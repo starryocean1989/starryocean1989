@@ -1,29 +1,29 @@
 # -*- coding: utf-8 -*-
 """
-性能优化模块
+性能优化模块.
+
 提供缓存机制、异步处理、性能监控等优化功能
 """
 
 import asyncio
+import functools
+import logging
 import threading
 import time
-import functools
-from typing import Dict, List, Optional, Any, Callable
 from collections import OrderedDict, defaultdict
 from concurrent.futures import ThreadPoolExecutor
-import logging
+from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
-# 导入核心模块
-from .vnpy_integration import TerminalEngine
-from .models import UnifiedMarketData
+if TYPE_CHECKING:
+    from .models import UnifiedMarketData
+    from .vnpy_integration import TerminalEngine
 
 
 class Cache:
-    """通用缓存类"""
+    """通用缓存类."""
 
     def __init__(self, max_size: int = 1000, ttl: int = 300):
-        """
-        初始化缓存
+        """初始化缓存.
 
         Args:
             max_size: 最大缓存大小
@@ -37,7 +37,7 @@ class Cache:
         self.logger = logging.getLogger(__name__)
 
     def get(self, key: str) -> Any:
-        """获取缓存项"""
+        """获取缓存项."""
         with self._lock:
             if key not in self._cache:
                 return None
@@ -53,7 +53,7 @@ class Cache:
             return self._cache[key]
 
     def put(self, key: str, value: Any):
-        """添加缓存项"""
+        """添加缓存项."""
         with self._lock:
             # 如果已存在，先删除
             if key in self._cache:
@@ -71,18 +71,18 @@ class Cache:
             self._timestamps[key] = time.time()
 
     def clear(self):
-        """清空缓存"""
+        """清空缓存."""
         with self._lock:
             self._cache.clear()
             self._timestamps.clear()
 
     def size(self) -> int:
-        """获取缓存大小"""
+        """获取缓存大小."""
         with self._lock:
             return len(self._cache)
 
     def cleanup_expired(self):
-        """清理过期项"""
+        """清理过期项."""
         with self._lock:
             current_time = time.time()
             expired_keys = [
@@ -99,9 +99,10 @@ class Cache:
 
 
 class DataCache:
-    """数据缓存管理器"""
+    """数据缓存管理器."""
 
     def __init__(self):
+        """初始化数据缓存管理器."""
         self.market_data_cache = Cache(max_size=5000, ttl=300)  # 5分钟过期
         self.order_cache = Cache(max_size=1000, ttl=600)       # 10分钟过期
         self.position_cache = Cache(max_size=1000, ttl=300)    # 5分钟过期
@@ -114,7 +115,7 @@ class DataCache:
         cleanup_thread.start()
 
     def _cleanup_loop(self):
-        """定期清理过期缓存"""
+        """定期清理过期缓存."""
         while True:
             try:
                 time.sleep(60)  # 每分钟清理一次
@@ -124,40 +125,40 @@ class DataCache:
             except (RuntimeError, AttributeError, KeyError) as e:
                 self.logger.error("缓存清理失败: %s", e)
 
-    def cache_market_data(self, symbol: str, data: List[UnifiedMarketData]):
-        """缓存行情数据"""
+    def cache_market_data(self, symbol: str, data: List["UnifiedMarketData"]):
+        """缓存行情数据."""
         key = f"market_{symbol}"
         self.market_data_cache.put(key, data)
 
     def get_market_data(
         self, symbol: str
-    ) -> Optional[List[UnifiedMarketData]]:
-        """获取缓存的行情数据"""
+    ) -> Optional[List["UnifiedMarketData"]]:
+        """获取缓存的行情数据."""
         key = f"market_{symbol}"
         return self.market_data_cache.get(key)
 
     def cache_order(self, order_id: str, order: Any):
-        """缓存订单"""
+        """缓存订单."""
         key = f"order_{order_id}"
         self.order_cache.put(key, order)
 
     def get_order(self, order_id: str) -> Any:
-        """获取缓存的订单"""
+        """获取缓存的订单."""
         key = f"order_{order_id}"
         return self.order_cache.get(key)
 
     def cache_position(self, symbol: str, position: Any):
-        """缓存持仓"""
+        """缓存持仓."""
         key = f"position_{symbol}"
         self.position_cache.put(key, position)
 
     def get_position(self, symbol: str) -> Any:
-        """获取缓存的持仓"""
+        """获取缓存的持仓."""
         key = f"position_{symbol}"
         return self.position_cache.get(key)
 
     def get_stats(self) -> Dict[str, Any]:
-        """获取缓存统计信息"""
+        """获取缓存统计信息."""
         return {
             "market_data_cache": {
                 "size": self.market_data_cache.size(),
@@ -175,9 +176,10 @@ class DataCache:
 
 
 class AsyncTaskManager:
-    """异步任务管理器"""
+    """异步任务管理器."""
 
     def __init__(self, max_workers: int = 10):
+        """初始化异步任务管理器."""
         self.max_workers = max_workers
         self.executor = ThreadPoolExecutor(max_workers=max_workers)
         self.loop = None
@@ -186,7 +188,7 @@ class AsyncTaskManager:
         self._results: Dict[str, Any] = {}
 
     def start_event_loop(self):
-        """启动事件循环"""
+        """启动事件循环."""
         try:
             self.loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self.loop)
@@ -206,7 +208,7 @@ class AsyncTaskManager:
             self.logger.error("启动事件循环失败: %s", e)
 
     def stop_event_loop(self):
-        """停止事件循环"""
+        """停止事件循环."""
         if self.loop:
             try:
                 self.loop.call_soon_threadsafe(self.loop.stop)
@@ -216,7 +218,7 @@ class AsyncTaskManager:
                 self.logger.error("停止事件循环失败: %s", e)
 
     def get_task_stats(self) -> Dict[str, int]:
-        """获取任务统计信息"""
+        """获取任务统计信息."""
         return {
             "active_tasks": len(self._tasks),
             "completed_tasks": len(self._results),
@@ -226,7 +228,7 @@ class AsyncTaskManager:
     def submit_task(
         self, task_id: str, func: Callable, *args, **kwargs
     ) -> str:
-        """提交异步任务"""
+        """提交异步任务."""
         def task_wrapper():
             try:
                 result = func(*args, **kwargs)
@@ -242,7 +244,7 @@ class AsyncTaskManager:
     def submit_asyncio_task(
         self, coroutine_func: Callable, *args, **kwargs
     ) -> str:
-        """提交异步协程任务"""
+        """提交异步协程任务."""
         if not self.loop:
             self.start_event_loop()
 
@@ -264,7 +266,7 @@ class AsyncTaskManager:
         return task_id
 
     def get_task_result(self, task_id: str, timeout: float = 10.0) -> Any:
-        """获取任务结果"""
+        """获取任务结果."""
         if task_id not in self._tasks:
             return {"success": False, "error": "任务不存在"}
 
@@ -296,7 +298,7 @@ class AsyncTaskManager:
                 del self._tasks[task_id]
 
     def cancel_task(self, task_id: str) -> bool:
-        """取消任务"""
+        """取消任务."""
         if task_id not in self._tasks:
             return False
 
@@ -312,9 +314,10 @@ class AsyncTaskManager:
 
 
 class PerformanceOptimizer:
-    """性能优化器"""
+    """性能优化器."""
 
-    def __init__(self, terminal_engine: TerminalEngine):
+    def __init__(self, terminal_engine: "TerminalEngine"):
+        """初始化性能优化器."""
         self.terminal_engine = terminal_engine
         self.logger = logging.getLogger(__name__)
 
@@ -330,17 +333,17 @@ class PerformanceOptimizer:
         self.start_optimization()
 
     def start_optimization(self):
-        """启动性能优化"""
+        """启动性能优化."""
         self.task_manager.start_event_loop()
         self.logger.info("性能优化器启动完成")
 
     def stop_optimization(self):
-        """停止性能优化"""
+        """停止性能优化."""
         self.task_manager.stop_event_loop()
         self.logger.info("性能优化器停止完成")
 
     def cache_data(self, data_type: str, key: str, data: Any):
-        """缓存数据"""
+        """缓存数据."""
         if data_type == "market":
             if isinstance(data, list):
                 self.data_cache.cache_market_data(key, data)
@@ -353,7 +356,7 @@ class PerformanceOptimizer:
             self.data_cache.cache_position(key, data)
 
     def get_cached_data(self, data_type: str, key: str) -> Any:
-        """获取缓存数据"""
+        """获取缓存数据."""
         if data_type == "market":
             return self.data_cache.get_market_data(key)
         elif data_type == "order":
@@ -365,24 +368,24 @@ class PerformanceOptimizer:
     def submit_async_task(
         self, task_id: str, func: Callable, *args, **kwargs
     ) -> str:
-        """提交异步任务"""
+        """提交异步任务."""
         return self.task_manager.submit_task(task_id, func, *args, **kwargs)
 
     def submit_asyncio_task(
         self, coroutine_func: Callable, *args, **kwargs
     ) -> str:
-        """提交异步协程任务"""
+        """提交异步协程任务."""
         return self.task_manager.submit_asyncio_task(
             coroutine_func, *args, **kwargs
         )
 
     def get_task_result(self, task_id: str, timeout: float = 10.0) -> Any:
-        """获取异步任务结果"""
+        """获取异步任务结果."""
         return self.task_manager.get_task_result(task_id, timeout)
 
     @staticmethod
     def memoize(func: Callable) -> Callable:
-        """记忆化装饰器"""
+        """记忆化装饰器."""
         cache = {}
 
         @functools.wraps(func)
@@ -400,7 +403,7 @@ class PerformanceOptimizer:
     def optimize_data_processing(
         self, data_processor: Callable, data: Any
     ) -> Any:
-        """优化数据处理"""
+        """优化数据处理."""
         def process_with_cache():
             # 这里可以实现数据处理的缓存逻辑
             return data_processor(data)
@@ -414,7 +417,7 @@ class PerformanceOptimizer:
         self, items: List[Any], processor: Callable,
         batch_size: int = 10
     ) -> List[Any]:
-        """批量处理数据"""
+        """批量处理数据."""
         results = []
 
         for i in range(0, len(items), batch_size):
@@ -434,7 +437,7 @@ class PerformanceOptimizer:
         return results
 
     def get_performance_stats(self) -> Dict[str, Any]:
-        """获取性能统计"""
+        """获取性能统计."""
         return {
             "cache_stats": self.data_cache.get_stats(),
             "task_manager_stats": self.task_manager.get_task_stats(),
@@ -442,27 +445,28 @@ class PerformanceOptimizer:
         }
 
     def enable_optimization(self):
-        """启用优化"""
+        """启用优化."""
         self._optimization_enabled = True
         self.logger.info("性能优化已启用")
 
     def disable_optimization(self):
-        """禁用优化"""
+        """禁用优化."""
         self._optimization_enabled = False
         self.logger.info("性能优化已禁用")
 
 
 class AsyncDataProcessor:
-    """异步数据处理器"""
+    """异步数据处理器."""
 
-    def __init__(self, optimizer: PerformanceOptimizer):
+    def __init__(self, optimizer: "PerformanceOptimizer"):
+        """初始化异步数据处理器."""
         self.optimizer = optimizer
         self.logger = logging.getLogger(__name__)
 
     async def process_market_data_async(
-        self, data_list: List[UnifiedMarketData]
+        self, data_list: List["UnifiedMarketData"]
     ) -> Dict[str, Any]:
-        """异步处理行情数据"""
+        """异步处理行情数据."""
         results = {}
 
         # 分批处理
@@ -488,9 +492,9 @@ class AsyncDataProcessor:
         return results
 
     def process_data_sync(
-        self, data_list: List[UnifiedMarketData]
+        self, data_list: List["UnifiedMarketData"]
     ) -> Dict[str, Any]:
-        """同步处理数据（包装为异步）"""
+        """同步处理数据（包装为异步）."""
         try:
             # 使用线程池执行
             future = self.optimizer.task_manager.executor.submit(
@@ -502,9 +506,9 @@ class AsyncDataProcessor:
             return {}
 
     def _sync_process_data(
-        self, data_list: List[UnifiedMarketData]
+        self, data_list: List["UnifiedMarketData"]
     ) -> Dict[str, Any]:
-        """实际的数据处理逻辑"""
+        """实际的数据处理逻辑."""
         results = {}
 
         for data in data_list:
@@ -523,39 +527,48 @@ class AsyncDataProcessor:
 
 # 全局性能优化器管理类
 class _PerformanceOptimizerRegistry:
-    """性能优化器注册表"""
+    """性能优化器注册表."""
 
     def __init__(self):
-        self._optimizer: Optional[PerformanceOptimizer] = None
+        """初始化性能优化器注册表."""
+        self._optimizer: Optional["PerformanceOptimizer"] = None
 
     def get_performance_optimizer(
-        self, terminal_engine: TerminalEngine
-    ) -> PerformanceOptimizer:
-        """获取性能优化器实例"""
+        self, terminal_engine: "TerminalEngine"
+    ) -> "PerformanceOptimizer":
+        """获取性能优化器实例."""
         if self._optimizer is None:
             self._optimizer = PerformanceOptimizer(terminal_engine)
         return self._optimizer
 
     def reset_optimizer(self):
-        """重置性能优化器（用于测试）"""
+        """重置性能优化器（用于测试）."""
         if self._optimizer:
             self._optimizer.stop_optimization()
             self._optimizer = None
 
+    def get_optimizer_instance(
+        self, terminal_engine: "TerminalEngine"
+    ) -> "PerformanceOptimizer":
+        """获取性能优化器实例（别名方法）."""
+        return self.get_performance_optimizer(terminal_engine)
+
 
 # 全局注册表实例
-_performance_registry = _PerformanceOptimizerRegistry()
+_performance_registry: _PerformanceOptimizerRegistry = (
+    _PerformanceOptimizerRegistry()
+)
 
 
 def get_performance_optimizer(
-    terminal_engine: TerminalEngine
-) -> PerformanceOptimizer:
-    """获取全局性能优化器实例"""
-    return _performance_registry.get_optimizer(terminal_engine)
+    terminal_engine: "TerminalEngine"
+) -> "PerformanceOptimizer":
+    """获取全局性能优化器实例."""
+    return _performance_registry.get_optimizer_instance(terminal_engine)
 
 
 def reset_performance_optimizer():
-    """重置性能优化器（用于测试）"""
+    """重置性能优化器（用于测试）."""
     _performance_registry.reset_optimizer()
 
 

@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-监控和测试模块
-提供性能监控、单元测试、健康检查等功能
+监控和测试模块.
+
+提供性能监控、单元测试、健康检查等功能.
 """
 
 # 标准库导入（按字母顺序）
@@ -14,9 +15,9 @@ import threading
 import time
 import unittest
 from collections import defaultdict
-from contextlib import redirect_stdout, redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 # 第三方库导入（按字母顺序）
 import psutil
@@ -24,16 +25,19 @@ import psutil
 # 本地模块导入（按字母顺序）
 from .models import get_data_model_manager
 from .performance import get_performance_optimizer
-from .shared_services import ConfigService
 from .test_integration import main as integration_main
 from .test_performance import main as performance_main
 from .vnpy_integration import TerminalEngine, VNPY_AVAILABLE
 
+if TYPE_CHECKING:
+    from .shared_services import ConfigService
+
 
 class PerformanceMonitor:
-    """性能监控器"""
+    """性能监控器."""
 
-    def __init__(self, config_service: ConfigService):
+    def __init__(self, config_service: "ConfigService"):
+        """初始化性能监控器."""
         self.config_service = config_service
         self.logger = logging.getLogger(__name__)
 
@@ -53,7 +57,7 @@ class PerformanceMonitor:
         self._init_thresholds()
 
     def _init_thresholds(self):
-        """初始化监控阈值"""
+        """初始化监控阈值."""
         config = self.config_service.get("system", {})
 
         self._thresholds = {
@@ -67,7 +71,7 @@ class PerformanceMonitor:
         }
 
     def start_monitoring(self, interval: float = 5.0):
-        """启动性能监控"""
+        """启动性能监控."""
         if self._state['monitoring']:
             return
 
@@ -82,7 +86,7 @@ class PerformanceMonitor:
         self.logger.info("性能监控已启动，间隔: %s秒", interval)
 
     def stop_monitoring(self):
-        """停止性能监控"""
+        """停止性能监控."""
         if not self._state['monitoring']:
             return
 
@@ -95,7 +99,7 @@ class PerformanceMonitor:
         self.logger.info("性能监控已停止")
 
     def _monitoring_loop(self, interval: float):
-        """监控循环"""
+        """监控循环."""
         while not self._state['stop_event'].is_set():
             try:
                 # 收集性能指标
@@ -110,12 +114,12 @@ class PerformanceMonitor:
                 # 等待下次监控
                 self._state['stop_event'].wait(interval)
 
-            except (RuntimeError, OSError, IOError) as e:
+            except (RuntimeError, OSError) as e:
                 self.logger.error("监控循环异常: %s", e)
                 time.sleep(interval)
 
     def _collect_metrics(self):
-        """收集性能指标"""
+        """收集性能指标."""
         timestamp = datetime.now()
 
         try:
@@ -155,7 +159,7 @@ class PerformanceMonitor:
             self.logger.error("收集性能指标失败: %s", e)
 
     def _measure_response_time(self) -> float:
-        """测量响应时间"""
+        """测量响应时间."""
         start_time = time.time()
 
         # 模拟一些操作来测量响应时间
@@ -165,13 +169,13 @@ class PerformanceMonitor:
         return (time.time() - start_time) * 1000  # 毫秒
 
     def _get_error_count(self) -> int:
-        """获取错误计数（简化版）"""
+        """获取错误计数（简化版）."""
         # 这里可以从日志或其他来源获取错误计数
         # 暂时返回0
         return 0
 
     def _collect_core_metrics(self) -> Optional[Dict[str, Any]]:
-        """收集核心模块指标"""
+        """收集核心模块指标."""
         try:
             metrics = {}
 
@@ -197,7 +201,7 @@ class PerformanceMonitor:
             return None
 
     def _check_thresholds(self):
-        """检查阈值告警"""
+        """检查阈值告警."""
         try:
             if not self._metrics["system"]:
                 return
@@ -230,7 +234,7 @@ class PerformanceMonitor:
             self.logger.error("检查阈值失败: %s", e)
 
     def _add_alert(self, alert_type: str, title: str, message: str):
-        """添加告警"""
+        """添加告警."""
         alert = {
             "timestamp": datetime.now(),
             "type": alert_type,
@@ -248,7 +252,7 @@ class PerformanceMonitor:
         self.logger.warning("监控告警: %s - %s", title, message)
 
     def _cleanup_old_metrics(self):
-        """清理旧的监控数据"""
+        """清理旧的监控数据."""
         cutoff_time = datetime.now() - timedelta(hours=24)  # 保留24小时数据
 
         for category in self._metrics:
@@ -261,7 +265,7 @@ class PerformanceMonitor:
 
     def get_metrics(self, category: str = None,
                     hours: int = 1) -> Dict[str, Any]:
-        """获取监控指标"""
+        """获取监控指标."""
         cutoff_time = datetime.now() - timedelta(hours=hours)
 
         if category:
@@ -284,16 +288,16 @@ class PerformanceMonitor:
         return result
 
     def get_alerts(self, limit: int = 100) -> List[Dict[str, Any]]:
-        """获取告警列表"""
+        """获取告警列表."""
         return self._alerts[-limit:] if self._alerts else []
 
     def clear_alerts(self):
-        """清空告警"""
+        """清空告警."""
         self._alerts.clear()
         self.logger.info("监控告警已清空")
 
     def get_summary(self) -> Dict[str, Any]:
-        """获取监控摘要"""
+        """获取监控摘要."""
         summary = {
             "monitoring_active": self._state['monitoring'],
             "total_alerts": len(self._alerts),
@@ -322,30 +326,31 @@ class PerformanceMonitor:
 
     @property
     def is_monitoring(self) -> bool:
-        """是否正在监控"""
+        """是否正在监控."""
         return self._state['monitoring']
 
     @property
     def metrics_count(self) -> int:
-        """指标数量"""
+        """指标数量."""
         return sum(len(metrics) for metrics in self._metrics.values())
 
     @property
     def alerts_count(self) -> int:
-        """告警数量"""
+        """告警数量."""
         return len(self._alerts)
 
 
 class TestRunner:
-    """测试运行器"""
+    """测试运行器."""
 
-    def __init__(self, config_service: ConfigService):
+    def __init__(self, config_service: "ConfigService"):
+        """初始化测试运行器."""
         self.config_service = config_service
         self.logger = logging.getLogger(__name__)
         self._test_results: Dict[str, Any] = {}
 
     def run_unit_tests(self, test_module: str = None) -> Dict[str, Any]:
-        """运行单元测试"""
+        """运行单元测试."""
         start_time = time.time()
 
         # 发现测试
@@ -354,7 +359,7 @@ class TestRunner:
                 module = __import__(test_module, fromlist=[''])
                 loader = unittest.TestLoader()
                 suite = loader.loadTestsFromModule(module)
-            except (ImportError, AttributeError, ModuleNotFoundError) as e:
+            except (ImportError, AttributeError) as e:
                 self.logger.error("加载测试模块失败 %s: %s", test_module, e)
                 return {"success": False, "error": str(e)}
         else:
@@ -373,7 +378,7 @@ class TestRunner:
                     loader = unittest.TestLoader()
                     module_suite = loader.loadTestsFromModule(module)
                     suite.addTests(module_suite)
-                except (ImportError, AttributeError, ModuleNotFoundError) as e:
+                except (ImportError, AttributeError) as e:
                     self.logger.warning("加载测试文件失败 %s: %s", test_file, e)
 
         # 运行测试
@@ -412,7 +417,7 @@ class TestRunner:
         return test_result
 
     def run_integration_tests(self) -> Dict[str, Any]:
-        """运行集成测试"""
+        """运行集成测试."""
         start_time = time.time()
 
         try:
@@ -449,7 +454,7 @@ class TestRunner:
 
             return result
 
-        except (RuntimeError, OSError, IOError) as e:
+        except (RuntimeError, OSError) as e:
             self.logger.error("运行集成测试失败: %s", e)
             return {
                 "success": False,
@@ -459,7 +464,7 @@ class TestRunner:
             }
 
     def run_performance_tests(self) -> Dict[str, Any]:
-        """运行性能测试"""
+        """运行性能测试."""
         start_time = time.time()
 
         try:
@@ -496,7 +501,7 @@ class TestRunner:
 
             return result
 
-        except (RuntimeError, OSError, IOError) as e:
+        except (RuntimeError, OSError) as e:
             self.logger.error("运行性能测试失败: %s", str(e))
             return {
                 "success": False,
@@ -506,7 +511,7 @@ class TestRunner:
             }
 
     def get_test_results(self, limit: int = 10) -> List[Dict[str, Any]]:
-        """获取测试结果"""
+        """获取测试结果."""
         results = list(self._test_results.values())
         results.sort(
             key=lambda x: x.get("timestamp") or datetime.min,
@@ -515,7 +520,7 @@ class TestRunner:
         return results[:limit]
 
     def run_all_tests(self) -> Dict[str, Any]:
-        """运行所有测试"""
+        """运行所有测试."""
         results = {}
 
         self.logger.info("开始运行全套测试")
@@ -551,7 +556,7 @@ class TestRunner:
 
     @property
     def last_test_timestamp(self) -> Optional[datetime]:
-        """最后测试时间戳"""
+        """最后测试时间戳."""
         if not self._test_results:
             return None
         last_key = max(self._test_results.keys())
@@ -559,57 +564,46 @@ class TestRunner:
 
 
 class TestStream:
-    """测试输出流"""
+    """测试输出流."""
 
     def __init__(self):
-        """初始化测试输出流"""
+        """初始化测试输出流."""
         self.content = []
 
     def write(self, text):
-        """写入文本到输出流"""
+        """写入文本到输出流."""
         self.content.append(text)
 
     def flush(self):
-        """刷新输出流（无操作）"""
+        """刷新输出流（无操作）."""
         # 无操作 - 兼容StringIO接口
 
     def getvalue(self):
-        """获取输出流的内容"""
+        """获取输出流的内容."""
         return ''.join(self.content)
 
 
 class HealthChecker:
-    """健康检查器"""
+    """健康检查器."""
 
     def __init__(self, terminal_engine: TerminalEngine):
+        """初始化健康检查器."""
         self.terminal_engine = terminal_engine
         self.logger = logging.getLogger(__name__)
         self._check_results: Dict[str, Any] = {}
 
     def check_system_health(self) -> Dict[str, Any]:
-        """检查系统健康状态"""
-        checks = {}
-
-        # 检查Python环境
-        checks["python"] = self._check_python_environment()
-
-        # 检查内存使用
-        checks["memory"] = self._check_memory_usage()
-
-        # 检查磁盘空间
-        checks["disk"] = self._check_disk_space()
-
-        # 检查核心模块
-        checks["core_modules"] = self._check_core_modules()
-
-        # 检查VNPY连接
-        if VNPY_AVAILABLE:
-            checks["vnpy"] = self._check_vnpy_connection()
-        else:
-            checks["vnpy"] = {
+        """检查系统健康状态."""
+        checks = {
+            "python": self._check_python_environment(),
+            "memory": self._check_memory_usage(),
+            "disk": self._check_disk_space(),
+            "core_modules": self._check_core_modules(),
+            "vnpy": (self._check_vnpy_connection() if VNPY_AVAILABLE else {
                 "status": "unavailable",
                 "message": "VNPY不可用"
-            }
+            })
+        }
 
         # 计算整体健康评分
         health_score = self._calculate_health_score(checks)
@@ -627,7 +621,7 @@ class HealthChecker:
         return result
 
     def _check_python_environment(self) -> Dict[str, Any]:
-        """检查Python环境"""
+        """检查Python环境."""
         try:
             return {
                 "status": "ok",
@@ -639,7 +633,7 @@ class HealthChecker:
             return {"status": "error", "error": str(e)}
 
     def _check_memory_usage(self) -> Dict[str, Any]:
-        """检查内存使用"""
+        """检查内存使用."""
         try:
             memory = psutil.virtual_memory()
             threshold = 80  # 80%
@@ -656,7 +650,7 @@ class HealthChecker:
             return {"status": "error", "error": str(e)}
 
     def _check_disk_space(self) -> Dict[str, Any]:
-        """检查磁盘空间"""
+        """检查磁盘空间."""
         try:
             disk = psutil.disk_usage('/')
             threshold = 90  # 90%
@@ -673,7 +667,7 @@ class HealthChecker:
             return {"status": "error", "error": str(e)}
 
     def _check_core_modules(self) -> Dict[str, Any]:
-        """检查核心模块"""
+        """检查核心模块."""
         checks = {}
 
         try:
@@ -720,7 +714,7 @@ class HealthChecker:
         return checks
 
     def _check_vnpy_connection(self) -> Dict[str, Any]:
-        """检查VNPY连接"""
+        """检查VNPY连接."""
         try:
             status = self.terminal_engine.get_status()
             return {
@@ -733,7 +727,7 @@ class HealthChecker:
             return {"status": "error", "error": str(e)}
 
     def _calculate_health_score(self, checks: Dict[str, Any]) -> float:
-        """计算健康评分"""
+        """计算健康评分."""
         scores = []
 
         # 系统检查评分
@@ -768,7 +762,7 @@ class HealthChecker:
         return (sum(scores) / len(scores)) if scores else 0
 
     def get_check_history(self, limit: int = 10) -> List[Dict[str, Any]]:
-        """获取检查历史"""
+        """获取检查历史."""
         results = list(self._check_results.values())
         results.sort(
             key=lambda x: x.get("timestamp") or datetime.min,
@@ -778,7 +772,7 @@ class HealthChecker:
 
     @property
     def last_check_timestamp(self) -> Optional[datetime]:
-        """最后检查时间戳"""
+        """最后检查时间戳."""
         if not self._check_results:
             return None
         last_key = max(self._check_results.keys())
@@ -786,10 +780,11 @@ class HealthChecker:
 
 
 class MonitoringManager:
-    """监控管理器"""
+    """监控管理器."""
 
-    def __init__(self, config_service: ConfigService,
+    def __init__(self, config_service: "ConfigService",
                  terminal_engine: TerminalEngine):
+        """初始化监控管理器."""
         self.config_service = config_service
         self.terminal_engine = terminal_engine
         self.logger = logging.getLogger(__name__)
@@ -803,17 +798,17 @@ class MonitoringManager:
         self.start_all_monitoring()
 
     def start_all_monitoring(self):
-        """启动所有监控"""
+        """启动所有监控."""
         self.performance_monitor.start_monitoring()
         self.logger.info("监控管理器启动完成")
 
     def stop_all_monitoring(self):
-        """停止所有监控"""
+        """停止所有监控."""
         self.performance_monitor.stop_monitoring()
         self.logger.info("监控管理器停止完成")
 
     def run_comprehensive_test(self) -> Dict[str, Any]:
-        """运行综合测试"""
+        """运行综合测试."""
         self.logger.info("开始运行综合测试")
 
         # 健康检查
@@ -849,7 +844,7 @@ class MonitoringManager:
         return report
 
     def get_status(self) -> Dict[str, Any]:
-        """获取监控状态"""
+        """获取监控状态."""
         return {
             "performance_monitor": {
                 "active": self.performance_monitor.is_monitoring,

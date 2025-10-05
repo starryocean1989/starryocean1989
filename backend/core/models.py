@@ -1,28 +1,24 @@
 # -*- coding: utf-8 -*-
 """
-统一数据模型模块
-使用VNPY标准数据对象，避免重复定义
+统一数据模型模块.
+
+使用VNPY标准数据对象，避免重复定义。
 """
 
-import logging
+import logging  # Standard library import
 import sys
-from typing import Dict, List, Optional, Any
-from datetime import datetime
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
-
-# 导入VNPY核心数据模型
-from .vnpy_integration import (
-    TickData, BarData, OrderData, TradeData,
-    PositionData, AccountData
-)
+from typing import Any, Dict, List, Optional
 
 # 导入统一导入模块
 from .imports import pd
 
 
 class DataCategory(Enum):
-    """数据类别枚举"""
+    """数据类别枚举."""
+
     MARKET_DATA = "market_data"      # 行情数据
     TRANSACTION_DATA = "transaction_data"  # 交易数据
     PORTFOLIO_DATA = "portfolio_data"      # 组合数据
@@ -31,7 +27,8 @@ class DataCategory(Enum):
 
 
 class DataSource(Enum):
-    """数据源枚举"""
+    """数据源枚举."""
+
     VNPY = "vnpy"
     TUSHARE = "tushare"
     RQDATA = "rqdata"
@@ -42,7 +39,8 @@ class DataSource(Enum):
 
 @dataclass
 class DataMetadata:  # pylint: disable=too-many-instance-attributes
-    """数据元数据"""
+    """数据元数据."""
+
     category: DataCategory
     source: DataSource
     symbol: str = ""
@@ -58,7 +56,8 @@ class DataMetadata:  # pylint: disable=too-many-instance-attributes
 
 @dataclass
 class UnifiedMarketData:  # pylint: disable=too-many-instance-attributes
-    """统一行情数据模型"""
+    """统一行情数据模型."""
+
     # 基础信息
     symbol: str
     exchange: str
@@ -92,8 +91,8 @@ class UnifiedMarketData:  # pylint: disable=too-many-instance-attributes
     ))
 
     @classmethod
-    def from_vnpy_tick(cls, tick: TickData) -> 'UnifiedMarketData':
-        """从VNPY TickData创建统一数据"""
+    def from_vnpy_tick(cls, tick: Any) -> 'UnifiedMarketData':
+        """从VNPY TickData创建统一数据."""
         return cls(
             symbol=tick.symbol,
             exchange=tick.exchange if hasattr(tick, 'exchange') else "",
@@ -123,14 +122,15 @@ class UnifiedMarketData:  # pylint: disable=too-many-instance-attributes
         )
 
     @classmethod
-    def from_vnpy_bar(cls, bar_data: BarData) -> 'UnifiedMarketData':
-        """从VNPY BarData创建统一数据"""
+    def from_vnpy_bar(cls, bar_data: Any) -> 'UnifiedMarketData':
+        """从VNPY BarData创建统一数据."""
         return cls(
             symbol=bar_data.symbol,
             exchange=bar_data.exchange,
             data_type="bar",
             datetime=bar_data.datetime,
-            timestamp=int(bar_data.datetime.timestamp()) if bar_data.datetime else 0,
+            timestamp=(int(bar_data.datetime.timestamp())
+                       if bar_data.datetime else 0),
             open_price=bar_data.open_price,
             high_price=bar_data.high_price,
             low_price=bar_data.low_price,
@@ -144,14 +144,15 @@ class UnifiedMarketData:  # pylint: disable=too-many-instance-attributes
                 DataSource.VNPY,
                 symbol=bar_data.symbol,
                 exchange=bar_data.exchange,
-                frequency=f"{bar_data.interval}m" if bar_data.interval else "1m",
+                frequency=(f"{bar_data.interval}m"
+                           if bar_data.interval else "1m"),
                 count=1,
                 last_updated=bar_data.datetime
             )
         )
 
     def to_pandas_row(self) -> Dict[str, Any]:
-        """转换为pandas行数据"""
+        """转换为pandas行数据."""
         return {
             'symbol': self.symbol,
             'exchange': self.exchange,
@@ -175,7 +176,8 @@ class UnifiedMarketData:  # pylint: disable=too-many-instance-attributes
 
 @dataclass
 class UnifiedOrder:  # pylint: disable=too-many-instance-attributes
-    """统一订单数据模型"""
+    """统一订单数据模型."""
+
     # 基础信息
     order_id: str
     symbol: str
@@ -198,8 +200,8 @@ class UnifiedOrder:  # pylint: disable=too-many-instance-attributes
     ))
 
     @classmethod
-    def from_vnpy_order(cls, order: OrderData) -> 'UnifiedOrder':
-        """从VNPY OrderData创建统一订单"""
+    def from_vnpy_order(cls, order: Any) -> 'UnifiedOrder':
+        """从VNPY OrderData创建统一订单."""
         return cls(
             order_id=(order.orderid if hasattr(order, 'orderid')
                       else str(id(order))),
@@ -226,7 +228,8 @@ class UnifiedOrder:  # pylint: disable=too-many-instance-attributes
 
 @dataclass
 class UnifiedTrade:  # pylint: disable=too-many-instance-attributes
-    """统一成交数据模型"""
+    """统一成交数据模型."""
+
     # 基础信息
     trade_id: str
     order_id: str
@@ -245,8 +248,8 @@ class UnifiedTrade:  # pylint: disable=too-many-instance-attributes
     ))
 
     @classmethod
-    def from_vnpy_trade(cls, trade: TradeData) -> 'UnifiedTrade':
-        """从VNPY TradeData创建统一成交"""
+    def from_vnpy_trade(cls, trade: Any) -> 'UnifiedTrade':
+        """从VNPY TradeData创建统一成交."""
         return cls(
             trade_id=(trade.tradeid if hasattr(trade, 'tradeid')
                       else str(id(trade))),
@@ -271,7 +274,8 @@ class UnifiedTrade:  # pylint: disable=too-many-instance-attributes
 
 @dataclass
 class UnifiedPosition:  # pylint: disable=too-many-instance-attributes
-    """统一持仓数据模型"""
+    """统一持仓数据模型."""
+
     # 基础信息
     symbol: str
     exchange: str
@@ -294,8 +298,8 @@ class UnifiedPosition:  # pylint: disable=too-many-instance-attributes
     ))
 
     @classmethod
-    def from_vnpy_position(cls, position: PositionData) -> 'UnifiedPosition':
-        """从VNPY PositionData创建统一持仓"""
+    def from_vnpy_position(cls, position: Any) -> 'UnifiedPosition':
+        """从VNPY PositionData创建统一持仓."""
         return cls(
             symbol=position.symbol,
             exchange=position.exchange,
@@ -320,7 +324,8 @@ class UnifiedPosition:  # pylint: disable=too-many-instance-attributes
 
 @dataclass
 class UnifiedAccount:  # pylint: disable=too-many-instance-attributes
-    """统一账户数据模型"""
+    """统一账户数据模型."""
+
     # 基础信息
     account_id: str
     account_type: str  # stock, future, option
@@ -345,8 +350,8 @@ class UnifiedAccount:  # pylint: disable=too-many-instance-attributes
     ))
 
     @classmethod
-    def from_vnpy_account(cls, account: AccountData) -> 'UnifiedAccount':
-        """从VNPY AccountData创建统一账户"""
+    def from_vnpy_account(cls, account: Any) -> 'UnifiedAccount':
+        """从VNPY AccountData创建统一账户."""
         total_profit = account.close_profit + account.position_profit
 
         return cls(
@@ -370,9 +375,10 @@ class UnifiedAccount:  # pylint: disable=too-many-instance-attributes
 
 
 class DataModelManager:
-    """数据模型管理器"""
+    """数据模型管理器."""
 
     def __init__(self):
+        """初始化数据模型管理器."""
         self.logger = logging.getLogger(__name__)
         self._market_data_cache: Dict[str, List[UnifiedMarketData]] = {}
         self._order_cache: Dict[str, UnifiedOrder] = {}
@@ -381,7 +387,7 @@ class DataModelManager:
         self._account_cache: Dict[str, UnifiedAccount] = {}
 
     def add_market_data(self, data: UnifiedMarketData):
-        """添加行情数据"""
+        """添加行情数据."""
         key = f"{data.symbol}_{data.exchange}"
         if key not in self._market_data_cache:
             self._market_data_cache[key] = []
@@ -393,49 +399,49 @@ class DataModelManager:
 
     def get_market_data(self, symbol: str, exchange: str = "",
                         limit: int = 100) -> List[UnifiedMarketData]:
-        """获取行情数据"""
+        """获取行情数据."""
         key = f"{symbol}_{exchange}"
         data_list = self._market_data_cache.get(key, [])
         return data_list[-limit:] if data_list else []
 
     def add_order(self, order: UnifiedOrder):
-        """添加订单"""
+        """添加订单."""
         self._order_cache[order.order_id] = order
 
     def get_order(self, order_id: str) -> Optional[UnifiedOrder]:
-        """获取订单"""
+        """获取订单."""
         return self._order_cache.get(order_id)
 
     def add_trade(self, trade: UnifiedTrade):
-        """添加成交"""
+        """添加成交."""
         self._trade_cache[trade.trade_id] = trade
 
     def get_trade(self, trade_id: str) -> Optional[UnifiedTrade]:
-        """获取成交"""
+        """获取成交."""
         return self._trade_cache.get(trade_id)
 
     def add_position(self, position: UnifiedPosition):
-        """添加持仓"""
+        """添加持仓."""
         key = f"{position.symbol}_{position.exchange}_{position.direction}"
         self._position_cache[key] = position
 
     def get_position(self, symbol: str, exchange: str = "",
                      direction: str = "long") -> Optional[UnifiedPosition]:
-        """获取持仓"""
+        """获取持仓."""
         key = f"{symbol}_{exchange}_{direction}"
         return self._position_cache.get(key)
 
     def add_account(self, account: UnifiedAccount):
-        """添加账户"""
+        """添加账户."""
         self._account_cache[account.account_id] = account
 
     def get_account(self, account_id: str) -> Optional[UnifiedAccount]:
-        """获取账户"""
+        """获取账户."""
         return self._account_cache.get(account_id)
 
     def to_pandas_dataframe(self, data_list: List[UnifiedMarketData]
                             ) -> Optional[Any]:
-        """将行情数据转换为pandas DataFrame"""
+        """将行情数据转换为pandas DataFrame."""
         if not data_list or not pd:
             return None
 
@@ -451,7 +457,7 @@ class DataModelManager:
             return None
 
     def get_statistics(self) -> Dict[str, Any]:
-        """获取数据统计信息"""
+        """获取数据统计信息."""
         return {
             "market_data_count": sum(len(v) for v in
                                      self._market_data_cache.values()),
@@ -463,7 +469,7 @@ class DataModelManager:
         }
 
     def _estimate_memory_usage(self) -> str:
-        """估算内存使用量"""
+        """估算内存使用量."""
         try:
             total_size = 0
 
@@ -488,7 +494,7 @@ class DataModelManager:
             return "未知"
 
     def clear_cache(self, data_type: str = "all"):
-        """清空缓存"""
+        """清空缓存."""
         if data_type in ["all", "market"]:
             self._market_data_cache.clear()
 
@@ -509,19 +515,19 @@ class DataModelManager:
 
 # 全局数据模型管理器管理类
 class _DataModelManagerRegistry:  # pylint: disable=invalid-name
-    """数据模型管理器注册表"""
+    """数据模型管理器注册表."""
 
     def __init__(self):
         self._manager: Optional[DataModelManager] = None
 
     def get_manager(self) -> DataModelManager:
-        """获取数据模型管理器实例"""
+        """获取数据模型管理器实例."""
         if self._manager is None:
             self._manager = DataModelManager()
         return self._manager
 
     def reset_manager(self):
-        """重置数据模型管理器（用于测试）"""
+        """重置数据模型管理器（用于测试）."""
         if self._manager:
             self._manager.clear_cache()
             self._manager = None
@@ -532,12 +538,12 @@ _data_model_registry = _DataModelManagerRegistry()
 
 
 def get_data_model_manager() -> DataModelManager:
-    """获取全局数据模型管理器实例"""
+    """获取全局数据模型管理器实例."""
     return _data_model_registry.get_manager()
 
 
 def reset_data_model_manager():
-    """重置数据模型管理器（用于测试）"""
+    """重置数据模型管理器（用于测试）."""
     _data_model_registry.reset_manager()
 
 

@@ -1,30 +1,22 @@
 # -*- coding: utf-8 -*-
 """
-性能优化模块测试
-验证缓存机制、异步处理等性能优化功能
+性能优化模块测试.
+
+验证缓存机制、异步处理等性能优化功能。
 """
 
+import asyncio
 import sys
 import time
-import asyncio
 from pathlib import Path
 
-try:
-    from ..vnpy_integration import get_terminal_engine
-    from ..performance import (
-        Cache, DataCache, AsyncTaskManager,
-        AsyncDataProcessor,
-        get_performance_optimizer
-    )
-    from ..models import UnifiedMarketData
-except ImportError:
-    from backend.core.vnpy_integration import get_terminal_engine
-    from backend.core.performance import (
-        Cache, DataCache, AsyncTaskManager,
-        AsyncDataProcessor,
-        get_performance_optimizer
-    )
-    from backend.core.models import UnifiedMarketData
+# 使用绝对导入避免相对导入问题
+from backend.core.models import UnifiedMarketData
+from backend.core.performance import (
+    AsyncDataProcessor, AsyncTaskManager, Cache, DataCache,
+    get_performance_optimizer
+)
+from backend.core.vnpy_integration import get_terminal_engine
 
 # 添加项目根目录到Python路径
 project_root = Path(__file__).parent.parent.parent
@@ -32,7 +24,10 @@ sys.path.insert(0, str(project_root))
 
 
 def test_cache():
-    """测试缓存功能"""
+    """测试缓存功能.
+
+    验证基础缓存和数据缓存的功能。
+    """
     print("=== 测试缓存功能 ===")
 
     # 测试基础缓存
@@ -76,7 +71,10 @@ def test_cache():
 
 
 def test_async_task_manager():
-    """测试异步任务管理器"""
+    """测试异步任务管理器.
+
+    验证同步和异步任务的管理功能。
+    """
     print("\n=== 测试异步任务管理器 ===")
 
     task_manager = AsyncTaskManager(max_workers=2)
@@ -112,7 +110,10 @@ def test_async_task_manager():
 
 
 def test_performance_optimizer():
-    """测试性能优化器"""
+    """测试性能优化器.
+
+    验证缓存、异步任务和性能统计功能。
+    """
     print("\n=== 测试性能优化器 ===")
 
     # 获取终端引擎
@@ -159,7 +160,10 @@ def test_performance_optimizer():
 
 
 def test_async_data_processor():
-    """测试异步数据处理器"""
+    """测试异步数据处理器.
+
+    验证数据处理器的同步处理功能。
+    """
     print("\n=== 测试异步数据处理器 ===")
 
     # 创建模拟数据
@@ -189,7 +193,10 @@ def test_async_data_processor():
 
 
 def main():
-    """主测试函数"""
+    """主测试函数.
+
+    运行所有性能优化模块的测试。
+    """
     print("🚀 开始性能优化模块测试")
     print("=" * 50)
 

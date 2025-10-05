@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-核心模块集成测试
+核心模块集成测试.
+
 验证VNPY架构集成、统一导入、数据模型等核心功能
 """
 
-import sys
 import logging
+import sys
 import time
 from pathlib import Path
 
@@ -14,26 +15,27 @@ project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 # 核心模块导入 - 使用绝对导入避免相对导入问题
-from backend.core.vnpy_integration import (
-    VNPY_AVAILABLE, get_terminal_engine
-)
-from backend.core.imports import (
-    check_module_availability, setup_logging,
-    ModuleAvailability
-)
-from backend.core.models import (
-    UnifiedMarketData, get_data_model_manager
-)
-from backend.core.factories import (
-    UnifiedFactory
-)
-from backend.core.shared_services import (
-    ConfigService, LoggingService, MonitoringService
-)
+try:
+    from backend.core.factories import UnifiedFactory
+    from backend.core.imports import (
+        ModuleAvailability, check_module_availability, setup_logging
+    )
+    from backend.core.models import (
+        UnifiedMarketData, get_data_model_manager
+    )
+    from backend.core.shared_services import (
+        ConfigService, LoggingService, MonitoringService
+    )
+    from backend.core.vnpy_integration import (
+        VNPY_AVAILABLE, get_terminal_engine
+    )
+except ImportError as e:
+    print(f"导入错误: {e}")
+    sys.exit(1)
 
 
 def test_vnpy_integration():
-    """测试VNPY架构集成"""
+    """测试VNPY架构集成."""
     print("=== 测试VNPY架构集成 ===")
 
     try:
@@ -60,7 +62,7 @@ def test_vnpy_integration():
 
 
 def test_unified_imports():
-    """测试统一导入管理"""
+    """测试统一导入管理."""
     print("\n=== 测试统一导入管理 ===")
 
     try:
@@ -87,7 +89,7 @@ def test_unified_imports():
 
 
 def test_data_models():
-    """测试统一数据模型"""
+    """测试统一数据模型."""
     print("\n=== 测试统一数据模型 ===")
 
     try:
@@ -127,7 +129,7 @@ def test_data_models():
 
 
 def test_factories():
-    """测试工厂模式"""
+    """测试工厂模式."""
     print("\n=== 测试工厂模式 ===")
 
     try:
@@ -151,7 +153,7 @@ def test_factories():
 
 
 def test_shared_services():
-    """测试共享服务层"""
+    """测试共享服务层."""
     print("\n=== 测试共享服务层 ===")
 
     try:
@@ -185,13 +187,13 @@ def test_shared_services():
         print("✅ 共享服务层测试通过")
         return True
 
-    except (ImportError, AttributeError, RuntimeError, OSError, IOError) as e:
+    except (ImportError, AttributeError, RuntimeError, OSError) as e:
         print(f"❌ 共享服务层测试失败: {e}")
         return False
 
 
 def main():
-    """主测试函数"""
+    """主测试函数."""
     print("🚀 开始核心模块集成测试")
     print("=" * 50)
 

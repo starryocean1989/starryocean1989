@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-监控和测试模块测试
-验证性能监控、健康检查、单元测试等功能
+监控和测试模块测试.
+
+验证性能监控、健康检查、单元测试等功能。
 """
 
 import sys
@@ -9,11 +10,11 @@ import time
 from pathlib import Path
 
 # 使用绝对导入避免相对导入问题
-from backend.core.vnpy_integration import get_terminal_engine
-from backend.core.shared_services import ConfigService
 from backend.core.monitoring import (
-    PerformanceMonitor, TestRunner, HealthChecker, MonitoringManager
+    HealthChecker, MonitoringManager, PerformanceMonitor, TestRunner
 )
+from backend.core.shared_services import ConfigService
+from backend.core.vnpy_integration import get_terminal_engine
 
 # 添加项目根目录到Python路径
 project_root = Path(__file__).parent.parent.parent
@@ -21,7 +22,7 @@ sys.path.insert(0, str(project_root))
 
 
 def test_performance_monitor():
-    """测试性能监控器"""
+    """测试性能监控器."""
     print("=== 测试性能监控器 ===")
 
     # 创建配置服务
@@ -66,7 +67,7 @@ def test_performance_monitor():
 
 
 def test_health_checker():
-    """测试健康检查器"""
+    """测试健康检查器."""
     print("\n=== 测试健康检查器 ===")
 
     # 获取终端引擎
@@ -95,7 +96,7 @@ def test_health_checker():
 
 
 def test_test_runner():
-    """测试测试运行器"""
+    """测试测试运行器."""
     print("\n=== 测试测试运行器 ===")
 
     # 创建配置服务
@@ -141,7 +142,7 @@ def test_test_runner():
 
 
 def test_monitoring_manager():
-    """测试监控管理器"""
+    """测试监控管理器."""
     print("\n=== 测试监控管理器 ===")
 
     # 创建配置服务
@@ -176,7 +177,7 @@ def test_monitoring_manager():
 
 
 def test_stress_test():
-    """压力测试"""
+    """压力测试."""
     print("\n=== 压力测试 ===")
 
     # 获取终端引擎
@@ -187,7 +188,7 @@ def test_stress_test():
 
     # 执行多次健康检查
     results = []
-    for i in range(10):
+    for _ in range(10):
         result = health_checker.check_system_health()
         results.append(result)
         time.sleep(0.1)  # 小间隔
@@ -209,7 +210,7 @@ def test_stress_test():
 
 
 def main():
-    """主测试函数"""
+    """主测试函数."""
     print("🚀 开始监控和测试模块测试")
     print("=" * 50)
 

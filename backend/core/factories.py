@@ -1,27 +1,32 @@
 # -*- coding: utf-8 -*-
 """
-工厂模式实现模块
-提供统一的网关、策略、数据源创建和管理
+工厂模式实现模块.
+
+提供统一的网关、策略、数据源创建和管理.
 """
-
 import logging
-from typing import Dict, List, Optional, Any, Type
 from enum import Enum
+from typing import Any, Dict, List, Optional, TYPE_CHECKING, Type
 
-# 导入核心模块
-from .vnpy_integration import TerminalEngine
-
-# 导入统一导入
 from .imports import (
-    CtpGateway, MiniGateway, IbGateway,
-    CtaEngine, AlgoEngine, PortfolioEngine,
-    TushareDatafeed, RqdataDatafeed,
-    ModuleAvailability
+    AlgoEngine,
+    CtaEngine,
+    CtpGateway,
+    IbGateway,
+    MiniGateway,
+    ModuleAvailability,
+    PortfolioEngine,
+    RqdataDatafeed,
+    TushareDatafeed
 )
+
+if TYPE_CHECKING:
+    from .vnpy_integration import TerminalEngine
 
 
 class GatewayType(Enum):
-    """网关类型枚举"""
+    """网关类型枚举."""
+
     CTP = "ctp"           # 国内期货CTP
     MINI = "mini"         # 期货迷你版
     IB = "ib"             # 国际市场IB
@@ -31,7 +36,8 @@ class GatewayType(Enum):
 
 
 class StrategyType(Enum):
-    """策略类型枚举"""
+    """策略类型枚举."""
+
     CTA = "cta"           # CTA策略
     ALGO = "algo"         # 算法交易
     PORTFOLIO = "portfolio"  # 组合策略
@@ -41,7 +47,8 @@ class StrategyType(Enum):
 
 
 class DatafeedType(Enum):
-    """数据源类型枚举"""
+    """数据源类型枚举."""
+
     TUSHARE = "tushare"   # 聚宽数据
     RQDATA = "rqdata"     # 米筐数据
     VNPY_RECORDER = "vnpy_recorder"  # VNPY录制器
@@ -49,9 +56,10 @@ class DatafeedType(Enum):
 
 
 class GatewayFactory:
-    """网关工厂"""
+    """网关工厂."""
 
-    def __init__(self, terminal_engine: TerminalEngine):
+    def __init__(self, terminal_engine: "TerminalEngine") -> None:
+        """初始化网关工厂."""
         self.terminal_engine = terminal_engine
         self.logger = logging.getLogger(__name__)
         self._gateway_configs: Dict[str, Dict[str, Any]] = {}
@@ -59,8 +67,8 @@ class GatewayFactory:
 
     def register_gateway_type(self, gateway_type: GatewayType,
                               gateway_class: Type,
-                              default_config: Dict[str, Any] = None):
-        """注册网关类型"""
+                              default_config: Dict[str, Any] = None) -> None:
+        """注册网关类型."""
         self._gateway_configs[gateway_type.value] = {
             "class": gateway_class,
             "config": default_config or {}
@@ -69,7 +77,7 @@ class GatewayFactory:
 
     def create_gateway(self, gateway_name: str, gateway_type: GatewayType,
                        config: Dict[str, Any] = None) -> Optional[Any]:
-        """创建网关实例"""
+        """创建网关实例."""
         if gateway_type.value not in self._gateway_configs:
             self.logger.error("未注册的网关类型: %s", gateway_type.value)
             return None
@@ -104,7 +112,7 @@ class GatewayFactory:
 
     def connect_gateway(self, gateway_name: str,
                         connection_config: Dict[str, Any]) -> bool:
-        """连接网关"""
+        """连接网关."""
         if gateway_name not in self._gateway_instances:
             self.logger.error("网关未找到: %s", gateway_name)
             return False
@@ -113,7 +121,7 @@ class GatewayFactory:
             gateway_name, **connection_config)
 
     def disconnect_gateway(self, gateway_name: str) -> bool:
-        """断开网关连接"""
+        """断开网关连接."""
         if gateway_name not in self._gateway_instances:
             self.logger.error("网关未找到: %s", gateway_name)
             return False
@@ -130,13 +138,13 @@ class GatewayFactory:
         return False
 
     def get_gateway(self, gateway_name: str) -> Optional[Any]:
-        """获取网关实例"""
+        """获取网关实例."""
         if gateway_name in self._gateway_instances:
             return self._gateway_instances[gateway_name]["instance"]
         return None
 
     def list_gateways(self) -> List[Dict[str, Any]]:
-        """列出所有网关"""
+        """列出所有网关."""
         return [
             {
                 "name": name,
@@ -148,7 +156,7 @@ class GatewayFactory:
         ]
 
     def remove_gateway(self, gateway_name: str) -> bool:
-        """移除网关"""
+        """移除网关."""
         if gateway_name in self._gateway_instances:
             try:
                 # 先断开连接
@@ -165,9 +173,10 @@ class GatewayFactory:
 
 
 class StrategyFactory:
-    """策略工厂"""
+    """策略工厂."""
 
-    def __init__(self, terminal_engine: TerminalEngine):
+    def __init__(self, terminal_engine: "TerminalEngine") -> None:
+        """初始化策略工厂."""
         self.terminal_engine = terminal_engine
         self.logger = logging.getLogger(__name__)
         self._strategy_configs: Dict[str, Dict[str, Any]] = {}
@@ -175,8 +184,8 @@ class StrategyFactory:
 
     def register_strategy_type(self, strategy_type: StrategyType,
                                engine_name: str,
-                               default_config: Dict[str, Any] = None):
-        """注册策略类型"""
+                               default_config: Dict[str, Any] = None) -> None:
+        """注册策略类型."""
         self._strategy_configs[strategy_type.value] = {
             "engine": engine_name,
             "config": default_config or {}
@@ -186,7 +195,7 @@ class StrategyFactory:
     def create_strategy(self, strategy_name: str, strategy_type: StrategyType,
                         strategy_class: Type,
                         config: Dict[str, Any] = None) -> Optional[Any]:
-        """创建策略实例"""
+        """创建策略实例."""
         if strategy_type.value not in self._strategy_configs:
             self.logger.error("未注册的策略类型: %s", strategy_type.value)
             return None
@@ -226,7 +235,7 @@ class StrategyFactory:
             return None
 
     def start_strategy(self, strategy_name: str) -> bool:
-        """启动策略"""
+        """启动策略."""
         if strategy_name not in self._strategy_instances:
             self.logger.error("策略未找到: %s", strategy_name)
             return False
@@ -249,7 +258,7 @@ class StrategyFactory:
         return False
 
     def stop_strategy(self, strategy_name: str) -> bool:
-        """停止策略"""
+        """停止策略."""
         if strategy_name not in self._strategy_instances:
             self.logger.error("策略未找到: %s", strategy_name)
             return False
@@ -271,7 +280,7 @@ class StrategyFactory:
         return False
 
     def list_strategies(self) -> List[Dict[str, Any]]:
-        """列出所有策略"""
+        """列出所有策略."""
         strategies = []
 
         for engine_name, engine in \
@@ -288,7 +297,7 @@ class StrategyFactory:
         return strategies
 
     def remove_strategy(self, strategy_name: str) -> bool:
-        """移除策略"""
+        """移除策略."""
         if strategy_name in self._strategy_instances:
             try:
                 # 先停止策略
@@ -305,9 +314,10 @@ class StrategyFactory:
 
 
 class DatafeedFactory:
-    """数据源工厂"""
+    """数据源工厂."""
 
-    def __init__(self, terminal_engine: TerminalEngine):
+    def __init__(self, terminal_engine: "TerminalEngine") -> None:
+        """初始化数据源工厂."""
         self.terminal_engine = terminal_engine
         self.logger = logging.getLogger(__name__)
         self._datafeed_configs: Dict[str, Dict[str, Any]] = {}
@@ -315,8 +325,8 @@ class DatafeedFactory:
 
     def register_datafeed_type(self, datafeed_type: DatafeedType,
                                datafeed_class: Type,
-                               default_config: Dict[str, Any] = None):
-        """注册数据源类型"""
+                               default_config: Dict[str, Any] = None) -> None:
+        """注册数据源类型."""
         self._datafeed_configs[datafeed_type.value] = {
             "class": datafeed_class,
             "config": default_config or {}
@@ -325,7 +335,7 @@ class DatafeedFactory:
 
     def create_datafeed(self, datafeed_name: str, datafeed_type: DatafeedType,
                         config: Dict[str, Any] = None) -> Optional[Any]:
-        """创建数据源实例"""
+        """创建数据源实例."""
         if datafeed_type.value not in self._datafeed_configs:
             self.logger.error("未注册的数据源类型: %s", datafeed_type.value)
             return None
@@ -360,7 +370,7 @@ class DatafeedFactory:
 
     def subscribe_symbol(self, datafeed_name: str, symbol: str,
                          exchange: str = "") -> bool:
-        """订阅行情数据"""
+        """订阅行情数据."""
         if datafeed_name not in self._datafeed_instances:
             self.logger.error("数据源未找到: %s", datafeed_name)
             return False
@@ -378,7 +388,7 @@ class DatafeedFactory:
 
     def unsubscribe_symbol(self, datafeed_name: str, symbol: str,
                            exchange: str = "") -> bool:
-        """取消订阅行情数据"""
+        """取消订阅行情数据."""
         if datafeed_name not in self._datafeed_instances:
             self.logger.error("数据源未找到: %s", datafeed_name)
             return False
@@ -395,7 +405,7 @@ class DatafeedFactory:
         return False
 
     def list_datafeeds(self) -> List[Dict[str, Any]]:
-        """列出所有数据源"""
+        """列出所有数据源."""
         return [
             {
                 "name": name,
@@ -407,7 +417,7 @@ class DatafeedFactory:
         ]
 
     def remove_datafeed(self, datafeed_name: str) -> bool:
-        """移除数据源"""
+        """移除数据源."""
         if datafeed_name in self._datafeed_instances:
             try:
                 # 先取消所有订阅
@@ -428,9 +438,10 @@ class DatafeedFactory:
 
 
 class UnifiedFactory:
-    """统一工厂，整合所有工厂"""
+    """统一工厂，整合所有工厂."""
 
-    def __init__(self, terminal_engine: TerminalEngine):
+    def __init__(self, terminal_engine: "TerminalEngine") -> None:
+        """初始化统一工厂."""
         self.terminal_engine = terminal_engine
         self.logger = logging.getLogger(__name__)
 
@@ -442,8 +453,8 @@ class UnifiedFactory:
         # 自动注册可用类型
         self._auto_register_types()
 
-    def _auto_register_types(self):
-        """自动注册可用类型"""
+    def _auto_register_types(self) -> None:
+        """自动注册可用类型."""
         # 注册网关类型
         if (ModuleAvailability.CTP_GATEWAY and CtpGateway):
             self.gateway_factory.register_gateway_type(
@@ -500,7 +511,7 @@ class UnifiedFactory:
         self.logger.info("类型注册完成")
 
     def get_status(self) -> Dict[str, Any]:
-        """获取工厂状态"""
+        """获取工厂状态."""
         return {
             "gateway_count": len(self.gateway_factory.list_gateways()),
             "strategy_count": len(self.strategy_factory.list_strategies()),
@@ -511,15 +522,15 @@ class UnifiedFactory:
         }
 
     def get_gateway_factory(self) -> GatewayFactory:
-        """获取网关工厂"""
+        """获取网关工厂."""
         return self.gateway_factory
 
     def get_strategy_factory(self) -> StrategyFactory:
-        """获取策略工厂"""
+        """获取策略工厂."""
         return self.strategy_factory
 
     def get_datafeed_factory(self) -> DatafeedFactory:
-        """获取数据源工厂"""
+        """获取数据源工厂."""
         return self.datafeed_factory
 
 

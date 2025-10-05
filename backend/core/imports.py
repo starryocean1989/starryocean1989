@@ -1,22 +1,23 @@
 # -*- coding: utf-8 -*-
 """
-统一导入管理模块
-减少重复导入，提升代码复用性和维护性
+统一导入管理模块.
+
+减少重复导入，提升代码复用性和维护性。
 """
 
+import asyncio
+import datetime
+import json
 import logging
 import logging.handlers
-from logging import Logger
-from typing import Dict, List, Optional, Any, Union, Tuple
-
-# 系统内置模块
 import os
 import sys
-import json
+import threading
 import time
-import datetime
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 # 数据处理模块
 try:
@@ -47,9 +48,6 @@ except ImportError:
     psutil = None
 
 # 网络和并发
-import asyncio
-import threading
-from concurrent.futures import ThreadPoolExecutor
 import requests
 
 # GUI框架（可选）
@@ -68,12 +66,10 @@ except ImportError:
 
 # VNPY核心模块
 from .vnpy_integration import (
-    TerminalEngine, MainEngine, EventEngine, Event,
-    TickData, BarData, OrderData, TradeData,
-    PositionData, AccountData,
-    EVENT_TICK, EVENT_ORDER, EVENT_TRADE,
-    EVENT_POSITION, EVENT_ACCOUNT, EVENT_LOG,
-    VNPY_AVAILABLE
+    AccountData, BarData, EVENT_ACCOUNT, EVENT_LOG, EVENT_ORDER,
+    EVENT_POSITION, EVENT_TICK, EVENT_TRADE, Event, EventEngine,
+    MainEngine, OrderData, PositionData, TerminalEngine, TickData,
+    TradeData, VNPY_AVAILABLE
 )
 
 # VNPY策略引擎
@@ -221,11 +217,11 @@ except ImportError:
 
 # 常量定义 - 模块可用性
 class ModuleAvailability:
-    """模块可用性常量"""
+    """模块可用性常量."""
 
     def __init__(self):
-        """初始化常量类以避免pylint警告"""
-        # 无需初始化，常量类
+        """初始化常量类以避免pylint警告."""
+        # 无需初始化，常量类。
 
     # 系统模块
     PANDAS = PANDAS_AVAILABLE
@@ -256,7 +252,7 @@ class ModuleAvailability:
 
     @classmethod
     def is_module_available(cls, module_name: str) -> bool:
-        """检查模块是否可用"""
+        """检查模块是否可用."""
         return getattr(cls, module_name.upper(), False)
 
     # 数据库模块
@@ -265,7 +261,7 @@ class ModuleAvailability:
 
     @classmethod
     def get_available_modules(cls) -> list:
-        """获取所有可用模块的列表"""
+        """获取所有可用模块的列表."""
         available = []
         for attr_name in dir(cls):
             if not attr_name.startswith('_'):
@@ -276,7 +272,7 @@ class ModuleAvailability:
 
     @classmethod
     def get_unavailable_modules(cls) -> list:
-        """获取所有不可用模块的列表"""
+        """获取所有不可用模块的列表."""
         unavailable = []
         for attr_name in dir(cls):
             if not attr_name.startswith('_'):
@@ -287,7 +283,7 @@ class ModuleAvailability:
 
 
 def check_module_availability() -> Dict[str, bool]:
-    """检查所有模块的可用性"""
+    """检查所有模块的可用性."""
     return {
         "pandas": PANDAS_AVAILABLE,
         "numpy": PANDAS_AVAILABLE and np is not None,
@@ -313,7 +309,7 @@ def check_module_availability() -> Dict[str, bool]:
 
 
 def safe_import(module_name: str, fallback=None):
-    """安全导入模块"""
+    """安全导入模块."""
     try:
         # 使用字典映射来减少返回语句数量
         module_map = {
@@ -345,8 +341,8 @@ def safe_import(module_name: str, fallback=None):
 def setup_logging(
     name: str = "terminal", level: str = "INFO",
     log_file: str = None
-) -> Logger:
-    """统一日志配置"""
+):
+    """统一日志配置."""
     logger = logging.getLogger(name)
     logger.setLevel(getattr(logging, level.upper(), logging.INFO))
 
@@ -378,7 +374,7 @@ def setup_logging(
             )
             file_handler.setFormatter(file_formatter)
             logger.addHandler(file_handler)
-        except (IOError, OSError) as e:
+        except OSError as e:
             logger.warning("无法创建日志文件处理器: %s", e)
 
     return logger
@@ -388,7 +384,7 @@ def setup_logging(
 def vnpy_to_pandas(
     vnpy_data_list: List[Any], data_type: str = "tick"
 ) -> Optional[Any]:
-    """将VNPY数据转换为pandas DataFrame"""
+    """将VNPY数据转换为pandas DataFrame."""
     if not PANDAS_AVAILABLE or not vnpy_data_list:
         return None
 
