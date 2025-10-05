@@ -24,8 +24,51 @@ except ImportError as e:
     logging.warning(f"VNPY核心模块导入失败: {e}")
     VNPY_AVAILABLE = False
 
+# VNPY扩展引擎导入（条件性导入）
+try:
+    from vnpy_ctastrategy import CtaEngine
+    VNPY_CTA_AVAILABLE = True
+except ImportError:
+    VNPY_CTA_AVAILABLE = False
+    CtaEngine = None
+
+try:
+    from vnpy_algotrading import AlgoEngine
+    VNPY_ALGO_AVAILABLE = True
+except ImportError:
+    VNPY_ALGO_AVAILABLE = False
+    AlgoEngine = None
+
+try:
+    from vnpy_portfoliostrategy import PortfolioEngine
+    VNPY_PORTFOLIO_AVAILABLE = True
+except ImportError:
+    VNPY_PORTFOLIO_AVAILABLE = False
+    PortfolioEngine = None
+
+try:
+    from vnpy_spreadtrading import SpreadEngine
+    VNPY_SPREAD_AVAILABLE = True
+except ImportError:
+    VNPY_SPREAD_AVAILABLE = False
+    SpreadEngine = None
+
+try:
+    from vnpy_scripttrader import ScriptEngine
+    VNPY_SCRIPT_AVAILABLE = True
+except ImportError:
+    VNPY_SCRIPT_AVAILABLE = False
+    ScriptEngine = None
+
+try:
+    from vnpy_optionmaster import OptionEngine
+    VNPY_OPTION_AVAILABLE = True
+except ImportError:
+    VNPY_OPTION_AVAILABLE = False
+    OptionEngine = None
+
     # 创建兼容性存根类
-    class EventEngine:
+    class EventEngineCompat:
         def __init__(self):
             self._handlers = {}
 
@@ -46,10 +89,10 @@ except ImportError as e:
                 for handler in self._handlers[event.type]:
                     try:
                         handler(event)
-                    except Exception as e:
+                    except (TypeError, AttributeError, RuntimeError) as e:
                         logging.error(f"事件处理失败 {event.type}: {e}")
 
-    class MainEngine:
+    class MainEngineStub:
         def __init__(self, event_engine):
             self.event_engine = event_engine
             self.engines = {}
@@ -60,12 +103,12 @@ except ImportError as e:
         def get_engine(self, engine_name):
             return self.engines.get(engine_name)
 
-    class BaseData:
+    class BaseDataStub:
         def __init__(self):
             self.datetime = None
             self.gateway_name = ""
 
-    class TickData(BaseData):
+    class TickData(BaseDataStub):
         def __init__(self):
             super().__init__()
             self.symbol = ""
@@ -207,74 +250,70 @@ class TerminalEngine:
 
         try:
             # 注册CTA策略引擎
-            try:
-                from vnpy_ctastrategy import CtaEngine
+            if VNPY_CTA_AVAILABLE and CtaEngine:
                 cta_engine = CtaEngine(self.main_engine, self.event_engine)
                 self.main_engine.add_engine(cta_engine)
                 self.strategy_engines["cta"] = cta_engine
                 self.logger.info("CTA策略引擎注册完成")
-            except ImportError:
+            else:
                 self.logger.warning("CTA策略引擎不可用")
 
             # 注册算法交易引擎
-            try:
-                from vnpy_algotrading import AlgoEngine
+            if VNPY_ALGO_AVAILABLE and AlgoEngine:
                 algo_engine = AlgoEngine(self.main_engine, self.event_engine)
                 self.main_engine.add_engine(algo_engine)
                 self.strategy_engines["algo"] = algo_engine
                 self.logger.info("算法交易引擎注册完成")
-            except ImportError:
+            else:
                 self.logger.warning("算法交易引擎不可用")
 
             # 注册组合策略引擎
             try:
                 from vnpy_portfoliostrategy import PortfolioEngine
-                portfolio_engine = PortfolioEngine(
-                    self.main_engine, self.event_engine
-                )
-                self.main_engine.add_engine(portfolio_engine)
-                self.strategy_engines["portfolio"] = portfolio_engine
-                self.logger.info("组合策略引擎注册完成")
+                if PortfolioEngine:
+                    portfolio_engine = PortfolioEngine(
+                        self.main_engine, self.event_engine
+                    )
+                    self.main_engine.add_engine(portfolio_engine)
+                    self.strategy_engines["portfolio"] = portfolio_engine
+                    self.logger.info("组合策略引擎注册完成")
             except ImportError:
                 self.logger.warning("组合策略引擎不可用")
 
             # 注册价差交易引擎
-            try:
-                from vnpy_spreadtrading import SpreadEngine
+            if VNPY_SPREAD_AVAILABLE and SpreadEngine:
                 spread_engine = SpreadEngine(
                     self.main_engine, self.event_engine
                 )
                 self.main_engine.add_engine(spread_engine)
                 self.strategy_engines["spread"] = spread_engine
                 self.logger.info("价差交易引擎注册完成")
-            except ImportError:
+            else:
                 self.logger.warning("价差交易引擎不可用")
 
             # 注册脚本交易引擎
-            try:
-                from vnpy_scripttrader import ScriptEngine
+            if VNPY_SCRIPT_AVAILABLE and ScriptEngine:
                 script_engine = ScriptEngine(
                     self.main_engine, self.event_engine
                 )
                 self.main_engine.add_engine(script_engine)
                 self.strategy_engines["script"] = script_engine
                 self.logger.info("脚本交易引擎注册完成")
-            except ImportError:
+            else:
                 self.logger.warning("脚本交易引擎不可用")
 
             # 注册期权策略引擎
-            try:
-                from vnpy_optionmaster import OptionEngine
+            if VNPY_OPTION_AVAILABLE and OptionEngine:
                 option_engine = OptionEngine(
                     self.main_engine, self.event_engine
                 )
                 self.main_engine.add_engine(option_engine)
                 self.strategy_engines["option"] = option_engine
                 self.logger.info("期权策略引擎注册完成")
-            except ImportError:
+            else:
                 self.logger.warning("期权策略引擎不可用")
 
-        except Exception as e:
+        except (RuntimeError, AttributeError, ImportError) as e:
             self.logger.error(f"注册VNPY包失败: {e}")
 
     def add_gateway(self, gateway_name: str, gateway_class: Any, **kwargs):
@@ -287,7 +326,7 @@ class TerminalEngine:
             self.gateways[gateway_name] = gateway
             self.logger.info(f"网关 {gateway_name} 添加完成")
             return gateway
-        except Exception as e:
+        except (TypeError, AttributeError, RuntimeError) as e:
             self.logger.error(f"添加网关 {gateway_name} 失败: {e}")
             return None
 
@@ -297,12 +336,13 @@ class TerminalEngine:
             datafeed = datafeed_class(
                 self.main_engine, self.event_engine, **kwargs
             )
-            self.main_engine.add_datafeed(datafeed)
+            # VNPY可能没有add_datafeed方法，直接使用数据源对象
+            # self.main_engine.add_datafeed(datafeed)
             self.datafeeds[datafeed_name] = datafeed
-            self.logger.info(f"数据源 {datafeed_name} 添加完成")
+            self.logger.info("数据源 %s 添加完成", datafeed_name)
             return datafeed
-        except Exception as e:
-            self.logger.error(f"添加数据源 {datafeed_name} 失败: {e}")
+        except (TypeError, AttributeError, RuntimeError) as e:
+            self.logger.error("添加数据源 %s 失败: %s", datafeed_name, e)
             return None
 
     def connect_gateway(self, gateway_name: str, **settings):
@@ -313,7 +353,7 @@ class TerminalEngine:
                 gateway.connect(settings)
                 self.logger.info(f"网关 {gateway_name} 连接成功")
                 return True
-            except Exception as e:
+            except (ConnectionError, TimeoutError, RuntimeError) as e:
                 self.logger.error(f"连接网关 {gateway_name} 失败: {e}")
                 return False
         else:
@@ -328,7 +368,7 @@ class TerminalEngine:
                     gateway.subscribe(symbol, exchange)
             self.logger.info(f"订阅 {symbol} 行情数据成功")
             return True
-        except Exception as e:
+        except (AttributeError, RuntimeError, TypeError) as e:
             self.logger.error(f"订阅行情数据失败: {e}")
             return False
 
@@ -382,7 +422,7 @@ class TerminalEngine:
                 cta_engine.add_strategy(strategy, strategy_name)
                 self.logger.info(f"策略 {strategy_name} 启动成功")
                 return strategy
-        except Exception as e:
+        except (TypeError, AttributeError, RuntimeError) as e:
             self.logger.error(f"启动策略失败: {e}")
         return None
 
@@ -394,7 +434,7 @@ class TerminalEngine:
                 cta_engine.remove_strategy(strategy_name)
                 self.logger.info(f"策略 {strategy_name} 停止成功")
                 return True
-        except Exception as e:
+        except (AttributeError, RuntimeError, KeyError) as e:
             self.logger.error(f"停止策略失败: {e}")
         return False
 
@@ -442,7 +482,7 @@ class TerminalEngine:
                     gateway.close()
 
             self.logger.info("终端引擎已关闭")
-        except Exception as e:
+        except (AttributeError, RuntimeError, IOError) as e:
             self.logger.error(f"关闭终端引擎失败: {e}")
 
 

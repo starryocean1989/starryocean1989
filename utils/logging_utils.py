@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-日志工具模块
+日志工具模块.
+
 提供统一的日志配置和管理功能
 """
 
@@ -11,19 +12,19 @@ from typing import Optional
 
 
 class LoggerMixin:
-    """日志混合类"""
+    """日志混合类."""
 
     @property
     def logger(self) -> logging.Logger:
-        """获取日志器"""
+        """获取日志器."""
         name = self.__class__.__name__
         return logging.getLogger(name)
 
 
 def setup_logging(name: str = "terminal", level: str = "INFO",
-                 log_file: Optional[str] = None) -> logging.Logger:
+                  log_file: Optional[str] = None) -> logging.Logger:
     """
-    设置日志配置
+    设置日志配置.
 
     Args:
         name: 日志器名称
@@ -59,16 +60,17 @@ def setup_logging(name: str = "terminal", level: str = "INFO",
             file_handler = logging.FileHandler(log_file, encoding='utf-8')
             file_handler.setLevel(logging.DEBUG)
             file_formatter = logging.Formatter(
-                '%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s'
+                '%(asctime)s - %(name)s - %(levelname)s - '
+                '%(filename)s:%(lineno)d - %(message)s'
             )
             file_handler.setFormatter(file_formatter)
             logger.addHandler(file_handler)
-        except Exception as e:
-            logger.warning(f"无法创建日志文件处理器: {e}")
+        except OSError as e:
+            logger.warning("无法创建日志文件处理器: %s", e)
 
     return logger
 
 
 def get_logger(name: str) -> logging.Logger:
-    """获取日志器"""
+    """获取日志器."""
     return logging.getLogger(name)

@@ -13,7 +13,7 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-# 核心模块导入
+# 核心模块导入 - 使用绝对导入避免相对导入问题
 from backend.core.vnpy_integration import (
     VNPY_AVAILABLE, get_terminal_engine
 )

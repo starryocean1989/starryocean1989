@@ -49,7 +49,7 @@ class ConfigService:
             self._create_default_config()
             return self.save_config()
 
-        except Exception as e:
+        except (IOError, OSError, json.JSONDecodeError, FileNotFoundError) as e:
             self.logger.error("加载配置失败: %s", e)
             self._create_default_config()
             return False
@@ -77,7 +77,7 @@ class ConfigService:
                 self.logger.info("配置保存成功: %s", self.config_file)
                 return True
 
-        except Exception as e:
+        except (IOError, OSError, ValueError, PermissionError) as e:
             self.logger.error("保存配置失败: %s", e)
             return False
 
@@ -206,7 +206,7 @@ class ConfigService:
 
             return True
 
-        except Exception as e:
+        except (TypeError, ValueError, KeyError) as e:
             self.logger.error("设置配置失败 %s: %s", key, e)
             return False
 
@@ -230,7 +230,7 @@ class ConfigService:
 
                 return True
 
-        except Exception as e:
+        except (TypeError, ValueError, KeyError) as e:
             self.logger.error("批量更新配置失败: %s", e)
             return False
 
@@ -250,7 +250,7 @@ class ConfigService:
         for listener in self._listeners:
             try:
                 listener(key, value)
-            except Exception as e:
+            except (TypeError, AttributeError, RuntimeError) as e:
                 self.logger.error("配置监听器执行失败: %s", e)
 
     def reload_config(self) -> bool:
@@ -269,7 +269,7 @@ class ConfigService:
             self.logger.info("配置导出成功: %s", export_path)
             return True
 
-        except Exception as e:
+        except (IOError, OSError, PermissionError) as e:
             self.logger.error("导出配置失败: %s", e)
             return False
 
@@ -301,7 +301,7 @@ class ConfigService:
             self.logger.error("导入配置验证失败，已恢复原配置")
             return False
 
-        except Exception as e:
+        except (IOError, OSError, json.JSONDecodeError, FileNotFoundError) as e:
             self.logger.error("导入配置失败: %s", e)
             return False
 
@@ -326,7 +326,7 @@ class ConfigService:
 
             return True
 
-        except Exception as e:
+        except (TypeError, ValueError, KeyError) as e:
             self.logger.error("配置验证失败: %s", e)
             return False
 
@@ -395,7 +395,7 @@ class LoggingService:
             file_handler.setLevel(logging.DEBUG)
             self._handlers["file"] = file_handler
 
-        except Exception as e:
+        except (IOError, OSError, PermissionError) as e:
             self.logger.error("创建文件日志处理器失败: %s", e)
 
     def _configure_root_logger(self):
@@ -433,7 +433,7 @@ class LoggingService:
 
             self.logger.info("日志级别已设置为: %s", level)
 
-        except Exception as e:
+        except (AttributeError, ValueError, TypeError) as e:
             self.logger.error("设置日志级别失败: %s", e)
 
     def add_file_handler(self, name: str, file_path: str, level: str = "INFO"):
@@ -454,7 +454,7 @@ class LoggingService:
 
             self.logger.info("文件日志处理器添加成功: %s", name)
 
-        except Exception as e:
+        except (IOError, OSError, PermissionError, AttributeError) as e:
             self.logger.error("添加文件日志处理器失败 %s: %s", name, e)
 
     def remove_handler(self, name: str):
@@ -473,7 +473,7 @@ class LoggingService:
                 del self._handlers[name]
                 self.logger.info("日志处理器移除成功: %s", name)
 
-            except Exception as e:
+            except (AttributeError, IOError, OSError) as e:
                 self.logger.error("移除日志处理器失败 %s: %s", name, e)
 
 
@@ -539,7 +539,7 @@ class MonitoringService:
                 # 等待下次监控
                 self._stop_event.wait(interval)
 
-            except Exception as e:
+            except (RuntimeError, OSError, IOError) as e:
                 self.logger.error("监控循环异常: %s", e)
                 time.sleep(interval)
 
@@ -579,7 +579,7 @@ class MonitoringService:
             with self._lock:
                 self._monitoring_data["system"] = metrics
 
-        except Exception as e:
+        except (RuntimeError, OSError, psutil.Error) as e:
             self.logger.error("收集系统指标失败: %s", e)
 
     def _collect_vnpy_metrics(self):
@@ -610,7 +610,7 @@ class MonitoringService:
             with self._lock:
                 self._monitoring_data["vnpy"] = metrics
 
-        except Exception as e:
+        except (RuntimeError, AttributeError, ConnectionError) as e:
             self.logger.error("收集VNPY指标失败: %s", e)
 
     def _check_alerts(self):
@@ -669,7 +669,7 @@ class MonitoringService:
                 for alert in alerts_to_add:
                     self.logger.warning("监控告警: %s", alert['message'])
 
-        except Exception as e:
+        except (KeyError, TypeError, RuntimeError) as e:
             self.logger.error("检查告警失败: %s", e)
 
     def _save_performance_history(self):
@@ -695,7 +695,7 @@ class MonitoringService:
                     self._performance_history = self._performance_history[
                         -max_history:]
 
-        except Exception as e:
+        except (IOError, OSError, TypeError) as e:
             self.logger.error("保存性能历史失败: %s", e)
 
     def get_current_metrics(self) -> Dict[str, Any]:
@@ -747,7 +747,7 @@ class MonitoringService:
 
             return round(score, 1)
 
-        except Exception as e:
+        except (KeyError, TypeError, RuntimeError, ZeroDivisionError) as e:
             self.logger.error("计算健康评分失败: %s", e)
             return 0.0
 

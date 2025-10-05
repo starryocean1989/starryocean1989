@@ -57,7 +57,7 @@ class DataMetadata:  # pylint: disable=too-many-instance-attributes
 
 
 @dataclass
-class UnifiedMarketData:
+class UnifiedMarketData:  # pylint: disable=too-many-instance-attributes
     """统一行情数据模型"""
     # 基础信息
     symbol: str
@@ -123,30 +123,30 @@ class UnifiedMarketData:
         )
 
     @classmethod
-    def from_vnpy_bar(cls, bar: BarData) -> 'UnifiedMarketData':
+    def from_vnpy_bar(cls, bar_data: BarData) -> 'UnifiedMarketData':
         """从VNPY BarData创建统一数据"""
         return cls(
-            symbol=bar.symbol,
-            exchange=bar.exchange,
+            symbol=bar_data.symbol,
+            exchange=bar_data.exchange,
             data_type="bar",
-            datetime=bar.datetime,
-            timestamp=int(bar.datetime.timestamp()) if bar.datetime else 0,
-            open_price=bar.open_price,
-            high_price=bar.high_price,
-            low_price=bar.low_price,
-            close_price=bar.close_price,
+            datetime=bar_data.datetime,
+            timestamp=int(bar_data.datetime.timestamp()) if bar_data.datetime else 0,
+            open_price=bar_data.open_price,
+            high_price=bar_data.high_price,
+            low_price=bar_data.low_price,
+            close_price=bar_data.close_price,
             pre_close=0.0,  # BarData中没有pre_close
-            volume=bar.volume,
-            turnover=bar.turnover,
-            open_interest=bar.open_interest,
+            volume=bar_data.volume,
+            turnover=bar_data.turnover,
+            open_interest=bar_data.open_interest,
             metadata=DataMetadata(
                 DataCategory.MARKET_DATA,
                 DataSource.VNPY,
-                symbol=bar.symbol,
-                exchange=bar.exchange,
-                frequency=f"{bar.interval}m" if bar.interval else "1m",
+                symbol=bar_data.symbol,
+                exchange=bar_data.exchange,
+                frequency=f"{bar_data.interval}m" if bar_data.interval else "1m",
                 count=1,
-                last_updated=bar.datetime
+                last_updated=bar_data.datetime
             )
         )
 
@@ -174,7 +174,7 @@ class UnifiedMarketData:
 
 
 @dataclass
-class UnifiedOrder:
+class UnifiedOrder:  # pylint: disable=too-many-instance-attributes
     """统一订单数据模型"""
     # 基础信息
     order_id: str
@@ -225,7 +225,7 @@ class UnifiedOrder:
 
 
 @dataclass
-class UnifiedTrade:
+class UnifiedTrade:  # pylint: disable=too-many-instance-attributes
     """统一成交数据模型"""
     # 基础信息
     trade_id: str
@@ -270,7 +270,7 @@ class UnifiedTrade:
 
 
 @dataclass
-class UnifiedPosition:
+class UnifiedPosition:  # pylint: disable=too-many-instance-attributes
     """统一持仓数据模型"""
     # 基础信息
     symbol: str
@@ -319,7 +319,7 @@ class UnifiedPosition:
 
 
 @dataclass
-class UnifiedAccount:
+class UnifiedAccount:  # pylint: disable=too-many-instance-attributes
     """统一账户数据模型"""
     # 基础信息
     account_id: str
@@ -447,7 +447,7 @@ class DataModelManager:
                 df.set_index('datetime', inplace=True)
             return df
         except (ValueError, TypeError, AttributeError) as e:
-            self.logger.error(f"转换为pandas DataFrame失败: {e}")
+            self.logger.error("转换为pandas DataFrame失败: %s", e)
             return None
 
     def get_statistics(self) -> Dict[str, Any]:
@@ -480,10 +480,9 @@ class DataModelManager:
 
             if total_size < 1024:
                 return f"{total_size} B"
-            elif total_size < 1024 * 1024:
+            if total_size < 1024 * 1024:
                 return f"{total_size / 1024:.1f} KB"
-            else:
-                return f"{total_size / (1024 * 1024):.1f} MB"
+            return f"{total_size / (1024 * 1024):.1f} MB"
 
         except (TypeError, AttributeError, OverflowError):
             return "未知"
@@ -505,27 +504,41 @@ class DataModelManager:
         if data_type in ["all", "account"]:
             self._account_cache.clear()
 
-        self.logger.info(f"缓存已清空: {data_type}")
+        self.logger.info("缓存已清空: %s", data_type)
 
 
-# 全局数据模型管理器实例
-_data_model_manager = None
+# 全局数据模型管理器管理类
+class _DataModelManagerRegistry:  # pylint: disable=invalid-name
+    """数据模型管理器注册表"""
+
+    def __init__(self):
+        self._manager: Optional[DataModelManager] = None
+
+    def get_manager(self) -> DataModelManager:
+        """获取数据模型管理器实例"""
+        if self._manager is None:
+            self._manager = DataModelManager()
+        return self._manager
+
+    def reset_manager(self):
+        """重置数据模型管理器（用于测试）"""
+        if self._manager:
+            self._manager.clear_cache()
+            self._manager = None
+
+
+# 全局注册表实例
+_data_model_registry = _DataModelManagerRegistry()
 
 
 def get_data_model_manager() -> DataModelManager:
     """获取全局数据模型管理器实例"""
-    global _data_model_manager
-    if _data_model_manager is None:
-        _data_model_manager = DataModelManager()
-    return _data_model_manager
+    return _data_model_registry.get_manager()
 
 
 def reset_data_model_manager():
     """重置数据模型管理器（用于测试）"""
-    global _data_model_manager
-    if _data_model_manager:
-        _data_model_manager.clear_cache()
-        _data_model_manager = None
+    _data_model_registry.reset_manager()
 
 
 # 导出所有公共接口

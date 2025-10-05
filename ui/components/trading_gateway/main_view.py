@@ -1,47 +1,51 @@
 # -*- coding: utf-8 -*-
-"""
-交易网关界面 - 主视图
-混合架构：网关管理器（固有组件）+ 2个子界面
+"""交易网关界面 - 主视图.
+
+混合架构：网关管理器（固有组件）+ 2个子界面.
 """
 
-from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
-    QLabel, QPushButton, QGroupBox, QComboBox,
-    QTabWidget, QTableWidget, QTableWidgetItem,
-    QHeaderView, QLineEdit, QFormLayout
-)
-from PySide6.QtCore import Qt, QTimer, Signal
+import logging
+
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
+from PySide6.QtWidgets import (
+    QComboBox, QGroupBox, QHBoxLayout, QHeaderView,
+    QLabel, QPushButton, QSplitter, QTabWidget,
+    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
+)
 
 try:
-    from ..widgets.base_widget import BaseWidget
-    from ...utils.logging_utils import LoggerMixin
+    from ui.widgets.base_widget import BaseWidget
+    from utils.logging_utils import LoggerMixin
+    from backend.core.vnpy_integration import VnPyAdapter
 except ImportError:
-    try:
-        from ui.widgets.base_widget import BaseWidget
-        from utils.logging_utils import LoggerMixin
-    except ImportError:
-        class BaseWidget:
-            def __init__(self, parent=None, title=""):
-                self.parent = parent
-                self.title = title
+    class BaseWidget:
+        """Base widget class."""
 
-        class LoggerMixin:
-            @property
-            def logger(self):
-                import logging
-                return logging.getLogger(self.__class__.__name__)
+        def __init__(self, parent=None, title=""):
+            """Initialize base widget."""
+            self.parent = parent
+            self.title = title
+
+    class LoggerMixin:
+        """Logger mixin class."""
+
+        @property
+        def logger(self):
+            """Get logger instance."""
+            return logging.getLogger(self.__class__.__name__)
 
 
 class TradingGateway(BaseWidget, LoggerMixin):
-    """交易网关主界面"""
+    """交易网关主界面."""
 
     def __init__(self, parent=None):
+        """Initialize trading gateway."""
         super().__init__(parent, "交易网关")
         self.logger.info("交易网关界面初始化开始")
 
     def setup_ui(self):
-        """设置用户界面"""
+        """设置用户界面."""
         main_layout = QHBoxLayout(self)
 
         # 创建主分割器
@@ -59,14 +63,16 @@ class TradingGateway(BaseWidget, LoggerMixin):
         main_layout.addWidget(main_splitter)
 
     def _create_gateway_manager(self):
-        """创建网关管理器"""
+        """创建网关管理器."""
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
         # 标题栏
         title_layout = QHBoxLayout()
         title_label = QLabel("🔗 网关管理器")
-        title_label.setStyleSheet("font-weight: bold; font-size: 14px; padding: 5px;")
+        title_label.setStyleSheet(
+            "font-weight: bold; font-size: 14px; padding: 5px;"
+        )
         title_layout.addWidget(title_label)
 
         layout.addLayout(title_layout)
@@ -81,8 +87,12 @@ class TradingGateway(BaseWidget, LoggerMixin):
         gateways_layout = QVBoxLayout(gateways_group)
 
         self.gateways_table = QTableWidget(0, 4)
-        self.gateways_table.setHorizontalHeaderLabels(["网关名称", "类型", "状态", "操作"])
-        self.gateways_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.gateways_table.setHorizontalHeaderLabels(
+            ["网关名称", "类型", "状态", "操作"]
+        )
+        self.gateways_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
 
         gateways_layout.addWidget(self.gateways_table)
 
@@ -91,7 +101,7 @@ class TradingGateway(BaseWidget, LoggerMixin):
         return widget
 
     def _create_content_area(self):
-        """创建内容区域"""
+        """创建内容区域."""
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
@@ -111,7 +121,7 @@ class TradingGateway(BaseWidget, LoggerMixin):
         return widget
 
     def _create_strategy_tab(self):
-        """创建策略实例子界面"""
+        """创建策略实例子界面."""
         tab = QWidget()
         layout = QVBoxLayout(tab)
 
@@ -120,8 +130,12 @@ class TradingGateway(BaseWidget, LoggerMixin):
         strategy_layout = QVBoxLayout(strategy_group)
 
         self.strategy_table = QTableWidget(0, 5)
-        self.strategy_table.setHorizontalHeaderLabels(["策略名称", "网关", "状态", "启动时间", "操作"])
-        self.strategy_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.strategy_table.setHorizontalHeaderLabels(
+            ["策略名称", "网关", "状态", "启动时间", "操作"]
+        )
+        self.strategy_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
 
         strategy_layout.addWidget(self.strategy_table)
 
@@ -148,7 +162,7 @@ class TradingGateway(BaseWidget, LoggerMixin):
         return tab
 
     def _create_monitor_tab(self):
-        """创建交易监控子界面"""
+        """创建交易监控子界面."""
         tab = QWidget()
         layout = QVBoxLayout(tab)
 
@@ -174,8 +188,12 @@ class TradingGateway(BaseWidget, LoggerMixin):
         monitor_layout = QVBoxLayout(monitor_group)
 
         self.monitor_table = QTableWidget(0, 4)
-        self.monitor_table.setHorizontalHeaderLabels(["时间", "事件", "详情", "状态"])
-        self.monitor_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.monitor_table.setHorizontalHeaderLabels(
+            ["时间", "事件", "详情", "状态"]
+        )
+        self.monitor_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
 
         monitor_layout.addWidget(self.monitor_table)
 
@@ -184,40 +202,43 @@ class TradingGateway(BaseWidget, LoggerMixin):
         return tab
 
     def connect_signals(self):
-        """连接信号槽"""
+        """连接信号槽."""
         # 初始化VNPY适配器
         self._initialize_vnpy_adapter()
 
         # 连接模板选择信号
-        self.template_combo.currentTextChanged.connect(self._on_template_changed)
+        self.template_combo.currentTextChanged.connect(
+            self._on_template_changed
+        )
 
         # 启动更新定时器
-        self.start_update_timer(1000, self._update_gateway_status)
+        self.start_update_timer(
+            1000, self._update_gateway_status
+        )
 
     def _initialize_vnpy_adapter(self):
-        """初始化VNPY适配器"""
+        """初始化VNPY适配器."""
         try:
-            from integration.vnpy_adapter import VnPyAdapter
             self.vnpy_adapter = VnPyAdapter()
-            self._logger.info("VNPY适配器初始化完成")
+            self.logger.info("VNPY适配器初始化完成")
         except Exception as e:
-            self._logger.error(f"VNPY适配器初始化失败: {e}")
+            self.logger.error("VNPY适配器初始化失败: %s", e)
             self.vnpy_adapter = None
 
     def _create_new_gateway(self):
-        """新建网关"""
+        """新建网关."""
         self.show_info("新建网关功能开发中...")
 
     def _deploy_strategy(self):
-        """部署策略"""
+        """部署策略."""
         self.show_info("部署策略功能开发中...")
 
     def _start_all_strategies(self):
-        """启动所有策略"""
+        """启动所有策略."""
         self.show_info("启动所有策略...")
 
     def _stop_all_strategies(self):
-        """停止所有策略"""
+        """停止所有策略."""
         if self.vnpy_adapter:
             try:
                 # 这里可以实现停止所有策略的逻辑
@@ -229,7 +250,7 @@ class TradingGateway(BaseWidget, LoggerMixin):
             self.show_warning("VNPY适配器不可用")
 
     def _start_strategy(self, strategy_name):
-        """启动策略"""
+        """启动策略."""
         if self.vnpy_adapter:
             try:
                 # 这里可以实现启动策略的逻辑
@@ -241,7 +262,7 @@ class TradingGateway(BaseWidget, LoggerMixin):
             self.show_warning("VNPY适配器不可用")
 
     def _stop_strategy(self, strategy_name):
-        """停止策略"""
+        """停止策略."""
         if self.vnpy_adapter:
             try:
                 # 这里可以实现停止策略的逻辑
@@ -253,12 +274,12 @@ class TradingGateway(BaseWidget, LoggerMixin):
             self.show_warning("VNPY适配器不可用")
 
     def _on_template_changed(self, text):
-        """模板选择改变"""
-        self.logger.info(f"切换监控模板: {text}")
+        """模板选择改变."""
+        self.logger.info("切换监控模板: %s", text)
         # 这里实现模板切换逻辑
 
     def _update_gateway_status(self):
-        """更新网关状态"""
+        """更新网关状态."""
         if self.vnpy_adapter:
             try:
                 # 获取网关状态
@@ -275,13 +296,13 @@ class TradingGateway(BaseWidget, LoggerMixin):
                 self._update_strategies_table(status)
 
             except Exception as e:
-                self.logger.error(f"更新网关状态失败: {e}")
+                self.logger.error("更新网关状态失败: %s", e)
         else:
             # 无VNPY适配器时使用模拟数据
             self._update_gateways_table_fallback()
 
     def _update_gateways_table(self, status):
-        """更新网关表格"""
+        """更新网关表格."""
         # 清空表格
         self.gateways_table.setRowCount(0)
 
@@ -301,7 +322,9 @@ class TradingGateway(BaseWidget, LoggerMixin):
             # 连接状态
             is_connected = gateway_name in connected_gateways
             status_text = "已连接" if is_connected else "未连接"
-            status_color = QColor("#4caf50") if is_connected else QColor("#ff9800")
+            status_color = (
+                QColor("#4caf50") if is_connected else QColor("#ff9800")
+            )
 
             status_item = QTableWidgetItem(status_text)
             status_item.setBackground(status_color)
@@ -310,15 +333,21 @@ class TradingGateway(BaseWidget, LoggerMixin):
             # 操作按钮
             if is_connected:
                 disconnect_btn = QPushButton("断开")
-                disconnect_btn.clicked.connect(lambda checked, gw=gateway_name: self._disconnect_gateway(gw))
+                disconnect_btn.clicked.connect(
+                    lambda gw=gateway_name: self._disconnect_gateway(gw)
+                )
             else:
                 connect_btn = QPushButton("连接")
-                connect_btn.clicked.connect(lambda checked, gw=gateway_name: self._connect_gateway(gw))
+                connect_btn.clicked.connect(
+                    lambda gw=gateway_name: self._connect_gateway(gw)
+                )
 
-            self.gateways_table.setCellWidget(i, 3, connect_btn if not is_connected else disconnect_btn)
+            self.gateways_table.setCellWidget(
+                i, 3, connect_btn if not is_connected else disconnect_btn
+            )
 
     def _update_gateways_table_fallback(self):
-        """备用网关表格更新（VNPY不可用时）"""
+        """备用网关表格更新（VNPY不可用时）."""
         # 清空表格
         self.gateways_table.setRowCount(0)
 
@@ -347,23 +376,28 @@ class TradingGateway(BaseWidget, LoggerMixin):
             self.gateways_table.setCellWidget(i, 3, btn)
 
     def _connect_gateway(self, gateway_name):
-        """连接网关"""
+        """连接网关."""
         if self.vnpy_adapter:
             try:
                 # 这里可以实现实际的网关连接逻辑
-                result = self.vnpy_adapter.connect_gateway(gateway_name, {})
+                result = self.vnpy_adapter.connect_gateway(
+                    gateway_name, {}
+                )
                 if result.get('success', False):
                     self.show_info(f"网关 {gateway_name} 连接成功")
                     self._update_gateway_status()
                 else:
-                    self.show_error(f"网关 {gateway_name} 连接失败: {result.get('message', '未知错误')}")
+                    self.show_error(
+                        f"网关 {gateway_name} 连接失败: "
+                        f"{result.get('message', '未知错误')}"
+                    )
             except Exception as e:
                 self.show_error(f"连接网关失败: {str(e)}")
         else:
             self.show_warning("VNPY适配器不可用")
 
     def _disconnect_gateway(self, gateway_name):
-        """断开网关"""
+        """断开网关."""
         if self.vnpy_adapter:
             try:
                 result = self.vnpy_adapter.disconnect_gateway(gateway_name)
@@ -371,14 +405,17 @@ class TradingGateway(BaseWidget, LoggerMixin):
                     self.show_info(f"网关 {gateway_name} 已断开")
                     self._update_gateway_status()
                 else:
-                    self.show_error(f"断开网关失败: {result.get('message', '未知错误')}")
+                    self.show_error(
+                        f"断开网关失败: "
+                        f"{result.get('message', '未知错误')}"
+                    )
             except Exception as e:
                 self.show_error(f"断开网关失败: {str(e)}")
         else:
             self.show_warning("VNPY适配器不可用")
 
     def _update_strategies_table(self, status):
-        """更新策略表格"""
+        """更新策略表格."""
         # 清空表格
         self.strategy_table.setRowCount(0)
 
@@ -406,18 +443,24 @@ class TradingGateway(BaseWidget, LoggerMixin):
             # 操作按钮
             if status == "运行中":
                 stop_btn = QPushButton("停止")
-                stop_btn.clicked.connect(lambda checked, s=name: self._stop_strategy(s))
+                stop_btn.clicked.connect(
+                    lambda s=name: self._stop_strategy(s)
+                )
             else:
                 start_btn = QPushButton("启动")
-                start_btn.clicked.connect(lambda checked, s=name: self._start_strategy(s))
+                start_btn.clicked.connect(
+                    lambda s=name: self._start_strategy(s)
+                )
 
-            self.strategy_table.setCellWidget(i, 4, start_btn if status != "运行中" else stop_btn)
+            self.strategy_table.setCellWidget(
+                i, 4, start_btn if status != "运行中" else stop_btn
+            )
 
     def refresh_data(self):
-        """刷新数据"""
+        """刷新数据."""
         self.show_info("交易网关数据已刷新")
 
     def on_close(self):
-        """关闭处理"""
+        """关闭处理."""
         self.stop_update_timer()
         self.logger.info("交易网关界面已关闭")

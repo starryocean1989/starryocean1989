@@ -1,0 +1,22 @@
+# -*- coding: utf-8 -*-
+# Pylint configuration file
+
+[MASTER]
+# Add PySide6 to the extension modules
+extension-pkg-whitelist=PySide6
+
+[MESSAGES CONTROL]
+# Disable specific warnings that are false positives for PySide6
+disable=no-name-in-module,import-error
+
+[IMPORTS]
+# Add PySide6 to the known modules
+known-third-party=PySide6,numpy,talib,pyqtgraph
+
+[FORMAT]
+# Set maximum line length
+max-line-length=88
+
+[TYPECHECK]
+# Ignore missing imports for PySide6
+ignored-modules=PySide6.QtCore,PySide6.QtGui,PySide6.QtWidgets

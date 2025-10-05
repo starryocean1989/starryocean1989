@@ -6,7 +6,9 @@
 """
 
 import socket
+import ssl
 import logging
+from datetime import datetime
 from typing import Dict, Any, List
 
 logger = logging.getLogger(__name__)
@@ -18,6 +20,14 @@ class NetworkTester:
     def __init__(self):
         self.logger = logging.getLogger(__name__)
 
+    def test_host(self, host: str, port: int = 80) -> bool:
+        """测试主机连通性"""
+        return test_connectivity(host, port)
+
+    def ping(self, host: str) -> bool:
+        """Ping主机（简单版本）"""
+        return test_connectivity(host, 80)
+
 
 class PortScanner:
     """端口扫描器"""
@@ -25,12 +35,74 @@ class PortScanner:
     def __init__(self):
         self.logger = logging.getLogger(__name__)
 
+    def scan(self, host: str, ports: List[int]) -> List[Dict[str, Any]]:
+        """扫描指定端口"""
+        return scan_ports(host, ports)
+
+    def scan_range(self, host: str, start_port: int, end_port: int) -> List[Dict[str, Any]]:
+        """扫描端口范围"""
+        ports = list(range(start_port, end_port + 1))
+        return self.scan(host, ports)
+
 
 class SSLValidator:
     """SSL验证器"""
 
     def __init__(self):
         self.logger = logging.getLogger(__name__)
+
+    def validate_ssl_cert(self, host: str, port: int = 443) -> Dict[str, Any]:
+        """验证SSL证书"""
+        try:
+            context = ssl.create_default_context()
+            with socket.create_connection((host, port)) as sock:
+                with context.wrap_socket(sock, server_hostname=host) as ssock:
+                    cert = ssock.getpeercert()
+                    return {
+                        "valid": True,
+                        "cert_info": cert,
+                        "host": host,
+                        "port": port
+                    }
+        except (ssl.SSLError, socket.error, OSError, ConnectionError) as e:
+            return {
+                "valid": False,
+                "error": str(e),
+                "host": host,
+                "port": port
+            }
+
+    def check_ssl_expiry(self, host: str, port: int = 443) -> Dict[str, Any]:
+        """检查SSL证书到期时间"""
+        try:
+            context = ssl.create_default_context()
+            with socket.create_connection((host, port)) as sock:
+                with context.wrap_socket(sock, server_hostname=host) as ssock:
+                    cert = ssock.getpeercert()
+                    expiry_date = cert.get('notAfter')
+                    if expiry_date:
+                        expiry = datetime.strptime(expiry_date, '%b %d %H:%M:%S %Y %Z')
+                        return {
+                            "valid": True,
+                            "expiry_date": expiry,
+                            "days_until_expiry": (expiry - datetime.now()).days,
+                            "host": host,
+                            "port": port
+                        }
+                    else:
+                        return {
+                            "valid": False,
+                            "error": "No expiry date found in certificate",
+                            "host": host,
+                            "port": port
+                        }
+        except (ssl.SSLError, socket.error, OSError, ConnectionError, ValueError) as e:
+            return {
+                "valid": False,
+                "error": str(e),
+                "host": host,
+                "port": port
+            }
 
 
 def test_connectivity(host: str, port: int = 80) -> bool:

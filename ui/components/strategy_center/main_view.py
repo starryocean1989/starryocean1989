@@ -1,42 +1,46 @@
 # -*- coding: utf-8 -*-
 """
-策略中心界面 - 主视图
-混合架构：策略/指标管理器（固有组件）+ 2个子界面
+策略中心界面 - 主视图.
+
+混合架构：策略/指标管理器（固有组件）+ 2个子界面.
 """
 
+from PySide6.QtCore import QTimer, Qt
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
-    QLabel, QPushButton, QGroupBox, QTreeWidget,
-    QTreeWidgetItem, QTabWidget, QTextEdit,
-    QComboBox, QLineEdit, QProgressBar, QSizePolicy
+    QComboBox, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
+    QProgressBar, QPushButton, QSplitter, QTabWidget,
+    QTextEdit, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
+    QWidget
 )
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QIcon
 
 try:
-    from ..widgets.base_widget import BaseWidget
-    from ...utils.logging_utils import LoggerMixin
+    from ui.widgets.base_widget import BaseWidget
+    from utils.logging_utils import LoggerMixin
 except ImportError:
-    try:
-        from ui.widgets.base_widget import BaseWidget
-        from utils.logging_utils import LoggerMixin
-    except ImportError:
-        class BaseWidget:
-            def __init__(self, parent=None, title=""):
-                self.parent = parent
-                self.title = title
+    class BaseWidget:
+        """Base widget class fallback."""
 
-        class LoggerMixin:
-            @property
-            def logger(self):
-                import logging
-                return logging.getLogger(self.__class__.__name__)
+        def __init__(self, parent=None, title=""):
+            """Initialize base widget."""
+            self.parent = parent
+            self.title = title
+
+    class LoggerMixin:
+        """Logger mixin fallback."""
+
+        @property
+        def logger(self):
+            """Get logger instance."""
+            import logging
+            return logging.getLogger(self.__class__.__name__)
 
 
 class StrategyCenter(BaseWidget, LoggerMixin):
-    """策略中心主界面"""
+    """策略中心主界面类."""
 
     def __init__(self, parent=None):
+        """Initialize strategy center."""
         super().__init__(parent, "策略中心")
         self.logger.info("策略中心界面初始化开始")
 
@@ -44,13 +48,19 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         self._initialize_vnpy_adapter()
 
     def _initialize_vnpy_adapter(self):
-        """初始化VNPY适配器"""
+        """初始化VNPY适配器."""
         try:
-            from integration.vnpy_adapter import VnPyAdapter
-            self.vnpy_adapter = VnPyAdapter()
-            self._logger.info("VNPY适配器初始化完成")
+            # Try to import VnPyCoreAdapter from the project's VnPy integration
+            from backend.infrastructure.data_module_vnpy import (
+                VnPyCoreAdapter
+            )
+            self.vnpy_adapter = VnPyCoreAdapter()
+            self.logger.info("VNPY适配器初始化完成")
+        except ImportError as e:
+            self.logger.warning("VNPY适配器模块未找到: %s", e)
+            self.vnpy_adapter = None
         except Exception as e:
-            self._logger.error(f"VNPY适配器初始化失败: {e}")
+            self.logger.error("VNPY适配器初始化失败: %s", e)
             self.vnpy_adapter = None
 
         # 确保属性始终存在
@@ -58,7 +68,7 @@ class StrategyCenter(BaseWidget, LoggerMixin):
             self.vnpy_adapter = None
 
     def setup_ui(self):
-        """设置用户界面"""
+        """设置用户界面."""
         main_layout = QHBoxLayout(self)
 
         # 创建主分割器
@@ -76,14 +86,16 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         main_layout.addWidget(main_splitter)
 
     def _create_strategy_manager(self):
-        """创建策略/指标管理器"""
+        """创建策略/指标管理器."""
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
         # 管理器标题栏
         title_layout = QHBoxLayout()
         title_label = QLabel("📁 策略/指标管理器")
-        title_label.setStyleSheet("font-weight: bold; font-size: 14px; padding: 5px;")
+        title_label.setStyleSheet(
+            "font-weight: bold; font-size: 14px; padding: 5px;"
+        )
         title_layout.addWidget(title_label)
 
         # 隐藏/显示按钮
@@ -121,7 +133,7 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         return widget
 
     def _create_file_tree(self):
-        """创建文件树结构"""
+        """创建文件树结构."""
         # 清空现有树结构
         self.file_tree.clear()
 
@@ -173,13 +185,13 @@ class StrategyCenter(BaseWidget, LoggerMixin):
                 self.file_tree.expandAll()
 
             except Exception as e:
-                self.logger.error(f"创建文件树失败: {e}")
+                self.logger.error("创建文件树失败: %s", e)
                 self._create_fallback_file_tree()
         else:
             self._create_fallback_file_tree()
 
     def _create_fallback_file_tree(self):
-        """创建备用文件树（VNPY不可用时）"""
+        """创建备用文件树（VNPY不可用时）."""
         # 策略文件夹
         strategy_root = QTreeWidgetItem(self.file_tree)
         strategy_root.setText(0, "📂 策略")
@@ -194,7 +206,9 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         for file_name in strategy_files:
             file_item = QTreeWidgetItem(strategy_root)
             file_item.setText(0, f"📄 {file_name}")
-            file_item.setData(0, Qt.ItemDataRole.UserRole, {"type": "strategy", "path": file_name})
+            file_item.setData(0, Qt.ItemDataRole.UserRole, {
+                "type": "strategy", "path": file_name
+            })
 
         # 指标文件夹
         indicator_root = QTreeWidgetItem(self.file_tree)
@@ -210,12 +224,14 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         for file_name in indicator_files:
             file_item = QTreeWidgetItem(indicator_root)
             file_item.setText(0, f"📊 {file_name}")
-            file_item.setData(0, Qt.ItemDataRole.UserRole, {"type": "indicator", "path": file_name})
+            file_item.setData(0, Qt.ItemDataRole.UserRole, {
+                "type": "indicator", "path": file_name
+            })
 
         self.file_tree.expandAll()
 
     def _create_content_area(self):
-        """创建内容区域"""
+        """创建内容区域."""
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
@@ -235,7 +251,7 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         return widget
 
     def _create_editor_tab(self):
-        """创建编写子界面"""
+        """创建编写子界面."""
         tab = QWidget()
         layout = QVBoxLayout(tab)
 
@@ -274,7 +290,7 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         return tab
 
     def _create_ai_assistant(self):
-        """创建AI助手组件"""
+        """创建AI助手组件."""
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
@@ -307,7 +323,7 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         return widget
 
     def _create_backtest_tab(self):
-        """创建回测子界面"""
+        """创建回测子界面."""
         tab = QWidget()
         layout = QVBoxLayout(tab)
 
@@ -396,7 +412,7 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         return tab
 
     def connect_signals(self):
-        """连接信号槽"""
+        """连接信号槽."""
         # 初始化VNPY适配器
         self._initialize_vnpy_adapter()
 
@@ -406,18 +422,8 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         # 启动更新定时器
         self.start_update_timer(2000, self._update_status)
 
-    def _initialize_vnpy_adapter(self):
-        """初始化VNPY适配器"""
-        try:
-            from integration.vnpy_adapter import VnPyAdapter
-            self.vnpy_adapter = VnPyAdapter()
-            self._logger.info("VNPY适配器初始化完成")
-        except Exception as e:
-            self._logger.error(f"VNPY适配器初始化失败: {e}")
-            self.vnpy_adapter = None
-
     def _toggle_manager(self):
-        """切换管理器显示/隐藏"""
+        """切换管理器显示/隐藏."""
         if self.toggle_btn.text() == "◀":
             self.toggle_btn.setText("▶")
             # 这里可以隐藏左侧管理器
@@ -426,7 +432,9 @@ class StrategyCenter(BaseWidget, LoggerMixin):
             # 这里可以显示左侧管理器
 
     def _on_file_double_clicked(self, item, column):
-        """文件双击事件"""
+        """文件双击事件."""
+        # Use column parameter to avoid unused argument warning
+        _ = column
         data = item.data(0, Qt.ItemDataRole.UserRole)
         if data and "path" in data:
             file_path = data["path"]
@@ -440,7 +448,7 @@ class StrategyCenter(BaseWidget, LoggerMixin):
                 self._load_indicator_file(file_path)
 
     def _on_file_selected(self):
-        """文件选择事件"""
+        """文件选择事件."""
         selected_items = self.file_tree.selectedItems()
         if selected_items:
             item = selected_items[0]
@@ -450,15 +458,15 @@ class StrategyCenter(BaseWidget, LoggerMixin):
                 self.current_file_label.setText(f"选中文件: {file_path}")
 
     def _create_new_strategy(self):
-        """新建策略"""
+        """新建策略."""
         self.show_info("新建策略功能开发中...")
 
     def _create_new_indicator(self):
-        """新建指标"""
+        """新建指标."""
         self.show_info("新建指标功能开发中...")
 
     def _toggle_ai_assistant(self):
-        """切换AI助手显示"""
+        """切换AI助手显示."""
         is_visible = self.ai_assistant_widget.isVisible()
         self.ai_assistant_widget.setVisible(not is_visible)
 
@@ -468,7 +476,7 @@ class StrategyCenter(BaseWidget, LoggerMixin):
             self.ai_assistant_btn.setText("显示AI助手")
 
     def _send_to_ai(self):
-        """发送消息给AI助手"""
+        """发送消息给AI助手."""
         message = self.user_input.text().strip()
         if message:
             self.ai_response.append(f"用户: {message}")
@@ -476,7 +484,7 @@ class StrategyCenter(BaseWidget, LoggerMixin):
             self.user_input.clear()
 
     def _run_backtest(self):
-        """运行回测"""
+        """运行回测."""
         if not self.vnpy_adapter:
             self.show_error("VNPY适配器不可用，无法运行回测")
             return
@@ -505,12 +513,12 @@ class StrategyCenter(BaseWidget, LoggerMixin):
             self._simulate_backtest_progress()
 
         except Exception as e:
-            self.show_error(f"运行回测失败: {str(e)}")
+            self.show_error("运行回测失败: %s", str(e))
             self.run_backtest_btn.setEnabled(True)
             self.stop_backtest_btn.setEnabled(False)
 
     def _stop_backtest(self):
-        """停止回测"""
+        """停止回测."""
         self.show_info("停止回测")
         self.run_backtest_btn.setEnabled(True)
         self.stop_backtest_btn.setEnabled(False)
@@ -518,7 +526,7 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         self.backtest_status_label.setText("回测已停止")
 
     def _simulate_backtest_progress(self):
-        """模拟回测进度"""
+        """模拟回测进度."""
         import random
 
         def update_progress():
@@ -582,25 +590,24 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         update_progress()
 
     def _load_strategy_file(self, file_path):
-        """加载策略文件"""
+        """加载策略文件."""
         # 这里实现策略文件加载逻辑
         self.code_editor.setText(f"# 加载策略文件: {file_path}\n# 这里是策略代码内容...")
 
     def _load_indicator_file(self, file_path):
-        """加载指标文件"""
+        """加载指标文件."""
         # 这里实现指标文件加载逻辑
         self.code_editor.setText(f"# 加载指标文件: {file_path}\n# 这里是指标代码内容...")
 
     def _update_status(self):
-        """更新状态"""
+        """更新状态."""
         # 这里可以更新一些状态信息
-        pass
 
     def refresh_data(self):
-        """刷新数据"""
+        """刷新数据."""
         self.show_info("策略中心数据已刷新")
 
     def on_close(self):
-        """关闭处理"""
+        """关闭处理."""
         self.stop_update_timer()
         self.logger.info("策略中心界面已关闭")

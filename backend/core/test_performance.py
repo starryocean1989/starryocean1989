@@ -9,13 +9,22 @@ import time
 import asyncio
 from pathlib import Path
 
-from backend.core.vnpy_integration import get_terminal_engine
-from backend.core.performance import (
-    Cache, DataCache, AsyncTaskManager,
-    AsyncDataProcessor,
-    get_performance_optimizer
-)
-from backend.core.models import UnifiedMarketData
+try:
+    from ..vnpy_integration import get_terminal_engine
+    from ..performance import (
+        Cache, DataCache, AsyncTaskManager,
+        AsyncDataProcessor,
+        get_performance_optimizer
+    )
+    from ..models import UnifiedMarketData
+except ImportError:
+    from backend.core.vnpy_integration import get_terminal_engine
+    from backend.core.performance import (
+        Cache, DataCache, AsyncTaskManager,
+        AsyncDataProcessor,
+        get_performance_optimizer
+    )
+    from backend.core.models import UnifiedMarketData
 
 # 添加项目根目录到Python路径
 project_root = Path(__file__).parent.parent.parent
@@ -195,9 +204,9 @@ def main():
     results = []
     for test_func in tests:
         try:
-            result = test_func()
+            test_func()  # 只调用函数，不赋值返回值
             results.append(True)
-        except Exception as e:
+        except (RuntimeError, TypeError, AttributeError) as e:
             print(f"❌ 测试失败 {test_func.__name__}: {e}")
             results.append(False)
 

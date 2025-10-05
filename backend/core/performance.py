@@ -95,7 +95,7 @@ class Cache:
                 del self._timestamps[key]
 
             if expired_keys:
-                self.logger.debug(f"清理过期缓存项: {len(expired_keys)} 个")
+                self.logger.debug("清理过期缓存项: %s 个", len(expired_keys))
 
 
 class DataCache:
@@ -122,7 +122,7 @@ class DataCache:
                 self.order_cache.cleanup_expired()
                 self.position_cache.cleanup_expired()
             except (RuntimeError, AttributeError, KeyError) as e:
-                self.logger.error(f"缓存清理失败: {e}")
+                self.logger.error("缓存清理失败: %s", e)
 
     def cache_market_data(self, symbol: str, data: List[UnifiedMarketData]):
         """缓存行情数据"""
@@ -196,14 +196,14 @@ class AsyncTaskManager:
                 try:
                     self.loop.run_forever()
                 except (RuntimeError, KeyboardInterrupt) as e:
-                    self.logger.error(f"事件循环异常: {e}")
+                    self.logger.error("事件循环异常: %s", e)
 
             loop_thread = threading.Thread(target=run_loop, daemon=True)
             loop_thread.start()
             self.logger.info("异步任务管理器启动完成")
 
         except (RuntimeError, OSError) as e:
-            self.logger.error(f"启动事件循环失败: {e}")
+            self.logger.error("启动事件循环失败: %s", e)
 
     def stop_event_loop(self):
         """停止事件循环"""
@@ -213,7 +213,15 @@ class AsyncTaskManager:
                 self.executor.shutdown(wait=True)
                 self.logger.info("异步任务管理器停止完成")
             except (RuntimeError, AttributeError) as e:
-                self.logger.error(f"停止事件循环失败: {e}")
+                self.logger.error("停止事件循环失败: %s", e)
+
+    def get_task_stats(self) -> Dict[str, int]:
+        """获取任务统计信息"""
+        return {
+            "active_tasks": len(self._tasks),
+            "completed_tasks": len(self._results),
+            "max_workers": self.max_workers
+        }
 
     def submit_task(
         self, task_id: str, func: Callable, *args, **kwargs
@@ -224,7 +232,7 @@ class AsyncTaskManager:
                 result = func(*args, **kwargs)
                 self._results[task_id] = {"success": True, "result": result}
             except (RuntimeError, TypeError, ValueError, AttributeError) as e:
-                self.logger.error(f"任务执行失败 {task_id}: {e}")
+                self.logger.error("任务执行失败 %s: %s", task_id, e)
                 self._results[task_id] = {"success": False, "error": str(e)}
 
         future = self.executor.submit(task_wrapper)
@@ -248,7 +256,7 @@ class AsyncTaskManager:
                     result = coroutine_func(*args, **kwargs)
                 self._results[task_id] = {"success": True, "result": result}
             except (RuntimeError, TypeError, ValueError, AttributeError) as e:
-                self.logger.error(f"异步任务执行失败 {task_id}: {e}")
+                self.logger.error("异步任务执行失败 %s: %s", task_id, e)
                 self._results[task_id] = {"success": False, "error": str(e)}
 
         future = asyncio.run_coroutine_threadsafe(wrapper(), self.loop)
@@ -412,7 +420,7 @@ class PerformanceOptimizer:
         for i in range(0, len(items), batch_size):
             batch = items[i:i + batch_size]
 
-            def process_batch():
+            def process_batch(batch=batch):
                 return [processor(item) for item in batch]
 
             task_id = self.submit_async_task(f"batch_{i}", process_batch)
@@ -421,7 +429,7 @@ class PerformanceOptimizer:
             if result.get("success"):
                 results.extend(result.get("result", []))
             else:
-                self.logger.error(f"批处理失败: {result.get('error')}")
+                self.logger.error("批处理失败: %s", result.get('error'))
 
         return results
 
@@ -429,11 +437,7 @@ class PerformanceOptimizer:
         """获取性能统计"""
         return {
             "cache_stats": self.data_cache.get_stats(),
-            "task_manager_stats": {
-                "active_tasks": len(self.task_manager._tasks),
-                "completed_tasks": len(self.task_manager._results),
-                "max_workers": self.task_manager.max_workers
-            },
+            "task_manager_stats": self.task_manager.get_task_stats(),
             "optimization_enabled": self._optimization_enabled
         }
 
@@ -494,7 +498,7 @@ class AsyncDataProcessor:
             )
             return future.result(timeout=30)
         except (TimeoutError, RuntimeError, AttributeError) as e:
-            self.logger.error(f"同步数据处理失败: {e}")
+            self.logger.error("同步数据处理失败: %s", e)
             return {}
 
     def _sync_process_data(
@@ -517,26 +521,42 @@ class AsyncDataProcessor:
         return results
 
 
-# 全局性能优化器实例
-_performance_optimizer = None
+# 全局性能优化器管理类
+class _PerformanceOptimizerRegistry:
+    """性能优化器注册表"""
+
+    def __init__(self):
+        self._optimizer: Optional[PerformanceOptimizer] = None
+
+    def get_performance_optimizer(
+        self, terminal_engine: TerminalEngine
+    ) -> PerformanceOptimizer:
+        """获取性能优化器实例"""
+        if self._optimizer is None:
+            self._optimizer = PerformanceOptimizer(terminal_engine)
+        return self._optimizer
+
+    def reset_optimizer(self):
+        """重置性能优化器（用于测试）"""
+        if self._optimizer:
+            self._optimizer.stop_optimization()
+            self._optimizer = None
+
+
+# 全局注册表实例
+_performance_registry = _PerformanceOptimizerRegistry()
 
 
 def get_performance_optimizer(
     terminal_engine: TerminalEngine
 ) -> PerformanceOptimizer:
     """获取全局性能优化器实例"""
-    global _performance_optimizer
-    if _performance_optimizer is None:
-        _performance_optimizer = PerformanceOptimizer(terminal_engine)
-    return _performance_optimizer
+    return _performance_registry.get_optimizer(terminal_engine)
 
 
 def reset_performance_optimizer():
     """重置性能优化器（用于测试）"""
-    global _performance_optimizer
-    if _performance_optimizer:
-        _performance_optimizer.stop_optimization()
-        _performance_optimizer = None
+    _performance_registry.reset_optimizer()
 
 
 # 导出公共接口

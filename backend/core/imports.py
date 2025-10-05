@@ -122,16 +122,9 @@ except ImportError:
     CTP_GATEWAY_AVAILABLE = False
     CtpGateway = None  # pylint: disable=invalid-name
 
-try:
-    if VNPY_AVAILABLE:
-        from vnpy_mini import MiniGateway
-        MINI_GATEWAY_AVAILABLE = True
-    else:
-        MINI_GATEWAY_AVAILABLE = False
-        MiniGateway = None  # pylint: disable=invalid-name
-except ImportError:
-    MINI_GATEWAY_AVAILABLE = False
-    MiniGateway = None  # pylint: disable=invalid-name
+# vnpy_mini 模块不存在，已移除
+MINI_GATEWAY_AVAILABLE = False
+MiniGateway = None  # pylint: disable=invalid-name
 
 try:
     if VNPY_AVAILABLE:
@@ -265,24 +258,19 @@ class ModuleAvailability:
     def is_module_available(cls, module_name: str) -> bool:
         """检查模块是否可用"""
         return getattr(cls, module_name.upper(), False)
-    DATA_ENGINE_UTILS = DATA_ENGINE_UTILS_AVAILABLE
 
     # 数据库模块
     SQLITE = SQLITE_AVAILABLE
     MONGODB = MONGODB_AVAILABLE
 
     @classmethod
-    def is_module_available(cls, module_name: str) -> bool:
-        """检查指定模块是否可用"""
-        return getattr(cls, module_name.upper(), False)
-
-    @classmethod
     def get_available_modules(cls) -> list:
         """获取所有可用模块的列表"""
         available = []
         for attr_name in dir(cls):
-            if not attr_name.startswith('_') and isinstance(getattr(cls, attr_name), bool):
-                if getattr(cls, attr_name):
+            if not attr_name.startswith('_'):
+                attr_value = getattr(cls, attr_name)
+                if isinstance(attr_value, bool) and attr_value:
                     available.append(attr_name.lower())
         return available
 
@@ -291,8 +279,9 @@ class ModuleAvailability:
         """获取所有不可用模块的列表"""
         unavailable = []
         for attr_name in dir(cls):
-            if not attr_name.startswith('_') and isinstance(getattr(cls, attr_name), bool):
-                if not getattr(cls, attr_name):
+            if not attr_name.startswith('_'):
+                attr_value = getattr(cls, attr_name)
+                if isinstance(attr_value, bool) and not attr_value:
                     unavailable.append(attr_name.lower())
         return unavailable
 

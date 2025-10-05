@@ -8,6 +8,7 @@ import sys
 import time
 from pathlib import Path
 
+# 使用绝对导入避免相对导入问题
 from backend.core.vnpy_integration import get_terminal_engine
 from backend.core.shared_services import ConfigService
 from backend.core.monitoring import (
@@ -224,9 +225,9 @@ def main():
     results = []
     for test_func in tests:
         try:
-            result = test_func()
+            test_func()  # 只调用函数，不赋值返回值
             results.append(True)
-        except Exception as e:
+        except (RuntimeError, TypeError, AttributeError) as e:
             print(f"❌ 测试失败 {test_func.__name__}: {e}")
             results.append(False)
 
