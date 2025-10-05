@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """主窗口 - 星辰金融终端的主界面."""
 
+import contextlib
 import logging
 import sys
 import traceback
@@ -157,6 +158,7 @@ except ImportError:
         from components.portfolio_investment.main_view import (
             PortfolioInvestment
         )
+        from components.ops_center.main_view import OpsCenter
     except ImportError:
         # 简化版本
         class SystemManager:
@@ -219,6 +221,8 @@ class MainWindow(QMainWindow, LoggerMixin):
 
         # 更新定时器
         self.update_timer = None
+        # 界面就绪标志
+        self.ui_ready = False
 
         # 初始化UI
         self.setup_ui()
@@ -372,6 +376,11 @@ class MainWindow(QMainWindow, LoggerMixin):
                 self.tab_widget.addTab(
                     self.function_interfaces["data"], tab_text
                 )
+                # 实例化后确保构建UI与信号绑定
+                if hasattr(self.function_interfaces["data"], "setup_ui"):
+                    self.function_interfaces["data"].setup_ui()
+                if hasattr(self.function_interfaces["data"], "connect_signals"):
+                    self.function_interfaces["data"].connect_signals()
                 self.logger.info("数据中心界面创建成功")
             except (ImportError, AttributeError, RuntimeError) as e:
                 self.logger.error("数据中心界面创建失败: %s", e)
@@ -394,9 +403,19 @@ class MainWindow(QMainWindow, LoggerMixin):
                 self.tab_widget.addTab(
                     self.function_interfaces["strategy"], tab_text
                 )
+                # 实例化后确保构建UI与信号绑定
+                if hasattr(self.function_interfaces["strategy"], "setup_ui"):
+                    self.function_interfaces["strategy"].setup_ui()
+                if hasattr(self.function_interfaces["strategy"], "connect_signals"):
+                    self.function_interfaces["strategy"].connect_signals()
                 self.logger.info("策略中心界面创建成功")
             except (ImportError, AttributeError, RuntimeError) as e:
                 self.logger.error("策略中心界面创建失败: %s", e)
+                # 占位标签，避免缺失
+                placeholder = QWidget()
+                placeholder_layout = QVBoxLayout(placeholder)
+                placeholder_layout.addWidget(QLabel("策略中心加载失败：请检查依赖或模块实现"))
+                self.tab_widget.addTab(placeholder, "🧠 策略中心")
 
             # 交易网关界面（混合架构，管理器+选项卡）
             try:
@@ -405,6 +424,11 @@ class MainWindow(QMainWindow, LoggerMixin):
                 self.tab_widget.addTab(
                     self.function_interfaces["trading"], tab_text
                 )
+                # 实例化后确保构建UI与信号绑定
+                if hasattr(self.function_interfaces["trading"], "setup_ui"):
+                    self.function_interfaces["trading"].setup_ui()
+                if hasattr(self.function_interfaces["trading"], "connect_signals"):
+                    self.function_interfaces["trading"].connect_signals()
                 self.logger.info("交易网关界面创建成功")
             except (ImportError, AttributeError, RuntimeError) as e:
                 self.logger.error("交易网关界面创建失败: %s", e)
@@ -416,9 +440,19 @@ class MainWindow(QMainWindow, LoggerMixin):
                 self.tab_widget.addTab(
                     self.function_interfaces["portfolio"], tab_text
                 )
+                # 实例化后确保构建UI与信号绑定
+                if hasattr(self.function_interfaces["portfolio"], "setup_ui"):
+                    self.function_interfaces["portfolio"].setup_ui()
+                if hasattr(self.function_interfaces["portfolio"], "connect_signals"):
+                    self.function_interfaces["portfolio"].connect_signals()
                 self.logger.info("组合投资界面创建成功")
             except (ImportError, AttributeError, RuntimeError) as e:
                 self.logger.error("组合投资界面创建失败: %s", e)
+                # 占位标签，避免缺失
+                placeholder = QWidget()
+                placeholder_layout = QVBoxLayout(placeholder)
+                placeholder_layout.addWidget(QLabel("组合投资加载失败：请检查依赖或模块实现"))
+                self.tab_widget.addTab(placeholder, "📊 组合投资")
 
             # 运维与诊断中心（新增）
             try:
@@ -432,6 +466,8 @@ class MainWindow(QMainWindow, LoggerMixin):
                 self.logger.error("运维与诊断中心创建失败: %s", e)
 
             self.logger.info("所有功能界面创建完成")
+            # 标记界面已就绪
+            self.ui_ready = True
 
         except (ImportError, AttributeError, RuntimeError) as e:
             self.logger.error("创建功能界面失败: %s", e)
@@ -540,12 +576,22 @@ class MainWindow(QMainWindow, LoggerMixin):
 
     def start_update_timer(self):
         """启动状态更新定时器."""
+        # 就绪守卫，未就绪不启动定时器
+        if not getattr(self, "ui_ready", False):
+            return
         self.update_timer = QTimer(self)
         self.update_timer.timeout.connect(self.update_status)
         self.update_timer.start(5000)  # 每5秒更新一次
 
     def update_status(self):
         """更新状态栏信息."""
+        # 就绪与控件存在性守卫，避免 NoneType 访问
+        if not getattr(self, "ui_ready", False):
+            return
+        if not hasattr(self, "system_info_label") or self.system_info_label is None:
+            return
+        if not hasattr(self, "status_label") or self.status_label is None:
+            return
         try:
             # 更新系统信息
             if psutil is not None:
@@ -658,27 +704,37 @@ class MainWindow(QMainWindow, LoggerMixin):
 
 def main():
     """主函数."""
-    # 设置日志
-    setup_logging(
-        name="terminal_v0.50",
-        level="INFO",
-        log_file="logs/terminal_v0.50.log"
-    )
+    try:
+        # 设置日志
+        setup_logging(
+            name="terminal_v0.50",
+            level="INFO",
+            log_file="logs/terminal_v0.50.log"
+        )
 
-    # 创建应用程序
-    app = QApplication(sys.argv)
+        # 创建应用程序
+        app = QApplication(sys.argv)
 
-    # 设置应用程序属性
-    app.setApplicationName("星辰金融终端")
-    app.setApplicationVersion("5.0.0")
-    app.setOrganizationName("星辰科技")
+        # 设置应用程序属性
+        app.setApplicationName("星辰金融终端")
+        app.setApplicationVersion("5.0.0")
+        app.setOrganizationName("星辰科技")
 
-    # 创建主窗口
-    main_window = MainWindow()
-    main_window.show()
+        # 创建主窗口
+        main_window = MainWindow()
+        main_window.show()
 
-    # 运行应用程序
-    sys.exit(app.exec())
+        # 运行应用程序
+        sys.exit(app.exec())
+    except (ImportError, OSError, RuntimeError, SystemError) as e:
+        # 记录致命异常，便于启动器与热更新诊断
+        logging.getLogger("terminal_v0.50.main").exception("UI启动异常: %s", e)
+        # 追加到UI进程日志文件
+        with contextlib.suppress(Exception), open(
+            "logs/ui_process.err.log", "a", encoding="utf-8"
+        ) as f:
+            f.write(f"UI启动异常: {e}\n")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -383,8 +383,13 @@ class DataCenter(BaseWidget, LoggerMixin):
     def _initialize_vnpy_adapter(self):
         """初始化VNPY适配器."""
         try:
-            self.vnpy_adapter = VnPyAdapter()
-            self.logger.info("VNPY适配器初始化完成")
+            # 适配器可用性判断，避免 NameError
+            if 'VnPyAdapter' in globals() and VnPyAdapter:
+                self.vnpy_adapter = VnPyAdapter()
+                self.logger.info("VNPY适配器初始化完成")
+            else:
+                self.logger.warning("VNPY适配器不可用，使用模拟数据")
+                self.vnpy_adapter = None
         except (ImportError, AttributeError, RuntimeError) as e:
             self.logger.error("VNPY适配器初始化失败: %s", e)
             self.vnpy_adapter = None
@@ -413,6 +418,12 @@ class DataCenter(BaseWidget, LoggerMixin):
         symbol = self.symbol_input.text()
         start_date = self.start_date_input.text()
         end_date = self.end_date_input.text()
+
+        # 默认日期范围：最近30天，避免空值导致异常
+        if not start_date:
+            start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+        if not end_date:
+            end_date = datetime.now().strftime("%Y-%m-%d")
 
         if not symbol:
             self.show_warning("请输入品种代码")
@@ -655,6 +666,8 @@ class DataCenter(BaseWidget, LoggerMixin):
 
             # 操作按钮
             operation_btn = QPushButton("查看")
+            operation_btn.clicked.connect(
+                self._create_view_handler(code))
             self.symbols_table.setCellWidget(i, 5, operation_btn)
 
     def _load_local_data(self, _symbol, start_date, end_date):  # noqa: U101
@@ -665,8 +678,13 @@ class DataCenter(BaseWidget, LoggerMixin):
         # 模拟数据
 
         # 生成模拟数据
-        current_date = datetime.strptime(start_date, "%Y-%m-%d")
-        end_date_obj = datetime.strptime(end_date, "%Y-%m-%d")
+        try:
+            current_date = datetime.strptime(start_date, "%Y-%m-%d")
+            end_date_obj = datetime.strptime(end_date, "%Y-%m-%d")
+        except ValueError:
+            # 日期格式不正确或为空时，回退到最近30天
+            current_date = datetime.now() - timedelta(days=30)
+            end_date_obj = datetime.now()
 
         row = 0
         while current_date <= end_date_obj:
@@ -751,6 +769,33 @@ class DataCenter(BaseWidget, LoggerMixin):
         """刷新数据."""
         self._load_symbols_data()
         self.show_info("数据中心数据已刷新")
+
+    def _create_view_handler(self, code: str):
+        """创建查看按钮的处理器."""
+        def handler():
+            self._on_view_symbol(code)
+        return handler
+
+    def _on_view_symbol(self, code: str):
+        """在品种列表中点击查看：填充代码、切换到本地数据、补全日期并查询。"""
+        try:
+            self.symbol_input.setText(code)
+            # 切换到本地数据标签页
+            if self.tab_widget and self.local_data_tab:
+                idx = self.tab_widget.indexOf(self.local_data_tab)
+                if idx >= 0:
+                    self.tab_widget.setCurrentIndex(idx)
+            # 补全默认日期
+            if self.start_date_input and not self.start_date_input.text():
+                self.start_date_input.setText(
+                    (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+                )
+            if self.end_date_input and not self.end_date_input.text():
+                self.end_date_input.setText(datetime.now().strftime("%Y-%m-%d"))
+            # 执行查询
+            self._query_local_data()
+        except (AttributeError, RuntimeError, ValueError) as e:
+            self.show_error(f"查看品种失败: {e}")
 
     def on_close(self):
         """关闭处理."""

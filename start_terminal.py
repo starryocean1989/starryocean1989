@@ -199,6 +199,32 @@ class TerminalLauncher:
                 bufsize=1,
                 universal_newlines=True
             )
+
+            # 异步消费子进程输出，避免阻塞并写入日志文件
+            def _stream_to_log(stream, log_name):
+                try:
+                    log_file = self.logs_path / log_name
+                    with open(log_file, "a", encoding="utf-8") as lf:
+                        for line in iter(stream.readline, ''):
+                            if line:
+                                lf.write(line)
+                                lf.flush()
+                except (OSError, UnicodeDecodeError) as e:
+                    self.logger.debug("写入UI日志失败: %s", e)
+
+            if self.ui_process.stdout:
+                threading.Thread(
+                    target=_stream_to_log,
+                    args=(self.ui_process.stdout, "ui_process.log"),
+                    daemon=True
+                ).start()
+            if self.ui_process.stderr:
+                threading.Thread(
+                    target=_stream_to_log,
+                    args=(self.ui_process.stderr, "ui_process.err.log"),
+                    daemon=True
+                ).start()
+
             self.logger.info(
                 "UI启动成功，PID=%s", self.ui_process.pid)
             self._write_pids()

@@ -87,6 +87,9 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
         self.position_table = None
         self.risk_progress = None
 
+        # 更新定时器与就绪标志
+        self._update_timer = None
+        self.ui_ready = False
         # 初始化VNPY适配器 - 在super().__init__()之后
         self._initialize_vnpy_adapter()
 
@@ -107,6 +110,8 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
         main_splitter.addWidget(right_widget)
 
         main_layout.addWidget(main_splitter)
+        # 界面就绪
+        self.ui_ready = True
 
     def _create_portfolio_manager(self):
         """创建组合管理组件"""
@@ -293,6 +298,9 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
 
     def _initialize_vnpy_adapter(self):
         """初始化VNPY适配器"""
+        # 确保属性始终存在
+        self.vnpy_adapter = None
+        
         try:
             if VnPyAdapter is not None:
                 self.vnpy_adapter = VnPyAdapter()
@@ -317,6 +325,26 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
         if index >= 0:
             tab_text = self.gateway_tab.tabText(index)
             self.logger.info("切换到网关: %s", tab_text)
+
+    def start_update_timer(self, interval: int, callback):
+        """启动更新定时器（安全守卫）"""
+        if not getattr(self, "ui_ready", False):
+            return
+        if callback is None:
+            return
+        if getattr(self, "_update_timer", None) is None:
+            from PySide6.QtCore import QTimer as _QTimer
+            self._update_timer = _QTimer(self)
+            self._update_timer.timeout.connect(callback)
+        self._update_timer.start(int(interval) if interval else 2000)
+
+    def stop_update_timer(self):
+        """停止更新定时器"""
+        try:
+            if getattr(self, "_update_timer", None):
+                self._update_timer.stop()
+        finally:
+            self._update_timer = None
 
     def _update_portfolio_data(self):
         """更新组合数据"""

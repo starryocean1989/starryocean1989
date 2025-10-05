@@ -71,6 +71,9 @@ class TradingGateway(BaseWidget, LoggerMixin):
 
         # Initialize UI components
         self.new_gateway_btn = None
+        # 更新定时器与就绪标志
+        self._update_timer = None
+        self.ui_ready = False
         self.gateways_table = None
         self.content_tab = None
         self.strategy_tab = None
@@ -100,6 +103,8 @@ class TradingGateway(BaseWidget, LoggerMixin):
         main_splitter.addWidget(right_widget)
 
         main_layout.addWidget(main_splitter)
+        # 界面就绪
+        self.ui_ready = True
 
     def _create_gateway_manager(self):
         """创建网关管理器."""
@@ -320,6 +325,26 @@ class TradingGateway(BaseWidget, LoggerMixin):
         """模板选择改变."""
         self.logger.info("切换监控模板: %s", text)
         # 这里实现模板切换逻辑
+
+    def start_update_timer(self, interval: int, callback):
+        """启动更新定时器（安全守卫）."""
+        if not getattr(self, "ui_ready", False):
+            return
+        if callback is None:
+            return
+        if getattr(self, "_update_timer", None) is None:
+            from PySide6.QtCore import QTimer as _QTimer
+            self._update_timer = _QTimer(self)
+            self._update_timer.timeout.connect(callback)
+        self._update_timer.start(int(interval) if interval else 1000)
+
+    def stop_update_timer(self):
+        """停止更新定时器."""
+        try:
+            if getattr(self, "_update_timer", None):
+                self._update_timer.stop()
+        finally:
+            self._update_timer = None
 
     def _update_gateway_status(self):
         """更新网关状态."""

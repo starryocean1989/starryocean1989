@@ -72,11 +72,10 @@ echo.
 echo 🔧 执行开发模式启动...
 echo ==========================================
 echo 启用热更新和调试模式...
-python -c "
-import sys
-sys.argv = ['start_terminal.py', '--dev']
-exec(open('start_terminal.py').read())
-"
+REM 并行启动热更新监控与快速启动UI/后端
+start "" python hot_reload.py
+start "" python start_terminal.py quick
+echo ✅ 已启动热更新监控与快速启动（如需停止请关闭对应窗口）
 goto end
 
 :diagnostic

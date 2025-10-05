@@ -5,6 +5,7 @@
 监控文件变化，自动重启相关服务。
 """
 
+import contextlib
 import hashlib
 import logging
 import threading
@@ -191,8 +192,9 @@ class HotReloadMonitor:
 
         self.monitoring = False
 
-        if self.monitor_thread:
-            self.monitor_thread.join(timeout=5)
+        if self.monitor_thread and self.monitor_thread.is_alive():
+            with contextlib.suppress(RuntimeError, OSError, KeyboardInterrupt):
+                self.monitor_thread.join(timeout=1)
 
         self.logger.info("热更新监控已停止")
 
@@ -385,7 +387,8 @@ def main():
 
     except KeyboardInterrupt:
         print("\n\n🛑 用户请求停止监控")
-        monitor.stop_monitoring()
+        with contextlib.suppress(RuntimeError, OSError):
+            monitor.stop_monitoring()
         print("✅ 热更新监控已停止")
 
 

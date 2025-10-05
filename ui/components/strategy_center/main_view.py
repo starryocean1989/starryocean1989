@@ -22,6 +22,9 @@ try:
     from utils.logging_utils import LoggerMixin
     from backend.infrastructure.data_module_vnpy import VnPyCoreAdapter
 except ImportError:
+    # 适配器降级：导入失败时置为 None，避免 NameError
+    VnPyCoreAdapter = None
+
     class BaseWidget(QWidget):
         """Base widget class fallback."""
 
@@ -88,20 +91,26 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         self.backtest_status_label = None
         self.backtest_results = None
 
+        # 更新定时器与就绪标志
+        self._update_timer = None
+        self.ui_ready = False
         # 初始化VNPY适配器 - 在super().__init__()之后
         self._initialize_vnpy_adapter()
 
     def _initialize_vnpy_adapter(self):
         """初始化VNPY适配器."""
-        try:
-            self.vnpy_adapter = VnPyCoreAdapter()
-            self.logger.info("VNPY适配器初始化完成")
-        except (ImportError, AttributeError, ValueError) as e:
-            self.logger.error("VNPY适配器初始化失败: %s", e)
-            self.vnpy_adapter = None
-
         # 确保属性始终存在
-        if not hasattr(self, 'vnpy_adapter'):
+        self.vnpy_adapter = None
+
+        try:
+            if VnPyCoreAdapter is not None:
+                self.vnpy_adapter = VnPyCoreAdapter()
+                self.logger.info("VNPY适配器初始化完成")
+            else:
+                self.logger.warning("VNPY适配器不可用，使用模拟功能")
+                self.vnpy_adapter = None
+        except (NameError, ImportError, AttributeError, ValueError) as e:
+            self.logger.error("VNPY适配器初始化失败: %s", e)
             self.vnpy_adapter = None
 
     def setup_ui(self):
@@ -121,6 +130,8 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         main_splitter.addWidget(right_widget)
 
         main_layout.addWidget(main_splitter)
+        # 界面就绪
+        self.ui_ready = True
 
     def _create_strategy_manager(self):
         """创建策略/指标管理器."""
@@ -634,6 +645,25 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         """加载指标文件."""
         # 这里实现指标文件加载逻辑
         self.code_editor.setText(f"# 加载指标文件: {file_path}\n# 这里是指标代码内容...")
+
+    def start_update_timer(self, interval: int, callback):
+        """启动更新定时器（安全守卫）."""
+        if not getattr(self, "ui_ready", False):
+            return
+        if callback is None:
+            return
+        if getattr(self, "_update_timer", None) is None:
+            self._update_timer = QTimer(self)
+            self._update_timer.timeout.connect(callback)
+        self._update_timer.start(int(interval) if interval else 2000)
+
+    def stop_update_timer(self):
+        """停止更新定时器."""
+        try:
+            if getattr(self, "_update_timer", None):
+                self._update_timer.stop()
+        finally:
+            self._update_timer = None
 
     def _update_status(self):
         """更新状态."""
