@@ -1,0 +1,83 @@
+{
+  "app": {
+    "name": "星辰金融终端",
+    "version": "5.0.0",
+    "author": "星辰科技",
+    "description": "专业的金融交易终端系统"
+  },
+  "ui": {
+    "theme": "dark",
+    "language": "zh_CN",
+    "window_width": 1200,
+    "window_height": 800,
+    "min_width": 800,
+    "min_height": 600,
+    "font_size": 10,
+    "refresh_interval": 1000
+  },
+  "vnpy": {
+    "data_path": "data/vnpy",
+    "log_path": "logs/vnpy",
+    "cache_size": 1000,
+    "timeout": 30
+  },
+  "gateways": {
+    "ctp": {
+      "enabled": true,
+      "setting": {
+        "用户名": "",
+        "密码": "",
+        "经纪商代码": "",
+        "交易服务器": "",
+        "行情服务器": "",
+        "产品名称": "",
+        "授权编码": ""
+      }
+    },
+    "mini": {
+      "enabled": false,
+      "setting": {
+        "用户名": "",
+        "密码": "",
+        "经纪商代码": "",
+        "地址": "",
+        "端口": 0
+      }
+    },
+    "ib": {
+      "enabled": false,
+      "setting": {
+        "TWS地址": "127.0.0.1",
+        "TWS端口": 7497,
+        "客户端ID": 1
+      }
+    }
+  },
+  "datafeeds": {
+    "tushare": {
+      "enabled": true,
+      "token": "",
+      "timeout": 30
+    },
+    "rqdata": {
+      "enabled": false,
+      "username": "",
+      "password": "",
+      "timeout": 30
+    }
+  },
+  "strategies": {
+    "default_engine": "cta",
+    "auto_start": false,
+    "max_running": 10,
+    "log_level": "INFO"
+  },
+  "system": {
+    "log_level": "INFO",
+    "log_max_size": 10485760,
+    "log_backup_count": 5,
+    "performance_monitor": true,
+    "memory_warning_threshold": 80,
+    "cpu_warning_threshold": 80
+  }
+}

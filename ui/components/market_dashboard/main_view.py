@@ -14,8 +14,24 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QColor
 
-from ui.widgets.base_widget import BaseWidget
-from utils.logging_utils import LoggerMixin
+try:
+    from ..widgets.base_widget import BaseWidget
+    from ...utils.logging_utils import LoggerMixin
+except ImportError:
+    try:
+        from ui.widgets.base_widget import BaseWidget
+        from utils.logging_utils import LoggerMixin
+    except ImportError:
+        class BaseWidget:
+            def __init__(self, parent=None, title=""):
+                self.parent = parent
+                self.title = title
+
+        class LoggerMixin:
+            @property
+            def logger(self):
+                import logging
+                return logging.getLogger(self.__class__.__name__)
 
 
 class MarketDashboard(BaseWidget, LoggerMixin):

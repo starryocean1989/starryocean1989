@@ -17,41 +17,124 @@ from PySide6.QtCore import Qt, QTimer, QSize
 from PySide6.QtGui import QAction, QIcon, QPixmap
 
 # 导入主题和配置管理器
-from .themes.theme_manager import ThemeManager
-from config import ConfigManager
-from utils.logging_utils import LoggerMixin
 try:
-    from utils.error_handler import error_handler, ErrorCategory, ErrorSeverity
+    from .themes.theme_manager import ThemeManager
 except ImportError:
-    # 如果错误处理器不可用，创建简单的替代品
-    class ErrorCategory:
-        UI = "ui"
-        SYSTEM = "system"
-        NETWORK = "network"
-        DATA = "data"
-        VNPY = "vnpy"
-        UNKNOWN = "unknown"
+    try:
+        from themes.theme_manager import ThemeManager
+    except ImportError:
+        class ThemeManager:
+            def __init__(self):
+                pass
+            def apply_theme(self, app):
+                pass
 
-    class ErrorSeverity:
-        LOW = "low"
-        MEDIUM = "medium"
-        HIGH = "high"
-        CRITICAL = "critical"
+try:
+    from config import ConfigManager
+except ImportError:
+    try:
+        import sys
+        import os
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from config import ConfigManager
+    except ImportError:
+        class ConfigManager:
+            def __init__(self):
+                self.app_config = type('AppConfig', (), {
+                    'name': '星辰金融终端',
+                    'version': '5.0.0'
+                })()
+                self.ui_config = type('UIConfig', (), {
+                    'min_width': 800,
+                    'min_height': 600,
+                    'window_width': 1200,
+                    'window_height': 800,
+                    'theme': 'dark'
+                })()
 
-    class MockErrorHandler:
-        def handle_error(self, error_id, message, category=None, severity=None, max_retries=1, callback=None, parent_widget=None):
-            print(f"错误 {error_id}: {message}")
-            return False
+# 导入日志和错误处理
+try:
+    from ..utils.logging_utils import LoggerMixin
+except ImportError:
+    try:
+        from utils.logging_utils import LoggerMixin
+    except ImportError:
+        class LoggerMixin:
+            @property
+            def logger(self):
+                import logging
+                return logging.getLogger(self.__class__.__name__)
 
-    error_handler = MockErrorHandler()
+try:
+    from ..utils.error_handler import error_handler, ErrorCategory, ErrorSeverity
+except ImportError:
+    try:
+        from utils.error_handler import error_handler, ErrorCategory, ErrorSeverity
+    except ImportError:
+        # 如果错误处理器不可用，创建简单的替代品
+        class ErrorCategory:
+            UI = "ui"
+            SYSTEM = "system"
+            NETWORK = "network"
+            DATA = "data"
+            VNPY = "vnpy"
+            UNKNOWN = "unknown"
+
+        class ErrorSeverity:
+            LOW = "low"
+            MEDIUM = "medium"
+            HIGH = "high"
+            CRITICAL = "critical"
+
+        class MockErrorHandler:
+            def handle_error(self, error_id, message, category=None, severity=None, max_retries=1, callback=None, parent_widget=None):
+                print(f"错误 {error_id}: {message}")
+                return False
+
+        error_handler = MockErrorHandler()
 
 # 导入功能界面模块
-from .components.system_manager.main_view import SystemManager
-from .components.data_center.main_view import DataCenter
-from .components.market_dashboard.main_view import MarketDashboard
-from .components.strategy_center.main_view import StrategyCenter
-from .components.trading_gateway.main_view import TradingGateway
-from .components.portfolio_investment.main_view import PortfolioInvestment
+try:
+    from .components.system_manager.main_view import SystemManager
+    from .components.data_center.main_view import DataCenter
+    from .components.market_dashboard.main_view import MarketDashboard
+    from .components.strategy_center.main_view import StrategyCenter
+    from .components.trading_gateway.main_view import TradingGateway
+    from .components.portfolio_investment.main_view import PortfolioInvestment
+    from .components.ops_center.main_view import OpsCenter
+except ImportError:
+    try:
+        from components.system_manager.main_view import SystemManager
+        from components.data_center.main_view import DataCenter
+        from components.market_dashboard.main_view import MarketDashboard
+        from components.strategy_center.main_view import StrategyCenter
+        from components.trading_gateway.main_view import TradingGateway
+        from components.portfolio_investment.main_view import PortfolioInvestment
+    except ImportError:
+        # 简化版本
+        class SystemManager:
+            def __init__(self):
+                pass
+
+        class DataCenter:
+            def __init__(self):
+                pass
+
+        class MarketDashboard:
+            def __init__(self):
+                pass
+
+        class StrategyCenter:
+            def __init__(self):
+                pass
+
+        class TradingGateway:
+            def __init__(self):
+                pass
+
+        class PortfolioInvestment:
+            def __init__(self):
+                pass
 
 
 class MainWindow(QMainWindow, LoggerMixin):
@@ -249,6 +332,14 @@ class MainWindow(QMainWindow, LoggerMixin):
                 self.logger.info("组合投资界面创建成功")
             except Exception as e:
                 self.logger.error(f"组合投资界面创建失败: {e}")
+
+            # 运维与诊断中心（新增）
+            try:
+                self.function_interfaces["ops"] = OpsCenter()
+                self.tab_widget.addTab(self.function_interfaces["ops"], "🛡️ 运维与诊断")
+                self.logger.info("运维与诊断中心创建成功")
+            except Exception as e:
+                self.logger.error(f"运维与诊断中心创建失败: {e}")
 
             self.logger.info("所有功能界面创建完成")
 
@@ -469,8 +560,25 @@ class MainWindow(QMainWindow, LoggerMixin):
 
 def main():
     """主函数"""
-    # 设置日志
-    from utils.logging_utils import setup_logging
+    # 设置日志（稳健导入，提供回退）
+    try:
+        from ..utils.logging_utils import setup_logging
+    except ImportError:
+        try:
+            from utils.logging_utils import setup_logging
+        except ImportError:
+            def setup_logging(name: str = "terminal_v0.50", level: str = "INFO", log_file: str | None = None):
+                lvl = getattr(logging, level.upper(), logging.INFO)
+                logging.basicConfig(level=lvl, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+                if log_file:
+                    try:
+                        fh = logging.FileHandler(log_file, encoding="utf-8")
+                        fh.setLevel(lvl)
+                        fmt = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+                        fh.setFormatter(fmt)
+                        logging.getLogger().addHandler(fh)
+                    except Exception as e:
+                        logging.getLogger(__name__).warning(f"日志文件处理器创建失败: {e}")
     setup_logging(
         name="terminal_v0.50",
         level="INFO",

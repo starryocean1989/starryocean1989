@@ -14,7 +14,40 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal, QTimer, QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import QIcon, QPixmap, QFont, QColor, QPalette
 
-from utils.error_handler import error_handler, ErrorCategory, ErrorSeverity, ErrorInfo
+try:
+    from ...utils.error_handler import error_handler, ErrorCategory, ErrorSeverity, ErrorInfo
+except ImportError:
+    try:
+        from utils.error_handler import error_handler, ErrorCategory, ErrorSeverity, ErrorInfo
+    except ImportError:
+        class ErrorCategory:
+            UI = "ui"
+            SYSTEM = "system"
+            NETWORK = "network"
+            DATA = "data"
+            VNPY = "vnpy"
+            UNKNOWN = "unknown"
+
+        class ErrorSeverity:
+            LOW = "low"
+            MEDIUM = "medium"
+            HIGH = "high"
+            CRITICAL = "critical"
+
+        class ErrorInfo:
+            def __init__(self, error_id, message, category=None, severity=None, timestamp=None):
+                self.error_id = error_id
+                self.message = message
+                self.category = category or ErrorCategory.UNKNOWN
+                self.severity = severity or ErrorSeverity.MEDIUM
+                self.timestamp = timestamp
+
+        class MockErrorHandler:
+            def handle_error(self, error_id, message, category=None, severity=None, max_retries=1, callback=None, parent_widget=None):
+                print(f"错误 {error_id}: {message}")
+                return False
+
+        error_handler = MockErrorHandler()
 
 
 class ErrorNotificationWidget(QFrame):

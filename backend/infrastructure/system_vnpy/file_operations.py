@@ -54,7 +54,9 @@ class DirectoryManager:
     def __init__(self):
         self.logger = logging.getLogger(__name__)
 
-    def list_directory(self, path: str, pattern: str = "*", recursive: bool = False) -> List[str]:
+    def list_directory(
+        self, path: str, pattern: str = "*", recursive: bool = False
+    ) -> List[str]:
         """列出目录内容"""
         try:
             if not os.path.exists(path):
@@ -121,7 +123,10 @@ class DirectoryManager:
             self.logger.error("删除目录失败: %s", e)
             return False
 
-    def copy_directory(self, src: str, dst: str, ignore_patterns: Optional[List[str]] = None) -> bool:
+    def copy_directory(
+        self, src: str, dst: str,
+        ignore_patterns: Optional[List[str]] = None
+    ) -> bool:
         """复制目录"""
         try:
             if not os.path.exists(src):
@@ -351,7 +356,9 @@ class FilePermissionManager:
             self.logger.error("检查执行权限失败: %s", e)
             return False
 
-    def set_secure_permissions(self, path: str, is_directory: bool = False) -> bool:
+    def set_secure_permissions(
+        self, path: str, is_directory: bool = False
+    ) -> bool:
         """设置安全权限(文件644,目录755)"""
         try:
             if is_directory:
@@ -364,7 +371,9 @@ class FilePermissionManager:
             self.logger.error("设置安全权限失败: %s", e)
             return False
 
-    def batch_set_permissions(self, paths: List[str], mode: Union[int, str]) -> List[bool]:
+    def batch_set_permissions(
+        self, paths: List[str], mode: Union[int, str]
+    ) -> List[bool]:
         """批量设置权限"""
         results = []
         for path in paths:
@@ -372,7 +381,9 @@ class FilePermissionManager:
         return results
 
 
-def _handle_file_operations(operation: Dict[str, Any], file_manager: FileManager) -> bool:
+def _handle_file_operations(
+    operation: Dict[str, Any], file_manager: FileManager
+) -> bool:
     """处理文件操作"""
     op_type = operation.get('operation')
     path = operation.get('path')
@@ -390,7 +401,9 @@ def _handle_file_operations(operation: Dict[str, Any], file_manager: FileManager
     return False
 
 
-def _handle_directory_operations(operation: Dict[str, Any], dir_manager: DirectoryManager) -> bool:
+def _handle_directory_operations(
+    operation: Dict[str, Any], dir_manager: DirectoryManager
+) -> bool:
     """处理目录操作"""
     op_type = operation.get('operation')
     path = operation.get('path')
@@ -404,7 +417,10 @@ def _handle_directory_operations(operation: Dict[str, Any], dir_manager: Directo
     elif op_type == 'copy_directory':
         dst = operation.get('destination')
         ignore_patterns = operation.get('ignore_patterns')
-        return dir_manager.copy_directory(path, dst, ignore_patterns) if dst else False
+        return (
+            dir_manager.copy_directory(path, dst, ignore_patterns)
+            if dst else False
+        )
     elif op_type == 'move_directory':
         dst = operation.get('destination')
         return dir_manager.move_directory(path, dst) if dst else False
@@ -419,19 +435,26 @@ def _handle_directory_operations(operation: Dict[str, Any], dir_manager: Directo
     return False
 
 
-def _handle_permission_operations(operation: Dict[str, Any], perm_manager: FilePermissionManager) -> bool:
+def _handle_permission_operations(
+    operation: Dict[str, Any], perm_manager: FilePermissionManager
+) -> bool:
     """处理权限操作"""
     op_type = operation.get('operation')
     path = operation.get('path')
 
     if op_type == 'set_permissions':
         mode = operation.get('mode')
-        return perm_manager.set_permissions(path, mode) if mode is not None else False
+        return (
+            perm_manager.set_permissions(path, mode)
+            if mode is not None else False
+        )
     return False
 
 
-def _execute_file_operation(operation: Dict[str, Any], file_manager: FileManager,
-                            dir_manager: DirectoryManager, perm_manager: FilePermissionManager) -> bool:
+def _execute_file_operation(
+    operation: Dict[str, Any], file_manager: FileManager,
+    dir_manager: DirectoryManager, perm_manager: FilePermissionManager
+) -> bool:
     """执行单个文件操作"""
     op_type = operation.get('operation')
     path = operation.get('path')
@@ -463,9 +486,10 @@ def batch_file_operations(operations: List[Dict[str, Any]]) -> List[bool]:
 
     Args:
         operations: 操作列表,每个操作包含以下字段:
-            - operation: 操作类型 ('create_file', 'delete_file', 'copy_file', 'create_directory',
-                      'delete_directory', 'copy_directory', 'move_directory', 'set_permissions',
-                      'get_info', 'list_directory')
+            - operation: 操作类型 ('create_file', 'delete_file', 'copy_file',
+                      'create_directory', 'delete_directory', 'copy_directory',
+                      'move_directory', 'set_permissions', 'get_info',
+                      'list_directory')
             - path: 文件或目录路径
             - 其他操作特定参数
 
@@ -480,7 +504,9 @@ def batch_file_operations(operations: List[Dict[str, Any]]) -> List[bool]:
 
     for operation in operations:
         try:
-            result = _execute_file_operation(operation, file_manager, dir_manager, perm_manager)
+            result = _execute_file_operation(
+                operation, file_manager, dir_manager, perm_manager
+            )
             results.append(result)
         except (OSError, PermissionError, shutil.Error, IOError) as e:
             logger.error("批量操作执行失败: %s", e)

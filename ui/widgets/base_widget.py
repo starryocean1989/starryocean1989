@@ -10,7 +10,32 @@ from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QIcon, QPixmap
 
 # 导入统一错误处理器
-from utils.error_handler import error_handler, ErrorCategory, ErrorSeverity
+try:
+    from ...utils.error_handler import error_handler, ErrorCategory, ErrorSeverity
+except ImportError:
+    try:
+        from utils.error_handler import error_handler, ErrorCategory, ErrorSeverity
+    except ImportError:
+        class ErrorCategory:
+            UI = "ui"
+            SYSTEM = "system"
+            NETWORK = "network"
+            DATA = "data"
+            VNPY = "vnpy"
+            UNKNOWN = "unknown"
+
+        class ErrorSeverity:
+            LOW = "low"
+            MEDIUM = "medium"
+            HIGH = "high"
+            CRITICAL = "critical"
+
+        class MockErrorHandler:
+            def handle_error(self, error_id, message, category=None, severity=None, max_retries=1, callback=None, parent_widget=None):
+                print(f"错误 {error_id}: {message}")
+                return False
+
+        error_handler = MockErrorHandler()
 
 
 class BaseWidget(QWidget):
@@ -29,16 +54,6 @@ class BaseWidget(QWidget):
         self._is_initialized = False
         self._update_timer: Optional[QTimer] = None
 
-    @property
-    def logger(self):
-        """获取日志器"""
-        return self._logger
-
-    @logger.setter
-    def logger(self, value):
-        """设置日志器"""
-        self._logger = value
-
         # 设置窗口标志
         self.setWindowFlags(Qt.WindowType.Widget)
 
@@ -49,6 +64,16 @@ class BaseWidget(QWidget):
         self._is_initialized = True
         self._logger.info(f"{self.__class__.__name__} 初始化完成")
 
+    @property
+    def logger(self):
+        """获取日志器"""
+        return self._logger
+
+    @logger.setter
+    def logger(self, value):
+        """设置日志器"""
+        self._logger = value
+
     def setup_ui(self):
         """设置用户界面 - 子类必须实现"""
         raise NotImplementedError("子类必须实现 setup_ui 方法")
@@ -58,9 +83,9 @@ class BaseWidget(QWidget):
         pass
 
     def show_error(self, message: str, title: str = "错误",
-                   error_id: str = None, category: ErrorCategory = ErrorCategory.UI,
-                   severity: ErrorSeverity = ErrorSeverity.MEDIUM,
-                   max_retries: int = 1, retry_callback: Optional[Callable] = None):
+                   error_id: Optional[str] = None, category: Any = ErrorCategory.UI,
+                   severity: Any = ErrorSeverity.MEDIUM,
+                   max_retries: int = 1, retry_callback: Optional[Callable[..., Any]] = None):
         """显示错误信息 - 使用统一错误处理器"""
         error_id = error_id or f"{self.__class__.__name__}_{hash(message)}"
 
@@ -127,7 +152,7 @@ class BaseWidget(QWidget):
             # 隐藏加载状态
             pass
 
-    def start_update_timer(self, interval: int = 1000, callback: Optional[Callable] = None):
+    def start_update_timer(self, interval: int = 1000, callback: Optional[Callable[..., Any]] = None):
         """启动更新定时器"""
         if self._update_timer:
             self._update_timer.stop()
@@ -176,8 +201,9 @@ class BaseWidget(QWidget):
     def set_title(self, title: str):
         """设置窗口标题"""
         self.title = title
-        if hasattr(self.parent(), 'setWindowTitle'):
-            self.parent().setWindowTitle(title)
+        parent = self.parent()
+        if isinstance(parent, QWidget) and hasattr(parent, 'setWindowTitle'):
+            parent.setWindowTitle(title)
 
     def get_title(self) -> str:
         """获取窗口标题"""
