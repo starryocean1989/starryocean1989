@@ -31,6 +31,7 @@ try:
 except ImportError:
     VnPyAdapter = None
 
+
 # Import base classes with proper fallback handling
 
 if TYPE_CHECKING:
