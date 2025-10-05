@@ -1,0 +1,142 @@
+# Python 虚拟环境
+venv310/
+venv/
+env/
+ENV/
+.venv/
+.env/
+
+# Python 编译文件
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# 分发 / 打包
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# 单元测试 / 覆盖率报告
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# celery beat schedule file
+celerybeat-schedule
+
+# SageMath parsed files
+*.sage.py
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# IDE 相关
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 操作系统相关
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# 日志文件
+*.log
+
+# 数据库文件
+*.db
+*.sqlite
+*.sqlite3
+
+# 配置文件（如果包含敏感信息）
+config.ini
+*.conf
+
+# 临时文件
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# 编译输出
+Debug/
+Release/
+*.exe
+*.dll
+*.pdb
+*.obj
+*.o
+
+# 用户目录和系统文件
+../../*
+!../../terminal_v0.50/
+
+# 扩展和IDE缓存
+.lingma/
+.marscode/
+.mootdx/
+.qoder/
+.trae-aicc/
+.trae/
+.vntrader/
+.windsurf/
+
+# 特定日志文件
+terminal_dev.log
+market_dashboard_*.log
+
+# 特定配置文件
+pyautotrading.ini
+
+# 特定安装文件
+python-3.10.11-32bit.exe
+install_32bit_packages.py
