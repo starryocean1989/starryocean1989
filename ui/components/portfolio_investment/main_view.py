@@ -17,9 +17,12 @@ from PySide6.QtWidgets import (
 )
 
 try:
-    from integration.vnpy_adapter import VnPyAdapter
+    from ....backend.core.vnpy_integration import TerminalEngine as VnPyAdapter
 except ImportError:
-    VnPyAdapter = None
+    try:
+        from backend.core.vnpy_integration import TerminalEngine as VnPyAdapter
+    except ImportError:
+        VnPyAdapter = None
 
 try:
     from ...widgets.base_widget import BaseWidget

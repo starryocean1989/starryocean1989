@@ -25,8 +25,8 @@ class DataPersistenceService(ABC):
 
     @abstractmethod
     async def load_data(
-        self, _source: str, _filters: Optional[Dict[str, Any]] = None
-    ) -> List[Dict[str, Any]]:  # noqa: U101
+        self, _source: str, _filters: Optional[Dict[str, Any]] = None  # noqa: U101
+    ) -> List[Dict[str, Any]]:
         """加载数据."""
         raise NotImplementedError
 

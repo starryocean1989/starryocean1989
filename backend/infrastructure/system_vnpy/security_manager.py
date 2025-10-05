@@ -5,10 +5,11 @@
 提供权限控制,加密解密,审计日志等安全功能.
 """
 
+import base64
+import datetime
 import logging
 import secrets
-import datetime
-import base64
+
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -53,7 +54,8 @@ class SecurityManager:
 
             self.is_initialized = True
             logger.info("SecurityManager initialized successfully")
-            self.audit_logger.log_system_event('security_init', 'Security system initialized', 'success')
+            self.audit_logger.log_system_event(
+                'security_init', 'Security system initialized', 'success')
 
         except Exception as e:
             logger.error("Failed to initialize SecurityManager: %s", e)
@@ -79,21 +81,27 @@ class SecurityManager:
             # 检查用户是否存在
             if not self.permission_controller.user_exists(user_id):
                 logger.warning("User %s does not exist", user_id)
-                self.audit_logger.log_user_action(user_id, 'access_denied', resource, 'user_not_found')
+                self.audit_logger.log_user_action(
+                    user_id, 'access_denied', resource, 'user_not_found')
                 return False
 
             # 验证权限
-            has_permission = self.permission_controller.has_permission(user_id, resource)
+            has_permission = self.permission_controller.has_permission(
+                user_id, resource)
 
             # 记录访问尝试
             result = 'granted' if has_permission else 'denied'
-            self.audit_logger.log_user_action(user_id, 'access_attempt', resource, result)
+            self.audit_logger.log_user_action(
+                user_id, 'access_attempt', resource, result)
 
             return has_permission
 
         except (ValueError, RuntimeError, KeyError) as e:
-            logger.error("Permission validation error for user %s, resource %s: %s", user_id, resource, e)
-            self.audit_logger.log_user_action(user_id, 'access_error', resource, f'error: {e}')
+            logger.error(
+                "Permission validation error for user %s, resource %s: %s",
+                user_id, resource, e)
+            self.audit_logger.log_user_action(
+                user_id, 'access_error', resource, f'error: {e}')
             return False
 
 
@@ -332,9 +340,11 @@ class AuditLogger:
             'result': result
         }
         self.audit_logs.append(log_entry)
-        logger.info("Audit log: %s performed %s on %s - %s", user_id, action, resource, result)
+        logger.info(
+            "Audit log: %s performed %s on %s - %s", user_id, action, resource, result)
 
-    def log_permission_change(self, admin_user: str, target_user: str, permission: str, action: str):
+    def log_permission_change(
+            self, admin_user: str, target_user: str, permission: str, action: str):
         """记录权限变更日志
 
         Args:
@@ -351,7 +361,9 @@ class AuditLogger:
             'action': action
         }
         self.audit_logs.append(log_entry)
-        logger.info("Permission audit: %s %sed %s for %s", admin_user, action, permission, target_user)
+        logger.info(
+            "Permission audit: %s %sed %s for %s",
+            admin_user, action, permission, target_user)
 
     def get_audit_logs(self, user_id: str = None) -> list:
         """获取审计日志
@@ -364,7 +376,8 @@ class AuditLogger:
         """
         if user_id:
             return [log for log in self.audit_logs
-                    if log.get('user_id') == user_id or log.get('target_user') == user_id]
+                    if (log.get('user_id') == user_id or
+                        log.get('target_user') == user_id)]
         return self.audit_logs.copy()
 
     def initialize(self):
@@ -388,7 +401,9 @@ class AuditLogger:
             'source': 'system'
         }
         self.audit_logs.append(log_entry)
-        logger.info("System event: %s - %s (%s)", event_type, description, result)
+        logger.info(
+            "System event: %s - %s (%s)",
+            event_type, description, result)
 
 
 __all__ = [
