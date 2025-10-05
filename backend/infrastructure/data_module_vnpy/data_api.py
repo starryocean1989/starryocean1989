@@ -1,34 +1,35 @@
 # -*- coding: utf-8 -*-
 """
-数据API模块
+数据API模块.
 
-提供数据访问和操作的API接口
+提供数据访问和操作的API接口.
 """
-from typing import Any, Dict, Optional
 import logging
+from typing import Any, Dict, Optional
 
 
 logger = logging.getLogger(__name__)
 
 
 class DataApi:
-    """数据API类"""
+    """数据API类."""
 
     def __init__(self) -> None:
+        """初始化数据API."""
         self.logger = logging.getLogger(__name__)
 
     def get_market_data(
         self, symbol: str, data_type: str = "tick"
     ) -> Optional[Dict[str, Any]]:
         """
-        获取市场数据
+        获取市场数据.
 
         Args:
-            symbol: 证券代码
-            data_type: 数据类型 (tick, bar, etc.)
+            symbol: 证券代码.
+            data_type: 数据类型 (tick, bar, etc.).
 
         Returns:
-            市场数据字典或None
+            市场数据字典或None.
         """
         try:
             # 这里应该实现实际的数据获取逻辑
@@ -41,14 +42,14 @@ class DataApi:
 
     def save_market_data(self, symbol: str, data: Dict[str, Any]) -> bool:
         """
-        保存市场数据
+        保存市场数据.
 
         Args:
-            symbol: 证券代码
-            data: 市场数据
+            symbol: 证券代码.
+            data: 市场数据.
 
         Returns:
-            保存是否成功
+            保存是否成功.
         """
         try:
             # 这里应该实现实际的数据保存逻辑
@@ -60,6 +61,6 @@ class DataApi:
             self.logger.info("保存市场数据: %s, 数据条数: %d", symbol, len(data))
             return True
 
-        except (ValueError, IOError, PermissionError) as e:
+        except (ValueError, IOError) as e:
             self.logger.error("保存市场数据失败: %s", e)
             return False

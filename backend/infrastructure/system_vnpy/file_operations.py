@@ -1,63 +1,64 @@
 # -*- coding: utf-8 -*-
 """
-文件操作模块
+文件操作模块.
 
 提供文件和目录的基本操作功能.
 """
 
+import glob
+import logging
 import os
 import shutil
-import logging
 import stat
-import glob
-from typing import Dict, Any, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 logger = logging.getLogger(__name__)
 
 
 class FileManager:
-    """文件管理器"""
+    """文件管理器."""
 
     def create_directory(self, path: str, exist_ok: bool = True) -> bool:
-        """创建目录"""
+        """创建目录."""
         try:
             os.makedirs(path, exist_ok=exist_ok)
             return True
-        except (OSError, PermissionError) as e:
+        except OSError as e:
             logger.error("创建目录失败: %s", e)
             return False
 
     def delete_file(self, path: str) -> bool:
-        """删除文件"""
+        """删除文件."""
         try:
             if os.path.isfile(path):
                 os.remove(path)
                 return True
             return False
-        except (OSError, PermissionError) as e:
+        except OSError as e:
             logger.error("删除文件失败: %s", e)
             return False
 
     def copy_file(self, src: str, dst: str) -> bool:
-        """复制文件"""
+        """复制文件."""
         try:
             shutil.copy2(src, dst)
             return True
-        except (OSError, PermissionError, shutil.Error) as e:
+        except (OSError, shutil.Error) as e:
             logger.error("复制文件失败: %s", e)
             return False
 
 
 class DirectoryManager:
-    """目录管理器"""
+    """目录管理器."""
 
     def __init__(self):
+        """初始化目录管理器."""
         self.logger = logging.getLogger(__name__)
 
     def list_directory(
         self, path: str, pattern: str = "*", recursive: bool = False
     ) -> List[str]:
-        """列出目录内容"""
+        """列出目录内容."""
         try:
             if not os.path.exists(path):
                 self.logger.warning("目录不存在: %s", path)
@@ -76,12 +77,12 @@ class DirectoryManager:
                 search_pattern = os.path.join(path, pattern)
                 return glob.glob(search_pattern)
 
-        except (OSError, PermissionError) as e:
+        except OSError as e:
             self.logger.error("列出目录内容失败: %s", e)
             return []
 
     def get_directory_info(self, path: str) -> Optional[Dict[str, Any]]:
-        """获取目录信息"""
+        """获取目录信息."""
         try:
             if not os.path.exists(path):
                 return None
@@ -98,12 +99,12 @@ class DirectoryManager:
                 "is_file": os.path.isfile(path),
                 "is_symlink": os.path.islink(path)
             }
-        except (OSError, PermissionError) as e:
+        except OSError as e:
             self.logger.error("获取目录信息失败: %s", e)
             return None
 
     def delete_directory(self, path: str, recursive: bool = False) -> bool:
-        """删除目录"""
+        """删除目录."""
         try:
             if not os.path.exists(path):
                 self.logger.warning("目录不存在: %s", path)
@@ -119,7 +120,7 @@ class DirectoryManager:
                 os.rmdir(path)
 
             return True
-        except (OSError, PermissionError, shutil.Error) as e:
+        except (OSError, shutil.Error) as e:
             self.logger.error("删除目录失败: %s", e)
             return False
 
@@ -127,7 +128,7 @@ class DirectoryManager:
         self, src: str, dst: str,
         ignore_patterns: Optional[List[str]] = None
     ) -> bool:
-        """复制目录"""
+        """复制目录."""
         try:
             if not os.path.exists(src):
                 self.logger.error("源目录不存在: %s", src)
@@ -141,7 +142,9 @@ class DirectoryManager:
             os.makedirs(os.path.dirname(dst), exist_ok=True)
 
             if ignore_patterns:
-                def ignore_func(_, names):
+                def ignore_func(_directory, names):  # noqa: U101
+                    # directory parameter required by shutil.copytree
+                    # but not used in this implementation
                     ignored = []
                     for pattern in ignore_patterns:
                         for name in names:
@@ -153,12 +156,12 @@ class DirectoryManager:
                 shutil.copytree(src, dst)
 
             return True
-        except (OSError, PermissionError, shutil.Error) as e:
+        except (OSError, shutil.Error) as e:
             self.logger.error("复制目录失败: %s", e)
             return False
 
     def move_directory(self, src: str, dst: str) -> bool:
-        """移动目录"""
+        """移动目录."""
         try:
             if not os.path.exists(src):
                 self.logger.error("源目录不存在: %s", src)
@@ -170,12 +173,12 @@ class DirectoryManager:
 
             shutil.move(src, dst)
             return True
-        except (OSError, PermissionError, shutil.Error) as e:
+        except (OSError, shutil.Error) as e:
             self.logger.error("移动目录失败: %s", e)
             return False
 
     def get_directory_size(self, path: str) -> int:
-        """获取目录大小(字节)"""
+        """获取目录大小(字节)."""
         try:
             if not os.path.exists(path):
                 return 0
@@ -186,16 +189,16 @@ class DirectoryManager:
                     filepath = os.path.join(dirpath, filename)
                     try:
                         total_size += os.path.getsize(filepath)
-                    except (OSError, PermissionError):
+                    except OSError:
                         continue
 
             return total_size
-        except (OSError, PermissionError) as e:
+        except OSError as e:
             self.logger.error("获取目录大小失败: %s", e)
             return 0
 
     def clean_empty_directories(self, path: str) -> int:
-        """清理空目录,返回清理的目录数量"""
+        """清理空目录,返回清理的目录数量."""
         try:
             cleaned_count = 0
 
@@ -206,23 +209,24 @@ class DirectoryManager:
                         if not os.listdir(dir_path):  # 目录为空
                             os.rmdir(dir_path)
                             cleaned_count += 1
-                    except (OSError, PermissionError):
+                    except OSError:
                         continue
 
             return cleaned_count
-        except (OSError, PermissionError) as e:
+        except OSError as e:
             self.logger.error("清理空目录失败: %s", e)
             return 0
 
 
 class FilePermissionManager:
-    """文件权限管理器"""
+    """文件权限管理器."""
 
     def __init__(self):
+        """初始化文件权限管理器."""
         self.logger = logging.getLogger(__name__)
 
     def get_permissions(self, path: str) -> Optional[Dict[str, Any]]:
-        """获取文件或目录权限信息"""
+        """获取文件或目录权限信息."""
         try:
             if not os.path.exists(path):
                 self.logger.warning("路径不存在: %s", path)
@@ -248,12 +252,12 @@ class FilePermissionManager:
                 "is_file": stat.S_ISREG(mode),
                 "is_symlink": stat.S_ISLNK(mode)
             }
-        except (OSError, PermissionError) as e:
+        except OSError as e:
             self.logger.error("获取权限信息失败: %s", e)
             return None
 
     def set_permissions(self, path: str, mode: Union[int, str]) -> bool:
-        """设置文件或目录权限"""
+        """设置文件或目录权限."""
         try:
             if not os.path.exists(path):
                 self.logger.error("路径不存在: %s", path)
@@ -268,12 +272,12 @@ class FilePermissionManager:
 
             os.chmod(path, mode)
             return True
-        except (OSError, PermissionError) as e:
+        except OSError as e:
             self.logger.error("设置权限失败: %s", e)
             return False
 
     def _get_permission_mask(self, permission: str) -> Optional[int]:
-        """获取权限掩码"""
+        """获取权限掩码."""
         permission_masks = {
             "read": stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH,
             "write": stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH,
@@ -291,7 +295,7 @@ class FilePermissionManager:
         return permission_masks.get(permission)
 
     def add_permission(self, path: str, permission: str) -> bool:
-        """添加权限"""
+        """添加权限."""
         try:
             if not os.path.exists(path):
                 self.logger.error("路径不存在: %s", path)
@@ -307,12 +311,12 @@ class FilePermissionManager:
             new_mode = current_mode | permission_mask
             os.chmod(path, new_mode)
             return True
-        except (OSError, PermissionError) as e:
+        except OSError as e:
             self.logger.error("添加权限失败: %s", e)
             return False
 
     def remove_permission(self, path: str, permission: str) -> bool:
-        """移除权限"""
+        """移除权限."""
         try:
             if not os.path.exists(path):
                 self.logger.error("路径不存在: %s", path)
@@ -328,38 +332,38 @@ class FilePermissionManager:
             new_mode = current_mode & ~permission_mask
             os.chmod(path, new_mode)
             return True
-        except (OSError, PermissionError) as e:
+        except OSError as e:
             self.logger.error("移除权限失败: %s", e)
             return False
 
     def is_readable(self, path: str) -> bool:
-        """检查文件或目录是否可读"""
+        """检查文件或目录是否可读."""
         try:
             return os.access(path, os.R_OK)
-        except (OSError, PermissionError) as e:
+        except OSError as e:
             self.logger.error("检查读权限失败: %s", e)
             return False
 
     def is_writable(self, path: str) -> bool:
-        """检查文件或目录是否可写"""
+        """检查文件或目录是否可写."""
         try:
             return os.access(path, os.W_OK)
-        except (OSError, PermissionError) as e:
+        except OSError as e:
             self.logger.error("检查写权限失败: %s", e)
             return False
 
     def is_executable(self, path: str) -> bool:
-        """检查文件或目录是否可执行"""
+        """检查文件或目录是否可执行."""
         try:
             return os.access(path, os.X_OK)
-        except (OSError, PermissionError) as e:
+        except OSError as e:
             self.logger.error("检查执行权限失败: %s", e)
             return False
 
     def set_secure_permissions(
         self, path: str, is_directory: bool = False
     ) -> bool:
-        """设置安全权限(文件644,目录755)"""
+        """设置安全权限(文件644,目录755)."""
         try:
             if is_directory:
                 mode = 0o755  # rwxr-xr-x
@@ -367,14 +371,14 @@ class FilePermissionManager:
                 mode = 0o644  # rw-r--r--
 
             return self.set_permissions(path, mode)
-        except (OSError, PermissionError) as e:
+        except OSError as e:
             self.logger.error("设置安全权限失败: %s", e)
             return False
 
     def batch_set_permissions(
         self, paths: List[str], mode: Union[int, str]
     ) -> List[bool]:
-        """批量设置权限"""
+        """批量设置权限."""
         results = []
         for path in paths:
             results.append(self.set_permissions(path, mode))
@@ -384,7 +388,7 @@ class FilePermissionManager:
 def _handle_file_operations(
     operation: Dict[str, Any], file_manager: FileManager
 ) -> bool:
-    """处理文件操作"""
+    """处理文件操作."""
     op_type = operation.get('operation')
     path = operation.get('path')
 
@@ -404,7 +408,7 @@ def _handle_file_operations(
 def _handle_directory_operations(
     operation: Dict[str, Any], dir_manager: DirectoryManager
 ) -> bool:
-    """处理目录操作"""
+    """处理目录操作."""
     op_type = operation.get('operation')
     path = operation.get('path')
 
@@ -438,7 +442,7 @@ def _handle_directory_operations(
 def _handle_permission_operations(
     operation: Dict[str, Any], perm_manager: FilePermissionManager
 ) -> bool:
-    """处理权限操作"""
+    """处理权限操作."""
     op_type = operation.get('operation')
     path = operation.get('path')
 
@@ -455,7 +459,7 @@ def _execute_file_operation(
     operation: Dict[str, Any], file_manager: FileManager,
     dir_manager: DirectoryManager, perm_manager: FilePermissionManager
 ) -> bool:
-    """执行单个文件操作"""
+    """执行单个文件操作."""
     op_type = operation.get('operation')
     path = operation.get('path')
 
@@ -482,7 +486,7 @@ def _execute_file_operation(
 
 
 def batch_file_operations(operations: List[Dict[str, Any]]) -> List[bool]:
-    """批量文件操作
+    """批量文件操作.
 
     Args:
         operations: 操作列表,每个操作包含以下字段:
@@ -508,7 +512,7 @@ def batch_file_operations(operations: List[Dict[str, Any]]) -> List[bool]:
                 operation, file_manager, dir_manager, perm_manager
             )
             results.append(result)
-        except (OSError, PermissionError, shutil.Error, IOError) as e:
+        except (OSError, shutil.Error) as e:
             logger.error("批量操作执行失败: %s", e)
             results.append(False)
 

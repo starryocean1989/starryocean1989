@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Data Engine Infrastructure Module
+Data Engine Infrastructure Module.
 
 提供数据引擎的基础设施服务,
 包括数据采集,处理和存储功能.

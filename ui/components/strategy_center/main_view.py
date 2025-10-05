@@ -5,6 +5,8 @@
 混合架构：策略/指标管理器（固有组件）+ 2个子界面.
 """
 
+import logging
+import random
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
@@ -17,14 +19,34 @@ from PySide6.QtWidgets import (
 try:
     from ui.widgets.base_widget import BaseWidget
     from utils.logging_utils import LoggerMixin
+    from backend.infrastructure.data_module_vnpy import VnPyCoreAdapter
 except ImportError:
-    class BaseWidget:
+    class BaseWidget(QWidget):
         """Base widget class fallback."""
 
         def __init__(self, parent=None, title=""):
             """Initialize base widget."""
+            super().__init__(parent)
             self.parent = parent
             self.title = title
+
+        def setup_ui(self):
+            """Set up UI - fallback implementation."""
+
+        def connect_signals(self):
+            """Connect signals - fallback implementation."""
+
+        def show_info(self, message: str):
+            """Show info message."""
+            print(f"INFO: {message}")
+
+        def show_error(self, message: str):
+            """Show error message."""
+            print(f"ERROR: {message}")
+
+        def show_warning(self, message: str):
+            """Show warning message."""
+            print(f"WARNING: {message}")
 
     class LoggerMixin:
         """Logger mixin fallback."""
@@ -32,7 +54,6 @@ except ImportError:
         @property
         def logger(self):
             """Get logger instance."""
-            import logging
             return logging.getLogger(self.__class__.__name__)
 
 
@@ -44,22 +65,37 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         super().__init__(parent, "策略中心")
         self.logger.info("策略中心界面初始化开始")
 
+        # Initialize UI component attributes
+        self.toggle_btn = None
+        self.file_tree = None
+        self.content_tab = None
+        self.editor_tab = None
+        self.backtest_tab = None
+        self.current_file_label = None
+        self.ai_assistant_btn = None
+        self.code_editor = None
+        self.ai_assistant_widget = None
+        self.ai_response = None
+        self.user_input = None
+        self.backtest_target_combo = None
+        self.backtest_period_combo = None
+        self.start_date_input = None
+        self.end_date_input = None
+        self.run_backtest_btn = None
+        self.stop_backtest_btn = None
+        self.backtest_progress = None
+        self.backtest_status_label = None
+        self.backtest_results = None
+
         # 初始化VNPY适配器 - 在super().__init__()之后
         self._initialize_vnpy_adapter()
 
     def _initialize_vnpy_adapter(self):
         """初始化VNPY适配器."""
         try:
-            # Try to import VnPyCoreAdapter from the project's VnPy integration
-            from backend.infrastructure.data_module_vnpy import (
-                VnPyCoreAdapter
-            )
             self.vnpy_adapter = VnPyCoreAdapter()
             self.logger.info("VNPY适配器初始化完成")
-        except ImportError as e:
-            self.logger.warning("VNPY适配器模块未找到: %s", e)
-            self.vnpy_adapter = None
-        except Exception as e:
+        except (ImportError, AttributeError, ValueError) as e:
             self.logger.error("VNPY适配器初始化失败: %s", e)
             self.vnpy_adapter = None
 
@@ -184,7 +220,7 @@ class StrategyCenter(BaseWidget, LoggerMixin):
 
                 self.file_tree.expandAll()
 
-            except Exception as e:
+            except (AttributeError, ValueError, TypeError) as e:
                 self.logger.error("创建文件树失败: %s", e)
                 self._create_fallback_file_tree()
         else:
@@ -512,7 +548,7 @@ class StrategyCenter(BaseWidget, LoggerMixin):
             # 模拟回测进度
             self._simulate_backtest_progress()
 
-        except Exception as e:
+        except (ValueError, RuntimeError, AttributeError) as e:
             self.show_error("运行回测失败: %s", str(e))
             self.run_backtest_btn.setEnabled(True)
             self.stop_backtest_btn.setEnabled(False)
@@ -527,7 +563,6 @@ class StrategyCenter(BaseWidget, LoggerMixin):
 
     def _simulate_backtest_progress(self):
         """模拟回测进度."""
-        import random
 
         def update_progress():
             current_value = self.backtest_progress.value()

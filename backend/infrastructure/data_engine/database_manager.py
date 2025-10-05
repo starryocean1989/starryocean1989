@@ -1,27 +1,30 @@
 # -*- coding: utf-8 -*-
 """
-数据库管理器模块
+数据库管理器模块.
 
 提供数据库连接,表创建,数据插入等功能的数据库管理类.
 支持SQLite数据库操作,包括行情数据,数据源配置和查询历史的存储.
 """
 
-import sqlite3
 import logging
-from pathlib import Path
-from typing import List, Dict, Any, Optional
+import sqlite3
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class DatabaseManager:
-    """数据库管理器"""
+    """数据库管理器."""
 
-    def __init__(self, db_path: Path):
+    def __init__(self, db_path: "Path"):
+        """初始化数据库管理器."""
         self.db_path = db_path
         self.connection: Optional[sqlite3.Connection] = None
         self.logger = logging.getLogger(__name__)
 
     def initialize(self) -> None:
-        """初始化数据库表结构"""
+        """初始化数据库表结构."""
         try:
             self.connection = sqlite3.connect(str(self.db_path))
             self.connection.row_factory = sqlite3.Row
@@ -36,7 +39,7 @@ class DatabaseManager:
             raise
 
     def create_tables(self) -> None:
-        """创建数据库表"""
+        """创建数据库表."""
         if not self.connection:
             return
 
@@ -100,7 +103,7 @@ class DatabaseManager:
         cursor.close()
 
     def insert_quotes(self, quotes: List[Dict[str, Any]]) -> int:
-        """插入行情数据"""
+        """插入行情数据."""
         if not self.connection:
             raise RuntimeError("数据库未初始化")
 
@@ -112,7 +115,8 @@ class DatabaseManager:
                 cursor.execute(
                     """
                     INSERT INTO quotes (
-                        symbol, name, price, volume, timestamp, category, source
+                        symbol, name, price, volume, timestamp, category,
+                        source
                     )
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
@@ -142,7 +146,7 @@ class DatabaseManager:
         return inserted_count
 
     def close(self) -> None:
-        """关闭数据库连接"""
+        """关闭数据库连接."""
         if self.connection:
             self.connection.close()
             self.connection = None

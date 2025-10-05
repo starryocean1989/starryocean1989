@@ -1,19 +1,20 @@
 # -*- coding: utf-8 -*-
 """
-配置管理模块
-提供应用程序配置管理功能
+配置管理模块.
+
+提供应用程序配置管理功能。
 """
 
 import json
-import os
+import logging
 from pathlib import Path
-from typing import Dict, Any
 
 
 class AppConfig:
-    """应用配置"""
+    """应用配置."""
 
     def __init__(self):
+        """初始化应用配置."""
         self.name = "星辰金融终端"
         self.version = "5.0.0"
         self.author = "星辰科技"
@@ -21,9 +22,10 @@ class AppConfig:
 
 
 class UIConfig:
-    """UI配置"""
+    """UI配置."""
 
     def __init__(self):
+        """初始化UI配置."""
         self.theme = "dark"
         self.language = "zh_CN"
         self.window_width = 1200
@@ -35,10 +37,10 @@ class UIConfig:
 
 
 class ConfigManager:
-    """配置管理器"""
+    """配置管理器."""
 
     def __init__(self):
-        import logging
+        """初始化配置管理器."""
         self._logger = logging.getLogger(self.__class__.__name__)
         self.app_config = AppConfig()
         self.ui_config = UIConfig()
@@ -54,11 +56,11 @@ class ConfigManager:
 
     @property
     def logger(self):
-        """获取日志器"""
+        """获取日志器."""
         return self._logger
 
     def load_config(self):
-        """加载配置"""
+        """加载配置."""
         try:
             if self.config_file.exists():
                 with open(self.config_file, 'r', encoding='utf-8') as f:
@@ -75,11 +77,11 @@ class ConfigManager:
                         if hasattr(self.ui_config, key):
                             setattr(self.ui_config, key, value)
 
-        except Exception as e:
-            print(f"加载配置失败: {e}")
+        except (FileNotFoundError, json.JSONDecodeError, KeyError) as e:
+            self._logger.error("加载配置失败: %s", e)
 
     def save_config(self):
-        """保存配置"""
+        """保存配置."""
         try:
             data = {
                 'app': {
@@ -103,8 +105,8 @@ class ConfigManager:
             with open(self.config_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
 
-        except Exception as e:
-            print(f"保存配置失败: {e}")
+        except (OSError, TypeError) as e:
+            self._logger.error("保存配置失败: %s", e)
 
 
 # 全局配置实例

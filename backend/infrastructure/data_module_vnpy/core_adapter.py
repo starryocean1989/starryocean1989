@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-VnPy核心适配器
+VnPy核心适配器.
+
 通过vnpy主包统一接入所有VnPy功能
 """
 
@@ -18,15 +19,17 @@ except ImportError:
         MainEngine = None
         EventEngine = None
 
-from vnpy.trader.gateway import BaseGateway
-from vnpy.trader.datafeed import BaseDatafeed
-from vnpy.trader.app import BaseApp
-from vnpy.trader.object import (
-    TickData, BarData, OrderData, TradeData, AccountData, PositionData,
-    SubscribeRequest, OrderRequest, CancelRequest, HistoryRequest
-)
-from vnpy.trader.constant import Exchange, Interval, Direction, OrderType, Status
 from vnpy.event import Event
+from vnpy.trader.app import BaseApp
+from vnpy.trader.constant import (
+    Direction, Exchange, Interval, OrderType, Status
+)
+from vnpy.trader.datafeed import BaseDatafeed
+from vnpy.trader.gateway import BaseGateway
+from vnpy.trader.object import (
+    AccountData, BarData, CancelRequest, HistoryRequest, OrderData,
+    OrderRequest, PositionData, SubscribeRequest, TickData, TradeData
+)
 
 # Optional gateway imports
 try:
@@ -100,9 +103,10 @@ logger = logging.getLogger(__name__)
 
 
 class VnPyCoreAdapter:
-    """VnPy核心适配器 - 通过vnpy主包统一接入"""
+    """VnPy核心适配器 - 通过vnpy主包统一接入."""
 
     def __init__(self):
+        """初始化VnPy核心适配器."""
         self.event_engine: Optional[EventEngine] = None
         self.main_engine: Optional[MainEngine] = None
         self.gateways: Dict[str, Type[BaseGateway]] = {}
@@ -111,7 +115,7 @@ class VnPyCoreAdapter:
         self._initialized = False
 
     def initialize(self) -> bool:
-        """初始化VnPy核心引擎"""
+        """初始化VnPy核心引擎."""
         try:
             # 创建事件引擎
             self.event_engine = EventEngine()
@@ -134,7 +138,7 @@ class VnPyCoreAdapter:
             return False
 
     def _register_core_components(self):
-        """注册核心组件"""
+        """注册核心组件."""
         try:
             # 注册交易网关
             self._register_gateways()
@@ -149,7 +153,7 @@ class VnPyCoreAdapter:
             logger.error("注册核心组件失败: %s", e)
 
     def _register_gateways(self):
-        """注册交易网关"""
+        """注册交易网关."""
         try:
             # 注册可用的网关到主引擎
             gateways_to_register = []
@@ -173,13 +177,16 @@ class VnPyCoreAdapter:
             # 保存引用
             self.gateways.update(dict(gateways_to_register))
 
-            logger.info("交易网关注册完成,已注册: %s", [name for name, _ in gateways_to_register])
+            logger.info(
+                "交易网关注册完成,已注册: %s",
+                [name for name, _ in gateways_to_register]
+            )
 
         except (AttributeError, RuntimeError) as e:
             logger.error("注册交易网关失败: %s", e)
 
     def _register_apps(self):
-        """注册应用模块"""
+        """注册应用模块."""
         try:
             # 注册可用的应用到主引擎
             apps_to_register = []
@@ -190,7 +197,9 @@ class VnPyCoreAdapter:
 
             if PortfolioStrategyApp is not None:
                 self.main_engine.add_app(PortfolioStrategyApp)
-                apps_to_register.append(("PORTFOLIO_STRATEGY", PortfolioStrategyApp))
+                apps_to_register.append(
+                    ("PORTFOLIO_STRATEGY", PortfolioStrategyApp)
+                )
 
             if AlgoTradingApp is not None:
                 self.main_engine.add_app(AlgoTradingApp)
@@ -211,13 +220,16 @@ class VnPyCoreAdapter:
             # 保存引用
             self.apps.update(dict(apps_to_register))
 
-            logger.info("应用模块注册完成,已注册: %s", [name for name, _ in apps_to_register])
+            logger.info(
+                "应用模块注册完成,已注册: %s",
+                [name for name, _ in apps_to_register]
+            )
 
         except (AttributeError, RuntimeError) as e:
             logger.error("注册应用模块失败: %s", e)
 
     def _register_datafeeds(self):
-        """注册数据源"""
+        """注册数据源."""
         try:
             # 保存可用的数据源引用
             datafeeds_to_register = []
@@ -234,42 +246,45 @@ class VnPyCoreAdapter:
             # 保存引用
             self.datafeeds.update(dict(datafeeds_to_register))
 
-            logger.info("数据源注册完成,已注册: %s", [name for name, _ in datafeeds_to_register])
+            logger.info(
+                "数据源注册完成,已注册: %s",
+                [name for name, _ in datafeeds_to_register]
+            )
 
         except (AttributeError, RuntimeError) as e:
             logger.error("注册数据源失败: %s", e)
 
     def get_main_engine(self) -> Optional[MainEngine]:
-        """获取主引擎"""
+        """获取主引擎."""
         return self.main_engine
 
     def get_event_engine(self) -> Optional[EventEngine]:
-        """获取事件引擎"""
+        """获取事件引擎."""
         return self.event_engine
 
     def create_tick_data(self, **kwargs) -> TickData:
-        """创建Tick数据对象"""
+        """创建Tick数据对象."""
         return TickData(**kwargs)
 
     def create_bar_data(self, **kwargs) -> BarData:
-        """创建Bar数据对象"""
+        """创建Bar数据对象."""
         return BarData(**kwargs)
 
     def create_event(self, event_type: str, data: Any) -> Event:
-        """创建事件对象"""
+        """创建事件对象."""
         return Event(event_type, data)
 
     def put_event(self, event: Event):
-        """推送事件"""
+        """推送事件."""
         if self.event_engine:
             self.event_engine.put(event)
 
     def is_initialized(self) -> bool:
-        """检查是否已初始化"""
+        """检查是否已初始化."""
         return self._initialized
 
     def shutdown(self):
-        """关闭适配器"""
+        """关闭适配器."""
         try:
             if self.event_engine:
                 self.event_engine.stop()
@@ -292,7 +307,10 @@ vnpy_adapter = VnPyCoreAdapter()
 __all__ = [
     "VnPyCoreAdapter",
     "vnpy_adapter",
-    "TickData", "BarData", "OrderData", "TradeData", "AccountData", "PositionData",
+    "AccountData", "BarData", "CancelRequest", "Direction", "Event",
+    "Exchange", "HistoryRequest", "Interval", "OrderData", "OrderRequest",
+    "OrderType", "PositionData", "Status", "SubscribeRequest",
+    "TickData", "TradeData",
     "SubscribeRequest", "OrderRequest", "CancelRequest", "HistoryRequest",
     "Exchange", "Interval", "Direction", "OrderType", "Status",
     "Event"

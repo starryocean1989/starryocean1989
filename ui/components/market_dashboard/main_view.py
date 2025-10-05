@@ -44,14 +44,23 @@ except ImportError:
         from ui.widgets.base_widget import BaseWidget  # type: ignore
         from utils.logging_utils import LoggerMixin  # type: ignore
     except ImportError:
-        class BaseWidget:
+        class BaseWidget(QWidget):
             """Base widget class for fallback."""
 
             def __init__(self, parent=None, title=""):
                 """Initialize base widget."""
+                super().__init__(parent)
                 self.parent = parent
                 self.title = title
                 self._timer = None
+
+            def setup_ui(self):
+                """Set up UI - fallback implementation."""
+                pass
+
+            def connect_signals(self):
+                """Connect signals - fallback implementation."""
+                pass
 
             def start_update_timer(self, interval: int, callback):
                 """Start update timer."""
@@ -68,6 +77,14 @@ except ImportError:
             def show_info(self, message: str):
                 """Show info message."""
                 print(f"INFO: {message}")
+
+            def show_error(self, message: str):
+                """Show error message."""
+                print(f"ERROR: {message}")
+
+            def show_warning(self, message: str):
+                """Show warning message."""
+                print(f"WARNING: {message}")
 
         class LoggerMixin:
             """Logger mixin for fallback."""

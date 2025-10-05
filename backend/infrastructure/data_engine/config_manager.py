@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 """
-数据引擎配置管理器
+数据引擎配置管理器.
 
 本模块负责数据引擎的配置管理,
 包括存储配置,缓存配置和备份配置.
@@ -9,14 +9,14 @@
 
 import json
 import logging
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Dict, Union, Optional, Any
-from dataclasses import dataclass, asdict
+from typing import Any, Dict, Optional, Union
 
 
 @dataclass
 class StorageConfig:
-    """存储配置类"""
+    """存储配置类."""
 
     data_dir: str = "data"
     cache_dir: str = "cache"
@@ -30,7 +30,7 @@ class StorageConfig:
 
 @dataclass
 class DatabaseConfig:
-    """数据库配置类"""
+    """数据库配置类."""
 
     host: str = "localhost"
     port: int = 5432
@@ -44,7 +44,7 @@ class DatabaseConfig:
 
 @dataclass
 class NetworkConfig:
-    """网络配置类"""
+    """网络配置类."""
 
     timeout: int = 30
     retry_count: int = 3
@@ -55,14 +55,14 @@ class NetworkConfig:
 
 class DataEngineConfigManager:
     """
-    数据引擎配置管理器
+    数据引擎配置管理器.
 
     负责加载,保存和管理数据引擎的所有配置.
     """
 
     def __init__(self, config_file: str = "data_engine_config.json") -> None:
         """
-        初始化配置管理器
+        初始化配置管理器.
 
         Args:
             config_file: 配置文件路径
@@ -81,7 +81,7 @@ class DataEngineConfigManager:
     def _load_config_section(
         self, data: Dict[str, Any], section_name: str, config_obj: object
     ) -> None:
-        """加载配置的特定部分"""
+        """加载配置的特定部分."""
         if section_name in data:
             section_data = data[section_name]
             for key, value in section_data.items():
@@ -90,7 +90,7 @@ class DataEngineConfigManager:
 
     def load_config(self) -> bool:
         """
-        从文件加载配置
+        从文件加载配置.
 
         Returns:
             bool: 加载是否成功
@@ -102,7 +102,9 @@ class DataEngineConfigManager:
 
                 # 加载各个配置部分
                 self._load_config_section(data, "storage", self.storage_config)
-                self._load_config_section(data, "database", self.database_config)
+                self._load_config_section(
+                    data, "database", self.database_config
+                )
                 self._load_config_section(data, "network", self.network_config)
 
                 self.logger.info("配置已从 %s 加载", self.config_file)
@@ -113,7 +115,7 @@ class DataEngineConfigManager:
 
     def save_config(self) -> bool:
         """
-        保存配置到文件
+        保存配置到文件.
 
         Returns:
             bool: 保存是否成功
@@ -133,13 +135,13 @@ class DataEngineConfigManager:
 
             self.logger.info("配置已保存到 %s", self.config_file)
             return True
-        except (PermissionError, OSError) as e:
+        except OSError as e:
             self.logger.error("保存配置文件失败: %s", e)
             return False
 
     def get_storage_config(self) -> StorageConfig:
         """
-        获取存储配置
+        获取存储配置.
 
         Returns:
             StorageConfig: 存储配置对象
@@ -148,7 +150,7 @@ class DataEngineConfigManager:
 
     def get_database_config(self) -> DatabaseConfig:
         """
-        获取数据库配置
+        获取数据库配置.
 
         Returns:
             DatabaseConfig: 数据库配置对象
@@ -157,16 +159,18 @@ class DataEngineConfigManager:
 
     def get_network_config(self) -> NetworkConfig:
         """
-        获取网络配置
+        获取网络配置.
 
         Returns:
             NetworkConfig: 网络配置对象
         """
         return self.network_config
 
-    def update_storage_config(self, **kwargs: Union[str, int, float, bool]) -> bool:
+    def update_storage_config(
+        self, **kwargs: Union[str, int, float, bool]
+    ) -> bool:
         """
-        更新存储配置
+        更新存储配置.
 
         Args:
             **kwargs: 配置参数
@@ -188,7 +192,7 @@ class DataEngineConfigManager:
         self, **kwargs: Union[str, int, float, bool]
     ) -> bool:
         """
-        更新数据库配置
+        更新数据库配置.
 
         Args:
             **kwargs: 配置参数
@@ -210,7 +214,7 @@ class DataEngineConfigManager:
         self, **kwargs: Union[str, int, float, bool, None]
     ) -> bool:
         """
-        更新网络配置
+        更新网络配置.
 
         Args:
             **kwargs: 配置参数
@@ -232,7 +236,7 @@ class DataEngineConfigManager:
         self,
     ) -> Dict[str, Dict[str, Union[str, int, float, bool, None]]]:
         """
-        获取所有配置
+        获取所有配置.
 
         Returns:
             Dict[str, Dict[str, Union[str, int, float, bool, None]]]: 所有配置数据

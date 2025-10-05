@@ -1,17 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-系统资源监控模块
+系统资源监控模块.
 
 提供CPU,内存,磁盘,网络等系统资源的实时监控功能.
 基于psutil库实现跨平台的系统监控能力.
 """
 
 import logging
-import platform
 import os
-from typing import Dict, Any, List
-from datetime import datetime
+import platform
 from dataclasses import dataclass
+from datetime import datetime
+from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,8 @@ except ImportError:
 
 @dataclass
 class SystemInfo:
-    """系统信息"""
+    """系统信息."""
+
     platform: str
     platform_version: str
     architecture: str
@@ -41,7 +42,8 @@ class SystemInfo:
 
 @dataclass
 class ResourceUsage:
-    """资源使用情况"""
+    """资源使用情况."""
+
     cpu_percent: float
     memory_percent: float
     disk_percent: float
@@ -53,15 +55,16 @@ class ResourceUsage:
 
 
 class SystemMonitor:
-    """系统监控器"""
+    """系统监控器."""
 
     def __init__(self):
+        """初始化系统监控器."""
         self.monitoring = False
         self.history = []
         self.max_history = 1000
 
     def get_system_info(self) -> SystemInfo:
-        """获取系统基本信息"""
+        """获取系统基本信息."""
         try:
             if HAS_PSUTIL:
                 # 获取网络接口
@@ -101,7 +104,7 @@ class SystemMonitor:
             raise
 
     def get_resource_usage(self) -> ResourceUsage:
-        """获取资源使用情况"""
+        """获取资源使用情况."""
         try:
             if HAS_PSUTIL:
                 # CPU使用率
@@ -154,7 +157,7 @@ class SystemMonitor:
             raise
 
     def get_cpu_info(self) -> Dict[str, Any]:
-        """获取CPU详细信息"""
+        """获取CPU详细信息."""
         try:
             if HAS_PSUTIL:
                 cpu_freq = psutil.cpu_freq()
@@ -196,7 +199,7 @@ class SystemMonitor:
             return {}
 
     def get_memory_info(self) -> Dict[str, Any]:
-        """获取内存详细信息"""
+        """获取内存详细信息."""
         try:
             if HAS_PSUTIL:
                 virtual_memory = psutil.virtual_memory()
@@ -238,7 +241,7 @@ class SystemMonitor:
             return {}
 
     def get_disk_info(self) -> Dict[str, Any]:
-        """获取磁盘详细信息"""
+        """获取磁盘详细信息."""
         try:
             if not HAS_PSUTIL:
                 return {
@@ -280,12 +283,12 @@ class SystemMonitor:
                 }
 
             return disk_info
-        except (OSError, AttributeError, ImportError, PermissionError) as e:
+        except (OSError, AttributeError, ImportError) as e:
             logger.error("获取磁盘信息失败: %s", e)
             return {}
 
     def get_network_info(self) -> Dict[str, Any]:
-        """获取网络详细信息"""
+        """获取网络详细信息."""
         try:
             network_info = {}
 
@@ -339,39 +342,50 @@ class SystemMonitor:
             logger.error("获取网络信息失败: %s", e)
             return {}
 
-    def get_process_list(self, sort_by: str = "cpu_percent") -> List[Dict[str, Any]]:
-        """获取进程列表"""
+    def get_process_list(
+        self, sort_by: str = "cpu_percent"
+    ) -> List[Dict[str, Any]]:
+        """获取进程列表."""
         try:
             if not HAS_PSUTIL:
                 # 返回默认数据(无psutil时)
                 return [
                     {
                         "pid": 1, "name": "python", "cpu_percent": 25.0,
-                        "memory_percent": 15.0, "memory_mb": 256.0, "status": "running"
+                        "memory_percent": 15.0, "memory_mb": 256.0,
+                        "status": "running"
                     },
                     {
                         "pid": 2, "name": "chrome", "cpu_percent": 15.0,
-                        "memory_percent": 20.0, "memory_mb": 512.0, "status": "running"
+                        "memory_percent": 20.0, "memory_mb": 512.0,
+                        "status": "running"
                     },
                     {
                         "pid": 3, "name": "system", "cpu_percent": 5.0,
-                        "memory_percent": 10.0, "memory_mb": 128.0, "status": "running"
+                        "memory_percent": 10.0, "memory_mb": 128.0,
+                        "status": "running"
                     },
                 ]
 
             processes = []
 
-            for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_percent', 'status']):
+            for proc in psutil.process_iter([
+                'pid', 'name', 'cpu_percent', 'memory_percent', 'status'
+            ]):
                 try:
                     proc_info = proc.info
-                    proc_info['memory_mb'] = proc.memory_info().rss / 1024 / 1024
+                    proc_info['memory_mb'] = (
+                        proc.memory_info().rss / 1024 / 1024
+                    )
                     processes.append(proc_info)
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     continue
 
             # 排序
             if sort_by in ["cpu_percent", "memory_percent", "memory_mb"]:
-                processes.sort(key=lambda x: x.get(sort_by, 0), reverse=True)
+                processes.sort(
+                    key=lambda x: x.get(sort_by, 0), reverse=True
+                )
 
             return processes[:50]  # 返回前50个进程
         except (OSError, AttributeError, ImportError) as e:
@@ -380,16 +394,22 @@ class SystemMonitor:
 
 
 class ResourceMonitor:
-    """资源监控器"""
+    """资源监控器."""
 
-    def __init__(self, threshold_cpu: float = 80.0, threshold_memory: float = 80.0, threshold_disk: float = 90.0):
+    def __init__(
+        self,
+        threshold_cpu: float = 80.0,
+        threshold_memory: float = 80.0,
+        threshold_disk: float = 90.0
+    ):
+        """初始化资源监控器."""
         self.threshold_cpu = threshold_cpu
         self.threshold_memory = threshold_memory
         self.threshold_disk = threshold_disk
         self.alerts = []
 
     def check_thresholds(self, usage: ResourceUsage) -> List[Dict[str, Any]]:
-        """检查阈值告警"""
+        """检查阈值告警."""
         alerts = []
 
         if usage.cpu_percent > self.threshold_cpu:
@@ -429,10 +449,10 @@ class ResourceMonitor:
 
 
 class HardwareMonitor:
-    """硬件监控器"""
+    """硬件监控器."""
 
     def get_temperature_info(self) -> Dict[str, Any]:
-        """获取温度信息"""
+        """获取温度信息."""
         try:
             temps = psutil.sensors_temperatures()
             temp_info = {}
@@ -453,7 +473,7 @@ class HardwareMonitor:
             return {}
 
     def get_fan_info(self) -> Dict[str, Any]:
-        """获取风扇信息"""
+        """获取风扇信息."""
         try:
             fans = psutil.sensors_fans()
             fan_info = {}
@@ -472,7 +492,7 @@ class HardwareMonitor:
             return {}
 
     def get_battery_info(self) -> Dict[str, Any]:
-        """获取电池信息"""
+        """获取电池信息."""
         try:
             battery = psutil.sensors_battery()
             if battery:
@@ -489,13 +509,13 @@ class HardwareMonitor:
 
 # 便捷函数
 def get_system_info() -> SystemInfo:
-    """获取系统信息"""
+    """获取系统信息."""
     monitor = SystemMonitor()
     return monitor.get_system_info()
 
 
 def get_resource_usage() -> ResourceUsage:
-    """获取资源使用情况"""
+    """获取资源使用情况."""
     monitor = SystemMonitor()
     return monitor.get_resource_usage()
 

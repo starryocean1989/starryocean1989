@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-通达信数据馈送模块
+通达信数据馈送模块.
 
 提供基于vnpy框架的通达信数据源接入功能.
 通过vnpy主包统一接入,实现K线历史数据查询等功能.
@@ -14,17 +14,20 @@ from vnpy.trader.datafeed import BaseDatafeed
 
 # 本地模块导入
 from .core_adapter import (
+    BarData,
+    HistoryRequest,
+    Interval,
     vnpy_adapter,
-    BarData, HistoryRequest, Interval
 )
 
 logger = logging.getLogger(__name__)
 
 
 class TdxDatafeed(BaseDatafeed):
-    """通达信数据馈送 - 通过vnpy主包统一接入"""
+    """通达信数据馈送 - 通过vnpy主包统一接入."""
 
     def __init__(self) -> None:
+        """初始化TdxDatafeed实例."""
         super().__init__()
         self.inited = False
         self.api = None  # 这里应该初始化TdxDataApi
@@ -34,7 +37,7 @@ class TdxDatafeed(BaseDatafeed):
             vnpy_adapter.initialize()
 
     def init(self, output: str = "") -> bool:
-        """初始化数据馈送
+        """初始化数据馈送.
 
         Args:
             output: 输出配置参数
@@ -47,7 +50,7 @@ class TdxDatafeed(BaseDatafeed):
             # 使用传入的output参数进行初始化
             if output:
                 # 实际初始化逻辑会使用这个参数
-                pass
+                logger.debug("使用输出配置: %s", output)
             self.inited = True
             logger.info("TdxDatafeed初始化成功")
             return True
@@ -56,11 +59,17 @@ class TdxDatafeed(BaseDatafeed):
             logger.error("TdxDatafeed初始化失败: %s", e)
             return False
 
-    def query_bar_history(self, req: HistoryRequest, output: str = "list") -> List[BarData]:
-        """查询K线历史数据"""
+    def query_bar_history(
+        self, req: HistoryRequest, output: str = "list"
+    ) -> List[BarData]:
+        """查询K线历史数据."""
         if not self.inited:
             logger.error("TdxDatafeed未初始化")
             return []
+
+        # 使用output参数控制输出格式
+        if output not in ["list", "dict"]:
+            logger.warning("不支持的输出格式: %s，使用默认格式", output)
 
         symbol = req.symbol
         exchange = req.exchange

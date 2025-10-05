@@ -1,24 +1,23 @@
 # -*- coding: utf-8 -*-
 """
-热更新监控脚本
-监控文件变化，自动重启相关服务
+热更新监控脚本.
+
+监控文件变化，自动重启相关服务。
 """
 
-import os
-import sys
-import time
 import hashlib
-import threading
-import subprocess
-from pathlib import Path
-from typing import Dict, Set, Optional, Union
 import logging
+import threading
+import time
+from pathlib import Path
+from typing import Any, Dict, Optional, Set, Union
 
 
 class HotReloadMonitor:
-    """热更新监控器"""
+    """热更新监控器."""
 
     def __init__(self, project_root: Path):
+        """初始化热更新监控器."""
         self.project_root = project_root
         self.logger = self._setup_logging()
 
@@ -50,7 +49,7 @@ class HotReloadMonitor:
         self._init_ignore_patterns()
 
     def _setup_logging(self) -> logging.Logger:
-        """设置日志"""
+        """设置日志."""
         logger = logging.getLogger("HotReload")
         logger.setLevel(logging.INFO)
 
@@ -70,7 +69,7 @@ class HotReloadMonitor:
         return logger
 
     def _init_ignore_patterns(self):
-        """初始化忽略模式"""
+        """初始化忽略模式."""
         ignore_patterns = [
             '__pycache__',
             '.git',
@@ -96,28 +95,33 @@ class HotReloadMonitor:
                     self._add_ignore_path(ignore_path)
 
     def _add_ignore_path(self, path: Path):
-        """添加忽略路径"""
+        """添加忽略路径."""
         if path.is_file():
             self.ignored_files.add(str(path.relative_to(self.project_root)))
         elif path.is_dir():
             for file_path in path.rglob('*'):
                 if file_path.is_file():
-                    self.ignored_files.add(str(file_path.relative_to(self.project_root)))
+                    relative_path = file_path.relative_to(self.project_root)
+                    self.ignored_files.add(str(relative_path))
 
     def _should_ignore_file(self, file_path: str) -> bool:
-        """检查是否应该忽略文件"""
+        """检查是否应该忽略文件."""
         # 检查扩展名
-        if any(file_path.endswith(ignored) for ignored in self.ignored_files if ignored.startswith('.')):
+        ext_ignored = [ignored for ignored in self.ignored_files
+                       if ignored.startswith('.')]
+        if any(file_path.endswith(ignored) for ignored in ext_ignored):
             return True
 
         # 检查路径模式
-        if any(ignored in file_path for ignored in self.ignored_files if not ignored.startswith('.')):
+        path_ignored = [ignored for ignored in self.ignored_files
+                        if not ignored.startswith('.')]
+        if any(ignored in file_path for ignored in path_ignored):
             return True
 
         return False
 
     def _calculate_file_hash(self, file_path: Path) -> Optional[str]:
-        """计算文件哈希"""
+        """计算文件哈希."""
         try:
             if not file_path.exists() or not file_path.is_file():
                 return None
@@ -136,12 +140,12 @@ class HotReloadMonitor:
                 content = f.read()
                 return hashlib.md5(content).hexdigest()
 
-        except Exception as e:
-            self.logger.debug(f"计算文件哈希失败 {file_path}: {e}")
+        except OSError as e:
+            self.logger.debug("计算文件哈希失败 %s: %s", file_path, e)
             return None
 
     def _scan_all_files(self) -> Dict[str, str]:
-        """扫描所有监控文件"""
+        """扫描所有监控文件."""
         current_hashes = {}
 
         for watch_path in self.watch_paths:
@@ -152,13 +156,15 @@ class HotReloadMonitor:
                 if file_path.is_file():
                     file_hash = self._calculate_file_hash(file_path)
                     if file_hash:
-                        relative_path = str(file_path.relative_to(self.project_root))
+                        relative_path = str(
+                            file_path.relative_to(self.project_root)
+                        )
                         current_hashes[relative_path] = file_hash
 
         return current_hashes
 
     def start_monitoring(self):
-        """启动监控"""
+        """启动监控."""
         if self.monitoring:
             return
 
@@ -166,17 +172,20 @@ class HotReloadMonitor:
 
         # 初始扫描
         self.file_hashes = self._scan_all_files()
-        self.logger.info(f"初始扫描完成，监控 {len(self.file_hashes)} 个文件")
+        self.logger.info("初始扫描完成，监控 %d 个文件",
+                         len(self.file_hashes))
 
         # 启动监控线程
         self.monitoring = True
-        self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
+        self.monitor_thread = threading.Thread(
+            target=self._monitor_loop, daemon=True
+        )
         self.monitor_thread.start()
 
         self.logger.info("✅ 热更新监控已启动")
 
     def stop_monitoring(self):
-        """停止监控"""
+        """停止监控."""
         if not self.monitoring:
             return
 
@@ -188,7 +197,7 @@ class HotReloadMonitor:
         self.logger.info("热更新监控已停止")
 
     def _monitor_loop(self):
-        """监控循环"""
+        """监控循环."""
         consecutive_failures = 0
 
         while self.monitoring:
@@ -206,9 +215,9 @@ class HotReloadMonitor:
                 # 等待下次检查
                 time.sleep(2)
 
-            except Exception as e:
+            except (OSError, RuntimeError) as e:
                 consecutive_failures += 1
-                self.logger.error(f"监控循环异常: {e}")
+                self.logger.error("监控循环异常: %s", e)
 
                 if consecutive_failures >= 5:
                     self.logger.error("连续失败过多，暂停监控")
@@ -217,7 +226,7 @@ class HotReloadMonitor:
                 time.sleep(5)
 
     def _check_file_changes(self) -> bool:
-        """检查文件变化"""
+        """检查文件变化."""
         current_hashes = self._scan_all_files()
         changes_detected = False
         changed_paths: Set[str] = set()
@@ -225,18 +234,18 @@ class HotReloadMonitor:
         # 检查新增和修改的文件
         for file_path, current_hash in current_hashes.items():
             if file_path not in self.file_hashes:
-                self.logger.info(f"新增文件: {file_path}")
+                self.logger.info("新增文件: %s", file_path)
                 changes_detected = True
                 changed_paths.add(file_path)
             elif self.file_hashes[file_path] != current_hash:
-                self.logger.info(f"文件修改: {file_path}")
+                self.logger.info("文件修改: %s", file_path)
                 changes_detected = True
                 changed_paths.add(file_path)
 
         # 检查删除的文件
         for file_path in self.file_hashes:
             if file_path not in current_hashes:
-                self.logger.info(f"文件删除: {file_path}")
+                self.logger.info("文件删除: %s", file_path)
                 changes_detected = True
                 changed_paths.add(file_path)
 
@@ -248,7 +257,7 @@ class HotReloadMonitor:
         return changes_detected
 
     def _restart_services(self):
-        """重启服务：根据变更范围向启动器发送命令"""
+        """重启服务：根据变更范围向启动器发送命令."""
         current_time = time.time()
 
         # 防止频繁重启
@@ -265,14 +274,17 @@ class HotReloadMonitor:
         self.last_restart_time = current_time
 
         try:
-            self.logger.info(f"执行第 {self.restart_count} 次重启...")
+            self.logger.info("执行第 %d 次重启...", self.restart_count)
 
             # 计算重启范围
-            changed = list(self._last_changed_paths) if self._last_changed_paths else []
+            changed = list(self._last_changed_paths) \
+                if self._last_changed_paths else []
             restart_cmd = "restart_all"
             if changed:
                 ui_changed = any(p.startswith("ui/") for p in changed)
-                backend_changed = any(p.startswith("backend/") for p in changed)
+                backend_changed = any(
+                    p.startswith("backend/") for p in changed
+                )
                 if ui_changed and not backend_changed:
                     restart_cmd = "restart_ui"
                 elif backend_changed and not ui_changed:
@@ -284,21 +296,23 @@ class HotReloadMonitor:
             cmd_file = self.project_root / "logs" / "launcher.cmd"
             try:
                 cmd_file.parent.mkdir(exist_ok=True)
-                cmd_file.write_text(restart_cmd, encoding="utf-8")
-                self.logger.info(f"已发送重启指令: {restart_cmd}")
-            except Exception as e:
-                self.logger.error(f"写入指令文件失败: {e}")
+                cmd_file.write_text(
+                    restart_cmd, encoding="utf-8"
+                )
+                self.logger.info("已发送重启指令: %s", restart_cmd)
+            except OSError as e:
+                self.logger.error("写入指令文件失败: %s", e)
 
             # 去抖延时
             time.sleep(self.restart_delay)
 
             self.logger.info("服务重启指令发送完成")
 
-        except Exception as e:
-            self.logger.error(f"重启服务失败: {e}")
+        except (OSError, RuntimeError) as e:
+            self.logger.error("重启服务失败: %s", e)
 
     def get_status(self) -> Dict[str, Any]:
-        """获取监控状态"""
+        """获取监控状态."""
         return {
             "monitoring": self.monitoring,
             "files_watched": len(self.file_hashes),
@@ -308,37 +322,37 @@ class HotReloadMonitor:
         }
 
     def add_watch_path(self, path: Union[str, Path]):
-        """添加监控路径"""
+        """添加监控路径."""
         watch_path = Path(path)
         if watch_path not in self.watch_paths:
             self.watch_paths.append(watch_path)
-            self.logger.info(f"添加监控路径: {watch_path}")
+            self.logger.info("添加监控路径: %s", watch_path)
 
     def remove_watch_path(self, path: Union[str, Path]):
-        """移除监控路径"""
+        """移除监控路径."""
         watch_path = Path(path)
         if watch_path in self.watch_paths:
             self.watch_paths.remove(watch_path)
-            self.logger.info(f"移除监控路径: {watch_path}")
+            self.logger.info("移除监控路径: %s", watch_path)
 
     def add_ignore_pattern(self, pattern: str):
-        """添加忽略模式"""
+        """添加忽略模式."""
         if pattern.startswith('*'):
             self.ignored_files.add(pattern[1:])
         else:
             ignore_path = self.project_root / pattern
             if ignore_path.exists():
                 self._add_ignore_path(ignore_path)
-        self.logger.info(f"添加忽略模式: {pattern}")
+        self.logger.info("添加忽略模式: %s", pattern)
 
     def trigger_manual_restart(self):
-        """手动触发重启"""
+        """手动触发重启."""
         self.logger.info("手动触发服务重启...")
         self._restart_services()
 
 
 def main():
-    """主函数"""
+    """主函数."""
     print("🔥 热更新监控器")
     print("=" * 40)
 
@@ -366,7 +380,8 @@ def main():
         while True:
             time.sleep(10)
             status = monitor.get_status()
-            print(f"\r📊 监控中... 重启次数: {status['restart_count']}", end="", flush=True)
+            print(f"\r📊 监控中... 重启次数: {status['restart_count']}",
+                  end="", flush=True)
 
     except KeyboardInterrupt:
         print("\n\n🛑 用户请求停止监控")

@@ -44,14 +44,21 @@ try:
     from utils.logging_utils import LoggerMixin
 except ImportError:
     # 简化版本
-    class BaseWidget:
+    class BaseWidget(QWidget):
         """基础组件类."""
 
         def __init__(self, parent=None, title=""):
             """初始化基础组件."""
+            super().__init__(parent)
             self.parent = parent
             self.title = title
             self._timer = None
+
+        def setup_ui(self):
+            """Set up UI - fallback implementation."""
+
+        def connect_signals(self):
+            """Connect signals - fallback implementation."""
 
         def start_update_timer(self, interval: int, callback):
             """启动更新定时器."""
@@ -68,6 +75,14 @@ except ImportError:
         def show_info(self, message: str):
             """显示信息."""
             print(f"INFO: {message}")
+
+        def show_error(self, message: str):
+            """Show error message."""
+            print(f"ERROR: {message}")
+
+        def show_warning(self, message: str):
+            """Show warning message."""
+            print(f"WARNING: {message}")
 
     class LoggerMixin:
         """日志混入类."""

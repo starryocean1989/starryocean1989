@@ -1,20 +1,21 @@
 # -*- coding: utf-8 -*-
-"""数据传感器模块
+"""数据传感器模块.
 
 监控数据变化并触发相应的事件处理
 """
-from typing import Dict, Any, Callable, List
 import asyncio
 import logging
+from typing import Any, Callable, Dict, List
 
 
 logger = logging.getLogger(__name__)
 
 
 class DataSensor:
-    """数据传感器类"""
+    """数据传感器类."""
 
     def __init__(self) -> None:
+        """初始化数据传感器."""
         self.logger = logging.getLogger(__name__)
         self.callbacks: Dict[str, List[Callable[[Any], None]]] = {}
         self.monitoring = False
@@ -22,7 +23,7 @@ class DataSensor:
     def register_callback(self, event_type: str,
                           callback: Callable[[Any], None]) -> None:
         """
-        注册事件回调函数
+        注册事件回调函数.
 
         Args:
             event_type: 事件类型
@@ -37,7 +38,7 @@ class DataSensor:
     def unregister_callback(self, event_type: str,
                             callback: Callable[[Any], None]) -> None:
         """
-        注销事件回调函数
+        注销事件回调函数.
 
         Args:
             event_type: 事件类型
@@ -51,7 +52,7 @@ class DataSensor:
                 self.logger.warning("回调函数未找到: %s", event_type)
 
     async def start_monitoring(self) -> None:
-        """启动数据监控"""
+        """启动数据监控."""
         self.monitoring = True
         self.logger.info("启动数据监控")
 
@@ -60,18 +61,18 @@ class DataSensor:
                 # 这里应该实现实际的数据监控逻辑
                 await asyncio.sleep(1)  # 每秒检查一次
 
-            except (ConnectionError, TimeoutError, OSError) as e:
+            except OSError as e:
                 self.logger.error("数据监控出错: %s", e)
                 await asyncio.sleep(5)  # 出错后等待5秒再试
 
     def stop_monitoring(self) -> None:
-        """停止数据监控"""
+        """停止数据监控."""
         self.monitoring = False
         self.logger.info("停止数据监控")
 
     def trigger_event(self, event_type: str, data: Dict[str, Any]) -> None:
         """
-        触发事件
+        触发事件.
 
         Args:
             event_type: 事件类型

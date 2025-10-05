@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-时间戳校正器模块
+时间戳校正器模块.
 
 该模块提供了时间戳校正和标准化的功能,用于处理K线数据中的时间戳异常.
 主要功能包括:
@@ -10,7 +10,7 @@
 
 import logging
 from datetime import timedelta
-from typing import List, Dict, Any
+from typing import Any, Dict, List
 
 import pandas as pd
 
@@ -22,16 +22,17 @@ logger = logging.getLogger(__name__)
 
 
 class TimestampCorrector:
-    """时间戳校正器"""
+    """时间戳校正器."""
 
     def __init__(self) -> None:
+        """初始化时间戳校正器."""
         self.logger = logging.getLogger(__name__)
 
     def correct_timestamps(
         self, bars: List[Dict[str, Any]], interval_minutes: int = 1
     ) -> List[Dict[str, Any]]:
         """
-        校正时间戳
+        校正时间戳.
 
         Args:
             bars: K线数据列表
@@ -50,8 +51,10 @@ class TimestampCorrector:
         df["datetime_shifted_next"] = df["datetime"].shift(-1)
 
         # 计算时间差
-        df["diff_prev"] = (pd.to_datetime(df["datetime"]) - pd.to_datetime(df["datetime_shifted_prev"])).abs()
-        df["diff_next"] = (pd.to_datetime(df["datetime_shifted_next"]) - pd.to_datetime(df["datetime"])).abs()
+        df["diff_prev"] = (pd.to_datetime(df["datetime"]) -
+                           pd.to_datetime(df["datetime_shifted_prev"])).abs()
+        df["diff_next"] = (pd.to_datetime(df["datetime_shifted_next"]) -
+                           pd.to_datetime(df["datetime"])).abs()
 
         # 预期的时间间隔
         expected_interval = timedelta(minutes=interval_minutes)
@@ -79,7 +82,7 @@ class TimestampCorrector:
         self, bars: List[Dict[str, Any]], start_time: str = "09:30:00"
     ) -> List[Dict[str, Any]]:
         """
-        标准化时间戳到交易时间
+        标准化时间戳到交易时间.
 
         Args:
             bars: K线数据列表
@@ -91,7 +94,7 @@ class TimestampCorrector:
         try:
             normalized_bars = []
             # pylint: disable=fixme
-            # TODO: Implement time normalization logic using start_time parameter
+            # TODO: Implement time normalization logic using start_time
             _ = start_time  # Acknowledge parameter to avoid linting warning
 
             for kline_data in bars:

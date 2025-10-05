@@ -9,22 +9,23 @@ from typing import List
 
 from .adapters.tdx_adapter import TDXDataAdapter as TdxAdapter
 from .engine import DataEngine
-from .scheduler import Scheduler, AbstractAdapter
+from .models import Quote
+from .scheduler import AbstractAdapter, Scheduler
 from .utils import setup_logging
 from .vnpy_datafeed import VnpyDataPusher
-from .models import Quote
 
 logger = logging.getLogger(__name__)
 
 
 class TDXAdapterWrapper(AbstractAdapter):
-    """TDX适配器包装器,使其兼容AbstractAdapter接口"""
+    """TDX适配器包装器,使其兼容AbstractAdapter接口."""
 
     def __init__(self, tdx_adapter: TdxAdapter):
+        """初始化TDX适配器包装器."""
         self.tdx_adapter = tdx_adapter
 
     async def get_quotes(self) -> List[Quote]:
-        """获取行情数据并转换为Quote对象"""
+        """获取行情数据并转换为Quote对象."""
         # 获取一些默认的股票代码
         symbols = ["000001", "000002", "600000", "600036"]
         raw_quotes = await self.tdx_adapter.get_quotes(symbols)
@@ -47,7 +48,7 @@ class TDXAdapterWrapper(AbstractAdapter):
 
 
 async def main() -> None:
-    """主函数,启动数据引擎服务"""
+    """主函数,启动数据引擎服务."""
     # 1. 设置日志
     setup_logging(level=logging.INFO)
 
@@ -90,7 +91,7 @@ async def main() -> None:
     except KeyboardInterrupt:
         logger.info("收到键盘中断信号,停止数据引擎...")
 
-    except (ConnectionError, OSError, ValueError, TypeError) as e:
+    except (OSError, ValueError, TypeError) as e:
         logger.error("数据引擎运行出错: %s", e)
 
     finally:

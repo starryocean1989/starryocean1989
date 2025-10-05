@@ -1,35 +1,67 @@
 # -*- coding: utf-8 -*-
 """
 组合投资界面 - 主视图
+
 混合架构：两个固有业务组件，无独立子界面
 """
 
-from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
-    QLabel, QPushButton, QGroupBox, QTableWidget,
-    QTableWidgetItem, QHeaderView, QTabWidget,
-    QProgressBar, QFormLayout, QLineEdit
-)
-from PySide6.QtCore import Qt, QTimer, Signal
+import logging
+
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
+from PySide6.QtWidgets import (
+    QFormLayout, QGroupBox, QHBoxLayout, QHeaderView,
+    QLabel, QProgressBar, QPushButton, QSplitter,
+    QTabWidget, QTableWidget, QTableWidgetItem,
+    QVBoxLayout, QWidget
+)
 
 try:
-    from ..widgets.base_widget import BaseWidget
-    from ...utils.logging_utils import LoggerMixin
+    from integration.vnpy_adapter import VnPyAdapter
+except ImportError:
+    VnPyAdapter = None
+
+try:
+    from ...widgets.base_widget import BaseWidget
+    from ....utils.logging_utils import LoggerMixin
 except ImportError:
     try:
         from ui.widgets.base_widget import BaseWidget
         from utils.logging_utils import LoggerMixin
     except ImportError:
-        class BaseWidget:
+        class BaseWidget(QWidget):
+            """Base widget fallback implementation."""
+
             def __init__(self, parent=None, title=""):
+                """Initialize base widget."""
+                super().__init__(parent)
                 self.parent = parent
                 self.title = title
 
+            def setup_ui(self):
+                """Set up UI - fallback implementation."""
+
+            def connect_signals(self):
+                """Connect signals - fallback implementation."""
+
+            def show_info(self, message: str):
+                """Show info message."""
+                print(f"INFO: {message}")
+
+            def show_error(self, message: str):
+                """Show error message."""
+                print(f"ERROR: {message}")
+
+            def show_warning(self, message: str):
+                """Show warning message."""
+                print(f"WARNING: {message}")
+
         class LoggerMixin:
+            """Logger mixin fallback implementation."""
+
             @property
             def logger(self):
-                import logging
+                """Get logger instance."""
                 return logging.getLogger(self.__class__.__name__)
 
 
@@ -37,25 +69,23 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
     """组合投资主界面"""
 
     def __init__(self, parent=None):
+        """Initialize portfolio investment interface."""
         super().__init__(parent, "组合投资")
         self.logger.info("组合投资界面初始化开始")
 
+        # Initialize UI components
+        self.auto_portfolio_table = None
+        self.custom_portfolio_table = None
+        self.gateway_tab = None
+        self.total_pnl_label = None
+        self.total_return_label = None
+        self.max_drawdown_label = None
+        self.sharpe_ratio_label = None
+        self.position_table = None
+        self.risk_progress = None
+
         # 初始化VNPY适配器 - 在super().__init__()之后
         self._initialize_vnpy_adapter()
-
-    def _initialize_vnpy_adapter(self):
-        """初始化VNPY适配器"""
-        try:
-            from integration.vnpy_adapter import VnPyAdapter
-            self.vnpy_adapter = VnPyAdapter()
-            self._logger.info("VNPY适配器初始化完成")
-        except Exception as e:
-            self._logger.error(f"VNPY适配器初始化失败: {e}")
-            self.vnpy_adapter = None
-
-        # 确保属性始终存在
-        if not hasattr(self, 'vnpy_adapter'):
-            self.vnpy_adapter = None
 
     def setup_ui(self):
         """设置用户界面"""
@@ -90,8 +120,12 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
         auto_layout = QVBoxLayout(auto_group)
 
         self.auto_portfolio_table = QTableWidget(0, 3)
-        self.auto_portfolio_table.setHorizontalHeaderLabels(["网关名称", "策略数量", "状态"])
-        self.auto_portfolio_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.auto_portfolio_table.setHorizontalHeaderLabels(
+            ["网关名称", "策略数量", "状态"]
+        )
+        self.auto_portfolio_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
 
         auto_layout.addWidget(self.auto_portfolio_table)
 
@@ -118,8 +152,12 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
 
         # 自定义组合列表
         self.custom_portfolio_table = QTableWidget(0, 4)
-        self.custom_portfolio_table.setHorizontalHeaderLabels(["组合名称", "包含网关", "权重", "操作"])
-        self.custom_portfolio_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.custom_portfolio_table.setHorizontalHeaderLabels(
+            ["组合名称", "包含网关", "权重", "操作"]
+        )
+        self.custom_portfolio_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
 
         custom_layout.addWidget(self.custom_portfolio_table)
 
@@ -169,8 +207,8 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
                 # 如果有虚拟网关，也创建选项卡
                 # 这里可以根据实际需求添加虚拟网关的逻辑
 
-            except Exception as e:
-                self.logger.error(f"创建网关选项卡失败: {e}")
+            except (AttributeError, TypeError, ValueError) as e:
+                self.logger.error("创建网关选项卡失败: %s", e)
                 self._create_fallback_gateway_tabs()
         else:
             self._create_fallback_gateway_tabs()
@@ -188,6 +226,9 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
         """为指定网关创建监控选项卡"""
         tab = QWidget()
         layout = QVBoxLayout(tab)
+
+        # 记录网关名称用于调试
+        self.logger.debug("创建监控选项卡: %s", gateway_name)
 
         # 业绩概览组
         overview_group = QGroupBox("业绩概览")
@@ -212,8 +253,12 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
         position_layout = QVBoxLayout(position_group)
 
         self.position_table = QTableWidget(0, 5)
-        self.position_table.setHorizontalHeaderLabels(["品种", "持仓", "成本", "市值", "盈亏"])
-        self.position_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.position_table.setHorizontalHeaderLabels(
+            ["品种", "持仓", "成本", "市值", "盈亏"]
+        )
+        self.position_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
 
         position_layout.addWidget(self.position_table)
 
@@ -246,11 +291,14 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
     def _initialize_vnpy_adapter(self):
         """初始化VNPY适配器"""
         try:
-            from integration.vnpy_adapter import VnPyAdapter
-            self.vnpy_adapter = VnPyAdapter()
-            self.logger.info("VNPY适配器初始化完成")
-        except Exception as e:
-            self.logger.error(f"VNPY适配器初始化失败: {e}")
+            if VnPyAdapter is not None:
+                self.vnpy_adapter = VnPyAdapter()
+                self.logger.info("VNPY适配器初始化完成")
+            else:
+                self.vnpy_adapter = None
+                self.logger.warning("VNPY适配器不可用")
+        except (AttributeError, TypeError, ValueError, RuntimeError) as e:
+            self.logger.error("VNPY适配器初始化失败: %s", e)
             self.vnpy_adapter = None
 
     def _create_custom_portfolio(self):
@@ -265,7 +313,7 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
         """网关选项卡切换"""
         if index >= 0:
             tab_text = self.gateway_tab.tabText(index)
-            self.logger.info(f"切换到网关: {tab_text}")
+            self.logger.info("切换到网关: %s", tab_text)
 
     def _update_portfolio_data(self):
         """更新组合数据"""
@@ -282,15 +330,15 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
 
                 # 更新自定义组合表格
                 if hasattr(self.vnpy_adapter, 'get_status'):
-                    self._update_custom_portfolios(status)
+                    self._update_custom_portfolios()
                 else:
                     self._update_custom_portfolios_fallback()
 
                 # 更新监控数据
                 self._update_monitor_data()
 
-            except Exception as e:
-                self.logger.error(f"更新组合数据失败: {e}")
+            except (AttributeError, TypeError, ValueError, RuntimeError) as e:
+                self.logger.error("更新组合数据失败: %s", e)
                 # 回退到模拟数据
                 self._update_auto_portfolios_fallback()
                 self._update_custom_portfolios_fallback()
@@ -412,8 +460,8 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
                 # 更新账户信息
                 self._update_account_info(account_info)
 
-            except Exception as e:
-                self.logger.error(f"更新监控数据失败: {e}")
+            except (AttributeError, TypeError, ValueError, RuntimeError) as e:
+                self.logger.error("更新监控数据失败: %s", e)
 
     def _update_positions_table(self, positions):
         """更新持仓表格"""

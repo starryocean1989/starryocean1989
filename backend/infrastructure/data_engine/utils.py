@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-数据引擎工具模块
+数据引擎工具模块.
 
 提供数据引擎相关的通用工具函数,包括日志配置,数据验证和格式化等功能.
 """
@@ -11,7 +11,7 @@ import sys
 
 def setup_logging(level: int = logging.INFO) -> None:
     """
-    设置日志配置
+    设置日志配置.
 
     Args:
         level: 日志级别,默认INFO
@@ -25,7 +25,7 @@ def setup_logging(level: int = logging.INFO) -> None:
 
 def validate_symbol(symbol: str) -> bool:
     """
-    验证证券代码格式
+    验证证券代码格式.
 
     Args:
         symbol: 证券代码
@@ -42,7 +42,7 @@ def validate_symbol(symbol: str) -> bool:
 
 def format_datetime(dt: str) -> str:
     """
-    格式化日期时间字符串
+    格式化日期时间字符串.
 
     Args:
         dt: 日期时间字符串

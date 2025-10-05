@@ -23,13 +23,34 @@ except ImportError:
     _VnPyAdapter = None
     VNPY_AVAILABLE = False
 
-    class BaseWidget:
+    class BaseWidget(QWidget):
         """Base widget class."""
 
         def __init__(self, parent=None, title=""):
             """Initialize base widget."""
+            super().__init__(parent)
             self.parent = parent
             self.title = title
+
+        def setup_ui(self):
+            """Set up UI - fallback implementation."""
+            # Fallback implementation - no UI setup needed
+
+        def connect_signals(self):
+            """Connect signals - fallback implementation."""
+            # Fallback implementation - no signals to connect
+
+        def show_info(self, message: str):
+            """Show info message."""
+            print(f"INFO: {message}")
+
+        def show_error(self, message: str):
+            """Show error message."""
+            print(f"ERROR: {message}")
+
+        def show_warning(self, message: str):
+            """Show warning message."""
+            print(f"WARNING: {message}")
 
     class LoggerMixin:
         """Logger mixin class."""

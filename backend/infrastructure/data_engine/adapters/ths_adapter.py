@@ -1,29 +1,30 @@
 # -*- coding: utf-8 -*-
 
 """
-同花顺数据适配器
+同花顺数据适配器.
 
 本模块实现了同花顺数据源的适配器,
 用于获取实时和历史的市场数据.
 """
 
-from typing import Dict, List, Optional, Union
 from datetime import datetime
+from typing import Dict, List, Optional, Union
 
 from .base_adapter import BaseDataAdapter
 
 
 class THSDataAdapter(BaseDataAdapter):
-
     """
-    同花顺数据适配器
+    同花顺数据适配器.
 
     继承自BaseDataAdapter,提供同花顺数据的获取功能.
     """
 
-    def __init__(self, config: Dict[str, Union[str, int, float, bool]]) -> None:
+    def __init__(
+        self, config: Dict[str, Union[str, int, float, bool]]
+    ) -> None:
         """
-        初始化同花顺适配器
+        初始化同花顺适配器.
 
         Args:
             config: 配置字典,包含API密钥,超时设置等
@@ -39,22 +40,22 @@ class THSDataAdapter(BaseDataAdapter):
 
     @property
     def name(self) -> str:
-        """适配器名称"""
+        """适配器名称."""
         return self._name
 
     @property
     def description(self) -> str:
-        """适配器描述"""
+        """适配器描述."""
         return self._description
 
     @property
     def version(self) -> str:
-        """适配器版本"""
+        """适配器版本."""
         return self._version
 
     async def connect(self) -> bool:
         """
-        连接到同花顺数据源
+        连接到同花顺数据源.
 
         Returns:
             bool: 连接是否成功
@@ -78,7 +79,7 @@ class THSDataAdapter(BaseDataAdapter):
 
     async def disconnect(self) -> bool:
         """
-        断开数据源连接
+        断开数据源连接.
 
         Returns:
             bool: 断开是否成功
@@ -93,7 +94,7 @@ class THSDataAdapter(BaseDataAdapter):
 
     def check_connection(self) -> bool:
         """
-        检查连接状态
+        检查连接状态.
 
         Returns:
             bool: 是否已连接
@@ -102,7 +103,7 @@ class THSDataAdapter(BaseDataAdapter):
 
     def _format_symbol(self, symbol: str) -> str:
         """
-        格式化证券代码为同花顺格式
+        格式化证券代码为同花顺格式.
 
         Args:
             symbol: 证券代码
@@ -116,10 +117,10 @@ class THSDataAdapter(BaseDataAdapter):
         return symbol
 
     async def get_market_data(
-        self, symbol: str, data_type: str = "kline"  # pylint: disable=unused-argument
+        self, symbol: str, data_type: str = "kline"
     ) -> Optional[Dict[str, Union[str, int, float, bool]]]:
         """
-        获取市场数据
+        获取市场数据.
 
         Args:
             symbol: 证券代码
@@ -134,6 +135,8 @@ class THSDataAdapter(BaseDataAdapter):
 
             # 同花顺API调用(实际API需要付费授权)
             # 需要实现同花顺API的实际数据获取逻辑
+            # 使用data_type参数进行数据获取
+            _ = data_type  # 避免未使用参数警告
 
             return {
                 "symbol": symbol,
@@ -154,10 +157,10 @@ class THSDataAdapter(BaseDataAdapter):
         symbol: str,
         start_date: datetime,
         end_date: datetime,
-        data_type: str = "kline",  # pylint: disable=unused-argument
+        data_type: str = "kline",
     ) -> List[Dict[str, Union[str, int, float, bool]]]:
         """
-        获取历史数据
+        获取历史数据.
 
         Args:
             symbol: 证券代码
@@ -169,10 +172,10 @@ class THSDataAdapter(BaseDataAdapter):
             List[Dict[str, Union[str, int, float, bool]]]: 历史数据列表
         """
         # 同花顺历史数据获取需要付费API,这里返回空列表
+        # 使用参数避免未使用警告
+        _ = (symbol, start_date, end_date, data_type)
         return []
 
     async def cleanup(self) -> None:
-        """
-        清理资源
-        """
+        """清理资源."""
         await self.disconnect()

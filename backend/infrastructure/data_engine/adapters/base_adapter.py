@@ -1,27 +1,29 @@
 # -*- coding: utf-8 -*-
 """
-数据适配器基类
+数据适配器基类.
 
 提供所有数据适配器的统一接口和基础功能.
 所有具体的数据适配器都应该继承自此类.
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, List, Union, Any
 from datetime import datetime
+from typing import Any, Dict, List, Union
 
 
 class BaseDataAdapter(ABC):
     """
-    数据适配器基类
+    数据适配器基类.
 
     定义了所有数据适配器必须实现的接口方法.
     提供统一的数据获取,配置管理和错误处理机制.
     """
 
-    def __init__(self, config: Dict[str, Union[str, int, float, bool]]) -> None:
+    def __init__(
+        self, config: Dict[str, Union[str, int, float, bool]]
+    ) -> None:
         """
-        初始化数据适配器
+        初始化数据适配器.
 
         Args:
             config: 适配器配置参数
@@ -33,7 +35,7 @@ class BaseDataAdapter(ABC):
     @abstractmethod
     async def connect(self) -> bool:
         """
-        连接到数据源
+        连接到数据源.
 
         Returns:
             bool: 连接是否成功
@@ -43,7 +45,7 @@ class BaseDataAdapter(ABC):
     @abstractmethod
     async def disconnect(self) -> bool:
         """
-        断开与数据源的连接
+        断开与数据源的连接.
 
         Returns:
             bool: 断开是否成功
@@ -51,9 +53,11 @@ class BaseDataAdapter(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def get_quotes(self, symbols: List[str]) -> List[Dict[str, Any]]:
+    async def get_quotes(
+        self, symbols: List[str]  # noqa: U100
+    ) -> List[Dict[str, Any]]:
         """
-        获取行情数据
+        获取行情数据.
 
         Args:
             symbols: 股票代码列表
@@ -66,12 +70,12 @@ class BaseDataAdapter(ABC):
     @abstractmethod
     async def get_historical_data(
         self,
-        symbol: str,
-        start_date: datetime,
-        end_date: datetime
+        symbol: str,  # noqa: U100
+        start_date: datetime,  # noqa: U100
+        end_date: datetime  # noqa: U100
     ) -> List[Dict[str, Any]]:
         """
-        获取历史数据
+        获取历史数据.
 
         Args:
             symbol: 股票代码
@@ -85,7 +89,7 @@ class BaseDataAdapter(ABC):
 
     def get_config(self, key: str, default: Any = None) -> Any:
         """
-        获取配置参数
+        获取配置参数.
 
         Args:
             key: 配置键
@@ -98,7 +102,7 @@ class BaseDataAdapter(ABC):
 
     def update_config(self, key: str, value: Any) -> None:
         """
-        更新配置参数
+        更新配置参数.
 
         Args:
             key: 配置键

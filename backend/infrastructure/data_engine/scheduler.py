@@ -1,39 +1,41 @@
 # -*- coding: utf-8 -*-
-"""数据调度器模块 - 提供行情数据调度功能"""
+"""数据调度器模块 - 提供行情数据调度功能."""
 
 import asyncio
 import logging
-from typing import List
 from abc import ABC, abstractmethod
+from typing import List, TYPE_CHECKING
 
-from .models import Quote
 from .engine import DataScheduler
+
+if TYPE_CHECKING:
+    from .models import Quote
 
 logger = logging.getLogger(__name__)
 
 
 class AbstractAdapter(ABC):
-    """数据适配器接口"""
+    """数据适配器接口."""
 
     @abstractmethod
-    async def get_quotes(self) -> List[Quote]:
-        """获取行情数据"""
+    async def get_quotes(self) -> List["Quote"]:
+        """获取行情数据."""
 
 
 class Scheduler(DataScheduler):
-
-    """数据调度器"""
+    """数据调度器."""
 
     def __init__(self, adapters: List[AbstractAdapter]):
+        """初始化调度器."""
         self.adapters = adapters
         self.logger = logging.getLogger(__name__)
 
-    async def get_data(self) -> List[Quote]:  # type: ignore
+    async def get_data(self) -> List["Quote"]:  # type: ignore
         """
-        从所有适配器获取数据
+        从所有适配器获取数据.
 
         Returns:
-            List[Quote]: 所有适配器返回的行情数据列表
+            List["Quote"]: 所有适配器返回的行情数据列表.
         """
         all_quotes = []
 

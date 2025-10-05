@@ -1,26 +1,30 @@
 # -*- coding: utf-8 -*-
 """
-UI应用测试脚本
-直接运行UI应用并捕获错误
+UI应用测试脚本.
+
+直接运行UI应用并捕获错误。
 """
 
-import sys
 import os
+import sys
 import traceback
+
+from PySide6.QtWidgets import QApplication
+
+from ui.main_window import MainWindow
 
 # 添加项目根目录到路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+
 def test_ui_app():
-    """测试UI应用"""
+    """测试UI应用."""
     print("🖥️  测试星辰金融终端UI应用")
     print("=" * 50)
 
     try:
-        # 导入必要的模块
-        print("📦 导入模块...")
-        from PySide6.QtWidgets import QApplication
-        from ui.main_window import MainWindow
+        # 验证模块导入
+        print("📦 验证模块导入...")
         print("✅ 模块导入成功")
 
         # 创建应用
@@ -58,7 +62,7 @@ def test_ui_app():
 
         return True
 
-    except Exception as e:
+    except (ImportError, AttributeError, RuntimeError, TypeError) as e:
         print(f"❌ UI应用启动失败: {e}")
         print("\n📋 错误详情:")
         traceback.print_exc()
@@ -66,7 +70,7 @@ def test_ui_app():
 
 
 def main():
-    """主函数"""
+    """主函数."""
     success = test_ui_app()
 
     if success:

@@ -1,16 +1,19 @@
 # -*- coding: utf-8 -*-
-"""VnPy数据馈送模块 - 通过vnpy主包统一接入数据引擎"""
+"""VnPy数据馈送模块 - 通过vnpy主包统一接入数据引擎."""
 
 import logging
-from typing import Any, List, Dict
+from typing import Any, Dict, List
 
+# Third-party imports
 from vnpy.trader.gateway import BaseGateway
 
-# 通过vnpy主包统一导入
-from ..data_module_vnpy.core_adapter import (
-    vnpy_adapter,
+# Local imports
+from backend.infrastructure.data_module_vnpy.core_adapter import (
+    CancelRequest,
     Exchange,
-    SubscribeRequest, OrderRequest, CancelRequest
+    OrderRequest,
+    SubscribeRequest,
+    vnpy_adapter
 )
 
 logger = logging.getLogger(__name__)
@@ -21,16 +24,17 @@ __all__ = ["VnpyDataPusher", "EngineDatafeed"]
 
 
 class VnpyDataPusher:
-    """VnPy数据推送器 - 通过vnpy主包统一接入"""
+    """VnPy数据推送器 - 通过vnpy主包统一接入."""
 
     def __init__(self):
+        """初始化VnPy数据推送器."""
         # 使用全局适配器
         if not vnpy_adapter.is_initialized():
             vnpy_adapter.initialize()
         self.event_engine = vnpy_adapter.get_event_engine()
 
     async def push_quotes(self, quotes: List[Dict[str, Any]]) -> None:
-        """推送行情数据到VnPy事件引擎"""
+        """推送行情数据到VnPy事件引擎."""
         if not self.event_engine:
             logger.error("VnPy事件引擎未初始化")
             return
@@ -52,7 +56,9 @@ class VnpyDataPusher:
                     prev_close=quote.get("prev_close", 0.0),
                 )
                 # 通过适配器创建并推送事件
-                event = vnpy_adapter.create_event(EVENT_TICK + quote.get("symbol", ""), tick)
+                event = vnpy_adapter.create_event(
+                    EVENT_TICK + quote.get("symbol", ""), tick
+                )
                 vnpy_adapter.put_event(event)
                 logger.debug("推送行情数据: %s", quote.get('symbol'))
             except (ValueError, KeyError, TypeError) as e:
@@ -60,9 +66,10 @@ class VnpyDataPusher:
 
 
 class EngineDatafeed(BaseGateway):
-    """引擎数据馈送网关 - 通过vnpy主包统一接入"""
+    """引擎数据馈送网关 - 通过vnpy主包统一接入."""
 
     def __init__(self, gateway_name: str = "data_engine"):
+        """初始化引擎数据馈送网关."""
         # 使用全局适配器的事件引擎
         if not vnpy_adapter.is_initialized():
             vnpy_adapter.initialize()
@@ -70,31 +77,31 @@ class EngineDatafeed(BaseGateway):
         super().__init__(event_engine, gateway_name)
         self.logger = logging.getLogger(__name__)
 
-    def connect(self, setting: Dict[str, Any]) -> None:
-        """连接网关"""
+    def connect(self, _setting: Dict[str, Any]) -> None:  # noqa
+        """连接网关."""
         self.logger.info("连接数据引擎网关")
 
     def subscribe(self, req: SubscribeRequest) -> None:
-        """订阅行情"""
+        """订阅行情."""
         self.logger.info("订阅行情: %s", req.symbol)
 
-    def send_order(self, req: OrderRequest) -> str:
-        """发送委托"""
+    def send_order(self, _req: OrderRequest) -> str:  # noqa
+        """发送委托."""
         self.logger.warning("数据引擎网关不支持发送委托")
         return ""
 
-    def cancel_order(self, req: CancelRequest) -> None:
-        """撤销委托"""
+    def cancel_order(self, _req: CancelRequest) -> None:  # noqa
+        """撤销委托."""
         self.logger.warning("数据引擎网关不支持撤销委托")
 
     def query_account(self) -> None:
-        """查询账户"""
+        """查询账户."""
         self.logger.warning("数据引擎网关不支持查询账户")
 
     def query_position(self) -> None:
-        """查询持仓"""
+        """查询持仓."""
         self.logger.warning("数据引擎网关不支持查询持仓")
 
     def close(self) -> None:
-        """关闭连接"""
+        """关闭连接."""
         self.logger.info("关闭数据引擎网关连接")

@@ -1,18 +1,19 @@
 # -*- coding: utf-8 -*-
-"""数据引擎模块 - 提供行情数据调度和推送功能"""
+"""数据引擎模块 - 提供行情数据调度和推送功能."""
 
 import asyncio
 import logging
-from typing import List, Set, Tuple
 from abc import ABC, abstractmethod
+from typing import List, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
 
 class Quote:
-    """行情数据类"""
+    """行情数据类."""
 
     def __init__(self, symbol: str, price: float, volume: int, timestamp: str):
+        """初始化行情数据."""
         self.symbol = symbol
         self.price = price
         self.volume = volume
@@ -20,23 +21,23 @@ class Quote:
 
 
 class DataScheduler(ABC):
-    """数据调度器接口"""
+    """数据调度器接口."""
 
     @abstractmethod
     async def get_data(self) -> List[Quote]:
-        """获取数据"""
+        """获取数据."""
 
 
 class DataPusher(ABC):
-    """数据推送器接口"""
+    """数据推送器接口."""
 
     @abstractmethod
-    async def push_quotes(self, quotes: List[Quote]) -> None:
-        """推送行情数据"""
+    async def push_quotes(self, quotes: List[Quote]) -> None:  # noqa: U100
+        """推送行情数据."""
 
 
 class DataEngine:
-    """数据引擎"""
+    """数据引擎."""
 
     def __init__(
         self,
@@ -44,6 +45,7 @@ class DataEngine:
         pusher: DataPusher,
         poll_interval: int = 5,
     ):
+        """初始化数据引擎."""
         self.scheduler = scheduler
         self.pusher = pusher
         self.poll_interval = poll_interval
@@ -51,7 +53,7 @@ class DataEngine:
         self.logger = logging.getLogger(__name__)
 
     async def start(self) -> None:
-        """启动引擎"""
+        """启动引擎."""
         self.running = True
         self.logger.info("数据引擎启动")
 
@@ -65,12 +67,12 @@ class DataEngine:
             self.logger.info("数据引擎停止")
 
     async def stop(self) -> None:
-        """停止引擎"""
+        """停止引擎."""
         self.running = False
         self.logger.info("正在停止数据引擎...")
 
     async def _main_loop(self) -> None:
-        """主循环"""
+        """主循环."""
         while self.running:
             try:
                 # 获取数据
@@ -98,10 +100,10 @@ class DataEngine:
 
     def _filter_duplicates(self, quotes: List[Quote]) -> List[Quote]:
         """
-        过滤重复的行情数据
+        过滤重复的行情数据.
 
-        简化的重复过滤逻辑
-        在实际实现中,可以使用更复杂的算法
+        简化的重复过滤逻辑.
+        在实际实现中,可以使用更复杂的算法.
         """
         seen: Set[Tuple[str, str]] = set()
         filtered = []

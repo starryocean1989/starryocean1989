@@ -5,47 +5,73 @@
 """
 
 import logging
-
-from typing import Any, Dict, List
 from abc import ABC, abstractmethod
-from vnpy.event import Event  # type: ignore
+from typing import Any, Dict, List, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from vnpy.event import Event  # type: ignore
 
 logger = logging.getLogger(__name__)
 
 
 class EventEngine:
-    """事件引擎接口"""
+    """事件引擎接口."""
 
-    def put(self, event: Event) -> None:
-        """推送事件"""
+    def put(self, event: "Event") -> None:
+        """推送事件.
+
+        Args:
+            event: 要推送的事件对象.
+        """
+        # Use event to avoid unused argument warning
+        _ = event
         raise NotImplementedError
 
 
 class DataFeedGateway(ABC):
-    """数据源网关基类"""
+    """数据源网关基类."""
 
-    def __init__(self, event_engine: EventEngine):
+    def __init__(self, event_engine: EventEngine) -> None:
+        """初始化数据源网关.
+
+        Args:
+            event_engine: 事件引擎实例.
+        """
         self.event_engine = event_engine
 
     @abstractmethod
     async def get_quotes(self, symbols: List[str]) -> List[Dict[str, Any]]:
-        """获取行情数据"""
+        """获取行情数据.
+
+        Args:
+            symbols: 股票代码列表.
+
+        Returns:
+            行情数据列表.
+        """
+        # Use symbols to avoid unused argument warning
+        _ = symbols
         raise NotImplementedError
 
 
 class DataFeedManager:
-    """数据馈送管理器"""
+    """数据馈送管理器."""
 
-    def __init__(self, event_engine: EventEngine):
+    def __init__(self, event_engine: EventEngine) -> None:
+        """初始化数据馈送管理器.
+
+        Args:
+            event_engine: 事件引擎实例.
+        """
         self.event_engine = event_engine
         self.datafeeds: Dict[str, DataFeedGateway] = {}
 
     def add_datafeed(self, name: str, datafeed: DataFeedGateway) -> None:
-        """添加数据馈送"""
+        """添加数据馈送."""
         self.datafeeds[name] = datafeed
 
     async def get_all_quotes(self, symbols: List[str]) -> List[Dict[str, Any]]:
-        """获取所有数据源的行情数据"""
+        """获取所有数据源的行情数据."""
         all_quotes = []
 
         for name, gateway in self.datafeeds.items():

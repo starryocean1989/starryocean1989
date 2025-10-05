@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 """
-新浪财经数据适配器
+新浪财经数据适配器.
 
 本模块实现了新浪财经数据源的适配器,
 用于获取实时和历史的市场数据.
@@ -17,16 +17,17 @@ from .base_adapter import BaseDataAdapter
 
 
 class SinaDataAdapter(BaseDataAdapter):
-
     """
-    新浪财经数据适配器
+    新浪财经数据适配器.
 
     继承自BaseDataAdapter,提供新浪财经数据的获取功能.
     """
 
-    def __init__(self, config: Dict[str, Union[str, int, float, bool]]) -> None:
+    def __init__(
+        self, config: Dict[str, Union[str, int, float, bool]]
+    ) -> None:
         """
-        初始化新浪财经适配器
+        初始化新浪财经适配器.
 
         Args:
             config: 配置字典,包含API密钥,超时设置等
@@ -41,22 +42,22 @@ class SinaDataAdapter(BaseDataAdapter):
 
     @property
     def name(self) -> str:
-        """适配器名称"""
+        """适配器名称."""
         return self._name
 
     @property
     def description(self) -> str:
-        """适配器描述"""
+        """适配器描述."""
         return self._description
 
     @property
     def version(self) -> str:
-        """适配器版本"""
+        """适配器版本."""
         return self._version
 
     async def connect(self) -> bool:
         """
-        连接到新浪财经数据源
+        连接到新浪财经数据源.
 
         Returns:
             bool: 连接是否成功
@@ -76,7 +77,7 @@ class SinaDataAdapter(BaseDataAdapter):
 
     async def disconnect(self) -> bool:
         """
-        断开数据源连接
+        断开数据源连接.
 
         Returns:
             bool: 断开是否成功
@@ -94,7 +95,7 @@ class SinaDataAdapter(BaseDataAdapter):
 
     def _check_connection(self) -> bool:
         """
-        检查连接状态
+        检查连接状态.
 
         Returns:
             bool: 是否已连接
@@ -103,7 +104,7 @@ class SinaDataAdapter(BaseDataAdapter):
 
     def _format_symbol(self, symbol: str) -> str:
         """
-        格式化证券代码为新浪格式
+        格式化证券代码为新浪格式.
 
         Args:
             symbol: 证券代码
@@ -120,10 +121,10 @@ class SinaDataAdapter(BaseDataAdapter):
             return symbol
 
     async def get_market_data(
-        self, symbol: str, _data_type: str = "kline"
+        self, symbol: str, _data_type: str = "kline"  # noqa: U101
     ) -> Optional[Dict[str, Union[str, int, float, bool]]]:
         """
-        获取市场数据
+        获取市场数据.
 
         Args:
             symbol: 证券代码
@@ -157,7 +158,7 @@ class SinaDataAdapter(BaseDataAdapter):
         self, raw_data: str, symbol: str
     ) -> Dict[str, Union[str, int, float, bool]]:
         """
-        解析新浪财经返回的原始数据
+        解析新浪财经返回的原始数据.
 
         Args:
             raw_data: 原始数据字符串
@@ -205,13 +206,13 @@ class SinaDataAdapter(BaseDataAdapter):
 
     async def get_historical_data(
         self,
-        _symbol: str,
-        _start_date: datetime,
-        _end_date: datetime,
-        _data_type: str = "kline",
+        _symbol: str,  # noqa: U101
+        _start_date: datetime,  # noqa: U101
+        _end_date: datetime,  # noqa: U101
+        _data_type: str = "kline",  # noqa: U101
     ) -> List[Dict[str, Union[str, int, float, bool]]]:
         """
-        获取历史数据
+        获取历史数据.
 
         注意:新浪财经API可能不提供完整的K线历史数据,
         此方法返回空列表,建议使用其他数据源获取历史数据.
@@ -230,7 +231,5 @@ class SinaDataAdapter(BaseDataAdapter):
         return []
 
     async def cleanup(self) -> None:
-        """
-        清理资源
-        """
+        """清理资源."""
         await self.disconnect()
