@@ -128,7 +128,7 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
             # 左侧：组合管理组件（固有组件）
             try:
                 left_widget = self._create_portfolio_manager()
-            except Exception as e:
+            except (AttributeError, TypeError, ValueError, RuntimeError) as e:
                 left_widget = QWidget()
                 ll = QVBoxLayout(left_widget)
                 msg = QLabel(f"左侧组合管理加载失败：{e}")
@@ -139,7 +139,7 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
             # 右侧：组合投资监控组件（固有组件）
             try:
                 right_widget = self._create_monitor_panel()
-            except Exception as e:
+            except (AttributeError, TypeError, ValueError, RuntimeError) as e:
                 right_widget = QWidget()
                 rl = QVBoxLayout(right_widget)
                 msg = QLabel(f"右侧监控面板加载失败：{e}")
@@ -150,7 +150,7 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
             main_layout.addWidget(main_splitter)
             # 界面就绪
             self.ui_ready = True
-        except Exception as e:
+        except (AttributeError, TypeError, ValueError, RuntimeError) as e:
             # 占位回退，避免整体不可见
             fallback = QWidget()
             fl = QVBoxLayout(fallback)
@@ -252,10 +252,12 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
                 pl.addWidget(msg)
                 demo_table = QTableWidget(0, 3)
                 demo_table.setHorizontalHeaderLabels(["组合", "权重", "状态"])
-                demo_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+                demo_table.horizontalHeader().setSectionResizeMode(
+                    QHeaderView.ResizeMode.Stretch
+                )
                 pl.addWidget(demo_table)
                 self.gateway_tab.addTab(placeholder, "示例网关")
-        except Exception as e:
+        except (AttributeError, TypeError, ValueError, RuntimeError) as e:
             # 占位失败也不影响主界面显示
             self.logger.warning("添加占位选项卡失败: %s", e)
 
@@ -377,7 +379,9 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
             # 简易示例占位表格
             demo_table = QTableWidget(0, 3)
             demo_table.setHorizontalHeaderLabels(["组合", "权重", "状态"])
-            demo_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+            demo_table.horizontalHeader().setSectionResizeMode(
+                QHeaderView.ResizeMode.Stretch
+            )
             pl.addWidget(demo_table)
             self.gateway_tab.addTab(placeholder, "示例网关")
 
@@ -438,9 +442,14 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
     def _update_portfolio_data(self):
         """更新组合数据"""
         # 空控件守卫：表格或选项卡未创建则不更新
-        if any(getattr(self, name, None) is None for name in [
-            "auto_portfolio_table", "custom_portfolio_table", "gateway_tab"
-        ]):
+        if any(
+            getattr(self, name, None) is None
+            for name in [
+                "auto_portfolio_table",
+                "custom_portfolio_table",
+                "gateway_tab",
+            ]
+        ):
             return
 
         if self.vnpy_adapter:
@@ -587,13 +596,12 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
         data = getattr(self, "portfolio_data", None)
         if data is None or not isinstance(data, (dict, list)):
             return
-        """更新监控数据"""
         # 就绪与控件守卫
         if not getattr(self, "ui_ready", False):
             return
         if not getattr(self, "gateway_tab", None):
             return
-        if self.gateway_tab.count() == 0:
+        if self.gateway_tab and self.gateway_tab.count() == 0:
             return
         if not self.vnpy_adapter:
             return
@@ -639,34 +647,54 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
         if not positions:
             return
         # 简化：仅清空并填充前几行示例
-        self.position_table.setRowCount(0)
-        for i, pos in enumerate(positions[:10]):
-            self.position_table.insertRow(i)
-            self.position_table.setItem(i, 0, QTableWidgetItem(str(pos.get("symbol", "--"))))
-            self.position_table.setItem(i, 1, QTableWidgetItem(str(pos.get("volume", 0))))
-            self.position_table.setItem(i, 2, QTableWidgetItem(str(pos.get("cost", 0))))
-            self.position_table.setItem(i, 3, QTableWidgetItem(str(pos.get("market_value", 0))))
-            self.position_table.setItem(i, 4, QTableWidgetItem(str(pos.get("pnl", 0))))
+        if self.position_table:
+            self.position_table.setRowCount(0)
+            for i, pos in enumerate(positions[:10]):
+                self.position_table.insertRow(i)
+                self.position_table.setItem(
+                    i, 0, QTableWidgetItem(str(pos.get("symbol", "--")))
+                )
+                self.position_table.setItem(
+                    i, 1, QTableWidgetItem(str(pos.get("volume", 0)))
+                )
+                self.position_table.setItem(
+                    i, 2, QTableWidgetItem(str(pos.get("cost", 0)))
+                )
+                self.position_table.setItem(
+                    i, 3, QTableWidgetItem(str(pos.get("market_value", 0)))
+                )
+                self.position_table.setItem(
+                    i, 4, QTableWidgetItem(str(pos.get("pnl", 0)))
+                )
 
     def _update_account_info(self, account_info):
         """更新账户信息"""
         if not account_info:
             return
         # 判空守卫
-        for name in ["total_pnl_label", "total_return_label", "max_drawdown_label", "sharpe_ratio_label"]:
+        for name in [
+            "total_pnl_label",
+            "total_return_label",
+            "max_drawdown_label",
+            "sharpe_ratio_label",
+        ]:
             if getattr(self, name, None) is None:
                 return
-        self.total_pnl_label.setText(str(account_info.get("total_pnl", "--")))
-        self.total_return_label.setText(str(account_info.get("total_return", "--")))
-        self.max_drawdown_label.setText(str(account_info.get("max_drawdown", "--")))
-        self.sharpe_ratio_label.setText(str(account_info.get("sharpe_ratio", "--")))
+        if self.total_pnl_label:
+            self.total_pnl_label.setText(str(account_info.get("total_pnl", "--")))
+        if self.total_return_label:
+            self.total_return_label.setText(str(account_info.get("total_return", "--")))
+        if self.max_drawdown_label:
+            self.max_drawdown_label.setText(str(account_info.get("max_drawdown", "--")))
+        if self.sharpe_ratio_label:
+            self.sharpe_ratio_label.setText(str(account_info.get("sharpe_ratio", "--")))
 
     def refresh_data(self):
         """刷新数据"""
         try:
             self._update_portfolio_data()
             self.show_info("组合投资数据已刷新")
-        except Exception as e:
+        except (AttributeError, TypeError, ValueError, RuntimeError) as e:
             self.show_error(f"刷新数据失败: {e}")
 
     def on_close(self):

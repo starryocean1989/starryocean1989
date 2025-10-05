@@ -12,8 +12,10 @@ from pathlib import Path
 
 # 项目特定导入 - 按字母顺序排列
 from backend.core import (
-    DataModelManager, MonitoringManager, PerformanceOptimizer,
-    TerminalEngine
+    DataModelManager,
+    MonitoringManager,
+    PerformanceOptimizer,
+    TerminalEngine,
 )
 from backend.core.factories import UnifiedFactory
 from backend.core.models import UnifiedMarketData
@@ -53,7 +55,7 @@ def test_complete_workflow():
         health_checker = HealthChecker(engine)
         health_result = health_checker.check_system_health()
 
-        if health_result['health_score'] < 80:
+        if health_result["health_score"] < 80:
             print(f"    ⚠️ 健康评分较低: {health_result['health_score']}")
         else:
             print(f"    ✅ 健康评分良好: {health_result['health_score']}")
@@ -63,7 +65,7 @@ def test_complete_workflow():
         test_runner = TestRunner(config_service)
         perf_result = test_runner.run_performance_tests()
 
-        if perf_result.get('success'):
+        if perf_result.get("success"):
             print("    ✅ 性能测试通过")
         else:
             print(f"    ❌ 性能测试失败: {perf_result.get('error')}")
@@ -76,7 +78,7 @@ def test_complete_workflow():
         time.sleep(3)
 
         status = monitoring_manager.get_status()
-        if status['performance_monitor']['active']:
+        if status["performance_monitor"]["active"]:
             print("    ✅ 性能监控正常")
         else:
             print("    ❌ 性能监控异常")
@@ -85,9 +87,9 @@ def test_complete_workflow():
         print("  🎯 执行综合测试...")
         comprehensive_result = monitoring_manager.run_comprehensive_test()
 
-        health_ok = comprehensive_result['summary']['health_score'] >= 80
-        tests_ok = comprehensive_result['summary']['tests_passed']
-        perf_ok = comprehensive_result['summary']['performance_ok']
+        health_ok = comprehensive_result["summary"]["health_score"] >= 80
+        tests_ok = comprehensive_result["summary"]["tests_passed"]
+        perf_ok = comprehensive_result["summary"]["performance_ok"]
         overall_success = health_ok and tests_ok and perf_ok
 
         if overall_success:
@@ -120,7 +122,7 @@ def test_hot_reload_integration():
 
         # 检查监控状态
         status = monitor.get_status()
-        if status['monitoring']:
+        if status["monitoring"]:
             print(f"    ✅ 热更新监控启动成功，监控 {status['files_watched']} 个文件")
         else:
             print("    ❌ 热更新监控启动失败")
@@ -152,8 +154,7 @@ def test_launcher_integration():
         diagnostics = launcher.run_diagnostics()
 
         success_count = sum(
-            1 for v in diagnostics.values()
-            if v and str(v) != 'import_error'
+            1 for v in diagnostics.values() if v and str(v) != "import_error"
         )
 
         if success_count >= 5:  # 大部分检查通过
@@ -197,14 +198,16 @@ class IntegrationTestSuite(unittest.TestCase):
             # 这些导入已经在文件顶部完成
 
             # 创建测试数据
+            from datetime import datetime
+
             market_data = UnifiedMarketData(
                 symbol="TEST001",
                 exchange="TEST",
                 data_type="tick",
-                datetime=None,
+                datetime=datetime.now(),
                 timestamp=0,
                 close_price=100.0,
-                volume=1000
+                volume=1000,
             )
 
             # 测试数据管理器
@@ -228,9 +231,9 @@ class IntegrationTestSuite(unittest.TestCase):
 
             # 测试工厂状态
             status = factory.get_status()
-            self.assertIn('gateway_count', status)
-            self.assertIn('strategy_count', status)
-            self.assertIn('datafeed_count', status)
+            self.assertIn("gateway_count", status)
+            self.assertIn("strategy_count", status)
+            self.assertIn("datafeed_count", status)
 
         except (ImportError, AttributeError, RuntimeError) as e:
             self.fail(f"工厂集成失败: {e}")
@@ -265,7 +268,7 @@ def main():
         ("完整工作流程", workflow_success),
         ("热更新集成", hot_reload_success),
         ("启动器集成", launcher_success),
-        ("单元测试套件", test_result.wasSuccessful())
+        ("单元测试套件", test_result.wasSuccessful()),
     ]
 
     passed = 0

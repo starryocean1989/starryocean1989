@@ -7,8 +7,6 @@ from typing import Any, Callable, Dict, Optional
 
 # pylint: disable=no-name-in-module
 from PySide6.QtCore import QTimer, Qt, Signal
-
-# pylint: disable=no-name-in-module
 from PySide6.QtWidgets import QMessageBox, QWidget
 
 

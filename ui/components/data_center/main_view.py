@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 
 # Import with proper type handling
 
+
 if TYPE_CHECKING:
     from ui.widgets.base_widget import BaseWidget
 
