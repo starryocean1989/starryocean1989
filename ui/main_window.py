@@ -437,9 +437,25 @@ class MainWindow(QMainWindow, LoggerMixin):
                 tab_text = "🛠️ 系统管理"
                 if self.tab_widget is not None:
                     self.tab_widget.addTab(self.function_interfaces["system"], tab_text)
+                # 确保UI设置和信号连接
+                if hasattr(self.function_interfaces["system"], "setup_ui"):
+                    self.function_interfaces["system"].setup_ui()
+                if hasattr(self.function_interfaces["system"], "connect_signals"):
+                    self.function_interfaces["system"].connect_signals()
                 self.logger.info("系统管理界面创建成功")
             except (ImportError, AttributeError, RuntimeError) as e:
+                import traceback
                 self.logger.error("系统管理界面创建失败: %s", e)
+                self.logger.error("详细错误信息: %s", traceback.format_exc())
+                # 创建占位标签，确保系统管理位置不会丢失
+                placeholder = QWidget()
+                placeholder_layout = QVBoxLayout(placeholder)
+                error_label = QLabel(f"系统管理加载失败：{str(e)}\n\n请检查依赖或模块实现")
+                error_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                error_label.setStyleSheet("color: #ff6b6b; font-size: 14px; padding: 20px;")
+                placeholder_layout.addWidget(error_label)
+                if self.tab_widget is not None:
+                    self.tab_widget.addTab(placeholder, "🛠️ 系统管理")
 
             # 数据中心界面（标准架构，4个子界面）
             try:

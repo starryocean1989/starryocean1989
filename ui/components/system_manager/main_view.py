@@ -123,10 +123,8 @@ class SystemManager(BaseWidget, LoggerMixin):
 
     def __init__(self, parent=None):
         """初始化系统管理界面."""
-        super().__init__(parent, "系统管理")
-        self.logger.info("系统管理界面初始化开始")
-
-        # 初始化所有UI组件属性
+        # 必须先初始化所有属性，再调用super().__init__()
+        # 因为BaseWidget会在__init__中自动调用setup_ui()
         self.tab_widget: QTabWidget = QTabWidget()
         self.system_status_tab: Optional[QWidget] = None
         self.performance_tab: Optional[QWidget] = None
@@ -177,6 +175,10 @@ class SystemManager(BaseWidget, LoggerMixin):
 
         # VNPY适配器
         self.vnpy_adapter: Optional[Any] = None
+        
+        # 现在调用父类初始化，这时setup_ui()会被调用
+        super().__init__(parent, "系统管理")
+        self.logger.info("系统管理界面初始化开始")
 
     def setup_ui(self):
         """设置用户界面."""
@@ -546,11 +548,16 @@ class SystemManager(BaseWidget, LoggerMixin):
 
     def connect_signals(self):
         """连接信号槽."""
-        # 初始化VNPY适配器
-        self._initialize_vnpy_adapter()
+        try:
+            # 初始化VNPY适配器
+            self._initialize_vnpy_adapter()
 
-        # 启动状态更新定时器
-        self.start_update_timer(2000, self._update_system_status)
+            # 启动状态更新定时器
+            self.start_update_timer(2000, self._update_system_status)
+        except Exception as e:
+            self.logger.error("连接信号失败: %s", e)
+            import traceback
+            self.logger.error("详细错误: %s", traceback.format_exc())
 
     def _initialize_vnpy_adapter(self):
         """初始化VNPY适配器."""
@@ -575,19 +582,19 @@ class SystemManager(BaseWidget, LoggerMixin):
 
             # 更新基础系统信息
             cpu_percent = psutil.cpu_percent()
-            if self.cpu_label:
+            if hasattr(self, 'cpu_label') and self.cpu_label:
                 self.cpu_label.setText(f"{cpu_percent:.1f}%")
 
             memory = psutil.virtual_memory()
-            if self.memory_label:
+            if hasattr(self, 'memory_label') and self.memory_label:
                 self.memory_label.setText(f"{memory.percent:.1f}%")
 
             disk = psutil.disk_usage("/")
-            if self.disk_label:
+            if hasattr(self, 'disk_label') and self.disk_label:
                 self.disk_label.setText(f"{disk.percent:.1f}%")
 
             network = psutil.net_if_addrs()
-            if self.network_label:
+            if hasattr(self, 'network_label') and self.network_label:
                 self.network_label.setText(f"接口数: {len(network)}")
 
             # 更新VNPY系统状态
