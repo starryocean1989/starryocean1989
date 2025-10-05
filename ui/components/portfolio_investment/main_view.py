@@ -300,7 +300,7 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
         """初始化VNPY适配器"""
         # 确保属性始终存在
         self.vnpy_adapter = None
-        
+
         try:
             if VnPyAdapter is not None:
                 self.vnpy_adapter = VnPyAdapter()
@@ -326,7 +326,8 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
             tab_text = self.gateway_tab.tabText(index)
             self.logger.info("切换到网关: %s", tab_text)
 
-    def start_update_timer(self, interval: int, callback):
+    def start_update_timer(self, interval: int = 1000,
+                           callback=None):
         """启动更新定时器（安全守卫）"""
         if not getattr(self, "ui_ready", False):
             return

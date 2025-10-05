@@ -56,13 +56,12 @@ except ImportError:
 
             def setup_ui(self):
                 """Set up UI - fallback implementation."""
-                pass
 
             def connect_signals(self):
                 """Connect signals - fallback implementation."""
-                pass
 
-            def start_update_timer(self, interval: int, callback):
+            def start_update_timer(self, interval: int = 1000,
+                                   callback=None):
                 """Start update timer."""
                 self._timer = QTimer()
                 self._timer.timeout.connect(callback)

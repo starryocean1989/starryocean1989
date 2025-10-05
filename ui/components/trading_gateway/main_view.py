@@ -5,8 +5,9 @@
 """
 
 import logging
+from typing import Any, Callable, Optional
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QComboBox, QGroupBox, QHBoxLayout, QHeaderView,
@@ -17,10 +18,10 @@ from PySide6.QtWidgets import (
 try:
     from ui.widgets.base_widget import BaseWidget
     from utils.logging_utils import LoggerMixin
-    from backend.core.vnpy_integration import VnPyAdapter as _VnPyAdapter
+    from backend.core.vnpy_integration import TerminalEngine as VnPyAdapter
     VNPY_AVAILABLE = True
 except ImportError:
-    _VnPyAdapter = None
+    VnPyAdapter = None
     VNPY_AVAILABLE = False
 
     class BaseWidget(QWidget):
@@ -250,21 +251,18 @@ class TradingGateway(BaseWidget, LoggerMixin):
         # 初始化VNPY适配器
         self._initialize_vnpy_adapter()
 
-        # 连接模板选择信号
-        self.template_combo.currentTextChanged.connect(
-            self._on_template_changed
-        )
+        # 连接模板选择信号（空控件守卫）
+        if self.template_combo is not None:
+            self.template_combo.currentTextChanged.connect(self._on_template_changed)
 
-        # 启动更新定时器
-        self.start_update_timer(
-            1000, self._update_gateway_status
-        )
+        # 启动更新定时器（就绪守卫）
+        self.start_update_timer(1000, self._update_gateway_status)
 
     def _initialize_vnpy_adapter(self):
         """初始化VNPY适配器."""
-        if VNPY_AVAILABLE and _VnPyAdapter:
+        if VNPY_AVAILABLE and VnPyAdapter:
             try:
-                self.vnpy_adapter = _VnPyAdapter()
+                self.vnpy_adapter = VnPyAdapter()
                 self.logger.info("VNPY适配器初始化完成")
             except (ImportError, RuntimeError, AttributeError) as e:
                 self.logger.error("VNPY适配器初始化失败: %s", e)
@@ -326,17 +324,20 @@ class TradingGateway(BaseWidget, LoggerMixin):
         self.logger.info("切换监控模板: %s", text)
         # 这里实现模板切换逻辑
 
-    def start_update_timer(self, interval: int, callback):
+    def start_update_timer(self, interval: int = 1000,
+                           callback: Optional[Callable[..., Any]] = None):
         """启动更新定时器（安全守卫）."""
         if not getattr(self, "ui_ready", False):
             return
         if callback is None:
             return
-        if getattr(self, "_update_timer", None) is None:
-            from PySide6.QtCore import QTimer as _QTimer
-            self._update_timer = _QTimer(self)
+        timer = getattr(self, "_update_timer", None)
+        if timer is None:
+            self._update_timer = QTimer(self)
             self._update_timer.timeout.connect(callback)
-        self._update_timer.start(int(interval) if interval else 1000)
+            timer = self._update_timer
+        if timer is not None:
+            timer.start(int(interval) if interval else 1000)
 
     def stop_update_timer(self):
         """停止更新定时器."""
@@ -371,6 +372,9 @@ class TradingGateway(BaseWidget, LoggerMixin):
 
     def _update_gateways_table(self, status):
         """更新网关表格."""
+        # 空控件守卫
+        if self.gateways_table is None:
+            return
         # 清空表格
         self.gateways_table.setRowCount(0)
 
@@ -398,24 +402,21 @@ class TradingGateway(BaseWidget, LoggerMixin):
             status_item.setBackground(status_color)
             self.gateways_table.setItem(i, 2, status_item)
 
-            # 操作按钮
+            # 操作按钮（统一变量，避免未绑定告警）
+            btn = QPushButton("断开" if is_connected else "连接")
             if is_connected:
-                disconnect_btn = QPushButton("断开")
-                disconnect_btn.clicked.connect(
+                btn.clicked.connect(
                     lambda gw=gateway_name: self._disconnect_gateway(gw)
                 )
             else:
-                connect_btn = QPushButton("连接")
-                connect_btn.clicked.connect(
-                    lambda gw=gateway_name: self._connect_gateway(gw)
-                )
-
-            self.gateways_table.setCellWidget(
-                i, 3, connect_btn if not is_connected else disconnect_btn
-            )
+                btn.clicked.connect(lambda gw=gateway_name: self._connect_gateway(gw))
+            self.gateways_table.setCellWidget(i, 3, btn)
 
     def _update_gateways_table_fallback(self):
         """备用网关表格更新（VNPY不可用时）."""
+        # 空控件守卫
+        if self.gateways_table is None:
+            return
         # 清空表格
         self.gateways_table.setRowCount(0)
 
@@ -447,18 +448,25 @@ class TradingGateway(BaseWidget, LoggerMixin):
         """连接网关."""
         if self.vnpy_adapter:
             try:
-                # 这里可以实现实际的网关连接逻辑
-                result = self.vnpy_adapter.connect_gateway(
-                    gateway_name, {}
-                )
-                if result.get('success', False):
+                # 兼容不同签名与方法名
+                result = None
+                if hasattr(self.vnpy_adapter, "connect_gateway"):
+                    try:
+                        result = self.vnpy_adapter.connect_gateway(gateway_name)
+                    except TypeError:
+                        result = self.vnpy_adapter.connect_gateway(gateway_name, **{})
+                elif hasattr(self.vnpy_adapter, "connect"):
+                    try:
+                        result = self.vnpy_adapter.connect(gateway_name)
+                    except TypeError:
+                        result = self.vnpy_adapter.connect(gateway_name, **{})
+
+                if ((isinstance(result, dict) and result.get("success", False)) or
+                        (result is True)):
                     self.show_info(f"网关 {gateway_name} 连接成功")
                     self._update_gateway_status()
                 else:
-                    self.show_error(
-                        f"网关 {gateway_name} 连接失败: "
-                        f"{result.get('message', '未知错误')}"
-                    )
+                    self.show_error(f"网关 {gateway_name} 连接失败")
             except (RuntimeError, AttributeError, ConnectionError) as e:
                 self.show_error(f"连接网关失败: {str(e)}")
         else:
@@ -468,15 +476,18 @@ class TradingGateway(BaseWidget, LoggerMixin):
         """断开网关."""
         if self.vnpy_adapter:
             try:
-                result = self.vnpy_adapter.disconnect_gateway(gateway_name)
-                if result.get('success', False):
+                result = None
+                if hasattr(self.vnpy_adapter, "disconnect_gateway"):
+                    result = self.vnpy_adapter.disconnect_gateway(gateway_name)
+                elif hasattr(self.vnpy_adapter, "disconnect"):
+                    result = self.vnpy_adapter.disconnect(gateway_name)
+
+                if ((isinstance(result, dict) and result.get("success", False)) or
+                        (result is True)):
                     self.show_info(f"网关 {gateway_name} 已断开")
                     self._update_gateway_status()
                 else:
-                    self.show_error(
-                        f"断开网关失败: "
-                        f"{result.get('message', '未知错误')}"
-                    )
+                    self.show_error("断开网关失败")
             except (RuntimeError, AttributeError, ConnectionError) as e:
                 self.show_error(f"断开网关失败: {str(e)}")
         else:
@@ -484,6 +495,9 @@ class TradingGateway(BaseWidget, LoggerMixin):
 
     def _update_strategies_table(self, status):
         """更新策略表格."""
+        # 空控件守卫
+        if self.strategy_table is None:
+            return
         # 清空表格
         self.strategy_table.setRowCount(0)
 
@@ -508,21 +522,13 @@ class TradingGateway(BaseWidget, LoggerMixin):
 
             self.strategy_table.setItem(i, 3, QTableWidgetItem(start_time))
 
-            # 操作按钮
+            # 操作按钮（统一变量，避免未绑定）
+            btn = QPushButton("停止" if status == "运行中" else "启动")
             if status == "运行中":
-                stop_btn = QPushButton("停止")
-                stop_btn.clicked.connect(
-                    lambda s=name: self._stop_strategy(s)
-                )
+                btn.clicked.connect(lambda s=name: self._stop_strategy(s))
             else:
-                start_btn = QPushButton("启动")
-                start_btn.clicked.connect(
-                    lambda s=name: self._start_strategy(s)
-                )
-
-            self.strategy_table.setCellWidget(
-                i, 4, start_btn if status != "运行中" else stop_btn
-            )
+                btn.clicked.connect(lambda s=name: self._start_strategy(s))
+            self.strategy_table.setCellWidget(i, 4, btn)
 
     def refresh_data(self):
         """刷新数据."""

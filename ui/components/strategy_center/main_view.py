@@ -646,7 +646,8 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         # 这里实现指标文件加载逻辑
         self.code_editor.setText(f"# 加载指标文件: {file_path}\n# 这里是指标代码内容...")
 
-    def start_update_timer(self, interval: int, callback):
+    def start_update_timer(self, interval: int = 1000,
+                           callback=None):
         """启动更新定时器（安全守卫）."""
         if not getattr(self, "ui_ready", False):
             return

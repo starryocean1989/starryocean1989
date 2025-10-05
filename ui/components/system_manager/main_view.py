@@ -60,7 +60,8 @@ except ImportError:
         def connect_signals(self):
             """Connect signals - fallback implementation."""
 
-        def start_update_timer(self, interval: int, callback):
+        def start_update_timer(self, interval: int = 1000,
+                               callback=None):
             """启动更新定时器."""
             self._timer = QTimer()
             self._timer.timeout.connect(callback)
