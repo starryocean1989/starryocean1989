@@ -17,8 +17,12 @@ from PySide6.QtWidgets import (
 try:
     from ui.widgets.base_widget import BaseWidget
     from utils.logging_utils import LoggerMixin
-    from backend.core.vnpy_integration import VnPyAdapter
+    from backend.core.vnpy_integration import VnPyAdapter as _VnPyAdapter
+    VNPY_AVAILABLE = True
 except ImportError:
+    _VnPyAdapter = None
+    VNPY_AVAILABLE = False
+
     class BaseWidget:
         """Base widget class."""
 
@@ -43,6 +47,20 @@ class TradingGateway(BaseWidget, LoggerMixin):
         """Initialize trading gateway."""
         super().__init__(parent, "交易网关")
         self.logger.info("交易网关界面初始化开始")
+
+        # Initialize UI components
+        self.new_gateway_btn = None
+        self.gateways_table = None
+        self.content_tab = None
+        self.strategy_tab = None
+        self.monitor_tab = None
+        self.strategy_table = None
+        self.deploy_btn = None
+        self.start_all_btn = None
+        self.stop_all_btn = None
+        self.template_combo = None
+        self.monitor_table = None
+        self.vnpy_adapter = None
 
     def setup_ui(self):
         """设置用户界面."""
@@ -218,12 +236,16 @@ class TradingGateway(BaseWidget, LoggerMixin):
 
     def _initialize_vnpy_adapter(self):
         """初始化VNPY适配器."""
-        try:
-            self.vnpy_adapter = VnPyAdapter()
-            self.logger.info("VNPY适配器初始化完成")
-        except Exception as e:
-            self.logger.error("VNPY适配器初始化失败: %s", e)
+        if VNPY_AVAILABLE and _VnPyAdapter:
+            try:
+                self.vnpy_adapter = _VnPyAdapter()
+                self.logger.info("VNPY适配器初始化完成")
+            except (ImportError, RuntimeError, AttributeError) as e:
+                self.logger.error("VNPY适配器初始化失败: %s", e)
+                self.vnpy_adapter = None
+        else:
             self.vnpy_adapter = None
+            self.logger.warning("VNPY适配器不可用")
 
     def _create_new_gateway(self):
         """新建网关."""
@@ -244,7 +266,7 @@ class TradingGateway(BaseWidget, LoggerMixin):
                 # 这里可以实现停止所有策略的逻辑
                 self.show_info("停止所有策略...")
                 self._update_gateway_status()
-            except Exception as e:
+            except (RuntimeError, AttributeError, ConnectionError) as e:
                 self.show_error(f"停止策略失败: {str(e)}")
         else:
             self.show_warning("VNPY适配器不可用")
@@ -256,7 +278,7 @@ class TradingGateway(BaseWidget, LoggerMixin):
                 # 这里可以实现启动策略的逻辑
                 self.show_info(f"启动策略: {strategy_name}")
                 self._update_gateway_status()
-            except Exception as e:
+            except (RuntimeError, AttributeError, ConnectionError) as e:
                 self.show_error(f"启动策略失败: {str(e)}")
         else:
             self.show_warning("VNPY适配器不可用")
@@ -268,7 +290,7 @@ class TradingGateway(BaseWidget, LoggerMixin):
                 # 这里可以实现停止策略的逻辑
                 self.show_info(f"停止策略: {strategy_name}")
                 self._update_gateway_status()
-            except Exception as e:
+            except (RuntimeError, AttributeError, ConnectionError) as e:
                 self.show_error(f"停止策略失败: {str(e)}")
         else:
             self.show_warning("VNPY适配器不可用")
@@ -295,7 +317,7 @@ class TradingGateway(BaseWidget, LoggerMixin):
                 # 更新策略表格
                 self._update_strategies_table(status)
 
-            except Exception as e:
+            except (RuntimeError, AttributeError, ConnectionError) as e:
                 self.logger.error("更新网关状态失败: %s", e)
         else:
             # 无VNPY适配器时使用模拟数据
@@ -391,7 +413,7 @@ class TradingGateway(BaseWidget, LoggerMixin):
                         f"网关 {gateway_name} 连接失败: "
                         f"{result.get('message', '未知错误')}"
                     )
-            except Exception as e:
+            except (RuntimeError, AttributeError, ConnectionError) as e:
                 self.show_error(f"连接网关失败: {str(e)}")
         else:
             self.show_warning("VNPY适配器不可用")
@@ -409,7 +431,7 @@ class TradingGateway(BaseWidget, LoggerMixin):
                         f"断开网关失败: "
                         f"{result.get('message', '未知错误')}"
                     )
-            except Exception as e:
+            except (RuntimeError, AttributeError, ConnectionError) as e:
                 self.show_error(f"断开网关失败: {str(e)}")
         else:
             self.show_warning("VNPY适配器不可用")

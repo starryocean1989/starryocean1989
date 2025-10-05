@@ -7,9 +7,9 @@
 
 import logging
 import time
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QFormLayout, QGroupBox, QHBoxLayout, QHeaderView,
@@ -28,47 +28,68 @@ except ImportError:
     pg = None
 
 try:
-    from ..widgets.base_widget import BaseWidget
-    from ...utils.logging_utils import LoggerMixin
+    from backend.infrastructure.data_module_vnpy.core_adapter import (
+        VnPyCoreAdapter as _VnPyAdapter
+    )
 except ImportError:
     try:
-        from ui.widgets.base_widget import BaseWidget
-        from utils.logging_utils import LoggerMixin
+        from backend.core.vnpy_integration import (
+            TerminalEngine as _VnPyAdapter
+        )
     except ImportError:
-        # 简化版本
-        class BaseWidget:
-            """基础组件类."""
+        _VnPyAdapter = None
 
-            def __init__(self, parent=None, title=""):
-                """初始化基础组件."""
-                self.parent = parent
-                self.title = title
+try:
+    from ui.widgets.base_widget import BaseWidget
+    from utils.logging_utils import LoggerMixin
+except ImportError:
+    # 简化版本
+    class BaseWidget:
+        """基础组件类."""
+
+        def __init__(self, parent=None, title=""):
+            """初始化基础组件."""
+            self.parent = parent
+            self.title = title
+            self._timer = None
+
+        def start_update_timer(self, interval: int, callback):
+            """启动更新定时器."""
+            self._timer = QTimer()
+            self._timer.timeout.connect(callback)
+            self._timer.start(interval)
+
+        def stop_update_timer(self):
+            """停止更新定时器."""
+            if self._timer:
+                self._timer.stop()
                 self._timer = None
 
-            def start_update_timer(self, interval: int, callback):
-                """启动更新定时器."""
-                from PySide6.QtCore import QTimer
-                self._timer = QTimer()
-                self._timer.timeout.connect(callback)
-                self._timer.start(interval)
+        def show_info(self, message: str):
+            """显示信息."""
+            print(f"INFO: {message}")
 
-            def stop_update_timer(self):
-                """停止更新定时器."""
-                if self._timer:
-                    self._timer.stop()
-                    self._timer = None
+    class LoggerMixin:
+        """日志混入类."""
 
-            def show_info(self, message: str):
-                """显示信息."""
-                print(f"INFO: {message}")
+        @property
+        def logger(self):
+            """获取日志记录器."""
+            return logging.getLogger(self.__class__.__name__)
 
-        class LoggerMixin:
-            """日志混入类."""
 
-            @property
-            def logger(self):
-                """获取日志记录器."""
-                return logging.getLogger(self.__class__.__name__)
+class MockVnPyAdapter:
+    """模拟VNPY适配器类."""
+
+    def get_status(self):
+        """获取模拟状态."""
+        return {
+            'vnpy_available': False,
+            'gateways': [],
+            'connected_gateways': False,
+            'real_time_worker_running': False,
+            'subscribed_symbols': []
+        }
 
 
 class SystemManager(BaseWidget, LoggerMixin):
@@ -78,7 +99,7 @@ class SystemManager(BaseWidget, LoggerMixin):
         """初始化系统管理界面."""
         super().__init__(parent, "系统管理")
         self.logger.info("系统管理界面初始化开始")
-        
+
         # 初始化所有UI组件属性
         self.tab_widget: Optional[QTabWidget] = None
         self.system_status_tab: Optional[QWidget] = None
@@ -89,7 +110,7 @@ class SystemManager(BaseWidget, LoggerMixin):
         self.logs_tab: Optional[QWidget] = None
         self.diagnosis_tab: Optional[QWidget] = None
         self.tools_tab: Optional[QWidget] = None
-        
+
         # 系统状态组件
         self.cpu_label: Optional[QLabel] = None
         self.memory_label: Optional[QLabel] = None
@@ -97,7 +118,7 @@ class SystemManager(BaseWidget, LoggerMixin):
         self.network_label: Optional[QLabel] = None
         self.status_table: Optional[QTableWidget] = None
         self.vnpy_status_label: Optional[QLabel] = None
-        
+
         # 性能监控组件
         self.cpu_plot: Optional[Any] = None
         self.cpu_curve: Optional[Any] = None
@@ -106,28 +127,28 @@ class SystemManager(BaseWidget, LoggerMixin):
         self.performance_history: Dict[str, list] = {'cpu': [], 'memory': []}
         self.max_history_points: int = 100
         self.performance_table: Optional[QTableWidget] = None
-        
+
         # 告警管理组件
         self.alerts_table: Optional[QTableWidget] = None
         self.alert_history_table: Optional[QTableWidget] = None
-        
+
         # 服务管理组件
         self.services_table: Optional[QTableWidget] = None
         self.health_progress: Optional[QProgressBar] = None
-        
+
         # 配置管理组件
         self.config_table: Optional[QTableWidget] = None
-        
+
         # 日志管理组件
         self.logs_table: Optional[QTableWidget] = None
-        
+
         # 诊断工具组件
         self.diagnosis_table: Optional[QTableWidget] = None
         self.diagnosis_text: Optional[QLabel] = None
-        
+
         # 工具集合组件
         self.tools_table: Optional[QTableWidget] = None
-        
+
         # VNPY适配器
         self.vnpy_adapter: Optional[Any] = None
 
@@ -490,23 +511,23 @@ class SystemManager(BaseWidget, LoggerMixin):
     def _initialize_vnpy_adapter(self):
         """初始化VNPY适配器."""
         try:
-            # 尝试导入VNPY适配器
-            try:
-                from integration.vnpy_adapter import VnPyAdapter
-                self.vnpy_adapter = VnPyAdapter()
+            if _VnPyAdapter is not None:
+                self.vnpy_adapter = _VnPyAdapter()
                 self.logger.info("VNPY适配器初始化完成")
-            except ImportError:
+            else:
                 # 如果无法导入，创建一个模拟适配器
                 self.vnpy_adapter = MockVnPyAdapter()
                 self.logger.info("使用模拟VNPY适配器")
-        except Exception as e:
+        except (RuntimeError, AttributeError) as e:
             self.logger.error("VNPY适配器初始化失败: %s", e)
             self.vnpy_adapter = None
 
     def _update_system_status(self):
         """更新系统状态."""
         try:
-            import psutil
+            if psutil is None:
+                self.logger.warning("psutil库未安装，无法获取系统状态")
+                return
 
             # 更新基础系统信息
             cpu_percent = psutil.cpu_percent()
@@ -561,16 +582,14 @@ class SystemManager(BaseWidget, LoggerMixin):
             # 更新性能图表
             self._update_performance_charts()
 
-        except Exception as e:
-            self.logger.error(f"更新系统状态失败: {e}")
+        except (AttributeError, RuntimeError) as e:
+            self.logger.error("更新系统状态失败: %s", e)
 
     def _update_performance_charts(self):
         """更新性能图表."""
         try:
-            import psutil
-            import time
-
-            if not hasattr(self, 'cpu_curve'):
+            if (psutil is None or not hasattr(self, 'cpu_curve') or
+                    self.cpu_curve is None):
                 return
 
             current_time = time.time()
@@ -599,13 +618,14 @@ class SystemManager(BaseWidget, LoggerMixin):
                 times, memory_values = zip(*self.performance_history['memory'])
                 self.memory_curve.setData(times, memory_values)
 
-        except Exception as e:
-            self.logger.error(f"更新性能图表失败: {e}")
+        except (AttributeError, RuntimeError) as e:
+            self.logger.error("更新性能图表失败: %s", e)
 
     def _update_status_table(self):
         """更新状态表格."""
         try:
-            import psutil
+            if psutil is None:
+                return
 
             # 清空表格
             self.status_table.setRowCount(0)
@@ -666,8 +686,8 @@ class SystemManager(BaseWidget, LoggerMixin):
                 else:
                     status_item.setBackground(QColor("#f44336"))
 
-        except Exception as e:
-            self.logger.error(f"更新状态表格失败: {e}")
+        except (AttributeError, RuntimeError) as e:
+            self.logger.error("更新状态表格失败: %s", e)
 
     def _clear_logs(self):
         """清空日志."""

@@ -4,13 +4,13 @@
 import os
 from contextlib import suppress
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Any, Dict, List
 
-from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QPushButton,
-    QTableWidget, QTableWidgetItem, QHeaderView, QTextEdit
-)
 from PySide6.QtCore import QTimer
+from PySide6.QtWidgets import (
+    QGroupBox, QHBoxLayout, QHeaderView, QLabel, QPushButton,
+    QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget
+)
 
 try:
     import psutil  # 用于读取进程与系统信息
@@ -197,4 +197,3 @@ class OpsCenter(QWidget):
                     lines.append(f"== {lf.name} ==")
                     lines.extend(tail)
         self.log_view.setPlainText("\n".join(lines))
-
