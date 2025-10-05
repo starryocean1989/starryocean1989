@@ -11,7 +11,7 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 
-class DataApi:
+class DataAPI:
     """数据API类."""
 
     def __init__(self) -> None:

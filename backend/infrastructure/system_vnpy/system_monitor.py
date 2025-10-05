@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 # 尝试导入psutil,如果没有则使用基础实现
 try:
     import psutil
+
     HAS_PSUTIL = True
 except ImportError:
     HAS_PSUTIL = False
@@ -71,19 +72,19 @@ class SystemMonitor:
                 network_interfaces = list(psutil.net_if_addrs().keys())
 
                 # 获取磁盘总空间
-                disk_usage = psutil.disk_usage('/')
+                disk_usage = psutil.disk_usage("/")
 
                 return SystemInfo(
                     platform=platform.system(),
                     platform_version=platform.version(),
                     architecture=platform.architecture()[0],
                     hostname=platform.node(),
-                    cpu_count=psutil.cpu_count(logical=False),
-                    cpu_count_logical=psutil.cpu_count(logical=True),
+                    cpu_count=psutil.cpu_count(logical=False) or 1,
+                    cpu_count_logical=psutil.cpu_count(logical=True) or 1,
                     memory_total=psutil.virtual_memory().total,
                     disk_total=disk_usage.total,
                     network_interfaces=network_interfaces,
-                    boot_time=datetime.fromtimestamp(psutil.boot_time())
+                    boot_time=datetime.fromtimestamp(psutil.boot_time()),
                 )
             else:
                 # 基础实现
@@ -97,7 +98,7 @@ class SystemMonitor:
                     memory_total=1024 * 1024 * 1024,  # 1GB 默认值
                     disk_total=100 * 1024 * 1024 * 1024,  # 100GB 默认值
                     network_interfaces=["eth0"],
-                    boot_time=datetime.now()
+                    boot_time=datetime.now(),
                 )
         except (OSError, AttributeError, ImportError) as e:
             logger.error("获取系统信息失败: %s", e)
@@ -114,7 +115,7 @@ class SystemMonitor:
                 memory = psutil.virtual_memory()
 
                 # 磁盘使用率
-                disk = psutil.disk_usage('/')
+                disk = psutil.disk_usage("/")
 
                 # 网络流量
                 network = psutil.net_io_counters()
@@ -138,7 +139,7 @@ class SystemMonitor:
                     network_recv=network.bytes_recv,
                     process_count=process_count,
                     load_average=load_average,
-                    timestamp=datetime.now()
+                    timestamp=datetime.now(),
                 )
             else:
                 # 基础实现(无psutil时返回默认值)
@@ -150,7 +151,7 @@ class SystemMonitor:
                     network_recv=2048 * 1024,
                     process_count=150,
                     load_average=[0.5, 0.4, 0.3],
-                    timestamp=datetime.now()
+                    timestamp=datetime.now(),
                 )
         except (OSError, AttributeError, ImportError) as e:
             logger.error("获取资源使用情况失败: %s", e)
@@ -176,7 +177,7 @@ class SystemMonitor:
                         "user": cpu_times.user,
                         "system": cpu_times.system,
                         "idle": cpu_times.idle,
-                    }
+                    },
                 }
             else:
                 return {
@@ -192,7 +193,7 @@ class SystemMonitor:
                         "user": 1000.0,
                         "system": 500.0,
                         "idle": 5000.0,
-                    }
+                    },
                 }
         except (OSError, AttributeError, ImportError) as e:
             logger.error("获取CPU信息失败: %s", e)
@@ -218,7 +219,7 @@ class SystemMonitor:
                         "used": swap_memory.used,
                         "free": swap_memory.free,
                         "percent": swap_memory.percent,
-                    }
+                    },
                 }
             else:
                 return {
@@ -234,7 +235,7 @@ class SystemMonitor:
                         "used": 512 * 1024 * 1024,
                         "free": 1.5 * 1024 * 1024 * 1024,
                         "percent": 25.0,
-                    }
+                    },
                 }
         except (OSError, AttributeError, ImportError) as e:
             logger.error("获取内存信息失败: %s", e)
@@ -297,19 +298,18 @@ class SystemMonitor:
             net_if_stats = psutil.net_if_stats()
 
             for interface, addresses in net_if_addrs.items():
-                interface_info = {
-                    "addresses": [],
-                    "stats": {}
-                }
+                interface_info = {"addresses": [], "stats": {}}
 
                 # 地址信息
                 for addr in addresses:
-                    interface_info["addresses"].append({
-                        "family": str(addr.family),
-                        "address": addr.address,
-                        "netmask": addr.netmask,
-                        "broadcast": addr.broadcast,
-                    })
+                    interface_info["addresses"].append(
+                        {
+                            "family": str(addr.family),
+                            "address": addr.address,
+                            "netmask": addr.netmask,
+                            "broadcast": addr.broadcast,
+                        }
+                    )
 
                 # 统计信息
                 if interface in net_if_stats:
@@ -342,50 +342,53 @@ class SystemMonitor:
             logger.error("获取网络信息失败: %s", e)
             return {}
 
-    def get_process_list(
-        self, sort_by: str = "cpu_percent"
-    ) -> List[Dict[str, Any]]:
+    def get_process_list(self, sort_by: str = "cpu_percent") -> List[Dict[str, Any]]:
         """获取进程列表."""
         try:
             if not HAS_PSUTIL:
                 # 返回默认数据(无psutil时)
                 return [
                     {
-                        "pid": 1, "name": "python", "cpu_percent": 25.0,
-                        "memory_percent": 15.0, "memory_mb": 256.0,
-                        "status": "running"
+                        "pid": 1,
+                        "name": "python",
+                        "cpu_percent": 25.0,
+                        "memory_percent": 15.0,
+                        "memory_mb": 256.0,
+                        "status": "running",
                     },
                     {
-                        "pid": 2, "name": "chrome", "cpu_percent": 15.0,
-                        "memory_percent": 20.0, "memory_mb": 512.0,
-                        "status": "running"
+                        "pid": 2,
+                        "name": "chrome",
+                        "cpu_percent": 15.0,
+                        "memory_percent": 20.0,
+                        "memory_mb": 512.0,
+                        "status": "running",
                     },
                     {
-                        "pid": 3, "name": "system", "cpu_percent": 5.0,
-                        "memory_percent": 10.0, "memory_mb": 128.0,
-                        "status": "running"
+                        "pid": 3,
+                        "name": "system",
+                        "cpu_percent": 5.0,
+                        "memory_percent": 10.0,
+                        "memory_mb": 128.0,
+                        "status": "running",
                     },
                 ]
 
             processes = []
 
-            for proc in psutil.process_iter([
-                'pid', 'name', 'cpu_percent', 'memory_percent', 'status'
-            ]):
+            for proc in psutil.process_iter(
+                ["pid", "name", "cpu_percent", "memory_percent", "status"]
+            ):
                 try:
                     proc_info = proc.info
-                    proc_info['memory_mb'] = (
-                        proc.memory_info().rss / 1024 / 1024
-                    )
+                    proc_info["memory_mb"] = proc.memory_info().rss / 1024 / 1024
                     processes.append(proc_info)
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     continue
 
             # 排序
             if sort_by in ["cpu_percent", "memory_percent", "memory_mb"]:
-                processes.sort(
-                    key=lambda x: x.get(sort_by, 0), reverse=True
-                )
+                processes.sort(key=lambda x: x.get(sort_by, 0), reverse=True)
 
             return processes[:50]  # 返回前50个进程
         except (OSError, AttributeError, ImportError) as e:
@@ -400,7 +403,7 @@ class ResourceMonitor:
         self,
         threshold_cpu: float = 80.0,
         threshold_memory: float = 80.0,
-        threshold_disk: float = 90.0
+        threshold_disk: float = 90.0,
     ):
         """初始化资源监控器."""
         self.threshold_cpu = threshold_cpu
@@ -413,34 +416,40 @@ class ResourceMonitor:
         alerts = []
 
         if usage.cpu_percent > self.threshold_cpu:
-            alerts.append({
-                "type": "cpu_high",
-                "level": "warning",
-                "message": f"CPU使用率过高: {usage.cpu_percent:.1f}%",
-                "threshold": self.threshold_cpu,
-                "current": usage.cpu_percent,
-                "timestamp": usage.timestamp
-            })
+            alerts.append(
+                {
+                    "type": "cpu_high",
+                    "level": "warning",
+                    "message": f"CPU使用率过高: {usage.cpu_percent:.1f}%",
+                    "threshold": self.threshold_cpu,
+                    "current": usage.cpu_percent,
+                    "timestamp": usage.timestamp,
+                }
+            )
 
         if usage.memory_percent > self.threshold_memory:
-            alerts.append({
-                "type": "memory_high",
-                "level": "warning",
-                "message": f"内存使用率过高: {usage.memory_percent:.1f}%",
-                "threshold": self.threshold_memory,
-                "current": usage.memory_percent,
-                "timestamp": usage.timestamp
-            })
+            alerts.append(
+                {
+                    "type": "memory_high",
+                    "level": "warning",
+                    "message": f"内存使用率过高: {usage.memory_percent:.1f}%",
+                    "threshold": self.threshold_memory,
+                    "current": usage.memory_percent,
+                    "timestamp": usage.timestamp,
+                }
+            )
 
         if usage.disk_percent > self.threshold_disk:
-            alerts.append({
-                "type": "disk_high",
-                "level": "critical",
-                "message": f"磁盘使用率过高: {usage.disk_percent:.1f}%",
-                "threshold": self.threshold_disk,
-                "current": usage.disk_percent,
-                "timestamp": usage.timestamp
-            })
+            alerts.append(
+                {
+                    "type": "disk_high",
+                    "level": "critical",
+                    "message": f"磁盘使用率过高: {usage.disk_percent:.1f}%",
+                    "threshold": self.threshold_disk,
+                    "current": usage.disk_percent,
+                    "timestamp": usage.timestamp,
+                }
+            )
 
         # 保存告警历史
         self.alerts.extend(alerts)
@@ -454,40 +463,62 @@ class HardwareMonitor:
     def get_temperature_info(self) -> Dict[str, Any]:
         """获取温度信息."""
         try:
-            temps = psutil.sensors_temperatures()
-            temp_info = {}
+            if not HAS_PSUTIL:
+                return {}
 
-            for name, entries in temps.items():
-                temp_info[name] = []
-                for entry in entries:
-                    temp_info[name].append({
-                        "label": entry.label or "Unknown",
-                        "current": entry.current,
-                        "high": entry.high,
-                        "critical": entry.critical,
-                    })
+            # 使用try-except处理平台兼容性问题
+            try:
+                temps = psutil.sensors_temperatures()  # type: ignore
+                temp_info = {}
 
-            return temp_info
-        except (OSError, AttributeError, ImportError) as e:
+                for name, entries in temps.items():
+                    temp_info[name] = []
+                    for entry in entries:
+                        temp_info[name].append(
+                            {
+                                "label": entry.label or "Unknown",
+                                "current": entry.current,
+                                "high": entry.high,
+                                "critical": entry.critical,
+                            }
+                        )
+
+                return temp_info
+            except AttributeError:
+                logger.warning("当前平台不支持温度传感器")
+                return {}
+
+        except (OSError, ImportError) as e:
             logger.warning("获取温度信息失败(可能不支持): %s", e)
             return {}
 
     def get_fan_info(self) -> Dict[str, Any]:
         """获取风扇信息."""
         try:
-            fans = psutil.sensors_fans()
-            fan_info = {}
+            if not HAS_PSUTIL:
+                return {}
 
-            for name, entries in fans.items():
-                fan_info[name] = []
-                for entry in entries:
-                    fan_info[name].append({
-                        "label": entry.label or "Unknown",
-                        "current": entry.current,
-                    })
+            # 使用try-except处理平台兼容性问题
+            try:
+                fans = psutil.sensors_fans()  # type: ignore
+                fan_info = {}
 
-            return fan_info
-        except (OSError, AttributeError, ImportError) as e:
+                for name, entries in fans.items():
+                    fan_info[name] = []
+                    for entry in entries:
+                        fan_info[name].append(
+                            {
+                                "label": entry.label or "Unknown",
+                                "current": entry.current,
+                            }
+                        )
+
+                return fan_info
+            except AttributeError:
+                logger.warning("当前平台不支持风扇传感器")
+                return {}
+
+        except (OSError, ImportError) as e:
             logger.warning("获取风扇信息失败(可能不支持): %s", e)
             return {}
 

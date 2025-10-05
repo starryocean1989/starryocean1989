@@ -2,7 +2,7 @@
 """VnPy数据馈送模块 - 通过vnpy主包统一接入数据引擎."""
 
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 # Third-party imports
 from vnpy.trader.gateway import BaseGateway
@@ -13,7 +13,7 @@ from backend.infrastructure.data_module_vnpy.core_adapter import (
     Exchange,
     OrderRequest,
     SubscribeRequest,
-    vnpy_adapter
+    vnpy_adapter,
 )
 
 logger = logging.getLogger(__name__)
@@ -31,7 +31,7 @@ class VnpyDataPusher:
         # 使用全局适配器
         if not vnpy_adapter.is_initialized():
             vnpy_adapter.initialize()
-        self.event_engine = vnpy_adapter.get_event_engine()
+        self.event_engine: Optional[Any] = vnpy_adapter.get_event_engine()
 
     async def push_quotes(self, quotes: List[Dict[str, Any]]) -> None:
         """推送行情数据到VnPy事件引擎."""
@@ -60,7 +60,7 @@ class VnpyDataPusher:
                     EVENT_TICK + quote.get("symbol", ""), tick
                 )
                 vnpy_adapter.put_event(event)
-                logger.debug("推送行情数据: %s", quote.get('symbol'))
+                logger.debug("推送行情数据: %s", quote.get("symbol"))
             except (ValueError, KeyError, TypeError) as e:
                 logger.error("推送行情数据失败: %s", e)
 
@@ -74,6 +74,8 @@ class EngineDatafeed(BaseGateway):
         if not vnpy_adapter.is_initialized():
             vnpy_adapter.initialize()
         event_engine = vnpy_adapter.get_event_engine()
+        if event_engine is None:
+            raise RuntimeError("VnPy事件引擎未初始化，无法创建数据馈送网关")
         super().__init__(event_engine, gateway_name)
         self.logger = logging.getLogger(__name__)
 

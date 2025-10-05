@@ -8,6 +8,7 @@
 import logging
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 # 添加项目根目录到Python路径
@@ -18,17 +19,17 @@ sys.path.insert(0, str(project_root))
 try:
     from backend.core.factories import UnifiedFactory
     from backend.core.imports import (
-        ModuleAvailability, check_module_availability, setup_logging
+        ModuleAvailability,
+        check_module_availability,
+        setup_logging,
     )
-    from backend.core.models import (
-        UnifiedMarketData, get_data_model_manager
-    )
+    from backend.core.models import UnifiedMarketData, get_data_model_manager
     from backend.core.shared_services import (
-        ConfigService, LoggingService, MonitoringService
+        ConfigService,
+        LoggingService,
+        MonitoringService,
     )
-    from backend.core.vnpy_integration import (
-        VNPY_AVAILABLE, get_terminal_engine
-    )
+    from backend.core.vnpy_integration import VNPY_AVAILABLE, get_terminal_engine
 except ImportError as e:
     print(f"导入错误: {e}")
     sys.exit(1)
@@ -98,14 +99,14 @@ def test_data_models():
             symbol="000001",
             exchange="SZSE",
             data_type="tick",
-            datetime=None,
-            timestamp=0,
+            datetime=datetime.now(),
+            timestamp=int(datetime.now().timestamp()),
             open_price=10.0,
             high_price=10.5,
             low_price=9.8,
             close_price=10.2,
             volume=1000,
-            turnover=10200.0
+            turnover=10200.0,
         )
         print(f"行情数据模型创建成功: {market_data.symbol}")
 
@@ -200,7 +201,7 @@ def main():
     # 设置日志
     logging.basicConfig(
         level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
 
     # 运行所有测试
@@ -209,7 +210,7 @@ def main():
         test_unified_imports,
         test_data_models,
         test_factories,
-        test_shared_services
+        test_shared_services,
     ]
 
     results = []

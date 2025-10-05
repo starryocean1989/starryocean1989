@@ -17,7 +17,7 @@ from .imports import (
     ModuleAvailability,
     PortfolioEngine,
     RqdataDatafeed,
-    TushareDatafeed
+    TushareDatafeed,
 )
 
 if TYPE_CHECKING:
@@ -27,30 +27,30 @@ if TYPE_CHECKING:
 class GatewayType(Enum):
     """网关类型枚举."""
 
-    CTP = "ctp"           # 国内期货CTP
-    MINI = "mini"         # 期货迷你版
-    IB = "ib"             # 国际市场IB
-    PAPER = "paper"       # 模拟交易
-    TDX = "tdx"           # 通达信股票
-    TTS = "tts"           # 期货仿真
+    CTP = "ctp"  # 国内期货CTP
+    MINI = "mini"  # 期货迷你版
+    IB = "ib"  # 国际市场IB
+    PAPER = "paper"  # 模拟交易
+    TDX = "tdx"  # 通达信股票
+    TTS = "tts"  # 期货仿真
 
 
 class StrategyType(Enum):
     """策略类型枚举."""
 
-    CTA = "cta"           # CTA策略
-    ALGO = "algo"         # 算法交易
+    CTA = "cta"  # CTA策略
+    ALGO = "algo"  # 算法交易
     PORTFOLIO = "portfolio"  # 组合策略
-    SPREAD = "spread"     # 价差交易
-    SCRIPT = "script"     # 脚本交易
-    OPTION = "option"     # 期权策略
+    SPREAD = "spread"  # 价差交易
+    SCRIPT = "script"  # 脚本交易
+    OPTION = "option"  # 期权策略
 
 
 class DatafeedType(Enum):
     """数据源类型枚举."""
 
-    TUSHARE = "tushare"   # 聚宽数据
-    RQDATA = "rqdata"     # 米筐数据
+    TUSHARE = "tushare"  # 聚宽数据
+    RQDATA = "rqdata"  # 米筐数据
     VNPY_RECORDER = "vnpy_recorder"  # VNPY录制器
     LOCAL_DB = "local_db"  # 本地数据库
 
@@ -65,18 +65,25 @@ class GatewayFactory:
         self._gateway_configs: Dict[str, Dict[str, Any]] = {}
         self._gateway_instances: Dict[str, Any] = {}
 
-    def register_gateway_type(self, gateway_type: GatewayType,
-                              gateway_class: Type,
-                              default_config: Dict[str, Any] = None) -> None:
+    def register_gateway_type(
+        self,
+        gateway_type: GatewayType,
+        gateway_class: Type,
+        default_config: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """注册网关类型."""
         self._gateway_configs[gateway_type.value] = {
             "class": gateway_class,
-            "config": default_config or {}
+            "config": default_config or {},
         }
         self.logger.info("注册网关类型: %s", gateway_type.value)
 
-    def create_gateway(self, gateway_name: str, gateway_type: GatewayType,
-                       config: Dict[str, Any] = None) -> Optional[Any]:
+    def create_gateway(
+        self,
+        gateway_name: str,
+        gateway_type: GatewayType,
+        config: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Any]:
         """创建网关实例."""
         if gateway_type.value not in self._gateway_configs:
             self.logger.error("未注册的网关类型: %s", gateway_type.value)
@@ -93,16 +100,18 @@ class GatewayFactory:
 
             # 创建网关实例
             gateway = self.terminal_engine.add_gateway(
-                gateway_name, gateway_class, **final_config)
+                gateway_name, gateway_class, **final_config
+            )
 
             if gateway:
                 self._gateway_instances[gateway_name] = {
                     "type": gateway_type,
                     "instance": gateway,
-                    "config": final_config
+                    "config": final_config,
                 }
-                self.logger.info("网关创建成功: %s (%s)",
-                                 gateway_name, gateway_type.value)
+                self.logger.info(
+                    "网关创建成功: %s (%s)", gateway_name, gateway_type.value
+                )
 
             return gateway
 
@@ -110,15 +119,15 @@ class GatewayFactory:
             self.logger.error("创建网关失败 %s: %s", gateway_name, e)
             return None
 
-    def connect_gateway(self, gateway_name: str,
-                        connection_config: Dict[str, Any]) -> bool:
+    def connect_gateway(
+        self, gateway_name: str, connection_config: Dict[str, Any]
+    ) -> bool:
         """连接网关."""
         if gateway_name not in self._gateway_instances:
             self.logger.error("网关未找到: %s", gateway_name)
             return False
 
-        return self.terminal_engine.connect_gateway(
-            gateway_name, **connection_config)
+        return self.terminal_engine.connect_gateway(gateway_name, **connection_config)
 
     def disconnect_gateway(self, gateway_name: str) -> bool:
         """断开网关连接."""
@@ -128,7 +137,7 @@ class GatewayFactory:
 
         try:
             gateway = self._gateway_instances[gateway_name]["instance"]
-            if hasattr(gateway, 'close'):
+            if hasattr(gateway, "close"):
                 gateway.close()
                 self.logger.info("网关断开成功: %s", gateway_name)
                 return True
@@ -149,8 +158,8 @@ class GatewayFactory:
             {
                 "name": name,
                 "type": info["type"].value,
-                "connected": getattr(info["instance"], 'connected', False),
-                "trading": getattr(info["instance"], 'trading', False)
+                "connected": getattr(info["instance"], "connected", False),
+                "trading": getattr(info["instance"], "trading", False),
             }
             for name, info in self._gateway_instances.items()
         ]
@@ -182,19 +191,26 @@ class StrategyFactory:
         self._strategy_configs: Dict[str, Dict[str, Any]] = {}
         self._strategy_instances: Dict[str, Any] = {}
 
-    def register_strategy_type(self, strategy_type: StrategyType,
-                               engine_name: str,
-                               default_config: Dict[str, Any] = None) -> None:
+    def register_strategy_type(
+        self,
+        strategy_type: StrategyType,
+        engine_name: str,
+        default_config: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """注册策略类型."""
         self._strategy_configs[strategy_type.value] = {
             "engine": engine_name,
-            "config": default_config or {}
+            "config": default_config or {},
         }
         self.logger.info("注册策略类型: %s -> %s", strategy_type.value, engine_name)
 
-    def create_strategy(self, strategy_name: str, strategy_type: StrategyType,
-                        strategy_class: Type,
-                        config: Dict[str, Any] = None) -> Optional[Any]:
+    def create_strategy(
+        self,
+        strategy_name: str,
+        strategy_type: StrategyType,
+        strategy_class: Type,
+        config: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Any]:
         """创建策略实例."""
         if strategy_type.value not in self._strategy_configs:
             self.logger.error("未注册的策略类型: %s", strategy_type.value)
@@ -208,14 +224,14 @@ class StrategyFactory:
                 return None
 
             # 合并配置
-            final_config = self._strategy_configs[strategy_type.value][
-                "config"].copy()
+            final_config = self._strategy_configs[strategy_type.value]["config"].copy()
             if config:
                 final_config.update(config)
 
             # 创建策略实例
             strategy = self.terminal_engine.start_strategy(
-                strategy_name, strategy_class, **final_config)
+                strategy_name, strategy_class, **final_config
+            )
 
             if strategy:
                 self._strategy_instances[strategy_name] = {
@@ -223,10 +239,11 @@ class StrategyFactory:
                     "class": strategy_class,
                     "instance": strategy,
                     "engine": engine_name,
-                    "config": final_config
+                    "config": final_config,
                 }
-                self.logger.info("策略创建成功: %s (%s)",
-                                 strategy_name, strategy_type.value)
+                self.logger.info(
+                    "策略创建成功: %s (%s)", strategy_name, strategy_type.value
+                )
 
             return strategy
 
@@ -242,12 +259,11 @@ class StrategyFactory:
 
         try:
             strategy_info = self._strategy_instances[strategy_name]
-            engine = self.terminal_engine.strategy_engines[
-                strategy_info["engine"]]
+            engine = self.terminal_engine.strategy_engines[strategy_info["engine"]]
 
             # 这里需要根据具体引擎的API来启动策略
             # 不同引擎的启动方式可能不同
-            if hasattr(engine, 'start_strategy'):
+            if hasattr(engine, "start_strategy"):
                 engine.start_strategy(strategy_name)
                 self.logger.info("策略启动成功: %s", strategy_name)
                 return True
@@ -265,11 +281,10 @@ class StrategyFactory:
 
         try:
             strategy_info = self._strategy_instances[strategy_name]
-            engine = self.terminal_engine.strategy_engines[
-                strategy_info["engine"]]
+            engine = self.terminal_engine.strategy_engines[strategy_info["engine"]]
 
             # 这里需要根据具体引擎的API来停止策略
-            if hasattr(engine, 'stop_strategy'):
+            if hasattr(engine, "stop_strategy"):
                 engine.stop_strategy(strategy_name)
                 self.logger.info("策略停止成功: %s", strategy_name)
                 return True
@@ -283,16 +298,17 @@ class StrategyFactory:
         """列出所有策略."""
         strategies = []
 
-        for engine_name, engine in \
-                self.terminal_engine.strategy_engines.items():
-            if hasattr(engine, 'strategies'):
+        for engine_name, engine in self.terminal_engine.strategy_engines.items():
+            if hasattr(engine, "strategies"):
                 for strategy_name, strategy in engine.strategies.items():
-                    strategies.append({
-                        "name": strategy_name,
-                        "engine": engine_name,
-                        "active": getattr(strategy, 'active', False),
-                        "trading": getattr(strategy, 'trading', False)
-                    })
+                    strategies.append(
+                        {
+                            "name": strategy_name,
+                            "engine": engine_name,
+                            "active": getattr(strategy, "active", False),
+                            "trading": getattr(strategy, "trading", False),
+                        }
+                    )
 
         return strategies
 
@@ -323,18 +339,25 @@ class DatafeedFactory:
         self._datafeed_configs: Dict[str, Dict[str, Any]] = {}
         self._datafeed_instances: Dict[str, Any] = {}
 
-    def register_datafeed_type(self, datafeed_type: DatafeedType,
-                               datafeed_class: Type,
-                               default_config: Dict[str, Any] = None) -> None:
+    def register_datafeed_type(
+        self,
+        datafeed_type: DatafeedType,
+        datafeed_class: Type,
+        default_config: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """注册数据源类型."""
         self._datafeed_configs[datafeed_type.value] = {
             "class": datafeed_class,
-            "config": default_config or {}
+            "config": default_config or {},
         }
         self.logger.info("注册数据源类型: %s", datafeed_type.value)
 
-    def create_datafeed(self, datafeed_name: str, datafeed_type: DatafeedType,
-                        config: Dict[str, Any] = None) -> Optional[Any]:
+    def create_datafeed(
+        self,
+        datafeed_name: str,
+        datafeed_type: DatafeedType,
+        config: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Any]:
         """创建数据源实例."""
         if datafeed_type.value not in self._datafeed_configs:
             self.logger.error("未注册的数据源类型: %s", datafeed_type.value)
@@ -351,16 +374,18 @@ class DatafeedFactory:
 
             # 创建数据源实例
             datafeed = self.terminal_engine.add_datafeed(
-                datafeed_name, datafeed_class, **final_config)
+                datafeed_name, datafeed_class, **final_config
+            )
 
             if datafeed:
                 self._datafeed_instances[datafeed_name] = {
                     "type": datafeed_type,
                     "instance": datafeed,
-                    "config": final_config
+                    "config": final_config,
                 }
-                self.logger.info("数据源创建成功: %s (%s)",
-                                 datafeed_name, datafeed_type.value)
+                self.logger.info(
+                    "数据源创建成功: %s (%s)", datafeed_name, datafeed_type.value
+                )
 
             return datafeed
 
@@ -368,8 +393,9 @@ class DatafeedFactory:
             self.logger.error("创建数据源失败 %s: %s", datafeed_name, e)
             return None
 
-    def subscribe_symbol(self, datafeed_name: str, symbol: str,
-                         exchange: str = "") -> bool:
+    def subscribe_symbol(
+        self, datafeed_name: str, symbol: str, exchange: str = ""
+    ) -> bool:
         """订阅行情数据."""
         if datafeed_name not in self._datafeed_instances:
             self.logger.error("数据源未找到: %s", datafeed_name)
@@ -377,7 +403,7 @@ class DatafeedFactory:
 
         try:
             datafeed = self._datafeed_instances[datafeed_name]["instance"]
-            if hasattr(datafeed, 'subscribe'):
+            if hasattr(datafeed, "subscribe"):
                 datafeed.subscribe(symbol, exchange)
                 self.logger.info("订阅成功: %s -> %s", datafeed_name, symbol)
                 return True
@@ -386,8 +412,9 @@ class DatafeedFactory:
 
         return False
 
-    def unsubscribe_symbol(self, datafeed_name: str, symbol: str,
-                           exchange: str = "") -> bool:
+    def unsubscribe_symbol(
+        self, datafeed_name: str, symbol: str, exchange: str = ""
+    ) -> bool:
         """取消订阅行情数据."""
         if datafeed_name not in self._datafeed_instances:
             self.logger.error("数据源未找到: %s", datafeed_name)
@@ -395,7 +422,7 @@ class DatafeedFactory:
 
         try:
             datafeed = self._datafeed_instances[datafeed_name]["instance"]
-            if hasattr(datafeed, 'unsubscribe'):
+            if hasattr(datafeed, "unsubscribe"):
                 datafeed.unsubscribe(symbol, exchange)
                 self.logger.info("取消订阅成功: %s -> %s", datafeed_name, symbol)
                 return True
@@ -410,8 +437,8 @@ class DatafeedFactory:
             {
                 "name": name,
                 "type": info["type"].value,
-                "connected": getattr(info["instance"], 'connected', False),
-                "symbols": getattr(info["instance"], 'subscribed_symbols', [])
+                "connected": getattr(info["instance"], "connected", False),
+                "symbols": getattr(info["instance"], "subscribed_symbols", []),
             }
             for name, info in self._datafeed_instances.items()
         ]
@@ -422,9 +449,9 @@ class DatafeedFactory:
             try:
                 # 先取消所有订阅
                 datafeed = self._datafeed_instances[datafeed_name]["instance"]
-                if hasattr(datafeed, 'subscribed_symbols'):
+                if hasattr(datafeed, "subscribed_symbols"):
                     for symbol in datafeed.subscribed_symbols:
-                        if hasattr(datafeed, 'unsubscribe'):
+                        if hasattr(datafeed, "unsubscribe"):
                             datafeed.unsubscribe(symbol)
 
                 # 移除实例
@@ -456,56 +483,72 @@ class UnifiedFactory:
     def _auto_register_types(self) -> None:
         """自动注册可用类型."""
         # 注册网关类型
-        if (ModuleAvailability.CTP_GATEWAY and CtpGateway):
+        if ModuleAvailability.CTP_GATEWAY and CtpGateway:
             self.gateway_factory.register_gateway_type(
-                GatewayType.CTP, CtpGateway,
-                {"setting": {"用户名": "", "密码": "", "经纪商代码": "",
-                             "交易服务器": "", "行情服务器": ""}}
+                GatewayType.CTP,
+                CtpGateway,
+                {
+                    "setting": {
+                        "用户名": "",
+                        "密码": "",
+                        "经纪商代码": "",
+                        "交易服务器": "",
+                        "行情服务器": "",
+                    }
+                },
             )
 
-        if (ModuleAvailability.MINI_GATEWAY and MiniGateway):
+        if ModuleAvailability.MINI_GATEWAY and MiniGateway:
             self.gateway_factory.register_gateway_type(
-                GatewayType.MINI, MiniGateway,
-                {"setting": {"用户名": "", "密码": "", "经纪商代码": "",
-                             "地址": "", "端口": 0}}
+                GatewayType.MINI,
+                MiniGateway,
+                {
+                    "setting": {
+                        "用户名": "",
+                        "密码": "",
+                        "经纪商代码": "",
+                        "地址": "",
+                        "端口": 0,
+                    }
+                },
             )
 
         if ModuleAvailability.IB_GATEWAY and IbGateway:
             self.gateway_factory.register_gateway_type(
-                GatewayType.IB, IbGateway,
-                {"setting": {"TWS地址": "127.0.0.1", "TWS端口": 7497, "客户端ID": 1}}
+                GatewayType.IB,
+                IbGateway,
+                {"setting": {"TWS地址": "127.0.0.1", "TWS端口": 7497, "客户端ID": 1}},
             )
 
         # 注册策略类型
         if ModuleAvailability.CTA_ENGINE and CtaEngine:
             self.strategy_factory.register_strategy_type(
-                StrategyType.CTA, "cta",
-                {"class_params": {}, "strategy_params": {}}
+                StrategyType.CTA, "cta", {"class_params": {}, "strategy_params": {}}
             )
 
         if ModuleAvailability.ALGO_ENGINE and AlgoEngine:
             self.strategy_factory.register_strategy_type(
-                StrategyType.ALGO, "algo",
-                {"class_params": {}, "strategy_params": {}}
+                StrategyType.ALGO, "algo", {"class_params": {}, "strategy_params": {}}
             )
 
         if ModuleAvailability.PORTFOLIO_ENGINE and PortfolioEngine:
             self.strategy_factory.register_strategy_type(
-                StrategyType.PORTFOLIO, "portfolio",
-                {"class_params": {}, "strategy_params": {}}
+                StrategyType.PORTFOLIO,
+                "portfolio",
+                {"class_params": {}, "strategy_params": {}},
             )
 
         # 注册数据源类型
         if ModuleAvailability.TUSHARE_DATAFEED and TushareDatafeed:
             self.datafeed_factory.register_datafeed_type(
-                DatafeedType.TUSHARE, TushareDatafeed,
-                {"token": "", "symbols": []}
+                DatafeedType.TUSHARE, TushareDatafeed, {"token": "", "symbols": []}
             )
 
         if ModuleAvailability.RQDATA_DATAFEED and RqdataDatafeed:
             self.datafeed_factory.register_datafeed_type(
-                DatafeedType.RQDATA, RqdataDatafeed,
-                {"username": "", "password": "", "symbols": []}
+                DatafeedType.RQDATA,
+                RqdataDatafeed,
+                {"username": "", "password": "", "symbols": []},
             )
 
         self.logger.info("类型注册完成")
@@ -518,7 +561,7 @@ class UnifiedFactory:
             "datafeed_count": len(self.datafeed_factory.list_datafeeds()),
             "gateways": self.gateway_factory.list_gateways(),
             "strategies": self.strategy_factory.list_strategies(),
-            "datafeeds": self.datafeed_factory.list_datafeeds()
+            "datafeeds": self.datafeed_factory.list_datafeeds(),
         }
 
     def get_gateway_factory(self) -> GatewayFactory:
@@ -537,8 +580,12 @@ class UnifiedFactory:
 # 导出公共接口
 __all__ = [
     # 枚举类型
-    'GatewayType', 'StrategyType', 'DatafeedType',
-
+    "GatewayType",
+    "StrategyType",
+    "DatafeedType",
     # 工厂类
-    'GatewayFactory', 'StrategyFactory', 'DatafeedFactory', 'UnifiedFactory'
+    "GatewayFactory",
+    "StrategyFactory",
+    "DatafeedFactory",
+    "UnifiedFactory",
 ]

@@ -6,30 +6,43 @@ VnPy核心适配器.
 """
 
 import logging
-from typing import Any, Dict, Optional, Type
+from typing import Any, Dict, Optional, TYPE_CHECKING, Type
 
-try:
-    from vnpy import MainEngine, EventEngine
-except ImportError:
-    # Fallback imports if not available in vnpy root
-    try:
-        from vnpy.trader.engine import MainEngine
-        from vnpy.event import EventEngine
-    except ImportError:
-        MainEngine = None
-        EventEngine = None
-
+# VnPy core imports
 from vnpy.event import Event
 from vnpy.trader.app import BaseApp
-from vnpy.trader.constant import (
-    Direction, Exchange, Interval, OrderType, Status
-)
+from vnpy.trader.constant import Direction, Exchange, Interval, OrderType, Status
 from vnpy.trader.datafeed import BaseDatafeed
 from vnpy.trader.gateway import BaseGateway
 from vnpy.trader.object import (
-    AccountData, BarData, CancelRequest, HistoryRequest, OrderData,
-    OrderRequest, PositionData, SubscribeRequest, TickData, TradeData
+    AccountData,
+    BarData,
+    CancelRequest,
+    HistoryRequest,
+    OrderData,
+    OrderRequest,
+    PositionData,
+    SubscribeRequest,
+    TickData,
+    TradeData,
 )
+
+# Type-only imports for type checking
+if TYPE_CHECKING:
+    from vnpy.trader.engine import MainEngine
+    from vnpy.event import EventEngine
+else:
+    # Runtime imports with fallbacks
+    try:
+        from vnpy import MainEngine, EventEngine
+    except ImportError:
+        # Fallback imports if not available in vnpy root
+        try:
+            from vnpy.trader.engine import MainEngine
+            from vnpy.event import EventEngine
+        except ImportError:
+            MainEngine = None
+            EventEngine = None
 
 # Optional gateway imports
 try:
@@ -107,8 +120,8 @@ class VnPyCoreAdapter:
 
     def __init__(self):
         """初始化VnPy核心适配器."""
-        self.event_engine: Optional[EventEngine] = None
-        self.main_engine: Optional[MainEngine] = None
+        self.event_engine: Optional["EventEngine"] = None
+        self.main_engine: Optional["MainEngine"] = None
         self.gateways: Dict[str, Type[BaseGateway]] = {}
         self.apps: Dict[str, Type[BaseApp]] = {}
         self.datafeeds: Dict[str, Type[BaseDatafeed]] = {}
@@ -117,6 +130,11 @@ class VnPyCoreAdapter:
     def initialize(self) -> bool:
         """初始化VnPy核心引擎."""
         try:
+            # 检查是否可用
+            if EventEngine is None or MainEngine is None:
+                logger.error("VnPy核心组件不可用，请检查vnpy安装")
+                return False
+
             # 创建事件引擎
             self.event_engine = EventEngine()
 
@@ -124,7 +142,8 @@ class VnPyCoreAdapter:
             self.main_engine = MainEngine(self.event_engine)
 
             # 启动事件引擎
-            self.event_engine.start()
+            if self.event_engine:
+                self.event_engine.start()
 
             # 注册核心组件
             self._register_core_components()
@@ -155,6 +174,10 @@ class VnPyCoreAdapter:
     def _register_gateways(self):
         """注册交易网关."""
         try:
+            if self.main_engine is None:
+                logger.warning("主引擎未初始化，跳过网关注册")
+                return
+
             # 注册可用的网关到主引擎
             gateways_to_register = []
 
@@ -179,7 +202,7 @@ class VnPyCoreAdapter:
 
             logger.info(
                 "交易网关注册完成,已注册: %s",
-                [name for name, _ in gateways_to_register]
+                [name for name, _ in gateways_to_register],
             )
 
         except (AttributeError, RuntimeError) as e:
@@ -188,6 +211,10 @@ class VnPyCoreAdapter:
     def _register_apps(self):
         """注册应用模块."""
         try:
+            if self.main_engine is None:
+                logger.warning("主引擎未初始化，跳过应用注册")
+                return
+
             # 注册可用的应用到主引擎
             apps_to_register = []
 
@@ -197,9 +224,7 @@ class VnPyCoreAdapter:
 
             if PortfolioStrategyApp is not None:
                 self.main_engine.add_app(PortfolioStrategyApp)
-                apps_to_register.append(
-                    ("PORTFOLIO_STRATEGY", PortfolioStrategyApp)
-                )
+                apps_to_register.append(("PORTFOLIO_STRATEGY", PortfolioStrategyApp))
 
             if AlgoTradingApp is not None:
                 self.main_engine.add_app(AlgoTradingApp)
@@ -221,8 +246,7 @@ class VnPyCoreAdapter:
             self.apps.update(dict(apps_to_register))
 
             logger.info(
-                "应用模块注册完成,已注册: %s",
-                [name for name, _ in apps_to_register]
+                "应用模块注册完成,已注册: %s", [name for name, _ in apps_to_register]
             )
 
         except (AttributeError, RuntimeError) as e:
@@ -247,18 +271,17 @@ class VnPyCoreAdapter:
             self.datafeeds.update(dict(datafeeds_to_register))
 
             logger.info(
-                "数据源注册完成,已注册: %s",
-                [name for name, _ in datafeeds_to_register]
+                "数据源注册完成,已注册: %s", [name for name, _ in datafeeds_to_register]
             )
 
         except (AttributeError, RuntimeError) as e:
             logger.error("注册数据源失败: %s", e)
 
-    def get_main_engine(self) -> Optional[MainEngine]:
+    def get_main_engine(self) -> Optional["MainEngine"]:
         """获取主引擎."""
         return self.main_engine
 
-    def get_event_engine(self) -> Optional[EventEngine]:
+    def get_event_engine(self) -> Optional["EventEngine"]:
         """获取事件引擎."""
         return self.event_engine
 
@@ -307,11 +330,30 @@ vnpy_adapter = VnPyCoreAdapter()
 __all__ = [
     "VnPyCoreAdapter",
     "vnpy_adapter",
-    "AccountData", "BarData", "CancelRequest", "Direction", "Event",
-    "Exchange", "HistoryRequest", "Interval", "OrderData", "OrderRequest",
-    "OrderType", "PositionData", "Status", "SubscribeRequest",
-    "TickData", "TradeData",
-    "SubscribeRequest", "OrderRequest", "CancelRequest", "HistoryRequest",
-    "Exchange", "Interval", "Direction", "OrderType", "Status",
-    "Event"
+    "AccountData",
+    "BarData",
+    "CancelRequest",
+    "Direction",
+    "Event",
+    "Exchange",
+    "HistoryRequest",
+    "Interval",
+    "OrderData",
+    "OrderRequest",
+    "OrderType",
+    "PositionData",
+    "Status",
+    "SubscribeRequest",
+    "TickData",
+    "TradeData",
+    "SubscribeRequest",
+    "OrderRequest",
+    "CancelRequest",
+    "HistoryRequest",
+    "Exchange",
+    "Interval",
+    "Direction",
+    "OrderType",
+    "Status",
+    "Event",
 ]

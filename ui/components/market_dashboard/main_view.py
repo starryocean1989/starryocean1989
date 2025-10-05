@@ -12,10 +12,19 @@ from typing import Any, Dict, Optional
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QComboBox, QGroupBox, QHBoxLayout, QHeaderView,
-    QLabel, QLineEdit, QPushButton, QSplitter,
-    QTabWidget, QTableWidget, QTableWidgetItem,
-    QVBoxLayout, QWidget
+    QComboBox,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QSplitter,
+    QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
 )
 
 # Optional imports with fallbacks
@@ -25,9 +34,7 @@ except ImportError:
     pg = None
 
 try:
-    from integration.vnpy_adapter import (  # type: ignore
-        VnPyAdapter as _VnPyAdapter
-    )
+    from integration.vnpy_adapter import VnPyAdapter as _VnPyAdapter  # type: ignore
 except ImportError:
     _VnPyAdapter = None
 
@@ -38,19 +45,17 @@ except ImportError:
 
 try:
     from ..widgets.base_widget import BaseWidget  # type: ignore
-    from ...utils.logging_utils import LoggerMixin  # type: ignore
 except ImportError:
     try:
         from ui.widgets.base_widget import BaseWidget  # type: ignore
-        from utils.logging_utils import LoggerMixin  # type: ignore
     except ImportError:
+
         class BaseWidget(QWidget):
             """Base widget class for fallback."""
 
             def __init__(self, parent=None, title=""):
                 """Initialize base widget."""
                 super().__init__(parent)
-                self.parent = parent
                 self.title = title
                 self._timer = None
 
@@ -60,8 +65,7 @@ except ImportError:
             def connect_signals(self):
                 """Connect signals - fallback implementation."""
 
-            def start_update_timer(self, interval: int = 1000,
-                                   callback=None):
+            def start_update_timer(self, interval: int = 1000, callback=None):
                 """Start update timer."""
                 self._timer = QTimer()
                 self._timer.timeout.connect(callback)
@@ -100,11 +104,11 @@ class MockVnPyAdapter:
     def get_status(self):
         """Get mock status."""
         return {
-            'vnpy_available': False,
-            'gateways': [],
-            'connected_gateways': False,
-            'real_time_worker_running': False,
-            'subscribed_symbols': []
+            "vnpy_available": False,
+            "gateways": [],
+            "connected_gateways": False,
+            "real_time_worker_running": False,
+            "subscribed_symbols": [],
         }
 
     def subscribe_market_data(self, symbol):
@@ -116,15 +120,15 @@ class MockVnPyAdapter:
     def get_market_data(self, symbol):
         """Get mock market data."""
         return {
-            'symbol': symbol,
-            'last_price': 100.0,
-            'volume': 1000,
-            'bid_price': 99.9,
-            'ask_price': 100.1
+            "symbol": symbol,
+            "last_price": 100.0,
+            "volume": 1000,
+            "bid_price": 99.9,
+            "ask_price": 100.1,
         }
 
 
-class MarketDashboard(BaseWidget, LoggerMixin):
+class MarketDashboard(BaseWidget):  # type: ignore[misc]
     """行情看板主界面."""
 
     def __init__(self, parent=None):
@@ -154,7 +158,13 @@ class MarketDashboard(BaseWidget, LoggerMixin):
         self.kdj_plot: Optional[Any] = None
         self.boll_plot: Optional[Any] = None
 
-        self.logger.info("行情看板界面初始化开始")
+        self._logger = logging.getLogger(self.__class__.__name__)
+        self._logger.info("行情看板界面初始化开始")
+
+    @property
+    def logger(self):
+        """Get logger instance."""
+        return self._logger
 
     def setup_ui(self):
         """设置用户界面."""
@@ -188,10 +198,15 @@ class MarketDashboard(BaseWidget, LoggerMixin):
         symbol_layout = QVBoxLayout(symbol_group)
 
         self.symbol_combo = QComboBox()
-        self.symbol_combo.addItems([
-            "000001 - 平安银行", "000002 - 万科A", "600000 - 浦发银行",
-            "IF2406 - 沪深300股指期货", "IC2406 - 中证500股指期货"
-        ])
+        self.symbol_combo.addItems(
+            [
+                "000001 - 平安银行",
+                "000002 - 万科A",
+                "600000 - 浦发银行",
+                "IF2406 - 沪深300股指期货",
+                "IC2406 - 中证500股指期货",
+            ]
+        )
         self.symbol_combo.currentTextChanged.connect(self._on_symbol_changed)
         symbol_layout.addWidget(self.symbol_combo)
 
@@ -216,11 +231,9 @@ class MarketDashboard(BaseWidget, LoggerMixin):
         self.market_data_table = QTableWidget(5, 2)
         self.market_data_table.setHorizontalHeaderLabels(["项目", "数值"])
         header = self.market_data_table.horizontalHeader()
-        header.setSectionResizeMode(
-            QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.market_data_table.verticalHeader().setVisible(False)
-        self.market_data_table.setEditTriggers(
-            QTableWidget.EditTrigger.NoEditTriggers)
+        self.market_data_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
 
         # 设置行标题和初始值
         items = ["最新价", "涨跌幅", "成交量", "成交额", "换手率"]
@@ -248,8 +261,7 @@ class MarketDashboard(BaseWidget, LoggerMixin):
         self.period_combo = QComboBox()
         periods = ["日K", "周K", "月K", "5分钟", "15分钟", "30分钟", "1小时"]
         self.period_combo.addItems(periods)
-        self.period_combo.currentTextChanged.connect(
-            self._on_period_changed)
+        self.period_combo.currentTextChanged.connect(self._on_period_changed)
         toolbar_layout.addWidget(QLabel("周期:"))
         toolbar_layout.addWidget(self.period_combo)
 
@@ -275,10 +287,14 @@ class MarketDashboard(BaseWidget, LoggerMixin):
         self.main_chart_widget.setMinimumHeight(300)
 
         # 连接图表组件信号
-        chart = self.main_chart_widget
-        chart.symbol_changed.connect(self._on_chart_symbol_changed)
-        chart.period_changed.connect(self._on_chart_period_changed)
-        chart.indicator_toggled.connect(self._on_chart_indicator_toggled)
+        if self.main_chart_widget:
+            chart = self.main_chart_widget
+            if hasattr(chart, "symbol_changed"):
+                chart.symbol_changed.connect(self._on_chart_symbol_changed)
+            if hasattr(chart, "period_changed"):
+                chart.period_changed.connect(self._on_chart_period_changed)
+            if hasattr(chart, "indicator_toggled"):
+                chart.indicator_toggled.connect(self._on_chart_indicator_toggled)
 
         # 初始化VNPY适配器和实时数据
         self._initialize_vnpy_adapter()
@@ -294,8 +310,7 @@ class MarketDashboard(BaseWidget, LoggerMixin):
 
         self.indicator_selector = QComboBox()
         self.indicator_selector.addItems(["MACD", "RSI", "KDJ", "BOLL"])
-        self.indicator_selector.currentTextChanged.connect(
-            self._on_indicator_selected)
+        self.indicator_selector.currentTextChanged.connect(self._on_indicator_selected)
         indicator_layout.addWidget(QLabel("指标:"))
         indicator_layout.addWidget(self.indicator_selector)
 
@@ -326,12 +341,16 @@ class MarketDashboard(BaseWidget, LoggerMixin):
             # 创建MACD图表
             macd_win = pg.GraphicsLayoutWidget()
             macd_win.setBackground(QColor(26, 26, 26))
-            self.macd_plot = macd_win.addPlot(title="MACD")
-            self.macd_plot.showGrid(x=True, y=True)
-            self.macd_plot.setMinimumHeight(150)
+            # 使用正确的pyqtgraph方法
+            # type: ignore[reportAttributeAccessIssue]
+            self.macd_plot = macd_win.addPlot(title="MACD")  # noqa: E501
+            if self.macd_plot:
+                self.macd_plot.showGrid(x=True, y=True)
+                self.macd_plot.setMinimumHeight(150)
 
             macd_layout.addWidget(macd_win)
-            self.indicators_tab.addTab(macd_tab, "MACD")
+            if self.indicators_tab:
+                self.indicators_tab.addTab(macd_tab, "MACD")
 
             # RSI指标
             rsi_tab = QWidget()
@@ -340,12 +359,17 @@ class MarketDashboard(BaseWidget, LoggerMixin):
             # 创建RSI图表
             rsi_win = pg.GraphicsLayoutWidget()
             rsi_win.setBackground(QColor(26, 26, 26))
-            self.rsi_plot = rsi_win.addPlot(title="RSI")
-            self.rsi_plot.showGrid(x=True, y=True)
-            self.rsi_plot.setMinimumHeight(150)
+            # 使用正确的pyqtgraph方法
+            self.rsi_plot = rsi_win.addPlot(  # type: ignore[reportAttributeAccessIssue]
+                title="RSI"
+            )
+            if self.rsi_plot:
+                self.rsi_plot.showGrid(x=True, y=True)
+                self.rsi_plot.setMinimumHeight(150)
 
             rsi_layout.addWidget(rsi_win)
-            self.indicators_tab.addTab(rsi_tab, "RSI")
+            if self.indicators_tab:
+                self.indicators_tab.addTab(rsi_tab, "RSI")
 
             # KDJ指标
             kdj_tab = QWidget()
@@ -354,12 +378,17 @@ class MarketDashboard(BaseWidget, LoggerMixin):
             # 创建KDJ图表
             kdj_win = pg.GraphicsLayoutWidget()
             kdj_win.setBackground(QColor(26, 26, 26))
-            self.kdj_plot = kdj_win.addPlot(title="KDJ")
-            self.kdj_plot.showGrid(x=True, y=True)
-            self.kdj_plot.setMinimumHeight(150)
+            # 使用正确的pyqtgraph方法
+            self.kdj_plot = kdj_win.addPlot(  # type: ignore[reportAttributeAccessIssue]
+                title="KDJ"
+            )
+            if self.kdj_plot:
+                self.kdj_plot.showGrid(x=True, y=True)
+                self.kdj_plot.setMinimumHeight(150)
 
             kdj_layout.addWidget(kdj_win)
-            self.indicators_tab.addTab(kdj_tab, "KDJ")
+            if self.indicators_tab:
+                self.indicators_tab.addTab(kdj_tab, "KDJ")
 
             # BOLL指标
             boll_tab = QWidget()
@@ -368,12 +397,15 @@ class MarketDashboard(BaseWidget, LoggerMixin):
             # 创建BOLL图表
             boll_win = pg.GraphicsLayoutWidget()
             boll_win.setBackground(QColor(26, 26, 26))
-            self.boll_plot = boll_win.addPlot(title="BOLL")
-            self.boll_plot.showGrid(x=True, y=True)
-            self.boll_plot.setMinimumHeight(150)
+            # 使用正确的pyqtgraph方法
+            self.boll_plot = boll_win.addPlot(title="BOLL")  # type: ignore
+            if self.boll_plot:
+                self.boll_plot.showGrid(x=True, y=True)
+                self.boll_plot.setMinimumHeight(150)
 
             boll_layout.addWidget(boll_win)
-            self.indicators_tab.addTab(boll_tab, "BOLL")
+            if self.indicators_tab:
+                self.indicators_tab.addTab(boll_tab, "BOLL")
 
         else:
             # 如果pyqtgraph不可用，显示替代内容
@@ -382,7 +414,8 @@ class MarketDashboard(BaseWidget, LoggerMixin):
                 layout = QVBoxLayout(tab)
                 layout.addWidget(QLabel(f"📊 {indicator}指标图表"))
                 layout.addWidget(QLabel("（需要安装pyqtgraph库）"))
-                self.indicators_tab.addTab(tab, indicator)
+                if self.indicators_tab:
+                    self.indicators_tab.addTab(tab, indicator)
 
     def _create_right_panel(self):
         """创建右侧面板."""
@@ -395,17 +428,17 @@ class MarketDashboard(BaseWidget, LoggerMixin):
 
         # 品种叠加
         self.overlay_symbol_combo = QComboBox()
-        self.overlay_symbol_combo.addItems([
-            "无", "000001 - 平安银行", "000002 - 万科A", "600000 - 浦发银行"
-        ])
+        self.overlay_symbol_combo.addItems(
+            ["无", "000001 - 平安银行", "000002 - 万科A", "600000 - 浦发银行"]
+        )
         overlay_layout.addWidget(QLabel("品种叠加:"))
         overlay_layout.addWidget(self.overlay_symbol_combo)
 
         # 指标叠加
         self.overlay_indicator_combo = QComboBox()
-        self.overlay_indicator_combo.addItems([
-            "无", "MA5", "MA10", "MA20", "MA60", "BOLL"
-        ])
+        self.overlay_indicator_combo.addItems(
+            ["无", "MA5", "MA10", "MA20", "MA60", "BOLL"]
+        )
         overlay_layout.addWidget(QLabel("指标叠加:"))
         overlay_layout.addWidget(self.overlay_indicator_combo)
 
@@ -449,18 +482,22 @@ class MarketDashboard(BaseWidget, LoggerMixin):
     def connect_signals(self):
         """连接信号槽."""
         # 连接品种选择信号
-        self.symbol_combo.currentTextChanged.connect(
-            self._on_symbol_changed)
-        self.overlay_symbol_combo.currentTextChanged.connect(
-            self._on_overlay_changed)
-        self.overlay_indicator_combo.currentTextChanged.connect(
-            self._on_indicator_changed)
+        if self.symbol_combo:
+            self.symbol_combo.currentTextChanged.connect(self._on_symbol_changed)
+        if self.overlay_symbol_combo:
+            self.overlay_symbol_combo.currentTextChanged.connect(
+                self._on_overlay_changed
+            )
+        if self.overlay_indicator_combo:
+            self.overlay_indicator_combo.currentTextChanged.connect(
+                self._on_indicator_changed
+            )
 
         # 连接控制信号
-        self.coord_type_combo.currentTextChanged.connect(
-            self._on_coord_changed)
-        self.style_combo.currentTextChanged.connect(
-            self._on_style_changed)
+        if self.coord_type_combo:
+            self.coord_type_combo.currentTextChanged.connect(self._on_coord_changed)
+        if self.style_combo:
+            self.style_combo.currentTextChanged.connect(self._on_style_changed)
 
         # 启动数据更新定时器
         self.start_update_timer(1000, self._update_market_data)
@@ -473,9 +510,9 @@ class MarketDashboard(BaseWidget, LoggerMixin):
                 self.logger.info("VNPY适配器初始化完成")
 
                 # 连接实时数据信号
-                if hasattr(self.vnpy_adapter, 'real_time_worker'):
-                    worker = self.vnpy_adapter.real_time_worker
-                    if worker and hasattr(worker, 'tick_received'):
+                if hasattr(self.vnpy_adapter, "real_time_worker"):
+                    worker = getattr(self.vnpy_adapter, "real_time_worker", None)
+                    if worker and hasattr(worker, "tick_received"):
                         worker.tick_received.connect(self._on_real_time_tick)
             else:
                 # 如果无法导入，创建一个模拟适配器
@@ -491,22 +528,23 @@ class MarketDashboard(BaseWidget, LoggerMixin):
         """实时tick数据回调."""
         try:
             # 更新行情数据表格
-            last_price = tick_data.get('last_price', 0)
+            last_price = tick_data.get("last_price", 0)
 
             # 更新最新价
-            table = self.market_data_table
-            table.setItem(0, 1, QTableWidgetItem(str(last_price)))
+            if self.market_data_table:
+                table = self.market_data_table
+                table.setItem(0, 1, QTableWidgetItem(str(last_price)))
 
-            # 计算涨跌幅（模拟）
-            change = random.uniform(-5, 5)
-            table.setItem(1, 1, QTableWidgetItem(f"{change:.2f}%"))
+                # 计算涨跌幅（模拟）
+                change = random.uniform(-5, 5)
+                table.setItem(1, 1, QTableWidgetItem(f"{change:.2f}%"))
 
-            # 更新成交量
-            volume = tick_data.get('volume', 0)
-            table.setItem(2, 1, QTableWidgetItem(str(volume)))
+                # 更新成交量
+                volume = tick_data.get("volume", 0)
+                table.setItem(2, 1, QTableWidgetItem(str(volume)))
 
             # 更新图表数据
-            if hasattr(self, 'main_chart_widget'):
+            if hasattr(self, "main_chart_widget"):
                 # 这里可以传递实时数据给图表组件进行更新
                 pass
 
@@ -518,20 +556,23 @@ class MarketDashboard(BaseWidget, LoggerMixin):
         self.logger.info("切换品种: %s", text)
 
         if text:
-            symbol_code = text.split(" - ")[0]
+            symbol_code = text.split(" - ", maxsplit=1)[0]
             # 订阅新品种的实时数据
-            if hasattr(self, 'vnpy_adapter') and self.vnpy_adapter:
+            if hasattr(self, "vnpy_adapter") and self.vnpy_adapter:
                 # 取消之前品种的订阅
-                current_symbol = getattr(
-                    self, '_current_subscribed_symbol', None)
+                current_symbol = getattr(self, "_current_subscribed_symbol", None)
                 adapter = self.vnpy_adapter
-                if (current_symbol and current_symbol != symbol_code and
-                        hasattr(adapter, 'unsubscribe_real_time_data')):
+                if (
+                    current_symbol
+                    and current_symbol != symbol_code
+                    and hasattr(adapter, "unsubscribe_real_time_data")
+                ):
                     adapter.unsubscribe_real_time_data(current_symbol)
 
                 # 订阅新品种
-                if (hasattr(adapter, 'subscribe_real_time_data') and
-                        adapter.subscribe_real_time_data(symbol_code)):
+                if hasattr(
+                    adapter, "subscribe_real_time_data"
+                ) and adapter.subscribe_real_time_data(symbol_code):
                     self._current_subscribed_symbol = symbol_code
 
         self._update_market_data()
@@ -565,44 +606,48 @@ class MarketDashboard(BaseWidget, LoggerMixin):
         """指标选择改变."""
         self.logger.info("选择技术指标: %s", indicator_name)
         # 同步图表组件的品种和周期选择
-        if hasattr(self, 'main_chart_widget'):
-            current_text = self.symbol_combo.currentText()
-            if current_text and " - " in current_text:
-                symbol_code = current_text.split(" - ")[0]
-                self.main_chart_widget.set_symbol(symbol_code)
-            chart = self.main_chart_widget
-            chart.set_period(self.period_combo.currentText())
+        if hasattr(self, "main_chart_widget") and self.main_chart_widget:
+            if self.symbol_combo:
+                current_text = self.symbol_combo.currentText()
+                if current_text and " - " in current_text:
+                    symbol_code = current_text.split(" - ", maxsplit=1)[0]
+                    self.main_chart_widget.set_symbol(symbol_code)
+            if self.period_combo and hasattr(self.main_chart_widget, "set_period"):
+                self.main_chart_widget.set_period(self.period_combo.currentText())
 
     def _on_chart_symbol_changed(self, symbol: str):
         """图表组件品种改变回调."""
         self.logger.info("图表组件品种改变: %s", symbol)
         # 同步主界面的品种选择
-        for i in range(self.symbol_combo.count()):
-            text = self.symbol_combo.itemText(i)
-            if text.startswith(symbol):
-                self.symbol_combo.setCurrentIndex(i)
-                break
+        if self.symbol_combo:
+            for i in range(self.symbol_combo.count()):
+                text = self.symbol_combo.itemText(i)
+                if text.startswith(symbol):
+                    self.symbol_combo.setCurrentIndex(i)
+                    break
 
     def _on_chart_period_changed(self, period: str):
         """图表组件周期改变回调."""
         self.logger.info("图表组件周期改变: %s", period)
         # 同步主界面的周期选择
-        index = self.period_combo.findText(period)
-        if index >= 0:
-            self.period_combo.setCurrentIndex(index)
+        if self.period_combo:
+            index = self.period_combo.findText(period)
+            if index >= 0:
+                self.period_combo.setCurrentIndex(index)
 
     def _on_chart_indicator_toggled(self, indicator: str, enabled: bool):
         """图表组件指标切换回调."""
         self.logger.info("图表组件指标切换: %s = %s", indicator, enabled)
         # 更新指标选择器状态
-        index = self.indicator_selector.findText(indicator)
-        if index >= 0:
-            # 这里可以实现指标启用/禁用的视觉反馈
-            pass
+        if self.indicator_selector:
+            index = self.indicator_selector.findText(indicator)
+            if index >= 0:
+                # 这里可以实现指标启用/禁用的视觉反馈
+                pass
 
     def _search_symbol(self):
         """搜索品种."""
-        search_text = self.symbol_search.text()
+        search_text = self.symbol_search.text() if self.symbol_search else ""
         self.logger.info("搜索品种: %s", search_text)
         # 这里实现品种搜索逻辑
 
@@ -625,10 +670,10 @@ class MarketDashboard(BaseWidget, LoggerMixin):
         """更新行情数据."""
         try:
             # 模拟实时数据更新
-            current_text = self.symbol_combo.currentText()
+            current_text = self.symbol_combo.currentText() if self.symbol_combo else ""
             # Extract symbol code if available
             if current_text and " - " in current_text:
-                _ = current_text.split(" - ")[0]
+                _ = current_text.split(" - ", maxsplit=1)[0]
             else:
                 _ = "000001"
 
@@ -638,14 +683,19 @@ class MarketDashboard(BaseWidget, LoggerMixin):
                 f"{random.uniform(-5, 5):.2f}%",
                 str(random.randint(10000, 1000000)),
                 str(round(random.uniform(100000, 10000000), 2)),
-                f"{random.uniform(0.1, 10):.2f}%"
+                f"{random.uniform(0.1, 10):.2f}%",
             ]
 
-            for i, value in enumerate(data_items):
-                self.market_data_table.setItem(i, 1, QTableWidgetItem(value))
+            if self.market_data_table:
+                for i, value in enumerate(data_items):
+                    self.market_data_table.setItem(i, 1, QTableWidgetItem(value))
 
             # 更新图表数据（如果图表组件可用）
-            if hasattr(self, 'main_chart_widget'):
+            if (
+                hasattr(self, "main_chart_widget")
+                and self.main_chart_widget
+                and hasattr(self.main_chart_widget, "refresh_data")
+            ):
                 self.main_chart_widget.refresh_data()
 
         except (AttributeError, IndexError, TypeError) as e:
@@ -659,14 +709,12 @@ class MarketDashboard(BaseWidget, LoggerMixin):
     def on_close(self):
         """关闭处理."""
         # 停止实时数据订阅
-        if hasattr(self, 'vnpy_adapter') and self.vnpy_adapter:
-            current_symbol = getattr(
-                self, '_current_subscribed_symbol', None)
+        if hasattr(self, "vnpy_adapter") and self.vnpy_adapter:
+            current_symbol = getattr(self, "_current_subscribed_symbol", None)
             adapter = self.vnpy_adapter
-            if (current_symbol and
-                    hasattr(adapter, 'unsubscribe_real_time_data')):
+            if current_symbol and hasattr(adapter, "unsubscribe_real_time_data"):
                 adapter.unsubscribe_real_time_data(current_symbol)
-            if hasattr(adapter, 'stop_real_time_data'):
+            if hasattr(adapter, "stop_real_time_data"):
                 adapter.stop_real_time_data()
 
         self.stop_update_timer()

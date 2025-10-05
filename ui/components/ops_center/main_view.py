@@ -8,12 +8,21 @@ from typing import Any, Dict, List
 
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
-    QGroupBox, QHBoxLayout, QHeaderView, QLabel, QPushButton,
-    QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
 )
 
 try:
     import psutil  # 用于读取进程与系统信息
+
     PSUTIL_AVAILABLE = True
 except ImportError:
     PSUTIL_AVAILABLE = False
@@ -97,15 +106,11 @@ class OpsCenter(QWidget):
         layout.addStretch()
 
     def _connect_signals(self):
-        self.restart_ui_btn.clicked.connect(
-            lambda: self._write_cmd("restart_ui")
-        )
+        self.restart_ui_btn.clicked.connect(lambda: self._write_cmd("restart_ui"))
         self.restart_backend_btn.clicked.connect(
             lambda: self._write_cmd("restart_backend")
         )
-        self.restart_all_btn.clicked.connect(
-            lambda: self._write_cmd("restart_all")
-        )
+        self.restart_all_btn.clicked.connect(lambda: self._write_cmd("restart_all"))
         self.toggle_hot_reload_btn.clicked.connect(
             lambda: self._write_cmd("restart_all")
         )
@@ -132,9 +137,7 @@ class OpsCenter(QWidget):
                 for line in PIDS_FILE.read_text(encoding="utf-8").splitlines():
                     if line.startswith("backend_pid="):
                         val = line.split("=", 1)[1].strip()
-                        result["backend_pid"] = (
-                            int(val) if val.isdigit() else None
-                        )
+                        result["backend_pid"] = int(val) if val.isdigit() else None
                     elif line.startswith("ui_pid="):
                         val = line.split("=", 1)[1].strip()
                         result["ui_pid"] = int(val) if val.isdigit() else None
@@ -156,16 +159,19 @@ class OpsCenter(QWidget):
 
     def _refresh_status(self):
         pids = self._read_pids()
-        backend_alive = self._is_process_alive(pids.get("backend_pid"))
-        ui_alive = self._is_process_alive(pids.get("ui_pid"))
+        backend_pid = pids.get("backend_pid")
+        ui_pid = pids.get("ui_pid")
+        backend_alive = (
+            self._is_process_alive(backend_pid) if backend_pid is not None else False
+        )
+        ui_alive = self._is_process_alive(ui_pid) if ui_pid is not None else False
 
         self.backend_status.setText(
             f"后端: {'运行中' if backend_alive else '未运行'} "
             f"({pids.get('backend_pid')})"
         )
         self.ui_status.setText(
-            f"UI: {'运行中' if ui_alive else '未运行'} "
-            f"({pids.get('ui_pid')})"
+            f"UI: {'运行中' if ui_alive else '未运行'} " f"({pids.get('ui_pid')})"
         )
         # 守护状态无法直接判断，这里根据PID文件存在性与刷新频率推测
         watchdog = "运行中" if PIDS_FILE.exists() else "未知"

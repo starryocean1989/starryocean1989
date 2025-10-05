@@ -12,9 +12,18 @@ from typing import Any, Dict, Optional
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QFormLayout, QGroupBox, QHBoxLayout, QHeaderView,
-    QLabel, QProgressBar, QPushButton, QTabWidget,
-    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QProgressBar,
+    QPushButton,
+    QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
 )
 
 try:
@@ -29,28 +38,30 @@ except ImportError:
 
 try:
     from backend.infrastructure.data_module_vnpy.core_adapter import (
-        VnPyCoreAdapter as _VnPyAdapter
+        VnPyCoreAdapter as _VnPyAdapter,
     )
 except ImportError:
     try:
-        from backend.core.vnpy_integration import (
-            TerminalEngine as _VnPyAdapter
-        )
+        from backend.core.vnpy_integration import TerminalEngine as _VnPyAdapter
     except ImportError:
         _VnPyAdapter = None
 
+# 尝试导入更高级的版本
 try:
-    from ui.widgets.base_widget import BaseWidget
-    from utils.logging_utils import LoggerMixin
+    from ui.widgets.base_widget import BaseWidget as _BaseWidget
+    from utils.logging_utils import LoggerMixin as _LoggerMixin
+
+    # Use imported classes
+    BaseWidget = _BaseWidget  # type: ignore
+    LoggerMixin = _LoggerMixin  # type: ignore
 except ImportError:
-    # 简化版本
+    # 定义基础类
     class BaseWidget(QWidget):
         """基础组件类."""
 
         def __init__(self, parent=None, title=""):
             """初始化基础组件."""
             super().__init__(parent)
-            self.parent = parent
             self.title = title
             self._timer = None
 
@@ -60,8 +71,7 @@ except ImportError:
         def connect_signals(self):
             """Connect signals - fallback implementation."""
 
-        def start_update_timer(self, interval: int = 1000,
-                               callback=None):
+        def start_update_timer(self, interval: int = 1000, callback=None):
             """启动更新定时器."""
             self._timer = QTimer()
             self._timer.timeout.connect(callback)
@@ -100,11 +110,11 @@ class MockVnPyAdapter:
     def get_status(self):
         """获取模拟状态."""
         return {
-            'vnpy_available': False,
-            'gateways': [],
-            'connected_gateways': False,
-            'real_time_worker_running': False,
-            'subscribed_symbols': []
+            "vnpy_available": False,
+            "gateways": [],
+            "connected_gateways": False,
+            "real_time_worker_running": False,
+            "subscribed_symbols": [],
         }
 
 
@@ -117,7 +127,7 @@ class SystemManager(BaseWidget, LoggerMixin):
         self.logger.info("系统管理界面初始化开始")
 
         # 初始化所有UI组件属性
-        self.tab_widget: Optional[QTabWidget] = None
+        self.tab_widget: QTabWidget = QTabWidget()
         self.system_status_tab: Optional[QWidget] = None
         self.performance_tab: Optional[QWidget] = None
         self.alerts_tab: Optional[QWidget] = None
@@ -140,7 +150,7 @@ class SystemManager(BaseWidget, LoggerMixin):
         self.cpu_curve: Optional[Any] = None
         self.memory_plot: Optional[Any] = None
         self.memory_curve: Optional[Any] = None
-        self.performance_history: Dict[str, list] = {'cpu': [], 'memory': []}
+        self.performance_history: Dict[str, list] = {"cpu": [], "memory": []}
         self.max_history_points: int = 100
         self.performance_table: Optional[QTableWidget] = None
 
@@ -172,17 +182,19 @@ class SystemManager(BaseWidget, LoggerMixin):
         """设置用户界面."""
         main_layout = QVBoxLayout(self)
 
-        # 创建选项卡部件
-        self.tab_widget = QTabWidget()
-        self.tab_widget.setTabPosition(QTabWidget.TabPosition.North)
+        # 选项卡部件已在__init__中初始化
+        if self.tab_widget:
+            self.tab_widget.setTabPosition(QTabWidget.TabPosition.North)
 
         # 创建8个子界面
         self._create_sub_interfaces()
 
-        main_layout.addWidget(self.tab_widget)
+        if self.tab_widget:
+            main_layout.addWidget(self.tab_widget)
 
         # 设置样式
-        self.setStyleSheet("""
+        self.setStyleSheet(
+            """
             QTabWidget::pane {
                 border: 1px solid #404040;
                 background-color: #1e1e1e;
@@ -199,41 +211,50 @@ class SystemManager(BaseWidget, LoggerMixin):
             QTabBar::tab:hover {
                 background-color: #383838;
             }
-        """)
+        """
+        )
 
     def _create_sub_interfaces(self):
         """创建8个子界面."""
         # 1.1 系统状态实时监控
         self.system_status_tab = self._create_system_status_tab()
-        self.tab_widget.addTab(self.system_status_tab, "🔍 系统状态监控")
+        if self.tab_widget:
+            self.tab_widget.addTab(self.system_status_tab, "🔍 系统状态监控")
 
         # 1.2 性能指标展示
         self.performance_tab = self._create_performance_tab()
-        self.tab_widget.addTab(self.performance_tab, "📊 性能指标")
+        if self.tab_widget:
+            self.tab_widget.addTab(self.performance_tab, "📊 性能指标")
 
         # 1.3 告警信息管理
         self.alerts_tab = self._create_alerts_tab()
-        self.tab_widget.addTab(self.alerts_tab, "🚨 告警管理")
+        if self.tab_widget:
+            self.tab_widget.addTab(self.alerts_tab, "🚨 告警管理")
 
         # 1.4 服务健康检查
         self.services_tab = self._create_services_tab()
-        self.tab_widget.addTab(self.services_tab, "💚 服务检查")
+        if self.tab_widget:
+            self.tab_widget.addTab(self.services_tab, "💚 服务检查")
 
         # 1.5 系统配置
         self.config_tab = self._create_config_tab()
-        self.tab_widget.addTab(self.config_tab, "⚙️ 系统配置")
+        if self.tab_widget:
+            self.tab_widget.addTab(self.config_tab, "⚙️ 系统配置")
 
         # 1.6 日志管理
         self.logs_tab = self._create_logs_tab()
-        self.tab_widget.addTab(self.logs_tab, "📝 日志管理")
+        if self.tab_widget:
+            self.tab_widget.addTab(self.logs_tab, "📝 日志管理")
 
         # 1.7 系统诊断
         self.diagnosis_tab = self._create_diagnosis_tab()
-        self.tab_widget.addTab(self.diagnosis_tab, "🔧 系统诊断")
+        if self.tab_widget:
+            self.tab_widget.addTab(self.diagnosis_tab, "🔧 系统诊断")
 
         # 1.8 工具集合
         self.tools_tab = self._create_tools_tab()
-        self.tab_widget.addTab(self.tools_tab, "🛠️ 工具集合")
+        if self.tab_widget:
+            self.tab_widget.addTab(self.tools_tab, "🛠️ 工具集合")
 
     def _create_system_status_tab(self):
         """创建系统状态监控子界面."""
@@ -291,22 +312,30 @@ class SystemManager(BaseWidget, LoggerMixin):
             # CPU使用率图表
             cpu_win = pg.GraphicsLayoutWidget()
             cpu_win.setBackground(QColor(26, 26, 26))
-            self.cpu_plot = cpu_win.addPlot(title="CPU使用率 (%)")
-            self.cpu_plot.showGrid(x=True, y=True)
-            self.cpu_plot.setRange(yRange=[0, 100])
-
-            pen = pg.mkPen(color='red', width=2)
-            self.cpu_curve = self.cpu_plot.plot(pen=pen)
+            try:
+                self.cpu_plot = cpu_win.addPlot(title="CPU使用率 (%)")  # type: ignore
+                if self.cpu_plot:
+                    self.cpu_plot.showGrid(x=True, y=True)
+                    self.cpu_plot.setRange(yRange=[0, 100])
+                    pen = pg.mkPen(color="red", width=2)
+                    self.cpu_curve = self.cpu_plot.plot(pen=pen)
+            except AttributeError:
+                self.cpu_plot = None
+                self.cpu_curve = None
 
             # 内存使用率图表
             memory_win = pg.GraphicsLayoutWidget()
             memory_win.setBackground(QColor(26, 26, 26))
-            self.memory_plot = memory_win.addPlot(title="内存使用率 (%)")
-            self.memory_plot.showGrid(x=True, y=True)
-            self.memory_plot.setRange(yRange=[0, 100])
-
-            pen = pg.mkPen(color='blue', width=2)
-            self.memory_curve = self.memory_plot.plot(pen=pen)
+            try:
+                self.memory_plot = memory_win.addPlot(title="内存使用率 (%)")  # type: ignore
+                if self.memory_plot:
+                    self.memory_plot.showGrid(x=True, y=True)
+                    self.memory_plot.setRange(yRange=[0, 100])
+                    pen = pg.mkPen(color="blue", width=2)
+                    self.memory_curve = self.memory_plot.plot(pen=pen)
+            except AttributeError:
+                self.memory_plot = None
+                self.memory_curve = None
 
             chart_widget_layout.addWidget(cpu_win)
             chart_widget_layout.addWidget(memory_win)
@@ -315,8 +344,7 @@ class SystemManager(BaseWidget, LoggerMixin):
 
         else:
             # 如果pyqtgraph不可用，显示替代内容
-            text = ("📈 性能图表区域\n\n" +
-                    "需要安装pyqtgraph库以获得完整功能")
+            text = "📈 性能图表区域\n\n" + "需要安装pyqtgraph库以获得完整功能"
             chart_placeholder = QLabel(text)
             chart_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
             style = "color: #888; font-size: 14px; padding: 20px;"
@@ -547,49 +575,57 @@ class SystemManager(BaseWidget, LoggerMixin):
 
             # 更新基础系统信息
             cpu_percent = psutil.cpu_percent()
-            self.cpu_label.setText(f"{cpu_percent:.1f}%")
+            if self.cpu_label:
+                self.cpu_label.setText(f"{cpu_percent:.1f}%")
 
             memory = psutil.virtual_memory()
-            self.memory_label.setText(f"{memory.percent:.1f}%")
+            if self.memory_label:
+                self.memory_label.setText(f"{memory.percent:.1f}%")
 
-            disk = psutil.disk_usage('/')
-            self.disk_label.setText(f"{disk.percent:.1f}%")
+            disk = psutil.disk_usage("/")
+            if self.disk_label:
+                self.disk_label.setText(f"{disk.percent:.1f}%")
 
             network = psutil.net_if_addrs()
-            self.network_label.setText(f"接口数: {len(network)}")
+            if self.network_label:
+                self.network_label.setText(f"接口数: {len(network)}")
 
             # 更新VNPY系统状态
-            if self.vnpy_adapter and hasattr(self.vnpy_adapter, 'get_status'):
+            if self.vnpy_adapter and hasattr(self.vnpy_adapter, "get_status"):
                 vnpy_status = self.vnpy_adapter.get_status()
             else:
                 vnpy_status = {}
 
                 # 更新VNPY状态标签
-                vnpy_available = vnpy_status.get('vnpy_available', False)
+                vnpy_available = vnpy_status.get("vnpy_available", False)
                 status_text = "可用" if vnpy_available else "不可用"
                 vnpy_status_text = f"VNPY: {status_text} | "
 
-                gateways = vnpy_status.get('gateways', [])
+                gateways = vnpy_status.get("gateways", [])
                 vnpy_status_text += f"网关: {len(gateways)} | "
 
-                worker_running = vnpy_status.get('real_time_worker_running',
-                                                 False)
+                worker_running = vnpy_status.get("real_time_worker_running", False)
                 worker_text = "运行" if worker_running else "停止"
                 vnpy_status_text += f"实时数据: {worker_text}"
 
                 # 添加VNPY状态标签（如果不存在）
-                if not hasattr(self, 'vnpy_status_label'):
-                    layout = self.system_status_tab.layout()
-                    if isinstance(layout, QVBoxLayout):
+                if not hasattr(self, "vnpy_status_label"):
+                    layout = (
+                        self.system_status_tab.layout()
+                        if self.system_status_tab
+                        else None
+                    )
+                    if layout and isinstance(layout, QVBoxLayout):
                         overview_group = layout.itemAt(0).widget()
                         if isinstance(overview_group, QGroupBox):
                             overview_layout = overview_group.layout()
                             if isinstance(overview_layout, QFormLayout):
                                 self.vnpy_status_label = QLabel("--")
-                                overview_layout.addRow("VNPY状态:",
-                                                       self.vnpy_status_label)
+                                overview_layout.addRow(
+                                    "VNPY状态:", self.vnpy_status_label
+                                )
 
-                if hasattr(self, 'vnpy_status_label'):
+                if hasattr(self, "vnpy_status_label") and self.vnpy_status_label:
                     self.vnpy_status_label.setText(vnpy_status_text)
 
             # 更新状态表格
@@ -604,8 +640,11 @@ class SystemManager(BaseWidget, LoggerMixin):
     def _update_performance_charts(self):
         """更新性能图表."""
         try:
-            if (psutil is None or not hasattr(self, 'cpu_curve') or
-                    self.cpu_curve is None):
+            if (
+                psutil is None
+                or not hasattr(self, "cpu_curve")
+                or self.cpu_curve is None
+            ):
                 return
 
             current_time = time.time()
@@ -615,23 +654,21 @@ class SystemManager(BaseWidget, LoggerMixin):
             memory_percent = psutil.virtual_memory().percent
 
             # 添加到历史数据
-            self.performance_history['cpu'].append((current_time, cpu_percent))
-            self.performance_history['memory'].append((current_time,
-                                                      memory_percent))
+            self.performance_history["cpu"].append((current_time, cpu_percent))
+            self.performance_history["memory"].append((current_time, memory_percent))
 
             # 限制历史数据点数量
             for key, history in self.performance_history.items():
                 if len(history) > self.max_history_points:
-                    self.performance_history[key] = history[
-                        -self.max_history_points:]
+                    self.performance_history[key] = history[-self.max_history_points :]
 
             # 更新图表
-            if self.performance_history['cpu']:
-                times, cpu_values = zip(*self.performance_history['cpu'])
+            if self.performance_history["cpu"] and self.cpu_curve:
+                times, cpu_values = zip(*self.performance_history["cpu"])
                 self.cpu_curve.setData(times, cpu_values)
 
-            if self.performance_history['memory']:
-                times, memory_values = zip(*self.performance_history['memory'])
+            if self.performance_history["memory"] and self.memory_curve:
+                times, memory_values = zip(*self.performance_history["memory"])
                 self.memory_curve.setData(times, memory_values)
 
         except (AttributeError, RuntimeError) as e:
@@ -644,70 +681,90 @@ class SystemManager(BaseWidget, LoggerMixin):
                 return
 
             # 清空表格
-            self.status_table.setRowCount(0)
+            if self.status_table:
+                self.status_table.setRowCount(0)
 
             # 基础系统组件状态
             cpu_percent = psutil.cpu_percent()
             memory_percent = psutil.virtual_memory().percent
-            disk_percent = psutil.disk_usage('/').percent
+            disk_percent = psutil.disk_usage("/").percent
 
             base_components = [
                 ("CPU", "正常", f"使用率: {cpu_percent:.1f}%"),
                 ("内存", "正常", f"使用率: {memory_percent:.1f}%"),
                 ("磁盘", "正常", f"使用率: {disk_percent:.1f}%"),
                 ("网络", "正常", "连接正常"),
-                ("数据库", "正常", "连接正常")
+                ("数据库", "正常", "连接正常"),
             ]
 
             # VNPY相关组件状态
             vnpy_components = []
-            if self.vnpy_adapter and hasattr(self.vnpy_adapter, 'get_status'):
+            if self.vnpy_adapter and hasattr(self.vnpy_adapter, "get_status"):
                 vnpy_status = self.vnpy_adapter.get_status()
-                vnpy_available = vnpy_status.get('vnpy_available', False)
-                gateways = vnpy_status.get('gateways', [])
-                worker_running = vnpy_status.get('real_time_worker_running',
-                                                 False)
-                subscribed = vnpy_status.get('subscribed_symbols', [])
+                vnpy_available = vnpy_status.get("vnpy_available", False)
+                gateways = vnpy_status.get("gateways", [])
+                worker_running = vnpy_status.get("real_time_worker_running", False)
+                subscribed = vnpy_status.get("subscribed_symbols", [])
 
-                vnpy_components.extend([
-                    ("VNPY引擎", "可用" if vnpy_available else "不可用",
-                     f"状态: {'运行' if vnpy_available else '停止'}"),
-                    ("交易网关", "正常" if vnpy_status.get('connected_gateways')
-                     else "未连接", f"网关数: {len(gateways)}"),
-                    ("实时数据", "运行" if worker_running else "停止",
-                     f"订阅品种: {len(subscribed)}")
-                ])
+                vnpy_components.extend(
+                    [
+                        (
+                            "VNPY引擎",
+                            "可用" if vnpy_available else "不可用",
+                            f"状态: {'运行' if vnpy_available else '停止'}",
+                        ),
+                        (
+                            "交易网关",
+                            (
+                                "正常"
+                                if vnpy_status.get("connected_gateways")
+                                else "未连接"
+                            ),
+                            f"网关数: {len(gateways)}",
+                        ),
+                        (
+                            "实时数据",
+                            "运行" if worker_running else "停止",
+                            f"订阅品种: {len(subscribed)}",
+                        ),
+                    ]
+                )
             else:
-                vnpy_components.extend([
-                    ("VNPY引擎", "不可用", "VNPY适配器未初始化"),
-                    ("交易网关", "未知", "VNPY不可用"),
-                    ("实时数据", "停止", "VNPY不可用")
-                ])
+                vnpy_components.extend(
+                    [
+                        ("VNPY引擎", "不可用", "VNPY适配器未初始化"),
+                        ("交易网关", "未知", "VNPY不可用"),
+                        ("实时数据", "停止", "VNPY不可用"),
+                    ]
+                )
 
             # 合并所有组件
             all_components = base_components + vnpy_components
 
-            for i, (component, status, detail) in enumerate(all_components):
-                self.status_table.insertRow(i)
-                self.status_table.setItem(i, 0, QTableWidgetItem(component))
-                self.status_table.setItem(i, 1, QTableWidgetItem(status))
-                self.status_table.setItem(i, 2, QTableWidgetItem(detail))
+            if self.status_table:
+                for i, (component, status, detail) in enumerate(all_components):
+                    self.status_table.insertRow(i)
+                    self.status_table.setItem(i, 0, QTableWidgetItem(component))
+                    self.status_table.setItem(i, 1, QTableWidgetItem(status))
+                    self.status_table.setItem(i, 2, QTableWidgetItem(detail))
 
-                # 设置状态颜色
-                status_item = self.status_table.item(i, 1)
-                if status in ["正常", "可用", "运行"]:
-                    status_item.setBackground(QColor("#4caf50"))
-                elif status in ["不可用", "停止", "未知"]:
-                    status_item.setBackground(QColor("#ff9800"))
-                else:
-                    status_item.setBackground(QColor("#f44336"))
+                    # 设置状态颜色
+                    status_item = self.status_table.item(i, 1)
+                    if status_item:
+                        if status in ["正常", "可用", "运行"]:
+                            status_item.setBackground(QColor("#4caf50"))
+                        elif status in ["不可用", "停止", "未知"]:
+                            status_item.setBackground(QColor("#ff9800"))
+                        else:
+                            status_item.setBackground(QColor("#f44336"))
 
         except (AttributeError, RuntimeError) as e:
             self.logger.error("更新状态表格失败: %s", e)
 
     def _clear_logs(self):
         """清空日志."""
-        self.logs_table.setRowCount(0)
+        if self.logs_table:
+            self.logs_table.setRowCount(0)
         self.show_info("日志已清空")
 
     def _export_logs(self):

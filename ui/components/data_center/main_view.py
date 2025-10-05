@@ -8,34 +8,48 @@
 import logging
 import random
 from datetime import datetime, timedelta
+from typing import Optional, TYPE_CHECKING
 
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QFormLayout, QGroupBox,
-    QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-    QProgressBar, QPushButton, QSplitter, QTabWidget,
-    QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout,
-    QWidget
+    QCheckBox,
+    QComboBox,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QProgressBar,
+    QPushButton,
+    QSplitter,
+    QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
 )
 
-try:
-    from ...widgets.base_widget import BaseWidget
-    from ....utils.logging_utils import LoggerMixin
-    from ....backend.core.vnpy_integration import VnPyAdapter
-except ImportError:
+# Import with proper type handling
+
+if TYPE_CHECKING:
+    from ui.widgets.base_widget import BaseWidget
+
+    from utils.logging_utils import LoggerMixin
+else:
     try:
         from ui.widgets.base_widget import BaseWidget
         from utils.logging_utils import LoggerMixin
-        from backend.core.vnpy_integration import VnPyAdapter
     except ImportError:
+        # Fallback classes with proper typing
         class BaseWidget(QWidget):
             """Base widget class for fallback."""
 
-            def __init__(self, parent=None, title=""):
+            def __init__(self, parent: Optional[QWidget] = None, title: str = ""):
                 """Initialize base widget."""
                 super().__init__(parent)
-                self.parent = parent
                 self.title = title
 
             def setup_ui(self):
@@ -62,9 +76,39 @@ except ImportError:
             """Logger mixin for fallback."""
 
             @property
-            def logger(self):
+            def logger(self) -> logging.Logger:
                 """Get logger instance."""
                 return logging.getLogger(self.__class__.__name__)
+
+
+# VnPyAdapter stub class since it doesn't exist in vnpy_integration
+
+
+class VnPyAdapter:
+    """VnPy适配器存根类."""
+
+    def __init__(self):
+        """初始化VnPy适配器."""
+        self.logger = logging.getLogger(self.__class__.__name__)
+
+    def get_kline_data(self, symbol: str, interval: str, limit: int = 100):
+        """获取K线数据."""
+        self.logger.info("获取K线数据: %s %s (限制: %d)", symbol, interval, limit)
+        # 返回模拟数据
+        return []
+
+    def get_status(self):
+        """获取状态."""
+        return {
+            "vnpy_available": True,
+            "data_sources": ["mock", "vnpy"],
+            "active_data_source": "mock",
+        }
+
+    def switch_data_source(self, source_name: str):
+        """切换数据源."""
+        self.logger.info("切换数据源: %s", source_name)
+        return True
 
 
 class DataCenter(BaseWidget, LoggerMixin):
@@ -75,35 +119,37 @@ class DataCenter(BaseWidget, LoggerMixin):
         super().__init__(parent, "数据中心")
         self.logger.info("数据中心界面初始化开始")
 
-        # Initialize all UI attributes
-        self.tab_widget = None
-        self.symbols_tab = None
-        self.local_data_tab = None
-        self.download_tab = None
-        self.sources_tab = None
-        self.search_input = None
-        self.exchange_combo = None
-        self.symbols_table = None
-        self.symbol_input = None
-        self.start_date_input = None
-        self.end_date_input = None
-        self.data_table = None
-        self.data_status_label = None
-        self.data_quality_label = None
-        self.full_download_radio = None
-        self.custom_download_radio = None
-        self.download_symbols_input = None
-        self.download_start_date = None
-        self.download_end_date = None
-        self.download_progress = None
-        self.progress_label = None
-        self.start_download_btn = None
-        self.pause_download_btn = None
-        self.stop_download_btn = None
-        self.sources_table = None
-        self.config_status_label = None
-        self.monitor_text = None
+        # Initialize VNPY adapter first
         self.vnpy_adapter = None
+
+        # Initialize all UI attributes with proper typing
+        self.tab_widget: Optional[QTabWidget] = None
+        self.symbols_tab: Optional[QWidget] = None
+        self.local_data_tab: Optional[QWidget] = None
+        self.download_tab: Optional[QWidget] = None
+        self.sources_tab: Optional[QWidget] = None
+        self.search_input: Optional[QLineEdit] = None
+        self.exchange_combo: Optional[QComboBox] = None
+        self.symbols_table: Optional[QTableWidget] = None
+        self.symbol_input: Optional[QLineEdit] = None
+        self.start_date_input: Optional[QLineEdit] = None
+        self.end_date_input: Optional[QLineEdit] = None
+        self.data_table: Optional[QTableWidget] = None
+        self.data_status_label: Optional[QLabel] = None
+        self.data_quality_label: Optional[QLabel] = None
+        self.full_download_radio: Optional[QCheckBox] = None
+        self.custom_download_radio: Optional[QCheckBox] = None
+        self.download_symbols_input: Optional[QLineEdit] = None
+        self.download_start_date: Optional[QLineEdit] = None
+        self.download_end_date: Optional[QLineEdit] = None
+        self.download_progress: Optional[QProgressBar] = None
+        self.progress_label: Optional[QLabel] = None
+        self.start_download_btn: Optional[QPushButton] = None
+        self.pause_download_btn: Optional[QPushButton] = None
+        self.stop_download_btn: Optional[QPushButton] = None
+        self.sources_table: Optional[QTableWidget] = None
+        self.config_status_label: Optional[QLabel] = None
+        self.monitor_text: Optional[QTextEdit] = None
 
     def setup_ui(self):
         """设置用户界面."""
@@ -120,21 +166,27 @@ class DataCenter(BaseWidget, LoggerMixin):
 
     def _create_sub_interfaces(self):
         """创建4个子界面."""
+        if not self.tab_widget:
+            return
         # 2.1 品种列表
         self.symbols_tab = self._create_symbols_tab()
-        self.tab_widget.addTab(self.symbols_tab, "📋 品种列表")
+        if self.symbols_tab:
+            self.tab_widget.addTab(self.symbols_tab, "📋 品种列表")
 
         # 2.2 本地数据
         self.local_data_tab = self._create_local_data_tab()
-        self.tab_widget.addTab(self.local_data_tab, "💾 本地数据")
+        if self.local_data_tab:
+            self.tab_widget.addTab(self.local_data_tab, "💾 本地数据")
 
         # 2.3 数据下载
         self.download_tab = self._create_download_tab()
-        self.tab_widget.addTab(self.download_tab, "⬇️ 数据下载")
+        if self.download_tab:
+            self.tab_widget.addTab(self.download_tab, "⬇️ 数据下载")
 
         # 2.4 数据源管理
         self.sources_tab = self._create_sources_tab()
-        self.tab_widget.addTab(self.sources_tab, "🔗 数据源管理")
+        if self.sources_tab:
+            self.tab_widget.addTab(self.sources_tab, "🔗 数据源管理")
 
     def _create_symbols_tab(self):
         """创建品种列表子界面."""
@@ -167,9 +219,9 @@ class DataCenter(BaseWidget, LoggerMixin):
         symbols_layout = QVBoxLayout(symbols_group)
 
         self.symbols_table = QTableWidget(0, 6)
-        self.symbols_table.setHorizontalHeaderLabels([
-            "品种代码", "品种名称", "交易所", "类型", "状态", "操作"
-        ])
+        self.symbols_table.setHorizontalHeaderLabels(
+            ["品种代码", "品种名称", "交易所", "类型", "状态", "操作"]
+        )
         header = self.symbols_table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
 
@@ -218,9 +270,9 @@ class DataCenter(BaseWidget, LoggerMixin):
         display_layout = QVBoxLayout(display_group)
 
         self.data_table = QTableWidget(0, 7)
-        self.data_table.setHorizontalHeaderLabels([
-            "日期", "开盘价", "最高价", "最低价", "收盘价", "成交量", "成交额"
-        ])
+        self.data_table.setHorizontalHeaderLabels(
+            ["日期", "开盘价", "最高价", "最低价", "收盘价", "成交量", "成交额"]
+        )
         header = self.data_table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
 
@@ -330,9 +382,9 @@ class DataCenter(BaseWidget, LoggerMixin):
         sources_layout = QVBoxLayout(sources_group)
 
         self.sources_table = QTableWidget(0, 5)
-        self.sources_table.setHorizontalHeaderLabels([
-            "数据源", "类型", "状态", "连接数", "操作"
-        ])
+        self.sources_table.setHorizontalHeaderLabels(
+            ["数据源", "类型", "状态", "连接数", "操作"]
+        )
         header = self.sources_table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
 
@@ -371,20 +423,21 @@ class DataCenter(BaseWidget, LoggerMixin):
         # 初始化VNPY适配器
         self._initialize_vnpy_adapter()
 
-        # 连接搜索信号
-        self.search_input.textChanged.connect(self._on_search_text_changed)
-        self.exchange_combo.currentTextChanged.connect(
-            self._on_exchange_changed)
+        # 连接搜索信号 - 添加空值检查
+        if self.search_input:
+            self.search_input.textChanged.connect(self._on_search_text_changed)
+        if self.exchange_combo:
+            self.exchange_combo.currentTextChanged.connect(self._on_exchange_changed)
 
-        # 连接数据查询信号
-        self.symbol_input.textChanged.connect(
-            self._on_symbol_input_changed)
+        # 连接数据查询信号 - 添加空值检查
+        if self.symbol_input:
+            self.symbol_input.textChanged.connect(self._on_symbol_input_changed)
 
     def _initialize_vnpy_adapter(self):
         """初始化VNPY适配器."""
         try:
             # 适配器可用性判断，避免 NameError
-            if 'VnPyAdapter' in globals() and VnPyAdapter:
+            if "VnPyAdapter" in globals() and VnPyAdapter:
                 self.vnpy_adapter = VnPyAdapter()
                 self.logger.info("VNPY适配器初始化完成")
             else:
@@ -396,6 +449,10 @@ class DataCenter(BaseWidget, LoggerMixin):
 
     def _search_symbols(self):
         """搜索品种."""
+        # 添加空值检查
+        if not self.search_input or not self.exchange_combo:
+            return
+
         search_text = self.search_input.text()
         exchange = self.exchange_combo.currentText()
 
@@ -415,6 +472,14 @@ class DataCenter(BaseWidget, LoggerMixin):
 
     def _query_local_data(self):
         """查询本地数据."""
+        # 添加空值检查
+        if (
+            not self.symbol_input
+            or not self.start_date_input
+            or not self.end_date_input
+        ):
+            return
+
         symbol = self.symbol_input.text()
         start_date = self.start_date_input.text()
         end_date = self.end_date_input.text()
@@ -435,16 +500,19 @@ class DataCenter(BaseWidget, LoggerMixin):
         if self.vnpy_adapter:
             try:
                 # 获取K线数据
-                if hasattr(self.vnpy_adapter, 'get_kline_data'):
+                if hasattr(self.vnpy_adapter, "get_kline_data"):
                     kline_data = self.vnpy_adapter.get_kline_data(
-                        symbol, "日K", limit=100)
+                        symbol, "日K", limit=100
+                    )
                 else:
                     kline_data = []
 
                 if kline_data:
                     self._display_kline_data(kline_data, symbol)
-                    self.data_status_label.setText(f"显示 {len(kline_data)} 条数据")
-                    self.data_quality_label.setText("数据质量: 来自VNPY")
+                    if self.data_status_label:
+                        self.data_status_label.setText(f"显示 {len(kline_data)} 条数据")
+                    if self.data_quality_label:
+                        self.data_quality_label.setText("数据质量: 来自VNPY")
                 else:
                     self.show_warning("未找到数据，显示模拟数据")
                     self._load_local_data(symbol, start_date, end_date)
@@ -459,6 +527,9 @@ class DataCenter(BaseWidget, LoggerMixin):
 
     def _start_download(self):
         """开始下载."""
+        if not self.full_download_radio:
+            return
+
         if self.full_download_radio.isChecked():
             self._start_full_download()
         else:
@@ -468,19 +539,28 @@ class DataCenter(BaseWidget, LoggerMixin):
         """开始全量下载."""
         self.show_info("开始全量数据下载...")
 
-        # 模拟下载进度
-        self.download_progress.setValue(0)
-        self.progress_label.setText("全量下载中...")
+        # 模拟下载进度 - 添加空值检查
+        if self.download_progress:
+            self.download_progress.setValue(0)
+        if self.progress_label:
+            self.progress_label.setText("全量下载中...")
 
-        self.start_download_btn.setEnabled(False)
-        self.pause_download_btn.setEnabled(True)
-        self.stop_download_btn.setEnabled(True)
+        if self.start_download_btn:
+            self.start_download_btn.setEnabled(False)
+        if self.pause_download_btn:
+            self.pause_download_btn.setEnabled(True)
+        if self.stop_download_btn:
+            self.stop_download_btn.setEnabled(True)
 
         # 模拟下载进度
         self._simulate_download_progress()
 
     def _start_custom_download(self):
         """开始自定义下载."""
+        # 添加空值检查
+        if not self.download_symbols_input:
+            return
+
         symbols = self.download_symbols_input.text()
         # start_date and end_date are not used in current implementation
         # start_date = self.download_start_date.text()
@@ -492,13 +572,18 @@ class DataCenter(BaseWidget, LoggerMixin):
 
         self.show_info(f"开始自定义下载: {symbols}")
 
-        # 模拟下载进度
-        self.download_progress.setValue(0)
-        self.progress_label.setText("自定义下载中...")
+        # 模拟下载进度 - 添加空值检查
+        if self.download_progress:
+            self.download_progress.setValue(0)
+        if self.progress_label:
+            self.progress_label.setText("自定义下载中...")
 
-        self.start_download_btn.setEnabled(False)
-        self.pause_download_btn.setEnabled(True)
-        self.stop_download_btn.setEnabled(True)
+        if self.start_download_btn:
+            self.start_download_btn.setEnabled(False)
+        if self.pause_download_btn:
+            self.pause_download_btn.setEnabled(True)
+        if self.stop_download_btn:
+            self.stop_download_btn.setEnabled(True)
 
         # 模拟下载进度
         self._simulate_download_progress()
@@ -506,26 +591,33 @@ class DataCenter(BaseWidget, LoggerMixin):
     def _pause_download(self):
         """暂停下载."""
         self.show_info("下载已暂停")
-        self.pause_download_btn.setText("继续")
-        self.pause_download_btn.clicked.disconnect()
-        self.pause_download_btn.clicked.connect(self._resume_download)
+        if self.pause_download_btn:
+            self.pause_download_btn.setText("继续")
+            self.pause_download_btn.clicked.disconnect()
+            self.pause_download_btn.clicked.connect(self._resume_download)
 
     def _resume_download(self):
         """继续下载."""
         self.show_info("下载继续...")
-        self.pause_download_btn.setText("暂停")
-        self.pause_download_btn.clicked.disconnect()
-        self.pause_download_btn.clicked.connect(self._pause_download)
+        if self.pause_download_btn:
+            self.pause_download_btn.setText("暂停")
+            self.pause_download_btn.clicked.disconnect()
+            self.pause_download_btn.clicked.connect(self._pause_download)
 
     def _stop_download(self):
         """停止下载."""
         self.show_info("下载已停止")
-        self.download_progress.setValue(0)
-        self.progress_label.setText("准备就绪")
+        if self.download_progress:
+            self.download_progress.setValue(0)
+        if self.progress_label:
+            self.progress_label.setText("准备就绪")
 
-        self.start_download_btn.setEnabled(True)
-        self.pause_download_btn.setEnabled(False)
-        self.stop_download_btn.setEnabled(False)
+        if self.start_download_btn:
+            self.start_download_btn.setEnabled(True)
+        if self.pause_download_btn:
+            self.pause_download_btn.setEnabled(False)
+        if self.stop_download_btn:
+            self.stop_download_btn.setEnabled(False)
 
     def _test_connections(self):
         """测试连接."""
@@ -534,7 +626,7 @@ class DataCenter(BaseWidget, LoggerMixin):
         if self.vnpy_adapter:
             try:
                 # 获取数据源状态
-                if hasattr(self.vnpy_adapter, 'get_status'):
+                if hasattr(self.vnpy_adapter, "get_status"):
                     status = self.vnpy_adapter.get_status()
                     # 更新数据源表格
                     self._update_data_sources_table(status)
@@ -543,38 +635,47 @@ class DataCenter(BaseWidget, LoggerMixin):
                     self._update_data_sources_table({})
 
                 # 更新配置状态
-                vnpy_available = status.get('vnpy_available', False)
-                data_sources = status.get('data_sources', [])
+                vnpy_available = status.get("vnpy_available", False)
+                data_sources = status.get("data_sources", [])
 
                 if vnpy_available and data_sources:
-                    sources_text = ', '.join(data_sources)
+                    sources_text = ", ".join(data_sources)
                     status_text = f"配置状态: 连接正常 (数据源: {sources_text})"
-                    self.config_status_label.setText(status_text)
+                    if self.config_status_label:
+                        self.config_status_label.setText(status_text)
                 else:
-                    self.config_status_label.setText("配置状态: 部分连接异常")
+                    if self.config_status_label:
+                        self.config_status_label.setText("配置状态: 部分连接异常")
 
-                self.monitor_text.append("连接测试完成 - 数据源状态已更新")
+                if self.monitor_text:
+                    self.monitor_text.append("连接测试完成 - 数据源状态已更新")
 
             except (AttributeError, RuntimeError, ConnectionError) as e:
                 self.show_error(f"连接测试失败: {str(e)}")
-                self.config_status_label.setText("配置状态: 测试失败")
+                if self.config_status_label:
+                    self.config_status_label.setText("配置状态: 测试失败")
         else:
-            self.config_status_label.setText("配置状态: 测试中...")
+            if self.config_status_label:
+                self.config_status_label.setText("配置状态: 测试中...")
             # 模拟测试结果
             QTimer.singleShot(2000, self._update_connection_test_result)
 
     def _update_connection_test_result(self):
         """更新连接测试结果."""
-        self.config_status_label.setText("配置状态: 连接正常")
-        self.monitor_text.append("连接测试完成 - 所有数据源连接正常")
+        if self.config_status_label:
+            self.config_status_label.setText("配置状态: 连接正常")
+        if self.monitor_text:
+            self.monitor_text.append("连接测试完成 - 所有数据源连接正常")
 
     def _update_data_sources_table(self, status):
         """更新数据源表格."""
+        if not self.sources_table:
+            return
         # 清空表格
         self.sources_table.setRowCount(0)
 
-        data_sources = status.get('data_sources', [])
-        active_source = status.get('active_data_source', '')
+        data_sources = status.get("data_sources", [])
+        active_source = status.get("active_data_source", "")
 
         for i, source_name in enumerate(data_sources):
             self.sources_table.insertRow(i)
@@ -583,7 +684,7 @@ class DataCenter(BaseWidget, LoggerMixin):
             self.sources_table.setItem(i, 0, QTableWidgetItem(source_name))
 
             # 类型（这里可以根据实际情况设置）
-            source_type = "VNPY" if source_name != 'mock' else "模拟"
+            source_type = "VNPY" if source_name != "mock" else "模拟"
             self.sources_table.setItem(i, 1, QTableWidgetItem(source_type))
 
             # 状态
@@ -607,19 +708,23 @@ class DataCenter(BaseWidget, LoggerMixin):
             def connect_switch_btn(src):
                 def switch_handler():
                     return self._switch_data_source(src)
+
                 return switch_handler
+
             switch_btn.clicked.connect(connect_switch_btn(source_name))
             self.sources_table.setCellWidget(i, 4, switch_btn)
 
     def _switch_data_source(self, source_name):
         """切换数据源."""
-        has_switch_method = hasattr(
-            self.vnpy_adapter, 'switch_data_source')
-        if (self.vnpy_adapter and has_switch_method and
-                self.vnpy_adapter.switch_data_source(source_name)):
+        has_switch_method = hasattr(self.vnpy_adapter, "switch_data_source")
+        if (
+            self.vnpy_adapter
+            and has_switch_method
+            and self.vnpy_adapter.switch_data_source(source_name)
+        ):
             self.show_info(f"已切换到数据源: {source_name}")
             # 刷新显示
-            if hasattr(self.vnpy_adapter, 'get_status'):
+            if hasattr(self.vnpy_adapter, "get_status"):
                 status = self.vnpy_adapter.get_status()
                 self._update_data_sources_table(status)
             else:
@@ -629,21 +734,33 @@ class DataCenter(BaseWidget, LoggerMixin):
 
     def _simulate_download_progress(self):
         """模拟下载进度."""
+
         def update_progress():
+            if not self.download_progress:
+                return
+
             current_value = self.download_progress.value()
             if current_value < 100:
                 self.download_progress.setValue(current_value + 10)
                 QTimer.singleShot(500, update_progress)
             else:
-                self.progress_label.setText("下载完成")
-                self.start_download_btn.setEnabled(True)
-                self.pause_download_btn.setEnabled(False)
-                self.stop_download_btn.setEnabled(False)
+                if self.progress_label:
+                    self.progress_label.setText("下载完成")
+                if self.start_download_btn:
+                    self.start_download_btn.setEnabled(True)
+                if self.pause_download_btn:
+                    self.pause_download_btn.setEnabled(False)
+                if self.stop_download_btn:
+                    self.stop_download_btn.setEnabled(False)
 
         update_progress()
 
     def _load_symbols_data(self):
         """加载品种数据."""
+        # 添加空值检查
+        if not self.symbols_table:
+            return
+
         # 清空表格
         self.symbols_table.setRowCount(0)
 
@@ -655,8 +772,7 @@ class DataCenter(BaseWidget, LoggerMixin):
             ("IF2406", "沪深300股指期货", "中金所", "期货", "正常"),
         ]
 
-        for i, (code, name, exchange, type_, status) in enumerate(
-                symbols_data):
+        for i, (code, name, exchange, type_, status) in enumerate(symbols_data):
             self.symbols_table.insertRow(i)
             self.symbols_table.setItem(i, 0, QTableWidgetItem(code))
             self.symbols_table.setItem(i, 1, QTableWidgetItem(name))
@@ -666,12 +782,15 @@ class DataCenter(BaseWidget, LoggerMixin):
 
             # 操作按钮
             operation_btn = QPushButton("查看")
-            operation_btn.clicked.connect(
-                self._create_view_handler(code))
+            operation_btn.clicked.connect(self._create_view_handler(code))
             self.symbols_table.setCellWidget(i, 5, operation_btn)
 
     def _load_local_data(self, _symbol, start_date, end_date):  # noqa: U101
         """加载本地数据."""
+        # 添加空值检查
+        if not self.data_table:
+            return
+
         # 清空表格
         self.data_table.setRowCount(0)
 
@@ -711,11 +830,17 @@ class DataCenter(BaseWidget, LoggerMixin):
             current_date += timedelta(days=1)
             row += 1
 
-        self.data_status_label.setText(f"显示 {row} 条数据")
-        self.data_quality_label.setText("数据质量: 良好")
+        if self.data_status_label:
+            self.data_status_label.setText(f"显示 {row} 条数据")
+        if self.data_quality_label:
+            self.data_quality_label.setText("数据质量: 良好")
 
     def _display_kline_data(self, kline_data, _symbol):  # noqa: U101
         """显示K线数据."""
+        # 添加空值检查
+        if not self.data_table:
+            return
+
         # 清空表格
         self.data_table.setRowCount(0)
 
@@ -723,31 +848,37 @@ class DataCenter(BaseWidget, LoggerMixin):
             self.data_table.insertRow(row)
 
             # 格式化日期
-            datetime_obj = data_item.get('datetime', '')
-            if hasattr(datetime_obj, 'strftime'):
+            datetime_obj = data_item.get("datetime", "")
+            if hasattr(datetime_obj, "strftime"):
                 date_str = datetime_obj.strftime("%Y-%m-%d")
             else:
                 date_str = str(datetime_obj)
 
             self.data_table.setItem(row, 0, QTableWidgetItem(date_str))
-            self.data_table.setItem(row, 1, QTableWidgetItem(
-                str(data_item.get('open', 0))))
-            self.data_table.setItem(row, 2, QTableWidgetItem(
-                str(data_item.get('high', 0))))
-            self.data_table.setItem(row, 3, QTableWidgetItem(
-                str(data_item.get('low', 0))))
-            self.data_table.setItem(row, 4, QTableWidgetItem(
-                str(data_item.get('close', 0))))
-            self.data_table.setItem(row, 5, QTableWidgetItem(
-                str(data_item.get('volume', 0))))
-            close_price = data_item.get('close', 0)
-            volume = data_item.get('volume', 0)
+            self.data_table.setItem(
+                row, 1, QTableWidgetItem(str(data_item.get("open", 0)))
+            )
+            self.data_table.setItem(
+                row, 2, QTableWidgetItem(str(data_item.get("high", 0)))
+            )
+            self.data_table.setItem(
+                row, 3, QTableWidgetItem(str(data_item.get("low", 0)))
+            )
+            self.data_table.setItem(
+                row, 4, QTableWidgetItem(str(data_item.get("close", 0)))
+            )
+            self.data_table.setItem(
+                row, 5, QTableWidgetItem(str(data_item.get("volume", 0)))
+            )
+            close_price = data_item.get("close", 0)
+            volume = data_item.get("volume", 0)
             amount = close_price * volume
-            self.data_table.setItem(row, 6, QTableWidgetItem(
-                str(amount)))
+            self.data_table.setItem(row, 6, QTableWidgetItem(str(amount)))
 
-        self.data_status_label.setText(f"显示 {len(kline_data)} 条数据")
-        self.data_quality_label.setText("数据质量: 来自VNPY")
+        if self.data_status_label:
+            self.data_status_label.setText(f"显示 {len(kline_data)} 条数据")
+        if self.data_quality_label:
+            self.data_quality_label.setText("数据质量: 来自VNPY")
 
     def _on_search_text_changed(self, text):
         """搜索文本改变."""
@@ -772,14 +903,17 @@ class DataCenter(BaseWidget, LoggerMixin):
 
     def _create_view_handler(self, code: str):
         """创建查看按钮的处理器."""
+
         def handler():
             self._on_view_symbol(code)
+
         return handler
 
     def _on_view_symbol(self, code: str):
         """在品种列表中点击查看：填充代码、切换到本地数据、补全日期并查询。"""
         try:
-            self.symbol_input.setText(code)
+            if self.symbol_input:
+                self.symbol_input.setText(code)
             # 切换到本地数据标签页
             if self.tab_widget and self.local_data_tab:
                 idx = self.tab_widget.indexOf(self.local_data_tab)

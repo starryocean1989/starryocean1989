@@ -27,7 +27,7 @@ from .models import get_data_model_manager
 from .performance import get_performance_optimizer
 from .test_integration import main as integration_main
 from .test_performance import main as performance_main
-from .vnpy_integration import TerminalEngine, VNPY_AVAILABLE
+from .vnpy_integration import TerminalEngine, VNPY_AVAILABLE, get_terminal_engine
 
 if TYPE_CHECKING:
     from .shared_services import ConfigService
@@ -48,9 +48,9 @@ class PerformanceMonitor:
 
         # 监控状态（分组在一起减少实例属性数量）
         self._state = {
-            'monitoring': False,
-            'monitor_thread': None,
-            'stop_event': threading.Event()
+            "monitoring": False,
+            "monitor_thread": None,
+            "stop_event": threading.Event(),
         }
 
         # 初始化阈值
@@ -65,42 +65,39 @@ class PerformanceMonitor:
             "memory_percent": config.get("memory_warning_threshold", 80.0),
             "response_time": config.get("response_time_threshold", 5.0),
             "error_rate": config.get("error_rate_threshold", 10.0),
-            "memory_leak_threshold": (
-                config.get("memory_leak_threshold", 100.0)
-            )  # MB
+            "memory_leak_threshold": (config.get("memory_leak_threshold", 100.0)),  # MB
         }
 
     def start_monitoring(self, interval: float = 5.0):
         """启动性能监控."""
-        if self._state['monitoring']:
+        if self._state["monitoring"]:
             return
 
-        self._state['monitoring'] = True
-        self._state['stop_event'].clear()
+        self._state["monitoring"] = True
+        self._state["stop_event"].clear()
 
-        self._state['monitor_thread'] = threading.Thread(
-            target=self._monitoring_loop,
-            daemon=True
+        self._state["monitor_thread"] = threading.Thread(
+            target=self._monitoring_loop, daemon=True
         )
-        self._state['monitor_thread'].start()
+        self._state["monitor_thread"].start()
         self.logger.info("性能监控已启动，间隔: %s秒", interval)
 
     def stop_monitoring(self):
         """停止性能监控."""
-        if not self._state['monitoring']:
+        if not self._state["monitoring"]:
             return
 
-        self._state['monitoring'] = False
-        self._state['stop_event'].set()
+        self._state["monitoring"] = False
+        self._state["stop_event"].set()
 
-        if self._state['monitor_thread']:
-            self._state['monitor_thread'].join(timeout=5)
+        if self._state["monitor_thread"]:
+            self._state["monitor_thread"].join(timeout=5)
 
         self.logger.info("性能监控已停止")
 
     def _monitoring_loop(self, interval: float):
         """监控循环."""
-        while not self._state['stop_event'].is_set():
+        while not self._state["stop_event"].is_set():
             try:
                 # 收集性能指标
                 self._collect_metrics()
@@ -112,7 +109,7 @@ class PerformanceMonitor:
                 self._cleanup_old_metrics()
 
                 # 等待下次监控
-                self._state['stop_event'].wait(interval)
+                self._state["stop_event"].wait(interval)
 
             except (RuntimeError, OSError) as e:
                 self.logger.error("监控循环异常: %s", e)
@@ -126,7 +123,7 @@ class PerformanceMonitor:
             # 系统性能指标
             cpu_percent = psutil.cpu_percent(interval=1)
             memory = psutil.virtual_memory()
-            disk = psutil.disk_usage('/')
+            disk = psutil.disk_usage("/")
 
             system_metrics = {
                 "timestamp": timestamp,
@@ -134,7 +131,7 @@ class PerformanceMonitor:
                 "memory_percent": memory.percent,
                 "memory_used_mb": memory.used / (1024 * 1024),
                 "disk_percent": disk.percent,
-                "disk_used_gb": disk.used / (1024 * 1024 * 1024)
+                "disk_used_gb": disk.used / (1024 * 1024 * 1024),
             }
 
             self._metrics["system"].append(system_metrics)
@@ -145,7 +142,7 @@ class PerformanceMonitor:
                 "python_objects": len(gc.get_objects()),
                 "thread_count": threading.active_count(),
                 "response_time": self._measure_response_time(),
-                "error_count": self._get_error_count()
+                "error_count": self._get_error_count(),
             }
 
             self._metrics["application"].append(app_metrics)
@@ -187,7 +184,8 @@ class PerformanceMonitor:
 
             # 性能优化器指标
             try:
-                optimizer = get_performance_optimizer(None)
+                terminal_engine = get_terminal_engine()
+                optimizer = get_performance_optimizer(terminal_engine)
                 if optimizer:
                     perf_stats = optimizer.get_performance_stats()
                     metrics["performance"] = perf_stats
@@ -210,24 +208,35 @@ class PerformanceMonitor:
 
             # CPU告警
             if latest["cpu_percent"] > self._thresholds["cpu_percent"]:
-                self._add_alert("cpu_warning", "高CPU使用率",
-                                f"CPU使用率 {latest['cpu_percent']:.1f}% "
-                                f"超过阈值 {self._thresholds['cpu_percent']}%")
+                self._add_alert(
+                    "cpu_warning",
+                    "高CPU使用率",
+                    f"CPU使用率 {latest['cpu_percent']:.1f}% "
+                    f"超过阈值 {self._thresholds['cpu_percent']}%",
+                )
 
             # 内存告警
             if latest["memory_percent"] > self._thresholds["memory_percent"]:
-                self._add_alert("memory_warning", "高内存使用率",
-                                f"内存使用率 {latest['memory_percent']:.1f}% "
-                                f"超过阈值 {self._thresholds['memory_percent']}%")
+                self._add_alert(
+                    "memory_warning",
+                    "高内存使用率",
+                    f"内存使用率 {latest['memory_percent']:.1f}% "
+                    f"超过阈值 {self._thresholds['memory_percent']}%",
+                )
 
             # 响应时间告警
-            if (latest.get("response_time", 0) >
-                    self._thresholds["response_time"] * 1000):
+            if (
+                latest.get("response_time", 0)
+                > self._thresholds["response_time"] * 1000
+            ):
                 self._add_alert(
-                    "response_time_warning", "响应时间过长",
-                    (f"响应时间 {latest.get('response_time', 0):.1f}ms "
-                     f"超过阈值 "
-                     f"{self._thresholds['response_time'] * 1000}ms")
+                    "response_time_warning",
+                    "响应时间过长",
+                    (
+                        f"响应时间 {latest.get('response_time', 0):.1f}ms "
+                        f"超过阈值 "
+                        f"{self._thresholds['response_time'] * 1000}ms"
+                    ),
                 )
 
         except (KeyError, TypeError, RuntimeError) as e:
@@ -240,7 +249,7 @@ class PerformanceMonitor:
             "type": alert_type,
             "title": title,
             "message": message,
-            "resolved": False
+            "resolved": False,
         }
 
         self._alerts.append(alert)
@@ -258,21 +267,30 @@ class PerformanceMonitor:
         for category in self._metrics:
             if category in self._metrics:
                 self._metrics[category] = [
-                    m for m in self._metrics[category]
-                    if (isinstance(m, dict) and m.get("timestamp")
-                        and m["timestamp"] >= cutoff_time)
+                    m
+                    for m in self._metrics[category]
+                    if (
+                        isinstance(m, dict)
+                        and m.get("timestamp")
+                        and m["timestamp"] >= cutoff_time
+                    )
                 ]
 
-    def get_metrics(self, category: str = None,
-                    hours: int = 1) -> Dict[str, Any]:
+    def get_metrics(
+        self, category: Optional[str] = None, hours: int = 1
+    ) -> Dict[str, Any]:
         """获取监控指标."""
         cutoff_time = datetime.now() - timedelta(hours=hours)
 
         if category:
             metrics = [
-                m for m in self._metrics.get(category, [])
-                if (isinstance(m, dict) and m.get("timestamp")
-                    and m["timestamp"] >= cutoff_time)
+                m
+                for m in self._metrics.get(category, [])
+                if (
+                    isinstance(m, dict)
+                    and m.get("timestamp")
+                    and m["timestamp"] >= cutoff_time
+                )
             ]
             return {category: metrics}
 
@@ -280,9 +298,13 @@ class PerformanceMonitor:
         result = {}
         for cat, data in self._metrics.items():
             result[cat] = [
-                m for m in data
-                if (isinstance(m, dict) and m.get("timestamp")
-                    and m["timestamp"] >= cutoff_time)
+                m
+                for m in data
+                if (
+                    isinstance(m, dict)
+                    and m.get("timestamp")
+                    and m["timestamp"] >= cutoff_time
+                )
             ]
 
         return result
@@ -299,19 +321,19 @@ class PerformanceMonitor:
     def get_summary(self) -> Dict[str, Any]:
         """获取监控摘要."""
         summary = {
-            "monitoring_active": self._state['monitoring'],
+            "monitoring_active": self._state["monitoring"],
             "total_alerts": len(self._alerts),
             "metrics_count": {
-                category: len(metrics)
-                for category, metrics in self._metrics.items()
+                category: len(metrics) for category, metrics in self._metrics.items()
             },
-            "thresholds": self._thresholds.copy()
+            "thresholds": self._thresholds.copy(),
         }
 
         # 最近的系统指标
         if self._metrics["system"]:
             latest_metrics = [
-                m for m in self._metrics["system"]
+                m
+                for m in self._metrics["system"]
                 if isinstance(m, dict) and m.get("timestamp")
             ]
             if latest_metrics:
@@ -319,7 +341,7 @@ class PerformanceMonitor:
                 summary["latest_system_metrics"] = {
                     "cpu_percent": latest.get("cpu_percent", 0),
                     "memory_percent": latest.get("memory_percent", 0),
-                    "timestamp": latest.get("timestamp")
+                    "timestamp": latest.get("timestamp"),
                 }
 
         return summary
@@ -327,7 +349,7 @@ class PerformanceMonitor:
     @property
     def is_monitoring(self) -> bool:
         """是否正在监控."""
-        return self._state['monitoring']
+        return self._state["monitoring"]
 
     @property
     def metrics_count(self) -> int:
@@ -349,14 +371,14 @@ class TestRunner:
         self.logger = logging.getLogger(__name__)
         self._test_results: Dict[str, Any] = {}
 
-    def run_unit_tests(self, test_module: str = None) -> Dict[str, Any]:
+    def run_unit_tests(self, test_module: Optional[str] = None) -> Dict[str, Any]:
         """运行单元测试."""
         start_time = time.time()
 
         # 发现测试
         if test_module:
             try:
-                module = __import__(test_module, fromlist=[''])
+                module = __import__(test_module, fromlist=[""])
                 loader = unittest.TestLoader()
                 suite = loader.loadTestsFromModule(module)
             except (ImportError, AttributeError) as e:
@@ -369,12 +391,12 @@ class TestRunner:
             # 发现所有测试文件
             test_files = [
                 "backend.core.test_integration",
-                "backend.core.test_performance"
+                "backend.core.test_performance",
             ]
 
             for test_file in test_files:
                 try:
-                    module = __import__(test_file, fromlist=[''])
+                    module = __import__(test_file, fromlist=[""])
                     loader = unittest.TestLoader()
                     module_suite = loader.loadTestsFromModule(module)
                     suite.addTests(module_suite)
@@ -401,18 +423,19 @@ class TestRunner:
                     for test, error in result.failures
                 ],
                 "errors": [
-                    {"test": str(test), "error": error}
-                    for test, error in result.errors
-                ]
-            }
+                    {"test": str(test), "error": error} for test, error in result.errors
+                ],
+            },
         }
 
         self._test_results[datetime.now().isoformat()] = test_result
 
-        self.logger.info("单元测试完成: %s 个测试, %s 个失败, %s 个错误",
-                         test_result['tests_run'],
-                         test_result['failures'],
-                         test_result['errors'])
+        self.logger.info(
+            "单元测试完成: %s 个测试, %s 个失败, %s 个错误",
+            test_result["tests_run"],
+            test_result["failures"],
+            test_result["errors"],
+        )
 
         return test_result
 
@@ -426,8 +449,7 @@ class TestRunner:
             stdout_capture = io.StringIO()
             stderr_capture = io.StringIO()
 
-            with redirect_stdout(stdout_capture), \
-                 redirect_stderr(stderr_capture):
+            with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
                 exit_code = integration_main()
 
             output = stdout_capture.getvalue()
@@ -441,7 +463,7 @@ class TestRunner:
                 "success": success,
                 "exit_code": exit_code,
                 "output": output,
-                "errors": errors
+                "errors": errors,
             }
 
             key = f"integration_{datetime.now().isoformat()}"
@@ -460,7 +482,7 @@ class TestRunner:
                 "success": False,
                 "error": str(e),
                 "timestamp": datetime.now(),
-                "duration": time.time() - start_time
+                "duration": time.time() - start_time,
             }
 
     def run_performance_tests(self) -> Dict[str, Any]:
@@ -473,8 +495,7 @@ class TestRunner:
             stdout_capture = io.StringIO()
             stderr_capture = io.StringIO()
 
-            with redirect_stdout(stdout_capture), \
-                 redirect_stderr(stderr_capture):
+            with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
                 exit_code = performance_main()
 
             output = stdout_capture.getvalue()
@@ -488,7 +509,7 @@ class TestRunner:
                 "success": success,
                 "exit_code": exit_code,
                 "output": output,
-                "errors": errors
+                "errors": errors,
             }
 
             key = f"performance_{datetime.now().isoformat()}"
@@ -507,16 +528,13 @@ class TestRunner:
                 "success": False,
                 "error": str(e),
                 "timestamp": datetime.now(),
-                "duration": time.time() - start_time
+                "duration": time.time() - start_time,
             }
 
     def get_test_results(self, limit: int = 10) -> List[Dict[str, Any]]:
         """获取测试结果."""
         results = list(self._test_results.values())
-        results.sort(
-            key=lambda x: x.get("timestamp") or datetime.min,
-            reverse=True
-        )
+        results.sort(key=lambda x: x.get("timestamp") or datetime.min, reverse=True)
         return results[:limit]
 
     def run_all_tests(self) -> Dict[str, Any]:
@@ -535,16 +553,18 @@ class TestRunner:
         results["performance_tests"] = self.run_performance_tests()
 
         # 计算总体结果
-        total_success = all([
-            results["unit_tests"].get("success", False),
-            results["integration_tests"].get("success", False),
-            results["performance_tests"].get("success", False)
-        ])
+        total_success = all(
+            [
+                results["unit_tests"].get("success", False),
+                results["integration_tests"].get("success", False),
+                results["performance_tests"].get("success", False),
+            ]
+        )
 
         summary = {
             "timestamp": datetime.now(),
             "total_success": total_success,
-            "results": results
+            "results": results,
         }
 
         if total_success:
@@ -580,7 +600,7 @@ class TestStream:
 
     def getvalue(self):
         """获取输出流的内容."""
-        return ''.join(self.content)
+        return "".join(self.content)
 
 
 class HealthChecker:
@@ -599,10 +619,11 @@ class HealthChecker:
             "memory": self._check_memory_usage(),
             "disk": self._check_disk_space(),
             "core_modules": self._check_core_modules(),
-            "vnpy": (self._check_vnpy_connection() if VNPY_AVAILABLE else {
-                "status": "unavailable",
-                "message": "VNPY不可用"
-            })
+            "vnpy": (
+                self._check_vnpy_connection()
+                if VNPY_AVAILABLE
+                else {"status": "unavailable", "message": "VNPY不可用"}
+            ),
         }
 
         # 计算整体健康评分
@@ -611,10 +632,12 @@ class HealthChecker:
         result = {
             "timestamp": datetime.now(),
             "health_score": health_score,
-            "status": ("healthy" if health_score >= 80
-                       else "warning" if health_score >= 60
-                       else "critical"),
-            "checks": checks
+            "status": (
+                "healthy"
+                if health_score >= 80
+                else "warning" if health_score >= 60 else "critical"
+            ),
+            "checks": checks,
         }
 
         self._check_results[datetime.now().isoformat()] = result
@@ -627,7 +650,7 @@ class HealthChecker:
                 "status": "ok",
                 "version": sys.version,
                 "platform": platform.platform(),
-                "python_bits": "64-bit" if sys.maxsize > 2**32 else "32-bit"
+                "python_bits": "64-bit" if sys.maxsize > 2**32 else "32-bit",
             }
         except (RuntimeError, OSError) as e:
             return {"status": "error", "error": str(e)}
@@ -644,7 +667,7 @@ class HealthChecker:
                 "status": status,
                 "percent": memory.percent,
                 "used_mb": memory.used / (1024 * 1024),
-                "available_mb": memory.available / (1024 * 1024)
+                "available_mb": memory.available / (1024 * 1024),
             }
         except (RuntimeError, OSError, psutil.Error) as e:
             return {"status": "error", "error": str(e)}
@@ -652,7 +675,7 @@ class HealthChecker:
     def _check_disk_space(self) -> Dict[str, Any]:
         """检查磁盘空间."""
         try:
-            disk = psutil.disk_usage('/')
+            disk = psutil.disk_usage("/")
             threshold = 90  # 90%
 
             status = "ok" if disk.percent < threshold else "warning"
@@ -661,7 +684,7 @@ class HealthChecker:
                 "status": status,
                 "percent": disk.percent,
                 "used_gb": disk.used / (1024 * 1024 * 1024),
-                "free_gb": disk.free / (1024 * 1024 * 1024)
+                "free_gb": disk.free / (1024 * 1024 * 1024),
             }
         except (RuntimeError, OSError, psutil.Error) as e:
             return {"status": "error", "error": str(e)}
@@ -679,37 +702,24 @@ class HealthChecker:
             else:
                 checks["data_manager"] = {
                     "status": "error",
-                    "error": "无法获取数据管理器"
+                    "error": "无法获取数据管理器",
                 }
         except (RuntimeError, AttributeError) as e:
-            checks["data_manager"] = {
-                "status": "error",
-                "error": str(e)
-            }
+            checks["data_manager"] = {"status": "error", "error": str(e)}
 
         try:
             # 检查性能优化器
-            optimizer = get_performance_optimizer(
-                self.terminal_engine
-            )
+            optimizer = get_performance_optimizer(self.terminal_engine)
             if optimizer:
                 stats = optimizer.get_performance_stats()
-                checks["performance_optimizer"] = {
-                    "status": "ok",
-                    "stats": stats
-                }
+                checks["performance_optimizer"] = {"status": "ok", "stats": stats}
             else:
                 checks["performance_optimizer"] = {
                     "status": "error",
-                    "error": (
-                        "无法获取性能优化器"
-                    )
+                    "error": ("无法获取性能优化器"),
                 }
         except (RuntimeError, AttributeError) as e:
-            checks["performance_optimizer"] = {
-                "status": "error",
-                "error": str(e)
-            }
+            checks["performance_optimizer"] = {"status": "error", "error": str(e)}
 
         return checks
 
@@ -721,7 +731,7 @@ class HealthChecker:
                 "status": "ok",
                 "vnpy_available": status.get("vnpy_available", False),
                 "gateways": len(status.get("gateways", {})),
-                "datafeeds": len(status.get("datafeeds", {}))
+                "datafeeds": len(status.get("datafeeds", {})),
             }
         except (RuntimeError, AttributeError, ConnectionError) as e:
             return {"status": "error", "error": str(e)}
@@ -741,14 +751,12 @@ class HealthChecker:
 
         # 核心模块评分
         core_modules = checks.get("core_modules", {})
-        if (core_modules.get("data_manager", {})
-                .get("status") == "ok"):
+        if core_modules.get("data_manager", {}).get("status") == "ok":
             scores.append(100)
         else:
             scores.append(0)
 
-        if (core_modules.get("performance_optimizer", {})
-                .get("status") == "ok"):
+        if core_modules.get("performance_optimizer", {}).get("status") == "ok":
             scores.append(100)
         else:
             scores.append(0)
@@ -764,10 +772,7 @@ class HealthChecker:
     def get_check_history(self, limit: int = 10) -> List[Dict[str, Any]]:
         """获取检查历史."""
         results = list(self._check_results.values())
-        results.sort(
-            key=lambda x: x.get("timestamp") or datetime.min,
-            reverse=True
-        )
+        results.sort(key=lambda x: x.get("timestamp") or datetime.min, reverse=True)
         return results[:limit]
 
     @property
@@ -782,8 +787,9 @@ class HealthChecker:
 class MonitoringManager:
     """监控管理器."""
 
-    def __init__(self, config_service: "ConfigService",
-                 terminal_engine: TerminalEngine):
+    def __init__(
+        self, config_service: "ConfigService", terminal_engine: TerminalEngine
+    ):
         """初始化监控管理器."""
         self.config_service = config_service
         self.terminal_engine = terminal_engine
@@ -818,9 +824,7 @@ class MonitoringManager:
         test_result = self.test_runner.run_all_tests()
 
         # 性能指标
-        performance_metrics = (
-            self.performance_monitor.get_metrics(hours=1)
-        )
+        performance_metrics = self.performance_monitor.get_metrics(hours=1)
 
         # 综合报告
         report = {
@@ -831,15 +835,12 @@ class MonitoringManager:
             "summary": {
                 "health_score": health_result.get("health_score", 0),
                 "tests_passed": test_result.get("total_success", False),
-                "performance_ok": (
-                    len(performance_metrics.get("system", [])) > 0
-                )
-            }
+                "performance_ok": (len(performance_metrics.get("system", [])) > 0),
+            },
         }
 
         self.logger.info(
-            "综合测试完成 - 健康评分: %s",
-            report['summary']['health_score']
+            "综合测试完成 - 健康评分: %s", report["summary"]["health_score"]
         )
         return report
 
@@ -849,18 +850,12 @@ class MonitoringManager:
             "performance_monitor": {
                 "active": self.performance_monitor.is_monitoring,
                 "metrics_count": self.performance_monitor.metrics_count,
-                "alerts_count": self.performance_monitor.alerts_count
+                "alerts_count": self.performance_monitor.alerts_count,
             },
-            "health_checker": {
-                "last_check": self.health_checker.last_check_timestamp
-            },
-            "test_runner": {
-                "last_test": self.test_runner.last_test_timestamp
-            }
+            "health_checker": {"last_check": self.health_checker.last_check_timestamp},
+            "test_runner": {"last_test": self.test_runner.last_test_timestamp},
         }
 
 
 # 导出公共接口
-__all__ = [
-    'PerformanceMonitor', 'TestRunner', 'HealthChecker', 'MonitoringManager'
-]
+__all__ = ["PerformanceMonitor", "TestRunner", "HealthChecker", "MonitoringManager"]

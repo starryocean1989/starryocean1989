@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 try:
     import pandas as pd
     import numpy as np
+
     PANDAS_AVAILABLE = True
 except ImportError:
     PANDAS_AVAILABLE = False
@@ -33,6 +34,7 @@ except ImportError:
 try:
     import matplotlib.pyplot as plt
     import seaborn as sns
+
     MATPLOTLIB_AVAILABLE = True
 except ImportError:
     MATPLOTLIB_AVAILABLE = False
@@ -42,6 +44,7 @@ except ImportError:
 # 系统监控
 try:
     import psutil
+
     PSUTIL_AVAILABLE = True
 except ImportError:
     PSUTIL_AVAILABLE = False
@@ -53,11 +56,21 @@ import requests
 # GUI框架（可选）
 try:
     from PySide6.QtWidgets import (
-        QWidget, QApplication, QVBoxLayout, QHBoxLayout,
-        QLabel, QPushButton, QMainWindow, QTabWidget,
-        QTableWidget, QHeaderView, QSplitter, QSizePolicy
+        QWidget,
+        QApplication,
+        QVBoxLayout,
+        QHBoxLayout,
+        QLabel,
+        QPushButton,
+        QMainWindow,
+        QTabWidget,
+        QTableWidget,
+        QHeaderView,
+        QSplitter,
+        QSizePolicy,
     )
     from PySide6.QtCore import Qt, Signal
+
     PYSIDE6_AVAILABLE = True
 except ImportError:
     PYSIDE6_AVAILABLE = False
@@ -66,16 +79,30 @@ except ImportError:
 
 # VNPY核心模块
 from .vnpy_integration import (
-    AccountData, BarData, EVENT_ACCOUNT, EVENT_LOG, EVENT_ORDER,
-    EVENT_POSITION, EVENT_TICK, EVENT_TRADE, Event, EventEngine,
-    MainEngine, OrderData, PositionData, TerminalEngine, TickData,
-    TradeData, VNPY_AVAILABLE
+    AccountData,
+    BarData,
+    EVENT_ACCOUNT,
+    EVENT_LOG,
+    EVENT_ORDER,
+    EVENT_POSITION,
+    EVENT_TICK,
+    EVENT_TRADE,
+    Event,
+    EventEngine,
+    MainEngine,
+    OrderData,
+    PositionData,
+    TerminalEngine,
+    TickData,
+    TradeData,
+    VNPY_AVAILABLE,
 )
 
 # VNPY策略引擎
 try:
     if VNPY_AVAILABLE:
         from vnpy_ctastrategy import CtaEngine
+
         CTA_ENGINE_AVAILABLE = True
     else:
         CTA_ENGINE_AVAILABLE = False
@@ -87,6 +114,7 @@ except ImportError:
 try:
     if VNPY_AVAILABLE:
         from vnpy_algotrading import AlgoEngine
+
         ALGO_ENGINE_AVAILABLE = True
     else:
         ALGO_ENGINE_AVAILABLE = False
@@ -97,7 +125,10 @@ except ImportError:
 
 try:
     if VNPY_AVAILABLE:
-        from vnpy_portfoliostrategy import PortfolioEngine
+        from vnpy_portfoliostrategy import (
+            StrategyEngine as PortfolioEngine,
+        )  # noqa: F401
+
         PORTFOLIO_ENGINE_AVAILABLE = True
     else:
         PORTFOLIO_ENGINE_AVAILABLE = False
@@ -110,6 +141,7 @@ except ImportError:
 try:
     if VNPY_AVAILABLE:
         from vnpy_ctp import CtpGateway
+
         CTP_GATEWAY_AVAILABLE = True
     else:
         CTP_GATEWAY_AVAILABLE = False
@@ -125,6 +157,7 @@ MiniGateway = None  # pylint: disable=invalid-name
 try:
     if VNPY_AVAILABLE:
         from vnpy_ib import IbGateway
+
         IB_GATEWAY_AVAILABLE = True
     else:
         IB_GATEWAY_AVAILABLE = False
@@ -136,7 +169,8 @@ except ImportError:
 # VNPY数据源
 try:
     if VNPY_AVAILABLE:
-        from vnpy_tushare import TushareDatafeed
+        from vnpy_tushare import TushareDatafeed  # type: ignore
+
         TUSHARE_DATAFEED_AVAILABLE = True
     else:
         TUSHARE_DATAFEED_AVAILABLE = False
@@ -147,7 +181,8 @@ except ImportError:
 
 try:
     if VNPY_AVAILABLE:
-        from vnpy_rqdata import RqdataDatafeed
+        from vnpy_rqdata import RqdataDatafeed  # type: ignore
+
         RQDATA_DATAFEED_AVAILABLE = True
     else:
         RQDATA_DATAFEED_AVAILABLE = False
@@ -161,8 +196,9 @@ try:
     from ..infrastructure.data_module_vnpy.data_manager import DataManager
     from ..infrastructure.data_module_vnpy.data_api import DataAPI
     from ..infrastructure.data_module_vnpy.integration_manager import (
-        IntegrationManager
+        VnPyIntegrationManager as IntegrationManager,
     )
+
     DATA_MODULE_AVAILABLE = True
 except ImportError:
     DATA_MODULE_AVAILABLE = False
@@ -174,14 +210,19 @@ except ImportError:
 try:
     from ..infrastructure.system_vnpy.system_monitor import SystemMonitor
     from ..infrastructure.system_vnpy.performance_optimizer import (
-        PerformanceOptimizer
-    )
+        CacheManager,
+        MemoryOptimizer,
+        ConcurrencyOptimizer,
+    )  # noqa: F401
     from ..infrastructure.system_vnpy.process_manager import ProcessManager
+
     SYSTEM_MODULE_AVAILABLE = True
 except ImportError:
     SYSTEM_MODULE_AVAILABLE = False
     SystemMonitor = None
-    PerformanceOptimizer = None
+    CacheManager = None
+    MemoryOptimizer = None
+    ConcurrencyOptimizer = None
     ProcessManager = None
 
 # 工具模块
@@ -189,8 +230,9 @@ try:
     from ..infrastructure.data_engine.utils import (
         setup_logging as engine_setup_logging,  # noqa: F401
         validate_symbol,  # noqa: F401
-        format_datetime  # noqa: F401
+        format_datetime,  # noqa: F401
     )
+
     DATA_ENGINE_UTILS_AVAILABLE = True
 except ImportError:
     DATA_ENGINE_UTILS_AVAILABLE = False
@@ -198,6 +240,7 @@ except ImportError:
 # 图表和可视化
 try:
     import pyqtgraph  # noqa: F401  # pylint: disable=unused-import
+
     PYQTGRAPH_AVAILABLE = True
 except ImportError:
     PYQTGRAPH_AVAILABLE = False
@@ -206,6 +249,7 @@ except ImportError:
 try:
     import sqlite3
     import pymongo
+
     SQLITE_AVAILABLE = True
     MONGODB_AVAILABLE = True
 except ImportError:
@@ -264,7 +308,7 @@ class ModuleAvailability:
         """获取所有可用模块的列表."""
         available = []
         for attr_name in dir(cls):
-            if not attr_name.startswith('_'):
+            if not attr_name.startswith("_"):
                 attr_value = getattr(cls, attr_name)
                 if isinstance(attr_value, bool) and attr_value:
                     available.append(attr_name.lower())
@@ -275,7 +319,7 @@ class ModuleAvailability:
         """获取所有不可用模块的列表."""
         unavailable = []
         for attr_name in dir(cls):
-            if not attr_name.startswith('_'):
+            if not attr_name.startswith("_"):
                 attr_value = getattr(cls, attr_name)
                 if isinstance(attr_value, bool) and not attr_value:
                     unavailable.append(attr_name.lower())
@@ -304,7 +348,7 @@ def check_module_availability() -> Dict[str, bool]:
         "system_module": SYSTEM_MODULE_AVAILABLE,
         "data_engine_utils": DATA_ENGINE_UTILS_AVAILABLE,
         "sqlite": SQLITE_AVAILABLE,
-        "mongodb": MONGODB_AVAILABLE
+        "mongodb": MONGODB_AVAILABLE,
     }
 
 
@@ -317,15 +361,17 @@ def safe_import(module_name: str, fallback=None):
             "numpy": np,
             "psutil": psutil,
             "matplotlib": plt,
-            "vnpy_ctastrategy": CtaEngine
+            "vnpy_ctastrategy": CtaEngine,
         }
 
         # 扩展模块映射
         extended_map = module_map.copy()
-        extended_map.update({
-            "vnpy_algotrading": AlgoEngine,
-            "vnpy_ctp": CtpGateway,
-        })
+        extended_map.update(
+            {
+                "vnpy_algotrading": AlgoEngine,
+                "vnpy_ctp": CtpGateway,
+            }
+        )
 
         if module_name in extended_map:
             return extended_map[module_name]
@@ -339,8 +385,7 @@ def safe_import(module_name: str, fallback=None):
 
 # 统一日志配置
 def setup_logging(
-    name: str = "terminal", level: str = "INFO",
-    log_file: str = None
+    name: str = "terminal", level: str = "INFO", log_file: Optional[str] = None
 ):
     """统一日志配置."""
     logger = logging.getLogger(name)
@@ -354,7 +399,7 @@ def setup_logging(
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
     console_formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
     console_handler.setFormatter(console_formatter)
     logger.addHandler(console_handler)
@@ -366,11 +411,11 @@ def setup_logging(
             log_path = Path(log_file)
             log_path.parent.mkdir(parents=True, exist_ok=True)
 
-            file_handler = logging.FileHandler(log_file, encoding='utf-8')
+            file_handler = logging.FileHandler(log_file, encoding="utf-8")
             file_handler.setLevel(logging.DEBUG)
             file_formatter = logging.Formatter(
-                '%(asctime)s - %(name)s - %(levelname)s - '
-                '%(filename)s:%(lineno)d - %(message)s'
+                "%(asctime)s - %(name)s - %(levelname)s - "
+                "%(filename)s:%(lineno)d - %(message)s"
             )
             file_handler.setFormatter(file_formatter)
             logger.addHandler(file_handler)
@@ -381,44 +426,52 @@ def setup_logging(
 
 
 # 数据转换工具
-def vnpy_to_pandas(
-    vnpy_data_list: List[Any], data_type: str = "tick"
-) -> Optional[Any]:
+def vnpy_to_pandas(vnpy_data_list: List[Any], data_type: str = "tick") -> Optional[Any]:
     """将VNPY数据转换为pandas DataFrame."""
     if not PANDAS_AVAILABLE or not vnpy_data_list:
         return None
 
     try:
-        if data_type == "tick":
-            df = pd.DataFrame([{
-                'datetime': data.datetime,
-                'symbol': data.symbol,
-                'last_price': data.last_price,
-                'volume': data.volume,
-                'turnover': data.turnover,
-                'open_interest': data.open_interest,
-                'bid_price': data.bid_price_1,
-                'ask_price': data.ask_price_1,
-                'bid_volume': data.bid_volume_1,
-                'ask_volume': data.ask_volume_1
-            } for data in vnpy_data_list])
-        elif data_type == "bar":
-            df = pd.DataFrame([{
-                'datetime': data.datetime,
-                'symbol': data.symbol,
-                'open_price': data.open_price,
-                'high_price': data.high_price,
-                'low_price': data.low_price,
-                'close_price': data.close_price,
-                'volume': data.volume,
-                'turnover': data.turnover
-            } for data in vnpy_data_list])
+        if data_type == "tick" and pd is not None:
+            df = pd.DataFrame(
+                [
+                    {
+                        "datetime": data.datetime,
+                        "symbol": data.symbol,
+                        "last_price": data.last_price,
+                        "volume": data.volume,
+                        "turnover": data.turnover,
+                        "open_interest": data.open_interest,
+                        "bid_price": data.bid_price_1,
+                        "ask_price": data.ask_price_1,
+                        "bid_volume": data.bid_volume_1,
+                        "ask_volume": data.ask_volume_1,
+                    }
+                    for data in vnpy_data_list
+                ]
+            )
+        elif data_type == "bar" and pd is not None:
+            df = pd.DataFrame(
+                [
+                    {
+                        "datetime": data.datetime,
+                        "symbol": data.symbol,
+                        "open_price": data.open_price,
+                        "high_price": data.high_price,
+                        "low_price": data.low_price,
+                        "close_price": data.close_price,
+                        "volume": data.volume,
+                        "turnover": data.turnover,
+                    }
+                    for data in vnpy_data_list
+                ]
+            )
         else:
             return None
 
-        if not df.empty:
-            df['datetime'] = pd.to_datetime(df['datetime'])
-            df.set_index('datetime', inplace=True)
+        if not df.empty and pd is not None:
+            df["datetime"] = pd.to_datetime(df["datetime"])
+            df.set_index("datetime", inplace=True)
 
         return df
 
@@ -430,55 +483,95 @@ def vnpy_to_pandas(
 # 导出所有公共接口
 __all__ = [
     # 基础类型和常量
-    'Path', 'Dict', 'List', 'Optional', 'Any', 'Union', 'Tuple',
-
+    "Path",
+    "Dict",
+    "List",
+    "Optional",
+    "Any",
+    "Union",
+    "Tuple",
     # 系统模块
-    'os', 'sys', 'json', 'time', 'datetime', 'traceback',
-    'asyncio', 'threading', 'requests', 'ThreadPoolExecutor',
-
+    "os",
+    "sys",
+    "json",
+    "time",
+    "datetime",
+    "traceback",
+    "asyncio",
+    "threading",
+    "requests",
+    "ThreadPoolExecutor",
     # 数据处理
-    'pd', 'np', 'plt', 'sns',
-
+    "pd",
+    "np",
+    "plt",
+    "sns",
     # 系统监控
-    'psutil',
-
+    "psutil",
     # GUI组件
-    'QWidget', 'QApplication', 'QVBoxLayout', 'QHBoxLayout',
-    'QLabel', 'QPushButton', 'QMainWindow', 'QTabWidget',
-    'QTableWidget', 'QHeaderView', 'QSplitter', 'QSizePolicy',
-    'Qt', 'Signal',
-
+    "QWidget",
+    "QApplication",
+    "QVBoxLayout",
+    "QHBoxLayout",
+    "QLabel",
+    "QPushButton",
+    "QMainWindow",
+    "QTabWidget",
+    "QTableWidget",
+    "QHeaderView",
+    "QSplitter",
+    "QSizePolicy",
+    "Qt",
+    "Signal",
     # VNPY核心
-    'TerminalEngine', 'MainEngine', 'EventEngine', 'Event',
-    'TickData', 'BarData', 'OrderData', 'TradeData',
-    'PositionData', 'AccountData',
-
+    "TerminalEngine",
+    "MainEngine",
+    "EventEngine",
+    "Event",
+    "TickData",
+    "BarData",
+    "OrderData",
+    "TradeData",
+    "PositionData",
+    "AccountData",
     # VNPY事件常量
-    'EVENT_TICK', 'EVENT_ORDER', 'EVENT_TRADE',
-    'EVENT_POSITION', 'EVENT_ACCOUNT', 'EVENT_LOG',
-
+    "EVENT_TICK",
+    "EVENT_ORDER",
+    "EVENT_TRADE",
+    "EVENT_POSITION",
+    "EVENT_ACCOUNT",
+    "EVENT_LOG",
     # VNPY引擎
-    'CtaEngine', 'AlgoEngine', 'PortfolioEngine',
-
+    "CtaEngine",
+    "AlgoEngine",
+    "PortfolioEngine",
     # VNPY网关
-    'CtpGateway', 'MiniGateway', 'IbGateway',
-
+    "CtpGateway",
+    "MiniGateway",
+    "IbGateway",
     # VNPY数据源
-    'TushareDatafeed', 'RqdataDatafeed',
-
+    "TushareDatafeed",
+    "RqdataDatafeed",
     # 本地模块
-    'DataManager', 'DataAPI', 'IntegrationManager',
-    'SystemMonitor', 'ProcessManager',
-    'PerformanceOptimizer',
-
+    "DataManager",
+    "DataAPI",
+    "IntegrationManager",
+    "SystemMonitor",
+    "ProcessManager",
+    "CacheManager",
+    "MemoryOptimizer",
+    "ConcurrencyOptimizer",
     # 工具函数
-    'setup_logging', 'check_module_availability', 'safe_import',
-    'vnpy_to_pandas',
-    'engine_setup_logging', 'validate_symbol', 'format_datetime',
-
+    "setup_logging",
+    "check_module_availability",
+    "safe_import",
+    "vnpy_to_pandas",
+    "engine_setup_logging",
+    "validate_symbol",
+    "format_datetime",
     # 可用性常量
-    'ModuleAvailability',
-
+    "ModuleAvailability",
     # 数据库
-    'sqlite3', 'pymongo'
+    "sqlite3",
+    "pymongo",
 ]

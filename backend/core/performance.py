@@ -86,7 +86,8 @@ class Cache:
         with self._lock:
             current_time = time.time()
             expired_keys = [
-                key for key, timestamp in self._timestamps.items()
+                key
+                for key, timestamp in self._timestamps.items()
                 if current_time - timestamp > self.ttl
             ]
 
@@ -104,14 +105,12 @@ class DataCache:
     def __init__(self):
         """初始化数据缓存管理器."""
         self.market_data_cache = Cache(max_size=5000, ttl=300)  # 5分钟过期
-        self.order_cache = Cache(max_size=1000, ttl=600)       # 10分钟过期
-        self.position_cache = Cache(max_size=1000, ttl=300)    # 5分钟过期
+        self.order_cache = Cache(max_size=1000, ttl=600)  # 10分钟过期
+        self.position_cache = Cache(max_size=1000, ttl=300)  # 5分钟过期
         self.logger = logging.getLogger(__name__)
 
         # 启动定期清理线程
-        cleanup_thread = threading.Thread(
-            target=self._cleanup_loop, daemon=True
-        )
+        cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
         cleanup_thread.start()
 
     def _cleanup_loop(self):
@@ -130,9 +129,7 @@ class DataCache:
         key = f"market_{symbol}"
         self.market_data_cache.put(key, data)
 
-    def get_market_data(
-        self, symbol: str
-    ) -> Optional[List["UnifiedMarketData"]]:
+    def get_market_data(self, symbol: str) -> Optional[List["UnifiedMarketData"]]:
         """获取缓存的行情数据."""
         key = f"market_{symbol}"
         return self.market_data_cache.get(key)
@@ -162,16 +159,16 @@ class DataCache:
         return {
             "market_data_cache": {
                 "size": self.market_data_cache.size(),
-                "max_size": self.market_data_cache.max_size
+                "max_size": self.market_data_cache.max_size,
             },
             "order_cache": {
                 "size": self.order_cache.size(),
-                "max_size": self.order_cache.max_size
+                "max_size": self.order_cache.max_size,
             },
             "position_cache": {
                 "size": self.position_cache.size(),
-                "max_size": self.position_cache.max_size
-            }
+                "max_size": self.position_cache.max_size,
+            },
         }
 
 
@@ -196,7 +193,8 @@ class AsyncTaskManager:
             # 在线程中运行事件循环
             def run_loop():
                 try:
-                    self.loop.run_forever()
+                    if self.loop is not None:
+                        self.loop.run_forever()
                 except (RuntimeError, KeyboardInterrupt) as e:
                     self.logger.error("事件循环异常: %s", e)
 
@@ -222,13 +220,12 @@ class AsyncTaskManager:
         return {
             "active_tasks": len(self._tasks),
             "completed_tasks": len(self._results),
-            "max_workers": self.max_workers
+            "max_workers": self.max_workers,
         }
 
-    def submit_task(
-        self, task_id: str, func: Callable, *args, **kwargs
-    ) -> str:
+    def submit_task(self, task_id: str, func: Callable, *args, **kwargs) -> str:
         """提交异步任务."""
+
         def task_wrapper():
             try:
                 result = func(*args, **kwargs)
@@ -241,9 +238,7 @@ class AsyncTaskManager:
         self._tasks[task_id] = future
         return task_id
 
-    def submit_asyncio_task(
-        self, coroutine_func: Callable, *args, **kwargs
-    ) -> str:
+    def submit_asyncio_task(self, coroutine_func: Callable, *args, **kwargs) -> str:
         """提交异步协程任务."""
         if not self.loop:
             self.start_event_loop()
@@ -261,6 +256,8 @@ class AsyncTaskManager:
                 self.logger.error("异步任务执行失败 %s: %s", task_id, e)
                 self._results[task_id] = {"success": False, "error": str(e)}
 
+        if self.loop is None:
+            raise RuntimeError("事件循环未初始化")
         future = asyncio.run_coroutine_threadsafe(wrapper(), self.loop)
         self._tasks[task_id] = future
         return task_id
@@ -274,14 +271,11 @@ class AsyncTaskManager:
 
         try:
             # 等待任务完成
-            if hasattr(future, 'result'):
+            if hasattr(future, "result"):
                 result = future.result(timeout=timeout)
             else:
                 # asyncio future
-                result = (
-                    future.get(timeout=timeout)
-                    if hasattr(future, 'get') else None
-                )
+                result = future.get(timeout=timeout) if hasattr(future, "get") else None
 
             # 获取结果
             if task_id in self._results:
@@ -365,19 +359,13 @@ class PerformanceOptimizer:
             return self.data_cache.get_position(key)
         return None
 
-    def submit_async_task(
-        self, task_id: str, func: Callable, *args, **kwargs
-    ) -> str:
+    def submit_async_task(self, task_id: str, func: Callable, *args, **kwargs) -> str:
         """提交异步任务."""
         return self.task_manager.submit_task(task_id, func, *args, **kwargs)
 
-    def submit_asyncio_task(
-        self, coroutine_func: Callable, *args, **kwargs
-    ) -> str:
+    def submit_asyncio_task(self, coroutine_func: Callable, *args, **kwargs) -> str:
         """提交异步协程任务."""
-        return self.task_manager.submit_asyncio_task(
-            coroutine_func, *args, **kwargs
-        )
+        return self.task_manager.submit_asyncio_task(coroutine_func, *args, **kwargs)
 
     def get_task_result(self, task_id: str, timeout: float = 10.0) -> Any:
         """获取异步任务结果."""
@@ -400,10 +388,9 @@ class PerformanceOptimizer:
 
         return wrapper
 
-    def optimize_data_processing(
-        self, data_processor: Callable, data: Any
-    ) -> Any:
+    def optimize_data_processing(self, data_processor: Callable, data: Any) -> Any:
         """优化数据处理."""
+
         def process_with_cache():
             # 这里可以实现数据处理的缓存逻辑
             return data_processor(data)
@@ -414,14 +401,13 @@ class PerformanceOptimizer:
         return self.get_task_result(task_id)
 
     def batch_process(
-        self, items: List[Any], processor: Callable,
-        batch_size: int = 10
+        self, items: List[Any], processor: Callable, batch_size: int = 10
     ) -> List[Any]:
         """批量处理数据."""
         results = []
 
         for i in range(0, len(items), batch_size):
-            batch = items[i:i + batch_size]
+            batch = items[i : i + batch_size]
 
             def process_batch(batch=batch):
                 return [processor(item) for item in batch]
@@ -432,7 +418,7 @@ class PerformanceOptimizer:
             if result.get("success"):
                 results.extend(result.get("result", []))
             else:
-                self.logger.error("批处理失败: %s", result.get('error'))
+                self.logger.error("批处理失败: %s", result.get("error"))
 
         return results
 
@@ -441,7 +427,7 @@ class PerformanceOptimizer:
         return {
             "cache_stats": self.data_cache.get_stats(),
             "task_manager_stats": self.task_manager.get_task_stats(),
-            "optimization_enabled": self._optimization_enabled
+            "optimization_enabled": self._optimization_enabled,
         }
 
     def enable_optimization(self):
@@ -472,7 +458,7 @@ class AsyncDataProcessor:
         # 分批处理
         batch_size = 100
         for i in range(0, len(data_list), batch_size):
-            batch = data_list[i:i + batch_size]
+            batch = data_list[i : i + batch_size]
 
             # 模拟异步处理
             await asyncio.sleep(0.01)
@@ -483,17 +469,17 @@ class AsyncDataProcessor:
                 if symbol not in results:
                     results[symbol] = []
 
-                results[symbol].append({
-                    "datetime": data.datetime,
-                    "price": data.close_price,
-                    "volume": data.volume
-                })
+                results[symbol].append(
+                    {
+                        "datetime": data.datetime,
+                        "price": data.close_price,
+                        "volume": data.volume,
+                    }
+                )
 
         return results
 
-    def process_data_sync(
-        self, data_list: List["UnifiedMarketData"]
-    ) -> Dict[str, Any]:
+    def process_data_sync(self, data_list: List["UnifiedMarketData"]) -> Dict[str, Any]:
         """同步处理数据（包装为异步）."""
         try:
             # 使用线程池执行
@@ -516,11 +502,13 @@ class AsyncDataProcessor:
             if symbol not in results:
                 results[symbol] = []
 
-            results[symbol].append({
-                "datetime": data.datetime,
-                "price": data.close_price,
-                "volume": data.volume
-            })
+            results[symbol].append(
+                {
+                    "datetime": data.datetime,
+                    "price": data.close_price,
+                    "volume": data.volume,
+                }
+            )
 
         return results
 
@@ -555,13 +543,11 @@ class _PerformanceOptimizerRegistry:
 
 
 # 全局注册表实例
-_performance_registry: _PerformanceOptimizerRegistry = (
-    _PerformanceOptimizerRegistry()
-)
+_performance_registry: _PerformanceOptimizerRegistry = _PerformanceOptimizerRegistry()
 
 
 def get_performance_optimizer(
-    terminal_engine: "TerminalEngine"
+    terminal_engine: "TerminalEngine",
 ) -> "PerformanceOptimizer":
     """获取全局性能优化器实例."""
     return _performance_registry.get_optimizer_instance(terminal_engine)
@@ -574,7 +560,11 @@ def reset_performance_optimizer():
 
 # 导出公共接口
 __all__ = [
-    'Cache', 'DataCache', 'AsyncTaskManager',
-    'PerformanceOptimizer', 'AsyncDataProcessor',
-    'get_performance_optimizer', 'reset_performance_optimizer'
+    "Cache",
+    "DataCache",
+    "AsyncTaskManager",
+    "PerformanceOptimizer",
+    "AsyncDataProcessor",
+    "get_performance_optimizer",
+    "reset_performance_optimizer",
 ]

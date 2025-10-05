@@ -5,6 +5,7 @@
 提供文件和目录的基本操作功能.
 """
 
+import fnmatch
 import glob
 import logging
 import os
@@ -55,6 +56,15 @@ class DirectoryManager:
         """初始化目录管理器."""
         self.logger = logging.getLogger(__name__)
 
+    def create_directory(self, path: str, exist_ok: bool = True) -> bool:
+        """创建目录."""
+        try:
+            os.makedirs(path, exist_ok=exist_ok)
+            return True
+        except OSError as e:
+            self.logger.error("创建目录失败: %s", e)
+            return False
+
     def list_directory(
         self, path: str, pattern: str = "*", recursive: bool = False
     ) -> List[str]:
@@ -97,7 +107,7 @@ class DirectoryManager:
                 "permissions": oct(stat_info.st_mode)[-3:],
                 "is_directory": os.path.isdir(path),
                 "is_file": os.path.isfile(path),
-                "is_symlink": os.path.islink(path)
+                "is_symlink": os.path.islink(path),
             }
         except OSError as e:
             self.logger.error("获取目录信息失败: %s", e)
@@ -125,8 +135,7 @@ class DirectoryManager:
             return False
 
     def copy_directory(
-        self, src: str, dst: str,
-        ignore_patterns: Optional[List[str]] = None
+        self, src: str, dst: str, ignore_patterns: Optional[List[str]] = None
     ) -> bool:
         """复制目录."""
         try:
@@ -142,15 +151,17 @@ class DirectoryManager:
             os.makedirs(os.path.dirname(dst), exist_ok=True)
 
             if ignore_patterns:
+
                 def ignore_func(_directory, names):  # noqa: U101
                     # directory parameter required by shutil.copytree
                     # but not used in this implementation
                     ignored = []
                     for pattern in ignore_patterns:
                         for name in names:
-                            if glob.fnmatch.fnmatch(name, pattern):
+                            if fnmatch.fnmatch(name, pattern):
                                 ignored.append(name)
                     return ignored
+
                 shutil.copytree(src, dst, ignore=ignore_func)
             else:
                 shutil.copytree(src, dst)
@@ -250,7 +261,7 @@ class FilePermissionManager:
                 "other_execute": bool(mode & stat.S_IXOTH),
                 "is_directory": stat.S_ISDIR(mode),
                 "is_file": stat.S_ISREG(mode),
-                "is_symlink": stat.S_ISLNK(mode)
+                "is_symlink": stat.S_ISLNK(mode),
             }
         except OSError as e:
             self.logger.error("获取权限信息失败: %s", e)
@@ -265,7 +276,7 @@ class FilePermissionManager:
 
             if isinstance(mode, str):
                 # 如果是字符串格式(如 "755", "644")
-                if mode.startswith('0'):
+                if mode.startswith("0"):
                     mode = int(mode, 8)
                 else:
                     mode = int(mode, 8)
@@ -360,9 +371,7 @@ class FilePermissionManager:
             self.logger.error("检查执行权限失败: %s", e)
             return False
 
-    def set_secure_permissions(
-        self, path: str, is_directory: bool = False
-    ) -> bool:
+    def set_secure_permissions(self, path: str, is_directory: bool = False) -> bool:
         """设置安全权限(文件644,目录755)."""
         try:
             if is_directory:
@@ -389,19 +398,21 @@ def _handle_file_operations(
     operation: Dict[str, Any], file_manager: FileManager
 ) -> bool:
     """处理文件操作."""
-    op_type = operation.get('operation')
-    path = operation.get('path')
+    op_type = operation.get("operation")
+    path = operation.get("path")
 
-    if op_type == 'create_file':
-        content = operation.get('content', '')
-        with open(path, 'w', encoding='utf-8') as f:
-            f.write(content)
-        return True
-    elif op_type == 'delete_file':
-        return file_manager.delete_file(path)
-    elif op_type == 'copy_file':
-        dst = operation.get('destination')
-        return file_manager.copy_file(path, dst) if dst else False
+    if op_type == "create_file":
+        content = operation.get("content", "")
+        if path is not None:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
+            return True
+        return False
+    elif op_type == "delete_file":
+        return file_manager.delete_file(path) if path is not None else False
+    elif op_type == "copy_file":
+        dst = operation.get("destination")
+        return file_manager.copy_file(path, dst) if path is not None and dst else False
     return False
 
 
@@ -409,32 +420,43 @@ def _handle_directory_operations(
     operation: Dict[str, Any], dir_manager: DirectoryManager
 ) -> bool:
     """处理目录操作."""
-    op_type = operation.get('operation')
-    path = operation.get('path')
+    op_type = operation.get("operation")
+    path = operation.get("path")
 
-    if op_type == 'create_directory':
-        exist_ok = operation.get('exist_ok', True)
-        return dir_manager.create_directory(path, exist_ok)
-    elif op_type == 'delete_directory':
-        recursive = operation.get('recursive', False)
-        return dir_manager.delete_directory(path, recursive)
-    elif op_type == 'copy_directory':
-        dst = operation.get('destination')
-        ignore_patterns = operation.get('ignore_patterns')
+    if op_type == "create_directory":
+        exist_ok = operation.get("exist_ok", True)
+        return (
+            dir_manager.create_directory(path, exist_ok) if path is not None else False
+        )
+    elif op_type == "delete_directory":
+        recursive = operation.get("recursive", False)
+        return (
+            dir_manager.delete_directory(path, recursive) if path is not None else False
+        )
+    elif op_type == "copy_directory":
+        dst = operation.get("destination")
+        ignore_patterns = operation.get("ignore_patterns")
         return (
             dir_manager.copy_directory(path, dst, ignore_patterns)
-            if dst else False
+            if path is not None and dst
+            else False
         )
-    elif op_type == 'move_directory':
-        dst = operation.get('destination')
-        return dir_manager.move_directory(path, dst) if dst else False
-    elif op_type == 'get_info':
-        info = dir_manager.get_directory_info(path)
+    elif op_type == "move_directory":
+        dst = operation.get("destination")
+        return (
+            dir_manager.move_directory(path, dst) if path is not None and dst else False
+        )
+    elif op_type == "get_info":
+        info = dir_manager.get_directory_info(path) if path is not None else None
         return info is not None
-    elif op_type == 'list_directory':
-        pattern = operation.get('pattern', '*')
-        recursive = operation.get('recursive', False)
-        files = dir_manager.list_directory(path, pattern, recursive)
+    elif op_type == "list_directory":
+        pattern = operation.get("pattern", "*")
+        recursive = operation.get("recursive", False)
+        files = (
+            dir_manager.list_directory(path, pattern, recursive)
+            if path is not None
+            else []
+        )
         return len(files) >= 0
     return False
 
@@ -443,25 +465,28 @@ def _handle_permission_operations(
     operation: Dict[str, Any], perm_manager: FilePermissionManager
 ) -> bool:
     """处理权限操作."""
-    op_type = operation.get('operation')
-    path = operation.get('path')
+    op_type = operation.get("operation")
+    path = operation.get("path")
 
-    if op_type == 'set_permissions':
-        mode = operation.get('mode')
+    if op_type == "set_permissions":
+        mode = operation.get("mode")
         return (
             perm_manager.set_permissions(path, mode)
-            if mode is not None else False
+            if path is not None and mode is not None
+            else False
         )
     return False
 
 
 def _execute_file_operation(
-    operation: Dict[str, Any], file_manager: FileManager,
-    dir_manager: DirectoryManager, perm_manager: FilePermissionManager
+    operation: Dict[str, Any],
+    file_manager: FileManager,
+    dir_manager: DirectoryManager,
+    perm_manager: FilePermissionManager,
 ) -> bool:
     """执行单个文件操作."""
-    op_type = operation.get('operation')
-    path = operation.get('path')
+    op_type = operation.get("operation")
+    path = operation.get("path")
 
     if not op_type or not path:
         return False

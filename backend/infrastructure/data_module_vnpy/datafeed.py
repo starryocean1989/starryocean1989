@@ -78,13 +78,13 @@ class TdxDatafeed(BaseDatafeed):
         end = req.end
 
         logger.info(
-            "查询K线历史数据: %s %s %s %s %s",
-            symbol,
-            exchange,
-            interval,
-            start,
-            end
+            "查询K线历史数据: %s %s %s %s %s", symbol, exchange, interval, start, end
         )
+
+        # 检查时间间隔是否有效
+        if interval is None:
+            logger.error("时间间隔不能为空")
+            return []
 
         # 映射时间间隔
         interval_map = {

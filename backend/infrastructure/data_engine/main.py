@@ -5,10 +5,10 @@
 import asyncio
 import logging
 from datetime import datetime
-from typing import List
+from typing import List, cast
 
 from .adapters.tdx_adapter import TDXDataAdapter as TdxAdapter
-from .engine import DataEngine
+from .engine import DataEngine, DataPusher
 from .models import Quote
 from .scheduler import AbstractAdapter, Scheduler
 from .utils import setup_logging
@@ -37,7 +37,7 @@ class TDXAdapterWrapper(AbstractAdapter):
                     symbol=raw_quote.get("symbol", ""),
                     price=float(raw_quote.get("price", 0.0)),
                     volume=int(raw_quote.get("volume", 0)),
-                    timestamp=datetime.now()
+                    timestamp=datetime.now(),
                 )
                 quotes.append(quote)
             except (ValueError, TypeError) as e:
@@ -45,6 +45,34 @@ class TDXAdapterWrapper(AbstractAdapter):
                 continue
 
         return quotes
+
+
+class VnpyDataPusherWrapper(DataPusher):
+    """VnPy数据推送器包装器,使其兼容DataPusher接口."""
+
+    def __init__(self):
+        """初始化VnPy数据推送器包装器."""
+        self.vnpy_pusher = VnpyDataPusher()
+
+    async def push_quotes(self, quotes: List[Quote]) -> None:
+        """推送行情数据到VnPy系统."""
+        # 将Quote对象转换为字典格式
+        quote_dicts = []
+        for quote in quotes:
+            quote_dict = {
+                "symbol": quote.symbol,
+                "last_price": quote.price,
+                "volume": quote.volume,
+                "datetime": quote.timestamp,
+                "name": quote.symbol,  # 使用symbol作为name
+                "open_price": quote.price,  # 简化处理
+                "high_price": quote.price,
+                "low_price": quote.price,
+                "prev_close": quote.price,
+            }
+            quote_dicts.append(quote_dict)
+
+        await self.vnpy_pusher.push_quotes(quote_dicts)
 
 
 async def main() -> None:
@@ -66,10 +94,12 @@ async def main() -> None:
         "max_retry": 3,
     }
     tdx_adapter = TdxAdapter(tdx_config)
-    adapters = [TDXAdapterWrapper(tdx_adapter)]  # 可以添加更多适配器
+    adapters: List[AbstractAdapter] = [
+        cast("AbstractAdapter", TDXAdapterWrapper(tdx_adapter))
+    ]  # 可以添加更多适配器
 
     # 3. 创建数据推送器
-    pusher = VnpyDataPusher()
+    pusher = VnpyDataPusherWrapper()
 
     # 4. 创建调度器
     scheduler = Scheduler(adapters)

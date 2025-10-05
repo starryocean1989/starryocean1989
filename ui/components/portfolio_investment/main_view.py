@@ -6,14 +6,24 @@
 """
 
 import logging
+from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QFormLayout, QGroupBox, QHBoxLayout, QHeaderView,
-    QLabel, QProgressBar, QPushButton, QSplitter,
-    QTabWidget, QTableWidget, QTableWidgetItem,
-    QVBoxLayout, QWidget
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QProgressBar,
+    QPushButton,
+    QSplitter,
+    QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
 )
 
 try:
@@ -24,48 +34,57 @@ except ImportError:
     except ImportError:
         VnPyAdapter = None
 
-try:
+# Import base classes with proper fallback handling
+
+if TYPE_CHECKING:
+    # For type checking, use the actual imported classes
     from ...widgets.base_widget import BaseWidget
     from ....utils.logging_utils import LoggerMixin
-except ImportError:
+else:
+    # Runtime imports with fallback
     try:
-        from ui.widgets.base_widget import BaseWidget
-        from utils.logging_utils import LoggerMixin
+        from ...widgets.base_widget import BaseWidget
+        from ....utils.logging_utils import LoggerMixin
     except ImportError:
-        class BaseWidget(QWidget):
-            """Base widget fallback implementation."""
+        try:
+            from ui.widgets.base_widget import BaseWidget
+            from utils.logging_utils import LoggerMixin
+        except ImportError:
+            # Create fallback implementations
+            class BaseWidget(QWidget):
+                """Base widget fallback implementation."""
 
-            def __init__(self, parent=None, title=""):
-                """Initialize base widget."""
-                super().__init__(parent)
-                self.parent = parent
-                self.title = title
+                def __init__(self, parent=None, title=""):
+                    """Initialize base widget."""
+                    super().__init__(parent)
+                    self._parent = parent
+                    self.title = title
 
-            def setup_ui(self):
-                """Set up UI - fallback implementation."""
+                def setup_ui(self):
+                    """Set up UI - fallback implementation."""
 
-            def connect_signals(self):
-                """Connect signals - fallback implementation."""
+                def connect_signals(self):
+                    """Connect signals - fallback implementation."""
 
-            def show_info(self, message: str):
-                """Show info message."""
-                print(f"INFO: {message}")
+                def show_info(self, message: str):
+                    """Show info message."""
+                    print(f"INFO: {message}")
 
-            def show_error(self, message: str):
-                """Show error message."""
-                print(f"ERROR: {message}")
+                def show_error(self, message: str):
+                    """Show error message."""
+                    print(f"ERROR: {message}")
 
-            def show_warning(self, message: str):
-                """Show warning message."""
-                print(f"WARNING: {message}")
+                def show_warning(self, message: str):
+                    """Show warning message."""
+                    print(f"WARNING: {message}")
 
-        class LoggerMixin:
-            """Logger mixin fallback implementation."""
+            class LoggerMixin:
+                """Logger mixin fallback implementation."""
 
-            @property
-            def logger(self):
-                """Get logger instance."""
-                return logging.getLogger(self.__class__.__name__)
+                @property
+                def logger(self):
+                    """Get logger instance."""
+                    return logging.getLogger(self.__class__.__name__)
 
 
 class PortfolioInvestment(BaseWidget, LoggerMixin):
@@ -196,21 +215,23 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
     def _create_gateway_tabs(self):
         """创建网关选项卡"""
         # 清空现有选项卡
-        self.gateway_tab.clear()
+        if self.gateway_tab:
+            self.gateway_tab.clear()
 
         if self.vnpy_adapter:
             try:
                 # 从VNPY获取连接的网关列表
-                if hasattr(self.vnpy_adapter, 'get_status'):
+                if hasattr(self.vnpy_adapter, "get_status"):
                     status = self.vnpy_adapter.get_status()
-                    connected_gateways = status.get('connected_gateways', [])
+                    connected_gateways = status.get("connected_gateways", [])
                 else:
                     connected_gateways = []
 
                 # 为每个连接的网关创建选项卡
                 for gateway_name in connected_gateways:
                     tab = self._create_monitor_tab(gateway_name)
-                    self.gateway_tab.addTab(tab, gateway_name)
+                    if self.gateway_tab:
+                        self.gateway_tab.addTab(tab, gateway_name)
 
                 # 如果有虚拟网关，也创建选项卡
                 # 这里可以根据实际需求添加虚拟网关的逻辑
@@ -228,7 +249,8 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
 
         for gateway_name in gateway_names:
             tab = self._create_monitor_tab(gateway_name)
-            self.gateway_tab.addTab(tab, gateway_name)
+            if self.gateway_tab:
+                self.gateway_tab.addTab(tab, gateway_name)
 
     def _create_monitor_tab(self, gateway_name):
         """为指定网关创建监控选项卡"""
@@ -291,7 +313,8 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
         self._initialize_vnpy_adapter()
 
         # 连接网关选项卡切换信号
-        self.gateway_tab.currentChanged.connect(self._on_gateway_tab_changed)
+        if self.gateway_tab:
+            self.gateway_tab.currentChanged.connect(self._on_gateway_tab_changed)
 
         # 启动更新定时器
         self.start_update_timer(2000, self._update_portfolio_data)
@@ -322,28 +345,28 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
 
     def _on_gateway_tab_changed(self, index):
         """网关选项卡切换"""
-        if index >= 0:
+        if index >= 0 and self.gateway_tab:
             tab_text = self.gateway_tab.tabText(index)
             self.logger.info("切换到网关: %s", tab_text)
 
-    def start_update_timer(self, interval: int = 1000,
-                           callback=None):
+    def start_update_timer(self, interval: int = 1000, callback=None):
         """启动更新定时器（安全守卫）"""
         if not getattr(self, "ui_ready", False):
             return
         if callback is None:
             return
         if getattr(self, "_update_timer", None) is None:
-            from PySide6.QtCore import QTimer as _QTimer
-            self._update_timer = _QTimer(self)
+            self._update_timer = QTimer(self)
             self._update_timer.timeout.connect(callback)
-        self._update_timer.start(int(interval) if interval else 2000)
+        if self._update_timer:
+            self._update_timer.start(int(interval) if interval else 2000)
 
     def stop_update_timer(self):
         """停止更新定时器"""
         try:
-            if getattr(self, "_update_timer", None):
-                self._update_timer.stop()
+            timer = getattr(self, "_update_timer", None)
+            if timer:
+                timer.stop()
         finally:
             self._update_timer = None
 
@@ -352,7 +375,7 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
         if self.vnpy_adapter:
             try:
                 # 从VNPY获取真实数据
-                if hasattr(self.vnpy_adapter, 'get_status'):
+                if hasattr(self.vnpy_adapter, "get_status"):
                     status = self.vnpy_adapter.get_status()
                     # 更新自动组合表格
                     self._update_auto_portfolios(status)
@@ -361,7 +384,7 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
                     self._update_auto_portfolios_fallback()
 
                 # 更新自定义组合表格
-                if hasattr(self.vnpy_adapter, 'get_status'):
+                if hasattr(self.vnpy_adapter, "get_status"):
                     self._update_custom_portfolios()
                 else:
                     self._update_custom_portfolios_fallback()
@@ -382,32 +405,38 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
     def _update_auto_portfolios(self, status):
         """更新自动组合"""
         # 清空表格
-        self.auto_portfolio_table.setRowCount(0)
+        if self.auto_portfolio_table:
+            self.auto_portfolio_table.setRowCount(0)
 
-        connected_gateways = status.get('connected_gateways', [])
+        connected_gateways = status.get("connected_gateways", [])
 
         for i, gateway_name in enumerate(connected_gateways):
-            self.auto_portfolio_table.insertRow(i)
+            if self.auto_portfolio_table:
+                self.auto_portfolio_table.insertRow(i)
 
-            # 网关名称
-            self.auto_portfolio_table.setItem(i, 0, QTableWidgetItem(gateway_name))
+                # 网关名称
+                self.auto_portfolio_table.setItem(i, 0, QTableWidgetItem(gateway_name))
 
-            # 策略数量（模拟，实际需要从VNPY获取）
-            strategies_count = "多个策略"  # 这里需要实际实现策略计数
-            self.auto_portfolio_table.setItem(i, 1, QTableWidgetItem(strategies_count))
+                # 策略数量（模拟，实际需要从VNPY获取）
+                strategies_count = "多个策略"  # 需要实际实现策略计数
+                self.auto_portfolio_table.setItem(
+                    i, 1, QTableWidgetItem(strategies_count)
+                )
 
-            # 状态（已连接的网关都是运行中）
-            status_text = "运行中"
-            self.auto_portfolio_table.setItem(i, 2, QTableWidgetItem(status_text))
+                # 状态（已连接的网关都是运行中）
+                status_text = "运行中"
+                self.auto_portfolio_table.setItem(i, 2, QTableWidgetItem(status_text))
 
-            # 设置状态颜色
-            status_item = self.auto_portfolio_table.item(i, 2)
-            status_item.setBackground(QColor("#4caf50"))
+                # 设置状态颜色
+                status_item = self.auto_portfolio_table.item(i, 2)
+                if status_item:
+                    status_item.setBackground(QColor("#4caf50"))
 
     def _update_auto_portfolios_fallback(self):
         """备用自动组合更新（VNPY不可用时）"""
         # 清空表格
-        self.auto_portfolio_table.setRowCount(0)
+        if self.auto_portfolio_table:
+            self.auto_portfolio_table.setRowCount(0)
 
         # 模拟数据
         auto_data = [
@@ -416,22 +445,25 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
         ]
 
         for i, (gateway, strategies, status) in enumerate(auto_data):
-            self.auto_portfolio_table.insertRow(i)
-            self.auto_portfolio_table.setItem(i, 0, QTableWidgetItem(gateway))
-            self.auto_portfolio_table.setItem(i, 1, QTableWidgetItem(strategies))
-            self.auto_portfolio_table.setItem(i, 2, QTableWidgetItem(status))
+            if self.auto_portfolio_table:
+                self.auto_portfolio_table.insertRow(i)
+                self.auto_portfolio_table.setItem(i, 0, QTableWidgetItem(gateway))
+                self.auto_portfolio_table.setItem(i, 1, QTableWidgetItem(strategies))
+                self.auto_portfolio_table.setItem(i, 2, QTableWidgetItem(status))
 
-            # 设置状态颜色
-            status_item = self.auto_portfolio_table.item(i, 2)
-            if status == "运行中":
-                status_item.setBackground(QColor("#4caf50"))
-            else:
-                status_item.setBackground(QColor("#ff9800"))
+                # 设置状态颜色
+                status_item = self.auto_portfolio_table.item(i, 2)
+                if status_item:
+                    if status == "运行中":
+                        status_item.setBackground(QColor("#4caf50"))
+                    else:
+                        status_item.setBackground(QColor("#ff9800"))
 
     def _update_custom_portfolios(self):
         """更新自定义组合"""
         # 清空表格
-        self.custom_portfolio_table.setRowCount(0)
+        if self.custom_portfolio_table:
+            self.custom_portfolio_table.setRowCount(0)
 
         # 模拟数据
         custom_data = [
@@ -440,19 +472,21 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
         ]
 
         for i, (name, gateways, weights, operation) in enumerate(custom_data):
-            self.custom_portfolio_table.insertRow(i)
-            self.custom_portfolio_table.setItem(i, 0, QTableWidgetItem(name))
-            self.custom_portfolio_table.setItem(i, 1, QTableWidgetItem(gateways))
-            self.custom_portfolio_table.setItem(i, 2, QTableWidgetItem(weights))
+            if self.custom_portfolio_table:
+                self.custom_portfolio_table.insertRow(i)
+                self.custom_portfolio_table.setItem(i, 0, QTableWidgetItem(name))
+                self.custom_portfolio_table.setItem(i, 1, QTableWidgetItem(gateways))
+                self.custom_portfolio_table.setItem(i, 2, QTableWidgetItem(weights))
 
-            # 操作按钮
-            operation_btn = QPushButton(operation)
-            self.custom_portfolio_table.setCellWidget(i, 3, operation_btn)
+                # 操作按钮
+                operation_btn = QPushButton(operation)
+                self.custom_portfolio_table.setCellWidget(i, 3, operation_btn)
 
     def _update_custom_portfolios_fallback(self):
         """备用自定义组合更新（VNPY不可用时）"""
         # 清空表格
-        self.custom_portfolio_table.setRowCount(0)
+        if self.custom_portfolio_table:
+            self.custom_portfolio_table.setRowCount(0)
 
         # 模拟数据
         custom_data = [
@@ -461,39 +495,53 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
         ]
 
         for i, (name, gateways, weights, operation) in enumerate(custom_data):
-            self.custom_portfolio_table.insertRow(i)
-            self.custom_portfolio_table.setItem(i, 0, QTableWidgetItem(name))
-            self.custom_portfolio_table.setItem(i, 1, QTableWidgetItem(gateways))
-            self.custom_portfolio_table.setItem(i, 2, QTableWidgetItem(weights))
+            if self.custom_portfolio_table:
+                self.custom_portfolio_table.insertRow(i)
+                self.custom_portfolio_table.setItem(i, 0, QTableWidgetItem(name))
+                self.custom_portfolio_table.setItem(i, 1, QTableWidgetItem(gateways))
+                self.custom_portfolio_table.setItem(i, 2, QTableWidgetItem(weights))
 
-            # 操作按钮
-            operation_btn = QPushButton(operation)
-            self.custom_portfolio_table.setCellWidget(i, 3, operation_btn)
+                # 操作按钮
+                operation_btn = QPushButton(operation)
+                self.custom_portfolio_table.setCellWidget(i, 3, operation_btn)
 
     def _update_monitor_data(self):
         """更新监控数据"""
         if not self.vnpy_adapter:
             return
 
-        current_tab = self.gateway_tab.currentWidget()
-        if current_tab:
-            # 获取当前网关名称
-            current_index = self.gateway_tab.currentIndex()
-            gateway_name = self.gateway_tab.tabText(current_index)
+        if self.gateway_tab:
+            current_tab = self.gateway_tab.currentWidget()
+            if current_tab:
+                # 获取当前网关名称
+                current_index = self.gateway_tab.currentIndex()
+                gateway_name = self.gateway_tab.tabText(current_index)
 
-            try:
-                # 从VNPY获取持仓信息
-                positions = self.vnpy_adapter.get_positions(gateway_name)
-                account_info = self.vnpy_adapter.get_account_info(gateway_name)
+                try:
+                    # 从VNPY获取持仓信息
+                    positions = None
+                    account_info = None
 
-                # 更新持仓表格
-                self._update_positions_table(positions)
+                    if hasattr(self.vnpy_adapter, "get_positions"):
+                        positions = self.vnpy_adapter.get_positions(gateway_name)
+                    else:
+                        self.logger.warning("TerminalEngine 缺少 get_positions 方法")
 
-                # 更新账户信息
-                self._update_account_info(account_info)
+                    if hasattr(self.vnpy_adapter, "get_account_info"):
+                        account_info = self.vnpy_adapter.get_account_info(gateway_name)
+                    else:
+                        self.logger.warning("TerminalEngine 缺少 get_account_info 方法")
 
-            except (AttributeError, TypeError, ValueError, RuntimeError) as e:
-                self.logger.error("更新监控数据失败: %s", e)
+                    # 更新持仓表格
+                    if positions is not None:
+                        self._update_positions_table(positions)
+
+                    # 更新账户信息
+                    if account_info is not None:
+                        self._update_account_info(account_info)
+
+                except (AttributeError, TypeError, ValueError, RuntimeError) as e:
+                    self.logger.error("更新监控数据失败: %s", e)
 
     def _update_positions_table(self, positions):
         """更新持仓表格"""

@@ -53,8 +53,7 @@ def find_popup_window(hwnd):
     return win32gui.GetWindow(hwnd, win32con.GW_ENABLEDPOPUP)
 
 
-def find_top_window(wanted_text=None, wanted_class=None,
-                    selection_function=None):
+def find_top_window(wanted_text=None, wanted_class=None, selection_function=None):
     """Find the hwnd of a top level window.
 
     You can identify windows using captions, classes, a custom selection
@@ -82,8 +81,7 @@ def find_top_window(wanted_text=None, wanted_class=None,
 
         optDialog = findTopWindow(wanted_text="Options")
     """
-    top_windows = find_top_windows(wanted_text, wanted_class,
-                                   selection_function)
+    top_windows = find_top_windows(wanted_text, wanted_class, selection_function)
     if top_windows:
         return top_windows[0]
     else:
@@ -97,8 +95,7 @@ def find_top_window(wanted_text=None, wanted_class=None,
         )
 
 
-def find_top_windows(wanted_text=None, wanted_class=None,
-                     selection_function=None):
+def find_top_windows(wanted_text=None, wanted_class=None, selection_function=None):
     """Find the hwnd of top level windows.
 
     You can identify windows using captions, classes, a custom selection
@@ -130,8 +127,9 @@ def find_top_windows(wanted_text=None, wanted_class=None,
     top_windows = []
     win32gui.EnumWindows(_window_enumeration_handler, top_windows)
     for hwnd, window_text, window_class in top_windows:
-        if (wanted_text and _normalise_text(wanted_text) not in
-                _normalise_text(window_text)):
+        if wanted_text and _normalise_text(wanted_text) not in _normalise_text(
+            window_text
+        ):
             continue
         if wanted_class and window_class != wanted_class:
             continue
@@ -152,9 +150,7 @@ def dump_specified_window(hwnd, wanted_text=None, wanted_class=None):
     windows = []
     hwnd_child = None
     while True:
-        hwnd_child = win32gui.FindWindowEx(
-            hwnd, hwnd_child, wanted_class, wanted_text
-        )
+        hwnd_child = win32gui.FindWindowEx(hwnd, hwnd_child, wanted_class, wanted_text)
         if hwnd_child:
             text_name = win32gui.GetWindowText(hwnd_child)
             class_name = win32gui.GetClassName(hwnd_child)
@@ -172,9 +168,7 @@ def find_specified_windows(top_hwnd, num_child_windows=70):
     """
     windows = []
     try:
-        win32gui.Enum_child_windows(
-            top_hwnd, _window_enumeration_handler, windows
-        )
+        win32gui.EnumChildWindows(top_hwnd, _window_enumeration_handler, windows)
     except win32gui.error:
         # No child windows
         return
@@ -209,7 +203,7 @@ def dump_window(hwnd):
     """
     windows = []
     try:
-        win32gui.Enum_child_windows(hwnd, _window_enumeration_handler, windows)
+        win32gui.EnumChildWindows(hwnd, _window_enumeration_handler, windows)
     except win32gui.error:
         # No child windows
         return
@@ -248,8 +242,9 @@ def close_popup_windows(top_hwnd):
         time.sleep(0.3)
 
 
-def find_control(top_hwnd, wanted_text=None, wanted_class=None,
-                 selection_function=None):
+def find_control(
+    top_hwnd, wanted_text=None, wanted_class=None, selection_function=None
+):
     """Find a control.
 
     You can identify a control using caption, classe, a custom selection
@@ -308,8 +303,9 @@ def find_control(top_hwnd, wanted_text=None, wanted_class=None,
         )
 
 
-def find_controls(top_hwnd, wanted_text=None, wanted_class=None,
-                  selection_function=None):
+def find_controls(
+    top_hwnd, wanted_text=None, wanted_class=None, selection_function=None
+):
     """Find controls.
 
     You can identify controls using captions, classes, a custom selection
@@ -348,7 +344,7 @@ def find_controls(top_hwnd, wanted_text=None, wanted_class=None,
         results = []
         child_windows = []
         try:
-            win32gui.Enum_child_windows(
+            win32gui.EnumChildWindows(
                 current_hwnd, _window_enumeration_handler, child_windows
             )
         except win32gui.error:
@@ -361,8 +357,9 @@ def find_controls(top_hwnd, wanted_text=None, wanted_class=None,
             if descendent_matching_hwnds:
                 results += descendent_matching_hwnds
 
-            if (wanted_text and _normalise_text(wanted_text) not in
-                    _normalise_text(window_text)):
+            if wanted_text and _normalise_text(wanted_text) not in _normalise_text(
+                window_text
+            ):
                 continue
             if wanted_class and window_class != wanted_class:
                 continue
@@ -554,18 +551,15 @@ def _normalise_text(text):
 def _send_notify_message(hwnd, message, item=None):
     """Send a notify message to a window."""
     # For selection change messages, include the item in the wParam
-    if (message in (win32con.CBN_SELCHANGE, win32con.LBN_SELCHANGE) and
-            item is not None):
-        wparam = win32api.MAKELONG(
-            win32api.GetWindowLong(hwnd, win32con.GWL_ID), item
-        )
+    if message in (win32con.CBN_SELCHANGE, win32con.LBN_SELCHANGE) and item is not None:
+        wparam = win32api.MAKELONG(win32api.GetWindowLong(hwnd, win32con.GWL_ID), item)
     else:
         wparam = win32api.MAKELONG(
             win32api.GetWindowLong(hwnd, win32con.GWL_ID), message
         )
 
     win32gui.SendMessage(
-        win32api.GetParent(hwnd),
+        win32gui.GetParent(hwnd),
         win32con.WM_COMMAND,
         wparam,
         hwnd,

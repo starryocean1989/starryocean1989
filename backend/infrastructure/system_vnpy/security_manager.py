@@ -39,11 +39,11 @@ class SecurityManager:
 
             # 设置默认安全策略
             self.security_policies = {
-                'password_min_length': 8,
-                'session_timeout': 3600,  # 1小时
-                'max_login_attempts': 5,
-                'encryption_algorithm': 'AES-256',
-                'audit_log_retention_days': 90
+                "password_min_length": 8,
+                "session_timeout": 3600,  # 1小时
+                "max_login_attempts": 5,
+                "encryption_algorithm": "AES-256",
+                "audit_log_retention_days": 90,
             }
 
             # 初始化审计日志
@@ -55,12 +55,14 @@ class SecurityManager:
             self.is_initialized = True
             logger.info("SecurityManager initialized successfully")
             self.audit_logger.log_system_event(
-                'security_init', 'Security system initialized', 'success')
+                "security_init", "Security system initialized", "success"
+            )
 
         except Exception as e:
             logger.error("Failed to initialize SecurityManager: %s", e)
             self.audit_logger.log_system_event(
-                'security_init', f'Security system initialization failed: {e}', 'error')
+                "security_init", f"Security system initialization failed: {e}", "error"
+            )
             raise
 
     def validate_permissions(self, user_id: str, resource: str) -> bool:
@@ -82,26 +84,33 @@ class SecurityManager:
             if not self.permission_controller.user_exists(user_id):
                 logger.warning("User %s does not exist", user_id)
                 self.audit_logger.log_user_action(
-                    user_id, 'access_denied', resource, 'user_not_found')
+                    user_id, "access_denied", resource, "user_not_found"
+                )
                 return False
 
             # 验证权限
             has_permission = self.permission_controller.has_permission(
-                user_id, resource)
+                user_id, resource
+            )
 
             # 记录访问尝试
-            result = 'granted' if has_permission else 'denied'
+            result = "granted" if has_permission else "denied"
             self.audit_logger.log_user_action(
-                user_id, 'access_attempt', resource, result)
+                user_id, "access_attempt", resource, result
+            )
 
             return has_permission
 
         except (ValueError, RuntimeError, KeyError) as e:
             logger.error(
                 "Permission validation error for user %s, resource %s: %s",
-                user_id, resource, e)
+                user_id,
+                resource,
+                e,
+            )
             self.audit_logger.log_user_action(
-                user_id, 'access_error', resource, f'error: {e}')
+                user_id, "access_error", resource, f"error: {e}"
+            )
             return False
 
 
@@ -122,15 +131,15 @@ class PermissionController:
         """初始化权限控制器"""
         # 设置默认角色和权限
         self.role_permissions = {
-            'admin': {'read', 'write', 'delete', 'manage_users', 'system_config'},
-            'trader': {'read', 'write', 'trading'},
-            'viewer': {'read'},
-            'analyst': {'read', 'analysis'}
+            "admin": {"read", "write", "delete", "manage_users", "system_config"},
+            "trader": {"read", "write", "trading"},
+            "viewer": {"read"},
+            "analyst": {"read", "analysis"},
         }
 
         # 创建默认管理员用户
-        self.user_roles['admin'] = 'admin'
-        self.permissions['admin'] = self.role_permissions['admin'].copy()
+        self.user_roles["admin"] = "admin"
+        self.permissions["admin"] = self.role_permissions["admin"].copy()
 
         self.is_initialized = True
         logger.info("PermissionController initialized")
@@ -266,13 +275,13 @@ class EncryptionManager:
 
         try:
             # 将字符串转换为字节
-            data_bytes = data.encode('utf-8')
+            data_bytes = data.encode("utf-8")
 
             # 使用Fernet加密
             encrypted_bytes = self.fernet.encrypt(data_bytes)
 
             # 转换为base64字符串
-            encrypted_data = base64.urlsafe_b64encode(encrypted_bytes).decode('utf-8')
+            encrypted_data = base64.urlsafe_b64encode(encrypted_bytes).decode("utf-8")
 
             logger.info("Data encrypted successfully")
             return encrypted_data
@@ -296,13 +305,13 @@ class EncryptionManager:
 
         try:
             # 将base64字符串转换为字节
-            encrypted_bytes = base64.urlsafe_b64decode(encrypted_data.encode('utf-8'))
+            encrypted_bytes = base64.urlsafe_b64decode(encrypted_data.encode("utf-8"))
 
             # 使用Fernet解密
             decrypted_bytes = self.fernet.decrypt(encrypted_bytes)
 
             # 转换为字符串
-            decrypted_data = decrypted_bytes.decode('utf-8')
+            decrypted_data = decrypted_bytes.decode("utf-8")
 
             logger.info("Data decrypted successfully")
             return decrypted_data
@@ -333,18 +342,20 @@ class AuditLogger:
             result: 操作结果
         """
         log_entry = {
-            'timestamp': datetime.datetime.now().isoformat(),
-            'user_id': user_id,
-            'action': action,
-            'resource': resource,
-            'result': result
+            "timestamp": datetime.datetime.now().isoformat(),
+            "user_id": user_id,
+            "action": action,
+            "resource": resource,
+            "result": result,
         }
         self.audit_logs.append(log_entry)
         logger.info(
-            "Audit log: %s performed %s on %s - %s", user_id, action, resource, result)
+            "Audit log: %s performed %s on %s - %s", user_id, action, resource, result
+        )
 
     def log_permission_change(
-            self, admin_user: str, target_user: str, permission: str, action: str):
+        self, admin_user: str, target_user: str, permission: str, action: str
+    ):
         """记录权限变更日志
 
         Args:
@@ -354,18 +365,22 @@ class AuditLogger:
             action: 操作类型(grant/revoke)
         """
         log_entry = {
-            'timestamp': datetime.datetime.now().isoformat(),
-            'admin_user': admin_user,
-            'target_user': target_user,
-            'permission': permission,
-            'action': action
+            "timestamp": datetime.datetime.now().isoformat(),
+            "admin_user": admin_user,
+            "target_user": target_user,
+            "permission": permission,
+            "action": action,
         }
         self.audit_logs.append(log_entry)
         logger.info(
             "Permission audit: %s %sed %s for %s",
-            admin_user, action, permission, target_user)
+            admin_user,
+            action,
+            permission,
+            target_user,
+        )
 
-    def get_audit_logs(self, user_id: str = None) -> list:
+    def get_audit_logs(self, user_id: str | None = None) -> list:
         """获取审计日志
 
         Args:
@@ -375,9 +390,11 @@ class AuditLogger:
             list: 审计日志列表
         """
         if user_id:
-            return [log for log in self.audit_logs
-                    if (log.get('user_id') == user_id or
-                        log.get('target_user') == user_id)]
+            return [
+                log
+                for log in self.audit_logs
+                if (log.get("user_id") == user_id or log.get("target_user") == user_id)
+            ]
         return self.audit_logs.copy()
 
     def initialize(self):
@@ -394,16 +411,14 @@ class AuditLogger:
             result: 事件结果
         """
         log_entry = {
-            'timestamp': datetime.datetime.now().isoformat(),
-            'event_type': event_type,
-            'description': description,
-            'result': result,
-            'source': 'system'
+            "timestamp": datetime.datetime.now().isoformat(),
+            "event_type": event_type,
+            "description": description,
+            "result": result,
+            "source": "system",
         }
         self.audit_logs.append(log_entry)
-        logger.info(
-            "System event: %s - %s (%s)",
-            event_type, description, result)
+        logger.info("System event: %s - %s (%s)", event_type, description, result)
 
 
 __all__ = [

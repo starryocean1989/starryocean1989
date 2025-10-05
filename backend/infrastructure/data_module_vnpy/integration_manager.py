@@ -30,7 +30,7 @@ class VnPyIntegrationManager:
         """加载VnPy配置."""
         try:
             if Path(self.config_path).exists():
-                with open(self.config_path, 'r', encoding='utf-8') as f:
+                with open(self.config_path, "r", encoding="utf-8") as f:
                     return json.load(f)
             else:
                 return self._get_default_config()
@@ -42,21 +42,9 @@ class VnPyIntegrationManager:
         """获取默认配置."""
         return {
             "datafeed": {
-                "tushare": {
-                    "enabled": True,
-                    "token": "",
-                    "timeout": 30
-                },
-                "rqdata": {
-                    "enabled": False,
-                    "username": "",
-                    "password": ""
-                },
-                "ifind": {
-                    "enabled": False,
-                    "username": "",
-                    "password": ""
-                }
+                "tushare": {"enabled": True, "token": "", "timeout": 30},
+                "rqdata": {"enabled": False, "username": "", "password": ""},
+                "ifind": {"enabled": False, "username": "", "password": ""},
             },
             "gateway": {
                 "ctp": {
@@ -65,7 +53,7 @@ class VnPyIntegrationManager:
                     "md_front": "",
                     "td_front": "",
                     "app_id": "",
-                    "auth_code": ""
+                    "auth_code": "",
                 },
                 "ctptest": {
                     "enabled": False,
@@ -73,14 +61,14 @@ class VnPyIntegrationManager:
                     "md_front": "",
                     "td_front": "",
                     "app_id": "",
-                    "auth_code": ""
+                    "auth_code": "",
                 },
                 "ib": {
                     "enabled": False,
                     "host": "127.0.0.1",
                     "port": 7497,
-                    "client_id": 1
-                }
+                    "client_id": 1,
+                },
             },
             "strategy": {
                 "cta": {
@@ -88,24 +76,21 @@ class VnPyIntegrationManager:
                     "class_names": [
                         "DoubleMaStrategy",
                         "BollChannelStrategy",
-                        "DualThrustStrategy"
-                    ]
+                        "DualThrustStrategy",
+                    ],
                 },
                 "portfolio": {
                     "enabled": True,
-                    "class_names": [
-                        "PairTradingStrategy",
-                        "TrendFollowingStrategy"
-                    ]
+                    "class_names": ["PairTradingStrategy", "TrendFollowingStrategy"],
                 },
                 "spread": {
                     "enabled": True,
                     "class_names": [
                         "BasicSpreadStrategy",
-                        "StatisticalArbitrageStrategy"
-                    ]
-                }
-            }
+                        "StatisticalArbitrageStrategy",
+                    ],
+                },
+            },
         }
 
     def initialize_datafeed(self, datafeed_type: str) -> bool:
@@ -301,7 +286,7 @@ class VnPyIntegrationManager:
     def save_config(self) -> bool:
         """保存配置到文件."""
         try:
-            with open(self.config_path, 'w', encoding='utf-8') as f:
+            with open(self.config_path, "w", encoding="utf-8") as f:
                 json.dump(self.config, f, ensure_ascii=False, indent=2)
             logger.info("配置已保存到: %s", self.config_path)
             return True
@@ -312,3 +297,6 @@ class VnPyIntegrationManager:
 
 # 全局实例
 vnpy_manager = VnPyIntegrationManager()
+
+# 创建别名以匹配导入期望
+IntegrationManager = VnPyIntegrationManager

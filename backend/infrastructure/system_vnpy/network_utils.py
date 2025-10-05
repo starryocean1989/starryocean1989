@@ -41,8 +41,9 @@ class PortScanner:
         """扫描指定端口."""
         return scan_ports(host, ports)
 
-    def scan_range(self, host: str, start_port: int, end_port: int) -> \
-            List[Dict[str, Any]]:
+    def scan_range(
+        self, host: str, start_port: int, end_port: int
+    ) -> List[Dict[str, Any]]:
         """扫描端口范围."""
         ports = list(range(start_port, end_port + 1))
         return self.scan(host, ports)
@@ -59,58 +60,51 @@ class SSLValidator:
         """验证SSL证书."""
         try:
             context = ssl.create_default_context()
-            with socket.create_connection((host, port)) as sock, \
-                    context.wrap_socket(sock, server_hostname=host) as ssock:
+            with (
+                socket.create_connection((host, port)) as sock,
+                context.wrap_socket(sock, server_hostname=host) as ssock,
+            ):
                 cert = ssock.getpeercert()
-                return {
-                    "valid": True,
-                    "cert_info": cert,
-                    "host": host,
-                    "port": port
-                }
+                return {"valid": True, "cert_info": cert, "host": host, "port": port}
         except (ssl.SSLError, OSError) as e:
-            return {
-                "valid": False,
-                "error": str(e),
-                "host": host,
-                "port": port
-            }
+            return {"valid": False, "error": str(e), "host": host, "port": port}
 
     def check_ssl_expiry(self, host: str, port: int = 443) -> Dict[str, Any]:
         """检查SSL证书到期时间."""
         try:
             context = ssl.create_default_context()
-            with socket.create_connection((host, port)) as sock, \
-                    context.wrap_socket(sock, server_hostname=host) as ssock:
+            with (
+                socket.create_connection((host, port)) as sock,
+                context.wrap_socket(sock, server_hostname=host) as ssock,
+            ):
                 cert = ssock.getpeercert()
-                expiry_date = cert.get('notAfter')
-                if expiry_date:
-                    expiry = datetime.strptime(
-                        expiry_date, '%b %d %H:%M:%S %Y %Z'
-                    )
+                if cert is None:
+                    return {
+                        "valid": False,
+                        "error": "No certificate information available",
+                        "host": host,
+                        "port": port,
+                    }
+
+                expiry_date = cert.get("notAfter")
+                if expiry_date and isinstance(expiry_date, str):
+                    expiry = datetime.strptime(expiry_date, "%b %d %H:%M:%S %Y %Z")
                     return {
                         "valid": True,
                         "expiry_date": expiry,
-                        "days_until_expiry": (
-                            expiry - datetime.now()
-                        ).days,
+                        "days_until_expiry": (expiry - datetime.now()).days,
                         "host": host,
-                        "port": port
+                        "port": port,
                     }
                 else:
                     return {
                         "valid": False,
                         "error": "No expiry date found in certificate",
                         "host": host,
-                        "port": port
+                        "port": port,
                     }
         except (ssl.SSLError, OSError, ValueError) as e:
-            return {
-                "valid": False,
-                "error": str(e),
-                "host": host,
-                "port": port
-            }
+            return {"valid": False, "error": str(e), "host": host, "port": port}
 
 
 def test_connectivity(host: str, port: int = 80) -> bool:
