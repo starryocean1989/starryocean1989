@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
+# type: ignore
 """主窗口 - 星辰金融终端的主界面."""
 
 import contextlib
 import logging
 import sys
 import traceback
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 try:
     import psutil
@@ -17,17 +18,24 @@ except ImportError:
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
-    QApplication, QLabel, QMainWindow,
-    QMessageBox, QTabWidget, QVBoxLayout, QWidget
+    QApplication,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
 )
 
 # 导入主题和配置管理器
+
 try:
-    from .themes.theme_manager import ThemeManager
+    from .themes.theme_manager import ThemeManager  # type: ignore
 except ImportError:
     try:
-        from themes.theme_manager import ThemeManager
+        from themes.theme_manager import ThemeManager  # type: ignore
     except ImportError:
+
         class ThemeManager:
             """主题管理器类."""
 
@@ -37,66 +45,69 @@ except ImportError:
             def apply_theme(self, _app):  # noqa: U101
                 """应用主题."""
 
+            def reload_theme(self):
+                """重新加载主题."""
+
 
 try:
-    from config import ConfigManager
+    from config import ConfigManager  # type: ignore
 except ImportError:
     try:
         import os
+
         current_file = os.path.abspath(__file__)
         parent_dir = os.path.dirname(current_file)
         current_dir = os.path.dirname(parent_dir)
         sys.path.insert(0, current_dir)
-        from config import ConfigManager
+        from config import ConfigManager  # type: ignore
     except ImportError:
+
+        class AppConfig:
+            """应用配置."""
+
+            def __init__(self):
+                """初始化应用配置."""
+                self.name = "星辰金融终端"
+                self.version = "5.0.0"
+                self.author = "星辰科技"
+                self.description = "专业的金融交易终端系统"
+
+        class UIConfig:
+            """UI配置."""
+
+            def __init__(self):
+                """初始化UI配置."""
+                self.theme = "dark"
+                self.language = "zh_CN"
+                self.window_width = 1200
+                self.window_height = 800
+                self.min_width = 800
+                self.min_height = 600
+                self.font_size = 10
+                self.refresh_interval = 1000
+
         class ConfigManager:
             """配置管理器类."""
 
             def __init__(self):
                 """初始化配置管理器."""
-                self.app_config = type('AppConfig', (), {
-                    'name': '星辰金融终端',
-                    'version': '5.0.0'
-                })()
-                self.ui_config = type('UIConfig', (), {
-                    'min_width': 800,
-                    'min_height': 600,
-                    'window_width': 1200,
-                    'window_height': 800,
-                    'theme': 'dark'
-                })()
+                self.app_config = AppConfig()
+                self.ui_config = UIConfig()
+
+            def save_config(self):
+                """保存配置."""
+
 
 # 导入日志和错误处理
 try:
-    from ..utils.logging_utils import LoggerMixin, setup_logging
-    from ..utils.error_handler import (
-        error_handler, ErrorCategory, ErrorSeverity
-    )
+    from ..utils.logging_utils import LoggerMixin, setup_logging  # type: ignore
+    from ..utils.error_handler import error_handler  # type: ignore
 except ImportError:
     try:
-        from utils.logging_utils import LoggerMixin, setup_logging
-        from utils.error_handler import (
-            error_handler, ErrorCategory, ErrorSeverity
-        )
+        from utils.logging_utils import LoggerMixin, setup_logging  # type: ignore
+        from utils.error_handler import error_handler  # type: ignore
     except ImportError:
         # 如果错误处理器不可用，创建简单的替代品
-        class ErrorCategory:
-            """错误分类枚举."""
-
-            UI = "ui"
-            SYSTEM = "system"
-            NETWORK = "network"
-            DATA = "data"
-            VNPY = "vnpy"
-            UNKNOWN = "unknown"
-
-        class ErrorSeverity:
-            """错误严重程度枚举."""
-
-            LOW = "low"
-            MEDIUM = "medium"
-            HIGH = "high"
-            CRITICAL = "critical"
 
         class LoggerMixin:
             """日志混合类."""
@@ -106,33 +117,44 @@ except ImportError:
                 """获取日志记录器."""
                 return logging.getLogger(self.__class__.__name__)
 
-        def setup_logging(_name: str = "terminal_v0.50",  # noqa: U101
-                          level: str = "INFO",
-                          log_file: str | None = None):
+        def setup_logging(
+            name: str = "terminal", level: str = "INFO", log_file: str | None = None
+        ):
             """设置日志."""
-            lvl = getattr(logging, level.upper(), logging.INFO)
-            fmt = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-            logging.basicConfig(level=lvl, format=fmt)
+            logger = logging.getLogger(name)
+            logger.setLevel(getattr(logging, level.upper(), logging.INFO))
+
+            # 避免重复添加处理器
+            if logger.handlers:
+                return logger
+
+            # 控制台处理器
+            console_handler = logging.StreamHandler()
+            console_handler.setLevel(logging.INFO)
+            console_formatter = logging.Formatter(
+                "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+            )
+            console_handler.setFormatter(console_formatter)
+            logger.addHandler(console_handler)
+
+            # 文件处理器（如果指定）
             if log_file:
                 try:
                     fh = logging.FileHandler(log_file, encoding="utf-8")
-                    fh.setLevel(lvl)
-                    format_str = ('%(asctime)s - %(name)s - '
-                                  '%(levelname)s - %(message)s')
+                    fh.setLevel(logging.DEBUG)
+                    format_str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
                     formatter = logging.Formatter(format_str)
                     fh.setFormatter(formatter)
-                    logging.getLogger().addHandler(fh)
+                    logger.addHandler(fh)
                 except OSError as e:
-                    logger = logging.getLogger(__name__)
                     logger.warning("日志文件处理器创建失败: %s", e)
+
+            return logger
 
         class MockErrorHandler:
             """模拟错误处理器."""
 
-            def handle_error(self, error_id, message,  # noqa: U101
-                             _category=None, _severity=None,  # noqa: U101
-                             _max_retries=1, _callback=None,  # noqa: U101
-                             _parent_widget=None):  # noqa: U101
+            def handle_error(self, error_id, message):
                 """处理错误信息."""
                 print(f"错误 {error_id}: {message}")
                 return False
@@ -141,61 +163,112 @@ except ImportError:
 
 # 导入功能界面模块
 try:
-    from .components.system_manager.main_view import SystemManager
-    from .components.data_center.main_view import DataCenter
-    from .components.market_dashboard.main_view import MarketDashboard
-    from .components.strategy_center.main_view import StrategyCenter
-    from .components.trading_gateway.main_view import TradingGateway
-    from .components.portfolio_investment.main_view import PortfolioInvestment
-    from .components.ops_center.main_view import OpsCenter
+    from .components.system_manager.main_view import (  # type: ignore[import]
+        SystemManager,
+    )
+    from .components.data_center.main_view import DataCenter  # type: ignore[import]
+    from .components.market_dashboard.main_view import (  # type: ignore[import]
+        MarketDashboard,
+    )
+    from .components.strategy_center.main_view import (  # type: ignore[import]
+        StrategyCenter,
+    )
+    from .components.trading_gateway.main_view import (  # type: ignore[import]
+        TradingGateway,
+    )
+    from .components.portfolio_investment.main_view import (  # type: ignore[import]
+        PortfolioInvestment,
+    )
+    from .components.ops_center.main_view import OpsCenter  # type: ignore[import]
 except ImportError:
     try:
-        from components.system_manager.main_view import SystemManager
-        from components.data_center.main_view import DataCenter
-        from components.market_dashboard.main_view import MarketDashboard
-        from components.strategy_center.main_view import StrategyCenter
-        from components.trading_gateway.main_view import TradingGateway
-        from components.portfolio_investment.main_view import (
-            PortfolioInvestment
+        from components.system_manager.main_view import (  # type: ignore[import]
+            SystemManager,
         )
-        from components.ops_center.main_view import OpsCenter
+        from components.data_center.main_view import DataCenter  # type: ignore[import]
+        from components.market_dashboard.main_view import (  # type: ignore[import]
+            MarketDashboard,
+        )
+        from components.strategy_center.main_view import (  # type: ignore[import]
+            StrategyCenter,
+        )
+        from components.trading_gateway.main_view import (  # type: ignore[import]
+            TradingGateway,
+        )
+        from components.portfolio_investment.main_view import (  # type: ignore[import]
+            PortfolioInvestment,
+        )
+        from components.ops_center.main_view import OpsCenter  # type: ignore[import]
     except ImportError:
         # 简化版本
-        class SystemManager:
+        class SystemManager(QWidget):
             """系统管理器组件."""
 
             def __init__(self):
                 """初始化系统管理器."""
+                QWidget.__init__(self)
 
-        class DataCenter:
+        class DataCenter(QWidget):
             """数据中心组件."""
 
             def __init__(self):
                 """初始化数据中心."""
+                QWidget.__init__(self)
 
-        class MarketDashboard:
+            def setup_ui(self):
+                """设置UI."""
+
+            def connect_signals(self):
+                """连接信号."""
+
+        class MarketDashboard(QWidget):
             """行情看板组件."""
 
             def __init__(self):
                 """初始化行情看板."""
 
-        class StrategyCenter:
+        class StrategyCenter(QWidget):
             """策略中心组件."""
 
             def __init__(self):
                 """初始化策略中心."""
+                QWidget.__init__(self)
 
-        class TradingGateway:
+            def setup_ui(self):
+                """设置UI."""
+
+            def connect_signals(self):
+                """连接信号."""
+
+        class TradingGateway(QWidget):
             """交易网关组件."""
 
             def __init__(self):
                 """初始化交易网关."""
 
-        class PortfolioInvestment:
+            def setup_ui(self):
+                """设置UI."""
+
+            def connect_signals(self):
+                """连接信号."""
+
+        class PortfolioInvestment(QWidget):
             """组合投资组件."""
 
             def __init__(self):
                 """初始化组合投资."""
+
+            def setup_ui(self):
+                """设置UI."""
+
+            def connect_signals(self):
+                """连接信号."""
+
+        class OpsCenter(QWidget):
+            """运维与诊断中心组件."""
+
+            def __init__(self):
+                """初始化运维与诊断中心."""
 
 
 class MainWindow(QMainWindow, LoggerMixin):
@@ -206,8 +279,8 @@ class MainWindow(QMainWindow, LoggerMixin):
         super().__init__()
 
         # 初始化组件
-        self.theme_manager = ThemeManager()
-        self.config_manager = ConfigManager()
+        self.theme_manager: Any = ThemeManager()
+        self.config_manager: Any = ConfigManager()
 
         # 界面组件
         self.central_widget = None
@@ -217,7 +290,7 @@ class MainWindow(QMainWindow, LoggerMixin):
         self.toolbar = None
 
         # 功能界面实例
-        self.function_interfaces: Dict[str, QWidget] = {}
+        self.function_interfaces: Dict[str, Any] = {}
 
         # 更新定时器
         self.update_timer = None
@@ -251,11 +324,11 @@ class MainWindow(QMainWindow, LoggerMixin):
         self.setWindowTitle(title)
         self.setMinimumSize(
             self.config_manager.ui_config.min_width,
-            self.config_manager.ui_config.min_height
+            self.config_manager.ui_config.min_height,
         )
         self.resize(
             self.config_manager.ui_config.window_width,
-            self.config_manager.ui_config.window_height
+            self.config_manager.ui_config.window_height,
         )
 
         # 创建中央部件
@@ -331,7 +404,7 @@ class MainWindow(QMainWindow, LoggerMixin):
             ("行情看板", "market"),
             ("策略中心", "strategy"),
             ("交易网关", "trading"),
-            ("组合投资", "portfolio")
+            ("组合投资", "portfolio"),
         ]
 
         for name, interface_id in interfaces:
@@ -362,9 +435,8 @@ class MainWindow(QMainWindow, LoggerMixin):
             try:
                 self.function_interfaces["system"] = SystemManager()
                 tab_text = "🛠️ 系统管理"
-                self.tab_widget.addTab(
-                    self.function_interfaces["system"], tab_text
-                )
+                if self.tab_widget is not None:
+                    self.tab_widget.addTab(self.function_interfaces["system"], tab_text)
                 self.logger.info("系统管理界面创建成功")
             except (ImportError, AttributeError, RuntimeError) as e:
                 self.logger.error("系统管理界面创建失败: %s", e)
@@ -373,9 +445,8 @@ class MainWindow(QMainWindow, LoggerMixin):
             try:
                 self.function_interfaces["data"] = DataCenter()
                 tab_text = "🗃️ 数据中心"
-                self.tab_widget.addTab(
-                    self.function_interfaces["data"], tab_text
-                )
+                if self.tab_widget is not None:
+                    self.tab_widget.addTab(self.function_interfaces["data"], tab_text)
                 # 实例化后确保构建UI与信号绑定
                 if hasattr(self.function_interfaces["data"], "setup_ui"):
                     self.function_interfaces["data"].setup_ui()
@@ -389,9 +460,8 @@ class MainWindow(QMainWindow, LoggerMixin):
             try:
                 self.function_interfaces["market"] = MarketDashboard()
                 tab_text = "📈 行情看板"
-                self.tab_widget.addTab(
-                    self.function_interfaces["market"], tab_text
-                )
+                if self.tab_widget is not None:
+                    self.tab_widget.addTab(self.function_interfaces["market"], tab_text)
                 self.logger.info("行情看板界面创建成功")
             except (ImportError, AttributeError, RuntimeError) as e:
                 self.logger.error("行情看板界面创建失败: %s", e)
@@ -400,9 +470,10 @@ class MainWindow(QMainWindow, LoggerMixin):
             try:
                 self.function_interfaces["strategy"] = StrategyCenter()
                 tab_text = "🧠 策略中心"
-                self.tab_widget.addTab(
-                    self.function_interfaces["strategy"], tab_text
-                )
+                if self.tab_widget is not None:
+                    self.tab_widget.addTab(
+                        self.function_interfaces["strategy"], tab_text
+                    )
                 # 实例化后确保构建UI与信号绑定
                 if hasattr(self.function_interfaces["strategy"], "setup_ui"):
                     self.function_interfaces["strategy"].setup_ui()
@@ -414,16 +485,20 @@ class MainWindow(QMainWindow, LoggerMixin):
                 # 占位标签，避免缺失
                 placeholder = QWidget()
                 placeholder_layout = QVBoxLayout(placeholder)
-                placeholder_layout.addWidget(QLabel("策略中心加载失败：请检查依赖或模块实现"))
-                self.tab_widget.addTab(placeholder, "🧠 策略中心")
+                placeholder_layout.addWidget(
+                    QLabel("策略中心加载失败：请检查依赖或模块实现")
+                )
+                if self.tab_widget is not None:
+                    self.tab_widget.addTab(placeholder, "🧠 策略中心")
 
             # 交易网关界面（混合架构，管理器+选项卡）
             try:
                 self.function_interfaces["trading"] = TradingGateway()
                 tab_text = "🔗 交易网关"
-                self.tab_widget.addTab(
-                    self.function_interfaces["trading"], tab_text
-                )
+                if self.tab_widget is not None:
+                    self.tab_widget.addTab(
+                        self.function_interfaces["trading"], tab_text
+                    )
                 # 实例化后确保构建UI与信号绑定
                 if hasattr(self.function_interfaces["trading"], "setup_ui"):
                     self.function_interfaces["trading"].setup_ui()
@@ -436,31 +511,34 @@ class MainWindow(QMainWindow, LoggerMixin):
             # 组合投资界面（混合架构，双固有组件）
             try:
                 self.function_interfaces["portfolio"] = PortfolioInvestment()
-                tab_text = "📊 组合投资"
-                self.tab_widget.addTab(
-                    self.function_interfaces["portfolio"], tab_text
-                )
-                # 实例化后确保构建UI与信号绑定
+                # 实例化后确保构建UI与信号绑定（成功后再挂载到Tab）
                 if hasattr(self.function_interfaces["portfolio"], "setup_ui"):
                     self.function_interfaces["portfolio"].setup_ui()
                 if hasattr(self.function_interfaces["portfolio"], "connect_signals"):
                     self.function_interfaces["portfolio"].connect_signals()
+                tab_text = "📊 组合投资"
+                if self.tab_widget is not None:
+                    self.tab_widget.addTab(
+                        self.function_interfaces["portfolio"], tab_text
+                    )
                 self.logger.info("组合投资界面创建成功")
             except (ImportError, AttributeError, RuntimeError) as e:
                 self.logger.error("组合投资界面创建失败: %s", e)
                 # 占位标签，避免缺失
                 placeholder = QWidget()
                 placeholder_layout = QVBoxLayout(placeholder)
-                placeholder_layout.addWidget(QLabel("组合投资加载失败：请检查依赖或模块实现"))
-                self.tab_widget.addTab(placeholder, "📊 组合投资")
+                placeholder_layout.addWidget(
+                    QLabel("组合投资加载失败：请检查依赖或模块实现")
+                )
+                if self.tab_widget is not None:
+                    self.tab_widget.addTab(placeholder, "📊 组合投资")
 
             # 运维与诊断中心（新增）
             try:
                 self.function_interfaces["ops"] = OpsCenter()
                 tab_text = "🛡️ 运维与诊断"
-                self.tab_widget.addTab(
-                    self.function_interfaces["ops"], tab_text
-                )
+                if self.tab_widget is not None:
+                    self.tab_widget.addTab(self.function_interfaces["ops"], tab_text)
                 self.logger.info("运维与诊断中心创建成功")
             except (ImportError, AttributeError, RuntimeError) as e:
                 self.logger.error("运维与诊断中心创建失败: %s", e)
@@ -478,10 +556,6 @@ class MainWindow(QMainWindow, LoggerMixin):
                 error_handler.handle_error(
                     error_id="main_window_interface_init",
                     message=f"界面初始化失败: {str(e)}",
-                    _category=ErrorCategory.UI,
-                    _severity=ErrorSeverity.HIGH,
-                    _max_retries=1,
-                    _parent_widget=self
                 )
             except (AttributeError, RuntimeError) as handler_error:
                 self.logger.error("错误处理器调用失败: %s", handler_error)
@@ -500,7 +574,8 @@ class MainWindow(QMainWindow, LoggerMixin):
         try:
             self.config_manager.ui_config.theme = theme_name
             self.config_manager.save_config()
-            self.theme_manager.reload_theme()
+            if hasattr(self.theme_manager, "reload_theme"):
+                self.theme_manager.reload_theme()
             self.apply_theme()
             self.logger.info("切换到主题: %s", theme_name)
         except (AttributeError, RuntimeError, OSError) as e:
@@ -508,7 +583,7 @@ class MainWindow(QMainWindow, LoggerMixin):
 
     def switch_to_interface(self, interface_id: str):
         """切换到指定界面."""
-        if interface_id in self.function_interfaces:
+        if interface_id in self.function_interfaces and self.tab_widget is not None:
             interface = self.function_interfaces[interface_id]
             index = self.tab_widget.indexOf(interface)
             if index >= 0:
@@ -520,7 +595,7 @@ class MainWindow(QMainWindow, LoggerMixin):
         try:
             for interface_id, interface in self.function_interfaces.items():
                 try:
-                    if hasattr(interface, 'refresh_data'):
+                    if hasattr(interface, "refresh_data"):
                         interface.refresh_data()
                         self.logger.info("界面 %s 刷新成功", interface_id)
                 except (AttributeError, RuntimeError) as interface_error:
@@ -535,12 +610,7 @@ class MainWindow(QMainWindow, LoggerMixin):
             # 使用统一错误处理器
             try:
                 error_handler.handle_error(
-                    error_id="main_window_refresh",
-                    message=f"刷新失败: {str(e)}",
-                    _category=ErrorCategory.UI,
-                    _severity=ErrorSeverity.MEDIUM,
-                    _max_retries=2,
-                    _parent_widget=self
+                    error_id="main_window_refresh", message=f"刷新失败: {str(e)}"
                 )
             except (AttributeError, RuntimeError) as handler_error:
                 self.logger.error("错误处理器调用失败: %s", handler_error)
@@ -548,18 +618,23 @@ class MainWindow(QMainWindow, LoggerMixin):
     def connect_signals(self):
         """连接信号槽."""
         # 连接选项卡切换信号
-        self.tab_widget.currentChanged.connect(self.on_tab_changed)
+        if self.tab_widget is not None:
+            self.tab_widget.currentChanged.connect(self.on_tab_changed)
 
         # 连接功能界面的信号
         for interface in self.function_interfaces.values():
-            if hasattr(interface, 'error_occurred'):
+            if hasattr(interface, "error_occurred"):
                 interface.error_occurred.connect(self.on_interface_error)
-            if hasattr(interface, 'info_message'):
+            if hasattr(interface, "info_message"):
                 interface.info_message.connect(self.on_interface_info)
 
     def on_tab_changed(self, index: int):
         """选项卡切换回调."""
-        if index >= 0 and index < self.tab_widget.count():
+        if (
+            self.tab_widget is not None
+            and index >= 0
+            and index < self.tab_widget.count()
+        ):
             tab_text = self.tab_widget.tabText(index)
             self.status_label.setText(f"当前界面: {tab_text}")
             self.logger.info("切换到选项卡: %s", tab_text)
@@ -640,7 +715,7 @@ class MainWindow(QMainWindow, LoggerMixin):
                 <li>🔗 交易网关 - 多网关交易执行</li>
                 <li>📊 组合投资 - 投资组合管理和监控</li>
             </ul>
-            """
+            """,
         )
 
     def closeEvent(self, event):  # pylint: disable=invalid-name
@@ -655,7 +730,7 @@ class MainWindow(QMainWindow, LoggerMixin):
             "确认退出",
             "确定要退出星辰金融终端吗？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No
+            QMessageBox.StandardButton.No,
         )
 
         if reply == QMessageBox.StandardButton.Yes:
@@ -666,18 +741,14 @@ class MainWindow(QMainWindow, LoggerMixin):
 
     def show_error(self, message: str):
         """显示错误信息."""
-        QMessageBox.critical(
-            self,
-            "错误",
-            message,
-            QMessageBox.StandardButton.Ok
-        )
+        QMessageBox.critical(self, "错误", message, QMessageBox.StandardButton.Ok)
 
     def get_current_interface(self) -> Optional[QWidget]:
         """获取当前活动界面."""
-        current_index = self.tab_widget.currentIndex()
-        if current_index >= 0:
-            return self.tab_widget.widget(current_index)
+        if self.tab_widget is not None:
+            current_index = self.tab_widget.currentIndex()
+            if current_index >= 0:
+                return self.tab_widget.widget(current_index)
         return None
 
     def get_interface_by_id(self, interface_id: str) -> Optional[QWidget]:
@@ -707,9 +778,7 @@ def main():
     try:
         # 设置日志
         setup_logging(
-            name="terminal_v0.50",
-            level="INFO",
-            log_file="logs/terminal_v0.50.log"
+            name="terminal_v0.50", level="INFO", log_file="logs/terminal_v0.50.log"
         )
 
         # 创建应用程序
@@ -730,9 +799,10 @@ def main():
         # 记录致命异常，便于启动器与热更新诊断
         logging.getLogger("terminal_v0.50.main").exception("UI启动异常: %s", e)
         # 追加到UI进程日志文件
-        with contextlib.suppress(Exception), open(
-            "logs/ui_process.err.log", "a", encoding="utf-8"
-        ) as f:
+        with (
+            contextlib.suppress(Exception),
+            open("logs/ui_process.err.log", "a", encoding="utf-8") as f,
+        ):
             f.write(f"UI启动异常: {e}\n")
         sys.exit(1)
 

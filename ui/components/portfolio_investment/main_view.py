@@ -114,23 +114,53 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
 
     def setup_ui(self):
         """设置用户界面"""
-        main_layout = QHBoxLayout(self)
+        try:
+            main_layout = QHBoxLayout()
+            self.setLayout(main_layout)
+            self.setMinimumSize(400, 300)
 
-        # 创建主分割器
-        main_splitter = QSplitter(Qt.Orientation.Horizontal)
-        main_splitter.setSizes([400, 600])
+            # 创建主分割器
+            main_splitter = QSplitter(Qt.Orientation.Horizontal)
+            main_splitter.setSizes([400, 600])
+            main_splitter.setStretchFactor(0, 1)
+            main_splitter.setStretchFactor(1, 1)
 
-        # 左侧：组合管理组件（固有组件）
-        left_widget = self._create_portfolio_manager()
-        main_splitter.addWidget(left_widget)
+            # 左侧：组合管理组件（固有组件）
+            try:
+                left_widget = self._create_portfolio_manager()
+            except Exception as e:
+                left_widget = QWidget()
+                ll = QVBoxLayout(left_widget)
+                msg = QLabel(f"左侧组合管理加载失败：{e}")
+                msg.setStyleSheet("color:#d32f2f;")
+                ll.addWidget(msg)
+            main_splitter.addWidget(left_widget)
 
-        # 右侧：组合投资监控组件（固有组件）
-        right_widget = self._create_monitor_panel()
-        main_splitter.addWidget(right_widget)
+            # 右侧：组合投资监控组件（固有组件）
+            try:
+                right_widget = self._create_monitor_panel()
+            except Exception as e:
+                right_widget = QWidget()
+                rl = QVBoxLayout(right_widget)
+                msg = QLabel(f"右侧监控面板加载失败：{e}")
+                msg.setStyleSheet("color:#d32f2f;")
+                rl.addWidget(msg)
+            main_splitter.addWidget(right_widget)
 
-        main_layout.addWidget(main_splitter)
-        # 界面就绪
-        self.ui_ready = True
+            main_layout.addWidget(main_splitter)
+            # 界面就绪
+            self.ui_ready = True
+        except Exception as e:
+            # 占位回退，避免整体不可见
+            fallback = QWidget()
+            fl = QVBoxLayout(fallback)
+            msg = QLabel(f"组合投资界面加载失败：{e}\n已切换到占位界面。")
+
+            msg.setStyleSheet("color:#d32f2f;")
+            fl.addWidget(msg)
+            outer = QHBoxLayout()
+            self.setLayout(outer)
+            outer.addWidget(fallback)
 
     def _create_portfolio_manager(self):
         """创建组合管理组件"""
@@ -206,7 +236,28 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
         self.gateway_tab = QTabWidget()
 
         # 为每个网关创建选项卡
+        gateways = getattr(self, "gateways", None)
+        # 容错：数据类型不合法时回退为空
+        if not isinstance(gateways, (list, tuple)):
+            gateways = []
         self._create_gateway_tabs()
+
+        # 若无任何选项卡，立即加入占位选项卡保证初次渲染可见
+        try:
+            if self.gateway_tab and self.gateway_tab.count() == 0:
+                placeholder = QWidget()
+                pl = QVBoxLayout(placeholder)
+                msg = QLabel("暂无连接的网关，已显示示例面板。")
+                msg.setStyleSheet("color:#555;")
+                pl.addWidget(msg)
+                demo_table = QTableWidget(0, 3)
+                demo_table.setHorizontalHeaderLabels(["组合", "权重", "状态"])
+                demo_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+                pl.addWidget(demo_table)
+                self.gateway_tab.addTab(placeholder, "示例网关")
+        except Exception as e:
+            # 占位失败也不影响主界面显示
+            self.logger.warning("添加占位选项卡失败: %s", e)
 
         layout.addWidget(self.gateway_tab)
 
@@ -316,6 +367,20 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
         if self.gateway_tab:
             self.gateway_tab.currentChanged.connect(self._on_gateway_tab_changed)
 
+        # 当没有任何网关选项卡时，加入占位选项卡，避免界面空白
+        if self.gateway_tab and self.gateway_tab.count() == 0:
+            placeholder = QWidget()
+            pl = QVBoxLayout(placeholder)
+            msg = QLabel("暂无连接的网关，当前显示示例面板。")
+            msg.setStyleSheet("color:#555;")
+            pl.addWidget(msg)
+            # 简易示例占位表格
+            demo_table = QTableWidget(0, 3)
+            demo_table.setHorizontalHeaderLabels(["组合", "权重", "状态"])
+            demo_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+            pl.addWidget(demo_table)
+            self.gateway_tab.addTab(placeholder, "示例网关")
+
         # 启动更新定时器
         self.start_update_timer(2000, self._update_portfolio_data)
 
@@ -372,6 +437,12 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
 
     def _update_portfolio_data(self):
         """更新组合数据"""
+        # 空控件守卫：表格或选项卡未创建则不更新
+        if any(getattr(self, name, None) is None for name in [
+            "auto_portfolio_table", "custom_portfolio_table", "gateway_tab"
+        ]):
+            return
+
         if self.vnpy_adapter:
             try:
                 # 从VNPY获取真实数据
@@ -506,7 +577,24 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
                 self.custom_portfolio_table.setCellWidget(i, 3, operation_btn)
 
     def _update_monitor_data(self):
+        # 就绪与控件守卫
+        if not getattr(self, "ui_ready", False):
+            return
+        tab = getattr(self, "gateway_tab", None)
+        if tab is None or not hasattr(tab, "currentIndex"):
+            return
+        # 数据容错：组合数据必须为 dict/list
+        data = getattr(self, "portfolio_data", None)
+        if data is None or not isinstance(data, (dict, list)):
+            return
         """更新监控数据"""
+        # 就绪与控件守卫
+        if not getattr(self, "ui_ready", False):
+            return
+        if not getattr(self, "gateway_tab", None):
+            return
+        if self.gateway_tab.count() == 0:
+            return
         if not self.vnpy_adapter:
             return
 
@@ -545,29 +633,45 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
 
     def _update_positions_table(self, positions):
         """更新持仓表格"""
-        # 这里需要找到当前活动选项卡中的持仓表格
-        # 由于选项卡动态创建，这里的实现需要更复杂的控件管理
-        # 目前先记录持仓数据，实际显示需要更复杂的实现
-
-        if positions:
-            # 这里应该更新持仓表格
-            # 由于控件结构复杂，这里简化处理
-            pass
+        # 当前示例未将 position_table 绑定到具体选项卡，直接判空返回
+        if getattr(self, "position_table", None) is None:
+            return
+        if not positions:
+            return
+        # 简化：仅清空并填充前几行示例
+        self.position_table.setRowCount(0)
+        for i, pos in enumerate(positions[:10]):
+            self.position_table.insertRow(i)
+            self.position_table.setItem(i, 0, QTableWidgetItem(str(pos.get("symbol", "--"))))
+            self.position_table.setItem(i, 1, QTableWidgetItem(str(pos.get("volume", 0))))
+            self.position_table.setItem(i, 2, QTableWidgetItem(str(pos.get("cost", 0))))
+            self.position_table.setItem(i, 3, QTableWidgetItem(str(pos.get("market_value", 0))))
+            self.position_table.setItem(i, 4, QTableWidgetItem(str(pos.get("pnl", 0))))
 
     def _update_account_info(self, account_info):
         """更新账户信息"""
-        # 这里应该更新业绩概览信息
-        # 由于控件结构复杂，这里简化处理
-        if account_info:
-            # 更新账户余额、可用资金等信息
-            pass
+        if not account_info:
+            return
+        # 判空守卫
+        for name in ["total_pnl_label", "total_return_label", "max_drawdown_label", "sharpe_ratio_label"]:
+            if getattr(self, name, None) is None:
+                return
+        self.total_pnl_label.setText(str(account_info.get("total_pnl", "--")))
+        self.total_return_label.setText(str(account_info.get("total_return", "--")))
+        self.max_drawdown_label.setText(str(account_info.get("max_drawdown", "--")))
+        self.sharpe_ratio_label.setText(str(account_info.get("sharpe_ratio", "--")))
 
     def refresh_data(self):
         """刷新数据"""
-        self._update_portfolio_data()
-        self.show_info("组合投资数据已刷新")
+        try:
+            self._update_portfolio_data()
+            self.show_info("组合投资数据已刷新")
+        except Exception as e:
+            self.show_error(f"刷新数据失败: {e}")
 
     def on_close(self):
         """关闭处理"""
-        self.stop_update_timer()
-        self.logger.info("组合投资界面已关闭")
+        try:
+            self.stop_update_timer()
+        finally:
+            self.logger.info("组合投资界面已关闭")

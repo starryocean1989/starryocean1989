@@ -2,50 +2,51 @@
 """基础控件基类 - 提供通用功能和接口."""
 
 import logging
+from enum import Enum
 from typing import Any, Callable, Dict, Optional
 
 # pylint: disable=no-name-in-module
 from PySide6.QtCore import QTimer, Qt, Signal
+
 # pylint: disable=no-name-in-module
 from PySide6.QtWidgets import QMessageBox, QWidget
 
-# 导入统一错误处理器
+
+# 定义基础枚举类
+class ErrorCategory(Enum):
+    """错误分类枚举."""
+
+    UI = "ui"
+    SYSTEM = "system"
+    NETWORK = "network"
+    DATA = "data"
+    VNPY = "vnpy"
+    UNKNOWN = "unknown"
+
+
+class ErrorSeverity(Enum):
+    """错误严重程度枚举."""
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
 try:
-    from ...utils.error_handler import (error_handler, ErrorCategory,
-                                        ErrorSeverity)
+    from ...utils.error_handler import error_handler
 except ImportError:
     try:
-        from utils.error_handler import (error_handler, ErrorCategory,
-                                         ErrorSeverity)
+        from utils.error_handler import error_handler
     except ImportError:
-        class ErrorCategory:
-            """错误分类枚举."""
-
-            UI = "ui"
-            SYSTEM = "system"
-            NETWORK = "network"
-            DATA = "data"
-            VNPY = "vnpy"
-            UNKNOWN = "unknown"
-
-        class ErrorSeverity:
-            """错误严重程度枚举."""
-
-            LOW = "low"
-            MEDIUM = "medium"
-            HIGH = "high"
-            CRITICAL = "critical"
 
         class MockErrorHandler:
             """模拟错误处理器."""
 
-            # pylint: disable=unused-argument
-            def handle_error(self, error_id, message,  # noqa: U101
-                             _category=None,  # noqa: U101
-                             _severity=None, _max_retries=1,  # noqa: U101
-                             _callback=None,  # noqa: U101
-                             _parent_widget=None):  # noqa: U101
+            def handle_error(self, error_id, message, **kwargs):
                 """处理错误信息."""
+                # Suppress unused kwargs warning
+                _ = kwargs
                 print("错误 %s: %s", error_id, message)
                 return False
 
@@ -57,8 +58,8 @@ class BaseWidget(QWidget):
 
     # 信号定义
     error_occurred = Signal(str)  # 错误信号
-    info_message = Signal(str)    # 信息信号
-    data_updated = Signal(dict)   # 数据更新信号
+    info_message = Signal(str)  # 信息信号
+    data_updated = Signal(dict)  # 数据更新信号
 
     def __init__(self, parent=None, title: str = ""):
         """初始化基础控件.
@@ -103,12 +104,16 @@ class BaseWidget(QWidget):
         # pylint: disable=unnecessary-pass
         pass
 
-    def show_error(self, message: str, title: str = "错误",
-                   error_id: Optional[str] = None,
-                   category: Any = ErrorCategory.UI,
-                   severity: Any = ErrorSeverity.MEDIUM,
-                   max_retries: int = 1,
-                   retry_callback: Optional[Callable[..., Any]] = None):
+    def show_error(
+        self,
+        message: str,
+        title: str = "错误",
+        error_id: Optional[str] = None,
+        category: Any = ErrorCategory.UI,
+        severity: Any = ErrorSeverity.MEDIUM,
+        max_retries: int = 1,
+        retry_callback: Optional[Callable[..., Any]] = None,
+    ):
         """显示错误信息 - 使用统一错误处理器."""
         error_id = error_id or f"{self.__class__.__name__}_{hash(message)}"
 
@@ -120,7 +125,7 @@ class BaseWidget(QWidget):
             severity=severity,
             max_retries=max_retries,
             callback=retry_callback,
-            parent_widget=self
+            parent_widget=self,
         )
 
         # 记录到本地日志
@@ -133,24 +138,14 @@ class BaseWidget(QWidget):
         """显示警告信息."""
         self._logger.warning("%s: %s", title, message)
 
-        QMessageBox.warning(
-            self,
-            title,
-            message,
-            QMessageBox.StandardButton.Ok
-        )
+        QMessageBox.warning(self, title, message, QMessageBox.StandardButton.Ok)
 
     def show_info(self, message: str, title: str = "信息"):
         """显示信息."""
         self._logger.info("%s: %s", title, message)
         self.info_message.emit(message)
 
-        QMessageBox.information(
-            self,
-            title,
-            message,
-            QMessageBox.StandardButton.Ok
-        )
+        QMessageBox.information(self, title, message, QMessageBox.StandardButton.Ok)
 
     def show_question(self, message: str, title: str = "确认") -> bool:
         """显示确认对话框."""
@@ -161,7 +156,7 @@ class BaseWidget(QWidget):
             title,
             message,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No
+            QMessageBox.StandardButton.No,
         )
 
         return reply == QMessageBox.StandardButton.Yes
@@ -176,8 +171,9 @@ class BaseWidget(QWidget):
             # pylint: disable=unnecessary-pass
             pass
 
-    def start_update_timer(self, interval: int = 1000,
-                           callback: Optional[Callable[..., Any]] = None):
+    def start_update_timer(
+        self, interval: int = 1000, callback: Optional[Callable[..., Any]] = None
+    ):
         """启动更新定时器."""
         if self._update_timer:
             self._update_timer.stop()
@@ -230,7 +226,7 @@ class BaseWidget(QWidget):
         """设置窗口标题."""
         self.title = title
         parent = self.parent()
-        if isinstance(parent, QWidget) and hasattr(parent, 'setWindowTitle'):
+        if isinstance(parent, QWidget) and hasattr(parent, "setWindowTitle"):
             parent.setWindowTitle(title)
 
     def get_title(self) -> str:
@@ -265,15 +261,11 @@ class BaseWidget(QWidget):
         # pylint: disable=unnecessary-pass
         pass
 
-    def export_data(
-        self, _format_type: str = "json"  # noqa: U101
-    ) -> Optional[str]:
+    def export_data(self, _format_type: str = "json") -> Optional[str]:  # noqa: U101
         """导出数据 - 子类可以重写."""
         return None
 
-    def import_data(
-        self, _data: str, _format_type: str = "json"  # noqa: U101
-    ) -> bool:
+    def import_data(self, _data: str, _format_type: str = "json") -> bool:  # noqa: U101
         """导入数据 - 子类可以重写."""
         return False
 
@@ -282,5 +274,5 @@ class BaseWidget(QWidget):
         return {
             "name": self.__class__.__name__,
             "initialized": self._is_initialized,
-            "title": self.title
+            "title": self.title,
         }

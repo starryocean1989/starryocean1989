@@ -10,27 +10,39 @@ from typing import Any, Callable, Optional
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QComboBox, QGroupBox, QHBoxLayout, QHeaderView,
-    QLabel, QPushButton, QSplitter, QTabWidget,
-    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
+    QComboBox,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QPushButton,
+    QSplitter,
+    QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
 )
 
 try:
-    from ui.widgets.base_widget import BaseWidget
-    from utils.logging_utils import LoggerMixin
+    from ui.widgets.base_widget import BaseWidget as _BaseWidget
+    from utils.logging_utils import LoggerMixin as _LoggerMixin
     from backend.core.vnpy_integration import TerminalEngine as VnPyAdapter
+
+    BaseWidget = _BaseWidget  # type: ignore[assignment]
+    LoggerMixin = _LoggerMixin  # type: ignore[assignment]
     VNPY_AVAILABLE = True
 except ImportError:
     VnPyAdapter = None
     VNPY_AVAILABLE = False
 
-    class BaseWidget(QWidget):
+    class BaseWidget(QWidget):  # type: ignore[misc]
         """Base widget class."""
 
         def __init__(self, parent=None, title=""):
             """Initialize base widget."""
             super().__init__(parent)
-            self.parent = parent
+            self._parent = parent
             self.title = title
 
         def setup_ui(self):
@@ -53,7 +65,7 @@ except ImportError:
             """Show warning message."""
             print(f"WARNING: {message}")
 
-    class LoggerMixin:
+    class LoggerMixin:  # type: ignore[misc]
         """Logger mixin class."""
 
         @property
@@ -115,9 +127,7 @@ class TradingGateway(BaseWidget, LoggerMixin):
         # 标题栏
         title_layout = QHBoxLayout()
         title_label = QLabel("🔗 网关管理器")
-        title_label.setStyleSheet(
-            "font-weight: bold; font-size: 14px; padding: 5px;"
-        )
+        title_label.setStyleSheet("font-weight: bold; font-size: 14px; padding: 5px;")
         title_layout.addWidget(title_label)
 
         layout.addLayout(title_layout)
@@ -216,14 +226,16 @@ class TradingGateway(BaseWidget, LoggerMixin):
         template_layout = QVBoxLayout(template_group)
 
         self.template_combo = QComboBox()
-        self.template_combo.addItems([
-            "algotrading - 算法交易监控",
-            "ctastrategy - CTA策略监控",
-            "optionmaster - 期权策略监控",
-            "portfoliostrategy - 组合策略监控",
-            "scripttrader - 脚本交易监控",
-            "spreadtrading - 价差交易监控"
-        ])
+        self.template_combo.addItems(
+            [
+                "algotrading - 算法交易监控",
+                "ctastrategy - CTA策略监控",
+                "optionmaster - 期权策略监控",
+                "portfoliostrategy - 组合策略监控",
+                "scripttrader - 脚本交易监控",
+                "spreadtrading - 价差交易监控",
+            ]
+        )
         template_layout.addWidget(self.template_combo)
 
         layout.addWidget(template_group)
@@ -233,9 +245,7 @@ class TradingGateway(BaseWidget, LoggerMixin):
         monitor_layout = QVBoxLayout(monitor_group)
 
         self.monitor_table = QTableWidget(0, 4)
-        self.monitor_table.setHorizontalHeaderLabels(
-            ["时间", "事件", "详情", "状态"]
-        )
+        self.monitor_table.setHorizontalHeaderLabels(["时间", "事件", "详情", "状态"])
         self.monitor_table.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.Stretch
         )
@@ -324,8 +334,9 @@ class TradingGateway(BaseWidget, LoggerMixin):
         self.logger.info("切换监控模板: %s", text)
         # 这里实现模板切换逻辑
 
-    def start_update_timer(self, interval: int = 1000,
-                           callback: Optional[Callable[..., Any]] = None):
+    def start_update_timer(
+        self, interval: int = 1000, callback: Optional[Callable[..., Any]] = None
+    ):
         """启动更新定时器（安全守卫）."""
         if not getattr(self, "ui_ready", False):
             return
@@ -342,8 +353,8 @@ class TradingGateway(BaseWidget, LoggerMixin):
     def stop_update_timer(self):
         """停止更新定时器."""
         try:
-            if getattr(self, "_update_timer", None):
-                self._update_timer.stop()
+            if getattr(self, "_update_timer", None) is not None:
+                self._update_timer.stop()  # type: ignore[union-attr]
         finally:
             self._update_timer = None
 
@@ -352,7 +363,7 @@ class TradingGateway(BaseWidget, LoggerMixin):
         if self.vnpy_adapter:
             try:
                 # 获取网关状态
-                if hasattr(self.vnpy_adapter, 'get_status'):
+                if hasattr(self.vnpy_adapter, "get_status"):
                     status = self.vnpy_adapter.get_status()
                     # 更新网关表格
                     self._update_gateways_table(status)
@@ -378,8 +389,8 @@ class TradingGateway(BaseWidget, LoggerMixin):
         # 清空表格
         self.gateways_table.setRowCount(0)
 
-        gateways = status.get('gateways', [])
-        connected_gateways = status.get('connected_gateways', [])
+        gateways = status.get("gateways", [])
+        connected_gateways = status.get("connected_gateways", [])
 
         for i, gateway_name in enumerate(gateways):
             self.gateways_table.insertRow(i)
@@ -394,9 +405,7 @@ class TradingGateway(BaseWidget, LoggerMixin):
             # 连接状态
             is_connected = gateway_name in connected_gateways
             status_text = "已连接" if is_connected else "未连接"
-            status_color = (
-                QColor("#4caf50") if is_connected else QColor("#ff9800")
-            )
+            status_color = QColor("#4caf50") if is_connected else QColor("#ff9800")
 
             status_item = QTableWidgetItem(status_text)
             status_item.setBackground(status_color)
@@ -424,7 +433,7 @@ class TradingGateway(BaseWidget, LoggerMixin):
         gateways_data = [
             ("CTP", "期货", "已连接"),
             ("IB", "国际", "未连接"),
-            ("PaperAccount", "模拟", "已连接")
+            ("PaperAccount", "模拟", "已连接"),
         ]
 
         for i, (name, type_, status) in enumerate(gateways_data):
@@ -457,12 +466,15 @@ class TradingGateway(BaseWidget, LoggerMixin):
                         result = self.vnpy_adapter.connect_gateway(gateway_name, **{})
                 elif hasattr(self.vnpy_adapter, "connect"):
                     try:
-                        result = self.vnpy_adapter.connect(gateway_name)
+                        result = self.vnpy_adapter.connect(gateway_name)  # type: ignore
                     except TypeError:
-                        result = self.vnpy_adapter.connect(gateway_name, **{})
+                        result = self.vnpy_adapter.connect(  # type: ignore
+                            gateway_name, **{}
+                        )
 
-                if ((isinstance(result, dict) and result.get("success", False)) or
-                        (result is True)):
+                if (isinstance(result, dict) and result.get("success", False)) or (
+                    result is True
+                ):
                     self.show_info(f"网关 {gateway_name} 连接成功")
                     self._update_gateway_status()
                 else:
@@ -478,12 +490,17 @@ class TradingGateway(BaseWidget, LoggerMixin):
             try:
                 result = None
                 if hasattr(self.vnpy_adapter, "disconnect_gateway"):
-                    result = self.vnpy_adapter.disconnect_gateway(gateway_name)
+                    result = self.vnpy_adapter.disconnect_gateway(  # type: ignore
+                        gateway_name
+                    )
                 elif hasattr(self.vnpy_adapter, "disconnect"):
-                    result = self.vnpy_adapter.disconnect(gateway_name)
+                    result = self.vnpy_adapter.disconnect(  # type: ignore[attr-defined]
+                        gateway_name
+                    )
 
-                if ((isinstance(result, dict) and result.get("success", False)) or
-                        (result is True)):
+                if (isinstance(result, dict) and result.get("success", False)) or (
+                    result is True
+                ):
                     self.show_info(f"网关 {gateway_name} 已断开")
                     self._update_gateway_status()
                 else:
@@ -505,7 +522,7 @@ class TradingGateway(BaseWidget, LoggerMixin):
         strategies = [
             ("双均线策略", "CTP", "运行中", "2024-01-01 09:30:00"),
             ("RSI策略", "CTP", "停止", "2024-01-01 10:00:00"),
-            ("MACD策略", "IB", "运行中", "2024-01-01 09:45:00")
+            ("MACD策略", "IB", "运行中", "2024-01-01 09:45:00"),
         ]
 
         for i, (name, gateway, status, start_time) in enumerate(strategies):

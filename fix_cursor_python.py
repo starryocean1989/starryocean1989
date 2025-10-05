@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """
 修复Cursor IDE Python语言服务器问题
+
 解决 'python.analysis.restartLanguageServer' not found 错误
 """
 
 import subprocess
 import sys
-import os
 import json
 from pathlib import Path
 
@@ -153,10 +153,10 @@ def test_python_environment():
     # 测试Python解释器
     try:
         result = subprocess.run(
-            [sys.executable, "--version"], capture_output=True, text=True
+            [sys.executable, "--version"], capture_output=True, text=True, check=True
         )
         print(f"✓ Python版本: {result.stdout.strip()}")
-    except Exception as e:
+    except subprocess.CalledProcessError as e:
         print(f"✗ Python测试失败: {e}")
 
     # 测试虚拟环境
@@ -164,10 +164,13 @@ def test_python_environment():
     if venv_python.exists():
         try:
             result = subprocess.run(
-                [str(venv_python), "--version"], capture_output=True, text=True
+                [str(venv_python), "--version"],
+                capture_output=True,
+                text=True,
+                check=True,
             )
             print(f"✓ 虚拟环境Python: {result.stdout.strip()}")
-        except Exception as e:
+        except subprocess.CalledProcessError as e:
             print(f"✗ 虚拟环境测试失败: {e}")
     else:
         print("⚠ 虚拟环境不存在")
@@ -181,14 +184,14 @@ def test_python_environment():
                 capture_output=True,
                 text=True,
                 timeout=10,
+                check=True,
             )
-            if result.returncode == 0:
-                version = result.stdout.strip().split("\n")[0]
-                print(f"✓ {package}: {version}")
-            else:
-                print(f"⚠ {package}: 版本检查失败")
-        except Exception as e:
+            version = result.stdout.strip().split("\n")[0]
+            print(f"✓ {package}: {version}")
+        except subprocess.CalledProcessError as e:
             print(f"✗ {package}: {e}")
+        except subprocess.TimeoutExpired as e:
+            print(f"✗ {package}: 超时 - {e}")
 
 
 def create_restart_script():

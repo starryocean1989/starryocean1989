@@ -8,26 +8,60 @@ from typing import Dict
 
 # PySide6 imports
 from PySide6.QtCore import (  # pylint: disable=no-name-in-module
-    QEasingCurve, QPropertyAnimation, QTimer, Qt, Signal
+    QByteArray,
+    QEasingCurve,
+    QPropertyAnimation,
+    QTimer,
+    Qt,
+    Signal,
 )
 from PySide6.QtGui import QColor, QFont  # pylint: disable=no-name-in-module
 from PySide6.QtWidgets import (  # pylint: disable=no-name-in-module
-    QCheckBox, QFrame, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
-    QProgressBar, QPushButton, QScrollArea, QSplitter, QTabWidget,
-    QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget
+    QCheckBox,
+    QFrame,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QProgressBar,
+    QPushButton,
+    QScrollArea,
+    QSplitter,
+    QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
 )
 
 try:
     from ...utils.error_handler import (
-        error_handler, ErrorCategory, ErrorSeverity, ErrorInfo
+        error_handler,
+        ErrorCategory as _ErrorCategory,
+        ErrorSeverity as _ErrorSeverity,
+        ErrorInfo as _ErrorInfo,
     )
+
+    ErrorCategory = _ErrorCategory  # type: ignore
+    ErrorSeverity = _ErrorSeverity  # type: ignore
+    ErrorInfo = _ErrorInfo  # type: ignore
 except ImportError:
     try:
         from utils.error_handler import (
-            error_handler, ErrorCategory, ErrorSeverity, ErrorInfo
+            error_handler,
+            ErrorCategory as _ErrorCategory,
+            ErrorSeverity as _ErrorSeverity,
+            ErrorInfo as _ErrorInfo,
         )
+
+        ErrorCategory = _ErrorCategory  # type: ignore
+        ErrorSeverity = _ErrorSeverity  # type: ignore
+        ErrorInfo = _ErrorInfo  # type: ignore
     except ImportError:
-        class ErrorCategory:
+        from enum import Enum
+
+        class ErrorCategory(Enum):
             """错误类别枚举."""
 
             UI = "ui"
@@ -37,7 +71,7 @@ except ImportError:
             VNPY = "vnpy"
             UNKNOWN = "unknown"
 
-        class ErrorSeverity:
+        class ErrorSeverity(Enum):
             """错误严重程度枚举."""
 
             LOW = "low"
@@ -48,9 +82,16 @@ except ImportError:
         class ErrorInfo:
             """错误信息类."""
 
-            def __init__(self, error_id, message, category=None,
-                         severity=None, timestamp=None, retry_count=0,
-                         max_retries=3):
+            def __init__(
+                self,
+                error_id,
+                message,
+                category=None,
+                severity=None,
+                timestamp=None,
+                retry_count=0,
+                max_retries=3,
+            ):
                 """初始化错误信息.
 
                 Args:
@@ -73,15 +114,56 @@ except ImportError:
         class MockErrorHandler:
             """模拟错误处理器."""
 
-            def handle_error(self, error_id, message, _category=None,
-                             _severity=None, _max_retries=1, _callback=None,
-                             _parent_widget=None):
+            def __init__(self):
+                """初始化模拟错误处理器."""
+                self.error_occurred = Signal()
+                self.error_resolved = Signal()
+                self.retry_scheduled = Signal()
+
+            def handle_error(
+                self,
+                error_id,
+                message,
+                _category=None,
+                _severity=None,
+                _max_retries=1,
+                _callback=None,
+                _parent_widget=None,
+            ):
                 """处理错误."""
                 # 使用下划线前缀的参数名表示故意未使用
-                _ = (_category, _severity, _max_retries, _callback,
-                     _parent_widget)
+                _ = (_category, _severity, _max_retries, _callback, _parent_widget)
                 print(f"错误 {error_id}: {message}")
                 return False
+
+            def get_error_status(self):
+                """获取错误状态."""
+                return {
+                    "error_categories": {},
+                    "error_severities": {},
+                    "active_errors": 0,
+                    "suppressed_errors": 0,
+                    "circuit_breakers": 0,
+                }
+
+            def resolve_error(self, error_id):
+                """解决错误."""
+                print(f"解决错误: {error_id}")
+
+            class Suppressor:
+                """错误抑制器."""
+
+                def clear_suppression(self, error_id=None):
+                    """清除抑制."""
+                    if error_id:
+                        print(f"清除抑制: {error_id}")
+                    else:
+                        print("清除所有抑制")
+
+            @property
+            def suppressor(self):
+                """获取抑制器."""
+                return self.Suppressor()
 
         error_handler = MockErrorHandler()
 
@@ -91,7 +173,7 @@ class ErrorNotificationWidget(QFrame):
 
     # 信号定义
     notification_clicked = Signal(str)  # error_id
-    retry_requested = Signal(str)     # error_id
+    retry_requested = Signal(str)  # error_id
     suppress_requested = Signal(str)  # error_id
 
     def __init__(self, error_info: ErrorInfo, parent=None):
@@ -113,29 +195,35 @@ class ErrorNotificationWidget(QFrame):
 
         # 根据严重程度设置样式
         if self.error_info.severity == ErrorSeverity.CRITICAL:
-            self.setStyleSheet("""
+            self.setStyleSheet(
+                """
                 QFrame {
                     background-color: #ffebee;
                     border: 2px solid #f44336;
                     border-radius: 8px;
                 }
-            """)
+            """
+            )
         elif self.error_info.severity == ErrorSeverity.HIGH:
-            self.setStyleSheet("""
+            self.setStyleSheet(
+                """
                 QFrame {
                     background-color: #fff3e0;
                     border: 1px solid #ff9800;
                     border-radius: 6px;
                 }
-            """)
+            """
+            )
         else:
-            self.setStyleSheet("""
+            self.setStyleSheet(
+                """
                 QFrame {
                     background-color: #f5f5f5;
                     border: 1px solid #9e9e9e;
                     border-radius: 4px;
                 }
-            """)
+            """
+            )
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -162,15 +250,22 @@ class ErrorNotificationWidget(QFrame):
         title_layout.addWidget(title_label)
 
         # 严重程度标签
-        severity_label = QLabel(self.error_info.severity.value.upper())
-        severity_label.setStyleSheet("""
+        severity_value = (
+            self.error_info.severity.value
+            if hasattr(self.error_info.severity, "value")
+            else str(self.error_info.severity)
+        )
+        severity_label = QLabel(severity_value.upper())
+        severity_label.setStyleSheet(
+            """
             QLabel {
                 background-color: #e0e0e0;
                 padding: 2px 6px;
                 border-radius: 3px;
                 font-size: 10px;
             }
-        """)
+        """
+        )
         title_layout.addWidget(severity_label)
 
         title_layout.addStretch()
@@ -178,7 +273,8 @@ class ErrorNotificationWidget(QFrame):
         # 关闭按钮
         close_btn = QPushButton("×")
         close_btn.setFixedSize(20, 20)
-        close_btn.setStyleSheet("""
+        close_btn.setStyleSheet(
+            """
             QPushButton {
                 background-color: transparent;
                 border: none;
@@ -189,7 +285,8 @@ class ErrorNotificationWidget(QFrame):
                 background-color: #ffcdd2;
                 border-radius: 10px;
             }
-        """)
+        """
+        )
         close_btn.clicked.connect(self.close)
         title_layout.addWidget(close_btn)
 
@@ -206,7 +303,8 @@ class ErrorNotificationWidget(QFrame):
             button_layout = QHBoxLayout()
 
             retry_btn = QPushButton("重试")
-            retry_btn.setStyleSheet("""
+            retry_btn.setStyleSheet(
+                """
                 QPushButton {
                     background-color: #2196f3;
                     color: white;
@@ -217,14 +315,16 @@ class ErrorNotificationWidget(QFrame):
                 QPushButton:hover {
                     background-color: #1976d2;
                 }
-            """)
+            """
+            )
             retry_btn.clicked.connect(
                 lambda: self.retry_requested.emit(self.error_info.error_id)
             )
             button_layout.addWidget(retry_btn)
 
             suppress_btn = QPushButton("忽略")
-            suppress_btn.setStyleSheet("""
+            suppress_btn.setStyleSheet(
+                """
                 QPushButton {
                     background-color: #9e9e9e;
                     color: white;
@@ -235,7 +335,8 @@ class ErrorNotificationWidget(QFrame):
                 QPushButton:hover {
                     background-color: #757575;
                 }
-            """)
+            """
+            )
             suppress_btn.clicked.connect(
                 lambda: self.suppress_requested.emit(self.error_info.error_id)
             )
@@ -256,7 +357,7 @@ class ErrorNotificationWidget(QFrame):
 
     def setup_animation(self):
         """设置动画效果."""
-        self.animation = QPropertyAnimation(self, b"opacity")
+        self.animation = QPropertyAnimation(self, QByteArray(b"opacity"))
         self.animation.setDuration(300)
         self.animation.setEasingCurve(QEasingCurve.Type.OutCubic)
         self.animation.finished.connect(self.show)
@@ -309,6 +410,11 @@ class ErrorFeedbackWidget(QWidget):
         self.connect_signals()
         self.start_update_timer()
 
+    @property
+    def logger(self):
+        """获取日志记录器."""
+        return self._logger
+
     def setup_ui(self):
         """设置界面."""
         layout = QVBoxLayout(self)
@@ -324,7 +430,7 @@ class ErrorFeedbackWidget(QWidget):
             Qt.ScrollBarPolicy.ScrollBarAsNeeded
         )
         self.notification_area.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarNever
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
 
         self.notification_container = QWidget()
@@ -421,9 +527,9 @@ class ErrorFeedbackWidget(QWidget):
         # 错误列表表格
         self.errors_table = QTableWidget()
         self.errors_table.setColumnCount(5)
-        self.errors_table.setHorizontalHeaderLabels([
-            "时间", "错误ID", "类别", "严重程度", "消息"
-        ])
+        self.errors_table.setHorizontalHeaderLabels(
+            ["时间", "错误ID", "类别", "严重程度", "消息"]
+        )
 
         # 设置列宽
         header = self.errors_table.horizontalHeader()
@@ -466,9 +572,9 @@ class ErrorFeedbackWidget(QWidget):
     def connect_signals(self):
         """连接信号."""
         # 连接错误处理器信号
-        error_handler.error_occurred.connect(self.on_error_occurred)
-        error_handler.error_resolved.connect(self.on_error_resolved)
-        error_handler.retry_scheduled.connect(self.on_retry_scheduled)
+        error_handler.error_occurred.connect(self.on_error_occurred)  # type: ignore
+        error_handler.error_resolved.connect(self.on_error_resolved)  # type: ignore
+        error_handler.retry_scheduled.connect(self.on_retry_scheduled)  # type: ignore
 
     def start_update_timer(self):
         """启动更新定时器."""
@@ -478,7 +584,7 @@ class ErrorFeedbackWidget(QWidget):
 
     def on_error_occurred(self, error_info: ErrorInfo):
         """错误发生回调."""
-        self.logger.info(f"收到错误: {error_info.error_id}")
+        self.logger.info("收到错误: %s", error_info.error_id)
 
         # 创建通知组件
         notification = ErrorNotificationWidget(error_info)
@@ -488,7 +594,8 @@ class ErrorFeedbackWidget(QWidget):
 
         # 添加到通知区域
         self.notification_widgets[error_info.error_id] = notification
-        self.notification_layout.insertWidget(0, notification)
+        if self.notification_layout is not None:
+            self.notification_layout.insertWidget(0, notification)
 
         # 显示动画
         notification.show_with_animation()
@@ -498,7 +605,7 @@ class ErrorFeedbackWidget(QWidget):
 
     def on_error_resolved(self, error_id: str):
         """错误解决回调."""
-        self.logger.info(f"错误已解决: {error_id}")
+        self.logger.info("错误已解决: %s", error_id)
 
         # 移除通知组件
         if error_id in self.notification_widgets:
@@ -508,42 +615,51 @@ class ErrorFeedbackWidget(QWidget):
 
     def on_retry_scheduled(self, error_id: str, delay: float):
         """重试计划回调."""
-        self.logger.info(f"错误 {error_id} 将在 {delay:.1f} 秒后重试")
-        self.status_label.setText(f"重试计划: {error_id} ({delay:.1f}s)")
+        self.logger.info("错误 %s 将在 %.1f 秒后重试", error_id, delay)
+        if self.status_label is not None:
+            self.status_label.setText(f"重试计划: {error_id} ({delay:.1f}s)")
 
     def on_retry_requested(self, error_id: str):
         """重试请求回调."""
-        self.logger.info(f"用户请求重试: {error_id}")
+        self.logger.info("用户请求重试: %s", error_id)
         error_handler.resolve_error(error_id)
 
     def on_suppress_requested(self, error_id: str):
         """抑制请求回调."""
-        self.logger.info(f"用户请求抑制: {error_id}")
+        self.logger.info("用户请求抑制: %s", error_id)
         error_handler.suppressor.clear_suppression(error_id)
 
     def add_error_to_table(self, error_info: ErrorInfo):
         """添加错误到表格."""
+        if self.errors_table is None:
+            return
         row = self.errors_table.rowCount()
         self.errors_table.insertRow(row)
 
         # 时间
-        time_str = datetime.datetime.fromtimestamp(
-            error_info.timestamp
-        ).strftime("%H:%M:%S")
+        time_str = datetime.datetime.fromtimestamp(error_info.timestamp).strftime(
+            "%H:%M:%S"
+        )
         self.errors_table.setItem(row, 0, QTableWidgetItem(time_str))
 
         # 错误ID
-        self.errors_table.setItem(
-            row, 1, QTableWidgetItem(error_info.error_id)
-        )
+        self.errors_table.setItem(row, 1, QTableWidgetItem(error_info.error_id))
 
         # 类别
-        self.errors_table.setItem(
-            row, 2, QTableWidgetItem(error_info.category.value)
+        category_value = (
+            error_info.category.value
+            if hasattr(error_info.category, "value")
+            else str(error_info.category)
         )
+        self.errors_table.setItem(row, 2, QTableWidgetItem(category_value))
 
         # 严重程度
-        severity_item = QTableWidgetItem(error_info.severity.value)
+        severity_value = (
+            error_info.severity.value
+            if hasattr(error_info.severity, "value")
+            else str(error_info.severity)
+        )
+        severity_item = QTableWidgetItem(severity_value)
         if error_info.severity == ErrorSeverity.CRITICAL:
             severity_item.setBackground(QColor("#ffcdd2"))
         elif error_info.severity == ErrorSeverity.HIGH:
@@ -551,12 +667,11 @@ class ErrorFeedbackWidget(QWidget):
         self.errors_table.setItem(row, 3, severity_item)
 
         # 消息
-        self.errors_table.setItem(
-            row, 4, QTableWidgetItem(error_info.message)
-        )
+        self.errors_table.setItem(row, 4, QTableWidgetItem(error_info.message))
 
         # 滚动到最新行
-        self.errors_table.scrollToBottom()
+        if self.errors_table is not None:
+            self.errors_table.scrollToBottom()
 
     def update_display(self):
         """更新显示."""
@@ -568,13 +683,15 @@ class ErrorFeedbackWidget(QWidget):
 
     def update_stats_table(self):
         """更新统计表格."""
+        if self.stats_table is None:
+            return
         status = error_handler.get_error_status()
 
         # 清空表格
         self.stats_table.setRowCount(0)
 
         # 添加错误类别统计
-        for category, count in status.get('error_categories', {}).items():
+        for category, count in status.get("error_categories", {}).items():
             if count > 0:
                 row = self.stats_table.rowCount()
                 self.stats_table.insertRow(row)
@@ -582,7 +699,7 @@ class ErrorFeedbackWidget(QWidget):
                 self.stats_table.setItem(row, 1, QTableWidgetItem(str(count)))
 
         # 添加严重程度统计
-        for severity, count in status.get('error_severities', {}).items():
+        for severity, count in status.get("error_severities", {}).items():
             if count > 0:
                 row = self.stats_table.rowCount()
                 self.stats_table.insertRow(row)
@@ -601,7 +718,8 @@ class ErrorFeedbackWidget(QWidget):
 熔断器: {status.get('circuit_breakers', 0)}
         """.strip()
 
-        self.system_info_text.setPlainText(system_info)
+        if self.system_info_text is not None:
+            self.system_info_text.setPlainText(system_info)
 
         # 更新错误处理器状态
         error_handler_info = f"""
@@ -609,7 +727,8 @@ class ErrorFeedbackWidget(QWidget):
 最后更新: {time.strftime('%Y-%m-%d %H:%M:%S')}
         """.strip()
 
-        self.error_handler_info_text.setPlainText(error_handler_info)
+        if self.error_handler_info_text is not None:
+            self.error_handler_info_text.setPlainText(error_handler_info)
 
     def retry_all_errors(self):
         """重试所有错误."""
@@ -623,7 +742,8 @@ class ErrorFeedbackWidget(QWidget):
         self.notification_widgets.clear()
 
         # 清空错误列表
-        self.errors_table.setRowCount(0)
+        if self.errors_table is not None:
+            self.errors_table.setRowCount(0)
 
         # 清除错误处理器状态
         error_handler.suppressor.clear_suppression()

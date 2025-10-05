@@ -10,10 +10,14 @@ from enum import Enum
 from typing import Callable, Dict, Optional
 
 try:
+    from PySide6.QtCore import Signal
     from PySide6.QtWidgets import QMessageBox
+
     HAS_QT = True
+    HAS_SIGNALS = True
 except ImportError:
     HAS_QT = False
+    HAS_SIGNALS = False
 
 
 class ErrorCategory(Enum):
@@ -39,16 +43,20 @@ class ErrorSeverity(Enum):
 class ErrorInfo:
     """错误信息."""
 
-    def __init__(self, error_id: str, message: str,
-                 category: ErrorCategory = ErrorCategory.UNKNOWN,
-                 severity: ErrorSeverity = ErrorSeverity.MEDIUM,
-                 timestamp: Optional[str] = None):
+    def __init__(
+        self,
+        error_id: str,
+        message: str,
+        category: ErrorCategory = ErrorCategory.UNKNOWN,
+        severity: ErrorSeverity = ErrorSeverity.MEDIUM,
+        timestamp: Optional[str] = None,
+    ):
         """初始化错误信息."""
         self.error_id = error_id
         self.message = message
         self.category = category
         self.severity = severity
-        self.timestamp = timestamp or str(__import__('time').time())
+        self.timestamp = timestamp or str(__import__("time").time())
 
 
 class ErrorHandler:
@@ -60,16 +68,42 @@ class ErrorHandler:
         self._error_history: list[ErrorInfo] = []
         self._handlers: Dict[str, Callable] = {}
 
+        # 添加信号支持
+        if HAS_SIGNALS:
+            self.error_occurred = Signal(object)  # ErrorInfo
+            self.error_resolved = Signal(str)  # error_id
+            self.retry_scheduled = Signal(str, float)  # error_id, delay
+        else:
+            # 创建模拟信号对象
+            class MockSignal:
+                """模拟信号类，用于非Qt环境."""
+
+                def connect(self, callback):  # pylint: disable=unused-argument
+                    """连接信号."""
+                    del callback
+
+                def emit(self, *args):  # pylint: disable=unused-argument
+                    """发出信号."""
+                    del args
+
+            self.error_occurred = MockSignal()
+            self.error_resolved = MockSignal()
+            self.retry_scheduled = MockSignal()
+
     def register_handler(self, category: ErrorCategory, handler: Callable):
         """注册错误处理器."""
         self._handlers[category.value] = handler
 
-    def handle_error(self, error_id: str, message: str,
-                     category: ErrorCategory = ErrorCategory.UNKNOWN,
-                     severity: ErrorSeverity = ErrorSeverity.MEDIUM,
-                     max_retries: int = 1,
-                     callback: Optional[Callable] = None,
-                     parent_widget=None) -> bool:
+    def handle_error(
+        self,
+        error_id: str,
+        message: str,
+        category: ErrorCategory = ErrorCategory.UNKNOWN,
+        severity: ErrorSeverity = ErrorSeverity.MEDIUM,
+        max_retries: int = 1,
+        callback: Optional[Callable] = None,
+        parent_widget=None,
+    ) -> bool:
         """处理错误.
 
         Args:
@@ -97,23 +131,29 @@ class ErrorHandler:
         if category.value in self._handlers:
             try:
                 handler = self._handlers[category.value]
-                return handler(error_info, max_retries, callback,
-                               parent_widget)
+                return handler(error_info, max_retries, callback, parent_widget)
             except (AttributeError, TypeError) as e:
                 self.logger.error("错误处理器执行失败: %s", e)
 
         # 默认处理
-        return self._default_error_handler(error_info, max_retries, callback,
-                                           parent_widget)
+        return self._default_error_handler(
+            error_info, max_retries, callback, parent_widget
+        )
 
     def _default_error_handler(  # pylint: disable=unused-argument
-            self, error_info: ErrorInfo,
-            max_retries: int,  # noqa: U100
-            callback: Optional[Callable],
-            parent_widget) -> bool:
+        self,
+        error_info: ErrorInfo,
+        max_retries: int,  # noqa: U100
+        callback: Optional[Callable],
+        parent_widget,
+    ) -> bool:
         """默认错误处理器."""
-        self.logger.error("[%s] %s: %s", error_info.category.value,
-                          error_info.error_id, error_info.message)
+        self.logger.error(
+            "[%s] %s: %s",
+            error_info.category.value,
+            error_info.error_id,
+            error_info.message,
+        )
 
         # 根据严重程度决定是否显示对话框
         if error_info.severity in [ErrorSeverity.HIGH, ErrorSeverity.CRITICAL]:
@@ -122,7 +162,7 @@ class ErrorHandler:
                     parent_widget,
                     "错误",
                     f"{error_info.error_id}: {error_info.message}",
-                    QMessageBox.StandardButton.Ok
+                    QMessageBox.StandardButton.Ok,
                 )
             else:
                 print(f"错误: {error_info.error_id}: {error_info.message}")
@@ -144,6 +184,59 @@ class ErrorHandler:
         """清空错误历史."""
         self._error_history.clear()
         self.logger.info("错误历史已清空")
+
+    def get_error_status(self):
+        """获取错误状态."""
+        categories = {}
+        severities = {}
+
+        for error in self._error_history:
+            # 统计类别
+            cat = (
+                error.category.value
+                if hasattr(error.category, "value")
+                else str(error.category)
+            )
+            categories[cat] = categories.get(cat, 0) + 1
+
+            # 统计严重程度
+            sev = (
+                error.severity.value
+                if hasattr(error.severity, "value")
+                else str(error.severity)
+            )
+            severities[sev] = severities.get(sev, 0) + 1
+
+        return {
+            "error_categories": categories,
+            "error_severities": severities,
+            "active_errors": len(self._error_history),
+            "suppressed_errors": 0,
+            "circuit_breakers": 0,
+        }
+
+    def resolve_error(self, error_id: str):
+        """解决错误."""
+        self.logger.info("解决错误: %s", error_id)
+        # 从历史记录中移除错误
+        self._error_history = [e for e in self._error_history if e.error_id != error_id]
+        # 发出信号
+        self.error_resolved.emit(error_id)  # type: ignore
+
+    class Suppressor:
+        """错误抑制器类."""
+
+        def clear_suppression(self, error_id=None):
+            """清除抑制."""
+            if error_id:
+                print(f"清除抑制: {error_id}")
+            else:
+                print("清除所有抑制")
+
+    @property
+    def suppressor(self):
+        """获取抑制器."""
+        return self.Suppressor()
 
 
 # 全局错误处理器实例

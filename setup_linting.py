@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 """
 设置代码质量检查工具
+
 确保Cursor IDE能正确显示代码错误和警告
 """
 
+import json
 import subprocess
 import sys
-import os
 from pathlib import Path
 
 
@@ -32,24 +33,33 @@ def test_linting():
     # 测试flake8
     try:
         result = subprocess.run(
-            [sys.executable, "-m", "flake8", test_file], capture_output=True, text=True
+            [sys.executable, "-m", "flake8", test_file],
+            capture_output=True,
+            text=True,
+            check=False,
         )
         if result.returncode == 0:
             print("✓ flake8: 无错误")
         else:
             print(f"⚠ flake8 发现问题:\n{result.stdout}")
-    except Exception as e:
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
         print(f"✗ flake8 测试失败: {e}")
 
     # 测试pylint
     try:
         result = subprocess.run(
-            [sys.executable, "-m", "pylint", test_file], capture_output=True, text=True
+            [sys.executable, "-m", "pylint", test_file],
+            capture_output=True,
+            text=True,
+            check=False,
         )
-        print(
-            f"✓ pylint 检查完成 (评分: {result.stdout.split('rated at ')[1].split('/')[0] if 'rated at' in result.stdout else 'N/A'})"
-        )
-    except Exception as e:
+        score_text = "N/A"
+        if "rated at" in result.stdout:
+            score_parts = result.stdout.split("rated at ")[1].split("/")
+            if len(score_parts) > 0:
+                score_text = score_parts[0]
+        print(f"✓ pylint 检查完成 (评分: {score_text})")
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
         print(f"✗ pylint 测试失败: {e}")
 
 
@@ -79,8 +89,6 @@ def create_vscode_config():
         "python.formatting.provider": "black",
         "python.sortImports.args": ["--profile", "black"],
     }
-
-    import json
 
     with open(vscode_dir / "settings.json", "w", encoding="utf-8") as f:
         json.dump(settings, f, indent=4, ensure_ascii=False)
@@ -116,4 +124,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

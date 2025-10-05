@@ -342,8 +342,9 @@ class MarketDashboard(BaseWidget):  # type: ignore[misc]
             macd_win = pg.GraphicsLayoutWidget()
             macd_win.setBackground(QColor(26, 26, 26))
             # 使用正确的pyqtgraph方法
-            # type: ignore[reportAttributeAccessIssue]
-            self.macd_plot = macd_win.addPlot(title="MACD")  # noqa: E501
+            self.macd_plot = macd_win.addPlot(  # type: ignore[attr-defined]
+                title="MACD"
+            )
             if self.macd_plot:
                 self.macd_plot.showGrid(x=True, y=True)
                 self.macd_plot.setMinimumHeight(150)
@@ -360,9 +361,7 @@ class MarketDashboard(BaseWidget):  # type: ignore[misc]
             rsi_win = pg.GraphicsLayoutWidget()
             rsi_win.setBackground(QColor(26, 26, 26))
             # 使用正确的pyqtgraph方法
-            self.rsi_plot = rsi_win.addPlot(  # type: ignore[reportAttributeAccessIssue]
-                title="RSI"
-            )
+            self.rsi_plot = rsi_win.addPlot(title="RSI")  # type: ignore[attr-defined]
             if self.rsi_plot:
                 self.rsi_plot.showGrid(x=True, y=True)
                 self.rsi_plot.setMinimumHeight(150)
@@ -379,9 +378,7 @@ class MarketDashboard(BaseWidget):  # type: ignore[misc]
             kdj_win = pg.GraphicsLayoutWidget()
             kdj_win.setBackground(QColor(26, 26, 26))
             # 使用正确的pyqtgraph方法
-            self.kdj_plot = kdj_win.addPlot(  # type: ignore[reportAttributeAccessIssue]
-                title="KDJ"
-            )
+            self.kdj_plot = kdj_win.addPlot(title="KDJ")  # type: ignore[attr-defined]
             if self.kdj_plot:
                 self.kdj_plot.showGrid(x=True, y=True)
                 self.kdj_plot.setMinimumHeight(150)
@@ -398,7 +395,9 @@ class MarketDashboard(BaseWidget):  # type: ignore[misc]
             boll_win = pg.GraphicsLayoutWidget()
             boll_win.setBackground(QColor(26, 26, 26))
             # 使用正确的pyqtgraph方法
-            self.boll_plot = boll_win.addPlot(title="BOLL")  # type: ignore
+            self.boll_plot = boll_win.addPlot(  # type: ignore[attr-defined]
+                title="BOLL"
+            )
             if self.boll_plot:
                 self.boll_plot.showGrid(x=True, y=True)
                 self.boll_plot.setMinimumHeight(150)

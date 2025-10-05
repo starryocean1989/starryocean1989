@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """
 Cursor IDE 诊断脚本
+
 检查为什么Cursor IDE不显示代码错误
 """
 
 import subprocess
 import sys
-import os
 import json
 from pathlib import Path
 
@@ -41,14 +41,18 @@ def check_linting_tools():
     for tool, cmd in tools.items():
         try:
             result = subprocess.run(
-                cmd.split(), capture_output=True, text=True, timeout=10
+                cmd.split(), capture_output=True, text=True, timeout=10, check=False
             )
             if result.returncode == 0:
                 version = result.stdout.strip().split("\n")[0]
                 print(f"✓ {tool}: {version}")
             else:
                 print(f"✗ {tool}: 命令失败")
-        except Exception as e:
+        except (
+            subprocess.TimeoutExpired,
+            subprocess.SubprocessError,
+            FileNotFoundError,
+        ) as e:
             print(f"✗ {tool}: {e}")
 
 
@@ -82,7 +86,7 @@ def check_vscode_config():
                     else:
                         print(f"⚠ 缺少配置: {key}")
 
-            except Exception as e:
+            except (json.JSONDecodeError, FileNotFoundError, PermissionError) as e:
                 print(f"✗ 读取settings.json失败: {e}")
         else:
             print("✗ settings.json不存在")
@@ -108,15 +112,20 @@ def test_linting_on_file():
             capture_output=True,
             text=True,
             timeout=30,
+            check=False,
         )
         if result.returncode == 0:
             print("✓ flake8: 无错误")
         else:
-            print(f"⚠ flake8发现问题:")
+            print("⚠ flake8发现问题:")
             for line in result.stdout.split("\n")[:5]:  # 只显示前5个问题
                 if line.strip():
                     print(f"  {line}")
-    except Exception as e:
+    except (
+        subprocess.TimeoutExpired,
+        subprocess.SubprocessError,
+        FileNotFoundError,
+    ) as e:
         print(f"✗ flake8测试失败: {e}")
 
     # 测试pylint
@@ -126,13 +135,18 @@ def test_linting_on_file():
             capture_output=True,
             text=True,
             timeout=30,
+            check=False,
         )
         if "rated at" in result.stdout:
             rating = result.stdout.split("rated at ")[1].split("/")[0]
             print(f"✓ pylint评分: {rating}/10")
         else:
             print("⚠ pylint输出格式异常")
-    except Exception as e:
+    except (
+        subprocess.TimeoutExpired,
+        subprocess.SubprocessError,
+        FileNotFoundError,
+    ) as e:
         print(f"✗ pylint测试失败: {e}")
 
 
@@ -178,4 +192,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
