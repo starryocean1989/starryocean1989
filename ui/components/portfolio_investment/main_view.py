@@ -27,28 +27,25 @@ from PySide6.QtWidgets import (
 )
 
 try:
-    from ....backend.core.vnpy_integration import TerminalEngine as VnPyAdapter
+    from backend.core.vnpy_integration import TerminalEngine as VnPyAdapter
 except ImportError:
-    try:
-        from backend.core.vnpy_integration import TerminalEngine as VnPyAdapter
-    except ImportError:
-        VnPyAdapter = None
+    VnPyAdapter = None
 
 # Import base classes with proper fallback handling
 
 if TYPE_CHECKING:
     # For type checking, use the actual imported classes
-    from ...widgets.base_widget import BaseWidget
-    from ....utils.logging_utils import LoggerMixin
+    from ..widgets.base_widget import BaseWidget  # type: ignore
+    from ...utils.logging_utils import LoggerMixin  # type: ignore
 else:
     # Runtime imports with fallback
     try:
-        from ...widgets.base_widget import BaseWidget
-        from ....utils.logging_utils import LoggerMixin
+        from ..widgets.base_widget import BaseWidget  # type: ignore
+        from ...utils.logging_utils import LoggerMixin  # type: ignore
     except ImportError:
         try:
-            from ui.widgets.base_widget import BaseWidget
-            from utils.logging_utils import LoggerMixin
+            from ui.widgets.base_widget import BaseWidget  # type: ignore
+            from utils.logging_utils import LoggerMixin  # type: ignore
         except ImportError:
             # Create fallback implementations
             class BaseWidget(QWidget):
@@ -95,22 +92,21 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
         super().__init__(parent, "组合投资")
         self.logger.info("组合投资界面初始化开始")
 
-        # Initialize UI components
+        # Initialize VNPY adapter first
+        self.vnpy_adapter = None
+        self._initialize_vnpy_adapter()
+
+        # Initialize UI components - 移除容易导致冲突的单例变量
         self.auto_portfolio_table = None
         self.custom_portfolio_table = None
         self.gateway_tab = None
-        self.total_pnl_label = None
-        self.total_return_label = None
-        self.max_drawdown_label = None
-        self.sharpe_ratio_label = None
-        self.position_table = None
-        self.risk_progress = None
+
+        # 监控数据存储 - 用于管理多个选项卡的数据
+        self.monitor_data = {}
 
         # 更新定时器与就绪标志
         self._update_timer = None
         self.ui_ready = False
-        # 初始化VNPY适配器 - 在super().__init__()之后
-        self._initialize_vnpy_adapter()
 
     def setup_ui(self):
         """设置用户界面"""
@@ -223,7 +219,7 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
         return widget
 
     def _create_monitor_panel(self):
-        """创建组合投资监控组件"""
+        """创建组合投资监控组件 - 保证始终成功"""
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
@@ -232,41 +228,109 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
         title_label.setStyleSheet("font-weight: bold; font-size: 16px; padding: 5px;")
         layout.addWidget(title_label)
 
-        # 网关选项卡
+        # 初始化监控数据存储
+        self.monitor_data = {}
+
+        # 创建网关选项卡 - 使用保证成功的方法
         self.gateway_tab = QTabWidget()
-
-        # 为每个网关创建选项卡
-        gateways = getattr(self, "gateways", None)
-        # 容错：数据类型不合法时回退为空
-        if not isinstance(gateways, (list, tuple)):
-            gateways = []
-        self._create_gateway_tabs()
-
-        # 若无任何选项卡，立即加入占位选项卡保证初次渲染可见
-        try:
-            if self.gateway_tab and self.gateway_tab.count() == 0:
-                placeholder = QWidget()
-                pl = QVBoxLayout(placeholder)
-                msg = QLabel("暂无连接的网关，已显示示例面板。")
-                msg.setStyleSheet("color:#555;")
-                pl.addWidget(msg)
-                demo_table = QTableWidget(0, 3)
-                demo_table.setHorizontalHeaderLabels(["组合", "权重", "状态"])
-                demo_table.horizontalHeader().setSectionResizeMode(
-                    QHeaderView.ResizeMode.Stretch
-                )
-                pl.addWidget(demo_table)
-                self.gateway_tab.addTab(placeholder, "示例网关")
-        except (AttributeError, TypeError, ValueError, RuntimeError) as e:
-            # 占位失败也不影响主界面显示
-            self.logger.warning("添加占位选项卡失败: %s", e)
+        self._ensure_monitor_content()
 
         layout.addWidget(self.gateway_tab)
-
         return widget
 
+    def _ensure_monitor_content(self):
+        """确保监控面板有内容显示 - 多层级备份机制"""
+        try:
+            # 第一层：尝试创建真实网关选项卡
+            self._try_create_real_gateway_tabs()
+
+            # 检查是否成功创建了选项卡
+            if self.gateway_tab and self.gateway_tab.count() > 0:
+                self.logger.info("成功创建网关选项卡")
+                return
+
+        except (AttributeError, TypeError, ValueError, RuntimeError) as e:
+            self.logger.warning("创建真实网关选项卡失败: %s", e)
+
+        try:
+            # 第二层：创建示例监控选项卡
+            self._create_demo_monitor_tab_safe()
+
+            if self.gateway_tab and self.gateway_tab.count() > 0:
+                self.logger.info("成功创建示例监控选项卡")
+                return
+
+        except (AttributeError, TypeError, ValueError, RuntimeError) as e:
+            self.logger.warning("创建示例监控选项卡失败: %s", e)
+
+        # 第三层：最简化的占位选项卡（绝对不会失败）
+        self._create_minimal_monitor_tab()
+
+    def _try_create_real_gateway_tabs(self):
+        """尝试创建真实网关选项卡"""
+        if not self.vnpy_adapter:
+            return
+
+        if not hasattr(self.vnpy_adapter, "get_status"):
+            return
+
+        status = self.vnpy_adapter.get_status()
+        connected_gateways = status.get("connected_gateways", [])
+
+        for gateway_name in connected_gateways:
+            tab = self._create_monitor_tab(gateway_name)
+            if self.gateway_tab:
+                self.gateway_tab.addTab(tab, gateway_name)
+                self.logger.info("创建真实网关选项卡: %s", gateway_name)
+
+    def _create_demo_monitor_tab_safe(self):
+        """安全创建示例监控选项卡"""
+        demo_tab = self._create_demo_monitor_tab()
+        if self.gateway_tab:
+            self.gateway_tab.addTab(demo_tab, "📊 示例网关")
+
+    def _create_minimal_monitor_tab(self):
+        """创建最简化的监控选项卡（绝对不会失败）"""
+        try:
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+
+            # 简单的欢迎信息
+            welcome_label = QLabel("👋 欢迎使用组合投资监控")
+            welcome_label.setStyleSheet(
+                "font-size: 16px; font-weight: bold; color: #2196F3; padding: 20px;"
+            )
+            welcome_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            layout.addWidget(welcome_label)
+
+            # 状态信息
+            status_label = QLabel("🔄 正在加载监控数据...")
+            status_label.setStyleSheet("color: #666; font-size: 14px; padding: 10px;")
+            status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            layout.addWidget(status_label)
+
+            # 简单的进度条
+            progress = QProgressBar()
+            progress.setRange(0, 0)  # 无限进度条
+            progress.setStyleSheet("QProgressBar { margin: 20px; }")
+            layout.addWidget(progress)
+
+            # 添加伸缩空间
+            layout.addStretch()
+
+            if self.gateway_tab:
+                self.gateway_tab.addTab(tab, "📊 监控面板")
+                self.logger.info("成功创建最简化监控选项卡")
+
+        except (AttributeError, TypeError, ValueError, RuntimeError) as e:
+            self.logger.error("创建最简化监控选项卡也失败: %s", e)
+            # 最后的最后手段：空的QWidget
+            empty_tab = QWidget()
+            if self.gateway_tab:
+                self.gateway_tab.addTab(empty_tab, "监控")
+
     def _create_gateway_tabs(self):
-        """创建网关选项卡"""
+        """创建网关选项卡 - 修复版，确保始终有可见内容"""
         # 清空现有选项卡
         if self.gateway_tab:
             self.gateway_tab.clear()
@@ -285,25 +349,32 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
                     tab = self._create_monitor_tab(gateway_name)
                     if self.gateway_tab:
                         self.gateway_tab.addTab(tab, gateway_name)
+                        self.logger.info("创建网关选项卡: %s", gateway_name)
 
-                # 如果有虚拟网关，也创建选项卡
-                # 这里可以根据实际需求添加虚拟网关的逻辑
+                # 如果没有任何网关连接，创建示例选项卡
+                if not connected_gateways:
+                    self.logger.info("无连接网关，创建示例选项卡")
+                    self._create_fallback_gateway_tabs()
 
-            except (AttributeError, TypeError, ValueError) as e:
+            except (AttributeError, TypeError, ValueError, RuntimeError) as e:
                 self.logger.error("创建网关选项卡失败: %s", e)
                 self._create_fallback_gateway_tabs()
         else:
+            self.logger.warning("VNPY适配器不可用，创建示例选项卡")
             self._create_fallback_gateway_tabs()
 
     def _create_fallback_gateway_tabs(self):
         """创建备用网关选项卡（VNPY不可用时）"""
-        # 示例网关选项卡
-        gateway_names = ["CTP-001", "虚拟网关-001", "IB-001"]
-
-        for gateway_name in gateway_names:
-            tab = self._create_monitor_tab(gateway_name)
+        try:
+            # 创建一个示例监控选项卡，而不是多个
+            demo_tab = self._create_demo_monitor_tab()
             if self.gateway_tab:
-                self.gateway_tab.addTab(tab, gateway_name)
+                self.gateway_tab.addTab(demo_tab, "示例网关")
+                self.logger.info("已创建示例网关选项卡")
+        except (AttributeError, TypeError, ValueError, RuntimeError) as e:
+            self.logger.error("创建示例网关选项卡失败: %s", e)
+            # 创建最基础的占位选项卡
+            self._create_minimal_monitor_tab()
 
     def _create_monitor_tab(self, gateway_name):
         """为指定网关创建监控选项卡"""
@@ -313,21 +384,32 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
         # 记录网关名称用于调试
         self.logger.debug("创建监控选项卡: %s", gateway_name)
 
+        # 为每个选项卡创建独立的控件引用，避免共享实例变量
+        tab_data = {
+            "gateway_name": gateway_name,
+            "total_pnl_label": None,
+            "total_return_label": None,
+            "max_drawdown_label": None,
+            "sharpe_ratio_label": None,
+            "position_table": None,
+            "risk_progress": None,
+        }
+
         # 业绩概览组
         overview_group = QGroupBox("业绩概览")
         overview_layout = QFormLayout(overview_group)
 
-        self.total_pnl_label = QLabel("--")
-        overview_layout.addRow("总盈亏:", self.total_pnl_label)
+        tab_data["total_pnl_label"] = QLabel("--")
+        overview_layout.addRow("总盈亏:", tab_data["total_pnl_label"])
 
-        self.total_return_label = QLabel("--")
-        overview_layout.addRow("总收益率:", self.total_return_label)
+        tab_data["total_return_label"] = QLabel("--")
+        overview_layout.addRow("总收益率:", tab_data["total_return_label"])
 
-        self.max_drawdown_label = QLabel("--")
-        overview_layout.addRow("最大回撤:", self.max_drawdown_label)
+        tab_data["max_drawdown_label"] = QLabel("--")
+        overview_layout.addRow("最大回撤:", tab_data["max_drawdown_label"])
 
-        self.sharpe_ratio_label = QLabel("--")
-        overview_layout.addRow("夏普比率:", self.sharpe_ratio_label)
+        tab_data["sharpe_ratio_label"] = QLabel("--")
+        overview_layout.addRow("夏普比率:", tab_data["sharpe_ratio_label"])
 
         layout.addWidget(overview_group)
 
@@ -335,28 +417,35 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
         position_group = QGroupBox("持仓情况")
         position_layout = QVBoxLayout(position_group)
 
-        self.position_table = QTableWidget(0, 5)
-        self.position_table.setHorizontalHeaderLabels(
+        tab_data["position_table"] = QTableWidget(0, 5)
+        tab_data["position_table"].setHorizontalHeaderLabels(
             ["品种", "持仓", "成本", "市值", "盈亏"]
         )
-        self.position_table.horizontalHeader().setSectionResizeMode(
+        tab_data["position_table"].horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.Stretch
         )
 
-        position_layout.addWidget(self.position_table)
-
+        position_layout.addWidget(tab_data["position_table"])
         layout.addWidget(position_group)
 
         # 风险指标组
         risk_group = QGroupBox("风险指标")
         risk_layout = QVBoxLayout(risk_group)
 
-        self.risk_progress = QProgressBar()
-        self.risk_progress.setRange(0, 100)
+        tab_data["risk_progress"] = QProgressBar()
+        tab_data["risk_progress"].setRange(0, 100)
         risk_layout.addWidget(QLabel("风险等级:"))
-        risk_layout.addWidget(self.risk_progress)
+        risk_layout.addWidget(tab_data["risk_progress"])
 
         layout.addWidget(risk_group)
+
+        # 将tab_data存储到选项卡对象中
+        tab.tab_data = tab_data  # type: ignore
+
+        # 存储到monitor_data中用于更新
+        if not hasattr(self, "monitor_data"):
+            self.monitor_data = {}
+        self.monitor_data[gateway_name] = tab_data
 
         return tab
 
@@ -369,21 +458,8 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
         if self.gateway_tab:
             self.gateway_tab.currentChanged.connect(self._on_gateway_tab_changed)
 
-        # 当没有任何网关选项卡时，加入占位选项卡，避免界面空白
-        if self.gateway_tab and self.gateway_tab.count() == 0:
-            placeholder = QWidget()
-            pl = QVBoxLayout(placeholder)
-            msg = QLabel("暂无连接的网关，当前显示示例面板。")
-            msg.setStyleSheet("color:#555;")
-            pl.addWidget(msg)
-            # 简易示例占位表格
-            demo_table = QTableWidget(0, 3)
-            demo_table.setHorizontalHeaderLabels(["组合", "权重", "状态"])
-            demo_table.horizontalHeader().setSectionResizeMode(
-                QHeaderView.ResizeMode.Stretch
-            )
-            pl.addWidget(demo_table)
-            self.gateway_tab.addTab(placeholder, "示例网关")
+        # 确保至少有一个选项卡（在_ensure_monitor_content中已处理）
+        # 不需要在这里再次检查和创建
 
         # 启动更新定时器
         self.start_update_timer(2000, self._update_portfolio_data)
@@ -421,21 +497,33 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
     def start_update_timer(self, interval: int = 1000, callback=None):
         """启动更新定时器（安全守卫）"""
         if not getattr(self, "ui_ready", False):
+            self.logger.debug("界面未就绪，不启动定时器")
             return
         if callback is None:
+            self.logger.debug("无回调函数，不启动定时器")
             return
-        if getattr(self, "_update_timer", None) is None:
+
+        try:
+            # 停止旧定时器
+            self.stop_update_timer()
+
+            # 创建新定时器
             self._update_timer = QTimer(self)
             self._update_timer.timeout.connect(callback)
-        if self._update_timer:
             self._update_timer.start(int(interval) if interval else 2000)
+            self.logger.debug("定时器已启动，间隔: %sms", interval)
+        except (AttributeError, TypeError, ValueError, RuntimeError) as e:
+            self.logger.error("启动定时器失败: %s", e)
 
     def stop_update_timer(self):
         """停止更新定时器"""
         try:
             timer = getattr(self, "_update_timer", None)
-            if timer:
+            if timer and timer.isActive():
                 timer.stop()
+                self.logger.debug("定时器已停止")
+        except (AttributeError, TypeError, ValueError, RuntimeError) as e:
+            self.logger.error("停止定时器失败: %s", e)
         finally:
             self._update_timer = None
 
@@ -586,27 +674,23 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
                 self.custom_portfolio_table.setCellWidget(i, 3, operation_btn)
 
     def _update_monitor_data(self):
-        # 就绪与控件守卫
+        """更新监控数据 - 修复版，支持无网关情况"""
+        # 就绪守卫
         if not getattr(self, "ui_ready", False):
-            return
-        tab = getattr(self, "gateway_tab", None)
-        if tab is None or not hasattr(tab, "currentIndex"):
-            return
-        # 数据容错：组合数据必须为 dict/list
-        data = getattr(self, "portfolio_data", None)
-        if data is None or not isinstance(data, (dict, list)):
-            return
-        # 就绪与控件守卫
-        if not getattr(self, "ui_ready", False):
-            return
-        if not getattr(self, "gateway_tab", None):
-            return
-        if self.gateway_tab and self.gateway_tab.count() == 0:
-            return
-        if not self.vnpy_adapter:
             return
 
-        if self.gateway_tab:
+        # 控件守卫
+        if not getattr(self, "gateway_tab", None):
+            self.logger.debug("gateway_tab未初始化，跳过更新")
+            return
+
+        # 处理无网关情况：显示示例数据而不是空白
+        if not self.gateway_tab or self.gateway_tab.count() == 0:
+            self.logger.debug("无网关连接，跳过更新")
+            return
+
+        # 有网关时正常更新逻辑
+        if self.vnpy_adapter and self.gateway_tab:
             current_tab = self.gateway_tab.currentWidget()
             if current_tab:
                 # 获取当前网关名称
@@ -630,64 +714,184 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
 
                     # 更新持仓表格
                     if positions is not None:
-                        self._update_positions_table(positions)
+                        self._update_positions_table(gateway_name, positions)
 
                     # 更新账户信息
                     if account_info is not None:
-                        self._update_account_info(account_info)
+                        self._update_account_info(gateway_name, account_info)
 
                 except (AttributeError, TypeError, ValueError, RuntimeError) as e:
                     self.logger.error("更新监控数据失败: %s", e)
 
-    def _update_positions_table(self, positions):
+    def _update_positions_table(self, gateway_name, positions):
         """更新持仓表格"""
-        # 当前示例未将 position_table 绑定到具体选项卡，直接判空返回
-        if getattr(self, "position_table", None) is None:
+        if not hasattr(self, "monitor_data") or gateway_name not in self.monitor_data:
             return
-        if not positions:
+
+        tab_data = self.monitor_data[gateway_name]
+        position_table = tab_data.get("position_table")
+
+        if position_table is None or not positions:
             return
-        # 简化：仅清空并填充前几行示例
-        if self.position_table:
-            self.position_table.setRowCount(0)
+
+        # 清空并填充数据
+        try:
+            position_table.setRowCount(0)
+            # 限制显示数量，避免表格过大
             for i, pos in enumerate(positions[:10]):
-                self.position_table.insertRow(i)
-                self.position_table.setItem(
+                position_table.insertRow(i)
+                position_table.setItem(
                     i, 0, QTableWidgetItem(str(pos.get("symbol", "--")))
                 )
-                self.position_table.setItem(
+                position_table.setItem(
                     i, 1, QTableWidgetItem(str(pos.get("volume", 0)))
                 )
-                self.position_table.setItem(
-                    i, 2, QTableWidgetItem(str(pos.get("cost", 0)))
-                )
-                self.position_table.setItem(
+                position_table.setItem(i, 2, QTableWidgetItem(str(pos.get("cost", 0))))
+                position_table.setItem(
                     i, 3, QTableWidgetItem(str(pos.get("market_value", 0)))
                 )
-                self.position_table.setItem(
-                    i, 4, QTableWidgetItem(str(pos.get("pnl", 0)))
-                )
+                position_table.setItem(i, 4, QTableWidgetItem(str(pos.get("pnl", 0))))
+        except (AttributeError, TypeError, ValueError, RuntimeError) as e:
+            self.logger.error("更新持仓表格失败: %s", e)
 
-    def _update_account_info(self, account_info):
+    def _update_account_info(self, gateway_name, account_info):
         """更新账户信息"""
         if not account_info:
             return
-        # 判空守卫
-        for name in [
-            "total_pnl_label",
-            "total_return_label",
-            "max_drawdown_label",
-            "sharpe_ratio_label",
-        ]:
-            if getattr(self, name, None) is None:
-                return
-        if self.total_pnl_label:
-            self.total_pnl_label.setText(str(account_info.get("total_pnl", "--")))
-        if self.total_return_label:
-            self.total_return_label.setText(str(account_info.get("total_return", "--")))
-        if self.max_drawdown_label:
-            self.max_drawdown_label.setText(str(account_info.get("max_drawdown", "--")))
-        if self.sharpe_ratio_label:
-            self.sharpe_ratio_label.setText(str(account_info.get("sharpe_ratio", "--")))
+
+        if not hasattr(self, "monitor_data") or gateway_name not in self.monitor_data:
+            return
+
+        tab_data = self.monitor_data[gateway_name]
+
+        # 更新各个标签
+        try:
+            if tab_data.get("total_pnl_label"):
+                tab_data["total_pnl_label"].setText(
+                    str(account_info.get("total_pnl", "--"))
+                )
+            if tab_data.get("total_return_label"):
+                tab_data["total_return_label"].setText(
+                    str(account_info.get("total_return", "--"))
+                )
+            if tab_data.get("max_drawdown_label"):
+                tab_data["max_drawdown_label"].setText(
+                    str(account_info.get("max_drawdown", "--"))
+                )
+            if tab_data.get("sharpe_ratio_label"):
+                tab_data["sharpe_ratio_label"].setText(
+                    str(account_info.get("sharpe_ratio", "--"))
+                )
+        except (AttributeError, TypeError, ValueError, RuntimeError) as e:
+            self.logger.error("更新账户信息失败: %s", e)
+
+    def _show_demo_monitor_panel(self):
+        """显示示例监控面板（无网关连接时）"""
+        try:
+            # 清空所有选项卡，重新创建示例选项卡
+            if self.gateway_tab:
+                self.gateway_tab.clear()
+
+                # 创建示例网关选项卡
+                demo_tab = self._create_demo_monitor_tab()
+                self.gateway_tab.addTab(demo_tab, "示例网关")
+
+                self.logger.info("已显示示例监控面板")
+        except (AttributeError, TypeError, ValueError, RuntimeError) as e:
+            self.logger.error("显示示例监控面板失败: %s", e)
+
+    def _create_demo_monitor_tab(self):
+        """创建示例监控选项卡"""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        # 状态提示
+        status_label = QLabel("📋 当前无活跃网关连接\n以下显示的是示例数据")
+        status_label.setStyleSheet(
+            """
+            color: #666;
+            font-size: 12px;
+            padding: 10px;
+            background-color: #f5f5f5;
+            border-radius: 5px;
+        """
+        )
+        layout.addWidget(status_label)
+
+        # 业绩概览组
+        overview_group = QGroupBox("示例业绩概览")
+        overview_layout = QFormLayout(overview_group)
+
+        demo_data = {
+            "总盈亏": "+1,250.00",
+            "总收益率": "+2.5%",
+            "最大回撤": "-5.2%",
+            "夏普比率": "1.85",
+        }
+
+        for label_text, value in demo_data.items():
+            label = QLabel(value)
+            label.setStyleSheet(
+                "font-weight: bold; color: #2e7d32;"
+                if value.startswith("+")
+                else "font-weight: bold; color: #d32f2f;"
+            )
+            overview_layout.addRow(label_text + ":", label)
+
+        layout.addWidget(overview_group)
+
+        # 持仓情况组
+        position_group = QGroupBox("示例持仓情况")
+        position_layout = QVBoxLayout(position_group)
+
+        demo_positions = [
+            ("螺纹钢2501", "10手", "3,500.00", "35,250.00", "+250.00"),
+            ("沪深300股指", "5手", "4,200.00", "21,500.00", "+500.00"),
+            ("沪铜2501", "3手", "68,000.00", "206,400.00", "+1,400.00"),
+        ]
+
+        position_table = QTableWidget(len(demo_positions), 5)
+        position_table.setHorizontalHeaderLabels(
+            ["品种", "持仓", "成本", "市值", "盈亏"]
+        )
+        position_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
+
+        for i, (symbol, volume, cost, market_value, pnl) in enumerate(demo_positions):
+            position_table.setItem(i, 0, QTableWidgetItem(symbol))
+            position_table.setItem(i, 1, QTableWidgetItem(volume))
+            position_table.setItem(i, 2, QTableWidgetItem(cost))
+            position_table.setItem(i, 3, QTableWidgetItem(market_value))
+
+            pnl_item = QTableWidgetItem(pnl)
+            if pnl.startswith("+"):
+                pnl_item.setBackground(QColor("#e8f5e8"))
+            else:
+                pnl_item.setBackground(QColor("#ffebee"))
+            position_table.setItem(i, 4, pnl_item)
+
+        position_layout.addWidget(position_table)
+        layout.addWidget(position_group)
+
+        # 风险指标组
+        risk_group = QGroupBox("示例风险指标")
+        risk_layout = QVBoxLayout(risk_group)
+
+        risk_progress = QProgressBar()
+        risk_progress.setRange(0, 100)
+        risk_progress.setValue(25)  # 低风险
+        risk_layout.addWidget(QLabel("风险等级:"))
+        risk_layout.addWidget(risk_progress)
+
+        # 风险等级标签
+        risk_label = QLabel("低风险 - 系统运行正常")
+        risk_label.setStyleSheet("color: #2e7d32; font-weight: bold;")
+        risk_layout.addWidget(risk_label)
+
+        layout.addWidget(risk_group)
+
+        return tab
 
     def refresh_data(self):
         """刷新数据"""

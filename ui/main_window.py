@@ -511,11 +511,6 @@ class MainWindow(QMainWindow, LoggerMixin):
             # 组合投资界面（混合架构，双固有组件）
             try:
                 self.function_interfaces["portfolio"] = PortfolioInvestment()
-                # 实例化后确保构建UI与信号绑定（成功后再挂载到Tab）
-                if hasattr(self.function_interfaces["portfolio"], "setup_ui"):
-                    self.function_interfaces["portfolio"].setup_ui()
-                if hasattr(self.function_interfaces["portfolio"], "connect_signals"):
-                    self.function_interfaces["portfolio"].connect_signals()
                 tab_text = "📊 组合投资"
                 if self.tab_widget is not None:
                     self.tab_widget.addTab(

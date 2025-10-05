@@ -28,10 +28,10 @@ from PySide6.QtWidgets import (
 )
 
 try:
-    from backend.infrastructure.data_module_vnpy import VnPyCoreAdapter
+    from backend.core.vnpy_integration import TerminalEngine as VnPyAdapter
 except ImportError:
     # 适配器降级：导入失败时置为 None，避免 NameError
-    VnPyCoreAdapter = None
+    VnPyAdapter = None
 
 
 class StrategyCenter(QWidget):
@@ -104,8 +104,8 @@ class StrategyCenter(QWidget):
         self.vnpy_adapter = None
 
         try:
-            if VnPyCoreAdapter is not None:
-                self.vnpy_adapter = VnPyCoreAdapter()
+            if VnPyAdapter is not None:
+                self.vnpy_adapter = VnPyAdapter()
                 self.logger.info("VNPY适配器初始化完成")
             else:
                 self.logger.warning("VNPY适配器不可用，使用模拟功能")

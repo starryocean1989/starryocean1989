@@ -8,13 +8,17 @@
 import asyncio
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 # 使用绝对导入避免相对导入问题
 from backend.core.models import UnifiedMarketData
 from backend.core.performance import (
-    AsyncDataProcessor, AsyncTaskManager, Cache, DataCache,
-    get_performance_optimizer
+    AsyncDataProcessor,
+    AsyncTaskManager,
+    Cache,
+    DataCache,
+    get_performance_optimizer,
 )
 from backend.core.vnpy_integration import get_terminal_engine
 
@@ -55,13 +59,19 @@ def test_cache():
     # 测试行情数据缓存
     market_data = [
         UnifiedMarketData(
-            symbol="000001", exchange="SZSE", data_type="tick",
-            datetime=None, timestamp=0, close_price=10.0, volume=100
+            symbol="000001",
+            exchange="SZSE",
+            data_type="tick",
+            datetime=datetime.now(),
+            timestamp=0,
+            close_price=10.0,
+            volume=100,
         )
     ]
     data_cache.cache_market_data("000001", market_data)
 
     retrieved = data_cache.get_market_data("000001")
+    assert retrieved is not None, "获取数据失败，返回None"
     assert len(retrieved) == 1, f"期望1条数据，得到{len(retrieved)}条"
 
     stats = data_cache.get_stats()
@@ -122,8 +132,13 @@ def test_performance_optimizer():
 
     # 测试缓存功能
     test_data = UnifiedMarketData(
-        symbol="000002", exchange="SZSE", data_type="tick",
-        datetime=None, timestamp=0, close_price=20.0, volume=200
+        symbol="000002",
+        exchange="SZSE",
+        data_type="tick",
+        datetime=datetime.now(),
+        timestamp=0,
+        close_price=20.0,
+        volume=200,
     )
 
     optimizer.cache_data("market", "000002", [test_data])
@@ -138,16 +153,14 @@ def test_performance_optimizer():
     def cpu_intensive_task(n):
         return sum(i * i for i in range(n))
 
-    task_id = optimizer.submit_async_task(
-        "cpu_test", cpu_intensive_task, 10000
-    )
+    task_id = optimizer.submit_async_task("cpu_test", cpu_intensive_task, 10000)
     result = optimizer.get_task_result(task_id, timeout=10)
 
     assert result["success"], f"CPU密集任务失败: {result.get('error')}"
     expected = sum(i * i for i in range(10000))
-    assert result["result"] == expected, (
-        f"计算结果错误: 期望{expected}，得到{result['result']}"
-    )
+    assert (
+        result["result"] == expected
+    ), f"计算结果错误: 期望{expected}，得到{result['result']}"
 
     print("✅ 性能优化器异步任务测试通过")
 
@@ -170,8 +183,13 @@ def test_async_data_processor():
     test_data = []
     for i in range(10):
         data = UnifiedMarketData(
-            symbol=f"STOCK{i}", exchange="SZSE", data_type="tick",
-            datetime=None, timestamp=i, close_price=10.0 + i, volume=100 * i
+            symbol=f"STOCK{i}",
+            exchange="SZSE",
+            data_type="tick",
+            datetime=datetime.now(),
+            timestamp=i,
+            close_price=10.0 + i,
+            volume=100 * i,
         )
         test_data.append(data)
 
@@ -185,9 +203,9 @@ def test_async_data_processor():
 
     assert len(result) == 10, f"期望10个股票，得到{len(result)}个"
     assert "STOCK0" in result, "第一个股票数据丢失"
-    assert len(result["STOCK0"]) == 1, (
-        f"STOCK0应该有1条记录，得到{len(result['STOCK0'])}条"
-    )
+    assert (
+        len(result["STOCK0"]) == 1
+    ), f"STOCK0应该有1条记录，得到{len(result['STOCK0'])}条"
 
     print("✅ 异步数据处理器测试通过")
 
@@ -205,7 +223,7 @@ def main():
         test_cache,
         test_async_task_manager,
         test_performance_optimizer,
-        test_async_data_processor
+        test_async_data_processor,
     ]
 
     results = []

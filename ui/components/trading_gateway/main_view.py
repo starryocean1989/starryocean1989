@@ -97,7 +97,10 @@ class TradingGateway(BaseWidget, LoggerMixin):
         self.stop_all_btn = None
         self.template_combo = None
         self.monitor_table = None
+        
+        # Initialize VNPY adapter first
         self.vnpy_adapter = None
+        self._initialize_vnpy_adapter()
 
     def setup_ui(self):
         """设置用户界面."""
