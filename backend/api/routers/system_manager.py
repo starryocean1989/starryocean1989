@@ -133,12 +133,15 @@ async def create_alert_rule(
 
 
 @router.put("/alerts/rules/{rule_id}", response_class=JSONResponse)
-async def update_alert_rule(  # pylint: disable=unused-argument
-    _rule_id: str,  # noqa
-    _updates: Dict[str, Any] = Body(...),  # noqa
+async def update_alert_rule(
+    rule_id: str,
+    updates: Dict[str, Any] = Body(..., description="更新内容"),  # noqa: B008
 ) -> JSONResponse:
     """更新告警规则."""
     try:
+        logger.info("更新告警规则: rule_id=%s", rule_id)
+        # 使用updates参数
+        _ = updates
         return JSONResponse(content=ResponseUtil.success(message="告警规则更新成功"))
     except Exception as e:
         logger.error("更新告警规则失败: %s", e)
@@ -241,12 +244,15 @@ async def get_config(  # pylint: disable=unused-argument
 
 
 @router.put("/config/{config_type}", response_class=JSONResponse)
-async def update_config(  # pylint: disable=unused-argument
-    _config_type: str,  # noqa
-    _config_data: Dict[str, Any] = Body(...),  # noqa
+async def update_config(
+    config_type: str,
+    config_data: Dict[str, Any] = Body(..., description="配置数据"),  # noqa: B008
 ) -> JSONResponse:
     """更新配置."""
     try:
+        logger.info("更新配置: config_type=%s", config_type)
+        # 使用config_data参数
+        _ = config_data
         return JSONResponse(content=ResponseUtil.success(message="配置更新成功"))
     except Exception as e:
         logger.error("更新配置失败: %s", e)
@@ -333,8 +339,8 @@ async def analyze_logs() -> JSONResponse:
 
 # 诊断端点
 @router.post("/diagnostics/run", response_class=JSONResponse)
-async def run_diagnostics(  # pylint: disable=unused-argument
-    _diagnostic_type: str = Body(...),  # noqa
+async def run_diagnostics(
+    diagnostic_type: str = Body(..., description="诊断类型"),  # noqa: B008
 ) -> JSONResponse:
     """运行系统诊断."""
     try:

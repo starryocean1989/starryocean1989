@@ -6,7 +6,7 @@
 """
 
 import logging
-from typing import Dict, Any, Optional, List
+from typing import Any, Dict, List, Optional
 from datetime import datetime
 import asyncio
 
@@ -38,11 +38,6 @@ class BacktestService:
 
             # 提取回测参数
             strategy_type = parameters.get("strategy_type", "ctastrategy")
-            symbol = parameters.get("symbol", "")
-            exchange = parameters.get("exchange", "")
-            start_date = parameters.get("start_date")
-            end_date = parameters.get("end_date")
-            capital = parameters.get("capital", 1000000.0)
 
             # 创建回测任务
             task_info = {
@@ -80,24 +75,55 @@ class BacktestService:
 
             strategy_type = parameters.get("strategy_type", "ctastrategy")
 
-            # 模拟回测执行
-            # TODO: 集成实际的VnPy回测引擎
-            logger.info("开始执行回测: task_id=%s", task_id)
+            # 集成VnPy回测引擎
+            logger.info(
+                "开始执行回测: task_id=%s, strategy_type=%s", task_id, strategy_type
+            )
 
-            # 模拟进度更新
-            for progress in [20, 40, 60, 80, 100]:
-                await asyncio.sleep(1)
-                task["progress"] = progress
-                logger.info(
-                    "回测进度更新: task_id=%s, progress=%d%%", task_id, progress
-                )
+            # 创建回测引擎
+            from backend.services.strategy_center.backtest_engines import (
+                BacktestEngineFactory,
+            )
+
+            engine = BacktestEngineFactory.create_engine(strategy_type)
+            if not engine:
+                raise ValueError(f"不支持的策略类型: {strategy_type}")
+
+            # 初始化引擎
+            task["progress"] = 10
+            logger.info("初始化回测引擎: task_id=%s", task_id)
+            if not engine.initialize(parameters):
+                raise RuntimeError("回测引擎初始化失败")
+
+            # 执行回测
+            task["progress"] = 30
+            logger.info("执行回测计算: task_id=%s", task_id)
+            await asyncio.sleep(0.5)  # 模拟计算时间
+
+            backtest_result = engine.run_backtest()
+
+            # 获取结果
+            task["progress"] = 80
+            logger.info("收集回测结果: task_id=%s", task_id)
+            await asyncio.sleep(0.5)
+
+            results = engine.get_results()
+
+            # 保存结果
+            task["progress"] = 90
+            task["results"] = results
+            task["backtest_info"] = backtest_result
 
             # 完成回测
             task["status"] = "completed"
             task["progress"] = 100.0
             task["end_time"] = datetime.now().isoformat()
 
-            logger.info("回测任务完成: task_id=%s", task_id)
+            logger.info(
+                "回测任务完成: task_id=%s, 总收益率=%.2f%%",
+                task_id,
+                results.get("total_return", 0) * 100,
+            )
 
         except Exception as e:
             logger.error("执行回测失败: task_id=%s, error=%s", task_id, e)

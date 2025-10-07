@@ -10,7 +10,12 @@ import json
 import logging
 from typing import Any, Dict, Optional
 from pathlib import Path
-from pydantic import BaseSettings, Field
+
+try:
+    from pydantic_settings import BaseSettings
+    from pydantic import Field
+except ImportError:
+    from pydantic import BaseSettings, Field
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +138,35 @@ class LoggingConfig(BaseSettings):
         env_prefix = "LOG_"
 
 
+class AIConfig(BaseSettings):
+    """AI助手配置."""
+
+    # DeepSeek API配置
+    provider: str = Field(default="deepseek", env="AI_PROVIDER")
+    api_key: Optional[str] = Field(default=None, env="AI_API_KEY")
+    api_url: str = Field(
+        default="https://api.deepseek.com/v1/chat/completions", env="AI_API_URL"
+    )
+    model: str = Field(default="deepseek-chat", env="AI_MODEL")
+
+    # 请求配置
+    max_tokens: int = Field(default=2000, env="AI_MAX_TOKENS")
+    temperature: float = Field(default=0.7, env="AI_TEMPERATURE")
+    timeout: int = Field(default=30, env="AI_TIMEOUT")
+
+    # 对话配置
+    max_history: int = Field(default=10, env="AI_MAX_HISTORY")
+    system_prompt: str = Field(
+        default="你是一个专业的量化交易策略编写助手，擅长Python和VnPy框架。",
+        env="AI_SYSTEM_PROMPT",
+    )
+
+    class Config:
+        """配置类."""
+
+        env_prefix = "AI_"
+
+
 class Settings:
     """统一配置管理类."""
 
@@ -146,6 +180,7 @@ class Settings:
         self.websocket = WebSocketConfig()
         self.api = APIConfig()
         self.logging = LoggingConfig()
+        self.ai = AIConfig()
 
         # 加载配置文件
         if config_file and Path(config_file).exists():
@@ -182,6 +217,7 @@ class Settings:
                 "websocket": self.websocket.dict(),
                 "api": self.api.dict(),
                 "logging": self.logging.dict(),
+                "ai": self.ai.dict(),
             }
 
             # 确保目录存在
@@ -229,6 +265,7 @@ class Settings:
             "websocket": self.websocket.dict(),
             "api": self.api.dict(),
             "logging": self.logging.dict(),
+            "ai": self.ai.dict(),
         }
 
 
@@ -260,6 +297,7 @@ __all__ = [
     "WebSocketConfig",
     "APIConfig",
     "LoggingConfig",
+    "AIConfig",
     "Settings",
     "get_settings",
     "init_settings",

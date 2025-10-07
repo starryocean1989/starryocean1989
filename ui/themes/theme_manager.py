@@ -77,7 +77,7 @@ class ThemeManager:
                         qss_content = f.read()
                     app.setStyleSheet(qss_content)
                     self._logger.info("成功加载QSS样式表: %s", qss_path)
-                except Exception as e:
+                except (OSError, UnicodeDecodeError) as e:
                     self._logger.warning("加载QSS失败，使用默认样式: %s", e)
 
             self._logger.info("主题应用成功")
@@ -381,3 +381,96 @@ class ThemeManager:
         """重新加载主题."""
         self._load_themes()
         self._logger.info("主题重新加载完成")
+
+    def switch_theme(self, theme_name: str, app: "QApplication") -> bool:
+        """
+        切换主题
+
+        Args:
+            theme_name: 主题名称（"dark"或"light"）
+            app: QApplication实例
+
+        Returns:
+            bool: 是否成功
+        """
+        try:
+            # 加载对应主题文件
+            theme_files = {
+                "dark": Path(__file__).parent / "dark_theme.json",
+                "light": Path(__file__).parent / "light_theme.json",
+            }
+
+            qss_files = {
+                "dark": Path(__file__).parent / "modern_dark_style.qss",
+                "light": Path(__file__).parent / "modern_light_style.qss",
+            }
+
+            theme_file = theme_files.get(theme_name)
+            qss_file = qss_files.get(theme_name)
+
+            if not theme_file or not theme_file.exists():
+                self._logger.error("主题文件不存在: %s", theme_name)
+                return False
+
+            # 加载主题配置
+            with open(theme_file, "r", encoding="utf-8") as f:
+                self.themes = json.load(f)
+
+            self.current_theme = theme_name
+
+            # 应用QSS样式
+            if qss_file and qss_file.exists():
+                with open(qss_file, "r", encoding="utf-8") as f:
+                    qss_content = f.read()
+                app.setStyleSheet(qss_content)
+                self._logger.info("成功切换到%s主题", theme_name)
+            else:
+                # 回退到调色板方式
+                self._set_dark_palette(app, self.themes)
+                self._logger.warning(
+                    "QSS文件不存在，使用调色板方式应用%s主题", theme_name
+                )
+
+            # 保存主题选择
+            self._save_theme_preference(theme_name)
+
+            return True
+
+        except (OSError, json.JSONDecodeError) as e:
+            self._logger.error("切换主题失败: %s", e)
+            return False
+
+    def _save_theme_preference(self, theme_name: str) -> None:
+        """保存主题偏好设置"""
+        try:
+            pref_file = Path(__file__).parent / "theme_preference.json"
+            with open(pref_file, "w", encoding="utf-8") as f:
+                json.dump({"theme": theme_name}, f)
+            self._logger.info("保存主题偏好: %s", theme_name)
+        except (OSError, TypeError) as e:
+            self._logger.error("保存主题偏好失败: %s", e)
+
+    def load_theme_preference(self) -> str:
+        """加载主题偏好设置"""
+        try:
+            pref_file = Path(__file__).parent / "theme_preference.json"
+            if pref_file.exists():
+                with open(pref_file, "r", encoding="utf-8") as f:
+                    pref = json.load(f)
+                    theme = pref.get("theme", "dark")
+                    self._logger.info("加载主题偏好: %s", theme)
+                    return theme
+        except (OSError, json.JSONDecodeError) as e:
+            self._logger.error("加载主题偏好失败: %s", e)
+        return "dark"
+
+    def get_available_themes(self) -> list:
+        """获取可用主题列表"""
+        themes = []
+        theme_dir = Path(__file__).parent
+
+        for theme_file in theme_dir.glob("*_theme.json"):
+            theme_name = theme_file.stem.replace("_theme", "")
+            themes.append(theme_name)
+
+        return themes

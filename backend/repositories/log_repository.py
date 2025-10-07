@@ -24,7 +24,7 @@ class LogRepository(InMemoryRepository[dict]):
         logger.info("日志Repository初始化完成")
 
     async def save_log(self, log_data: dict) -> bool:
-        """保存日志."""
+        """保存日志（同时保存到内存和数据库）."""
         try:
             # 为日志分配唯一ID
             self._log_counter += 1
@@ -43,11 +43,44 @@ class LogRepository(InMemoryRepository[dict]):
             # 保存到内存存储
             self._data[log_id] = log_entry
 
+            # 同时保存到数据库
+            await self._save_to_database(log_entry)
+
             logger.debug("保存日志成功: %s", log_id)
             return True
 
         except Exception as e:
             logger.error("保存日志失败: %s", e)
+            return False
+
+    async def _save_to_database(self, log_entry: dict) -> bool:
+        """保存日志到数据库."""
+        try:
+            from backend.core.database import get_db_manager
+            import json
+
+            db = get_db_manager()
+            query = """
+                INSERT INTO system_logs (timestamp, level, module, message, extra)
+                VALUES (?, ?, ?, ?, ?)
+            """
+            params = (
+                log_entry.get("timestamp", datetime.now().isoformat()),
+                log_entry.get("level", "INFO"),
+                log_entry.get("module", ""),
+                log_entry.get("message", ""),
+                json.dumps(
+                    {
+                        k: v
+                        for k, v in log_entry.items()
+                        if k not in ["timestamp", "level", "module", "message", "id"]
+                    }
+                ),
+            )
+            db.execute_update(query, params)
+            return True
+        except Exception as e:
+            logger.error(f"保存日志到数据库失败: {e}")
             return False
 
     async def query_logs(

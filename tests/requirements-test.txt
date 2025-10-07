@@ -1,0 +1,26 @@
+# -*- coding: utf-8 -*-
+# UI交互功能回路测试依赖
+
+# 核心测试框架
+pytest>=7.4.0
+pytest-qt>=4.2.0
+pytest-asyncio>=0.21.0
+pytest-timeout>=2.1.0
+pytest-xdist>=3.3.0
+
+# HTML测试报告
+pytest-html>=3.2.0
+pytest-cov>=4.1.0
+
+# Mock和stub
+pytest-mock>=3.11.0
+
+# WebSocket测试
+websocket-client>=1.6.0
+
+# UI测试辅助
+pytestqt>=4.2.0
+
+# 日志和调试
+pytest-logger>=0.5.1
+

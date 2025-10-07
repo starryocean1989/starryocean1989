@@ -1,0 +1,39 @@
+{
+    "name": "Modern Light",
+    "type": "light",
+    "colors": {
+        "primary": "#2196F3",
+        "secondary": "#FFC107",
+        "success": "#4CAF50",
+        "danger": "#F44336",
+        "warning": "#FF9800",
+        "info": "#00BCD4",
+        "background": "#FAFAFA",
+        "surface": "#FFFFFF",
+        "text_primary": "#212121",
+        "text_secondary": "#757575",
+        "border": "#E0E0E0",
+        "hover": "#F5F5F5",
+        "selected": "#E3F2FD",
+        "disabled": "#BDBDBD"
+    },
+    "fonts": {
+        "family": "Microsoft YaHei, SimHei, Arial",
+        "size": {
+            "normal": 10,
+            "large": 12,
+            "title": 14
+        }
+    },
+    "spacing": {
+        "small": 4,
+        "medium": 8,
+        "large": 16
+    },
+    "border_radius": {
+        "small": 3,
+        "medium": 5,
+        "large": 8
+    }
+}
+

@@ -23,27 +23,58 @@ class ConfigRepository(BaseRepository):
 
     async def get_config(self, config_key: str) -> Optional[dict]:
         """获取配置."""
-        # TODO: 实现数据库查询逻辑
-        _ = config_key  # noqa: F841
-        return None
+        from backend.core.database import get_db_manager
+
+        db = get_db_manager()
+        query = "SELECT * FROM system_config WHERE key = ?"
+        results = db.execute_query(query, (config_key,))
+        return results[0] if results else None
 
     async def set_config(self, config_key: str, config_data: dict) -> bool:
         """设置配置."""
-        # TODO: 实现数据库保存逻辑
-        _ = (config_key, config_data)  # noqa: F841
+        from backend.core.database import get_db_manager
+        from datetime import datetime
+
+        db = get_db_manager()
+        query = """
+            INSERT OR REPLACE INTO system_config (key, value, type, description, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+        """
+        params = (
+            config_key,
+            config_data["value"],
+            config_data.get("type", "string"),
+            config_data.get("description", ""),
+            datetime.now().isoformat(),
+        )
+        db.execute_update(query, params)
+        logger.info(f"设置配置: {config_key}")
         return True
 
     async def list_configs(self, config_type: Optional[str] = None) -> List[dict]:
         """列出配置."""
-        # TODO: 实现数据库列表查询逻辑
-        _ = config_type  # noqa: F841
-        return []
+        from backend.core.database import get_db_manager
+
+        db = get_db_manager()
+        if config_type:
+            query = "SELECT * FROM system_config WHERE type = ? ORDER BY key"
+            results = db.execute_query(query, (config_type,))
+        else:
+            query = "SELECT * FROM system_config ORDER BY key"
+            results = db.execute_query(query)
+        return results
 
     async def delete_config(self, config_key: str) -> bool:
         """删除配置."""
-        # TODO: 实现数据库删除逻辑
-        _ = config_key  # noqa: F841
-        return True
+        from backend.core.database import get_db_manager
+
+        db = get_db_manager()
+        query = "DELETE FROM system_config WHERE key = ?"
+        rowcount = db.execute_update(query, (config_key,))
+        if rowcount > 0:
+            logger.info(f"删除配置: {config_key}")
+            return True
+        return False
 
 
 __all__ = ["ConfigRepository"]

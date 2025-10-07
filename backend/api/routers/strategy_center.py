@@ -150,7 +150,7 @@ async def get_file_content(file_id: str) -> JSONResponse:
 @router.put("/files/{file_id}", response_class=JSONResponse)
 async def update_file_content(
     file_id: str,
-    _content: str = Body(..., description="文件内容"),  # noqa: B008, U101
+    content: str = Body(..., description="文件内容"),  # noqa: B008
 ) -> JSONResponse:
     """更新文件内容."""
     try:
@@ -239,12 +239,12 @@ async def move_file(
 
 @router.post("/code/validate", response_class=JSONResponse)
 async def validate_code(
-    _code: str = Body(..., description="代码内容"),  # noqa: B008, U101
+    code: str = Body(..., description="代码内容"),  # noqa: B008
     file_type: str = Body("python", description="文件类型"),  # noqa: B008
 ) -> JSONResponse:
     """验证代码语法."""
     try:
-        logger.info("验证代码请求: file_type=%s", file_type)
+        logger.info("验证代码请求: file_type=%s, code_length=%d", file_type, len(code))
 
         # TODO: 实现代码验证逻辑
         validation_result = {
@@ -268,7 +268,7 @@ async def validate_code(
 
 @router.post("/code/analyze", response_class=JSONResponse)
 async def analyze_code(
-    _code: str = Body(..., description="代码内容"),  # noqa: B008, U101
+    code: str = Body(..., description="代码内容"),  # noqa: B008
 ) -> JSONResponse:
     """分析代码结构."""
     try:
@@ -303,10 +303,8 @@ async def analyze_code(
 
 @router.post("/ai/chat", response_class=JSONResponse)
 async def ai_chat(
-    _message: str = Body(..., description="用户消息"),  # noqa: B008, U101
-    _context: Optional[Dict[str, Any]] = Body(  # noqa: B008, U101, E501
-        None, description="上下文"
-    ),
+    message: str = Body(..., description="用户消息"),  # noqa: B008
+    context: Optional[Dict[str, Any]] = Body(None, description="上下文"),  # noqa: B008
 ) -> JSONResponse:
     """AI助手对话 (预留接口)."""
     try:
@@ -571,9 +569,7 @@ async def apply_template(
     template_id: str = Body(..., description="模板ID"),  # noqa: B008
     file_name: str = Body(..., description="文件名"),  # noqa: B008
     folder_path: str = Body(..., description="文件夹路径"),  # noqa: B008
-    _parameters: Optional[Dict[str, Any]] = Body(  # noqa: B008, U101
-        None, description="参数"
-    ),
+    parameters: Optional[Dict[str, Any]] = Body(None, description="参数"),  # noqa: B008
 ) -> JSONResponse:
     """应用模板创建新文件."""
     try:
