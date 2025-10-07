@@ -23,9 +23,7 @@ class SinaDataAdapter(BaseDataAdapter):
     继承自BaseDataAdapter,提供新浪财经数据的获取功能.
     """
 
-    def __init__(
-        self, config: Dict[str, Union[str, int, float, bool]]
-    ) -> None:
+    def __init__(self, config: Dict[str, Union[str, int, float, bool]]) -> None:
         """
         初始化新浪财经适配器.
 
@@ -134,7 +132,7 @@ class SinaDataAdapter(BaseDataAdapter):
             Optional[Dict[str, Union[str, int, float, bool]]]: 市场数据字典
         """
         try:
-            if not self._check_connection():
+            if not self._check_connection() or self._session is None:
                 return None
 
             formatted_symbol = self._format_symbol(symbol)
@@ -182,13 +180,9 @@ class SinaDataAdapter(BaseDataAdapter):
                             "name": fields[0],
                             "price": float(fields[3]) if fields[3] else 0.0,
                             "change": float(fields[4]) if fields[4] else 0.0,
-                            "change_percent": (
-                                float(fields[5]) if fields[5] else 0.0
-                            ),
+                            "change_percent": (float(fields[5]) if fields[5] else 0.0),
                             "volume": (
-                                int(fields[8])
-                                if len(fields) > 8 and fields[8]
-                                else 0
+                                int(fields[8]) if len(fields) > 8 and fields[8] else 0
                             ),
                             "amount": (
                                 float(fields[9])

@@ -10,13 +10,14 @@
 基于pytdx.reader.BlockReader扩展，支持完整GBK编码解析。
 """
 
-import struct
-import pandas as pd
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple
-from collections import OrderedDict
+from typing import Dict, List, Optional
 
-from pytdx.reader.block_reader import BlockReader, BlockReader_TYPE_FLAT, BlockReader_TYPE_GROUP
+import pandas as pd  # noqa: TC002
+from pytdx.reader.block_reader import (
+    BlockReader,
+    BlockReader_TYPE_FLAT,
+)
 
 
 class BlockParser:
@@ -71,7 +72,7 @@ class BlockParser:
             df = reader.get_df(str(self.block_file_path), BlockReader_TYPE_FLAT)
             return df
         except Exception as e:
-            raise Exception(f"解析spblock.dat文件失败: {e}")
+            raise RuntimeError(f"解析spblock.dat文件失败: {e}") from e
 
     def get_target_blocks(self) -> Dict[str, List[str]]:
         """
@@ -82,18 +83,14 @@ class BlockParser:
         """
         df = self.parse_block_file()
 
-        target_blocks = {
-            "融资融券": [],
-            "T+0基金": [],
-            "含可转债": []
-        }
+        target_blocks = {"融资融券": [], "T+0基金": [], "含可转债": []}
 
         for _, row in df.iterrows():
-            block_name = row['blockname']
-            code = row['code']
+            block_name = str(row["blockname"])
+            code = str(row["code"])
 
             # 融资融券板块：提取9开头的品种（北证A股）
-            if "融资融券" in block_name and code.startswith('9'):
+            if "融资融券" in block_name and code.startswith("9"):
                 target_blocks["融资融券"].append(code)
 
             # T+0基金板块
@@ -165,7 +162,7 @@ class BlockParser:
         Returns:
             文件信息字典
         """
-        if not self.is_available():
+        if not self.is_available() or self.block_file_path is None:
             return {"status": "不可用", "path": ""}
 
         file_path = str(self.block_file_path)
@@ -174,7 +171,7 @@ class BlockParser:
         return {
             "status": "可用",
             "path": file_path,
-            "size": f"{file_size / 1024:.2f} KB"
+            "size": f"{file_size / 1024:.2f} KB",
         }
 
 
@@ -211,8 +208,8 @@ class CustomBlockParser:
             result[keyword] = []
 
             for _, row in df.iterrows():
-                block_name = row['blockname']
-                code = row['code']
+                block_name = str(row["blockname"])
+                code = str(row["code"])
 
                 if keyword in block_name:
                     result[keyword].append(code)
@@ -235,24 +232,25 @@ class CustomBlockParser:
         df = self.parser.parse_block_file()
         stocks = []
 
-        for _, row in df.iterrows():
-            code = row['code']
+        # 将模式映射为前缀
+        pattern_map = {
+            "9*": "9",
+            "688*": "688",
+            "60*": "60",
+            "000*": "000",
+            "001*": "001",
+            "002*": "002",
+            "300*": "300",
+            "301*": "301",
+        }
 
-            if pattern == "9*" and code.startswith('9'):
-                stocks.append(code)
-            elif pattern == "688*" and code.startswith('688'):
-                stocks.append(code)
-            elif pattern == "60*" and code.startswith('60'):
-                stocks.append(code)
-            elif pattern == "000*" and code.startswith('000'):
-                stocks.append(code)
-            elif pattern == "001*" and code.startswith('001'):
-                stocks.append(code)
-            elif pattern == "002*" and code.startswith('002'):
-                stocks.append(code)
-            elif pattern == "300*" and code.startswith('300'):
-                stocks.append(code)
-            elif pattern == "301*" and code.startswith('301'):
+        prefix = pattern_map.get(pattern)
+        if prefix is None:
+            return []
+
+        for _, row in df.iterrows():
+            code = str(row["code"])
+            if code.startswith(prefix):
                 stocks.append(code)
 
         return list(set(stocks))  # 去重

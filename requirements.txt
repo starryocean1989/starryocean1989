@@ -8,6 +8,7 @@ seaborn>=0.11.0
 
 # 系统监控
 psutil>=5.8.0
+watchdog>=2.1.0
 
 # GUI框架
 PySide6>=6.2.0

@@ -191,20 +191,8 @@ except ImportError:
     RQDATA_DATAFEED_AVAILABLE = False
     RqdataDatafeed = None  # pylint: disable=invalid-name
 
-# 本地数据模块
-try:
-    from ..infrastructure.data_module_vnpy.data_manager import DataManager
-    from ..infrastructure.data_module_vnpy.data_api import DataAPI
-    from ..infrastructure.data_module_vnpy.integration_manager import (
-        VnPyIntegrationManager as IntegrationManager,
-    )
-
-    DATA_MODULE_AVAILABLE = True
-except ImportError:
-    DATA_MODULE_AVAILABLE = False
-    DataManager = None
-    DataAPI = None
-    IntegrationManager = None
+# 本地数据模块 - 目前暂无可用的数据模块类
+DATA_MODULE_AVAILABLE = False
 
 # 系统模块
 try:
@@ -553,9 +541,6 @@ __all__ = [
     "TushareDatafeed",
     "RqdataDatafeed",
     # 本地模块
-    "DataManager",
-    "DataAPI",
-    "IntegrationManager",
     "SystemMonitor",
     "ProcessManager",
     "CacheManager",

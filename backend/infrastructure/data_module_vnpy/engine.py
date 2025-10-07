@@ -12,13 +12,11 @@ ChinaStockEngine继承vnpy的BaseEngine，集成所有功能模块：
 """
 
 import logging
-from datetime import datetime, date
-from pathlib import Path
-from typing import List, Dict, Optional, Union, Any
+from datetime import date, datetime
+from typing import Any, Dict, List, Optional, Union
 
+from vnpy.event import Event, EventEngine
 from vnpy.trader.engine import BaseEngine, MainEngine
-from vnpy.event import EventEngine, Event
-from vnpy.trader.constant import Interval, Exchange
 
 from .config import config_manager
 from .stock_fetcher import StockFetcher
@@ -91,7 +89,8 @@ class ChinaStockEngine(BaseEngine):
             result = self.stock_fetcher.get_all_market_stocks()
 
             # 推送日志事件
-            self._push_log_event(f"成功读取本地品种缓存: {sum(len(stocks) for stocks in result.values())} 个品种")
+            total_stocks = sum(len(stocks) for stocks in result.values())
+            self._push_log_event(f"成功读取本地品种缓存: {total_stocks} 个品种")
 
             return result
 
@@ -117,7 +116,7 @@ class ChinaStockEngine(BaseEngine):
                 return False
 
             # 缓存品种列表
-            cache_file = self.stock_fetcher.cache_stock_list(stocks_df)
+            self.stock_fetcher.cache_stock_list(stocks_df)
 
             # 推送下载事件
             self._push_download_event("stock_list", "success", len(stocks_df))
@@ -131,7 +130,7 @@ class ChinaStockEngine(BaseEngine):
             self._push_log_event(f"更新品种列表失败: {e}", "ERROR")
             return False
 
-    def download_full(self, market_types: List[str] = None) -> bool:
+    def download_full(self, market_types: Optional[List[str]] = None) -> bool:
         """
         全量下载K线数据
 
@@ -163,7 +162,7 @@ class ChinaStockEngine(BaseEngine):
             # 保存数据
             saved_count = 0
             for key, data in download_results.items():
-                symbol, interval = key.split('_', 1)
+                symbol, interval = key.split("_", 1)
                 file_path = self.storage_manager.save_kline(symbol, interval, data)
                 if file_path:
                     saved_count += 1
@@ -180,8 +179,9 @@ class ChinaStockEngine(BaseEngine):
             self._push_log_event(f"全量下载失败: {e}", "ERROR")
             return False
 
-    def download_incremental(self, start_date: Union[str, date],
-                           market_types: List[str] = None) -> bool:
+    def download_incremental(
+        self, start_date: Union[str, date], market_types: Optional[List[str]] = None
+    ) -> bool:
         """
         增量下载K线数据
 
@@ -209,12 +209,14 @@ class ChinaStockEngine(BaseEngine):
                 return False
 
             # 下载增量K线数据
-            download_results = self.stock_fetcher.download_incremental_kline(all_stocks, start_date)
+            download_results = self.stock_fetcher.download_incremental_kline(
+                all_stocks, start_date
+            )
 
             # 合并并保存数据
             saved_count = 0
             for key, data in download_results.items():
-                symbol, interval = key.split('_', 1)
+                symbol, interval = key.split("_", 1)
                 success = self.storage_manager.merge_data(symbol, interval, data)
                 if success:
                     saved_count += 1
@@ -231,9 +233,13 @@ class ChinaStockEngine(BaseEngine):
             self._push_log_event(f"增量下载失败: {e}", "ERROR")
             return False
 
-    def query_data(self, symbol: str, interval: str,
-                  start_date: Optional[Union[str, date]] = None,
-                  end_date: Optional[Union[str, date]] = None) -> Optional[Any]:
+    def query_data(
+        self,
+        symbol: str,
+        interval: str,
+        start_date: Optional[Union[str, date]] = None,
+        end_date: Optional[Union[str, date]] = None,
+    ) -> Optional[Any]:
         """
         查询数据
 
@@ -247,10 +253,14 @@ class ChinaStockEngine(BaseEngine):
             查询结果
         """
         try:
-            data = self.storage_manager.query_kline(symbol, interval, start_date, end_date)
+            data = self.storage_manager.query_kline(
+                symbol, interval, start_date, end_date
+            )
 
             if data is not None:
-                self.logger.info(f"查询数据成功: {symbol} {interval}, {len(data)} 条记录")
+                self.logger.info(
+                    f"查询数据成功: {symbol} {interval}, {len(data)} 条记录"
+                )
             else:
                 self.logger.warning(f"未找到数据: {symbol} {interval}")
 
@@ -260,7 +270,9 @@ class ChinaStockEngine(BaseEngine):
             self.logger.error(f"查询数据失败: {symbol} {interval}, {e}")
             return None
 
-    def get_validation_result(self, force_refresh: bool = False) -> Optional[ValidationSummary]:
+    def get_validation_result(
+        self, force_refresh: bool = False
+    ) -> Optional[ValidationSummary]:
         """
         获取数据感知结果
 
@@ -281,7 +293,10 @@ class ChinaStockEngine(BaseEngine):
             if summary:
                 # 推送校验事件
                 self._push_validation_event(summary)
-                self.logger.info(f"数据校验完成: {summary.valid_symbols}/{summary.total_symbols} 有效")
+                self.logger.info(
+                    f"数据校验完成: "
+                    f"{summary.valid_symbols}/{summary.total_symbols} 有效"
+                )
 
             return summary
 
@@ -385,7 +400,7 @@ class ChinaStockEngine(BaseEngine):
                 "message": message,
                 "level": level,
                 "timestamp": datetime.now(),
-                "engine": APP_NAME
+                "engine": APP_NAME,
             }
 
             event = Event(EVENT_CHINASTOCK_LOG, event_data)
@@ -410,10 +425,10 @@ class ChinaStockEngine(BaseEngine):
                     "total_errors": summary.total_errors,
                     "total_warnings": summary.total_warnings,
                     "check_time": summary.check_time.isoformat(),
-                    "base_date": summary.base_date.isoformat()
+                    "base_date": summary.base_date.isoformat(),
                 },
                 "timestamp": datetime.now(),
-                "engine": APP_NAME
+                "engine": APP_NAME,
             }
 
             event = Event(EVENT_CHINASTOCK_VALIDATION, event_data)
@@ -422,8 +437,9 @@ class ChinaStockEngine(BaseEngine):
         except Exception as e:
             self.logger.error(f"推送校验事件失败: {e}")
 
-    def _push_download_event(self, download_type: str, status: str,
-                           count: int, error: str = None) -> None:
+    def _push_download_event(
+        self, download_type: str, status: str, count: int, error: Optional[str] = None
+    ) -> None:
         """
         推送下载事件
 
@@ -440,7 +456,7 @@ class ChinaStockEngine(BaseEngine):
                 "count": count,
                 "error": error,
                 "timestamp": datetime.now(),
-                "engine": APP_NAME
+                "engine": APP_NAME,
             }
 
             event = Event(EVENT_CHINASTOCK_DOWNLOAD, event_data)

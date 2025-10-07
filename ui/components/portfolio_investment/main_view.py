@@ -37,16 +37,16 @@ except ImportError:
 if TYPE_CHECKING:
     # For type checking, use the actual imported classes
     from ..widgets.base_widget import BaseWidget  # type: ignore
-    from ...utils.logging_utils import LoggerMixin  # type: ignore
+    from backend.core.utils.logging_utils import LoggerMixin  # type: ignore
 else:
     # Runtime imports with fallback
     try:
         from ..widgets.base_widget import BaseWidget  # type: ignore
-        from ...utils.logging_utils import LoggerMixin  # type: ignore
+        from backend.core.utils.logging_utils import LoggerMixin  # type: ignore
     except ImportError:
         try:
             from ui.widgets.base_widget import BaseWidget  # type: ignore
-            from utils.logging_utils import LoggerMixin  # type: ignore
+            from backend.core.utils.logging_utils import LoggerMixin  # type: ignore
         except ImportError:
             # Create fallback implementations
             class BaseWidget(QWidget):
@@ -234,10 +234,84 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
 
         # 创建网关选项卡 - 使用保证成功的方法
         self.gateway_tab = QTabWidget()
+        self.gateway_tab.setTabsClosable(True)  # 允许关闭Tab
+        self.gateway_tab.setMovable(True)  # 允许拖动Tab
+        self.gateway_tab.tabCloseRequested.connect(self._on_tab_close_requested)
         self._ensure_monitor_content()
 
         layout.addWidget(self.gateway_tab)
         return widget
+
+    def _create_metric_card(self, title: str, value: str, color: str):
+        """创建指标卡片."""
+        card = QGroupBox()
+        card.setStyleSheet(
+            f"""
+            QGroupBox {{
+                border: 2px solid {color};
+                border-radius: 8px;
+                padding: 15px;
+                background-color: #2A2A2A;
+            }}
+        """
+        )
+
+        card_layout = QVBoxLayout(card)
+
+        title_label = QLabel(title)
+        title_label.setStyleSheet("font-size: 12px; color: #888;")
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card_layout.addWidget(title_label)
+
+        value_label = QLabel(value)
+        value_label.setStyleSheet(
+            f"font-size: 20px; font-weight: bold; color: {color};"
+        )
+        value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card_layout.addWidget(value_label)
+
+        return card
+
+    def _on_tab_close_requested(self, index: int):
+        """处理Tab关闭请求."""
+        if not self.gateway_tab:
+            return
+
+        # 获取要关闭的Tab名称
+        tab_name = self.gateway_tab.tabText(index)
+
+        from PySide6.QtWidgets import QMessageBox
+
+        reply = QMessageBox.question(
+            self,
+            "确认关闭",
+            f"确定要关闭监控 '{tab_name}' 吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            self.gateway_tab.removeTab(index)
+            self.show_info(f"已关闭监控: {tab_name}")
+
+    def _refresh_monitor_data(self, gateway_name: str):
+        """刷新监控数据."""
+        self.show_info(f"刷新监控数据: {gateway_name}")
+        # 这里可以调用后端API刷新数据
+
+    def _export_monitor_report(self, gateway_name: str):
+        """导出监控报告."""
+        from PySide6.QtWidgets import QFileDialog
+
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出监控报告",
+            f"{gateway_name}_监控报告.html",
+            "HTML Files (*.html);;PDF Files (*.pdf);;All Files (*)",
+        )
+
+        if filename:
+            self.show_info(f"导出报告到: {filename}")
+            # 这里可以实现实际的报告导出逻辑
 
     def _ensure_monitor_content(self):
         """确保监控面板有内容显示 - 多层级备份机制"""
@@ -378,9 +452,9 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
             self._create_minimal_monitor_tab()
 
     def _create_monitor_tab(self, gateway_name):
-        """为指定网关创建监控选项卡"""
+        """为指定网关创建监控选项卡（优化版）"""
         tab = QWidget()
-        layout = QVBoxLayout(tab)
+        main_layout = QVBoxLayout(tab)
 
         # 记录网关名称用于调试
         self.logger.debug("创建监控选项卡: %s", gateway_name)
@@ -394,25 +468,79 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
             "sharpe_ratio_label": None,
             "position_table": None,
             "risk_progress": None,
+            "equity_curve": None,  # 资金曲线图
         }
 
-        # 业绩概览组
-        overview_group = QGroupBox("业绩概览")
-        overview_layout = QFormLayout(overview_group)
+        # 顶部工具栏
+        toolbar_layout = QHBoxLayout()
+        toolbar_layout.addWidget(QLabel(f"网关: {gateway_name}"))
+        toolbar_layout.addStretch()
 
-        tab_data["total_pnl_label"] = QLabel("--")
-        overview_layout.addRow("总盈亏:", tab_data["total_pnl_label"])
+        refresh_btn = QPushButton("🔄 刷新")
+        refresh_btn.setToolTip("刷新监控数据")
+        refresh_btn.clicked.connect(lambda: self._refresh_monitor_data(gateway_name))
+        toolbar_layout.addWidget(refresh_btn)
 
-        tab_data["total_return_label"] = QLabel("--")
-        overview_layout.addRow("总收益率:", tab_data["total_return_label"])
+        export_btn = QPushButton("📤 导出")
+        export_btn.setToolTip("导出监控报告")
+        export_btn.clicked.connect(lambda: self._export_monitor_report(gateway_name))
+        toolbar_layout.addWidget(export_btn)
 
-        tab_data["max_drawdown_label"] = QLabel("--")
-        overview_layout.addRow("最大回撤:", tab_data["max_drawdown_label"])
+        main_layout.addLayout(toolbar_layout)
 
-        tab_data["sharpe_ratio_label"] = QLabel("--")
-        overview_layout.addRow("夏普比率:", tab_data["sharpe_ratio_label"])
+        # 业绩概览组（使用卡片式布局）
+        overview_group = QGroupBox("实时业绩概览")
+        overview_main_layout = QVBoxLayout(overview_group)
 
-        layout.addWidget(overview_group)
+        # 使用网格布局显示关键指标卡片
+        cards_layout = QHBoxLayout()
+
+        # 盈亏卡片
+        pnl_card = self._create_metric_card("总盈亏", "--", "#4CAF50")
+        tab_data["total_pnl_label"] = pnl_card
+        cards_layout.addWidget(pnl_card)
+
+        # 收益率卡片
+        return_card = self._create_metric_card("总收益率", "--", "#2196F3")
+        tab_data["total_return_label"] = return_card
+        cards_layout.addWidget(return_card)
+
+        # 最大回撤卡片
+        dd_card = self._create_metric_card("最大回撤", "--", "#FF9800")
+        tab_data["max_drawdown_label"] = dd_card
+        cards_layout.addWidget(dd_card)
+
+        # 夏普比率卡片
+        sharpe_card = self._create_metric_card("夏普比率", "--", "#9C27B0")
+        tab_data["sharpe_ratio_label"] = sharpe_card
+        cards_layout.addWidget(sharpe_card)
+
+        overview_main_layout.addLayout(cards_layout)
+        main_layout.addWidget(overview_group)
+
+        # 资金曲线图（可选，需要pyqtgraph）
+        try:
+            import pyqtgraph as pg
+
+            equity_group = QGroupBox("资金曲线")
+            equity_layout = QVBoxLayout(equity_group)
+
+            equity_widget = pg.PlotWidget()
+            equity_widget.setBackground("#1E1E1E")
+            equity_widget.setMinimumHeight(200)
+            equity_widget.setLabel("left", "资金", units="元")
+            equity_widget.setLabel("bottom", "时间")
+            equity_widget.showGrid(x=True, y=True)
+            tab_data["equity_curve"] = equity_widget
+
+            equity_layout.addWidget(equity_widget)
+            main_layout.addWidget(equity_group)
+        except ImportError:
+            # 如果没有pyqtgraph，显示文本提示
+            equity_placeholder = QLabel("📈 资金曲线图（需要安装pyqtgraph）")
+            equity_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            equity_placeholder.setStyleSheet("color: #888; padding: 20px;")
+            main_layout.addWidget(equity_placeholder)
 
         # 持仓情况组
         position_group = QGroupBox("持仓情况")
@@ -427,7 +555,7 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
         )
 
         position_layout.addWidget(tab_data["position_table"])
-        layout.addWidget(position_group)
+        main_layout.addWidget(position_group)
 
         # 风险指标组
         risk_group = QGroupBox("风险指标")
@@ -438,7 +566,7 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
         risk_layout.addWidget(QLabel("风险等级:"))
         risk_layout.addWidget(tab_data["risk_progress"])
 
-        layout.addWidget(risk_group)
+        main_layout.addWidget(risk_group)
 
         # 将tab_data存储到选项卡对象中
         tab.tab_data = tab_data  # type: ignore

@@ -9,14 +9,13 @@ Parquet格式存储管理模块
 - 分区策略：按品种和周期分区存储
 """
 
-import pandas as pd
-import pyarrow as pa
-import pyarrow.parquet as pq
-from pathlib import Path
-from datetime import datetime, date
-from typing import List, Dict, Optional, Union, Tuple
 import logging
 import shutil
+from datetime import date, datetime
+from pathlib import Path  # noqa: TC003
+from typing import Dict, List, Optional, Union
+
+import pandas as pd
 
 from .config import config_manager
 
@@ -60,18 +59,22 @@ class StorageManager:
             df = self._standardize_dataframe(dataframe, symbol, interval)
 
             # 保存为Parquet文件
-            df.to_parquet(file_path, index=False, engine='pyarrow')
+            df.to_parquet(file_path, index=False, engine="pyarrow")
 
-            self.logger.info(f"成功保存 {symbol} {interval} 数据到: {file_path}")
+            self.logger.info("成功保存 %s %s 数据到: %s", symbol, interval, file_path)
             return file_path
 
         except Exception as e:
-            self.logger.error(f"保存 {symbol} {interval} 数据失败: {e}")
+            self.logger.error("保存 %s %s 数据失败: %s", symbol, interval, e)
             raise
 
-    def query_kline(self, symbol: str, interval: str,
-                   start_date: Optional[Union[str, date]] = None,
-                   end_date: Optional[Union[str, date]] = None) -> Optional[pd.DataFrame]:
+    def query_kline(
+        self,
+        symbol: str,
+        interval: str,
+        start_date: Optional[Union[str, date]] = None,
+        end_date: Optional[Union[str, date]] = None,
+    ) -> Optional[pd.DataFrame]:
         """
         查询K线数据
 
@@ -89,7 +92,7 @@ class StorageManager:
             file_path = self.data_dir / symbol / interval / "data.parquet"
 
             if not file_path.exists():
-                self.logger.warning(f"数据文件不存在: {file_path}")
+                self.logger.warning("数据文件不存在: %s", file_path)
                 return None
 
             # 读取Parquet文件
@@ -99,11 +102,13 @@ class StorageManager:
             if start_date or end_date:
                 df = self._filter_by_date_range(df, start_date, end_date)
 
-            self.logger.info(f"成功查询 {symbol} {interval} 数据: {len(df)} 条记录")
+            self.logger.info(
+                "成功查询 %s %s 数据: %d 条记录", symbol, interval, len(df)
+            )
             return df
 
-        except Exception as e:
-            self.logger.error(f"查询 {symbol} {interval} 数据失败: {e}")
+        except (OSError, pd.errors.ParserError) as e:
+            self.logger.error("查询 %s %s 数据失败: %s", symbol, interval, e)
             return None
 
     def list_symbols(self) -> List[str]:
@@ -119,11 +124,11 @@ class StorageManager:
                 if item.is_dir():
                     symbols.append(item.name)
 
-            self.logger.info(f"发现 {len(symbols)} 个品种")
+            self.logger.info("发现 %d 个品种", len(symbols))
             return sorted(symbols)
 
-        except Exception as e:
-            self.logger.error(f"列出品种失败: {e}")
+        except OSError as e:
+            self.logger.error("列出品种失败: %s", e)
             return []
 
     def list_intervals(self, symbol: str) -> List[str]:
@@ -148,8 +153,8 @@ class StorageManager:
 
             return sorted(intervals)
 
-        except Exception as e:
-            self.logger.error(f"列出 {symbol} 周期失败: {e}")
+        except OSError as e:
+            self.logger.error("列出 %s 周期失败: %s", symbol, e)
             return []
 
     def get_data_info(self, symbol: str, interval: str) -> Optional[Dict]:
@@ -179,18 +184,22 @@ class StorageManager:
                 "file_size": file_path.stat().st_size,
                 "record_count": len(df),
                 "columns": list(df.columns),
-                "start_date": df['datetime'].min() if 'datetime' in df.columns else None,
-                "end_date": df['datetime'].max() if 'datetime' in df.columns else None,
-                "last_modified": datetime.fromtimestamp(file_path.stat().st_mtime)
+                "start_date": (
+                    df["datetime"].min() if "datetime" in df.columns else None
+                ),
+                "end_date": (
+                    df["datetime"].max() if "datetime" in df.columns else None
+                ),
+                "last_modified": datetime.fromtimestamp(file_path.stat().st_mtime),
             }
 
             return info
 
-        except Exception as e:
-            self.logger.error(f"获取 {symbol} {interval} 数据信息失败: {e}")
+        except (OSError, pd.errors.ParserError) as e:
+            self.logger.error("获取 %s %s 数据信息失败: %s", symbol, interval, e)
             return None
 
-    def delete_data(self, symbol: str, interval: str = None) -> bool:
+    def delete_data(self, symbol: str, interval: Optional[str] = None) -> bool:
         """
         删除数据
 
@@ -207,18 +216,18 @@ class StorageManager:
                 interval_dir = self.data_dir / symbol / interval
                 if interval_dir.exists():
                     shutil.rmtree(interval_dir)
-                    self.logger.info(f"删除 {symbol} {interval} 数据成功")
+                    self.logger.info("删除 %s %s 数据成功", symbol, interval)
             else:
                 # 删除整个品种数据
                 symbol_dir = self.data_dir / symbol
                 if symbol_dir.exists():
                     shutil.rmtree(symbol_dir)
-                    self.logger.info(f"删除 {symbol} 所有数据成功")
+                    self.logger.info("删除 %s 所有数据成功", symbol)
 
             return True
 
-        except Exception as e:
-            self.logger.error(f"删除 {symbol} {interval} 数据失败: {e}")
+        except OSError as e:
+            self.logger.error("删除 %s %s 数据失败: %s", symbol, interval, e)
             return False
 
     def backup_data(self, symbol: str, interval: str, backup_dir: Path) -> bool:
@@ -237,21 +246,23 @@ class StorageManager:
             source_path = self.data_dir / symbol / interval / "data.parquet"
 
             if not source_path.exists():
-                self.logger.warning(f"源文件不存在: {source_path}")
+                self.logger.warning("源文件不存在: %s", source_path)
                 return False
 
             # 创建备份目录
             backup_dir.mkdir(parents=True, exist_ok=True)
-            backup_path = backup_dir / f"{symbol}_{interval}_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.parquet"
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"{symbol}_{interval}_backup_{timestamp}.parquet"
+            backup_path = backup_dir / filename
 
             # 复制文件
             shutil.copy2(source_path, backup_path)
 
-            self.logger.info(f"备份 {symbol} {interval} 数据到: {backup_path}")
+            self.logger.info("备份 %s %s 数据到: %s", symbol, interval, backup_path)
             return True
 
-        except Exception as e:
-            self.logger.error(f"备份 {symbol} {interval} 数据失败: {e}")
+        except OSError as e:
+            self.logger.error("备份 %s %s 数据失败: %s", symbol, interval, e)
             return False
 
     def merge_data(self, symbol: str, interval: str, new_data: pd.DataFrame) -> bool:
@@ -281,18 +292,20 @@ class StorageManager:
                 merged_data = pd.concat([existing_data, new_data], ignore_index=True)
 
                 # 去重（基于datetime列）
-                if 'datetime' in merged_data.columns:
-                    merged_data = merged_data.drop_duplicates(subset=['datetime'], keep='last')
-                    merged_data = merged_data.sort_values('datetime')
+                if "datetime" in merged_data.columns:
+                    merged_data = merged_data.drop_duplicates(
+                        subset=["datetime"], keep="last"
+                    )
+                    merged_data = merged_data.sort_values("datetime")
 
                 # 保存合并后的数据
                 self.save_kline(symbol, interval, merged_data)
 
-            self.logger.info(f"成功合并 {symbol} {interval} 数据")
+            self.logger.info("成功合并 %s %s 数据", symbol, interval)
             return True
 
-        except Exception as e:
-            self.logger.error(f"合并 {symbol} {interval} 数据失败: {e}")
+        except (OSError, pd.errors.ParserError, ValueError) as e:
+            self.logger.error("合并 %s %s 数据失败: %s", symbol, interval, e)
             return False
 
     def get_storage_stats(self) -> Dict:
@@ -307,7 +320,7 @@ class StorageManager:
                 "total_symbols": 0,
                 "total_files": 0,
                 "total_size": 0,
-                "symbols": []
+                "symbols": [],
             }
 
             for symbol_dir in self.data_dir.iterdir():
@@ -315,7 +328,7 @@ class StorageManager:
                     symbol_stats = {
                         "symbol": symbol_dir.name,
                         "intervals": [],
-                        "total_size": 0
+                        "total_size": 0,
                     }
 
                     for interval_dir in symbol_dir.iterdir():
@@ -323,10 +336,9 @@ class StorageManager:
                             file_path = interval_dir / "data.parquet"
                             if file_path.exists():
                                 file_size = file_path.stat().st_size
-                                symbol_stats["intervals"].append({
-                                    "interval": interval_dir.name,
-                                    "size": file_size
-                                })
+                                symbol_stats["intervals"].append(
+                                    {"interval": interval_dir.name, "size": file_size}
+                                )
                                 symbol_stats["total_size"] += file_size
                                 stats["total_size"] += file_size
                                 stats["total_files"] += 1
@@ -336,11 +348,13 @@ class StorageManager:
 
             return stats
 
-        except Exception as e:
-            self.logger.error(f"获取存储统计失败: {e}")
+        except OSError as e:
+            self.logger.error("获取存储统计失败: %s", e)
             return {}
 
-    def _standardize_dataframe(self, df: pd.DataFrame, symbol: str, interval: str) -> pd.DataFrame:
+    def _standardize_dataframe(
+        self, df: pd.DataFrame, symbol: str, interval: str
+    ) -> pd.DataFrame:
         """
         标准化DataFrame格式
 
@@ -352,32 +366,33 @@ class StorageManager:
         Returns:
             标准化后的DataFrame
         """
-        # 确保有必要的列
-        required_columns = ['datetime', 'open', 'high', 'low', 'close', 'volume']
-
         # 添加品种和周期信息
         df = df.copy()
-        df['symbol'] = symbol
-        df['interval'] = interval
+        df["symbol"] = symbol
+        df["interval"] = interval
 
         # 确保datetime列是datetime类型
-        if 'datetime' in df.columns:
-            df['datetime'] = pd.to_datetime(df['datetime'])
+        if "datetime" in df.columns:
+            df["datetime"] = pd.to_datetime(df["datetime"])
 
         # 确保数值列是float类型
-        numeric_columns = ['open', 'high', 'low', 'close', 'volume']
+        numeric_columns = ["open", "high", "low", "close", "volume"]
         for col in numeric_columns:
             if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
+                df[col] = pd.to_numeric(df[col], errors="coerce")
 
         # 按时间排序
-        if 'datetime' in df.columns:
-            df = df.sort_values('datetime')
+        if "datetime" in df.columns:
+            df = df.sort_values("datetime")
 
         return df
 
-    def _filter_by_date_range(self, df: pd.DataFrame, start_date: Optional[Union[str, date]],
-                            end_date: Optional[Union[str, date]]) -> pd.DataFrame:
+    def _filter_by_date_range(
+        self,
+        df: pd.DataFrame,
+        start_date: Optional[Union[str, date]],
+        end_date: Optional[Union[str, date]],
+    ) -> pd.DataFrame:
         """
         按日期范围过滤数据
 
@@ -389,18 +404,20 @@ class StorageManager:
         Returns:
             过滤后的DataFrame
         """
-        if 'datetime' not in df.columns:
+        if "datetime" not in df.columns:
             return df
 
         # 转换日期格式
         if start_date:
             if isinstance(start_date, str):
                 start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
-            df = df[df['datetime'].dt.date >= start_date]
+            mask = df["datetime"].dt.date >= start_date
+            df = df.loc[mask]
 
         if end_date:
             if isinstance(end_date, str):
                 end_date = datetime.strptime(end_date, "%Y-%m-%d").date()
-            df = df[df['datetime'].dt.date <= end_date]
+            mask = df["datetime"].dt.date <= end_date
+            df = df.loc[mask]
 
         return df

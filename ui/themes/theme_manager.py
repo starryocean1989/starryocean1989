@@ -68,6 +68,18 @@ class ThemeManager:
                 theme = self.themes
             self._set_dark_palette(app, theme)
             self._set_global_font(app, theme)
+
+            # 尝试加载QSS样式表文件
+            qss_path = Path(__file__).parent / "modern_dark_style.qss"
+            if qss_path.exists():
+                try:
+                    with open(qss_path, "r", encoding="utf-8") as f:
+                        qss_content = f.read()
+                    app.setStyleSheet(qss_content)
+                    self._logger.info("成功加载QSS样式表: %s", qss_path)
+                except Exception as e:
+                    self._logger.warning("加载QSS失败，使用默认样式: %s", e)
+
             self._logger.info("主题应用成功")
         except (ValueError, TypeError, AttributeError) as e:
             self._logger.error("应用主题失败: %s", e)

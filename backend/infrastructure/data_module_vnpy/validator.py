@@ -11,15 +11,15 @@
 - 多线程/多进程处理
 """
 
-import pandas as pd
-import numpy as np
-from datetime import datetime, date, timedelta
-from pathlib import Path
-from typing import List, Dict, Optional, Union, Tuple, Any
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 import json
 import logging
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
+from datetime import date, datetime, timedelta
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import pandas as pd
 
 from .config import config_manager
 from .storage import StorageManager
@@ -28,6 +28,7 @@ from .storage import StorageManager
 @dataclass
 class ValidationResult:
     """数据校验结果"""
+
     symbol: str
     interval: str
     check_time: datetime
@@ -44,6 +45,7 @@ class ValidationResult:
 @dataclass
 class ValidationSummary:
     """校验汇总"""
+
     total_symbols: int
     valid_symbols: int
     invalid_symbols: int
@@ -86,9 +88,14 @@ class DataValidator:
         if not symbols:
             self.logger.warning("未发现任何品种数据")
             return ValidationSummary(
-                total_symbols=0, valid_symbols=0, invalid_symbols=0,
-                total_errors=0, total_warnings=0, check_time=datetime.now(),
-                base_date=self.base_date, results=[]
+                total_symbols=0,
+                valid_symbols=0,
+                invalid_symbols=0,
+                total_errors=0,
+                total_warnings=0,
+                check_time=datetime.now(),
+                base_date=self.base_date,
+                results=[],
             )
 
         # 并行校验所有品种
@@ -99,7 +106,9 @@ class DataValidator:
             for symbol in symbols:
                 intervals = self.storage_manager.list_intervals(symbol)
                 for interval in intervals:
-                    future = executor.submit(self._validate_single_data, symbol, interval, force_refresh)
+                    future = executor.submit(
+                        self._validate_single_data, symbol, interval, force_refresh
+                    )
                     future_to_symbol[future] = (symbol, interval)
 
             for future in as_completed(future_to_symbol):
@@ -108,8 +117,8 @@ class DataValidator:
                     result = future.result()
                     if result:
                         results.append(result)
-                except Exception as e:
-                    self.logger.error(f"校验 {symbol} {interval} 失败: {e}")
+                except (OSError, ValueError, KeyError) as e:
+                    self.logger.error("校验 %s %s 失败: %s", symbol, interval, e)
 
         # 生成汇总
         summary = self._generate_summary(results)
@@ -117,10 +126,16 @@ class DataValidator:
         # 缓存结果
         self._cache_results(summary)
 
-        self.logger.info(f"数据校验完成: {summary.valid_symbols}/{summary.total_symbols} 有效")
+        self.logger.info(
+            "数据校验完成: %s/%s 有效",
+            summary.valid_symbols,
+            summary.total_symbols,
+        )
         return summary
 
-    def validate_symbol(self, symbol: str, interval: str = None) -> Union[ValidationResult, List[ValidationResult]]:
+    def validate_symbol(
+        self, symbol: str, interval: Optional[str] = None
+    ) -> Union[ValidationResult, List[ValidationResult], None]:
         """
         校验指定品种数据
 
@@ -157,15 +172,20 @@ class DataValidator:
             reference_symbols = set(reference_stocks)
             missing_symbols = reference_symbols - existing_symbols
 
-            self.logger.info(f"发现 {len(missing_symbols)} 个缺失品种")
+            self.logger.info("发现 %s 个缺失品种", len(missing_symbols))
             return sorted(missing_symbols)
 
-        except Exception as e:
-            self.logger.error(f"检查缺失品种失败: {e}")
+        except (OSError, ValueError) as e:
+            self.logger.error("检查缺失品种失败: %s", e)
             return []
 
-    def check_missing_dates(self, symbol: str, interval: str,
-                          start_date: date = None, end_date: date = None) -> List[date]:
+    def check_missing_dates(
+        self,
+        symbol: str,
+        interval: str,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+    ) -> List[date]:
         """
         检查缺失的日期
 
@@ -185,16 +205,20 @@ class DataValidator:
                 end_date = date.today()
 
             # 获取现有数据
-            data = self.storage_manager.query_kline(symbol, interval, start_date, end_date)
+            data = self.storage_manager.query_kline(
+                symbol, interval, start_date, end_date
+            )
             if data is None or data.empty:
                 return self._generate_date_range(start_date, end_date, interval)
 
             # 生成期望的日期范围
-            expected_dates = set(self._generate_date_range(start_date, end_date, interval))
+            expected_dates = set(
+                self._generate_date_range(start_date, end_date, interval)
+            )
 
             # 获取实际日期
-            if 'datetime' in data.columns:
-                actual_dates = set(data['datetime'].dt.date)
+            if "datetime" in data.columns:
+                actual_dates = set(data["datetime"].dt.date)
             else:
                 return list(expected_dates)
 
@@ -203,8 +227,8 @@ class DataValidator:
 
             return sorted(missing_dates)
 
-        except Exception as e:
-            self.logger.error(f"检查 {symbol} {interval} 缺失日期失败: {e}")
+        except (OSError, ValueError, KeyError) as e:
+            self.logger.error("检查 %s %s 缺失日期失败: %s", symbol, interval, e)
             return []
 
     def check_logic_errors(self, data: pd.DataFrame) -> List[Dict[str, Any]]:
@@ -221,69 +245,89 @@ class DataValidator:
 
         try:
             # 检查高价低于低价
-            if 'high' in data.columns and 'low' in data.columns:
-                invalid_high_low = data[data['high'] < data['low']]
+            if "high" in data.columns and "low" in data.columns:
+                invalid_high_low = data[data["high"] < data["low"]]
                 for idx, row in invalid_high_low.iterrows():
-                    errors.append({
-                        "type": "high_low_invalid",
-                        "row": int(idx),
-                        "high": float(row['high']),
-                        "low": float(row['low']),
-                        "message": f"高价 {row['high']} 低于低价 {row['low']}"
-                    })
+                    errors.append(
+                        {
+                            "type": "high_low_invalid",
+                            "row": str(idx),
+                            "high": float(row["high"]),
+                            "low": float(row["low"]),
+                            "message": f"高价 {row['high']} 低于低价 {row['low']}",
+                        }
+                    )
 
             # 检查开盘价和收盘价超出高低价范围
-            if all(col in data.columns for col in ['open', 'high', 'low']):
-                invalid_open = data[(data['open'] > data['high']) | (data['open'] < data['low'])]
+            if all(col in data.columns for col in ["open", "high", "low"]):
+                invalid_open = data[
+                    (data["open"] > data["high"]) | (data["open"] < data["low"])
+                ]
                 for idx, row in invalid_open.iterrows():
-                    errors.append({
-                        "type": "open_out_of_range",
-                        "row": int(idx),
-                        "open": float(row['open']),
-                        "high": float(row['high']),
-                        "low": float(row['low']),
-                        "message": f"开盘价 {row['open']} 超出高低价范围 [{row['low']}, {row['high']}]"
-                    })
+                    errors.append(
+                        {
+                            "type": "open_out_of_range",
+                            "row": str(idx),
+                            "open": float(row["open"]),
+                            "high": float(row["high"]),
+                            "low": float(row["low"]),
+                            "message": (
+                                f"开盘价 {row['open']} 超出高低价范围 "
+                                f"[{row['low']}, {row['high']}]"
+                            ),
+                        }
+                    )
 
-            if all(col in data.columns for col in ['close', 'high', 'low']):
-                invalid_close = data[(data['close'] > data['high']) | (data['close'] < data['low'])]
+            if all(col in data.columns for col in ["close", "high", "low"]):
+                invalid_close = data[
+                    (data["close"] > data["high"]) | (data["close"] < data["low"])
+                ]
                 for idx, row in invalid_close.iterrows():
-                    errors.append({
-                        "type": "close_out_of_range",
-                        "row": int(idx),
-                        "close": float(row['close']),
-                        "high": float(row['high']),
-                        "low": float(row['low']),
-                        "message": f"收盘价 {row['close']} 超出高低价范围 [{row['low']}, {row['high']}]"
-                    })
+                    errors.append(
+                        {
+                            "type": "close_out_of_range",
+                            "row": str(idx),
+                            "close": float(row["close"]),
+                            "high": float(row["high"]),
+                            "low": float(row["low"]),
+                            "message": (
+                                f"收盘价 {row['close']} 超出高低价范围 "
+                                f"[{row['low']}, {row['high']}]"
+                            ),
+                        }
+                    )
 
             # 检查负值
-            price_columns = ['open', 'high', 'low', 'close']
+            price_columns = ["open", "high", "low", "close"]
             for col in price_columns:
                 if col in data.columns:
                     negative_prices = data[data[col] < 0]
                     for idx, row in negative_prices.iterrows():
-                        errors.append({
-                            "type": "negative_price",
-                            "row": int(idx),
-                            "column": col,
-                            "value": float(row[col]),
-                            "message": f"{col} 价格 {row[col]} 为负值"
-                        })
+                        errors.append(
+                            {
+                                "type": "negative_price",
+                                "row": str(idx),
+                                "column": col,
+                                "value": float(row[col]),
+                                "message": f"{col} 价格 {row[col]} 为负值",
+                            }
+                        )
 
             # 检查成交量负值
-            if 'volume' in data.columns:
-                negative_volume = data[data['volume'] < 0]
+            if "volume" in data.columns:
+                negative_volume = data[data["volume"] < 0]
                 for idx, row in negative_volume.iterrows():
-                    errors.append({
-                        "type": "negative_volume",
-                        "row": int(idx),
-                        "value": float(row['volume']),
-                        "message": f"成交量 {row['volume']} 为负值"
-                    })
+                    errors.append(
+                        {
+                            "type": "negative_volume",
+                            "row": str(idx),
+                            "value": float(row["volume"]),
+                            "message": f"成交量 {row['volume']} 为负值",
+                        }
+                    )
 
-        except Exception as e:
-            self.logger.error(f"检查逻辑错误失败: {e}")
+        except (KeyError, ValueError) as e:
+            self.logger.error("检查逻辑错误失败: %s", e)
 
         return errors
 
@@ -301,46 +345,54 @@ class DataValidator:
 
         try:
             # 检查数值列的数据类型
-            numeric_columns = ['open', 'high', 'low', 'close', 'volume']
+            numeric_columns = ["open", "high", "low", "close", "volume"]
             for col in numeric_columns:
                 if col in data.columns:
                     # 检查是否有非数值数据
-                    non_numeric = data[~pd.to_numeric(data[col], errors='coerce').notna()]
+                    numeric_series = pd.to_numeric(data[col], errors="coerce")
+                    non_numeric = data[pd.isna(numeric_series)]
                     for idx, row in non_numeric.iterrows():
-                        errors.append({
-                            "type": "non_numeric",
-                            "row": int(idx),
-                            "column": col,
-                            "value": str(row[col]),
-                            "message": f"{col} 列包含非数值数据: {row[col]}"
-                        })
+                        errors.append(
+                            {
+                                "type": "non_numeric",
+                                "row": str(idx),
+                                "column": col,
+                                "value": str(row[col]),
+                                "message": (f"{col} 列包含非数值数据: {row[col]}"),
+                            }
+                        )
 
             # 检查缺失值
             for col in numeric_columns:
                 if col in data.columns:
                     missing_values = data[data[col].isna()]
                     if not missing_values.empty:
-                        for idx, row in missing_values.iterrows():
-                            errors.append({
-                                "type": "missing_value",
-                                "row": int(idx),
-                                "column": col,
-                                "message": f"{col} 列包含缺失值"
-                            })
+                        for idx, _row in missing_values.iterrows():
+                            errors.append(
+                                {
+                                    "type": "missing_value",
+                                    "row": str(idx),
+                                    "column": col,
+                                    "message": (f"{col} 列包含缺失值"),
+                                }
+                            )
 
             # 检查datetime列
-            if 'datetime' in data.columns:
-                invalid_datetime = data[~pd.to_datetime(data['datetime'], errors='coerce').notna()]
+            if "datetime" in data.columns:
+                datetime_series = pd.to_datetime(data["datetime"], errors="coerce")
+                invalid_datetime = data[pd.isna(datetime_series)]
                 for idx, row in invalid_datetime.iterrows():
-                    errors.append({
-                        "type": "invalid_datetime",
-                        "row": int(idx),
-                        "value": str(row['datetime']),
-                        "message": f"datetime 列包含无效日期: {row['datetime']}"
-                    })
+                    errors.append(
+                        {
+                            "type": "invalid_datetime",
+                            "row": str(idx),
+                            "value": str(row["datetime"]),
+                            "message": (f"datetime 列包含无效日期: {row['datetime']}"),
+                        }
+                    )
 
-        except Exception as e:
-            self.logger.error(f"检查格式错误失败: {e}")
+        except (KeyError, ValueError) as e:
+            self.logger.error("检查格式错误失败: %s", e)
 
         return errors
 
@@ -353,34 +405,36 @@ class DataValidator:
         """
         if self.cache_file.exists():
             try:
-                with open(self.cache_file, 'r', encoding='utf-8') as f:
+                with open(self.cache_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
 
                 # 重建ValidationSummary对象
                 results = []
-                for result_data in data.get('results', []):
+                for result_data in data.get("results", []):
                     result = ValidationResult(**result_data)
                     results.append(result)
 
                 summary = ValidationSummary(
-                    total_symbols=data['total_symbols'],
-                    valid_symbols=data['valid_symbols'],
-                    invalid_symbols=data['invalid_symbols'],
-                    total_errors=data['total_errors'],
-                    total_warnings=data['total_warnings'],
-                    check_time=datetime.fromisoformat(data['check_time']),
-                    base_date=datetime.fromisoformat(data['base_date']).date(),
-                    results=results
+                    total_symbols=data["total_symbols"],
+                    valid_symbols=data["valid_symbols"],
+                    invalid_symbols=data["invalid_symbols"],
+                    total_errors=data["total_errors"],
+                    total_warnings=data["total_warnings"],
+                    check_time=datetime.fromisoformat(data["check_time"]),
+                    base_date=datetime.fromisoformat(data["base_date"]).date(),
+                    results=results,
                 )
 
                 return summary
 
-            except Exception as e:
-                self.logger.error(f"读取校验汇总失败: {e}")
+            except (OSError, ValueError, KeyError) as e:
+                self.logger.error("读取校验汇总失败: %s", e)
 
         return None
 
-    def _validate_single_data(self, symbol: str, interval: str, force_refresh: bool = False) -> Optional[ValidationResult]:
+    def _validate_single_data(
+        self, symbol: str, interval: str, force_refresh: bool = False
+    ) -> Optional[ValidationResult]:
         """
         校验单个数据文件
 
@@ -397,17 +451,24 @@ class DataValidator:
             cache_key = f"{symbol}_{interval}"
             if not force_refresh and cache_key in self._cached_results:
                 cached_result = self._cached_results[cache_key]
-                if datetime.now() - cached_result['check_time'] < timedelta(hours=1):
+                if datetime.now() - cached_result["check_time"] < timedelta(hours=1):
                     return ValidationResult(**cached_result)
 
             # 获取数据
             data = self.storage_manager.query_kline(symbol, interval)
             if data is None or data.empty:
                 return ValidationResult(
-                    symbol=symbol, interval=interval, check_time=datetime.now(),
-                    is_valid=False, errors=["数据文件不存在或为空"], warnings=[],
-                    record_count=0, date_range=(None, None), missing_dates=[],
-                    logic_errors=[], format_errors=[]
+                    symbol=symbol,
+                    interval=interval,
+                    check_time=datetime.now(),
+                    is_valid=False,
+                    errors=["数据文件不存在或为空"],
+                    warnings=[],
+                    record_count=0,
+                    date_range=(None, None),
+                    missing_dates=[],
+                    logic_errors=[],
+                    format_errors=[],
                 )
 
             # 执行各种检查
@@ -417,12 +478,12 @@ class DataValidator:
             # 逻辑错误检查
             logic_errors = self.check_logic_errors(data)
             if logic_errors:
-                errors.extend([error['message'] for error in logic_errors])
+                errors.extend([error["message"] for error in logic_errors])
 
             # 格式错误检查
             format_errors = self.check_format_errors(data)
             if format_errors:
-                errors.extend([error['message'] for error in format_errors])
+                errors.extend([error["message"] for error in format_errors])
 
             # 缺失日期检查
             missing_dates = self.check_missing_dates(symbol, interval)
@@ -439,12 +500,20 @@ class DataValidator:
                 warnings=warnings,
                 record_count=len(data),
                 date_range=(
-                    data['datetime'].min().date() if 'datetime' in data.columns else None,
-                    data['datetime'].max().date() if 'datetime' in data.columns else None
+                    (
+                        data["datetime"].min().date()
+                        if "datetime" in data.columns
+                        else None
+                    ),
+                    (
+                        data["datetime"].max().date()
+                        if "datetime" in data.columns
+                        else None
+                    ),
                 ),
                 missing_dates=missing_dates,
                 logic_errors=logic_errors,
-                format_errors=format_errors
+                format_errors=format_errors,
             )
 
             # 更新缓存
@@ -452,22 +521,27 @@ class DataValidator:
 
             return result
 
-        except Exception as e:
-            self.logger.error(f"校验 {symbol} {interval} 失败: {e}")
+        except (OSError, ValueError, KeyError) as e:
+            self.logger.error("校验 %s %s 失败: %s", symbol, interval, e)
             return None
 
-    def _generate_date_range(self, start_date: date, end_date: date, interval: str) -> List[date]:
+    def _generate_date_range(
+        self, start_date: date, end_date: date, _interval: str
+    ) -> List[date]:
         """
         生成期望的日期范围
 
         Args:
             start_date: 开始日期
             end_date: 结束日期
-            interval: K线周期
+            _interval: K线周期（保留供将来使用）
 
         Returns:
             日期列表
         """
+        # 参数 _interval 保留供将来根据不同周期生成日期范围
+        del _interval
+
         dates = []
         current_date = start_date
 
@@ -504,7 +578,7 @@ class DataValidator:
             total_warnings=total_warnings,
             check_time=datetime.now(),
             base_date=self.base_date,
-            results=results
+            results=results,
         )
 
     def _cache_results(self, summary: ValidationSummary) -> None:
@@ -523,27 +597,25 @@ class DataValidator:
                 "total_warnings": summary.total_warnings,
                 "check_time": summary.check_time.isoformat(),
                 "base_date": summary.base_date.isoformat(),
-                "results": [asdict(result) for result in summary.results]
+                "results": [asdict(result) for result in summary.results],
             }
 
-            with open(self.cache_file, 'w', encoding='utf-8') as f:
+            with open(self.cache_file, "w", encoding="utf-8") as f:
                 json.dump(cache_data, f, ensure_ascii=False, indent=2)
 
-        except Exception as e:
-            self.logger.error(f"缓存校验结果失败: {e}")
+        except (OSError, ValueError) as e:
+            self.logger.error("缓存校验结果失败: %s", e)
 
     def _load_cached_results(self) -> None:
-        """
-        加载缓存的校验结果
-        """
+        """加载缓存的校验结果"""
         try:
             if self.cache_file.exists():
-                with open(self.cache_file, 'r', encoding='utf-8') as f:
+                with open(self.cache_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
 
-                for result_data in data.get('results', []):
+                for result_data in data.get("results", []):
                     cache_key = f"{result_data['symbol']}_{result_data['interval']}"
                     self._cached_results[cache_key] = result_data
 
-        except Exception as e:
-            self.logger.error(f"加载缓存校验结果失败: {e}")
+        except (OSError, ValueError, KeyError) as e:
+            self.logger.error("加载缓存校验结果失败: %s", e)

@@ -10,11 +10,10 @@
 - 其他运行时配置
 """
 
-import json
-import os
+from contextlib import suppress
 from pathlib import Path
-from typing import Dict, Any, Optional
-from datetime import datetime, date
+from typing import Any, Dict, Optional
+from datetime import date, datetime
 
 from vnpy.trader.setting import SETTINGS, SETTING_FILENAME
 from vnpy.trader.utility import load_json, save_json
@@ -121,10 +120,8 @@ class ConfigManager:
         try:
             # 读取现有配置
             setting_data = {}
-            try:
+            with suppress(Exception):
                 setting_data = load_json(SETTING_FILENAME)
-            except Exception:
-                pass
 
             # 更新chinastock相关配置
             for key, value in self._config.items():

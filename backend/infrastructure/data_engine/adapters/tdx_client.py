@@ -7,11 +7,10 @@
 支持上海、深圳、北交所的市场数据获取.
 """
 
-import asyncio
 import logging
 import socket
 import struct
-import time
+import zlib
 from datetime import datetime
 from threading import Lock
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -40,6 +39,18 @@ class TDXHqClient(BaseDataAdapter):
     支持上交所、深交所、北交所的市场数据获取.
     """
 
+    # 市场常量
+    MARKET_SZ = 0  # 深圳
+    MARKET_SH = 1  # 上海
+    MARKET_BJ = 2  # 北京（北交所）
+
+    # 命令常量
+    CMD_SECURITY_QUOTES = 0x053E  # 行情信息
+    CMD_SECURITY_COUNT = 0x044E  # 证券数量
+    CMD_SECURITY_LIST = 0x0450  # 证券列表
+    CMD_SECURITY_BARS = 0x052D  # K线数据
+    CMD_MINUTE_TIME_DATA = 0x0537  # 分时数据
+
     def __init__(self, config: Dict[str, Union[str, int, float, bool]]) -> None:
         """
         初始化通达信行情客户端.
@@ -65,18 +76,6 @@ class TDXHqClient(BaseDataAdapter):
             self._config.port = int(config["port"])
         if "timeout" in config:
             self._config.timeout = int(config["timeout"])
-
-        # 市场常量
-        self.MARKET_SZ = 0  # 深圳
-        self.MARKET_SH = 1  # 上海
-        self.MARKET_BJ = 2  # 北京（北交所）
-
-        # 命令常量
-        self.CMD_SECURITY_QUOTES = 0x053E  # 行情信息
-        self.CMD_SECURITY_COUNT = 0x044E  # 证券数量
-        self.CMD_SECURITY_LIST = 0x0450  # 证券列表
-        self.CMD_SECURITY_BARS = 0x052D  # K线数据
-        self.CMD_MINUTE_TIME_DATA = 0x0537  # 分时数据
 
     @property
     def name(self) -> str:
@@ -180,6 +179,9 @@ class TDXHqClient(BaseDataAdapter):
     def _send_handshake1(self) -> bool:
         """发送握手包1."""
         try:
+            if not self._socket:
+                self._logger.error("Socket未初始化，无法发送握手包1")
+                return False
             handshake1 = bytes.fromhex("0c 02 18 93 00 01 03 00 03 00 0d 00 01")
             self._socket.send(handshake1)
             response = self._socket.recv(20)
@@ -191,6 +193,9 @@ class TDXHqClient(BaseDataAdapter):
     def _send_handshake2(self) -> bool:
         """发送握手包2."""
         try:
+            if not self._socket:
+                self._logger.error("Socket未初始化，无法发送握手包2")
+                return False
             handshake2 = bytes.fromhex("0c 02 18 94 00 01 03 00 03 00 0d 00 02")
             self._socket.send(handshake2)
             response = self._socket.recv(20)
@@ -237,8 +242,6 @@ class TDXHqClient(BaseDataAdapter):
 
                 # 如果数据被压缩，需要解压
                 if zip_size != unzip_size:
-                    import zlib
-
                     response_data = zlib.decompress(response_data)
 
                 self._logger.debug("TDX请求响应长度: %s", len(response_data))
@@ -309,7 +312,7 @@ class TDXHqClient(BaseDataAdapter):
                 request_data.extend(self._format_symbol(market, code))
 
             # 发送请求
-            response = self._send_request(request_data)
+            response = self._send_request(bytes(request_data))
             if not response:
                 return []
 
@@ -381,7 +384,7 @@ class TDXHqClient(BaseDataAdapter):
 
         return quotes
 
-    def _get_price(self, data: bytes, start_pos: int) -> Tuple[int, int]:
+    def _get_price(self, data: bytes, start_pos: int) -> int:
         """
         解析通达信价格数据.
 
@@ -390,14 +393,14 @@ class TDXHqClient(BaseDataAdapter):
             start_pos: 起始位置
 
         Returns:
-            Tuple[int, int]: (价格值, 新位置)
+            int: 价格值
         """
         # 简化版价格解析，实际应该实现完整的get_price逻辑
         if start_pos + 4 > len(data):
-            return 0, start_pos + 4
+            return 0
 
         price = struct.unpack("<i", data[start_pos : start_pos + 4])[0]
-        return price, start_pos + 4
+        return price
 
     def _calc_price(self, base_price: int, diff: int) -> float:
         """计算实际价格."""
@@ -426,11 +429,12 @@ class TDXHqClient(BaseDataAdapter):
 
         Args:
             symbol: 证券代码
-            data_type: 数据类型
+            data_type: 数据类型 (当前仅支持 "quote")
 
         Returns:
             Optional[Dict[str, Union[str, int, float, bool]]]: 市场数据字典
         """
+        _ = data_type  # 当前仅支持quote类型，参数保留用于未来扩展
         quotes = await self.get_quotes([symbol])
         return quotes[0] if quotes else None
 
@@ -448,6 +452,8 @@ class TDXHqClient(BaseDataAdapter):
         Returns:
             List[Dict[str, Any]]: 历史数据列表
         """
+        # 保留参数用于未来实现
+        _ = (symbol, start_date, end_date)
         # 这里需要实现历史数据获取逻辑
         # 简化处理，返回空列表
         self._logger.warning("历史数据获取功能尚未完全实现")
@@ -475,7 +481,7 @@ class TDXHqClient(BaseDataAdapter):
                 return []
 
             # 构建请求包
-            # 请求头部: 0x10c, 0x02006320, pkg_len, pkg_len, 0x052d, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+            # 请求头部: 0x10c, 0x02006320, pkg_len, pkg_len, 0x052d, ...
             pkg_len = 12 + 7 + 2  # 头部(12) + 股票标识(7) + 其他参数(2)
 
             header_data = struct.pack(
@@ -510,7 +516,7 @@ class TDXHqClient(BaseDataAdapter):
             request_data.extend(param_data)
 
             # 发送请求
-            response = self._send_request(request_data)
+            response = self._send_request(bytes(request_data))
             if not response:
                 return []
 
@@ -571,7 +577,9 @@ class TDXHqClient(BaseDataAdapter):
 
                 kline = {
                     "code": "UNKNOWN",  # 需要从请求中获取
-                    "datetime": f"{year:04d}-{month:02d}-{day:02d} {hour:02d}:{minute:02d}",
+                    "datetime": (
+                        f"{year:04d}-{month:02d}-{day:02d} " f"{hour:02d}:{minute:02d}"
+                    ),
                     "open": self._calc_price(open_price, 0),
                     "high": self._calc_price(high_price, 0),
                     "low": self._calc_price(low_price, 0),

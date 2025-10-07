@@ -102,12 +102,14 @@ class DataEngineConfigManager:
 
                 # 加载各个配置部分
                 self._load_config_section(data, "storage", self.storage_config)
-                self._load_config_section(
-                    data, "database", self.database_config
-                )
+                self._load_config_section(data, "database", self.database_config)
                 self._load_config_section(data, "network", self.network_config)
 
                 self.logger.info("配置已从 %s 加载", self.config_file)
+                return True
+            else:
+                # 配置文件不存在,使用默认配置
+                self.logger.info("配置文件不存在,使用默认配置")
                 return True
         except (FileNotFoundError, json.JSONDecodeError, PermissionError) as e:
             self.logger.error("加载配置文件失败: %s", e)
@@ -166,9 +168,7 @@ class DataEngineConfigManager:
         """
         return self.network_config
 
-    def update_storage_config(
-        self, **kwargs: Union[str, int, float, bool]
-    ) -> bool:
+    def update_storage_config(self, **kwargs: Union[str, int, float, bool]) -> bool:
         """
         更新存储配置.
 
@@ -188,9 +188,7 @@ class DataEngineConfigManager:
             self.logger.error("更新存储配置失败: %s", e)
             return False
 
-    def update_database_config(
-        self, **kwargs: Union[str, int, float, bool]
-    ) -> bool:
+    def update_database_config(self, **kwargs: Union[str, int, float, bool]) -> bool:
         """
         更新数据库配置.
 

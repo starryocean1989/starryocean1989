@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (  # pylint: disable=no-name-in-module
 )
 
 try:
-    from ...utils.error_handler import (
+    from backend.core.utils.error_handler import (
         error_handler,
         ErrorCategory as _ErrorCategory,
         ErrorSeverity as _ErrorSeverity,
@@ -48,7 +48,7 @@ try:
     ErrorInfo = _ErrorInfo  # type: ignore
 except ImportError:
     try:
-        from utils.error_handler import (
+        from ...backend.core.utils.error_handler import (
             error_handler,
             ErrorCategory as _ErrorCategory,
             ErrorSeverity as _ErrorSeverity,

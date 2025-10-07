@@ -12,12 +12,14 @@
 import time
 import logging
 from pathlib import Path
-from typing import Optional, Callable, Dict, Any
+from typing import Any, Callable, Dict, Optional
 from datetime import datetime
 import threading
 
 from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler, FileSystemEvent
+from watchdog.events import FileSystemEvent, FileSystemEventHandler
+
+from vnpy.event import Event
 
 from .config import config_manager
 from .validator import DataValidator
@@ -38,7 +40,7 @@ class DataFileWatcher(FileSystemEventHandler):
         self.validator = DataValidator()
 
         # 监控的文件类型
-        self.watched_extensions = {'.parquet'}
+        self.watched_extensions = {".parquet"}
 
         # 防抖机制
         self._last_check_time = {}
@@ -46,23 +48,35 @@ class DataFileWatcher(FileSystemEventHandler):
 
     def on_created(self, event: FileSystemEvent) -> None:
         """文件创建事件"""
-        if not event.is_directory and self._should_watch(event.src_path):
-            self._handle_file_change(event.src_path, "created")
+        src_path = (
+            str(event.src_path) if isinstance(event.src_path, bytes) else event.src_path
+        )
+        if not event.is_directory and self._should_watch(src_path):
+            self._handle_file_change(src_path, "created")
 
     def on_modified(self, event: FileSystemEvent) -> None:
         """文件修改事件"""
-        if not event.is_directory and self._should_watch(event.src_path):
-            self._handle_file_change(event.src_path, "modified")
+        src_path = (
+            str(event.src_path) if isinstance(event.src_path, bytes) else event.src_path
+        )
+        if not event.is_directory and self._should_watch(src_path):
+            self._handle_file_change(src_path, "modified")
 
     def on_deleted(self, event: FileSystemEvent) -> None:
         """文件删除事件"""
-        if not event.is_directory and self._should_watch(event.src_path):
-            self._handle_file_change(event.src_path, "deleted")
+        src_path = (
+            str(event.src_path) if isinstance(event.src_path, bytes) else event.src_path
+        )
+        if not event.is_directory and self._should_watch(src_path):
+            self._handle_file_change(src_path, "deleted")
 
     def on_moved(self, event: FileSystemEvent) -> None:
         """文件移动事件"""
-        if not event.is_directory and self._should_watch(event.src_path):
-            self._handle_file_change(event.src_path, "moved")
+        src_path = (
+            str(event.src_path) if isinstance(event.src_path, bytes) else event.src_path
+        )
+        if not event.is_directory and self._should_watch(src_path):
+            self._handle_file_change(src_path, "moved")
 
     def _should_watch(self, file_path: str) -> bool:
         """
@@ -88,13 +102,16 @@ class DataFileWatcher(FileSystemEventHandler):
         try:
             # 防抖检查
             current_time = time.time()
-            if file_path in self._last_check_time:
-                if current_time - self._last_check_time[file_path] < self._check_interval:
-                    return
+            if (
+                file_path in self._last_check_time
+                and current_time - self._last_check_time[file_path]
+                < self._check_interval
+            ):
+                return
 
             self._last_check_time[file_path] = current_time
 
-            self.logger.info(f"检测到文件变化: {file_path} ({event_type})")
+            self.logger.info("检测到文件变化: %s (%s)", file_path, event_type)
 
             # 解析文件路径获取品种和周期信息
             symbol, interval = self._parse_file_path(file_path)
@@ -106,8 +123,8 @@ class DataFileWatcher(FileSystemEventHandler):
             if self.callback:
                 self.callback(file_path, event_type, symbol, interval)
 
-        except Exception as e:
-            self.logger.error(f"处理文件变化失败: {file_path}, {e}")
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            self.logger.error("处理文件变化失败: %s, %s", file_path, e)
 
     def _parse_file_path(self, file_path: str) -> tuple[Optional[str], Optional[str]]:
         """
@@ -130,11 +147,13 @@ class DataFileWatcher(FileSystemEventHandler):
 
             return None, None
 
-        except Exception as e:
-            self.logger.error(f"解析文件路径失败: {file_path}, {e}")
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            self.logger.error("解析文件路径失败: %s, %s", file_path, e)
             return None, None
 
-    def _validate_changed_data(self, symbol: str, interval: str, event_type: str) -> None:
+    def _validate_changed_data(
+        self, symbol: str, interval: str, event_type: str
+    ) -> None:
         """
         校验变化的数据
 
@@ -145,7 +164,7 @@ class DataFileWatcher(FileSystemEventHandler):
         """
         try:
             if event_type == "deleted":
-                self.logger.info(f"数据文件已删除: {symbol} {interval}")
+                self.logger.info("数据文件已删除: %s %s", symbol, interval)
                 return
 
             # 执行数据校验
@@ -155,14 +174,17 @@ class DataFileWatcher(FileSystemEventHandler):
                     result = result[0]  # 取第一个结果
 
                 if result.is_valid:
-                    self.logger.info(f"数据校验通过: {symbol} {interval}")
+                    self.logger.info("数据校验通过: %s %s", symbol, interval)
                 else:
-                    self.logger.warning(f"数据校验失败: {symbol} {interval}, 错误: {result.errors}")
+                    errors = result.errors
+                    self.logger.warning(
+                        "数据校验失败: %s %s, 错误: %s", symbol, interval, errors
+                    )
             else:
-                self.logger.warning(f"数据校验失败: {symbol} {interval}")
+                self.logger.warning("数据校验失败: %s %s", symbol, interval)
 
-        except Exception as e:
-            self.logger.error(f"校验变化数据失败: {symbol} {interval}, {e}")
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            self.logger.error("校验变化数据失败: %s %s, %s", symbol, interval, e)
 
 
 class FileWatcherManager:
@@ -170,14 +192,15 @@ class FileWatcherManager:
 
     def __init__(self):
         """初始化文件监控管理器"""
-        self.observer: Optional[Observer] = None
+        self.observer = None  # Observer instance or None
         self.handler: Optional[DataFileWatcher] = None
         self.logger = logging.getLogger(__name__)
         self._is_running = False
         self._lock = threading.Lock()
 
-    def start_watching(self, watch_dir: Optional[Path] = None,
-                      callback: Optional[Callable] = None) -> bool:
+    def start_watching(
+        self, watch_dir: Optional[Path] = None, callback: Optional[Callable] = None
+    ) -> bool:
         """
         开始监控文件变化
 
@@ -198,7 +221,7 @@ class FileWatcherManager:
                     watch_dir = config_manager.get_data_dir()
 
                 if not watch_dir.exists():
-                    self.logger.error(f"监控目录不存在: {watch_dir}")
+                    self.logger.error("监控目录不存在: %s", watch_dir)
                     return False
 
                 # 创建监控处理器
@@ -206,17 +229,18 @@ class FileWatcherManager:
 
                 # 创建观察者
                 self.observer = Observer()
-                self.observer.schedule(self.handler, str(watch_dir), recursive=True)
+                if self.observer is not None:
+                    self.observer.schedule(self.handler, str(watch_dir), recursive=True)
 
-                # 启动监控
-                self.observer.start()
-                self._is_running = True
+                    # 启动监控
+                    self.observer.start()
+                    self._is_running = True
 
-                self.logger.info(f"开始监控目录: {watch_dir}")
+                self.logger.info("开始监控目录: %s", watch_dir)
                 return True
 
-            except Exception as e:
-                self.logger.error(f"启动文件监控失败: {e}")
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                self.logger.error("启动文件监控失败: %s", e)
                 return False
 
     def stop_watching(self) -> bool:
@@ -243,8 +267,8 @@ class FileWatcherManager:
                 self.logger.info("停止文件监控")
                 return True
 
-            except Exception as e:
-                self.logger.error(f"停止文件监控失败: {e}")
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                self.logger.error("停止文件监控失败: %s", e)
                 return False
 
     def is_running(self) -> bool:
@@ -265,11 +289,12 @@ class FileWatcherManager:
             监控信息字典
         """
         with self._lock:
+            watch_dir = str(config_manager.get_data_dir()) if self._is_running else None
             return {
                 "is_running": self._is_running,
-                "watch_dir": str(config_manager.get_data_dir()) if self._is_running else None,
+                "watch_dir": watch_dir,
                 "handler": self.handler is not None,
-                "observer": self.observer is not None
+                "observer": self.observer is not None,
             }
 
 
@@ -325,6 +350,7 @@ class EventDrivenFileWatcher:
         Returns:
             回调函数
         """
+
         def callback(file_path: str, event_type: str, symbol: str, interval: str):
             """文件变化回调函数"""
             try:
@@ -335,18 +361,17 @@ class EventDrivenFileWatcher:
                         "event_type": event_type,
                         "symbol": symbol,
                         "interval": interval,
-                        "timestamp": datetime.now()
+                        "timestamp": datetime.now(),
                     }
 
                     # 推送事件
-                    from vnpy.event import Event
                     event = Event("EVENT_CHINASTOCK_FILE_CHANGE", event_data)
                     self.event_engine.put(event)
 
-                    self.logger.info(f"推送文件变化事件: {symbol} {interval}")
+                    self.logger.info("推送文件变化事件: %s %s", symbol, interval)
 
-            except Exception as e:
-                self.logger.error(f"处理文件变化回调失败: {e}")
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                self.logger.error("处理文件变化回调失败: %s", e)
 
         return callback
 

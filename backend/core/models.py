@@ -12,6 +12,8 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
+from pydantic import BaseModel, Field
+
 # 导入统一导入模块
 from .imports import pd
 
@@ -19,11 +21,11 @@ from .imports import pd
 class DataCategory(Enum):
     """数据类别枚举."""
 
-    MARKET_DATA = "market_data"      # 行情数据
+    MARKET_DATA = "market_data"  # 行情数据
     TRANSACTION_DATA = "transaction_data"  # 交易数据
-    PORTFOLIO_DATA = "portfolio_data"      # 组合数据
-    RISK_DATA = "risk_data"          # 风险数据
-    SYSTEM_DATA = "system_data"      # 系统数据
+    PORTFOLIO_DATA = "portfolio_data"  # 组合数据
+    RISK_DATA = "risk_data"  # 风险数据
+    SYSTEM_DATA = "system_data"  # 系统数据
 
 
 class DataSource(Enum):
@@ -86,16 +88,16 @@ class UnifiedMarketData:  # pylint: disable=too-many-instance-attributes
     ask_volume: int = 0
 
     # 元数据
-    metadata: DataMetadata = field(default_factory=lambda: DataMetadata(
-        DataCategory.MARKET_DATA, DataSource.VNPY
-    ))
+    metadata: DataMetadata = field(
+        default_factory=lambda: DataMetadata(DataCategory.MARKET_DATA, DataSource.VNPY)
+    )
 
     @classmethod
-    def from_vnpy_tick(cls, tick: Any) -> 'UnifiedMarketData':
+    def from_vnpy_tick(cls, tick: Any) -> "UnifiedMarketData":
         """从VNPY TickData创建统一数据."""
         return cls(
             symbol=tick.symbol,
-            exchange=tick.exchange if hasattr(tick, 'exchange') else "",
+            exchange=tick.exchange if hasattr(tick, "exchange") else "",
             data_type="tick",
             datetime=tick.datetime,
             timestamp=int(tick.datetime.timestamp()) if tick.datetime else 0,
@@ -115,22 +117,21 @@ class UnifiedMarketData:  # pylint: disable=too-many-instance-attributes
                 DataCategory.MARKET_DATA,
                 DataSource.VNPY,
                 symbol=tick.symbol,
-                exchange=tick.exchange if hasattr(tick, 'exchange') else "",
+                exchange=tick.exchange if hasattr(tick, "exchange") else "",
                 count=1,
-                last_updated=tick.datetime
-            )
+                last_updated=tick.datetime,
+            ),
         )
 
     @classmethod
-    def from_vnpy_bar(cls, bar_data: Any) -> 'UnifiedMarketData':
+    def from_vnpy_bar(cls, bar_data: Any) -> "UnifiedMarketData":
         """从VNPY BarData创建统一数据."""
         return cls(
             symbol=bar_data.symbol,
             exchange=bar_data.exchange,
             data_type="bar",
             datetime=bar_data.datetime,
-            timestamp=(int(bar_data.datetime.timestamp())
-                       if bar_data.datetime else 0),
+            timestamp=(int(bar_data.datetime.timestamp()) if bar_data.datetime else 0),
             open_price=bar_data.open_price,
             high_price=bar_data.high_price,
             low_price=bar_data.low_price,
@@ -144,33 +145,32 @@ class UnifiedMarketData:  # pylint: disable=too-many-instance-attributes
                 DataSource.VNPY,
                 symbol=bar_data.symbol,
                 exchange=bar_data.exchange,
-                frequency=(f"{bar_data.interval}m"
-                           if bar_data.interval else "1m"),
+                frequency=(f"{bar_data.interval}m" if bar_data.interval else "1m"),
                 count=1,
-                last_updated=bar_data.datetime
-            )
+                last_updated=bar_data.datetime,
+            ),
         )
 
     def to_pandas_row(self) -> Dict[str, Any]:
         """转换为pandas行数据."""
         return {
-            'symbol': self.symbol,
-            'exchange': self.exchange,
-            'data_type': self.data_type,
-            'datetime': self.datetime,
-            'timestamp': self.timestamp,
-            'open_price': self.open_price,
-            'high_price': self.high_price,
-            'low_price': self.low_price,
-            'close_price': self.close_price,
-            'pre_close': self.pre_close,
-            'volume': self.volume,
-            'turnover': self.turnover,
-            'open_interest': self.open_interest,
-            'bid_price': self.bid_price,
-            'bid_volume': self.bid_volume,
-            'ask_price': self.ask_price,
-            'ask_volume': self.ask_volume
+            "symbol": self.symbol,
+            "exchange": self.exchange,
+            "data_type": self.data_type,
+            "datetime": self.datetime,
+            "timestamp": self.timestamp,
+            "open_price": self.open_price,
+            "high_price": self.high_price,
+            "low_price": self.low_price,
+            "close_price": self.close_price,
+            "pre_close": self.pre_close,
+            "volume": self.volume,
+            "turnover": self.turnover,
+            "open_interest": self.open_interest,
+            "bid_price": self.bid_price,
+            "bid_volume": self.bid_volume,
+            "ask_price": self.ask_price,
+            "ask_volume": self.ask_volume,
         }
 
 
@@ -183,7 +183,7 @@ class UnifiedOrder:  # pylint: disable=too-many-instance-attributes
     symbol: str
     exchange: str
     order_type: str  # market, limit, stop
-    direction: str   # long, short
+    direction: str  # long, short
 
     # 价格和数量
     price: float
@@ -195,16 +195,17 @@ class UnifiedOrder:  # pylint: disable=too-many-instance-attributes
     traded_volume: int = 0
 
     # 元数据
-    metadata: DataMetadata = field(default_factory=lambda: DataMetadata(
-        DataCategory.TRANSACTION_DATA, DataSource.VNPY
-    ))
+    metadata: DataMetadata = field(
+        default_factory=lambda: DataMetadata(
+            DataCategory.TRANSACTION_DATA, DataSource.VNPY
+        )
+    )
 
     @classmethod
-    def from_vnpy_order(cls, order: Any) -> 'UnifiedOrder':
+    def from_vnpy_order(cls, order: Any) -> "UnifiedOrder":
         """从VNPY OrderData创建统一订单."""
         return cls(
-            order_id=(order.orderid if hasattr(order, 'orderid')
-                      else str(id(order))),
+            order_id=(order.orderid if hasattr(order, "orderid") else str(id(order))),
             symbol=order.symbol,
             exchange=order.exchange,
             order_type=order.type,
@@ -213,16 +214,19 @@ class UnifiedOrder:  # pylint: disable=too-many-instance-attributes
             volume=order.volume,
             traded_volume=order.traded,
             status=order.status,
-            order_time=(datetime.strptime(order.time, "%H:%M:%S")
-                        if order.time else datetime.now()),
+            order_time=(
+                datetime.strptime(order.time, "%H:%M:%S")
+                if order.time
+                else datetime.now()
+            ),
             metadata=DataMetadata(
                 DataCategory.TRANSACTION_DATA,
                 DataSource.VNPY,
                 symbol=order.symbol,
                 exchange=order.exchange,
                 count=1,
-                last_updated=datetime.now()
-            )
+                last_updated=datetime.now(),
+            ),
         )
 
 
@@ -243,32 +247,36 @@ class UnifiedTrade:  # pylint: disable=too-many-instance-attributes
     trade_time: datetime
 
     # 元数据
-    metadata: DataMetadata = field(default_factory=lambda: DataMetadata(
-        DataCategory.TRANSACTION_DATA, DataSource.VNPY
-    ))
+    metadata: DataMetadata = field(
+        default_factory=lambda: DataMetadata(
+            DataCategory.TRANSACTION_DATA, DataSource.VNPY
+        )
+    )
 
     @classmethod
-    def from_vnpy_trade(cls, trade: Any) -> 'UnifiedTrade':
+    def from_vnpy_trade(cls, trade: Any) -> "UnifiedTrade":
         """从VNPY TradeData创建统一成交."""
         return cls(
-            trade_id=(trade.tradeid if hasattr(trade, 'tradeid')
-                      else str(id(trade))),
+            trade_id=(trade.tradeid if hasattr(trade, "tradeid") else str(id(trade))),
             order_id="",  # TradeData中没有order_id
             symbol=trade.symbol,
             exchange=trade.exchange,
             direction=trade.direction,
             price=trade.price,
             volume=trade.volume,
-            trade_time=(datetime.strptime(trade.time, "%H:%M:%S")
-                        if trade.time else datetime.now()),
+            trade_time=(
+                datetime.strptime(trade.time, "%H:%M:%S")
+                if trade.time
+                else datetime.now()
+            ),
             metadata=DataMetadata(
                 DataCategory.TRANSACTION_DATA,
                 DataSource.VNPY,
                 symbol=trade.symbol,
                 exchange=trade.exchange,
                 count=1,
-                last_updated=datetime.now()
-            )
+                last_updated=datetime.now(),
+            ),
         )
 
 
@@ -293,12 +301,14 @@ class UnifiedPosition:  # pylint: disable=too-many-instance-attributes
     realized_pnl: float
 
     # 元数据
-    metadata: DataMetadata = field(default_factory=lambda: DataMetadata(
-        DataCategory.PORTFOLIO_DATA, DataSource.VNPY
-    ))
+    metadata: DataMetadata = field(
+        default_factory=lambda: DataMetadata(
+            DataCategory.PORTFOLIO_DATA, DataSource.VNPY
+        )
+    )
 
     @classmethod
-    def from_vnpy_position(cls, position: Any) -> 'UnifiedPosition':
+    def from_vnpy_position(cls, position: Any) -> "UnifiedPosition":
         """从VNPY PositionData创建统一持仓."""
         return cls(
             symbol=position.symbol,
@@ -317,8 +327,8 @@ class UnifiedPosition:  # pylint: disable=too-many-instance-attributes
                 symbol=position.symbol,
                 exchange=position.exchange,
                 count=1,
-                last_updated=datetime.now()
-            )
+                last_updated=datetime.now(),
+            ),
         )
 
 
@@ -345,12 +355,14 @@ class UnifiedAccount:  # pylint: disable=too-many-instance-attributes
     total_profit: float
 
     # 元数据
-    metadata: DataMetadata = field(default_factory=lambda: DataMetadata(
-        DataCategory.PORTFOLIO_DATA, DataSource.VNPY
-    ))
+    metadata: DataMetadata = field(
+        default_factory=lambda: DataMetadata(
+            DataCategory.PORTFOLIO_DATA, DataSource.VNPY
+        )
+    )
 
     @classmethod
-    def from_vnpy_account(cls, account: Any) -> 'UnifiedAccount':
+    def from_vnpy_account(cls, account: Any) -> "UnifiedAccount":
         """从VNPY AccountData创建统一账户."""
         total_profit = account.close_profit + account.position_profit
 
@@ -369,9 +381,638 @@ class UnifiedAccount:  # pylint: disable=too-many-instance-attributes
                 DataCategory.PORTFOLIO_DATA,
                 DataSource.VNPY,
                 count=1,
-                last_updated=datetime.now()
-            )
+                last_updated=datetime.now(),
+            ),
         )
+
+
+# =============================================================================
+# 数据中心模块数据模型
+# =============================================================================
+
+
+class SymbolInfo(BaseModel):
+    """品种信息模型."""
+
+    id: Optional[str] = Field(None, description="品种ID")
+    symbol: str = Field(..., description="品种代码")
+    exchange: str = Field(..., description="交易所")
+    name: str = Field(..., description="品种名称")
+    product: str = Field(..., description="产品类型")
+    size: float = Field(..., description="合约乘数")
+    pricetick: float = Field(..., description="最小变动价位")
+    min_volume: int = Field(default=1, description="最小交易量")
+    max_volume: int = Field(default=1000000, description="最大交易量")
+    is_active: bool = Field(default=True, description="是否活跃")
+    listed_date: Optional[datetime] = Field(None, description="上市日期")
+    expired_date: Optional[datetime] = Field(None, description="到期日期")
+
+
+class DownloadTask(BaseModel):
+    """下载任务模型."""
+
+    task_id: str = Field(..., description="任务ID")
+    symbol: str = Field(..., description="品种代码")
+    exchange: str = Field(..., description="交易所")
+    start_date: datetime = Field(..., description="开始日期")
+    end_date: datetime = Field(..., description="结束日期")
+    data_type: str = Field(default="bar", description="数据类型")
+    frequency: str = Field(default="1m", description="数据频率")
+    status: str = Field(default="pending", description="任务状态")
+    progress: float = Field(default=0.0, description="进度百分比")
+    total_count: int = Field(default=0, description="总数据量")
+    downloaded_count: int = Field(default=0, description="已下载数量")
+    error_message: Optional[str] = Field(None, description="错误信息")
+    created_at: datetime = Field(default_factory=datetime.now, description="创建时间")
+    updated_at: datetime = Field(default_factory=datetime.now, description="更新时间")
+
+
+class DataSourceConfig(BaseModel):
+    """数据源配置模型."""
+
+    source_id: str = Field(..., description="数据源ID")
+    source_type: str = Field(..., description="数据源类型")
+    name: str = Field(..., description="数据源名称")
+    is_enabled: bool = Field(default=True, description="是否启用")
+    is_connected: bool = Field(default=False, description="是否连接")
+    config: Dict[str, Any] = Field(default_factory=dict, description="配置参数")
+    last_connected: Optional[datetime] = Field(None, description="最后连接时间")
+    error_count: int = Field(default=0, description="错误次数")
+
+
+# =============================================================================
+# 行情看板模块数据模型
+# =============================================================================
+
+
+class ChartConfig(BaseModel):
+    """图表配置模型."""
+
+    chart_id: str = Field(..., description="图表ID")
+    symbol: str = Field(..., description="主品种")
+    exchange: str = Field(..., description="交易所")
+    chart_type: str = Field(default="kline", description="图表类型")
+    period: str = Field(default="1m", description="周期")
+    indicators: List[Dict[str, Any]] = Field(
+        default_factory=list, description="指标配置"
+    )
+    overlays: List[Dict[str, Any]] = Field(default_factory=list, description="叠加配置")
+    theme: str = Field(default="dark", description="主题")
+    auto_refresh: bool = Field(default=True, description="自动刷新")
+
+
+class IndicatorConfig(BaseModel):
+    """指标配置模型."""
+
+    indicator_id: str = Field(..., description="指标ID")
+    name: str = Field(..., description="指标名称")
+    type: str = Field(..., description="指标类型")
+    parameters: Dict[str, Any] = Field(default_factory=dict, description="参数")
+    style: Dict[str, Any] = Field(default_factory=dict, description="样式配置")
+    sub_chart: int = Field(default=0, description="副图编号")
+
+
+class GapInfo(BaseModel):
+    """数据断点信息模型."""
+
+    symbol: str = Field(..., description="品种代码")
+    exchange: str = Field(..., description="交易所")
+    gap_start: datetime = Field(..., description="断点开始时间")
+    gap_end: datetime = Field(..., description="断点结束时间")
+    gap_type: str = Field(..., description="断点类型")
+    severity: str = Field(default="medium", description="严重程度")
+    suggested_action: str = Field(..., description="建议操作")
+
+
+# =============================================================================
+# 策略指标中心模块数据模型
+# =============================================================================
+
+
+class StrategyFile(BaseModel):
+    """策略文件模型."""
+
+    file_path: str = Field(..., description="文件路径")
+    file_name: str = Field(..., description="文件名")
+    file_type: str = Field(..., description="文件类型")
+    size: int = Field(default=0, description="文件大小")
+    modified_time: datetime = Field(..., description="修改时间")
+    strategy_type: Optional[str] = Field(None, description="策略类型")
+    is_valid: bool = Field(default=True, description="是否有效")
+
+
+class BacktestConfig(BaseModel):
+    """回测配置模型."""
+
+    backtest_id: str = Field(..., description="回测ID")
+    strategy_name: str = Field(..., description="策略名称")
+    symbol: str = Field(..., description="品种代码")
+    start_date: datetime = Field(..., description="开始日期")
+    end_date: datetime = Field(..., description="结束日期")
+    initial_capital: float = Field(default=100000.0, description="初始资金")
+    commission_rate: float = Field(default=0.0003, description="手续费率")
+    slippage_rate: float = Field(default=0.0, description="滑点率")
+    parameters: Dict[str, Any] = Field(default_factory=dict, description="策略参数")
+    status: str = Field(default="pending", description="回测状态")
+    progress: float = Field(default=0.0, description="进度百分比")
+
+
+class BacktestResult(BaseModel):
+    """回测结果模型."""
+
+    backtest_id: str = Field(..., description="回测ID")
+    total_return: float = Field(default=0.0, description="总收益率")
+    annual_return: float = Field(default=0.0, description="年化收益率")
+    max_drawdown: float = Field(default=0.0, description="最大回撤")
+    sharpe_ratio: float = Field(default=0.0, description="夏普比率")
+    win_rate: float = Field(default=0.0, description="胜率")
+    profit_factor: float = Field(default=0.0, description="盈利因子")
+    total_trades: int = Field(default=0, description="总交易次数")
+    winning_trades: int = Field(default=0, description="盈利交易次数")
+    losing_trades: int = Field(default=0, description="亏损交易次数")
+    equity_curve: List[Dict[str, Any]] = Field(
+        default_factory=list, description="权益曲线"
+    )
+    trade_records: List[Dict[str, Any]] = Field(
+        default_factory=list, description="交易记录"
+    )
+
+
+class AIChatMessage(BaseModel):
+    """AI聊天消息模型."""
+
+    message_id: str = Field(..., description="消息ID")
+    role: str = Field(..., description="角色")
+    content: str = Field(..., description="内容")
+    timestamp: datetime = Field(default_factory=datetime.now, description="时间戳")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="元数据")
+
+
+# =============================================================================
+# 交易网关模块数据模型
+# =============================================================================
+
+
+class GatewayConfig(BaseModel):
+    """网关配置模型."""
+
+    gateway_id: str = Field(..., description="网关ID")
+    gateway_type: str = Field(..., description="网关类型")
+    gateway_name: str = Field(..., description="网关名称")
+    is_active: bool = Field(default=False, description="是否激活")
+    is_connected: bool = Field(default=False, description="是否连接")
+    config: Dict[str, Any] = Field(default_factory=dict, description="配置参数")
+    status: str = Field(default="disconnected", description="连接状态")
+    last_connected: Optional[datetime] = Field(None, description="最后连接时间")
+    error_message: Optional[str] = Field(None, description="错误信息")
+
+
+class StrategyInstance(BaseModel):
+    """策略实例模型."""
+
+    instance_id: str = Field(..., description="实例ID")
+    gateway_id: str = Field(..., description="网关ID")
+    strategy_name: str = Field(..., description="策略名称")
+    strategy_type: str = Field(..., description="策略类型")
+    symbol: str = Field(..., description="品种代码")
+    parameters: Dict[str, Any] = Field(default_factory=dict, description="参数")
+    is_active: bool = Field(default=False, description="是否激活")
+    status: str = Field(default="stopped", description="运行状态")
+    created_at: datetime = Field(default_factory=datetime.now, description="创建时间")
+    started_at: Optional[datetime] = Field(None, description="启动时间")
+    stopped_at: Optional[datetime] = Field(None, description="停止时间")
+
+
+class MonitorData(BaseModel):
+    """监控数据模型."""
+
+    gateway_id: str = Field(..., description="网关ID")
+    data_type: str = Field(..., description="数据类型")
+    timestamp: datetime = Field(default_factory=datetime.now, description="时间戳")
+    data: Dict[str, Any] = Field(default_factory=dict, description="数据内容")
+
+
+# =============================================================================
+# 组合投资模块数据模型
+# =============================================================================
+
+
+class Portfolio(BaseModel):
+    """组合模型."""
+
+    portfolio_id: str = Field(..., description="组合ID")
+    portfolio_name: str = Field(..., description="组合名称")
+    portfolio_type: str = Field(default="custom", description="组合类型")
+    description: str = Field(default="", description="描述")
+    is_active: bool = Field(default=True, description="是否激活")
+    created_at: datetime = Field(default_factory=datetime.now, description="创建时间")
+    updated_at: datetime = Field(default_factory=datetime.now, description="更新时间")
+    config: Dict[str, Any] = Field(default_factory=dict, description="配置参数")
+
+
+class PortfolioPosition(BaseModel):
+    """组合持仓模型."""
+
+    portfolio_id: str = Field(..., description="组合ID")
+    symbol: str = Field(..., description="品种代码")
+    exchange: str = Field(..., description="交易所")
+    direction: str = Field(..., description="方向")
+    volume: float = Field(default=0.0, description="数量")
+    price: float = Field(default=0.0, description="价格")
+    market_value: float = Field(default=0.0, description="市值")
+    cost_value: float = Field(default=0.0, description="成本")
+    unrealized_pnl: float = Field(default=0.0, description="未实现盈亏")
+    realized_pnl: float = Field(default=0.0, description="已实现盈亏")
+    weight: float = Field(default=0.0, description="权重")
+
+
+class PortfolioPerformance(BaseModel):
+    """组合业绩模型."""
+
+    portfolio_id: str = Field(..., description="组合ID")
+    date: datetime = Field(..., description="日期")
+    total_value: float = Field(default=0.0, description="总市值")
+    cash: float = Field(default=0.0, description="现金")
+    total_return: float = Field(default=0.0, description="总收益率")
+    daily_return: float = Field(default=0.0, description="日收益率")
+    cumulative_return: float = Field(default=0.0, description="累计收益率")
+    volatility: float = Field(default=0.0, description="波动率")
+    sharpe_ratio: float = Field(default=0.0, description="夏普比率")
+    max_drawdown: float = Field(default=0.0, description="最大回撤")
+
+
+# =============================================================================
+# 系统管理模块数据模型
+# =============================================================================
+
+
+class SystemMetric(BaseModel):
+    """系统指标模型."""
+
+    metric_id: str = Field(..., description="指标ID")
+    metric_type: str = Field(..., description="指标类型")
+    name: str = Field(..., description="指标名称")
+    value: float = Field(default=0.0, description="指标值")
+    unit: str = Field(default="", description="单位")
+    threshold_warning: Optional[float] = Field(None, description="警告阈值")
+    threshold_critical: Optional[float] = Field(None, description="严重阈值")
+    status: str = Field(default="normal", description="状态")
+    timestamp: datetime = Field(default_factory=datetime.now, description="时间戳")
+
+
+class AlertRule(BaseModel):
+    """告警规则模型."""
+
+    rule_id: str = Field(..., description="规则ID")
+    rule_name: str = Field(..., description="规则名称")
+    metric_type: str = Field(..., description="指标类型")
+    condition: str = Field(..., description="条件")
+    threshold: float = Field(..., description="阈值")
+    severity: str = Field(default="warning", description="严重程度")
+    is_enabled: bool = Field(default=True, description="是否启用")
+    notification_methods: List[str] = Field(
+        default_factory=list, description="通知方式"
+    )
+    created_at: datetime = Field(default_factory=datetime.now, description="创建时间")
+
+
+class AlertRecord(BaseModel):
+    """告警记录模型."""
+
+    alert_id: str = Field(..., description="告警ID")
+    rule_id: str = Field(..., description="规则ID")
+    metric_type: str = Field(..., description="指标类型")
+    metric_value: float = Field(..., description="指标值")
+    threshold: float = Field(..., description="阈值")
+    severity: str = Field(..., description="严重程度")
+    message: str = Field(..., description="告警消息")
+    status: str = Field(default="active", description="状态")
+    triggered_at: datetime = Field(default_factory=datetime.now, description="触发时间")
+    acknowledged_at: Optional[datetime] = Field(None, description="确认时间")
+    resolved_at: Optional[datetime] = Field(None, description="解决时间")
+
+
+class HealthCheck(BaseModel):
+    """健康检查模型."""
+
+    service_name: str = Field(..., description="服务名称")
+    status: str = Field(..., description="状态")
+    response_time: float = Field(default=0.0, description="响应时间")
+    error_message: Optional[str] = Field(None, description="错误信息")
+    last_check: datetime = Field(
+        default_factory=datetime.now, description="最后检查时间"
+    )
+    details: Dict[str, Any] = Field(default_factory=dict, description="详细信息")
+
+
+class SystemTool(BaseModel):
+    """系统工具模型."""
+
+    tool_id: str = Field(..., description="工具ID")
+    tool_name: str = Field(..., description="工具名称")
+    tool_type: str = Field(..., description="工具类型")
+    description: str = Field(default="", description="描述")
+    command: str = Field(..., description="命令")
+    parameters: Dict[str, Any] = Field(default_factory=dict, description="参数")
+    is_enabled: bool = Field(default=True, description="是否启用")
+    created_at: datetime = Field(default_factory=datetime.now, description="创建时间")
+
+
+class LogEntry(BaseModel):
+    """日志条目模型."""
+
+    log_id: str = Field(..., description="日志ID")
+    level: str = Field(..., description="日志级别")
+    logger_name: str = Field(..., description="记录器名称")
+    message: str = Field(..., description="日志消息")
+    timestamp: datetime = Field(default_factory=datetime.now, description="时间戳")
+    module: Optional[str] = Field(None, description="模块名称")
+    function: Optional[str] = Field(None, description="函数名称")
+    line_number: Optional[int] = Field(None, description="行号")
+    extra_data: Dict[str, Any] = Field(default_factory=dict, description="额外数据")
+
+
+class DiagnosticReport(BaseModel):
+    """诊断报告模型."""
+
+    report_id: str = Field(..., description="报告ID")
+    report_type: str = Field(..., description="报告类型")
+    status: str = Field(..., description="诊断状态")
+    summary: str = Field(..., description="摘要")
+    details: Dict[str, Any] = Field(default_factory=dict, description="详细信息")
+    recommendations: List[str] = Field(default_factory=list, description="建议")
+    created_at: datetime = Field(default_factory=datetime.now, description="创建时间")
+
+
+class ConfigItem(BaseModel):
+    """配置项模型."""
+
+    config_key: str = Field(..., description="配置键")
+    config_value: Any = Field(..., description="配置值")
+    config_type: str = Field(..., description="配置类型")
+    description: str = Field(default="", description="描述")
+    is_encrypted: bool = Field(default=False, description="是否加密")
+    last_modified: datetime = Field(
+        default_factory=datetime.now, description="最后修改时间"
+    )
+    modified_by: Optional[str] = Field(None, description="修改人")
+
+
+# =============================================================================
+# 扩展的策略中心模块数据模型
+# =============================================================================
+
+
+class StrategyTemplate(BaseModel):
+    """策略模板模型."""
+
+    template_id: str = Field(..., description="模板ID")
+    template_name: str = Field(..., description="模板名称")
+    strategy_type: str = Field(..., description="策略类型")
+    description: str = Field(default="", description="描述")
+    template_code: str = Field(..., description="模板代码")
+    parameters: Dict[str, Any] = Field(default_factory=dict, description="参数定义")
+    is_builtin: bool = Field(default=False, description="是否内置模板")
+    created_at: datetime = Field(default_factory=datetime.now, description="创建时间")
+
+
+class BacktestTask(BaseModel):
+    """回测任务模型."""
+
+    task_id: str = Field(..., description="任务ID")
+    strategy_file_id: str = Field(..., description="策略文件ID")
+    strategy_name: str = Field(..., description="策略名称")
+    strategy_type: str = Field(..., description="策略类型")
+    parameters: Dict[str, Any] = Field(default_factory=dict, description="回测参数")
+    status: str = Field(default="pending", description="任务状态")
+    progress: float = Field(default=0.0, description="进度")
+    start_time: Optional[datetime] = Field(None, description="开始时间")
+    end_time: Optional[datetime] = Field(None, description="结束时间")
+    error_message: Optional[str] = Field(None, description="错误信息")
+    created_at: datetime = Field(default_factory=datetime.now, description="创建时间")
+
+
+# =============================================================================
+# 扩展的交易网关模块数据模型
+# =============================================================================
+
+
+class GatewayInstance(BaseModel):
+    """网关实例模型."""
+
+    instance_id: str = Field(..., description="实例ID")
+    gateway_type: str = Field(..., description="网关类型")
+    instance_name: str = Field(..., description="实例名称")
+    config: Dict[str, Any] = Field(default_factory=dict, description="配置")
+    status: str = Field(default="disconnected", description="状态")
+    connected_at: Optional[datetime] = Field(None, description="连接时间")
+    disconnected_at: Optional[datetime] = Field(None, description="断开时间")
+    error_count: int = Field(default=0, description="错误计数")
+    last_error: Optional[str] = Field(None, description="最后错误")
+    created_at: datetime = Field(default_factory=datetime.now, description="创建时间")
+
+
+class OrderInfo(BaseModel):
+    """委托信息模型."""
+
+    order_id: str = Field(..., description="委托ID")
+    gateway_id: str = Field(..., description="网关ID")
+    symbol: str = Field(..., description="品种代码")
+    exchange: str = Field(..., description="交易所")
+    direction: str = Field(..., description="方向")
+    offset: str = Field(..., description="开平")
+    price: float = Field(..., description="价格")
+    volume: float = Field(..., description="数量")
+    traded_volume: float = Field(default=0.0, description="成交数量")
+    status: str = Field(..., description="状态")
+    order_time: datetime = Field(default_factory=datetime.now, description="委托时间")
+    strategy_name: Optional[str] = Field(None, description="策略名称")
+
+
+class PositionInfo(BaseModel):
+    """持仓信息模型."""
+
+    position_id: str = Field(..., description="持仓ID")
+    gateway_id: str = Field(..., description="网关ID")
+    symbol: str = Field(..., description="品种代码")
+    exchange: str = Field(..., description="交易所")
+    direction: str = Field(..., description="方向")
+    volume: float = Field(..., description="数量")
+    frozen: float = Field(default=0.0, description="冻结数量")
+    price: float = Field(..., description="价格")
+    pnl: float = Field(default=0.0, description="盈亏")
+    last_update: datetime = Field(default_factory=datetime.now, description="更新时间")
+
+
+class AccountInfo(BaseModel):
+    """资金信息模型."""
+
+    account_id: str = Field(..., description="账户ID")
+    gateway_id: str = Field(..., description="网关ID")
+    balance: float = Field(..., description="余额")
+    frozen: float = Field(default=0.0, description="冻结")
+    available: float = Field(..., description="可用")
+    margin: float = Field(default=0.0, description="保证金")
+    commission: float = Field(default=0.0, description="手续费")
+    last_update: datetime = Field(default_factory=datetime.now, description="更新时间")
+
+
+class TradeInfo(BaseModel):
+    """成交信息模型."""
+
+    trade_id: str = Field(..., description="成交ID")
+    order_id: str = Field(..., description="委托ID")
+    gateway_id: str = Field(..., description="网关ID")
+    symbol: str = Field(..., description="品种代码")
+    exchange: str = Field(..., description="交易所")
+    direction: str = Field(..., description="方向")
+    offset: str = Field(..., description="开平")
+    price: float = Field(..., description="价格")
+    volume: float = Field(..., description="数量")
+    trade_time: datetime = Field(default_factory=datetime.now, description="成交时间")
+    strategy_name: Optional[str] = Field(None, description="策略名称")
+
+
+# =============================================================================
+# 扩展的组合投资模块数据模型
+# =============================================================================
+
+
+class VirtualGateway(BaseModel):
+    """虚拟网关模型."""
+
+    virtual_id: str = Field(..., description="虚拟网关ID")
+    virtual_name: str = Field(..., description="虚拟网关名称")
+    member_gateways: List[str] = Field(
+        default_factory=list, description="成员网关ID列表"
+    )
+    description: str = Field(default="", description="描述")
+    created_at: datetime = Field(default_factory=datetime.now, description="创建时间")
+    updated_at: datetime = Field(default_factory=datetime.now, description="更新时间")
+
+
+class PortfolioMember(BaseModel):
+    """组合成员模型."""
+
+    portfolio_id: str = Field(..., description="组合ID")
+    member_id: str = Field(..., description="成员ID")
+    member_type: str = Field(..., description="成员类型")
+    weight: float = Field(default=0.0, description="权重")
+    is_active: bool = Field(default=True, description="是否激活")
+    added_at: datetime = Field(default_factory=datetime.now, description="添加时间")
+
+
+class PerformanceMetrics(BaseModel):
+    """业绩指标模型."""
+
+    portfolio_id: str = Field(..., description="组合ID")
+    date: datetime = Field(..., description="日期")
+    net_value: float = Field(..., description="净值")
+    total_return: float = Field(..., description="总收益率")
+    daily_return: float = Field(..., description="日收益率")
+    annual_return: float = Field(default=0.0, description="年化收益率")
+    sharpe_ratio: float = Field(default=0.0, description="夏普比率")
+    sortino_ratio: float = Field(default=0.0, description="索提诺比率")
+    max_drawdown: float = Field(default=0.0, description="最大回撤")
+    win_rate: float = Field(default=0.0, description="胜率")
+
+
+class RiskMetrics(BaseModel):
+    """风险指标模型."""
+
+    portfolio_id: str = Field(..., description="组合ID")
+    date: datetime = Field(..., description="日期")
+    volatility: float = Field(..., description="波动率")
+    var_95: float = Field(..., description="95% VaR")
+    var_99: float = Field(..., description="99% VaR")
+    cvar_95: float = Field(..., description="95% CVaR")
+    beta: float = Field(default=0.0, description="Beta值")
+    correlation_matrix: Dict[str, Any] = Field(
+        default_factory=dict, description="相关性矩阵"
+    )
+    exposure: Dict[str, float] = Field(default_factory=dict, description="风险暴露")
+
+
+class AttributionResult(BaseModel):
+    """归因分析结果模型."""
+
+    portfolio_id: str = Field(..., description="组合ID")
+    date: datetime = Field(..., description="日期")
+    total_return: float = Field(..., description="总收益")
+    asset_allocation: Dict[str, float] = Field(
+        default_factory=dict, description="资产配置贡献"
+    )
+    security_selection: Dict[str, float] = Field(
+        default_factory=dict, description="证券选择贡献"
+    )
+    timing: float = Field(default=0.0, description="择时贡献")
+    interaction: float = Field(default=0.0, description="交互效应")
+    residual: float = Field(default=0.0, description="残差")
+
+
+# =============================================================================
+# 扩展的系统管理模块数据模型
+# =============================================================================
+
+
+class SystemStatus(BaseModel):
+    """系统状态模型."""
+
+    timestamp: datetime = Field(default_factory=datetime.now, description="时间戳")
+    cpu_percent: float = Field(..., description="CPU使用率")
+    memory_percent: float = Field(..., description="内存使用率")
+    disk_percent: float = Field(..., description="磁盘使用率")
+    network_sent: float = Field(default=0.0, description="网络发送")
+    network_recv: float = Field(default=0.0, description="网络接收")
+    process_count: int = Field(default=0, description="进程数")
+    thread_count: int = Field(default=0, description="线程数")
+    status: str = Field(default="normal", description="状态")
+
+
+class AlertInfo(BaseModel):
+    """告警信息模型."""
+
+    alert_id: str = Field(..., description="告警ID")
+    alert_type: str = Field(..., description="告警类型")
+    severity: str = Field(..., description="严重程度")
+    title: str = Field(..., description="标题")
+    message: str = Field(..., description="消息")
+    source: str = Field(..., description="来源")
+    status: str = Field(default="active", description="状态")
+    triggered_at: datetime = Field(default_factory=datetime.now, description="触发时间")
+    acknowledged_at: Optional[datetime] = Field(None, description="确认时间")
+    resolved_at: Optional[datetime] = Field(None, description="解决时间")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="元数据")
+
+
+class HealthCheckResult(BaseModel):
+    """健康检查结果模型."""
+
+    service_name: str = Field(..., description="服务名称")
+    status: str = Field(..., description="状态")
+    response_time_ms: float = Field(..., description="响应时间(毫秒)")
+    message: str = Field(default="", description="消息")
+    details: Dict[str, Any] = Field(default_factory=dict, description="详细信息")
+    checked_at: datetime = Field(default_factory=datetime.now, description="检查时间")
+
+
+class ToolInfo(BaseModel):
+    """工具信息模型."""
+
+    tool_id: str = Field(..., description="工具ID")
+    tool_name: str = Field(..., description="工具名称")
+    tool_category: str = Field(..., description="工具类别")
+    version: str = Field(default="1.0.0", description="版本")
+    description: str = Field(default="", description="描述")
+    entry_point: str = Field(..., description="入口点")
+    parameters_schema: Dict[str, Any] = Field(
+        default_factory=dict, description="参数模式"
+    )
+    is_enabled: bool = Field(default=True, description="是否启用")
+    registered_at: datetime = Field(
+        default_factory=datetime.now, description="注册时间"
+    )
+    usage_count: int = Field(default=0, description="使用次数")
 
 
 class DataModelManager:
@@ -397,8 +1038,9 @@ class DataModelManager:
         if len(self._market_data_cache[key]) > 10000:
             self._market_data_cache[key] = self._market_data_cache[key][-5000:]
 
-    def get_market_data(self, symbol: str, exchange: str = "",
-                        limit: int = 100) -> List[UnifiedMarketData]:
+    def get_market_data(
+        self, symbol: str, exchange: str = "", limit: int = 100
+    ) -> List[UnifiedMarketData]:
         """获取行情数据."""
         key = f"{symbol}_{exchange}"
         data_list = self._market_data_cache.get(key, [])
@@ -425,8 +1067,9 @@ class DataModelManager:
         key = f"{position.symbol}_{position.exchange}_{position.direction}"
         self._position_cache[key] = position
 
-    def get_position(self, symbol: str, exchange: str = "",
-                     direction: str = "long") -> Optional[UnifiedPosition]:
+    def get_position(
+        self, symbol: str, exchange: str = "", direction: str = "long"
+    ) -> Optional[UnifiedPosition]:
         """获取持仓."""
         key = f"{symbol}_{exchange}_{direction}"
         return self._position_cache.get(key)
@@ -439,8 +1082,7 @@ class DataModelManager:
         """获取账户."""
         return self._account_cache.get(account_id)
 
-    def to_pandas_dataframe(self, data_list: List[UnifiedMarketData]
-                            ) -> Optional[Any]:
+    def to_pandas_dataframe(self, data_list: List[UnifiedMarketData]) -> Optional[Any]:
         """将行情数据转换为pandas DataFrame."""
         if not data_list or not pd:
             return None
@@ -449,8 +1091,8 @@ class DataModelManager:
             rows = [data.to_pandas_row() for data in data_list]
             df = pd.DataFrame(rows)
             if not df.empty:
-                df['datetime'] = pd.to_datetime(df['datetime'])
-                df.set_index('datetime', inplace=True)
+                df["datetime"] = pd.to_datetime(df["datetime"])
+                df.set_index("datetime", inplace=True)
             return df
         except (ValueError, TypeError, AttributeError) as e:
             self.logger.error("转换为pandas DataFrame失败: %s", e)
@@ -459,13 +1101,12 @@ class DataModelManager:
     def get_statistics(self) -> Dict[str, Any]:
         """获取数据统计信息."""
         return {
-            "market_data_count": sum(len(v) for v in
-                                     self._market_data_cache.values()),
+            "market_data_count": sum(len(v) for v in self._market_data_cache.values()),
             "order_count": len(self._order_cache),
             "trade_count": len(self._trade_cache),
             "position_count": len(self._position_cache),
             "account_count": len(self._account_cache),
-            "cache_memory_usage": self._estimate_memory_usage()
+            "cache_memory_usage": self._estimate_memory_usage(),
         }
 
     def _estimate_memory_usage(self) -> str:
@@ -475,8 +1116,9 @@ class DataModelManager:
 
             # 估算市场数据内存
             for data_list in self._market_data_cache.values():
-                total_size += (sys.getsizeof(data_list) +
-                               sum(sys.getsizeof(data) for data in data_list))
+                total_size += sys.getsizeof(data_list) + sum(
+                    sys.getsizeof(data) for data in data_list
+                )
 
             # 估算其他数据内存
             total_size += sys.getsizeof(self._order_cache)
@@ -550,15 +1192,68 @@ def reset_data_model_manager():
 # 导出所有公共接口
 __all__ = [
     # 数据类别和源枚举
-    'DataCategory', 'DataSource',
-
-    # 数据模型类
-    'DataMetadata', 'UnifiedMarketData', 'UnifiedOrder',
-    'UnifiedTrade', 'UnifiedPosition', 'UnifiedAccount',
-
+    "DataCategory",
+    "DataSource",
+    # 原始数据模型类
+    "DataMetadata",
+    "UnifiedMarketData",
+    "UnifiedOrder",
+    "UnifiedTrade",
+    "UnifiedPosition",
+    "UnifiedAccount",
+    # 数据中心模块模型
+    "SymbolInfo",
+    "DownloadTask",
+    "DataSourceConfig",
+    # 行情看板模块模型
+    "ChartConfig",
+    "IndicatorConfig",
+    "GapInfo",
+    # 策略指标中心模块模型
+    "StrategyFile",
+    "BacktestConfig",
+    "BacktestResult",
+    "AIChatMessage",
+    # 交易网关模块模型
+    "GatewayConfig",
+    "StrategyInstance",
+    "MonitorData",
+    # 组合投资模块模型
+    "Portfolio",
+    "PortfolioPosition",
+    "PortfolioPerformance",
+    # 系统管理模块模型
+    "SystemMetric",
+    "AlertRule",
+    "AlertRecord",
+    "HealthCheck",
+    "SystemTool",
+    "LogEntry",
+    "DiagnosticReport",
+    "ConfigItem",
+    # 扩展的策略中心模型
+    "StrategyTemplate",
+    "BacktestTask",
+    # 扩展的交易网关模型
+    "GatewayInstance",
+    "OrderInfo",
+    "PositionInfo",
+    "AccountInfo",
+    "TradeInfo",
+    # 扩展的组合投资模型
+    "VirtualGateway",
+    "PortfolioMember",
+    "PerformanceMetrics",
+    "RiskMetrics",
+    "AttributionResult",
+    # 扩展的系统管理模型
+    "SystemStatus",
+    "AlertInfo",
+    "HealthCheckResult",
+    "ToolInfo",
     # 管理器类
-    'DataModelManager',
-
+    "DataModelManager",
     # 全局函数
-    'get_data_model_manager', 'reset_data_model_manager'
+    "get_data_model_manager",
+    "reset_data_model_manager",
 ]

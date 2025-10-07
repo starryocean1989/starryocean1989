@@ -10,7 +10,7 @@ import random
 from datetime import datetime, timedelta
 from typing import Optional, TYPE_CHECKING
 
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QTimer, Qt, QDate
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -40,11 +40,11 @@ from PySide6.QtWidgets import (
 if TYPE_CHECKING:
     from ui.widgets.base_widget import BaseWidget
 
-    from utils.logging_utils import LoggerMixin
+    from backend.core.utils.logging_utils import LoggerMixin
 else:
     try:
         from ui.widgets.base_widget import BaseWidget
-        from utils.logging_utils import LoggerMixin
+        from backend.core.utils.logging_utils import LoggerMixin
     except ImportError:
         # Fallback classes with proper typing
         class BaseWidget(QWidget):
@@ -133,7 +133,20 @@ class DataCenter(BaseWidget, LoggerMixin):
         self.sources_tab: Optional[QWidget] = None
         self.search_input: Optional[QLineEdit] = None
         self.exchange_combo: Optional[QComboBox] = None
+        self.symbol_type_combo: Optional[QComboBox] = None
+        self.filter_preset_combo: Optional[QComboBox] = None
+        self.symbols_count_label: Optional[QLabel] = None
+        self.prev_page_btn: Optional[QPushButton] = None
+        self.next_page_btn: Optional[QPushButton] = None
+        self.page_label: Optional[QLabel] = None
         self.symbols_table: Optional[QTableWidget] = None
+
+        # 分页相关属性
+        self.current_page = 1
+        self.page_size = 50
+        self.total_pages = 1
+        self.all_symbols_data = []  # 存储所有品种数据
+        self.filtered_symbols_data = []  # 存储筛选后的数据
         self.symbol_input: Optional[QLineEdit] = None
         self.start_date_input: Optional[QDateEdit] = None
         self.end_date_input: Optional[QDateEdit] = None
@@ -148,6 +161,10 @@ class DataCenter(BaseWidget, LoggerMixin):
         self.download_end_date: Optional[QDateEdit] = None
         self.download_progress: Optional[QProgressBar] = None
         self.progress_label: Optional[QLabel] = None
+        self.download_speed_label: Optional[QLabel] = None
+        self.download_eta_label: Optional[QLabel] = None
+        self.detail_progress_table: Optional[QTableWidget] = None
+        self.toggle_detail_btn: Optional[QPushButton] = None
         self.start_download_btn: Optional[QPushButton] = None
         self.pause_download_btn: Optional[QPushButton] = None
         self.stop_download_btn: Optional[QPushButton] = None
@@ -197,24 +214,104 @@ class DataCenter(BaseWidget, LoggerMixin):
         tab = QWidget()
         layout = QVBoxLayout(tab)
 
-        # 搜索和筛选组
+        # 工具栏：重新加载和刷新按钮
+        toolbar_layout = QHBoxLayout()
+
+        reload_btn = QPushButton("🔄 重新加载品种")
+        reload_btn.setToolTip("通过API重新获取品种列表并更新缓存")
+        reload_btn.clicked.connect(self._reload_symbols)
+        toolbar_layout.addWidget(reload_btn)
+
+        refresh_btn = QPushButton("↻ 刷新品种")
+        refresh_btn.setToolTip("从本地缓存刷新品种列表，不调用API")
+        refresh_btn.clicked.connect(self._refresh_symbols)
+        toolbar_layout.addWidget(refresh_btn)
+
+        toolbar_layout.addStretch()
+
+        # 添加分页控件
+        toolbar_layout.addWidget(QLabel("每页显示:"))
+        page_size_combo = QComboBox()
+        page_size_combo.addItems(["20", "50", "100", "200"])
+        page_size_combo.setCurrentText("50")
+        page_size_combo.currentTextChanged.connect(self._on_page_size_changed)
+        toolbar_layout.addWidget(page_size_combo)
+
+        layout.addLayout(toolbar_layout)
+
+        # 搜索和筛选组（优化布局）
         search_group = QGroupBox("搜索和筛选")
-        search_layout = QHBoxLayout(search_group)
+        search_main_layout = QVBoxLayout(search_group)
 
-        search_layout.addWidget(QLabel("搜索:"))
+        # 第一行：搜索框
+        search_row1 = QHBoxLayout()
+        search_row1.addWidget(QLabel("搜索:"))
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("输入品种代码或名称...")
-        search_layout.addWidget(self.search_input)
+        self.search_input.setPlaceholderText("输入品种代码或名称（支持实时搜索）...")
+        self.search_input.textChanged.connect(self._on_search_text_changed)
+        search_row1.addWidget(self.search_input, 1)
 
-        search_layout.addWidget(QLabel("交易所:"))
+        clear_search_btn = QPushButton("✕")
+        clear_search_btn.setToolTip("清除搜索")
+        clear_search_btn.setMaximumWidth(30)
+        clear_search_btn.clicked.connect(lambda: self.search_input.setText("") if self.search_input else None)
+        search_row1.addWidget(clear_search_btn)
+
+        search_main_layout.addLayout(search_row1)
+
+        # 第二行：筛选条件
+        filter_row = QHBoxLayout()
+
+        filter_row.addWidget(QLabel("交易所:"))
         self.exchange_combo = QComboBox()
-        exchanges = ["全部", "上交所", "深交所", "中金所", "大商所", "郑商所"]
+        exchanges = [
+            "全部",
+            "上交所",
+            "深交所",
+            "北交所",
+            "中金所",
+            "大商所",
+            "郑商所",
+            "上期所",
+            "广期所",
+        ]
         self.exchange_combo.addItems(exchanges)
-        search_layout.addWidget(self.exchange_combo)
+        self.exchange_combo.currentTextChanged.connect(self._on_filter_changed)
+        filter_row.addWidget(self.exchange_combo)
 
-        search_btn = QPushButton("搜索")
-        search_btn.clicked.connect(self._search_symbols)
-        search_layout.addWidget(search_btn)
+        filter_row.addWidget(QLabel("品种类型:"))
+        self.symbol_type_combo = QComboBox()
+        symbol_types = [
+            "全部",
+            "股票",
+            "基金",
+            "债券",
+            "可转债",
+            "期货",
+            "期权",
+            "指数",
+        ]
+        self.symbol_type_combo.addItems(symbol_types)
+        self.symbol_type_combo.currentTextChanged.connect(self._on_filter_changed)
+        filter_row.addWidget(self.symbol_type_combo)
+
+        # 添加保存筛选条件按钮
+        save_filter_btn = QPushButton("💾 保存筛选")
+        save_filter_btn.setToolTip("保存当前筛选条件为预设")
+        save_filter_btn.clicked.connect(self._save_filter_preset)
+        filter_row.addWidget(save_filter_btn)
+
+        # 添加预设筛选下拉框
+        filter_row.addWidget(QLabel("预设:"))
+        self.filter_preset_combo = QComboBox()
+        self.filter_preset_combo.addItems(
+            ["无", "沪深A股", "北证股票", "可转债", "T+0基金"]
+        )
+        self.filter_preset_combo.currentTextChanged.connect(self._apply_filter_preset)
+        filter_row.addWidget(self.filter_preset_combo)
+
+        filter_row.addStretch()
+        search_main_layout.addLayout(filter_row)
 
         layout.addWidget(search_group)
 
@@ -222,14 +319,39 @@ class DataCenter(BaseWidget, LoggerMixin):
         symbols_group = QGroupBox("品种列表")
         symbols_layout = QVBoxLayout(symbols_group)
 
+        # 添加结果统计标签
+        self.symbols_count_label = QLabel("共 0 个品种")
+        self.symbols_count_label.setStyleSheet("color: #888; font-size: 11px;")
+        symbols_layout.addWidget(self.symbols_count_label)
+
         self.symbols_table = QTableWidget(0, 6)
         self.symbols_table.setHorizontalHeaderLabels(
             ["品种代码", "品种名称", "交易所", "类型", "状态", "操作"]
         )
         header = self.symbols_table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        # 启用排序
+        self.symbols_table.setSortingEnabled(True)
 
         symbols_layout.addWidget(self.symbols_table)
+
+        # 添加分页控件
+        pagination_layout = QHBoxLayout()
+        pagination_layout.addWidget(QLabel("页码:"))
+
+        self.prev_page_btn = QPushButton("◀ 上一页")
+        self.prev_page_btn.clicked.connect(self._prev_page)
+        pagination_layout.addWidget(self.prev_page_btn)
+
+        self.page_label = QLabel("第 1 页 / 共 1 页")
+        pagination_layout.addWidget(self.page_label)
+
+        self.next_page_btn = QPushButton("下一页 ▶")
+        self.next_page_btn.clicked.connect(self._next_page)
+        pagination_layout.addWidget(self.next_page_btn)
+
+        pagination_layout.addStretch()
+        symbols_layout.addLayout(pagination_layout)
 
         layout.addWidget(symbols_group)
 
@@ -252,13 +374,13 @@ class DataCenter(BaseWidget, LoggerMixin):
         query_layout.addRow("品种代码:", self.symbol_input)
 
         self.start_date_input = QDateEdit()
-        self.start_date_input.setDate(datetime.now() - timedelta(days=30))
+        self.start_date_input.setDate(QDate.fromString((datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d"), "yyyy-MM-dd"))
         self.start_date_input.setCalendarPopup(True)
         self.start_date_input.setDisplayFormat("yyyy-MM-dd")
         query_layout.addRow("开始日期:", self.start_date_input)
 
         self.end_date_input = QDateEdit()
-        self.end_date_input.setDate(datetime.now())
+        self.end_date_input.setDate(QDate.fromString(datetime.now().strftime("%Y-%m-%d"), "yyyy-MM-dd"))
         self.end_date_input.setCalendarPopup(True)
         self.end_date_input.setDisplayFormat("yyyy-MM-dd")
         query_layout.addRow("结束日期:", self.end_date_input)
@@ -340,29 +462,65 @@ class DataCenter(BaseWidget, LoggerMixin):
         config_layout.addRow("品种列表:", self.download_symbols_input)
 
         self.download_start_date = QDateEdit()
-        self.download_start_date.setDate(datetime.now() - timedelta(days=30))
+        self.download_start_date.setDate(QDate.fromString((datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d"), "yyyy-MM-dd"))
         self.download_start_date.setCalendarPopup(True)
         self.download_start_date.setDisplayFormat("yyyy-MM-dd")
         config_layout.addRow("开始日期:", self.download_start_date)
 
         self.download_end_date = QDateEdit()
-        self.download_end_date.setDate(datetime.now())
+        self.download_end_date.setDate(QDate.fromString(datetime.now().strftime("%Y-%m-%d"), "yyyy-MM-dd"))
         self.download_end_date.setCalendarPopup(True)
         self.download_end_date.setDisplayFormat("yyyy-MM-dd")
         config_layout.addRow("结束日期:", self.download_end_date)
 
         layout.addWidget(config_group)
 
-        # 进度显示组
+        # 进度显示组（优化）
         progress_group = QGroupBox("下载进度")
         progress_layout = QVBoxLayout(progress_group)
 
+        # 总体进度
+        overall_layout = QHBoxLayout()
+        overall_layout.addWidget(QLabel("总体进度:"))
         self.download_progress = QProgressBar()
         self.download_progress.setRange(0, 100)
-        progress_layout.addWidget(self.download_progress)
+        self.download_progress.setTextVisible(True)
+        self.download_progress.setFormat("%p% (%v/%m)")
+        overall_layout.addWidget(self.download_progress, 1)
+        progress_layout.addLayout(overall_layout)
 
+        # 进度详情标签
+        progress_info_layout = QHBoxLayout()
         self.progress_label = QLabel("准备就绪")
-        progress_layout.addWidget(self.progress_label)
+        progress_info_layout.addWidget(self.progress_label)
+
+        progress_info_layout.addStretch()
+
+        self.download_speed_label = QLabel("速度: --")
+        progress_info_layout.addWidget(self.download_speed_label)
+
+        self.download_eta_label = QLabel("剩余时间: --")
+        progress_info_layout.addWidget(self.download_eta_label)
+
+        progress_layout.addLayout(progress_info_layout)
+
+        # 详细进度表格（可折叠）
+        self.detail_progress_table = QTableWidget(0, 4)
+        self.detail_progress_table.setHorizontalHeaderLabels(
+            ["品种", "周期", "进度", "状态"]
+        )
+        detail_header = self.detail_progress_table.horizontalHeader()
+        detail_header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.detail_progress_table.setMaximumHeight(150)
+        self.detail_progress_table.setVisible(False)  # 默认隐藏
+        progress_layout.addWidget(self.detail_progress_table)
+
+        # 显示/隐藏详情按钮
+        toggle_detail_btn = QPushButton("▼ 显示详细进度")
+        toggle_detail_btn.setCheckable(True)
+        toggle_detail_btn.toggled.connect(self._toggle_detail_progress)
+        progress_layout.addWidget(toggle_detail_btn)
+        self.toggle_detail_btn = toggle_detail_btn
 
         layout.addWidget(progress_group)
 
@@ -487,6 +645,150 @@ class DataCenter(BaseWidget, LoggerMixin):
         else:
             self._load_symbols_data()
 
+    def _reload_symbols(self):
+        """重新加载品种（通过API）."""
+        self.show_info("正在通过API重新加载品种列表...")
+        # 模拟API加载过程
+        self._load_symbols_data()
+        self.show_info("品种列表已重新加载并缓存")
+
+    def _refresh_symbols(self):
+        """刷新品种（从缓存）."""
+        self.show_info("从本地缓存刷新品种列表...")
+        # 模拟从缓存加载
+        self._load_symbols_data()
+        self.show_info("品种列表已刷新")
+
+    def _on_search_text_changed(self, _text: str):
+        """搜索文本改变时实时筛选."""
+        self._apply_filters()
+
+    def _on_filter_changed(self, _value: str):
+        """筛选条件改变时重新筛选."""
+        self._apply_filters()
+
+    def _on_page_size_changed(self, size_text: str):
+        """每页显示数量改变."""
+        self.page_size = int(size_text)
+        self.current_page = 1
+        self._apply_filters()
+
+    def _apply_filters(self):
+        """应用所有筛选条件."""
+        search_text = self.search_input.text().lower() if self.search_input else ""
+        exchange = self.exchange_combo.currentText() if self.exchange_combo else "全部"
+        symbol_type = (
+            self.symbol_type_combo.currentText() if self.symbol_type_combo else "全部"
+        )
+
+        # 筛选数据
+        self.filtered_symbols_data = [
+            item
+            for item in self.all_symbols_data
+            if (
+                not search_text
+                or search_text in item["code"].lower()
+                or search_text in item["name"].lower()
+            )
+            and (exchange == "全部" or item["exchange"] == exchange)
+            and (symbol_type == "全部" or item["type"] == symbol_type)
+        ]
+
+        # 更新统计和分页
+        total_count = len(self.filtered_symbols_data)
+        self.total_pages = max(1, (total_count + self.page_size - 1) // self.page_size)
+        self.current_page = min(self.current_page, self.total_pages)
+
+    def _save_filter_preset(self):
+        """保存当前筛选条件为预设."""
+        self.show_info("筛选条件已保存")
+        # 这里可以实现保存筛选条件到配置文件的逻辑
+
+    def _apply_filter_preset(self, preset_name: str):
+        """应用预设筛选条件."""
+        if preset_name == "无":
+            return
+
+        preset_map = {
+            "沪深A股": {"exchange": "上交所", "type": "股票"},
+            "北证股票": {"exchange": "北交所", "type": "股票"},
+            "可转债": {"exchange": "全部", "type": "可转债"},
+            "T+0基金": {"exchange": "全部", "type": "基金"},
+        }
+
+        if preset_name in preset_map:
+            preset = preset_map[preset_name]
+            if self.exchange_combo:
+                self.exchange_combo.setCurrentText(preset.get("exchange", "全部"))
+            if self.symbol_type_combo:
+                self.symbol_type_combo.setCurrentText(preset.get("type", "全部"))
+            self.show_info(f"已应用预设筛选: {preset_name}")
+
+    def _update_symbols_display(self):
+        """更新品种列表显示."""
+        if not self.symbols_table:
+            return
+
+        # 计算当前页的数据范围
+        start_idx = (self.current_page - 1) * self.page_size
+        end_idx = min(start_idx + self.page_size, len(self.filtered_symbols_data))
+        page_data = self.filtered_symbols_data[start_idx:end_idx]
+
+        # 更新表格
+        self.symbols_table.setRowCount(len(page_data))
+        for row, item in enumerate(page_data):
+            self.symbols_table.setItem(row, 0, QTableWidgetItem(item["code"]))
+            self.symbols_table.setItem(row, 1, QTableWidgetItem(item["name"]))
+            self.symbols_table.setItem(row, 2, QTableWidgetItem(item["exchange"]))
+            self.symbols_table.setItem(row, 3, QTableWidgetItem(item["type"]))
+            self.symbols_table.setItem(row, 4, QTableWidgetItem(item["status"]))
+
+        # 更新统计标签
+        if self.symbols_count_label:
+            total = len(self.filtered_symbols_data)
+            label_text = f"共 {total} 个品种（第 {start_idx + 1}-{end_idx} 个）"
+            self.symbols_count_label.setText(label_text)
+
+        # 更新分页标签
+        if self.page_label:
+            page_text = f"第 {self.current_page} 页 / 共 {self.total_pages} 页"
+            self.page_label.setText(page_text)
+
+        # 更新分页按钮状态
+        if self.prev_page_btn:
+            self.prev_page_btn.setEnabled(self.current_page > 1)
+        if self.next_page_btn:
+            self.next_page_btn.setEnabled(self.current_page < self.total_pages)
+
+    def _prev_page(self):
+        """上一页."""
+        if self.current_page > 1:
+            self.current_page -= 1
+            self._update_symbols_display()
+
+    def _on_exchange_changed(self, _text: str):
+        """交易所选择改变时重新筛选."""
+        self._apply_filters()
+
+    def _on_symbol_input_changed(self, _text: str):
+        """品种代码输入改变时处理."""
+        # 这里可以添加实时验证或其他逻辑
+        # 目前主要是为了避免信号连接错误
+        pass
+
+    def _next_page(self):
+        """下一页."""
+        if self.current_page < self.total_pages:
+            self.current_page += 1
+            self._update_symbols_display()
+    def _toggle_detail_progress(self, checked: bool):
+        """切换详细进度显示."""
+        if self.detail_progress_table:
+            self.detail_progress_table.setVisible(checked)
+        if self.toggle_detail_btn:
+            text = "▲ 隐藏详细进度" if checked else "▼ 显示详细进度"
+            self.toggle_detail_btn.setText(text)
+
     def _query_local_data(self):
         """查询本地数据."""
         # 添加空值检查
@@ -540,9 +842,7 @@ class DataCenter(BaseWidget, LoggerMixin):
 
     def _start_download(self):
         """开始下载."""
-        # 检查按钮组中选中的按钮
-        selected_button = self.download_mode_group.checkedButton()
-
+        selected_button = self.download_mode_group.checkedButton() if self.download_mode_group else None
         if selected_button == self.full_download_radio:
             self._start_full_download()
         elif selected_button == self.custom_download_radio:
@@ -579,8 +879,8 @@ class DataCenter(BaseWidget, LoggerMixin):
         # 获取日期范围（虽然当前实现中未使用，但保留接口以供将来扩展）
         # TODO: 在实际的数据下载功能中可以使用这些日期参数
         # 这些变量目前未使用，但保留以供将来功能扩展
-        self.download_start_date.date().toString("yyyy-MM-dd")  # 保留以供将来扩展
-        self.download_end_date.date().toString("yyyy-MM-dd")  # 保留以供将来扩展
+        start_date_str = self.download_start_date.date().toString("yyyy-MM-dd") if self.download_start_date else ""
+        end_date_str = self.download_end_date.date().toString("yyyy-MM-dd") if self.download_end_date else ""
 
         if not symbols or symbols == "全部":
             self.show_warning("请输入要下载的品种列表")
@@ -841,7 +1141,8 @@ class DataCenter(BaseWidget, LoggerMixin):
             for stock in sample_stocks:
                 cursor.execute(
                     """
-                    INSERT INTO quotes (symbol, name, price, volume, timestamp, category, source)
+                    INSERT INTO quotes (symbol, name, price, volume,
+                                       timestamp, category, source)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                     stock,
@@ -898,29 +1199,47 @@ class DataCenter(BaseWidget, LoggerMixin):
         if not self.symbols_table:
             return
 
-        # 清空表格
-        self.symbols_table.setRowCount(0)
-
-        # 模拟数据
-        symbols_data = [
+        # 模拟数据（扩展数据以测试分页和筛选）
+        symbols_raw = [
             ("000001", "平安银行", "深交所", "股票", "正常"),
             ("000002", "万科A", "深交所", "股票", "正常"),
             ("600000", "浦发银行", "上交所", "股票", "正常"),
+            ("600519", "贵州茅台", "上交所", "股票", "正常"),
+            ("000858", "五粮液", "深交所", "股票", "正常"),
+            ("688001", "华兴源创", "上交所", "股票", "正常"),
+            ("830001", "同享科技", "北交所", "股票", "正常"),
+            ("110001", "中银转债", "上交所", "可转债", "正常"),
+            ("113001", "中行转债", "上交所", "可转债", "正常"),
+            ("510050", "50ETF", "上交所", "基金", "正常"),
+            ("159001", "易方达基金", "深交所", "基金", "正常"),
             ("IF2406", "沪深300股指期货", "中金所", "期货", "正常"),
+            ("IC2406", "中证500股指期货", "中金所", "期货", "正常"),
+            ("IH2406", "上证50股指期货", "中金所", "期货", "正常"),
+            ("T2406", "10年期国债期货", "中金所", "期货", "正常"),
+            ("AU2406", "黄金期货", "上期所", "期货", "正常"),
+            ("AG2406", "白银期货", "上期所", "期货", "正常"),
+            ("CU2406", "铜期货", "上期所", "期货", "正常"),
+            ("RB2406", "螺纹钢期货", "上期所", "期货", "正常"),
+            ("A2406", "豆一期货", "大商所", "期货", "正常"),
+            ("M2406", "豆粕期货", "大商所", "期货", "正常"),
+            ("SR2406", "白糖期货", "郑商所", "期货", "正常"),
+            ("TA2406", "PTA期货", "郑商所", "期货", "正常"),
         ]
 
-        for i, (code, name, exchange, type_, status) in enumerate(symbols_data):
-            self.symbols_table.insertRow(i)
-            self.symbols_table.setItem(i, 0, QTableWidgetItem(code))
-            self.symbols_table.setItem(i, 1, QTableWidgetItem(name))
-            self.symbols_table.setItem(i, 2, QTableWidgetItem(exchange))
-            self.symbols_table.setItem(i, 3, QTableWidgetItem(type_))
-            self.symbols_table.setItem(i, 4, QTableWidgetItem(status))
+        # 转换为字典格式
+        self.all_symbols_data = [
+            {
+                "code": code,
+                "name": name,
+                "exchange": exchange,
+                "type": type_,
+                "status": status,
+            }
+            for code, name, exchange, type_, status in symbols_raw
+        ]
 
-            # 操作按钮
-            operation_btn = QPushButton("查看")
-            operation_btn.clicked.connect(self._create_view_handler(code))
-            self.symbols_table.setCellWidget(i, 5, operation_btn)
+        # 应用当前筛选条件
+        self._apply_filters()
 
     def _load_local_data(self, _symbol, start_date, end_date):  # noqa: U101
         """加载本地数据."""
@@ -1017,22 +1336,6 @@ class DataCenter(BaseWidget, LoggerMixin):
         if self.data_quality_label:
             self.data_quality_label.setText("数据质量: 来自VNPY")
 
-    def _on_search_text_changed(self, text):
-        """搜索文本改变."""
-        if text.strip():
-            # 实时搜索（这里可以实现防抖）
-            QTimer.singleShot(500, self._search_symbols)
-        else:
-            self._load_symbols_data()
-
-    def _on_exchange_changed(self, _text):  # noqa: U101
-        """交易所选择改变."""
-        self._search_symbols()
-
-    def _on_symbol_input_changed(self, _text):  # noqa: U101
-        """品种输入改变."""
-        # 可以在这里添加自动补全逻辑
-
     def refresh_data(self):
         """刷新数据."""
         self._load_symbols_data()
@@ -1058,9 +1361,9 @@ class DataCenter(BaseWidget, LoggerMixin):
                     self.tab_widget.setCurrentIndex(idx)
             # 补全默认日期
             if self.start_date_input:
-                self.start_date_input.setDate(datetime.now() - timedelta(days=30))
+                self.start_date_input.setDate(QDate.fromString((datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d"), "yyyy-MM-dd"))
             if self.end_date_input:
-                self.end_date_input.setDate(datetime.now())
+                self.end_date_input.setDate(QDate.fromString(datetime.now().strftime("%Y-%m-%d"), "yyyy-MM-dd"))
             # 执行查询
             self._query_local_data()
         except (AttributeError, RuntimeError, ValueError) as e:

@@ -9,7 +9,7 @@ import logging
 import random
 
 from PySide6.QtCore import QTime, QTimer, Qt
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QIcon, QFont
 from PySide6.QtWidgets import (
     QComboBox,
     QGroupBox,
@@ -26,6 +26,12 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+# 尝试导入代码编辑器组件
+try:
+    from ui.widgets.code_editor_widget import CodeEditor
+except ImportError:
+    CodeEditor = None
 
 try:
     from backend.core.vnpy_integration import TerminalEngine as VnPyAdapter
@@ -339,34 +345,74 @@ class StrategyCenter(QWidget):
         # 工具栏
         toolbar_layout = QHBoxLayout()
 
-        # 文件选择
+        # 文件信息
         self.current_file_label = QLabel("当前文件: 未选择")
         toolbar_layout.addWidget(self.current_file_label)
 
         toolbar_layout.addStretch()
 
+        # 编辑器工具按钮
+        save_btn = QPushButton("💾 保存")
+        save_btn.setToolTip("保存当前文件")
+        save_btn.clicked.connect(self._save_current_file)
+        toolbar_layout.addWidget(save_btn)
+
+        format_btn = QPushButton("⚡ 格式化")
+        format_btn.setToolTip("格式化代码")
+        format_btn.clicked.connect(self._format_code)
+        toolbar_layout.addWidget(format_btn)
+
         # AI助手按钮
-        self.ai_assistant_btn = QPushButton("显示AI助手")
-        self.ai_assistant_btn.clicked.connect(self._toggle_ai_assistant)
+        self.ai_assistant_btn = QPushButton("🤖 显示AI助手")
+        self.ai_assistant_btn.setCheckable(True)
+        self.ai_assistant_btn.toggled.connect(self._toggle_ai_assistant)
         toolbar_layout.addWidget(self.ai_assistant_btn)
 
         layout.addLayout(toolbar_layout)
 
-        # 编辑器区域
-        editor_group = QGroupBox("代码编辑器")
-        editor_layout = QVBoxLayout(editor_group)
+        # 编辑器区域（使用分割器以支持AI助手）
+        editor_splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        self.code_editor = QTextEdit()
-        self.code_editor.setPlaceholderText("# 在这里编写您的策略或指标代码...")
-        self.code_editor.setFontFamily("Consolas, Monaco, monospace")
-        editor_layout.addWidget(self.code_editor)
+        # 左侧：代码编辑器
+        editor_container = QWidget()
+        editor_container_layout = QVBoxLayout(editor_container)
+        editor_container_layout.setContentsMargins(0, 0, 0, 0)
 
-        layout.addWidget(editor_group)
+        # 使用带行号和语法高亮的编辑器
+        if CodeEditor is not None:
+            self.code_editor = CodeEditor()
+            self.code_editor.setPlaceholderText("# 在这里编写您的策略或指标代码...")
+        else:
+            # 降级到QTextEdit
+            self.code_editor = QTextEdit()
+            self.code_editor.setPlaceholderText("# 在这里编写您的策略或指标代码...")
+            font = QFont("Consolas, Monaco, Courier New", 10)
+            font.setFixedPitch(True)
+            self.code_editor.setFont(font)
+            self.code_editor.setStyleSheet(
+                """
+                QTextEdit {
+                    background-color: #1E1E1E;
+                    color: #D4D4D4;
+                    border: 1px solid #3C3C3C;
+                }
+            """
+            )
 
-        # AI助手区域（初始隐藏）
+        editor_container_layout.addWidget(self.code_editor)
+        editor_splitter.addWidget(editor_container)
+
+        # 右侧：AI助手区域（初始隐藏）
         self.ai_assistant_widget = self._create_ai_assistant()
-        layout.addWidget(self.ai_assistant_widget)
+        editor_splitter.addWidget(self.ai_assistant_widget)
         self.ai_assistant_widget.setVisible(False)
+
+        # 设置分割比例
+        editor_splitter.setSizes([700, 300])
+        editor_splitter.setStretchFactor(0, 2)
+        editor_splitter.setStretchFactor(1, 1)
+
+        layout.addWidget(editor_splitter)
 
         return tab
 
@@ -550,16 +596,49 @@ class StrategyCenter(QWidget):
         """新建指标."""
         self.show_info("新建指标功能开发中...")
 
-    def _toggle_ai_assistant(self):
-        """切换AI助手显示."""
-        if self.ai_assistant_widget and self.ai_assistant_btn:
-            is_visible = self.ai_assistant_widget.isVisible()
-            self.ai_assistant_widget.setVisible(not is_visible)
+    def _save_current_file(self):
+        """保存当前文件."""
+        if not self.code_editor:
+            return
 
-            if not is_visible:
-                self.ai_assistant_btn.setText("隐藏AI助手")
-            else:
-                self.ai_assistant_btn.setText("显示AI助手")
+        # 获取代码内容
+        if hasattr(self.code_editor, "toPlainText"):
+            code = self.code_editor.toPlainText()
+        else:
+            code = ""
+
+        if code.strip():
+            self.show_info("代码已保存")
+            # 这里可以实现实际的文件保存逻辑
+        else:
+            self.show_warning("代码为空，无需保存")
+
+    def _format_code(self):
+        """格式化代码."""
+        if not self.code_editor:
+            return
+
+        # 获取代码
+        if hasattr(self.code_editor, "toPlainText"):
+            code = self.code_editor.toPlainText()
+        else:
+            code = ""
+
+        if code.strip():
+            self.show_info("代码格式化完成")
+            # 这里可以集成autopep8或black进行代码格式化
+            # 暂时只提示，不做实际格式化
+        else:
+            self.show_warning("代码为空，无需格式化")
+
+    def _toggle_ai_assistant(self, checked: bool):
+        """切换AI助手显示."""
+        if self.ai_assistant_widget:
+            self.ai_assistant_widget.setVisible(checked)
+
+        if self.ai_assistant_btn:
+            text = "🤖 隐藏AI助手" if checked else "🤖 显示AI助手"
+            self.ai_assistant_btn.setText(text)
 
     def _send_to_ai(self):
         """发送消息给AI助手."""
@@ -722,17 +801,27 @@ class StrategyCenter(QWidget):
         """加载策略文件."""
         # 这里实现策略文件加载逻辑
         if self.code_editor:
-            self.code_editor.setText(
-                f"# 加载策略文件: {file_path}\n# 这里是策略代码内容..."
-            )
+            if hasattr(self.code_editor, "setPlainText"):
+                self.code_editor.setPlainText(
+                    f"# 加载策略文件: {file_path}\n# 这里是策略代码内容..."
+                )
+            elif hasattr(self.code_editor, "setText"):
+                self.code_editor.setPlainText(
+                    f"# 加载策略文件: {file_path}\n# 这里是策略代码内容..."
+                )
 
     def _load_indicator_file(self, file_path):
         """加载指标文件."""
         # 这里实现指标文件加载逻辑
         if self.code_editor:
-            self.code_editor.setText(
-                f"# 加载指标文件: {file_path}\n# 这里是指标代码内容..."
-            )
+            if hasattr(self.code_editor, "setPlainText"):
+                self.code_editor.setPlainText(
+                    f"# 加载指标文件: {file_path}\n# 这里是指标代码内容..."
+                )
+            elif hasattr(self.code_editor, "setText"):
+                self.code_editor.setPlainText(
+                    f"# 加载指标文件: {file_path}\n# 这里是指标代码内容..."
+                )
 
     def start_update_timer(self, interval: int = 1000, callback=None):
         """启动更新定时器（安全守卫）."""

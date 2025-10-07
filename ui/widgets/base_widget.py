@@ -32,10 +32,10 @@ class ErrorSeverity(Enum):
 
 
 try:
-    from ...utils.error_handler import error_handler
+    from backend.core.utils.error_handler import error_handler
 except ImportError:
     try:
-        from utils.error_handler import error_handler
+        from ...backend.core.utils.error_handler import error_handler
     except ImportError:
 
         class MockErrorHandler:

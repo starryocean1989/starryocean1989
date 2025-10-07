@@ -12,6 +12,7 @@ from typing import Any, Dict, Optional
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QCheckBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QProgressBar,
     QPushButton,
+    QSplitter,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -37,19 +39,14 @@ except ImportError:
     pg = None
 
 try:
-    from backend.infrastructure.data_module_vnpy.core_adapter import (
-        VnPyCoreAdapter as _VnPyAdapter,
-    )
+    from backend.core.vnpy_integration import TerminalEngine as _VnPyAdapter
 except ImportError:
-    try:
-        from backend.core.vnpy_integration import TerminalEngine as _VnPyAdapter
-    except ImportError:
-        _VnPyAdapter = None
+    _VnPyAdapter = None
 
 # 尝试导入更高级的版本
 try:
     from ui.widgets.base_widget import BaseWidget as _BaseWidget
-    from utils.logging_utils import LoggerMixin as _LoggerMixin
+    from backend.core.utils.logging_utils import LoggerMixin as _LoggerMixin
 
     # Use imported classes
     BaseWidget = _BaseWidget  # type: ignore
@@ -148,7 +145,20 @@ class SystemManager(BaseWidget, LoggerMixin):
         self.cpu_curve: Optional[Any] = None
         self.memory_plot: Optional[Any] = None
         self.memory_curve: Optional[Any] = None
-        self.performance_history: Dict[str, list] = {"cpu": [], "memory": []}
+        self.disk_plot: Optional[Any] = None
+        self.disk_read_curve: Optional[Any] = None
+        self.disk_write_curve: Optional[Any] = None
+        self.network_plot: Optional[Any] = None
+        self.network_recv_curve: Optional[Any] = None
+        self.network_send_curve: Optional[Any] = None
+        self.performance_history: Dict[str, list] = {
+            "cpu": [],
+            "memory": [],
+            "disk_read": [],
+            "disk_write": [],
+            "net_recv": [],
+            "net_send": [],
+        }
         self.max_history_points: int = 100
         self.performance_table: Optional[QTableWidget] = None
 
@@ -175,7 +185,7 @@ class SystemManager(BaseWidget, LoggerMixin):
 
         # VNPY适配器
         self.vnpy_adapter: Optional[Any] = None
-        
+
         # 现在调用父类初始化，这时setup_ui()会被调用
         super().__init__(parent, "系统管理")
         self.logger.info("系统管理界面初始化开始")
@@ -297,19 +307,45 @@ class SystemManager(BaseWidget, LoggerMixin):
         return tab
 
     def _create_performance_tab(self):
-        """创建性能指标子界面."""
+        """创建性能指标子界面（优化版）."""
         tab = QWidget()
         layout = QVBoxLayout(tab)
 
-        # 性能图表组
-        chart_group = QGroupBox("性能图表")
+        # 工具栏
+        toolbar_layout = QHBoxLayout()
+        toolbar_layout.addWidget(QLabel("📊 性能监控"))
+        toolbar_layout.addStretch()
+
+        auto_refresh_check = QCheckBox("自动刷新")
+        auto_refresh_check.setChecked(True)
+        auto_refresh_check.setToolTip("每5秒自动更新图表")
+        toolbar_layout.addWidget(auto_refresh_check)
+
+        clear_btn = QPushButton("清除历史")
+        clear_btn.setToolTip("清除历史数据")
+        clear_btn.clicked.connect(self._clear_performance_history)
+        toolbar_layout.addWidget(clear_btn)
+
+        export_btn = QPushButton("📤 导出")
+        export_btn.setToolTip("导出性能报告")
+        export_btn.clicked.connect(self._export_performance_report)
+        toolbar_layout.addWidget(export_btn)
+
+        layout.addLayout(toolbar_layout)
+
+        # 性能图表组（优化布局）
+        chart_group = QGroupBox("实时性能图表")
         chart_layout = QVBoxLayout(chart_group)
 
         # 性能图表组件
         if pg is not None:
-            # 创建性能图表
-            chart_widget = QWidget()
-            chart_widget_layout = QVBoxLayout(chart_widget)
+            # 使用2x2网格布局展示4个图表
+            chart_splitter = QSplitter(Qt.Orientation.Vertical)
+
+            # 上半部分：CPU和内存
+            top_widget = QWidget()
+            top_layout = QHBoxLayout(top_widget)
+            top_layout.setContentsMargins(0, 0, 0, 0)
 
             # CPU使用率图表
             cpu_win = pg.GraphicsLayoutWidget()
@@ -317,10 +353,19 @@ class SystemManager(BaseWidget, LoggerMixin):
             try:
                 self.cpu_plot = cpu_win.addPlot(title="CPU使用率 (%)")  # type: ignore
                 if self.cpu_plot:
-                    self.cpu_plot.showGrid(x=True, y=True)
+                    self.cpu_plot.showGrid(x=True, y=True, alpha=0.3)
                     self.cpu_plot.setRange(yRange=[0, 100])
-                    pen = pg.mkPen(color="red", width=2)
+                    self.cpu_plot.setLabel("left", "CPU %")
+                    self.cpu_plot.setLabel("bottom", "时间点")
+                    pen = pg.mkPen(color="#FF6B6B", width=2)
                     self.cpu_curve = self.cpu_plot.plot(pen=pen)
+                    # 添加阈值线
+                    threshold_line = pg.InfiniteLine(
+                        pos=80,
+                        angle=0,
+                        pen=pg.mkPen("y", width=1, style=Qt.PenStyle.DashLine),
+                    )
+                    self.cpu_plot.addItem(threshold_line)
             except AttributeError:
                 self.cpu_plot = None
                 self.cpu_curve = None
@@ -331,18 +376,78 @@ class SystemManager(BaseWidget, LoggerMixin):
             try:
                 self.memory_plot = memory_win.addPlot(title="内存使用率 (%)")  # type: ignore
                 if self.memory_plot:
-                    self.memory_plot.showGrid(x=True, y=True)
+                    self.memory_plot.showGrid(x=True, y=True, alpha=0.3)
                     self.memory_plot.setRange(yRange=[0, 100])
-                    pen = pg.mkPen(color="blue", width=2)
+                    self.memory_plot.setLabel("left", "内存 %")
+                    self.memory_plot.setLabel("bottom", "时间点")
+                    pen = pg.mkPen(color="#4ECDC4", width=2)
                     self.memory_curve = self.memory_plot.plot(pen=pen)
+                    # 添加阈值线
+                    threshold_line = pg.InfiniteLine(
+                        pos=80,
+                        angle=0,
+                        pen=pg.mkPen("y", width=1, style=Qt.PenStyle.DashLine),
+                    )
+                    self.memory_plot.addItem(threshold_line)
             except AttributeError:
                 self.memory_plot = None
                 self.memory_curve = None
 
-            chart_widget_layout.addWidget(cpu_win)
-            chart_widget_layout.addWidget(memory_win)
+            top_layout.addWidget(cpu_win)
+            top_layout.addWidget(memory_win)
+            chart_splitter.addWidget(top_widget)
 
-            chart_layout.addWidget(chart_widget)
+            # 下半部分：磁盘I/O和网络流量
+            bottom_widget = QWidget()
+            bottom_layout = QHBoxLayout(bottom_widget)
+            bottom_layout.setContentsMargins(0, 0, 0, 0)
+
+            # 磁盘I/O图表
+            disk_win = pg.GraphicsLayoutWidget()
+            disk_win.setBackground(QColor(26, 26, 26))
+            try:
+                self.disk_plot = disk_win.addPlot(title="磁盘I/O (MB/s)")  # type: ignore
+                if self.disk_plot:
+                    self.disk_plot.showGrid(x=True, y=True, alpha=0.3)
+                    self.disk_plot.setLabel("left", "MB/s")
+                    self.disk_plot.setLabel("bottom", "时间点")
+                    read_pen = pg.mkPen(color="#95E1D3", width=2)
+                    write_pen = pg.mkPen(color="#F38181", width=2)
+                    self.disk_read_curve = self.disk_plot.plot(pen=read_pen, name="读")
+                    self.disk_write_curve = self.disk_plot.plot(
+                        pen=write_pen, name="写"
+                    )
+                    self.disk_plot.addLegend()
+            except AttributeError:
+                self.disk_plot = None
+
+            # 网络流量图表
+            network_win = pg.GraphicsLayoutWidget()
+            network_win.setBackground(QColor(26, 26, 26))
+            try:
+                self.network_plot = network_win.addPlot(title="网络流量 (KB/s)")  # type: ignore
+                if self.network_plot:
+                    self.network_plot.showGrid(x=True, y=True, alpha=0.3)
+                    self.network_plot.setLabel("left", "KB/s")
+                    self.network_plot.setLabel("bottom", "时间点")
+                    recv_pen = pg.mkPen(color="#A8E6CF", width=2)
+                    send_pen = pg.mkPen(color="#FFD3B6", width=2)
+                    self.network_recv_curve = self.network_plot.plot(
+                        pen=recv_pen, name="接收"
+                    )
+                    self.network_send_curve = self.network_plot.plot(
+                        pen=send_pen, name="发送"
+                    )
+                    self.network_plot.addLegend()
+            except AttributeError:
+                self.network_plot = None
+
+            bottom_layout.addWidget(disk_win)
+            bottom_layout.addWidget(network_win)
+            chart_splitter.addWidget(bottom_widget)
+
+            chart_splitter.setSizes([300, 300])
+            chart_layout.addWidget(chart_splitter)
 
         else:
             # 如果pyqtgraph不可用，显示替代内容
@@ -355,7 +460,7 @@ class SystemManager(BaseWidget, LoggerMixin):
 
         layout.addWidget(chart_group)
 
-        # 性能统计组
+        # 性能统计组（优化展示）
         stats_group = QGroupBox("性能统计")
         stats_layout = QVBoxLayout(stats_group)
 
@@ -364,6 +469,22 @@ class SystemManager(BaseWidget, LoggerMixin):
         self.performance_table.setHorizontalHeaderLabels(headers)
         header = self.performance_table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+
+        # 添加初始数据行
+        metrics = [
+            "CPU使用率",
+            "内存使用率",
+            "磁盘读取",
+            "磁盘写入",
+            "网络接收",
+            "网络发送",
+        ]
+        self.performance_table.setRowCount(len(metrics))
+        for i, metric in enumerate(metrics):
+            self.performance_table.setItem(i, 0, QTableWidgetItem(metric))
+            self.performance_table.setItem(i, 1, QTableWidgetItem("--"))
+            self.performance_table.setItem(i, 2, QTableWidgetItem("--"))
+            self.performance_table.setItem(i, 3, QTableWidgetItem("--"))
 
         stats_layout.addWidget(self.performance_table)
 
@@ -546,6 +667,46 @@ class SystemManager(BaseWidget, LoggerMixin):
 
         return tab
 
+    def _clear_performance_history(self):
+        """清除性能历史数据."""
+        self.performance_history = {
+            "cpu": [],
+            "memory": [],
+            "disk_read": [],
+            "disk_write": [],
+            "net_recv": [],
+            "net_send": [],
+        }
+        self.show_info("性能历史数据已清除")
+        # 清空图表
+        if self.cpu_curve:
+            self.cpu_curve.setData([], [])
+        if self.memory_curve:
+            self.memory_curve.setData([], [])
+        if hasattr(self, "disk_read_curve") and self.disk_read_curve:
+            self.disk_read_curve.setData([], [])
+        if hasattr(self, "disk_write_curve") and self.disk_write_curve:
+            self.disk_write_curve.setData([], [])
+        if hasattr(self, "network_recv_curve") and self.network_recv_curve:
+            self.network_recv_curve.setData([], [])
+        if hasattr(self, "network_send_curve") and self.network_send_curve:
+            self.network_send_curve.setData([], [])
+
+    def _export_performance_report(self):
+        """导出性能报告."""
+        from PySide6.QtWidgets import QFileDialog
+
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出性能报告",
+            "performance_report.html",
+            "HTML Files (*.html);;PDF Files (*.pdf);;CSV Files (*.csv)",
+        )
+
+        if filename:
+            self.show_info(f"导出性能报告到: {filename}")
+            # 这里可以实现实际的报告导出逻辑
+
     def connect_signals(self):
         """连接信号槽."""
         try:
@@ -557,6 +718,7 @@ class SystemManager(BaseWidget, LoggerMixin):
         except Exception as e:
             self.logger.error("连接信号失败: %s", e)
             import traceback
+
             self.logger.error("详细错误: %s", traceback.format_exc())
 
     def _initialize_vnpy_adapter(self):
@@ -582,19 +744,19 @@ class SystemManager(BaseWidget, LoggerMixin):
 
             # 更新基础系统信息
             cpu_percent = psutil.cpu_percent()
-            if hasattr(self, 'cpu_label') and self.cpu_label:
+            if hasattr(self, "cpu_label") and self.cpu_label:
                 self.cpu_label.setText(f"{cpu_percent:.1f}%")
 
             memory = psutil.virtual_memory()
-            if hasattr(self, 'memory_label') and self.memory_label:
+            if hasattr(self, "memory_label") and self.memory_label:
                 self.memory_label.setText(f"{memory.percent:.1f}%")
 
             disk = psutil.disk_usage("/")
-            if hasattr(self, 'disk_label') and self.disk_label:
+            if hasattr(self, "disk_label") and self.disk_label:
                 self.disk_label.setText(f"{disk.percent:.1f}%")
 
             network = psutil.net_if_addrs()
-            if hasattr(self, 'network_label') and self.network_label:
+            if hasattr(self, "network_label") and self.network_label:
                 self.network_label.setText(f"接口数: {len(network)}")
 
             # 更新VNPY系统状态

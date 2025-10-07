@@ -9,38 +9,38 @@ mootdx数据获取封装模块
 - 数据缓存：将获取的数据缓存到本地
 """
 
-import pandas as pd
-import numpy as np
-from datetime import datetime, date, timedelta
-from pathlib import Path
-from typing import List, Dict, Optional, Tuple, Union
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import time
+from __future__ import annotations
+
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date, datetime
+from pathlib import Path  # noqa: TC003
+from typing import Dict, List, Optional, Union
+
+import pandas as pd
 
 from mootdx.quotes import Quotes
-from mootdx.consts import MARKET_SH, MARKET_SZ
 
-from .config import config_manager
 from .block_parser import BlockParser
+from .config import config_manager
 
 
 class StockFetcher:
     """股票数据获取器"""
+
+    # 市场分类常量（类级别）
+    MARKET_SHANGHAI = 0  # 上证
+    MARKET_SHENZHEN = 1  # 深证
+
+    # 品种代码前缀（类级别）
+    SH_PREFIXES = ["688", "60"]  # 上证A股
+    SZ_PREFIXES = ["000", "001", "002", "300", "301"]  # 深证A股
 
     def __init__(self):
         """初始化数据获取器"""
         self.quotes = Quotes.factory()
         self.block_parser = BlockParser(config_manager.get_tdx_dir())
         self.logger = logging.getLogger(__name__)
-
-        # 市场分类常量
-        self.MARKET_SHANGHAI = 0  # 上证
-        self.MARKET_SHENZHEN = 1  # 深证
-
-        # 品种代码前缀
-        self.SH_PREFIXES = ['688', '60']  # 上证A股
-        self.SZ_PREFIXES = ['000', '001', '002', '300', '301']  # 深证A股
 
     def fetch_all_stocks(self) -> pd.DataFrame:
         """
@@ -51,11 +51,15 @@ class StockFetcher:
         """
         try:
             self.logger.info("开始获取所有品种列表...")
-            stocks_df = self.quotes.stock_all()
-            self.logger.info(f"成功获取 {len(stocks_df)} 个品种")
-            return stocks_df
-        except Exception as e:
-            self.logger.error(f"获取品种列表失败: {e}")
+            stocks_df = self.quotes.stock_all()  # type: ignore[attr-defined]
+            if stocks_df is not None and isinstance(stocks_df, pd.DataFrame):
+                self.logger.info("成功获取 %s 个品种", len(stocks_df))
+                return stocks_df
+            else:
+                self.logger.error("获取品种列表失败: 返回数据为空或类型不正确")
+                raise ValueError("stock_all() 返回的数据无效")
+        except (OSError, ValueError, KeyError, AttributeError, TypeError) as e:
+            self.logger.error("获取品种列表失败: %s", e)
             raise
 
     def parse_market_codes(self, stocks_df: pd.DataFrame) -> Dict[str, List[str]]:
@@ -73,22 +77,24 @@ class StockFetcher:
             "深证A股": [],
             "北证A股": [],
             "T+0基金": [],
-            "含可转债": []
+            "含可转债": [],
         }
 
         for _, row in stocks_df.iterrows():
-            code = str(row['code']).zfill(6)  # 补齐6位
-            market = row['market']
+            code = str(row["code"]).zfill(6)  # 补齐6位
+            market = row["market"]
 
             # 上证A股：market=0, 代码以688或60开头
-            if market == self.MARKET_SHANGHAI:
-                if any(code.startswith(prefix) for prefix in self.SH_PREFIXES):
-                    result["上证A股"].append(code)
+            if market == self.MARKET_SHANGHAI and any(
+                code.startswith(prefix) for prefix in self.SH_PREFIXES
+            ):
+                result["上证A股"].append(code)
 
             # 深证A股：market=1, 代码以000/001/002/300/301开头
-            elif market == self.MARKET_SHENZHEN:
-                if any(code.startswith(prefix) for prefix in self.SZ_PREFIXES):
-                    result["深证A股"].append(code)
+            elif market == self.MARKET_SHENZHEN and any(
+                code.startswith(prefix) for prefix in self.SZ_PREFIXES
+            ):
+                result["深证A股"].append(code)
 
         # 从通达信板块文件获取特殊品种
         if self.block_parser.is_available():
@@ -96,12 +102,12 @@ class StockFetcher:
                 result["北证A股"] = self.block_parser.get_beijing_stocks()
                 result["T+0基金"] = self.block_parser.get_t0_funds()
                 result["含可转债"] = self.block_parser.get_convertible_bonds()
-            except Exception as e:
-                self.logger.warning(f"解析通达信板块文件失败: {e}")
+            except (OSError, ValueError, KeyError) as e:
+                self.logger.warning("解析通达信板块文件失败: %s", e)
 
         return result
 
-    def cache_stock_list(self, stocks_df: pd.DataFrame) -> Path:
+    def cache_stock_list(self, stocks_df: pd.DataFrame) -> "Path":
         """
         缓存品种列表到本地
 
@@ -116,12 +122,12 @@ class StockFetcher:
 
         try:
             # 添加缓存时间戳
-            stocks_df['cache_time'] = datetime.now()
+            stocks_df["cache_time"] = datetime.now()
             stocks_df.to_parquet(cache_file, index=False)
-            self.logger.info(f"品种列表已缓存到: {cache_file}")
+            self.logger.info("品种列表已缓存到: %s", cache_file)
             return cache_file
-        except Exception as e:
-            self.logger.error(f"缓存品种列表失败: {e}")
+        except (OSError, ValueError, KeyError, AttributeError, TypeError) as e:
+            self.logger.error("缓存品种列表失败: %s", e)
             raise
 
     def load_cached_stock_list(self) -> Optional[pd.DataFrame]:
@@ -137,14 +143,16 @@ class StockFetcher:
         if cache_file.exists():
             try:
                 df = pd.read_parquet(cache_file)
-                self.logger.info(f"成功加载缓存的品种列表: {len(df)} 个品种")
+                self.logger.info("成功加载缓存的品种列表: %s 个品种", len(df))
                 return df
-            except Exception as e:
-                self.logger.error(f"加载缓存品种列表失败: {e}")
+            except (OSError, ValueError, KeyError) as e:
+                self.logger.error("加载缓存品种列表失败: %s", e)
 
         return None
 
-    def download_full_kline(self, symbols: List[str], intervals: List[str] = None) -> Dict[str, pd.DataFrame]:
+    def download_full_kline(
+        self, symbols: List[str], intervals: Optional[List[str]] = None
+    ) -> Dict[str, pd.DataFrame]:
         """
         全量下载K线数据
 
@@ -156,13 +164,14 @@ class StockFetcher:
             下载结果字典
         """
         if intervals is None:
-            intervals = ['1d', '5m', '1m']
+            intervals = ["1d", "5m", "1m"]
 
         result = {}
         max_workers = config_manager.get_max_workers()
-        timeout = config_manager.get_timeout()
 
-        self.logger.info(f"开始全量下载K线数据: {len(symbols)} 个品种, {intervals} 周期")
+        self.logger.info(
+            "开始全量下载K线数据: %s 个品种, %s 周期", len(symbols), intervals
+        )
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             # 提交所有下载任务
@@ -171,8 +180,7 @@ class StockFetcher:
             for symbol in symbols:
                 for interval in intervals:
                     future = executor.submit(
-                        self._download_single_kline,
-                        symbol, interval, timeout
+                        self._download_single_kline, symbol, interval
                     )
                     future_to_symbol[future] = (symbol, interval)
 
@@ -184,15 +192,21 @@ class StockFetcher:
                     if data is not None and not data.empty:
                         key = f"{symbol}_{interval}"
                         result[key] = data
-                        self.logger.info(f"成功下载 {symbol} {interval} 数据: {len(data)} 条")
-                except Exception as e:
-                    self.logger.error(f"下载 {symbol} {interval} 失败: {e}")
+                        self.logger.info(
+                            "成功下载 %s %s 数据: %s 条", symbol, interval, len(data)
+                        )
+                except (OSError, ValueError, KeyError) as e:
+                    self.logger.error("下载 %s %s 失败: %s", symbol, interval, e)
 
-        self.logger.info(f"全量下载完成: {len(result)} 个数据集")
+        self.logger.info("全量下载完成: %s 个数据集", len(result))
         return result
 
-    def download_incremental_kline(self, symbols: List[str], start_date: Union[str, date],
-                                 intervals: List[str] = None) -> Dict[str, pd.DataFrame]:
+    def download_incremental_kline(
+        self,
+        symbols: List[str],
+        start_date: Union[str, date],
+        intervals: Optional[List[str]] = None,
+    ) -> Dict[str, pd.DataFrame]:
         """
         增量下载K线数据
 
@@ -205,13 +219,14 @@ class StockFetcher:
             下载结果字典
         """
         if intervals is None:
-            intervals = ['1d', '5m', '1m']
+            intervals = ["1d", "5m", "1m"]
 
         result = {}
         max_workers = config_manager.get_max_workers()
-        timeout = config_manager.get_timeout()
 
-        self.logger.info(f"开始增量下载K线数据: {len(symbols)} 个品种, 从 {start_date} 开始")
+        self.logger.info(
+            "开始增量下载K线数据: %s 个品种, 从 %s 开始", len(symbols), start_date
+        )
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_symbol = {}
@@ -220,7 +235,9 @@ class StockFetcher:
                 for interval in intervals:
                     future = executor.submit(
                         self._download_single_kline_incremental,
-                        symbol, interval, start_date, timeout
+                        symbol,
+                        interval,
+                        start_date,
                     )
                     future_to_symbol[future] = (symbol, interval)
 
@@ -231,21 +248,29 @@ class StockFetcher:
                     if data is not None and not data.empty:
                         key = f"{symbol}_{interval}"
                         result[key] = data
-                        self.logger.info(f"成功下载 {symbol} {interval} 增量数据: {len(data)} 条")
-                except Exception as e:
-                    self.logger.error(f"下载 {symbol} {interval} 增量数据失败: {e}")
+                        self.logger.info(
+                            "成功下载 %s %s 增量数据: %s 条",
+                            symbol,
+                            interval,
+                            len(data),
+                        )
+                except (OSError, ValueError, KeyError) as e:
+                    self.logger.error(
+                        "下载 %s %s 增量数据失败: %s", symbol, interval, e
+                    )
 
-        self.logger.info(f"增量下载完成: {len(result)} 个数据集")
+        self.logger.info("增量下载完成: %s 个数据集", len(result))
         return result
 
-    def _download_single_kline(self, symbol: str, interval: str, timeout: int) -> Optional[pd.DataFrame]:
+    def _download_single_kline(
+        self, symbol: str, interval: str
+    ) -> Optional[pd.DataFrame]:
         """
         下载单个品种的K线数据
 
         Args:
             symbol: 品种代码
             interval: K线周期
-            timeout: 超时时间
 
         Returns:
             K线数据DataFrame
@@ -253,18 +278,18 @@ class StockFetcher:
         try:
             # 转换周期格式
             frequency_map = {
-                '1d': 9,    # 日线
-                '5m': 5,    # 5分钟
-                '1m': 8,    # 1分钟
+                "1d": 9,  # 日线
+                "5m": 5,  # 5分钟
+                "1m": 8,  # 1分钟
             }
 
             frequency = frequency_map.get(interval, 9)
 
             # 设置下载数量
             offset_map = {
-                '1d': 8000,    # 日线8000根
-                '5m': 20000,   # 5分钟20000根
-                '1m': 20000,   # 1分钟20000根
+                "1d": 8000,  # 日线8000根
+                "5m": 20000,  # 5分钟20000根
+                "1m": 20000,  # 1分钟20000根
             }
 
             offset = offset_map.get(interval, 8000)
@@ -272,9 +297,9 @@ class StockFetcher:
             # 调用mootdx接口
             data = self.quotes.bars(
                 symbol=symbol,
-                frequency=frequency,
+                frequency=frequency,  # type: ignore[arg-type]
                 start=0,
-                offset=offset
+                offset=offset,
             )
 
             if data is not None and not data.empty:
@@ -282,13 +307,14 @@ class StockFetcher:
                 data = self._standardize_columns(data, symbol, interval)
                 return data
 
-        except Exception as e:
-            self.logger.error(f"下载 {symbol} {interval} 失败: {e}")
+        except (OSError, ValueError, KeyError, AttributeError, TypeError) as e:
+            self.logger.error("下载 %s %s 失败: %s", symbol, interval, e)
 
         return None
 
-    def _download_single_kline_incremental(self, symbol: str, interval: str,
-                                         start_date: Union[str, date], timeout: int) -> Optional[pd.DataFrame]:
+    def _download_single_kline_incremental(
+        self, symbol: str, interval: str, start_date: Union[str, date]
+    ) -> Optional[pd.DataFrame]:
         """
         下载单个品种的增量K线数据
 
@@ -296,7 +322,6 @@ class StockFetcher:
             symbol: 品种代码
             interval: K线周期
             start_date: 开始日期
-            timeout: 超时时间
 
         Returns:
             K线数据DataFrame
@@ -311,15 +336,15 @@ class StockFetcher:
 
             # 转换周期格式
             frequency_map = {
-                '1d': 9,    # 日线
-                '5m': 5,    # 5分钟
-                '1m': 8,    # 1分钟
+                "1d": 9,  # 日线
+                "5m": 5,  # 5分钟
+                "1m": 8,  # 1分钟
             }
 
             frequency = frequency_map.get(interval, 9)
 
             # 根据周期设置下载数量
-            if interval == '1d':
+            if interval == "1d":
                 offset = min(days_diff, 8000)
             else:
                 # 分钟线按天数估算
@@ -328,9 +353,9 @@ class StockFetcher:
             # 调用mootdx接口
             data = self.quotes.bars(
                 symbol=symbol,
-                frequency=frequency,
+                frequency=frequency,  # type: ignore[arg-type]
                 start=0,
-                offset=offset
+                offset=offset,
             )
 
             if data is not None and not data.empty:
@@ -339,12 +364,14 @@ class StockFetcher:
                 data = self._standardize_columns(data, symbol, interval)
                 return data
 
-        except Exception as e:
-            self.logger.error(f"下载 {symbol} {interval} 增量数据失败: {e}")
+        except (OSError, ValueError, KeyError, AttributeError, TypeError) as e:
+            self.logger.error("下载 %s %s 增量数据失败: %s", symbol, interval, e)
 
         return None
 
-    def _standardize_columns(self, data: pd.DataFrame, symbol: str, interval: str) -> pd.DataFrame:
+    def _standardize_columns(
+        self, data: pd.DataFrame, symbol: str, interval: str
+    ) -> pd.DataFrame:
         """
         标准化DataFrame列名和格式
 
@@ -356,36 +383,33 @@ class StockFetcher:
         Returns:
             标准化后的DataFrame
         """
-        # 确保有必要的列
-        required_columns = ['datetime', 'open', 'high', 'low', 'close', 'volume']
-
         # 重命名列（如果必要）
         column_mapping = {
-            'date': 'datetime',
-            'time': 'datetime',
-            'open_price': 'open',
-            'high_price': 'high',
-            'low_price': 'low',
-            'close_price': 'close',
-            'vol': 'volume',
-            'amount': 'turnover'
+            "date": "datetime",
+            "time": "datetime",
+            "open_price": "open",
+            "high_price": "high",
+            "low_price": "low",
+            "close_price": "close",
+            "vol": "volume",
+            "amount": "turnover",
         }
 
         data = data.rename(columns=column_mapping)
 
         # 添加品种和周期信息
-        data['symbol'] = symbol
-        data['interval'] = interval
+        data["symbol"] = symbol
+        data["interval"] = interval
 
         # 确保datetime列是datetime类型
-        if 'datetime' in data.columns:
-            data['datetime'] = pd.to_datetime(data['datetime'])
+        if "datetime" in data.columns:
+            data["datetime"] = pd.to_datetime(data["datetime"])
 
         # 确保数值列是float类型
-        numeric_columns = ['open', 'high', 'low', 'close', 'volume']
+        numeric_columns = ["open", "high", "low", "close", "volume"]
         for col in numeric_columns:
             if col in data.columns:
-                data[col] = pd.to_numeric(data[col], errors='coerce')
+                data[col] = pd.to_numeric(data[col], errors="coerce")
 
         return data
 
@@ -400,10 +424,12 @@ class StockFetcher:
         Returns:
             过滤后的数据
         """
-        if 'datetime' in data.columns:
-            data['date'] = pd.to_datetime(data['datetime']).dt.date
-            data = data[data['date'] >= start_date]
-            data = data.drop('date', axis=1)
+        if "datetime" in data.columns:
+            data["date"] = pd.to_datetime(data["datetime"]).dt.date
+            filtered_data = data[data["date"] >= start_date].copy()
+            if isinstance(filtered_data, pd.DataFrame):
+                filtered_data = filtered_data.drop("date", axis=1)
+                return filtered_data
 
         return data
 

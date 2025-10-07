@@ -1,4 +1,7 @@
 # -*- coding: utf-8 -*-
+# pylint: disable=import-outside-toplevel,unused-import,broad-exception-caught
+# type: ignore
+# pyright: reportUnusedImport=false
 """
 基本功能测试脚本
 
@@ -11,25 +14,32 @@ from pathlib import Path
 # 添加当前目录到Python路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+
 def test_imports():
     """测试模块导入"""
     try:
-        from data_module_vnpy.config import config_manager
+        from data_module_vnpy.config import config_manager  # noqa: F401
+
         print("✓ 配置管理模块导入成功")
 
-        from data_module_vnpy.stock_fetcher import StockFetcher
+        from data_module_vnpy.stock_fetcher import StockFetcher  # noqa: F401
+
         print("✓ 数据获取模块导入成功")
 
-        from data_module_vnpy.storage import StorageManager
+        from data_module_vnpy.storage import StorageManager  # noqa: F401
+
         print("✓ 存储管理模块导入成功")
 
-        from data_module_vnpy.validator import DataValidator
+        from data_module_vnpy.validator import DataValidator  # noqa: F401
+
         print("✓ 数据校验模块导入成功")
 
-        from data_module_vnpy.file_watcher import FileWatcherManager
+        from data_module_vnpy.file_watcher import FileWatcherManager  # noqa: F401
+
         print("✓ 文件监控模块导入成功")
 
-        from data_module_vnpy.block_parser import BlockParser
+        from data_module_vnpy.block_parser import BlockParser  # noqa: F401
+
         print("✓ 板块解析模块导入成功")
 
         return True
@@ -37,6 +47,7 @@ def test_imports():
     except Exception as e:
         print(f"✗ 模块导入失败: {e}")
         return False
+
 
 def test_config():
     """测试配置管理"""
@@ -58,6 +69,7 @@ def test_config():
         print(f"✗ 配置测试失败: {e}")
         return False
 
+
 def test_storage():
     """测试存储管理"""
     try:
@@ -66,7 +78,7 @@ def test_storage():
         storage = StorageManager()
         symbols = storage.list_symbols()
 
-        print(f"✓ 存储管理器初始化成功")
+        print("✓ 存储管理器初始化成功")
         print(f"✓ 发现 {len(symbols)} 个品种")
 
         return True
@@ -74,6 +86,7 @@ def test_storage():
     except Exception as e:
         print(f"✗ 存储测试失败: {e}")
         return False
+
 
 def main():
     """主测试函数"""
@@ -106,6 +119,7 @@ def main():
         print("🎉 所有测试通过！data_module_vnpy 基本功能正常")
     else:
         print("⚠️  部分测试失败，请检查相关模块")
+
 
 if __name__ == "__main__":
     main()

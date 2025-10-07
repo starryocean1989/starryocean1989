@@ -44,6 +44,11 @@ except ImportError:
     ChartWidget = None
 
 try:
+    from ui.widgets.chart_toolbar_widget import ChartToolbar
+except ImportError:
+    ChartToolbar = None
+
+try:
     from ..widgets.base_widget import BaseWidget  # type: ignore
 except ImportError:
     try:
@@ -254,8 +259,18 @@ class MarketDashboard(BaseWidget):  # type: ignore[misc]
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
-        # 工具栏
+        # 基础工具栏
         toolbar_layout = QHBoxLayout()
+
+        # 图表类型切换
+        chart_type_label = QLabel("图表:")
+        toolbar_layout.addWidget(chart_type_label)
+
+        chart_type_combo = QComboBox()
+        chart_type_combo.addItems(["K线图", "分时图", "Tick图"])
+        chart_type_combo.currentTextChanged.connect(self._on_chart_type_changed)
+        toolbar_layout.addWidget(chart_type_combo)
+        self.chart_type_combo = chart_type_combo
 
         # 周期选择
         self.period_combo = QComboBox()
@@ -268,11 +283,22 @@ class MarketDashboard(BaseWidget):  # type: ignore[misc]
         toolbar_layout.addStretch()
 
         # 图表操作按钮
-        refresh_btn = QPushButton("刷新")
+        refresh_btn = QPushButton("🔄 刷新")
         refresh_btn.clicked.connect(self._refresh_chart)
         toolbar_layout.addWidget(refresh_btn)
 
         layout.addLayout(toolbar_layout)
+
+        # 图表工具栏（高级功能）
+        if ChartToolbar is not None:
+            chart_toolbar = ChartToolbar(self)
+            chart_toolbar.tool_changed.connect(self._on_chart_tool_changed)
+            chart_toolbar.crosshair_toggled.connect(self._on_crosshair_toggled)
+            chart_toolbar.drawing_mode_changed.connect(self._on_drawing_mode_changed)
+            layout.addWidget(chart_toolbar)
+            self.chart_toolbar = chart_toolbar
+        else:
+            self.chart_toolbar = None
 
         # 图表区域组
         chart_group = QGroupBox("行情图表")
@@ -654,6 +680,34 @@ class MarketDashboard(BaseWidget):  # type: ignore[misc]
         """刷新图表."""
         self.show_info("刷新图表...")
         # 这里实现图表刷新逻辑
+
+    def _on_chart_type_changed(self, chart_type: str):
+        """图表类型切换."""
+        self.show_info(f"切换图表类型: {chart_type}")
+        # K线图/分时图/Tick图切换逻辑
+
+    def _on_chart_tool_changed(self, tool: str):
+        """图表工具切换."""
+        self.show_info(f"切换工具: {tool}")
+        # 工具模式切换逻辑
+
+    def _on_crosshair_toggled(self, enabled: bool):
+        """十字光标切换."""
+        status = "启用" if enabled else "禁用"
+        self.show_info(f"十字光标: {status}")
+        # 十字光标显示/隐藏逻辑
+
+    def _on_drawing_mode_changed(self, mode: str):
+        """画线模式切换."""
+        mode_names = {
+            "trend": "趋势线",
+            "hline": "水平线",
+            "vline": "垂直线",
+            "rectangle": "矩形框",
+            "text": "文本标注",
+        }
+        self.show_info(f"画线模式: {mode_names.get(mode, mode)}")
+        # 画线模式切换逻辑
 
     def _apply_settings(self):
         """应用设置."""
