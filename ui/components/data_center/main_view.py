@@ -13,8 +13,9 @@ from typing import Optional, TYPE_CHECKING
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QCheckBox,
+    QButtonGroup,
     QComboBox,
+    QDateEdit,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -23,6 +24,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QProgressBar,
     QPushButton,
+    QRadioButton,
     QSplitter,
     QTabWidget,
     QTableWidget,
@@ -133,16 +135,17 @@ class DataCenter(BaseWidget, LoggerMixin):
         self.exchange_combo: Optional[QComboBox] = None
         self.symbols_table: Optional[QTableWidget] = None
         self.symbol_input: Optional[QLineEdit] = None
-        self.start_date_input: Optional[QLineEdit] = None
-        self.end_date_input: Optional[QLineEdit] = None
+        self.start_date_input: Optional[QDateEdit] = None
+        self.end_date_input: Optional[QDateEdit] = None
         self.data_table: Optional[QTableWidget] = None
         self.data_status_label: Optional[QLabel] = None
         self.data_quality_label: Optional[QLabel] = None
-        self.full_download_radio: Optional[QCheckBox] = None
-        self.custom_download_radio: Optional[QCheckBox] = None
+        self.full_download_radio: Optional[QRadioButton] = None
+        self.custom_download_radio: Optional[QRadioButton] = None
+        self.download_mode_group: Optional[QButtonGroup] = None
         self.download_symbols_input: Optional[QLineEdit] = None
-        self.download_start_date: Optional[QLineEdit] = None
-        self.download_end_date: Optional[QLineEdit] = None
+        self.download_start_date: Optional[QDateEdit] = None
+        self.download_end_date: Optional[QDateEdit] = None
         self.download_progress: Optional[QProgressBar] = None
         self.progress_label: Optional[QLabel] = None
         self.start_download_btn: Optional[QPushButton] = None
@@ -248,12 +251,16 @@ class DataCenter(BaseWidget, LoggerMixin):
         self.symbol_input.setPlaceholderText("输入品种代码...")
         query_layout.addRow("品种代码:", self.symbol_input)
 
-        self.start_date_input = QLineEdit()
-        self.start_date_input.setPlaceholderText("YYYY-MM-DD")
+        self.start_date_input = QDateEdit()
+        self.start_date_input.setDate(datetime.now() - timedelta(days=30))
+        self.start_date_input.setCalendarPopup(True)
+        self.start_date_input.setDisplayFormat("yyyy-MM-dd")
         query_layout.addRow("开始日期:", self.start_date_input)
 
-        self.end_date_input = QLineEdit()
-        self.end_date_input.setPlaceholderText("YYYY-MM-DD")
+        self.end_date_input = QDateEdit()
+        self.end_date_input.setDate(datetime.now())
+        self.end_date_input.setCalendarPopup(True)
+        self.end_date_input.setDisplayFormat("yyyy-MM-dd")
         query_layout.addRow("结束日期:", self.end_date_input)
 
         query_btn = QPushButton("查询数据")
@@ -310,11 +317,16 @@ class DataCenter(BaseWidget, LoggerMixin):
         mode_group = QGroupBox("下载模式")
         mode_layout = QVBoxLayout(mode_group)
 
-        self.full_download_radio = QCheckBox("全量下载")
+        # 创建按钮组确保互斥选择
+        self.download_mode_group = QButtonGroup(self)
+
+        self.full_download_radio = QRadioButton("全量下载")
         self.full_download_radio.setChecked(True)
+        self.download_mode_group.addButton(self.full_download_radio, 0)
         mode_layout.addWidget(self.full_download_radio)
 
-        self.custom_download_radio = QCheckBox("自定义下载")
+        self.custom_download_radio = QRadioButton("自定义下载")
+        self.download_mode_group.addButton(self.custom_download_radio, 1)
         mode_layout.addWidget(self.custom_download_radio)
 
         layout.addWidget(mode_group)
@@ -327,12 +339,16 @@ class DataCenter(BaseWidget, LoggerMixin):
         self.download_symbols_input.setPlaceholderText("如: 000001,000002 或 全部")
         config_layout.addRow("品种列表:", self.download_symbols_input)
 
-        self.download_start_date = QLineEdit()
-        self.download_start_date.setPlaceholderText("YYYY-MM-DD")
+        self.download_start_date = QDateEdit()
+        self.download_start_date.setDate(datetime.now() - timedelta(days=30))
+        self.download_start_date.setCalendarPopup(True)
+        self.download_start_date.setDisplayFormat("yyyy-MM-dd")
         config_layout.addRow("开始日期:", self.download_start_date)
 
-        self.download_end_date = QLineEdit()
-        self.download_end_date.setPlaceholderText("YYYY-MM-DD")
+        self.download_end_date = QDateEdit()
+        self.download_end_date.setDate(datetime.now())
+        self.download_end_date.setCalendarPopup(True)
+        self.download_end_date.setDisplayFormat("yyyy-MM-dd")
         config_layout.addRow("结束日期:", self.download_end_date)
 
         layout.addWidget(config_group)
@@ -482,14 +498,10 @@ class DataCenter(BaseWidget, LoggerMixin):
             return
 
         symbol = self.symbol_input.text()
-        start_date = self.start_date_input.text()
-        end_date = self.end_date_input.text()
 
-        # 默认日期范围：最近30天，避免空值导致异常
-        if not start_date:
-            start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-        if not end_date:
-            end_date = datetime.now().strftime("%Y-%m-%d")
+        # 获取日期输入框的值
+        start_date = self.start_date_input.date().toString("yyyy-MM-dd")
+        end_date = self.end_date_input.date().toString("yyyy-MM-dd")
 
         if not symbol:
             self.show_warning("请输入品种代码")
@@ -528,24 +540,24 @@ class DataCenter(BaseWidget, LoggerMixin):
 
     def _start_download(self):
         """开始下载."""
-        if not self.full_download_radio:
-            return
+        # 检查按钮组中选中的按钮
+        selected_button = self.download_mode_group.checkedButton()
 
-        if self.full_download_radio.isChecked():
+        if selected_button == self.full_download_radio:
             self._start_full_download()
-        else:
+        elif selected_button == self.custom_download_radio:
             self._start_custom_download()
+        else:
+            # 默认执行全量下载
+            self._start_full_download()
 
     def _start_full_download(self):
         """开始全量下载."""
         self.show_info("开始全量数据下载...")
 
-        # 模拟下载进度 - 添加空值检查
-        if self.download_progress:
-            self.download_progress.setValue(0)
+        # 更新UI状态
         if self.progress_label:
             self.progress_label.setText("全量下载中...")
-
         if self.start_download_btn:
             self.start_download_btn.setEnabled(False)
         if self.pause_download_btn:
@@ -553,8 +565,9 @@ class DataCenter(BaseWidget, LoggerMixin):
         if self.stop_download_btn:
             self.stop_download_btn.setEnabled(True)
 
-        # 模拟下载进度
-        self._simulate_download_progress()
+        # 开始模拟下载进度（会自动重置进度条），传入数据库路径
+        db_path = getattr(self, "_test_db_path", "test_data_download.db")
+        self._simulate_download_progress(db_path)
 
     def _start_custom_download(self):
         """开始自定义下载."""
@@ -563,9 +576,11 @@ class DataCenter(BaseWidget, LoggerMixin):
             return
 
         symbols = self.download_symbols_input.text()
-        # start_date and end_date are not used in current implementation
-        # start_date = self.download_start_date.text()
-        # end_date = self.download_end_date.text()
+        # 获取日期范围（虽然当前实现中未使用，但保留接口以供将来扩展）
+        # TODO: 在实际的数据下载功能中可以使用这些日期参数
+        # 这些变量目前未使用，但保留以供将来功能扩展
+        self.download_start_date.date().toString("yyyy-MM-dd")  # 保留以供将来扩展
+        self.download_end_date.date().toString("yyyy-MM-dd")  # 保留以供将来扩展
 
         if not symbols or symbols == "全部":
             self.show_warning("请输入要下载的品种列表")
@@ -573,12 +588,9 @@ class DataCenter(BaseWidget, LoggerMixin):
 
         self.show_info(f"开始自定义下载: {symbols}")
 
-        # 模拟下载进度 - 添加空值检查
-        if self.download_progress:
-            self.download_progress.setValue(0)
+        # 更新UI状态
         if self.progress_label:
             self.progress_label.setText("自定义下载中...")
-
         if self.start_download_btn:
             self.start_download_btn.setEnabled(False)
         if self.pause_download_btn:
@@ -586,7 +598,7 @@ class DataCenter(BaseWidget, LoggerMixin):
         if self.stop_download_btn:
             self.stop_download_btn.setEnabled(True)
 
-        # 模拟下载进度
+        # 开始模拟下载进度（会自动重置进度条）
         self._simulate_download_progress()
 
     def _pause_download(self):
@@ -608,17 +620,13 @@ class DataCenter(BaseWidget, LoggerMixin):
     def _stop_download(self):
         """停止下载."""
         self.show_info("下载已停止")
+
+        # 停止进度更新（如果有的话）
         if self.download_progress:
             self.download_progress.setValue(0)
-        if self.progress_label:
-            self.progress_label.setText("准备就绪")
 
-        if self.start_download_btn:
-            self.start_download_btn.setEnabled(True)
-        if self.pause_download_btn:
-            self.pause_download_btn.setEnabled(False)
-        if self.stop_download_btn:
-            self.stop_download_btn.setEnabled(False)
+        # 调用完成方法来统一更新UI状态
+        self._complete_download()
 
     def _test_connections(self):
         """测试连接."""
@@ -733,8 +741,8 @@ class DataCenter(BaseWidget, LoggerMixin):
         else:
             self.show_error("切换数据源失败")
 
-    def _simulate_download_progress(self):
-        """模拟下载进度."""
+    def _simulate_download_progress(self, db_path=None):
+        """模拟下载进度并保存数据到数据库."""
 
         def update_progress():
             if not self.download_progress:
@@ -742,19 +750,147 @@ class DataCenter(BaseWidget, LoggerMixin):
 
             current_value = self.download_progress.value()
             if current_value < 100:
-                self.download_progress.setValue(current_value + 10)
-                QTimer.singleShot(500, update_progress)
-            else:
-                if self.progress_label:
-                    self.progress_label.setText("下载完成")
-                if self.start_download_btn:
-                    self.start_download_btn.setEnabled(True)
-                if self.pause_download_btn:
-                    self.pause_download_btn.setEnabled(False)
-                if self.stop_download_btn:
-                    self.stop_download_btn.setEnabled(False)
+                new_value = min(current_value + 10, 100)  # 确保不会超过100
+                self.download_progress.setValue(new_value)
 
-        update_progress()
+                # 在进度更新过程中保存数据
+                if new_value % 20 == 0:  # 每20%保存一批数据
+                    self._save_sample_data_to_db(db_path)
+
+                # 如果还没完成，继续下一阶段
+                if new_value < 100:
+                    QTimer.singleShot(500, update_progress)
+                else:
+                    # 完成时更新UI状态
+                    self._complete_download()
+            else:
+                # 如果已经是100%，直接完成
+                self._complete_download()
+
+        # 确保进度条可见并开始更新
+        if self.download_progress:
+            self.download_progress.setValue(0)
+            self.download_progress.show()
+
+        # 延迟一点时间开始更新，确保UI有时间刷新
+        QTimer.singleShot(100, update_progress)
+
+    def _save_sample_data_to_db(self, db_path=None):
+        """保存示例数据到数据库."""
+        try:
+            import sqlite3
+
+            # 如果没有指定数据库路径，使用默认路径
+            if not db_path:
+                db_path = "test_data_download.db"
+
+            # 连接数据库
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+
+            # 生成一些示例股票数据
+            sample_stocks = [
+                (
+                    "000001",
+                    "平安银行",
+                    15.50,
+                    1000000,
+                    "2024-09-01 09:30:00",
+                    "股票",
+                    "模拟数据",
+                ),
+                (
+                    "000002",
+                    "万科A",
+                    12.80,
+                    800000,
+                    "2024-09-01 09:30:00",
+                    "股票",
+                    "模拟数据",
+                ),
+                (
+                    "600000",
+                    "浦发银行",
+                    8.90,
+                    1500000,
+                    "2024-09-01 09:30:00",
+                    "股票",
+                    "模拟数据",
+                ),
+                (
+                    "000001",
+                    "平安银行",
+                    15.55,
+                    1100000,
+                    "2024-09-01 10:00:00",
+                    "股票",
+                    "模拟数据",
+                ),
+                (
+                    "000002",
+                    "万科A",
+                    12.85,
+                    850000,
+                    "2024-09-01 10:00:00",
+                    "股票",
+                    "模拟数据",
+                ),
+            ]
+
+            # 插入股票数据
+            for stock in sample_stocks:
+                cursor.execute(
+                    """
+                    INSERT INTO quotes (symbol, name, price, volume, timestamp, category, source)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                    stock,
+                )
+
+            # 插入证券信息
+            securities = [
+                ("000001", "平安银行", "股票"),
+                ("000002", "万科A", "股票"),
+                ("600000", "浦发银行", "股票"),
+            ]
+
+            for security in securities:
+                # 检查是否已存在，避免重复插入
+                cursor.execute(
+                    "SELECT id FROM securities WHERE symbol = ?", (security[0],)
+                )
+                if not cursor.fetchone():
+                    cursor.execute(
+                        """
+                        INSERT INTO securities (symbol, name, category)
+                        VALUES (?, ?, ?)
+                    """,
+                        security,
+                    )
+
+            conn.commit()
+            conn.close()
+
+            self.logger.info(f"保存了 {len(sample_stocks)} 条股票数据到数据库")
+
+        except Exception as e:
+            self.logger.error(f"保存数据到数据库失败: {e}")
+
+    def _complete_download(self):
+        """完成下载，更新UI状态."""
+        if self.progress_label:
+            # 根据当前状态设置合适的文本
+            current_text = self.progress_label.text()
+            if "完成" in current_text:
+                self.progress_label.setText("下载完成")
+            else:
+                self.progress_label.setText("准备就绪")
+        if self.start_download_btn:
+            self.start_download_btn.setEnabled(True)
+        if self.pause_download_btn:
+            self.pause_download_btn.setEnabled(False)
+        if self.stop_download_btn:
+            self.stop_download_btn.setEnabled(False)
 
     def _load_symbols_data(self):
         """加载品种数据."""
@@ -921,12 +1057,10 @@ class DataCenter(BaseWidget, LoggerMixin):
                 if idx >= 0:
                     self.tab_widget.setCurrentIndex(idx)
             # 补全默认日期
-            if self.start_date_input and not self.start_date_input.text():
-                self.start_date_input.setText(
-                    (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-                )
-            if self.end_date_input and not self.end_date_input.text():
-                self.end_date_input.setText(datetime.now().strftime("%Y-%m-%d"))
+            if self.start_date_input:
+                self.start_date_input.setDate(datetime.now() - timedelta(days=30))
+            if self.end_date_input:
+                self.end_date_input.setDate(datetime.now())
             # 执行查询
             self._query_local_data()
         except (AttributeError, RuntimeError, ValueError) as e:
