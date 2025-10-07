@@ -419,7 +419,7 @@ class RealtimeService(BaseService):
         except Exception as e:
             self.logger.error("处理K线数据更新事件失败: %s", e)
 
-    def get_subscription_statistics(self) -> Dict[str, any]:
+    def get_subscription_statistics(self) -> Dict[str, Any]:
         """获取订阅统计信息."""
         try:
             total_clients = len(self._subscriptions)
