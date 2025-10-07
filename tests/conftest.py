@@ -5,7 +5,7 @@ import sys
 import os
 
 # 将项目根目录添加到Python路径中
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import logging
 from pathlib import Path
@@ -82,3 +82,11 @@ def pytest_report_header(config):
         f"项目路径: {project_root}",
         "测试目标: 验证43个功能链路的完整业务回路",
     ]
+
+
+# 导入所有fixtures，使其在所有测试中可用
+pytest_plugins = [
+    "tests.test_ui_integration.fixtures.app_fixture",
+    "tests.test_ui_integration.fixtures.ui_fixture",
+    "tests.test_ui_integration.fixtures.mock_backend",
+]

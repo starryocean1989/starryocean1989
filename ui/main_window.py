@@ -27,8 +27,46 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .themes.theme_manager import ThemeManager
-from config import ConfigManager
+from ui.themes.theme_manager import ThemeManager
+
+try:
+    from backend.config import ConfigManager
+except ImportError:
+    # Fallback配置管理器
+    class AppConfig:
+        """应用配置."""
+
+        def __init__(self):
+            self.name = "星辰金融终端"
+            self.version = "5.0.0"
+            self.author = "星辰科技"
+            self.description = "专业的金融交易终端系统"
+
+    class UIConfig:
+        """UI配置."""
+
+        def __init__(self):
+            self.theme = "dark"
+            self.language = "zh_CN"
+            self.window_width = 1200
+            self.window_height = 800
+            self.min_width = 800
+            self.min_height = 600
+            self.font_size = 10
+            self.refresh_interval = 1000
+
+    class ConfigManager:
+        """配置管理器类."""
+
+        def __init__(self):
+            self.app_config = AppConfig()
+            self.ui_config = UIConfig()
+
+        def save_config(self):
+            """保存配置."""
+            pass
+
+
 from backend.core.utils.logging_utils import (
     LoggerMixin,
     setup_logging,
@@ -36,12 +74,12 @@ from backend.core.utils.logging_utils import (
 from backend.core.utils.error_handler import error_handler
 
 # 导入功能界面模块
-from .components.system_manager.main_view import SystemManager
-from .components.data_center.main_view import DataCenter
-from .components.market_dashboard.main_view import MarketDashboard
-from .components.strategy_center.main_view import StrategyCenter
-from .components.trading_gateway.main_view import TradingGateway
-from .components.portfolio_investment.main_view import PortfolioInvestment
+from ui.components.system_manager.main_view import SystemManager
+from ui.components.data_center.main_view import DataCenter
+from ui.components.market_dashboard.main_view import MarketDashboard
+from ui.components.strategy_center.main_view import StrategyCenter
+from ui.components.trading_gateway.main_view import TradingGateway
+from ui.components.portfolio_investment.main_view import PortfolioInvestment
 
 
 class MainWindow(QMainWindow, LoggerMixin):

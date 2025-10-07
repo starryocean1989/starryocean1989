@@ -866,8 +866,28 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
         # 清空并填充数据
         try:
             position_table.setRowCount(0)
+
+            # 处理positions可能是字典或列表的情况
+            if isinstance(positions, dict):
+                # 如果是字典，将值转换为列表
+                positions_list = list(positions.values())
+            elif isinstance(positions, list):
+                # 如果是列表，直接使用
+                positions_list = positions
+            else:
+                # 其他类型，记录错误并返回
+                self.logger.error(
+                    "positions类型错误: %s, 值: %s", type(positions), positions
+                )
+                return
+
             # 限制显示数量，避免表格过大
-            for i, pos in enumerate(positions[:10]):
+            for i, pos in enumerate(positions_list[:10]):
+                # 确保pos是字典类型
+                if not isinstance(pos, dict):
+                    self.logger.warning("持仓项不是字典类型: %s", type(pos))
+                    continue
+
                 position_table.insertRow(i)
                 position_table.setItem(
                     i, 0, QTableWidgetItem(str(pos.get("symbol", "--")))

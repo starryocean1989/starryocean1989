@@ -39,11 +39,10 @@ class VnpyService(BaseService):
 
             self.logger.info("正在初始化VnPy主引擎...")
 
-            # 创建事件引擎
+            # 创建事件引擎（不手动启动，让MainEngine自动启动）
             self._event_engine = EventEngine()
-            self._event_engine.start()
 
-            # 创建主引擎
+            # 创建主引擎（MainEngine会自动启动EventEngine）
             self._main_engine = MainEngine(self._event_engine)
 
             # 初始化各种引擎

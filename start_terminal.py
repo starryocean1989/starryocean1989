@@ -58,22 +58,21 @@ class TerminalLauncher:
         logger.setLevel(logging.INFO)
 
         # 避免重复添加处理器
-        if not any(isinstance(h, logging.FileHandler)
-                   for h in logger.handlers):
+        if not any(isinstance(h, logging.FileHandler) for h in logger.handlers):
             file_handler = logging.FileHandler(
-                self.logs_path / "launcher.log", encoding="utf-8")
+                self.logs_path / "launcher.log", encoding="utf-8"
+            )
             file_handler.setLevel(logging.DEBUG)
             fmt = logging.Formatter(
-                "%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+                "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+            )
             file_handler.setFormatter(fmt)
             logger.addHandler(file_handler)
 
-        if not any(isinstance(h, logging.StreamHandler)
-                   for h in logger.handlers):
+        if not any(isinstance(h, logging.StreamHandler) for h in logger.handlers):
             console_handler = logging.StreamHandler()
             console_handler.setLevel(logging.INFO)
-            fmt = logging.Formatter(
-                "%(asctime)s - %(levelname)s - %(message)s")
+            fmt = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
             console_handler.setFormatter(fmt)
             logger.addHandler(console_handler)
 
@@ -112,10 +111,10 @@ class TerminalLauncher:
 
         env = os.environ.copy()
         env["VIRTUAL_ENV"] = str(self.venv_path)
-        env["PATH"] = (str(path_to_add) + os.pathsep +
-                       env.get("PATH", ""))
-        env["PYTHONPATH"] = (str(self.project_root) + os.pathsep +
-                             env.get("PYTHONPATH", ""))
+        env["PATH"] = str(path_to_add) + os.pathsep + env.get("PATH", "")
+        env["PYTHONPATH"] = (
+            str(self.project_root) + os.pathsep + env.get("PYTHONPATH", "")
+        )
 
         return {"env": env, "python_path": str(python_path)}
 
@@ -128,9 +127,11 @@ class TerminalLauncher:
                 if self.backend_process and self.backend_process.poll() is None
                 else ""
             )
-            ui_pid = (self.ui_process.pid
-                      if self.ui_process and
-                      self.ui_process.poll() is None else "")
+            ui_pid = (
+                self.ui_process.pid
+                if self.ui_process and self.ui_process.poll() is None
+                else ""
+            )
             with open(self.pids_file, "w", encoding="utf-8") as f:
                 f.write(f"backend_pid={backend_pid}\n")
                 f.write(f"ui_pid={ui_pid}\n")
@@ -142,30 +143,67 @@ class TerminalLauncher:
         try:
             if self.backend_process and self.backend_process.poll() is None:
                 self.logger.info(
-                    "后端已在运行（PID=%s），跳过重复启动",
-                    self.backend_process.pid)
+                    "后端已在运行（PID=%s），跳过重复启动", self.backend_process.pid
+                )
                 self._write_pids()
                 return True
 
             venv = self.activate_venv()
-            backend_main = self.backend_path / "core" / "vnpy_integration.py"
+            backend_main = self.backend_path / "app.py"
             if not backend_main.exists():
                 self.logger.error("后端主文件不存在: %s", backend_main)
                 return False
 
             self.logger.info("启动后端服务...")
+            # 使用 uvicorn 启动 FastAPI 应用
             self.backend_process = subprocess.Popen(
-                [venv["python_path"], str(backend_main)],
+                [
+                    venv["python_path"],
+                    "-m",
+                    "uvicorn",
+                    "backend.app:app",
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    "8000",
+                    "--log-level",
+                    "info",
+                ],
                 cwd=str(self.project_root),
                 env=venv["env"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
                 bufsize=1,
-                universal_newlines=True
+                universal_newlines=True,
             )
-            self.logger.info(
-                "后端启动成功，PID=%s", self.backend_process.pid)
+
+            # 异步消费后端子进程输出，写入日志文件
+            def _stream_to_log(stream, log_name):
+                try:
+                    log_file = self.logs_path / log_name
+                    with open(log_file, "a", encoding="utf-8") as lf:
+                        for line in iter(stream.readline, ""):
+                            if line:
+                                lf.write(line)
+                                lf.flush()
+                except (OSError, UnicodeDecodeError) as e:
+                    self.logger.debug("写入后端日志失败: %s", e)
+
+            if self.backend_process.stdout:
+                threading.Thread(
+                    target=_stream_to_log,
+                    args=(self.backend_process.stdout, "backend_process.log"),
+                    daemon=True,
+                ).start()
+            if self.backend_process.stderr:
+                threading.Thread(
+                    target=_stream_to_log,
+                    args=(self.backend_process.stderr, "backend_process.err.log"),
+                    daemon=True,
+                ).start()
+
+            self.logger.info("后端启动成功，PID=%s", self.backend_process.pid)
             self._write_pids()
             return True
         except (subprocess.SubprocessError, OSError, RuntimeError) as e:
@@ -177,8 +215,8 @@ class TerminalLauncher:
         try:
             if self.ui_process and self.ui_process.poll() is None:
                 self.logger.info(
-                    "UI已在运行（PID=%s），跳过重复启动",
-                    self.ui_process.pid)
+                    "UI已在运行（PID=%s），跳过重复启动", self.ui_process.pid
+                )
                 self._write_pids()
                 return True
 
@@ -197,7 +235,7 @@ class TerminalLauncher:
                 stderr=subprocess.PIPE,
                 text=True,
                 bufsize=1,
-                universal_newlines=True
+                universal_newlines=True,
             )
 
             # 异步消费子进程输出，避免阻塞并写入日志文件
@@ -205,7 +243,7 @@ class TerminalLauncher:
                 try:
                     log_file = self.logs_path / log_name
                     with open(log_file, "a", encoding="utf-8") as lf:
-                        for line in iter(stream.readline, ''):
+                        for line in iter(stream.readline, ""):
                             if line:
                                 lf.write(line)
                                 lf.flush()
@@ -216,17 +254,16 @@ class TerminalLauncher:
                 threading.Thread(
                     target=_stream_to_log,
                     args=(self.ui_process.stdout, "ui_process.log"),
-                    daemon=True
+                    daemon=True,
                 ).start()
             if self.ui_process.stderr:
                 threading.Thread(
                     target=_stream_to_log,
                     args=(self.ui_process.stderr, "ui_process.err.log"),
-                    daemon=True
+                    daemon=True,
                 ).start()
 
-            self.logger.info(
-                "UI启动成功，PID=%s", self.ui_process.pid)
+            self.logger.info("UI启动成功，PID=%s", self.ui_process.pid)
             self._write_pids()
             return True
         except (subprocess.SubprocessError, OSError, RuntimeError) as e:
@@ -288,23 +325,24 @@ class TerminalLauncher:
         """获取当前状态并刷新PID文件."""
         status = {
             "backend_running": (
-                self.backend_process is not None
-                and self.backend_process.poll() is None
+                self.backend_process is not None and self.backend_process.poll() is None
             ),
             "ui_running": (
-                self.ui_process is not None
-                and self.ui_process.poll() is None
+                self.ui_process is not None and self.ui_process.poll() is None
             ),
             "backend_pid": (
                 self.backend_process.pid
                 if self.backend_process and self.backend_process.poll() is None
                 else None
             ),
-            "ui_pid": (self.ui_process.pid
-                       if self.ui_process and
-                       self.ui_process.poll() is None else None),
-            "watchdog_running": (self.watchdog_thread is not None and
-                                 self.watchdog_thread.is_alive()),
+            "ui_pid": (
+                self.ui_process.pid
+                if self.ui_process and self.ui_process.poll() is None
+                else None
+            ),
+            "watchdog_running": (
+                self.watchdog_thread is not None and self.watchdog_thread.is_alive()
+            ),
             "hot_reload_enabled": self.enable_hot_reload,
             "auto_restart_enabled": self.auto_restart,
         }
@@ -315,10 +353,8 @@ class TerminalLauncher:
         """运行启动前诊断."""
         info = {
             "venv_ok": self.check_venv(),
-            "backend_main_exists": (
-                self.backend_path / "core" / "vnpy_integration.py").exists(),
-            "ui_main_exists": (
-                self.ui_path / "main_window.py").exists(),
+            "backend_main_exists": (self.backend_path / "app.py").exists(),
+            "ui_main_exists": (self.ui_path / "main_window.py").exists(),
             "logs_writable": (
                 os.access(str(self.logs_path), os.W_OK)
                 if self.logs_path.exists()
@@ -333,13 +369,12 @@ class TerminalLauncher:
         while True:
             try:
                 # 后端进程退出检查
-                if (self.backend_process and
-                        self.backend_process.poll() is not None):
+                if self.backend_process and self.backend_process.poll() is not None:
                     exit_code = self.backend_process.returncode
                     if exit_code != 0:
                         self.logger.warning(
-                            "检测到后端异常退出(code=%s)，准备重启",
-                            exit_code)
+                            "检测到后端异常退出(code=%s)，准备重启", exit_code
+                        )
                         if self.auto_restart:
                             time.sleep(self.restart_delay)
                             self.start_backend()
@@ -352,7 +387,8 @@ class TerminalLauncher:
                     exit_code = self.ui_process.returncode
                     if exit_code != 0:
                         self.logger.warning(
-                            "检测到UI异常退出(code=%s)，准备重启", exit_code)
+                            "检测到UI异常退出(code=%s)，准备重启", exit_code
+                        )
                         if self.auto_restart:
                             time.sleep(self.restart_delay)
                             self.start_ui()
@@ -374,8 +410,7 @@ class TerminalLauncher:
                 if self.cmd_file.exists():
                     content = ""
                     try:
-                        content = self.cmd_file.read_text(
-                            encoding="utf-8").strip()
+                        content = self.cmd_file.read_text(encoding="utf-8").strip()
                     except (OSError, UnicodeDecodeError):
                         content = ""
                     if content:
@@ -386,8 +421,7 @@ class TerminalLauncher:
                         if content == "restart_all":
                             self.restart_all()
                         elif content == "restart_ui":
-                            if (self.ui_process and
-                                    self.ui_process.poll() is None):
+                            if self.ui_process and self.ui_process.poll() is None:
                                 try:
                                     self.ui_process.terminate()
                                     self.ui_process.wait(timeout=10)
@@ -399,8 +433,10 @@ class TerminalLauncher:
                             time.sleep(self.restart_delay)
                             self.start_ui()
                         elif content == "restart_backend":
-                            if (self.backend_process and
-                                    self.backend_process.poll() is None):
+                            if (
+                                self.backend_process
+                                and self.backend_process.poll() is None
+                            ):
                                 try:
                                     self.backend_process.terminate()
                                     self.backend_process.wait(timeout=10)
@@ -420,12 +456,13 @@ class TerminalLauncher:
         """启动守护与指令监听线程."""
         if not (self.watchdog_thread and self.watchdog_thread.is_alive()):
             self.watchdog_thread = threading.Thread(
-                target=self._watchdog_loop, daemon=True)
+                target=self._watchdog_loop, daemon=True
+            )
             self.watchdog_thread.start()
-        if not (self.cmd_listener_thread and
-                self.cmd_listener_thread.is_alive()):
+        if not (self.cmd_listener_thread and self.cmd_listener_thread.is_alive()):
             self.cmd_listener_thread = threading.Thread(
-                target=self._command_listener_loop, daemon=True)
+                target=self._command_listener_loop, daemon=True
+            )
             self.cmd_listener_thread.start()
         self.logger.info("守护与指令监听线程已就绪")
 
@@ -464,10 +501,14 @@ def main() -> int:
 
     status = launcher.get_status()
     print("📊 当前状态：")
-    print(f"  - 后端运行: {'✅' if status['backend_running'] else '❌'} "
-          f"(PID={status['backend_pid']})")
-    print(f"  - UI运行: {'✅' if status['ui_running'] else '❌'} "
-          f"(PID={status['ui_pid']})")
+    print(
+        f"  - 后端运行: {'✅' if status['backend_running'] else '❌'} "
+        f"(PID={status['backend_pid']})"
+    )
+    print(
+        f"  - UI运行: {'✅' if status['ui_running'] else '❌'} "
+        f"(PID={status['ui_pid']})"
+    )
     print(f"  - 热更新: {'✅' if status['hot_reload_enabled'] else '❌'}")
 
     print("\n💡 提示：Ctrl+C 退出；变更代码后可向 logs/launcher.cmd 写入")
