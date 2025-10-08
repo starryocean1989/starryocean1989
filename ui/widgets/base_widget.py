@@ -126,8 +126,6 @@ class BaseWidget(QWidget):
         self._logger.info("%s: %s", title, message)
         self.info_message.emit(message)
 
-        QMessageBox.information(self, title, message, QMessageBox.StandardButton.Ok)
-
     def show_question(self, message: str, title: str = "确认") -> bool:
         """显示确认对话框."""
         self._logger.info("用户确认: %s", message)
@@ -142,36 +140,26 @@ class BaseWidget(QWidget):
 
         return reply == QMessageBox.StandardButton.Yes
 
-    def set_loading_state(self, loading: bool, message: str = "加载中..."):
-        """设置加载状态."""
-        if loading:
-            # 显示加载状态
-            self.show_info(message)
-        else:
-            # 隐藏加载状态
-            # pylint: disable=unnecessary-pass
-            pass
-
     def start_update_timer(
         self, interval: int = 1000, callback: Optional[Callable[..., Any]] = None
     ):
         """启动更新定时器."""
-        if self._update_timer:
-            self._update_timer.stop()
+        if not callback:
+            return
+
+        self.stop_update_timer()
 
         self._update_timer = QTimer(self)
-        self._update_timer.timeout.connect(callback or self._on_update_timer)
+        self._update_timer.timeout.connect(callback)
         self._update_timer.start(interval)
+        self._logger.debug("定时器已启动，间隔: %sms", interval)
 
     def stop_update_timer(self):
         """停止更新定时器."""
-        if self._update_timer and self._update_timer.isActive():
-            self._update_timer.stop()
-
-    def _on_update_timer(self):
-        """定时器触发回调 - 子类可以重写."""
-        # pylint: disable=unnecessary-pass
-        pass
+        if self._update_timer:
+            if self._update_timer.isActive():
+                self._update_timer.stop()
+            self._update_timer = None
 
     def update_data(self, data: Dict[str, Any]):
         """更新数据 - 子类可以重写."""
@@ -217,43 +205,3 @@ class BaseWidget(QWidget):
     def is_initialized(self) -> bool:
         """检查是否已初始化."""
         return self._is_initialized
-
-    def retranslate_ui(self):
-        """重新翻译界面 - 子类可以重写."""
-        # pylint: disable=unnecessary-pass
-        pass
-
-    def apply_theme(self, _theme_manager):  # noqa: U101
-        """应用主题 - 子类可以重写."""
-        # pylint: disable=unnecessary-pass
-        pass
-
-    def save_settings(self) -> Dict[str, Any]:
-        """保存设置 - 子类可以重写."""
-        return {}
-
-    def load_settings(self, _settings: Dict[str, Any]):  # noqa: U101
-        """加载设置 - 子类可以重写."""
-        # pylint: disable=unnecessary-pass
-        pass
-
-    def reset_settings(self):
-        """重置设置 - 子类可以重写."""
-        # pylint: disable=unnecessary-pass
-        pass
-
-    def export_data(self, _format_type: str = "json") -> Optional[str]:  # noqa: U101
-        """导出数据 - 子类可以重写."""
-        return None
-
-    def import_data(self, _data: str, _format_type: str = "json") -> bool:  # noqa: U101
-        """导入数据 - 子类可以重写."""
-        return False
-
-    def get_status_info(self) -> Dict[str, Any]:
-        """获取状态信息 - 子类可以重写."""
-        return {
-            "name": self.__class__.__name__,
-            "initialized": self._is_initialized,
-            "title": self.title,
-        }

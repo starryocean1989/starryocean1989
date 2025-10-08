@@ -12,6 +12,7 @@ mootdx数据获取封装模块
 from __future__ import annotations
 
 import logging
+import signal
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime
 from pathlib import Path  # noqa: TC003
@@ -23,6 +24,41 @@ from mootdx.quotes import Quotes
 
 from .block_parser import BlockParser
 from .config import config_manager
+
+
+# 自定义超时异常（避免与内置TimeoutError冲突，但在Python 3.3+中TimeoutError已经是内置的）
+class NetworkTimeoutError(Exception):
+    """网络超时异常"""
+
+    def __init__(self, message="操作超时"):
+        self.message = message
+        super().__init__(self.message)
+
+
+def timeout_handler(signum, frame):  # noqa: ARG001
+    """超时处理器"""
+    raise NetworkTimeoutError("操作超时")
+
+
+class timeout_context:  # noqa: D101
+    """超时上下文管理器（仅用于Unix系统，Windows使用其他方式）"""
+
+    def __init__(self, seconds):
+        """初始化超时上下文"""
+        self.seconds = seconds
+
+    def __enter__(self):
+        """进入上下文"""
+        # Windows不支持signal.alarm，跳过
+        if hasattr(signal, "SIGALRM"):
+            signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(self.seconds)
+        return self
+
+    def __exit__(self, exc_type, exc_value, exc_traceback):  # noqa: ARG002
+        """退出上下文"""
+        if hasattr(signal, "SIGALRM"):
+            signal.alarm(0)
 
 
 class StockFetcher:
@@ -44,29 +80,96 @@ class StockFetcher:
         Args:
             block_parser: BlockParser实例，如果为None则创建新实例
         """
+        # 配置超时参数（注意：mootdx 的 factory 方法不直接支持 timeout 参数）
+        # 我们需要在调用时通过其他方式控制超时
         self.quotes = Quotes.factory()
         self.block_parser = block_parser or BlockParser(config_manager.get_tdx_dir())
         self.logger = logging.getLogger(__name__)
 
+        # 超时配置
+        self.network_timeout = 10  # 网络请求超时时间（秒）
+
     def fetch_all_stocks(self) -> pd.DataFrame:
         """
-        获取所有品种列表
+        获取所有品种列表（带超时和重试机制）
 
         Returns:
             包含所有品种信息的DataFrame
+
+        Raises:
+            TimeoutError: 网络请求超时
+            ConnectionError: 网络连接错误
+            ValueError: 数据格式错误
         """
-        try:
-            self.logger.info("开始获取所有品种列表...")
-            stocks_df = self.quotes.stock_all()  # type: ignore[attr-defined]
-            if stocks_df is not None and isinstance(stocks_df, pd.DataFrame):
-                self.logger.info("成功获取 %s 个品种", len(stocks_df))
-                return stocks_df
-            else:
-                self.logger.error("获取品种列表失败: 返回数据为空或类型不正确")
-                raise ValueError("stock_all() 返回的数据无效")
-        except (OSError, ValueError, KeyError, AttributeError, TypeError) as e:
-            self.logger.error("获取品种列表失败: %s", e)
-            raise
+        max_retries = 1  # 最多重试1次
+        retry_delay = 2  # 重试延迟（秒）
+
+        for attempt in range(max_retries + 1):
+            try:
+                self.logger.info(
+                    "开始获取所有品种列表... (尝试 %d/%d)", attempt + 1, max_retries + 1
+                )
+
+                # 使用线程池执行，以便能够控制超时
+                from concurrent.futures import (
+                    ThreadPoolExecutor,
+                    TimeoutError as FutureTimeoutError,
+                )
+                import time
+
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(self.quotes.stock_all)  # type: ignore[attr-defined]
+                    try:
+                        # 等待结果，设置超时
+                        stocks_df = future.result(timeout=self.network_timeout)
+                    except FutureTimeoutError as exc:
+                        self.logger.error("获取品种列表超时 (>%d秒)", self.network_timeout)
+                        raise NetworkTimeoutError(
+                            f"网络请求超时 (>{self.network_timeout}秒)"
+                        ) from exc
+
+                # 验证返回数据
+                if (
+                    stocks_df is not None
+                    and isinstance(stocks_df, pd.DataFrame)
+                    and not stocks_df.empty
+                ):
+                    self.logger.info("成功获取 %s 个品种", len(stocks_df))
+                    return stocks_df
+                else:
+                    self.logger.error("获取品种列表失败: 返回数据为空或类型不正确")
+                    raise ValueError("stock_all() 返回的数据无效或为空")
+
+            except (NetworkTimeoutError, TimeoutError):
+                # 超时不重试，直接抛出
+                raise
+
+            except OSError as e:
+                # 网络错误，可以重试
+                self.logger.warning(
+                    "网络连接错误 (尝试 %d/%d): %s", attempt + 1, max_retries + 1, e
+                )
+                if attempt < max_retries:
+                    self.logger.info("等待 %d 秒后重试...", retry_delay)
+                    import time
+
+                    time.sleep(retry_delay)
+                else:
+                    self.logger.error("获取品种列表失败: 已达到最大重试次数")
+                    raise ConnectionError(f"网络连接失败: {e}") from e
+
+            except (ValueError, KeyError, AttributeError, TypeError) as e:
+                # 数据解析错误，不重试
+                self.logger.error("获取品种列表失败: 数据解析错误 - %s", e)
+                raise ValueError(f"数据解析错误: {e}") from e
+
+            except Exception as e:
+                # 其他未知错误
+                self.logger.error("获取品种列表失败: 未知错误 - %s", e, exc_info=True)
+                raise RuntimeError(f"未知错误: {e}") from e
+
+        # 理论上不会到这里
+        raise RuntimeError("获取品种列表失败: 未知原因")
 
     def parse_market_codes(self, stocks_df: pd.DataFrame) -> Dict[str, List[str]]:
         """

@@ -3,4 +3,4 @@
 
 from .main_view import MarketDashboard
 
-__all__ = ['MarketDashboard']
+__all__ = ["MarketDashboard"]

@@ -7,15 +7,35 @@
 
 # 导入所有仓库类
 from .base_repository import BaseRepository, InMemoryRepository
-from .symbol_repository import SymbolRepository
-from .download_task_repository import DownloadTaskRepository
-from .data_source_repository import DataSourceRepository
+from .data_repositories import (
+    SymbolRepository,
+    DataSourceRepository,
+    DownloadTaskRepository,
+)
+from .trading_repositories import (
+    GatewayRepository,
+    StrategyRepository,
+    BacktestRepository,
+)
+from .system_repositories import (
+    AlertRepository,
+    LogRepository,
+    ConfigRepository,
+    PortfolioRepository,
+)
 
 # 导出所有仓库类
 __all__ = [
     "BaseRepository",
     "InMemoryRepository",
     "SymbolRepository",
-    "DownloadTaskRepository",
     "DataSourceRepository",
+    "DownloadTaskRepository",
+    "GatewayRepository",
+    "StrategyRepository",
+    "BacktestRepository",
+    "AlertRepository",
+    "LogRepository",
+    "ConfigRepository",
+    "PortfolioRepository",
 ]

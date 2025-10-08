@@ -3,4 +3,4 @@
 
 from .main_view import StrategyCenter
 
-__all__ = ['StrategyCenter']
+__all__ = ["StrategyCenter"]

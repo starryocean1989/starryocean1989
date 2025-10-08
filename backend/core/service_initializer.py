@@ -1,395 +1,466 @@
 # -*- coding: utf-8 -*-
-# pylint: disable=protected-access
-# 注: ServiceInitializer 作为 ServiceManager 的紧密协作类,
-# 需要访问 _record_error 方法来记录详细的服务初始化过程
 """
-服务初始化器 - 错误追踪和详细报告版本
+服务初始化器 - 按依赖顺序初始化所有服务
 
-专注于详细错误报告机制，让用户知道服务初始化的具体问题。
-不实现多层级降级机制，而是提供完整的错误信息追踪。
+负责整个系统的服务初始化流程，包括：
+- VNPY框架初始化（MainEngine + EventEngine）
+- ChinaStockEngine初始化
+- 各业务服务初始化
+- 依赖关系管理
+- 错误处理和降级
 """
 
 import logging
-import threading
-from typing import Any, Dict
-
-from .shared_services import ErrorSeverity, ServiceManager
-from .vnpy_service_adapter import VnPyServiceAdapter
+from typing import Any, Dict, List
+from enum import Enum
 
 logger = logging.getLogger(__name__)
 
 
+class InitializationPhase(Enum):
+    """初始化阶段."""
+
+    VNPY_CORE = "vnpy_core"  # VNPY核心框架
+    DATA_ENGINES = "data_engines"  # 数据引擎（ChinaStockEngine等）
+    DATA_SERVICES = "data_services"  # 数据服务
+    TRADING_SERVICES = "trading_services"  # 交易服务
+    STRATEGY_SERVICES = "strategy_services"  # 策略服务
+    AUXILIARY_SERVICES = "auxiliary_services"  # 辅助服务
+
+
 class ServiceInitializer:
-    """服务初始化器 - 专注于错误追踪和报告"""
+    """服务初始化器.
 
-    def __init__(self, service_manager: ServiceManager):
-        """初始化服务初始化器"""
-        self.service_manager = service_manager
-        self.logger = logging.getLogger(self.__class__.__name__)
-        self._initialization_lock = threading.Lock()
+    按照依赖顺序初始化所有服务：
+    1. VNPY核心框架 (MainEngine + EventEngine)
+    2. 数据引擎 (ChinaStockEngine)
+    3. 数据服务 (DataCenterService)
+    4. 交易服务 (TradingGatewayService)
+    5. 策略服务 (StrategyCenterService)
+    6. 辅助服务 (Portfolio, Market, System)
+    """
 
-        # VnPy服务适配器
-        self.vnpy_adapter = None
-
-    def initialize_all_services(self) -> bool:
-        """初始化所有服务，返回成功状态"""
-        try:
-            with self._initialization_lock:
-                self.service_manager._record_error(
-                    "ServiceInitializer",
-                    "INITIALIZATION_START",
-                    "开始初始化所有后端服务",
-                    severity=ErrorSeverity.INFO,
-                )
-
-                success = True
-
-                # 初始化VnPy服务适配器
-                if not self._initialize_vnpy_adapter():
-                    success = False
-
-                # 初始化品种服务
-                if not self._initialize_symbol_service():
-                    success = False
-
-                # 初始化其他核心服务
-                if not self._initialize_other_services():
-                    success = False
-
-                if success:
-                    self.service_manager._record_error(
-                        "ServiceInitializer",
-                        "INITIALIZATION_SUCCESS",
-                        "所有后端服务初始化成功",
-                        severity=ErrorSeverity.INFO,
-                    )
-                else:
-                    self.service_manager._record_error(
-                        "ServiceInitializer",
-                        "INITIALIZATION_PARTIAL_SUCCESS",
-                        "部分后端服务初始化成功，部分失败",
-                        severity=ErrorSeverity.WARNING,
-                    )
-
-                return success
-
-        except Exception as e:
-            self.service_manager._record_error(
-                "ServiceInitializer",
-                "INITIALIZATION_EXCEPTION",
-                f"服务初始化过程中发生异常: {str(e)}",
-                exception=e,
-                severity=ErrorSeverity.CRITICAL,
-            )
-            return False
-
-    def _initialize_vnpy_adapter(self) -> bool:
-        """初始化VnPy服务适配器"""
-        try:
-            self.service_manager._record_error(
-                "ServiceInitializer",
-                "VNPY_ADAPTER_INIT_START",
-                "开始初始化VnPy服务适配器",
-                severity=ErrorSeverity.INFO,
-            )
-
-            # 创建VnPy服务适配器
-            self.vnpy_adapter = VnPyServiceAdapter(self.service_manager)
-
-            # 注册到服务管理器
-            success = self.service_manager.register_service("vnpy_service", self.vnpy_adapter)
-
-            if success:
-                self.service_manager._record_error(
-                    "ServiceInitializer",
-                    "VNPY_ADAPTER_INIT_SUCCESS",
-                    "VnPy服务适配器初始化成功",
-                    severity=ErrorSeverity.INFO,
-                )
-                return True
-            else:
-                self.service_manager._record_error(
-                    "ServiceInitializer",
-                    "VNPY_ADAPTER_REGISTRATION_FAILED",
-                    "VnPy服务适配器注册失败",
-                    severity=ErrorSeverity.ERROR,
-                )
-                return False
-
-        except Exception as e:
-            self.service_manager._record_error(
-                "ServiceInitializer",
-                "VNPY_ADAPTER_INIT_EXCEPTION",
-                f"VnPy服务适配器初始化异常: {str(e)}",
-                exception=e,
-                severity=ErrorSeverity.ERROR,
-            )
-            return False
-
-    def _initialize_symbol_service(self) -> bool:
-        """初始化品种服务"""
-        try:
-            self.service_manager._record_error(
-                "ServiceInitializer",
-                "SYMBOL_SERVICE_INIT_START",
-                "开始初始化品种服务",
-                severity=ErrorSeverity.INFO,
-            )
-
-            # 检查VnPy服务是否可用
-            vnpy_service = self.service_manager.get_service("vnpy_service")
-            if vnpy_service is None:
-                self.service_manager._record_error(
-                    "ServiceInitializer",
-                    "SYMBOL_SERVICE_VNPY_DEPENDENCY_MISSING",
-                    "无法初始化品种服务：VnPy服务不可用",
-                    severity=ErrorSeverity.ERROR,
-                )
-                return False
-
-            # 创建品种服务（简化版本，直接使用VnPy适配器）
-            symbol_service = SymbolServiceWrapper(vnpy_service)
-
-            # 注册服务
-            success = self.service_manager.register_service("symbol_service", symbol_service)
-
-            if success:
-                self.service_manager._record_error(
-                    "ServiceInitializer",
-                    "SYMBOL_SERVICE_INIT_SUCCESS",
-                    "品种服务初始化成功",
-                    severity=ErrorSeverity.INFO,
-                )
-                return True
-            else:
-                return False
-
-        except Exception as e:
-            self.service_manager._record_error(
-                "ServiceInitializer",
-                "SYMBOL_SERVICE_INIT_EXCEPTION",
-                f"品种服务初始化异常: {str(e)}",
-                exception=e,
-                severity=ErrorSeverity.ERROR,
-            )
-            return False
-
-    def _initialize_other_services(self) -> bool:
-        """初始化其他核心服务"""
-        try:
-            self.service_manager._record_error(
-                "ServiceInitializer",
-                "OTHER_SERVICES_INIT_START",
-                "开始初始化其他核心服务",
-                severity=ErrorSeverity.INFO,
-            )
-
-            success_count = 0
-            total_services = 0
-
-            # 初始化事件服务
-            total_services += 1
-            if self._initialize_event_service():
-                success_count += 1
-
-            # 初始化本地数据服务
-            total_services += 1
-            if self._initialize_local_data_service():
-                success_count += 1
-
-            # 初始化下载服务
-            total_services += 1
-            if self._initialize_download_service():
-                success_count += 1
-
-            # 初始化数据源服务
-            total_services += 1
-            if self._initialize_data_source_service():
-                success_count += 1
-
-            if success_count == total_services:
-                self.service_manager._record_error(
-                    "ServiceInitializer",
-                    "OTHER_SERVICES_INIT_SUCCESS",
-                    f"所有{total_services}个其他服务初始化成功",
-                    severity=ErrorSeverity.INFO,
-                )
-                return True
-            else:
-                self.service_manager._record_error(
-                    "ServiceInitializer",
-                    "OTHER_SERVICES_INIT_PARTIAL",
-                    f"其他服务初始化部分成功：{success_count}/{total_services}",
-                    severity=ErrorSeverity.WARNING,
-                )
-                return False
-
-        except Exception as e:
-            self.service_manager._record_error(
-                "ServiceInitializer",
-                "OTHER_SERVICES_INIT_EXCEPTION",
-                f"其他服务初始化异常: {str(e)}",
-                exception=e,
-                severity=ErrorSeverity.ERROR,
-            )
-            return False
-
-    def _initialize_event_service(self) -> bool:
-        """初始化事件服务"""
-        try:
-            # 创建简单的事件服务
-            event_service = SimpleEventService()
-            return self.service_manager.register_service("event_service", event_service)
-        except Exception as e:
-            self.service_manager._record_error(
-                "ServiceInitializer",
-                "EVENT_SERVICE_INIT_FAILED",
-                f"事件服务初始化失败: {str(e)}",
-                exception=e,
-                severity=ErrorSeverity.ERROR,
-            )
-            return False
-
-    def _initialize_local_data_service(self) -> bool:
-        """初始化本地数据服务"""
-        try:
-            # 创建简单的本地数据服务
-            local_data_service = SimpleLocalDataService()
-            return self.service_manager.register_service("local_data_service", local_data_service)
-        except Exception as e:
-            self.service_manager._record_error(
-                "ServiceInitializer",
-                "LOCAL_DATA_SERVICE_INIT_FAILED",
-                f"本地数据服务初始化失败: {str(e)}",
-                exception=e,
-                severity=ErrorSeverity.ERROR,
-            )
-            return False
-
-    def _initialize_download_service(self) -> bool:
-        """初始化下载服务"""
-        try:
-            # 创建简单的下载服务
-            download_service = SimpleDownloadService()
-            return self.service_manager.register_service("download_service", download_service)
-        except Exception as e:
-            self.service_manager._record_error(
-                "ServiceInitializer",
-                "DOWNLOAD_SERVICE_INIT_FAILED",
-                f"下载服务初始化失败: {str(e)}",
-                exception=e,
-                severity=ErrorSeverity.ERROR,
-            )
-            return False
-
-    def _initialize_data_source_service(self) -> bool:
-        """初始化数据源服务"""
-        try:
-            # 导入并创建数据源服务
-            from backend.services.data_center.data_source_service import DataSourceService
-
-            data_source_service = DataSourceService()
-            return self.service_manager.register_service("data_source_service", data_source_service)
-        except Exception as e:
-            self.service_manager._record_error(
-                "ServiceInitializer",
-                "DATA_SOURCE_SERVICE_INIT_FAILED",
-                f"数据源服务初始化失败: {str(e)}",
-                exception=e,
-                severity=ErrorSeverity.ERROR,
-            )
-            return False
-
-    def get_initialization_report(self) -> Dict[str, Any]:
-        """获取初始化报告"""
-        report = {
-            "vnpy_adapter_available": self.vnpy_adapter is not None,
-            "vnpy_adapter_status": None,
-            "services_registered": len(self.service_manager.services),
-            "error_count": len(self.service_manager.errors),
-        }
-
-        if self.vnpy_adapter:
-            report["vnpy_adapter_status"] = self.vnpy_adapter.get_status()
-
-        return report
-
-
-class SymbolServiceWrapper:
-    """品种服务包装器"""
-
-    def __init__(self, vnpy_adapter):
-        """初始化品种服务包装器
+    def __init__(self, service_manager):
+        """初始化服务初始化器.
 
         Args:
-            vnpy_adapter: VnPy服务适配器实例
+            service_manager: 服务管理器实例
         """
-        self.vnpy_adapter = vnpy_adapter
-        self.logger = logging.getLogger("SymbolServiceWrapper")
+        self.service_manager = service_manager
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self.initialized_services: Dict[str, Any] = {}
+        self.failed_services: List[str] = []
 
-    async def get_all_symbols(self):
-        """获取所有品种"""
-        return self.vnpy_adapter.get_symbols()
+        # VNPY引擎实例
+        self.main_engine = None
+        self.event_engine = None
+        self.china_stock_engine = None
 
-    async def refresh_cache(self):
-        """刷新缓存"""
-        return self.vnpy_adapter.refresh_stock_list()
+    def initialize_all_services(self) -> bool:
+        """初始化所有服务.
+
+        Returns:
+            bool: 是否成功初始化（允许部分失败）
+        """
+        try:
+            self.logger.info("=" * 60)
+            self.logger.info("开始初始化服务...")
+            self.logger.info("=" * 60)
+
+            # 阶段1: 初始化VNPY核心框架
+            phase1_success = self._initialize_vnpy_core()
+
+            # 阶段2: 初始化数据引擎
+            phase2_success = self._initialize_data_engines()
+
+            # 阶段3: 初始化数据服务
+            phase3_success = self._initialize_data_services()
+
+            # 阶段4: 初始化交易服务
+            _phase4_success = self._initialize_trading_services()
+
+            # 阶段5: 初始化策略服务
+            _phase5_success = self._initialize_strategy_services()
+
+            # 阶段6: 初始化辅助服务
+            _phase6_success = self._initialize_auxiliary_services()
+
+            # 生成初始化报告
+            self._generate_initialization_report()
+
+            # 如果核心服务初始化成功，即使部分服务失败也返回True
+            core_services_ok = phase1_success or phase2_success or phase3_success
+
+            if core_services_ok:
+                self.logger.info("✅ 核心服务初始化成功，系统可以启动")
+                return True
+            else:
+                self.logger.error("❌ 核心服务初始化失败，系统无法正常启动")
+                return False
+
+        except Exception as e:
+            self.logger.error("服务初始化过程发生严重异常: %s", e, exc_info=True)
+            self.service_manager.record_error(
+                "ServiceInitializer",
+                "CRITICAL_INITIALIZATION_ERROR",
+                f"初始化过程异常: {str(e)}",
+                exception=e,
+            )
+            return False
+
+    def _initialize_vnpy_core(self) -> bool:
+        """阶段1: 初始化VNPY核心框架.
+
+        Returns:
+            bool: 是否成功
+        """
+        self.logger.info("\n" + "=" * 60)
+        self.logger.info("阶段1: 初始化VNPY核心框架")
+        self.logger.info("=" * 60)
+
+        try:
+            # 导入VNPY核心类
+            try:
+                from vnpy.event import EventEngine
+                from vnpy.trader.engine import MainEngine
+
+                self.logger.info("✅ VNPY核心模块导入成功")
+            except ImportError as e:
+                self.logger.error("❌ VNPY核心模块导入失败: %s", e)
+                self.failed_services.append("vnpy_core")
+                return False
+
+            # 创建事件引擎
+            try:
+                self.event_engine = EventEngine()
+                self.logger.info("✅ EventEngine 创建成功")
+            except Exception as e:
+                self.logger.error("❌ EventEngine 创建失败: %s", e, exc_info=True)
+                self.failed_services.append("event_engine")
+                return False
+
+            # 创建主引擎
+            try:
+                self.main_engine = MainEngine(self.event_engine)
+                self.logger.info("✅ MainEngine 创建成功")
+            except Exception as e:
+                self.logger.error("❌ MainEngine 创建失败: %s", e, exc_info=True)
+                self.failed_services.append("main_engine")
+                return False
+
+            # 注册到全局
+            from backend.core.shared_services import set_main_engine, set_event_engine
+
+            set_main_engine(self.main_engine)
+            set_event_engine(self.event_engine)
+
+            self.logger.info("✅ VNPY核心框架初始化完成")
+            return True
+
+        except Exception as e:
+            self.logger.error("❌ VNPY核心框架初始化失败: %s", e, exc_info=True)
+            self.failed_services.append("vnpy_core")
+            return False
+
+    def _initialize_data_engines(self) -> bool:
+        """阶段2: 初始化数据引擎.
+
+        Returns:
+            bool: 是否成功
+        """
+        self.logger.info("\n" + "=" * 60)
+        self.logger.info("阶段2: 初始化数据引擎")
+        self.logger.info("=" * 60)
+
+        if not self.main_engine or not self.event_engine:
+            self.logger.warning("⚠️ VNPY引擎未初始化，跳过数据引擎初始化")
+            return False
+
+        try:
+            # 初始化ChinaStockEngine
+            try:
+                from backend.infrastructure.data_module_vnpy.engine import ChinaStockEngine
+
+                self.china_stock_engine = ChinaStockEngine(self.main_engine, self.event_engine)
+                self.logger.info("✅ ChinaStockEngine 创建成功")
+
+                # 注册到全局
+                from backend.core.shared_services import set_china_stock_engine
+
+                set_china_stock_engine(self.china_stock_engine)
+
+            except ImportError as e:
+                self.logger.warning("⚠️ ChinaStockEngine 不可用: %s", e)
+                self.failed_services.append("china_stock_engine")
+            except Exception as e:
+                self.logger.error("❌ ChinaStockEngine 初始化失败: %s", e, exc_info=True)
+                self.failed_services.append("china_stock_engine")
+
+            # 集成data_engine作为vnpy datafeed
+            try:
+                from backend.infrastructure.data_engine.vnpy_datafeed import DataEngineGateway
+
+                # 添加DataEngine网关到MainEngine
+                self.main_engine.add_gateway(DataEngineGateway)
+                self.logger.info("✅ DataEngine网关已注册")
+
+            except ImportError as e:
+                self.logger.warning("⚠️ DataEngine网关不可用: %s", e)
+            except Exception as e:
+                self.logger.error("❌ DataEngine网关注册失败: %s", e, exc_info=True)
+
+            self.logger.info("✅ 数据引擎初始化完成")
+            return True
+
+        except Exception as e:
+            self.logger.error("❌ 数据引擎初始化失败: %s", e, exc_info=True)
+            return False
+
+    def _initialize_data_services(self) -> bool:
+        """阶段3: 初始化数据服务.
+
+        Returns:
+            bool: 是否成功
+        """
+        self.logger.info("\n" + "=" * 60)
+        self.logger.info("阶段3: 初始化数据服务")
+        self.logger.info("=" * 60)
+
+        success_count = 0
+
+        # 初始化DataCenterService
+        try:
+            from backend.services.data_center_service import DataCenterService
+
+            data_center_service = DataCenterService()
+            init_success = data_center_service.initialize()
+
+            if init_success:
+                self.service_manager.register_service("data_center_service", data_center_service)
+                self.initialized_services["data_center_service"] = data_center_service
+                self.logger.info("✅ DataCenterService 初始化成功")
+                success_count += 1
+            else:
+                self.logger.warning("⚠️ DataCenterService 初始化失败")
+                self.failed_services.append("data_center_service")
+
+        except Exception as e:
+            self.logger.error("❌ DataCenterService 初始化异常: %s", e, exc_info=True)
+            self.failed_services.append("data_center_service")
+
+        return success_count > 0
+
+    def _initialize_trading_services(self) -> bool:
+        """阶段4: 初始化交易服务.
+
+        Returns:
+            bool: 是否成功
+        """
+        self.logger.info("\n" + "=" * 60)
+        self.logger.info("阶段4: 初始化交易服务")
+        self.logger.info("=" * 60)
+
+        success_count = 0
+
+        # 初始化TradingGatewayService
+        try:
+            from backend.services.trading_gateway_service import TradingGatewayService
+
+            trading_gateway_service = TradingGatewayService()
+            init_success = trading_gateway_service.initialize()
+
+            if init_success:
+                self.service_manager.register_service(
+                    "trading_gateway_service", trading_gateway_service
+                )
+                self.initialized_services["trading_gateway_service"] = trading_gateway_service
+                self.logger.info("✅ TradingGatewayService 初始化成功")
+                success_count += 1
+            else:
+                self.logger.warning("⚠️ TradingGatewayService 初始化失败")
+                self.failed_services.append("trading_gateway_service")
+
+        except Exception as e:
+            self.logger.error("❌ TradingGatewayService 初始化异常: %s", e, exc_info=True)
+            self.failed_services.append("trading_gateway_service")
+
+        return success_count > 0
+
+    def _initialize_strategy_services(self) -> bool:
+        """阶段5: 初始化策略服务.
+
+        Returns:
+            bool: 是否成功
+        """
+        self.logger.info("\n" + "=" * 60)
+        self.logger.info("阶段5: 初始化策略服务")
+        self.logger.info("=" * 60)
+
+        success_count = 0
+
+        # 初始化StrategyCenterService
+        try:
+            from backend.services.strategy_center_service import StrategyCenterService
+
+            strategy_center_service = StrategyCenterService()
+            init_success = strategy_center_service.initialize()
+
+            if init_success:
+                self.service_manager.register_service(
+                    "strategy_center_service", strategy_center_service
+                )
+                self.initialized_services["strategy_center_service"] = strategy_center_service
+                self.logger.info("✅ StrategyCenterService 初始化成功")
+                success_count += 1
+            else:
+                self.logger.warning("⚠️ StrategyCenterService 初始化失败")
+                self.failed_services.append("strategy_center_service")
+
+        except Exception as e:
+            self.logger.error("❌ StrategyCenterService 初始化异常: %s", e, exc_info=True)
+            self.failed_services.append("strategy_center_service")
+
+        return success_count > 0
+
+    def _initialize_auxiliary_services(self) -> bool:
+        """阶段6: 初始化辅助服务.
+
+        Returns:
+            bool: 是否成功
+        """
+        self.logger.info("\n" + "=" * 60)
+        self.logger.info("阶段6: 初始化辅助服务")
+        self.logger.info("=" * 60)
+
+        success_count = 0
+
+        # 初始化PortfolioService
+        try:
+            from backend.services.portfolio_service import PortfolioService
+
+            portfolio_service = PortfolioService()
+            init_success = portfolio_service.initialize()
+
+            if init_success:
+                self.service_manager.register_service("portfolio_service", portfolio_service)
+                self.initialized_services["portfolio_service"] = portfolio_service
+                self.logger.info("✅ PortfolioService 初始化成功")
+                success_count += 1
+            else:
+                self.logger.warning("⚠️ PortfolioService 初始化失败")
+                self.failed_services.append("portfolio_service")
+
+        except Exception as e:
+            self.logger.error("❌ PortfolioService 初始化异常: %s", e, exc_info=True)
+            self.failed_services.append("portfolio_service")
+
+        # 初始化MarketBoardService
+        try:
+            from backend.services.market_board_service import MarketBoardService
+
+            market_board_service = MarketBoardService()
+            init_success = market_board_service.initialize()
+
+            if init_success:
+                self.service_manager.register_service("market_board_service", market_board_service)
+                self.initialized_services["market_board_service"] = market_board_service
+                self.logger.info("✅ MarketBoardService 初始化成功")
+                success_count += 1
+            else:
+                self.logger.warning("⚠️ MarketBoardService 初始化失败")
+                self.failed_services.append("market_board_service")
+
+        except Exception as e:
+            self.logger.error("❌ MarketBoardService 初始化异常: %s", e, exc_info=True)
+            self.failed_services.append("market_board_service")
+
+        # 初始化SystemManagerService
+        try:
+            from backend.services.system_manager_service import SystemManagerService
+
+            system_manager_service = SystemManagerService()
+            init_success = system_manager_service.initialize()
+
+            if init_success:
+                self.service_manager.register_service(
+                    "system_manager_service", system_manager_service
+                )
+                self.initialized_services["system_manager_service"] = system_manager_service
+                self.logger.info("✅ SystemManagerService 初始化成功")
+                success_count += 1
+            else:
+                self.logger.warning("⚠️ SystemManagerService 初始化失败")
+                self.failed_services.append("system_manager_service")
+
+        except Exception as e:
+            self.logger.error("❌ SystemManagerService 初始化异常: %s", e, exc_info=True)
+            self.failed_services.append("system_manager_service")
+
+        return success_count > 0
+
+    def _generate_initialization_report(self):
+        """生成初始化报告."""
+        self.logger.info("\n" + "=" * 60)
+        self.logger.info("初始化报告")
+        self.logger.info("=" * 60)
+
+        total_services = len(self.initialized_services) + len(self.failed_services)
+        success_count = len(self.initialized_services)
+        failed_count = len(self.failed_services)
+
+        self.logger.info("总服务数: %d", total_services)
+        self.logger.info("成功初始化: %d", success_count)
+        self.logger.info("初始化失败: %d", failed_count)
+
+        if self.initialized_services:
+            self.logger.info("\n✅ 成功的服务:")
+            for name in self.initialized_services:
+                self.logger.info("  - %s", name)
+
+        if self.failed_services:
+            self.logger.info("\n❌ 失败的服务:")
+            for name in self.failed_services:
+                self.logger.info("  - %s", name)
+
+        self.logger.info("=" * 60)
 
 
-class SimpleEventService:
-    """简单事件服务"""
+def initialize_real_services() -> bool:
+    """初始化所有服务的入口函数.
 
-    def __init__(self):
-        """初始化简单事件服务"""
-        self.handlers = {}
-        self.logger = logging.getLogger("SimpleEventService")
+    Returns:
+        bool: 是否初始化成功
+    """
+    from backend.core.shared_services import get_service_manager
 
-    async def emit_event(self, event_type, data=None):
-        """发送事件"""
-        if event_type in self.handlers:
-            for handler in self.handlers[event_type]:
-                try:
-                    handler(data)
-                except Exception as e:
-                    self.logger.error("事件处理器执行失败: %s", e)
-
-    def register_handler(self, event_type, handler):
-        """注册事件处理器"""
-        if event_type not in self.handlers:
-            self.handlers[event_type] = []
-        self.handlers[event_type].append(handler)
+    service_manager = get_service_manager()
+    initializer = ServiceInitializer(service_manager)
+    return initializer.initialize_all_services()
 
 
-class SimpleLocalDataService:
-    """简单本地数据服务"""
+def shutdown_real_services() -> None:
+    """关闭所有服务."""
+    from backend.core.shared_services import get_service_manager, get_main_engine
 
-    def __init__(self):
-        """初始化简单本地数据服务"""
-        self.logger = logging.getLogger("SimpleLocalDataService")
+    service_manager = get_service_manager()
+    logger.info("开始关闭所有服务...")
 
-    async def query_data(self):
-        """查询数据"""
-        return []
+    # 关闭所有业务服务
+    for service_name, service in list(service_manager.services.items()):
+        if service and hasattr(service, "shutdown"):
+            try:
+                service.shutdown()
+                logger.info("✅ %s 已关闭", service_name)
+            except Exception as e:
+                logger.error("❌ 关闭 %s 失败: %s", service_name, e)
 
-    def get_status(self):
-        """获取状态"""
-        return "运行中"
+    # 关闭VNPY主引擎
+    main_engine = get_main_engine()
+    if main_engine:
+        try:
+            main_engine.close()
+            logger.info("✅ MainEngine 已关闭")
+        except Exception as e:
+            logger.error("❌ 关闭 MainEngine 失败: %s", e)
 
-
-class SimpleDownloadService:
-    """简单下载服务"""
-
-    def __init__(self):
-        """初始化简单下载服务"""
-        self.logger = logging.getLogger("SimpleDownloadService")
-        self.tasks = []
-
-    async def create_download_task(self):
-        """创建下载任务"""
-        task = {"task_id": f"task_{len(self.tasks)}", "status": "pending"}
-        self.tasks.append(task)
-        return task
-
-    async def get_download_tasks(self):
-        """获取下载任务"""
-        return self.tasks
+    logger.info("所有服务已关闭")

@@ -19,7 +19,7 @@ from vnpy.event import Event, EventEngine
 from vnpy.trader.engine import BaseEngine, MainEngine
 
 from .config import config_manager
-from .stock_fetcher import StockFetcher
+from .stock_fetcher import StockFetcher, NetworkTimeoutError
 from .storage import StorageManager
 from .validator import DataValidator, ValidationSummary
 from .file_watcher import EventDrivenFileWatcher
@@ -101,7 +101,7 @@ class ChinaStockEngine(BaseEngine):
 
     def reload_stock_list(self) -> bool:
         """
-        调用API更新品种缓存
+        调用API更新品种缓存（带完整异常处理）
 
         Returns:
             是否更新成功
@@ -110,20 +110,53 @@ class ChinaStockEngine(BaseEngine):
             self.logger.info("开始更新品种列表...")
 
             # 重新初始化block_parser（如果用户刚配置了通达信路径）
-            tdx_dir = config_manager.get_tdx_dir()
-            self.block_parser = BlockParser(tdx_dir)
-            self.stock_fetcher.block_parser = self.block_parser
-            spblock_status = "可用" if self.block_parser.is_available() else "不可用"
-            self.logger.info("BlockParser已重新初始化: spblock.dat %s", spblock_status)
+            try:
+                tdx_dir = config_manager.get_tdx_dir()
+                self.block_parser = BlockParser(tdx_dir)
+                self.stock_fetcher.block_parser = self.block_parser
+                spblock_status = "可用" if self.block_parser.is_available() else "不可用"
+                self.logger.info("BlockParser已重新初始化: spblock.dat %s", spblock_status)
+            except Exception as e:
+                self.logger.warning(f"重新初始化BlockParser失败: {e}，将继续使用现有实例")
 
-            # 获取所有品种
-            stocks_df = self.stock_fetcher.fetch_all_stocks()
+            # 获取所有品种（这里可能会超时）
+            try:
+                stocks_df = self.stock_fetcher.fetch_all_stocks()
+            except (NetworkTimeoutError, TimeoutError) as e:
+                self.logger.error(f"获取品种列表超时: {e}")
+                self._push_download_event("stock_list", "error", 0, "网络请求超时，请检查网络连接")
+                self._push_log_event("获取品种列表超时，请检查网络连接", "ERROR")
+                return False
+            except ConnectionError as e:
+                self.logger.error(f"网络连接失败: {e}")
+                self._push_download_event("stock_list", "error", 0, "网络连接失败，请检查网络状态")
+                self._push_log_event("网络连接失败，请检查网络状态", "ERROR")
+                return False
+            except ValueError as e:
+                self.logger.error(f"数据格式错误: {e}")
+                self._push_download_event("stock_list", "error", 0, "数据格式错误")
+                self._push_log_event(f"数据格式错误: {e}", "ERROR")
+                return False
+            except Exception as e:
+                self.logger.error(f"获取品种列表失败: {e}", exc_info=True)
+                self._push_download_event("stock_list", "error", 0, str(e))
+                self._push_log_event(f"获取品种列表失败: {e}", "ERROR")
+                return False
+
+            # 验证数据
             if stocks_df is None or stocks_df.empty:
-                self.logger.error("获取品种列表失败")
+                self.logger.error("获取品种列表失败: 数据为空")
+                self._push_download_event("stock_list", "error", 0, "获取的数据为空")
+                self._push_log_event("获取品种列表失败: 数据为空", "ERROR")
                 return False
 
             # 缓存品种列表
-            self.stock_fetcher.cache_stock_list(stocks_df)
+            try:
+                self.stock_fetcher.cache_stock_list(stocks_df)
+            except Exception as e:
+                self.logger.error(f"缓存品种列表失败: {e}")
+                # 即使缓存失败，也认为更新成功（因为已经获取到数据）
+                self.logger.warning("缓存失败但数据已获取，继续执行")
 
             # 推送下载事件
             self._push_download_event("stock_list", "success", len(stocks_df))
@@ -132,8 +165,9 @@ class ChinaStockEngine(BaseEngine):
             return True
 
         except Exception as e:
-            self.logger.error(f"更新品种列表失败: {e}")
-            self._push_download_event("stock_list", "error", 0, str(e))
+            # 最外层兜底异常处理
+            self.logger.error(f"更新品种列表失败（未知错误）: {e}", exc_info=True)
+            self._push_download_event("stock_list", "error", 0, f"未知错误: {str(e)}")
             self._push_log_event(f"更新品种列表失败: {e}", "ERROR")
             return False
 
@@ -216,9 +250,7 @@ class ChinaStockEngine(BaseEngine):
                 return False
 
             # 下载增量K线数据
-            download_results = self.stock_fetcher.download_incremental_kline(
-                all_stocks, start_date
-            )
+            download_results = self.stock_fetcher.download_incremental_kline(all_stocks, start_date)
 
             # 合并并保存数据
             saved_count = 0
@@ -260,14 +292,10 @@ class ChinaStockEngine(BaseEngine):
             查询结果
         """
         try:
-            data = self.storage_manager.query_kline(
-                symbol, interval, start_date, end_date
-            )
+            data = self.storage_manager.query_kline(symbol, interval, start_date, end_date)
 
             if data is not None:
-                self.logger.info(
-                    f"查询数据成功: {symbol} {interval}, {len(data)} 条记录"
-                )
+                self.logger.info(f"查询数据成功: {symbol} {interval}, {len(data)} 条记录")
             else:
                 self.logger.warning(f"未找到数据: {symbol} {interval}")
 
@@ -277,9 +305,7 @@ class ChinaStockEngine(BaseEngine):
             self.logger.error(f"查询数据失败: {symbol} {interval}, {e}")
             return None
 
-    def get_validation_result(
-        self, force_refresh: bool = False
-    ) -> Optional[ValidationSummary]:
+    def get_validation_result(self, force_refresh: bool = False) -> Optional[ValidationSummary]:
         """
         获取数据感知结果
 
@@ -301,8 +327,7 @@ class ChinaStockEngine(BaseEngine):
                 # 推送校验事件
                 self._push_validation_event(summary)
                 self.logger.info(
-                    f"数据校验完成: "
-                    f"{summary.valid_symbols}/{summary.total_symbols} 有效"
+                    f"数据校验完成: " f"{summary.valid_symbols}/{summary.total_symbols} 有效"
                 )
 
             return summary

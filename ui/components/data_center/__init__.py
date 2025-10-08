@@ -3,4 +3,4 @@
 
 from .main_view import DataCenter
 
-__all__ = ['DataCenter']
+__all__ = ["DataCenter"]

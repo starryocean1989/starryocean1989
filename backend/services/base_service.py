@@ -7,178 +7,225 @@
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 from datetime import datetime
+from enum import Enum
 
 logger = logging.getLogger(__name__)
 
 
-class BaseService(ABC):
-    """服务基类."""
+class ServiceStatus(Enum):
+    """服务状态枚举."""
 
-    def __init__(self, service_name: str):
+    STOPPED = "stopped"  # 未启动
+    STARTING = "starting"  # 启动中
+    RUNNING = "running"  # 运行中
+    STOPPING = "stopping"  # 停止中
+    ERROR = "error"  # 错误状态
+
+
+class BaseService(ABC):
+    """服务基类.
+
+    所有业务服务的抽象基类，提供：
+    - 标准的初始化和关闭接口
+    - 健康检查机制
+    - 状态管理
+    - 日志记录
+    - 错误处理
+    """
+
+    def __init__(self):
         """初始化基础服务."""
-        self.service_name = service_name
-        self.logger = logging.getLogger(f"{__name__}.{service_name}")
+        self.service_name = self.__class__.__name__
+        self.logger = logging.getLogger(f"{__name__}.{self.service_name}")
+        self.status = ServiceStatus.STOPPED
         self.is_initialized = False
         self.start_time: Optional[datetime] = None
+        self._errors: List[str] = []
+
+        # VNPY引擎引用（在_do_initialize中设置）
+        self.main_engine = None
+        self.event_engine = None
+
+        self.logger.info(f"服务 {self.service_name} 创建完成")
+
+    def initialize(self) -> bool:
+        """初始化服务.
+
+        Returns:
+            bool: 是否成功初始化
+        """
+        try:
+            self.status = ServiceStatus.STARTING
+            self.logger.info(f"正在初始化服务: {self.service_name}")
+
+            # 获取全局VNPY引擎
+            from backend.core.shared_services import get_main_engine, get_event_engine
+
+            self.main_engine = get_main_engine()
+            self.event_engine = get_event_engine()
+
+            # 调用子类的具体初始化逻辑
+            result = self._do_initialize()
+
+            if result:
+                self.is_initialized = True
+                self.start_time = datetime.now()
+                self.status = ServiceStatus.RUNNING
+                self.logger.info(f"服务 {self.service_name} 初始化成功")
+            else:
+                self.status = ServiceStatus.ERROR
+                self.logger.error(f"服务 {self.service_name} 初始化失败")
+
+            return result
+
+        except Exception as e:
+            self.status = ServiceStatus.ERROR
+            self._errors.append(f"初始化异常: {str(e)}")
+            self.logger.error(f"服务 {self.service_name} 初始化异常: {e}", exc_info=True)
+            return False
+
+    def shutdown(self) -> bool:
+        """关闭服务.
+
+        Returns:
+            bool: 是否成功关闭
+        """
+        try:
+            self.status = ServiceStatus.STOPPING
+            self.logger.info(f"正在关闭服务: {self.service_name}")
+
+            # 调用子类的具体关闭逻辑
+            result = self._do_shutdown()
+
+            self.is_initialized = False
+            self.status = ServiceStatus.STOPPED
+            self.logger.info(f"服务 {self.service_name} 关闭完成")
+
+            return result
+
+        except Exception as e:
+            self.status = ServiceStatus.ERROR
+            self._errors.append(f"关闭异常: {str(e)}")
+            self.logger.error(f"服务 {self.service_name} 关闭异常: {e}", exc_info=True)
+            return False
+
+    def health_check(self) -> Dict[str, Any]:
+        """健康检查.
+
+        Returns:
+            Dict: 健康检查结果
+        """
+        try:
+            # 基础健康检查
+            is_healthy = (
+                self.status == ServiceStatus.RUNNING
+                and self.is_initialized
+                and len(self._errors) == 0
+            )
+
+            # 调用子类的具体健康检查逻辑
+            custom_health = self._do_health_check()
+
+            return {
+                "service_name": self.service_name,
+                "status": self.status.value,
+                "is_healthy": is_healthy,
+                "is_initialized": self.is_initialized,
+                "uptime": self._get_uptime(),
+                "errors": self._errors[-5:],  # 最近5个错误
+                "custom": custom_health,
+            }
+
+        except Exception as e:
+            return {
+                "service_name": self.service_name,
+                "status": "error",
+                "is_healthy": False,
+                "error": str(e),
+            }
 
     @abstractmethod
-    async def initialize(self) -> None:
-        """初始化服务."""
+    def _do_initialize(self) -> bool:
+        """具体的初始化逻辑（由子类实现）.
+
+        Returns:
+            bool: 是否成功
+        """
         pass
 
     @abstractmethod
-    async def shutdown(self) -> None:
-        """关闭服务."""
+    def _do_shutdown(self) -> bool:
+        """具体的关闭逻辑（由子类实现）.
+
+        Returns:
+            bool: 是否成功
+        """
         pass
 
-    @abstractmethod
-    async def health_check(self) -> Dict[str, Any]:
-        """健康检查."""
-        pass
+    def _do_health_check(self) -> Dict[str, Any]:
+        """具体的健康检查逻辑（由子类可选实现）.
+
+        Returns:
+            Dict: 自定义健康检查信息
+        """
+        return {}
 
     def get_service_info(self) -> Dict[str, Any]:
         """获取服务信息."""
         return {
             "service_name": self.service_name,
+            "status": self.status.value,
             "is_initialized": self.is_initialized,
             "start_time": self.start_time.isoformat() if self.start_time else None,
             "uptime": self._get_uptime(),
+            "error_count": len(self._errors),
+            "has_main_engine": self.main_engine is not None,
+            "has_event_engine": self.event_engine is not None,
         }
 
     def _get_uptime(self) -> Optional[float]:
-        """获取运行时间."""
+        """获取运行时间（秒）."""
         if self.start_time:
             return (datetime.now() - self.start_time).total_seconds()
         return None
 
     def _log_operation(self, operation: str, **kwargs) -> None:
         """记录操作日志."""
-        self.logger.info(
-            "服务操作: %s - %s",
-            operation,
-            ", ".join(f"{k}={v}" for k, v in kwargs.items()),
-        )
+        details = ", ".join(f"{k}={v}" for k, v in kwargs.items())
+        self.logger.info(f"[{self.service_name}] {operation} {details if details else ''}")
 
     def _log_error(self, operation: str, error: Exception, **kwargs) -> None:
         """记录错误日志."""
+        error_msg = f"{operation}: {str(error)}"
+        self._errors.append(error_msg)
+
+        # 限制错误列表大小
+        if len(self._errors) > 100:
+            self._errors = self._errors[-50:]
+
+        details = ", ".join(f"{k}={v}" for k, v in kwargs.items())
         self.logger.error(
-            "服务错误: %s - %s - %s",
-            operation,
-            str(error),
-            ", ".join(f"{k}={v}" for k, v in kwargs.items()),
+            f"[{self.service_name}] {operation} 失败 - {error} {details if details else ''}",
+            exc_info=True,
         )
 
+    def clear_errors(self):
+        """清空错误记录."""
+        self._errors.clear()
 
-class ServiceManager:
-    """服务管理器."""
+    def get_errors(self, limit: int = 10) -> List[str]:
+        """获取最近的错误记录.
 
-    def __init__(self):
-        """初始化服务管理器."""
-        self.logger = logging.getLogger(__name__)
-        self._services: Dict[str, BaseService] = {}
-        self._initialized = False
+        Args:
+            limit: 返回的错误数量限制
 
-    def register_service(self, service: BaseService) -> None:
-        """注册服务."""
-        service_name = service.service_name
-        if service_name in self._services:
-            self.logger.warning("服务已存在，将被覆盖: %s", service_name)
-
-        self._services[service_name] = service
-        self.logger.info("服务已注册: %s", service_name)
-
-    async def initialize_all(self) -> None:
-        """初始化所有服务."""
-        if self._initialized:
-            self.logger.warning("服务管理器已初始化")
-            return
-
-        self.logger.info("开始初始化所有服务...")
-
-        for service_name, service in self._services.items():
-            try:
-                self.logger.info("初始化服务: %s", service_name)
-                await service.initialize()
-                service.start_time = datetime.now()
-                service.is_initialized = True
-                self.logger.info("服务初始化完成: %s", service_name)
-            except Exception as e:
-                self.logger.error("服务初始化失败: %s - %s", service_name, e)
-                raise
-
-        self._initialized = True
-        self.logger.info("所有服务初始化完成")
-
-    async def shutdown_all(self) -> None:
-        """关闭所有服务."""
-        if not self._initialized:
-            self.logger.warning("服务管理器未初始化")
-            return
-
-        self.logger.info("开始关闭所有服务...")
-
-        # 逆序关闭服务
-        for service_name, service in reversed(list(self._services.items())):
-            try:
-                self.logger.info("关闭服务: %s", service_name)
-                await service.shutdown()
-                service.is_initialized = False
-                self.logger.info("服务关闭完成: %s", service_name)
-            except Exception as e:
-                self.logger.error("服务关闭失败: %s - %s", service_name, e)
-
-        self._initialized = False
-        self.logger.info("所有服务关闭完成")
-
-    async def health_check_all(self) -> Dict[str, Any]:
-        """检查所有服务健康状态."""
-        results = {
-            "overall_status": "healthy",
-            "services": {},
-            "total_services": len(self._services),
-            "healthy_services": 0,
-            "unhealthy_services": 0,
-        }
-
-        for service_name, service in self._services.items():
-            try:
-                health_info = await service.health_check()
-                results["services"][service_name] = {
-                    "status": "healthy",
-                    "info": health_info,
-                }
-                results["healthy_services"] += 1
-            except Exception as e:
-                results["services"][service_name] = {
-                    "status": "unhealthy",
-                    "error": str(e),
-                }
-                results["unhealthy_services"] += 1
-                results["overall_status"] = "unhealthy"
-
-        return results
-
-    def get_service(self, service_name: str) -> Optional[BaseService]:
-        """获取服务实例."""
-        return self._services.get(service_name)
-
-    def get_all_services(self) -> Dict[str, BaseService]:
-        """获取所有服务."""
-        return self._services.copy()
-
-    def get_service_info(self) -> Dict[str, Any]:
-        """获取服务管理器信息."""
-        return {
-            "total_services": len(self._services),
-            "initialized": self._initialized,
-            "services": {
-                name: service.get_service_info()
-                for name, service in self._services.items()
-            },
-        }
+        Returns:
+            List[str]: 错误列表
+        """
+        return self._errors[-limit:] if self._errors else []
 
 
 # 导出公共接口
-__all__ = ["BaseService", "ServiceManager"]
+__all__ = ["BaseService", "ServiceStatus"]

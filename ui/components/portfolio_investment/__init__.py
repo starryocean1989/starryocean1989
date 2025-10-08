@@ -3,4 +3,4 @@
 
 from .main_view import PortfolioInvestment
 
-__all__ = ['PortfolioInvestment']
+__all__ = ["PortfolioInvestment"]

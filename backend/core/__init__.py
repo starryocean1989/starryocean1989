@@ -1,121 +1,173 @@
 # -*- coding: utf-8 -*-
 """
-星辰金融终端 - 核心模块包.
+Backend核心模块.
 
-提供统一的架构支撑和服务集成
+提供后端核心功能，包括VnPy集成、数据模型、服务管理等。
+注意：不导出任何UI组件，保持后端纯净。
 """
 
 __version__ = "1.0.0"
 __author__ = "星辰科技"
 
-# 导出核心模块
+# 基础导入
 from .imports import (
-    AlgoEngine,
-    Any,
-    CtaEngine,
-    CtpGateway,
-    Dict,
-    IbGateway,
-    List,
-    MiniGateway,
-    ModuleAvailability,
-    Optional,
-    PortfolioEngine,
-    ProcessManager,
-    QApplication,
-    QHBoxLayout,
-    QHeaderView,
-    QLabel,
-    QMainWindow,
-    QPushButton,
-    QSizePolicy,
-    QSplitter,
-    QTabWidget,
-    QTableWidget,
-    QVBoxLayout,
-    QWidget,
-    Qt,
-    RqdataDatafeed,
-    Signal,
-    SystemMonitor,
-    ThreadPoolExecutor,
-    Tuple,
-    TushareDatafeed,
-    Union,
-    asyncio,
-    check_module_availability,
-    datetime,
-    json,
-    np,
+    # 标准库
     os,
-    pd,
-    plt,
-    psutil,
-    pymongo,
-    requests,
-    safe_import,
-    setup_logging,
-    sns,
-    sqlite3,
     sys,
-    threading,
+    json,
     time,
+    datetime,
     traceback,
+    asyncio,
+    threading,
+    sqlite3,
+    logging,
+    Path,
+    ThreadPoolExecutor,
+    # 类型
+    Dict,
+    List,
+    Optional,
+    Any,
+    Union,
+    Tuple,
+    # 网络
+    requests,
+    # 数据处理
+    pd,
+    np,
+    PANDAS_AVAILABLE,
+    NUMPY_AVAILABLE,
+    # 系统
+    psutil,
+    PSUTIL_AVAILABLE,
+    # VnPy核心
+    VNPY_AVAILABLE,
+    MainEngine,
+    EventEngine,
+    Event,
+    TickData,
+    BarData,
+    OrderData,
+    TradeData,
+    PositionData,
+    AccountData,
+    EVENT_TICK,
+    EVENT_ORDER,
+    EVENT_TRADE,
+    EVENT_POSITION,
+    EVENT_ACCOUNT,
+    EVENT_LOG,
+    # VnPy策略引擎
+    CtaEngine,
+    AlgoEngine,
+    PortfolioEngine,
+    CTA_ENGINE_AVAILABLE,
+    ALGO_ENGINE_AVAILABLE,
+    PORTFOLIO_ENGINE_AVAILABLE,
+    # VnPy网关
+    CtpGateway,
+    IbGateway,
+    PaperAccountGateway,
+    CTP_GATEWAY_AVAILABLE,
+    IB_GATEWAY_AVAILABLE,
+    PAPERACCOUNT_GATEWAY_AVAILABLE,
+    # VnPy数据源
+    TushareDatafeed,
+    RqdataDatafeed,
+    TUSHARE_DATAFEED_AVAILABLE,
+    RQDATA_DATAFEED_AVAILABLE,
+    # Infrastructure
+    SystemMonitor,
+    ProcessManager,
+    SYSTEM_MODULE_AVAILABLE,
+    # 工具函数
+    setup_logging,
     vnpy_to_pandas,
 )
+
+# 数据模型
 from .models import (
     DataCategory,
-    DataMetadata,
-    DataModelManager,
     DataSource,
-    UnifiedAccount,
+    DataMetadata,
     UnifiedMarketData,
     UnifiedOrder,
-    UnifiedPosition,
     UnifiedTrade,
+    UnifiedPosition,
+    UnifiedAccount,
+    DataModelManager,
     get_data_model_manager,
     reset_data_model_manager,
 )
-from .monitoring import HealthChecker, MonitoringManager, PerformanceMonitor, TestRunner
+
+# 共享服务
+from .shared_services import (
+    ServiceManager,
+    ErrorSeverity,
+    get_service_manager,
+    get_main_engine,
+    get_event_engine,
+    get_china_stock_engine,
+)
+
+# 性能优化
 from .performance import (
-    AsyncDataProcessor,
-    AsyncTaskManager,
     Cache,
     DataCache,
+    AsyncTaskManager,
     PerformanceOptimizer,
+    AsyncDataProcessor,
     get_performance_optimizer,
     reset_performance_optimizer,
 )
-from .shared_services import get_service_manager, ServiceManager, ErrorSeverity
-from .vnpy_integration import (
-    AccountData,
-    BarData,
-    EVENT_ACCOUNT,
-    EVENT_LOG,
-    EVENT_ORDER,
-    EVENT_POSITION,
-    EVENT_TICK,
-    EVENT_TRADE,
-    Event,
-    EventEngine,
-    MainEngine,
-    OrderData,
-    PositionData,
-    TerminalEngine,
-    TickData,
-    TradeData,
-    VNPY_AVAILABLE,
-    get_terminal_engine,
-    reset_terminal_engine,
+
+# 监控
+from .monitoring import (
+    PerformanceMonitor,
+    HealthChecker,
+    MonitoringManager,
+    TestRunner,
 )
 
-# 包信息
+# 数据库
+from .database import DatabaseManager
+
 __all__ = [
     # 版本信息
     "__version__",
     "__author__",
-    # VNPY集成
-    "TerminalEngine",
+    # 标准库
+    "os",
+    "sys",
+    "json",
+    "time",
+    "datetime",
+    "traceback",
+    "asyncio",
+    "threading",
+    "sqlite3",
+    "logging",
+    "Path",
+    "ThreadPoolExecutor",
+    "requests",
+    # 类型
+    "Dict",
+    "List",
+    "Optional",
+    "Any",
+    "Union",
+    "Tuple",
+    # 数据处理
+    "pd",
+    "np",
+    "PANDAS_AVAILABLE",
+    "NUMPY_AVAILABLE",
+    # 系统
+    "psutil",
+    "PSUTIL_AVAILABLE",
+    # VnPy核心
+    "VNPY_AVAILABLE",
     "MainEngine",
     "EventEngine",
     "Event",
@@ -131,64 +183,33 @@ __all__ = [
     "EVENT_POSITION",
     "EVENT_ACCOUNT",
     "EVENT_LOG",
-    "get_terminal_engine",
-    "reset_terminal_engine",
-    "VNPY_AVAILABLE",
-    # 统一导入
-    "os",
-    "sys",
-    "json",
-    "time",
-    "datetime",
-    "traceback",
-    "asyncio",
-    "threading",
-    "requests",
-    "ThreadPoolExecutor",
-    "pd",
-    "np",
-    "plt",
-    "sns",
-    "psutil",
-    "QWidget",
-    "QApplication",
-    "QVBoxLayout",
-    "QHBoxLayout",
-    "QLabel",
-    "QPushButton",
-    "QMainWindow",
-    "QTabWidget",
-    "QTableWidget",
-    "QHeaderView",
-    "QSplitter",
-    "QSizePolicy",
-    "Qt",
-    "Signal",
+    # VnPy策略引擎
     "CtaEngine",
     "AlgoEngine",
     "PortfolioEngine",
+    "CTA_ENGINE_AVAILABLE",
+    "ALGO_ENGINE_AVAILABLE",
+    "PORTFOLIO_ENGINE_AVAILABLE",
+    # VnPy网关
     "CtpGateway",
-    "MiniGateway",
     "IbGateway",
+    "PaperAccountGateway",
+    "CTP_GATEWAY_AVAILABLE",
+    "IB_GATEWAY_AVAILABLE",
+    "PAPERACCOUNT_GATEWAY_AVAILABLE",
+    # VnPy数据源
     "TushareDatafeed",
     "RqdataDatafeed",
+    "TUSHARE_DATAFEED_AVAILABLE",
+    "RQDATA_DATAFEED_AVAILABLE",
+    # Infrastructure
     "SystemMonitor",
-    "PerformanceOptimizer",
     "ProcessManager",
+    "SYSTEM_MODULE_AVAILABLE",
+    # 工具函数
     "setup_logging",
-    "check_module_availability",
-    "safe_import",
     "vnpy_to_pandas",
-    "ModuleAvailability",
-    "sqlite3",
-    "pymongo",
-    "Dict",
-    "List",
-    "Optional",
-    "Any",
-    "Union",
-    "Tuple",
-    # 统一数据模型
+    # 数据模型
     "DataCategory",
     "DataSource",
     "DataMetadata",
@@ -200,6 +221,13 @@ __all__ = [
     "DataModelManager",
     "get_data_model_manager",
     "reset_data_model_manager",
+    # 共享服务
+    "ServiceManager",
+    "ErrorSeverity",
+    "get_service_manager",
+    "get_main_engine",
+    "get_event_engine",
+    "get_china_stock_engine",
     # 性能优化
     "Cache",
     "DataCache",
@@ -208,14 +236,11 @@ __all__ = [
     "AsyncDataProcessor",
     "get_performance_optimizer",
     "reset_performance_optimizer",
-    # 监控和测试
+    # 监控
     "PerformanceMonitor",
-    "TestRunner",
     "HealthChecker",
     "MonitoringManager",
-    # 共享服务
-    # 共享服务
-    "get_service_manager",
-    "ServiceManager",
-    "ErrorSeverity",
+    "TestRunner",
+    # 数据库
+    "DatabaseManager",
 ]

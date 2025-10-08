@@ -3,4 +3,4 @@
 
 from .main_view import TradingGateway
 
-__all__ = ['TradingGateway']
+__all__ = ["TradingGateway"]

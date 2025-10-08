@@ -1,11 +1,8 @@
 # -*- coding: utf-8 -*-
-# type: ignore
-"""主窗口 - 星辰金融终端的主界面（完全重建版）."""
+"""主窗口 - 星辰金融终端的主界面（重构版）."""
 
-import contextlib
 import logging
 import sys
-import traceback
 from typing import Any, Dict, Optional
 
 try:
@@ -31,15 +28,8 @@ from PySide6.QtWidgets import (
 )
 
 from backend.config import ConfigManager
+from backend.core.utils.logging_utils import LoggerMixin, setup_logging
 
-
-from backend.core.utils.error_handler import error_handler
-from backend.core.utils.logging_utils import (
-    LoggerMixin,
-    setup_logging,
-)
-
-# UI模块导入
 from ui.themes.theme_manager import ThemeManager
 from ui.components.data_center.main_view import DataCenter
 from ui.components.market_dashboard.main_view import MarketDashboard
@@ -51,49 +41,38 @@ from ui.widgets.responsive_helper import ResponsiveHelper
 
 
 class MainWindow(QMainWindow, LoggerMixin):
-    """主窗口类 - 完全重建版.
+    """主窗口类（重构版）.
 
     架构设计：
-    - 左侧：垂直导航列表（QListWidget）
-    - 右侧：内容显示区（QStackedWidget）
-    - 顶部：菜单栏和工具栏
+    - 左侧：垂直导航列表
+    - 右侧：内容显示区
+    - 顶部：菜单栏
     - 底部：状态栏
     """
 
-    # 定义信号
-    interface_changed = Signal(str)  # 界面切换信号
+    interface_changed = Signal(str)
 
     def __init__(self):
         """初始化主窗口."""
         super().__init__()
 
-        # 先初始化后端服务
+        # 初始化后端服务
         self._initialize_backend_services()
 
         # 初始化组件
-        self.theme_manager: Any = ThemeManager()
-        self.config_manager: Any = ConfigManager()
+        self.theme_manager = ThemeManager()
+        self.config_manager = ConfigManager()
 
         # 界面组件
         self.central_widget: Optional[QWidget] = None
-        self.nav_list: Optional[QListWidget] = None  # 左侧导航列表
-        self.content_stack: Optional[QStackedWidget] = None  # 右侧内容区
-        self.status_bar = None
+        self.nav_list: Optional[QListWidget] = None
+        self.content_stack: Optional[QStackedWidget] = None
         self.status_label: Optional[QLabel] = None
         self.system_info_label: Optional[QLabel] = None
-        self.menu_bar = None
-        # 不使用工具栏，只保留左侧导航
 
-        # 功能界面实例 - 按顺序存储
+        # 功能界面实例
         self.function_interfaces: Dict[str, Any] = {}
-        self.interface_order = [
-            "system",
-            "data",
-            "market",
-            "strategy",
-            "trading",
-            "portfolio",
-        ]
+        self.interface_order = ["system", "data", "market", "strategy", "trading", "portfolio"]
 
         # 界面元数据
         self.interface_metadata = {
@@ -106,18 +85,13 @@ class MainWindow(QMainWindow, LoggerMixin):
         }
 
         # 更新定时器
-        self.update_timer = None
-        # 界面就绪标志
-        self.ui_ready = False
-
-        # 响应式布局帮助器
-        self.responsive_helper = None
-        self._init_responsive_helper()
+        self.update_timer: Optional[QTimer] = None
+        self.responsive_helper: Optional[ResponsiveHelper] = None
 
         # 初始化UI
+        self._init_responsive_helper()
         self.setup_ui()
         self.setup_menu_bar()
-        # self.setup_toolbar()  # 删除顶部工具栏，只保留左侧导航
         self.setup_status_bar()
         self.create_function_interfaces()
 
@@ -130,24 +104,25 @@ class MainWindow(QMainWindow, LoggerMixin):
         # 启动更新定时器
         self.start_update_timer()
 
-        self.logger.info("主窗口初始化完成（重建版）")
+        self.logger.info("主窗口初始化完成")
 
     def _initialize_backend_services(self):
-        """初始化后端服务（同步方式）."""
+        """初始化后端服务."""
         try:
-            from backend.core.shared_services import initialize_real_services
-            
-            # 初始化真实的后端服务
-            success = initialize_real_services()
+            from backend.core.shared_services import initialize_services
+
+            init_result = initialize_services()
+            success = init_result.get("success", False)
             if success:
-                logging.getLogger(__name__).info("后端真实服务初始化完成")
+                logging.getLogger(__name__).info("后端服务初始化完成")
             else:
-                logging.getLogger(__name__).warning("后端服务初始化失败，将使用占位服务")
+                logging.getLogger(__name__).warning("后端服务初始化失败")
+                error_report = init_result.get("user_friendly_report", "")
+                if error_report:
+                    logging.getLogger(__name__).warning("错误详情: %s", error_report)
 
         except Exception as e:
-            logging.getLogger(__name__).warning("后端服务初始化失败，部分功能可能不可用: %s", e)
-            import traceback
-            traceback.print_exc()
+            logging.getLogger(__name__).warning("后端服务初始化失败: %s", e)
 
     def setup_ui(self):
         """设置主界面."""
@@ -301,59 +276,23 @@ class MainWindow(QMainWindow, LoggerMixin):
 
     def create_function_interfaces(self):
         """创建6个功能界面."""
-        try:
-            # 1. 系统管理界面（标准架构，8个子界面）
-            self._create_interface(
-                interface_id="system",
-                interface_class=SystemManager,
-            )
+        interfaces = [
+            ("system", SystemManager),
+            ("data", DataCenter),
+            ("market", MarketDashboard),
+            ("strategy", StrategyCenter),
+            ("trading", TradingGateway),
+            ("portfolio", PortfolioInvestment),
+        ]
 
-            # 2. 数据中心界面（标准架构，4个子界面）
-            self._create_interface(
-                interface_id="data",
-                interface_class=DataCenter,
-            )
+        for interface_id, interface_class in interfaces:
+            self._create_interface(interface_id, interface_class)
 
-            # 3. 行情看板界面（单一界面，集成设计）
-            self._create_interface(
-                interface_id="market",
-                interface_class=MarketDashboard,
-            )
+        self.logger.info("所有功能界面创建完成")
 
-            # 4. 策略中心界面（混合架构，管理器+选项卡）
-            self._create_interface(
-                interface_id="strategy",
-                interface_class=StrategyCenter,
-            )
-
-            # 5. 交易网关界面（混合架构，管理器+选项卡）
-            self._create_interface(
-                interface_id="trading",
-                interface_class=TradingGateway,
-            )
-
-            # 6. 组合投资界面（混合架构，双固有组件）
-            self._create_interface(
-                interface_id="portfolio",
-                interface_class=PortfolioInvestment,
-            )
-
-            self.logger.info("所有功能界面创建完成")
-
-            # 默认选中第一个界面
-            if self.nav_list and self.nav_list.count() > 0:
-                self.nav_list.setCurrentRow(0)
-
-            # 标记界面已就绪
-            self.ui_ready = True
-
-        except Exception as e:
-            self.logger.error("创建功能界面失败: %s", e)
-            self.logger.error("详细错误信息: %s", traceback.format_exc())
-            error_handler.handle_error(
-                error_id="main_window_interface_init",
-                message=f"界面初始化失败: {str(e)}",
-            )
+        # 默认选中第一个界面
+        if self.nav_list and self.nav_list.count() > 0:
+            self.nav_list.setCurrentRow(0)
 
     def _create_interface(self, interface_id: str, interface_class: type):
         """创建单个功能界面.
@@ -386,13 +325,8 @@ class MainWindow(QMainWindow, LoggerMixin):
 
             self.logger.info("%s界面创建成功", metadata["name"])
 
-        except (ImportError, AttributeError, RuntimeError) as e:
+        except Exception as e:
             self.logger.error("%s界面创建失败: %s", interface_id, e)
-            self.logger.error("详细错误信息: %s", traceback.format_exc())
-
-            # 打印到控制台以便立即看到
-            print(f"❌ {interface_id}界面创建失败: {e}")
-            print(f"详细堆栈: {traceback.format_exc()}")
 
             # 创建错误占位符
             placeholder = self._create_error_placeholder(interface_id, str(e))
@@ -499,11 +433,8 @@ class MainWindow(QMainWindow, LoggerMixin):
             if self.status_label:
                 self.status_label.setText("刷新完成")
             self.logger.info("所有界面刷新完成")
-        except (AttributeError, RuntimeError) as e:
+        except Exception as e:
             self.logger.error("刷新界面失败: %s", e)
-            error_handler.handle_error(
-                error_id="main_window_refresh", message=f"刷新失败: {str(e)}"
-            )
 
     def connect_signals(self):
         """连接信号槽."""
@@ -555,46 +486,25 @@ class MainWindow(QMainWindow, LoggerMixin):
 
     def start_update_timer(self):
         """启动状态更新定时器."""
-        # 就绪守卫，未就绪不启动定时器
-        if not getattr(self, "ui_ready", False):
-            return
         self.update_timer = QTimer(self)
         self.update_timer.timeout.connect(self.update_status)
-        self.update_timer.start(5000)  # 每5秒更新一次
+        self.update_timer.start(5000)
 
     def update_status(self):
         """更新状态栏信息."""
-        # 就绪与控件存在性守卫
-        if not getattr(self, "ui_ready", False):
-            return
-        if not self.system_info_label or not self.status_label:
+        if not self.system_info_label:
             return
 
         try:
-            # 更新系统信息
-            if psutil is not None:
-                try:
-                    cpu_percent = psutil.cpu_percent()
-                    memory = psutil.virtual_memory()
-
-                    cpu_text = f"CPU: {cpu_percent:.1f}%"
-                    memory_text = f"内存: {memory.percent:.1f}%"
-                    status_text = f"{cpu_text} | {memory_text}"
-                    self.system_info_label.setText(status_text)
-
-                    # 检查性能阈值
-                    if cpu_percent > 80 or memory.percent > 80:
-                        self.status_label.setText("警告: 系统负载较高")
-                    else:
-                        current_text = self.status_label.text()
-                        if not current_text.startswith("当前界面:"):
-                            self.status_label.setText("系统正常")
-                except (OSError, RuntimeError):
-                    self.system_info_label.setText("系统监控不可用")
+            if psutil:
+                cpu_percent = psutil.cpu_percent()
+                memory = psutil.virtual_memory()
+                status_text = f"CPU: {cpu_percent:.1f}% | 内存: {memory.percent:.1f}%"
+                self.system_info_label.setText(status_text)
             else:
                 self.system_info_label.setText("系统监控不可用")
 
-        except (AttributeError, RuntimeError, OSError) as e:
+        except Exception as e:
             self.logger.error("更新状态失败: %s", e)
 
     def show_about(self):
@@ -621,11 +531,9 @@ class MainWindow(QMainWindow, LoggerMixin):
 
     def closeEvent(self, event):
         """窗口关闭事件."""
-        # 停止定时器
         if self.update_timer:
             self.update_timer.stop()
 
-        # 询问用户是否确认退出
         reply = QMessageBox.question(
             self,
             "确认退出",
@@ -635,13 +543,12 @@ class MainWindow(QMainWindow, LoggerMixin):
         )
 
         if reply == QMessageBox.StandardButton.Yes:
-            # 关闭后端服务
             try:
                 from backend.core.shared_services import shutdown_real_services
                 shutdown_real_services()
             except Exception as e:
                 self.logger.warning("关闭后端服务失败: %s", e)
-            
+
             self.logger.info("应用程序退出")
             event.accept()
         else:
@@ -713,31 +620,20 @@ class MainWindow(QMainWindow, LoggerMixin):
 def main():
     """主函数."""
     try:
-        # 设置日志
         setup_logging(name="terminal_v0.50", level="INFO", log_file="logs/terminal_v0.50.log")
 
-        # 创建应用程序
         app = QApplication(sys.argv)
-
-        # 设置应用程序属性
         app.setApplicationName("星辰金融终端")
         app.setApplicationVersion("5.0.0")
         app.setOrganizationName("星辰科技")
 
-        # 创建主窗口
         main_window = MainWindow()
         main_window.show()
 
-        # 运行应用程序
         sys.exit(app.exec())
-    except (ImportError, OSError, RuntimeError, SystemError) as e:
-        # 记录致命异常
+
+    except Exception as e:
         logging.getLogger("terminal_v0.50.main").exception("UI启动异常: %s", e)
-        with (
-            contextlib.suppress(Exception),
-            open("logs/ui_process.err.log", "a", encoding="utf-8") as f,
-        ):
-            f.write(f"UI启动异常: {e}\n")
         sys.exit(1)
 
 

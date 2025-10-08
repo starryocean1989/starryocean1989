@@ -25,9 +25,16 @@ import psutil
 # 本地模块导入（按字母顺序）
 from .models import get_data_model_manager
 from .performance import get_performance_optimizer
-from .test_integration import main as integration_main
-from .test_performance import main as performance_main
-from .vnpy_integration import TerminalEngine, VNPY_AVAILABLE, get_terminal_engine
+from .imports import VNPY_AVAILABLE
+
+# 注释掉已删除的模块导入
+# from .test_integration import main as integration_main
+# from .test_performance import main as performance_main
+# from .vnpy_integration import TerminalEngine, VNPY_AVAILABLE, get_terminal_engine
+
+# 这些测试主函数现在不可用
+integration_main = None
+performance_main = None
 
 if TYPE_CHECKING:
     # 临时注释掉ConfigService相关导入
@@ -184,8 +191,10 @@ class PerformanceMonitor:
 
             # 性能优化器指标
             try:
-                terminal_engine = get_terminal_engine()
-                optimizer = get_performance_optimizer(terminal_engine)
+                from .shared_services import get_main_engine
+
+                main_engine = get_main_engine()
+                optimizer = get_performance_optimizer(main_engine)
                 if optimizer:
                     perf_stats = optimizer.get_performance_stats()
                     metrics["performance"] = perf_stats
@@ -586,9 +595,9 @@ class TestStream:
 class HealthChecker:
     """健康检查器."""
 
-    def __init__(self, terminal_engine: Optional[TerminalEngine] = None):
+    def __init__(self, main_engine: Optional[Any] = None):
         """初始化健康检查器."""
-        self.terminal_engine = terminal_engine
+        self.main_engine = main_engine
         self.logger = logging.getLogger(__name__)
         self._check_results: Dict[str, Any] = {}
 
@@ -707,14 +716,15 @@ class HealthChecker:
     def _check_vnpy_connection(self) -> Dict[str, Any]:
         """检查VNPY连接."""
         try:
-            if not self.terminal_engine:
-                return {"status": "error", "error": "TerminalEngine未初始化"}
-            status = self.terminal_engine.get_status()
+            if not self.main_engine:
+                return {"status": "error", "error": "MainEngine未初始化"}
+
+            # 检查主引擎是否正常工作
             return {
                 "status": "ok",
-                "vnpy_available": status.get("vnpy_available", False),
-                "gateways": len(status.get("gateways", {})),
-                "datafeeds": len(status.get("datafeeds", {})),
+                "vnpy_available": VNPY_AVAILABLE,
+                "main_engine_initialized": self.main_engine is not None,
+                "engines": len(getattr(self.main_engine, "engines", {})),
             }
         except (RuntimeError, AttributeError, ConnectionError) as e:
             return {"status": "error", "error": str(e)}

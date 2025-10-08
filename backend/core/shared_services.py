@@ -379,6 +379,11 @@ class ServiceManager:
 _service_manager: Optional[ServiceManager] = None
 _init_lock = threading.Lock()
 
+# 全局VNPY引擎实例
+_main_engine: Optional[Any] = None
+_event_engine: Optional[Any] = None
+_china_stock_engine: Optional[Any] = None
+
 
 def get_service_manager() -> ServiceManager:
     """获取全局服务管理器实例."""
@@ -393,13 +398,48 @@ def get_service_manager() -> ServiceManager:
     return _service_manager
 
 
+def get_main_engine() -> Optional[Any]:
+    """获取全局VNPY主引擎实例."""
+    return _main_engine
+
+
+def get_event_engine() -> Optional[Any]:
+    """获取全局VNPY事件引擎实例."""
+    return _event_engine
+
+
+def get_china_stock_engine() -> Optional[Any]:
+    """获取全局ChinaStock数据引擎实例."""
+    return _china_stock_engine
+
+
+def set_main_engine(engine: Any) -> None:
+    """设置全局VNPY主引擎实例."""
+    global _main_engine
+    _main_engine = engine
+    logger.info("全局主引擎已设置")
+
+
+def set_event_engine(engine: Any) -> None:
+    """设置全局VNPY事件引擎实例."""
+    global _event_engine
+    _event_engine = engine
+    logger.info("全局事件引擎已设置")
+
+
+def set_china_stock_engine(engine: Any) -> None:
+    """设置全局ChinaStock数据引擎实例."""
+    global _china_stock_engine
+    _china_stock_engine = engine
+    logger.info("全局ChinaStock引擎已设置")
+
+
 def initialize_services() -> Dict[str, Any]:
     """初始化所有服务，返回详细的初始化报告"""
     try:
-        from .service_initializer import ServiceInitializer
+        from .service_initializer import initialize_real_services
 
         service_manager = get_service_manager()
-        initializer = ServiceInitializer(service_manager)
 
         # 记录初始化开始
         service_manager.record_error(
@@ -410,7 +450,7 @@ def initialize_services() -> Dict[str, Any]:
         )
 
         # 执行初始化
-        success = initializer.initialize_all_services()
+        success = initialize_real_services()
         service_manager.initialization_attempted = True
         service_manager.initialization_completed = success
 
@@ -470,7 +510,14 @@ def shutdown_services() -> None:
             "ServiceManager", "SHUTDOWN_START", "开始关闭所有服务", severity=ErrorSeverity.INFO
         )
 
-        # 这里可以添加具体的服务关闭逻辑
+        # 调用真实的服务关闭逻辑
+        try:
+            from .service_initializer import shutdown_real_services
+
+            shutdown_real_services()
+        except Exception as e:
+            logger.error("关闭服务时发生错误: %s", e, exc_info=True)
+
         _service_manager = None
         logger.info("全局服务管理器已清理")
 
