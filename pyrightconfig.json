@@ -8,7 +8,8 @@
     "exclude": [
         "**/__pycache__",
         "**/venv*",
-        "**/node_modules"
+        "**/node_modules",
+        "strategies/templates/**"
     ],
     "pythonVersion": "3.10",
     "pythonPlatform": "Windows",

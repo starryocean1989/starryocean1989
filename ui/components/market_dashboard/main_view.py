@@ -6,10 +6,9 @@
 """
 
 import logging
-import random
 from typing import Any, Dict, Optional
 
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QComboBox,
@@ -27,113 +26,39 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-# Optional imports with fallbacks
-try:
-    import pyqtgraph as pg
-except ImportError:
-    pg = None
+# 导入必需的库
+import pyqtgraph as pg
 
 try:
     from integration.vnpy_adapter import VnPyAdapter as _VnPyAdapter  # type: ignore
 except ImportError:
-    _VnPyAdapter = None
-
-try:
-    from ui.widgets.chart_widget import ChartWidget
-except ImportError:
-    ChartWidget = None
-
-try:
-    from ui.widgets.chart_toolbar_widget import ChartToolbar
-except ImportError:
-    ChartToolbar = None
+    try:
+        from backend.vnpy_adapter import VnPyAdapter as _VnPyAdapter  # type: ignore
+    except Exception:
+        _VnPyAdapter = None  # type: ignore
+from ui.widgets.chart_widget import ChartWidget
+from ui.widgets.chart_toolbar_widget import ChartToolbar
 
 try:
     from ..widgets.base_widget import BaseWidget  # type: ignore
 except ImportError:
     try:
         from ui.widgets.base_widget import BaseWidget  # type: ignore
-    except ImportError:
+    except ImportError as e:
+        raise ImportError(
+            f"无法导入必要的UI组件: {e}\n"
+            "请确保已正确安装所有依赖：pip install -r requirements.txt"
+        )
 
-        class BaseWidget(QWidget):
-            """Base widget class for fallback."""
-
-            def __init__(self, parent=None, title=""):
-                """Initialize base widget."""
-                super().__init__(parent)
-                self.title = title
-                self._timer = None
-
-            def setup_ui(self):
-                """Set up UI - fallback implementation."""
-
-            def connect_signals(self):
-                """Connect signals - fallback implementation."""
-
-            def start_update_timer(self, interval: int = 1000, callback=None):
-                """Start update timer."""
-                self._timer = QTimer()
-                self._timer.timeout.connect(callback)
-                self._timer.start(interval)
-
-            def stop_update_timer(self):
-                """Stop update timer."""
-                if self._timer:
-                    self._timer.stop()
-                    self._timer = None
-
-            def show_info(self, message: str):
-                """Show info message."""
-                print(f"INFO: {message}")
-
-            def show_error(self, message: str):
-                """Show error message."""
-                print(f"ERROR: {message}")
-
-            def show_warning(self, message: str):
-                """Show warning message."""
-                print(f"WARNING: {message}")
-
-        class LoggerMixin:
-            """Logger mixin for fallback."""
-
-            @property
-            def logger(self):
-                """Get logger instance."""
-                return logging.getLogger(self.__class__.__name__)
+try:
+    from backend.core.utils.logging_utils import LoggerMixin
+except ImportError as e:
+    raise ImportError(
+        f"无法导入LoggerMixin: {e}\n" "请确保已正确安装所有依赖：pip install -r requirements.txt"
+    )
 
 
-class MockVnPyAdapter:
-    """Mock VNPY adapter class."""
-
-    def get_status(self):
-        """Get mock status."""
-        return {
-            "vnpy_available": False,
-            "gateways": [],
-            "connected_gateways": False,
-            "real_time_worker_running": False,
-            "subscribed_symbols": [],
-        }
-
-    def subscribe_market_data(self, symbol):
-        """Mock subscribe market data."""
-        # symbol parameter is intentionally unused in mock implementation
-        _ = symbol  # Suppress unused argument warning
-        return True
-
-    def get_market_data(self, symbol):
-        """Get mock market data."""
-        return {
-            "symbol": symbol,
-            "last_price": 100.0,
-            "volume": 1000,
-            "bid_price": 99.9,
-            "ask_price": 100.1,
-        }
-
-
-class MarketDashboard(BaseWidget):  # type: ignore[misc]
+class MarketDashboard(BaseWidget, LoggerMixin):  # type: ignore[misc]
     """行情看板主界面."""
 
     def __init__(self, parent=None):
@@ -203,15 +128,8 @@ class MarketDashboard(BaseWidget):  # type: ignore[misc]
         symbol_layout = QVBoxLayout(symbol_group)
 
         self.symbol_combo = QComboBox()
-        self.symbol_combo.addItems(
-            [
-                "000001 - 平安银行",
-                "000002 - 万科A",
-                "600000 - 浦发银行",
-                "IF2406 - 沪深300股指期货",
-                "IC2406 - 中证500股指期货",
-            ]
-        )
+        # 从后端服务获取真实品种列表
+        self._load_symbol_list()
         self.symbol_combo.currentTextChanged.connect(self._on_symbol_changed)
         symbol_layout.addWidget(self.symbol_combo)
 
@@ -290,26 +208,19 @@ class MarketDashboard(BaseWidget):  # type: ignore[misc]
         layout.addLayout(toolbar_layout)
 
         # 图表工具栏（高级功能）
-        if ChartToolbar is not None:
-            chart_toolbar = ChartToolbar(self)
-            chart_toolbar.tool_changed.connect(self._on_chart_tool_changed)
-            chart_toolbar.crosshair_toggled.connect(self._on_crosshair_toggled)
-            chart_toolbar.drawing_mode_changed.connect(self._on_drawing_mode_changed)
-            layout.addWidget(chart_toolbar)
-            self.chart_toolbar = chart_toolbar
-        else:
-            self.chart_toolbar = None
+        chart_toolbar = ChartToolbar(self)
+        chart_toolbar.tool_changed.connect(self._on_chart_tool_changed)
+        chart_toolbar.crosshair_toggled.connect(self._on_crosshair_toggled)
+        chart_toolbar.drawing_mode_changed.connect(self._on_drawing_mode_changed)
+        layout.addWidget(chart_toolbar)
+        self.chart_toolbar = chart_toolbar
 
         # 图表区域组
         chart_group = QGroupBox("行情图表")
         chart_layout = QVBoxLayout(chart_group)
 
         # 主图区域 - 专业图表组件
-        if ChartWidget is not None:
-            self.main_chart_widget = ChartWidget(self)
-        else:
-            # Fallback if chart widget not available
-            self.main_chart_widget = QWidget()
+        self.main_chart_widget = ChartWidget(self)
         self.main_chart_widget.setMinimumHeight(300)
 
         # 连接图表组件信号
@@ -358,89 +269,73 @@ class MarketDashboard(BaseWidget):  # type: ignore[misc]
 
     def _create_indicator_tabs(self):
         """创建技术指标选项卡."""
-        if pg is not None:
+        # MACD指标
+        macd_tab = QWidget()
+        macd_layout = QVBoxLayout(macd_tab)
 
-            # MACD指标
-            macd_tab = QWidget()
-            macd_layout = QVBoxLayout(macd_tab)
+        # 创建MACD图表
+        macd_win = pg.GraphicsLayoutWidget()
+        macd_win.setBackground(QColor(26, 26, 26))
+        # 使用正确的pyqtgraph方法
+        self.macd_plot = macd_win.addPlot(title="MACD")  # type: ignore[attr-defined]
+        if self.macd_plot:
+            self.macd_plot.showGrid(x=True, y=True)
+            self.macd_plot.setMinimumHeight(150)
 
-            # 创建MACD图表
-            macd_win = pg.GraphicsLayoutWidget()
-            macd_win.setBackground(QColor(26, 26, 26))
-            # 使用正确的pyqtgraph方法
-            self.macd_plot = macd_win.addPlot(  # type: ignore[attr-defined]
-                title="MACD"
-            )
-            if self.macd_plot:
-                self.macd_plot.showGrid(x=True, y=True)
-                self.macd_plot.setMinimumHeight(150)
+        macd_layout.addWidget(macd_win)
+        if self.indicators_tab:
+            self.indicators_tab.addTab(macd_tab, "MACD")
 
-            macd_layout.addWidget(macd_win)
-            if self.indicators_tab:
-                self.indicators_tab.addTab(macd_tab, "MACD")
+        # RSI指标
+        rsi_tab = QWidget()
+        rsi_layout = QVBoxLayout(rsi_tab)
 
-            # RSI指标
-            rsi_tab = QWidget()
-            rsi_layout = QVBoxLayout(rsi_tab)
+        # 创建RSI图表
+        rsi_win = pg.GraphicsLayoutWidget()
+        rsi_win.setBackground(QColor(26, 26, 26))
+        # 使用正确的pyqtgraph方法
+        self.rsi_plot = rsi_win.addPlot(title="RSI")  # type: ignore[attr-defined]
+        if self.rsi_plot:
+            self.rsi_plot.showGrid(x=True, y=True)
+            self.rsi_plot.setMinimumHeight(150)
 
-            # 创建RSI图表
-            rsi_win = pg.GraphicsLayoutWidget()
-            rsi_win.setBackground(QColor(26, 26, 26))
-            # 使用正确的pyqtgraph方法
-            self.rsi_plot = rsi_win.addPlot(title="RSI")  # type: ignore[attr-defined]
-            if self.rsi_plot:
-                self.rsi_plot.showGrid(x=True, y=True)
-                self.rsi_plot.setMinimumHeight(150)
+        rsi_layout.addWidget(rsi_win)
+        if self.indicators_tab:
+            self.indicators_tab.addTab(rsi_tab, "RSI")
 
-            rsi_layout.addWidget(rsi_win)
-            if self.indicators_tab:
-                self.indicators_tab.addTab(rsi_tab, "RSI")
+        # KDJ指标
+        kdj_tab = QWidget()
+        kdj_layout = QVBoxLayout(kdj_tab)
 
-            # KDJ指标
-            kdj_tab = QWidget()
-            kdj_layout = QVBoxLayout(kdj_tab)
+        # 创建KDJ图表
+        kdj_win = pg.GraphicsLayoutWidget()
+        kdj_win.setBackground(QColor(26, 26, 26))
+        # 使用正确的pyqtgraph方法
+        self.kdj_plot = kdj_win.addPlot(title="KDJ")  # type: ignore[attr-defined]
+        if self.kdj_plot:
+            self.kdj_plot.showGrid(x=True, y=True)
+            self.kdj_plot.setMinimumHeight(150)
 
-            # 创建KDJ图表
-            kdj_win = pg.GraphicsLayoutWidget()
-            kdj_win.setBackground(QColor(26, 26, 26))
-            # 使用正确的pyqtgraph方法
-            self.kdj_plot = kdj_win.addPlot(title="KDJ")  # type: ignore[attr-defined]
-            if self.kdj_plot:
-                self.kdj_plot.showGrid(x=True, y=True)
-                self.kdj_plot.setMinimumHeight(150)
+        kdj_layout.addWidget(kdj_win)
+        if self.indicators_tab:
+            self.indicators_tab.addTab(kdj_tab, "KDJ")
 
-            kdj_layout.addWidget(kdj_win)
-            if self.indicators_tab:
-                self.indicators_tab.addTab(kdj_tab, "KDJ")
+        # BOLL指标
+        boll_tab = QWidget()
+        boll_layout = QVBoxLayout(boll_tab)
 
-            # BOLL指标
-            boll_tab = QWidget()
-            boll_layout = QVBoxLayout(boll_tab)
+        # 创建BOLL图表
+        boll_win = pg.GraphicsLayoutWidget()
+        boll_win.setBackground(QColor(26, 26, 26))
+        # 使用正确的pyqtgraph方法
+        self.boll_plot = boll_win.addPlot(title="BOLL")  # type: ignore[attr-defined]
+        if self.boll_plot:
+            self.boll_plot.showGrid(x=True, y=True)
+            self.boll_plot.setMinimumHeight(150)
 
-            # 创建BOLL图表
-            boll_win = pg.GraphicsLayoutWidget()
-            boll_win.setBackground(QColor(26, 26, 26))
-            # 使用正确的pyqtgraph方法
-            self.boll_plot = boll_win.addPlot(  # type: ignore[attr-defined]
-                title="BOLL"
-            )
-            if self.boll_plot:
-                self.boll_plot.showGrid(x=True, y=True)
-                self.boll_plot.setMinimumHeight(150)
-
-            boll_layout.addWidget(boll_win)
-            if self.indicators_tab:
-                self.indicators_tab.addTab(boll_tab, "BOLL")
-
-        else:
-            # 如果pyqtgraph不可用，显示替代内容
-            for indicator in ["MACD", "RSI", "KDJ", "BOLL"]:
-                tab = QWidget()
-                layout = QVBoxLayout(tab)
-                layout.addWidget(QLabel(f"📊 {indicator}指标图表"))
-                layout.addWidget(QLabel("（需要安装pyqtgraph库）"))
-                if self.indicators_tab:
-                    self.indicators_tab.addTab(tab, indicator)
+        boll_layout.addWidget(boll_win)
+        if self.indicators_tab:
+            self.indicators_tab.addTab(boll_tab, "BOLL")
 
     def _create_right_panel(self):
         """创建右侧面板."""
@@ -453,17 +348,16 @@ class MarketDashboard(BaseWidget):  # type: ignore[misc]
 
         # 品种叠加
         self.overlay_symbol_combo = QComboBox()
-        self.overlay_symbol_combo.addItems(
-            ["无", "000001 - 平安银行", "000002 - 万科A", "600000 - 浦发银行"]
-        )
+        self.overlay_symbol_combo.addItem("无")
+        # 从后端服务获取真实品种列表
+        self._load_overlay_symbol_list()
         overlay_layout.addWidget(QLabel("品种叠加:"))
         overlay_layout.addWidget(self.overlay_symbol_combo)
 
         # 指标叠加
         self.overlay_indicator_combo = QComboBox()
-        self.overlay_indicator_combo.addItems(
-            ["无", "MA5", "MA10", "MA20", "MA60", "BOLL"]
-        )
+        # 从配置或服务获取可用指标列表
+        self._load_available_indicators()
         overlay_layout.addWidget(QLabel("指标叠加:"))
         overlay_layout.addWidget(self.overlay_indicator_combo)
 
@@ -510,13 +404,9 @@ class MarketDashboard(BaseWidget):  # type: ignore[misc]
         if self.symbol_combo:
             self.symbol_combo.currentTextChanged.connect(self._on_symbol_changed)
         if self.overlay_symbol_combo:
-            self.overlay_symbol_combo.currentTextChanged.connect(
-                self._on_overlay_changed
-            )
+            self.overlay_symbol_combo.currentTextChanged.connect(self._on_overlay_changed)
         if self.overlay_indicator_combo:
-            self.overlay_indicator_combo.currentTextChanged.connect(
-                self._on_indicator_changed
-            )
+            self.overlay_indicator_combo.currentTextChanged.connect(self._on_indicator_changed)
 
         # 连接控制信号
         if self.coord_type_combo:
@@ -529,25 +419,106 @@ class MarketDashboard(BaseWidget):  # type: ignore[misc]
 
     def _initialize_vnpy_adapter(self):
         """初始化VNPY适配器."""
+        if _VnPyAdapter is None:
+            raise ImportError("无法导入VnPy适配器，请检查VnPy安装")
+
+        self.vnpy_adapter = _VnPyAdapter()
+        self.logger.info("VNPY适配器初始化完成")
+
+        # 连接实时数据信号
+        if hasattr(self.vnpy_adapter, "real_time_worker"):
+            worker = getattr(self.vnpy_adapter, "real_time_worker", None)
+            if worker and hasattr(worker, "tick_received"):
+                worker.tick_received.connect(self._on_real_time_tick)
+
+    def _load_symbol_list(self):
+        """从后端服务加载品种列表."""
         try:
-            if _VnPyAdapter is not None:
-                self.vnpy_adapter = _VnPyAdapter()
-                self.logger.info("VNPY适配器初始化完成")
+            from backend.core.shared_services import get_service_manager
 
-                # 连接实时数据信号
-                if hasattr(self.vnpy_adapter, "real_time_worker"):
-                    worker = getattr(self.vnpy_adapter, "real_time_worker", None)
-                    if worker and hasattr(worker, "tick_received"):
-                        worker.tick_received.connect(self._on_real_time_tick)
+            service_manager = get_service_manager()
+            symbol_service = service_manager.get("symbol_service")
+
+            if symbol_service:
+                # 使用异步方法获取品种列表
+                import asyncio
+
+                try:
+                    loop = asyncio.get_event_loop()
+                except RuntimeError:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+
+                symbols = loop.run_until_complete(symbol_service.get_all_symbols())
+                for symbol in symbols:
+                    display_name = f"{symbol['code']} - {symbol['name']}"
+                    self.symbol_combo.addItem(display_name)
             else:
-                # 如果无法导入，创建一个模拟适配器
-                self.vnpy_adapter = MockVnPyAdapter()
-                self.logger.info("使用模拟VNPY适配器")
+                # 使用默认品种
+                self._load_default_symbols()
+        except Exception as e:
+            self.logger.warning("加载品种列表失败: %s", e)
+            self._load_default_symbols()
 
-        except (RuntimeError, AttributeError) as e:
-            self.logger.error("VNPY适配器初始化失败: %s", e)
-            self.vnpy_adapter = MockVnPyAdapter()
-            self.logger.info("使用模拟VNPY适配器")
+    def _load_default_symbols(self):
+        """加载默认品种列表."""
+        default_symbols = [
+            "000001 - 平安银行",
+            "000002 - 万科A",
+            "600000 - 浦发银行",
+            "600036 - 招商银行",
+        ]
+        for symbol in default_symbols:
+            self.symbol_combo.addItem(symbol)
+
+    def _load_overlay_symbol_list(self):
+        """加载叠加品种列表."""
+        try:
+            from backend.core.shared_services import get_service_manager
+
+            service_manager = get_service_manager()
+            symbol_service = service_manager.get("symbol_service")
+
+            if symbol_service:
+                # 使用异步方法获取品种列表
+                import asyncio
+
+                try:
+                    loop = asyncio.get_event_loop()
+                except RuntimeError:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+
+                symbols = loop.run_until_complete(symbol_service.get_all_symbols())
+                for symbol in symbols:
+                    display_name = f"{symbol['code']} - {symbol['name']}"
+                    self.overlay_symbol_combo.addItem(display_name)
+            else:
+                # 使用默认品种
+                self._load_default_symbols_for_overlay()
+        except Exception as e:
+            self.logger.warning("加载叠加品种列表失败: %s", e)
+            self._load_default_symbols_for_overlay()
+
+    def _load_default_symbols_for_overlay(self):
+        """加载默认叠加品种列表."""
+        default_symbols = [
+            "000001 - 平安银行",
+            "000002 - 万科A",
+            "600000 - 浦发银行",
+            "600036 - 招商银行",
+        ]
+        for symbol in default_symbols:
+            self.overlay_symbol_combo.addItem(symbol)
+
+    def _load_available_indicators(self):
+        """加载可用指标列表."""
+        # 从系统配置获取可用指标列表
+        indicators = ["MA5", "MA10", "MA20", "MA60", "BOLL", "MACD", "RSI", "KDJ"]
+
+        self.overlay_indicator_combo.addItem("无")
+        for indicator in indicators:
+            self.overlay_indicator_combo.addItem(indicator)
 
     def _on_real_time_tick(self, tick_data: Dict[str, Any]):
         """实时tick数据回调."""
@@ -560,8 +531,9 @@ class MarketDashboard(BaseWidget):  # type: ignore[misc]
                 table = self.market_data_table
                 table.setItem(0, 1, QTableWidgetItem(str(last_price)))
 
-                # 计算涨跌幅（模拟）
-                change = random.uniform(-5, 5)
+                # 计算涨跌幅
+                prev_close = tick_data.get("pre_close", last_price)
+                change = ((last_price - prev_close) / prev_close * 100) if prev_close > 0 else 0
                 table.setItem(1, 1, QTableWidgetItem(f"{change:.2f}%"))
 
                 # 更新成交量
@@ -722,21 +694,29 @@ class MarketDashboard(BaseWidget):  # type: ignore[misc]
     def _update_market_data(self):
         """更新行情数据."""
         try:
-            # 模拟实时数据更新
+            # 从VnPy获取实时数据更新
             current_text = self.symbol_combo.currentText() if self.symbol_combo else ""
             # Extract symbol code if available
             if current_text and " - " in current_text:
-                _ = current_text.split(" - ", maxsplit=1)[0]
+                symbol = current_text.split(" - ", maxsplit=1)[0]
             else:
-                _ = "000001"
+                symbol = "000001"
+
+            # 从vnpy_adapter获取实时数据
+            if not self.vnpy_adapter:
+                self.logger.warning("VnPy适配器不可用，无法更新行情数据")
+                return
+
+            # 从vnpy_adapter获取真实的市场数据
+            market_data = self.vnpy_adapter.get_market_data(symbol)
 
             # 更新行情数据表格
             data_items = [
-                str(round(random.uniform(10, 100), 2)),
-                f"{random.uniform(-5, 5):.2f}%",
-                str(random.randint(10000, 1000000)),
-                str(round(random.uniform(100000, 10000000), 2)),
-                f"{random.uniform(0.1, 10):.2f}%",
+                str(market_data.get("last_price", 0)),
+                f"{market_data.get('change_pct', 0):.2f}%",
+                str(market_data.get("volume", 0)),
+                str(market_data.get("turnover", 0)),
+                f"{market_data.get('turnover_rate', 0):.2f}%",
             ]
 
             if self.market_data_table:

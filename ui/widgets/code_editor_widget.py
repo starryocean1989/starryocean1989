@@ -1,20 +1,21 @@
 # -*- coding: utf-8 -*-
 """
-代码编辑器组件 - 带行号和语法高亮
+代码编辑器组件 - 带行号和语法高亮.
 
 支持Python语法高亮和行号显示
 """
 
-from PySide6.QtCore import Qt, QRect, QSize
+import re
+
+from PySide6.QtCore import QRect, QSize, Qt
 from PySide6.QtGui import (
     QColor,
-    QPainter,
-    QTextFormat,
     QFont,
+    QPainter,
     QSyntaxHighlighter,
     QTextCharFormat,
 )
-from PySide6.QtWidgets import QWidget, QPlainTextEdit, QTextEdit
+from PySide6.QtWidgets import QPlainTextEdit, QWidget
 
 
 class LineNumberArea(QWidget):
@@ -25,11 +26,11 @@ class LineNumberArea(QWidget):
         super().__init__(editor)
         self.code_editor = editor
 
-    def sizeHint(self):
+    def sizeHint(self):  # pylint: disable=invalid-name
         """建议大小."""
         return QSize(self.code_editor.line_number_area_width(), 0)
 
-    def paintEvent(self, event):
+    def paintEvent(self, event):  # pylint: disable=invalid-name
         """绘制行号."""
         self.code_editor.line_number_area_paint_event(event)
 
@@ -95,8 +96,14 @@ class PythonHighlighter(QSyntaxHighlighter):
         # 字符串格式
         string_format = QTextCharFormat()
         string_format.setForeground(QColor("#CE9178"))  # VS Code橙色
-        self.highlighting_rules.append((r'"[^"\\]*(\\.[^"\\]*)*"', string_format))
-        self.highlighting_rules.append((r"'[^'\\]*(\\.[^'\\]*)*'", string_format))
+
+        # 双引号字符串正则表达式
+        double_quote_pattern = r'"[^"\\]*(\\.[^"\\]*)*"'
+        self.highlighting_rules.append((double_quote_pattern, string_format))
+
+        # 单引号字符串正则表达式
+        single_quote_pattern = r"'[^'\\]*(\\.[^'\\]*)*'"
+        self.highlighting_rules.append((single_quote_pattern, string_format))
 
         # 注释格式
         comment_format = QTextCharFormat()
@@ -114,10 +121,8 @@ class PythonHighlighter(QSyntaxHighlighter):
         number_format.setForeground(QColor("#B5CEA8"))  # VS Code浅绿
         self.highlighting_rules.append((r"\b[0-9]+\.?[0-9]*\b", number_format))
 
-    def highlightBlock(self, text):
+    def highlightBlock(self, text):  # pylint: disable=invalid-name
         """高亮当前文本块."""
-        import re
-
         for pattern, fmt in self.highlighting_rules:
             for match in re.finditer(pattern, text):
                 start = match.start()
@@ -150,7 +155,7 @@ class CodeEditor(QPlainTextEdit):
         self.updateRequest.connect(self.update_line_number_area)
 
         # 更新行号区域宽度
-        self.update_line_number_area_width(0)
+        self.update_line_number_area_width()
 
         # 应用Python语法高亮
         self.highlighter = PythonHighlighter(self.document())
@@ -173,7 +178,7 @@ class CodeEditor(QPlainTextEdit):
         space = 10 + self.fontMetrics().horizontalAdvance("9") * digits
         return space
 
-    def update_line_number_area_width(self, _new_block_count):
+    def update_line_number_area_width(self):
         """更新行号区域宽度."""
         self.setViewportMargins(self.line_number_area_width(), 0, 0, 0)
 
@@ -182,21 +187,19 @@ class CodeEditor(QPlainTextEdit):
         if dy:
             self.line_number_area.scroll(0, dy)
         else:
-            self.line_number_area.update(
-                0, rect.y(), self.line_number_area.width(), rect.height()
-            )
+            self.line_number_area.update(0, rect.y(), self.line_number_area.width(), rect.height())
 
         if rect.contains(self.viewport().rect()):
-            self.update_line_number_area_width(0)
+            self.update_line_number_area_width()
 
-    def resizeEvent(self, event):
+    def resizeEvent(self, event):  # pylint: disable=invalid-name
         """调整大小事件."""
         super().resizeEvent(event)
 
         cr = self.contentsRect()
-        self.line_number_area.setGeometry(
-            QRect(cr.left(), cr.top(), self.line_number_area_width(), cr.height())
-        )
+        line_width = self.line_number_area_width()
+        rect = QRect(cr.left(), cr.top(), line_width, cr.height())
+        self.line_number_area.setGeometry(rect)
 
     def line_number_area_paint_event(self, event):
         """绘制行号."""
@@ -205,9 +208,9 @@ class CodeEditor(QPlainTextEdit):
 
         block = self.firstVisibleBlock()
         block_number = block.blockNumber()
-        top = int(
-            self.blockBoundingGeometry(block).translated(self.contentOffset()).top()
-        )
+        offset = self.contentOffset()
+        geometry = self.blockBoundingGeometry(block).translated(offset)
+        top = int(geometry.top())
         bottom = top + int(self.blockBoundingRect(block).height())
 
         while block.isValid() and top <= event.rect().bottom():

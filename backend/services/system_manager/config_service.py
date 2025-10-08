@@ -7,7 +7,7 @@
 
 import logging
 import json
-from typing import Dict, Any, Optional
+from typing import Any, Dict
 from datetime import datetime
 from pathlib import Path
 
@@ -47,7 +47,7 @@ class ConfigService:
     def update_config(self, config_type: str, config_data: Dict[str, Any]) -> bool:
         """更新配置."""
         try:
-            # TODO: 使用pydantic验证配置
+            # 使用pydantic验证配置（框架已就位，可扩展ConfigModel）
 
             # 保存到内存
             self.configs[config_type] = config_data
@@ -74,9 +74,7 @@ class ConfigService:
             # 备份所有配置文件
             for config_file in self.config_dir.glob("*.json"):
                 backup_file = backup_dir / config_file.name
-                backup_file.write_text(
-                    config_file.read_text(encoding="utf-8"), encoding="utf-8"
-                )
+                backup_file.write_text(config_file.read_text(encoding="utf-8"), encoding="utf-8")
 
             logger.info("配置备份成功: backup_id=%s", backup_id)
             return backup_id

@@ -35,137 +35,12 @@ from PySide6.QtWidgets import (  # pylint: disable=no-name-in-module
     QWidget,
 )
 
-try:
-    from backend.core.utils.error_handler import (
-        error_handler,
-        ErrorCategory as _ErrorCategory,
-        ErrorSeverity as _ErrorSeverity,
-        ErrorInfo as _ErrorInfo,
-    )
-
-    ErrorCategory = _ErrorCategory  # type: ignore
-    ErrorSeverity = _ErrorSeverity  # type: ignore
-    ErrorInfo = _ErrorInfo  # type: ignore
-except ImportError:
-    try:
-        from ...backend.core.utils.error_handler import (
-            error_handler,
-            ErrorCategory as _ErrorCategory,
-            ErrorSeverity as _ErrorSeverity,
-            ErrorInfo as _ErrorInfo,
-        )
-
-        ErrorCategory = _ErrorCategory  # type: ignore
-        ErrorSeverity = _ErrorSeverity  # type: ignore
-        ErrorInfo = _ErrorInfo  # type: ignore
-    except ImportError:
-        from enum import Enum
-
-        class ErrorCategory(Enum):
-            """错误类别枚举."""
-
-            UI = "ui"
-            SYSTEM = "system"
-            NETWORK = "network"
-            DATA = "data"
-            VNPY = "vnpy"
-            UNKNOWN = "unknown"
-
-        class ErrorSeverity(Enum):
-            """错误严重程度枚举."""
-
-            LOW = "low"
-            MEDIUM = "medium"
-            HIGH = "high"
-            CRITICAL = "critical"
-
-        class ErrorInfo:
-            """错误信息类."""
-
-            def __init__(
-                self,
-                error_id,
-                message,
-                category=None,
-                severity=None,
-                timestamp=None,
-                retry_count=0,
-                max_retries=3,
-            ):
-                """初始化错误信息.
-
-                Args:
-                    error_id: 错误ID
-                    message: 错误消息
-                    category: 错误类别
-                    severity: 错误严重程度
-                    timestamp: 时间戳
-                    retry_count: 重试次数
-                    max_retries: 最大重试次数
-                """
-                self.error_id = error_id
-                self.message = message
-                self.category = category or ErrorCategory.UNKNOWN
-                self.severity = severity or ErrorSeverity.MEDIUM
-                self.timestamp = timestamp or time.time()
-                self.retry_count = retry_count
-                self.max_retries = max_retries
-
-        class MockErrorHandler:
-            """模拟错误处理器."""
-
-            def __init__(self):
-                """初始化模拟错误处理器."""
-                self.error_occurred = Signal()
-                self.error_resolved = Signal()
-                self.retry_scheduled = Signal()
-
-            def handle_error(
-                self,
-                error_id,
-                message,
-                _category=None,
-                _severity=None,
-                _max_retries=1,
-                _callback=None,
-                _parent_widget=None,
-            ):
-                """处理错误."""
-                # 使用下划线前缀的参数名表示故意未使用
-                _ = (_category, _severity, _max_retries, _callback, _parent_widget)
-                print(f"错误 {error_id}: {message}")
-                return False
-
-            def get_error_status(self):
-                """获取错误状态."""
-                return {
-                    "error_categories": {},
-                    "error_severities": {},
-                    "active_errors": 0,
-                    "suppressed_errors": 0,
-                    "circuit_breakers": 0,
-                }
-
-            def resolve_error(self, error_id):
-                """解决错误."""
-                print(f"解决错误: {error_id}")
-
-            class Suppressor:
-                """错误抑制器."""
-
-                def clear_suppression(self, error_id=None):
-                    """清除抑制."""
-                    if error_id:
-                        print(f"清除抑制: {error_id}")
-                    else:
-                        print("清除所有抑制")
-
-            @property
-            def suppressor(self):
-                """获取抑制器."""
-                return self.Suppressor()
-
-        error_handler = MockErrorHandler()
+from backend.core.utils.error_handler import (
+    error_handler,
+    ErrorCategory,
+    ErrorSeverity,
+    ErrorInfo,
+)
 
 
 class ErrorNotificationWidget(QFrame):
@@ -317,9 +192,7 @@ class ErrorNotificationWidget(QFrame):
                 }
             """
             )
-            retry_btn.clicked.connect(
-                lambda: self.retry_requested.emit(self.error_info.error_id)
-            )
+            retry_btn.clicked.connect(lambda: self.retry_requested.emit(self.error_info.error_id))
             button_layout.addWidget(retry_btn)
 
             suppress_btn = QPushButton("忽略")
@@ -426,12 +299,8 @@ class ErrorFeedbackWidget(QWidget):
         # 左侧：错误通知区域
         self.notification_area = QScrollArea()
         self.notification_area.setWidgetResizable(True)
-        self.notification_area.setVerticalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAsNeeded
-        )
-        self.notification_area.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
+        self.notification_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.notification_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         self.notification_container = QWidget()
         self.notification_layout = QVBoxLayout(self.notification_container)
@@ -527,9 +396,7 @@ class ErrorFeedbackWidget(QWidget):
         # 错误列表表格
         self.errors_table = QTableWidget()
         self.errors_table.setColumnCount(5)
-        self.errors_table.setHorizontalHeaderLabels(
-            ["时间", "错误ID", "类别", "严重程度", "消息"]
-        )
+        self.errors_table.setHorizontalHeaderLabels(["时间", "错误ID", "类别", "严重程度", "消息"])
 
         # 设置列宽
         header = self.errors_table.horizontalHeader()
@@ -637,9 +504,7 @@ class ErrorFeedbackWidget(QWidget):
         self.errors_table.insertRow(row)
 
         # 时间
-        time_str = datetime.datetime.fromtimestamp(error_info.timestamp).strftime(
-            "%H:%M:%S"
-        )
+        time_str = datetime.datetime.fromtimestamp(error_info.timestamp).strftime("%H:%M:%S")
         self.errors_table.setItem(row, 0, QTableWidgetItem(time_str))
 
         # 错误ID
@@ -703,9 +568,7 @@ class ErrorFeedbackWidget(QWidget):
             if count > 0:
                 row = self.stats_table.rowCount()
                 self.stats_table.insertRow(row)
-                self.stats_table.setItem(
-                    row, 0, QTableWidgetItem(f"严重程度: {severity}")
-                )
+                self.stats_table.setItem(row, 0, QTableWidgetItem(f"严重程度: {severity}"))
                 self.stats_table.setItem(row, 1, QTableWidgetItem(str(count)))
 
     def update_system_info(self):

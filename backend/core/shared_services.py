@@ -1,5 +1,89 @@
 # -*- coding: utf-8 -*-
 """
+Shared services manager for UI and tests.
+
+提供一个轻量的共享服务管理器，满足 UI 的导入：
+from backend.core.shared_services import get_service_manager
+
+避免依赖真实外部环境，默认提供轻量桩：
+- DummyVnpyService: 提供 get_database_manager()
+- DummyEventService: 提供基本占位方法
+"""
+
+import logging
+from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
+
+# 轻量桩实现
+class _DummyDatabase:
+    def load_bar_data(self, *args, **kwargs):
+        return []
+
+class DummyVnpyService:
+    def __init__(self):
+        self._db = _DummyDatabase()
+        self.is_initialized = True
+
+    def get_database_manager(self):
+        return self._db
+
+class DummyEventService:
+    def __init__(self):
+        self.is_initialized = True
+
+    def register_handler(self, *_args, **_kwargs):
+        pass
+
+    def unregister_handler(self, *_args, **_kwargs):
+        pass
+
+    async def emit_event(self, *_args, **_kwargs):
+        return None
+
+class ServiceManager:
+    """
+    轻量共享服务管理器，可被 UI/测试获取。
+    """
+
+    def __init__(self):
+        self.vnpy_service: Any = DummyVnpyService()
+        self.event_service: Any = DummyEventService()
+        # 按需缓存服务实例
+        self._services: dict[str, Any] = {}
+
+    def get_service(self, name: str) -> Optional[Any]:
+        return self._services.get(name)
+
+    def set_service(self, name: str, svc: Any) -> None:
+        self._services[name] = svc
+
+    # 兼容别名：与现有API保持一致
+    def register(self, name: str, svc: Any) -> None:
+        """注册服务（alias of set_service）."""
+        self._services[name] = svc
+
+    def get(self, name: str, default: Any = None) -> Optional[Any]:
+        """获取服务（alias of get_service），不存在返回default."""
+        return self._services.get(name, default)
+
+    def has(self, name: str) -> bool:
+        """判断服务是否已注册."""
+        return name in self._services
+
+# 模块级单例
+_service_manager: Optional[ServiceManager] = None
+
+def get_service_manager() -> ServiceManager:
+    """
+    提供 UI 侧调用的共享服务管理器。
+    """
+    global _service_manager
+    if _service_manager is None:
+        _service_manager = ServiceManager()
+        logger.info("Shared ServiceManager initialized (dummy)")
+    return _service_manager
+"""
 共享服务层模块.
 
 提供统一的配置、日志、监控等服务.

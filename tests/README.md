@@ -1,223 +1,372 @@
-# UI交互功能回路测试套件
+# -*- coding: utf-8 -*-
+# E2E端到端测试套件
 
 ## 📋 概述
 
-本测试套件实现了完整的UI交互功能回路测试，覆盖**43个功能链路**，验证从UI点击操作到UI反馈接收的完整业务回路。
+本目录包含完整的E2E端到端测试体系，使用真实后端服务验证所有功能链路。
 
-## 🎯 测试目标
+## 🎯 测试策略
 
-- **完全自动化**: 使用pytest-qt模拟所有UI交互
-- **端到端验证**: UI → 后端API → 数据库 → 返回UI显示
-- **业务逻辑验证**: 数据下载、策略回测、交易执行等完整流程
+### E2E端到端测试（真实后端）
 
-## 📊 测试覆盖
+- **目标**: 验证真实的数据流和完整业务流程
+- **特点**: 使用真实的后端服务、VnPy和数据库
+- **优势**: 发现集成问题，验证数据一致性，确保生产可用性
+- **覆盖**: 21个测试用例，覆盖所有核心业务流程
+- **运行**: `python tests/run_e2e_tests.py`
 
-### 测试统计
-
-| 功能界面 | 功能链路数 | 测试文件 | 状态 |
-|---------|-----------|---------|------|
-| 系统管理 | 8 | test_01_system_manager.py | ✅ |
-| 数据中心 | 7 | test_02_data_center.py | ✅ |
-| 行情看板 | 6 | test_03_market_board.py | ✅ |
-| 策略中心 | 8 | test_04_strategy_center.py | ✅ |
-| 交易网关 | 10 | test_05_trading_gateway.py | ✅ |
-| 组合投资 | 4 | test_06_portfolio.py | ✅ |
-| **总计** | **43** | **6个文件** | ✅ |
-
-## 🚀 快速开始
-
-### 1. 安装测试依赖
-
-```bash
-pip install -r tests/requirements-test.txt
-```
-
-### 2. 运行测试
-
-#### 方式一：使用Python脚本（推荐）
-
-```bash
-python tests/run_ui_tests.py
-```
-
-#### 方式二：直接使用pytest
-
-```bash
-# 运行所有UI测试
-pytest tests/test_ui_integration -v
-
-# 运行特定模块测试
-pytest tests/test_ui_integration/test_01_system_manager.py -v
-
-# 使用标记运行测试
-pytest -m data_center -v
-```
-
-### 3. 生成HTML报告
-
-```bash
-pytest tests/test_ui_integration --html=tests/reports/test_results.html --self-contained-html
-```
-
-## 📁 目录结构
+## 🔄 测试架构
 
 ```
 tests/
-├── conftest.py                          # pytest配置和全局fixtures
+├── test_e2e/                        # E2E端到端测试（真实后端）
+│   ├── test_e2e_symbol_cache.py     # 品种缓存与展示
+│   ├── test_e2e_data_download.py    # 增量数据下载
+│   ├── test_e2e_backtest.py         # 策略回测引擎
+│   ├── test_e2e_datasource_management.py  # 数据源管理
+│   ├── test_e2e_local_data_query.py       # 本地数据查询
+│   ├── test_e2e_data_quality_check_repair.py  # 数据质量检查与修复
+│   ├── test_e2e_data_gap_detection.py     # 数据缺口检测
+│   ├── test_e2e_download_progress_monitoring.py  # 下载进度监控
+│   ├── test_e2e_symbol_filter_pagination.py    # 品种筛选与分页
+│   ├── test_e2e_market_chart_display.py   # 行情图表显示
+│   ├── test_e2e_market_board_indicators.py  # 行情看板指标
+│   ├── test_e2e_realtime_data_recording.py  # 实时数据推送与录制
+│   ├── test_e2e_strategy_instance_lifecycle.py  # 策略实例生命周期
+│   ├── test_e2e_vnpy_strategy_template_adaptation.py  # VnPy策略模板适配
+│   ├── test_e2e_gateway.py              # 交易网关连接
+│   ├── test_e2e_portfolio_monitoring.py  # 组合监控
+│   ├── test_e2e_alert_management.py     # 告警管理
+│   ├── test_e2e_service_health_check.py  # 服务健康检查
+│   ├── test_e2e_ai_assistant_integration.py  # AI助手集成
+│   ├── conftest.py                      # E2E测试配置
+│   └── utils/                           # E2E测试工具
+│       ├── app_runner.py                # 后端应用启动器
+│       ├── db_helper.py                 # VnPy数据库验证工具
+│       ├── service_accessor.py          # 后端服务状态访问器
+│       ├── wait_helpers.py              # 异步等待助手
+│       ├── strategy_helper.py           # 策略验证助手
+│       └── chart_helper.py              # 图表验证助手
+│
+├── conftest.py                          # 全局pytest配置
+├── run_e2e_tests.py                     # E2E测试运行脚本
 ├── requirements-test.txt                # 测试依赖
-├── run_ui_tests.py                      # 测试运行脚本
-├── test_ui_integration/                 # UI集成测试主目录
-│   ├── __init__.py
-│   ├── base_ui_test.py                 # UI测试基类
-│   ├── fixtures/                        # 测试fixtures
-│   │   ├── app_fixture.py              # 应用实例fixture
-│   │   ├── ui_fixture.py               # UI组件fixture
-│   │   └── mock_backend.py             # 后端mock fixture
-│   ├── utils/                           # 测试工具
-│   │   ├── ui_interactor.py            # UI交互工具类
-│   │   ├── signal_recorder.py          # 信号记录器
-│   │   ├── feedback_verifier.py        # 反馈验证器
-│   │   └── wait_helpers.py             # 等待辅助函数
-│   ├── test_01_system_manager.py       # 系统管理测试(8条)
-│   ├── test_02_data_center.py          # 数据中心测试(7条)
-│   ├── test_03_market_board.py         # 行情看板测试(6条)
-│   ├── test_04_strategy_center.py      # 策略中心测试(8条)
-│   ├── test_05_trading_gateway.py      # 交易网关测试(10条)
-│   └── test_06_portfolio.py            # 组合投资测试(4条)
-└── reports/                             # 测试报告输出目录
+└── reports/                             # 测试报告目录
+    └── test_results.html                # HTML测试报告
 ```
 
-## 🔧 测试框架
+## 🚀 快速开始
 
-### 核心组件
+### 环境准备
 
-1. **BaseUITest**: UI测试基类，提供通用测试方法
-2. **UIInteractor**: UI交互工具，封装所有UI操作
-3. **SignalRecorder**: 信号记录器，捕获和验证Qt信号
-4. **FeedbackVerifier**: 反馈验证器，验证UI反馈完整性
-5. **wait_helpers**: 等待辅助函数，处理异步操作
-
-### 测试流程
-
-```python
-# 标准测试流程
-def test_feature_loop(ui_interactor, signal_recorder, feedback_verifier):
-    # 1. 准备阶段
-    ui_interactor.navigate_to_interface("目标界面")
-
-    # 2. 操作阶段
-    with signal_recorder.capture():
-        ui_interactor.click_button("操作按钮")
-        ui_interactor.input_text(input_widget, "测试数据")
-
-    # 3. 等待阶段
-    wait_for_feedback(timeout=5)
-
-    # 4. 验证阶段
-    assert signal_recorder.verify_signal_emitted("expected_signal")
-    assert feedback_verifier.verify_ui_state(expected_state)
-    assert feedback_verifier.verify_data_displayed(expected_data)
-```
-
-## 📝 测试标记
-
-使用pytest标记来分类和筛选测试：
-
-```bash
-# 按功能模块运行
-pytest -m system_manager -v
-pytest -m data_center -v
-pytest -m market_board -v
-pytest -m strategy_center -v
-pytest -m trading_gateway -v
-pytest -m portfolio -v
-
-# 运行所有UI测试
-pytest -m ui -v
-
-# 运行回路测试
-pytest -m loop -v
-```
-
-## ✅ 验收标准
-
-### 测试通过标准
-
-1. ✅ 所有43个功能链路测试用例全部通过
-2. ✅ UI交互 → 后端处理 → UI反馈回路完整
-3. ✅ 反馈验证准确率 ≥ 95%
-4. ✅ 测试覆盖率 ≥ 90%
-5. ✅ 测试报告生成完整
-
-### 质量指标
-
-- **测试执行时间**: 全量测试 ≤ 30分钟
-- **测试稳定性**: 重复执行成功率 ≥ 98%
-- **错误定位准确性**: 失败原因明确指向具体链路
-
-## 🐛 故障排查
-
-### 常见问题
-
-1. **pytest-qt未安装**
+1. **安装测试依赖**
    ```bash
-   pip install pytest-qt
+   pip install -r requirements-test.txt
    ```
 
-2. **QApplication错误**
-   - 确保只有一个QApplication实例
-   - 检查qtbot fixture是否正确使用
+2. **配置数据库**
+   - 确保VnPy数据库配置正确
+   - 检查 `config/terminal_config.json` 中的数据库设置
 
-3. **组件未找到**
-   - 检查组件名称是否正确
-   - 验证组件是否已加载完成
-   - 增加等待时间
+3. **启动后端服务**（可选，测试会自动启动）
+   ```bash
+   python start_terminal.py
+   ```
 
-4. **信号未捕获**
-   - 确认信号已正确连接
-   - 检查信号名称拼写
-   - 验证信号发射时机
+### 运行测试
 
-## 📊 测试报告
-
-测试完成后，HTML报告会生成在 `tests/reports/test_results.html`
-
-报告包含：
-- 测试执行总览（通过/失败/跳过）
-- 每个功能链路的详细结果
-- 失败用例的错误堆栈
-- 测试执行时间统计
-
-## 🔄 持续集成
-
-可以将测试集成到CI/CD流程中：
-
-```yaml
-# .github/workflows/ui-tests.yml
-name: UI Tests
-on: [push, pull_request]
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v2
-      - name: Install dependencies
-        run: pip install -r tests/requirements-test.txt
-      - name: Run UI tests
-        run: python tests/run_ui_tests.py
+#### 运行所有E2E测试
+```bash
+python tests/run_e2e_tests.py
 ```
 
-## 📖 参考文档
+#### 运行特定测试文件
+```bash
+pytest tests/test_e2e/test_e2e_symbol_cache.py -v
+```
 
-- [pytest-qt文档](https://pytest-qt.readthedocs.io/)
-- [PySide6文档](https://doc.qt.io/qtforpython/)
-- [功能链条分解文档](../docs/1.权威需求文档/功能链条分解文档.md)
+#### 运行特定测试用例
+```bash
+pytest tests/test_e2e/test_e2e_data_download.py::TestDataDownloadE2E::test_incremental_download_with_cache -v
+```
 
-## 🤝 贡献
+#### 只运行标记为e2e的测试
+```bash
+pytest -m e2e -v
+```
 
-欢迎提交问题和改进建议！
+#### 生成HTML报告
+```bash
+pytest tests/test_e2e/ --html=tests/reports/test_results.html --self-contained-html
+```
 
-## 📄 许可证
+## 📊 测试覆盖范围
 
-本测试套件遵循项目主许可证。
+### 1. 数据中心模块 (9个测试)
 
+#### 1.1 品种列表管理
+- ✅ test_e2e_symbol_cache.py
+  - 品种列表缓存生成
+  - 品种列表UI展示
+  - 缓存快速刷新
+
+#### 1.2 数据下载
+- ✅ test_e2e_data_download.py
+  - 增量数据下载流程
+  - 品种缓存调用验证
+  - 数据保存格式验证
+  - 任务取消功能
+
+- ✅ test_e2e_download_progress_monitoring.py
+  - 下载进度实时监控
+  - 进度百分比计算
+  - 状态变更通知
+
+#### 1.3 数据管理
+- ✅ test_e2e_datasource_management.py
+  - 数据源连接管理
+  - 连接状态监控
+  - 数据推送与自动录制
+
+- ✅ test_e2e_local_data_query.py
+  - 本地数据查询
+  - 时间范围筛选
+  - 品种筛选
+
+- ✅ test_e2e_data_quality_check_repair.py
+  - 数据完整性检查
+  - 数据准确性验证
+  - 自动修复功能
+
+- ✅ test_e2e_data_gap_detection.py
+  - 数据缺口检测
+  - 缺口识别算法
+
+- ✅ test_e2e_symbol_filter_pagination.py
+  - 品种筛选功能
+  - 分页显示
+
+### 2. 行情看板模块 (3个测试)
+
+#### 2.1 行情显示
+- ✅ test_e2e_market_chart_display.py
+  - K线图表显示
+  - 周期切换
+  - 指标叠加
+
+- ✅ test_e2e_market_board_indicators.py
+  - 行情指标计算
+  - 实时更新
+  - 多品种展示
+
+- ✅ test_e2e_realtime_data_recording.py
+  - 实时数据推送
+  - 自动录制功能
+  - 数据融合
+
+### 3. 策略中心模块 (4个测试)
+
+#### 3.1 回测功能
+- ✅ test_e2e_backtest.py
+  - CTA策略回测
+  - 期权策略回测
+  - 组合策略回测
+  - 脚本交易回测
+  - 价差交易回测
+
+#### 3.2 策略管理
+- ✅ test_e2e_strategy_instance_lifecycle.py
+  - 策略部署
+  - 策略池管理
+  - 批量启动/停止
+  - 状态流转
+
+- ✅ test_e2e_vnpy_strategy_template_adaptation.py
+  - VnPy策略模板识别
+  - 监控界面适配
+  - portfoliostrategy特殊处理
+
+### 4. 交易网关模块 (1个测试)
+
+- ✅ test_e2e_gateway.py
+  - 网关连接（已跳过，待实现mock）
+  - 委托/成交管理
+
+### 5. 组合投资模块 (1个测试)
+
+- ✅ test_e2e_portfolio_monitoring.py
+  - 自动组合识别
+  - 绩效指标监控
+  - 风险指标监控
+
+### 6. 系统管理模块 (3个测试)
+
+- ✅ test_e2e_alert_management.py
+  - 告警规则配置
+  - 告警触发与通知
+
+- ✅ test_e2e_service_health_check.py
+  - 服务健康检查
+  - 状态监控
+
+- ✅ test_e2e_ai_assistant_integration.py
+  - AI助手集成测试
+
+## 🛠️ 测试工具
+
+### app_runner.py
+后端应用生命周期管理，支持：
+- 异步启动/停止后端服务
+- 服务健康检查
+- 测试隔离
+
+### db_helper.py
+VnPy数据库验证工具，提供：
+- Bar数据统计
+- 数据格式验证
+- 数据质量检查
+- 测试数据清理
+
+### service_accessor.py
+后端服务状态访问器，可以：
+- 获取品种缓存统计
+- 验证下载任务状态
+- 检查数据源连接状态
+- 访问策略池信息
+
+### wait_helpers.py
+异步等待助手，包含：
+- `wait_until_condition` - 通用条件等待
+- `wait_for_cache_loaded` - 品种缓存加载等待
+- `wait_for_task_completion` - 任务完成等待
+- `wait_for_service_state` - 服务状态等待
+- `wait_for_connection_state` - 连接状态等待
+- `wait_for_ui_update` - UI更新等待
+
+### strategy_helper.py
+策略验证助手，支持：
+- 策略部署验证
+- 状态流转验证
+- 模板识别
+- 批量控制验证
+
+### chart_helper.py
+图表验证助手，提供：
+- 图表数据验证
+- 渲染性能测试
+- 指标叠加验证
+
+## 📝 测试编写规范
+
+### 1. 使用条件等待，避免固定sleep
+```python
+# ❌ 不推荐
+await asyncio.sleep(1.0)
+
+# ✅ 推荐
+from tests.test_e2e.utils.wait_helpers import wait_for_cache_loaded
+await wait_for_cache_loaded(symbol_service, service_accessor, min_size=1, timeout=5.0)
+```
+
+### 2. 使用ServiceAccessor访问服务状态
+```python
+# ❌ 不推荐 - 直接访问私有字段
+cache_size = symbol_service._symbols_cache
+
+# ✅ 推荐 - 使用ServiceAccessor
+from tests.test_e2e.utils.service_accessor import ServiceAccessor
+accessor = ServiceAccessor()
+stats = accessor.get_cache_stats(symbol_service)
+cache_size = stats["cache_size"]
+```
+
+### 3. 合理设置超时时间
+```python
+# 快速操作（UI交互）：2.0s
+# 中速操作（服务状态）：5.0s
+# 慢速操作（数据加载）：10.0s
+# 长时操作（任务执行）：30.0s
+
+await wait_for_cache_loaded(
+    symbol_service,
+    service_accessor,
+    min_size=1,
+    timeout=5.0  # 中速操作
+)
+```
+
+### 4. 使用pytest标记
+```python
+@pytest.mark.e2e
+@pytest.mark.asyncio
+@pytest.mark.timeout(60)  # 设置测试超时
+class TestSymbolCacheE2E:
+    async def test_symbol_cache_generation(self):
+        ...
+```
+
+### 5. 清理测试数据
+```python
+@pytest.fixture
+def clean_cache():
+    """清理品种缓存."""
+    yield
+    # 测试后清理
+    symbol_service._symbols_cache.clear()
+```
+
+## 🔍 调试指南
+
+### 查看详细日志
+```bash
+pytest tests/test_e2e/test_e2e_symbol_cache.py -v -s --log-cli-level=DEBUG
+```
+
+### 只运行失败的测试
+```bash
+pytest tests/test_e2e/ --lf
+```
+
+### 进入调试模式
+```bash
+pytest tests/test_e2e/test_e2e_symbol_cache.py --pdb
+```
+
+### 查看测试覆盖率
+```bash
+pytest tests/test_e2e/ --cov=backend --cov-report=html
+```
+
+## 📚 相关文档
+
+- [E2E测试使用指南](./E2E测试使用指南.md)
+- [E2E测试项目最终总结](./E2E测试项目最终总结.md)
+- [E2E测试扩展完成报告](./E2E测试扩展完成报告.md)
+- [E2E稳定化修复总结](../E2E测试稳定化修复完成总结.md)
+
+## 🐛 已知问题
+
+1. **跳过的测试**
+   - `test_e2e_gateway.py` - 需要真实网关连接（待实现mock）
+   - `test_e2e_backtest.py::test_backtest_execution_framework` - 回测引擎待实现
+
+2. **待优化项**
+   - 部分测试依赖私有字段（计划解耦）
+   - 数据源操作顺序需要规范化
+   - 异常捕获需要细化
+
+详见：`C:\Users\USER\Desktop\terminal_v0.50\E2E测试稳定化修复完成总结.md`
+
+## 🤝 贡献指南
+
+1. 新增测试应遵循现有的命名和结构规范
+2. 使用`wait_helpers`而非固定sleep
+3. 添加清晰的日志输出
+4. 编写有意义的断言消息
+5. 在测试类文档字符串中说明测试覆盖范围
+
+---
+
+**最后更新**: 2025-10-08
+**维护者**: 开发团队
+**测试数量**: 21个E2E测试用例

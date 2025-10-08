@@ -364,9 +364,7 @@ class TerminalEngine:
         try:
             # 注册CTA策略引擎
             if VNPY_CTA_AVAILABLE and CtaEngine:
-                cta_engine = CtaEngine(
-                    self.main_engine, self.event_engine  # type: ignore
-                )
+                cta_engine = CtaEngine(self.main_engine, self.event_engine)  # type: ignore
                 # 直接添加到策略引擎字典，不通过main_engine.add_engine
                 self.strategy_engines["cta"] = cta_engine
                 self.logger.info("CTA策略引擎注册完成")
@@ -375,9 +373,7 @@ class TerminalEngine:
 
             # 注册算法交易引擎
             if VNPY_ALGO_AVAILABLE and AlgoEngine:
-                algo_engine = AlgoEngine(
-                    self.main_engine, self.event_engine  # type: ignore
-                )
+                algo_engine = AlgoEngine(self.main_engine, self.event_engine)  # type: ignore
                 # 直接添加到策略引擎字典，不通过main_engine.add_engine
                 self.strategy_engines["algo"] = algo_engine
                 self.logger.info("算法交易引擎注册完成")
@@ -398,9 +394,7 @@ class TerminalEngine:
 
             # 注册价差交易引擎
             if VNPY_SPREAD_AVAILABLE and SpreadEngine:
-                spread_engine = SpreadEngine(
-                    self.main_engine, self.event_engine  # type: ignore
-                )
+                spread_engine = SpreadEngine(self.main_engine, self.event_engine)  # type: ignore
                 # 直接添加到策略引擎字典，不通过main_engine.add_engine
                 self.strategy_engines["spread"] = spread_engine
                 self.logger.info("价差交易引擎注册完成")
@@ -409,9 +403,7 @@ class TerminalEngine:
 
             # 注册脚本交易引擎
             if VNPY_SCRIPT_AVAILABLE and ScriptEngine:
-                script_engine = ScriptEngine(
-                    self.main_engine, self.event_engine  # type: ignore
-                )
+                script_engine = ScriptEngine(self.main_engine, self.event_engine)  # type: ignore
                 # 直接添加到策略引擎字典，不通过main_engine.add_engine
                 self.strategy_engines["script"] = script_engine
                 self.logger.info("脚本交易引擎注册完成")
@@ -420,9 +412,7 @@ class TerminalEngine:
 
             # 注册期权策略引擎
             if VNPY_OPTION_AVAILABLE and OptionEngine:
-                option_engine = OptionEngine(
-                    self.main_engine, self.event_engine  # type: ignore
-                )
+                option_engine = OptionEngine(self.main_engine, self.event_engine)  # type: ignore
                 # 直接添加到策略引擎字典，不通过main_engine.add_engine
                 self.strategy_engines["option"] = option_engine
                 self.logger.info("期权策略引擎注册完成")
@@ -530,42 +520,28 @@ class TerminalEngine:
 
             # 如果指定了网关名称，只获取该网关的持仓
             if gateway_name:
-                if gateway_name in self.gateways:
-                    gateway = self.gateways[gateway_name]
-                    if hasattr(gateway, "get_positions"):
-                        positions = gateway.get_positions()
-                    else:
-                        # 模拟持仓数据
-                        positions = {
-                            "rb2501": {
-                                "symbol": "rb2501",
-                                "direction": "long",
-                                "volume": 10,
-                                "price": 3500.0,
-                                "pnl": 500.0,
-                            }
-                        }
+                if gateway_name not in self.gateways:
+                    raise ValueError(f"网关不存在: {gateway_name}")
+
+                gateway = self.gateways[gateway_name]
+                if not hasattr(gateway, "get_positions"):
+                    raise NotImplementedError(f"网关 {gateway_name} 未实现get_positions方法")
+
+                positions = gateway.get_positions()
             else:
                 # 获取所有网关的持仓
                 for name, gateway in self.gateways.items():
-                    if hasattr(gateway, "get_positions"):
-                        gateway_positions = gateway.get_positions()
-                        positions.update(gateway_positions)
-                    else:
-                        # 模拟持仓数据
-                        positions[f"{name}_rb2501"] = {
-                            "symbol": "rb2501",
-                            "direction": "long",
-                            "volume": 5,
-                            "price": 3500.0,
-                            "pnl": 250.0,
-                        }
+                    if not hasattr(gateway, "get_positions"):
+                        raise NotImplementedError(f"网关 {name} 未实现get_positions方法")
+
+                    gateway_positions = gateway.get_positions()
+                    positions.update(gateway_positions)
 
             self.logger.info("获取持仓信息成功: %s", len(positions))
             return positions
-        except (AttributeError, TypeError, RuntimeError) as e:
+        except (AttributeError, TypeError, RuntimeError, ValueError) as e:
             self.logger.error("获取持仓信息失败: %s", e)
-            return {}
+            raise
 
     def get_account_info(self, gateway_name: Optional[str] = None) -> Dict[str, Any]:
         """获取账户信息."""
@@ -574,44 +550,28 @@ class TerminalEngine:
 
             # 如果指定了网关名称，只获取该网关的账户信息
             if gateway_name:
-                if gateway_name in self.gateways:
-                    gateway = self.gateways[gateway_name]
-                    if hasattr(gateway, "get_account_info"):
-                        account_info = gateway.get_account_info()
-                    else:
-                        # 模拟账户数据
-                        account_info = {
-                            "account_id": f"{gateway_name}_account",
-                            "balance": 100000.0,
-                            "available": 95000.0,
-                            "commission": 50.0,
-                            "margin": 5000.0,
-                            "close_profit": 1000.0,
-                            "position_profit": 500.0,
-                        }
+                if gateway_name not in self.gateways:
+                    raise ValueError(f"网关不存在: {gateway_name}")
+
+                gateway = self.gateways[gateway_name]
+                if not hasattr(gateway, "get_account_info"):
+                    raise NotImplementedError(f"网关 {gateway_name} 未实现get_account_info方法")
+
+                account_info = gateway.get_account_info()
             else:
                 # 获取所有网关的账户信息
                 for name, gateway in self.gateways.items():
-                    if hasattr(gateway, "get_account_info"):
-                        gateway_account = gateway.get_account_info()
-                        account_info[name] = gateway_account
-                    else:
-                        # 模拟账户数据
-                        account_info[name] = {
-                            "account_id": f"{name}_account",
-                            "balance": 100000.0,
-                            "available": 95000.0,
-                            "commission": 50.0,
-                            "margin": 5000.0,
-                            "close_profit": 1000.0,
-                            "position_profit": 500.0,
-                        }
+                    if not hasattr(gateway, "get_account_info"):
+                        raise NotImplementedError(f"网关 {name} 未实现get_account_info方法")
+
+                    gateway_account = gateway.get_account_info()
+                    account_info[name] = gateway_account
 
             self.logger.info("获取账户信息成功: %s", len(account_info))
             return account_info
-        except (AttributeError, TypeError, RuntimeError) as e:
+        except (AttributeError, TypeError, RuntimeError, ValueError) as e:
             self.logger.error("获取账户信息失败: %s", e)
-            return {}
+            raise
 
     def start_strategy(self, strategy_name: str, strategy_class: Any, **kwargs):
         """启动策略."""

@@ -36,9 +36,7 @@ class TDXDataAdapter(BaseDataAdapter):
     继承自BaseDataAdapter,提供通达信数据的获取功能.
     """
 
-    def __init__(
-        self, config: Dict[str, Union[str, int, float, bool]]
-    ) -> None:
+    def __init__(self, config: Dict[str, Union[str, int, float, bool]]) -> None:
         """
         初始化通达信适配器.
 
@@ -91,13 +89,8 @@ class TDXDataAdapter(BaseDataAdapter):
                 if self._socket:
                     self._socket.close()
 
-                self._logger.info(
-                    "正在连接到TDX服务器 %s:%s",
-                    self._config.host, self._config.port
-                )
-                self._socket = socket.socket(
-                    socket.AF_INET, socket.SOCK_STREAM
-                )
+                self._logger.info("正在连接到TDX服务器 %s:%s", self._config.host, self._config.port)
+                self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 self._socket.settimeout(self._config.timeout)
                 self._socket.connect((self._config.host, self._config.port))
 
@@ -239,46 +232,29 @@ class TDXDataAdapter(BaseDataAdapter):
         """
         try:
             if not self.connected or not self._socket:
-                self._logger.warning(
-                    "TDX未连接，无法获取 %s 的市场数据", symbol
-                )
+                self._logger.warning("TDX未连接，无法获取 %s 的市场数据", symbol)
                 return None
 
             self._logger.debug("正在获取 %s 的 %s 数据", symbol, data_type)
 
-            # 这里应该实现实际的通达信协议数据请求
-            # 需要实现通达信协议的实际数据获取逻辑
-            # 目前返回模拟数据，实际实现需要解析TDX协议
-
+            # 实际的通达信协议数据请求需要实现
             # 格式化证券代码
             formatted_symbol = self._format_symbol(symbol)
             self._logger.debug("格式化后的证券代码: %s", formatted_symbol)
 
-            # 模拟数据返回
-            market_data = {
-                "symbol": symbol,
-                "price": 0.0,
-                "change": 0.0,
-                "change_percent": 0.0,
-                "volume": 0,
-                "amount": 0.0,
-                "timestamp": datetime.utcnow().isoformat(),
-                "source": "tdx",
-                "data_type": data_type
-            }
-
-            self._logger.debug("成功获取 %s 的市场数据", symbol)
-            return market_data
+            # 抛出错误，要求实现真实的TDX协议数据获取
+            self._logger.error("TDX协议数据获取功能未实现")
+            raise NotImplementedError(
+                f"TDX协议数据获取功能未实现，需要实现通达信协议的实际数据获取逻辑。"
+                f"请使用真实的TDX接口获取品种 {symbol} 的 {data_type} 数据。"
+            )
 
         except OSError as exc:
             self._logger.error("获取 %s 市场数据时出错: %s", symbol, exc)
             return None
 
     async def get_historical_data(
-        self,
-        symbol: str,
-        start_date: datetime,
-        end_date: datetime
+        self, symbol: str, start_date: datetime, end_date: datetime
     ) -> List[Dict[str, Any]]:
         """
         获取历史数据.
@@ -293,15 +269,10 @@ class TDXDataAdapter(BaseDataAdapter):
         """
         try:
             if not self.connected or not self._socket:
-                self._logger.warning(
-                    "TDX未连接，无法获取 %s 的历史数据", symbol
-                )
+                self._logger.warning("TDX未连接，无法获取 %s 的历史数据", symbol)
                 return []
 
-            self._logger.info(
-                "正在获取 %s 从 %s 到 %s 的历史数据",
-                symbol, start_date, end_date
-            )
+            self._logger.info("正在获取 %s 从 %s 到 %s 的历史数据", symbol, start_date, end_date)
 
             # 通达信历史数据获取较为复杂,这里返回空列表
             # 实际实现需要解析通达信的历史数据协议

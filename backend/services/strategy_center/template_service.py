@@ -6,7 +6,7 @@
 """
 
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List, Optional
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -18,9 +18,7 @@ class TemplateService:
     def __init__(self):
         """初始化模板服务."""
         self._builtin_templates = self._load_builtin_templates()
-        logger.info(
-            "策略模板服务初始化完成，内置模板数: %d", len(self._builtin_templates)
-        )
+        logger.info("策略模板服务初始化完成，内置模板数: %d", len(self._builtin_templates))
 
     def _load_builtin_templates(self) -> List[Dict[str, Any]]:
         """加载内置模板."""
@@ -109,17 +107,13 @@ class TwapAlgo(AlgoTemplate):
 
         return templates
 
-    def list_templates(
-        self, strategy_type: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
+    def list_templates(self, strategy_type: Optional[str] = None) -> List[Dict[str, Any]]:
         """获取模板列表."""
         try:
             templates = self._builtin_templates.copy()
 
             if strategy_type:
-                templates = [
-                    t for t in templates if t["strategy_type"] == strategy_type
-                ]
+                templates = [t for t in templates if t["strategy_type"] == strategy_type]
 
             return templates
 
@@ -156,11 +150,8 @@ class TwapAlgo(AlgoTemplate):
             # 获取模板代码
             code = template["template_code"]
 
-            # TODO: 如果提供了参数，替换模板中的占位符
-            if parameters:
-                for key, value in parameters.items():
-                    placeholder = f"{{{{ {key} }}}}"
-                    code = code.replace(placeholder, str(value))
+            # 替换模板中的占位符
+            code = self._replace_placeholders(code, parameters)
 
             result = {
                 "file_id": f"{folder_path}/{file_name}".replace("\\", "/"),
@@ -177,6 +168,97 @@ class TwapAlgo(AlgoTemplate):
         except Exception as e:
             logger.error("应用模板失败: %s", e)
             raise
+
+    def _replace_placeholders(
+        self, content: str, parameters: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """
+        替换模板中的占位符.
+
+        Args:
+            content: 模板内容
+            parameters: 参数字典
+
+        Returns:
+            str: 替换后的内容
+        """
+        if not parameters:
+            parameters = {}
+
+        # 默认参数
+        defaults = {
+            "author": parameters.get("author", "Anonymous"),
+            "strategy_name": parameters.get("strategy_name", "MyStrategy"),
+            "description": parameters.get("description", "自定义策略"),
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "parameters": self._format_parameters(parameters.get("strategy_parameters", [])),
+            "variables": self._format_variables(parameters.get("strategy_variables", [])),
+        }
+
+        # 替换所有占位符（支持 {{key}} 格式）
+        result = content
+        for key, value in defaults.items():
+            placeholder = f"{{{{{key}}}}}"
+            result = result.replace(placeholder, str(value))
+
+        # 同时支持传入的自定义参数
+        for key, value in parameters.items():
+            placeholder = f"{{{{{key}}}}}"
+            result = result.replace(placeholder, str(value))
+
+        return result
+
+    def _format_parameters(self, params: List[Dict[str, Any]]) -> str:
+        """
+        格式化策略参数.
+
+        Args:
+            params: 参数列表
+
+        Returns:
+            str: 格式化后的参数代码
+        """
+        if not params:
+            return "# 无参数"
+
+        lines = []
+        for param in params:
+            name = param.get("name", "param")
+            value = param.get("value", 0)
+            comment = param.get("comment", "")
+
+            if comment:
+                lines.append(f"    {name} = {value}  # {comment}")
+            else:
+                lines.append(f"    {name} = {value}")
+
+        return "\n".join(lines)
+
+    def _format_variables(self, variables: List[Dict[str, Any]]) -> str:
+        """
+        格式化策略变量.
+
+        Args:
+            variables: 变量列表
+
+        Returns:
+            str: 格式化后的变量代码
+        """
+        if not variables:
+            return "# 无变量"
+
+        lines = []
+        for var in variables:
+            name = var.get("name", "var")
+            value = var.get("value", 0)
+            comment = var.get("comment", "")
+
+            if comment:
+                lines.append(f"    {name} = {value}  # {comment}")
+            else:
+                lines.append(f"    {name} = {value}")
+
+        return "\n".join(lines)
 
 
 __all__ = ["TemplateService"]

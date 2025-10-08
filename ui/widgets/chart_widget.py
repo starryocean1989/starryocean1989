@@ -12,9 +12,7 @@ from typing import Any, Dict, List
 # Qt imports first
 from PySide6.QtCore import QThread, Qt, Signal
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import (
-    QComboBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
-)
+from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
 # Third-party imports
 import numpy as np
@@ -22,15 +20,14 @@ import numpy as np
 from ui.widgets.base_widget import BaseWidget
 
 # Backend imports
-try:
-    from backend.infrastructure.data_module_vnpy import vnpy_adapter
-    VNPY_ADAPTER_AVAILABLE = True
-except ImportError:
-    VNPY_ADAPTER_AVAILABLE = False
-    vnpy_adapter = None
+from backend.vnpy_adapter import vnpy_adapter
+
+if not vnpy_adapter:
+    raise ImportError("VnPy适配器不可用，请确保VnPy已正确安装和配置")
 
 try:
     import pyqtgraph as pg
+
     PYQTGRAPH_AVAILABLE = True
 except ImportError:
     PYQTGRAPH_AVAILABLE = False
@@ -38,6 +35,7 @@ except ImportError:
 
 try:
     import talib  # type: ignore
+
     TALIB_AVAILABLE = True
 except ImportError:
     TALIB_AVAILABLE = False
@@ -68,90 +66,58 @@ class ChartDataWorker(QThread):
         self.running = True
 
         try:
-            # 获取历史数据
-            if self.data_api and hasattr(self.data_api, 'get_kline_data'):
-                kline_data = self.data_api.get_kline_data(
-                    self.symbol, self.period, limit=200
-                )
-            else:
-                # 模拟数据
-                kline_data = self._generate_mock_data()
+            # 从VnPy获取历史数据
+            if not self.data_api or not hasattr(self.data_api, "get_kline_data"):
+                raise RuntimeError("VnPy数据接口不可用")
+
+            kline_data = self.data_api.get_kline_data(self.symbol, self.period, limit=200)
+
+            if not kline_data:
+                raise ValueError(f"未找到品种 {self.symbol} 的K线数据")
 
             # 计算技术指标
             indicators = self._calculate_indicators(kline_data)
 
             result = {
-                'symbol': self.symbol,
-                'period': self.period,
-                'kline_data': kline_data,
-                'indicators': indicators
+                "symbol": self.symbol,
+                "period": self.period,
+                "kline_data": kline_data,
+                "indicators": indicators,
             }
 
             self.data_ready.emit(result)
 
-        except (ImportError, AttributeError, ValueError, TypeError) as e:
-            self.data_ready.emit({'error': str(e)})
+        except Exception as e:
+            self.data_ready.emit({"error": str(e)})
         finally:
             self.running = False
 
-    def _generate_mock_data(self) -> List[Dict[str, Any]]:
-        """生成模拟数据."""
-        data = []
-        base_price = 100.0
-
-        for i in range(200):
-            # 模拟价格波动
-            change = np.random.normal(0, 0.02)
-            open_price = base_price
-            close_price = open_price * (1 + change)
-
-            # 确保价格合理性
-            high_price = max(open_price, close_price) * (
-                1 + abs(np.random.normal(0, 0.01))
-            )
-            low_price = min(open_price, close_price) * (
-                1 - abs(np.random.normal(0, 0.01))
-            )
-
-            volume = np.random.randint(10000, 1000000)
-
-            data.append({
-                'datetime': datetime.now() - timedelta(days=200 - i),
-                'open': round(open_price, 2),
-                'high': round(high_price, 2),
-                'low': round(low_price, 2),
-                'close': round(close_price, 2),
-                'volume': volume
-            })
-
-            base_price = close_price
-
-        return data
-
-    def _calculate_indicators(
-        self, kline_data: List[Dict[str, Any]]
-    ) -> Dict[str, Any]:
+    def _calculate_indicators(self, kline_data: List[Dict[str, Any]]) -> Dict[str, Any]:
         """计算技术指标."""
         if not TALIB_AVAILABLE or not kline_data:
             return {}
 
         try:
             # 提取价格数据
-            closes = np.array([item['close'] for item in kline_data])
-            highs = np.array([item['high'] for item in kline_data])
-            lows = np.array([item['low'] for item in kline_data])
+            closes = np.array([item["close"] for item in kline_data])
+            highs = np.array([item["high"] for item in kline_data])
+            lows = np.array([item["low"] for item in kline_data])
 
             # 计算技术指标
-            if hasattr(talib, 'MACD'):
+            if hasattr(talib, "MACD"):
                 macd_result = talib.MACD(  # type: ignore
                     closes, fastperiod=12, slowperiod=26, signalperiod=9
                 )
             else:
                 macd_result = None
 
-            if hasattr(talib, 'BBANDS'):
+            if hasattr(talib, "BBANDS"):
                 boll_result = talib.BBANDS(  # type: ignore
-                    closes, timeperiod=20, nbdevup=2, nbdevdn=2, matype=0
+                    closes,
+                    timeperiod=20,
+                    nbdevup=2,
+                    nbdevdn=2,
+                    matype=0,  # type: ignore  # 0 = SMA (Simple Moving Average)
                 )
             else:
                 boll_result = None
@@ -159,56 +125,55 @@ class ChartDataWorker(QThread):
             indicators = {}
 
             # MA指标
-            if hasattr(talib, 'MA'):
-                indicators.update({
-                    'ma5': talib.MA(closes, timeperiod=5),  # type: ignore
-                    'ma10': talib.MA(closes, timeperiod=10),  # type: ignore
-                    'ma20': talib.MA(closes, timeperiod=20),  # type: ignore
-                    'ma60': talib.MA(closes, timeperiod=60),  # type: ignore
-                })
+            if hasattr(talib, "MA"):
+                indicators.update(
+                    {
+                        "ma5": talib.MA(closes, timeperiod=5),  # type: ignore
+                        "ma10": talib.MA(closes, timeperiod=10),  # type: ignore
+                        "ma20": talib.MA(closes, timeperiod=20),  # type: ignore
+                        "ma60": talib.MA(closes, timeperiod=60),  # type: ignore
+                    }
+                )
 
             # MACD指标
             if macd_result:
-                indicators.update({
-                    'macd': macd_result[0],
-                    'macdsignal': macd_result[1],
-                    'macdhist': macd_result[2],
-                })
+                indicators.update(
+                    {
+                        "macd": macd_result[0],
+                        "macdsignal": macd_result[1],
+                        "macdhist": macd_result[2],
+                    }
+                )
 
             # RSI指标
-            if hasattr(talib, 'RSI'):
-                indicators['rsi'] = talib.RSI(  # type: ignore
-                    closes, timeperiod=14
-                )
+            if hasattr(talib, "RSI"):
+                indicators["rsi"] = talib.RSI(closes, timeperiod=14)  # type: ignore
 
             # 布林带指标
             if boll_result:
-                indicators.update({
-                    'boll_upper': boll_result[0],
-                    'boll_middle': boll_result[1],
-                    'boll_lower': boll_result[2],
-                })
+                indicators.update(
+                    {
+                        "boll_upper": boll_result[0],
+                        "boll_middle": boll_result[1],
+                        "boll_lower": boll_result[2],
+                    }
+                )
 
             # KDJ指标需要单独计算
-            if hasattr(talib, 'STOCH'):
+            if hasattr(talib, "STOCH"):
                 slowk, slowd = talib.STOCH(  # type: ignore
-                    highs, lows, closes,
-                    fastk_period=9, slowk_period=3, slowd_period=3
+                    highs, lows, closes, fastk_period=9, slowk_period=3, slowd_period=3
                 )
             else:
                 slowk, slowd = None, None
             # KDJ指标
             if slowk is not None and slowd is not None:
-                indicators.update({
-                    'kdj_k': slowk,
-                    'kdj_d': slowd,
-                    'kdj_j': 3 * slowk - 2 * slowd
-                })
+                indicators.update({"kdj_k": slowk, "kdj_d": slowd, "kdj_j": 3 * slowk - 2 * slowd})
 
             return indicators
 
         except (ValueError, TypeError, IndexError) as e:
-            return {'error': f'指标计算失败: {str(e)}'}
+            return {"error": f"指标计算失败: {str(e)}"}
 
 
 class ChartWidget(BaseWidget):
@@ -227,15 +192,15 @@ class ChartWidget(BaseWidget):
         """
         # 颜色配置 - 必须在super().__init__()之前初始化
         self.colors = {
-            'background': QColor(26, 26, 26),
-            'foreground': QColor(255, 255, 255),
-            'grid': QColor(64, 64, 64),
-            'up': QColor(255, 100, 100),      # 红色 - 上涨
-            'down': QColor(100, 255, 100),    # 绿色 - 下跌
-            'ma5': QColor(255, 255, 0),       # 黄色
-            'ma10': QColor(0, 255, 255),      # 青色
-            'ma20': QColor(255, 0, 255),      # 品红
-            'ma60': QColor(128, 128, 128),    # 灰色
+            "background": QColor(26, 26, 26),
+            "foreground": QColor(255, 255, 255),
+            "grid": QColor(64, 64, 64),
+            "up": QColor(255, 100, 100),  # 红色 - 上涨
+            "down": QColor(100, 255, 100),  # 绿色 - 下跌
+            "ma5": QColor(255, 255, 0),  # 黄色
+            "ma10": QColor(0, 255, 255),  # 青色
+            "ma20": QColor(255, 0, 255),  # 品红
+            "ma60": QColor(128, 128, 128),  # 灰色
         }
 
         # 图表组件 - 必须在super().__init__()之前初始化
@@ -265,9 +230,9 @@ class ChartWidget(BaseWidget):
     def setup_ui(self):
         """设置用户界面."""
         if not PYQTGRAPH_AVAILABLE:
-            # 如果pyqtgraph不可用，显示替代界面
-            self._create_fallback_ui()
-            return
+            raise ImportError(
+                "pyqtgraph未安装，无法创建图表组件。\n" "请安装：pip install pyqtgraph"
+            )
 
         main_layout = QVBoxLayout(self)
 
@@ -276,11 +241,13 @@ class ChartWidget(BaseWidget):
 
         # 主图区域
         self._create_main_chart()
-        chart_layout.addWidget(self.main_chart_widget)
+        if self.main_chart_widget:
+            chart_layout.addWidget(self.main_chart_widget)
 
         # 成交量图表
         self._create_volume_chart()
-        chart_layout.addWidget(self.volume_chart_widget)
+        if self.volume_chart_widget:
+            chart_layout.addWidget(self.volume_chart_widget)
 
         # 技术指标图表
         self._create_indicator_charts()
@@ -293,55 +260,37 @@ class ChartWidget(BaseWidget):
         control_layout = self._create_control_panel()
         main_layout.addLayout(control_layout)
 
-    def _create_fallback_ui(self):
-        """创建备用界面（pyqtgraph不可用时）."""
-        layout = QVBoxLayout(self)
-
-        label = QLabel("📈 专业图表组件\n\n需要安装pyqtgraph库以获得完整功能")
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        label.setStyleSheet("""
-            QLabel {
-                color: #888888;
-                font-size: 16px;
-                padding: 40px;
-            }
-        """)
-        layout.addWidget(label)
-
     def _create_main_chart(self):
         """创建主图表（K线图）."""
         if not PYQTGRAPH_AVAILABLE:
             return
 
         # 创建图形窗口
-        self.main_chart_widget = pg.GraphicsLayoutWidget()
-        self.main_chart_widget.setBackground(self.colors['background'])
+        self.main_chart_widget = pg.GraphicsLayoutWidget()  # type: ignore
+        if self.main_chart_widget:
+            self.main_chart_widget.setBackground(self.colors["background"])
 
         # 创建主图表
-        self.main_chart = self.main_chart_widget.addPlot(title="K线图")
+        self.main_chart = self.main_chart_widget.addPlot(title="K线图")  # type: ignore
         self.main_chart.showGrid(x=True, y=True)
-        self.main_chart.getAxis('bottom').setPen(self.colors['foreground'])
-        self.main_chart.getAxis('left').setPen(self.colors['foreground'])
+        self.main_chart.getAxis("bottom").setPen(self.colors["foreground"])
+        self.main_chart.getAxis("left").setPen(self.colors["foreground"])
 
         # 设置坐标轴样式
-        self.main_chart.getAxis('bottom').setTextPen(self.colors['foreground'])
-        self.main_chart.getAxis('left').setTextPen(self.colors['foreground'])
+        self.main_chart.getAxis("bottom").setTextPen(self.colors["foreground"])
+        self.main_chart.getAxis("left").setTextPen(self.colors["foreground"])
 
         # 隐藏自动缩放按钮
         self.main_chart.hideButtons()
 
         # 创建蜡烛图项目
         try:
-            # 尝试使用CandlestickItem
-            if hasattr(pg, 'CandlestickItem'):
-                self.candlestick = pg.CandlestickItem()
-            else:
-                # 如果CandlestickItem不可用，使用普通的PlotDataItem
-                self.candlestick = pg.PlotDataItem()
+            # 使用PlotDataItem来绘制蜡烛图
+            self.candlestick = pg.PlotDataItem()  # type: ignore
             self.main_chart.addItem(self.candlestick)
         except (AttributeError, ImportError):
             # 如果创建失败，使用简单的PlotDataItem
-            self.candlestick = pg.PlotDataItem()
+            self.candlestick = pg.PlotDataItem()  # type: ignore
             self.main_chart.addItem(self.candlestick)
 
     def _create_volume_chart(self):
@@ -349,24 +298,21 @@ class ChartWidget(BaseWidget):
         if not PYQTGRAPH_AVAILABLE:
             return
 
-        self.volume_chart_widget = pg.GraphicsLayoutWidget()
-        self.volume_chart_widget.setBackground(self.colors['background'])
+        self.volume_chart_widget = pg.GraphicsLayoutWidget()  # type: ignore
+        if self.volume_chart_widget:
+            self.volume_chart_widget.setBackground(self.colors["background"])
 
-        self.volume_chart = self.volume_chart_widget.addPlot(title="成交量")
+        self.volume_chart = self.volume_chart_widget.addPlot(title="成交量")  # type: ignore
         self.volume_chart.showGrid(x=True, y=True)
-        self.volume_chart.getAxis('bottom').setPen(self.colors['foreground'])
-        self.volume_chart.getAxis('left').setPen(self.colors['foreground'])
-        self.volume_chart.getAxis('bottom').setTextPen(
-            self.colors['foreground']
-        )
-        self.volume_chart.getAxis('left').setTextPen(
-            self.colors['foreground']
-        )
+        self.volume_chart.getAxis("bottom").setPen(self.colors["foreground"])
+        self.volume_chart.getAxis("left").setPen(self.colors["foreground"])
+        self.volume_chart.getAxis("bottom").setTextPen(self.colors["foreground"])
+        self.volume_chart.getAxis("left").setTextPen(self.colors["foreground"])
         self.volume_chart.hideButtons()
 
         # 创建柱状图项目
-        self.volume_bars = pg.BarGraphItem(
-            x=[], height=[], width=0.8, brush=self.colors['up']
+        self.volume_bars = pg.BarGraphItem(  # type: ignore
+            x=[], height=[], width=0.8, brush=self.colors["up"]
         )
         self.volume_chart.addItem(self.volume_bars)
 
@@ -376,28 +322,30 @@ class ChartWidget(BaseWidget):
             return
 
         # MACD图表
-        macd_win = pg.GraphicsLayoutWidget()
-        macd_win.setBackground(self.colors['background'])
-        macd_plot = macd_win.addPlot(title="MACD")
+        macd_win = pg.GraphicsLayoutWidget()  # type: ignore
+        if macd_win:
+            macd_win.setBackground(self.colors["background"])
+        macd_plot = macd_win.addPlot(title="MACD")  # type: ignore
         macd_plot.showGrid(x=True, y=True)
-        macd_plot.getAxis('bottom').setPen(self.colors['foreground'])
-        macd_plot.getAxis('left').setPen(self.colors['foreground'])
-        macd_plot.getAxis('bottom').setTextPen(self.colors['foreground'])
-        macd_plot.getAxis('left').setTextPen(self.colors['foreground'])
+        macd_plot.getAxis("bottom").setPen(self.colors["foreground"])
+        macd_plot.getAxis("left").setPen(self.colors["foreground"])
+        macd_plot.getAxis("bottom").setTextPen(self.colors["foreground"])
+        macd_plot.getAxis("left").setTextPen(self.colors["foreground"])
         macd_plot.hideButtons()
-        self.indicator_charts['macd'] = macd_win
+        self.indicator_charts["macd"] = macd_win
 
         # RSI图表
-        rsi_win = pg.GraphicsLayoutWidget()
-        rsi_win.setBackground(self.colors['background'])
-        rsi_plot = rsi_win.addPlot(title="RSI")
+        rsi_win = pg.GraphicsLayoutWidget()  # type: ignore
+        if rsi_win:
+            rsi_win.setBackground(self.colors["background"])
+        rsi_plot = rsi_win.addPlot(title="RSI")  # type: ignore
         rsi_plot.showGrid(x=True, y=True)
-        rsi_plot.getAxis('bottom').setPen(self.colors['foreground'])
-        rsi_plot.getAxis('left').setPen(self.colors['foreground'])
-        rsi_plot.getAxis('bottom').setTextPen(self.colors['foreground'])
-        rsi_plot.getAxis('left').setTextPen(self.colors['foreground'])
+        rsi_plot.getAxis("bottom").setPen(self.colors["foreground"])
+        rsi_plot.getAxis("left").setPen(self.colors["foreground"])
+        rsi_plot.getAxis("bottom").setTextPen(self.colors["foreground"])
+        rsi_plot.getAxis("left").setTextPen(self.colors["foreground"])
         rsi_plot.hideButtons()
-        self.indicator_charts['rsi'] = rsi_win
+        self.indicator_charts["rsi"] = rsi_win
 
     def _create_control_panel(self):
         """创建控制面板."""
@@ -407,10 +355,8 @@ class ChartWidget(BaseWidget):
         symbol_layout = QHBoxLayout()
         symbol_layout.addWidget(QLabel("品种:"))
         self.symbol_combo = QComboBox()
-        self.symbol_combo.addItems([
-            "000001 - 平安银行", "000002 - 万科A", "600000 - 浦发银行",
-            "IF2406 - 沪深300股指期货", "IC2406 - 中证500股指期货"
-        ])
+        # 从后端服务加载真实品种列表
+        self._load_symbols_from_backend()
         self.symbol_combo.currentTextChanged.connect(self._on_symbol_changed)
         symbol_layout.addWidget(self.symbol_combo)
         layout.addLayout(symbol_layout)
@@ -419,9 +365,7 @@ class ChartWidget(BaseWidget):
         period_layout = QHBoxLayout()
         period_layout.addWidget(QLabel("周期:"))
         self.period_combo = QComboBox()
-        self.period_combo.addItems([
-            "日K", "周K", "月K", "5分钟", "15分钟", "30分钟", "1小时"
-        ])
+        self.period_combo.addItems(["日K", "周K", "月K", "5分钟", "15分钟", "30分钟", "1小时"])
         self.period_combo.currentTextChanged.connect(self._on_period_changed)
         period_layout.addWidget(self.period_combo)
         layout.addLayout(period_layout)
@@ -437,11 +381,9 @@ class ChartWidget(BaseWidget):
 
     def connect_signals(self):
         """连接信号槽."""
-        if PYQTGRAPH_AVAILABLE:
+        if PYQTGRAPH_AVAILABLE and self.main_chart and self.main_chart.scene():
             # 连接鼠标交互信号
-            self.main_chart.scene().sigMouseClicked.connect(
-                self._on_chart_clicked
-            )
+            self.main_chart.scene().sigMouseClicked.connect(self._on_chart_clicked)
 
     def _on_symbol_changed(self, text: str):
         """品种选择改变."""
@@ -462,8 +404,12 @@ class ChartWidget(BaseWidget):
 
     def _on_chart_clicked(self, event):
         """图表点击事件."""
-        if event.button() == Qt.MouseButton.LeftButton:
-            pos = self.main_chart.vb.mapSceneToView(event.scenePos())
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self.main_chart
+            and hasattr(self.main_chart, "vb")
+        ):
+            pos = self.main_chart.vb.mapSceneToView(event.scenePos())  # type: ignore
             self._logger.info("图表点击位置: x=%s, y=%s", pos.x(), pos.y())
 
     def _load_chart_data(self):
@@ -477,31 +423,33 @@ class ChartWidget(BaseWidget):
             self.data_worker.wait()
 
         # 创建新的数据工作线程
-        adapter = vnpy_adapter if VNPY_ADAPTER_AVAILABLE else None
+        if not vnpy_adapter:
+            self.show_error("VnPy适配器不可用")
+            return
 
         self.data_worker = ChartDataWorker(
-            symbol=self.current_symbol,
-            period=self.current_period,
-            data_api=adapter
+            symbol=self.current_symbol, period=self.current_period, data_api=vnpy_adapter
         )
 
         self.data_worker.data_ready.connect(self._on_data_ready)
         self.data_worker.start()
 
-        self.show_info("正在加载图表数据...")
+        # 不使用弹窗，使用日志记录
+        self.logger.info("正在加载图表数据...")
 
     def _on_data_ready(self, result: Dict[str, Any]):
         """数据准备完成回调."""
-        if 'error' in result:
+        if "error" in result:
             self.show_error(f"数据加载失败: {result['error']}")
             return
 
         try:
-            self.chart_data = result['kline_data']
-            self.indicators_data = result.get('indicators', {})
+            self.chart_data = result["kline_data"]
+            self.indicators_data = result.get("indicators", {})
 
             self._update_chart_display()
-            self.show_info("图表数据加载完成")
+            # 不使用弹窗，使用日志记录
+            self.logger.info("图表数据加载完成")
 
         except (ValueError, TypeError, AttributeError) as e:
             self.show_error(f"图表更新失败: {str(e)}")
@@ -513,33 +461,34 @@ class ChartWidget(BaseWidget):
 
         try:
             # 提取数据
-            timestamps = [
-                item['datetime'].timestamp() for item in self.chart_data
-            ]
-            opens = [item['open'] for item in self.chart_data]
-            closes = [item['close'] for item in self.chart_data]
-            highs = [item['high'] for item in self.chart_data]
-            lows = [item['low'] for item in self.chart_data]
-            volumes = [item['volume'] for item in self.chart_data]
+            timestamps = [item["datetime"].timestamp() for item in self.chart_data]
+            opens = [item["open"] for item in self.chart_data]
+            closes = [item["close"] for item in self.chart_data]
+            highs = [item["high"] for item in self.chart_data]
+            lows = [item["low"] for item in self.chart_data]
+            volumes = [item["volume"] for item in self.chart_data]
 
             # 更新K线图
-            self.candlestick.setData(
-                timestamps, opens, closes, highs, lows
-            )
+            if self.candlestick:
+                self.candlestick.setData(timestamps, opens, closes, highs, lows)
 
             # 更新成交量图表
-            self.volume_bars.setOpts(x=timestamps, height=volumes)
+            if self.volume_bars:
+                self.volume_bars.setOpts(x=timestamps, height=volumes)
 
             # 更新技术指标
             self._update_indicators()
 
             # 调整坐标轴范围
-            self.main_chart.setXRange(min(timestamps), max(timestamps))
-            self.volume_chart.setXRange(min(timestamps), max(timestamps))
+            if self.main_chart:
+                self.main_chart.setXRange(min(timestamps), max(timestamps))
+            if self.volume_chart:
+                self.volume_chart.setXRange(min(timestamps), max(timestamps))
 
             # 更新指标图表的X轴范围
             for chart in self.indicator_charts.values():
-                chart.setXRange(min(timestamps), max(timestamps))
+                if chart:
+                    chart.setXRange(min(timestamps), max(timestamps))
 
         except (ValueError, TypeError, AttributeError) as e:
             self._logger.error("图表显示更新失败: %s", e)
@@ -550,77 +499,109 @@ class ChartWidget(BaseWidget):
             return
 
         try:
-            timestamps = [
-                item['datetime'].timestamp() for item in self.chart_data
-            ]
+            timestamps = [item["datetime"].timestamp() for item in self.chart_data]
 
             # 更新MACD指标
-            macd_data = self.indicators_data.get('macd')
+            macd_data = self.indicators_data.get("macd")
             if macd_data is not None:
                 try:
                     # 清除旧的MACD线条
-                    self.indicator_charts['macd'].clear()
+                    self.indicator_charts["macd"].clear()
 
                     # 绘制MACD线条
                     macd_values = macd_data
-                    macdsignal_values = self.indicators_data['macdsignal']
+                    macdsignal_values = self.indicators_data["macdsignal"]
                     # 使用plot方法替代addItem来避免geometryChanged问题
-                    self.indicator_charts['macd'].plot(
-                        x=timestamps[-len(macd_values):],
-                        y=macd_values,
-                        pen=pg.mkPen(color='blue', width=1)
-                    )
+                    if hasattr(pg, "mkPen"):
+                        self.indicator_charts["macd"].plot(
+                            x=timestamps[-len(macd_values) :],
+                            y=macd_values,
+                            pen=(
+                                pg.mkPen(color="blue", width=1)
+                                if pg and hasattr(pg, "mkPen")
+                                else None
+                            ),
+                        )
 
                     # Signal线（橙色）
-                    self.indicator_charts['macd'].plot(
-                        x=timestamps[-len(macdsignal_values):],
-                        y=macdsignal_values,
-                        pen=pg.mkPen(color='orange', width=1)
-                    )
+                    if hasattr(pg, "mkPen"):
+                        self.indicator_charts["macd"].plot(
+                            x=timestamps[-len(macdsignal_values) :],
+                            y=macdsignal_values,
+                            pen=(
+                                pg.mkPen(color="orange", width=1)
+                                if pg and hasattr(pg, "mkPen")
+                                else None
+                            ),
+                        )
                 except (ValueError, TypeError, AttributeError) as macd_error:
                     self._logger.warning("MACD指标更新失败: %s", macd_error)
                     # 使用简单的plot方法作为备用
                     if macd_data is not None:
-                        self.indicator_charts['macd'].clear()
-                        self.indicator_charts['macd'].plot(
-                            x=timestamps[-len(macd_data):],
-                            y=macd_data,
-                            pen=pg.mkPen(color='blue', width=1)
-                        )
+                        self.indicator_charts["macd"].clear()
+                        if hasattr(pg, "mkPen"):
+                            self.indicator_charts["macd"].plot(
+                                x=timestamps[-len(macd_data) :],
+                                y=macd_data,
+                                pen=(
+                                    pg.mkPen(color="blue", width=1)
+                                    if pg and hasattr(pg, "mkPen")
+                                    else None
+                                ),
+                            )
 
             # 更新RSI指标
-            rsi_data = self.indicators_data.get('rsi')
+            rsi_data = self.indicators_data.get("rsi")
             if rsi_data is not None:
                 try:
-                    self.indicator_charts['rsi'].clear()
+                    self.indicator_charts["rsi"].clear()
 
                     rsi_values = rsi_data
                     # 使用plot方法替代addItem来避免geometryChanged问题
-                    self.indicator_charts['rsi'].plot(
-                        x=timestamps[-len(rsi_values):],
-                        y=rsi_values,
-                        pen=pg.mkPen(color='yellow', width=1)
-                    )
+                    if hasattr(pg, "mkPen"):
+                        self.indicator_charts["rsi"].plot(
+                            x=timestamps[-len(rsi_values) :],
+                            y=rsi_values,
+                            pen=(
+                                pg.mkPen(color="yellow", width=1)
+                                if pg and hasattr(pg, "mkPen")
+                                else None
+                            ),
+                        )
 
                     # 添加超买超卖线
-                    self.indicator_charts['rsi'].addLine(
-                        y=70,
-                        pen=pg.mkPen(color='red', style=Qt.PenStyle.DashLine)
-                    )
-                    self.indicator_charts['rsi'].addLine(
-                        y=30,
-                        pen=pg.mkPen(color='green', style=Qt.PenStyle.DashLine)
-                    )
+                    if hasattr(pg, "mkPen"):
+                        self.indicator_charts["rsi"].addLine(
+                            y=70,
+                            pen=(
+                                pg.mkPen(color="red", style=Qt.PenStyle.DashLine)
+                                if pg and hasattr(pg, "mkPen")
+                                else None
+                            ),
+                        )
+                        self.indicator_charts["rsi"].addLine(
+                            y=30,
+                            pen=(
+                                pg.mkPen(color="green", style=Qt.PenStyle.DashLine)
+                                if pg and hasattr(pg, "mkPen")
+                                else None
+                            ),
+                        )
                 except (ValueError, TypeError, AttributeError) as rsi_error:
                     self._logger.warning("RSI指标更新失败: %s", rsi_error)
                     # 使用简单的plot方法作为备用
                     if rsi_data is not None:
-                        self.indicator_charts['rsi'].clear()
-                        self.indicator_charts['rsi'].plot(
-                            x=timestamps[-len(rsi_data):],
-                            y=rsi_data,
-                            pen=pg.mkPen(color='yellow', width=1)
-                        )
+                        self.indicator_charts["rsi"].clear()
+                        if hasattr(pg, "mkPen"):
+                            self.indicator_charts["rsi"].plot(
+                                x=timestamps[-len(rsi_data) :],
+                                y=rsi_data,
+                                pen=(
+                                    pg.mkPen(color="yellow", width=1)
+                                    if pg and hasattr(pg, "mkPen")
+                                    else None
+                                ),
+                            )
 
         except (ValueError, TypeError, AttributeError) as e:
             self._logger.error("指标更新失败: %s", e)
@@ -634,19 +615,21 @@ class ChartWidget(BaseWidget):
         if symbol != self.current_symbol:
             self.current_symbol = symbol
             # 找到对应的显示文本
-            for i in range(self.symbol_combo.count()):
-                text = self.symbol_combo.itemText(i)
-                if text.startswith(symbol):
-                    self.symbol_combo.setCurrentIndex(i)
-                    break
+            if self.symbol_combo:
+                for i in range(self.symbol_combo.count()):
+                    text = self.symbol_combo.itemText(i)
+                    if text.startswith(symbol):
+                        self.symbol_combo.setCurrentIndex(i)
+                        break
 
     def set_period(self, period: str):
         """设置周期."""
         if period != self.current_period:
             self.current_period = period
-            index = self.period_combo.findText(period)
-            if index >= 0:
-                self.period_combo.setCurrentIndex(index)
+            if self.period_combo:
+                index = self.period_combo.findText(period)
+                if index >= 0:
+                    self.period_combo.setCurrentIndex(index)
 
     def add_indicator(self, indicator_type: str):
         """添加技术指标.
@@ -667,14 +650,63 @@ class ChartWidget(BaseWidget):
         self._logger.info("设置图表样式: %s", style)
         # 这里可以实现不同的图表样式
 
+    def _load_symbols_from_backend(self):
+        """从后端服务加载品种列表."""
+        try:
+            from backend.core.shared_services import get_service_manager
+            import asyncio
+
+            service_manager = get_service_manager()
+            symbol_service = service_manager.get("symbol_service")
+
+            if symbol_service:
+                # 获取事件循环
+                try:
+                    loop = asyncio.get_event_loop()
+                except RuntimeError:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+
+                # 异步获取品种列表
+                symbols = loop.run_until_complete(symbol_service.get_all_symbols())
+
+                if symbols:
+                    for symbol in symbols:
+                        display_name = f"{symbol['code']} - {symbol['name']}"
+                        self.symbol_combo.addItem(display_name)
+                    self._logger.info("已加载 %d 个品种", len(symbols))
+                else:
+                    # 使用默认品种
+                    self._load_default_chart_symbols()
+            else:
+                # 使用默认品种
+                self._load_default_chart_symbols()
+
+        except Exception as e:
+            self._logger.warning("加载品种列表失败: %s", e)
+            # 使用默认品种
+            self._load_default_chart_symbols()
+
+    def _load_default_chart_symbols(self):
+        """加载默认品种列表."""
+        default_symbols = [
+            {"code": "000001", "name": "平安银行"},
+            {"code": "000002", "name": "万科A"},
+            {"code": "600000", "name": "浦发银行"},
+            {"code": "600036", "name": "招商银行"},
+        ]
+        for symbol in default_symbols:
+            display_name = f"{symbol['code']} - {symbol['name']}"
+            self.symbol_combo.addItem(display_name)
+        self._logger.info("已加载 %d 个默认品种", len(default_symbols))
+
     def export_chart(self, format_type: str = "png"):
         """导出图表."""
         try:
             if PYQTGRAPH_AVAILABLE:
                 # 导出主图表
-                exporter = pg.exporters.ImageExporter(self.main_chart.scene())
-                filename = (f"chart_{self.current_symbol}_"
-                            f"{self.current_period}.{format_type}")
+                exporter = pg.exporters.ImageExporter(self.main_chart.scene())  # type: ignore
+                filename = f"chart_{self.current_symbol}_" f"{self.current_period}.{format_type}"
                 exporter.export(filename)
                 self.show_info(f"图表已导出到: {filename}")
             else:

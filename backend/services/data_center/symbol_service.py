@@ -113,9 +113,7 @@ class SymbolService(BaseService):
                 self._symbols_cache[cache_key] = symbol_info
 
             self._cache_updated = True
-            self.logger.info(
-                "品种信息缓存加载完成: %d 个品种", len(self._symbols_cache)
-            )
+            self.logger.info("品种信息缓存加载完成: %d 个品种", len(self._symbols_cache))
 
         except Exception as e:
             self.logger.error("加载品种信息缓存失败: %s", e)
@@ -154,9 +152,7 @@ class SymbolService(BaseService):
             self.logger.error("获取品种列表失败: %s", e)
             raise
 
-    async def get_symbol_detail(
-        self, symbol: str, exchange: str
-    ) -> Optional[SymbolInfo]:
+    async def get_symbol_detail(self, symbol: str, exchange: str) -> Optional[SymbolInfo]:
         """获取品种详情."""
         try:
             # 如果缓存未更新，重新加载
@@ -196,9 +192,7 @@ class SymbolService(BaseService):
                 ):
                     matching_symbols.append(symbol)
 
-            self.logger.info(
-                "搜索品种: 关键词='%s', 结果=%d 个", keyword, len(matching_symbols)
-            )
+            self.logger.info("搜索品种: 关键词='%s', 结果=%d 个", keyword, len(matching_symbols))
             return matching_symbols
 
         except Exception as e:
@@ -246,6 +240,60 @@ class SymbolService(BaseService):
             self.logger.error("获取产品类型列表失败: %s", e)
             raise
 
+    async def get_symbols_page(
+        self,
+        page: int = 1,
+        page_size: int = 50,
+        exchange: Optional[str] = None,
+        product: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        分页获取品种列表.
+
+        Args:
+            page: 页码（从1开始）
+            page_size: 每页数量
+            exchange: 交易所筛选（可选）
+            product: 产品类型筛选（可选）
+
+        Returns:
+            品种信息字典列表
+        """
+        try:
+            # 获取所有符合条件的品种
+            symbols = await self.get_all_symbols(exchange=exchange, product=product)
+
+            # 计算分页
+            start_idx = (page - 1) * page_size
+            end_idx = start_idx + page_size
+
+            # 提取当前页
+            page_symbols = symbols[start_idx:end_idx]
+
+            # 转换为字典格式
+            result = []
+            for symbol in page_symbols:
+                result.append(
+                    {
+                        "symbol": symbol.symbol,
+                        "exchange": symbol.exchange,
+                        "name": symbol.name,
+                        "product": symbol.product,
+                        "size": symbol.size,
+                        "pricetick": symbol.pricetick,
+                        "is_active": symbol.is_active,
+                    }
+                )
+
+            self.logger.info(
+                "分页获取品种: page=%d, page_size=%d, 返回=%d个", page, page_size, len(result)
+            )
+            return result
+
+        except Exception as e:
+            self.logger.error("分页获取品种失败: %s", e)
+            raise
+
     async def refresh_cache(self) -> None:
         """刷新品种缓存."""
         try:
@@ -257,15 +305,34 @@ class SymbolService(BaseService):
             self.logger.error("刷新品种缓存失败: %s", e)
             raise
 
+    async def refresh_cache_from_memory(self) -> None:
+        """
+        从内存刷新缓存（不重新加载数据源）.
+
+        这是一个快速刷新操作，仅重新组织已有缓存数据。
+        """
+        try:
+            self.logger.info("正在从内存刷新品种缓存...")
+            # 已经在内存中的缓存不需要重新加载，只需要标记为已更新
+            if len(self._symbols_cache) > 0:
+                self._cache_updated = True
+                self.logger.info("品种缓存快速刷新完成: %d 个品种", len(self._symbols_cache))
+            else:
+                # 如果缓存为空，则执行完整加载
+                await self._load_symbols_cache()
+                self.logger.info("品种缓存完整加载完成: %d 个品种", len(self._symbols_cache))
+
+        except Exception as e:
+            self.logger.error("刷新品种缓存失败: %s", e)
+            raise
+
     def get_cache_statistics(self) -> Dict[str, Any]:
         """获取缓存统计信息."""
         try:
             return {
                 "total_symbols": len(self._symbols_cache),
                 "cache_updated": self._cache_updated,
-                "exchanges_count": len(
-                    set(s.exchange for s in self._symbols_cache.values())
-                ),
+                "exchanges_count": len(set(s.exchange for s in self._symbols_cache.values())),
                 "products_count": len(
                     set(s.product for s in self._symbols_cache.values() if s.product)
                 ),

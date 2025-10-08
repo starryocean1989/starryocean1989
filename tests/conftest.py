@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Pytest配置文件."""
+"""E2E测试Pytest配置文件."""
 
 import sys
 import os
@@ -30,8 +30,8 @@ logger = logging.getLogger(__name__)
 def setup_test_environment():
     """设置测试环境."""
     logger.info("=" * 80)
-    logger.info("开始UI交互功能回路测试")
-    logger.info("测试范围：43个功能链路，6个功能界面")
+    logger.info("开始E2E测试")
+    logger.info("测试范围：21个E2E测试用例，覆盖所有功能链路")
     logger.info("=" * 80)
 
     # 确保测试报告目录存在
@@ -41,7 +41,7 @@ def setup_test_environment():
     yield
 
     logger.info("=" * 80)
-    logger.info("测试执行完成")
+    logger.info("E2E测试执行完成")
     logger.info("=" * 80)
 
 
@@ -62,31 +62,22 @@ def test_data_dir(tmp_path):
 def pytest_configure(config):
     """pytest配置钩子."""
     # 添加自定义标记
-    config.addinivalue_line("markers", "ui: UI集成测试标记")
-    config.addinivalue_line("markers", "loop: 功能回路测试标记")
+    config.addinivalue_line("markers", "e2e: E2E端到端测试标记")
+    config.addinivalue_line("markers", "slow: 慢速测试标记")
 
 
 def pytest_collection_modifyitems(config, items):
     """修改测试收集项."""
-    # 为所有测试添加loop标记
+    # 为e2e测试添加标记
     for item in items:
-        if "test_ui_integration" in str(item.fspath):
-            item.add_marker(pytest.mark.loop)
-            item.add_marker(pytest.mark.ui)
+        if "test_e2e" in str(item.fspath):
+            item.add_marker(pytest.mark.e2e)
 
 
 def pytest_report_header(config):
     """自定义测试报告头."""
     return [
-        "UI交互功能回路测试套件",
+        "E2E端到端测试套件",
         f"项目路径: {project_root}",
-        "测试目标: 验证43个功能链路的完整业务回路",
+        "测试目标: 验证所有功能链路的完整业务回路",
     ]
-
-
-# 导入所有fixtures，使其在所有测试中可用
-pytest_plugins = [
-    "tests.test_ui_integration.fixtures.app_fixture",
-    "tests.test_ui_integration.fixtures.ui_fixture",
-    "tests.test_ui_integration.fixtures.mock_backend",
-]

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # type: ignore
-"""主窗口 - 星辰金融终端的主界面."""
+"""主窗口 - 星辰金融终端的主界面（完全重建版）."""
 
 import contextlib
 import logging
@@ -13,96 +13,97 @@ try:
 except ImportError:
     psutil = None
 
-# Import logging utilities
-
-from PySide6.QtCore import QTimer, Qt
-from PySide6.QtGui import QAction
+from PySide6.QtCore import QTimer, Qt, Signal
+from PySide6.QtGui import QAction, QFont
 from PySide6.QtWidgets import (
     QApplication,
+    QHBoxLayout,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
-    QTabWidget,
+    QSizePolicy,
+    QSplitter,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from ui.themes.theme_manager import ThemeManager
-
-try:
-    from backend.config import ConfigManager
-except ImportError:
-    # Fallback配置管理器
-    class AppConfig:
-        """应用配置."""
-
-        def __init__(self):
-            self.name = "星辰金融终端"
-            self.version = "5.0.0"
-            self.author = "星辰科技"
-            self.description = "专业的金融交易终端系统"
-
-    class UIConfig:
-        """UI配置."""
-
-        def __init__(self):
-            self.theme = "dark"
-            self.language = "zh_CN"
-            self.window_width = 1200
-            self.window_height = 800
-            self.min_width = 800
-            self.min_height = 600
-            self.font_size = 10
-            self.refresh_interval = 1000
-
-    class ConfigManager:
-        """配置管理器类."""
-
-        def __init__(self):
-            self.app_config = AppConfig()
-            self.ui_config = UIConfig()
-
-        def save_config(self):
-            """保存配置."""
-            pass
+from backend.config import ConfigManager
 
 
+from backend.core.utils.error_handler import error_handler
 from backend.core.utils.logging_utils import (
     LoggerMixin,
     setup_logging,
 )
-from backend.core.utils.error_handler import error_handler
 
-# 导入功能界面模块
-from ui.components.system_manager.main_view import SystemManager
+# UI模块导入
+from ui.themes.theme_manager import ThemeManager
 from ui.components.data_center.main_view import DataCenter
 from ui.components.market_dashboard.main_view import MarketDashboard
-from ui.components.strategy_center.main_view import StrategyCenter
-from ui.components.trading_gateway.main_view import TradingGateway
 from ui.components.portfolio_investment.main_view import PortfolioInvestment
+from ui.components.strategy_center.main_view import StrategyCenter
+from ui.components.system_manager.main_view import SystemManager
+from ui.components.trading_gateway.main_view import TradingGateway
+from ui.widgets.responsive_helper import ResponsiveHelper
 
 
 class MainWindow(QMainWindow, LoggerMixin):
-    """主窗口类."""
+    """主窗口类 - 完全重建版.
+
+    架构设计：
+    - 左侧：垂直导航列表（QListWidget）
+    - 右侧：内容显示区（QStackedWidget）
+    - 顶部：菜单栏和工具栏
+    - 底部：状态栏
+    """
+
+    # 定义信号
+    interface_changed = Signal(str)  # 界面切换信号
 
     def __init__(self):
         """初始化主窗口."""
         super().__init__()
+
+        # 先初始化后端服务
+        self._initialize_backend_services()
 
         # 初始化组件
         self.theme_manager: Any = ThemeManager()
         self.config_manager: Any = ConfigManager()
 
         # 界面组件
-        self.central_widget = None
-        self.tab_widget = None
-        self.content_stack = None  # 右侧内容显示区
+        self.central_widget: Optional[QWidget] = None
+        self.nav_list: Optional[QListWidget] = None  # 左侧导航列表
+        self.content_stack: Optional[QStackedWidget] = None  # 右侧内容区
         self.status_bar = None
+        self.status_label: Optional[QLabel] = None
+        self.system_info_label: Optional[QLabel] = None
         self.menu_bar = None
-        self.toolbar = None
+        # 不使用工具栏，只保留左侧导航
 
-        # 功能界面实例
+        # 功能界面实例 - 按顺序存储
         self.function_interfaces: Dict[str, Any] = {}
+        self.interface_order = [
+            "system",
+            "data",
+            "market",
+            "strategy",
+            "trading",
+            "portfolio",
+        ]
+
+        # 界面元数据
+        self.interface_metadata = {
+            "system": {"icon": "🛠️", "name": "系统管理", "description": "系统监控与运维管理"},
+            "data": {"icon": "🗃️", "name": "数据中心", "description": "数据管理解决方案"},
+            "market": {"icon": "📈", "name": "行情看板", "description": "专业行情分析工具"},
+            "strategy": {"icon": "🧠", "name": "策略中心", "description": "策略开发和回测环境"},
+            "trading": {"icon": "🔗", "name": "交易网关", "description": "多网关交易执行"},
+            "portfolio": {"icon": "📊", "name": "组合投资", "description": "投资组合管理和监控"},
+        }
 
         # 更新定时器
         self.update_timer = None
@@ -116,7 +117,7 @@ class MainWindow(QMainWindow, LoggerMixin):
         # 初始化UI
         self.setup_ui()
         self.setup_menu_bar()
-        self.setup_toolbar()
+        # self.setup_toolbar()  # 删除顶部工具栏，只保留左侧导航
         self.setup_status_bar()
         self.create_function_interfaces()
 
@@ -129,7 +130,62 @@ class MainWindow(QMainWindow, LoggerMixin):
         # 启动更新定时器
         self.start_update_timer()
 
-        self.logger.info("主窗口初始化完成")
+        self.logger.info("主窗口初始化完成（重建版）")
+
+    def _initialize_backend_services(self):
+        """初始化后端服务（同步方式）."""
+        try:
+            import asyncio
+            from backend.core.shared_services import get_service_manager
+            from backend.services.vnpy_service import VnpyService
+            from backend.services.event_service import EventService
+            from backend.services.data_center.symbol_service import SymbolService
+            from backend.services.data_center.local_data_service import LocalDataService
+            from backend.services.data_center.download_service import DownloadService
+            from backend.services.data_center.data_source_service import DataSourceService
+
+            # 获取共享服务管理器
+            service_manager = get_service_manager()
+
+            # 创建事件循环（如果没有）
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+
+            # 初始化核心服务
+            vnpy_service = VnpyService()
+            loop.run_until_complete(vnpy_service.initialize())
+            service_manager.register("vnpy_service", vnpy_service)
+
+            event_service = EventService(vnpy_service)
+            service_manager.register("event_service", event_service)
+
+            # 初始化数据中心服务
+            symbol_service = SymbolService(vnpy_service)
+            loop.run_until_complete(symbol_service.initialize())
+            service_manager.register("symbol_service", symbol_service)
+
+            local_data_service = LocalDataService(vnpy_service, event_service)
+            loop.run_until_complete(local_data_service.initialize())
+            service_manager.register("local_data_service", local_data_service)
+
+            download_service = DownloadService(vnpy_service, event_service)
+            loop.run_until_complete(download_service.initialize())
+            service_manager.register("download_service", download_service)
+
+            data_source_service = DataSourceService(vnpy_service, event_service)
+            loop.run_until_complete(data_source_service.initialize())
+            service_manager.register("data_source_service", data_source_service)
+
+            logging.getLogger(__name__).info("后端服务初始化完成")
+
+        except Exception as e:
+            logging.getLogger(__name__).warning("后端服务初始化失败，部分功能可能不可用: %s", e)
+            import traceback
+
+            traceback.print_exc()
 
     def setup_ui(self):
         """设置主界面."""
@@ -152,32 +208,79 @@ class MainWindow(QMainWindow, LoggerMixin):
         self.setCentralWidget(self.central_widget)
 
         # 创建主布局
-        main_layout = QVBoxLayout(self.central_widget)
+        main_layout = QHBoxLayout(self.central_widget)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # 创建水平分割器：左侧垂直Tab + 右侧内容区
-        from PySide6.QtWidgets import QSplitter, QStackedWidget
-
+        # 创建水平分割器：左侧导航 + 右侧内容区
         main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        main_splitter.setChildrenCollapsible(False)  # 不允许折叠
 
-        # 左侧：功能界面选择（垂直Tab）
-        self.tab_widget = QTabWidget()
-        self.tab_widget.setTabPosition(QTabWidget.TabPosition.West)
-        self.tab_widget.setMaximumWidth(150)
-        self.tab_widget.setMinimumWidth(120)
+        # 左侧：导航列表
+        self.nav_list = self._create_navigation_list()
+        main_splitter.addWidget(self.nav_list)
 
-        # 右侧：内容显示区（QStackedWidget）
+        # 右侧：内容显示区
         self.content_stack = QStackedWidget()
-
-        # 添加到分割器
-        main_splitter.addWidget(self.tab_widget)
+        self.content_stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.content_stack.setStyleSheet(
+            """
+            QStackedWidget {
+                background-color: #1e1e1e;
+                border-left: 1px solid #404040;
+            }
+            """
+        )
         main_splitter.addWidget(self.content_stack)
-        main_splitter.setStretchFactor(0, 0)  # 左侧固定宽度
-        main_splitter.setStretchFactor(1, 1)  # 右侧自适应
-        main_splitter.setSizes([140, 1000])
+
+        # 设置分割比例：左侧固定宽度，右侧自适应
+        main_splitter.setStretchFactor(0, 0)  # 左侧不拉伸
+        main_splitter.setStretchFactor(1, 1)  # 右侧拉伸
+        main_splitter.setSizes([200, 1000])  # 初始大小
 
         main_layout.addWidget(main_splitter)
+
+    def _create_navigation_list(self) -> QListWidget:
+        """创建左侧导航列表."""
+        nav_list = QListWidget()
+        nav_list.setMaximumWidth(220)
+        nav_list.setMinimumWidth(180)
+
+        # 设置导航列表样式
+        nav_list.setStyleSheet(
+            """
+            QListWidget {
+                background-color: #2d2d2d;
+                border: none;
+                outline: none;
+                padding: 5px;
+            }
+            QListWidget::item {
+                color: #ffffff;
+                padding: 15px 10px;
+                margin: 2px 0px;
+                border: 1px solid transparent;
+                border-radius: 6px;
+                font-size: 13px;
+            }
+            QListWidget::item:hover {
+                background-color: #383838;
+                border: 1px solid #505050;
+            }
+            QListWidget::item:selected {
+                background-color: #1e88e5;
+                border: 1px solid #42a5f5;
+                font-weight: bold;
+            }
+            """
+        )
+
+        # 设置字体
+        font = QFont()
+        font.setPointSize(11)
+        nav_list.setFont(font)
+
+        return nav_list
 
     def setup_menu_bar(self):
         """设置菜单栏."""
@@ -209,45 +312,18 @@ class MainWindow(QMainWindow, LoggerMixin):
         dark_theme_action.triggered.connect(lambda: self.switch_theme("dark"))
         theme_menu.addAction(dark_theme_action)
 
+        light_theme_action = QAction("明亮主题", self)
+        light_theme_action.setCheckable(True)
+        light_theme_action.setChecked(not is_dark)
+        light_theme_action.triggered.connect(lambda: self.switch_theme("light"))
+        theme_menu.addAction(light_theme_action)
+
         # 帮助菜单
         help_menu = self.menu_bar.addMenu("帮助(&H)")
 
         about_action = QAction("关于(&A)", self)
         about_action.triggered.connect(self.show_about)
         help_menu.addAction(about_action)
-
-    def setup_toolbar(self):
-        """设置工具栏."""
-        self.toolbar = self.addToolBar("主工具栏")
-        style = Qt.ToolButtonStyle.ToolButtonTextBesideIcon
-        self.toolbar.setToolButtonStyle(style)
-
-        # 刷新按钮
-        refresh_action = QAction("刷新", self)
-        refresh_action.setShortcut("F5")
-        refresh_action.triggered.connect(self.refresh_all_interfaces)
-        self.toolbar.addAction(refresh_action)
-
-        self.toolbar.addSeparator()
-
-        # 功能界面快捷按钮
-        interfaces = [
-            ("系统管理", "system"),
-            ("数据中心", "data"),
-            ("行情看板", "market"),
-            ("策略中心", "strategy"),
-            ("交易网关", "trading"),
-            ("组合投资", "portfolio"),
-        ]
-
-        for name, interface_id in interfaces:
-            action = QAction(name, self)
-            action.triggered.connect(
-                lambda _checked, iid=interface_id: (  # noqa: U101
-                    self.switch_to_interface(iid)
-                )
-            )
-            self.toolbar.addAction(action)
 
     def setup_status_bar(self):
         """设置状态栏."""
@@ -262,171 +338,160 @@ class MainWindow(QMainWindow, LoggerMixin):
         self.status_bar.addPermanentWidget(self.system_info_label)
 
     def create_function_interfaces(self):
-        """创建功能界面."""
+        """创建6个功能界面."""
         try:
-            # 系统管理界面（标准架构，8个子界面）
-            try:
-                self.function_interfaces["system"] = SystemManager()
-                # 确保UI设置和信号连接
-                if hasattr(self.function_interfaces["system"], "setup_ui"):
-                    self.function_interfaces["system"].setup_ui()
-                if hasattr(self.function_interfaces["system"], "connect_signals"):
-                    self.function_interfaces["system"].connect_signals()
+            # 1. 系统管理界面（标准架构，8个子界面）
+            self._create_interface(
+                interface_id="system",
+                interface_class=SystemManager,
+            )
 
-                # 添加到内容区和导航Tab
-                if self.content_stack is not None:
-                    self.content_stack.addWidget(self.function_interfaces["system"])
-                if self.tab_widget is not None:
-                    # 左侧导航只显示一个空Widget占位
-                    nav_placeholder = QWidget()
-                    self.tab_widget.addTab(nav_placeholder, "系统管理")
-                self.logger.info("系统管理界面创建成功")
-            except (ImportError, AttributeError, RuntimeError) as e:
-                self.logger.error("系统管理界面创建失败: %s", e)
-                self.logger.error("详细错误信息: %s", traceback.format_exc())
-                # 创建占位标签，确保系统管理位置不会丢失
-                placeholder = QWidget()
-                placeholder_layout = QVBoxLayout(placeholder)
-                error_msg = f"系统管理加载失败：{str(e)}\n\n请检查依赖或模块实现"
-                error_label = QLabel(error_msg)
-                error_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                error_style = "color: #ff6b6b; font-size: 14px; padding: 20px;"
-                error_label.setStyleSheet(error_style)
-                placeholder_layout.addWidget(error_label)
-                if self.content_stack is not None:
-                    self.content_stack.addWidget(placeholder)
-                if self.tab_widget is not None:
-                    nav_placeholder = QWidget()
-                    self.tab_widget.addTab(nav_placeholder, "系统管理")
+            # 2. 数据中心界面（标准架构，4个子界面）
+            self._create_interface(
+                interface_id="data",
+                interface_class=DataCenter,
+            )
 
-            # 数据中心界面（标准架构，4个子界面）
-            try:
-                self.function_interfaces["data"] = DataCenter()
-                # 实例化后确保构建UI与信号绑定
-                if hasattr(self.function_interfaces["data"], "setup_ui"):
-                    self.function_interfaces["data"].setup_ui()
-                if hasattr(self.function_interfaces["data"], "connect_signals"):
-                    self.function_interfaces["data"].connect_signals()
+            # 3. 行情看板界面（单一界面，集成设计）
+            self._create_interface(
+                interface_id="market",
+                interface_class=MarketDashboard,
+            )
 
-                # 添加到内容区和导航Tab
-                if self.content_stack is not None:
-                    self.content_stack.addWidget(self.function_interfaces["data"])
-                if self.tab_widget is not None:
-                    nav_placeholder = QWidget()
-                    self.tab_widget.addTab(nav_placeholder, "数据中心")
-                self.logger.info("数据中心界面创建成功")
-            except (ImportError, AttributeError, RuntimeError) as e:
-                self.logger.error("数据中心界面创建失败: %s", e)
+            # 4. 策略中心界面（混合架构，管理器+选项卡）
+            self._create_interface(
+                interface_id="strategy",
+                interface_class=StrategyCenter,
+            )
 
-            # 行情看板界面（单一界面，集成设计）
-            try:
-                self.function_interfaces["market"] = MarketDashboard()
+            # 5. 交易网关界面（混合架构，管理器+选项卡）
+            self._create_interface(
+                interface_id="trading",
+                interface_class=TradingGateway,
+            )
 
-                # 添加到内容区和导航Tab
-                if self.content_stack is not None:
-                    self.content_stack.addWidget(self.function_interfaces["market"])
-                if self.tab_widget is not None:
-                    nav_placeholder = QWidget()
-                    self.tab_widget.addTab(nav_placeholder, "行情看板")
-                self.logger.info("行情看板界面创建成功")
-            except (ImportError, AttributeError, RuntimeError) as e:
-                self.logger.error("行情看板界面创建失败: %s", e)
-
-            # 策略中心界面（混合架构，管理器+选项卡）
-            try:
-                self.function_interfaces["strategy"] = StrategyCenter()
-                # 实例化后确保构建UI与信号绑定
-                if hasattr(self.function_interfaces["strategy"], "setup_ui"):
-                    self.function_interfaces["strategy"].setup_ui()
-                if hasattr(self.function_interfaces["strategy"], "connect_signals"):
-                    self.function_interfaces["strategy"].connect_signals()
-
-                # 添加到内容区和导航Tab
-                if self.content_stack is not None:
-                    self.content_stack.addWidget(self.function_interfaces["strategy"])
-                if self.tab_widget is not None:
-                    nav_placeholder = QWidget()
-                    self.tab_widget.addTab(nav_placeholder, "策略中心")
-                self.logger.info("策略中心界面创建成功")
-            except (ImportError, AttributeError, RuntimeError) as e:
-                self.logger.error("策略中心界面创建失败: %s", e)
-                # 占位标签，避免缺失
-                placeholder = QWidget()
-                placeholder_layout = QVBoxLayout(placeholder)
-                placeholder_layout.addWidget(
-                    QLabel("策略中心加载失败：请检查依赖或模块实现")
-                )
-                if self.content_stack is not None:
-                    self.content_stack.addWidget(placeholder)
-                if self.tab_widget is not None:
-                    nav_placeholder = QWidget()
-                    self.tab_widget.addTab(nav_placeholder, "策略中心")
-
-            # 交易网关界面（混合架构，管理器+选项卡）
-            try:
-                self.function_interfaces["trading"] = TradingGateway()
-                # 实例化后确保构建UI与信号绑定
-                if hasattr(self.function_interfaces["trading"], "setup_ui"):
-                    self.function_interfaces["trading"].setup_ui()
-                if hasattr(self.function_interfaces["trading"], "connect_signals"):
-                    self.function_interfaces["trading"].connect_signals()
-
-                # 添加到内容区和导航Tab
-                if self.content_stack is not None:
-                    self.content_stack.addWidget(self.function_interfaces["trading"])
-                if self.tab_widget is not None:
-                    nav_placeholder = QWidget()
-                    self.tab_widget.addTab(nav_placeholder, "交易网关")
-                self.logger.info("交易网关界面创建成功")
-            except (ImportError, AttributeError, RuntimeError) as e:
-                self.logger.error("交易网关界面创建失败: %s", e)
-
-            # 组合投资界面（混合架构，双固有组件）
-            try:
-                self.function_interfaces["portfolio"] = PortfolioInvestment()
-                # 实例化后确保构建UI与信号绑定
-                if hasattr(self.function_interfaces["portfolio"], "setup_ui"):
-                    self.function_interfaces["portfolio"].setup_ui()
-                if hasattr(self.function_interfaces["portfolio"], "connect_signals"):
-                    self.function_interfaces["portfolio"].connect_signals()
-
-                # 添加到内容区和导航Tab
-                if self.content_stack is not None:
-                    self.content_stack.addWidget(self.function_interfaces["portfolio"])
-                if self.tab_widget is not None:
-                    nav_placeholder = QWidget()
-                    self.tab_widget.addTab(nav_placeholder, "组合投资")
-                self.logger.info("组合投资界面创建成功")
-            except (ImportError, AttributeError, RuntimeError) as e:
-                self.logger.error("组合投资界面创建失败: %s", e)
-                # 占位标签，避免缺失
-                placeholder = QWidget()
-                placeholder_layout = QVBoxLayout(placeholder)
-                placeholder_layout.addWidget(
-                    QLabel("组合投资加载失败：请检查依赖或模块实现")
-                )
-                if self.content_stack is not None:
-                    self.content_stack.addWidget(placeholder)
-                if self.tab_widget is not None:
-                    nav_placeholder = QWidget()
-                    self.tab_widget.addTab(nav_placeholder, "组合投资")
+            # 6. 组合投资界面（混合架构，双固有组件）
+            self._create_interface(
+                interface_id="portfolio",
+                interface_class=PortfolioInvestment,
+            )
 
             self.logger.info("所有功能界面创建完成")
+
+            # 默认选中第一个界面
+            if self.nav_list and self.nav_list.count() > 0:
+                self.nav_list.setCurrentRow(0)
+
             # 标记界面已就绪
             self.ui_ready = True
 
-        except (ImportError, AttributeError, RuntimeError) as e:
+        except Exception as e:
             self.logger.error("创建功能界面失败: %s", e)
             self.logger.error("详细错误信息: %s", traceback.format_exc())
+            error_handler.handle_error(
+                error_id="main_window_interface_init",
+                message=f"界面初始化失败: {str(e)}",
+            )
 
-            # 使用统一错误处理器
-            try:
-                error_handler.handle_error(
-                    error_id="main_window_interface_init",
-                    message=f"界面初始化失败: {str(e)}",
-                )
-            except (AttributeError, RuntimeError) as handler_error:
-                self.logger.error("错误处理器调用失败: %s", handler_error)
+    def _create_interface(self, interface_id: str, interface_class: type):
+        """创建单个功能界面.
+
+        Args:
+            interface_id: 界面ID
+            interface_class: 界面类
+        """
+        try:
+            # 创建界面实例
+            # 注意：BaseWidget会在__init__中自动调用setup_ui()和connect_signals()
+            # 所以这里不需要再次调用
+            interface = interface_class()
+
+            # 保存到字典
+            self.function_interfaces[interface_id] = interface
+
+            # 添加到内容区
+            if self.content_stack:
+                self.content_stack.addWidget(interface)
+
+            # 添加到左侧导航列表
+            if self.nav_list:
+                metadata = self.interface_metadata[interface_id]
+                item_text = f"{metadata['icon']}  {metadata['name']}"
+                item = QListWidgetItem(item_text)
+                item.setData(Qt.ItemDataRole.UserRole, interface_id)
+                item.setToolTip(metadata["description"])
+                self.nav_list.addItem(item)
+
+            self.logger.info("%s界面创建成功", metadata["name"])
+
+        except (ImportError, AttributeError, RuntimeError) as e:
+            self.logger.error("%s界面创建失败: %s", interface_id, e)
+            self.logger.error("详细错误信息: %s", traceback.format_exc())
+
+            # 打印到控制台以便立即看到
+            print(f"❌ {interface_id}界面创建失败: {e}")
+            print(f"详细堆栈: {traceback.format_exc()}")
+
+            # 创建错误占位符
+            placeholder = self._create_error_placeholder(interface_id, str(e))
+
+            # 添加到内容区
+            if self.content_stack:
+                self.content_stack.addWidget(placeholder)
+
+            # 添加到导航列表（带错误标记）
+            if self.nav_list:
+                metadata = self.interface_metadata[interface_id]
+                item_text = f"{metadata['icon']}  {metadata['name']} ⚠️"
+                item = QListWidgetItem(item_text)
+                item.setData(Qt.ItemDataRole.UserRole, interface_id)
+                item.setToolTip(f"加载失败：{str(e)}")
+                self.nav_list.addItem(item)
+
+    def _create_error_placeholder(self, interface_id: str, error_msg: str) -> QWidget:
+        """创建错误占位符.
+
+        Args:
+            interface_id: 界面ID
+            error_msg: 错误消息
+
+        Returns:
+            错误占位符widget
+        """
+        placeholder = QWidget()
+        layout = QVBoxLayout(placeholder)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        metadata = self.interface_metadata[interface_id]
+
+        # 图标
+        icon_label = QLabel(f"{metadata['icon']}")
+        icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon_label.setStyleSheet("font-size: 48px;")
+        layout.addWidget(icon_label)
+
+        # 标题
+        title_label = QLabel(f"{metadata['name']}加载失败")
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title_label.setStyleSheet(
+            "font-size: 18px; font-weight: bold; color: #ff6b6b; margin: 10px;"
+        )
+        layout.addWidget(title_label)
+
+        # 错误信息
+        error_label = QLabel(f"错误信息：{error_msg}")
+        error_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        error_label.setStyleSheet("color: #999; font-size: 12px;")
+        error_label.setWordWrap(True)
+        layout.addWidget(error_label)
+
+        # 建议
+        hint_label = QLabel("请检查依赖或模块实现")
+        hint_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        hint_label.setStyleSheet("color: #666; font-size: 11px; margin-top: 10px;")
+        layout.addWidget(hint_label)
+
+        return placeholder
 
     def apply_theme(self):
         """应用主题."""
@@ -451,20 +516,10 @@ class MainWindow(QMainWindow, LoggerMixin):
 
     def switch_to_interface(self, interface_id: str):
         """切换到指定界面."""
-        if interface_id in self.function_interfaces:
-            # 界面ID到索引的映射
-            interface_map = {
-                "system": 0,
-                "data": 1,
-                "market": 2,
-                "strategy": 3,
-                "trading": 4,
-                "portfolio": 5,
-            }
-
-            index = interface_map.get(interface_id, -1)
-            if index >= 0 and self.tab_widget is not None:
-                self.tab_widget.setCurrentIndex(index)
+        if interface_id in self.interface_order:
+            index = self.interface_order.index(interface_id)
+            if self.nav_list and index >= 0 and index < self.nav_list.count():
+                self.nav_list.setCurrentRow(index)
                 self.logger.info("切换到界面: %s", interface_id)
 
     def refresh_all_interfaces(self):
@@ -479,24 +534,20 @@ class MainWindow(QMainWindow, LoggerMixin):
                     error_msg = f"界面 {interface_id} 刷新失败: {interface_error}"
                     self.logger.error(error_msg)
 
-            self.status_label.setText("刷新完成")
+            if self.status_label:
+                self.status_label.setText("刷新完成")
             self.logger.info("所有界面刷新完成")
         except (AttributeError, RuntimeError) as e:
             self.logger.error("刷新界面失败: %s", e)
-
-            # 使用统一错误处理器
-            try:
-                error_handler.handle_error(
-                    error_id="main_window_refresh", message=f"刷新失败: {str(e)}"
-                )
-            except (AttributeError, RuntimeError) as handler_error:
-                self.logger.error("错误处理器调用失败: %s", handler_error)
+            error_handler.handle_error(
+                error_id="main_window_refresh", message=f"刷新失败: {str(e)}"
+            )
 
     def connect_signals(self):
         """连接信号槽."""
-        # 连接左侧导航Tab切换信号，同步切换右侧内容区
-        if self.tab_widget is not None and self.content_stack is not None:
-            self.tab_widget.currentChanged.connect(self.on_nav_tab_changed)
+        # 连接左侧导航列表的切换信号
+        if self.nav_list:
+            self.nav_list.currentRowChanged.connect(self.on_nav_changed)
 
         # 连接功能界面的信号
         for interface in self.function_interfaces.values():
@@ -505,30 +556,39 @@ class MainWindow(QMainWindow, LoggerMixin):
             if hasattr(interface, "info_message"):
                 interface.info_message.connect(self.on_interface_info)
 
-    def on_nav_tab_changed(self, index: int):
-        """左侧导航Tab切换回调，同步切换右侧内容区."""
-        if (
-            self.tab_widget is not None
-            and self.content_stack is not None
-            and index >= 0
-            and index < self.tab_widget.count()
-        ):
-            # 同步切换右侧内容区
-            self.content_stack.setCurrentIndex(index)
+    def on_nav_changed(self, current_row: int):
+        """左侧导航切换回调."""
+        if current_row >= 0 and self.content_stack:
+            # 切换右侧内容区
+            self.content_stack.setCurrentIndex(current_row)
 
-            # 更新状态栏
-            tab_text = self.tab_widget.tabText(index)
-            self.status_label.setText(f"当前界面: {tab_text}")
-            self.logger.info("切换到界面: %s", tab_text)
+            # 获取界面ID
+            if self.nav_list:
+                item = self.nav_list.item(current_row)
+                if item:
+                    interface_id = item.data(Qt.ItemDataRole.UserRole)
+                    metadata = self.interface_metadata.get(interface_id, {})
+                    interface_name = metadata.get("name", "未知")
+
+                    # 更新状态栏
+                    if self.status_label:
+                        self.status_label.setText(f"当前界面: {interface_name}")
+
+                    # 发送界面切换信号
+                    self.interface_changed.emit(interface_id)
+
+                    self.logger.info("切换到界面: %s (%s)", interface_name, interface_id)
 
     def on_interface_error(self, message: str):
         """界面错误回调."""
-        self.status_label.setText("错误: " + message)
+        if self.status_label:
+            self.status_label.setText("错误: " + message)
         self.logger.error("界面错误: %s", message)
 
     def on_interface_info(self, message: str):
         """界面信息回调."""
-        self.status_label.setText("信息: " + message)
+        if self.status_label:
+            self.status_label.setText("信息: " + message)
         self.logger.info("界面信息: %s", message)
 
     def start_update_timer(self):
@@ -542,13 +602,12 @@ class MainWindow(QMainWindow, LoggerMixin):
 
     def update_status(self):
         """更新状态栏信息."""
-        # 就绪与控件存在性守卫，避免 NoneType 访问
+        # 就绪与控件存在性守卫
         if not getattr(self, "ui_ready", False):
             return
-        if not hasattr(self, "system_info_label") or self.system_info_label is None:
+        if not self.system_info_label or not self.status_label:
             return
-        if not hasattr(self, "status_label") or self.status_label is None:
-            return
+
         try:
             # 更新系统信息
             if psutil is not None:
@@ -565,15 +624,13 @@ class MainWindow(QMainWindow, LoggerMixin):
                     if cpu_percent > 80 or memory.percent > 80:
                         self.status_label.setText("警告: 系统负载较高")
                     else:
-                        self.status_label.setText("系统正常")
+                        current_text = self.status_label.text()
+                        if not current_text.startswith("当前界面:"):
+                            self.status_label.setText("系统正常")
                 except (OSError, RuntimeError):
-                    # 如果psutil调用失败，显示默认状态
                     self.system_info_label.setText("系统监控不可用")
-                    self.status_label.setText("系统正常")
             else:
-                # 如果psutil不可用，显示默认状态
                 self.system_info_label.setText("系统监控不可用")
-                self.status_label.setText("系统正常")
 
         except (AttributeError, RuntimeError, OSError) as e:
             self.logger.error("更新状态失败: %s", e)
@@ -588,19 +645,19 @@ class MainWindow(QMainWindow, LoggerMixin):
             <p>基于 VNPY 生态系统构建</p>
             <p>提供完整的交易工具和服务</p>
             <br>
-            <p><strong>功能特性:</strong></p>
+            <p><strong>6个功能界面:</strong></p>
             <ul>
-                <li>🛠️ 系统管理 - 8个监控和管理模块</li>
-                <li>🗃️ 数据中心 - 4个数据管理模块</li>
-                <li>📈 行情看板 - 专业行情分析工具</li>
-                <li>🧠 策略中心 - 策略开发和回测环境</li>
-                <li>🔗 交易网关 - 多网关交易执行</li>
-                <li>📊 组合投资 - 投资组合管理和监控</li>
+                <li>🛠️ 系统管理 - 系统监控与运维管理 (8个子界面)</li>
+                <li>🗃️ 数据中心 - 数据管理解决方案 (4个子界面)</li>
+                <li>📈 行情看板 - 专业行情分析工具 (单一界面)</li>
+                <li>🧠 策略中心 - 策略开发和回测环境 (混合架构)</li>
+                <li>🔗 交易网关 - 多网关交易执行 (混合架构)</li>
+                <li>📊 组合投资 - 投资组合管理和监控 (混合架构)</li>
             </ul>
             """,
         )
 
-    def closeEvent(self, event):  # pylint: disable=invalid-name
+    def closeEvent(self, event):
         """窗口关闭事件."""
         # 停止定时器
         if self.update_timer:
@@ -627,7 +684,7 @@ class MainWindow(QMainWindow, LoggerMixin):
 
     def get_current_interface(self) -> Optional[QWidget]:
         """获取当前活动界面."""
-        if self.content_stack is not None:
+        if self.content_stack:
             current_index = self.content_stack.currentIndex()
             if current_index >= 0:
                 return self.content_stack.widget(current_index)
@@ -651,12 +708,8 @@ class MainWindow(QMainWindow, LoggerMixin):
     def _init_responsive_helper(self):
         """初始化响应式布局帮助器."""
         try:
-            from ui.widgets.responsive_helper import ResponsiveHelper
-
             self.responsive_helper = ResponsiveHelper(self)
-            self.responsive_helper.size_class_changed.connect(
-                self._on_size_class_changed
-            )
+            self.responsive_helper.size_class_changed.connect(self._on_size_class_changed)
         except ImportError:
             self.responsive_helper = None
 
@@ -664,19 +717,19 @@ class MainWindow(QMainWindow, LoggerMixin):
         """尺寸级别变化时调整布局."""
         self.logger.info("窗口尺寸级别变化: %s", size_class)
 
-        # 根据尺寸调整导航Tab宽度
-        if self.tab_widget:
+        # 根据尺寸调整导航列表宽度
+        if self.nav_list:
             if size_class == "small":
-                self.tab_widget.setMaximumWidth(100)
-                self.tab_widget.setMinimumWidth(80)
+                self.nav_list.setMaximumWidth(160)
+                self.nav_list.setMinimumWidth(140)
             elif size_class == "medium":
-                self.tab_widget.setMaximumWidth(130)
-                self.tab_widget.setMinimumWidth(110)
+                self.nav_list.setMaximumWidth(200)
+                self.nav_list.setMinimumWidth(160)
             else:  # large or xlarge
-                self.tab_widget.setMaximumWidth(150)
-                self.tab_widget.setMinimumWidth(120)
+                self.nav_list.setMaximumWidth(240)
+                self.nav_list.setMinimumWidth(180)
 
-    def resizeEvent(self, event):  # pylint: disable=invalid-name
+    def resizeEvent(self, event):
         """窗口大小改变事件."""
         super().resizeEvent(event)
 
@@ -692,9 +745,7 @@ def main():
     """主函数."""
     try:
         # 设置日志
-        setup_logging(
-            name="terminal_v0.50", level="INFO", log_file="logs/terminal_v0.50.log"
-        )
+        setup_logging(name="terminal_v0.50", level="INFO", log_file="logs/terminal_v0.50.log")
 
         # 创建应用程序
         app = QApplication(sys.argv)
@@ -711,9 +762,8 @@ def main():
         # 运行应用程序
         sys.exit(app.exec())
     except (ImportError, OSError, RuntimeError, SystemError) as e:
-        # 记录致命异常，便于启动器与热更新诊断
+        # 记录致命异常
         logging.getLogger("terminal_v0.50.main").exception("UI启动异常: %s", e)
-        # 追加到UI进程日志文件
         with (
             contextlib.suppress(Exception),
             open("logs/ui_process.err.log", "a", encoding="utf-8") as f,

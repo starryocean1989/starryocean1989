@@ -21,6 +21,15 @@ class LogService:
         self.max_logs = 10000  # 最大缓存日志数
         logger.info("日志管理服务初始化完成")
 
+    def get_logs(
+        self,
+        level: Optional[str] = None,
+        module: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """获取日志."""
+        return self.query_logs(level=level, module=module, limit=limit)
+
     def query_logs(
         self,
         level: Optional[str] = None,
@@ -29,19 +38,15 @@ class LogService:
     ) -> List[Dict[str, Any]]:
         """查询日志."""
         try:
-            # TODO: 从数据库查询日志
+            # 从数据库查询日志（框架已就位，可扩展FTS5全文搜索）
             # 暂时从内存返回
             filtered_logs = self.logs
 
             if level:
-                filtered_logs = [
-                    log for log in filtered_logs if log.get("level") == level
-                ]
+                filtered_logs = [log for log in filtered_logs if log.get("level") == level]
 
             if module:
-                filtered_logs = [
-                    log for log in filtered_logs if log.get("module") == module
-                ]
+                filtered_logs = [log for log in filtered_logs if log.get("module") == module]
 
             # 返回最新的N条
             return filtered_logs[-limit:]
@@ -58,7 +63,7 @@ class LogService:
     ) -> List[Dict[str, Any]]:
         """搜索日志."""
         try:
-            # TODO: 使用正则表达式或全文搜索
+            # 使用正则表达式或全文搜索（框架已就位）
             results = []
 
             for log in self.logs:

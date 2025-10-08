@@ -49,9 +49,7 @@ class DataSourceService(BaseService):
             self.event_service.register_handler(
                 "data_source_deleted", self._handle_data_source_deleted
             )
-            self.event_service.register_handler(
-                "data_source_test", self._handle_data_source_test
-            )
+            self.event_service.register_handler("data_source_test", self._handle_data_source_test)
 
             self.logger.info("数据源服务初始化完成")
             self.is_initialized = True
@@ -75,9 +73,7 @@ class DataSourceService(BaseService):
             self.event_service.unregister_handler(
                 "data_source_deleted", self._handle_data_source_deleted
             )
-            self.event_service.unregister_handler(
-                "data_source_test", self._handle_data_source_test
-            )
+            self.event_service.unregister_handler("data_source_test", self._handle_data_source_test)
 
             # 清理数据
             self._data_sources.clear()
@@ -97,15 +93,11 @@ class DataSourceService(BaseService):
                 "service_name": self.service_name,
                 "is_initialized": self.is_initialized,
                 "total_sources": len(self._data_sources),
-                "enabled_sources": len(
-                    [s for s in self._data_sources.values() if s.is_enabled]
-                ),
+                "enabled_sources": len([s for s in self._data_sources.values() if s.is_enabled]),
                 "connected_sources": len(
                     [s for s in self._data_sources.values() if s.is_connected]
                 ),
-                "source_types": list(
-                    set(s.source_type for s in self._data_sources.values())
-                ),
+                "source_types": list(set(s.source_type for s in self._data_sources.values())),
                 "vnpy_service_available": self.vnpy_service.is_initialized,
                 "timestamp": datetime.now().isoformat(),
             }
@@ -169,9 +161,7 @@ class DataSourceService(BaseService):
             for source in default_sources:
                 self._data_sources[source.source_id] = source
 
-            self.logger.info(
-                "默认数据源配置加载完成: %d 个数据源", len(default_sources)
-            )
+            self.logger.info("默认数据源配置加载完成: %d 个数据源", len(default_sources))
 
         except Exception as e:
             self.logger.error("加载默认数据源配置失败: %s", e)
@@ -203,9 +193,7 @@ class DataSourceService(BaseService):
             self.logger.error("获取数据源配置失败: %s", e)
             raise
 
-    async def create_data_source(
-        self, source_config: DataSourceConfig
-    ) -> DataSourceConfig:
+    async def create_data_source(self, source_config: DataSourceConfig) -> DataSourceConfig:
         """创建数据源配置."""
         try:
             # 检查ID是否已存在
@@ -216,9 +204,7 @@ class DataSourceService(BaseService):
             self._data_sources[source_config.source_id] = source_config
 
             # 发送创建事件
-            await self.event_service.emit_event(
-                "data_source_created", source_config.dict()
-            )
+            await self.event_service.emit_event("data_source_created", source_config.dict())
 
             self.logger.info("数据源配置创建成功: %s", source_config.source_id)
             return source_config
@@ -243,9 +229,7 @@ class DataSourceService(BaseService):
             self._data_sources[source_id] = source_config
 
             # 发送更新事件
-            await self.event_service.emit_event(
-                "data_source_updated", source_config.dict()
-            )
+            await self.event_service.emit_event("data_source_updated", source_config.dict())
 
             self.logger.info("数据源配置更新成功: %s", source_id)
             return source_config
@@ -270,9 +254,7 @@ class DataSourceService(BaseService):
                 del self._connection_tests[source_id]
 
             # 发送删除事件
-            await self.event_service.emit_event(
-                "data_source_deleted", {"source_id": source_id}
-            )
+            await self.event_service.emit_event("data_source_deleted", {"source_id": source_id})
 
             self.logger.info("数据源配置删除成功: %s", source_id)
             return True
@@ -283,99 +265,153 @@ class DataSourceService(BaseService):
 
     async def test_data_source_connection(self, source_id: str) -> Dict[str, Any]:
         """测试数据源连接."""
-        try:
-            # 检查数据源是否存在
-            source = self._data_sources.get(source_id)
-            if not source:
-                raise ValueError(f"数据源不存在: {source_id}")
+        # 检查数据源是否存在
+        source = self._data_sources.get(source_id)
+        if not source:
+            raise ValueError(f"数据源不存在: {source_id}")
 
-            # 发送测试事件
-            await self.event_service.emit_event(
-                "data_source_test", {"source_id": source_id}
-            )
+        # 发送测试事件
+        await self.event_service.emit_event("data_source_test", {"source_id": source_id})
 
-            # 模拟连接测试
-            test_result = await self._simulate_connection_test(source)
+        # 调用真实的连接测试
+        test_result = await self._test_connection_real(source)
 
-            # 保存测试结果
-            self._connection_tests[source_id] = test_result
+        # 保存测试结果
+        self._connection_tests[source_id] = test_result
 
-            # 更新数据源状态
-            if test_result["connection_status"] == "success":
-                source.is_connected = True
-                source.last_connected = datetime.now()
-                source.error_count = 0
-            else:
-                source.is_connected = False
-                source.error_count += 1
+        # 更新数据源状态
+        if test_result["connection_status"] == "success":
+            source.is_connected = True
+            source.last_connected = datetime.now()
+            source.error_count = 0
+        else:
+            source.is_connected = False
+            source.error_count += 1
 
-            self.logger.info(
-                "数据源连接测试完成: %s, 状态=%s",
-                source_id,
-                test_result["connection_status"],
-            )
-            return test_result
+        self.logger.info(
+            "数据源连接测试完成: %s, 状态=%s",
+            source_id,
+            test_result["connection_status"],
+        )
+        return test_result
 
-        except Exception as e:
-            self.logger.error("测试数据源连接失败: %s", e)
-            raise
+    async def _test_connection_real(self, source: DataSourceConfig) -> Dict[str, Any]:
+        """真实的连接测试."""
+        start_time = datetime.now()
 
-    async def _simulate_connection_test(
-        self, source: DataSourceConfig
-    ) -> Dict[str, Any]:
-        """模拟连接测试."""
-        try:
-            # 模拟测试延迟
-            await asyncio.sleep(0.5)
+        # 根据数据源类型进行真实连接测试
+        if source.source_type == "tushare":
+            # Tushare连接测试
+            token = source.config.get("token")
+            if not token:
+                return {
+                    "source_id": source.source_id,
+                    "connection_status": "failed",
+                    "response_time": 0.0,
+                    "test_time": datetime.now().isoformat(),
+                    "message": "缺少API Token",
+                    "error": "Token is required for Tushare",
+                }
 
-            # 根据数据源类型模拟不同的测试结果
-            if source.source_type == "tushare":
-                # Tushare需要token
-                if source.config.get("token"):
-                    test_result = {
-                        "source_id": source.source_id,
-                        "connection_status": "success",
-                        "response_time": 0.5,
-                        "test_time": datetime.now().isoformat(),
-                        "message": "连接测试成功",
-                        "details": {
-                            "api_version": "1.2.89",
-                            "user_level": "basic",
-                        },
-                    }
-                else:
-                    test_result = {
-                        "source_id": source.source_id,
-                        "connection_status": "failed",
-                        "response_time": 0.5,
-                        "test_time": datetime.now().isoformat(),
-                        "message": "缺少API Token",
-                        "error": "Token is required for Tushare",
-                    }
-            else:
-                # 其他数据源模拟成功
-                test_result = {
+            try:
+                import tushare as ts
+
+                ts.set_token(token)
+                pro = ts.pro_api()
+                # 测试API调用
+                df = pro.trade_cal(exchange="", start_date="20240101", end_date="20240101")
+
+                response_time = (datetime.now() - start_time).total_seconds()
+                return {
                     "source_id": source.source_id,
                     "connection_status": "success",
-                    "response_time": 0.3,
+                    "response_time": response_time,
                     "test_time": datetime.now().isoformat(),
                     "message": "连接测试成功",
                     "details": {
-                        "source_type": source.source_type,
-                        "timeout": source.config.get("timeout", 30),
+                        "api_available": True,
+                        "record_count": len(df),
                     },
                 }
+            except Exception as e:
+                return {
+                    "source_id": source.source_id,
+                    "connection_status": "failed",
+                    "response_time": (datetime.now() - start_time).total_seconds(),
+                    "test_time": datetime.now().isoformat(),
+                    "message": "连接测试失败",
+                    "error": str(e),
+                }
 
-            return test_result
+        elif source.source_type == "akshare":
+            # AKShare连接测试
+            try:
+                import akshare as ak
 
-        except Exception as e:
+                # 测试API调用 - 获取实时行情
+                df = ak.stock_zh_a_spot_em()
+
+                response_time = (datetime.now() - start_time).total_seconds()
+                return {
+                    "source_id": source.source_id,
+                    "connection_status": "success",
+                    "response_time": response_time,
+                    "test_time": datetime.now().isoformat(),
+                    "message": "连接测试成功",
+                    "details": {
+                        "api_available": True,
+                        "record_count": len(df),
+                    },
+                }
+            except Exception as e:
+                return {
+                    "source_id": source.source_id,
+                    "connection_status": "failed",
+                    "response_time": (datetime.now() - start_time).total_seconds(),
+                    "test_time": datetime.now().isoformat(),
+                    "message": "连接测试失败",
+                    "error": str(e),
+                }
+
+        elif source.source_type == "yfinance":
+            # Yahoo Finance连接测试
+            try:
+                import yfinance as yf
+
+                # 测试API调用
+                ticker = yf.Ticker("AAPL")
+                info = ticker.info
+
+                response_time = (datetime.now() - start_time).total_seconds()
+                return {
+                    "source_id": source.source_id,
+                    "connection_status": "success",
+                    "response_time": response_time,
+                    "test_time": datetime.now().isoformat(),
+                    "message": "连接测试成功",
+                    "details": {
+                        "api_available": True,
+                        "symbol": info.get("symbol", "AAPL"),
+                    },
+                }
+            except Exception as e:
+                return {
+                    "source_id": source.source_id,
+                    "connection_status": "failed",
+                    "response_time": (datetime.now() - start_time).total_seconds(),
+                    "test_time": datetime.now().isoformat(),
+                    "message": "连接测试失败",
+                    "error": str(e),
+                }
+        else:
+            # 不支持的数据源类型
             return {
                 "source_id": source.source_id,
                 "connection_status": "error",
                 "response_time": 0.0,
                 "test_time": datetime.now().isoformat(),
-                "message": "连接测试出错",
-                "error": str(e),
+                "message": "不支持的数据源类型",
+                "error": f"Unsupported source type: {source.source_type}",
             }
 
     async def enable_data_source(self, source_id: str) -> bool:
@@ -425,9 +461,7 @@ class DataSourceService(BaseService):
     async def get_connected_data_sources(self) -> List[DataSourceConfig]:
         """获取已连接的数据源列表."""
         try:
-            connected_sources = [
-                s for s in self._data_sources.values() if s.is_connected
-            ]
+            connected_sources = [s for s in self._data_sources.values() if s.is_connected]
             self.logger.info("获取已连接的数据源: %d 个", len(connected_sources))
             return connected_sources
 
@@ -505,9 +539,7 @@ class DataSourceService(BaseService):
         try:
             stats = {
                 "total_sources": len(self._data_sources),
-                "enabled_sources": len(
-                    [s for s in self._data_sources.values() if s.is_enabled]
-                ),
+                "enabled_sources": len([s for s in self._data_sources.values() if s.is_enabled]),
                 "connected_sources": len(
                     [s for s in self._data_sources.values() if s.is_connected]
                 ),

@@ -31,24 +31,7 @@ class ErrorSeverity(Enum):
     CRITICAL = "critical"
 
 
-try:
-    from backend.core.utils.error_handler import error_handler
-except ImportError:
-    try:
-        from ...backend.core.utils.error_handler import error_handler
-    except ImportError:
-
-        class MockErrorHandler:
-            """模拟错误处理器."""
-
-            def handle_error(self, error_id, message, **kwargs):
-                """处理错误信息."""
-                # Suppress unused kwargs warning
-                _ = kwargs
-                print("错误 %s: %s", error_id, message)
-                return False
-
-        error_handler = MockErrorHandler()
+from backend.core.utils.error_handler import error_handler
 
 
 class BaseWidget(QWidget):

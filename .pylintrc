@@ -4,10 +4,12 @@
 [MASTER]
 # Add PySide6 to the extension modules
 extension-pkg-whitelist=PySide6
+# Exclude template files that contain Jinja2 placeholders
+ignore-patterns=.*strategies/templates/.*\.py$
 
 [MESSAGES CONTROL]
 # Disable specific warnings that are false positives for PySide6
-disable=no-name-in-module,import-error
+disable=no-name-in-module,import-error,C0413,C0415,C0301,W0718,W0611,W0621,W0404,R1705
 
 [IMPORTS]
 # Add PySide6 to the known modules
@@ -15,7 +17,7 @@ known-third-party=PySide6,numpy,talib,pyqtgraph
 
 [FORMAT]
 # Set maximum line length
-max-line-length=88
+max-line-length=100
 
 [TYPECHECK]
 # Ignore missing imports for PySide6

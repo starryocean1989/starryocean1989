@@ -5,13 +5,13 @@
 提供基于VnPy事件引擎的事件处理和分发功能。
 """
 
+import contextlib
 import logging
 import asyncio
 from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 from datetime import datetime
 
 from .base_service import BaseService
-from backend.api.websocket_manager import get_websocket_manager
 
 if TYPE_CHECKING:
     from vnpy.event import EventEngine
@@ -28,9 +28,9 @@ class EventService(BaseService):
         super().__init__("Event")
         self.vnpy_service = vnpy_service
         self._event_handlers: Dict[str, List[Callable]] = {}
-        self._websocket_manager = get_websocket_manager()
         self._event_queue = asyncio.Queue()
         self._event_processor_task: Optional[asyncio.Task] = None
+        self._event_engine: Optional["EventEngine"] = None
 
     async def initialize(self) -> None:
         """初始化事件服务."""
@@ -63,10 +63,8 @@ class EventService(BaseService):
             # 停止事件处理任务
             if self._event_processor_task:
                 self._event_processor_task.cancel()
-                try:
+                with contextlib.suppress(asyncio.CancelledError):
                     await self._event_processor_task
-                except asyncio.CancelledError:
-                    pass
 
             # 取消所有事件处理器
             await self._unregister_vnpy_handlers()
@@ -88,8 +86,7 @@ class EventService(BaseService):
                 "handlers_count": len(self._event_handlers),
                 "queue_size": self._event_queue.qsize(),
                 "processor_task_active": (
-                    self._event_processor_task is not None
-                    and not self._event_processor_task.done()
+                    self._event_processor_task is not None and not self._event_processor_task.done()
                 ),
                 "timestamp": datetime.now().isoformat(),
             }
@@ -197,9 +194,7 @@ class EventService(BaseService):
         try:
             if hasattr(data, "__dict__"):
                 return {
-                    key: value
-                    for key, value in data.__dict__.items()
-                    if not key.startswith("_")
+                    key: value for key, value in data.__dict__.items() if not key.startswith("_")
                 }
             elif isinstance(data, dict):
                 return data
@@ -255,41 +250,8 @@ class EventService(BaseService):
                 except Exception as e:
                     self.logger.error("事件处理器执行失败: %s - %s", event_type, e)
 
-            # 通过WebSocket广播事件
-            await self._broadcast_event(event)
-
         except Exception as e:
             self.logger.error("处理事件失败: %s", e)
-
-    async def _broadcast_event(self, event: Dict[str, Any]) -> None:
-        """通过WebSocket广播事件."""
-        try:
-            event_type = event.get("type")
-            if not event_type:
-                self.logger.warning("事件缺少type字段，跳过广播")
-                return
-
-            # 构造广播消息
-            message = {
-                "type": "vnpy_event",
-                "event_type": event_type,
-                "data": event.get("data"),
-                "timestamp": event.get("timestamp"),
-            }
-
-            # 根据事件类型决定广播范围
-            if event_type in ["eTick", "eOrder", "eTrade"]:
-                # 实时交易数据广播给所有连接
-                await self._websocket_manager.broadcast(message)
-            elif event_type in ["eLog", "eError"]:
-                # 日志和错误信息广播给管理员连接
-                await self._websocket_manager.send_to_type("admin", message)
-            else:
-                # 其他事件广播给相关订阅者
-                await self._websocket_manager.broadcast_to_topic(event_type, message)
-
-        except Exception as e:
-            self.logger.error("广播事件失败: %s", e)
 
     def register_handler(self, event_type: str, handler: Callable) -> None:
         """注册事件处理器."""
@@ -330,8 +292,7 @@ class EventService(BaseService):
             "queue_size": self._event_queue.qsize(),
             "registered_events": list(self._event_handlers.keys()),
             "processor_task_active": (
-                self._event_processor_task is not None
-                and not self._event_processor_task.done()
+                self._event_processor_task is not None and not self._event_processor_task.done()
             ),
         }
 

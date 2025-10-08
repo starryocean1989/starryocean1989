@@ -1,6 +1,8 @@
+# -*- coding: utf-8 -*-
 # ============================================================
-# Terminal v0.50 完整依赖列表
-# 包含所有直接依赖和间接依赖
+# Terminal v0.50 依赖列表（纯桌面应用版）
+# 本项目是纯Python桌面应用，UI直接调用后端服务
+# 无需FastAPI、uvicorn、WebSocket等Web框架
 # ============================================================
 
 # ========== 核心框架 ==========
@@ -90,26 +92,6 @@ tzlocal>=4.0.0
 # vnpy_rqdata
 # vnpy_ifind
 
-# ========== FastAPI和Web框架 ==========
-fastapi>=0.104.0
-uvicorn>=0.24.0
-starlette>=0.27.0
-
-# FastAPI依赖
-pydantic>=2.0.0
-pydantic-settings>=2.0.0
-pydantic-core>=2.0.0
-typing-extensions>=4.0.0
-annotated-types>=0.4.0
-
-# uvicorn依赖
-click>=7.0.0
-h11>=0.11.0
-
-# starlette依赖
-anyio>=3.0.0
-sniffio>=1.1.0
-
 # ========== AI助手 ==========
 openai>=1.0.0
 
@@ -149,9 +131,6 @@ click>=8.0.0
 mypy-extensions>=0.4.3
 pathspec>=0.9.0
 
-# isort依赖
-# （无额外依赖）
-
 # ========== 测试工具（可选） ==========
 pytest>=7.0.0
 pytest-asyncio>=0.20.0
@@ -162,6 +141,7 @@ iniconfig>=1.1.0
 pluggy>=1.0.0
 exceptiongroup>=1.0.0
 tomli>=1.0.0
+typing-extensions>=4.0.0
 
 # ========== 其他工具依赖 ==========
 # 日期时间处理

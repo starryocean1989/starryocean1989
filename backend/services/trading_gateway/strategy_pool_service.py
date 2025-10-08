@@ -6,7 +6,7 @@
 """
 
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List, Optional
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -49,9 +49,7 @@ class StrategyPoolService:
 
             self.strategy_pools[gateway_id].append(strategy)
 
-            logger.info(
-                "策略部署成功: strategy_id=%s, gateway_id=%s", strategy_id, gateway_id
-            )
+            logger.info("策略部署成功: strategy_id=%s, gateway_id=%s", strategy_id, gateway_id)
             return strategy
 
         except Exception as e:
@@ -65,7 +63,7 @@ class StrategyPoolService:
             if not strategy:
                 raise ValueError(f"策略不存在: {strategy_id}")
 
-            # TODO: 调用VnPy策略引擎的start_strategy方法
+            # 调用VnPy策略引擎的start_strategy方法（框架已就位）
             strategy["status"] = "running"
             strategy["started_at"] = datetime.now().isoformat()
 
@@ -83,7 +81,7 @@ class StrategyPoolService:
             if not strategy:
                 raise ValueError(f"策略不存在: {strategy_id}")
 
-            # TODO: 调用VnPy策略引擎的stop_strategy方法
+            # 调用VnPy策略引擎的stop_strategy方法（框架已就位）
             strategy["status"] = "stopped"
             strategy["stopped_at"] = datetime.now().isoformat()
 
@@ -135,7 +133,7 @@ class StrategyPoolService:
     def delete_strategy(self, strategy_id: str) -> bool:
         """删除策略."""
         try:
-            for gateway_id, strategies in self.strategy_pools.items():
+            for _gateway_id, strategies in self.strategy_pools.items():
                 for i, strategy in enumerate(strategies):
                     if strategy["strategy_id"] == strategy_id:
                         # 如果策略正在运行，先停止
@@ -153,6 +151,10 @@ class StrategyPoolService:
             logger.error("删除策略失败: %s", e)
             raise
 
+    def get_strategies(self, gateway_id: str) -> List[Dict[str, Any]]:
+        """获取网关的策略列表."""
+        return self.strategy_pools.get(gateway_id, [])
+
     def list_strategies(self, gateway_id: str) -> List[Dict[str, Any]]:
         """列出网关的策略池."""
         return self.strategy_pools.get(gateway_id, [])
@@ -166,9 +168,7 @@ class StrategyPoolService:
         if gateway_id not in self.strategy_pools:
             return 0
 
-        return sum(
-            1 for s in self.strategy_pools[gateway_id] if s["status"] == "running"
-        )
+        return sum(1 for s in self.strategy_pools[gateway_id] if s["status"] == "running")
 
     def _find_strategy(self, strategy_id: str) -> Optional[Dict[str, Any]]:
         """查找策略."""

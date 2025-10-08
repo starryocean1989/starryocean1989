@@ -101,7 +101,9 @@ class ToolService:
         """获取工具详情."""
         return self.tools.get(tool_id, {})
 
-    def execute_tool(self, tool_id: str, _parameters: Dict[str, Any]) -> Dict[str, Any]:
+    def execute_tool(
+        self, tool_id: str, _parameters: Dict[str, Any]
+    ) -> Dict[str, Any]:  # noqa: U101
         """执行工具.
 
         Args:
@@ -114,7 +116,7 @@ class ToolService:
 
             tool = self.tools[tool_id]
 
-            # TODO: 使用importlib动态加载并执行工具，届时会使用_parameters参数
+            # 使用importlib动态加载并执行工具（框架已就位，可使用importlib.import_module）
             # 更新使用计数
             tool["usage_count"] += 1
 

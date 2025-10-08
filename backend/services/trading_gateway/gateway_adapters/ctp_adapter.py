@@ -90,15 +90,14 @@ class CTPGatewayAdapter(BaseGatewayAdapter):
                 logger.info("CTP网关连接成功")
                 return True
 
-            except ImportError:
-                logger.warning("vnpy_ctp未安装，使用模拟模式")
-                self.is_connected = True
-                return True
+            except ImportError as e:
+                logger.error("vnpy_ctp未安装: %s", e)
+                raise ImportError("vnpy_ctp未安装，请安装: pip install vnpy_ctp")
 
         except Exception as e:  # pylint: disable=broad-exception-caught
             logger.error("CTP网关连接失败: %s", e)
             self.is_connected = False
-            return False
+            raise
 
     def disconnect(self) -> bool:
         """断开CTP网关"""

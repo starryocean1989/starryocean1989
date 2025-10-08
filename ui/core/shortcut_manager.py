@@ -8,7 +8,7 @@
 import json
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Dict, Optional
+from typing import Callable, Dict, Optional, TYPE_CHECKING
 
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
@@ -175,9 +175,7 @@ class ShortcutManager(QObject):
         shortcuts.update(self.custom_shortcuts)
         return shortcuts
 
-    def set_custom_shortcut(
-        self, key_sequence: str, action_name: str, description: str
-    ) -> bool:
+    def set_custom_shortcut(self, key_sequence: str, action_name: str, description: str) -> bool:
         """
         设置自定义快捷键
 

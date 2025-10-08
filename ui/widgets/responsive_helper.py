@@ -1,12 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-响应式布局帮助类
+响应式布局帮助类.
 
 根据窗口大小自动调整UI布局
 """
 
-from PySide6.QtCore import QObject, Signal, QSize
-from PySide6.QtWidgets import QWidget
+from PySide6.QtCore import QObject, QSize, Signal
 
 
 class ResponsiveHelper(QObject):
@@ -29,12 +28,12 @@ class ResponsiveHelper(QObject):
         """根据宽度获取尺寸级别."""
         if width < self.BREAKPOINT_SMALL:
             return "small"
-        elif width < self.BREAKPOINT_MEDIUM:
+        if width < self.BREAKPOINT_MEDIUM:
             return "medium"
-        elif width < self.BREAKPOINT_LARGE:
+        if width < self.BREAKPOINT_LARGE:
             return "large"
-        else:
-            return "xlarge"
+
+        return "xlarge"
 
     def update_size(self, size: QSize):
         """更新尺寸并发出信号."""
@@ -51,18 +50,18 @@ class ResponsiveHelper(QObject):
         if total_width < 800:
             # 小屏幕：隐藏侧边栏或最小化
             return [0, total_width] if is_left_panel else [total_width, 0]
-        elif total_width < 1200:
+        if total_width < 1200:
             # 中等屏幕：侧边栏较窄
             sidebar_width = 200
             return [sidebar_width, total_width - sidebar_width]
-        elif total_width < 1600:
+        if total_width < 1600:
             # 大屏幕：标准侧边栏
             sidebar_width = 250
             return [sidebar_width, total_width - sidebar_width]
-        else:
-            # 超大屏幕：较宽侧边栏
-            sidebar_width = 300
-            return [sidebar_width, total_width - sidebar_width]
+
+        # 超大屏幕：较宽侧边栏
+        sidebar_width = 300
+        return [sidebar_width, total_width - sidebar_width]
 
     @staticmethod
     def get_table_page_size(height: int) -> int:
@@ -78,24 +77,24 @@ class ResponsiveHelper(QObject):
         # 取标准值
         if rows < 20:
             return 20
-        elif rows < 50:
+        if rows < 50:
             return 50
-        elif rows < 100:
+        if rows < 100:
             return 100
-        else:
-            return 200
+
+        return 200
 
     @staticmethod
     def get_font_size(width: int) -> int:
         """根据宽度获取最优字体大小."""
         if width < 800:
             return 9
-        elif width < 1200:
+        if width < 1200:
             return 10
-        elif width < 1600:
+        if width < 1600:
             return 11
-        else:
-            return 12
+
+        return 12
 
     @staticmethod
     def should_show_sidebar(width: int) -> bool:
@@ -107,9 +106,9 @@ class ResponsiveHelper(QObject):
         """获取卡片布局的列数."""
         if width < 800:
             return 1
-        elif width < 1200:
+        if width < 1200:
             return 2
-        elif width < 1600:
+        if width < 1600:
             return 3
-        else:
-            return 4
+
+        return 4

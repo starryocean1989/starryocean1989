@@ -90,79 +90,51 @@ class ThemeManager:
         dark_palette = QPalette()
         # 窗口背景
         background = colors.get("background", {})
-        window_bg = (
-            background.get("main", "#121212")
-            if isinstance(background, dict)
-            else "#121212"
-        )
+        window_bg = background.get("main", "#121212") if isinstance(background, dict) else "#121212"
         dark_palette.setColor(QPalette.ColorRole.Window, QColor(window_bg))
         # 窗口文本
         text = colors.get("text", {})
-        window_text = (
-            text.get("primary", "#ffffff") if isinstance(text, dict) else "#ffffff"
-        )
+        window_text = text.get("primary", "#ffffff") if isinstance(text, dict) else "#ffffff"
         dark_palette.setColor(QPalette.ColorRole.WindowText, QColor(window_text))
         # 基础颜色
         surface = colors.get("surface", {})
-        base_bg = (
-            surface.get("main", "#1e1e1e") if isinstance(surface, dict) else "#1e1e1e"
-        )
+        base_bg = surface.get("main", "#1e1e1e") if isinstance(surface, dict) else "#1e1e1e"
         dark_palette.setColor(QPalette.ColorRole.Base, QColor(base_bg))
-        base_text = (
-            text.get("primary", "#ffffff") if isinstance(text, dict) else "#ffffff"
-        )
+        base_text = text.get("primary", "#ffffff") if isinstance(text, dict) else "#ffffff"
         dark_palette.setColor(QPalette.ColorRole.Text, QColor(base_text))
         # 交替基础颜色
         alternate_bg = (
-            background.get("secondary", "#1e1e1e")
-            if isinstance(background, dict)
-            else "#1e1e1e"
+            background.get("secondary", "#1e1e1e") if isinstance(background, dict) else "#1e1e1e"
         )
         dark_palette.setColor(QPalette.ColorRole.AlternateBase, QColor(alternate_bg))
         # 按钮颜色
         button = colors.get("button", {})
-        button_bg = (
-            button.get("default", "#2d2d2d") if isinstance(button, dict) else "#2d2d2d"
-        )
+        button_bg = button.get("default", "#2d2d2d") if isinstance(button, dict) else "#2d2d2d"
         dark_palette.setColor(QPalette.ColorRole.Button, QColor(button_bg))
-        button_text = (
-            text.get("primary", "#ffffff") if isinstance(text, dict) else "#ffffff"
-        )
+        button_text = text.get("primary", "#ffffff") if isinstance(text, dict) else "#ffffff"
         dark_palette.setColor(QPalette.ColorRole.ButtonText, QColor(button_text))
         # 高亮颜色
         highlight_bg = colors.get("primary", "#1e88e5")
         dark_palette.setColor(QPalette.ColorRole.Highlight, QColor(highlight_bg))
-        highlight_text = (
-            text.get("primary", "#ffffff") if isinstance(text, dict) else "#ffffff"
-        )
-        dark_palette.setColor(
-            QPalette.ColorRole.HighlightedText, QColor(highlight_text)
-        )
+        highlight_text = text.get("primary", "#ffffff") if isinstance(text, dict) else "#ffffff"
+        dark_palette.setColor(QPalette.ColorRole.HighlightedText, QColor(highlight_text))
         # 链接颜色
         link_color = colors.get("primary", "#1e88e5")
         dark_palette.setColor(QPalette.ColorRole.Link, QColor(link_color))
         # 工具提示
         tooltip = colors.get("tooltip", {})
         tooltip_bg = (
-            tooltip.get("background", "#383838")
-            if isinstance(tooltip, dict)
-            else "#383838"
+            tooltip.get("background", "#383838") if isinstance(tooltip, dict) else "#383838"
         )
         dark_palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(tooltip_bg))
-        tooltip_text = (
-            tooltip.get("text", "#ffffff") if isinstance(tooltip, dict) else "#ffffff"
-        )
+        tooltip_text = tooltip.get("text", "#ffffff") if isinstance(tooltip, dict) else "#ffffff"
         dark_palette.setColor(QPalette.ColorRole.ToolTipText, QColor(tooltip_text))
         # 禁用状态
-        disabled_bg = (
-            button.get("disabled", "#1a1a1a") if isinstance(button, dict) else "#1a1a1a"
-        )
+        disabled_bg = button.get("disabled", "#1a1a1a") if isinstance(button, dict) else "#1a1a1a"
         dark_palette.setColor(
             QPalette.ColorGroup.Disabled, QPalette.ColorRole.Button, QColor(disabled_bg)
         )
-        disabled_text = (
-            text.get("disabled", "#808080") if isinstance(text, dict) else "#808080"
-        )
+        disabled_text = text.get("disabled", "#808080") if isinstance(text, dict) else "#808080"
         dark_palette.setColor(
             QPalette.ColorGroup.Disabled,
             QPalette.ColorRole.ButtonText,
@@ -189,12 +161,8 @@ class ThemeManager:
         # 获取主题配置
         theme = self.themes
         border_radius = theme.get("border_radius", {})
-        border_radius_md = (
-            border_radius.get("md", 8) if isinstance(border_radius, dict) else 8
-        )
-        border_radius_sm = (
-            border_radius.get("sm", 4) if isinstance(border_radius, dict) else 4
-        )
+        border_radius_md = border_radius.get("md", 8) if isinstance(border_radius, dict) else 8
+        border_radius_sm = border_radius.get("sm", 4) if isinstance(border_radius, dict) else 4
         stylesheet = f"""
         QMainWindow {{
             background-color: {safe_get_color('background.main', '#121212')};
@@ -358,9 +326,7 @@ class ThemeManager:
     def _set_global_font(self, app: "QApplication", theme: Dict[str, Any]):
         """设置全局字体."""
         typography = theme.get("typography", {})
-        font_family = typography.get(
-            "font_family", "Microsoft YaHei, SimSun, sans-serif"
-        )
+        font_family = typography.get("font_family", "Microsoft YaHei, SimSun, sans-serif")
         font_size = typography.get("font_size", {}).get("md", 14)
         font = QFont(font_family, font_size)
         app.setFont(font)
@@ -427,9 +393,7 @@ class ThemeManager:
             else:
                 # 回退到调色板方式
                 self._set_dark_palette(app, self.themes)
-                self._logger.warning(
-                    "QSS文件不存在，使用调色板方式应用%s主题", theme_name
-                )
+                self._logger.warning("QSS文件不存在，使用调色板方式应用%s主题", theme_name)
 
             # 保存主题选择
             self._save_theme_preference(theme_name)

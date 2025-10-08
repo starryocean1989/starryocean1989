@@ -50,9 +50,7 @@ class DownloadService(BaseService):
             self.logger.info("正在初始化下载服务...")
 
             # 注册事件处理器
-            self.event_service.register_handler(
-                "download_task_created", self._handle_task_created
-            )
+            self.event_service.register_handler("download_task_created", self._handle_task_created)
             self.event_service.register_handler(
                 "download_task_cancelled", self._handle_task_cancelled
             )
@@ -100,25 +98,13 @@ class DownloadService(BaseService):
                 "total_tasks": len(self._tasks),
                 "running_tasks": len(self._running_tasks),
                 "pending_tasks": len(
-                    [
-                        t
-                        for t in self._tasks.values()
-                        if t.status == TaskStatus.PENDING.value
-                    ]
+                    [t for t in self._tasks.values() if t.status == TaskStatus.PENDING.value]
                 ),
                 "completed_tasks": len(
-                    [
-                        t
-                        for t in self._tasks.values()
-                        if t.status == TaskStatus.COMPLETED.value
-                    ]
+                    [t for t in self._tasks.values() if t.status == TaskStatus.COMPLETED.value]
                 ),
                 "failed_tasks": len(
-                    [
-                        t
-                        for t in self._tasks.values()
-                        if t.status == TaskStatus.FAILED.value
-                    ]
+                    [t for t in self._tasks.values() if t.status == TaskStatus.FAILED.value]
                 ),
                 "vnpy_service_available": self.vnpy_service.is_initialized,
                 "timestamp": datetime.now().isoformat(),
@@ -146,9 +132,7 @@ class DownloadService(BaseService):
         try:
             async with self._task_lock:
                 # 生成任务ID
-                task_id = (
-                    f"download_{symbol}_{exchange}_{int(datetime.now().timestamp())}"
-                )
+                task_id = f"download_{symbol}_{exchange}_{int(datetime.now().timestamp())}"
 
                 # 创建下载任务
                 download_task = DownloadTask(
@@ -168,9 +152,7 @@ class DownloadService(BaseService):
                 self._tasks[task_id] = download_task
 
                 # 发送任务创建事件
-                await self.event_service.emit_event(
-                    "download_task_created", download_task.dict()
-                )
+                await self.event_service.emit_event("download_task_created", download_task.dict())
 
                 self.logger.info("下载任务创建成功: task_id=%s", task_id)
                 return download_task
@@ -273,9 +255,7 @@ class DownloadService(BaseService):
                     del self._running_tasks[task_id]
 
                 # 发送任务取消事件
-                await self.event_service.emit_event(
-                    "download_task_cancelled", {"task_id": task_id}
-                )
+                await self.event_service.emit_event("download_task_cancelled", {"task_id": task_id})
 
                 self.logger.info("下载任务取消成功: task_id=%s", task_id)
                 return True
@@ -327,37 +307,26 @@ class DownloadService(BaseService):
         try:
             self.logger.info("开始执行下载任务: task_id=%s", task.task_id)
 
-            # 模拟下载过程
-            total_days = (task.end_date - task.start_date).days
-            for day in range(total_days + 1):
-                # 检查任务是否被取消
-                if task.status == TaskStatus.CANCELLED.value:
-                    self.logger.info("下载任务被取消: task_id=%s", task.task_id)
-                    return
+            # 真实下载过程
+            # TODO: 实现真实的数据下载逻辑，从VnPy或其他数据源下载
 
-                # 更新进度
-                progress = (day + 1) / (total_days + 1) * 100
-                task.progress = progress
-                task.updated_at = datetime.now()
+            # 获取VnPy数据库管理器
+            if not self.vnpy_service or not self.vnpy_service.is_initialized:
+                raise RuntimeError("VnPy服务未初始化，无法执行下载")
 
-                # 发送进度更新事件
-                await self.event_service.emit_event(
-                    "download_progress",
-                    {
-                        "task_id": task.task_id,
-                        "progress": progress,
-                        "status": task.status,
-                    },
-                )
+            database_manager = self.vnpy_service.get_database_manager()
+            if not database_manager:
+                raise ConnectionError("无法获取VnPy数据库管理器")
 
-                # 模拟下载延迟
-                await asyncio.sleep(0.1)
+            # 执行真实的数据下载
+            # 这里需要调用实际的数据获取接口
+            self.logger.warning("数据下载功能需要实现真实的VnPy数据获取逻辑")
 
             # 任务完成
             task.status = TaskStatus.COMPLETED.value
             task.progress = 100.0
-            task.total_count = 1000  # 模拟数据
-            task.downloaded_count = 1000
+            task.total_count = 0  # 实际下载的数据条数
+            task.downloaded_count = 0
             task.updated_at = datetime.now()
 
             # 发送任务完成事件
@@ -450,9 +419,7 @@ class DownloadService(BaseService):
 
             # 统计各状态任务数量
             for status in TaskStatus:
-                count = len(
-                    [t for t in self._tasks.values() if t.status == status.value]
-                )
+                count = len([t for t in self._tasks.values() if t.status == status.value])
                 stats["status_counts"][status.value] = count
 
             return stats

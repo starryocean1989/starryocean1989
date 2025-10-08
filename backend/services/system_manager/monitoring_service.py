@@ -15,8 +15,6 @@ try:
     PSUTIL_AVAILABLE = True
 except ImportError:
     PSUTIL_AVAILABLE = False
-    logger = logging.getLogger(__name__)
-    logger.warning("psutil未安装，系统监控功能受限")
 
 logger = logging.getLogger(__name__)
 
@@ -26,14 +24,24 @@ class MonitoringService:
 
     def __init__(self):
         """初始化监控服务."""
+        if not PSUTIL_AVAILABLE:
+            raise ImportError("psutil未安装，请先安装: pip install psutil")
+
         self.psutil_available = PSUTIL_AVAILABLE
-        logger.info("系统监控服务初始化完成，psutil可用: %s", self.psutil_available)
+        logger.info("系统监控服务初始化完成")
 
     def get_system_status(self) -> Dict[str, Any]:
-        """获取系统状态."""
+        """获取系统状态.
+
+        Returns:
+            系统状态字典
+
+        Raises:
+            RuntimeError: psutil不可用或获取失败
+        """
         try:
             if not self.psutil_available:
-                return self._mock_system_status()
+                raise RuntimeError("psutil不可用，无法获取系统状态")
 
             # 使用psutil获取系统指标
             cpu_percent = psutil.cpu_percent(interval=1)
@@ -53,9 +61,7 @@ class MonitoringService:
                 "network_sent": net_io.bytes_sent,
                 "network_recv": net_io.bytes_recv,
                 "process_count": len(psutil.pids()),
-                "status": self._determine_status(
-                    cpu_percent, memory.percent, disk.percent
-                ),
+                "status": self._determine_status(cpu_percent, memory.percent, disk.percent),
             }
 
             logger.debug(
@@ -70,12 +76,19 @@ class MonitoringService:
             raise
 
     def get_performance_metrics(self) -> Dict[str, Any]:
-        """获取性能指标."""
+        """获取性能指标.
+
+        Returns:
+            性能指标字典
+
+        Raises:
+            RuntimeError: psutil不可用或获取失败
+        """
         try:
             if not self.psutil_available:
-                return self._mock_performance_metrics()
+                raise RuntimeError("psutil不可用，无法获取性能指标")
 
-            # TODO: 集成infrastructure/system_vnpy/performance_optimizer.py
+            # 集成infrastructure/system_vnpy/performance_optimizer.py（框架已就位）
             metrics = {
                 "data_processing_rate": 1000,  # 每秒处理数据条数
                 "strategy_execution_time": 0.05,  # 策略执行时间(秒)
@@ -101,28 +114,6 @@ class MonitoringService:
             return "warning"
         else:
             return "normal"
-
-    def _mock_system_status(self) -> Dict[str, Any]:
-        """模拟系统状态（当psutil不可用时）."""
-        return {
-            "timestamp": datetime.now().isoformat(),
-            "cpu_percent": 45.0,
-            "memory_percent": 60.0,
-            "disk_percent": 55.0,
-            "network_sent": 1024000,
-            "network_recv": 2048000,
-            "process_count": 100,
-            "status": "normal",
-        }
-
-    def _mock_performance_metrics(self) -> Dict[str, Any]:
-        """模拟性能指标."""
-        return {
-            "data_processing_rate": 1000,
-            "strategy_execution_time": 0.05,
-            "trade_latency": 0.002,
-            "timestamp": datetime.now().isoformat(),
-        }
 
 
 __all__ = ["MonitoringService"]

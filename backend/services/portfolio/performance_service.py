@@ -112,5 +112,27 @@ class PerformanceService:
             "win_rate": 0.0,
         }
 
+    def calculate_attribution(self, portfolio_id: str) -> Dict[str, Any]:
+        """计算归因分析."""
+        try:
+            # 归因分析需要组合持仓、收益等详细数据
+            # 这里返回基本的归因结构
+            attribution = {
+                "portfolio_id": portfolio_id,
+                "total_return": 0.0,
+                "asset_allocation": {},
+                "security_selection": {},
+                "timing": 0.0,
+                "interaction": 0.0,
+                "date": datetime.now().isoformat(),
+            }
+
+            logger.info("归因分析完成: portfolio_id=%s", portfolio_id)
+            return attribution
+
+        except Exception as e:
+            logger.error("计算归因分析失败: %s", e)
+            raise
+
 
 __all__ = ["PerformanceService"]

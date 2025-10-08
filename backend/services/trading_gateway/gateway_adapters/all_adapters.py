@@ -77,13 +77,12 @@ class CTPTestGatewayAdapter(BaseGatewayAdapter):
                 logger.info("成功导入vnpy_ctptest")
                 self.is_connected = True
                 return True
-            except ImportError:
-                logger.warning("vnpy_ctptest未安装，使用模拟模式")
-                self.is_connected = True
-                return True
+            except ImportError as e:
+                logger.error("vnpy_ctptest未安装: %s", e)
+                raise ImportError("vnpy_ctptest未安装，请安装: pip install vnpy_ctptest")
         except (OSError, RuntimeError) as e:
             logger.error("CTPTest网关连接失败: %s", e)
-            return False
+            raise
 
     def disconnect(self) -> bool:
         """断开网关连接."""
@@ -177,10 +176,9 @@ class SoptGatewayAdapter(BaseGatewayAdapter):
                 logger.info("成功导入vnpy_sopt")
                 self.is_connected = True
                 return True
-            except ImportError:
-                logger.warning("vnpy_sopt未安装，使用模拟模式")
-                self.is_connected = True
-                return True
+            except ImportError as e:
+                logger.error("vnpy_sopt未安装: %s", e)
+                raise ImportError("vnpy_sopt未安装，请安装: pip install vnpy_sopt")
         except (OSError, RuntimeError) as e:
             logger.error("Sopt网关连接失败: %s", e)
             return False
@@ -265,10 +263,9 @@ class TTSGatewayAdapter(BaseGatewayAdapter):
                 logger.info("成功导入vnpy_tts")
                 self.is_connected = True
                 return True
-            except ImportError:
-                logger.warning("vnpy_tts未安装，使用模拟模式")
-                self.is_connected = True
-                return True
+            except ImportError as e:
+                logger.error("vnpy_tts未安装: %s", e)
+                raise ImportError("vnpy_tts未安装，请安装: pip install vnpy_tts")
         except (OSError, RuntimeError) as e:
             logger.error("TTS网关连接失败: %s", e)
             return False
@@ -350,10 +347,9 @@ class IBGatewayAdapter(BaseGatewayAdapter):
                 logger.info("成功导入vnpy_ib")
                 self.is_connected = True
                 return True
-            except ImportError:
-                logger.warning("vnpy_ib未安装，使用模拟模式")
-                self.is_connected = True
-                return True
+            except ImportError as e:
+                logger.error("vnpy_ib未安装: %s", e)
+                raise ImportError("vnpy_ib未安装，请安装: pip install vnpy_ib")
         except (OSError, RuntimeError) as e:
             logger.error("IB网关连接失败: %s", e)
             return False

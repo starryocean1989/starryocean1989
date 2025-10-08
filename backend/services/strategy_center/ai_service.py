@@ -32,7 +32,7 @@ class AIService:
             logger.info("AI助手服务初始化完成（DeepSeek API已配置）")
             self.enabled = True
         else:
-            logger.warning("AI助手服务初始化完成（API Key未配置，使用模拟模式）")
+            logger.warning("AI助手服务初始化完成（API Key未配置，AI功能将不可用）")
             self.enabled = False
 
     async def chat(
@@ -53,9 +53,15 @@ class AIService:
             AI响应
         """
         try:
-            # 如果未启用，返回提示信息
+            # 如果未启用，直接报错
             if not self.enabled:
-                return self._get_mock_response(message, context)
+                raise RuntimeError(
+                    "AI助手未启用。请配置DeepSeek API Key：\n"
+                    "1. 访问 https://platform.deepseek.com/ 注册账号\n"
+                    "2. 获取API Key\n"
+                    "3. 设置环境变量：AI_API_KEY=your_api_key\n"
+                    "4. 重启应用"
+                )
 
             # 获取或创建会话历史
             session_id = session_id or "default"
@@ -117,9 +123,7 @@ class AIService:
         if context:
             if "code" in context:
                 code_text = context["code"]
-                current_message = (
-                    f"当前代码：\n```python\n{code_text}\n```\n\n{message}"
-                )
+                current_message = f"当前代码：\n```python\n{code_text}\n```\n\n{message}"
             if "strategy_info" in context:
                 strategy_json = json.dumps(context["strategy_info"], ensure_ascii=False)
                 current_message += f"\n\n策略信息：{strategy_json}"
@@ -169,31 +173,7 @@ class AIService:
 
         return {"text": text, "code": "\n\n".join(code_blocks) if code_blocks else None}
 
-    def _get_mock_response(
-        self, message: str, context: Optional[Dict[str, Any]]
-    ) -> Dict[str, Any]:
-        """获取模拟响应（API Key未配置时）"""
-        _ = context  # Unused parameter, kept for signature compatibility
-        mock_msg = (
-            f"收到您的消息：{message}\n\n"
-            "AI助手当前处于模拟模式。要启用完整功能，"
-            "请配置DeepSeek API Key：\n"
-            "1. 访问 https://platform.deepseek.com/ 注册账号\n"
-            "2. 获取API Key\n"
-            "3. 设置环境变量：AI_API_KEY=your_api_key\n"
-            "4. 重启应用"
-        )
-        return {
-            "success": True,
-            "message": mock_msg,
-            "code": None,
-            "type": "mock_response",
-            "timestamp": datetime.now().isoformat(),
-        }
-
-    async def analyze_code(
-        self, code: str, analysis_type: str = "review"
-    ) -> Dict[str, Any]:
+    async def analyze_code(self, code: str, analysis_type: str = "review") -> Dict[str, Any]:
         """
         代码分析
 

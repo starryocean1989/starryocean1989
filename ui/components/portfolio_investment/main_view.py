@@ -5,13 +5,11 @@
 混合架构：两个固有业务组件，无独立子界面
 """
 
-import logging
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -32,14 +30,15 @@ except ImportError:
     VnPyAdapter = None
 
 
-# Import base classes with proper fallback handling
+# Import base classes - no fallback, fail fast
 
 if TYPE_CHECKING:
     # For type checking, use the actual imported classes
     from ..widgets.base_widget import BaseWidget  # type: ignore
+
     from backend.core.utils.logging_utils import LoggerMixin  # type: ignore
 else:
-    # Runtime imports with fallback
+    # Runtime imports - fail if dependencies are missing
     try:
         from ..widgets.base_widget import BaseWidget  # type: ignore
         from backend.core.utils.logging_utils import LoggerMixin  # type: ignore
@@ -47,42 +46,11 @@ else:
         try:
             from ui.widgets.base_widget import BaseWidget  # type: ignore
             from backend.core.utils.logging_utils import LoggerMixin  # type: ignore
-        except ImportError:
-            # Create fallback implementations
-            class BaseWidget(QWidget):
-                """Base widget fallback implementation."""
-
-                def __init__(self, parent=None, title=""):
-                    """Initialize base widget."""
-                    super().__init__(parent)
-                    self._parent = parent
-                    self.title = title
-
-                def setup_ui(self):
-                    """Set up UI - fallback implementation."""
-
-                def connect_signals(self):
-                    """Connect signals - fallback implementation."""
-
-                def show_info(self, message: str):
-                    """Show info message."""
-                    print(f"INFO: {message}")
-
-                def show_error(self, message: str):
-                    """Show error message."""
-                    print(f"ERROR: {message}")
-
-                def show_warning(self, message: str):
-                    """Show warning message."""
-                    print(f"WARNING: {message}")
-
-            class LoggerMixin:
-                """Logger mixin fallback implementation."""
-
-                @property
-                def logger(self):
-                    """Get logger instance."""
-                    return logging.getLogger(self.__class__.__name__)
+        except ImportError as e:
+            raise ImportError(
+                f"无法导入必要的UI组件: {e}\n"
+                "请确保已正确安装所有依赖：pip install -r requirements.txt"
+            )
 
 
 class PortfolioInvestment(BaseWidget, LoggerMixin):
@@ -90,12 +58,11 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
 
     def __init__(self, parent=None):
         """Initialize portfolio investment interface."""
-        super().__init__(parent, "组合投资")
-        self.logger.info("组合投资界面初始化开始")
+        # Initialize all attributes BEFORE calling super().__init__
+        # because BaseWidget may call setup_ui() automatically
 
         # Initialize VNPY adapter first
         self.vnpy_adapter = None
-        self._initialize_vnpy_adapter()
 
         # Initialize UI components - 移除容易导致冲突的单例变量
         self.auto_portfolio_table = None
@@ -109,55 +76,43 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
         self._update_timer = None
         self.ui_ready = False
 
+        # Now call parent init which may trigger setup_ui()
+        super().__init__(parent, "组合投资")
+        self.logger.info("组合投资界面初始化开始")
+
+        # Initialize VNPY adapter after UI setup
+        self._initialize_vnpy_adapter()
+
     def setup_ui(self):
         """设置用户界面"""
-        try:
-            main_layout = QHBoxLayout()
-            self.setLayout(main_layout)
-            self.setMinimumSize(400, 300)
+        # 设置组件大小策略为扩展
+        from PySide6.QtWidgets import QSizePolicy
 
-            # 创建主分割器
-            main_splitter = QSplitter(Qt.Orientation.Horizontal)
-            main_splitter.setSizes([400, 600])
-            main_splitter.setStretchFactor(0, 1)
-            main_splitter.setStretchFactor(1, 1)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
-            # 左侧：组合管理组件（固有组件）
-            try:
-                left_widget = self._create_portfolio_manager()
-            except (AttributeError, TypeError, ValueError, RuntimeError) as e:
-                left_widget = QWidget()
-                ll = QVBoxLayout(left_widget)
-                msg = QLabel(f"左侧组合管理加载失败：{e}")
-                msg.setStyleSheet("color:#d32f2f;")
-                ll.addWidget(msg)
-            main_splitter.addWidget(left_widget)
+        main_layout = QHBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+        self.setLayout(main_layout)
+        self.setMinimumSize(600, 400)
 
-            # 右侧：组合投资监控组件（固有组件）
-            try:
-                right_widget = self._create_monitor_panel()
-            except (AttributeError, TypeError, ValueError, RuntimeError) as e:
-                right_widget = QWidget()
-                rl = QVBoxLayout(right_widget)
-                msg = QLabel(f"右侧监控面板加载失败：{e}")
-                msg.setStyleSheet("color:#d32f2f;")
-                rl.addWidget(msg)
-            main_splitter.addWidget(right_widget)
+        # 创建主分割器
+        main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        main_splitter.setSizes([400, 600])
+        main_splitter.setStretchFactor(0, 1)
+        main_splitter.setStretchFactor(1, 1)
 
-            main_layout.addWidget(main_splitter)
-            # 界面就绪
-            self.ui_ready = True
-        except (AttributeError, TypeError, ValueError, RuntimeError) as e:
-            # 占位回退，避免整体不可见
-            fallback = QWidget()
-            fl = QVBoxLayout(fallback)
-            msg = QLabel(f"组合投资界面加载失败：{e}\n已切换到占位界面。")
+        # 左侧：组合管理组件（固有组件）
+        left_widget = self._create_portfolio_manager()
+        main_splitter.addWidget(left_widget)
 
-            msg.setStyleSheet("color:#d32f2f;")
-            fl.addWidget(msg)
-            outer = QHBoxLayout()
-            self.setLayout(outer)
-            outer.addWidget(fallback)
+        # 右侧：组合投资监控组件（固有组件）
+        right_widget = self._create_monitor_panel()
+        main_splitter.addWidget(right_widget)
+
+        main_layout.addWidget(main_splitter)
+        # 界面就绪
+        self.ui_ready = True
 
     def _create_portfolio_manager(self):
         """创建组合管理组件"""
@@ -174,9 +129,7 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
         auto_layout = QVBoxLayout(auto_group)
 
         self.auto_portfolio_table = QTableWidget(0, 3)
-        self.auto_portfolio_table.setHorizontalHeaderLabels(
-            ["网关名称", "策略数量", "状态"]
-        )
+        self.auto_portfolio_table.setHorizontalHeaderLabels(["网关名称", "策略数量", "状态"])
         self.auto_portfolio_table.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.Stretch
         )
@@ -264,9 +217,7 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
         card_layout.addWidget(title_label)
 
         value_label = QLabel(value)
-        value_label.setStyleSheet(
-            f"font-size: 20px; font-weight: bold; color: {color};"
-        )
+        value_label.setStyleSheet(f"font-size: 20px; font-weight: bold; color: {color};")
         value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         card_layout.addWidget(value_label)
 
@@ -314,32 +265,14 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
             # 这里可以实现实际的报告导出逻辑
 
     def _ensure_monitor_content(self):
-        """确保监控面板有内容显示 - 多层级备份机制"""
-        try:
-            # 第一层：尝试创建真实网关选项卡
-            self._try_create_real_gateway_tabs()
+        """确保监控面板有内容显示 - 只创建真实网关选项卡"""
+        # 尝试创建真实网关选项卡
+        self._try_create_real_gateway_tabs()
 
-            # 检查是否成功创建了选项卡
-            if self.gateway_tab and self.gateway_tab.count() > 0:
-                self.logger.info("成功创建网关选项卡")
-                return
-
-        except (AttributeError, TypeError, ValueError, RuntimeError) as e:
-            self.logger.warning("创建真实网关选项卡失败: %s", e)
-
-        try:
-            # 第二层：创建示例监控选项卡
-            self._create_demo_monitor_tab_safe()
-
-            if self.gateway_tab and self.gateway_tab.count() > 0:
-                self.logger.info("成功创建示例监控选项卡")
-                return
-
-        except (AttributeError, TypeError, ValueError, RuntimeError) as e:
-            self.logger.warning("创建示例监控选项卡失败: %s", e)
-
-        # 第三层：最简化的占位选项卡（绝对不会失败）
-        self._create_minimal_monitor_tab()
+        # 如果没有网关，显示提示占位符
+        if self.gateway_tab and self.gateway_tab.count() == 0:
+            self.logger.info("无可用网关，创建提示占位符")
+            self._create_no_gateway_placeholder()
 
     def _try_create_real_gateway_tabs(self):
         """尝试创建真实网关选项卡"""
@@ -358,51 +291,33 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
                 self.gateway_tab.addTab(tab, gateway_name)
                 self.logger.info("创建真实网关选项卡: %s", gateway_name)
 
-    def _create_demo_monitor_tab_safe(self):
-        """安全创建示例监控选项卡"""
-        demo_tab = self._create_demo_monitor_tab()
+    def _create_no_gateway_placeholder(self):
+        """创建无网关提示占位符"""
+        placeholder = QWidget()
+        layout = QVBoxLayout(placeholder)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        # 图标
+        icon_label = QLabel("🔌")
+        icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon_label.setStyleSheet("font-size: 48px;")
+        layout.addWidget(icon_label)
+
+        # 标题
+        title_label = QLabel("未连接网关")
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #999; margin: 10px;")
+        layout.addWidget(title_label)
+
+        # 提示信息
+        hint_label = QLabel("当前无可用网关连接\n请先在「交易网关」界面配置并连接网关")
+        hint_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        hint_label.setStyleSheet("color: #666; font-size: 12px;")
+        hint_label.setWordWrap(True)
+        layout.addWidget(hint_label)
+
         if self.gateway_tab:
-            self.gateway_tab.addTab(demo_tab, "📊 示例网关")
-
-    def _create_minimal_monitor_tab(self):
-        """创建最简化的监控选项卡（绝对不会失败）"""
-        try:
-            tab = QWidget()
-            layout = QVBoxLayout(tab)
-
-            # 简单的欢迎信息
-            welcome_label = QLabel("👋 欢迎使用组合投资监控")
-            welcome_label.setStyleSheet(
-                "font-size: 16px; font-weight: bold; color: #2196F3; padding: 20px;"
-            )
-            welcome_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            layout.addWidget(welcome_label)
-
-            # 状态信息
-            status_label = QLabel("🔄 正在加载监控数据...")
-            status_label.setStyleSheet("color: #666; font-size: 14px; padding: 10px;")
-            status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            layout.addWidget(status_label)
-
-            # 简单的进度条
-            progress = QProgressBar()
-            progress.setRange(0, 0)  # 无限进度条
-            progress.setStyleSheet("QProgressBar { margin: 20px; }")
-            layout.addWidget(progress)
-
-            # 添加伸缩空间
-            layout.addStretch()
-
-            if self.gateway_tab:
-                self.gateway_tab.addTab(tab, "📊 监控面板")
-                self.logger.info("成功创建最简化监控选项卡")
-
-        except (AttributeError, TypeError, ValueError, RuntimeError) as e:
-            self.logger.error("创建最简化监控选项卡也失败: %s", e)
-            # 最后的最后手段：空的QWidget
-            empty_tab = QWidget()
-            if self.gateway_tab:
-                self.gateway_tab.addTab(empty_tab, "监控")
+            self.gateway_tab.addTab(placeholder, "💡 提示")
 
     def _create_gateway_tabs(self):
         """创建网关选项卡 - 修复版，确保始终有可见内容"""
@@ -426,30 +341,16 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
                         self.gateway_tab.addTab(tab, gateway_name)
                         self.logger.info("创建网关选项卡: %s", gateway_name)
 
-                # 如果没有任何网关连接，创建示例选项卡
+                # 如果没有任何网关连接，显示错误
                 if not connected_gateways:
-                    self.logger.info("无连接网关，创建示例选项卡")
-                    self._create_fallback_gateway_tabs()
+                    self.logger.warning("无连接网关")
+                    raise RuntimeError("无可用网关连接，请先配置并连接网关")
 
-            except (AttributeError, TypeError, ValueError, RuntimeError) as e:
+            except Exception as e:
                 self.logger.error("创建网关选项卡失败: %s", e)
-                self._create_fallback_gateway_tabs()
+                raise
         else:
-            self.logger.warning("VNPY适配器不可用，创建示例选项卡")
-            self._create_fallback_gateway_tabs()
-
-    def _create_fallback_gateway_tabs(self):
-        """创建备用网关选项卡（VNPY不可用时）"""
-        try:
-            # 创建一个示例监控选项卡，而不是多个
-            demo_tab = self._create_demo_monitor_tab()
-            if self.gateway_tab:
-                self.gateway_tab.addTab(demo_tab, "示例网关")
-                self.logger.info("已创建示例网关选项卡")
-        except (AttributeError, TypeError, ValueError, RuntimeError) as e:
-            self.logger.error("创建示例网关选项卡失败: %s", e)
-            # 创建最基础的占位选项卡
-            self._create_minimal_monitor_tab()
+            raise RuntimeError("VnPy适配器不可用，无法创建网关监控")
 
     def _create_monitor_tab(self, gateway_name):
         """为指定网关创建监控选项卡（优化版）"""
@@ -518,29 +419,22 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
         overview_main_layout.addLayout(cards_layout)
         main_layout.addWidget(overview_group)
 
-        # 资金曲线图（可选，需要pyqtgraph）
-        try:
-            import pyqtgraph as pg
+        # 资金曲线图
+        import pyqtgraph as pg
 
-            equity_group = QGroupBox("资金曲线")
-            equity_layout = QVBoxLayout(equity_group)
+        equity_group = QGroupBox("资金曲线")
+        equity_layout = QVBoxLayout(equity_group)
 
-            equity_widget = pg.PlotWidget()
-            equity_widget.setBackground("#1E1E1E")
-            equity_widget.setMinimumHeight(200)
-            equity_widget.setLabel("left", "资金", units="元")
-            equity_widget.setLabel("bottom", "时间")
-            equity_widget.showGrid(x=True, y=True)
-            tab_data["equity_curve"] = equity_widget
+        equity_widget = pg.PlotWidget()
+        equity_widget.setBackground("#1E1E1E")
+        equity_widget.setMinimumHeight(200)
+        equity_widget.setLabel("left", "资金", units="元")
+        equity_widget.setLabel("bottom", "时间")
+        equity_widget.showGrid(x=True, y=True)
+        tab_data["equity_curve"] = equity_widget
 
-            equity_layout.addWidget(equity_widget)
-            main_layout.addWidget(equity_group)
-        except ImportError:
-            # 如果没有pyqtgraph，显示文本提示
-            equity_placeholder = QLabel("📈 资金曲线图（需要安装pyqtgraph）")
-            equity_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            equity_placeholder.setStyleSheet("color: #888; padding: 20px;")
-            main_layout.addWidget(equity_placeholder)
+        equity_layout.addWidget(equity_widget)
+        main_layout.addWidget(equity_group)
 
         # 持仓情况组
         position_group = QGroupBox("持仓情况")
@@ -595,27 +489,19 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
 
     def _initialize_vnpy_adapter(self):
         """初始化VNPY适配器"""
-        # 确保属性始终存在
-        self.vnpy_adapter = None
+        if VnPyAdapter is None:
+            raise ImportError("VnPy适配器不可用，请检查VnPy安装")
 
-        try:
-            if VnPyAdapter is not None:
-                self.vnpy_adapter = VnPyAdapter()
-                self.logger.info("VNPY适配器初始化完成")
-            else:
-                self.vnpy_adapter = None
-                self.logger.warning("VNPY适配器不可用")
-        except (AttributeError, TypeError, ValueError, RuntimeError) as e:
-            self.logger.error("VNPY适配器初始化失败: %s", e)
-            self.vnpy_adapter = None
+        self.vnpy_adapter = VnPyAdapter()
+        self.logger.info("VNPY适配器初始化完成")
 
     def _create_custom_portfolio(self):
         """新建自定义组合"""
-        self.show_info("新建自定义组合功能开发中...")
+        raise NotImplementedError("自定义组合功能需要实现portfolio_service集成。")
 
     def _delete_custom_portfolio(self):
         """删除自定义组合"""
-        self.show_info("删除自定义组合功能开发中...")
+        raise NotImplementedError("删除自定义组合功能需要实现portfolio_service集成。")
 
     def _on_gateway_tab_changed(self, index):
         """网关选项卡切换"""
@@ -669,35 +555,29 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
         ):
             return
 
-        if self.vnpy_adapter:
-            try:
-                # 从VNPY获取真实数据
-                if hasattr(self.vnpy_adapter, "get_status"):
-                    status = self.vnpy_adapter.get_status()
-                    # 更新自动组合表格
-                    self._update_auto_portfolios(status)
-                else:
-                    # 使用模拟数据
-                    self._update_auto_portfolios_fallback()
+        if not self.vnpy_adapter:
+            # VnPy适配器未初始化时不更新数据
+            return
 
-                # 更新自定义组合表格
-                if hasattr(self.vnpy_adapter, "get_status"):
-                    self._update_custom_portfolios()
-                else:
-                    self._update_custom_portfolios_fallback()
+        try:
+            # 从VNPY获取真实数据
+            if not hasattr(self.vnpy_adapter, "get_status"):
+                raise AttributeError("VnPy适配器缺少get_status方法")
 
-                # 更新监控数据
-                self._update_monitor_data()
+            status = self.vnpy_adapter.get_status()
 
-            except (AttributeError, TypeError, ValueError, RuntimeError) as e:
-                self.logger.error("更新组合数据失败: %s", e)
-                # 回退到模拟数据
-                self._update_auto_portfolios_fallback()
-                self._update_custom_portfolios_fallback()
-        else:
-            # 无VNPY适配器时使用模拟数据
-            self._update_auto_portfolios_fallback()
-            self._update_custom_portfolios_fallback()
+            # 更新自动组合表格
+            self._update_auto_portfolios(status)
+
+            # 更新自定义组合表格
+            self._update_custom_portfolios(status)
+
+            # 更新监控数据
+            self._update_monitor_data()
+
+        except Exception as e:
+            self.logger.error("更新组合数据失败: %s", e)
+            raise
 
     def _update_auto_portfolios(self, status):
         """更新自动组合"""
@@ -707,6 +587,10 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
 
         connected_gateways = status.get("connected_gateways", [])
 
+        if not connected_gateways:
+            # 没有连接的网关是正常情况
+            return
+
         for i, gateway_name in enumerate(connected_gateways):
             if self.auto_portfolio_table:
                 self.auto_portfolio_table.insertRow(i)
@@ -714,11 +598,10 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
                 # 网关名称
                 self.auto_portfolio_table.setItem(i, 0, QTableWidgetItem(gateway_name))
 
-                # 策略数量（模拟，实际需要从VNPY获取）
-                strategies_count = "多个策略"  # 需要实际实现策略计数
-                self.auto_portfolio_table.setItem(
-                    i, 1, QTableWidgetItem(strategies_count)
-                )
+                # 策略数量 - 功能未实现
+                strategies_count = "0"
+
+                self.auto_portfolio_table.setItem(i, 1, QTableWidgetItem(strategies_count))
 
                 # 状态（已连接的网关都是运行中）
                 status_text = "运行中"
@@ -729,78 +612,15 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
                 if status_item:
                     status_item.setBackground(QColor("#4caf50"))
 
-    def _update_auto_portfolios_fallback(self):
-        """备用自动组合更新（VNPY不可用时）"""
-        # 清空表格
-        if self.auto_portfolio_table:
-            self.auto_portfolio_table.setRowCount(0)
-
-        # 模拟数据
-        auto_data = [
-            ("CTP主账户", "3个策略", "运行中"),
-            ("IB国际账户", "2个策略", "运行中"),
-        ]
-
-        for i, (gateway, strategies, status) in enumerate(auto_data):
-            if self.auto_portfolio_table:
-                self.auto_portfolio_table.insertRow(i)
-                self.auto_portfolio_table.setItem(i, 0, QTableWidgetItem(gateway))
-                self.auto_portfolio_table.setItem(i, 1, QTableWidgetItem(strategies))
-                self.auto_portfolio_table.setItem(i, 2, QTableWidgetItem(status))
-
-                # 设置状态颜色
-                status_item = self.auto_portfolio_table.item(i, 2)
-                if status_item:
-                    if status == "运行中":
-                        status_item.setBackground(QColor("#4caf50"))
-                    else:
-                        status_item.setBackground(QColor("#ff9800"))
-
     def _update_custom_portfolios(self):
-        """更新自定义组合"""
+        """更新自定义组合 - 从后端服务获取真实数据"""
         # 清空表格
         if self.custom_portfolio_table:
             self.custom_portfolio_table.setRowCount(0)
 
-        # 模拟数据
-        custom_data = [
-            ("成长组合", "CTP主账户, IB国际账户", "50%, 50%", "编辑"),
-            ("价值组合", "CTP主账户", "100%", "编辑"),
-        ]
-
-        for i, (name, gateways, weights, operation) in enumerate(custom_data):
-            if self.custom_portfolio_table:
-                self.custom_portfolio_table.insertRow(i)
-                self.custom_portfolio_table.setItem(i, 0, QTableWidgetItem(name))
-                self.custom_portfolio_table.setItem(i, 1, QTableWidgetItem(gateways))
-                self.custom_portfolio_table.setItem(i, 2, QTableWidgetItem(weights))
-
-                # 操作按钮
-                operation_btn = QPushButton(operation)
-                self.custom_portfolio_table.setCellWidget(i, 3, operation_btn)
-
-    def _update_custom_portfolios_fallback(self):
-        """备用自定义组合更新（VNPY不可用时）"""
-        # 清空表格
-        if self.custom_portfolio_table:
-            self.custom_portfolio_table.setRowCount(0)
-
-        # 模拟数据
-        custom_data = [
-            ("成长组合", "CTP主账户, IB国际账户", "50%, 50%", "编辑"),
-            ("价值组合", "CTP主账户", "100%", "编辑"),
-        ]
-
-        for i, (name, gateways, weights, operation) in enumerate(custom_data):
-            if self.custom_portfolio_table:
-                self.custom_portfolio_table.insertRow(i)
-                self.custom_portfolio_table.setItem(i, 0, QTableWidgetItem(name))
-                self.custom_portfolio_table.setItem(i, 1, QTableWidgetItem(gateways))
-                self.custom_portfolio_table.setItem(i, 2, QTableWidgetItem(weights))
-
-                # 操作按钮
-                operation_btn = QPushButton(operation)
-                self.custom_portfolio_table.setCellWidget(i, 3, operation_btn)
+        # 自定义组合功能需要实现portfolio_service
+        # 目前返回空列表
+        pass
 
     def _update_monitor_data(self):
         """更新监控数据 - 修复版，支持无网关情况"""
@@ -813,7 +633,7 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
             self.logger.debug("gateway_tab未初始化，跳过更新")
             return
 
-        # 处理无网关情况：显示示例数据而不是空白
+        # 处理无网关情况：直接返回
         if not self.gateway_tab or self.gateway_tab.count() == 0:
             self.logger.debug("无网关连接，跳过更新")
             return
@@ -876,9 +696,7 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
                 positions_list = positions
             else:
                 # 其他类型，记录错误并返回
-                self.logger.error(
-                    "positions类型错误: %s, 值: %s", type(positions), positions
-                )
+                self.logger.error("positions类型错误: %s, 值: %s", type(positions), positions)
                 return
 
             # 限制显示数量，避免表格过大
@@ -889,16 +707,10 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
                     continue
 
                 position_table.insertRow(i)
-                position_table.setItem(
-                    i, 0, QTableWidgetItem(str(pos.get("symbol", "--")))
-                )
-                position_table.setItem(
-                    i, 1, QTableWidgetItem(str(pos.get("volume", 0)))
-                )
+                position_table.setItem(i, 0, QTableWidgetItem(str(pos.get("symbol", "--"))))
+                position_table.setItem(i, 1, QTableWidgetItem(str(pos.get("volume", 0))))
                 position_table.setItem(i, 2, QTableWidgetItem(str(pos.get("cost", 0))))
-                position_table.setItem(
-                    i, 3, QTableWidgetItem(str(pos.get("market_value", 0)))
-                )
+                position_table.setItem(i, 3, QTableWidgetItem(str(pos.get("market_value", 0))))
                 position_table.setItem(i, 4, QTableWidgetItem(str(pos.get("pnl", 0))))
         except (AttributeError, TypeError, ValueError, RuntimeError) as e:
             self.logger.error("更新持仓表格失败: %s", e)
@@ -916,131 +728,15 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
         # 更新各个标签
         try:
             if tab_data.get("total_pnl_label"):
-                tab_data["total_pnl_label"].setText(
-                    str(account_info.get("total_pnl", "--"))
-                )
+                tab_data["total_pnl_label"].setText(str(account_info.get("total_pnl", "--")))
             if tab_data.get("total_return_label"):
-                tab_data["total_return_label"].setText(
-                    str(account_info.get("total_return", "--"))
-                )
+                tab_data["total_return_label"].setText(str(account_info.get("total_return", "--")))
             if tab_data.get("max_drawdown_label"):
-                tab_data["max_drawdown_label"].setText(
-                    str(account_info.get("max_drawdown", "--"))
-                )
+                tab_data["max_drawdown_label"].setText(str(account_info.get("max_drawdown", "--")))
             if tab_data.get("sharpe_ratio_label"):
-                tab_data["sharpe_ratio_label"].setText(
-                    str(account_info.get("sharpe_ratio", "--"))
-                )
+                tab_data["sharpe_ratio_label"].setText(str(account_info.get("sharpe_ratio", "--")))
         except (AttributeError, TypeError, ValueError, RuntimeError) as e:
             self.logger.error("更新账户信息失败: %s", e)
-
-    def _show_demo_monitor_panel(self):
-        """显示示例监控面板（无网关连接时）"""
-        try:
-            # 清空所有选项卡，重新创建示例选项卡
-            if self.gateway_tab:
-                self.gateway_tab.clear()
-
-                # 创建示例网关选项卡
-                demo_tab = self._create_demo_monitor_tab()
-                self.gateway_tab.addTab(demo_tab, "示例网关")
-
-                self.logger.info("已显示示例监控面板")
-        except (AttributeError, TypeError, ValueError, RuntimeError) as e:
-            self.logger.error("显示示例监控面板失败: %s", e)
-
-    def _create_demo_monitor_tab(self):
-        """创建示例监控选项卡"""
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-
-        # 状态提示
-        status_label = QLabel("📋 当前无活跃网关连接\n以下显示的是示例数据")
-        status_label.setStyleSheet(
-            """
-            color: #666;
-            font-size: 12px;
-            padding: 10px;
-            background-color: #f5f5f5;
-            border-radius: 5px;
-        """
-        )
-        layout.addWidget(status_label)
-
-        # 业绩概览组
-        overview_group = QGroupBox("示例业绩概览")
-        overview_layout = QFormLayout(overview_group)
-
-        demo_data = {
-            "总盈亏": "+1,250.00",
-            "总收益率": "+2.5%",
-            "最大回撤": "-5.2%",
-            "夏普比率": "1.85",
-        }
-
-        for label_text, value in demo_data.items():
-            label = QLabel(value)
-            label.setStyleSheet(
-                "font-weight: bold; color: #2e7d32;"
-                if value.startswith("+")
-                else "font-weight: bold; color: #d32f2f;"
-            )
-            overview_layout.addRow(label_text + ":", label)
-
-        layout.addWidget(overview_group)
-
-        # 持仓情况组
-        position_group = QGroupBox("示例持仓情况")
-        position_layout = QVBoxLayout(position_group)
-
-        demo_positions = [
-            ("螺纹钢2501", "10手", "3,500.00", "35,250.00", "+250.00"),
-            ("沪深300股指", "5手", "4,200.00", "21,500.00", "+500.00"),
-            ("沪铜2501", "3手", "68,000.00", "206,400.00", "+1,400.00"),
-        ]
-
-        position_table = QTableWidget(len(demo_positions), 5)
-        position_table.setHorizontalHeaderLabels(
-            ["品种", "持仓", "成本", "市值", "盈亏"]
-        )
-        position_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Stretch
-        )
-
-        for i, (symbol, volume, cost, market_value, pnl) in enumerate(demo_positions):
-            position_table.setItem(i, 0, QTableWidgetItem(symbol))
-            position_table.setItem(i, 1, QTableWidgetItem(volume))
-            position_table.setItem(i, 2, QTableWidgetItem(cost))
-            position_table.setItem(i, 3, QTableWidgetItem(market_value))
-
-            pnl_item = QTableWidgetItem(pnl)
-            if pnl.startswith("+"):
-                pnl_item.setBackground(QColor("#e8f5e8"))
-            else:
-                pnl_item.setBackground(QColor("#ffebee"))
-            position_table.setItem(i, 4, pnl_item)
-
-        position_layout.addWidget(position_table)
-        layout.addWidget(position_group)
-
-        # 风险指标组
-        risk_group = QGroupBox("示例风险指标")
-        risk_layout = QVBoxLayout(risk_group)
-
-        risk_progress = QProgressBar()
-        risk_progress.setRange(0, 100)
-        risk_progress.setValue(25)  # 低风险
-        risk_layout.addWidget(QLabel("风险等级:"))
-        risk_layout.addWidget(risk_progress)
-
-        # 风险等级标签
-        risk_label = QLabel("低风险 - 系统运行正常")
-        risk_label.setStyleSheet("color: #2e7d32; font-weight: bold;")
-        risk_layout.addWidget(risk_label)
-
-        layout.addWidget(risk_group)
-
-        return tab
 
     def refresh_data(self):
         """刷新数据"""

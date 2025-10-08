@@ -1,12 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-星辰金融终端启动脚本（稳定版）.
+星辰金融终端启动脚本（简化版-纯桌面应用）.
 
-- 虚拟环境激活
-- 启动后端与UI
-- 守护线程与指令监听（logs/launcher.cmd）
-- PID文件写入（logs/launcher.pids）
-- 日志记录（logs/launcher.log）
+本项目是纯Python桌面应用，UI直接调用后端服务，无需FastAPI/WebSocket等Web框架。
 """
 
 import contextlib
@@ -21,18 +17,16 @@ from typing import Any, Dict, Optional
 
 
 class TerminalLauncher:
-    """终端启动器（稳健实现）."""
+    """终端启动器（简化版-只启动UI）."""
 
     def __init__(self) -> None:
         """初始化终端启动器."""
         self.project_root = Path(__file__).parent
         self.venv_path = self.project_root / "venv310"
-        self.backend_path = self.project_root / "backend"
         self.ui_path = self.project_root / "ui"
         self.logs_path = self.project_root / "logs"
 
         # 进程管理
-        self.backend_process: Optional[subprocess.Popen] = None
         self.ui_process: Optional[subprocess.Popen] = None
 
         # 线程
@@ -59,13 +53,9 @@ class TerminalLauncher:
 
         # 避免重复添加处理器
         if not any(isinstance(h, logging.FileHandler) for h in logger.handlers):
-            file_handler = logging.FileHandler(
-                self.logs_path / "launcher.log", encoding="utf-8"
-            )
+            file_handler = logging.FileHandler(self.logs_path / "launcher.log", encoding="utf-8")
             file_handler.setLevel(logging.DEBUG)
-            fmt = logging.Formatter(
-                "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-            )
+            fmt = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
             file_handler.setFormatter(fmt)
             logger.addHandler(file_handler)
 
@@ -112,9 +102,7 @@ class TerminalLauncher:
         env = os.environ.copy()
         env["VIRTUAL_ENV"] = str(self.venv_path)
         env["PATH"] = str(path_to_add) + os.pathsep + env.get("PATH", "")
-        env["PYTHONPATH"] = (
-            str(self.project_root) + os.pathsep + env.get("PYTHONPATH", "")
-        )
+        env["PYTHONPATH"] = str(self.project_root) + os.pathsep + env.get("PYTHONPATH", "")
 
         return {"env": env, "python_path": str(python_path)}
 
@@ -122,101 +110,19 @@ class TerminalLauncher:
         """写入 PID 文件."""
         try:
             self.logs_path.mkdir(exist_ok=True)
-            backend_pid = (
-                self.backend_process.pid
-                if self.backend_process and self.backend_process.poll() is None
-                else ""
-            )
             ui_pid = (
-                self.ui_process.pid
-                if self.ui_process and self.ui_process.poll() is None
-                else ""
+                self.ui_process.pid if self.ui_process and self.ui_process.poll() is None else ""
             )
             with open(self.pids_file, "w", encoding="utf-8") as f:
-                f.write(f"backend_pid={backend_pid}\n")
                 f.write(f"ui_pid={ui_pid}\n")
         except OSError as e:
             self.logger.debug("写入PID文件失败: %s", e)
-
-    def start_backend(self) -> bool:
-        """启动后端服务."""
-        try:
-            if self.backend_process and self.backend_process.poll() is None:
-                self.logger.info(
-                    "后端已在运行（PID=%s），跳过重复启动", self.backend_process.pid
-                )
-                self._write_pids()
-                return True
-
-            venv = self.activate_venv()
-            backend_main = self.backend_path / "app.py"
-            if not backend_main.exists():
-                self.logger.error("后端主文件不存在: %s", backend_main)
-                return False
-
-            self.logger.info("启动后端服务...")
-            # 使用 uvicorn 启动 FastAPI 应用
-            self.backend_process = subprocess.Popen(
-                [
-                    venv["python_path"],
-                    "-m",
-                    "uvicorn",
-                    "backend.app:app",
-                    "--host",
-                    "127.0.0.1",
-                    "--port",
-                    "8000",
-                    "--log-level",
-                    "info",
-                ],
-                cwd=str(self.project_root),
-                env=venv["env"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                bufsize=1,
-                universal_newlines=True,
-            )
-
-            # 异步消费后端子进程输出，写入日志文件
-            def _stream_to_log(stream, log_name):
-                try:
-                    log_file = self.logs_path / log_name
-                    with open(log_file, "a", encoding="utf-8") as lf:
-                        for line in iter(stream.readline, ""):
-                            if line:
-                                lf.write(line)
-                                lf.flush()
-                except (OSError, UnicodeDecodeError) as e:
-                    self.logger.debug("写入后端日志失败: %s", e)
-
-            if self.backend_process.stdout:
-                threading.Thread(
-                    target=_stream_to_log,
-                    args=(self.backend_process.stdout, "backend_process.log"),
-                    daemon=True,
-                ).start()
-            if self.backend_process.stderr:
-                threading.Thread(
-                    target=_stream_to_log,
-                    args=(self.backend_process.stderr, "backend_process.err.log"),
-                    daemon=True,
-                ).start()
-
-            self.logger.info("后端启动成功，PID=%s", self.backend_process.pid)
-            self._write_pids()
-            return True
-        except (subprocess.SubprocessError, OSError, RuntimeError) as e:
-            self.logger.error("启动后端失败: %s", e)
-            return False
 
     def start_ui(self) -> bool:
         """启动UI界面."""
         try:
             if self.ui_process and self.ui_process.poll() is None:
-                self.logger.info(
-                    "UI已在运行（PID=%s），跳过重复启动", self.ui_process.pid
-                )
+                self.logger.info("UI已在运行（PID=%s），跳过重复启动", self.ui_process.pid)
                 self._write_pids()
                 return True
 
@@ -272,25 +178,11 @@ class TerminalLauncher:
 
     def stop_all(self) -> None:
         """停止所有子进程."""
-        self.logger.info("停止所有服务...")
+        self.logger.info("停止UI服务...")
         # 清空命令文件以防意外重启
         with contextlib.suppress(Exception):
             if self.cmd_file.exists():
                 self.cmd_file.unlink(missing_ok=True)
-
-        # 停止后端
-        if self.backend_process:
-            try:
-                self.backend_process.terminate()
-                self.backend_process.wait(timeout=10)
-                self.logger.info("后端进程已停止")
-            except subprocess.TimeoutExpired:
-                self.backend_process.kill()
-                self.logger.warning("后端进程被强制终止")
-            except (subprocess.SubprocessError, OSError) as e:
-                self.logger.error("停止后端进程失败: %s", e)
-            finally:
-                self.backend_process = None
 
         # 停止UI
         if self.ui_process:
@@ -308,37 +200,23 @@ class TerminalLauncher:
 
         self._write_pids()
 
-    def restart_all(self) -> bool:
-        """重启所有服务."""
-        self.logger.info("重启所有服务...")
+    def restart_ui(self) -> bool:
+        """重启UI服务."""
+        self.logger.info("重启UI服务...")
         self.stop_all()
         time.sleep(self.restart_delay)
-        ok_back = self.start_backend()
-        ok_ui = self.start_ui()
-        if ok_back and ok_ui:
-            self.logger.info("所有服务重启完成")
+        if self.start_ui():
+            self.logger.info("UI服务重启完成")
             return True
-        self.logger.error("服务重启失败")
+        self.logger.error("UI服务重启失败")
         return False
 
     def get_status(self) -> Dict[str, Any]:
         """获取当前状态并刷新PID文件."""
         status = {
-            "backend_running": (
-                self.backend_process is not None and self.backend_process.poll() is None
-            ),
-            "ui_running": (
-                self.ui_process is not None and self.ui_process.poll() is None
-            ),
-            "backend_pid": (
-                self.backend_process.pid
-                if self.backend_process and self.backend_process.poll() is None
-                else None
-            ),
+            "ui_running": (self.ui_process is not None and self.ui_process.poll() is None),
             "ui_pid": (
-                self.ui_process.pid
-                if self.ui_process and self.ui_process.poll() is None
-                else None
+                self.ui_process.pid if self.ui_process and self.ui_process.poll() is None else None
             ),
             "watchdog_running": (
                 self.watchdog_thread is not None and self.watchdog_thread.is_alive()
@@ -353,12 +231,9 @@ class TerminalLauncher:
         """运行启动前诊断."""
         info = {
             "venv_ok": self.check_venv(),
-            "backend_main_exists": (self.backend_path / "app.py").exists(),
             "ui_main_exists": (self.ui_path / "main_window.py").exists(),
             "logs_writable": (
-                os.access(str(self.logs_path), os.W_OK)
-                if self.logs_path.exists()
-                else True
+                os.access(str(self.logs_path), os.W_OK) if self.logs_path.exists() else True
             ),
         }
         return info
@@ -368,27 +243,11 @@ class TerminalLauncher:
         self.logger.info("守护线程已启动")
         while True:
             try:
-                # 后端进程退出检查
-                if self.backend_process and self.backend_process.poll() is not None:
-                    exit_code = self.backend_process.returncode
-                    if exit_code != 0:
-                        self.logger.warning(
-                            "检测到后端异常退出(code=%s)，准备重启", exit_code
-                        )
-                        if self.auto_restart:
-                            time.sleep(self.restart_delay)
-                            self.start_backend()
-                    else:
-                        self.logger.info("后端正常退出(code=0)，不自动重启")
-                    self.backend_process = None
-
                 # UI进程退出检查
                 if self.ui_process and self.ui_process.poll() is not None:
                     exit_code = self.ui_process.returncode
                     if exit_code != 0:
-                        self.logger.warning(
-                            "检测到UI异常退出(code=%s)，准备重启", exit_code
-                        )
+                        self.logger.warning("检测到UI异常退出(code=%s)，准备重启", exit_code)
                         if self.auto_restart:
                             time.sleep(self.restart_delay)
                             self.start_ui()
@@ -418,35 +277,8 @@ class TerminalLauncher:
                         # 清空指令文件避免重复
                         with contextlib.suppress(Exception):
                             self.cmd_file.write_text("", encoding="utf-8")
-                        if content == "restart_all":
-                            self.restart_all()
-                        elif content == "restart_ui":
-                            if self.ui_process and self.ui_process.poll() is None:
-                                try:
-                                    self.ui_process.terminate()
-                                    self.ui_process.wait(timeout=10)
-                                except (subprocess.SubprocessError, OSError):
-                                    with contextlib.suppress(Exception):
-                                        self.ui_process.kill()
-                                finally:
-                                    self.ui_process = None
-                            time.sleep(self.restart_delay)
-                            self.start_ui()
-                        elif content == "restart_backend":
-                            if (
-                                self.backend_process
-                                and self.backend_process.poll() is None
-                            ):
-                                try:
-                                    self.backend_process.terminate()
-                                    self.backend_process.wait(timeout=10)
-                                except (subprocess.SubprocessError, OSError):
-                                    with contextlib.suppress(Exception):
-                                        self.backend_process.kill()
-                                finally:
-                                    self.backend_process = None
-                            time.sleep(self.restart_delay)
-                            self.start_backend()
+                        if content in ["restart_all", "restart_ui"]:
+                            self.restart_ui()
                 time.sleep(1)
             except (RuntimeError, OSError, subprocess.SubprocessError) as e:
                 self.logger.error("指令监听异常: %s", e)
@@ -455,9 +287,7 @@ class TerminalLauncher:
     def start_watchdog(self) -> None:
         """启动守护与指令监听线程."""
         if not (self.watchdog_thread and self.watchdog_thread.is_alive()):
-            self.watchdog_thread = threading.Thread(
-                target=self._watchdog_loop, daemon=True
-            )
+            self.watchdog_thread = threading.Thread(target=self._watchdog_loop, daemon=True)
             self.watchdog_thread.start()
         if not (self.cmd_listener_thread and self.cmd_listener_thread.is_alive()):
             self.cmd_listener_thread = threading.Thread(
@@ -469,7 +299,7 @@ class TerminalLauncher:
 
 def main() -> int:
     """主启动函数."""
-    print("🚀 星辰金融终端启动器（稳定版）")
+    print("🚀 星辰金融终端启动器（纯桌面应用版）")
     print("=" * 50)
 
     launcher = TerminalLauncher()
@@ -484,35 +314,25 @@ def main() -> int:
         return 1
     print("✅ 诊断通过")
 
-    print("\n🏃‍♂️ 启动服务...")
-    if not launcher.start_backend():
-        print("❌ 后端启动失败")
-        return 1
-
-    time.sleep(2)
-
+    print("\n🏃‍♂️ 启动应用...")
     if not launcher.start_ui():
         print("❌ UI启动失败")
-        launcher.stop_all()
         return 1
 
-    print("✅ 所有服务启动完成")
+    print("✅ 应用启动完成")
     launcher.start_watchdog()
 
     status = launcher.get_status()
     print("📊 当前状态：")
-    print(
-        f"  - 后端运行: {'✅' if status['backend_running'] else '❌'} "
-        f"(PID={status['backend_pid']})"
-    )
-    print(
-        f"  - UI运行: {'✅' if status['ui_running'] else '❌'} "
-        f"(PID={status['ui_pid']})"
-    )
+    print(f"  - UI运行: {'✅' if status['ui_running'] else '❌'} " f"(PID={status['ui_pid']})")
     print(f"  - 热更新: {'✅' if status['hot_reload_enabled'] else '❌'}")
 
-    print("\n💡 提示：Ctrl+C 退出；变更代码后可向 logs/launcher.cmd 写入")
-    print("     restart_ui 或 restart_backend 测试热更新")
+    print("\n💡 提示：")
+    print("  - Ctrl+C 退出应用")
+    print("  - 变更代码后可向 logs/launcher.cmd 写入 restart_ui 测试热更新")
+    print("\n架构说明：")
+    print("  本项目是纯Python桌面应用，UI直接调用后端服务层")
+    print("  无需FastAPI/uvicorn/WebSocket等Web框架")
 
     try:
         while True:
@@ -529,7 +349,7 @@ def quick_start() -> int:
     """快速启动（简化版）."""
     launcher = TerminalLauncher()
     try:
-        if launcher.start_backend() and launcher.start_ui():
+        if launcher.start_ui():
             launcher.start_watchdog()
             print("✅ 快速启动成功（Ctrl+C退出）")
             while True:

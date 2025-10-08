@@ -1,24 +1,31 @@
 # -*- coding: utf-8 -*-
 # 🌟 星辰金融终端 v0.50
 
-**量化交易与数据管理桌面应用**
+**纯Python量化交易桌面应用**
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
 [![VnPy](https://img.shields.io/badge/VnPy-3.0+-green.svg)](https://www.vnpy.com/)
 [![Qt](https://img.shields.io/badge/Qt-PySide6-brightgreen.svg)](https://www.qt.io/)
+[![Architecture](https://img.shields.io/badge/架构-纯桌面应用-orange.svg)]()
 [![License](https://img.shields.io/badge/License-Private-red.svg)]()
 
 ---
 
 ## 📋 项目简介
 
-星辰金融终端是一个功能完整的量化交易与数据管理桌面应用，提供：
+星辰金融终端是一个功能完整的**纯Python量化交易桌面应用**，提供：
 - 📊 专业的行情分析和看盘
 - 🧠 策略编写、回测和AI辅助
 - 🔗 多种交易网关支持
 - 💼 组合投资管理
 - 🗃️ 完整的数据中心
 - 🛠️ 系统监控和管理
+
+**架构特点：**
+- ✅ 纯Python桌面应用，单进程运行
+- ✅ UI直接调用服务层，无需Web框架
+- ✅ 基于VnPy生态系统，功能强大
+- ✅ 简洁高效，易于开发和调试
 
 ---
 
@@ -79,15 +86,20 @@ python test_frontend_integration.py
 ### 4. 启动应用
 
 ```bash
-# 方式1：使用Python脚本
+# 方式1：标准启动（推荐）
 python start_terminal.py
 
-# 方式2：使用批处理文件
+# 方式2：快速启动
+python start_terminal.py quick
+
+# 方式3：使用批处理文件
 start_terminal.bat
 
-# 方式3：快速启动
-python start_terminal.py quick
+# 方式4：直接运行UI（开发调试用）
+python ui/main_window.py
 ```
+
+**注意：** 本项目是纯桌面应用，只启动一个UI进程，无需启动后端服务器。
 
 ---
 
@@ -194,12 +206,11 @@ python install_vnpy_packages.py --all
 
 ```
 terminal_v0.50/
-├── backend/              # 后端服务
+├── backend/              # 后端服务层（无Web框架）
 │   ├── core/            # 核心模块（数据库等）
 │   ├── repositories/    # 数据访问层（7个）
-│   ├── services/        # 业务逻辑层
-│   └── api/             # API路由层
-├── ui/                   # 前端界面
+│   └── services/        # 业务逻辑层
+├── ui/                   # UI界面层（PySide6）
 │   ├── components/      # 6个功能界面
 │   ├── core/            # 核心模块（快捷键）
 │   ├── themes/          # 主题系统
@@ -210,6 +221,45 @@ terminal_v0.50/
 ├── logs/                 # 日志文件
 └── tests/                # 测试文件
 ```
+
+## 🏗️ 架构说明
+
+**纯Python桌面应用架构：**
+
+本项目是纯Python桌面应用，采用简洁的三层架构：
+
+```
+┌──────────────────────────────────┐
+│  UI Layer (PySide6)              │  ← 用户界面层
+│  - 6个功能界面                   │
+│  - 主题系统                       │
+│  - 通用组件                       │
+└────────────┬─────────────────────┘
+             │ 直接调用
+┌────────────▼─────────────────────┐
+│  Service Layer                   │  ← 业务逻辑层
+│  - 数据中心服务                  │
+│  - 行情看板服务                  │
+│  - 策略中心服务                  │
+│  - 交易网关服务                  │
+│  - 组合投资服务                  │
+│  - 系统管理服务                  │
+└────────────┬─────────────────────┘
+             │ 调用
+┌────────────▼─────────────────────┐
+│  Core Layer                      │  ← 核心功能层
+│  - VnPy引擎                      │
+│  - 数据库（SQLite）              │
+│  - 事件引擎                      │
+│  - Repository层                  │
+└──────────────────────────────────┘
+```
+
+**架构特点：**
+- ✅ 单进程运行，UI直接调用服务层
+- ✅ 无需FastAPI/uvicorn等Web框架
+- ✅ 无需WebSocket等网络通信
+- ✅ 简洁高效，易于调试
 
 ---
 
@@ -259,19 +309,23 @@ python test_e2e.py
 
 ## 🛠️ 技术栈
 
-### 后端
+### UI层
 
-- **FastAPI** - Web框架
-- **SQLite** - 数据库
-- **VnPy** - 量化交易框架
-- **DeepSeek** - AI服务
-- **aiohttp** - 异步HTTP客户端
+- **PySide6** - Qt for Python（UI框架）
+- **QSS** - Qt样式表（主题系统）
+- **pyqtgraph** - 高性能图表（数据可视化）
 
-### 前端
+### 服务层
 
-- **PySide6** - Qt for Python
-- **QSS** - Qt样式表
-- **pyqtgraph** - 高性能图表
+- **VnPy** - 量化交易框架（核心引擎）
+- **SQLite** - 数据库（数据存储）
+- **DeepSeek** - AI服务（代码辅助）
+- **aiohttp** - 异步HTTP客户端（网络请求）
+
+### 工具
+
+- **pytest** - 单元测试框架
+- **black/flake8** - 代码质量工具
 
 ---
 

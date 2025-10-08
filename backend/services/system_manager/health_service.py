@@ -7,7 +7,7 @@
 
 import logging
 import time
-from typing import Dict, Any, List
+from typing import Any, Dict, List
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -49,35 +49,29 @@ class HealthService:
         try:
             start_time = time.time()
 
-            # TODO: 实际调用各模块的健康检查接口
-            # 模拟健康检查
-            status = "healthy"
-            message = "服务运行正常"
+            # TODO: 实际调用各服务的health_check接口
+            # 需要通过service_manager获取服务实例并调用其health_check方法
 
+            # 临时实现：只返回基本信息，不做实际检查
             response_time_ms = (time.time() - start_time) * 1000
+
+            logger.warning("服务健康检查需要实现真实的服务状态查询: %s", service_name)
 
             result = {
                 "service_name": service_name,
-                "status": status,
+                "status": "unknown",
                 "response_time_ms": response_time_ms,
-                "message": message,
+                "message": "健康检查功能待实现",
                 "details": {},
                 "checked_at": datetime.now().isoformat(),
             }
 
-            logger.debug("服务健康检查完成: %s, status=%s", service_name, status)
+            logger.debug("服务健康检查: %s, status=%s", service_name, result["status"])
             return result
 
         except Exception as e:
             logger.error("服务健康检查失败: service=%s, error=%s", service_name, e)
-            return {
-                "service_name": service_name,
-                "status": "unhealthy",
-                "response_time_ms": 0,
-                "message": str(e),
-                "details": {},
-                "checked_at": datetime.now().isoformat(),
-            }
+            raise
 
 
 __all__ = ["HealthService"]

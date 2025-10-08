@@ -106,9 +106,7 @@ class LocalDataService(BaseService):
             # 检查缓存
             if cache_key in self._data_cache:
                 cached_data = self._data_cache[cache_key]
-                self.logger.info(
-                    "从缓存获取市场数据: %s, %d 条", cache_key, len(cached_data)
-                )
+                self.logger.info("从缓存获取市场数据: %s, %d 条", cache_key, len(cached_data))
                 return [data.to_pandas_row() for data in cached_data]
 
             # 从VnPy获取数据
@@ -122,9 +120,7 @@ class LocalDataService(BaseService):
             # 转换为字典格式
             data_dicts = [data.to_pandas_row() for data in market_data]
 
-            self.logger.info(
-                "获取市场数据: %s.%s, %d 条", symbol, exchange, len(data_dicts)
-            )
+            self.logger.info("获取市场数据: %s.%s, %d 条", symbol, exchange, len(data_dicts))
             return data_dicts
 
         except Exception as e:
@@ -186,9 +182,7 @@ class LocalDataService(BaseService):
                     return latest.to_pandas_row()
 
             # 从VnPy获取最新数据
-            latest_data = await self._fetch_latest_from_vnpy(
-                symbol, exchange, data_type
-            )
+            latest_data = await self._fetch_latest_from_vnpy(symbol, exchange, data_type)
 
             if latest_data:
                 self.logger.info("获取最新数据: %s.%s", symbol, exchange)
@@ -211,9 +205,7 @@ class LocalDataService(BaseService):
         """搜索数据断点."""
         try:
             # 获取数据
-            data = await self.get_bar_data(
-                symbol, exchange, start_date, end_date, frequency
-            )
+            data = await self.get_bar_data(symbol, exchange, start_date, end_date, frequency)
 
             if not data:
                 return []
@@ -223,12 +215,8 @@ class LocalDataService(BaseService):
             expected_interval = self._get_frequency_seconds(frequency)
 
             for i in range(1, len(data)):
-                prev_time = datetime.fromisoformat(
-                    data[i - 1]["datetime"].replace("Z", "+00:00")
-                )
-                curr_time = datetime.fromisoformat(
-                    data[i]["datetime"].replace("Z", "+00:00")
-                )
+                prev_time = datetime.fromisoformat(data[i - 1]["datetime"].replace("Z", "+00:00"))
+                curr_time = datetime.fromisoformat(data[i]["datetime"].replace("Z", "+00:00"))
 
                 time_diff = (curr_time - prev_time).total_seconds()
 
@@ -246,9 +234,7 @@ class LocalDataService(BaseService):
                     }
                     gaps.append(gap_info)
 
-            self.logger.info(
-                "搜索数据断点: %s.%s, %d 个断点", symbol, exchange, len(gaps)
-            )
+            self.logger.info("搜索数据断点: %s.%s, %d 个断点", symbol, exchange, len(gaps))
             return gaps
 
         except Exception as e:
@@ -280,13 +266,9 @@ class LocalDataService(BaseService):
                 }
 
             # 计算统计信息
-            prices = [
-                record["close_price"] for record in data if record["close_price"] > 0
-            ]
+            prices = [record["close_price"] for record in data if record["close_price"] > 0]
             volumes = [record["volume"] for record in data if record["volume"] > 0]
-            turnovers = [
-                record["turnover"] for record in data if record["turnover"] > 0
-            ]
+            turnovers = [record["turnover"] for record in data if record["turnover"] > 0]
 
             stats = {
                 "symbol": symbol,
@@ -324,49 +306,65 @@ class LocalDataService(BaseService):
     ) -> List[UnifiedMarketData]:
         """从VnPy获取数据."""
         try:
-            # TODO: 实际从VnPy数据库获取数据
-            # 这里先返回模拟数据
-            mock_data = []
+            if not self.vnpy_service or not self.vnpy_service.is_initialized:
+                raise RuntimeError("VnPy服务未初始化")
+
+            # 获取VnPy数据库管理器
+            database_manager = self.vnpy_service.get_database_manager()
+            if not database_manager:
+                raise ConnectionError("无法获取VnPy数据库管理器")
 
             if not start_date:
                 start_date = datetime.now() - timedelta(days=1)
             if not end_date:
                 end_date = datetime.now()
 
-            # 生成模拟数据
-            current_time = start_date
-            interval_seconds = self._get_frequency_seconds(frequency)
+            # 映射频率到VnPy的Interval
+            interval_map = {
+                "1s": "1s",
+                "1m": "1m",
+                "5m": "5m",
+                "15m": "15m",
+                "30m": "30m",
+                "1h": "1h",
+                "1d": "d",
+            }
+            vnpy_interval = interval_map.get(frequency, "1m")
 
-            for i in range(min(limit, 100)):
-                if current_time > end_date:
-                    break
+            # 从VnPy数据库获取bar数据
+            bars = database_manager.load_bar_data(
+                symbol=symbol,
+                exchange=exchange,
+                interval=vnpy_interval,
+                start=start_date,
+                end=end_date,
+            )
 
-                # 生成模拟价格数据
-                base_price = 3500.0 + i * 0.5
+            if not bars:
+                raise ValueError(f"未找到品种 {symbol}.{exchange} 的{data_type}数据")
 
+            # 转换为UnifiedMarketData格式
+            result = []
+            for bar in bars[:limit]:
                 market_data = UnifiedMarketData(
                     symbol=symbol,
                     exchange=exchange,
                     data_type=data_type,
-                    datetime=current_time,
-                    timestamp=int(current_time.timestamp()),
-                    open_price=base_price,
-                    high_price=base_price + 10.0,
-                    low_price=base_price - 5.0,
-                    close_price=base_price + 2.0,
-                    pre_close=base_price - 0.5,
-                    volume=1000 + i * 10,
-                    turnover=base_price * (1000 + i * 10),
-                    open_interest=50000 + i * 100,
+                    datetime=bar.datetime,
+                    timestamp=int(bar.datetime.timestamp()),
+                    open_price=bar.open_price,
+                    high_price=bar.high_price,
+                    low_price=bar.low_price,
+                    close_price=bar.close_price,
+                    pre_close=getattr(bar, "pre_close", 0),
+                    volume=bar.volume,
+                    turnover=getattr(bar, "turnover", 0),
+                    open_interest=getattr(bar, "open_interest", 0),
                 )
+                result.append(market_data)
 
-                mock_data.append(market_data)
-                current_time += timedelta(seconds=interval_seconds)
-
-            self.logger.info(
-                "从VnPy获取数据: %s.%s, %d 条", symbol, exchange, len(mock_data)
-            )
-            return mock_data
+            self.logger.info("从VnPy获取数据: %s.%s, %d 条", symbol, exchange, len(result))
+            return result
 
         except Exception as e:
             self.logger.error("从VnPy获取数据失败: %s", e)
@@ -380,25 +378,42 @@ class LocalDataService(BaseService):
     ) -> Optional[UnifiedMarketData]:
         """从VnPy获取最新数据."""
         try:
-            # TODO: 实际从VnPy获取最新数据
-            # 这里先返回模拟数据
-            current_time = datetime.now()
-            base_price = 3500.0
+            if not self.vnpy_service or not self.vnpy_service.is_initialized:
+                raise RuntimeError("VnPy服务未初始化")
+
+            # 获取VnPy数据库管理器
+            database_manager = self.vnpy_service.get_database_manager()
+            if not database_manager:
+                raise ConnectionError("无法获取VnPy数据库管理器")
+
+            # 获取最新的一条bar数据
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=1)  # 查询最近1天的数据
+
+            bars = database_manager.load_bar_data(
+                symbol=symbol, exchange=exchange, interval="1m", start=start_date, end=end_date
+            )
+
+            if not bars:
+                raise ValueError(f"未找到品种 {symbol}.{exchange} 的最新数据")
+
+            # 取最后一条数据
+            latest_bar = bars[-1]
 
             latest_data = UnifiedMarketData(
                 symbol=symbol,
                 exchange=exchange,
                 data_type=data_type,
-                datetime=current_time,
-                timestamp=int(current_time.timestamp()),
-                open_price=base_price,
-                high_price=base_price + 10.0,
-                low_price=base_price - 5.0,
-                close_price=base_price + 2.0,
-                pre_close=base_price - 0.5,
-                volume=1000,
-                turnover=base_price * 1000,
-                open_interest=50000,
+                datetime=latest_bar.datetime,
+                timestamp=int(latest_bar.datetime.timestamp()),
+                open_price=latest_bar.open_price,
+                high_price=latest_bar.high_price,
+                low_price=latest_bar.low_price,
+                close_price=latest_bar.close_price,
+                pre_close=getattr(latest_bar, "pre_close", 0),
+                volume=latest_bar.volume,
+                turnover=getattr(latest_bar, "turnover", 0),
+                open_interest=getattr(latest_bar, "open_interest", 0),
             )
 
             self.logger.info("从VnPy获取最新数据: %s.%s", symbol, exchange)
@@ -443,17 +458,13 @@ class LocalDataService(BaseService):
         except Exception as e:
             self.logger.error("处理市场数据更新事件失败: %s", e)
 
-    def clear_cache(
-        self, symbol: Optional[str] = None, exchange: Optional[str] = None
-    ) -> int:
+    def clear_cache(self, symbol: Optional[str] = None, exchange: Optional[str] = None) -> int:
         """清理缓存."""
         try:
             if symbol and exchange:
                 # 清理指定品种的缓存
                 keys_to_remove = [
-                    key
-                    for key in self._data_cache.keys()
-                    if key.startswith(f"{symbol}.{exchange}")
+                    key for key in self._data_cache if key.startswith(f"{symbol}.{exchange}")
                 ]
                 for key in keys_to_remove:
                     del self._data_cache[key]

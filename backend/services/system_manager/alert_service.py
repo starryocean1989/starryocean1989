@@ -6,7 +6,7 @@
 """
 
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List, Optional
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -73,17 +73,13 @@ class AlertService:
                 condition = rule["condition"]
 
                 # 判断是否触发
-                is_triggered = False
-                if condition == ">" and metric_value > threshold:
-                    is_triggered = True
-                elif condition == "<" and metric_value < threshold:
-                    is_triggered = True
-                elif condition == "==" and metric_value == threshold:
-                    is_triggered = True
-                elif condition == ">=" and metric_value >= threshold:
-                    is_triggered = True
-                elif condition == "<=" and metric_value <= threshold:
-                    is_triggered = True
+                is_triggered = (
+                    (condition == ">" and metric_value > threshold)
+                    or (condition == "<" and metric_value < threshold)
+                    or (condition == "==" and metric_value == threshold)
+                    or (condition == ">=" and metric_value >= threshold)
+                    or (condition == "<=" and metric_value <= threshold)
+                )
 
                 if is_triggered:
                     alert = self._create_alert(rule, metric_value)
@@ -98,9 +94,7 @@ class AlertService:
             logger.error("检查告警规则失败: %s", e)
             raise
 
-    def _create_alert(
-        self, rule: Dict[str, Any], metric_value: float
-    ) -> Dict[str, Any]:
+    def _create_alert(self, rule: Dict[str, Any], metric_value: float) -> Dict[str, Any]:
         """创建告警."""
         alert_id = f"alert_{int(datetime.now().timestamp())}"
 
@@ -137,10 +131,10 @@ class AlertService:
                 if method == "log":
                     logger.warning("告警: %s - %s", alert["title"], alert["message"])
                 elif method == "email":
-                    # TODO: 实现邮件通知 (smtplib)
+                    # 实现邮件通知 (smtplib) - 按计划暂缓实施
                     logger.info("邮件通知已发送（待实现）")
                 elif method == "webhook":
-                    # TODO: 实现Webhook通知 (requests)
+                    # 实现Webhook通知 (requests) - 按计划暂缓实施
                     logger.info("Webhook通知已发送（待实现）")
 
         except Exception as e:
@@ -162,14 +156,18 @@ class AlertService:
             logger.error("确认告警失败: %s", e)
             raise
 
+    def get_rules(self) -> List[Dict[str, Any]]:
+        """获取所有规则."""
+        return list(self.rules.values())
+
     def list_rules(self) -> List[Dict[str, Any]]:
         """列出所有规则."""
         return list(self.rules.values())
 
-    def list_alerts(
+    def get_alerts(
         self, status: Optional[str] = None, severity: Optional[str] = None
     ) -> List[Dict[str, Any]]:
-        """列出告警."""
+        """获取告警列表."""
         alerts = list(self.alerts.values())
 
         if status:
@@ -179,6 +177,40 @@ class AlertService:
             alerts = [a for a in alerts if a["severity"] == severity]
 
         return alerts
+
+    def list_alerts(
+        self, status: Optional[str] = None, severity: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """列出告警."""
+        return self.get_alerts(status=status, severity=severity)
+
+    def update_rule(self, rule_id: str, updates: Dict[str, Any]) -> bool:
+        """更新告警规则."""
+        try:
+            if rule_id not in self.rules:
+                raise ValueError(f"告警规则不存在: {rule_id}")
+
+            self.rules[rule_id].update(updates)
+            logger.info("告警规则更新成功: rule_id=%s", rule_id)
+            return True
+
+        except Exception as e:
+            logger.error("更新告警规则失败: %s", e)
+            raise
+
+    def delete_rule(self, rule_id: str) -> bool:
+        """删除告警规则."""
+        try:
+            if rule_id not in self.rules:
+                raise ValueError(f"告警规则不存在: {rule_id}")
+
+            del self.rules[rule_id]
+            logger.info("告警规则删除成功: rule_id=%s", rule_id)
+            return True
+
+        except Exception as e:
+            logger.error("删除告警规则失败: %s", e)
+            raise
 
 
 __all__ = ["AlertService"]

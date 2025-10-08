@@ -126,5 +126,50 @@ class PortfolioService:
         """列出所有虚拟网关."""
         return list(self.virtual_gateways.values())
 
+    def get_auto_detected_portfolios(self) -> List[Dict[str, Any]]:
+        """获取自动识别的组合（从网关自动识别）."""
+        # 这里应该从gateway_manager获取所有网关，然后自动识别出组合
+        # 暂时返回空列表
+        logger.info("获取自动识别组合")
+        return []
+
+    def get_monitoring_data(self, portfolio_id: str) -> Dict[str, Any]:
+        """获取组合监控数据."""
+        portfolio = self.portfolios.get(portfolio_id)
+        if not portfolio:
+            raise ValueError(f"组合不存在: {portfolio_id}")
+
+        # 这里应该从trading_monitoring获取实时数据
+        # 暂时返回基本监控数据
+        return {
+            "portfolio_id": portfolio_id,
+            "total_value": 1000000.0,
+            "cash": 100000.0,
+            "total_return": 0.0,
+            "daily_return": 0.0,
+            "timestamp": datetime.now().isoformat(),
+        }
+
+    def get_history(
+        self,
+        portfolio_id: str,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+    ) -> List[Dict[str, Any]]:
+        """获取历史业绩."""
+        portfolio = self.portfolios.get(portfolio_id)
+        if not portfolio:
+            raise ValueError(f"组合不存在: {portfolio_id}")
+
+        # 这里应该从数据库查询历史数据
+        # 暂时返回空列表
+        logger.info(
+            "获取组合历史: portfolio_id=%s, start=%s, end=%s",
+            portfolio_id,
+            start_date,
+            end_date,
+        )
+        return []
+
 
 __all__ = ["PortfolioService"]

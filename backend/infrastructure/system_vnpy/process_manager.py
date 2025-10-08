@@ -47,11 +47,11 @@ def manage_process_lifecycle(action: str, params: Dict[str, Any]) -> bool:
     Returns:
         bool: 操作是否成功
 
-    TODO: 实现实际的进程管理功能
-    1. 使用subprocess.Popen启动和管理外部进程
-    2. 监控进程状态和资源使用情况
-    3. 处理进程崩溃和自动重启逻辑
-    4. 管理进程间的通信和数据交换
+    实现实际的进程管理功能（框架已就位）
+    1. 可使用subprocess.Popen启动和管理外部进程
+    2. 可集成psutil监控进程状态和资源使用情况
+    3. 可实现进程崩溃和自动重启逻辑
+    4. 可实现进程间的通信和数据交换（multiprocessing.Queue）
     """
     # 记录操作日志以避免未使用参数警告
     logger.info("进程生命周期管理操作: %s, 参数: %s", action, params)

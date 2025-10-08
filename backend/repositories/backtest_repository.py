@@ -1,188 +1,262 @@
 # -*- coding: utf-8 -*-
 """
-回测Repository.
+回测任务Repository.
 
 提供回测任务和结果的数据库操作。
 """
 
 import json
 import logging
+from typing import Any, Dict, List, Optional
 from datetime import datetime
-from typing import List, Optional
-
-from backend.repositories.base_repository import BaseRepository
 
 logger = logging.getLogger(__name__)
 
 
-class BacktestRepository(BaseRepository):
-    """回测Repository."""
+class BacktestRepository:
+    """回测任务Repository."""
 
     def __init__(self):
-        """初始化."""
-        super().__init__(table_name="backtest_tasks")
+        """初始化回测Repository."""
         logger.info("回测Repository初始化完成")
 
-    async def create_task(self, task_data: dict) -> dict:
-        """创建回测任务."""
-        from backend.core.database import get_db_manager
-
-        db = get_db_manager()
-        query = """
-            INSERT INTO backtest_tasks
-            (id, strategy_id, parameters, status, progress, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+    async def create_task(self, task_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        params = (
-            task_data["id"],
-            task_data["strategy_id"],
-            json.dumps(task_data.get("parameters", {})),
-            task_data.get("status", "pending"),
-            0.0,
-            datetime.now().isoformat(),
-        )
-        db.execute_update(query, params)
-        logger.info("创建回测任务: %s", task_data["id"])
-        return task_data
+        创建回测任务.
 
-    async def get_task(self, task_id: str) -> Optional[dict]:
-        """获取回测任务."""
+        Args:
+            task_data: 任务数据
+
+        Returns:
+            Dict[str, Any]: 创建的任务数据
+        """
         from backend.core.database import get_db_manager
 
-        db = get_db_manager()
-        query = "SELECT * FROM backtest_tasks WHERE id = ?"
-        results = db.execute_query(query, (task_id,))
-        if results:
-            task = results[0]
-            task["parameters"] = json.loads(task["parameters"])
-            return task
-        return None
+        try:
+            db = get_db_manager()
+            now = datetime.now().isoformat()
 
-    async def list_tasks(self, filters: Optional[dict] = None) -> List[dict]:
-        """列出回测任务."""
+            query = """
+                INSERT INTO backtest_tasks (
+                    id, strategy_id, parameters, status, progress,
+                    created_at, started_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """
+            params = (
+                task_data["id"],
+                task_data.get("strategy_id", ""),
+                json.dumps(task_data.get("parameters", {})),
+                task_data.get("status", "pending"),
+                task_data.get("progress", 0.0),
+                now,
+                task_data.get("started_at"),
+            )
+            db.execute_update(query, params)
+            logger.info("创建回测任务记录: %s", task_data["id"])
+            return task_data
+        except Exception as e:
+            logger.error("创建回测任务记录失败: %s", e)
+            raise
+
+    async def get_task(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """
+        获取回测任务.
+
+        Args:
+            task_id: 任务ID
+
+        Returns:
+            Optional[Dict[str, Any]]: 任务数据
+        """
         from backend.core.database import get_db_manager
 
-        db = get_db_manager()
-        query = "SELECT * FROM backtest_tasks WHERE 1=1"
-        params = []
+        try:
+            db = get_db_manager()
+            query = "SELECT * FROM backtest_tasks WHERE id = ?"
+            results = db.execute_query(query, (task_id,))
 
-        if filters:
-            if "status" in filters:
-                query += " AND status = ?"
-                params.append(filters["status"])
-            if "strategy_id" in filters:
-                query += " AND strategy_id = ?"
-                params.append(filters["strategy_id"])
+            if results:
+                task = dict(results[0])
+                # 解析JSON字段
+                if task.get("parameters"):
+                    task["parameters"] = json.loads(task["parameters"])
+                return task
+            return None
+        except Exception as e:
+            logger.error("查询回测任务失败: %s", e)
+            return None
 
-        query += " ORDER BY created_at DESC"
-        results = db.execute_query(query, tuple(params) if params else None)
+    async def list_tasks(
+        self, status: Optional[str] = None, limit: int = 100, offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        """
+        列出回测任务.
 
-        for task in results:
-            task["parameters"] = json.loads(task["parameters"])
-        return results
+        Args:
+            status: 状态筛选
+            limit: 限制数量
+            offset: 偏移量
 
-    async def update_task(self, task_id: str, updates: dict) -> bool:
-        """更新回测任务."""
+        Returns:
+            List[Dict[str, Any]]: 任务列表
+        """
         from backend.core.database import get_db_manager
 
-        db = get_db_manager()
-        set_clauses = []
-        params = []
+        try:
+            db = get_db_manager()
 
-        for key, value in updates.items():
-            if key in ["status", "progress", "error"]:
-                set_clauses.append(f"{key} = ?")
-                params.append(value)
-            elif key == "started_at" and value:
-                set_clauses.append("started_at = ?")
-                params.append(datetime.now().isoformat())
-            elif key == "completed_at" and value:
-                set_clauses.append("completed_at = ?")
-                params.append(datetime.now().isoformat())
+            if status:
+                query = "SELECT * FROM backtest_tasks WHERE status = ? ORDER BY created_at DESC LIMIT ? OFFSET ?"
+                results = db.execute_query(query, (status, limit, offset))
+            else:
+                query = "SELECT * FROM backtest_tasks ORDER BY created_at DESC LIMIT ? OFFSET ?"
+                results = db.execute_query(query, (limit, offset))
 
-        if not set_clauses:
+            tasks = []
+            for row in results:
+                task = dict(row)
+                # 解析JSON字段
+                if task.get("parameters"):
+                    task["parameters"] = json.loads(task["parameters"])
+                tasks.append(task)
+
+            return tasks
+        except Exception as e:
+            logger.error("列出回测任务失败: %s", e)
+            return []
+
+    async def update_task(self, task_id: str, updates: Dict[str, Any]) -> bool:
+        """
+        更新回测任务.
+
+        Args:
+            task_id: 任务ID
+            updates: 更新内容
+
+        Returns:
+            bool: 是否成功
+        """
+        from backend.core.database import get_db_manager
+
+        try:
+            db = get_db_manager()
+
+            # 构建动态更新语句
+            set_clauses = []
+            params = []
+
+            for key, value in updates.items():
+                if key in ["status", "progress", "error", "started_at", "completed_at"]:
+                    set_clauses.append(f"{key} = ?")
+                    params.append(value)
+                elif key == "parameters":
+                    set_clauses.append("parameters = ?")
+                    params.append(json.dumps(value))
+
+            if not set_clauses:
+                return False
+
+            params.append(task_id)
+            query = f"UPDATE backtest_tasks SET {', '.join(set_clauses)} WHERE id = ?"
+            rowcount = db.execute_update(query, tuple(params))
+
+            if rowcount > 0:
+                logger.info("更新回测任务: %s", task_id)
+                return True
+            return False
+        except Exception as e:
+            logger.error("更新回测任务失败: %s", e)
             return False
 
-        params.append(task_id)
-        query = f"UPDATE backtest_tasks SET {', '.join(set_clauses)} WHERE id = ?"
-        rowcount = db.execute_update(query, tuple(params))
-        return rowcount > 0
-
-    async def save_result(self, task_id: str, result_data: dict) -> bool:
-        """保存回测结果."""
-        from backend.core.database import get_db_manager
-
-        db = get_db_manager()
-        query = """
-            INSERT OR REPLACE INTO backtest_results
-            (task_id, result_data, metrics, trades, created_at)
-            VALUES (?, ?, ?, ?, ?)
+    async def save_result(self, task_id: str, result_data: Dict[str, Any]) -> bool:
         """
-        params = (
-            task_id,
-            json.dumps(result_data),
-            json.dumps(result_data.get("metrics", {})),
-            json.dumps(result_data.get("trades", [])),
-            datetime.now().isoformat(),
-        )
-        db.execute_update(query, params)
-        logger.info("保存回测结果: %s", task_id)
-        return True
+        保存回测结果.
 
-    async def get_result(self, task_id: str) -> Optional[dict]:
-        """获取回测结果."""
+        Args:
+            task_id: 任务ID
+            result_data: 结果数据
+
+        Returns:
+            bool: 是否成功
+        """
         from backend.core.database import get_db_manager
 
-        db = get_db_manager()
-        query = "SELECT * FROM backtest_results WHERE task_id = ?"
-        results = db.execute_query(query, (task_id,))
-        if results:
-            result = results[0]
-            result["result_data"] = json.loads(result["result_data"])
-            result["metrics"] = json.loads(result["metrics"])
-            result["trades"] = json.loads(result["trades"])
-            return result
-        return None
+        try:
+            db = get_db_manager()
+            now = datetime.now().isoformat()
 
-    # 实现BaseRepository的抽象方法
-    async def create(self, entity: dict) -> dict:
-        """创建实体（实现抽象方法）."""
-        return await self.create_task(entity)
+            # 检查是否已存在
+            query_check = "SELECT task_id FROM backtest_results WHERE task_id = ?"
+            existing = db.execute_query(query_check, (task_id,))
 
-    async def get_by_id(self, entity_id: str) -> Optional[dict]:
-        """根据ID获取实体（实现抽象方法）."""
-        return await self.get_task(entity_id)
+            if existing:
+                # 更新现有记录
+                query = """
+                    UPDATE backtest_results
+                    SET result_data = ?, metrics = ?, trades = ?
+                    WHERE task_id = ?
+                """
+                params = (
+                    json.dumps(result_data.get("result_data", {})),
+                    json.dumps(result_data.get("metrics", {})),
+                    json.dumps(result_data.get("trades", [])),
+                    task_id,
+                )
+            else:
+                # 插入新记录
+                query = """
+                    INSERT INTO backtest_results (
+                        task_id, result_data, metrics, trades, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?)
+                """
+                params = (
+                    task_id,
+                    json.dumps(result_data.get("result_data", {})),
+                    json.dumps(result_data.get("metrics", {})),
+                    json.dumps(result_data.get("trades", [])),
+                    now,
+                )
 
-    async def get_all(self, limit: int = 100, offset: int = 0) -> List[dict]:
-        """获取所有实体（实现抽象方法）."""
-        return await self.list_tasks()
+            db.execute_update(query, params)
+            logger.info("保存回测结果: %s", task_id)
+            return True
+        except Exception as e:
+            logger.error("保存回测结果失败: %s", e)
+            return False
 
-    async def update(self, entity: dict) -> dict:
-        """更新实体（实现抽象方法）."""
-        entity_id = entity.get("id")
-        if not entity_id:
-            raise ValueError("Entity must have an 'id' field")
-        await self.update_task(entity_id, entity)
-        return entity
+    async def get_result(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """
+        获取回测结果.
 
-    async def delete(self, entity_id: str) -> bool:
-        """删除实体（实现抽象方法）."""
+        Args:
+            task_id: 任务ID
+
+        Returns:
+            Optional[Dict[str, Any]]: 结果数据
+        """
         from backend.core.database import get_db_manager
 
-        db = get_db_manager()
-        query = "DELETE FROM backtest_tasks WHERE id = ?"
-        rowcount = db.execute_update(query, (entity_id,))
-        return rowcount > 0
+        try:
+            db = get_db_manager()
+            query = "SELECT * FROM backtest_results WHERE task_id = ?"
+            results = db.execute_query(query, (task_id,))
 
-    async def count(self) -> int:
-        """获取实体总数（实现抽象方法）."""
-        tasks = await self.list_tasks()
-        return len(tasks)
-
-    async def exists(self, entity_id: str) -> bool:
-        """检查实体是否存在（实现抽象方法）."""
-        task = await self.get_task(entity_id)
-        return task is not None
+            if results:
+                result = dict(results[0])
+                # 解析JSON字段
+                if result.get("result_data"):
+                    result["result_data"] = json.loads(result["result_data"])
+                if result.get("metrics"):
+                    result["metrics"] = json.loads(result["metrics"])
+                if result.get("trades"):
+                    result["trades"] = json.loads(result["trades"])
+                return result
+            return None
+        except Exception as e:
+            logger.error("查询回测结果失败: %s", e)
+            return None
 
 
 __all__ = ["BacktestRepository"]

@@ -105,7 +105,7 @@ class DataFusionService(BaseService):
 
             # 生成缓存键
             cache_key = f"{symbol}.{exchange}.{frequency}"
-            
+
             # 检查缓存
             if cache_key in self._fusion_cache:
                 cached_data = self._fusion_cache[cache_key]
@@ -114,7 +114,7 @@ class DataFusionService(BaseService):
 
             # 从多个数据源获取数据
             data_sources = await self._get_available_data_sources(symbol, exchange)
-            
+
             if not data_sources:
                 self.logger.warning("无可用数据源: %s.%s", symbol, exchange)
                 return []
@@ -137,15 +137,16 @@ class DataFusionService(BaseService):
             self.logger.error("数据融合失败: %s", e)
             raise
 
-    async def _get_available_data_sources(
-        self, symbol: str, exchange: str
-    ) -> List[str]:
+    async def _get_available_data_sources(self, symbol: str, exchange: str) -> List[str]:
         """获取可用的数据源."""
         try:
-            # 这里应该从数据源服务获取可用数据源
-            # 暂时返回模拟数据源
-            available_sources = ["vnpy_local", "tushare", "akshare"]
-            
+            # TODO: 从数据源服务获取真实的可用数据源
+            # 需要实现DataSourceService的get_available_sources方法
+            self.logger.warning("获取可用数据源需要实现DataSourceService集成")
+
+            # 临时返回空列表，而不是硬编码数据
+            available_sources = []
+
             self.logger.info(
                 "获取可用数据源: %s.%s, %d 个数据源",
                 symbol,
@@ -156,7 +157,7 @@ class DataFusionService(BaseService):
 
         except Exception as e:
             self.logger.error("获取可用数据源失败: %s", e)
-            return []
+            raise
 
     async def _perform_data_fusion(
         self,
@@ -178,16 +179,14 @@ class DataFusionService(BaseService):
                     source_data = await self._fetch_from_source(
                         source, symbol, exchange, start_date, end_date, frequency, limit
                     )
-                    
+
                     if source_data:
                         # 添加数据源标识
                         for data_point in source_data:
                             data_point["source"] = source
-                        
+
                         all_data.extend(source_data)
-                        self.logger.info(
-                            "从数据源 %s 获取数据: %d 条", source, len(source_data)
-                        )
+                        self.logger.info("从数据源 %s 获取数据: %d 条", source, len(source_data))
 
                 except Exception as e:
                     self.logger.warning("从数据源 %s 获取数据失败: %s", source, e)
@@ -199,7 +198,9 @@ class DataFusionService(BaseService):
             # 去重和合并
             fused_data = await self._merge_data_by_timestamp(all_data)
 
-            self.logger.info("数据融合完成: %d 条原始数据 -> %d 条融合数据", len(all_data), len(fused_data))
+            self.logger.info(
+                "数据融合完成: %d 条原始数据 -> %d 条融合数据", len(all_data), len(fused_data)
+            )
             return fused_data
 
         except Exception as e:
@@ -231,18 +232,20 @@ class DataFusionService(BaseService):
 
                 data = []
                 for bar in vnpy_data:
-                    data.append({
-                        "timestamp": int(bar.datetime.timestamp() * 1000),
-                        "datetime": bar.datetime.isoformat(),
-                        "open": float(bar.open_price),
-                        "high": float(bar.high_price),
-                        "low": float(bar.low_price),
-                        "close": float(bar.close_price),
-                        "volume": int(bar.volume),
-                        "turnover": float(bar.turnover),
-                        "open_interest": int(bar.open_interest),
-                        "source": source,
-                    })
+                    data.append(
+                        {
+                            "timestamp": int(bar.datetime.timestamp() * 1000),
+                            "datetime": bar.datetime.isoformat(),
+                            "open": float(bar.open_price),
+                            "high": float(bar.high_price),
+                            "low": float(bar.low_price),
+                            "close": float(bar.close_price),
+                            "volume": int(bar.volume),
+                            "turnover": float(bar.turnover),
+                            "open_interest": int(bar.open_interest),
+                            "source": source,
+                        }
+                    )
 
                 return data
 
@@ -255,7 +258,9 @@ class DataFusionService(BaseService):
             self.logger.error("从数据源 %s 获取数据失败: %s", source, e)
             return []
 
-    async def _merge_data_by_timestamp(self, all_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    async def _merge_data_by_timestamp(
+        self, all_data: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
         """按时间戳合并数据."""
         try:
             if not all_data:
@@ -293,7 +298,7 @@ class DataFusionService(BaseService):
 
             # 选择最可靠的数据源
             priority_sources = ["vnpy_local", "tushare", "akshare"]
-            
+
             for source in priority_sources:
                 for data_point in data_points:
                     if data_point.get("source") == source:
@@ -317,7 +322,7 @@ class DataFusionService(BaseService):
                 return []
 
             cleaned_data = []
-            
+
             for data_point in data:
                 # 检查数据完整性
                 if await self._validate_data_point(data_point):
@@ -327,7 +332,9 @@ class DataFusionService(BaseService):
                 else:
                     self.logger.warning("跳过无效数据点: %s", data_point.get("datetime"))
 
-            self.logger.info("数据清洗完成: %d 条原始数据 -> %d 条清洗后数据", len(data), len(cleaned_data))
+            self.logger.info(
+                "数据清洗完成: %d 条原始数据 -> %d 条清洗后数据", len(data), len(cleaned_data)
+            )
             return cleaned_data
 
         except Exception as e:
@@ -357,7 +364,9 @@ class DataFusionService(BaseService):
                 return False
 
             # 检查OHLC关系
-            if high_price < max(open_price, close_price) or low_price > min(open_price, close_price):
+            if high_price < max(open_price, close_price) or low_price > min(
+                open_price, close_price
+            ):
                 return False
 
             return True

@@ -290,6 +290,87 @@ def init_settings(config_file: Optional[str] = None) -> Settings:
     return _settings
 
 
+# 轻量UI/应用配置（供前端UI使用）
+class AppConfig(BaseSettings):
+    """应用基础配置（供UI展示用）."""
+    name: str = Field(default="星辰金融终端", env="APP_NAME")
+    version: str = Field(default="5.0.0", env="APP_VERSION")
+
+    class Config:
+        env_prefix = "APP_"
+
+
+class UIConfig(BaseSettings):
+    """UI界面配置（供主窗口使用）."""
+    window_width: int = Field(default=1200, env="UI_WINDOW_WIDTH")
+    window_height: int = Field(default=800, env="UI_WINDOW_HEIGHT")
+    min_width: int = Field(default=960, env="UI_MIN_WIDTH")
+    min_height: int = Field(default=640, env="UI_MIN_HEIGHT")
+    theme: str = Field(default="dark", env="UI_THEME")
+
+    class Config:
+        env_prefix = "UI_"
+
+
+class ConfigManager:
+    """UI层期望的配置管理器（轻量实现）。"""
+
+    def __init__(self, config_file: Optional[str] = None):
+        # 轻量从环境/默认值加载
+        self.app_config = AppConfig()
+        self.ui_config = UIConfig()
+        # 兼容保存到文件（可选）
+        self._config_file = config_file or os.getenv("UI_CONFIG_FILE")
+
+        # 若提供文件路径，尝试加载
+        if self._config_file and Path(self._config_file).exists():
+            try:
+                with open(self._config_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                app = data.get("app", {})
+                ui = data.get("ui", {})
+                for k, v in app.items():
+                    if hasattr(self.app_config, k):
+                        setattr(self.app_config, k, v)
+                for k, v in ui.items():
+                    if hasattr(self.ui_config, k):
+                        setattr(self.ui_config, k, v)
+                logger.info("UI配置文件加载完成: %s", self._config_file)
+            except Exception as e:
+                logger.error("UI配置文件加载失败: %s", e)
+
+    def save_config(self) -> None:
+        """保存当前配置到文件（如提供路径）。"""
+        if not self._config_file:
+            # 无文件路径时不写盘，仅日志提示
+            logger.debug("未提供UI配置文件路径，跳过保存")
+            return
+        try:
+            Path(self._config_file).parent.mkdir(parents=True, exist_ok=True)
+            with open(self._config_file, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "app": {
+                            "name": self.app_config.name,
+                            "version": self.app_config.version,
+                        },
+                        "ui": {
+                            "window_width": self.ui_config.window_width,
+                            "window_height": self.ui_config.window_height,
+                            "min_width": self.ui_config.min_width,
+                            "min_height": self.ui_config.min_height,
+                            "theme": self.ui_config.theme,
+                        },
+                    },
+                    f,
+                    indent=2,
+                    ensure_ascii=False,
+                )
+            logger.info("UI配置保存完成: %s", self._config_file)
+        except Exception as e:
+            logger.error("UI配置保存失败: %s", e)
+
+
 # 导出公共接口
 __all__ = [
     "DatabaseConfig",
@@ -301,4 +382,8 @@ __all__ = [
     "Settings",
     "get_settings",
     "init_settings",
+    # UI层轻量配置管理器
+    "AppConfig",
+    "UIConfig",
+    "ConfigManager",
 ]
