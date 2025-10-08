@@ -6,8 +6,8 @@
 """
 
 import logging
-from typing import Dict, List, Optional, Any, TYPE_CHECKING
-from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from datetime import datetime
 
 from backend.services.base_service import BaseService
 from backend.core.models import ChartConfig
@@ -117,18 +117,18 @@ class ChartService(BaseService):
 
             # 转换为图表格式
             chart_data = []
-            for bar in vnpy_data:
+            for bar_data in vnpy_data:
                 chart_data.append(
                     {
-                        "timestamp": int(bar.datetime.timestamp() * 1000),
-                        "datetime": bar.datetime.isoformat(),
-                        "open": float(bar.open_price),
-                        "high": float(bar.high_price),
-                        "low": float(bar.low_price),
-                        "close": float(bar.close_price),
-                        "volume": int(bar.volume),
-                        "turnover": float(bar.turnover),
-                        "open_interest": int(bar.open_interest),
+                        "timestamp": int(bar_data.datetime.timestamp() * 1000),
+                        "datetime": bar_data.datetime.isoformat(),
+                        "open": float(bar_data.open_price),
+                        "high": float(bar_data.high_price),
+                        "low": float(bar_data.low_price),
+                        "close": float(bar_data.close_price),
+                        "volume": int(bar_data.volume),
+                        "turnover": float(bar_data.turnover),
+                        "open_interest": int(bar_data.open_interest),
                     }
                 )
 

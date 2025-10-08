@@ -5,10 +5,11 @@
 混合架构：策略/指标管理器（固有组件）+ 2个子界面.
 """
 
+import asyncio
 import logging
 
-from PySide6.QtCore import QTimer, Qt
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import QThread, QTimer, Qt, Signal
+from PySide6.QtGui import QIcon, QTextCursor
 from PySide6.QtWidgets import (
     QComboBox,
     QGroupBox,
@@ -34,6 +35,58 @@ try:
 except ImportError:
     # 导入失败时置为 None
     VnPyAdapter = None
+
+
+class AIWorker(QThread):
+    """AI助手工作线程."""
+
+    response_ready = Signal(dict)
+
+    def __init__(self, message: str, code_context: str = ""):
+        """初始化AI工作线程.
+
+        Args:
+            message: 用户消息
+            code_context: 代码上下文
+        """
+        super().__init__()
+        self.message = message
+        self.code_context = code_context
+        self.running = False
+
+    def run(self):
+        """运行AI查询任务."""
+        self.running = True
+
+        try:
+            # 导入AI服务
+            from backend.services.strategy_center.ai_service import AIService
+
+            # 创建AI服务实例
+            ai_service = AIService()
+
+            # 准备上下文
+            context = None
+            if self.code_context:
+                context = {"code": self.code_context}
+
+            # 在工作线程中运行异步函数
+            result = asyncio.run(ai_service.chat(self.message, context=context))
+
+            # 发送结果信号
+            self.response_ready.emit(result)
+
+        except Exception as e:
+            # 发送错误信息
+            self.response_ready.emit(
+                {
+                    "success": False,
+                    "error": str(e),
+                    "message": f"AI助手处理失败: {e}",
+                }
+            )
+        finally:
+            self.running = False
 
 
 class StrategyCenter(QWidget):
@@ -69,6 +122,9 @@ class StrategyCenter(QWidget):
         self.backtest_progress = None
         self.backtest_status_label = None
         self.backtest_results = None
+
+        # AI Worker
+        self.ai_worker = None
 
         # 更新定时器与就绪标志
         self._update_timer = None
@@ -263,7 +319,7 @@ class StrategyCenter(QWidget):
 
         except Exception as e:
             self.logger.error("创建文件树失败: %s", e)
-            raise RuntimeError(f"无法创建策略文件树: {e}")
+            raise RuntimeError(f"无法创建策略文件树: {e}") from e
 
     def _create_content_area(self):
         """创建内容区域."""
@@ -585,17 +641,65 @@ class StrategyCenter(QWidget):
 
     def _send_to_ai(self):
         """发送消息给AI助手."""
-        if self.user_input and self.ai_response:
-            message = self.user_input.text().strip()
-            if message:
-                self.ai_response.append(f"用户: {message}")
-                # 调用AI服务
-                from backend.services.strategy_center.ai_service import AIService
+        if not self.user_input or not self.ai_response:
+            return
 
-                ai_service = AIService()
-                response = ai_service.query(message)
-                self.ai_response.append(f"AI助手: {response}")
-                self.user_input.clear()
+        message = self.user_input.text().strip()
+        if not message:
+            return
+
+        # 显示用户消息
+        self.ai_response.append(f"用户: {message}")
+        self.user_input.clear()
+
+        # 检查是否已有Worker在运行
+        if self.ai_worker and self.ai_worker.isRunning():
+            self.ai_response.append("AI助手: [忙碌中] 请等待当前请求完成...")
+            return
+
+        # 获取代码上下文（如果编辑器中有代码）
+        code_context = ""
+        if self.code_editor and hasattr(self.code_editor, "toPlainText"):
+            code_context = self.code_editor.toPlainText()
+
+        # 显示处理中提示
+        self.ai_response.append("AI助手: [处理中...] 正在思考您的问题...")
+
+        # 创建并启动AI Worker
+        self.ai_worker = AIWorker(message, code_context)
+        self.ai_worker.response_ready.connect(self._on_ai_response)
+        self.ai_worker.start()
+
+    def _on_ai_response(self, result: dict):
+        """处理AI响应."""
+        if not self.ai_response:
+            return
+
+        if result.get("success"):
+            # 显示AI回答
+            response_message = result.get("message", "")
+            if response_message:
+                self.ai_response.append(f"AI助手: {response_message}")
+
+            # 如果有代码，插入到编辑器
+            code = result.get("code")
+            if code and self.code_editor and hasattr(self.code_editor, "insertPlainText"):
+                # 询问用户是否要插入代码（这里简化为直接追加）
+                self.ai_response.append("\n[代码已生成，您可以从编辑器中查看]")
+                # 在编辑器末尾插入代码
+                cursor = self.code_editor.textCursor()
+                cursor.movePosition(QTextCursor.MoveOperation.End)
+                self.code_editor.setTextCursor(cursor)
+                self.code_editor.insertPlainText(f"\n\n# AI生成的代码:\n{code}\n")
+        else:
+            # 显示错误信息
+            error_message = result.get("message", "未知错误")
+            self.ai_response.append(f"AI助手: [错误] {error_message}")
+
+        # 清理Worker
+        if self.ai_worker:
+            self.ai_worker.deleteLater()
+            self.ai_worker = None
 
     def _run_backtest(self):
         """运行回测."""
@@ -700,6 +804,10 @@ class StrategyCenter(QWidget):
         """从文件系统加载策略列表用于回测."""
         import os
 
+        if not self.backtest_target_combo:
+            self.logger.warning("回测目标下拉框未初始化")
+            return
+
         try:
             strategy_dir = "strategies/user_strategies"
             if os.path.exists(strategy_dir):
@@ -750,4 +858,10 @@ class StrategyCenter(QWidget):
     def on_close(self):
         """关闭处理."""
         self.stop_update_timer()
+
+        # 清理AI Worker
+        if self.ai_worker and self.ai_worker.isRunning():
+            self.ai_worker.terminate()
+            self.ai_worker.wait()
+
         self.logger.info("策略中心界面已关闭")

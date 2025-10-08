@@ -72,7 +72,7 @@ class CTPGatewayAdapter(BaseGatewayAdapter):
             ]
         }
 
-    def connect(self, config: Dict[str, Any], password: Optional[str] = None) -> bool:
+    def connect(self, config: Dict[str, Any], password: Optional[str] = None) -> bool:  # noqa: U100
         """连接CTP网关"""
         try:
             # 尝试导入vnpy_ctp
@@ -81,6 +81,7 @@ class CTPGatewayAdapter(BaseGatewayAdapter):
                 from vnpy_ctp import CtpGateway  # noqa: F401
 
                 logger.info("成功导入vnpy_ctp")
+                logger.debug("连接配置: %s", {k: v for k, v in config.items() if k != "password"})
 
                 # 实际集成代码
                 # self.vnpy_gateway = CtpGateway(event_engine)
@@ -92,7 +93,7 @@ class CTPGatewayAdapter(BaseGatewayAdapter):
 
             except ImportError as e:
                 logger.error("vnpy_ctp未安装: %s", e)
-                raise ImportError("vnpy_ctp未安装，请安装: pip install vnpy_ctp")
+                raise ImportError("vnpy_ctp未安装，请安装: pip install vnpy_ctp") from e
 
         except Exception as e:  # pylint: disable=broad-exception-caught
             logger.error("CTP网关连接失败: %s", e)

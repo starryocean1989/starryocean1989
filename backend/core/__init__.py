@@ -86,7 +86,7 @@ from .performance import (
     get_performance_optimizer,
     reset_performance_optimizer,
 )
-from .shared_services import ConfigService, LoggingService, MonitoringService
+from .shared_services import get_service_manager, ServiceManager, ErrorSeverity
 from .vnpy_integration import (
     AccountData,
     BarData,
@@ -214,7 +214,8 @@ __all__ = [
     "HealthChecker",
     "MonitoringManager",
     # 共享服务
-    "ConfigService",
-    "LoggingService",
-    "MonitoringService",
+    # 共享服务
+    "get_service_manager",
+    "ServiceManager",
+    "ErrorSeverity",
 ]

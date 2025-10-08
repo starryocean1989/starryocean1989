@@ -183,14 +183,20 @@ class TestDownloadProgressMonitoringE2E:
         await download_service.start_download_task(task_id)
         logger.info(f"✓ 任务{task_id}已启动")
 
-        # 等待任务开始执行（条件式等待，最多3秒）
-        _waited = 0.0
-        while _waited < 3.0:
-            _status = service_accessor.get_task_status(download_service, task_id)
-            if _status and (_status.get("is_running") or _status.get("status") == "running"):
-                break
-            await asyncio.sleep(0.2)
-            _waited += 0.2
+        # 等待任务开始执行（使用条件等待，最多3秒）
+        await wait_until_condition(
+            lambda: (
+                service_accessor.get_task_status(download_service, task_id) is not None
+                and (
+                    service_accessor.get_task_status(download_service, task_id).get("is_running")
+                    or service_accessor.get_task_status(download_service, task_id).get("status")
+                    == "running"
+                )
+            ),
+            timeout=3.0,
+            interval=0.2,
+            error_message="等待任务开始执行超时",
+        )
 
         # 验证点1&5: 测量取消操作耗时
         start_time = time.time()
@@ -227,10 +233,16 @@ class TestDownloadProgressMonitoringE2E:
 
         # 验证点3: 验证进度不再更新
         progress_before = task_status["progress"]
-        # 验证取消后进度不再更新（检查进度保持不变）
-        # 等待短时间后确认进度未变化
-        await asyncio.sleep(1.0)  # 给系统时间确认进度已冻结
-        _unchanged = True
+        # 验证取消后进度不再更新（使用条件等待确认进度保持不变）
+
+        # 等待一小段时间后确认进度仍保持不变
+        await wait_until_condition(
+            lambda: service_accessor.get_task_status(download_service, task_id)["progress"]
+            == progress_before,
+            timeout=2.0,
+            interval=0.3,
+            error_message="取消后进度应该保持不变",
+        )
 
         task_status_after = service_accessor.get_task_status(download_service, task_id)
         progress_after = task_status_after["progress"]
@@ -268,6 +280,10 @@ class TestDownloadProgressMonitoringE2E:
         test_symbol, test_exchange = self._get_test_symbol(symbol_service)
 
         # 创建并完成多个任务
+        from tests.test_e2e.utils.service_accessor import ServiceAccessor
+
+        service_accessor = ServiceAccessor()
+
         task_ids = []
         for i in range(3):
             task = await download_service.create_download_task(
@@ -276,22 +292,24 @@ class TestDownloadProgressMonitoringE2E:
                 start_date=datetime(2024, 10, i + 1),
                 end_date=datetime(2024, 10, i + 2),
             )
-            task_ids.append(task.task_id)
+            current_task_id = task.task_id
+            task_ids.append(current_task_id)
 
             # 启动任务并使用条件等待确保任务开始运行（修复问题C：不再使用固定sleep）
-            await download_service.start_download_task(task.task_id)
+            await download_service.start_download_task(current_task_id)
+
             # 等待任务进入运行状态
+            def check_task_started(tid=current_task_id):
+                status = service_accessor.get_task_status(download_service, tid)
+                if status and status.get("status") in ["running", "completed", "failed"]:
+                    return True
+                return False
+
             await wait_until_condition(
-                condition_func=lambda: (
-                    service_accessor.get_task_status(download_service, task.task_id)
-                    and service_accessor.get_task_status(download_service, task.task_id).get(
-                        "status"
-                    )
-                    in ["running", "completed", "failed"]
-                ),
+                condition_func=check_task_started,
                 timeout=3.0,
                 interval=0.2,
-                error_message=f"任务{task.task_id}未启动",
+                error_message=f"任务{current_task_id}未启动",
             )
 
         logger.info(f"✓ 创建了{len(task_ids)}个下载任务")
@@ -456,10 +474,13 @@ class TestDownloadProgressMonitoringE2E:
             await download_service.start_download_task(task_id)
         logger.info("✓ 所有任务已启动")
 
-        # 验证点1&2: 监控所有任务进度（优化间隔）
+        # 验证点1&2: 监控所有任务进度（定期采样）
         monitoring_iterations = 5
         for iteration in range(monitoring_iterations):
-            await asyncio.sleep(0.5)  # 缩短间隔提高效率
+            # 采样间隔: 每0.5秒采样一次进度（这是测试设计的定期监控，非阻塞等待）
+            # 如需更精确的进度监控，可考虑使用wait_until_condition
+            if iteration > 0:  # 第一次迭代立即执行，后续迭代间隔0.5秒
+                await asyncio.sleep(0.5)
 
             logger.info(f"\n--- 监控迭代 {iteration + 1} ---")
 

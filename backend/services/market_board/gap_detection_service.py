@@ -6,8 +6,8 @@
 """
 
 import logging
-from typing import Dict, List, Optional, TYPE_CHECKING, Any
-from datetime import datetime, timedelta
+from typing import TYPE_CHECKING, Any, Dict, List
+from datetime import datetime
 
 from backend.services.base_service import BaseService
 from backend.core.models import GapInfo
@@ -107,11 +107,13 @@ class GapDetectionService(BaseService):
 
             # 生成缓存键
             cache_key = f"{symbol}.{exchange}.{frequency}.{start_date.date()}.{end_date.date()}"
-            
+
             # 检查缓存
             if cache_key in self._gap_cache:
                 cached_gaps = self._gap_cache[cache_key]
-                self.logger.info("从缓存获取断点检测结果: %s, %d 个断点", cache_key, len(cached_gaps))
+                self.logger.info(
+                    "从缓存获取断点检测结果: %s, %d 个断点", cache_key, len(cached_gaps)
+                )
                 return cached_gaps
 
             # 获取历史数据
@@ -298,7 +300,7 @@ class GapDetectionService(BaseService):
                 "total_missing_time_seconds": total_missing_time,
                 "total_missing_time_hours": total_missing_time / 3600,
                 "data_completeness": await self._calculate_completeness(
-                    symbol, exchange, start_date, end_date, all_gaps
+                    start_date, end_date, all_gaps
                 ),
                 "timestamp": datetime.now().isoformat(),
             }
@@ -312,8 +314,6 @@ class GapDetectionService(BaseService):
 
     async def _calculate_completeness(
         self,
-        symbol: str,
-        exchange: str,
         start_date: datetime,
         end_date: datetime,
         gaps: List[GapInfo],
@@ -362,9 +362,7 @@ class GapDetectionService(BaseService):
             threshold_level = severity_levels.get(severity_threshold, 2)
 
             fixable_gaps = [
-                gap
-                for gap in gaps
-                if severity_levels.get(gap.severity, 0) >= threshold_level
+                gap for gap in gaps if severity_levels.get(gap.severity, 0) >= threshold_level
             ]
 
             # 执行修复
@@ -420,7 +418,8 @@ class GapDetectionService(BaseService):
             if symbol and exchange:
                 # 清除相关缓存
                 keys_to_remove = [
-                    key for key in self._gap_cache.keys()
+                    key
+                    for key in self._gap_cache.keys()
                     if key.startswith(f"{symbol}.{exchange}.{frequency}")
                 ]
                 for key in keys_to_remove:

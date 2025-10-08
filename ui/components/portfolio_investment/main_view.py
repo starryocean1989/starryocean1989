@@ -32,8 +32,8 @@ except ImportError:
 
 # Import base classes - no fallback, fail fast
 
+
 if TYPE_CHECKING:
-    # For type checking, use the actual imported classes
     from ..widgets.base_widget import BaseWidget  # type: ignore
 
     from backend.core.utils.logging_utils import LoggerMixin  # type: ignore
@@ -570,7 +570,7 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
             self._update_auto_portfolios(status)
 
             # 更新自定义组合表格
-            self._update_custom_portfolios(status)
+            self._update_custom_portfolios()
 
             # 更新监控数据
             self._update_monitor_data()

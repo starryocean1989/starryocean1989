@@ -10,10 +10,8 @@ import time
 from pathlib import Path
 
 # 使用绝对导入避免相对导入问题
-from backend.core.monitoring import (
-    HealthChecker, MonitoringManager, PerformanceMonitor, TestRunner
-)
-from backend.core.shared_services import ConfigService
+from backend.core.monitoring import HealthChecker, MonitoringManager, PerformanceMonitor, TestRunner
+from backend.services.system_manager.config_service import ConfigService
 from backend.core.vnpy_integration import get_terminal_engine
 
 # 添加项目根目录到Python路径
@@ -44,8 +42,8 @@ def test_performance_monitor():
     # 检查是否有系统指标
     if "system" in metrics and metrics["system"]:
         latest = metrics["system"][-1]
-        cpu_percent = latest.get('cpu_percent', 0)
-        memory_percent = latest.get('memory_percent', 0)
+        cpu_percent = latest.get("cpu_percent", 0)
+        memory_percent = latest.get("memory_percent", 0)
         print(f"最新系统指标: CPU {cpu_percent:.1f}%, 内存 {memory_percent:.1f}%")
     else:
         print("警告: 未收集到系统指标")
@@ -56,8 +54,8 @@ def test_performance_monitor():
 
     # 获取摘要
     summary = monitor.get_summary()
-    total_alerts = summary['total_alerts']
-    monitoring_status = '激活' if summary['monitoring_active'] else '停止'
+    total_alerts = summary["total_alerts"]
+    monitoring_status = "激活" if summary["monitoring_active"] else "停止"
     print(f"监控摘要: {total_alerts} 个告警, 监控状态: {monitoring_status}")
 
     # 停止监控
@@ -84,8 +82,8 @@ def test_health_checker():
     print(f"检查项目数量: {len(health_result['checks'])}")
 
     # 检查各个组件
-    for check_name, check_result in health_result['checks'].items():
-        status = check_result.get('status', 'unknown')
+    for check_name, check_result in health_result["checks"].items():
+        status = check_result.get("status", "unknown")
         print(f"  {check_name}: {status}")
 
     # 获取检查历史
@@ -112,8 +110,8 @@ def test_test_runner():
     if unit_result.get("success", False):
         print(f"✅ 单元测试通过: {unit_result['tests_run']} 个测试")
     else:
-        failures = unit_result.get('failures', 0)
-        errors = unit_result.get('errors', 0)
+        failures = unit_result.get("failures", 0)
+        errors = unit_result.get("errors", 0)
         print(f"❌ 单元测试失败: {failures} 个失败, {errors} 个错误")
 
     # 运行集成测试
@@ -194,12 +192,12 @@ def test_stress_test():
         time.sleep(0.1)  # 小间隔
 
     # 检查结果一致性
-    scores = [r['health_score'] for r in results]
+    scores = [r["health_score"] for r in results]
     avg_score = sum(scores) / len(scores)
 
     print(f"10次健康检查平均评分: {avg_score:.1f}")
     variance = sum((s - avg_score) ** 2 for s in scores) / len(scores)
-    std_deviation = variance ** 0.5
+    std_deviation = variance**0.5
     print(f"评分标准差: {std_deviation:.1f}")
 
     # 检查历史记录
@@ -220,7 +218,7 @@ def main():
         test_health_checker,
         test_test_runner,
         test_monitoring_manager,
-        test_stress_test
+        test_stress_test,
     ]
 
     results = []

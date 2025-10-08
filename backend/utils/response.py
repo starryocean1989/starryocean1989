@@ -6,8 +6,9 @@
 """
 
 import logging
-from typing import Any, Dict, List, Optional, Union
 from datetime import datetime
+from typing import Any, Dict, List, Optional
+
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
@@ -107,9 +108,7 @@ class ApiResponse:
         }
 
     @staticmethod
-    def not_found(
-        resource: str = "资源", message: Optional[str] = None
-    ) -> Dict[str, Any]:
+    def not_found(resource: str = "资源", message: Optional[str] = None) -> Dict[str, Any]:
         """资源未找到响应格式."""
         if message is None:
             message = f"{resource}不存在"
@@ -165,9 +164,7 @@ class ResponseHelper:
         if headers is None:
             headers = {}
 
-        return JSONResponse(
-            content=response_data, status_code=status_code, headers=headers
-        )
+        return JSONResponse(content=response_data, status_code=status_code, headers=headers)
 
     @staticmethod
     def success_response(
@@ -207,9 +204,7 @@ class ResponseHelper:
         return ResponseHelper.create_json_response(response_data, 400)
 
     @staticmethod
-    def not_found_response(
-        resource: str = "资源", message: Optional[str] = None
-    ) -> JSONResponse:
+    def not_found_response(resource: str = "资源", message: Optional[str] = None) -> JSONResponse:
         """创建资源未找到响应."""
         response_data = ApiResponse.not_found(resource, message)
         return ResponseHelper.create_json_response(response_data, 404)
@@ -263,9 +258,7 @@ class HTTPExceptionHelper:
         )
 
     @staticmethod
-    def not_found(
-        resource: str = "资源", message: Optional[str] = None
-    ) -> HTTPException:
+    def not_found(resource: str = "资源", message: Optional[str] = None) -> HTTPException:
         """创建404错误异常."""
         if message is None:
             message = f"{resource}不存在"

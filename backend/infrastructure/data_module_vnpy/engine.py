@@ -50,11 +50,11 @@ class ChinaStockEngine(BaseEngine):
         super().__init__(main_engine, event_engine, APP_NAME)
 
         # 初始化组件
-        self.stock_fetcher = StockFetcher()
+        self.block_parser = BlockParser(config_manager.get_tdx_dir())
+        self.stock_fetcher = StockFetcher(self.block_parser)
         self.storage_manager = StorageManager()
         self.validator = DataValidator()
         self.file_watcher = EventDrivenFileWatcher(event_engine)
-        self.block_parser = BlockParser(config_manager.get_tdx_dir())
 
         # 日志记录器
         self.logger = logging.getLogger(__name__)
@@ -108,6 +108,13 @@ class ChinaStockEngine(BaseEngine):
         """
         try:
             self.logger.info("开始更新品种列表...")
+
+            # 重新初始化block_parser（如果用户刚配置了通达信路径）
+            tdx_dir = config_manager.get_tdx_dir()
+            self.block_parser = BlockParser(tdx_dir)
+            self.stock_fetcher.block_parser = self.block_parser
+            spblock_status = "可用" if self.block_parser.is_available() else "不可用"
+            self.logger.info("BlockParser已重新初始化: spblock.dat %s", spblock_status)
 
             # 获取所有品种
             stocks_df = self.stock_fetcher.fetch_all_stocks()

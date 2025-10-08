@@ -36,11 +36,14 @@ contourpy>=1.0.0
 
 # ========== 系统监控 ==========
 psutil>=5.8.0
-watchdog>=2.1.0
+watchdog>=3.0.0
 
 # ========== 数据库 ==========
 # 数据库驱动
 pymongo>=4.0.0
+
+# 列式存储
+pyarrow>=10.0.0
 
 # pymongo依赖
 dnspython>=2.0.0
@@ -87,10 +90,15 @@ tzlocal>=4.0.0
 # vnpy_ib - Interactive Brokers网关
 # vnpy_paperaccount - 模拟交易网关
 
-# VNPY数据源
+# VNPY数据源（需要通过git安装）
 # vnpy_tushare
 # vnpy_rqdata
 # vnpy_ifind
+
+# ========== data_module_vnpy数据源 ==========
+# 通达信数据获取
+mootdx>=0.11.7
+pytdx>=1.72
 
 # ========== AI助手 ==========
 openai>=1.0.0

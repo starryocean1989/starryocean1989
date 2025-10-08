@@ -437,7 +437,7 @@ class MarketDashboard(BaseWidget, LoggerMixin):  # type: ignore[misc]
             from backend.core.shared_services import get_service_manager
 
             service_manager = get_service_manager()
-            symbol_service = service_manager.get("symbol_service")
+            symbol_service = service_manager.get_service("symbol_service")
 
             if symbol_service:
                 # 使用异步方法获取品种列表
@@ -450,9 +450,10 @@ class MarketDashboard(BaseWidget, LoggerMixin):  # type: ignore[misc]
                     asyncio.set_event_loop(loop)
 
                 symbols = loop.run_until_complete(symbol_service.get_all_symbols())
-                for symbol in symbols:
-                    display_name = f"{symbol['code']} - {symbol['name']}"
-                    self.symbol_combo.addItem(display_name)
+                if self.symbol_combo is not None:
+                    for symbol in symbols:
+                        display_name = f"{symbol['code']} - {symbol['name']}"
+                        self.symbol_combo.addItem(display_name)
             else:
                 # 使用默认品种
                 self._load_default_symbols()
@@ -468,8 +469,9 @@ class MarketDashboard(BaseWidget, LoggerMixin):  # type: ignore[misc]
             "600000 - 浦发银行",
             "600036 - 招商银行",
         ]
-        for symbol in default_symbols:
-            self.symbol_combo.addItem(symbol)
+        if self.symbol_combo is not None:
+            for symbol in default_symbols:
+                self.symbol_combo.addItem(symbol)
 
     def _load_overlay_symbol_list(self):
         """加载叠加品种列表."""
@@ -477,7 +479,7 @@ class MarketDashboard(BaseWidget, LoggerMixin):  # type: ignore[misc]
             from backend.core.shared_services import get_service_manager
 
             service_manager = get_service_manager()
-            symbol_service = service_manager.get("symbol_service")
+            symbol_service = service_manager.get_service("symbol_service")
 
             if symbol_service:
                 # 使用异步方法获取品种列表
@@ -490,9 +492,10 @@ class MarketDashboard(BaseWidget, LoggerMixin):  # type: ignore[misc]
                     asyncio.set_event_loop(loop)
 
                 symbols = loop.run_until_complete(symbol_service.get_all_symbols())
-                for symbol in symbols:
-                    display_name = f"{symbol['code']} - {symbol['name']}"
-                    self.overlay_symbol_combo.addItem(display_name)
+                if self.overlay_symbol_combo is not None:
+                    for symbol in symbols:
+                        display_name = f"{symbol['code']} - {symbol['name']}"
+                        self.overlay_symbol_combo.addItem(display_name)
             else:
                 # 使用默认品种
                 self._load_default_symbols_for_overlay()
@@ -508,17 +511,19 @@ class MarketDashboard(BaseWidget, LoggerMixin):  # type: ignore[misc]
             "600000 - 浦发银行",
             "600036 - 招商银行",
         ]
-        for symbol in default_symbols:
-            self.overlay_symbol_combo.addItem(symbol)
+        if self.overlay_symbol_combo is not None:
+            for symbol in default_symbols:
+                self.overlay_symbol_combo.addItem(symbol)
 
     def _load_available_indicators(self):
         """加载可用指标列表."""
         # 从系统配置获取可用指标列表
         indicators = ["MA5", "MA10", "MA20", "MA60", "BOLL", "MACD", "RSI", "KDJ"]
 
-        self.overlay_indicator_combo.addItem("无")
-        for indicator in indicators:
-            self.overlay_indicator_combo.addItem(indicator)
+        if self.overlay_indicator_combo is not None:
+            self.overlay_indicator_combo.addItem("无")
+            for indicator in indicators:
+                self.overlay_indicator_combo.addItem(indicator)
 
     def _on_real_time_tick(self, tick_data: Dict[str, Any]):
         """实时tick数据回调."""

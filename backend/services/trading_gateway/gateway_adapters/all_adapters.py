@@ -67,19 +67,22 @@ class CTPTestGatewayAdapter(BaseGatewayAdapter):
             ]
         }
 
-    def connect(self, config: Dict[str, Any], password: Optional[str] = None) -> bool:
+    def connect(
+        self, _config: Dict[str, Any], _password: Optional[str] = None
+    ) -> bool:  # noqa: U100
         """连接网关."""
+        _ = _config, _password  # 参数保留用于接口一致性
         try:
             try:
                 # pylint: disable=unused-import,import-outside-toplevel
-                from vnpy_ctptest import CtptestGateway  # noqa: F401
+                from vnpy_ctptest import CtptestGateway  # noqa: F401  # type: ignore
 
                 logger.info("成功导入vnpy_ctptest")
                 self.is_connected = True
                 return True
             except ImportError as e:
                 logger.error("vnpy_ctptest未安装: %s", e)
-                raise ImportError("vnpy_ctptest未安装，请安装: pip install vnpy_ctptest")
+                raise ImportError("vnpy_ctptest未安装，请安装: pip install vnpy_ctptest") from e
         except (OSError, RuntimeError) as e:
             logger.error("CTPTest网关连接失败: %s", e)
             raise
@@ -89,16 +92,19 @@ class CTPTestGatewayAdapter(BaseGatewayAdapter):
         self.is_connected = False
         return True
 
-    def subscribe(self, symbol: str, exchange: str) -> bool:
+    def subscribe(self, _symbol: str, _exchange: str) -> bool:  # noqa: U100
         """订阅行情."""
+        _ = _symbol, _exchange  # 参数保留用于接口一致性
         return True
 
-    def send_order(self, order_req: Dict[str, Any]) -> str:
+    def send_order(self, _order_req: Dict[str, Any]) -> str:  # noqa: U100
         """发送订单."""
+        _ = _order_req  # 参数保留用于接口一致性
         return f"order_{int(datetime.now().timestamp())}"
 
-    def cancel_order(self, order_id: str) -> bool:
+    def cancel_order(self, _order_id: str) -> bool:  # noqa: U100
         """撤销订单."""
+        _ = _order_id  # 参数保留用于接口一致性
         return True
 
     def query_account(self) -> Dict[str, Any]:
@@ -166,19 +172,22 @@ class SoptGatewayAdapter(BaseGatewayAdapter):
             ]
         }
 
-    def connect(self, config: Dict[str, Any], password: Optional[str] = None) -> bool:
+    def connect(
+        self, _config: Dict[str, Any], _password: Optional[str] = None
+    ) -> bool:  # noqa: U100
         """连接网关."""
+        _ = _config, _password  # 参数保留用于接口一致性
         try:
             try:
                 # pylint: disable=unused-import,import-outside-toplevel
-                from vnpy_sopt import SoptGateway  # noqa: F401
+                from vnpy_sopt import SoptGateway  # noqa: F401  # type: ignore
 
                 logger.info("成功导入vnpy_sopt")
                 self.is_connected = True
                 return True
             except ImportError as e:
                 logger.error("vnpy_sopt未安装: %s", e)
-                raise ImportError("vnpy_sopt未安装，请安装: pip install vnpy_sopt")
+                raise ImportError("vnpy_sopt未安装，请安装: pip install vnpy_sopt") from e
         except (OSError, RuntimeError) as e:
             logger.error("Sopt网关连接失败: %s", e)
             return False
@@ -188,16 +197,19 @@ class SoptGatewayAdapter(BaseGatewayAdapter):
         self.is_connected = False
         return True
 
-    def subscribe(self, symbol: str, exchange: str) -> bool:
+    def subscribe(self, _symbol: str, _exchange: str) -> bool:  # noqa: U100
         """订阅行情."""
+        _ = _symbol, _exchange  # 参数保留用于接口一致性
         return True
 
-    def send_order(self, order_req: Dict[str, Any]) -> str:
+    def send_order(self, _order_req: Dict[str, Any]) -> str:  # noqa: U100
         """发送订单."""
+        _ = _order_req  # 参数保留用于接口一致性
         return f"order_{int(datetime.now().timestamp())}"
 
-    def cancel_order(self, order_id: str) -> bool:
+    def cancel_order(self, _order_id: str) -> bool:  # noqa: U100
         """撤销订单."""
+        _ = _order_id  # 参数保留用于接口一致性
         return True
 
     def query_account(self) -> Dict[str, Any]:
@@ -253,19 +265,22 @@ class TTSGatewayAdapter(BaseGatewayAdapter):
             ]
         }
 
-    def connect(self, config: Dict[str, Any], password: Optional[str] = None) -> bool:
+    def connect(
+        self, _config: Dict[str, Any], _password: Optional[str] = None
+    ) -> bool:  # noqa: U100
         """连接网关."""
+        _ = _config, _password  # 参数保留用于接口一致性
         try:
             try:
                 # pylint: disable=unused-import,import-outside-toplevel
-                from vnpy_tts import TtsGateway  # noqa: F401
+                from vnpy_tts import TtsGateway  # noqa: F401  # type: ignore
 
                 logger.info("成功导入vnpy_tts")
                 self.is_connected = True
                 return True
             except ImportError as e:
                 logger.error("vnpy_tts未安装: %s", e)
-                raise ImportError("vnpy_tts未安装，请安装: pip install vnpy_tts")
+                raise ImportError("vnpy_tts未安装，请安装: pip install vnpy_tts") from e
         except (OSError, RuntimeError) as e:
             logger.error("TTS网关连接失败: %s", e)
             return False
@@ -275,16 +290,19 @@ class TTSGatewayAdapter(BaseGatewayAdapter):
         self.is_connected = False
         return True
 
-    def subscribe(self, symbol: str, exchange: str) -> bool:
+    def subscribe(self, _symbol: str, _exchange: str) -> bool:  # noqa: U100
         """订阅行情."""
+        _ = _symbol, _exchange  # 参数保留用于接口一致性
         return True
 
-    def send_order(self, order_req: Dict[str, Any]) -> str:
+    def send_order(self, _order_req: Dict[str, Any]) -> str:  # noqa: U100
         """发送订单."""
+        _ = _order_req  # 参数保留用于接口一致性
         return f"order_{int(datetime.now().timestamp())}"
 
-    def cancel_order(self, order_id: str) -> bool:
+    def cancel_order(self, _order_id: str) -> bool:  # noqa: U100
         """撤销订单."""
+        _ = _order_id  # 参数保留用于接口一致性
         return True
 
     def query_account(self) -> Dict[str, Any]:
@@ -337,8 +355,11 @@ class IBGatewayAdapter(BaseGatewayAdapter):
             ]
         }
 
-    def connect(self, config: Dict[str, Any], password: Optional[str] = None) -> bool:
+    def connect(
+        self, _config: Dict[str, Any], _password: Optional[str] = None
+    ) -> bool:  # noqa: U100
         """连接网关."""
+        _ = _config, _password  # 参数保留用于接口一致性
         try:
             try:
                 # pylint: disable=unused-import,import-outside-toplevel
@@ -349,7 +370,7 @@ class IBGatewayAdapter(BaseGatewayAdapter):
                 return True
             except ImportError as e:
                 logger.error("vnpy_ib未安装: %s", e)
-                raise ImportError("vnpy_ib未安装，请安装: pip install vnpy_ib")
+                raise ImportError("vnpy_ib未安装，请安装: pip install vnpy_ib") from e
         except (OSError, RuntimeError) as e:
             logger.error("IB网关连接失败: %s", e)
             return False
@@ -359,16 +380,19 @@ class IBGatewayAdapter(BaseGatewayAdapter):
         self.is_connected = False
         return True
 
-    def subscribe(self, symbol: str, exchange: str) -> bool:
+    def subscribe(self, _symbol: str, _exchange: str) -> bool:  # noqa: U100
         """订阅行情."""
+        _ = _symbol, _exchange  # 参数保留用于接口一致性
         return True
 
-    def send_order(self, order_req: Dict[str, Any]) -> str:
+    def send_order(self, _order_req: Dict[str, Any]) -> str:  # noqa: U100
         """发送订单."""
+        _ = _order_req  # 参数保留用于接口一致性
         return f"order_{int(datetime.now().timestamp())}"
 
-    def cancel_order(self, order_id: str) -> bool:
+    def cancel_order(self, _order_id: str) -> bool:  # noqa: U100
         """撤销订单."""
+        _ = _order_id  # 参数保留用于接口一致性
         return True
 
     def query_account(self) -> Dict[str, Any]:
@@ -413,8 +437,11 @@ class TDXGatewayAdapter(BaseGatewayAdapter):
             ]
         }
 
-    def connect(self, config: Dict[str, Any], password: Optional[str] = None) -> bool:
+    def connect(
+        self, _config: Dict[str, Any], _password: Optional[str] = None
+    ) -> bool:  # noqa: U100
         """连接网关."""
+        _ = _config, _password  # 参数保留用于接口一致性
         try:
             # TDX网关在infrastructure/tdx_gateway中
             logger.info("使用TDX网关（infrastructure/tdx_gateway）")
@@ -429,16 +456,19 @@ class TDXGatewayAdapter(BaseGatewayAdapter):
         self.is_connected = False
         return True
 
-    def subscribe(self, symbol: str, exchange: str) -> bool:
+    def subscribe(self, _symbol: str, _exchange: str) -> bool:  # noqa: U100
         """订阅行情."""
+        _ = _symbol, _exchange  # 参数保留用于接口一致性
         return True
 
-    def send_order(self, order_req: Dict[str, Any]) -> str:
+    def send_order(self, _order_req: Dict[str, Any]) -> str:  # noqa: U100
         """发送订单."""
+        _ = _order_req  # 参数保留用于接口一致性
         return f"order_{int(datetime.now().timestamp())}"
 
-    def cancel_order(self, order_id: str) -> bool:
+    def cancel_order(self, _order_id: str) -> bool:  # noqa: U100
         """撤销订单."""
+        _ = _order_id  # 参数保留用于接口一致性
         return True
 
     def query_account(self) -> Dict[str, Any]:

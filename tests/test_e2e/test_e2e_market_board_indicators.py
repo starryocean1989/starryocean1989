@@ -137,7 +137,7 @@ class TestMarketBoardIndicatorsE2E:
             else:
                 logger.warning(f"  - {indicator}指标切换失败（可能UI实现待完善）")
 
-            await asyncio.sleep(0.3)
+            # 注意：指标切换验证已包含性能测量，无需额外等待
 
         logger.info("✓ 指标切换功能正常")
 
@@ -236,7 +236,7 @@ class TestMarketBoardIndicatorsE2E:
             else:
                 logger.warning(f"    ⚠ {coord_type}坐标切换可能未实现")
 
-            await asyncio.sleep(0.2)
+            # 注意：坐标切换验证已包含性能测量，无需额外等待
 
         # 验证点3: 坐标轴自动适应
         logger.info("\n步骤2: 测试坐标轴自动适应...")
@@ -322,7 +322,7 @@ class TestMarketBoardIndicatorsE2E:
             else:
                 logger.warning(f"  - 品种{i}: {symbol_data['symbol']} 添加失败")
 
-            await asyncio.sleep(0.3)
+            # 注意：品种添加验证已完成，无需额外等待
 
         logger.info(f"✓ 成功添加{overlay_count}个叠加品种")
 
@@ -442,7 +442,7 @@ class TestMarketBoardIndicatorsE2E:
             else:
                 logger.warning(f"  - {indicator['name']} 添加失败（可能未实现）")
 
-            await asyncio.sleep(0.2)
+            # 注意：指标添加验证已包含性能测量，无需额外等待
 
         logger.info(f"✓ 成功添加{len(added_indicators)}个指标")
 
@@ -599,4 +599,6 @@ class TestMarketBoardIndicatorsE2E:
         cache_stats = accessor.get_cache_stats(symbol_service)
         if cache_stats["cache_size"] == 0:
             await symbol_service.refresh_cache()
-            await asyncio.sleep(1)
+            from tests.test_e2e.utils.wait_helpers import wait_for_cache_loaded
+
+            await wait_for_cache_loaded(symbol_service, accessor, min_size=1, timeout=5.0)

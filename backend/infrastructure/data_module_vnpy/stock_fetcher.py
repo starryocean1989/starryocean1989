@@ -35,11 +35,17 @@ class StockFetcher:
     # 品种代码前缀（类级别）
     SH_PREFIXES = ["688", "60"]  # 上证A股
     SZ_PREFIXES = ["000", "001", "002", "300", "301"]  # 深证A股
+    BJ_PREFIXES = ["43", "83", "87", "88"]  # 北证A股（北交所）
 
-    def __init__(self):
-        """初始化数据获取器"""
+    def __init__(self, block_parser=None):
+        """
+        初始化数据获取器
+
+        Args:
+            block_parser: BlockParser实例，如果为None则创建新实例
+        """
         self.quotes = Quotes.factory()
-        self.block_parser = BlockParser(config_manager.get_tdx_dir())
+        self.block_parser = block_parser or BlockParser(config_manager.get_tdx_dir())
         self.logger = logging.getLogger(__name__)
 
     def fetch_all_stocks(self) -> pd.DataFrame:
@@ -75,35 +81,70 @@ class StockFetcher:
         result = {
             "上证A股": [],
             "深证A股": [],
-            "北证A股": [],
-            "T+0基金": [],
-            "含可转债": [],
+            "北证A股": [],  # 从API数据中按前缀筛选
+            "T+0基金": [],  # 从spblock.dat获取
+            "含可转债": [],  # 从spblock.dat获取
         }
+
+        # 检查必需列是否存在
+        if "code" not in stocks_df.columns:
+            self.logger.error("品种DataFrame缺少'code'列")
+            return result
 
         for _, row in stocks_df.iterrows():
             code = str(row["code"]).zfill(6)  # 补齐6位
-            market = row["market"]
 
-            # 上证A股：market=0, 代码以688或60开头
-            if market == self.MARKET_SHANGHAI and any(
-                code.startswith(prefix) for prefix in self.SH_PREFIXES
-            ):
-                result["上证A股"].append(code)
+            # 如果market列存在，使用market字段
+            if "market" in stocks_df.columns:
+                market = row["market"]
 
-            # 深证A股：market=1, 代码以000/001/002/300/301开头
-            elif market == self.MARKET_SHENZHEN and any(
-                code.startswith(prefix) for prefix in self.SZ_PREFIXES
-            ):
-                result["深证A股"].append(code)
+                # 上证A股：market=0, 代码以688或60开头
+                if market == self.MARKET_SHANGHAI and any(
+                    code.startswith(prefix) for prefix in self.SH_PREFIXES
+                ):
+                    result["上证A股"].append(code)
+
+                # 深证A股：market=1, 代码以000/001/002/300/301开头
+                elif market == self.MARKET_SHENZHEN and any(
+                    code.startswith(prefix) for prefix in self.SZ_PREFIXES
+                ):
+                    result["深证A股"].append(code)
+            else:
+                # 如果market列不存在，根据代码前缀推断
+                if any(code.startswith(prefix) for prefix in self.SH_PREFIXES):
+                    result["上证A股"].append(code)
+                elif any(code.startswith(prefix) for prefix in self.SZ_PREFIXES):
+                    result["深证A股"].append(code)
+                elif any(code.startswith(prefix) for prefix in self.BJ_PREFIXES):
+                    result["北证A股"].append(code)
 
         # 从通达信板块文件获取特殊品种
+        # spblock.dat中的7位代码格式：第1位是市场代码，后6位是股票代码
+        # 29xxxxx表示北证A股（市场代码2，股票代码9xxxxx）
         if self.block_parser.is_available():
             try:
-                result["北证A股"] = self.block_parser.get_beijing_stocks()
+                beijing_stocks_from_spblock = self.block_parser.get_beijing_stocks()
+
+                # 优先使用spblock.dat的北证A股数据（更准确）
+                if beijing_stocks_from_spblock:
+                    result["北证A股"] = beijing_stocks_from_spblock
+                    self.logger.info(
+                        "从spblock.dat的融资融券板块获取北证A股: %d 个",
+                        len(beijing_stocks_from_spblock),
+                    )
+                # 否则使用API数据按前缀筛选的北证A股作为备份
+
                 result["T+0基金"] = self.block_parser.get_t0_funds()
                 result["含可转债"] = self.block_parser.get_convertible_bonds()
-            except (OSError, ValueError, KeyError) as e:
-                self.logger.warning("解析通达信板块文件失败: %s", e)
+
+                self.logger.info(
+                    "从spblock.dat获取特殊品种: 北证A股 %d 个, T+0基金 %d 个, 含可转债 %d 个",
+                    len(result["北证A股"]),
+                    len(result["T+0基金"]),
+                    len(result["含可转债"]),
+                )
+            except Exception as e:
+                self.logger.warning("解析通达信板块文件失败: %s，将仅使用API筛选的品种", e)
 
         return result
 
@@ -169,9 +210,7 @@ class StockFetcher:
         result = {}
         max_workers = config_manager.get_max_workers()
 
-        self.logger.info(
-            "开始全量下载K线数据: %s 个品种, %s 周期", len(symbols), intervals
-        )
+        self.logger.info("开始全量下载K线数据: %s 个品种, %s 周期", len(symbols), intervals)
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             # 提交所有下载任务
@@ -179,9 +218,7 @@ class StockFetcher:
 
             for symbol in symbols:
                 for interval in intervals:
-                    future = executor.submit(
-                        self._download_single_kline, symbol, interval
-                    )
+                    future = executor.submit(self._download_single_kline, symbol, interval)
                     future_to_symbol[future] = (symbol, interval)
 
             # 收集结果
@@ -192,9 +229,7 @@ class StockFetcher:
                     if data is not None and not data.empty:
                         key = f"{symbol}_{interval}"
                         result[key] = data
-                        self.logger.info(
-                            "成功下载 %s %s 数据: %s 条", symbol, interval, len(data)
-                        )
+                        self.logger.info("成功下载 %s %s 数据: %s 条", symbol, interval, len(data))
                 except (OSError, ValueError, KeyError) as e:
                     self.logger.error("下载 %s %s 失败: %s", symbol, interval, e)
 
@@ -224,9 +259,7 @@ class StockFetcher:
         result = {}
         max_workers = config_manager.get_max_workers()
 
-        self.logger.info(
-            "开始增量下载K线数据: %s 个品种, 从 %s 开始", len(symbols), start_date
-        )
+        self.logger.info("开始增量下载K线数据: %s 个品种, 从 %s 开始", len(symbols), start_date)
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_symbol = {}
@@ -255,16 +288,12 @@ class StockFetcher:
                             len(data),
                         )
                 except (OSError, ValueError, KeyError) as e:
-                    self.logger.error(
-                        "下载 %s %s 增量数据失败: %s", symbol, interval, e
-                    )
+                    self.logger.error("下载 %s %s 增量数据失败: %s", symbol, interval, e)
 
         self.logger.info("增量下载完成: %s 个数据集", len(result))
         return result
 
-    def _download_single_kline(
-        self, symbol: str, interval: str
-    ) -> Optional[pd.DataFrame]:
+    def _download_single_kline(self, symbol: str, interval: str) -> Optional[pd.DataFrame]:
         """
         下载单个品种的K线数据
 
@@ -369,9 +398,7 @@ class StockFetcher:
 
         return None
 
-    def _standardize_columns(
-        self, data: pd.DataFrame, symbol: str, interval: str
-    ) -> pd.DataFrame:
+    def _standardize_columns(self, data: pd.DataFrame, symbol: str, interval: str) -> pd.DataFrame:
         """
         标准化DataFrame列名和格式
 

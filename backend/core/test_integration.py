@@ -7,7 +7,6 @@
 
 import logging
 import sys
-import time
 from datetime import datetime
 from pathlib import Path
 
@@ -25,11 +24,11 @@ try:
     )
     from backend.core.models import UnifiedMarketData, get_data_model_manager
     from backend.core.shared_services import (
-        ConfigService,
-        LoggingService,
-        MonitoringService,
+        get_service_manager,
     )
     from backend.core.vnpy_integration import VNPY_AVAILABLE, get_terminal_engine
+    from backend.services.system_manager.config_service import ConfigService
+    from backend.services.system_manager.monitoring_service import MonitoringService
 except ImportError as e:
     print(f"导入错误: {e}")
     sys.exit(1)
@@ -159,37 +158,42 @@ def test_shared_services():
 
     try:
         # 测试配置服务
-        config_service = ConfigService("test_config.json")
-        app_name = config_service.get("app.name")
-        print(f"配置服务测试: {app_name}")
+        config_service = ConfigService("config")
+        # 测试配置读取（使用实际的API）
+        terminal_config = config_service.get_config("terminal_config")
+        print(f"配置服务测试: 成功读取配置，包含 {len(terminal_config)} 个配置项")
 
-        # 测试日志服务
-        logging_service = LoggingService(config_service)
-        test_logger = logging_service.get_logger("test")
+        # 测试日志功能（使用Python标准日志）
+        test_logger = logging.getLogger("test_shared_services")
         test_logger.info("共享服务层测试日志")
         print("日志服务测试完成")
 
-        # 测试监控服务（短暂运行）
-        engine = get_terminal_engine()
-        monitoring_service = MonitoringService(config_service, engine)
+        # 测试监控服务
+        monitoring_service = MonitoringService()
 
-        # 等待一小段时间收集监控数据
-        time.sleep(2)
+        # 获取系统状态
+        system_status = monitoring_service.get_system_status()
+        print(
+            f"系统状态: CPU={system_status['cpu_percent']:.1f}%, Memory={system_status['memory_percent']:.1f}%"
+        )
 
-        metrics = monitoring_service.get_current_metrics()
-        print(f"监控指标收集成功: {len(metrics)} 类指标")
+        # 获取性能指标
+        metrics = monitoring_service.get_performance_metrics()
+        print(f"性能指标收集成功: 内存使用 {metrics['memory_usage_mb']:.1f}MB")
 
-        health_score = monitoring_service.get_system_health_score()
-        print(f"系统健康评分: {health_score}")
-
-        # 清理
-        monitoring_service.stop_monitoring()
+        # 测试服务管理器
+        service_manager = get_service_manager()
+        service_status = service_manager.get_service_status()
+        print(f"服务管理器: 已注册 {len(service_status)} 个服务")
 
         print("✅ 共享服务层测试通过")
         return True
 
     except (ImportError, AttributeError, RuntimeError, OSError) as e:
         print(f"❌ 共享服务层测试失败: {e}")
+        import traceback
+
+        traceback.print_exc()
         return False
 
 

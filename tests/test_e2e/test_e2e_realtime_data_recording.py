@@ -436,7 +436,17 @@ class TestRealtimeDataRecordingE2E:
         await datasource_service.start_data_push()
         logger.info("✓ 数据推送已启动")
 
-        await asyncio.sleep(2)
+        # 使用条件等待确保推送已稳定启动
+        from tests.test_e2e.utils.wait_helpers import wait_until_condition
+        from tests.test_e2e.utils.service_accessor import ServiceAccessor
+
+        accessor = ServiceAccessor()
+        await wait_until_condition(
+            lambda: accessor.get_connection_state(datasource_service).get("is_pushing", False),
+            timeout=5.0,
+            interval=0.3,
+            error_message="数据推送启动超时",
+        )
 
         # 验证点1&4: 停止推送并测量时间
         logger.info("\n步骤1: 停止数据推送...")
@@ -724,7 +734,9 @@ class TestRealtimeDataRecordingE2E:
         cache_stats = accessor.get_cache_stats(symbol_service)
         if cache_stats["cache_size"] == 0:
             await symbol_service.refresh_cache()
-            await asyncio.sleep(1)
+            from tests.test_e2e.utils.wait_helpers import wait_for_cache_loaded
+
+            await wait_for_cache_loaded(symbol_service, accessor, min_size=1, timeout=5.0)
 
     def _get_test_symbol(self, symbol_service):
         """获取测试品种."""

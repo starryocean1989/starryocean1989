@@ -135,56 +135,18 @@ class MainWindow(QMainWindow, LoggerMixin):
     def _initialize_backend_services(self):
         """初始化后端服务（同步方式）."""
         try:
-            import asyncio
-            from backend.core.shared_services import get_service_manager
-            from backend.services.vnpy_service import VnpyService
-            from backend.services.event_service import EventService
-            from backend.services.data_center.symbol_service import SymbolService
-            from backend.services.data_center.local_data_service import LocalDataService
-            from backend.services.data_center.download_service import DownloadService
-            from backend.services.data_center.data_source_service import DataSourceService
-
-            # 获取共享服务管理器
-            service_manager = get_service_manager()
-
-            # 创建事件循环（如果没有）
-            try:
-                loop = asyncio.get_event_loop()
-            except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-
-            # 初始化核心服务
-            vnpy_service = VnpyService()
-            loop.run_until_complete(vnpy_service.initialize())
-            service_manager.register("vnpy_service", vnpy_service)
-
-            event_service = EventService(vnpy_service)
-            service_manager.register("event_service", event_service)
-
-            # 初始化数据中心服务
-            symbol_service = SymbolService(vnpy_service)
-            loop.run_until_complete(symbol_service.initialize())
-            service_manager.register("symbol_service", symbol_service)
-
-            local_data_service = LocalDataService(vnpy_service, event_service)
-            loop.run_until_complete(local_data_service.initialize())
-            service_manager.register("local_data_service", local_data_service)
-
-            download_service = DownloadService(vnpy_service, event_service)
-            loop.run_until_complete(download_service.initialize())
-            service_manager.register("download_service", download_service)
-
-            data_source_service = DataSourceService(vnpy_service, event_service)
-            loop.run_until_complete(data_source_service.initialize())
-            service_manager.register("data_source_service", data_source_service)
-
-            logging.getLogger(__name__).info("后端服务初始化完成")
+            from backend.core.shared_services import initialize_real_services
+            
+            # 初始化真实的后端服务
+            success = initialize_real_services()
+            if success:
+                logging.getLogger(__name__).info("后端真实服务初始化完成")
+            else:
+                logging.getLogger(__name__).warning("后端服务初始化失败，将使用占位服务")
 
         except Exception as e:
             logging.getLogger(__name__).warning("后端服务初始化失败，部分功能可能不可用: %s", e)
             import traceback
-
             traceback.print_exc()
 
     def setup_ui(self):
@@ -673,6 +635,13 @@ class MainWindow(QMainWindow, LoggerMixin):
         )
 
         if reply == QMessageBox.StandardButton.Yes:
+            # 关闭后端服务
+            try:
+                from backend.core.shared_services import shutdown_real_services
+                shutdown_real_services()
+            except Exception as e:
+                self.logger.warning("关闭后端服务失败: %s", e)
+            
             self.logger.info("应用程序退出")
             event.accept()
         else:

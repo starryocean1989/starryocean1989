@@ -7,7 +7,8 @@
 
 import logging
 import asyncio
-from typing import Dict, List, Optional, TYPE_CHECKING, Set, Any
+from contextlib import suppress
+from typing import Any, Dict, List, Optional, Set, TYPE_CHECKING
 from datetime import datetime
 
 from backend.services.base_service import BaseService
@@ -37,12 +38,8 @@ class RealtimeService(BaseService):
             self.logger.info("正在初始化实时数据服务...")
 
             # 注册事件处理器
-            self.event_service.register_handler(
-                "tick_data_updated", self._handle_tick_data_updated
-            )
-            self.event_service.register_handler(
-                "bar_data_updated", self._handle_bar_data_updated
-            )
+            self.event_service.register_handler("tick_data_updated", self._handle_tick_data_updated)
+            self.event_service.register_handler("bar_data_updated", self._handle_bar_data_updated)
 
             # 启动广播任务
             self._running = True
@@ -64,18 +61,14 @@ class RealtimeService(BaseService):
             self._running = False
             if self._broadcast_task:
                 self._broadcast_task.cancel()
-                try:
+                with suppress(asyncio.CancelledError):
                     await self._broadcast_task
-                except asyncio.CancelledError:
-                    pass
 
             # 取消注册事件处理器
             self.event_service.unregister_handler(
                 "tick_data_updated", self._handle_tick_data_updated
             )
-            self.event_service.unregister_handler(
-                "bar_data_updated", self._handle_bar_data_updated
-            )
+            self.event_service.unregister_handler("bar_data_updated", self._handle_bar_data_updated)
 
             # 清理订阅
             self._subscriptions.clear()
@@ -95,9 +88,7 @@ class RealtimeService(BaseService):
                 "is_initialized": self.is_initialized,
                 "is_running": self._running,
                 "active_subscriptions": len(self._subscriptions),
-                "total_symbols": sum(
-                    len(symbols) for symbols in self._subscriptions.values()
-                ),
+                "total_symbols": sum(len(symbols) for symbols in self._subscriptions.values()),
                 "vnpy_service_available": self.vnpy_service.is_initialized,
                 "timestamp": datetime.now().isoformat(),
             }
@@ -111,9 +102,7 @@ class RealtimeService(BaseService):
                 "timestamp": datetime.now().isoformat(),
             }
 
-    async def subscribe_symbol(
-        self, client_id: str, symbol: str, exchange: str
-    ) -> bool:
+    async def subscribe_symbol(self, client_id: str, symbol: str, exchange: str) -> bool:
         """订阅品种实时数据."""
         try:
             full_symbol = f"{symbol}.{exchange}"
@@ -141,9 +130,7 @@ class RealtimeService(BaseService):
             self.logger.error("订阅品种失败: %s", e)
             return False
 
-    async def unsubscribe_symbol(
-        self, client_id: str, symbol: str, exchange: str
-    ) -> bool:
+    async def unsubscribe_symbol(self, client_id: str, symbol: str, exchange: str) -> bool:
         """取消订阅品种实时数据."""
         try:
             full_symbol = f"{symbol}.{exchange}"
@@ -180,9 +167,7 @@ class RealtimeService(BaseService):
                 symbols = list(self._subscriptions[client_id])
                 del self._subscriptions[client_id]
 
-                self.logger.info(
-                    "客户端 %s 取消所有订阅: %d 个品种", client_id, len(symbols)
-                )
+                self.logger.info("客户端 %s 取消所有订阅: %d 个品种", client_id, len(symbols))
 
                 # 发送取消订阅事件
                 for symbol in symbols:
@@ -215,10 +200,7 @@ class RealtimeService(BaseService):
     async def get_all_subscriptions(self) -> Dict[str, List[str]]:
         """获取所有订阅信息."""
         try:
-            return {
-                client_id: list(symbols)
-                for client_id, symbols in self._subscriptions.items()
-            }
+            return {client_id: list(symbols) for client_id, symbols in self._subscriptions.items()}
 
         except Exception as e:
             self.logger.error("获取所有订阅信息失败: %s", e)
@@ -236,9 +218,7 @@ class RealtimeService(BaseService):
             self.logger.error("获取被订阅品种失败: %s", e)
             return set()
 
-    async def get_tick_data(
-        self, symbol: str, exchange: str
-    ) -> Optional[Dict[str, Any]]:
+    async def get_tick_data(self, symbol: str, exchange: str) -> Optional[Dict[str, Any]]:
         """获取实时Tick数据."""
         try:
             tick_data = self.vnpy_service.get_latest_tick(symbol, exchange)
@@ -258,15 +238,11 @@ class RealtimeService(BaseService):
                 "bid_price_1": (
                     float(tick_data.bid_price_1) if tick_data.bid_price_1 > 0 else None
                 ),
-                "bid_volume_1": (
-                    int(tick_data.bid_volume_1) if tick_data.bid_volume_1 > 0 else 0
-                ),
+                "bid_volume_1": (int(tick_data.bid_volume_1) if tick_data.bid_volume_1 > 0 else 0),
                 "ask_price_1": (
                     float(tick_data.ask_price_1) if tick_data.ask_price_1 > 0 else None
                 ),
-                "ask_volume_1": (
-                    int(tick_data.ask_volume_1) if tick_data.ask_volume_1 > 0 else 0
-                ),
+                "ask_volume_1": (int(tick_data.ask_volume_1) if tick_data.ask_volume_1 > 0 else 0),
             }
 
         except Exception as e:
@@ -423,9 +399,7 @@ class RealtimeService(BaseService):
         """获取订阅统计信息."""
         try:
             total_clients = len(self._subscriptions)
-            total_symbols = sum(
-                len(symbols) for symbols in self._subscriptions.values()
-            )
+            total_symbols = sum(len(symbols) for symbols in self._subscriptions.values())
             # 收集所有唯一品种
             all_symbols = set()
             for symbols in self._subscriptions.values():

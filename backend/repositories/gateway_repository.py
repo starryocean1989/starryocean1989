@@ -89,9 +89,7 @@ class GatewayRepository(BaseRepository):
         params.append(datetime.now().isoformat())
         params.append(instance_id)
 
-        query = (
-            f"UPDATE gateway_instances SET {', '.join(set_clauses)} " f"WHERE id = ?"
-        )
+        query = f"UPDATE gateway_instances SET {', '.join(set_clauses)} " f"WHERE id = ?"
         rowcount = db.execute_update(query, tuple(params))
         return rowcount > 0
 
@@ -114,8 +112,9 @@ class GatewayRepository(BaseRepository):
         """根据ID获取实体（实现抽象方法）."""
         return await self.get_gateway(entity_id)
 
-    async def get_all(self, limit: int = 100, offset: int = 0) -> List[dict]:
+    async def get_all(self, _limit: int = 100, _offset: int = 0) -> List[dict]:
         """获取所有实体（实现抽象方法）."""
+        _ = _limit, _offset  # 来自基类的参数，当前实现不需要分页
         return await self.list_gateways()
 
     async def update(self, entity: dict) -> dict:
@@ -187,12 +186,11 @@ class StrategyInstanceRepository(BaseRepository):
         db = get_db_manager()
         if gateway_id:
             query = (
-                "SELECT * FROM strategy_instances "
-                "WHERE gateway_id = ? ORDER BY created_at DESC"
+                "SELECT * FROM strategy_instances " "WHERE gateway_id = ? ORDER BY created_at DESC"
             )
             results = db.execute_query(query, (gateway_id,))
         else:
-            query = "SELECT * FROM strategy_instances " "ORDER BY created_at DESC"
+            query = "SELECT * FROM strategy_instances ORDER BY created_at DESC"
             results = db.execute_query(query)
 
         for instance in results:
@@ -217,9 +215,7 @@ class StrategyInstanceRepository(BaseRepository):
             return False
 
         params.append(strategy_id)
-        query = (
-            f"UPDATE strategy_instances SET {', '.join(set_clauses)} " f"WHERE id = ?"
-        )
+        query = f"UPDATE strategy_instances SET {', '.join(set_clauses)} " f"WHERE id = ?"
         rowcount = db.execute_update(query, tuple(params))
         return rowcount > 0
 
@@ -242,8 +238,9 @@ class StrategyInstanceRepository(BaseRepository):
         """根据ID获取实体（实现抽象方法）."""
         return await self.get_instance(entity_id)
 
-    async def get_all(self, limit: int = 100, offset: int = 0) -> List[dict]:
+    async def get_all(self, _limit: int = 100, _offset: int = 0) -> List[dict]:
         """获取所有实体（实现抽象方法）."""
+        _ = _limit, _offset  # 来自基类的参数，当前实现不需要分页
         return await self.list_instances()
 
     async def update(self, entity: dict) -> dict:

@@ -5,13 +5,14 @@
 提供技术指标计算和分析功能。
 """
 
+from __future__ import annotations
+
 import logging
-import math
-from typing import Dict, List, Optional, TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from datetime import datetime
 
 from backend.services.base_service import BaseService
-from backend.core.models import IndicatorConfig
+from backend.core.models import IndicatorConfig  # noqa: TC001
 
 if TYPE_CHECKING:
     from backend.services.vnpy_service import VnpyService
@@ -190,24 +191,28 @@ class IndicatorService(BaseService):
 
         for i in range(len(vnpy_data)):
             if i < period - 1:
-                ma_values.append({
-                    "timestamp": int(vnpy_data[i].datetime.timestamp() * 1000),
-                    "datetime": vnpy_data[i].datetime.isoformat(),
-                    "value": None,
-                    "indicator_name": "MA",
-                    "parameters": parameters,
-                })
+                ma_values.append(
+                    {
+                        "timestamp": int(vnpy_data[i].datetime.timestamp() * 1000),
+                        "datetime": vnpy_data[i].datetime.isoformat(),
+                        "value": None,
+                        "indicator_name": "MA",
+                        "parameters": parameters,
+                    }
+                )
             else:
-                ma_value = sum(
-                    vnpy_data[j].close_price for j in range(i - period + 1, i + 1)
-                ) / period
-                ma_values.append({
-                    "timestamp": int(vnpy_data[i].datetime.timestamp() * 1000),
-                    "datetime": vnpy_data[i].datetime.isoformat(),
-                    "value": float(ma_value),
-                    "indicator_name": "MA",
-                    "parameters": parameters,
-                })
+                ma_value = (
+                    sum(vnpy_data[j].close_price for j in range(i - period + 1, i + 1)) / period
+                )
+                ma_values.append(
+                    {
+                        "timestamp": int(vnpy_data[i].datetime.timestamp() * 1000),
+                        "datetime": vnpy_data[i].datetime.isoformat(),
+                        "value": float(ma_value),
+                        "indicator_name": "MA",
+                        "parameters": parameters,
+                    }
+                )
 
         return ma_values
 
@@ -223,15 +228,19 @@ class IndicatorService(BaseService):
             if i == 0:
                 ema_value = vnpy_data[i].close_price
             else:
-                ema_value = alpha * vnpy_data[i].close_price + (1 - alpha) * ema_values[i - 1]["value"]
+                ema_value = (
+                    alpha * vnpy_data[i].close_price + (1 - alpha) * ema_values[i - 1]["value"]
+                )
 
-            ema_values.append({
-                "timestamp": int(vnpy_data[i].datetime.timestamp() * 1000),
-                "datetime": vnpy_data[i].datetime.isoformat(),
-                "value": float(ema_value),
-                "indicator_name": "EMA",
-                "parameters": parameters,
-            })
+            ema_values.append(
+                {
+                    "timestamp": int(vnpy_data[i].datetime.timestamp() * 1000),
+                    "datetime": vnpy_data[i].datetime.isoformat(),
+                    "value": float(ema_value),
+                    "indicator_name": "EMA",
+                    "parameters": parameters,
+                }
+            )
 
         return ema_values
 
@@ -290,15 +299,17 @@ class IndicatorService(BaseService):
         # 构建结果
         macd_values = []
         for i in range(len(vnpy_data)):
-            macd_values.append({
-                "timestamp": int(vnpy_data[i].datetime.timestamp() * 1000),
-                "datetime": vnpy_data[i].datetime.isoformat(),
-                "macd": float(macd_line[i]),
-                "signal": float(signal_line[i]),
-                "histogram": float(histogram[i]),
-                "indicator_name": "MACD",
-                "parameters": parameters,
-            })
+            macd_values.append(
+                {
+                    "timestamp": int(vnpy_data[i].datetime.timestamp() * 1000),
+                    "datetime": vnpy_data[i].datetime.isoformat(),
+                    "macd": float(macd_line[i]),
+                    "signal": float(signal_line[i]),
+                    "histogram": float(histogram[i]),
+                    "indicator_name": "MACD",
+                    "parameters": parameters,
+                }
+            )
 
         return macd_values
 
@@ -316,17 +327,19 @@ class IndicatorService(BaseService):
 
         for i in range(len(vnpy_data)):
             if i < period:
-                rsi_values.append({
-                    "timestamp": int(vnpy_data[i].datetime.timestamp() * 1000),
-                    "datetime": vnpy_data[i].datetime.isoformat(),
-                    "value": None,
-                    "indicator_name": "RSI",
-                    "parameters": parameters,
-                })
+                rsi_values.append(
+                    {
+                        "timestamp": int(vnpy_data[i].datetime.timestamp() * 1000),
+                        "datetime": vnpy_data[i].datetime.isoformat(),
+                        "value": None,
+                        "indicator_name": "RSI",
+                        "parameters": parameters,
+                    }
+                )
             else:
                 # 计算指定期间内的平均涨幅和跌幅
-                gains = [change for change in price_changes[i - period:i] if change > 0]
-                losses = [-change for change in price_changes[i - period:i] if change < 0]
+                gains = [change for change in price_changes[i - period : i] if change > 0]
+                losses = [-change for change in price_changes[i - period : i] if change < 0]
 
                 avg_gain = sum(gains) / period if gains else 0
                 avg_loss = sum(losses) / period if losses else 0
@@ -337,13 +350,15 @@ class IndicatorService(BaseService):
                     rs = avg_gain / avg_loss
                     rsi = 100 - (100 / (1 + rs))
 
-                rsi_values.append({
-                    "timestamp": int(vnpy_data[i].datetime.timestamp() * 1000),
-                    "datetime": vnpy_data[i].datetime.isoformat(),
-                    "value": float(rsi),
-                    "indicator_name": "RSI",
-                    "parameters": parameters,
-                })
+                rsi_values.append(
+                    {
+                        "timestamp": int(vnpy_data[i].datetime.timestamp() * 1000),
+                        "datetime": vnpy_data[i].datetime.isoformat(),
+                        "value": float(rsi),
+                        "indicator_name": "RSI",
+                        "parameters": parameters,
+                    }
+                )
 
         return rsi_values
 
@@ -353,7 +368,6 @@ class IndicatorService(BaseService):
         """计算KDJ指标."""
         k_period = parameters.get("k_period", 9)
         d_period = parameters.get("d_period", 3)
-        j_period = parameters.get("j_period", 3)
 
         k_values = []
         d_values = []
@@ -372,7 +386,9 @@ class IndicatorService(BaseService):
                 if period_high == period_low:
                     k_value = 50
                 else:
-                    k_value = (vnpy_data[i].close_price - period_low) / (period_high - period_low) * 100
+                    k_value = (
+                        (vnpy_data[i].close_price - period_low) / (period_high - period_low) * 100
+                    )
 
                 k_values.append(k_value)
 
@@ -397,15 +413,17 @@ class IndicatorService(BaseService):
         # 构建结果
         kdj_values = []
         for i in range(len(vnpy_data)):
-            kdj_values.append({
-                "timestamp": int(vnpy_data[i].datetime.timestamp() * 1000),
-                "datetime": vnpy_data[i].datetime.isoformat(),
-                "k": float(k_values[i]) if k_values[i] is not None else None,
-                "d": float(d_values[i]) if d_values[i] is not None else None,
-                "j": float(j_values[i]) if j_values[i] is not None else None,
-                "indicator_name": "KDJ",
-                "parameters": parameters,
-            })
+            kdj_values.append(
+                {
+                    "timestamp": int(vnpy_data[i].datetime.timestamp() * 1000),
+                    "datetime": vnpy_data[i].datetime.isoformat(),
+                    "k": float(k_values[i]) if k_values[i] is not None else None,
+                    "d": float(d_values[i]) if d_values[i] is not None else None,
+                    "j": float(j_values[i]) if j_values[i] is not None else None,
+                    "indicator_name": "KDJ",
+                    "parameters": parameters,
+                }
+            )
 
         return kdj_values
 
@@ -424,7 +442,7 @@ class IndicatorService(BaseService):
                             "default": 20,
                             "min": 1,
                             "max": 200,
-                            "description": "计算周期"
+                            "description": "计算周期",
                         }
                     ],
                     "outputs": ["value"],
@@ -440,7 +458,7 @@ class IndicatorService(BaseService):
                             "default": 12,
                             "min": 1,
                             "max": 200,
-                            "description": "计算周期"
+                            "description": "计算周期",
                         }
                     ],
                     "outputs": ["value"],
@@ -456,7 +474,7 @@ class IndicatorService(BaseService):
                             "default": 12,
                             "min": 1,
                             "max": 100,
-                            "description": "快速EMA周期"
+                            "description": "快速EMA周期",
                         },
                         {
                             "name": "slow_period",
@@ -464,7 +482,7 @@ class IndicatorService(BaseService):
                             "default": 26,
                             "min": 1,
                             "max": 100,
-                            "description": "慢速EMA周期"
+                            "description": "慢速EMA周期",
                         },
                         {
                             "name": "signal_period",
@@ -472,7 +490,7 @@ class IndicatorService(BaseService):
                             "default": 9,
                             "min": 1,
                             "max": 50,
-                            "description": "信号线周期"
+                            "description": "信号线周期",
                         },
                     ],
                     "outputs": ["macd", "signal", "histogram"],
@@ -488,7 +506,7 @@ class IndicatorService(BaseService):
                             "default": 14,
                             "min": 1,
                             "max": 100,
-                            "description": "计算周期"
+                            "description": "计算周期",
                         }
                     ],
                     "outputs": ["value"],
@@ -504,7 +522,7 @@ class IndicatorService(BaseService):
                             "default": 9,
                             "min": 1,
                             "max": 50,
-                            "description": "K值周期"
+                            "description": "K值周期",
                         },
                         {
                             "name": "d_period",
@@ -512,7 +530,7 @@ class IndicatorService(BaseService):
                             "default": 3,
                             "min": 1,
                             "max": 20,
-                            "description": "D值周期"
+                            "description": "D值周期",
                         },
                         {
                             "name": "j_period",
@@ -520,7 +538,7 @@ class IndicatorService(BaseService):
                             "default": 3,
                             "min": 1,
                             "max": 20,
-                            "description": "J值周期"
+                            "description": "J值周期",
                         },
                     ],
                     "outputs": ["k", "d", "j"],
@@ -544,7 +562,8 @@ class IndicatorService(BaseService):
             if symbol and exchange:
                 # 清除相关指标缓存
                 keys_to_remove = [
-                    key for key in self._indicator_cache.keys()
+                    key
+                    for key in self._indicator_cache.keys()
                     if key.startswith(f"{symbol}.{exchange}")
                 ]
                 for key in keys_to_remove:

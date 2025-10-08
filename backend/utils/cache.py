@@ -8,8 +8,7 @@
 import logging
 import time
 import threading
-from typing import Any, Dict, List, Optional, Callable, Union
-from datetime import datetime, timedelta
+from typing import Any, Callable, Dict, Optional, Union
 from collections import OrderedDict
 
 logger = logging.getLogger(__name__)
@@ -128,9 +127,7 @@ class TTLCache:
         """获取缓存统计信息."""
         with self._lock:
             total_requests = self._stats["hits"] + self._stats["misses"]
-            hit_rate = (
-                self._stats["hits"] / total_requests * 100 if total_requests > 0 else 0
-            )
+            hit_rate = self._stats["hits"] / total_requests * 100 if total_requests > 0 else 0
 
             return {
                 "size": len(self._cache),
@@ -218,9 +215,7 @@ class MemoryCache:
         """获取缓存统计信息."""
         with self._lock:
             total_requests = self._stats["hits"] + self._stats["misses"]
-            hit_rate = (
-                self._stats["hits"] / total_requests * 100 if total_requests > 0 else 0
-            )
+            hit_rate = self._stats["hits"] / total_requests * 100 if total_requests > 0 else 0
 
             return {
                 "size": len(self._cache),
@@ -250,9 +245,7 @@ class CacheManager:
 
             cache = TTLCache(max_size, default_ttl)
             self._caches[name] = cache
-            logger.info(
-                "创建TTL缓存: %s (max_size=%d, ttl=%d)", name, max_size, default_ttl
-            )
+            logger.info("创建TTL缓存: %s (max_size=%d, ttl=%d)", name, max_size, default_ttl)
             return cache
 
     def create_memory_cache(self, name: str, max_size: int = 1000) -> MemoryCache:
@@ -363,9 +356,7 @@ def get_cache_manager() -> CacheManager:
     return _cache_manager
 
 
-def cached(
-    cache_name: str, key_func: Optional[Callable] = None, ttl: Optional[int] = None
-):
+def cached(cache_name: str, key_func: Optional[Callable] = None, ttl: Optional[int] = None):
     """缓存装饰器工厂."""
     cache = _cache_manager.get_cache(cache_name)
     if not cache:

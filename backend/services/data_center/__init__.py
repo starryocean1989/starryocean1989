@@ -7,7 +7,7 @@
 
 # 导入所有服务类
 from .symbol_service import SymbolService
-from .download_service import DownloadService, TaskStatus
+from .download_service import DownloadService
 from .local_data_service import LocalDataService
 from .data_source_service import DataSourceService
 
@@ -15,7 +15,6 @@ from .data_source_service import DataSourceService
 __all__ = [
     "SymbolService",
     "DownloadService",
-    "TaskStatus",
     "LocalDataService",
     "DataSourceService",
 ]

@@ -49,14 +49,18 @@ class ErrorInfo:
         message: str,
         category: ErrorCategory = ErrorCategory.UNKNOWN,
         severity: ErrorSeverity = ErrorSeverity.MEDIUM,
-        timestamp: Optional[str] = None,
+        timestamp: Optional[float] = None,
+        retry_count: int = 0,
+        max_retries: int = 3,
     ):
         """初始化错误信息."""
         self.error_id = error_id
         self.message = message
         self.category = category
         self.severity = severity
-        self.timestamp = timestamp or str(__import__("time").time())
+        self.timestamp = timestamp or __import__("time").time()
+        self.retry_count = retry_count
+        self.max_retries = max_retries
 
 
 class ErrorHandler:
@@ -136,9 +140,7 @@ class ErrorHandler:
                 self.logger.error("错误处理器执行失败: %s", e)
 
         # 默认处理
-        return self._default_error_handler(
-            error_info, max_retries, callback, parent_widget
-        )
+        return self._default_error_handler(error_info, max_retries, callback, parent_widget)
 
     def _default_error_handler(  # pylint: disable=unused-argument
         self,
@@ -192,19 +194,11 @@ class ErrorHandler:
 
         for error in self._error_history:
             # 统计类别
-            cat = (
-                error.category.value
-                if hasattr(error.category, "value")
-                else str(error.category)
-            )
+            cat = error.category.value if hasattr(error.category, "value") else str(error.category)
             categories[cat] = categories.get(cat, 0) + 1
 
             # 统计严重程度
-            sev = (
-                error.severity.value
-                if hasattr(error.severity, "value")
-                else str(error.severity)
-            )
+            sev = error.severity.value if hasattr(error.severity, "value") else str(error.severity)
             severities[sev] = severities.get(sev, 0) + 1
 
         return {

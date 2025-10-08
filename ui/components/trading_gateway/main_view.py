@@ -4,7 +4,6 @@
 混合架构：网关管理器（固有组件）+ 2个子界面.
 """
 
-import logging
 from typing import Any, Callable, Optional
 
 from PySide6.QtCore import QTimer, Qt
@@ -37,7 +36,7 @@ except ImportError as e:
     raise ImportError(
         f"无法导入必要的UI组件或VnPy适配器: {e}\n"
         "请确保已正确安装所有依赖：pip install -r requirements.txt"
-    )
+    ) from e
 
 
 class TradingGateway(BaseWidget, LoggerMixin):
@@ -247,7 +246,7 @@ class TradingGateway(BaseWidget, LoggerMixin):
             return [f"{key} - {value}" for key, value in gateway_service.gateway_types.items()]
         except Exception as e:
             self.logger.error("获取网关类型列表失败: %s", e)
-            raise RuntimeError(f"无法获取网关类型列表: {str(e)}")
+            raise RuntimeError(f"无法获取网关类型列表: {str(e)}") from e
 
     def _get_available_templates(self):
         """从后端服务获取可用监控模板列表."""
@@ -256,7 +255,7 @@ class TradingGateway(BaseWidget, LoggerMixin):
             return ["委托监控", "持仓监控", "资金监控", "成交监控", "综合监控"]
         except Exception as e:
             self.logger.error("获取监控模板列表失败: %s", e)
-            raise RuntimeError(f"无法获取监控模板列表: {str(e)}")
+            raise RuntimeError(f"无法获取监控模板列表: {str(e)}") from e
 
     def _create_new_gateway(self):
         """新建网关 - 显示动态表单对话框."""
@@ -484,7 +483,13 @@ class TradingGateway(BaseWidget, LoggerMixin):
             self.show_info(f"正在连接网关: {config.get('name', '')}...")
             # 调用后端API连接网关
             if self.vnpy_adapter:
-                result = self.vnpy_adapter.connect_gateway(config)
+                # 提取网关名称和配置设置
+                gateway_name = config.get("name", "")
+                # 构建设置字典（排除name和type字段）
+                settings = {k: v for k, v in config.items() if k not in ("name", "type")}
+                settings["password"] = password  # 添加密码到设置中
+
+                result = self.vnpy_adapter.connect_gateway(gateway_name, **settings)
                 if result:
                     if self.gateways_table:
                         self.gateways_table.setItem(row, 2, QTableWidgetItem("已连接"))
@@ -604,7 +609,7 @@ class TradingGateway(BaseWidget, LoggerMixin):
         self._update_gateways_table(status)
 
         # 更新策略表格
-        self._update_strategies_table(status)
+        self._update_strategies_table()
 
     def _update_gateways_table(self, status):
         """更新网关表格."""
@@ -715,7 +720,7 @@ class TradingGateway(BaseWidget, LoggerMixin):
 
         # 获取真实策略列表
         if hasattr(self.vnpy_adapter, "get_strategies"):
-            strategies = self.vnpy_adapter.get_strategies()
+            strategies = self.vnpy_adapter.get_strategies()  # type: ignore[attr-defined]
         else:
             self.logger.warning("VNPY适配器缺少get_strategies方法")
             strategies = []

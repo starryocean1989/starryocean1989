@@ -1,846 +1,487 @@
 # -*- coding: utf-8 -*-
 """
-Shared services manager for UI and tests.
+共享服务管理器 - 错误追踪和详细报告版本
 
-提供一个轻量的共享服务管理器，满足 UI 的导入：
-from backend.core.shared_services import get_service_manager
-
-避免依赖真实外部环境，默认提供轻量桩：
-- DummyVnpyService: 提供 get_database_manager()
-- DummyEventService: 提供基本占位方法
+专注于详细错误报告机制，让用户知道哪里出错了。
+不实现多层级降级机制，而是提供完整的错误信息追踪。
 """
 
 import logging
-from typing import Any, Optional
+import threading
+import traceback
+import json
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+from enum import Enum
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# 轻量桩实现
-class _DummyDatabase:
-    def load_bar_data(self, *args, **kwargs):
-        return []
 
-class DummyVnpyService:
-    def __init__(self):
-        self._db = _DummyDatabase()
-        self.is_initialized = True
+class ErrorSeverity(Enum):
+    """错误严重程度."""
 
-    def get_database_manager(self):
-        return self._db
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+    CRITICAL = "critical"
 
-class DummyEventService:
-    def __init__(self):
-        self.is_initialized = True
 
-    def register_handler(self, *_args, **_kwargs):
-        pass
+class ServiceError:
+    """服务错误信息."""
 
-    def unregister_handler(self, *_args, **_kwargs):
-        pass
+    def __init__(
+        self,
+        service_name: str,
+        error_type: str,
+        message: str,
+        exception: Optional[Exception] = None,
+        severity: ErrorSeverity = ErrorSeverity.ERROR,
+    ):
+        """初始化服务错误对象."""
+        self.service_name = service_name
+        self.error_type = error_type
+        self.message = message
+        self.exception = exception
+        self.severity = severity
+        self.timestamp = datetime.now()
+        self.traceback = traceback.format_exc() if exception else None
 
-    async def emit_event(self, *_args, **_kwargs):
-        return None
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典格式."""
+        return {
+            "service_name": self.service_name,
+            "error_type": self.error_type,
+            "message": self.message,
+            "severity": self.severity.value,
+            "timestamp": self.timestamp.isoformat(),
+            "traceback": self.traceback,
+            "exception_type": type(self.exception).__name__ if self.exception else None,
+        }
+
+    def get_user_friendly_message(self) -> str:
+        """获取用户友好的错误消息."""
+        severity_prefix = {
+            ErrorSeverity.INFO: "ℹ️",
+            ErrorSeverity.WARNING: "⚠️",
+            ErrorSeverity.ERROR: "❌",
+            ErrorSeverity.CRITICAL: "🚨",
+        }
+
+        prefix = severity_prefix.get(self.severity, "❌")
+        time_str = self.timestamp.strftime("%H:%M:%S")
+
+        return f"{prefix} [{time_str}] {self.service_name}: {self.message}"
+
 
 class ServiceManager:
-    """
-    轻量共享服务管理器，可被 UI/测试获取。
-    """
+    """服务管理器 - 专注于错误追踪和详细报告"""
 
     def __init__(self):
-        self.vnpy_service: Any = DummyVnpyService()
-        self.event_service: Any = DummyEventService()
-        # 按需缓存服务实例
-        self._services: dict[str, Any] = {}
+        """初始化服务管理器."""
+        self.services = {}
+        self.errors = []  # 存储所有错误信息
+        self.logger = self._setup_logger()
+        self.initialization_attempted = False
+        self.initialization_completed = False
+        self._lock = threading.RLock()
+        self._max_errors_per_service = 50  # 每个服务最多保留50个错误
 
-    def get_service(self, name: str) -> Optional[Any]:
-        return self._services.get(name)
+    def _setup_logger(self):
+        """设置错误追踪日志记录器"""
+        import logging
 
-    def set_service(self, name: str, svc: Any) -> None:
-        self._services[name] = svc
+        logger = logging.getLogger("ServiceManager")
+        logger.setLevel(logging.DEBUG)
 
-    # 兼容别名：与现有API保持一致
-    def register(self, name: str, svc: Any) -> None:
-        """注册服务（alias of set_service）."""
-        self._services[name] = svc
+        if not logger.handlers:
+            handler = logging.StreamHandler()
+            formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+            handler.setFormatter(formatter)
+            logger.addHandler(handler)
 
-    def get(self, name: str, default: Any = None) -> Optional[Any]:
-        """获取服务（alias of get_service），不存在返回default."""
-        return self._services.get(name, default)
+        return logger
 
-    def has(self, name: str) -> bool:
-        """判断服务是否已注册."""
-        return name in self._services
+    def register_service(self, name: str, service: Any) -> bool:
+        """注册服务并记录任何错误"""
+        try:
+            if name in self.services:
+                self.record_error(
+                    name,
+                    "DUPLICATE_REGISTRATION",
+                    f"服务 '{name}' 已经注册过了",
+                    severity=ErrorSeverity.WARNING,
+                )
+                return False
 
-# 模块级单例
+            # 验证服务是否可用
+            if service is None:
+                self.record_error(
+                    name, "NULL_SERVICE", f"尝试注册空服务 '{name}'", severity=ErrorSeverity.ERROR
+                )
+                return False
+
+            self.services[name] = service
+            self.logger.info("服务 '%s' 注册成功", name)
+            return True
+
+        except Exception as e:
+            self.record_error(
+                name,
+                "REGISTRATION_EXCEPTION",
+                f"注册服务 '{name}' 时发生异常: {str(e)}",
+                exception=e,
+                severity=ErrorSeverity.ERROR,
+            )
+            return False
+
+    def get_service(self, name: str) -> Any:
+        """获取服务，记录访问错误"""
+        try:
+            if name not in self.services:
+                self.record_error(
+                    name,
+                    "SERVICE_NOT_FOUND",
+                    f"请求的服务 '{name}' 未找到。可用服务: {list(self.services.keys())}",
+                    severity=ErrorSeverity.ERROR,
+                )
+                return None
+
+            service = self.services[name]
+            if service is None:
+                self.record_error(
+                    name,
+                    "NULL_SERVICE_RETRIEVED",
+                    f"服务 '{name}' 存在但为空",
+                    severity=ErrorSeverity.ERROR,
+                )
+                return None
+
+            return service
+
+        except Exception as e:
+            self.record_error(
+                name,
+                "SERVICE_ACCESS_EXCEPTION",
+                f"访问服务 '{name}' 时发生异常: {str(e)}",
+                exception=e,
+                severity=ErrorSeverity.ERROR,
+            )
+            return None
+
+    def record_error(
+        self,
+        service_name: str,
+        error_type: str,
+        message: str,
+        exception: Optional[Exception] = None,
+        severity: ErrorSeverity = ErrorSeverity.ERROR,
+    ):
+        """记录详细错误信息"""
+        error = ServiceError(service_name, error_type, message, exception, severity)
+
+        with self._lock:
+            self.errors.append(error)
+
+            # 限制错误数量，防止内存泄漏
+            if len(self.errors) > self._max_errors_per_service * 10:
+                self.errors = self.errors[-self._max_errors_per_service * 5 :]
+
+        # 同时记录到日志
+        log_level = {
+            ErrorSeverity.INFO: self.logger.info,
+            ErrorSeverity.WARNING: self.logger.warning,
+            ErrorSeverity.ERROR: self.logger.error,
+            ErrorSeverity.CRITICAL: self.logger.critical,
+        }.get(severity, self.logger.error)
+
+        log_level("[%s] %s: %s", service_name, error_type, message)
+        if exception and hasattr(exception, "__traceback__"):
+            self.logger.error("异常详情: %s", str(exception))
+
+    def get_error_summary(self) -> Dict[str, Any]:
+        """获取错误统计摘要"""
+        if not self.errors:
+            return {
+                "total_errors": 0,
+                "by_severity": {},
+                "by_service": {},
+                "by_error_type": {},
+                "summary": "无错误记录",
+            }
+
+        # 按严重程度统计
+        by_severity = {}
+        for error in self.errors:
+            severity = error.severity.value
+            by_severity[severity] = by_severity.get(severity, 0) + 1
+
+        # 按服务统计
+        by_service = {}
+        for error in self.errors:
+            service = error.service_name
+            by_service[service] = by_service.get(service, 0) + 1
+
+        # 按错误类型统计
+        by_error_type = {}
+        for error in self.errors:
+            error_type = error.error_type
+            by_error_type[error_type] = by_error_type.get(error_type, 0) + 1
+
+        return {
+            "total_errors": len(self.errors),
+            "by_severity": by_severity,
+            "by_service": by_service,
+            "by_error_type": by_error_type,
+            "summary": f"共记录 {len(self.errors)} 个错误/警告",
+        }
+
+    def get_user_friendly_error_report(self) -> str:
+        """获取用户友好的错误报告"""
+        if not self.errors:
+            return "✅ 所有服务运行正常，无错误记录。"
+
+        report_lines = []
+        report_lines.append("📋 系统错误报告")
+        report_lines.append("=" * 50)
+
+        # 错误统计概览
+        summary = self.get_error_summary()
+        report_lines.append(f"📊 错误统计: {summary['summary']}")
+
+        # 按严重程度分组显示
+        severity_order = [
+            ErrorSeverity.CRITICAL,
+            ErrorSeverity.ERROR,
+            ErrorSeverity.WARNING,
+            ErrorSeverity.INFO,
+        ]
+
+        for severity in severity_order:
+            severity_errors = [e for e in self.errors if e.severity == severity]
+            if not severity_errors:
+                continue
+
+            severity_icons = {
+                ErrorSeverity.CRITICAL: "🔴",
+                ErrorSeverity.ERROR: "❌",
+                ErrorSeverity.WARNING: "⚠️",
+                ErrorSeverity.INFO: "ℹ️",
+            }
+
+            icon = severity_icons.get(severity, "❓")
+            report_lines.append(f"\n{icon} {severity.value.upper()} ({len(severity_errors)} 项):")
+            report_lines.append("-" * 30)
+
+            for error in severity_errors:
+                time_str = error.timestamp.strftime("%H:%M:%S")
+                report_lines.append(f"  [{time_str}] {error.service_name}")
+                report_lines.append(f"    错误类型: {error.error_type}")
+                report_lines.append(f"    详细信息: {error.message}")
+
+                if error.exception:
+                    report_lines.append(f"    异常: {str(error.exception)}")
+
+                report_lines.append("")
+
+        # 问题解决建议
+        report_lines.append("\n💡 建议解决方案:")
+        report_lines.append("-" * 30)
+
+        critical_errors = [e for e in self.errors if e.severity == ErrorSeverity.CRITICAL]
+        major_errors = [e for e in self.errors if e.severity == ErrorSeverity.ERROR]
+
+        if critical_errors:
+            report_lines.append("🔴 严重错误需要立即修复:")
+            for error in critical_errors[:3]:  # 只显示前3个
+                report_lines.append(f"  - {error.service_name}: {error.message}")
+
+        if major_errors:
+            report_lines.append("❌ 主要错误需要优先处理:")
+            for error in major_errors[:3]:  # 只显示前3个
+                report_lines.append(f"  - {error.service_name}: {error.message}")
+
+        # 服务状态概览
+        report_lines.append("\n🔍 服务状态概览:")
+        report_lines.append("-" * 30)
+        report_lines.append(f"已注册服务数量: {len(self.services)}")
+        if self.services:
+            report_lines.append(f"可用服务: {', '.join(self.services.keys())}")
+        else:
+            report_lines.append("⚠️ 当前没有任何已注册的服务")
+
+        return "\n".join(report_lines)
+
+    def clear_errors(self):
+        """清空错误记录"""
+        with self._lock:
+            self.errors.clear()
+        self.logger.info("错误记录已清空")
+
+    def get_service_status(self) -> Dict[str, str]:
+        """获取所有服务的状态"""
+        status = {}
+        for name, service in self.services.items():
+            if service is None:
+                status[name] = "❌ 空服务"
+            else:
+                # 尝试基本的服务健康检查
+                try:
+                    if hasattr(service, "is_connected") and callable(service.is_connected):
+                        is_connected = service.is_connected()
+                        status[name] = "✅ 已连接" if is_connected else "⚠️ 未连接"
+                    elif hasattr(service, "status") and callable(service.status):
+                        service_status = service.status()
+                        status[name] = f"📊 {service_status}"
+                    else:
+                        status[name] = "✅ 已注册"
+                except Exception as e:
+                    status[name] = f"❌ 检查失败: {str(e)}"
+
+        return status
+
+    def get_detailed_error_log(self) -> List[Dict[str, Any]]:
+        """获取详细的错误日志"""
+        with self._lock:
+            return [error.to_dict() for error in self.errors]
+
+    def export_error_report(self, file_path: str) -> bool:
+        """导出错误报告到文件"""
+        try:
+            report_data = {
+                "timestamp": datetime.now().isoformat(),
+                "summary": self.get_error_summary(),
+                "user_friendly_report": self.get_user_friendly_error_report(),
+                "service_status": self.get_service_status(),
+                "detailed_errors": self.get_detailed_error_log(),
+            }
+
+            Path(file_path).parent.mkdir(parents=True, exist_ok=True)
+
+            with open(file_path, "w", encoding="utf-8") as f:
+                json.dump(report_data, f, indent=2, ensure_ascii=False)
+
+            self.logger.info("错误报告已导出到: %s", file_path)
+            return True
+
+        except Exception as e:
+            self.record_error(
+                "ServiceManager",
+                "EXPORT_ERROR",
+                f"导出错误报告失败: {str(e)}",
+                exception=e,
+                severity=ErrorSeverity.ERROR,
+            )
+            return False
+
+
+# 全局服务管理器实例
 _service_manager: Optional[ServiceManager] = None
+_init_lock = threading.Lock()
+
 
 def get_service_manager() -> ServiceManager:
-    """
-    提供 UI 侧调用的共享服务管理器。
-    """
+    """获取全局服务管理器实例."""
     global _service_manager
+
     if _service_manager is None:
-        _service_manager = ServiceManager()
-        logger.info("Shared ServiceManager initialized (dummy)")
+        with _init_lock:
+            if _service_manager is None:
+                _service_manager = ServiceManager()
+                logger.info("全局服务管理器已创建")
+
     return _service_manager
-"""
-共享服务层模块.
-
-提供统一的配置、日志、监控等服务.
-"""
-
-import contextlib
-import json
-import logging
-import logging.handlers
-import threading
-import time
-from datetime import datetime, timedelta
-from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
-
-from .imports import psutil
-from .vnpy_integration import TerminalEngine, VNPY_AVAILABLE
 
 
-class ConfigService:
-    """统一配置管理服务."""
+def initialize_services() -> Dict[str, Any]:
+    """初始化所有服务，返回详细的初始化报告"""
+    try:
+        from .service_initializer import ServiceInitializer
 
-    def __init__(self, config_file: str = "config/terminal_config.json"):
-        """初始化配置服务."""
-        self.config_file = Path(config_file)
-        self.logger = logging.getLogger(__name__)
-        self._config: Dict[str, Any] = {}
-        self._listeners: List[Callable] = []
-        self._lock = threading.Lock()
+        service_manager = get_service_manager()
+        initializer = ServiceInitializer(service_manager)
 
-        # 确保配置目录存在
-        self.config_file.parent.mkdir(parents=True, exist_ok=True)
+        # 记录初始化开始
+        service_manager.record_error(
+            "ServiceManager",
+            "INITIALIZATION_START",
+            "开始初始化所有服务",
+            severity=ErrorSeverity.INFO,
+        )
 
-        # 加载配置
-        self.load_config()
+        # 执行初始化
+        success = initializer.initialize_all_services()
+        service_manager.initialization_attempted = True
+        service_manager.initialization_completed = success
 
-    def load_config(self) -> bool:
-        """加载配置文件."""
-        try:
-            if self.config_file.exists():
-                with open(self.config_file, 'r', encoding='utf-8') as f:
-                    self._config = json.load(f)
-                self.logger.info("配置加载成功: %s", self.config_file)
-                return True
+        # 生成初始化报告
+        if success:
+            service_manager.record_error(
+                "ServiceManager",
+                "INITIALIZATION_SUCCESS",
+                "所有服务初始化成功",
+                severity=ErrorSeverity.INFO,
+            )
+            logger.info("服务初始化完成")
+        else:
+            service_manager.record_error(
+                "ServiceManager",
+                "INITIALIZATION_PARTIAL_FAILURE",
+                "部分服务初始化失败，请查看详细错误信息",
+                severity=ErrorSeverity.WARNING,
+            )
+            logger.warning("服务初始化部分失败")
 
-            # 创建默认配置
-            self._create_default_config()
-            return self.save_config()
-
-        except (OSError, json.JSONDecodeError) as e:
-            self.logger.error("加载配置失败: %s", e)
-            self._create_default_config()
-            return False
-
-    def save_config(self) -> bool:
-        """保存配置文件."""
-        try:
-            with self._lock:
-                # 备份原文件
-                backup_file = None
-                if self.config_file.exists():
-                    backup_file = self.config_file.with_suffix('.json.bak')
-                    self.config_file.rename(backup_file)
-
-                # 保存新配置
-                with open(self.config_file, 'w', encoding='utf-8') as f:
-                    json.dump(self._config, f, indent=2, ensure_ascii=False)
-
-                # 恢复备份文件（如果存在）
-                if backup_file and backup_file.exists():
-                    backup_file.rename(
-                        self.config_file.with_suffix('.json.bak')
-                    )
-
-                self.logger.info("配置保存成功: %s", self.config_file)
-                return True
-
-        except (OSError, ValueError) as e:
-            self.logger.error("保存配置失败: %s", e)
-            return False
-
-    def _create_default_config(self):
-        """创建默认配置."""
-        self._config = {
-            "app": {
-                "name": "星辰金融终端",
-                "version": "5.0.0",
-                "author": "星辰科技",
-                "description": "专业的金融交易终端系统"
-            },
-
-            "ui": {
-                "theme": "dark",
-                "language": "zh_CN",
-                "window_width": 1200,
-                "window_height": 800,
-                "min_width": 800,
-                "min_height": 600,
-                "font_size": 10,
-                "refresh_interval": 1000
-            },
-
-            "vnpy": {
-                "data_path": "data/vnpy",
-                "log_path": "logs/vnpy",
-                "cache_size": 1000,
-                "timeout": 30
-            },
-
-            "gateways": {
-                "ctp": {
-                    "enabled": True,
-                    "setting": {
-                        "用户名": "",
-                        "密码": "",
-                        "经纪商代码": "",
-                        "交易服务器": "",
-                        "行情服务器": "",
-                        "产品名称": "",
-                        "授权编码": ""
-                    }
-                },
-                "mini": {
-                    "enabled": False,
-                    "setting": {
-                        "用户名": "",
-                        "密码": "",
-                        "经纪商代码": "",
-                        "地址": "",
-                        "端口": 0
-                    }
-                },
-                "ib": {
-                    "enabled": False,
-                    "setting": {
-                        "TWS地址": "127.0.0.1",
-                        "TWS端口": 7497,
-                        "客户端ID": 1
-                    }
-                }
-            },
-
-            "datafeeds": {
-                "tushare": {
-                    "enabled": True,
-                    "token": "",
-                    "timeout": 30
-                },
-                "rqdata": {
-                    "enabled": False,
-                    "username": "",
-                    "password": "",
-                    "timeout": 30
-                }
-            },
-
-            "strategies": {
-                "default_engine": "cta",
-                "auto_start": False,
-                "max_running": 10,
-                "log_level": "INFO"
-            },
-
-            "system": {
-                "log_level": "INFO",
-                "log_max_size": 10485760,  # 10MB
-                "log_backup_count": 5,
-                "performance_monitor": True,
-                "memory_warning_threshold": 80,
-                "cpu_warning_threshold": 80
-            }
+        # 返回详细报告
+        return {
+            "success": success,
+            "initialization_completed": success,
+            "error_summary": service_manager.get_error_summary(),
+            "service_status": service_manager.get_service_status(),
+            "user_friendly_report": service_manager.get_user_friendly_error_report(),
         }
 
-    def get(self, key: str, default: Any = None) -> Any:
-        """获取配置值."""
-        keys = key.split('.')
-        value = self._config
+    except Exception as e:
+        service_manager = get_service_manager()
+        service_manager.record_error(
+            "ServiceManager",
+            "INITIALIZATION_EXCEPTION",
+            f"服务初始化过程中发生严重异常: {str(e)}",
+            exception=e,
+            severity=ErrorSeverity.CRITICAL,
+        )
+        logger.error("服务初始化失败: %s", e, exc_info=True)
 
-        for k in keys:
-            if isinstance(value, dict) and k in value:
-                value = value[k]
-            else:
-                return default
-
-        return value
-
-    def set(self, key: str, value: Any) -> bool:
-        """设置配置值."""
-        try:
-            keys = key.split('.')
-            config = self._config
-
-            # 导航到父级字典
-            for k in keys[:-1]:
-                if k not in config or not isinstance(config[k], dict):
-                    config[k] = {}
-                config = config[k]
-
-            # 设置值
-            config[keys[-1]] = value
-
-            # 通知监听器
-            self._notify_listeners(key, value)
-
-            return True
-
-        except (TypeError, ValueError, KeyError) as e:
-            self.logger.error("设置配置失败 %s: %s", key, e)
-            return False
-
-    def update(self, updates: Dict[str, Any]) -> bool:
-        """批量更新配置."""
-        try:
-            with self._lock:
-                def deep_update(d, u):
-                    for k, v in u.items():
-                        if (isinstance(v, dict) and k in d and
-                                isinstance(d[k], dict)):
-                            deep_update(d[k], v)
-                        else:
-                            d[k] = v
-
-                deep_update(self._config, updates)
-
-                # 通知监听器
-                for key, value in updates.items():
-                    self._notify_listeners(key, value)
-
-                return True
-
-        except (TypeError, ValueError, KeyError) as e:
-            self.logger.error("批量更新配置失败: %s", e)
-            return False
-
-    def add_listener(self, listener: Callable[[str, Any], None]):
-        """添加配置变更监听器."""
-        self._listeners.append(listener)
-
-    def remove_listener(self, listener: Callable[[str, Any], None]):
-        """移除配置变更监听器."""
-        with contextlib.suppress(ValueError):
-            self._listeners.remove(listener)
-
-    def _notify_listeners(self, key: str, value: Any):
-        """通知监听器配置变更."""
-        for listener in self._listeners:
-            try:
-                listener(key, value)
-            except (TypeError, AttributeError, RuntimeError) as e:
-                self.logger.error("配置监听器执行失败: %s", e)
-
-    def reload_config(self) -> bool:
-        """重新加载配置."""
-        return self.load_config()
-
-    def export_config(self, export_file: str) -> bool:
-        """导出配置到文件."""
-        try:
-            export_path = Path(export_file)
-            export_path.parent.mkdir(parents=True, exist_ok=True)
-
-            with open(export_path, 'w', encoding='utf-8') as f:
-                json.dump(self._config, f, indent=2, ensure_ascii=False)
-
-            self.logger.info("配置导出成功: %s", export_path)
-            return True
-
-        except OSError as e:
-            self.logger.error("导出配置失败: %s", e)
-            return False
-
-    def import_config(self, import_file: str) -> bool:
-        """从文件导入配置."""
-        try:
-            import_path = Path(import_file)
-            if not import_path.exists():
-                self.logger.error("导入配置文件不存在: %s", import_path)
-                return False
-
-            with open(import_path, 'r', encoding='utf-8') as f:
-                imported_config = json.load(f)
-
-            # 备份当前配置
-            backup_config = self._config.copy()
-
-            # 尝试导入
-            self._config = imported_config
-
-            # 验证导入的配置
-            if self._validate_config():
-                self.save_config()
-                self.logger.info("配置导入成功: %s", import_path)
-                return True
-
-            # 恢复备份
-            self._config = backup_config
-            self.logger.error("导入配置验证失败，已恢复原配置")
-            return False
-
-        except (OSError, json.JSONDecodeError) as e:
-            self.logger.error("导入配置失败: %s", e)
-            return False
-
-    def _validate_config(self) -> bool:
-        """验证配置有效性."""
-        try:
-            # 检查必需的顶级配置项
-            required_keys = [
-                "app", "ui", "vnpy", "gateways",
-                "datafeeds", "strategies", "system"
-            ]
-            for key in required_keys:
-                if key not in self._config:
-                    self.logger.error("配置缺少必需项: %s", key)
-                    return False
-
-            # 检查UI配置
-            ui_config = self._config["ui"]
-            if not isinstance(ui_config.get("window_width"), int):
-                self.logger.error("UI配置中window_width必须为整数")
-                return False
-
-            return True
-
-        except (TypeError, ValueError, KeyError) as e:
-            self.logger.error("配置验证失败: %s", e)
-            return False
-
-
-class LoggingService:
-    """统一日志管理服务."""
-
-    def __init__(self, config_service: ConfigService):
-        """初始化日志服务."""
-        self.config_service = config_service
-        self.logger = logging.getLogger(__name__)
-        self._handlers: Dict[str, logging.Handler] = {}
-        self._formatters: Dict[str, logging.Formatter] = {}
-        self._lock = threading.Lock()
-
-        # 初始化日志格式器
-        self._init_formatters()
-
-        # 初始化日志处理器
-        self._init_handlers()
-
-        # 配置根日志器
-        self._configure_root_logger()
-
-    def _init_formatters(self):
-        """初始化日志格式器."""
-        self._formatters = {
-            "console": logging.Formatter(
-                '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-            ),
-            "file": logging.Formatter(
-                '%(asctime)s - %(name)s - %(levelname)s - %(filename)s:'
-                '%(lineno)d - %(message)s'
-            ),
-            "detailed": logging.Formatter(
-                '%(asctime)s - %(name)s - %(levelname)s - %(funcName)s() - '
-                '%(message)s',
-                datefmt='%Y-%m-%d %H:%M:%S'
-            )
+        return {
+            "success": False,
+            "initialization_completed": False,
+            "error_summary": service_manager.get_error_summary(),
+            "service_status": service_manager.get_service_status(),
+            "user_friendly_report": service_manager.get_user_friendly_error_report(),
         }
 
-    def _init_handlers(self):
-        """初始化日志处理器."""
-        config = self.config_service.get("system", {})
 
-        # 控制台处理器
-        console_handler = logging.StreamHandler()
-        console_handler.setFormatter(self._formatters["console"])
-        console_handler.setLevel(
-            getattr(logging, config.get("log_level", "INFO").upper())
+def shutdown_services() -> None:
+    """关闭所有服务."""
+    global _service_manager
+
+    if _service_manager:
+        _service_manager.record_error(
+            "ServiceManager", "SHUTDOWN_START", "开始关闭所有服务", severity=ErrorSeverity.INFO
         )
-        self._handlers["console"] = console_handler
 
-        # 文件处理器
-        log_file = config.get("log_file", "logs/terminal.log")
-        try:
-            log_path = Path(log_file)
-            log_path.parent.mkdir(parents=True, exist_ok=True)
+        # 这里可以添加具体的服务关闭逻辑
+        _service_manager = None
+        logger.info("全局服务管理器已清理")
 
-            file_handler = logging.handlers.RotatingFileHandler(
-                log_file,
-                maxBytes=config.get("log_max_size", 10485760),
-                backupCount=config.get("log_backup_count", 5),
-                encoding='utf-8'
-            )
-            file_handler.setFormatter(self._formatters["file"])
-            file_handler.setLevel(logging.DEBUG)
-            self._handlers["file"] = file_handler
 
-        except OSError as e:
-            self.logger.error("创建文件日志处理器失败: %s", e)
+def get_error_report() -> str:
+    """获取当前的错误报告"""
+    service_manager = get_service_manager()
+    return service_manager.get_user_friendly_error_report()
 
-    def _configure_root_logger(self):
-        """配置根日志器."""
-        root_logger = logging.getLogger()
 
-        # 清空现有处理器
-        for handler in root_logger.handlers[:]:
-            root_logger.removeHandler(handler)
-
-        # 添加新处理器
-        for handler in self._handlers.values():
-            root_logger.addHandler(handler)
-
-        # 设置日志级别
-        config = self.config_service.get("system", {})
-        level = getattr(logging, config.get("log_level", "INFO").upper())
-        root_logger.setLevel(level)
-
-    def get_logger(self, name: str) -> logging.Logger:
-        """获取指定名称的日志器."""
-        return logging.getLogger(name)
-
-    def set_level(self, level: str):
-        """设置日志级别."""
-        try:
-            config = self.config_service.get("system", {})
-            config["log_level"] = level
-            self.config_service.set("system.log_level", level)
-
-            # 更新所有处理器级别
-            level_enum = getattr(logging, level.upper())
-            for handler in self._handlers.values():
-                handler.setLevel(level_enum)
-
-            self.logger.info("日志级别已设置为: %s", level)
-
-        except (AttributeError, ValueError, TypeError) as e:
-            self.logger.error("设置日志级别失败: %s", e)
-
-    def add_file_handler(self, name: str, file_path: str, level: str = "INFO"):
-        """添加文件处理器."""
-        try:
-            log_path = Path(file_path)
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-
-            handler = logging.FileHandler(file_path, encoding='utf-8')
-            handler.setFormatter(self._formatters["file"])
-            handler.setLevel(getattr(logging, level.upper()))
-
-            self._handlers[name] = handler
-
-            # 添加到根日志器
-            root_logger = logging.getLogger()
-            root_logger.addHandler(handler)
-
-            self.logger.info("文件日志处理器添加成功: %s", name)
-
-        except (OSError, AttributeError) as e:
-            self.logger.error("添加文件日志处理器失败 %s: %s", name, e)
-
-    def remove_handler(self, name: str):
-        """移除日志处理器."""
-        if name in self._handlers:
-            try:
-                handler = self._handlers[name]
-
-                # 从根日志器移除
-                root_logger = logging.getLogger()
-                root_logger.removeHandler(handler)
-
-                # 关闭处理器
-                handler.close()
-
-                del self._handlers[name]
-                self.logger.info("日志处理器移除成功: %s", name)
-
-            except (AttributeError, OSError) as e:
-                self.logger.error("移除日志处理器失败 %s: %s", name, e)
-
-
-class MonitoringService:
-    """统一监控服务."""
-
-    def __init__(self, config_service: ConfigService,
-                 terminal_engine: TerminalEngine):
-        """初始化监控服务."""
-        self.config_service = config_service
-        self.terminal_engine = terminal_engine
-        self.logger = logging.getLogger(__name__)
-
-        self._monitoring_data: Dict[str, Any] = {}
-        self._alerts: List[Dict[str, Any]] = []
-        self._performance_history: List[Dict[str, Any]] = []
-
-        self._monitor_thread: Optional[threading.Thread] = None
-        self._stop_event = threading.Event()
-        self._lock = threading.Lock()
-
-        # 启动监控
-        self.start_monitoring()
-
-    def start_monitoring(self):
-        """启动监控."""
-        if self._monitor_thread and self._monitor_thread.is_alive():
-            return
-
-        self._stop_event.clear()
-        self._monitor_thread = threading.Thread(
-            target=self._monitoring_loop, daemon=True
-        )
-        self._monitor_thread.start()
-        self.logger.info("监控服务已启动")
-
-    def stop_monitoring(self):
-        """停止监控."""
-        self._stop_event.set()
-
-        if self._monitor_thread:
-            self._monitor_thread.join(timeout=5)
-
-        self.logger.info("监控服务已停止")
-
-    def _monitoring_loop(self):
-        """监控循环."""
-        interval = 5  # 监控间隔（秒）
-
-        while not self._stop_event.is_set():
-            try:
-                # 收集系统性能数据
-                self._collect_system_metrics()
-
-                # 收集VNPY状态数据
-                self._collect_vnpy_metrics()
-
-                # 检查告警条件
-                self._check_alerts()
-
-                # 保存历史数据
-                self._save_performance_history()
-
-                # 等待下次监控
-                self._stop_event.wait(interval)
-
-            except (RuntimeError, OSError) as e:
-                self.logger.error("监控循环异常: %s", e)
-                time.sleep(interval)
-
-    def _collect_system_metrics(self):
-        """收集系统性能指标."""
-        try:
-            if not psutil:
-                return
-
-            timestamp = datetime.now()
-
-            # CPU使用率
-            cpu_percent = psutil.cpu_percent(interval=1)
-
-            # 内存使用情况
-            memory = psutil.virtual_memory()
-
-            # 磁盘使用情况
-            disk = psutil.disk_usage('/')
-
-            # 网络状态
-            network = psutil.net_if_stats()
-
-            metrics = {
-                "timestamp": timestamp,
-                "cpu_percent": cpu_percent,
-                "memory_percent": memory.percent,
-                "memory_used": memory.used,
-                "memory_available": memory.available,
-                "disk_percent": disk.percent,
-                "disk_used": disk.used,
-                "disk_free": disk.free,
-                "network_interfaces": len(network),
-                "active_connections": len(psutil.net_connections())
-            }
-
-            with self._lock:
-                self._monitoring_data["system"] = metrics
-
-        except (RuntimeError, OSError, psutil.Error) as e:
-            self.logger.error("收集系统指标失败: %s", e)
-
-    def _collect_vnpy_metrics(self):
-        """收集VNPY指标."""
-        try:
-            if not VNPY_AVAILABLE:
-                return
-
-            timestamp = datetime.now()
-            status = self.terminal_engine.get_status()
-
-            metrics = {
-                "timestamp": timestamp,
-                "vnpy_available": status.get("vnpy_available", False),
-                "connected_gateways": status.get("connected_gateways", 0),
-                "subscribed_symbols": status.get("subscribed_symbols", 0),
-                "active_strategies": 0,
-                "gateway_count": len(status.get("gateways", {})),
-                "datafeed_count": len(status.get("datafeeds", {}))
-            }
-
-            # 计算活跃策略数量
-            for engine_info in status.get(
-                    "strategy_engines", {}).values():
-                metrics["active_strategies"] += engine_info.get(
-                    "strategies", 0)
-
-            with self._lock:
-                self._monitoring_data["vnpy"] = metrics
-
-        except (RuntimeError, AttributeError, ConnectionError) as e:
-            self.logger.error("收集VNPY指标失败: %s", e)
-
-    def _check_alerts(self):
-        """检查告警条件."""
-        try:
-            config = self.config_service.get("system", {})
-            cpu_threshold = config.get("cpu_warning_threshold", 80)
-            memory_threshold = config.get("memory_warning_threshold", 80)
-
-            current_metrics = self._monitoring_data.get("system", {})
-
-            if not current_metrics:
-                return
-
-            alerts_to_add = []
-
-            # CPU告警
-            if current_metrics.get("cpu_percent", 0) > cpu_threshold:
-                alert = {
-                    "timestamp": datetime.now(),
-                    "type": "cpu_warning",
-                    "level": "warning",
-                    "message": f"CPU使用率过高: "
-                               f"{current_metrics['cpu_percent']:.1f}%",
-                    "metric": "cpu_percent",
-                    "value": current_metrics["cpu_percent"],
-                    "threshold": cpu_threshold
-                }
-                alerts_to_add.append(alert)
-
-            # 内存告警
-            if (current_metrics.get("memory_percent", 0) >
-                    memory_threshold):
-                alert = {
-                    "timestamp": datetime.now(),
-                    "type": "memory_warning",
-                    "level": "warning",
-                    "message": f"内存使用率过高: "
-                               f"{current_metrics['memory_percent']:.1f}%",
-                    "metric": "memory_percent",
-                    "value": current_metrics["memory_percent"],
-                    "threshold": memory_threshold
-                }
-                alerts_to_add.append(alert)
-
-            # 添加新告警
-            if alerts_to_add:
-                with self._lock:
-                    self._alerts.extend(alerts_to_add)
-
-                    # 限制告警数量
-                    if len(self._alerts) > 1000:
-                        self._alerts = self._alerts[-500:]
-
-                # 记录告警日志
-                for alert in alerts_to_add:
-                    self.logger.warning("监控告警: %s", alert['message'])
-
-        except (KeyError, TypeError, RuntimeError) as e:
-            self.logger.error("检查告警失败: %s", e)
-
-    def _save_performance_history(self):
-        """保存性能历史数据."""
-        try:
-            if not self._monitoring_data:
-                return
-
-            history_entry = {
-                "timestamp": datetime.now(),
-                "system": self._monitoring_data.get("system", {}),
-                "vnpy": self._monitoring_data.get("vnpy", {})
-            }
-
-            with self._lock:
-                self._performance_history.append(
-                    history_entry
-                )
-
-                # 限制历史数据数量
-                max_history = 3600  # 保存1小时的历史数据（每5秒一个点）
-                if len(self._performance_history) > max_history:
-                    self._performance_history = self._performance_history[
-                        -max_history:]
-
-        except (OSError, TypeError) as e:
-            self.logger.error("保存性能历史失败: %s", e)
-
-    def get_current_metrics(self) -> Dict[str, Any]:
-        """获取当前监控指标."""
-        with self._lock:
-            return self._monitoring_data.copy()
-
-    def get_performance_history(self, hours: int = 1) -> List[Dict[str, Any]]:
-        """获取性能历史数据."""
-        with self._lock:
-            cutoff_time = datetime.now() - timedelta(hours=hours)
-            return [
-                entry for entry in self._performance_history
-                if entry["timestamp"] >= cutoff_time
-            ]
-
-    def get_alerts(self, limit: int = 100) -> List[Dict[str, Any]]:
-        """获取告警列表."""
-        with self._lock:
-            return self._alerts[-limit:] if self._alerts else []
-
-    def clear_alerts(self):
-        """清空告警."""
-        with self._lock:
-            self._alerts.clear()
-        self.logger.info("告警已清空")
-
-    def get_system_health_score(self) -> float:
-        """获取系统健康评分."""
-        try:
-            metrics = self._monitoring_data.get("system", {})
-
-            if not metrics:
-                return 0.0
-
-            score = 100.0
-
-            # CPU评分
-            cpu_score = max(0, 100 - metrics.get("cpu_percent", 0))
-            score = min(score, cpu_score)
-
-            # 内存评分
-            memory_score = max(0, 100 - metrics.get("memory_percent", 0))
-            score = min(score, memory_score)
-
-            # 磁盘评分
-            disk_score = max(0, 100 - metrics.get("disk_percent", 0))
-            score = min(score, disk_score)
-
-            return round(score, 1)
-
-        except (KeyError, TypeError, RuntimeError, ZeroDivisionError) as e:
-            self.logger.error("计算健康评分失败: %s", e)
-            return 0.0
-
-    def __del__(self):
-        """析构函数，确保监控线程被停止."""
-        self.stop_monitoring()
-
-
-# 导出公共接口
-__all__ = [
-    'ConfigService', 'LoggingService', 'MonitoringService'
-]
+def clear_error_log() -> None:
+    """清空错误日志"""
+    service_manager = get_service_manager()
+    service_manager.clear_errors()

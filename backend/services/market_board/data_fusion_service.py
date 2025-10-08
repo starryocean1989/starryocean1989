@@ -6,10 +6,11 @@
 """
 
 import logging
-from typing import Dict, List, Optional, TYPE_CHECKING, Any
-from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from datetime import datetime
 
 from backend.services.base_service import BaseService
+from backend.core.shared_services import get_service_manager
 
 if TYPE_CHECKING:
     from backend.services.vnpy_service import VnpyService
@@ -26,6 +27,7 @@ class DataFusionService(BaseService):
         super().__init__("DataFusionService")
         self.vnpy_service = vnpy_service
         self.event_service = event_service
+        self.service_manager = get_service_manager()
         self._fusion_cache: Dict[str, List[Dict[str, Any]]] = {}
 
     async def initialize(self) -> None:
@@ -140,15 +142,47 @@ class DataFusionService(BaseService):
     async def _get_available_data_sources(self, symbol: str, exchange: str) -> List[str]:
         """获取可用的数据源."""
         try:
-            # TODO: 从数据源服务获取真实的可用数据源
-            # 需要实现DataSourceService的get_available_sources方法
-            self.logger.warning("获取可用数据源需要实现DataSourceService集成")
-
-            # 临时返回空列表，而不是硬编码数据
             available_sources = []
 
+            # 尝试从服务管理器获取数据源服务
+            data_source_service = self.service_manager.get_service("data_source_service")
+
+            if data_source_service:
+                # 从数据源服务获取所有数据源
+                all_sources = await data_source_service.get_all_data_sources()
+
+                # 筛选出已启用且已连接的数据源
+                for source in all_sources:
+                    if (
+                        source.get("config", {}).get("enabled", False)
+                        and source.get("status") == "connected"
+                    ):
+                        # 根据数据源类型映射到内部标识
+                        source_type = source.get("source_type")
+                        if source_type == "vnpy":
+                            available_sources.append("vnpy_local")
+                        elif source_type == "tushare":
+                            available_sources.append("tushare")
+                        elif source_type == "akshare":
+                            available_sources.append("akshare")
+                        elif source_type == "local":
+                            # 本地缓存作为备选数据源
+                            pass
+
+                self.logger.info(
+                    "从数据源服务获取可用数据源: %s.%s, %d 个数据源",
+                    symbol,
+                    exchange,
+                    len(available_sources),
+                )
+            else:
+                # 如果数据源服务不可用，使用默认的VnPy本地源
+                self.logger.warning("数据源服务不可用，使用默认VnPy本地数据源")
+                if self.vnpy_service and self.vnpy_service.is_initialized:
+                    available_sources.append("vnpy_local")
+
             self.logger.info(
-                "获取可用数据源: %s.%s, %d 个数据源",
+                "获取可用数据源完成: %s.%s, %d 个数据源",
                 symbol,
                 exchange,
                 len(available_sources),
@@ -157,7 +191,10 @@ class DataFusionService(BaseService):
 
         except Exception as e:
             self.logger.error("获取可用数据源失败: %s", e)
-            raise
+            # 发生错误时返回默认数据源
+            if self.vnpy_service and self.vnpy_service.is_initialized:
+                return ["vnpy_local"]
+            return []
 
     async def _perform_data_fusion(
         self,
@@ -231,18 +268,18 @@ class DataFusionService(BaseService):
                 )
 
                 data = []
-                for bar in vnpy_data:
+                for bar_data in vnpy_data:
                     data.append(
                         {
-                            "timestamp": int(bar.datetime.timestamp() * 1000),
-                            "datetime": bar.datetime.isoformat(),
-                            "open": float(bar.open_price),
-                            "high": float(bar.high_price),
-                            "low": float(bar.low_price),
-                            "close": float(bar.close_price),
-                            "volume": int(bar.volume),
-                            "turnover": float(bar.turnover),
-                            "open_interest": int(bar.open_interest),
+                            "timestamp": int(bar_data.datetime.timestamp() * 1000),
+                            "datetime": bar_data.datetime.isoformat(),
+                            "open": float(bar_data.open_price),
+                            "high": float(bar_data.high_price),
+                            "low": float(bar_data.low_price),
+                            "close": float(bar_data.close_price),
+                            "volume": int(bar_data.volume),
+                            "turnover": float(bar_data.turnover),
+                            "open_interest": int(bar_data.open_interest),
                             "source": source,
                         }
                     )
@@ -277,7 +314,7 @@ class DataFusionService(BaseService):
 
             # 合并每个时间戳的数据
             merged_data = []
-            for timestamp, group_data in timestamp_groups.items():
+            for _timestamp, group_data in timestamp_groups.items():
                 merged_point = await self._merge_data_points(group_data)
                 merged_data.append(merged_point)
 

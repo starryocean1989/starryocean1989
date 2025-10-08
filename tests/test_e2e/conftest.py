@@ -74,95 +74,32 @@ async def symbol_service(backend_app):
         # 初始化服务
         await symbol_service.initialize()
 
-        # 为测试环境提供稳定可控的品种列表，确保 refresh_cache 能填充缓存
+        # 确保data_module_vnpy有数据
+        # 按照设计文档，品种列表应从data_module_vnpy获取
         try:
-            from backend.core.models import SymbolInfo
+            chinastock_engine = vnpy_service.get_chinastock_engine()
+            if chinastock_engine:
+                # 检查本地品种缓存
+                stocks = chinastock_engine.refresh_stock_list()
 
-            def _dummy_get_symbols():
-                # 返回字典列表以满足 symbol_service._load_symbols_cache 的键访问
-                # 使用SSE（上海证券交易所）作为测试交易所，这是VnPy支持的有效交易所
-                return [
-                    {
-                        "symbol": "TEST",
-                        "exchange": "SSE",
-                        "name": "测试品种1",
-                        "product": "EQUITY",
-                        "size": 1,
-                        "pricetick": 0.01,
-                        "min_volume": 100,
-                        "max_volume": 1000000,
-                        "is_active": True,
-                        "listed_date": None,
-                        "expired_date": None,
-                    },
-                    {
-                        "symbol": "TEST2",
-                        "exchange": "SSE",
-                        "name": "测试品种2",
-                        "product": "FUT",
-                        "size": 1,
-                        "pricetick": 0.01,
-                        "min_volume": 1,
-                        "max_volume": 1000000,
-                        "is_active": True,
-                        "listed_date": None,
-                        "expired_date": None,
-                    },
-                ]
+                if not stocks or sum(len(v) for v in stocks.values()) == 0:
+                    logger.info("data_module_vnpy本地品种缓存为空，调用API加载品种列表...")
+                    success = chinastock_engine.reload_stock_list()
 
-            # 将 DummyVnpyService 提供的 get_symbols 替换为测试数据
-            if hasattr(shared_services, "vnpy_service"):
-                setattr(shared_services.vnpy_service, "get_symbols", _dummy_get_symbols)
-        except Exception as _e:
-            logger.warning("注入测试品种列表失败（忽略）：%s", _e)
+                    if success:
+                        stocks = chinastock_engine.refresh_stock_list()
+                        total = sum(len(v) for v in stocks.values())
+                        logger.info("品种列表加载成功: %d 个品种", total)
+                    else:
+                        logger.warning("品种列表加载失败，测试将使用空品种列表")
+                else:
+                    total = sum(len(v) for v in stocks.values())
+                    logger.info("使用data_module_vnpy本地品种缓存: %d 个品种", total)
+            else:
+                logger.warning("data_module_vnpy引擎不可用，测试可能因缺少品种数据而失败")
 
-        # 预置两个稳定的测试品种到缓存，避免外部数据缺失导致缓存为空（组合/价差用例至少需要两个）
-        try:
-            # 仅当缓存为空时注入
-            if (
-                getattr(symbol_service, "_symbols_cache", None) is not None
-                and len(symbol_service._symbols_cache) == 0
-            ):
-                # 使用真实的 SymbolInfo 对象进行预置，符合 ServiceAccessor 的访问期望
-                from backend.core.models import SymbolInfo
-
-                dummy1 = SymbolInfo(
-                    id=None,
-                    symbol="TEST",
-                    exchange="SSE",
-                    name="测试品种1",
-                    product="EQUITY",
-                    size=100,
-                    pricetick=0.01,
-                    min_volume=100,
-                    max_volume=1000000,
-                    is_active=True,
-                    listed_date=None,
-                    expired_date=None,
-                )
-                dummy2 = SymbolInfo(
-                    id=None,
-                    symbol="TEST2",
-                    exchange="SSE",
-                    name="测试品种2",
-                    product="EQUITY",
-                    size=100,
-                    pricetick=0.01,
-                    min_volume=100,
-                    max_volume=1000000,
-                    is_active=True,
-                    listed_date=None,
-                    expired_date=None,
-                )
-                cache_key1 = f"{dummy1.symbol}.{dummy1.exchange}"
-                cache_key2 = f"{dummy2.symbol}.{dummy2.exchange}"
-                symbol_service._symbols_cache[cache_key1] = dummy1
-                symbol_service._symbols_cache[cache_key2] = dummy2
-                # 标记缓存已更新（若服务使用此标志）
-                if hasattr(symbol_service, "_cache_updated"):
-                    symbol_service._cache_updated = True
-        except Exception as _e:
-            logger.warning("预置测试品种失败（忽略，不影响测试继续）: %s", _e)
+        except Exception as e:
+            logger.warning("初始化data_module_vnpy品种数据失败: %s", e)
 
         # 保存到共享服务
         shared_services.symbol_service = symbol_service

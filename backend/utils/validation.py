@@ -7,8 +7,8 @@
 
 import logging
 import re
-from typing import Any, Dict, List, Optional, Union
-from datetime import datetime, date
+from typing import Any, Dict, List, Optional
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 
 logger = logging.getLogger(__name__)
@@ -17,9 +17,7 @@ logger = logging.getLogger(__name__)
 class ValidationError(Exception):
     """验证错误异常."""
 
-    def __init__(
-        self, message: str, field: Optional[str] = None, value: Optional[Any] = None
-    ):
+    def __init__(self, message: str, field: Optional[str] = None, value: Optional[Any] = None):
         """初始化验证错误."""
         super().__init__(message)
         self.message = message
@@ -55,14 +53,10 @@ class DataValidator:
             raise ValidationError(f"{field_name}必须是字符串", field_name, value)
 
         if min_length is not None and len(value) < min_length:
-            raise ValidationError(
-                f"{field_name}长度不能少于{min_length}个字符", field_name, value
-            )
+            raise ValidationError(f"{field_name}长度不能少于{min_length}个字符", field_name, value)
 
         if max_length is not None and len(value) > max_length:
-            raise ValidationError(
-                f"{field_name}长度不能超过{max_length}个字符", field_name, value
-            )
+            raise ValidationError(f"{field_name}长度不能超过{max_length}个字符", field_name, value)
 
         if pattern and not re.match(pattern, value):
             raise ValidationError(f"{field_name}格式不正确", field_name, value)
@@ -85,8 +79,8 @@ class DataValidator:
 
         try:
             int_value = int(value)
-        except (ValueError, TypeError):
-            raise ValidationError(f"{field_name}必须是整数", field_name, value)
+        except (ValueError, TypeError) as exc:
+            raise ValidationError(f"{field_name}必须是整数", field_name, value) from exc
 
         if min_value is not None and int_value < min_value:
             raise ValidationError(f"{field_name}不能小于{min_value}", field_name, value)
@@ -112,8 +106,8 @@ class DataValidator:
 
         try:
             float_value = float(value)
-        except (ValueError, TypeError):
-            raise ValidationError(f"{field_name}必须是数字", field_name, value)
+        except (ValueError, TypeError) as exc:
+            raise ValidationError(f"{field_name}必须是数字", field_name, value) from exc
 
         if min_value is not None and float_value < min_value:
             raise ValidationError(f"{field_name}不能小于{min_value}", field_name, value)
@@ -140,8 +134,8 @@ class DataValidator:
 
         try:
             decimal_value = Decimal(str(value))
-        except (InvalidOperation, ValueError, TypeError):
-            raise ValidationError(f"{field_name}必须是有效数字", field_name, value)
+        except (InvalidOperation, ValueError, TypeError) as exc:
+            raise ValidationError(f"{field_name}必须是有效数字", field_name, value) from exc
 
         if min_value is not None and decimal_value < min_value:
             raise ValidationError(f"{field_name}不能小于{min_value}", field_name, value)
@@ -199,10 +193,10 @@ class DataValidator:
             if format_str:
                 try:
                     return datetime.strptime(value, format_str)
-                except ValueError:
+                except ValueError as exc:
                     raise ValidationError(
                         f"{field_name}格式不正确，应为{format_str}", field_name, value
-                    )
+                    ) from exc
             else:
                 # 尝试常见格式
                 formats = [
@@ -289,14 +283,10 @@ class DataValidator:
         list_value = list(value)
 
         if min_length is not None and len(list_value) < min_length:
-            raise ValidationError(
-                f"{field_name}长度不能少于{min_length}", field_name, value
-            )
+            raise ValidationError(f"{field_name}长度不能少于{min_length}", field_name, value)
 
         if max_length is not None and len(list_value) > max_length:
-            raise ValidationError(
-                f"{field_name}长度不能超过{max_length}", field_name, value
-            )
+            raise ValidationError(f"{field_name}长度不能超过{max_length}", field_name, value)
 
         if item_type:
             for i, item in enumerate(list_value):
@@ -346,9 +336,7 @@ class SymbolValidator:
 
         # 品种代码应该是字母数字组合，长度在2-20之间
         if not re.match(r"^[A-Za-z0-9]{2,20}$", symbol):
-            raise ValidationError(
-                "品种代码格式不正确，应为2-20位字母数字组合", "symbol", symbol
-            )
+            raise ValidationError("品种代码格式不正确，应为2-20位字母数字组合", "symbol", symbol)
 
         return symbol.upper()
 
@@ -389,19 +377,15 @@ class TimeValidator:
         # 简单的时间验证，实际应该根据具体市场规则
         weekday = dt.weekday()
         hour = dt.hour
-        minute = dt.minute
 
         # 工作日 9:00-15:00
-        if weekday < 5:  # 周一到周五
-            if 9 <= hour <= 15:
-                return True
+        if weekday < 5 and 9 <= hour <= 15:  # 周一到周五
+            return True
 
         return False
 
     @staticmethod
-    def validate_time_range(
-        start_time: datetime, end_time: datetime, max_days: int = 365
-    ) -> None:
+    def validate_time_range(start_time: datetime, end_time: datetime, max_days: int = 365) -> None:
         """验证时间范围."""
         if start_time >= end_time:
             raise ValidationError("开始时间必须早于结束时间")

@@ -30,13 +30,15 @@ from .test_performance import main as performance_main
 from .vnpy_integration import TerminalEngine, VNPY_AVAILABLE, get_terminal_engine
 
 if TYPE_CHECKING:
-    from .shared_services import ConfigService
+    # 临时注释掉ConfigService相关导入
+    # from .shared_services import ConfigService
+    pass
 
 
 class PerformanceMonitor:
     """性能监控器."""
 
-    def __init__(self, config_service: "ConfigService"):
+    def __init__(self, config_service=None):  # 临时修改
         """初始化性能监控器."""
         self.config_service = config_service
         self.logger = logging.getLogger(__name__)
@@ -58,7 +60,7 @@ class PerformanceMonitor:
 
     def _init_thresholds(self):
         """初始化监控阈值."""
-        config = self.config_service.get("system", {})
+        config = self.config_service.get("system", {}) if self.config_service else {}
 
         self._thresholds = {
             "cpu_percent": config.get("cpu_warning_threshold", 80.0),
@@ -76,9 +78,7 @@ class PerformanceMonitor:
         self._state["monitoring"] = True
         self._state["stop_event"].clear()
 
-        self._state["monitor_thread"] = threading.Thread(
-            target=self._monitoring_loop, daemon=True
-        )
+        self._state["monitor_thread"] = threading.Thread(target=self._monitoring_loop, daemon=True)
         self._state["monitor_thread"].start()
         self.logger.info("性能监控已启动，间隔: %s秒", interval)
 
@@ -225,10 +225,7 @@ class PerformanceMonitor:
                 )
 
             # 响应时间告警
-            if (
-                latest.get("response_time", 0)
-                > self._thresholds["response_time"] * 1000
-            ):
+            if latest.get("response_time", 0) > self._thresholds["response_time"] * 1000:
                 self._add_alert(
                     "response_time_warning",
                     "响应时间过长",
@@ -270,15 +267,11 @@ class PerformanceMonitor:
                     m
                     for m in self._metrics[category]
                     if (
-                        isinstance(m, dict)
-                        and m.get("timestamp")
-                        and m["timestamp"] >= cutoff_time
+                        isinstance(m, dict) and m.get("timestamp") and m["timestamp"] >= cutoff_time
                     )
                 ]
 
-    def get_metrics(
-        self, category: Optional[str] = None, hours: int = 1
-    ) -> Dict[str, Any]:
+    def get_metrics(self, category: Optional[str] = None, hours: int = 1) -> Dict[str, Any]:
         """获取监控指标."""
         cutoff_time = datetime.now() - timedelta(hours=hours)
 
@@ -286,11 +279,7 @@ class PerformanceMonitor:
             metrics = [
                 m
                 for m in self._metrics.get(category, [])
-                if (
-                    isinstance(m, dict)
-                    and m.get("timestamp")
-                    and m["timestamp"] >= cutoff_time
-                )
+                if (isinstance(m, dict) and m.get("timestamp") and m["timestamp"] >= cutoff_time)
             ]
             return {category: metrics}
 
@@ -300,11 +289,7 @@ class PerformanceMonitor:
             result[cat] = [
                 m
                 for m in data
-                if (
-                    isinstance(m, dict)
-                    and m.get("timestamp")
-                    and m["timestamp"] >= cutoff_time
-                )
+                if (isinstance(m, dict) and m.get("timestamp") and m["timestamp"] >= cutoff_time)
             ]
 
         return result
@@ -332,9 +317,7 @@ class PerformanceMonitor:
         # 最近的系统指标
         if self._metrics["system"]:
             latest_metrics = [
-                m
-                for m in self._metrics["system"]
-                if isinstance(m, dict) and m.get("timestamp")
+                m for m in self._metrics["system"] if isinstance(m, dict) and m.get("timestamp")
             ]
             if latest_metrics:
                 latest = latest_metrics[-1]
@@ -365,7 +348,7 @@ class PerformanceMonitor:
 class TestRunner:
     """测试运行器."""
 
-    def __init__(self, config_service: "ConfigService"):
+    def __init__(self, config_service: Optional[Any] = None):
         """初始化测试运行器."""
         self.config_service = config_service
         self.logger = logging.getLogger(__name__)
@@ -419,12 +402,9 @@ class TestRunner:
             "success": len(result.failures) == 0 and len(result.errors) == 0,
             "details": {
                 "failures": [
-                    {"test": str(test), "error": error}
-                    for test, error in result.failures
+                    {"test": str(test), "error": error} for test, error in result.failures
                 ],
-                "errors": [
-                    {"test": str(test), "error": error} for test, error in result.errors
-                ],
+                "errors": [{"test": str(test), "error": error} for test, error in result.errors],
             },
         }
 
@@ -606,7 +586,7 @@ class TestStream:
 class HealthChecker:
     """健康检查器."""
 
-    def __init__(self, terminal_engine: TerminalEngine):
+    def __init__(self, terminal_engine: Optional[TerminalEngine] = None):
         """初始化健康检查器."""
         self.terminal_engine = terminal_engine
         self.logger = logging.getLogger(__name__)
@@ -633,9 +613,7 @@ class HealthChecker:
             "timestamp": datetime.now(),
             "health_score": health_score,
             "status": (
-                "healthy"
-                if health_score >= 80
-                else "warning" if health_score >= 60 else "critical"
+                "healthy" if health_score >= 80 else "warning" if health_score >= 60 else "critical"
             ),
             "checks": checks,
         }
@@ -709,7 +687,10 @@ class HealthChecker:
 
         try:
             # 检查性能优化器
-            optimizer = get_performance_optimizer(self.terminal_engine)
+            if self.terminal_engine:
+                optimizer = get_performance_optimizer(self.terminal_engine)
+            else:
+                optimizer = None
             if optimizer:
                 stats = optimizer.get_performance_stats()
                 checks["performance_optimizer"] = {"status": "ok", "stats": stats}
@@ -726,6 +707,8 @@ class HealthChecker:
     def _check_vnpy_connection(self) -> Dict[str, Any]:
         """检查VNPY连接."""
         try:
+            if not self.terminal_engine:
+                return {"status": "error", "error": "TerminalEngine未初始化"}
             status = self.terminal_engine.get_status()
             return {
                 "status": "ok",
@@ -787,9 +770,7 @@ class HealthChecker:
 class MonitoringManager:
     """监控管理器."""
 
-    def __init__(
-        self, config_service: "ConfigService", terminal_engine: TerminalEngine
-    ):
+    def __init__(self, config_service=None, terminal_engine=None):  # 临时修改
         """初始化监控管理器."""
         self.config_service = config_service
         self.terminal_engine = terminal_engine
@@ -839,9 +820,7 @@ class MonitoringManager:
             },
         }
 
-        self.logger.info(
-            "综合测试完成 - 健康评分: %s", report["summary"]["health_score"]
-        )
+        self.logger.info("综合测试完成 - 健康评分: %s", report["summary"]["health_score"])
         return report
 
     def get_status(self) -> Dict[str, Any]:

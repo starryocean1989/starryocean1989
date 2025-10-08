@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import pandas as pd  # noqa: TC002
+
 from pytdx.reader.block_reader import (
     BlockReader,
     BlockReader_TYPE_FLAT,
@@ -35,28 +36,57 @@ class BlockParser:
         self._find_block_file()
 
     def _find_block_file(self) -> None:
-        """查找spblock.dat文件"""
+        """查找spblock.dat文件（递归搜索）"""
         if self.tdx_dir and self.tdx_dir.exists():
-            block_file = self.tdx_dir / "new_tdx" / "spblock.dat"
-            if block_file.exists():
-                self.block_file_path = block_file
+            # 在指定目录下递归搜索spblock.dat
+            found = self._search_spblock_in_dir(self.tdx_dir)
+            if found:
                 return
 
-        # 尝试常见路径
-        common_paths = [
-            Path("C:/通达信金融终端V7/new_tdx/spblock.dat"),
-            Path("C:/Program Files/通达信金融终端V7/new_tdx/spblock.dat"),
-            Path("D:/通达信金融终端V7/new_tdx/spblock.dat"),
+        # 如果未指定路径或搜索失败，尝试常见根目录并递归搜索
+        common_root_dirs = [
+            Path("C:/通达信金融终端V7"),
+            Path("C:/Program Files/通达信金融终端V7"),
+            Path("D:/通达信金融终端V7"),
+            Path("C:/tdx"),
+            Path("D:/tdx"),
         ]
 
-        for path in common_paths:
-            if path.exists():
-                self.block_file_path = path
+        for root_dir in common_root_dirs:
+            if root_dir.exists() and self._search_spblock_in_dir(root_dir):
                 return
+
+    def _search_spblock_in_dir(self, directory: Path) -> bool:
+        """
+        在指定目录下递归搜索spblock.dat文件
+
+        Args:
+            directory: 要搜索的目录
+
+        Returns:
+            是否找到文件
+        """
+        import logging
+
+        logger = logging.getLogger(__name__)
+
+        try:
+            logger.info("正在递归搜索 %s 目录下的spblock.dat文件...", directory)
+            for spblock_file in directory.rglob("spblock.dat"):
+                if spblock_file.is_file():
+                    self.block_file_path = spblock_file
+                    logger.info("✓ 找到spblock.dat: %s", spblock_file)
+                    return True
+            logger.warning("在 %s 目录下未找到spblock.dat文件", directory)
+        except OSError as e:
+            # 忽略权限错误和文件系统错误
+            logger.warning("搜索 %s 时发生错误: %s", directory, e)
+            return False
+        return False
 
     def parse_block_file(self) -> pd.DataFrame:
         """
-        解析spblock.dat文件
+        解析spblock.dat文件（自定义解析器）
 
         Returns:
             包含板块信息的DataFrame，列包括：
@@ -68,11 +98,101 @@ class BlockParser:
             raise FileNotFoundError("未找到spblock.dat文件，请检查通达信软件路径")
 
         try:
+            # 先尝试使用pytdx的BlockReader
             reader = BlockReader()
             df = reader.get_df(str(self.block_file_path), BlockReader_TYPE_FLAT)
             return df
         except Exception as e:
-            raise RuntimeError(f"解析spblock.dat文件失败: {e}") from e
+            # pytdx解析失败，使用自定义解析器
+            import logging
+
+            logger = logging.getLogger(__name__)
+            logger.warning("pytdx BlockReader解析失败: %s，使用自定义解析器", e)
+            return self._parse_spblock_custom()
+
+    def _parse_spblock_custom(self) -> pd.DataFrame:
+        r"""
+        自定义spblock.dat解析器
+
+        文件格式（文本格式，GBK编码）：
+        #板块名称\r\n
+        代码1\r\n
+        代码2\r\n
+        ...
+        #下一个板块名称\r\n
+        ...
+
+        Returns:
+            DataFrame with columns: blockname, code
+        """
+        import logging
+
+        logger = logging.getLogger(__name__)
+
+        if not self.block_file_path:
+            raise FileNotFoundError("未找到spblock.dat文件")
+
+        results = []
+
+        try:
+            # 使用GBK编码读取文本文件
+            with open(self.block_file_path, "r", encoding="gbk", errors="ignore") as f:
+                lines = f.readlines()
+
+            current_block = ""
+
+            for line in lines:
+                line = line.strip()
+
+                if not line:
+                    continue
+
+                # 板块名称行（以#开头）
+                if line.startswith("#"):
+                    current_block = line[1:].strip()  # 去掉#号
+                    logger.debug("找到板块: %s", current_block)
+
+                # 股票代码行（纯数字，可能是6位或7位）
+                elif line.isdigit() and len(line) >= 6:
+                    # 保留完整的原始代码（可能是7位）
+                    original_code = line
+
+                    # 提取实际的6位股票代码
+                    if len(line) == 7:
+                        # 7位代码：第1位是市场代码，后6位是股票代码
+                        market_code = line[0]
+                        stock_code = line[1:7]
+                    else:
+                        # 6位或其他长度，直接使用前6位
+                        market_code = ""
+                        stock_code = line[:6].zfill(6)
+
+                    if current_block:
+                        results.append(
+                            {
+                                "blockname": current_block,
+                                "code": stock_code,
+                                "original_code": original_code,
+                                "market_code": market_code,
+                                "block_type": "text",
+                            }
+                        )
+
+            # 转换为DataFrame
+            if not results:
+                logger.warning("spblock.dat解析未找到任何数据")
+                return pd.DataFrame(columns=["blockname", "code", "block_type"])  # type: ignore[call-overload]
+
+            df = pd.DataFrame(results)
+            logger.info(
+                "成功解析spblock.dat: %d 条记录，%d 个板块", len(df), df["blockname"].nunique()
+            )
+            return df
+
+        except Exception as e:
+            logger.error("自定义解析spblock.dat失败: %s", e, exc_info=True)
+            # 返回空DataFrame但保持结构
+            return pd.DataFrame(columns=["blockname", "code", "block_type"])  # type: ignore[call-overload]
 
     def get_target_blocks(self) -> Dict[str, List[str]]:
         """
@@ -83,35 +203,42 @@ class BlockParser:
         """
         df = self.parse_block_file()
 
-        target_blocks = {"融资融券": [], "T+0基金": [], "含可转债": []}
+        target_blocks = {"融资融券_北证A股": [], "T+0基金": [], "含可转债": []}
 
         for _, row in df.iterrows():
             block_name = str(row["blockname"])
             code = str(row["code"])
+            original_code = str(row.get("original_code", code))
 
-            # 融资融券板块：提取9开头的品种（北证A股）
-            if "融资融券" in block_name and code.startswith("9"):
-                target_blocks["融资融券"].append(code)
+            # 融资融券板块：从7位代码中提取29开头的（北证A股）
+            # 7位代码格式：第1位是市场代码，后6位是股票代码
+            # 29xxxxx表示北证A股（市场代码2，股票代码9xxxxx）
+            if (
+                "融资融券" in block_name
+                and len(original_code) == 7
+                and original_code.startswith("29")
+            ):
+                target_blocks["融资融券_北证A股"].append(code)
 
             # T+0基金板块
-            elif "T+0基金" in block_name:
+            if "T+0基金" in block_name:
                 target_blocks["T+0基金"].append(code)
 
             # 含可转债板块
-            elif "含可转债" in block_name:
+            if "含可转债" in block_name:
                 target_blocks["含可转债"].append(code)
 
         return target_blocks
 
     def get_beijing_stocks(self) -> List[str]:
         """
-        获取北证A股品种代码列表
+        获取北证A股品种代码列表（从融资融券板块中提取29开头的7位代码）
 
         Returns:
-            北证A股品种代码列表
+            北证A股品种代码列表（6位代码，9xxxxx格式）
         """
         target_blocks = self.get_target_blocks()
-        return target_blocks["融资融券"]
+        return target_blocks.get("融资融券_北证A股", [])
 
     def get_t0_funds(self) -> List[str]:
         """

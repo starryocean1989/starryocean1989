@@ -8,10 +8,10 @@
 import logging
 import asyncio
 import time
-from typing import Any, Callable, Dict, List, Optional, Union, Coroutine
+from contextlib import suppress
+from typing import Any, Callable, Coroutine, Dict, List, Optional
 from datetime import datetime, timedelta
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
-import threading
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -135,9 +135,7 @@ class AsyncTaskManager:
 
             # 等待所有任务完成或取消
             if self._running_tasks:
-                await asyncio.gather(
-                    *self._running_tasks.values(), return_exceptions=True
-                )
+                await asyncio.gather(*self._running_tasks.values(), return_exceptions=True)
 
             self._running_tasks.clear()
             self._task_stats.clear()
@@ -166,9 +164,7 @@ class AsyncRateLimiter:
             elapsed = now - self._last_update
 
             # 添加新令牌
-            self._tokens = min(
-                self.rate, self._tokens + elapsed * (self.rate / self.per)
-            )
+            self._tokens = min(self.rate, self._tokens + elapsed * (self.rate / self.per))
             self._last_update = now
 
             # 检查是否有足够的令牌
@@ -217,9 +213,7 @@ class AsyncRetry:
                         logger.error("重试失败，已达到最大尝试次数: %s", func.__name__)
                         raise
 
-                    logger.warning(
-                        "重试第 %d 次: %s - %s", attempt + 1, func.__name__, str(e)
-                    )
+                    logger.warning("重试第 %d 次: %s - %s", attempt + 1, func.__name__, str(e))
 
                     await asyncio.sleep(current_delay)
                     current_delay *= self.backoff_factor
@@ -310,10 +304,8 @@ class AsyncBatchProcessor:
         self._running = False
         if self._flush_task:
             self._flush_task.cancel()
-            try:
+            with suppress(asyncio.CancelledError):
                 await self._flush_task
-            except asyncio.CancelledError:
-                pass
 
         # 处理剩余的批次
         await self.flush()
@@ -358,9 +350,7 @@ class AsyncBatchProcessor:
                 else:
                     # 在线程池中运行同步函数
                     loop = asyncio.get_event_loop()
-                    await loop.run_in_executor(
-                        None, self.processor_func, batch_to_process
-                    )
+                    await loop.run_in_executor(None, self.processor_func, batch_to_process)
         except Exception as e:
             logger.error("批量处理错误: %s", e)
 
@@ -377,13 +367,9 @@ class AsyncTimeout:
 
         async def wrapper(*args, **kwargs):
             try:
-                return await asyncio.wait_for(
-                    func(*args, **kwargs), timeout=self.timeout
-                )
+                return await asyncio.wait_for(func(*args, **kwargs), timeout=self.timeout)
             except asyncio.TimeoutError:
-                logger.error(
-                    "函数执行超时: %s (timeout=%s)", func.__name__, self.timeout
-                )
+                logger.error("函数执行超时: %s (timeout=%s)", func.__name__, self.timeout)
                 raise
 
         return wrapper

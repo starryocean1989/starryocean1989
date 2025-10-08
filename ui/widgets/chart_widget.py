@@ -6,7 +6,6 @@
 """
 # pylint: disable=no-name-in-module
 
-from datetime import datetime, timedelta
 from typing import Any, Dict, List
 
 # Qt imports first
@@ -230,9 +229,7 @@ class ChartWidget(BaseWidget):
     def setup_ui(self):
         """设置用户界面."""
         if not PYQTGRAPH_AVAILABLE:
-            raise ImportError(
-                "pyqtgraph未安装，无法创建图表组件。\n" "请安装：pip install pyqtgraph"
-            )
+            raise ImportError("pyqtgraph未安装，无法创建图表组件。\n请安装：pip install pyqtgraph")
 
         main_layout = QVBoxLayout(self)
 
@@ -657,7 +654,7 @@ class ChartWidget(BaseWidget):
             import asyncio
 
             service_manager = get_service_manager()
-            symbol_service = service_manager.get("symbol_service")
+            symbol_service = service_manager.get_service("symbol_service")
 
             if symbol_service:
                 # 获取事件循环
@@ -670,7 +667,7 @@ class ChartWidget(BaseWidget):
                 # 异步获取品种列表
                 symbols = loop.run_until_complete(symbol_service.get_all_symbols())
 
-                if symbols:
+                if symbols and self.symbol_combo:
                     for symbol in symbols:
                         display_name = f"{symbol['code']} - {symbol['name']}"
                         self.symbol_combo.addItem(display_name)
@@ -689,6 +686,9 @@ class ChartWidget(BaseWidget):
 
     def _load_default_chart_symbols(self):
         """加载默认品种列表."""
+        if not self.symbol_combo:
+            return
+
         default_symbols = [
             {"code": "000001", "name": "平安银行"},
             {"code": "000002", "name": "万科A"},

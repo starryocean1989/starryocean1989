@@ -1,569 +1,413 @@
 # -*- coding: utf-8 -*-
 """
-数据源服务.
+数据源服务 - 错误追踪和详细报告版本
 
-提供数据源配置和管理相关的业务逻辑。
+专注于详细错误报告机制，让用户知道数据源服务的具体问题。
+不实现多层级降级机制，而是提供完整的错误信息追踪。
 """
 
 import logging
-import asyncio
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional
 from datetime import datetime
 
-from backend.services.base_service import BaseService
-from backend.core.models import DataSourceConfig
-
-if TYPE_CHECKING:
-    from backend.services.vnpy_service import VnpyService
-    from backend.services.event_service import EventService
+from backend.core.shared_services import ErrorSeverity, get_service_manager
 
 logger = logging.getLogger(__name__)
 
 
-class DataSourceService(BaseService):
-    """数据源服务."""
+class DataSource:
+    """数据源"""
 
-    def __init__(self, vnpy_service: "VnpyService", event_service: "EventService"):
-        """初始化数据源服务."""
-        super().__init__("DataSourceService")
-        self.vnpy_service = vnpy_service
-        self.event_service = event_service
-        self._data_sources: Dict[str, DataSourceConfig] = {}
-        self._connection_tests: Dict[str, Dict[str, Any]] = {}
+    def __init__(self, source_id: str, name: str, source_type: str, config: Dict[str, Any]):
+        """
+        初始化数据源
 
-    async def initialize(self) -> None:
-        """初始化数据源服务."""
+        Args:
+            source_id: 数据源ID
+            name: 数据源名称
+            source_type: 数据源类型
+            config: 配置参数
+        """
+        self.source_id = source_id
+        self.name = name
+        self.source_type = source_type
+        self.config = config
+        self.status = "disconnected"
+        self.last_update: Optional[datetime] = None
+        self.error_message: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典格式"""
+        return {
+            "source_id": self.source_id,
+            "name": self.name,
+            "source_type": self.source_type,
+            "config": self.config,
+            "status": self.status,
+            "last_update": self.last_update.isoformat() if self.last_update else None,
+            "error_message": self.error_message,
+        }
+
+
+class DataSourceService:
+    """数据源服务 - 专注于错误追踪和详细报告"""
+
+    def __init__(self):
+        """初始化数据源服务"""
+        self.service_manager = get_service_manager()
+        self.logger = logging.getLogger(self.__class__.__name__)
+
+        self._data_sources: Dict[str, DataSource] = {}
+        self._initialization_successful = False
+
+        # 尝试初始化
+        self._attempt_initialization()
+
+    def _attempt_initialization(self):
+        """尝试初始化数据源服务"""
         try:
-            self.logger.info("正在初始化数据源服务...")
-
-            # 加载默认数据源配置
-            await self._load_default_data_sources()
-
-            # 注册事件处理器
-            self.event_service.register_handler(
-                "data_source_created", self._handle_data_source_created
+            self.service_manager.record_error(
+                "DataSourceService",
+                "INITIALIZATION_START",
+                "开始初始化数据源服务",
+                severity=ErrorSeverity.INFO,
             )
-            self.event_service.register_handler(
-                "data_source_updated", self._handle_data_source_updated
-            )
-            self.event_service.register_handler(
-                "data_source_deleted", self._handle_data_source_deleted
-            )
-            self.event_service.register_handler("data_source_test", self._handle_data_source_test)
 
-            self.logger.info("数据源服务初始化完成")
-            self.is_initialized = True
+            # 初始化一些默认数据源
+            self._initialize_default_sources()
+
+            self._initialization_successful = True
+            self.service_manager.record_error(
+                "DataSourceService",
+                "INITIALIZATION_SUCCESS",
+                f"数据源服务初始化成功，配置{len(self._data_sources)}个数据源",
+                severity=ErrorSeverity.INFO,
+            )
 
         except Exception as e:
-            self.logger.error("数据源服务初始化失败: %s", e)
-            raise
-
-    async def shutdown(self) -> None:
-        """关闭数据源服务."""
-        try:
-            self.logger.info("正在关闭数据源服务...")
-
-            # 取消注册事件处理器
-            self.event_service.unregister_handler(
-                "data_source_created", self._handle_data_source_created
+            error_msg = f"数据源服务初始化失败: {str(e)}"
+            self.service_manager.record_error(
+                "DataSourceService",
+                "INITIALIZATION_EXCEPTION",
+                error_msg,
+                exception=e,
+                severity=ErrorSeverity.CRITICAL,
             )
-            self.event_service.unregister_handler(
-                "data_source_updated", self._handle_data_source_updated
-            )
-            self.event_service.unregister_handler(
-                "data_source_deleted", self._handle_data_source_deleted
-            )
-            self.event_service.unregister_handler("data_source_test", self._handle_data_source_test)
 
-            # 清理数据
-            self._data_sources.clear()
-            self._connection_tests.clear()
-
-            self.logger.info("数据源服务关闭完成")
-            self.is_initialized = False
-
-        except Exception as e:
-            self.logger.error("数据源服务关闭失败: %s", e)
-            raise
-
-    async def health_check(self) -> Dict[str, Any]:
-        """检查数据源服务健康状态."""
+    def _initialize_default_sources(self):
+        """初始化默认数据源"""
         try:
-            return {
-                "service_name": self.service_name,
-                "is_initialized": self.is_initialized,
-                "total_sources": len(self._data_sources),
-                "enabled_sources": len([s for s in self._data_sources.values() if s.is_enabled]),
-                "connected_sources": len(
-                    [s for s in self._data_sources.values() if s.is_connected]
-                ),
-                "source_types": list(set(s.source_type for s in self._data_sources.values())),
-                "vnpy_service_available": self.vnpy_service.is_initialized,
-                "timestamp": datetime.now().isoformat(),
-            }
-
-        except Exception as e:
-            self.logger.error("数据源服务健康检查失败: %s", e)
-            return {
-                "service_name": self.service_name,
-                "status": "error",
-                "error": str(e),
-                "timestamp": datetime.now().isoformat(),
-            }
-
-    async def _load_default_data_sources(self) -> None:
-        """加载默认数据源配置."""
-        try:
-            # 创建默认数据源配置
+            # 添加一些示例数据源
             default_sources = [
-                DataSourceConfig(
-                    source_id="tushare_default",
-                    source_type="tushare",
-                    name="Tushare数据源",
-                    is_enabled=True,
-                    is_connected=False,
-                    config={
-                        "token": "",
-                        "timeout": 30,
-                        "retry_count": 3,
+                {
+                    "source_id": "vnpy_source",
+                    "name": "VnPy数据源",
+                    "source_type": "vnpy",
+                    "config": {"description": "通过VnPy获取市场数据", "enabled": True},
+                },
+                {
+                    "source_id": "local_cache",
+                    "name": "本地缓存",
+                    "source_type": "local",
+                    "config": {"description": "本地数据缓存", "enabled": True},
+                },
+                {
+                    "source_id": "external_api",
+                    "name": "外部API",
+                    "source_type": "api",
+                    "config": {
+                        "description": "外部数据API接口",
+                        "enabled": False,
+                        "url": "https://api.example.com",
                     },
-                    last_connected=None,
-                    error_count=0,
-                ),
-                DataSourceConfig(
-                    source_id="akshare_default",
-                    source_type="akshare",
-                    name="AKShare数据源",
-                    is_enabled=True,
-                    is_connected=False,
-                    config={
-                        "timeout": 30,
-                        "retry_count": 3,
-                    },
-                    last_connected=None,
-                    error_count=0,
-                ),
-                DataSourceConfig(
-                    source_id="yfinance_default",
-                    source_type="yfinance",
-                    name="Yahoo Finance数据源",
-                    is_enabled=True,
-                    is_connected=False,
-                    config={
-                        "timeout": 30,
-                        "retry_count": 3,
-                    },
-                    last_connected=None,
-                    error_count=0,
-                ),
+                },
             ]
 
-            for source in default_sources:
-                self._data_sources[source.source_id] = source
+            for source_config in default_sources:
+                data_source = DataSource(
+                    source_id=source_config["source_id"],
+                    name=source_config["name"],
+                    source_type=source_config["source_type"],
+                    config=source_config["config"],
+                )
+                self._data_sources[data_source.source_id] = data_source
 
-            self.logger.info("默认数据源配置加载完成: %d 个数据源", len(default_sources))
+            self.service_manager.record_error(
+                "DataSourceService",
+                "DEFAULT_SOURCES_INITIALIZED",
+                f"默认数据源初始化完成: {len(default_sources)}个",
+                severity=ErrorSeverity.INFO,
+            )
 
         except Exception as e:
-            self.logger.error("加载默认数据源配置失败: %s", e)
-            raise
+            self.service_manager.record_error(
+                "DataSourceService",
+                "DEFAULT_SOURCES_INIT_EXCEPTION",
+                f"初始化默认数据源失败: {str(e)}",
+                exception=e,
+                severity=ErrorSeverity.ERROR,
+            )
 
-    async def get_all_data_sources(self) -> List[DataSourceConfig]:
-        """获取所有数据源配置."""
+    async def get_all_data_sources(self) -> List[Dict[str, Any]]:
+        """获取所有数据源"""
         try:
-            sources = list(self._data_sources.values())
-            self.logger.info("获取所有数据源配置: %d 个", len(sources))
+            self.service_manager.record_error(
+                "DataSourceService",
+                "GET_ALL_SOURCES_START",
+                "开始获取所有数据源",
+                severity=ErrorSeverity.INFO,
+            )
+
+            sources = [source.to_dict() for source in self._data_sources.values()]
+
+            self.service_manager.record_error(
+                "DataSourceService",
+                "GET_ALL_SOURCES_SUCCESS",
+                f"获取所有数据源成功，返回{len(sources)}个数据源",
+                severity=ErrorSeverity.INFO,
+            )
+
             return sources
 
         except Exception as e:
-            self.logger.error("获取所有数据源配置失败: %s", e)
-            raise
+            error_msg = f"获取所有数据源失败: {str(e)}"
+            self.service_manager.record_error(
+                "DataSourceService",
+                "GET_ALL_SOURCES_EXCEPTION",
+                error_msg,
+                exception=e,
+                severity=ErrorSeverity.ERROR,
+            )
+            return []
 
-    async def get_data_source_by_id(self, source_id: str) -> Optional[DataSourceConfig]:
-        """根据ID获取数据源配置."""
+    async def get_data_source(self, source_id: str) -> Optional[Dict[str, Any]]:
+        """获取指定数据源"""
         try:
             source = self._data_sources.get(source_id)
+
             if source:
-                self.logger.info("获取数据源配置: %s", source_id)
+                self.service_manager.record_error(
+                    "DataSourceService",
+                    "GET_SOURCE_SUCCESS",
+                    f"获取数据源成功: {source_id}",
+                    severity=ErrorSeverity.INFO,
+                )
+                return source.to_dict()
             else:
-                self.logger.warning("数据源不存在: %s", source_id)
-
-            return source
-
-        except Exception as e:
-            self.logger.error("获取数据源配置失败: %s", e)
-            raise
-
-    async def create_data_source(self, source_config: DataSourceConfig) -> DataSourceConfig:
-        """创建数据源配置."""
-        try:
-            # 检查ID是否已存在
-            if source_config.source_id in self._data_sources:
-                raise ValueError(f"数据源ID已存在: {source_config.source_id}")
-
-            # 保存配置
-            self._data_sources[source_config.source_id] = source_config
-
-            # 发送创建事件
-            await self.event_service.emit_event("data_source_created", source_config.dict())
-
-            self.logger.info("数据源配置创建成功: %s", source_config.source_id)
-            return source_config
+                self.service_manager.record_error(
+                    "DataSourceService",
+                    "SOURCE_NOT_FOUND",
+                    f"数据源不存在: {source_id}",
+                    severity=ErrorSeverity.WARNING,
+                )
+                return None
 
         except Exception as e:
-            self.logger.error("创建数据源配置失败: %s", e)
-            raise
+            error_msg = f"获取数据源失败: {str(e)}"
+            self.service_manager.record_error(
+                "DataSourceService",
+                "GET_SOURCE_EXCEPTION",
+                error_msg,
+                exception=e,
+                severity=ErrorSeverity.ERROR,
+            )
+            return None
 
-    async def update_data_source(
-        self, source_id: str, source_config: DataSourceConfig
-    ) -> DataSourceConfig:
-        """更新数据源配置."""
+    async def test_connection(self, source_id: str) -> bool:
+        """测试数据源连接"""
         try:
-            # 检查数据源是否存在
-            if source_id not in self._data_sources:
-                raise ValueError(f"数据源不存在: {source_id}")
+            self.service_manager.record_error(
+                "DataSourceService",
+                "TEST_CONNECTION_START",
+                f"开始测试数据源连接: {source_id}",
+                severity=ErrorSeverity.INFO,
+            )
 
-            # 保持原有ID
-            source_config.source_id = source_id
-
-            # 更新配置
-            self._data_sources[source_id] = source_config
-
-            # 发送更新事件
-            await self.event_service.emit_event("data_source_updated", source_config.dict())
-
-            self.logger.info("数据源配置更新成功: %s", source_id)
-            return source_config
-
-        except Exception as e:
-            self.logger.error("更新数据源配置失败: %s", e)
-            raise
-
-    async def delete_data_source(self, source_id: str) -> bool:
-        """删除数据源配置."""
-        try:
-            # 检查数据源是否存在
-            if source_id not in self._data_sources:
-                self.logger.warning("数据源不存在: %s", source_id)
+            source = self._data_sources.get(source_id)
+            if not source:
+                self.service_manager.record_error(
+                    "DataSourceService",
+                    "TEST_CONNECTION_SOURCE_NOT_FOUND",
+                    f"测试连接失败，数据源不存在: {source_id}",
+                    severity=ErrorSeverity.ERROR,
+                )
                 return False
 
-            # 删除配置
+            # 模拟连接测试
+            if source.source_type == "vnpy":
+                # 检查VnPy服务是否可用
+                vnpy_service = self.service_manager.get_service("vnpy_service")
+                if vnpy_service:
+                    success = True
+                    source.status = "connected"
+                    source.last_update = datetime.now()
+                    source.error_message = None
+                else:
+                    success = False
+                    source.status = "error"
+                    source.error_message = "VnPy服务不可用"
+            elif source.source_type == "local":
+                # 本地缓存总是可用
+                success = True
+                source.status = "connected"
+                source.last_update = datetime.now()
+                source.error_message = None
+            else:
+                # 其他类型模拟失败
+                success = False
+                source.status = "error"
+                source.error_message = "连接测试失败"
+
+            if success:
+                self.service_manager.record_error(
+                    "DataSourceService",
+                    "TEST_CONNECTION_SUCCESS",
+                    f"数据源连接测试成功: {source_id}",
+                    severity=ErrorSeverity.INFO,
+                )
+            else:
+                self.service_manager.record_error(
+                    "DataSourceService",
+                    "TEST_CONNECTION_FAILED",
+                    f"数据源连接测试失败: {source_id}, 错误: {source.error_message}",
+                    severity=ErrorSeverity.WARNING,
+                )
+
+            return success
+
+        except Exception as e:
+            error_msg = f"测试数据源连接异常: {str(e)}"
+            self.service_manager.record_error(
+                "DataSourceService",
+                "TEST_CONNECTION_EXCEPTION",
+                error_msg,
+                exception=e,
+                severity=ErrorSeverity.ERROR,
+            )
+            return False
+
+    async def add_data_source(
+        self, source_id: str, name: str, source_type: str, config: Dict[str, Any]
+    ) -> bool:
+        """添加数据源"""
+        try:
+            if source_id in self._data_sources:
+                self.service_manager.record_error(
+                    "DataSourceService",
+                    "ADD_SOURCE_DUPLICATE",
+                    f"数据源已存在: {source_id}",
+                    severity=ErrorSeverity.WARNING,
+                )
+                return False
+
+            data_source = DataSource(source_id, name, source_type, config)
+            self._data_sources[source_id] = data_source
+
+            self.service_manager.record_error(
+                "DataSourceService",
+                "ADD_SOURCE_SUCCESS",
+                f"添加数据源成功: {source_id}",
+                severity=ErrorSeverity.INFO,
+            )
+            return True
+
+        except Exception as e:
+            error_msg = f"添加数据源失败: {str(e)}"
+            self.service_manager.record_error(
+                "DataSourceService",
+                "ADD_SOURCE_EXCEPTION",
+                error_msg,
+                exception=e,
+                severity=ErrorSeverity.ERROR,
+            )
+            return False
+
+    async def remove_data_source(self, source_id: str) -> bool:
+        """移除数据源"""
+        try:
+            if source_id not in self._data_sources:
+                self.service_manager.record_error(
+                    "DataSourceService",
+                    "REMOVE_SOURCE_NOT_FOUND",
+                    f"要移除的数据源不存在: {source_id}",
+                    severity=ErrorSeverity.WARNING,
+                )
+                return False
+
             del self._data_sources[source_id]
 
-            # 清理测试结果
-            if source_id in self._connection_tests:
-                del self._connection_tests[source_id]
-
-            # 发送删除事件
-            await self.event_service.emit_event("data_source_deleted", {"source_id": source_id})
-
-            self.logger.info("数据源配置删除成功: %s", source_id)
+            self.service_manager.record_error(
+                "DataSourceService",
+                "REMOVE_SOURCE_SUCCESS",
+                f"移除数据源成功: {source_id}",
+                severity=ErrorSeverity.INFO,
+            )
             return True
 
         except Exception as e:
-            self.logger.error("删除数据源配置失败: %s", e)
-            raise
+            error_msg = f"移除数据源失败: {str(e)}"
+            self.service_manager.record_error(
+                "DataSourceService",
+                "REMOVE_SOURCE_EXCEPTION",
+                error_msg,
+                exception=e,
+                severity=ErrorSeverity.ERROR,
+            )
+            return False
 
-    async def test_data_source_connection(self, source_id: str) -> Dict[str, Any]:
-        """测试数据源连接."""
-        # 检查数据源是否存在
-        source = self._data_sources.get(source_id)
-        if not source:
-            raise ValueError(f"数据源不存在: {source_id}")
+    def get_service_status(self) -> Dict[str, Any]:
+        """获取服务状态"""
+        status_counts = {}
+        for source in self._data_sources.values():
+            status = source.status
+            status_counts[status] = status_counts.get(status, 0) + 1
 
-        # 发送测试事件
-        await self.event_service.emit_event("data_source_test", {"source_id": source_id})
+        return {
+            "initialization_successful": self._initialization_successful,
+            "total_sources": len(self._data_sources),
+            "status_counts": status_counts,
+        }
 
-        # 调用真实的连接测试
-        test_result = await self._test_connection_real(source)
+    def get_detailed_status_report(self) -> str:
+        """获取详细状态报告"""
+        report_lines = []
+        report_lines.append("🔍 数据源服务状态报告")
+        report_lines.append("=" * 50)
 
-        # 保存测试结果
-        self._connection_tests[source_id] = test_result
-
-        # 更新数据源状态
-        if test_result["connection_status"] == "success":
-            source.is_connected = True
-            source.last_connected = datetime.now()
-            source.error_count = 0
-        else:
-            source.is_connected = False
-            source.error_count += 1
-
-        self.logger.info(
-            "数据源连接测试完成: %s, 状态=%s",
-            source_id,
-            test_result["connection_status"],
+        # 基本状态
+        status_icon = "✅" if self._initialization_successful else "❌"
+        report_lines.append(
+            f"📊 初始化状态: {status_icon} {'成功' if self._initialization_successful else '失败'}"
         )
-        return test_result
 
-    async def _test_connection_real(self, source: DataSourceConfig) -> Dict[str, Any]:
-        """真实的连接测试."""
-        start_time = datetime.now()
+        # 数据源统计
+        report_lines.append(f"📋 总数据源数: {len(self._data_sources)}")
 
-        # 根据数据源类型进行真实连接测试
-        if source.source_type == "tushare":
-            # Tushare连接测试
-            token = source.config.get("token")
-            if not token:
-                return {
-                    "source_id": source.source_id,
-                    "connection_status": "failed",
-                    "response_time": 0.0,
-                    "test_time": datetime.now().isoformat(),
-                    "message": "缺少API Token",
-                    "error": "Token is required for Tushare",
-                }
-
-            try:
-                import tushare as ts
-
-                ts.set_token(token)
-                pro = ts.pro_api()
-                # 测试API调用
-                df = pro.trade_cal(exchange="", start_date="20240101", end_date="20240101")
-
-                response_time = (datetime.now() - start_time).total_seconds()
-                return {
-                    "source_id": source.source_id,
-                    "connection_status": "success",
-                    "response_time": response_time,
-                    "test_time": datetime.now().isoformat(),
-                    "message": "连接测试成功",
-                    "details": {
-                        "api_available": True,
-                        "record_count": len(df),
-                    },
-                }
-            except Exception as e:
-                return {
-                    "source_id": source.source_id,
-                    "connection_status": "failed",
-                    "response_time": (datetime.now() - start_time).total_seconds(),
-                    "test_time": datetime.now().isoformat(),
-                    "message": "连接测试失败",
-                    "error": str(e),
-                }
-
-        elif source.source_type == "akshare":
-            # AKShare连接测试
-            try:
-                import akshare as ak
-
-                # 测试API调用 - 获取实时行情
-                df = ak.stock_zh_a_spot_em()
-
-                response_time = (datetime.now() - start_time).total_seconds()
-                return {
-                    "source_id": source.source_id,
-                    "connection_status": "success",
-                    "response_time": response_time,
-                    "test_time": datetime.now().isoformat(),
-                    "message": "连接测试成功",
-                    "details": {
-                        "api_available": True,
-                        "record_count": len(df),
-                    },
-                }
-            except Exception as e:
-                return {
-                    "source_id": source.source_id,
-                    "connection_status": "failed",
-                    "response_time": (datetime.now() - start_time).total_seconds(),
-                    "test_time": datetime.now().isoformat(),
-                    "message": "连接测试失败",
-                    "error": str(e),
-                }
-
-        elif source.source_type == "yfinance":
-            # Yahoo Finance连接测试
-            try:
-                import yfinance as yf
-
-                # 测试API调用
-                ticker = yf.Ticker("AAPL")
-                info = ticker.info
-
-                response_time = (datetime.now() - start_time).total_seconds()
-                return {
-                    "source_id": source.source_id,
-                    "connection_status": "success",
-                    "response_time": response_time,
-                    "test_time": datetime.now().isoformat(),
-                    "message": "连接测试成功",
-                    "details": {
-                        "api_available": True,
-                        "symbol": info.get("symbol", "AAPL"),
-                    },
-                }
-            except Exception as e:
-                return {
-                    "source_id": source.source_id,
-                    "connection_status": "failed",
-                    "response_time": (datetime.now() - start_time).total_seconds(),
-                    "test_time": datetime.now().isoformat(),
-                    "message": "连接测试失败",
-                    "error": str(e),
-                }
-        else:
-            # 不支持的数据源类型
-            return {
-                "source_id": source.source_id,
-                "connection_status": "error",
-                "response_time": 0.0,
-                "test_time": datetime.now().isoformat(),
-                "message": "不支持的数据源类型",
-                "error": f"Unsupported source type: {source.source_type}",
-            }
-
-    async def enable_data_source(self, source_id: str) -> bool:
-        """启用数据源."""
-        try:
-            source = self._data_sources.get(source_id)
-            if not source:
-                self.logger.warning("数据源不存在: %s", source_id)
-                return False
-
-            source.is_enabled = True
-            self.logger.info("数据源已启用: %s", source_id)
-            return True
-
-        except Exception as e:
-            self.logger.error("启用数据源失败: %s", e)
-            raise
-
-    async def disable_data_source(self, source_id: str) -> bool:
-        """禁用数据源."""
-        try:
-            source = self._data_sources.get(source_id)
-            if not source:
-                self.logger.warning("数据源不存在: %s", source_id)
-                return False
-
-            source.is_enabled = False
-            source.is_connected = False
-            self.logger.info("数据源已禁用: %s", source_id)
-            return True
-
-        except Exception as e:
-            self.logger.error("禁用数据源失败: %s", e)
-            raise
-
-    async def get_enabled_data_sources(self) -> List[DataSourceConfig]:
-        """获取启用的数据源列表."""
-        try:
-            enabled_sources = [s for s in self._data_sources.values() if s.is_enabled]
-            self.logger.info("获取启用的数据源: %d 个", len(enabled_sources))
-            return enabled_sources
-
-        except Exception as e:
-            self.logger.error("获取启用的数据源失败: %s", e)
-            raise
-
-    async def get_connected_data_sources(self) -> List[DataSourceConfig]:
-        """获取已连接的数据源列表."""
-        try:
-            connected_sources = [s for s in self._data_sources.values() if s.is_connected]
-            self.logger.info("获取已连接的数据源: %d 个", len(connected_sources))
-            return connected_sources
-
-        except Exception as e:
-            self.logger.error("获取已连接的数据源失败: %s", e)
-            raise
-
-    def get_connection_test_result(self, source_id: str) -> Optional[Dict[str, Any]]:
-        """获取连接测试结果."""
-        try:
-            result = self._connection_tests.get(source_id)
-            if result:
-                self.logger.info("获取连接测试结果: %s", source_id)
-            else:
-                self.logger.warning("连接测试结果不存在: %s", source_id)
-
-            return result
-
-        except Exception as e:
-            self.logger.error("获取连接测试结果失败: %s", e)
-            raise
-
-    async def _handle_data_source_created(self, event: Dict[str, Any]) -> None:
-        """处理数据源创建事件."""
-        try:
-            data = event.get("data", {})
-            source_id = data.get("source_id")
-
-            if source_id:
-                self.logger.info("处理数据源创建事件: %s", source_id)
-
-        except Exception as e:
-            self.logger.error("处理数据源创建事件失败: %s", e)
-
-    async def _handle_data_source_updated(self, event: Dict[str, Any]) -> None:
-        """处理数据源更新事件."""
-        try:
-            data = event.get("data", {})
-            source_id = data.get("source_id")
-
-            if source_id:
-                self.logger.info("处理数据源更新事件: %s", source_id)
-
-        except Exception as e:
-            self.logger.error("处理数据源更新事件失败: %s", e)
-
-    async def _handle_data_source_deleted(self, event: Dict[str, Any]) -> None:
-        """处理数据源删除事件."""
-        try:
-            data = event.get("data", {})
-            source_id = data.get("source_id")
-
-            if source_id:
-                self.logger.info("处理数据源删除事件: %s", source_id)
-
-        except Exception as e:
-            self.logger.error("处理数据源删除事件失败: %s", e)
-
-    async def _handle_data_source_test(self, event: Dict[str, Any]) -> None:
-        """处理数据源测试事件."""
-        try:
-            data = event.get("data", {})
-            source_id = data.get("source_id")
-
-            if source_id:
-                # 执行连接测试
-                await self.test_data_source_connection(source_id)
-                self.logger.info("处理数据源测试事件: %s", source_id)
-
-        except Exception as e:
-            self.logger.error("处理数据源测试事件失败: %s", e)
-
-    def get_data_source_statistics(self) -> Dict[str, Any]:
-        """获取数据源统计信息."""
-        try:
-            stats = {
-                "total_sources": len(self._data_sources),
-                "enabled_sources": len([s for s in self._data_sources.values() if s.is_enabled]),
-                "connected_sources": len(
-                    [s for s in self._data_sources.values() if s.is_connected]
-                ),
-                "source_types": {},
-                "connection_tests": len(self._connection_tests),
-                "timestamp": datetime.now().isoformat(),
-            }
-
-            # 统计各类型数据源数量
+        if self._data_sources:
+            status_counts = {}
             for source in self._data_sources.values():
-                source_type = source.source_type
-                if source_type not in stats["source_types"]:
-                    stats["source_types"][source_type] = 0
-                stats["source_types"][source_type] += 1
+                status = source.status
+                status_counts[status] = status_counts.get(status, 0) + 1
 
-            return stats
+            report_lines.append("📊 数据源状态统计:")
+            for status, count in status_counts.items():
+                status_icons = {"connected": "✅", "disconnected": "⚠️", "error": "❌"}
+                icon = status_icons.get(status, "❓")
+                report_lines.append(f"  {icon} {status}: {count}")
 
-        except Exception as e:
-            self.logger.error("获取数据源统计信息失败: %s", e)
-            return {
-                "error": str(e),
-                "timestamp": datetime.now().isoformat(),
-            }
+            report_lines.append("\n📋 数据源详情:")
+            for source in self._data_sources.values():
+                status_icon = {"connected": "✅", "disconnected": "⚠️", "error": "❌"}.get(
+                    source.status, "❓"
+                )
+                report_lines.append(f"  {status_icon} {source.name} ({source.source_type})")
+                if source.error_message:
+                    report_lines.append(f"    错误: {source.error_message}")
+        else:
+            report_lines.append("📋 暂无数据源")
+
+        return "\n".join(report_lines)
 
 
 # 导出公共接口
-__all__ = ["DataSourceService"]
+__all__ = ["DataSourceService", "DataSource"]

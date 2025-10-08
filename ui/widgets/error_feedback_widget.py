@@ -36,10 +36,9 @@ from PySide6.QtWidgets import (  # pylint: disable=no-name-in-module
 )
 
 from backend.core.utils.error_handler import (
-    error_handler,
-    ErrorCategory,
-    ErrorSeverity,
     ErrorInfo,
+    ErrorSeverity,
+    error_handler,
 )
 
 

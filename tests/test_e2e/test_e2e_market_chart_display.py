@@ -67,11 +67,10 @@ class TestMarketChartDisplayE2E:
 
             if switch_result:
                 logger.info(f"✓ {chart_type} 图表切换成功")
+                # 注意：图表切换验证已包含状态检查，无需额外等待
+                # 如需验证渲染完成，应在chart_helper中实现具体的渲染状态检查
             else:
                 logger.warning(f"⚠ {chart_type} 图表切换失败（可能UI实现待完善）")
-
-            # 短暂等待UI更新完成
-            await asyncio.sleep(0.3)  # 缩短等待时间
 
         logger.info("=" * 80)
 
@@ -96,11 +95,9 @@ class TestMarketChartDisplayE2E:
 
             if switch_result:
                 logger.info(f"✓ {period} 周期切换成功")
+                # 注意：周期切换验证已包含状态检查，无需额外等待
             else:
                 logger.warning(f"⚠ {period} 周期切换失败")
-
-            # 短暂等待周期切换完成
-            await asyncio.sleep(0.3)  # 缩短等待时间
 
         logger.info("=" * 80)
 
@@ -185,7 +182,9 @@ class TestMarketChartDisplayE2E:
         # 模拟图表渲染函数（异步版本，避免阻塞事件循环）
         async def mock_render():
             """模拟渲染过程."""
-            await asyncio.sleep(0.1)  # 模拟渲染耗时
+            # 注意：这是有意为之的测试模拟延迟，用于测试性能测量功能
+            # 模拟真实渲染耗时0.1秒，以验证性能测量的准确性
+            await asyncio.sleep(0.1)
 
         # 测量渲染性能（要求≤2秒）
         performance_result = await self.chart_helper.measure_rendering_performance_async(

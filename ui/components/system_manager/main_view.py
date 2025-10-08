@@ -5,22 +5,26 @@
 标准架构：8个子界面采用选项卡形式.
 """
 
-import logging
 import time
 from typing import Any, Dict, Optional
 
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
+    QDateEdit,
+    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QSizePolicy,
+    QSpinBox,
     QSplitter,
     QTabWidget,
     QTableWidget,
@@ -30,6 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 import psutil
+
 import pyqtgraph as pg
 
 try:
@@ -41,15 +46,16 @@ except ImportError:
 try:
     from ui.widgets.base_widget import BaseWidget as _BaseWidget
     from backend.core.utils.logging_utils import LoggerMixin as _LoggerMixin
+    from ui.components.system_manager.system_manager_handlers import SystemManagerHandlers
 
     # Use imported classes
     BaseWidget = _BaseWidget  # type: ignore
     LoggerMixin = _LoggerMixin  # type: ignore
-except ImportError:
+except ImportError as e:
     # 导入失败时直接报错，不使用fallback
     raise ImportError(
         "无法导入必要的UI组件，请确保已正确安装所有依赖：pip install -r requirements.txt"
-    )
+    ) from e
 
 
 class SystemManager(BaseWidget, LoggerMixin):
@@ -69,6 +75,9 @@ class SystemManager(BaseWidget, LoggerMixin):
         self.diagnosis_tab: Optional[QWidget] = None
         self.tools_tab: Optional[QWidget] = None
 
+        # 初始化处理器
+        self.handlers = SystemManagerHandlers(self)
+
         # 系统状态组件
         self.cpu_label: Optional[QLabel] = None
         self.memory_label: Optional[QLabel] = None
@@ -76,6 +85,23 @@ class SystemManager(BaseWidget, LoggerMixin):
         self.network_label: Optional[QLabel] = None
         self.status_table: Optional[QTableWidget] = None
         self.vnpy_status_label: Optional[QLabel] = None
+
+        # 配置组件
+        self.config_widgets: Dict[str, Any] = {}
+        self.tdx_path_edit: Optional[QLineEdit] = None
+        self.cache_dir_edit: Optional[QLineEdit] = None
+        self.data_dir_edit: Optional[QLineEdit] = None
+        self.base_date_edit: Optional[QDateEdit] = None
+        self.max_workers_spin: Optional[QSpinBox] = None
+        self.timeout_spin: Optional[QSpinBox] = None
+        self.retry_spin: Optional[QSpinBox] = None
+        self.watcher_check: Optional[QCheckBox] = None
+        self.watcher_interval_spin: Optional[QSpinBox] = None
+        self.cache_dir_label: Optional[QLabel] = None
+        self.data_dir_label: Optional[QLabel] = None
+        self.cache_files_label: Optional[QLabel] = None
+        self.data_symbols_label: Optional[QLabel] = None
+        self.tdx_status_label: Optional[QLabel] = None
 
         # 性能监控组件
         self.cpu_plot: Optional[Any] = None
@@ -486,18 +512,167 @@ class SystemManager(BaseWidget, LoggerMixin):
         layout = QVBoxLayout(tab)
         tab.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
-        # 配置组
-        config_group = QGroupBox("系统配置")
-        config_layout = QFormLayout(config_group)
+        # 顶部工具栏
+        toolbar_layout = QHBoxLayout()
+        toolbar_layout.addWidget(QLabel("⚙️ 系统配置"))
+        toolbar_layout.addStretch()
 
-        self.config_table = QTableWidget(0, 3)
-        self.config_table.setHorizontalHeaderLabels(["配置项", "当前值", "描述"])
-        header = self.config_table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        refresh_btn = QPushButton("🔄 刷新")
+        refresh_btn.setToolTip("重新加载配置")
+        refresh_btn.clicked.connect(self._refresh_config)
+        toolbar_layout.addWidget(refresh_btn)
 
-        config_layout.addWidget(self.config_table)
+        save_btn = QPushButton("💾 保存")
+        save_btn.setToolTip("保存配置更改")
+        save_btn.clicked.connect(self._save_config)
+        toolbar_layout.addWidget(save_btn)
 
-        layout.addWidget(config_group)
+        reset_btn = QPushButton("↩️ 重置")
+        reset_btn.setToolTip("重置为默认配置")
+        reset_btn.clicked.connect(self._reset_config)
+        toolbar_layout.addWidget(reset_btn)
+
+        layout.addLayout(toolbar_layout)
+
+        # data_module_vnpy配置组
+        data_config_group = QGroupBox("数据中心配置（data_module_vnpy）")
+        data_config_layout = QFormLayout(data_config_group)
+        data_config_layout.setSpacing(10)
+
+        # 保存配置控件引用
+        self.config_widgets = {}
+
+        # 通达信软件根目录
+        tdx_layout = QHBoxLayout()
+        self.tdx_path_edit = QLineEdit()
+        self.tdx_path_edit.setPlaceholderText("例如: C:/通达信金融终端V7")
+        tdx_layout.addWidget(self.tdx_path_edit)
+
+        tdx_browse_btn = QPushButton("📁 浏览")
+        tdx_browse_btn.clicked.connect(self._browse_tdx_dir)
+        tdx_layout.addWidget(tdx_browse_btn)
+
+        tdx_validate_btn = QPushButton("✓ 验证")
+        tdx_validate_btn.clicked.connect(self._validate_tdx_path)
+        tdx_layout.addWidget(tdx_validate_btn)
+
+        data_config_layout.addRow("通达信根目录*:", tdx_layout)
+        self.config_widgets["chinastock.tdx_dir"] = self.tdx_path_edit
+
+        # 品种列表缓存目录
+        cache_layout = QHBoxLayout()
+        self.cache_dir_edit = QLineEdit()
+        self.cache_dir_edit.setPlaceholderText("例如: ./data/cache")
+        cache_layout.addWidget(self.cache_dir_edit)
+
+        cache_browse_btn = QPushButton("📁 浏览")
+        cache_browse_btn.clicked.connect(self._browse_cache_dir)
+        cache_layout.addWidget(cache_browse_btn)
+
+        data_config_layout.addRow("品种缓存目录:", cache_layout)
+        self.config_widgets["chinastock.cache_dir"] = self.cache_dir_edit
+
+        # K线数据存储目录
+        data_layout = QHBoxLayout()
+        self.data_dir_edit = QLineEdit()
+        self.data_dir_edit.setPlaceholderText("例如: ./data/kline")
+        data_layout.addWidget(self.data_dir_edit)
+
+        data_browse_btn = QPushButton("📁 浏览")
+        data_browse_btn.clicked.connect(self._browse_data_dir)
+        data_layout.addWidget(data_browse_btn)
+
+        data_config_layout.addRow("K线数据目录:", data_layout)
+        self.config_widgets["chinastock.data_dir"] = self.data_dir_edit
+
+        # 数据感知基日
+        from PySide6.QtCore import QDate
+
+        self.base_date_edit = QDateEdit()
+        self.base_date_edit.setCalendarPopup(True)
+        self.base_date_edit.setDisplayFormat("yyyy-MM-dd")
+        self.base_date_edit.setDate(QDate(2020, 1, 1))
+        data_config_layout.addRow("数据感知基日:", self.base_date_edit)
+        self.config_widgets["chinastock.base_date"] = self.base_date_edit
+
+        # 最大工作线程数
+        self.max_workers_spin = QSpinBox()
+        self.max_workers_spin.setRange(1, 50)
+        self.max_workers_spin.setValue(10)
+        self.max_workers_spin.setSuffix(" 线程")
+        data_config_layout.addRow("最大线程数:", self.max_workers_spin)
+        self.config_widgets["chinastock.max_workers"] = self.max_workers_spin
+
+        # 请求超时时间
+        self.timeout_spin = QSpinBox()
+        self.timeout_spin.setRange(10, 300)
+        self.timeout_spin.setValue(30)
+        self.timeout_spin.setSuffix(" 秒")
+        data_config_layout.addRow("请求超时:", self.timeout_spin)
+        self.config_widgets["chinastock.timeout"] = self.timeout_spin
+
+        # 请求重试次数
+        self.retry_spin = QSpinBox()
+        self.retry_spin.setRange(0, 10)
+        self.retry_spin.setValue(3)
+        self.retry_spin.setSuffix(" 次")
+        data_config_layout.addRow("重试次数:", self.retry_spin)
+        self.config_widgets["chinastock.retry_times"] = self.retry_spin
+
+        # 启用文件监控
+        self.watcher_check = QCheckBox()
+        self.watcher_check.setChecked(True)
+        data_config_layout.addRow("启用文件监控:", self.watcher_check)
+        self.config_widgets["chinastock.enable_watcher"] = self.watcher_check
+
+        # 文件监控间隔
+        self.watcher_interval_spin = QSpinBox()
+        self.watcher_interval_spin.setRange(1, 60)
+        self.watcher_interval_spin.setValue(5)
+        self.watcher_interval_spin.setSuffix(" 秒")
+        data_config_layout.addRow("监控检查间隔:", self.watcher_interval_spin)
+        self.config_widgets["chinastock.watcher_interval"] = self.watcher_interval_spin
+
+        layout.addWidget(data_config_group)
+
+        # 配置统计组
+        stats_group = QGroupBox("配置状态")
+        stats_layout = QFormLayout(stats_group)
+
+        self.cache_dir_label = QLabel("-")
+        stats_layout.addRow("品种缓存路径:", self.cache_dir_label)
+
+        self.data_dir_label = QLabel("-")
+        stats_layout.addRow("K线数据路径:", self.data_dir_label)
+
+        self.cache_files_label = QLabel("-")
+        stats_layout.addRow("缓存文件数:", self.cache_files_label)
+
+        self.data_symbols_label = QLabel("-")
+        stats_layout.addRow("已下载品种数:", self.data_symbols_label)
+
+        self.tdx_status_label = QLabel("-")
+        stats_layout.addRow("通达信状态:", self.tdx_status_label)
+
+        layout.addWidget(stats_group)
+
+        # 说明文字
+        help_label = QLabel(
+            "💡 提示：\n"
+            "• 通达信根目录用于解析spblock.dat文件，获取北证A股、T+0基金、含可转债等特殊品种\n"
+            "• 如果不配置通达信路径，仅能获取上证A股和深证A股\n"
+            "• 修改配置后需要点击'保存'按钮并重启应用才能生效"
+        )
+        help_label.setWordWrap(True)
+        help_label.setStyleSheet(
+            "color: #666; padding: 10px; background: #f5f5f5; border-radius: 5px;"
+        )
+        layout.addWidget(help_label)
+
+        layout.addStretch()
+
+        # 加载初始配置
+        self._load_initial_config()
 
         return tab
 
@@ -657,7 +832,7 @@ class SystemManager(BaseWidget, LoggerMixin):
             self.logger.info("VNPY适配器初始化完成")
         except (RuntimeError, AttributeError) as e:
             self.logger.error("VNPY适配器初始化失败: %s", e)
-            raise RuntimeError(f"VNPY适配器初始化失败: {e}")
+            raise RuntimeError(f"VNPY适配器初始化失败: {e}") from e
 
     def _update_system_status(self):
         """更新系统状态."""
@@ -788,6 +963,14 @@ class SystemManager(BaseWidget, LoggerMixin):
             worker_running = vnpy_status.get("real_time_worker_running", False)
             subscribed = vnpy_status.get("subscribed_symbols", [])
 
+            # 处理 subscribed 可能是 int 或 list 的情况
+            if isinstance(subscribed, int):
+                subscribed_count = subscribed
+            elif isinstance(subscribed, list):
+                subscribed_count = len(subscribed)
+            else:
+                subscribed_count = 0
+
             vnpy_components = [
                 (
                     "VNPY引擎",
@@ -802,7 +985,7 @@ class SystemManager(BaseWidget, LoggerMixin):
                 (
                     "实时数据",
                     "运行" if worker_running else "停止",
-                    f"订阅品种: {len(subscribed)}",
+                    f"订阅品种: {subscribed_count}",
                 ),
             ]
 
@@ -844,10 +1027,7 @@ class SystemManager(BaseWidget, LoggerMixin):
             # 弹出文件保存对话框
             default_filename = f"terminal_logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
             file_path, _ = QFileDialog.getSaveFileName(
-                self,
-                "导出日志",
-                default_filename,
-                "文本文件 (*.txt);;所有文件 (*.*)"
+                self, "导出日志", default_filename, "文本文件 (*.txt);;所有文件 (*.*)"
             )
 
             if not file_path:
@@ -864,7 +1044,7 @@ class SystemManager(BaseWidget, LoggerMixin):
                 module_item = self.logs_table.item(row, 2)
                 message_item = self.logs_table.item(row, 3)
 
-                if all([time_item, level_item, module_item, message_item]):
+                if time_item and level_item and module_item and message_item:
                     log_line = f"[{time_item.text()}] [{level_item.text()}] {module_item.text()}: {message_item.text()}"
                     log_lines.append(log_line)
 
@@ -874,12 +1054,12 @@ class SystemManager(BaseWidget, LoggerMixin):
                 if os.path.exists(logs_dir):
                     log_file = os.path.join(logs_dir, "terminal_v0.50.log")
                     if os.path.exists(log_file):
-                        with open(log_file, 'r', encoding='utf-8') as f:
+                        with open(log_file, "r", encoding="utf-8") as f:
                             log_lines = f.readlines()
 
             # 保存到文件
-            with open(file_path, 'w', encoding='utf-8') as f:
-                f.write('\n'.join(log_lines))
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(log_lines))
 
             self.show_info(f"日志已导出到: {file_path}")
 
@@ -895,3 +1075,226 @@ class SystemManager(BaseWidget, LoggerMixin):
         """关闭处理."""
         self.stop_update_timer()
         self.logger.info("系统管理界面已关闭")
+
+    # ========== 配置管理方法 ==========
+
+    def _load_initial_config(self):
+        """加载初始配置."""
+        try:
+            config = self.handlers.load_data_module_config()
+
+            # 填充配置到UI控件
+            for _name, cfg in config.items():
+                key = cfg["key"]
+                value = cfg["value"]
+
+                if key == "chinastock.tdx_dir" and self.tdx_path_edit:
+                    self.tdx_path_edit.setText(str(value))
+                elif key == "chinastock.cache_dir" and self.cache_dir_edit:
+                    self.cache_dir_edit.setText(str(value))
+                elif key == "chinastock.data_dir" and self.data_dir_edit:
+                    self.data_dir_edit.setText(str(value))
+                elif key == "chinastock.base_date" and self.base_date_edit:
+                    from PySide6.QtCore import QDate
+
+                    date_parts = str(value).split("-")
+                    if len(date_parts) == 3:
+                        self.base_date_edit.setDate(
+                            QDate(int(date_parts[0]), int(date_parts[1]), int(date_parts[2]))
+                        )
+                elif key == "chinastock.max_workers" and self.max_workers_spin:
+                    self.max_workers_spin.setValue(int(value))
+                elif key == "chinastock.timeout" and self.timeout_spin:
+                    self.timeout_spin.setValue(int(value))
+                elif key == "chinastock.retry_times" and self.retry_spin:
+                    self.retry_spin.setValue(int(value))
+                elif key == "chinastock.enable_watcher" and self.watcher_check:
+                    self.watcher_check.setChecked(bool(value))
+                elif key == "chinastock.watcher_interval" and self.watcher_interval_spin:
+                    self.watcher_interval_spin.setValue(int(value))
+
+            # 更新配置统计
+            self._update_config_stats()
+
+            self.logger.info("配置加载完成")
+
+        except Exception as e:
+            self.logger.error("加载配置失败: %s", e)
+            self.show_error(f"加载配置失败: {e}")
+
+    def _refresh_config(self):
+        """刷新配置."""
+        try:
+            self._load_initial_config()
+            self.show_info("配置已刷新")
+        except Exception as e:
+            self.show_error(f"刷新配置失败: {e}")
+
+    def _save_config(self):
+        """保存配置."""
+        try:
+            # 检查必要的控件是否初始化
+            if not all(
+                [
+                    self.tdx_path_edit,
+                    self.cache_dir_edit,
+                    self.data_dir_edit,
+                    self.base_date_edit,
+                    self.max_workers_spin,
+                    self.timeout_spin,
+                    self.retry_spin,
+                    self.watcher_check,
+                    self.watcher_interval_spin,
+                ]
+            ):
+                self.show_error("配置控件未初始化")
+                return
+
+            # 收集配置更新
+            assert self.tdx_path_edit is not None
+            assert self.cache_dir_edit is not None
+            assert self.data_dir_edit is not None
+            assert self.base_date_edit is not None
+            assert self.max_workers_spin is not None
+            assert self.timeout_spin is not None
+            assert self.retry_spin is not None
+            assert self.watcher_check is not None
+            assert self.watcher_interval_spin is not None
+
+            config_updates = {
+                "chinastock.tdx_dir": self.tdx_path_edit.text().strip(),
+                "chinastock.cache_dir": self.cache_dir_edit.text().strip(),
+                "chinastock.data_dir": self.data_dir_edit.text().strip(),
+                "chinastock.base_date": self.base_date_edit.date().toString("yyyy-MM-dd"),
+                "chinastock.max_workers": self.max_workers_spin.value(),
+                "chinastock.timeout": self.timeout_spin.value(),
+                "chinastock.retry_times": self.retry_spin.value(),
+                "chinastock.enable_watcher": self.watcher_check.isChecked(),
+                "chinastock.watcher_interval": self.watcher_interval_spin.value(),
+            }
+
+            # 保存配置
+            success = self.handlers.save_data_module_config(config_updates)
+
+            if success:
+                self.show_info("配置保存成功！\n\n注意：部分配置需要重启应用后才能生效")
+                self._update_config_stats()
+            else:
+                self.show_error("配置保存失败，请查看日志")
+
+        except Exception as e:
+            self.logger.error("保存配置失败: %s", e)
+            self.show_error(f"保存配置失败: {e}")
+
+    def _reset_config(self):
+        """重置配置."""
+        try:
+            # 确认对话框
+            reply = QMessageBox.question(
+                self,
+                "确认重置",
+                "确定要重置所有配置为默认值吗？\n此操作不可撤销。",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+
+            if reply == QMessageBox.StandardButton.Yes:
+                success = self.handlers.reset_to_defaults()
+
+                if success:
+                    self.show_info("配置已重置为默认值")
+                    self._load_initial_config()
+                else:
+                    self.show_error("重置配置失败")
+
+        except Exception as e:
+            self.logger.error("重置配置失败: %s", e)
+            self.show_error(f"重置配置失败: {e}")
+
+    def _browse_tdx_dir(self):
+        """浏览选择通达信目录."""
+        try:
+            dir_path = QFileDialog.getExistingDirectory(
+                self, "选择通达信软件根目录", "", QFileDialog.Option.ShowDirsOnly
+            )
+
+            if dir_path and self.tdx_path_edit:
+                self.tdx_path_edit.setText(dir_path)
+                # 自动验证路径
+                self._validate_tdx_path()
+
+        except Exception as e:
+            self.logger.error("浏览目录失败: %s", e)
+
+    def _browse_cache_dir(self):
+        """浏览选择品种缓存目录."""
+        try:
+            dir_path = QFileDialog.getExistingDirectory(
+                self, "选择品种缓存目录", "", QFileDialog.Option.ShowDirsOnly
+            )
+
+            if dir_path and self.cache_dir_edit:
+                self.cache_dir_edit.setText(dir_path)
+
+        except Exception as e:
+            self.logger.error("浏览目录失败: %s", e)
+
+    def _browse_data_dir(self):
+        """浏览选择K线数据目录."""
+        try:
+            dir_path = QFileDialog.getExistingDirectory(
+                self, "选择K线数据目录", "", QFileDialog.Option.ShowDirsOnly
+            )
+
+            if dir_path and self.data_dir_edit:
+                self.data_dir_edit.setText(dir_path)
+
+        except Exception as e:
+            self.logger.error("浏览目录失败: %s", e)
+
+    def _validate_tdx_path(self):
+        """验证通达信路径."""
+        try:
+            if not self.tdx_path_edit:
+                return
+
+            tdx_path = self.tdx_path_edit.text().strip()
+            is_valid, message = self.handlers.validate_tdx_path(tdx_path)
+
+            if is_valid:
+                QMessageBox.information(self, "验证成功", message, QMessageBox.StandardButton.Ok)
+            else:
+                QMessageBox.warning(self, "验证失败", message, QMessageBox.StandardButton.Ok)
+
+        except Exception as e:
+            self.logger.error("验证路径失败: %s", e)
+            QMessageBox.critical(self, "错误", f"验证路径失败: {e}")
+
+    def _update_config_stats(self):
+        """更新配置统计信息."""
+        try:
+            stats = self.handlers.get_config_statistics()
+
+            if self.cache_dir_label:
+                self.cache_dir_label.setText(stats.get("cache_dir", "-"))
+            if self.data_dir_label:
+                self.data_dir_label.setText(stats.get("data_dir", "-"))
+            if self.cache_files_label:
+                self.cache_files_label.setText(str(stats.get("cache_files_count", 0)))
+            if self.data_symbols_label:
+                self.data_symbols_label.setText(str(stats.get("data_symbols_count", 0)))
+
+            if self.tdx_status_label:
+                if stats.get("tdx_configured"):
+                    self.tdx_status_label.setText("✓ 已配置")
+                    self.tdx_status_label.setStyleSheet("color: green;")
+                else:
+                    self.tdx_status_label.setText("✗ 未配置")
+                    self.tdx_status_label.setStyleSheet("color: orange;")
+
+        except Exception as e:
+            self.logger.error("更新配置统计失败: %s", e)
+
+
+# 导出公共接口
+__all__ = ["SystemManager"]

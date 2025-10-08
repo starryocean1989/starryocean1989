@@ -112,7 +112,7 @@ class CTABacktestEngine(BacktestEngineBase):
             "start": None,
             "end": None,
             "interval": "1m",
-            "capital": 100000.0
+            "capital": 100000.0,
         }
         self.backtest_engine_class = None
         self.optimization_setting_class = None
@@ -264,11 +264,19 @@ class CTABacktestEngine(BacktestEngineBase):
                 trade_list.append(
                     {
                         "datetime": (
-                            trade.datetime.isoformat() if hasattr(trade, "datetime") else ""
+                            trade.datetime.isoformat()
+                            if hasattr(trade, "datetime") and trade.datetime
+                            else ""
                         ),
                         "symbol": trade.symbol if hasattr(trade, "symbol") else "",
-                        "direction": trade.direction.value if hasattr(trade, "direction") else "",
-                        "offset": trade.offset.value if hasattr(trade, "offset") else "",
+                        "direction": (
+                            trade.direction.value
+                            if hasattr(trade, "direction") and trade.direction
+                            else ""
+                        ),
+                        "offset": (
+                            trade.offset.value if hasattr(trade, "offset") and trade.offset else ""
+                        ),
                         "price": float(trade.price) if hasattr(trade, "price") else 0.0,
                         "volume": float(trade.volume) if hasattr(trade, "volume") else 0.0,
                     }
@@ -281,14 +289,24 @@ class CTABacktestEngine(BacktestEngineBase):
                 order_list.append(
                     {
                         "datetime": (
-                            order.datetime.isoformat() if hasattr(order, "datetime") else ""
+                            order.datetime.isoformat()
+                            if hasattr(order, "datetime") and order.datetime
+                            else ""
                         ),
                         "symbol": order.symbol if hasattr(order, "symbol") else "",
-                        "direction": order.direction.value if hasattr(order, "direction") else "",
-                        "offset": order.offset.value if hasattr(order, "offset") else "",
+                        "direction": (
+                            order.direction.value
+                            if hasattr(order, "direction") and order.direction
+                            else ""
+                        ),
+                        "offset": (
+                            order.offset.value if hasattr(order, "offset") and order.offset else ""
+                        ),
                         "price": float(order.price) if hasattr(order, "price") else 0.0,
                         "volume": float(order.volume) if hasattr(order, "volume") else 0.0,
-                        "status": order.status.value if hasattr(order, "status") else "",
+                        "status": (
+                            order.status.value if hasattr(order, "status") and order.status else ""
+                        ),
                     }
                 )
 
@@ -398,7 +416,7 @@ class OptionMasterBacktestEngine(BacktestEngineBase):
         else:  # put
             price = K * math.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
 
-        return price
+        return float(price)
 
     def _calculate_greeks(
         self, S: float, K: float, T: float, r: float, sigma: float, option_type: str = "call"
@@ -451,7 +469,13 @@ class OptionMasterBacktestEngine(BacktestEngineBase):
         else:
             rho = -K * T * math.exp(-r * T) * norm.cdf(-d2) / 100
 
-        return {"delta": delta, "gamma": gamma, "theta": theta, "vega": vega, "rho": rho}
+        return {
+            "delta": float(delta),
+            "gamma": float(gamma),
+            "theta": float(theta),
+            "vega": float(vega),
+            "rho": float(rho),
+        }
 
     def _calculate_historical_volatility(self, prices: List[float], window: int = 20) -> float:
         """计算历史波动率
@@ -471,7 +495,7 @@ class OptionMasterBacktestEngine(BacktestEngineBase):
         returns = np.diff(np.log(prices[-window - 1 :]))
         volatility = np.std(returns) * np.sqrt(252)  # 年化
 
-        return volatility
+        return float(volatility)
 
     def initialize(self, parameters: Dict[str, Any]) -> bool:
         """初始化期权策略回测引擎
@@ -930,11 +954,19 @@ class PortfolioBacktestEngine(BacktestEngineBase):
                 trade_list.append(
                     {
                         "datetime": (
-                            trade.datetime.isoformat() if hasattr(trade, "datetime") else ""
+                            trade.datetime.isoformat()
+                            if hasattr(trade, "datetime") and trade.datetime
+                            else ""
                         ),
                         "symbol": trade.symbol if hasattr(trade, "symbol") else "",
-                        "direction": trade.direction.value if hasattr(trade, "direction") else "",
-                        "offset": trade.offset.value if hasattr(trade, "offset") else "",
+                        "direction": (
+                            trade.direction.value
+                            if hasattr(trade, "direction") and trade.direction
+                            else ""
+                        ),
+                        "offset": (
+                            trade.offset.value if hasattr(trade, "offset") and trade.offset else ""
+                        ),
                         "price": float(trade.price) if hasattr(trade, "price") else 0.0,
                         "volume": float(trade.volume) if hasattr(trade, "volume") else 0.0,
                     }
@@ -947,14 +979,24 @@ class PortfolioBacktestEngine(BacktestEngineBase):
                 order_list.append(
                     {
                         "datetime": (
-                            order.datetime.isoformat() if hasattr(order, "datetime") else ""
+                            order.datetime.isoformat()
+                            if hasattr(order, "datetime") and order.datetime
+                            else ""
                         ),
                         "symbol": order.symbol if hasattr(order, "symbol") else "",
-                        "direction": order.direction.value if hasattr(order, "direction") else "",
-                        "offset": order.offset.value if hasattr(order, "offset") else "",
+                        "direction": (
+                            order.direction.value
+                            if hasattr(order, "direction") and order.direction
+                            else ""
+                        ),
+                        "offset": (
+                            order.offset.value if hasattr(order, "offset") and order.offset else ""
+                        ),
                         "price": float(order.price) if hasattr(order, "price") else 0.0,
                         "volume": float(order.volume) if hasattr(order, "volume") else 0.0,
-                        "status": order.status.value if hasattr(order, "status") else "",
+                        "status": (
+                            order.status.value if hasattr(order, "status") and order.status else ""
+                        ),
                     }
                 )
 
@@ -1355,17 +1397,24 @@ class SpreadTradingBacktestEngine(BacktestEngineBase):
 
             # 注意：vnpy_spreadtrading的API可能与CTA不同
             # 这里使用通用参数设置，实际使用时可能需要调整
+            # spread参数需要传入SpreadData对象而非字符串，这里先保存基本信息
             try:
-                self.engine.set_parameters(
-                    spread=f"{spread_name}",
-                    interval=interval,
-                    start=datetime.fromisoformat(parameters.get("start", "2024-01-01")),
-                    end=datetime.fromisoformat(parameters.get("end", "2024-10-01")),
-                    rate=parameters.get("rate", 0.0003),
-                    slippage=parameters.get("slippage", 0.01),
-                    size=100,
-                    pricetick=0.01,
-                    capital=parameters.get("capital", 1000000),
+                # 由于spread参数类型复杂，暂时跳过set_parameters
+                # 实际使用时需要创建SpreadData对象
+                logger.warning("价差交易引擎需要SpreadData对象，当前使用简化配置")
+                # 保存参数供后续使用
+                self.parameters.update(
+                    {
+                        "spread_name": spread_name,
+                        "leg_symbols": leg_symbols,
+                        "leg_ratios": leg_ratios,
+                        "interval": interval,
+                        "start": datetime.fromisoformat(parameters.get("start", "2024-01-01")),
+                        "end": datetime.fromisoformat(parameters.get("end", "2024-10-01")),
+                        "rate": parameters.get("rate", 0.0003),
+                        "slippage": parameters.get("slippage", 0.01),
+                        "capital": parameters.get("capital", 1000000),
+                    }
                 )
             except TypeError:
                 # 如果API不匹配，记录警告并使用默认设置
@@ -1443,18 +1492,26 @@ class SpreadTradingBacktestEngine(BacktestEngineBase):
             trade_list = []
             try:
                 if hasattr(self.engine, "get_all_trades"):
-                    trades = self.engine.get_all_trades()
+                    trades = self.engine.get_all_trades()  # type: ignore
                     for trade in trades:
                         trade_list.append(
                             {
                                 "datetime": (
-                                    trade.datetime.isoformat() if hasattr(trade, "datetime") else ""
+                                    trade.datetime.isoformat()
+                                    if hasattr(trade, "datetime") and trade.datetime
+                                    else ""
                                 ),
                                 "symbol": trade.symbol if hasattr(trade, "symbol") else "",
                                 "direction": (
-                                    trade.direction.value if hasattr(trade, "direction") else ""
+                                    trade.direction.value
+                                    if hasattr(trade, "direction") and trade.direction
+                                    else ""
                                 ),
-                                "offset": trade.offset.value if hasattr(trade, "offset") else "",
+                                "offset": (
+                                    trade.offset.value
+                                    if hasattr(trade, "offset") and trade.offset
+                                    else ""
+                                ),
                                 "price": float(trade.price) if hasattr(trade, "price") else 0.0,
                                 "volume": float(trade.volume) if hasattr(trade, "volume") else 0.0,
                             }
@@ -1466,21 +1523,33 @@ class SpreadTradingBacktestEngine(BacktestEngineBase):
             order_list = []
             try:
                 if hasattr(self.engine, "get_all_orders"):
-                    orders = self.engine.get_all_orders()
+                    orders = self.engine.get_all_orders()  # type: ignore
                     for order in orders:
                         order_list.append(
                             {
                                 "datetime": (
-                                    order.datetime.isoformat() if hasattr(order, "datetime") else ""
+                                    order.datetime.isoformat()
+                                    if hasattr(order, "datetime") and order.datetime
+                                    else ""
                                 ),
                                 "symbol": order.symbol if hasattr(order, "symbol") else "",
                                 "direction": (
-                                    order.direction.value if hasattr(order, "direction") else ""
+                                    order.direction.value
+                                    if hasattr(order, "direction") and order.direction
+                                    else ""
                                 ),
-                                "offset": order.offset.value if hasattr(order, "offset") else "",
+                                "offset": (
+                                    order.offset.value
+                                    if hasattr(order, "offset") and order.offset
+                                    else ""
+                                ),
                                 "price": float(order.price) if hasattr(order, "price") else 0.0,
                                 "volume": float(order.volume) if hasattr(order, "volume") else 0.0,
-                                "status": order.status.value if hasattr(order, "status") else "",
+                                "status": (
+                                    order.status.value
+                                    if hasattr(order, "status") and order.status
+                                    else ""
+                                ),
                             }
                         )
             except Exception as order_err:

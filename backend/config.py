@@ -8,14 +8,33 @@
 import os
 import json
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TYPE_CHECKING
 from pathlib import Path
 
-try:
-    from pydantic_settings import BaseSettings
-    from pydantic import Field
-except ImportError:
-    from pydantic import BaseSettings, Field
+if TYPE_CHECKING:
+    # For type checkers, always use pydantic_settings types
+    try:
+        from pydantic_settings import BaseSettings
+        from pydantic import Field, ConfigDict
+    except ImportError:
+        from pydantic import BaseSettings, Field  # type: ignore[assignment]
+
+        ConfigDict = Any  # type: ignore[misc]
+else:
+    # For runtime, handle both pydantic v1 and v2
+    try:
+        from pydantic_settings import BaseSettings
+        from pydantic import Field, ConfigDict
+    except ImportError:
+        from pydantic import BaseSettings, Field
+
+        # For Pydantic v1 compatibility
+        class ConfigDict:  # type: ignore[no-redef]
+            """Fallback ConfigDict for Pydantic v1."""
+
+            def __init__(self, **kwargs: Any) -> None:
+                _ = kwargs  # Acknowledge unused parameter
+
 
 logger = logging.getLogger(__name__)
 
@@ -23,81 +42,68 @@ logger = logging.getLogger(__name__)
 class DatabaseConfig(BaseSettings):
     """数据库配置."""
 
+    model_config = ConfigDict(env_prefix="DB_") if ConfigDict else None  # type: ignore
+
     # SQLite配置
-    sqlite_path: str = Field(default="data/terminal.db", env="SQLITE_PATH")
-    sqlite_timeout: int = Field(default=30, env="SQLITE_TIMEOUT")
+    sqlite_path: str = Field(default="data/terminal.db")
+    sqlite_timeout: int = Field(default=30)
 
     # PostgreSQL配置（可选）
-    postgres_host: Optional[str] = Field(default=None, env="POSTGRES_HOST")
-    postgres_port: int = Field(default=5432, env="POSTGRES_PORT")
-    postgres_db: Optional[str] = Field(default=None, env="POSTGRES_DB")
-    postgres_user: Optional[str] = Field(default=None, env="POSTGRES_USER")
-    postgres_password: Optional[str] = Field(default=None, env="POSTGRES_PASSWORD")
-
-    class Config:
-        """配置类."""
-
-        env_prefix = "DB_"
+    postgres_host: Optional[str] = Field(default=None)
+    postgres_port: int = Field(default=5432)
+    postgres_db: Optional[str] = Field(default=None)
+    postgres_user: Optional[str] = Field(default=None)
+    postgres_password: Optional[str] = Field(default=None)
 
 
 class VnPyConfig(BaseSettings):
     """VnPy配置."""
 
+    model_config = ConfigDict(env_prefix="VNPY_") if ConfigDict else None  # type: ignore
+
     # VnPy引擎配置
-    event_engine_timer_interval: float = Field(
-        default=1.0, env="VNPY_EVENT_TIMER_INTERVAL"
-    )
-    event_engine_timer_interval_ms: int = Field(
-        default=1000, env="VNPY_EVENT_TIMER_INTERVAL_MS"
-    )
+    event_engine_timer_interval: float = Field(default=1.0)
+    event_engine_timer_interval_ms: int = Field(default=1000)
 
     # 数据存储配置
-    data_storage_path: str = Field(default="data", env="VNPY_DATA_STORAGE_PATH")
+    data_storage_path: str = Field(default="data")
 
     # 日志配置
-    log_level: str = Field(default="INFO", env="VNPY_LOG_LEVEL")
-    log_file: Optional[str] = Field(default=None, env="VNPY_LOG_FILE")
-
-    class Config:
-        """配置类."""
-
-        env_prefix = "VNPY_"
+    log_level: str = Field(default="INFO")
+    log_file: Optional[str] = Field(default=None)
 
 
 class WebSocketConfig(BaseSettings):
     """WebSocket配置."""
 
+    model_config = ConfigDict(env_prefix="WS_") if ConfigDict else None  # type: ignore
+
     # 连接配置
-    max_connections: int = Field(default=1000, env="WS_MAX_CONNECTIONS")
-    connection_timeout: float = Field(default=300.0, env="WS_CONNECTION_TIMEOUT")
+    max_connections: int = Field(default=1000)
+    connection_timeout: float = Field(default=300.0)
 
     # 消息配置
-    max_message_size: int = Field(default=1024 * 1024, env="WS_MAX_MESSAGE_SIZE")  # 1MB
-    ping_interval: float = Field(default=30.0, env="WS_PING_INTERVAL")
-    ping_timeout: float = Field(default=10.0, env="WS_PING_TIMEOUT")
+    max_message_size: int = Field(default=1024 * 1024)  # 1MB
+    ping_interval: float = Field(default=30.0)
+    ping_timeout: float = Field(default=10.0)
 
     # 清理配置
-    cleanup_interval: float = Field(default=60.0, env="WS_CLEANUP_INTERVAL")
-
-    class Config:
-        """配置类."""
-
-        env_prefix = "WS_"
+    cleanup_interval: float = Field(default=60.0)
 
 
 class APIConfig(BaseSettings):
     """API配置."""
 
+    model_config = ConfigDict(env_prefix="API_") if ConfigDict else None  # type: ignore
+
     # 服务器配置
-    host: str = Field(default="0.0.0.0", env="API_HOST")
-    port: int = Field(default=8000, env="API_PORT")
-    debug: bool = Field(default=False, env="API_DEBUG")
+    host: str = Field(default="0.0.0.0")
+    port: int = Field(default=8000)
+    debug: bool = Field(default=False)
 
     # 安全配置
-    secret_key: str = Field(default="your-secret-key-here", env="API_SECRET_KEY")
-    access_token_expire_minutes: int = Field(
-        default=30, env="API_ACCESS_TOKEN_EXPIRE_MINUTES"
-    )
+    secret_key: str = Field(default="your-secret-key-here")
+    access_token_expire_minutes: int = Field(default=30)
 
     # CORS配置
     cors_origins: list = Field(
@@ -106,65 +112,44 @@ class APIConfig(BaseSettings):
             "http://localhost:5173",
             "http://127.0.0.1:3000",
             "http://127.0.0.1:5173",
-        ],
-        env="API_CORS_ORIGINS",
+        ]
     )
 
     # 限流配置
-    rate_limit_per_minute: int = Field(default=100, env="API_RATE_LIMIT_PER_MINUTE")
-
-    class Config:
-        """配置类."""
-
-        env_prefix = "API_"
+    rate_limit_per_minute: int = Field(default=100)
 
 
 class LoggingConfig(BaseSettings):
     """日志配置."""
 
-    level: str = Field(default="INFO", env="LOG_LEVEL")
-    format: str = Field(
-        default="%(asctime)s - %(name)s - %(levelname)s - %(message)s", env="LOG_FORMAT"
-    )
-    file_path: Optional[str] = Field(default="logs/backend.log", env="LOG_FILE_PATH")
-    max_file_size: int = Field(
-        default=10 * 1024 * 1024, env="LOG_MAX_FILE_SIZE"
-    )  # 10MB
-    backup_count: int = Field(default=5, env="LOG_BACKUP_COUNT")
+    model_config = ConfigDict(env_prefix="LOG_") if ConfigDict else None  # type: ignore
 
-    class Config:
-        """配置类."""
-
-        env_prefix = "LOG_"
+    level: str = Field(default="INFO")
+    format: str = Field(default="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    file_path: Optional[str] = Field(default="logs/backend.log")
+    max_file_size: int = Field(default=10 * 1024 * 1024)  # 10MB
+    backup_count: int = Field(default=5)
 
 
 class AIConfig(BaseSettings):
     """AI助手配置."""
 
+    model_config = ConfigDict(env_prefix="AI_") if ConfigDict else None  # type: ignore
+
     # DeepSeek API配置
-    provider: str = Field(default="deepseek", env="AI_PROVIDER")
-    api_key: Optional[str] = Field(default=None, env="AI_API_KEY")
-    api_url: str = Field(
-        default="https://api.deepseek.com/v1/chat/completions", env="AI_API_URL"
-    )
-    model: str = Field(default="deepseek-chat", env="AI_MODEL")
+    provider: str = Field(default="deepseek")
+    api_key: Optional[str] = Field(default=None)
+    api_url: str = Field(default="https://api.deepseek.com/v1/chat/completions")
+    model: str = Field(default="deepseek-chat")
 
     # 请求配置
-    max_tokens: int = Field(default=2000, env="AI_MAX_TOKENS")
-    temperature: float = Field(default=0.7, env="AI_TEMPERATURE")
-    timeout: int = Field(default=30, env="AI_TIMEOUT")
+    max_tokens: int = Field(default=2000)
+    temperature: float = Field(default=0.7)
+    timeout: int = Field(default=30)
 
     # 对话配置
-    max_history: int = Field(default=10, env="AI_MAX_HISTORY")
-    system_prompt: str = Field(
-        default="你是一个专业的量化交易策略编写助手，擅长Python和VnPy框架。",
-        env="AI_SYSTEM_PROMPT",
-    )
-
-    class Config:
-        """配置类."""
-
-        env_prefix = "AI_"
+    max_history: int = Field(default=10)
+    system_prompt: str = Field(default="你是一个专业的量化交易策略编写助手，擅长Python和VnPy框架。")
 
 
 class Settings:
@@ -212,12 +197,28 @@ class Settings:
         """保存配置到文件."""
         try:
             config_data = {
-                "database": self.database.dict(),
-                "vnpy": self.vnpy.dict(),
-                "websocket": self.websocket.dict(),
-                "api": self.api.dict(),
-                "logging": self.logging.dict(),
-                "ai": self.ai.dict(),
+                "database": (
+                    self.database.model_dump()
+                    if hasattr(self.database, "model_dump")
+                    else self.database.dict()
+                ),
+                "vnpy": (
+                    self.vnpy.model_dump() if hasattr(self.vnpy, "model_dump") else self.vnpy.dict()
+                ),
+                "websocket": (
+                    self.websocket.model_dump()
+                    if hasattr(self.websocket, "model_dump")
+                    else self.websocket.dict()
+                ),
+                "api": (
+                    self.api.model_dump() if hasattr(self.api, "model_dump") else self.api.dict()
+                ),
+                "logging": (
+                    self.logging.model_dump()
+                    if hasattr(self.logging, "model_dump")
+                    else self.logging.dict()
+                ),
+                "ai": self.ai.model_dump() if hasattr(self.ai, "model_dump") else self.ai.dict(),
             }
 
             # 确保目录存在
@@ -260,12 +261,26 @@ class Settings:
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典格式."""
         return {
-            "database": self.database.dict(),
-            "vnpy": self.vnpy.dict(),
-            "websocket": self.websocket.dict(),
-            "api": self.api.dict(),
-            "logging": self.logging.dict(),
-            "ai": self.ai.dict(),
+            "database": (
+                self.database.model_dump()
+                if hasattr(self.database, "model_dump")
+                else self.database.dict()
+            ),
+            "vnpy": (
+                self.vnpy.model_dump() if hasattr(self.vnpy, "model_dump") else self.vnpy.dict()
+            ),
+            "websocket": (
+                self.websocket.model_dump()
+                if hasattr(self.websocket, "model_dump")
+                else self.websocket.dict()
+            ),
+            "api": self.api.model_dump() if hasattr(self.api, "model_dump") else self.api.dict(),
+            "logging": (
+                self.logging.model_dump()
+                if hasattr(self.logging, "model_dump")
+                else self.logging.dict()
+            ),
+            "ai": self.ai.model_dump() if hasattr(self.ai, "model_dump") else self.ai.dict(),
         }
 
 
@@ -293,29 +308,30 @@ def init_settings(config_file: Optional[str] = None) -> Settings:
 # 轻量UI/应用配置（供前端UI使用）
 class AppConfig(BaseSettings):
     """应用基础配置（供UI展示用）."""
-    name: str = Field(default="星辰金融终端", env="APP_NAME")
-    version: str = Field(default="5.0.0", env="APP_VERSION")
 
-    class Config:
-        env_prefix = "APP_"
+    model_config = ConfigDict(env_prefix="APP_") if ConfigDict else None  # type: ignore
+
+    name: str = Field(default="星辰金融终端")
+    version: str = Field(default="5.0.0")
 
 
 class UIConfig(BaseSettings):
     """UI界面配置（供主窗口使用）."""
-    window_width: int = Field(default=1200, env="UI_WINDOW_WIDTH")
-    window_height: int = Field(default=800, env="UI_WINDOW_HEIGHT")
-    min_width: int = Field(default=960, env="UI_MIN_WIDTH")
-    min_height: int = Field(default=640, env="UI_MIN_HEIGHT")
-    theme: str = Field(default="dark", env="UI_THEME")
 
-    class Config:
-        env_prefix = "UI_"
+    model_config = ConfigDict(env_prefix="UI_") if ConfigDict else None  # type: ignore
+
+    window_width: int = Field(default=1200)
+    window_height: int = Field(default=800)
+    min_width: int = Field(default=960)
+    min_height: int = Field(default=640)
+    theme: str = Field(default="dark")
 
 
 class ConfigManager:
     """UI层期望的配置管理器（轻量实现）。"""
 
     def __init__(self, config_file: Optional[str] = None):
+        """初始化配置管理器."""
         # 轻量从环境/默认值加载
         self.app_config = AppConfig()
         self.ui_config = UIConfig()

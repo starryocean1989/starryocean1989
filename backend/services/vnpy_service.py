@@ -28,6 +28,7 @@ class VnpyService(BaseService):
         self._event_engine = None
         self._gateways: Dict[str, Any] = {}
         self._engines: Dict[str, Any] = {}
+        self._chinastock_engine = None
 
     async def initialize(self) -> None:
         """初始化VnPy主引擎."""
@@ -122,13 +123,21 @@ class VnpyService(BaseService):
     async def _initialize_engines(self) -> None:
         """初始化各种引擎."""
         try:
-            # VnPy的引擎（如CtaEngine）通常作为独立的App添加
-            # 而不是直接从vnpy.trader.engine导入
-            # 这里保留引擎字典供以后通过add_app方式扩展
-            self.logger.info("引擎初始化预留（需要通过add_app添加具体引擎）")
+            # 添加中国A股数据管理应用（data_module_vnpy）
+            # pylint: disable=import-outside-toplevel
+            from backend.infrastructure.data_module_vnpy import ChinaStockApp
 
+            self.logger.info("正在加载中国A股数据管理应用...")
+            self._chinastock_engine = self._main_engine.add_app(ChinaStockApp)
+            self._engines["chinastock"] = self._chinastock_engine
+            self.logger.info("中国A股数据管理应用已加载")
+
+        except ImportError as e:
+            self.logger.warning("data_module_vnpy模块不可用: %s", e)
+            self._chinastock_engine = None
         except Exception as e:  # pylint: disable=broad-exception-caught
             self.logger.error("引擎初始化失败: %s", e)
+            self._chinastock_engine = None
             raise
 
     def get_main_engine(self) -> Any:
@@ -150,6 +159,10 @@ class VnpyService(BaseService):
     def get_all_engines(self) -> Dict[str, Any]:
         """获取所有引擎."""
         return self._engines.copy()
+
+    def get_chinastock_engine(self) -> Optional[Any]:
+        """获取中国A股数据管理引擎."""
+        return self._chinastock_engine if hasattr(self, "_chinastock_engine") else None
 
     def get_gateway(self, gateway_name: str) -> Optional[Any]:
         """获取指定网关."""
@@ -236,8 +249,46 @@ class VnpyService(BaseService):
             return False
 
     def get_symbols(self) -> List[Dict[str, Any]]:
-        """获取所有品种信息."""
+        """从data_module_vnpy获取品种列表."""
         try:
+            # 优先从data_module_vnpy获取品种列表
+            chinastock_engine = self.get_chinastock_engine()
+            if chinastock_engine:
+                self.logger.debug("从data_module_vnpy获取品种列表...")
+                stocks_dict = chinastock_engine.refresh_stock_list()
+
+                if stocks_dict and isinstance(stocks_dict, dict):
+                    # 转换为统一格式
+                    symbols = []
+                    for market_type, stock_codes in stocks_dict.items():
+                        if not isinstance(stock_codes, list):
+                            continue
+
+                        for code in stock_codes:
+                            # 根据代码判断交易所
+                            if code.startswith(("6", "688")):
+                                exchange = "SSE"  # 上海证券交易所
+                            elif code.startswith(("0", "1", "2", "3")):
+                                exchange = "SZSE"  # 深圳证券交易所
+                            else:
+                                exchange = "SSE"  # 默认上海
+
+                            symbols.append(
+                                {
+                                    "symbol": code,
+                                    "exchange": exchange,
+                                    "name": code,  # 简化，使用代码作为名称
+                                    "product": market_type,
+                                    "size": 100,
+                                    "pricetick": 0.01,
+                                }
+                            )
+
+                    if symbols:
+                        self.logger.info("从data_module_vnpy获取品种列表: %d 个品种", len(symbols))
+                        return symbols
+
+            # 如果data_module_vnpy不可用，尝试从网关获取（兼容旧逻辑）
             if not self.is_initialized:
                 return []
 
@@ -527,9 +578,7 @@ class VnpyService(BaseService):
             self.logger.error("获取最新Tick数据失败: %s", e)
             return None
 
-    def get_latest_bar(
-        self, symbol: str, exchange: str, frequency: str = "1m"
-    ) -> Optional[Any]:
+    def get_latest_bar(self, symbol: str, exchange: str, frequency: str = "1m") -> Optional[Any]:
         """获取最新K线数据."""
         try:
             if not self.is_initialized:

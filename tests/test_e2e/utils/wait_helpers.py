@@ -12,6 +12,62 @@ from typing import Any, Callable, Optional
 logger = logging.getLogger(__name__)
 
 
+class WaitConfig:
+    """
+    等待超时配置标准.
+
+    定义不同类型操作的推荐超时时间和轮询间隔。
+    """
+
+    # 超时配置（秒）
+    UI_INTERACTION_TIMEOUT = 2.0  # UI交互操作（按钮点击、选项卡切换等）
+    SERVICE_STATE_TIMEOUT = 5.0  # 服务状态变更（连接、启动、停止等）
+    DATA_LOADING_TIMEOUT = 10.0  # 数据加载操作（缓存刷新、数据查询等）
+    TASK_EXECUTION_TIMEOUT = 30.0  # 长时任务执行（下载、回测、计算等）
+
+    # 轮询间隔配置（秒）
+    FAST_POLL_INTERVAL = 0.1  # 快速轮询（UI响应、状态检查）
+    NORMAL_POLL_INTERVAL = 0.3  # 常规轮询（服务状态、数据加载）
+    SLOW_POLL_INTERVAL = 1.0  # 慢速轮询（长时任务进度）
+
+    @classmethod
+    def get_timeout(cls, operation_type: str) -> float:
+        """
+        根据操作类型获取推荐超时时间.
+
+        Args:
+            operation_type: 操作类型 (ui_interaction, service_state, data_loading, task_execution)
+
+        Returns:
+            超时时间（秒）
+        """
+        timeout_map = {
+            "ui_interaction": cls.UI_INTERACTION_TIMEOUT,
+            "service_state": cls.SERVICE_STATE_TIMEOUT,
+            "data_loading": cls.DATA_LOADING_TIMEOUT,
+            "task_execution": cls.TASK_EXECUTION_TIMEOUT,
+        }
+        return timeout_map.get(operation_type, cls.SERVICE_STATE_TIMEOUT)
+
+    @classmethod
+    def get_interval(cls, poll_speed: str) -> float:
+        """
+        根据轮询速度获取推荐间隔.
+
+        Args:
+            poll_speed: 轮询速度 (fast, normal, slow)
+
+        Returns:
+            轮询间隔（秒）
+        """
+        interval_map = {
+            "fast": cls.FAST_POLL_INTERVAL,
+            "normal": cls.NORMAL_POLL_INTERVAL,
+            "slow": cls.SLOW_POLL_INTERVAL,
+        }
+        return interval_map.get(poll_speed, cls.NORMAL_POLL_INTERVAL)
+
+
 async def wait_until_condition(
     condition_func: Callable[[], bool],
     timeout: float = 3.0,

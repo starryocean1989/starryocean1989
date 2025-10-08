@@ -7,7 +7,7 @@ VNPY架构深度集成模块.
 
 import contextlib
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 # VNPY核心导入
 # 首先定义存根类
@@ -597,6 +597,30 @@ class TerminalEngine:
         except (AttributeError, RuntimeError, KeyError) as e:
             self.logger.error("停止策略失败: %s", e)
         return False
+
+    def get_strategies(self) -> List[Dict[str, Any]]:
+        """获取所有策略列表."""
+        strategies: List[Dict[str, Any]] = []
+        try:
+            # 从所有策略引擎中获取策略信息
+            for engine_name, engine in self.strategy_engines.items():
+                if hasattr(engine, "strategies"):
+                    engine_strategies = getattr(engine, "strategies", {})
+                    for strategy_name, strategy in engine_strategies.items():
+                        strategy_info = {
+                            "name": strategy_name,
+                            "engine": engine_name,
+                            "gateway": getattr(strategy, "gateway_name", "未知"),
+                            "status": "运行中" if getattr(strategy, "trading", False) else "已停止",
+                            "start_time": getattr(strategy, "start_time", ""),
+                        }
+                        strategies.append(strategy_info)
+
+            self.logger.info("获取策略列表成功，共 %d 个策略", len(strategies))
+        except (AttributeError, RuntimeError, TypeError) as e:
+            self.logger.error("获取策略列表失败: %s", e)
+
+        return strategies
 
     def _on_system_status(self, event):
         """系统状态事件处理."""

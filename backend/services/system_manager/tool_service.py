@@ -102,8 +102,8 @@ class ToolService:
         return self.tools.get(tool_id, {})
 
     def execute_tool(
-        self, tool_id: str, _parameters: Dict[str, Any]
-    ) -> Dict[str, Any]:  # noqa: U101
+        self, tool_id: str, _parameters: Dict[str, Any]  # noqa: U101
+    ) -> Dict[str, Any]:
         """执行工具.
 
         Args:
