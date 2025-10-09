@@ -21,16 +21,17 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QRadioButton,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
     QVBoxLayout,
     QWidget,
-    QTabWidget,
 )
 
-from backend.core.shared_services import get_service_manager
-from backend.core.utils.logging_utils import LoggerMixin
+from backend.core.base import get_service_manager
+
+from backend.core.utils import LoggerMixin
 from ui.widgets.base_widget import BaseWidget
 
 # ==================== 常量定义 ====================
@@ -68,6 +69,9 @@ class DataCenter(BaseWidget, LoggerMixin):
         self.all_symbols_data: List[Dict[str, Any]] = []
         self.filtered_symbols_data: List[Dict[str, Any]] = []
 
+        # 下载任务相关属性
+        self.current_download_task_id: Optional[str] = None
+
         # 初始化UI控件引用
         self.tab_widget: Optional[QTabWidget] = None
         self.symbols_tab: Optional[QWidget] = None
@@ -79,6 +83,8 @@ class DataCenter(BaseWidget, LoggerMixin):
         self.exchange_combo: Optional[QComboBox] = None
         self.symbol_type_combo: Optional[QComboBox] = None
         self.filter_preset_combo: Optional[QComboBox] = None
+        self.market_combo: Optional[QComboBox] = None  # 添加缺失的属性
+        self.category_combo: Optional[QComboBox] = None  # 添加缺失的属性
         self.symbols_count_label: Optional[QLabel] = None
         self.symbols_table: Optional[QTableWidget] = None
         self.search_input: Optional[QLineEdit] = None
@@ -576,11 +582,11 @@ class DataCenter(BaseWidget, LoggerMixin):
         if self.next_page_btn:
             self.next_page_btn.setEnabled(self.current_page < self.total_pages)
 
-    def _on_search_text_changed(self, _text: str):  # noqa: U100
+    def _on_search_text_changed(self, text: str):
         """搜索文本改变."""
         self._apply_filters()
 
-    def _on_filter_changed(self, _value: str):  # noqa: U100
+    def _on_filter_changed(self, value: str):
         """筛选条件改变."""
         self._apply_filters()
 
@@ -631,7 +637,35 @@ class DataCenter(BaseWidget, LoggerMixin):
 
     def _save_filter_preset(self):
         """保存筛选预设."""
-        self.show_info("筛选预设保存功能待实现")
+        if not self.data_center_service:
+            self.show_error("数据中心服务不可用")
+            return
+
+        from PySide6.QtWidgets import QInputDialog
+
+        # 弹出对话框让用户输入预设名称
+        preset_name, ok = QInputDialog.getText(
+            self, "保存筛选预设", "请输入预设名称:", text="我的筛选"
+        )
+
+        if ok and preset_name:
+            # 收集当前筛选条件
+            filters = {}
+
+            if self.market_combo:
+                filters["market"] = self.market_combo.currentText()
+            if self.category_combo:
+                filters["category"] = self.category_combo.currentText()
+            if self.search_input:
+                filters["search"] = self.search_input.text()
+
+            # 保存预设
+            result = self.data_center_service.save_filter_preset(preset_name, filters)
+
+            if result.get("success"):
+                self.show_info(f"筛选预设 '{preset_name}' 保存成功")
+            else:
+                self.show_error(f"保存失败: {result.get('message', '未知错误')}")
 
     # ==================== 本地数据事件处理 ====================
 
@@ -735,11 +769,72 @@ class DataCenter(BaseWidget, LoggerMixin):
 
     def _pause_download(self):
         """暂停下载."""
-        self.show_info("暂停下载功能待实现")
+        if not self.data_center_service:
+            self.show_error("数据中心服务不可用")
+            return
+
+        if not hasattr(self, "current_download_task_id"):
+            self.show_warning("没有正在运行的下载任务")
+            return
+
+        result = self.data_center_service.pause_download(self.current_download_task_id)
+
+        if result.get("success"):
+            self.show_info("下载已暂停")
+            if self.pause_download_btn:
+                self.pause_download_btn.setText("恢复下载")
+                self.pause_download_btn.clicked.disconnect()
+                self.pause_download_btn.clicked.connect(self._resume_download)
+        else:
+            self.show_error(f"暂停失败: {result.get('message', '未知错误')}")
+
+    def _resume_download(self):
+        """恢复下载."""
+        if not self.data_center_service:
+            self.show_error("数据中心服务不可用")
+            return
+
+        if not hasattr(self, "current_download_task_id"):
+            self.show_warning("没有暂停的下载任务")
+            return
+
+        result = self.data_center_service.resume_download(self.current_download_task_id)
+
+        if result.get("success"):
+            self.show_info("下载已恢复")
+            if self.pause_download_btn:
+                self.pause_download_btn.setText("暂停下载")
+                self.pause_download_btn.clicked.disconnect()
+                self.pause_download_btn.clicked.connect(self._pause_download)
+        else:
+            self.show_error(f"恢复失败: {result.get('message', '未知错误')}")
 
     def _stop_download(self):
         """停止下载."""
-        self.show_info("停止下载功能待实现")
+        if not self.data_center_service:
+            self.show_error("数据中心服务不可用")
+            return
+
+        if not hasattr(self, "current_download_task_id"):
+            self.show_warning("没有正在运行的下载任务")
+            return
+
+        result = self.data_center_service.stop_download(self.current_download_task_id)
+
+        if result.get("success"):
+            self.show_info("下载已停止")
+            if self.start_download_btn:
+                self.start_download_btn.setEnabled(True)
+            if self.pause_download_btn:
+                self.pause_download_btn.setEnabled(False)
+            if self.stop_download_btn:
+                self.stop_download_btn.setEnabled(False)
+
+            # 清除任务ID
+            if hasattr(self, "current_download_task_id"):
+                delattr(self, "current_download_task_id")
+        else:
+            self.show_error(f"停止失败: {result.get('message', '未知错误')}")
         if self.start_download_btn:
             self.start_download_btn.setEnabled(True)
         if self.pause_download_btn:
@@ -747,10 +842,10 @@ class DataCenter(BaseWidget, LoggerMixin):
         if self.stop_download_btn:
             self.stop_download_btn.setEnabled(False)
 
-    def _toggle_detail_progress(self, _checked: bool):
+    def _toggle_detail_progress(self, checked: bool):  # noqa: U101
         """切换详细进度显示."""
         if self.detail_progress_table:
-            self.detail_progress_table.setVisible(_checked)
+            self.detail_progress_table.setVisible(checked)
 
     # ==================== 数据源管理事件处理 ====================
 

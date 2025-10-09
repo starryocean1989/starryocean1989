@@ -216,9 +216,7 @@ class DatabaseManager:
             cursor.execute(
                 "CREATE INDEX IF NOT EXISTS idx_system_logs_timestamp ON system_logs(timestamp)"
             )
-            cursor.execute(
-                "CREATE INDEX IF NOT EXISTS idx_system_logs_level ON system_logs(level)"
-            )
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_system_logs_level ON system_logs(level)")
 
             conn.commit()
             logger.info("数据库表初始化完成")
@@ -238,9 +236,7 @@ class DatabaseManager:
         finally:
             conn.close()
 
-    def execute_query(
-        self, query: str, params: Optional[Tuple] = None
-    ) -> List[Dict[str, Any]]:
+    def execute_query(self, query: str, params: Optional[Tuple] = None) -> List[Dict[str, Any]]:
         """
         执行查询并返回结果
 

@@ -208,9 +208,7 @@ class DataEngineConfigManager:
             self.logger.error("更新数据库配置失败: %s", e)
             return False
 
-    def update_network_config(
-        self, **kwargs: Union[str, int, float, bool, None]
-    ) -> bool:
+    def update_network_config(self, **kwargs: Union[str, int, float, bool, None]) -> bool:
         """
         更新网络配置.
 

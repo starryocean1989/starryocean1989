@@ -104,9 +104,7 @@ class TDXHqClient(BaseDataAdapter):
                 if self._socket:
                     self._socket.close()
 
-                self._logger.info(
-                    "正在连接到TDX服务器 %s:%s", self._config.host, self._config.port
-                )
+                self._logger.info("正在连接到TDX服务器 %s:%s", self._config.host, self._config.port)
                 self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 self._socket.settimeout(self._config.timeout)
                 self._socket.connect((self._config.host, self._config.port))
@@ -235,9 +233,7 @@ class TDXHqClient(BaseDataAdapter):
                 # 读取响应数据
                 response_data = self._socket.recv(zip_size)
                 if len(response_data) != zip_size:
-                    self._logger.error(
-                        "响应数据长度错误: %d != %d", len(response_data), zip_size
-                    )
+                    self._logger.error("响应数据长度错误: %d != %d", len(response_data), zip_size)
                     return None
 
                 # 如果数据被压缩，需要解压
@@ -270,9 +266,7 @@ class TDXHqClient(BaseDataAdapter):
             self._logger.error("格式化证券代码 %s 时出错: %s", code, exc)
             return struct.pack("<B6s", market, code.zfill(6).encode("ascii"))
 
-    async def get_security_quotes(
-        self, stocks: List[Tuple[int, str]]
-    ) -> List[Dict[str, Any]]:
+    async def get_security_quotes(self, stocks: List[Tuple[int, str]]) -> List[Dict[str, Any]]:
         """
         获取行情数据.
 
@@ -577,9 +571,7 @@ class TDXHqClient(BaseDataAdapter):
 
                 kline = {
                     "code": "UNKNOWN",  # 需要从请求中获取
-                    "datetime": (
-                        f"{year:04d}-{month:02d}-{day:02d} " f"{hour:02d}:{minute:02d}"
-                    ),
+                    "datetime": (f"{year:04d}-{month:02d}-{day:02d} " f"{hour:02d}:{minute:02d}"),
                     "open": self._calc_price(open_price, 0),
                     "high": self._calc_price(high_price, 0),
                     "low": self._calc_price(low_price, 0),

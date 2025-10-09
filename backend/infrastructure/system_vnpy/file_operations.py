@@ -65,9 +65,7 @@ class DirectoryManager:
             self.logger.error("创建目录失败: %s", e)
             return False
 
-    def list_directory(
-        self, path: str, pattern: str = "*", recursive: bool = False
-    ) -> List[str]:
+    def list_directory(self, path: str, pattern: str = "*", recursive: bool = False) -> List[str]:
         """列出目录内容."""
         try:
             if not os.path.exists(path):
@@ -384,9 +382,7 @@ class FilePermissionManager:
             self.logger.error("设置安全权限失败: %s", e)
             return False
 
-    def batch_set_permissions(
-        self, paths: List[str], mode: Union[int, str]
-    ) -> List[bool]:
+    def batch_set_permissions(self, paths: List[str], mode: Union[int, str]) -> List[bool]:
         """批量设置权限."""
         results = []
         for path in paths:
@@ -394,9 +390,7 @@ class FilePermissionManager:
         return results
 
 
-def _handle_file_operations(
-    operation: Dict[str, Any], file_manager: FileManager
-) -> bool:
+def _handle_file_operations(operation: Dict[str, Any], file_manager: FileManager) -> bool:
     """处理文件操作."""
     op_type = operation.get("operation")
     path = operation.get("path")
@@ -416,23 +410,17 @@ def _handle_file_operations(
     return False
 
 
-def _handle_directory_operations(
-    operation: Dict[str, Any], dir_manager: DirectoryManager
-) -> bool:
+def _handle_directory_operations(operation: Dict[str, Any], dir_manager: DirectoryManager) -> bool:
     """处理目录操作."""
     op_type = operation.get("operation")
     path = operation.get("path")
 
     if op_type == "create_directory":
         exist_ok = operation.get("exist_ok", True)
-        return (
-            dir_manager.create_directory(path, exist_ok) if path is not None else False
-        )
+        return dir_manager.create_directory(path, exist_ok) if path is not None else False
     elif op_type == "delete_directory":
         recursive = operation.get("recursive", False)
-        return (
-            dir_manager.delete_directory(path, recursive) if path is not None else False
-        )
+        return dir_manager.delete_directory(path, recursive) if path is not None else False
     elif op_type == "copy_directory":
         dst = operation.get("destination")
         ignore_patterns = operation.get("ignore_patterns")
@@ -443,20 +431,14 @@ def _handle_directory_operations(
         )
     elif op_type == "move_directory":
         dst = operation.get("destination")
-        return (
-            dir_manager.move_directory(path, dst) if path is not None and dst else False
-        )
+        return dir_manager.move_directory(path, dst) if path is not None and dst else False
     elif op_type == "get_info":
         info = dir_manager.get_directory_info(path) if path is not None else None
         return info is not None
     elif op_type == "list_directory":
         pattern = operation.get("pattern", "*")
         recursive = operation.get("recursive", False)
-        files = (
-            dir_manager.list_directory(path, pattern, recursive)
-            if path is not None
-            else []
-        )
+        files = dir_manager.list_directory(path, pattern, recursive) if path is not None else []
         return len(files) >= 0
     return False
 
@@ -533,9 +515,7 @@ def batch_file_operations(operations: List[Dict[str, Any]]) -> List[bool]:
 
     for operation in operations:
         try:
-            result = _execute_file_operation(
-                operation, file_manager, dir_manager, perm_manager
-            )
+            result = _execute_file_operation(operation, file_manager, dir_manager, perm_manager)
             results.append(result)
         except (OSError, shutil.Error) as e:
             logger.error("批量操作执行失败: %s", e)

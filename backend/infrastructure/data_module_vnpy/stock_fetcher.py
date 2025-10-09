@@ -181,7 +181,7 @@ class StockFetcher:
         Returns:
             分类后的品种代码字典
         """
-        result = {
+        result: Dict[str, List[str]] = {
             "上证A股": [],
             "深证A股": [],
             "北证A股": [],  # 从API数据中按前缀筛选

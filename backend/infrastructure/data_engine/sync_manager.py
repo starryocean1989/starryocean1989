@@ -17,9 +17,7 @@ class DataPersistenceService(ABC):
     """数据持久化服务接口."""
 
     @abstractmethod
-    async def save_data(
-        self, _data: Dict[str, Any], _source: str  # noqa: U101
-    ) -> bool:
+    async def save_data(self, _data: Dict[str, Any], _source: str) -> bool:  # noqa: U101
         """保存数据."""
         raise NotImplementedError
 

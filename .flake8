@@ -5,3 +5,5 @@ extend-ignore = E402,D400,I100,E501,W503
 exclude =
     strategies/templates/,
     strategies/templates/*.py
+per-file-ignores =
+    typings/*.pyi:U100,B018,F401,F811,D100,D101,D102,D103,D104,D105,D107,E704,E302

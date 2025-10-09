@@ -43,38 +43,30 @@ class DataFileWatcher(FileSystemEventHandler):
         self.watched_extensions = {".parquet"}
 
         # 防抖机制
-        self._last_check_time = {}
+        self._last_check_time: Dict[str, float] = {}
         self._check_interval = 5  # 5秒内不重复检查同一文件
 
     def on_created(self, event: FileSystemEvent) -> None:
         """文件创建事件"""
-        src_path = (
-            str(event.src_path) if isinstance(event.src_path, bytes) else event.src_path
-        )
+        src_path = str(event.src_path) if isinstance(event.src_path, bytes) else event.src_path
         if not event.is_directory and self._should_watch(src_path):
             self._handle_file_change(src_path, "created")
 
     def on_modified(self, event: FileSystemEvent) -> None:
         """文件修改事件"""
-        src_path = (
-            str(event.src_path) if isinstance(event.src_path, bytes) else event.src_path
-        )
+        src_path = str(event.src_path) if isinstance(event.src_path, bytes) else event.src_path
         if not event.is_directory and self._should_watch(src_path):
             self._handle_file_change(src_path, "modified")
 
     def on_deleted(self, event: FileSystemEvent) -> None:
         """文件删除事件"""
-        src_path = (
-            str(event.src_path) if isinstance(event.src_path, bytes) else event.src_path
-        )
+        src_path = str(event.src_path) if isinstance(event.src_path, bytes) else event.src_path
         if not event.is_directory and self._should_watch(src_path):
             self._handle_file_change(src_path, "deleted")
 
     def on_moved(self, event: FileSystemEvent) -> None:
         """文件移动事件"""
-        src_path = (
-            str(event.src_path) if isinstance(event.src_path, bytes) else event.src_path
-        )
+        src_path = str(event.src_path) if isinstance(event.src_path, bytes) else event.src_path
         if not event.is_directory and self._should_watch(src_path):
             self._handle_file_change(src_path, "moved")
 
@@ -104,8 +96,7 @@ class DataFileWatcher(FileSystemEventHandler):
             current_time = time.time()
             if (
                 file_path in self._last_check_time
-                and current_time - self._last_check_time[file_path]
-                < self._check_interval
+                and current_time - self._last_check_time[file_path] < self._check_interval
             ):
                 return
 
@@ -151,9 +142,7 @@ class DataFileWatcher(FileSystemEventHandler):
             self.logger.error("解析文件路径失败: %s, %s", file_path, e)
             return None, None
 
-    def _validate_changed_data(
-        self, symbol: str, interval: str, event_type: str
-    ) -> None:
+    def _validate_changed_data(self, symbol: str, interval: str, event_type: str) -> None:
         """
         校验变化的数据
 
@@ -177,9 +166,7 @@ class DataFileWatcher(FileSystemEventHandler):
                     self.logger.info("数据校验通过: %s %s", symbol, interval)
                 else:
                     errors = result.errors
-                    self.logger.warning(
-                        "数据校验失败: %s %s, 错误: %s", symbol, interval, errors
-                    )
+                    self.logger.warning("数据校验失败: %s %s, 错误: %s", symbol, interval, errors)
             else:
                 self.logger.warning("数据校验失败: %s %s", symbol, interval)
 

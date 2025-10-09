@@ -3,17 +3,17 @@
 交易网关服务.
 
 提供完整的交易网关管理功能，包括：
-- 7种网关的注册和管理（CTP, CTP mini, Sopt, TTS, IB, PaperAccount, TDX Gateway）
+- 7种网关的注册和管理（CTP, CTP mini, Sopt, TTS, IB, PaperAccount, TradeX Gateway）
 - 策略实例管理（策略池、部署、控制）
 - 交易监控（6种策略模板适配、交易数据、风险监控）
 """
 
-import logging
+import contextlib
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 from enum import Enum
 
-from backend.services.base_service import BaseService
+from backend.services.base_and_utils import BaseService
 
 
 class GatewayType(Enum):
@@ -25,7 +25,7 @@ class GatewayType(Enum):
     TTS = "tts"  # 国内期货仿真交易
     IB = "ib"  # 海外证券、期货、期权、贵金属
     PAPER_ACCOUNT = "paperaccount"  # 纯本地模拟交易
-    TDX_GATEWAY = "tdx"  # 国内股票交易（通达信）
+    TRADEX_GATEWAY = "tdx"  # 国内股票交易（TradeX标准接口）
 
 
 class StrategyEngineType(Enum):
@@ -62,6 +62,12 @@ class TradingGatewayService(BaseService):
         # 网关配置模板
         self.gateway_config_templates = self._init_gateway_templates()
 
+        # 网关类字典（在 _do_initialize 中填充）
+        self.gateway_classes: Dict[str, Any] = {}
+
+        # 风险管理引擎
+        self.risk_engine = None
+
         self.logger.info("交易网关服务已创建")
 
     def _do_initialize(self) -> bool:
@@ -76,6 +82,9 @@ class TradingGatewayService(BaseService):
 
             # 初始化网关类
             self._init_gateway_classes()
+
+            # 初始化风险管理引擎
+            self._init_risk_manager()
 
             return True
 
@@ -168,11 +177,20 @@ class TradingGatewayService(BaseService):
                 "requires_address": False,  # 不需要地址
                 "config_fields": ["初始资金"],
             },
-            GatewayType.TDX_GATEWAY.value: {
-                "name": "TDX Gateway",
-                "description": "国内股票交易（通达信）",
+            GatewayType.TRADEX_GATEWAY.value: {
+                "name": "TradeX",
+                "description": "国内股票交易（TradeX标准接口）",
                 "requires_address": True,
-                "config_fields": ["服务器地址", "用户名", "密码", "通达信路径"],
+                "config_fields": [
+                    "服务器IP",
+                    "服务器端口",
+                    "客户端版本",
+                    "营业部ID",
+                    "登录账号",
+                    "交易账号",
+                    "交易密码",
+                    "通讯密码",
+                ],
             },
         }
 
@@ -191,19 +209,113 @@ class TradingGatewayService(BaseService):
             except ImportError:
                 self.logger.warning("⚠️ CTP网关类不可用")
 
-            # PaperAccount
+            # PaperAccount（使用适配器集成）
             try:
-                from vnpy_paperaccount import PaperAccountGateway
+                from backend.infrastructure.gateway_adapters import PaperAccountGateway
 
                 self.gateway_classes[GatewayType.PAPER_ACCOUNT.value] = PaperAccountGateway
                 self.logger.info("✅ PaperAccount网关类可用")
             except ImportError:
                 self.logger.warning("⚠️ PaperAccount网关类不可用")
 
-            # TODO: 导入其他网关类
+            # CTP Mini
+            try:
+                from vnpy_mini import MiniGateway
+
+                self.gateway_classes[GatewayType.CTP_MINI.value] = MiniGateway
+                self.logger.info("✅ CTP Mini网关类可用")
+            except ImportError:
+                self.logger.warning("⚠️ CTP Mini网关类不可用")
+
+            # Sopt
+            try:
+                from vnpy_sopt import SoptGateway
+
+                self.gateway_classes[GatewayType.SOPT.value] = SoptGateway
+                self.logger.info("✅ Sopt网关类可用")
+            except ImportError:
+                self.logger.warning("⚠️ Sopt网关类不可用")
+
+            # TTS
+            try:
+                from vnpy_tts import TtsGateway
+
+                self.gateway_classes[GatewayType.TTS.value] = TtsGateway
+                self.logger.info("✅ TTS网关类可用")
+            except ImportError:
+                self.logger.warning("⚠️ TTS网关类不可用")
+
+            # IB (Interactive Brokers)
+            try:
+                from vnpy_ib import IbGateway
+
+                self.gateway_classes[GatewayType.IB.value] = IbGateway
+                self.logger.info("✅ IB网关类可用")
+            except ImportError:
+                self.logger.warning("⚠️ IB网关类不可用")
+
+            # TradeX Gateway（国内股票交易）
+            try:
+                from backend.infrastructure.gateway_adapters import TradeXGateway
+
+                self.gateway_classes[GatewayType.TRADEX_GATEWAY.value] = TradeXGateway
+                self.logger.info("✅ TradeX网关类可用")
+            except ImportError:
+                self.logger.warning("⚠️ TradeX网关类不可用")
 
         except Exception as e:
             self.logger.error("初始化网关类失败: %s", e, exc_info=True)
+
+    def _init_risk_manager(self):
+        """初始化风险管理引擎."""
+        try:
+            if not self.main_engine:
+                self.logger.warning("MainEngine不可用，无法初始化风险管理")
+                return
+
+            # 尝试导入vnpy_riskmanager
+            try:
+                from vnpy_riskmanager import RiskManagerApp
+
+                # 添加风险管理应用到MainEngine
+                self.risk_engine = self.main_engine.add_app(RiskManagerApp)
+
+                if self.risk_engine:
+                    self.logger.info("✅ 风险管理引擎初始化成功")
+
+                    # 设置默认风控参数
+                    self._set_default_risk_parameters()
+                else:
+                    self.logger.warning("⚠️ 风险管理引擎获取失败")
+
+            except ImportError:
+                self.logger.warning("⚠️ vnpy_riskmanager未安装")
+
+        except Exception as e:
+            self.logger.error("风险管理引擎初始化失败: %s", e, exc_info=True)
+
+    def _set_default_risk_parameters(self):
+        """设置默认风控参数."""
+        if not self.risk_engine:
+            return
+
+        try:
+            # 设置默认风控参数
+            default_params = {
+                "order_flow_limit": 50,  # 单位时间内委托流量限制
+                "order_flow_clear": 1,  # 委托流量清空时间（秒）
+                "order_size_limit": 1000,  # 单笔委托数量限制
+                "order_cancel_limit": 100,  # 单位时间内撤单次数限制
+                "trade_limit": 100,  # 单位时间内成交限制
+                "active_order_limit": 50,  # 活动委托数量限制
+            }
+
+            if hasattr(self.risk_engine, "update_setting"):
+                self.risk_engine.update_setting(default_params)
+                self.logger.info("风控参数已设置")
+
+        except Exception as e:
+            self.logger.warning("设置风控参数失败: %s", e)
 
     # ==================== 网关管理 ====================
 
@@ -273,7 +385,7 @@ class TradingGatewayService(BaseService):
 
             # 添加网关类到MainEngine（如果尚未添加）
             self.main_engine.add_gateway(gateway_class)
-            self.logger.info(f"网关类 {gateway_type} 已注册到MainEngine")
+            self.logger.info("网关类 %s 已注册到MainEngine", gateway_type)
 
             # 保存网关实例信息（实际的网关实例在connect时创建）
             self.gateway_instances[gateway_name] = {
@@ -288,7 +400,7 @@ class TradingGatewayService(BaseService):
             # 初始化该网关的策略池
             self.strategy_instances[gateway_name] = {}
 
-            self.logger.info(f"网关 '{gateway_name}' (类型: {gateway_type}) 创建成功")
+            self.logger.info("网关 '%s' (类型: %s) 创建成功", gateway_name, gateway_type)
 
             return {
                 "success": True,
@@ -331,6 +443,13 @@ class TradingGatewayService(BaseService):
             if password:
                 connect_setting["密码"] = password
 
+            # 检查main_engine是否可用
+            if self.main_engine is None:
+                return {
+                    "success": False,
+                    "message": "MainEngine不可用",
+                }
+
             # 调用main_engine连接
             # gateway_name作为vnpy中的gateway_name参数
             self.main_engine.connect(connect_setting, gateway_type)
@@ -338,7 +457,7 @@ class TradingGatewayService(BaseService):
             # 更新状态
             gateway_info["connected"] = True
 
-            self.logger.info(f"网关 '{gateway_name}' 连接请求已发送")
+            self.logger.info("网关 '%s' 连接请求已发送", gateway_name)
 
             return {
                 "success": True,
@@ -370,19 +489,18 @@ class TradingGatewayService(BaseService):
                 }
 
             gateway_info = self.gateway_instances[gateway_name]
-            gateway_type = gateway_info["type"]
 
             # 先停止该网关的所有策略
             self._stop_gateway_strategies(gateway_name)
 
-            # 断开网关（使用gateway_type作为gateway_name参数）
+            # 断开网关
             if self.main_engine:
                 self.main_engine.close()  # 关闭所有网关连接
                 # 注意：VNPY的close()会关闭所有网关，如果需要单独关闭，需要其他方法
 
             gateway_info["connected"] = False
 
-            self.logger.info(f"网关 '{gateway_name}' 已断开")
+            self.logger.info("网关 '%s' 已断开", gateway_name)
 
             return {
                 "success": True,
@@ -416,10 +534,7 @@ class TradingGatewayService(BaseService):
             # 先断开
             self.disconnect_gateway(gateway_name)
 
-            # 删除网关
-            if self.terminal_engine:
-                self.terminal_engine.remove_gateway(gateway_name)
-
+            # 删除网关实例信息
             del self.gateway_instances[gateway_name]
             if gateway_name in self.strategy_instances:
                 del self.strategy_instances[gateway_name]
@@ -504,6 +619,13 @@ class TradingGatewayService(BaseService):
             # 确定策略引擎类型（默认CTA）
             engine_name = strategy_params.get("engine_type", "CtaStrategy")
 
+            # 检查main_engine是否可用
+            if self.main_engine is None:
+                return {
+                    "success": False,
+                    "message": "MainEngine不可用",
+                }
+
             # 获取策略引擎
             try:
                 strategy_engine = self.main_engine.get_engine(engine_name)
@@ -533,10 +655,10 @@ class TradingGatewayService(BaseService):
                     setting=setting,
                 )
 
-                self.logger.info(f"策略 '{strategy_name}' 已添加到引擎 '{engine_name}'")
+                self.logger.info("策略 '%s' 已添加到引擎 '%s'", strategy_name, engine_name)
 
             except Exception as e:
-                self.logger.error(f"添加策略失败: {e}", exc_info=True)
+                self.logger.error("添加策略失败: %s", e, exc_info=True)
                 return {
                     "success": False,
                     "message": f"添加策略失败: {str(e)}",
@@ -593,6 +715,13 @@ class TradingGatewayService(BaseService):
             strategy_info = self.strategy_instances[gateway_name][strategy_name]
             engine_name = strategy_info.get("engine_name", "CtaStrategy")
 
+            # 检查main_engine是否可用
+            if self.main_engine is None:
+                return {
+                    "success": False,
+                    "message": "MainEngine不可用",
+                }
+
             # 获取策略引擎
             try:
                 strategy_engine = self.main_engine.get_engine(engine_name)
@@ -611,14 +740,14 @@ class TradingGatewayService(BaseService):
             try:
                 # 先初始化策略
                 strategy_engine.init_strategy(strategy_name)
-                self.logger.info(f"策略 '{strategy_name}' 初始化完成")
+                self.logger.info("策略 '%s' 初始化完成", strategy_name)
 
                 # 启动策略
                 strategy_engine.start_strategy(strategy_name)
-                self.logger.info(f"策略 '{strategy_name}' 已启动")
+                self.logger.info("策略 '%s' 已启动", strategy_name)
 
             except Exception as e:
-                self.logger.error(f"启动策略失败: {e}", exc_info=True)
+                self.logger.error("启动策略失败: %s", e, exc_info=True)
                 return {
                     "success": False,
                     "message": f"启动策略失败: {str(e)}",
@@ -666,6 +795,13 @@ class TradingGatewayService(BaseService):
             strategy_info = self.strategy_instances[gateway_name][strategy_name]
             engine_name = strategy_info.get("engine_name", "CtaStrategy")
 
+            # 检查main_engine是否可用
+            if self.main_engine is None:
+                return {
+                    "success": False,
+                    "message": "MainEngine不可用",
+                }
+
             # 获取策略引擎
             try:
                 strategy_engine = self.main_engine.get_engine(engine_name)
@@ -683,10 +819,10 @@ class TradingGatewayService(BaseService):
             # 停止策略
             try:
                 strategy_engine.stop_strategy(strategy_name)
-                self.logger.info(f"策略 '{strategy_name}' 已停止")
+                self.logger.info("策略 '%s' 已停止", strategy_name)
 
             except Exception as e:
-                self.logger.error(f"停止策略失败: {e}", exc_info=True)
+                self.logger.error("停止策略失败: %s", e, exc_info=True)
                 return {
                     "success": False,
                     "message": f"停止策略失败: {str(e)}",
@@ -851,7 +987,7 @@ class TradingGatewayService(BaseService):
 
     def _stop_all_strategies(self):
         """停止所有策略."""
-        for gateway_name in self.strategy_instances.keys():
+        for gateway_name in self.strategy_instances:
             self._stop_gateway_strategies(gateway_name)
 
     # ==================== 交易监控 ====================
@@ -967,3 +1103,352 @@ class TradingGatewayService(BaseService):
                 "success": False,
                 "message": f"获取失败: {str(e)}",
             }
+
+    # ==================== 风险管理 ====================
+
+    def get_risk_status(self) -> Dict[str, Any]:
+        """获取风险管理状态.
+
+        Returns:
+            Dict: 风险管理状态信息
+        """
+        try:
+            if not self.risk_engine:
+                return {
+                    "success": False,
+                    "message": "风险管理引擎不可用",
+                    "enabled": False,
+                }
+
+            # 获取风控状态
+            status = {
+                "enabled": True,
+                "active": False,
+                "parameters": {},
+            }
+
+            # 获取风控参数
+            if hasattr(self.risk_engine, "get_parameters"):
+                with contextlib.suppress(Exception):
+                    status["parameters"] = self.risk_engine.get_parameters()
+
+            # 获取风控激活状态
+            if hasattr(self.risk_engine, "is_active"):
+                with contextlib.suppress(Exception):
+                    status["active"] = self.risk_engine.is_active()
+
+            return {
+                "success": True,
+                "status": status,
+            }
+
+        except Exception as e:
+            self._log_error("获取风险管理状态", e)
+            return {
+                "success": False,
+                "message": f"获取失败: {str(e)}",
+            }
+
+    def update_risk_parameters(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        """更新风控参数.
+
+        Args:
+            parameters: 风控参数字典
+
+        Returns:
+            Dict: 更新结果
+        """
+        try:
+            if not self.risk_engine:
+                return {
+                    "success": False,
+                    "message": "风险管理引擎不可用",
+                }
+
+            if hasattr(self.risk_engine, "update_setting"):
+                self.risk_engine.update_setting(parameters)
+                self.logger.info(f"风控参数已更新: {list(parameters.keys())}")
+
+                return {
+                    "success": True,
+                    "message": "风控参数已更新",
+                }
+            else:
+                return {
+                    "success": False,
+                    "message": "风险管理引擎不支持update_setting方法",
+                }
+
+        except Exception as e:
+            self._log_error("更新风控参数", e)
+            return {
+                "success": False,
+                "message": f"更新失败: {str(e)}",
+            }
+
+    def set_risk_active(self, active: bool) -> Dict[str, Any]:
+        """启用/禁用风控.
+
+        Args:
+            active: True=启用，False=禁用
+
+        Returns:
+            Dict: 操作结果
+        """
+        try:
+            if not self.risk_engine:
+                return {
+                    "success": False,
+                    "message": "风险管理引擎不可用",
+                }
+
+            if hasattr(self.risk_engine, "set_active"):
+                self.risk_engine.set_active(active)
+                action = "启用" if active else "禁用"
+                self.logger.info(f"风控已{action}")
+
+                return {
+                    "success": True,
+                    "message": f"风控已{action}",
+                }
+            else:
+                return {
+                    "success": False,
+                    "message": "风险管理引擎不支持set_active方法",
+                }
+
+        except Exception as e:
+            self._log_error("设置风控状态", e)
+            return {
+                "success": False,
+                "message": f"操作失败: {str(e)}",
+            }
+
+    # ==================== 策略类型识别与监控适配 ====================
+
+    def identify_strategy_type(
+        self,
+        strategy_class_name: str,
+        gateway_name: Optional[str] = None,
+        strategy_name: Optional[str] = None,
+    ) -> str:
+        """识别策略类型.
+
+        通过策略类名或策略实例的继承关系识别策略类型。
+
+        Args:
+            strategy_class_name: 策略类名
+            gateway_name: 网关名称（可选，用于查找已部署策略）
+            strategy_name: 策略名称（可选，用于查找已部署策略）
+
+        Returns:
+            str: 策略引擎类型 (algotrading/ctastrategy/optionmaster/portfoliostrategy/scripttrader/spreadtrading)
+        """
+        try:
+            # 方法1: 根据策略类名模式识别
+            class_name_lower = strategy_class_name.lower()
+
+            # algotrading: 算法交易策略
+            if any(
+                keyword in class_name_lower
+                for keyword in ["algo", "twap", "vwap", "iceberg", "sniper", "stop"]
+            ):
+                return StrategyEngineType.ALGO_TRADING.value
+
+            # optionmaster: 期权策略
+            if any(
+                keyword in class_name_lower
+                for keyword in ["option", "greeks", "delta", "gamma", "vega", "theta"]
+            ):
+                return StrategyEngineType.OPTION_MASTER.value
+
+            # spreadtrading: 价差交易
+            if any(keyword in class_name_lower for keyword in ["spread", "arbitrage", "pair"]):
+                return StrategyEngineType.SPREAD_TRADING.value
+
+            # portfoliostrategy: 组合策略
+            if any(keyword in class_name_lower for keyword in ["portfolio", "multi", "basket"]):
+                return StrategyEngineType.PORTFOLIO_STRATEGY.value
+
+            # scripttrader: 脚本交易
+            if any(keyword in class_name_lower for keyword in ["script", "manual"]):
+                return StrategyEngineType.SCRIPT_TRADER.value
+
+            # 方法2: 从已部署的策略实例获取引擎类型
+            if (
+                gateway_name
+                and strategy_name
+                and gateway_name in self.strategy_instances
+                and strategy_name in self.strategy_instances[gateway_name]
+            ):
+                strategy_info = self.strategy_instances[gateway_name][strategy_name]
+                engine_type = strategy_info.get("engine_type", "")
+                if engine_type:
+                    return engine_type.lower()
+
+            # 默认返回CTA策略
+            return StrategyEngineType.CTA_STRATEGY.value
+
+        except Exception as e:
+            self.logger.error(f"识别策略类型失败: {e}")
+            return StrategyEngineType.CTA_STRATEGY.value
+
+    def get_monitor_template_for_strategy(
+        self, strategy_type: Optional[str] = None, strategy_class_name: Optional[str] = None
+    ) -> str:
+        """获取策略对应的监控UI模板.
+
+        Args:
+            strategy_type: 策略引擎类型
+            strategy_class_name: 策略类名（如果strategy_type未提供）
+
+        Returns:
+            str: 监控模板名称
+        """
+        try:
+            # 如果未提供策略类型，先识别
+            if not strategy_type and strategy_class_name:
+                strategy_type = self.identify_strategy_type(strategy_class_name)
+
+            # 确保strategy_type不为None
+            if strategy_type is None:
+                return "default_monitor"
+
+            # 根据策略类型返回对应的监控模板
+            monitor_templates = {
+                StrategyEngineType.ALGO_TRADING.value: "algo_monitor",
+                StrategyEngineType.CTA_STRATEGY.value: "cta_monitor",
+                StrategyEngineType.OPTION_MASTER.value: "option_monitor",
+                StrategyEngineType.PORTFOLIO_STRATEGY.value: "portfolio_monitor",
+                StrategyEngineType.SCRIPT_TRADER.value: "default_monitor",
+                StrategyEngineType.SPREAD_TRADING.value: "spread_monitor",
+            }
+
+            return monitor_templates.get(strategy_type, "default_monitor")  # 默认返回通用监控模板
+
+        except Exception as e:
+            self.logger.error(f"获取监控模板失败: {e}")
+            return "default_monitor"
+
+    def get_strategy_monitoring_data(self, gateway_name: str, strategy_name: str) -> Dict[str, Any]:
+        """获取策略监控数据.
+
+        根据策略类型返回不同的监控数据结构。
+
+        Args:
+            gateway_name: 网关名称
+            strategy_name: 策略名称
+
+        Returns:
+            Dict: 监控数据（包含策略类型、监控模板、监控数据）
+        """
+        try:
+            # 检查策略是否存在
+            if gateway_name not in self.strategy_instances:
+                return {"success": False, "message": f"网关 '{gateway_name}' 不存在"}
+
+            if strategy_name not in self.strategy_instances[gateway_name]:
+                return {"success": False, "message": f"策略 '{strategy_name}' 不存在"}
+
+            strategy_info = self.strategy_instances[gateway_name][strategy_name]
+
+            # 识别策略类型
+            strategy_class = strategy_info.get("class_name", "")
+            strategy_type = self.identify_strategy_type(strategy_class, gateway_name, strategy_name)
+
+            # 获取监控模板
+            monitor_template = self.get_monitor_template_for_strategy(strategy_type)
+
+            # 构建监控数据
+            monitoring_data = {
+                "success": True,
+                "strategy_name": strategy_name,
+                "strategy_class": strategy_class,
+                "strategy_type": strategy_type,
+                "monitor_template": monitor_template,
+                "status": strategy_info.get("status", "stopped"),
+                "data": self._get_strategy_specific_data(strategy_type, strategy_info),
+            }
+
+            return monitoring_data
+
+        except Exception as e:
+            self._log_error(f"获取策略监控数据[{gateway_name}.{strategy_name}]", e)
+            return {"success": False, "message": f"获取失败: {str(e)}"}
+
+    def _get_strategy_specific_data(
+        self, strategy_type: str, strategy_info: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """获取策略类型特定的监控数据.
+
+        Args:
+            strategy_type: 策略类型
+            strategy_info: 策略信息
+
+        Returns:
+            Dict: 策略特定监控数据
+        """
+        # 基础监控数据
+        base_data = {
+            "parameters": strategy_info.get("parameters", {}),
+            "variables": strategy_info.get("variables", {}),
+            "timestamp": datetime.now().isoformat(),
+        }
+
+        # 根据策略类型添加特定数据
+        if strategy_type == StrategyEngineType.ALGO_TRADING.value:
+            # 算法交易：执行进度、目标价格、成交进度
+            base_data.update(
+                {
+                    "progress_percent": strategy_info.get("progress_percent", 0),
+                    "target_price": strategy_info.get("target_price", 0),
+                    "filled_volume": strategy_info.get("filled_volume", 0),
+                    "target_volume": strategy_info.get("target_volume", 0),
+                }
+            )
+
+        elif strategy_type == StrategyEngineType.CTA_STRATEGY.value:
+            # CTA策略：持仓、K线数据
+            base_data.update(
+                {
+                    "position": strategy_info.get("position", 0),
+                    "entry_price": strategy_info.get("entry_price", 0),
+                    "current_price": strategy_info.get("current_price", 0),
+                    "pnl": strategy_info.get("pnl", 0),
+                }
+            )
+
+        elif strategy_type == StrategyEngineType.OPTION_MASTER.value:
+            # 期权策略：希腊字母、T型报价
+            base_data.update(
+                {
+                    "delta": strategy_info.get("delta", 0),
+                    "gamma": strategy_info.get("gamma", 0),
+                    "vega": strategy_info.get("vega", 0),
+                    "theta": strategy_info.get("theta", 0),
+                    "underlying_price": strategy_info.get("underlying_price", 0),
+                }
+            )
+
+        elif strategy_type == StrategyEngineType.PORTFOLIO_STRATEGY.value:
+            # 组合策略：多品种持仓
+            base_data.update(
+                {
+                    "positions": strategy_info.get("positions", {}),
+                    "total_value": strategy_info.get("total_value", 0),
+                    "weights": strategy_info.get("weights", {}),
+                }
+            )
+
+        elif strategy_type == StrategyEngineType.SPREAD_TRADING.value:
+            # 价差交易：价差实时价格
+            base_data.update(
+                {
+                    "spread_price": strategy_info.get("spread_price", 0),
+                    "leg1_price": strategy_info.get("leg1_price", 0),
+                    "leg2_price": strategy_info.get("leg2_price", 0),
+                    "spread_position": strategy_info.get("spread_position", 0),
+                }
+            )
+
+        return base_data

@@ -31,7 +31,7 @@ class ErrorSeverity(Enum):
     CRITICAL = "critical"
 
 
-from backend.core.utils.error_handler import error_handler
+from backend.core.utils import error_handler
 
 
 class BaseWidget(QWidget):

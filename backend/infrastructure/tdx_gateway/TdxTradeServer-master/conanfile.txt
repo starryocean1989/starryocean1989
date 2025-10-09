@@ -1,8 +1,0 @@
-// -*- coding: utf-8 -*-
-
-[requires]
-restbed/next@nunojpg/ci
-jsonformoderncpp/2.1.1@vthiery/stable
-
-[generators]
-qmake

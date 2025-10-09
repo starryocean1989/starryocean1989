@@ -17,14 +17,16 @@ from PySide6.QtWidgets import (
     QSplitter,
     QTabWidget,
     QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 import pyqtgraph as pg
 
-from backend.core.shared_services import get_service_manager
-from backend.core.utils.logging_utils import LoggerMixin
+from backend.core.base import get_service_manager
+from backend.core.utils import LoggerMixin
+
 from ui.widgets.base_widget import BaseWidget
 
 
@@ -42,6 +44,12 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
         self.custom_portfolio_table: Optional[QTableWidget] = None
         self.gateway_tab: Optional[QTabWidget] = None
         self.monitor_data: Dict[str, Any] = {}
+
+        # 监控选项卡字典（用于动态创建）
+        self.monitor_tabs: Dict[str, QWidget] = {}
+
+        # 刷新定时器
+        self.refresh_timer: Optional[Any] = None
 
         # 调用父类初始化
         super().__init__(parent, "组合投资")
@@ -283,7 +291,63 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
 
     def _create_custom_portfolio(self):
         """新建自定义组合."""
-        self.show_info("新建自定义组合功能需要vnpy集成")
+        if not self.portfolio_service:
+            self.show_error("组合投资服务不可用")
+            return
+
+        from PySide6.QtWidgets import QDialog, QFormLayout, QLineEdit, QDialogButtonBox
+
+        # 创建对话框
+        dialog = QDialog(self)
+        dialog.setWindowTitle("新建自定义组合")
+        dialog.setModal(True)
+        dialog.resize(400, 200)
+
+        layout = QFormLayout(dialog)
+
+        # 组合名称
+        name_input = QLineEdit()
+        layout.addRow("组合名称:", name_input)
+
+        # 网关列表
+        gateway_input = QLineEdit()
+        gateway_input.setPlaceholderText("输入网关名称，用逗号分隔")
+        layout.addRow("包含网关:", gateway_input)
+
+        # 按钮
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+
+        # 显示对话框
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            portfolio_name = name_input.text().strip()
+            gateways_text = gateway_input.text().strip()
+
+            if not portfolio_name:
+                self.show_error("请输入组合名称")
+                return
+
+            # 解析网关列表
+            gateway_list = [g.strip() for g in gateways_text.split(",") if g.strip()]
+
+            if not gateway_list:
+                self.show_error("请至少输入一个网关名称")
+                return
+
+            # 调用服务创建组合
+            result = self.portfolio_service.create_custom_portfolio(
+                portfolio_name=portfolio_name, gateway_names=gateway_list, weights=None
+            )
+
+            if result.get("success"):
+                self.show_info(f"组合 '{portfolio_name}' 创建成功")
+                self.refresh_data()
+            else:
+                self.show_error(f"创建组合失败: {result.get('message', '未知错误')}")
 
     def _delete_custom_portfolio(self):
         """删除自定义组合."""
@@ -305,6 +369,13 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
         if self.gateway_tab:
             self.gateway_tab.currentChanged.connect(self._on_gateway_tab_changed)
 
+        # 启动自动刷新定时器
+        from PySide6.QtCore import QTimer
+
+        self.refresh_timer = QTimer(self)
+        self.refresh_timer.timeout.connect(self._auto_refresh_portfolios)
+        self.refresh_timer.start(5000)  # 每5秒刷新一次
+
     def _on_gateway_tab_changed(self, index: int):
         """网关选项卡切换."""
         if index >= 0 and self.gateway_tab:
@@ -313,7 +384,140 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
 
     def refresh_data(self):
         """刷新数据."""
-        self.show_info("组合投资数据已刷新")
+        try:
+            if not self.portfolio_service:
+                return
+
+            # 获取组合列表
+            result = self.portfolio_service.list_portfolios()
+            if not result.get("success"):
+                return
+
+            portfolios = result.get("portfolios", {})
+
+            # 更新自动组合表格
+            self._update_auto_portfolios_table(portfolios.get("auto_portfolios", []))
+
+            # 更新自定义组合表格
+            self._update_custom_portfolios_table(portfolios.get("custom_portfolios", []))
+
+            # 动态创建监控选项卡
+            self._create_portfolio_monitor_tabs(portfolios)
+
+        except Exception as e:
+            self.logger.error("刷新数据失败: %s", e)
+
+    def _update_auto_portfolios_table(self, portfolios: list):
+        """更新自动组合表格."""
+        if not self.auto_portfolio_table:
+            return
+
+        self.auto_portfolio_table.setRowCount(0)
+        for portfolio in portfolios:
+            row = self.auto_portfolio_table.rowCount()
+            self.auto_portfolio_table.insertRow(row)
+
+            gateway_name = portfolio.get("gateway_name", "")
+            strategy_count = portfolio.get("strategy_count", 0)
+
+            self.auto_portfolio_table.setItem(row, 0, QTableWidgetItem(gateway_name))
+            self.auto_portfolio_table.setItem(row, 1, QTableWidgetItem(str(strategy_count)))
+            self.auto_portfolio_table.setItem(row, 2, QTableWidgetItem("运行中"))
+
+    def _update_custom_portfolios_table(self, portfolios: list):
+        """更新自定义组合表格."""
+        if not self.custom_portfolio_table:
+            return
+
+        self.custom_portfolio_table.setRowCount(0)
+        for portfolio in portfolios:
+            row = self.custom_portfolio_table.rowCount()
+            self.custom_portfolio_table.insertRow(row)
+
+            name = portfolio.get("name", "")
+            gateway_names = portfolio.get("gateway_names", [])
+            weights = portfolio.get("weights", {})
+
+            self.custom_portfolio_table.setItem(row, 0, QTableWidgetItem(name))
+            self.custom_portfolio_table.setItem(row, 1, QTableWidgetItem(", ".join(gateway_names)))
+            self.custom_portfolio_table.setItem(row, 2, QTableWidgetItem(str(weights)))
+
+            # 添加删除按钮
+            delete_btn = QPushButton("删除")
+            delete_btn.clicked.connect(lambda _, n=name: self._delete_portfolio_by_name(n))
+            self.custom_portfolio_table.setCellWidget(row, 3, delete_btn)
+
+    def _create_portfolio_monitor_tabs(self, portfolios: Dict[str, Any]):
+        """动态创建组合监控选项卡."""
+        if not self.gateway_tab:
+            return
+
+        # 获取所有组合
+        all_portfolios = []
+        all_portfolios.extend(portfolios.get("auto_portfolios", []))
+        all_portfolios.extend(portfolios.get("custom_portfolios", []))
+
+        # 为每个组合创建监控选项卡
+        for portfolio in all_portfolios:
+            portfolio_id = portfolio.get("id") or portfolio.get("name")
+
+            if portfolio_id not in self.monitor_tabs:
+                # 创建新选项卡
+                tab = self._create_monitor_tab_with_data(portfolio)
+                self.monitor_tabs[portfolio_id] = tab
+
+                # 获取网关名称
+                gateway_name = portfolio.get("gateway_name") or portfolio.get("name")
+                self.gateway_tab.addTab(tab, f"📊 {gateway_name}")
+
+    def _create_monitor_tab_with_data(self, portfolio: Dict[str, Any]) -> QWidget:
+        """创建带数据的监控选项卡."""
+        portfolio_id = portfolio.get("id") or portfolio.get("name") or ""
+        gateway_name = portfolio.get("gateway_name") or portfolio.get("name") or ""
+
+        tab = self._create_monitor_tab(gateway_name)
+
+        # 获取监控数据并更新
+        self._refresh_portfolio_monitoring(portfolio_id, tab)
+
+        return tab
+
+    def _refresh_portfolio_monitoring(self, portfolio_id: str, _tab: QWidget):
+        """刷新组合监控数据."""
+        if not self.portfolio_service:
+            return
+
+        try:
+            # 获取监控数据
+            result = self.portfolio_service.get_portfolio_monitoring(portfolio_id)
+            if not result.get("success"):
+                return
+
+            data = result.get("data", {})
+
+            # 更新业绩指标卡片
+            # 这里可以通过查找tab中的QLabel来更新数据
+            # 为了简化，我们在这里记录日志
+            self.logger.info("组合 %s 监控数据: %s" % (portfolio_id, data))
+
+        except Exception as e:
+            self.logger.error("刷新组合监控失败: %s" % e)
+
+    def _auto_refresh_portfolios(self):
+        """自动刷新组合列表."""
+        self.refresh_data()
+
+    def _delete_portfolio_by_name(self, portfolio_name: str):
+        """通过名称删除组合."""
+        if not self.portfolio_service:
+            return
+
+        result = self.portfolio_service.delete_custom_portfolio(portfolio_name)
+        if result.get("success"):
+            self.show_info(f"组合 '{portfolio_name}' 已删除")
+            self.refresh_data()
+        else:
+            self.show_error(f"删除失败: {result.get('message')}")
 
     def on_close(self):
         """关闭处理."""

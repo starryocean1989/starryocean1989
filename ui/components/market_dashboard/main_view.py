@@ -10,6 +10,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QComboBox,
+    QDialog,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -20,14 +21,16 @@ from PySide6.QtWidgets import (
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
 import pyqtgraph as pg
 
-from backend.core.shared_services import get_service_manager
-from backend.core.utils.logging_utils import LoggerMixin
+from backend.core.base import get_service_manager
+from backend.core.utils import LoggerMixin
+
 from ui.widgets.base_widget import BaseWidget
 from ui.widgets.chart_widget import ChartWidget
 from ui.widgets.chart_toolbar_widget import ChartToolbar
@@ -359,9 +362,192 @@ class MarketDashboard(BaseWidget, LoggerMixin):
         # 启动数据更新定时器
         self.start_update_timer(1000, self._update_market_data)
 
-    def _on_symbol_changed(self, _text: str):  # noqa: U100
+    def _on_symbol_changed(self, text: str):
         """品种改变."""
         self._update_market_data()
+
+        # 自动检测数据断点
+        self._auto_detect_data_gaps(text)
+
+    def _auto_detect_data_gaps(self, symbol_text: str):
+        """自动检测数据断点并提示用户.
+
+        Args:
+            symbol_text: 品种文本（格式："代码 - 名称"）
+        """
+        if not self.market_service or not symbol_text or " - " not in symbol_text:
+            return
+
+        try:
+            # 解析品种代码
+            symbol_code = symbol_text.split(" - ")[0].strip()
+
+            # 获取当前选择的周期
+            interval = "1d"  # 默认日线
+            if self.period_combo:
+                period_text = self.period_combo.currentText()
+                interval_map = {
+                    "1分钟": "1min",
+                    "5分钟": "5min",
+                    "15分钟": "15min",
+                    "30分钟": "30min",
+                    "60分钟": "60min",
+                    "日线": "1d",
+                    "周线": "1w",
+                    "月线": "1m",
+                }
+                interval = interval_map.get(period_text, "1d")
+
+            # 调用backend的断点检测
+            from datetime import datetime, timedelta
+
+            end_date = datetime.now().strftime("%Y-%m-%d")
+            start_date = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
+
+            result = self.market_service.detect_data_gaps(
+                symbol=symbol_code, start_date=start_date, end_date=end_date, interval=interval
+            )
+
+            if not result.get("success"):
+                return
+
+            has_gaps = result.get("has_gaps", False)
+            gaps = result.get("gaps", [])
+
+            # 如果检测到断点，弹出提示
+            if has_gaps and gaps:
+                self._show_gap_warning_dialog(symbol_code, interval, gaps)
+
+        except Exception as e:
+            self.logger.error("自动检测数据断点失败: %s", e)
+
+    def _show_gap_warning_dialog(self, symbol: str, interval: str, gaps: list):
+        """显示数据断点警告对话框.
+
+        Args:
+            symbol: 品种代码
+            interval: 数据周期
+            gaps: 断点列表
+        """
+        dialog = QDialog(self)
+        dialog.setWindowTitle("数据断点检测")
+        dialog.setMinimumWidth(500)
+        dialog.setMinimumHeight(400)
+
+        layout = QVBoxLayout(dialog)
+
+        # 提示信息
+        info_label = QLabel(f"检测到品种 {symbol}（{interval}）的数据存在断点：")
+        info_label.setStyleSheet("font-weight: bold; color: #FF9800;")
+        layout.addWidget(info_label)
+
+        # 断点详情
+        gap_text = QTextEdit()
+        gap_text.setReadOnly(True)
+
+        gap_details = []
+        for i, gap in enumerate(gaps[:10], 1):  # 最多显示10个断点
+            gap_start = gap.get("gap_start", "")
+            gap_end = gap.get("gap_end", "")
+            gap_days = gap.get("gap_days", 0)
+            gap_details.append(f"{i}. {gap_start} ~ {gap_end} (缺失 {gap_days} 个周期)")
+
+        gap_text.setText("\n".join(gap_details))
+        layout.addWidget(gap_text)
+
+        # 获取增量更新建议
+        suggestion_result = {"success": False}  # 默认值
+        if self.market_service:
+            suggestion_result = self.market_service.suggest_incremental_update(symbol, interval)
+        if suggestion_result.get("success"):
+            suggestion = suggestion_result.get("suggestion", {})
+            update_info = "\n建议增量更新：\n"
+            update_info += f"开始日期：{suggestion.get('start_date', '')}\n"
+            update_info += f"结束日期：{suggestion.get('end_date', '')}\n"
+
+            if interval in ["1min", "5min"]:
+                update_info += "支持精确更新到前一根K线"
+
+            suggestion_label = QLabel(update_info)
+            suggestion_label.setStyleSheet("color: #4CAF50;")
+            layout.addWidget(suggestion_label)
+
+        # 按钮
+        button_layout = QHBoxLayout()
+
+        update_btn = QPushButton("立即更新")
+        update_btn.clicked.connect(lambda: self._start_incremental_update(symbol, interval, dialog))
+        button_layout.addWidget(update_btn)
+
+        ignore_btn = QPushButton("忽略")
+        ignore_btn.clicked.connect(dialog.reject)
+        button_layout.addWidget(ignore_btn)
+
+        layout.addLayout(button_layout)
+
+        dialog.exec()
+
+    def _start_incremental_update(self, symbol: str, interval: str, dialog: QDialog):
+        """开始增量更新.
+
+        Args:
+            symbol: 品种代码
+            interval: 数据周期
+            dialog: 对话框（用于关闭）
+        """
+        try:
+            # 调用数据中心服务进行增量下载
+            data_center_service = self.service_manager.get_service("data_center_service")
+
+            if data_center_service:
+                # 先获取建议的更新范围（从market_service）
+                if self.market_service:
+                    suggestion_result = self.market_service.suggest_incremental_update_range(
+                        symbol=symbol, interval=interval
+                    )
+
+                    if suggestion_result.get("success"):
+                        # 提取建议的开始日期
+                        update_start_time = suggestion_result.get("update_start_time", "")
+                        # 如果是ISO格式（包含时间），只取日期部分
+                        start_date = (
+                            update_start_time.split("T")[0]
+                            if "T" in update_start_time
+                            else update_start_time
+                        )
+
+                        # 如果没有获取到有效日期，使用默认值（最近30天）
+                        if not start_date:
+                            from datetime import datetime, timedelta
+
+                            start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+                    else:
+                        # 如果获取建议失败，使用默认值
+                        from datetime import datetime, timedelta
+
+                        start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+                else:
+                    # market_service不可用，使用默认值
+                    from datetime import datetime, timedelta
+
+                    start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+
+                # 使用正确的API签名调用增量下载
+                result = data_center_service.start_incremental_download(start_date=start_date)
+
+                if result.get("success"):
+                    self.show_info(
+                        f"已启动增量更新：{symbol} ({interval})\n从 {start_date} 开始更新"
+                    )
+                    dialog.accept()
+                else:
+                    self.show_error(f"启动增量更新失败：{result.get('message', '未知错误')}")
+            else:
+                self.show_warning("数据中心服务不可用")
+
+        except Exception as e:
+            self.logger.error("启动增量更新失败: %s", e)
+            self.show_error(f"启动增量更新失败: {e}")
 
     def refresh_data(self):
         """刷新数据."""

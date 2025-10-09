@@ -7,6 +7,7 @@
 from typing import Any, Dict, Optional
 
 from PySide6.QtCore import Qt
+
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -28,20 +29,21 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from backend.core.shared_services import get_service_manager
-from backend.core.utils.logging_utils import LoggerMixin
+from backend.core.base import get_service_manager
+from backend.core.utils import LoggerMixin
+
 from ui.widgets.base_widget import BaseWidget
 
 
 # 网关类型配置
 GATEWAY_TYPES = {
-    "CTP": "国内期货、期权",
-    "CTP mini": "国内期货、期权（迷你版）",
-    "Sopt": "国内ETF期权",
+    "ctp": "国内期货、期权",
+    "ctp_mini": "国内期货、期权（迷你版）",
+    "sopt": "国内ETF期权",
     "tts": "国内期货仿真交易",
     "ib": "海外证券、期货、期权、贵金属",
     "paperaccount": "纯本地模拟交易",
-    "TDX gateway": "国内股票交易",
+    "tdx": "国内股票交易（TradeX）",
 }
 
 
@@ -52,7 +54,7 @@ class TradingGateway(BaseWidget, LoggerMixin):
         """初始化交易网关."""
         # 初始化服务管理器
         self.service_manager = get_service_manager()
-        self.trading_service = None
+        self.trading_service: Optional[Any] = None
 
         # 初始化UI组件
         self.new_gateway_btn: Optional[QPushButton] = None
@@ -66,6 +68,9 @@ class TradingGateway(BaseWidget, LoggerMixin):
         self.stop_all_btn: Optional[QPushButton] = None
         self.template_combo: Optional[QComboBox] = None
         self.monitor_table: Optional[QTableWidget] = None
+        self.monitor_container: Optional[QWidget] = None
+        self.monitor_layout: Optional[QVBoxLayout] = None
+        self.auto_switch_timer: Optional[Any] = None  # QTimer类型
 
         # 调用父类初始化
         super().__init__(parent, "交易网关")
@@ -79,13 +84,14 @@ class TradingGateway(BaseWidget, LoggerMixin):
         try:
             # 从服务管理器获取交易网关服务
             self.trading_service = self.service_manager.get_service("trading_gateway_service")
-            if self.trading_service:
+            if self.trading_service is not None:
                 self.logger.info("交易网关服务获取成功")
             else:
                 self.logger.warning("交易网关服务未注册")
         except Exception as e:
             self.logger.error("获取交易网关服务失败: %s", e)
             self.show_error(f"服务获取失败: {e}")
+            self.trading_service = None
 
     def setup_ui(self):
         """设置用户界面."""
@@ -201,34 +207,277 @@ class TradingGateway(BaseWidget, LoggerMixin):
     # ==================== 交易监控子界面 ====================
 
     def _create_monitor_tab(self) -> QWidget:
-        """创建交易监控子界面."""
+        """创建交易监控子界面（支持差异化策略监控）."""
         tab = QWidget()
         layout = QVBoxLayout(tab)
 
-        # 监控模板组
-        template_group = QGroupBox("监控模板")
-        template_layout = QVBoxLayout(template_group)
+        # 策略类型选择组
+        template_group = QGroupBox("策略类型")
+        template_layout = QHBoxLayout(template_group)
 
         self.template_combo = QComboBox()
-        templates = ["委托监控", "持仓监控", "资金监控", "成交监控", "综合监控"]
-        self.template_combo.addItems(templates)
+        strategy_types = [
+            "CTA策略",
+            "算法交易",
+            "期权策略",
+            "组合策略",
+            "价差交易",
+            "脚本交易",
+            "通用监控",
+        ]
+        self.template_combo.addItems(strategy_types)
+        self.template_combo.currentTextChanged.connect(self._on_strategy_type_changed)
+        template_layout.addWidget(QLabel("当前策略类型:"))
         template_layout.addWidget(self.template_combo)
+        template_layout.addStretch()
 
         layout.addWidget(template_group)
 
-        # 监控内容组
-        monitor_group = QGroupBox("监控内容")
+        # 监控内容容器（动态切换）
+        self.monitor_container = QWidget()
+        self.monitor_layout = QVBoxLayout(self.monitor_container)
+        layout.addWidget(self.monitor_container)
+
+        # 创建默认监控界面
+        self._create_default_monitor()
+
+        return tab
+
+    def _on_strategy_type_changed(self, strategy_type: str):
+        """策略类型切换事件."""
+        # 清空容器
+        if self.monitor_layout is not None:
+            while self.monitor_layout.count():
+                child = self.monitor_layout.takeAt(0)
+                if child.widget():
+                    child.widget().deleteLater()
+
+        # 根据策略类型创建对应监控界面
+        if strategy_type == "CTA策略":
+            self._create_cta_monitor()
+        elif strategy_type == "算法交易":
+            self._create_algo_monitor()
+        elif strategy_type == "期权策略":
+            self._create_option_monitor()
+        elif strategy_type == "组合策略":
+            self._create_portfolio_monitor()
+        elif strategy_type == "价差交易":
+            self._create_spread_monitor()
+        elif strategy_type == "脚本交易":
+            self._create_script_monitor()
+        else:
+            self._create_default_monitor()
+
+    def _create_default_monitor(self):
+        """创建默认监控界面（通用）."""
+        monitor_group = QGroupBox("通用监控")
         monitor_layout = QVBoxLayout(monitor_group)
 
-        self.monitor_table = QTableWidget(0, 4)
-        self.monitor_table.setHorizontalHeaderLabels(["时间", "事件", "详情", "状态"])
+        self.monitor_table = QTableWidget(0, 6)
+        self.monitor_table.setHorizontalHeaderLabels(
+            ["时间", "策略", "事件", "品种", "详情", "状态"]
+        )
         header = self.monitor_table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
 
         monitor_layout.addWidget(self.monitor_table)
-        layout.addWidget(monitor_group)
+        if self.monitor_layout is not None:
+            self.monitor_layout.addWidget(monitor_group)
 
-        return tab
+    def _create_cta_monitor(self):
+        """创建CTA策略专用监控界面."""
+        # 尝试导入vnpy_ctastrategy的UI组件
+        cta_widget = None
+        try:
+            from vnpy_ctastrategy.ui import CtaManager
+
+            if (
+                self.trading_service
+                and hasattr(self.trading_service, "main_engine")
+                and self.trading_service.main_engine is not None
+            ):
+                cta_widget = CtaManager(
+                    self.trading_service.main_engine, self.trading_service.event_engine
+                )
+            self.logger.info("已加载vnpy_ctastrategy专用监控组件")
+        except ImportError:
+            self.logger.warning("vnpy_ctastrategy UI组件不可用，使用简化版")
+
+        if cta_widget and self.monitor_layout is not None:
+            self.monitor_layout.addWidget(cta_widget)
+        else:
+            # 简化版CTA监控
+            group = QGroupBox("CTA策略监控")
+            layout = QVBoxLayout(group)
+
+            table = QTableWidget(0, 7)
+            table.setHorizontalHeaderLabels(
+                ["策略", "持仓", "入场价", "当前价", "盈亏", "状态", "操作"]
+            )
+            header = table.horizontalHeader()
+            header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+
+            layout.addWidget(table)
+            if self.monitor_layout is not None:
+                self.monitor_layout.addWidget(group)
+
+    def _create_algo_monitor(self):
+        """创建算法交易专用监控界面."""
+        try:
+            from vnpy_algotrading.ui import AlgoManager
+
+            if (
+                self.trading_service
+                and hasattr(self.trading_service, "main_engine")
+                and self.trading_service.main_engine is not None
+            ):
+                algo_widget = AlgoManager(
+                    self.trading_service.main_engine, self.trading_service.event_engine
+                )
+            if self.monitor_layout is not None:
+                self.monitor_layout.addWidget(algo_widget)
+            self.logger.info("已加载vnpy_algotrading专用监控组件")
+        except ImportError:
+            # 简化版算法交易监控
+            group = QGroupBox("算法交易监控")
+            layout = QVBoxLayout(group)
+
+            table = QTableWidget(0, 7)
+            table.setHorizontalHeaderLabels(
+                ["算法", "目标价", "目标量", "已成交", "进度", "状态", "操作"]
+            )
+            header = table.horizontalHeader()
+            header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+
+            layout.addWidget(table)
+            if self.monitor_layout is not None:
+                self.monitor_layout.addWidget(group)
+
+    def _create_option_monitor(self):
+        """创建期权策略专用监控界面."""
+        try:
+            from vnpy_optionmaster.ui import OptionManager
+
+            if (
+                self.trading_service
+                and hasattr(self.trading_service, "main_engine")
+                and self.trading_service.main_engine is not None
+            ):
+                option_widget = OptionManager(
+                    self.trading_service.main_engine, self.trading_service.event_engine
+                )
+            if self.monitor_layout is not None:
+                self.monitor_layout.addWidget(option_widget)
+            self.logger.info("已加载vnpy_optionmaster专用监控组件")
+        except ImportError:
+            # 简化版期权监控
+            group = QGroupBox("期权策略监控（希腊字母）")
+            layout = QVBoxLayout(group)
+
+            table = QTableWidget(0, 8)
+            table.setHorizontalHeaderLabels(
+                ["策略", "Delta", "Gamma", "Vega", "Theta", "标的价格", "组合价值", "操作"]
+            )
+            header = table.horizontalHeader()
+            header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+
+            layout.addWidget(table)
+            if self.monitor_layout is not None:
+                self.monitor_layout.addWidget(group)
+
+    def _create_portfolio_monitor(self):
+        """创建组合策略专用监控界面."""
+        try:
+            from vnpy_portfoliostrategy.ui import PortfolioStrategyManager
+
+            if (
+                self.trading_service
+                and hasattr(self.trading_service, "main_engine")
+                and self.trading_service.main_engine is not None
+            ):
+                portfolio_widget = PortfolioStrategyManager(
+                    self.trading_service.main_engine, self.trading_service.event_engine
+                )
+            if self.monitor_layout is not None:
+                self.monitor_layout.addWidget(portfolio_widget)
+            self.logger.info("已加载vnpy_portfoliostrategy专用监控组件")
+        except ImportError:
+            # 简化版组合策略监控
+            group = QGroupBox("组合策略监控")
+            layout = QVBoxLayout(group)
+
+            table = QTableWidget(0, 6)
+            table.setHorizontalHeaderLabels(["品种", "持仓", "权重", "市值", "贡献", "操作"])
+            header = table.horizontalHeader()
+            header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+
+            layout.addWidget(table)
+            if self.monitor_layout is not None:
+                self.monitor_layout.addWidget(group)
+
+    def _create_spread_monitor(self):
+        """创建价差交易专用监控界面."""
+        try:
+            from vnpy_spreadtrading.ui import SpreadManager
+
+            if (
+                self.trading_service
+                and hasattr(self.trading_service, "main_engine")
+                and self.trading_service.main_engine is not None
+            ):
+                spread_widget = SpreadManager(
+                    self.trading_service.main_engine, self.trading_service.event_engine
+                )
+            if self.monitor_layout is not None:
+                self.monitor_layout.addWidget(spread_widget)
+            self.logger.info("已加载vnpy_spreadtrading专用监控组件")
+        except ImportError:
+            # 简化版价差交易监控
+            group = QGroupBox("价差交易监控")
+            layout = QVBoxLayout(group)
+
+            table = QTableWidget(0, 7)
+            table.setHorizontalHeaderLabels(
+                ["价差名称", "价差价格", "腿1价格", "腿2价格", "持仓", "盈亏", "操作"]
+            )
+            header = table.horizontalHeader()
+            header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+
+            layout.addWidget(table)
+            if self.monitor_layout is not None:
+                self.monitor_layout.addWidget(group)
+
+    def _create_script_monitor(self):
+        """创建脚本交易专用监控界面."""
+        try:
+            from vnpy_scripttrader.ui import ScriptEngine
+
+            if (
+                self.trading_service
+                and hasattr(self.trading_service, "main_engine")
+                and self.trading_service.main_engine is not None
+            ):
+                script_widget = ScriptEngine(
+                    self.trading_service.main_engine, self.trading_service.event_engine
+                )
+            else:
+                script_widget = None
+            if script_widget and self.monitor_layout is not None:
+                self.monitor_layout.addWidget(script_widget)
+            self.logger.info("已加载vnpy_scripttrader专用监控组件")
+        except ImportError:
+            # 简化版脚本交易监控
+            group = QGroupBox("脚本交易监控")
+            layout = QVBoxLayout(group)
+
+            table = QTableWidget(0, 5)
+            table.setHorizontalHeaderLabels(["脚本名称", "运行时间", "执行次数", "状态", "操作"])
+            header = table.horizontalHeader()
+            header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+
+            layout.addWidget(table)
+            if self.monitor_layout is not None:
+                self.monitor_layout.addWidget(group)
 
     # ==================== 事件处理 ====================
 
@@ -285,11 +534,11 @@ class TradingGateway(BaseWidget, LoggerMixin):
                 dynamic_form_layout.addRow("初始资金:", capital_input)
                 dynamic_fields["capital"] = capital_input
 
-            elif gateway_type == "TDX gateway":
+            elif gateway_type == "TradeX gateway":
                 path_input = QLineEdit()
-                path_input.setPlaceholderText("通达信安装路径")
-                dynamic_form_layout.addRow("通达信路径:", path_input)
-                dynamic_fields["tdx_path"] = path_input
+                path_input.setPlaceholderText("TradeX DLL路径")
+                dynamic_form_layout.addRow("TradeX路径:", path_input)
+                dynamic_fields["tradex_path"] = path_input
 
         update_form(gateway_type_combo.currentText())
         gateway_type_combo.currentTextChanged.connect(update_form)
@@ -339,11 +588,11 @@ class TradingGateway(BaseWidget, LoggerMixin):
         op_layout.setContentsMargins(2, 2, 2, 2)
 
         connect_btn = QPushButton("连接")
-        connect_btn.clicked.connect(lambda _c, r=row: self._connect_gateway(r))  # noqa: U100
+        connect_btn.clicked.connect(lambda checked, r=row: self._connect_gateway(r))
         op_layout.addWidget(connect_btn)
 
         delete_btn = QPushButton("删除")
-        delete_btn.clicked.connect(lambda _c, r=row: self._delete_gateway(r))  # noqa: U100
+        delete_btn.clicked.connect(lambda checked, r=row: self._delete_gateway(r))
         op_layout.addWidget(delete_btn)
 
         self.gateways_table.setCellWidget(row, 3, op_widget)
@@ -385,7 +634,94 @@ class TradingGateway(BaseWidget, LoggerMixin):
 
     def _deploy_strategy(self):
         """部署策略."""
-        self.show_info("部署策略功能需要vnpy集成")
+        if not self.trading_service:
+            self.show_error("交易网关服务不可用")
+            return
+
+        # 创建策略部署对话框
+        dialog = QDialog(self)
+        dialog.setWindowTitle("部署策略")
+        dialog.setModal(True)
+        dialog.resize(500, 400)
+
+        layout = QFormLayout(dialog)
+
+        # 网关选择
+        gateway_combo = QComboBox()
+        if self.trading_service:
+            gateway_list = self.trading_service.get_gateway_list()
+            if gateway_list and gateway_list.get("success"):
+                for gw in gateway_list.get("gateways", []):
+                    gateway_combo.addItem(gw["name"])
+        layout.addRow("网关:", gateway_combo)
+
+        # 策略名称
+        strategy_name_input = QLineEdit()
+        layout.addRow("策略名称:", strategy_name_input)
+
+        # 策略类名
+        strategy_class_input = QLineEdit()
+        strategy_class_input.setPlaceholderText("例如: DoubleMaStrategy")
+        layout.addRow("策略类名:", strategy_class_input)
+
+        # 引擎类型
+        engine_combo = QComboBox()
+        engine_combo.addItems(
+            [
+                "CtaStrategy",
+                "AlgoTrading",
+                "OptionMaster",
+                "PortfolioStrategy",
+                "ScriptTrader",
+                "SpreadTrading",
+            ]
+        )
+        layout.addRow("引擎类型:", engine_combo)
+
+        # 交易品种
+        symbols_input = QLineEdit()
+        symbols_input.setPlaceholderText("例如: rb2101.SHFE,IF2101.CFFEX")
+        layout.addRow("交易品种:", symbols_input)
+
+        # 按钮
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+
+        # 显示对话框
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            gateway_name = gateway_combo.currentText()
+            strategy_name = strategy_name_input.text().strip()
+            strategy_class = strategy_class_input.text().strip()
+            engine_type = engine_combo.currentText()
+            symbols_text = symbols_input.text().strip()
+
+            if not all([gateway_name, strategy_name, strategy_class]):
+                self.show_error("请填写完整的策略信息")
+                return
+
+            # 解析交易品种
+            vt_symbols = [s.strip() for s in symbols_text.split(",") if s.strip()]
+
+            # 调用服务部署策略
+            result = self.trading_service.deploy_strategy(
+                gateway_name=gateway_name,
+                strategy_name=strategy_name,
+                strategy_class=strategy_class,
+                strategy_params={
+                    "engine_type": engine_type,
+                    "vt_symbols": vt_symbols,
+                },
+            )
+
+            if result.get("success"):
+                self.show_info(f"策略 '{strategy_name}' 部署成功")
+                self.refresh_data()
+            else:
+                self.show_error(f"策略部署失败: {result.get('message', '未知错误')}")
 
     def _start_all_strategies(self):
         """启动所有策略."""
@@ -399,10 +735,82 @@ class TradingGateway(BaseWidget, LoggerMixin):
 
     def connect_signals(self):
         """连接信号槽."""
+        # 启动策略状态监控定时器（用于自动切换监控界面）
+        from PySide6.QtCore import QTimer
+
+        self.auto_switch_timer = QTimer(self)
+        self.auto_switch_timer.timeout.connect(self._check_and_auto_switch_monitor)
+        self.auto_switch_timer.start(3000)  # 每3秒检查一次
 
     def refresh_data(self):
         """刷新数据."""
+        self._check_and_auto_switch_monitor()
         self.show_info("交易网关数据已刷新")
+
+    def _check_and_auto_switch_monitor(self):
+        """检查并自动切换监控界面.
+
+        需求：策略池只激活1个策略的网关自动切换到监控界面。
+        """
+        if not self.trading_service or not self.gateways_table:
+            return
+
+        try:
+            # 获取当前选中的网关
+            current_row = self.gateways_table.currentRow()
+            if current_row < 0:
+                return
+
+            gateway_name_item = self.gateways_table.item(current_row, 0)
+            if not gateway_name_item:
+                return
+
+            gateway_name = gateway_name_item.text()
+
+            # 获取该网关的策略实例
+            if gateway_name not in self.trading_service.strategy_instances:
+                return
+
+            strategies = self.trading_service.strategy_instances[gateway_name]
+
+            # 检查激活策略数量
+            active_strategies = [s for s in strategies.values() if s.get("status") == "running"]
+
+            # 如果恰好只有1个激活策略，自动切换到监控界面
+            if len(active_strategies) == 1:
+                strategy = active_strategies[0]
+
+                # 识别策略类型
+                strategy_type = self.trading_service.recognize_strategy_type(
+                    strategy_class_code=strategy.get("class_code", ""),
+                    gateway_name=gateway_name,
+                    strategy_name=strategy.get("name", ""),
+                )
+
+                # 自动切换到监控Tab
+                if self.content_tab and self.content_tab.currentIndex() != 1:
+                    self.content_tab.setCurrentIndex(1)  # 切换到监控Tab
+
+                # 根据策略类型切换监控界面
+                if self.template_combo:
+                    type_map = {
+                        "ctastrategy": "CTA策略",
+                        "algotrading": "算法交易",
+                        "optionmaster": "期权策略",
+                        "portfoliostrategy": "组合策略",
+                        "spreadtrading": "价差交易",
+                        "scripttrader": "脚本交易",
+                    }
+
+                    display_type = type_map.get(strategy_type, "通用监控")
+                    current_type = self.template_combo.currentText()
+
+                    if current_type != display_type:
+                        self.template_combo.setCurrentText(display_type)
+                        self.logger.info(f"自动切换到{display_type}监控界面（检测到单策略运行）")
+
+        except Exception as e:
+            self.logger.error(f"自动切换监控界面失败: {e}")
 
     def on_close(self):
         """关闭处理."""

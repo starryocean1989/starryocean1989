@@ -7,7 +7,7 @@
 import os
 from typing import Optional
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QComboBox,
     QGroupBox,
@@ -25,10 +25,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from backend.core.shared_services import get_service_manager
-from backend.core.utils.logging_utils import LoggerMixin
+from backend.core.base import get_service_manager
+from backend.core.utils import LoggerMixin
+
 from ui.widgets.base_widget import BaseWidget
-from ui.widgets.code_editor_widget import CodeEditor
+
+# 尝试导入Monaco Editor，如果失败则降级到CodeEditor
+try:
+    from ui.widgets.monaco_editor_widget import MonacoEditorWidget as EditorWidget
+except ImportError:
+    from ui.widgets.code_editor_widget import CodeEditor as EditorWidget
 
 
 class StrategyCenter(BaseWidget, LoggerMixin):
@@ -48,11 +54,12 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         self.backtest_tab: Optional[QWidget] = None
         self.current_file_label: Optional[QLabel] = None
         self.ai_assistant_btn: Optional[QPushButton] = None
-        self.code_editor: Optional[CodeEditor] = None
+        self.code_editor: Optional[EditorWidget] = None
         self.ai_assistant_widget: Optional[QWidget] = None
         self.ai_response: Optional[QTextEdit] = None
         self.user_input: Optional[QLineEdit] = None
         self.backtest_target_combo: Optional[QComboBox] = None
+        self.renderer_type_combo: Optional[QComboBox] = None
         self.start_date_input: Optional[QLineEdit] = None
         self.end_date_input: Optional[QLineEdit] = None
         self.run_backtest_btn: Optional[QPushButton] = None
@@ -60,6 +67,10 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         self.backtest_progress: Optional[QProgressBar] = None
         self.backtest_status_label: Optional[QLabel] = None
         self.backtest_results: Optional[QTextEdit] = None
+
+        # 回测任务追踪
+        self.current_backtest_task_id: Optional[str] = None
+        self.backtest_timer: Optional[QTimer] = None
 
         # 调用父类初始化
         super().__init__(parent, "策略中心")
@@ -267,9 +278,9 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         # 编辑器区域
         editor_splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        # 代码编辑器
-        self.code_editor = CodeEditor()
-        self.code_editor.setPlaceholderText("# 在这里编写您的策略或指标代码...")
+        # 代码编辑器（Monaco Editor）
+        self.code_editor = EditorWidget()
+        # Monaco Editor通过HTML模板提供初始内容，不需要setPlaceholderText
         editor_splitter.addWidget(self.code_editor)
 
         # AI助手区域
@@ -333,6 +344,13 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         self.backtest_target_combo = QComboBox()
         self._load_strategy_list()
         left_form.addWidget(self.backtest_target_combo)
+
+        left_form.addWidget(QLabel("展示模板:"))
+        self.renderer_type_combo = QComboBox()
+        self.renderer_type_combo.addItems(
+            ["默认展示", "CTA策略", "算法交易", "期权策略", "组合策略", "价差交易", "脚本交易"]
+        )
+        left_form.addWidget(self.renderer_type_combo)
 
         config_layout.addLayout(left_form)
 
@@ -404,8 +422,9 @@ class StrategyCenter(BaseWidget, LoggerMixin):
             else:
                 self.toggle_btn.setText("◀")
 
-    def _on_file_double_clicked(self, item: QTreeWidgetItem, _column: int):  # noqa: U100
+    def _on_file_double_clicked(self, item: QTreeWidgetItem, column: int):
         """文件双击事件."""
+        _ = column  # 未使用但Qt信号需要
         data = item.data(0, Qt.ItemDataRole.UserRole)
         if not data or "path" not in data:
             return
@@ -479,19 +498,112 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         if not message:
             return
 
-        self.ai_response.append(f"用户: {message}")
+        # 显示用户消息
+        self.ai_response.append(f"\n>>> 用户: {message}\n")
         self.user_input.clear()
 
-        # vnpy集成后通过strategy_service调用AI功能
-        self.ai_response.append("AI助手: [功能需要vnpy集成]")
+        # 获取AI助手服务
+        try:
+            ai_service = self.service_manager.get_service("ai_assistant_service")
+            if not ai_service:
+                self.ai_response.append("❌ AI助手服务不可用\n")
+                return
+
+            # 获取当前编辑器中的代码作为上下文
+            context = {}
+            if self.code_editor:
+                current_code = self.code_editor.toPlainText()
+                if current_code.strip():
+                    context["strategy_code"] = current_code
+
+            # 调用AI服务
+            response = ai_service.chat(message, context=context)
+
+            if not response.get("success"):
+                error_msg = response.get("message", "未知错误")
+                self.ai_response.append(f"❌ AI调用失败: {error_msg}\n")
+                return
+
+            # 根据消息类型处理AI回复
+            message_type = response.get("message_type", "text")
+
+            if message_type == "code":
+                # 纯代码 - 插入到编辑器
+                code = response.get("code", "")
+                if code and self.code_editor:
+                    self.code_editor.insertPlainText(f"\n{code}\n")
+                    self.ai_response.append("✅ 代码已插入到编辑器\n")
+
+            elif message_type == "text":
+                # 纯文本 - 显示在AI反馈区
+                text = response.get("text", response.get("message", ""))
+                self.ai_response.append(f"🤖 AI助手:\n{text}\n")
+
+            elif message_type == "mixed":
+                # 混合内容 - 代码插入编辑器，文本显示在反馈区
+                code = response.get("code", "")
+                text = response.get("text", "")
+
+                if text:
+                    self.ai_response.append(f"🤖 AI助手:\n{text}\n")
+
+                if code and self.code_editor:
+                    self.code_editor.insertPlainText(f"\n{code}\n")
+                    self.ai_response.append("\n✅ 代码部分已插入到编辑器\n")
+
+        except Exception as e:
+            self.logger.error("AI助手调用失败: %s", e)
+            self.ai_response.append(f"❌ 错误: {str(e)}\n")
 
     def _create_new_strategy(self):
         """新建策略."""
-        self.show_info("新建策略功能需要vnpy集成")
+        if not self.strategy_service:
+            self.show_error("策略中心服务不可用")
+            return
+
+        from PySide6.QtWidgets import QInputDialog
+
+        # 弹出对话框让用户输入策略名称
+        strategy_name, ok = QInputDialog.getText(
+            self, "新建策略", "请输入策略名称:", text="my_strategy"
+        )
+
+        if ok and strategy_name:
+            # 创建策略文件
+            result = self.strategy_service.create_strategy_file(
+                filename=f"{strategy_name}.py", template="cta_template"
+            )
+
+            if result.get("success"):
+                self.show_info(f"策略 '{strategy_name}.py' 创建成功")
+                self.refresh_data()
+            else:
+                self.show_error(f"创建策略失败: {result.get('message', '未知错误')}")
 
     def _create_new_indicator(self):
         """新建指标."""
-        self.show_info("新建指标功能需要vnpy集成")
+        if not self.strategy_service:
+            self.show_error("策略中心服务不可用")
+            return
+
+        from PySide6.QtWidgets import QInputDialog
+
+        # 弹出对话框让用户输入指标名称
+        indicator_name, ok = QInputDialog.getText(
+            self, "新建指标", "请输入指标名称:", text="my_indicator"
+        )
+
+        if ok and indicator_name:
+            # 创建指标文件
+            result = self.strategy_service.create_strategy_file(
+                filename=f"{indicator_name}.py", template="indicator_template"
+            )
+
+            if result.get("success"):
+                self.show_info(f"指标 '{indicator_name}.py' 创建成功")
+                self.refresh_data()
+            else:
+                self.show_error(f"创建指标失败: {result.get('message', '未知错误')}")
 
     def _load_strategy_list(self):
         """加载策略列表."""
@@ -515,6 +627,10 @@ class StrategyCenter(BaseWidget, LoggerMixin):
 
     def _run_backtest(self):
         """运行回测."""
+        if not self.strategy_service:
+            self.show_error("策略中心服务不可用")
+            return
+
         strategy_name = (
             self.backtest_target_combo.currentText() if self.backtest_target_combo else ""
         )
@@ -536,18 +652,118 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         if self.backtest_status_label:
             self.backtest_status_label.setText("回测运行中...")
 
-        # vnpy集成后通过strategy_service运行回测
-        if self.backtest_results:
-            self.backtest_results.setText("回测功能需要vnpy集成")
-        if self.backtest_progress:
-            self.backtest_progress.setValue(100)
-        if self.backtest_status_label:
-            self.backtest_status_label.setText("等待vnpy集成")
+        # 获取选择的展示模板类型
+        renderer_type_text = (
+            self.renderer_type_combo.currentText() if self.renderer_type_combo else "默认展示"
+        )
+        renderer_type_map = {
+            "默认展示": "default",
+            "CTA策略": "cta",
+            "算法交易": "algo",
+            "期权策略": "option",
+            "组合策略": "portfolio",
+            "价差交易": "spread",
+            "脚本交易": "script",
+        }
+        renderer_type = renderer_type_map.get(renderer_type_text, "default")
 
-        if self.run_backtest_btn:
-            self.run_backtest_btn.setEnabled(True)
-        if self.stop_backtest_btn:
-            self.stop_backtest_btn.setEnabled(False)
+        # 通过strategy_service运行回测
+        backtest_config = {
+            "start_date": start_date,
+            "end_date": end_date,
+            "capital": 1000000,
+            "symbol": "000001",
+            "exchange": "SZSE",
+            "interval": "1d",
+            "renderer_type": renderer_type,  # 传递展示模板类型
+        }
+
+        result = self.strategy_service.start_backtest(
+            strategy_file=strategy_name, config=backtest_config
+        )
+
+        if result.get("success"):
+            self.current_backtest_task_id = result.get("task_id")
+            self.show_info("回测已启动，正在后台运行...")
+
+            # 启动进度监控定时器
+            from PySide6.QtCore import QTimer
+
+            self.backtest_timer = QTimer()
+            self.backtest_timer.timeout.connect(self._check_backtest_progress)
+            self.backtest_timer.start(1000)  # 每秒检查一次
+        else:
+            self.show_error(f"启动回测失败: {result.get('message', '未知错误')}")
+            if self.run_backtest_btn:
+                self.run_backtest_btn.setEnabled(True)
+            if self.stop_backtest_btn:
+                self.stop_backtest_btn.setEnabled(False)
+
+    def _check_backtest_progress(self):
+        """检查回测进度."""
+        if not self.strategy_service or not hasattr(self, "current_backtest_task_id"):
+            return
+
+        status = self.strategy_service.get_backtest_status(self.current_backtest_task_id)
+
+        if not status:
+            return
+
+        progress = status.get("progress", 0)
+        task_status = status.get("status", "unknown")
+
+        # 更新进度条
+        if self.backtest_progress:
+            self.backtest_progress.setValue(progress)
+
+        # 更新状态
+        if self.backtest_status_label:
+            self.backtest_status_label.setText(f"回测进度: {progress}%")
+
+        # 检查是否完成
+        if task_status == "completed":
+            result = status.get("result", {})
+
+            # 显示结果
+            result_text = "=== 回测结果 ===\n"
+            result_text += f"总收益率: {result.get('total_return', 0)*100:.2f}%\n"
+            result_text += f"夏普比率: {result.get('sharpe_ratio', 0):.2f}\n"
+            result_text += f"最大回撤: {result.get('max_drawdown', 0)*100:.2f}%\n"
+            result_text += f"交易次数: {result.get('total_trades', 0)}\n"
+            result_text += f"胜率: {result.get('winning_rate', 0)*100:.2f}%\n"
+            result_text += f"\n{result.get('message', '')}"
+
+            if self.backtest_results:
+                self.backtest_results.setText(result_text)
+
+            self.show_info("回测已完成")
+
+            # 停止定时器
+            if self.backtest_timer is not None:
+                self.backtest_timer.stop()
+
+            # 恢复按钮状态
+            if self.run_backtest_btn:
+                self.run_backtest_btn.setEnabled(True)
+            if self.stop_backtest_btn:
+                self.stop_backtest_btn.setEnabled(False)
+
+        elif task_status == "failed":
+            error = status.get("result", {}).get("error", "未知错误")
+            self.show_error(f"回测失败: {error}")
+
+            if self.backtest_results:
+                self.backtest_results.setText(f"回测失败:\n{error}")
+
+            # 停止定时器
+            if self.backtest_timer is not None:
+                self.backtest_timer.stop()
+
+            # 恢复按钮状态
+            if self.run_backtest_btn:
+                self.run_backtest_btn.setEnabled(True)
+            if self.stop_backtest_btn:
+                self.stop_backtest_btn.setEnabled(False)
 
     def _stop_backtest(self):
         """停止回测."""

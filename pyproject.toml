@@ -42,6 +42,16 @@ disable = [
 ]
 max-line-length = 100
 
+[tool.pylint.messages_control]
+# 为 .pyi 类型存根文件禁用特定检查
+disable-pyi = [
+    "W0613",  # unused-argument
+    "C0115",  # missing-class-docstring
+    "C0116",  # missing-function-docstring
+    "W0107",  # unnecessary-pass
+    "R0903"   # too-few-public-methods
+]
+
 [tool.flake8]
 max-line-length = 100
 ignore = [

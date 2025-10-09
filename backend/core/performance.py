@@ -16,7 +16,8 @@ from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .models import UnifiedMarketData
-    from .vnpy_integration import TerminalEngine
+
+    # from .vnpy_integration import TerminalEngine  # 暂时注释，待实现
 
 
 class Cache:
@@ -310,8 +311,12 @@ class AsyncTaskManager:
 class PerformanceOptimizer:
     """性能优化器."""
 
-    def __init__(self, terminal_engine: "TerminalEngine"):
-        """初始化性能优化器."""
+    def __init__(self, terminal_engine: Any):
+        """初始化性能优化器.
+
+        Args:
+            terminal_engine: 终端引擎实例（待实现 TerminalEngine 类）
+        """
         self.terminal_engine = terminal_engine
         self.logger = logging.getLogger(__name__)
 
@@ -395,9 +400,7 @@ class PerformanceOptimizer:
             # 这里可以实现数据处理的缓存逻辑
             return data_processor(data)
 
-        task_id = self.submit_async_task(
-            f"data_process_{time.time()}", process_with_cache
-        )
+        task_id = self.submit_async_task(f"data_process_{time.time()}", process_with_cache)
         return self.get_task_result(task_id)
 
     def batch_process(
@@ -483,17 +486,13 @@ class AsyncDataProcessor:
         """同步处理数据（包装为异步）."""
         try:
             # 使用线程池执行
-            future = self.optimizer.task_manager.executor.submit(
-                self._sync_process_data, data_list
-            )
+            future = self.optimizer.task_manager.executor.submit(self._sync_process_data, data_list)
             return future.result(timeout=30)
         except (TimeoutError, RuntimeError, AttributeError) as e:
             self.logger.error("同步数据处理失败: %s", e)
             return {}
 
-    def _sync_process_data(
-        self, data_list: List["UnifiedMarketData"]
-    ) -> Dict[str, Any]:
+    def _sync_process_data(self, data_list: List["UnifiedMarketData"]) -> Dict[str, Any]:
         """实际的数据处理逻辑."""
         results = {}
 
@@ -521,10 +520,12 @@ class _PerformanceOptimizerRegistry:
         """初始化性能优化器注册表."""
         self._optimizer: Optional["PerformanceOptimizer"] = None
 
-    def get_performance_optimizer(
-        self, terminal_engine: "TerminalEngine"
-    ) -> "PerformanceOptimizer":
-        """获取性能优化器实例."""
+    def get_performance_optimizer(self, terminal_engine: Any) -> "PerformanceOptimizer":
+        """获取性能优化器实例.
+
+        Args:
+            terminal_engine: 终端引擎实例（待实现 TerminalEngine 类）
+        """
         if self._optimizer is None:
             self._optimizer = PerformanceOptimizer(terminal_engine)
         return self._optimizer
@@ -535,10 +536,12 @@ class _PerformanceOptimizerRegistry:
             self._optimizer.stop_optimization()
             self._optimizer = None
 
-    def get_optimizer_instance(
-        self, terminal_engine: "TerminalEngine"
-    ) -> "PerformanceOptimizer":
-        """获取性能优化器实例（别名方法）."""
+    def get_optimizer_instance(self, terminal_engine: Any) -> "PerformanceOptimizer":
+        """获取性能优化器实例（别名方法）.
+
+        Args:
+            terminal_engine: 终端引擎实例（待实现 TerminalEngine 类）
+        """
         return self.get_performance_optimizer(terminal_engine)
 
 
@@ -547,9 +550,13 @@ _performance_registry: _PerformanceOptimizerRegistry = _PerformanceOptimizerRegi
 
 
 def get_performance_optimizer(
-    terminal_engine: "TerminalEngine",
+    terminal_engine: Any,
 ) -> "PerformanceOptimizer":
-    """获取全局性能优化器实例."""
+    """获取全局性能优化器实例.
+
+    Args:
+        terminal_engine: 终端引擎实例（待实现 TerminalEngine 类）
+    """
     return _performance_registry.get_optimizer_instance(terminal_engine)
 
 

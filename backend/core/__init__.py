@@ -9,155 +9,117 @@ Backend核心模块.
 __version__ = "1.0.0"
 __author__ = "星辰科技"
 
+# 基础模块导入（仅导出在__all__中的）
+
+# 第三方库导入（避免循环导入）
+import requests
+
+# 数据处理库
+try:
+    import numpy as np
+    import pandas as pd
+
+    PANDAS_AVAILABLE = True
+    NUMPY_AVAILABLE = True
+except ImportError:
+    pd = None
+    np = None
+    PANDAS_AVAILABLE = False
+    NUMPY_AVAILABLE = False
+
+# 系统监控
+try:
+    import psutil
+
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    psutil = None
+    PSUTIL_AVAILABLE = False
+
 # 基础导入
-from .imports import (
-    # 标准库
-    os,
-    sys,
-    json,
-    time,
-    datetime,
-    traceback,
-    asyncio,
-    threading,
-    sqlite3,
-    logging,
-    Path,
-    ThreadPoolExecutor,
-    # 类型
-    Dict,
-    List,
-    Optional,
-    Any,
-    Union,
-    Tuple,
-    # 网络
-    requests,
-    # 数据处理
-    pd,
-    np,
-    PANDAS_AVAILABLE,
-    NUMPY_AVAILABLE,
-    # 系统
-    psutil,
-    PSUTIL_AVAILABLE,
-    # VnPy核心
-    VNPY_AVAILABLE,
-    MainEngine,
-    EventEngine,
-    Event,
-    TickData,
-    BarData,
-    OrderData,
-    TradeData,
-    PositionData,
+from .base import (
+    ALGO_ENGINE_AVAILABLE,
     AccountData,
-    EVENT_TICK,
-    EVENT_ORDER,
-    EVENT_TRADE,
-    EVENT_POSITION,
+    ALGO_ENGINE,
+    BarData,
+    CTA_ENGINE_AVAILABLE,
+    CTP_GATEWAY_AVAILABLE,
+    CTA_ENGINE,
+    CtpGateway,
     EVENT_ACCOUNT,
     EVENT_LOG,
-    # VnPy策略引擎
-    CtaEngine,
-    AlgoEngine,
-    PortfolioEngine,
-    CTA_ENGINE_AVAILABLE,
-    ALGO_ENGINE_AVAILABLE,
-    PORTFOLIO_ENGINE_AVAILABLE,
-    # VnPy网关
-    CtpGateway,
-    IbGateway,
-    PaperAccountGateway,
-    CTP_GATEWAY_AVAILABLE,
+    EVENT_ORDER,
+    EVENT_POSITION,
+    EVENT_TICK,
+    EVENT_TRADE,
+    Event,
+    EventEngine,
     IB_GATEWAY_AVAILABLE,
+    IbGateway,
+    MainEngine,
+    OrderData,
     PAPERACCOUNT_GATEWAY_AVAILABLE,
-    # VnPy数据源
-    TushareDatafeed,
-    RqdataDatafeed,
-    TUSHARE_DATAFEED_AVAILABLE,
-    RQDATA_DATAFEED_AVAILABLE,
-    # Infrastructure
-    SystemMonitor,
+    PORTFOLIO_ENGINE_AVAILABLE,
+    PaperAccountGateway,
+    PORTFOLIO_ENGINE,
+    PositionData,
     ProcessManager,
+    RQDATA_DATAFEED_AVAILABLE,
+    RQDATA_DATAFEED,
     SYSTEM_MODULE_AVAILABLE,
-    # 工具函数
+    SystemMonitor,
+    TUSHARE_DATAFEED_AVAILABLE,
+    TickData,
+    TradeData,
+    TUSHARE_DATAFEED,
+    VNPY_AVAILABLE,
     setup_logging,
     vnpy_to_pandas,
 )
-
-# 数据模型
 from .models import (
     DataCategory,
-    DataSource,
     DataMetadata,
+    DataModelManager,
+    DataSource,
+    UnifiedAccount,
     UnifiedMarketData,
     UnifiedOrder,
-    UnifiedTrade,
     UnifiedPosition,
-    UnifiedAccount,
-    DataModelManager,
+    UnifiedTrade,
     get_data_model_manager,
     reset_data_model_manager,
 )
-
-# 共享服务
-from .shared_services import (
-    ServiceManager,
+from .base import (
     ErrorSeverity,
-    get_service_manager,
-    get_main_engine,
-    get_event_engine,
+    ServiceManager,
     get_china_stock_engine,
+    get_event_engine,
+    get_main_engine,
+    get_service_manager,
 )
-
-# 性能优化
 from .performance import (
+    AsyncDataProcessor,
+    AsyncTaskManager,
     Cache,
     DataCache,
-    AsyncTaskManager,
     PerformanceOptimizer,
-    AsyncDataProcessor,
     get_performance_optimizer,
     reset_performance_optimizer,
 )
-
-# 监控
 from .monitoring import (
-    PerformanceMonitor,
     HealthChecker,
     MonitoringManager,
+    PerformanceMonitor,
     TestRunner,
 )
-
-# 数据库
 from .database import DatabaseManager
 
 __all__ = [
     # 版本信息
     "__version__",
     "__author__",
-    # 标准库
-    "os",
-    "sys",
-    "json",
-    "time",
-    "datetime",
-    "traceback",
-    "asyncio",
-    "threading",
-    "sqlite3",
-    "logging",
-    "Path",
-    "ThreadPoolExecutor",
+    # 第三方库
     "requests",
-    # 类型
-    "Dict",
-    "List",
-    "Optional",
-    "Any",
-    "Union",
-    "Tuple",
     # 数据处理
     "pd",
     "np",
@@ -184,9 +146,9 @@ __all__ = [
     "EVENT_ACCOUNT",
     "EVENT_LOG",
     # VnPy策略引擎
-    "CtaEngine",
-    "AlgoEngine",
-    "PortfolioEngine",
+    "CTA_ENGINE",
+    "ALGO_ENGINE",
+    "PORTFOLIO_ENGINE",
     "CTA_ENGINE_AVAILABLE",
     "ALGO_ENGINE_AVAILABLE",
     "PORTFOLIO_ENGINE_AVAILABLE",
@@ -198,8 +160,8 @@ __all__ = [
     "IB_GATEWAY_AVAILABLE",
     "PAPERACCOUNT_GATEWAY_AVAILABLE",
     # VnPy数据源
-    "TushareDatafeed",
-    "RqdataDatafeed",
+    "TUSHARE_DATAFEED",
+    "RQDATA_DATAFEED",
     "TUSHARE_DATAFEED_AVAILABLE",
     "RQDATA_DATAFEED_AVAILABLE",
     # Infrastructure

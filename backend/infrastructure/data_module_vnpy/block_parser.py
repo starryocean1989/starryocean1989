@@ -32,7 +32,7 @@ class BlockParser:
             tdx_dir: 通达信软件根目录，如果为None则自动查找
         """
         self.tdx_dir = tdx_dir
-        self.block_file_path = None
+        self.block_file_path: Optional[Path] = None
         self._find_block_file()
 
     def _find_block_file(self) -> None:
@@ -203,7 +203,11 @@ class BlockParser:
         """
         df = self.parse_block_file()
 
-        target_blocks = {"融资融券_北证A股": [], "T+0基金": [], "含可转债": []}
+        target_blocks: Dict[str, List[str]] = {
+            "融资融券_北证A股": [],
+            "T+0基金": [],
+            "含可转债": [],
+        }
 
         for _, row in df.iterrows():
             block_name = str(row["blockname"])
@@ -329,7 +333,7 @@ class CustomBlockParser:
             return {}
 
         df = self.parser.parse_block_file()
-        result = {}
+        result: Dict[str, List[str]] = {}
 
         for keyword in keywords:
             result[keyword] = []

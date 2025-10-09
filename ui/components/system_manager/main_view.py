@@ -11,6 +11,7 @@ from PySide6.QtCore import QDate, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDateEdit,
     QFileDialog,
     QFormLayout,
@@ -23,6 +24,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSizePolicy,
+    QSlider,
     QSpinBox,
     QSplitter,
     QTabWidget,
@@ -35,8 +37,8 @@ from PySide6.QtWidgets import (
 import psutil
 import pyqtgraph as pg
 
-from backend.core.shared_services import get_service_manager
-from backend.core.utils.logging_utils import LoggerMixin
+from backend.core.base import get_service_manager
+from backend.core.utils import LoggerMixin
 from ui.widgets.base_widget import BaseWidget
 
 
@@ -450,6 +452,60 @@ class SystemManager(BaseWidget, LoggerMixin):
 
         layout.addWidget(config_group)
 
+        # AI助手配置组
+        ai_config_group = QGroupBox("AI助手配置")
+        ai_config_layout = QFormLayout(ai_config_group)
+
+        # API Key
+        self.ai_api_key_edit = QLineEdit()
+        self.ai_api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.ai_api_key_edit.setPlaceholderText("请输入DeepSeek API Key")
+        ai_config_layout.addRow("API Key:", self.ai_api_key_edit)
+
+        # API URL
+        self.ai_api_url_edit = QLineEdit()
+        self.ai_api_url_edit.setPlaceholderText("https://api.deepseek.com/v1/chat/completions")
+        ai_config_layout.addRow("API URL:", self.ai_api_url_edit)
+
+        # Model
+        self.ai_model_combo = QComboBox()
+        self.ai_model_combo.addItems(["deepseek-chat", "deepseek-coder"])
+        ai_config_layout.addRow("模型:", self.ai_model_combo)
+
+        # Max Tokens
+        self.ai_max_tokens_spin = QSpinBox()
+        self.ai_max_tokens_spin.setRange(100, 8000)
+        self.ai_max_tokens_spin.setValue(2000)
+        self.ai_max_tokens_spin.setSingleStep(100)
+        ai_config_layout.addRow("最大Token数:", self.ai_max_tokens_spin)
+
+        # Temperature
+        temp_layout = QHBoxLayout()
+        self.ai_temperature_slider = QSlider(Qt.Orientation.Horizontal)
+        self.ai_temperature_slider.setRange(0, 100)  # 0.0-1.0映射到0-100
+        self.ai_temperature_slider.setValue(70)  # 默认0.7
+        self.ai_temperature_label = QLabel("0.70")
+        self.ai_temperature_slider.valueChanged.connect(
+            lambda v: self.ai_temperature_label.setText(f"{v/100:.2f}")
+        )
+        temp_layout.addWidget(self.ai_temperature_slider)
+        temp_layout.addWidget(self.ai_temperature_label)
+        ai_config_layout.addRow("温度参数:", temp_layout)
+
+        # Max History
+        self.ai_max_history_spin = QSpinBox()
+        self.ai_max_history_spin.setRange(1, 50)
+        self.ai_max_history_spin.setValue(10)
+        ai_config_layout.addRow("对话历史长度:", self.ai_max_history_spin)
+
+        # Timeout
+        self.ai_timeout_spin = QSpinBox()
+        self.ai_timeout_spin.setRange(10, 120)
+        self.ai_timeout_spin.setValue(30)
+        ai_config_layout.addRow("超时时间(秒):", self.ai_timeout_spin)
+
+        layout.addWidget(ai_config_group)
+
         # 加载配置
         self._load_config()
 
@@ -554,6 +610,22 @@ class SystemManager(BaseWidget, LoggerMixin):
             if self.watcher_interval_spin:
                 self.watcher_interval_spin.setValue(5)
 
+            # 加载AI配置
+            if hasattr(self, "ai_api_key_edit"):
+                self.ai_api_key_edit.setText("")
+            if hasattr(self, "ai_api_url_edit"):
+                self.ai_api_url_edit.setText("https://api.deepseek.com/v1/chat/completions")
+            if hasattr(self, "ai_model_combo"):
+                self.ai_model_combo.setCurrentText("deepseek-chat")
+            if hasattr(self, "ai_max_tokens_spin"):
+                self.ai_max_tokens_spin.setValue(2000)
+            if hasattr(self, "ai_temperature_slider"):
+                self.ai_temperature_slider.setValue(70)
+            if hasattr(self, "ai_max_history_spin"):
+                self.ai_max_history_spin.setValue(10)
+            if hasattr(self, "ai_timeout_spin"):
+                self.ai_timeout_spin.setValue(30)
+
             self.logger.info("配置加载完成（使用默认值）")
 
         except Exception as e:
@@ -567,8 +639,59 @@ class SystemManager(BaseWidget, LoggerMixin):
     def _save_config(self):
         """保存配置."""
         try:
-            # vnpy集成后通过service保存配置
-            self.show_info("配置保存功能需要vnpy集成")
+            if not self.system_service:
+                self.show_error("系统管理服务不可用")
+                return
+
+            # 收集配置数据
+            config_data = {}
+
+            if self.tdx_path_edit:
+                config_data["tdx_path"] = self.tdx_path_edit.text()
+            if self.cache_dir_edit:
+                config_data["cache_dir"] = self.cache_dir_edit.text()
+            if self.data_dir_edit:
+                config_data["data_dir"] = self.data_dir_edit.text()
+            if self.base_date_edit:
+                config_data["base_date"] = self.base_date_edit.date().toString("yyyy-MM-dd")
+            if self.max_workers_spin:
+                config_data["max_workers"] = self.max_workers_spin.value()
+            if self.timeout_spin:
+                config_data["timeout"] = self.timeout_spin.value()
+            if self.retry_spin:
+                config_data["retry_count"] = self.retry_spin.value()
+            if self.watcher_check:
+                config_data["watcher_enabled"] = self.watcher_check.isChecked()
+            if self.watcher_interval_spin:
+                config_data["watcher_interval"] = self.watcher_interval_spin.value()
+
+            # 收集AI配置数据
+            ai_config = {}
+            if hasattr(self, "ai_api_key_edit") and self.ai_api_key_edit.text():
+                ai_config["api_key"] = self.ai_api_key_edit.text()
+            if hasattr(self, "ai_api_url_edit") and self.ai_api_url_edit.text():
+                ai_config["api_url"] = self.ai_api_url_edit.text()
+            if hasattr(self, "ai_model_combo"):
+                ai_config["model"] = self.ai_model_combo.currentText()
+            if hasattr(self, "ai_max_tokens_spin"):
+                ai_config["max_tokens"] = self.ai_max_tokens_spin.value()
+            if hasattr(self, "ai_temperature_slider"):
+                ai_config["temperature"] = self.ai_temperature_slider.value() / 100.0
+            if hasattr(self, "ai_max_history_spin"):
+                ai_config["max_history"] = self.ai_max_history_spin.value()
+            if hasattr(self, "ai_timeout_spin"):
+                ai_config["timeout"] = self.ai_timeout_spin.value()
+
+            if ai_config:
+                config_data["ai"] = ai_config
+
+            # 调用服务保存配置
+            result = self.system_service.save_config(config_data)
+
+            if result.get("success"):
+                self.show_info("配置保存成功")
+            else:
+                self.show_error(f"配置保存失败: {result.get('message', '未知错误')}")
 
         except Exception as e:
             self.logger.error("保存配置失败: %s", e)

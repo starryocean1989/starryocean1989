@@ -68,6 +68,9 @@ class VnPyConfig(BaseSettings):
     # 数据存储配置
     data_storage_path: str = Field(default="data")
 
+    # 实时数据录制配置（对应需求：保存位置可配置更改）
+    recording_data_path: str = Field(default="data/recordings")
+
     # 日志配置
     log_level: str = Field(default="INFO")
     log_file: Optional[str] = Field(default=None)

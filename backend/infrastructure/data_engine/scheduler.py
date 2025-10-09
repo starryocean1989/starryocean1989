@@ -47,17 +47,13 @@ class Scheduler(DataScheduler):
             adapter_name = self.adapters[i].__class__.__name__
 
             if isinstance(result, Exception):
-                self.logger.error(
-                    "适配器 %s 获取数据失败: %s", adapter_name, result
-                )
+                self.logger.error("适配器 %s 获取数据失败: %s", adapter_name, result)
                 continue
 
             quotes = result
             if isinstance(quotes, list) and quotes:
                 all_quotes.extend(quotes)
-                self.logger.debug(
-                    "适配器 %s 返回了 %d 条数据", adapter_name, len(quotes)
-                )
+                self.logger.debug("适配器 %s 返回了 %d 条数据", adapter_name, len(quotes))
 
         self.logger.info("总共获取到 %d 条行情数据", len(all_quotes))
         return all_quotes

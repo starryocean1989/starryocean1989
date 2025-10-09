@@ -89,15 +89,11 @@ class SecurityManager:
                 return False
 
             # 验证权限
-            has_permission = self.permission_controller.has_permission(
-                user_id, resource
-            )
+            has_permission = self.permission_controller.has_permission(user_id, resource)
 
             # 记录访问尝试
             result = "granted" if has_permission else "denied"
-            self.audit_logger.log_user_action(
-                user_id, "access_attempt", resource, result
-            )
+            self.audit_logger.log_user_action(user_id, "access_attempt", resource, result)
 
             return has_permission
 
@@ -108,9 +104,7 @@ class SecurityManager:
                 resource,
                 e,
             )
-            self.audit_logger.log_user_action(
-                user_id, "access_error", resource, f"error: {e}"
-            )
+            self.audit_logger.log_user_action(user_id, "access_error", resource, f"error: {e}")
             return False
 
 
@@ -349,9 +343,7 @@ class AuditLogger:
             "result": result,
         }
         self.audit_logs.append(log_entry)
-        logger.info(
-            "Audit log: %s performed %s on %s - %s", user_id, action, resource, result
-        )
+        logger.info("Audit log: %s performed %s on %s - %s", user_id, action, resource, result)
 
     def log_permission_change(
         self, admin_user: str, target_user: str, permission: str, action: str

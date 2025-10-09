@@ -8,14 +8,13 @@
 - 回测服务（配置管理、回测执行、结果处理）
 """
 
-import logging
-import os
 import shutil
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 from datetime import datetime
 
-from backend.services.base_service import BaseService
+from backend.services.base_and_utils import BaseService
+from backend.core.backtest_renderers import BacktestRendererFactory
 
 
 class StrategyCenterService(BaseService):
@@ -81,8 +80,6 @@ class StrategyCenterService(BaseService):
     def _init_backtest_engine(self):
         """初始化回测引擎."""
         try:
-            from vnpy_ctabacktester import BacktesterEngine
-
             # 检查main_engine是否可用
             if self.main_engine:
                 # 回测引擎需要main_engine和event_engine
@@ -441,12 +438,210 @@ class MyPortfolioStrategy(StrategyTemplate):
                     "strategy_file": strategy_file,
                     "config": config,
                     "start_time": datetime.now(),
-                    "progress": 50,  # 模拟进度
+                    "progress": 0,  # 真实进度，从0开始
                     "result": None,
                 }
 
-                # TODO: 在后台线程执行实际回测
-                # 这里需要加载策略类、加载数据、运行回测引擎
+                # 在后台线程执行实际回测
+                import threading
+
+                def run_backtest():
+                    """后台线程执行回测."""
+                    try:
+                        task = self._backtest_tasks[task_id]
+
+                        # 更新进度：准备阶段
+                        task["progress"] = 10
+                        self.logger.info(f"回测任务 {task_id}: 准备阶段...")
+
+                        # 尝试导入回测引擎
+                        try:
+                            from vnpy_ctabacktester import BacktesterEngine
+                            from vnpy.trader.engine import MainEngine, EventEngine
+
+                            # 更新进度：加载数据
+                            task["progress"] = 20
+                            self.logger.info(f"回测任务 {task_id}: 加载数据...")
+
+                            # 创建回测引擎
+                            event_engine = EventEngine()
+                            main_engine = MainEngine(event_engine)
+                            backtest_engine = BacktesterEngine(main_engine, event_engine)
+
+                            # 更新进度：配置参数
+                            task["progress"] = 30
+                            self.logger.info(f"回测任务 {task_id}: 配置参数...")
+
+                            # 实现真实的策略加载和回测执行
+                            import importlib.util
+                            import sys
+                            from datetime import datetime as dt
+
+                            # 1. 动态加载策略类
+                            strategy_module_name = f"strategy_{task_id}"
+                            spec = importlib.util.spec_from_file_location(
+                                strategy_module_name, strategy_path
+                            )
+
+                            if spec is None or spec.loader is None:
+                                raise ValueError(f"无法加载策略文件: {strategy_path}")
+
+                            strategy_module = importlib.util.module_from_spec(spec)
+                            sys.modules[strategy_module_name] = strategy_module
+                            spec.loader.exec_module(strategy_module)
+
+                            # 查找策略类（继承自CtaTemplate的类）
+                            from vnpy_ctastrategy import CtaTemplate
+
+                            strategy_class = None
+                            for name in dir(strategy_module):
+                                obj = getattr(strategy_module, name)
+                                if (
+                                    isinstance(obj, type)
+                                    and issubclass(obj, CtaTemplate)
+                                    and obj is not CtaTemplate
+                                ):
+                                    strategy_class = obj
+                                    break
+
+                            if strategy_class is None:
+                                raise ValueError("策略文件中未找到有效的策略类")
+
+                            self.logger.info(f"成功加载策略类: {strategy_class.__name__}")
+
+                            # 更新进度：加载历史数据
+                            task["progress"] = 40
+                            self.logger.info(f"回测任务 {task_id}: 加载历史数据...")
+
+                            # 2. 获取历史数据（通过data_center_service）
+                            symbol = config.get("symbol", "000001")
+                            exchange = config.get("exchange", "SZSE")
+                            interval_str = config.get("interval", "1d")
+
+                            # 注：vnpy的run_backtesting方法需要interval作为字符串，直接使用interval_str
+
+                            # 从data_center_service获取历史数据
+                            from backend.core.base import get_service_manager
+
+                            service_manager = get_service_manager()
+                            data_service = service_manager.get_service("data_center")
+
+                            if data_service:
+                                data_result = data_service.query_local_data(
+                                    symbol=symbol,
+                                    start_date=start_date,
+                                    end_date=end_date,
+                                    frequency=interval_str,
+                                )
+
+                                if data_result.get("success") and data_result.get("data"):
+                                    self.logger.info(
+                                        f"成功加载 {len(data_result['data'])} 条历史数据"
+                                    )
+                                else:
+                                    self.logger.warning("未能从数据中心获取历史数据，使用空数据集")
+                            else:
+                                self.logger.warning("数据中心服务不可用，回测可能无法正常进行")
+
+                            # 更新进度：执行回测
+                            task["progress"] = 50
+                            self.logger.info(f"回测任务 {task_id}: 执行回测...")
+
+                            # 3. 配置并执行回测
+                            # 运行回测（直接调用run_backtesting方法）
+                            self.logger.info("开始执行回测...")
+                            backtest_engine.run_backtesting(  # type: ignore
+                                class_name=strategy_class.__name__,
+                                vt_symbol=f"{symbol}.{exchange}",
+                                interval=interval_str,  # 使用字符串而不是枚举
+                                start=dt.strptime(start_date, "%Y-%m-%d"),
+                                end=dt.strptime(end_date, "%Y-%m-%d"),
+                                rate=config.get("commission_rate", 0.0003),
+                                slippage=config.get("slippage", 0.0),
+                                size=config.get("size", 1),
+                                pricetick=config.get("pricetick", 0.01),
+                                capital=int(capital),
+                                setting=config.get("strategy_setting", {}),
+                            )
+
+                            # 更新进度：计算结果
+                            task["progress"] = 80
+                            self.logger.info(f"回测任务 {task_id}: 计算统计指标...")
+
+                            # 4. 计算统计结果
+                            statistics = backtest_engine.result_statistics
+
+                            # 更新进度：生成报告
+                            task["progress"] = 90
+                            self.logger.info(f"回测任务 {task_id}: 生成报告...")
+
+                            # 提取关键指标
+                            total_return = statistics.get("total_return", 0.0)
+                            sharpe_ratio = statistics.get("sharpe_ratio", 0.0)
+                            max_drawdown = statistics.get("max_drawdown", 0.0)
+                            total_trades = statistics.get("total_trades", 0)
+                            winning_rate = statistics.get("winning_rate", 0.0)
+
+                            # 尝试生成图表数据（使用vnpy_chartwizard）
+                            chart_data = None
+                            try:
+                                # 获取回测结果数据
+                                daily_results = backtest_engine.get_all_daily_results()
+                                if daily_results:
+                                    # 准备图表数据（简化版，供UI绘制）
+                                    chart_data = {
+                                        "dates": [str(r.date) for r in daily_results],
+                                        "balance": [r.balance for r in daily_results],
+                                        "drawdown": [r.max_drawdown for r in daily_results],
+                                    }
+                                    self.logger.info("成功生成回测图表数据")
+                            except Exception as chart_error:
+                                self.logger.warning(f"生成图表数据失败: {chart_error}")
+
+                            # 回测完成
+                            task["progress"] = 100
+                            task["status"] = "completed"
+                            task["result"] = {
+                                "total_return": float(total_return),
+                                "sharpe_ratio": float(sharpe_ratio),
+                                "max_drawdown": float(max_drawdown),
+                                "total_trades": int(total_trades),
+                                "winning_rate": float(winning_rate),
+                                "all_statistics": statistics,
+                                "chart_data": chart_data,  # 图表数据
+                                "message": "回测执行成功",
+                            }
+                            self.logger.info(
+                                f"回测任务 {task_id} 完成 - "
+                                f"总收益: {total_return:.2%}, "
+                                f"夏普比率: {sharpe_ratio:.2f}, "
+                                f"最大回撤: {max_drawdown:.2%}"
+                            )
+
+                            # 清理策略模块
+                            if strategy_module_name in sys.modules:
+                                del sys.modules[strategy_module_name]
+
+                        except ImportError as e:
+                            self.logger.warning(f"vnpy_ctabacktester未安装: {e}")
+                            task["status"] = "failed"
+                            task["progress"] = 0
+                            task["result"] = {
+                                "error": "vnpy_ctabacktester包未安装",
+                            }
+
+                    except Exception as e:
+                        self.logger.error(f"回测任务 {task_id} 失败: {e}", exc_info=True)
+                        task["status"] = "failed"
+                        task["progress"] = 0
+                        task["result"] = {
+                            "error": str(e),
+                        }
+
+                # 启动后台线程
+                backtest_thread = threading.Thread(target=run_backtest, daemon=True)
+                backtest_thread.start()
+                self.logger.info(f"回测任务 {task_id} 已在后台线程启动")
 
                 return {
                     "success": True,
@@ -465,10 +660,57 @@ class MyPortfolioStrategy(StrategyTemplate):
             self._log_error("启动回测", e)
             return {"success": False, "message": str(e)}
 
+    def render_backtest_result(
+        self, task_id: str, strategy_type: str = "ctastrategy"
+    ) -> Dict[str, Any]:
+        """渲染回测结果（使用策略类型专用模板）.
+
+        对应需求文档链条4.2.2：不同策略类型的自定义展示
+
+        Args:
+            task_id: 回测任务ID
+            strategy_type: 策略类型
+
+        Returns:
+            Dict: 渲染后的结果
+        """
+        try:
+            task = self._backtest_tasks.get(task_id)
+            if not task:
+                return {
+                    "success": False,
+                    "message": "回测任务不存在",
+                }
+
+            if task["status"] != "completed":
+                return {
+                    "success": False,
+                    "message": f"回测任务未完成，当前状态: {task['status']}",
+                }
+
+            # 获取原始回测结果
+            raw_result = task.get("result", {})
+
+            # 使用渲染器工厂渲染结果
+            rendered_result = BacktestRendererFactory.render_backtest_result(
+                strategy_type, raw_result
+            )
+
+            return {
+                "success": True,
+                "task_id": task_id,
+                "strategy_type": strategy_type,
+                "rendered_result": rendered_result,
+            }
+
+        except Exception as e:
+            self._log_error("渲染回测结果", e)
+            return {"success": False, "message": str(e)}
+
     def _stop_all_backtests(self):
         """停止所有回测任务."""
         for task_id in list(self._backtest_tasks.keys()):
             task = self._backtest_tasks[task_id]
             if task["status"] == "running":
                 task["status"] = "stopped"
-                self.logger.info(f"回测任务 {task_id} 已停止")
+                self.logger.info("回测任务 %s 已停止", task_id)

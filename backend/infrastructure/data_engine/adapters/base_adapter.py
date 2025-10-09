@@ -8,7 +8,7 @@
 
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Optional, Union
 
 
 class BaseDataAdapter(ABC):
@@ -19,9 +19,7 @@ class BaseDataAdapter(ABC):
     提供统一的数据获取,配置管理和错误处理机制.
     """
 
-    def __init__(
-        self, config: Dict[str, Union[str, int, float, bool]]
-    ) -> None:
+    def __init__(self, config: Dict[str, Union[str, int, float, bool]]) -> None:
         """
         初始化数据适配器.
 
@@ -30,7 +28,7 @@ class BaseDataAdapter(ABC):
         """
         self.config = config
         self.is_connected = False
-        self.last_update = None
+        self.last_update: Optional[datetime] = None
 
     @abstractmethod
     async def connect(self) -> bool:
@@ -53,9 +51,7 @@ class BaseDataAdapter(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def get_quotes(
-        self, symbols: List[str]  # noqa: U100
-    ) -> List[Dict[str, Any]]:
+    async def get_quotes(self, symbols: List[str]) -> List[Dict[str, Any]]:  # noqa: U100
         """
         获取行情数据.
 
@@ -72,7 +68,7 @@ class BaseDataAdapter(ABC):
         self,
         symbol: str,  # noqa: U100
         start_date: datetime,  # noqa: U100
-        end_date: datetime  # noqa: U100
+        end_date: datetime,  # noqa: U100
     ) -> List[Dict[str, Any]]:
         """
         获取历史数据.

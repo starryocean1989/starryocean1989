@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from backend.config import ConfigManager
-from backend.core.utils.logging_utils import LoggerMixin, setup_logging
+from backend.core.utils import LoggerMixin, setup_logging
 
 from ui.themes.theme_manager import ThemeManager
 from ui.components.data_center.main_view import DataCenter
@@ -109,7 +109,7 @@ class MainWindow(QMainWindow, LoggerMixin):
     def _initialize_backend_services(self):
         """初始化后端服务."""
         try:
-            from backend.core.shared_services import initialize_services
+            from backend.core.base import initialize_services
 
             init_result = initialize_services()
             success = init_result.get("success", False)
@@ -393,8 +393,12 @@ class MainWindow(QMainWindow, LoggerMixin):
         """应用主题."""
         try:
             app_instance = QApplication.instance()
-            self.theme_manager.apply_theme(app_instance)
-            self.logger.info("主题应用完成")
+            # 确保 app_instance 是 QApplication 类型
+            if isinstance(app_instance, QApplication):
+                self.theme_manager.apply_theme(app_instance)
+                self.logger.info("主题应用完成")
+            else:
+                self.logger.warning("无法获取 QApplication 实例")
         except (AttributeError, RuntimeError, ImportError) as e:
             self.logger.error("应用主题失败: %s", e)
 
@@ -529,7 +533,7 @@ class MainWindow(QMainWindow, LoggerMixin):
             """,
         )
 
-    def closeEvent(self, event):
+    def closeEvent(self, event):  # pylint: disable=invalid-name
         """窗口关闭事件."""
         if self.update_timer:
             self.update_timer.stop()
@@ -544,8 +548,9 @@ class MainWindow(QMainWindow, LoggerMixin):
 
         if reply == QMessageBox.StandardButton.Yes:
             try:
-                from backend.core.shared_services import shutdown_real_services
-                shutdown_real_services()
+                from backend.core.base import shutdown_services
+
+                shutdown_services()
             except Exception as e:
                 self.logger.warning("关闭后端服务失败: %s", e)
 
@@ -605,7 +610,7 @@ class MainWindow(QMainWindow, LoggerMixin):
                 self.nav_list.setMaximumWidth(240)
                 self.nav_list.setMinimumWidth(180)
 
-    def resizeEvent(self, event):
+    def resizeEvent(self, event):  # pylint: disable=invalid-name
         """窗口大小改变事件."""
         super().resizeEvent(event)
 

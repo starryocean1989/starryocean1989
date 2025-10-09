@@ -321,7 +321,7 @@ class ChinaStockEngine(BaseEngine):
             else:
                 summary = self.validator.get_validation_summary()
                 if summary is None:
-                    summary = self.validator.validate_all_data()
+                    summary = self.validator.validate_all_data()  # type: ignore[assignment]
 
             if summary:
                 # 推送校验事件

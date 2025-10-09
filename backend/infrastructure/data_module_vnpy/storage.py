@@ -102,9 +102,7 @@ class StorageManager:
             if start_date or end_date:
                 df = self._filter_by_date_range(df, start_date, end_date)
 
-            self.logger.info(
-                "成功查询 %s %s 数据: %d 条记录", symbol, interval, len(df)
-            )
+            self.logger.info("成功查询 %s %s 数据: %d 条记录", symbol, interval, len(df))
             return df
 
         except (OSError, pd.errors.ParserError) as e:
@@ -184,12 +182,8 @@ class StorageManager:
                 "file_size": file_path.stat().st_size,
                 "record_count": len(df),
                 "columns": list(df.columns),
-                "start_date": (
-                    df["datetime"].min() if "datetime" in df.columns else None
-                ),
-                "end_date": (
-                    df["datetime"].max() if "datetime" in df.columns else None
-                ),
+                "start_date": (df["datetime"].min() if "datetime" in df.columns else None),
+                "end_date": (df["datetime"].max() if "datetime" in df.columns else None),
                 "last_modified": datetime.fromtimestamp(file_path.stat().st_mtime),
             }
 
@@ -293,9 +287,7 @@ class StorageManager:
 
                 # 去重（基于datetime列）
                 if "datetime" in merged_data.columns:
-                    merged_data = merged_data.drop_duplicates(
-                        subset=["datetime"], keep="last"
-                    )
+                    merged_data = merged_data.drop_duplicates(subset=["datetime"], keep="last")
                     merged_data = merged_data.sort_values("datetime")
 
                 # 保存合并后的数据
@@ -352,9 +344,7 @@ class StorageManager:
             self.logger.error("获取存储统计失败: %s", e)
             return {}
 
-    def _standardize_dataframe(
-        self, df: pd.DataFrame, symbol: str, interval: str
-    ) -> pd.DataFrame:
+    def _standardize_dataframe(self, df: pd.DataFrame, symbol: str, interval: str) -> pd.DataFrame:
         """
         标准化DataFrame格式
 

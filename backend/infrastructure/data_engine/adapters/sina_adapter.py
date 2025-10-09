@@ -181,14 +181,8 @@ class SinaDataAdapter(BaseDataAdapter):
                             "price": float(fields[3]) if fields[3] else 0.0,
                             "change": float(fields[4]) if fields[4] else 0.0,
                             "change_percent": (float(fields[5]) if fields[5] else 0.0),
-                            "volume": (
-                                int(fields[8]) if len(fields) > 8 and fields[8] else 0
-                            ),
-                            "amount": (
-                                float(fields[9])
-                                if len(fields) > 9 and fields[9]
-                                else 0.0
-                            ),
+                            "volume": (int(fields[8]) if len(fields) > 8 and fields[8] else 0),
+                            "amount": (float(fields[9]) if len(fields) > 9 and fields[9] else 0.0),
                             "timestamp": datetime.utcnow().isoformat(),
                             "source": "sina",
                         }

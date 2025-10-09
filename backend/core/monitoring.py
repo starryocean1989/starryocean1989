@@ -17,7 +17,7 @@ import unittest
 from collections import defaultdict
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
 # 第三方库导入（按字母顺序）
 import psutil
@@ -25,7 +25,7 @@ import psutil
 # 本地模块导入（按字母顺序）
 from .models import get_data_model_manager
 from .performance import get_performance_optimizer
-from .imports import VNPY_AVAILABLE
+from .base import VNPY_AVAILABLE
 
 # 注释掉已删除的模块导入
 # from .test_integration import main as integration_main
@@ -33,8 +33,26 @@ from .imports import VNPY_AVAILABLE
 # from .vnpy_integration import TerminalEngine, VNPY_AVAILABLE, get_terminal_engine
 
 # 这些测试主函数现在不可用
-integration_main = None
-performance_main = None
+integration_main: Optional[Callable[[], int]] = None
+performance_main: Optional[Callable[[], int]] = None
+
+
+def _call_optional_test_function(func: Optional[Callable[[], int]]) -> int:
+    """
+    调用可选的测试函数（用于处理类型检查问题）.
+
+    Args:
+        func: 可选的可调用函数
+
+    Returns:
+        函数的返回值
+
+    Raises:
+        AssertionError: 如果函数为None或不可调用
+    """
+    assert func is not None and callable(func), "Test function must be callable"
+    return func()
+
 
 if TYPE_CHECKING:
     # 临时注释掉ConfigService相关导入
@@ -191,7 +209,7 @@ class PerformanceMonitor:
 
             # 性能优化器指标
             try:
-                from .shared_services import get_main_engine
+                from .base import get_main_engine
 
                 main_engine = get_main_engine()
                 optimizer = get_performance_optimizer(main_engine)
@@ -433,13 +451,23 @@ class TestRunner:
         start_time = time.time()
 
         try:
+            # 检查集成测试是否可用
+            if integration_main is None:
+                return {
+                    "success": False,
+                    "error": "集成测试模块不可用",
+                    "timestamp": datetime.now(),
+                    "duration": time.time() - start_time,
+                }
+
             # 运行集成测试
             # 捕获输出
             stdout_capture = io.StringIO()
             stderr_capture = io.StringIO()
 
+            # 调用集成测试函数
             with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
-                exit_code = integration_main()
+                exit_code = _call_optional_test_function(integration_main)
 
             output = stdout_capture.getvalue()
             errors = stderr_capture.getvalue()
@@ -479,13 +507,23 @@ class TestRunner:
         start_time = time.time()
 
         try:
+            # 检查性能测试是否可用
+            if performance_main is None:
+                return {
+                    "success": False,
+                    "error": "性能测试模块不可用",
+                    "timestamp": datetime.now(),
+                    "duration": time.time() - start_time,
+                }
+
             # 运行性能测试
             # 捕获输出
             stdout_capture = io.StringIO()
             stderr_capture = io.StringIO()
 
+            # 调用性能测试函数
             with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
-                exit_code = performance_main()
+                exit_code = _call_optional_test_function(performance_main)
 
             output = stdout_capture.getvalue()
             errors = stderr_capture.getvalue()
@@ -696,8 +734,8 @@ class HealthChecker:
 
         try:
             # 检查性能优化器
-            if self.terminal_engine:
-                optimizer = get_performance_optimizer(self.terminal_engine)
+            if self.main_engine:
+                optimizer = get_performance_optimizer(self.main_engine)
             else:
                 optimizer = None
             if optimizer:

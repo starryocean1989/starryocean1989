@@ -22,5 +22,6 @@
     ],
     "typeCheckingMode": "basic",
     "useLibraryCodeForTypes": true,
-    "autoImportCompletions": true
+    "autoImportCompletions": true,
+    "reportOptionalCall": "none"
 }

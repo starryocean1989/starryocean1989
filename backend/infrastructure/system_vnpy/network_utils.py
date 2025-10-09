@@ -41,9 +41,7 @@ class PortScanner:
         """扫描指定端口."""
         return scan_ports(host, ports)
 
-    def scan_range(
-        self, host: str, start_port: int, end_port: int
-    ) -> List[Dict[str, Any]]:
+    def scan_range(self, host: str, start_port: int, end_port: int) -> List[Dict[str, Any]]:
         """扫描端口范围."""
         ports = list(range(start_port, end_port + 1))
         return self.scan(host, ports)

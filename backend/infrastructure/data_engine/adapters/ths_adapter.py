@@ -20,9 +20,7 @@ class THSDataAdapter(BaseDataAdapter):
     继承自BaseDataAdapter,提供同花顺数据的获取功能.
     """
 
-    def __init__(
-        self, config: Dict[str, Union[str, int, float, bool]]
-    ) -> None:
+    def __init__(self, config: Dict[str, Union[str, int, float, bool]]) -> None:
         """
         初始化同花顺适配器.
 
@@ -36,7 +34,7 @@ class THSDataAdapter(BaseDataAdapter):
         self._base_url = "https://api.waditu.com/"
         self._api_key = config.get("api_key", "")
         self.connected = False
-        self.last_connection_time = None
+        self.last_connection_time: Optional[datetime] = None
 
     @property
     def name(self) -> str:

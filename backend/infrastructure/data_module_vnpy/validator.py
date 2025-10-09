@@ -205,16 +205,12 @@ class DataValidator:
                 end_date = date.today()
 
             # 获取现有数据
-            data = self.storage_manager.query_kline(
-                symbol, interval, start_date, end_date
-            )
+            data = self.storage_manager.query_kline(symbol, interval, start_date, end_date)
             if data is None or data.empty:
                 return self._generate_date_range(start_date, end_date, interval)
 
             # 生成期望的日期范围
-            expected_dates = set(
-                self._generate_date_range(start_date, end_date, interval)
-            )
+            expected_dates = set(self._generate_date_range(start_date, end_date, interval))
 
             # 获取实际日期
             if "datetime" in data.columns:
@@ -260,9 +256,7 @@ class DataValidator:
 
             # 检查开盘价和收盘价超出高低价范围
             if all(col in data.columns for col in ["open", "high", "low"]):
-                invalid_open = data[
-                    (data["open"] > data["high"]) | (data["open"] < data["low"])
-                ]
+                invalid_open = data[(data["open"] > data["high"]) | (data["open"] < data["low"])]
                 for idx, row in invalid_open.iterrows():
                     errors.append(
                         {
@@ -279,9 +273,7 @@ class DataValidator:
                     )
 
             if all(col in data.columns for col in ["close", "high", "low"]):
-                invalid_close = data[
-                    (data["close"] > data["high"]) | (data["close"] < data["low"])
-                ]
+                invalid_close = data[(data["close"] > data["high"]) | (data["close"] < data["low"])]
                 for idx, row in invalid_close.iterrows():
                     errors.append(
                         {
@@ -500,16 +492,8 @@ class DataValidator:
                 warnings=warnings,
                 record_count=len(data),
                 date_range=(
-                    (
-                        data["datetime"].min().date()
-                        if "datetime" in data.columns
-                        else None
-                    ),
-                    (
-                        data["datetime"].max().date()
-                        if "datetime" in data.columns
-                        else None
-                    ),
+                    (data["datetime"].min().date() if "datetime" in data.columns else None),
+                    (data["datetime"].max().date() if "datetime" in data.columns else None),
                 ),
                 missing_dates=missing_dates,
                 logic_errors=logic_errors,
@@ -525,9 +509,7 @@ class DataValidator:
             self.logger.error("校验 %s %s 失败: %s", symbol, interval, e)
             return None
 
-    def _generate_date_range(
-        self, start_date: date, end_date: date, _interval: str
-    ) -> List[date]:
+    def _generate_date_range(self, start_date: date, end_date: date, _interval: str) -> List[date]:
         """
         生成期望的日期范围
 

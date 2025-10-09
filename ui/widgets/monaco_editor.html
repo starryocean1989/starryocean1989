@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Monaco Editor</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #1e1e1e;
+        }
+        #container {
+            width: 100vw;
+            height: 100vh;
+        }
+    </style>
+</head>
+<body>
+    <div id="container"></div>
+
+    <!-- Monaco Editor CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js"></script>
+    <script>
+        require.config({ paths: { 'vs': 'https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs' }});
+
+        let editor = null;
+
+        require(['vs/editor/editor.main'], function() {
+            editor = monaco.editor.create(document.getElementById('container'), {
+                value: '# -*- coding: utf-8 -*-\n"""VnPy策略模板.\n\n请在下方编写你的策略代码。\n"""\n\nfrom vnpy_ctastrategy import CtaTemplate\nfrom vnpy.trader.object import BarData, TickData\n\n\nclass MyStrategy(CtaTemplate):\n    """示例策略."""\n    \n    author = "VnPy"\n    \n    # 策略参数\n    fast_window = 10\n    slow_window = 20\n    \n    # 策略变量\n    fast_ma = 0.0\n    slow_ma = 0.0\n    \n    parameters = ["fast_window", "slow_window"]\n    variables = ["fast_ma", "slow_ma"]\n    \n    def __init__(self, cta_engine, strategy_name, vt_symbol, setting):\n        """初始化."""\n        super().__init__(cta_engine, strategy_name, vt_symbol, setting)\n    \n    def on_init(self):\n        """策略初始化."""\n        self.write_log("策略初始化")\n        self.load_bar(10)\n    \n    def on_start(self):\n        """策略启动."""\n        self.write_log("策略启动")\n    \n    def on_stop(self):\n        """策略停止."""\n        self.write_log("策略停止")\n    \n    def on_tick(self, tick: TickData):\n        """Tick数据推送."""\n        pass\n    \n    def on_bar(self, bar: BarData):\n        """K线数据推送."""\n        # 计算均线\n        self.fast_ma = sum([b.close_price for b in self.bars[-self.fast_window:]]) / self.fast_window\n        self.slow_ma = sum([b.close_price for b in self.bars[-self.slow_window:]]) / self.slow_window\n        \n        # 交易逻辑\n        if self.fast_ma > self.slow_ma:\n            if self.pos == 0:\n                self.buy(bar.close_price + 10, 1)\n        elif self.fast_ma < self.slow_ma:\n            if self.pos > 0:\n                self.sell(bar.close_price - 10, 1)\n',
+                language: 'python',
+                theme: 'vs-dark',
+                automaticLayout: true,
+                fontSize: 14,
+                fontFamily: 'Consolas, "Courier New", monospace',
+                minimap: {
+                    enabled: true
+                },
+                scrollBeyondLastLine: false,
+                wordWrap: 'on',
+                lineNumbers: 'on',
+                renderWhitespace: 'selection',
+                folding: true,
+                links: true,
+                mouseWheelZoom: true,
+                quickSuggestions: true,
+                suggestOnTriggerCharacters: true,
+                acceptSuggestionOnEnter: 'on',
+                tabCompletion: 'on',
+                wordBasedSuggestions: true,
+                formatOnPaste: true,
+                formatOnType: true
+            });
+
+            // 注册Python语言特定的补全提示
+            monaco.languages.registerCompletionItemProvider('python', {
+                provideCompletionItems: function(model, position) {
+                    var suggestions = [
+                        // VnPy核心类
+                        {
+                            label: 'CtaTemplate',
+                            kind: monaco.languages.CompletionItemKind.Class,
+                            insertText: 'CtaTemplate',
+                            documentation: 'VnPy CTA策略模板基类'
+                        },
+                        {
+                            label: 'BarData',
+                            kind: monaco.languages.CompletionItemKind.Class,
+                            insertText: 'BarData',
+                            documentation: 'K线数据对象'
+                        },
+                        {
+                            label: 'TickData',
+                            kind: monaco.languages.CompletionItemKind.Class,
+                            insertText: 'TickData',
+                            documentation: 'Tick数据对象'
+                        },
+                        // VnPy核心方法
+                        {
+                            label: 'on_init',
+                            kind: monaco.languages.CompletionItemKind.Method,
+                            insertText: 'on_init(self):\n    """策略初始化."""\n    self.write_log("策略初始化")\n    self.load_bar(10)',
+                            insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                            documentation: '策略初始化回调'
+                        },
+                        {
+                            label: 'on_start',
+                            kind: monaco.languages.CompletionItemKind.Method,
+                            insertText: 'on_start(self):\n    """策略启动."""\n    self.write_log("策略启动")',
+                            insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                            documentation: '策略启动回调'
+                        },
+                        {
+                            label: 'on_bar',
+                            kind: monaco.languages.CompletionItemKind.Method,
+                            insertText: 'on_bar(self, bar: BarData):\n    """K线数据推送."""\n    pass',
+                            insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                            documentation: 'K线数据回调'
+                        },
+                        {
+                            label: 'on_tick',
+                            kind: monaco.languages.CompletionItemKind.Method,
+                            insertText: 'on_tick(self, tick: TickData):\n    """Tick数据推送."""\n    pass',
+                            insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                            documentation: 'Tick数据回调'
+                        },
+                        {
+                            label: 'buy',
+                            kind: monaco.languages.CompletionItemKind.Method,
+                            insertText: 'buy(${1:price}, ${2:volume})',
+                            insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                            documentation: '买入开仓'
+                        },
+                        {
+                            label: 'sell',
+                            kind: monaco.languages.CompletionItemKind.Method,
+                            insertText: 'sell(${1:price}, ${2:volume})',
+                            insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                            documentation: '卖出平仓'
+                        },
+                        {
+                            label: 'short',
+                            kind: monaco.languages.CompletionItemKind.Method,
+                            insertText: 'short(${1:price}, ${2:volume})',
+                            insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                            documentation: '卖出开仓'
+                        },
+                        {
+                            label: 'cover',
+                            kind: monaco.languages.CompletionItemKind.Method,
+                            insertText: 'cover(${1:price}, ${2:volume})',
+                            insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                            documentation: '买入平仓'
+                        },
+                        {
+                            label: 'write_log',
+                            kind: monaco.languages.CompletionItemKind.Method,
+                            insertText: 'write_log("${1:message}")',
+                            insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+                            documentation: '写入日志'
+                        }
+                    ];
+                    return { suggestions: suggestions };
+                }
+            });
+
+            // 暴露全局函数供Qt调用
+            window.getEditorContent = function() {
+                return editor ? editor.getValue() : '';
+            };
+
+            window.setEditorContent = function(content) {
+                if (editor) {
+                    editor.setValue(content);
+                }
+            };
+
+            window.insertTextAtCursor = function(text) {
+                if (editor) {
+                    const position = editor.getPosition();
+                    editor.executeEdits('', [{
+                        range: new monaco.Range(
+                            position.lineNumber,
+                            position.column,
+                            position.lineNumber,
+                            position.column
+                        ),
+                        text: text
+                    }]);
+                }
+            };
+
+            // 通知Qt编辑器已加载
+            console.log('Monaco Editor loaded');
+        });
+    </script>
+</body>
+</html>
+

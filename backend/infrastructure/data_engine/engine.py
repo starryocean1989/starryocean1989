@@ -86,9 +86,7 @@ class DataEngine:
                         # 推送数据
                         await self.pusher.push_quotes(filtered_quotes)
 
-                    self.logger.info(
-                        "处理了 %d 条行情数据", len(filtered_quotes)
-                    )
+                    self.logger.info("处理了 %d 条行情数据", len(filtered_quotes))
 
                 # 等待下次轮询
                 await asyncio.sleep(self.poll_interval)
