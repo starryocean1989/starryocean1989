@@ -19,10 +19,8 @@ pytz>=2021.3
 PySide6>=6.2.0
 # PySide6依赖
 shiboken6>=6.2.0
-# PySide6 WebEngine (for Monaco Editor)
-PySide6-WebEngine>=6.2.0
-# QScintilla代码编辑器
-PyQt6-QScintilla>=2.13.0
+# 注意：PySide6 6.2+ 包含WebEngine支持，无需单独安装
+# 注意：已移除 PyQt6-QScintilla（混用问题），使用 Monaco Editor 作为代码编辑器
 
 # ========== 可视化 ==========
 matplotlib>=3.5.0
@@ -78,7 +76,7 @@ pyzmq>=22.0.0
 peewee>=3.14.0
 tzlocal>=4.0.0
 
-# VNPY扩展包 - 需要通过git安装
+
 # 使用命令：python install_vnpy_packages.py --essential
 # vnpy_sqlite - 数据库存储
 # vnpy_ctabacktester - CTA策略回测
@@ -117,6 +115,7 @@ httpcore>=0.15.0
 
 # ========== 配置和环境 ==========
 python-dotenv>=0.19.0
+pydantic-settings>=2.0.0
 
 # ========== 任务调度 ==========
 APScheduler>=3.10.0

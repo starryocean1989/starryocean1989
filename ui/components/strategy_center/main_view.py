@@ -7,7 +7,7 @@
 import os
 from typing import Optional
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QFileSystemWatcher
 from PySide6.QtWidgets import (
     QComboBox,
     QGroupBox,
@@ -72,12 +72,21 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         self.current_backtest_task_id: Optional[str] = None
         self.backtest_timer: Optional[QTimer] = None
 
+        # 当前文件追踪
+        self.current_file_path: Optional[str] = None
+
+        # 文件系统监控
+        self.file_watcher: Optional[QFileSystemWatcher] = None
+
         # 调用父类初始化
         super().__init__(parent, "策略中心")
         self.logger.info("策略中心界面初始化开始")
 
         # 初始化服务
         self._initialize_service()
+        
+        # 初始化文件系统监控
+        self._setup_file_watcher()
 
     def _initialize_service(self):
         """获取策略中心服务."""
@@ -91,6 +100,42 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         except Exception as e:
             self.logger.error("获取策略中心服务失败: %s", e)
             self.show_error(f"服务获取失败: {e}")
+
+    def _setup_file_watcher(self):
+        """设置文件系统监控器 - 自动检测文件变化并刷新树."""
+        try:
+            self.file_watcher = QFileSystemWatcher()
+            
+            # 监控策略目录和模板目录
+            watch_dirs = [
+                "strategies/user_strategies",
+                "strategies/templates"
+            ]
+            
+            for directory in watch_dirs:
+                if os.path.exists(directory):
+                    self.file_watcher.addPath(directory)
+                    self.logger.info(f"开始监控目录: {directory}")
+            
+            # 连接信号：目录内容变化时自动刷新文件树
+            self.file_watcher.directoryChanged.connect(self._on_directory_changed)
+            
+            self.logger.info("✅ 文件系统监控器已启动")
+        except Exception as e:
+            self.logger.error(f"设置文件系统监控失败: {e}")
+
+    def _on_directory_changed(self, path: str):
+        """目录变化回调 - 自动刷新文件树."""
+        self.logger.info(f"检测到目录变化: {path}")
+        
+        # 使用定时器延迟刷新，避免频繁更新
+        if not hasattr(self, '_refresh_timer'):
+            self._refresh_timer = QTimer()
+            self._refresh_timer.setSingleShot(True)
+            self._refresh_timer.timeout.connect(self._delayed_refresh)
+        
+        # 300ms延迟刷新（防抖）
+        self._refresh_timer.start(300)
 
     def setup_ui(self):
         """设置用户界面."""
@@ -134,8 +179,10 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         self.file_tree = QTreeWidget()
         self.file_tree.setHeaderHidden(True)
         self.file_tree.itemDoubleClicked.connect(self._on_file_double_clicked)
-        self._create_file_tree()
         layout.addWidget(self.file_tree)
+
+        # 初始化文件树内容（在添加到布局后）
+        self._create_file_tree()
 
         # 底部按钮
         button_layout = QHBoxLayout()
@@ -155,6 +202,7 @@ class StrategyCenter(BaseWidget, LoggerMixin):
     def _create_file_tree(self):
         """创建文件树结构."""
         if not self.file_tree:
+            self.logger.warning("文件树控件未初始化")
             return
 
         self.file_tree.clear()
@@ -166,14 +214,18 @@ class StrategyCenter(BaseWidget, LoggerMixin):
             self.file_tree.addTopLevelItem(strategy_root)
 
             strategy_dir = "strategies/user_strategies"
+            self.logger.info(f"检查策略目录: {strategy_dir}, 存在: {os.path.exists(strategy_dir)}")
+
             if os.path.exists(strategy_dir):
                 strategy_files = [
                     f
                     for f in os.listdir(strategy_dir)
                     if f.endswith(".py") and not f.startswith("__")
                 ]
+                self.logger.info(f"找到策略文件: {strategy_files}")
             else:
                 strategy_files = []
+                self.logger.warning(f"策略目录不存在: {strategy_dir}")
 
             for file_name in strategy_files:
                 file_item = QTreeWidgetItem()
@@ -187,6 +239,7 @@ class StrategyCenter(BaseWidget, LoggerMixin):
                     },
                 )
                 strategy_root.addChild(file_item)
+                self.logger.info(f"添加策略文件到树: {file_name}")
 
             # 模板文件夹
             template_root = QTreeWidgetItem()
@@ -194,14 +247,18 @@ class StrategyCenter(BaseWidget, LoggerMixin):
             self.file_tree.addTopLevelItem(template_root)
 
             template_dir = "strategies/templates"
+            self.logger.info(f"检查模板目录: {template_dir}, 存在: {os.path.exists(template_dir)}")
+
             if os.path.exists(template_dir):
                 template_files = [
                     f
                     for f in os.listdir(template_dir)
                     if f.endswith(".py") and not f.startswith("__")
                 ]
+                self.logger.info(f"找到模板文件: {template_files}")
             else:
                 template_files = []
+                self.logger.warning(f"模板目录不存在: {template_dir}")
 
             for file_name in template_files:
                 file_item = QTreeWidgetItem()
@@ -215,15 +272,16 @@ class StrategyCenter(BaseWidget, LoggerMixin):
                     },
                 )
                 template_root.addChild(file_item)
+                self.logger.info(f"添加模板文件到树: {file_name}")
 
             self.file_tree.expandAll()
 
             self.logger.info(
-                "文件树创建完成: %s策略, %s模板", len(strategy_files), len(template_files)
+                "文件树创建完成: %d个策略, %d个模板", len(strategy_files), len(template_files)
             )
 
         except Exception as e:
-            self.logger.error("创建文件树失败: %s", e)
+            self.logger.error("创建文件树失败: %s", e, exc_info=True)
 
     # ==================== 内容区域 ====================
 
@@ -430,6 +488,10 @@ class StrategyCenter(BaseWidget, LoggerMixin):
             return
 
         file_path = data["path"]
+
+        # 记录当前文件路径
+        self.current_file_path = file_path
+
         if self.current_file_label:
             self.current_file_label.setText(f"当前文件: {file_path}")
 
@@ -456,10 +518,50 @@ class StrategyCenter(BaseWidget, LoggerMixin):
             return
 
         code = self.code_editor.toPlainText()
-        if code.strip():
-            self.show_info("代码已保存")
-        else:
+        if not code.strip():
             self.show_warning("代码为空，无需保存")
+            return
+
+        # 如果有当前文件路径，直接保存
+        if self.current_file_path:
+            try:
+                with open(self.current_file_path, "w", encoding="utf-8") as f:
+                    f.write(code)
+                self.show_info(f"文件已保存: {self.current_file_path}")
+                self.logger.info("文件保存成功: %s", self.current_file_path)
+
+                # 刷新文件树
+                self.refresh_data()
+            except Exception as e:
+                self.logger.error("保存文件失败: %s", e)
+                self.show_error(f"保存失败: {e}")
+        else:
+            # 没有当前文件，弹出保存对话框
+            from PySide6.QtWidgets import QFileDialog
+
+            file_path, _ = QFileDialog.getSaveFileName(
+                self, "保存策略文件", "strategies/user_strategies/", "Python文件 (*.py)"
+            )
+
+            if file_path:
+                try:
+                    with open(file_path, "w", encoding="utf-8") as f:
+                        f.write(code)
+
+                    # 更新当前文件路径
+                    self.current_file_path = file_path
+
+                    if self.current_file_label:
+                        self.current_file_label.setText(f"当前文件: {file_path}")
+
+                    self.show_info(f"文件已保存: {file_path}")
+                    self.logger.info("文件保存成功: %s", file_path)
+
+                    # 刷新文件树
+                    self.refresh_data()
+                except Exception as e:
+                    self.logger.error("保存文件失败: %s", e)
+                    self.show_error(f"保存失败: {e}")
 
     def _format_code(self):
         """格式化代码."""
@@ -524,6 +626,9 @@ class StrategyCenter(BaseWidget, LoggerMixin):
                 self.ai_response.append(f"❌ AI调用失败: {error_msg}\n")
                 return
 
+            # 检查是否有文件被修改
+            files_modified = response.get("files_modified", [])
+
             # 根据消息类型处理AI回复
             message_type = response.get("message_type", "text")
 
@@ -551,6 +656,22 @@ class StrategyCenter(BaseWidget, LoggerMixin):
                     self.code_editor.insertPlainText(f"\n{code}\n")
                     self.ai_response.append("\n✅ 代码部分已插入到编辑器\n")
 
+            # 如果AI修改了文件，刷新文件树并加载最新的文件
+            if files_modified:
+                self.ai_response.append(f"\n📁 AI助手已保存文件: {', '.join(files_modified)}\n")
+
+                # 刷新文件树
+                self.refresh_data()
+
+                # 如果只修改了一个文件，自动加载到编辑器
+                if len(files_modified) == 1:
+                    file_path = files_modified[0]
+                    self.current_file_path = file_path
+                    if self.current_file_label:
+                        self.current_file_label.setText(f"当前文件: {file_path}")
+                    self._load_file(file_path)
+                    self.ai_response.append(f"✅ 文件已加载到编辑器: {file_path}\n")
+
         except Exception as e:
             self.logger.error("AI助手调用失败: %s", e)
             self.ai_response.append(f"❌ 错误: {str(e)}\n")
@@ -569,14 +690,27 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         )
 
         if ok and strategy_name:
+            # 确保文件名有.py后缀
+            if not strategy_name.endswith(".py"):
+                strategy_name = f"{strategy_name}.py"
+
             # 创建策略文件
             result = self.strategy_service.create_strategy_file(
-                filename=f"{strategy_name}.py", template="cta_template"
+                file_path=strategy_name, template_type="cta"
             )
 
             if result.get("success"):
-                self.show_info(f"策略 '{strategy_name}.py' 创建成功")
+                self.show_info(f"策略 '{strategy_name}' 创建成功")
+
+                # 刷新文件树
                 self.refresh_data()
+
+                # 加载新创建的文件到编辑器
+                file_path = f"strategies/user_strategies/{strategy_name}"
+                self.current_file_path = file_path
+                if self.current_file_label:
+                    self.current_file_label.setText(f"当前文件: {file_path}")
+                self._load_file(file_path)
             else:
                 self.show_error(f"创建策略失败: {result.get('message', '未知错误')}")
 
@@ -594,14 +728,27 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         )
 
         if ok and indicator_name:
-            # 创建指标文件
+            # 确保文件名有.py后缀
+            if not indicator_name.endswith(".py"):
+                indicator_name = f"{indicator_name}.py"
+
+            # 创建指标文件（使用CTA模板）
             result = self.strategy_service.create_strategy_file(
-                filename=f"{indicator_name}.py", template="indicator_template"
+                file_path=indicator_name, template_type="cta"
             )
 
             if result.get("success"):
-                self.show_info(f"指标 '{indicator_name}.py' 创建成功")
+                self.show_info(f"指标 '{indicator_name}' 创建成功")
+
+                # 刷新文件树
                 self.refresh_data()
+
+                # 加载新创建的文件到编辑器
+                file_path = f"strategies/user_strategies/{indicator_name}"
+                self.current_file_path = file_path
+                if self.current_file_label:
+                    self.current_file_label.setText(f"当前文件: {file_path}")
+                self._load_file(file_path)
             else:
                 self.show_error(f"创建指标失败: {result.get('message', '未知错误')}")
 
@@ -778,10 +925,23 @@ class StrategyCenter(BaseWidget, LoggerMixin):
     def connect_signals(self):
         """连接信号槽."""
 
+    def _delayed_refresh(self):
+        """延迟刷新（用于防抖）."""
+        self._create_file_tree()
+        self.logger.info("文件树已自动刷新（文件系统变化）")
+
     def refresh_data(self):
         """刷新数据."""
-        self.show_info("策略中心数据已刷新")
+        # 刷新文件树
+        self._create_file_tree()
+        self.logger.info("策略中心数据已手动刷新")
 
     def on_close(self):
         """关闭处理."""
+        # 停止文件系统监控
+        if self.file_watcher:
+            self.file_watcher.deleteLater()
+            self.file_watcher = None
+            self.logger.info("文件系统监控器已停止")
+        
         self.logger.info("策略中心界面已关闭")

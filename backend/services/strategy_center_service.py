@@ -87,12 +87,15 @@ class StrategyCenterService(BaseService):
                 if self.backtest_engine:
                     self.logger.info("✅ 回测引擎初始化成功")
                 else:
-                    self.logger.warning("⚠️ 回测引擎获取失败")
+                    # 回测引擎是可选功能，降低日志级别
+                    self.logger.debug("⚠️ 回测引擎获取失败")
             else:
-                self.logger.warning("⚠️ MainEngine不可用，无法初始化回测引擎")
+                # 回测引擎是可选功能，降低日志级别
+                self.logger.debug("⚠️ MainEngine不可用，无法初始化回测引擎")
 
         except ImportError:
-            self.logger.warning("⚠️ vnpy_ctabacktester不可用")
+            # 回测引擎是可选功能，降低日志级别
+            self.logger.debug("⚠️ vnpy_ctabacktester不可用")
 
     # ==================== 策略文件管理 ====================
 

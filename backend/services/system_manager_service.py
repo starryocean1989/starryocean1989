@@ -863,6 +863,179 @@ class SystemManagerService(BaseService):
         except Exception as e:
             return {"error": str(e)}
 
+    # ==================== 配置诊断 ====================
+
+    def diagnose_config(self) -> Dict[str, Any]:
+        """诊断配置文件状态.
+
+        Returns:
+            Dict: 诊断结果
+        """
+        try:
+            from backend.config import get_settings
+            import json
+            import os
+
+            # 🔧 修复：使用配置对象中保存的路径，或从环境变量获取
+            settings = get_settings()
+            if settings.config_file:
+                config_file = Path(settings.config_file)
+            else:
+                # 从环境变量获取或使用默认值
+                config_file_str = os.getenv("CONFIG_FILE") or "config/terminal_config.json"
+                config_file = Path(config_file_str)
+                # 如果是相对路径，转换为绝对路径
+                if not config_file.is_absolute():
+                    from pathlib import Path as P
+
+                    project_root = P(__file__).parent.parent.parent
+                    config_file = project_root / config_file
+
+            diagnosis = {
+                "config_file_path": str(config_file.absolute()),
+                "config_file_exists": config_file.exists(),
+                "config_file_content": None,
+                "memory_config": None,
+                "ai_service_status": None,
+            }
+
+            # 检查文件内容
+            if config_file.exists():
+                try:
+                    with open(config_file, "r", encoding="utf-8") as f:
+                        diagnosis["config_file_content"] = json.load(f)
+                except Exception as e:
+                    diagnosis["config_file_error"] = str(e)
+
+            # 检查内存配置
+            settings = get_settings()
+            diagnosis["memory_config"] = {
+                "ai_api_key_set": bool(settings.ai.api_key),
+                "ai_api_url": settings.ai.api_url,
+                "ai_model": settings.ai.model,
+            }
+
+            # 检查AI服务状态
+            from backend.core.base import get_service_manager
+
+            service_manager = get_service_manager()
+            ai_service = service_manager.get_service("ai_assistant_service")
+
+            if ai_service:
+                # 检查初始化状态
+                try:
+                    initialized = (
+                        ai_service.is_initialized
+                        if hasattr(ai_service, "is_initialized")
+                        else "unknown"
+                    )
+                except Exception:
+                    initialized = "unknown"
+
+                # 检查API Key配置
+                try:
+                    api_key_configured = (
+                        bool(ai_service.api_key) if hasattr(ai_service, "api_key") else "unknown"
+                    )
+                except Exception:
+                    api_key_configured = "unknown"
+
+                diagnosis["ai_service_status"] = {
+                    "exists": True,
+                    "initialized": initialized,
+                    "api_key_configured": api_key_configured,
+                }
+            else:
+                diagnosis["ai_service_status"] = {"exists": False}
+
+            return {
+                "success": True,
+                "diagnosis": diagnosis,
+            }
+
+        except Exception as e:
+            self.logger.error("配置诊断失败: %s", e, exc_info=True)
+            return {
+                "success": False,
+                "message": str(e),
+            }
+
+    # ==================== 服务重载 ====================
+
+    def reload_ai_service(self) -> Dict[str, Any]:
+        """重新加载AI助手服务.
+
+        当AI配置更新后，需要重新初始化AI服务以应用新配置。
+
+        Returns:
+            Dict: 重载结果
+        """
+        try:
+            from backend.core.base import get_service_manager
+            from backend.config import init_settings, get_settings
+            import os
+
+            # 🔧 关键修复：强制重新加载配置文件，确保使用最新保存的配置
+            if os.getenv("CONFIG_FILE"):
+                config_file = os.getenv("CONFIG_FILE")
+                self.logger.info("从环境变量重新加载配置: %s", config_file)
+                init_settings(config_file)
+            else:
+                settings = get_settings()
+                if settings.config_file:
+                    self.logger.info("重新加载配置文件: %s", settings.config_file)
+                    init_settings(settings.config_file)
+                else:
+                    self.logger.info("重新加载默认配置文件")
+                    init_settings()
+
+            # 验证配置是否已更新
+            settings = get_settings()
+            if settings.ai.api_key:
+                masked_key = f"{settings.ai.api_key[:4]}...{settings.ai.api_key[-4:]}"
+                self.logger.info("重新加载后的API Key: %s", masked_key)
+            else:
+                self.logger.warning("API Key未设置，AI服务重载可能失败")
+
+            service_manager = get_service_manager()
+
+            # 关闭旧服务
+            old_service = service_manager.get_service("ai_assistant_service")
+            if old_service:
+                try:
+                    old_service.shutdown()
+                    self.logger.info("旧AI服务已关闭")
+                except Exception as e:
+                    self.logger.warning("关闭旧AI服务时出错: %s", e)
+
+            # 创建新服务实例
+            from backend.services.ai_assistant_service import AIAssistantService
+
+            ai_service = AIAssistantService()
+            init_success = ai_service.initialize()
+
+            if init_success:
+                # 注册新服务
+                service_manager.register_service("ai_assistant_service", ai_service)
+                self.logger.info("AI服务重新加载成功")
+                return {
+                    "success": True,
+                    "message": "AI服务已重新加载并初始化成功",
+                }
+            else:
+                self.logger.warning("AI服务重新初始化失败")
+                return {
+                    "success": False,
+                    "message": "AI服务初始化失败，请检查API配置是否正确",
+                }
+
+        except Exception as e:
+            self.logger.error("重新加载AI服务失败: %s", e, exc_info=True)
+            return {
+                "success": False,
+                "message": f"重新加载失败: {str(e)}",
+            }
+
     # ==================== 配置管理 ====================
 
     def get_all_configs(self) -> Dict[str, Any]:
@@ -985,6 +1158,10 @@ class SystemManagerService(BaseService):
             Dict: 更新结果
         """
         try:
+            import os
+
+            ai_config_updated = False
+
             if module == "data_center":
                 # 更新data_module_vnpy配置
                 from backend.infrastructure.data_module_vnpy.config import config_manager
@@ -1008,9 +1185,19 @@ class SystemManagerService(BaseService):
                             setattr(settings.vnpy, key, value)
 
                 elif module == "ai":
+                    # AI配置更新，需要重新加载服务
+                    ai_config_updated = True
                     for key, value in config_data.items():
                         if hasattr(settings.ai, key):
                             setattr(settings.ai, key, value)
+                            # 记录详细的配置更新（API Key需要遮蔽）
+                            if key == "api_key" and value:
+                                masked_value = (
+                                    f"{value[:4]}...{value[-4:]}" if len(value) > 8 else "***"
+                                )
+                                self.logger.info("更新AI配置: %s = %s", key, masked_value)
+                            else:
+                                self.logger.info("更新AI配置: %s = %s", key, value)
 
                 elif module == "database":
                     for key, value in config_data.items():
@@ -1029,8 +1216,22 @@ class SystemManagerService(BaseService):
                             if hasattr(settings.api, api_key):
                                 setattr(settings.api, api_key, value)
 
-                # 保存到文件
-                config_file = Path("config/terminal_config.json")
+                # 🔧 修复：保存到正确的配置文件路径
+                if settings.config_file:
+                    # 使用配置对象中保存的路径
+                    config_file = Path(settings.config_file)
+                else:
+                    # 从环境变量获取或使用默认值
+                    config_file_str = os.getenv("CONFIG_FILE") or "config/terminal_config.json"
+                    config_file = Path(config_file_str)
+                    # 如果是相对路径，转换为绝对路径
+                    if not config_file.is_absolute():
+                        from pathlib import Path as P
+
+                        project_root = P(__file__).parent.parent.parent
+                        config_file = project_root / config_file
+
+                self.logger.info("保存配置到文件: %s", str(config_file.absolute()))
                 settings.save_to_file(str(config_file))
 
             else:
@@ -1041,10 +1242,27 @@ class SystemManagerService(BaseService):
 
             self.logger.info(f"配置已更新: {module} - {list(config_data.keys())}")
 
-            return {
+            # 如果AI配置被更新，自动重新加载AI服务
+            result = {
                 "success": True,
                 "message": f"{module}配置已更新",
+                "ai_reloaded": False,
             }
+
+            if ai_config_updated:
+                self.logger.info("AI配置已更新，正在重新加载AI服务...")
+                reload_result = self.reload_ai_service()
+                result["ai_reloaded"] = reload_result.get("success", False)
+                result["ai_reload_message"] = reload_result.get("message", "")
+
+                if reload_result.get("success"):
+                    result["message"] = f"{module}配置已更新，AI服务已重新加载"
+                else:
+                    result["message"] = (
+                        f"{module}配置已更新，但AI服务重载失败: {reload_result.get('message')}"
+                    )
+
+            return result
 
         except Exception as e:
             self._log_error(f"更新配置[{module}]", e)

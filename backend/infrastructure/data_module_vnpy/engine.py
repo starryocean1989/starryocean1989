@@ -187,14 +187,17 @@ class ChinaStockEngine(BaseEngine):
 
             self.logger.info(f"开始全量下载K线数据: {market_types}")
 
-            # 获取所有品种
+            # 获取所有品种（仅使用本地缓存，不允许重新获取）
             all_stocks = []
             for market_type in market_types:
-                stocks = self.stock_fetcher.get_market_stocks(market_type)
+                stocks = self.stock_fetcher.get_market_stocks(market_type, allow_fetch=False)
                 all_stocks.extend(stocks)
 
             if not all_stocks:
-                self.logger.warning("未找到任何品种")
+                error_msg = "本地品种缓存不存在或为空，请先在【品种列表】界面点击【重新加载品种】按钮获取品种列表"
+                self.logger.error(error_msg)
+                self._push_download_event("full_kline", "error", 0, error_msg)
+                self._push_log_event(error_msg, "ERROR")
                 return False
 
             # 下载K线数据
@@ -239,14 +242,17 @@ class ChinaStockEngine(BaseEngine):
 
             self.logger.info(f"开始增量下载K线数据: 从 {start_date} 开始")
 
-            # 获取所有品种
+            # 获取所有品种（仅使用本地缓存，不允许重新获取）
             all_stocks = []
             for market_type in market_types:
-                stocks = self.stock_fetcher.get_market_stocks(market_type)
+                stocks = self.stock_fetcher.get_market_stocks(market_type, allow_fetch=False)
                 all_stocks.extend(stocks)
 
             if not all_stocks:
-                self.logger.warning("未找到任何品种")
+                error_msg = "本地品种缓存不存在或为空，请先在【品种列表】界面点击【重新加载品种】按钮获取品种列表"
+                self.logger.error(error_msg)
+                self._push_download_event("incremental_kline", "error", 0, error_msg)
+                self._push_log_event(error_msg, "ERROR")
                 return False
 
             # 下载增量K线数据

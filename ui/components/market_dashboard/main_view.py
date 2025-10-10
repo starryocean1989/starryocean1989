@@ -3,6 +3,7 @@
 
 单一界面：所有功能集成在一个综合界面中。
 通过MarketBoardService访问行情数据。
+集成vnpy_chartwizard专业图表组件。
 """
 from typing import Any, Optional
 
@@ -32,7 +33,7 @@ from backend.core.base import get_service_manager
 from backend.core.utils import LoggerMixin
 
 from ui.widgets.base_widget import BaseWidget
-from ui.widgets.chart_widget import ChartWidget
+from ui.widgets.chart_wizard_widget import ChartWizardWidget
 from ui.widgets.chart_toolbar_widget import ChartToolbar
 
 
@@ -51,7 +52,7 @@ class MarketDashboard(BaseWidget, LoggerMixin):
         self.market_data_table: Optional[QTableWidget] = None
         self.period_combo: Optional[QComboBox] = None
         self.chart_type_combo: Optional[QComboBox] = None
-        self.main_chart_widget: Optional[ChartWidget] = None
+        self.main_chart_widget: Optional[ChartWizardWidget] = None
         self.chart_toolbar: Optional[ChartToolbar] = None
         self.indicator_selector: Optional[QComboBox] = None
         self.indicators_tab: Optional[QTabWidget] = None
@@ -195,7 +196,8 @@ class MarketDashboard(BaseWidget, LoggerMixin):
         chart_group = QGroupBox("行情图表")
         chart_layout = QVBoxLayout(chart_group)
 
-        self.main_chart_widget = ChartWidget(self)
+        # 使用vnpy_chartwizard专业图表组件
+        self.main_chart_widget = ChartWizardWidget(self)
         self.main_chart_widget.setMinimumHeight(300)
         chart_layout.addWidget(self.main_chart_widget)
 
@@ -359,11 +361,32 @@ class MarketDashboard(BaseWidget, LoggerMixin):
         if self.symbol_combo:
             self.symbol_combo.currentTextChanged.connect(self._on_symbol_changed)
 
+        # 连接图表组件信号
+        if self.main_chart_widget and hasattr(self.main_chart_widget, "symbol_changed"):
+            self.main_chart_widget.symbol_changed.connect(self._on_chart_symbol_changed)
+
         # 启动数据更新定时器
         self.start_update_timer(1000, self._update_market_data)
 
+    def _on_chart_symbol_changed(self, symbol: str):
+        """图表品种改变回调.
+
+        Args:
+            symbol: 品种代码
+        """
+        self.logger.info(f"图表品种已切换: {symbol}")
+
     def _on_symbol_changed(self, text: str):
         """品种改变."""
+        # 解析品种代码
+        if text and " - " in text:
+            symbol_code = text.split(" - ")[0].strip()
+
+            # 更新图表品种
+            if self.main_chart_widget and hasattr(self.main_chart_widget, "set_symbol"):
+                self.main_chart_widget.set_symbol(symbol_code)
+
+        # 更新行情数据
         self._update_market_data()
 
         # 自动检测数据断点

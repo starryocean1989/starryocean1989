@@ -52,17 +52,13 @@ from .services.system_manager_service import SystemManagerService
 from .services.trading_gateway_service import TradingGatewayService
 
 # 导出仓库
-from .repositories.data_repositories import (
+from .repositories import (
     SymbolRepository,
     DataSourceRepository,
     DownloadTaskRepository,
-)
-from .repositories.trading_repositories import (
     GatewayRepository,
     StrategyRepository,
     BacktestRepository,
-)
-from .repositories.system_repositories import (
     AlertRepository,
     LogRepository,
     ConfigRepository,
@@ -70,7 +66,7 @@ from .repositories.system_repositories import (
 )
 
 # 导出工具
-from .utils.utils import (
+from .core.utils import (
     success_response,
     error_response,
     validate_required_fields,

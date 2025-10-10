@@ -109,25 +109,59 @@ class SystemManager(BaseWidget, LoggerMixin):
         # 工具集合组件
         self.tools_table: Optional[QTableWidget] = None
 
+        # 🔧 关键修复：在调用父类初始化之前就初始化服务
+        # 因为 super().__init__() 会调用 setup_ui()，而 setup_ui() 会创建标签页
+        # 标签页创建时会调用 _load_config()，此时需要 system_service 已经就绪
+        self._initialize_service_before_ui()
+
         # 调用父类初始化
         super().__init__(parent, "系统管理")
-        self.logger.info("系统管理界面初始化开始")
+        self.logger.info("系统管理界面初始化完成")
 
-        # 初始化服务
-        self._initialize_service()
+    def _initialize_service_before_ui(self):
+        """在UI创建之前初始化服务（关键修复）.
 
-    def _initialize_service(self):
-        """获取系统管理服务."""
+        这个方法必须在 super().__init__() 之前调用，
+        因为父类初始化会创建UI，而UI创建时会调用 _load_config()，
+        _load_config() 需要 system_service 已经就绪。
+
+        注意：此时 self.logger 还未初始化，使用 logging.getLogger()
+        """
+        import logging
+
+        logger = logging.getLogger(self.__class__.__name__)
+
         try:
             # 从服务管理器获取系统管理服务
             self.system_service = self.service_manager.get_service("system_manager_service")
             if self.system_service:
-                self.logger.info("系统管理服务获取成功")
+                logger.info("系统管理服务获取成功")
             else:
-                self.logger.warning("系统管理服务未注册")
+                logger.warning("系统管理服务未注册，尝试手动创建...")
+                # 如果服务未注册，尝试手动创建并注册
+                try:
+                    from backend.services.system_manager_service import SystemManagerService
+
+                    self.system_service = SystemManagerService()
+                    # 初始化服务
+                    init_success = self.system_service.initialize()
+
+                    # 注册到服务管理器（无论初始化是否成功）
+                    self.service_manager.register_service(
+                        "system_manager_service", self.system_service
+                    )
+
+                    if init_success:
+                        logger.info("系统管理服务手动创建并注册成功")
+                    else:
+                        logger.warning("系统管理服务初始化失败，但服务已注册（可能部分功能不可用）")
+                        # 保留服务引用，不要设为None
+                except Exception as create_error:
+                    logger.error("手动创建系统管理服务失败: %s", create_error, exc_info=True)
+                    self.system_service = None
         except Exception as e:
-            self.logger.error("获取系统管理服务失败: %s", e)
-            self.show_error(f"服务获取失败: {e}")
+            logger.error("获取系统管理服务失败: %s", e, exc_info=True)
+            self.system_service = None
 
     def setup_ui(self):
         """设置用户界面."""
@@ -360,6 +394,11 @@ class SystemManager(BaseWidget, LoggerMixin):
         toolbar_layout.addWidget(QLabel("⚙️ 系统配置"))
         toolbar_layout.addStretch()
 
+        # 诊断按钮
+        diagnose_btn = QPushButton("🔍 诊断配置")
+        diagnose_btn.clicked.connect(self._diagnose_config)
+        toolbar_layout.addWidget(diagnose_btn)
+
         refresh_btn = QPushButton("🔄 刷新")
         refresh_btn.clicked.connect(self._refresh_config)
         toolbar_layout.addWidget(refresh_btn)
@@ -500,9 +539,19 @@ class SystemManager(BaseWidget, LoggerMixin):
 
         # Timeout
         self.ai_timeout_spin = QSpinBox()
-        self.ai_timeout_spin.setRange(10, 120)
+        self.ai_timeout_spin.setRange(10, 180)
         self.ai_timeout_spin.setValue(30)
         ai_config_layout.addRow("超时时间(秒):", self.ai_timeout_spin)
+
+        # 工具调用开关
+        self.ai_enable_tools_check = QCheckBox()
+        self.ai_enable_tools_check.setChecked(False)
+        self.ai_enable_tools_check.setToolTip(
+            "启用AI文件操作工具（读取、写入、删除文件）。\n"
+            "注意：需要DeepSeek API支持Function Calling。\n"
+            "如果遇到连接错误，请禁用此选项。"
+        )
+        ai_config_layout.addRow("启用文件操作工具:", self.ai_enable_tools_check)
 
         layout.addWidget(ai_config_group)
 
@@ -590,7 +639,93 @@ class SystemManager(BaseWidget, LoggerMixin):
     def _load_config(self):
         """加载配置."""
         try:
-            # 使用默认值（vnpy集成后通过service访问）
+            if not self.system_service:
+                self.logger.warning("系统管理服务不可用，使用默认配置")
+                self._load_default_config()
+                return
+
+            # 从服务获取所有配置
+            result = self.system_service.get_all_configs()
+
+            if not result.get("success"):
+                self.logger.warning("获取配置失败，使用默认值: %s", result.get("message"))
+                self._load_default_config()
+                return
+
+            configs = result.get("configs", {})
+
+            # 加载数据中心配置
+            data_config = configs.get("data_center", {})
+            if self.tdx_path_edit:
+                tdx_dir = data_config.get("tdx_dir", "")
+                self.tdx_path_edit.setText(tdx_dir)
+            if self.cache_dir_edit:
+                cache_dir = data_config.get("cache_dir", "./data/cache")
+                self.cache_dir_edit.setText(cache_dir)
+            if self.data_dir_edit:
+                data_dir = data_config.get("data_dir", "./data/kline")
+                self.data_dir_edit.setText(data_dir)
+            if self.base_date_edit:
+                base_date_str = data_config.get("base_date", "2020-01-01")
+                try:
+                    parts = base_date_str.split("-")
+                    if len(parts) == 3:
+                        self.base_date_edit.setDate(
+                            QDate(int(parts[0]), int(parts[1]), int(parts[2]))
+                        )
+                    else:
+                        self.base_date_edit.setDate(QDate(2020, 1, 1))
+                except (ValueError, IndexError):
+                    self.base_date_edit.setDate(QDate(2020, 1, 1))
+            if self.max_workers_spin:
+                self.max_workers_spin.setValue(data_config.get("max_workers", 10))
+            if self.timeout_spin:
+                self.timeout_spin.setValue(data_config.get("timeout", 30))
+            if self.retry_spin:
+                self.retry_spin.setValue(data_config.get("retry_times", 3))
+            if self.watcher_check:
+                self.watcher_check.setChecked(data_config.get("enable_watcher", True))
+            if self.watcher_interval_spin:
+                self.watcher_interval_spin.setValue(data_config.get("watcher_interval", 5))
+
+            # 加载AI配置
+            ai_config = configs.get("ai", {})
+            if hasattr(self, "ai_api_key_edit"):
+                api_key = ai_config.get("api_key", "")
+                self.ai_api_key_edit.setText(api_key)
+            if hasattr(self, "ai_api_url_edit"):
+                api_url = ai_config.get("api_url", "https://api.deepseek.com/v1/chat/completions")
+                self.ai_api_url_edit.setText(api_url)
+            if hasattr(self, "ai_model_combo"):
+                model = ai_config.get("model", "deepseek-chat")
+                self.ai_model_combo.setCurrentText(model)
+            if hasattr(self, "ai_max_tokens_spin"):
+                max_tokens = ai_config.get("max_tokens", 2000)
+                self.ai_max_tokens_spin.setValue(max_tokens)
+            if hasattr(self, "ai_temperature_slider"):
+                temperature = ai_config.get("temperature", 0.7)
+                self.ai_temperature_slider.setValue(int(temperature * 100))
+            if hasattr(self, "ai_max_history_spin"):
+                max_history = ai_config.get("max_history", 10)
+                self.ai_max_history_spin.setValue(max_history)
+            if hasattr(self, "ai_timeout_spin"):
+                timeout = ai_config.get("timeout", 30)
+                self.ai_timeout_spin.setValue(timeout)
+
+            if hasattr(self, "ai_enable_tools_check"):
+                enable_tools = ai_config.get("enable_tools", False)
+                self.ai_enable_tools_check.setChecked(enable_tools)
+
+            self.logger.info("配置加载完成")
+
+        except Exception as e:
+            self.logger.error("加载配置失败: %s", e, exc_info=True)
+            self._load_default_config()
+
+    def _load_default_config(self):
+        """加载默认配置."""
+        try:
+            # 数据中心默认配置
             if self.tdx_path_edit:
                 self.tdx_path_edit.setText("")
             if self.cache_dir_edit:
@@ -610,7 +745,7 @@ class SystemManager(BaseWidget, LoggerMixin):
             if self.watcher_interval_spin:
                 self.watcher_interval_spin.setValue(5)
 
-            # 加载AI配置
+            # AI默认配置
             if hasattr(self, "ai_api_key_edit"):
                 self.ai_api_key_edit.setText("")
             if hasattr(self, "ai_api_url_edit"):
@@ -626,10 +761,118 @@ class SystemManager(BaseWidget, LoggerMixin):
             if hasattr(self, "ai_timeout_spin"):
                 self.ai_timeout_spin.setValue(30)
 
-            self.logger.info("配置加载完成（使用默认值）")
+            self.logger.info("已加载默认配置")
 
         except Exception as e:
-            self.logger.error("加载配置失败: %s", e)
+            self.logger.error("加载默认配置失败: %s", e)
+
+    def _verify_config_file(self):
+        """验证配置文件是否正确写入."""
+        try:
+            import json
+            from pathlib import Path
+
+            config_file = Path("config/terminal_config.json")
+            if not config_file.exists():
+                self.logger.error("❌ 配置文件不存在！")
+                return
+
+            with open(config_file, "r", encoding="utf-8") as f:
+                config_data = json.load(f)
+
+            ai_config = config_data.get("ai", {})
+            api_key = ai_config.get("api_key", "")
+
+            if api_key:
+                masked_key = f"{api_key[:4]}...{api_key[-4:]}" if len(api_key) > 8 else "***"
+                self.logger.info(f"✅ 配置文件验证: API Key = {masked_key}")
+            else:
+                self.logger.warning("⚠️ 配置文件中API Key为空")
+
+            self.logger.info(f"✅ 配置文件验证通过: {config_file.absolute()}")
+
+        except Exception as e:
+            self.logger.error(f"配置文件验证失败: {e}", exc_info=True)
+
+    def _diagnose_config(self):
+        """诊断配置状态."""
+        try:
+            self.logger.info("开始诊断配置...")
+
+            if not self.system_service:
+                self.logger.error("系统管理服务不可用")
+                self.show_error("系统管理服务不可用")
+                return
+
+            self.logger.info("调用 diagnose_config...")
+            result = self.system_service.diagnose_config()
+            self.logger.info("diagnose_config 返回结果: %s", result.get("success"))
+
+            if result.get("success"):
+                diagnosis = result.get("diagnosis", {})
+                self.logger.info("获取到诊断信息: %s", list(diagnosis.keys()))
+
+                # 构建诊断信息
+                msg_parts = []
+                msg_parts.append("配置诊断报告")
+                msg_parts.append("=" * 50)
+                msg_parts.append(f"\n配置文件路径:\n{diagnosis.get('config_file_path')}")
+                msg_parts.append(f"\n配置文件存在: {diagnosis.get('config_file_exists')}")
+
+                # 文件中的AI配置
+                if diagnosis.get("config_file_content"):
+                    config = diagnosis["config_file_content"]
+                    ai_config = config.get("ai", {})
+                    msg_parts.append(f"\n文件中的AI配置:")
+                    api_key = ai_config.get("api_key", "")
+                    if api_key:
+                        # 显示API Key的前后各4位
+                        masked_key = (
+                            f"{api_key[:4]}...{api_key[-4:]}" if len(api_key) > 8 else "***"
+                        )
+                        msg_parts.append(f"  - API Key: {masked_key}")
+                    else:
+                        msg_parts.append(f"  - API Key: 未设置")
+                    msg_parts.append(f"  - API URL: {ai_config.get('api_url', '未设置')}")
+                    msg_parts.append(f"  - 模型: {ai_config.get('model', '未设置')}")
+                else:
+                    msg_parts.append(f"\n文件中的AI配置: 无（文件不存在或为空）")
+
+                # 内存中的AI配置
+                mem_config = diagnosis.get("memory_config", {})
+                msg_parts.append(f"\n内存中的AI配置:")
+                msg_parts.append(
+                    f"  - API Key: {'已设置' if mem_config.get('ai_api_key_set') else '未设置'}"
+                )
+                msg_parts.append(f"  - API URL: {mem_config.get('ai_api_url', '未设置')}")
+                msg_parts.append(f"  - 模型: {mem_config.get('ai_model', '未设置')}")
+
+                # AI服务状态
+                ai_status = diagnosis.get("ai_service_status", {})
+                msg_parts.append(f"\nAI服务状态:")
+                msg_parts.append(f"  - 服务存在: {ai_status.get('exists')}")
+                if ai_status.get("exists"):
+                    msg_parts.append(f"  - 已初始化: {ai_status.get('initialized')}")
+                    msg_parts.append(f"  - API Key配置: {ai_status.get('api_key_configured')}")
+                else:
+                    msg_parts.append("  - 服务未注册")
+
+                # 显示对话框
+                full_msg = "\n".join(msg_parts)
+                self.logger.info("显示诊断对话框")
+                QMessageBox.information(self, "配置诊断", full_msg)
+            else:
+                error_msg = result.get("message", "未知错误")
+                self.logger.error("诊断失败: %s", error_msg)
+                self.show_error(f"诊断失败: {error_msg}")
+
+        except Exception as e:
+            self.logger.error("配置诊断失败: %s", e, exc_info=True)
+            import traceback
+
+            tb = traceback.format_exc()
+            self.logger.error("异常堆栈: %s", tb)
+            self.show_error(f"诊断失败: {e}\n\n详细信息请查看日志")
 
     def _refresh_config(self):
         """刷新配置."""
@@ -643,34 +886,44 @@ class SystemManager(BaseWidget, LoggerMixin):
                 self.show_error("系统管理服务不可用")
                 return
 
-            # 收集配置数据
-            config_data = {}
-
-            if self.tdx_path_edit:
-                config_data["tdx_path"] = self.tdx_path_edit.text()
-            if self.cache_dir_edit:
-                config_data["cache_dir"] = self.cache_dir_edit.text()
-            if self.data_dir_edit:
-                config_data["data_dir"] = self.data_dir_edit.text()
+            # 收集数据中心配置
+            data_center_config = {}
+            if self.tdx_path_edit and self.tdx_path_edit.text():
+                data_center_config["tdx_dir"] = self.tdx_path_edit.text()
+            if self.cache_dir_edit and self.cache_dir_edit.text():
+                data_center_config["cache_dir"] = self.cache_dir_edit.text()
+            if self.data_dir_edit and self.data_dir_edit.text():
+                data_center_config["data_dir"] = self.data_dir_edit.text()
             if self.base_date_edit:
-                config_data["base_date"] = self.base_date_edit.date().toString("yyyy-MM-dd")
+                data_center_config["base_date"] = self.base_date_edit.date().toString("yyyy-MM-dd")
             if self.max_workers_spin:
-                config_data["max_workers"] = self.max_workers_spin.value()
+                data_center_config["max_workers"] = self.max_workers_spin.value()
             if self.timeout_spin:
-                config_data["timeout"] = self.timeout_spin.value()
+                data_center_config["timeout"] = self.timeout_spin.value()
             if self.retry_spin:
-                config_data["retry_count"] = self.retry_spin.value()
+                data_center_config["retry_times"] = self.retry_spin.value()
             if self.watcher_check:
-                config_data["watcher_enabled"] = self.watcher_check.isChecked()
+                data_center_config["enable_watcher"] = self.watcher_check.isChecked()
             if self.watcher_interval_spin:
-                config_data["watcher_interval"] = self.watcher_interval_spin.value()
+                data_center_config["watcher_interval"] = self.watcher_interval_spin.value()
 
             # 收集AI配置数据
             ai_config = {}
-            if hasattr(self, "ai_api_key_edit") and self.ai_api_key_edit.text():
-                ai_config["api_key"] = self.ai_api_key_edit.text()
-            if hasattr(self, "ai_api_url_edit") and self.ai_api_url_edit.text():
-                ai_config["api_url"] = self.ai_api_url_edit.text()
+            if hasattr(self, "ai_api_key_edit"):
+                api_key_text = self.ai_api_key_edit.text().strip()
+                if api_key_text:
+                    ai_config["api_key"] = api_key_text
+                    self.logger.info(
+                        f"收集到API Key: {api_key_text[:4]}...{api_key_text[-4:] if len(api_key_text) > 8 else '***'}"
+                    )
+                else:
+                    self.logger.warning("API Key为空")
+
+            if hasattr(self, "ai_api_url_edit"):
+                api_url_text = self.ai_api_url_edit.text().strip()
+                if api_url_text:
+                    ai_config["api_url"] = api_url_text
+
             if hasattr(self, "ai_model_combo"):
                 ai_config["model"] = self.ai_model_combo.currentText()
             if hasattr(self, "ai_max_tokens_spin"):
@@ -681,20 +934,68 @@ class SystemManager(BaseWidget, LoggerMixin):
                 ai_config["max_history"] = self.ai_max_history_spin.value()
             if hasattr(self, "ai_timeout_spin"):
                 ai_config["timeout"] = self.ai_timeout_spin.value()
+            if hasattr(self, "ai_enable_tools_check"):
+                ai_config["enable_tools"] = self.ai_enable_tools_check.isChecked()
 
+            self.logger.info(f"收集到AI配置项: {list(ai_config.keys())}")
+
+            # 保存结果跟踪
+            success_count = 0
+            fail_messages = []
+            ai_service_reloaded = False
+
+            # 保存数据中心配置
+            if data_center_config:
+                result = self.system_service.update_config("data_center", data_center_config)
+                if result.get("success"):
+                    success_count += 1
+                    self.logger.info("数据中心配置保存成功")
+                else:
+                    fail_messages.append(f"数据中心: {result.get('message')}")
+
+            # 保存AI配置（会自动触发服务重载）
             if ai_config:
-                config_data["ai"] = ai_config
+                self.logger.info("开始保存AI配置...")
+                result = self.system_service.update_config("ai", ai_config)
+                self.logger.info(
+                    f"update_config返回: success={result.get('success')}, ai_reloaded={result.get('ai_reloaded')}"
+                )
 
-            # 调用服务保存配置
-            result = self.system_service.save_config(config_data)
+                if result.get("success"):
+                    success_count += 1
+                    ai_service_reloaded = result.get("ai_reloaded", False)
+                    self.logger.info(f"AI配置保存成功，服务重载状态: {ai_service_reloaded}")
 
-            if result.get("success"):
-                self.show_info("配置保存成功")
+                    # 验证配置文件
+                    self._verify_config_file()
+
+                    # 检查AI服务是否重载成功
+                    if ai_service_reloaded:
+                        self.logger.info("✅ AI服务重载成功")
+                    else:
+                        reload_msg = result.get("ai_reload_message", "未知原因")
+                        self.logger.warning(f"⚠️ AI服务重载失败: {reload_msg}")
+                        fail_messages.append(f"AI服务重载失败: {reload_msg}")
+                else:
+                    error_msg = result.get("message", "未知错误")
+                    self.logger.error(f"AI配置保存失败: {error_msg}")
+                    fail_messages.append(f"AI配置: {error_msg}")
+
+            # 显示保存结果
+            if success_count > 0 and not fail_messages:
+                if ai_service_reloaded:
+                    self.show_info("配置保存成功，AI服务已重新加载")
+                else:
+                    self.show_info("配置保存成功")
+            elif success_count > 0 and fail_messages:
+                msg = "部分配置保存成功，但存在问题:\n" + "\n".join(fail_messages)
+                self.show_warning(msg)
             else:
-                self.show_error(f"配置保存失败: {result.get('message', '未知错误')}")
+                msg = "配置保存失败:\n" + "\n".join(fail_messages)
+                self.show_error(msg)
 
         except Exception as e:
-            self.logger.error("保存配置失败: %s", e)
+            self.logger.error("保存配置失败: %s", e, exc_info=True)
             self.show_error(f"保存配置失败: {e}")
 
     def _reset_config(self):

@@ -1,18 +1,60 @@
 {
-  "app": {
-    "name": "星辰金融终端",
-    "version": "5.0.0",
-    "author": "星辰科技",
-    "description": "专业的金融交易终端系统"
+  "database": {
+    "sqlite_path": "data/terminal.db",
+    "sqlite_timeout": 30,
+    "postgres_host": null,
+    "postgres_port": 5432,
+    "postgres_db": null,
+    "postgres_user": null,
+    "postgres_password": null
   },
-  "ui": {
-    "theme": "dark",
-    "language": "zh_CN",
-    "window_width": 1200,
-    "window_height": 800,
-    "min_width": 800,
-    "min_height": 600,
-    "font_size": 10,
-    "refresh_interval": 1000
+  "vnpy": {
+    "event_engine_timer_interval": 1.0,
+    "event_engine_timer_interval_ms": 1000,
+    "data_storage_path": "data",
+    "recording_data_path": "data/recordings",
+    "log_level": "INFO",
+    "log_file": null
+  },
+  "websocket": {
+    "max_connections": 1000,
+    "connection_timeout": 300.0,
+    "max_message_size": 1048576,
+    "ping_interval": 30.0,
+    "ping_timeout": 10.0,
+    "cleanup_interval": 60.0
+  },
+  "api": {
+    "host": "0.0.0.0",
+    "port": 8000,
+    "debug": false,
+    "secret_key": "your-secret-key-here",
+    "access_token_expire_minutes": 30,
+    "cors_origins": [
+      "http://localhost:3000",
+      "http://localhost:5173",
+      "http://127.0.0.1:3000",
+      "http://127.0.0.1:5173"
+    ],
+    "rate_limit_per_minute": 100
+  },
+  "logging": {
+    "level": "INFO",
+    "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    "file_path": "logs/backend.log",
+    "max_file_size": 10485760,
+    "backup_count": 5
+  },
+  "ai": {
+    "provider": "deepseek",
+    "api_key": "sk-095ed1289fba4f9cb67fd4ac0ce0345b",
+    "api_url": "https://api.deepseek.com/v1/chat/completions",
+    "model": "deepseek-chat",
+    "max_tokens": 2000,
+    "temperature": 0.7,
+    "timeout": 90,
+    "max_history": 10,
+    "system_prompt": "你是一个专业的量化交易策略编写助手，擅长Python和VnPy框架。",
+    "enable_tools": false
   }
 }

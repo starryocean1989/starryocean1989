@@ -154,6 +154,9 @@ class AIConfig(BaseSettings):
     max_history: int = Field(default=10)
     system_prompt: str = Field(default="你是一个专业的量化交易策略编写助手，擅长Python和VnPy框架。")
 
+    # 工具调用配置（MCP功能）
+    enable_tools: bool = Field(default=False)  # 默认禁用，避免兼容性问题
+
 
 class Settings:
     """统一配置管理类."""
@@ -170,9 +173,16 @@ class Settings:
         self.logging = LoggingConfig()
         self.ai = AIConfig()
 
-        # 加载配置文件
-        if config_file and Path(config_file).exists():
-            self.load_from_file(config_file)
+        # 加载配置文件（如果提供了路径就尝试加载）
+        if config_file:
+            config_path = Path(config_file)
+            if config_path.exists():
+                self.load_from_file(config_file)
+            else:
+                # 配置文件不存在，创建默认配置
+                logger.info("配置文件不存在，将创建默认配置: %s", config_file)
+                config_path.parent.mkdir(parents=True, exist_ok=True)
+                self.save_to_file(config_file)
 
         # 创建必要的目录
         self._create_directories()
@@ -297,6 +307,9 @@ def get_settings() -> Settings:
     if _settings is None:
         # 尝试从环境变量获取配置文件路径
         config_file = os.getenv("CONFIG_FILE")
+        if not config_file:
+            # 如果环境变量未设置，使用默认路径
+            config_file = "config/terminal_config.json"
         _settings = Settings(config_file)
     return _settings
 
@@ -304,7 +317,14 @@ def get_settings() -> Settings:
 def init_settings(config_file: Optional[str] = None) -> Settings:
     """初始化全局配置."""
     global _settings
+    if config_file is None:
+        # 🔧 修复点2：优先从环境变量获取配置文件路径
+        config_file = os.getenv("CONFIG_FILE") or "config/terminal_config.json"
+
+    # 强制重新创建配置对象，确保加载最新文件
     _settings = Settings(config_file)
+
+    logger.info("全局配置已初始化: %s", config_file)
     return _settings
 
 

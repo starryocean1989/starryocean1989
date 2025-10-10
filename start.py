@@ -90,6 +90,14 @@ def activate_venv(venv_path: Path, project_root: Path) -> dict:
     else:
         env["PYTHONPATH"] = str(project_root)
 
+    # 设置配置文件路径，确保启动时加载配置
+    config_file = project_root / "config" / "terminal_config.json"
+    env["CONFIG_FILE"] = str(config_file)
+
+    # 设置Python解释器路径，用于PySide6 WebEngine和其他子进程
+    env["PYTHONEXECUTABLE"] = str(python_path)
+    env["QT_WEBENGINE_PYTHON_EXECUTABLE"] = str(python_path)
+
     return {"env": env, "python_path": str(python_path)}
 
 
@@ -104,8 +112,9 @@ def start_ui(
             [python_path, str(ui_main)],
             cwd=str(project_root),
             env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            # 移除stdout/stderr重定向，让输出直接显示
+            # stdout=subprocess.PIPE,
+            # stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
             universal_newlines=True,
@@ -212,7 +221,7 @@ def main() -> int:
     print("✅ 应用启动成功!")
     print("=" * 60)
     print()
-    print(f"📊 进程信息:")
+    print("📊 进程信息:")
     print(f"  - PID: {ui_process.pid}")
     print(f"  - Python: {venv_config['python_path']}")
     print()

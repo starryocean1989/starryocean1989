@@ -840,6 +840,31 @@ class ServiceInitializer:
             self.logger.info("开始初始化服务...")
             self.logger.info("=" * 60)
 
+            # 🔧 修复点1：显式初始化配置（从环境变量指定的路径）
+            from backend.config import init_settings, get_settings
+            import os
+
+            config_file = os.getenv("CONFIG_FILE")
+            if config_file:
+                self.logger.info("从环境变量加载配置文件: %s", config_file)
+                init_settings(config_file)
+            else:
+                self.logger.info("使用默认配置文件")
+                init_settings()
+
+            # 验证配置已加载
+            settings = get_settings()
+            self.logger.info("配置文件路径: %s", settings.config_file)
+            if settings.ai.api_key:
+                masked_key = (
+                    f"{settings.ai.api_key[:4]}...{settings.ai.api_key[-4:]}"
+                    if len(settings.ai.api_key) > 8
+                    else "***"
+                )
+                self.logger.info("AI API Key: %s", masked_key)
+            else:
+                self.logger.info("AI API Key: 未设置")
+
             # 阶段1: 初始化VNPY核心框架
             phase1_success = self._initialize_vnpy_core()
 
@@ -1102,11 +1127,13 @@ class ServiceInitializer:
                 self.logger.info("✅ AIAssistantService 初始化成功")
                 success_count += 1
             else:
-                self.logger.warning("⚠️ AIAssistantService 初始化失败（可能未配置API密钥）")
+                # AI是可选功能，降低日志级别避免干扰
+                self.logger.debug("⚠️ AIAssistantService 初始化失败（可能未配置API密钥）")
                 self.failed_services.append("ai_assistant_service")
 
         except Exception as e:
-            self.logger.error("❌ AIAssistantService 初始化异常: %s", e, exc_info=True)
+            # AI是可选功能，降低日志级别避免干扰
+            self.logger.debug("❌ AIAssistantService 初始化异常: %s", e)
             self.failed_services.append("ai_assistant_service")
 
         return success_count > 0
@@ -1164,6 +1191,7 @@ class ServiceInitializer:
             self.failed_services.append("market_board_service")
 
         # 初始化SystemManagerService
+        # 🔧 修复点3：SystemManagerService 专门处理（即使初始化失败也注册服务）
         try:
             from backend.services.system_manager_service import SystemManagerService
 
@@ -1178,11 +1206,21 @@ class ServiceInitializer:
                 self.logger.info("✅ SystemManagerService 初始化成功")
                 success_count += 1
             else:
-                self.logger.warning("⚠️ SystemManagerService 初始化失败")
+                self.logger.warning("⚠️ SystemManagerService 初始化失败（但已注册服务）")
+                # 即使初始化失败，也注册服务（让UI能够访问）
+                self.service_manager.register_service(
+                    "system_manager_service", system_manager_service
+                )
                 self.failed_services.append("system_manager_service")
 
         except Exception as e:
-            self.logger.error("❌ SystemManagerService 初始化异常: %s", e, exc_info=True)
+            self.logger.error("❌ SystemManagerService 创建失败: %s", e, exc_info=True)
+            self.service_manager.record_error(
+                "SystemManagerService",
+                "SERVICE_CREATION_FAILED",
+                f"创建服务失败: {str(e)}",
+                exception=e,
+            )
             self.failed_services.append("system_manager_service")
 
         return success_count > 0

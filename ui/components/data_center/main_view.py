@@ -7,7 +7,7 @@
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from PySide6.QtCore import QDate
+from PySide6.QtCore import QDate, QThread, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
     QComboBox,
@@ -36,8 +36,8 @@ from ui.widgets.base_widget import BaseWidget
 
 # ==================== 常量定义 ====================
 
-EXCHANGES = ["全部", "上交所", "深交所", "北交所", "中金所", "大商所", "郑商所", "上期所", "广期所"]
-SYMBOL_TYPES = ["全部", "股票", "基金", "债券", "可转债", "期货", "期权", "指数"]
+EXCHANGES = ["全部", "上交所", "深交所", "北交所"]
+SYMBOL_TYPES = ["全部", "股票", "基金", "可转债"]
 PAGE_SIZE_OPTIONS = ["20", "50", "100", "200"]
 
 SYMBOLS_TABLE_HEADERS = ["品种代码", "品种名称", "交易所", "类型", "状态", "操作"]
@@ -45,12 +45,153 @@ LOCAL_DATA_TABLE_HEADERS = ["日期", "开盘价", "最高价", "最低价", "�
 DOWNLOAD_PROGRESS_TABLE_HEADERS = ["品种", "周期", "进度", "状态"]
 SOURCES_TABLE_HEADERS = ["数据源", "类型", "状态", "连接数", "操作"]
 
-FILTER_PRESETS = {
-    "沪深A股": {"exchange": "上交所", "type": "股票"},
-    "北证股票": {"exchange": "北交所", "type": "股票"},
-    "可转债": {"exchange": "全部", "type": "可转债"},
-    "T+0基金": {"exchange": "全部", "type": "基金"},
-}
+
+# ==================== 异步工作线程 ====================
+
+
+class ReloadSymbolsThread(QThread):
+    """异步重新加载品种的工作线程."""
+
+    # 定义信号
+    finished_signal = Signal(dict)  # 完成信号，传递结果字典
+    error_signal = Signal(str)  # 错误信号，传递错误消息
+    progress_signal = Signal(str)  # 进度信号，传递进度消息
+
+    def __init__(self, data_center_service, parent=None):
+        """初始化工作线程.
+
+        Args:
+            data_center_service: 数据中心服务实例
+            parent: 父对象
+        """
+        super().__init__(parent)
+        self.data_center_service = data_center_service
+
+    def run(self):
+        """线程执行函数（在后台线程中运行）."""
+        import logging
+
+        logger = logging.getLogger(__name__)
+
+        # 同时使用print和logging，确保能看到输出
+        print(">>> [THREAD] ReloadSymbolsThread.run() 开始执行", flush=True)
+        logger.info(">>> [THREAD] ReloadSymbolsThread.run() 开始执行")
+
+        try:
+            print(">>> [THREAD] 发送进度信号...", flush=True)
+            self.progress_signal.emit("正在连接服务器...")
+            logger.info(">>> [THREAD] 发送进度信号: 正在连接服务器...")
+
+            # 在后台线程中执行耗时操作
+            print(">>> [THREAD] 开始调用 reload_symbol_list()...", flush=True)
+            logger.info(">>> [THREAD] 开始调用 reload_symbol_list()...")
+            import time
+
+            start_time = time.time()
+            result = self.data_center_service.reload_symbol_list(force=True)
+            elapsed = time.time() - start_time
+
+            print(f">>> [THREAD] reload_symbol_list() 完成，耗时: {elapsed:.2f}秒", flush=True)
+            logger.info(">>> [THREAD] reload_symbol_list() 完成，耗时: %.2f秒", elapsed)
+
+            # 发送完成信号
+            print(
+                f">>> [THREAD] 发送完成信号: success={result.get('success')}, count={result.get('symbol_count')}",
+                flush=True,
+            )
+            logger.info(
+                ">>> [THREAD] 发送完成信号，结果: success=%s, count=%s",
+                result.get("success"),
+                result.get("symbol_count"),
+            )
+            self.finished_signal.emit(result)
+
+            print(">>> [THREAD] ReloadSymbolsThread.run() 执行完成", flush=True)
+            logger.info(">>> [THREAD] ReloadSymbolsThread.run() 执行完成")
+
+        except Exception as e:
+            # 发送错误信号
+            print(f">>> [THREAD] 发生异常: {e}", flush=True)
+            logger.error(">>> [THREAD] 发生异常: %s", e, exc_info=True)
+            import traceback
+
+            traceback.print_exc()
+            self.error_signal.emit(f"加载失败: {str(e)}")
+
+
+class DownloadThread(QThread):
+    """异步数据下载的工作线程."""
+
+    # 定义信号
+    finished_signal = Signal(dict)  # 完成信号，传递结果字典
+    error_signal = Signal(str)  # 错误信号，传递错误消息
+    progress_signal = Signal(str)  # 进度信号，传递进度消息
+
+    def __init__(self, data_center_service, download_type, start_date=None, parent=None):
+        """初始化工作线程.
+
+        Args:
+            data_center_service: 数据中心服务实例
+            download_type: 下载类型 ('full' 或 'incremental')
+            start_date: 开始日期（仅增量下载需要）
+            parent: 父对象
+        """
+        super().__init__(parent)
+        self.data_center_service = data_center_service
+        self.download_type = download_type
+        self.start_date = start_date
+
+    def run(self):
+        """线程执行函数（在后台线程中运行）."""
+        import logging
+
+        logger = logging.getLogger(__name__)
+
+        # 使用print确保能看到输出
+        print(
+            f">>> [DOWNLOAD THREAD] DownloadThread.run() 开始执行，类型: {self.download_type}",
+            flush=True,
+        )
+        logger.info(">>> [DOWNLOAD THREAD] DownloadThread.run() 开始执行")
+
+        try:
+            print(">>> [DOWNLOAD THREAD] 发送进度信号...", flush=True)
+            self.progress_signal.emit("正在准备下载...")
+
+            # 在后台线程中执行耗时操作
+            import time
+
+            start_time = time.time()
+
+            if self.download_type == "full":
+                print(">>> [DOWNLOAD THREAD] 开始全量下载...", flush=True)
+                result = self.data_center_service.start_full_download()
+            else:
+                print(
+                    f">>> [DOWNLOAD THREAD] 开始增量下载，开始日期: {self.start_date}...",
+                    flush=True,
+                )
+                result = self.data_center_service.start_incremental_download(self.start_date)
+
+            elapsed = time.time() - start_time
+            print(f">>> [DOWNLOAD THREAD] 下载完成，耗时: {elapsed:.2f}秒", flush=True)
+
+            # 发送完成信号
+            print(
+                f">>> [DOWNLOAD THREAD] 发送完成信号: success={result.get('success')}", flush=True
+            )
+            self.finished_signal.emit(result)
+
+            print(">>> [DOWNLOAD THREAD] DownloadThread.run() 执行完成", flush=True)
+
+        except Exception as e:
+            # 发送错误信号
+            print(f">>> [DOWNLOAD THREAD] 发生异常: {e}", flush=True)
+            logger.error(">>> [DOWNLOAD THREAD] 发生异常: %s", e, exc_info=True)
+            import traceback
+
+            traceback.print_exc()
+            self.error_signal.emit(f"下载失败: {str(e)}")
 
 
 class DataCenter(BaseWidget, LoggerMixin):
@@ -72,6 +213,10 @@ class DataCenter(BaseWidget, LoggerMixin):
         # 下载任务相关属性
         self.current_download_task_id: Optional[str] = None
 
+        # 异步工作线程
+        self.reload_thread: Optional[ReloadSymbolsThread] = None
+        self.download_thread: Optional[DownloadThread] = None
+
         # 初始化UI控件引用
         self.tab_widget: Optional[QTabWidget] = None
         self.symbols_tab: Optional[QWidget] = None
@@ -82,9 +227,6 @@ class DataCenter(BaseWidget, LoggerMixin):
         # 品种列表选项卡控件
         self.exchange_combo: Optional[QComboBox] = None
         self.symbol_type_combo: Optional[QComboBox] = None
-        self.filter_preset_combo: Optional[QComboBox] = None
-        self.market_combo: Optional[QComboBox] = None  # 添加缺失的属性
-        self.category_combo: Optional[QComboBox] = None  # 添加缺失的属性
         self.symbols_count_label: Optional[QLabel] = None
         self.symbols_table: Optional[QTableWidget] = None
         self.search_input: Optional[QLineEdit] = None
@@ -120,25 +262,25 @@ class DataCenter(BaseWidget, LoggerMixin):
         self.config_status_label: Optional[QLabel] = None
         self.monitor_text: Optional[QTextEdit] = None
 
+        # ⚠ 关键修复：在调用super().__init__之前先获取服务
+        # 因为super().__init__会调用setup_ui()，而setup_ui()会调用_load_symbols_data()
+        # 如果此时服务还没初始化，会导致错误
+        try:
+            self.data_center_service = self.service_manager.get_service("data_center_service")
+        except Exception as e:
+            import logging
+
+            logging.getLogger(__name__).error("获取数据中心服务失败: %s", e)
+
         # 调用父类初始化
         super().__init__(parent, "数据中心")
         self.logger.info("数据中心界面初始化完成")
 
-        # 获取数据中心服务
-        self._initialize_service()
-
-    def _initialize_service(self):
-        """获取数据中心服务."""
-        try:
-            # 从服务管理器获取数据中心服务
-            self.data_center_service = self.service_manager.get_service("data_center_service")
-            if self.data_center_service:
-                self.logger.info("数据中心服务获取成功")
-            else:
-                self.logger.warning("数据中心服务未注册")
-        except Exception as e:
-            self.logger.error("获取数据中心服务失败: %s", e)
-            self.show_error(f"服务获取失败: {e}")
+        # 检查服务状态并记录
+        if self.data_center_service:
+            self.logger.info("✓ 数据中心服务已就绪")
+        else:
+            self.logger.warning("⚠ 数据中心服务未注册")
 
     def setup_ui(self):
         """设置用户界面."""
@@ -235,12 +377,6 @@ class DataCenter(BaseWidget, LoggerMixin):
         self.symbol_type_combo.currentTextChanged.connect(self._on_filter_changed)
         filter_row.addWidget(self.symbol_type_combo)
 
-        filter_row.addWidget(QLabel("预设:"))
-        self.filter_preset_combo = QComboBox()
-        self.filter_preset_combo.addItems(["无"] + list(FILTER_PRESETS.keys()))
-        self.filter_preset_combo.currentTextChanged.connect(self._apply_filter_preset)
-        filter_row.addWidget(self.filter_preset_combo)
-
         filter_row.addStretch()
         search_layout.addLayout(filter_row)
 
@@ -252,6 +388,11 @@ class DataCenter(BaseWidget, LoggerMixin):
 
         self.symbols_count_label = QLabel("共 0 个品种")
         symbols_layout.addWidget(self.symbols_count_label)
+
+        # 添加提示标签
+        hint_label = QLabel("💡 提示：点击上方【↻ 刷新品种】按钮加载品种列表")
+        hint_label.setStyleSheet("color: #888; font-size: 12px; padding: 10px;")
+        symbols_layout.addWidget(hint_label)
 
         self.symbols_table = QTableWidget(0, 6)
         self.symbols_table.setHorizontalHeaderLabels(SYMBOLS_TABLE_HEADERS)
@@ -275,8 +416,9 @@ class DataCenter(BaseWidget, LoggerMixin):
         symbols_layout.addLayout(pagination_layout)
         layout.addWidget(symbols_group)
 
-        # 初始加载数据
-        self._load_symbols_data()
+        # ⚠️ 修复：移除初始化时的自动加载，避免启动卡顿
+        # 用户需要手动点击"刷新品种"按钮来加载数据
+        # self._load_symbols_data()
 
         return tab
 
@@ -297,12 +439,16 @@ class DataCenter(BaseWidget, LoggerMixin):
 
         self.start_date_input = QDateEdit()
         self.start_date_input.setCalendarPopup(True)
+        self.start_date_input.setDisplayFormat("yyyy-MM-dd")  # 设置日期显示格式
         self.start_date_input.setDate(QDate.currentDate().addMonths(-1))
+        # 不设置按钮样式，使用默认的下拉按钮（会自动显示日历图标）
         query_layout.addRow("开始日期:", self.start_date_input)
 
         self.end_date_input = QDateEdit()
         self.end_date_input.setCalendarPopup(True)
+        self.end_date_input.setDisplayFormat("yyyy-MM-dd")  # 设置日期显示格式
         self.end_date_input.setDate(QDate.currentDate())
+        # 不设置按钮样式，使用默认的下拉按钮（会自动显示日历图标）
         query_layout.addRow("结束日期:", self.end_date_input)
 
         query_btn = QPushButton("查询")
@@ -348,29 +494,41 @@ class DataCenter(BaseWidget, LoggerMixin):
         mode_group = QGroupBox("下载模式")
         mode_layout = QVBoxLayout(mode_group)
 
-        self.download_mode_group = QButtonGroup()
+        # 创建单选框（在同一个父容器中会自动互斥）
         self.full_download_radio = QRadioButton("全量下载（全品类、全周期、固定长度历史数据）")
         self.full_download_radio.setChecked(True)
-        self.download_mode_group.addButton(self.full_download_radio, 1)
         mode_layout.addWidget(self.full_download_radio)
 
         self.custom_download_radio = QRadioButton("增量下载（自定义日期范围）")
-        self.download_mode_group.addButton(self.custom_download_radio, 2)
         mode_layout.addWidget(self.custom_download_radio)
 
-        # 增量下载配置
-        custom_layout = QFormLayout()
+        # 创建 QButtonGroup 用于管理（但不影响界面显示）
+        self.download_mode_group = QButtonGroup(self)
+        self.download_mode_group.addButton(self.full_download_radio, 1)
+        self.download_mode_group.addButton(self.custom_download_radio, 2)
+
+        # 增量下载配置（缩进以显示层级关系）
+        custom_config_layout = QVBoxLayout()
+        custom_config_layout.setContentsMargins(30, 0, 0, 0)  # 左侧缩进
+
+        date_layout = QFormLayout()
         self.download_start_date = QDateEdit()
         self.download_start_date.setCalendarPopup(True)
+        self.download_start_date.setDisplayFormat("yyyy-MM-dd")  # 设置日期显示格式
         self.download_start_date.setDate(QDate.currentDate().addMonths(-3))
-        custom_layout.addRow("开始日期:", self.download_start_date)
+        # 不设置按钮样式，使用默认的下拉按钮（会自动显示日历图标）
+        date_layout.addRow("开始日期:", self.download_start_date)
 
         self.download_end_date = QDateEdit()
         self.download_end_date.setCalendarPopup(True)
+        self.download_end_date.setDisplayFormat("yyyy-MM-dd")  # 设置日期显示格式
         self.download_end_date.setDate(QDate.currentDate())
-        custom_layout.addRow("结束日期:", self.download_end_date)
+        # 不设置按钮样式，使用默认的下拉按钮（会自动显示日历图标）
+        date_layout.addRow("结束日期:", self.download_end_date)
 
-        mode_layout.addLayout(custom_layout)
+        custom_config_layout.addLayout(date_layout)
+        mode_layout.addLayout(custom_config_layout)
+
         layout.addWidget(mode_group)
 
         # 控制组
@@ -466,25 +624,103 @@ class DataCenter(BaseWidget, LoggerMixin):
     # ==================== 品种列表事件处理 ====================
 
     def _reload_symbols(self):
-        """重新加载品种（通过API）."""
+        """重新加载品种（异步版本）."""
         try:
+            self.logger.info("=" * 60)
+            self.logger.info(">>> _reload_symbols() 被调用")
+            self.logger.info("=" * 60)
+
             if not self.data_center_service:
+                self.logger.error(">>> 数据中心服务未初始化")
                 self.show_error("数据中心服务未初始化")
                 return
 
-            self.show_info("正在重新加载品种列表...")
-            result = self.data_center_service.reload_symbol_list(force=True)
+            # 检查是否已有线程在运行
+            if self.reload_thread and self.reload_thread.isRunning():
+                self.logger.warning(">>> 已有线程在运行")
+                self.show_warning("品种列表正在加载中，请稍候...")
+                return
 
-            if result["success"]:
-                self.all_symbols_data = result.get("data", [])
+            # 创建工作线程
+            self.logger.info(">>> 创建 ReloadSymbolsThread...")
+            self.reload_thread = ReloadSymbolsThread(self.data_center_service, self)
+            self.logger.info(">>> ReloadSymbolsThread 创建成功: %s", self.reload_thread)
+
+            # 连接信号
+            self.logger.info(">>> 连接信号...")
+            self.reload_thread.finished_signal.connect(self._on_reload_finished)
+            self.reload_thread.error_signal.connect(self._on_reload_error)
+            self.reload_thread.progress_signal.connect(self.show_info)
+            self.logger.info(">>> 信号连接完成")
+
+            # 启动线程
+            self.logger.info(">>> 启动线程...")
+            self.reload_thread.start()
+            self.logger.info(">>> 线程已启动，isRunning: %s", self.reload_thread.isRunning())
+
+            # 显示加载提示
+            self.show_info("正在重新加载品种列表...")
+            self.logger.info(">>> _reload_symbols() 执行完成")
+
+        except Exception as e:
+            self.logger.error(">>> 启动重新加载失败: %s", e, exc_info=True)
+            self.show_error(f"启动失败: {e}")
+
+    def _on_reload_finished(self, result: Dict[str, Any]):
+        """重新加载完成的回调（在UI线程中执行）.
+
+        Args:
+            result: reload_symbol_list的返回结果
+        """
+        try:
+            self.logger.info("=" * 60)
+            self.logger.info(">>> _on_reload_finished() 被调用")
+            self.logger.info(
+                ">>> result: success=%s, count=%s",
+                result.get("success"),
+                result.get("symbol_count"),
+            )
+            self.logger.info("=" * 60)
+
+            if result.get("success"):
+                data = result.get("data", [])
+                self.logger.info(">>> 获取到数据: %d个", len(data))
+                self.all_symbols_data = data
+                self.logger.info(">>> all_symbols_data已更新: %d个", len(self.all_symbols_data))
+
                 self._apply_filters()
+                self.logger.info(">>> _apply_filters()完成")
+
+                # 显示加载成功信息
                 self.show_info(f"成功加载 {result['symbol_count']} 个品种")
+
+                # 如果有警告信息，显示警告
+                if result.get("warning"):
+                    self.show_warning(result["warning"])
             else:
+                self.logger.error(">>> 加载失败: %s", result.get("message"))
                 self.show_error(f"加载失败: {result.get('message', '未知错误')}")
 
         except Exception as e:
-            self.logger.error("重新加载品种失败: %s", e)
-            self.show_error(f"加载失败: {e}")
+            self.logger.error(">>> 处理加载结果失败: %s", e, exc_info=True)
+            self.show_error(f"处理结果失败: {e}")
+
+        finally:
+            # 清理线程引用
+            self.reload_thread = None
+            self.logger.info(">>> _on_reload_finished() 执行完成")
+
+    def _on_reload_error(self, error_message: str):
+        """重新加载出错的回调（在UI线程中执行）.
+
+        Args:
+            error_message: 错误消息
+        """
+        self.logger.error("重新加载品种失败: %s", error_message)
+        self.show_error(error_message)
+
+        # 清理线程引用
+        self.reload_thread = None
 
     def _refresh_symbols(self):
         """刷新品种（从缓存）."""
@@ -582,24 +818,13 @@ class DataCenter(BaseWidget, LoggerMixin):
         if self.next_page_btn:
             self.next_page_btn.setEnabled(self.current_page < self.total_pages)
 
-    def _on_search_text_changed(self, text: str):
+    def _on_search_text_changed(self, text: str):  # noqa: ARG002
         """搜索文本改变."""
         self._apply_filters()
 
-    def _on_filter_changed(self, value: str):
+    def _on_filter_changed(self, value: str):  # noqa: ARG002
         """筛选条件改变."""
         self._apply_filters()
-
-    def _apply_filter_preset(self, preset_name: str):
-        """应用筛选预设."""
-        if preset_name == "无" or preset_name not in FILTER_PRESETS:
-            return
-
-        preset = FILTER_PRESETS[preset_name]
-        if self.exchange_combo:
-            self.exchange_combo.setCurrentText(preset.get("exchange", "全部"))
-        if self.symbol_type_combo:
-            self.symbol_type_combo.setCurrentText(preset.get("type", "全部"))
 
     def _on_page_size_changed(self, size_text: str):
         """每页显示数量改变."""
@@ -634,38 +859,6 @@ class DataCenter(BaseWidget, LoggerMixin):
         if self.tab_widget:
             self.tab_widget.setCurrentIndex(1)
         self._query_local_data()
-
-    def _save_filter_preset(self):
-        """保存筛选预设."""
-        if not self.data_center_service:
-            self.show_error("数据中心服务不可用")
-            return
-
-        from PySide6.QtWidgets import QInputDialog
-
-        # 弹出对话框让用户输入预设名称
-        preset_name, ok = QInputDialog.getText(
-            self, "保存筛选预设", "请输入预设名称:", text="我的筛选"
-        )
-
-        if ok and preset_name:
-            # 收集当前筛选条件
-            filters = {}
-
-            if self.market_combo:
-                filters["market"] = self.market_combo.currentText()
-            if self.category_combo:
-                filters["category"] = self.category_combo.currentText()
-            if self.search_input:
-                filters["search"] = self.search_input.text()
-
-            # 保存预设
-            result = self.data_center_service.save_filter_preset(preset_name, filters)
-
-            if result.get("success"):
-                self.show_info(f"筛选预设 '{preset_name}' 保存成功")
-            else:
-                self.show_error(f"保存失败: {result.get('message', '未知错误')}")
 
     # ==================== 本地数据事件处理 ====================
 
@@ -729,33 +922,63 @@ class DataCenter(BaseWidget, LoggerMixin):
     # ==================== 数据下载事件处理 ====================
 
     def _start_download(self):
-        """开始下载."""
+        """开始下载（异步版本）."""
         try:
+            self.logger.info("=" * 60)
+            self.logger.info(">>> _start_download() 被调用")
+            self.logger.info("=" * 60)
+
             if not self.data_center_service:
+                self.logger.error(">>> 数据中心服务未初始化")
                 self.show_error("数据中心服务未初始化")
                 return
 
+            # 检查是否已有线程在运行
+            if self.download_thread and self.download_thread.isRunning():
+                self.logger.warning(">>> 已有下载线程在运行")
+                self.show_warning("下载任务正在进行中，请稍候...")
+                return
+
+            # 确定下载类型和参数
             if self.full_download_radio and self.full_download_radio.isChecked():
-                result = self.data_center_service.start_full_download()
-                if result["success"]:
-                    self.show_info(f"全量下载已启动，任务ID: {result['task_id']}")
-                else:
-                    self.show_error(f"启动失败: {result.get('message', '未知错误')}")
-                    return
+                download_type = "full"
+                start_date = None
+                self.logger.info(">>> 选择了全量下载")
             else:
+                download_type = "incremental"
                 if self.download_start_date:
                     qdate = self.download_start_date.date()
-                    start_date_str = qdate.toString("yyyy-MM-dd")
+                    start_date = qdate.toString("yyyy-MM-dd")
                 else:
-                    start_date_str = datetime.now().strftime("%Y-%m-%d")
+                    start_date = datetime.now().strftime("%Y-%m-%d")
+                self.logger.info(">>> 选择了增量下载，开始日期: %s", start_date)
 
-                result = self.data_center_service.start_incremental_download(start_date_str)
-                if result["success"]:
-                    self.show_info(f"增量下载已启动，任务ID: {result['task_id']}")
-                else:
-                    self.show_error(f"启动失败: {result.get('message', '未知错误')}")
-                    return
+            # 🔧 关键修复：提前生成并保存任务ID
+            # 不等待下载完成回调，立即保存任务ID以便停止操作
+            task_id = f"{download_type}_download_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            self.current_download_task_id = task_id
+            self.logger.info(">>> 生成任务ID: %s", task_id)
 
+            # 创建下载线程
+            self.logger.info(">>> 创建 DownloadThread...")
+            self.download_thread = DownloadThread(
+                self.data_center_service, download_type, start_date, self
+            )
+            self.logger.info(">>> DownloadThread 创建成功: %s", self.download_thread)
+
+            # 连接信号
+            self.logger.info(">>> 连接信号...")
+            self.download_thread.finished_signal.connect(self._on_download_finished)
+            self.download_thread.error_signal.connect(self._on_download_error)
+            self.download_thread.progress_signal.connect(self.show_info)
+            self.logger.info(">>> 信号连接完成")
+
+            # 启动线程
+            self.logger.info(">>> 启动下载线程...")
+            self.download_thread.start()
+            self.logger.info(">>> 线程已启动，isRunning: %s", self.download_thread.isRunning())
+
+            # 更新按钮状态
             if self.start_download_btn:
                 self.start_download_btn.setEnabled(False)
             if self.pause_download_btn:
@@ -763,9 +986,56 @@ class DataCenter(BaseWidget, LoggerMixin):
             if self.stop_download_btn:
                 self.stop_download_btn.setEnabled(True)
 
+            # 显示加载提示
+            self.show_info(f"正在启动下载任务... (任务ID: {task_id})")
+            self.logger.info(">>> _start_download() 执行完成")
+
         except Exception as e:
-            self.logger.error("启动下载失败: %s", e)
+            self.logger.error(">>> 启动下载失败: %s", e, exc_info=True)
             self.show_error(f"启动失败: {e}")
+            # 🔧 修复：确保异常情况下也清理状态
+            self._reset_download_state()
+
+    def _on_download_finished(self, result: Dict[str, Any]):
+        """下载完成的回调（在UI线程中执行）.
+
+        Args:
+            result: 下载结果
+        """
+        try:
+            self.logger.info("=" * 60)
+            self.logger.info(">>> _on_download_finished() 被调用")
+            self.logger.info(">>> result: success=%s", result.get("success"))
+            self.logger.info("=" * 60)
+
+            if result.get("success"):
+                task_id = result.get("task_id", self.current_download_task_id)
+                self.show_info(f"下载任务已完成！任务ID: {task_id}")
+                self.logger.info(">>> 下载任务完成成功: %s", task_id)
+            else:
+                self.logger.error(">>> 下载任务失败: %s", result.get("message"))
+                self.show_error(f"下载失败: {result.get('message', '未知错误')}")
+
+        except Exception as e:
+            self.logger.error(">>> 处理下载结果失败: %s", e, exc_info=True)
+            self.show_error(f"处理结果失败: {e}")
+
+        finally:
+            # 🔧 修复：统一使用 _reset_download_state() 清理状态
+            self._reset_download_state()
+            self.logger.info(">>> _on_download_finished() 执行完成")
+
+    def _on_download_error(self, error_message: str):
+        """下载出错的回调（在UI线程中执行）.
+
+        Args:
+            error_message: 错误消息
+        """
+        self.logger.error("下载失败: %s", error_message)
+        self.show_error(error_message)
+
+        # 🔧 修复：统一使用 _reset_download_state() 清理状态
+        self._reset_download_state()
 
     def _pause_download(self):
         """暂停下载."""
@@ -811,41 +1081,122 @@ class DataCenter(BaseWidget, LoggerMixin):
 
     def _stop_download(self):
         """停止下载."""
-        if not self.data_center_service:
-            self.show_error("数据中心服务不可用")
-            return
+        try:
+            self.logger.info(">>> _stop_download() 被调用")
 
-        if not hasattr(self, "current_download_task_id"):
-            self.show_warning("没有正在运行的下载任务")
-            return
+            # 🔧 修复：先尝试停止QThread线程
+            thread_stopped = False
+            if self.download_thread and self.download_thread.isRunning():
+                self.logger.info(">>> 检测到运行中的下载线程，尝试终止...")
+                try:
+                    # 请求线程终止
+                    self.download_thread.requestInterruption()
+                    # 等待最多3秒
+                    if self.download_thread.wait(3000):
+                        self.logger.info(">>> 线程已正常终止")
+                        thread_stopped = True
+                    else:
+                        # 强制终止（不推荐，但必要时使用）
+                        self.logger.warning(">>> 线程未响应，强制终止...")
+                        self.download_thread.terminate()
+                        self.download_thread.wait(1000)
+                        thread_stopped = True
+                except Exception as thread_error:
+                    self.logger.error(">>> 终止线程失败: %s", thread_error)
 
-        result = self.data_center_service.stop_download(self.current_download_task_id)
+            # 🔧 修复：再尝试通过后端服务停止任务
+            backend_stopped = False
+            if self.data_center_service and hasattr(self, "current_download_task_id"):
+                self.logger.info(">>> 尝试通过后端服务停止任务: %s", self.current_download_task_id)
+                try:
+                    result = self.data_center_service.stop_download(self.current_download_task_id)
+                    if result.get("success"):
+                        self.logger.info(">>> 后端任务停止成功")
+                        backend_stopped = True
+                    else:
+                        self.logger.warning(">>> 后端任务停止失败: %s", result.get("message"))
+                except Exception as backend_error:
+                    self.logger.error(">>> 后端停止任务异常: %s", backend_error)
 
-        if result.get("success"):
-            self.show_info("下载已停止")
-            if self.start_download_btn:
-                self.start_download_btn.setEnabled(True)
-            if self.pause_download_btn:
-                self.pause_download_btn.setEnabled(False)
-            if self.stop_download_btn:
-                self.stop_download_btn.setEnabled(False)
+            # 🔧 修复：无论如何都清理状态和恢复按钮
+            self._reset_download_state()
 
-            # 清除任务ID
-            if hasattr(self, "current_download_task_id"):
-                delattr(self, "current_download_task_id")
-        else:
-            self.show_error(f"停止失败: {result.get('message', '未知错误')}")
-        if self.start_download_btn:
-            self.start_download_btn.setEnabled(True)
-        if self.pause_download_btn:
-            self.pause_download_btn.setEnabled(False)
-        if self.stop_download_btn:
-            self.stop_download_btn.setEnabled(False)
+            # 显示结果
+            if thread_stopped or backend_stopped:
+                self.show_info("下载已停止")
+            else:
+                self.show_warning("下载任务已终止（状态已清理）")
+
+            self.logger.info(">>> _stop_download() 执行完成")
+
+        except Exception as e:
+            self.logger.error(">>> 停止下载失败: %s", e, exc_info=True)
+            # 🔧 修复：即使出错也要清理状态
+            self._reset_download_state()
+            self.show_error(f"停止操作出错，但状态已清理: {e}")
 
     def _toggle_detail_progress(self, checked: bool):  # noqa: U101
         """切换详细进度显示."""
         if self.detail_progress_table:
             self.detail_progress_table.setVisible(checked)
+
+    def _reset_download_state(self):
+        """重置下载状态（清理线程、任务ID、恢复按钮）.
+
+        这个方法用于清理所有下载相关的状态，确保UI能恢复到可用状态。
+        适用场景：
+        1. 下载完成后
+        2. 下载出错后
+        3. 强制停止下载后
+        4. 任何需要清理状态的情况
+        """
+        try:
+            self.logger.info(">>> _reset_download_state() 开始清理状态...")
+
+            # 清理线程引用
+            if self.download_thread:
+                self.logger.info(">>> 清理下载线程引用")
+                # 如果线程还在运行，尝试断开信号连接
+                try:
+                    if self.download_thread.isRunning():
+                        self.download_thread.finished_signal.disconnect()
+                        self.download_thread.error_signal.disconnect()
+                        self.download_thread.progress_signal.disconnect()
+                except Exception:
+                    pass  # 忽略断开信号的错误
+
+                self.download_thread = None
+
+            # 清理任务ID
+            if hasattr(self, "current_download_task_id"):
+                self.logger.info(">>> 清理任务ID: %s", self.current_download_task_id)
+                delattr(self, "current_download_task_id")
+
+            # 恢复按钮状态
+            if self.start_download_btn:
+                self.start_download_btn.setEnabled(True)
+            if self.pause_download_btn:
+                self.pause_download_btn.setEnabled(False)
+                # 重置暂停按钮文本和连接
+                self.pause_download_btn.setText("暂停")
+                try:
+                    self.pause_download_btn.clicked.disconnect()
+                except Exception:
+                    pass
+                self.pause_download_btn.clicked.connect(self._pause_download)
+            if self.stop_download_btn:
+                self.stop_download_btn.setEnabled(False)
+
+            # 重置进度显示
+            if self.download_progress:
+                self.download_progress.setValue(0)
+            if self.progress_label:
+                self.progress_label.setText("准备就绪")
+
+            self.logger.info(">>> _reset_download_state() 状态清理完成")
+
+        except Exception as e:
+            self.logger.error(">>> 重置下载状态失败: %s", e, exc_info=True)
 
     # ==================== 数据源管理事件处理 ====================
 
@@ -856,7 +1207,7 @@ class DataCenter(BaseWidget, LoggerMixin):
                 return
 
             # 获取数据源状态
-            result = self.data_center_service.get_datafeed_status()
+            result = self.data_center_service.get_all_datafeed_status()
 
             if result["success"]:
                 sources_data = result.get("datafeeds", {})
@@ -893,8 +1244,8 @@ class DataCenter(BaseWidget, LoggerMixin):
                         # 操作按钮
                         connect_btn = QPushButton("连接" if not connected else "断开")
                         connect_btn.clicked.connect(
-                            lambda _checked, sid=source_id, conn=connected: self._toggle_source_connection(
-                                sid, conn
+                            lambda _checked, sid=source_id, conn=connected: (  # noqa: ARG005
+                                self._toggle_source_connection(sid, conn)
                             )
                         )
                         self.sources_table.setCellWidget(i, 4, connect_btn)

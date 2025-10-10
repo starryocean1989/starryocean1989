@@ -252,7 +252,8 @@ class TradingGatewayService(BaseService):
                 self.gateway_classes[GatewayType.IB.value] = IbGateway
                 self.logger.info("✅ IB网关类可用")
             except ImportError:
-                self.logger.warning("⚠️ IB网关类不可用")
+                # IB网关是可选功能，降低日志级别
+                self.logger.debug("⚠️ IB网关类不可用")
 
             # TradeX Gateway（国内股票交易）
             try:
@@ -315,7 +316,8 @@ class TradingGatewayService(BaseService):
                 self.logger.info("风控参数已设置")
 
         except Exception as e:
-            self.logger.warning("设置风控参数失败: %s", e)
+            # 风控参数设置失败是常见情况，降低日志级别
+            self.logger.debug("设置风控参数失败: %s", e)
 
     # ==================== 网关管理 ====================
 

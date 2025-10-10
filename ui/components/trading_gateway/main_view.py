@@ -518,27 +518,143 @@ class TradingGateway(BaseWidget, LoggerMixin):
             dynamic_fields["name"] = name_input
 
             # 根据网关类型添加不同字段
-            if gateway_type in ["CTP", "CTP mini"]:
+            if gateway_type in ["ctp", "ctp_mini"]:
                 user_input = QLineEdit()
+                user_input.setPlaceholderText("输入用户名...")
                 dynamic_form_layout.addRow("用户名:", user_input)
                 dynamic_fields["user"] = user_input
 
+                password_input = QLineEdit()
+                password_input.setPlaceholderText("输入密码...")
+                password_input.setEchoMode(QLineEdit.EchoMode.Password)
+                dynamic_form_layout.addRow("密码:", password_input)
+                dynamic_fields["password"] = password_input
+
                 server_input = QLineEdit()
+                server_input.setPlaceholderText("输入服务器地址...")
                 dynamic_form_layout.addRow("服务器地址:", server_input)
                 dynamic_fields["server"] = server_input
+
+                broker_input = QLineEdit()
+                broker_input.setPlaceholderText("输入经纪商代码...")
+                dynamic_form_layout.addRow("经纪商代码:", broker_input)
+                dynamic_fields["broker"] = broker_input
+
+            elif gateway_type == "sopt":
+                user_input = QLineEdit()
+                user_input.setPlaceholderText("输入用户名...")
+                dynamic_form_layout.addRow("用户名:", user_input)
+                dynamic_fields["user"] = user_input
+
+                password_input = QLineEdit()
+                password_input.setPlaceholderText("输入密码...")
+                password_input.setEchoMode(QLineEdit.EchoMode.Password)
+                dynamic_form_layout.addRow("密码:", password_input)
+                dynamic_fields["password"] = password_input
+
+                server_input = QLineEdit()
+                server_input.setPlaceholderText("输入服务器地址...")
+                dynamic_form_layout.addRow("服务器地址:", server_input)
+                dynamic_fields["server"] = server_input
+
+                auth_input = QLineEdit()
+                auth_input.setPlaceholderText("输入授权码...")
+                dynamic_form_layout.addRow("授权码:", auth_input)
+                dynamic_fields["auth_code"] = auth_input
+
+            elif gateway_type == "tts":
+                user_input = QLineEdit()
+                user_input.setPlaceholderText("输入用户名...")
+                dynamic_form_layout.addRow("用户名:", user_input)
+                dynamic_fields["user"] = user_input
+
+                password_input = QLineEdit()
+                password_input.setPlaceholderText("输入密码...")
+                password_input.setEchoMode(QLineEdit.EchoMode.Password)
+                dynamic_form_layout.addRow("密码:", password_input)
+                dynamic_fields["password"] = password_input
+
+                server_input = QLineEdit()
+                server_input.setPlaceholderText("输入服务器地址...")
+                dynamic_form_layout.addRow("服务器地址:", server_input)
+                dynamic_fields["server"] = server_input
+
+            elif gateway_type == "ib":
+                host_input = QLineEdit()
+                host_input.setPlaceholderText("默认: 127.0.0.1")
+                host_input.setText("127.0.0.1")
+                dynamic_form_layout.addRow("服务器地址:", host_input)
+                dynamic_fields["host"] = host_input
+
+                port_input = QSpinBox()
+                port_input.setRange(1, 65535)
+                port_input.setValue(7497)
+                dynamic_form_layout.addRow("端口:", port_input)
+                dynamic_fields["port"] = port_input
+
+                client_id_input = QSpinBox()
+                client_id_input.setRange(1, 999)
+                client_id_input.setValue(1)
+                dynamic_form_layout.addRow("客户号:", client_id_input)
+                dynamic_fields["client_id"] = client_id_input
+
+                account_input = QLineEdit()
+                account_input.setPlaceholderText("输入账户ID...")
+                dynamic_form_layout.addRow("账户ID:", account_input)
+                dynamic_fields["account"] = account_input
 
             elif gateway_type == "paperaccount":
                 capital_input = QSpinBox()
                 capital_input.setRange(10000, 100000000)
                 capital_input.setValue(1000000)
+                capital_input.setSingleStep(10000)
                 dynamic_form_layout.addRow("初始资金:", capital_input)
                 dynamic_fields["capital"] = capital_input
 
-            elif gateway_type == "TradeX gateway":
-                path_input = QLineEdit()
-                path_input.setPlaceholderText("TradeX DLL路径")
-                dynamic_form_layout.addRow("TradeX路径:", path_input)
-                dynamic_fields["tradex_path"] = path_input
+            elif gateway_type == "tdx":
+                server_ip_input = QLineEdit()
+                server_ip_input.setPlaceholderText("券商服务器IP")
+                dynamic_form_layout.addRow("服务器IP:", server_ip_input)
+                dynamic_fields["server_ip"] = server_ip_input
+
+                port_input = QSpinBox()
+                port_input.setRange(1, 65535)
+                port_input.setValue(7708)
+                dynamic_form_layout.addRow("服务器端口:", port_input)
+                dynamic_fields["port"] = port_input
+
+                version_input = QLineEdit()
+                version_input.setPlaceholderText("例如: 6.40")
+                version_input.setText("6.40")
+                dynamic_form_layout.addRow("客户端版本:", version_input)
+                dynamic_fields["version"] = version_input
+
+                yyb_id_input = QLineEdit()
+                yyb_id_input.setPlaceholderText("营业部ID")
+                dynamic_form_layout.addRow("营业部ID:", yyb_id_input)
+                dynamic_fields["yyb_id"] = yyb_id_input
+
+                account_input = QLineEdit()
+                account_input.setPlaceholderText("登录账号")
+                dynamic_form_layout.addRow("登录账号:", account_input)
+                dynamic_fields["account"] = account_input
+
+                trade_account_input = QLineEdit()
+                trade_account_input.setPlaceholderText("交易账号")
+                dynamic_form_layout.addRow("交易账号:", trade_account_input)
+                dynamic_fields["trade_account"] = trade_account_input
+
+                password_input = QLineEdit()
+                password_input.setPlaceholderText("交易密码")
+                password_input.setEchoMode(QLineEdit.EchoMode.Password)
+                dynamic_form_layout.addRow("交易密码:", password_input)
+                dynamic_fields["password"] = password_input
+
+                comm_password_input = QLineEdit()
+                comm_password_input.setPlaceholderText("通讯密码")
+                comm_password_input.setEchoMode(QLineEdit.EchoMode.Password)
+                dynamic_form_layout.addRow("通讯密码:", comm_password_input)
+                dynamic_fields["comm_password"] = comm_password_input
 
         update_form(gateway_type_combo.currentText())
         gateway_type_combo.currentTextChanged.connect(update_form)
@@ -556,10 +672,15 @@ class TradingGateway(BaseWidget, LoggerMixin):
         # 显示对话框
         if dialog.exec() == QDialog.DialogCode.Accepted:
             gateway_type = gateway_type_combo.currentText().split(" - ")[0]
-            config = {
-                "type": gateway_type,
-                "name": dynamic_fields["name"].text() if "name" in dynamic_fields else "",
-            }
+            gateway_name = dynamic_fields.get("name").text() if "name" in dynamic_fields else ""
+
+            # 验证网关名称
+            if not gateway_name:
+                self.show_error("请输入网关名称")
+                return
+
+            # 构建配置
+            config = {}
             for key, field in dynamic_fields.items():
                 if key != "name":
                     if isinstance(field, QLineEdit):
@@ -567,8 +688,28 @@ class TradingGateway(BaseWidget, LoggerMixin):
                     elif isinstance(field, QSpinBox):
                         config[key] = field.value()
 
-            self.show_info(f"创建网关: {config['name']} ({gateway_type})")
-            self._add_gateway_to_list(config)
+            # 调用后端服务创建网关
+            if not self.trading_service:
+                self.show_error("交易网关服务不可用")
+                return
+
+            try:
+                result = self.trading_service.create_gateway(gateway_name, gateway_type, config)
+
+                if result.get("success"):
+                    # 创建成功后添加到列表
+                    display_config = {
+                        "name": gateway_name,
+                        "type": gateway_type,
+                    }
+                    self._add_gateway_to_list(display_config)
+                    self.show_info(f"网关 '{gateway_name}' 创建成功")
+                else:
+                    error_msg = result.get("message", "未知错误")
+                    self.show_error(f"创建网关失败: {error_msg}")
+            except Exception as e:
+                self.show_error(f"创建网关时发生错误: {str(e)}")
+                self.logger.error(f"创建网关失败: {e}", exc_info=True)
 
     def _add_gateway_to_list(self, config: dict):
         """添加网关到列表."""
@@ -607,11 +748,53 @@ class TradingGateway(BaseWidget, LoggerMixin):
             return
 
         gateway_name = gateway_item.text()
-        self.show_info(f"连接网关: {gateway_name}")
 
-        # vnpy集成后通过trading_service连接网关
-        if self.gateways_table:
-            self.gateways_table.setItem(row, 2, QTableWidgetItem("连接中..."))
+        # 检查服务是否可用
+        if not self.trading_service:
+            self.show_error("交易网关服务不可用")
+            return
+
+        # 获取网关类型
+        type_item = self.gateways_table.item(row, 1)
+        if not type_item:
+            self.show_error("无法获取网关类型")
+            return
+
+        gateway_type = type_item.text()
+
+        # 对于需要密码的网关，弹出密码输入对话框
+        password = None
+        if gateway_type != "paperaccount":
+            from PySide6.QtWidgets import QInputDialog
+
+            password, ok = QInputDialog.getText(
+                self,
+                "输入密码",
+                f"请输入网关 '{gateway_name}' 的密码:",
+                QLineEdit.EchoMode.Password,
+            )
+            if not ok:
+                return
+
+        # 设置连接中状态
+        self.gateways_table.setItem(row, 2, QTableWidgetItem("连接中..."))
+        self.show_info(f"正在连接网关: {gateway_name}")
+
+        # 调用后端服务连接网关
+        try:
+            result = self.trading_service.connect_gateway(gateway_name, password)
+
+            if result.get("success"):
+                self.gateways_table.setItem(row, 2, QTableWidgetItem("已连接"))
+                self.show_info(f"网关 '{gateway_name}' 连接成功")
+            else:
+                self.gateways_table.setItem(row, 2, QTableWidgetItem("连接失败"))
+                error_msg = result.get("message", "未知错误")
+                self.show_error(f"网关连接失败: {error_msg}")
+        except Exception as e:
+            self.gateways_table.setItem(row, 2, QTableWidgetItem("连接失败"))
+            self.show_error(f"连接网关时发生错误: {str(e)}")
+            self.logger.error(f"连接网关失败: {e}", exc_info=True)
 
     def _delete_gateway(self, row: int):
         """删除网关."""
@@ -629,8 +812,23 @@ class TradingGateway(BaseWidget, LoggerMixin):
         )
 
         if reply == QMessageBox.StandardButton.Yes:
-            self.gateways_table.removeRow(row)
-            self.show_info(f"已删除网关: {gateway_name}")
+            # 调用后端服务删除网关
+            if self.trading_service:
+                try:
+                    result = self.trading_service.delete_gateway(gateway_name)
+                    if result.get("success"):
+                        self.gateways_table.removeRow(row)
+                        self.show_info(f"已删除网关: {gateway_name}")
+                    else:
+                        error_msg = result.get("message", "未知错误")
+                        self.show_error(f"删除网关失败: {error_msg}")
+                except Exception as e:
+                    self.show_error(f"删除网关时发生错误: {str(e)}")
+                    self.logger.error(f"删除网关失败: {e}", exc_info=True)
+            else:
+                # 如果服务不可用，至少从界面删除
+                self.gateways_table.removeRow(row)
+                self.show_info(f"已从界面删除网关: {gateway_name}")
 
     def _deploy_strategy(self):
         """部署策略."""
@@ -649,10 +847,12 @@ class TradingGateway(BaseWidget, LoggerMixin):
         # 网关选择
         gateway_combo = QComboBox()
         if self.trading_service:
-            gateway_list = self.trading_service.get_gateway_list()
-            if gateway_list and gateway_list.get("success"):
-                for gw in gateway_list.get("gateways", []):
+            try:
+                gateways = self.trading_service.list_gateways()
+                for gw in gateways:
                     gateway_combo.addItem(gw["name"])
+            except Exception as e:
+                self.logger.error(f"获取网关列表失败: {e}")
         layout.addRow("网关:", gateway_combo)
 
         # 策略名称

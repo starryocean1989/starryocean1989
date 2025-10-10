@@ -92,7 +92,7 @@ class StorageManager:
             file_path = self.data_dir / symbol / interval / "data.parquet"
 
             if not file_path.exists():
-                self.logger.warning("数据文件不存在: %s", file_path)
+                self.logger.debug("数据文件不存在: %s", file_path)
                 return None
 
             # 读取Parquet文件
@@ -358,18 +358,66 @@ class StorageManager:
         """
         # 添加品种和周期信息
         df = df.copy()
+
+        # 🔧 修复：重置索引（避免datetime同时作为索引和列）
+        if df.index.name == "datetime" or (
+            hasattr(df.index, "dtype") and "datetime" in str(df.index.dtype)
+        ):
+            # 如果索引名为datetime且列中也有datetime，先删除列，保留索引
+            if "datetime" in df.columns:
+                df = df.drop(columns=["datetime"])
+
+            # 🔧 修复：在reset_index前过滤无效日期索引
+            # 某些品种的数据可能包含无效日期（如 0-00-00），需要先过滤
+            try:
+                # 检查索引是否有无效值（NaT）
+                valid_index = df.index.notna()
+                if not valid_index.all():
+                    self.logger.warning(
+                        "检测到 %d 个无效日期索引，已过滤: %s %s",
+                        (~valid_index).sum(),
+                        symbol,
+                        interval,
+                    )
+                    df = df[valid_index]
+            except Exception as e:
+                self.logger.debug("检查索引有效性时出错: %s", e)
+
+            df = df.reset_index(drop=False)
+
+        # 🔧 修复：删除重复列（如果存在）
+        if df.columns.duplicated().any():
+            self.logger.warning("检测到重复列名: %s", df.columns[df.columns.duplicated()].tolist())
+            # 保留第一个出现的列，删除后续重复列
+            df = df.loc[:, ~df.columns.duplicated(keep="first")]
+
         df["symbol"] = symbol
         df["interval"] = interval
 
         # 确保datetime列是datetime类型
         if "datetime" in df.columns:
-            df["datetime"] = pd.to_datetime(df["datetime"])
+            df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce")
+            # 删除无效日期
+            df = df[df["datetime"].notna()].copy()
 
-        # 确保数值列是float类型
+        # 🔧 修复：确保数值列是float类型，并增强错误处理
         numeric_columns = ["open", "high", "low", "close", "volume"]
         for col in numeric_columns:
             if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
+                try:
+                    # 确保列是 Series 类型（防止重复列导致的 DataFrame）
+                    if isinstance(df[col], pd.DataFrame):
+                        self.logger.warning("列 %s 是 DataFrame，取第一列", col)
+                        df[col] = df[col].iloc[:, 0]
+
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+                except Exception as e:
+                    self.logger.error("转换列 %s 为数值类型失败: %s", col, e)
+                    # 如果转换失败，尝试强制转换
+                    try:
+                        df[col] = pd.to_numeric(df[col].values, errors="coerce")
+                    except Exception as e2:
+                        self.logger.error("强制转换列 %s 仍然失败: %s，跳过该列", col, e2)
 
         # 按时间排序
         if "datetime" in df.columns:

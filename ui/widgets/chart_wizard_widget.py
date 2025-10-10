@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 # 尝试导入vnpy_chartwizard
 try:
-    from vnpy_chartwizard import ChartWidget as VnpyChartWidget
+    from vnpy_chartwizard.ui.widget import ChartWidget as VnpyChartWidget
 
     HAS_CHART_WIZARD = True
     logger.info("✅ vnpy_chartwizard可用")
@@ -88,19 +88,21 @@ class ChartWizardWidget(BaseWidget):
             main_engine = get_main_engine()
 
             if not main_engine:
+                self._logger.warning("MainEngine不可用，使用降级方案")
                 raise RuntimeError("MainEngine不可用")
 
             # 创建图表组件
-            self.chart_widget = VnpyChartWidget(main_engine, None)
+            # vnpy_chartwizard.ChartWidget(main_engine, event_engine)
+            self.chart_widget = VnpyChartWidget(main_engine, main_engine.event_engine)
 
             # 添加到布局
             if self.chart_widget:
                 layout.addWidget(self.chart_widget)
 
-            self._logger.info("vnpy_chartwizard图表组件初始化成功")
+            self._logger.info("✅ vnpy_chartwizard图表组件初始化成功")
 
         except Exception as e:
-            self._logger.error(f"创建vnpy_chartwizard组件失败: {e}")
+            self._logger.error(f"❌ 创建vnpy_chartwizard组件失败: {e}")
             raise
 
     def _setup_fallback_chart(self, layout: QVBoxLayout):
@@ -171,16 +173,19 @@ class ChartWizardWidget(BaseWidget):
                     # 构建vt_symbol
                     # 假设symbol格式为 "000001" 或 "000001.SZSE"
                     if "." not in symbol:
-                        # 添加默认交易所
-                        vt_symbol = f"{symbol}.SZSE"
+                        # 判断是上海还是深圳
+                        if symbol.startswith("6"):
+                            vt_symbol = f"{symbol}.SSE"  # 上海交易所
+                        else:
+                            vt_symbol = f"{symbol}.SZSE"  # 深圳交易所
                     else:
                         vt_symbol = symbol
 
                     # 更新历史数据
                     self.chart_widget.update_history(vt_symbol)
-                    self._logger.info(f"更新图表品种: {vt_symbol}")
+                    self._logger.info(f"✅ 更新图表品种: {vt_symbol}")
                 except Exception as e:
-                    self._logger.error(f"更新图表品种失败: {e}")
+                    self._logger.error(f"❌ 更新图表品种失败: {e}")
         elif self.chart_widget and hasattr(self.chart_widget, "set_symbol"):
             # 降级方案
             self.chart_widget.set_symbol(symbol)

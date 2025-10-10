@@ -98,6 +98,9 @@ class DataCenterService(BaseService):
             # 初始化消息发布器
             self._init_message_publisher()
 
+            # 🔧 修复：启动时加载品种缓存（如果存在）
+            self._load_symbol_cache_on_startup()
+
             return True  # 即使部分功能不可用，也返回True以允许服务启动
 
         except Exception as e:
@@ -178,7 +181,8 @@ class DataCenterService(BaseService):
             return True
 
         except ImportError:
-            self.logger.warning("⚠️ APScheduler未安装，定时清理功能不可用")
+            # APScheduler是可选功能，降低日志级别避免干扰
+            self.logger.debug("⚠️ APScheduler未安装，定时清理功能不可用")
             return False
         except Exception as e:
             self.logger.error("任务调度器初始化失败: %s", e, exc_info=True)
@@ -199,11 +203,13 @@ class DataCenterService(BaseService):
                 self.logger.info("✅ 消息发布器可用")
                 return True
             else:
-                self.logger.warning("⚠️ 消息发布器不可用，WebSocket推送功能受限")
+                # WebSocket是可选功能，降低日志级别避免干扰
+                self.logger.debug("⚠️ 消息发布器不可用，WebSocket推送功能受限")
                 return False
 
         except Exception as e:
-            self.logger.warning("消息发布器初始化失败: %s", str(e))
+            # WebSocket是可选功能，降低日志级别避免干扰
+            self.logger.debug("消息发布器初始化失败: %s", str(e))
             return False
 
     def _cleanup_recorded_data_daily(self, days_to_keep: int = 1):
@@ -225,6 +231,150 @@ class DataCenterService(BaseService):
         except Exception as e:
             self.logger.error("定时清理录制数据异常: %s", e, exc_info=True)
 
+    def _load_symbol_cache_on_startup(self):
+        """启动时加载品种缓存（异步）.
+
+        逻辑：
+        1. 先尝试从 data/cache/stock_list_classified.json 加载缓存
+        2. 如果新格式缓存存在，加载到内存
+        3. 兼容旧格式：如果只有parquet文件，也能加载（会自动迁移）
+        4. 如果缓存不存在，启动后台线程异步加载（不阻塞启动）
+        """
+        try:
+            self.logger.info("检查品种列表缓存...")
+
+            # 尝试从JSON文件加载（使用data_module的配置管理器）
+            from backend.infrastructure.data_module_vnpy.config import config_manager
+            import json
+
+            cache_dir = config_manager.get_cache_dir()
+            json_cache_file = cache_dir / "stock_list_classified.json"
+            parquet_cache_file = cache_dir / "stock_list.parquet"
+
+            # 优先加载新格式JSON文件
+            if json_cache_file.exists():
+                try:
+                    with open(json_cache_file, "r", encoding="utf-8") as f:
+                        cache_data = json.load(f)
+
+                    classified = cache_data.get("classified", {})
+
+                    # 将分类数据转换为前端需要的格式
+                    symbols = []
+                    for market_type, codes in classified.items():
+                        for code in codes:
+                            symbols.append(
+                                {
+                                    "symbol": code,
+                                    "code": code,
+                                    "name": code,  # JSON中只有代码，名称暂时用代码代替
+                                    "exchange": self._map_market_to_exchange(market_type),
+                                    "product_type": self._map_market_to_product_type(market_type),
+                                }
+                            )
+
+                    # 更新内存缓存
+                    self._symbol_cache = {
+                        "symbols": symbols,
+                        "timestamp": datetime.now(),
+                    }
+                    self._symbol_cache_time = datetime.now()
+
+                    self.logger.info("✅ 从JSON缓存加载了 %d 个品种（5个市场）", len(symbols))
+                    return
+
+                except Exception as e:
+                    self.logger.warning("加载JSON缓存失败: %s，尝试旧格式", e)
+
+            # 兼容旧格式parquet（会触发一次迁移）
+            if parquet_cache_file.exists():
+                try:
+                    import pandas as pd
+
+                    df = pd.read_parquet(parquet_cache_file)
+
+                    # 将DataFrame转换为字典列表
+                    symbols = []
+                    for _, row in df.iterrows():
+                        symbols.append(
+                            {
+                                "code": row.get("code", ""),
+                                "name": row.get("name", ""),
+                                "exchange": row.get("exchange", ""),
+                                "type": row.get("product", ""),
+                            }
+                        )
+
+                    # 更新内存缓存
+                    self._symbol_cache = {
+                        "symbols": symbols,
+                        "timestamp": datetime.now(),
+                    }
+                    self._symbol_cache_time = datetime.now()
+
+                    self.logger.info(
+                        "✅ 从旧格式parquet加载了 %d 个品种（下次启动将自动迁移）", len(symbols)
+                    )
+                    return
+
+                except Exception as e:
+                    self.logger.warning("加载parquet缓存失败: %s，将异步重新加载", e)
+
+            # 缓存不存在或加载失败，启动后台线程异步加载
+            self.logger.info("缓存文件不存在，启动后台线程异步加载品种列表...")
+            self._async_load_symbols_in_background()
+
+        except Exception as e:
+            self.logger.error("启动时加载缓存失败: %s", e, exc_info=True)
+
+    def _map_market_to_exchange(self, market_type: str) -> str:
+        """将市场类型映射到交易所."""
+        mapping = {
+            "上证A股": "上交所",
+            "深证A股": "深交所",
+            "北证A股": "北交所",
+            "T+0基金": "全部",
+            "含可转债": "全部",
+        }
+        return mapping.get(market_type, "未知")
+
+    def _map_market_to_product_type(self, market_type: str) -> str:
+        """将市场类型映射到产品类型."""
+        mapping = {
+            "上证A股": "股票",
+            "深证A股": "股票",
+            "北证A股": "股票",
+            "T+0基金": "基金",
+            "含可转债": "可转债",
+        }
+        return mapping.get(market_type, "未知")
+
+    def _async_load_symbols_in_background(self):
+        """在后台线程中异步加载品种列表."""
+        import threading
+
+        def load_symbols():
+            try:
+                self.logger.info("【后台线程】开始异步加载品种列表...")
+                result = self.reload_symbol_list(force=False)
+
+                if result.get("success"):
+                    self.logger.info(
+                        "【后台线程】✅ 品种列表加载成功: %d 个品种", result.get("symbol_count", 0)
+                    )
+                else:
+                    self.logger.warning(
+                        "【后台线程】⚠️ 品种列表加载失败: %s", result.get("message", "")
+                    )
+
+            except Exception as e:
+                self.logger.error("【后台线程】品种列表加载异常: %s", e, exc_info=True)
+
+        # 启动守护线程（不阻塞主程序退出）
+        thread = threading.Thread(target=load_symbols, daemon=True, name="SymbolLoader")
+        thread.start()
+        self.logger.info("后台加载线程已启动")
+
     # ==================== 品种列表管理 ====================
 
     def reload_symbol_list(self, force: bool = False) -> Dict[str, Any]:
@@ -243,10 +393,14 @@ class DataCenterService(BaseService):
         """
         try:
             self._log_operation("重新加载品种列表", force=force)
+            self.logger.info("=" * 60)
+            self.logger.info("【开始】重新加载品种列表 (force=%s)", force)
+            self.logger.info("=" * 60)
 
             # 检查缓存是否有效（如果不强制刷新）
             if not force and self._is_symbol_cache_valid():
                 symbols = self._symbol_cache.get("symbols", []) if self._symbol_cache else []
+                self.logger.info("使用缓存的品种列表: %d 个品种", len(symbols))
                 return {
                     "success": True,
                     "symbol_count": len(symbols),
@@ -256,6 +410,7 @@ class DataCenterService(BaseService):
 
             # 调用china_stock_engine获取品种列表
             if self.china_stock_engine is None:
+                self.logger.error("ChinaStockEngine不可用")
                 return {
                     "success": False,
                     "symbol_count": 0,
@@ -264,24 +419,49 @@ class DataCenterService(BaseService):
                 }
 
             # 调用实际的品种列表获取方法
+            self.logger.info("【步骤1】调用 _fetch_symbols_from_china_stock()...")
             symbols = self._fetch_symbols_from_china_stock()
+            self.logger.info("【步骤1完成】获取到 %d 个品种", len(symbols))
 
             # 更新缓存
+            self.logger.info("【步骤2】更新内存缓存...")
             self._symbol_cache = {
                 "symbols": symbols,
                 "timestamp": datetime.now(),
             }
             self._symbol_cache_time = datetime.now()
+            self.logger.info("【步骤2完成】缓存已更新")
+
+            self.logger.info("=" * 60)
+            self.logger.info("【成功】品种列表加载完成: %d 个品种", len(symbols))
+            self.logger.info("=" * 60)
+
+            # 检查通达信根目录配置
+            warning_message = None
+            if self.china_stock_engine:
+                # 检查BlockParser是否可用
+                block_parser = getattr(self.china_stock_engine, "block_parser", None)
+                if block_parser and not block_parser.is_available():
+                    warning_message = (
+                        "⚠️ 未配置通达信根目录，品种列表可能不完整。"
+                        "缺少：T+0基金、可转债等特殊品种。"
+                        "请在系统配置中设置通达信软件根目录。"
+                    )
+                    self.logger.warning(warning_message)
 
             return {
                 "success": True,
                 "symbol_count": len(symbols),
                 "message": "品种列表加载成功",
                 "data": symbols,
+                "warning": warning_message,  # 添加警告信息
             }
 
         except Exception as e:
             self._log_error("重新加载品种列表", e)
+            self.logger.error("=" * 60)
+            self.logger.error("【失败】品种列表加载失败: %s", e, exc_info=True)
+            self.logger.error("=" * 60)
             return {
                 "success": False,
                 "symbol_count": 0,
@@ -395,6 +575,25 @@ class DataCenterService(BaseService):
         # 不再检查时间，缓存永久有效
         return True
 
+    def _map_market_to_exchange_and_type(self, market_name: str) -> tuple:
+        """将市场名称映射到交易所和品种类型.
+
+        Args:
+            market_name: 市场名称（如"上证A股"、"深证A股"等）
+
+        Returns:
+            tuple: (exchange, product_type) 交易所名称和品种类型
+        """
+        mapping = {
+            "上证A股": ("上交所", "股票"),
+            "深证A股": ("深交所", "股票"),
+            "北证A股": ("北交所", "股票"),
+            "T+0基金": ("全部", "基金"),  # T+0基金可能分布在多个交易所
+            "含可转债": ("全部", "可转债"),  # 可转债可能分布在多个交易所
+        }
+
+        return mapping.get(market_name, ("未知", "未知"))
+
     def _fetch_symbols_from_china_stock(self) -> List[Dict[str, Any]]:
         """从ChinaStockEngine获取品种列表.
 
@@ -407,26 +606,58 @@ class DataCenterService(BaseService):
                 self.logger.warning("ChinaStockEngine不可用")
                 return []
 
-            result = self.china_stock_engine.reload_stock_list()
+            # 第1步：调用reload_stock_list更新缓存（返回bool）
+            self.logger.info("  → 调用 china_stock_engine.reload_stock_list()...")
+            success = self.china_stock_engine.reload_stock_list()
+            self.logger.info("  ← reload_stock_list 返回: %s", success)
 
-            if not result:
-                self.logger.warning("ChinaStockEngine返回空结果")
+            if not success:
+                self.logger.warning("更新品种缓存失败")
                 return []
 
+            # 第2步：调用get_all_market_stocks获取分类后的品种字典
+            self.logger.info("  → 调用 china_stock_engine.get_all_market_stocks()...")
+            market_stocks = self.china_stock_engine.get_all_market_stocks()
+            self.logger.info(
+                "  ← get_all_market_stocks 返回: %d 个市场",
+                len(market_stocks) if market_stocks else 0,
+            )
+
+            if not market_stocks:
+                self.logger.warning("获取品种分类失败")
+                return []
+
+            # 打印各市场品种数量
+            for market_name, stock_list in market_stocks.items():
+                self.logger.info("     - %s: %d 个", market_name, len(stock_list))
+
             # 转换为前端需要的格式
+            self.logger.info("  → 转换为前端数据格式...")
             symbols = []
-            for exchange, stock_list in result.items():
+            for market_name, stock_list in market_stocks.items():
+                # 映射市场名称到交易所和品种类型
+                exchange, product_type = self._map_market_to_exchange_and_type(market_name)
+
                 for stock_code in stock_list:
                     symbols.append(
                         {
-                            "code": stock_code,
-                            "exchange": exchange,
+                            "symbol": stock_code,  # 使用symbol字段（与前端期望一致）
+                            "code": stock_code,  # 同时保留code字段
                             "name": stock_code,  # 暂时使用代码作为名称
-                            "type": "stock",  # 暂时都标记为stock
+                            "exchange": exchange,  # 使用映射后的交易所名称
+                            "product_type": product_type,  # 使用映射后的品种类型
                         }
                     )
 
-            self.logger.info("成功获取 %d 个品种", len(symbols))
+            self.logger.info("  ← 转换完成: %d 个品种", len(symbols))
+            self.logger.info("✅ 成功获取 %d 个分类品种（来自5个市场）", len(symbols))
+
+            # 打印前3个样例
+            if len(symbols) > 0:
+                self.logger.info("  前3个品种样例:")
+                for i, sym in enumerate(symbols[:3]):
+                    self.logger.info("    [%d] %s", i + 1, sym)
+
             return symbols
 
         except Exception as e:
@@ -462,7 +693,14 @@ class DataCenterService(BaseService):
 
             # 调用ChinaStockEngine的K线数据全量下载方法
             try:
-                self.china_stock_engine.download_all_stocks()
+                success = self.china_stock_engine.download_full()
+                if not success:
+                    # 下载失败（例如：本地缓存不存在）
+                    return {
+                        "success": False,
+                        "task_id": None,
+                        "message": "本地品种缓存不存在或为空，请先在【品种列表】界面点击【重新加载品种】按钮获取品种列表",
+                    }
             except Exception as e:
                 self.logger.error("全量下载启动失败: %s", e, exc_info=True)
                 return {
@@ -523,7 +761,15 @@ class DataCenterService(BaseService):
                 from datetime import datetime as dt
 
                 start_dt = dt.strptime(start_date, "%Y-%m-%d").date()
-                self.china_stock_engine.download_incremental(start_date=start_dt)
+                success = self.china_stock_engine.download_incremental(start_date=start_dt)
+
+                if not success:
+                    # 下载失败（例如：本地缓存不存在）
+                    return {
+                        "success": False,
+                        "task_id": None,
+                        "message": "本地品种缓存不存在或为空，请先在【品种列表】界面点击【重新加载品种】按钮获取品种列表",
+                    }
 
                 # 注册任务
                 self._download_tasks[task_id] = {
@@ -1392,8 +1638,6 @@ class DataCenterService(BaseService):
             recording_path = custom_path or settings.vnpy.recording_data_path
 
             # 确保录制目录存在
-            from pathlib import Path
-
             Path(recording_path).mkdir(parents=True, exist_ok=True)
             self.logger.info("录制数据路径: %s", recording_path)
 
@@ -1537,140 +1781,6 @@ class DataCenterService(BaseService):
             "datafeeds": status,
             "recording": recording_status,
         }
-
-    # ==================== 筛选预设管理 ====================
-
-    def save_filter_preset(self, preset_name: str, filters: Dict[str, Any]) -> Dict[str, Any]:
-        """保存筛选预设.
-
-        Args:
-            preset_name: 预设名称
-            filters: 筛选条件
-
-        Returns:
-            Dict: 保存结果
-        """
-        try:
-            import json
-
-            # 预设文件路径
-            preset_file = Path("config/filter_presets.json")
-            preset_file.parent.mkdir(parents=True, exist_ok=True)
-
-            # 加载现有预设
-            if preset_file.exists():
-                with open(preset_file, "r", encoding="utf-8") as f:
-                    presets = json.load(f)
-            else:
-                presets = {}
-
-            # 添加/更新预设
-            presets[preset_name] = {
-                "name": preset_name,
-                "filters": filters,
-                "created_at": datetime.now().isoformat(),
-            }
-
-            # 保存预设
-            with open(preset_file, "w", encoding="utf-8") as f:
-                json.dump(presets, f, indent=4, ensure_ascii=False)
-
-            self.logger.info("筛选预设已保存: %s", preset_name)
-
-            return {
-                "success": True,
-                "message": f"预设 '{preset_name}' 已保存",
-            }
-
-        except Exception as e:
-            self._log_error("保存筛选预设", e)
-            return {
-                "success": False,
-                "message": f"保存预设失败: {str(e)}",
-            }
-
-    def load_filter_presets(self) -> Dict[str, Any]:
-        """加载所有筛选预设.
-
-        Returns:
-            Dict: 预设列表
-        """
-        try:
-            import json
-
-            preset_file = Path("config/filter_presets.json")
-
-            if not preset_file.exists():
-                return {
-                    "success": True,
-                    "presets": {},
-                    "message": "预设文件不存在",
-                }
-
-            with open(preset_file, "r", encoding="utf-8") as f:
-                presets = json.load(f)
-
-            return {
-                "success": True,
-                "presets": presets,
-                "count": len(presets),
-            }
-
-        except Exception as e:
-            self._log_error("加载筛选预设", e)
-            return {
-                "success": False,
-                "presets": {},
-                "message": f"加载预设失败: {str(e)}",
-            }
-
-    def delete_filter_preset(self, preset_name: str) -> Dict[str, Any]:
-        """删除筛选预设.
-
-        Args:
-            preset_name: 预设名称
-
-        Returns:
-            Dict: 删除结果
-        """
-        try:
-            import json
-
-            preset_file = Path("config/filter_presets.json")
-
-            if not preset_file.exists():
-                return {
-                    "success": False,
-                    "message": "预设文件不存在",
-                }
-
-            with open(preset_file, "r", encoding="utf-8") as f:
-                presets = json.load(f)
-
-            if preset_name not in presets:
-                return {
-                    "success": False,
-                    "message": f"预设 '{preset_name}' 不存在",
-                }
-
-            del presets[preset_name]
-
-            with open(preset_file, "w", encoding="utf-8") as f:
-                json.dump(presets, f, indent=4, ensure_ascii=False)
-
-            self.logger.info("筛选预设已删除: %s", preset_name)
-
-            return {
-                "success": True,
-                "message": f"预设 '{preset_name}' 已删除",
-            }
-
-        except Exception as e:
-            self._log_error("删除筛选预设", e)
-            return {
-                "success": False,
-                "message": f"删除预设失败: {str(e)}",
-            }
 
     # ==================== 实时数据录制 ====================
 
@@ -1847,8 +1957,6 @@ class DataCenterService(BaseService):
             Dict: 清理结果
         """
         try:
-            from pathlib import Path
-
             # vnpy_datarecorder默认录制到data目录
             data_dir = Path("data")
 

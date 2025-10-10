@@ -1,8 +1,23 @@
 # -*- coding: utf-8 -*-
 """主窗口 - 星辰金融终端的主界面（重构版）."""
 
-import logging
+# 🔧 关键修复：在任何导入之前设置Python解释器环境变量
+# 这样PySide6 WebEngine进程会使用正确的Python路径
+import os
 import sys
+if not os.environ.get("PYTHONEXECUTABLE"):
+    os.environ["PYTHONEXECUTABLE"] = sys.executable
+if not os.environ.get("QT_WEBENGINE_PYTHON_EXECUTABLE"):
+    os.environ["QT_WEBENGINE_PYTHON_EXECUTABLE"] = sys.executable
+
+from pathlib import Path
+
+# Add project root to Python path to ensure backend module can be imported
+project_root = Path(__file__).parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+import logging
 from typing import Any, Dict, Optional
 
 try:
@@ -34,7 +49,9 @@ from ui.themes.theme_manager import ThemeManager
 from ui.components.data_center.main_view import DataCenter
 from ui.components.market_dashboard.main_view import MarketDashboard
 from ui.components.portfolio_investment.main_view import PortfolioInvestment
-from ui.components.strategy_center.main_view import StrategyCenter
+from ui.components.strategy_center.main_view_refactored import (
+    StrategyCenterRefactored as StrategyCenter,
+)
 from ui.components.system_manager.main_view import SystemManager
 from ui.components.trading_gateway.main_view import TradingGateway
 from ui.widgets.responsive_helper import ResponsiveHelper
@@ -52,12 +69,23 @@ class MainWindow(QMainWindow, LoggerMixin):
 
     interface_changed = Signal(str)
 
-    def __init__(self):
-        """初始化主窗口."""
+    def __init__(self, backend_ready: bool = True):
+        """初始化主窗口.
+
+        Args:
+            backend_ready: 后端服务是否已就绪（True=同步模式，False=异步模式）
+        """
         super().__init__()
 
-        # 初始化后端服务
-        self._initialize_backend_services()
+        self.backend_ready = backend_ready
+
+        # 如果是同步模式（向后兼容），先初始化配置和后端
+        if backend_ready:
+            # 🔧 关键修复：在任何服务创建之前就初始化配置
+            self._initialize_config_first()
+
+            # 初始化后端服务
+            self._initialize_backend_services()
 
         # 初始化组件
         self.theme_manager = ThemeManager()
@@ -88,15 +116,72 @@ class MainWindow(QMainWindow, LoggerMixin):
         self.update_timer: Optional[QTimer] = None
         self.responsive_helper: Optional[ResponsiveHelper] = None
 
-        # 初始化UI
+        # 初始化UI框架
         self._init_responsive_helper()
         self.setup_ui()
         self.setup_menu_bar()
         self.setup_status_bar()
-        self.create_function_interfaces()
 
-        # 应用主题
-        self.apply_theme()
+        # 如果后端已就绪，立即创建功能界面
+        if backend_ready:
+            self.create_function_interfaces()
+
+            # 应用主题
+            self.apply_theme()
+
+            # 连接信号
+            self.connect_signals()
+
+            # 启动更新定时器
+            self.start_update_timer()
+
+            self.logger.info("主窗口初始化完成（同步模式）")
+        else:
+            # 异步模式：功能界面稍后创建
+            self.apply_theme()
+            self.logger.info("主窗口框架初始化完成（异步模式，等待后端就绪）")
+
+    def _initialize_config_first(self):
+        """在所有服务创建之前初始化配置.
+
+        这个方法必须在任何后端服务或UI组件创建之前调用，
+        确保所有服务都使用正确的配置文件。
+        """
+        try:
+            import os
+            from backend.config import init_settings, get_settings
+
+            # 从环境变量获取配置文件路径
+            config_file = os.getenv("CONFIG_FILE")
+
+            if config_file:
+                logging.getLogger(__name__).info("从环境变量加载配置: %s", config_file)
+                init_settings(config_file)
+            else:
+                logging.getLogger(__name__).info("使用默认配置文件")
+                init_settings()
+
+            # 验证配置已加载
+            settings = get_settings()
+            if settings.ai.api_key:
+                masked_key = (
+                    f"{settings.ai.api_key[:4]}...{settings.ai.api_key[-4:]}"
+                    if len(settings.ai.api_key) > 8
+                    else "***"
+                )
+                logging.getLogger(__name__).info("配置已加载，API Key: %s", masked_key)
+            else:
+                logging.getLogger(__name__).warning("配置已加载，但API Key未设置")
+
+        except Exception as e:
+            logging.getLogger(__name__).error("配置初始化失败: %s", e, exc_info=True)
+
+    def initialize_function_interfaces_after_backend(self):
+        """在后端就绪后初始化功能界面（异步模式）."""
+        self.logger.info("后端就绪，开始创建功能界面...")
+
+        # 创建功能界面
+        self.create_function_interfaces()
 
         # 连接信号
         self.connect_signals()
@@ -104,7 +189,7 @@ class MainWindow(QMainWindow, LoggerMixin):
         # 启动更新定时器
         self.start_update_timer()
 
-        self.logger.info("主窗口初始化完成")
+        self.logger.info("✅ 功能界面创建完成")
 
     def _initialize_backend_services(self):
         """初始化后端服务."""
@@ -623,8 +708,16 @@ class MainWindow(QMainWindow, LoggerMixin):
 
 
 def main():
-    """主函数."""
+    """主函数（使用启动协调器）."""
     try:
+        # 🔧 在创建QApplication之前设置Python解释器环境变量
+        # 这样PySide6 WebEngine进程会使用正确的Python路径
+        import os
+        if not os.environ.get("PYTHONEXECUTABLE"):
+            os.environ["PYTHONEXECUTABLE"] = sys.executable
+        if not os.environ.get("QT_WEBENGINE_PYTHON_EXECUTABLE"):
+            os.environ["QT_WEBENGINE_PYTHON_EXECUTABLE"] = sys.executable
+
         setup_logging(name="terminal_v0.50", level="INFO", log_file="logs/terminal_v0.50.log")
 
         app = QApplication(sys.argv)
@@ -632,7 +725,86 @@ def main():
         app.setApplicationVersion("5.0.0")
         app.setOrganizationName("星辰科技")
 
-        main_window = MainWindow()
+        # 🔧 关键修复：在创建任何UI组件之前先初始化配置
+        import os
+        from backend.config import init_settings
+
+        config_file = os.getenv("CONFIG_FILE")
+        if config_file:
+            logging.getLogger(__name__).info("主入口：从环境变量加载配置: %s", config_file)
+            init_settings(config_file)
+        else:
+            logging.getLogger(__name__).info("主入口：使用默认配置文件")
+            init_settings()
+
+        # 创建启动协调器（告知配置已初始化）
+        from ui.startup_coordinator import StartupCoordinator
+
+        coordinator = StartupCoordinator(app, config_already_initialized=True)
+
+        # 创建主窗口（异步模式）
+        main_window = MainWindow(backend_ready=False)
+
+        # 连接信号
+        def on_startup_completed():
+            """启动完成回调."""
+            logging.getLogger(__name__).info("收到启动完成信号，初始化UI组件")
+
+            # 隐藏启动画面
+            coordinator.hide_splash()
+
+            # 初始化功能界面
+            main_window.initialize_function_interfaces_after_backend()
+
+            # 显示主窗口
+            main_window.show()
+
+        def on_startup_failed(error: str):
+            """启动失败回调."""
+            logging.getLogger(__name__).error("启动失败: %s", error)
+            coordinator.hide_splash()
+
+            # 显示错误对话框
+            from PySide6.QtWidgets import QMessageBox
+
+            QMessageBox.critical(
+                None, "启动失败", f"应用启动失败:\n\n{error}\n\n请查看日志文件了解详情。"
+            )
+            sys.exit(1)
+
+        coordinator.startup_completed.connect(on_startup_completed)
+        coordinator.startup_failed.connect(on_startup_failed)
+
+        # 开始启动流程
+        coordinator.start()
+
+        # 运行应用
+        sys.exit(app.exec())
+
+    except Exception as e:
+        logging.getLogger("terminal_v0.50.main").exception("UI启动异常: %s", e)
+        sys.exit(1)
+
+
+def main_sync():
+    """主函数（同步模式，向后兼容）."""
+    try:
+        # 🔧 在创建QApplication之前设置Python解释器环境变量
+        # 这样PySide6 WebEngine进程会使用正确的Python路径
+        import os
+        if not os.environ.get("PYTHONEXECUTABLE"):
+            os.environ["PYTHONEXECUTABLE"] = sys.executable
+        if not os.environ.get("QT_WEBENGINE_PYTHON_EXECUTABLE"):
+            os.environ["QT_WEBENGINE_PYTHON_EXECUTABLE"] = sys.executable
+
+        setup_logging(name="terminal_v0.50", level="INFO", log_file="logs/terminal_v0.50.log")
+
+        app = QApplication(sys.argv)
+        app.setApplicationName("星辰金融终端")
+        app.setApplicationVersion("5.0.0")
+        app.setOrganizationName("星辰科技")
+
+        main_window = MainWindow(backend_ready=True)
         main_window.show()
 
         sys.exit(app.exec())

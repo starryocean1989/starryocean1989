@@ -757,36 +757,42 @@ class ChartWidget(BaseWidget):
         """从后端服务加载品种列表."""
         try:
             from backend.core.base import get_service_manager
-            import asyncio
 
             service_manager = get_service_manager()
-            symbol_service = service_manager.get_service("symbol_service")
+            # 修复：使用data_center_service代替不存在的symbol_service
+            data_center_service = service_manager.get_service("data_center_service")
 
-            if symbol_service:
-                # 获取事件循环
-                try:
-                    loop = asyncio.get_event_loop()
-                except RuntimeError:
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
+            if data_center_service:
+                # 检查是否有缓存，避免在初始化时触发API加载
+                if (
+                    hasattr(data_center_service, "_symbol_cache")
+                    and data_center_service._symbol_cache
+                ):
+                    # 只在有缓存时才从服务加载
+                    result = data_center_service.refresh_symbol_list()
 
-                # 异步获取品种列表
-                symbols = loop.run_until_complete(symbol_service.get_all_symbols())
+                    if result.get("success") and self.symbol_combo:
+                        symbols = result.get("data", [])
+                        if symbols:  # 确保有数据
+                            for symbol in symbols:
+                                # 兼容不同的数据格式
+                                code = symbol.get("code") or symbol.get("symbol", "")
+                                name = symbol.get("name", "")
+                                if code:
+                                    display_name = f"{code} - {name}" if name else code
+                                    self.symbol_combo.addItem(display_name, code)
+                            self._logger.debug("图表组件已从缓存加载 %d 个品种", len(symbols))
+                            return
 
-                if symbols and self.symbol_combo:
-                    for symbol in symbols:
-                        display_name = f"{symbol['code']} - {symbol['name']}"
-                        self.symbol_combo.addItem(display_name)
-                    self._logger.info("已加载 %d 个品种", len(symbols))
-                else:
-                    # 使用默认品种
-                    self._load_default_chart_symbols()
+                # 缓存为空，使用默认品种（避免触发API加载）
+                self._load_default_chart_symbols()
             else:
-                # 使用默认品种
+                # 数据中心服务不可用，使用默认品种
+                self._logger.debug("数据中心服务不可用，使用默认品种列表")
                 self._load_default_chart_symbols()
 
         except Exception as e:
-            self._logger.warning("加载品种列表失败: %s", e)
+            self._logger.debug("加载品种列表失败: %s，使用默认品种", e)
             # 使用默认品种
             self._load_default_chart_symbols()
 

@@ -42,11 +42,17 @@ class MonacoEditorWidget(QWidget):
 
         if not HAS_WEBENGINE:
             raise ImportError(
-                "QWebEngineView不可用。请安装PySide6-WebEngine: " "pip install PySide6-WebEngine"
+                "QWebEngineView不可用。请安装PySide6-WebEngine: pip install PySide6-WebEngine"
             )
 
         # 当前内容
         self._content = ""
+
+        # 调试日志
+        import logging
+
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self.logger.info("初始化 Monaco Editor Widget")
 
         # 设置UI
         self._setup_ui()
@@ -59,10 +65,21 @@ class MonacoEditorWidget(QWidget):
         # 创建WebEngineView
         self.web_view = QWebEngineView(self)
 
+        # 🔧 允许从远程加载资源（Monaco CDN）
+        from PySide6.QtWebEngineCore import QWebEngineSettings
+
+        settings = self.web_view.settings()
+        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.ErrorPageEnabled, True)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.PluginsEnabled, True)
+
+        self.logger.info("WebEngine 设置已配置（允许远程资源）")
+
         # 加载Monaco Editor HTML
         html_path = os.path.join(os.path.dirname(__file__), "monaco_editor.html")
 
         if os.path.exists(html_path) and self.web_view is not None:
+            self.logger.info("加载 Monaco HTML: %s", html_path)
             self.web_view.setUrl(QUrl.fromLocalFile(html_path))
         else:
             # 降级方案：显示错误信息
@@ -154,6 +171,36 @@ class MonacoEditorWidget(QWidget):
     def clear(self):
         """清空编辑器内容."""
         self.setText("")
+
+    # ==================== 断点管理 ====================
+
+    def setBreakpoint(self, line_number: int):
+        """设置或取消断点.
+
+        Args:
+            line_number: 行号
+        """
+        if self.web_view:
+            js_code = f"window.setBreakpoint ? window.setBreakpoint({line_number}) : [];"
+            self.web_view.page().runJavaScript(js_code)
+            self.logger.info(f"切换断点: 行 {line_number}")
+
+    def getBreakpoints(self, callback):
+        """获取所有断点（异步）.
+
+        Args:
+            callback: 回调函数，接收断点列表
+        """
+        if self.web_view:
+            js_code = "window.getBreakpoints ? window.getBreakpoints() : [];"
+            self.web_view.page().runJavaScript(js_code, callback)
+
+    def clearBreakpoints(self):
+        """清除所有断点."""
+        if self.web_view:
+            js_code = "window.clearBreakpoints ? window.clearBreakpoints() : null;"
+            self.web_view.page().runJavaScript(js_code)
+            self.logger.info("已清除所有断点")
 
     @staticmethod
     def _escape_js_string(text: str) -> str:
