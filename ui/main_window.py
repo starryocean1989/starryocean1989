@@ -5,6 +5,7 @@
 # 这样PySide6 WebEngine进程会使用正确的Python路径
 import os
 import sys
+
 if not os.environ.get("PYTHONEXECUTABLE"):
     os.environ["PYTHONEXECUTABLE"] = sys.executable
 if not os.environ.get("QT_WEBENGINE_PYTHON_EXECUTABLE"):
@@ -49,9 +50,7 @@ from ui.themes.theme_manager import ThemeManager
 from ui.components.data_center.main_view import DataCenter
 from ui.components.market_dashboard.main_view import MarketDashboard
 from ui.components.portfolio_investment.main_view import PortfolioInvestment
-from ui.components.strategy_center.main_view_refactored import (
-    StrategyCenterRefactored as StrategyCenter,
-)
+from ui.components.strategy_center.main_view import StrategyCenter
 from ui.components.system_manager.main_view import SystemManager
 from ui.components.trading_gateway.main_view import TradingGateway
 from ui.widgets.responsive_helper import ResponsiveHelper
@@ -713,6 +712,7 @@ def main():
         # 🔧 在创建QApplication之前设置Python解释器环境变量
         # 这样PySide6 WebEngine进程会使用正确的Python路径
         import os
+
         if not os.environ.get("PYTHONEXECUTABLE"):
             os.environ["PYTHONEXECUTABLE"] = sys.executable
         if not os.environ.get("QT_WEBENGINE_PYTHON_EXECUTABLE"):
@@ -792,6 +792,7 @@ def main_sync():
         # 🔧 在创建QApplication之前设置Python解释器环境变量
         # 这样PySide6 WebEngine进程会使用正确的Python路径
         import os
+
         if not os.environ.get("PYTHONEXECUTABLE"):
             os.environ["PYTHONEXECUTABLE"] = sys.executable
         if not os.environ.get("QT_WEBENGINE_PYTHON_EXECUTABLE"):

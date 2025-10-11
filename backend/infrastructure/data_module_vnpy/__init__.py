@@ -17,14 +17,21 @@ from pathlib import Path
 from vnpy.trader.app import BaseApp
 
 from .engine import APP_NAME, ChinaStockEngine
+from .polling_gateway import PollingGateway
+from .virtual_gateway import VirtualGateway
+from .data_readers import BaseReader, TdxBinaryReader
 
 __all__ = [
     "APP_NAME",
     "ChinaStockEngine",
     "ChinaStockApp",
+    "PollingGateway",
+    "VirtualGateway",
+    "BaseReader",
+    "TdxBinaryReader",
 ]
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"  # 升级到2.0.0版本
 
 
 class ChinaStockApp(BaseApp):

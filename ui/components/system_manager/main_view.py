@@ -7,7 +7,7 @@
 import time
 from typing import Any, Dict, Optional
 
-from PySide6.QtCore import QDate, Qt
+from PySide6.QtCore import QDate, Qt, Signal, QObject
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -44,6 +44,10 @@ from ui.widgets.base_widget import BaseWidget
 
 class SystemManager(BaseWidget, LoggerMixin):
     """系统管理主界面（重构版）."""
+
+    # 定义信号用于跨线程通信
+    reader_progress_signal = Signal(int, int, str, bool)  # current, total, info, success
+    reader_finished_signal = Signal(dict)  # result
 
     def __init__(self, parent=None):
         """初始化系统管理界面."""
@@ -621,18 +625,384 @@ class SystemManager(BaseWidget, LoggerMixin):
         tab = QWidget()
         layout = QVBoxLayout(tab)
 
-        # 工具组
-        tools_group = QGroupBox("可用工具")
-        tools_layout = QVBoxLayout(tools_group)
+        # 数据标准化读取器组
+        reader_group = QGroupBox("数据标准化读取器 - 批量自动化处理")
+        reader_layout = QVBoxLayout(reader_group)
 
-        self.tools_table = QTableWidget(0, 3)
-        headers = ["工具名称", "描述", "操作"]
-        self.tools_table.setHorizontalHeaderLabels(headers)
-        tools_layout.addWidget(self.tools_table)
+        # 提示信息
+        hint_label = QLabel("💡 勾选市场和数据类型后，程序会自动从品种缓存中获取对应品种并批量读取")
+        hint_label.setStyleSheet("color: #666; font-size: 12px; padding: 5px;")
+        hint_label.setWordWrap(True)
+        reader_layout.addWidget(hint_label)
 
-        layout.addWidget(tools_group)
+        # 表单布局
+        form_layout = QFormLayout()
+
+        # 数据源类型（只读）
+        type_label = QLabel("通达信")
+        type_label.setStyleSheet("font-weight: bold;")
+        form_layout.addRow("数据源类型:", type_label)
+
+        # 数据类型（多选）
+        data_type_layout = QHBoxLayout()
+        self.reader_day_check = QCheckBox("日线")
+        self.reader_day_check.setChecked(True)
+        data_type_layout.addWidget(self.reader_day_check)
+
+        self.reader_5min_check = QCheckBox("5分钟线")
+        data_type_layout.addWidget(self.reader_5min_check)
+
+        self.reader_1min_check = QCheckBox("1分钟线")
+        data_type_layout.addWidget(self.reader_1min_check)
+
+        data_type_layout.addStretch()
+        form_layout.addRow("数据类型:", data_type_layout)
+
+        # 市场（多选）
+        market_layout = QHBoxLayout()
+        self.reader_sh_check = QCheckBox("上证")
+        self.reader_sh_check.setChecked(True)
+        market_layout.addWidget(self.reader_sh_check)
+
+        self.reader_sz_check = QCheckBox("深证")
+        market_layout.addWidget(self.reader_sz_check)
+
+        self.reader_bj_check = QCheckBox("北证")
+        market_layout.addWidget(self.reader_bj_check)
+
+        market_layout.addStretch()
+        form_layout.addRow("市场:", market_layout)
+
+        # 通达信根目录
+        tdx_layout = QHBoxLayout()
+        self.reader_tdx_path_edit = QLineEdit()
+        self.reader_tdx_path_edit.setPlaceholderText("只需填写根目录，例如: C:\\new_tdx")
+        self.reader_tdx_path_edit.setToolTip(
+            "填写通达信软件的根目录即可，例如: C:\\new_tdx\n"
+            "程序会根据您选择的市场和数据类型自动拼接完整路径：\n"
+            "  上证日线 → C:\\new_tdx\\vipdoc\\sh\\lday\\\n"
+            "  深证5分 → C:\\new_tdx\\vipdoc\\sz\\fzline\\\n"
+            "  北证1分 → C:\\new_tdx\\vipdoc\\bj\\minline\\"
+        )
+        tdx_layout.addWidget(self.reader_tdx_path_edit)
+
+        tdx_browse_btn = QPushButton("📁 浏览")
+        tdx_browse_btn.clicked.connect(self._browse_tdx_root)
+        tdx_layout.addWidget(tdx_browse_btn)
+
+        form_layout.addRow("通达信根目录:", tdx_layout)
+
+        # 线程数
+        thread_layout = QHBoxLayout()
+        self.reader_thread_spin = QSpinBox()
+        self.reader_thread_spin.setRange(1, 16)
+        self.reader_thread_spin.setValue(4)
+        self.reader_thread_spin.setSuffix(" 线程")
+        thread_layout.addWidget(self.reader_thread_spin)
+        thread_layout.addStretch()
+        form_layout.addRow("并发线程数:", thread_layout)
+
+        reader_layout.addLayout(form_layout)
+
+        # 进度组
+        progress_group = QGroupBox("处理进度")
+        progress_layout = QVBoxLayout(progress_group)
+
+        # 状态标签
+        self.reader_status_label = QLabel("状态: 就绪")
+        progress_layout.addWidget(self.reader_status_label)
+
+        # 进度条
+        self.reader_progress_bar = QProgressBar()
+        self.reader_progress_bar.setRange(0, 100)
+        self.reader_progress_bar.setValue(0)
+        progress_layout.addWidget(self.reader_progress_bar)
+
+        # 详细进度标签
+        self.reader_detail_label = QLabel("")
+        self.reader_detail_label.setStyleSheet("color: #888; font-size: 11px;")
+        progress_layout.addWidget(self.reader_detail_label)
+
+        reader_layout.addWidget(progress_group)
+
+        # 批量读取按钮组
+        button_layout = QHBoxLayout()
+
+        self.reader_start_btn = QPushButton("🚀 开始批量读取并保存")
+        self.reader_start_btn.clicked.connect(self._read_and_save_tdx_data)
+        self.reader_start_btn.setStyleSheet("font-size: 14px; padding: 10px;")
+        button_layout.addWidget(self.reader_start_btn)
+
+        self.reader_stop_btn = QPushButton("⛔ 停止")
+        self.reader_stop_btn.clicked.connect(self._stop_tdx_reader)
+        self.reader_stop_btn.setStyleSheet("font-size: 14px; padding: 10px;")
+        self.reader_stop_btn.setEnabled(False)
+        button_layout.addWidget(self.reader_stop_btn)
+
+        reader_layout.addLayout(button_layout)
+
+        layout.addWidget(reader_group)
+
+        # 加载通达信根目录配置
+        self._load_tdx_reader_config()
+
+        layout.addStretch()
 
         return tab
+
+    def _browse_tdx_root(self):
+        """浏览通达信根目录."""
+        dir_path = QFileDialog.getExistingDirectory(self, "选择通达信软件根目录")
+        if dir_path and self.reader_tdx_path_edit:
+            self.reader_tdx_path_edit.setText(dir_path)
+
+    def _update_reader_progress(self, current: int, total: int, info: str, success: bool):
+        """更新读取器进度（槽函数，在主线程中执行）.
+
+        Args:
+            current: 当前完成数
+            total: 总任务数
+            info: 当前处理信息
+            success: 是否成功
+        """
+        try:
+            # 更新进度条
+            if self.reader_progress_bar:
+                progress_pct = int(current / total * 100) if total > 0 else 0
+                self.reader_progress_bar.setValue(progress_pct)
+
+            # 更新详细信息
+            if self.reader_detail_label:
+                status_icon = "✅" if success else "❌"
+                self.reader_detail_label.setText(f"{status_icon} {current}/{total} - {info}")
+
+            # 更新状态标签
+            if self.reader_status_label:
+                progress_pct = int(current / total * 100) if total > 0 else 0
+                self.reader_status_label.setText(
+                    f"状态: 正在处理 {current}/{total} ({progress_pct}%)"
+                )
+
+        except Exception as e:
+            self.logger.error("更新进度失败: %s", e)
+
+    def _update_reader_finished(self, result: dict):
+        """更新读取器完成状态（槽函数，在主线程中执行）.
+
+        Args:
+            result: 处理结果字典
+        """
+        try:
+            # 恢复按钮状态
+            if self.reader_start_btn:
+                self.reader_start_btn.setEnabled(True)
+            if self.reader_stop_btn:
+                self.reader_stop_btn.setEnabled(False)
+
+            if result.get("success"):
+                success_count = result.get("success_count", 0)
+                fail_count = result.get("fail_count", 0)
+                total_tasks = result.get("total_tasks", 0)
+                was_stopped = result.get("was_stopped", False)
+
+                if was_stopped:
+                    message = f"已停止：已完成 {success_count + fail_count}/{total_tasks}，成功 {success_count}，失败 {fail_count}"
+                else:
+                    message = f"完成：成功 {success_count}/{total_tasks}，失败 {fail_count}"
+
+                if self.reader_status_label:
+                    self.reader_status_label.setText(f"状态: {message}")
+
+                if self.reader_progress_bar:
+                    self.reader_progress_bar.setValue(100)
+
+                if was_stopped:
+                    self.show_warning(message)
+                else:
+                    self.show_info(message)
+            else:
+                error_msg = result.get("message", "未知错误")
+
+                if self.reader_status_label:
+                    self.reader_status_label.setText("状态: 读取失败")
+
+                if self.reader_progress_bar:
+                    self.reader_progress_bar.setValue(0)
+
+                self.show_error(f"读取失败: {error_msg}")
+
+        except Exception as e:
+            self.logger.error("更新完成状态失败: %s", e)
+
+    def _stop_tdx_reader(self):
+        """停止通达信数据读取."""
+        try:
+            if not self.system_service:
+                self.show_error("系统管理服务不可用")
+                return
+
+            result = self.system_service.stop_tdx_reader()
+
+            if result["success"]:
+                self.show_info("停止信号已发送，任务将在当前批次完成后停止...")
+                if self.reader_stop_btn:
+                    self.reader_stop_btn.setEnabled(False)
+            else:
+                self.show_error(f"停止失败: {result.get('message', '未知错误')}")
+
+        except Exception as e:
+            self.logger.error("停止任务失败: %s", e)
+            self.show_error(f"停止失败: {e}")
+
+    def _load_tdx_reader_config(self):
+        """加载通达信读取器配置."""
+        try:
+            if not self.system_service:
+                return
+
+            result = self.system_service.get_tdx_reader_config()
+
+            if result.get("success"):
+                config = result.get("config", {})
+                tdx_root = config.get("tdx_root", "")
+
+                if tdx_root and self.reader_tdx_path_edit:
+                    self.reader_tdx_path_edit.setText(tdx_root)
+
+        except Exception as e:
+            self.logger.error("加载通达信读取器配置失败: %s", e)
+
+    def _read_and_save_tdx_data(self):
+        """读取并保存通达信数据（多市场、多周期、带进度）."""
+        try:
+            if not self.system_service:
+                self.show_error("系统管理服务不可用")
+                return
+
+            # 收集选中的数据类型
+            data_types = []
+            if self.reader_day_check and self.reader_day_check.isChecked():
+                data_types.append("day")
+            if self.reader_5min_check and self.reader_5min_check.isChecked():
+                data_types.append("5min")
+            if self.reader_1min_check and self.reader_1min_check.isChecked():
+                data_types.append("1min")
+
+            if not data_types:
+                self.show_warning("请至少选择一种数据类型")
+                return
+
+            # 收集选中的市场
+            markets = []
+            if self.reader_sh_check and self.reader_sh_check.isChecked():
+                markets.append("sh")
+            if self.reader_sz_check and self.reader_sz_check.isChecked():
+                markets.append("sz")
+            if self.reader_bj_check and self.reader_bj_check.isChecked():
+                markets.append("bj")
+
+            if not markets:
+                self.show_warning("请至少选择一个市场")
+                return
+
+            # 获取通达信根目录
+            if not self.reader_tdx_path_edit:
+                return
+
+            tdx_root = self.reader_tdx_path_edit.text().strip()
+
+            if not tdx_root:
+                self.show_warning("请输入通达信根目录")
+                return
+
+            # 获取线程数
+            max_workers = 4
+            if self.reader_thread_spin:
+                max_workers = self.reader_thread_spin.value()
+
+            # 初始化进度
+            if self.reader_progress_bar:
+                self.reader_progress_bar.setValue(0)
+            if self.reader_detail_label:
+                self.reader_detail_label.setText("")
+
+            # 连接信号到槽函数
+            try:
+                self.reader_progress_signal.disconnect()
+            except Exception:
+                pass  # 第一次连接时会失败，忽略
+
+            self.reader_progress_signal.connect(self._update_reader_progress)
+
+            try:
+                self.reader_finished_signal.disconnect()
+            except Exception:
+                pass
+
+            self.reader_finished_signal.connect(self._update_reader_finished)
+
+            # 定义进度回调函数
+            def progress_callback(current, total, info, success):
+                """进度回调函数（在工作线程中调用，需要线程安全）"""
+                # 通过Signal发送进度更新（自动在主线程处理）
+                self.reader_progress_signal.emit(current, total, info, success)
+
+            # 更新初始状态
+            if self.reader_status_label:
+                self.reader_status_label.setText("状态: 准备中...")
+
+            # 禁用开始按钮，启用停止按钮
+            if self.reader_start_btn:
+                self.reader_start_btn.setEnabled(False)
+            if self.reader_stop_btn:
+                self.reader_stop_btn.setEnabled(True)
+
+            # 调用服务
+            config = {
+                "data_types": data_types,
+                "markets": markets,
+                "tdx_root": tdx_root,
+                "use_symbol_cache": True,
+                "max_workers": max_workers,
+            }
+
+            self.logger.info(
+                "开始批量读取: 数据类型=%s, 市场=%s, 线程数=%d",
+                data_types,
+                markets,
+                max_workers,
+            )
+
+            # 在单独的线程中执行（避免阻塞UI）
+            import threading
+
+            def do_read():
+                try:
+                    result = self.system_service.read_tdx_data(config, progress_callback)
+                    # 通过Signal发送完成状态
+                    self.reader_finished_signal.emit(result)
+
+                except Exception as e:
+                    self.logger.error("读取通达信数据失败: %s", e)
+                    # 发送错误结果
+                    self.reader_finished_signal.emit(
+                        {
+                            "success": False,
+                            "message": f"读取失败: {str(e)}",
+                        }
+                    )
+
+            # 启动工作线程
+            thread = threading.Thread(target=do_read, daemon=True, name="TdxReader")
+            thread.start()
+
+        except Exception as e:
+            self.logger.error("启动读取任务失败: %s", e)
+
+            if self.reader_status_label:
+                self.reader_status_label.setText("状态: 启动失败")
+
+            self.show_error(f"启动失败: {e}")
 
     # ==================== 配置管理方法 ====================
 

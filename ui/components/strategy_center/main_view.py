@@ -1,15 +1,21 @@
 # -*- coding: utf-8 -*-
-"""策略中心界面 - 主视图（重构版）.
+"""策略中心界面 - 现代IDE风格.
 
-混合架构：策略/指标管理器（固有组件）+ 2个子界面。
-通过StrategyCenterService访问策略和回测功能。
+采用现代IDE架构：
+- 左侧：文件管理器（支持右键菜单、拖拽、搜索）
+- 中央：多标签编辑器（支持多文件同时编辑）
+- 右侧：AI助手（可隐藏）
+- 底部：回测面板、终端、调试控制台（可折叠）
 """
+
 import os
+from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, QTimer, QFileSystemWatcher
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QComboBox,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -19,26 +25,21 @@ from PySide6.QtWidgets import (
     QSplitter,
     QTabWidget,
     QTextEdit,
-    QTreeWidget,
-    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 from backend.core.base import get_service_manager
 from backend.core.utils import LoggerMixin
-
 from ui.widgets.base_widget import BaseWidget
 
-# 尝试导入Monaco Editor，如果失败则降级到CodeEditor
-try:
-    from ui.widgets.monaco_editor_widget import MonacoEditorWidget as EditorWidget
-except ImportError:
-    from ui.widgets.code_editor_widget import CodeEditor as EditorWidget
+# 导入核心组件
+from ui.components.strategy_center.editor_tabs import EditorTabWidget
+from ui.components.strategy_center.file_explorer import FileExplorerWidget
 
 
 class StrategyCenter(BaseWidget, LoggerMixin):
-    """策略中心主界面（重构版）."""
+    """策略中心主界面 - 现代IDE风格."""
 
     def __init__(self, parent=None):
         """初始化策略中心."""
@@ -47,17 +48,15 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         self.strategy_service = None
 
         # 初始化UI组件
-        self.toggle_btn: Optional[QPushButton] = None
-        self.file_tree: Optional[QTreeWidget] = None
-        self.content_tab: Optional[QTabWidget] = None
-        self.editor_tab: Optional[QWidget] = None
-        self.backtest_tab: Optional[QWidget] = None
-        self.current_file_label: Optional[QLabel] = None
-        self.ai_assistant_btn: Optional[QPushButton] = None
-        self.code_editor: Optional[EditorWidget] = None
+        self.file_explorer: Optional[FileExplorerWidget] = None
+        self.editor_tabs: Optional[EditorTabWidget] = None
         self.ai_assistant_widget: Optional[QWidget] = None
+        self.ai_assistant_btn: Optional[QPushButton] = None
         self.ai_response: Optional[QTextEdit] = None
         self.user_input: Optional[QLineEdit] = None
+
+        # 回测相关组件
+        self.backtest_panel: Optional[QWidget] = None
         self.backtest_target_combo: Optional[QComboBox] = None
         self.renderer_type_combo: Optional[QComboBox] = None
         self.start_date_input: Optional[QLineEdit] = None
@@ -72,26 +71,16 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         self.current_backtest_task_id: Optional[str] = None
         self.backtest_timer: Optional[QTimer] = None
 
-        # 当前文件追踪
-        self.current_file_path: Optional[str] = None
-
-        # 文件系统监控
-        self.file_watcher: Optional[QFileSystemWatcher] = None
-
         # 调用父类初始化
         super().__init__(parent, "策略中心")
         self.logger.info("策略中心界面初始化开始")
 
         # 初始化服务
         self._initialize_service()
-        
-        # 初始化文件系统监控
-        self._setup_file_watcher()
 
     def _initialize_service(self):
         """获取策略中心服务."""
         try:
-            # 从服务管理器获取策略中心服务
             self.strategy_service = self.service_manager.get_service("strategy_center_service")
             if self.strategy_service:
                 self.logger.info("策略中心服务获取成功")
@@ -101,259 +90,196 @@ class StrategyCenter(BaseWidget, LoggerMixin):
             self.logger.error("获取策略中心服务失败: %s", e)
             self.show_error(f"服务获取失败: {e}")
 
-    def _setup_file_watcher(self):
-        """设置文件系统监控器 - 自动检测文件变化并刷新树."""
-        try:
-            self.file_watcher = QFileSystemWatcher()
-            
-            # 监控策略目录和模板目录
-            watch_dirs = [
-                "strategies/user_strategies",
-                "strategies/templates"
-            ]
-            
-            for directory in watch_dirs:
-                if os.path.exists(directory):
-                    self.file_watcher.addPath(directory)
-                    self.logger.info(f"开始监控目录: {directory}")
-            
-            # 连接信号：目录内容变化时自动刷新文件树
-            self.file_watcher.directoryChanged.connect(self._on_directory_changed)
-            
-            self.logger.info("✅ 文件系统监控器已启动")
-        except Exception as e:
-            self.logger.error(f"设置文件系统监控失败: {e}")
-
-    def _on_directory_changed(self, path: str):
-        """目录变化回调 - 自动刷新文件树."""
-        self.logger.info(f"检测到目录变化: {path}")
-        
-        # 使用定时器延迟刷新，避免频繁更新
-        if not hasattr(self, '_refresh_timer'):
-            self._refresh_timer = QTimer()
-            self._refresh_timer.setSingleShot(True)
-            self._refresh_timer.timeout.connect(self._delayed_refresh)
-        
-        # 300ms延迟刷新（防抖）
-        self._refresh_timer.start(300)
-
     def setup_ui(self):
-        """设置用户界面."""
+        """设置用户界面 - 左侧策略管理器 + 右侧子页面切换."""
         main_layout = QHBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
 
-        # 创建主分割器
+        # 创建主分割器（水平）
         main_splitter = QSplitter(Qt.Orientation.Horizontal)
-        main_splitter.setSizes([250, 800])
 
-        # 左侧：策略/指标管理器（固有组件）
+        # 左侧：策略/指标管理器（固定组件）
         left_widget = self._create_strategy_manager()
         main_splitter.addWidget(left_widget)
 
-        # 右侧：子界面区域
-        right_widget = self._create_content_area()
+        # 右侧：子界面区域（QTabWidget切换）
+        right_widget = self._create_content_tabs()
         main_splitter.addWidget(right_widget)
+
+        # 设置初始大小比例：左侧250，右侧800
+        main_splitter.setSizes([250, 800])
 
         main_layout.addWidget(main_splitter)
 
-    # ==================== 策略/指标管理器（固有组件）====================
+        # 在所有组件创建完成后连接信号
+        self.connect_signals()
 
     def _create_strategy_manager(self) -> QWidget:
-        """创建策略/指标管理器."""
+        """创建策略/指标管理器（固定组件）.
+
+        Returns:
+            QWidget: 策略管理器组件
+        """
         widget = QWidget()
         layout = QVBoxLayout(widget)
+        layout.setContentsMargins(5, 5, 5, 5)
 
         # 标题栏
         title_layout = QHBoxLayout()
         title_label = QLabel("📁 策略/指标管理器")
-        title_label.setStyleSheet("font-weight: bold; font-size: 14px;")
+        title_label.setStyleSheet("font-weight: bold; font-size: 14px; padding: 5px;")
         title_layout.addWidget(title_label)
-
-        self.toggle_btn = QPushButton("◀")
-        self.toggle_btn.setMaximumWidth(30)
-        self.toggle_btn.clicked.connect(self._toggle_manager)
-        title_layout.addWidget(self.toggle_btn)
-
+        title_layout.addStretch()
         layout.addLayout(title_layout)
 
-        # 文件树
-        self.file_tree = QTreeWidget()
-        self.file_tree.setHeaderHidden(True)
-        self.file_tree.itemDoubleClicked.connect(self._on_file_double_clicked)
-        layout.addWidget(self.file_tree)
+        # 文件管理器（使用增强版，使用绝对路径确保正确）
+        strategies_dir = Path(__file__).parent.parent.parent.parent / "strategies"
+        self.file_explorer = FileExplorerWidget(str(strategies_dir.resolve()))
+        layout.addWidget(self.file_explorer)
 
-        # 初始化文件树内容（在添加到布局后）
-        self._create_file_tree()
-
-        # 底部按钮
-        button_layout = QHBoxLayout()
-
-        new_strategy_btn = QPushButton("新建策略")
-        new_strategy_btn.clicked.connect(self._create_new_strategy)
-        button_layout.addWidget(new_strategy_btn)
-
-        new_indicator_btn = QPushButton("新建指标")
-        new_indicator_btn.clicked.connect(self._create_new_indicator)
-        button_layout.addWidget(new_indicator_btn)
-
-        layout.addLayout(button_layout)
+        self.logger.info(f"文件管理器根目录: {strategies_dir.resolve()}")
 
         return widget
 
-    def _create_file_tree(self):
-        """创建文件树结构."""
-        if not self.file_tree:
-            self.logger.warning("文件树控件未初始化")
-            return
+    def _create_content_tabs(self) -> QWidget:
+        """创建右侧内容标签页（子界面切换）.
 
-        self.file_tree.clear()
-
-        try:
-            # 策略文件夹
-            strategy_root = QTreeWidgetItem()
-            strategy_root.setText(0, "📂 策略")
-            self.file_tree.addTopLevelItem(strategy_root)
-
-            strategy_dir = "strategies/user_strategies"
-            self.logger.info(f"检查策略目录: {strategy_dir}, 存在: {os.path.exists(strategy_dir)}")
-
-            if os.path.exists(strategy_dir):
-                strategy_files = [
-                    f
-                    for f in os.listdir(strategy_dir)
-                    if f.endswith(".py") and not f.startswith("__")
-                ]
-                self.logger.info(f"找到策略文件: {strategy_files}")
-            else:
-                strategy_files = []
-                self.logger.warning(f"策略目录不存在: {strategy_dir}")
-
-            for file_name in strategy_files:
-                file_item = QTreeWidgetItem()
-                file_item.setText(0, f"📄 {file_name}")
-                file_item.setData(
-                    0,
-                    Qt.ItemDataRole.UserRole,
-                    {
-                        "type": "strategy",
-                        "path": os.path.join(strategy_dir, file_name),
-                    },
-                )
-                strategy_root.addChild(file_item)
-                self.logger.info(f"添加策略文件到树: {file_name}")
-
-            # 模板文件夹
-            template_root = QTreeWidgetItem()
-            template_root.setText(0, "📂 策略模板")
-            self.file_tree.addTopLevelItem(template_root)
-
-            template_dir = "strategies/templates"
-            self.logger.info(f"检查模板目录: {template_dir}, 存在: {os.path.exists(template_dir)}")
-
-            if os.path.exists(template_dir):
-                template_files = [
-                    f
-                    for f in os.listdir(template_dir)
-                    if f.endswith(".py") and not f.startswith("__")
-                ]
-                self.logger.info(f"找到模板文件: {template_files}")
-            else:
-                template_files = []
-                self.logger.warning(f"模板目录不存在: {template_dir}")
-
-            for file_name in template_files:
-                file_item = QTreeWidgetItem()
-                file_item.setText(0, f"📋 {file_name}")
-                file_item.setData(
-                    0,
-                    Qt.ItemDataRole.UserRole,
-                    {
-                        "type": "template",
-                        "path": os.path.join(template_dir, file_name),
-                    },
-                )
-                template_root.addChild(file_item)
-                self.logger.info(f"添加模板文件到树: {file_name}")
-
-            self.file_tree.expandAll()
-
-            self.logger.info(
-                "文件树创建完成: %d个策略, %d个模板", len(strategy_files), len(template_files)
-            )
-
-        except Exception as e:
-            self.logger.error("创建文件树失败: %s", e, exc_info=True)
-
-    # ==================== 内容区域 ====================
-
-    def _create_content_area(self) -> QWidget:
-        """创建内容区域."""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-
+        Returns:
+            QWidget: 内容标签页组件
+        """
+        # 创建标签页容器
         self.content_tab = QTabWidget()
+        self.content_tab.setDocumentMode(True)
 
-        # 4.1 策略/指标编写子界面
+        # Tab1: 策略编写（IDE编辑器）
         self.editor_tab = self._create_editor_tab()
-        self.content_tab.addTab(self.editor_tab, "✏️ 编写")
+        self.content_tab.addTab(self.editor_tab, "📝 策略编写")
 
-        # 4.2 策略/指标回测子界面
+        # Tab2: 策略回测
         self.backtest_tab = self._create_backtest_tab()
-        self.content_tab.addTab(self.backtest_tab, "📈 回测")
+        self.content_tab.addTab(self.backtest_tab, "📊 策略回测")
 
-        layout.addWidget(self.content_tab)
-
-        return widget
-
-    # ==================== 编写子界面 ====================
+        return self.content_tab
 
     def _create_editor_tab(self) -> QWidget:
-        """创建编写子界面."""
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
+        """创建策略编写标签页.
+
+        Returns:
+            QWidget: 编辑器标签页组件
+        """
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
 
         # 工具栏
-        toolbar_layout = QHBoxLayout()
+        toolbar = self._create_toolbar()
+        layout.addWidget(toolbar)
 
-        self.current_file_label = QLabel("当前文件: 未选择")
-        toolbar_layout.addWidget(self.current_file_label)
-        toolbar_layout.addStretch()
-
-        save_btn = QPushButton("💾 保存")
-        save_btn.clicked.connect(self._save_current_file)
-        toolbar_layout.addWidget(save_btn)
-
-        format_btn = QPushButton("⚡ 格式化")
-        format_btn.clicked.connect(self._format_code)
-        toolbar_layout.addWidget(format_btn)
-
-        self.ai_assistant_btn = QPushButton("🤖 显示AI助手")
-        self.ai_assistant_btn.setCheckable(True)
-        self.ai_assistant_btn.toggled.connect(self._toggle_ai_assistant)
-        toolbar_layout.addWidget(self.ai_assistant_btn)
-
-        layout.addLayout(toolbar_layout)
-
-        # 编辑器区域
+        # 编辑器 + AI助手（水平分割）
         editor_splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        # 代码编辑器（Monaco Editor）
-        self.code_editor = EditorWidget()
-        # Monaco Editor通过HTML模板提供初始内容，不需要setPlaceholderText
-        editor_splitter.addWidget(self.code_editor)
+        # 多标签编辑器
+        self.editor_tabs = EditorTabWidget()
+        editor_splitter.addWidget(self.editor_tabs)
 
-        # AI助手区域
+        # AI助手
         self.ai_assistant_widget = self._create_ai_assistant()
         editor_splitter.addWidget(self.ai_assistant_widget)
         self.ai_assistant_widget.setVisible(False)
 
-        editor_splitter.setSizes([700, 300])
+        editor_splitter.setSizes([800, 300])
 
         layout.addWidget(editor_splitter)
 
-        return tab
+        return widget
+
+    def _create_backtest_tab(self) -> QWidget:
+        """创建策略回测标签页.
+
+        Returns:
+            QWidget: 回测标签页组件
+        """
+        # 使用现有的回测面板创建方法
+        return self._create_backtest_panel()
+
+    def _create_toolbar(self) -> QWidget:
+        """创建工具栏.
+
+        Returns:
+            QWidget: 工具栏组件
+        """
+        toolbar = QWidget()
+        # 设置固定高度，防止工具栏占据过多空间
+        toolbar.setFixedHeight(45)
+
+        layout = QHBoxLayout(toolbar)
+        # 设置合理的边距
+        layout.setContentsMargins(8, 5, 8, 5)
+        layout.setSpacing(5)  # 设置统一的紧凑间距
+
+        # 文件操作按钮组
+        new_btn = QPushButton("📄 新建")
+        new_btn.setMinimumWidth(80)
+        new_btn.setMaximumWidth(100)
+        new_btn.clicked.connect(self._create_new_strategy)
+        layout.addWidget(new_btn)
+
+        save_btn = QPushButton("💾 保存")
+        save_btn.setMinimumWidth(80)
+        save_btn.setMaximumWidth(100)
+        save_btn.clicked.connect(self._save_current_file)
+        layout.addWidget(save_btn)
+
+        save_all_btn = QPushButton("💾 保存全部")
+        save_all_btn.setMinimumWidth(100)
+        save_all_btn.setMaximumWidth(120)
+        save_all_btn.clicked.connect(self._save_all_files)
+        layout.addWidget(save_all_btn)
+
+        # 格式化按钮
+        format_btn = QPushButton("⚡ 格式化")
+        format_btn.setMinimumWidth(90)
+        format_btn.setMaximumWidth(110)
+        format_btn.clicked.connect(self._format_code)
+        layout.addWidget(format_btn)
+
+        # 添加视觉分隔符
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.VLine)
+        separator.setFrameShadow(QFrame.Shadow.Sunken)
+        separator.setFixedHeight(25)
+        layout.addWidget(separator)
+
+        # AI助手按钮
+        self.ai_assistant_btn = QPushButton("🤖 AI助手")
+        self.ai_assistant_btn.setCheckable(True)
+        self.ai_assistant_btn.setMinimumWidth(100)
+        self.ai_assistant_btn.setMaximumWidth(120)
+        self.ai_assistant_btn.toggled.connect(self._toggle_ai_assistant)
+        layout.addWidget(self.ai_assistant_btn)
+
+        # 添加弹性空间，将后续内容推到右边
+        layout.addStretch()
+
+        # 当前文件路径标签
+        current_file_label = QLabel("就绪")
+        current_file_label.setStyleSheet("color: #888; padding-right: 10px;")
+        layout.addWidget(current_file_label)
+
+        # 连接信号：当前文件切换时更新标签
+        if self.editor_tabs:
+            self.editor_tabs.current_file_changed.connect(
+                lambda path: current_file_label.setText(f"📄 {Path(path).name}")
+            )
+
+        return toolbar
 
     def _create_ai_assistant(self) -> QWidget:
-        """创建AI助手组件."""
+        """创建AI助手组件.
+
+        Returns:
+            QWidget: AI助手组件
+        """
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
@@ -384,14 +310,16 @@ class StrategyCenter(BaseWidget, LoggerMixin):
 
         return widget
 
-    # ==================== 回测子界面 ====================
+    def _create_backtest_panel(self) -> QWidget:
+        """创建回测面板.
 
-    def _create_backtest_tab(self) -> QWidget:
-        """创建回测子界面."""
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
+        Returns:
+            QWidget: 回测面板组件
+        """
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
 
-        # 回测配置组
+        # 回测配置
         config_group = QGroupBox("回测配置")
         config_layout = QHBoxLayout(config_group)
 
@@ -429,24 +357,23 @@ class StrategyCenter(BaseWidget, LoggerMixin):
 
         layout.addWidget(config_group)
 
-        # 回测控制组
-        control_group = QGroupBox("回测控制")
-        control_layout = QHBoxLayout(control_group)
+        # 回测控制
+        control_layout = QHBoxLayout()
 
-        self.run_backtest_btn = QPushButton("运行回测")
+        self.run_backtest_btn = QPushButton("▶️ 运行回测")
         self.run_backtest_btn.clicked.connect(self._run_backtest)
         control_layout.addWidget(self.run_backtest_btn)
 
-        self.stop_backtest_btn = QPushButton("停止回测")
+        self.stop_backtest_btn = QPushButton("⏹️ 停止回测")
         self.stop_backtest_btn.clicked.connect(self._stop_backtest)
         self.stop_backtest_btn.setEnabled(False)
         control_layout.addWidget(self.stop_backtest_btn)
 
         control_layout.addStretch()
 
-        layout.addWidget(control_group)
+        layout.addLayout(control_layout)
 
-        # 回测进度组
+        # 回测进度
         progress_group = QGroupBox("回测进度")
         progress_layout = QVBoxLayout(progress_group)
 
@@ -458,7 +385,7 @@ class StrategyCenter(BaseWidget, LoggerMixin):
 
         layout.addWidget(progress_group)
 
-        # 回测结果组
+        # 回测结果
         results_group = QGroupBox("回测结果")
         results_layout = QVBoxLayout(results_group)
 
@@ -468,213 +395,143 @@ class StrategyCenter(BaseWidget, LoggerMixin):
 
         layout.addWidget(results_group)
 
-        return tab
+        return panel
 
     # ==================== 事件处理 ====================
 
-    def _toggle_manager(self):
-        """切换管理器显示/隐藏."""
-        if self.toggle_btn:
-            if self.toggle_btn.text() == "◀":
-                self.toggle_btn.setText("▶")
-            else:
-                self.toggle_btn.setText("◀")
-
-    def _on_file_double_clicked(self, item: QTreeWidgetItem, column: int):
-        """文件双击事件."""
-        _ = column  # 未使用但Qt信号需要
-        data = item.data(0, Qt.ItemDataRole.UserRole)
-        if not data or "path" not in data:
-            return
-
-        file_path = data["path"]
-
-        # 记录当前文件路径
-        self.current_file_path = file_path
-
-        if self.current_file_label:
-            self.current_file_label.setText(f"当前文件: {file_path}")
-
-        self._load_file(file_path)
-
-    def _load_file(self, file_path: str):
-        """加载文件."""
+    def connect_signals(self):
+        """连接信号槽."""
         try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                content = f.read()
+            # 文件管理器信号
+            if self.file_explorer:
+                self.file_explorer.file_double_clicked.connect(self._on_file_double_clicked)
+                self.logger.info("文件管理器信号已连接")
 
-            if self.code_editor:
-                self.code_editor.setPlainText(content)
-
-            self.logger.info("文件加载成功: %s", file_path)
-
+            # 编辑器标签信号
+            if self.editor_tabs:
+                self.editor_tabs.file_saved.connect(self._on_file_saved)
+                self.logger.info("编辑器标签信号已连接")
         except Exception as e:
-            self.logger.error("加载文件失败: %s", e)
-            self.show_error(f"加载文件失败: {e}")
+            self.logger.error(f"连接信号失败: {e}", exc_info=True)
 
-    def _save_current_file(self):
-        """保存当前文件."""
-        if not self.code_editor:
-            return
+    def _on_file_double_clicked(self, file_path: str):
+        """文件双击事件 - 根据当前标签页执行不同操作.
 
-        code = self.code_editor.toPlainText()
-        if not code.strip():
-            self.show_warning("代码为空，无需保存")
-            return
-
-        # 如果有当前文件路径，直接保存
-        if self.current_file_path:
-            try:
-                with open(self.current_file_path, "w", encoding="utf-8") as f:
-                    f.write(code)
-                self.show_info(f"文件已保存: {self.current_file_path}")
-                self.logger.info("文件保存成功: %s", self.current_file_path)
-
-                # 刷新文件树
-                self.refresh_data()
-            except Exception as e:
-                self.logger.error("保存文件失败: %s", e)
-                self.show_error(f"保存失败: {e}")
-        else:
-            # 没有当前文件，弹出保存对话框
-            from PySide6.QtWidgets import QFileDialog
-
-            file_path, _ = QFileDialog.getSaveFileName(
-                self, "保存策略文件", "strategies/user_strategies/", "Python文件 (*.py)"
+        Args:
+            file_path: 文件路径
+        """
+        try:
+            self.logger.info(f"🔍 [DEBUG] 双击事件触发，接收到文件路径: {file_path}")
+            self.logger.info(
+                f"🔍 [DEBUG] 路径类型: {type(file_path)}, 长度: {len(file_path) if file_path else 0}"
             )
 
-            if file_path:
-                try:
-                    with open(file_path, "w", encoding="utf-8") as f:
-                        f.write(code)
-
-                    # 更新当前文件路径
-                    self.current_file_path = file_path
-
-                    if self.current_file_label:
-                        self.current_file_label.setText(f"当前文件: {file_path}")
-
-                    self.show_info(f"文件已保存: {file_path}")
-                    self.logger.info("文件保存成功: %s", file_path)
-
-                    # 刷新文件树
-                    self.refresh_data()
-                except Exception as e:
-                    self.logger.error("保存文件失败: %s", e)
-                    self.show_error(f"保存失败: {e}")
-
-    def _format_code(self):
-        """格式化代码."""
-        if not self.code_editor:
-            return
-
-        code = self.code_editor.toPlainText()
-        if not code.strip():
-            self.show_warning("代码为空，无需格式化")
-            return
-
-        try:
-            import autopep8
-
-            formatted_code = autopep8.fix_code(code)
-            self.code_editor.setPlainText(formatted_code)
-            self.show_info("代码格式化完成")
-        except ImportError:
-            self.show_warning("需要安装autopep8: pip install autopep8")
-
-    def _toggle_ai_assistant(self, checked: bool):
-        """切换AI助手显示."""
-        if self.ai_assistant_widget:
-            self.ai_assistant_widget.setVisible(checked)
-
-        if self.ai_assistant_btn:
-            text = "🤖 隐藏AI助手" if checked else "🤖 显示AI助手"
-            self.ai_assistant_btn.setText(text)
-
-    def _send_to_ai(self):
-        """发送消息给AI助手."""
-        if not self.user_input or not self.ai_response:
-            return
-
-        message = self.user_input.text().strip()
-        if not message:
-            return
-
-        # 显示用户消息
-        self.ai_response.append(f"\n>>> 用户: {message}\n")
-        self.user_input.clear()
-
-        # 获取AI助手服务
-        try:
-            ai_service = self.service_manager.get_service("ai_assistant_service")
-            if not ai_service:
-                self.ai_response.append("❌ AI助手服务不可用\n")
+            if not file_path:
+                self.logger.warning("文件路径为空，无法处理")
                 return
 
-            # 获取当前编辑器中的代码作为上下文
-            context = {}
-            if self.code_editor:
-                current_code = self.code_editor.toPlainText()
-                if current_code.strip():
-                    context["strategy_code"] = current_code
-
-            # 调用AI服务
-            response = ai_service.chat(message, context=context)
-
-            if not response.get("success"):
-                error_msg = response.get("message", "未知错误")
-                self.ai_response.append(f"❌ AI调用失败: {error_msg}\n")
+            # 检查当前在哪个标签页
+            if not hasattr(self, "content_tab") or not self.content_tab:
+                self.logger.error("内容标签页组件未初始化")
                 return
 
-            # 检查是否有文件被修改
-            files_modified = response.get("files_modified", [])
+            current_tab_index = self.content_tab.currentIndex()
+            self.logger.info(f"🔍 [DEBUG] 当前标签页索引: {current_tab_index}, 文件: {file_path}")
 
-            # 根据消息类型处理AI回复
-            message_type = response.get("message_type", "text")
+            # 0 = 策略编写标签页：打开文件到编辑器
+            if current_tab_index == 0:
+                self._handle_file_open_for_editing(file_path)
 
-            if message_type == "code":
-                # 纯代码 - 插入到编辑器
-                code = response.get("code", "")
-                if code and self.code_editor:
-                    self.code_editor.insertPlainText(f"\n{code}\n")
-                    self.ai_response.append("✅ 代码已插入到编辑器\n")
+            # 1 = 策略回测标签页：选中该策略作为回测目标
+            elif current_tab_index == 1:
+                self._handle_file_select_for_backtest(file_path)
 
-            elif message_type == "text":
-                # 纯文本 - 显示在AI反馈区
-                text = response.get("text", response.get("message", ""))
-                self.ai_response.append(f"🤖 AI助手:\n{text}\n")
-
-            elif message_type == "mixed":
-                # 混合内容 - 代码插入编辑器，文本显示在反馈区
-                code = response.get("code", "")
-                text = response.get("text", "")
-
-                if text:
-                    self.ai_response.append(f"🤖 AI助手:\n{text}\n")
-
-                if code and self.code_editor:
-                    self.code_editor.insertPlainText(f"\n{code}\n")
-                    self.ai_response.append("\n✅ 代码部分已插入到编辑器\n")
-
-            # 如果AI修改了文件，刷新文件树并加载最新的文件
-            if files_modified:
-                self.ai_response.append(f"\n📁 AI助手已保存文件: {', '.join(files_modified)}\n")
-
-                # 刷新文件树
-                self.refresh_data()
-
-                # 如果只修改了一个文件，自动加载到编辑器
-                if len(files_modified) == 1:
-                    file_path = files_modified[0]
-                    self.current_file_path = file_path
-                    if self.current_file_label:
-                        self.current_file_label.setText(f"当前文件: {file_path}")
-                    self._load_file(file_path)
-                    self.ai_response.append(f"✅ 文件已加载到编辑器: {file_path}\n")
+            else:
+                self.logger.warning(f"未知的标签页索引: {current_tab_index}")
 
         except Exception as e:
-            self.logger.error("AI助手调用失败: %s", e)
-            self.ai_response.append(f"❌ 错误: {str(e)}\n")
+            self.logger.error(f"双击文件处理失败: {file_path}, 错误: {e}", exc_info=True)
+            self.show_error(f"处理文件时发生错误:\n{str(e)}")
+
+    def _handle_file_open_for_editing(self, file_path: str):
+        """在策略编写标签页中打开文件.
+
+        Args:
+            file_path: 文件路径
+        """
+        if not self.editor_tabs:
+            self.logger.error("编辑器标签组件未初始化")
+            self.show_error("编辑器组件未准备好，请稍后再试")
+            return
+
+        self.logger.info(f"在编辑器中打开文件: {file_path}")
+        success = self.editor_tabs.open_file(file_path)
+
+        if success:
+            self.logger.info(f"文件在编辑器中打开成功: {file_path}")
+        else:
+            self.logger.warning(f"文件打开失败: {file_path}")
+
+    def _handle_file_select_for_backtest(self, file_path: str):
+        """在策略回测标签页中选中文件作为回测目标.
+
+        Args:
+            file_path: 文件路径
+        """
+        self.logger.info(f"🔍 [DEBUG] _handle_file_select_for_backtest 被调用")
+        self.logger.info(f"🔍 [DEBUG] 完整文件路径: {file_path}")
+
+        # 获取文件名（不含路径）
+        file_name = Path(file_path).name
+        self.logger.info(f"🔍 [DEBUG] 提取的文件名: {file_name}")
+
+        # 检查是否是Python文件
+        if not file_name.endswith(".py"):
+            self.logger.warning(f"文件不是Python文件: {file_name}")
+            self.show_warning(f"只能选择Python策略文件进行回测\n选中的文件: {file_name}")
+            return
+
+        # 在回测目标下拉框中选择该策略
+        if not self.backtest_target_combo:
+            self.logger.error("回测目标下拉框未初始化")
+            return
+
+        # 🔧 修复：每次选择时都刷新策略列表，确保列表最新
+        self.logger.info("🔍 [DEBUG] 开始刷新策略列表")
+        self._load_strategy_list()
+
+        # 打印当前下拉框中的所有项
+        self.logger.info(f"🔍 [DEBUG] 下拉框中的项数: {self.backtest_target_combo.count()}")
+        for i in range(self.backtest_target_combo.count()):
+            item_text = self.backtest_target_combo.itemText(i)
+            self.logger.info(f"🔍 [DEBUG] 下拉框项 [{i}]: '{item_text}' (长度: {len(item_text)})")
+
+        # 查找并选中该策略
+        self.logger.info(f"🔍 [DEBUG] 尝试查找文件名: '{file_name}' (长度: {len(file_name)})")
+        index = self.backtest_target_combo.findText(file_name)
+        self.logger.info(f"🔍 [DEBUG] findText 返回索引: {index}")
+
+        if index >= 0:
+            self.backtest_target_combo.setCurrentIndex(index)
+            self.logger.info(f"✓ 已选中回测策略: {file_name}")
+            self.show_info(f"✓ 已选中回测策略: {file_name}")
+        else:
+            self.logger.error(f"✗ 回测列表中未找到策略: {file_name}")
+            self.logger.error(
+                f"🔍 [DEBUG] 匹配失败详情 - 查找: '{file_name}', 列表: {[self.backtest_target_combo.itemText(i) for i in range(self.backtest_target_combo.count())]}"
+            )
+            self.show_warning(
+                f"✗ 无法在回测列表中找到策略: {file_name}\n\n可能原因：\n1. 文件不在 strategies/user_strategies 目录\n2. 文件名不符合Python文件命名规范"
+            )
+
+    def _on_file_saved(self, file_path: str):
+        """文件保存事件.
+
+        Args:
+            file_path: 文件路径
+        """
+        self.logger.info(f"文件已保存: {file_path}")
+        self.show_info(f"文件已保存: {Path(file_path).name}")
 
     def _create_new_strategy(self):
         """新建策略."""
@@ -703,74 +560,208 @@ class StrategyCenter(BaseWidget, LoggerMixin):
                 self.show_info(f"策略 '{strategy_name}' 创建成功")
 
                 # 刷新文件树
-                self.refresh_data()
+                if self.file_explorer:
+                    self.file_explorer.refresh()
 
-                # 加载新创建的文件到编辑器
+                # 🔧 修复：刷新回测策略列表
+                self._load_strategy_list()
+                self.logger.info("已刷新回测策略列表")
+
+                # 打开新创建的文件
                 file_path = f"strategies/user_strategies/{strategy_name}"
-                self.current_file_path = file_path
-                if self.current_file_label:
-                    self.current_file_label.setText(f"当前文件: {file_path}")
-                self._load_file(file_path)
+                if self.editor_tabs:
+                    self.editor_tabs.open_file(file_path)
             else:
                 self.show_error(f"创建策略失败: {result.get('message', '未知错误')}")
 
-    def _create_new_indicator(self):
-        """新建指标."""
-        if not self.strategy_service:
-            self.show_error("策略中心服务不可用")
+    def _save_current_file(self):
+        """保存当前文件."""
+        if self.editor_tabs:
+            if self.editor_tabs.save_file():
+                self.show_info("文件已保存")
+            else:
+                self.show_warning("没有打开的文件")
+
+    def _save_all_files(self):
+        """保存所有文件."""
+        if self.editor_tabs:
+            count = self.editor_tabs.save_all_files()
+            if count > 0:
+                self.show_info(f"已保存 {count} 个文件")
+            else:
+                self.show_info("没有需要保存的文件")
+
+    def _format_code(self):
+        """格式化代码."""
+        current_editor = self.editor_tabs.get_current_editor() if self.editor_tabs else None
+
+        if not current_editor:
+            self.show_warning("没有打开的文件")
             return
 
-        from PySide6.QtWidgets import QInputDialog
-
-        # 弹出对话框让用户输入指标名称
-        indicator_name, ok = QInputDialog.getText(
-            self, "新建指标", "请输入指标名称:", text="my_indicator"
-        )
-
-        if ok and indicator_name:
-            # 确保文件名有.py后缀
-            if not indicator_name.endswith(".py"):
-                indicator_name = f"{indicator_name}.py"
-
-            # 创建指标文件（使用CTA模板）
-            result = self.strategy_service.create_strategy_file(
-                file_path=indicator_name, template_type="cta"
-            )
-
-            if result.get("success"):
-                self.show_info(f"指标 '{indicator_name}' 创建成功")
-
-                # 刷新文件树
-                self.refresh_data()
-
-                # 加载新创建的文件到编辑器
-                file_path = f"strategies/user_strategies/{indicator_name}"
-                self.current_file_path = file_path
-                if self.current_file_label:
-                    self.current_file_label.setText(f"当前文件: {file_path}")
-                self._load_file(file_path)
-            else:
-                self.show_error(f"创建指标失败: {result.get('message', '未知错误')}")
-
-    def _load_strategy_list(self):
-        """加载策略列表."""
-        if not self.backtest_target_combo:
+        code = current_editor.toPlainText()
+        if not code.strip():
+            self.show_warning("代码为空")
             return
 
         try:
-            strategy_dir = "strategies/user_strategies"
-            if os.path.exists(strategy_dir):
-                strategy_files = [
-                    f
-                    for f in os.listdir(strategy_dir)
-                    if f.endswith(".py") and not f.startswith("__")
-                ]
-                self.backtest_target_combo.addItems(strategy_files)
-            else:
-                self.backtest_target_combo.addItem("(策略目录不存在)")
+            import autopep8
+
+            formatted_code = autopep8.fix_code(code)
+            current_editor.setPlainText(formatted_code)
+            self.show_info("代码格式化完成")
+        except ImportError:
+            self.show_warning("需要安装autopep8: pip install autopep8")
+
+    def _toggle_ai_assistant(self, checked: bool):
+        """切换AI助手显示.
+
+        Args:
+            checked: 是否显示
+        """
+        if self.ai_assistant_widget:
+            self.ai_assistant_widget.setVisible(checked)
+
+        if self.ai_assistant_btn:
+            # 按钮文本保持简洁，通过按钮选中状态显示是否激活
+            text = "🤖 AI助手 ✓" if checked else "🤖 AI助手"
+            self.ai_assistant_btn.setText(text)
+
+    def _send_to_ai(self):
+        """发送消息给AI助手."""
+        if not self.user_input or not self.ai_response:
+            return
+
+        message = self.user_input.text().strip()
+        if not message:
+            return
+
+        # 显示用户消息
+        self.ai_response.append(f"\n>>> 用户: {message}\n")
+        self.user_input.clear()
+
+        # 获取AI助手服务
+        try:
+            ai_service = self.service_manager.get_service("ai_assistant_service")
+            if not ai_service:
+                self.ai_response.append("❌ AI助手服务不可用\n")
+                return
+
+            # 获取当前编辑器中的代码作为上下文
+            context = {}
+            current_editor = self.editor_tabs.get_current_editor() if self.editor_tabs else None
+            if current_editor:
+                current_code = current_editor.toPlainText()
+                if current_code.strip():
+                    context["strategy_code"] = current_code
+
+            # 调用AI服务
+            response = ai_service.chat(message, context=context)
+
+            if not response.get("success"):
+                error_msg = response.get("message", "未知错误")
+                self.ai_response.append(f"❌ AI调用失败: {error_msg}\n")
+                return
+
+            # 处理AI回复
+            message_type = response.get("message_type", "text")
+
+            if message_type == "code":
+                # 纯代码 - 插入到编辑器
+                code = response.get("code", "")
+                if code and current_editor:
+                    current_editor.insertPlainText(f"\n{code}\n")
+                    self.ai_response.append("✅ 代码已插入到编辑器\n")
+
+            elif message_type == "text":
+                # 纯文本 - 显示在AI反馈区
+                text = response.get("text", response.get("message", ""))
+                self.ai_response.append(f"🤖 AI助手:\n{text}\n")
+
+            elif message_type == "mixed":
+                # 混合内容
+                code = response.get("code", "")
+                text = response.get("text", "")
+
+                if text:
+                    self.ai_response.append(f"🤖 AI助手:\n{text}\n")
+
+                if code and current_editor:
+                    current_editor.insertPlainText(f"\n{code}\n")
+                    self.ai_response.append("\n✅ 代码部分已插入到编辑器\n")
+
+            # 如果AI修改了文件，刷新文件树
+            files_modified = response.get("files_modified", [])
+            if files_modified:
+                self.ai_response.append(f"\n📁 AI助手已保存文件: {', '.join(files_modified)}\n")
+
+                # 刷新文件树
+                if self.file_explorer:
+                    self.file_explorer.refresh()
+
+                # 如果只修改了一个文件，自动打开
+                if len(files_modified) == 1 and self.editor_tabs:
+                    file_path = files_modified[0]
+                    self.editor_tabs.open_file(file_path)
+                    self.ai_response.append(f"✅ 文件已打开: {file_path}\n")
 
         except Exception as e:
-            self.logger.error("加载策略列表失败: %s", e)
+            self.logger.error("AI助手调用失败: %s", e)
+            self.ai_response.append(f"❌ 错误: {str(e)}\n")
+
+    def _load_strategy_list(self):
+        """加载策略列表到下拉框."""
+        if not self.backtest_target_combo:
+            self.logger.error("🔍 [DEBUG] backtest_target_combo 未初始化")
+            return
+
+        try:
+            self.logger.info("🔍 [DEBUG] ===== 开始加载策略列表 =====")
+
+            # 先清空下拉框，避免重复添加
+            self.backtest_target_combo.clear()
+            self.logger.info("🔍 [DEBUG] 已清空下拉框")
+
+            # 🔧 关键修复：使用绝对路径确保正确找到目录
+            strategy_dir = (
+                Path(__file__).parent.parent.parent.parent / "strategies" / "user_strategies"
+            )
+            abs_strategy_dir = str(strategy_dir.resolve())
+            self.logger.info(f"🔍 [DEBUG] 策略目录（绝对）: {abs_strategy_dir}")
+            self.logger.info(f"🔍 [DEBUG] 当前工作目录: {os.getcwd()}")
+            self.logger.info(f"🔍 [DEBUG] 目录是否存在: {strategy_dir.exists()}")
+
+            if strategy_dir.exists():
+                all_files = list(strategy_dir.iterdir())
+                self.logger.info(f"🔍 [DEBUG] 目录中所有文件: {[f.name for f in all_files]}")
+
+                strategy_files = [
+                    f.name
+                    for f in all_files
+                    if f.is_file() and f.name.endswith(".py") and not f.name.startswith("__")
+                ]
+                self.logger.info(f"🔍 [DEBUG] 过滤后的策略文件: {strategy_files}")
+
+                if strategy_files:
+                    self.backtest_target_combo.addItems(strategy_files)
+                    self.logger.info(f"✓ 已加载 {len(strategy_files)} 个策略文件")
+
+                    # 打印每个添加的文件的详细信息
+                    for f in strategy_files:
+                        self.logger.info(
+                            f"🔍 [DEBUG] 添加文件: '{f}' (长度: {len(f)}, repr: {repr(f)})"
+                        )
+                else:
+                    self.backtest_target_combo.addItem("(无可用策略)")
+                    self.logger.warning("🔍 [DEBUG] 未找到符合条件的策略文件")
+            else:
+                self.backtest_target_combo.addItem("(策略目录不存在)")
+                self.logger.error(f"策略目录不存在: {strategy_dir}")
+
+            self.logger.info("🔍 [DEBUG] ===== 策略列表加载完成 =====")
+
+        except Exception as e:
+            self.logger.error(f"加载策略列表失败: {e}", exc_info=True)
 
     def _run_backtest(self):
         """运行回测."""
@@ -799,7 +790,7 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         if self.backtest_status_label:
             self.backtest_status_label.setText("回测运行中...")
 
-        # 获取选择的展示模板类型
+        # 获取展示模板类型
         renderer_type_text = (
             self.renderer_type_combo.currentText() if self.renderer_type_combo else "默认展示"
         )
@@ -822,7 +813,7 @@ class StrategyCenter(BaseWidget, LoggerMixin):
             "symbol": "000001",
             "exchange": "SZSE",
             "interval": "1d",
-            "renderer_type": renderer_type,  # 传递展示模板类型
+            "renderer_type": renderer_type,
         }
 
         result = self.strategy_service.start_backtest(
@@ -834,8 +825,6 @@ class StrategyCenter(BaseWidget, LoggerMixin):
             self.show_info("回测已启动，正在后台运行...")
 
             # 启动进度监控定时器
-            from PySide6.QtCore import QTimer
-
             self.backtest_timer = QTimer()
             self.backtest_timer.timeout.connect(self._check_backtest_progress)
             self.backtest_timer.start(1000)  # 每秒检查一次
@@ -920,28 +909,35 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         if self.stop_backtest_btn:
             self.stop_backtest_btn.setEnabled(False)
 
-    # ==================== 通用方法 ====================
-
-    def connect_signals(self):
-        """连接信号槽."""
-
-    def _delayed_refresh(self):
-        """延迟刷新（用于防抖）."""
-        self._create_file_tree()
-        self.logger.info("文件树已自动刷新（文件系统变化）")
-
     def refresh_data(self):
         """刷新数据."""
         # 刷新文件树
-        self._create_file_tree()
+        if self.file_explorer:
+            self.file_explorer.refresh()
+
         self.logger.info("策略中心数据已手动刷新")
 
     def on_close(self):
         """关闭处理."""
-        # 停止文件系统监控
-        if self.file_watcher:
-            self.file_watcher.deleteLater()
-            self.file_watcher = None
-            self.logger.info("文件系统监控器已停止")
-        
+        # 提示保存未保存的文件
+        if self.editor_tabs:
+            if self.editor_tabs.unsaved_files:
+                from PySide6.QtWidgets import QMessageBox
+
+                reply = QMessageBox.question(
+                    self,
+                    "保存文件",
+                    f"有 {len(self.editor_tabs.unsaved_files)} 个文件未保存。是否保存？",
+                    QMessageBox.StandardButton.Save
+                    | QMessageBox.StandardButton.Discard
+                    | QMessageBox.StandardButton.Cancel,
+                    QMessageBox.StandardButton.Save,
+                )
+
+                if reply == QMessageBox.StandardButton.Save:
+                    self.editor_tabs.save_all_files()
+                elif reply == QMessageBox.StandardButton.Cancel:
+                    return False
+
         self.logger.info("策略中心界面已关闭")
+        return True

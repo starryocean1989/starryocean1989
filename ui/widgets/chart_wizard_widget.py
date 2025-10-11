@@ -7,7 +7,7 @@ ChartWizard适配器 - 集成vnpy_chartwizard
 """
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QVBoxLayout, QWidget
@@ -81,19 +81,11 @@ class ChartWizardWidget(BaseWidget):
             layout: 布局
         """
         # 创建vnpy_chartwizard图表组件
-        # ChartWidget需要一个MainEngine实例
+        # ChartWidget是一个独立的图表显示组件，只需要parent参数
+        # 数据通过update_history()方法更新
         try:
-            from backend.core.base import get_main_engine
-
-            main_engine = get_main_engine()
-
-            if not main_engine:
-                self._logger.warning("MainEngine不可用，使用降级方案")
-                raise RuntimeError("MainEngine不可用")
-
             # 创建图表组件
-            # vnpy_chartwizard.ChartWidget(main_engine, event_engine)
-            self.chart_widget = VnpyChartWidget(main_engine, main_engine.event_engine)
+            self.chart_widget = VnpyChartWidget(parent=self)
 
             # 添加到布局
             if self.chart_widget:
@@ -156,6 +148,102 @@ class ChartWizardWidget(BaseWidget):
         self.symbol_changed.emit(symbol)
         self._logger.info(f"图表品种切换: {symbol}")
 
+    def _convert_to_bar_data(
+        self, data_list: List[Dict[str, Any]], symbol: str, exchange: str
+    ) -> List[Any]:
+        """将数据转换为vnpy的BarData格式.
+
+        Args:
+            data_list: 数据字典列表
+            symbol: 品种代码
+            exchange: 交易所代码
+
+        Returns:
+            List[BarData]: BarData对象列表
+        """
+        try:
+            from vnpy.trader.object import BarData
+            from vnpy.trader.constant import Exchange, Interval
+            from datetime import datetime
+
+            bars = []
+
+            # 转换交易所字符串为Exchange枚举
+            try:
+                exchange_enum = Exchange(exchange)
+            except ValueError:
+                self._logger.warning(f"未知的交易所: {exchange}，使用SSE")
+                exchange_enum = Exchange.SSE
+
+            # 转换周期字符串为Interval枚举
+            interval_map = {
+                "1d": Interval.DAILY,
+                "1w": Interval.WEEKLY,
+                "1h": Interval.HOUR,
+                "1m": Interval.MINUTE,
+                "5m": Interval.MINUTE,
+                "15m": Interval.MINUTE,
+                "30m": Interval.MINUTE,
+            }
+            interval_enum = interval_map.get(
+                self.current_period if hasattr(self, 'current_period') else "1d",
+                Interval.DAILY
+            )
+
+            for item in data_list:
+                try:
+                    # 处理日期时间
+                    if "datetime" in item:
+                        dt_str = item["datetime"]
+                    elif "date" in item:
+                        dt_str = item["date"]
+                    else:
+                        continue
+
+                    # 转换为datetime对象
+                    if isinstance(dt_str, str):
+                        # 尝试多种日期格式
+                        for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%Y/%m/%d"]:
+                            try:
+                                dt = datetime.strptime(dt_str, fmt)
+                                break
+                            except ValueError:
+                                continue
+                        else:
+                            self._logger.warning(f"无法解析日期: {dt_str}")
+                            continue
+                    elif isinstance(dt_str, datetime):
+                        dt = dt_str
+                    else:
+                        continue
+
+                    # 创建BarData对象
+                    bar = BarData(
+                        gateway_name="DB",  # 数据库数据
+                        symbol=symbol,
+                        exchange=exchange_enum,
+                        datetime=dt,
+                        interval=interval_enum,
+                        volume=float(item.get("volume", 0)),
+                        turnover=float(item.get("turnover", 0)),
+                        open_interest=float(item.get("open_interest", 0)),
+                        open_price=float(item.get("open", 0)),
+                        high_price=float(item.get("high", 0)),
+                        low_price=float(item.get("low", 0)),
+                        close_price=float(item.get("close", 0)),
+                    )
+                    bars.append(bar)
+
+                except Exception as e:
+                    self._logger.warning(f"转换单条数据失败: {e}, 数据: {item}")
+                    continue
+
+            return bars
+
+        except Exception as e:
+            self._logger.error(f"数据转换失败: {e}", exc_info=True)
+            return []
+
     # ========== 公共接口 ==========
 
     def set_symbol(self, symbol: str):
@@ -167,25 +255,64 @@ class ChartWizardWidget(BaseWidget):
         self.current_symbol = symbol
 
         if HAS_CHART_WIZARD and self.chart_widget:
-            # vnpy_chartwizard的设置方法
-            if hasattr(self.chart_widget, "update_history"):
-                try:
-                    # 构建vt_symbol
-                    # 假设symbol格式为 "000001" 或 "000001.SZSE"
-                    if "." not in symbol:
-                        # 判断是上海还是深圳
-                        if symbol.startswith("6"):
-                            vt_symbol = f"{symbol}.SSE"  # 上海交易所
-                        else:
-                            vt_symbol = f"{symbol}.SZSE"  # 深圳交易所
-                    else:
-                        vt_symbol = symbol
+            # vnpy_chartwizard需要BarData列表
+            # 从数据中心获取历史K线数据并转换
+            try:
+                from backend.core.base import get_service_manager
+                from datetime import datetime, timedelta
 
-                    # 更新历史数据
-                    self.chart_widget.update_history(vt_symbol)
-                    self._logger.info(f"✅ 更新图表品种: {vt_symbol}")
-                except Exception as e:
-                    self._logger.error(f"❌ 更新图表品种失败: {e}")
+                service_mgr = get_service_manager()
+                if not service_mgr:
+                    self._logger.warning("服务管理器不可用，无法加载图表数据")
+                    return
+
+                data_service = service_mgr.get_service("data_center_service")
+                if not data_service:
+                    self._logger.warning("数据服务不可用，无法加载图表数据")
+                    return
+
+                # 构建vt_symbol（去掉交易所后缀用于查询）
+                query_symbol = symbol.split(".")[0] if "." in symbol else symbol
+
+                # 确定交易所
+                if "." in symbol:
+                    exchange_str = symbol.split(".")[1]
+                elif symbol.startswith("6"):
+                    exchange_str = "SSE"
+                else:
+                    exchange_str = "SZSE"
+
+                # 计算查询时间范围（最近200个交易日）
+                end_date = datetime.now()
+                start_date = end_date - timedelta(days=300)  # 多取一些天数确保有200个交易日
+
+                # 查询本地数据
+                result = data_service.query_local_data(
+                    symbol=query_symbol,
+                    start_date=start_date.strftime("%Y-%m-%d"),
+                    end_date=end_date.strftime("%Y-%m-%d"),
+                    interval=self.current_period if hasattr(self, 'current_period') else "1d"
+                )
+
+                if result.get("success") and result.get("data"):
+                    # 转换为BarData列表
+                    bars = self._convert_to_bar_data(
+                        result["data"],
+                        query_symbol,
+                        exchange_str
+                    )
+
+                    if bars:
+                        # 更新图表
+                        self.chart_widget.update_history(bars)
+                        self._logger.info(f"✅ 成功加载 {len(bars)} 条K线数据: {symbol}")
+                    else:
+                        self._logger.warning(f"数据转换失败: {symbol}")
+                else:
+                    self._logger.warning(f"无K线数据: {symbol}, {result.get('message', '')}")
+
+            except Exception as e:
+                self._logger.error(f"❌ 更新图表品种失败: {e}", exc_info=True)
         elif self.chart_widget and hasattr(self.chart_widget, "set_symbol"):
             # 降级方案
             self.chart_widget.set_symbol(symbol)
@@ -208,16 +335,9 @@ class ChartWizardWidget(BaseWidget):
     def refresh_data(self):
         """刷新数据."""
         if HAS_CHART_WIZARD and self.chart_widget:
-            if hasattr(self.chart_widget, "update_history"):
-                try:
-                    # 刷新当前品种
-                    if self.current_symbol:
-                        vt_symbol = self.current_symbol
-                        if "." not in vt_symbol:
-                            vt_symbol = f"{vt_symbol}.SZSE"
-                        self.chart_widget.update_history(vt_symbol)
-                except Exception as e:
-                    self._logger.error(f"刷新图表数据失败: {e}")
+            # 重新加载当前品种的数据
+            if self.current_symbol:
+                self.set_symbol(self.current_symbol)
         elif self.chart_widget and hasattr(self.chart_widget, "refresh_data"):
             # 降级方案
             self.chart_widget.refresh_data()
@@ -294,15 +414,45 @@ class ChartWizardWidget(BaseWidget):
         """
         if HAS_CHART_WIZARD and self.chart_widget:
             try:
-                vt_symbol = f"{symbol}.{exchange}"
+                from backend.core.base import get_service_manager
 
-                # vnpy_chartwizard加载历史数据
-                if hasattr(self.chart_widget, "update_history"):
-                    self.chart_widget.update_history(vt_symbol)
+                service_mgr = get_service_manager()
+                if not service_mgr:
+                    self.show_error("服务管理器不可用")
+                    return
 
-                self._logger.info(f"加载历史数据: {vt_symbol} {interval} {start}~{end}")
+                data_service = service_mgr.get_service("data_center_service")
+                if not data_service:
+                    self.show_error("数据服务不可用")
+                    return
+
+                # 查询指定时间范围的数据
+                result = data_service.query_local_data(
+                    symbol=symbol,
+                    start_date=start,
+                    end_date=end,
+                    interval=interval
+                )
+
+                if result.get("success") and result.get("data"):
+                    # 转换为BarData列表
+                    bars = self._convert_to_bar_data(
+                        result["data"],
+                        symbol,
+                        exchange
+                    )
+
+                    if bars:
+                        # 更新图表
+                        self.chart_widget.update_history(bars)
+                        self._logger.info(f"✅ 加载历史数据成功: {symbol}.{exchange} {interval} {start}~{end}, {len(bars)}条")
+                    else:
+                        self.show_warning(f"数据转换失败")
+                else:
+                    self.show_warning(f"无历史数据: {result.get('message', '')}")
+
             except Exception as e:
-                self._logger.error(f"加载历史数据失败: {e}")
+                self._logger.error(f"加载历史数据失败: {e}", exc_info=True)
                 self.show_error(f"加载数据失败: {str(e)}")
         else:
             self._logger.warning("vnpy_chartwizard不可用，无法加载历史数据")

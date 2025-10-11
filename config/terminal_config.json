@@ -56,5 +56,6 @@
     "max_history": 10,
     "system_prompt": "你是一个专业的量化交易策略编写助手，擅长Python和VnPy框架。",
     "enable_tools": false
-  }
+  },
+  "gateways": []
 }

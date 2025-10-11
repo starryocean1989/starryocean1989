@@ -66,6 +66,9 @@ class SystemManagerService(BaseService):
         self.network_tester = NetworkTester()
         self.port_scanner = PortScanner()
 
+        # 数据读取任务控制
+        self._tdx_reader_stop_flag = False
+
         # 性能跟踪器
         self.performance_tracker = performance_tracker
 
@@ -1449,4 +1452,334 @@ class SystemManagerService(BaseService):
             return {
                 "success": False,
                 "message": f"移除工具失败: {str(e)}",
+            }
+
+    # ==================== 数据标准化读取器 ====================
+
+    def get_available_data_readers(self) -> Dict[str, Any]:
+        """获取可用的数据读取器列表.
+
+        Returns:
+            Dict: 数据读取器列表
+        """
+        try:
+            readers = [
+                {
+                    "id": "tdx",
+                    "name": "通达信",
+                    "description": "读取通达信本地二进制数据文件",
+                    "supported_types": ["日线", "5分钟线", "1分钟线"],
+                    "supported_markets": ["上证", "深证", "北证"],
+                }
+            ]
+
+            return {
+                "success": True,
+                "readers": readers,
+            }
+
+        except Exception as e:
+            self._log_error("获取数据读取器列表", e)
+            return {
+                "success": False,
+                "readers": [],
+                "message": f"获取失败: {str(e)}",
+            }
+
+    def read_tdx_data(self, config: Dict[str, Any], progress_callback=None) -> Dict[str, Any]:
+        """读取通达信数据并标准化保存（多市场、多周期、多线程）.
+
+        Args:
+            config: 配置信息
+                - data_types: 数据类型列表 ['day', '5min', '1min']
+                - markets: 市场代码列表 ['sh', 'sz', 'bj']
+                - tdx_root: 通达信根目录
+                - use_symbol_cache: 是否使用品种缓存（自动获取品种列表）
+                - max_workers: 最大线程数
+            progress_callback: 进度回调 callback(current, total, info)
+
+        Returns:
+            Dict: 处理结果
+        """
+        try:
+            self._log_operation("读取通达信数据")
+
+            # 验证配置
+            data_types = config.get("data_types", [])
+            markets = config.get("markets", [])
+            tdx_root = config.get("tdx_root")
+            use_symbol_cache = config.get("use_symbol_cache", True)
+            max_workers = config.get("max_workers", 4)
+
+            if not data_types or not markets or not tdx_root:
+                return {
+                    "success": False,
+                    "message": "缺少必要参数：数据类型、市场代码或通达信根目录",
+                }
+
+            # 验证通达信目录
+            tdx_path = Path(tdx_root)
+            if not tdx_path.exists():
+                return {
+                    "success": False,
+                    "message": f"通达信目录不存在: {tdx_root}",
+                }
+
+            # 获取品种列表
+            if use_symbol_cache:
+                symbols_by_market = self._get_symbols_from_cache(markets)
+                if not any(symbols_by_market.values()):
+                    return {
+                        "success": False,
+                        "message": "品种缓存为空，请先在数据中心重新加载品种列表",
+                    }
+            else:
+                return {
+                    "success": False,
+                    "message": "手动指定品种功能已移除，请使用品种缓存",
+                }
+
+            # 导入TdxBinaryReader
+            try:
+                from backend.infrastructure.data_module_vnpy.data_readers.tdx_reader import (
+                    TdxBinaryReader,
+                )
+            except ImportError as e:
+                self.logger.error("导入TdxBinaryReader失败: %s", e)
+                return {
+                    "success": False,
+                    "message": f"导入读取器失败: {str(e)}",
+                }
+
+            # 创建读取器实例
+            reader = TdxBinaryReader(source_path=tdx_path)
+
+            # 计算总任务数
+            total_tasks = sum(
+                len(symbols_by_market.get(market, [])) * len(data_types) for market in markets
+            )
+
+            if total_tasks == 0:
+                return {
+                    "success": False,
+                    "message": "没有找到符合条件的品种",
+                }
+
+            self.logger.info("开始批量读取: %d 个任务", total_tasks)
+
+            # 重置停止标志
+            self._tdx_reader_stop_flag = False
+
+            # 批量处理（多市场、多周期）
+            all_results = {}
+            completed = 0
+
+            for market in markets:
+                # 检查停止标志
+                if self._tdx_reader_stop_flag:
+                    self.logger.info("检测到停止标志，中断批量读取")
+                    break
+
+                symbols = symbols_by_market.get(market, [])
+                if not symbols:
+                    continue
+
+                for data_type in data_types:
+                    # 检查停止标志
+                    if self._tdx_reader_stop_flag:
+                        self.logger.info("检测到停止标志，中断批量读取")
+                        break
+
+                    # 定义进度回调包装器
+                    def wrapped_callback(current, total, symbol, success):
+                        nonlocal completed
+                        completed += 1
+                        if progress_callback:
+                            info = f"{market.upper()} {data_type} {symbol}"
+                            progress_callback(completed, total_tasks, info, success)
+
+                        # 检查停止标志
+                        return not self._tdx_reader_stop_flag
+
+                    # 批量处理
+                    results = reader.process_batch(
+                        symbols=symbols,
+                        data_type=data_type,
+                        market=market,
+                        progress_callback=wrapped_callback,
+                        max_workers=max_workers,
+                        stop_check=lambda: self._tdx_reader_stop_flag,
+                    )
+
+                    # 合并结果
+                    for symbol, success in results.items():
+                        key = f"{market}_{data_type}_{symbol}"
+                        all_results[key] = success
+
+            # 统计结果
+            success_count = sum(1 for v in all_results.values() if v)
+            fail_count = len(all_results) - success_count
+            was_stopped = self._tdx_reader_stop_flag
+
+            if was_stopped:
+                self.logger.info(
+                    "批量读取已停止: 已完成 %d/%d, 成功 %d, 失败 %d",
+                    len(all_results),
+                    total_tasks,
+                    success_count,
+                    fail_count,
+                )
+                message = f"已停止：已完成 {len(all_results)}/{total_tasks}，成功 {success_count}，失败 {fail_count}"
+            else:
+                self.logger.info(
+                    "批量读取完成: 成功 %d, 失败 %d",
+                    success_count,
+                    fail_count,
+                )
+                message = f"批量读取完成：成功 {success_count} 个，失败 {fail_count} 个"
+
+            return {
+                "success": True,
+                "message": message,
+                "results": all_results,
+                "success_count": success_count,
+                "fail_count": fail_count,
+                "total_tasks": total_tasks,
+                "was_stopped": was_stopped,
+            }
+
+        except Exception as e:
+            self._log_error("读取通达信数据", e)
+            return {
+                "success": False,
+                "message": f"读取失败: {str(e)}",
+            }
+
+    def stop_tdx_reader(self) -> Dict[str, Any]:
+        """停止通达信数据读取任务.
+
+        Returns:
+            Dict: 停止结果
+        """
+        try:
+            self._tdx_reader_stop_flag = True
+            self.logger.info("已发送停止信号")
+
+            return {
+                "success": True,
+                "message": "停止信号已发送，任务将在当前批次完成后停止",
+            }
+
+        except Exception as e:
+            self._log_error("停止通达信读取", e)
+            return {
+                "success": False,
+                "message": f"停止失败: {str(e)}",
+            }
+
+    def _get_symbols_from_cache(self, markets: List[str]) -> Dict[str, List[str]]:
+        """从品种缓存获取指定市场的品种列表.
+
+        Args:
+            markets: 市场代码列表 ['sh', 'sz', 'bj']
+
+        Returns:
+            Dict: 市场到品种列表的映射
+        """
+        try:
+            # 获取服务管理器和数据中心服务
+            from backend.core.base import get_service_manager
+
+            service_manager = get_service_manager()
+            data_center_service = service_manager.get_service("data_center_service")
+
+            if not data_center_service:
+                self.logger.warning("数据中心服务不可用")
+                return {}
+
+            # 获取品种列表
+            result = data_center_service.refresh_symbol_list()
+            if not result.get("success"):
+                self.logger.warning("获取品种列表失败")
+                return {}
+
+            symbols = result.get("data", [])
+            if not symbols:
+                return {}
+
+            # 市场映射
+            market_mapping = {
+                "sh": "上交所",
+                "sz": "深交所",
+                "bj": "北交所",
+            }
+
+            # 按市场分类
+            symbols_by_market = {market: [] for market in markets}
+
+            for symbol_info in symbols:
+                exchange = symbol_info.get("exchange", "")
+                symbol_code = symbol_info.get("symbol", "")
+
+                # 匹配市场
+                for market_code, exchange_name in market_mapping.items():
+                    if market_code in markets and exchange == exchange_name:
+                        symbols_by_market[market_code].append(symbol_code)
+                        break
+
+            # 打印统计
+            for market in markets:
+                count = len(symbols_by_market.get(market, []))
+                self.logger.info(
+                    "市场 %s: 找到 %d 个品种",
+                    market.upper(),
+                    count,
+                )
+
+            return symbols_by_market
+
+        except Exception as e:
+            self.logger.error("从缓存获取品种列表失败: %s", e)
+            return {}
+
+    def get_tdx_reader_config(self) -> Dict[str, Any]:
+        """获取通达信读取器的配置.
+
+        Returns:
+            Dict: 配置信息
+        """
+        try:
+            # 从配置管理器获取通达信根目录
+            try:
+                from backend.infrastructure.data_module_vnpy.config import config_manager
+
+                tdx_dir = config_manager.get_tdx_reader_root_dir()
+            except Exception:
+                tdx_dir = None
+
+            config = {
+                "tdx_root": str(tdx_dir) if tdx_dir else "",
+                "data_types": {
+                    "day": "日线",
+                    "5min": "5分钟线",
+                    "1min": "1分钟线",
+                },
+                "markets": {
+                    "sh": "上证",
+                    "sz": "深证",
+                    "bj": "北证",
+                },
+            }
+
+            return {
+                "success": True,
+                "config": config,
+            }
+
+        except Exception as e:
+            self._log_error("获取通达信读取器配置", e)
+            return {
+                "success": False,
+                "config": {},
+                "message": f"获取配置失败: {str(e)}",
             }

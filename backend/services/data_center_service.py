@@ -44,7 +44,8 @@ class DataCenterService(BaseService):
 
         # 数据源连接状态
         self.datafeeds: Dict[str, Any] = {
-            "data_engine": None,
+            "polling_gateway": None,
+            "virtual_gateway": None,
             "ifind": None,
             "rqdata": None,
             "tushare": None,
@@ -55,6 +56,10 @@ class DataCenterService(BaseService):
 
         # 实时推送状态
         self.realtime_push_active: bool = False
+
+        # 网关实例
+        self.polling_gateway = None
+        self.virtual_gateway = None
 
         # 品种列表缓存
         self._symbol_cache: Optional[Dict[str, Any]] = None
@@ -897,68 +902,109 @@ class DataCenterService(BaseService):
         except Exception as e:
             self.logger.error("推送下载事件失败: %s", str(e))
 
-    def get_download_progress(self, task_id: str) -> Dict[str, Any]:
-        """获取下载进度.
+    def get_download_progress(self, task_id: str = None) -> Dict[str, Any]:
+        """获取下载进度（支持从后端engine实时获取）.
 
         Args:
-            task_id: 任务ID
+            task_id: 任务ID（可选）
 
         Returns:
             Dict: 进度信息
         """
-        task = self._download_tasks.get(task_id)
-        if task is None:
-            return {
-                "success": False,
-                "message": "任务不存在",
-            }
+        # 🔧 新架构：直接从ChinaStockEngine获取实时进度
+        if self.china_stock_engine and hasattr(self.china_stock_engine, "get_download_progress"):
+            try:
+                progress = self.china_stock_engine.get_download_progress()
 
-        return {
-            "success": True,
-            "task_id": task_id,
-            "type": task["type"],
-            "status": task["status"],
-            "progress": task["progress"],
-            "start_time": task["start_time"].isoformat(),
-        }
+                if progress.get("is_downloading"):
+                    # 正在下载，返回实时进度
+                    completed = progress.get("completed", 0)
+                    total = progress.get("total", 1)
+                    progress_pct = (completed / total * 100) if total > 0 else 0
 
-    def stop_download(self, task_id: str) -> Dict[str, Any]:
-        """停止下载任务.
+                    return {
+                        "success": True,
+                        "is_downloading": True,
+                        "progress": progress_pct,
+                        "completed": completed,
+                        "total": total,
+                        "current_symbol": progress.get("current_symbol", ""),
+                        "current_interval": progress.get("current_interval", ""),
+                        "start_time": progress.get("start_time"),
+                    }
+                else:
+                    # 没有正在进行的下载
+                    return {
+                        "success": True,
+                        "is_downloading": False,
+                        "progress": 0,
+                    }
+            except Exception as e:
+                self.logger.error("获取实时进度失败: %s", e)
 
-        Args:
-            task_id: 任务ID
-
-        Returns:
-            Dict: 操作结果
-        """
-        try:
-            if task_id not in self._download_tasks:
+        # 旧逻辑：从任务字典获取
+        if task_id:
+            task = self._download_tasks.get(task_id)
+            if task is None:
                 return {
                     "success": False,
                     "message": "任务不存在",
                 }
 
-            # 实现实际的停止逻辑
-            task = self._download_tasks[task_id]
+            return {
+                "success": True,
+                "task_id": task_id,
+                "type": task["type"],
+                "status": task["status"],
+                "progress": task["progress"],
+                "start_time": task["start_time"].isoformat(),
+            }
 
+        # 无task_id且无正在进行的下载
+        return {
+            "success": True,
+            "is_downloading": False,
+            "progress": 0,
+        }
+
+    def stop_download(self, task_id: str = None) -> Dict[str, Any]:
+        """停止下载任务.
+
+        Args:
+            task_id: 任务ID（可选，如果未提供则停止当前任务）
+
+        Returns:
+            Dict: 操作结果
+        """
+        try:
             # 如果ChinaStockEngine支持停止操作，调用停止方法
             if self.china_stock_engine and hasattr(self.china_stock_engine, "stop_download"):
                 try:
                     self.china_stock_engine.stop_download()
-                    self.logger.info("已调用ChinaStockEngine停止下载")
+                    self.logger.info("✅ 已调用ChinaStockEngine停止下载")
+
+                    # 更新任务状态
+                    if task_id and task_id in self._download_tasks:
+                        task = self._download_tasks[task_id]
+                        task["status"] = "stopped"
+                        task["stop_time"] = datetime.now()
+                        self.logger.info("下载任务 %s 已停止", task_id)
+
+                    return {
+                        "success": True,
+                        "message": "任务已停止",
+                    }
                 except Exception as e:
                     self.logger.warning("调用停止下载失败: %s", e)
-
-            # 更新任务状态
-            task["status"] = "stopped"
-            task["stop_time"] = datetime.now()
-
-            self.logger.info("下载任务 %s 已停止", task_id)
-
-            return {
-                "success": True,
-                "message": "任务已停止",
-            }
+                    return {
+                        "success": False,
+                        "message": f"停止失败: {str(e)}",
+                    }
+            else:
+                return {
+                    "success": False,
+                    "message": "ChinaStockEngine不支持停止操作",
+                }
 
         except Exception as e:
             self._log_error("停止下载", e, task_id=task_id)
@@ -967,49 +1013,45 @@ class DataCenterService(BaseService):
                 "message": f"停止失败: {str(e)}",
             }
 
-    def pause_download(self, task_id: str) -> Dict[str, Any]:
+    def pause_download(self, task_id: str = None) -> Dict[str, Any]:
         """暂停下载任务.
 
         Args:
-            task_id: 任务ID
+            task_id: 任务ID（可选）
 
         Returns:
             Dict: 操作结果
         """
         try:
-            if task_id not in self._download_tasks:
-                return {
-                    "success": False,
-                    "message": "任务不存在",
-                }
-
-            task = self._download_tasks[task_id]
-
-            if task["status"] != "running":
-                return {
-                    "success": False,
-                    "message": f"任务状态为 '{task['status']}'，无法暂停",
-                }
-
             # 如果ChinaStockEngine支持暂停操作，调用暂停方法
             if self.china_stock_engine and hasattr(self.china_stock_engine, "pause_download"):
                 try:
                     self.china_stock_engine.pause_download()
-                    self.logger.info("已调用ChinaStockEngine暂停下载")
+                    self.logger.info("✅ 已调用ChinaStockEngine暂停下载")
+
+                    # 更新任务状态
+                    if task_id and task_id in self._download_tasks:
+                        task = self._download_tasks[task_id]
+                        task["status"] = "paused"
+                        task["paused_at"] = datetime.now()
+                        task["paused_progress"] = task.get("progress", 0)
+                        self.logger.info("下载任务 %s 已暂停", task_id)
+
+                    return {
+                        "success": True,
+                        "message": "任务已暂停",
+                    }
                 except Exception as e:
                     self.logger.warning("调用暂停下载失败: %s", e)
-
-            # 更新任务状态
-            task["status"] = "paused"
-            task["paused_at"] = datetime.now()
-            task["paused_progress"] = task.get("progress", 0)
-
-            self.logger.info("下载任务 %s 已暂停", task_id)
-
-            return {
-                "success": True,
-                "message": "任务已暂停",
-            }
+                    return {
+                        "success": False,
+                        "message": f"暂停失败: {str(e)}",
+                    }
+            else:
+                return {
+                    "success": False,
+                    "message": "ChinaStockEngine不支持暂停操作",
+                }
 
         except Exception as e:
             self._log_error("暂停下载", e, task_id=task_id)
@@ -1018,48 +1060,44 @@ class DataCenterService(BaseService):
                 "message": f"暂停失败: {str(e)}",
             }
 
-    def resume_download(self, task_id: str) -> Dict[str, Any]:
+    def resume_download(self, task_id: str = None) -> Dict[str, Any]:
         """恢复暂停的下载任务.
 
         Args:
-            task_id: 任务ID
+            task_id: 任务ID（可选）
 
         Returns:
             Dict: 操作结果
         """
         try:
-            if task_id not in self._download_tasks:
-                return {
-                    "success": False,
-                    "message": "任务不存在",
-                }
-
-            task = self._download_tasks[task_id]
-
-            if task["status"] != "paused":
-                return {
-                    "success": False,
-                    "message": f"任务状态为 '{task['status']}'，无法恢复",
-                }
-
             # 如果ChinaStockEngine支持恢复操作，调用恢复方法
             if self.china_stock_engine and hasattr(self.china_stock_engine, "resume_download"):
                 try:
                     self.china_stock_engine.resume_download()
-                    self.logger.info("已调用ChinaStockEngine恢复下载")
+                    self.logger.info("✅ 已调用ChinaStockEngine恢复下载")
+
+                    # 更新任务状态
+                    if task_id and task_id in self._download_tasks:
+                        task = self._download_tasks[task_id]
+                        task["status"] = "running"
+                        task["resumed_at"] = datetime.now()
+                        self.logger.info("下载任务 %s 已恢复", task_id)
+
+                    return {
+                        "success": True,
+                        "message": "任务已恢复",
+                    }
                 except Exception as e:
                     self.logger.warning("调用恢复下载失败: %s", e)
-
-            # 更新任务状态
-            task["status"] = "running"
-            task["resumed_at"] = datetime.now()
-
-            self.logger.info("下载任务 %s 已恢复", task_id)
-
-            return {
-                "success": True,
-                "message": "任务已恢复",
-            }
+                    return {
+                        "success": False,
+                        "message": f"恢复失败: {str(e)}",
+                    }
+            else:
+                return {
+                    "success": False,
+                    "message": "ChinaStockEngine不支持恢复操作",
+                }
 
         except Exception as e:
             self._log_error("恢复下载", e, task_id=task_id)
@@ -1109,8 +1147,8 @@ class DataCenterService(BaseService):
                 end_dt = dt.strptime(end_date, "%Y-%m-%d").date()
 
                 # 查询数据
-                data = self.china_stock_engine.query_bar_data(
-                    symbol=symbol, start_date=start_dt, end_date=end_dt, interval=interval
+                data = self.china_stock_engine.query_data(
+                    symbol=symbol, interval=interval, start_date=start_dt, end_date=end_dt
                 )
 
                 if data is not None and not data.empty:
@@ -2007,4 +2045,335 @@ class DataCenterService(BaseService):
             return {
                 "success": False,
                 "message": f"清理失败: {str(e)}",
+            }
+
+    # ==================== 轮询转推送网关管理 ====================
+
+    def start_polling_gateway(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        """启动轮询转推送网关.
+
+        Args:
+            config: 网关配置
+                - interval: 轮询间隔（秒）
+                - symbols: 订阅品种列表
+
+        Returns:
+            Dict: 启动结果
+        """
+        try:
+            self._log_operation("启动轮询转推送网关")
+
+            # 检查是否已有网关运行
+            if self.polling_gateway is not None:
+                return {
+                    "success": False,
+                    "message": "轮询网关已在运行，请先停止",
+                }
+
+            # 检查虚拟网关是否在运行（互斥）
+            if self.virtual_gateway is not None:
+                return {
+                    "success": False,
+                    "message": "虚拟网关正在运行，同时只能运行一个推送网关",
+                }
+
+            # 获取MainEngine和EventEngine
+            from backend.core.base import get_main_engine, get_event_engine
+
+            main_engine = get_main_engine()
+            event_engine = get_event_engine()
+
+            if not main_engine or not event_engine:
+                return {
+                    "success": False,
+                    "message": "MainEngine或EventEngine不可用",
+                }
+
+            # 导入网关类
+            try:
+                from backend.infrastructure.data_module_vnpy.polling_gateway import (
+                    PollingGateway,
+                )
+            except ImportError as e:
+                self.logger.error("导入PollingGateway失败: %s", e)
+                return {
+                    "success": False,
+                    "message": f"导入网关失败: {str(e)}",
+                }
+
+            # 创建网关实例
+            gateway_name = "POLLING"
+            self.polling_gateway = PollingGateway(event_engine, gateway_name)
+
+            # 准备配置
+            gateway_setting = {
+                "轮询间隔（秒）": config.get("interval", 60),
+                "品种列表": ",".join(config.get("symbols", [])),
+            }
+
+            # 连接网关
+            self.polling_gateway.connect(gateway_setting)
+
+            # 更新数据源状态
+            self.datafeeds["polling_gateway"] = self.polling_gateway
+            self.active_datafeed = "polling_gateway"
+            self.realtime_push_active = True
+
+            self.logger.info("✅ 轮询转推送网关已启动")
+
+            return {
+                "success": True,
+                "message": "轮询转推送网关已启动",
+                "gateway_name": gateway_name,
+            }
+
+        except Exception as e:
+            self._log_error("启动轮询网关", e)
+            # 清理
+            self.polling_gateway = None
+            self.datafeeds["polling_gateway"] = None
+            return {
+                "success": False,
+                "message": f"启动失败: {str(e)}",
+            }
+
+    def stop_polling_gateway(self) -> Dict[str, Any]:
+        """停止轮询转推送网关.
+
+        Returns:
+            Dict: 停止结果
+        """
+        try:
+            if self.polling_gateway is None:
+                return {
+                    "success": False,
+                    "message": "轮询网关未运行",
+                }
+
+            # 关闭网关
+            self.polling_gateway.close()
+            self.polling_gateway = None
+
+            # 更新状态
+            self.datafeeds["polling_gateway"] = None
+            if self.active_datafeed == "polling_gateway":
+                self.active_datafeed = None
+                self.realtime_push_active = False
+
+            self.logger.info("✅ 轮询转推送网关已停止")
+
+            return {
+                "success": True,
+                "message": "轮询转推送网关已停止",
+            }
+
+        except Exception as e:
+            self._log_error("停止轮询网关", e)
+            return {
+                "success": False,
+                "message": f"停止失败: {str(e)}",
+            }
+
+    def get_polling_gateway_status(self) -> Dict[str, Any]:
+        """获取轮询网关状态.
+
+        Returns:
+            Dict: 网关状态
+        """
+        try:
+            is_running = self.polling_gateway is not None
+
+            status = {
+                "running": is_running,
+                "gateway_name": "POLLING" if is_running else None,
+            }
+
+            # 如果网关在运行，获取更多状态信息
+            if is_running and self.polling_gateway:
+                # 获取订阅的品种数量
+                if hasattr(self.polling_gateway, "subscribed_symbols"):
+                    status["subscribed_count"] = len(self.polling_gateway.subscribed_symbols)
+
+            return {
+                "success": True,
+                "status": status,
+            }
+
+        except Exception as e:
+            self._log_error("获取轮询网关状态", e)
+            return {
+                "success": False,
+                "message": f"获取状态失败: {str(e)}",
+            }
+
+    # ==================== 虚拟推送网关管理 ====================
+
+    def start_virtual_gateway(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        """启动虚拟推送网关.
+
+        Args:
+            config: 网关配置
+                - start_datetime: 起始时间（格式：YYYY-MM-DD HH:MM:SS）
+                - speed: 推送速度倍数
+                - symbols: 订阅品种列表
+
+        Returns:
+            Dict: 启动结果
+        """
+        try:
+            self._log_operation("启动虚拟推送网关")
+
+            # 检查是否已有网关运行
+            if self.virtual_gateway is not None:
+                return {
+                    "success": False,
+                    "message": "虚拟网关已在运行，请先停止",
+                }
+
+            # 检查轮询网关是否在运行（互斥）
+            if self.polling_gateway is not None:
+                return {
+                    "success": False,
+                    "message": "轮询网关正在运行，同时只能运行一个推送网关",
+                }
+
+            # 验证起始时间
+            start_datetime_str = config.get("start_datetime", "")
+            if not start_datetime_str:
+                return {
+                    "success": False,
+                    "message": "必须指定起始时间",
+                }
+
+            # 获取MainEngine和EventEngine
+            from backend.core.base import get_main_engine, get_event_engine
+
+            main_engine = get_main_engine()
+            event_engine = get_event_engine()
+
+            if not main_engine or not event_engine:
+                return {
+                    "success": False,
+                    "message": "MainEngine或EventEngine不可用",
+                }
+
+            # 导入网关类
+            try:
+                from backend.infrastructure.data_module_vnpy.virtual_gateway import (
+                    VirtualGateway,
+                )
+            except ImportError as e:
+                self.logger.error("导入VirtualGateway失败: %s", e)
+                return {
+                    "success": False,
+                    "message": f"导入网关失败: {str(e)}",
+                }
+
+            # 创建网关实例
+            gateway_name = "VIRTUAL"
+            self.virtual_gateway = VirtualGateway(event_engine, gateway_name)
+
+            # 准备配置
+            gateway_setting = {
+                "起始时间": start_datetime_str,
+                "推送速度": config.get("speed", 1.0),
+                "品种列表": ",".join(config.get("symbols", [])),
+            }
+
+            # 连接网关
+            self.virtual_gateway.connect(gateway_setting)
+
+            # 更新数据源状态
+            self.datafeeds["virtual_gateway"] = self.virtual_gateway
+            self.active_datafeed = "virtual_gateway"
+            self.realtime_push_active = True
+
+            self.logger.info("✅ 虚拟推送网关已启动")
+
+            return {
+                "success": True,
+                "message": "虚拟推送网关已启动",
+                "gateway_name": gateway_name,
+            }
+
+        except Exception as e:
+            self._log_error("启动虚拟网关", e)
+            # 清理
+            self.virtual_gateway = None
+            self.datafeeds["virtual_gateway"] = None
+            return {
+                "success": False,
+                "message": f"启动失败: {str(e)}",
+            }
+
+    def stop_virtual_gateway(self) -> Dict[str, Any]:
+        """停止虚拟推送网关.
+
+        Returns:
+            Dict: 停止结果
+        """
+        try:
+            if self.virtual_gateway is None:
+                return {
+                    "success": False,
+                    "message": "虚拟网关未运行",
+                }
+
+            # 关闭网关
+            self.virtual_gateway.close()
+            self.virtual_gateway = None
+
+            # 更新状态
+            self.datafeeds["virtual_gateway"] = None
+            if self.active_datafeed == "virtual_gateway":
+                self.active_datafeed = None
+                self.realtime_push_active = False
+
+            self.logger.info("✅ 虚拟推送网关已停止")
+
+            return {
+                "success": True,
+                "message": "虚拟推送网关已停止",
+            }
+
+        except Exception as e:
+            self._log_error("停止虚拟网关", e)
+            return {
+                "success": False,
+                "message": f"停止失败: {str(e)}",
+            }
+
+    def get_virtual_gateway_status(self) -> Dict[str, Any]:
+        """获取虚拟网关状态.
+
+        Returns:
+            Dict: 网关状态
+        """
+        try:
+            is_running = self.virtual_gateway is not None
+
+            status = {
+                "running": is_running,
+                "gateway_name": "VIRTUAL" if is_running else None,
+            }
+
+            # 如果网关在运行，获取更多状态信息
+            if is_running and self.virtual_gateway:
+                # 获取订阅的品种数量
+                if hasattr(self.virtual_gateway, "subscribed_symbols"):
+                    status["subscribed_count"] = len(self.virtual_gateway.subscribed_symbols)
+                # 获取推送进度
+                if hasattr(self.virtual_gateway, "push_positions"):
+                    status["push_positions"] = self.virtual_gateway.push_positions
+
+            return {
+                "success": True,
+                "status": status,
+            }
+
+        except Exception as e:
+            self._log_error("获取虚拟网关状态", e)
+            return {
+                "success": False,
+                "message": f"获取状态失败: {str(e)}",
             }

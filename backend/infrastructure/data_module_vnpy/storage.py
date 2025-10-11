@@ -58,8 +58,26 @@ class StorageManager:
             # 标准化数据格式
             df = self._standardize_dataframe(dataframe, symbol, interval)
 
-            # 保存为Parquet文件
-            df.to_parquet(file_path, index=False, engine="pyarrow")
+            # 保存为Parquet文件（使用zstd压缩算法，压缩级别3）
+            # ============================================================
+            # 【存储策略说明】：
+            #   - 格式：Parquet二进制列式压缩格式
+            #   - 压缩算法：zstd (Zstandard)
+            #   - 压缩级别：3 (平衡压缩率和速度)
+            #   - 分区策略：按品种/周期两级目录分区（{symbol}/{interval}/data.parquet）
+            #   - 增量更新：通过merge_data()方法实现，去重后合并
+            #   - 查询优化：
+            #       * 列式存储支持按列读取，减少IO
+            #       * 时间范围过滤在读取时应用（query_kline方法）
+            #       * 支持谓词下推（predicate pushdown）优化查询性能
+            # ============================================================
+            df.to_parquet(
+                file_path,
+                index=False,
+                engine="pyarrow",
+                compression="zstd",
+                compression_level=3,
+            )
 
             self.logger.info("成功保存 %s %s 数据到: %s", symbol, interval, file_path)
             return file_path

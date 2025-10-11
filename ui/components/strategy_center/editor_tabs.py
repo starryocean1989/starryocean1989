@@ -9,7 +9,7 @@
 """
 
 from pathlib import Path
-from typing import Dict, Optional, Set
+from typing import Dict, Optional, Set, Any
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
@@ -22,11 +22,23 @@ from PySide6.QtWidgets import (
 
 from backend.core.utils import LoggerMixin
 
-# 尝试导入Monaco Editor，如果失败则降级到CodeEditor
+# 导入Monaco Editor（异步加载版）
+_editor_widget_available = False
+_editor_widget_class = None
+_editor_widget_name = None
+
 try:
-    from ui.widgets.monaco_editor_widget import MonacoEditorWidget as EditorWidget
-except ImportError:
-    from ui.widgets.code_editor_widget import CodeEditor as EditorWidget
+    from ui.widgets.monaco_editor_widget import MonacoEditorWidget, HAS_WEBENGINE
+
+    if HAS_WEBENGINE:
+        _editor_widget_class = MonacoEditorWidget
+        _editor_widget_available = True
+        _editor_widget_name = "Monaco Editor"
+        print("✓ Monaco Editor 可用（异步加载版）")
+    else:
+        print("✗ Monaco Editor 不可用 (缺少 PySide6-WebEngine)")
+except ImportError as e:
+    print(f"✗ Monaco Editor 导入失败: {e}")
 
 
 class EditorTabWidget(QTabWidget, LoggerMixin):
@@ -50,8 +62,8 @@ class EditorTabWidget(QTabWidget, LoggerMixin):
         """初始化多标签编辑器."""
         super().__init__(parent)
 
-        # 编辑器字典：{file_path: EditorWidget}
-        self.editors: Dict[str, EditorWidget] = {}
+        # 编辑器字典：{file_path: 编辑器组件}
+        self.editors: Dict[str, Any] = {}
 
         # 未保存文件集合
         self.unsaved_files: Set[str] = set()
@@ -126,8 +138,13 @@ class EditorTabWidget(QTabWidget, LoggerMixin):
             bool: 是否成功打开
         """
         try:
+            self.logger.info(f"🔍 [DEBUG] ===== editor_tabs.open_file 被调用 =====")
+            self.logger.info(f"🔍 [DEBUG] 原始路径: {file_path}")
+
             # 规范化路径
             file_path = str(Path(file_path).resolve())
+            self.logger.info(f"🔍 [DEBUG] 规范化后路径: {file_path}")
+            self.logger.info(f"🔍 [DEBUG] 文件是否存在: {Path(file_path).exists()}")
 
             # 如果文件已打开，切换到对应标签
             if file_path in self.editors:
@@ -137,43 +154,146 @@ class EditorTabWidget(QTabWidget, LoggerMixin):
                     self.logger.info(f"切换到已打开的文件: {file_path}")
                     return True
 
-            # 读取文件内容
+            # 检查文件是否存在
             if not Path(file_path).exists():
                 self.logger.error(f"文件不存在: {file_path}")
+                from PySide6.QtWidgets import QMessageBox
+
+                QMessageBox.warning(self, "文件不存在", f"无法打开文件，文件不存在:\n{file_path}")
                 return False
 
-            with open(file_path, "r", encoding="utf-8") as f:
-                content = f.read()
+            # 读取文件内容
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                self.logger.info(f"成功读取文件内容，长度: {len(content)}")
+            except Exception as read_error:
+                self.logger.error(f"读取文件失败: {read_error}", exc_info=True)
+                from PySide6.QtWidgets import QMessageBox
 
-            # 创建新的编辑器
-            editor = EditorWidget()
-            editor.setPlainText(content)
+                QMessageBox.critical(self, "读取失败", f"无法读取文件:\n{str(read_error)}")
+                return False
 
-            # 监控内容变化
-            if hasattr(editor, "textChanged"):
-                editor.textChanged.connect(lambda: self._on_content_changed(file_path))
+            # 🔧 创建Monaco Editor（异步加载版）
+            try:
+                self.logger.info(f"🔍 [DEBUG] 开始创建Monaco编辑器")
+
+                if not _editor_widget_available or _editor_widget_class is None:
+                    self.logger.error("Monaco Editor不可用")
+                    from PySide6.QtWidgets import QMessageBox
+
+                    QMessageBox.critical(
+                        self,
+                        "编辑器不可用",
+                        "Monaco Editor组件未正确加载。\n\n"
+                        "请安装编辑器依赖：\n"
+                        "pip install PySide6-WebEngine",
+                    )
+                    return False
+
+                self.logger.info("🔍 [DEBUG] === 开始创建Monaco Editor实例 ===")
+
+                try:
+                    editor = _editor_widget_class()
+                    self.logger.info("✓ Monaco Editor __init__ 完成")
+                except Exception as init_error:
+                    self.logger.error(f"🔴 Monaco __init__ 失败: {init_error}", exc_info=True)
+                    raise
+
+                try:
+                    # 设置内容（Monaco Editor 会自动处理异步加载）
+                    self.logger.info("🔍 [DEBUG] 准备设置内容...")
+                    editor.setPlainText(content)
+                    self.logger.info("✓ 内容设置完成")
+                except Exception as content_error:
+                    self.logger.error(f"🔴 setPlainText 失败: {content_error}", exc_info=True)
+                    raise
+
+                # 检查编辑器状态
+                if hasattr(editor, "isReady"):
+                    is_ready = editor.isReady()
+                    self.logger.info(f"编辑器内容设置完成（就绪状态: {is_ready}）")
+                else:
+                    self.logger.info("编辑器内容设置完成")
+
+                # 🔧 修复：延迟连接信号，避免初始化时触发
+                self.logger.info("🔍 [DEBUG] 准备连接内容变化信号")
+
+                # 监控内容变化（兼容不同编辑器的信号）
+                try:
+                    if hasattr(editor, "textChanged"):
+                        # CodeEditor 使用 textChanged 信号
+                        editor.textChanged.connect(lambda: self._on_content_changed(file_path))
+                        self.logger.info("✓ 内容变化信号连接成功（textChanged）")
+                    elif hasattr(editor, "contentChanged"):
+                        # MonacoEditorWidget 使用 contentChanged 信号
+                        # 注意：不使用content参数，避免潜在的递归
+                        editor.contentChanged.connect(lambda _: self._on_content_changed(file_path))
+                        self.logger.info("✓ 内容变化信号连接成功（contentChanged）")
+                    else:
+                        self.logger.warning("编辑器不支持内容变化信号")
+                except Exception as signal_error:
+                    self.logger.error(f"⚠️ 信号连接失败: {signal_error}", exc_info=True)
+
+            except Exception as editor_error:
+                self.logger.error(f"创建编辑器失败: {editor_error}", exc_info=True)
+                from PySide6.QtWidgets import QMessageBox
+
+                QMessageBox.critical(
+                    self,
+                    "编辑器错误",
+                    f"无法创建编辑器组件:\n{str(editor_error)}\n\n"
+                    f"错误详情: {type(editor_error).__name__}\n\n"
+                    "请检查编辑器依赖是否正确安装。",
+                )
+                return False
+
+            # 🔧 修复：验证编辑器对象有效性
+            if not editor or not hasattr(editor, "toPlainText"):
+                self.logger.error("编辑器对象无效或缺少必要方法")
+                from PySide6.QtWidgets import QMessageBox
+
+                QMessageBox.critical(self, "编辑器错误", "编辑器对象创建失败，缺少必要方法")
+                return False
 
             # 保存编辑器引用
             self.editors[file_path] = editor
 
             # 添加标签
             file_name = Path(file_path).name
-            index = self.addTab(editor, file_name)
+            self.logger.info(f"🔍 [DEBUG] 准备添加标签: {file_name}")
 
-            # 设置标签提示（显示完整路径）
-            self.setTabToolTip(index, file_path)
+            try:
+                index = self.addTab(editor, file_name)
+                self.logger.info(f"🔍 [DEBUG] 标签添加成功，索引: {index}")
 
-            # 切换到新标签
-            self.setCurrentIndex(index)
+                # 设置标签提示（显示完整路径）
+                self.setTabToolTip(index, file_path)
 
-            # 发送信号
-            self.file_opened.emit(file_path)
+                # 切换到新标签
+                self.setCurrentIndex(index)
+                self.logger.info(f"🔍 [DEBUG] 已切换到新标签")
 
-            self.logger.info(f"成功打开文件: {file_path}")
-            return True
+                # 发送信号
+                self.file_opened.emit(file_path)
+
+                self.logger.info(f"✓ 成功打开文件: {file_path}")
+                return True
+            except Exception as tab_error:
+                self.logger.error(f"🔴 添加标签失败: {tab_error}", exc_info=True)
+                # 清理已创建的编辑器
+                if file_path in self.editors:
+                    del self.editors[file_path]
+                from PySide6.QtWidgets import QMessageBox
+
+                QMessageBox.critical(self, "标签错误", f"无法添加标签:\n{str(tab_error)}")
+                return False
 
         except Exception as e:
             self.logger.error(f"打开文件失败: {file_path}, 错误: {e}", exc_info=True)
+            from PySide6.QtWidgets import QMessageBox
+
+            QMessageBox.critical(self, "打开失败", f"打开文件时发生未知错误:\n{str(e)}")
             return False
 
     def close_file(self, file_path: str, force: bool = False) -> bool:
@@ -308,14 +428,15 @@ class EditorTabWidget(QTabWidget, LoggerMixin):
 
     # ==================== 编辑器访问 ====================
 
-    def get_current_editor(self) -> Optional[EditorWidget]:
+    def get_current_editor(self) -> Optional[Any]:
         """获取当前活动的编辑器.
 
         Returns:
-            Optional[EditorWidget]: 当前编辑器，如果没有则返回None
+            Optional[Any]: 当前编辑器组件，如果没有则返回None
         """
         current_widget = self.currentWidget()
-        if isinstance(current_widget, EditorWidget):
+        # 检查是否是编辑器组件（有 toPlainText 方法）
+        if current_widget and hasattr(current_widget, "toPlainText"):
             return current_widget
         return None
 

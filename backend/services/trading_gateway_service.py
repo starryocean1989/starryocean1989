@@ -9,6 +9,8 @@
 """
 
 import contextlib
+import json
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 from enum import Enum
@@ -49,9 +51,67 @@ class TradingGatewayService(BaseService):
     4. 风险管理 - 风险指标、预警、限额管理
     """
 
+    # 策略引擎名称映射（小写格式 -> VnPy引擎名称）
+    ENGINE_NAME_MAP = {
+        "ctastrategy": "CtaStrategy",
+        "algotrading": "AlgoTrading",
+        "optionmaster": "OptionMaster",
+        "portfoliostrategy": "PortfolioStrategy",
+        "scripttrader": "ScriptTrader",
+        "spreadtrading": "SpreadTrading",
+    }
+
+    # 策略应用类映射（引擎名称 -> (模块名, 类名)）
+    APP_CLASS_MAP = {
+        "CtaStrategy": ("vnpy_ctastrategy", "CtaStrategyApp"),
+        "AlgoTrading": ("vnpy_algotrading", "AlgoTradingApp"),
+        "OptionMaster": ("vnpy_optionmaster", "OptionMasterApp"),
+        "PortfolioStrategy": ("vnpy_portfoliostrategy", "PortfolioStrategyApp"),
+        "ScriptTrader": ("vnpy_scripttrader", "ScriptTraderApp"),
+        "SpreadTrading": ("vnpy_spreadtrading", "SpreadTradingApp"),
+    }
+
+    # 友好的策略类型名称
+    ENGINE_DISPLAY_NAMES = {
+        "CtaStrategy": "CTA策略",
+        "AlgoTrading": "算法交易",
+        "OptionMaster": "期权分析",
+        "PortfolioStrategy": "组合策略",
+        "ScriptTrader": "脚本交易",
+        "SpreadTrading": "价差交易",
+    }
+
+    # 支持策略池部署的引擎（其他引擎有不同的使用方式）
+    STRATEGY_POOL_SUPPORTED_ENGINES = {
+        "CtaStrategy",  # ✅ CTA策略 - 支持add_strategy
+        "PortfolioStrategy",  # ✅ 组合策略 - 支持add_strategy
+        "SpreadTrading",  # ✅ 价差交易 - 支持add_strategy
+    }
+
+    @staticmethod
+    def _check_package_installed(module_name: str) -> bool:
+        """动态检测包是否已安装.
+
+        Args:
+            module_name: 模块名称
+
+        Returns:
+            bool: 是否已安装
+        """
+        try:
+            import importlib.util
+
+            spec = importlib.util.find_spec(module_name)
+            return spec is not None
+        except (ImportError, ValueError, AttributeError):
+            return False
+
     def __init__(self):
         """初始化交易网关服务."""
         super().__init__()
+
+        # 记录已加载的策略应用
+        self.loaded_apps = set()
 
         # 网关实例管理
         self.gateway_instances: Dict[str, Dict[str, Any]] = {}
@@ -67,6 +127,9 @@ class TradingGatewayService(BaseService):
 
         # 风险管理引擎
         self.risk_engine = None
+
+        # 配置文件路径
+        self.config_file = Path("config/terminal_config.json")
 
         self.logger.info("交易网关服务已创建")
 
@@ -85,6 +148,9 @@ class TradingGatewayService(BaseService):
 
             # 初始化风险管理引擎
             self._init_risk_manager()
+
+            # 加载已保存的网关配置
+            self._load_gateway_configs()
 
             return True
 
@@ -319,6 +385,79 @@ class TradingGatewayService(BaseService):
             # 风控参数设置失败是常见情况，降低日志级别
             self.logger.debug("设置风控参数失败: %s", e)
 
+    def _load_gateway_configs(self):
+        """从配置文件加载网关配置."""
+        try:
+            if not self.config_file.exists():
+                self.logger.info("配置文件不存在，跳过网关配置加载")
+                return
+
+            with open(self.config_file, "r", encoding="utf-8") as f:
+                config = json.load(f)
+
+            gateways = config.get("gateways", [])
+            if not gateways:
+                self.logger.info("没有保存的网关配置")
+                return
+
+            self.logger.info(f"开始加载 {len(gateways)} 个网关配置")
+
+            for gateway_config in gateways:
+                gateway_name = gateway_config.get("name")
+                gateway_type = gateway_config.get("type")
+                config_data = gateway_config.get("config", {})
+
+                if not gateway_name or not gateway_type:
+                    self.logger.warning(f"无效的网关配置: {gateway_config}")
+                    continue
+
+                # 创建网关实例
+                result = self.create_gateway(gateway_name, gateway_type, config_data)
+
+                if result.get("success"):
+                    self.logger.info(f"✓ 网关 '{gateway_name}' 加载成功")
+                else:
+                    self.logger.warning(
+                        f"✗ 网关 '{gateway_name}' 加载失败: {result.get('message')}"
+                    )
+
+            self.logger.info("网关配置加载完成")
+
+        except Exception as e:
+            self.logger.error(f"加载网关配置失败: {e}", exc_info=True)
+
+    def _save_gateway_configs(self):
+        """保存网关配置到配置文件."""
+        try:
+            # 读取现有配置
+            if self.config_file.exists():
+                with open(self.config_file, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+            else:
+                config = {}
+
+            # 构建网关配置列表
+            gateways = []
+            for name, info in self.gateway_instances.items():
+                gateway_config = {
+                    "name": name,
+                    "type": info["type"],
+                    "config": info["config"],
+                }
+                gateways.append(gateway_config)
+
+            # 更新配置
+            config["gateways"] = gateways
+
+            # 保存到文件
+            with open(self.config_file, "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=2, ensure_ascii=False)
+
+            self.logger.info(f"网关配置已保存，共 {len(gateways)} 个网关")
+
+        except Exception as e:
+            self.logger.error(f"保存网关配置失败: {e}", exc_info=True)
+
     # ==================== 网关管理 ====================
 
     def get_gateway_types(self) -> List[Dict[str, Any]]:
@@ -403,6 +542,9 @@ class TradingGatewayService(BaseService):
             self.strategy_instances[gateway_name] = {}
 
             self.logger.info("网关 '%s' (类型: %s) 创建成功", gateway_name, gateway_type)
+
+            # 保存网关配置到文件
+            self._save_gateway_configs()
 
             return {
                 "success": True,
@@ -541,6 +683,9 @@ class TradingGatewayService(BaseService):
             if gateway_name in self.strategy_instances:
                 del self.strategy_instances[gateway_name]
 
+            # 保存网关配置到文件
+            self._save_gateway_configs()
+
             return {
                 "success": True,
                 "message": f"网关 '{gateway_name}' 已删除",
@@ -619,13 +764,48 @@ class TradingGatewayService(BaseService):
                 }
 
             # 确定策略引擎类型（默认CTA）
-            engine_name = strategy_params.get("engine_type", "CtaStrategy")
+            engine_type_param = strategy_params.get("engine_type", "ctastrategy")
+            # 将小写格式转换为vnpy的引擎名称格式
+            engine_name = self.ENGINE_NAME_MAP.get(
+                engine_type_param.lower() if isinstance(engine_type_param, str) else "ctastrategy",
+                "CtaStrategy",
+            )
 
             # 检查main_engine是否可用
             if self.main_engine is None:
                 return {
                     "success": False,
                     "message": "MainEngine不可用",
+                }
+
+            # 按需加载策略应用
+            if not self._ensure_app_loaded(engine_name):
+                # 获取友好的错误提示
+                display_name = self.ENGINE_DISPLAY_NAMES.get(engine_name, engine_name)
+                module_name = self.APP_CLASS_MAP.get(engine_name, ("未知", ""))[0]
+
+                error_msg = (
+                    f"{display_name}引擎不可用。\n\n"
+                    f"原因：扩展包 {module_name} 未安装或加载失败。\n\n"
+                    f"当前已安装的策略引擎：\n"
+                )
+
+                # 列出可用的引擎（动态检测）
+                available = []
+                for name, (mod, cls) in self.APP_CLASS_MAP.items():
+                    if self._check_package_installed(mod):
+                        available.append(self.ENGINE_DISPLAY_NAMES.get(name, name))
+
+                if available:
+                    error_msg += "  • " + "\n  • ".join(available)
+                else:
+                    error_msg += "  (无)"
+
+                error_msg += f"\n\n如需使用{display_name}，请确保扩展包 {module_name} 已正确安装。"
+
+                return {
+                    "success": False,
+                    "message": error_msg,
                 }
 
             # 获取策略引擎
@@ -642,22 +822,21 @@ class TradingGatewayService(BaseService):
                     "message": f"获取策略引擎失败: {str(e)}",
                 }
 
-            # 准备策略配置
-            vt_symbols = strategy_params.get("vt_symbols", [])
-            setting = {
-                k: v for k, v in strategy_params.items() if k not in ["engine_type", "vt_symbols"]
-            }
-
-            # 部署策略到引擎
+            # 根据引擎类型准备不同的参数和调用不同的API
             try:
-                strategy_engine.add_strategy(
-                    class_name=strategy_class,
+                deploy_result = self._deploy_to_engine(
+                    strategy_engine=strategy_engine,
+                    engine_name=engine_name,
+                    strategy_class=strategy_class,
                     strategy_name=strategy_name,
-                    vt_symbols=vt_symbols,
-                    setting=setting,
+                    strategy_params=strategy_params,
                 )
 
-                self.logger.info("策略 '%s' 已添加到引擎 '%s'", strategy_name, engine_name)
+                if not deploy_result["success"]:
+                    return deploy_result
+
+                # 获取部署信息
+                deployed_info = deploy_result["info"]
 
             except Exception as e:
                 self.logger.error("添加策略失败: %s", e, exc_info=True)
@@ -672,7 +851,7 @@ class TradingGatewayService(BaseService):
                 "class": strategy_class,
                 "params": strategy_params,
                 "engine_name": engine_name,
-                "vt_symbols": vt_symbols,
+                "deployed_info": deployed_info,  # 引擎特定的部署信息
                 "status": "stopped",
                 "deploy_time": datetime.now(),
             }
@@ -715,7 +894,16 @@ class TradingGatewayService(BaseService):
                 }
 
             strategy_info = self.strategy_instances[gateway_name][strategy_name]
-            engine_name = strategy_info.get("engine_name", "CtaStrategy")
+            # 获取引擎名称，确保使用正确的格式
+            engine_name_stored = strategy_info.get("engine_name", "CtaStrategy")
+            engine_name = self.ENGINE_NAME_MAP.get(
+                (
+                    engine_name_stored.lower()
+                    if isinstance(engine_name_stored, str)
+                    else "ctastrategy"
+                ),
+                engine_name_stored,
+            )
 
             # 检查main_engine是否可用
             if self.main_engine is None:
@@ -738,15 +926,29 @@ class TradingGatewayService(BaseService):
                     "message": f"获取策略引擎失败: {str(e)}",
                 }
 
+            # 检查启动前置条件
+            precondition_check = self._check_strategy_start_preconditions(
+                gateway_name, strategy_info, engine_name
+            )
+            if not precondition_check["success"]:
+                return precondition_check
+
             # 初始化并启动策略
             try:
                 # 先初始化策略
+                self.logger.info("正在初始化策略 '%s'...", strategy_name)
                 strategy_engine.init_strategy(strategy_name)
-                self.logger.info("策略 '%s' 初始化完成", strategy_name)
+                self.logger.info("✅ 策略 '%s' 初始化完成", strategy_name)
+
+                # 等待初始化完成（init_strategy可能是异步的）
+                import time
+
+                time.sleep(0.5)
 
                 # 启动策略
+                self.logger.info("正在启动策略 '%s'...", strategy_name)
                 strategy_engine.start_strategy(strategy_name)
-                self.logger.info("策略 '%s' 已启动", strategy_name)
+                self.logger.info("✅ 策略 '%s' 已启动", strategy_name)
 
             except Exception as e:
                 self.logger.error("启动策略失败: %s", e, exc_info=True)
@@ -795,7 +997,16 @@ class TradingGatewayService(BaseService):
                 }
 
             strategy_info = self.strategy_instances[gateway_name][strategy_name]
-            engine_name = strategy_info.get("engine_name", "CtaStrategy")
+            # 获取引擎名称，确保使用正确的格式
+            engine_name_stored = strategy_info.get("engine_name", "CtaStrategy")
+            engine_name = self.ENGINE_NAME_MAP.get(
+                (
+                    engine_name_stored.lower()
+                    if isinstance(engine_name_stored, str)
+                    else "ctastrategy"
+                ),
+                engine_name_stored,
+            )
 
             # 检查main_engine是否可用
             if self.main_engine is None:
@@ -991,6 +1202,375 @@ class TradingGatewayService(BaseService):
         """停止所有策略."""
         for gateway_name in self.strategy_instances:
             self._stop_gateway_strategies(gateway_name)
+
+    def _deploy_to_engine(
+        self,
+        strategy_engine: Any,
+        engine_name: str,
+        strategy_class: str,
+        strategy_name: str,
+        strategy_params: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """根据引擎类型部署策略.
+
+        不同的策略引擎有不同的API：
+        - CTA策略: add_strategy(class_name, strategy_name, vt_symbol, setting)
+        - 组合策略: add_strategy(class_name, strategy_name, vt_symbols, setting)
+        - 价差交易: add_strategy(class_name, strategy_name, spread_name, setting)
+        - 算法交易: start_algo(algo_template, setting) - 不同的模式
+
+        Args:
+            strategy_engine: 策略引擎实例
+            engine_name: 引擎名称
+            strategy_class: 策略类名
+            strategy_name: 策略名称
+            strategy_params: 策略参数
+
+        Returns:
+            Dict: 部署结果
+        """
+        # 排除引擎类型参数
+        setting = {k: v for k, v in strategy_params.items() if k not in ["engine_type"]}
+
+        try:
+            if engine_name == "CtaStrategy":
+                # CTA策略: 单合约
+                vt_symbol = self._get_vt_symbol(strategy_params)
+                if not vt_symbol:
+                    return {
+                        "success": False,
+                        "message": "CTA策略需要vt_symbol参数（合约代码）",
+                    }
+
+                # 移除vt_symbol和vt_symbols，放入setting中的其他参数
+                setting = {k: v for k, v in setting.items() if k not in ["vt_symbol", "vt_symbols"]}
+
+                strategy_engine.add_strategy(
+                    class_name=strategy_class,
+                    strategy_name=strategy_name,
+                    vt_symbol=vt_symbol,
+                    setting=setting,
+                )
+
+                self.logger.info("✅ CTA策略 '%s' 已部署，合约: %s", strategy_name, vt_symbol)
+                return {
+                    "success": True,
+                    "info": {"vt_symbol": vt_symbol, "type": "cta"},
+                }
+
+            elif engine_name == "PortfolioStrategy":
+                # 组合策略: 多合约
+                vt_symbols = strategy_params.get("vt_symbols", [])
+                if not vt_symbols:
+                    # 兼容单合约
+                    vt_symbol = strategy_params.get("vt_symbol", "")
+                    if vt_symbol:
+                        vt_symbols = [vt_symbol]
+
+                if not vt_symbols:
+                    return {
+                        "success": False,
+                        "message": "组合策略需要vt_symbols参数（合约列表）",
+                    }
+
+                # 移除vt_symbols，放入setting中的其他参数
+                setting = {k: v for k, v in setting.items() if k not in ["vt_symbol", "vt_symbols"]}
+
+                strategy_engine.add_strategy(
+                    class_name=strategy_class,
+                    strategy_name=strategy_name,
+                    vt_symbols=vt_symbols,
+                    setting=setting,
+                )
+
+                self.logger.info("✅ 组合策略 '%s' 已部署，合约: %s", strategy_name, vt_symbols)
+                return {
+                    "success": True,
+                    "info": {"vt_symbols": vt_symbols, "type": "portfolio"},
+                }
+
+            elif engine_name == "SpreadTrading":
+                # 价差交易: 使用价差名称
+                spread_name = strategy_params.get("spread_name", "")
+                if not spread_name:
+                    return {
+                        "success": False,
+                        "message": "价差交易策略需要spread_name参数（价差组合名称）",
+                    }
+
+                # 移除spread_name，放入setting中的其他参数
+                setting = {k: v for k, v in setting.items() if k != "spread_name"}
+
+                strategy_engine.add_strategy(
+                    class_name=strategy_class,
+                    strategy_name=strategy_name,
+                    spread_name=spread_name,
+                    setting=setting,
+                )
+
+                self.logger.info(
+                    "✅ 价差交易策略 '%s' 已部署，价差: %s", strategy_name, spread_name
+                )
+                return {
+                    "success": True,
+                    "info": {"spread_name": spread_name, "type": "spread"},
+                }
+
+            elif engine_name == "OptionMaster":
+                # 期权引擎: 不是用来部署策略的，而是期权分析工具
+                return {
+                    "success": False,
+                    "message": (
+                        "期权分析引擎不支持通过策略池部署。\n\n"
+                        "期权引擎（OptionMaster）是专业的期权分析和对冲工具，提供：\n"
+                        "  • 期权T型报价展示\n"
+                        "  • 希腊字母计算和监控\n"
+                        "  • 期权定价算法\n"
+                        "  • 期权对冲算法\n"
+                        "  • 隐含波动率分析\n\n"
+                        "它不是传统的策略引擎，无法通过策略池部署。\n"
+                        "如需进行期权交易策略，建议使用CTA策略引擎，\n"
+                        "在策略代码中调用期权相关的交易逻辑。"
+                    ),
+                }
+
+            elif engine_name == "AlgoTrading":
+                # 算法交易: 使用start_algo而不是add_strategy
+                return {
+                    "success": False,
+                    "message": (
+                        "算法交易引擎不支持通过策略池部署。\n\n"
+                        "算法交易（AlgoTrading）是一次性执行的智能订单算法，包括：\n"
+                        "  • TWAP（时间加权平均）\n"
+                        "  • VWAP（成交量加权平均）\n"
+                        "  • 冰山算法\n"
+                        "  • 狙击手算法\n\n"
+                        "使用方式：在下单时选择算法类型，而不是预先部署到策略池。"
+                    ),
+                }
+
+            elif engine_name == "ScriptTrader":
+                # 脚本交易: 特殊的执行模式
+                return {
+                    "success": False,
+                    "message": (
+                        "脚本交易引擎不支持通过策略池部署。\n\n"
+                        "脚本交易（ScriptTrader）是灵活的Python脚本执行环境，\n"
+                        "用于快速验证交易想法或执行临时交易任务。\n\n"
+                        "使用方式：直接在脚本交易界面编写和执行Python脚本。"
+                    ),
+                }
+
+            else:
+                # 未知引擎，尝试通用方法
+                vt_symbol = self._get_vt_symbol(strategy_params)
+                if not vt_symbol:
+                    return {
+                        "success": False,
+                        "message": f"未知的引擎类型: {engine_name}",
+                    }
+
+                setting = {k: v for k, v in setting.items() if k not in ["vt_symbol", "vt_symbols"]}
+
+                strategy_engine.add_strategy(
+                    class_name=strategy_class,
+                    strategy_name=strategy_name,
+                    vt_symbol=vt_symbol,
+                    setting=setting,
+                )
+
+                self.logger.info("✅ 策略 '%s' 已部署到 %s", strategy_name, engine_name)
+                return {
+                    "success": True,
+                    "info": {"vt_symbol": vt_symbol, "type": "generic"},
+                }
+
+        except Exception as e:
+            self.logger.error("部署策略到引擎失败: %s", e, exc_info=True)
+            return {
+                "success": False,
+                "message": f"部署失败: {str(e)}",
+            }
+
+    def _get_vt_symbol(self, strategy_params: Dict[str, Any]) -> str:
+        """从参数中获取vt_symbol（兼容多种格式）.
+
+        Args:
+            strategy_params: 策略参数
+
+        Returns:
+            str: 合约代码
+        """
+        # 优先使用vt_symbol
+        vt_symbol = strategy_params.get("vt_symbol", "")
+
+        if not vt_symbol:
+            # 兼容vt_symbols列表（取第一个）
+            vt_symbols = strategy_params.get("vt_symbols", [])
+            if vt_symbols:
+                vt_symbol = vt_symbols[0] if isinstance(vt_symbols, list) else str(vt_symbols)
+
+        return vt_symbol
+
+    def _check_strategy_start_preconditions(
+        self, gateway_name: str, strategy_info: Dict[str, Any], engine_name: str
+    ) -> Dict[str, Any]:
+        """检查策略启动的前置条件.
+
+        策略启动需要满足：
+        1. 网关已连接
+        2. 合约数据可用（可以订阅行情）
+        3. 策略类已注册到引擎
+
+        Args:
+            gateway_name: 网关名称
+            strategy_info: 策略信息
+            engine_name: 引擎名称
+
+        Returns:
+            Dict: 检查结果
+        """
+        issues = []
+
+        # 1. 检查网关连接状态
+        if gateway_name in self.gateway_instances:
+            gateway_info = self.gateway_instances[gateway_name]
+            if not gateway_info.get("connected", False):
+                issues.append("网关未连接")
+                self.logger.warning("⚠️ 网关 '%s' 未连接", gateway_name)
+
+        # 2. 检查合约数据
+        if self.main_engine:
+            # 获取合约信息
+            deployed_info = strategy_info.get("deployed_info", {})
+            vt_symbol = deployed_info.get("vt_symbol")
+            vt_symbols = deployed_info.get("vt_symbols", [])
+
+            symbols_to_check = []
+            if vt_symbol:
+                symbols_to_check.append(vt_symbol)
+            if vt_symbols:
+                symbols_to_check.extend(vt_symbols)
+
+            if symbols_to_check:
+                missing_contracts = []
+                for symbol in symbols_to_check:
+                    contract = self.main_engine.get_contract(symbol)
+                    if not contract:
+                        missing_contracts.append(symbol)
+
+                if missing_contracts:
+                    issues.append(f"找不到合约: {', '.join(missing_contracts)}")
+                    self.logger.warning(
+                        "⚠️ 找不到合约数据: %s (网关可能未连接或未订阅该合约)", missing_contracts
+                    )
+
+        # 如果有问题，返回友好提示
+        if issues:
+            error_msg = "策略启动前置条件不满足：\n\n"
+            for i, issue in enumerate(issues, 1):
+                error_msg += f"{i}. {issue}\n"
+
+            error_msg += "\n💡 解决方案：\n"
+            if "网关未连接" in str(issues):
+                error_msg += "  • 请先连接网关\n"
+            if "找不到合约" in str(issues):
+                error_msg += "  • 确保网关已连接\n"
+                error_msg += "  • 确保合约代码格式正确（如：600000.SSE）\n"
+                error_msg += "  • 网关连接后会自动获取可用合约\n"
+
+            return {
+                "success": False,
+                "message": error_msg.strip(),
+            }
+
+        return {"success": True}
+
+    def _ensure_app_loaded(self, engine_name: str) -> bool:
+        """确保策略应用已加载.
+
+        Args:
+            engine_name: 引擎名称（如"CtaStrategy"）
+
+        Returns:
+            bool: 是否成功加载
+        """
+        # 如果已加载，直接返回
+        if engine_name in self.loaded_apps:
+            return True
+
+        # 检查main_engine
+        if not self.main_engine:
+            self.logger.error("MainEngine不可用，无法加载策略应用")
+            return False
+
+        # 获取应用类信息
+        if engine_name not in self.APP_CLASS_MAP:
+            self.logger.error("未知的策略引擎: %s", engine_name)
+            return False
+
+        module_name, class_name = self.APP_CLASS_MAP[engine_name]
+        display_name = self.ENGINE_DISPLAY_NAMES.get(engine_name, engine_name)
+
+        # 动态检测包是否已安装
+        is_installed = self._check_package_installed(module_name)
+
+        if not is_installed:
+            self.logger.error("❌ %s引擎不可用：扩展包 %s 未安装", display_name, module_name)
+            return False
+
+        try:
+            # 动态导入模块
+            import importlib
+
+            module = importlib.import_module(module_name)
+            app_class = getattr(module, class_name)
+
+            # 添加到MainEngine
+            self.main_engine.add_app(app_class)
+            self.loaded_apps.add(engine_name)
+
+            self.logger.info("✅ 策略应用 %s 已按需加载", display_name)
+            return True
+
+        except ImportError as e:
+            self.logger.error("❌ 策略包 %s 导入失败: %s", module_name, e)
+            return False
+        except AttributeError as e:
+            self.logger.error("❌ 策略应用类 %s 不存在: %s", class_name, e)
+            return False
+        except Exception as e:
+            self.logger.error("❌ 加载策略应用 %s 失败: %s", engine_name, e, exc_info=True)
+            return False
+
+    def get_available_engine_types(self) -> List[Dict[str, Any]]:
+        """获取可用的策略引擎类型列表.
+
+        只返回支持策略池部署的引擎类型。
+
+        Returns:
+            List[Dict]: 引擎类型列表，包含名称、显示名称、是否可用
+        """
+        available_engines = []
+        for engine_name, (module_name, class_name) in self.APP_CLASS_MAP.items():
+            # 只返回支持策略池的引擎
+            if engine_name not in self.STRATEGY_POOL_SUPPORTED_ENGINES:
+                continue
+
+            display_name = self.ENGINE_DISPLAY_NAMES.get(engine_name, engine_name)
+            # 动态检测包是否已安装
+            is_installed = self._check_package_installed(module_name)
+            available_engines.append(
+                {
+                    "engine_name": engine_name,
+                    "display_name": display_name,
+                    "module_name": module_name,
+                    "is_installed": is_installed,
+                    "is_available": is_installed,  # 兼容旧字段名
+                    "supports_strategy_pool": True,
+                }
+            )
+        return available_engines
 
     # ==================== 交易监控 ====================
 

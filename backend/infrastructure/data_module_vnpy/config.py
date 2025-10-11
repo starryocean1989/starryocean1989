@@ -33,6 +33,17 @@ class ConfigManager:
         "chinastock.retry_times": 3,
         "chinastock.enable_watcher": True,
         "chinastock.watcher_interval": 5,
+        # 轮询数据源转换器配置
+        "chinastock.polling_gateway.enabled": False,
+        "chinastock.polling_gateway.interval": 60,  # 轮询间隔（秒）
+        # 品种列表默认从本地缓存加载，不再提供默认配置
+        # 虚拟推送数据网关配置
+        "chinastock.virtual_gateway.enabled": False,
+        "chinastock.virtual_gateway.start_datetime": "",  # 虚拟推送起始时间（格式：YYYY-MM-DD HH:MM:SS）
+        "chinastock.virtual_gateway.speed": 1.0,  # 推送速度倍数（1.0=实时，2.0=2倍速）
+        # 品种列表默认从本地缓存加载，不再提供默认配置
+        # 数据标准化读取工具配置
+        "chinastock.data_readers.tdx_root_dir": "C:/new_tdx",  # 通达信软件根目录
     }
 
     def __init__(self):
@@ -114,6 +125,33 @@ class ConfigManager:
     def get_watcher_interval(self) -> int:
         """获取文件监控间隔（秒）"""
         return int(self.get("chinastock.watcher_interval", 5))
+
+    def is_polling_gateway_enabled(self) -> bool:
+        """是否启用轮询数据源转换器"""
+        return bool(self.get("chinastock.polling_gateway.enabled", False))
+
+    def get_polling_interval(self) -> int:
+        """获取轮询间隔（秒）"""
+        return int(self.get("chinastock.polling_gateway.interval", 60))
+
+    def is_virtual_gateway_enabled(self) -> bool:
+        """是否启用虚拟推送数据网关"""
+        return bool(self.get("chinastock.virtual_gateway.enabled", False))
+
+    def get_virtual_gateway_start_datetime(self) -> str:
+        """获取虚拟网关起始时间"""
+        return str(self.get("chinastock.virtual_gateway.start_datetime", ""))
+
+    def get_virtual_gateway_speed(self) -> float:
+        """获取虚拟网关推送速度倍数"""
+        return float(self.get("chinastock.virtual_gateway.speed", 1.0))
+
+    def get_tdx_reader_root_dir(self) -> Optional[Path]:
+        """获取通达信数据读取器根目录"""
+        tdx_root = self.get("chinastock.data_readers.tdx_root_dir", "C:/new_tdx")
+        if tdx_root and Path(tdx_root).exists():
+            return Path(tdx_root)
+        return None
 
     def _save_to_file(self) -> None:
         """保存配置到文件"""

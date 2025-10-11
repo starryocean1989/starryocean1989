@@ -12,6 +12,7 @@ ChinaStockEngine继承vnpy的BaseEngine，集成所有功能模块：
 """
 
 import logging
+import threading
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional, Union
 
@@ -24,6 +25,9 @@ from .storage import StorageManager
 from .validator import DataValidator, ValidationSummary
 from .file_watcher import EventDrivenFileWatcher
 from .block_parser import BlockParser
+from .polling_gateway import PollingGateway
+from .virtual_gateway import VirtualGateway
+from .data_readers import TdxBinaryReader
 
 
 # 事件类型常量
@@ -56,12 +60,31 @@ class ChinaStockEngine(BaseEngine):
         self.validator = DataValidator()
         self.file_watcher = EventDrivenFileWatcher(event_engine)
 
+        # 新增：轮询网关和虚拟网关
+        self.polling_gateway: Optional[PollingGateway] = None
+        self.virtual_gateway: Optional[VirtualGateway] = None
+
+        # 新增：数据读取器
+        self.tdx_reader: Optional[TdxBinaryReader] = None
+
         # 日志记录器
         self.logger = logging.getLogger(__name__)
+
+        # 🔧 异步下载管理
+        self._download_thread: Optional[threading.Thread] = None
+        self._download_lock = threading.Lock()
 
         # 启动文件监控
         if config_manager.is_watcher_enabled():
             self._start_file_watcher()
+
+        # 自动启动轮询网关（如果配置启用）
+        if config_manager.is_polling_gateway_enabled():
+            self._init_polling_gateway()
+
+        # 自动启动虚拟网关（如果配置启用）
+        if config_manager.is_virtual_gateway_enabled():
+            self._init_virtual_gateway()
 
         self.logger.info("中国A股数据管理引擎初始化完成")
 
@@ -71,6 +94,14 @@ class ChinaStockEngine(BaseEngine):
             # 停止文件监控
             if self.file_watcher.is_running():
                 self.file_watcher.stop()
+
+            # 关闭轮询网关
+            if self.polling_gateway:
+                self.polling_gateway.close()
+
+            # 关闭虚拟网关
+            if self.virtual_gateway:
+                self.virtual_gateway.close()
 
             self.logger.info("中国A股数据管理引擎已关闭")
 
@@ -227,14 +258,45 @@ class ChinaStockEngine(BaseEngine):
         self, start_date: Union[str, date], market_types: Optional[List[str]] = None
     ) -> bool:
         """
-        增量下载K线数据
+        增量下载K线数据（异步执行，立即返回）
 
         Args:
             start_date: 开始日期
             market_types: 市场类型列表
 
         Returns:
-            是否下载成功
+            是否成功启动下载任务
+        """
+        with self._download_lock:
+            # 检查是否有正在运行的下载任务
+            if self._download_thread and self._download_thread.is_alive():
+                self.logger.warning("已有下载任务正在运行")
+                return False
+
+            # 重置下载状态
+            self.stock_fetcher.reset_download_state()
+
+            # 创建并启动后台下载线程
+            self._download_thread = threading.Thread(
+                target=self._do_download_incremental,
+                args=(start_date, market_types),
+                daemon=True,
+                name="IncrementalDownloadThread",
+            )
+            self._download_thread.start()
+
+            self.logger.info("✅ 增量下载任务已启动（后台线程）")
+            return True
+
+    def _do_download_incremental(
+        self, start_date: Union[str, date], market_types: Optional[List[str]] = None
+    ):
+        """
+        实际执行增量下载的后台方法（在独立线程中运行）
+
+        Args:
+            start_date: 开始日期
+            market_types: 市场类型列表
         """
         try:
             if market_types is None:
@@ -253,10 +315,37 @@ class ChinaStockEngine(BaseEngine):
                 self.logger.error(error_msg)
                 self._push_download_event("incremental_kline", "error", 0, error_msg)
                 self._push_log_event(error_msg, "ERROR")
-                return False
+                return
 
-            # 下载增量K线数据
-            download_results = self.stock_fetcher.download_incremental_kline(all_stocks, start_date)
+            # 定义进度回调函数
+            def progress_callback(completed: int, total: int, symbol: str, interval: str):
+                """进度回调：通过事件推送进度"""
+                progress_pct = (completed / total) * 100
+                # 🔧 调试日志（每100个打印一次）
+                if completed % 100 == 0:
+                    self.logger.info(
+                        "推送进度事件: %d/%d (%.1f%%) - %s %s",
+                        completed,
+                        total,
+                        progress_pct,
+                        symbol,
+                        interval,
+                    )
+                self._push_download_progress_event(
+                    "incremental_kline", progress_pct, completed, total, f"{symbol} {interval}"
+                )
+
+            # 下载增量K线数据（带进度回调）
+            download_results = self.stock_fetcher.download_incremental_kline(
+                all_stocks, start_date, progress_callback=progress_callback
+            )
+
+            # 检查是否被停止
+            if self.stock_fetcher.is_stopped():
+                self.logger.warning("⛔ 下载被停止")
+                self._push_download_event("incremental_kline", "stopped", len(download_results))
+                self._push_log_event("增量下载已停止", "WARNING")
+                return
 
             # 合并并保存数据
             saved_count = 0
@@ -270,13 +359,10 @@ class ChinaStockEngine(BaseEngine):
             self._push_download_event("incremental_kline", "success", saved_count)
             self._push_log_event(f"增量下载完成: {saved_count} 个数据集")
 
-            return True
-
         except Exception as e:
-            self.logger.error(f"增量下载失败: {e}")
+            self.logger.error(f"增量下载失败: {e}", exc_info=True)
             self._push_download_event("incremental_kline", "error", 0, str(e))
             self._push_log_event(f"增量下载失败: {e}", "ERROR")
-            return False
 
     def query_data(
         self,
@@ -502,3 +588,230 @@ class ChinaStockEngine(BaseEngine):
 
         except Exception as e:
             self.logger.error(f"推送下载事件失败: {e}")
+
+    def _push_download_progress_event(
+        self, download_type: str, progress_pct: float, completed: int, total: int, current_item: str
+    ) -> None:
+        """
+        推送下载进度事件
+
+        Args:
+            download_type: 下载类型
+            progress_pct: 进度百分比
+            completed: 已完成数量
+            total: 总数量
+            current_item: 当前项目
+        """
+        try:
+            event_data = {
+                "download_type": download_type,
+                "status": "progress",
+                "progress": progress_pct,
+                "completed": completed,
+                "total": total,
+                "current_item": current_item,
+                "timestamp": datetime.now(),
+                "engine": APP_NAME,
+            }
+
+            event = Event(EVENT_CHINASTOCK_DOWNLOAD, event_data)
+            self.event_engine.put(event)
+
+        except Exception as e:
+            self.logger.error(f"推送下载进度事件失败: {e}")
+
+    # ==================== 下载控制方法 ====================
+
+    def stop_download(self):
+        """停止当前下载任务"""
+        self.stock_fetcher.stop_download()
+        self.logger.info("已请求停止下载")
+
+    def pause_download(self):
+        """暂停当前下载任务"""
+        self.stock_fetcher.pause_download()
+        self.logger.info("已请求暂停下载")
+
+    def resume_download(self):
+        """恢复暂停的下载任务"""
+        self.stock_fetcher.resume_download()
+        self.logger.info("已请求恢复下载")
+
+    def get_download_progress(self) -> Dict[str, Any]:
+        """获取当前下载进度（供前端轮询）"""
+        return self.stock_fetcher.get_download_progress()
+
+    # ==================== 轮询网关管理方法 ====================
+
+    def _init_polling_gateway(self) -> None:
+        """初始化轮询网关"""
+        try:
+            self.polling_gateway = PollingGateway(self.event_engine, "POLLING")
+            # 使用默认设置连接
+            self.polling_gateway.connect({})
+            self.logger.info("轮询网关已初始化")
+        except Exception as e:
+            self.logger.error("初始化轮询网关失败: %s", e)
+
+    def start_polling_gateway(self, setting: Optional[Dict] = None) -> bool:
+        """
+        启动轮询网关
+
+        Args:
+            setting: 网关设置（可选）
+
+        Returns:
+            是否启动成功
+        """
+        try:
+            if self.polling_gateway is None:
+                self.polling_gateway = PollingGateway(self.event_engine, "POLLING")
+
+            if setting is None:
+                setting = {}
+
+            self.polling_gateway.connect(setting)
+            self.logger.info("轮询网关已启动")
+            self._push_log_event("✅ 轮询网关已成功启动", "INFO")
+            return True
+
+        except ValueError as e:
+            # 配置错误（如缓存不存在），给出明确提示
+            error_msg = f"启动轮询网关失败: {str(e)}"
+            self.logger.error(error_msg)
+            self._push_log_event(error_msg, "ERROR")
+            return False
+        except Exception as e:
+            # 其他未知错误
+            error_msg = f"启动轮询网关失败（未知错误）: {str(e)}"
+            self.logger.error(error_msg, exc_info=True)
+            self._push_log_event(error_msg, "ERROR")
+            return False
+
+    def stop_polling_gateway(self) -> bool:
+        """
+        停止轮询网关
+
+        Returns:
+            是否停止成功
+        """
+        try:
+            if self.polling_gateway:
+                self.polling_gateway.close()
+                self.logger.info("轮询网关已停止")
+            return True
+
+        except Exception as e:
+            self.logger.error("停止轮询网关失败: %s", e)
+            return False
+
+    # ==================== 虚拟网关管理方法 ====================
+
+    def _init_virtual_gateway(self) -> None:
+        """初始化虚拟网关"""
+        try:
+            self.virtual_gateway = VirtualGateway(self.event_engine, "VIRTUAL")
+            # 使用默认设置连接
+            self.virtual_gateway.connect({})
+            self.logger.info("虚拟网关已初始化")
+        except Exception as e:
+            self.logger.error("初始化虚拟网关失败: %s", e)
+
+    def start_virtual_gateway(
+        self, start_datetime: str, speed: float = 1.0, symbols: Optional[List[str]] = None
+    ) -> bool:
+        """
+        启动虚拟网关
+
+        Args:
+            start_datetime: 起始时间（格式：YYYY-MM-DD HH:MM:SS）
+            speed: 推送速度倍数（1.0=实时，2.0=2倍速）
+            symbols: 品种列表（可选）
+
+        Returns:
+            是否启动成功
+        """
+        try:
+            if self.virtual_gateway is None:
+                self.virtual_gateway = VirtualGateway(self.event_engine, "VIRTUAL")
+
+            setting = {
+                "起始时间": start_datetime,
+                "推送速度": speed,
+                "品种列表": ",".join(symbols) if symbols else "",
+            }
+
+            self.virtual_gateway.connect(setting)
+            self.logger.info("虚拟网关已启动")
+            self._push_log_event("✅ 虚拟网关已成功启动", "INFO")
+            return True
+
+        except ValueError as e:
+            # 配置错误（如缓存不存在），给出明确提示
+            error_msg = f"启动虚拟网关失败: {str(e)}"
+            self.logger.error(error_msg)
+            self._push_log_event(error_msg, "ERROR")
+            return False
+        except Exception as e:
+            # 其他未知错误
+            error_msg = f"启动虚拟网关失败（未知错误）: {str(e)}"
+            self.logger.error(error_msg, exc_info=True)
+            self._push_log_event(error_msg, "ERROR")
+            return False
+
+    def stop_virtual_gateway(self) -> bool:
+        """
+        停止虚拟网关
+
+        Returns:
+            是否停止成功
+        """
+        try:
+            if self.virtual_gateway:
+                self.virtual_gateway.close()
+                self.logger.info("虚拟网关已停止")
+            return True
+
+        except Exception as e:
+            self.logger.error("停止虚拟网关失败: %s", e)
+            return False
+
+    # ==================== 数据读取器管理方法 ====================
+
+    def read_tdx_data(
+        self,
+        symbols: List[str],
+        data_type: str = "day",
+        market: str = "sh",
+    ) -> Dict[str, bool]:
+        """
+        读取通达信本地数据并保存
+
+        Args:
+            symbols: 品种代码列表
+            data_type: 数据类型（'day', '5min', '1min'）
+            market: 市场代码（'sh', 'sz', 'bj'）
+
+        Returns:
+            品种代码到处理结果的映射字典
+        """
+        try:
+            # 初始化读取器（如果尚未初始化）
+            if self.tdx_reader is None:
+                self.tdx_reader = TdxBinaryReader()
+
+            # 批量处理
+            results = self.tdx_reader.process_batch(
+                symbols=symbols, data_type=data_type, market=market
+            )
+
+            success_count = sum(1 for v in results.values() if v)
+            self.logger.info("读取通达信数据完成: %d/%d 成功", success_count, len(symbols))
+            self._push_log_event(f"读取通达信数据完成: {success_count}/{len(symbols)} 成功")
+
+            return results
+
+        except Exception as e:
+            self.logger.error("读取通达信数据失败: %s", e)
+            self._push_log_event(f"读取通达信数据失败: {e}", "ERROR")
+            return {symbol: False for symbol in symbols}

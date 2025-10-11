@@ -7,11 +7,12 @@
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from PySide6.QtCore import QDate, QThread, Signal
+from PySide6.QtCore import QDate, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
     QComboBox,
     QDateEdit,
+    QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -21,6 +22,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QRadioButton,
+    QSpinBox,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -29,10 +31,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from backend.core.base import get_service_manager
+from backend.core.base import get_service_manager, get_event_engine
 
 from backend.core.utils import LoggerMixin
 from ui.widgets.base_widget import BaseWidget
+
+# vnpy事件相关
+from vnpy.event import Event
+
+# 事件类型常量（与backend保持一致）
+EVENT_CHINASTOCK_DOWNLOAD = "eChinaStockDownload"
 
 # ==================== 常量定义 ====================
 
@@ -217,6 +225,12 @@ class DataCenter(BaseWidget, LoggerMixin):
         self.reload_thread: Optional[ReloadSymbolsThread] = None
         self.download_thread: Optional[DownloadThread] = None
 
+        # 🔧 进度轮询定时器（备用）
+        self.progress_timer: Optional[QTimer] = None
+
+        # 🔧 vnpy事件引擎
+        self.event_engine = None
+
         # 初始化UI控件引用
         self.tab_widget: Optional[QTabWidget] = None
         self.symbols_tab: Optional[QWidget] = None
@@ -281,6 +295,9 @@ class DataCenter(BaseWidget, LoggerMixin):
             self.logger.info("✓ 数据中心服务已就绪")
         else:
             self.logger.warning("⚠ 数据中心服务未注册")
+
+        # 🔧 注册vnpy事件监听器
+        self._register_event_handlers()
 
     def setup_ui(self):
         """设置用户界面."""
@@ -388,6 +405,14 @@ class DataCenter(BaseWidget, LoggerMixin):
 
         self.symbols_count_label = QLabel("共 0 个品种")
         symbols_layout.addWidget(self.symbols_count_label)
+
+        # 添加品种加载进度条（默认隐藏）
+        self.symbol_loading_progress = QProgressBar()
+        self.symbol_loading_progress.setRange(0, 0)  # 不确定进度模式
+        self.symbol_loading_progress.setTextVisible(True)
+        self.symbol_loading_progress.setFormat("正在加载品种列表，请稍候...")
+        self.symbol_loading_progress.setVisible(False)
+        symbols_layout.addWidget(self.symbol_loading_progress)
 
         # 添加提示标签
         hint_label = QLabel("💡 提示：点击上方【↻ 刷新品种】按钮加载品种列表")
@@ -658,8 +683,12 @@ class DataCenter(BaseWidget, LoggerMixin):
             self.reload_thread.start()
             self.logger.info(">>> 线程已启动，isRunning: %s", self.reload_thread.isRunning())
 
+            # 显示加载进度条
+            if self.symbol_loading_progress:
+                self.symbol_loading_progress.setVisible(True)
+
             # 显示加载提示
-            self.show_info("正在重新加载品种列表...")
+            self.show_info("正在重新加载品种列表，请稍候...")
             self.logger.info(">>> _reload_symbols() 执行完成")
 
         except Exception as e:
@@ -682,6 +711,10 @@ class DataCenter(BaseWidget, LoggerMixin):
             )
             self.logger.info("=" * 60)
 
+            # 隐藏加载进度条
+            if self.symbol_loading_progress:
+                self.symbol_loading_progress.setVisible(False)
+
             if result.get("success"):
                 data = result.get("data", [])
                 self.logger.info(">>> 获取到数据: %d个", len(data))
@@ -692,7 +725,7 @@ class DataCenter(BaseWidget, LoggerMixin):
                 self.logger.info(">>> _apply_filters()完成")
 
                 # 显示加载成功信息
-                self.show_info(f"成功加载 {result['symbol_count']} 个品种")
+                self.show_info(f"✅ 成功加载 {result['symbol_count']} 个品种")
 
                 # 如果有警告信息，显示警告
                 if result.get("warning"):
@@ -706,6 +739,10 @@ class DataCenter(BaseWidget, LoggerMixin):
             self.show_error(f"处理结果失败: {e}")
 
         finally:
+            # 隐藏加载进度条
+            if self.symbol_loading_progress:
+                self.symbol_loading_progress.setVisible(False)
+
             # 清理线程引用
             self.reload_thread = None
             self.logger.info(">>> _on_reload_finished() 执行完成")
@@ -717,6 +754,11 @@ class DataCenter(BaseWidget, LoggerMixin):
             error_message: 错误消息
         """
         self.logger.error("重新加载品种失败: %s", error_message)
+
+        # 隐藏加载进度条
+        if self.symbol_loading_progress:
+            self.symbol_loading_progress.setVisible(False)
+
         self.show_error(error_message)
 
         # 清理线程引用
@@ -1005,25 +1047,40 @@ class DataCenter(BaseWidget, LoggerMixin):
         try:
             self.logger.info("=" * 60)
             self.logger.info(">>> _on_download_finished() 被调用")
-            self.logger.info(">>> result: success=%s", result.get("success"))
+            self.logger.info(
+                ">>> result: success=%s, message=%s", result.get("success"), result.get("message")
+            )
             self.logger.info("=" * 60)
 
             if result.get("success"):
                 task_id = result.get("task_id", self.current_download_task_id)
-                self.show_info(f"下载任务已完成！任务ID: {task_id}")
-                self.logger.info(">>> 下载任务完成成功: %s", task_id)
+                message = result.get("message", "")
+
+                # 🔧 区分"任务已启动"和"任务已完成"
+                if "已启动" in message or "启动" in message:
+                    # 异步下载：任务刚启动，不是完成
+                    self.show_info(f"✅ {message}（任务ID: {task_id}）")
+                    self.show_info("📊 下载正在后台进行，UI将实时显示进度...")
+                    self.logger.info(">>> 下载任务已启动（异步）: %s", task_id)
+
+                    # 🔧 启动进度轮询定时器
+                    self._start_progress_polling()
+
+                    # 注意：保持按钮状态，允许用户停止下载
+                else:
+                    # 同步下载或真正完成
+                    self.show_info(f"✅ 下载任务已完成！任务ID: {task_id}")
+                    self.logger.info(">>> 下载任务完成成功: %s", task_id)
+                    self._reset_download_state()
             else:
                 self.logger.error(">>> 下载任务失败: %s", result.get("message"))
                 self.show_error(f"下载失败: {result.get('message', '未知错误')}")
+                self._reset_download_state()
 
         except Exception as e:
             self.logger.error(">>> 处理下载结果失败: %s", e, exc_info=True)
             self.show_error(f"处理结果失败: {e}")
-
-        finally:
-            # 🔧 修复：统一使用 _reset_download_state() 清理状态
             self._reset_download_state()
-            self.logger.info(">>> _on_download_finished() 执行完成")
 
     def _on_download_error(self, error_message: str):
         """下载出错的回调（在UI线程中执行）.
@@ -1043,20 +1100,20 @@ class DataCenter(BaseWidget, LoggerMixin):
             self.show_error("数据中心服务不可用")
             return
 
-        if not hasattr(self, "current_download_task_id"):
-            self.show_warning("没有正在运行的下载任务")
-            return
-
+        # 🔧 新架构：调用后端暂停方法
         result = self.data_center_service.pause_download(self.current_download_task_id)
 
         if result.get("success"):
-            self.show_info("下载已暂停")
+            self.show_info("⏸️ 已发送暂停信号，下载将在当前品种完成后暂停...")
+            self.logger.info(">>> 暂停信号已发送")
+            # 更新按钮状态
             if self.pause_download_btn:
                 self.pause_download_btn.setText("恢复下载")
                 self.pause_download_btn.clicked.disconnect()
                 self.pause_download_btn.clicked.connect(self._resume_download)
         else:
-            self.show_error(f"暂停失败: {result.get('message', '未知错误')}")
+            self.show_warning(f"暂停请求失败: {result.get('message')}")
+            self.logger.warning(">>> 暂停请求失败: %s", result.get("message"))
 
     def _resume_download(self):
         """恢复下载."""
@@ -1084,20 +1141,35 @@ class DataCenter(BaseWidget, LoggerMixin):
         try:
             self.logger.info(">>> _stop_download() 被调用")
 
-            # 🔧 修复：先尝试停止QThread线程
+            # 🔧 新架构：调用后端停止方法（后端会通知后台线程停止）
+            if not self.data_center_service:
+                self.show_error("数据中心服务不可用")
+                return
+
+            # 调用后端停止方法
+            result = self.data_center_service.stop_download(self.current_download_task_id)
+
+            if result.get("success"):
+                self.show_info("⛔ 已发送停止信号，下载将在当前品种完成后停止...")
+                self.logger.info(">>> 停止信号已发送")
+            else:
+                self.show_warning(f"停止请求失败: {result.get('message')}")
+                self.logger.warning(">>> 停止请求失败: %s", result.get("message"))
+
+            # 旧逻辑：尝试停止QThread（用于兼容旧的同步下载）
             thread_stopped = False
             if self.download_thread and self.download_thread.isRunning():
-                self.logger.info(">>> 检测到运行中的下载线程，尝试终止...")
+                self.logger.info(">>> 检测到运行中的QThread线程，尝试终止...")
                 try:
                     # 请求线程终止
                     self.download_thread.requestInterruption()
                     # 等待最多3秒
                     if self.download_thread.wait(3000):
-                        self.logger.info(">>> 线程已正常终止")
+                        self.logger.info(">>> QThread已正常终止")
                         thread_stopped = True
                     else:
                         # 强制终止（不推荐，但必要时使用）
-                        self.logger.warning(">>> 线程未响应，强制终止...")
+                        self.logger.warning(">>> QThread未响应，强制终止...")
                         self.download_thread.terminate()
                         self.download_thread.wait(1000)
                         thread_stopped = True
@@ -1140,6 +1212,177 @@ class DataCenter(BaseWidget, LoggerMixin):
         if self.detail_progress_table:
             self.detail_progress_table.setVisible(checked)
 
+    def _register_event_handlers(self):
+        """注册vnpy事件监听器"""
+        try:
+            self.event_engine = get_event_engine()
+
+            if self.event_engine:
+                # 注册下载事件监听器
+                self.event_engine.register(EVENT_CHINASTOCK_DOWNLOAD, self._on_download_event)
+                self.logger.info("✅ vnpy下载事件监听器已注册")
+            else:
+                self.logger.warning("⚠️ event_engine不可用，事件推送功能不可用")
+                self.logger.info("将使用备用的轮询机制")
+
+        except Exception as e:
+            self.logger.error("注册事件监听器失败: %s", e)
+
+    def _unregister_event_handlers(self):
+        """注销vnpy事件监听器"""
+        try:
+            if self.event_engine:
+                self.event_engine.unregister(EVENT_CHINASTOCK_DOWNLOAD, self._on_download_event)
+                self.logger.info("✅ vnpy事件监听器已注销")
+        except Exception as e:
+            self.logger.error("注销事件监听器失败: %s", e)
+
+    def closeEvent(self, event):
+        """窗口关闭事件"""
+        # 注销事件监听器
+        self._unregister_event_handlers()
+        # 调用父类方法
+        super().closeEvent(event)
+
+    def _on_download_event(self, event: Event):
+        """处理下载事件（vnpy事件回调）"""
+        try:
+            event_data = event.data
+            status = event_data.get("status")
+
+            # 🔧 调试日志
+            self.logger.info(">>> 收到下载事件: status=%s", status)
+
+            if status == "progress":
+                # 进度更新事件
+                progress_pct = event_data.get("progress", 0)
+                completed = event_data.get("completed", 0)
+                total = event_data.get("total", 0)
+                current_item = event_data.get("current_item", "")
+
+                # 更新UI进度条和标签
+                if self.download_progress:
+                    self.download_progress.setValue(int(progress_pct))
+
+                if self.progress_label:
+                    self.progress_label.setText(
+                        f"📥 下载中: {completed}/{total} ({progress_pct:.1f}%) - {current_item}"
+                    )
+
+                # 每100个打印一次日志
+                if completed % 100 == 0:
+                    self.logger.info(">>> 进度: %d/%d (%.1f%%)", completed, total, progress_pct)
+
+            elif status == "success":
+                # 下载成功完成
+                count = event_data.get("count", 0)
+                self.logger.info(">>> 下载完成事件：%d 个数据集", count)
+
+                # 更新UI
+                if self.download_progress:
+                    self.download_progress.setValue(100)
+                if self.progress_label:
+                    self.progress_label.setText(f"✅ 下载完成：{count} 个数据集")
+
+                # 重置状态
+                self._reset_download_state()
+                self.show_info(f"✅ 下载任务已全部完成！共 {count} 个数据集")
+
+            elif status == "error":
+                # 下载失败
+                error_msg = event_data.get("error", "未知错误")
+                self.logger.error(">>> 下载失败事件：%s", error_msg)
+
+                if self.progress_label:
+                    self.progress_label.setText("❌ 下载失败")
+
+                self._reset_download_state()
+                self.show_error(f"下载失败: {error_msg}")
+
+            elif status == "stopped":
+                # 下载被停止
+                count = event_data.get("count", 0)
+                self.logger.info(">>> 下载停止事件：已完成 %d 个", count)
+
+                if self.progress_label:
+                    self.progress_label.setText(f"⛔ 下载已停止：{count} 个数据集")
+
+                self._reset_download_state()
+                self.show_info(f"下载已停止，已完成 {count} 个数据集")
+
+        except Exception as e:
+            self.logger.error("处理下载事件失败: %s", e)
+
+    def _start_progress_polling(self):
+        """启动进度轮询定时器（仅在事件引擎不可用时使用）"""
+        # 🔧 优先使用事件推送，轮询作为备用
+        if self.event_engine:
+            self.logger.info(">>> 使用vnpy事件推送机制，不启动轮询")
+            return
+
+        self.logger.info(">>> event_engine不可用，启动备用轮询机制")
+        if self.progress_timer is None:
+            self.progress_timer = QTimer(self)
+            self.progress_timer.timeout.connect(self._update_download_progress)
+
+        # 启动定时器，每1秒轮询一次
+        self.progress_timer.start(1000)
+        self.logger.info(">>> 进度轮询定时器已启动（每1秒更新）")
+
+    def _stop_progress_polling(self):
+        """停止进度轮询定时器"""
+        if self.progress_timer and self.progress_timer.isActive():
+            self.progress_timer.stop()
+            self.logger.info(">>> 进度轮询定时器已停止")
+
+    def _update_download_progress(self):
+        """更新下载进度（定时器回调）"""
+        try:
+            if not self.data_center_service:
+                return
+
+            # 获取实时进度
+            progress_data = self.data_center_service.get_download_progress()
+
+            if not progress_data.get("success"):
+                return
+
+            is_downloading = progress_data.get("is_downloading", False)
+
+            if not is_downloading:
+                # 下载已完成，停止轮询
+                self.logger.info(">>> 检测到下载完成，停止轮询并重置状态")
+                self._stop_progress_polling()
+
+                # 更新UI显示完成状态
+                if self.download_progress:
+                    self.download_progress.setValue(100)
+                if self.progress_label:
+                    self.progress_label.setText("✅ 下载完成")
+
+                # 重置按钮状态
+                self._reset_download_state()
+                self.show_info("✅ 下载任务已全部完成！")
+                return
+
+            # 更新进度条和标签
+            progress_pct = progress_data.get("progress", 0)
+            completed = progress_data.get("completed", 0)
+            total = progress_data.get("total", 0)
+            current_symbol = progress_data.get("current_symbol", "")
+            current_interval = progress_data.get("current_interval", "")
+
+            if self.download_progress:
+                self.download_progress.setValue(int(progress_pct))
+
+            if self.progress_label:
+                self.progress_label.setText(
+                    f"📥 下载中: {completed}/{total} ({progress_pct:.1f}%) - 当前: {current_symbol} {current_interval}"
+                )
+
+        except Exception as e:
+            self.logger.error(">>> 更新进度失败: %s", e)
+
     def _reset_download_state(self):
         """重置下载状态（清理线程、任务ID、恢复按钮）.
 
@@ -1152,6 +1395,9 @@ class DataCenter(BaseWidget, LoggerMixin):
         """
         try:
             self.logger.info(">>> _reset_download_state() 开始清理状态...")
+
+            # 🔧 停止进度轮询定时器
+            self._stop_progress_polling()
 
             # 清理线程引用
             if self.download_thread:
@@ -1213,9 +1459,10 @@ class DataCenter(BaseWidget, LoggerMixin):
                 sources_data = result.get("datafeeds", {})
 
                 if self.sources_table:
-                    # 固定的4个数据源
+                    # 5个数据源：删除data_engine，添加polling_gateway和virtual_gateway
                     source_list = [
-                        {"id": "data_engine", "name": "Data Engine", "type": "本地"},
+                        {"id": "polling_gateway", "name": "轮询转推送", "type": "本地"},
+                        {"id": "virtual_gateway", "name": "虚拟推送", "type": "本地"},
                         {"id": "ifind", "name": "iFind", "type": "商业"},
                         {"id": "rqdata", "name": "RQData", "type": "商业"},
                         {"id": "tushare", "name": "Tushare", "type": "商业"},
@@ -1241,14 +1488,44 @@ class DataCenter(BaseWidget, LoggerMixin):
                         self.sources_table.setItem(i, 2, QTableWidgetItem(status_text))
                         self.sources_table.setItem(i, 3, QTableWidgetItem("0"))
 
-                        # 操作按钮
-                        connect_btn = QPushButton("连接" if not connected else "断开")
-                        connect_btn.clicked.connect(
-                            lambda _checked, sid=source_id, conn=connected: (  # noqa: ARG005
-                                self._toggle_source_connection(sid, conn)
+                        # 操作按钮容器
+                        button_widget = QWidget()
+                        button_layout = QHBoxLayout(button_widget)
+                        button_layout.setContentsMargins(2, 2, 2, 2)
+                        button_layout.setSpacing(2)
+
+                        # 对于polling_gateway和virtual_gateway，添加配置按钮
+                        if source_id in ["polling_gateway", "virtual_gateway"]:
+                            config_btn = QPushButton("配置")
+                            config_btn.clicked.connect(
+                                lambda _checked, sid=source_id: self._configure_gateway(sid)
                             )
-                        )
-                        self.sources_table.setCellWidget(i, 4, connect_btn)
+                            button_layout.addWidget(config_btn)
+
+                            # 启动/停止按钮
+                            if connected:
+                                stop_btn = QPushButton("停止")
+                                stop_btn.clicked.connect(
+                                    lambda _checked, sid=source_id: self._stop_gateway(sid)
+                                )
+                                button_layout.addWidget(stop_btn)
+                            else:
+                                start_btn = QPushButton("启动")
+                                start_btn.clicked.connect(
+                                    lambda _checked, sid=source_id: self._start_gateway(sid)
+                                )
+                                button_layout.addWidget(start_btn)
+                        else:
+                            # 其他数据源保持原有的连接/断开按钮
+                            connect_btn = QPushButton("连接" if not connected else "断开")
+                            connect_btn.clicked.connect(
+                                lambda _checked, sid=source_id, conn=connected: (
+                                    self._toggle_source_connection(sid, conn)
+                                )
+                            )
+                            button_layout.addWidget(connect_btn)
+
+                        self.sources_table.setCellWidget(i, 4, button_widget)
 
         except Exception as e:
             self.logger.error("加载数据源失败: %s", e)
@@ -1273,6 +1550,169 @@ class DataCenter(BaseWidget, LoggerMixin):
         except Exception as e:
             self.logger.error("切换数据源连接失败: %s", e)
             self.show_error(f"操作失败: {e}")
+
+    def _configure_gateway(self, gateway_id: str):
+        """配置网关."""
+        try:
+            from PySide6.QtWidgets import QDialog, QDialogButtonBox, QDateTimeEdit
+            from PySide6.QtCore import QDateTime
+
+            if gateway_id == "polling_gateway":
+                # 轮询网关配置对话框
+                dialog = QDialog(self)
+                dialog.setWindowTitle("配置轮询转推送网关")
+                dialog.setMinimumWidth(500)
+
+                layout = QFormLayout(dialog)
+
+                # 轮询间隔
+                interval_spin = QSpinBox()
+                interval_spin.setRange(1, 600)
+                interval_spin.setValue(60)
+                interval_spin.setSuffix(" 秒")
+                layout.addRow("轮询间隔:", interval_spin)
+
+                # 订阅品种
+                symbols_input = QLineEdit()
+                symbols_input.setPlaceholderText("例如: 600000,000001,000002")
+                layout.addRow("订阅品种:", symbols_input)
+
+                # 按钮
+                button_box = QDialogButtonBox(
+                    QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+                )
+                button_box.accepted.connect(dialog.accept)
+                button_box.rejected.connect(dialog.reject)
+                layout.addWidget(button_box)
+
+                if dialog.exec() == QDialog.DialogCode.Accepted:
+                    # 保存配置到实例变量
+                    self.polling_gateway_config = {
+                        "interval": interval_spin.value(),
+                        "symbols": [
+                            s.strip() for s in symbols_input.text().split(",") if s.strip()
+                        ],
+                    }
+                    self.show_info("轮询网关配置已保存")
+
+            elif gateway_id == "virtual_gateway":
+                # 虚拟网关配置对话框
+                dialog = QDialog(self)
+                dialog.setWindowTitle("配置虚拟推送网关")
+                dialog.setMinimumWidth(500)
+
+                layout = QFormLayout(dialog)
+
+                # 起始时间
+                datetime_edit = QDateTimeEdit()
+                datetime_edit.setCalendarPopup(True)
+                datetime_edit.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
+                datetime_edit.setDateTime(QDateTime.currentDateTime().addMonths(-1))
+                layout.addRow("起始时间:", datetime_edit)
+
+                # 推送速度
+                speed_spin = QDoubleSpinBox()
+                speed_spin.setRange(0.1, 10.0)
+                speed_spin.setValue(1.0)
+                speed_spin.setSingleStep(0.1)
+                speed_spin.setSuffix(" 倍")
+                layout.addRow("推送速度:", speed_spin)
+
+                # 订阅品种
+                symbols_input = QLineEdit()
+                symbols_input.setPlaceholderText("例如: 600000,000001,000002")
+                layout.addRow("订阅品种:", symbols_input)
+
+                # 按钮
+                button_box = QDialogButtonBox(
+                    QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+                )
+                button_box.accepted.connect(dialog.accept)
+                button_box.rejected.connect(dialog.reject)
+                layout.addWidget(button_box)
+
+                if dialog.exec() == QDialog.DialogCode.Accepted:
+                    # 保存配置到实例变量
+                    self.virtual_gateway_config = {
+                        "start_datetime": datetime_edit.dateTime().toString("yyyy-MM-dd HH:mm:ss"),
+                        "speed": speed_spin.value(),
+                        "symbols": [
+                            s.strip() for s in symbols_input.text().split(",") if s.strip()
+                        ],
+                    }
+                    self.show_info("虚拟网关配置已保存")
+
+        except Exception as e:
+            self.logger.error("配置网关失败: %s", e)
+            self.show_error(f"配置失败: {e}")
+
+    def _start_gateway(self, gateway_id: str):
+        """启动网关."""
+        try:
+            if not self.data_center_service:
+                self.show_error("数据中心服务不可用")
+                return
+
+            if gateway_id == "polling_gateway":
+                # 检查是否已配置
+                config = getattr(self, "polling_gateway_config", None)
+                if not config:
+                    self.show_warning("请先配置轮询网关")
+                    return
+
+                # 启动网关
+                result = self.data_center_service.start_polling_gateway(config)
+
+                if result["success"]:
+                    self.show_info("轮询网关启动成功")
+                    self._load_data_sources()
+                else:
+                    self.show_error(f"启动失败: {result.get('message', '未知错误')}")
+
+            elif gateway_id == "virtual_gateway":
+                # 检查是否已配置
+                config = getattr(self, "virtual_gateway_config", None)
+                if not config:
+                    self.show_warning("请先配置虚拟网关")
+                    return
+
+                # 启动网关
+                result = self.data_center_service.start_virtual_gateway(config)
+
+                if result["success"]:
+                    self.show_info("虚拟网关启动成功")
+                    self._load_data_sources()
+                else:
+                    self.show_error(f"启动失败: {result.get('message', '未知错误')}")
+
+        except Exception as e:
+            self.logger.error("启动网关失败: %s", e)
+            self.show_error(f"启动失败: {e}")
+
+    def _stop_gateway(self, gateway_id: str):
+        """停止网关."""
+        try:
+            if not self.data_center_service:
+                self.show_error("数据中心服务不可用")
+                return
+
+            if gateway_id == "polling_gateway":
+                result = self.data_center_service.stop_polling_gateway()
+            elif gateway_id == "virtual_gateway":
+                result = self.data_center_service.stop_virtual_gateway()
+            else:
+                self.show_error(f"未知网关: {gateway_id}")
+                return
+
+            if result["success"]:
+                self.show_info("网关已停止")
+                self._load_data_sources()
+            else:
+                self.show_error(f"停止失败: {result.get('message', '未知错误')}")
+
+        except Exception as e:
+            self.logger.error("停止网关失败: %s", e)
+            self.show_error(f"停止失败: {e}")
 
     # ==================== 通用方法 ====================
 

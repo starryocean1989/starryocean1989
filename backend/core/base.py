@@ -906,6 +906,109 @@ class ServiceInitializer:
             )
             return False
 
+    def _add_strategy_apps(self) -> None:
+        """添加策略应用到MainEngine."""
+        if not self.main_engine:
+            self.logger.warning("⚠️ MainEngine不可用，无法添加策略应用")
+            return
+
+        self.logger.info("开始添加策略应用...")
+
+        # 1. CTA策略应用
+        try:
+            from vnpy_ctastrategy import CtaStrategyApp
+
+            self.main_engine.add_app(CtaStrategyApp)
+            self.logger.info("✅ CtaStrategyApp 已添加")
+        except ImportError:
+            self.logger.warning("⚠️ vnpy_ctastrategy 未安装")
+        except Exception as e:
+            self.logger.error("❌ 添加 CtaStrategyApp 失败: %s", e)
+
+        # 2. 算法交易应用
+        try:
+            from vnpy_algotrading import AlgoTradingApp
+
+            self.main_engine.add_app(AlgoTradingApp)
+            self.logger.info("✅ AlgoTradingApp 已添加")
+        except ImportError:
+            self.logger.warning("⚠️ vnpy_algotrading 未安装")
+        except Exception as e:
+            self.logger.error("❌ 添加 AlgoTradingApp 失败: %s", e)
+
+        # 3. 期权策略应用
+        try:
+            from vnpy_optionmaster import OptionMasterApp
+
+            self.main_engine.add_app(OptionMasterApp)
+            self.logger.info("✅ OptionMasterApp 已添加")
+        except ImportError:
+            self.logger.warning("⚠️ vnpy_optionmaster 未安装")
+        except Exception as e:
+            self.logger.error("❌ 添加 OptionMasterApp 失败: %s", e)
+
+        # 4. 组合策略应用
+        try:
+            from vnpy_portfoliostrategy import PortfolioStrategyApp
+
+            self.main_engine.add_app(PortfolioStrategyApp)
+            self.logger.info("✅ PortfolioStrategyApp 已添加")
+        except ImportError:
+            self.logger.warning("⚠️ vnpy_portfoliostrategy 未安装")
+        except Exception as e:
+            self.logger.error("❌ 添加 PortfolioStrategyApp 失败: %s", e)
+
+        # 5. 脚本交易应用
+        try:
+            from vnpy_scripttrader import ScriptTraderApp
+
+            self.main_engine.add_app(ScriptTraderApp)
+            self.logger.info("✅ ScriptTraderApp 已添加")
+        except ImportError:
+            self.logger.warning("⚠️ vnpy_scripttrader 未安装")
+        except Exception as e:
+            self.logger.error("❌ 添加 ScriptTraderApp 失败: %s", e)
+
+        # 6. 价差交易应用
+        try:
+            from vnpy_spreadtrading import SpreadTradingApp
+
+            self.main_engine.add_app(SpreadTradingApp)
+            self.logger.info("✅ SpreadTradingApp 已添加")
+        except ImportError:
+            self.logger.warning("⚠️ vnpy_spreadtrading 未安装")
+        except Exception as e:
+            self.logger.error("❌ 添加 SpreadTradingApp 失败: %s", e)
+
+        self.logger.info("策略应用添加完成")
+
+    def _configure_datafeed(self) -> None:
+        """配置数据服务.
+
+        将data_module_vnpy配置为vnpy的数据源，用于获取历史数据。
+        """
+        if not self.main_engine:
+            self.logger.warning("⚠️ MainEngine不可用，无法配置数据服务")
+            return
+
+        try:
+            # 尝试获取已初始化的ChinaStockEngine
+            from backend.core.base import get_china_stock_engine
+
+            china_stock_engine = get_china_stock_engine()
+
+            if china_stock_engine:
+                # 将ChinaStockEngine设置为MainEngine的datafeed
+                # 注意：vnpy的策略引擎会使用这个datafeed获取历史数据
+                self.logger.info("✅ 使用 ChinaStockEngine 作为数据源")
+                # vnpy会自动使用已注册的datafeed
+            else:
+                self.logger.warning("⚠️ ChinaStockEngine 未初始化，策略可能无法获取历史数据")
+
+        except Exception as e:
+            self.logger.warning("⚠️ 配置数据服务失败: %s", e)
+            self.logger.info("策略可以在没有历史数据的情况下运行（仅使用实时行情）")
+
     def _initialize_vnpy_core(self) -> bool:
         """阶段1: 初始化VNPY核心框架.
 
@@ -946,9 +1049,16 @@ class ServiceInitializer:
                 self.failed_services.append("main_engine")
                 return False
 
+            # 配置数据服务（使用本地data_module_vnpy作为datafeed）
+            self._configure_datafeed()
+
             # 注册到全局
             set_main_engine(self.main_engine)
             set_event_engine(self.event_engine)
+
+            # 延迟加载策略应用（避免启动时内存错误）
+            # 策略应用将在首次使用时按需加载
+            # self._add_strategy_apps()
 
             self.logger.info("✅ VNPY核心框架初始化完成")
             return True

@@ -6,10 +6,13 @@
 
 ### 核心功能
 - **品种列表获取**：支持上证A股、深证A股、北证A股、T+0基金、含可转债
-- **K线数据下载**：全量下载和增量下载，支持日线、5分钟、1分钟
-- **数据存储**：Parquet列式压缩格式，高效存储和查询
+- **K线数据下载**：全量下载和增量下载，支持日线、5分钟、1分钟，多服务器并行优化
+- **数据存储**：Parquet列式压缩格式（zstd压缩），高效存储和查询
 - **数据感知**：品种缺失、历史缺失、逻辑错误、格式错误检查
 - **文件监控**：实时监控数据变化并推送结果
+- **轮询转推送网关**：将轮询型数据源转换为推送型，符合vnpy Gateway标准（v2.0新增）
+- **虚拟推送网关**：使用历史数据模拟实时推送，用于回测和测试（v2.0新增）
+- **数据标准化读取**：读取通达信等本地数据文件并标准化保存（v2.0新增）
 
 ### 技术特点
 - **vnpy标准架构**：完全集成vnpy生态系统
@@ -114,9 +117,52 @@ new_config = {
 engine.update_config(new_config)
 ```
 
+#### 6. 轮询转推送网关（v2.0新增）
+```python
+# 启动轮询网关
+setting = {
+    "轮询间隔（秒）": 60,
+    "品种列表": "000001,600000,600036"  # 逗号分隔
+}
+engine.start_polling_gateway(setting)
+
+# 停止轮询网关
+engine.stop_polling_gateway()
+```
+
+#### 7. 虚拟推送网关（v2.0新增）
+```python
+# 启动虚拟网关（回放历史数据）
+engine.start_virtual_gateway(
+    start_datetime="2024-01-01 09:30:00",
+    speed=2.0,  # 2倍速
+    symbols=["000001", "600000"]
+)
+
+# 停止虚拟网关
+engine.stop_virtual_gateway()
+```
+
+#### 8. 数据标准化读取（v2.0新增）
+```python
+# 读取通达信本地数据
+symbols = ["000001", "000002", "600000"]
+results = engine.read_tdx_data(
+    symbols=symbols,
+    data_type="day",  # 'day', '5min', '1min'
+    market="sh"  # 'sh', 'sz', 'bj'
+)
+
+# 查看处理结果
+for symbol, success in results.items():
+    print(f"{symbol}: {'成功' if success else '失败'}")
+```
+
 ## 配置说明
 
 ### 主要配置项
+
+#### 基础配置
 - `chinastock.cache_dir`: 品种列表缓存路径
 - `chinastock.data_dir`: K线数据存储路径
 - `chinastock.tdx_dir`: 通达信软件根目录
@@ -126,6 +172,19 @@ engine.update_config(new_config)
 - `chinastock.retry_times`: 重试次数
 - `chinastock.enable_watcher`: 是否启用文件监控
 - `chinastock.watcher_interval`: 文件监控间隔（秒）
+
+#### 轮询网关配置（v2.0新增）
+- `chinastock.polling_gateway.enabled`: 是否自动启用轮询网关
+- `chinastock.polling_gateway.interval`: 轮询间隔（秒，默认60）
+- `chinastock.polling_gateway.symbols`: 订阅的品种列表（列表类型）
+
+#### 虚拟网关配置（v2.0新增）
+- `chinastock.virtual_gateway.enabled`: 是否自动启用虚拟网关
+- `chinastock.virtual_gateway.start_datetime`: 虚拟推送起始时间（格式：YYYY-MM-DD HH:MM:SS）
+- `chinastock.virtual_gateway.speed`: 推送速度倍数（1.0=实时，2.0=2倍速）
+
+#### 数据读取器配置（v2.0新增）
+- `chinastock.data_readers.tdx_root_dir`: 通达信软件根目录（用于读取本地数据）
 
 ### 配置方式
 1. 通过vnpy的`vt_setting.json`文件配置
@@ -219,26 +278,58 @@ class ValidationResult:
 
 ## 开发说明
 
-### 模块结构
+### 模块结构（v2.0）
 ```
 data_module_vnpy/
-├── __init__.py              # 包导出
-├── engine.py                # 主引擎
-├── config.py                # 配置管理
-├── stock_fetcher.py         # 数据获取
+├── __init__.py              # 包导出（导出新增组件）
+├── engine.py                # 主引擎（新增网关管理方法）
+├── config.py                # 配置管理（新增配置项）
+├── stock_fetcher.py         # 数据获取（优化多服务器并行注释）
 ├── block_parser.py          # 板块文件解析
-├── storage.py               # 数据存储
+├── storage.py               # 数据存储（增强zstd压缩）
 ├── validator.py             # 数据校验
 ├── file_watcher.py          # 文件监控
+├── datetime_decoder.py      # 日期解码
+├── polling_gateway.py       # ⭐ v2.0新增：轮询转推送网关
+├── virtual_gateway.py       # ⭐ v2.0新增：虚拟推送网关
+├── data_readers/            # ⭐ v2.0新增：数据标准化读取工具
+│   ├── __init__.py
+│   ├── base_reader.py       # 读取器基类
+│   └── tdx_reader.py        # 通达信数据读取器
 ├── requirements.txt         # 依赖包
-└── README.md               # 说明文档
+└── README.md               # 说明文档（更新v2.0内容）
 ```
+
+### v2.0新功能说明
+
+#### 1. 轮询转推送网关（polling_gateway.py）
+将mootdx等轮询型数据源转换为推送型数据源，符合vnpy Gateway标准：
+- **多服务器并行**：利用mootdx多个服务器IP实现并行请求
+- **交易时间判断**：只在交易时间段（9:30-11:30, 13:00-15:00）轮询推送
+- **订阅管理**：根据前端订阅的品种列表轮询
+- **频率可配**：当前默认1分钟推送频率
+
+#### 2. 虚拟推送网关（virtual_gateway.py）
+使用历史数据模拟实时推送，用于非交易时段的回测和测试：
+- **历史数据回放**：从StorageManager读取历史1分钟K线数据
+- **时间模拟**：从配置的起始时间开始，按时间顺序推送
+- **速度控制**：支持配置推送速度倍数（1.0=实时，2.0=2倍速）
+- **vnpy标准**：符合vnpy Gateway接口规范
+
+#### 3. 数据标准化读取工具（data_readers/）
+读取本地各种格式的数据文件并标准化保存：
+- **模块化设计**：每种数据类型一个独立的读取器文件
+- **通达信支持**：读取通达信二进制数据（日线、5min线、1min线）
+- **易于扩展**：继承BaseReader基类即可添加新数据类型
+- **标准化保存**：自动转换为Parquet格式并保存
 
 ### 扩展开发
 1. **添加新的数据源**: 在`stock_fetcher.py`中扩展
 2. **添加新的存储格式**: 在`storage.py`中扩展
 3. **添加新的校验规则**: 在`validator.py`中扩展
 4. **添加新的监控功能**: 在`file_watcher.py`中扩展
+5. **添加新的数据读取器**（v2.0）：在`data_readers/`目录下创建新文件，继承`BaseReader`基类
+6. **自定义Gateway**（v2.0）：参考`polling_gateway.py`和`virtual_gateway.py`实现
 
 ## 注意事项
 

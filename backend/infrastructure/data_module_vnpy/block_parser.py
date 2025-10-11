@@ -15,11 +15,6 @@ from typing import Dict, List, Optional
 
 import pandas as pd  # noqa: TC002
 
-from pytdx.reader.block_reader import (
-    BlockReader,
-    BlockReader_TYPE_FLAT,
-)
-
 
 class BlockParser:
     """通达信板块文件解析器"""
@@ -86,7 +81,7 @@ class BlockParser:
 
     def parse_block_file(self) -> pd.DataFrame:
         """
-        解析spblock.dat文件（自定义解析器）
+        解析spblock.dat文件（直接使用自定义解析器）
 
         Returns:
             包含板块信息的DataFrame，列包括：
@@ -97,18 +92,8 @@ class BlockParser:
         if not self.block_file_path or not self.block_file_path.exists():
             raise FileNotFoundError("未找到spblock.dat文件，请检查通达信软件路径")
 
-        try:
-            # 先尝试使用pytdx的BlockReader
-            reader = BlockReader()
-            df = reader.get_df(str(self.block_file_path), BlockReader_TYPE_FLAT)
-            return df
-        except Exception as e:
-            # pytdx解析失败，使用自定义解析器
-            import logging
-
-            logger = logging.getLogger(__name__)
-            logger.warning("pytdx BlockReader解析失败: %s，使用自定义解析器", e)
-            return self._parse_spblock_custom()
+        # 直接使用自定义解析器（pytdx的BlockReader对部分文件格式支持不好）
+        return self._parse_spblock_custom()
 
     def _parse_spblock_custom(self) -> pd.DataFrame:
         r"""

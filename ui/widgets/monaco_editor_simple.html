@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simple Code Editor</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Consolas', 'Courier New', monospace;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            overflow: hidden;
+        }
+        #editor {
+            width: 100vw;
+            height: 100vh;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            font-size: 14px;
+            line-height: 1.6;
+            border: none;
+            outline: none;
+            resize: none;
+            padding: 10px;
+            font-family: 'Consolas', 'Courier New', monospace;
+        }
+        #editor:focus {
+            outline: none;
+        }
+    </style>
+</head>
+<body>
+    <textarea id="editor" spellcheck="false"></textarea>
+
+    <script>
+        // 简单的编辑器实现（无需网络）
+        const editor = document.getElementById('editor');
+
+        // Tab键支持（插入4个空格）
+        editor.addEventListener('keydown', function(e) {
+            if (e.key === 'Tab') {
+                e.preventDefault();
+                const start = this.selectionStart;
+                const end = this.selectionEnd;
+                const value = this.value;
+                this.value = value.substring(0, start) + '    ' + value.substring(end);
+                this.selectionStart = this.selectionEnd = start + 4;
+            }
+        });
+
+        // 暴露API供Qt调用
+        window.editorReady = true;
+
+        window.getEditorContent = function() {
+            return editor.value;
+        };
+
+        window.setEditorContent = function(content) {
+            editor.value = content;
+        };
+
+        window.insertTextAtCursor = function(text) {
+            const start = editor.selectionStart;
+            const end = editor.selectionEnd;
+            const value = editor.value;
+            editor.value = value.substring(0, start) + text + value.substring(end);
+            editor.selectionStart = editor.selectionEnd = start + text.length;
+            editor.focus();
+        };
+
+        // 断点管理（简化版）
+        window.setBreakpoint = function(lineNumber) {
+            return [];
+        };
+
+        window.getBreakpoints = function() {
+            return [];
+        };
+
+        window.clearBreakpoints = function() {
+            // 不支持
+        };
+
+        // 立即通知Qt编辑器已就绪
+        console.log('Simple editor ready');
+    </script>
+</body>
+</html>
+

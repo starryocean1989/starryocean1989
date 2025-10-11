@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QTreeWidget,
     QTreeWidgetItem,
+    QTreeWidgetItemIterator,
     QMenu,
     QLineEdit,
     QInputDialog,
@@ -99,13 +100,15 @@ class FileExplorerTree(QTreeWidget, LoggerMixin):
         try:
             self.clear()
 
-            # 添加根节点
+            # 添加根节点（带文件夹图标）
             root_item = QTreeWidgetItem()
-            root_item.setText(0, self.root_dir.name)
+            root_item.setText(0, f"📁 {self.root_dir.name}")
             root_item.setData(
                 0, Qt.ItemDataRole.UserRole, {"type": "directory", "path": str(self.root_dir)}
             )
             root_item.setExpanded(True)
+            # 确保显示子节点指示器（展开/折叠箭头）
+            root_item.setChildIndicatorPolicy(QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator)
             self.addTopLevelItem(root_item)
 
             # 递归加载子目录和文件
@@ -129,11 +132,15 @@ class FileExplorerTree(QTreeWidget, LoggerMixin):
 
             # 获取目录内容
             items = sorted(directory.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
+            self.logger.debug(f"加载目录 {directory}，找到 {len(items)} 个项目")
 
             for item_path in items:
                 # 跳过隐藏文件和__pycache__
                 if item_path.name.startswith(".") or item_path.name == "__pycache__":
+                    self.logger.debug(f"跳过: {item_path.name}")
                     continue
+
+                self.logger.debug(f"处理: {item_path.name} (是目录: {item_path.is_dir()})")
 
                 # 创建树节点
                 item = QTreeWidgetItem()
@@ -144,6 +151,8 @@ class FileExplorerTree(QTreeWidget, LoggerMixin):
                     item.setData(
                         0, Qt.ItemDataRole.UserRole, {"type": "directory", "path": str(item_path)}
                     )
+                    # 确保文件夹节点显示展开/折叠箭头
+                    item.setChildIndicatorPolicy(QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator)
                     parent_item.addChild(item)
 
                     # 递归加载子目录
@@ -208,7 +217,8 @@ class FileExplorerTree(QTreeWidget, LoggerMixin):
 
         # 如果是文件，发送双击信号
         if data["type"] == "file":
-            file_path = data["path"]
+            # 🔧 修复：规范化路径（确保使用绝对路径）
+            file_path = str(Path(data["path"]).resolve())
             self.file_double_clicked.emit(file_path)
             self.logger.info(f"双击文件: {file_path}")
 
@@ -241,6 +251,10 @@ class FileExplorerTree(QTreeWidget, LoggerMixin):
         menu.addSeparator()
 
         # 编辑菜单（需要选中项）
+        rename_action = None
+        delete_action = None
+        copy_action = None
+        cut_action = None
         if item:
             rename_action = menu.addAction("✏️ 重命名")
             delete_action = menu.addAction("🗑️ 删除")
@@ -249,6 +263,7 @@ class FileExplorerTree(QTreeWidget, LoggerMixin):
             cut_action = menu.addAction("✂️ 剪切")
 
         # 粘贴菜单（需要剪贴板有内容）
+        paste_action = None
         if self.clipboard:
             paste_action = menu.addAction("📌 粘贴")
 
@@ -370,7 +385,7 @@ class FileExplorerTree(QTreeWidget, LoggerMixin):
         old_name = old_path.name
 
         # 输入新名称
-        new_name, ok = QInputDialog.getText(self, "重命名", f"请输入新名称:", text=old_name)
+        new_name, ok = QInputDialog.getText(self, "重命名", "请输入新名称:", text=old_name)
 
         if ok and new_name and new_name != old_name:
             new_path = old_path.parent / new_name
@@ -548,8 +563,19 @@ class FileExplorerWidget(QWidget, LoggerMixin):
         search_layout.addWidget(self.search_input)
 
         refresh_btn = QPushButton("🔄")
-        refresh_btn.setMaximumWidth(30)
-        refresh_btn.setToolTip("刷新")
+        refresh_btn.setMinimumWidth(40)
+        refresh_btn.setMaximumWidth(50)
+        refresh_btn.setMinimumHeight(25)
+        refresh_btn.setToolTip("刷新文件列表")
+        # 设置字体大小以确保emoji正常显示
+        refresh_btn.setStyleSheet(
+            """
+            QPushButton {
+                font-size: 16px;
+                padding: 2px;
+            }
+        """
+        )
         refresh_btn.clicked.connect(self._refresh_tree)
         search_layout.addWidget(refresh_btn)
 
