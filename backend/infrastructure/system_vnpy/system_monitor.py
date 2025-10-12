@@ -9,6 +9,7 @@
 import logging
 import os
 import platform
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List
@@ -64,6 +65,14 @@ class SystemMonitor:
         self.history = []
         self.max_history = 1000
 
+        # 🚀 性能优化：初始化CPU采样（建立baseline）
+        # 第一次调用cpu_percent()建立基线，后续调用interval=None才有意义
+        if HAS_PSUTIL:
+            try:
+                psutil.cpu_percent(interval=None)
+            except Exception:
+                pass
+
     def get_system_info(self) -> SystemInfo:
         """获取系统基本信息."""
         try:
@@ -109,7 +118,10 @@ class SystemMonitor:
         try:
             if HAS_PSUTIL:
                 # CPU使用率
-                cpu_percent = psutil.cpu_percent(interval=1)
+                # 🚀 性能优化：使用interval=None（非阻塞模式）
+                # interval=1会阻塞线程1秒！严重影响性能
+                # None表示返回自上次调用以来的CPU使用率，不阻塞
+                cpu_percent = psutil.cpu_percent(interval=None)
 
                 # 内存使用率
                 memory = psutil.virtual_memory()
@@ -340,6 +352,169 @@ class SystemMonitor:
             return network_info
         except (OSError, AttributeError, ImportError) as e:
             logger.error("获取网络信息失败: %s", e)
+            return {}
+
+    def get_disk_io_speed(self) -> Dict[str, Dict[str, float]]:
+        """获取各磁盘I/O速度 (MB/s).
+
+        Returns:
+            Dict: 各磁盘的读写速度，格式: {"C:": {"read_speed": 50.2, "write_speed": 30.1}, ...}
+        """
+        try:
+            if not HAS_PSUTIL:
+                return {}
+
+            # 获取所有磁盘分区
+            partitions = psutil.disk_partitions()
+            io_speeds = {}
+
+            # 获取第一次I/O计数
+            io_counters_1 = psutil.disk_io_counters(perdisk=True)
+            time.sleep(0.1)  # 等待100ms
+            io_counters_2 = psutil.disk_io_counters(perdisk=True)
+
+            if not io_counters_1 or not io_counters_2:
+                return {}
+
+            # 计算每个磁盘的I/O速度
+            for partition in partitions:
+                try:
+                    # 在Windows上，使用设备名（去除反斜杠）
+                    # 例如：\\?\Volume{...} 或 C:\
+                    device = partition.device
+
+                    # Windows磁盘设备名处理
+                    if platform.system() == "Windows":
+                        # 对于形如 "C:\" 的设备，提取盘符
+                        if ":" in device:
+                            disk_key = device.split(":")[0]
+                        else:
+                            continue
+                    else:
+                        # Linux/Unix使用完整设备名
+                        disk_key = device.replace("/dev/", "")
+
+                    # 查找对应的I/O计数器
+                    # 在Windows上，psutil返回的key可能是 "PhysicalDrive0" 等
+                    # 我们需要通过分区映射到物理磁盘
+                    found_counter = None
+                    for counter_key in io_counters_1.keys():
+                        # 简单匹配策略
+                        if disk_key in counter_key or counter_key in disk_key:
+                            found_counter = counter_key
+                            break
+
+                    if not found_counter:
+                        # 尝试使用物理磁盘编号
+                        if found_counter is None and len(io_counters_1) > 0:
+                            # 使用第一个物理磁盘作为默认值
+                            found_counter = list(io_counters_1.keys())[0]
+
+                    if (
+                        found_counter
+                        and found_counter in io_counters_1
+                        and found_counter in io_counters_2
+                    ):
+                        counter_1 = io_counters_1[found_counter]
+                        counter_2 = io_counters_2[found_counter]
+
+                        # 计算读写速度 (字节/秒 -> MB/秒)
+                        read_bytes_diff = counter_2.read_bytes - counter_1.read_bytes
+                        write_bytes_diff = counter_2.write_bytes - counter_1.write_bytes
+
+                        read_speed_mbps = (read_bytes_diff / 0.1) / (1024 * 1024)  # 0.1秒间隔
+                        write_speed_mbps = (write_bytes_diff / 0.1) / (1024 * 1024)
+
+                        # 使用挂载点作为key（更友好）
+                        mount_point = partition.mountpoint
+                        io_speeds[mount_point] = {
+                            "read_speed": round(read_speed_mbps, 2),
+                            "write_speed": round(write_speed_mbps, 2),
+                        }
+
+                except (PermissionError, OSError) as e:
+                    logger.debug("无法获取磁盘 %s 的I/O速度: %s", partition.device, e)
+                    continue
+
+            return io_speeds
+
+        except Exception as e:
+            logger.error("获取磁盘I/O速度失败: %s", e)
+            return {}
+
+    def get_network_speed(self) -> Dict[str, Any]:
+        """获取网络速度和带宽占用.
+
+        Returns:
+            Dict: 网络速度信息，格式:
+            {
+                "upload_speed_kbps": 1024.5,
+                "download_speed_kbps": 5120.8,
+                "bandwidth_percent": 45.2,
+                "interface": "以太网"
+            }
+        """
+        try:
+            if not HAS_PSUTIL:
+                return {}
+
+            # 获取第一次网络I/O计数
+            net_io_1 = psutil.net_io_counters()
+            time.sleep(0.1)  # 等待100ms
+            net_io_2 = psutil.net_io_counters()
+
+            if not net_io_1 or not net_io_2:
+                return {}
+
+            # 计算上传/下载速度 (字节/秒 -> KB/秒)
+            upload_bytes_diff = net_io_2.bytes_sent - net_io_1.bytes_sent
+            download_bytes_diff = net_io_2.bytes_recv - net_io_1.bytes_recv
+
+            upload_speed_kbps = (upload_bytes_diff / 0.1) / 1024  # 0.1秒间隔
+            download_speed_kbps = (download_bytes_diff / 0.1) / 1024
+
+            # 估算带宽占用百分比（假设1Gbps网卡 = 125MB/s = 128000KB/s）
+            # 这里使用一个保守的估算
+            total_speed_kbps = upload_speed_kbps + download_speed_kbps
+            assumed_bandwidth_kbps = 128000  # 1Gbps网卡
+
+            # 尝试获取实际网卡速度
+            try:
+                net_if_stats = psutil.net_if_stats()
+                for interface, stats in net_if_stats.items():
+                    if stats.isup and stats.speed > 0:
+                        # speed单位是Mbps，转换为KBps
+                        assumed_bandwidth_kbps = stats.speed * 1024 / 8
+                        break
+            except Exception:
+                pass
+
+            bandwidth_percent = (
+                (total_speed_kbps / assumed_bandwidth_kbps * 100)
+                if assumed_bandwidth_kbps > 0
+                else 0
+            )
+
+            # 获取主要网络接口名称
+            interface_name = "未知"
+            try:
+                net_if_stats = psutil.net_if_stats()
+                for interface, stats in net_if_stats.items():
+                    if stats.isup:
+                        interface_name = interface
+                        break
+            except Exception:
+                pass
+
+            return {
+                "upload_speed_kbps": round(upload_speed_kbps, 2),
+                "download_speed_kbps": round(download_speed_kbps, 2),
+                "bandwidth_percent": round(bandwidth_percent, 2),
+                "interface": interface_name,
+            }
+
+        except Exception as e:
+            logger.error("获取网络速度失败: %s", e)
             return {}
 
     def get_process_list(self, sort_by: str = "cpu_percent") -> List[Dict[str, Any]]:

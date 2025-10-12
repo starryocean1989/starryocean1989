@@ -27,6 +27,7 @@ from mootdx.quotes import Quotes
 from .block_parser import BlockParser
 from .config import config_manager
 from .datetime_decoder import TdxDateTimeDecoder
+from .server_pool import ServerPool
 
 
 # 自定义超时异常（避免与内置TimeoutError冲突，但在Python 3.3+中TimeoutError已经是内置的）
@@ -97,17 +98,30 @@ class StockFetcher:
             "current_interval": "",
             "start_time": None,
         }
-        # 配置超时参数（注意：mootdx 的 factory 方法不直接支持 timeout 参数）
-        # 我们需要在调用时通过其他方式控制超时
-        self.quotes = Quotes.factory()
-        self.block_parser = block_parser or BlockParser(config_manager.get_tdx_dir())
+        # 🚀 新架构：使用服务器池管理多个连接
+        # 获取配置的服务器池大小（默认5个）
+        server_pool_size = config_manager.get("chinastock.server_pool_size", 5)
+        self.server_pool = ServerPool(max_servers=server_pool_size, timeout=30)
         self.logger = logging.getLogger(__name__)
+
+        # 保留quotes用于向后兼容（延迟初始化）
+        self._quotes = None
+
+        self.block_parser = block_parser or BlockParser(config_manager.get_tdx_dir())
 
         # 超时配置
         self.network_timeout = 30  # 网络请求超时时间（秒），从10秒改为30秒
 
         # 品种分类缓存：避免重复解析spblock.dat
         self._classified_stocks_cache: Optional[Dict[str, List[str]]] = None
+
+    @property
+    def quotes(self):
+        """向后兼容：延迟初始化单一Quotes实例"""
+        if self._quotes is None:
+            self._quotes = Quotes.factory()
+            self.logger.info("延迟初始化默认Quotes实例（向后兼容）")
+        return self._quotes
 
     # ==================== 下载控制方法 ====================
 
@@ -550,7 +564,7 @@ class StockFetcher:
         progress_callback: Optional[Callable[[int, int, str, str], None]] = None,
     ) -> Dict[str, pd.DataFrame]:
         """
-        增量下载K线数据（支持进度回调和停止/暂停）
+        增量下载K线数据（多服务器并行架构）
 
         Args:
             symbols: 品种代码列表
@@ -565,151 +579,307 @@ class StockFetcher:
             intervals = ["1d", "5m", "1m"]
 
         result = {}
-        # 🚀 多服务器并行优化策略：
+
+        # 🚀 新架构：多服务器并行下载
         # ============================================================
-        # 【关键发现】限流机制分析：
-        #   - mootdx的限流是基于单个TCP连接，而非基于IP或总请求数
-        #   - 单个连接内如果并发请求过多，会触发限流导致空数据返回
-        #
-        # 【优化策略】多服务器并行异步下载：
-        #   1. 利用mootdx内置的服务器分析功能（硬编码几十上百个公共活跃服务器）
-        #   2. 测试服务器可用性，选择可用的服务器（例如20个通过测试）
-        #   3. 将下载任务按品种分成多份（按服务器数量分组）
-        #   4. 为每个服务器创建独立的Quotes实例（独立TCP连接）
-        #   5. 每个服务器内部使用串行请求（避免单连接限流）
-        #   6. 多个服务器间使用并行请求（ThreadPoolExecutor多线程）
+        # 【架构说明】：
+        #   1. 发现可用服务器（mootdx内置服务器池）
+        #   2. 为每个服务器创建独立Quotes实例（独立TCP连接）
+        #   3. 将任务按品种+周期分配给多个服务器
+        #   4. 每个服务器内部串行处理（避免单连接限流）
+        #   5. 多个服务器之间并行执行（ThreadPoolExecutor）
         #
         # 【性能提升】：
-        #   - 单连接串行：100% 基准速度
-        #   - 2个并行连接：提速30%+（实测）
-        #   - 理论上可扩展到更多服务器实现更高并发
-        #
-        # 【实现细节】：
-        #   - 本机8核16线程，每次请求50ms等待时间，异步完全可行
-        #   - 当前配置：2个并行连接（可根据需要调整）
-        #   - 每个连接内部严格串行，确保稳定性
+        #   - 理论提速：N倍（N=服务器数量，考虑网络延迟实际约0.7N）
+        #   - 降低空数据率：多服务器分散压力，单点故障影响小
+        #   - 提升稳定性：服务器级别负载均衡
         # ============================================================
-        num_parallel_connections = 2  # 并行连接数（每个连接内部串行）
 
-        self.logger.info(
-            "开始增量下载K线数据: %s 个品种, 从 %s 开始 (多服务器并行策略: %d个并行连接)",
-            len(symbols),
-            start_date,
-            num_parallel_connections,
-        )
+        self.logger.info("=" * 60)
+        self.logger.info("【多服务器并行下载】开始增量下载K线数据")
+        self.logger.info("  品种数量: %d", len(symbols))
+        self.logger.info("  周期列表: %s", intervals)
+        self.logger.info("  起始日期: %s", start_date)
+        self.logger.info("=" * 60)
 
-        # 计算总任务数并打印预估时间
-        total_tasks = len(symbols) * len(intervals)
-        self.logger.info(
-            "⏰ 预计下载任务数: %d (品种: %d × 周期: %d)",
-            total_tasks,
-            len(symbols),
-            len(intervals),
-        )
-        self.logger.info(
-            "⏰ 预计耗时: %.1f分钟 (并发数: %d)",
-            total_tasks * 1.5 / 60 / num_parallel_connections,
-            num_parallel_connections,
-        )
+        try:
+            # 步骤1：发现可用服务器
+            self.logger.info("【步骤1】发现可用服务器...")
+            available_servers = self.server_pool.discover_servers()
 
-        # 🔧 初始化进度跟踪
-        from datetime import datetime
+            if not available_servers:
+                self.logger.error("❌ 没有可用服务器，无法下载")
+                return result
 
-        self._download_progress = {
-            "is_downloading": True,
-            "completed": 0,
-            "total": total_tasks,
-            "current_symbol": "",
-            "current_interval": "",
-            "start_time": datetime.now(),
-        }
+            num_servers = len(available_servers)
+            self.logger.info("✅ 发现 %d 个可用服务器", num_servers)
 
-        completed_tasks = 0
+            # 步骤2：分配任务到服务器
+            self.logger.info("【步骤2】分配任务到服务器...")
+            tasks_per_server = self._split_tasks_by_server(symbols, intervals, num_servers)
 
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_symbol = {}
+            if not tasks_per_server:
+                self.logger.error("❌ 任务分配失败")
+                return result
 
-            for symbol in symbols:
-                for interval in intervals:
-                    future = executor.submit(
-                        self._download_single_kline_incremental,
-                        symbol,
-                        interval,
-                        start_date,
+            # 计算总任务数
+            total_tasks = len(symbols) * len(intervals)
+            self.logger.info("✅ 任务分配完成: 总计 %d 个任务", total_tasks)
+
+            # 预估时间（多服务器并行）
+            estimated_time = total_tasks * 1.5 / 60 / num_servers
+            self.logger.info("⏰ 预计耗时: %.1f 分钟（%d服务器并行）", estimated_time, num_servers)
+
+            # 初始化进度跟踪
+            from datetime import datetime
+
+            self._download_progress = {
+                "is_downloading": True,
+                "completed": 0,
+                "total": total_tasks,
+                "current_symbol": "",
+                "current_interval": "",
+                "start_time": datetime.now(),
+            }
+
+            # 步骤3：并行执行下载任务
+            self.logger.info("【步骤3】启动 %d 个并行下载线程...", num_servers)
+            self.logger.info("=" * 60)
+
+            # 性能监控：记录开始时间
+            parallel_start_time = time.time()
+
+            completed_lock = threading.Lock()
+            completed_tasks = [0]  # 使用列表以便在闭包中修改
+
+            # 性能监控：各服务器完成时间
+            server_completion_times = {}
+
+            def wrapped_progress_callback(
+                local_completed, local_total, symbol, interval
+            ):  # noqa: ARG001
+                """包装的进度回调，用于聚合多个服务器的进度"""
+                with completed_lock:
+                    completed_tasks[0] += 1
+                    progress_pct = (completed_tasks[0] / total_tasks) * 100
+
+                    # 更新进度信息
+                    self._download_progress.update(
+                        {
+                            "completed": completed_tasks[0],
+                            "current_symbol": symbol,
+                            "current_interval": interval,
+                        }
                     )
-                    future_to_symbol[future] = (symbol, interval)
 
-            for future in as_completed(future_to_symbol):
-                # 🔧 检查停止信号
-                if self.is_stopped():
-                    self.logger.warning("⛔ 下载已被停止，取消剩余任务...")
-                    break
-
-                # 🔧 检查暂停信号（阻塞直到恢复）
-                self._pause_event.wait()  # 如果暂停，这里会阻塞
-
-                symbol, interval = future_to_symbol[future]
-                completed_tasks += 1
-                progress_pct = (completed_tasks / total_tasks) * 100
-
-                # 🔧 更新进度信息
-                self._download_progress.update(
-                    {
-                        "completed": completed_tasks,
-                        "current_symbol": symbol,
-                        "current_interval": interval,
-                    }
-                )
-
-                try:
-                    data = future.result()
-                    if data is not None and not data.empty:
-                        key = f"{symbol}_{interval}"
-                        result[key] = data
+                    # 每100个打印一次进度
+                    if completed_tasks[0] % 100 == 0:
                         self.logger.info(
-                            "📥 [%d/%d (%.1f%%)] 成功下载 %s %s: %d 条",
-                            completed_tasks,
+                            "📊 进度: [%d/%d (%.1f%%)]",
+                            completed_tasks[0],
                             total_tasks,
                             progress_pct,
-                            symbol,
-                            interval,
-                            len(data),
                         )
 
-                        # 🔧 调用进度回调
-                        if progress_callback:
+                    # 🚀 性能优化：大幅降低UI回调频率
+                    # 调用外部回调（UI更新）- 根据服务器数量动态调整频率
+                    # 服务器越多，UI更新越少，避免事件队列阻塞
+                    if progress_callback:
+                        # 动态计算更新间隔
+                        if num_servers >= 20:
+                            update_interval = 50  # 20+服务器：每50个任务更新一次
+                        elif num_servers >= 15:
+                            update_interval = 30  # 15-19服务器：每30个任务
+                        elif num_servers >= 10:
+                            update_interval = 20  # 10-14服务器：每20个任务
+                        else:
+                            update_interval = 10  # <10服务器：每10个任务
+
+                        # 只在达到间隔或完成时才回调UI
+                        if (
+                            completed_tasks[0] % update_interval == 0
+                            or completed_tasks[0] == total_tasks
+                        ):
                             try:
-                                progress_callback(completed_tasks, total_tasks, symbol, interval)
+                                progress_callback(completed_tasks[0], total_tasks, symbol, interval)
                             except Exception as e:
                                 self.logger.error("进度回调失败: %s", e)
-                    else:
-                        self.logger.debug(
-                            "⚠️ [%d/%d (%.1f%%)] 下载 %s %s 返回空数据",
-                            completed_tasks,
-                            total_tasks,
-                            progress_pct,
-                            symbol,
-                            interval,
+
+            # 🚀 关键修复：使用as_completed实现真正的并行等待
+            # 而不是串行等待每个future按顺序完成
+            executor = None  # 初始化为None
+
+            try:
+                executor = ThreadPoolExecutor(max_workers=num_servers)
+                futures = []
+
+                # 提交所有任务到线程池
+                for server, tasks in tasks_per_server.items():
+                    try:
+                        # 为每个服务器创建独立的Quotes实例
+                        quotes_instance = self.server_pool.create_quotes_for_server(server)
+
+                        # 提交任务
+                        future = executor.submit(
+                            self._download_tasks_for_server,
+                            quotes_instance,
+                            tasks,
+                            start_date,
+                            wrapped_progress_callback,
                         )
-                except (OSError, ValueError, KeyError) as e:
-                    self.logger.error(
-                        "❌ [%d/%d (%.1f%%)] 下载 %s %s 失败: %s",
-                        completed_tasks,
-                        total_tasks,
-                        progress_pct,
-                        symbol,
-                        interval,
-                        e,
-                    )
-                except Exception as e:
-                    self.logger.error(
-                        "下载 %s %s 发生未知错误: %s", symbol, interval, e, exc_info=True
+                        futures.append((future, server))
+
+                    except Exception as e:
+                        self.logger.error(
+                            "为服务器 %s:%d 创建连接失败: %s，跳过该服务器", server[0], server[1], e
+                        )
+                        # 继续下一个服务器
+                        continue
+
+                if not futures:
+                    self.logger.error("❌ 所有服务器连接失败，无法下载")
+                    return result
+
+                # 🚀 使用as_completed实现并行等待
+                # 谁先完成就先处理谁，不会按顺序等待
+                future_to_server = {future: server for future, server in futures}
+                completed_servers = 0
+
+                try:
+                    for future in as_completed(future_to_server.keys()):
+                        # 检查停止信号
+                        if self.is_stopped():
+                            self.logger.warning("⛔ 检测到停止信号，等待当前任务完成后退出...")
+
+                            # 🚀 关键修复：不尝试取消future（会导致异常）
+                            # future.cancel()对已运行的任务无效，且可能引发异常
+                            # 改为：等待当前正在处理的future完成，然后退出循环
+                            # 后台线程会检查self.is_stopped()并自行中断
+
+                            self.logger.info("等待当前服务器任务完成...")
+                            break
+
+                        server = future_to_server[future]
+                        completed_servers += 1
+
+                        # 🔍 性能监控：记录服务器完成时间
+                        server_elapsed = time.time() - parallel_start_time
+                        server_completion_times[server] = server_elapsed
+
+                        try:
+                            server_results = future.result(timeout=300)  # 5分钟超时
+
+                            if server_results and isinstance(server_results, dict):
+                                result.update(server_results)
+
+                                # 🔍 性能监控：显示服务器完成时间和速度
+                                tasks_count = len(tasks_per_server.get(server, []))
+                                avg_time_per_task = (
+                                    server_elapsed / tasks_count if tasks_count > 0 else 0
+                                )
+
+                                self.logger.info(
+                                    "✅ 服务器 %s:%d 完成 [%d/%d]: %d/%d 个数据集, "
+                                    "耗时 %.1f秒, 平均 %.2f秒/任务",
+                                    server[0],
+                                    server[1],
+                                    completed_servers,
+                                    num_servers,
+                                    len(server_results),
+                                    tasks_count,
+                                    server_elapsed,
+                                    avg_time_per_task,
+                                )
+                            else:
+                                self.logger.warning(
+                                    "⚠️ 服务器 %s:%d 返回无效结果", server[0], server[1]
+                                )
+                        except TimeoutError:
+                            self.logger.error(
+                                "❌ 服务器 %s:%d 超时（>300秒）", server[0], server[1]
+                            )
+                        except Exception as e:
+                            self.logger.error(
+                                "❌ 服务器 %s:%d 执行失败: %s",
+                                server[0],
+                                server[1],
+                                e,
+                                exc_info=True,
+                            )
+
+                except Exception as loop_error:
+                    self.logger.error("处理future结果时异常: %s", loop_error, exc_info=True)
+
+            finally:
+                # 🚀 关键修复：确保executor正确关闭
+                # 检查executor是否已创建
+                if executor is not None:
+                    try:
+                        if self.is_stopped():
+                            self.logger.info("停止状态，快速关闭executor（不等待未完成任务）")
+                            # Python 3.9+支持cancel_futures参数
+                            try:
+                                executor.shutdown(wait=False, cancel_futures=True)
+                            except TypeError:
+                                # Python 3.8及以下版本不支持cancel_futures参数
+                                executor.shutdown(wait=False)
+                        else:
+                            self.logger.debug("正常完成，关闭executor")
+                            executor.shutdown(wait=True)
+                    except Exception as shutdown_err:
+                        self.logger.error("关闭executor失败: %s", shutdown_err, exc_info=True)
+
+            # 🔍 性能监控：分析并行性能
+            total_parallel_time = time.time() - parallel_start_time
+
+            self.logger.info("=" * 60)
+            self.logger.info(
+                "【完成】增量下载完成: 成功下载 %d/%d 个数据集", len(result), total_tasks
+            )
+            self.logger.info("总耗时: %.1f 秒", total_parallel_time)
+
+            # 分析并行效率
+            if server_completion_times:
+                min_time = min(server_completion_times.values())
+                max_time = max(server_completion_times.values())
+                avg_time = sum(server_completion_times.values()) / len(server_completion_times)
+
+                self.logger.info("【性能分析】")
+                self.logger.info("  最快服务器: %.1f 秒", min_time)
+                self.logger.info("  最慢服务器: %.1f 秒", max_time)
+                self.logger.info("  平均完成时间: %.1f 秒", avg_time)
+                self.logger.info(
+                    "  负载均衡度: %.1f%% （理想100%%）",
+                    (min_time / max_time * 100) if max_time > 0 else 0,
+                )
+
+                # 检查是否真正并行
+                if max_time < total_parallel_time * 1.1:  # 允许10%误差
+                    self.logger.info("  ✅ 确认：服务器真正并行执行")
+                else:
+                    self.logger.warning(
+                        "  ⚠️ 警告：可能存在串行化！最慢服务器 %.1fs < 总时间 %.1fs",
+                        max_time,
+                        total_parallel_time,
                     )
 
-        self.logger.info("增量下载完成: %s 个数据集", len(result))
+            self.logger.info("=" * 60)
 
-        # 标记下载完成
-        self._download_progress["is_downloading"] = False
+        except KeyboardInterrupt:
+            self.logger.warning("下载被用户中断（KeyboardInterrupt）")
+            # 标记下载完成
+            self._download_progress["is_downloading"] = False
+            return result
+
+        except Exception as e:
+            self.logger.error("增量下载异常: %s", e, exc_info=True)
+            # 标记下载完成
+            self._download_progress["is_downloading"] = False
+            return result
+
+        finally:
+            # 确保无论如何都标记下载完成
+            self._download_progress["is_downloading"] = False
 
         return result
 
@@ -1239,3 +1409,270 @@ class StockFetcher:
         # 解析一次并缓存结果
         self._classified_stocks_cache = self.parse_market_codes(stocks_df)
         return self._classified_stocks_cache
+
+    # ==================== 多服务器并行下载方法 ====================
+
+    def _split_tasks_by_server(
+        self, symbols: List[str], intervals: List[str], num_servers: int
+    ) -> Dict[tuple, List[tuple]]:
+        """
+        将下载任务按服务器分组
+
+        Args:
+            symbols: 品种代码列表
+            intervals: K线周期列表
+            num_servers: 服务器数量
+
+        Returns:
+            服务器到任务列表的映射 {(ip, port): [(symbol, interval), ...]}
+        """
+        # 生成所有任务
+        all_tasks = [(s, i) for s in symbols for i in intervals]
+
+        # 获取服务器列表
+        servers = self.server_pool.get_server_pool(num_servers)
+
+        if not servers:
+            self.logger.error("没有可用服务器")
+            return {}
+
+        # 按服务器数量分组（轮询分配）
+        tasks_per_server = {}
+        for idx, task in enumerate(all_tasks):
+            server_idx = idx % len(servers)
+            server = servers[server_idx]
+            if server not in tasks_per_server:
+                tasks_per_server[server] = []
+            tasks_per_server[server].append(task)
+
+        # 打印任务分配统计
+        self.logger.info("任务分配统计:")
+        for server, tasks in tasks_per_server.items():
+            self.logger.info("  服务器 %s:%d -> %d 个任务", server[0], server[1], len(tasks))
+
+        return tasks_per_server
+
+    def _download_tasks_for_server(
+        self,
+        quotes_instance: Quotes,
+        tasks: List[tuple],
+        start_date: Union[str, date],
+        progress_callback: Optional[Callable[[int, int, str, str], None]] = None,
+    ) -> Dict[str, pd.DataFrame]:
+        """
+        在单个服务器连接上串行处理所有分配的任务
+
+        Args:
+            quotes_instance: 该服务器的独立Quotes实例
+            tasks: 该服务器负责的任务列表 [(symbol, interval), ...]
+            start_date: 开始日期
+            progress_callback: 进度回调函数
+
+        Returns:
+            下载结果字典 {f"{symbol}_{interval}": DataFrame}
+        """
+        results = {}
+        server_info = "未知"
+
+        try:
+            # 获取服务器信息用于日志
+            if hasattr(quotes_instance, "server"):
+                server_info = f"{quotes_instance.server[0]}:{quotes_instance.server[1]}"
+
+            # 🔍 性能监控：记录此服务器的开始时间
+            server_start_time = time.time()
+            current_thread = threading.current_thread()
+
+            self.logger.info(
+                "🚀 服务器 %s 开始处理 %d 个任务 (线程: %s)",
+                server_info,
+                len(tasks),
+                current_thread.name,
+            )
+
+            for idx, (symbol, interval) in enumerate(tasks):
+                # 检查停止信号
+                if self.is_stopped():
+                    self.logger.warning("服务器 %s 检测到停止信号，中断处理", server_info)
+                    break
+
+                # 检查暂停信号
+                self._pause_event.wait()
+
+                # 下载单个品种数据
+                try:
+                    data = self._download_single_with_quotes(
+                        quotes_instance, symbol, interval, start_date
+                    )
+
+                    if data is not None and not data.empty:
+                        key = f"{symbol}_{interval}"
+                        results[key] = data
+                        self.logger.debug(
+                            "服务器 %s: ✅ %s %s (%d条) [%d/%d]",
+                            server_info,
+                            symbol,
+                            interval,
+                            len(data),
+                            idx + 1,
+                            len(tasks),
+                        )
+                    else:
+                        self.logger.debug(
+                            "服务器 %s: ⚠️ %s %s 返回空数据 [%d/%d]",
+                            server_info,
+                            symbol,
+                            interval,
+                            idx + 1,
+                            len(tasks),
+                        )
+
+                    # 调用进度回调（如果提供）
+                    # 🚀 优化：只在每10个任务回调一次，减少锁竞争
+                    if progress_callback and ((idx + 1) % 10 == 0 or (idx + 1) == len(tasks)):
+                        # 注意：这里的进度是针对这个服务器的，总进度由上层聚合
+                        progress_callback(idx + 1, len(tasks), symbol, interval)
+
+                except Exception as e:
+                    self.logger.error(
+                        "服务器 %s 下载 %s %s 失败: %s", server_info, symbol, interval, str(e)[:100]
+                    )
+
+            # 🔍 性能监控：此服务器总耗时
+            server_total_time = time.time() - server_start_time
+            successful_rate = len(results) / len(tasks) * 100 if len(tasks) > 0 else 0
+
+            self.logger.info(
+                "🏁 服务器 %s 完成: 成功 %d/%d 个任务 (%.1f%%), " "总耗时 %.1f秒, 平均 %.2f秒/任务",
+                server_info,
+                len(results),
+                len(tasks),
+                successful_rate,
+                server_total_time,
+                server_total_time / len(tasks) if len(tasks) > 0 else 0,
+            )
+
+        except KeyboardInterrupt:
+            self.logger.warning("服务器 %s 被用户中断", server_info)
+
+        except Exception as e:
+            self.logger.error("服务器 %s 处理异常: %s", server_info, e, exc_info=True)
+
+        finally:
+            # 🚀 关键修复：确保连接总是被关闭，避免资源泄漏
+            try:
+                if hasattr(quotes_instance, "close"):
+                    quotes_instance.close()
+                    self.logger.debug("服务器 %s 连接已关闭", server_info)
+            except Exception as close_err:
+                # 忽略关闭错误，不影响返回
+                self.logger.debug("关闭服务器 %s 连接时出错（已忽略）: %s", server_info, close_err)
+
+        return results
+
+    def _download_single_with_quotes(
+        self,
+        quotes_instance: Quotes,
+        symbol: str,
+        interval: str,
+        start_date: Union[str, date],
+    ) -> Optional[pd.DataFrame]:
+        """
+        使用指定Quotes实例下载单个品种的增量K线数据
+
+        Args:
+            quotes_instance: Quotes实例
+            symbol: 品种代码
+            interval: K线周期
+            start_date: 开始日期
+
+        Returns:
+            K线数据DataFrame
+        """
+        try:
+            # 转换日期格式
+            if isinstance(start_date, str):
+                start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
+
+            # 计算从开始日期到现在的天数
+            days_diff = (date.today() - start_date).days
+
+            # 转换周期格式
+            frequency_map = {
+                "1d": 9,  # 日线
+                "5m": 0,  # 5分钟
+                "1m": 8,  # 1分钟
+            }
+
+            frequency = frequency_map.get(interval, 9)
+
+            # 根据周期设置合理的下载数量
+            if interval == "1d":
+                offset = min(int(days_diff * 1.5), 800)
+            elif interval == "5m":
+                offset = min(int(days_diff * 50), 800)
+            elif interval == "1m":
+                offset = min(int(days_diff * 250), 800)
+            else:
+                offset = 800
+
+            # 添加重试机制
+            max_retries = 3
+            retry_delay = 0.5
+            data = None
+
+            for retry in range(max_retries):
+                if retry > 0:
+                    time.sleep(retry_delay)
+
+                try:
+                    # 确定市场代码
+                    market = 1 if symbol.startswith("6") else 0
+
+                    # 调用底层API（使用传入的quotes_instance）
+                    raw_data = quotes_instance.client.get_security_bars(
+                        int(frequency), int(market), str(symbol), 0, int(offset)
+                    )
+
+                    if not raw_data:
+                        data = None
+                    else:
+                        # 转换为DataFrame并解码
+                        data = pd.DataFrame(raw_data)
+                        data = TdxDateTimeDecoder.decode_dataframe(data, interval)
+
+                        # 设置index
+                        if not data.empty and "datetime" in data.columns:
+                            data.index = data["datetime"]
+
+                        # 标准化列名
+                        if "vol" in data.columns:
+                            data["volume"] = data["vol"]
+
+                except Exception as api_error:
+                    self.logger.debug("API调用失败: %s, 错误: %s", symbol, str(api_error)[:50])
+                    data = None
+
+                # 如果成功获取到数据，跳出重试循环
+                if data is not None and not data.empty:
+                    break
+
+                # 如果数据为空，准备重试
+                if retry < max_retries - 1:
+                    retry_delay *= 2
+
+            if data is not None and not data.empty:
+                # 标准化列名并过滤
+                data = self._standardize_columns(data, symbol, interval)
+
+                if data is not None and not data.empty:
+                    # 过滤日期
+                    data = self._filter_by_date(data, start_date)
+
+                    if data is not None and not data.empty:
+                        return data
+
+        except Exception as e:
+            self.logger.error("下载 %s %s 增量数据失败: %s", symbol, interval, e)
+
+        return None

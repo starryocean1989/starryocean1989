@@ -59,8 +59,8 @@ class TdxDateTimeDecoder:
             month = int(parts[1])
             day = int(parts[2])
 
-            # 检查是否需要解码（day > 31或month > 12）
-            if day <= 31 and month <= 12 and month >= 1:
+            # 检查是否需要解码（day > 31或month > 12或day=0或month=0）
+            if 1 <= day <= 31 and 1 <= month <= 12:
                 # 正常日期，无需解码
                 time_parts = time_str.split(":")
                 hour = int(time_parts[0]) if len(time_parts) > 0 else 0
@@ -122,8 +122,8 @@ class TdxDateTimeDecoder:
             month = int(parts[1])
             day = int(parts[2])
 
-            # 检查是否需要解码（year > 2200或month > 12或day > 31）
-            if year <= 2200 and month <= 12 and day <= 31 and month >= 1 and day >= 1:
+            # 检查是否需要解码（year > 2200或month > 12或day > 31或day=0或month=0）
+            if year <= 2200 and 1 <= day <= 31 and 1 <= month <= 12:
                 # 正常日期，无需解码
                 time_parts = time_str.split(":")
                 hour = int(time_parts[0]) if len(time_parts) > 0 else 15

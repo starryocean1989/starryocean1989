@@ -33,6 +33,8 @@ class ConfigManager:
         "chinastock.retry_times": 3,
         "chinastock.enable_watcher": True,
         "chinastock.watcher_interval": 5,
+        # 多服务器并行下载配置
+        "chinastock.server_pool_size": 5,  # 并行服务器数量（默认5个，可设置1-30）
         # 轮询数据源转换器配置
         "chinastock.polling_gateway.enabled": False,
         "chinastock.polling_gateway.interval": 60,  # 轮询间隔（秒）

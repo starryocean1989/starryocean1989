@@ -44,6 +44,11 @@ class StorageManager:
             保存的文件路径
         """
         try:
+            # 🚀 关键检查：防止空DataFrame导致Parquet文件损坏
+            if dataframe is None or dataframe.empty:
+                self.logger.warning("DataFrame为空，跳过保存: %s %s", symbol, interval)
+                return None
+
             # 创建品种目录
             symbol_dir = self.data_dir / symbol
             symbol_dir.mkdir(parents=True, exist_ok=True)
@@ -57,6 +62,11 @@ class StorageManager:
 
             # 标准化数据格式
             df = self._standardize_dataframe(dataframe, symbol, interval)
+
+            # 🚀 关键检查：标准化后再次检查是否为空（防止Parquet损坏）
+            if df is None or df.empty or len(df) == 0:
+                self.logger.warning("标准化后DataFrame为空，跳过保存: %s %s", symbol, interval)
+                return None
 
             # 保存为Parquet文件（使用zstd压缩算法，压缩级别3）
             # ============================================================

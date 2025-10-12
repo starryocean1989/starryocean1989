@@ -5,9 +5,10 @@
 合并handlers逻辑，统一backend调用。
 """
 import time
-from typing import Any, Dict, Optional
+from collections import deque
+from typing import Any, Dict, List, Optional
 
-from PySide6.QtCore import QDate, Qt, Signal, QObject
+from PySide6.QtCore import QDate, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -15,6 +16,7 @@ from PySide6.QtWidgets import (
     QDateEdit,
     QFileDialog,
     QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -23,6 +25,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSlider,
     QSpinBox,
@@ -30,6 +33,7 @@ from PySide6.QtWidgets import (
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -38,7 +42,12 @@ import psutil
 import pyqtgraph as pg
 
 from backend.core.base import get_service_manager
-from backend.core.utils import LoggerMixin
+from backend.core.utils import (
+    LoggerMixin,
+    EVENT_SYSTEM_STATUS,
+    EVENT_PERFORMANCE_METRICS,
+    EVENT_SERVICE_STATUS,
+)
 from ui.widgets.base_widget import BaseWidget
 
 
@@ -64,6 +73,7 @@ class SystemManager(BaseWidget, LoggerMixin):
         self.config_tab: Optional[QWidget] = None
         self.logs_tab: Optional[QWidget] = None
         self.diagnosis_tab: Optional[QWidget] = None
+        self.process_monitor_tab: Optional[QWidget] = None
         self.tools_tab: Optional[QWidget] = None
 
         # 系统状态组件
@@ -102,16 +112,109 @@ class SystemManager(BaseWidget, LoggerMixin):
 
         # 服务管理组件
         self.services_table: Optional[QTableWidget] = None
+        self.dependencies_table: Optional[QTableWidget] = None
         self.health_progress: Optional[QProgressBar] = None
 
         # 日志管理组件
         self.logs_table: Optional[QTableWidget] = None
 
-        # 诊断工具组件
+        # 诊断工具组件（保留旧Tab作为兼容）
         self.diagnosis_table: Optional[QTableWidget] = None
+
+        # 新增：进程监控组件
+        self.process_table: Optional[QTableWidget] = None
+        # 热力图组件（整体设备监控）
+        self.heatmap_cpu: Optional[Any] = None
+        self.heatmap_memory: Optional[Any] = None
+        self.heatmap_disk_io: Optional[Any] = None
+        self.heatmap_network: Optional[Any] = None
+        self.heatmap_bandwidth: Optional[Any] = None
+        # 热力图数据历史
+        self.heatmap_history: Dict[str, Any] = {
+            "cpu": [],
+            "memory": [],
+            "disk_io": [],
+            "network": [],
+            "bandwidth": [],
+        }
 
         # 工具集合组件
         self.tools_table: Optional[QTableWidget] = None
+
+        # 新增：系统状态监控增强组件
+        self.cpu_chart: Optional[Any] = None
+        self.memory_chart: Optional[Any] = None
+        self.disk_io_chart: Optional[Any] = None
+        self.network_speed_chart: Optional[Any] = None
+        self.disk_space_chart: Optional[Any] = None
+        self.status_details_table: Optional[QTableWidget] = None
+
+        # 新增：历史数据存储
+        self.system_status_history: Dict[str, Any] = {
+            "cpu": deque(maxlen=100),
+            "memory": deque(maxlen=100),
+            "disk_io": {},
+            "network": {"upload": deque(maxlen=100), "download": deque(maxlen=100)},
+        }
+
+        # 新增：统计数据存储（用于计算平均值和峰值）
+        self.system_stats: Dict[str, Dict[str, float]] = {
+            "cpu": {"current": 0, "avg": 0, "peak": 0},
+            "memory": {"current": 0, "avg": 0, "peak": 0},
+            "disk": {"current": 0, "avg": 0, "peak": 0},
+            "network_upload": {"current": 0, "avg": 0, "peak": 0},
+            "network_download": {"current": 0, "avg": 0, "peak": 0},
+        }
+
+        # 新增：性能指标组件引用
+        self.data_processing_widgets: Dict[str, Any] = {}
+        self.strategy_execution_widgets: Dict[str, Any] = {}
+        self.trading_execution_widgets: Dict[str, Any] = {}
+
+        # 新增：诊断界面组件
+        self.diagnosis_tabs: Optional[QTabWidget] = None
+        self.basic_perf_table: Optional[QTableWidget] = None
+        self.basic_network_table: Optional[QTableWidget] = None
+        self.basic_db_table: Optional[QTableWidget] = None
+        self.bottlenecks_table: Optional[QTableWidget] = None
+        self.errors_table: Optional[QTableWidget] = None
+        self.suggestions_text: Optional[QTextEdit] = None
+        self.error_details_table: Optional[QTableWidget] = None
+        self.optimization_text: Optional[QTextEdit] = None
+        self.fix_suggestions_table: Optional[QTableWidget] = None
+
+        # 新增：服务状态增强组件
+        self.health_detail_label: Optional[QLabel] = None
+
+        # 新增：配置界面组件
+        self.monitoring_interval_spin: Optional[QSpinBox] = None
+        self.ai_api_key_edit: Optional[QLineEdit] = None
+        self.ai_api_url_edit: Optional[QLineEdit] = None
+        self.ai_model_combo: Optional[QComboBox] = None
+        self.ai_max_tokens_spin: Optional[QSpinBox] = None
+        self.ai_temperature_slider: Optional[QSlider] = None
+        self.ai_temperature_label: Optional[QLabel] = None
+        self.ai_max_history_spin: Optional[QSpinBox] = None
+        self.ai_timeout_spin: Optional[QSpinBox] = None
+        self.ai_enable_tools_check: Optional[QCheckBox] = None
+
+        # 新增：工具集合组件
+        self.reader_day_check: Optional[QCheckBox] = None
+        self.reader_5min_check: Optional[QCheckBox] = None
+        self.reader_1min_check: Optional[QCheckBox] = None
+        self.reader_sh_check: Optional[QCheckBox] = None
+        self.reader_sz_check: Optional[QCheckBox] = None
+        self.reader_bj_check: Optional[QCheckBox] = None
+        self.reader_tdx_path_edit: Optional[QLineEdit] = None
+        self.reader_thread_spin: Optional[QSpinBox] = None
+        self.reader_status_label: Optional[QLabel] = None
+        self.reader_progress_bar: Optional[QProgressBar] = None
+        self.reader_detail_label: Optional[QLabel] = None
+        self.reader_start_btn: Optional[QPushButton] = None
+        self.reader_stop_btn: Optional[QPushButton] = None
+
+        # 新增：事件引擎
+        self.event_engine: Optional[Any] = None
 
         # 🔧 关键修复：在调用父类初始化之前就初始化服务
         # 因为 super().__init__() 会调用 setup_ui()，而 setup_ui() 会创建标签页
@@ -120,6 +223,10 @@ class SystemManager(BaseWidget, LoggerMixin):
 
         # 调用父类初始化
         super().__init__(parent, "系统管理")
+
+        # 注册事件监听器
+        self._register_event_listeners()
+
         self.logger.info("系统管理界面初始化完成")
 
     def _initialize_service_before_ui(self):
@@ -188,153 +295,268 @@ class SystemManager(BaseWidget, LoggerMixin):
             main_layout.addWidget(self.tab_widget)
 
     def _create_sub_interfaces(self):
-        """创建8个子界面."""
-        # 1.1 系统状态实时监控
+        """创建8个子界面（按新顺序）."""
+        # 1. 系统状态监控
         self.system_status_tab = self._create_system_status_tab()
         if self.tab_widget:
             self.tab_widget.addTab(self.system_status_tab, "🔍 系统状态监控")
 
-        # 1.2 性能指标展示
+        # 2. 性能指标
         self.performance_tab = self._create_performance_tab()
         if self.tab_widget:
             self.tab_widget.addTab(self.performance_tab, "📊 性能指标")
 
-        # 1.3 告警信息管理
+        # 3. 服务监控（重构）
+        self.services_tab = self._create_services_tab()
+        if self.tab_widget:
+            self.tab_widget.addTab(self.services_tab, "💚 服务监控")
+
+        # 4. 进程监控（新设计）
+        self.process_monitor_tab = self._create_process_monitor_tab()
+        if self.tab_widget:
+            self.tab_widget.addTab(self.process_monitor_tab, "🔧 进程监控")
+
+        # 保留原诊断Tab作为兼容（可选）
+        # self.diagnosis_tab = self._create_diagnosis_tab()
+        # if self.tab_widget:
+        #     self.tab_widget.addTab(self.diagnosis_tab, "🔍 系统诊断（旧版）")
+
+        # 5. 告警管理
         self.alerts_tab = self._create_alerts_tab()
         if self.tab_widget:
             self.tab_widget.addTab(self.alerts_tab, "🚨 告警管理")
 
-        # 1.4 服务健康检查
-        self.services_tab = self._create_services_tab()
-        if self.tab_widget:
-            self.tab_widget.addTab(self.services_tab, "💚 服务检查")
-
-        # 1.5 系统配置
-        self.config_tab = self._create_config_tab()
-        if self.tab_widget:
-            self.tab_widget.addTab(self.config_tab, "⚙️ 系统配置")
-
-        # 1.6 日志管理
+        # 6. 日志管理
         self.logs_tab = self._create_logs_tab()
         if self.tab_widget:
             self.tab_widget.addTab(self.logs_tab, "📝 日志管理")
 
-        # 1.7 系统诊断
-        self.diagnosis_tab = self._create_diagnosis_tab()
+        # 7. 系统配置
+        self.config_tab = self._create_config_tab()
         if self.tab_widget:
-            self.tab_widget.addTab(self.diagnosis_tab, "🔧 系统诊断")
+            self.tab_widget.addTab(self.config_tab, "⚙️ 系统配置")
 
-        # 1.8 工具集合
+        # 8. 系统工具
         self.tools_tab = self._create_tools_tab()
         if self.tab_widget:
-            self.tab_widget.addTab(self.tools_tab, "🛠️ 工具集合")
+            self.tab_widget.addTab(self.tools_tab, "🛠️ 系统工具")
+
+    def _register_event_listeners(self):
+        """注册vnpy事件监听器."""
+        try:
+            from backend.core.base import get_event_engine
+            from backend.core.utils import EVENT_PROCESS_STATUS
+
+            self.event_engine = get_event_engine()
+            if self.event_engine:
+                self.event_engine.register(EVENT_SYSTEM_STATUS, self._on_system_status_event)
+                self.event_engine.register(EVENT_PERFORMANCE_METRICS, self._on_performance_event)
+                self.event_engine.register(EVENT_SERVICE_STATUS, self._on_service_status_event)
+                self.event_engine.register(EVENT_PROCESS_STATUS, self._on_process_status_event)
+                self.logger.info("事件监听器已注册（包含进程状态事件）")
+            else:
+                self.logger.warning("EventEngine不可用，无法注册事件监听器")
+        except Exception as e:
+            self.logger.error("注册事件监听器失败: %s", e)
 
     # ==================== 1.1 系统状态监控 ====================
 
     def _create_system_status_tab(self) -> QWidget:
-        """创建系统状态监控子界面."""
+        """创建系统状态监控子界面（图表化增强版）."""
         tab = QWidget()
         layout = QVBoxLayout(tab)
 
-        # 状态概览组
-        overview_group = QGroupBox("系统概览")
-        overview_layout = QFormLayout(overview_group)
+        # 工具栏
+        toolbar = QHBoxLayout()
+        toolbar.addWidget(QLabel("🔍 系统状态实时监控"))
+        toolbar.addStretch()
 
-        self.cpu_label = QLabel("--")
-        overview_layout.addRow("CPU使用率:", self.cpu_label)
+        auto_refresh = QCheckBox("自动刷新（事件驱动）")
+        auto_refresh.setChecked(True)
+        auto_refresh.setEnabled(False)  # 事件驱动自动更新
+        toolbar.addWidget(auto_refresh)
 
-        self.memory_label = QLabel("--")
-        overview_layout.addRow("内存使用率:", self.memory_label)
+        layout.addLayout(toolbar)
 
-        self.disk_label = QLabel("--")
-        overview_layout.addRow("磁盘使用率:", self.disk_label)
+        # 使用QSplitter分隔图表和详细数据
+        main_splitter = QSplitter(Qt.Orientation.Vertical)
 
-        self.network_label = QLabel("--")
-        overview_layout.addRow("网络状态:", self.network_label)
+        # 图表区域（3行2列）
+        charts_widget = QWidget()
+        charts_layout = QGridLayout(charts_widget)
+        charts_layout.setSpacing(10)
 
-        layout.addWidget(overview_group)
+        # 第1行：CPU和内存
+        self.cpu_chart = self._create_line_chart("CPU使用率 (%)", "#FF6B6B")
+        self.memory_chart = self._create_line_chart("内存使用率 (%)", "#4ECDC4")
+        charts_layout.addWidget(self.cpu_chart, 0, 0)
+        charts_layout.addWidget(self.memory_chart, 0, 1)
 
-        # 系统详情组
-        details_group = QGroupBox("详细状态")
+        # 第2行：磁盘I/O和网速
+        self.disk_io_chart = self._create_multi_line_chart("磁盘I/O速度 (MB/s)")
+        self.network_speed_chart = self._create_network_chart("网络速度 (KB/s)")
+        charts_layout.addWidget(self.disk_io_chart, 1, 0)
+        charts_layout.addWidget(self.network_speed_chart, 1, 1)
+
+        # 第3行：硬盘空间（跨两列）
+        self.disk_space_chart = self._create_disk_space_chart("硬盘空间占用")
+        charts_layout.addWidget(self.disk_space_chart, 2, 0, 1, 2)
+
+        main_splitter.addWidget(charts_widget)
+
+        # 详细数据表格
+        details_group = QGroupBox("详细数据")
         details_layout = QVBoxLayout(details_group)
 
-        self.status_table = QTableWidget(0, 3)
-        self.status_table.setHorizontalHeaderLabels(["组件", "状态", "详情"])
-        header = self.status_table.horizontalHeader()
+        self.status_details_table = QTableWidget(0, 4)
+        self.status_details_table.setHorizontalHeaderLabels(["指标", "当前值", "平均值", "峰值"])
+        header = self.status_details_table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
 
-        details_layout.addWidget(self.status_table)
-        layout.addWidget(details_group)
+        details_layout.addWidget(self.status_details_table)
+        main_splitter.addWidget(details_group)
+
+        # 设置分隔比例：图表区域占70%，详细数据占30%
+        main_splitter.setSizes([700, 300])
+        main_splitter.setStretchFactor(0, 7)
+        main_splitter.setStretchFactor(1, 3)
+
+        layout.addWidget(main_splitter)
 
         return tab
 
     # ==================== 1.2 性能指标展示 ====================
 
     def _create_performance_tab(self) -> QWidget:
-        """创建性能指标子界面."""
+        """创建性能指标子界面（重构版 - 专注业务性能）."""
         tab = QWidget()
         layout = QVBoxLayout(tab)
 
         # 工具栏
         toolbar_layout = QHBoxLayout()
-        toolbar_layout.addWidget(QLabel("📊 性能监控"))
+        toolbar_layout.addWidget(QLabel("📊 业务性能指标"))
         toolbar_layout.addStretch()
 
-        auto_refresh_check = QCheckBox("自动刷新")
+        auto_refresh_check = QCheckBox("自动刷新（事件驱动）")
         auto_refresh_check.setChecked(True)
+        auto_refresh_check.setEnabled(False)
         toolbar_layout.addWidget(auto_refresh_check)
-
-        clear_btn = QPushButton("清除历史")
-        clear_btn.clicked.connect(self._clear_performance_history)
-        toolbar_layout.addWidget(clear_btn)
 
         layout.addLayout(toolbar_layout)
 
-        # 性能图表组
-        chart_group = QGroupBox("实时性能图表")
-        chart_layout = QVBoxLayout(chart_group)
+        # 1. 数据处理性能
+        data_group = self._create_performance_group(
+            "数据处理性能",
+            [
+                ("平均查询时间", "ms"),
+                ("下载速度", "Mbps"),
+                ("缓存命中率", "%"),
+                ("总查询数", "次"),
+            ],
+        )
+        layout.addWidget(data_group)
+        self.data_processing_widgets = data_group
 
-        chart_splitter = QSplitter(Qt.Orientation.Horizontal)
+        # 2. 策略执行性能
+        strategy_group = self._create_performance_group(
+            "策略执行性能",
+            [
+                ("平均信号延迟", "ms"),
+                ("K线处理时间", "ms"),
+                ("策略吞吐量", "次/秒"),
+                ("错误率", "%"),
+                ("总调用次数", "次"),
+            ],
+        )
+        layout.addWidget(strategy_group)
+        self.strategy_execution_widgets = strategy_group
 
-        # CPU图表
-        cpu_win = pg.GraphicsLayoutWidget()
-        cpu_win.setBackground(QColor(26, 26, 26))
-        self.cpu_plot = cpu_win.addPlot(title="CPU使用率 (%)")  # type: ignore[attr-defined]
-        if self.cpu_plot:
-            self.cpu_plot.showGrid(x=True, y=True, alpha=0.3)
-            self.cpu_plot.setRange(yRange=[0, 100])
-            pen = pg.mkPen(color="#FF6B6B", width=2)
-            self.cpu_curve = self.cpu_plot.plot(pen=pen)
-
-        chart_splitter.addWidget(cpu_win)
-
-        # 内存图表
-        memory_win = pg.GraphicsLayoutWidget()
-        memory_win.setBackground(QColor(26, 26, 26))
-        self.memory_plot = memory_win.addPlot(title="内存使用率 (%)")  # type: ignore[attr-defined]
-        if self.memory_plot:
-            self.memory_plot.showGrid(x=True, y=True, alpha=0.3)
-            self.memory_plot.setRange(yRange=[0, 100])
-            pen = pg.mkPen(color="#4ECDC4", width=2)
-            self.memory_curve = self.memory_plot.plot(pen=pen)
-
-        chart_splitter.addWidget(memory_win)
-        chart_layout.addWidget(chart_splitter)
-
-        layout.addWidget(chart_group)
-
-        # 性能统计组
-        stats_group = QGroupBox("性能统计")
-        stats_layout = QVBoxLayout(stats_group)
-
-        self.performance_table = QTableWidget(0, 4)
-        headers = ["指标", "当前值", "平均值", "峰值"]
-        self.performance_table.setHorizontalHeaderLabels(headers)
-        stats_layout.addWidget(self.performance_table)
-
-        layout.addWidget(stats_group)
+        # 3. 交易执行性能
+        trading_group = self._create_performance_group(
+            "交易执行性能",
+            [
+                ("平均订单延迟", "ms"),
+                ("订单成功率", "%"),
+                ("持仓更新延迟", "ms"),
+            ],
+        )
+        layout.addWidget(trading_group)
+        self.trading_execution_widgets = trading_group
 
         return tab
+
+    def _create_performance_group(self, title: str, metrics: List[tuple]):
+        """创建性能指标分组框.
+
+        Args:
+            title: 分组标题
+            metrics: 指标列表 [(名称, 单位), ...]
+
+        Returns:
+            QGroupBox: 分组框组件
+        """
+        group = QGroupBox(title)
+        layout = QGridLayout(group)
+        layout.setSpacing(10)
+
+        # 创建指标卡片
+        group.labels = []
+        for i, (name, unit) in enumerate(metrics):
+            card = QWidget()
+            card.setStyleSheet(
+                """
+                QWidget {
+                    background-color: #2C2C2C;
+                    border-radius: 5px;
+                    padding: 10px;
+                }
+                """
+            )
+            card_layout = QVBoxLayout(card)
+            card_layout.setSpacing(5)
+
+            # 指标名称
+            name_label = QLabel(name)
+            name_label.setStyleSheet("color: #888; font-size: 11px;")
+            card_layout.addWidget(name_label)
+
+            # 指标值
+            value_label = QLabel("--")
+            value_label.setStyleSheet("color: #FFF; font-size: 18px; font-weight: bold;")
+            card_layout.addWidget(value_label)
+
+            # 单位
+            unit_label = QLabel(unit)
+            unit_label.setStyleSheet("color: #666; font-size: 10px;")
+            card_layout.addWidget(unit_label)
+
+            # 添加到网格
+            row = i // 3
+            col = i % 3
+            layout.addWidget(card, row, col)
+
+            group.labels.append(value_label)
+
+        return group
+
+    def _update_performance_group(self, group_widget, values: List[float]):
+        """更新性能分组框的数据.
+
+        Args:
+            group_widget: 分组框组件
+            values: 值列表
+        """
+        try:
+            if not hasattr(group_widget, "labels"):
+                return
+
+            for i, value in enumerate(values):
+                if i < len(group_widget.labels):
+                    label = group_widget.labels[i]
+                    label.setText(f"{value:.2f}")
+
+        except Exception as e:
+            self.logger.error("更新性能分组失败: %s", e)
 
     # ==================== 1.3 告警管理 ====================
 
@@ -359,32 +581,261 @@ class SystemManager(BaseWidget, LoggerMixin):
     # ==================== 1.4 服务健康检查 ====================
 
     def _create_services_tab(self) -> QWidget:
-        """创建服务检查子界面."""
+        """创建服务监控子界面（重构版 - 增加业务指标、资源占用、外部依赖）."""
         tab = QWidget()
         layout = QVBoxLayout(tab)
 
-        # 服务状态组
-        services_group = QGroupBox("服务状态")
+        # 工具栏
+        toolbar = QHBoxLayout()
+
+        check_all_btn = QPushButton("🔄 快速检查全部")
+        check_all_btn.clicked.connect(self._check_all_services)
+        toolbar.addWidget(check_all_btn)
+
+        toolbar.addStretch()
+        layout.addLayout(toolbar)
+
+        # 服务状态组（增加业务指标和资源占用列）
+        services_group = QGroupBox("Backend服务状态")
         services_layout = QVBoxLayout(services_group)
 
-        self.services_table = QTableWidget(0, 4)
-        headers = ["服务名称", "状态", "启动时间", "操作"]
+        self.services_table = QTableWidget(0, 9)
+        headers = [
+            "服务名称",
+            "状态",
+            "响应时间",
+            "调用次数",
+            "成功率",
+            "错误率",
+            "内存(MB)",
+            "线程数",
+            "操作",
+        ]
         self.services_table.setHorizontalHeaderLabels(headers)
+        header = self.services_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         services_layout.addWidget(self.services_table)
 
         layout.addWidget(services_group)
 
-        # 健康检查组
-        health_group = QGroupBox("健康检查")
+        # 外部依赖组
+        dependencies_group = QGroupBox("外部依赖状态")
+        dependencies_layout = QVBoxLayout(dependencies_group)
+
+        self.dependencies_table = QTableWidget(0, 3)
+        dep_headers = ["依赖名称", "状态", "详情"]
+        self.dependencies_table.setHorizontalHeaderLabels(dep_headers)
+        dep_header = self.dependencies_table.horizontalHeader()
+        dep_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        dep_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        dep_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        dep_header.setMinimumSectionSize(150)
+        self.dependencies_table.setColumnWidth(0, 180)
+        self.dependencies_table.setColumnWidth(1, 100)
+        self.dependencies_table.setMaximumHeight(150)
+        dependencies_layout.addWidget(self.dependencies_table)
+
+        layout.addWidget(dependencies_group)
+
+        # 健康检查组（显示综合健康评分）
+        health_group = QGroupBox("整体健康评分")
         health_layout = QVBoxLayout(health_group)
 
         self.health_progress = QProgressBar()
         self.health_progress.setRange(0, 100)
+        self.health_progress.setTextVisible(True)
+        self.health_progress.setFormat("%v/100")
+        self.health_progress.setStyleSheet(
+            """
+            QProgressBar {
+                border: 2px solid #444;
+                border-radius: 5px;
+                text-align: center;
+                height: 30px;
+                font-size: 14px;
+                font-weight: bold;
+            }
+            QProgressBar::chunk {
+                background-color: #4ECDC4;
+            }
+            """
+        )
         health_layout.addWidget(self.health_progress)
+
+        self.health_detail_label = QLabel(
+            "在线服务: --/-- | 平均响应时间: --ms | 服务健康: --% | 依赖健康: --%"
+        )
+        self.health_detail_label.setStyleSheet("color: #888; font-size: 12px;")
+        health_layout.addWidget(self.health_detail_label)
 
         layout.addWidget(health_group)
 
         return tab
+
+    def _check_all_services(self):
+        """检查所有服务（增强版 - 包含外部依赖）."""
+        try:
+            if not self.system_service:
+                self.show_error("系统管理服务不可用")
+                return
+
+            result = self.system_service.check_all_services()
+            if result.get("success"):
+                services = result.get("services", [])
+                external_dependencies = result.get("external_dependencies", {})
+                health_score = result.get("health_score", 0)
+                service_health_score = result.get("service_health_score", 0)
+                dependency_health_score = result.get("dependency_health_score", 0)
+                avg_response_time = result.get("avg_response_time_ms", 0)
+                online_services = result.get("online_services", 0)
+                total_services = result.get("total_services", 0)
+
+                # 更新综合健康评分
+                if self.health_progress:
+                    self.health_progress.setValue(int(health_score))
+
+                if self.health_detail_label:
+                    self.health_detail_label.setText(
+                        f"在线服务: {online_services}/{total_services} | "
+                        f"平均响应时间: {avg_response_time:.1f}ms | "
+                        f"服务健康: {service_health_score:.0f}% | "
+                        f"依赖健康: {dependency_health_score:.0f}%"
+                    )
+
+                # 更新服务表格
+                self._update_services_table(services)
+
+                # 更新外部依赖表格
+                self._update_dependencies_table(external_dependencies)
+
+                self.show_info(f"服务检查完成：{online_services}/{total_services} 在线")
+            else:
+                self.show_error(f"检查失败: {result.get('message')}")
+
+        except Exception as e:
+            self.logger.error("检查服务失败: %s", e)
+            self.show_error(f"检查失败: {e}")
+
+    def _update_services_table(self, services: List[Dict[str, Any]]):
+        """更新服务表格（增强版 - 包含业务指标和资源占用）."""
+        try:
+            if not self.services_table:
+                return
+
+            self.services_table.setRowCount(0)
+
+            for service in services:
+                row = self.services_table.rowCount()
+                self.services_table.insertRow(row)
+
+                # 列0: 服务名称
+                self.services_table.setItem(row, 0, QTableWidgetItem(service["service_name"]))
+
+                # 列1: 状态
+                status_text = "🟢 在线" if service["online"] else "🔴 离线"
+                self.services_table.setItem(row, 1, QTableWidgetItem(status_text))
+
+                # 列2: 响应时间
+                response_time = service.get("response_time_ms", 0)
+                time_text = f"{response_time:.1f}ms" if response_time > 0 else "--"
+                self.services_table.setItem(row, 2, QTableWidgetItem(time_text))
+
+                # 列3: 调用次数
+                call_count = service.get("call_count", 0)
+                self.services_table.setItem(row, 3, QTableWidgetItem(str(call_count)))
+
+                # 列4: 成功率
+                success_rate = service.get("success_rate", 0.0)
+                self.services_table.setItem(row, 4, QTableWidgetItem(f"{success_rate:.1f}%"))
+
+                # 列5: 错误率
+                error_rate = service.get("error_rate", 0.0)
+                self.services_table.setItem(row, 5, QTableWidgetItem(f"{error_rate:.1f}%"))
+
+                # 列6: 内存占用
+                memory_mb = service.get("memory_mb", 0.0)
+                self.services_table.setItem(row, 6, QTableWidgetItem(f"{memory_mb:.1f}"))
+
+                # 列7: 线程数
+                thread_count = service.get("thread_count", 0)
+                self.services_table.setItem(row, 7, QTableWidgetItem(str(thread_count)))
+
+                # 列8: 操作按钮
+                restart_btn = QPushButton("🔄 重启")
+                restart_btn.clicked.connect(
+                    lambda checked, name=service["service_name"]: self._restart_service(name)
+                )
+                self.services_table.setCellWidget(row, 8, restart_btn)
+
+        except Exception as e:
+            self.logger.error("更新服务表格失败: %s", e)
+
+    def _update_dependencies_table(self, dependencies: Dict[str, Any]):
+        """更新外部依赖表格.
+
+        Args:
+            dependencies: 外部依赖字典
+        """
+        try:
+            if not self.dependencies_table:
+                return
+
+            self.dependencies_table.setRowCount(0)
+
+            for dep_id, dep_info in dependencies.items():
+                row = self.dependencies_table.rowCount()
+                self.dependencies_table.insertRow(row)
+
+                # 列0: 依赖名称
+                dep_name = dep_info.get("name", dep_id)
+                self.dependencies_table.setItem(row, 0, QTableWidgetItem(dep_name))
+
+                # 列1: 状态
+                online = dep_info.get("online")
+                if online is True:
+                    status_text = "🟢 正常"
+                elif online is False:
+                    status_text = "🔴 异常"
+                else:
+                    status_text = "⚪ 未知"
+                self.dependencies_table.setItem(row, 1, QTableWidgetItem(status_text))
+
+                # 列2: 详情
+                message = dep_info.get("message", "")
+                self.dependencies_table.setItem(row, 2, QTableWidgetItem(message))
+
+        except Exception as e:
+            self.logger.error("更新依赖表格失败: %s", e)
+
+    def _restart_service(self, service_name: str):
+        """重启服务."""
+        reply = QMessageBox.question(
+            self,
+            "确认重启",
+            f"确定要重启服务 '{service_name}' 吗？\n这可能会暂时中断服务。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            try:
+                if not self.system_service:
+                    self.show_error("系统管理服务不可用")
+                    return
+
+                self.show_info(f"正在重启服务 '{service_name}'...")
+
+                result = self.system_service.restart_service(service_name, graceful=True)
+                if result.get("success"):
+                    elapsed_time = result.get("elapsed_time", 0)
+                    self.show_info(f"服务 '{service_name}' 重启成功（耗时: {elapsed_time:.1f}s）")
+                    # 重新检查服务状态
+                    self._check_all_services()
+                else:
+                    self.show_error(f"重启失败: {result.get('message')}")
+
+            except Exception as e:
+                self.logger.error("重启服务失败: %s", e)
+                self.show_error(f"重启失败: {e}")
 
     # ==================== 1.5 系统配置 ====================
 
@@ -495,6 +946,25 @@ class SystemManager(BaseWidget, LoggerMixin):
 
         layout.addWidget(config_group)
 
+        # 监控配置组
+        monitoring_config_group = QGroupBox("监控配置")
+        monitoring_config_layout = QFormLayout(monitoring_config_group)
+
+        # 监控推送频率
+        self.monitoring_interval_spin = QSpinBox()
+        self.monitoring_interval_spin.setRange(1, 10)
+        self.monitoring_interval_spin.setValue(2)
+        self.monitoring_interval_spin.setSuffix(" 秒")
+        self.monitoring_interval_spin.setToolTip(
+            "设置进程监控和服务监控的数据推送频率\n"
+            "范围: 1-10秒\n"
+            "默认: 2秒\n"
+            "注意: 过低的频率可能影响系统性能"
+        )
+        monitoring_config_layout.addRow("推送频率:", self.monitoring_interval_spin)
+
+        layout.addWidget(monitoring_config_group)
+
         # AI助手配置组
         ai_config_group = QGroupBox("AI助手配置")
         ai_config_layout = QFormLayout(ai_config_group)
@@ -602,21 +1072,650 @@ class SystemManager(BaseWidget, LoggerMixin):
     # ==================== 1.7 系统诊断 ====================
 
     def _create_diagnosis_tab(self) -> QWidget:
-        """创建系统诊断子界面."""
+        """创建系统诊断子界面（增强版）."""
         tab = QWidget()
         layout = QVBoxLayout(tab)
 
-        # 诊断工具组
-        tools_group = QGroupBox("诊断工具")
-        tools_layout = QVBoxLayout(tools_group)
+        # 工具栏
+        toolbar = QHBoxLayout()
 
-        self.diagnosis_table = QTableWidget(0, 3)
-        self.diagnosis_table.setHorizontalHeaderLabels(["诊断项", "状态", "结果"])
-        tools_layout.addWidget(self.diagnosis_table)
+        basic_btn = QPushButton("🔍 基础诊断")
+        basic_btn.clicked.connect(self._run_basic_diagnostics)
+        toolbar.addWidget(basic_btn)
 
-        layout.addWidget(tools_group)
+        advanced_btn = QPushButton("🔬 高级诊断")
+        advanced_btn.clicked.connect(self._run_advanced_diagnostics)
+        toolbar.addWidget(advanced_btn)
+
+        toolbar.addStretch()
+        layout.addLayout(toolbar)
+
+        # 诊断结果选项卡
+        self.diagnosis_tabs = QTabWidget()
+
+        # 基础诊断标签页
+        basic_tab = QWidget()
+        basic_layout = QVBoxLayout(basic_tab)
+
+        # 性能诊断
+        perf_group = QGroupBox("性能诊断")
+        perf_layout = QVBoxLayout(perf_group)
+        self.basic_perf_table = QTableWidget(0, 2)
+        self.basic_perf_table.setHorizontalHeaderLabels(["项目", "值"])
+        perf_layout.addWidget(self.basic_perf_table)
+        basic_layout.addWidget(perf_group)
+
+        # 网络诊断
+        network_group = QGroupBox("网络诊断")
+        network_layout = QVBoxLayout(network_group)
+        self.basic_network_table = QTableWidget(0, 2)
+        self.basic_network_table.setHorizontalHeaderLabels(["项目", "值"])
+        network_layout.addWidget(self.basic_network_table)
+        basic_layout.addWidget(network_group)
+
+        # 数据库诊断
+        db_group = QGroupBox("数据库诊断")
+        db_layout = QVBoxLayout(db_group)
+        self.basic_db_table = QTableWidget(0, 2)
+        self.basic_db_table.setHorizontalHeaderLabels(["项目", "值"])
+        db_layout.addWidget(self.basic_db_table)
+        basic_layout.addWidget(db_group)
+
+        self.diagnosis_tabs.addTab(basic_tab, "基础诊断")
+
+        # 性能瓶颈标签页
+        bottlenecks_tab = QWidget()
+        bottlenecks_layout = QVBoxLayout(bottlenecks_tab)
+        self.bottlenecks_table = QTableWidget(0, 5)
+        self.bottlenecks_table.setHorizontalHeaderLabels(
+            ["类型", "严重程度", "当前值", "阈值", "影响"]
+        )
+        header = self.bottlenecks_table.horizontalHeader()
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        bottlenecks_layout.addWidget(self.bottlenecks_table)
+        self.diagnosis_tabs.addTab(bottlenecks_tab, "性能瓶颈")
+
+        # 错误分析标签页
+        errors_tab = QWidget()
+        errors_layout = QVBoxLayout(errors_tab)
+
+        # TOP错误统计
+        top_errors_group = QGroupBox("错误TOP10")
+        top_errors_layout = QVBoxLayout(top_errors_group)
+        self.errors_table = QTableWidget(0, 2)
+        self.errors_table.setHorizontalHeaderLabels(["错误类型", "出现次数"])
+        top_errors_layout.addWidget(self.errors_table)
+        errors_layout.addWidget(top_errors_group)
+
+        # 错误详情
+        error_details_group = QGroupBox("最近错误")
+        error_details_layout = QVBoxLayout(error_details_group)
+        self.error_details_table = QTableWidget(0, 3)
+        self.error_details_table.setHorizontalHeaderLabels(["时间", "类型", "消息"])
+        header = self.error_details_table.horizontalHeader()
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        error_details_layout.addWidget(self.error_details_table)
+        errors_layout.addWidget(error_details_group)
+
+        self.diagnosis_tabs.addTab(errors_tab, "错误分析")
+
+        # 优化建议标签页
+        suggestions_tab = QWidget()
+        suggestions_layout = QVBoxLayout(suggestions_tab)
+
+        # 优化建议
+        opt_group = QGroupBox("系统优化建议")
+        opt_layout = QVBoxLayout(opt_group)
+        self.optimization_text = QTextEdit()
+        self.optimization_text.setReadOnly(True)
+        opt_layout.addWidget(self.optimization_text)
+        suggestions_layout.addWidget(opt_group)
+
+        # 修复建议
+        fix_group = QGroupBox("自动修复建议")
+        fix_layout = QVBoxLayout(fix_group)
+        self.fix_suggestions_table = QTableWidget(0, 4)
+        self.fix_suggestions_table.setHorizontalHeaderLabels(
+            ["标题", "描述", "可自动修复", "风险级别"]
+        )
+        header = self.fix_suggestions_table.horizontalHeader()
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        fix_layout.addWidget(self.fix_suggestions_table)
+        suggestions_layout.addWidget(fix_group)
+
+        self.diagnosis_tabs.addTab(suggestions_tab, "优化建议")
+
+        layout.addWidget(self.diagnosis_tabs)
 
         return tab
+
+    def _create_process_monitor_tab(self) -> QWidget:
+        """创建进程监控子界面（新设计 - 进程列表+整体设备热力图）."""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        # 工具栏
+        toolbar = QHBoxLayout()
+        toolbar.addWidget(QLabel("🔍 进程监控 - 自动识别关键进程并分析瓶颈"))
+        toolbar.addStretch()
+
+        refresh_btn = QPushButton("🔄 刷新")
+        refresh_btn.clicked.connect(self._refresh_process_monitor)
+        toolbar.addWidget(refresh_btn)
+
+        layout.addLayout(toolbar)
+
+        # 使用QSplitter左右分隔：进程列表（左） + 整体设备监控热力图（右）
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        # 左侧：进程列表（7列）
+        list_widget = QWidget()
+        list_layout = QVBoxLayout(list_widget)
+
+        self.process_table = QTableWidget(0, 7)
+        headers = ["进程名称", "状态", "CPU%", "内存(MB)", "磁盘IO(MB/s)", "网速(MB/s)", "瓶颈点"]
+        self.process_table.setHorizontalHeaderLabels(headers)
+        header = self.process_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        list_layout.addWidget(self.process_table)
+
+        splitter.addWidget(list_widget)
+
+        # 右侧：整体设备监控热力图（5个指标，纵向排列）
+        heatmap_widget = QWidget()
+        heatmap_layout = QVBoxLayout(heatmap_widget)
+        heatmap_layout.setContentsMargins(10, 10, 10, 10)
+        heatmap_layout.setSpacing(15)
+
+        # 标题
+        title_label = QLabel("📊 整体设备监控")
+        title_label.setStyleSheet("font-size: 14px; font-weight: bold; padding-bottom: 5px;")
+        heatmap_layout.addWidget(title_label)
+
+        # 创建5个热力图（单行，显示百分比）
+        self.heatmap_cpu = self._create_single_heatmap("CPU使用率", "%")
+        self.heatmap_memory = self._create_single_heatmap("内存使用率", "%")
+        self.heatmap_disk_io = self._create_single_heatmap("磁盘IO速度", "%")
+        self.heatmap_network = self._create_single_heatmap("网络速度", "%")
+        self.heatmap_bandwidth = self._create_single_heatmap("带宽占用", "%")
+
+        heatmap_layout.addWidget(self.heatmap_cpu)
+        heatmap_layout.addWidget(self.heatmap_memory)
+        heatmap_layout.addWidget(self.heatmap_disk_io)
+        heatmap_layout.addWidget(self.heatmap_network)
+        heatmap_layout.addWidget(self.heatmap_bandwidth)
+
+        heatmap_layout.addStretch()
+
+        splitter.addWidget(heatmap_widget)
+
+        # 设置分隔比例：进程列表60%，热力图40%
+        splitter.setSizes([600, 400])
+        splitter.setStretchFactor(0, 6)
+        splitter.setStretchFactor(1, 4)
+
+        layout.addWidget(splitter)
+
+        return tab
+
+    def _create_single_heatmap(self, title: str, unit: str = "%") -> QWidget:
+        """创建单行热力图组件.
+
+        Args:
+            title: 标题
+            unit: 单位
+
+        Returns:
+            QWidget: 热力图组件
+        """
+        widget = QWidget()
+        widget.setMinimumHeight(60)
+        widget.setMaximumHeight(80)
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(5, 5, 5, 5)
+        layout.setSpacing(5)
+
+        # 标题和当前值
+        header_layout = QHBoxLayout()
+        title_label = QLabel(title)
+        title_label.setStyleSheet("font-size: 12px; color: #AAA;")
+        header_layout.addWidget(title_label)
+
+        header_layout.addStretch()
+
+        value_label = QLabel("0.0%")
+        value_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #FFF;")
+        header_layout.addWidget(value_label)
+
+        layout.addLayout(header_layout)
+
+        # 热力图进度条（使用QProgressBar实现）
+        progress_bar = QProgressBar()
+        progress_bar.setRange(0, 100)
+        progress_bar.setValue(0)
+        progress_bar.setTextVisible(False)
+        progress_bar.setMinimumHeight(30)
+
+        # 设置渐变色样式（绿→黄→红）
+        progress_bar.setStyleSheet(
+            """
+            QProgressBar {
+                border: 2px solid #444;
+                border-radius: 5px;
+                background-color: #1E1E1E;
+            }
+            QProgressBar::chunk {
+                background: qlineargradient(
+                    x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #00FF00,
+                    stop:0.5 #FFFF00,
+                    stop:1 #FF0000
+                );
+            }
+            """
+        )
+
+        layout.addWidget(progress_bar)
+
+        # 保存组件引用
+        widget.value_label = value_label
+        widget.progress_bar = progress_bar
+
+        return widget
+
+    def _refresh_process_monitor(self):
+        """刷新进程监控数据（主动触发）."""
+        try:
+            if not self.system_service:
+                self.show_warning("系统管理服务不可用")
+                return
+
+            result = self.system_service.get_monitored_processes()
+            if result.get("success"):
+                processes = result.get("processes", [])
+                self.logger.info(f"刷新进程监控：识别到 {len(processes)} 个进程")
+                # 注意：实际数据更新由事件驱动，这里只是手动触发一次识别
+            else:
+                self.show_warning(f"刷新失败: {result.get('message')}")
+
+        except Exception as e:
+            self.logger.error("刷新进程监控失败: %s", e)
+            self.show_error(f"刷新失败: {e}")
+
+    def _update_process_table(self, processes: List[Dict[str, Any]]):
+        """更新进程表格（新设计 - 7列含磁盘IO和网络速度）.
+
+        Args:
+            processes: 进程数据列表
+        """
+        try:
+            if not self.process_table:
+                return
+
+            self.process_table.setRowCount(0)
+
+            for proc in processes:
+                row = self.process_table.rowCount()
+                self.process_table.insertRow(row)
+
+                # 列0: 进程名称
+                process_name = proc.get("process_name", "")
+                self.process_table.setItem(row, 0, QTableWidgetItem(process_name))
+
+                # 列1: 状态
+                status = proc.get("status", "unknown")
+                status_map = {
+                    "running": "🟢 运行中",
+                    "idle": "⚪ 空闲",
+                    "stopped": "🔴 已停止",
+                }
+                status_text = status_map.get(status, status)
+                self.process_table.setItem(row, 1, QTableWidgetItem(status_text))
+
+                # 列2: CPU%
+                cpu_percent = proc.get("cpu_percent", 0)
+                self.process_table.setItem(row, 2, QTableWidgetItem(f"{cpu_percent:.1f}"))
+
+                # 列3: 内存(MB)
+                memory_mb = proc.get("memory_mb", 0)
+                self.process_table.setItem(row, 3, QTableWidgetItem(f"{memory_mb:.1f}"))
+
+                # 列4: 磁盘IO(MB/s) - 取读写最大值
+                disk_read = proc.get("disk_read_mbps", 0)
+                disk_write = proc.get("disk_write_mbps", 0)
+                disk_io = max(disk_read, disk_write)
+                self.process_table.setItem(row, 4, QTableWidgetItem(f"{disk_io:.1f}"))
+
+                # 列5: 网速(MB/s) - 取收发最大值
+                network_recv = proc.get("network_recv_mbps", 0)
+                network_send = proc.get("network_send_mbps", 0)
+                network_speed = max(network_recv, network_send)
+                self.process_table.setItem(row, 5, QTableWidgetItem(f"{network_speed:.1f}"))
+
+                # 列6: 瓶颈点
+                bottleneck = proc.get("bottleneck", "balanced")
+                bottleneck_map = {
+                    "cpu": "🔴 CPU",
+                    "memory": "🟠 内存",
+                    "disk_io": "🟡 磁盘IO",
+                    "network": "🔵 网络",
+                    "balanced": "🟢 均衡",
+                }
+                bottleneck_text = bottleneck_map.get(bottleneck, bottleneck)
+                self.process_table.setItem(row, 6, QTableWidgetItem(bottleneck_text))
+
+        except Exception as e:
+            self.logger.error("更新进程表格失败: %s", e)
+
+    def _update_heatmaps(self, metrics: Dict[str, Any]):
+        """更新热力图（整体设备监控）.
+
+        Args:
+            metrics: 系统指标数据
+        """
+        try:
+            # 1. CPU使用率
+            cpu_percent = metrics.get("cpu_percent", 0)
+            if self.heatmap_cpu:
+                self.heatmap_cpu.progress_bar.setValue(int(cpu_percent))
+                self.heatmap_cpu.value_label.setText(f"{cpu_percent:.1f}%")
+
+            # 2. 内存使用率
+            memory_percent = metrics.get("memory_percent", 0)
+            if self.heatmap_memory:
+                self.heatmap_memory.progress_bar.setValue(int(memory_percent))
+                self.heatmap_memory.value_label.setText(f"{memory_percent:.1f}%")
+
+            # 3. 磁盘IO速度（转换为百分比）
+            disk_io_speed = metrics.get("disk_io_speed", {})
+            max_disk_io = 0.0
+            for disk, speeds in disk_io_speed.items():
+                if disk == "io_counters":
+                    continue
+                read_speed = speeds.get("read_speed", 0)
+                write_speed = speeds.get("write_speed", 0)
+                max_disk_io = max(max_disk_io, read_speed, write_speed)
+
+            # 假设HDD理论极限150MB/s
+            disk_io_percent = min((max_disk_io / 150.0) * 100, 100.0)
+            if self.heatmap_disk_io:
+                self.heatmap_disk_io.progress_bar.setValue(int(disk_io_percent))
+                self.heatmap_disk_io.value_label.setText(f"{disk_io_percent:.1f}%")
+
+            # 4. 网络速度（转换为百分比）
+            network_speed = metrics.get("network_speed", {})
+            upload_speed = network_speed.get("upload_speed_kbps", 0) / 1024  # 转MB/s
+            download_speed = network_speed.get("download_speed_kbps", 0) / 1024  # 转MB/s
+            max_network_speed = max(upload_speed, download_speed)
+
+            # 假设千兆网络理论极限100MB/s
+            network_percent = min((max_network_speed / 100.0) * 100, 100.0)
+            if self.heatmap_network:
+                self.heatmap_network.progress_bar.setValue(int(network_percent))
+                self.heatmap_network.value_label.setText(f"{network_percent:.1f}%")
+
+            # 5. 带宽占用百分比
+            bandwidth_percent = network_speed.get("bandwidth_percent", 0)
+            if self.heatmap_bandwidth:
+                self.heatmap_bandwidth.progress_bar.setValue(int(bandwidth_percent))
+                self.heatmap_bandwidth.value_label.setText(f"{bandwidth_percent:.1f}%")
+
+        except Exception as e:
+            self.logger.error("更新热力图失败: %s", e)
+
+    def _run_basic_diagnostics(self):
+        """运行基础诊断."""
+        try:
+            if not self.system_service:
+                self.show_error("系统管理服务不可用")
+                return
+
+            self.show_info("正在运行基础诊断...")
+
+            result = self.system_service.run_diagnostics()
+            if result.get("success"):
+                diagnostics = result["diagnostics"]
+
+                # 更新性能诊断表格
+                self._update_basic_perf_table(diagnostics.get("performance", {}))
+
+                # 更新网络诊断表格
+                self._update_basic_network_table(diagnostics.get("network", {}))
+
+                # 更新数据库诊断表格
+                self._update_basic_db_table(diagnostics.get("database", {}))
+
+                # 切换到基础诊断标签页
+                if self.diagnosis_tabs:
+                    self.diagnosis_tabs.setCurrentIndex(0)
+
+                self.show_info("基础诊断完成，请查看诊断结果")
+            else:
+                self.show_error(f"诊断失败: {result.get('message')}")
+
+        except Exception as e:
+            self.logger.error("运行基础诊断失败: %s", e)
+            self.show_error(f"诊断失败: {e}")
+
+    def _update_basic_perf_table(self, perf_data: Dict[str, Any]):
+        """更新基础性能诊断表格."""
+        try:
+            if not self.basic_perf_table:
+                return
+
+            self.basic_perf_table.setRowCount(0)
+
+            # 将字典数据转换为表格行
+            for key, value in perf_data.items():
+                row = self.basic_perf_table.rowCount()
+                self.basic_perf_table.insertRow(row)
+                self.basic_perf_table.setItem(row, 0, QTableWidgetItem(str(key)))
+                self.basic_perf_table.setItem(row, 1, QTableWidgetItem(str(value)))
+
+        except Exception as e:
+            self.logger.error("更新性能诊断表格失败: %s", e)
+
+    def _update_basic_network_table(self, network_data: Dict[str, Any]):
+        """更新基础网络诊断表格."""
+        try:
+            if not self.basic_network_table:
+                return
+
+            self.basic_network_table.setRowCount(0)
+
+            # 将字典数据转换为表格行
+            for key, value in network_data.items():
+                row = self.basic_network_table.rowCount()
+                self.basic_network_table.insertRow(row)
+
+                # 特殊处理复杂类型
+                if isinstance(value, dict):
+                    display_value = ", ".join([f"{k}: {v}" for k, v in value.items()])
+                elif isinstance(value, bool):
+                    display_value = "✅ 是" if value else "❌ 否"
+                else:
+                    display_value = str(value)
+
+                self.basic_network_table.setItem(row, 0, QTableWidgetItem(str(key)))
+                self.basic_network_table.setItem(row, 1, QTableWidgetItem(display_value))
+
+        except Exception as e:
+            self.logger.error("更新网络诊断表格失败: %s", e)
+
+    def _update_basic_db_table(self, db_data: Dict[str, Any]):
+        """更新基础数据库诊断表格."""
+        try:
+            if not self.basic_db_table:
+                return
+
+            self.basic_db_table.setRowCount(0)
+
+            # 将字典数据转换为表格行
+            for key, value in db_data.items():
+                row = self.basic_db_table.rowCount()
+                self.basic_db_table.insertRow(row)
+
+                # 特殊处理
+                if key == "exists":
+                    display_value = "✅ 存在" if value else "❌ 不存在"
+                elif key == "size":
+                    # 转换字节为MB
+                    size_mb = value / (1024 * 1024) if isinstance(value, (int, float)) else 0
+                    display_value = f"{size_mb:.2f} MB"
+                else:
+                    display_value = str(value)
+
+                self.basic_db_table.setItem(row, 0, QTableWidgetItem(str(key)))
+                self.basic_db_table.setItem(row, 1, QTableWidgetItem(display_value))
+
+        except Exception as e:
+            self.logger.error("更新数据库诊断表格失败: %s", e)
+
+    def _run_advanced_diagnostics(self):
+        """运行高级诊断."""
+        try:
+            if not self.system_service:
+                self.show_error("系统管理服务不可用")
+                return
+
+            self.show_info("正在运行高级诊断，请稍候...")
+
+            result = self.system_service.run_advanced_diagnostics()
+            if result.get("success"):
+                diagnostics = result["diagnostics"]
+
+                # 更新性能瓶颈表格
+                bottlenecks = diagnostics.get("performance_bottlenecks", [])
+                self._update_bottlenecks_table(bottlenecks)
+
+                # 更新错误分析表格
+                log_analysis = diagnostics.get("log_analysis", {})
+                self._update_errors_tables(log_analysis)
+
+                # 更新优化建议
+                opt_suggestions = diagnostics.get("optimization_suggestions", [])
+                fix_suggestions = diagnostics.get("fix_suggestions", [])
+                self._update_suggestions(opt_suggestions, fix_suggestions)
+
+                # 切换到性能瓶颈标签页（第2个标签，索引1）
+                if self.diagnosis_tabs:
+                    # 如果有瓶颈，切换到性能瓶颈标签页
+                    if bottlenecks:
+                        self.diagnosis_tabs.setCurrentIndex(1)  # 性能瓶颈
+                    # 如果有错误分析，切换到错误分析标签页
+                    elif log_analysis.get("total_errors", 0) > 0:
+                        self.diagnosis_tabs.setCurrentIndex(2)  # 错误分析
+                    # 否则切换到优化建议标签页
+                    else:
+                        self.diagnosis_tabs.setCurrentIndex(3)  # 优化建议
+
+                # 构建诊断摘要信息
+                total_bottlenecks = len(bottlenecks)
+                total_errors = log_analysis.get("total_errors", 0)
+                total_suggestions = len(opt_suggestions) + len(fix_suggestions)
+
+                self.show_info(
+                    f"高级诊断完成：发现 {total_bottlenecks} 个瓶颈、"
+                    f"{total_errors} 个错误、{total_suggestions} 条建议"
+                )
+            else:
+                self.show_error(f"诊断失败: {result.get('message')}")
+
+        except Exception as e:
+            self.logger.error("运行高级诊断失败: %s", e)
+            self.show_error(f"诊断失败: {e}")
+
+    def _update_bottlenecks_table(self, bottlenecks: List[Dict[str, Any]]):
+        """更新性能瓶颈表格."""
+        try:
+            if not self.bottlenecks_table:
+                return
+
+            self.bottlenecks_table.setRowCount(0)
+
+            for bottleneck in bottlenecks:
+                row = self.bottlenecks_table.rowCount()
+                self.bottlenecks_table.insertRow(row)
+
+                self.bottlenecks_table.setItem(row, 0, QTableWidgetItem(bottleneck["type"]))
+                self.bottlenecks_table.setItem(row, 1, QTableWidgetItem(bottleneck["severity"]))
+                self.bottlenecks_table.setItem(
+                    row, 2, QTableWidgetItem(str(bottleneck["current_value"]))
+                )
+                self.bottlenecks_table.setItem(
+                    row, 3, QTableWidgetItem(str(bottleneck["threshold"]))
+                )
+                self.bottlenecks_table.setItem(row, 4, QTableWidgetItem(bottleneck["impact"]))
+
+        except Exception as e:
+            self.logger.error("更新瓶颈表格失败: %s", e)
+
+    def _update_errors_tables(self, log_analysis: Dict[str, Any]):
+        """更新错误分析表格."""
+        try:
+            if not self.errors_table:
+                return
+
+            # 更新TOP错误表格
+            self.errors_table.setRowCount(0)
+            top_errors = log_analysis.get("top_errors", [])
+            for error in top_errors:
+                row = self.errors_table.rowCount()
+                self.errors_table.insertRow(row)
+                self.errors_table.setItem(row, 0, QTableWidgetItem(error["type"]))
+                self.errors_table.setItem(row, 1, QTableWidgetItem(str(error["count"])))
+
+            # 更新错误详情表格
+            if hasattr(self, "error_details_table") and self.error_details_table:
+                self.error_details_table.setRowCount(0)
+                error_patterns = log_analysis.get("error_patterns", [])[:20]  # 最多显示20条
+                for error in error_patterns:
+                    row = self.error_details_table.rowCount()
+                    self.error_details_table.insertRow(row)
+                    self.error_details_table.setItem(
+                        row, 0, QTableWidgetItem(error.get("timestamp", ""))
+                    )
+                    self.error_details_table.setItem(
+                        row, 1, QTableWidgetItem(error.get("type", ""))
+                    )
+                    self.error_details_table.setItem(
+                        row, 2, QTableWidgetItem(error.get("message", ""))
+                    )
+
+        except Exception as e:
+            self.logger.error("更新错误表格失败: %s", e)
+
+    def _update_suggestions(
+        self, opt_suggestions: List[str], fix_suggestions: List[Dict[str, Any]]
+    ):
+        """更新优化和修复建议."""
+        try:
+            # 更新优化建议
+            if self.optimization_text:
+                text = "\n".join(opt_suggestions) if opt_suggestions else "暂无优化建议"
+                self.optimization_text.setPlainText(text)
+
+            # 更新修复建议表格
+            if hasattr(self, "fix_suggestions_table") and self.fix_suggestions_table:
+                self.fix_suggestions_table.setRowCount(0)
+                for suggestion in fix_suggestions:
+                    row = self.fix_suggestions_table.rowCount()
+                    self.fix_suggestions_table.insertRow(row)
+                    self.fix_suggestions_table.setItem(
+                        row, 0, QTableWidgetItem(suggestion["title"])
+                    )
+                    self.fix_suggestions_table.setItem(
+                        row, 1, QTableWidgetItem(suggestion["description"])
+                    )
+                    self.fix_suggestions_table.setItem(
+                        row, 2, QTableWidgetItem("是" if suggestion["auto_fixable"] else "否")
+                    )
+                    self.fix_suggestions_table.setItem(
+                        row, 3, QTableWidgetItem(suggestion["risk_level"])
+                    )
+
+        except Exception as e:
+            self.logger.error("更新建议失败: %s", e)
 
     # ==================== 1.8 工具集合 ====================
 
@@ -1323,6 +2422,20 @@ class SystemManager(BaseWidget, LoggerMixin):
                 else:
                     fail_messages.append(f"数据中心: {result.get('message')}")
 
+            # 保存监控频率配置
+            if hasattr(self, "monitoring_interval_spin") and self.monitoring_interval_spin:
+                interval = self.monitoring_interval_spin.value()
+                try:
+                    result = self.system_service.set_monitoring_interval(interval)
+                    if result.get("success"):
+                        success_count += 1
+                        self.logger.info("监控推送频率已设置为 %d 秒", interval)
+                    else:
+                        fail_messages.append(f"监控频率: {result.get('message')}")
+                except Exception as e:
+                    self.logger.error("设置监控频率失败: %s", e)
+                    fail_messages.append(f"监控频率: {str(e)}")
+
             # 保存AI配置（会自动触发服务重载）
             if ai_config:
                 self.logger.info("开始保存AI配置...")
@@ -1524,11 +2637,544 @@ class SystemManager(BaseWidget, LoggerMixin):
         except Exception as e:
             self.logger.error("更新性能图表失败: %s", e)
 
+    # ==================== 图表创建辅助方法 ====================
+
+    def _create_line_chart(self, title: str, color: str):
+        """创建单线图表."""
+        chart_widget = pg.GraphicsLayoutWidget()
+        chart_widget.setBackground(QColor(26, 26, 26))
+
+        plot = chart_widget.addPlot(title=title)
+        plot.showGrid(x=True, y=True, alpha=0.3)
+        plot.setRange(yRange=[0, 100])
+        plot.setLabel("bottom", "时间")
+        plot.setLabel("left", "百分比 (%)")
+
+        pen = pg.mkPen(color=color, width=2)
+        curve = plot.plot(pen=pen)
+
+        # 存储引用
+        chart_widget.plot_ref = plot
+        chart_widget.curve_ref = curve
+
+        return chart_widget
+
+    def _create_multi_line_chart(self, title: str):
+        """创建多线图表（用于多磁盘I/O）."""
+        chart_widget = pg.GraphicsLayoutWidget()
+        chart_widget.setBackground(QColor(26, 26, 26))
+
+        plot = chart_widget.addPlot(title=title)
+        plot.showGrid(x=True, y=True, alpha=0.3)
+        plot.setLabel("bottom", "时间")
+        plot.setLabel("left", "速度 (MB/s)")
+        plot.addLegend()
+
+        # 存储曲线引用
+        chart_widget.plot_ref = plot
+        chart_widget.curves_ref = {}
+
+        return chart_widget
+
+    def _create_network_chart(self, title: str):
+        """创建网络速度图表（上传+下载）."""
+        chart_widget = pg.GraphicsLayoutWidget()
+        chart_widget.setBackground(QColor(26, 26, 26))
+
+        plot = chart_widget.addPlot(title=title)
+        plot.showGrid(x=True, y=True, alpha=0.3)
+        plot.setLabel("bottom", "时间")
+        plot.setLabel("left", "速度 (KB/s)")
+        plot.addLegend()
+
+        # 上传曲线（红色）
+        upload_pen = pg.mkPen(color="#FF6B6B", width=2)
+        upload_curve = plot.plot(pen=upload_pen, name="上传")
+
+        # 下载曲线（绿色）
+        download_pen = pg.mkPen(color="#4ECDC4", width=2)
+        download_curve = plot.plot(pen=download_pen, name="下载")
+
+        chart_widget.plot_ref = plot
+        chart_widget.upload_curve = upload_curve
+        chart_widget.download_curve = download_curve
+
+        return chart_widget
+
+    def _create_disk_space_chart(self, title: str):
+        """创建硬盘空间条形图."""
+        chart_widget = QWidget()
+        layout = QVBoxLayout(chart_widget)
+        layout.setContentsMargins(5, 5, 5, 5)
+
+        title_label = QLabel(title)
+        title_label.setStyleSheet("font-weight: bold; font-size: 12px;")
+        layout.addWidget(title_label)
+
+        # 使用QScrollArea以支持多个磁盘
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_area.setMaximumHeight(120)
+
+        bars_widget = QWidget()
+        bars_layout = QVBoxLayout(bars_widget)
+        bars_layout.setSpacing(5)
+
+        scroll_area.setWidget(bars_widget)
+        layout.addWidget(scroll_area)
+
+        # 存储引用
+        chart_widget.bars_layout_ref = bars_layout
+        chart_widget.disk_bars = {}
+
+        return chart_widget
+
+    def _get_disk_color(self, index: int) -> str:
+        """获取磁盘曲线颜色."""
+        colors = ["#FF6B6B", "#4ECDC4", "#45B7D1", "#FFA07A", "#98D8C8"]
+        return colors[index % len(colors)]
+
+    # ==================== 事件处理回调 ====================
+
+    def _on_system_status_event(self, event):
+        """处理系统状态更新事件."""
+        try:
+            metrics = event.data
+
+            # 更新CPU图表
+            cpu_percent = metrics.get("cpu_percent", 0)
+            self._update_line_chart(self.cpu_chart, "cpu", cpu_percent)
+
+            # 更新内存图表
+            memory_percent = metrics.get("memory_percent", 0)
+            self._update_line_chart(self.memory_chart, "memory", memory_percent)
+
+            # 更新磁盘I/O图表
+            disk_io_speed = metrics.get("disk_io_speed", {})
+            self._update_disk_io_chart(disk_io_speed)
+
+            # 更新网络速度图表
+            network_speed = metrics.get("network_speed", {})
+            self._update_network_chart(network_speed)
+
+            # 更新磁盘空间图表
+            disk_info = metrics.get("disk_info", {})
+            self._update_disk_space_chart(disk_info)
+
+            # 更新详细数据表格
+            self._update_status_details_table(metrics)
+
+            # 更新进程监控Tab的热力图（整体设备监控）
+            self._update_heatmaps(metrics)
+
+        except Exception as e:
+            self.logger.error("处理系统状态事件失败: %s", e)
+
+    def _on_performance_event(self, event):
+        """处理性能指标更新事件."""
+        try:
+            indicators = event.data.get("performance_indicators", {})
+
+            # 更新数据处理性能
+            data_processing = indicators.get("data_processing", {})
+            if self.data_processing_widgets:
+                self._update_performance_group(
+                    self.data_processing_widgets,
+                    [
+                        data_processing.get("avg_query_time_ms", 0),
+                        data_processing.get("avg_download_speed_mbps", 0),
+                        data_processing.get("cache_hit_rate", 0),
+                        data_processing.get("total_queries", 0),
+                    ],
+                )
+
+            # 更新策略执行性能
+            strategy = indicators.get("strategy_execution", {})
+            if self.strategy_execution_widgets:
+                self._update_performance_group(
+                    self.strategy_execution_widgets,
+                    [
+                        strategy.get("avg_signal_latency_ms", 0),
+                        strategy.get("on_bar_processing_time_ms", 0),
+                        strategy.get("strategy_throughput", 0),
+                        strategy.get("error_rate", 0),
+                        strategy.get("total_calls", 0),
+                    ],
+                )
+
+            # 更新交易执行性能
+            trading = indicators.get("trading_execution", {})
+            if self.trading_execution_widgets:
+                self._update_performance_group(
+                    self.trading_execution_widgets,
+                    [
+                        trading.get("avg_order_latency_ms", 0),
+                        trading.get("order_success_rate", 0),
+                        trading.get("position_update_delay_ms", 0),
+                    ],
+                )
+
+        except Exception as e:
+            self.logger.error("处理性能指标事件失败: %s", e)
+
+    def _on_service_status_event(self, event):
+        """处理服务状态更新事件（增强版 - 包含外部依赖）."""
+        try:
+            status = event.data
+            # 更新服务表格
+            if hasattr(self, "services_table") and self.services_table:
+                services = status.get("services", [])
+                self._update_services_table(services)
+
+            # 更新外部依赖表格
+            if hasattr(self, "dependencies_table") and self.dependencies_table:
+                external_dependencies = status.get("external_dependencies", {})
+                self._update_dependencies_table(external_dependencies)
+
+            # 更新健康评分
+            if hasattr(self, "health_progress") and self.health_progress:
+                health_score = status.get("health_score", 0)
+                self.health_progress.setValue(int(health_score))
+
+            if hasattr(self, "health_detail_label") and self.health_detail_label:
+                online = status.get("online_services", 0)
+                total = status.get("total_services", 0)
+                avg_time = status.get("avg_response_time_ms", 0)
+                service_health = status.get("service_health_score", 0)
+                dep_health = status.get("dependency_health_score", 0)
+                self.health_detail_label.setText(
+                    f"在线服务: {online}/{total} | "
+                    f"平均响应时间: {avg_time:.1f}ms | "
+                    f"服务健康: {service_health:.0f}% | "
+                    f"依赖健康: {dep_health:.0f}%"
+                )
+
+        except Exception as e:
+            self.logger.error("处理服务状态事件失败: %s", e)
+
+    def _on_process_status_event(self, event):
+        """处理进程状态更新事件.
+
+        Args:
+            event: 进程状态事件，包含processes列表
+        """
+        try:
+            data = event.data
+            processes = data.get("processes", [])
+
+            # 更新进程表格
+            if hasattr(self, "process_table") and self.process_table:
+                self._update_process_table(processes)
+
+        except Exception as e:
+            self.logger.error("处理进程状态事件失败: %s", e)
+
+    # ==================== 图表更新方法 ====================
+
+    def _update_line_chart(self, chart_widget, key: str, value: float):
+        """更新单线图表."""
+        try:
+            if not chart_widget or not hasattr(chart_widget, "curve_ref"):
+                return
+
+            # 添加数据点
+            self.system_status_history[key].append((time.time(), value))
+
+            # 更新曲线
+            if self.system_status_history[key]:
+                times, values = zip(*self.system_status_history[key])
+                chart_widget.curve_ref.setData(times, values)
+
+        except Exception as e:
+            self.logger.error("更新图表失败 %s: %s", key, e)
+
+    def _update_disk_io_chart(self, disk_io_speed: Dict[str, Dict[str, float]]):
+        """更新磁盘I/O图表."""
+        try:
+            if not self.disk_io_chart or not hasattr(self.disk_io_chart, "curves_ref"):
+                return
+
+            current_time = time.time()
+
+            for disk, speeds in disk_io_speed.items():
+                read_speed = speeds.get("read_speed", 0)
+                write_speed = speeds.get("write_speed", 0)
+
+                # 为每个磁盘创建读写曲线
+                read_key = f"{disk}_read"
+                write_key = f"{disk}_write"
+
+                # 创建读曲线
+                if read_key not in self.disk_io_chart.curves_ref:
+                    color = self._get_disk_color(len(self.disk_io_chart.curves_ref))
+                    pen = pg.mkPen(color=color, width=2, style=Qt.PenStyle.SolidLine)
+                    curve = self.disk_io_chart.plot_ref.plot(pen=pen, name=f"{disk} 读")
+                    self.disk_io_chart.curves_ref[read_key] = curve
+                    self.system_status_history["disk_io"][read_key] = deque(maxlen=100)
+
+                # 创建写曲线
+                if write_key not in self.disk_io_chart.curves_ref:
+                    color = self._get_disk_color(len(self.disk_io_chart.curves_ref))
+                    pen = pg.mkPen(color=color, width=2, style=Qt.PenStyle.DashLine)
+                    curve = self.disk_io_chart.plot_ref.plot(pen=pen, name=f"{disk} 写")
+                    self.disk_io_chart.curves_ref[write_key] = curve
+                    self.system_status_history["disk_io"][write_key] = deque(maxlen=100)
+
+                # 更新数据
+                self.system_status_history["disk_io"][read_key].append((current_time, read_speed))
+                self.system_status_history["disk_io"][write_key].append((current_time, write_speed))
+
+                # 更新曲线
+                times_r, values_r = zip(*self.system_status_history["disk_io"][read_key])
+                self.disk_io_chart.curves_ref[read_key].setData(times_r, values_r)
+
+                times_w, values_w = zip(*self.system_status_history["disk_io"][write_key])
+                self.disk_io_chart.curves_ref[write_key].setData(times_w, values_w)
+
+        except Exception as e:
+            self.logger.error("更新磁盘I/O图表失败: %s", e)
+
+    def _update_network_chart(self, network_speed: Dict[str, Any]):
+        """更新网络速度图表."""
+        try:
+            if not self.network_speed_chart:
+                return
+
+            upload = network_speed.get("upload_speed_kbps", 0)
+            download = network_speed.get("download_speed_kbps", 0)
+            current_time = time.time()
+
+            # 更新上传曲线
+            self.system_status_history["network"]["upload"].append((current_time, upload))
+            if self.system_status_history["network"]["upload"]:
+                times, values = zip(*self.system_status_history["network"]["upload"])
+                self.network_speed_chart.upload_curve.setData(times, values)
+
+            # 更新下载曲线
+            self.system_status_history["network"]["download"].append((current_time, download))
+            if self.system_status_history["network"]["download"]:
+                times, values = zip(*self.system_status_history["network"]["download"])
+                self.network_speed_chart.download_curve.setData(times, values)
+
+        except Exception as e:
+            self.logger.error("更新网络速度图表失败: %s", e)
+
+    def _update_disk_space_chart(self, disk_info: Dict[str, Any]):
+        """更新磁盘空间图表."""
+        try:
+            if not self.disk_space_chart or not hasattr(self.disk_space_chart, "bars_layout_ref"):
+                return
+
+            for disk, info in disk_info.items():
+                if disk == "io_counters":
+                    continue
+
+                if disk not in self.disk_space_chart.disk_bars:
+                    # 创建新的进度条
+                    bar_widget = QWidget()
+                    bar_layout = QHBoxLayout(bar_widget)
+                    bar_layout.setContentsMargins(0, 2, 0, 2)
+
+                    label = QLabel(disk)
+                    label.setMinimumWidth(80)
+                    label.setStyleSheet("font-weight: bold;")
+                    bar_layout.addWidget(label)
+
+                    progress = QProgressBar()
+                    progress.setTextVisible(True)
+                    progress.setStyleSheet(
+                        """
+                        QProgressBar {
+                            border: 1px solid #444;
+                            border-radius: 3px;
+                            text-align: center;
+                        }
+                        QProgressBar::chunk {
+                            background-color: #4ECDC4;
+                        }
+                        """
+                    )
+                    bar_layout.addWidget(progress)
+
+                    size_label = QLabel("")
+                    size_label.setMinimumWidth(120)
+                    size_label.setStyleSheet("color: #888; font-size: 11px;")
+                    bar_layout.addWidget(size_label)
+
+                    self.disk_space_chart.bars_layout_ref.addWidget(bar_widget)
+                    self.disk_space_chart.disk_bars[disk] = {
+                        "progress": progress,
+                        "size_label": size_label,
+                    }
+
+                # 更新进度条
+                percent = info.get("percent", 0)
+                total = info.get("total", 0)
+                used = info.get("used", 0)
+                free = info.get("free", 0)
+
+                bar_info = self.disk_space_chart.disk_bars[disk]
+                bar_info["progress"].setValue(int(percent))
+                bar_info["progress"].setFormat(f"{percent:.1f}% 已用")
+
+                # 更新大小信息
+                total_gb = total / (1024**3) if total else 0
+                used_gb = used / (1024**3) if used else 0
+                free_gb = free / (1024**3) if free else 0
+                bar_info["size_label"].setText(
+                    f"总计: {total_gb:.1f}GB | 已用: {used_gb:.1f}GB | 可用: {free_gb:.1f}GB"
+                )
+
+                # 根据使用率设置颜色
+                if percent > 90:
+                    bar_info["progress"].setStyleSheet(
+                        """
+                        QProgressBar::chunk { background-color: #FF6B6B; }
+                        """
+                    )
+                elif percent > 80:
+                    bar_info["progress"].setStyleSheet(
+                        """
+                        QProgressBar::chunk { background-color: #FFA07A; }
+                        """
+                    )
+                else:
+                    bar_info["progress"].setStyleSheet(
+                        """
+                        QProgressBar::chunk { background-color: #4ECDC4; }
+                        """
+                    )
+
+        except Exception as e:
+            self.logger.error("更新磁盘空间图表失败: %s", e)
+
+    def _update_status_details_table(self, metrics: Dict[str, Any]):
+        """更新状态详细数据表格."""
+        try:
+            if not self.status_details_table:
+                return
+
+            # 更新统计数据
+            cpu_percent = metrics.get("cpu_percent", 0)
+            memory_percent = metrics.get("memory_percent", 0)
+            disk_percent = metrics.get("disk_percent", 0)
+
+            # 更新CPU统计
+            self._update_stat("cpu", cpu_percent)
+            # 更新内存统计
+            self._update_stat("memory", memory_percent)
+            # 更新磁盘统计
+            self._update_stat("disk", disk_percent)
+
+            # 网络速度统计
+            network_speed = metrics.get("network_speed", {})
+            upload = network_speed.get("upload_speed_kbps", 0)
+            download = network_speed.get("download_speed_kbps", 0)
+            bandwidth = network_speed.get("bandwidth_percent", 0)
+
+            self._update_stat("network_upload", upload)
+            self._update_stat("network_download", download)
+
+            # 构建表格行
+            rows = [
+                (
+                    "CPU使用率",
+                    f"{self.system_stats['cpu']['current']:.1f}%",
+                    f"{self.system_stats['cpu']['avg']:.1f}%",
+                    f"{self.system_stats['cpu']['peak']:.1f}%",
+                ),
+                (
+                    "内存使用率",
+                    f"{self.system_stats['memory']['current']:.1f}%",
+                    f"{self.system_stats['memory']['avg']:.1f}%",
+                    f"{self.system_stats['memory']['peak']:.1f}%",
+                ),
+                (
+                    "磁盘使用率",
+                    f"{self.system_stats['disk']['current']:.1f}%",
+                    f"{self.system_stats['disk']['avg']:.1f}%",
+                    f"{self.system_stats['disk']['peak']:.1f}%",
+                ),
+                (
+                    "网络上传",
+                    f"{self.system_stats['network_upload']['current']:.1f} KB/s",
+                    f"{self.system_stats['network_upload']['avg']:.1f} KB/s",
+                    f"{self.system_stats['network_upload']['peak']:.1f} KB/s",
+                ),
+                (
+                    "网络下载",
+                    f"{self.system_stats['network_download']['current']:.1f} KB/s",
+                    f"{self.system_stats['network_download']['avg']:.1f} KB/s",
+                    f"{self.system_stats['network_download']['peak']:.1f} KB/s",
+                ),
+                (
+                    "带宽占用",
+                    f"{bandwidth:.1f}%",
+                    "--",
+                    "--",
+                ),
+            ]
+
+            self.status_details_table.setRowCount(0)
+            for i, (name, current, avg, peak) in enumerate(rows):
+                self.status_details_table.insertRow(i)
+                self.status_details_table.setItem(i, 0, QTableWidgetItem(name))
+                self.status_details_table.setItem(i, 1, QTableWidgetItem(current))
+                self.status_details_table.setItem(i, 2, QTableWidgetItem(avg))
+                self.status_details_table.setItem(i, 3, QTableWidgetItem(peak))
+
+        except Exception as e:
+            self.logger.error("更新状态详细表格失败: %s", e)
+
+    def _update_stat(self, key: str, value: float):
+        """更新统计数据（当前值、平均值、峰值）.
+
+        Args:
+            key: 统计项键名
+            value: 当前值
+        """
+        try:
+            if key not in self.system_stats:
+                self.system_stats[key] = {"current": 0, "avg": 0, "peak": 0}
+
+            # 更新当前值
+            self.system_stats[key]["current"] = value
+
+            # 更新峰值
+            if value > self.system_stats[key]["peak"]:
+                self.system_stats[key]["peak"] = value
+
+            # 计算平均值（基于历史数据）
+            history_key = key
+            if key == "network_upload":
+                history_key = "network"
+                history_data = self.system_status_history.get(history_key, {}).get("upload", [])
+            elif key == "network_download":
+                history_key = "network"
+                history_data = self.system_status_history.get(history_key, {}).get("download", [])
+            else:
+                history_data = self.system_status_history.get(key, [])
+
+            if history_data and len(history_data) > 0:
+                # 从历史数据计算平均值
+                values = [v for t, v in history_data]
+                avg_value = sum(values) / len(values)
+                self.system_stats[key]["avg"] = avg_value
+            else:
+                # 没有历史数据时，平均值等于当前值
+                self.system_stats[key]["avg"] = value
+
+        except Exception as e:
+            self.logger.error("更新统计数据失败 %s: %s", key, e)
+
     # ==================== 通用方法 ====================
 
     def connect_signals(self):
         """连接信号槽."""
-        self.start_update_timer(2000, self._update_system_status)
+        # 移除定时器更新，改为事件驱动
+        # self.start_update_timer(2000, self._update_system_status)
+        pass
 
     def refresh_data(self):
         """刷新数据."""

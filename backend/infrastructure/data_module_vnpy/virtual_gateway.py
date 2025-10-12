@@ -34,7 +34,7 @@ import pandas as pd
 
 from .config import config_manager
 from .storage import StorageManager
-from .stock_fetcher import StockFetcher
+from .multiprocess_fetcher import MultiProcessStockFetcher as StockFetcher
 
 
 class VirtualGateway(BaseGateway):

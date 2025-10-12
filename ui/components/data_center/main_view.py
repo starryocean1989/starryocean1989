@@ -7,7 +7,7 @@
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from PySide6.QtCore import QDate, QThread, QTimer, Signal
+from PySide6.QtCore import QDate, QThread, QTimer, Signal, Qt
 from PySide6.QtWidgets import (
     QButtonGroup,
     QComboBox,
@@ -171,15 +171,21 @@ class DownloadThread(QThread):
 
             start_time = time.time()
 
-            if self.download_type == "full":
-                print(">>> [DOWNLOAD THREAD] 开始全量下载...", flush=True)
-                result = self.data_center_service.start_full_download()
-            else:
-                print(
-                    f">>> [DOWNLOAD THREAD] 开始增量下载，开始日期: {self.start_date}...",
-                    flush=True,
-                )
-                result = self.data_center_service.start_incremental_download(self.start_date)
+            try:
+                if self.download_type == "full":
+                    print(">>> [DOWNLOAD THREAD] 开始全量下载...", flush=True)
+                    result = self.data_center_service.start_full_download()
+                else:
+                    print(
+                        f">>> [DOWNLOAD THREAD] 开始增量下载，开始日期: {self.start_date}...",
+                        flush=True,
+                    )
+                    result = self.data_center_service.start_incremental_download(self.start_date)
+            except Exception as download_error:
+                logger.error("下载过程异常: %s", download_error, exc_info=True)
+                print(f">>> [DOWNLOAD THREAD] 下载异常: {download_error}", flush=True)
+                self.error_signal.emit(f"下载失败: {str(download_error)}")
+                return
 
             elapsed = time.time() - start_time
             print(f">>> [DOWNLOAD THREAD] 下载完成，耗时: {elapsed:.2f}秒", flush=True)
@@ -188,7 +194,13 @@ class DownloadThread(QThread):
             print(
                 f">>> [DOWNLOAD THREAD] 发送完成信号: success={result.get('success')}", flush=True
             )
-            self.finished_signal.emit(result)
+
+            try:
+                self.finished_signal.emit(result)
+                print(">>> [DOWNLOAD THREAD] 完成信号已发送", flush=True)
+            except Exception as signal_err:
+                print(f">>> [DOWNLOAD THREAD] 发送完成信号失败: {signal_err}", flush=True)
+                logger.error("发送完成信号失败: %s", signal_err, exc_info=True)
 
             print(">>> [DOWNLOAD THREAD] DownloadThread.run() 执行完成", flush=True)
 
@@ -199,7 +211,13 @@ class DownloadThread(QThread):
             import traceback
 
             traceback.print_exc()
-            self.error_signal.emit(f"下载失败: {str(e)}")
+
+            # 确保信号发送成功
+            try:
+                self.error_signal.emit(f"下载失败: {str(e)}")
+            except Exception as signal_err:
+                print(f">>> [DOWNLOAD THREAD] 发送错误信号失败: {signal_err}", flush=True)
+                logger.error("发送错误信号失败: %s", signal_err)
 
 
 class DataCenter(BaseWidget, LoggerMixin):
@@ -575,6 +593,13 @@ class DataCenter(BaseWidget, LoggerMixin):
         control_layout.addWidget(self.stop_download_btn)
 
         control_layout.addStretch()
+
+        # 添加服务器配置按钮
+        self.server_config_btn = QPushButton("⚙ 服务器配置")
+        self.server_config_btn.setToolTip("配置多服务器并行下载参数")
+        self.server_config_btn.clicked.connect(self._show_server_config)
+        control_layout.addWidget(self.server_config_btn)
+
         layout.addWidget(control_group)
 
         # 进度组
@@ -673,9 +698,12 @@ class DataCenter(BaseWidget, LoggerMixin):
 
             # 连接信号
             self.logger.info(">>> 连接信号...")
-            self.reload_thread.finished_signal.connect(self._on_reload_finished)
-            self.reload_thread.error_signal.connect(self._on_reload_error)
-            self.reload_thread.progress_signal.connect(self.show_info)
+            # 🚀 关键修复：使用Qt.QueuedConnection确保跨线程信号安全
+            self.reload_thread.finished_signal.connect(
+                self._on_reload_finished, Qt.QueuedConnection
+            )
+            self.reload_thread.error_signal.connect(self._on_reload_error, Qt.QueuedConnection)
+            self.reload_thread.progress_signal.connect(self.show_info, Qt.QueuedConnection)
             self.logger.info(">>> 信号连接完成")
 
             # 启动线程
@@ -963,6 +991,22 @@ class DataCenter(BaseWidget, LoggerMixin):
 
     # ==================== 数据下载事件处理 ====================
 
+    def _show_server_config(self):
+        """显示服务器配置对话框"""
+        try:
+            from ui.components.data_center.server_config_dialog import ServerConfigDialog
+
+            if not self.data_center_service:
+                self.show_error("数据中心服务未初始化")
+                return
+
+            # 显示配置对话框
+            ServerConfigDialog.show_config_dialog(self.data_center_service, self)
+
+        except Exception as e:
+            self.logger.error("显示服务器配置对话框失败: %s", e, exc_info=True)
+            self.show_error(f"显示配置对话框失败: {str(e)}")
+
     def _start_download(self):
         """开始下载（异步版本）."""
         try:
@@ -1010,9 +1054,13 @@ class DataCenter(BaseWidget, LoggerMixin):
 
             # 连接信号
             self.logger.info(">>> 连接信号...")
-            self.download_thread.finished_signal.connect(self._on_download_finished)
-            self.download_thread.error_signal.connect(self._on_download_error)
-            self.download_thread.progress_signal.connect(self.show_info)
+            # 🚀 关键修复：使用Qt.QueuedConnection确保跨线程信号安全
+            # 这会确保槽函数在主线程的事件循环中执行，避免绘图冲突
+            self.download_thread.finished_signal.connect(
+                self._on_download_finished, Qt.QueuedConnection
+            )
+            self.download_thread.error_signal.connect(self._on_download_error, Qt.QueuedConnection)
+            self.download_thread.progress_signal.connect(self.show_info, Qt.QueuedConnection)
             self.logger.info(">>> 信号连接完成")
 
             # 启动线程

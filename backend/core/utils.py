@@ -45,6 +45,18 @@ except ImportError:
     HAS_SIGNALS = False
 
 
+# =============================================================================
+# 事件类型定义 (用于vnpy EventEngine)
+# =============================================================================
+
+# 系统管理相关事件
+EVENT_SYSTEM_STATUS = "eSystemStatus"  # 系统状态更新事件
+EVENT_PERFORMANCE_METRICS = "ePerformanceMetrics"  # 性能指标更新事件
+EVENT_SERVICE_STATUS = "eServiceStatus"  # 服务状态更新事件
+EVENT_DIAGNOSTIC_RESULT = "eDiagnosticResult"  # 诊断结果事件
+EVENT_PROCESS_STATUS = "eProcessStatus"  # 进程状态更新事件
+
+
 class LoggerMixin:
     """日志混合类."""
 

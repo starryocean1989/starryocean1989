@@ -33,7 +33,7 @@ from vnpy.trader.object import (
 from mootdx.quotes import Quotes
 
 from .config import config_manager
-from .stock_fetcher import StockFetcher
+from .multiprocess_fetcher import MultiProcessStockFetcher as StockFetcher
 
 
 class PollingGateway(BaseGateway):

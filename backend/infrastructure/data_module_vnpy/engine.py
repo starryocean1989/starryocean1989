@@ -20,7 +20,8 @@ from vnpy.event import Event, EventEngine
 from vnpy.trader.engine import BaseEngine, MainEngine
 
 from .config import config_manager
-from .stock_fetcher import StockFetcher, NetworkTimeoutError
+from .multiprocess_fetcher import MultiProcessStockFetcher as StockFetcher
+from .stock_fetcher import NetworkTimeoutError
 from .storage import StorageManager
 from .validator import DataValidator, ValidationSummary
 from .file_watcher import EventDrivenFileWatcher

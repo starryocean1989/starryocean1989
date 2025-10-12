@@ -2206,6 +2206,65 @@ class DataCenterService(BaseService):
                 "message": f"获取状态失败: {str(e)}",
             }
 
+    # ==================== 配置管理 ====================
+
+    def get_server_pool_config(self) -> Dict[str, Any]:
+        """获取服务器池配置.
+
+        Returns:
+            Dict: 配置信息
+        """
+        try:
+            from backend.infrastructure.data_module_vnpy.config import config_manager
+
+            server_pool_size = config_manager.get("chinastock.server_pool_size", 5)
+
+            return {
+                "success": True,
+                "server_pool_size": server_pool_size,
+                "min_size": 1,
+                "max_size": 30,  # 从10提升到30
+                "recommended": {
+                    "保守模式（网络差）": 2,
+                    "标准模式（网络一般）": 5,
+                    "加速模式（网络好）": 10,
+                    "极速模式（网络优+高配置）": 15,
+                },
+                "note": "I/O密集型任务，可以设置超过CPU核心数。建议从5开始，逐步增加观察效果。",
+            }
+        except Exception as e:
+            self._log_error("获取服务器池配置", e)
+            return {"success": False, "message": f"获取失败: {str(e)}"}
+
+    def set_server_pool_size(self, size: int) -> Dict[str, Any]:
+        """设置服务器池大小.
+
+        Args:
+            size: 服务器池大小（1-30）
+
+        Returns:
+            Dict: 操作结果
+        """
+        try:
+            if not 1 <= size <= 30:
+                return {"success": False, "message": "服务器池大小必须在1-30之间"}
+
+            from backend.infrastructure.data_module_vnpy.config import config_manager
+
+            config_manager.set("chinastock.server_pool_size", size)
+
+            self.logger.info("服务器池大小已设置为: %d", size)
+
+            return {
+                "success": True,
+                "message": f"服务器池大小已设置为 {size}（重启后生效）",
+                "server_pool_size": size,
+                "restart_required": True,
+            }
+        except Exception as e:
+            self._log_error("设置服务器池大小", e)
+            return {"success": False, "message": f"设置失败: {str(e)}"}
+
     # ==================== 虚拟推送网关管理 ====================
 
     def start_virtual_gateway(self, config: Dict[str, Any]) -> Dict[str, Any]:

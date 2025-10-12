@@ -75,6 +75,39 @@ class SystemManagerService(BaseService):
         # 告警引擎
         self.alert_engine = alert_engine
 
+        # 新增：诊断工具
+        from backend.infrastructure.system_vnpy.diagnostic_tools import (
+            LogAnalyzer,
+            PerformanceAnalyzer,
+            AutoFixer,
+        )
+
+        self.log_analyzer = LogAnalyzer()
+        self.performance_analyzer = PerformanceAnalyzer()
+        self.auto_fixer = AutoFixer()
+
+        # 新增：服务管理工具
+        from backend.infrastructure.system_vnpy.service_manager import (
+            ServiceHealthChecker,
+            ServiceRestarter,
+        )
+
+        self.service_health_checker = ServiceHealthChecker()
+        self.service_restarter = ServiceRestarter()
+
+        # 新增：进程监控工具
+        from backend.infrastructure.system_vnpy.process_monitor import (
+            ProcessMonitor,
+            BottleneckAnalyzer,
+        )
+
+        self.process_monitor = ProcessMonitor()
+        self.bottleneck_analyzer = BottleneckAnalyzer()
+
+        # 新增：事件发布器（延迟初始化，在_do_initialize中启动）
+        self.metrics_publisher = None
+        self.process_publisher = None
+
         self.logger.info("系统管理服务已创建")
 
     def _do_initialize(self) -> bool:
@@ -88,6 +121,36 @@ class SystemManagerService(BaseService):
             # 加载默认告警规则
             self._load_default_alert_rules()
 
+            # 初始化事件发布器
+            try:
+                from backend.core.base import get_event_engine
+                from backend.infrastructure.system_vnpy.event_publisher import (
+                    SystemMetricsPublisher,
+                    ProcessMetricsPublisher,
+                )
+
+                event_engine = get_event_engine()
+                if event_engine:
+                    # 启动系统指标发布器
+                    self.metrics_publisher = SystemMetricsPublisher(
+                        event_engine, self.system_monitor
+                    )
+                    self.metrics_publisher.start_publishing(interval=2)
+                    self.logger.info("系统指标发布器已启动")
+
+                    # 启动进程监控发布器
+                    self.process_publisher = ProcessMetricsPublisher(
+                        event_engine, self.process_monitor, self.bottleneck_analyzer
+                    )
+                    # 获取配置的推送频率
+                    interval = self.service_health_checker.get_monitoring_interval()
+                    self.process_publisher.start_publishing(interval=interval)
+                    self.logger.info("进程监控发布器已启动")
+                else:
+                    self.logger.warning("EventEngine不可用，事件发布器未启动")
+            except Exception as e:
+                self.logger.warning("初始化事件发布器失败: %s", e)
+
             return True
 
         except Exception as e:
@@ -97,6 +160,22 @@ class SystemManagerService(BaseService):
     def _do_shutdown(self) -> bool:
         """关闭系统管理服务."""
         try:
+            # 停止系统指标发布器
+            if self.metrics_publisher:
+                try:
+                    self.metrics_publisher.stop_publishing()
+                    self.logger.info("系统指标发布器已停止")
+                except Exception as e:
+                    self.logger.warning("停止系统指标发布器失败: %s", e)
+
+            # 停止进程监控发布器
+            if self.process_publisher:
+                try:
+                    self.process_publisher.stop_publishing()
+                    self.logger.info("进程监控发布器已停止")
+                except Exception as e:
+                    self.logger.warning("停止进程监控发布器失败: %s", e)
+
             # 停止监控
             self._stop_monitoring()
             return True
@@ -143,7 +222,20 @@ class SystemManagerService(BaseService):
             disk_rule = create_rule_from_template("disk_high", "rule_disk_high", 85, priority=2)
             self.alert_engine.add_rule(disk_rule)
 
-            self.logger.info("默认告警规则已加载")
+            # 服务离线告警规则
+            service_offline_rule = AlertRule(
+                rule_id="rule_service_offline",
+                name="服务离线告警",
+                condition="service_offline",  # 特殊条件类型
+                severity=AlertSeverity.CRITICAL,
+                enabled=True,
+                priority=1,
+                group="service",
+                description="当关键服务离线时触发告警",
+            )
+            self.alert_engine.add_rule(service_offline_rule)
+
+            self.logger.info("默认告警规则已加载（包含服务离线规则）")
         except Exception as e:
             self.logger.error("加载默认告警规则失败: %s", str(e))
 
@@ -255,14 +347,24 @@ class SystemManagerService(BaseService):
         """
         signal_latencies = []
         bar_processing_times = []
+        error_counts = []
+        total_calls_list = []
 
         for metric_name, metric_data in metrics.items():
             avg_time = metric_data.get("avg_time_ms", 0)
+            total_calls = metric_data.get("total_calls", 0)
+            success_rate = metric_data.get("success_rate", 100)
 
             if "signal" in metric_name.lower() or "order" in metric_name.lower():
                 signal_latencies.append(avg_time)
             elif "on_bar" in metric_name.lower() or "process" in metric_name.lower():
                 bar_processing_times.append(avg_time)
+
+            # 统计错误
+            if total_calls > 0:
+                error_count = int(total_calls * (100 - success_rate) / 100)
+                error_counts.append(error_count)
+                total_calls_list.append(total_calls)
 
         avg_signal_latency = (
             sum(signal_latencies) / len(signal_latencies) if signal_latencies else 0.0
@@ -271,18 +373,20 @@ class SystemManagerService(BaseService):
             sum(bar_processing_times) / len(bar_processing_times) if bar_processing_times else 0.0
         )
 
-        # 从系统监控获取CPU使用率作为策略CPU占用的近似值
-        try:
-            resource_usage = self.system_monitor.get_resource_usage()
-            strategy_cpu_usage = resource_usage.cpu_percent
-        except Exception:
-            strategy_cpu_usage = 0.0
+        # 计算错误率和吞吐量
+        total_calls_sum = sum(total_calls_list)
+        total_errors = sum(error_counts)
+        error_rate = (total_errors / total_calls_sum * 100) if total_calls_sum > 0 else 0.0
+
+        # 策略吞吐量（假设基于总调用次数）
+        strategy_throughput = total_calls_sum  # 实际应该基于时间窗口计算
 
         return {
             "avg_signal_latency_ms": round(avg_signal_latency, 2),
-            "strategy_cpu_usage_percent": round(strategy_cpu_usage, 2),
             "on_bar_processing_time_ms": round(avg_bar_processing, 2),
-            "total_strategy_calls": sum(m.get("total_calls", 0) for m in metrics.values()),
+            "strategy_throughput": strategy_throughput,  # 新增：策略吞吐量
+            "error_rate": round(error_rate, 2),  # 新增：错误率
+            "total_calls": total_calls_sum,
             "metrics_detail": metrics,
         }
 
@@ -406,6 +510,62 @@ class SystemManagerService(BaseService):
             "success": True,
             "metrics": self.monitoring_data,
         }
+
+    def get_enhanced_system_metrics(self) -> Dict[str, Any]:
+        """获取增强的系统指标（包含磁盘I/O、网速、温度）.
+
+        Returns:
+            Dict: 增强的系统指标
+        """
+        try:
+            # 基础系统资源
+            resource_usage = self.system_monitor.get_resource_usage()
+
+            # 磁盘I/O速度
+            disk_io_speed = {}
+            try:
+                disk_io_speed = self.system_monitor.get_disk_io_speed()
+            except Exception as e:
+                self.logger.debug("获取磁盘I/O速度失败: %s", e)
+
+            # 网络速度
+            network_speed = {}
+            try:
+                network_speed = self.system_monitor.get_network_speed()
+            except Exception as e:
+                self.logger.debug("获取网络速度失败: %s", e)
+
+            # 磁盘详细信息（各磁盘空间）
+            disk_info = {}
+            try:
+                disk_info = self.system_monitor.get_disk_info()
+            except Exception as e:
+                self.logger.debug("获取磁盘信息失败: %s", e)
+
+            metrics = {
+                # 基础指标
+                "cpu_percent": resource_usage.cpu_percent,
+                "memory_percent": resource_usage.memory_percent,
+                "disk_percent": resource_usage.disk_percent,
+                "network_sent": resource_usage.network_sent,
+                "network_recv": resource_usage.network_recv,
+                "process_count": resource_usage.process_count,
+                "load_average": resource_usage.load_average,
+                "timestamp": resource_usage.timestamp.isoformat(),
+                # 增强指标
+                "disk_io_speed": disk_io_speed,  # 各磁盘I/O速度
+                "network_speed": network_speed,  # 网络速度和带宽占用
+                "disk_info": disk_info,  # 磁盘详细信息
+            }
+
+            return {
+                "success": True,
+                "metrics": metrics,
+            }
+
+        except Exception as e:
+            self._log_error("获取增强系统指标", e)
+            return {"success": False, "message": str(e)}
 
     def get_system_info(self) -> Dict[str, Any]:
         """获取系统基本信息.
@@ -662,7 +822,7 @@ class SystemManagerService(BaseService):
     # ==================== 服务健康检查 ====================
 
     def check_all_services(self) -> Dict[str, Any]:
-        """检查所有服务健康状态.
+        """检查所有服务健康状态（增强版）.
 
         Returns:
             Dict: 服务健康状态
@@ -671,15 +831,65 @@ class SystemManagerService(BaseService):
             from backend.core.base import get_service_manager
 
             service_manager = get_service_manager()
-            service_status = service_manager.get_service_status()
+
+            # 使用增强的服务健康检查器
+            result = self.service_health_checker.check_all_services(service_manager)
+
+            return result
+
+        except Exception as e:
+            self._log_error("检查服务健康", e)
+            return {"success": False, "message": str(e)}
+
+    def check_service_health(self, service_name: str) -> Dict[str, Any]:
+        """轻量级服务健康检查（单个服务）.
+
+        Args:
+            service_name: 服务名称
+
+        Returns:
+            Dict: 健康检查结果
+        """
+        try:
+            from backend.core.base import get_service_manager
+
+            service_manager = get_service_manager()
+
+            result = self.service_health_checker.quick_check(service_name, service_manager)
 
             return {
                 "success": True,
-                "services": service_status,
+                "result": result,
             }
 
         except Exception as e:
             self._log_error("检查服务健康", e)
+            return {"success": False, "message": str(e)}
+
+    def restart_service(self, service_name: str, graceful: bool = True) -> Dict[str, Any]:
+        """重启指定服务.
+
+        Args:
+            service_name: 服务名称
+            graceful: 是否优雅重启
+
+        Returns:
+            Dict: 重启结果
+        """
+        try:
+            from backend.core.base import get_service_manager
+
+            service_manager = get_service_manager()
+
+            if graceful:
+                result = self.service_restarter.graceful_restart(service_name, service_manager)
+            else:
+                result = self.service_restarter.restart_service(service_name, service_manager)
+
+            return result
+
+        except Exception as e:
+            self._log_error("重启服务", e)
             return {"success": False, "message": str(e)}
 
     # ==================== 日志管理 ====================
@@ -745,7 +955,7 @@ class SystemManagerService(BaseService):
     # ==================== 系统诊断 ====================
 
     def run_diagnostics(self) -> Dict[str, Any]:
-        """运行系统诊断.
+        """运行基础系统诊断.
 
         Returns:
             Dict: 诊断结果
@@ -765,6 +975,69 @@ class SystemManagerService(BaseService):
 
         except Exception as e:
             self._log_error("运行诊断", e)
+            return {"success": False, "message": str(e)}
+
+    def run_advanced_diagnostics(self) -> Dict[str, Any]:
+        """运行高级诊断（包含日志分析和优化建议）.
+
+        Returns:
+            Dict: 高级诊断结果
+        """
+        try:
+            # 基础诊断
+            basic_diagnostics = self.run_diagnostics()
+
+            # 性能瓶颈分析
+            bottlenecks = []
+            try:
+                bottlenecks = self.performance_analyzer.analyze_bottlenecks()
+            except Exception as e:
+                self.logger.warning("分析性能瓶颈失败: %s", e)
+
+            # 日志分析
+            log_analysis = {}
+            try:
+                log_file = "logs/terminal_v0.50.log"
+                log_analysis = self.log_analyzer.analyze_error_logs(log_file, hours=24)
+            except Exception as e:
+                self.logger.warning("分析日志失败: %s", e)
+
+            # 生成优化建议
+            optimization_suggestions = []
+            try:
+                optimization_suggestions = (
+                    self.performance_analyzer.generate_optimization_suggestions(bottlenecks)
+                )
+            except Exception as e:
+                self.logger.warning("生成优化建议失败: %s", e)
+
+            # 生成修复建议
+            fix_suggestions = []
+            try:
+                if log_analysis.get("success") and log_analysis.get("top_errors"):
+                    for error in log_analysis["top_errors"][:5]:  # 只处理前5个
+                        error_type = error["type"]
+                        fixes = self.auto_fixer.suggest_fixes(error_type)
+                        fix_suggestions.extend(fixes)
+            except Exception as e:
+                self.logger.warning("生成修复建议失败: %s", e)
+
+            diagnostics = {
+                "timestamp": datetime.now().isoformat(),
+                "basic_diagnostics": basic_diagnostics.get("diagnostics", {}),
+                "performance_bottlenecks": bottlenecks,
+                "log_analysis": log_analysis,
+                "optimization_suggestions": optimization_suggestions,
+                "fix_suggestions": fix_suggestions[:10],  # 限制数量
+            }
+
+            return {
+                "success": True,
+                "diagnostics": diagnostics,
+            }
+
+        except Exception as e:
+            self._log_error("运行高级诊断", e)
             return {"success": False, "message": str(e)}
 
     def _diagnose_performance(self) -> Dict[str, Any]:
@@ -1782,4 +2055,163 @@ class SystemManagerService(BaseService):
                 "success": False,
                 "config": {},
                 "message": f"获取配置失败: {str(e)}",
+            }
+
+    # ==================== 进程监控接口 ====================
+
+    def get_monitored_processes(self) -> Dict[str, Any]:
+        """获取所有监控中的进程列表.
+
+        Returns:
+            Dict: 进程列表
+        """
+        try:
+            processes = self.process_monitor.identify_processes()
+
+            return {
+                "success": True,
+                "processes": processes,
+                "total_count": len(processes),
+            }
+
+        except Exception as e:
+            self._log_error("获取进程列表", e)
+            return {
+                "success": False,
+                "processes": [],
+                "message": str(e),
+            }
+
+    def get_process_details(
+        self, process_id: str, process_name: str, process_type: str
+    ) -> Dict[str, Any]:
+        """获取单个进程详细信息.
+
+        Args:
+            process_id: 进程ID
+            process_name: 进程名称
+            process_type: 进程类型
+
+        Returns:
+            Dict: 进程详细信息
+        """
+        try:
+            # 获取进程指标
+            metrics = self.process_monitor.get_process_metrics(
+                process_id, process_name, process_type
+            )
+
+            if not metrics:
+                return {
+                    "success": False,
+                    "message": f"无法获取进程指标: {process_id}",
+                }
+
+            # 获取历史数据
+            history = self.process_monitor.get_metrics_history(process_id, limit=100)
+
+            return {
+                "success": True,
+                "metrics": {
+                    "process_id": metrics.process_id,
+                    "process_name": metrics.process_name,
+                    "process_type": metrics.process_type,
+                    "status": metrics.status,
+                    "cpu_percent": metrics.cpu_percent,
+                    "memory_mb": metrics.memory_mb,
+                    "memory_percent": metrics.memory_percent,
+                    "disk_read_mbps": metrics.disk_read_mbps,
+                    "disk_write_mbps": metrics.disk_write_mbps,
+                    "network_recv_mbps": metrics.network_recv_mbps,
+                    "network_send_mbps": metrics.network_send_mbps,
+                    "timestamp": metrics.timestamp.isoformat(),
+                },
+                "history": history,
+            }
+
+        except Exception as e:
+            self._log_error("获取进程详细信息", e)
+            return {
+                "success": False,
+                "message": str(e),
+            }
+
+    def get_process_bottleneck(
+        self, process_id: str, process_name: str, process_type: str
+    ) -> Dict[str, Any]:
+        """获取进程瓶颈分析结果.
+
+        Args:
+            process_id: 进程ID
+            process_name: 进程名称
+            process_type: 进程类型
+
+        Returns:
+            Dict: 瓶颈分析结果
+        """
+        try:
+            # 获取进程指标
+            metrics = self.process_monitor.get_process_metrics(
+                process_id, process_name, process_type
+            )
+
+            if not metrics:
+                return {
+                    "success": False,
+                    "message": f"无法获取进程指标: {process_id}",
+                }
+
+            # 瓶颈分析
+            bottleneck_result = self.bottleneck_analyzer.analyze_by_type(metrics)
+
+            return {
+                "success": True,
+                "bottleneck": {
+                    "process_id": bottleneck_result.process_id,
+                    "process_name": bottleneck_result.process_name,
+                    "process_type": bottleneck_result.process_type,
+                    "bottleneck_type": bottleneck_result.bottleneck,
+                    "bottleneck_percent": bottleneck_result.bottleneck_percent,
+                    "details": bottleneck_result.details,
+                    "suggestion": bottleneck_result.suggestion,
+                },
+            }
+
+        except Exception as e:
+            self._log_error("获取进程瓶颈", e)
+            return {
+                "success": False,
+                "message": str(e),
+            }
+
+    def set_monitoring_interval(self, interval: int) -> Dict[str, Any]:
+        """设置监控推送频率.
+
+        Args:
+            interval: 推送间隔（秒），范围1-10
+
+        Returns:
+            Dict: 设置结果
+        """
+        try:
+            # 设置ServiceHealthChecker的推送频率
+            self.service_health_checker.set_monitoring_interval(interval)
+
+            # 重启进程监控发布器以应用新频率
+            if self.process_publisher and self.process_publisher.is_publishing:
+                self.process_publisher.stop_publishing()
+                self.process_publisher.start_publishing(interval=interval)
+                self.logger.info("进程监控推送频率已更新为 %d 秒", interval)
+
+            return {
+                "success": True,
+                "message": f"监控推送频率已设置为 {interval} 秒",
+                "interval": interval,
+            }
+
+        except Exception as e:
+            self._log_error("设置监控频率", e)
+            return {
+                "success": False,
+                "message": str(e),
             }
