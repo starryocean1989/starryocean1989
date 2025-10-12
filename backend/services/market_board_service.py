@@ -44,6 +44,9 @@ class MarketBoardService(BaseService):
         # 数据录制引擎
         self.recorder_engine = None
 
+        # 事件处理器注册状态
+        self.event_handlers_registered = False
+
         self.logger.info("行情看板服务已创建")
 
     def _do_initialize(self) -> bool:
@@ -54,11 +57,71 @@ class MarketBoardService(BaseService):
             # 初始化技术指标库
             self._init_talib()
 
+            # 注册事件处理器
+            self._register_event_handlers()
+
             return True
 
         except Exception as e:
             self._log_error("初始化", e)
             return False
+
+    def _register_event_handlers(self):
+        """注册vnpy事件处理器."""
+        try:
+            from backend.core.base import get_event_engine
+            from vnpy.trader.event import EVENT_TICK
+
+            event_engine = get_event_engine()
+            if not event_engine:
+                self.logger.warning("EventEngine不可用，无法注册事件处理器")
+                return
+
+            # 注册Tick事件处理器
+            event_engine.register(EVENT_TICK, self._process_tick_event)
+            self.event_handlers_registered = True
+
+            self.logger.info("✅ 已注册vnpy事件处理器")
+
+        except ImportError as e:
+            self.logger.warning("无法导入vnpy模块: %s", e)
+        except Exception as e:
+            self.logger.error("注册事件处理器失败: %s", e, exc_info=True)
+
+    def _process_tick_event(self, event):
+        """处理Tick事件.
+
+        Args:
+            event: vnpy Event对象
+        """
+        try:
+            tick = event.data
+            if not tick:
+                return
+
+            # 获取品种标识
+            symbol = tick.symbol
+
+            # 只处理已订阅的品种
+            if symbol not in self.subscribed_symbols:
+                return
+
+            # 更新实时数据缓存
+            self.realtime_data_cache[symbol] = {
+                "symbol": symbol,
+                "last_price": tick.last_price,
+                "volume": tick.volume,
+                "datetime": tick.datetime,
+                "bid_price_1": tick.bid_price_1,
+                "ask_price_1": tick.ask_price_1,
+                "bid_volume_1": tick.bid_volume_1,
+                "ask_volume_1": tick.ask_volume_1,
+            }
+
+            self.logger.debug("收到Tick数据: %s @ %.2f", symbol, tick.last_price)
+
+        except Exception as e:
+            self.logger.error("处理Tick事件失败: %s", e, exc_info=True)
 
     def _do_shutdown(self) -> bool:
         """关闭行情看板服务."""
@@ -257,6 +320,17 @@ class MarketBoardService(BaseService):
     def unsubscribe_all(self):
         """取消所有订阅."""
         self.subscribed_symbols.clear()
+
+    def get_realtime_data(self, symbol: str) -> Dict[str, Any]:
+        """获取品种的实时数据缓存.
+
+        Args:
+            symbol: 品种代码
+
+        Returns:
+            Dict: 实时数据
+        """
+        return self.realtime_data_cache.get(symbol, {})
 
     # ==================== 技术指标计算 ====================
 

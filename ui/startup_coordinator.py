@@ -3,6 +3,7 @@
 
 import logging
 import os
+import threading
 from typing import Optional
 
 from PySide6.QtCore import QObject, QThread, Signal, Qt
@@ -25,31 +26,51 @@ class BackendInitializerWorker(QObject):
     def run(self):
         """运行后端初始化."""
         try:
-            self.logger.info("开始后端服务初始化...")
+            self.logger.info("=" * 70)
+            self.logger.info("🔧 后端初始化工作线程启动")
+            self.logger.info("=" * 70)
+            self.logger.info("线程ID: %s", threading.current_thread().ident)
+            self.logger.info("线程名: %s", threading.current_thread().name)
+            self.logger.info(
+                "当前线程是否为主线程: %s", threading.current_thread() == threading.main_thread()
+            )
             self.progress_updated.emit("正在初始化配置...", 10)
 
             # 导入后端模块
+            self.logger.info("步骤1: 导入后端服务模块...")
             from backend.core.base import initialize_services
+
+            self.logger.info("✅ 后端模块导入成功")
 
             self.progress_updated.emit("正在启动后端服务...", 30)
 
             # 执行初始化
+            self.logger.info("步骤2: 开始执行后端服务初始化...")
+            self.logger.info("⚠️ 注意：此过程中不应创建任何Qt GUI对象")
             result = initialize_services()
+            self.logger.info("✅ initialize_services() 执行完成")
 
             success = result.get("success", False)
 
             if success:
                 self.progress_updated.emit("后端服务初始化完成", 100)
+                self.logger.info("=" * 70)
                 self.logger.info("✅ 后端服务初始化成功")
+                self.logger.info("=" * 70)
                 self.initialization_completed.emit(True, result)
             else:
                 error_msg = result.get("message", "未知错误")
                 self.progress_updated.emit(f"初始化失败: {error_msg}", 100)
+                self.logger.error("=" * 70)
                 self.logger.error("❌ 后端服务初始化失败: %s", error_msg)
+                self.logger.error("=" * 70)
                 self.initialization_completed.emit(False, result)
 
         except Exception as e:
             error_msg = f"后端初始化异常: {str(e)}"
+            self.logger.error("=" * 70)
+            self.logger.error("💥 后端初始化工作线程发生异常")
+            self.logger.error("=" * 70)
             self.logger.error(error_msg, exc_info=True)
             self.error_occurred.emit(error_msg)
             self.initialization_completed.emit(False, {"success": False, "message": error_msg})

@@ -23,20 +23,8 @@ from PySide6.QtGui import (
     QTextFormat,
     QSyntaxHighlighter,
     QTextCharFormat,
-    QPalette,
 )
 from PySide6.QtWidgets import QWidget, QPlainTextEdit, QTextEdit
-
-# Pygments语法高亮
-try:
-    from pygments import highlight
-    from pygments.lexers import PythonLexer
-    from pygments.formatters import HtmlFormatter
-    from pygments.styles import get_style_by_name
-
-    HAS_PYGMENTS = True
-except ImportError:
-    HAS_PYGMENTS = False
 
 # Monaco兼容性标志
 HAS_WEBENGINE = True  # 兼容标志
@@ -391,7 +379,7 @@ class MonacoEditorWidget(QPlainTextEdit):
 
     def setBreakpoint(self, line_number: int):
         """设置断点（占位实现）."""
-        pass
+        return
 
     def getBreakpoints(self, callback):
         """获取断点（占位实现）."""
@@ -399,4 +387,45 @@ class MonacoEditorWidget(QPlainTextEdit):
 
     def clearBreakpoints(self):
         """清除断点（占位实现）."""
-        pass
+        return
+
+    # ==================== 只读模式 ====================
+
+    def setReadOnly(self, readonly: bool):
+        """设置只读状态（带样式变化）.
+
+        Args:
+            readonly: 是否只读
+        """
+        super().setReadOnly(readonly)
+
+        if readonly:
+            # 只读时使用更明显的灰色背景和边框
+            self.setStyleSheet(
+                """
+                QPlainTextEdit {
+                    background-color: #2a2a2a;
+                    color: #d4d4d4;
+                    border: 1px solid #555555;
+                    padding-left: 5px;
+                    selection-background-color: #264f78;
+                    selection-color: #ffffff;
+                }
+            """
+            )
+            self.logger.info("编辑器设置为只读模式")
+        else:
+            # 恢复正常编辑模式样式
+            self.setStyleSheet(
+                """
+                QPlainTextEdit {
+                    background-color: #1e1e1e;
+                    color: #d4d4d4;
+                    border: none;
+                    padding-left: 5px;
+                    selection-background-color: #264f78;
+                    selection-color: #ffffff;
+                }
+            """
+            )
+            self.logger.info("编辑器设置为编辑模式")

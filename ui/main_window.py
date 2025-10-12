@@ -177,18 +177,34 @@ class MainWindow(QMainWindow, LoggerMixin):
 
     def initialize_function_interfaces_after_backend(self):
         """在后端就绪后初始化功能界面（异步模式）."""
-        self.logger.info("后端就绪，开始创建功能界面...")
+        self.logger.info("=" * 70)
+        self.logger.info("🎨 开始创建UI功能界面（主线程）")
+        self.logger.info("=" * 70)
+
+        import threading
+
+        self.logger.info("当前线程ID: %s", threading.current_thread().ident)
+        self.logger.info("当前线程名: %s", threading.current_thread().name)
+        self.logger.info("是否为主线程: %s", threading.current_thread() == threading.main_thread())
 
         # 创建功能界面
+        self.logger.info("步骤1: 创建6个功能界面...")
         self.create_function_interfaces()
+        self.logger.info("✅ 功能界面创建完成")
 
         # 连接信号
+        self.logger.info("步骤2: 连接信号槽...")
         self.connect_signals()
+        self.logger.info("✅ 信号槽连接完成")
 
         # 启动更新定时器
+        self.logger.info("步骤3: 启动更新定时器...")
         self.start_update_timer()
+        self.logger.info("✅ 更新定时器启动完成")
 
-        self.logger.info("✅ 功能界面创建完成")
+        self.logger.info("=" * 70)
+        self.logger.info("✅ UI功能界面初始化完成")
+        self.logger.info("=" * 70)
 
     def _initialize_backend_services(self):
         """初始化后端服务."""
@@ -369,14 +385,30 @@ class MainWindow(QMainWindow, LoggerMixin):
             ("portfolio", PortfolioInvestment),
         ]
 
-        for interface_id, interface_class in interfaces:
-            self._create_interface(interface_id, interface_class)
+        self.logger.info("准备创建%d个功能界面", len(interfaces))
 
-        self.logger.info("所有功能界面创建完成")
+        for idx, (interface_id, interface_class) in enumerate(interfaces, 1):
+            self.logger.info("-" * 70)
+            self.logger.info(
+                "创建界面 %d/%d: %s (%s)",
+                idx,
+                len(interfaces),
+                interface_id,
+                interface_class.__name__,
+            )
+            self.logger.info("-" * 70)
+            self._create_interface(interface_id, interface_class)
+            self.logger.info("✅ 界面 %s 创建完成", interface_id)
+
+        self.logger.info("=" * 70)
+        self.logger.info("✅ 所有功能界面创建完成")
+        self.logger.info("=" * 70)
 
         # 默认选中第一个界面
         if self.nav_list and self.nav_list.count() > 0:
+            self.logger.info("设置默认选中第一个界面")
             self.nav_list.setCurrentRow(0)
+            self.logger.info("✅ 默认界面设置完成")
 
     def _create_interface(self, interface_id: str, interface_class: type):
         """创建单个功能界面.
@@ -385,32 +417,42 @@ class MainWindow(QMainWindow, LoggerMixin):
             interface_id: 界面ID
             interface_class: 界面类
         """
+        metadata = self.interface_metadata.get(interface_id, {})
+        interface_name = metadata.get("name", interface_id)
+
         try:
             # 创建界面实例
+            self.logger.info("  → 步骤1: 实例化 %s 类...", interface_class.__name__)
             # 注意：BaseWidget会在__init__中自动调用setup_ui()和connect_signals()
             # 所以这里不需要再次调用
             interface = interface_class()
+            self.logger.info("  ✅ %s 实例化成功", interface_class.__name__)
 
             # 保存到字典
+            self.logger.info("  → 步骤2: 保存到界面字典...")
             self.function_interfaces[interface_id] = interface
+            self.logger.info("  ✅ 已保存到字典")
 
             # 添加到内容区
+            self.logger.info("  → 步骤3: 添加到内容显示区...")
             if self.content_stack:
                 self.content_stack.addWidget(interface)
+                self.logger.info("  ✅ 已添加到内容区")
 
             # 添加到左侧导航列表
+            self.logger.info("  → 步骤4: 添加到导航列表...")
             if self.nav_list:
-                metadata = self.interface_metadata[interface_id]
-                item_text = f"{metadata['icon']}  {metadata['name']}"
+                item_text = f"{metadata['icon']}  {interface_name}"
                 item = QListWidgetItem(item_text)
                 item.setData(Qt.ItemDataRole.UserRole, interface_id)
                 item.setToolTip(metadata["description"])
                 self.nav_list.addItem(item)
+                self.logger.info("  ✅ 已添加到导航列表")
 
-            self.logger.info("%s界面创建成功", metadata["name"])
+            self.logger.info("✨ %s 界面创建成功", interface_name)
 
         except Exception as e:
-            self.logger.error("%s界面创建失败: %s", interface_id, e)
+            self.logger.error("❌ %s 界面创建失败: %s", interface_id, e, exc_info=True)
 
             # 创建错误占位符
             placeholder = self._create_error_placeholder(interface_id, str(e))
@@ -748,20 +790,35 @@ def main():
         # 连接信号
         def on_startup_completed():
             """启动完成回调."""
-            logging.getLogger(__name__).info("收到启动完成信号，初始化UI组件")
+            logging.getLogger(__name__).info("=" * 70)
+            logging.getLogger(__name__).info("📡 收到启动完成信号")
+            logging.getLogger(__name__).info("=" * 70)
 
             # 隐藏启动画面
+            logging.getLogger(__name__).info("步骤1: 隐藏启动画面...")
             coordinator.hide_splash()
+            logging.getLogger(__name__).info("✅ 启动画面已隐藏")
 
             # 初始化功能界面
+            logging.getLogger(__name__).info("步骤2: 初始化UI组件...")
             main_window.initialize_function_interfaces_after_backend()
+            logging.getLogger(__name__).info("✅ UI组件初始化完成")
 
             # 显示主窗口
+            logging.getLogger(__name__).info("步骤3: 显示主窗口...")
             main_window.show()
+            logging.getLogger(__name__).info("✅ 主窗口已显示")
+
+            logging.getLogger(__name__).info("=" * 70)
+            logging.getLogger(__name__).info("🎉 应用启动完成！")
+            logging.getLogger(__name__).info("=" * 70)
 
         def on_startup_failed(error: str):
             """启动失败回调."""
-            logging.getLogger(__name__).error("启动失败: %s", error)
+            logging.getLogger(__name__).error("=" * 70)
+            logging.getLogger(__name__).error("💥 启动失败")
+            logging.getLogger(__name__).error("=" * 70)
+            logging.getLogger(__name__).error("错误信息: %s", error)
             coordinator.hide_splash()
 
             # 显示错误对话框
@@ -816,4 +873,4 @@ def main_sync():
 
 
 if __name__ == "__main__":
-    main()
+    main_sync()  # 使用同步模式，避免异步初始化导致的崩溃

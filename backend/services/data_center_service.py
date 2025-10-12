@@ -1182,53 +1182,127 @@ class DataCenterService(BaseService):
                 "data": [],
             }
 
-    def check_data_quality(self, symbol: Optional[str] = None) -> Dict[str, Any]:
-        """检查数据质量.
+    def check_data_quality(
+        self, symbol: Optional[str] = None, interval: str = "1d"
+    ) -> Dict[str, Any]:
+        """检查数据质量（增强版 - 支持数据感知）.
 
         Args:
             symbol: 品种代码（可选，为None则检查所有品种）
+            interval: K线周期，默认"1d"
 
         Returns:
-            Dict: 质量检查结果
+            Dict: 质量检查结果，包含详细的质量感知信息
+                {
+                    "success": bool,
+                    "message": str,
+                    "quality_status": str,  # "excellent", "good", "warning", "error"
+                    "quality_score": int,   # 0-100分
+                    "data_count": int,      # 数据条数
+                    "date_range": tuple,    # 日期范围
+                    "missing_dates_count": int,  # 缺失日期数量
+                    "errors_count": int,    # 错误数量
+                    "warnings_count": int,  # 警告数量
+                    "issues": list,         # 详细问题列表
+                    "can_repair": bool      # 是否可以修复
+                }
         """
         try:
-            self._log_operation("检查数据质量", symbol=symbol)
+            self._log_operation("检查数据质量", symbol=symbol, interval=interval)
 
             if not self.china_stock_engine:
                 return {
                     "success": False,
                     "message": "ChinaStockEngine不可用",
+                    "quality_status": "error",
+                    "quality_score": 0,
                     "issues": [],
+                    "can_repair": False,
                 }
 
-            # 调用ChinaStockEngine的数据校验方法
+            # 调用validator进行质量检查
             try:
+                from backend.infrastructure.data_module_vnpy.validator import DataValidator
+
+                validator = DataValidator()
+
                 if symbol:
                     # 单品种校验
-                    validation_result = self.china_stock_engine.validate_data([symbol])
-                else:
-                    # 所有品种校验
-                    validation_result = self.china_stock_engine.validate_data()
+                    validation_result = validator.validate_symbol(symbol, interval)
 
-                if validation_result:
+                    if not validation_result:
+                        return {
+                            "success": True,
+                            "message": f"品种 {symbol} 没有本地数据",
+                            "quality_status": "error",
+                            "quality_score": 0,
+                            "data_count": 0,
+                            "date_range": (None, None),
+                            "missing_dates_count": 0,
+                            "errors_count": 0,
+                            "warnings_count": 0,
+                            "issues": ["数据文件不存在或为空"],
+                            "can_repair": True,
+                        }
+
+                    # 解析ValidationResult对象
+                    errors = validation_result.errors
+                    warnings = validation_result.warnings
+                    record_count = validation_result.record_count
+                    date_range = validation_result.date_range
+                    missing_dates = validation_result.missing_dates
+
+                    # 计算质量评分（0-100）
+                    quality_score = self._calculate_quality_score(
+                        len(errors), len(warnings), len(missing_dates), record_count
+                    )
+
+                    # 确定质量状态
+                    if len(errors) > 0:
+                        quality_status = "error"
+                        status_text = "❌ 数据有错误"
+                    elif len(warnings) > 0 or len(missing_dates) > 0:
+                        quality_status = "warning"
+                        status_text = "⚠️ 数据有警告"
+                    else:
+                        quality_status = "excellent"
+                        status_text = "✅ 数据正常"
+
+                    # 构建详细问题列表
                     issues = []
-                    # 解析校验结果
-                    if hasattr(validation_result, "to_dict"):
-                        issues_dict = validation_result.to_dict()
-                        for sym, result in issues_dict.items():
-                            if not result.get("is_valid", True):
-                                issues.append({"symbol": sym, "issue": result.get("message", "")})
+                    issues.extend(errors)
+                    if missing_dates:
+                        issues.append(f"缺失 {len(missing_dates)} 个交易日的数据")
 
                     return {
                         "success": True,
-                        "message": f"质量检查完成，发现{len(issues)}个问题",
+                        "message": f"{status_text}，共 {record_count} 条记录",
+                        "quality_status": quality_status,
+                        "quality_score": quality_score,
+                        "data_count": record_count,
+                        "date_range": date_range,
+                        "missing_dates_count": len(missing_dates),
+                        "errors_count": len(errors),
+                        "warnings_count": len(warnings),
                         "issues": issues,
+                        "can_repair": len(errors) > 0 or len(missing_dates) > 0,
                     }
                 else:
+                    # 所有品种校验（返回简化的汇总）
+                    summary = validator.validate_all_data()
+
                     return {
                         "success": True,
-                        "message": "质量检查完成",
+                        "message": f"质量检查完成，共 {summary.total_symbols} 个品种",
+                        "quality_status": "good" if summary.invalid_symbols == 0 else "warning",
+                        "quality_score": 100 if summary.invalid_symbols == 0 else 50,
+                        "total_symbols": summary.total_symbols,
+                        "valid_symbols": summary.valid_symbols,
+                        "invalid_symbols": summary.invalid_symbols,
+                        "total_errors": summary.total_errors,
+                        "total_warnings": summary.total_warnings,
                         "issues": [],
+                        "can_repair": summary.invalid_symbols > 0,
                     }
 
             except Exception as e:
@@ -1236,7 +1310,10 @@ class DataCenterService(BaseService):
                 return {
                     "success": False,
                     "message": f"检查失败: {str(e)}",
-                    "issues": [],
+                    "quality_status": "error",
+                    "quality_score": 0,
+                    "issues": [str(e)],
+                    "can_repair": False,
                 }
 
         except Exception as e:
@@ -1244,8 +1321,42 @@ class DataCenterService(BaseService):
             return {
                 "success": False,
                 "message": f"检查失败: {str(e)}",
-                "issues": [],
+                "quality_status": "error",
+                "quality_score": 0,
+                "issues": [str(e)],
+                "can_repair": False,
             }
+
+    def _calculate_quality_score(
+        self, errors_count: int, warnings_count: int, missing_dates_count: int, total_records: int
+    ) -> int:
+        """计算数据质量评分.
+
+        Args:
+            errors_count: 错误数量
+            warnings_count: 警告数量
+            missing_dates_count: 缺失日期数量
+            total_records: 总记录数
+
+        Returns:
+            int: 质量评分（0-100）
+        """
+        # 基础分100分
+        score = 100
+
+        # 错误扣分（每个错误扣10分）
+        score -= errors_count * 10
+
+        # 警告扣分（每个警告扣5分）
+        score -= warnings_count * 5
+
+        # 缺失日期扣分（根据比例）
+        if total_records > 0 and missing_dates_count > 0:
+            missing_ratio = missing_dates_count / (total_records + missing_dates_count)
+            score -= int(missing_ratio * 30)  # 最多扣30分
+
+        # 确保分数在0-100之间
+        return max(0, min(100, score))
 
     def auto_repair_data(self, symbol: str, issues: List[str]) -> Dict[str, Any]:
         """自动修复数据.
@@ -1295,6 +1406,122 @@ class DataCenterService(BaseService):
                 "success": False,
                 "message": f"修复失败: {str(e)}",
                 "repaired_count": 0,
+            }
+
+    # ==================== 数据感知管理 ====================
+
+    def get_data_quality_overview(self) -> Dict[str, Any]:
+        """获取全局数据质量概览（自动感知）.
+
+        Returns:
+            Dict: {
+                "success": bool,
+                "total_symbols": int,
+                "missing_symbols": int,
+                "error_symbols": int,
+                "warning_symbols": int,
+                "quality_score": int,  # 0-100分
+                "last_scan_time": str,
+                "details": list  # 有问题的品种详情列表
+            }
+        """
+        try:
+            if not self.china_stock_engine:
+                return {
+                    "success": False,
+                    "message": "ChinaStockEngine不可用",
+                    "total_symbols": 0,
+                    "missing_symbols": 0,
+                    "error_symbols": 0,
+                    "warning_symbols": 0,
+                    "quality_score": 0,
+                }
+
+            # 获取数据感知器的质量概览
+            overview = self.china_stock_engine.get_data_quality_overview()
+
+            if not overview:
+                # 尚未扫描，返回空概览
+                return {
+                    "success": True,
+                    "message": "数据质量扫描尚未完成，请稍候...",
+                    "total_symbols": 0,
+                    "missing_symbols": 0,
+                    "error_symbols": 0,
+                    "warning_symbols": 0,
+                    "quality_score": 0,
+                    "last_scan_time": None,
+                    "details": [],
+                }
+
+            # 转换为返回格式
+            return {
+                "success": True,
+                "total_symbols": overview.total_symbols,
+                "missing_symbols": overview.missing_symbols,
+                "error_symbols": overview.error_symbols,
+                "warning_symbols": overview.warning_symbols,
+                "quality_score": overview.quality_score,
+                "last_scan_time": (
+                    overview.last_scan_time.isoformat() if overview.last_scan_time else None
+                ),
+                "base_date": overview.base_date.isoformat(),
+                "scanned_intervals": overview.scanned_intervals,
+                "details": overview.details,  # 有问题的品种列表
+                "message": "数据质量概览获取成功",
+            }
+
+        except Exception as e:
+            self.logger.error("获取数据质量概览失败: %s", e, exc_info=True)
+            return {
+                "success": False,
+                "message": f"获取失败: {str(e)}",
+                "total_symbols": 0,
+                "missing_symbols": 0,
+                "error_symbols": 0,
+                "warning_symbols": 0,
+                "quality_score": 0,
+            }
+
+    def trigger_data_quality_scan(self, force_refresh: bool = False) -> Dict[str, Any]:
+        """手动触发数据质量扫描.
+
+        Args:
+            force_refresh: 是否强制刷新（忽略缓存）
+
+        Returns:
+            Dict: 扫描结果
+        """
+        try:
+            if not self.china_stock_engine:
+                return {
+                    "success": False,
+                    "message": "ChinaStockEngine不可用",
+                }
+
+            self.logger.info("手动触发数据质量扫描...")
+
+            # 触发扫描
+            overview = self.china_stock_engine.trigger_data_quality_scan(force_refresh)
+
+            if not overview:
+                return {
+                    "success": False,
+                    "message": "扫描失败",
+                }
+
+            return {
+                "success": True,
+                "message": "数据质量扫描完成",
+                "total_symbols": overview.total_symbols,
+                "quality_score": overview.quality_score,
+            }
+
+        except Exception as e:
+            self.logger.error("触发数据质量扫描失败: %s", e, exc_info=True)
+            return {
+                "success": False,
+                "message": f"扫描失败: {str(e)}",
             }
 
     # ==================== 数据源管理 ====================

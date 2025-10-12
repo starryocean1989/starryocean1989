@@ -148,6 +148,9 @@ def download_worker_process(
                 return
 
         # 工作循环
+        empty_count = 0  # 连续空队列计数
+        max_empty_count = 10  # 连续10次（5秒）空队列后退出
+
         while not stop_event.is_set():
             # 检查暂停
             if not pause_event.is_set():
@@ -157,6 +160,9 @@ def download_worker_process(
             try:
                 # 从队列获取任务（timeout避免永久阻塞）
                 task = task_queue.get(timeout=0.5)
+
+                # 获取到任务，重置空计数
+                empty_count = 0
 
                 symbol, interval, start_date = task
 
@@ -215,12 +221,19 @@ def download_worker_process(
                     progress_queue.put((symbol, interval))
 
             except queue.Empty:
-                # 队列空，继续等待
+                # 队列空，增加计数
+                empty_count += 1
+                if empty_count >= max_empty_count:
+                    # 连续多次空队列，认为任务已完成，自动退出
+                    logger.info(
+                        "进程 %d 检测到队列长时间为空（%d次），自动退出", worker_id, empty_count
+                    )
+                    break
                 continue
             except Exception as e:
                 logger.error("进程 %d 任务处理异常: %s", worker_id, e)
 
-        logger.info("进程 %d 收到停止信号，已处理 %d 个任务", worker_id, processed_count)
+        logger.info("进程 %d 已退出，已处理 %d 个任务", worker_id, processed_count)
 
     except Exception as e:
         logger.error("进程 %d 初始化失败: %s", worker_id, e, exc_info=True)

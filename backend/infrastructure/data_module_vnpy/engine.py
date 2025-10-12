@@ -29,6 +29,8 @@ from .block_parser import BlockParser
 from .polling_gateway import PollingGateway
 from .virtual_gateway import VirtualGateway
 from .data_readers import TdxBinaryReader
+from .data_sensor import DataSensor, QualityOverview
+from .file_watcher import DataFileWatcher
 
 
 # 事件类型常量
@@ -36,6 +38,8 @@ EVENT_CHINASTOCK_LOG = "eChinaStockLog"
 EVENT_CHINASTOCK_VALIDATION = "eChinaStockValidation"
 EVENT_CHINASTOCK_FILE_CHANGE = "eChinaStockFileChange"
 EVENT_CHINASTOCK_DOWNLOAD = "eChinaStockDownload"
+EVENT_DATA_QUALITY_UPDATE = "eDataQualityUpdate"  # 数据质量更新事件
+EVENT_DATA_SCAN_COMPLETE = "eDataScanComplete"  # 扫描完成事件
 
 # 应用名称
 APP_NAME = "ChinaStock"
@@ -60,6 +64,10 @@ class ChinaStockEngine(BaseEngine):
         self.storage_manager = StorageManager()
         self.validator = DataValidator()
         self.file_watcher = EventDrivenFileWatcher(event_engine)
+
+        # 新增：数据感知器
+        self.data_sensor = DataSensor(event_engine)
+        self.data_file_watcher: Optional[DataFileWatcher] = None
 
         # 新增：轮询网关和虚拟网关
         self.polling_gateway: Optional[PollingGateway] = None
@@ -87,11 +95,17 @@ class ChinaStockEngine(BaseEngine):
         if config_manager.is_virtual_gateway_enabled():
             self._init_virtual_gateway()
 
+        # 启动数据感知（后台线程）
+        self._start_data_sensing_async()
+
         self.logger.info("中国A股数据管理引擎初始化完成")
 
     def close(self) -> None:
         """关闭引擎"""
         try:
+            # 停止数据感知
+            self.stop_data_sensing()
+
             # 停止文件监控
             if self.file_watcher.is_running():
                 self.file_watcher.stop()
@@ -816,3 +830,138 @@ class ChinaStockEngine(BaseEngine):
             self.logger.error("读取通达信数据失败: %s", e)
             self._push_log_event(f"读取通达信数据失败: {e}", "ERROR")
             return {symbol: False for symbol in symbols}
+
+    # ==================== 数据感知管理方法 ====================
+
+    def _start_data_sensing_async(self) -> None:
+        """启动数据感知（后台线程，不阻塞初始化）"""
+
+        def scan_in_background():
+            try:
+                self.logger.info("【后台线程】开始数据质量扫描...")
+
+                # 获取参考品种列表
+                reference_symbols = []
+                all_stocks_dict = self.stock_fetcher.get_all_market_stocks()
+                if all_stocks_dict:
+                    for stocks in all_stocks_dict.values():
+                        reference_symbols.extend(stocks)
+
+                # 执行全量扫描
+                overview = self.data_sensor.scan_all_data(
+                    reference_symbols=reference_symbols,
+                    force_refresh=True,
+                )
+
+                self.logger.info(
+                    "【后台线程】数据质量扫描完成: 评分=%s, 缺失=%s, 错误=%s",
+                    overview.quality_score,
+                    overview.missing_symbols,
+                    overview.error_symbols,
+                )
+
+                # 启动文件监控
+                self._start_data_file_watcher()
+
+            except Exception as e:
+                self.logger.error("【后台线程】数据质量扫描失败: %s", e, exc_info=True)
+
+        # 启动守护线程
+        scan_thread = threading.Thread(
+            target=scan_in_background,
+            daemon=True,
+            name="DataSensingScanThread",
+        )
+        scan_thread.start()
+        self.logger.info("数据感知后台扫描线程已启动")
+
+    def _start_data_file_watcher(self) -> bool:
+        """启动数据文件监控
+
+        Returns:
+            是否启动成功
+        """
+        try:
+            if self.data_file_watcher and self.data_file_watcher.is_running:
+                self.logger.warning("数据文件监控已在运行")
+                return False
+
+            # 创建文件监控器
+            data_dir = config_manager.get_data_dir()
+            self.data_file_watcher = DataFileWatcher(
+                data_dir=data_dir,
+                callback=self.data_sensor.on_file_changed,
+            )
+
+            # 启动监控
+            success = self.data_file_watcher.start()
+
+            if success:
+                self.logger.info("✅ 数据文件监控已启动")
+            else:
+                self.logger.warning("⚠️ 数据文件监控启动失败（可能是watchdog不可用）")
+
+            return success
+
+        except Exception as e:
+            self.logger.error("启动数据文件监控失败: %s", e, exc_info=True)
+            return False
+
+    def stop_data_sensing(self) -> bool:
+        """停止数据感知
+
+        Returns:
+            是否停止成功
+        """
+        try:
+            # 停止文件监控
+            if self.data_file_watcher:
+                self.data_file_watcher.stop()
+                self.data_file_watcher = None
+                self.logger.info("数据文件监控已停止")
+
+            return True
+
+        except Exception as e:
+            self.logger.error("停止数据感知失败: %s", e)
+            return False
+
+    def get_data_quality_overview(self) -> Optional[QualityOverview]:
+        """获取数据质量概览
+
+        Returns:
+            质量概览（如果尚未扫描则返回None）
+        """
+        return self.data_sensor.get_quality_overview()
+
+    def trigger_data_quality_scan(self, force_refresh: bool = False) -> Optional[QualityOverview]:
+        """手动触发数据质量扫描
+
+        Args:
+            force_refresh: 是否强制刷新（忽略缓存）
+
+        Returns:
+            质量概览
+        """
+        try:
+            self.logger.info("开始手动数据质量扫描...")
+
+            # 获取参考品种列表
+            reference_symbols = []
+            all_stocks_dict = self.stock_fetcher.get_all_market_stocks()
+            if all_stocks_dict:
+                for stocks in all_stocks_dict.values():
+                    reference_symbols.extend(stocks)
+
+            # 执行扫描
+            overview = self.data_sensor.scan_all_data(
+                reference_symbols=reference_symbols,
+                force_refresh=force_refresh,
+            )
+
+            self.logger.info("手动数据质量扫描完成")
+            return overview
+
+        except Exception as e:
+            self.logger.error("手动数据质量扫描失败: %s", e, exc_info=True)
+            return None

@@ -209,6 +209,13 @@ class EditorTabWidget(QTabWidget, LoggerMixin):
                     self.logger.error(f"🔴 setPlainText 失败: {content_error}", exc_info=True)
                     raise
 
+                # 🔧 检查是否是模板文件，设置为只读
+                normalized_path = file_path.replace("\\", "/")
+                is_template = "strategies/templates/" in normalized_path
+                if is_template:
+                    editor.setReadOnly(True)
+                    self.logger.info(f"✓ 模板文件设置为只读: {file_path}")
+
                 # 检查编辑器状态
                 if hasattr(editor, "isReady"):
                     is_ready = editor.isReady()
@@ -371,6 +378,21 @@ class EditorTabWidget(QTabWidget, LoggerMixin):
             if not file_path or file_path not in self.editors:
                 return False
 
+            # 检查是否是只读模板文件
+            normalized_path = file_path.replace("\\", "/")
+            is_template = "strategies/templates/" in normalized_path
+            if is_template:
+                from PySide6.QtWidgets import QMessageBox
+
+                QMessageBox.warning(
+                    self,
+                    "无法保存",
+                    f"文件 '{Path(file_path).name}' 是系统模板文件，不允许修改。\n\n"
+                    "如需创建自定义策略，请使用「新建」功能。",
+                )
+                self.logger.warning(f"尝试保存只读模板文件被阻止: {file_path}")
+                return False
+
             # 获取编辑器内容
             editor = self.editors[file_path]
             content = editor.toPlainText()
@@ -484,11 +506,17 @@ class EditorTabWidget(QTabWidget, LoggerMixin):
         Args:
             file_path: 文件路径
         """
-        # 标记为未保存
-        self.unsaved_files.add(file_path)
+        # 检查是否是只读模板文件
+        normalized_path = file_path.replace("\\", "/")
+        is_template = "strategies/templates/" in normalized_path
 
-        # 更新标签标题
-        self._update_tab_title(file_path)
+        # 只读文件不应被标记为未保存
+        if not is_template:
+            # 标记为未保存
+            self.unsaved_files.add(file_path)
+
+            # 更新标签标题
+            self._update_tab_title(file_path)
 
     def _update_tab_title(self, file_path: str):
         """更新标签标题.
@@ -500,11 +528,19 @@ class EditorTabWidget(QTabWidget, LoggerMixin):
         if index >= 0:
             file_name = Path(file_path).name
 
+            # 检查是否是只读模板
+            normalized_path = file_path.replace("\\", "/")
+            is_template = "strategies/templates/" in normalized_path
+
             # 如果未保存，添加圆点标记
             if file_path in self.unsaved_files:
                 title = f"● {file_name}"
             else:
                 title = file_name
+
+            # 如果是只读模板，添加[只读]标记
+            if is_template:
+                title = f"[只读] {title}"
 
             self.setTabText(index, title)
 

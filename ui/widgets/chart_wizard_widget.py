@@ -45,7 +45,14 @@ class ChartWizardWidget(BaseWidget):
         Args:
             parent: 父窗口组件
         """
-        super().__init__(parent, "专业图表")
+        # 🔧 修复：先初始化所有属性，再调用super().__init__()
+        # 因为BaseWidget.__init__会调用setup_ui()，需要这些属性已经存在
+
+        # 🔧 线程安全修复：延迟获取引擎，避免在初始化时访问可能未就绪的资源
+        # 引擎将在实际需要时通过_get_engines()方法获取
+        self.main_engine: Optional[Any] = None
+        self.event_engine: Optional[Any] = None
+        self._engines_initialized = False
 
         # 图表组件
         self.chart_widget: Optional[Any] = None
@@ -56,6 +63,35 @@ class ChartWizardWidget(BaseWidget):
 
         # 数据管理器引用
         self.data_manager = None
+
+        # 最后调用父类初始化（会触发setup_ui()）
+        super().__init__(parent, "专业图表")
+
+    def _get_engines(self) -> bool:
+        """延迟获取MainEngine和EventEngine.
+
+        Returns:
+            bool: 是否成功获取引擎
+        """
+        if self._engines_initialized:
+            return True
+
+        try:
+            from backend.core.base import get_main_engine, get_event_engine
+
+            self.main_engine = get_main_engine()
+            self.event_engine = get_event_engine()
+
+            if self.main_engine and self.event_engine:
+                self._engines_initialized = True
+                self._logger.info("✅ 成功获取MainEngine和EventEngine")
+                return True
+            else:
+                self._logger.warning("⚠️ MainEngine或EventEngine尚未初始化")
+                return False
+        except Exception as e:
+            self._logger.error(f"获取引擎失败: {e}", exc_info=True)
+            return False
 
     def setup_ui(self):
         """设置用户界面."""
@@ -81,20 +117,40 @@ class ChartWizardWidget(BaseWidget):
             layout: 布局
         """
         # 创建vnpy_chartwizard图表组件
-        # ChartWidget是一个独立的图表显示组件，只需要parent参数
-        # 数据通过update_history()方法更新
+        # vnpy_chartwizard.ChartWidget需要MainEngine和EventEngine参数
         try:
-            # 创建图表组件
-            self.chart_widget = VnpyChartWidget(parent=self)
+            # 🔧 线程安全修复：延迟获取引擎
+            if not self._get_engines():
+                self._logger.warning("⚠️ MainEngine或EventEngine不可用，使用降级方案")
+                raise RuntimeError("MainEngine或EventEngine不可用")
 
-            # 添加到布局
-            if self.chart_widget:
+            # 尝试使用vnpy_chartwizard（需要MainEngine和EventEngine）
+            # 注意：vnpy_chartwizard.ChartWidget 实际上是ChartWizardWidget，不是单独的图表组件
+            # 我们这里直接使用vnpy.chart.ChartWidget
+            try:
+                from vnpy.chart import ChartWidget, CandleItem, VolumeItem
+
+                # 创建vnpy.chart图表组件（不需要MainEngine）
+                self.chart_widget = ChartWidget()
+
+                # 添加K线图和成交量图
+                self.chart_widget.add_plot("candle", hide_x_axis=True)
+                self.chart_widget.add_plot("volume", maximum_height=200)
+                self.chart_widget.add_item(CandleItem, "candle", "candle")
+                self.chart_widget.add_item(VolumeItem, "volume", "volume")
+                self.chart_widget.add_cursor()
+
+                # 添加到布局
                 layout.addWidget(self.chart_widget)
 
-            self._logger.info("✅ vnpy_chartwizard图表组件初始化成功")
+                self._logger.info("✅ vnpy.chart图表组件初始化成功")
+
+            except ImportError as e:
+                self._logger.error(f"❌ 无法导入vnpy.chart: {e}")
+                raise
 
         except Exception as e:
-            self._logger.error(f"❌ 创建vnpy_chartwizard组件失败: {e}")
+            self._logger.error(f"❌ 创建vnpy图表组件失败: {e}, 使用降级方案")
             raise
 
     def _setup_fallback_chart(self, layout: QVBoxLayout):
@@ -186,8 +242,7 @@ class ChartWizardWidget(BaseWidget):
                 "30m": Interval.MINUTE,
             }
             interval_enum = interval_map.get(
-                self.current_period if hasattr(self, 'current_period') else "1d",
-                Interval.DAILY
+                self.current_period if hasattr(self, "current_period") else "1d", Interval.DAILY
             )
 
             for item in data_list:
@@ -291,21 +346,20 @@ class ChartWizardWidget(BaseWidget):
                     symbol=query_symbol,
                     start_date=start_date.strftime("%Y-%m-%d"),
                     end_date=end_date.strftime("%Y-%m-%d"),
-                    interval=self.current_period if hasattr(self, 'current_period') else "1d"
+                    interval=self.current_period if hasattr(self, "current_period") else "1d",
                 )
 
                 if result.get("success") and result.get("data"):
                     # 转换为BarData列表
-                    bars = self._convert_to_bar_data(
-                        result["data"],
-                        query_symbol,
-                        exchange_str
-                    )
+                    bars = self._convert_to_bar_data(result["data"], query_symbol, exchange_str)
 
                     if bars:
                         # 更新图表
-                        self.chart_widget.update_history(bars)
-                        self._logger.info(f"✅ 成功加载 {len(bars)} 条K线数据: {symbol}")
+                        if hasattr(self.chart_widget, "update_history"):
+                            self.chart_widget.update_history(bars)
+                            self._logger.info(f"✅ 成功加载 {len(bars)} 条K线数据: {symbol}")
+                        else:
+                            self._logger.warning("图表组件不支持update_history方法")
                     else:
                         self._logger.warning(f"数据转换失败: {symbol}")
                 else:
@@ -331,6 +385,49 @@ class ChartWizardWidget(BaseWidget):
         if not HAS_CHART_WIZARD and self.chart_widget and hasattr(self.chart_widget, "set_period"):
             # 降级方案
             self.chart_widget.set_period(period)
+
+    def set_coordinate_type(self, coord_type: str):
+        """设置坐标类型.
+
+        Args:
+            coord_type: 坐标类型（"linear" 或 "log"）
+        """
+        try:
+            is_log = coord_type == "log"
+            self._logger.info(f"设置坐标类型: {coord_type}")
+
+            if HAS_CHART_WIZARD and self.chart_widget:
+                # 使用vnpy.chart的图表组件
+                try:
+                    # vnpy.chart的ChartWidget支持设置Y轴为对数坐标
+                    if hasattr(self.chart_widget, "_plots"):
+                        # 获取所有plot
+                        for plot_name, plot_item in self.chart_widget._plots.items():
+                            if plot_item and hasattr(plot_item, "setLogMode"):
+                                # 设置Y轴为对数模式
+                                plot_item.setLogMode(x=False, y=is_log)
+                                self._logger.info(
+                                    f"✅ 图表 {plot_name} 已切换为{'对数' if is_log else '线性'}坐标"
+                                )
+                    elif hasattr(self.chart_widget, "setLogMode"):
+                        # 直接在图表widget上设置
+                        self.chart_widget.setLogMode(x=False, y=is_log)
+                        self._logger.info(f"✅ 图表已切换为{'对数' if is_log else '线性'}坐标")
+                    else:
+                        self._logger.warning("图表组件不支持setLogMode方法")
+
+                except Exception as e:
+                    self._logger.error(f"设置vnpy图表坐标类型失败: {e}", exc_info=True)
+
+            elif self.chart_widget and hasattr(self.chart_widget, "set_coordinate_type"):
+                # 降级方案：使用自定义ChartWidget
+                self.chart_widget.set_coordinate_type(coord_type)
+                self._logger.info(f"✅ 降级图表已切换为{coord_type}坐标")
+            else:
+                self._logger.warning("图表组件不支持坐标类型切换")
+
+        except Exception as e:
+            self._logger.error(f"设置坐标类型失败: {e}", exc_info=True)
 
     def refresh_data(self):
         """刷新数据."""
@@ -428,26 +525,21 @@ class ChartWizardWidget(BaseWidget):
 
                 # 查询指定时间范围的数据
                 result = data_service.query_local_data(
-                    symbol=symbol,
-                    start_date=start,
-                    end_date=end,
-                    interval=interval
+                    symbol=symbol, start_date=start, end_date=end, interval=interval
                 )
 
                 if result.get("success") and result.get("data"):
                     # 转换为BarData列表
-                    bars = self._convert_to_bar_data(
-                        result["data"],
-                        symbol,
-                        exchange
-                    )
+                    bars = self._convert_to_bar_data(result["data"], symbol, exchange)
 
                     if bars:
                         # 更新图表
                         self.chart_widget.update_history(bars)
-                        self._logger.info(f"✅ 加载历史数据成功: {symbol}.{exchange} {interval} {start}~{end}, {len(bars)}条")
+                        self._logger.info(
+                            f"✅ 加载历史数据成功: {symbol}.{exchange} {interval} {start}~{end}, {len(bars)}条"
+                        )
                     else:
-                        self.show_warning(f"数据转换失败")
+                        self.show_warning("数据转换失败")
                 else:
                     self.show_warning(f"无历史数据: {result.get('message', '')}")
 

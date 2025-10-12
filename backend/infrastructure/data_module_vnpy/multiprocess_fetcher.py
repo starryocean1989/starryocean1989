@@ -261,10 +261,11 @@ class MultiProcessStockFetcher:
             self.logger.info("【步骤4】监控进度...")
             result = self._monitor_progress_and_collect_results(total_tasks, progress_callback)
 
-            # 🚀 关键修复：设置停止信号，让工作进程优雅退出
-            self.logger.info("所有任务完成，设置停止信号...")
-            self.stop_event.set()
-            time.sleep(0.5)  # 给进程时间检测停止信号
+            # 🚀 不设置stop_event！让工作进程检测到队列空后自动退出
+            # 工作进程会在连续10次(5秒)队列空后自动退出
+            # stop_event只用于手动停止
+            self.logger.info("所有任务完成，等待进程自动退出...")
+            time.sleep(6.0)  # 等待工作进程检测到队列空（至少5秒）并退出
 
             # 步骤5：清理进程
             self._cleanup_processes()
@@ -406,21 +407,24 @@ class MultiProcessStockFetcher:
                         interval,
                     )
 
-                # 🚀 双重进度输出：终端详细 + UI简单
+                # 🚀 双重进度输出：终端 + UI文本框
                 if completed % 10 == 0 or completed == total_tasks:
                     progress_pct = (completed / total_tasks) * 100
-                    progress_text = f"下载进度: {completed}/{total_tasks} ({progress_pct:.1f}%)"
+                    progress_text = f"📊 下载进度: {completed}/{total_tasks} ({progress_pct:.1f}%) - {symbol} {interval}"
 
-                    # 1. 终端输出（详细，每10个任务）
-                    print(f"📊 {progress_text} - {symbol} {interval}")
+                    # 1. 终端输出
+                    print(progress_text)
 
-                    # 2. UI更新（简单，每100个任务或完成时）
+                    # 2. UI文本框更新（只在每100个或完成时）
                     if progress_callback and (completed % 100 == 0 or completed == total_tasks):
                         try:
-                            # UI的progress_signal只接受一个字符串参数
-                            progress_callback(progress_text)
+                            # 传递简化的文本
+                            simple_text = (
+                                f"下载进度: {completed}/{total_tasks} ({progress_pct:.1f}%)"
+                            )
+                            progress_callback(simple_text)
                         except Exception as e:
-                            self.logger.debug("UI回调失败（已忽略）: %s", e)
+                            self.logger.debug("UI文本追加失败（已忽略）: %s", e)
 
             except queue.Empty:
                 # 队列空，检查是否所有进程都退出了
@@ -618,8 +622,9 @@ class MultiProcessStockFetcher:
         result["上证A股"] = stocks_df[sh_mask]["code"].tolist()
 
         # 🚀 关键修复：排除000000-000999的指数区间
-        sz_000_mask = stocks_df["code"].str.startswith("000") & (
-            stocks_df["code"].astype(int) >= 1000
+        # 使用字符串比较而非int转换（避免异常）
+        sz_000_mask = stocks_df["code"].str.startswith("000") & ~(
+            stocks_df["code"].str.match(r"^000[0-9]{3}$")
         )
         sz_mask = (
             sz_000_mask

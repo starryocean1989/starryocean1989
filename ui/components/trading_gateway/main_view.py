@@ -1142,6 +1142,70 @@ class TradingGateway(BaseWidget, LoggerMixin):
 
         layout.addWidget(symbols_group)
 
+        # 6. 策略引擎特定参数组
+        engine_params_group = QGroupBox("策略引擎参数")
+        engine_params_layout = QFormLayout(engine_params_group)
+
+        # 动态参数字段容器
+        engine_param_widgets: Dict[str, Any] = {}
+
+        # 根据引擎类型显示不同的参数输入框
+        def update_engine_params(folder_text: str):
+            """根据文件夹名称推测引擎类型并更新参数输入"""
+            # 清除现有参数
+            while engine_params_layout.rowCount() > 0:
+                engine_params_layout.removeRow(0)
+            engine_param_widgets.clear()
+
+            # 推测引擎类型
+            folder_lower = folder_text.lower()
+
+            if "spread" in folder_lower:
+                # 价差交易策略：需要 spread_name
+                spread_name_input = QLineEdit()
+                spread_name_input.setPlaceholderText("例如: rb2501-rb2505 (价差组合名称)")
+                engine_params_layout.addRow("价差名称 (spread_name):", spread_name_input)
+                engine_param_widgets["spread_name"] = spread_name_input
+
+                hint = QLabel("💡 价差名称用于标识价差组合，如：rb2501-rb2505")
+                hint.setStyleSheet("color: #666; font-size: 11px;")
+                engine_params_layout.addRow("", hint)
+
+            elif "portfolio" in folder_lower:
+                # 组合策略：提示将使用vt_symbols
+                hint = QLabel("✓ 组合策略将使用上方品种池中的所有品种")
+                hint.setStyleSheet("color: #0078d4; font-size: 11px;")
+                engine_params_layout.addRow(hint)
+
+            elif "cta" in folder_lower or folder_text == "根目录":
+                # CTA策略：提示将使用第一个品种
+                hint = QLabel("✓ CTA策略将使用品种池中的第一个品种")
+                hint.setStyleSheet("color: #0078d4; font-size: 11px;")
+                engine_params_layout.addRow(hint)
+
+            elif "algo" in folder_lower:
+                # 算法交易：提示不支持
+                hint = QLabel("⚠️ 算法交易引擎不支持通过策略池部署")
+                hint.setStyleSheet("color: #ff9800; font-size: 11px;")
+                engine_params_layout.addRow(hint)
+
+            elif "script" in folder_lower:
+                # 脚本交易：提示不支持
+                hint = QLabel("⚠️ 脚本交易引擎不支持通过策略池部署")
+                hint.setStyleSheet("color: #ff9800; font-size: 11px;")
+                engine_params_layout.addRow(hint)
+
+            elif "option" in folder_lower:
+                # 期权策略：提示不支持
+                hint = QLabel("⚠️ 期权分析引擎不支持通过策略池部署")
+                hint.setStyleSheet("color: #ff9800; font-size: 11px;")
+                engine_params_layout.addRow(hint)
+
+        # 连接文件夹选择变化事件
+        folder_combo.currentTextChanged.connect(update_engine_params)
+
+        layout.addWidget(engine_params_group)
+
         # 获取可用品种列表（用于搜索）
         available_symbols = self._get_available_symbols()
 
@@ -1472,15 +1536,31 @@ class TradingGateway(BaseWidget, LoggerMixin):
             elif "script" in folder_lower:
                 engine_type = "ScriptTrader"
 
+            # 构建策略参数
+            strategy_params = {
+                "engine_type": engine_type,
+                "vt_symbols": selected_symbols,
+            }
+
+            # 添加引擎特定参数
+            if "spread" in folder_lower:
+                # 价差交易策略：需要 spread_name
+                if "spread_name" in engine_param_widgets:
+                    spread_name = engine_param_widgets["spread_name"].text().strip()
+                    if not spread_name:
+                        self.show_error("请输入价差名称 (spread_name)")
+                        return
+                    strategy_params["spread_name"] = spread_name
+                else:
+                    self.show_error("价差交易策略需要 spread_name 参数")
+                    return
+
             # 调用服务部署策略
             result = self.trading_service.deploy_strategy(
                 gateway_name=gateway_name,
                 strategy_name=strategy_name,
                 strategy_class=strategy_class,
-                strategy_params={
-                    "engine_type": engine_type,
-                    "vt_symbols": selected_symbols,
-                },
+                strategy_params=strategy_params,
             )
 
             if result.get("success"):
