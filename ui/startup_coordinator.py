@@ -34,6 +34,12 @@ class BackendInitializerWorker(QObject):
             self.logger.info(
                 "当前线程是否为主线程: %s", threading.current_thread() == threading.main_thread()
             )
+            
+            # 🔧 检查中断请求
+            if self.thread() and self.thread().isInterruptionRequested():
+                self.logger.info("收到中断请求，停止初始化")
+                return
+                
             self.progress_updated.emit("正在初始化配置...", 10)
 
             # 导入后端模块
@@ -41,6 +47,11 @@ class BackendInitializerWorker(QObject):
             from backend.core.base import initialize_services
 
             self.logger.info("✅ 后端模块导入成功")
+            
+            # 再次检查中断请求
+            if self.thread() and self.thread().isInterruptionRequested():
+                self.logger.info("收到中断请求，停止初始化")
+                return
 
             self.progress_updated.emit("正在启动后端服务...", 30)
 
@@ -49,6 +60,11 @@ class BackendInitializerWorker(QObject):
             self.logger.info("⚠️ 注意：此过程中不应创建任何Qt GUI对象")
             result = initialize_services()
             self.logger.info("✅ initialize_services() 执行完成")
+            
+            # 最后检查中断请求
+            if self.thread() and self.thread().isInterruptionRequested():
+                self.logger.info("收到中断请求，停止初始化")
+                return
 
             success = result.get("success", False)
 
@@ -234,15 +250,45 @@ class StartupCoordinator(QObject):
         self.backend_worker.initialization_completed.connect(self._on_backend_completed)
         self.backend_worker.error_occurred.connect(self._on_backend_error)
 
-        # 线程完成后自动清理
-        self.backend_worker.initialization_completed.connect(self.backend_thread.quit)
-        self.backend_thread.finished.connect(self.backend_worker.deleteLater)
-        self.backend_thread.finished.connect(self.backend_thread.deleteLater)
-
+        # 🔧 按照记忆中的QThread安全终止实践，使用安全的清理机制
+        self.backend_worker.initialization_completed.connect(self._safe_cleanup_thread)
+        
         # 启动线程
         self.backend_thread.start()
 
         self.logger.info("✅ 后端初始化线程已启动")
+
+    def _safe_cleanup_thread(self):
+        """安全清理QThread资源."""
+        if self.backend_thread and self.backend_thread.isRunning():
+            self.logger.info("开始安全清理后端线程...")
+            
+            # 请求中断
+            self.backend_thread.requestInterruption()
+            
+            # 使用QTimer实现异步等待，避免阻塞主线程
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(100, self._finish_thread_cleanup)
+        else:
+            self._finish_thread_cleanup()
+            
+    def _finish_thread_cleanup(self):
+        """完成线程清理."""
+        try:
+            if self.backend_thread:
+                if self.backend_thread.isRunning():
+                    self.backend_thread.quit()
+                    # 不使用wait()避免阻塞
+                
+                # 在线程完成后清理资源
+                self.backend_thread.finished.connect(lambda: (
+                    self.backend_worker.deleteLater() if self.backend_worker else None,
+                    self.backend_thread.deleteLater() if self.backend_thread else None
+                ))
+                
+                self.logger.info("✅ 后端线程清理完成")
+        except Exception as e:
+            self.logger.error("线程清理异常: %s", e)
 
     def _on_backend_progress(self, message: str, progress: int):
         """后端初始化进度更新."""

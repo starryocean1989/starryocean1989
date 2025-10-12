@@ -87,8 +87,18 @@ class MainWindow(QMainWindow, LoggerMixin):
             self._initialize_backend_services()
 
         # 初始化组件
-        self.theme_manager = ThemeManager()
-        self.config_manager = ConfigManager()
+        try:
+            self.theme_manager = ThemeManager()
+        except Exception as e:
+            self.logger.error("初始化主题管理器失败: %s", e)
+            self.theme_manager = None
+        
+        try:
+            self.config_manager = ConfigManager()
+        except Exception as e:
+            self.logger.error("初始化配置管理器失败: %s", e)
+            # 先设置为 None，后面会处理
+            self.config_manager = None
 
         # 界面组件
         self.central_widget: Optional[QWidget] = None
@@ -139,6 +149,17 @@ class MainWindow(QMainWindow, LoggerMixin):
             # 异步模式：功能界面稍后创建
             self.apply_theme()
             self.logger.info("主窗口框架初始化完成（异步模式，等待后端就绪）")
+            
+    def show(self):
+        """重写show方法以确保窗口正确显示."""
+        super().show()
+        # 强制窗口显示并置顶
+        self.raise_()
+        self.activateWindow()
+        # 确保窗口不是最小化状态
+        if self.isMinimized():
+            self.showNormal()
+        self.logger.info("主窗口已显示")
 
     def _initialize_config_first(self):
         """在所有服务创建之前初始化配置.
@@ -177,34 +198,65 @@ class MainWindow(QMainWindow, LoggerMixin):
 
     def initialize_function_interfaces_after_backend(self):
         """在后端就绪后初始化功能界面（异步模式）."""
-        self.logger.info("=" * 70)
-        self.logger.info("🎨 开始创建UI功能界面（主线程）")
-        self.logger.info("=" * 70)
+        try:
+            self.logger.info("=" * 70)
+            self.logger.info("🎨 开始创建UI功能界面（主线程）")
+            self.logger.info("=" * 70)
 
-        import threading
+            import threading
 
-        self.logger.info("当前线程ID: %s", threading.current_thread().ident)
-        self.logger.info("当前线程名: %s", threading.current_thread().name)
-        self.logger.info("是否为主线程: %s", threading.current_thread() == threading.main_thread())
+            self.logger.info("当前线程ID: %s", threading.current_thread().ident)
+            self.logger.info("当前线程名: %s", threading.current_thread().name)
+            self.logger.info("是否为主线程: %s", threading.current_thread() == threading.main_thread())
 
-        # 创建功能界面
-        self.logger.info("步骤1: 创建6个功能界面...")
-        self.create_function_interfaces()
-        self.logger.info("✅ 功能界面创建完成")
+            # 创建功能界面
+            self.logger.info("步骤1: 创建6个功能界面...")
+            try:
+                self.create_function_interfaces()
+                self.logger.info("✅ 功能界面创建完成")
+            except Exception as e:
+                self.logger.error("❌ 功能界面创建失败: %s", e, exc_info=True)
+                raise
 
-        # 连接信号
-        self.logger.info("步骤2: 连接信号槽...")
-        self.connect_signals()
-        self.logger.info("✅ 信号槽连接完成")
+            # 连接信号
+            self.logger.info("步骤2: 连接信号槽...")
+            try:
+                self.connect_signals()
+                self.logger.info("✅ 信号槽连接完成")
+            except Exception as e:
+                self.logger.error("❌ 信号槽连接失败: %s", e, exc_info=True)
+                # 信号连接失败不致命，继续执行
 
-        # 启动更新定时器
-        self.logger.info("步骤3: 启动更新定时器...")
-        self.start_update_timer()
-        self.logger.info("✅ 更新定时器启动完成")
+            # 启动更新定时器
+            self.logger.info("步骤3: 启动更新定时器...")
+            try:
+                self.start_update_timer()
+                self.logger.info("✅ 更新定时器启动完成")
+            except Exception as e:
+                self.logger.error("❌ 更新定时器启动失败: %s", e, exc_info=True)
+                # 定时器失败不致命，继续执行
 
-        self.logger.info("=" * 70)
-        self.logger.info("✅ UI功能界面初始化完成")
-        self.logger.info("=" * 70)
+            self.logger.info("=" * 70)
+            self.logger.info("✅ UI功能界面初始化完成")
+            self.logger.info("=" * 70)
+            
+        except Exception as e:
+            self.logger.error("=" * 70)
+            self.logger.error("💥 UI功能界面初始化发生严重异常")
+            self.logger.error("=" * 70)
+            self.logger.error("异常信息: %s", e, exc_info=True)
+            # 不再重新抛出异常，避免应用崩溃
+            
+            # 显示错误信息给用户
+            try:
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.warning(
+                    self, 
+                    "初始化警告", 
+                    f"功能界面初始化时遇到问题：\n\n{str(e)}\n\n但UI框架仍可使用。"
+                )
+            except:
+                pass
 
     def _initialize_backend_services(self):
         """初始化后端服务."""
@@ -227,18 +279,24 @@ class MainWindow(QMainWindow, LoggerMixin):
     def setup_ui(self):
         """设置主界面."""
         # 设置窗口基本属性
-        app_name = self.config_manager.app_config.name
-        app_version = self.config_manager.app_config.version
-        title = f"{app_name} v{app_version}"
-        self.setWindowTitle(title)
-        self.setMinimumSize(
-            self.config_manager.ui_config.min_width,
-            self.config_manager.ui_config.min_height,
-        )
-        self.resize(
-            self.config_manager.ui_config.window_width,
-            self.config_manager.ui_config.window_height,
-        )
+        if self.config_manager:
+            app_name = self.config_manager.app_config.name
+            app_version = self.config_manager.app_config.version
+            title = f"{app_name} v{app_version}"
+            self.setWindowTitle(title)
+            self.setMinimumSize(
+                self.config_manager.ui_config.min_width,
+                self.config_manager.ui_config.min_height,
+            )
+            self.resize(
+                self.config_manager.ui_config.window_width,
+                self.config_manager.ui_config.window_height,
+            )
+        else:
+            # 使用默认值
+            self.setWindowTitle("星辰金融终端 v5.0.0")
+            self.setMinimumSize(1024, 768)
+            self.resize(1400, 900)
 
         # 创建中央部件
         self.central_widget = QWidget()
@@ -344,7 +402,9 @@ class MainWindow(QMainWindow, LoggerMixin):
 
         dark_theme_action = QAction("暗黑主题", self)
         dark_theme_action.setCheckable(True)
-        is_dark = self.config_manager.ui_config.theme == "dark"
+        is_dark = True  # 默认为暗黑主题
+        if self.config_manager:
+            is_dark = self.config_manager.ui_config.theme == "dark"
         dark_theme_action.setChecked(is_dark)
         dark_theme_action.triggered.connect(lambda: self.switch_theme("dark"))
         theme_menu.addAction(dark_theme_action)
@@ -521,20 +581,50 @@ class MainWindow(QMainWindow, LoggerMixin):
             app_instance = QApplication.instance()
             # 确保 app_instance 是 QApplication 类型
             if isinstance(app_instance, QApplication):
-                self.theme_manager.apply_theme(app_instance)
-                self.logger.info("主题应用完成")
+                # 🔧 增加安全性检查
+                if hasattr(self, 'theme_manager') and self.theme_manager:
+                    self.theme_manager.apply_theme(app_instance)
+                    self.logger.info("主题应用完成")
+                else:
+                    self.logger.warning("主题管理器不可用，跳过主题应用")
             else:
                 self.logger.warning("无法获取 QApplication 实例")
         except (AttributeError, RuntimeError, ImportError) as e:
             self.logger.error("应用主题失败: %s", e)
+            # 应用基本样式作为回退方案
+            try:
+                self._apply_fallback_style()
+            except Exception as fallback_error:
+                self.logger.error("应用回退样式也失败: %s", fallback_error)
+
+    def _apply_fallback_style(self):
+        """应用回退样式（当主题管理器失败时）."""
+        self.setStyleSheet("""
+            QMainWindow {
+                background-color: #1e1e1e;
+                color: #ffffff;
+            }
+            QListWidget {
+                background-color: #2d2d2d;
+                color: #ffffff;
+                border: none;
+            }
+            QListWidget::item:selected {
+                background-color: #1e88e5;
+            }
+        """)
+        self.logger.info("已应用回退样式")
 
     def switch_theme(self, theme_name: str):
         """切换主题."""
         try:
-            self.config_manager.ui_config.theme = theme_name
-            self.config_manager.save_config()
-            if hasattr(self.theme_manager, "reload_theme"):
+            if self.config_manager:
+                self.config_manager.ui_config.theme = theme_name
+                self.config_manager.save_config()
+            
+            if self.theme_manager and hasattr(self.theme_manager, "reload_theme"):
                 self.theme_manager.reload_theme()
+            
             self.apply_theme()
             self.logger.info("切换到主题: %s", theme_name)
         except (AttributeError, RuntimeError, OSError) as e:
@@ -639,10 +729,14 @@ class MainWindow(QMainWindow, LoggerMixin):
 
     def show_about(self):
         """显示关于对话框."""
+        version = "5.0.0"
+        if self.config_manager:
+            version = self.config_manager.app_config.version
+            
         QMessageBox.about(
             self,
             "关于星辰金融终端",
-            f"""<h3>星辰金融终端 v{self.config_manager.app_config.version}</h3>
+            f"""<h3>星辰金融终端 v{version}</h3>
             <p>专业的金融交易终端系统</p>
             <p>基于 VNPY 生态系统构建</p>
             <p>提供完整的交易工具和服务</p>
@@ -704,11 +798,14 @@ class MainWindow(QMainWindow, LoggerMixin):
     def save_window_state(self):
         """保存窗口状态."""
         try:
-            # 保存窗口大小和位置
-            self.config_manager.ui_config.window_width = self.width()
-            self.config_manager.ui_config.window_height = self.height()
-            self.config_manager.save_config()
-            self.logger.info("窗口状态已保存")
+            if self.config_manager:
+                # 保存窗口大小和位置
+                self.config_manager.ui_config.window_width = self.width()
+                self.config_manager.ui_config.window_height = self.height()
+                self.config_manager.save_config()
+                self.logger.info("窗口状态已保存")
+            else:
+                self.logger.warning("配置管理器不可用，无法保存窗口状态")
         except (AttributeError, OSError) as e:
             self.logger.error("保存窗口状态失败: %s", e)
 
@@ -762,10 +859,20 @@ def main():
 
         setup_logging(name="terminal_v0.50", level="INFO", log_file="logs/terminal_v0.50.log")
 
+        # 🔧 设置Qt属性以避免QStyleHints连接问题
+        os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
+        os.environ["QT_ENABLE_HIGHDPI_SCALING"] = "0"
+
         app = QApplication(sys.argv)
         app.setApplicationName("星辰金融终端")
         app.setApplicationVersion("5.0.0")
         app.setOrganizationName("星辰科技")
+        
+        # 🔧 禁用可能导致问题的Qt功能
+        try:
+            app.setAttribute(Qt.AA_DisableWindowContextHelpButton, True)
+        except (AttributeError, TypeError):
+            logging.getLogger(__name__).warning("无法设置AA_DisableWindowContextHelpButton属性")
 
         # 🔧 关键修复：在创建任何UI组件之前先初始化配置
         import os
@@ -856,11 +963,21 @@ def main_sync():
             os.environ["QT_WEBENGINE_PYTHON_EXECUTABLE"] = sys.executable
 
         setup_logging(name="terminal_v0.50", level="INFO", log_file="logs/terminal_v0.50.log")
+        
+        # 🔧 设置Qt属性以避免QStyleHints连接问题
+        os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
+        os.environ["QT_ENABLE_HIGHDPI_SCALING"] = "0"
 
         app = QApplication(sys.argv)
         app.setApplicationName("星辰金融终端")
         app.setApplicationVersion("5.0.0")
         app.setOrganizationName("星辰科技")
+        
+        # 🔧 禁用可能导致问题的Qt功能
+        try:
+            app.setAttribute(Qt.AA_DisableWindowContextHelpButton, True)
+        except (AttributeError, TypeError):
+            logging.getLogger(__name__).warning("无法设置AA_DisableWindowContextHelpButton属性")
 
         main_window = MainWindow(backend_ready=True)
         main_window.show()

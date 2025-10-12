@@ -47,6 +47,9 @@ class SymbolSearchWidget(QComboBox):
 
         # 所有品种列表（完整数据）
         self._all_symbols: List[dict] = []
+        
+        # 防止递归标志
+        self._updating = False
 
         # 设置为可编辑
         self.setEditable(True)
@@ -147,18 +150,28 @@ class SymbolSearchWidget(QComboBox):
         Args:
             text: 当前文本
         """
-        if not text:
-            # 空文本，显示所有品种
-            self._update_display_list(self._all_symbols)
+        # 防止递归调用
+        if self._updating:
             return
+            
+        try:
+            self._updating = True
+            
+            if not text:
+                # 空文本，显示所有品种
+                self._update_display_list(self._all_symbols)
+                return
 
-        # 过滤匹配的品种
-        matched = self._filter_symbols(text)
-        self._update_display_list(matched)
+            # 过滤匹配的品种
+            matched = self._filter_symbols(text)
+            self._update_display_list(matched)
 
-        # 如果有匹配项，自动展开下拉列表
-        if matched:
-            self.showPopup()
+            # 如果有匹配项，自动展开下拉列表（但只在用户输入时）
+            if matched and len(text.strip()) > 0 and self.lineEdit().hasFocus():
+                self.showPopup()
+                
+        finally:
+            self._updating = False
 
     def _filter_symbols(self, search_text: str) -> List[dict]:
         """过滤匹配的品种.
@@ -197,22 +210,30 @@ class SymbolSearchWidget(QComboBox):
         Args:
             symbols: 要显示的品种列表
         """
-        # 保存当前文本
-        current_text = self.lineEdit().text()
+        # 防止递归调用
+        if self._updating:
+            return
+            
+        try:
+            # 保存当前文本
+            current_text = self.lineEdit().text()
 
-        # 阻止信号，避免触发不必要的事件
-        self.blockSignals(True)
+            # 阻止信号，避免触发不必要的事件
+            self.blockSignals(True)
 
-        # 清空并重新添加
-        self.clear()
-        for symbol in symbols:
-            self.addItem(symbol["display"])
+            # 清空并重新添加
+            self.clear()
+            for symbol in symbols:
+                self.addItem(symbol["display"])
 
-        # 恢复文本
-        self.setEditText(current_text)
+            # 恢复文本
+            self.setEditText(current_text)
 
-        # 恢复信号
-        self.blockSignals(False)
+            # 恢复信号
+            self.blockSignals(False)
+            
+        except Exception as e:
+            logger.error(f"更新显示列表失败: {e}", exc_info=True)
 
     def _on_selection_changed(self, text: str):
         """选择改变处理.

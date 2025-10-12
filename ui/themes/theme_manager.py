@@ -66,8 +66,17 @@ class ThemeManager:
                 self._logger.warning("主题配置为空，使用默认主题")
                 self._create_default_theme()
                 theme = self.themes
-            self._set_dark_palette(app, theme)
-            self._set_global_font(app, theme)
+
+            # 🔧 修复: 安全地应用主题，避免Qt连接问题
+            try:
+                self._set_dark_palette(app, theme)
+            except Exception as e:
+                self._logger.warning("设置调色板失败，跳过: %s", e)
+            
+            try:
+                self._set_global_font(app, theme)
+            except Exception as e:
+                self._logger.warning("设置字体失败，跳过: %s", e)
 
             # 尝试加载QSS样式表文件
             qss_path = Path(__file__).parent / "modern_dark_style.qss"
@@ -79,6 +88,13 @@ class ThemeManager:
                     self._logger.info("成功加载QSS样式表: %s", qss_path)
                 except (OSError, UnicodeDecodeError) as e:
                     self._logger.warning("加载QSS失败，使用默认样式: %s", e)
+            else:
+                # 如果QSS文件不存在，应用基本样式
+                self._logger.info("QSS文件不存在，应用基本样式")
+                try:
+                    self._apply_basic_style(app)
+                except Exception as e:
+                    self._logger.warning("应用基本样式失败: %s", e)
 
             self._logger.info("主题应用成功")
         except (ValueError, TypeError, AttributeError) as e:
@@ -330,6 +346,38 @@ class ThemeManager:
         font_size = typography.get("font_size", {}).get("md", 14)
         font = QFont(font_family, font_size)
         app.setFont(font)
+
+    def _apply_basic_style(self, app: "QApplication"):
+        """应用基本样式（当QSS文件不存在时）."""
+        basic_style = """
+        QMainWindow {
+            background-color: #121212;
+            color: #ffffff;
+        }
+        QWidget {
+            background-color: #121212;
+            color: #ffffff;
+        }
+        QPushButton {
+            background-color: #2d2d2d;
+            color: #ffffff;
+            border: 1px solid #404040;
+            padding: 8px 16px;
+            border-radius: 4px;
+        }
+        QPushButton:hover {
+            background-color: #383838;
+        }
+        QListWidget {
+            background-color: #2d2d2d;
+            color: #ffffff;
+            border: none;
+        }
+        QListWidget::item:selected {
+            background-color: #1e88e5;
+        }
+        """
+        app.setStyleSheet(basic_style)
 
     def get_color(self, color_path: str, default: str = "#ffffff") -> str:
         """获取主题颜色."""
