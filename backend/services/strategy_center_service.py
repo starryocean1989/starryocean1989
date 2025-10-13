@@ -8,9 +8,10 @@
 - 回测服务（配置管理、回测执行、结果处理）
 """
 
+import ast
 import shutil
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from datetime import datetime
 
 from backend.services.base_and_utils import BaseService
@@ -395,6 +396,340 @@ class MyPortfolioStrategy(StrategyTemplate):
         }
         return templates.get(template_type, "# -*- coding: utf-8 -*-\n# 策略模板\n")
 
+    # ==================== 策略列表API（供交易网关等模块使用） ====================
+
+    def get_available_strategies(
+        self,
+        strategy_folder: Optional[str] = None,
+        engine_type: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """获取可用的策略列表（解析后的结构化信息）.
+
+        供交易网关等模块调用，返回可部署的策略类信息。
+
+        Args:
+            strategy_folder: 策略文件夹（可选，相对于strategy_root）
+            engine_type: 策略引擎类型过滤（可选：ctastrategy/portfoliostrategy/spreadtrading等）
+
+        Returns:
+            Dict: {
+                "success": bool,
+                "strategies": [
+                    {
+                        "class_name": str,      # 策略类名
+                        "file_path": str,       # 文件相对路径
+                        "file_name": str,       # 文件名
+                        "folder": str,          # 所属文件夹
+                        "engine_type": str,     # 策略引擎类型
+                        "template": str,        # 继承的模板类
+                        "display_name": str,    # 显示名称
+                        "author": str,          # 作者（如果定义）
+                        "description": str      # 描述（从docstring提取）
+                    }
+                ],
+                "folders": [str],  # 可用的文件夹列表
+                "message": str
+            }
+        """
+        try:
+            self._log_operation("获取可用策略列表", folder=strategy_folder, engine=engine_type)
+
+            # 确定扫描目录
+            if strategy_folder:
+                scan_dir = self.strategy_root / strategy_folder
+                if not scan_dir.exists():
+                    return {
+                        "success": False,
+                        "message": f"策略文件夹不存在: {strategy_folder}",
+                        "strategies": [],
+                        "folders": [],
+                    }
+            else:
+                scan_dir = self.strategy_root
+
+            # 扫描策略文件
+            strategies = []
+            folders_set = set()
+
+            # 递归扫描所有.py文件
+            for file_path in scan_dir.rglob("*.py"):
+                # 跳过__init__文件和私有文件
+                if file_path.name.startswith("__"):
+                    continue
+
+                # 解析策略文件
+                strategy_info = self._parse_strategy_file(file_path)
+
+                if strategy_info:
+                    # 如果指定了engine_type，过滤
+                    if engine_type and strategy_info["engine_type"] != engine_type:
+                        continue
+
+                    strategies.append(strategy_info)
+
+                    # 记录文件夹
+                    folder_name = strategy_info["folder"]
+                    if folder_name:
+                        folders_set.add(folder_name)
+
+            # 排序
+            strategies.sort(key=lambda s: (s["folder"], s["file_name"]))
+            folders = sorted(list(folders_set))
+
+            self.logger.info(f"扫描到 {len(strategies)} 个策略（{len(folders)} 个文件夹）")
+
+            return {
+                "success": True,
+                "strategies": strategies,
+                "folders": folders,
+                "message": f"成功获取 {len(strategies)} 个策略",
+            }
+
+        except Exception as e:
+            self._log_error("获取可用策略列表", e)
+            return {
+                "success": False,
+                "strategies": [],
+                "folders": [],
+                "message": f"获取失败: {str(e)}",
+            }
+
+    def identify_strategy_type(self, file_path: str) -> Optional[str]:
+        """识别策略文件的引擎类型（供交易网关调用）.
+
+        Args:
+            file_path: 策略文件路径（相对于strategy_root）
+
+        Returns:
+            str: 策略引擎类型（如"ctastrategy"），如果无法识别则返回None
+        """
+        try:
+            target_file = self.strategy_root / file_path
+
+            if not target_file.exists() or not target_file.is_file():
+                return None
+
+            # 解析策略文件
+            strategy_info = self._parse_strategy_file(target_file)
+
+            if strategy_info:
+                return strategy_info.get("engine_type")
+
+            return None
+
+        except Exception as e:
+            self._log_error("识别策略类型", e)
+            return None
+
+    def load_strategy_module_info(self, file_path: str) -> Optional[Dict[str, Any]]:
+        """加载策略模块信息（供交易网关调用）.
+
+        Args:
+            file_path: 策略文件路径（相对于strategy_root）
+
+        Returns:
+            Dict: 策略模块信息，包含：
+                - class_name: 策略类名
+                - engine_type: 策略引擎类型
+                - template: 模板名称
+                - params: 策略参数
+                - file_path: 文件相对路径
+                - abs_file_path: 完整文件路径
+                - module_name: Python模块名（用于导入）
+        """
+        try:
+            target_file = self.strategy_root / file_path
+
+            if not target_file.exists() or not target_file.is_file():
+                self.logger.error(f"策略文件不存在: {file_path}")
+                return None
+
+            # 解析策略文件获取信息
+            strategy_info = self._parse_strategy_file(target_file)
+
+            if not strategy_info:
+                self.logger.error(f"无法解析策略文件: {file_path}")
+                return None
+
+            # 构建模块导入路径
+            # 例如: strategies/user_strategies/cta_strategies/my_strategy.py
+            # 转换为: strategies.user_strategies.cta_strategies.my_strategy
+            relative_path = target_file.relative_to(Path.cwd())
+            module_parts = list(relative_path.parts[:-1]) + [relative_path.stem]
+            module_name = ".".join(module_parts)
+
+            return {
+                "class_name": strategy_info["class_name"],
+                "engine_type": strategy_info["engine_type"],
+                "template": strategy_info["template"],
+                "params": strategy_info.get("params", {}),
+                "file_path": strategy_info["file_path"],  # 相对路径
+                "abs_file_path": str(target_file),  # 绝对路径
+                "module_name": module_name,
+                "author": strategy_info.get("author", "未知"),
+                "description": strategy_info.get("description", ""),
+            }
+
+        except Exception as e:
+            self._log_error("加载策略模块信息", e)
+            return None
+
+    def _parse_strategy_file(self, file_path: Path) -> Optional[Dict[str, Any]]:
+        """解析策略文件，提取策略类信息.
+
+        Args:
+            file_path: 策略文件路径
+
+        Returns:
+            Dict: 策略信息，如果解析失败或无有效策略类则返回None
+        """
+        try:
+            # 读取文件内容
+            content = file_path.read_text(encoding="utf-8")
+
+            # 解析AST
+            tree = ast.parse(content)
+
+            # 查找策略类定义
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.ClassDef):
+                    continue
+
+                # 检查是否继承自策略模板
+                base_names = []
+                for base in node.bases:
+                    if isinstance(base, ast.Name):
+                        base_names.append(base.id)
+                    elif isinstance(base, ast.Attribute):
+                        base_names.append(base.attr)
+
+                # 识别策略引擎类型
+                engine_type, template = self._identify_strategy_type_from_bases(base_names)
+
+                if not engine_type:
+                    continue  # 不是策略类
+
+                # 提取策略参数
+                params = self._extract_strategy_params(node)
+
+                # 提取作者和描述
+                author = self._extract_class_attribute(node, "author") or "未知"
+                description = ast.get_docstring(node) or ""
+
+                # 计算相对路径和文件夹
+                relative_path = file_path.relative_to(self.strategy_root)
+                folder_parts = relative_path.parts[:-1]
+                folder = folder_parts[0] if folder_parts else "根目录"
+
+                return {
+                    "class_name": node.name,
+                    "file_path": str(relative_path).replace("\\", "/"),
+                    "file_name": file_path.name,
+                    "folder": folder,
+                    "engine_type": engine_type,
+                    "template": template,
+                    "display_name": f"{node.name} ({file_path.name})",
+                    "author": author,
+                    "description": description.split("\n")[0] if description else "",  # 只取第一行
+                    "params": params,
+                }
+
+            return None  # 没有找到策略类
+
+        except SyntaxError as e:
+            self.logger.warning(f"策略文件语法错误 {file_path.name}: {e}")
+            return None
+        except Exception as e:
+            self.logger.warning(f"解析策略文件失败 {file_path.name}: {e}")
+            return None
+
+    def _identify_strategy_type_from_bases(self, base_names: List[str]) -> tuple:
+        """根据基类名识别策略引擎类型.
+
+        Args:
+            base_names: 基类名称列表
+
+        Returns:
+            tuple: (engine_type, template_name) 或 (None, None)
+        """
+        # 策略模板映射
+        template_mapping = {
+            "CtaTemplate": ("ctastrategy", "CtaTemplate"),
+            "AlgoTemplate": ("algotrading", "AlgoTemplate"),
+            "StrategyTemplate": ("portfoliostrategy", "StrategyTemplate"),  # PortfolioStrategy
+            "SpreadStrategyTemplate": ("spreadtrading", "SpreadStrategyTemplate"),
+            "OptionTemplate": ("optionmaster", "OptionTemplate"),
+            # scripttrader没有固定模板，通常继承object或自定义基类
+        }
+
+        for base in base_names:
+            if base in template_mapping:
+                return template_mapping[base]
+
+        # 检查是否包含特定关键词（用于识别scripttrader等）
+        for base in base_names:
+            base_lower = base.lower()
+            if "script" in base_lower:
+                return ("scripttrader", base)
+
+        return (None, None)
+
+    def _extract_strategy_params(self, class_node: ast.ClassDef) -> Dict[str, Any]:
+        """提取策略参数定义.
+
+        Args:
+            class_node: 策略类的AST节点
+
+        Returns:
+            Dict: 参数名 -> 默认值
+        """
+        params = {}
+
+        for node in class_node.body:
+            # 查找类变量定义（策略参数）
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        param_name = target.id
+
+                        # 跳过私有变量和特殊变量
+                        if param_name.startswith("_") or param_name in [
+                            "author",
+                            "display_name",
+                            "class_name",
+                        ]:
+                            continue
+
+                        # 提取默认值
+                        try:
+                            param_value = ast.literal_eval(node.value)
+                            params[param_name] = param_value
+                        except (ValueError, SyntaxError):
+                            # 无法直接求值的表达式，记录为字符串
+                            params[param_name] = ast.unparse(node.value)
+
+        return params
+
+    def _extract_class_attribute(self, class_node: ast.ClassDef, attr_name: str) -> Optional[str]:
+        """提取类属性值.
+
+        Args:
+            class_node: 类AST节点
+            attr_name: 属性名
+
+        Returns:
+            str: 属性值，如果不存在返回None
+        """
+        for node in class_node.body:
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id == attr_name:
+                        try:
+                            return ast.literal_eval(node.value)
+                        except (ValueError, SyntaxError):
+                            return ast.unparse(node.value)
+        return None
+
     # ==================== 回测服务 ====================
 
     def start_backtest(self, strategy_file: str, config: Dict[str, Any]) -> Dict[str, Any]:
@@ -527,24 +862,40 @@ class MyPortfolioStrategy(StrategyTemplate):
                             from backend.core.base import get_service_manager
 
                             service_manager = get_service_manager()
-                            data_service = service_manager.get_service("data_center")
+                            data_service = service_manager.get_service("data_center_service")
 
                             if data_service:
+                                # 调用data_center_service的查询方法
                                 data_result = data_service.query_local_data(
                                     symbol=symbol,
                                     start_date=start_date,
                                     end_date=end_date,
-                                    frequency=interval_str,
+                                    interval=interval_str,  # 统一使用interval参数名
                                 )
 
                                 if data_result.get("success") and data_result.get("data"):
                                     self.logger.info(
-                                        f"成功加载 {len(data_result['data'])} 条历史数据"
+                                        "✅ 从数据中心加载 %d 条历史数据", len(data_result["data"])
                                     )
+
+                                    # 检查数据质量
+                                    if hasattr(data_service, "check_data_quality"):
+                                        quality_result = data_service.check_data_quality(
+                                            symbol, start_date, end_date, interval_str
+                                        )
+                                        if quality_result.get("success"):
+                                            quality_score = quality_result.get("quality_score", 1.0)
+                                            if quality_score < 0.8:
+                                                self.logger.warning(
+                                                    "⚠️ 回测数据质量较低 (%.2f)，可能影响回测结果准确性",
+                                                    quality_score,
+                                                )
                                 else:
-                                    self.logger.warning("未能从数据中心获取历史数据，使用空数据集")
+                                    self.logger.warning(
+                                        "未能从数据中心获取历史数据，回测将使用vnpy内置数据源"
+                                    )
                             else:
-                                self.logger.warning("数据中心服务不可用，回测可能无法正常进行")
+                                self.logger.warning("数据中心服务不可用，回测将使用vnpy内置数据源")
 
                             # 更新进度：执行回测
                             task["progress"] = 50

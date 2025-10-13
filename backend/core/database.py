@@ -143,6 +143,71 @@ class DatabaseManager:
             """
             )
 
+            # 交易历史表（组合投资监控用）
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS trade_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    portfolio_id TEXT NOT NULL,
+                    gateway_name TEXT NOT NULL,
+                    strategy_name TEXT,
+                    trade_date DATE NOT NULL,
+                    trade_time TIMESTAMP NOT NULL,
+                    symbol TEXT NOT NULL,
+                    direction TEXT NOT NULL,
+                    offset TEXT,
+                    price REAL NOT NULL,
+                    volume INTEGER NOT NULL,
+                    turnover REAL,
+                    commission REAL DEFAULT 0,
+                    slippage REAL DEFAULT 0,
+                    pnl REAL DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """
+            )
+
+            # 持仓快照表（用于计算历史业绩）
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS position_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    portfolio_id TEXT NOT NULL,
+                    snapshot_date DATE NOT NULL,
+                    snapshot_time TIMESTAMP NOT NULL,
+                    symbol TEXT NOT NULL,
+                    direction TEXT NOT NULL,
+                    volume INTEGER NOT NULL,
+                    price REAL NOT NULL,
+                    cost REAL NOT NULL,
+                    market_value REAL NOT NULL,
+                    pnl REAL DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(portfolio_id, snapshot_date, symbol, direction)
+                )
+            """
+            )
+
+            # 账户快照表（用于计算历史业绩）
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS account_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    portfolio_id TEXT NOT NULL,
+                    snapshot_date DATE NOT NULL,
+                    snapshot_time TIMESTAMP NOT NULL,
+                    balance REAL NOT NULL,
+                    available REAL NOT NULL,
+                    frozen REAL DEFAULT 0,
+                    margin REAL DEFAULT 0,
+                    total_pnl REAL DEFAULT 0,
+                    daily_pnl REAL DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(portfolio_id, snapshot_date)
+                )
+            """
+            )
+
             # 告警规则表
             cursor.execute(
                 """
@@ -217,6 +282,24 @@ class DatabaseManager:
                 "CREATE INDEX IF NOT EXISTS idx_system_logs_timestamp ON system_logs(timestamp)"
             )
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_system_logs_level ON system_logs(level)")
+
+            # 交易历史表索引
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_trade_history_portfolio ON trade_history(portfolio_id, trade_date)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_trade_history_gateway ON trade_history(gateway_name, trade_date)"
+            )
+
+            # 持仓快照表索引
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_position_snapshots_portfolio ON position_snapshots(portfolio_id, snapshot_date)"
+            )
+
+            # 账户快照表索引
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_account_snapshots_portfolio ON account_snapshots(portfolio_id, snapshot_date)"
+            )
 
             conn.commit()
             logger.info("数据库表初始化完成")

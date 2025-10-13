@@ -92,7 +92,7 @@ class MainWindow(QMainWindow, LoggerMixin):
         except Exception as e:
             self.logger.error("初始化主题管理器失败: %s", e)
             self.theme_manager = None
-        
+
         try:
             self.config_manager = ConfigManager()
         except Exception as e:
@@ -149,7 +149,7 @@ class MainWindow(QMainWindow, LoggerMixin):
             # 异步模式：功能界面稍后创建
             self.apply_theme()
             self.logger.info("主窗口框架初始化完成（异步模式，等待后端就绪）")
-            
+
     def show(self):
         """重写show方法以确保窗口正确显示."""
         super().show()
@@ -207,7 +207,9 @@ class MainWindow(QMainWindow, LoggerMixin):
 
             self.logger.info("当前线程ID: %s", threading.current_thread().ident)
             self.logger.info("当前线程名: %s", threading.current_thread().name)
-            self.logger.info("是否为主线程: %s", threading.current_thread() == threading.main_thread())
+            self.logger.info(
+                "是否为主线程: %s", threading.current_thread() == threading.main_thread()
+            )
 
             # 创建功能界面
             self.logger.info("步骤1: 创建6个功能界面...")
@@ -239,23 +241,24 @@ class MainWindow(QMainWindow, LoggerMixin):
             self.logger.info("=" * 70)
             self.logger.info("✅ UI功能界面初始化完成")
             self.logger.info("=" * 70)
-            
+
         except Exception as e:
             self.logger.error("=" * 70)
             self.logger.error("💥 UI功能界面初始化发生严重异常")
             self.logger.error("=" * 70)
             self.logger.error("异常信息: %s", e, exc_info=True)
             # 不再重新抛出异常，避免应用崩溃
-            
+
             # 显示错误信息给用户
             try:
                 from PySide6.QtWidgets import QMessageBox
+
                 QMessageBox.warning(
-                    self, 
-                    "初始化警告", 
-                    f"功能界面初始化时遇到问题：\n\n{str(e)}\n\n但UI框架仍可使用。"
+                    self,
+                    "初始化警告",
+                    f"功能界面初始化时遇到问题：\n\n{str(e)}\n\n但UI框架仍可使用。",
                 )
-            except:
+            except Exception:
                 pass
 
     def _initialize_backend_services(self):
@@ -582,7 +585,7 @@ class MainWindow(QMainWindow, LoggerMixin):
             # 确保 app_instance 是 QApplication 类型
             if isinstance(app_instance, QApplication):
                 # 🔧 增加安全性检查
-                if hasattr(self, 'theme_manager') and self.theme_manager:
+                if hasattr(self, "theme_manager") and self.theme_manager:
                     self.theme_manager.apply_theme(app_instance)
                     self.logger.info("主题应用完成")
                 else:
@@ -599,7 +602,8 @@ class MainWindow(QMainWindow, LoggerMixin):
 
     def _apply_fallback_style(self):
         """应用回退样式（当主题管理器失败时）."""
-        self.setStyleSheet("""
+        self.setStyleSheet(
+            """
             QMainWindow {
                 background-color: #1e1e1e;
                 color: #ffffff;
@@ -612,7 +616,8 @@ class MainWindow(QMainWindow, LoggerMixin):
             QListWidget::item:selected {
                 background-color: #1e88e5;
             }
-        """)
+        """
+        )
         self.logger.info("已应用回退样式")
 
     def switch_theme(self, theme_name: str):
@@ -621,10 +626,10 @@ class MainWindow(QMainWindow, LoggerMixin):
             if self.config_manager:
                 self.config_manager.ui_config.theme = theme_name
                 self.config_manager.save_config()
-            
+
             if self.theme_manager and hasattr(self.theme_manager, "reload_theme"):
                 self.theme_manager.reload_theme()
-            
+
             self.apply_theme()
             self.logger.info("切换到主题: %s", theme_name)
         except (AttributeError, RuntimeError, OSError) as e:
@@ -732,7 +737,7 @@ class MainWindow(QMainWindow, LoggerMixin):
         version = "5.0.0"
         if self.config_manager:
             version = self.config_manager.app_config.version
-            
+
         QMessageBox.about(
             self,
             "关于星辰金融终端",
@@ -867,12 +872,6 @@ def main():
         app.setApplicationName("星辰金融终端")
         app.setApplicationVersion("5.0.0")
         app.setOrganizationName("星辰科技")
-        
-        # 🔧 禁用可能导致问题的Qt功能
-        try:
-            app.setAttribute(Qt.AA_DisableWindowContextHelpButton, True)
-        except (AttributeError, TypeError):
-            logging.getLogger(__name__).warning("无法设置AA_DisableWindowContextHelpButton属性")
 
         # 🔧 关键修复：在创建任何UI组件之前先初始化配置
         import os
@@ -963,7 +962,7 @@ def main_sync():
             os.environ["QT_WEBENGINE_PYTHON_EXECUTABLE"] = sys.executable
 
         setup_logging(name="terminal_v0.50", level="INFO", log_file="logs/terminal_v0.50.log")
-        
+
         # 🔧 设置Qt属性以避免QStyleHints连接问题
         os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
         os.environ["QT_ENABLE_HIGHDPI_SCALING"] = "0"
@@ -972,12 +971,6 @@ def main_sync():
         app.setApplicationName("星辰金融终端")
         app.setApplicationVersion("5.0.0")
         app.setOrganizationName("星辰科技")
-        
-        # 🔧 禁用可能导致问题的Qt功能
-        try:
-            app.setAttribute(Qt.AA_DisableWindowContextHelpButton, True)
-        except (AttributeError, TypeError):
-            logging.getLogger(__name__).warning("无法设置AA_DisableWindowContextHelpButton属性")
 
         main_window = MainWindow(backend_ready=True)
         main_window.show()

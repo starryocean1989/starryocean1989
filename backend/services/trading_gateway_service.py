@@ -603,6 +603,9 @@ class TradingGatewayService(BaseService):
 
             self.logger.info("网关 '%s' 连接请求已发送", gateway_name)
 
+            # ✨ 发送网关状态变化事件
+            self._emit_gateway_status_event(gateway_name, "connected", gateway_type)
+
             return {
                 "success": True,
                 "message": f"网关 '{gateway_name}' 连接请求已发送",
@@ -645,6 +648,10 @@ class TradingGatewayService(BaseService):
             gateway_info["connected"] = False
 
             self.logger.info("网关 '%s' 已断开", gateway_name)
+
+            # ✨ 发送网关状态变化事件
+            gateway_type = gateway_info.get("type", "")
+            self._emit_gateway_status_event(gateway_name, "disconnected", gateway_type)
 
             return {
                 "success": True,
@@ -723,6 +730,132 @@ class TradingGatewayService(BaseService):
             self.disconnect_gateway(gateway_name)
 
     # ==================== 策略实例管理 ====================
+
+    def get_available_strategies(self, engine_type: Optional[str] = None) -> List[Dict[str, Any]]:
+        """获取可用的策略列表（从策略中心）.
+
+        Args:
+            engine_type: 策略引擎类型（如"ctastrategy", "algotrading"等），None表示全部
+
+        Returns:
+            List[Dict]: 策略列表
+        """
+        try:
+            # 从服务管理器获取策略中心服务
+            from backend.core.base import get_service_manager
+
+            service_manager = get_service_manager()
+            strategy_service = service_manager.get_service("strategy_center_service")
+
+            if not strategy_service:
+                self.logger.warning("策略中心服务不可用")
+                return []
+
+            # 调用策略中心的get_available_strategies方法
+            result = strategy_service.get_available_strategies(engine_type=engine_type)
+
+            if result.get("success"):
+                return result.get("strategies", [])
+            else:
+                self.logger.error(f"获取策略列表失败: {result.get('message')}")
+                return []
+
+        except Exception as e:
+            self._log_error("获取可用策略列表", e)
+            return []
+
+    def identify_strategy_type_from_file(self, file_path: str) -> Optional[str]:
+        """从策略文件识别策略类型.
+
+        Args:
+            file_path: 策略文件路径（相对于策略根目录）
+
+        Returns:
+            str: 策略引擎类型，如果无法识别则返回None
+        """
+        try:
+            from backend.core.base import get_service_manager
+
+            service_manager = get_service_manager()
+            strategy_service = service_manager.get_service("strategy_center_service")
+
+            if not strategy_service:
+                self.logger.warning("策略中心服务不可用")
+                return None
+
+            return strategy_service.identify_strategy_type(file_path)
+
+        except Exception as e:
+            self._log_error("识别策略类型", e)
+            return None
+
+    def load_strategy_from_file(
+        self,
+        gateway_name: str,
+        strategy_name: str,
+        file_path: str,
+        strategy_params: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """从策略文件加载并部署策略.
+
+        Args:
+            gateway_name: 网关名称
+            strategy_name: 策略名称
+            file_path: 策略文件路径（相对于策略根目录）
+            strategy_params: 策略参数
+
+        Returns:
+            Dict: 部署结果
+        """
+        try:
+            self._log_operation(
+                "从文件加载策略", gateway=gateway_name, strategy=strategy_name, file=file_path
+            )
+
+            # 从策略中心加载策略模块信息
+            from backend.core.base import get_service_manager
+
+            service_manager = get_service_manager()
+            strategy_service = service_manager.get_service("strategy_center_service")
+
+            if not strategy_service:
+                return {
+                    "success": False,
+                    "message": "策略中心服务不可用",
+                }
+
+            # 加载策略模块信息
+            module_info = strategy_service.load_strategy_module_info(file_path)
+
+            if not module_info:
+                return {
+                    "success": False,
+                    "message": f"无法加载策略文件: {file_path}",
+                }
+
+            # 使用解析出的策略类名和引擎类型
+            strategy_class = module_info["class_name"]
+            engine_type = module_info["engine_type"]
+
+            # 设置策略参数中的engine_type
+            strategy_params = strategy_params.copy()
+            strategy_params["engine_type"] = engine_type
+            strategy_params["file_path"] = file_path  # 记录原文件路径
+
+            # 调用原有的部署方法
+            return self.deploy_strategy(
+                gateway_name=gateway_name,
+                strategy_name=strategy_name,
+                strategy_class=strategy_class,
+                strategy_params=strategy_params,
+            )
+
+        except Exception as e:
+            self._log_error("从文件加载策略", e)
+            return {
+                "success": False,
+                "message": f"加载失败: {str(e)}",
+            }
 
     def deploy_strategy(
         self,
@@ -960,6 +1093,9 @@ class TradingGatewayService(BaseService):
             # 更新状态
             strategy_info["status"] = "running"
 
+            # ✨ 发送策略状态变化事件（支持跨模块集成）
+            self._emit_strategy_status_event(gateway_name, strategy_name, "running", engine_name)
+
             return {
                 "success": True,
                 "message": f"策略 '{strategy_name}' 已启动",
@@ -1043,6 +1179,9 @@ class TradingGatewayService(BaseService):
 
             # 更新状态
             strategy_info["status"] = "stopped"
+
+            # ✨ 发送策略状态变化事件（支持跨模块集成）
+            self._emit_strategy_status_event(gateway_name, strategy_name, "stopped", engine_name)
 
             return {
                 "success": True,
@@ -1806,7 +1945,178 @@ class TradingGatewayService(BaseService):
                 "message": f"操作失败: {str(e)}",
             }
 
+    # ==================== 策略状态事件发送 ====================
+
+    def _emit_strategy_status_event(
+        self, gateway_name: str, strategy_name: str, status: str, engine_name: str
+    ):
+        """发送策略状态变化事件.
+
+        Args:
+            gateway_name: 网关名称
+            strategy_name: 策略名称
+            status: 状态（running/stopped）
+            engine_name: 引擎名称
+        """
+        try:
+            from backend.core.base import get_event_engine
+            from backend.core.utils import EVENT_STRATEGY_STATUS_CHANGED
+            from vnpy.event import Event
+
+            event_engine = get_event_engine()
+            if not event_engine:
+                return
+
+            # 构建事件数据
+            event_data = {
+                "gateway_name": gateway_name,
+                "strategy_name": strategy_name,
+                "status": status,
+                "engine_name": engine_name,
+                "engine_type": engine_name.lower() if isinstance(engine_name, str) else "ctastrategy",
+                "timestamp": datetime.now().isoformat(),
+                "active_count": self._count_active_strategies(gateway_name),
+            }
+
+            # 发送事件
+            event = Event(EVENT_STRATEGY_STATUS_CHANGED, event_data)
+            event_engine.put(event)
+
+            self.logger.debug(
+                f"📢 已发送策略状态变化事件: {gateway_name}.{strategy_name} -> {status}"
+            )
+
+        except Exception as e:
+            self.logger.warning(f"发送策略状态事件失败: {e}")
+
+    def _emit_gateway_status_event(
+        self, gateway_name: str, status: str, gateway_type: str
+    ):
+        """发送网关状态变化事件.
+
+        Args:
+            gateway_name: 网关名称
+            status: 状态（connected/disconnected）
+            gateway_type: 网关类型
+        """
+        try:
+            from backend.core.base import get_event_engine
+            from backend.core.utils import EVENT_GATEWAY_STATUS_CHANGED
+            from vnpy.event import Event
+
+            event_engine = get_event_engine()
+            if not event_engine:
+                return
+
+            # 构建事件数据
+            event_data = {
+                "gateway_name": gateway_name,
+                "status": status,
+                "gateway_type": gateway_type,
+                "timestamp": datetime.now().isoformat(),
+                "strategy_count": len(self.strategy_instances.get(gateway_name, {})),
+            }
+
+            # 发送事件
+            event = Event(EVENT_GATEWAY_STATUS_CHANGED, event_data)
+            event_engine.put(event)
+
+            self.logger.debug(f"📢 已发送网关状态变化事件: {gateway_name} -> {status}")
+
+        except Exception as e:
+            self.logger.warning(f"发送网关状态事件失败: {e}")
+
+    def _count_active_strategies(self, gateway_name: str) -> int:
+        """统计网关的激活策略数量.
+
+        Args:
+            gateway_name: 网关名称
+
+        Returns:
+            int: 激活策略数量
+        """
+        if gateway_name not in self.strategy_instances:
+            return 0
+
+        strategies = self.strategy_instances[gateway_name]
+        return sum(1 for s in strategies.values() if s.get("status") == "running")
+
+    def get_single_strategy_gateways(self) -> List[Dict[str, Any]]:
+        """获取只激活1个策略的网关列表.
+
+        对应需求：策略池只激活了1个策略的交易网关都会被动的出现在交易监控界面。
+
+        Returns:
+            List[Dict]: 单策略网关列表
+        """
+        single_strategy_gateways = []
+
+        for gateway_name, strategies in self.strategy_instances.items():
+            active_strategies = [s for s in strategies.values() if s.get("status") == "running"]
+
+            # 只有激活1个策略时才返回
+            if len(active_strategies) == 1:
+                strategy = active_strategies[0]
+                engine_name = strategy.get("engine_name", "CtaStrategy")
+                strategy_type = (
+                    engine_name.lower() if isinstance(engine_name, str) else "ctastrategy"
+                )
+
+                single_strategy_gateways.append({
+                    "gateway_name": gateway_name,
+                    "strategy_name": strategy.get("name", ""),
+                    "strategy_class": strategy.get("class", ""),
+                    "engine_name": engine_name,
+                    "strategy_type": strategy_type,
+                    "monitor_template": self.get_monitor_template_for_strategy(strategy_type),
+                })
+
+        return single_strategy_gateways
+
     # ==================== 策略类型识别与监控适配 ====================
+
+    def get_active_strategy_for_monitoring(self, gateway_name: str) -> Optional[Dict[str, Any]]:
+        """获取网关的监控策略（仅当激活1个策略时返回）.
+
+        Args:
+            gateway_name: 网关名称
+
+        Returns:
+            Dict: 监控信息（包含策略、引擎名称、监控模板），如果不满足条件则返回None
+        """
+        try:
+            if gateway_name not in self.strategy_instances:
+                return None
+
+            strategies = self.strategy_instances[gateway_name]
+            active_strategies = [s for s in strategies.values() if s.get("status") == "running"]
+
+            # 只有激活1个策略时才返回监控信息
+            if len(active_strategies) == 1:
+                strategy = active_strategies[0]
+                strategy_name = strategy.get("name", "")
+                engine_name = strategy.get("engine_name", "CtaStrategy")
+                strategy_type = (
+                    engine_name.lower() if isinstance(engine_name, str) else "ctastrategy"
+                )
+
+                monitor_template = self.get_monitor_template_for_strategy(
+                    strategy_type=strategy_type
+                )
+
+                return {
+                    "strategy": strategy,
+                    "strategy_name": strategy_name,
+                    "engine_name": engine_name,
+                    "strategy_type": strategy_type,
+                    "monitor_template": monitor_template,
+                }
+
+            return None
+
+        except Exception as e:
+            self.logger.error("获取监控策略失败: %s", e)
+            return None
 
     def identify_strategy_type(
         self,

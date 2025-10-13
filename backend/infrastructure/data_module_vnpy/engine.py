@@ -284,6 +284,17 @@ class ChinaStockEngine(BaseEngine):
             def progress_callback(completed: int, total: int, symbol: str, interval: str):
                 """进度回调：通过事件推送进度"""
                 progress_pct = (completed / total) * 100
+
+                # 🚀 限制事件推送频率：只在每100个或特殊节点推送（避免UI崩溃）
+                should_push = (
+                    completed % 100 == 0
+                    or completed == 1  # 第一个
+                    or completed == total  # 最后一个
+                )
+
+                if not should_push:
+                    return
+
                 # 🔧 调试日志（每100个打印一次）
                 if completed % 100 == 0:
                     self.logger.info(
@@ -294,6 +305,7 @@ class ChinaStockEngine(BaseEngine):
                         symbol,
                         interval,
                     )
+
                 self._push_download_progress_event(
                     "incremental_kline", progress_pct, completed, total, f"{symbol} {interval}"
                 )
@@ -312,15 +324,61 @@ class ChinaStockEngine(BaseEngine):
 
             # 合并并保存数据
             saved_count = 0
+            skipped_count = 0
+            failed_count = 0
+
+            # 🚀 统计下载结果的详细状态
+            none_count = sum(1 for v in download_results.values() if v is None)
+            empty_count = sum(1 for v in download_results.values() if v is not None and v.empty)
+
+            self.logger.info("=" * 60)
+            self.logger.info("开始保存下载结果...")
+            self.logger.info("📊 下载结果分析:")
+            self.logger.info("  • 下载结果总数: %d", len(download_results))
+            self.logger.info("  • 下载返回None: %d (下载失败)", none_count)
+            self.logger.info("  • 下载返回空数据: %d (品种无数据/停牌等)", empty_count)
+            self.logger.info("  • 下载返回有效数据: %d (待保存)", len(download_results) - none_count - empty_count)
+
             for key, data in download_results.items():
                 symbol, interval = key.split("_", 1)
-                success = self.storage_manager.merge_data(symbol, interval, data)
-                if success:
-                    saved_count += 1
+
+                # 🚀 检查数据有效性（防止保存空DataFrame导致损坏文件）
+                if data is None:
+                    self.logger.debug("跳过保存（下载失败）: %s %s", symbol, interval)
+                    skipped_count += 1
+                elif data.empty or len(data) == 0:
+                    self.logger.debug("跳过保存（空数据）: %s %s", symbol, interval)
+                    skipped_count += 1
+                else:
+                    # 有数据，尝试保存
+                    try:
+                        success = self.storage_manager.merge_data(symbol, interval, data)
+                        if success:
+                            saved_count += 1
+                            self.logger.debug("✓ 保存成功: %s %s (%d行)", symbol, interval, len(data))
+                        else:
+                            failed_count += 1
+                            self.logger.error("✗ 保存失败: %s %s", symbol, interval)
+                    except Exception as e:
+                        self.logger.error("保存 %s %s 异常: %s", symbol, interval, e)
+                        failed_count += 1
+
+            # 统计汇总
+            self.logger.info("=" * 60)
+            self.logger.info("📊 保存统计:")
+            self.logger.info("  • 下载结果总数: %d", len(download_results))
+            self.logger.info("  • 成功保存: %d", saved_count)
+            self.logger.info("  • 跳过（下载失败/空数据）: %d", skipped_count)
+            self.logger.info("  • 保存失败: %d", failed_count)
+            self.logger.info("  • 保存成功率: %.1f%%",
+                          (saved_count / (saved_count + failed_count) * 100) if (saved_count + failed_count) > 0 else 0)
+            self.logger.info("=" * 60)
 
             # 推送下载事件
             self._push_download_event("incremental_kline", "success", saved_count)
-            self._push_log_event(f"增量下载完成: {saved_count} 个数据集")
+            self._push_log_event(
+                f"增量下载完成: {saved_count} 个数据集（跳过{skipped_count}个空数据）"
+            )
 
         except Exception as e:
             self.logger.error(f"增量下载失败: {e}", exc_info=True)
@@ -913,3 +971,38 @@ class ChinaStockEngine(BaseEngine):
         except Exception as e:
             self.logger.error("手动数据质量扫描失败: %s", e, exc_info=True)
             return None
+
+    def scan_corrupted_files(self, auto_delete: bool = False) -> Dict[str, List[str]]:
+        """扫描并修复损坏的Parquet文件
+
+        Args:
+            auto_delete: 是否自动删除损坏文件
+
+        Returns:
+            损坏文件报告 {"corrupted": [...], "deleted": [...]}
+        """
+        try:
+            self.logger.info("开始扫描损坏的Parquet文件（auto_delete=%s）...", auto_delete)
+
+            result = self.storage_manager.scan_and_repair_corrupted_files(auto_delete)
+
+            self.logger.info(
+                "扫描完成：发现 %d 个损坏文件，已删除 %d 个",
+                len(result.get("corrupted", [])),
+                len(result.get("deleted", [])),
+            )
+
+            # 推送日志事件
+            if result.get("corrupted"):
+                self._push_log_event(
+                    f"发现 {len(result['corrupted'])} 个损坏文件"
+                    + (f"，已删除 {len(result['deleted'])} 个" if auto_delete else ""),
+                    "WARNING" if not auto_delete else "INFO",
+                )
+
+            return result
+
+        except Exception as e:
+            self.logger.error("扫描损坏文件失败: %s", e, exc_info=True)
+            self._push_log_event(f"扫描损坏文件失败: {e}", "ERROR")
+            return {"corrupted": [], "deleted": []}

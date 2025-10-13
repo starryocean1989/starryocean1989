@@ -73,11 +73,11 @@ class ServerConfigDialog(QDialog):
         # 服务器数量滑块
         slider_layout = QVBoxLayout()
 
-        self.size_slider = QSlider(Qt.Horizontal)
+        self.size_slider = QSlider(Qt.Orientation.Horizontal)
         self.size_slider.setMinimum(1)
         self.size_slider.setMaximum(30)
         self.size_slider.setValue(5)
-        self.size_slider.setTickPosition(QSlider.TicksBelow)
+        self.size_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.size_slider.setTickInterval(5)  # 每5个显示一个刻度
         self.size_slider.valueChanged.connect(self._on_slider_changed)
         slider_layout.addWidget(self.size_slider)
@@ -86,7 +86,7 @@ class ServerConfigDialog(QDialog):
         value_layout = QHBoxLayout()
         for i in [1, 5, 10, 15, 20, 25, 30]:
             label = QLabel(str(i))
-            label.setAlignment(Qt.AlignCenter)
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             value_layout.addWidget(label)
             if i < 30:
                 value_layout.addStretch()  # 添加弹性空间
@@ -208,4 +208,4 @@ class ServerConfigDialog(QDialog):
             bool: 用户是否点击了应用
         """
         dialog = cls(data_center_service, parent)
-        return dialog.exec() == QDialog.Accepted
+        return dialog.exec() == QDialog.DialogCode.Accepted

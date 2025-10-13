@@ -114,6 +114,13 @@ class SystemManager(BaseWidget, LoggerMixin):
         self.services_table: Optional[QTableWidget] = None
         self.dependencies_table: Optional[QTableWidget] = None
         self.health_progress: Optional[QProgressBar] = None
+        self.health_detail_label: Optional[QLabel] = None
+
+        # 业务指标卡片
+        self.dc_metrics_card: Optional[QGroupBox] = None
+        self.gw_metrics_card: Optional[QGroupBox] = None
+        self.pf_metrics_card: Optional[QGroupBox] = None
+        self.st_metrics_card: Optional[QGroupBox] = None
 
         # 日志管理组件
         self.logs_table: Optional[QTableWidget] = None
@@ -212,6 +219,14 @@ class SystemManager(BaseWidget, LoggerMixin):
         self.reader_detail_label: Optional[QLabel] = None
         self.reader_start_btn: Optional[QPushButton] = None
         self.reader_stop_btn: Optional[QPushButton] = None
+
+        # 🆕 损坏文件清理工具控件
+        self.cleaner_data_dir_label: Optional[QLabel] = None
+        self.cleaner_result_label: Optional[QLabel] = None
+        self.cleaner_detail_text: Optional[QTextEdit] = None
+        self.cleaner_scan_btn: Optional[QPushButton] = None
+        self.cleaner_clean_btn: Optional[QPushButton] = None
+        self._cleaner_corrupted_files: List[str] = []  # 缓存扫描到的损坏文件列表
 
         # 新增：事件引擎
         self.event_engine: Optional[Any] = None
@@ -592,8 +607,16 @@ class SystemManager(BaseWidget, LoggerMixin):
         check_all_btn.clicked.connect(self._check_all_services)
         toolbar.addWidget(check_all_btn)
 
+        refresh_business_btn = QPushButton("📊 刷新业务指标")
+        refresh_business_btn.clicked.connect(self._refresh_business_metrics)
+        toolbar.addWidget(refresh_business_btn)
+
         toolbar.addStretch()
         layout.addLayout(toolbar)
+
+        # 业务指标仪表板（新增）
+        business_dashboard = self._create_business_metrics_dashboard()
+        layout.addWidget(business_dashboard)
 
         # 服务状态组（增加业务指标和资源占用列）
         services_group = QGroupBox("Backend服务状态")
@@ -1845,6 +1868,60 @@ class SystemManager(BaseWidget, LoggerMixin):
         # 加载通达信根目录配置
         self._load_tdx_reader_config()
 
+        # 🆕 损坏数据文件清理工具组
+        cleaner_group = QGroupBox("损坏数据文件清理工具")
+        cleaner_layout = QVBoxLayout(cleaner_group)
+
+        # 提示信息
+        cleaner_hint = QLabel("💡 扫描并清理损坏的Parquet数据文件（0字节、无法读取等）")
+        cleaner_hint.setStyleSheet("color: #666; font-size: 12px; padding: 5px;")
+        cleaner_hint.setWordWrap(True)
+        cleaner_layout.addWidget(cleaner_hint)
+
+        # 数据目录显示
+        data_dir_layout = QFormLayout()
+        self.cleaner_data_dir_label = QLabel("加载中...")
+        self.cleaner_data_dir_label.setStyleSheet("font-weight: bold; color: #0066cc;")
+        self.cleaner_data_dir_label.setWordWrap(True)
+        data_dir_layout.addRow("数据文件目录:", self.cleaner_data_dir_label)
+        cleaner_layout.addLayout(data_dir_layout)
+
+        # 扫描结果显示
+        result_group = QGroupBox("扫描结果")
+        result_layout = QVBoxLayout(result_group)
+
+        self.cleaner_result_label = QLabel("状态: 未扫描")
+        result_layout.addWidget(self.cleaner_result_label)
+
+        self.cleaner_detail_text = QTextEdit()
+        self.cleaner_detail_text.setReadOnly(True)
+        self.cleaner_detail_text.setMaximumHeight(150)
+        self.cleaner_detail_text.setPlaceholderText("扫描结果将显示在这里...")
+        result_layout.addWidget(self.cleaner_detail_text)
+
+        cleaner_layout.addWidget(result_group)
+
+        # 按钮组
+        cleaner_button_layout = QHBoxLayout()
+
+        self.cleaner_scan_btn = QPushButton("🔍 扫描损坏文件")
+        self.cleaner_scan_btn.clicked.connect(self._scan_corrupted_files)
+        self.cleaner_scan_btn.setStyleSheet("font-size: 14px; padding: 10px;")
+        cleaner_button_layout.addWidget(self.cleaner_scan_btn)
+
+        self.cleaner_clean_btn = QPushButton("🗑️ 清理损坏文件")
+        self.cleaner_clean_btn.clicked.connect(self._clean_corrupted_files)
+        self.cleaner_clean_btn.setStyleSheet("font-size: 14px; padding: 10px;")
+        self.cleaner_clean_btn.setEnabled(False)  # 默认禁用，扫描后才能清理
+        cleaner_button_layout.addWidget(self.cleaner_clean_btn)
+
+        cleaner_layout.addLayout(cleaner_button_layout)
+
+        layout.addWidget(cleaner_group)
+
+        # 加载数据目录配置
+        self._load_cleaner_config()
+
         layout.addStretch()
 
         return tab
@@ -2103,6 +2180,422 @@ class SystemManager(BaseWidget, LoggerMixin):
 
             self.show_error(f"启动失败: {e}")
 
+    # ==================== 损坏文件清理工具方法 ====================
+
+    def _load_cleaner_config(self):
+        """加载清理工具配置（显示数据目录）."""
+        try:
+            if not self.system_service:
+                if self.cleaner_data_dir_label:
+                    self.cleaner_data_dir_label.setText("./data/kline（默认）")
+                return
+
+            # 从服务获取数据目录配置
+            result = self.system_service.get_all_configs()
+
+            if not result.get("success"):
+                if self.cleaner_data_dir_label:
+                    self.cleaner_data_dir_label.setText("./data/kline（默认）")
+                return
+
+            configs = result.get("configs", {})
+            data_config = configs.get("data_center", {})
+            data_dir = data_config.get("data_dir", "./data/kline")
+
+            if self.cleaner_data_dir_label:
+                self.cleaner_data_dir_label.setText(data_dir)
+
+        except Exception as e:
+            self.logger.error("加载清理工具配置失败: %s", e)
+            if self.cleaner_data_dir_label:
+                self.cleaner_data_dir_label.setText("./data/kline（默认）")
+
+    def _scan_corrupted_files(self):
+        """扫描损坏的Parquet文件（后台线程）."""
+        try:
+            if not self.system_service:
+                self.show_error("系统管理服务不可用")
+                return
+
+            # 禁用扫描按钮
+            if self.cleaner_scan_btn:
+                self.cleaner_scan_btn.setEnabled(False)
+
+            # 更新状态
+            if self.cleaner_result_label:
+                self.cleaner_result_label.setText("状态: 正在扫描...")
+
+            # 清空详细信息
+            if self.cleaner_detail_text:
+                self.cleaner_detail_text.clear()
+                self.cleaner_detail_text.append("开始扫描损坏的Parquet文件...\n")
+
+            # 创建后台工作线程
+            from PySide6.QtCore import QThread, Signal
+
+            class ScanThread(QThread):
+                finished_signal = Signal(dict)
+                error_signal = Signal(str)
+                progress_signal = Signal(int, int, str)  # current, total, message
+
+                def __init__(self, service, auto_delete):
+                    super().__init__()
+                    self.service = service
+                    self.auto_delete = auto_delete
+
+                def run(self):
+                    try:
+                        # 定义进度回调
+                        def progress_callback(current, total, message):
+                            self.progress_signal.emit(current, total, message)
+
+                        # 调用扫描，传入进度回调
+                        result = self.service.scan_corrupted_files(
+                            auto_delete=self.auto_delete, progress_callback=progress_callback
+                        )
+                        self.finished_signal.emit(result)
+                    except Exception as e:
+                        self.error_signal.emit(str(e))
+
+            # 创建线程实例
+            self._scan_thread = ScanThread(self.system_service, auto_delete=False)
+            self._scan_thread.finished_signal.connect(self._on_scan_finished)
+            self._scan_thread.error_signal.connect(self._on_scan_error)
+            self._scan_thread.progress_signal.connect(self._on_scan_progress)
+            self._scan_thread.start()
+
+        except Exception as e:
+            self.logger.error("启动扫描失败: %s", e)
+            if self.cleaner_result_label:
+                self.cleaner_result_label.setText(f"状态: 启动失败 - {e}")
+            if self.cleaner_detail_text:
+                self.cleaner_detail_text.append(f"❌ 启动失败: {e}")
+            self.show_error(f"启动扫描失败: {e}")
+
+            # 恢复扫描按钮
+            if self.cleaner_scan_btn:
+                self.cleaner_scan_btn.setEnabled(True)
+
+    def _on_scan_finished(self, result: dict):
+        """扫描完成回调（在主线程执行）.
+
+        Args:
+            result: 扫描结果
+        """
+        try:
+            if not result.get("success"):
+                error_msg = result.get("message", "未知错误")
+                if self.cleaner_result_label:
+                    self.cleaner_result_label.setText(f"状态: 扫描失败 - {error_msg}")
+                if self.cleaner_detail_text:
+                    self.cleaner_detail_text.append(f"❌ 扫描失败: {error_msg}")
+                self.show_error(f"扫描失败: {error_msg}")
+
+                # 恢复扫描按钮
+                if self.cleaner_scan_btn:
+                    self.cleaner_scan_btn.setEnabled(True)
+                return
+
+            # 获取扫描结果
+            scan_result = result.get("result", {})
+            corrupted_files = scan_result.get("corrupted", [])
+            self._cleaner_corrupted_files = corrupted_files
+
+            # 在详细文本中添加扫描完成摘要
+            if self.cleaner_detail_text:
+                self.cleaner_detail_text.append(
+                    f"\n{'='*50}\n扫描完成摘要:\n{'='*50}"
+                )
+
+            # 更新界面
+            if len(corrupted_files) == 0:
+                if self.cleaner_result_label:
+                    self.cleaner_result_label.setText("状态: ✅ 未发现损坏文件")
+                if self.cleaner_detail_text:
+                    self.cleaner_detail_text.append("✅ 扫描完成，未发现损坏文件！")
+
+                # 禁用清理按钮
+                if self.cleaner_clean_btn:
+                    self.cleaner_clean_btn.setEnabled(False)
+
+                self.show_info("扫描完成，未发现损坏文件")
+
+            else:
+                if self.cleaner_result_label:
+                    self.cleaner_result_label.setText(
+                        f"状态: ⚠️ 发现 {len(corrupted_files)} 个损坏文件"
+                    )
+
+                if self.cleaner_detail_text:
+                    self.cleaner_detail_text.append(f"⚠️ 发现 {len(corrupted_files)} 个损坏文件：\n")
+
+                    # 只显示前50个文件
+                    display_count = min(len(corrupted_files), 50)
+                    for i, file_path in enumerate(corrupted_files[:display_count], 1):
+                        self.cleaner_detail_text.append(f"{i}. {file_path}")
+
+                    if len(corrupted_files) > 50:
+                        self.cleaner_detail_text.append(
+                            f"\n... 还有 {len(corrupted_files) - 50} 个文件未显示"
+                        )
+
+                # 启用清理按钮
+                if self.cleaner_clean_btn:
+                    self.cleaner_clean_btn.setEnabled(True)
+
+                self.show_warning(f"发现 {len(corrupted_files)} 个损坏文件，可以点击清理按钮删除")
+
+        except Exception as e:
+            self.logger.error("扫描损坏文件失败: %s", e)
+            if self.cleaner_result_label:
+                self.cleaner_result_label.setText(f"状态: 扫描异常 - {e}")
+            if self.cleaner_detail_text:
+                self.cleaner_detail_text.append(f"❌ 扫描异常: {e}")
+            self.show_error(f"扫描失败: {e}")
+
+        finally:
+            # 恢复扫描按钮
+            if self.cleaner_scan_btn:
+                self.cleaner_scan_btn.setEnabled(True)
+
+    def _on_scan_progress(self, current: int, total: int, message: str):
+        """扫描进度回调（在主线程执行）.
+
+        Args:
+            current: 当前已检查文件数
+            total: 总文件数
+            message: 当前处理消息
+        """
+        try:
+            # 更新状态标签（实时显示进度）
+            if self.cleaner_result_label:
+                progress_pct = (current / total * 100) if total > 0 else 0
+                self.cleaner_result_label.setText(
+                    f"状态: 正在扫描... {current}/{total} ({progress_pct:.1f}%) - {message}"
+                )
+
+            # 详细文本只在关键节点显示（每100个或整百倍数）
+            if self.cleaner_detail_text and (current % 100 == 0 or current == total):
+                self.cleaner_detail_text.append(
+                    f"✓ 已检查 {current}/{total} 个文件 ({progress_pct:.1f}%)"
+                )
+
+        except Exception as e:
+            self.logger.error("更新扫描进度失败: %s", e)
+
+    def _on_scan_error(self, error_msg: str):
+        """扫描错误回调（在主线程执行）.
+
+        Args:
+            error_msg: 错误消息
+        """
+        try:
+            if self.cleaner_result_label:
+                self.cleaner_result_label.setText(f"状态: 扫描异常 - {error_msg}")
+            if self.cleaner_detail_text:
+                self.cleaner_detail_text.append(f"❌ 扫描异常: {error_msg}")
+            self.show_error(f"扫描失败: {error_msg}")
+
+        except Exception as e:
+            self.logger.error("处理扫描错误失败: %s", e)
+
+        finally:
+            # 恢复扫描按钮
+            if self.cleaner_scan_btn:
+                self.cleaner_scan_btn.setEnabled(True)
+
+    def _clean_corrupted_files(self):
+        """清理损坏的Parquet文件."""
+        try:
+            if not self.system_service:
+                self.show_error("系统管理服务不可用")
+                return
+
+            # 检查是否有需要清理的文件
+            if not self._cleaner_corrupted_files:
+                self.show_warning("请先扫描损坏文件")
+                return
+
+            # 确认对话框
+            from PySide6.QtWidgets import QMessageBox
+
+            reply = QMessageBox.question(
+                self,
+                "确认清理",
+                f"确定要删除 {len(self._cleaner_corrupted_files)} 个损坏的文件吗？\n\n"
+                "⚠️ 此操作不可恢复！",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+
+            if reply != QMessageBox.Yes:
+                return
+
+            # 禁用按钮
+            if self.cleaner_scan_btn:
+                self.cleaner_scan_btn.setEnabled(False)
+            if self.cleaner_clean_btn:
+                self.cleaner_clean_btn.setEnabled(False)
+
+            # 更新状态
+            if self.cleaner_result_label:
+                self.cleaner_result_label.setText("状态: 正在清理...")
+
+            if self.cleaner_detail_text:
+                self.cleaner_detail_text.append("\n开始清理损坏文件...\n")
+
+            # 创建后台清理线程
+            from PySide6.QtCore import QThread, Signal
+
+            class CleanThread(QThread):
+                finished_signal = Signal(dict)
+                error_signal = Signal(str)
+                progress_signal = Signal(int, int, str)  # current, total, message
+
+                def __init__(self, service):
+                    super().__init__()
+                    self.service = service
+
+                def run(self):
+                    try:
+                        # 定义进度回调
+                        def progress_callback(current, total, message):
+                            self.progress_signal.emit(current, total, message)
+
+                        # 调用清理，传入进度回调
+                        result = self.service.scan_corrupted_files(
+                            auto_delete=True, progress_callback=progress_callback
+                        )
+                        self.finished_signal.emit(result)
+                    except Exception as e:
+                        self.error_signal.emit(str(e))
+
+            # 创建线程实例
+            self._clean_thread = CleanThread(self.system_service)
+            self._clean_thread.finished_signal.connect(self._on_clean_finished)
+            self._clean_thread.error_signal.connect(self._on_clean_error)
+            self._clean_thread.progress_signal.connect(self._on_clean_progress)
+            self._clean_thread.start()
+
+        except Exception as e:
+            self.logger.error("清理损坏文件失败: %s", e)
+            if self.cleaner_result_label:
+                self.cleaner_result_label.setText(f"状态: 清理异常 - {e}")
+            if self.cleaner_detail_text:
+                self.cleaner_detail_text.append(f"❌ 清理异常: {e}")
+            self.show_error(f"清理失败: {e}")
+
+        finally:
+            # 恢复扫描按钮
+            if self.cleaner_scan_btn:
+                self.cleaner_scan_btn.setEnabled(True)
+
+    def _on_clean_finished(self, result: dict):
+        """清理完成回调（在主线程执行）.
+
+        Args:
+            result: 清理结果
+        """
+        try:
+            if not result.get("success"):
+                error_msg = result.get("message", "未知错误")
+                if self.cleaner_result_label:
+                    self.cleaner_result_label.setText(f"状态: 清理失败 - {error_msg}")
+                if self.cleaner_detail_text:
+                    self.cleaner_detail_text.append(f"❌ 清理失败: {error_msg}")
+                self.show_error(f"清理失败: {error_msg}")
+
+                # 恢复按钮
+                if self.cleaner_scan_btn:
+                    self.cleaner_scan_btn.setEnabled(True)
+                return
+
+            # 获取清理结果
+            clean_result = result.get("result", {})
+            deleted_files = clean_result.get("deleted", [])
+
+            # 更新界面
+            if self.cleaner_result_label:
+                self.cleaner_result_label.setText(f"状态: ✅ 已清理 {len(deleted_files)} 个文件")
+
+            if self.cleaner_detail_text:
+                self.cleaner_detail_text.append(
+                    f"✅ 清理完成，已删除 {len(deleted_files)} 个文件\n"
+                )
+
+                # 显示删除的文件
+                display_count = min(len(deleted_files), 30)
+                for i, file_path in enumerate(deleted_files[:display_count], 1):
+                    self.cleaner_detail_text.append(f"  {i}. 已删除: {file_path}")
+
+                if len(deleted_files) > 30:
+                    self.cleaner_detail_text.append(
+                        f"\n... 还有 {len(deleted_files) - 30} 个文件未显示"
+                    )
+
+            # 清空缓存列表
+            self._cleaner_corrupted_files = []
+
+            # 禁用清理按钮
+            if self.cleaner_clean_btn:
+                self.cleaner_clean_btn.setEnabled(False)
+
+            self.show_info(f"清理完成，已删除 {len(deleted_files)} 个损坏文件")
+
+        except Exception as e:
+            self.logger.error("处理清理结果失败: %s", e)
+
+        finally:
+            # 恢复扫描按钮
+            if self.cleaner_scan_btn:
+                self.cleaner_scan_btn.setEnabled(True)
+
+    def _on_clean_progress(self, current: int, total: int, message: str):
+        """清理进度回调（在主线程执行）.
+
+        Args:
+            current: 当前已检查文件数
+            total: 总文件数
+            message: 当前处理消息
+        """
+        try:
+            # 更新状态标签（实时显示进度）
+            if self.cleaner_result_label:
+                progress_pct = (current / total * 100) if total > 0 else 0
+                self.cleaner_result_label.setText(
+                    f"状态: 正在清理... {current}/{total} ({progress_pct:.1f}%) - {message}"
+                )
+
+            # 详细文本只在关键节点显示（每100个或整百倍数）
+            if self.cleaner_detail_text and (current % 100 == 0 or current == total):
+                self.cleaner_detail_text.append(
+                    f"✓ 已检查 {current}/{total} 个文件 ({progress_pct:.1f}%)"
+                )
+
+        except Exception as e:
+            self.logger.error("更新清理进度失败: %s", e)
+
+    def _on_clean_error(self, error_msg: str):
+        """清理错误回调（在主线程执行）.
+
+        Args:
+            error_msg: 错误消息
+        """
+        try:
+            if self.cleaner_result_label:
+                self.cleaner_result_label.setText(f"状态: 清理异常 - {error_msg}")
+            if self.cleaner_detail_text:
+                self.cleaner_detail_text.append(f"❌ 清理异常: {error_msg}")
+            self.show_error(f"清理失败: {error_msg}")
+
+        except Exception as e:
+            self.logger.error("处理清理错误失败: %s", e)
+
+        finally:
+            # 恢复扫描按钮
+            if self.cleaner_scan_btn:
+                self.cleaner_scan_btn.setEnabled(True)
+
     # ==================== 配置管理方法 ====================
 
     def _load_config(self):
@@ -2292,7 +2785,7 @@ class SystemManager(BaseWidget, LoggerMixin):
                 if diagnosis.get("config_file_content"):
                     config = diagnosis["config_file_content"]
                     ai_config = config.get("ai", {})
-                    msg_parts.append(f"\n文件中的AI配置:")
+                    msg_parts.append("\n文件中的AI配置:")
                     api_key = ai_config.get("api_key", "")
                     if api_key:
                         # 显示API Key的前后各4位
@@ -2301,15 +2794,15 @@ class SystemManager(BaseWidget, LoggerMixin):
                         )
                         msg_parts.append(f"  - API Key: {masked_key}")
                     else:
-                        msg_parts.append(f"  - API Key: 未设置")
+                        msg_parts.append("  - API Key: 未设置")
                     msg_parts.append(f"  - API URL: {ai_config.get('api_url', '未设置')}")
                     msg_parts.append(f"  - 模型: {ai_config.get('model', '未设置')}")
                 else:
-                    msg_parts.append(f"\n文件中的AI配置: 无（文件不存在或为空）")
+                    msg_parts.append("\n文件中的AI配置: 无（文件不存在或为空）")
 
                 # 内存中的AI配置
                 mem_config = diagnosis.get("memory_config", {})
-                msg_parts.append(f"\n内存中的AI配置:")
+                msg_parts.append("\n内存中的AI配置:")
                 msg_parts.append(
                     f"  - API Key: {'已设置' if mem_config.get('ai_api_key_set') else '未设置'}"
                 )
@@ -2318,7 +2811,7 @@ class SystemManager(BaseWidget, LoggerMixin):
 
                 # AI服务状态
                 ai_status = diagnosis.get("ai_service_status", {})
-                msg_parts.append(f"\nAI服务状态:")
+                msg_parts.append("\nAI服务状态:")
                 msg_parts.append(f"  - 服务存在: {ai_status.get('exists')}")
                 if ai_status.get("exists"):
                     msg_parts.append(f"  - 已初始化: {ai_status.get('initialized')}")
@@ -2622,7 +3115,7 @@ class SystemManager(BaseWidget, LoggerMixin):
             for key in self.performance_history:
                 if len(self.performance_history[key]) > self.max_history_points:
                     self.performance_history[key] = self.performance_history[key][
-                        -self.max_history_points :
+                        -self.max_history_points:
                     ]
 
             # 更新图表
@@ -3179,6 +3672,190 @@ class SystemManager(BaseWidget, LoggerMixin):
     def refresh_data(self):
         """刷新数据."""
         self._update_system_status()
+
+    # ==================== 业务指标监控仪表板 ====================
+
+    def _create_business_metrics_dashboard(self) -> QWidget:
+        """创建业务指标监控仪表板."""
+        dashboard = QGroupBox("📊 业务指标监控")
+        layout = QGridLayout(dashboard)
+        layout.setSpacing(15)
+
+        # 创建4个模块卡片
+        self.dc_metrics_card = self._create_module_metrics_card("数据中心")
+        self.gw_metrics_card = self._create_module_metrics_card("交易网关")
+        self.pf_metrics_card = self._create_module_metrics_card("组合投资")
+        self.st_metrics_card = self._create_module_metrics_card("策略中心")
+
+        layout.addWidget(self.dc_metrics_card, 0, 0)
+        layout.addWidget(self.gw_metrics_card, 0, 1)
+        layout.addWidget(self.pf_metrics_card, 1, 0)
+        layout.addWidget(self.st_metrics_card, 1, 1)
+
+        return dashboard
+
+    def _create_module_metrics_card(self, module_name: str) -> QGroupBox:
+        """创建模块指标卡片.
+
+        Args:
+            module_name: 模块名称
+
+        Returns:
+            QGroupBox: 模块卡片
+        """
+        card = QGroupBox(module_name)
+        card.setStyleSheet(
+            """
+            QGroupBox {
+                border: 2px solid #4CAF50;
+                border-radius: 10px;
+                padding: 15px;
+                background-color: #2A2A2A;
+                font-weight: bold;
+            }
+            QGroupBox::title {
+                color: #4CAF50;
+            }
+            """
+        )
+
+        layout = QVBoxLayout(card)
+        layout.setSpacing(8)
+
+        # 根据模块创建不同的指标标签
+        if module_name == "数据中心":
+            metrics = [
+                ("品种数", "dc_symbol_count"),
+                ("已连接数据源", "dc_connected_datafeeds"),
+                ("下载任务数", "dc_active_downloads"),
+                ("录制功能", "dc_recording_enabled"),
+            ]
+        elif module_name == "交易网关":
+            metrics = [
+                ("总网关数", "gw_total_gateways"),
+                ("已连接网关", "gw_connected_gateways"),
+                ("总策略数", "gw_total_strategies"),
+                ("激活策略数", "gw_active_strategies"),
+            ]
+        elif module_name == "组合投资":
+            metrics = [
+                ("自动组合数", "pf_auto_portfolio_count"),
+                ("自定义组合数", "pf_custom_portfolio_count"),
+                ("总组合数", "pf_total_portfolio_count"),
+            ]
+        elif module_name == "策略中心":
+            metrics = [
+                ("可用策略数", "st_available_strategies"),
+                ("活跃回测任务", "st_active_backtests"),
+            ]
+        else:
+            metrics = []
+
+        # 创建指标标签
+        for metric_name, label_name in metrics:
+            metric_layout = QHBoxLayout()
+
+            name_label = QLabel(f"{metric_name}:")
+            name_label.setStyleSheet("color: #888; font-size: 11px;")
+            metric_layout.addWidget(name_label)
+
+            value_label = QLabel("--")
+            value_label.setStyleSheet("color: #FFF; font-size: 14px; font-weight: bold;")
+            value_label.setObjectName(label_name)
+            metric_layout.addWidget(value_label)
+
+            metric_layout.addStretch()
+
+            layout.addLayout(metric_layout)
+
+        return card
+
+    def _refresh_business_metrics(self):
+        """刷新业务指标."""
+        try:
+            if not self.system_service:
+                self.show_error("系统管理服务不可用")
+                return
+
+            result = self.system_service.get_business_metrics()
+
+            if not result.get("success"):
+                self.show_error(f"获取业务指标失败: {result.get('message')}")
+                return
+
+            metrics = result.get("metrics", {})
+
+            # 1. 更新数据中心指标
+            dc = metrics.get("data_center", {})
+            if not dc.get("error"):
+                self._update_metric_label("dc_symbol_count", dc.get("symbol_count", 0))
+                self._update_metric_label(
+                    "dc_connected_datafeeds", dc.get("connected_datafeeds", 0)
+                )
+                self._update_metric_label("dc_active_downloads", dc.get("active_downloads", 0))
+                recording = "启用" if dc.get("recording_enabled") else "禁用"
+                self._update_metric_label("dc_recording_enabled", recording)
+
+            # 2. 更新交易网关指标
+            gw = metrics.get("trading_gateway", {})
+            if not gw.get("error"):
+                self._update_metric_label("gw_total_gateways", gw.get("total_gateways", 0))
+                self._update_metric_label("gw_connected_gateways", gw.get("connected_gateways", 0))
+                self._update_metric_label("gw_total_strategies", gw.get("total_strategies", 0))
+                self._update_metric_label("gw_active_strategies", gw.get("active_strategies", 0))
+
+            # 3. 更新组合投资指标
+            pf = metrics.get("portfolio_investment", {})
+            if not pf.get("error"):
+                self._update_metric_label(
+                    "pf_auto_portfolio_count", pf.get("auto_portfolio_count", 0)
+                )
+                self._update_metric_label(
+                    "pf_custom_portfolio_count", pf.get("custom_portfolio_count", 0)
+                )
+                self._update_metric_label(
+                    "pf_total_portfolio_count", pf.get("total_portfolio_count", 0)
+                )
+
+            # 4. 更新策略中心指标
+            st = metrics.get("strategy_center", {})
+            if not st.get("error"):
+                self._update_metric_label(
+                    "st_available_strategies", st.get("available_strategies", 0)
+                )
+                self._update_metric_label("st_active_backtests", st.get("active_backtests", 0))
+
+            self.show_info("业务指标已刷新")
+
+        except Exception as e:
+            self.logger.error("刷新业务指标失败: %s", e)
+            self.show_error(f"刷新失败: {e}")
+
+    def _update_metric_label(self, label_name: str, value):
+        """更新指标标签值.
+
+        Args:
+            label_name: 标签对象名称
+            value: 值
+        """
+        try:
+            # 在所有模块卡片中查找标签
+            for card in [
+                self.dc_metrics_card,
+                self.gw_metrics_card,
+                self.pf_metrics_card,
+                self.st_metrics_card,
+            ]:
+                if not card:
+                    continue
+
+                label = card.findChild(QLabel, label_name)
+                if label:
+                    label.setText(str(value))
+                    break
+
+        except Exception as e:
+            self.logger.debug(f"更新指标标签失败: {e}")
         self.show_info("系统状态已刷新")
 
     def on_close(self):

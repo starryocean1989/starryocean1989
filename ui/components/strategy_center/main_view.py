@@ -55,6 +55,11 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         self.ai_response: Optional[QTextEdit] = None
         self.user_input: Optional[QLineEdit] = None
 
+        # 标签页组件
+        self.content_tab: Optional[QTabWidget] = None
+        self.editor_tab: Optional[QWidget] = None
+        self.backtest_tab: Optional[QWidget] = None
+
         # 回测相关组件
         self.backtest_panel: Optional[QWidget] = None
         self.backtest_target_combo: Optional[QComboBox] = None
@@ -137,7 +142,7 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         self.file_explorer = FileExplorerWidget(str(strategies_dir.resolve()))
         layout.addWidget(self.file_explorer)
 
-        self.logger.info(f"文件管理器根目录: {strategies_dir.resolve()}")
+        self.logger.info("文件管理器根目录: %s", strategies_dir.resolve())
 
         return widget
 
@@ -412,7 +417,7 @@ class StrategyCenter(BaseWidget, LoggerMixin):
                 self.editor_tabs.file_saved.connect(self._on_file_saved)
                 self.logger.info("编辑器标签信号已连接")
         except Exception as e:
-            self.logger.error(f"连接信号失败: {e}", exc_info=True)
+            self.logger.error("连接信号失败: %s", e, exc_info=True)
 
     def _on_file_double_clicked(self, file_path: str):
         """文件双击事件 - 根据当前标签页执行不同操作.
@@ -421,9 +426,11 @@ class StrategyCenter(BaseWidget, LoggerMixin):
             file_path: 文件路径
         """
         try:
-            self.logger.info(f"🔍 [DEBUG] 双击事件触发，接收到文件路径: {file_path}")
+            self.logger.info("🔍 [DEBUG] 双击事件触发，接收到文件路径: %s", file_path)
             self.logger.info(
-                f"🔍 [DEBUG] 路径类型: {type(file_path)}, 长度: {len(file_path) if file_path else 0}"
+                "🔍 [DEBUG] 路径类型: %s, 长度: %s",
+                type(file_path),
+                len(file_path) if file_path else 0,
             )
 
             if not file_path:
@@ -436,7 +443,9 @@ class StrategyCenter(BaseWidget, LoggerMixin):
                 return
 
             current_tab_index = self.content_tab.currentIndex()
-            self.logger.info(f"🔍 [DEBUG] 当前标签页索引: {current_tab_index}, 文件: {file_path}")
+            self.logger.info(
+                "🔍 [DEBUG] 当前标签页索引: %s, 文件: %s", current_tab_index, file_path
+            )
 
             # 0 = 策略编写标签页：打开文件到编辑器
             if current_tab_index == 0:
@@ -447,10 +456,10 @@ class StrategyCenter(BaseWidget, LoggerMixin):
                 self._handle_file_select_for_backtest(file_path)
 
             else:
-                self.logger.warning(f"未知的标签页索引: {current_tab_index}")
+                self.logger.warning("未知的标签页索引: %s", current_tab_index)
 
         except Exception as e:
-            self.logger.error(f"双击文件处理失败: {file_path}, 错误: {e}", exc_info=True)
+            self.logger.error("双击文件处理失败: %s, 错误: %s", file_path, e, exc_info=True)
             self.show_error(f"处理文件时发生错误:\n{str(e)}")
 
     def _handle_file_open_for_editing(self, file_path: str):
@@ -464,13 +473,13 @@ class StrategyCenter(BaseWidget, LoggerMixin):
             self.show_error("编辑器组件未准备好，请稍后再试")
             return
 
-        self.logger.info(f"在编辑器中打开文件: {file_path}")
+        self.logger.info("在编辑器中打开文件: %s", file_path)
         success = self.editor_tabs.open_file(file_path)
 
         if success:
-            self.logger.info(f"文件在编辑器中打开成功: {file_path}")
+            self.logger.info("文件在编辑器中打开成功: %s", file_path)
         else:
-            self.logger.warning(f"文件打开失败: {file_path}")
+            self.logger.warning("文件打开失败: %s", file_path)
 
     def _handle_file_select_for_backtest(self, file_path: str):
         """在策略回测标签页中选中文件作为回测目标.
@@ -478,16 +487,16 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         Args:
             file_path: 文件路径
         """
-        self.logger.info(f"🔍 [DEBUG] _handle_file_select_for_backtest 被调用")
-        self.logger.info(f"🔍 [DEBUG] 完整文件路径: {file_path}")
+        self.logger.info("🔍 [DEBUG] _handle_file_select_for_backtest 被调用")
+        self.logger.info("🔍 [DEBUG] 完整文件路径: %s", file_path)
 
         # 获取文件名（不含路径）
         file_name = Path(file_path).name
-        self.logger.info(f"🔍 [DEBUG] 提取的文件名: {file_name}")
+        self.logger.info("🔍 [DEBUG] 提取的文件名: %s", file_name)
 
         # 检查是否是Python文件
         if not file_name.endswith(".py"):
-            self.logger.warning(f"文件不是Python文件: {file_name}")
+            self.logger.warning("文件不是Python文件: %s", file_name)
             self.show_warning(f"只能选择Python策略文件进行回测\n选中的文件: {file_name}")
             return
 
@@ -501,24 +510,31 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         self._load_strategy_list()
 
         # 打印当前下拉框中的所有项
-        self.logger.info(f"🔍 [DEBUG] 下拉框中的项数: {self.backtest_target_combo.count()}")
+        self.logger.info("🔍 [DEBUG] 下拉框中的项数: %s", self.backtest_target_combo.count())
         for i in range(self.backtest_target_combo.count()):
             item_text = self.backtest_target_combo.itemText(i)
-            self.logger.info(f"🔍 [DEBUG] 下拉框项 [{i}]: '{item_text}' (长度: {len(item_text)})")
+            self.logger.info(
+                "🔍 [DEBUG] 下拉框项 [%s]: '%s' (长度: %s)", i, item_text, len(item_text)
+            )
 
         # 查找并选中该策略
-        self.logger.info(f"🔍 [DEBUG] 尝试查找文件名: '{file_name}' (长度: {len(file_name)})")
+        self.logger.info("🔍 [DEBUG] 尝试查找文件名: '%s' (长度: %s)", file_name, len(file_name))
         index = self.backtest_target_combo.findText(file_name)
-        self.logger.info(f"🔍 [DEBUG] findText 返回索引: {index}")
+        self.logger.info("🔍 [DEBUG] findText 返回索引: %s", index)
 
         if index >= 0:
             self.backtest_target_combo.setCurrentIndex(index)
-            self.logger.info(f"✓ 已选中回测策略: {file_name}")
+            self.logger.info("✓ 已选中回测策略: %s", file_name)
             self.show_info(f"✓ 已选中回测策略: {file_name}")
         else:
-            self.logger.error(f"✗ 回测列表中未找到策略: {file_name}")
+            self.logger.error("✗ 回测列表中未找到策略: %s", file_name)
             self.logger.error(
-                f"🔍 [DEBUG] 匹配失败详情 - 查找: '{file_name}', 列表: {[self.backtest_target_combo.itemText(i) for i in range(self.backtest_target_combo.count())]}"
+                "🔍 [DEBUG] 匹配失败详情 - 查找: '%s', 列表: %s",
+                file_name,
+                [
+                    self.backtest_target_combo.itemText(i)
+                    for i in range(self.backtest_target_combo.count())
+                ],
             )
             self.show_warning(
                 f"✗ 无法在回测列表中找到策略: {file_name}\n\n可能原因：\n1. 文件不在 strategies/user_strategies 目录\n2. 文件名不符合Python文件命名规范"
@@ -530,7 +546,7 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         Args:
             file_path: 文件路径
         """
-        self.logger.info(f"文件已保存: {file_path}")
+        self.logger.info("文件已保存: %s", file_path)
         self.show_info(f"文件已保存: {Path(file_path).name}")
 
     def _create_new_strategy(self):
@@ -605,7 +621,7 @@ class StrategyCenter(BaseWidget, LoggerMixin):
             return
 
         try:
-            import autopep8
+            import autopep8  # type: ignore[import-untyped]
 
             formatted_code = autopep8.fix_code(code)
             current_editor.setPlainText(formatted_code)
@@ -727,41 +743,41 @@ class StrategyCenter(BaseWidget, LoggerMixin):
                 Path(__file__).parent.parent.parent.parent / "strategies" / "user_strategies"
             )
             abs_strategy_dir = str(strategy_dir.resolve())
-            self.logger.info(f"🔍 [DEBUG] 策略目录（绝对）: {abs_strategy_dir}")
-            self.logger.info(f"🔍 [DEBUG] 当前工作目录: {os.getcwd()}")
-            self.logger.info(f"🔍 [DEBUG] 目录是否存在: {strategy_dir.exists()}")
+            self.logger.info("🔍 [DEBUG] 策略目录（绝对）: %s", abs_strategy_dir)
+            self.logger.info("🔍 [DEBUG] 当前工作目录: %s", os.getcwd())
+            self.logger.info("🔍 [DEBUG] 目录是否存在: %s", strategy_dir.exists())
 
             if strategy_dir.exists():
                 all_files = list(strategy_dir.iterdir())
-                self.logger.info(f"🔍 [DEBUG] 目录中所有文件: {[f.name for f in all_files]}")
+                self.logger.info("🔍 [DEBUG] 目录中所有文件: %s", [f.name for f in all_files])
 
                 strategy_files = [
                     f.name
                     for f in all_files
                     if f.is_file() and f.name.endswith(".py") and not f.name.startswith("__")
                 ]
-                self.logger.info(f"🔍 [DEBUG] 过滤后的策略文件: {strategy_files}")
+                self.logger.info("🔍 [DEBUG] 过滤后的策略文件: %s", strategy_files)
 
                 if strategy_files:
                     self.backtest_target_combo.addItems(strategy_files)
-                    self.logger.info(f"✓ 已加载 {len(strategy_files)} 个策略文件")
+                    self.logger.info("✓ 已加载 %s 个策略文件", len(strategy_files))
 
                     # 打印每个添加的文件的详细信息
                     for f in strategy_files:
                         self.logger.info(
-                            f"🔍 [DEBUG] 添加文件: '{f}' (长度: {len(f)}, repr: {repr(f)})"
+                            "🔍 [DEBUG] 添加文件: '%s' (长度: %s, repr: %s)", f, len(f), repr(f)
                         )
                 else:
                     self.backtest_target_combo.addItem("(无可用策略)")
                     self.logger.warning("🔍 [DEBUG] 未找到符合条件的策略文件")
             else:
                 self.backtest_target_combo.addItem("(策略目录不存在)")
-                self.logger.error(f"策略目录不存在: {strategy_dir}")
+                self.logger.error("策略目录不存在: %s", strategy_dir)
 
             self.logger.info("🔍 [DEBUG] ===== 策略列表加载完成 =====")
 
         except Exception as e:
-            self.logger.error(f"加载策略列表失败: {e}", exc_info=True)
+            self.logger.error("加载策略列表失败: %s", e, exc_info=True)
 
     def _run_backtest(self):
         """运行回测."""

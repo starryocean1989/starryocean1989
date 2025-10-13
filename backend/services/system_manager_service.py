@@ -1312,6 +1312,133 @@ class SystemManagerService(BaseService):
                 "message": f"重新加载失败: {str(e)}",
             }
 
+    # ==================== 业务指标监控 ====================
+
+    def get_business_metrics(self) -> Dict[str, Any]:
+        """获取业务指标监控数据.
+
+        聚合各业务服务的关键指标：
+        - 数据中心：品种数量、本地数据量、下载任务进度
+        - 交易网关：网关连接数、策略运行数、订单成交数
+        - 组合投资：组合数量、总盈亏、风险指标
+
+        Returns:
+            Dict: 业务指标数据
+        """
+        try:
+            from backend.core.base import get_service_manager
+
+            service_manager = get_service_manager()
+            metrics = {}
+
+            # 1. 数据中心指标
+            data_center_service = service_manager.get_service("data_center_service")
+            if data_center_service:
+                try:
+                    # 获取品种列表
+                    symbol_result = data_center_service.refresh_symbol_list()
+                    symbol_count = (
+                        len(symbol_result.get("data", [])) if symbol_result.get("success") else 0
+                    )
+
+                    # 获取数据源状态
+                    datafeed_status = data_center_service.get_all_datafeed_status()
+                    connected_datafeeds = sum(
+                        1
+                        for df in datafeed_status.get("datafeeds", {}).values()
+                        if df.get("connected")
+                    )
+
+                    metrics["data_center"] = {
+                        "symbol_count": symbol_count,
+                        "connected_datafeeds": connected_datafeeds,
+                        "active_downloads": len(data_center_service._download_tasks),
+                        "recording_enabled": datafeed_status.get("recording", {}).get(
+                            "enabled", False
+                        ),
+                    }
+                except Exception as e:
+                    self.logger.warning(f"获取数据中心指标失败: {e}")
+                    metrics["data_center"] = {"error": str(e)}
+
+            # 2. 交易网关指标
+            gateway_service = service_manager.get_service("trading_gateway_service")
+            if gateway_service:
+                try:
+                    gateways = gateway_service.list_gateways()
+                    connected_gateways = sum(1 for g in gateways if g.get("connected"))
+
+                    total_strategies = sum(
+                        len(strategies)
+                        for strategies in gateway_service.strategy_instances.values()
+                    )
+                    active_strategies = sum(
+                        1
+                        for strategies in gateway_service.strategy_instances.values()
+                        for s in strategies.values()
+                        if s.get("status") == "running"
+                    )
+
+                    metrics["trading_gateway"] = {
+                        "total_gateways": len(gateways),
+                        "connected_gateways": connected_gateways,
+                        "total_strategies": total_strategies,
+                        "active_strategies": active_strategies,
+                    }
+                except Exception as e:
+                    self.logger.warning(f"获取交易网关指标失败: {e}")
+                    metrics["trading_gateway"] = {"error": str(e)}
+
+            # 3. 组合投资指标
+            portfolio_service = service_manager.get_service("portfolio_service")
+            if portfolio_service:
+                try:
+                    portfolios_result = portfolio_service.list_portfolios()
+                    if portfolios_result.get("success"):
+                        portfolios = portfolios_result.get("portfolios", {})
+                        auto_count = len(portfolios.get("auto_portfolios", []))
+                        custom_count = len(portfolios.get("custom_portfolios", []))
+
+                        metrics["portfolio_investment"] = {
+                            "auto_portfolio_count": auto_count,
+                            "custom_portfolio_count": custom_count,
+                            "total_portfolio_count": auto_count + custom_count,
+                        }
+                    else:
+                        metrics["portfolio_investment"] = {"error": "无法获取组合列表"}
+                except Exception as e:
+                    self.logger.warning(f"获取组合投资指标失败: {e}")
+                    metrics["portfolio_investment"] = {"error": str(e)}
+
+            # 4. 策略中心指标
+            strategy_service = service_manager.get_service("strategy_center_service")
+            if strategy_service:
+                try:
+                    strategies_result = strategy_service.get_available_strategies()
+                    strategy_count = (
+                        len(strategies_result.get("strategies", []))
+                        if strategies_result.get("success")
+                        else 0
+                    )
+
+                    metrics["strategy_center"] = {
+                        "available_strategies": strategy_count,
+                        "active_backtests": len(strategy_service._backtest_tasks),
+                    }
+                except Exception as e:
+                    self.logger.warning(f"获取策略中心指标失败: {e}")
+                    metrics["strategy_center"] = {"error": str(e)}
+
+            return {
+                "success": True,
+                "metrics": metrics,
+                "timestamp": datetime.now().isoformat(),
+            }
+
+        except Exception as e:
+            self._log_error("获取业务指标", e)
+            return {"success": False, "message": str(e)}
+
     # ==================== 配置管理 ====================
 
     def get_all_configs(self) -> Dict[str, Any]:
@@ -2207,4 +2334,41 @@ class SystemManagerService(BaseService):
             return {
                 "success": False,
                 "message": str(e),
+            }
+
+    def scan_corrupted_files(
+        self, auto_delete: bool = False, progress_callback=None
+    ) -> Dict[str, Any]:
+        """扫描并清理损坏的Parquet文件.
+
+        Args:
+            auto_delete: 是否自动删除损坏文件
+            progress_callback: 进度回调函数
+
+        Returns:
+            Dict: 扫描结果 {"success": bool, "result": {"corrupted": [...], "deleted": [...]}}
+        """
+        try:
+            # 直接导入并使用StorageManager
+            from backend.infrastructure.data_module_vnpy.storage import StorageManager
+
+            storage_manager = StorageManager()
+
+            # 调用扫描方法，传入进度回调
+            result = storage_manager.scan_and_repair_corrupted_files(
+                auto_delete=auto_delete, progress_callback=progress_callback
+            )
+
+            return {
+                "success": True,
+                "message": "扫描完成",
+                "result": result,
+            }
+
+        except Exception as e:
+            self._log_error("扫描损坏文件", e)
+            return {
+                "success": False,
+                "message": str(e),
+                "result": {"corrupted": [], "deleted": []},
             }

@@ -70,7 +70,6 @@ class TradingGateway(BaseWidget, LoggerMixin):
         self.monitor_table: Optional[QTableWidget] = None
         self.monitor_container: Optional[QWidget] = None
         self.monitor_layout: Optional[QVBoxLayout] = None
-        self.auto_switch_timer: Optional[Any] = None  # QTimer类型
 
         # 调用父类初始化
         super().__init__(parent, "交易网关")
@@ -260,8 +259,9 @@ class TradingGateway(BaseWidget, LoggerMixin):
         if self.monitor_layout is not None:
             while self.monitor_layout.count():
                 child = self.monitor_layout.takeAt(0)
-                if child.widget():
-                    child.widget().deleteLater()
+                widget = child.widget()
+                if widget is not None:
+                    widget.deleteLater()
 
         # 根据策略类型创建对应监控界面
         if strategy_type == "CTA策略":
@@ -280,9 +280,43 @@ class TradingGateway(BaseWidget, LoggerMixin):
             self._create_default_monitor()
 
     def _create_default_monitor(self):
-        """创建默认监控界面（通用）."""
-        monitor_group = QGroupBox("通用监控")
-        monitor_layout = QVBoxLayout(monitor_group)
+        """创建默认监控界面（通用）- 集成VnPy核心监控组件."""
+        from backend.core.base import get_event_engine
+        from ui.widgets.strategy_monitors import (
+            OrderMonitor,
+            TradeMonitor,
+            PositionMonitor,
+            AccountMonitor,
+        )
+
+        # 获取事件引擎
+        event_engine = get_event_engine()
+
+        # 获取当前选中的网关名称（用于数据过滤）
+        gateway_name = self._get_selected_gateway_name() or ""
+
+        # 创建监控选项卡（VnPy核心4监控 + 自定义监控）
+        monitor_tabs = QTabWidget()
+
+        # Tab 1: 资金监控
+        account_monitor = AccountMonitor(event_engine, gateway_name, self)
+        monitor_tabs.addTab(account_monitor, "💰 资金")
+
+        # Tab 2: 持仓监控
+        position_monitor = PositionMonitor(event_engine, gateway_name, self)
+        monitor_tabs.addTab(position_monitor, "📊 持仓")
+
+        # Tab 3: 订单监控
+        order_monitor = OrderMonitor(event_engine, gateway_name, self)
+        monitor_tabs.addTab(order_monitor, "📝 订单")
+
+        # Tab 4: 成交监控
+        trade_monitor = TradeMonitor(event_engine, gateway_name, self)
+        monitor_tabs.addTab(trade_monitor, "✅ 成交")
+
+        # Tab 5: 事件日志（自定义）
+        log_group = QGroupBox("事件日志")
+        log_layout = QVBoxLayout(log_group)
 
         self.monitor_table = QTableWidget(0, 6)
         self.monitor_table.setHorizontalHeaderLabels(
@@ -291,14 +325,39 @@ class TradingGateway(BaseWidget, LoggerMixin):
         header = self.monitor_table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
 
-        monitor_layout.addWidget(self.monitor_table)
+        log_layout.addWidget(self.monitor_table)
+        monitor_tabs.addTab(log_group, "📋 日志")
+
+        # 添加到主布局
         if self.monitor_layout is not None:
-            self.monitor_layout.addWidget(monitor_group)
+            self.monitor_layout.addWidget(monitor_tabs)
+
+        self.logger.info("✅ 已集成VnPy核心监控组件（资金、持仓、订单、成交）")
 
     def _create_cta_monitor(self):
-        """创建CTA策略专用监控界面."""
-        # 尝试导入vnpy_ctastrategy的UI组件
-        cta_widget = None
+        """创建CTA策略专用监控界面 - 集成VnPy核心监控."""
+        from backend.core.base import get_event_engine
+        from ui.widgets.strategy_monitors import (
+            OrderMonitor,
+            TradeMonitor,
+            PositionMonitor,
+            AccountMonitor,
+        )
+
+        # 获取事件引擎和网关名称
+        event_engine = get_event_engine()
+        gateway_name = self._get_selected_gateway_name() or ""
+
+        # 创建监控选项卡
+        monitor_tabs = QTabWidget()
+
+        # VnPy核心监控组件
+        monitor_tabs.addTab(AccountMonitor(event_engine, gateway_name, self), "💰 资金")
+        monitor_tabs.addTab(PositionMonitor(event_engine, gateway_name, self), "📊 持仓")
+        monitor_tabs.addTab(OrderMonitor(event_engine, gateway_name, self), "📝 订单")
+        monitor_tabs.addTab(TradeMonitor(event_engine, gateway_name, self), "✅ 成交")
+
+        # 尝试添加vnpy_ctastrategy原生组件
         try:
             from vnpy_ctastrategy.ui import CtaManager
 
@@ -310,31 +369,44 @@ class TradingGateway(BaseWidget, LoggerMixin):
                 cta_widget = CtaManager(
                     self.trading_service.main_engine, self.trading_service.event_engine
                 )
-            self.logger.info("已加载vnpy_ctastrategy专用监控组件")
+                monitor_tabs.addTab(cta_widget, "🎯 CTA管理器")
+                self.logger.info("已加载vnpy_ctastrategy专用监控组件")
         except ImportError:
-            self.logger.warning("vnpy_ctastrategy UI组件不可用，使用简化版")
+            self.logger.warning("vnpy_ctastrategy UI组件不可用")
 
-        if cta_widget and self.monitor_layout is not None:
-            self.monitor_layout.addWidget(cta_widget)
-        else:
-            # 简化版CTA监控
-            group = QGroupBox("CTA策略监控")
-            layout = QVBoxLayout(group)
-
-            table = QTableWidget(0, 7)
-            table.setHorizontalHeaderLabels(
-                ["策略", "持仓", "入场价", "当前价", "盈亏", "状态", "操作"]
-            )
-            header = table.horizontalHeader()
-            header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-
-            layout.addWidget(table)
-            if self.monitor_layout is not None:
-                self.monitor_layout.addWidget(group)
+        if self.monitor_layout is not None:
+            self.monitor_layout.addWidget(monitor_tabs)
 
     def _create_algo_monitor(self):
-        """创建算法交易专用监控界面."""
-        algo_widget = None
+        """创建算法交易专用监控界面 - 集成VnPy核心监控."""
+        from backend.core.base import get_event_engine
+        from ui.widgets.strategy_monitors import (
+            OrderMonitor,
+            TradeMonitor,
+            PositionMonitor,
+            AccountMonitor,
+            AlgoMonitorWidget,
+        )
+
+        # 获取事件引擎和网关名称
+        event_engine = get_event_engine()
+        gateway_name = self._get_selected_gateway_name() or ""
+
+        # 创建监控选项卡
+        monitor_tabs = QTabWidget()
+
+        # VnPy核心监控组件
+        monitor_tabs.addTab(AccountMonitor(event_engine, gateway_name, self), "💰 资金")
+        monitor_tabs.addTab(PositionMonitor(event_engine, gateway_name, self), "📊 持仓")
+        monitor_tabs.addTab(OrderMonitor(event_engine, gateway_name, self), "📝 订单")
+        monitor_tabs.addTab(TradeMonitor(event_engine, gateway_name, self), "✅ 成交")
+
+        # 算法交易专用监控
+        if self.trading_service:
+            algo_widget = AlgoMonitorWidget(gateway_name, self.trading_service, self)
+            monitor_tabs.addTab(algo_widget, "⚡ 算法监控")
+
+        # 尝试添加vnpy_algotrading原生组件
         try:
             from vnpy_algotrading.ui import AlgoManager
 
@@ -343,34 +415,47 @@ class TradingGateway(BaseWidget, LoggerMixin):
                 and hasattr(self.trading_service, "main_engine")
                 and self.trading_service.main_engine is not None
             ):
-                algo_widget = AlgoManager(
+                algo_manager = AlgoManager(
                     self.trading_service.main_engine, self.trading_service.event_engine
                 )
-            self.logger.info("已加载vnpy_algotrading专用监控组件")
+                monitor_tabs.addTab(algo_manager, "🎯 Algo管理器")
+                self.logger.info("已加载vnpy_algotrading原生组件")
         except ImportError:
-            self.logger.warning("vnpy_algotrading UI组件不可用，使用简化版")
+            self.logger.warning("vnpy_algotrading UI组件不可用")
 
-        if algo_widget and self.monitor_layout is not None:
-            self.monitor_layout.addWidget(algo_widget)
-        else:
-            # 简化版算法交易监控
-            group = QGroupBox("算法交易监控")
-            layout = QVBoxLayout(group)
-
-            table = QTableWidget(0, 7)
-            table.setHorizontalHeaderLabels(
-                ["算法", "目标价", "目标量", "已成交", "进度", "状态", "操作"]
-            )
-            header = table.horizontalHeader()
-            header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-
-            layout.addWidget(table)
-            if self.monitor_layout is not None:
-                self.monitor_layout.addWidget(group)
+        if self.monitor_layout is not None:
+            self.monitor_layout.addWidget(monitor_tabs)
 
     def _create_option_monitor(self):
-        """创建期权策略专用监控界面."""
-        option_widget = None
+        """创建期权策略专用监控界面 - 集成VnPy核心监控."""
+        from backend.core.base import get_event_engine
+        from ui.widgets.strategy_monitors import (
+            OrderMonitor,
+            TradeMonitor,
+            PositionMonitor,
+            AccountMonitor,
+            OptionMonitorWidget,
+        )
+
+        # 获取事件引擎和网关名称
+        event_engine = get_event_engine()
+        gateway_name = self._get_selected_gateway_name() or ""
+
+        # 创建监控选项卡
+        monitor_tabs = QTabWidget()
+
+        # VnPy核心监控组件
+        monitor_tabs.addTab(AccountMonitor(event_engine, gateway_name, self), "💰 资金")
+        monitor_tabs.addTab(PositionMonitor(event_engine, gateway_name, self), "📊 持仓")
+        monitor_tabs.addTab(OrderMonitor(event_engine, gateway_name, self), "📝 订单")
+        monitor_tabs.addTab(TradeMonitor(event_engine, gateway_name, self), "✅ 成交")
+
+        # 期权专用监控
+        if self.trading_service:
+            option_widget = OptionMonitorWidget(gateway_name, self.trading_service, self)
+            monitor_tabs.addTab(option_widget, "📈 期权监控")
+
+        # 尝试添加vnpy_optionmaster原生组件
         try:
             from vnpy_optionmaster.ui import OptionManager
 
@@ -379,33 +464,47 @@ class TradingGateway(BaseWidget, LoggerMixin):
                 and hasattr(self.trading_service, "main_engine")
                 and self.trading_service.main_engine is not None
             ):
-                option_widget = OptionManager(
+                option_manager = OptionManager(
                     self.trading_service.main_engine, self.trading_service.event_engine
                 )
-            self.logger.info("已加载vnpy_optionmaster专用监控组件")
+                monitor_tabs.addTab(option_manager, "🎯 Option管理器")
+                self.logger.info("已加载vnpy_optionmaster原生组件")
         except ImportError:
-            self.logger.warning("vnpy_optionmaster UI组件不可用，使用简化版")
+            self.logger.warning("vnpy_optionmaster UI组件不可用")
 
-        if option_widget and self.monitor_layout is not None:
-            self.monitor_layout.addWidget(option_widget)
-        else:
-            # 简化版期权监控
-            group = QGroupBox("期权策略监控（希腊字母）")
-            layout = QVBoxLayout(group)
-
-            table = QTableWidget(0, 8)
-            table.setHorizontalHeaderLabels(
-                ["策略", "Delta", "Gamma", "Vega", "Theta", "标的价格", "组合价值", "操作"]
-            )
-            header = table.horizontalHeader()
-            header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-
-            layout.addWidget(table)
-            if self.monitor_layout is not None:
-                self.monitor_layout.addWidget(group)
+        if self.monitor_layout is not None:
+            self.monitor_layout.addWidget(monitor_tabs)
 
     def _create_portfolio_monitor(self):
-        """创建组合策略专用监控界面."""
+        """创建组合策略专用监控界面 - 集成VnPy核心监控."""
+        from backend.core.base import get_event_engine
+        from ui.widgets.strategy_monitors import (
+            OrderMonitor,
+            TradeMonitor,
+            PositionMonitor,
+            AccountMonitor,
+            PortfolioMonitorWidget,
+        )
+
+        # 获取事件引擎和网关名称
+        event_engine = get_event_engine()
+        gateway_name = self._get_selected_gateway_name() or ""
+
+        # 创建监控选项卡
+        monitor_tabs = QTabWidget()
+
+        # VnPy核心监控组件
+        monitor_tabs.addTab(AccountMonitor(event_engine, gateway_name, self), "💰 资金")
+        monitor_tabs.addTab(PositionMonitor(event_engine, gateway_name, self), "📊 持仓")
+        monitor_tabs.addTab(OrderMonitor(event_engine, gateway_name, self), "📝 订单")
+        monitor_tabs.addTab(TradeMonitor(event_engine, gateway_name, self), "✅ 成交")
+
+        # 组合策略专用监控
+        if self.trading_service:
+            portfolio_widget = PortfolioMonitorWidget(gateway_name, self.trading_service, self)
+            monitor_tabs.addTab(portfolio_widget, "📊 组合监控")
+
+        # 尝试添加vnpy_portfoliostrategy原生组件
         portfolio_widget = None
         try:
             from vnpy_portfoliostrategy.ui import PortfolioStrategyManager
@@ -415,32 +514,41 @@ class TradingGateway(BaseWidget, LoggerMixin):
                 and hasattr(self.trading_service, "main_engine")
                 and self.trading_service.main_engine is not None
             ):
-                portfolio_widget = PortfolioStrategyManager(
+                portfolio_manager = PortfolioStrategyManager(
                     self.trading_service.main_engine, self.trading_service.event_engine
                 )
-            self.logger.info("已加载vnpy_portfoliostrategy专用监控组件")
+                monitor_tabs.addTab(portfolio_manager, "🎯 Portfolio管理器")
+            self.logger.info("已加载vnpy_portfoliostrategy原生组件")
         except ImportError:
-            self.logger.warning("vnpy_portfoliostrategy UI组件不可用，使用简化版")
+            self.logger.warning("vnpy_portfoliostrategy UI组件不可用")
 
-        if portfolio_widget and self.monitor_layout is not None:
-            self.monitor_layout.addWidget(portfolio_widget)
-        else:
-            # 简化版组合策略监控
-            group = QGroupBox("组合策略监控")
-            layout = QVBoxLayout(group)
-
-            table = QTableWidget(0, 6)
-            table.setHorizontalHeaderLabels(["品种", "持仓", "权重", "市值", "贡献", "操作"])
-            header = table.horizontalHeader()
-            header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-
-            layout.addWidget(table)
-            if self.monitor_layout is not None:
-                self.monitor_layout.addWidget(group)
+        if self.monitor_layout is not None:
+            self.monitor_layout.addWidget(monitor_tabs)
 
     def _create_spread_monitor(self):
-        """创建价差交易专用监控界面."""
-        spread_widget = None
+        """创建价差交易专用监控界面 - 集成VnPy核心监控."""
+        from backend.core.base import get_event_engine
+        from ui.widgets.strategy_monitors import (
+            OrderMonitor,
+            TradeMonitor,
+            PositionMonitor,
+            AccountMonitor,
+        )
+
+        # 获取事件引擎和网关名称
+        event_engine = get_event_engine()
+        gateway_name = self._get_selected_gateway_name() or ""
+
+        # 创建监控选项卡
+        monitor_tabs = QTabWidget()
+
+        # VnPy核心监控组件
+        monitor_tabs.addTab(AccountMonitor(event_engine, gateway_name, self), "💰 资金")
+        monitor_tabs.addTab(PositionMonitor(event_engine, gateway_name, self), "📊 持仓")
+        monitor_tabs.addTab(OrderMonitor(event_engine, gateway_name, self), "📝 订单")
+        monitor_tabs.addTab(TradeMonitor(event_engine, gateway_name, self), "✅ 成交")
+
+        # 尝试添加vnpy_spreadtrading原生组件
         try:
             from vnpy_spreadtrading.ui import SpreadManager
 
@@ -452,59 +560,56 @@ class TradingGateway(BaseWidget, LoggerMixin):
                 spread_widget = SpreadManager(
                     self.trading_service.main_engine, self.trading_service.event_engine
                 )
-            self.logger.info("已加载vnpy_spreadtrading专用监控组件")
+                monitor_tabs.addTab(spread_widget, "🎯 Spread管理器")
+                self.logger.info("已加载vnpy_spreadtrading原生组件")
         except ImportError:
-            self.logger.warning("vnpy_spreadtrading UI组件不可用，使用简化版")
+            self.logger.warning("vnpy_spreadtrading UI组件不可用")
 
-        if spread_widget and self.monitor_layout is not None:
-            self.monitor_layout.addWidget(spread_widget)
-        else:
-            # 简化版价差交易监控
-            group = QGroupBox("价差交易监控")
-            layout = QVBoxLayout(group)
-
-            table = QTableWidget(0, 7)
-            table.setHorizontalHeaderLabels(
-                ["价差名称", "价差价格", "腿1价格", "腿2价格", "持仓", "盈亏", "操作"]
-            )
-            header = table.horizontalHeader()
-            header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-
-            layout.addWidget(table)
-            if self.monitor_layout is not None:
-                self.monitor_layout.addWidget(group)
+        if self.monitor_layout is not None:
+            self.monitor_layout.addWidget(monitor_tabs)
 
     def _create_script_monitor(self):
-        """创建脚本交易专用监控界面."""
+        """创建脚本交易专用监控界面 - 集成VnPy核心监控."""
+        from backend.core.base import get_event_engine
+        from ui.widgets.strategy_monitors import (
+            OrderMonitor,
+            TradeMonitor,
+            PositionMonitor,
+            AccountMonitor,
+        )
+
+        # 获取事件引擎和网关名称
+        event_engine = get_event_engine()
+        gateway_name = self._get_selected_gateway_name() or ""
+
+        # 创建监控选项卡
+        monitor_tabs = QTabWidget()
+
+        # VnPy核心监控组件
+        monitor_tabs.addTab(AccountMonitor(event_engine, gateway_name, self), "💰 资金")
+        monitor_tabs.addTab(PositionMonitor(event_engine, gateway_name, self), "📊 持仓")
+        monitor_tabs.addTab(OrderMonitor(event_engine, gateway_name, self), "📝 订单")
+        monitor_tabs.addTab(TradeMonitor(event_engine, gateway_name, self), "✅ 成交")
+
+        # 尝试添加vnpy_scripttrader原生组件
         try:
-            from vnpy_scripttrader.ui import ScriptEngine
+            from vnpy_scripttrader.ui import ScriptManager
 
             if (
                 self.trading_service
                 and hasattr(self.trading_service, "main_engine")
                 and self.trading_service.main_engine is not None
             ):
-                script_widget = ScriptEngine(
+                script_widget = ScriptManager(
                     self.trading_service.main_engine, self.trading_service.event_engine
                 )
-            else:
-                script_widget = None
-            if script_widget and self.monitor_layout is not None:
-                self.monitor_layout.addWidget(script_widget)
-            self.logger.info("已加载vnpy_scripttrader专用监控组件")
-        except ImportError:
-            # 简化版脚本交易监控
-            group = QGroupBox("脚本交易监控")
-            layout = QVBoxLayout(group)
+                monitor_tabs.addTab(script_widget, "🎯 Script管理器")
+                self.logger.info("已加载vnpy_scripttrader原生组件")
+        except (ImportError, AttributeError):
+            self.logger.warning("vnpy_scripttrader UI组件不可用")
 
-            table = QTableWidget(0, 5)
-            table.setHorizontalHeaderLabels(["脚本名称", "运行时间", "执行次数", "状态", "操作"])
-            header = table.horizontalHeader()
-            header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-
-            layout.addWidget(table)
-            if self.monitor_layout is not None:
-                self.monitor_layout.addWidget(group)
+        if self.monitor_layout is not None:
+            self.monitor_layout.addWidget(monitor_tabs)
 
     # ==================== 事件处理 ====================
 
@@ -699,7 +804,10 @@ class TradingGateway(BaseWidget, LoggerMixin):
         # 显示对话框
         if dialog.exec() == QDialog.DialogCode.Accepted:
             gateway_type = gateway_type_combo.currentText().split(" - ")[0]
-            gateway_name = dynamic_fields.get("name").text() if "name" in dynamic_fields else ""
+
+            # 安全获取网关名称
+            name_field = dynamic_fields.get("name")
+            gateway_name = name_field.text() if name_field else ""
 
             # 验证网关名称
             if not gateway_name:
@@ -883,11 +991,12 @@ class TradingGateway(BaseWidget, LoggerMixin):
     def _connect_gateway(self, row: int):
         """连接网关（保留兼容）."""
         # 获取按钮
-        op_widget = self.gateways_table.cellWidget(row, 3)
-        if op_widget:
-            connect_btn = op_widget.findChild(QPushButton)
-            if connect_btn:
-                self._connect_gateway_ui(row, connect_btn)
+        if self.gateways_table:
+            op_widget = self.gateways_table.cellWidget(row, 3)
+            if op_widget:
+                connect_btn = op_widget.findChild(QPushButton)
+                if connect_btn:
+                    self._connect_gateway_ui(row, connect_btn)
 
     def _delete_gateway(self, row: int):
         """删除网关."""
@@ -958,47 +1067,46 @@ class TradingGateway(BaseWidget, LoggerMixin):
                 self.logger.error(f"获取网关列表失败: {e}")
         form_layout.addRow("选择网关:", gateway_combo)
 
-        # 准备策略目录（使用绝对路径）
-        from pathlib import Path
-        import re
+        # 2. 通过StrategyCenter服务API获取策略列表（重构版）
+        self.logger.info("通过strategy_center_service获取策略列表...")
 
-        # 获取项目根目录（通过当前文件位置推断）
-        # 当前文件: ui/components/trading_gateway/main_view.py
-        # 项目根目录: 向上4级
-        base_dir = Path(__file__).resolve().parent.parent.parent.parent
-        strategies_base = base_dir / "strategies" / "user_strategies"
+        # 获取策略中心服务
+        strategy_service = self.service_manager.get_service("strategy_center_service")
+        if not strategy_service:
+            self.show_error("策略中心服务不可用")
+            return
 
-        self.logger.info(f"项目根目录: {base_dir}")
-        self.logger.info(f"策略基础目录: {strategies_base}")
+        # 调用API获取策略列表
+        strategies_result = strategy_service.get_available_strategies()
 
-        # 2. 策略文件夹选择（下拉框）
+        if not strategies_result.get("success"):
+            self.show_error(f"获取策略列表失败: {strategies_result.get('message', '未知错误')}")
+            return
+
+        all_strategies = strategies_result.get("strategies", [])
+        available_folders = strategies_result.get("folders", [])
+
+        self.logger.info(f"获取到 {len(all_strategies)} 个策略，{len(available_folders)} 个文件夹")
+
+        # 策略文件夹选择（下拉框）
         folder_combo = QComboBox()
         folder_combo.addItem("-- 请选择策略文件夹 --")
 
-        # 扫描子文件夹
-        folder_paths = {}  # 存储文件夹显示名和路径的映射
-        if strategies_base.exists():
-            # 添加根目录选项
+        # 添加文件夹选项
+        if "根目录" in available_folders:
             folder_combo.addItem("根目录")
-            folder_paths["根目录"] = strategies_base
-
-            # 扫描子文件夹
-            for item in strategies_base.iterdir():
-                if item.is_dir() and not item.name.startswith("__"):
-                    folder_combo.addItem(item.name)
-                    folder_paths[item.name] = item
-                    self.logger.info(f"找到策略文件夹: {item.name}")
-        else:
-            self.logger.error(f"策略目录不存在: {strategies_base}")
+        for folder in available_folders:
+            if folder != "根目录":
+                folder_combo.addItem(folder)
 
         form_layout.addRow("策略文件夹:", folder_combo)
 
-        # 3. 策略文件选择（下拉框）
+        # 策略文件选择（下拉框）
         strategy_file_combo = QComboBox()
         strategy_file_combo.addItem("-- 请先选择文件夹 --")
         strategy_file_combo.setEnabled(False)
 
-        strategy_class_map = {}  # 存储策略类名和文件的映射
+        strategy_class_map = {}  # 存储策略类名和策略信息的映射
 
         # 当选择文件夹时，更新策略文件列表
         def on_folder_selected(folder_text):
@@ -1010,46 +1118,23 @@ class TradingGateway(BaseWidget, LoggerMixin):
                 strategy_file_combo.setEnabled(False)
                 return
 
-            folder_path = folder_paths.get(folder_text)
-            if not folder_path:
-                return
-
             strategy_file_combo.setEnabled(True)
             strategy_file_combo.addItem("-- 请选择策略文件 --")
 
-            # 扫描该文件夹下的.py文件
-            found_count = 0
-            for file_path in folder_path.glob("*.py"):
-                if file_path.name.startswith("__"):
-                    continue
+            # 筛选该文件夹下的策略
+            folder_strategies = [s for s in all_strategies if s["folder"] == folder_text]
 
-                # 读取文件提取策略类名
-                try:
-                    with open(file_path, "r", encoding="utf-8") as f:
-                        content = f.read()
-
-                    # 匹配类定义（继承自各种策略模板）
-                    class_pattern = r"class\s+(\w+)\s*\([^)]*(?:Template|Strategy|Engine|Manager)\)"
-                    matches = re.findall(class_pattern, content)
-
-                    if matches:
-                        # 找到策略类
-                        for class_name in matches:
-                            display_text = f"{class_name} ({file_path.name})"
-                            strategy_file_combo.addItem(display_text)
-                            strategy_class_map[display_text] = {
-                                "class_name": class_name,
-                                "file_path": str(file_path),
-                                "folder": folder_text,
-                            }
-                            found_count += 1
-                except Exception as e:
-                    self.logger.warning(f"读取策略文件 {file_path.name} 失败: {e}")
-
-            self.logger.info(f"在文件夹 {folder_text} 中找到 {found_count} 个策略文件")
-
-            if found_count == 0:
+            if not folder_strategies:
                 strategy_file_combo.addItem("(该文件夹无策略文件)")
+                return
+
+            # 添加策略到下拉框
+            for strategy in folder_strategies:
+                display_text = strategy["display_name"]
+                strategy_file_combo.addItem(display_text)
+                strategy_class_map[display_text] = strategy
+
+            self.logger.info(f"文件夹 '{folder_text}' 有 {len(folder_strategies)} 个策略")
 
         folder_combo.currentTextChanged.connect(on_folder_selected)
         form_layout.addRow("策略文件:", strategy_file_combo)
@@ -1519,22 +1604,23 @@ class TradingGateway(BaseWidget, LoggerMixin):
                 self.show_error("请至少选择一个交易品种")
                 return
 
-            # 获取策略类名
-            strategy_class = strategy_class_map[strategy_file_text]["class_name"]
+            # 获取策略信息（从API返回的结构化数据）
+            strategy_info = strategy_class_map[strategy_file_text]
+            strategy_class = strategy_info["class_name"]
 
-            # 根据文件夹推测引擎类型
-            engine_type = "CtaStrategy"  # 默认
-            folder_lower = folder_text.lower()
-            if "algo" in folder_lower:
-                engine_type = "AlgoTrading"
-            elif "option" in folder_lower:
-                engine_type = "OptionMaster"
-            elif "portfolio" in folder_lower:
-                engine_type = "PortfolioStrategy"
-            elif "spread" in folder_lower:
-                engine_type = "SpreadTrading"
-            elif "script" in folder_lower:
-                engine_type = "ScriptTrader"
+            # 使用API返回的引擎类型（已正确识别）
+            engine_type_raw = strategy_info.get("engine_type", "ctastrategy")
+
+            # 转换为MainEngine需要的格式（首字母大写驼峰）
+            engine_type_mapping = {
+                "ctastrategy": "CtaStrategy",
+                "algotrading": "AlgoTrading",
+                "portfoliostrategy": "PortfolioStrategy",
+                "optionmaster": "OptionMaster",
+                "scripttrader": "ScriptTrader",
+                "spreadtrading": "SpreadTrading",
+            }
+            engine_type = engine_type_mapping.get(engine_type_raw, "CtaStrategy")
 
             # 构建策略参数
             strategy_params = {
@@ -1542,8 +1628,8 @@ class TradingGateway(BaseWidget, LoggerMixin):
                 "vt_symbols": selected_symbols,
             }
 
-            # 添加引擎特定参数
-            if "spread" in folder_lower:
+            # 添加引擎特定参数（基于识别的引擎类型）
+            if engine_type_raw == "spreadtrading":
                 # 价差交易策略：需要 spread_name
                 if "spread_name" in engine_param_widgets:
                     spread_name = engine_param_widgets["spread_name"].text().strip()
@@ -1711,16 +1797,24 @@ class TradingGateway(BaseWidget, LoggerMixin):
 
     # ==================== 通用方法 ====================
 
+    def _on_content_tab_changed(self, index: int):
+        """处理内容区Tab切换事件."""
+        # 当用户切换到监控Tab（index=1）时，更新监控界面显示
+        if index == 1:
+            self._check_and_update_monitor_display()
+
     def connect_signals(self):
         """连接信号槽."""
-        # 启动策略状态监控定时器（用于自动切换监控界面）
-        from PySide6.QtCore import QTimer
+        # 监听Tab切换事件，在用户切换到监控Tab时更新监控界面
+        if self.content_tab:
+            self.content_tab.currentChanged.connect(self._on_content_tab_changed)
 
-        self.auto_switch_timer = QTimer(self)
-        self.auto_switch_timer.timeout.connect(self._check_and_auto_switch_monitor)
-        self.auto_switch_timer.start(3000)  # 每3秒检查一次
+        # ✨ 监听策略状态变化事件，实现自动监控适配
+        self._register_strategy_status_listener()
 
         # 使用延迟加载确保UI和服务都已就绪
+        from PySide6.QtCore import QTimer
+
         QTimer.singleShot(100, self._load_existing_gateways)
 
     def refresh_data(self):
@@ -1734,7 +1828,10 @@ class TradingGateway(BaseWidget, LoggerMixin):
         # 而 _select_gateway_by_name 会调用 _load_strategies
         # 所以这里不需要再次调用 _load_strategies
 
-        self._check_and_auto_switch_monitor()
+        # 如果当前正在监控Tab，更新监控界面显示
+        if self.content_tab and self.content_tab.currentIndex() == 1:
+            self._check_and_update_monitor_display()
+
         self.show_info("交易网关数据已刷新")
 
         self.logger.info("=" * 50)
@@ -1907,7 +2004,7 @@ class TradingGateway(BaseWidget, LoggerMixin):
             "stopped": "已停止",
             "deployed": "已部署",
             "error": "错误",
-        }.get(status, status)
+        }.get(status, str(status))
         self.strategy_table.setItem(row, 2, QTableWidgetItem(status_text))
 
         # 启动时间
@@ -2003,10 +2100,97 @@ class TradingGateway(BaseWidget, LoggerMixin):
                 self.show_error(f"删除策略时发生错误: {str(e)}")
                 self.logger.error(f"删除策略失败: {e}", exc_info=True)
 
-    def _check_and_auto_switch_monitor(self):
-        """检查并自动切换监控界面.
+    def _register_strategy_status_listener(self):
+        """注册策略状态变化事件监听器.
 
-        需求：策略池只激活1个策略的网关自动切换到监控界面。
+        监听策略启动/停止事件，自动切换监控界面显示。
+        """
+        try:
+            from backend.core.base import get_event_engine
+            from backend.core.utils import EVENT_STRATEGY_STATUS_CHANGED
+
+            event_engine = get_event_engine()
+            if not event_engine:
+                self.logger.warning("EventEngine不可用，无法注册策略状态监听器")
+                return
+
+            # 注册事件处理器
+            event_engine.register(EVENT_STRATEGY_STATUS_CHANGED, self._on_strategy_status_changed)
+
+            self.logger.info("✅ 已注册策略状态变化事件监听器")
+
+        except Exception as e:
+            self.logger.error(f"注册策略状态监听器失败: {e}", exc_info=True)
+
+    def _on_strategy_status_changed(self, event):
+        """处理策略状态变化事件.
+
+        Args:
+            event: vnpy Event对象
+        """
+        try:
+            # 提取事件数据
+            data = event.data if hasattr(event, "data") else event
+            gateway_name = data.get("gateway_name", "")
+            strategy_name = data.get("strategy_name", "")
+            status = data.get("status", "")
+            active_count = data.get("active_count", 0)
+            strategy_type = data.get("engine_type", "ctastrategy")
+
+            self.logger.info(
+                f"📢 收到策略状态事件: {gateway_name}.{strategy_name} -> {status} "
+                f"(激活策略数: {active_count})"
+            )
+
+            # 刷新策略列表
+            self.refresh_data()
+
+            # 如果当前在监控Tab，且该网关正好只有1个激活策略，自动更新监控显示
+            if self.content_tab and self.content_tab.currentIndex() == 1:
+                if active_count == 1:
+                    # 获取当前选中的网关
+                    selected_gateway = self._get_selected_gateway_name()
+                    if selected_gateway == gateway_name:
+                        # 自动切换到对应的监控类型
+                        self._auto_switch_monitor_type(strategy_type)
+
+        except Exception as e:
+            self.logger.error(f"处理策略状态事件失败: {e}", exc_info=True)
+
+    def _auto_switch_monitor_type(self, strategy_type: str):
+        """自动切换监控类型.
+
+        Args:
+            strategy_type: 策略类型（ctastrategy/algotrading等）
+        """
+        try:
+            if not self.template_combo:
+                return
+
+            type_map = {
+                "ctastrategy": "CTA策略",
+                "algotrading": "算法交易",
+                "optionmaster": "期权策略",
+                "portfoliostrategy": "组合策略",
+                "spreadtrading": "价差交易",
+                "scripttrader": "脚本交易",
+            }
+
+            display_type = type_map.get(strategy_type, "通用监控")
+
+            # 如果当前类型不同，才切换
+            if self.template_combo.currentText() != display_type:
+                self.template_combo.setCurrentText(display_type)
+                self.logger.info(f"🔄 自动切换监控类型为: {display_type}")
+
+        except Exception as e:
+            self.logger.error(f"自动切换监控类型失败: {e}")
+
+    def _check_and_update_monitor_display(self):
+        """检查并更新监控界面显示.
+
+        需求：策略池只激活1个策略的网关在监控Tab中显示对应的监控界面。
+        不自动切换Tab，仅在用户切换到监控Tab时根据策略类型显示对应监控。
         """
         if not self.trading_service or not self.gateways_table:
             return
@@ -2032,22 +2216,17 @@ class TradingGateway(BaseWidget, LoggerMixin):
             # 检查激活策略数量
             active_strategies = [s for s in strategies.values() if s.get("status") == "running"]
 
-            # 如果恰好只有1个激活策略，自动切换到监控界面
+            # 如果恰好只有1个激活策略，更新监控界面显示
             if len(active_strategies) == 1:
                 strategy = active_strategies[0]
 
-                # 识别策略类型
-                strategy_type = self.trading_service.recognize_strategy_type(
-                    strategy_class_code=strategy.get("class_code", ""),
-                    gateway_name=gateway_name,
-                    strategy_name=strategy.get("name", ""),
+                # 获取策略引擎类型（使用部署时保存的engine_name）
+                engine_name = strategy.get("engine_name", "CtaStrategy")
+                strategy_type = (
+                    engine_name.lower() if isinstance(engine_name, str) else "ctastrategy"
                 )
 
-                # 自动切换到监控Tab
-                if self.content_tab and self.content_tab.currentIndex() != 1:
-                    self.content_tab.setCurrentIndex(1)  # 切换到监控Tab
-
-                # 根据策略类型切换监控界面
+                # 根据策略类型更新监控界面
                 if self.template_combo:
                     type_map = {
                         "ctastrategy": "CTA策略",
@@ -2063,10 +2242,10 @@ class TradingGateway(BaseWidget, LoggerMixin):
 
                     if current_type != display_type:
                         self.template_combo.setCurrentText(display_type)
-                        self.logger.info(f"自动切换到{display_type}监控界面（检测到单策略运行）")
+                        self.logger.info(f"更新监控界面显示为{display_type}（单策略运行）")
 
         except Exception as e:
-            self.logger.error(f"自动切换监控界面失败: {e}")
+            self.logger.error(f"更新监控界面显示失败: {e}")
 
     def on_close(self):
         """关闭处理."""

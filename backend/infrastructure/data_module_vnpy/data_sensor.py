@@ -323,6 +323,85 @@ class DataSensor:
 
         return sorted(missing)
 
+    def _format_missing_dates_description(self, missing_dates: List[date], interval: str) -> str:
+        """格式化缺失日期的详细描述
+
+        Args:
+            missing_dates: 缺失日期列表（已排序）
+            interval: 周期
+
+        Returns:
+            详细的缺失日期描述
+        """
+        if not missing_dates:
+            return ""
+
+        # 将连续日期分组为日期段
+        date_ranges = []
+        current_start = missing_dates[0]
+        current_end = missing_dates[0]
+
+        for i in range(1, len(missing_dates)):
+            current_date = missing_dates[i]
+            prev_date = missing_dates[i - 1]
+
+            # 检查是否连续（考虑周末，最多间隔3天）
+            days_diff = (current_date - prev_date).days
+            if days_diff <= 3:
+                # 连续，扩展当前范围
+                current_end = current_date
+            else:
+                # 不连续，保存当前范围并开始新范围
+                date_ranges.append((current_start, current_end))
+                current_start = current_date
+                current_end = current_date
+
+        # 添加最后一个范围
+        date_ranges.append((current_start, current_end))
+
+        # 生成描述
+        total_missing = len(missing_dates)
+
+        if len(date_ranges) == 1:
+            # 只有一个连续段
+            start, end = date_ranges[0]
+            if start == end:
+                return f"[{interval}] 缺失 {start.strftime('%Y-%m-%d')} 的数据（共1天）"
+            else:
+                return (
+                    f"[{interval}] 缺失 {start.strftime('%Y-%m-%d')} 到 "
+                    f"{end.strftime('%Y-%m-%d')} 的数据（共{total_missing}天）"
+                )
+        elif len(date_ranges) <= 3:
+            # 2-3个段，全部显示
+            range_strs = []
+            for start, end in date_ranges:
+                if start == end:
+                    range_strs.append(start.strftime("%Y-%m-%d"))
+                else:
+                    range_strs.append(f"{start.strftime('%Y-%m-%d')}至{end.strftime('%Y-%m-%d')}")
+            return f"[{interval}] 缺失 {', '.join(range_strs)} 等{total_missing}个交易日"
+        else:
+            # 超过3个段，只显示前2个和最后1个
+            range_strs = []
+            for start, end in date_ranges[:2]:
+                if start == end:
+                    range_strs.append(start.strftime("%Y-%m-%d"))
+                else:
+                    range_strs.append(f"{start.strftime('%Y-%m-%d')}至{end.strftime('%Y-%m-%d')}")
+
+            # 添加最后一个段
+            start, end = date_ranges[-1]
+            if start == end:
+                last_range = start.strftime("%Y-%m-%d")
+            else:
+                last_range = f"{start.strftime('%Y-%m-%d')}至{end.strftime('%Y-%m-%d')}"
+
+            return (
+                f"[{interval}] 缺失 {', '.join(range_strs)}...{last_range} "
+                f"等{len(date_ranges)}段共{total_missing}个交易日"
+            )
+
     def _calculate_overall_score(self, interval_results: Dict[str, ValidationResult]) -> int:
         """计算品种的综合质量评分
 
@@ -387,13 +466,33 @@ class DataSensor:
         Returns:
             质量概览
         """
-        # 统计
+        # 统计（语义说明）
+        # total_symbols: 参考品种列表总数（品种缓存中的所有品种）
+        # missing_symbols: 品种列表中有但本地完全无数据的品种
+        # error_symbols: 本地有数据但存在错误的品种
+        # warning_symbols: 本地有数据但有警告的品种
         total_symbols = (
             len(self.reference_symbols) if self.reference_symbols else len(quality_results)
         )
         missing_count = len(missing_symbols)
         error_count = sum(1 for q in quality_results.values() if q.has_errors)
         warning_count = sum(1 for q in quality_results.values() if q.has_warnings)
+
+        # 🚀 详细日志：记录真实的统计情况
+        local_count = len(quality_results)
+        self.logger.info("=" * 60)
+        self.logger.info("📊 数据质量统计详情：")
+        self.logger.info("  • 参考品种总数（品种列表）: %d", total_symbols)
+        self.logger.info("  • 本地已下载品种数: %d", local_count)
+        self.logger.info("  • 完全缺失数据品种: %d", missing_count)
+        self.logger.info("  • 有数据但存在错误: %d", error_count)
+        self.logger.info("  • 有数据但有警告: %d", warning_count)
+        if total_symbols > local_count:
+            self.logger.info(
+                "  ⚠️ 提示: %d 个品种未下载数据（正常现象）",
+                total_symbols - local_count,
+            )
+        self.logger.info("=" * 60)
 
         # 计算整体质量评分
         if quality_results:
@@ -452,9 +551,12 @@ class DataSensor:
                     for warning in result.warnings:
                         issues.append(f"[{interval}] {warning}")
 
-                    # 添加缺失日期信息
+                    # 添加缺失日期信息（详细描述）
                     if result.missing_dates:
-                        issues.append(f"[{interval}] 缺失 {len(result.missing_dates)} 个交易日")
+                        missing_desc = self._format_missing_dates_description(
+                            result.missing_dates, interval
+                        )
+                        issues.append(missing_desc)
 
                 detail = {
                     "symbol": symbol,
@@ -531,9 +633,13 @@ class DataSensor:
             return
 
         try:
+            # 计算本地有数据的品种数
+            local_count = overview.total_symbols - overview.missing_symbols
+
             event_data = {
                 "type": "scan_complete",
                 "total_symbols": overview.total_symbols,
+                "local_symbols": local_count,  # 🚀 新增：本地有数据的品种数
                 "missing_symbols": overview.missing_symbols,
                 "error_symbols": overview.error_symbols,
                 "warning_symbols": overview.warning_symbols,

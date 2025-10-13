@@ -345,7 +345,7 @@ class BottleneckAnalyzer:
             focus_areas = ["cpu", "memory", "disk_io", "network"]
 
         # 计算各项指标的使用率（相对于理论最大值）
-        usage_rates = {}
+        usage_rates: dict[str, float] = {}
 
         if "cpu" in focus_areas:
             usage_rates["cpu"] = min(metrics.cpu_percent, 100.0)
@@ -381,7 +381,7 @@ class BottleneckAnalyzer:
                 metrics=metrics,
             )
 
-        bottleneck_type = max(usage_rates, key=usage_rates.get)
+        bottleneck_type = max(usage_rates, key=lambda x: usage_rates.get(x, 0.0))
         bottleneck_percent = usage_rates[bottleneck_type]
 
         # 判断是否真的存在瓶颈

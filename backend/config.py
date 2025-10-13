@@ -12,14 +12,9 @@ from typing import Any, Dict, Optional, TYPE_CHECKING
 from pathlib import Path
 
 if TYPE_CHECKING:
-    # For type checkers, always use pydantic_settings types
-    try:
-        from pydantic_settings import BaseSettings
-        from pydantic import Field, ConfigDict
-    except ImportError:
-        from pydantic import BaseSettings, Field  # type: ignore[assignment]
-
-        ConfigDict = Any  # type: ignore[misc]
+    # For type checkers, always assume pydantic_settings is available
+    from pydantic_settings import BaseSettings
+    from pydantic import Field, ConfigDict
 else:
     # For runtime, handle both pydantic v1 and v2
     try:

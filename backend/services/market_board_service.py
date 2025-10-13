@@ -7,7 +7,7 @@
 - 技术指标计算（talib集成）
 - 图表数据准备（多周期K线、品种叠加）
 """
-# pylint: disable=too-many-lines,no-member
+# pylint: disable=too-many-lines,no-member,disallowed-name
 
 from typing import Any, Dict, List, Optional
 
@@ -159,18 +159,29 @@ class MarketBoardService(BaseService):
     # ==================== 行情数据查询 ====================
 
     def query_historical_data(
-        self, symbol: str, start_date: str, end_date: str, interval: str = "1d"
+        self,
+        symbol: str,
+        start_date: str,
+        end_date: str,
+        interval: str = "1d",
+        check_gaps: bool = True,
     ) -> Dict[str, Any]:
-        """查询历史行情数据.
+        """查询历史行情数据（增强版：支持断点检测）.
 
         Args:
             symbol: 品种代码
             start_date: 开始日期
             end_date: 结束日期
             interval: 周期
+            check_gaps: 是否检测数据断点
 
         Returns:
-            Dict: 历史数据
+            Dict: 历史数据，包含：
+                - success: bool
+                - data: List[Dict]
+                - message: str
+                - gaps: List[Dict] (如果check_gaps=True且存在断点)
+                - has_gaps: bool (是否存在断点)
         """
         try:
             # 从DataCenterService查询历史数据
@@ -191,10 +202,437 @@ class MarketBoardService(BaseService):
                 symbol=symbol, start_date=start_date, end_date=end_date, interval=interval
             )
 
+            # 如果需要检测断点
+            if check_gaps and result.get("success"):
+                gaps = self._detect_data_gaps(
+                    data=result.get("data", []),
+                    interval=interval,
+                )
+
+                result["gaps"] = gaps
+                result["has_gaps"] = len(gaps) > 0
+
+                if gaps:
+                    self.logger.warning(
+                        "检测到%d个数据断点，品种=%s，周期=%s", len(gaps), symbol, interval
+                    )
+                    # 在message中添加提示
+                    gap_msg = f"检测到{len(gaps)}个数据断点，建议进行增量更新"
+                    if result.get("message"):
+                        result["message"] += f"; {gap_msg}"
+                    else:
+                        result["message"] = gap_msg
+
             return result
 
         except Exception as e:
             self._log_error("查询历史数据", e)
+            return {"success": False, "message": str(e), "data": []}
+
+    def _detect_data_gaps(self, data: List[Dict], interval: str) -> List[Dict]:
+        """检测数据断点.
+
+        Args:
+            data: K线数据列表
+            interval: 周期
+
+        Returns:
+            List[Dict]: 断点列表，每项包含gap_start和gap_end
+        """
+        if not data or len(data) < 2:
+            return []
+
+        gaps = []
+
+        try:
+            from datetime import datetime
+
+            # 根据周期确定预期时间间隔
+            expected_delta = self._get_expected_time_delta(interval)
+
+            if not expected_delta:
+                return []  # 无法确定预期间隔
+
+            # 检查连续K线之间的时间间隔
+            for i in range(len(data) - 1):
+                current_time = datetime.fromisoformat(data[i].get("datetime", ""))
+                next_time = datetime.fromisoformat(data[i + 1].get("datetime", ""))
+
+                actual_delta = next_time - current_time
+
+                # 如果实际间隔大于预期间隔的1.5倍，认为存在断点
+                if actual_delta > expected_delta * 1.5:
+                    gaps.append(
+                        {
+                            "gap_start": data[i].get("datetime"),
+                            "gap_end": data[i + 1].get("datetime"),
+                            "expected_bars": int(actual_delta / expected_delta) - 1,
+                        }
+                    )
+
+        except Exception as e:
+            self.logger.warning("检测数据断点失败: %s", e)
+
+        return gaps
+
+    def _get_expected_time_delta(self, interval: str):
+        """根据周期获取预期时间间隔.
+
+        Args:
+            interval: 周期（如"1d", "5m", "1m"）
+
+        Returns:
+            timedelta: 预期时间间隔
+        """
+        from datetime import timedelta
+
+        interval_map = {
+            "1m": timedelta(minutes=1),
+            "5m": timedelta(minutes=5),
+            "15m": timedelta(minutes=15),
+            "30m": timedelta(minutes=30),
+            "1h": timedelta(hours=1),
+            "1d": timedelta(days=1),
+        }
+
+        return interval_map.get(interval)
+
+    def detect_data_gaps(
+        self, symbol: str, start_date: str, end_date: str, interval: str = "1d"
+    ) -> Dict[str, Any]:
+        """检测数据断点（公开API）.
+
+        Args:
+            symbol: 品种代码
+            start_date: 开始日期
+            end_date: 结束日期
+            interval: 周期
+
+        Returns:
+            Dict: {
+                "success": True/False,
+                "has_gaps": True/False,
+                "gaps": [{"gap_start": "2025-01-01", "gap_end": "2025-01-05", "expected_bars": 3}, ...],
+                "suggestion": "建议增量下载缺失数据"
+            }
+        """
+        try:
+            # 先查询历史数据
+            query_result = self.query_historical_data(
+                symbol=symbol,
+                start_date=start_date,
+                end_date=end_date,
+                interval=interval,
+                check_gaps=True,  # 启用断点检测
+            )
+
+            if not query_result.get("success"):
+                return {
+                    "success": False,
+                    "message": query_result.get("message", "数据查询失败"),
+                    "has_gaps": False,
+                    "gaps": [],
+                }
+
+            # 提取断点信息
+            gaps = query_result.get("gaps", [])
+            has_gaps = query_result.get("has_gaps", False)
+
+            result = {
+                "success": True,
+                "has_gaps": has_gaps,
+                "gaps": gaps,
+                "total_bars": len(query_result.get("data", [])),
+                "interval": interval,
+            }
+
+            # 添加建议
+            if has_gaps:
+                result["suggestion"] = f"检测到{len(gaps)}个数据断点，建议进行增量下载补齐数据"
+            else:
+                result["suggestion"] = "数据完整，无需增量下载"
+
+            return result
+
+        except Exception as e:
+            self._log_error("检测数据断点", e)
+            return {"success": False, "message": str(e), "has_gaps": False, "gaps": []}
+
+    def get_chart_data_fusion(
+        self, symbol: str, start_date: str, end_date: str, interval: str = "1d"
+    ) -> Dict[str, Any]:
+        """获取图表数据（融合历史+实时+录制三源数据）.
+
+        数据供应优先级：
+        1. 历史数据（data_module_vnpy）
+        2. 录制数据（vnpy_datarecorder缓存，当日数据）
+        3. 实时数据（self.realtime_data_cache，最新Tick）
+
+        Args:
+            symbol: 品种代码
+            start_date: 开始日期
+            end_date: 结束日期
+            interval: 周期
+
+        Returns:
+            Dict: {
+                "success": True,
+                "data": [...],  # 融合后的K线数据
+                "sources": ["historical", "recorded", "realtime"],  # 数据来源标识
+                "source_breakdown": {
+                    "historical_bars": 100,
+                    "recorded_bars": 20,
+                    "realtime_ticks": 1
+                }
+            }
+        """
+        try:
+            from datetime import datetime
+
+            all_data = []
+            sources_used = []
+            source_breakdown = {"historical_bars": 0, "recorded_bars": 0, "realtime_ticks": 0}
+
+            # 1. 获取历史数据（主要数据源）
+            historical_result = self.query_historical_data(
+                symbol=symbol,
+                start_date=start_date,
+                end_date=end_date,
+                interval=interval,
+                check_gaps=False,  # 融合时不检测断点
+            )
+
+            if historical_result.get("success"):
+                historical_data = historical_result.get("data", [])
+                all_data.extend(historical_data)
+                if historical_data:
+                    sources_used.append("historical")
+                    source_breakdown["historical_bars"] = len(historical_data)
+                    self.logger.info("融合数据：获取到%d条历史数据", len(historical_data))
+
+            # 2. 获取录制数据（当日数据补充）
+            today = datetime.now().strftime("%Y-%m-%d")
+            if end_date >= today:
+                recorded_result = self.get_intraday_recorded_data(symbol=symbol, date=today)
+                if recorded_result.get("success"):
+                    recorded_data = recorded_result.get("data", [])
+                    if recorded_data:
+                        # 过滤掉与历史数据重复的部分
+                        recorded_data = self._filter_duplicate_bars(all_data, recorded_data)
+                        all_data.extend(recorded_data)
+                        if recorded_data:
+                            sources_used.append("recorded")
+                            source_breakdown["recorded_bars"] = len(recorded_data)
+                            self.logger.info("融合数据：获取到%d条录制数据", len(recorded_data))
+
+            # 3. 获取实时数据（最新Tick）
+            realtime_tick = self.realtime_data_cache.get(symbol)
+            if realtime_tick:
+                # 将Tick转换为K线格式
+                tick_bar = self._convert_tick_to_bar(realtime_tick, interval)
+                if tick_bar:
+                    # 检查是否与最后一条K线重复（时间戳相同则更新，否则追加）
+                    if all_data and all_data[-1].get("datetime") == tick_bar.get("datetime"):
+                        all_data[-1] = tick_bar  # 更新最后一条
+                    else:
+                        all_data.append(tick_bar)  # 追加新K线
+
+                    if "realtime" not in sources_used:
+                        sources_used.append("realtime")
+                    source_breakdown["realtime_ticks"] = 1
+                    self.logger.info("融合数据：添加实时Tick数据")
+
+            # 4. 按时间排序
+            all_data.sort(key=lambda x: x.get("datetime", ""))
+
+            # 5. 为每条数据添加来源标识
+            for bar in all_data:
+                if not bar.get("source"):
+                    bar["source"] = self._identify_bar_source(bar, source_breakdown)
+
+            return {
+                "success": True,
+                "data": all_data,
+                "sources": sources_used,
+                "source_breakdown": source_breakdown,
+                "total_bars": len(all_data),
+            }
+
+        except Exception as e:
+            self._log_error("融合图表数据", e)
+            return {"success": False, "message": str(e), "data": [], "sources": []}
+
+    def _filter_duplicate_bars(self, existing_data: List[Dict], new_data: List[Dict]) -> List[Dict]:
+        """过滤重复的K线数据.
+
+        Args:
+            existing_data: 已有数据
+            new_data: 新数据
+
+        Returns:
+            List[Dict]: 过滤后的新数据
+        """
+        if not existing_data:
+            return new_data
+
+        # 提取已有数据的时间戳集合
+        existing_timestamps = {bar.get("datetime") for bar in existing_data}
+
+        # 过滤掉重复的
+        filtered = [bar for bar in new_data if bar.get("datetime") not in existing_timestamps]
+
+        return filtered
+
+    def _convert_tick_to_bar(self, tick: Dict, interval: str) -> Optional[Dict]:
+        """将Tick数据转换为K线格式.
+
+        Args:
+            tick: Tick数据
+            interval: K线周期
+
+        Returns:
+            Dict: K线数据
+        """
+        try:
+            from datetime import datetime
+
+            # 获取Tick时间
+            tick_time = tick.get("datetime")
+            if isinstance(tick_time, str):
+                tick_time = datetime.fromisoformat(tick_time)
+            elif not isinstance(tick_time, datetime):
+                return None
+
+            # 根据周期对齐时间（例如5分钟对齐到5分钟整点）
+            aligned_time = self._align_time_to_interval(tick_time, interval)
+
+            # 构造K线数据（使用last_price作为OHLC）
+            last_price = tick.get("last_price", 0)
+            volume = tick.get("volume", 0)
+
+            bar = {
+                "datetime": aligned_time.isoformat(),
+                "open": last_price,
+                "high": last_price,
+                "low": last_price,
+                "close": last_price,
+                "volume": volume,
+                "source": "realtime",
+            }
+
+            return bar
+
+        except Exception as e:
+            self.logger.warning("Tick转K线失败: %s", e)
+            return None
+
+    def _align_time_to_interval(self, dt, interval: str):
+        """将时间对齐到K线周期.
+
+        Args:
+            dt: datetime对象
+            interval: 周期
+
+        Returns:
+            datetime: 对齐后的时间
+        """
+        if interval == "1min":
+            return dt.replace(second=0, microsecond=0)
+        elif interval == "5min":
+            minute = (dt.minute // 5) * 5
+            return dt.replace(minute=minute, second=0, microsecond=0)
+        elif interval == "15min":
+            minute = (dt.minute // 15) * 15
+            return dt.replace(minute=minute, second=0, microsecond=0)
+        elif interval == "30min":
+            minute = (dt.minute // 30) * 30
+            return dt.replace(minute=minute, second=0, microsecond=0)
+        elif interval == "1h":
+            return dt.replace(minute=0, second=0, microsecond=0)
+        elif interval == "1d":
+            return dt.replace(hour=0, minute=0, second=0, microsecond=0)
+        else:
+            return dt
+
+    def _identify_bar_source(self, bar: Dict, source_breakdown: Dict) -> str:
+        """识别K线数据来源.
+
+        Args:
+            bar: K线数据
+            source_breakdown: 来源统计
+
+        Returns:
+            str: 数据来源标识
+        """
+        # 如果已经有source标识，直接返回
+        if bar.get("source"):
+            return bar["source"]
+
+        # 根据统计信息推断来源
+        if source_breakdown["realtime_ticks"] > 0:
+            # 最后一条可能是实时数据
+            return "realtime"
+        elif source_breakdown["recorded_bars"] > 0:
+            # 中间部分可能是录制数据
+            return "recorded"
+        else:
+            # 默认为历史数据
+            return "historical"
+
+    def get_intraday_recorded_data(self, symbol: str, date: Optional[str] = None) -> Dict[str, Any]:
+        """获取当日录制数据（供行情看板使用）.
+
+        Args:
+            symbol: 品种代码
+            date: 日期（默认为今天）
+
+        Returns:
+            Dict: 录制数据
+        """
+        try:
+            from datetime import date as dt_date
+            from backend.core.base import get_service_manager
+
+            service_manager = get_service_manager()
+            data_center_service = service_manager.get_service("data_center_service")
+
+            if not data_center_service:
+                return {
+                    "success": False,
+                    "message": "DataCenterService不可用",
+                    "data": [],
+                }
+
+            # 默认使用今天的日期
+            if not date:
+                date = dt_date.today().isoformat()
+
+            # 尝试从录制数据获取
+            # 注意：这个方法需要data_center_service提供get_recorded_data接口
+            if hasattr(data_center_service, "get_recorded_data"):
+                recorded_data = data_center_service.get_recorded_data(symbol, date)
+
+                if recorded_data:
+                    return {
+                        "success": True,
+                        "data": recorded_data,
+                        "source": "recorded",
+                        "message": "从录制缓存获取",
+                    }
+
+            # 如果没有录制数据，从历史数据获取
+            result = data_center_service.query_local_data(
+                symbol=symbol, start_date=date, end_date=date, interval="1m"  # 使用1分钟数据
+            )
+
+            if result.get("success"):
+                result["source"] = "historical"
+                result["message"] = "从历史数据获取"
+
+            return result
+
+        except Exception as e:
+            self._log_error("获取当日录制数据", e)
             return {"success": False, "message": str(e), "data": []}
 
     def subscribe_realtime_data(self, symbol: str) -> Dict[str, Any]:
@@ -521,104 +959,7 @@ class MarketBoardService(BaseService):
             self._log_error("停止录制", e)
             return {"success": False, "message": str(e)}
 
-    # ==================== 数据断点检测 ====================
-
-    def detect_data_gaps(
-        self, symbol: str, start_date: str, end_date: str, interval: str = "1d"
-    ) -> Dict[str, Any]:
-        """检测数据断点.
-
-        Args:
-            symbol: 品种代码
-            start_date: 开始日期
-            end_date: 结束日期
-            interval: 数据周期
-
-        Returns:
-            Dict: 断点检测结果
-        """
-        try:
-            # 从data_center_service获取数据
-            from backend.core.base import get_service_manager
-
-            service_manager = get_service_manager()
-            data_service = service_manager.get_service("data_center_service")
-
-            if not data_service:
-                return {
-                    "success": False,
-                    "message": "数据中心服务不可用",
-                }
-
-            # 查询本地数据
-            result = data_service.query_local_data(
-                symbol=symbol, start_date=start_date, end_date=end_date, frequency=interval
-            )
-
-            if not result.get("success"):
-                return {
-                    "success": False,
-                    "message": "数据查询失败",
-                }
-
-            data = result.get("data", [])
-
-            if not data:
-                return {
-                    "success": True,
-                    "has_gaps": True,
-                    "gaps": [],
-                    "message": "没有数据",
-                    "missing_count": 0,
-                }
-
-            # 检测数据断点
-            from datetime import datetime
-
-            gaps = []
-            dates = [datetime.strptime(d["date"], "%Y-%m-%d") for d in data]
-            dates.sort()
-
-            # 根据周期确定预期间隔
-            interval_days = {
-                "1d": 1,
-                "1w": 7,
-                "1m": 30,
-            }
-            expected_gap = interval_days.get(interval, 1)
-
-            # 检测断点（排除周末和节假日的简化版本）
-            for i in range(len(dates) - 1):
-                current_date = dates[i]
-                next_date = dates[i + 1]
-                diff_days = (next_date - current_date).days
-
-                # 如果间隔超过预期（考虑周末），则认为是断点
-                if diff_days > expected_gap + 2:  # +2容忍周末
-                    gaps.append(
-                        {
-                            "start": current_date.strftime("%Y-%m-%d"),
-                            "end": next_date.strftime("%Y-%m-%d"),
-                            "missing_days": diff_days - expected_gap,
-                        }
-                    )
-
-            self.logger.info("断点检测完成: %s, 发现 %s 个断点", symbol, len(gaps))
-
-            return {
-                "success": True,
-                "has_gaps": len(gaps) > 0,
-                "gaps": gaps,
-                "total_records": len(data),
-                "missing_count": len(gaps),
-            }
-
-        except Exception as e:
-            self._log_error("检测数据断点", e)
-            return {
-                "success": False,
-                "message": f"检测失败: {str(e)}",
-            }
+    # ==================== 日内数据断点检测 ====================
 
     def detect_intraday_gaps(
         self,

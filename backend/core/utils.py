@@ -56,6 +56,12 @@ EVENT_SERVICE_STATUS = "eServiceStatus"  # 服务状态更新事件
 EVENT_DIAGNOSTIC_RESULT = "eDiagnosticResult"  # 诊断结果事件
 EVENT_PROCESS_STATUS = "eProcessStatus"  # 进程状态更新事件
 
+# ✨ 新增：跨模块集成事件
+EVENT_STRATEGY_STATUS_CHANGED = "eStrategyStatusChanged"  # 策略状态变化事件
+EVENT_GATEWAY_STATUS_CHANGED = "eGatewayStatusChanged"  # 网关状态变化事件
+EVENT_DATA_DOWNLOAD_COMPLETE = "eDataDownloadComplete"  # 数据下载完成事件
+EVENT_RECORDING_STATUS_CHANGED = "eRecordingStatusChanged"  # 录制状态变化事件
+
 
 class LoggerMixin:
     """日志混合类."""

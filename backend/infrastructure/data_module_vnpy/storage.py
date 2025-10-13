@@ -81,19 +81,42 @@ class StorageManager:
             #       * 时间范围过滤在读取时应用（query_kline方法）
             #       * 支持谓词下推（predicate pushdown）优化查询性能
             # ============================================================
-            df.to_parquet(
-                file_path,
-                index=False,
-                engine="pyarrow",
-                compression="zstd",
-                compression_level=3,
-            )
 
-            self.logger.info("成功保存 %s %s 数据到: %s", symbol, interval, file_path)
-            return file_path
+            # 🚀 使用原子性写入：先写入临时文件，成功后重命名
+            temp_file_path = file_path.with_suffix(".parquet.tmp")
+
+            try:
+                df.to_parquet(
+                    temp_file_path,
+                    index=False,
+                    engine="pyarrow",
+                    compression="zstd",
+                    compression_level=3,
+                )
+
+                # 🚀 验证临时文件完整性
+                if temp_file_path.stat().st_size == 0:
+                    raise ValueError("临时文件大小为0，写入失败")
+
+                # 🚀 原子性重命名（成功写入后才替换原文件）
+                shutil.move(str(temp_file_path), str(file_path))
+
+                self.logger.info("成功保存 %s %s 数据到: %s", symbol, interval, file_path)
+                return file_path
+
+            except Exception as write_err:
+                # 🚀 清理临时文件
+                if temp_file_path.exists():
+                    try:
+                        temp_file_path.unlink()
+                    except Exception:
+                        pass
+
+                self.logger.error("保存 %s %s 数据失败: %s", symbol, interval, write_err)
+                raise
 
         except Exception as e:
-            self.logger.error("保存 %s %s 数据失败: %s", symbol, interval, e)
+            self.logger.error("保存 %s %s 数据异常: %s", symbol, interval, e)
             raise
 
     def query_kline(
@@ -133,8 +156,14 @@ class StorageManager:
             self.logger.info("成功查询 %s %s 数据: %d 条记录", symbol, interval, len(df))
             return df
 
-        except (OSError, pd.errors.ParserError) as e:
+        except Exception as e:
+            # 🚀 增强异常处理：Parquet文件可能损坏
             self.logger.error("查询 %s %s 数据失败: %s", symbol, interval, e)
+
+            # 🚀 如果文件存在但无法读取，标记为损坏
+            if file_path.exists():
+                self.logger.warning("检测到损坏的Parquet文件: %s", file_path)
+
             return None
 
     def list_symbols(self) -> List[str]:
@@ -487,3 +516,100 @@ class StorageManager:
             df = df.loc[mask]
 
         return df
+
+    def scan_and_repair_corrupted_files(
+        self, auto_delete: bool = False, progress_callback=None
+    ) -> Dict[str, List[str]]:
+        """
+        扫描并修复损坏的Parquet文件
+
+        Args:
+            auto_delete: 是否自动删除损坏文件
+            progress_callback: 进度回调函数，接收(current, total, message)参数
+
+        Returns:
+            损坏文件报告 {"corrupted": [...], "deleted": [...]}
+        """
+        corrupted_files = []
+        deleted_files = []
+
+        try:
+            self.logger.info("开始扫描损坏的Parquet文件...")
+
+            # 先统计总文件数
+            total_files = 0
+            for symbol_dir in self.data_dir.iterdir():
+                if not symbol_dir.is_dir():
+                    continue
+                for interval_dir in symbol_dir.iterdir():
+                    if not interval_dir.is_dir():
+                        continue
+                    file_path = interval_dir / "data.parquet"
+                    if file_path.exists():
+                        total_files += 1
+
+            self.logger.info("共发现 %d 个数据文件，开始检查...", total_files)
+
+            # 扫描所有文件
+            checked_count = 0
+            for symbol_dir in self.data_dir.iterdir():
+                if not symbol_dir.is_dir():
+                    continue
+
+                for interval_dir in symbol_dir.iterdir():
+                    if not interval_dir.is_dir():
+                        continue
+
+                    file_path = interval_dir / "data.parquet"
+                    if not file_path.exists():
+                        continue
+
+                    checked_count += 1
+
+                    # 报告进度（每个文件都回调，UI层控制显示频率）
+                    if progress_callback:
+                        symbol = symbol_dir.name
+                        interval = interval_dir.name
+                        progress_callback(checked_count, total_files, f"{symbol} {interval}")
+
+                    # 检查文件大小
+                    file_size = file_path.stat().st_size
+                    if file_size == 0 or file_size < 8:
+                        corrupted_files.append(str(file_path))
+
+                        if auto_delete:
+                            file_path.unlink()
+                            deleted_files.append(str(file_path))
+                            self.logger.info("已删除损坏文件（大小异常）: %s", file_path)
+                        continue
+
+                    # 尝试读取文件
+                    try:
+                        pd.read_parquet(file_path)
+                    except Exception:
+                        corrupted_files.append(str(file_path))
+
+                        if auto_delete:
+                            file_path.unlink()
+                            deleted_files.append(str(file_path))
+                            self.logger.info("已删除损坏文件（无法读取）: %s", file_path)
+
+            # 最终进度回调
+            if progress_callback:
+                progress_callback(
+                    total_files,
+                    total_files,
+                    f"完成 - 发现{len(corrupted_files)}个损坏文件",
+                )
+
+            self.logger.info(
+                "扫描完成：发现 %d 个损坏文件，已删除 %d 个",
+                len(corrupted_files),
+                len(deleted_files),
+            )
+
+            return {"corrupted": corrupted_files, "deleted": deleted_files if auto_delete else []}
+
+        except Exception as e:
+            self.logger.error("扫描损坏文件失败: %s", e)
+            return {"corrupted": [], "deleted": []}

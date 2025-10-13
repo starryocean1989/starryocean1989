@@ -138,7 +138,7 @@ class EditorTabWidget(QTabWidget, LoggerMixin):
             bool: 是否成功打开
         """
         try:
-            self.logger.info(f"🔍 [DEBUG] ===== editor_tabs.open_file 被调用 =====")
+            self.logger.info("🔍 [DEBUG] ===== editor_tabs.open_file 被调用 =====")
             self.logger.info(f"🔍 [DEBUG] 原始路径: {file_path}")
 
             # 规范化路径
@@ -176,7 +176,7 @@ class EditorTabWidget(QTabWidget, LoggerMixin):
 
             # 🔧 创建Monaco Editor（异步加载版）
             try:
-                self.logger.info(f"🔍 [DEBUG] 开始创建Monaco编辑器")
+                self.logger.info("🔍 [DEBUG] 开始创建Monaco编辑器")
 
                 if not _editor_widget_available or _editor_widget_class is None:
                     self.logger.error("Monaco Editor不可用")
@@ -279,7 +279,7 @@ class EditorTabWidget(QTabWidget, LoggerMixin):
 
                 # 切换到新标签
                 self.setCurrentIndex(index)
-                self.logger.info(f"🔍 [DEBUG] 已切换到新标签")
+                self.logger.info("🔍 [DEBUG] 已切换到新标签")
 
                 # 发送信号
                 self.file_opened.emit(file_path)

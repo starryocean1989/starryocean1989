@@ -273,10 +273,16 @@ class MultiProcessStockFetcher:
             # 性能统计
             total_time = time.time() - parallel_start_time
 
+            # 🚀 统计有效数据和空数据
+            valid_count = sum(1 for v in result.values() if v is not None and not v.empty)
+            empty_count = len(result) - valid_count
+
             self.logger.info("=" * 60)
-            self.logger.info(
-                "【完成】多进程下载完成: 成功下载 %d/%d 个数据集", len(result), total_tasks
-            )
+            self.logger.info("【完成】多进程下载完成")
+            self.logger.info("  总任务数: %d", total_tasks)
+            self.logger.info("  下载结果数: %d", len(result))
+            self.logger.info("  有效数据: %d", valid_count)
+            self.logger.info("  空数据: %d", empty_count)
             self.logger.info("  总耗时: %.1f秒 (%.1f分钟)", total_time, total_time / 60)
             self.logger.info(
                 "  平均速度: %.1f个/秒", len(result) / total_time if total_time > 0 else 0
@@ -407,24 +413,19 @@ class MultiProcessStockFetcher:
                         interval,
                     )
 
-                # 🚀 双重进度输出：终端 + UI文本框
+                # 🚀 调用进度回调（传递给engine.py，再推送vnpy事件到UI）
+                if progress_callback:
+                    try:
+                        # 调用回调函数（每个进度都调用，engine.py会推送事件到UI）
+                        progress_callback(completed, total_tasks, symbol, interval)
+                    except Exception as e:
+                        self.logger.debug("进度回调失败（已忽略）: %s", e)
+
+                # 🚀 终端进度输出（每10个打印一次）
                 if completed % 10 == 0 or completed == total_tasks:
                     progress_pct = (completed / total_tasks) * 100
                     progress_text = f"📊 下载进度: {completed}/{total_tasks} ({progress_pct:.1f}%) - {symbol} {interval}"
-
-                    # 1. 终端输出
                     print(progress_text)
-
-                    # 2. UI文本框更新（只在每100个或完成时）
-                    if progress_callback and (completed % 100 == 0 or completed == total_tasks):
-                        try:
-                            # 传递简化的文本
-                            simple_text = (
-                                f"下载进度: {completed}/{total_tasks} ({progress_pct:.1f}%)"
-                            )
-                            progress_callback(simple_text)
-                        except Exception as e:
-                            self.logger.debug("UI文本追加失败（已忽略）: %s", e)
 
             except queue.Empty:
                 # 队列空，检查是否所有进程都退出了

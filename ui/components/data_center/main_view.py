@@ -275,6 +275,7 @@ class DataCenter(BaseWidget, LoggerMixin):
         # 🆕 质量概览控件
         self.quality_overview_widget: Optional[QWidget] = None
         self.total_symbols_label: Optional[QLabel] = None
+        self.downloaded_symbols_label: Optional[QLabel] = None  # 🚀 新增
         self.missing_symbols_label: Optional[QLabel] = None
         self.error_symbols_label: Optional[QLabel] = None
         self.warning_symbols_label: Optional[QLabel] = None
@@ -561,18 +562,35 @@ class DataCenter(BaseWidget, LoggerMixin):
         quality_overview_group = QGroupBox("📊 数据质量概览（自动感知）")
         quality_overview_layout = QVBoxLayout(quality_overview_group)
 
+        # 🚀 添加说明提示
+        hint_label = QLabel(
+            "💡 说明：「总品种」=品种列表总数，「已下载」=本地有数据的品种数，"
+            "「缺失」=列表中有但本地无数据，「警告」=已下载但数据不完整"
+        )
+        hint_label.setStyleSheet("color: #666; font-size: 11px; padding: 5px;")
+        hint_label.setWordWrap(True)
+        quality_overview_layout.addWidget(hint_label)
+
         # 质量概览卡片（紧凑显示）
         self.quality_overview_widget = QWidget()
         overview_layout = QHBoxLayout(self.quality_overview_widget)
         overview_layout.setContentsMargins(5, 5, 5, 5)
 
-        # 总品种数
+        # 总品种数（参考列表）
         self.total_symbols_label = QLabel("总品种: --")
+        self.total_symbols_label.setToolTip("品种列表缓存中的所有品种数（包括已下载和未下载）")
         overview_layout.addWidget(self.total_symbols_label)
+
+        # 🆕 已下载品种数
+        self.downloaded_symbols_label = QLabel("已下载: --")
+        self.downloaded_symbols_label.setStyleSheet("color: #4CAF50;")
+        self.downloaded_symbols_label.setToolTip("本地已下载数据的品种数")
+        overview_layout.addWidget(self.downloaded_symbols_label)
 
         # 缺失品种
         self.missing_symbols_label = QLabel("缺失: --")
         self.missing_symbols_label.setStyleSheet("color: #FF9800;")
+        self.missing_symbols_label.setToolTip("品种列表中有但本地完全无数据的品种数")
         overview_layout.addWidget(self.missing_symbols_label)
 
         # 错误品种
@@ -791,12 +809,16 @@ class DataCenter(BaseWidget, LoggerMixin):
 
             # 连接信号
             self.logger.info(">>> 连接信号...")
-            # 🚀 关键修复：使用Qt.QueuedConnection确保跨线程信号安全
+            # 🚀 关键修复：使用Qt.ConnectionType.QueuedConnection确保跨线程信号安全
             self.reload_thread.finished_signal.connect(
-                self._on_reload_finished, Qt.QueuedConnection
+                self._on_reload_finished, Qt.ConnectionType.QueuedConnection
             )
-            self.reload_thread.error_signal.connect(self._on_reload_error, Qt.QueuedConnection)
-            self.reload_thread.progress_signal.connect(self.show_info, Qt.QueuedConnection)
+            self.reload_thread.error_signal.connect(
+                self._on_reload_error, Qt.ConnectionType.QueuedConnection
+            )
+            self.reload_thread.progress_signal.connect(
+                self.show_info, Qt.ConnectionType.QueuedConnection
+            )
             self.logger.info(">>> 信号连接完成")
 
             # 启动线程
@@ -1339,15 +1361,17 @@ class DataCenter(BaseWidget, LoggerMixin):
 
             # 连接信号
             self.logger.info(">>> 连接信号...")
-            # 🚀 关键修复：使用Qt.QueuedConnection确保跨线程信号安全
+            # 🚀 关键修复：使用Qt.ConnectionType.QueuedConnection确保跨线程信号安全
             # 这会确保槽函数在主线程的事件循环中执行，避免绘图冲突
             self.download_thread.finished_signal.connect(
-                self._on_download_finished, Qt.QueuedConnection
+                self._on_download_finished, Qt.ConnectionType.QueuedConnection
             )
-            self.download_thread.error_signal.connect(self._on_download_error, Qt.QueuedConnection)
+            self.download_thread.error_signal.connect(
+                self._on_download_error, Qt.ConnectionType.QueuedConnection
+            )
             # 🚀 改用文本追加槽函数，避免show_info的UI重绘
             self.download_thread.progress_signal.connect(
-                self._append_progress_text, Qt.QueuedConnection
+                self._append_progress_text, Qt.ConnectionType.QueuedConnection
             )
             self.logger.info(">>> 信号连接完成")
 
@@ -1355,6 +1379,11 @@ class DataCenter(BaseWidget, LoggerMixin):
             self.logger.info(">>> 启动下载线程...")
             self.download_thread.start()
             self.logger.info(">>> 线程已启动，isRunning: %s", self.download_thread.isRunning())
+
+            # 🚀 清空进度文本并显示开始信息
+            if self.progress_text:
+                self.progress_text.clear()
+                self.progress_text.append(f"开始增量下载... (开始日期: {start_date})\n")
 
             # 更新按钮状态
             if self.start_download_btn:
@@ -1621,6 +1650,12 @@ class DataCenter(BaseWidget, LoggerMixin):
             # 🔧 调试日志
             self.logger.info(">>> 收到下载事件: status=%s", status)
 
+            # 🚀 调试：在文本框显示收到事件（帮助诊断）
+            if status == "progress" and self.progress_text:
+                completed = event_data.get("completed", 0)
+                if completed == 1:  # 第一个进度事件
+                    self.progress_text.append("✓ 收到下载进度事件，开始显示进度...\n")
+
             if status == "progress":
                 # 进度更新事件
                 progress_pct = event_data.get("progress", 0)
@@ -1637,6 +1672,18 @@ class DataCenter(BaseWidget, LoggerMixin):
                         f"📥 下载中: {completed}/{total} ({progress_pct:.1f}%) - {current_item}"
                     )
 
+                # 🚀 文本进度显示（每100个显示一次，避免刷屏）
+                if self.progress_text:
+                    if completed % 100 == 0:
+                        self.progress_text.append(
+                            f"✓ 已下载 {completed}/{total} 个数据集 ({progress_pct:.1f}%)"
+                        )
+                    elif completed == total:
+                        # 最后一个也显示
+                        self.progress_text.append(
+                            f"✓ 已下载 {completed}/{total} 个数据集 ({progress_pct:.1f}%)"
+                        )
+
                 # 每100个打印一次日志
                 if completed % 100 == 0:
                     self.logger.info(">>> 进度: %d/%d (%.1f%%)", completed, total, progress_pct)
@@ -1652,6 +1699,13 @@ class DataCenter(BaseWidget, LoggerMixin):
                 if self.progress_label:
                     self.progress_label.setText(f"✅ 下载完成：{count} 个数据集")
 
+                # 🚀 文本显示下载完成摘要
+                if self.progress_text:
+                    self.progress_text.append(
+                        f"\n{'='*50}\n下载完成摘要:\n{'='*50}\n"
+                        f"✅ 下载完成，共成功保存 {count} 个数据集"
+                    )
+
                 # 重置状态
                 self._reset_download_state()
                 self.show_info(f"✅ 下载任务已全部完成！共 {count} 个数据集")
@@ -1664,6 +1718,12 @@ class DataCenter(BaseWidget, LoggerMixin):
                 if self.progress_label:
                     self.progress_label.setText("❌ 下载失败")
 
+                # 🚀 文本显示失败摘要
+                if self.progress_text:
+                    self.progress_text.append(
+                        f"\n{'='*50}\n下载失败:\n{'='*50}\n" f"❌ {error_msg}"
+                    )
+
                 self._reset_download_state()
                 self.show_error(f"下载失败: {error_msg}")
 
@@ -1674,6 +1734,13 @@ class DataCenter(BaseWidget, LoggerMixin):
 
                 if self.progress_label:
                     self.progress_label.setText(f"⛔ 下载已停止：{count} 个数据集")
+
+                # 🚀 文本显示停止摘要
+                if self.progress_text:
+                    self.progress_text.append(
+                        f"\n{'='*50}\n下载已停止:\n{'='*50}\n"
+                        f"⛔ 已下载 {count} 个数据集（用户手动停止）"
+                    )
 
                 self._reset_download_state()
                 self.show_info(f"下载已停止，已完成 {count} 个数据集")
@@ -2187,13 +2254,22 @@ class DataCenter(BaseWidget, LoggerMixin):
         try:
             # 更新各标签
             total = overview_data.get("total_symbols", 0)
+            local = overview_data.get("local_symbols", 0)  # 🚀 新增
             missing = overview_data.get("missing_symbols", 0)
             errors = overview_data.get("error_symbols", 0)
             warnings = overview_data.get("warning_symbols", 0)
             score = overview_data.get("quality_score", 0)
 
+            # 🚀 计算本地品种数（如果没有直接提供）
+            if local == 0 and total > 0 and missing > 0:
+                local = total - missing
+
             if self.total_symbols_label:
                 self.total_symbols_label.setText(f"总品种: {total}")
+
+            # 🚀 更新已下载品种数
+            if self.downloaded_symbols_label:
+                self.downloaded_symbols_label.setText(f"已下载: {local}")
 
             if self.missing_symbols_label:
                 self.missing_symbols_label.setText(f"缺失: {missing}")
@@ -2401,11 +2477,12 @@ class DataCenter(BaseWidget, LoggerMixin):
             self.logger.info("收到扫描完成事件: 总品种=%s, 评分=%s", total, score)
 
             # 刷新UI显示
-            result = self.data_center_service.get_data_quality_overview()
-            if result.get("success"):
-                self._update_quality_overview_ui(result)
-                # 静默更新，不显示提示（避免干扰用户）
-                self.logger.info("质量概览已自动更新")
+            if self.data_center_service is not None:
+                result = self.data_center_service.get_data_quality_overview()
+                if result.get("success"):
+                    self._update_quality_overview_ui(result)
+                    # 静默更新，不显示提示（避免干扰用户）
+                    self.logger.info("质量概览已自动更新")
 
         except Exception as e:
             self.logger.error("处理扫描完成事件失败: %s", e)

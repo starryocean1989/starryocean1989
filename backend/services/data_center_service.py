@@ -100,6 +100,9 @@ class DataCenterService(BaseService):
             # 🔧 修复：启动时加载品种缓存（如果存在）
             self._load_symbol_cache_on_startup()
 
+            # ✨ 新增：登录时检查并清理旧缓存
+            self.check_and_cleanup_old_cache_on_login()
+
             return True  # 即使部分功能不可用，也返回True以允许服务启动
 
         except Exception as e:
@@ -137,12 +140,186 @@ class DataCenterService(BaseService):
             "active_downloads": len(self._download_tasks),
         }
 
+    # ==================== 指数数据查询（基准数据支持） ====================
+
+    def query_index_data(
+        self,
+        index_code: str,
+        start_date: str,
+        end_date: str,
+        frequency: str = "1d",
+    ) -> Dict[str, Any]:
+        """查询指数数据（用于基准对比）.
+
+        支持的指数代码：
+        - 000001: 上证指数
+        - 000300: 沪深300
+        - 399001: 深证成指
+        - 399006: 创业板指
+        - 000016: 上证50
+        - 000905: 中证500
+        - 000852: 中证1000
+
+        Args:
+            index_code: 指数代码
+            start_date: 开始日期 (YYYY-MM-DD)
+            end_date: 结束日期 (YYYY-MM-DD)
+            frequency: 数据频率 (1d/1w/1M)
+
+        Returns:
+            Dict: {
+                "success": True,
+                "data": [{"date": "2025-01-01", "close": 3000.00, "open": ..., ...}, ...],
+                "index_name": "沪深300"
+            }
+        """
+        try:
+            # 指数名称映射
+            index_names = {
+                "000001": "上证指数",
+                "000300": "沪深300",
+                "399001": "深证成指",
+                "399006": "创业板指",
+                "000016": "上证50",
+                "000905": "中证500",
+                "000852": "中证1000",
+            }
+
+            index_name = index_names.get(index_code, f"指数{index_code}")
+
+            # 调用china_stock_engine查询指数数据
+            if not self.china_stock_engine:
+                return {
+                    "success": False,
+                    "message": "ChinaStockEngine不可用",
+                    "data": [],
+                }
+
+            # 使用china_stock_engine的query_data方法查询指数
+            result = self.china_stock_engine.query_data(
+                symbols=[index_code],
+                start_date=start_date,
+                end_date=end_date,
+                frequency=frequency,
+            )
+
+            if result.get("success") and result.get("data"):
+                data = result["data"].get(index_code, [])
+
+                if data:
+                    self.logger.info("✅ 查询到 %s 数据: %d 条", index_name, len(data))
+                    return {
+                        "success": True,
+                        "data": data,
+                        "index_code": index_code,
+                        "index_name": index_name,
+                        "frequency": frequency,
+                    }
+                else:
+                    self.logger.warning("⚠️ %s 数据为空", index_name)
+                    return {
+                        "success": False,
+                        "message": f"{index_name}数据为空",
+                        "data": [],
+                    }
+            else:
+                return {
+                    "success": False,
+                    "message": result.get("message", "查询失败"),
+                    "data": [],
+                }
+
+        except Exception as e:
+            self._log_error("查询指数数据", e)
+            return {
+                "success": False,
+                "message": str(e),
+                "data": [],
+            }
+
+    def get_index_returns(
+        self,
+        index_code: str = "000300",
+        lookback_days: int = 60,
+    ) -> Dict[str, Any]:
+        """获取指数收益率序列（用于基准对比）.
+
+        Args:
+            index_code: 指数代码（默认沪深300）
+            lookback_days: 回溯天数
+
+        Returns:
+            Dict: {
+                "success": True,
+                "returns": [0.008, -0.003, ...],  # 日收益率列表
+                "dates": ["2025-01-01", "2025-01-02", ...],
+                "index_name": "沪深300",
+                "index_code": "000300"
+            }
+        """
+        try:
+            from datetime import datetime, timedelta
+
+            # 计算日期范围
+            end_date = datetime.now().strftime("%Y-%m-%d")
+            start_date = (datetime.now() - timedelta(days=lookback_days + 30)).strftime(
+                "%Y-%m-%d"
+            )  # 多查30天确保有足够数据
+
+            # 查询指数数据
+            result = self.query_index_data(
+                index_code=index_code,
+                start_date=start_date,
+                end_date=end_date,
+                frequency="1d",
+            )
+
+            if not result.get("success"):
+                return result
+
+            data = result.get("data", [])
+
+            if len(data) < 2:
+                return {
+                    "success": False,
+                    "message": "指数数据不足，无法计算收益率",
+                }
+
+            # 计算日收益率
+            import numpy as np
+
+            closes = np.array([float(item["close"]) for item in data])
+            dates = [item.get("date", "") for item in data]
+
+            # 计算收益率
+            returns = np.diff(closes) / closes[:-1]
+
+            # 只返回最近lookback_days的数据
+            returns = returns[-lookback_days:].tolist()
+            dates = dates[-(lookback_days + 1) :]  # 收益率比价格少1个
+
+            return {
+                "success": True,
+                "returns": returns,
+                "dates": dates[1:],  # 对齐收益率
+                "index_name": result.get("index_name", ""),
+                "index_code": index_code,
+                "data_points": len(returns),
+            }
+
+        except Exception as e:
+            self._log_error("获取指数收益率", e)
+            return {
+                "success": False,
+                "message": str(e),
+            }
+
     def _init_data_engine(self) -> bool:
         """初始化data_engine."""
         try:
             # 尝试导入data_engine包
             try:
-                from backend.infrastructure.data_engine import engine as de_engine
+                from backend.infrastructure.data_module_vnpy import engine as de_engine
 
                 self.data_engine = de_engine
                 self.logger.info("✅ data_engine初始化成功")
@@ -682,9 +859,7 @@ class DataCenterService(BaseService):
                 return {
                     "success": False,
                     "task_id": None,
-                    "message": "增量下载最多支持最近100天数据，请调整开始日期（当前选择了{}天前的数据）".format(
-                        days_diff
-                    ),
+                    "message": f"增量下载最多支持最近100天数据，请调整开始日期（当前选择了{days_diff}天前的数据）",
                 }
 
             if days_diff < 0:
@@ -717,6 +892,9 @@ class DataCenterService(BaseService):
                     "start_date": start_date,
                     "progress": 50,  # 假设进度
                 }
+
+                # ✨ 发送数据下载完成事件（支持跨模块通知）
+                self._emit_download_complete_event(task_id, "incremental", start_date)
 
                 return {
                     "success": True,
@@ -803,7 +981,7 @@ class DataCenterService(BaseService):
         except Exception as e:
             self.logger.error("添加下载历史失败: %s", str(e))
 
-    def get_download_progress(self, task_id: str = None) -> Dict[str, Any]:
+    def get_download_progress(self, task_id: Optional[str] = None) -> Dict[str, Any]:
         """获取下载进度（支持从后端engine实时获取）.
 
         Args:
@@ -868,7 +1046,7 @@ class DataCenterService(BaseService):
             "progress": 0,
         }
 
-    def stop_download(self, task_id: str = None) -> Dict[str, Any]:
+    def stop_download(self, task_id: Optional[str] = None) -> Dict[str, Any]:
         """停止下载任务.
 
         Args:
@@ -914,7 +1092,7 @@ class DataCenterService(BaseService):
                 "message": f"停止失败: {str(e)}",
             }
 
-    def pause_download(self, task_id: str = None) -> Dict[str, Any]:
+    def pause_download(self, task_id: Optional[str] = None) -> Dict[str, Any]:
         """暂停下载任务.
 
         Args:
@@ -961,7 +1139,7 @@ class DataCenterService(BaseService):
                 "message": f"暂停失败: {str(e)}",
             }
 
-    def resume_download(self, task_id: str = None) -> Dict[str, Any]:
+    def resume_download(self, task_id: Optional[str] = None) -> Dict[str, Any]:
         """恢复暂停的下载任务.
 
         Args:
@@ -1145,6 +1323,16 @@ class DataCenterService(BaseService):
                             "issues": ["数据文件不存在或为空"],
                             "can_repair": True,
                         }
+
+                    # 确保是单个ValidationResult对象，而不是列表
+                    if isinstance(validation_result, list):
+                        # 如果返回列表，取第一个结果（理论上不应该发生，因为传入了interval）
+                        validation_result = validation_result[0] if validation_result else None
+                        if not validation_result:
+                            return {
+                                "success": False,
+                                "message": "验证结果为空",
+                            }
 
                     # 解析ValidationResult对象
                     errors = validation_result.errors
@@ -1356,9 +1544,13 @@ class DataCenterService(BaseService):
                 }
 
             # 转换为返回格式
+            # 🚀 计算本地有数据的品种数
+            local_symbols = overview.total_symbols - overview.missing_symbols
+
             return {
                 "success": True,
                 "total_symbols": overview.total_symbols,
+                "local_symbols": local_symbols,  # 🚀 新增：本地有数据的品种数
                 "missing_symbols": overview.missing_symbols,
                 "error_symbols": overview.error_symbols,
                 "warning_symbols": overview.warning_symbols,
@@ -2111,60 +2303,252 @@ class DataCenterService(BaseService):
                 "message": f"获取状态失败: {str(e)}",
             }
 
-    def cleanup_recorded_data(self, days_to_keep: int = 1) -> Dict[str, Any]:
+    def get_recorded_data(self, symbol: str, date: str) -> Optional[List[Dict[str, Any]]]:
+        """获取录制的数据（供行情看板使用）.
+
+        Args:
+            symbol: 品种代码
+            date: 日期（格式：YYYY-MM-DD）
+
+        Returns:
+            List[Dict]: 录制的数据列表，如果没有则返回None
+        """
+        try:
+            from pathlib import Path
+
+            # 录制数据路径（与vnpy_datarecorder保持一致）
+            recording_path = Path(".vntrader/data_recorder")
+
+            if not recording_path.exists():
+                return None
+
+            # 构建录制文件路径
+            # vnpy_datarecorder通常按日期和品种存储
+            # 格式示例: .vntrader/data_recorder/2024-01-01/000001.SZSE_1m.csv
+            date_dir = recording_path / date
+
+            if not date_dir.exists():
+                return None
+
+            # 查找该品种的录制文件
+            recorded_files = list(date_dir.glob(f"{symbol}*"))
+
+            if not recorded_files:
+                return None
+
+            # 读取第一个匹配的文件（通常只有一个）
+            import pandas as pd
+
+            data_file = recorded_files[0]
+            df = pd.read_csv(data_file)
+
+            # 转换为标准格式
+            data = df.to_dict("records")
+
+            self.logger.info(
+                "从录制数据加载 %d 条记录: symbol=%s, date=%s", len(data), symbol, date
+            )
+
+            return data
+
+        except Exception as e:
+            self.logger.warning("获取录制数据失败: %s", e)
+            return None
+
+    def sync_recorded_data_to_storage(
+        self, symbol: Optional[str] = None, date: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """将录制数据同步到本地存储（data_module_vnpy）.
+
+        实现数据录制与数据中心的无缝集成，确保录制的实时数据
+        能够在本地数据查询中访问到。
+
+        Args:
+            symbol: 品种代码（如为None则同步所有品种）
+            date: 日期（如为None则同步今天）
+
+        Returns:
+            Dict: 同步结果
+        """
+        try:
+            from datetime import datetime
+            from pathlib import Path
+            import pandas as pd
+
+            # 默认使用今天的日期
+            if not date:
+                date = datetime.now().strftime("%Y-%m-%d")
+
+            # 录制数据路径
+            recording_path = Path(".vntrader/data_recorder")
+            date_dir = recording_path / date
+
+            if not date_dir.exists():
+                return {
+                    "success": True,
+                    "message": f"录制数据目录不存在: {date}",
+                    "synced_count": 0,
+                }
+
+            synced_count = 0
+            failed_count = 0
+
+            # 如果指定了品种，只同步该品种
+            if symbol:
+                recorded_files = list(date_dir.glob(f"{symbol}*"))
+            else:
+                # 同步所有品种
+                recorded_files = list(date_dir.glob("*"))
+
+            self.logger.info("找到 %d 个录制文件待同步", len(recorded_files))
+
+            # 使用storage_manager保存数据
+            if not self.china_stock_engine:
+                self.logger.warning("ChinaStockEngine不可用，无法同步录制数据")
+                return {
+                    "success": False,
+                    "message": "ChinaStockEngine不可用",
+                }
+
+            storage_manager = self.china_stock_engine.storage_manager
+
+            for file_path in recorded_files:
+                try:
+                    # 读取录制数据
+                    df = pd.read_csv(file_path)
+
+                    if df.empty:
+                        continue
+
+                    # 解析文件名获取品种和周期信息
+                    # 格式示例: 000001.SZSE_1m.csv
+                    file_name = file_path.stem
+                    parts = file_name.split("_")
+                    symbol_code = parts[0] if parts else ""
+                    interval = parts[1] if len(parts) > 1 else "1m"
+
+                    # 转换周期格式
+                    interval_map = {"1m": "1min", "5m": "5min", "1d": "day"}
+                    data_type = interval_map.get(interval, "1min")
+
+                    # 保存到storage
+                    storage_manager.save_kline_data(symbol_code, df, data_type)
+
+                    synced_count += 1
+                    self.logger.info("✅ 已同步录制数据: %s (%s)", symbol_code, data_type)
+
+                except Exception as e:
+                    failed_count += 1
+                    self.logger.warning("同步文件 %s 失败: %s", file_path, e)
+
+            message = f"已同步 {synced_count} 个品种的录制数据"
+            if failed_count > 0:
+                message += f"，{failed_count} 个失败"
+
+            self.logger.info(message)
+
+            return {
+                "success": True,
+                "message": message,
+                "synced_count": synced_count,
+                "failed_count": failed_count,
+            }
+
+        except Exception as e:
+            self._log_error("同步录制数据", e)
+            return {
+                "success": False,
+                "message": f"同步失败: {str(e)}",
+            }
+
+    def cleanup_recorded_data(
+        self, days_to_keep: int = 1, sync_before_delete: bool = False
+    ) -> Dict[str, Any]:
         """清理过期的录制数据.
 
         删除超过指定天数的录制数据（日级缓存清理）。
+        默认不同步到持久存储，可通过参数控制。
 
         Args:
-            days_to_keep: 保留天数（默认1天）
+            days_to_keep: 保留天数（默认1天，即只保留今天的数据）
+            sync_before_delete: 删除前是否同步到持久存储（默认False）
 
         Returns:
             Dict: 清理结果
         """
         try:
-            # vnpy_datarecorder默认录制到data目录
-            data_dir = Path("data")
+            from pathlib import Path
+            from datetime import datetime, timedelta
 
-            if not data_dir.exists():
+            # 录制数据路径
+            recording_path = Path(".vntrader/data_recorder")
+
+            if not recording_path.exists():
                 return {
                     "success": True,
                     "message": "录制数据目录不存在",
-                    "deleted_files": 0,
+                    "deleted_dirs": 0,
                 }
 
             # 计算截止日期
             cutoff_date = datetime.now() - timedelta(days=days_to_keep)
 
-            deleted_files = 0
+            deleted_dirs = 0
             deleted_size = 0
+            synced_dirs = 0
 
-            # 查找并删除旧文件
-            for file_path in data_dir.rglob("*.db"):  # vnpy_datarecorder使用.db文件
+            # 遍历日期目录
+            for date_dir in recording_path.iterdir():
+                if not date_dir.is_dir():
+                    continue
+
                 try:
-                    # 检查文件修改时间
-                    file_mtime = datetime.fromtimestamp(file_path.stat().st_mtime)
+                    # 解析目录名（应该是日期格式YYYY-MM-DD）
+                    dir_name = date_dir.name
+                    dir_date = datetime.strptime(dir_name, "%Y-%m-%d")
 
-                    if file_mtime < cutoff_date:
-                        file_size = file_path.stat().st_size
-                        file_path.unlink()
-                        deleted_files += 1
-                        deleted_size += file_size
-                        self.logger.info("已删除过期录制文件: %s", file_path)
+                    # 如果是过期目录
+                    if dir_date.date() < cutoff_date.date():
+                        # 可选：同步数据到持久存储
+                        if sync_before_delete:
+                            sync_result = self.sync_recorded_data_to_storage(date=dir_name)
+                            if sync_result.get("success"):
+                                synced_dirs += 1
+                                self.logger.info("✅ 已同步过期录制数据: %s", dir_name)
 
+                        # 计算目录大小
+                        dir_size = sum(f.stat().st_size for f in date_dir.rglob("*") if f.is_file())
+
+                        # 删除目录
+                        import shutil
+
+                        shutil.rmtree(date_dir)
+
+                        deleted_dirs += 1
+                        deleted_size += dir_size
+                        self.logger.info("🗑️ 已删除过期录制目录: %s", dir_name)
+
+                except ValueError:
+                    # 目录名不是日期格式，跳过
+                    self.logger.debug("跳过非日期目录: %s", date_dir.name)
                 except Exception as e:
-                    self.logger.warning("删除文件 %s 失败: %s", file_path, e)
+                    self.logger.warning("处理目录 %s 失败: %s", date_dir, e)
+
+            message = f"已清理 {deleted_dirs} 个过期录制目录"
+            if synced_dirs > 0:
+                message += f"（已同步 {synced_dirs} 个到持久存储）"
 
             self.logger.info(
-                "录制数据清理完成: 删除 %d 个文件, 释放 %.2f MB",
-                deleted_files,
+                "录制数据清理完成: 删除 %d 个目录, 释放 %.2f MB",
+                deleted_dirs,
                 deleted_size / 1024 / 1024,
             )
 
             return {
                 "success": True,
-                "message": f"已清理 {deleted_files} 个过期文件",
-                "deleted_files": deleted_files,
+                "message": message,
+                "deleted_dirs": deleted_dirs,
+                "synced_dirs": synced_dirs,
                 "freed_space_mb": deleted_size / 1024 / 1024,
             }
 
@@ -2173,6 +2557,161 @@ class DataCenterService(BaseService):
             return {
                 "success": False,
                 "message": f"清理失败: {str(e)}",
+            }
+
+    def _emit_download_complete_event(self, task_id: str, download_type: str, start_date: str):
+        """发送数据下载完成事件.
+
+        Args:
+            task_id: 任务ID
+            download_type: 下载类型（incremental/full）
+            start_date: 开始日期
+        """
+        try:
+            from backend.core.base import get_event_engine
+            from backend.core.utils import EVENT_DATA_DOWNLOAD_COMPLETE
+            from vnpy.event import Event
+
+            event_engine = get_event_engine()
+            if not event_engine:
+                return
+
+            # 构建事件数据
+            event_data = {
+                "task_id": task_id,
+                "download_type": download_type,
+                "start_date": start_date,
+                "end_date": datetime.now().strftime("%Y-%m-%d"),
+                "timestamp": datetime.now().isoformat(),
+            }
+
+            # 发送事件
+            event = Event(EVENT_DATA_DOWNLOAD_COMPLETE, event_data)
+            event_engine.put(event)
+
+            self.logger.info("📢 已发送数据下载完成事件: %s (%s)", download_type, start_date)
+
+        except Exception as e:
+            self.logger.warning("发送下载完成事件失败: %s", e)
+
+    def _auto_start_recording_on_push(self) -> Dict[str, Any]:
+        """数据源推送启动时自动启动录制.
+
+        实现需求：实时数据推送时应有recording功能，该功能无需手动启动。
+
+        Returns:
+            Dict: 启动结果
+        """
+        try:
+            # 如果录制引擎已经在运行，直接返回成功
+            if self.recorder_engine:
+                self.logger.info("录制引擎已在运行，跳过自动启动")
+                return {
+                    "success": True,
+                    "message": "录制引擎已在运行",
+                }
+
+            # 调用现有的录制启动方法
+            result = self.start_realtime_data_recording(
+                symbols=None,  # 录制所有订阅品种
+                record_tick=True,
+                record_bar=True,
+            )
+
+            return result
+
+        except Exception as e:
+            self.logger.error("自动启动录制失败: %s", e, exc_info=True)
+            return {
+                "success": False,
+                "message": f"自动启动失败: {str(e)}",
+            }
+
+    def check_and_cleanup_old_cache_on_login(self) -> Dict[str, Any]:
+        """登录时检查并清理非当天的录制缓存（不同步到持久存储）.
+
+        在系统启动时执行，检查录制缓存目录，删除非当天的旧缓存。
+        与定时清理不同，这个方法不会同步数据到持久存储。
+
+        Returns:
+            Dict: 清理结果
+                - success: bool
+                - deleted_dirs: int 删除的目录数量
+                - freed_space_mb: float 释放的空间(MB)
+                - message: str
+        """
+        try:
+            from pathlib import Path
+            from datetime import datetime
+
+            # 录制数据路径
+            recording_path = Path(".vntrader/data_recorder")
+
+            if not recording_path.exists():
+                self.logger.info("录制数据目录不存在，无需清理")
+                return {
+                    "success": True,
+                    "message": "录制数据目录不存在",
+                    "deleted_dirs": 0,
+                    "freed_space_mb": 0.0,
+                }
+
+            # 获取当天日期
+            today = datetime.now().date()
+            today_str = today.strftime("%Y-%m-%d")
+
+            deleted_dirs = 0
+            deleted_size = 0
+
+            # 遍历日期目录
+            for date_dir in recording_path.iterdir():
+                if not date_dir.is_dir():
+                    continue
+
+                try:
+                    # 解析目录名（应该是日期格式YYYY-MM-DD）
+                    dir_name = date_dir.name
+
+                    # 检查是否为当天
+                    if dir_name != today_str:
+                        # 计算目录大小
+                        dir_size = sum(f.stat().st_size for f in date_dir.rglob("*") if f.is_file())
+
+                        # 直接删除（不同步到持久存储）
+                        import shutil
+
+                        shutil.rmtree(date_dir)
+
+                        deleted_dirs += 1
+                        deleted_size += dir_size
+                        self.logger.info("🗑️ 已删除旧录制缓存: %s", dir_name)
+
+                except Exception as e:
+                    self.logger.warning("处理目录 %s 失败: %s", date_dir, e)
+
+            freed_mb = deleted_size / 1024 / 1024
+
+            if deleted_dirs > 0:
+                self.logger.info(
+                    "✅ 登录时缓存清理完成: 删除 %d 个目录, 释放 %.2f MB", deleted_dirs, freed_mb
+                )
+            else:
+                self.logger.info("✅ 无需清理，只有当天的缓存")
+
+            return {
+                "success": True,
+                "deleted_dirs": deleted_dirs,
+                "freed_space_mb": freed_mb,
+                "message": f"已清理 {deleted_dirs} 个旧缓存目录",
+            }
+
+        except Exception as e:
+            self.logger.error("登录时缓存清理失败: %s", e, exc_info=True)
+            return {
+                "success": False,
+                "message": f"清理失败: {str(e)}",
+                "deleted_dirs": 0,
+                "freed_space_mb": 0.0,
             }
 
     # ==================== 轮询转推送网关管理 ====================
@@ -2229,6 +2768,14 @@ class DataCenterService(BaseService):
                     "message": f"导入网关失败: {str(e)}",
                 }
 
+            # 注册网关类到MainEngine（确保MainEngine能识别和管理该网关）
+            try:
+                main_engine.add_gateway(PollingGateway)
+                self.logger.info("✅ PollingGateway类已注册到MainEngine")
+            except Exception as e:
+                # 网关类可能已注册，忽略重复注册错误
+                self.logger.debug("PollingGateway注册跳过（可能已存在）: %s", e)
+
             # 创建网关实例
             gateway_name = "POLLING"
             self.polling_gateway = PollingGateway(event_engine, gateway_name)
@@ -2249,10 +2796,18 @@ class DataCenterService(BaseService):
 
             self.logger.info("✅ 轮询转推送网关已启动")
 
+            # ✨ 自动启动数据录制（需求：实时数据推送时应有recording功能，该功能无需手动启动）
+            auto_record_result = self._auto_start_recording_on_push()
+            if auto_record_result.get("success"):
+                self.logger.info("✅ 数据录制已自动启动")
+            else:
+                self.logger.warning("⚠️ 数据录制自动启动失败: %s", auto_record_result.get("message"))
+
             return {
                 "success": True,
                 "message": "轮询转推送网关已启动",
                 "gateway_name": gateway_name,
+                "recording_started": auto_record_result.get("success", False),
             }
 
         except Exception as e:
@@ -2277,6 +2832,15 @@ class DataCenterService(BaseService):
                     "success": False,
                     "message": "轮询网关未运行",
                 }
+
+            # 停止录制引擎
+            if self.recorder_engine:
+                try:
+                    stop_result = self.stop_realtime_data_recording()
+                    if stop_result.get("success"):
+                        self.logger.info("✅ 数据录制已停止")
+                except Exception as e:
+                    self.logger.warning("停止录制引擎失败: %s", e)
 
             # 关闭网关
             self.polling_gateway.close()
@@ -2456,6 +3020,14 @@ class DataCenterService(BaseService):
                     "message": f"导入网关失败: {str(e)}",
                 }
 
+            # 注册网关类到MainEngine（确保MainEngine能识别和管理该网关）
+            try:
+                main_engine.add_gateway(VirtualGateway)
+                self.logger.info("✅ VirtualGateway类已注册到MainEngine")
+            except Exception as e:
+                # 网关类可能已注册，忽略重复注册错误
+                self.logger.debug("VirtualGateway注册跳过（可能已存在）: %s", e)
+
             # 创建网关实例
             gateway_name = "VIRTUAL"
             self.virtual_gateway = VirtualGateway(event_engine, gateway_name)
@@ -2477,10 +3049,18 @@ class DataCenterService(BaseService):
 
             self.logger.info("✅ 虚拟推送网关已启动")
 
+            # ✨ 自动启动数据录制（需求：实时数据推送时应有recording功能，该功能无需手动启动）
+            auto_record_result = self._auto_start_recording_on_push()
+            if auto_record_result.get("success"):
+                self.logger.info("✅ 数据录制已自动启动")
+            else:
+                self.logger.warning("⚠️ 数据录制自动启动失败: %s", auto_record_result.get("message"))
+
             return {
                 "success": True,
                 "message": "虚拟推送网关已启动",
                 "gateway_name": gateway_name,
+                "recording_started": auto_record_result.get("success", False),
             }
 
         except Exception as e:
@@ -2505,6 +3085,15 @@ class DataCenterService(BaseService):
                     "success": False,
                     "message": "虚拟网关未运行",
                 }
+
+            # 停止录制引擎
+            if self.recorder_engine:
+                try:
+                    stop_result = self.stop_realtime_data_recording()
+                    if stop_result.get("success"):
+                        self.logger.info("✅ 数据录制已停止")
+                except Exception as e:
+                    self.logger.warning("停止录制引擎失败: %s", e)
 
             # 关闭网关
             self.virtual_gateway.close()

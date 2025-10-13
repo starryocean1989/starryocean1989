@@ -204,8 +204,20 @@ class DataValidator:
             if end_date is None:
                 end_date = date.today()
 
-            # 获取现有数据
-            data = self.storage_manager.query_kline(symbol, interval, start_date, end_date)
+            # 获取现有数据（🚀 增强异常处理）
+            try:
+                data = self.storage_manager.query_kline(symbol, interval, start_date, end_date)
+            except Exception as query_err:
+                # 🚀 文件损坏或读取失败，记录日志并返回空列表
+                self.logger.warning(
+                    "读取 %s %s 数据失败（可能是文件损坏）: %s",
+                    symbol,
+                    interval,
+                    str(query_err)[:100],
+                )
+                # 返回空列表而非整个日期范围（避免误报）
+                return []
+
             if data is None or data.empty:
                 return self._generate_date_range(start_date, end_date, interval)
 
@@ -223,8 +235,9 @@ class DataValidator:
 
             return sorted(missing_dates)
 
-        except (OSError, ValueError, KeyError) as e:
-            self.logger.error("检查 %s %s 缺失日期失败: %s", symbol, interval, e)
+        except Exception as e:
+            # 🚀 最外层捕获所有异常，避免影响其他品种的检查
+            self.logger.warning("检查 %s %s 缺失日期失败: %s", symbol, interval, str(e)[:100])
             return []
 
     def check_logic_errors(self, data: pd.DataFrame) -> List[Dict[str, Any]]:
@@ -511,7 +524,7 @@ class DataValidator:
 
     def _generate_date_range(self, start_date: date, end_date: date, _interval: str) -> List[date]:
         """
-        生成期望的日期范围
+        生成期望的日期范围（排除周末和节假日）
 
         Args:
             start_date: 开始日期
@@ -519,7 +532,7 @@ class DataValidator:
             _interval: K线周期（保留供将来使用）
 
         Returns:
-            日期列表
+            日期列表（排除周末和节假日）
         """
         # 参数 _interval 保留供将来根据不同周期生成日期范围
         del _interval
@@ -528,13 +541,108 @@ class DataValidator:
         current_date = start_date
 
         while current_date <= end_date:
-            # 跳过周末（假设只有工作日有交易数据）
+            # 跳过周末（0=周一，6=周日）
             if current_date.weekday() < 5:  # 0-4 表示周一到周五
-                dates.append(current_date)
+                # 检查是否是节假日
+                if not self._is_holiday(current_date):
+                    dates.append(current_date)
 
             current_date += timedelta(days=1)
 
         return dates
+
+    def _is_holiday(self, check_date: date) -> bool:
+        """
+        判断指定日期是否是中国法定节假日
+
+        Args:
+            check_date: 要检查的日期
+
+        Returns:
+            是否是节假日
+        """
+        # A股常见节假日（需要每年更新）
+        # 2024-2025年的主要节假日
+        holidays_2024 = [
+            # 元旦：1月1日
+            date(2024, 1, 1),
+            # 春节：2月10日-2月17日
+            date(2024, 2, 9),
+            date(2024, 2, 10),
+            date(2024, 2, 11),
+            date(2024, 2, 12),
+            date(2024, 2, 13),
+            date(2024, 2, 14),
+            date(2024, 2, 15),
+            date(2024, 2, 16),
+            date(2024, 2, 17),
+            # 清明节：4月4日-4月6日
+            date(2024, 4, 4),
+            date(2024, 4, 5),
+            date(2024, 4, 6),
+            # 劳动节：5月1日-5月5日
+            date(2024, 5, 1),
+            date(2024, 5, 2),
+            date(2024, 5, 3),
+            date(2024, 5, 4),
+            date(2024, 5, 5),
+            # 端午节：6月10日
+            date(2024, 6, 10),
+            # 中秋节：9月15日-9月17日
+            date(2024, 9, 15),
+            date(2024, 9, 16),
+            date(2024, 9, 17),
+            # 国庆节：10月1日-10月7日
+            date(2024, 10, 1),
+            date(2024, 10, 2),
+            date(2024, 10, 3),
+            date(2024, 10, 4),
+            date(2024, 10, 5),
+            date(2024, 10, 6),
+            date(2024, 10, 7),
+        ]
+
+        holidays_2025 = [
+            # 元旦：1月1日
+            date(2025, 1, 1),
+            # 春节：1月28日-2月4日
+            date(2025, 1, 28),
+            date(2025, 1, 29),
+            date(2025, 1, 30),
+            date(2025, 1, 31),
+            date(2025, 2, 1),
+            date(2025, 2, 2),
+            date(2025, 2, 3),
+            date(2025, 2, 4),
+            # 清明节：4月4日-4月6日
+            date(2025, 4, 4),
+            date(2025, 4, 5),
+            date(2025, 4, 6),
+            # 劳动节：5月1日-5月5日
+            date(2025, 5, 1),
+            date(2025, 5, 2),
+            date(2025, 5, 3),
+            date(2025, 5, 4),
+            date(2025, 5, 5),
+            # 端午节：5月31日-6月2日
+            date(2025, 5, 31),
+            date(2025, 6, 1),
+            date(2025, 6, 2),
+            # 中秋节：10月6日
+            date(2025, 10, 6),
+            # 国庆节：10月1日-10月7日
+            date(2025, 10, 1),
+            date(2025, 10, 2),
+            date(2025, 10, 3),
+            date(2025, 10, 4),
+            date(2025, 10, 5),
+            date(2025, 10, 7),
+        ]
+
+        # 合并所有节假日
+        all_holidays = set(holidays_2024 + holidays_2025)
+
+        return check_date in all_holidays
 
     def _generate_summary(self, results: List[ValidationResult]) -> ValidationSummary:
         """

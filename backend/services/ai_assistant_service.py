@@ -380,7 +380,7 @@ class AIAssistantService(BaseService):
             self.logger.error("连接错误: %s", e, exc_info=True)
             return {
                 "success": False,
-                "message": f"连接错误: 服务器关闭了连接。可能原因：1) 请求过大 2) 服务器繁忙 3) 网络不稳定。建议：分步骤操作，避免一次性复杂请求。",
+                "message": "连接错误: 服务器关闭了连接。可能原因：1) 请求过大 2) 服务器繁忙 3) 网络不稳定。建议：分步骤操作，避免一次性复杂请求。",
             }
         except requests.exceptions.RequestException as e:
             self.logger.error("网络请求失败: %s", e, exc_info=True)

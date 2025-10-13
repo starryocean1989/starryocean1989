@@ -170,6 +170,14 @@ def download_worker_process(
                 try:
                     data = _download_single_kline(quotes, symbol, interval, start_date, logger)
 
+                    # 🚀 统计：记录下载结果状态
+                    if data is None:
+                        logger.debug("进程 %d: 下载 %s %s 返回None", worker_id, symbol, interval)
+                    elif data.empty:
+                        logger.debug(
+                            "进程 %d: 下载 %s %s 返回空DataFrame", worker_id, symbol, interval
+                        )
+
                     # 将DataFrame转换为可序列化的dict
                     if data is not None and isinstance(data, pd.DataFrame) and not data.empty:
                         # 转换为dict格式（可序列化）
@@ -398,6 +406,7 @@ def _download_single_kline(
 
         # 最终检查
         if data is None or data.empty:
+            logger.debug("下载 %s %s 返回空数据（可能该品种在此日期无数据）", symbol, interval)
             return None
 
         # 确保有必要的字段
@@ -406,10 +415,16 @@ def _download_single_kline(
 
         if missing_fields:
             logger.debug(
-                "数据缺少字段 %s: %s（实际字段: %s）", symbol, missing_fields, data.columns.tolist()
+                "数据缺少字段 %s %s: %s（实际字段: %s）",
+                symbol,
+                interval,
+                missing_fields,
+                data.columns.tolist(),
             )
             return None
 
+        # 🚀 成功获取数据，记录行数
+        logger.debug("✓ 下载 %s %s 成功: %d 行数据", symbol, interval, len(data))
         return data
 
     except Exception as e:
