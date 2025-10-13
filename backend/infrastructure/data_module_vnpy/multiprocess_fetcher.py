@@ -762,29 +762,6 @@ class MultiProcessStockFetcher:
         self._classified_stocks_cache = self.parse_market_codes(stocks_df)
         return self._classified_stocks_cache
 
-    def download_full_kline(
-        self, symbols: List[str], intervals: Optional[List[str]] = None
-    ) -> Dict[str, pd.DataFrame]:
-        """
-        全量下载K线数据（使用多进程）
-
-        Args:
-            symbols: 品种代码列表
-            intervals: K线周期列表，默认['1d', '5m', '1m']
-
-        Returns:
-            下载结果字典
-        """
-        if intervals is None:
-            intervals = ["1d", "5m", "1m"]
-
-        # 全量下载：从很久以前开始
-        from datetime import date
-
-        start_date = date(2010, 1, 1)
-
-        return self.download_incremental_kline(symbols, start_date, intervals)
-
     # ==================== 其他工具方法 ====================
 
     def get_classified_stocks(self) -> Dict[str, List[str]]:

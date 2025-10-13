@@ -74,9 +74,6 @@ class DataCenterService(BaseService):
         # 任务调度器
         self.scheduler = None
 
-        # 消息发布器（用于WebSocket推送）
-        self.message_publisher = None
-
         self.logger.info("数据中心服务已创建")
 
     def _do_initialize(self) -> bool:
@@ -99,9 +96,6 @@ class DataCenterService(BaseService):
 
             # 初始化任务调度器
             self._init_scheduler()
-
-            # 初始化消息发布器
-            self._init_message_publisher()
 
             # 🔧 修复：启动时加载品种缓存（如果存在）
             self._load_symbol_cache_on_startup()
@@ -191,30 +185,6 @@ class DataCenterService(BaseService):
             return False
         except Exception as e:
             self.logger.error("任务调度器初始化失败: %s", e, exc_info=True)
-            return False
-
-    def _init_message_publisher(self) -> bool:
-        """初始化消息发布器.
-
-        Returns:
-            bool: 是否成功
-        """
-        try:
-            from backend.core.base import get_message_publisher
-
-            self.message_publisher = get_message_publisher()  # pylint: disable=assignment-from-none
-
-            if self.message_publisher:
-                self.logger.info("✅ 消息发布器可用")
-                return True
-            else:
-                # WebSocket是可选功能，降低日志级别避免干扰
-                self.logger.debug("⚠️ 消息发布器不可用，WebSocket推送功能受限")
-                return False
-
-        except Exception as e:
-            # WebSocket是可选功能，降低日志级别避免干扰
-            self.logger.debug("消息发布器初始化失败: %s", str(e))
             return False
 
     def _cleanup_recorded_data_daily(self, days_to_keep: int = 1):
@@ -671,75 +641,10 @@ class DataCenterService(BaseService):
 
     # ==================== 数据下载管理 ====================
 
-    def start_full_download(self) -> Dict[str, Any]:
-        """启动全量数据下载.
-
-        下载全品类（股票、可转债、T+0基金）、全周期（日线、5min、1min）的历史数据。
-
-        Returns:
-            Dict: {
-                "success": bool,
-                "task_id": str,
-                "message": str
-            }
-        """
-        try:
-            self._log_operation("启动全量数据下载")
-
-            if self.china_stock_engine is None:
-                return {
-                    "success": False,
-                    "task_id": None,
-                    "message": "ChinaStockEngine不可用",
-                }
-
-            # 创建下载任务
-            task_id = f"full_download_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-
-            # 调用ChinaStockEngine的K线数据全量下载方法
-            try:
-                success = self.china_stock_engine.download_full()
-                if not success:
-                    # 下载失败（例如：本地缓存不存在）
-                    return {
-                        "success": False,
-                        "task_id": None,
-                        "message": "本地品种缓存不存在或为空，请先在【品种列表】界面点击【重新加载品种】按钮获取品种列表",
-                    }
-            except Exception as e:
-                self.logger.error("全量下载启动失败: %s", e, exc_info=True)
-                return {
-                    "success": False,
-                    "task_id": None,
-                    "message": f"下载失败: {str(e)}",
-                }
-
-            # 注册任务
-            self._download_tasks[task_id] = {
-                "type": "full",
-                "status": "running",
-                "start_time": datetime.now(),
-                "progress": 0,
-            }
-
-            return {
-                "success": True,
-                "task_id": task_id,
-                "message": "全量下载已启动",
-            }
-
-        except Exception as e:
-            self._log_error("启动全量下载", e)
-            return {
-                "success": False,
-                "task_id": None,
-                "message": f"启动失败: {str(e)}",
-            }
-
     def start_incremental_download(self, start_date: str) -> Dict[str, Any]:
         """启动增量数据下载.
 
-        下载从指定日期至今的数据。
+        下载从指定日期至今的数据（最多支持最近100天）。
 
         Args:
             start_date: 开始日期（格式：YYYY-MM-DD）
@@ -757,15 +662,43 @@ class DataCenterService(BaseService):
                     "message": "data_module_vnpy不可用",
                 }
 
+            # 解析并验证日期
+            from datetime import datetime as dt, date
+
+            try:
+                start_dt = dt.strptime(start_date, "%Y-%m-%d").date()
+            except ValueError as e:
+                return {
+                    "success": False,
+                    "task_id": None,
+                    "message": f"日期格式错误: {str(e)}",
+                }
+
+            # 验证100天限制
+            today = date.today()
+            days_diff = (today - start_dt).days
+
+            if days_diff > 100:
+                return {
+                    "success": False,
+                    "task_id": None,
+                    "message": "增量下载最多支持最近100天数据，请调整开始日期（当前选择了{}天前的数据）".format(
+                        days_diff
+                    ),
+                }
+
+            if days_diff < 0:
+                return {
+                    "success": False,
+                    "task_id": None,
+                    "message": "开始日期不能晚于今天",
+                }
+
             # 创建下载任务
             task_id = f"incremental_download_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
             # 调用ChinaStockEngine的增量下载方法
             try:
-                # 解析日期
-                from datetime import datetime as dt
-
-                start_dt = dt.strptime(start_date, "%Y-%m-%d").date()
                 success = self.china_stock_engine.download_incremental(start_date=start_dt)
 
                 if not success:
@@ -869,38 +802,6 @@ class DataCenterService(BaseService):
 
         except Exception as e:
             self.logger.error("添加下载历史失败: %s", str(e))
-
-    def _publish_download_event(self, event_type: str, task_id: str, data: Dict[str, Any]):
-        """推送下载事件到WebSocket.
-
-        Args:
-            event_type: 事件类型 (started/progress/completed/failed)
-            task_id: 任务ID
-            data: 事件数据
-        """
-        try:
-            if not self.message_publisher:
-                return
-
-            if event_type == "started":
-                self.message_publisher.publish_download_started(task_id, data)
-            elif event_type == "progress":
-                self.message_publisher.publish_download_progress(
-                    task_id,
-                    data.get("progress", 0),
-                    data.get("current_symbol"),
-                    data.get("completed_symbols", 0),
-                    data.get("total_symbols", 0),
-                )
-            elif event_type == "completed":
-                self.message_publisher.publish_download_completed(task_id, data)
-            elif event_type == "failed":
-                self.message_publisher.publish_download_failed(
-                    task_id, data.get("error", "未知错误")
-                )
-
-        except Exception as e:
-            self.logger.error("推送下载事件失败: %s", str(e))
 
     def get_download_progress(self, task_id: str = None) -> Dict[str, Any]:
         """获取下载进度（支持从后端engine实时获取）.

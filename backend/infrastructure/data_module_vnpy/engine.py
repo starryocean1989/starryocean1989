@@ -4,7 +4,7 @@
 
 ChinaStockEngine继承vnpy的BaseEngine，集成所有功能模块：
 - 品种列表获取和缓存
-- K线数据下载（全量和增量）
+- K线数据下载（增量下载）
 - 数据存储和查询
 - 数据感知和校验
 - 文件监控
@@ -215,58 +215,6 @@ class ChinaStockEngine(BaseEngine):
             self.logger.error(f"更新品种列表失败（未知错误）: {e}", exc_info=True)
             self._push_download_event("stock_list", "error", 0, f"未知错误: {str(e)}")
             self._push_log_event(f"更新品种列表失败: {e}", "ERROR")
-            return False
-
-    def download_full(self, market_types: Optional[List[str]] = None) -> bool:
-        """
-        全量下载K线数据
-
-        Args:
-            market_types: 市场类型列表，默认下载所有类型
-
-        Returns:
-            是否下载成功
-        """
-        try:
-            if market_types is None:
-                market_types = ["上证A股", "深证A股", "北证A股", "T+0基金", "含可转债"]
-
-            self.logger.info(f"开始全量下载K线数据: {market_types}")
-
-            # 获取所有品种（仅使用本地缓存，不允许重新获取）
-            all_stocks = []
-            for market_type in market_types:
-                stocks = self.stock_fetcher.get_market_stocks(market_type, allow_fetch=False)
-                all_stocks.extend(stocks)
-
-            if not all_stocks:
-                error_msg = "本地品种缓存不存在或为空，请先在【品种列表】界面点击【重新加载品种】按钮获取品种列表"
-                self.logger.error(error_msg)
-                self._push_download_event("full_kline", "error", 0, error_msg)
-                self._push_log_event(error_msg, "ERROR")
-                return False
-
-            # 下载K线数据
-            download_results = self.stock_fetcher.download_full_kline(all_stocks)
-
-            # 保存数据
-            saved_count = 0
-            for key, data in download_results.items():
-                symbol, interval = key.split("_", 1)
-                file_path = self.storage_manager.save_kline(symbol, interval, data)
-                if file_path:
-                    saved_count += 1
-
-            # 推送下载事件
-            self._push_download_event("full_kline", "success", saved_count)
-            self._push_log_event(f"全量下载完成: {saved_count} 个数据集")
-
-            return True
-
-        except Exception as e:
-            self.logger.error(f"全量下载失败: {e}")
-            self._push_download_event("full_kline", "error", 0, str(e))
-            self._push_log_event(f"全量下载失败: {e}", "ERROR")
             return False
 
     def download_incremental(

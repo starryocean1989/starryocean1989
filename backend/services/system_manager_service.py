@@ -1397,15 +1397,12 @@ class SystemManagerService(BaseService):
                 self.logger.warning(f"获取数据库配置失败: {e}")
                 configs["database"] = {}
 
-            # 5. 网络配置（WebSocket + API）
+            # 5. 网络配置（API）
             try:
                 from backend.config import get_settings
 
                 settings = get_settings()
                 configs["network"] = {
-                    "ws_max_connections": settings.websocket.max_connections,
-                    "ws_connection_timeout": settings.websocket.connection_timeout,
-                    "ws_ping_interval": settings.websocket.ping_interval,
                     "api_host": settings.api.host,
                     "api_port": settings.api.port,
                     "api_debug": settings.api.debug,
@@ -1481,13 +1478,9 @@ class SystemManagerService(BaseService):
                             setattr(settings.database, key, value)
 
                 elif module == "network":
-                    # 网络配置需要分别更新websocket和api
+                    # 网络配置需要更新api
                     for key, value in config_data.items():
-                        if key.startswith("ws_"):
-                            ws_key = key[3:]  # 移除ws_前缀
-                            if hasattr(settings.websocket, ws_key):
-                                setattr(settings.websocket, ws_key, value)
-                        elif key.startswith("api_"):
+                        if key.startswith("api_"):
                             api_key = key[4:]  # 移除api_前缀
                             if hasattr(settings.api, api_key):
                                 setattr(settings.api, api_key, value)

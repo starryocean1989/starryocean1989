@@ -124,9 +124,6 @@ pydantic-settings>=2.0.0
 # ========== 任务调度 ==========
 APScheduler>=3.10.0
 
-# ========== WebSocket通信 ==========
-websockets>=10.0
-
 # ========== JSON和数据序列化 ==========
 orjson>=3.8.0
 

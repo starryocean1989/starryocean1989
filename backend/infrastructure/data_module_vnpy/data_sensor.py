@@ -409,29 +409,68 @@ class DataSensor:
 
         # 生成详细列表（仅包含有问题的品种，用于UI展示）
         details = []
+
+        # 1. 先添加缺失品种（优先级最高）
+        for symbol in missing_symbols[:50]:  # 最多50个缺失品种
+            detail = {
+                "symbol": symbol,
+                "score": 0,
+                "status": "missing",  # 状态：缺失
+                "has_errors": False,
+                "has_warnings": False,
+                "issues": ["品种数据完全缺失"],  # 问题列表
+                "intervals": {},
+            }
+            details.append(detail)
+
+        # 2. 添加有问题的已存在品种
         for symbol, quality in quality_results.items():
             if quality.has_errors or quality.has_warnings or quality.overall_score < 80:
-                detail = {
-                    "symbol": symbol,
-                    "score": quality.overall_score,
-                    "has_errors": quality.has_errors,
-                    "has_warnings": quality.has_warnings,
-                    "intervals": {},
-                }
+                # 确定状态
+                if quality.has_errors:
+                    status = "error"
+                elif quality.has_warnings:
+                    status = "warning"
+                else:
+                    status = "normal"
 
-                # 添加各周期的详细信息
+                # 收集所有问题
+                issues = []
+                intervals_detail = {}
+
                 for interval, result in quality.intervals.items():
-                    detail["intervals"][interval] = {
+                    intervals_detail[interval] = {
                         "record_count": result.record_count,
                         "missing_dates": len(result.missing_dates),
                         "errors": len(result.errors),
                         "warnings": len(result.warnings),
                     }
 
+                    # 收集该周期的错误和警告
+                    for error in result.errors:
+                        issues.append(f"[{interval}] {error}")
+                    for warning in result.warnings:
+                        issues.append(f"[{interval}] {warning}")
+
+                    # 添加缺失日期信息
+                    if result.missing_dates:
+                        issues.append(f"[{interval}] 缺失 {len(result.missing_dates)} 个交易日")
+
+                detail = {
+                    "symbol": symbol,
+                    "score": quality.overall_score,
+                    "status": status,
+                    "has_errors": quality.has_errors,
+                    "has_warnings": quality.has_warnings,
+                    "issues": issues,  # 问题列表
+                    "intervals": intervals_detail,
+                }
+
                 details.append(detail)
 
-        # 按评分排序（问题严重的排前面）
-        details.sort(key=lambda x: x["score"])
+        # 按状态优先级排序：缺失(1) → 错误(2) → 警告(3) → 正常(4)，同状态按评分排序
+        status_priority = {"missing": 1, "error": 2, "warning": 3, "normal": 4}
+        details.sort(key=lambda x: (status_priority.get(x["status"], 5), x["score"]))
 
         return QualityOverview(
             total_symbols=total_symbols,

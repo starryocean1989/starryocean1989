@@ -9,7 +9,6 @@ from typing import Any, Dict, List, Optional
 
 from PySide6.QtCore import QDate, QThread, QTimer, Signal, Qt
 from PySide6.QtWidgets import (
-    QButtonGroup,
     QComboBox,
     QDateEdit,
     QDoubleSpinBox,
@@ -21,7 +20,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QProgressBar,
     QPushButton,
-    QRadioButton,
     QSpinBox,
     QTabWidget,
     QTableWidget,
@@ -137,18 +135,16 @@ class DownloadThread(QThread):
     error_signal = Signal(str)  # 错误信号，传递错误消息
     progress_signal = Signal(str)  # 进度信号，传递进度消息
 
-    def __init__(self, data_center_service, download_type, start_date=None, parent=None):
+    def __init__(self, data_center_service, start_date, parent=None):
         """初始化工作线程.
 
         Args:
             data_center_service: 数据中心服务实例
-            download_type: 下载类型 ('full' 或 'incremental')
-            start_date: 开始日期（仅增量下载需要）
+            start_date: 开始日期（增量下载）
             parent: 父对象
         """
         super().__init__(parent)
         self.data_center_service = data_center_service
-        self.download_type = download_type
         self.start_date = start_date
 
     def run(self):
@@ -159,7 +155,7 @@ class DownloadThread(QThread):
 
         # 使用print确保能看到输出
         print(
-            f">>> [DOWNLOAD THREAD] DownloadThread.run() 开始执行，类型: {self.download_type}",
+            f">>> [DOWNLOAD THREAD] DownloadThread.run() 开始执行，开始日期: {self.start_date}",
             flush=True,
         )
         logger.info(">>> [DOWNLOAD THREAD] DownloadThread.run() 开始执行")
@@ -174,15 +170,11 @@ class DownloadThread(QThread):
             start_time = time.time()
 
             try:
-                if self.download_type == "full":
-                    print(">>> [DOWNLOAD THREAD] 开始全量下载...", flush=True)
-                    result = self.data_center_service.start_full_download()
-                else:
-                    print(
-                        f">>> [DOWNLOAD THREAD] 开始增量下载，开始日期: {self.start_date}...",
-                        flush=True,
-                    )
-                    result = self.data_center_service.start_incremental_download(self.start_date)
+                print(
+                    f">>> [DOWNLOAD THREAD] 开始增量下载，开始日期: {self.start_date}...",
+                    flush=True,
+                )
+                result = self.data_center_service.start_incremental_download(self.start_date)
             except Exception as download_error:
                 logger.error("下载过程异常: %s", download_error, exc_info=True)
                 print(f">>> [DOWNLOAD THREAD] 下载异常: {download_error}", flush=True)
@@ -291,12 +283,8 @@ class DataCenter(BaseWidget, LoggerMixin):
         self.quality_detail_table: Optional[QTableWidget] = None
 
         # 数据下载选项卡控件
-        self.full_download_radio: Optional[QRadioButton] = None
-        self.custom_download_radio: Optional[QRadioButton] = None
-        self.download_mode_group: Optional[QButtonGroup] = None
         self.download_symbols_input: Optional[QLineEdit] = None
         self.download_start_date: Optional[QDateEdit] = None
-        self.download_end_date: Optional[QDateEdit] = None
         self.download_progress: Optional[QProgressBar] = None
         self.progress_label: Optional[QLabel] = None
         self.progress_text: Optional[QTextEdit] = None  # 🔧 进度文本显示
@@ -620,7 +608,7 @@ class DataCenter(BaseWidget, LoggerMixin):
         # 详细质量表格（默认隐藏）
         self.quality_detail_table = QTableWidget(0, 4)
         self.quality_detail_table.setHorizontalHeaderLabels(
-            ["品种代码", "质量评分", "错误数", "警告数"]
+            ["品种代码", "状态", "质量评分", "问题描述"]
         )
         quality_detail_header = self.quality_detail_table.horizontalHeader()
         quality_detail_header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
@@ -639,46 +627,38 @@ class DataCenter(BaseWidget, LoggerMixin):
         tab = QWidget()
         layout = QVBoxLayout(tab)
 
-        # 下载模式组
-        mode_group = QGroupBox("下载模式")
-        mode_layout = QVBoxLayout(mode_group)
+        # 下载配置组（仅增量下载）
+        config_group = QGroupBox("增量下载配置")
+        config_layout = QFormLayout(config_group)
 
-        # 创建单选框（在同一个父容器中会自动互斥）
-        self.full_download_radio = QRadioButton("全量下载（全品类、全周期、固定长度历史数据）")
-        self.full_download_radio.setChecked(True)
-        mode_layout.addWidget(self.full_download_radio)
+        # 添加说明标签
+        info_label = QLabel("📊 增量下载：下载指定日期范围的历史数据（最多支持最近100天）")
+        info_label.setStyleSheet("color: #666; padding: 5px;")
+        config_layout.addRow(info_label)
 
-        self.custom_download_radio = QRadioButton("增量下载（自定义日期范围）")
-        mode_layout.addWidget(self.custom_download_radio)
-
-        # 创建 QButtonGroup 用于管理（但不影响界面显示）
-        self.download_mode_group = QButtonGroup(self)
-        self.download_mode_group.addButton(self.full_download_radio, 1)
-        self.download_mode_group.addButton(self.custom_download_radio, 2)
-
-        # 增量下载配置（缩进以显示层级关系）
-        custom_config_layout = QVBoxLayout()
-        custom_config_layout.setContentsMargins(30, 0, 0, 0)  # 左侧缩进
-
-        date_layout = QFormLayout()
+        # 日期选择器
         self.download_start_date = QDateEdit()
         self.download_start_date.setCalendarPopup(True)
-        self.download_start_date.setDisplayFormat("yyyy-MM-dd")  # 设置日期显示格式
-        self.download_start_date.setDate(QDate.currentDate().addMonths(-3))
-        # 不设置按钮样式，使用默认的下拉按钮（会自动显示日历图标）
-        date_layout.addRow("开始日期:", self.download_start_date)
+        self.download_start_date.setDisplayFormat("yyyy-MM-dd")
 
-        self.download_end_date = QDateEdit()
-        self.download_end_date.setCalendarPopup(True)
-        self.download_end_date.setDisplayFormat("yyyy-MM-dd")  # 设置日期显示格式
-        self.download_end_date.setDate(QDate.currentDate())
-        # 不设置按钮样式，使用默认的下拉按钮（会自动显示日历图标）
-        date_layout.addRow("结束日期:", self.download_end_date)
+        # 设置日期范围：最多最近100天
+        min_date = QDate.currentDate().addDays(-100)
+        max_date = QDate.currentDate()
+        self.download_start_date.setMinimumDate(min_date)
+        self.download_start_date.setMaximumDate(max_date)
+        self.download_start_date.setDate(QDate.currentDate().addDays(-30))  # 默认最近30天
 
-        custom_config_layout.addLayout(date_layout)
-        mode_layout.addLayout(custom_config_layout)
+        # 连接日期变更信号，验证100天限制
+        self.download_start_date.dateChanged.connect(self._validate_date_range)
 
-        layout.addWidget(mode_group)
+        config_layout.addRow("开始日期:", self.download_start_date)
+
+        # 添加提示标签
+        hint_label = QLabel("💡 数据将从开始日期下载至今天")
+        hint_label.setStyleSheet("color: #888; font-size: 11px;")
+        config_layout.addRow(hint_label)
+
+        layout.addWidget(config_group)
 
         # 控制组
         control_group = QGroupBox("下载控制")
@@ -1299,6 +1279,19 @@ class DataCenter(BaseWidget, LoggerMixin):
             self.logger.error("显示服务器配置对话框失败: %s", e, exc_info=True)
             self.show_error(f"显示配置对话框失败: {str(e)}")
 
+    def _validate_date_range(self):
+        """验证日期范围（确保不超过100天）."""
+        if not self.download_start_date:
+            return
+
+        start_date = self.download_start_date.date()
+        current_date = QDate.currentDate()
+        days_diff = start_date.daysTo(current_date)
+
+        if days_diff > 100:
+            self.show_warning("增量下载最多支持最近100天数据，已自动调整为100天前")
+            self.download_start_date.setDate(current_date.addDays(-100))
+
     def _start_download(self):
         """开始下载（异步版本）."""
         try:
@@ -1317,31 +1310,31 @@ class DataCenter(BaseWidget, LoggerMixin):
                 self.show_warning("下载任务正在进行中，请稍候...")
                 return
 
-            # 确定下载类型和参数
-            if self.full_download_radio and self.full_download_radio.isChecked():
-                download_type = "full"
-                start_date = None
-                self.logger.info(">>> 选择了全量下载")
+            # 获取增量下载参数
+            if self.download_start_date:
+                qdate = self.download_start_date.date()
+                start_date = qdate.toString("yyyy-MM-dd")
             else:
-                download_type = "incremental"
-                if self.download_start_date:
-                    qdate = self.download_start_date.date()
-                    start_date = qdate.toString("yyyy-MM-dd")
-                else:
-                    start_date = datetime.now().strftime("%Y-%m-%d")
-                self.logger.info(">>> 选择了增量下载，开始日期: %s", start_date)
+                start_date = datetime.now().strftime("%Y-%m-%d")
+
+            self.logger.info(">>> 增量下载，开始日期: %s", start_date)
+
+            # 验证日期范围（前端双重保险）
+            current_date = QDate.currentDate()
+            days_diff = qdate.daysTo(current_date)
+            if days_diff > 100:
+                self.show_error("增量下载最多支持最近100天数据，请重新选择日期")
+                return
 
             # 🔧 关键修复：提前生成并保存任务ID
             # 不等待下载完成回调，立即保存任务ID以便停止操作
-            task_id = f"{download_type}_download_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            task_id = f"incremental_download_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             self.current_download_task_id = task_id
             self.logger.info(">>> 生成任务ID: %s", task_id)
 
             # 创建下载线程
             self.logger.info(">>> 创建 DownloadThread...")
-            self.download_thread = DownloadThread(
-                self.data_center_service, download_type, start_date, self
-            )
+            self.download_thread = DownloadThread(self.data_center_service, start_date, self)
             self.logger.info(">>> DownloadThread 创建成功: %s", self.download_thread)
 
             # 连接信号
@@ -2113,7 +2106,7 @@ class DataCenter(BaseWidget, LoggerMixin):
                 return
 
             # 检查china_stock_engine是否可用
-            if not hasattr(self.data_center_service, 'china_stock_engine'):
+            if not hasattr(self.data_center_service, "china_stock_engine"):
                 self.logger.debug("china_stock_engine属性不存在，跳过质量概览加载")
                 return
 
@@ -2257,11 +2250,31 @@ class DataCenter(BaseWidget, LoggerMixin):
         except Exception as e:
             self.logger.error("切换质量详情失败: %s", e, exc_info=True)
 
+    def _get_status_info(self, detail: dict) -> tuple:
+        """获取状态信息（文本、图标、排序键）
+
+        Args:
+            detail: 品种详情字典
+
+        Returns:
+            tuple: (status_text, status_icon, sort_key)
+        """
+        status = detail.get("status", "normal")
+
+        status_map = {
+            "missing": ("缺失", "❌", 1),
+            "error": ("错误", "🔴", 2),
+            "warning": ("警告", "⚠️", 3),
+            "normal": ("正常", "✅", 4),
+        }
+
+        return status_map.get(status, ("未知", "❓", 5))
+
     def _update_quality_detail_table(self, details: list) -> None:
         """更新质量详情表格
 
         Args:
-            details: 详情列表
+            details: 详情列表（已按状态优先级排序）
         """
         try:
             if not self.quality_detail_table:
@@ -2274,15 +2287,32 @@ class DataCenter(BaseWidget, LoggerMixin):
             for i, detail in enumerate(details):
                 self.quality_detail_table.insertRow(i)
 
-                # 品种代码
+                # 第1列：品种代码
                 symbol = detail.get("symbol", "")
                 self.quality_detail_table.setItem(i, 0, QTableWidgetItem(symbol))
 
-                # 质量评分
+                # 第2列：状态（带图标和颜色）
+                status_text, status_icon, _ = self._get_status_info(detail)
+                status_item = QTableWidgetItem(f"{status_icon} {status_text}")
+
+                # 根据状态设置颜色
+                status = detail.get("status", "normal")
+                if status == "missing":
+                    status_item.setForeground(Qt.GlobalColor.red)
+                elif status == "error":
+                    status_item.setForeground(Qt.GlobalColor.red)
+                elif status == "warning":
+                    status_item.setForeground(Qt.GlobalColor.darkYellow)
+                else:
+                    status_item.setForeground(Qt.GlobalColor.darkGreen)
+
+                self.quality_detail_table.setItem(i, 1, status_item)
+
+                # 第3列：质量评分（保持颜色标识）
                 score = detail.get("score", 0)
                 score_item = QTableWidgetItem(str(score))
 
-                # 根据评分设置颜色
+                # 根据评分设置背景颜色
                 if score >= 80:
                     score_item.setBackground(Qt.GlobalColor.green)
                 elif score >= 60:
@@ -2290,15 +2320,47 @@ class DataCenter(BaseWidget, LoggerMixin):
                 else:
                     score_item.setBackground(Qt.GlobalColor.red)
 
-                self.quality_detail_table.setItem(i, 1, score_item)
+                self.quality_detail_table.setItem(i, 2, score_item)
 
-                # 计算错误数和警告数（从intervals中统计）
+                # 第4列：问题描述（简要）+ Tooltip（详细）
+                issues = detail.get("issues", [])
                 intervals = detail.get("intervals", {})
-                total_errors = sum(interval.get("errors", 0) for interval in intervals.values())
-                total_warnings = sum(interval.get("warnings", 0) for interval in intervals.values())
 
-                self.quality_detail_table.setItem(i, 2, QTableWidgetItem(str(total_errors)))
-                self.quality_detail_table.setItem(i, 3, QTableWidgetItem(str(total_warnings)))
+                # 生成简要描述
+                if status == "missing":
+                    brief_desc = "完全缺失"
+                else:
+                    # 统计错误和警告数量
+                    total_errors = sum(interval.get("errors", 0) for interval in intervals.values())
+                    total_warnings = sum(
+                        interval.get("warnings", 0) for interval in intervals.values()
+                    )
+                    total_missing_dates = sum(
+                        interval.get("missing_dates", 0) for interval in intervals.values()
+                    )
+
+                    desc_parts = []
+                    if total_errors > 0:
+                        desc_parts.append(f"{total_errors}个错误")
+                    if total_warnings > 0:
+                        desc_parts.append(f"{total_warnings}个警告")
+                    if total_missing_dates > 0:
+                        desc_parts.append(f"缺失{total_missing_dates}天")
+
+                    brief_desc = ", ".join(desc_parts) if desc_parts else "正常"
+
+                desc_item = QTableWidgetItem(brief_desc)
+
+                # 设置Tooltip显示详细问题列表
+                if issues:
+                    tooltip_text = "\n".join(issues[:20])  # 最多显示20条
+                    if len(issues) > 20:
+                        tooltip_text += f"\n... 还有 {len(issues) - 20} 条问题"
+                    desc_item.setToolTip(tooltip_text)
+                else:
+                    desc_item.setToolTip("无问题")
+
+                self.quality_detail_table.setItem(i, 3, desc_item)
 
             self.logger.info("质量详情表格已更新: %d 条记录", len(details))
 

@@ -499,63 +499,6 @@ class StockFetcher:
 
         return None
 
-    def download_full_kline(
-        self, symbols: List[str], intervals: Optional[List[str]] = None
-    ) -> Dict[str, pd.DataFrame]:
-        """
-        全量下载K线数据
-
-        Args:
-            symbols: 品种代码列表
-            intervals: K线周期列表，默认['1d', '5m', '1m']
-
-        Returns:
-            下载结果字典
-        """
-        if intervals is None:
-            intervals = ["1d", "5m", "1m"]
-
-        result = {}
-        # 🔧 修复：进一步降低并发数避免API限流（从10降到1，串行下载）
-        # mootdx API 对并发请求限流很严格，使用串行下载更稳定
-        max_workers = 1
-
-        self.logger.info(
-            "开始全量下载K线数据: %s 个品种, %s 周期 (串行下载，更稳定)",
-            len(symbols),
-            intervals,
-        )
-
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # 提交所有下载任务
-            future_to_symbol = {}
-
-            for symbol in symbols:
-                for interval in intervals:
-                    future = executor.submit(self._download_single_kline, symbol, interval)
-                    future_to_symbol[future] = (symbol, interval)
-
-            # 收集结果
-            for future in as_completed(future_to_symbol):
-                symbol, interval = future_to_symbol[future]
-                try:
-                    data = future.result()
-                    if data is not None and not data.empty:
-                        key = f"{symbol}_{interval}"
-                        result[key] = data
-                        self.logger.info("成功下载 %s %s 数据: %s 条", symbol, interval, len(data))
-                    else:
-                        self.logger.debug("下载 %s %s 返回空数据", symbol, interval)
-                except (OSError, ValueError, KeyError) as e:
-                    self.logger.error("下载 %s %s 失败: %s", symbol, interval, e)
-                except Exception as e:
-                    self.logger.error(
-                        "下载 %s %s 发生未知错误: %s", symbol, interval, e, exc_info=True
-                    )
-
-        self.logger.info("全量下载完成: %s 个数据集", len(result))
-        return result
-
     def download_incremental_kline(
         self,
         symbols: List[str],

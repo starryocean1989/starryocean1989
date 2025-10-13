@@ -778,13 +778,6 @@ def clear_error_log() -> None:
     service_manager.clear_errors()
 
 
-def get_message_publisher():
-    """获取全局消息发布器实例."""
-    # 消息发布器需要事件引擎和WebSocket服务器来初始化
-    # 这里暂时返回None，实际使用时需要确保这些依赖可用
-    return None
-
-
 # =============================================================================
 # Part 3: 服务初始化器 (来自 service_initializer.py)
 # =============================================================================
@@ -1581,7 +1574,6 @@ __all__ = [
     "set_china_stock_engine",
     "get_error_report",
     "clear_error_log",
-    "get_message_publisher",
     # 服务初始化
     "InitializationPhase",
     "ServiceInitializer",

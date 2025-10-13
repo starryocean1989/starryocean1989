@@ -76,24 +76,6 @@ class VnPyConfig(BaseSettings):
     log_file: Optional[str] = Field(default=None)
 
 
-class WebSocketConfig(BaseSettings):
-    """WebSocket配置."""
-
-    model_config = ConfigDict(env_prefix="WS_") if ConfigDict else None  # type: ignore
-
-    # 连接配置
-    max_connections: int = Field(default=1000)
-    connection_timeout: float = Field(default=300.0)
-
-    # 消息配置
-    max_message_size: int = Field(default=1024 * 1024)  # 1MB
-    ping_interval: float = Field(default=30.0)
-    ping_timeout: float = Field(default=10.0)
-
-    # 清理配置
-    cleanup_interval: float = Field(default=60.0)
-
-
 class APIConfig(BaseSettings):
     """API配置."""
 
@@ -168,7 +150,6 @@ class Settings:
         # 加载配置
         self.database = DatabaseConfig()
         self.vnpy = VnPyConfig()
-        self.websocket = WebSocketConfig()
         self.api = APIConfig()
         self.logging = LoggingConfig()
         self.ai = AIConfig()
@@ -217,11 +198,6 @@ class Settings:
                 ),
                 "vnpy": (
                     self.vnpy.model_dump() if hasattr(self.vnpy, "model_dump") else self.vnpy.dict()
-                ),
-                "websocket": (
-                    self.websocket.model_dump()
-                    if hasattr(self.websocket, "model_dump")
-                    else self.websocket.dict()
                 ),
                 "api": (
                     self.api.model_dump() if hasattr(self.api, "model_dump") else self.api.dict()
@@ -281,11 +257,6 @@ class Settings:
             ),
             "vnpy": (
                 self.vnpy.model_dump() if hasattr(self.vnpy, "model_dump") else self.vnpy.dict()
-            ),
-            "websocket": (
-                self.websocket.model_dump()
-                if hasattr(self.websocket, "model_dump")
-                else self.websocket.dict()
             ),
             "api": self.api.model_dump() if hasattr(self.api, "model_dump") else self.api.dict(),
             "logging": (
@@ -414,7 +385,6 @@ class ConfigManager:
 __all__ = [
     "DatabaseConfig",
     "VnPyConfig",
-    "WebSocketConfig",
     "APIConfig",
     "LoggingConfig",
     "AIConfig",

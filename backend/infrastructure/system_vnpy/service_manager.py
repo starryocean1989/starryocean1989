@@ -259,36 +259,6 @@ class ServiceHealthChecker:
                 "message": f"连接失败: {str(e)}",
             }
 
-        # 3. 检查WebSocket服务
-        try:
-            # 简单检查：统计活跃线程中是否有websocket相关线程
-            ws_thread_count = 0
-            for thread in threading.enumerate():
-                if "websocket" in thread.name.lower() or "ws" in thread.name.lower():
-                    ws_thread_count += 1
-
-            if ws_thread_count > 0:
-                dependencies["websocket"] = {
-                    "name": "WebSocket服务",
-                    "status": "online",
-                    "online": True,
-                    "message": f"检测到 {ws_thread_count} 个WebSocket线程",
-                }
-            else:
-                dependencies["websocket"] = {
-                    "name": "WebSocket服务",
-                    "status": "unknown",
-                    "online": None,
-                    "message": "未检测到WebSocket线程",
-                }
-        except Exception as e:
-            dependencies["websocket"] = {
-                "name": "WebSocket服务",
-                "status": "error",
-                "online": False,
-                "message": f"检查失败: {str(e)}",
-            }
-
         return dependencies
 
     def check_all_services(self, service_manager) -> Dict[str, Any]:
