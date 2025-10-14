@@ -9,6 +9,8 @@ ChinaStockEngine继承vnpy的BaseEngine，集成所有功能模块：
 - 数据感知和校验
 - 文件监控
 - 事件推送
+
+合并来源：engine.py
 """
 
 import logging
@@ -20,12 +22,11 @@ from vnpy.event import Event, EventEngine
 from vnpy.trader.engine import BaseEngine, MainEngine
 
 from .config import config_manager
-from .multiprocess_fetcher import MultiProcessStockFetcher as StockFetcher
-from .stock_fetcher import NetworkTimeoutError
+from .symbol_management import SymbolLoader
+from .multiprocess_fetcher import MultiProcessStockFetcher
 from .storage import StorageManager
 from .validator import DataValidator, ValidationSummary
 from .file_watcher import EventDrivenFileWatcher
-from .block_parser import BlockParser
 from .polling_gateway import PollingGateway
 from .virtual_gateway import VirtualGateway
 from .data_readers import TdxBinaryReader
@@ -59,8 +60,8 @@ class ChinaStockEngine(BaseEngine):
         super().__init__(main_engine, event_engine, APP_NAME)
 
         # 初始化组件
-        self.block_parser = BlockParser(config_manager.get_tdx_dir())
-        self.stock_fetcher = StockFetcher(self.block_parser)
+        self.symbol_loader = SymbolLoader()
+        self.stock_fetcher = MultiProcessStockFetcher()  # 用于下载功能
         self.storage_manager = StorageManager()
         self.validator = DataValidator()
         self.file_watcher = EventDrivenFileWatcher(event_engine)
@@ -123,7 +124,7 @@ class ChinaStockEngine(BaseEngine):
         except Exception as e:
             self.logger.error(f"关闭引擎失败: {e}")
 
-    def refresh_stock_list(self) -> Optional[Dict[str, List[str]]]:
+    def refresh_stock_list(self) -> Optional[Dict[str, List[Dict[str, Any]]]]:
         """
         读取本地品种缓存
 
@@ -132,7 +133,11 @@ class ChinaStockEngine(BaseEngine):
         """
         try:
             self.logger.info("读取本地品种缓存...")
-            result = self.stock_fetcher.get_all_market_stocks()
+            result = self.symbol_loader.load_from_cache()
+
+            if result is None:
+                self.logger.warning("本地缓存不存在，返回空字典")
+                return {}
 
             # 推送日志事件
             total_stocks = sum(len(stocks) for stocks in result.values())
@@ -155,65 +160,27 @@ class ChinaStockEngine(BaseEngine):
         try:
             self.logger.info("开始更新品种列表...")
 
-            # 重新初始化block_parser（如果用户刚配置了通达信路径）
-            try:
-                tdx_dir = config_manager.get_tdx_dir()
-                self.block_parser = BlockParser(tdx_dir)
-                self.stock_fetcher.block_parser = self.block_parser
-                spblock_status = "可用" if self.block_parser.is_available() else "不可用"
-                self.logger.info("BlockParser已重新初始化: spblock.dat %s", spblock_status)
-            except Exception as e:
-                self.logger.warning(f"重新初始化BlockParser失败: {e}，将继续使用现有实例")
-
-            # 获取所有品种（这里可能会超时）
-            try:
-                stocks_df = self.stock_fetcher.fetch_all_stocks()
-            except (NetworkTimeoutError, TimeoutError) as e:
-                self.logger.error(f"获取品种列表超时: {e}")
-                self._push_download_event("stock_list", "error", 0, "网络请求超时，请检查网络连接")
-                self._push_log_event("获取品种列表超时，请检查网络连接", "ERROR")
-                return False
-            except ConnectionError as e:
-                self.logger.error(f"网络连接失败: {e}")
-                self._push_download_event("stock_list", "error", 0, "网络连接失败，请检查网络状态")
-                self._push_log_event("网络连接失败，请检查网络状态", "ERROR")
-                return False
-            except ValueError as e:
-                self.logger.error(f"数据格式错误: {e}")
-                self._push_download_event("stock_list", "error", 0, "数据格式错误")
-                self._push_log_event(f"数据格式错误: {e}", "ERROR")
-                return False
-            except Exception as e:
-                self.logger.error(f"获取品种列表失败: {e}", exc_info=True)
-                self._push_download_event("stock_list", "error", 0, str(e))
-                self._push_log_event(f"获取品种列表失败: {e}", "ERROR")
-                return False
+            # 调用SymbolLoader从API加载
+            classified = self.symbol_loader.load_from_api()
 
             # 验证数据
-            if stocks_df is None or stocks_df.empty:
+            total_count = sum(len(stocks) for stocks in classified.values())
+            if total_count == 0:
                 self.logger.error("获取品种列表失败: 数据为空")
                 self._push_download_event("stock_list", "error", 0, "获取的数据为空")
                 self._push_log_event("获取品种列表失败: 数据为空", "ERROR")
                 return False
 
-            # 缓存品种列表
-            try:
-                self.stock_fetcher.cache_stock_list(stocks_df)
-            except Exception as e:
-                self.logger.error(f"缓存品种列表失败: {e}")
-                # 即使缓存失败，也认为更新成功（因为已经获取到数据）
-                self.logger.warning("缓存失败但数据已获取，继续执行")
-
             # 推送下载事件
-            self._push_download_event("stock_list", "success", len(stocks_df))
-            self._push_log_event(f"品种列表更新成功: {len(stocks_df)} 个品种")
+            self._push_download_event("stock_list", "success", total_count)
+            self._push_log_event(f"品种列表更新成功: {total_count} 个品种")
 
             return True
 
         except Exception as e:
             # 最外层兜底异常处理
-            self.logger.error(f"更新品种列表失败（未知错误）: {e}", exc_info=True)
-            self._push_download_event("stock_list", "error", 0, f"未知错误: {str(e)}")
+            self.logger.error(f"更新品种列表失败: {e}", exc_info=True)
+            self._push_download_event("stock_list", "error", 0, f"错误: {str(e)}")
             self._push_log_event(f"更新品种列表失败: {e}", "ERROR")
             return False
 
@@ -263,15 +230,32 @@ class ChinaStockEngine(BaseEngine):
         """
         try:
             if market_types is None:
-                market_types = ["上证A股", "深证A股", "北证A股", "T+0基金", "含可转债"]
+                market_types = ["上证A股", "深证A股", "北证A股", "T+0基金", "可转债"]
 
             self.logger.info(f"开始增量下载K线数据: 从 {start_date} 开始")
 
-            # 获取所有品种（仅使用本地缓存，不允许重新获取）
+            # 🚀 关键修正：品种缓存已经经过过滤，直接使用5724个品种
+            # 品种缓存中的品种已经是经过parse_market_codes过滤后的最终品种
+            # 不需要再次过滤，直接用于下载
             all_stocks = []
+            market_stock_counts = {}
+
             for market_type in market_types:
                 stocks = self.stock_fetcher.get_market_stocks(market_type, allow_fetch=False)
-                all_stocks.extend(stocks)
+                # stocks现在是一个字典列表，每个元素包含 code, name, market
+                # 🚀 兼容性处理：如果stocks是字符串列表，直接使用
+                if stocks and isinstance(stocks[0], str):
+                    stock_codes = stocks
+                else:
+                    stock_codes = [stock["code"] for stock in stocks]
+                market_stock_counts[market_type] = len(stock_codes)
+                all_stocks.extend(stock_codes)
+
+            # 🚀 调试：品种缓存统计（这些就是最终要下载的品种）
+            self.logger.info("📊 品种缓存统计（最终下载品种）:")
+            for market_type, count in market_stock_counts.items():
+                self.logger.info("  • %s: %d 个品种", market_type, count)
+            self.logger.info("  • 总品种数: %d", len(all_stocks))
 
             if not all_stocks:
                 error_msg = "本地品种缓存不存在或为空，请先在【品种列表】界面点击【重新加载品种】按钮获取品种列表"
@@ -279,6 +263,36 @@ class ChinaStockEngine(BaseEngine):
                 self._push_download_event("incremental_kline", "error", 0, error_msg)
                 self._push_log_event(error_msg, "ERROR")
                 return
+
+            # 🚀 调试：记录实际下载参数
+            from datetime import date
+
+            today = date.today()
+            actual_start_date = start_date
+
+            if isinstance(start_date, str):
+                from datetime import datetime
+
+                actual_start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
+
+            days_diff = (today - actual_start_date).days
+            self.logger.info("📅 增量下载日期范围:")
+            self.logger.info("  • 开始日期: %s", actual_start_date)
+            self.logger.info("  • 结束日期: %s", today)
+            self.logger.info("  • 天数差: %d 天", days_diff)
+
+            # 🚀 检查日期范围合理性
+            if days_diff <= 0:
+                error_msg = f"日期范围无效：开始日期{actual_start_date}晚于或等于今天{today}"
+                self.logger.error(error_msg)
+                self._push_download_event("incremental_kline", "error", 0, error_msg)
+                self._push_log_event(error_msg, "ERROR")
+                return
+
+            if days_diff > 100:
+                self.logger.warning("⚠️ 日期范围超过100天，可能导致下载大量历史数据")
+
+            self.logger.info("✅ 日期范围验证通过，开始下载...")
 
             # 定义进度回调函数
             def progress_callback(completed: int, total: int, symbol: str, interval: str):
@@ -337,7 +351,10 @@ class ChinaStockEngine(BaseEngine):
             self.logger.info("  • 下载结果总数: %d", len(download_results))
             self.logger.info("  • 下载返回None: %d (下载失败)", none_count)
             self.logger.info("  • 下载返回空数据: %d (品种无数据/停牌等)", empty_count)
-            self.logger.info("  • 下载返回有效数据: %d (待保存)", len(download_results) - none_count - empty_count)
+            self.logger.info(
+                "  • 下载返回有效数据: %d (待保存)",
+                len(download_results) - none_count - empty_count,
+            )
 
             for key, data in download_results.items():
                 symbol, interval = key.split("_", 1)
@@ -355,7 +372,9 @@ class ChinaStockEngine(BaseEngine):
                         success = self.storage_manager.merge_data(symbol, interval, data)
                         if success:
                             saved_count += 1
-                            self.logger.debug("✓ 保存成功: %s %s (%d行)", symbol, interval, len(data))
+                            self.logger.debug(
+                                "✓ 保存成功: %s %s (%d行)", symbol, interval, len(data)
+                            )
                         else:
                             failed_count += 1
                             self.logger.error("✗ 保存失败: %s %s", symbol, interval)
@@ -370,8 +389,14 @@ class ChinaStockEngine(BaseEngine):
             self.logger.info("  • 成功保存: %d", saved_count)
             self.logger.info("  • 跳过（下载失败/空数据）: %d", skipped_count)
             self.logger.info("  • 保存失败: %d", failed_count)
-            self.logger.info("  • 保存成功率: %.1f%%",
-                          (saved_count / (saved_count + failed_count) * 100) if (saved_count + failed_count) > 0 else 0)
+            self.logger.info(
+                "  • 保存成功率: %.1f%%",
+                (
+                    (saved_count / (saved_count + failed_count) * 100)
+                    if (saved_count + failed_count) > 0
+                    else 0
+                ),
+            )
             self.logger.info("=" * 60)
 
             # 推送下载事件
@@ -449,7 +474,7 @@ class ChinaStockEngine(BaseEngine):
             self.logger.error(f"获取校验结果失败: {e}")
             return None
 
-    def get_market_stocks(self, market_type: str) -> List[str]:
+    def get_market_stocks(self, market_type: str) -> List[Dict[str, Any]]:
         """
         获取指定市场的品种列表
 
@@ -457,23 +482,31 @@ class ChinaStockEngine(BaseEngine):
             market_type: 市场类型
 
         Returns:
-            品种代码列表
+            品种列表，每个品种包含 code, name, market
         """
         try:
-            return self.stock_fetcher.get_market_stocks(market_type)
+            classified = self.symbol_loader.load_from_cache()
+            if classified is None:
+                self.logger.warning("本地缓存不存在")
+                return []
+            return classified.get(market_type, [])
         except Exception as e:
             self.logger.error(f"获取 {market_type} 品种列表失败: {e}")
             return []
 
-    def get_all_market_stocks(self) -> Dict[str, List[str]]:
+    def get_all_market_stocks(self) -> Dict[str, List[Dict[str, Any]]]:
         """
         获取所有市场的品种分类
 
         Returns:
-            所有市场的品种分类字典
+            所有市场的品种分类字典，每个品种包含 code, name, market
         """
         try:
-            return self.stock_fetcher.get_all_market_stocks()
+            classified = self.symbol_loader.load_from_cache()
+            if classified is None:
+                self.logger.warning("本地缓存不存在")
+                return {}
+            return classified
         except Exception as e:
             self.logger.error(f"获取所有品种分类失败: {e}")
             return {}
@@ -851,7 +884,13 @@ class ChinaStockEngine(BaseEngine):
                 all_stocks_dict = self.stock_fetcher.get_all_market_stocks()
                 if all_stocks_dict:
                     for stocks in all_stocks_dict.values():
-                        reference_symbols.extend(stocks)
+                        # stocks现在是一个字典列表，提取code
+                        # 🚀 兼容性处理：如果stocks是字符串列表，直接使用
+                        if stocks and isinstance(stocks[0], str):
+                            stock_codes = stocks
+                        else:
+                            stock_codes = [stock["code"] for stock in stocks]
+                        reference_symbols.extend(stock_codes)
 
                 # 执行全量扫描
                 overview = self.data_sensor.scan_all_data(
@@ -957,7 +996,13 @@ class ChinaStockEngine(BaseEngine):
             all_stocks_dict = self.stock_fetcher.get_all_market_stocks()
             if all_stocks_dict:
                 for stocks in all_stocks_dict.values():
-                    reference_symbols.extend(stocks)
+                    # stocks现在是一个字典列表，提取code
+                    # 🚀 兼容性处理：如果stocks是字符串列表，直接使用
+                    if stocks and isinstance(stocks[0], str):
+                        stock_codes = stocks
+                    else:
+                        stock_codes = [stock["code"] for stock in stocks]
+                    reference_symbols.extend(stock_codes)
 
             # 执行扫描
             overview = self.data_sensor.scan_all_data(

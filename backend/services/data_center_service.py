@@ -7,7 +7,7 @@
 - 数据下载管理（全量/增量）
 - 本地数据查询
 - 数据质量检查和自动修复
-- 数据源管理（data_engine, ifind, rqdata, tushare）
+- 数据源管理（轮询转推送、虚拟推送）
 """
 
 from typing import Any, Dict, List, Optional
@@ -26,18 +26,15 @@ class DataCenterService(BaseService):
     2. 数据下载 - 全量下载、增量下载、进度监控
     3. 本地数据查询 - OHLCV数据查询、展示
     4. 数据质量管理 - 质量检查、自动修复、断点检测
-    5. 数据源管理 - 4种数据源连接、实时数据录制
+    5. 数据源管理 - 轮询转推送、虚拟推送
     """
 
     def __init__(self):
         """初始化数据中心服务."""
         super().__init__()
 
-        # ChinaStockEngine引擎
-        self.china_stock_engine = None
-
-        # data_engine
-        self.data_engine = None
+        # ChinaStockEngine引擎（现在是属性，会延迟获取）
+        self._china_stock_engine_checked = False
 
         # recorder_engine（在start_data_recording中初始化）
         self.recorder_engine = None
@@ -46,9 +43,6 @@ class DataCenterService(BaseService):
         self.datafeeds: Dict[str, Any] = {
             "polling_gateway": None,
             "virtual_gateway": None,
-            "ifind": None,
-            "rqdata": None,
-            "tushare": None,
         }
 
         # 当前活动的数据源（用于互斥控制）
@@ -81,33 +75,40 @@ class DataCenterService(BaseService):
         try:
             self.logger.info("初始化数据中心服务...")
 
-            # 获取全局ChinaStockEngine
-            from backend.core.base import get_china_stock_engine
-
-            self.china_stock_engine = get_china_stock_engine()
-
-            if self.china_stock_engine:
-                self.logger.info("✅ ChinaStockEngine 可用")
-            else:
-                self.logger.warning("⚠️ ChinaStockEngine 不可用，部分功能受限")
-
-            # 尝试初始化data_engine
-            self._init_data_engine()
-
             # 初始化任务调度器
             self._init_scheduler()
+
+            # 延迟获取 ChinaStockEngine（确保在服务初始化完成后）
+            # 这样可以确保全局变量已经被正确设置
+            self._ensure_china_stock_engine()
 
             # 🔧 修复：启动时加载品种缓存（如果存在）
             self._load_symbol_cache_on_startup()
 
-            # ✨ 新增：登录时检查并清理旧缓存
-            self.check_and_cleanup_old_cache_on_login()
-
-            return True  # 即使部分功能不可用，也返回True以允许服务启动
+            return True
 
         except Exception as e:
             self._log_error("初始化", e)
             return False
+
+    def _ensure_china_stock_engine(self) -> None:
+        """确保 ChinaStockEngine 被正确获取"""
+        if not self._china_stock_engine_checked:
+            from backend.core.base import get_china_stock_engine
+
+            self._china_stock_engine = get_china_stock_engine()
+            self._china_stock_engine_checked = True
+
+            if self._china_stock_engine:
+                self.logger.info("✅ ChinaStockEngine 可用")
+            else:
+                self.logger.warning("⚠️ ChinaStockEngine 不可用，部分功能受限")
+
+    @property
+    def china_stock_engine(self):
+        """获取 ChinaStockEngine（延迟获取）"""
+        self._ensure_china_stock_engine()
+        return self._china_stock_engine
 
     def _do_shutdown(self) -> bool:
         """关闭数据中心服务."""
@@ -134,7 +135,6 @@ class DataCenterService(BaseService):
         """健康检查."""
         return {
             "china_stock_engine_available": self.china_stock_engine is not None,
-            "data_engine_available": self.data_engine is not None,
             "connected_datafeeds": [name for name, df in self.datafeeds.items() if df is not None],
             "symbol_cache_loaded": self._symbol_cache is not None,
             "active_downloads": len(self._download_tasks),
@@ -314,24 +314,6 @@ class DataCenterService(BaseService):
                 "message": str(e),
             }
 
-    def _init_data_engine(self) -> bool:
-        """初始化data_engine."""
-        try:
-            # 尝试导入data_engine包
-            try:
-                from backend.infrastructure.data_module_vnpy import engine as de_engine
-
-                self.data_engine = de_engine
-                self.logger.info("✅ data_engine初始化成功")
-                return True
-            except ImportError as e:
-                self.logger.warning("⚠️ data_engine包不可用: %s", e)
-                return False
-
-        except Exception as e:
-            self.logger.error("data_engine初始化失败: %s", e, exc_info=True)
-            return False
-
     def _init_scheduler(self) -> bool:
         """初始化任务调度器."""
         try:
@@ -486,7 +468,7 @@ class DataCenterService(BaseService):
             "深证A股": "深交所",
             "北证A股": "北交所",
             "T+0基金": "全部",
-            "含可转债": "全部",
+            "可转债": "全部",
         }
         return mapping.get(market_type, "未知")
 
@@ -497,7 +479,7 @@ class DataCenterService(BaseService):
             "深证A股": "股票",
             "北证A股": "股票",
             "T+0基金": "基金",
-            "含可转债": "可转债",
+            "可转债": "可转债",
         }
         return mapping.get(market_type, "未知")
 
@@ -740,8 +722,8 @@ class DataCenterService(BaseService):
             "上证A股": ("上交所", "股票"),
             "深证A股": ("深交所", "股票"),
             "北证A股": ("北交所", "股票"),
-            "T+0基金": ("全部", "基金"),  # T+0基金可能分布在多个交易所
-            "含可转债": ("全部", "可转债"),  # 可转债可能分布在多个交易所
+            "T+0基金": ("全部", "基金"),  # T+0基金可能分布在多个交易所，后续会根据market_code细分
+            "可转债": ("全部", "可转债"),  # 可转债可能分布在多个交易所，后续会根据market_code细分
         }
 
         return mapping.get(market_name, ("未知", "未知"))
@@ -786,20 +768,71 @@ class DataCenterService(BaseService):
             # 转换为前端需要的格式
             self.logger.info("  → 转换为前端数据格式...")
             symbols = []
-            for market_name, stock_list in market_stocks.items():
-                # 映射市场名称到交易所和品种类型
-                exchange, product_type = self._map_market_to_exchange_and_type(market_name)
 
-                for stock_code in stock_list:
-                    symbols.append(
-                        {
-                            "symbol": stock_code,  # 使用symbol字段（与前端期望一致）
-                            "code": stock_code,  # 同时保留code字段
-                            "name": stock_code,  # 暂时使用代码作为名称
-                            "exchange": exchange,  # 使用映射后的交易所名称
-                            "product_type": product_type,  # 使用映射后的品种类型
-                        }
-                    )
+            # 如果market_stocks是市场分类的字典，需要扁平化处理
+            if isinstance(market_stocks, dict) and len(market_stocks) > 0:
+                # 检查第一个市场的第一个品种的数据结构
+                first_market = next(iter(market_stocks))
+                first_stock = market_stocks[first_market][0] if market_stocks[first_market] else {}
+
+                if isinstance(first_stock, dict) and "code" in first_stock:
+                    # 新格式：市场分类字典，品种是字典列表
+                    for market_name, stock_list in market_stocks.items():
+                        # 映射市场名称到交易所和品种类型
+                        exchange, product_type = self._map_market_to_exchange_and_type(market_name)
+
+                        for stock_info in stock_list:
+                            # stock_info是一个字典，包含 code, name, market
+                            stock_code = stock_info.get("code", "")
+                            stock_name = stock_info.get("name", "")
+                            market_code = stock_info.get("market", -1)
+
+                            # 🚀 关键修正：根据market_code映射交易所
+                            # 对于T+0基金和可转债（exchange="全部"），需要根据market_code细分
+                            if exchange == "全部":
+                                if market_code == 0:
+                                    exchange_name = "深交所"
+                                elif market_code == 1:
+                                    exchange_name = "上交所"
+                                elif market_code == 2:
+                                    exchange_name = "北交所"
+                                else:
+                                    exchange_name = "未知"
+                            else:
+                                exchange_name = exchange
+
+                            symbols.append(
+                                {
+                                    "symbol": stock_code,  # 使用symbol字段（与前端期望一致）
+                                    "code": stock_code,  # 同时保留code字段
+                                    "name": stock_name,  # 使用品种名称
+                                    "exchange": exchange_name,  # 使用映射后的交易所名称
+                                    "product_type": product_type,  # 使用映射后的品种类型
+                                    "market": market_code,  # 保留市场代码（供后端使用）
+                                }
+                            )
+                else:
+                    # 旧格式：市场分类字典，品种是字符串列表
+                    for market_name, stock_list in market_stocks.items():
+                        # 映射市场名称到交易所和品种类型
+                        exchange, product_type = self._map_market_to_exchange_and_type(market_name)
+
+                        for stock_code in stock_list:
+                            # stock_code是字符串，需要获取名称（暂时留空）
+                            symbols.append(
+                                {
+                                    "symbol": stock_code,  # 使用symbol字段（与前端期望一致）
+                                    "code": stock_code,  # 同时保留code字段
+                                    "name": "",  # 品种名称（旧格式没有名称）
+                                    "exchange": exchange,  # 使用映射后的交易所名称
+                                    "product_type": product_type,  # 使用映射后的品种类型
+                                    "market": -1,  # 市场代码（旧格式没有）
+                                }
+                            )
+            else:
+                # 直接是品种列表（备用处理）
+                self.logger.warning("market_stocks格式异常，使用备用处理")
+                symbols = market_stocks if isinstance(market_stocks, list) else []
 
             self.logger.info("  ← 转换完成: %d 个品种", len(symbols))
             self.logger.info("✅ 成功获取 %d 个分类品种（来自5个市场）", len(symbols))
@@ -1627,8 +1660,8 @@ class DataCenterService(BaseService):
         实现互斥连接控制：同时只能连接一个数据源。
 
         Args:
-            datafeed_type: 数据源类型 (data_engine, ifind, rqdata, tushare)
-            config: 配置信息（如账号密码）
+            datafeed_type: 数据源类型 (polling_gateway, virtual_gateway)
+            config: 配置信息
 
         Returns:
             Dict: 连接结果
@@ -1656,160 +1689,12 @@ class DataCenterService(BaseService):
 
             # 实现实际的数据源连接逻辑
             try:
-                if datafeed_type == "data_engine":
-                    # data_engine已在初始化时连接
-                    if self.data_engine:
-                        self.datafeeds[datafeed_type] = self.data_engine
-                        self.active_datafeed = datafeed_type
-                        self.logger.info("✅ %s 已设为活动数据源", datafeed_type)
-                        return {
-                            "success": True,
-                            "message": "data_engine连接成功",
-                        }
-                    else:
-                        return {
-                            "success": False,
-                            "message": "data_engine不可用",
-                        }
-
-                elif datafeed_type == "ifind":
-                    # 连接iFind数据源
-                    try:
-                        from vnpy_ifind import IfindDatafeed  # type: ignore
-
-                        if not config:
-                            return {
-                                "success": False,
-                                "message": "缺少账号密码配置",
-                            }
-
-                        # 获取配置
-                        username = config.get("username", "")
-                        password = config.get("password", "")
-
-                        if not username or not password:
-                            return {
-                                "success": False,
-                                "message": "用户名或密码为空",
-                            }
-
-                        # 创建数据源实例
-                        datafeed = IfindDatafeed()
-
-                        # 实际项目中，这里应该调用datafeed的init方法进行认证
-                        # datafeed.init(username, password)
-
-                        self.datafeeds[datafeed_type] = datafeed
-                        self.active_datafeed = datafeed_type
-                        self.logger.info("✅ %s 已设为活动数据源", datafeed_type)
-
-                        return {
-                            "success": True,
-                            "message": "iFind数据源连接成功（需通过MainEngine完成认证）",
-                        }
-
-                    except ImportError:
-                        return {
-                            "success": False,
-                            "message": "vnpy_ifind包未安装",
-                        }
-                    except Exception as e:
-                        return {
-                            "success": False,
-                            "message": f"iFind连接失败: {str(e)}",
-                        }
-
-                elif datafeed_type == "rqdata":
-                    # 连接RQData数据源
-                    try:
-                        from vnpy_rqdata import RqdataDatafeed  # type: ignore
-
-                        if not config:
-                            return {
-                                "success": False,
-                                "message": "缺少账号密码配置",
-                            }
-
-                        # 获取配置
-                        username = config.get("username", "")
-                        password = config.get("password", "")
-
-                        if not username or not password:
-                            return {
-                                "success": False,
-                                "message": "用户名或密码为空",
-                            }
-
-                        # 创建数据源实例
-                        datafeed = RqdataDatafeed()
-
-                        # 实际项目中，这里应该调用init方法进行认证
-                        # datafeed.init(username, password)
-
-                        self.datafeeds[datafeed_type] = datafeed
-                        self.active_datafeed = datafeed_type
-                        self.logger.info("✅ %s 已设为活动数据源", datafeed_type)
-
-                        return {
-                            "success": True,
-                            "message": "RQData数据源连接成功（需通过MainEngine完成认证）",
-                        }
-
-                    except ImportError:
-                        return {
-                            "success": False,
-                            "message": "vnpy_rqdata包未安装",
-                        }
-                    except Exception as e:
-                        return {
-                            "success": False,
-                            "message": f"RQData连接失败: {str(e)}",
-                        }
-
-                elif datafeed_type == "tushare":
-                    # 连接Tushare数据源
-                    try:
-                        from vnpy_tushare import TushareDatafeed  # type: ignore
-
-                        if not config:
-                            return {
-                                "success": False,
-                                "message": "缺少Token配置",
-                            }
-
-                        token = config.get("token", "")
-                        if not token:
-                            return {
-                                "success": False,
-                                "message": "Token为空",
-                            }
-
-                        # 创建数据源实例
-                        datafeed = TushareDatafeed()
-
-                        # 实际项目中，这里应该调用init方法设置token
-                        # datafeed.init(token)
-
-                        self.datafeeds[datafeed_type] = datafeed
-                        self.active_datafeed = datafeed_type
-                        self.logger.info("✅ %s 已设为活动数据源", datafeed_type)
-
-                        return {
-                            "success": True,
-                            "message": "Tushare数据源连接成功（需通过MainEngine完成认证）",
-                        }
-
-                    except ImportError:
-                        return {
-                            "success": False,
-                            "message": "vnpy_tushare包未安装",
-                        }
-                    except Exception as e:
-                        return {
-                            "success": False,
-                            "message": f"Tushare连接失败: {str(e)}",
-                        }
-
+                if datafeed_type in ["polling_gateway", "virtual_gateway"]:
+                    # 网关类型数据源，由start_polling_gateway或start_virtual_gateway处理
+                    return {
+                        "success": False,
+                        "message": f"{datafeed_type} 请使用专门的启动方法",
+                    }
                 else:
                     return {
                         "success": False,
@@ -2111,9 +1996,6 @@ class DataCenterService(BaseService):
                 elif hasattr(datafeed, "connected"):
                     with suppress(Exception):
                         is_pushing = datafeed.connected
-                # 如果数据源已连接但无法确定推送状态，假设正在推送
-                elif datafeed_type == "data_engine" and self.data_engine:
-                    is_pushing = True
 
             status[datafeed_type] = {
                 "connected": is_connected,

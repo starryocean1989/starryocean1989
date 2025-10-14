@@ -16,7 +16,7 @@ data_module_vnpy - 中国A股数据管理模块
 from pathlib import Path
 from vnpy.trader.app import BaseApp
 
-from .engine import APP_NAME, ChinaStockEngine
+from .core import APP_NAME, ChinaStockEngine
 from .polling_gateway import PollingGateway
 from .virtual_gateway import VirtualGateway
 from .data_readers import BaseReader, TdxBinaryReader

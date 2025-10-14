@@ -564,8 +564,8 @@ class DataCenter(BaseWidget, LoggerMixin):
 
         # 🚀 添加说明提示
         hint_label = QLabel(
-            "💡 说明：「总品种」=品种列表总数，「已下载」=本地有数据的品种数，"
-            "「缺失」=列表中有但本地无数据，「警告」=已下载但数据不完整"
+            "💡 说明：「总品种」=品种缓存总数（5724个已过滤品种），「已下载」=本地有数据的品种数，"
+            "「缺失」=缓存中有但本地无数据，「警告」=已下载但数据不完整"
         )
         hint_label.setStyleSheet("color: #666; font-size: 11px; padding: 5px;")
         hint_label.setWordWrap(True)
@@ -576,9 +576,9 @@ class DataCenter(BaseWidget, LoggerMixin):
         overview_layout = QHBoxLayout(self.quality_overview_widget)
         overview_layout.setContentsMargins(5, 5, 5, 5)
 
-        # 总品种数（参考列表）
+        # 总品种数（品种缓存）
         self.total_symbols_label = QLabel("总品种: --")
-        self.total_symbols_label.setToolTip("品种列表缓存中的所有品种数（包括已下载和未下载）")
+        self.total_symbols_label.setToolTip("品种缓存中的品种总数（5724个已过滤品种）")
         overview_layout.addWidget(self.total_symbols_label)
 
         # 🆕 已下载品种数
@@ -917,7 +917,19 @@ class DataCenter(BaseWidget, LoggerMixin):
             result = self.data_center_service.refresh_symbol_list()
 
             if result["success"]:
-                self.all_symbols_data = result.get("data", [])
+                data = result.get("data", [])
+                
+                # 🔧 增强健壮性：检查品种缓存是否为空
+                if not data or len(data) == 0:
+                    self.logger.warning("品种缓存为空，提示用户重新加载品种")
+                    self.show_warning("⚠️ 无品种缓存，请先点击【重新加载品种】按钮获取品种列表")
+                    # 清空表格显示
+                    self.all_symbols_data = []
+                    self.filtered_symbols_data = []
+                    self._update_symbols_table()
+                    return
+                
+                self.all_symbols_data = data
                 self._apply_filters()
                 self.show_info(f"刷新成功，共 {result['symbol_count']} 个品种")
             else:
@@ -972,6 +984,16 @@ class DataCenter(BaseWidget, LoggerMixin):
         if not self.symbols_table:
             return
 
+        # 🔧 增强容错性：检查数据有效性
+        if not self.filtered_symbols_data:
+            self.logger.debug("filtered_symbols_data为空，清空表格")
+            self.symbols_table.setRowCount(0)
+            if self.symbols_count_label:
+                self.symbols_count_label.setText("共 0 个品种")
+            if self.page_label:
+                self.page_label.setText("第 1 页 / 共 1 页")
+            return
+
         # 计算分页
         total_items = len(self.filtered_symbols_data)
         self.total_pages = max(1, (total_items + self.page_size - 1) // self.page_size)
@@ -982,16 +1004,74 @@ class DataCenter(BaseWidget, LoggerMixin):
         # 更新表格
         self.symbols_table.setRowCount(len(page_data))
         for i, symbol in enumerate(page_data):
-            self.symbols_table.setItem(i, 0, QTableWidgetItem(symbol.get("symbol", "")))
-            self.symbols_table.setItem(i, 1, QTableWidgetItem(symbol.get("name", "")))
-            self.symbols_table.setItem(i, 2, QTableWidgetItem(symbol.get("exchange", "")))
-            self.symbols_table.setItem(i, 3, QTableWidgetItem(symbol.get("product_type", "")))
-            self.symbols_table.setItem(i, 4, QTableWidgetItem("正常"))
+            try:
+                # 🚀 兼容性处理：symbol可能是字典或字符串
+                if isinstance(symbol, dict):
+                    # 🔧 处理嵌套字典结构：后端返回的数据结构
+                    # symbol = {
+                    #     'symbol': {'code': '600000', 'name': '浦发银行', 'market': 1},
+                    #     'code': {'code': '600000', 'name': '浦发银行', 'market': 1},
+                    #     'name': {'code': '600000', 'name': '浦发银行', 'market': 1},
+                    #     'exchange': '上交所',
+                    #     'product_type': '股票'
+                    # }
 
-            # 操作按钮
-            view_btn = QPushButton("查看")
-            view_btn.clicked.connect(self._create_view_handler(symbol.get("symbol", "")))
-            self.symbols_table.setCellWidget(i, 5, view_btn)
+                    # 获取品种信息字典（优先从symbol键获取，这是后端主要返回的）
+                    symbol_info = None
+                    if 'symbol' in symbol and isinstance(symbol['symbol'], dict):
+                        symbol_info = symbol['symbol']
+                    elif 'code' in symbol and isinstance(symbol['code'], dict):
+                        symbol_info = symbol['code']
+                    elif 'name' in symbol and isinstance(symbol['name'], dict):
+                        symbol_info = symbol['name']
+
+                    if symbol_info:
+                        symbol_code = symbol_info.get("code", "")
+                        symbol_name = symbol_info.get("name", "")
+                        symbol_exchange = symbol.get("exchange", "")
+                        symbol_type = symbol.get("product_type", "")
+                    else:
+                        # 备用处理：如果嵌套结构不匹配，尝试直接获取
+                        symbol_code = symbol.get("code", "")
+                        if isinstance(symbol_code, dict) and "code" in symbol_code:
+                            symbol_code = symbol_code["code"]
+                        symbol_name = symbol.get("name", "")
+                        if isinstance(symbol_name, dict) and "name" in symbol_name:
+                            symbol_name = symbol_name["name"]
+                        symbol_exchange = symbol.get("exchange", "")
+                        symbol_type = symbol.get("product_type", "")
+                else:
+                    # 旧格式：字符串
+                    symbol_code = str(symbol)
+                    symbol_name = ""
+                    symbol_exchange = ""
+                    symbol_type = ""
+                
+                # 🔧 数据验证：确保品种代码不为空
+                if not symbol_code:
+                    self.logger.warning(f"第{i}行品种数据无效，跳过: {symbol}")
+                    # 🔧 调试日志：记录数据结构类型
+                    self.logger.debug(f"数据结构类型: symbol={type(symbol)}, symbol_code={type(symbol_code)}")
+                    if isinstance(symbol, dict):
+                        self.logger.debug(f"symbol.keys()={list(symbol.keys())}")
+                        for k, v in symbol.items():
+                            self.logger.debug(f"  {k}: {type(v)} = {v}")
+                    continue
+                
+                self.symbols_table.setItem(i, 0, QTableWidgetItem(symbol_code))
+                self.symbols_table.setItem(i, 1, QTableWidgetItem(symbol_name))
+                self.symbols_table.setItem(i, 2, QTableWidgetItem(symbol_exchange))
+                self.symbols_table.setItem(i, 3, QTableWidgetItem(symbol_type))
+                self.symbols_table.setItem(i, 4, QTableWidgetItem("正常"))
+
+                # 操作按钮
+                view_btn = QPushButton("查看")
+                view_btn.clicked.connect(self._create_view_handler(symbol_code))
+                self.symbols_table.setCellWidget(i, 5, view_btn)
+            except Exception as e:
+                self.logger.error(f"更新第{i}行品种数据失败: {e}, symbol={symbol}", exc_info=True)
+                # 继续处理下一行，不中断整个表格更新
+                continue
 
         # 更新统计和分页
         if self.symbols_count_label:
@@ -1894,13 +1974,10 @@ class DataCenter(BaseWidget, LoggerMixin):
                 sources_data = result.get("datafeeds", {})
 
                 if self.sources_table:
-                    # 5个数据源：删除data_engine，添加polling_gateway和virtual_gateway
+                    # 只保留轮询转推送和虚拟推送
                     source_list = [
                         {"id": "polling_gateway", "name": "轮询转推送", "type": "本地"},
                         {"id": "virtual_gateway", "name": "虚拟推送", "type": "本地"},
-                        {"id": "ifind", "name": "iFind", "type": "商业"},
-                        {"id": "rqdata", "name": "RQData", "type": "商业"},
-                        {"id": "tushare", "name": "Tushare", "type": "商业"},
                     ]
 
                     self.sources_table.setRowCount(len(source_list))
@@ -2260,14 +2337,11 @@ class DataCenter(BaseWidget, LoggerMixin):
             warnings = overview_data.get("warning_symbols", 0)
             score = overview_data.get("quality_score", 0)
 
-            # 🚀 计算本地品种数（如果没有直接提供）
-            if local == 0 and total > 0 and missing > 0:
-                local = total - missing
-
+            # 🚀 更新显示
             if self.total_symbols_label:
                 self.total_symbols_label.setText(f"总品种: {total}")
 
-            # 🚀 更新已下载品种数
+            # 🚀 更新已下载品种数（本地有数据的品种数）
             if self.downloaded_symbols_label:
                 self.downloaded_symbols_label.setText(f"已下载: {local}")
 

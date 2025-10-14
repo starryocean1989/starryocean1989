@@ -466,9 +466,9 @@ class DataSensor:
         Returns:
             质量概览
         """
-        # 统计（语义说明）
-        # total_symbols: 参考品种列表总数（品种缓存中的所有品种）
-        # missing_symbols: 品种列表中有但本地完全无数据的品种
+        # 🚀 关键修正：品种缓存已经是过滤后的品种总数
+        # total_symbols: 品种缓存中的品种总数（5724个，已经过滤过的品种）
+        # missing_symbols: 缓存中有但本地完全无数据的品种
         # error_symbols: 本地有数据但存在错误的品种
         # warning_symbols: 本地有数据但有警告的品种
         total_symbols = (
@@ -482,16 +482,26 @@ class DataSensor:
         local_count = len(quality_results)
         self.logger.info("=" * 60)
         self.logger.info("📊 数据质量统计详情：")
-        self.logger.info("  • 参考品种总数（品种列表）: %d", total_symbols)
+        self.logger.info("  • 品种缓存总数（已过滤）: %d", total_symbols)
         self.logger.info("  • 本地已下载品种数: %d", local_count)
         self.logger.info("  • 完全缺失数据品种: %d", missing_count)
         self.logger.info("  • 有数据但存在错误: %d", error_count)
         self.logger.info("  • 有数据但有警告: %d", warning_count)
-        if total_symbols > local_count:
+
+        # 🚀 正确计算下载率
+        if total_symbols > 0:
+            downloaded_rate = (local_count / total_symbols) * 100
+            undownloaded_count = total_symbols - local_count
             self.logger.info(
-                "  ⚠️ 提示: %d 个品种未下载数据（正常现象）",
-                total_symbols - local_count,
+                "  📈 品种下载率: %.1f%% (%d/%d)", downloaded_rate, local_count, total_symbols
             )
+            if undownloaded_count > 0:
+                self.logger.info(
+                    "  ⚠️ 未下载品种: %d 个（这些品种应该下载但本地无数据）",
+                    undownloaded_count,
+                )
+            else:
+                self.logger.info("  ✅ 所有品种均已下载")
         self.logger.info("=" * 60)
 
         # 计算整体质量评分

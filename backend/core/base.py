@@ -787,7 +787,6 @@ class InitializationPhase(Enum):
     """初始化阶段."""
 
     VNPY_CORE = "vnpy_core"  # VNPY核心框架
-    DATA_ENGINES = "data_engines"  # 数据引擎（ChinaStockEngine等）
     DATA_SERVICES = "data_services"  # 数据服务
     TRADING_SERVICES = "trading_services"  # 交易服务
     STRATEGY_SERVICES = "strategy_services"  # 策略服务
@@ -861,19 +860,16 @@ class ServiceInitializer:
             # 阶段1: 初始化VNPY核心框架
             phase1_success = self._initialize_vnpy_core()
 
-            # 阶段2: 初始化数据引擎
-            phase2_success = self._initialize_data_engines()
+            # 阶段2: 初始化数据服务
+            phase2_success = self._initialize_data_services()
 
-            # 阶段3: 初始化数据服务
-            phase3_success = self._initialize_data_services()
+            # 阶段3: 初始化交易服务
+            phase3_success = self._initialize_trading_services()
 
-            # 阶段4: 初始化交易服务
-            self._initialize_trading_services()
+            # 阶段4: 初始化策略服务
+            phase4_success = self._initialize_strategy_services()
 
-            # 阶段5: 初始化策略服务
-            self._initialize_strategy_services()
-
-            # 阶段6: 初始化辅助服务
+            # 阶段5: 初始化辅助服务
             self._initialize_auxiliary_services()
 
             # 生成初始化报告
@@ -1061,69 +1057,36 @@ class ServiceInitializer:
             self.failed_services.append("vnpy_core")
             return False
 
-    def _initialize_data_engines(self) -> bool:
-        """阶段2: 初始化数据引擎.
-
-        Returns:
-            bool: 是否成功
-        """
-        self.logger.info("\n" + "=" * 60)
-        self.logger.info("阶段2: 初始化数据引擎")
-        self.logger.info("=" * 60)
-
-        if not self.main_engine or not self.event_engine:
-            self.logger.warning("⚠️ VNPY引擎未初始化，跳过数据引擎初始化")
-            return False
-
-        try:
-            # 初始化ChinaStockEngine
-            try:
-                from backend.infrastructure.data_module_vnpy.engine import ChinaStockEngine
-
-                self.china_stock_engine = ChinaStockEngine(self.main_engine, self.event_engine)
-                self.logger.info("✅ ChinaStockEngine 创建成功")
-
-                # 注册到全局
-                set_china_stock_engine(self.china_stock_engine)
-
-            except ImportError as e:
-                self.logger.warning("⚠️ ChinaStockEngine 不可用: %s", e)
-                self.failed_services.append("china_stock_engine")
-            except Exception as e:
-                self.logger.error("❌ ChinaStockEngine 初始化失败: %s", e, exc_info=True)
-                self.failed_services.append("china_stock_engine")
-
-            # 集成data_engine作为vnpy datafeed
-            try:
-                from backend.infrastructure.data_engine.vnpy_datafeed import DataEngineGateway
-
-                # 添加DataEngine网关到MainEngine
-                self.main_engine.add_gateway(DataEngineGateway)
-                self.logger.info("✅ DataEngine网关已注册")
-
-            except ImportError as e:
-                self.logger.warning("⚠️ DataEngine网关不可用: %s", e)
-            except Exception as e:
-                self.logger.error("❌ DataEngine网关注册失败: %s", e, exc_info=True)
-
-            self.logger.info("✅ 数据引擎初始化完成")
-            return True
-
-        except Exception as e:
-            self.logger.error("❌ 数据引擎初始化失败: %s", e, exc_info=True)
-            return False
-
     def _initialize_data_services(self) -> bool:
-        """阶段3: 初始化数据服务.
+        """阶段2: 初始化数据服务.
 
         Returns:
             bool: 是否成功
         """
         self.logger.info("\n" + "=" * 60)
-        self.logger.info("阶段3: 初始化数据服务")
+        self.logger.info("阶段2: 初始化数据服务")
         self.logger.info("=" * 60)
 
         success_count = 0
+
+        # 初始化ChinaStockEngine（作为数据引擎）
+        try:
+            from backend.infrastructure.data_module_vnpy.engine import ChinaStockEngine
+
+            self.china_stock_engine = ChinaStockEngine(self.main_engine, self.event_engine)
+            self.logger.info("✅ ChinaStockEngine 创建成功")
+
+            # 注册到全局
+            set_china_stock_engine(self.china_stock_engine)
+
+        except ImportError as e:
+            self.logger.warning("⚠️ ChinaStockEngine 不可用: %s", e)
+            self.china_stock_engine = None
+            set_china_stock_engine(None)
+        except Exception as e:
+            self.logger.error("❌ ChinaStockEngine 初始化失败: %s", e, exc_info=True)
+            self.china_stock_engine = None
+            set_china_stock_engine(None)
 
         # 初始化DataCenterService
         try:
@@ -1154,7 +1117,7 @@ class ServiceInitializer:
             bool: 是否成功
         """
         self.logger.info("\n" + "=" * 60)
-        self.logger.info("阶段4: 初始化交易服务")
+        self.logger.info("阶段3: 初始化交易服务")
         self.logger.info("=" * 60)
 
         success_count = 0
@@ -1190,7 +1153,7 @@ class ServiceInitializer:
             bool: 是否成功
         """
         self.logger.info("\n" + "=" * 60)
-        self.logger.info("阶段5: 初始化策略服务")
+        self.logger.info("阶段4: 初始化策略服务")
         self.logger.info("=" * 60)
 
         success_count = 0

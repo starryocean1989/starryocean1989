@@ -18,7 +18,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime
 from pathlib import Path  # noqa: TC003
-from typing import Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 import pandas as pd
 
@@ -28,6 +28,7 @@ from .block_parser import BlockParser
 from .config import config_manager
 from .datetime_decoder import TdxDateTimeDecoder
 from .server_pool import ServerPool
+from .config_file_parser import TdxConfigFileParser
 
 
 # 自定义超时异常（避免与内置TimeoutError冲突，但在Python 3.3+中TimeoutError已经是内置的）
@@ -108,6 +109,9 @@ class StockFetcher:
         self._quotes = None
 
         self.block_parser = block_parser or BlockParser(config_manager.get_tdx_dir())
+
+        # 新增：配置文件解析器
+        self.config_parser = TdxConfigFileParser(config_manager.get_tdx_dir())
 
         # 超时配置
         self.network_timeout = 30  # 网络请求超时时间（秒），从10秒改为30秒
@@ -201,44 +205,109 @@ class StockFetcher:
                 )
                 import time
 
-                self.logger.info("  → 准备调用 mootdx quotes.stock_all() API...")
+                self.logger.info("  → 准备调用 mootdx quotes.stocks() API...")
+                self.logger.info("  → 分别获取深沪两市数据，并手动添加market列")
+
+                # 分别获取深沪两市数据，并手动添加market列
+                stocks_list = []
 
                 with ThreadPoolExecutor(max_workers=1) as executor:
-                    start_time = time.time()
-                    future = executor.submit(self.quotes.stock_all)  # type: ignore[attr-defined]
-                    self.logger.info("  → API调用已提交，等待响应...")
+                    for market in [0, 1]:  # 0=深交所，1=上交所
+                        start_time = time.time()
+                        future = executor.submit(self.quotes.stocks, market)  # type: ignore[attr-defined]
+                        self.logger.info("  → 调用stocks(market=%d) API...", market)
 
-                    try:
-                        # 等待结果，设置超时
-                        stocks_df = future.result(timeout=self.network_timeout)
-                        elapsed_time = time.time() - start_time
-                        self.logger.info("  ← API调用完成！耗时: %.2f秒", elapsed_time)
+                        try:
+                            # 等待结果，设置超时
+                            stocks_df = future.result(timeout=self.network_timeout)
+                            elapsed_time = time.time() - start_time
+                            self.logger.info(
+                                "  ← stocks(market=%d) 完成！耗时: %.2f秒", market, elapsed_time
+                            )
 
-                    except FutureTimeoutError as exc:
-                        elapsed_time = time.time() - start_time
-                        self.logger.error(
-                            "获取品种列表超时 (>%d秒，实际等待%.2f秒)",
-                            self.network_timeout,
-                            elapsed_time,
-                        )
-                        raise NetworkTimeoutError(
-                            f"网络请求超时 (>{self.network_timeout}秒)"
-                        ) from exc
+                            # 🔍 调试：打印返回值的类型和基本信息
+                            self.logger.info(
+                                "  🔍 stocks(market=%d) 返回值类型: %s", market, type(stocks_df)
+                            )
+                            if stocks_df is not None:
+                                self.logger.info(
+                                    "  🔍 stocks(market=%d) 是否DataFrame: %s",
+                                    market,
+                                    isinstance(stocks_df, pd.DataFrame),
+                                )
+                                if isinstance(stocks_df, pd.DataFrame):
+                                    self.logger.info(
+                                        "  🔍 stocks(market=%d) DataFrame列: %s",
+                                        market,
+                                        list(stocks_df.columns),
+                                    )
+                                    self.logger.info(
+                                        "  🔍 stocks(market=%d) DataFrame行数: %d",
+                                        market,
+                                        len(stocks_df),
+                                    )
 
-                # 验证返回数据
-                self.logger.info("  → 验证返回数据...")
-                if (
-                    stocks_df is not None
-                    and isinstance(stocks_df, pd.DataFrame)
-                    and not stocks_df.empty
-                ):
-                    self.logger.info("  ← 数据验证通过！")
+                            # 🚀 关键修复：在try块内添加market列
+                            # 验证返回数据并添加market列
+                            if (
+                                stocks_df is not None
+                                and isinstance(stocks_df, pd.DataFrame)
+                                and not stocks_df.empty
+                            ):
+                                # 🔍 调试：打印添加market列前的DataFrame信息
+                                self.logger.info(
+                                    "  🔍 market=%d 添加market列前，DataFrame列: %s",
+                                    market,
+                                    list(stocks_df.columns),
+                                )
+
+                                # 手动添加market列
+                                stocks_df["market"] = market
+
+                                # 🔍 调试：打印添加market列后的DataFrame信息
+                                self.logger.info(
+                                    "  🔍 market=%d 添加market列后，DataFrame列: %s",
+                                    market,
+                                    list(stocks_df.columns),
+                                )
+
+                                stocks_list.append(stocks_df)
+                                self.logger.info(
+                                    "  ✓ 获取market=%d的品种: %d个", market, len(stocks_df)
+                                )
+                            else:
+                                self.logger.warning("  ⚠ market=%d返回数据为空或类型不正确", market)
+
+                        except FutureTimeoutError as exc:
+                            elapsed_time = time.time() - start_time
+                            self.logger.error(
+                                "获取market=%d品种列表超时 (>%d秒，实际等待%.2f秒)",
+                                market,
+                                self.network_timeout,
+                                elapsed_time,
+                            )
+                            raise NetworkTimeoutError(
+                                f"获取market={market}品种列表超时 (>{self.network_timeout}秒)"
+                            ) from exc
+
+                # 合并两个市场的数据
+                if stocks_list:
+                    # 🔍 调试：打印stocks_list中每个DataFrame的信息
+                    self.logger.info("  🔍 stocks_list中有 %d 个DataFrame", len(stocks_list))
+                    for idx, df in enumerate(stocks_list):
+                        self.logger.info("  🔍 stocks_list[%d]的列: %s", idx, list(df.columns))
+
+                    stocks_df = pd.concat(stocks_list, ignore_index=True)
+                    self.logger.info("  ← 数据合并完成！")
                     self.logger.info("✅ 成功获取 %s 个品种", len(stocks_df))
+                    # 🔍 调试：打印合并后DataFrame的列信息
+                    self.logger.info("  🔍 合并后DataFrame的列: %s", list(stocks_df.columns))
+                    self.logger.info("  🔍 合并后DataFrame的前3行:\n%s", stocks_df.head(3))
                     self.logger.info("=" * 60)
                     return stocks_df
                 else:
-                    self.logger.error("获取品种列表失败: 返回数据为空或类型不正确")
-                    raise ValueError("stock_all() 返回的数据无效或为空")
+                    self.logger.error("获取品种列表失败: 未能获取任何市场的品种数据")
+                    raise ValueError("未能获取任何市场的品种数据")
 
             except (NetworkTimeoutError, TimeoutError):
                 # 超时不重试，直接抛出
@@ -271,26 +340,41 @@ class StockFetcher:
         # 理论上不会到这里
         raise RuntimeError("获取品种列表失败: 未知原因")
 
-    def parse_market_codes(self, stocks_df: pd.DataFrame) -> Dict[str, List[str]]:
+    def parse_market_codes(self, stocks_df: pd.DataFrame) -> Dict[str, List[Dict[str, Any]]]:
         """
-        解析市场代码，分类品种（优化版：使用向量化操作）
+        解析市场代码，分类品种（重构版：按照新需求逻辑）
 
         Args:
-            stocks_df: 品种列表DataFrame
+            stocks_df: 品种列表DataFrame（集合D：stock_all()返回的数据）
 
         Returns:
-            分类后的品种代码字典
+            分类后的品种字典，包含品种代码、名称和市场代码
+            {
+                "上证A股": [...],    # 集合E
+                "深证A股": [...],    # 集合F
+                "北证A股": [...],    # 集合I
+                "T+0基金": [...],    # 集合H
+                "可转债": [...]      # 集合G
+            }
         """
         self.logger.info("【parse_market_codes】开始解析 %d 个品种...", len(stocks_df))
         start_time = time.time()
 
-        result: Dict[str, List[str]] = {
+        # 🔍 调试：打印传入DataFrame的列信息
+        self.logger.info("  🔍 传入DataFrame的列: %s", list(stocks_df.columns))
+        self.logger.info("  🔍 传入DataFrame的前3行:\n%s", stocks_df.head(3))
+
+        result: Dict[str, List[Dict[str, Any]]] = {
             "上证A股": [],
             "深证A股": [],
-            "北证A股": [],  # 从API数据中按前缀筛选
-            "T+0基金": [],  # 从spblock.dat获取
-            "含可转债": [],  # 从spblock.dat获取
+            "北证A股": [],
+            "T+0基金": [],
+            "可转债": [],
         }
+
+        # 统计匹配失败的品种（用于输出警告）
+        unmatched_convertible_bonds = []
+        unmatched_t0_funds = []
 
         # 检查必需列是否存在
         if "code" not in stocks_df.columns:
@@ -302,94 +386,310 @@ class StockFetcher:
         stocks_df = stocks_df.copy()
         stocks_df["code"] = stocks_df["code"].astype(str).str.zfill(6)
 
-        # 向量化操作：根据前缀筛选品种
+        # 验证market列存在（fetch_all_stocks已经添加了准确的market列）
+        if "market" not in stocks_df.columns:
+            self.logger.error("DataFrame中缺少market列，这是不应该发生的！")
+            self.logger.error("  🔍 当前DataFrame的列: %s", list(stocks_df.columns))
+            raise ValueError("DataFrame中缺少market列")
+
+        # ==================== 步骤1: 筛选集合E（上证A股）和集合F（深证A股） ====================
+        self.logger.info("  → 筛选上证A股和深证A股...")
         if "market" in stocks_df.columns:
-            self.logger.info("  → 使用market字段分类...")
-            # 上证A股：market=0, 代码以688或60开头
-            sh_mask = (stocks_df["market"] == self.MARKET_SHANGHAI) & (
+            # 上证A股：market=1, 代码以688或60开头
+            sh_mask = (stocks_df["market"] == 1) & (
                 stocks_df["code"].str.startswith("688") | stocks_df["code"].str.startswith("60")
             )
-            result["上证A股"] = stocks_df[sh_mask]["code"].tolist()
+            result["上证A股"] = self._build_stock_dicts(stocks_df[sh_mask])
 
-            # 深证A股：market=1, 代码以000/001/002/300/301开头
-            sz_mask = (stocks_df["market"] == self.MARKET_SHENZHEN) & (
+            # 深证A股：market=0, 代码以000/001/002/300/301开头
+            sz_mask = (stocks_df["market"] == 0) & (
                 stocks_df["code"].str.startswith("000")
                 | stocks_df["code"].str.startswith("001")
                 | stocks_df["code"].str.startswith("002")
                 | stocks_df["code"].str.startswith("300")
                 | stocks_df["code"].str.startswith("301")
             )
-            result["深证A股"] = stocks_df[sz_mask]["code"].tolist()
-        else:
-            self.logger.info("  → 使用代码前缀分类...")
-            # 如果market列不存在，根据代码前缀推断
-            sh_mask = stocks_df["code"].str.startswith("688") | stocks_df["code"].str.startswith(
-                "60"
-            )
-            result["上证A股"] = stocks_df[sh_mask]["code"].tolist()
-
-            sz_mask = (
-                stocks_df["code"].str.startswith("000")
-                | stocks_df["code"].str.startswith("001")
-                | stocks_df["code"].str.startswith("002")
-                | stocks_df["code"].str.startswith("300")
-                | stocks_df["code"].str.startswith("301")
-            )
-            result["深证A股"] = stocks_df[sz_mask]["code"].tolist()
-
-            bj_mask = (
-                stocks_df["code"].str.startswith("82")
-                | stocks_df["code"].str.startswith("83")
-                | stocks_df["code"].str.startswith("87")
-                | stocks_df["code"].str.startswith("43")
-            )
-            result["北证A股"] = stocks_df[bj_mask]["code"].tolist()
+            result["深证A股"] = self._build_stock_dicts(stocks_df[sz_mask])
 
         self.logger.info(
-            "  ← API筛选完成: 上证%d个, 深证%d个, 北证%d个",
+            "  ← 筛选完成: 上证A股 %d 个, 深证A股 %d 个",
             len(result["上证A股"]),
             len(result["深证A股"]),
-            len(result["北证A股"]),
         )
 
-        # 从通达信板块文件获取特殊品种
-        # spblock.dat中的7位代码格式：第1位是市场代码，后6位是股票代码
-        # 29xxxxx表示北证A股（市场代码2，股票代码9xxxxx）
-        self.logger.info("  → 从spblock.dat获取特殊品种...")
+        # ==================== 步骤2: 构建集合I（北交所，集合B添加市场代码2） ====================
+        self.logger.info("  → 处理北交所股票（集合B -> 集合I）...")
+        if self.config_parser.is_available():
+            try:
+                # 解析addedcode_bj.cfg获取北交所代码和简称
+                beijing_stocks = self.config_parser.parse_addedcode_bj()
+
+                # 添加固定市场代码2
+                beijing_stocks_with_market = []
+                for stock in beijing_stocks:
+                    beijing_stocks_with_market.append(
+                        {
+                            "code": stock["code"],
+                            "name": stock["name"],
+                            "market": 2,  # 固定市场代码为2
+                        }
+                    )
+
+                result["北证A股"] = beijing_stocks_with_market
+                self.logger.info("  ← 北交所股票处理完成: %d 个", len(result["北证A股"]))
+
+            except Exception as e:
+                self.logger.warning("解析北交所配置失败: %s", e)
+
+        # ==================== 步骤3: 构建集合G（可转债，集合A匹配简称） ====================
+        self.logger.info("  → 处理可转债（集合A -> 集合G）...")
+        if self.config_parser.is_available():
+            try:
+                # 解析tdxstat2.cfg获取可转债代码
+                convertible_codes_by_market = self.config_parser.parse_tdxstat2()
+
+                # 通过(market, code)从stocks_df中匹配简称
+                convertible_bonds = []
+                for market, codes in convertible_codes_by_market.items():
+                    for code in codes:
+                        # 在stocks_df中查找匹配的品种
+                        matched = stocks_df[
+                            (stocks_df["market"] == market) & (stocks_df["code"] == code)
+                        ]
+
+                        if len(matched) == 0:
+                            # ⚠️ 无匹配，记录到未匹配列表
+                            unmatched_convertible_bonds.append((market, code))
+                            convertible_bonds.append({"code": code, "name": "", "market": market})
+
+                        elif len(matched) == 1:
+                            # 唯一匹配
+                            name = str(matched.iloc[0].get("name", ""))
+                            convertible_bonds.append({"code": code, "name": name, "market": market})
+
+                        else:
+                            # 多个匹配，尝试过滤掉指数
+                            non_index = matched[
+                                ~matched["name"].str.contains("指数|ETF", na=False, regex=True)
+                            ]
+
+                            if len(non_index) == 1:
+                                # 过滤后只剩一个
+                                name = str(non_index.iloc[0].get("name", ""))
+                                actual_market = int(non_index.iloc[0].get("market", market))
+                                convertible_bonds.append(
+                                    {"code": code, "name": name, "market": actual_market}
+                                )
+                                self.logger.debug(
+                                    "✅ 可转债 %s: 多匹配，过滤掉指数后得到 (market=%d, name=%s)",
+                                    code,
+                                    actual_market,
+                                    name,
+                                )
+                            else:
+                                # 仍有多个或过滤后为空，取第一个
+                                name = str(matched.iloc[0].get("name", ""))
+                                actual_market = int(matched.iloc[0].get("market", market))
+                                convertible_bonds.append(
+                                    {"code": code, "name": name, "market": actual_market}
+                                )
+                                self.logger.warning(
+                                    "⚠️ 可转债 %s 在完整缓存中有 %d 个匹配，取第一个: %s",
+                                    code,
+                                    len(matched),
+                                    name,
+                                )
+
+                result["可转债"] = convertible_bonds
+                self.logger.info("  ← 可转债匹配完成: %d 个", len(result["可转债"]))
+
+            except Exception as e:
+                self.logger.warning("解析可转债配置失败: %s", e)
+
+        # ==================== 步骤4: 构建集合H（T+0基金，集合C匹配简称） ====================
+        self.logger.info("  → 处理T+0基金（集合C -> 集合H）...")
         if self.block_parser.is_available():
             try:
-                beijing_stocks_from_spblock = self.block_parser.get_beijing_stocks()
+                # 获取T+0基金的7位代码（包含market和code）
+                t0_fund_codes = self.block_parser.get_t0_fund_codes()
 
-                # 优先使用spblock.dat的北证A股数据（更准确）
-                if beijing_stocks_from_spblock:
-                    result["北证A股"] = beijing_stocks_from_spblock
-                    self.logger.info(
-                        "    从spblock.dat的融资融券板块获取北证A股: %d 个",
-                        len(beijing_stocks_from_spblock),
-                    )
-                # 否则使用API数据按前缀筛选的北证A股作为备份
+                # 通过(market, code)从stocks_df中匹配简称
+                t0_funds = []
+                for t0_fund in t0_fund_codes:
+                    market = t0_fund["market"]
+                    code = t0_fund["code"]
 
-                result["T+0基金"] = self.block_parser.get_t0_funds()
-                result["含可转债"] = self.block_parser.get_convertible_bonds()
+                    # 在stocks_df中查找匹配的品种
+                    matched = stocks_df[
+                        (stocks_df["market"] == market) & (stocks_df["code"] == code)
+                    ]
 
-                self.logger.info(
-                    "    从spblock.dat获取特殊品种: 北证A股 %d 个, T+0基金 %d 个, 含可转债 %d 个",
-                    len(result["北证A股"]),
-                    len(result["T+0基金"]),
-                    len(result["含可转债"]),
-                )
+                    if len(matched) == 0:
+                        # ⚠️ 无匹配，记录到未匹配列表
+                        unmatched_t0_funds.append((market, code))
+                        t0_funds.append({"code": code, "name": "", "market": market})
+
+                    elif len(matched) == 1:
+                        # 唯一匹配
+                        name = str(matched.iloc[0].get("name", ""))
+                        t0_funds.append({"code": code, "name": name, "market": market})
+
+                    else:
+                        # 多个匹配，尝试过滤掉指数
+                        non_index = matched[
+                            ~matched["name"].str.contains("指数|ETF", na=False, regex=True)
+                        ]
+
+                        if len(non_index) == 1:
+                            # 过滤后只剩一个
+                            name = str(non_index.iloc[0].get("name", ""))
+                            actual_market = int(non_index.iloc[0].get("market", market))
+                            t0_funds.append({"code": code, "name": name, "market": actual_market})
+                            self.logger.debug(
+                                "✅ T+0基金 %s: 多匹配，过滤掉指数后得到 (market=%d, name=%s)",
+                                code,
+                                actual_market,
+                                name,
+                            )
+                        else:
+                            # 仍有多个或过滤后为空，取第一个
+                            name = str(matched.iloc[0].get("name", ""))
+                            actual_market = int(matched.iloc[0].get("market", market))
+                            t0_funds.append({"code": code, "name": name, "market": actual_market})
+                            self.logger.warning(
+                                "⚠️ T+0基金 %s 在完整缓存中有 %d 个匹配，取第一个: %s",
+                                code,
+                                len(matched),
+                                name,
+                            )
+
+                result["T+0基金"] = t0_funds
+                self.logger.info("  ← T+0基金匹配完成: %d 个", len(result["T+0基金"]))
+
             except Exception as e:
-                self.logger.warning("解析通达信板块文件失败: %s，将仅使用API筛选的品种", e)
-        else:
-            self.logger.warning("  BlockParser不可用，跳过spblock.dat解析")
+                self.logger.warning("解析T+0基金失败: %s", e)
 
+        # ==================== 输出匹配失败警告 ====================
+        if unmatched_convertible_bonds:
+            self.logger.warning(
+                "⚠️ 可转债匹配失败 %d 个品种（无简称）：", len(unmatched_convertible_bonds)
+            )
+            for market, code in unmatched_convertible_bonds[:10]:  # 只打印前10个
+                self.logger.warning("  - 可转债 %s (market=%d) 在API返回数据中未找到", code, market)
+            if len(unmatched_convertible_bonds) > 10:
+                self.logger.warning(
+                    "  - ... 还有 %d 个未匹配", len(unmatched_convertible_bonds) - 10
+                )
+
+        if unmatched_t0_funds:
+            self.logger.warning("⚠️ T+0基金匹配失败 %d 个品种（无简称）：", len(unmatched_t0_funds))
+            for market, code in unmatched_t0_funds[:10]:  # 只打印前10个
+                self.logger.warning(
+                    "  - T+0基金 %s (market=%d) 在API返回数据中未找到", code, market
+                )
+            if len(unmatched_t0_funds) > 10:
+                self.logger.warning("  - ... 还有 %d 个未匹配", len(unmatched_t0_funds) - 10)
+
+        # ==================== 汇总统计 ====================
         elapsed_time = time.time() - start_time
         total_count = sum(len(codes) for codes in result.values())
+        self.logger.info("=" * 60)
+        self.logger.info("✅ parse_market_codes完成！耗时: %.2f秒", elapsed_time)
+        self.logger.info("📊 品种统计:")
+        self.logger.info("  • 上证A股: %d 个", len(result["上证A股"]))
+        self.logger.info("  • 深证A股: %d 个", len(result["深证A股"]))
+        self.logger.info("  • 北证A股: %d 个", len(result["北证A股"]))
         self.logger.info(
-            "✅ parse_market_codes完成！耗时: %.2f秒, 总计 %d 个品种", elapsed_time, total_count
+            "  • T+0基金: %d 个 (其中 %d 个无简称)", len(result["T+0基金"]), len(unmatched_t0_funds)
         )
+        self.logger.info(
+            "  • 可转债: %d 个 (其中 %d 个无简称)",
+            len(result["可转债"]),
+            len(unmatched_convertible_bonds),
+        )
+        self.logger.info("  • 总计: %d 个品种", total_count)
+        self.logger.info("=" * 60)
 
         return result
+
+    def _infer_market_from_code(self, code: str) -> int:
+        """
+        根据品种代码推断市场代码
+
+        Args:
+            code: 品种代码（6位）
+
+        Returns:
+            市场代码：0=深交所，1=上交所，2=北交所
+        """
+        if code.startswith(("688", "60")):
+            return 1  # 上交所
+        elif code.startswith(("000", "001", "002", "300", "301")):
+            return 0  # 深交所
+        elif code.startswith(("43", "83", "87", "88", "9")):
+            return 2  # 北交所
+        else:
+            return 1  # 默认为上交所
+
+    def _build_stock_dicts(self, stocks_df: pd.DataFrame) -> List[Dict[str, Any]]:
+        """
+        将品种DataFrame转换为字典列表格式
+
+        Args:
+            stocks_df: 品种DataFrame，包含code, name, market列
+
+        Returns:
+            字典列表，每个字典包含code, name, market字段
+        """
+        stock_dicts = []
+        for _, row in stocks_df.iterrows():
+            stock_dict = {
+                "code": str(row.get("code", "")),
+                "name": str(row.get("name", "")),
+                "market": int(row.get("market", -1)) if pd.notna(row.get("market")) else -1,
+            }
+            stock_dicts.append(stock_dict)
+        return stock_dicts
+
+    def _get_market_code_for_symbol(self, symbol: str) -> int:
+        """
+        根据品种代码确定市场代码
+
+        Args:
+            symbol: 品种代码
+
+        Returns:
+            市场代码：0=深交所，1=上交所，2=北交所，-1=未知
+        """
+        if not symbol:
+            return -1
+
+        code = symbol.zfill(6)
+
+        # 北交所：82, 83, 87, 43开头
+        if (
+            code.startswith("82")
+            or code.startswith("83")
+            or code.startswith("87")
+            or code.startswith("43")
+        ):
+            return 2  # 北交所
+
+        # 上交所：688, 60开头
+        elif code.startswith("688") or code.startswith("60"):
+            return 1  # 上交所
+
+        # 深交所：000, 001, 002, 300, 301开头
+        elif (
+            code.startswith("000")
+            or code.startswith("001")
+            or code.startswith("002")
+            or code.startswith("300")
+            or code.startswith("301")
+        ):
+            return 0  # 深交所
+
+        return -1  # 未知
 
     def cache_stock_list(self, stocks_df: pd.DataFrame) -> "Path":
         """
@@ -403,6 +703,10 @@ class StockFetcher:
         """
         self.logger.info("【cache_stock_list】开始缓存 %d 个品种到本地...", len(stocks_df))
         start_time = time.time()
+
+        # 🔍 调试：打印传入cache_stock_list的DataFrame信息
+        self.logger.info("  🔍 cache_stock_list接收到的DataFrame列: %s", list(stocks_df.columns))
+        self.logger.info("  🔍 cache_stock_list接收到的DataFrame前3行:\n%s", stocks_df.head(3))
 
         cache_dir = config_manager.get_cache_dir()
         cache_file = cache_dir / "stock_list_classified.json"
@@ -436,7 +740,7 @@ class StockFetcher:
             self.logger.info("   - 深证A股: %d 个", len(classified.get("深证A股", [])))
             self.logger.info("   - 北证A股: %d 个", len(classified.get("北证A股", [])))
             self.logger.info("   - T+0基金: %d 个", len(classified.get("T+0基金", [])))
-            self.logger.info("   - 含可转债: %d 个", len(classified.get("含可转债", [])))
+            self.logger.info("   - 可转债: %d 个", len(classified.get("可转债", [])))
 
             return cache_file
 
@@ -455,34 +759,7 @@ class StockFetcher:
         cache_dir = config_manager.get_cache_dir()
         cache_file = cache_dir / "stock_list_classified.json"
 
-        # 兼容旧格式：如果JSON文件不存在，尝试加载parquet文件
-        if not cache_file.exists():
-            old_cache_file = cache_dir / "stock_list.parquet"
-            if old_cache_file.exists():
-                self.logger.info("检测到旧格式缓存文件，正在迁移...")
-                try:
-                    # 加载旧格式
-                    df = pd.read_parquet(old_cache_file)
-                    # 解析分类
-                    classified = self.parse_market_codes(df)
-                    # 保存为新格式
-                    cache_data = {
-                        "cache_time": datetime.now().isoformat(),
-                        "total_count": sum(len(codes) for codes in classified.values()),
-                        "classified": classified,
-                    }
-                    import json
-
-                    with open(cache_file, "w", encoding="utf-8") as f:
-                        json.dump(cache_data, f, ensure_ascii=False, indent=2)
-                    self.logger.info("✅ 已迁移到新格式")
-                    # 删除旧文件
-                    old_cache_file.unlink()
-                    return classified
-                except Exception as e:
-                    self.logger.error("迁移旧格式失败: %s", e)
-                    return None
-
+        # 只加载新格式的JSON缓存文件
         if cache_file.exists():
             try:
                 import json
@@ -497,6 +774,8 @@ class StockFetcher:
             except (OSError, ValueError, KeyError) as e:
                 self.logger.error("加载缓存品种分类失败: %s", e)
 
+        # 如果新格式缓存不存在，返回None让调用方重新获取
+        self.logger.info("缓存文件不存在，需要重新获取品种列表")
         return None
 
     def download_incremental_kline(
@@ -1318,7 +1597,7 @@ class StockFetcher:
         self._classified_stocks_cache = self.parse_market_codes(stocks_df)
         return self._classified_stocks_cache.get(market_type, [])
 
-    def get_all_market_stocks(self, allow_fetch: bool = True) -> Dict[str, List[str]]:
+    def get_all_market_stocks(self, allow_fetch: bool = True) -> Dict[str, List[Dict[str, Any]]]:
         """
         获取所有市场的品种分类（优先使用缓存，无需解析）
 

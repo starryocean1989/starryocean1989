@@ -2,7 +2,7 @@
 """
 多进程股票数据获取器
 
-完全替代原StockFetcher，使用多进程实现真正的并行计算
+继承StockFetcher，使用多进程实现真正的并行计算
 突破Python GIL限制，实现15-20倍速度提升
 
 注意：Windows下使用multiprocessing需要确保在if __name__ == '__main__'保护下启动
@@ -14,6 +14,7 @@ import queue
 import time
 from datetime import datetime
 from multiprocessing import Manager, Process, cpu_count
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -24,6 +25,7 @@ from backend.infrastructure.data_module_vnpy.multiprocess_worker import (
     download_worker_process,
 )
 from backend.infrastructure.data_module_vnpy.server_pool import ServerPool
+from backend.infrastructure.data_module_vnpy.stock_fetcher import StockFetcher
 
 # 确保Windows兼容性
 import sys
@@ -34,22 +36,16 @@ if sys.platform == "win32":
     multiprocessing.freeze_support()
 
 
-class MultiProcessStockFetcher:
+class MultiProcessStockFetcher(StockFetcher):
     """
     多进程股票数据获取器
 
-    完全替代StockFetcher，使用multiprocessing实现真正的并行计算
+    继承StockFetcher，使用multiprocessing实现真正的并行计算
     每个进程有独立的GIL，可以充分利用多核CPU
+
+    品种列表获取逻辑：继承父类StockFetcher的新逻辑（集合A-G）
+    数据下载逻辑：使用多进程实现高性能下载
     """
-
-    # 市场分类常量（类级别）
-    MARKET_SHANGHAI = 0  # 上证
-    MARKET_SHENZHEN = 1  # 深证
-
-    # 品种代码前缀（类级别）
-    SH_PREFIXES = ["688", "60"]  # 上证A股
-    SZ_PREFIXES = ["000", "001", "002", "300", "301"]  # 深证A股
-    BJ_PREFIXES = ["43", "83", "87", "88"]  # 北证A股（北交所）
 
     def __init__(self, block_parser=None):
         """
@@ -58,6 +54,9 @@ class MultiProcessStockFetcher:
         Args:
             block_parser: BlockParser实例，如果为None则创建新实例
         """
+        # 先调用父类初始化（会初始化block_parser、config_parser等）
+        super().__init__(block_parser)
+
         self.logger = logging.getLogger(__name__)
 
         # 获取进程数配置（使用现有的server_pool_size）
@@ -75,35 +74,52 @@ class MultiProcessStockFetcher:
             pool_size,
         )
 
-        # 多进程共享对象（使用Manager）
-        self.manager = Manager()
-        self.task_queue = self.manager.Queue()
-        self.result_queue = self.manager.Queue()
-        self.progress_queue = self.manager.Queue()
-        self.stop_event = self.manager.Event()
-        self.pause_event = self.manager.Event()
-        self.pause_event.set()  # 默认不暂停
+        # 多进程共享对象（延迟初始化，避免启动时多进程问题）
+        self.manager = None
+        self.task_queue = None
+        self.result_queue = None
+        self.progress_queue = None
+        self.stop_event = None
+        self.pause_event = None
+        self._pause_set = True  # 默认不暂停
 
-        # 进度跟踪（进程安全）
-        self._download_progress = self.manager.dict(
-            {
-                "is_downloading": False,
-                "completed": 0,
-                "total": 0,
-                "current_symbol": "",
-                "current_interval": "",
-                "start_time": None,
-            }
-        )
+        # 进度跟踪（延迟初始化）
+        self._download_progress = None
 
-        # 进程池
+        # 进程池相关
         self.processes: List[Process] = []
 
         # ServerPool（用于获取可用服务器）
         self.server_pool = ServerPool(max_servers=max_processes, timeout=30)
 
-        # BlockParser
-        self.block_parser = block_parser or BlockParser(config_manager.get_tdx_dir())
+    def _init_multiprocess_objects(self):
+        """延迟初始化多进程对象"""
+        if self.manager is None:
+            self.manager = Manager()
+            self.task_queue = self.manager.Queue()
+            self.result_queue = self.manager.Queue()
+            self.progress_queue = self.manager.Queue()
+            self.stop_event = self.manager.Event()
+            self.pause_event = self.manager.Event()
+            if self._pause_set:
+                self.pause_event.set()  # 默认不暂停
+            else:
+                self.pause_event.clear()  # 暂停状态
+
+            # 进度跟踪（进程安全）
+            self._download_progress = self.manager.dict(
+                {
+                    "is_downloading": False,
+                    "completed": 0,
+                    "total": 0,
+                    "current_symbol": "",
+                    "current_interval": "",
+                    "start_time": None,
+                }
+            )
+
+        # BlockParser（父类StockFetcher已经初始化，这里不需要重复初始化）
+        # 父类在__init__中已经初始化了block_parser和config_parser
 
         # 超时配置
         self.network_timeout = 30
@@ -124,57 +140,8 @@ class MultiProcessStockFetcher:
             self.logger.info("延迟初始化默认Quotes实例（向后兼容）")
         return self._quotes
 
-    # ==================== 下载控制方法 ====================
-
-    def stop_download(self):
-        """停止下载"""
-        try:
-            self.stop_event.set()
-            self.logger.info("下载停止信号已设置")
-
-            # 立即开始清理进程（不等待任务完成）
-            # 进程会检测到stop_event并自行退出
-            self.logger.info("等待进程检测停止信号...")
-
-        except Exception as e:
-            self.logger.error("设置停止信号失败: %s", e)
-
-    def pause_download(self):
-        """暂停下载"""
-        self.pause_event.clear()  # clear表示暂停
-        self.logger.info("下载暂停信号已设置")
-
-    def resume_download(self):
-        """恢复下载"""
-        self.pause_event.set()  # set表示继续
-        self.logger.info("下载恢复信号已设置")
-
-    def reset_download_state(self):
-        """重置下载状态（准备新的下载任务）"""
-        self.stop_event.clear()
-        self.pause_event.set()
-
-        # 重置进度
-        self._download_progress["is_downloading"] = False
-        self._download_progress["completed"] = 0
-        self._download_progress["total"] = 0
-        self._download_progress["current_symbol"] = ""
-        self._download_progress["current_interval"] = ""
-        self._download_progress["start_time"] = None
-
-        self.logger.info("下载状态已重置")
-
-    def get_download_progress(self) -> dict:
-        """获取当前下载进度（供前端轮询使用）"""
-        return dict(self._download_progress)
-
-    def is_stopped(self) -> bool:
-        """检查是否已停止"""
-        return self.stop_event.is_set()
-
-    def is_paused(self) -> bool:
-        """检查是否已暂停"""
-        return not self.pause_event.is_set()
+    # ==================== 下载控制方法（继承自父类）====================
+    # stop_download(), pause_download(), resume_download等方法继承自StockFetcher
 
     # ==================== 核心下载方法 ====================
 
@@ -557,241 +524,8 @@ class MultiProcessStockFetcher:
         """检查是否已暂停（兼容旧API）"""
         return not self.pause_event.is_set()
 
-    # ==================== 品种列表API（必须实现，engine.py会调用） ====================
-
-    def fetch_all_stocks(self) -> pd.DataFrame:
-        """获取所有品种列表（委托给quotes）"""
-        return self.quotes.stock_all()
-
-    def parse_market_codes(self, stocks_df: pd.DataFrame) -> Dict[str, List[str]]:
-        """解析市场代码，分类品种"""
-        import time
-
-        self.logger.info("【parse_market_codes】开始解析 %d 个品种...", len(stocks_df))
-        start_time = time.time()
-
-        result: Dict[str, List[str]] = {
-            "上证A股": [],
-            "深证A股": [],
-            "北证A股": [],
-            "T+0基金": [],
-            "含可转债": [],
-        }
-
-        # 检查必需列
-        if "code" not in stocks_df.columns:
-            self.logger.error("品种DataFrame缺少'code'列")
-            return result
-
-        # 补齐代码为6位
-        stocks_df = stocks_df.copy()
-        stocks_df["code"] = stocks_df["code"].astype(str).str.zfill(6)
-
-        # 🚀 关键过滤1：使用volunit=100过滤出A股（排除38000+债券）
-        if "volunit" in stocks_df.columns:
-            before_count = len(stocks_df)
-            stocks_df = stocks_df[stocks_df["volunit"] == 100]
-            filtered_count = before_count - len(stocks_df)
-            self.logger.info("  → volunit过滤：排除 %d 个债券（volunit=10）", filtered_count)
-
-        # 🚀 关键过滤2：排除名称包含"债"的指数（即使volunit=100）
-        if "name" in stocks_df.columns:
-            before_count = len(stocks_df)
-            stocks_df = stocks_df[~stocks_df["name"].str.contains("债", na=False)]
-            filtered_count = before_count - len(stocks_df)
-            if filtered_count > 0:
-                self.logger.info("  → name过滤：排除 %d 个债券指数", filtered_count)
-
-        # 🚀 关键过滤3：排除指数
-        if "name" in stocks_df.columns:
-            before_count = len(stocks_df)
-            stocks_df = stocks_df[~stocks_df["name"].str.contains("指数", na=False)]
-            filtered_count = before_count - len(stocks_df)
-            if filtered_count > 0:
-                self.logger.info("  → name过滤：排除 %d 个指数", filtered_count)
-
-        # 🚀 关键过滤4：排除退市股
-        if "name" in stocks_df.columns:
-            before_count = len(stocks_df)
-            stocks_df = stocks_df[~stocks_df["name"].str.contains("退市|退", na=False)]
-            filtered_count = before_count - len(stocks_df)
-            if filtered_count > 0:
-                self.logger.info("  → name过滤：排除 %d 个退市股", filtered_count)
-
-        # 根据前缀筛选（现在只剩纯A股了）
-        sh_mask = stocks_df["code"].str.startswith("688") | stocks_df["code"].str.startswith("60")
-        result["上证A股"] = stocks_df[sh_mask]["code"].tolist()
-
-        # 🚀 关键修复：排除000000-000999的指数区间
-        # 使用字符串比较而非int转换（避免异常）
-        sz_000_mask = stocks_df["code"].str.startswith("000") & ~(
-            stocks_df["code"].str.match(r"^000[0-9]{3}$")
-        )
-        sz_mask = (
-            sz_000_mask
-            | stocks_df["code"].str.startswith("001")
-            | stocks_df["code"].str.startswith("002")
-            | stocks_df["code"].str.startswith("300")
-            | stocks_df["code"].str.startswith("301")
-        )
-        result["深证A股"] = stocks_df[sz_mask]["code"].tolist()
-
-        # 北证A股不在stock_all中，只能从spblock.dat获取
-        # 这里先留空
-        result["北证A股"] = []
-
-        # 从BlockParser获取特殊品种
-        if self.block_parser.is_available():
-            try:
-                beijing_stocks = self.block_parser.get_beijing_stocks()
-                if beijing_stocks:
-                    result["北证A股"] = beijing_stocks
-
-                result["T+0基金"] = self.block_parser.get_t0_funds()
-                result["含可转债"] = self.block_parser.get_convertible_bonds()
-            except Exception as e:
-                self.logger.warning("解析通达信板块文件失败: %s", e)
-
-        elapsed_time = time.time() - start_time
-        total_count = sum(len(codes) for codes in result.values())
-        self.logger.info(
-            "✅ parse_market_codes完成！耗时: %.2f秒, 总计 %d 个品种", elapsed_time, total_count
-        )
-
-        return result
-
-    def cache_stock_list(self, stocks_df: pd.DataFrame) -> "Path":
-        """缓存品种列表（委托给原实现）"""
-        from pathlib import Path
-        import json
-
-        cache_dir = config_manager.get_cache_dir()
-        cache_file = cache_dir / "stock_list_classified.json"
-
-        # 解析并缓存
-        classified = self.parse_market_codes(stocks_df)
-        cache_data = {
-            "cache_time": datetime.now().isoformat(),
-            "total_count": sum(len(codes) for codes in classified.values()),
-            "classified": classified,
-        }
-
-        with open(cache_file, "w", encoding="utf-8") as f:
-            json.dump(cache_data, f, ensure_ascii=False, indent=2)
-
-        self._classified_stocks_cache = classified
-        return cache_file
-
-    def load_cached_stock_list(self) -> Optional[Dict[str, List[str]]]:
-        """加载缓存的品种分类"""
-        import json
-        from pathlib import Path
-
-        cache_file = config_manager.get_cache_dir() / "stock_list_classified.json"
-
-        if not cache_file.exists():
-            return None
-
-        try:
-            with open(cache_file, "r", encoding="utf-8") as f:
-                cache_data = json.load(f)
-            return cache_data.get("classified")
-        except Exception as e:
-            self.logger.error("加载缓存失败: %s", e)
-            return None
-
-    def get_market_stocks(self, market_type: str, allow_fetch: bool = True) -> List[str]:
-        """
-        获取指定市场的品种列表（engine.py会调用）
-
-        Args:
-            market_type: 市场类型（上证A股、深证A股、北证A股、T+0基金、含可转债）
-            allow_fetch: 是否允许在缓存不存在时重新获取
-
-        Returns:
-            品种代码列表
-        """
-        # 如果已有分类缓存，直接返回
-        if self._classified_stocks_cache is not None:
-            return self._classified_stocks_cache.get(market_type, [])
-
-        # 尝试从本地缓存加载
-        classified = self.load_cached_stock_list()
-        if classified is not None:
-            self._classified_stocks_cache = classified
-            return self._classified_stocks_cache.get(market_type, [])
-
-        # 如果缓存不存在
-        if not allow_fetch:
-            self.logger.warning("本地品种缓存不存在，且不允许重新获取")
-            return []
-
-        # 允许重新获取时，调用API
-        self.logger.info("本地品种缓存不存在，开始从API获取...")
-        stocks_df = self.fetch_all_stocks()
-        self._classified_stocks_cache = self.parse_market_codes(stocks_df)
-        return self._classified_stocks_cache.get(market_type, [])
-
-    def get_all_market_stocks(self, allow_fetch: bool = True) -> Dict[str, List[str]]:
-        """
-        获取所有市场的品种分类
-
-        Args:
-            allow_fetch: 是否允许在缓存不存在时重新获取
-
-        Returns:
-            所有市场的品种分类字典
-        """
-        # 如果已有分类缓存，直接返回
-        if self._classified_stocks_cache is not None:
-            return self._classified_stocks_cache
-
-        # 尝试从本地缓存加载
-        classified = self.load_cached_stock_list()
-        if classified is not None:
-            self._classified_stocks_cache = classified
-            return self._classified_stocks_cache
-
-        # 如果缓存不存在
-        if not allow_fetch:
-            self.logger.warning("本地品种缓存不存在，且不允许重新获取")
-            return {}
-
-        # 允许重新获取时，调用API
-        self.logger.info("本地品种缓存不存在，开始从API获取...")
-        stocks_df = self.fetch_all_stocks()
-        self._classified_stocks_cache = self.parse_market_codes(stocks_df)
-        return self._classified_stocks_cache
-
-    # ==================== 其他工具方法 ====================
-
-    def get_classified_stocks(self) -> Dict[str, List[str]]:
-        """获取分类后的股票列表"""
-        if self._classified_stocks_cache is None:
-            self._classified_stocks_cache = self.block_parser.parse_block_file()
-        return self._classified_stocks_cache
-
-    @staticmethod
-    def get_exchange_by_symbol(symbol: str) -> str:
-        """根据品种代码获取交易所"""
-        if symbol.startswith(tuple(MultiProcessStockFetcher.SH_PREFIXES)):
-            return "SSE"
-        elif symbol.startswith(tuple(MultiProcessStockFetcher.SZ_PREFIXES)):
-            return "SZSE"
-        elif symbol.startswith(tuple(MultiProcessStockFetcher.BJ_PREFIXES)):
-            return "BSE"
-        else:
-            return "UNKNOWN"
-
-    @classmethod
-    def get_market_by_symbol(cls, symbol: str) -> int:
-        """根据品种代码获取市场代码"""
-        if symbol.startswith(tuple(cls.SH_PREFIXES)):
-            return cls.MARKET_SHANGHAI
-        elif symbol.startswith(tuple(cls.SZ_PREFIXES)):
-            return cls.MARKET_SHENZHEN
-        else:
-            return cls.MARKET_SHANGHAI
+    # ==================== 品种列表相关方法已迁移到symbol_loader.py ====================
+    # 此类不再负责品种列表的获取和缓存，只负责K线数据下载
 
     def shutdown(self):
         """主动关闭（释放资源）"""
