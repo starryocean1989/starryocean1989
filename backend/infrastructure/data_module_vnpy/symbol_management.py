@@ -52,6 +52,7 @@ class BlockParser:
 
         # 如果未指定路径或搜索失败，尝试常见根目录并递归搜索
         common_root_dirs = [
+            Path("C:/new_tdx"),
             Path("C:/通达信金融终端V7"),
             Path("C:/Program Files/通达信金融终端V7"),
             Path("D:/通达信金融终端V7"),
@@ -253,9 +254,9 @@ class BlockParser:
         target_blocks = self.get_target_blocks()
         return target_blocks["含可转债"]
 
-    def get_t0_fund_codes(self) -> List[Dict[str, int]]:
+    def get_t0_fund_codes(self) -> List[Dict[str, any]]:
         """
-        提取T+0基金板块中01/15开头的7位代码
+        提取T+0基金板块中01/15开头的7位代码（仅限块名包含“T+0基金”的区段）
 
         7位格式：第1位是市场代码（0或1），后6位是品种代码
         示例：`0151880`表示市场代码0，品种代码151880
@@ -267,7 +268,7 @@ class BlockParser:
             logger.warning("spblock.dat 文件不存在，返回空列表")
             return []
 
-        result = []
+        result: List[Dict[str, any]] = []
 
         try:
             # 使用GBK编码读取文本文件
@@ -286,25 +287,20 @@ class BlockParser:
                 if line.startswith("#"):
                     current_block = line[1:].strip()
                     logger.debug("找到板块: %s", current_block)
+                    continue
 
-                # 股票代码行（纯数字，可能是6位或7位）
-                elif line.isdigit() and len(line) >= 6:
-                    # 只处理T+0基金板块中的7位代码
-                    if "T+0基金" in current_block and len(line) == 7:
-                        # 提取市场代码（第1位）
-                        market_code = int(line[0])
-                        # 提取品种代码（后6位）
-                        stock_code = line[1:7]
+                # 仅在“T+0基金”板块内处理7位数字代码
+                if "T+0基金" in current_block and line.isdigit() and len(line) == 7:
+                    market_code = int(line[0])
+                    stock_code = line[1:7]
 
-                        # 🚀 关键修正：只保留市场0且品种代码1开头，或市场1且品种代码5开头
-                        # 市场0 + 品种代码1xxxxx（如 0151880）
-                        # 市场1 + 品种代码5xxxxx（如 1511880）
-                        if (market_code == 0 and stock_code.startswith("1")) or (
-                            market_code == 1 and stock_code.startswith("5")
-                        ):
-                            result.append({"market": market_code, "code": stock_code})
+                    # 只保留市场0且品种代码1开头，或市场1且品种代码5开头
+                    if (market_code == 0 and stock_code.startswith("1")) or (
+                        market_code == 1 and stock_code.startswith("5")
+                    ):
+                        result.append({"market": market_code, "code": stock_code})
 
-            logger.info("成功提取 T+0基金代码: %d 个", len(result))
+            logger.info("成功提取 T+0基金代码（限块名）: %d 个", len(result))
             return result
 
         except Exception as e:
@@ -396,8 +392,9 @@ class SymbolLoader:
         self._save_cache(classified)
 
         self.logger.info("=" * 60)
-        self.logger.info("API加载完成，共获取 %d 个品种",
-                        sum(len(stocks) for stocks in classified.values()))
+        self.logger.info(
+            "API加载完成，共获取 %d 个品种", sum(len(stocks) for stocks in classified.values())
+        )
         self.logger.info("=" * 60)
 
         return classified
@@ -420,8 +417,7 @@ class SymbolLoader:
             classified = cache_data.get("classified", {})
             cache_time = cache_data.get("cache_time", "")
 
-            self.logger.info("成功加载本地缓存: %s (缓存时间: %s)",
-                           self.cache_file, cache_time)
+            self.logger.info("成功加载本地缓存: %s (缓存时间: %s)", self.cache_file, cache_time)
             self.logger.info("  - 上证A股: %d", len(classified.get("上证A股", [])))
             self.logger.info("  - 深证A股: %d", len(classified.get("深证A股", [])))
             self.logger.info("  - 北证A股: %d", len(classified.get("北证A股", [])))
@@ -491,13 +487,7 @@ class SymbolLoader:
         """
         self.logger.info("步骤2: 分类品种")
 
-        result = {
-            "上证A股": [],
-            "深证A股": [],
-            "北证A股": [],
-            "T+0基金": [],
-            "可转债": []
-        }
+        result = {"上证A股": [], "深证A股": [], "北证A股": [], "T+0基金": [], "可转债": []}
 
         # 验证DataFrame结构
         if "market" not in complete_df.columns:
@@ -505,18 +495,17 @@ class SymbolLoader:
 
         # 集合E: 上证A股 (market==1 AND code.startswith('688'|'60'))
         sh_mask = (complete_df["market"] == 1) & (
-            complete_df["code"].str.startswith("688") |
-            complete_df["code"].str.startswith("60")
+            complete_df["code"].str.startswith("688") | complete_df["code"].str.startswith("60")
         )
         result["上证A股"] = self._build_stock_list(complete_df[sh_mask])
 
         # 集合F: 深证A股 (market==0 AND code.startswith('000'|'001'|'002'|'300'|'301'))
         sz_mask = (complete_df["market"] == 0) & (
-            complete_df["code"].str.startswith("000") |
-            complete_df["code"].str.startswith("001") |
-            complete_df["code"].str.startswith("002") |
-            complete_df["code"].str.startswith("300") |
-            complete_df["code"].str.startswith("301")
+            complete_df["code"].str.startswith("000")
+            | complete_df["code"].str.startswith("001")
+            | complete_df["code"].str.startswith("002")
+            | complete_df["code"].str.startswith("300")
+            | complete_df["code"].str.startswith("301")
         )
         result["深证A股"] = self._build_stock_list(complete_df[sz_mask])
 
@@ -548,11 +537,13 @@ class SymbolLoader:
         """
         result = []
         for _, row in df.iterrows():
-            result.append({
-                "code": str(row["code"]),
-                "name": str(row.get("name", "")),
-                "market": int(row["market"])
-            })
+            result.append(
+                {
+                    "code": str(row["code"]),
+                    "name": str(row.get("name", "")),
+                    "market": int(row["market"]),
+                }
+            )
         return result
 
     def _get_beijing_stocks(self) -> List[Dict[str, any]]:
@@ -573,13 +564,21 @@ class SymbolLoader:
             result = []
 
             for stock in beijing_stocks:
-                result.append({
-                    "code": stock["code"],
-                    "name": stock["name"],
-                    "market": 2  # 固定市场代码
-                })
+                result.append(
+                    {"code": stock["code"], "name": stock["name"], "market": 2}  # 固定市场代码
+                )
 
-            self.logger.info("  → 北证A股: %d 个（来自addedcode_bj.cfg）", len(result))
+            count = len(result)
+            if count == 0:
+                try:
+                    info = self.config_parser.get_file_info()
+                    self.logger.warning("  ⚠ 北证A股解析为空，文件信息: %s", info)
+                except Exception:
+                    pass
+            else:
+                samples = result[:3]
+                self.logger.info("  → 北证A股: %d 个（样例: %s）", count, samples)
+
             return result
 
         except Exception as e:
@@ -601,37 +600,38 @@ class SymbolLoader:
 
         try:
             t0_fund_codes = self.block_parser.get_t0_fund_codes()
+            total = len(t0_fund_codes)
             result = []
             unmatched_count = 0
+            unmatched_samples = []
 
             for fund in t0_fund_codes:
-                market = fund["market"]
-                code = fund["code"]
+                market = int(fund["market"])
+                code = str(fund["code"]).zfill(6)
 
                 # 从完整缓存中匹配
                 matched = complete_df[
-                    (complete_df["market"] == market) &
-                    (complete_df["code"] == code)
+                    (complete_df["market"] == market) & (complete_df["code"] == code)
                 ]
 
                 if len(matched) > 0:
                     name = str(matched.iloc[0].get("name", ""))
-                    result.append({
-                        "code": code,
-                        "name": name,
-                        "market": market
-                    })
+                    result.append({"code": code, "name": name, "market": market})
                 else:
                     # 无匹配，仍保留但名称为空
                     unmatched_count += 1
-                    result.append({
-                        "code": code,
-                        "name": "",
-                        "market": market
-                    })
+                    if len(unmatched_samples) < 3:
+                        unmatched_samples.append({"market": market, "code": code})
+                    result.append({"code": code, "name": "", "market": market})
 
-            self.logger.info("  → T+0基金: %d 个（%d个无名称）",
-                           len(result), unmatched_count)
+            matched_count = total - unmatched_count
+            self.logger.info(
+                "  → T+0基金: %d 个（匹配到名称: %d，未匹配: %d，示例未匹配: %s）",
+                len(result),
+                matched_count,
+                unmatched_count,
+                unmatched_samples,
+            )
             return result
 
         except Exception as e:
@@ -653,15 +653,19 @@ class SymbolLoader:
 
         try:
             convertible_codes_by_market = self.config_parser.parse_tdxstat2()
+            total = sum(len(v) for v in convertible_codes_by_market.values())
             result = []
             unmatched_count = 0
+            unmatched_samples = []
 
             for market, codes in convertible_codes_by_market.items():
-                for code in codes:
+                mkt = int(market)
+                for raw_code in codes:
+                    code = str(raw_code).zfill(6)
+
                     # 从完整缓存中匹配
                     matched = complete_df[
-                        (complete_df["market"] == market) &
-                        (complete_df["code"] == code)
+                        (complete_df["market"] == mkt) & (complete_df["code"] == code)
                     ]
 
                     if len(matched) > 0:
@@ -674,22 +678,22 @@ class SymbolLoader:
                                 matched = non_index
 
                         name = str(matched.iloc[0].get("name", ""))
-                        result.append({
-                            "code": code,
-                            "name": name,
-                            "market": market
-                        })
+                        result.append({"code": code, "name": name, "market": mkt})
                     else:
                         # 无匹配，仍保留但名称为空
                         unmatched_count += 1
-                        result.append({
-                            "code": code,
-                            "name": "",
-                            "market": market
-                        })
+                        if len(unmatched_samples) < 3:
+                            unmatched_samples.append({"market": mkt, "code": code})
+                        result.append({"code": code, "name": "", "market": mkt})
 
-            self.logger.info("  → 可转债: %d 个（%d个无名称）",
-                           len(result), unmatched_count)
+            matched_count = total - unmatched_count
+            self.logger.info(
+                "  → 可转债: %d 个（匹配到名称: %d，未匹配: %d，示例未匹配: %s）",
+                len(result),
+                matched_count,
+                unmatched_count,
+                unmatched_samples,
+            )
             return result
 
         except Exception as e:
@@ -709,7 +713,7 @@ class SymbolLoader:
             cache_data = {
                 "cache_time": datetime.now().isoformat(),
                 "total_count": sum(len(stocks) for stocks in classified.values()),
-                "classified": classified
+                "classified": classified,
             }
 
             with open(self.cache_file, "w", encoding="utf-8") as f:

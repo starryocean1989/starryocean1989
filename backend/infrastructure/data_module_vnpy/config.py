@@ -17,6 +17,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from datetime import date, datetime
+import re
 
 from vnpy.trader.setting import SETTINGS, SETTING_FILENAME
 from vnpy.trader.utility import load_json, save_json
@@ -112,40 +113,43 @@ class TdxConfigFileParser:
         """
         解析tdxstat2.cfg文件，获取可转债代码
 
-        文件格式：每行一个品种代码，纯数字
-        - 市场代码1且品种代码11开头的6位代码
-        - 市场代码0且品种代码12开头的6位代码
-
-        Returns:
-            {market: [codes]}  # market=1的11开头, market=0的12开头
+        实际文件为管道分隔：如 market|code|date|...
+        - 取第二列为6位代码
+        - 代码以11开头 -> 市场1；以12开头 -> 市场0
         """
         if not self.tdxstat2_path or not self.tdxstat2_path.exists():
             logger.warning("tdxstat2.cfg 文件不存在，返回空字典")
             return {0: [], 1: []}
 
         result: Dict[int, List[str]] = {0: [], 1: []}
+        total_lines = 0
+        parsed = 0
 
         try:
-            with open(self.tdxstat2_path, "r", encoding="utf-8", errors="ignore") as f:
-                for line in f:
-                    line = line.strip()
+            # 使用GBK读取
+            with open(self.tdxstat2_path, "r", encoding="gbk", errors="ignore") as f:
+                for raw in f:
+                    total_lines += 1
+                    line = raw.strip()
                     if not line:
                         continue
-
-                    # 每行应该是一个6位数字代码
-                    if line.isdigit() and len(line) == 6:
-                        code = line
-
-                        # 判断市场代码：11开头的是市场1，12开头的是市场0
-                        if code.startswith("11"):
-                            result[1].append(code)
-                        elif code.startswith("12"):
-                            result[0].append(code)
+                    parts = line.split("|")
+                    if len(parts) >= 2:
+                        code = parts[1].strip()
+                        if code.isdigit() and len(code) == 6:
+                            if code.startswith("11"):
+                                result[1].append(code)
+                                parsed += 1
+                            elif code.startswith("12"):
+                                result[0].append(code)
+                                parsed += 1
 
             logger.info(
-                "成功解析 tdxstat2.cfg: 市场0有 %d 个可转债, 市场1有 %d 个可转债",
+                "成功解析 tdxstat2.cfg: market0=%d, market1=%d, 总行=%d, 命中=%d",
                 len(result[0]),
                 len(result[1]),
+                total_lines,
+                parsed,
             )
             return result
 
@@ -155,39 +159,53 @@ class TdxConfigFileParser:
 
     def parse_addedcode_bj(self) -> List[Dict[str, str]]:
         """
-        解析addedcode_bj.cfg文件（GBK编码），获取北交所股票代码和简称
-
-        文件格式：每行为 `代码|简称`，GBK编码
-        - 代码为9开头的6位数字
-
-        Returns:
-            [{"code": "9xxxxx", "name": "简称"}, ...]
+        解析addedcode_bj.cfg（GBK）：实际格式多为
+        44|原代码|北证代码|名称|日期
+        - 取第3列为 920xxx（6位），第4列为名称（去除尾部括号注）
+        - 若该格式不匹配，再回退到简单 "code|name" 或空白分隔的两列格式（9/8/4开头）
         """
         if not self.addedcode_bj_path or not self.addedcode_bj_path.exists():
             logger.warning("addedcode_bj.cfg 文件不存在，返回空列表")
             return []
 
         result = []
+        used_new_format = 0
 
         try:
-            # 使用GBK编码读取文件
             with open(self.addedcode_bj_path, "r", encoding="gbk", errors="ignore") as f:
-                for line in f:
-                    line = line.strip()
+                for raw_line in f:
+                    line = raw_line.strip()
                     if not line:
                         continue
+                    parts = [p.strip() for p in line.split("|")]
 
-                    # 格式：代码|简称
-                    parts = line.split("|")
+                    # 优先解析 5 段及以上：44|orig|bj(920xxx)|name|date
+                    if len(parts) >= 4 and parts[2].isdigit() and len(parts[2]) == 6:
+                        bj_code = parts[2]
+                        name = parts[3]
+                        # 仅收集 920xxx（北证股票）
+                        if bj_code.startswith("920"):
+                            # 去除名称中的尾部括号注释
+                            name_clean = re.sub(r"\(.*?\)$", "", name).strip()
+                            result.append({"code": bj_code, "name": name_clean})
+                            used_new_format += 1
+                        continue
+
+                    # 回退：两段或空白分隔（兼容旧历史数据）
+                    if "|" not in line:
+                        parts = [p.strip() for p in re.split(r"\s+", line) if p.strip()]
                     if len(parts) >= 2:
-                        code = parts[0].strip()
-                        name = parts[1].strip()
+                        code = parts[0]
+                        name = parts[1]
+                        if code.isdigit() and len(code) == 6 and code.startswith(("9", "8", "4")):
+                            name_clean = re.sub(r"\(.*?\)$", "", name).strip()
+                            result.append({"code": code, "name": name_clean})
 
-                        # 只保留9开头的6位代码
-                        if code.isdigit() and len(code) == 6 and code.startswith("9"):
-                            result.append({"code": code, "name": name})
-
-            logger.info("成功解析 addedcode_bj.cfg: %d 个北交所股票", len(result))
+            logger.info(
+                "成功解析 addedcode_bj.cfg: %d 个北交所股票（新格式匹配 %d 条）",
+                len(result),
+                used_new_format,
+            )
             return result
 
         except Exception as e:

@@ -1334,7 +1334,7 @@ class DataCenterService(BaseService):
 
             # 调用validator进行质量检查
             try:
-                from backend.infrastructure.data_module_vnpy.validator import DataValidator
+                from backend.infrastructure.data_module_vnpy.data_quality import DataValidator
 
                 validator = DataValidator()
 
@@ -2640,7 +2640,7 @@ class DataCenterService(BaseService):
 
             # 导入网关类
             try:
-                from backend.infrastructure.data_module_vnpy.polling_gateway import (
+                from backend.infrastructure.data_module_vnpy.gateways import (
                     PollingGateway,
                 )
             except ImportError as e:
@@ -2892,7 +2892,7 @@ class DataCenterService(BaseService):
 
             # 导入网关类
             try:
-                from backend.infrastructure.data_module_vnpy.virtual_gateway import (
+                from backend.infrastructure.data_module_vnpy.gateways import (
                     VirtualGateway,
                 )
             except ImportError as e:

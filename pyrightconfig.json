@@ -1,27 +1,22 @@
 {
-    "include": [
-        "backend/**/*",
-        "ui/**/*",
-        "utils/**/*",
-        "tests/**/*"
-    ],
+    "$schema": "https://raw.githubusercontent.com/microsoft/pyright/main/packages/pyright/schema/pyrightconfig.schema.json",
+    "typeCheckingMode": "basic",
+    "reportMissingImports": "none",
+    "reportMissingTypeStubs": "none",
+    "reportOptionalSubscript": "none",
+    "reportUndefinedVariable": "warning",
     "exclude": [
+        "venv310",
         "**/__pycache__",
-        "**/venv*",
-        "**/node_modules",
-        "strategies/templates/**"
+        "node_modules"
     ],
-    "pythonVersion": "3.10",
-    "pythonPlatform": "Windows",
     "executionEnvironments": [
         {
             "root": ".",
-            "pythonVersion": "3.10",
-            "pythonPlatform": "Windows"
+            "extraPaths": [
+                "./backend",
+                "./venv310/Lib/site-packages"
+            ]
         }
-    ],
-    "typeCheckingMode": "basic",
-    "useLibraryCodeForTypes": true,
-    "autoImportCompletions": true,
-    "reportOptionalCall": "none"
+    ]
 }

@@ -23,15 +23,11 @@ from vnpy.trader.engine import BaseEngine, MainEngine
 
 from .config import config_manager
 from .symbol_management import SymbolLoader
-from .multiprocess_fetcher import MultiProcessStockFetcher
-from .storage import StorageManager
-from .validator import DataValidator, ValidationSummary
-from .file_watcher import EventDrivenFileWatcher
-from .polling_gateway import PollingGateway
-from .virtual_gateway import VirtualGateway
+from .data_fetcher import MultiProcessStockFetcher
+from .data_quality import StorageManager, DataValidator, ValidationSummary, DataFileWatcher
+from .gateways import PollingGateway, VirtualGateway
 from .data_readers import TdxBinaryReader
-from .data_sensor import DataSensor, QualityOverview
-from .file_watcher import DataFileWatcher
+from .data_quality import DataSensor, QualityOverview
 
 
 # 事件类型常量
@@ -64,7 +60,8 @@ class ChinaStockEngine(BaseEngine):
         self.stock_fetcher = MultiProcessStockFetcher()  # 用于下载功能
         self.storage_manager = StorageManager()
         self.validator = DataValidator()
-        self.file_watcher = EventDrivenFileWatcher(event_engine)
+        # 文件监控器（已合并到data_quality.py中，由data_sensor处理）
+        self.file_watcher = None
 
         # 新增：数据感知器
         self.data_sensor = DataSensor(event_engine)
@@ -100,6 +97,79 @@ class ChinaStockEngine(BaseEngine):
         self._start_data_sensing_async()
 
         self.logger.info("中国A股数据管理引擎初始化完成")
+        # 初始化后执行一次健康检查（不抛异常，仅记录）
+        try:
+            self.healthcheck()
+        except Exception:
+            pass
+
+    # ==================== 健康检查与就绪 ====================
+
+    def healthcheck(self) -> Dict[str, Any]:
+        """
+        健康检查：验证关键目录与最小数据可用性。
+        Returns: {"ready": bool, "message": str, "details": {...}}
+        """
+        details: Dict[str, Any] = {}
+        ready = True
+        message = "OK"
+        try:
+            from .config import config_manager
+            from pathlib import Path
+            import os
+
+            cache_dir = config_manager.get_cache_dir()
+            data_dir = config_manager.get_data_dir()
+            details["cache_dir"] = str(cache_dir)
+            details["data_dir"] = str(data_dir)
+
+            # 目录存在性与可写性
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            data_dir.mkdir(parents=True, exist_ok=True)
+            details["cache_dir_exists"] = cache_dir.exists()
+            details["data_dir_exists"] = data_dir.exists()
+
+            # 尝试写入/读取探针文件（权限检测）
+            probe = cache_dir / ".probe"
+            try:
+                probe.write_text("ok", encoding="utf-8")
+                details["cache_dir_writable"] = True
+                with probe.open("r", encoding="utf-8") as f:
+                    _ = f.read()
+                probe.unlink(missing_ok=True)
+            except Exception:
+                details["cache_dir_writable"] = False
+                ready = False
+                message = "cache_dir 不可写"
+
+            # 最小数据可用性（非强制）
+            parquet_count = 0
+            try:
+                for root, _, files in os.walk(data_dir):
+                    for fn in files:
+                        if fn.lower().endswith(".parquet"):
+                            parquet_count += 1
+                            if parquet_count >= 1:
+                                break
+                    if parquet_count >= 1:
+                        break
+            except Exception:
+                pass
+            details["parquet_files"] = parquet_count
+
+            if parquet_count == 0 and ready:
+                message = "未检测到最小数据集（可后续通过增量下载或导入TDX生成）"
+
+        except Exception as e:
+            ready = False
+            message = f"健康检查异常: {e}"
+
+        setattr(self, "_ready", bool(ready))
+        return {"ready": bool(ready), "message": message, "details": details}
+
+    def is_ready(self) -> bool:
+        """是否已通过健康检查（基本就绪）"""
+        return bool(getattr(self, "_ready", False))
 
     def close(self) -> None:
         """关闭引擎"""
@@ -108,8 +178,7 @@ class ChinaStockEngine(BaseEngine):
             self.stop_data_sensing()
 
             # 停止文件监控
-            if self.file_watcher.is_running():
-                self.file_watcher.stop()
+            # 文件监控已合并到data_sensor，无需单独停止
 
             # 关闭轮询网关
             if self.polling_gateway:
@@ -556,14 +625,9 @@ class ChinaStockEngine(BaseEngine):
             return False
 
     def _start_file_watcher(self) -> None:
-        """启动文件监控"""
-        try:
-            if self.file_watcher.start():
-                self.logger.info("文件监控启动成功")
-            else:
-                self.logger.warning("文件监控启动失败")
-        except Exception as e:
-            self.logger.error(f"启动文件监控失败: {e}")
+        """启动文件监控（已合并到data_sensor）"""
+        # 文件监控现在由data_sensor处理，无需单独启动
+        pass
 
     def _push_log_event(self, message: str, level: str = "INFO") -> None:
         """

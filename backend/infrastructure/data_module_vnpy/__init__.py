@@ -17,8 +17,7 @@ from pathlib import Path
 from vnpy.trader.app import BaseApp
 
 from .core import APP_NAME, ChinaStockEngine
-from .polling_gateway import PollingGateway
-from .virtual_gateway import VirtualGateway
+from .gateways import PollingGateway, VirtualGateway
 from .data_readers import BaseReader, TdxBinaryReader
 
 __all__ = [

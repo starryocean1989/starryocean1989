@@ -278,27 +278,30 @@ class ValidationResult:
 
 ## 开发说明
 
-### 模块结构（v2.0）
+### 模块结构（v2.0 重构后）
 ```
 data_module_vnpy/
-├── __init__.py              # 包导出（导出新增组件）
-├── engine.py                # 主引擎（新增网关管理方法）
-├── config.py                # 配置管理（新增配置项）
-├── stock_fetcher.py         # 数据获取（优化多服务器并行注释）
-├── block_parser.py          # 板块文件解析
-├── storage.py               # 数据存储（增强zstd压缩）
-├── validator.py             # 数据校验
-├── file_watcher.py          # 文件监控
-├── datetime_decoder.py      # 日期解码
-├── polling_gateway.py       # ⭐ v2.0新增：轮询转推送网关
-├── virtual_gateway.py       # ⭐ v2.0新增：虚拟推送网关
-├── data_readers/            # ⭐ v2.0新增：数据标准化读取工具
+├── __init__.py              # 包导出（导出所有核心组件）
+├── core.py                  # ⭐ 主引擎（原engine.py重命名）
+├── config.py                # 配置管理（合并config_file_parser.py）
+├── symbol_management.py     # ⭐ 品种管理（合并symbol_loader.py + block_parser.py）
+├── data_fetcher.py          # ⭐ 数据获取（合并stock_fetcher.py等5个文件）
+├── data_quality.py          # ⭐ 数据质量（合并storage.py等4个文件）
+├── gateways.py              # ⭐ 数据网关（合并polling_gateway.py + virtual_gateway.py）
+├── data_readers/            # 数据标准化读取工具（保持子目录结构）
 │   ├── __init__.py
 │   ├── base_reader.py       # 读取器基类
-│   └── tdx_reader.py        # 通达信数据读取器
+│   ├── tdx_reader.py        # 通达信数据读取器
+│   └── bj_decoder.py        # 北交所解码器
 ├── requirements.txt         # 依赖包
-└── README.md               # 说明文档（更新v2.0内容）
+└── README.md               # 说明文档（更新重构内容）
 ```
+
+**重构优势**：
+- **文件数量**：从23个文件精简到8个核心文件（减少65%）
+- **调试友好**：相关逻辑集中在同一文件，无需跨文件跳转
+- **架构清晰**：7个文件对应7个功能域，一目了然
+- **代码量减少**：消除重复导入和工具函数
 
 ### v2.0新功能说明
 
@@ -323,13 +326,13 @@ data_module_vnpy/
 - **易于扩展**：继承BaseReader基类即可添加新数据类型
 - **标准化保存**：自动转换为Parquet格式并保存
 
-### 扩展开发
-1. **添加新的数据源**: 在`stock_fetcher.py`中扩展
-2. **添加新的存储格式**: 在`storage.py`中扩展
-3. **添加新的校验规则**: 在`validator.py`中扩展
-4. **添加新的监控功能**: 在`file_watcher.py`中扩展
-5. **添加新的数据读取器**（v2.0）：在`data_readers/`目录下创建新文件，继承`BaseReader`基类
-6. **自定义Gateway**（v2.0）：参考`polling_gateway.py`和`virtual_gateway.py`实现
+### 扩展开发（重构后）
+1. **添加新的数据源**: 在`data_fetcher.py`中扩展
+2. **添加新的存储格式**: 在`data_quality.py`的`StorageManager`中扩展
+3. **添加新的校验规则**: 在`data_quality.py`的`DataValidator`中扩展
+4. **添加新的监控功能**: 在`data_quality.py`的`DataSensor`中扩展
+5. **添加新的数据读取器**：在`data_readers/`目录下创建新文件，继承`BaseReader`基类
+6. **自定义Gateway**：参考`gateways.py`中的`PollingGateway`和`VirtualGateway`实现
 
 ## 注意事项
 
@@ -338,6 +341,58 @@ data_module_vnpy/
 3. **多线程安全**: 使用线程锁保护共享资源
 4. **配置驱动**: 所有路径和参数均可配置
 5. **事件驱动**: 充分利用vnpy事件引擎实现异步通知
+
+## 品种解析与缓存（关键说明）
+
+本模块统一返回 E/F/G/H/I 五类集合的并集（去重），每个条目包含 code、name、market、category：
+- 上证A股（E）：来自集合D（stocks），筛选规则 market==1 且 code 以 688/60 开头；category=stock_sh
+- 深证A股（F）：来自集合D（stocks），筛选规则 market==0 且 code 以 000/001/002/300/301 开头；category=stock_sz
+- 可转债（G）：来自 tdxstat2.cfg 与 D 的 join
+  - 文件为管道分隔 GBK：market|code|date|...
+  - 取第2列为6位代码，code 以 11 开头 → market=1；code 以 12 开头 → market=0
+  - 与 D 以 key="market:code" 关联补全简称；未匹配也保留，name=""
+  - category=cb
+- T+0基金（H）：来自 spblock.dat 指定板块与 D 的 join
+  - 仅在板块名包含“#T+0基金”的区段内提取
+  - 行是7位纯数字，首位为市场，后6位为品种；仅纳入 01*/15*，且满足（market=0 且 code6以1开头）或（market=1 且 code6以5开头）
+  - 与 D 按 "market:code" 关联补全简称；未匹配也保留，name=""
+  - category=fund_t0
+- 北证A股（I）：来自 addedcode_bj.cfg
+  - 文件为 GBK，多字段管道分隔：44|原代码|北证代码|名称|日期
+  - 取第3列为 920xxx（6位）作为 code，第4列为 name（去除末尾括号注释）；market 固定为 2
+  - 若该格式不匹配，回退解析第一列为 code 第二列为 name（兼容历史）
+  - category=stock_bj
+
+实现细节：
+- 路径配置：从 chinastock.tdx_dir（如 C:
+ew_tdx）递归搜索 tdxstat2.cfg、addedcode_bj.cfg、spblock.dat
+- 编码：tdxstat2/addedcode_bj/spblock 均使用 encoding="gbk", errors="ignore"
+- 标准化：join key 为 "market:code"；code 一律为6位字符串（7位拆 market+6位）
+- 合并去重顺序：E → F → G → H → I；同 key 冲突以 D 衍生数据优先
+- 返回契约：未匹配简称的条目也会返回，name=""（与 name=null 等价）
+
+## 重新加载与缓存策略
+
+- 缓存文件：data/cache/instruments_efghi.json（示例）
+- 刷新策略：无 TTL；调用 reload 接口或前端“重新加载品种”时显式重建覆盖
+- 依赖数据：
+  - 本地通达信目录下三文件（tdxstat2.cfg、addedcode_bj.cfg、spblock.dat）
+  - D：mootdx 的 stocks(market=0/1) 全量数据
+- 兼容性：三文件缺失时会记录告警，并降级为仅 E/F（不中断服务）
+
+## 诊断日志与排障
+
+重载时会打印以下统计，便于快速定位问题：
+- tdxstat2 可转债：market0/market1 数量、命中行/总行、前3个样例
+- addedcode_bj 北证：解析总数、使用“多字段新格式”的匹配数、前缀分布与前3个样例
+- spblock T+0：在“#T+0基金”板块内提取的7位码数量、market/code样例
+- join 成功/失败计数：A→G、C→H 与 D 关联的命中率与未匹配样例（market, code）
+
+常见问题与处理：
+- 北证为0：大多为 addedcode_bj.cfg 未按 GBK/字段位解析，或文件路径错误；现已支持新老两种格式并记录样例
+- 可转债数量异常：tdxstat2 需按“管道取第2列”解析并仅接收 11*/12* 的6位码
+- T+0为0：确认 spblock.dat 的“#T+0基金”板块存在，且7位行以 01/15 开头
+- GBK 乱码：确保文件按 GBK 解码；日志中会含样例帮助识别
 
 ## 许可证
 

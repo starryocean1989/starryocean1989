@@ -1039,7 +1039,7 @@ class ServiceInitializer:
                 return False
 
             # 配置数据服务（使用本地data_module_vnpy作为datafeed）
-            self._configure_datafeed()
+            # 延后到 ChinaStockEngine 创建并健康检查通过后再配置，避免早期未初始化告警
 
             # 注册到全局
             set_main_engine(self.main_engine)
@@ -1071,13 +1071,30 @@ class ServiceInitializer:
 
         # 初始化ChinaStockEngine（作为数据引擎）
         try:
-            from backend.infrastructure.data_module_vnpy.engine import ChinaStockEngine
+            from backend.infrastructure.data_module_vnpy.core import ChinaStockEngine
 
             self.china_stock_engine = ChinaStockEngine(self.main_engine, self.event_engine)
             self.logger.info("✅ ChinaStockEngine 创建成功")
 
             # 注册到全局
             set_china_stock_engine(self.china_stock_engine)
+
+            # 健康检查并在就绪后配置为数据源
+            try:
+                if self.china_stock_engine and hasattr(self.china_stock_engine, "healthcheck"):
+                    hc = self.china_stock_engine.healthcheck()
+                    ready = bool(hc.get("ready", False))
+                    if ready:
+                        self.logger.info("✅ ChinaStockEngine 健康检查通过")
+                        self._configure_datafeed()
+                    else:
+                        self.logger.warning("⚠️ ChinaStockEngine 未就绪：%s", hc.get("message", "原因未知"))
+                else:
+                    # 兼容旧版引擎：无健康检查时直接配置
+                    self.logger.debug("ChinaStockEngine 未提供健康检查，直接配置数据源")
+                    self._configure_datafeed()
+            except Exception as e:
+                self.logger.warning("⚠️ 配置 ChinaStockEngine 为数据源时出现异常: %s", e)
 
         except ImportError as e:
             self.logger.warning("⚠️ ChinaStockEngine 不可用: %s", e)

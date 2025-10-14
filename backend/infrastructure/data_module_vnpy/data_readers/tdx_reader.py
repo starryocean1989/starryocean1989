@@ -26,7 +26,7 @@ from mootdx.reader import Reader
 from .base_reader import BaseReader
 from .bj_decoder import BjStockDecoder
 from ..config import config_manager
-from ..storage import StorageManager
+from ..data_quality import StorageManager
 
 
 class TdxBinaryReader(BaseReader):
