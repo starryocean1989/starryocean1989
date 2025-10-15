@@ -118,29 +118,15 @@ class SystemManagerService(BaseService):
             # 初始化监控（跳过，避免阻塞）
             self.logger.info("系统监控初始化已跳过（避免启动阻塞）")
 
-            # ⚡ 优化：延迟初始化日志和告警系统，避免启动时阻塞
-            # 将在后台线程中异步初始化
-            import threading
-
-            threading.Thread(
-                target=self._init_logging_and_alert_system_async,
-                daemon=True,
-                name="LogAlertSystemInitializer",
-            ).start()
-            self.logger.info("✅ 日志和告警系统将在后台异步初始化")
+            # ✅ 多进程架构改造：日志和告警系统已由独立进程处理
+            # 不再在主进程中直接初始化，避免跨线程UI更新问题
+            self.logger.info("✅ 日志和告警系统由独立进程处理（多进程架构）")
 
             return True
 
         except Exception as e:
             self._log_error("初始化", e)
             return False
-
-    def _init_logging_and_alert_system_async(self) -> None:
-        """在后台线程中异步初始化日志和告警系统."""
-        import time
-
-        time.sleep(2)  # 等待2秒，确保主启动流程完成
-        self._init_logging_and_alert_system()
 
     def _do_shutdown(self) -> bool:
         """关闭系统管理服务."""
@@ -189,49 +175,14 @@ class SystemManagerService(BaseService):
         self.monitoring_data.clear()
 
     def _init_logging_and_alert_system(self) -> None:
-        """初始化日志和告警系统（优化后的快速版本）."""
-        try:
-            from backend.core.logging_system import initialize_logging_system
-            from backend.core.alert_system import initialize_alert_system
-            from backend.core.base import get_event_engine
-
-            event_engine = get_event_engine()
-
-            print(f"[启动] 开始初始化日志和告警系统...")
-
-            # 初始化日志系统（已优化，快速初始化）
-            logging_config = {
-                "db_path": "data/logs.db",
-                "retention_days": 30,
-            }
-            logging_result = initialize_logging_system(event_engine, logging_config)
-
-            if logging_result:
-                print(f"[启动] ✅ 日志系统初始化成功")
-                self.logger.info("✅ 日志系统初始化成功")
-            else:
-                print(f"[启动] ❌ 日志系统初始化失败")
-                self.logger.error("❌ 日志系统初始化失败")
-
-            # 初始化告警系统（已优化，快速初始化）
-            alert_config = {
-                "db_path": "data/alerts.db",
-                "suppression_window": 300,
-            }
-            alert_result = initialize_alert_system(event_engine, alert_config)
-
-            if alert_result:
-                print(f"[启动] ✅ 告警系统初始化成功")
-                self.logger.info("✅ 告警系统初始化成功")
-            else:
-                print(f"[启动] ❌ 告警系统初始化失败")
-                self.logger.error("❌ 告警系统初始化失败")
-
-            print(f"[启动] 日志和告警系统初始化完成")
-
-        except Exception as e:
-            print(f"[启动] 初始化日志和告警系统异常: {e}")
-            self.logger.error("初始化日志和告警系统失败: %s", e)
+        """初始化日志和告警系统（已废弃 - 多进程架构改造）.
+        
+        日志和告警系统现在由独立进程处理，此方法保留以兼容性。
+        实际初始化在 log_alert_process.py 中完成。
+        """
+        # 多进程架构改造：此方法已废弃
+        # 日志和告警系统由 backend/processes/log_alert_process.py 独立进程处理
+        self.logger.info("日志和告警系统由独立进程处理，跳过主进程初始化")
 
     def _load_default_alert_rules(self):
         """加载默认告警规则."""

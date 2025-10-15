@@ -1455,6 +1455,48 @@ def initialize_real_services(progress_callback=None) -> bool:
     Returns:
         bool: 是否初始化成功
     """
+    # ✅ 多进程架构：在服务初始化之前启动日志/告警进程
+    try:
+        from backend.processes.process_manager import get_process_manager
+        
+        process_manager = get_process_manager()
+        
+        # 注册日志/告警进程
+        process_manager.register_process(
+            name="log_alert",
+            target_module="backend.processes.log_alert_process",
+            health_port=5559,
+            max_restarts=5,
+        )
+        
+        # 启动进程
+        if progress_callback:
+            progress_callback("✅ 启动日志/告警进程...", 2)
+        
+        success = process_manager.start_process("log_alert")
+        
+        if success:
+            logging.getLogger(__name__).info("✅ 日志/告警进程启动成功")
+            
+            # 配置分布式日志处理器
+            from backend.processes.ipc_client import get_distributed_log_handler
+            import logging
+            
+            distributed_handler = get_distributed_log_handler()
+            logging.root.addHandler(distributed_handler)
+            
+            logging.getLogger(__name__).info("✅ 分布式日志处理器已注册")
+        else:
+            logging.getLogger(__name__).warning("⚠️ 日志/告警进程启动失败，降级到本地模式")
+            
+        # 启动进程监控
+        process_manager.monitor_all()
+        
+    except Exception as e:
+        logging.getLogger(__name__).error("⚠️ 日志/告警进程启动失败: %s", e, exc_info=True)
+        # 不阻塞主进程启动，继续初始化
+    
+    # 继续初始化业务服务
     service_manager = get_service_manager()
     initializer = ServiceInitializer(service_manager, progress_callback=progress_callback)
     return initializer.initialize_all_services()
@@ -1501,6 +1543,18 @@ def shutdown_real_services() -> None:
             logging.getLogger(__name__).info("✅ MainEngine 已关闭")
         except Exception as e:
             logging.getLogger(__name__).error("❌ 关闭 MainEngine 失败: %s", e)
+    
+    # ✅ 多进程架构：关闭日志/告警进程
+    try:
+        from backend.processes.process_manager import get_process_manager
+        
+        process_manager = get_process_manager()
+        process_manager.cleanup()
+        
+        logging.getLogger(__name__).info("✅ 日志/告警进程已关闭")
+        
+    except Exception as e:
+        logging.getLogger(__name__).error("⚠️ 关闭日志/告警进程失败: %s", e)
 
     logging.getLogger(__name__).info("所有服务已关闭")
 
