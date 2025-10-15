@@ -16,9 +16,10 @@ from datetime import datetime
 
 from backend.services.base_and_utils import BaseService
 from backend.core.backtest_renderers import BacktestRendererFactory
+from backend.core.logging_mixin import LoggerMixin
 
 
-class StrategyCenterService(BaseService):
+class StrategyCenterService(BaseService, LoggerMixin):
     """策略中心服务.
 
     管理策略文件和回测功能，提供：
@@ -41,32 +42,41 @@ class StrategyCenterService(BaseService):
         # 回测任务
         self._backtest_tasks: Dict[str, Dict[str, Any]] = {}
 
-        self.logger.info("策略中心服务已创建")
-
     def _do_initialize(self) -> bool:
         """初始化策略中心服务."""
         try:
-            self.logger.info("初始化策略中心服务...")
+            self.log_operation_start("策略中心服务初始化")
 
             # 确保策略目录存在
             self.strategy_root.mkdir(parents=True, exist_ok=True)
+            self.logger.debug(f"策略目录已就绪: {self.strategy_root}")
 
             # 初始化回测引擎
             self._init_backtest_engine()
 
+            self.log_operation_success("策略中心服务初始化")
             return True
 
         except Exception as e:
+            self.log_operation_failure("策略中心服务初始化", e)
             self._log_error("初始化", e)
             return False
 
     def _do_shutdown(self) -> bool:
         """关闭策略中心服务."""
         try:
+            self.log_operation_start("策略中心服务关闭")
+            
             # 停止所有回测任务
+            active_tasks = len([t for t in self._backtest_tasks.values() if t.get("status") == "running"])
+            if active_tasks > 0:
+                self.logger.info(f"停止 {active_tasks} 个运行中的回测任务")
             self._stop_all_backtests()
+            
+            self.log_operation_success("策略中心服务关闭")
             return True
         except Exception as e:
+            self.log_operation_failure("策略中心服务关闭", e)
             self._log_error("关闭", e)
             return False
 
@@ -81,22 +91,24 @@ class StrategyCenterService(BaseService):
     def _init_backtest_engine(self):
         """初始化回测引擎."""
         try:
+            self.logger.debug("初始化回测引擎...")
+            
             # 检查main_engine是否可用
             if self.main_engine:
                 # 回测引擎需要main_engine和event_engine
                 self.backtest_engine = self.main_engine.get_engine("CtaBacktester")
                 if self.backtest_engine:
-                    self.logger.info("✅ 回测引擎初始化成功")
+                    self.logger.info("回测引擎初始化成功")
                 else:
                     # 回测引擎是可选功能，降低日志级别
-                    self.logger.debug("⚠️ 回测引擎获取失败")
+                    self.logger.debug("回测引擎获取失败")
             else:
                 # 回测引擎是可选功能，降低日志级别
-                self.logger.debug("⚠️ MainEngine不可用，无法初始化回测引擎")
+                self.logger.debug("MainEngine不可用，无法初始化回测引擎")
 
         except ImportError:
             # 回测引擎是可选功能，降低日志级别
-            self.logger.debug("⚠️ vnpy_ctabacktester不可用")
+            self.logger.debug("vnpy_ctabacktester不可用")
 
     # ==================== 策略文件管理 ====================
 
@@ -744,9 +756,12 @@ class MyPortfolioStrategy(StrategyTemplate):
         """
         try:
             task_id = f"backtest_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            
+            self.log_operation_start("启动回测任务", task_id=task_id, strategy=strategy_file)
 
             # 检查回测引擎是否可用
             if not self.backtest_engine:
+                self.logger.error("回测引擎不可用（vnpy_ctabacktester未安装）")
                 return {
                     "success": False,
                     "message": "回测引擎不可用（vnpy_ctabacktester未安装）",
@@ -758,6 +773,7 @@ class MyPortfolioStrategy(StrategyTemplate):
                 # 验证策略文件存在
                 strategy_path = self.strategy_root / strategy_file
                 if not strategy_path.exists():
+                    self.logger.error(f"策略文件不存在: {strategy_file}")
                     return {
                         "success": False,
                         "message": f"策略文件不存在: {strategy_file}",
@@ -767,8 +783,9 @@ class MyPortfolioStrategy(StrategyTemplate):
                 start_date = config.get("start_date", "2024-01-01")
                 end_date = config.get("end_date", "2024-12-31")
                 capital = config.get("capital", 1000000)
+                symbol = config.get("symbol", "000001")
 
-                self.logger.info(f"回测配置: {start_date} 到 {end_date}, 初始资金: {capital}")
+                self.logger.info(f"回测配置: {symbol} {start_date}~{end_date}, 初始资金: {capital}")
 
                 # 注册任务（实际回测在后台执行）
                 self._backtest_tasks[task_id] = {
@@ -779,18 +796,23 @@ class MyPortfolioStrategy(StrategyTemplate):
                     "progress": 0,  # 真实进度，从0开始
                     "result": None,
                 }
+                
+                self.logger.debug(f"回测任务已注册: {task_id}")
 
                 # 在后台线程执行实际回测
                 import threading
 
                 def run_backtest():
                     """后台线程执行回测."""
+                    import time
+                    start_time = time.time()
+                    
                     try:
                         task = self._backtest_tasks[task_id]
 
                         # 更新进度：准备阶段
                         task["progress"] = 10
-                        self.logger.info(f"回测任务 {task_id}: 准备阶段...")
+                        self.logger.info(f"[回测-{task_id}] 准备阶段...")
 
                         # 尝试导入回测引擎
                         try:
@@ -799,7 +821,7 @@ class MyPortfolioStrategy(StrategyTemplate):
 
                             # 更新进度：加载数据
                             task["progress"] = 20
-                            self.logger.info(f"回测任务 {task_id}: 加载数据...")
+                            self.logger.info(f"[回测-{task_id}] 加载数据...")
 
                             # 创建回测引擎
                             event_engine = EventEngine()
@@ -808,7 +830,7 @@ class MyPortfolioStrategy(StrategyTemplate):
 
                             # 更新进度：配置参数
                             task["progress"] = 30
-                            self.logger.info(f"回测任务 {task_id}: 配置参数...")
+                            self.logger.info(f"[回测-{task_id}] 配置参数...")
 
                             # 实现真实的策略加载和回测执行
                             import importlib.util
@@ -845,11 +867,11 @@ class MyPortfolioStrategy(StrategyTemplate):
                             if strategy_class is None:
                                 raise ValueError("策略文件中未找到有效的策略类")
 
-                            self.logger.info(f"成功加载策略类: {strategy_class.__name__}")
+                            self.logger.info(f"[回测-{task_id}] 成功加载策略类: {strategy_class.__name__}")
 
                             # 更新进度：加载历史数据
                             task["progress"] = 40
-                            self.logger.info(f"回测任务 {task_id}: 加载历史数据...")
+                            self.logger.info(f"[回测-{task_id}] 加载历史数据...")
 
                             # 2. 获取历史数据（通过data_center_service）
                             symbol = config.get("symbol", "000001")
@@ -874,9 +896,8 @@ class MyPortfolioStrategy(StrategyTemplate):
                                 )
 
                                 if data_result.get("success") and data_result.get("data"):
-                                    self.logger.info(
-                                        "✅ 从数据中心加载 %d 条历史数据", len(data_result["data"])
-                                    )
+                                    data_count = len(data_result["data"])
+                                    self.logger.info(f"[回测-{task_id}] 从数据中心加载 {data_count} 条历史数据")
 
                                     # 检查数据质量
                                     if hasattr(data_service, "check_data_quality"):
@@ -887,8 +908,7 @@ class MyPortfolioStrategy(StrategyTemplate):
                                             quality_score = quality_result.get("quality_score", 1.0)
                                             if quality_score < 0.8:
                                                 self.logger.warning(
-                                                    "⚠️ 回测数据质量较低 (%.2f)，可能影响回测结果准确性",
-                                                    quality_score,
+                                                    f"[回测-{task_id}] 回测数据质量较低 ({quality_score:.2f})，可能影响结果准确性"
                                                 )
                                 else:
                                     self.logger.warning(
@@ -899,11 +919,12 @@ class MyPortfolioStrategy(StrategyTemplate):
 
                             # 更新进度：执行回测
                             task["progress"] = 50
-                            self.logger.info(f"回测任务 {task_id}: 执行回测...")
+                            self.logger.info(f"[回测-{task_id}] 执行回测...")
 
                             # 3. 配置并执行回测
                             # 运行回测（直接调用run_backtesting方法）
-                            self.logger.info("开始执行回测...")
+                            backtest_start = time.time()
+                            self.logger.info(f"[回测-{task_id}] 开始执行回测引擎...")
                             backtest_engine.run_backtesting(  # type: ignore
                                 class_name=strategy_class.__name__,
                                 vt_symbol=f"{symbol}.{exchange}",
@@ -917,17 +938,20 @@ class MyPortfolioStrategy(StrategyTemplate):
                                 capital=int(capital),
                                 setting=config.get("strategy_setting", {}),
                             )
+                            
+                            backtest_duration = (time.time() - backtest_start) * 1000
+                            self.logger.info(f"[回测-{task_id}] 回测执行完成，耗时: {backtest_duration:.2f}ms")
 
                             # 更新进度：计算结果
                             task["progress"] = 80
-                            self.logger.info(f"回测任务 {task_id}: 计算统计指标...")
+                            self.logger.info(f"[回测-{task_id}] 计算统计指标...")
 
                             # 4. 计算统计结果
                             statistics = backtest_engine.result_statistics
 
                             # 更新进度：生成报告
                             task["progress"] = 90
-                            self.logger.info(f"回测任务 {task_id}: 生成报告...")
+                            self.logger.info(f"[回测-{task_id}] 生成报告...")
 
                             # 提取关键指标
                             total_return = statistics.get("total_return", 0.0)
@@ -948,11 +972,12 @@ class MyPortfolioStrategy(StrategyTemplate):
                                         "balance": [r.balance for r in daily_results],
                                         "drawdown": [r.max_drawdown for r in daily_results],
                                     }
-                                    self.logger.info("成功生成回测图表数据")
+                                    self.logger.info(f"[回测-{task_id}] 成功生成回测图表数据")
                             except Exception as chart_error:
-                                self.logger.warning(f"生成图表数据失败: {chart_error}")
+                                self.logger.warning(f"[回测-{task_id}] 生成图表数据失败: {chart_error}")
 
                             # 回测完成
+                            total_duration = (time.time() - start_time) * 1000
                             task["progress"] = 100
                             task["status"] = "completed"
                             task["result"] = {
@@ -965,11 +990,21 @@ class MyPortfolioStrategy(StrategyTemplate):
                                 "chart_data": chart_data,  # 图表数据
                                 "message": "回测执行成功",
                             }
+                            
+                            # 记录性能日志和结果日志
+                            self.log_performance("回测执行", total_duration, True, {
+                                "task_id": task_id,
+                                "strategy": strategy_file,
+                                "total_trades": total_trades
+                            })
+                            
                             self.logger.info(
-                                f"回测任务 {task_id} 完成 - "
+                                f"[回测-{task_id}] 完成 - "
                                 f"总收益: {total_return:.2%}, "
                                 f"夏普比率: {sharpe_ratio:.2f}, "
-                                f"最大回撤: {max_drawdown:.2%}"
+                                f"最大回撤: {max_drawdown:.2%}, "
+                                f"交易次数: {total_trades}, "
+                                f"胜率: {winning_rate:.2%}"
                             )
 
                             # 清理策略模块
@@ -977,7 +1012,7 @@ class MyPortfolioStrategy(StrategyTemplate):
                                 del sys.modules[strategy_module_name]
 
                         except ImportError as e:
-                            self.logger.warning(f"vnpy_ctabacktester未安装: {e}")
+                            self.logger.warning(f"[回测-{task_id}] vnpy_ctabacktester未安装: {e}")
                             task["status"] = "failed"
                             task["progress"] = 0
                             task["result"] = {
@@ -985,7 +1020,12 @@ class MyPortfolioStrategy(StrategyTemplate):
                             }
 
                     except Exception as e:
-                        self.logger.error(f"回测任务 {task_id} 失败: {e}", exc_info=True)
+                        total_duration = (time.time() - start_time) * 1000
+                        self.log_performance("回测执行", total_duration, False, {
+                            "task_id": task_id,
+                            "error": str(e)
+                        })
+                        self.logger.error(f"[回测-{task_id}] 失败: {e}", exc_info=True)
                         task["status"] = "failed"
                         task["progress"] = 0
                         task["result"] = {
@@ -995,6 +1035,8 @@ class MyPortfolioStrategy(StrategyTemplate):
                 # 启动后台线程
                 backtest_thread = threading.Thread(target=run_backtest, daemon=True)
                 backtest_thread.start()
+                
+                self.log_operation_success("启动回测任务", task_id=task_id)
                 self.logger.info(f"回测任务 {task_id} 已在后台线程启动")
 
                 return {
@@ -1004,14 +1046,14 @@ class MyPortfolioStrategy(StrategyTemplate):
                 }
 
             except Exception as e:
-                self.logger.error(f"回测启动失败: {e}", exc_info=True)
+                self.log_operation_failure("启动回测任务", e, task_id=task_id)
                 return {
                     "success": False,
                     "message": f"回测启动失败: {str(e)}",
                 }
 
         except Exception as e:
-            self._log_error("启动回测", e)
+            self.log_operation_failure("启动回测", e)
             return {"success": False, "message": str(e)}
 
     def render_backtest_result(

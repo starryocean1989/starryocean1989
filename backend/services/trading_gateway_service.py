@@ -16,6 +16,7 @@ from datetime import datetime
 from enum import Enum
 
 from backend.services.base_and_utils import BaseService
+from backend.core.logging_mixin import LoggerMixin
 
 
 class GatewayType(Enum):
@@ -41,7 +42,7 @@ class StrategyEngineType(Enum):
     SPREAD_TRADING = "spreadtrading"  # 价差交易
 
 
-class TradingGatewayService(BaseService):
+class TradingGatewayService(BaseService, LoggerMixin):
     """交易网关服务.
 
     管理所有交易网关和策略实例，提供：
@@ -109,7 +110,7 @@ class TradingGatewayService(BaseService):
     def __init__(self):
         """初始化交易网关服务."""
         super().__init__()
-
+        
         # 记录已加载的策略应用
         self.loaded_apps = set()
 
@@ -136,41 +137,51 @@ class TradingGatewayService(BaseService):
     def _do_initialize(self) -> bool:
         """初始化交易网关服务."""
         try:
-            self.logger.info("初始化交易网关服务...")
+            self.log_operation_start("交易网关服务初始化")
 
             # 检查main_engine是否可用
             if self.main_engine is None:
                 self.logger.warning("MainEngine不可用，部分功能受限")
+                self.log_operation_success("交易网关服务初始化", status="limited")
                 return True  # 仍然允许服务启动
 
             # 初始化网关类
+            self.logger.debug("初始化网关类...")
             self._init_gateway_classes()
 
             # 初始化风险管理引擎
+            self.logger.debug("初始化风险管理引擎...")
             self._init_risk_manager()
 
             # 加载已保存的网关配置
+            self.logger.debug("加载网关配置...")
             self._load_gateway_configs()
 
+            self.log_operation_success("交易网关服务初始化")
             return True
 
         except Exception as e:
+            self.log_operation_failure("交易网关服务初始化", e)
             self._log_error("初始化", e)
             return False
 
     def _do_shutdown(self) -> bool:
         """关闭交易网关服务."""
         try:
-            self.logger.info("关闭交易网关服务...")
+            self.log_operation_start("交易网关服务关闭")
 
             # 停止所有策略
+            self.logger.debug("停止所有策略...")
             self._stop_all_strategies()
 
             # 断开所有网关
+            self.logger.debug("断开所有网关...")
             self._disconnect_all_gateways()
 
+            self.log_operation_success("交易网关服务关闭")
             return True
         except Exception as e:
+            self.log_operation_failure("交易网关服务关闭", e)
             self._log_error("关闭", e)
             return False
 

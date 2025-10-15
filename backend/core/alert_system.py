@@ -157,31 +157,50 @@ class AlertDatabase:
         """
         self.db_path = db_path
         self._lock = threading.Lock()
+        self._needs_index_creation = False
+        self._db_error = False
 
         # 确保数据库目录存在
         from pathlib import Path
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
-        # 初始化数据库
+        # 初始化数据库（快速模式）
         self._init_database()
+        
+    def _create_remaining_indexes(self) -> None:
+        """创建剩余索引（延迟执行）."""
+        if not self._needs_index_creation or self._db_error:
+            return
+            
+        try:
+            with sqlite3.connect(self.db_path, timeout=10.0) as conn:
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_alerts_severity ON alerts(severity)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_alerts_rule_id ON alerts(rule_id)")
+                conn.commit()
+            
+            self._needs_index_creation = False
+            print("[后台] 告警数据库索引创建完成")
+        except Exception as e:
+            print(f"[后台] 创建告警索引失败: {e}")
 
     def _init_database(self) -> None:
-        """初始化数据库表结构."""
+        """初始化数据库表结构（延迟初始化模式）."""
         import time
+        from pathlib import Path
+        
+        db_path = Path(self.db_path)
+        db_exists = db_path.exists()
+        
+        if db_exists:
+            print(f"[启动] 告警数据库已存在: {self.db_path}")
+            return
+            
+        print(f"[启动] 初始化告警数据库: {self.db_path}")
         db_init_start = time.time()
 
-        print(f"[DEBUG] 初始化告警数据库: {self.db_path}")
-
         try:
-            # 使用更长的超时时间防止阻塞
-            print(f"[DEBUG] 连接告警数据库，timeout=30.0s...")
-            conn_start = time.time()
-            with sqlite3.connect(self.db_path, timeout=30.0) as conn:
-                conn_end = time.time()
-                print(f"[DEBUG] 告警数据库连接成功，耗时: {conn_end - conn_start:.3f}s")
-
-                print(f"[DEBUG] 创建告警表结构...")
-                table_start = time.time()
+            # 快速创建数据库文件和基础表结构
+            with sqlite3.connect(self.db_path, timeout=5.0, check_same_thread=False) as conn:
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS alerts (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -201,34 +220,22 @@ class AlertDatabase:
                         notes TEXT
                     )
                 """)
-                table_end = time.time()
-                print(f"[DEBUG] 告警表创建完成，耗时: {table_end - table_start:.3f}s")
-
-                # 创建索引
-                print(f"[DEBUG] 创建告警索引...")
-                index_start = time.time()
+                
+                # 创建关键索引
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_alerts_status ON alerts(status)")
-                conn.execute("CREATE INDEX IF NOT EXISTS idx_alerts_severity ON alerts(severity)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_alerts_created_at ON alerts(created_at)")
-                conn.execute("CREATE INDEX IF NOT EXISTS idx_alerts_rule_id ON alerts(rule_id)")
-                index_end = time.time()
-                print(f"[DEBUG] 告警索引创建完成，耗时: {index_end - index_start:.3f}s")
-
-                print(f"[DEBUG] 提交告警数据库事务...")
-                commit_start = time.time()
+                
                 conn.commit()
-                commit_end = time.time()
-                print(f"[DEBUG] 告警数据库事务提交完成，耗时: {commit_end - commit_start:.3f}s")
 
-            db_init_end = time.time()
-            total_time = db_init_end - db_init_start
-            print(f"[DEBUG] ✅ 告警数据库初始化完成，总耗时: {total_time:.3f}s")
+            total_time = time.time() - db_init_start
+            print(f"[启动] ✅ 告警数据库初始化完成，耗时: {total_time:.3f}s")
+            
+            self._needs_index_creation = True
 
         except Exception as e:
-            db_init_end = time.time()
-            total_time = db_init_end - db_init_start
-            print(f"[DEBUG] ❌ 告警数据库初始化失败，耗时: {total_time:.3f}s，错误: {e}")
-            raise
+            total_time = time.time() - db_init_start
+            print(f"[启动] ⚠️ 告警数据库初始化失败，耗时: {total_time:.3f}s，错误: {e}")
+            self._db_error = True
 
     def save_alert(self, alert: Alert) -> None:
         """保存告警记录.
@@ -236,9 +243,16 @@ class AlertDatabase:
         Args:
             alert: 告警对象
         """
+        if self._db_error:
+            return
+            
+        # 首次写入时创建剩余索引
+        if self._needs_index_creation:
+            threading.Thread(target=self._create_remaining_indexes, daemon=True).start()
+            
         try:
             with self._lock:
-                with sqlite3.connect(self.db_path) as conn:
+                with sqlite3.connect(self.db_path, timeout=5.0, check_same_thread=False) as conn:
                     conn.execute("""
                         INSERT OR REPLACE INTO alerts
                         (alert_id, rule_id, rule_name, severity, status, message, context,
@@ -264,7 +278,9 @@ class AlertDatabase:
                     conn.commit()
 
         except Exception as e:
-            print(f"告警数据库保存失败: {e}")
+            if not self._db_error:
+                print(f"[告警] 数据库保存失败: {e}")
+                self._db_error = True
 
     def get_alert(self, alert_id: str) -> Optional[Alert]:
         """获取告警记录.
@@ -665,7 +681,7 @@ def initialize_alert_system(event_engine, config: Optional[Dict[str, Any]] = Non
         import time
         start_time = time.time()
 
-        print(f"[DEBUG] 开始初始化告警系统... (事件引擎: {event_engine is not None})")
+        print(f"[启动] 告警系统初始化开始...")
 
         # 获取配置
         if config is None:
@@ -674,35 +690,30 @@ def initialize_alert_system(event_engine, config: Optional[Dict[str, Any]] = Non
                 "suppression_window": 300,
             }
 
-        print(f"[DEBUG] 告警系统配置: {config}")
-
         # 创建全局告警数据库
-        print(f"[DEBUG] 创建 AlertDatabase...")
-        db_start = time.time()
         global _alert_database
         with _alert_database_lock:
             _alert_database = AlertDatabase(config.get("db_path", "data/alerts.db"))
-        db_end = time.time()
-        print(f"[DEBUG] AlertDatabase 创建完成，耗时: {db_end - db_start:.3f}s")
 
         # 创建告警事件发布器
-        print(f"[DEBUG] 创建 AlertEventPublisher...")
-        publisher_start = time.time()
         alert_publisher = AlertEventPublisher(event_engine, _alert_database)
-        publisher_end = time.time()
-        print(f"[DEBUG] AlertEventPublisher 创建完成，耗时: {publisher_end - publisher_start:.3f}s")
-
-        # 创建日志告警规则（延迟到需要时才创建，避免初始化阻塞）
-        print(f"[DEBUG] 跳过默认日志告警规则创建，改为延迟初始化")
+        
+        # 初始化默认告警规则（延迟到后台线程）
+        import threading
+        threading.Thread(
+            target=_create_default_log_alert_rules,
+            daemon=True,
+            name="AlertRulesInitializer"
+        ).start()
 
         total_time = time.time() - start_time
-        print(f"[DEBUG] ✅ 扩展告警系统初始化完成，总耗时: {total_time:.3f}s")
+        print(f"[启动] ✅ 告警系统初始化完成，总耗时: {total_time:.3f}s")
 
         return True
 
     except Exception as e:
         total_time = time.time() - start_time if 'start_time' in locals() else 0
-        print(f"[DEBUG] 💥 初始化扩展告警系统失败，耗时: {total_time:.3f}s，错误: {e}")
+        print(f"[启动] ❌ 告警系统初始化失败，耗时: {total_time:.3f}s，错误: {e}")
         return False
 
 

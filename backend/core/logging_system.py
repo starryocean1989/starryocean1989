@@ -127,30 +127,50 @@ class LogDatabase:
         """
         self.db_path = db_path
         self._lock = threading.Lock()
+        self._needs_index_creation = False
+        self._db_error = False
 
         # 确保数据库目录存在
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
-        # 初始化数据库
+        # 初始化数据库（快速模式）
         self._init_database()
+        
+    def _create_remaining_indexes(self) -> None:
+        """创建剩余索引（延迟执行）."""
+        if not self._needs_index_creation or self._db_error:
+            return
+            
+        try:
+            with sqlite3.connect(self.db_path, timeout=10.0) as conn:
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_logs_module ON logs(module)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_logs_logger_name ON logs(logger_name)")
+                conn.commit()
+            
+            self._needs_index_creation = False
+            print("[后台] 日志数据库索引创建完成")
+        except Exception as e:
+            print(f"[后台] 创建日志索引失败: {e}")
 
     def _init_database(self) -> None:
-        """初始化数据库表结构."""
+        """初始化数据库表结构（延迟初始化模式）."""
+        # 延迟初始化：只在数据库文件不存在时才创建
+        # 表结构创建推迟到第一次写入时进行
         import time
+        
+        db_path = Path(self.db_path)
+        db_exists = db_path.exists()
+        
+        if db_exists:
+            print(f"[启动] 日志数据库已存在: {self.db_path}")
+            return
+        
+        print(f"[启动] 初始化日志数据库: {self.db_path}")
         db_init_start = time.time()
 
-        print(f"[DEBUG] 初始化日志数据库: {self.db_path}")
-
         try:
-            # 使用更长的超时时间防止阻塞
-            print(f"[DEBUG] 连接数据库，timeout=30.0s...")
-            conn_start = time.time()
-            with sqlite3.connect(self.db_path, timeout=30.0) as conn:
-                conn_end = time.time()
-                print(f"[DEBUG] 数据库连接成功，耗时: {conn_end - conn_start:.3f}s")
-
-                print(f"[DEBUG] 创建日志表结构...")
-                table_start = time.time()
+            # 快速创建数据库文件和基础表结构
+            with sqlite3.connect(self.db_path, timeout=5.0, check_same_thread=False) as conn:
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS logs (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -169,34 +189,24 @@ class LogDatabase:
                         created_at REAL NOT NULL
                     )
                 """)
-                table_end = time.time()
-                print(f"[DEBUG] 日志表创建完成，耗时: {table_end - table_start:.3f}s")
-
-                # 创建索引
-                print(f"[DEBUG] 创建索引...")
-                index_start = time.time()
+                
+                # 创建关键索引（其他索引延迟创建）
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs(timestamp)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_logs_level ON logs(level)")
-                conn.execute("CREATE INDEX IF NOT EXISTS idx_logs_module ON logs(module)")
-                conn.execute("CREATE INDEX IF NOT EXISTS idx_logs_logger_name ON logs(logger_name)")
-                index_end = time.time()
-                print(f"[DEBUG] 索引创建完成，耗时: {index_end - index_start:.3f}s")
-
-                print(f"[DEBUG] 提交事务...")
-                commit_start = time.time()
+                
                 conn.commit()
-                commit_end = time.time()
-                print(f"[DEBUG] 事务提交完成，耗时: {commit_end - commit_start:.3f}s")
 
-            db_init_end = time.time()
-            total_time = db_init_end - db_init_start
-            print(f"[DEBUG] ✅ 日志数据库初始化完成，总耗时: {total_time:.3f}s")
+            total_time = time.time() - db_init_start
+            print(f"[启动] ✅ 日志数据库初始化完成，耗时: {total_time:.3f}s")
+            
+            # 标记需要延迟创建其他索引
+            self._needs_index_creation = True
 
         except Exception as e:
-            db_init_end = time.time()
-            total_time = db_init_end - db_init_start
-            print(f"[DEBUG] ❌ 日志数据库初始化失败，耗时: {total_time:.3f}s，错误: {e}")
-            raise
+            total_time = time.time() - db_init_start
+            print(f"[启动] ⚠️ 日志数据库初始化失败，耗时: {total_time:.3f}s，错误: {e}")
+            # 不抛出异常，允许系统继续运行
+            self._db_error = True
 
     def add_log_record(self, log_data: Dict[str, Any]) -> None:
         """添加日志记录（批量插入优化）.
@@ -204,9 +214,17 @@ class LogDatabase:
         Args:
             log_data: 日志数据字典
         """
+        # 如果数据库有错误，跳过写入
+        if self._db_error:
+            return
+            
+        # 首次写入时创建剩余索引
+        if self._needs_index_creation:
+            threading.Thread(target=self._create_remaining_indexes, daemon=True).start()
+            
         try:
             with self._lock:
-                with sqlite3.connect(self.db_path, timeout=10.0) as conn:
+                with sqlite3.connect(self.db_path, timeout=5.0, check_same_thread=False) as conn:
                     conn.execute("""
                         INSERT OR IGNORE INTO logs
                         (timestamp, level, logger_name, module, function_name, line_number,
@@ -230,7 +248,9 @@ class LogDatabase:
                     conn.commit()
 
         except Exception as e:
-            print(f"日志数据库插入失败: {e}")
+            if not self._db_error:
+                print(f"[日志] 数据库插入失败: {e}")
+                self._db_error = True
 
     def query_logs(
         self,
@@ -443,40 +463,23 @@ class LogManager:
             import time
             init_start = time.time()
 
-            print(f"[DEBUG] LogManager.initialize() 开始执行...")
+            print(f"[启动] 日志管理系统初始化开始...")
 
             # 创建自定义日志处理器
-            print(f"[DEBUG] 创建 LogRecordHandler...")
-            handler_start = time.time()
             log_handler = LogRecordHandler(self)
-            handler_end = time.time()
-            print(f"[DEBUG] LogRecordHandler 创建完成，耗时: {handler_end - handler_start:.3f}s")
-
+            
             # 添加到根日志记录器
-            print(f"[DEBUG] 获取根日志记录器并添加处理器...")
-            logger_start = time.time()
             root_logger = logging.getLogger()
             root_logger.addHandler(log_handler)
-            logger_end = time.time()
-            print(f"[DEBUG] 日志处理器添加完成，耗时: {logger_end - logger_start:.3f}s")
-
-            # 设置日志级别
-            print(f"[DEBUG] 设置日志级别为 DEBUG...")
             root_logger.setLevel(logging.DEBUG)
 
-            init_end = time.time()
-            total_time = init_end - init_start
-            print(f"[DEBUG] ✅ 日志管理系统初始化完成，总耗时: {total_time:.3f}s")
+            total_time = time.time() - init_start
+            print(f"[启动] ✅ 日志管理系统初始化完成，总耗时: {total_time:.3f}s")
 
-            # 初始化完成后，暂时不启动清理定时器（避免阻塞）
-            print(f"[DEBUG] 日志清理定时器已禁用（避免启动阻塞）")
-
-            # 使用 print 而不是 logger，避免递归日志记录
-            print(f"[DEBUG] 日志管理系统初始化完成")
             return True
 
         except Exception as e:
-            print(f"[DEBUG] 💥 日志管理系统初始化异常: {e}")
+            print(f"[启动] ❌ 日志管理系统初始化异常: {e}")
             self.logger.error("日志管理系统初始化失败: %s", e)
             return False
 
@@ -752,7 +755,7 @@ def initialize_logging_system(event_engine=None, config: Optional[Dict[str, Any]
         import time
         start_time = time.time()
 
-        print(f"[DEBUG] 开始初始化日志系统... (事件引擎: {event_engine is not None})")
+        print(f"[启动] 日志系统初始化开始...")
 
         # 获取配置
         if config is None:
@@ -761,12 +764,9 @@ def initialize_logging_system(event_engine=None, config: Optional[Dict[str, Any]
                 "retention_days": 30,
             }
 
-        print(f"[DEBUG] 日志系统配置: {config}")
-
         # 创建全局日志管理器
         global _log_manager
         with _log_manager_lock:
-            print(f"[DEBUG] 创建 LogManager 实例...")
             _log_manager = LogManager(
                 db_path=config.get("db_path", "data/logs.db"),
                 event_engine=event_engine,
@@ -774,26 +774,21 @@ def initialize_logging_system(event_engine=None, config: Optional[Dict[str, Any]
             )
 
         # 初始化日志系统
-        print(f"[DEBUG] 开始 LogManager.initialize()...")
-        init_start = time.time()
         success = _log_manager.initialize()
-        init_end = time.time()
-
-        print(f"[DEBUG] LogManager.initialize() 完成，耗时: {init_end - init_start:.3f}s")
 
         if success:
             total_time = time.time() - start_time
-            print(f"[DEBUG] ✅ 日志系统初始化成功，总耗时: {total_time:.3f}s")
+            print(f"[启动] ✅ 日志系统初始化成功，总耗时: {total_time:.3f}s")
             logging.info("日志系统初始化完成")
         else:
             total_time = time.time() - start_time
-            print(f"[DEBUG] ❌ 日志系统初始化失败，总耗时: {total_time:.3f}s")
+            print(f"[启动] ❌ 日志系统初始化失败，总耗时: {total_time:.3f}s")
             logging.error("日志系统初始化失败")
 
         return success
 
     except Exception as e:
-        print(f"[DEBUG] 💥 初始化日志系统异常: {e}")
+        print(f"[启动] ❌ 初始化日志系统异常: {e}")
         logging.error("初始化日志系统失败: %s", e)
         return False
 

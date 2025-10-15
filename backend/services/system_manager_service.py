@@ -115,17 +115,11 @@ class SystemManagerService(BaseService):
         try:
             self.logger.info("初始化系统管理服务...")
 
-            # 初始化监控（完全跳过，避免阻塞）
+            # 初始化监控（跳过，避免阻塞）
             self.logger.info("系统监控初始化已跳过（避免启动阻塞）")
 
-            # 加载默认告警规则（暂时跳过，避免阻塞）
-            # self._load_default_alert_rules()
-
-            # 初始化事件发布器（完全跳过，避免阻塞）
-            self.logger.info("事件发布器初始化已跳过（避免启动阻塞）")
-
-            # 初始化日志和告警系统（暂时跳过，避免阻塞）
-            # self._init_logging_and_alert_system()
+            # 初始化日志和告警系统（优化后的快速初始化）
+            self._init_logging_and_alert_system()
 
             return True
 
@@ -180,102 +174,48 @@ class SystemManagerService(BaseService):
         self.monitoring_data.clear()
 
     def _init_logging_and_alert_system(self) -> None:
-        """初始化日志和告警系统."""
+        """初始化日志和告警系统（优化后的快速版本）."""
         try:
-            import time
-            import threading
             from backend.core.logging_system import initialize_logging_system
             from backend.core.alert_system import initialize_alert_system
             from backend.core.base import get_event_engine
 
             event_engine = get_event_engine()
 
-            print(f"[TIMEOUT] 开始初始化日志和告警系统，超时保护: 30秒")
+            print(f"[启动] 开始初始化日志和告警系统...")
 
-            # 初始化日志系统（带超时保护）
-            def init_logging():
-                try:
-                    logging_config = {
-                        "db_path": "data/logs.db",
-                        "retention_days": 30,
-                    }
-                    return initialize_logging_system(event_engine, logging_config)
-                except Exception as e:
-                    print(f"[TIMEOUT] 日志系统初始化异常: {e}")
-                    return False
-
-            logging_result = None
-            logging_exception = None
-
-            def logging_worker():
-                nonlocal logging_result, logging_exception
-                try:
-                    logging_result = init_logging()
-                except Exception as e:
-                    logging_exception = e
-
-            logging_thread = threading.Thread(target=logging_worker)
-            logging_thread.daemon = True
-            logging_thread.start()
-            logging_thread.join(timeout=30.0)  # 30秒超时
-
-            if logging_thread.is_alive():
-                print(f"[TIMEOUT] ❌ 日志系统初始化超时，跳过")
-                self.logger.warning("日志系统初始化超时，已跳过")
-            elif logging_exception:
-                print(f"[TIMEOUT] ❌ 日志系统初始化异常: {logging_exception}")
-                self.logger.error("日志系统初始化失败: %s", logging_exception)
-            elif logging_result:
-                print(f"[TIMEOUT] ✅ 日志系统初始化成功")
+            # 初始化日志系统（已优化，快速初始化）
+            logging_config = {
+                "db_path": "data/logs.db",
+                "retention_days": 30,
+            }
+            logging_result = initialize_logging_system(event_engine, logging_config)
+            
+            if logging_result:
+                print(f"[启动] ✅ 日志系统初始化成功")
                 self.logger.info("✅ 日志系统初始化成功")
             else:
-                print(f"[TIMEOUT] ❌ 日志系统初始化失败")
+                print(f"[启动] ❌ 日志系统初始化失败")
                 self.logger.error("❌ 日志系统初始化失败")
 
-            # 初始化告警系统（带超时保护）
-            def init_alert():
-                try:
-                    alert_config = {
-                        "db_path": "data/alerts.db",
-                        "suppression_window": 300,
-                    }
-                    return initialize_alert_system(event_engine, alert_config)
-                except Exception as e:
-                    print(f"[TIMEOUT] 告警系统初始化异常: {e}")
-                    return False
-
-            alert_result = None
-            alert_exception = None
-
-            def alert_worker():
-                nonlocal alert_result, alert_exception
-                try:
-                    alert_result = init_alert()
-                except Exception as e:
-                    alert_exception = e
-
-            alert_thread = threading.Thread(target=alert_worker)
-            alert_thread.daemon = True
-            alert_thread.start()
-            alert_thread.join(timeout=30.0)  # 30秒超时
-
-            if alert_thread.is_alive():
-                print(f"[TIMEOUT] ❌ 告警系统初始化超时，跳过")
-                self.logger.warning("告警系统初始化超时，已跳过")
-            elif alert_exception:
-                print(f"[TIMEOUT] ❌ 告警系统初始化异常: {alert_exception}")
-                self.logger.error("告警系统初始化失败: %s", alert_exception)
-            elif alert_result:
-                print(f"[TIMEOUT] ✅ 告警系统初始化成功")
+            # 初始化告警系统（已优化，快速初始化）
+            alert_config = {
+                "db_path": "data/alerts.db",
+                "suppression_window": 300,
+            }
+            alert_result = initialize_alert_system(event_engine, alert_config)
+            
+            if alert_result:
+                print(f"[启动] ✅ 告警系统初始化成功")
                 self.logger.info("✅ 告警系统初始化成功")
             else:
-                print(f"[TIMEOUT] ❌ 告警系统初始化失败")
+                print(f"[启动] ❌ 告警系统初始化失败")
                 self.logger.error("❌ 告警系统初始化失败")
 
-            print(f"[TIMEOUT] 日志和告警系统初始化完成")
+            print(f"[启动] 日志和告警系统初始化完成")
 
         except Exception as e:
-            print(f"[TIMEOUT] 初始化日志和告警系统整体异常: {e}")
+            print(f"[启动] 初始化日志和告警系统异常: {e}")
             self.logger.error("初始化日志和告警系统失败: %s", e)
 
     def _load_default_alert_rules(self):

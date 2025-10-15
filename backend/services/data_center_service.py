@@ -16,9 +16,10 @@ from contextlib import suppress
 from pathlib import Path
 
 from backend.services.base_and_utils import BaseService
+from backend.core.logging_mixin import LoggerMixin
 
 
-class DataCenterService(BaseService):
+class DataCenterService(BaseService, LoggerMixin):
     """数据中心服务.
 
     基于data_module_vnpy包实现的数据管理服务，提供：
@@ -32,7 +33,6 @@ class DataCenterService(BaseService):
     def __init__(self):
         """初始化数据中心服务."""
         super().__init__()
-
         # ChinaStockEngine引擎（现在是属性，会延迟获取）
         self._china_stock_engine_checked = False
 
@@ -73,10 +73,11 @@ class DataCenterService(BaseService):
     def _do_initialize(self) -> bool:
         """初始化数据中心服务."""
         try:
-            self.logger.info("初始化数据中心服务...")
+            self.log_operation_start("数据中心服务初始化")
 
             # 初始化任务调度器
             self._init_scheduler()
+            self.logger.debug("任务调度器初始化完成")
 
             # 延迟获取 ChinaStockEngine（确保在服务初始化完成后）
             # 这样可以确保全局变量已经被正确设置
@@ -85,9 +86,11 @@ class DataCenterService(BaseService):
             # 🔧 修复：启动时加载品种缓存（如果存在）
             self._load_symbol_cache_on_startup()
 
+            self.log_operation_success("数据中心服务初始化")
             return True
 
         except Exception as e:
+            self.log_operation_failure("数据中心服务初始化", e)
             self._log_error("初始化", e)
             return False
 
@@ -863,10 +866,14 @@ class DataCenterService(BaseService):
         Returns:
             Dict: 下载任务结果（阻塞直至完成或失败）
         """
+        import time
+        download_start_time = time.time()
+        
         try:
-            self._log_operation("启动增量数据下载(带进度)", start_date=start_date)
+            self.log_operation_start("增量数据下载", start_date=start_date)
 
             if self.china_stock_engine is None:
+                self.logger.error("中国股票引擎不可用")
                 return {
                     "success": False,
                     "task_id": None,
@@ -878,7 +885,9 @@ class DataCenterService(BaseService):
 
             try:
                 start_dt = dt.strptime(start_date, "%Y-%m-%d").date()
+                self.logger.debug(f"解析开始日期: {start_dt}")
             except ValueError as e:
+                self.logger.error(f"日期格式错误: {e}")
                 return {
                     "success": False,
                     "task_id": None,
@@ -909,19 +918,25 @@ class DataCenterService(BaseService):
                 "start_date": start_date,
                 "progress": 0,
             }
+            
+            self.logger.info(f"下载任务已创建: {task_id}，开始日期: {start_date}，预计下载 {days_diff} 天数据")
 
             # 启动底层后台下载任务（引擎内部自建线程）
             import time
 
             started = self.china_stock_engine.download_incremental(start_date=start_dt)
             if not started:
+                self.logger.error("下载启动失败：已有任务在运行或启动失败")
                 return {
                     "success": False,
                     "task_id": None,
                     "message": "已有下载任务在运行，或启动失败",
                 }
+            
+            self.logger.info(f"[下载-{task_id}] 引擎已启动，开始轮询进度...")
 
             last_pct = -1
+            last_log_time = time.time()
             # 直接轮询引擎进度，直到下载结束
             while True:
                 try:
@@ -933,6 +948,8 @@ class DataCenterService(BaseService):
                         pct = int((completed / total) * 100) if total > 0 else 0
                         cur_sym = prog.get("current_symbol", "") or ""
                         cur_itv = prog.get("current_interval", "") or ""
+                        
+                        # 进度更新：回调通知
                         if progress_callback and (pct != last_pct):
                             detail = f"{cur_sym} {cur_itv}".strip()
                             suffix = f" - {detail}" if detail else ""
@@ -940,7 +957,15 @@ class DataCenterService(BaseService):
                             with suppress(Exception):
                                 progress_callback(pct, msg)
                             last_pct = pct
+                        
+                        # 定期记录进度日志（每10秒）
+                        current_time = time.time()
+                        if current_time - last_log_time >= 10:
+                            self.logger.info(f"[下载-{task_id}] 进度: {pct}% ({completed}/{total}) - {cur_sym} {cur_itv}")
+                            last_log_time = current_time
+                        
                         if not is_downloading:
+                            self.logger.info(f"[下载-{task_id}] 引擎下载已结束")
                             break
                     time.sleep(0.5)
                 except Exception:
@@ -950,6 +975,9 @@ class DataCenterService(BaseService):
             if progress_callback:
                 with suppress(Exception):
                     progress_callback(100.0, "✅ 下载完成，正在整理结果...")
+            
+            download_duration = (time.time() - download_start_time) * 1000
+            self.logger.info(f"[下载-{task_id}] 整理结果...")
 
             self._emit_download_complete_event(task_id, "incremental", start_date)
 
@@ -957,11 +985,22 @@ class DataCenterService(BaseService):
             task = self._download_tasks.get(task_id, {})
             status = task.get("status", "finished")
             if status == "error":
+                error_msg = task.get("error_message", "下载失败")
+                self.log_operation_failure("增量数据下载", Exception(error_msg), task_id=task_id)
                 return {
                     "success": False,
                     "task_id": task_id,
-                    "message": task.get("error_message", "下载失败"),
+                    "message": error_msg,
                 }
+            
+            # 记录性能日志
+            self.log_performance("增量数据下载", download_duration, True, {
+                "task_id": task_id,
+                "start_date": start_date,
+                "days": days_diff
+            })
+            self.log_operation_success("增量数据下载", task_id=task_id, days=days_diff)
+            
             return {
                 "success": True,
                 "task_id": task_id,
@@ -969,7 +1008,9 @@ class DataCenterService(BaseService):
             }
 
         except Exception as e:
-            self._log_error("启动增量(带进度)", e, start_date=start_date)
+            download_duration = (time.time() - download_start_time) * 1000
+            self.log_performance("增量数据下载", download_duration, False, {"error": str(e)})
+            self.log_operation_failure("增量数据下载", e, start_date=start_date)
             return {
                 "success": False,
                 "task_id": None,

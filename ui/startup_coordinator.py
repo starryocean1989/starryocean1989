@@ -143,22 +143,10 @@ class StartupCoordinator(QObject):
     def _initialize_config(self):
         """步骤1: 初始化配置（同步，必须最先完成）."""
         if self.config_already_initialized:
-            self.logger.info("步骤1: 配置已在主入口初始化，跳过")
-
-            # 验证配置
-            from backend.config import get_settings
-
-            settings = get_settings()
-            if settings.ai.api_key:
-                masked_key = (
-                    f"{settings.ai.api_key[:4]}...{settings.ai.api_key[-4:]}"
-                    if len(settings.ai.api_key) > 8
-                    else "***"
-                )
-                self.logger.info("验证配置：API Key: %s", masked_key)
+            self.logger.info("配置已在主入口初始化，跳过")
             return
 
-        self.logger.info("步骤1: 初始化配置...")
+        self.logger.info("初始化配置...")
 
         from backend.config import init_settings, get_settings
 
@@ -170,23 +158,11 @@ class StartupCoordinator(QObject):
             self.logger.info("使用默认配置文件")
             init_settings()
 
-        # 验证配置
-        settings = get_settings()
-        if settings.ai.api_key:
-            masked_key = (
-                f"{settings.ai.api_key[:4]}...{settings.ai.api_key[-4:]}"
-                if len(settings.ai.api_key) > 8
-                else "***"
-            )
-            self.logger.info("配置已加载，API Key: %s", masked_key)
-        else:
-            self.logger.info("配置已加载，但API Key未设置")
-
         self.logger.info("✅ 配置初始化完成")
 
     def _show_splash_screen(self):
         """步骤2: 显示启动画面."""
-        self.logger.info("步骤2: 显示启动画面...")
+        self.logger.info("显示启动画面...")
 
         # 创建启动画面
         self.splash = QSplashScreen()
@@ -235,7 +211,7 @@ class StartupCoordinator(QObject):
 
     def _start_backend_initialization(self):
         """步骤3: 异步初始化后端服务."""
-        self.logger.info("步骤3: 启动后端服务初始化（异步）...")
+        self.logger.info("启动后端服务初始化（异步）...")
 
         # 创建工作线程
         self.backend_thread = QThread()
@@ -250,7 +226,7 @@ class StartupCoordinator(QObject):
         self.backend_worker.initialization_completed.connect(self._on_backend_completed)
         self.backend_worker.error_occurred.connect(self._on_backend_error)
 
-        # 🔧 按照记忆中的QThread安全终止实践，使用安全的清理机制
+        # 安全清理机制
         self.backend_worker.initialization_completed.connect(self._safe_cleanup_thread)
 
         # 启动线程
