@@ -260,7 +260,7 @@ class ChartWizardEnhanced(BaseWidget):
         layout.addWidget(info_label)
 
     def _create_toolbar(self) -> QHBoxLayout:
-        """创建顶部工具栏.
+        """创建顶部扩展工具栏（仅包含vnpy_chartwizard不支持的扩展功能）.
 
         Returns:
             工具栏布局
@@ -268,32 +268,13 @@ class ChartWizardEnhanced(BaseWidget):
         toolbar = QHBoxLayout()
         toolbar.setSpacing(10)
 
-        # 品种输入框
-        self.symbol_input = QLineEdit()
-        self.symbol_input.setPlaceholderText("输入品种代码（如：000001.SZSE）")
-        self.symbol_input.setMinimumWidth(250)
-        self.symbol_input.returnPressed.connect(self._on_new_chart)
-        toolbar.addWidget(QLabel("品种:"))
-        toolbar.addWidget(self.symbol_input)
+        # 注意：品种输入框和新建图表按钮由vnpy_chartwizard原生提供
+        # 这里只添加vnpy_chartwizard不支持的扩展功能
 
-        # 新建图表按钮
-        self.new_chart_btn = QPushButton("📊 新建图表")
-        self.new_chart_btn.clicked.connect(self._on_new_chart)
-        self.new_chart_btn.setMinimumWidth(100)
-        toolbar.addWidget(self.new_chart_btn)
-
-        toolbar.addSpacing(20)
-
-        # 图表类型切换
-        toolbar.addWidget(QLabel("图表:"))
-        self.chart_type_combo = QComboBox()
-        self.chart_type_combo.addItems(["K线图", "分时图", "Tick图"])
-        self.chart_type_combo.currentTextChanged.connect(self._on_chart_type_changed)
-        toolbar.addWidget(self.chart_type_combo)
-
+        toolbar.addWidget(QLabel("扩展功能:"))
         toolbar.addSpacing(10)
 
-        # 坐标类型切换
+        # 坐标类型切换（扩展功能）
         coord_group = QGroupBox("坐标类型")
         coord_layout = QHBoxLayout(coord_group)
         coord_layout.setContentsMargins(5, 5, 5, 5)
@@ -310,7 +291,7 @@ class ChartWizardEnhanced(BaseWidget):
 
         toolbar.addSpacing(10)
 
-        # 品种叠加
+        # 品种叠加（扩展功能）
         toolbar.addWidget(QLabel("叠加品种:"))
         self.overlay_symbol_combo = QComboBox()
         self.overlay_symbol_combo.setPlaceholderText("选择品种")
@@ -321,36 +302,6 @@ class ChartWizardEnhanced(BaseWidget):
         add_overlay_btn.clicked.connect(self._on_add_overlay_symbol)
         add_overlay_btn.setMaximumWidth(60)
         toolbar.addWidget(add_overlay_btn)
-
-        toolbar.addSpacing(10)
-
-        # 指标叠加
-        toolbar.addWidget(QLabel("叠加指标:"))
-        self.overlay_indicator_combo = QComboBox()
-        self.overlay_indicator_combo.addItems(
-            ["MA5", "MA10", "MA20", "MA60", "BOLL", "EMA12", "EMA26"]
-        )
-        self.overlay_indicator_combo.setMinimumWidth(100)
-        toolbar.addWidget(self.overlay_indicator_combo)
-
-        add_indicator_btn = QPushButton("➕ 指标")
-        add_indicator_btn.clicked.connect(self._on_add_overlay_indicator)
-        add_indicator_btn.setMaximumWidth(60)
-        toolbar.addWidget(add_indicator_btn)
-
-        toolbar.addSpacing(10)
-
-        # 副图指标
-        toolbar.addWidget(QLabel("副图:"))
-        self.subplot_combo = QComboBox()
-        self.subplot_combo.addItems(["MACD", "RSI", "KDJ"])
-        self.subplot_combo.setMinimumWidth(80)
-        toolbar.addWidget(self.subplot_combo)
-
-        add_subplot_btn = QPushButton("➕ 副图")
-        add_subplot_btn.clicked.connect(self._on_add_subplot)
-        add_subplot_btn.setMaximumWidth(60)
-        toolbar.addWidget(add_subplot_btn)
 
         toolbar.addStretch()
 
@@ -363,42 +314,17 @@ class ChartWizardEnhanced(BaseWidget):
         return toolbar
 
     def _on_new_chart(self):
-        """新建图表."""
+        """新建图表 - 直接使用vnpy_chartwizard原生功能.
+        
+        注意：vnpy_chartwizard已内置品种输入框和新建按钮，
+        这里保留此方法仅为外部调用接口。
+        """
         if not self.chart_wizard:
             self.show_warning("图表组件未就绪")
             return
 
-        vt_symbol = self.symbol_input.text().strip()
-        if not vt_symbol:
-            self.show_warning("请输入品种代码")
-            return
-
-        try:
-            # 调用 vnpy_chartwizard 的新建图表方法
-            # ChartWizardWidget 有内置的 new_chart() 方法
-            if hasattr(self.chart_wizard, "new_chart"):
-                # 设置品种输入框的值
-                if hasattr(self.chart_wizard, "symbol_line"):
-                    self.chart_wizard.symbol_line.setText(vt_symbol)
-                # 触发新建
-                self.chart_wizard.new_chart()
-                self.logger.info(f"✅ 新建图表: {vt_symbol}")
-                self.chart_created.emit(vt_symbol)
-                self.current_symbol = vt_symbol
-
-                # 清空输入框，准备输入下一个品种
-                self.symbol_input.clear()
-
-                # 自动检测数据断点
-                from PySide6.QtCore import QTimer
-
-                QTimer.singleShot(1000, self._check_data_gaps_for_current_chart)
-            else:
-                self.show_warning("图表组件不支持新建功能")
-
-        except Exception as e:
-            self.logger.error(f"❌ 新建图表失败: {e}", exc_info=True)
-            self.show_error(f"新建图表失败: {e}")
+        # vnpy_chartwizard已内置新建功能，直接使用即可
+        self.logger.info("✅ 请使用vnpy_chartwizard原生的品种输入框和新建按钮")
 
     def _on_coord_type_changed(self, checked: bool):
         """坐标类型变化处理.
@@ -424,15 +350,7 @@ class ChartWizardEnhanced(BaseWidget):
 
     # ========== 公共接口 ==========
 
-    def create_new_chart(self, vt_symbol: str):
-        """创建新图表.
 
-        Args:
-            vt_symbol: 品种代码（vt格式，如 000001.SZSE）
-        """
-        if self.symbol_input:
-            self.symbol_input.setText(vt_symbol)
-        self._on_new_chart()
 
     def get_current_chart(self):
         """获取当前激活的图表.
