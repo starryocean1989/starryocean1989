@@ -19,6 +19,8 @@ from vnpy.trader.app import BaseApp
 from .core import APP_NAME, ChinaStockEngine
 from .gateways import PollingGateway, VirtualGateway
 from .data_readers import BaseReader, TdxBinaryReader
+from .preload_service import PreloadService
+from .unified_data_manager import UnifiedDataManager
 
 __all__ = [
     "APP_NAME",
@@ -28,6 +30,8 @@ __all__ = [
     "VirtualGateway",
     "BaseReader",
     "TdxBinaryReader",
+    "PreloadService",
+    "UnifiedDataManager",
 ]
 
 __version__ = "2.0.0"  # 升级到2.0.0版本

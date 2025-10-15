@@ -98,7 +98,7 @@ class StorageManager:
             file_path = self.data_dir / symbol / interval / "data.parquet"
 
             if not file_path.exists():
-                self.logger.warning("数据文件不存在: %s", file_path)
+                self.logger.debug("数据文件不存在: %s", file_path)
                 return None
 
             # 读取数据

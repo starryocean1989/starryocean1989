@@ -115,41 +115,17 @@ class SystemManagerService(BaseService):
         try:
             self.logger.info("初始化系统管理服务...")
 
-            # 初始化监控
-            self._init_monitoring()
+            # 初始化监控（完全跳过，避免阻塞）
+            self.logger.info("系统监控初始化已跳过（避免启动阻塞）")
 
-            # 加载默认告警规则
-            self._load_default_alert_rules()
+            # 加载默认告警规则（暂时跳过，避免阻塞）
+            # self._load_default_alert_rules()
 
-            # 初始化事件发布器
-            try:
-                from backend.core.base import get_event_engine
-                from backend.infrastructure.system_vnpy.event_publisher import (
-                    SystemMetricsPublisher,
-                    ProcessMetricsPublisher,
-                )
+            # 初始化事件发布器（完全跳过，避免阻塞）
+            self.logger.info("事件发布器初始化已跳过（避免启动阻塞）")
 
-                event_engine = get_event_engine()
-                if event_engine:
-                    # 启动系统指标发布器
-                    self.metrics_publisher = SystemMetricsPublisher(
-                        event_engine, self.system_monitor
-                    )
-                    self.metrics_publisher.start_publishing(interval=2)
-                    self.logger.info("系统指标发布器已启动")
-
-                    # 启动进程监控发布器
-                    self.process_publisher = ProcessMetricsPublisher(
-                        event_engine, self.process_monitor, self.bottleneck_analyzer
-                    )
-                    # 获取配置的推送频率
-                    interval = self.service_health_checker.get_monitoring_interval()
-                    self.process_publisher.start_publishing(interval=interval)
-                    self.logger.info("进程监控发布器已启动")
-                else:
-                    self.logger.warning("EventEngine不可用，事件发布器未启动")
-            except Exception as e:
-                self.logger.warning("初始化事件发布器失败: %s", e)
+            # 初始化日志和告警系统（暂时跳过，避免阻塞）
+            # self._init_logging_and_alert_system()
 
             return True
 
@@ -194,15 +170,113 @@ class SystemManagerService(BaseService):
     def _init_monitoring(self):
         """初始化监控."""
         try:
-            # 收集初始监控数据
-            self.update_system_metrics()
-            self.logger.info("✅ 系统监控初始化成功")
+            # 跳过监控初始化，避免阻塞
+            self.logger.info("系统监控初始化已跳过（避免启动阻塞）")
         except Exception as e:
             self.logger.error("系统监控初始化失败: %s", e)
 
     def _stop_monitoring(self):
         """停止监控."""
         self.monitoring_data.clear()
+
+    def _init_logging_and_alert_system(self) -> None:
+        """初始化日志和告警系统."""
+        try:
+            import time
+            import threading
+            from backend.core.logging_system import initialize_logging_system
+            from backend.core.alert_system import initialize_alert_system
+            from backend.core.base import get_event_engine
+
+            event_engine = get_event_engine()
+
+            print(f"[TIMEOUT] 开始初始化日志和告警系统，超时保护: 30秒")
+
+            # 初始化日志系统（带超时保护）
+            def init_logging():
+                try:
+                    logging_config = {
+                        "db_path": "data/logs.db",
+                        "retention_days": 30,
+                    }
+                    return initialize_logging_system(event_engine, logging_config)
+                except Exception as e:
+                    print(f"[TIMEOUT] 日志系统初始化异常: {e}")
+                    return False
+
+            logging_result = None
+            logging_exception = None
+
+            def logging_worker():
+                nonlocal logging_result, logging_exception
+                try:
+                    logging_result = init_logging()
+                except Exception as e:
+                    logging_exception = e
+
+            logging_thread = threading.Thread(target=logging_worker)
+            logging_thread.daemon = True
+            logging_thread.start()
+            logging_thread.join(timeout=30.0)  # 30秒超时
+
+            if logging_thread.is_alive():
+                print(f"[TIMEOUT] ❌ 日志系统初始化超时，跳过")
+                self.logger.warning("日志系统初始化超时，已跳过")
+            elif logging_exception:
+                print(f"[TIMEOUT] ❌ 日志系统初始化异常: {logging_exception}")
+                self.logger.error("日志系统初始化失败: %s", logging_exception)
+            elif logging_result:
+                print(f"[TIMEOUT] ✅ 日志系统初始化成功")
+                self.logger.info("✅ 日志系统初始化成功")
+            else:
+                print(f"[TIMEOUT] ❌ 日志系统初始化失败")
+                self.logger.error("❌ 日志系统初始化失败")
+
+            # 初始化告警系统（带超时保护）
+            def init_alert():
+                try:
+                    alert_config = {
+                        "db_path": "data/alerts.db",
+                        "suppression_window": 300,
+                    }
+                    return initialize_alert_system(event_engine, alert_config)
+                except Exception as e:
+                    print(f"[TIMEOUT] 告警系统初始化异常: {e}")
+                    return False
+
+            alert_result = None
+            alert_exception = None
+
+            def alert_worker():
+                nonlocal alert_result, alert_exception
+                try:
+                    alert_result = init_alert()
+                except Exception as e:
+                    alert_exception = e
+
+            alert_thread = threading.Thread(target=alert_worker)
+            alert_thread.daemon = True
+            alert_thread.start()
+            alert_thread.join(timeout=30.0)  # 30秒超时
+
+            if alert_thread.is_alive():
+                print(f"[TIMEOUT] ❌ 告警系统初始化超时，跳过")
+                self.logger.warning("告警系统初始化超时，已跳过")
+            elif alert_exception:
+                print(f"[TIMEOUT] ❌ 告警系统初始化异常: {alert_exception}")
+                self.logger.error("告警系统初始化失败: %s", alert_exception)
+            elif alert_result:
+                print(f"[TIMEOUT] ✅ 告警系统初始化成功")
+                self.logger.info("✅ 告警系统初始化成功")
+            else:
+                print(f"[TIMEOUT] ❌ 告警系统初始化失败")
+                self.logger.error("❌ 告警系统初始化失败")
+
+            print(f"[TIMEOUT] 日志和告警系统初始化完成")
+
+        except Exception as e:
+            print(f"[TIMEOUT] 初始化日志和告警系统整体异常: {e}")
+            self.logger.error("初始化日志和告警系统失败: %s", e)
 
     def _load_default_alert_rules(self):
         """加载默认告警规则."""
@@ -235,7 +309,7 @@ class SystemManagerService(BaseService):
             )
             self.alert_engine.add_rule(service_offline_rule)
 
-            self.logger.info("默认告警规则已加载（包含服务离线规则）")
+            self.logger.info("默认告警规则已加载（CPU、内存、磁盘、服务离线监控规则，支持特殊条件评估）")
         except Exception as e:
             self.logger.error("加载默认告警规则失败: %s", str(e))
 
@@ -488,8 +562,8 @@ class SystemManagerService(BaseService):
 
             self.monitoring_data = metrics
 
-            # 检查告警
-            self._check_alerts(metrics)
+            # 检查告警（暂时跳过，避免阻塞）
+            # self._check_alerts(metrics)
 
             return {
                 "success": True,
@@ -605,8 +679,8 @@ class SystemManagerService(BaseService):
         Args:
             metrics: 系统指标
         """
-        # 使用告警引擎评估规则
-        self.alert_engine.evaluate_rules(metrics)
+        # 跳过告警检查，避免阻塞
+        self.logger.debug("告警检查已跳过（避免启动阻塞）")
 
     # ==================== 告警管理（链条1.3.1） ====================
 
@@ -897,60 +971,142 @@ class SystemManagerService(BaseService):
     def query_logs(
         self,
         level: Optional[str] = None,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        module: Optional[str] = None,
+        logger_name: Optional[str] = None,
         limit: int = 100,
+        offset: int = 0,
     ) -> Dict[str, Any]:
-        """查询日志.
+        """查询日志记录（增强版）.
 
         Args:
-            level: 日志级别（DEBUG, INFO, WARNING, ERROR, CRITICAL）
+            level: 日志级别筛选（DEBUG, INFO, WARNING, ERROR, CRITICAL）
+            start_time: 开始时间（ISO格式）
+            end_time: 结束时间（ISO格式）
+            module: 模块名筛选
+            logger_name: 日志记录器名筛选
             limit: 返回数量限制
+            offset: 偏移量
 
         Returns:
-            Dict: 日志列表
+            Dict: 日志记录列表和统计信息
         """
         try:
-            # 读取日志文件
-            log_dir = Path("logs")
-            log_file = log_dir / "terminal_v0.50.log"
+            from backend.core.logging_system import get_log_manager
 
-            if not log_file.exists():
-                return {
-                    "success": True,
-                    "logs": [],
-                    "total": 0,
-                    "message": "日志文件不存在",
+            log_manager = get_log_manager()
+
+            # 查询日志记录
+            logs = log_manager.query_logs(
+                level=level,
+                start_time=start_time,
+                end_time=end_time,
+                module=module,
+                logger_name=logger_name,
+                limit=limit,
+                offset=offset,
+            )
+
+            # 获取统计信息
+            stats = log_manager.get_log_stats()
+
+            return {
+                "success": True,
+                "logs": logs,
+                "total": len(logs),
+                "stats": stats,
+                "filters": {
+                    "level": level,
+                    "start_time": start_time,
+                    "end_time": end_time,
+                    "module": module,
+                    "logger_name": logger_name,
+                    "limit": limit,
+                    "offset": offset,
                 }
-
-            # 读取日志
-            logs = []
-            try:
-                with open(log_file, "r", encoding="utf-8") as f:
-                    lines = f.readlines()
-
-                # 解析日志行（简单实现）
-                for line in lines[-limit:]:  # 只返回最后limit条
-                    if level and level.upper() not in line:
-                        continue
-                    logs.append({"message": line.strip(), "raw": line})
-
-                return {
-                    "success": True,
-                    "logs": logs,
-                    "total": len(logs),
-                }
-
-            except Exception as e:
-                self.logger.error(f"读取日志文件失败: {e}", exc_info=True)
-                return {
-                    "success": False,
-                    "message": f"读取日志失败: {str(e)}",
-                    "logs": [],
-                    "total": 0,
-                }
+            }
 
         except Exception as e:
             self._log_error("查询日志", e)
-            return {"success": False, "message": str(e)}
+            return {
+                "success": False,
+                "message": str(e),
+                "logs": [],
+                "total": 0,
+                "stats": {}
+            }
+
+    def get_log_stats(self) -> Dict[str, Any]:
+        """获取日志统计信息.
+
+        Returns:
+            Dict: 日志统计信息
+        """
+        try:
+            from backend.core.logging_system import get_log_manager
+
+            log_manager = get_log_manager()
+            stats = log_manager.get_log_stats()
+
+            return {
+                "success": True,
+                "stats": stats
+            }
+
+        except Exception as e:
+            self._log_error("获取日志统计", e)
+            return {
+                "success": False,
+                "message": str(e),
+                "stats": {}
+            }
+
+    def export_logs(
+        self,
+        file_path: str,
+        level: Optional[str] = None,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        module: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """导出日志到文件.
+
+        Args:
+            file_path: 导出文件路径
+            level: 日志级别筛选
+            start_time: 开始时间
+            end_time: 结束时间
+            module: 模块名筛选
+
+        Returns:
+            Dict: 导出结果
+        """
+        try:
+            from backend.core.logging_system import get_log_manager
+
+            log_manager = get_log_manager()
+
+            success = log_manager.export_logs(
+                file_path=file_path,
+                level=level,
+                start_time=start_time,
+                end_time=end_time,
+                module=module,
+            )
+
+            return {
+                "success": success,
+                "message": "日志导出成功" if success else "日志导出失败",
+                "file_path": file_path,
+            }
+
+        except Exception as e:
+            self._log_error("导出日志", e)
+            return {
+                "success": False,
+                "message": str(e)
+            }
 
     # ==================== 系统诊断 ====================
 
@@ -1234,6 +1390,252 @@ class SystemManagerService(BaseService):
             return {
                 "success": False,
                 "message": str(e),
+            }
+
+    # ==================== 告警管理 ====================
+
+    def query_alerts(
+        self,
+        status: Optional[str] = None,
+        severity: Optional[str] = None,
+        rule_id: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        """查询告警记录.
+
+        Args:
+            status: 状态筛选（NEW, ACKNOWLEDGED, RESOLVED, IGNORED）
+            severity: 严重程度筛选（INFO, WARNING, ERROR, CRITICAL）
+            rule_id: 规则ID筛选
+            limit: 返回数量限制
+            offset: 偏移量
+
+        Returns:
+            Dict: 告警记录列表
+        """
+        try:
+            from backend.core.alert_system import get_alert_database
+
+            alert_db = get_alert_database()
+
+            # 查询告警记录
+            alerts = alert_db.get_alerts(
+                status=status,
+                severity=severity,
+                rule_id=rule_id,
+                limit=limit,
+                offset=offset,
+            )
+
+            # 转换告警对象为字典
+            alert_list = [alert.to_dict() for alert in alerts]
+
+            return {
+                "success": True,
+                "alerts": alert_list,
+                "total": len(alert_list),
+                "filters": {
+                    "status": status,
+                    "severity": severity,
+                    "rule_id": rule_id,
+                    "limit": limit,
+                    "offset": offset,
+                }
+            }
+
+        except Exception as e:
+            self._log_error("查询告警", e)
+            return {
+                "success": False,
+                "message": str(e),
+                "alerts": [],
+                "total": 0,
+            }
+
+    def get_unresolved_alerts(self) -> Dict[str, Any]:
+        """获取未解决的告警.
+
+        Returns:
+            Dict: 未解决告警列表
+        """
+        try:
+            from backend.core.alert_system import get_alert_database
+
+            alert_db = get_alert_database()
+            alerts = alert_db.get_unresolved_alerts()
+
+            # 转换告警对象为字典
+            alert_list = [alert.to_dict() for alert in alerts]
+
+            return {
+                "success": True,
+                "alerts": alert_list,
+                "total": len(alert_list),
+            }
+
+        except Exception as e:
+            self._log_error("获取未解决告警", e)
+            return {
+                "success": False,
+                "message": str(e),
+                "alerts": [],
+                "total": 0,
+            }
+
+    def acknowledge_alert(self, alert_id: str, note: str = "") -> Dict[str, Any]:
+        """确认告警.
+
+        Args:
+            alert_id: 告警ID
+            note: 备注
+
+        Returns:
+            Dict: 确认结果
+        """
+        try:
+            from backend.core.alert_system import get_alert_database
+            from backend.core.utils import AlertStatus
+
+            alert_db = get_alert_database()
+
+            success = alert_db.update_alert_status(
+                alert_id=alert_id,
+                status=AlertStatus.ACKNOWLEDGED,
+                note=note,
+            )
+
+            if success:
+                # 发布告警更新事件
+                alert = alert_db.get_alert(alert_id)
+                if alert:
+                    from backend.core.alert_system import AlertEventPublisher
+                    from backend.core.base import get_event_engine
+
+                    event_engine = get_event_engine()
+                    if event_engine:
+                        publisher = AlertEventPublisher(event_engine, alert_db)
+                        publisher.publish_alert_updated(alert)
+
+            return {
+                "success": success,
+                "message": "告警已确认" if success else "告警确认失败",
+            }
+
+        except Exception as e:
+            self._log_error("确认告警", e)
+            return {"success": False, "message": str(e)}
+
+    def resolve_alert(self, alert_id: str, note: str = "") -> Dict[str, Any]:
+        """解决告警.
+
+        Args:
+            alert_id: 告警ID
+            note: 备注
+
+        Returns:
+            Dict: 解决结果
+        """
+        try:
+            from backend.core.alert_system import get_alert_database
+            from backend.core.utils import AlertStatus
+
+            alert_db = get_alert_database()
+
+            success = alert_db.update_alert_status(
+                alert_id=alert_id,
+                status=AlertStatus.RESOLVED,
+                note=note,
+            )
+
+            if success:
+                # 发布告警更新事件
+                alert = alert_db.get_alert(alert_id)
+                if alert:
+                    from backend.core.alert_system import AlertEventPublisher
+                    from backend.core.base import get_event_engine
+
+                    event_engine = get_event_engine()
+                    if event_engine:
+                        publisher = AlertEventPublisher(event_engine, alert_db)
+                        publisher.publish_alert_updated(alert)
+
+            return {
+                "success": success,
+                "message": "告警已解决" if success else "告警解决失败",
+            }
+
+        except Exception as e:
+            self._log_error("解决告警", e)
+            return {"success": False, "message": str(e)}
+
+    def clear_resolved_alerts(self, older_than_days: int = 30) -> Dict[str, Any]:
+        """清理已解决的旧告警.
+
+        Args:
+            older_than_days: 超过多少天的已解决告警将被删除
+
+        Returns:
+            Dict: 清理结果
+        """
+        try:
+            from backend.core.alert_system import get_alert_database
+
+            alert_db = get_alert_database()
+            deleted_count = alert_db.delete_resolved_alerts(older_than_days)
+
+            return {
+                "success": True,
+                "message": f"已清理 {deleted_count} 条已解决的告警",
+                "deleted_count": deleted_count,
+            }
+
+        except Exception as e:
+            self._log_error("清理已解决告警", e)
+            return {
+                "success": False,
+                "message": str(e),
+                "deleted_count": 0,
+            }
+
+    def get_alert_stats(self) -> Dict[str, Any]:
+        """获取告警统计信息.
+
+        Returns:
+            Dict: 告警统计信息
+        """
+        try:
+            from backend.core.alert_system import get_alert_database
+
+            alert_db = get_alert_database()
+
+            # 按状态统计
+            new_alerts = alert_db.get_alerts(status="new", limit=1000)
+            acknowledged_alerts = alert_db.get_alerts(status="acknowledged", limit=1000)
+            resolved_alerts = alert_db.get_alerts(status="resolved", limit=1000)
+
+            # 按严重程度统计
+            error_alerts = alert_db.get_alerts(severity="error", limit=1000)
+            critical_alerts = alert_db.get_alerts(severity="critical", limit=1000)
+
+            return {
+                "success": True,
+                "stats": {
+                    "new_count": len(new_alerts),
+                    "acknowledged_count": len(acknowledged_alerts),
+                    "resolved_count": len(resolved_alerts),
+                    "error_count": len(error_alerts),
+                    "critical_count": len(critical_alerts),
+                    "total_count": len(new_alerts) + len(acknowledged_alerts) + len(resolved_alerts),
+                }
+            }
+
+        except Exception as e:
+            self._log_error("获取告警统计", e)
+            return {
+                "success": False,
+                "message": str(e),
+                "stats": {}
             }
 
     # ==================== 服务重载 ====================

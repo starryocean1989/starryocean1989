@@ -174,7 +174,18 @@ class DownloadThread(QThread):
                     f">>> [DOWNLOAD THREAD] 开始增量下载，开始日期: {self.start_date}...",
                     flush=True,
                 )
-                result = self.data_center_service.start_incremental_download(self.start_date)
+                # 优先调用带进度的新方法；不存在则回退旧方法
+                if hasattr(self.data_center_service, "start_incremental_download_with_progress"):
+                    def _cb(percent, message):
+                        try:
+                            self.progress_signal.emit(str(message))
+                        except Exception:
+                            pass
+                    result = self.data_center_service.start_incremental_download_with_progress(
+                        self.start_date, _cb
+                    )
+                else:
+                    result = self.data_center_service.start_incremental_download(self.start_date)
             except Exception as download_error:
                 logger.error("下载过程异常: %s", download_error, exc_info=True)
                 print(f">>> [DOWNLOAD THREAD] 下载异常: {download_error}", flush=True)
@@ -1499,7 +1510,7 @@ class DataCenter(BaseWidget, LoggerMixin):
             self.logger.info("=" * 60)
 
             if result.get("success"):
-                task_id = result.get("task_id", self.current_download_task_id)
+                task_id = result.get("task_id") or getattr(self, "current_download_task_id", None)
                 message = result.get("message", "")
 
                 # 🔧 区分"任务已启动"和"任务已完成"
@@ -1551,8 +1562,13 @@ class DataCenter(BaseWidget, LoggerMixin):
             self.show_error("数据中心服务不可用")
             return
 
+        task_id = getattr(self, "current_download_task_id", None)
+        if not task_id:
+            self.show_warning("没有活动的下载任务")
+            return
+
         # 🔧 新架构：调用后端暂停方法
-        result = self.data_center_service.pause_download(self.current_download_task_id)
+        result = self.data_center_service.pause_download(task_id)
 
         if result.get("success"):
             self.show_info("⏸️ 已发送暂停信号，下载将在当前品种完成后暂停...")
@@ -1576,7 +1592,12 @@ class DataCenter(BaseWidget, LoggerMixin):
             self.show_warning("没有暂停的下载任务")
             return
 
-        result = self.data_center_service.resume_download(self.current_download_task_id)
+        current_id = getattr(self, "current_download_task_id", None)
+        if not current_id:
+            self.show_warning("没有需要恢复的下载任务")
+            return
+
+        result = self.data_center_service.resume_download(current_id)
 
         if result.get("success"):
             self.show_info("下载已恢复")
@@ -1598,7 +1619,12 @@ class DataCenter(BaseWidget, LoggerMixin):
                 return
 
             # 调用后端停止方法
-            result = self.data_center_service.stop_download(self.current_download_task_id)
+            task_id = getattr(self, "current_download_task_id", None)
+            if not task_id:
+                self.show_warning("没有正在运行的下载任务")
+                return
+
+            result = self.data_center_service.stop_download(task_id)
 
             if result.get("success"):
                 # 不调用show_info，避免UI更新导致崩溃
@@ -1631,10 +1657,11 @@ class DataCenter(BaseWidget, LoggerMixin):
 
             # 🔧 修复：再尝试通过后端服务停止任务
             backend_stopped = False
-            if self.data_center_service and hasattr(self, "current_download_task_id"):
-                self.logger.info(">>> 尝试通过后端服务停止任务: %s", self.current_download_task_id)
+            task_id = getattr(self, "current_download_task_id", None)
+            if self.data_center_service and task_id:
+                self.logger.info(">>> 尝试通过后端服务停止任务: %s", task_id)
                 try:
-                    result = self.data_center_service.stop_download(self.current_download_task_id)
+                    result = self.data_center_service.stop_download(task_id)
                     if result.get("success"):
                         self.logger.info(">>> 后端任务停止成功")
                         backend_stopped = True
@@ -1830,19 +1857,20 @@ class DataCenter(BaseWidget, LoggerMixin):
 
     def _start_progress_polling(self):
         """启动进度轮询定时器（仅在事件引擎不可用时使用）"""
-        # 🔧 优先使用事件推送，轮询作为备用
+        # 同时启用事件推送与轮询，确保在任意环境下都有进度反馈
         if self.event_engine:
-            self.logger.info(">>> 使用vnpy事件推送机制，不启动轮询")
-            return
+            self.logger.info(">>> 使用vnpy事件推送机制，并启动轮询做冗余")
+        else:
+            self.logger.info(">>> event_engine不可用，启动备用轮询机制")
 
-        self.logger.info(">>> event_engine不可用，启动备用轮询机制")
         if self.progress_timer is None:
             self.progress_timer = QTimer(self)
             self.progress_timer.timeout.connect(self._update_download_progress)
 
         # 启动定时器，每1秒轮询一次
-        self.progress_timer.start(1000)
-        self.logger.info(">>> 进度轮询定时器已启动（每1秒更新）")
+        if not self.progress_timer.isActive():
+            self.progress_timer.start(1000)
+            self.logger.info(">>> 进度轮询定时器已启动（每1秒更新）")
 
     def _stop_progress_polling(self):
         """停止进度轮询定时器"""
@@ -1930,8 +1958,8 @@ class DataCenter(BaseWidget, LoggerMixin):
 
             # 清理任务ID
             if hasattr(self, "current_download_task_id"):
-                self.logger.info(">>> 清理任务ID: %s", self.current_download_task_id)
-                delattr(self, "current_download_task_id")
+                self.logger.info(">>> 清理任务ID: %s", getattr(self, "current_download_task_id", None))
+                self.current_download_task_id = None
 
             # 恢复按钮状态
             if self.start_download_btn:

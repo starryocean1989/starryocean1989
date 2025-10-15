@@ -283,6 +283,20 @@ class ConfigManager:
         # 品种列表默认从本地缓存加载，不再提供默认配置
         # 数据标准化读取工具配置
         "chinastock.data_readers.tdx_root_dir": "C:/new_tdx",  # 通达信软件根目录
+        # 统一数据管理器与预加载配置
+        "chinastock.unified_manager.enabled": True,
+        "chinastock.unified_manager.auto_download": True,
+        "chinastock.preload.enabled": True,
+        "chinastock.preload.auto_start": True,
+        "chinastock.preload.max_cache_symbols": 64,
+        "chinastock.preload.intervals": ["1d", "5m"],
+        "chinastock.preload.frequently_used_symbols": [
+            "000001",
+            "000002",
+            "600000",
+            "600036",
+            "600519",
+        ],
     }
 
     def __init__(self):
@@ -391,6 +405,44 @@ class ConfigManager:
         if tdx_root and Path(tdx_root).exists():
             return Path(tdx_root)
         return None
+
+    def is_unified_manager_enabled(self) -> bool:
+        """是否启用统一数据管理器"""
+        return bool(self.get("chinastock.unified_manager.enabled", True))
+
+    def is_unified_manager_auto_download_enabled(self) -> bool:
+        """统一数据管理器是否允许自动补全下载"""
+        return bool(self.get("chinastock.unified_manager.auto_download", True))
+
+    def is_preload_enabled(self) -> bool:
+        """是否启用预加载服务"""
+        return bool(self.get("chinastock.preload.enabled", True))
+
+    def is_preload_auto_start(self) -> bool:
+        """预加载服务是否自动启动"""
+        return bool(self.get("chinastock.preload.auto_start", True))
+
+    def get_preload_max_cache_symbols(self) -> int:
+        """获取预加载缓存的最大品种数量"""
+        return int(self.get("chinastock.preload.max_cache_symbols", 64))
+
+    def get_preload_intervals(self) -> List[str]:
+        """获取预加载的默认周期列表"""
+        intervals = self.get("chinastock.preload.intervals", ["1d", "5m"])
+        if isinstance(intervals, str):
+            return [item.strip() for item in intervals.split(",") if item.strip()]
+        if isinstance(intervals, list):
+            return [str(item).strip() for item in intervals if str(item).strip()]
+        return ["1d", "5m"]
+
+    def get_preload_frequently_used_symbols(self) -> List[str]:
+        """获取常用品种列表"""
+        symbols = self.get("chinastock.preload.frequently_used_symbols", [])
+        if isinstance(symbols, str):
+            return [item.strip() for item in symbols.split(",") if item.strip()]
+        if isinstance(symbols, list):
+            return [str(item).strip() for item in symbols if str(item).strip()]
+        return []
 
     def _save_to_file(self) -> None:
         """保存配置到文件"""

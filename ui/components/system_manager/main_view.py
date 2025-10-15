@@ -577,21 +577,12 @@ class SystemManager(BaseWidget, LoggerMixin):
 
     def _create_alerts_tab(self) -> QWidget:
         """创建告警管理子界面."""
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
+        from ui.components.system_manager.alert_manager_widget import AlertManagerWidget
 
-        # 告警规则组
-        rules_group = QGroupBox("告警规则")
-        rules_layout = QVBoxLayout(rules_group)
+        # 创建告警管理组件
+        self.alert_manager_widget = AlertManagerWidget()
 
-        self.alerts_table = QTableWidget(0, 4)
-        headers = ["规则名称", "类型", "阈值", "状态"]
-        self.alerts_table.setHorizontalHeaderLabels(headers)
-        rules_layout.addWidget(self.alerts_table)
-
-        layout.addWidget(rules_group)
-
-        return tab
+        return self.alert_manager_widget
 
     # ==================== 1.4 服务健康检查 ====================
 
@@ -1061,36 +1052,12 @@ class SystemManager(BaseWidget, LoggerMixin):
 
     def _create_logs_tab(self) -> QWidget:
         """创建日志管理子界面."""
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
+        from ui.components.system_manager.log_manager_widget import LogManagerWidget
 
-        # 日志查看组
-        logs_group = QGroupBox("日志查看")
-        logs_layout = QVBoxLayout(logs_group)
+        # 创建日志管理组件
+        self.log_manager_widget = LogManagerWidget()
 
-        self.logs_table = QTableWidget(0, 4)
-        self.logs_table.setHorizontalHeaderLabels(["时间", "级别", "模块", "消息"])
-        logs_layout.addWidget(self.logs_table)
-
-        layout.addWidget(logs_group)
-
-        # 日志控制组
-        control_group = QGroupBox("日志控制")
-        control_layout = QHBoxLayout(control_group)
-
-        clear_btn = QPushButton("清空日志")
-        clear_btn.clicked.connect(self._clear_logs)
-        control_layout.addWidget(clear_btn)
-
-        export_btn = QPushButton("导出日志")
-        export_btn.clicked.connect(self._export_logs)
-        control_layout.addWidget(export_btn)
-
-        control_layout.addStretch()
-
-        layout.addWidget(control_group)
-
-        return tab
+        return self.log_manager_widget
 
     # ==================== 1.7 系统诊断 ====================
 

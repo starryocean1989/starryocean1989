@@ -62,6 +62,11 @@ EVENT_GATEWAY_STATUS_CHANGED = "eGatewayStatusChanged"  # 网关状态变化事�
 EVENT_DATA_DOWNLOAD_COMPLETE = "eDataDownloadComplete"  # 数据下载完成事件
 EVENT_RECORDING_STATUS_CHANGED = "eRecordingStatusChanged"  # 录制状态变化事件
 
+# ✨ 新增：日志和告警系统事件
+EVENT_LOG_RECORD = "eLogRecord"  # 日志记录事件
+EVENT_ALERT_CREATED = "eAlertCreated"  # 告警创建事件
+EVENT_ALERT_UPDATED = "eAlertUpdated"  # 告警更新事件
+
 
 class LoggerMixin:
     """日志混合类."""
@@ -651,29 +656,52 @@ class AlertRule:
             return False
 
         try:
-            # 安全的表达式评估（仅允许基本运算和比较）
-            # 安全措施：
-            # 1. 清空__builtins__防止访问危险函数
-            # 2. 只提供有限的基本数学函数
-            # 3. 通过safe_namespace限制可用变量和函数
-            safe_namespace = {
-                "__builtins__": {},
-                "abs": abs,
-                "min": min,
-                "max": max,
-                "len": len,
-                "round": round,
-            }
-            safe_namespace.update(context)
+            # 特殊的条件处理
+            if self.condition == "service_offline":
+                # 检查上下文中是否有服务离线信息
+                service_offline = context.get("service_offline", False)
+                if service_offline:
+                    self.last_triggered = datetime.now()
+                    self.trigger_count += 1
+                return service_offline
+            elif self.condition == "system_error":
+                # 检查系统错误
+                system_error = context.get("system_error", False)
+                if system_error:
+                    self.last_triggered = datetime.now()
+                    self.trigger_count += 1
+                return system_error
+            elif self.condition == "connection_failed":
+                # 检查连接失败
+                connection_failed = context.get("connection_failed", False)
+                if connection_failed:
+                    self.last_triggered = datetime.now()
+                    self.trigger_count += 1
+                return connection_failed
+            else:
+                # 标准的表达式评估（仅允许基本运算和比较）
+                # 安全措施：
+                # 1. 清空__builtins__防止访问危险函数
+                # 2. 只提供有限的基本数学函数
+                # 3. 通过safe_namespace限制可用变量和函数
+                safe_namespace = {
+                    "__builtins__": {},
+                    "abs": abs,
+                    "min": min,
+                    "max": max,
+                    "len": len,
+                    "round": round,
+                }
+                safe_namespace.update(context)
 
-            # 评估条件表达式（使用eval是因为条件可能是动态表达式）
-            result = eval(self.condition, safe_namespace)  # noqa: S307
+                # 评估条件表达式（使用eval是因为条件可能是动态表达式）
+                result = eval(self.condition, safe_namespace)  # noqa: S307
 
-            if result:
-                self.last_triggered = datetime.now()
-                self.trigger_count += 1
+                if result:
+                    self.last_triggered = datetime.now()
+                    self.trigger_count += 1
 
-            return bool(result)
+                return bool(result)
 
         except Exception as e:
             logging.error("规则评估失败 %s: %s", self.name, str(e))

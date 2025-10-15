@@ -851,6 +851,131 @@ class DataCenterService(BaseService):
 
     # ==================== 数据下载管理 ====================
 
+    def start_incremental_download_with_progress(
+        self, start_date: str, progress_callback: Optional[Any] = None
+    ) -> Dict[str, Any]:
+        """启动增量数据下载（带进度回调，线程内轮询引擎进度）.
+
+        Args:
+            start_date: 开始日期（格式：YYYY-MM-DD）
+            progress_callback: 可选回调，形如 callback(percent: float, message: str)
+
+        Returns:
+            Dict: 下载任务结果（阻塞直至完成或失败）
+        """
+        try:
+            self._log_operation("启动增量数据下载(带进度)", start_date=start_date)
+
+            if self.china_stock_engine is None:
+                return {
+                    "success": False,
+                    "task_id": None,
+                    "message": "data_module_vnpy不可用",
+                }
+
+            # 解析并验证日期
+            from datetime import datetime as dt, date
+
+            try:
+                start_dt = dt.strptime(start_date, "%Y-%m-%d").date()
+            except ValueError as e:
+                return {
+                    "success": False,
+                    "task_id": None,
+                    "message": f"日期格式错误: {str(e)}",
+                }
+
+            today = date.today()
+            days_diff = (today - start_dt).days
+            if days_diff > 100:
+                return {
+                    "success": False,
+                    "task_id": None,
+                    "message": f"增量下载最多支持最近100天数据，请调整开始日期（当前选择了{days_diff}天前的数据）",
+                }
+            if days_diff < 0:
+                return {
+                    "success": False,
+                    "task_id": None,
+                    "message": "开始日期不能晚于今天",
+                }
+
+            # 生成任务ID并登记
+            task_id = f"incremental_download_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            self._download_tasks[task_id] = {
+                "type": "incremental",
+                "status": "running",
+                "start_time": datetime.now(),
+                "start_date": start_date,
+                "progress": 0,
+            }
+
+            # 启动底层后台下载任务（引擎内部自建线程）
+            import time
+
+            started = self.china_stock_engine.download_incremental(start_date=start_dt)
+            if not started:
+                return {
+                    "success": False,
+                    "task_id": None,
+                    "message": "已有下载任务在运行，或启动失败",
+                }
+
+            last_pct = -1
+            # 直接轮询引擎进度，直到下载结束
+            while True:
+                try:
+                    prog = self.china_stock_engine.get_download_progress()
+                    if isinstance(prog, dict):
+                        is_downloading = prog.get("is_downloading", False)
+                        completed = int(prog.get("completed", 0))
+                        total = int(prog.get("total", 0))
+                        pct = int((completed / total) * 100) if total > 0 else 0
+                        cur_sym = prog.get("current_symbol", "") or ""
+                        cur_itv = prog.get("current_interval", "") or ""
+                        if progress_callback and (pct != last_pct):
+                            detail = f"{cur_sym} {cur_itv}".strip()
+                            suffix = f" - {detail}" if detail else ""
+                            msg = f"📥 进度 {pct:.0f}%（{completed}/{total}）{suffix}"
+                            with suppress(Exception):
+                                progress_callback(pct, msg)
+                            last_pct = pct
+                        if not is_downloading:
+                            break
+                    time.sleep(0.5)
+                except Exception:
+                    time.sleep(0.5)
+
+            # 线程已结束，做一次最终上报与事件广播
+            if progress_callback:
+                with suppress(Exception):
+                    progress_callback(100.0, "✅ 下载完成，正在整理结果...")
+
+            self._emit_download_complete_event(task_id, "incremental", start_date)
+
+            # 汇总返回
+            task = self._download_tasks.get(task_id, {})
+            status = task.get("status", "finished")
+            if status == "error":
+                return {
+                    "success": False,
+                    "task_id": task_id,
+                    "message": task.get("error_message", "下载失败"),
+                }
+            return {
+                "success": True,
+                "task_id": task_id,
+                "message": "增量下载已完成",
+            }
+
+        except Exception as e:
+            self._log_error("启动增量(带进度)", e, start_date=start_date)
+            return {
+                "success": False,
+                "task_id": None,
+                "message": f"启动失败: {str(e)}",
+            }
+
     def start_incremental_download(self, start_date: str) -> Dict[str, Any]:
         """启动增量数据下载.
 

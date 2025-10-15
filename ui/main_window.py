@@ -433,9 +433,27 @@ class MainWindow(QMainWindow, LoggerMixin):
         self.status_label = QLabel("就绪")
         self.status_bar.addWidget(self.status_label, 1)
 
+        # 中间告警滚动条
+        from ui.widgets.alert_ticker import AlertTicker
+        self.alert_ticker = AlertTicker()
+        self.alert_ticker.clicked.connect(self._on_alert_ticker_clicked)
+        self.status_bar.addWidget(self.alert_ticker, 2)  # 伸展因子2，更大空间
+
         # 右侧系统信息
         self.system_info_label = QLabel("系统正常")
         self.status_bar.addPermanentWidget(self.system_info_label)
+
+    def _on_alert_ticker_clicked(self):
+        """处理告警滚动条点击事件."""
+        # 切换到系统管理界面的告警管理标签页
+        system_manager = self.function_interfaces.get("system")
+        if system_manager and hasattr(system_manager, "tab_widget"):
+            # 找到告警管理标签页的索引
+            for i in range(system_manager.tab_widget.count()):
+                tab_text = system_manager.tab_widget.tabText(i)
+                if "告警管理" in tab_text:
+                    system_manager.tab_widget.setCurrentIndex(i)
+                    break
 
     def create_function_interfaces(self):
         """创建6个功能界面."""

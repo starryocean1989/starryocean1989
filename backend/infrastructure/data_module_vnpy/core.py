@@ -28,6 +28,8 @@ from .data_quality import StorageManager, DataValidator, ValidationSummary, Data
 from .gateways import PollingGateway, VirtualGateway
 from .data_readers import TdxBinaryReader
 from .data_quality import DataSensor, QualityOverview
+from .preload_service import PreloadService
+from .unified_data_manager import UnifiedDataManager
 
 
 # 事件类型常量
@@ -74,6 +76,10 @@ class ChinaStockEngine(BaseEngine):
         # 新增：数据读取器
         self.tdx_reader: Optional[TdxBinaryReader] = None
 
+        # 新增：统一数据管理组件
+        self.preload_service: Optional[PreloadService] = None
+        self.unified_data_manager: Optional[UnifiedDataManager] = None
+
         # 日志记录器
         self.logger = logging.getLogger(__name__)
 
@@ -95,6 +101,26 @@ class ChinaStockEngine(BaseEngine):
 
         # 启动数据感知（后台线程）
         self._start_data_sensing_async()
+
+        # 初始化预加载与统一数据管理器
+        if config_manager.is_preload_enabled():
+            try:
+                self.preload_service = PreloadService(self)
+                if config_manager.is_preload_auto_start():
+                    self.preload_service.start(prime=True)
+            except Exception as exc:
+                self.logger.error("预加载服务初始化失败: %s", exc, exc_info=True)
+                self.preload_service = None
+
+        if config_manager.is_unified_manager_enabled():
+            try:
+                self.unified_data_manager = UnifiedDataManager(
+                    self,
+                    preload_service=self.preload_service,
+                )
+            except Exception as exc:
+                self.logger.error("统一数据管理器初始化失败: %s", exc, exc_info=True)
+                self.unified_data_manager = None
 
         self.logger.info("中国A股数据管理引擎初始化完成")
         # 初始化后执行一次健康检查（不抛异常，仅记录）
@@ -179,6 +205,10 @@ class ChinaStockEngine(BaseEngine):
 
             # 停止文件监控
             # 文件监控已合并到data_sensor，无需单独停止
+
+            if self.preload_service:
+                self.preload_service.stop()
+                self.preload_service = None
 
             # 关闭轮询网关
             if self.polling_gateway:
@@ -303,20 +333,35 @@ class ChinaStockEngine(BaseEngine):
 
             self.logger.info(f"开始增量下载K线数据: 从 {start_date} 开始")
 
-            # 🚀 关键修正：品种缓存已经经过过滤，直接使用5724个品种
-            # 品种缓存中的品种已经是经过parse_market_codes过滤后的最终品种
-            # 不需要再次过滤，直接用于下载
-            all_stocks = []
-            market_stock_counts = {}
+            # 🚀 关键修正：通过SymbolLoader缓存获取品种列表
+            classified_stocks = self.symbol_loader.load_from_cache() or {}
+
+            if not classified_stocks:
+                self.logger.warning("本地品种缓存为空，尝试重新加载品种列表…")
+                if not self.reload_stock_list():
+                    error_msg = "无法获取品种列表，请先在【品种列表】界面点击【重新加载品种】按钮"
+                    self.logger.error(error_msg)
+                    self._push_download_event("incremental_kline", "error", 0, error_msg)
+                    self._push_log_event(error_msg, "ERROR")
+                    return
+                classified_stocks = self.symbol_loader.load_from_cache() or {}
+
+            if not classified_stocks:
+                error_msg = "品种缓存仍为空，增量下载任务已取消"
+                self.logger.error(error_msg)
+                self._push_download_event("incremental_kline", "error", 0, error_msg)
+                self._push_log_event(error_msg, "ERROR")
+                return
+
+            all_stocks: List[str] = []
+            market_stock_counts: Dict[str, int] = {}
 
             for market_type in market_types:
-                stocks = self.stock_fetcher.get_market_stocks(market_type, allow_fetch=False)
-                # stocks现在是一个字典列表，每个元素包含 code, name, market
-                # 🚀 兼容性处理：如果stocks是字符串列表，直接使用
+                stocks = classified_stocks.get(market_type, [])
                 if stocks and isinstance(stocks[0], str):
-                    stock_codes = stocks
+                    stock_codes = [code for code in stocks if code]
                 else:
-                    stock_codes = [stock["code"] for stock in stocks]
+                    stock_codes = [stock.get("code", "") for stock in stocks if stock.get("code")]
                 market_stock_counts[market_type] = len(stock_codes)
                 all_stocks.extend(stock_codes)
 
@@ -481,35 +526,87 @@ class ChinaStockEngine(BaseEngine):
 
     def query_data(
         self,
-        symbol: str,
-        interval: str,
+        symbol: Optional[str] = None,
+        interval: str = "1d",
         start_date: Optional[Union[str, date]] = None,
         end_date: Optional[Union[str, date]] = None,
+        **kwargs,
     ) -> Optional[Any]:
-        """
-        查询数据
+        """统一查询接口，兼容单品种与多品种调用."""
 
-        Args:
-            symbol: 品种代码
-            interval: K线周期
-            start_date: 开始日期
-            end_date: 结束日期
+        symbols_param = kwargs.get("symbols")
+        frequency = kwargs.get("frequency") or interval
+        check_gaps = kwargs.get("check_gaps", True)
 
-        Returns:
-            查询结果
-        """
-        try:
-            data = self.storage_manager.query_kline(symbol, interval, start_date, end_date)
+        # 多品种查询路径
+        if symbols_param is not None:
+            symbols_list = (
+                [symbols_param]
+                if isinstance(symbols_param, str)
+                else list(symbols_param)
+            )
+            if not symbols_list:
+                return {"success": True, "data": {}, "interval": frequency}
 
-            if data is not None:
-                self.logger.info(f"查询数据成功: {symbol} {interval}, {len(data)} 条记录")
+            if self.unified_data_manager:
+                datasets = self.unified_data_manager.get_multi_kline_data(
+                    symbols_list,
+                    interval=frequency,
+                    start_date=start_date,
+                    end_date=end_date,
+                    check_gaps=check_gaps,
+                )
             else:
-                self.logger.warning(f"未找到数据: {symbol} {interval}")
+                datasets = {
+                    sym: self.storage_manager.query_kline(sym, frequency, start_date, end_date)
+                    for sym in symbols_list
+                }
+
+            payload = {
+                sym: (df.to_dict("records") if df is not None else [])
+                for sym, df in datasets.items()
+            }
+
+            success = any(payload.values())
+            return {
+                "success": success,
+                "data": payload,
+                "interval": frequency,
+                "message": None if success else "未查询到数据",
+            }
+
+        # 单品种查询
+        target_symbol = symbol or kwargs.get("symbols")
+        if isinstance(target_symbol, (list, tuple)):
+            target_symbol = target_symbol[0] if target_symbol else None
+        if target_symbol is None:
+            return None
+
+        try:
+            if self.unified_data_manager:
+                data = self.unified_data_manager.get_kline_data(
+                    target_symbol,
+                    interval=interval,
+                    start_date=start_date,
+                    end_date=end_date,
+                    check_gaps=check_gaps,
+                )
+            else:
+                data = self.storage_manager.query_kline(
+                    target_symbol, interval, start_date, end_date
+                )
+
+            if data is not None and hasattr(data, "__len__"):
+                self.logger.info(
+                    "查询数据成功: %s %s, %d 条记录", target_symbol, interval, len(data)
+                )
+            else:
+                self.logger.warning("未找到数据: %s %s", target_symbol, interval)
 
             return data
 
         except Exception as e:
-            self.logger.error(f"查询数据失败: {symbol} {interval}, {e}")
+            self.logger.error("查询数据失败: %s %s, %s", target_symbol, interval, e)
             return None
 
     def get_validation_result(self, force_refresh: bool = False) -> Optional[ValidationSummary]:
@@ -1042,6 +1139,10 @@ class ChinaStockEngine(BaseEngine):
             质量概览（如果尚未扫描则返回None）
         """
         return self.data_sensor.get_quality_overview()
+
+    def get_unified_data_manager(self) -> Optional[UnifiedDataManager]:
+        """获取统一数据管理器实例"""
+        return self.unified_data_manager
 
     def trigger_data_quality_scan(self, force_refresh: bool = False) -> Optional[QualityOverview]:
         """手动触发数据质量扫描

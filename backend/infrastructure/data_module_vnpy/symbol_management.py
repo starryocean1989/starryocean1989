@@ -434,7 +434,7 @@ class SymbolLoader:
         """
         获取完整品种列表（集合D）
 
-        分别调用market=0和market=1，手动添加market列后合并
+        分别调用market=0、1、2，手动添加market列后合并
 
         Returns:
             包含market列的完整DataFrame
@@ -444,7 +444,8 @@ class SymbolLoader:
         quotes = Quotes.factory()
         stocks_list = []
 
-        for market in [0, 1]:  # 0=深交所, 1=上交所
+        # 支持的市场：0=深交所, 1=上交所, 2=北交所
+        for market in [0, 1, 2]:
             try:
                 self.logger.info("  → 调用 stocks(market=%d)...", market)
                 df = quotes.stocks(market)
