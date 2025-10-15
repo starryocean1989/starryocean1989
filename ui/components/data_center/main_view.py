@@ -176,11 +176,13 @@ class DownloadThread(QThread):
                 )
                 # 优先调用带进度的新方法；不存在则回退旧方法
                 if hasattr(self.data_center_service, "start_incremental_download_with_progress"):
+
                     def _cb(percent, message):
                         try:
                             self.progress_signal.emit(str(message))
                         except Exception:
                             pass
+
                     result = self.data_center_service.start_incremental_download_with_progress(
                         self.start_date, _cb
                     )
@@ -929,7 +931,7 @@ class DataCenter(BaseWidget, LoggerMixin):
 
             if result["success"]:
                 data = result.get("data", [])
-                
+
                 # 🔧 增强健壮性：检查品种缓存是否为空
                 if not data or len(data) == 0:
                     self.logger.warning("品种缓存为空，提示用户重新加载品种")
@@ -939,7 +941,7 @@ class DataCenter(BaseWidget, LoggerMixin):
                     self.filtered_symbols_data = []
                     self._update_symbols_table()
                     return
-                
+
                 self.all_symbols_data = data
                 self._apply_filters()
                 self.show_info(f"刷新成功，共 {result['symbol_count']} 个品种")
@@ -1029,12 +1031,12 @@ class DataCenter(BaseWidget, LoggerMixin):
 
                     # 获取品种信息字典（优先从symbol键获取，这是后端主要返回的）
                     symbol_info = None
-                    if 'symbol' in symbol and isinstance(symbol['symbol'], dict):
-                        symbol_info = symbol['symbol']
-                    elif 'code' in symbol and isinstance(symbol['code'], dict):
-                        symbol_info = symbol['code']
-                    elif 'name' in symbol and isinstance(symbol['name'], dict):
-                        symbol_info = symbol['name']
+                    if "symbol" in symbol and isinstance(symbol["symbol"], dict):
+                        symbol_info = symbol["symbol"]
+                    elif "code" in symbol and isinstance(symbol["code"], dict):
+                        symbol_info = symbol["code"]
+                    elif "name" in symbol and isinstance(symbol["name"], dict):
+                        symbol_info = symbol["name"]
 
                     if symbol_info:
                         symbol_code = symbol_info.get("code", "")
@@ -1057,18 +1059,20 @@ class DataCenter(BaseWidget, LoggerMixin):
                     symbol_name = ""
                     symbol_exchange = ""
                     symbol_type = ""
-                
+
                 # 🔧 数据验证：确保品种代码不为空
                 if not symbol_code:
                     self.logger.warning(f"第{i}行品种数据无效，跳过: {symbol}")
                     # 🔧 调试日志：记录数据结构类型
-                    self.logger.debug(f"数据结构类型: symbol={type(symbol)}, symbol_code={type(symbol_code)}")
+                    self.logger.debug(
+                        f"数据结构类型: symbol={type(symbol)}, symbol_code={type(symbol_code)}"
+                    )
                     if isinstance(symbol, dict):
                         self.logger.debug(f"symbol.keys()={list(symbol.keys())}")
                         for k, v in symbol.items():
                             self.logger.debug(f"  {k}: {type(v)} = {v}")
                     continue
-                
+
                 self.symbols_table.setItem(i, 0, QTableWidgetItem(symbol_code))
                 self.symbols_table.setItem(i, 1, QTableWidgetItem(symbol_name))
                 self.symbols_table.setItem(i, 2, QTableWidgetItem(symbol_exchange))
@@ -1958,7 +1962,9 @@ class DataCenter(BaseWidget, LoggerMixin):
 
             # 清理任务ID
             if hasattr(self, "current_download_task_id"):
-                self.logger.info(">>> 清理任务ID: %s", getattr(self, "current_download_task_id", None))
+                self.logger.info(
+                    ">>> 清理任务ID: %s", getattr(self, "current_download_task_id", None)
+                )
                 self.current_download_task_id = None
 
             # 恢复按钮状态

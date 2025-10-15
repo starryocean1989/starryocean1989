@@ -718,85 +718,80 @@ def initialize_alert_system(event_engine, config: Optional[Dict[str, Any]] = Non
 
 
 def _create_default_log_alert_rules() -> None:
-    """创建默认的日志告警规则."""
+    """创建默认的日志告警规则（异步创建，避免阻塞启动）."""
+    import threading
     import time
 
-    print(f"[DEBUG] 开始创建默认日志告警规则...")
+    print(f"[DEBUG] 开始创建默认日志告警规则（异步模式）...")
 
-    try:
-        alert_engine = AlertEngine()
+    def _create_rules_async():
+        """在后台线程中创建规则."""
+        try:
+            # 等待系统初始化完成
+            time.sleep(2)
+            
+            print(f"[DEBUG] 后台线程开始创建告警规则...")
+            alert_engine = AlertEngine()
 
-        rules_start = time.time()
+            rules_start = time.time()
 
-        # ERROR级别日志告警规则
-        print(f"[DEBUG] 创建 ERROR 级别日志告警规则...")
-        error_rule_start = time.time()
-        error_rule = LogAlertRule(
-            rule_id="log_error_monitoring",
-            name="ERROR级别日志监控",
-            log_levels=["ERROR"],
-            severity=AlertSeverity.ERROR,
-            description="监控所有ERROR级别日志记录",
-            suppression_window=60,  # 1分钟抑制窗口
-        )
-        alert_engine.add_rule(error_rule)
-        error_rule_end = time.time()
-        print(f"[DEBUG] ERROR级别规则创建完成，耗时: {error_rule_end - error_rule_start:.3f}s")
+            # ERROR级别日志告警规则
+            error_rule = LogAlertRule(
+                rule_id="log_error_monitoring",
+                name="ERROR级别日志监控",
+                log_levels=["ERROR"],
+                severity=AlertSeverity.ERROR,
+                description="监控所有ERROR级别日志记录",
+                suppression_window=60,
+            )
+            alert_engine.add_rule(error_rule)
 
-        # CRITICAL级别日志告警规则
-        print(f"[DEBUG] 创建 CRITICAL 级别日志告警规则...")
-        critical_rule_start = time.time()
-        critical_rule = LogAlertRule(
-            rule_id="log_critical_monitoring",
-            name="CRITICAL级别日志监控",
-            log_levels=["CRITICAL"],
-            severity=AlertSeverity.CRITICAL,
-            description="监控所有CRITICAL级别日志记录",
-            suppression_window=30,  # 30秒抑制窗口
-        )
-        alert_engine.add_rule(critical_rule)
-        critical_rule_end = time.time()
-        print(f"[DEBUG] CRITICAL级别规则创建完成，耗时: {critical_rule_end - critical_rule_start:.3f}s")
+            # CRITICAL级别日志告警规则
+            critical_rule = LogAlertRule(
+                rule_id="log_critical_monitoring",
+                name="CRITICAL级别日志监控",
+                log_levels=["CRITICAL"],
+                severity=AlertSeverity.CRITICAL,
+                description="监控所有CRITICAL级别日志记录",
+                suppression_window=30,
+            )
+            alert_engine.add_rule(critical_rule)
 
-        # 连接失败告警规则
-        print(f"[DEBUG] 创建连接失败告警规则...")
-        connection_rule_start = time.time()
-        connection_rule = LogAlertRule(
-            rule_id="log_connection_failures",
-            name="连接失败监控",
-            keywords=["连接失败", "连接超时", "网络错误", "Connection failed", "Connection timeout"],
-            severity=AlertSeverity.WARNING,
-            description="监控连接相关的错误日志",
-            suppression_window=120,  # 2分钟抑制窗口
-        )
-        alert_engine.add_rule(connection_rule)
-        connection_rule_end = time.time()
-        print(f"[DEBUG] 连接失败规则创建完成，耗时: {connection_rule_end - connection_rule_start:.3f}s")
+            # 连接失败告警规则
+            connection_rule = LogAlertRule(
+                rule_id="log_connection_failures",
+                name="连接失败监控",
+                keywords=["连接失败", "连接超时", "网络错误", "Connection failed", "Connection timeout"],
+                severity=AlertSeverity.WARNING,
+                description="监控连接相关的错误日志",
+                suppression_window=120,
+            )
+            alert_engine.add_rule(connection_rule)
 
-        # 数据库错误告警规则
-        print(f"[DEBUG] 创建数据库错误告警规则...")
-        db_rule_start = time.time()
-        db_rule = LogAlertRule(
-            rule_id="log_database_errors",
-            name="数据库错误监控",
-            keywords=["数据库错误", "SQL错误", "连接池", "Database error", "SQL error"],
-            severity=AlertSeverity.ERROR,
-            description="监控数据库相关的错误日志",
-            suppression_window=60,  # 1分钟抑制窗口
-        )
-        alert_engine.add_rule(db_rule)
-        db_rule_end = time.time()
-        print(f"[DEBUG] 数据库错误规则创建完成，耗时: {db_rule_end - db_rule_start:.3f}s")
+            # 数据库错误告警规则
+            db_rule = LogAlertRule(
+                rule_id="log_database_errors",
+                name="数据库错误监控",
+                keywords=["数据库错误", "SQL错误", "连接池", "Database error", "SQL error"],
+                severity=AlertSeverity.ERROR,
+                description="监控数据库相关的错误日志",
+                suppression_window=60,
+            )
+            alert_engine.add_rule(db_rule)
 
-        rules_end = time.time()
-        total_time = rules_end - rules_start
-        print(f"[DEBUG] ✅ 所有默认日志告警规则创建完成，总耗时: {total_time:.3f}s")
+            rules_end = time.time()
+            total_time = rules_end - rules_start
+            print(f"[DEBUG] ✅ 所有默认日志告警规则创建完成，总耗时: {total_time:.3f}s")
 
-    except Exception as e:
-        rules_end = time.time()
-        total_time = rules_end - rules_start if 'rules_start' in locals() else 0
-        print(f"[DEBUG] ❌ 创建默认日志告警规则失败，耗时: {total_time:.3f}s，错误: {e}")
-        raise
+        except Exception as e:
+            print(f"[DEBUG] ❌ 后台创建默认日志告警规则失败: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    # 在后台线程中创建规则，不阻塞主线程
+    thread = threading.Thread(target=_create_rules_async, daemon=True, name="AlertRulesCreator")
+    thread.start()
+    print(f"[DEBUG] ✅ 告警规则创建线程已启动（后台运行）")
 
 
 def shutdown_alert_system() -> None:

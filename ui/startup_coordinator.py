@@ -7,11 +7,15 @@ import threading
 from typing import Optional
 
 from PySide6.QtCore import QObject, QThread, Signal, Qt
-from PySide6.QtWidgets import QSplashScreen, QApplication
+from PySide6.QtWidgets import QApplication, QSplashScreen, QWidget
 
 
 class BackendInitializerWorker(QObject):
-    """后端初始化工作线程."""
+    """后端初始化工作线程.
+
+    负责在后台线程中异步初始化所有后端服务，避免阻塞主线程UI。
+    采用六阶段初始化策略，每个阶段完成后发送进度更新。
+    """
 
     # 信号定义
     progress_updated = Signal(str, int)  # (消息, 进度百分比)
@@ -23,47 +27,67 @@ class BackendInitializerWorker(QObject):
         super().__init__()
         self.logger = logging.getLogger(self.__class__.__name__)
 
+
     def run(self):
-        """运行后端初始化."""
+        """运行后端初始化.
+
+        六阶段初始化流程：
+        1. VNPY核心（EventEngine, MainEngine）
+        2. 数据引擎（ChinaStockEngine）
+        3. 数据服务（DataCenterService）
+        4. 交易服务（TradingGatewayService）
+        5. 策略服务（StrategyCenterService, AIAssistantService）
+        6. 辅助服务（PortfolioService, MarketBoardService, SystemManagerService）
+        """
         try:
             self.logger.info("=" * 70)
-            self.logger.info("🔧 后端初始化工作线程启动")
+            self.logger.info("[BACKEND-INIT] 🔧 后端初始化工作线程启动")
             self.logger.info("=" * 70)
-            self.logger.info("线程ID: %s", threading.current_thread().ident)
-            self.logger.info("线程名: %s", threading.current_thread().name)
+            self.logger.info("[BACKEND-INIT] 线程ID: %s", threading.current_thread().ident)
+            self.logger.info("[BACKEND-INIT] 线程名: %s", threading.current_thread().name)
             self.logger.info(
-                "当前线程是否为主线程: %s", threading.current_thread() == threading.main_thread()
+                "[BACKEND-INIT] 当前线程是否为主线程: %s",
+                threading.current_thread() == threading.main_thread(),
             )
 
             # 🔧 检查中断请求
             if self.thread() and self.thread().isInterruptionRequested():
-                self.logger.info("收到中断请求，停止初始化")
+                self.logger.info("[BACKEND-INIT] 收到中断请求，停止初始化")
                 return
 
-            self.progress_updated.emit("正在初始化配置...", 10)
+            self.progress_updated.emit("正在准备后端环境...", 5)
 
             # 导入后端模块
-            self.logger.info("步骤1: 导入后端服务模块...")
+            self.logger.info("[BACKEND-INIT] 阶段0: 导入后端服务模块...")
             from backend.core.base import initialize_services
 
-            self.logger.info("✅ 后端模块导入成功")
+            self.logger.info("[BACKEND-INIT] ✅ 后端模块导入成功")
 
             # 再次检查中断请求
             if self.thread() and self.thread().isInterruptionRequested():
-                self.logger.info("收到中断请求，停止初始化")
+                self.logger.info("[BACKEND-INIT] 收到中断请求，停止初始化")
                 return
 
-            self.progress_updated.emit("正在启动后端服务...", 30)
+            self.progress_updated.emit("正在启动后端服务...", 10)
 
             # 执行初始化
-            self.logger.info("步骤2: 开始执行后端服务初始化...")
-            self.logger.info("⚠️ 注意：此过程中不应创建任何Qt GUI对象")
-            result = initialize_services()
-            self.logger.info("✅ initialize_services() 执行完成")
+            self.logger.info("[BACKEND-INIT] 开始执行六阶段后端服务初始化...")
+            self.logger.info("[BACKEND-INIT] ⚠️ 注意：此过程中不应创建任何Qt GUI对象")
+
+            # 创建进度回调函数
+            def progress_callback(message: str, progress: int):
+                """进度回调：将后端初始化进度转发到UI"""
+                self.logger.info("[BACKEND-INIT] [进度 %d%%] %s", progress, message)
+                self.progress_updated.emit(message, progress)
+
+            # 执行初始化（传入回调）
+            result = initialize_services(progress_callback=progress_callback)
+
+            self.logger.info("[BACKEND-INIT] ✅ initialize_services() 执行完成")
 
             # 最后检查中断请求
             if self.thread() and self.thread().isInterruptionRequested():
-                self.logger.info("收到中断请求，停止初始化")
+                self.logger.info("[BACKEND-INIT] 收到中断请求，停止初始化")
                 return
 
             success = result.get("success", False)
@@ -71,21 +95,21 @@ class BackendInitializerWorker(QObject):
             if success:
                 self.progress_updated.emit("后端服务初始化完成", 100)
                 self.logger.info("=" * 70)
-                self.logger.info("✅ 后端服务初始化成功")
+                self.logger.info("[BACKEND-INIT] ✅ 后端服务初始化成功")
                 self.logger.info("=" * 70)
                 self.initialization_completed.emit(True, result)
             else:
                 error_msg = result.get("message", "未知错误")
                 self.progress_updated.emit(f"初始化失败: {error_msg}", 100)
                 self.logger.error("=" * 70)
-                self.logger.error("❌ 后端服务初始化失败: %s", error_msg)
+                self.logger.error("[BACKEND-INIT] ❌ 后端服务初始化失败: %s", error_msg)
                 self.logger.error("=" * 70)
                 self.initialization_completed.emit(False, result)
 
         except Exception as e:
             error_msg = f"后端初始化异常: {str(e)}"
             self.logger.error("=" * 70)
-            self.logger.error("💥 后端初始化工作线程发生异常")
+            self.logger.error("[BACKEND-INIT] 💥 后端初始化工作线程发生异常")
             self.logger.error("=" * 70)
             self.logger.error(error_msg, exc_info=True)
             self.error_occurred.emit(error_msg)
@@ -93,7 +117,14 @@ class BackendInitializerWorker(QObject):
 
 
 class StartupCoordinator(QObject):
-    """启动协调器 - 管理整个应用的启动流程."""
+    """启动协调器 - 管理整个应用的启动流程.
+
+    职责：
+    1. 显示启动画面并更新进度
+    2. 管理后台初始化线程
+    3. 协调UI和后端的就绪状态
+    4. 处理启动失败和错误恢复
+    """
 
     # 信号定义
     startup_completed = Signal()  # 启动完成
@@ -120,11 +151,23 @@ class StartupCoordinator(QObject):
         self.backend_initialized = False
         self.backend_result: Optional[dict] = None
 
+        # 超时监视
+        self.timeout_timer: Optional[object] = None
+        self.initialization_timeout = 30  # 30秒超时
+
+        self.logger.info("[COORDINATOR] 启动协调器已创建")
+
     def start(self):
-        """开始启动流程."""
+        """开始启动流程.
+
+        启动流程：
+        1. 初始化配置（如果需要）
+        2. 显示启动画面
+        3. 启动后台初始化线程
+        """
         try:
             self.logger.info("=" * 60)
-            self.logger.info("启动协调器：开始启动流程")
+            self.logger.info("[COORDINATOR] 启动协调器：开始启动流程")
             self.logger.info("=" * 60)
 
             # 步骤1: 初始化配置
@@ -137,32 +180,32 @@ class StartupCoordinator(QObject):
             self._start_backend_initialization()
 
         except Exception as e:
-            self.logger.error("启动失败: %s", e, exc_info=True)
+            self.logger.error("[COORDINATOR] 启动失败: %s", e, exc_info=True)
             self.startup_failed.emit(str(e))
 
     def _initialize_config(self):
         """步骤1: 初始化配置（同步，必须最先完成）."""
         if self.config_already_initialized:
-            self.logger.info("配置已在主入口初始化，跳过")
+            self.logger.info("[COORDINATOR] 配置已在主入口初始化，跳过")
             return
 
-        self.logger.info("初始化配置...")
+        self.logger.info("[COORDINATOR] 初始化配置...")
 
-        from backend.config import init_settings, get_settings
+        from backend.config import init_settings
 
         config_file = os.getenv("CONFIG_FILE")
         if config_file:
-            self.logger.info("从环境变量加载配置: %s", config_file)
+            self.logger.info("[COORDINATOR] 从环境变量加载配置: %s", config_file)
             init_settings(config_file)
         else:
-            self.logger.info("使用默认配置文件")
+            self.logger.info("[COORDINATOR] 使用默认配置文件")
             init_settings()
 
-        self.logger.info("✅ 配置初始化完成")
+        self.logger.info("[COORDINATOR] ✅ 配置初始化完成")
 
     def _show_splash_screen(self):
         """步骤2: 显示启动画面."""
-        self.logger.info("显示启动画面...")
+        self.logger.info("[COORDINATOR] 显示启动画面...")
 
         # 创建启动画面
         self.splash = QSplashScreen()
@@ -189,7 +232,7 @@ class StartupCoordinator(QObject):
         self.splash.show()
         self.app.processEvents()
 
-        self.logger.info("✅ 启动画面已显示")
+        self.logger.info("[COORDINATOR] ✅ 启动画面已显示")
 
     def show_message(self, message: str, progress: int = 0):
         """在启动画面显示消息.
@@ -211,7 +254,7 @@ class StartupCoordinator(QObject):
 
     def _start_backend_initialization(self):
         """步骤3: 异步初始化后端服务."""
-        self.logger.info("启动后端服务初始化（异步）...")
+        self.logger.info("[COORDINATOR] 启动后端服务初始化（异步）...")
 
         # 创建工作线程
         self.backend_thread = QThread()
@@ -229,15 +272,18 @@ class StartupCoordinator(QObject):
         # 安全清理机制
         self.backend_worker.initialization_completed.connect(self._safe_cleanup_thread)
 
+        # 启动超时监视定时器
+        self._start_timeout_monitor()
+
         # 启动线程
         self.backend_thread.start()
 
-        self.logger.info("✅ 后端初始化线程已启动")
+        self.logger.info("[COORDINATOR] ✅ 后端初始化线程已启动")
 
     def _safe_cleanup_thread(self):
         """安全清理QThread资源."""
         if self.backend_thread and self.backend_thread.isRunning():
-            self.logger.info("开始安全清理后端线程...")
+            self.logger.info("[COORDINATOR] 开始安全清理后端线程...")
 
             # 请求中断
             self.backend_thread.requestInterruption()
@@ -265,22 +311,57 @@ class StartupCoordinator(QObject):
                     )
                 )
 
-                self.logger.info("✅ 后端线程清理完成")
+                self.logger.info("[COORDINATOR] ✅ 后端线程清理完成")
         except Exception as e:
-            self.logger.error("线程清理异常: %s", e)
+            self.logger.error("[COORDINATOR] 线程清理异常: %s", e)
+
+    def _start_timeout_monitor(self):
+        """启动超时监视定时器."""
+        from PySide6.QtCore import QTimer
+
+        self.timeout_timer = QTimer()
+        self.timeout_timer.setSingleShot(True)
+        self.timeout_timer.timeout.connect(self._on_initialization_timeout)
+        self.timeout_timer.start(self.initialization_timeout * 1000)  # 转换为毫秒
+
+        self.logger.info("[COORDINATOR] 启动超时监视定时器（%d秒）", self.initialization_timeout)
+
+    def _stop_timeout_monitor(self):
+        """停止超时监视定时器."""
+        if self.timeout_timer:
+            self.timeout_timer.stop()
+            self.timeout_timer = None
+            self.logger.info("[COORDINATOR] 停止超时监视定时器")
+
+    def _on_initialization_timeout(self):
+        """初始化超时处理."""
+        self.logger.warning("[COORDINATOR] ⚠️ 后端初始化超时（%d秒）", self.initialization_timeout)
+
+        # 显示超时警告
+        self.show_message(
+            f"后端初始化超时（{self.initialization_timeout}秒），可能存在阻塞...\n"
+            "系统将继续等待，或您可以强制退出",
+            50,
+        )
+
+        # 注意：不强制中断，继续等待，让用户决定是否退出
+        # 如果需要强制继续，可以发送 startup_failed 信号
 
     def _on_backend_progress(self, message: str, progress: int):
         """后端初始化进度更新."""
-        self.logger.info("后端初始化进度 [%d%%]: %s", progress, message)
+        self.logger.info("[COORDINATOR] 后端初始化进度 [%d%%]: %s", progress, message)
         self.show_message(message, progress)
 
     def _on_backend_completed(self, success: bool, result: dict):
         """后端初始化完成."""
+        # 停止超时监视
+        self._stop_timeout_monitor()
+
         self.backend_initialized = success
         self.backend_result = result
 
         if success:
-            self.logger.info("✅ 后端服务初始化成功，准备启动UI")
+            self.logger.info("[COORDINATOR] ✅ 后端服务初始化成功，准备启动UI")
             self.show_message("后端服务就绪，正在启动界面...", 100)
 
             # 延迟一下让用户看到消息
@@ -289,24 +370,48 @@ class StartupCoordinator(QObject):
             QTimer.singleShot(500, self._complete_startup)
         else:
             error_msg = result.get("message", "后端初始化失败")
-            self.logger.error("❌ 后端服务初始化失败: %s", error_msg)
+            self.logger.error("[COORDINATOR] ❌ 后端服务初始化失败: %s", error_msg)
             self.startup_failed.emit(error_msg)
 
     def _on_backend_error(self, error_msg: str):
         """后端初始化错误."""
-        self.logger.error("后端初始化错误: %s", error_msg)
+        # 停止超时监视
+        self._stop_timeout_monitor()
+
+        self.logger.error("[COORDINATOR] 后端初始化错误: %s", error_msg)
         self.show_message(f"错误: {error_msg}", 0)
         self.startup_failed.emit(error_msg)
 
     def _complete_startup(self):
         """完成启动流程."""
-        self.logger.info("✅ 启动流程完成，发送 startup_completed 信号")
+        self.logger.info("[COORDINATOR] ✅ 启动流程完成，发送 startup_completed 信号")
         self.startup_completed.emit()
 
-    def hide_splash(self):
+    def hide_splash(self, main_window: Optional[QWidget] = None):
         """隐藏启动画面."""
         if self.splash:
-            self.logger.info("隐藏启动画面")
-            self.splash.close()
-            self.splash.deleteLater()
-            self.splash = None
+            try:
+                self.logger.info("[COORDINATOR] 隐藏启动画面")
+                print("[COORDINATOR] 开始隐藏启动画面...")
+                if main_window:
+                    try:
+                        self.splash.finish(main_window)
+                    except Exception as finish_error:  # fallback if finish fails
+                        self.logger.warning(
+                            "[COORDINATOR] finish 调用失败，使用 close(): %s",
+                            finish_error,
+                        )
+                        self.splash.close()
+                else:
+                    self.splash.close()
+                print("[COORDINATOR] 启动画面已关闭")
+                self.splash.deleteLater()
+                print("[COORDINATOR] 启动画面已标记删除")
+                self.splash = None
+                print("[COORDINATOR] ✅ 启动画面已隐藏")
+                self.logger.info("[COORDINATOR] ✅ 启动画面已成功隐藏")
+            except Exception as e:
+                self.logger.error("[COORDINATOR] 隐藏启动画面失败: %s", e, exc_info=True)
+                print(f"[COORDINATOR] ❌ 隐藏启动画面失败: {e}")
+                # 即使失败，也设置为None避免重复操作
+                self.splash = None

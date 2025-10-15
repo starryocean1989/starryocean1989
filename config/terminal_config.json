@@ -48,5 +48,35 @@
     "max_history": 10,
     "system_prompt": "你是一个专业的量化交易策略编写助手，擅长Python和VnPy框架。",
     "enable_tools": false
+  },
+  "data_module_vnpy": {
+    "watcher": {
+      "enabled": false,
+      "check_interval": 5
+    },
+    "preload": {
+      "enabled": true,
+      "auto_start": false,
+      "frequently_used": []
+    },
+    "polling_gateway": {
+      "enabled": false
+    },
+    "virtual_gateway": {
+      "enabled": false
+    },
+    "download": {
+      "max_workers": 10
+    },
+    "unified_manager": {
+      "enabled": true
+    }
+  },
+  "startup": {
+    "mode": "async",
+    "splash_screen_duration_ms": 500,
+    "ui_visible_timeout_ms": 2000,
+    "backend_init_timeout_s": 30,
+    "enable_performance_logging": true
   }
 }

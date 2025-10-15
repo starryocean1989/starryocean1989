@@ -118,14 +118,29 @@ class SystemManagerService(BaseService):
             # 初始化监控（跳过，避免阻塞）
             self.logger.info("系统监控初始化已跳过（避免启动阻塞）")
 
-            # 初始化日志和告警系统（优化后的快速初始化）
-            self._init_logging_and_alert_system()
+            # ⚡ 优化：延迟初始化日志和告警系统，避免启动时阻塞
+            # 将在后台线程中异步初始化
+            import threading
+
+            threading.Thread(
+                target=self._init_logging_and_alert_system_async,
+                daemon=True,
+                name="LogAlertSystemInitializer",
+            ).start()
+            self.logger.info("✅ 日志和告警系统将在后台异步初始化")
 
             return True
 
         except Exception as e:
             self._log_error("初始化", e)
             return False
+
+    def _init_logging_and_alert_system_async(self) -> None:
+        """在后台线程中异步初始化日志和告警系统."""
+        import time
+
+        time.sleep(2)  # 等待2秒，确保主启动流程完成
+        self._init_logging_and_alert_system()
 
     def _do_shutdown(self) -> bool:
         """关闭系统管理服务."""
@@ -190,7 +205,7 @@ class SystemManagerService(BaseService):
                 "retention_days": 30,
             }
             logging_result = initialize_logging_system(event_engine, logging_config)
-            
+
             if logging_result:
                 print(f"[启动] ✅ 日志系统初始化成功")
                 self.logger.info("✅ 日志系统初始化成功")
@@ -204,7 +219,7 @@ class SystemManagerService(BaseService):
                 "suppression_window": 300,
             }
             alert_result = initialize_alert_system(event_engine, alert_config)
-            
+
             if alert_result:
                 print(f"[启动] ✅ 告警系统初始化成功")
                 self.logger.info("✅ 告警系统初始化成功")
@@ -249,7 +264,9 @@ class SystemManagerService(BaseService):
             )
             self.alert_engine.add_rule(service_offline_rule)
 
-            self.logger.info("默认告警规则已加载（CPU、内存、磁盘、服务离线监控规则，支持特殊条件评估）")
+            self.logger.info(
+                "默认告警规则已加载（CPU、内存、磁盘、服务离线监控规则，支持特殊条件评估）"
+            )
         except Exception as e:
             self.logger.error("加载默认告警规则失败: %s", str(e))
 
@@ -964,18 +981,12 @@ class SystemManagerService(BaseService):
                     "logger_name": logger_name,
                     "limit": limit,
                     "offset": offset,
-                }
+                },
             }
 
         except Exception as e:
             self._log_error("查询日志", e)
-            return {
-                "success": False,
-                "message": str(e),
-                "logs": [],
-                "total": 0,
-                "stats": {}
-            }
+            return {"success": False, "message": str(e), "logs": [], "total": 0, "stats": {}}
 
     def get_log_stats(self) -> Dict[str, Any]:
         """获取日志统计信息.
@@ -989,18 +1000,11 @@ class SystemManagerService(BaseService):
             log_manager = get_log_manager()
             stats = log_manager.get_log_stats()
 
-            return {
-                "success": True,
-                "stats": stats
-            }
+            return {"success": True, "stats": stats}
 
         except Exception as e:
             self._log_error("获取日志统计", e)
-            return {
-                "success": False,
-                "message": str(e),
-                "stats": {}
-            }
+            return {"success": False, "message": str(e), "stats": {}}
 
     def export_logs(
         self,
@@ -1043,10 +1047,7 @@ class SystemManagerService(BaseService):
 
         except Exception as e:
             self._log_error("导出日志", e)
-            return {
-                "success": False,
-                "message": str(e)
-            }
+            return {"success": False, "message": str(e)}
 
     # ==================== 系统诊断 ====================
 
@@ -1381,7 +1382,7 @@ class SystemManagerService(BaseService):
                     "rule_id": rule_id,
                     "limit": limit,
                     "offset": offset,
-                }
+                },
             }
 
         except Exception as e:
@@ -1566,17 +1567,15 @@ class SystemManagerService(BaseService):
                     "resolved_count": len(resolved_alerts),
                     "error_count": len(error_alerts),
                     "critical_count": len(critical_alerts),
-                    "total_count": len(new_alerts) + len(acknowledged_alerts) + len(resolved_alerts),
-                }
+                    "total_count": len(new_alerts)
+                    + len(acknowledged_alerts)
+                    + len(resolved_alerts),
+                },
             }
 
         except Exception as e:
             self._log_error("获取告警统计", e)
-            return {
-                "success": False,
-                "message": str(e),
-                "stats": {}
-            }
+            return {"success": False, "message": str(e), "stats": {}}
 
     # ==================== 服务重载 ====================
 

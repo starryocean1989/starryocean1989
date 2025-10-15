@@ -58,7 +58,7 @@ class BaseService(ABC):
     def __init__(self) -> None:
         """初始化基础服务."""
         self.service_name = self.__class__.__name__
-        self.logger = logging.getLogger(f"{__name__}.{self.service_name}")
+        self._logger = logging.getLogger(f"{__name__}.{self.service_name}")
         self.status = ServiceStatus.STOPPED
         self.is_initialized = False
         self.start_time: Optional[datetime] = None
@@ -69,6 +69,15 @@ class BaseService(ABC):
         self.event_engine = None
 
         self.logger.info(f"服务 {self.service_name} 创建完成")
+
+    @property
+    def logger(self) -> logging.Logger:
+        """获取日志记录器.
+
+        Returns:
+            logging.Logger: 日志记录器实例
+        """
+        return self._logger
 
     def initialize(self) -> bool:
         """初始化服务.

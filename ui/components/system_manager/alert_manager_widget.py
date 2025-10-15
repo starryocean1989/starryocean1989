@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 )
 
 from backend.core.utils import EVENT_ALERT_CREATED, EVENT_ALERT_UPDATED, AlertSeverity, AlertStatus
+from ui.core.boot_orchestrator import get_boot_orchestrator
 
 
 class AlertCard(QWidget):
@@ -256,8 +257,16 @@ class AlertManagerWidget(QWidget):
         # 连接信号
         self._connect_signals()
 
-        # 启动定时器
-        self.start_update_timer()
+        # 启动定时器改为就绪后启动
+        try:
+            orch = get_boot_orchestrator()
+            orch.on_all_ready(
+                ["backend_ready", "ui_ready", "ui_visible"],
+                lambda: QTimer.singleShot(0, self._init_after_backend),
+            )
+        except Exception:
+            # 回退：若编排器不可用，仍按旧逻辑启动
+            self.start_update_timer()
 
     def _init_ui(self) -> None:
         """初始化用户界面."""
@@ -488,11 +497,20 @@ class AlertManagerWidget(QWidget):
     def handle_event(self, event_type: str, event_data: Dict[str, Any]) -> None:
         """处理事件."""
         if event_type == EVENT_ALERT_CREATED:
-            # 新告警创建
-            self.add_alert(event_data)
+            # 新告警创建（切回主线程）
+            QTimer.singleShot(0, lambda: self.add_alert(event_data))
         elif event_type == EVENT_ALERT_UPDATED:
-            # 告警状态更新
-            self.update_alert(event_data)
+            # 告警状态更新（切回主线程）
+            QTimer.singleShot(0, lambda: self.update_alert(event_data))
+
+    def _init_after_backend(self) -> None:
+        """在后端与UI就绪后启动刷新与定时器."""
+        try:
+            # 先做一次首刷
+            self._refresh_alerts()
+        finally:
+            # 启动定时器
+            self.start_update_timer()
 
     def get_current_filters(self) -> Dict[str, Any]:
         """获取当前筛选条件."""

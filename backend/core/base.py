@@ -805,21 +805,37 @@ class ServiceInitializer:
     6. 辅助服务 (Portfolio, Market, System)
     """
 
-    def __init__(self, service_manager):
+    def __init__(self, service_manager, progress_callback=None):
         """初始化服务初始化器.
 
         Args:
             service_manager: 服务管理器实例
+            progress_callback: 进度回调函数 callback(message: str, progress: int)
         """
         self.service_manager = service_manager
         self.logger = logging.getLogger(self.__class__.__name__)
         self.initialized_services: Dict[str, Any] = {}
         self.failed_services: List[str] = []
+        self.progress_callback = progress_callback
 
         # VNPY引擎实例
         self.main_engine = None
         self.event_engine = None
         self.china_stock_engine = None
+
+    def _report_progress(self, message: str, progress: int):
+        """报告初始化进度.
+
+        Args:
+            message: 进度消息
+            progress: 进度百分比(0-100)
+        """
+        self.logger.info("[进度 %d%%] %s", progress, message)
+        if self.progress_callback:
+            try:
+                self.progress_callback(message, progress)
+            except Exception as e:
+                self.logger.warning("进度回调失败: %s", e)
 
     def initialize_all_services(self) -> bool:
         """初始化所有服务.
@@ -832,30 +848,11 @@ class ServiceInitializer:
             self.logger.info("开始初始化服务...")
             self.logger.info("=" * 60)
 
-            # 🔧 修复点1：显式初始化配置（从环境变量指定的路径）
-            from backend.config import init_settings, get_settings
-            import os
+            # 配置已在主线程初始化，无需重复初始化
+            from backend.config import get_settings
 
-            config_file = os.getenv("CONFIG_FILE")
-            if config_file:
-                self.logger.info("从环境变量加载配置文件: %s", config_file)
-                init_settings(config_file)
-            else:
-                self.logger.info("使用默认配置文件")
-                init_settings()
-
-            # 验证配置已加载
             settings = get_settings()
-            self.logger.info("配置文件路径: %s", settings.config_file)
-            if settings.ai.api_key:
-                masked_key = (
-                    f"{settings.ai.api_key[:4]}...{settings.ai.api_key[-4:]}"
-                    if len(settings.ai.api_key) > 8
-                    else "***"
-                )
-                self.logger.info("AI API Key: %s", masked_key)
-            else:
-                self.logger.info("AI API Key: 未设置")
+            self.logger.info("使用已加载的配置: %s", settings.config_file)
 
             # 阶段1: 初始化VNPY核心框架
             phase1_success = self._initialize_vnpy_core()
@@ -867,12 +864,13 @@ class ServiceInitializer:
             phase3_success = self._initialize_trading_services()
 
             # 阶段4: 初始化策略服务
-            phase4_success = self._initialize_strategy_services()
+            self._initialize_strategy_services()
 
             # 阶段5: 初始化辅助服务
             self._initialize_auxiliary_services()
 
             # 生成初始化报告
+            self._report_progress("生成初始化报告...", 98)
             self._generate_initialization_report()
 
             # 如果核心服务初始化成功，即使部分服务失败也返回True
@@ -880,9 +878,11 @@ class ServiceInitializer:
 
             if core_services_ok:
                 self.logger.info("✅ 核心服务初始化成功，系统可以启动")
+                self._report_progress("后端服务初始化完成", 100)
                 return True
             else:
                 self.logger.error("❌ 核心服务初始化失败，系统无法正常启动")
+                self._report_progress("核心服务初始化失败", 100)
                 return False
 
         except Exception as e:
@@ -999,78 +999,87 @@ class ServiceInitializer:
             self.logger.info("策略可以在没有历史数据的情况下运行（仅使用实时行情）")
 
     def _initialize_vnpy_core(self) -> bool:
-        """阶段1: 初始化VNPY核心框架.
+        """阶段1: 初始化VNPY核心框架（完整模式）.
+
+        进度: 20% → 40%
 
         Returns:
             bool: 是否成功
         """
+        self._report_progress("阶段1: 初始化VNPY核心引擎...", 20)
+
         self.logger.info("\n" + "=" * 60)
-        self.logger.info("阶段1: 初始化VNPY核心框架")
+        self.logger.info("阶段1: 初始化VNPY核心框架（完整模式）")
         self.logger.info("=" * 60)
 
-        try:
-            # 导入VNPY核心类
-            try:
-                from vnpy.event import EventEngine
-                from vnpy.trader.engine import MainEngine
+        start_time = time.time()
 
-                self.logger.info("✅ VNPY核心模块导入成功")
-            except ImportError as e:
-                self.logger.error("❌ VNPY核心模块导入失败: %s", e)
-                self.failed_services.append("vnpy_core")
-                return False
+        try:
+            from vnpy.event import EventEngine
+            from vnpy.trader.engine import MainEngine
 
             # 创建事件引擎
-            try:
-                self.event_engine = EventEngine()
-                self.logger.info("✅ EventEngine 创建成功")
-            except Exception as e:
-                self.logger.error("❌ EventEngine 创建失败: %s", e, exc_info=True)
-                self.failed_services.append("event_engine")
-                return False
+            self._report_progress("创建EventEngine...", 25)
+            self.logger.info("创建EventEngine（interval=0.5）...")
+            self.event_engine = EventEngine(interval=0.5)
+            self.logger.info("✅ EventEngine创建成功")
 
             # 创建主引擎
-            try:
-                self.main_engine = MainEngine(self.event_engine)
-                self.logger.info("✅ MainEngine 创建成功")
-            except Exception as e:
-                self.logger.error("❌ MainEngine 创建失败: %s", e, exc_info=True)
-                self.failed_services.append("main_engine")
-                return False
-
-            # 配置数据服务（使用本地data_module_vnpy作为datafeed）
-            # 延后到 ChinaStockEngine 创建并健康检查通过后再配置，避免早期未初始化告警
+            self._report_progress("创建MainEngine...", 30)
+            self.logger.info("创建MainEngine...")
+            self.main_engine = MainEngine(self.event_engine)
+            self.logger.info("✅ MainEngine创建成功")
 
             # 注册到全局
             set_main_engine(self.main_engine)
             set_event_engine(self.event_engine)
 
-            # 延迟加载策略应用（避免启动时内存错误）
-            # 策略应用将在首次使用时按需加载
-            # self._add_strategy_apps()
+            # 添加策略应用
+            self._report_progress("加载策略应用...", 35)
+            self._add_strategy_apps()
 
-            self.logger.info("✅ VNPY核心框架初始化完成")
+            elapsed = time.time() - start_time
+            self.logger.info("✅ VNPY核心框架初始化完成（完整模式），耗时 %.2f秒", elapsed)
+            self._report_progress("VNPY核心引擎初始化完成", 40)
             return True
 
         except Exception as e:
-            self.logger.error("❌ VNPY核心框架初始化失败: %s", e, exc_info=True)
-            self.failed_services.append("vnpy_core")
-            return False
+            # 如果VNPY初始化失败，使用占位符
+            elapsed = time.time() - start_time
+            self.logger.error("❌ VNPY初始化失败: %s（耗时 %.2f秒）", e, elapsed, exc_info=True)
+            self.logger.warning("⚠️ 使用占位符模式，系统将以数据功能模式运行")
+
+            # 创建空占位符
+            self.event_engine = None
+            self.main_engine = None
+
+            set_main_engine(None)
+            set_event_engine(None)
+
+            self._report_progress("VNPY初始化失败，使用占位符模式", 40)
+            # 返回True让后续流程继续（数据功能不依赖VNPY）
+            return True
 
     def _initialize_data_services(self) -> bool:
         """阶段2: 初始化数据服务.
 
+        进度: 40% → 60%
+
         Returns:
             bool: 是否成功
         """
+        self._report_progress("阶段2: 初始化数据引擎和服务...", 40)
+
         self.logger.info("\n" + "=" * 60)
         self.logger.info("阶段2: 初始化数据服务")
         self.logger.info("=" * 60)
 
+        start_time = time.time()
         success_count = 0
 
         # 初始化ChinaStockEngine（作为数据引擎）
         try:
+            self._report_progress("创建ChinaStockEngine...", 45)
             from backend.infrastructure.data_module_vnpy.core import ChinaStockEngine
 
             self.china_stock_engine = ChinaStockEngine(self.main_engine, self.event_engine)
@@ -1080,21 +1089,26 @@ class ServiceInitializer:
             set_china_stock_engine(self.china_stock_engine)
 
             # 健康检查并在就绪后配置为数据源
-            try:
-                if self.china_stock_engine and hasattr(self.china_stock_engine, "healthcheck"):
-                    hc = self.china_stock_engine.healthcheck()
-                    ready = bool(hc.get("ready", False))
-                    if ready:
-                        self.logger.info("✅ ChinaStockEngine 健康检查通过")
-                        self._configure_datafeed()
-                    else:
-                        self.logger.warning("⚠️ ChinaStockEngine 未就绪：%s", hc.get("message", "原因未知"))
-                else:
-                    # 兼容旧版引擎：无健康检查时直接配置
-                    self.logger.debug("ChinaStockEngine 未提供健康检查，直接配置数据源")
-                    self._configure_datafeed()
-            except Exception as e:
-                self.logger.warning("⚠️ 配置 ChinaStockEngine 为数据源时出现异常: %s", e)
+            # ❗ 优化：跳过启动时健康检查，避免阻塞，延迟到首次使用
+            # try:
+            #     if self.china_stock_engine and hasattr(self.china_stock_engine, "healthcheck"):
+            #         hc = self.china_stock_engine.healthcheck()
+            #         ready = bool(hc.get("ready", False))
+            #         if ready:
+            #             self.logger.info("✅ ChinaStockEngine 健康检查通过")
+            #             self._configure_datafeed()
+            #         else:
+            #             self.logger.warning("⚠️ ChinaStockEngine 未就绪：%s", hc.get("message", "原因未知"))
+            #     else:
+            #         # 兼容旧版引擎：无健康检查时直接配置
+            #         self.logger.debug("ChinaStockEngine 未提供健康检查，直接配置数据源")
+            #         self._configure_datafeed()
+            # except Exception as e:
+            #     self.logger.warning("⚠️ 配置 ChinaStockEngine 为数据源时出现异常: %s", e)
+
+            # 直接配置数据源，健康检查延迟到首次使用
+            self.logger.info("✅ ChinaStockEngine 创建成功，健康检查延迟到首次使用")
+            self._configure_datafeed()
 
         except ImportError as e:
             self.logger.warning("⚠️ ChinaStockEngine 不可用: %s", e)
@@ -1107,6 +1121,7 @@ class ServiceInitializer:
 
         # 初始化DataCenterService
         try:
+            self._report_progress("初始化DataCenterService...", 50)
             from backend.services.data_center_service import DataCenterService
 
             data_center_service = DataCenterService()
@@ -1125,18 +1140,26 @@ class ServiceInitializer:
             self.logger.error("❌ DataCenterService 初始化异常: %s", e, exc_info=True)
             self.failed_services.append("data_center_service")
 
+        elapsed = time.time() - start_time
+        self.logger.info("阶段2完成，耗时 %.2f秒", elapsed)
+        self._report_progress("数据服务初始化完成", 60)
         return success_count > 0
 
     def _initialize_trading_services(self) -> bool:
-        """阶段4: 初始化交易服务.
+        """阶段3: 初始化交易服务.
+
+        进度: 60% → 75%
 
         Returns:
             bool: 是否成功
         """
+        self._report_progress("阶段3: 初始化交易网关服务...", 60)
+
         self.logger.info("\n" + "=" * 60)
         self.logger.info("阶段3: 初始化交易服务")
         self.logger.info("=" * 60)
 
+        start_time = time.time()
         success_count = 0
 
         # 初始化TradingGatewayService
@@ -1161,18 +1184,26 @@ class ServiceInitializer:
             self.logger.error("❌ TradingGatewayService 初始化异常: %s", e, exc_info=True)
             self.failed_services.append("trading_gateway_service")
 
+        elapsed = time.time() - start_time
+        self.logger.info("阶段3完成，耗时 %.2f秒", elapsed)
+        self._report_progress("交易服务初始化完成", 75)
         return success_count > 0
 
     def _initialize_strategy_services(self) -> bool:
-        """阶段5: 初始化策略服务.
+        """阶段4: 初始化策略服务.
+
+        进度: 75% → 90%
 
         Returns:
             bool: 是否成功
         """
+        self._report_progress("阶段4: 初始化策略中心服务...", 75)
+
         self.logger.info("\n" + "=" * 60)
         self.logger.info("阶段4: 初始化策略服务")
         self.logger.info("=" * 60)
 
+        start_time = time.time()
         success_count = 0
 
         # 初始化StrategyCenterService
@@ -1219,18 +1250,26 @@ class ServiceInitializer:
             self.logger.debug("❌ AIAssistantService 初始化异常: %s", e)
             self.failed_services.append("ai_assistant_service")
 
+        elapsed = time.time() - start_time
+        self.logger.info("阶段4完成，耗时 %.2f秒", elapsed)
+        self._report_progress("策略服务初始化完成", 90)
         return success_count > 0
 
     def _initialize_auxiliary_services(self) -> bool:
-        """阶段6: 初始化辅助服务.
+        """阶段5: 初始化辅助服务.
+
+        进度: 90% → 95%
 
         Returns:
             bool: 是否成功
         """
+        self._report_progress("阶段5: 初始化辅助服务...", 90)
+
         self.logger.info("\n" + "=" * 60)
-        self.logger.info("阶段6: 初始化辅助服务")
+        self.logger.info("阶段5: 初始化辅助服务")
         self.logger.info("=" * 60)
 
+        start_time = time.time()
         success_count = 0
 
         # 初始化PortfolioService
@@ -1306,6 +1345,9 @@ class ServiceInitializer:
             )
             self.failed_services.append("system_manager_service")
 
+        elapsed = time.time() - start_time
+        self.logger.info("阶段5完成，耗时 %.2f秒", elapsed)
+        self._report_progress("辅助服务初始化完成", 95)
         return success_count > 0
 
     def _generate_initialization_report(self):
@@ -1335,8 +1377,12 @@ class ServiceInitializer:
         self.logger.info("=" * 60)
 
 
-def initialize_services() -> Dict[str, Any]:
-    """初始化所有服务，返回详细的初始化报告"""
+def initialize_services(progress_callback=None) -> Dict[str, Any]:
+    """初始化所有服务，返回详细的初始化报告
+
+    Args:
+        progress_callback: 进度回调函数 callback(message: str, progress: int)
+    """
     try:
         service_manager = get_service_manager()
 
@@ -1349,7 +1395,7 @@ def initialize_services() -> Dict[str, Any]:
         )
 
         # 执行初始化
-        success = initialize_real_services()
+        success = initialize_real_services(progress_callback=progress_callback)
         service_manager.initialization_attempted = True
         service_manager.initialization_completed = success
 
@@ -1400,14 +1446,17 @@ def initialize_services() -> Dict[str, Any]:
         }
 
 
-def initialize_real_services() -> bool:
+def initialize_real_services(progress_callback=None) -> bool:
     """初始化所有服务的入口函数.
+
+    Args:
+        progress_callback: 进度回调函数 callback(message: str, progress: int)
 
     Returns:
         bool: 是否初始化成功
     """
     service_manager = get_service_manager()
-    initializer = ServiceInitializer(service_manager)
+    initializer = ServiceInitializer(service_manager, progress_callback=progress_callback)
     return initializer.initialize_all_services()
 
 

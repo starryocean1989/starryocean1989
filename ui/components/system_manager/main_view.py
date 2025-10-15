@@ -65,7 +65,7 @@ class SystemManager(BaseWidget, LoggerMixin):
         self.system_service = None
 
         # 选项卡部件
-        self.tab_widget: QTabWidget = QTabWidget()
+        self.tab_widget: Optional[QTabWidget] = None
         self.system_status_tab: Optional[QWidget] = None
         self.performance_tab: Optional[QWidget] = None
         self.alerts_tab: Optional[QWidget] = None
@@ -290,12 +290,16 @@ class SystemManager(BaseWidget, LoggerMixin):
             self.system_service = None
 
     def setup_ui(self):
-        """设置用户界面."""
+        """设置用户界面（延迟加载重资源，构造期仅占位）."""
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
 
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMinimumSize(600, 400)
+
+        # 在父类 QWidget 初始化后再创建 QTabWidget，避免原生层不稳定
+        if not self.tab_widget:
+            self.tab_widget = QTabWidget()
 
         if self.tab_widget:
             self.tab_widget.setTabPosition(QTabWidget.TabPosition.North)
@@ -303,11 +307,42 @@ class SystemManager(BaseWidget, LoggerMixin):
                 QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
             )
 
-        # 创建8个子界面
-        self._create_sub_interfaces()
+        # 构造期仅添加占位Tab，避免创建重资源组件导致原生崩溃
+        placeholder = QWidget()
+        ph_layout = QVBoxLayout(placeholder)
+        ph_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        msg = QLabel("正在加载系统管理模块...")
+        msg.setStyleSheet("color: #aaa; font-size: 12px;")
+        ph_layout.addWidget(msg)
+        if self.tab_widget:
+            self.tab_widget.addTab(placeholder, "加载中")
 
         if self.tab_widget:
             main_layout.addWidget(self.tab_widget)
+
+        # 延迟创建子界面（在事件循环后执行）
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(300, self._safe_create_sub_interfaces)
+
+    def _safe_create_sub_interfaces(self):
+        """安全延迟创建子界面（失败显示错误占位，不让应用崩溃）."""
+        try:
+            # 清理占位Tab
+            if self.tab_widget and self.tab_widget.count() > 0 and self.tab_widget.tabText(0) == "加载中":
+                self.tab_widget.removeTab(0)
+            # 实际创建
+            self._create_sub_interfaces()
+        except Exception as e:
+            # 创建失败，显示错误占位
+            error_tab = QWidget()
+            layout = QVBoxLayout(error_tab)
+            layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            error_msg = QLabel(f"系统管理模块加载失败：{e}")
+            error_msg.setWordWrap(True)
+            layout.addWidget(error_msg)
+            if self.tab_widget:
+                self.tab_widget.addTab(error_tab, "错误")
+            self.logger.error("SystemManager 延迟加载失败: %s", e, exc_info=True)
 
     def _create_sub_interfaces(self):
         """创建8个子界面（按新顺序）."""

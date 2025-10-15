@@ -9,7 +9,7 @@ import json
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from PySide6.QtCore import QTimer, Signal, Qt
+from PySide6.QtCore import QTimer, Signal, Qt, QDateTime
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QComboBox,
@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from backend.core.utils import EVENT_LOG_RECORD
+from ui.core.boot_orchestrator import get_boot_orchestrator
 
 
 class LogManagerWidget(QWidget):
@@ -65,8 +66,16 @@ class LogManagerWidget(QWidget):
         # 连接信号
         self._connect_signals()
 
-        # 启动定时器
-        self.start_update_timer()
+        # 启动定时器改为就绪后启动
+        try:
+            orch = get_boot_orchestrator()
+            orch.on_all_ready(
+                ["backend_ready", "ui_ready", "ui_visible"],
+                lambda: QTimer.singleShot(0, self._init_after_backend),
+            )
+        except Exception:
+            # 回退：若编排器不可用，仍按旧逻辑启动
+            self.start_update_timer()
 
     def _init_ui(self) -> None:
         """初始化用户界面."""
@@ -100,11 +109,11 @@ class LogManagerWidget(QWidget):
         # 时间范围选择
         time_label = QLabel("时间范围:")
         self.start_time_edit = QDateTimeEdit()
-        self.start_time_edit.setDateTime(datetime.now() - timedelta(hours=1))
+        self.start_time_edit.setDateTime(QDateTime.fromPython(datetime.now() - timedelta(hours=1)))
         self.start_time_edit.setDisplayFormat("yyyy-MM-dd hh:mm:ss")
 
         self.end_time_edit = QDateTimeEdit()
-        self.end_time_edit.setDateTime(datetime.now())
+        self.end_time_edit.setDateTime(QDateTime.fromPython(datetime.now()))
         self.end_time_edit.setDisplayFormat("yyyy-MM-dd hh:mm:ss")
 
         layout.addWidget(time_label)
@@ -201,8 +210,8 @@ class LogManagerWidget(QWidget):
         level_text = self.level_combo.currentText()
         level = level_text if level_text != "全部" else None
 
-        start_time = self.start_time_edit.dateTime().toPython().isoformat()
-        end_time = self.end_time_edit.dateTime().toPython().isoformat()
+        start_time = self.start_time_edit.dateTime().toString(Qt.ISODate)
+        end_time = self.end_time_edit.dateTime().toString(Qt.ISODate)
 
         search_text = self.search_edit.text().strip()
         search_terms = [term.strip() for term in search_text.split()] if search_text else []
@@ -344,8 +353,8 @@ class LogManagerWidget(QWidget):
                 level_text = self.level_combo.currentText()
                 level = level_text if level_text != "全部" else None
 
-                start_time = self.start_time_edit.dateTime().toPython().isoformat()
-                end_time = self.end_time_edit.dateTime().toPython().isoformat()
+                start_time = self.start_time_edit.dateTime().toString(Qt.ISODate)
+                end_time = self.end_time_edit.dateTime().toString(Qt.ISODate)
 
                 search_text = self.search_edit.text().strip()
                 module = search_text if search_text else None
@@ -440,8 +449,17 @@ class LogManagerWidget(QWidget):
             event_data: 事件数据
         """
         if event_type == EVENT_LOG_RECORD:
-            # 接收到新的日志记录
-            self.add_log_record(event_data)
+            # 接收到新的日志记录（切回主线程，避免跨线程更新UI）
+            QTimer.singleShot(0, lambda: self.add_log_record(event_data))
+
+    def _init_after_backend(self) -> None:
+        """在后端与UI就绪后启动刷新与定时器."""
+        try:
+            # 先做一次首刷
+            self._refresh_logs()
+        finally:
+            # 启动定时器
+            self.start_update_timer()
 
     def get_current_filters(self) -> Dict[str, Any]:
         """获取当前筛选条件.
@@ -451,8 +469,8 @@ class LogManagerWidget(QWidget):
         """
         return {
             "level": self.level_combo.currentText() if self.level_combo.currentText() != "全部" else None,
-            "start_time": self.start_time_edit.dateTime().toPython().isoformat(),
-            "end_time": self.end_time_edit.dateTime().toPython().isoformat(),
+            "start_time": self.start_time_edit.dateTime().toString(Qt.ISODate),
+            "end_time": self.end_time_edit.dateTime().toString(Qt.ISODate),
             "search": self.search_edit.text().strip(),
         }
 
@@ -471,15 +489,17 @@ class LogManagerWidget(QWidget):
 
         if "start_time" in filters:
             try:
-                dt = datetime.fromisoformat(filters["start_time"])
-                self.start_time_edit.setDateTime(dt)
+                dt = QDateTime.fromString(filters["start_time"], Qt.ISODate)
+                if dt.isValid():
+                    self.start_time_edit.setDateTime(dt)
             except:
                 pass
 
         if "end_time" in filters:
             try:
-                dt = datetime.fromisoformat(filters["end_time"])
-                self.end_time_edit.setDateTime(dt)
+                dt = QDateTime.fromString(filters["end_time"], Qt.ISODate)
+                if dt.isValid():
+                    self.end_time_edit.setDateTime(dt)
             except:
                 pass
 
