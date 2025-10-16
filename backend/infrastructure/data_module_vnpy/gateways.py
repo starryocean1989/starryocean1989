@@ -89,7 +89,7 @@ class PollingGateway(BaseGateway):
             symbols_str = setting.get("品种列表", "")
             if symbols_str:
                 self.subscribed_symbols = set(
-                    symbols.strip() for symbol in symbols_str.split(",") if symbol.strip()
+                    symbol.strip() for symbol in symbols_str.split(",") if symbol.strip()
                 )
             else:
                 # 从配置获取
@@ -233,6 +233,31 @@ class PollingGateway(BaseGateway):
         self.subscribed_symbols.discard(req.symbol)
         self.logger.info("取消订阅品种: %s", req.symbol)
 
+    def send_order(self, req: OrderRequest) -> str:
+        """发送订单（轮询网关不支持交易，仅用于数据推送）"""
+        self.logger.warning("轮询网关不支持交易功能")
+        return ""
+
+    def cancel_order(self, req: CancelRequest) -> None:
+        """取消订单（轮询网关不支持交易，仅用于数据推送）"""
+        self.logger.warning("轮询网关不支持交易功能")
+
+    def get_account(self) -> None:
+        """获取账户信息（轮询网关不支持交易，仅用于数据推送）"""
+        self.logger.warning("轮询网关不支持交易功能")
+
+    def get_position(self) -> None:
+        """获取持仓信息（轮询网关不支持交易，仅用于数据推送）"""
+        self.logger.warning("轮询网关不支持交易功能")
+
+    def query_account(self) -> None:
+        """查询账户信息（轮询网关不支持交易，仅用于数据推送）"""
+        self.logger.warning("轮询网关不支持交易功能")
+
+    def query_position(self) -> None:
+        """查询持仓信息（轮询网关不支持交易，仅用于数据推送）"""
+        self.logger.warning("轮询网关不支持交易功能")
+
 
 # ==================== 虚拟网关 ====================
 
@@ -303,7 +328,7 @@ class VirtualGateway(BaseGateway):
             symbols_str = setting.get("品种列表", "")
             if symbols_str:
                 self.subscribed_symbols = set(
-                    symbols.strip() for symbol in symbols_str.split(",") if symbol.strip()
+                    symbol.strip() for symbol in symbols_str.split(",") if symbol.strip()
                 )
             else:
                 # 从配置获取
@@ -410,6 +435,11 @@ class VirtualGateway(BaseGateway):
     def _do_pushing(self) -> None:
         """执行一次推送"""
         try:
+            # 确保起始时间已设置
+            if self.start_datetime is None:
+                self.logger.warning("起始时间未设置，使用当前时间")
+                self.start_datetime = datetime.now()
+            
             current_time = self.start_datetime
 
             for symbol in list(self.subscribed_symbols):
@@ -468,6 +498,31 @@ class VirtualGateway(BaseGateway):
         """取消订阅"""
         self.subscribed_symbols.discard(req.symbol)
         self.logger.info("取消订阅品种: %s", req.symbol)
+
+    def send_order(self, req: OrderRequest) -> str:
+        """发送订单（虚拟网关不支持交易，仅用于数据推送）"""
+        self.logger.warning("虚拟网关不支持交易功能")
+        return ""
+
+    def cancel_order(self, req: CancelRequest) -> None:
+        """取消订单（虚拟网关不支持交易，仅用于数据推送）"""
+        self.logger.warning("虚拟网关不支持交易功能")
+
+    def get_account(self) -> None:
+        """获取账户信息（虚拟网关不支持交易，仅用于数据推送）"""
+        self.logger.warning("虚拟网关不支持交易功能")
+
+    def get_position(self) -> None:
+        """获取持仓信息（虚拟网关不支持交易，仅用于数据推送）"""
+        self.logger.warning("虚拟网关不支持交易功能")
+
+    def query_account(self) -> None:
+        """查询账户信息（虚拟网关不支持交易，仅用于数据推送）"""
+        self.logger.warning("虚拟网关不支持交易功能")
+
+    def query_position(self) -> None:
+        """查询持仓信息（虚拟网关不支持交易，仅用于数据推送）"""
+        self.logger.warning("虚拟网关不支持交易功能")
 
 
 # ==================== 全局实例 ====================

@@ -44,12 +44,13 @@ from .core import (
 )
 
 # 导出服务
-from .services.data_center_service import DataCenterService
-from .services.market_board_service import MarketBoardService
-from .services.portfolio_service import PortfolioService
-from .services.strategy_center_service import StrategyCenterService
-from .services.system_manager_service import SystemManagerService
-from .services.trading_gateway_service import TradingGatewayService
+from .modules.data_center.service import DataCenterService
+from .modules.market_board.service import MarketBoardService
+from .modules.portfolio.service import PortfolioService
+from .modules.strategy_center.service import StrategyCenterService
+from .modules.strategy_center.ai_assistant import AIAssistantService
+from .modules.system_manager.service import SystemManagerService
+from .modules.trading_gateway.service import TradingGatewayService
 
 # 导出仓库
 from .repositories import (
@@ -110,6 +111,7 @@ __all__ = [
     "MarketBoardService",
     "PortfolioService",
     "StrategyCenterService",
+    "AIAssistantService",
     "SystemManagerService",
     "TradingGatewayService",
     # 数据仓库

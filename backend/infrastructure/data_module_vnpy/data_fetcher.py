@@ -20,9 +20,10 @@ import queue
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime
 from multiprocessing import Manager, Process, cpu_count
-from typing import Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import pandas as pd
+from pandas import NaT
 
 from mootdx.quotes import Quotes
 
@@ -86,14 +87,37 @@ class TdxDateTimeDecoder:
 
             # 计算实际日期
             base_date = datetime(year, 1, 1)
-            actual_date = base_date + pd.Timedelta(days=day - 1)
+            timedelta_result = base_date + pd.Timedelta(days=day - 1)
+            
+            # 转换为datetime对象
+            actual_date: datetime
+            if isinstance(timedelta_result, datetime):
+                actual_date = timedelta_result
+            else:
+                # 如果是Timestamp或其他类型，尝试转换为datetime
+                try:
+                    if hasattr(timedelta_result, 'to_pydatetime') and callable(timedelta_result.to_pydatetime):
+                        converted = timedelta_result.to_pydatetime()
+                        if not isinstance(converted, datetime):
+                            return None
+                        actual_date = converted
+                    else:
+                        year_val = int(timedelta_result.year)
+                        month_val = int(timedelta_result.month)
+                        day_val = int(timedelta_result.day)
+                        actual_date = datetime(year_val, month_val, day_val)
+                except (ValueError, TypeError, AttributeError):
+                    return None
 
             # 解析时间
             time_parts = time_str.split(":")
             if len(time_parts) >= 2:
                 hour = int(time_parts[0])
                 minute = int(time_parts[1])
-                actual_date = actual_date.replace(hour=hour, minute=minute)
+                replaced_date = actual_date.replace(hour=hour, minute=minute)
+                if not isinstance(replaced_date, datetime):
+                    return None
+                actual_date = replaced_date
 
             return actual_date
 
@@ -114,8 +138,32 @@ class TdxDateTimeDecoder:
             day = int(parts[2])
 
             # 从基准日期计算实际日期
-            actual_date = TdxDateTimeDecoder.DAILY_BASE_DATE + pd.Timedelta(days=total_days - 1)
-            actual_date = actual_date.replace(month=month, day=day)
+            timedelta_result = TdxDateTimeDecoder.DAILY_BASE_DATE + pd.Timedelta(days=total_days - 1)
+            
+            # 转换为datetime对象
+            actual_date: datetime
+            if isinstance(timedelta_result, datetime):
+                actual_date = timedelta_result
+            else:
+                # 如果是Timestamp或其他类型，尝试转换为datetime
+                try:
+                    if hasattr(timedelta_result, 'to_pydatetime') and callable(timedelta_result.to_pydatetime):
+                        converted = timedelta_result.to_pydatetime()
+                        if not isinstance(converted, datetime):
+                            return None
+                        actual_date = converted
+                    else:
+                        year_val = int(timedelta_result.year)
+                        month_val = int(timedelta_result.month)
+                        day_val = int(timedelta_result.day)
+                        actual_date = datetime(year_val, month_val, day_val)
+                except (ValueError, TypeError, AttributeError):
+                    return None
+            
+            replaced_date = actual_date.replace(month=month, day=day)
+            if not isinstance(replaced_date, datetime):
+                return None
+            actual_date = replaced_date
 
             return actual_date
 
@@ -141,7 +189,10 @@ class TdxDateTimeDecoder:
         for _, row in data.iterrows():
             if "date" in row and "time" in row:
                 # 分钟线格式：date="YYYY-MM-DDD", time="HH:MM"
-                decoded = decode_func(str(row["date"]), str(row["time"]))
+                if interval in ["1m", "5m"]:
+                    decoded = TdxDateTimeDecoder.decode_minute_datetime(str(row["date"]), str(row["time"]))
+                else:
+                    decoded = decode_func(str(row["date"]))
             elif "date" in row:
                 # 日线格式：date="DDDD-MM-DD"
                 decoded = decode_func(str(row["date"]))
@@ -151,9 +202,16 @@ class TdxDateTimeDecoder:
             decoded_datetimes.append(decoded)
 
         data["datetime"] = decoded_datetimes
-        data = data[data["datetime"].notna()].copy()
+        mask = data["datetime"].notna()
+        filtered_data = data[mask]
+        
+        # 确保返回DataFrame类型
+        if isinstance(filtered_data, pd.DataFrame):
+            result = filtered_data.copy()
+        else:
+            result = pd.DataFrame(filtered_data)
 
-        return data
+        return result
 
 
 # ==================== 服务器池管理 ====================
@@ -222,12 +280,11 @@ class ServerPool:
         try:
             quotes = Quotes.factory(server=server, timeout=self.timeout)
             # 简单的连接测试：获取一个品种的基本信息
-            stocks = quotes.stocks(0)  # 上海市场
+            # 使用client API直接测试连接
+            test_result = hasattr(quotes, "client") or hasattr(quotes, "close")
             quotes.close()
 
-            if stocks is not None and not stocks.empty:
-                return True
-            return False
+            return test_result
 
         except Exception as e:
             self.logger.debug("服务器 %s:%d 测试失败: %s", server[0], server[1], e)
@@ -240,7 +297,7 @@ class ServerPool:
 
         return self.available_servers[:num_servers]
 
-    def create_quotes_for_server(self, server: Tuple[str, int]) -> Quotes:
+    def create_quotes_for_server(self, server: Tuple[str, int]):
         """为指定服务器创建独立的Quotes实例"""
         quotes = Quotes.factory(server=server, timeout=self.timeout)
         return quotes
@@ -396,7 +453,7 @@ def _download_single_kline_incremental(
 
         # 设置index
         if not data.empty and "datetime" in data.columns:
-            data.index = data["datetime"]
+            data = data.set_index("datetime", drop=False)
 
         # 标准化列名
         if "vol" in data.columns:
@@ -441,7 +498,8 @@ def _standardize_columns(data: pd.DataFrame, symbol: str, interval: str) -> pd.D
     # 确保datetime列是datetime类型
     if "datetime" in data.columns:
         data["datetime"] = pd.to_datetime(data["datetime"], errors="coerce")
-        data = data[data["datetime"].notna()].copy()
+        filtered_data = data[data["datetime"].notna()]
+        data = filtered_data.copy() if isinstance(filtered_data, pd.DataFrame) else pd.DataFrame(filtered_data)
 
     # 确保数值列是float类型
     numeric_columns = ["open", "high", "low", "close", "volume"]
@@ -463,7 +521,8 @@ def _filter_by_date(data: pd.DataFrame, start_date: date) -> pd.DataFrame:
         if pd.api.types.is_datetime64_any_dtype(data.index):
             start_datetime = pd.Timestamp(start_date)
             filtered = data[data.index >= start_datetime]
-            return filtered
+            result_df: pd.DataFrame = filtered if isinstance(filtered, pd.DataFrame) else pd.DataFrame(filtered)
+            return result_df
 
         if "datetime" not in data.columns:
             return data
@@ -474,13 +533,17 @@ def _filter_by_date(data: pd.DataFrame, start_date: date) -> pd.DataFrame:
             datetime_series = data["datetime"]
 
         valid_mask = datetime_series.notna()
-        if not valid_mask.any():
+        # 检查是否有任何有效值
+        has_valid_values = bool(valid_mask.sum() > 0)
+        if not has_valid_values:
             return pd.DataFrame()
 
         start_datetime = pd.Timestamp(start_date)
         date_mask = valid_mask & (datetime_series >= start_datetime)
 
-        return data[date_mask].copy()
+        filtered_result = data[date_mask]
+        final_result: pd.DataFrame = filtered_result.copy() if isinstance(filtered_result, pd.DataFrame) else pd.DataFrame(filtered_result)
+        return final_result
 
     except Exception as e:
         logging.getLogger(__name__).error("按日期过滤失败: %s，返回原始数据", e)
@@ -586,7 +649,7 @@ class StockFetcher:
         )
 
 
-    def get_all_market_stocks(self) -> Dict[str, List[Dict[str, any]]]:
+    def get_all_market_stocks(self) -> Dict[str, List[Dict[str, Any]]]:
         """
         获取所有市场的股票列表
 
@@ -720,18 +783,22 @@ class MultiProcessStockFetcher(StockFetcher):
 
             self.logger.info("✅ 任务列表构建完成: 总计 %d 个任务", total_tasks)
 
+            # 初始化多进程对象
+            self._init_multiprocess_objects()
+
             # 清空队列
             self._clear_queues()
 
             # 填充任务队列
-            for task in tasks:
-                self.task_queue.put(task)
+            if self.task_queue is not None:
+                for task in tasks:
+                    self.task_queue.put(task)
 
             # 初始化进度
             self._download_progress["is_downloading"] = True
             self._download_progress["completed"] = 0
             self._download_progress["total"] = total_tasks
-            self._download_progress["start_time"] = datetime.now()
+            self._download_progress["start_time"] = datetime.now().isoformat()
 
             # 步骤3：启动工作进程
             self._start_worker_processes(available_servers)
@@ -799,11 +866,13 @@ class MultiProcessStockFetcher(StockFetcher):
         completed = 0
 
         while completed < total_tasks:
-            if self.stop_event.is_set():
+            if self.stop_event is not None and self.stop_event.is_set():
                 break
 
             # 收集进度
             try:
+                if self.progress_queue is None:
+                    break
                 symbol, interval = self.progress_queue.get(timeout=0.1)
                 completed += 1
                 self._download_progress["completed"] = completed
@@ -832,12 +901,13 @@ class MultiProcessStockFetcher(StockFetcher):
 
             # 收集结果
             try:
-                key, data_dict = self.result_queue.get_nowait()
-                if data_dict is not None:
-                    df = pd.DataFrame(data_dict)
-                    if "datetime" in df.columns:
-                        df["datetime"] = pd.to_datetime(df["datetime"])
-                    results[key] = df
+                if self.result_queue is not None:
+                    key, data_dict = self.result_queue.get_nowait()
+                    if data_dict is not None:
+                        df = pd.DataFrame(data_dict)
+                        if "datetime" in df.columns:
+                            df["datetime"] = pd.to_datetime(df["datetime"])
+                        results[key] = df
             except queue.Empty:
                 pass
 
@@ -845,24 +915,26 @@ class MultiProcessStockFetcher(StockFetcher):
 
     def _drain_queues(self, results: Dict):
         """排空队列"""
-        while True:
-            try:
-                key, data_dict = self.result_queue.get_nowait()
-                if data_dict is not None:
-                    df = pd.DataFrame(data_dict)
-                    if "datetime" in df.columns:
-                        df["datetime"] = pd.to_datetime(df["datetime"])
-                    results[key] = df
-            except queue.Empty:
-                break
+        if self.result_queue is not None:
+            while True:
+                try:
+                    key, data_dict = self.result_queue.get_nowait()
+                    if data_dict is not None:
+                        df = pd.DataFrame(data_dict)
+                        if "datetime" in df.columns:
+                            df["datetime"] = pd.to_datetime(df["datetime"])
+                        results[key] = df
+                except queue.Empty:
+                    break
 
         extra_progress = 0
-        while True:
-            try:
-                self.progress_queue.get_nowait()
-                extra_progress += 1
-            except queue.Empty:
-                break
+        if self.progress_queue is not None:
+            while True:
+                try:
+                    self.progress_queue.get_nowait()
+                    extra_progress += 1
+                except queue.Empty:
+                    break
 
         if extra_progress > 0:
             self.logger.info("从队列中收集到额外 %d 个进度", extra_progress)
@@ -893,8 +965,9 @@ class MultiProcessStockFetcher(StockFetcher):
         """清空所有队列"""
         queues = [self.task_queue, self.result_queue, self.progress_queue]
         for q in queues:
-            while True:
-                try:
-                    q.get_nowait()
-                except queue.Empty:
-                    break
+            if q is not None:
+                while True:
+                    try:
+                        q.get_nowait()
+                    except queue.Empty:
+                        break

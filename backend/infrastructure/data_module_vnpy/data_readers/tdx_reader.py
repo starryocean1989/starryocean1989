@@ -174,7 +174,7 @@ class TdxBinaryReader(BaseReader):
             df = df.reset_index()
             # 第一列是日期
             if len(df.columns) > 0:
-                first_col = df.columns[0]
+                first_col = str(df.columns[0])  # 确保是字符串类型
                 if first_col not in ["datetime", "open", "high"]:
                     df = df.rename(columns={first_col: "datetime"})
 
@@ -210,17 +210,26 @@ class TdxBinaryReader(BaseReader):
 
         # 按时间排序
         if "datetime" in df.columns:
-            df = df.sort_values("datetime")
+            # 确保 df 是 DataFrame 类型，避免类型推断问题
+            if isinstance(df, pd.DataFrame):
+                df = df.sort_values("datetime")
 
         # 验证格式
         try:
-            self.validate_dataframe(df)
+            # 确保传入的是 DataFrame
+            if isinstance(df, pd.DataFrame):
+                self.validate_dataframe(df)
         except ValueError as e:
             self.logger.error("数据格式验证失败: %s", e)
             raise
 
         self.logger.info("数据标准化完成: %d 条记录", len(df))
-        return df
+        # 确保返回的是 DataFrame
+        if isinstance(df, pd.DataFrame):
+            return df
+        else:
+            # 如果不是 DataFrame，返回空 DataFrame
+            return pd.DataFrame()
 
     def save(
         self, dataframe: pd.DataFrame, target_path: Optional[Path] = None, merge: bool = True
@@ -248,13 +257,38 @@ class TdxBinaryReader(BaseReader):
             # 选择保存模式
             if merge:
                 # 增量更新：合并现有数据和新数据，去重
-                success = self.storage_manager.merge_data(symbol, interval, dataframe)
-                if success:
-                    self.logger.info("数据增量保存成功: %s %s (合并模式)", symbol, interval)
-                    return True
+                # 先查询现有数据
+                existing_df = self.storage_manager.query_kline(symbol, interval)
+                
+                if existing_df is not None and not existing_df.empty:
+                    # 合并新旧数据
+                    merged_df = pd.concat([existing_df, dataframe], ignore_index=True)
+                    
+                    # 按 datetime 排序并去重
+                    if "datetime" in merged_df.columns:
+                        merged_df = merged_df.sort_values("datetime")
+                        merged_df = merged_df.drop_duplicates(subset=["datetime"], keep="last")
+                    
+                    # 保存合并后的数据
+                    file_path = self.storage_manager.save_kline(symbol, interval, merged_df)
+                    if file_path:
+                        self.logger.info(
+                            "数据增量保存成功: %s %s (合并模式，合并后共 %d 条)", 
+                            symbol, interval, len(merged_df)
+                        )
+                        return True
+                    else:
+                        self.logger.error("数据增量保存失败: %s %s", symbol, interval)
+                        return False
                 else:
-                    self.logger.error("数据增量保存失败: %s %s", symbol, interval)
-                    return False
+                    # 如果没有现有数据，直接保存
+                    file_path = self.storage_manager.save_kline(symbol, interval, dataframe)
+                    if file_path:
+                        self.logger.info("数据保存成功: %s %s (首次保存)", symbol, interval)
+                        return True
+                    else:
+                        self.logger.error("数据保存失败: %s %s", symbol, interval)
+                        return False
             else:
                 # 覆盖模式：直接覆盖原有数据
                 file_path = self.storage_manager.save_kline(symbol, interval, dataframe)

@@ -102,7 +102,7 @@ class StorageManager:
                 return None
 
             # 读取数据
-            df = pd.read_parquet(file_path)
+            df = pd.read_parquet(file_path)  # type: ignore
 
             if df.empty:
                 return df
@@ -110,16 +110,17 @@ class StorageManager:
             # 过滤日期
             if start_date is not None:
                 if isinstance(start_date, str):
-                    start_date = pd.to_datetime(start_date).date()
-                df = df[df.index >= pd.Timestamp(start_date)]
+                    start_date = pd.to_datetime(start_date).date()  # type: ignore
+                df = df[df.index >= pd.Timestamp(start_date)]  # type: ignore
 
             if end_date is not None:
                 if isinstance(end_date, str):
-                    end_date = pd.to_datetime(end_date).date()
-                df = df[df.index <= pd.Timestamp(end_date)]
+                    end_date = pd.to_datetime(end_date).date()  # type: ignore
+                df = df[df.index <= pd.Timestamp(end_date)]  # type: ignore
 
             self.logger.info("查询数据成功: %s %s, %d条记录", symbol, interval, len(df))
-            return df
+            # 确保返回类型为 DataFrame
+            return df if isinstance(df, pd.DataFrame) else None
 
         except Exception as e:
             self.logger.error("查询数据失败: %s %s, %s", symbol, interval, e)
@@ -159,6 +160,94 @@ class StorageManager:
         except Exception as e:
             self.logger.error("获取存储统计失败: %s", e)
             return {}
+
+    def scan_and_repair_corrupted_files(
+        self, auto_delete: bool = False, progress_callback=None
+    ) -> Dict[str, Any]:
+        """扫描并修复损坏的Parquet文件.
+
+        Args:
+            auto_delete: 是否自动删除损坏文件
+            progress_callback: 进度回调函数
+
+        Returns:
+            Dict: 扫描结果 {"corrupted": [...], "deleted": [...]}
+        """
+        try:
+            corrupted_files = []
+            deleted_files = []
+
+            # 遍历所有数据文件
+            total_files = 0
+            processed_files = 0
+
+            for symbol_dir in self.data_dir.iterdir():
+                if not symbol_dir.is_dir():
+                    continue
+
+                for interval_dir in symbol_dir.iterdir():
+                    if not interval_dir.is_dir():
+                        continue
+
+                    for file_path in interval_dir.iterdir():
+                        if file_path.is_file() and file_path.suffix == ".parquet":
+                            total_files += 1
+
+            for symbol_dir in self.data_dir.iterdir():
+                if not symbol_dir.is_dir():
+                    continue
+
+                for interval_dir in symbol_dir.iterdir():
+                    if not interval_dir.is_dir():
+                        continue
+
+                    for file_path in interval_dir.iterdir():
+                        if file_path.is_file() and file_path.suffix == ".parquet":
+                            processed_files += 1
+
+                            # 更新进度
+                            if progress_callback:
+                                progress = processed_files / total_files if total_files > 0 else 0
+                                progress_callback(progress, f"检查文件: {file_path.name}")
+
+                            try:
+                                # 尝试读取文件来检查是否损坏
+                                df = pd.read_parquet(file_path)  # type: ignore
+                                if df.empty:
+                                    corrupted_files.append(str(file_path))
+                                    if auto_delete:
+                                        file_path.unlink()
+                                        deleted_files.append(str(file_path))
+                            except Exception as e:
+                                self.logger.warning("发现损坏文件: %s, 错误: %s", file_path, e)
+                                corrupted_files.append(str(file_path))
+                                if auto_delete:
+                                    try:
+                                        file_path.unlink()
+                                        deleted_files.append(str(file_path))
+                                    except Exception as del_e:
+                                        self.logger.error("删除损坏文件失败: %s, 错误: %s", file_path, del_e)
+
+            result = {
+                "corrupted": corrupted_files,
+                "deleted": deleted_files,
+                "total_scanned": processed_files,
+                "corrupted_count": len(corrupted_files),
+                "deleted_count": len(deleted_files),
+            }
+
+            self.logger.info(
+                "文件扫描完成: 扫描 %d 个文件，发现 %d 个损坏文件%s",
+                processed_files,
+                len(corrupted_files),
+                f"，删除 {len(deleted_files)} 个" if auto_delete else ""
+            )
+
+            return result
+
+        except Exception as e:
+            self.logger.error("扫描损坏文件失败: %s", e)
+            return {"corrupted": [], "deleted": [], "error": str(e)}
 
 
 # ==================== 数据校验器 ====================
@@ -226,22 +315,38 @@ class DataValidator:
             errors, warnings = self._validate_dataframe(df)
 
             # 计算日期范围
-            date_range = (None, None)
+            date_range: Tuple[Optional[date], Optional[date]] = (None, None)
             try:
                 if not df.empty and pd.api.types.is_datetime64_any_dtype(df.index):
-                    date_range = (df.index.min().date(), df.index.max().date())
+                    min_val = df.index.min()
+                    max_val = df.index.max()
+                    if bool(pd.notna(min_val)) and bool(pd.notna(max_val)):
+                        min_ts = pd.Timestamp(min_val)  # type: ignore
+                        max_ts = pd.Timestamp(max_val)  # type: ignore
+                        date_range = (min_ts.date(), max_ts.date())
                 elif not df.empty and "datetime" in df.columns:
                     # 如果索引不是datetime类型，尝试使用datetime列
                     if pd.api.types.is_datetime64_any_dtype(df["datetime"]):
-                        date_range = (df["datetime"].min().date(), df["datetime"].max().date())
+                        dt_min_val = df["datetime"].min()
+                        dt_max_val = df["datetime"].max()
+                        if bool(pd.notna(dt_min_val)) and bool(pd.notna(dt_max_val)):
+                            dt_min = pd.Timestamp(dt_min_val)  # type: ignore
+                            dt_max = pd.Timestamp(dt_max_val)  # type: ignore
+                            date_range = (dt_min.date(), dt_max.date())
                     else:
                         # 尝试转换datetime列
                         datetime_series = pd.to_datetime(df["datetime"], errors="coerce")
                         if not datetime_series.isna().all():
-                            date_range = (
-                                datetime_series.min().date(),
-                                datetime_series.max().date(),
-                            )
+                            dt_min_val = datetime_series.min()
+                            dt_max_val = datetime_series.max()
+                            if bool(pd.notna(dt_min_val)) and bool(pd.notna(dt_max_val)):
+                                dt_min = pd.Timestamp(dt_min_val)  # type: ignore
+                                dt_max = pd.Timestamp(dt_max_val)  # type: ignore
+                                # 确保返回的是 date 类型而不是 NaTType
+                                min_date_val = dt_min.date()
+                                max_date_val = dt_max.date()
+                                if isinstance(min_date_val, date) and isinstance(max_date_val, date):
+                                    date_range = (min_date_val, max_date_val)
             except Exception:
                 # 如果日期计算失败，保持为None
                 pass
@@ -292,7 +397,7 @@ class DataValidator:
             if col in df.columns:
                 if not pd.api.types.is_numeric_dtype(df[col]):
                     errors.append(f"{col}列不是数值类型")
-                elif df[col].isna().any():
+                elif bool(df[col].isna().any()):
                     errors.append(f"{col}列包含空值")
 
         # 检查逻辑关系
@@ -334,16 +439,20 @@ class DataValidator:
             # 获取日期范围
             min_date = date_series.min()
             max_date = date_series.max()
+            
+            # 检查是否有效
+            if bool(pd.isna(min_date)) or bool(pd.isna(max_date)):
+                return []
 
             # 确保是datetime类型，然后转换为date
             if pd.api.types.is_datetime64_any_dtype(date_series):
-                start_date = min_date.date()
-                end_date = max_date.date()
+                start_date = pd.Timestamp(min_date).date()  # type: ignore
+                end_date = pd.Timestamp(max_date).date()  # type: ignore
             else:
                 # 如果不是datetime类型，尝试转换
                 try:
-                    start_date = pd.to_datetime(min_date).date()
-                    end_date = pd.to_datetime(max_date).date()
+                    start_date = pd.Timestamp(pd.to_datetime(min_date)).date()  # type: ignore
+                    end_date = pd.Timestamp(pd.to_datetime(max_date)).date()  # type: ignore
                 except (ValueError, TypeError):
                     return []
 
@@ -353,17 +462,25 @@ class DataValidator:
             # 找出缺失的日期
             try:
                 if pd.api.types.is_datetime64_any_dtype(date_series):
-                    actual_dates = set(date_series.dt.date)
+                    # 如果是 Series，使用 .dt；如果是 DatetimeIndex，直接使用 .date
+                    if isinstance(date_series, pd.Series):
+                        actual_dates = set(date_series.dt.date)
+                    else:
+                        actual_dates = {pd.Timestamp(d).date() for d in date_series}
                 else:
-                    actual_dates = set(
-                        pd.to_datetime(date_series, errors="coerce").dt.date.dropna()
-                    )
+                    converted_series = pd.to_datetime(date_series, errors="coerce")
+                    if isinstance(converted_series, pd.Series):
+                        actual_dates = set(converted_series.dt.date.dropna())
+                    else:
+                        actual_dates = {pd.Timestamp(d).date() for d in converted_series if pd.notna(d)}
             except (AttributeError, TypeError):
                 return []
 
-            expected_date_set = set(expected_dates.date)
+            expected_date_set = {pd.Timestamp(d).date() for d in expected_dates}
 
-            missing_dates = list(expected_date_set - actual_dates)
+            missing_dates_set = expected_date_set - actual_dates
+            # 过滤掉可能的 NaTType，确保返回 List[date]
+            missing_dates: List[date] = [d for d in missing_dates_set if isinstance(d, date)]
             missing_dates.sort()
 
             return missing_dates
@@ -380,10 +497,15 @@ class DataValidator:
             if "high" in df.columns and "low" in df.columns:
                 invalid_high_low = df[df["high"] < df["low"]]
                 for idx, row in invalid_high_low.iterrows():
+                    # 转换索引为日期
+                    try:
+                        idx_date: Optional[date] = pd.Timestamp(idx).date() if pd.notna(idx) else None  # type: ignore
+                    except (ValueError, TypeError):
+                        idx_date = None
                     errors.append(
                         {
                             "type": "high_low_error",
-                            "date": idx.date(),
+                            "date": idx_date,
                             "high": row["high"],
                             "low": row["low"],
                         }
@@ -403,13 +525,20 @@ class DataValidator:
             numeric_columns = ["open", "high", "low", "close", "volume"]
             for col in numeric_columns:
                 if col in df.columns:
-                    non_numeric = df[pd.to_numeric(df[col], errors="coerce").isna()]
+                    # 使用 pd.isna() 而不是 .isna() 属性
+                    non_numeric_mask = pd.isna(pd.to_numeric(df[col], errors="coerce"))
+                    non_numeric = df[non_numeric_mask]
                     for idx, row in non_numeric.iterrows():
+                        # 转换索引为日期
+                        try:
+                            idx_date: Optional[date] = pd.Timestamp(idx).date() if pd.notna(idx) else None  # type: ignore
+                        except (ValueError, TypeError):
+                            idx_date = None
                         errors.append(
                             {
                                 "type": "format_error",
                                 "column": col,
-                                "date": idx.date(),
+                                "date": idx_date,
                                 "value": row[col],
                             }
                         )
@@ -418,6 +547,80 @@ class DataValidator:
             self.logger.error("检查格式错误失败: %s", e)
 
         return errors
+
+    def validate_all_data(self) -> ValidationSummary:
+        """校验所有品种的数据
+
+        Returns:
+            ValidationSummary: 校验汇总结果
+        """
+        try:
+            self.logger.info("开始全量数据校验...")
+
+            # 获取所有品种（需要从配置文件或数据库获取品种列表）
+            # 这里简化处理，假设从配置获取
+            try:
+                from .config import config_manager
+                reference_symbols = config_manager.get("chinastock.symbols", [])
+                if not reference_symbols:
+                    # 如果配置中没有品种列表，返回空结果
+                    return ValidationSummary(
+                        total_symbols=0,
+                        valid_symbols=0,
+                        invalid_symbols=0,
+                        total_errors=0,
+                        total_warnings=0,
+                        check_time=datetime.now(),
+                        base_date=date.today(),
+                    )
+            except Exception:
+                reference_symbols = []
+
+            # 校验所有品种
+            total_symbols = len(reference_symbols)
+            valid_symbols = 0
+            invalid_symbols = 0
+            total_errors = 0
+            total_warnings = 0
+
+            for symbol in reference_symbols:
+                try:
+                    # 校验所有时间周期
+                    intervals = ["1d", "5m", "1m"]
+                    for interval in intervals:
+                        result = self.validate_symbol(symbol, interval)
+                        if result.is_valid:
+                            valid_symbols += 1
+                        else:
+                            invalid_symbols += 1
+                            total_errors += len(result.errors)
+                            total_warnings += len(result.warnings)
+
+                except Exception as e:
+                    self.logger.error("校验品种 %s 失败: %s", symbol, e)
+                    invalid_symbols += 1
+
+            return ValidationSummary(
+                total_symbols=total_symbols,
+                valid_symbols=valid_symbols,
+                invalid_symbols=invalid_symbols,
+                total_errors=total_errors,
+                total_warnings=total_warnings,
+                check_time=datetime.now(),
+                base_date=date.today(),
+            )
+
+        except Exception as e:
+            self.logger.error("全量数据校验失败: %s", e)
+            return ValidationSummary(
+                total_symbols=0,
+                valid_symbols=0,
+                invalid_symbols=0,
+                total_errors=0,
+                total_warnings=0,
+                check_time=datetime.now(),
+                base_date=date.today(),
+            )
 
 
 # ==================== 数据感知器 ====================
@@ -697,11 +900,11 @@ class DataFileWatcher:
         self._running = False
 
         try:
-            from watchdog.observers import Observer
-            from watchdog.events import FileSystemEventHandler
+            from watchdog.observers import Observer  # type: ignore
+            from watchdog.events import FileSystemEventHandler  # type: ignore
 
             self.Observer = Observer
-            self.FileSystemEventHandler = FileSystemEventHandler
+            self.FileSystemEventHandler = FileSystemEventHandler  # type: ignore
             self.watchdog_available = True
 
         except ImportError:
@@ -727,7 +930,7 @@ class DataFileWatcher:
             self._handler = DataFileEventHandler(self.callback)
 
             # 监控数据目录及其子目录
-            self._observer.schedule(self._handler, str(self.data_dir), recursive=True)
+            self._observer.schedule(self._handler, str(self.data_dir), recursive=True)  # type: ignore
             self._observer.start()
 
             self._running = True
@@ -766,17 +969,23 @@ class DataFileWatcher:
 
 # 兼容 watchdog 不可用场景
 try:
-    from watchdog.events import FileSystemEventHandler as _FSHandler
+    from watchdog.events import FileSystemEventHandler as _FSHandler  # type: ignore
+    _WATCHDOG_AVAILABLE = True
 except Exception:  # pragma: no cover
+    _WATCHDOG_AVAILABLE = False
+    # 提供一个空基类
     class _FSHandler:  # type: ignore
-        pass
+        def dispatch(self, event):  # type: ignore
+            """空实现"""
+            pass
 
 
 class DataFileEventHandler(_FSHandler):
     """数据文件事件处理器（继承FileSystemEventHandler，提供安全dispatch）"""
 
     def __init__(self, callback):
-        super().__init__()
+        if _WATCHDOG_AVAILABLE:
+            super().__init__()
         self.callback = callback
         self.logger = logging.getLogger(__name__)
 
@@ -788,7 +997,8 @@ class DataFileEventHandler(_FSHandler):
     def dispatch(self, event):  # type: ignore[override]
         try:
             # 仅委托父类分发；父类会按事件类型调用 on_created/on_modified 等
-            return super().dispatch(event)
+            if _WATCHDOG_AVAILABLE:
+                return super().dispatch(event)
         except Exception as e:  # 防御性：不让线程崩溃
             try:
                 ev_path = getattr(event, "src_path", None) or getattr(event, "dest_path", None)

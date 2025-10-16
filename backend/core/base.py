@@ -854,7 +854,7 @@ class ServiceInitializer:
             settings = get_settings()
             self.logger.info("使用已加载的配置: %s", settings.config_file)
 
-            # 阶段1: 初始化VNPY核心框架
+            # 阶段1: 初始化VNPY核心框架（如果尚未初始化）
             phase1_success = self._initialize_vnpy_core()
 
             # 阶段2: 初始化数据服务
@@ -1006,10 +1006,10 @@ class ServiceInitializer:
         Returns:
             bool: 是否成功
         """
-        self._report_progress("阶段1: 初始化VNPY核心引擎...", 20)
+        self._report_progress("阶段1: 检查VNPY核心引擎...", 20)
 
         self.logger.info("\n" + "=" * 60)
-        self.logger.info("阶段1: 初始化VNPY核心框架（完整模式）")
+        self.logger.info("阶段1: 初始化VNPY核心框架")
         self.logger.info("=" * 60)
 
         start_time = time.time()
@@ -1018,28 +1018,38 @@ class ServiceInitializer:
             from vnpy.event import EventEngine
             from vnpy.trader.engine import MainEngine
 
-            # 创建事件引擎
-            self._report_progress("创建EventEngine...", 25)
-            self.logger.info("创建EventEngine（interval=0.5）...")
-            self.event_engine = EventEngine(interval=0.5)
-            self.logger.info("✅ EventEngine创建成功")
+            # ✅ 检查是否已在主线程中初始化
+            existing_event_engine = get_event_engine()
+            existing_main_engine = get_main_engine()
 
-            # 创建主引擎
-            self._report_progress("创建MainEngine...", 30)
-            self.logger.info("创建MainEngine...")
-            self.main_engine = MainEngine(self.event_engine)
-            self.logger.info("✅ MainEngine创建成功")
+            if existing_event_engine and existing_main_engine:
+                self.logger.info("✅ 检测到已存在的 EventEngine 和 MainEngine（主线程初始化）")
+                self.event_engine = existing_event_engine
+                self.main_engine = existing_main_engine
+                self.logger.info("✅ 使用主线程初始化的 VnPy 核心引擎")
+            else:
+                # 如果没有，则在当前线程创建（兼容模式）
+                self._report_progress("创建EventEngine...", 25)
+                self.logger.info("创建EventEngine（interval=0.5）...")
+                self.event_engine = EventEngine(interval=0.5)
+                self.logger.info("✅ EventEngine创建成功（工作线程已自动启动）")
 
-            # 注册到全局
-            set_main_engine(self.main_engine)
-            set_event_engine(self.event_engine)
+                # 创建主引擎
+                self._report_progress("创建MainEngine...", 30)
+                self.logger.info("创建MainEngine...")
+                self.main_engine = MainEngine(self.event_engine)
+                self.logger.info("✅ MainEngine创建成功")
 
-            # 添加策略应用
-            self._report_progress("加载策略应用...", 35)
-            self._add_strategy_apps()
+                # 注册到全局
+                set_main_engine(self.main_engine)
+                set_event_engine(self.event_engine)
+
+                # 添加策略应用
+                self._report_progress("加载策略应用...", 35)
+                self._add_strategy_apps()
 
             elapsed = time.time() - start_time
-            self.logger.info("✅ VNPY核心框架初始化完成（完整模式），耗时 %.2f秒", elapsed)
+            self.logger.info("✅ VNPY核心框架初始化完成，耗时 %.2f秒", elapsed)
             self._report_progress("VNPY核心引擎初始化完成", 40)
             return True
 
@@ -1122,7 +1132,7 @@ class ServiceInitializer:
         # 初始化DataCenterService
         try:
             self._report_progress("初始化DataCenterService...", 50)
-            from backend.services.data_center_service import DataCenterService
+            from backend.modules.data_center.service import DataCenterService
 
             data_center_service = DataCenterService()
             init_success = data_center_service.initialize()
@@ -1164,7 +1174,7 @@ class ServiceInitializer:
 
         # 初始化TradingGatewayService
         try:
-            from backend.services.trading_gateway_service import TradingGatewayService
+            from backend.modules.trading_gateway.service import TradingGatewayService
 
             trading_gateway_service = TradingGatewayService()
             init_success = trading_gateway_service.initialize()
@@ -1208,7 +1218,7 @@ class ServiceInitializer:
 
         # 初始化StrategyCenterService
         try:
-            from backend.services.strategy_center_service import StrategyCenterService
+            from backend.modules.strategy_center.service import StrategyCenterService
 
             strategy_center_service = StrategyCenterService()
             init_success = strategy_center_service.initialize()
@@ -1230,7 +1240,7 @@ class ServiceInitializer:
 
         # 初始化AIAssistantService
         try:
-            from backend.services.ai_assistant_service import AIAssistantService
+            from backend.modules.strategy_center.ai_assistant import AIAssistantService
 
             ai_assistant_service = AIAssistantService()
             init_success = ai_assistant_service.initialize()
@@ -1274,7 +1284,7 @@ class ServiceInitializer:
 
         # 初始化PortfolioService
         try:
-            from backend.services.portfolio_service import PortfolioService
+            from backend.modules.portfolio.service import PortfolioService
 
             portfolio_service = PortfolioService()
             init_success = portfolio_service.initialize()
@@ -1294,7 +1304,7 @@ class ServiceInitializer:
 
         # 初始化MarketBoardService
         try:
-            from backend.services.market_board_service import MarketBoardService
+            from backend.modules.market_board.service import MarketBoardService
 
             market_board_service = MarketBoardService()
             init_success = market_board_service.initialize()
@@ -1315,7 +1325,7 @@ class ServiceInitializer:
         # 初始化SystemManagerService
         # 🔧 修复点3：SystemManagerService 专门处理（即使初始化失败也注册服务）
         try:
-            from backend.services.system_manager_service import SystemManagerService
+            from backend.modules.system_manager.service import SystemManagerService
 
             system_manager_service = SystemManagerService()
             init_success = system_manager_service.initialize()
@@ -1455,48 +1465,13 @@ def initialize_real_services(progress_callback=None) -> bool:
     Returns:
         bool: 是否初始化成功
     """
-    # ✅ 多进程架构：在服务初始化之前启动日志/告警进程
-    try:
-        from backend.processes.process_manager import get_process_manager
-        
-        process_manager = get_process_manager()
-        
-        # 注册日志/告警进程
-        process_manager.register_process(
-            name="log_alert",
-            target_module="backend.processes.log_alert_process",
-            health_port=5559,
-            max_restarts=5,
-        )
-        
-        # 启动进程
-        if progress_callback:
-            progress_callback("✅ 启动日志/告警进程...", 2)
-        
-        success = process_manager.start_process("log_alert")
-        
-        if success:
-            logging.getLogger(__name__).info("✅ 日志/告警进程启动成功")
-            
-            # 配置分布式日志处理器
-            from backend.processes.ipc_client import get_distributed_log_handler
-            import logging
-            
-            distributed_handler = get_distributed_log_handler()
-            logging.root.addHandler(distributed_handler)
-            
-            logging.getLogger(__name__).info("✅ 分布式日志处理器已注册")
-        else:
-            logging.getLogger(__name__).warning("⚠️ 日志/告警进程启动失败，降级到本地模式")
-            
-        # 启动进程监控
-        process_manager.monitor_all()
-        
-    except Exception as e:
-        logging.getLogger(__name__).error("⚠️ 日志/告警进程启动失败: %s", e, exc_info=True)
-        # 不阻塞主进程启动，继续初始化
-    
-    # 继续初始化业务服务
+    # ✅ 单进程多线程架构：日志和告警系统在主进程中运行
+    # 通过Qt信号槽机制确保线程安全的UI更新
+    logging.getLogger(__name__).info("✅ 使用单进程多线程架构（日志和告警在主进程）")
+    if progress_callback:
+        progress_callback("✅ 单进程多线程模式", 8)
+
+    # 初始化业务服务
     service_manager = get_service_manager()
     initializer = ServiceInitializer(service_manager, progress_callback=progress_callback)
     return initializer.initialize_all_services()
@@ -1543,20 +1518,9 @@ def shutdown_real_services() -> None:
             logging.getLogger(__name__).info("✅ MainEngine 已关闭")
         except Exception as e:
             logging.getLogger(__name__).error("❌ 关闭 MainEngine 失败: %s", e)
-    
-    # ✅ 多进程架构：关闭日志/告警进程
-    try:
-        from backend.processes.process_manager import get_process_manager
-        
-        process_manager = get_process_manager()
-        process_manager.cleanup()
-        
-        logging.getLogger(__name__).info("✅ 日志/告警进程已关闭")
-        
-    except Exception as e:
-        logging.getLogger(__name__).error("⚠️ 关闭日志/告警进程失败: %s", e)
 
-    logging.getLogger(__name__).info("所有服务已关闭")
+    # ✅ 单进程多线程架构：日志和告警系统在主进程中，无需额外关闭
+    logging.getLogger(__name__).info("✅ 所有服务已关闭")
 
 
 # =============================================================================

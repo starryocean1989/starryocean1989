@@ -77,6 +77,7 @@ vnpy>=3.0.0
 
 # vnpy依赖
 pyzmq>=22.0.0
+msgpack>=1.0.0
 peewee>=3.14.0
 tzlocal>=4.0.0
 

@@ -47,10 +47,9 @@ def setup_environment():
 
 def setup_logging():
     """设置日志系统."""
-    import logging
-    from backend.core.utils import setup_logging
+    from backend.core.base import setup_logging as base_setup_logging
 
-    return setup_logging(
+    return base_setup_logging(
         name="StartupOptimized", level="INFO", log_file="logs/startup_optimized.log"
     )
 
@@ -68,12 +67,13 @@ def main():
     startup_start = time.time()
 
     print("=" * 70)
-    print("🚀 星辰金融终端 - 启动中")
+    print("🚀 星辰金融终端 - 启动中（单进程多线程模式）")
     print("=" * 70)
 
     try:
         # ==================== 阶段0：环境准备 ====================
         print("\n[ENV-SETUP] 阶段0：环境准备...")
+
         env_time = setup_environment()
         print(f"[ENV-SETUP] ✅ 环境准备完成 ({env_time:.0f}ms)")
 
@@ -89,7 +89,6 @@ def main():
         print("\n[QT-INIT] 阶段1：Qt框架初始化...")
         logger.info("[QT-INIT] 开始Qt框架初始化")
 
-        from PySide6.QtCore import Qt
         from PySide6.QtWidgets import QApplication
 
         app = QApplication(sys.argv)
@@ -146,33 +145,100 @@ def main():
             ui_visible_time,
         )
 
+        # ==================== 阶段2.5：主线程初始化 EventEngine/MainEngine ====================
+        print("\n[VNPY-CORE] 主线程初始化 EventEngine/MainEngine...")
+        logger.info("[VNPY-CORE] 开始在主线程初始化 EventEngine 和 MainEngine")
+
+        vnpy_start = time.time()
+
+        try:
+            from vnpy.event import EventEngine
+            from vnpy.trader.engine import MainEngine
+            from backend.core.base import set_event_engine, set_main_engine
+
+            # 创建 EventEngine（会自动启动工作线程）
+            event_engine = EventEngine(interval=0.5)
+            logger.info("[VNPY-CORE] ✅ EventEngine 创建成功（工作线程已启动）")
+            print("[VNPY-CORE] ✅ EventEngine 创建成功")
+
+            # 创建 MainEngine
+            main_engine = MainEngine(event_engine)
+            logger.info("[VNPY-CORE] ✅ MainEngine 创建成功")
+            print("[VNPY-CORE] ✅ MainEngine 创建成功")
+
+            # 注册到全局
+            set_event_engine(event_engine)
+            set_main_engine(main_engine)
+            logger.info("[VNPY-CORE] ✅ EventEngine 和 MainEngine 已注册到全局")
+
+            # 添加策略应用
+            try:
+                from vnpy_ctastrategy import CtaStrategyApp
+
+                main_engine.add_app(CtaStrategyApp)
+                logger.info("[VNPY-CORE] ✅ CtaStrategyApp 已添加")
+            except ImportError:
+                logger.warning("[VNPY-CORE] ⚠️ vnpy_ctastrategy 未安装")
+            except Exception as e:
+                logger.error("[VNPY-CORE] ❌ 添加 CtaStrategyApp 失败: %s", e)
+
+            try:
+                from vnpy_algotrading import AlgoTradingApp
+
+                main_engine.add_app(AlgoTradingApp)
+                logger.info("[VNPY-CORE] ✅ AlgoTradingApp 已添加")
+            except ImportError:
+                logger.warning("[VNPY-CORE] ⚠️ vnpy_algotrading 未安装")
+            except Exception as e:
+                logger.error("[VNPY-CORE] ❌ 添加 AlgoTradingApp 失败: %s", e)
+
+            try:
+                from vnpy_optionmaster import OptionMasterApp
+
+                main_engine.add_app(OptionMasterApp)
+                logger.info("[VNPY-CORE] ✅ OptionMasterApp 已添加")
+            except ImportError:
+                logger.warning("[VNPY-CORE] ⚠️ vnpy_optionmaster 未安装")
+            except Exception as e:
+                logger.error("[VNPY-CORE] ❌ 添加 OptionMasterApp 失败: %s", e)
+
+            try:
+                from vnpy_portfoliostrategy import PortfolioStrategyApp
+
+                main_engine.add_app(PortfolioStrategyApp)
+                logger.info("[VNPY-CORE] ✅ PortfolioStrategyApp 已添加")
+            except ImportError:
+                logger.warning("[VNPY-CORE] ⚠️ vnpy_portfoliostrategy 未安装")
+            except Exception as e:
+                logger.error("[VNPY-CORE] ❌ 添加 PortfolioStrategyApp 失败: %s", e)
+
+            vnpy_time = (time.time() - vnpy_start) * 1000
+            print(f"[VNPY-CORE] ✅ VnPy 核心初始化完成 ({vnpy_time:.0f}ms)")
+            logger.info("[VNPY-CORE] ✅ VnPy 核心初始化完成，耗时 %.0fms", vnpy_time)
+
+        except Exception as e:
+            logger.error("[VNPY-CORE] ❌ VnPy 核心初始化失败: %s", e, exc_info=True)
+            print(f"[VNPY-CORE] ❌ VnPy 核心初始化失败: {e}")
+            # 不中断启动流程，继续执行
+
         # ==================== 连接后端初始化回调 ====================
         def on_startup_completed():
             """阶段4：UI功能激活（后端就绪后）."""
+            logger.info("[UI-ACTIVATE] 开始激活UI功能...")
+            print("\n[UI-ACTIVATE] 阶段4：激活UI功能...")
+
             try:
                 activation_start = time.time()
-                logger.info("[UI-ACTIVATE] 后端初始化完成，开始激活UI功能")
 
-                # 创建功能界面并连接信号
-                logger.info("[UI-ACTIVATE] 开始初始化功能界面...")
-                try:
-                    main_window.initialize_function_interfaces_after_backend()
-                    logger.info("[UI-ACTIVATE] ✅ 功能界面初始化完成")
-                except Exception as ui_error:
-                    logger.error("[UI-ACTIVATE] ❌ 功能界面初始化失败: %s", ui_error, exc_info=True)
-                    # 即使失败，也继续显示主窗口
-                    print(f"\n⚠️  功能界面初始化失败: {ui_error}")
-                    print("💡 主窗口仍可使用，但部分功能不可用")
+                # 步骤1: 初始化主窗口的功能界面
+                print("[UI-ACTIVATE] 初始化功能界面...")
+                logger.info("[UI-ACTIVATE] 调用 initialize_function_interfaces_after_backend()")
+                main_window.initialize_function_interfaces_after_backend()
+                logger.info("[UI-ACTIVATE] ✅ 功能界面初始化完成")
 
-                # 确保主窗口可见
-                logger.info("[UI-ACTIVATE] 确保主窗口可见...")
-                main_window.show()
-                main_window.raise_()
-                main_window.activateWindow()
-                logger.info("[UI-ACTIVATE] ✅ 主窗口已激活")
-
-                # 隐藏启动画面
-                logger.info("[UI-ACTIVATE] 隐藏启动画面...")
+                # 步骤2: 隐藏启动画面
+                print("[UI-ACTIVATE] 隐藏启动画面...")
+                logger.info("[UI-ACTIVATE] 隐藏启动画面")
                 coordinator.hide_splash(main_window)
                 logger.info("[UI-ACTIVATE] ✅ 启动画面已隐藏")
 
@@ -180,7 +246,7 @@ def main():
                 total_time = (time.time() - startup_start) * 1000
 
                 print("\n" + "=" * 70)
-                print(f"✅ 系统启动完成！")
+                print("✅ 系统启动完成！")
                 print(f"   - UI激活耗时: {activation_time:.0f}ms")
                 print(f"   - 总启动时间: {total_time:.0f}ms")
                 print("=" * 70)

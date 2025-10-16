@@ -6,7 +6,7 @@ import os
 import threading
 from typing import Optional
 
-from PySide6.QtCore import QObject, QThread, Signal, Qt
+from PySide6.QtCore import QObject, QThread, Signal, Qt, QTimer
 from PySide6.QtWidgets import QApplication, QSplashScreen, QWidget
 
 
@@ -152,7 +152,7 @@ class StartupCoordinator(QObject):
         self.backend_result: Optional[dict] = None
 
         # 超时监视
-        self.timeout_timer: Optional[object] = None
+        self.timeout_timer: Optional[QTimer] = None
         self.initialization_timeout = 30  # 30秒超时
 
         self.logger.info("[COORDINATOR] 启动协调器已创建")

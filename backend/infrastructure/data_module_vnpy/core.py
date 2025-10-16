@@ -447,10 +447,11 @@ class ChinaStockEngine(BaseEngine):
 
             for market_type in market_types:
                 stocks = classified_stocks.get(market_type, [])
+                stock_codes: List[str] = []
                 if stocks and isinstance(stocks[0], str):
-                    stock_codes = [code for code in stocks if code]
+                    stock_codes = [code for code in stocks if isinstance(code, str) and code]
                 else:
-                    stock_codes = [stock.get("code", "") for stock in stocks if stock.get("code")]
+                    stock_codes = [stock.get("code", "") for stock in stocks if isinstance(stock, dict) and stock.get("code")]
                 market_stock_counts[market_type] = len(stock_codes)
                 all_stocks.extend(stock_codes)
 
@@ -468,10 +469,10 @@ class ChinaStockEngine(BaseEngine):
                 return
 
             # 🚀 调试：记录实际下载参数
-            from datetime import date
+            from datetime import date as date_type
 
-            today = date.today()
-            actual_start_date = start_date
+            today = date_type.today()
+            actual_start_date: date_type = start_date if isinstance(start_date, date_type) else date_type.today()
 
             if isinstance(start_date, str):
                 from datetime import datetime
@@ -572,8 +573,8 @@ class ChinaStockEngine(BaseEngine):
                 else:
                     # 有数据，尝试保存
                     try:
-                        success = self.storage_manager.merge_data(symbol, interval, data)
-                        if success:
+                        result_path = self.storage_manager.save_kline(symbol, interval, data)
+                        if result_path is not None:
                             saved_count += 1
                             self.logger.debug(
                                 "✓ 保存成功: %s %s (%d行)", symbol, interval, len(data)
@@ -612,50 +613,6 @@ class ChinaStockEngine(BaseEngine):
             self.logger.error(f"增量下载失败: {e}", exc_info=True)
             self._push_download_event("incremental_kline", "error", 0, str(e))
             self._push_log_event(f"增量下载失败: {e}", "ERROR")
-
-    def _ensure_lazy_init(self) -> None:
-        """确保延迟初始化已完成（首次查询时自动执行）"""
-        if self._lazy_init_done:
-            return
-
-        with self._lazy_init_lock:
-            if self._lazy_init_done:
-                return
-
-            self.logger.info("执行延迟初始化...")
-
-            # 执行健康检查
-            try:
-                hc_result = self.healthcheck()
-                if hc_result.get("ready"):
-                    self.logger.info("✅ 健康检查通过")
-                else:
-                    self.logger.warning("⚠️ 健康检查未通过: %s", hc_result.get("message"))
-            except Exception as e:
-                self.logger.warning("健康检查失败: %s", e)
-
-            # 启动数据感知（后台线程）
-            if not hasattr(self, "_data_sensing_started") or not self._data_sensing_started:
-                try:
-                    self._start_data_sensing_async()
-                    self._data_sensing_started = True
-                except Exception as e:
-                    self.logger.error("启动数据感知失败: %s", e)
-
-            # 启动预加载服务（如果配置启用且尚未启动）
-            if self.preload_service and config_manager.is_preload_auto_start():
-                try:
-                    if (
-                        not hasattr(self.preload_service, "_started")
-                        or not self.preload_service._started
-                    ):
-                        self.preload_service.start(prime=True)
-                        self.logger.info("✅ 预加载服务已启动")
-                except Exception as e:
-                    self.logger.error("启动预加载服务失败: %s", e)
-
-            self._lazy_init_done = True
-            self.logger.info("延迟初始化完成")
 
     def query_data(
         self,
@@ -754,12 +711,8 @@ class ChinaStockEngine(BaseEngine):
             校验汇总结果
         """
         try:
-            if force_refresh:
-                summary = self.validator.validate_all_data(force_refresh=True)
-            else:
-                summary = self.validator.get_validation_summary()
-                if summary is None:
-                    summary = self.validator.validate_all_data()  # type: ignore[assignment]
+            # DataValidator.validate_all_data() 不接受参数，总是执行完整验证
+            summary = self.validator.validate_all_data()
 
             if summary:
                 # 推送校验事件

@@ -44,16 +44,13 @@ from PySide6.QtWidgets import (
 )
 
 from backend.config import ConfigManager
-from backend.core.utils import LoggerMixin, setup_logging
+from backend.core.utils import LoggerMixin
+from backend.core.base import setup_logging
 
 from ui.themes.theme_manager import ThemeManager
 
 
-
-
-
-
-from ui.widgets.responsive_helper import ResponsiveHelper
+from ui.shared_widgets.responsive_helper import ResponsiveHelper
 from ui.core.boot_orchestrator import get_boot_orchestrator
 
 
@@ -126,12 +123,12 @@ class MainWindow(QMainWindow, LoggerMixin):
 
         # 动态导入映射：按需加载时根据ID导入对应类
         self.interface_imports = {
-            "data": ("ui.components.data_center.main_view", "DataCenter"),
-            "market": ("ui.components.market_dashboard.main_view", "MarketDashboard"),
-            "strategy": ("ui.components.strategy_center.main_view", "StrategyCenter"),
-            "trading": ("ui.components.trading_gateway.main_view", "TradingGateway"),
-            "portfolio": ("ui.components.portfolio_investment.main_view", "PortfolioInvestment"),
-            "system": ("ui.components.system_manager.main_view", "SystemManager"),
+            "data": ("ui.modules.data_center.view", "DataCenter"),
+            "market": ("ui.modules.market_board.view", "MarketDashboard"),
+            "strategy": ("ui.modules.strategy_center.view", "StrategyCenter"),
+            "trading": ("ui.modules.trading_gateway.view", "TradingGateway"),
+            "portfolio": ("ui.modules.portfolio.view", "PortfolioInvestment"),
+            "system": ("ui.modules.system_manager.view", "SystemManager"),
         }
 
         # 更新定时器
@@ -139,6 +136,11 @@ class MainWindow(QMainWindow, LoggerMixin):
         self.responsive_helper: Optional[ResponsiveHelper] = None
         # 启动就绪编排器
         self.boot_orchestrator = get_boot_orchestrator()
+
+        # ✅ 严格串行化：就绪标志
+        self._interfaces_created = False
+        self._interfaces_loaded = False
+        self._is_loading_interface = False  # 防止并发加载
 
         # 初始化UI框架
         self._init_responsive_helper()
@@ -248,7 +250,7 @@ class MainWindow(QMainWindow, LoggerMixin):
                 self.logger.error("❌ 功能界面创建失败: %s", e, exc_info=True)
                 # 不抛出异常，让应用继续运行（即使部分功能不可用）
 
-            # 连接信号
+            # 步骤2: 连接信号槽
             self.logger.info("步骤2: 连接信号槽...")
             try:
                 self.connect_signals()
@@ -257,7 +259,7 @@ class MainWindow(QMainWindow, LoggerMixin):
                 self.logger.error("❌ 信号槽连接失败: %s", e, exc_info=True)
                 # 信号连接失败不致命，继续执行
 
-            # 启动更新定时器
+            # 步骤3: 启动更新定时器
             self.logger.info("步骤3: 启动更新定时器...")
             try:
                 self.start_update_timer()
@@ -265,6 +267,23 @@ class MainWindow(QMainWindow, LoggerMixin):
             except Exception as e:
                 self.logger.error("❌ 更新定时器启动失败: %s", e, exc_info=True)
                 # 定时器失败不致命，继续执行
+
+            # 步骤4: 逐个触发按需加载
+            self.logger.info("步骤4: 逐个触发按需加载...")
+            try:
+                self._trigger_lazy_loads_sequentially()
+                self.logger.info("✅ 按需加载完成")
+            except Exception as e:
+                self.logger.error("❌ 按需加载失败: %s", e, exc_info=True)
+
+            # 步骤5: 设置默认选中界面
+            self.logger.info("步骤5: 设置默认选中界面...")
+            try:
+                if self.nav_list and self.nav_list.count() > 0:
+                    self.nav_list.setCurrentRow(0)
+                    self.logger.info("✅ 默认界面设置完成")
+            except Exception as e:
+                self.logger.error("❌ 设置默认界面失败: %s", e, exc_info=True)
 
             self.logger.info("=" * 70)
             self.logger.info("✅ UI功能界面初始化完成")
@@ -469,7 +488,7 @@ class MainWindow(QMainWindow, LoggerMixin):
         self.status_bar.addWidget(self.status_label, 1)
 
         # 中间告警滚动条
-        from ui.widgets.alert_ticker import AlertTicker
+        from ui.shared_widgets.alert_ticker import AlertTicker
 
         self.alert_ticker = AlertTicker()
         self.alert_ticker.clicked.connect(self._on_alert_ticker_clicked)
@@ -493,6 +512,7 @@ class MainWindow(QMainWindow, LoggerMixin):
 
     def create_function_interfaces(self):
         """创建6个功能界面."""
+        # 定义所有功能界面（使用延迟加载，interface_class=None）
         interfaces = [
             ("data", None),
             ("market", None),
@@ -503,6 +523,29 @@ class MainWindow(QMainWindow, LoggerMixin):
         ]
 
         self.logger.info("准备创建%d个功能界面", len(interfaces))
+        print("[SERIAL] 准备创建6个界面（严格串行模式）")
+
+        # ✅ 严格串行化：阻塞所有可能触发事件的组件
+        blocked_widgets = []
+        if self.nav_list:
+            self.nav_list.blockSignals(True)
+            blocked_widgets.append(("nav_list", self.nav_list))
+        if self.content_stack:
+            self.content_stack.blockSignals(True)
+            blocked_widgets.append(("content_stack", self.content_stack))
+
+        # ✅ 阻塞主窗口本身的信号
+        self.blockSignals(True)
+        blocked_widgets.append(("MainWindow", self))
+
+        self.logger.info("✅ 已阻塞 %d 个组件的信号，确保100%%串行创建", len(blocked_widgets))
+        print(f"[SERIAL] 已阻塞 {len(blocked_widgets)} 个组件的信号")
+
+        # ✅ 强制刷新所有挂起的Qt事件（清空队列）
+        from PySide6.QtWidgets import QApplication
+
+        QApplication.processEvents()
+        print("[SERIAL] 已清空Qt事件队列")
 
         for idx, (interface_id, interface_class) in enumerate(interfaces, 1):
             self.logger.info("-" * 70)
@@ -527,17 +570,25 @@ class MainWindow(QMainWindow, LoggerMixin):
                 print(f"[UI-CREATE] ❌ 界面 {interface_id} 创建失败: {e}")
                 # 继续创建下一个界面，不中断整个流程
 
+        print("[SERIAL] 所有6个界面占位符创建完成")
         self.logger.info("=" * 70)
         self.logger.info("✅ 所有功能界面创建完成")
         self.logger.info("=" * 70)
 
-        # 默认选中第一个界面
-        if self.nav_list and self.nav_list.count() > 0:
-            self.logger.info("设置默认选中第一个界面")
-            self.nav_list.setCurrentRow(0)
-            self.logger.info("✅ 默认界面设置完成")
+        # ✅ 恢复所有组件的信号（创建完成）
+        if self.nav_list:
+            self.nav_list.blockSignals(False)
+        if self.content_stack:
+            self.content_stack.blockSignals(False)
+        self.blockSignals(False)
+        self.logger.info("✅ 已恢复所有组件信号")
+        print("[SERIAL] 已恢复所有组件信号，准备进入下一阶段")
 
-    def _create_interface(self, interface_id: str, interface_class: type):
+        # ✅ 标记占位符创建完成
+        self._interfaces_created = True
+        self.logger.info("✅ 界面创建阶段完成，等待后端就绪后触发加载")
+
+    def _create_interface(self, interface_id: str, interface_class: type | None):
         """创建单个功能界面.
 
         Args:
@@ -562,15 +613,17 @@ class MainWindow(QMainWindow, LoggerMixin):
                 ph_layout.addWidget(label)
 
                 interface = placeholder
-                # 登记延迟加载器（就绪后实例化并替换占位）
-                self.lazy_loaders[interface_id] = lambda: self._instantiate_and_replace(
-                    interface_id, None
+                # ✅ 登记延迟加载器（使用偏函数避免lambda闭包问题）
+                from functools import partial
+
+                self.lazy_loaders[interface_id] = partial(
+                    self._instantiate_and_replace, interface_id, None
                 )
-                self.logger.info("  ⚠️ %s 使用占位并登记延迟加载器", interface_name)
+                self.logger.info("  ⚠️ %s 使用占位并登记延迟加载器（偏函数）", interface_name)
             except Exception as inst_error:
                 # 捕获实例化过程中的任何异常（包括访问违例）
                 self.logger.error(
-                    "  ❌ %s 实例化失败: %s", interface_class.__name__, inst_error, exc_info=True
+                    "  ❌ %s 实例化失败: %s", interface_name, inst_error, exc_info=True
                 )
                 raise  # 重新抛出，让外层捕获
 
@@ -592,23 +645,17 @@ class MainWindow(QMainWindow, LoggerMixin):
                 item = QListWidgetItem(item_text)
                 item.setData(Qt.ItemDataRole.UserRole, interface_id)
                 item.setToolTip(metadata["description"])
+                # ✅ 添加时确保信号被阻塞（避免触发任何回调）
                 self.nav_list.addItem(item)
-                self.logger.info("  ✅ 已添加到导航列表")
+                self.logger.info("  ✅ 已添加到导航列表（信号已阻塞）")
 
             self.logger.info("✨ %s 界面创建成功", interface_name)
-            # 按需加载：所有模块统一在三条件就绪后触发真实加载
-            if interface_id in getattr(self, "lazy_loaders", {}) and getattr(self, "boot_orchestrator", None):
-                orch = self.boot_orchestrator
-                orch.on_all_ready(
-                    ["backend_ready", "ui_ready", "ui_visible"],
-                    # 使用 singleShot 切回主线程执行
-                    lambda iid=interface_id: QTimer.singleShot(0, lambda: self._trigger_lazy_load(iid)),
-                )
+            # ✅ 完全移除boot_orchestrator回调机制，改为手动控制
 
         except Exception as e:
             self.logger.error("❌ %s 界面创建失败: %s", interface_id, e, exc_info=True)
             print(f"\n⚠️  界面 '{interface_id}' 创建失败: {e}")
-            print(f"   类名: {interface_class.__name__}")
+            print(f"   类名: {interface_class.__name__ if interface_class else 'Lazy'}")
 
             # 创建错误占位符
             placeholder = self._create_error_placeholder(interface_id, str(e))
@@ -637,12 +684,88 @@ class MainWindow(QMainWindow, LoggerMixin):
         except Exception as e:
             self.logger.error("按需加载 '%s' 失败: %s", interface_id, e, exc_info=True)
 
-    def _instantiate_and_replace(self, interface_id: str, interface_class: type):
+    def _trigger_lazy_loads_sequentially(self):
+        """严格串行触发所有按需加载（100%避免并发）.
+
+        使用就绪标志确保每次只加载一个界面，完全避免并发。
+        """
+        if self._is_loading_interface:
+            self.logger.warning("⚠️ 已有界面正在加载，跳过重复触发")
+            return
+
+        if self._interfaces_loaded:
+            self.logger.info("✅ 界面已全部加载，跳过")
+            return
+
+        self._is_loading_interface = True
+        self.logger.info("=" * 70)
+        self.logger.info("开始严格串行加载，共 %d 个界面", len(self.lazy_loaders))
+        self.logger.info("=" * 70)
+
+        loaded_count = 0
+        failed_count = 0
+
+        for idx, interface_id in enumerate(self.interface_order, 1):
+            if interface_id in self.lazy_loaders:
+                try:
+                    metadata = self.interface_metadata.get(interface_id, {})
+                    interface_name = metadata.get("name", interface_id)
+
+                    self.logger.info("-" * 60)
+                    self.logger.info(
+                        "[%d/%d] 正在加载: %s (%s)",
+                        idx,
+                        len(self.lazy_loaders),
+                        interface_name,
+                        interface_id,
+                    )
+                    self.logger.info("-" * 60)
+                    print(
+                        f"[LAZY-LOAD] [{idx}/{len(self.lazy_loaders)}] 正在加载: {interface_name}"
+                    )
+
+                    # 严格串行：等待上一个完全完成再加载下一个
+                    self._trigger_lazy_load(interface_id)
+
+                    loaded_count += 1
+                    self.logger.info(
+                        "✅ [%d/%d] %s 加载完成", idx, len(self.lazy_loaders), interface_name
+                    )
+                    print(
+                        f"[LAZY-LOAD] ✅ [{idx}/{len(self.lazy_loaders)}] {interface_name} 加载完成"
+                    )
+
+                except Exception as e:
+                    failed_count += 1
+                    self.logger.error(
+                        "❌ [%d/%d] %s 加载失败: %s",
+                        idx,
+                        len(self.lazy_loaders),
+                        interface_id,
+                        e,
+                        exc_info=True,
+                    )
+                    print(
+                        f"[LAZY-LOAD] ❌ [{idx}/{len(self.lazy_loaders)}] {interface_id} 加载失败: {e}"
+                    )
+                    # 继续加载下一个，不中断流程
+
+        self._interfaces_loaded = True
+        self._is_loading_interface = False
+
+        self.logger.info("=" * 70)
+        self.logger.info("✅ 所有按需加载已完成")
+        self.logger.info("   - 成功: %d 个", loaded_count)
+        self.logger.info("   - 失败: %d 个", failed_count)
+        self.logger.info("=" * 70)
+
+    def _instantiate_and_replace(self, interface_id: str, interface_class: type | None):
         """实例化真实界面并替换占位."""
         try:
             if not interface_class:
                 # 通用动态导入：根据映射导入对应类
                 from importlib import import_module
+
                 module_path, class_name = self.interface_imports.get(interface_id, (None, None))
                 if not module_path or not class_name:
                     raise RuntimeError(f"未找到界面映射: {interface_id}")
@@ -824,9 +947,11 @@ class MainWindow(QMainWindow, LoggerMixin):
                     interface_id = item.data(Qt.ItemDataRole.UserRole)
                     metadata = self.interface_metadata.get(interface_id, {})
                     interface_name = metadata.get("name", "未知")
-                    # 如果该界面为按需加载且尚未实例化真实界面，则立即触发创建
-                    if interface_id in getattr(self, "lazy_loaders", {}):
-                        self._trigger_lazy_load(interface_id)
+
+                    # ✅ 禁用自动触发按需加载，避免并发
+                    # 所有加载由_trigger_lazy_loads_sequentially()严格控制
+                    # if interface_id in getattr(self, "lazy_loaders", {}):
+                    #     self._trigger_lazy_load(interface_id)
 
                     # 更新状态栏
                     if self.status_label:

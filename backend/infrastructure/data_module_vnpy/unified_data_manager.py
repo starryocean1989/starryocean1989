@@ -6,9 +6,10 @@ from __future__ import annotations
 import logging
 from datetime import date, datetime
 from threading import Lock
-from typing import Dict, Iterable, Optional, Sequence, Set, Tuple, TYPE_CHECKING, Union
+from typing import Dict, Iterable, Optional, Sequence, Set, Tuple, TYPE_CHECKING, Union, cast
 
 import pandas as pd
+from pandas import Timestamp
 
 from vnpy.trader.constant import Exchange
 from vnpy.trader.object import SubscribeRequest
@@ -275,7 +276,7 @@ class UnifiedDataManager:
             else:
                 df = df.reset_index(drop=False)
                 if "datetime" not in df.columns and df.columns.size > 0:
-                    candidate = df.columns[0]
+                    candidate = str(df.columns[0])
                     if candidate != "datetime":
                         df = df.rename(columns={candidate: "datetime"})
         if "datetime" not in df.columns:
@@ -306,12 +307,12 @@ class UnifiedDataManager:
         return frame.loc[mask].reset_index(drop=True)
 
     # ------------------------------------------------------------------
-    def _to_timestamp(self, value: Union[str, date, datetime]) -> pd.Timestamp:
+    def _to_timestamp(self, value: Union[str, date, datetime]) -> Timestamp:
         if isinstance(value, datetime):
-            return pd.Timestamp(value)
+            return cast(Timestamp, pd.Timestamp(value))
         if isinstance(value, date):
-            return pd.Timestamp(datetime.combine(value, datetime.min.time()))
-        return pd.to_datetime(value)
+            return cast(Timestamp, pd.Timestamp(datetime.combine(value, datetime.min.time())))
+        return cast(Timestamp, pd.to_datetime(value))
 
     # ------------------------------------------------------------------
     def _trigger_backfill(self, symbol: str, start_date: Optional[Union[str, date]]) -> None:

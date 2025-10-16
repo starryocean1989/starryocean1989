@@ -15,7 +15,7 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 from mootdx.quotes import Quotes
@@ -171,7 +171,7 @@ class BlockParser:
             # 转换为DataFrame
             if not results:
                 logger.warning("spblock.dat解析未找到任何数据")
-                return pd.DataFrame(columns=["blockname", "code", "block_type"])
+                return pd.DataFrame(columns=["blockname", "code", "block_type"])  # type: ignore[arg-type]
 
             df = pd.DataFrame(results)
             logger.info(
@@ -182,7 +182,7 @@ class BlockParser:
         except Exception as e:
             logger.error("自定义解析spblock.dat失败: %s", e, exc_info=True)
             # 返回空DataFrame但保持结构
-            return pd.DataFrame(columns=["blockname", "code", "block_type"])
+            return pd.DataFrame(columns=["blockname", "code", "block_type"])  # type: ignore[arg-type]
 
     def get_target_blocks(self) -> Dict[str, List[str]]:
         """
@@ -254,7 +254,7 @@ class BlockParser:
         target_blocks = self.get_target_blocks()
         return target_blocks["含可转债"]
 
-    def get_t0_fund_codes(self) -> List[Dict[str, any]]:
+    def get_t0_fund_codes(self) -> List[Dict[str, Any]]:
         """
         提取T+0基金板块中01/15开头的7位代码（仅限块名包含“T+0基金”的区段）
 
@@ -268,7 +268,7 @@ class BlockParser:
             logger.warning("spblock.dat 文件不存在，返回空列表")
             return []
 
-        result: List[Dict[str, any]] = []
+        result: List[Dict[str, Any]] = []
 
         try:
             # 使用GBK编码读取文本文件
@@ -365,7 +365,7 @@ class SymbolLoader:
         self.cache_dir = config_manager.get_cache_dir()
         self.cache_file = self.cache_dir / "stock_list_classified.json"
 
-    def load_from_api(self) -> Dict[str, List[Dict[str, any]]]:
+    def load_from_api(self) -> Dict[str, List[Dict[str, Any]]]:
         """
         从API加载完整品种列表并分类
 
@@ -399,7 +399,7 @@ class SymbolLoader:
 
         return classified
 
-    def load_from_cache(self) -> Optional[Dict[str, List[Dict[str, any]]]]:
+    def load_from_cache(self) -> Optional[Dict[str, List[Dict[str, Any]]]]:
         """
         从本地缓存加载品种分类
 
@@ -476,7 +476,7 @@ class SymbolLoader:
 
         return complete_df
 
-    def _classify_stocks(self, complete_df: pd.DataFrame) -> Dict[str, List[Dict[str, any]]]:
+    def _classify_stocks(self, complete_df: pd.DataFrame) -> Dict[str, List[Dict[str, Any]]]:
         """
         分类品种（按照需求逻辑）
 
@@ -498,7 +498,8 @@ class SymbolLoader:
         sh_mask = (complete_df["market"] == 1) & (
             complete_df["code"].str.startswith("688") | complete_df["code"].str.startswith("60")
         )
-        result["上证A股"] = self._build_stock_list(complete_df[sh_mask])
+        sh_stocks: pd.DataFrame = complete_df[sh_mask]  # type: ignore[assignment]
+        result["上证A股"] = self._build_stock_list(sh_stocks)
 
         # 集合F: 深证A股 (market==0 AND code.startswith('000'|'001'|'002'|'300'|'301'))
         sz_mask = (complete_df["market"] == 0) & (
@@ -508,7 +509,8 @@ class SymbolLoader:
             | complete_df["code"].str.startswith("300")
             | complete_df["code"].str.startswith("301")
         )
-        result["深证A股"] = self._build_stock_list(complete_df[sz_mask])
+        sz_stocks: pd.DataFrame = complete_df[sz_mask]  # type: ignore[assignment]
+        result["深证A股"] = self._build_stock_list(sz_stocks)
 
         # 集合I: 北证A股（从addedcode_bj.cfg获取）
         result["北证A股"] = self._get_beijing_stocks()
@@ -526,7 +528,7 @@ class SymbolLoader:
 
         return result
 
-    def _build_stock_list(self, df: pd.DataFrame) -> List[Dict[str, any]]:
+    def _build_stock_list(self, df: pd.DataFrame) -> List[Dict[str, Any]]:
         """
         将DataFrame转换为字典列表
 
@@ -547,7 +549,7 @@ class SymbolLoader:
             )
         return result
 
-    def _get_beijing_stocks(self) -> List[Dict[str, any]]:
+    def _get_beijing_stocks(self) -> List[Dict[str, Any]]:
         """
         获取北证A股（集合B → 集合I）
 
@@ -586,7 +588,7 @@ class SymbolLoader:
             self.logger.warning("  ⚠ 解析北证A股失败: %s", e)
             return []
 
-    def _get_t0_funds(self, complete_df: pd.DataFrame) -> List[Dict[str, any]]:
+    def _get_t0_funds(self, complete_df: pd.DataFrame) -> List[Dict[str, Any]]:
         """
         获取T+0基金（集合C → 集合H）
 
@@ -639,7 +641,7 @@ class SymbolLoader:
             self.logger.warning("  ⚠ 解析T+0基金失败: %s", e)
             return []
 
-    def _get_convertible_bonds(self, complete_df: pd.DataFrame) -> List[Dict[str, any]]:
+    def _get_convertible_bonds(self, complete_df: pd.DataFrame) -> List[Dict[str, Any]]:
         """
         获取可转债（集合A → 集合G）
 
@@ -665,14 +667,14 @@ class SymbolLoader:
                     code = str(raw_code).zfill(6)
 
                     # 从完整缓存中匹配
-                    matched = complete_df[
+                    matched: pd.DataFrame = complete_df[  # type: ignore[assignment]
                         (complete_df["market"] == mkt) & (complete_df["code"] == code)
                     ]
 
                     if len(matched) > 0:
                         # 如果有多个匹配，过滤掉指数
                         if len(matched) > 1:
-                            non_index = matched[
+                            non_index: pd.DataFrame = matched[  # type: ignore[assignment]
                                 ~matched["name"].str.contains("指数|ETF", na=False, regex=True)
                             ]
                             if len(non_index) > 0:
@@ -701,7 +703,7 @@ class SymbolLoader:
             self.logger.warning("  ⚠ 解析可转债失败: %s", e)
             return []
 
-    def _save_cache(self, classified: Dict[str, List[Dict[str, any]]]) -> None:
+    def _save_cache(self, classified: Dict[str, List[Dict[str, Any]]]) -> None:
         """
         保存分类结果到本地缓存
 

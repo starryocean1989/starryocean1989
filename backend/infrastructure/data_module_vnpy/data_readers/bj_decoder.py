@@ -17,7 +17,7 @@
 import logging
 import struct
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, cast
 
 import pandas as pd
 
@@ -182,9 +182,9 @@ class BjStockDecoder:
             # 删除无效日期
             df = df[df["datetime"].notna()].copy()
             # 设置索引
-            df.index = df["datetime"]
+            df = df.set_index("datetime")
             # 只返回需要的列
-            df = df[["open", "high", "low", "close", "amount", "volume"]]
+            return cast(pd.DataFrame, df[["open", "high", "low", "close", "amount", "volume"]])
 
         return df
 
@@ -282,9 +282,9 @@ class BjStockDecoder:
             # 删除无效日期
             df = df[df["datetime"].notna()].copy()
             # 设置索引
-            df.index = df["datetime"]
+            df = df.set_index("datetime")
             # 只返回需要的列
-            df = df[["open", "high", "low", "close", "amount", "volume"]]
+            return cast(pd.DataFrame, df[["open", "high", "low", "close", "amount", "volume"]])
 
         return df
 
