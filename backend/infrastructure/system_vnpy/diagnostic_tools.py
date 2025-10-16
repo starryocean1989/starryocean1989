@@ -198,7 +198,7 @@ class PerformanceAnalyzer:
             bottlenecks = []
 
             # CPU瓶颈检查
-            cpu_percent = psutil.cpu_percent(interval=1)
+            cpu_percent: float = psutil.cpu_percent(interval=1, percpu=False)  # type: ignore[assignment]
             if cpu_percent > 80:
                 bottlenecks.append(
                     {
@@ -258,9 +258,9 @@ class PerformanceAnalyzer:
 
             # 网络瓶颈检查（简化版）
             net_io = psutil.net_io_counters()
-            if net_io:
+            if net_io and hasattr(net_io, "errin") and hasattr(net_io, "errout"):
                 # 检查错误包
-                error_count = net_io.errin + net_io.errout
+                error_count: int = net_io.errin + net_io.errout  # type: ignore[attr-defined]
 
                 if error_count > 100:
                     bottlenecks.append(

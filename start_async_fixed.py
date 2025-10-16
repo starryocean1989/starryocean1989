@@ -101,7 +101,7 @@ def main():
         logger.info("[QT-INIT] ✅ QApplication创建成功，耗时 %.0fms", stage1_time)
 
         # 加载配置文件
-        from backend.config import init_settings
+        from backend.core.config import init_settings
 
         config_file = os.getenv("CONFIG_FILE")
         if config_file:
@@ -157,7 +157,7 @@ def main():
             from backend.core.base import set_event_engine, set_main_engine
 
             # 创建 EventEngine（会自动启动工作线程）
-            event_engine = EventEngine(interval=0.5)
+            event_engine = EventEngine(interval=1)
             logger.info("[VNPY-CORE] ✅ EventEngine 创建成功（工作线程已启动）")
             print("[VNPY-CORE] ✅ EventEngine 创建成功")
 

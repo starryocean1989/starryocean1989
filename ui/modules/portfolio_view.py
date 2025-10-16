@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 import pyqtgraph as pg
 
 from backend.core.base import get_service_manager
-from backend.core.utils import LoggerMixin
+from backend.core.service_base import LoggerMixin
 
 from ui.shared_widgets.base_widget import BaseWidget
 

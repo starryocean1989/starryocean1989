@@ -567,11 +567,12 @@ class StrategyCenterService(BaseService, LoggerMixin):
                     config = {}
 
                 # 恢复任务到内存
+                created_at = task_row.get("created_at")
                 self._backtest_tasks[task_id] = {
                     "status": task_row.get("status", "unknown"),
                     "strategy_file": task_row.get("strategy_file"),
                     "config": config,
-                    "start_time": datetime.fromisoformat(task_row.get("created_at")) if task_row.get("created_at") else datetime.now(),
+                    "start_time": datetime.fromisoformat(created_at) if created_at and isinstance(created_at, str) else datetime.now(),
                     "progress": task_row.get("progress", 0),
                     "result": None,  # result需要从backtest_results表加载
                 }

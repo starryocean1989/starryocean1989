@@ -191,7 +191,7 @@ class StartupCoordinator(QObject):
 
         self.logger.info("[COORDINATOR] 初始化配置...")
 
-        from backend.config import init_settings
+        from backend.core.config import init_settings
 
         config_file = os.getenv("CONFIG_FILE")
         if config_file:

@@ -6,20 +6,24 @@
 """
 import time
 from collections import deque
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from PySide6.QtCore import QDate, Qt, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QDate, QDateTime, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QIcon
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDateEdit,
+    QDateTimeEdit,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -42,13 +46,1008 @@ import psutil
 import pyqtgraph as pg
 
 from backend.core.base import get_service_manager
+from backend.core.service_base import LoggerMixin
 from backend.core.utils import (
-    LoggerMixin,
     EVENT_SYSTEM_STATUS,
     EVENT_PERFORMANCE_METRICS,
     EVENT_SERVICE_STATUS,
+    EVENT_ALERT_CREATED,
+    EVENT_ALERT_UPDATED,
+    EVENT_LOG_RECORD,
 )
+from backend.services.system_manager_service import AlertSeverity, AlertStatus
 from ui.shared_widgets.base_widget import BaseWidget
+from ui.core.boot_orchestrator import get_boot_orchestrator
+
+
+# ==================== 告警管理组件 ====================
+
+
+class AlertCard(QWidget):
+    """告警卡片组件."""
+
+    def __init__(self, alert_data: Dict[str, Any]):
+        """初始化告警卡片.
+
+        Args:
+            alert_data: 告警数据
+        """
+        super().__init__()
+
+        self.alert_data = alert_data
+        self.alert_id = alert_data.get("alert_id")
+
+        # 设置样式
+        self.setFixedHeight(120)
+        self.setStyleSheet(self._get_card_style())
+
+        # 创建布局
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+
+        # 顶部信息
+        top_layout = QHBoxLayout()
+
+        # 严重程度和时间
+        severity = alert_data.get("severity", "info")
+        status = alert_data.get("status", "new")
+
+        severity_label = QLabel(f"[{severity.upper()}]")
+        severity_label.setStyleSheet(self._get_severity_style(severity))
+
+        time_label = QLabel(alert_data.get("created_at", ""))
+        time_label.setStyleSheet("color: #666; font-size: 11px;")
+
+        top_layout.addWidget(severity_label)
+        top_layout.addStretch()
+        top_layout.addWidget(time_label)
+
+        layout.addLayout(top_layout)
+
+        # 消息内容
+        message_label = QLabel(alert_data.get("message", ""))
+        message_label.setWordWrap(True)
+        message_label.setStyleSheet("font-weight: bold; margin: 5px 0;")
+        layout.addWidget(message_label)
+
+        # 来源信息
+        source_info = f"来源: {alert_data.get('rule_name', '未知规则')} | 模块: {alert_data.get('context', {}).get('module', '未知')}"
+        source_label = QLabel(source_info)
+        source_label.setStyleSheet("color: #666; font-size: 11px;")
+        layout.addWidget(source_label)
+
+        # 底部按钮
+        button_layout = QHBoxLayout()
+
+        if status == "new":
+            # 新告警：确认和解决按钮
+            acknowledge_btn = QPushButton("确认")
+            acknowledge_btn.clicked.connect(self._acknowledge_alert)
+            acknowledge_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #17a2b8;
+                    color: white;
+                    border: none;
+                    padding: 5px 10px;
+                    border-radius: 3px;
+                }
+                QPushButton:hover {
+                    background-color: #138496;
+                }
+            """)
+            button_layout.addWidget(acknowledge_btn)
+
+            resolve_btn = QPushButton("解决")
+            resolve_btn.clicked.connect(self._resolve_alert)
+            resolve_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #28a745;
+                    color: white;
+                    border: none;
+                    padding: 5px 10px;
+                    border-radius: 3px;
+                }
+                QPushButton:hover {
+                    background-color: #218838;
+                }
+            """)
+            button_layout.addWidget(resolve_btn)
+        elif status == "acknowledged":
+            # 已确认：解决按钮
+            resolve_btn = QPushButton("解决")
+            resolve_btn.clicked.connect(self._resolve_alert)
+            resolve_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #28a745;
+                    color: white;
+                    border: none;
+                    padding: 5px 10px;
+                    border-radius: 3px;
+                }
+                QPushButton:hover {
+                    background-color: #218838;
+                }
+            """)
+            button_layout.addWidget(resolve_btn)
+        else:
+            # 已解决或忽略：无操作按钮
+            status_label = QLabel(f"状态: {status}")
+            status_label.setStyleSheet("color: #28a745; font-size: 11px;")
+            button_layout.addWidget(status_label)
+
+        button_layout.addStretch()
+        layout.addLayout(button_layout)
+
+    def _get_card_style(self) -> str:
+        """获取卡片样式."""
+        severity = self.alert_data.get("severity", "info")
+        status = self.alert_data.get("status", "new")
+
+        base_style = """
+            QWidget {
+                border: 1px solid #ddd;
+                border-radius: 5px;
+                margin: 2px;
+            }
+        """
+
+        if status == "new":
+            if severity == "critical":
+                return base_style + "QWidget { background-color: #ffebee; border-left: 4px solid #d32f2f; }"
+            elif severity == "error":
+                return base_style + "QWidget { background-color: #fff3e0; border-left: 4px solid #f57c00; }"
+            else:
+                return base_style + "QWidget { background-color: #e3f2fd; border-left: 4px solid #2196f3; }"
+        else:
+            return base_style + "QWidget { background-color: #f5f5f5; }"
+
+    def _get_severity_style(self, severity: str) -> str:
+        """获取严重程度样式."""
+        color_map = {
+            "critical": "color: #d32f2f; font-weight: bold;",
+            "error": "color: #f57c00; font-weight: bold;",
+            "warning": "color: #fbc02d; font-weight: bold;",
+            "info": "color: #2196f3;",
+        }
+        return color_map.get(severity, "color: #666;")
+
+    def _acknowledge_alert(self) -> None:
+        """确认告警."""
+        note, ok = QInputDialog.getText(self, "确认告警", "请输入确认备注（可选）:")
+        if ok:
+            self._call_alert_action("acknowledge", note if note else "")
+
+    def _resolve_alert(self) -> None:
+        """解决告警."""
+        note, ok = QInputDialog.getText(self, "解决告警", "请输入解决备注（可选）:")
+        if ok:
+            self._call_alert_action("resolve", note if note else "")
+
+    def _call_alert_action(self, action: str, note: str) -> None:
+        """调用告警操作."""
+        try:
+            service_manager = get_service_manager()
+            system_service = service_manager.get_service("system_manager_service")
+
+            if system_service:
+                if action == "acknowledge":
+                    result = system_service.acknowledge_alert(self.alert_id, note)
+                elif action == "resolve":
+                    result = system_service.resolve_alert(self.alert_id, note)
+                else:
+                    return
+
+                if result.get("success"):
+                    # 更新卡片样式
+                    self.alert_data["status"] = "acknowledged" if action == "acknowledge" else "resolved"
+                    self.setStyleSheet(self._get_card_style())
+
+                    # 重新加载告警列表（直接调用父组件方法）
+                    parent = self.parent()
+                    while parent and not hasattr(parent, 'refresh_alerts'):
+                        parent = parent.parent()
+                    if parent and hasattr(parent, 'refresh_alerts'):
+                        # 类型断言：确保parent是AlertManagerWidget类型
+                        if isinstance(parent, AlertManagerWidget):
+                            parent.refresh_alerts()
+                else:
+                    QMessageBox.warning(self, "错误", f"操作失败: {result.get('message')}")
+            else:
+                QMessageBox.warning(self, "错误", "系统管理服务不可用")
+
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"操作失败: {str(e)}")
+
+
+class AlertManagerWidget(QWidget):
+    """告警管理界面组件."""
+
+    def __init__(self):
+        """初始化告警管理界面."""
+        super().__init__()
+
+        # 告警数据
+        self.alerts: List[Dict[str, Any]] = []
+        self.alert_cards: List[AlertCard] = []
+
+        # 筛选条件
+        self.current_filters = {
+            "status": None,
+            "severity": None,
+        }
+
+        # 自动刷新标志
+        self.auto_refresh = True
+
+        # 更新定时器
+        self.update_timer: Optional[QTimer] = None
+
+        # 初始化UI
+        self._init_ui()
+
+        # 连接信号
+        self._connect_signals()
+
+        # 启动定时器改为就绪后启动
+        try:
+            orch = get_boot_orchestrator()
+            orch.on_all_ready(
+                ["backend_ready", "ui_ready", "ui_visible"],
+                lambda: QTimer.singleShot(0, self._init_after_backend),
+            )
+        except Exception:
+            # 回退：若编排器不可用，仍按旧逻辑启动
+            self.start_update_timer()
+
+    def _init_ui(self) -> None:
+        """初始化用户界面."""
+        layout = QVBoxLayout(self)
+
+        # 顶部工具栏
+        toolbar = self._create_toolbar()
+        layout.addLayout(toolbar)
+
+        # 告警列表区域
+        scroll_area = self._create_alert_list_area()
+        layout.addWidget(scroll_area)
+
+    def _create_toolbar(self) -> QHBoxLayout:
+        """创建顶部工具栏."""
+        layout = QHBoxLayout()
+
+        # 状态筛选
+        status_label = QLabel("状态:")
+        self.status_combo = QComboBox()
+        self.status_combo.addItems(["全部", "NEW", "ACKNOWLEDGED", "RESOLVED", "IGNORED"])
+        layout.addWidget(status_label)
+        layout.addWidget(self.status_combo)
+
+        # 严重程度筛选
+        severity_label = QLabel("严重程度:")
+        self.severity_combo = QComboBox()
+        self.severity_combo.addItems(["全部", "CRITICAL", "ERROR", "WARNING", "INFO"])
+        layout.addWidget(severity_label)
+        layout.addWidget(self.severity_combo)
+
+        layout.addStretch()
+
+        # 刷新按钮
+        self.refresh_btn = QPushButton("刷新")
+        layout.addWidget(self.refresh_btn)
+
+        # 清理按钮
+        self.cleanup_btn = QPushButton("清理已解决")
+        layout.addWidget(self.cleanup_btn)
+
+        # 统计信息
+        self.stats_label = QLabel("告警统计: 总计 0 条")
+        layout.addWidget(self.stats_label)
+
+        return layout
+
+    def _create_alert_list_area(self) -> QScrollArea:
+        """创建告警列表区域."""
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+        # 容器widget
+        container = QWidget()
+        self.alerts_layout = QVBoxLayout(container)
+        self.alerts_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        # 设置间距
+        self.alerts_layout.setSpacing(5)
+        self.alerts_layout.setContentsMargins(10, 10, 10, 10)
+
+        scroll_area.setWidget(container)
+        return scroll_area
+
+    def _connect_signals(self) -> None:
+        """连接信号槽."""
+        self.status_combo.currentTextChanged.connect(self._apply_filters)
+        self.severity_combo.currentTextChanged.connect(self._apply_filters)
+        self.refresh_btn.clicked.connect(self._refresh_alerts)
+        self.cleanup_btn.clicked.connect(self._cleanup_resolved)
+
+    def _apply_filters(self) -> None:
+        """应用筛选条件."""
+        # 获取筛选条件
+        status_text = self.status_combo.currentText()
+        status = status_text if status_text != "全部" else None
+
+        severity_text = self.severity_combo.currentText()
+        severity = severity_text if severity_text != "全部" else None
+
+        # 应用筛选
+        filtered_alerts = []
+        for alert in self.alerts:
+            # 状态筛选
+            if status and alert.get("status") != status.lower():
+                continue
+
+            # 严重程度筛选
+            if severity and alert.get("severity") != severity.lower():
+                continue
+
+            filtered_alerts.append(alert)
+
+        # 更新显示
+        self._update_alert_cards(filtered_alerts)
+
+        # 更新统计
+        self._update_stats()
+
+    def _update_alert_cards(self, alerts: List[Dict[str, Any]]) -> None:
+        """更新告警卡片显示."""
+        # 清空现有卡片
+        for card in self.alert_cards:
+            card.setParent(None)
+            card.deleteLater()
+
+        self.alert_cards.clear()
+
+        # 创建新卡片
+        for alert in alerts:
+            card = AlertCard(alert)
+            self.alerts_layout.addWidget(card)
+            self.alert_cards.append(card)
+
+    def _update_stats(self) -> None:
+        """更新统计信息."""
+        total = len(self.alerts)
+        new_count = sum(1 for a in self.alerts if a.get("status") == "new")
+        acknowledged_count = sum(1 for a in self.alerts if a.get("status") == "acknowledged")
+        resolved_count = sum(1 for a in self.alerts if a.get("status") == "resolved")
+
+        self.stats_label.setText(
+            f"告警统计: 总计 {total} 条 (新: {new_count}, 确认: {acknowledged_count}, 解决: {resolved_count})"
+        )
+
+    def _refresh_alerts(self) -> None:
+        """刷新告警数据."""
+        try:
+            # 调用后端API获取最新告警
+            service_manager = get_service_manager()
+            system_service = service_manager.get_service("system_manager_service")
+
+            if system_service:
+                # 获取所有告警
+                result = system_service.query_alerts(limit=1000)
+
+                if result.get("success"):
+                    self.alerts = result.get("alerts", [])
+                    self._apply_filters()
+                else:
+                    QMessageBox.warning(self, "错误", f"获取告警失败: {result.get('message')}")
+            else:
+                QMessageBox.warning(self, "错误", "系统管理服务不可用")
+
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"刷新告警失败: {str(e)}")
+
+    def _cleanup_resolved(self) -> None:
+        """清理已解决的告警."""
+        try:
+            service_manager = get_service_manager()
+            system_service = service_manager.get_service("system_manager_service")
+
+            if system_service:
+                result = system_service.clear_resolved_alerts()
+
+                if result.get("success"):
+                    QMessageBox.information(self, "成功", result.get("message"))
+                    # 刷新告警列表
+                    self._refresh_alerts()
+                else:
+                    QMessageBox.warning(self, "错误", f"清理失败: {result.get('message')}")
+            else:
+                QMessageBox.warning(self, "错误", "系统管理服务不可用")
+
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"清理告警失败: {str(e)}")
+
+    def refresh_alerts(self) -> None:
+        """刷新告警显示（供子组件调用）."""
+        self._refresh_alerts()
+
+    def add_alert(self, alert_data: Dict[str, Any]) -> None:
+        """添加新告警."""
+        # 检查是否已存在
+        for existing_alert in self.alerts:
+            if existing_alert.get("alert_id") == alert_data.get("alert_id"):
+                # 更新现有告警
+                existing_alert.update(alert_data)
+                self._apply_filters()
+                return
+
+        # 添加新告警
+        self.alerts.insert(0, alert_data)  # 插入到开头
+
+        # 限制最大数量
+        if len(self.alerts) > 500:
+            self.alerts = self.alerts[:500]
+
+        # 应用筛选
+        self._apply_filters()
+
+    def update_alert(self, alert_data: Dict[str, Any]) -> None:
+        """更新告警状态."""
+        alert_id = alert_data.get("alert_id")
+
+        # 查找并更新
+        for i, alert in enumerate(self.alerts):
+            if alert.get("alert_id") == alert_id:
+                self.alerts[i].update(alert_data)
+                break
+
+        # 应用筛选（重新排序）
+        self._apply_filters()
+
+    def start_update_timer(self) -> None:
+        """启动更新定时器."""
+        if self.update_timer:
+            self.update_timer.stop()
+
+        # 每10秒自动刷新一次
+        self.update_timer = QTimer()
+        self.update_timer.timeout.connect(self._refresh_alerts)
+        self.update_timer.start(10000)  # 10秒
+
+    def stop_update_timer(self) -> None:
+        """停止更新定时器."""
+        if self.update_timer:
+            self.update_timer.stop()
+            self.update_timer = None
+
+    def handle_event(self, event_type: str, event_data: Dict[str, Any]) -> None:
+        """处理事件."""
+        if event_type == EVENT_ALERT_CREATED:
+            # 新告警创建（切回主线程）
+            QTimer.singleShot(0, lambda: self.add_alert(event_data))
+        elif event_type == EVENT_ALERT_UPDATED:
+            # 告警状态更新（切回主线程）
+            QTimer.singleShot(0, lambda: self.update_alert(event_data))
+
+    def _init_after_backend(self) -> None:
+        """在后端与UI就绪后启动刷新与定时器."""
+        try:
+            # 先做一次首刷
+            self._refresh_alerts()
+        finally:
+            # 启动定时器
+            self.start_update_timer()
+
+    def get_current_filters(self) -> Dict[str, Any]:
+        """获取当前筛选条件."""
+        return {
+            "status": self.status_combo.currentText() if self.status_combo.currentText() != "全部" else None,
+            "severity": self.severity_combo.currentText() if self.severity_combo.currentText() != "全部" else None,
+        }
+
+    def apply_filters_from_dict(self, filters: Dict[str, Any]) -> None:
+        """从字典应用筛选条件."""
+        if "status" in filters and filters["status"]:
+            index = self.status_combo.findText(filters["status"])
+            if index >= 0:
+                self.status_combo.setCurrentIndex(index)
+        else:
+            self.status_combo.setCurrentIndex(0)
+
+        if "severity" in filters and filters["severity"]:
+            index = self.severity_combo.findText(filters["severity"])
+            if index >= 0:
+                self.severity_combo.setCurrentIndex(index)
+        else:
+            self.severity_combo.setCurrentIndex(0)
+
+        self._apply_filters()
+
+
+# ==================== 日志管理组件 ====================
+
+
+class LogManagerWidget(QWidget):
+    """日志管理界面组件."""
+
+    # 信号定义
+    log_record_received = Signal(dict)  # 接收到新的日志记录
+
+    def __init__(self):
+        """初始化日志管理界面."""
+        super().__init__()
+
+        # 日志数据
+        self.log_records: List[Dict[str, Any]] = []
+        self.display_records: List[Dict[str, Any]] = []
+
+        # 筛选条件
+        self.current_filters = {
+            "level": None,
+            "start_time": None,
+            "end_time": None,
+            "module": None,
+            "logger_name": None,
+        }
+
+        # 自动滚动标志
+        self.auto_scroll = True
+
+        # 更新定时器
+        self.update_timer: Optional[QTimer] = None
+
+        # 初始化UI
+        self._init_ui()
+
+        # 连接信号
+        self._connect_signals()
+
+        # 启动定时器改为就绪后启动
+        try:
+            orch = get_boot_orchestrator()
+            orch.on_all_ready(
+                ["backend_ready", "ui_ready", "ui_visible"],
+                lambda: QTimer.singleShot(0, self._init_after_backend),
+            )
+        except Exception:
+            # 回退：若编排器不可用，仍按旧逻辑启动
+            self.start_update_timer()
+
+    def _init_ui(self) -> None:
+        """初始化用户界面."""
+        layout = QVBoxLayout(self)
+
+        # 顶部工具栏
+        toolbar = self._create_toolbar()
+        layout.addLayout(toolbar)
+
+        # 日志表格
+        self.log_table = self._create_log_table()
+        layout.addWidget(self.log_table)
+
+        # 底部状态栏
+        status_layout = self._create_status_bar()
+        layout.addLayout(status_layout)
+
+    def _create_toolbar(self) -> QHBoxLayout:
+        """创建顶部工具栏."""
+        layout = QHBoxLayout()
+
+        # 日志级别筛选
+        level_label = QLabel("级别:")
+        self.level_combo = QComboBox()
+        self.level_combo.addItems(["全部", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
+        layout.addWidget(level_label)
+        layout.addWidget(self.level_combo)
+
+        layout.addStretch()
+
+        # 时间范围选择
+        time_label = QLabel("时间范围:")
+        self.start_time_edit = QDateTimeEdit()
+        # PySide6: 使用 currentDateTime() 然后调整时间
+        start_time = QDateTime.currentDateTime().addSecs(-3600)  # 1小时前
+        self.start_time_edit.setDateTime(start_time)
+        self.start_time_edit.setDisplayFormat("yyyy-MM-dd hh:mm:ss")
+
+        self.end_time_edit = QDateTimeEdit()
+        self.end_time_edit.setDateTime(QDateTime.currentDateTime())
+        self.end_time_edit.setDisplayFormat("yyyy-MM-dd hh:mm:ss")
+
+        layout.addWidget(time_label)
+        layout.addWidget(self.start_time_edit)
+        layout.addWidget(QLabel("至"))
+        layout.addWidget(self.end_time_edit)
+
+        layout.addStretch()
+
+        # 搜索框
+        search_label = QLabel("搜索:")
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("模块名或关键字...")
+        self.search_edit.setFixedWidth(200)
+        layout.addWidget(search_label)
+        layout.addWidget(self.search_edit)
+
+        # 刷新按钮
+        self.refresh_btn = QPushButton("刷新")
+        layout.addWidget(self.refresh_btn)
+
+        # 导出按钮
+        self.export_btn = QPushButton("导出")
+        layout.addWidget(self.export_btn)
+
+        # 清空按钮
+        self.clear_btn = QPushButton("清空显示")
+        layout.addWidget(self.clear_btn)
+
+        return layout
+
+    def _create_log_table(self) -> QTableWidget:
+        """创建日志表格."""
+        table = QTableWidget(0, 6)
+        table.setHorizontalHeaderLabels(["时间", "级别", "模块", "函数", "行号", "消息"])
+
+        # 设置表头属性
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)  # 时间
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)  # 级别
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)  # 模块
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)  # 函数
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)  # 行号
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)  # 消息
+
+        # 设置表格属性
+        table.setAlternatingRowColors(True)
+        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+
+        # 双击查看详情
+        table.doubleClicked.connect(self._show_log_detail)
+
+        return table
+
+    def _create_status_bar(self) -> QHBoxLayout:
+        """创建底部状态栏."""
+        layout = QHBoxLayout()
+
+        # 统计信息
+        self.stats_label = QLabel("日志统计: 总计 0 条")
+        layout.addWidget(self.stats_label)
+
+        layout.addStretch()
+
+        # 自动滚动开关
+        self.auto_scroll_checkbox = QPushButton("自动滚动")
+        self.auto_scroll_checkbox.setCheckable(True)
+        self.auto_scroll_checkbox.setChecked(True)
+        self.auto_scroll_checkbox.clicked.connect(self._toggle_auto_scroll)
+        layout.addWidget(self.auto_scroll_checkbox)
+
+        return layout
+
+    def _connect_signals(self) -> None:
+        """连接信号槽."""
+        self.level_combo.currentTextChanged.connect(self._apply_filters)
+        self.start_time_edit.dateTimeChanged.connect(self._apply_filters)
+        self.end_time_edit.dateTimeChanged.connect(self._apply_filters)
+        self.search_edit.textChanged.connect(self._apply_filters)
+        self.refresh_btn.clicked.connect(self._refresh_logs)
+        self.export_btn.clicked.connect(self._export_logs)
+        self.clear_btn.clicked.connect(self._clear_display)
+
+    def _toggle_auto_scroll(self) -> None:
+        """切换自动滚动."""
+        self.auto_scroll = self.auto_scroll_checkbox.isChecked()
+
+    def _apply_filters(self) -> None:
+        """应用筛选条件."""
+        # 获取筛选条件
+        level_text = self.level_combo.currentText()
+        level = level_text if level_text != "全部" else None
+
+        start_time = self.start_time_edit.dateTime().toString("yyyy-MM-ddTHH:mm:ss")
+        end_time = self.end_time_edit.dateTime().toString("yyyy-MM-ddTHH:mm:ss")
+
+        search_text = self.search_edit.text().strip()
+        search_terms = [term.strip() for term in search_text.split()] if search_text else []
+
+        # 应用筛选
+        filtered_records = []
+        for record in self.log_records:
+            # 级别筛选
+            if level and record.get("level") != level:
+                continue
+
+            # 时间筛选
+            record_time = record.get("timestamp", "")
+            if record_time:
+                if start_time and record_time < start_time:
+                    continue
+                if end_time and record_time > end_time:
+                    continue
+
+            # 搜索筛选（模块名或消息内容）
+            if search_terms:
+                module = record.get("module", "").lower()
+                message = record.get("message", "").lower()
+                if not any(
+                    term.lower() in module or term.lower() in message for term in search_terms
+                ):
+                    continue
+
+            filtered_records.append(record)
+
+        # 更新显示
+        self.display_records = filtered_records
+        self._update_table()
+
+        # 更新统计
+        self._update_stats()
+
+    def _update_table(self) -> None:
+        """更新表格显示."""
+        self.log_table.setRowCount(len(self.display_records))
+
+        for row, record in enumerate(self.display_records):
+            # 时间
+            time_item = QTableWidgetItem(record.get("timestamp", ""))
+            self.log_table.setItem(row, 0, time_item)
+
+            # 级别（带颜色）
+            level = record.get("level", "")
+            level_item = QTableWidgetItem(level)
+            level_color = self._get_level_color(level)
+            level_item.setBackground(level_color)
+            self.log_table.setItem(row, 1, level_item)
+
+            # 模块
+            module_item = QTableWidgetItem(record.get("module", ""))
+            self.log_table.setItem(row, 2, module_item)
+
+            # 函数
+            func_item = QTableWidgetItem(record.get("function", ""))
+            self.log_table.setItem(row, 3, func_item)
+
+            # 行号
+            line_item = QTableWidgetItem(str(record.get("line", "")))
+            self.log_table.setItem(row, 4, line_item)
+
+            # 消息（截断过长内容）
+            message = record.get("message", "")
+            if len(message) > 200:
+                message = message[:200] + "..."
+            message_item = QTableWidgetItem(message)
+            self.log_table.setItem(row, 5, message_item)
+
+        # 如果自动滚动，滚动到最后一行
+        if self.auto_scroll and self.display_records:
+            self.log_table.scrollToBottom()
+
+    def _get_level_color(self, level: str) -> QColor:
+        """获取日志级别对应的颜色."""
+        color_map = {
+            "DEBUG": QColor(200, 200, 200),  # 灰色
+            "INFO": QColor(173, 216, 230),  # 浅蓝色
+            "WARNING": QColor(255, 255, 0),  # 黄色
+            "ERROR": QColor(255, 165, 0),  # 橙色
+            "CRITICAL": QColor(255, 0, 0),  # 红色
+        }
+        return color_map.get(level, QColor(255, 255, 255))  # 默认白色
+
+    def _update_stats(self) -> None:
+        """更新统计信息."""
+        total = len(self.log_records)
+        filtered = len(self.display_records)
+
+        self.stats_label.setText(f"日志统计: 显示 {filtered} 条 / 总计 {total} 条")
+
+    def _refresh_logs(self) -> None:
+        """刷新日志数据."""
+        try:
+            # 调用后端API获取最新日志
+            service_manager = get_service_manager()
+            system_service = service_manager.get_service("system_manager_service")
+
+            if system_service:
+                # 获取最近1000条日志
+                result = system_service.query_logs(limit=1000)
+
+                if result.get("success"):
+                    self.log_records = result.get("logs", [])
+                    self._apply_filters()
+                else:
+                    QMessageBox.warning(self, "错误", f"获取日志失败: {result.get('message')}")
+            else:
+                QMessageBox.warning(self, "错误", "系统管理服务不可用")
+
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"刷新日志失败: {str(e)}")
+
+    def _export_logs(self) -> None:
+        """导出日志."""
+        try:
+            # 选择保存路径
+            file_path, _ = QFileDialog.getSaveFileName(
+                self,
+                "导出日志",
+                f"logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                "文本文件 (*.txt);;所有文件 (*.*)",
+            )
+
+            if not file_path:
+                return
+
+            # 调用后端API导出日志
+            service_manager = get_service_manager()
+            system_service = service_manager.get_service("system_manager_service")
+
+            if system_service:
+                # 获取筛选条件
+                level_text = self.level_combo.currentText()
+                level = level_text if level_text != "全部" else None
+
+                start_time = self.start_time_edit.dateTime().toString("yyyy-MM-ddTHH:mm:ss")
+                end_time = self.end_time_edit.dateTime().toString("yyyy-MM-ddTHH:mm:ss")
+
+                search_text = self.search_edit.text().strip()
+                module = search_text if search_text else None
+
+                # 导出日志
+                result = system_service.export_logs(
+                    file_path=file_path,
+                    level=level,
+                    start_time=start_time,
+                    end_time=end_time,
+                    module=module,
+                )
+
+                if result.get("success"):
+                    QMessageBox.information(self, "成功", f"日志已导出到: {file_path}")
+                else:
+                    QMessageBox.warning(self, "错误", f"导出失败: {result.get('message')}")
+            else:
+                QMessageBox.warning(self, "错误", "系统管理服务不可用")
+
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"导出日志失败: {str(e)}")
+
+    def _clear_display(self) -> None:
+        """清空显示."""
+        self.display_records.clear()
+        self.log_table.setRowCount(0)
+        self._update_stats()
+
+    def _show_log_detail(self, index) -> None:
+        """显示日志详情."""
+        if index.row() >= len(self.display_records):
+            return
+
+        record = self.display_records[index.row()]
+
+        # 创建详情对话框
+        detail_text = f"""
+时间: {record.get('timestamp', '')}
+级别: {record.get('level', '')}
+模块: {record.get('module', '')}
+函数: {record.get('function', '')}
+行号: {record.get('line', '')}
+记录器: {record.get('logger_name', '')}
+
+消息:
+{record.get('message', '')}
+"""
+
+        if record.get("exception"):
+            detail_text += f"\n异常信息:\n{record.get('exception')}"
+
+        QMessageBox.information(self, "日志详情", detail_text)
+
+    def add_log_record(self, record: Dict[str, Any]) -> None:
+        """添加新的日志记录.
+
+        Args:
+            record: 日志记录数据
+        """
+        # 添加到记录列表
+        self.log_records.append(record)
+
+        # 限制最大记录数（保留最近2000条）
+        if len(self.log_records) > 2000:
+            self.log_records = self.log_records[-2000:]
+
+        # 应用筛选条件
+        self._apply_filters()
+
+    def start_update_timer(self) -> None:
+        """启动更新定时器."""
+        if self.update_timer:
+            self.update_timer.stop()
+
+        # 每5秒自动刷新一次
+        self.update_timer = QTimer()
+        self.update_timer.timeout.connect(self._refresh_logs)
+        self.update_timer.start(5000)  # 5秒
+
+    def stop_update_timer(self) -> None:
+        """停止更新定时器."""
+        if self.update_timer:
+            self.update_timer.stop()
+            self.update_timer = None
+
+    def handle_event(self, event_type: str, event_data: Dict[str, Any]) -> None:
+        """处理事件.
+
+        Args:
+            event_type: 事件类型
+            event_data: 事件数据
+        """
+        if event_type == EVENT_LOG_RECORD:
+            # 接收到新的日志记录（切回主线程，避免跨线程更新UI）
+            QTimer.singleShot(0, lambda: self.add_log_record(event_data))
+
+    def _init_after_backend(self) -> None:
+        """在后端与UI就绪后启动刷新与定时器."""
+        try:
+            # 先做一次首刷
+            self._refresh_logs()
+        finally:
+            # 启动定时器
+            self.start_update_timer()
+
+    def get_current_filters(self) -> Dict[str, Any]:
+        """获取当前筛选条件.
+
+        Returns:
+            筛选条件字典
+        """
+        return {
+            "level": (
+                self.level_combo.currentText() if self.level_combo.currentText() != "全部" else None
+            ),
+            "start_time": self.start_time_edit.dateTime().toString("yyyy-MM-ddTHH:mm:ss"),
+            "end_time": self.end_time_edit.dateTime().toString("yyyy-MM-ddTHH:mm:ss"),
+            "search": self.search_edit.text().strip(),
+        }
+
+    def apply_filters_from_dict(self, filters: Dict[str, Any]) -> None:
+        """从字典应用筛选条件.
+
+        Args:
+            filters: 筛选条件字典
+        """
+        if "level" in filters and filters["level"]:
+            index = self.level_combo.findText(filters["level"])
+            if index >= 0:
+                self.level_combo.setCurrentIndex(index)
+        else:
+            self.level_combo.setCurrentIndex(0)  # 全部
+
+        if "start_time" in filters:
+            try:
+                dt = QDateTime.fromString(filters["start_time"], "yyyy-MM-ddTHH:mm:ss")
+                if dt.isValid():
+                    self.start_time_edit.setDateTime(dt)
+            except Exception:
+                pass
+
+        if "end_time" in filters:
+            try:
+                dt = QDateTime.fromString(filters["end_time"], "yyyy-MM-ddTHH:mm:ss")
+                if dt.isValid():
+                    self.end_time_edit.setDateTime(dt)
+            except Exception:
+                pass
+
+        if "search" in filters:
+            self.search_edit.setText(filters["search"])
+
+        # 应用筛选
+        self._apply_filters()
+
+
+# ==================== 系统管理主界面 ====================
 
 
 class SystemManager(BaseWidget, LoggerMixin):
@@ -608,8 +1607,6 @@ class SystemManager(BaseWidget, LoggerMixin):
 
     def _create_alerts_tab(self) -> QWidget:
         """创建告警管理子界面."""
-        from ui.modules.system_manager.alert_widget import AlertManagerWidget
-
         # 创建告警管理组件
         self.alert_manager_widget = AlertManagerWidget()
 
@@ -1083,8 +2080,6 @@ class SystemManager(BaseWidget, LoggerMixin):
 
     def _create_logs_tab(self) -> QWidget:
         """创建日志管理子界面."""
-        from ui.modules.system_manager.log_widget import LogManagerWidget
-
         # 创建日志管理组件
         self.log_manager_widget = LogManagerWidget()
 

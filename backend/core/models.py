@@ -14,8 +14,13 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-# 导入统一导入模块
-from .base import pd
+# 直接导入pandas，避免循环导入
+try:
+    import pandas as pd
+    PANDAS_AVAILABLE = True
+except ImportError:
+    pd = None
+    PANDAS_AVAILABLE = False
 
 
 class DataCategory(Enum):

@@ -209,7 +209,7 @@ def main():
         logger.info(f"项目根目录: {project_root}")
 
         # 初始化配置和服务
-        from backend.config import init_settings
+        from backend.core.config import init_settings
         from backend.core.base import init_services
 
         init_settings()

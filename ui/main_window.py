@@ -43,14 +43,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from backend.config import ConfigManager
-from backend.core.utils import LoggerMixin
+from backend.core.config import ConfigManager
+from backend.core.service_base import LoggerMixin
 from backend.core.base import setup_logging
 
 from ui.themes.theme_manager import ThemeManager
-
-
-from ui.shared_widgets.responsive_helper import ResponsiveHelper
 from ui.core.boot_orchestrator import get_boot_orchestrator
 
 
@@ -121,14 +118,14 @@ class MainWindow(QMainWindow, LoggerMixin):
             "portfolio": {"icon": "📊", "name": "组合投资", "description": "投资组合管理和监控"},
         }
 
-        # 动态导入映射：按需加载时根据ID导入对应类
+        # 动态导入映射：按需加载时根据ID导入对应类（扁平化后的新路径）
         self.interface_imports = {
-            "data": ("ui.modules.data_center.view", "DataCenter"),
-            "market": ("ui.modules.market_board.view", "MarketDashboard"),
-            "strategy": ("ui.modules.strategy_center.view", "StrategyCenter"),
-            "trading": ("ui.modules.trading_gateway.view", "TradingGateway"),
-            "portfolio": ("ui.modules.portfolio.view", "PortfolioInvestment"),
-            "system": ("ui.modules.system_manager.view", "SystemManager"),
+            "data": ("ui.modules.data_center_view", "DataCenter"),
+            "market": ("ui.modules.market_board_view", "MarketDashboard"),
+            "strategy": ("ui.modules.strategy_center_view", "StrategyCenter"),
+            "trading": ("ui.modules.trading_gateway_view", "TradingGateway"),
+            "portfolio": ("ui.modules.portfolio_view", "PortfolioInvestment"),
+            "system": ("ui.modules.system_manager_view", "SystemManager"),
         }
 
         # 更新定时器
@@ -199,7 +196,7 @@ class MainWindow(QMainWindow, LoggerMixin):
         """
         try:
             import os
-            from backend.config import init_settings, get_settings
+            from backend.core.config import init_settings, get_settings
 
             # 从环境变量获取配置文件路径
             config_file = os.getenv("CONFIG_FILE")
@@ -488,8 +485,6 @@ class MainWindow(QMainWindow, LoggerMixin):
         self.status_bar.addWidget(self.status_label, 1)
 
         # 中间告警滚动条
-        from ui.shared_widgets.alert_ticker import AlertTicker
-
         self.alert_ticker = AlertTicker()
         self.alert_ticker.clicked.connect(self._on_alert_ticker_clicked)
         self.status_bar.addWidget(self.alert_ticker, 2)  # 伸展因子2，更大空间
@@ -1082,8 +1077,9 @@ class MainWindow(QMainWindow, LoggerMixin):
     def _init_responsive_helper(self):
         """初始化响应式布局帮助器."""
         try:
-            self.responsive_helper = ResponsiveHelper(self)
-            self.responsive_helper.size_class_changed.connect(self._on_size_class_changed)
+            self.responsive_helper = ResponsiveHelper()
+            # ResponsiveHelper 没有 size_class_changed 信号，手动处理尺寸变化
+            # self.responsive_helper.size_class_changed.connect(self._on_size_class_changed)
         except ImportError:
             self.responsive_helper = None
 
@@ -1140,7 +1136,7 @@ def main():
 
         # 🔧 关键修复：在创建任何UI组件之前先初始化配置
         import os
-        from backend.config import init_settings
+        from backend.core.config import init_settings
 
         config_file = os.getenv("CONFIG_FILE")
         if config_file:
@@ -1247,6 +1243,317 @@ def main_sync():
     except Exception as e:
         logging.getLogger("terminal_v0.50.main").exception("UI启动异常: %s", e)
         sys.exit(1)
+
+
+# ==================== 以下为内部组件（从 shared_widgets 合并） ====================
+# 合并说明：AlertTicker, ResponsiveHelper 只被 main_window 引用，故合并到此处
+
+class AlertTicker(QWidget):
+    """告警滚动条组件."""
+
+    # 信号定义
+    clicked = Signal()  # 点击信号
+
+    def __init__(self, parent=None):
+        """初始化告警滚动条."""
+        super().__init__(parent)
+
+        # 设置固定高度和背景色
+        self.setFixedHeight(30)
+        self.setStyleSheet("""
+            QWidget {
+                background-color: #dc3545;
+                border-radius: 5px;
+                margin: 2px;
+            }
+        """)
+
+        # 告警信息
+        self.current_alert: Optional[Dict[str, Any]] = None
+        self.display_text = ""
+
+        # 动画相关
+        from PySide6.QtCore import QPropertyAnimation, QPoint
+        self.animation: Optional[QPropertyAnimation] = None
+        self.slide_timer: Optional[QTimer] = None
+
+        # 显示控制
+        self.show_duration = 5000  # 显示5秒
+        self.hide_timer: Optional[QTimer] = None
+
+        # 字体设置
+        self.font: QFont = QFont("Arial", 10, QFont.Weight.Bold)
+
+        # 隐藏初始状态
+        self.hide()
+
+    def show_alert(self, alert_data: Dict[str, Any], duration: int = 5000) -> None:
+        """显示告警信息.
+
+        Args:
+            alert_data: 告警数据
+            duration: 显示时长（毫秒）
+        """
+        self.current_alert = alert_data
+        self.show_duration = duration
+
+        # 构建显示文本
+        severity = alert_data.get("severity", "info").upper()
+        message = alert_data.get("message", "")
+        rule_name = alert_data.get("rule_name", "")
+
+        self.display_text = f"⚠️ [{severity}] {message} (来源: {rule_name})"
+
+        # 调整字体大小以适应宽度
+        self._adjust_font_size()
+
+        # 显示组件
+        self.show()
+        self.raise_()
+
+        # 启动隐藏定时器
+        self._start_hide_timer()
+
+        # 启动滚动动画（如果文本过长）
+        if self._needs_scrolling():
+            self._start_scroll_animation()
+        else:
+            # 重置位置
+            self.updateGeometry()
+
+    def _adjust_font_size(self) -> None:
+        """调整字体大小以适应组件宽度."""
+        parent = self.parent()
+        parent_width = parent.width() if isinstance(parent, QWidget) and parent else 800
+
+        # 计算可用宽度（留出边距）
+        available_width = parent_width - 20
+
+        # 尝试不同的字体大小
+        for font_size in range(10, 7, -1):  # 从10到8递减
+            test_font = QFont("Arial", font_size, QFont.Weight.Bold)
+            font_metrics = self.fontMetrics()
+
+            # 计算文本宽度
+            text_width = font_metrics.boundingRect(self.display_text).width()
+
+            if text_width <= available_width:
+                self.font = test_font
+                break
+
+    def _needs_scrolling(self) -> bool:
+        """判断是否需要滚动动画."""
+        if not self.display_text:
+            return False
+
+        # 计算文本宽度
+        font_metrics = self.fontMetrics()
+        text_width = font_metrics.boundingRect(self.display_text).width()
+
+        # 如果文本宽度超过组件宽度，需要滚动
+        return text_width > self.width()
+
+    def _start_scroll_animation(self) -> None:
+        """启动滚动动画."""
+        if self.animation:
+            self.animation.stop()
+
+        from PySide6.QtCore import QPropertyAnimation, QPoint
+
+        # 计算滚动距离
+        font_metrics = self.fontMetrics()
+        text_width = font_metrics.boundingRect(self.display_text).width()
+        scroll_distance = text_width - self.width() + 20  # 额外滚动一点
+
+        if scroll_distance <= 0:
+            return
+
+        # 创建滚动动画
+        self.animation = QPropertyAnimation(self, b"pos")
+        self.animation.setDuration(3000)  # 3秒完成一次滚动
+        self.animation.setStartValue(self.pos())
+        self.animation.setEndValue(self.pos() + QPoint(-scroll_distance, 0))
+        self.animation.setLoopCount(-1)  # 无限循环
+
+        self.animation.start()
+
+    def _start_hide_timer(self) -> None:
+        """启动隐藏定时器."""
+        if self.hide_timer:
+            self.hide_timer.stop()
+
+        self.hide_timer = QTimer()
+        self.hide_timer.timeout.connect(self.hide)
+        self.hide_timer.start(self.show_duration)
+
+    def hide(self) -> None:
+        """隐藏组件."""
+        super().hide()
+
+        # 停止所有动画和定时器
+        if self.animation:
+            self.animation.stop()
+
+        if self.slide_timer:
+            self.slide_timer.stop()
+
+        if self.hide_timer:
+            self.hide_timer.stop()
+
+        # 清空当前告警
+        self.current_alert = None
+
+    def mousePressEvent(self, event) -> None:
+        """鼠标点击事件."""
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+
+    def paintEvent(self, event) -> None:
+        """绘制事件."""
+        if not self.display_text:
+            return
+
+        from PySide6.QtGui import QPainter, QColor
+
+        painter = QPainter(self)
+        painter.setFont(self.font)
+
+        # 设置文字颜色
+        painter.setPen(QColor(255, 255, 255))
+
+        # 绘制文字
+        rect = self.rect()
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, self.display_text)
+
+    def resizeEvent(self, event) -> None:
+        """大小改变事件."""
+        super().resizeEvent(event)
+
+        # 重新判断是否需要滚动
+        if self._needs_scrolling() and self.isVisible():
+            self._start_scroll_animation()
+        else:
+            # 停止滚动动画
+            if self.animation:
+                self.animation.stop()
+
+    def get_alert_data(self) -> Optional[Dict[str, Any]]:
+        """获取当前显示的告警数据.
+
+        Returns:
+            告警数据或None
+        """
+        return self.current_alert
+
+    def set_display_duration(self, duration_ms: int) -> None:
+        """设置显示时长.
+
+        Args:
+            duration_ms: 显示时长（毫秒）
+        """
+        self.show_duration = duration_ms
+
+
+class ResponsiveHelper:
+    """响应式布局帮助类."""
+
+    # 断点定义（像素）
+    BREAKPOINT_SMALL = 800
+    BREAKPOINT_MEDIUM = 1200
+    BREAKPOINT_LARGE = 1600
+
+    def __init__(self):
+        """初始化响应式帮助类."""
+        self._current_size_class = "medium"
+
+    def get_size_class(self, width: int) -> str:
+        """根据宽度获取尺寸级别."""
+        if width < self.BREAKPOINT_SMALL:
+            return "small"
+        if width < self.BREAKPOINT_MEDIUM:
+            return "medium"
+        if width < self.BREAKPOINT_LARGE:
+            return "large"
+
+        return "xlarge"
+
+    def update_size(self, size):
+        """更新尺寸并发出信号."""
+        from PySide6.QtCore import QSize
+        width = size.width()
+        new_class = self.get_size_class(width)
+
+        if new_class != self._current_size_class:
+            self._current_size_class = new_class
+
+    @staticmethod
+    def get_optimal_splitter_sizes(total_width: int, is_left_panel: bool = True):
+        """获取优化的分割器尺寸."""
+        if total_width < 800:
+            # 小屏幕：隐藏侧边栏或最小化
+            return [0, total_width] if is_left_panel else [total_width, 0]
+        if total_width < 1200:
+            # 中等屏幕：侧边栏较窄
+            sidebar_width = 200
+            return [sidebar_width, total_width - sidebar_width]
+        if total_width < 1600:
+            # 大屏幕：标准侧边栏
+            sidebar_width = 250
+            return [sidebar_width, total_width - sidebar_width]
+
+        # 超大屏幕：较宽侧边栏
+        sidebar_width = 300
+        return [sidebar_width, total_width - sidebar_width]
+
+    @staticmethod
+    def get_table_page_size(height: int) -> int:
+        """根据高度获取表格最优每页显示数量."""
+        # 每行约30px高度
+        row_height = 30
+        header_height = 50
+        pagination_height = 40
+
+        available_height = height - header_height - pagination_height
+        rows = max(10, available_height // row_height)
+
+        # 取标准值
+        if rows < 20:
+            return 20
+        if rows < 50:
+            return 50
+        if rows < 100:
+            return 100
+
+        return 200
+
+    @staticmethod
+    def get_font_size(width: int) -> int:
+        """根据宽度获取最优字体大小."""
+        if width < 800:
+            return 9
+        if width < 1200:
+            return 10
+        if width < 1600:
+            return 11
+
+        return 12
+
+    @staticmethod
+    def should_show_sidebar(width: int) -> bool:
+        """判断是否应该显示侧边栏."""
+        return width >= 800
+
+    @staticmethod
+    def get_card_columns(width: int) -> int:
+        """获取卡片布局的列数."""
+        if width < 800:
+            return 1
+        if width < 1200:
+            return 2
+        if width < 1600:
+            return 3
+
+        return 4
 
 
 if __name__ == "__main__":

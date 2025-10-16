@@ -37,11 +37,12 @@ from .core import (
     # 数据模型
     DataModelManager,
     get_data_model_manager,
-    # 数据库
-    DatabaseManager,
     # 工具
     setup_logging,
 )
+
+# 导出数据库管理器（从services导入）
+from .services.database_adapter import DatabaseManager
 
 # 导出服务（扁平化后的路径）
 from .services.data_center_service import DataCenterService

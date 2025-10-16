@@ -825,7 +825,7 @@ class DataCenterService(BaseService, LoggerMixin):
 
             if not market_stocks:
                 self.logger.warning("获取品种分类失败")
-                return []
+                return [], []
 
             # 打印各市场品种数量
             for market_name, stock_list in market_stocks.items():

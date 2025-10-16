@@ -23,10 +23,10 @@ class MarketBoardService(BaseService):
     核心职责：
     1. 技术指标计算（talib库支持）
     2. 历史数据查询代理（直接调用data_module_vnpy）
-    
+
     移除职责（交由其他模块负责）：
     - 断点检测 → data_module_vnpy
-    - 数据融合 → data_module_vnpy  
+    - 数据融合 → data_module_vnpy
     - 数据录制 → 数据中心模块
     """
 
@@ -36,7 +36,7 @@ class MarketBoardService(BaseService):
 
         # 技术指标库
         self.talib = None
-        
+
         # data_module_vnpy统一数据管理器
         self.unified_data_manager = None
 
@@ -49,7 +49,7 @@ class MarketBoardService(BaseService):
 
             # 初始化技术指标库
             self._init_talib()
-            
+
             # 获取data_module_vnpy统一数据管理器
             self._init_unified_data_manager()
 
@@ -62,24 +62,23 @@ class MarketBoardService(BaseService):
     def _init_unified_data_manager(self):
         """初始化data_module_vnpy统一数据管理器."""
         try:
-            from backend.core.base import get_main_engine
-            
-            main_engine = get_main_engine()
-            if not main_engine:
-                self.logger.warning("MainEngine不可用，无法获取统一数据管理器")
+            # 直接从全局获取ChinaStockEngine
+            from backend.core.base import get_china_stock_engine
+
+            china_stock_engine = get_china_stock_engine()
+            if not china_stock_engine:
+                self.logger.warning("⚠️ ChinaStockEngine不可用，将使用DataCenterService")
                 return
-                
-            # 从MainEngine获取ChinaStockEngine
-            if hasattr(main_engine, 'get_engine'):
-                china_stock_engine = main_engine.get_engine('ChinaStock')
-                if china_stock_engine and hasattr(china_stock_engine, 'get_unified_data_manager'):
-                    self.unified_data_manager = china_stock_engine.get_unified_data_manager()
-                    if self.unified_data_manager:
-                        self.logger.info("✅ 已获取data_module_vnpy统一数据管理器")
-                        return
-            
+
+            # 获取统一数据管理器
+            if hasattr(china_stock_engine, 'get_unified_data_manager'):
+                self.unified_data_manager = china_stock_engine.get_unified_data_manager()
+                if self.unified_data_manager:
+                    self.logger.info("✅ 已获取data_module_vnpy统一数据管理器")
+                    return
+
             self.logger.warning("⚠️ 无法获取统一数据管理器，将使用DataCenterService")
-            
+
         except Exception as e:
             self.logger.error("获取统一数据管理器失败: %s", e, exc_info=True)
 
@@ -140,7 +139,7 @@ class MarketBoardService(BaseService):
             if self.unified_data_manager:
                 try:
                     import pandas as pd
-                    
+
                     # 调用UnifiedDataManager.get_kline_data
                     df = self.unified_data_manager.get_kline_data(
                         symbol=symbol,
@@ -150,7 +149,7 @@ class MarketBoardService(BaseService):
                         check_gaps=check_gaps,
                         use_preload=True
                     )
-                    
+
                     if df is not None and not df.empty:
                         # 将DataFrame转换为Dict格式
                         data = []
@@ -163,7 +162,7 @@ class MarketBoardService(BaseService):
                                 "close": float(row.get("close", 0)),
                                 "volume": float(row.get("volume", 0)),
                             })
-                        
+
                         return {
                             "success": True,
                             "data": data,
@@ -175,10 +174,10 @@ class MarketBoardService(BaseService):
                             "message": "数据为空",
                             "data": [],
                         }
-                        
+
                 except Exception as e:
                     self.logger.warning("从 data_module_vnpy 查询失败: %s，尝试使用DataCenterService", e)
-            
+
             # 备用方案：使用DataCenterService
             from backend.core.base import get_service_manager
 
@@ -196,7 +195,7 @@ class MarketBoardService(BaseService):
             result = data_center_service.query_local_data(
                 symbol=symbol, start_date=start_date, end_date=end_date, interval=interval
             )
-            
+
             return result
 
         except Exception as e:

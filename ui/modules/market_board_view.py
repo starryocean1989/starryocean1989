@@ -1,16 +1,131 @@
-# -*- coding: utf-8 -*-
-"""
-ChartWizard增强版 - vnpy_chartwizard 适配器
+﻿# -*- coding: utf-8 -*-
+"""行情看板界面 - 主视图（vnpy_chartwizard版）.
 
-完全基于 vnpy_chartwizard，提供多标签页K线图表、实时订阅、自动K线合成等专业功能。
+多标签页界面：基于 vnpy_chartwizard 的专业图表应用。
+支持多品种同时监控、实时数据自动订阅、Tick转K线合成。
+集成品种叠加、指标叠加、对数坐标等高级功能。
 """
+from typing import Optional
+
+from PySide6.QtWidgets import (
+    QVBoxLayout,
+)
+
+from backend.core.base import get_service_manager
+from backend.core.service_base import LoggerMixin
+
+from ui.shared_widgets.base_widget import BaseWidget
+
+
+class MarketDashboard(BaseWidget, LoggerMixin):
+    """行情看板主界面（vnpy_chartwizard版）."""
+
+    def __init__(self, parent=None):
+        """初始化行情看板."""
+        # 初始化服务管理器
+        self.service_manager = get_service_manager()
+        self.market_service = None
+
+        # 初始化核心组件
+        self.chart_wizard: Optional[ChartWizardEnhanced] = None
+
+        # 调用父类初始化
+        super().__init__(parent, "行情看板")
+        self.logger.info("行情看板界面初始化开始（vnpy_chartwizard版）")
+
+        # 初始化服务
+        self._initialize_service()
+
+    def _initialize_service(self):
+        """获取行情看板服务."""
+        try:
+            # 从服务管理器获取行情看板服务
+            self.market_service = self.service_manager.get_service("market_board_service")
+            if self.market_service:
+                self.logger.info("行情看板服务获取成功")
+            else:
+                self.logger.warning("行情看板服务未注册")
+        except Exception as e:
+            self.logger.error("获取行情看板服务失败: %s", e)
+            self.show_error(f"服务获取失败: {e}")
+
+    def setup_ui(self):
+        """设置用户界面."""
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # 创建 ChartWizardEnhanced 核心组件
+        self.chart_wizard = ChartWizardEnhanced(self)
+        main_layout.addWidget(self.chart_wizard)
+
+        self.logger.info("✅ 行情看板界面创建完成（基于vnpy_chartwizard）")
+
+    def connect_signals(self):
+        """连接信号槽."""
+        # vnpy_chartwizard 已内置完整的事件处理
+        # 这里只需要连接自定义的扩展功能
+
+        if self.chart_wizard:
+            # 连接图表创建信号
+            self.chart_wizard.chart_created.connect(self._on_chart_created)
+            # 连接图表关闭信号
+            self.chart_wizard.chart_closed.connect(self._on_chart_closed)
+            # 连接品种变化信号
+            self.chart_wizard.symbol_changed.connect(self._on_symbol_changed)
+
+        self.logger.info("✅ 信号连接完成")
+
+    def _on_chart_created(self, vt_symbol: str):
+        """图表创建回调.
+
+        Args:
+            vt_symbol: 品种代码
+        """
+        self.logger.info("图表已创建: %s", vt_symbol)
+
+    def _on_chart_closed(self, vt_symbol: str):
+        """图表关闭回调.
+
+        Args:
+            vt_symbol: 品种代码
+        """
+        self.logger.info("图表已关闭: %s", vt_symbol)
+
+    def _on_symbol_changed(self, vt_symbol: str):
+        """品种改变.
+
+        Args:
+            vt_symbol: 品种代码
+        """
+        self.logger.info("当前品种: %s", vt_symbol)
+        # vnpy_chartwizard 已自动处理订阅、数据加载等
+        # 这里可以添加自定义的扩展逻辑
+
+    def refresh_data(self):
+        """刷新数据."""
+        # vnpy_chartwizard 实时更新，无需手动刷新
+        if self.chart_wizard:
+            current_chart = self.chart_wizard.get_current_chart()
+            if current_chart and hasattr(current_chart, "move_to_right"):
+                current_chart.move_to_right()
+        self.show_info("已刷新到最新数据")
+
+    def on_close(self):
+        """关闭处理."""
+        if self.chart_wizard:
+            self.chart_wizard.on_close()
+        self.logger.info("行情看板界面已关闭")
+
+
+# ==================== 以下为内部组件（从 shared_widgets 合并） ====================
+# 合并说明：ChartWizardEnhanced 只被 market_board_view 引用，故合并到此处
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtWidgets import (
-    QVBoxLayout,
     QHBoxLayout,
     QWidget,
     QLineEdit,
@@ -23,8 +138,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
 )
-
-from ui.shared_widgets.base_widget import BaseWidget
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +154,6 @@ except ImportError as e:
     VnpyChartWizard = None
     ChartWizardEngine = None
     logger.warning(f"⚠️ vnpy_chartwizard 不可用: {e}")
-
-
 class ChartWizardEnhanced(BaseWidget):
     """ChartWizard增强版组件.
 
@@ -876,8 +987,6 @@ class ChartWizardEnhanced(BaseWidget):
             macd_data = macd_result.get("data", {})
 
             # 使用SubplotIndicatorManager添加
-            from ui.shared_widgets.charts import SubplotIndicatorManager
-
             manager = SubplotIndicatorManager(current_chart)
             if manager.add_macd(macd_data=macd_data):
                 self.show_info("已添加MACD副图")
@@ -953,8 +1062,6 @@ class ChartWizardEnhanced(BaseWidget):
             rsi_data = rsi_result.get("data", [])
 
             # 使用SubplotIndicatorManager添加
-            from ui.shared_widgets.charts import SubplotIndicatorManager
-
             manager = SubplotIndicatorManager(current_chart)
             if manager.add_rsi(rsi_data=rsi_data, period=period):
                 self.show_info(f"已添加RSI({period})副图")
@@ -1445,8 +1552,6 @@ class ChartWizardEnhanced(BaseWidget):
                 return
 
             # 使用SubplotIndicatorManager添加
-            from ui.shared_widgets.charts import SubplotIndicatorManager
-
             manager = SubplotIndicatorManager(current_chart)
             if manager.add_kdj(kdj_data=kdj_data):
                 self.show_info("已添加KDJ副图")
@@ -1655,3 +1760,255 @@ class ChartWizardEnhanced(BaseWidget):
         # ChartWizard 会自动清理资源
         self.logger.info("ChartWizard增强版已关闭")
         super().on_close()
+class SubplotIndicatorManager:
+    """副图指标管理器.
+
+    负责在图表中添加和管理副图指标（MACD、RSI、KDJ等）。
+    """
+
+    def __init__(self, chart_widget):
+        """初始化副图指标管理器.
+
+        Args:
+            chart_widget: ChartWidget实例
+        """
+        self.chart = chart_widget
+        self.indicators: Dict[str, Any] = {}  # 指标名称 -> 指标实例
+
+    def add_macd(self, plot_name: str = "macd", macd_data: Optional[Dict] = None):
+        """添加MACD副图.
+
+        Args:
+            plot_name: Plot区域名称
+            macd_data: MACD数据 {"macd": [], "signal": [], "hist": []}
+        """
+        try:
+            import pyqtgraph as pg
+
+            # 添加plot区域
+            self.chart.add_plot(plot_name=plot_name, maximum_height=150, hide_x_axis=False)
+
+            if macd_data:
+                # 绘制MACD线
+                macd_plot = self.chart._plots.get(plot_name)
+                if macd_plot:
+                    # MACD柱状图
+                    if "hist" in macd_data:
+                        hist = macd_data["hist"]
+                        x_data = list(range(len(hist)))
+                        y_data = [
+                            h if h is not None and not (isinstance(h, float) and h != h) else 0
+                            for h in hist
+                        ]
+
+                        # 使用BarGraphItem绘制柱状图
+                        colors = ["r" if y < 0 else "g" for y in y_data]
+                        bars = pg.BarGraphItem(x=x_data, height=y_data, width=0.6, brushes=colors)
+                        macd_plot.addItem(bars)
+
+                    # MACD线（DIF）
+                    if "macd" in macd_data:
+                        macd_line = macd_data["macd"]
+                        x_data = []
+                        y_data = []
+                        for i, value in enumerate(macd_line):
+                            if value is not None and not (
+                                isinstance(value, float) and value != value
+                            ):
+                                x_data.append(i)
+                                y_data.append(float(value))
+
+                        if x_data and y_data:
+                            pen = pg.mkPen(color="#FFA07A", width=2)
+                            curve = pg.PlotDataItem(x=x_data, y=y_data, pen=pen, name="DIF")
+                            macd_plot.addItem(curve)
+
+                    # Signal线（DEA）
+                    if "signal" in macd_data:
+                        signal_line = macd_data["signal"]
+                        x_data = []
+                        y_data = []
+                        for i, value in enumerate(signal_line):
+                            if value is not None and not (
+                                isinstance(value, float) and value != value
+                            ):
+                                x_data.append(i)
+                                y_data.append(float(value))
+
+                        if x_data and y_data:
+                            pen = pg.mkPen(color="#4ECDC4", width=2)
+                            curve = pg.PlotDataItem(x=x_data, y=y_data, pen=pen, name="DEA")
+                            macd_plot.addItem(curve)
+
+            self.indicators["MACD"] = {
+                "plot_name": plot_name,
+                "type": "MACD",
+            }
+
+            logger.info(f"✅ MACD副图已添加: {plot_name}")
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ 添加MACD副图失败: {e}", exc_info=True)
+            return False
+
+    def add_rsi(self, plot_name: str = "rsi", rsi_data: Optional[List] = None, period: int = 14):
+        """添加RSI副图.
+
+        Args:
+            plot_name: Plot区域名称
+            rsi_data: RSI数据列表
+            period: RSI周期
+        """
+        try:
+            import pyqtgraph as pg
+
+            # 添加plot区域
+            self.chart.add_plot(plot_name=plot_name, maximum_height=120, hide_x_axis=False)
+
+            if rsi_data:
+                rsi_plot = self.chart._plots.get(plot_name)
+                if rsi_plot:
+                    # 准备数据
+                    x_data = []
+                    y_data = []
+                    for i, value in enumerate(rsi_data):
+                        if value is not None and not (isinstance(value, float) and value != value):
+                            x_data.append(i)
+                            y_data.append(float(value))
+
+                    if x_data and y_data:
+                        # 绘制RSI线
+                        pen = pg.mkPen(color="#FFA07A", width=2)
+                        curve = pg.PlotDataItem(x=x_data, y=y_data, pen=pen, name=f"RSI({period})")
+                        rsi_plot.addItem(curve)
+
+                        # 添加超买超卖参考线
+                        from PySide6.QtCore import Qt
+
+                        pen_ref = pg.mkPen(color="#CCCCCC", width=1, style=Qt.PenStyle.DashLine)
+
+                        # 超买线(70)
+                        overbought = pg.InfiniteLine(pos=70, angle=0, pen=pen_ref)
+                        rsi_plot.addItem(overbought)
+
+                        # 超卖线(30)
+                        oversold = pg.InfiniteLine(pos=30, angle=0, pen=pen_ref)
+                        rsi_plot.addItem(oversold)
+
+                        # 中线(50)
+                        midline = pg.InfiniteLine(pos=50, angle=0, pen=pen_ref)
+                        rsi_plot.addItem(midline)
+
+            self.indicators["RSI"] = {
+                "plot_name": plot_name,
+                "type": "RSI",
+                "period": period,
+            }
+
+            logger.info(f"✅ RSI副图已添加: {plot_name} (周期: {period})")
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ 添加RSI副图失败: {e}", exc_info=True)
+            return False
+
+    def add_kdj(self, plot_name: str = "kdj", kdj_data: Optional[Dict] = None):
+        """添加KDJ副图.
+
+        Args:
+            plot_name: Plot区域名称
+            kdj_data: KDJ数据 {"k": [], "d": [], "j": []}
+        """
+        try:
+            import pyqtgraph as pg
+
+            # 添加plot区域
+            self.chart.add_plot(plot_name=plot_name, maximum_height=120, hide_x_axis=False)
+
+            if kdj_data:
+                kdj_plot = self.chart._plots.get(plot_name)
+                if kdj_plot:
+                    colors = {"k": "#FFA07A", "d": "#4ECDC4", "j": "#95E1D3"}
+
+                    for line_name in ["k", "d", "j"]:
+                        if line_name in kdj_data:
+                            line_values = kdj_data[line_name]
+                            x_data = []
+                            y_data = []
+
+                            for i, value in enumerate(line_values):
+                                if value is not None and not (
+                                    isinstance(value, float) and value != value
+                                ):
+                                    x_data.append(i)
+                                    y_data.append(float(value))
+
+                            if x_data and y_data:
+                                pen = pg.mkPen(color=colors[line_name], width=2)
+                                curve = pg.PlotDataItem(
+                                    x=x_data, y=y_data, pen=pen, name=line_name.upper()
+                                )
+                                kdj_plot.addItem(curve)
+
+                    # 添加超买超卖参考线
+                    from PySide6.QtCore import Qt
+
+                    pen_ref = pg.mkPen(color="#CCCCCC", width=1, style=Qt.PenStyle.DashLine)
+
+                    # 超买线(80)
+                    overbought = pg.InfiniteLine(pos=80, angle=0, pen=pen_ref)
+                    kdj_plot.addItem(overbought)
+
+                    # 超卖线(20)
+                    oversold = pg.InfiniteLine(pos=20, angle=0, pen=pen_ref)
+                    kdj_plot.addItem(oversold)
+
+            self.indicators["KDJ"] = {
+                "plot_name": plot_name,
+                "type": "KDJ",
+            }
+
+            logger.info(f"✅ KDJ副图已添加: {plot_name}")
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ 添加KDJ副图失败: {e}", exc_info=True)
+            return False
+
+    def remove_indicator(self, indicator_type: str):
+        """移除副图指标.
+
+        Args:
+            indicator_type: 指标类型（MACD、RSI、KDJ等）
+        """
+        if indicator_type not in self.indicators:
+            logger.warning(f"指标不存在: {indicator_type}")
+            return False
+
+        try:
+            indicator_info = self.indicators[indicator_type]
+            plot_name = indicator_info["plot_name"]
+
+            # 移除plot区域
+            if hasattr(self.chart, "remove_plot"):
+                self.chart.remove_plot(plot_name)
+
+            # 从字典中删除
+            del self.indicators[indicator_type]
+
+            logger.info(f"✅ 已移除指标: {indicator_type}")
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ 移除指标失败: {e}", exc_info=True)
+            return False
+
+    def get_indicator_list(self) -> List[str]:
+        """获取当前已添加的指标列表.
+
+        Returns:
+            指标类型列表
+        """
+        return list(self.indicators.keys())
+

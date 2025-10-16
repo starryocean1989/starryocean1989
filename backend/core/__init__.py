@@ -108,7 +108,8 @@ from .config import (
     VnPyConfig,
     APIConfig,
     AIConfig,
-    DataModuleConfig,
+    ConfigManager,
+    init_settings,
 )
 
 # 数据仓库
@@ -213,7 +214,8 @@ __all__ = [
     "VnPyConfig",
     "APIConfig",
     "AIConfig",
-    "DataModuleConfig",
+    "ConfigManager",
+    "init_settings",
     # 数据仓库
     "BaseRepository",
     "InMemoryRepository",

@@ -15,7 +15,7 @@ from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import QWidget
 
-from backend.core.utils import LoggerMixin
+from backend.core.service_base import LoggerMixin
 
 
 class ShortcutManager(QObject, LoggerMixin):

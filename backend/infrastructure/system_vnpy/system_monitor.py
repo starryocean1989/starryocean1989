@@ -12,7 +12,7 @@ import platform
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Union, cast
 
 logger = logging.getLogger(__name__)
 
@@ -121,17 +121,19 @@ class SystemMonitor:
                 # 🚀 性能优化：使用interval=None（非阻塞模式）
                 # interval=1会阻塞线程1秒！严重影响性能
                 # None表示返回自上次调用以来的CPU使用率，不阻塞
-                cpu_percent = psutil.cpu_percent(interval=None)
+                cpu_percent_raw = psutil.cpu_percent(interval=None)
+                # 确保返回值是float类型（而不是list）
+                cpu_percent = float(cpu_percent_raw) if not isinstance(cpu_percent_raw, list) else 0.0
 
                 # 内存使用率
                 memory = psutil.virtual_memory()
 
                 # 磁盘使用率（带超时保护）
-                disk = None
+                disk: Any = None
                 try:
                     # 使用较短的超时避免阻塞
                     import signal
-                    def timeout_handler(signum, frame):
+                    def timeout_handler(signum: int, frame: Any) -> None:
                         raise TimeoutError("磁盘使用率获取超时")
 
                     old_handler = signal.signal(signal.SIGALRM, timeout_handler)
@@ -145,7 +147,7 @@ class SystemMonitor:
                     disk = type('DiskUsage', (), {'used': 50 * 1024 * 1024 * 1024, 'total': 100 * 1024 * 1024 * 1024})()
 
                 # 网络流量
-                network = None
+                network: Any = None
                 try:
                     network = psutil.net_io_counters()
                 except (OSError, AttributeError):
@@ -201,7 +203,7 @@ class SystemMonitor:
         try:
             if HAS_PSUTIL:
                 cpu_freq = psutil.cpu_freq()
-                cpu_times = psutil.cpu_times()
+                cpu_times: Any = psutil.cpu_times()
 
                 return {
                     "cpu_count_physical": psutil.cpu_count(logical=False),
@@ -313,7 +315,7 @@ class SystemMonitor:
                     continue
 
             # 磁盘IO统计
-            disk_io = psutil.disk_io_counters()
+            disk_io: Any = psutil.disk_io_counters()
             if disk_io:
                 disk_info["io_counters"] = {
                     "read_count": disk_io.read_count,
@@ -363,7 +365,7 @@ class SystemMonitor:
                 network_info[interface] = interface_info
 
             # 网络IO统计
-            net_io = psutil.net_io_counters()
+            net_io: Any = psutil.net_io_counters()
             if net_io:
                 network_info["io_counters"] = {
                     "bytes_sent": net_io.bytes_sent,
@@ -396,9 +398,9 @@ class SystemMonitor:
             io_speeds = {}
 
             # 获取第一次I/O计数
-            io_counters_1 = psutil.disk_io_counters(perdisk=True)
+            io_counters_1: Any = psutil.disk_io_counters(perdisk=True)
             time.sleep(0.1)  # 等待100ms
-            io_counters_2 = psutil.disk_io_counters(perdisk=True)
+            io_counters_2: Any = psutil.disk_io_counters(perdisk=True)
 
             if not io_counters_1 or not io_counters_2:
                 return {}
@@ -486,9 +488,9 @@ class SystemMonitor:
                 return {}
 
             # 获取第一次网络I/O计数
-            net_io_1 = psutil.net_io_counters()
+            net_io_1: Any = psutil.net_io_counters()
             time.sleep(0.1)  # 等待100ms
-            net_io_2 = psutil.net_io_counters()
+            net_io_2: Any = psutil.net_io_counters()
 
             if not net_io_1 or not net_io_2:
                 return {}
@@ -582,8 +584,10 @@ class SystemMonitor:
                 ["pid", "name", "cpu_percent", "memory_percent", "status"]
             ):
                 try:
-                    proc_info = proc.info
-                    proc_info["memory_mb"] = proc.memory_info().rss / 1024 / 1024
+                    # 使用 cast 来告诉类型检查器 proc 是 Any 类型
+                    proc_any: Any = proc
+                    proc_info: Any = proc_any.info
+                    proc_info["memory_mb"] = proc_any.memory_info().rss / 1024 / 1024
                     processes.append(proc_info)
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     continue

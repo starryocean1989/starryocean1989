@@ -80,7 +80,7 @@ class ServiceHealthChecker:
                 error_rate = 0.0
 
                 try:
-                    from backend.core.utils import performance_tracker
+                    from backend.services.system_manager_service import performance_tracker
 
                     # 尝试从性能跟踪器获取服务相关指标
                     all_metrics = performance_tracker.get_all_metrics()

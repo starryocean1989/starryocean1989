@@ -13,13 +13,19 @@
 - 工具注册系统
 """
 
+import asyncio
+import gc
 import json
 import logging
+import platform
+import psutil
 import sqlite3
 import sys
 import threading
 import time
 import unittest
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from enum import Enum
 from io import StringIO
@@ -27,6 +33,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Callable
 
 from backend.core.service_base import BaseService
+from backend.core.models import UnifiedMarketData, get_data_model_manager
 from backend.infrastructure.system_vnpy.system_monitor import SystemMonitor
 from backend.infrastructure.system_vnpy.network_utils import NetworkTester, PortScanner
 from backend.services.database_adapter import get_db_manager
@@ -2423,6 +2430,7 @@ class SystemManagerService(BaseService):
 
         # 性能监控器
         self.performance_monitor = PerformanceMonitor()
+        self.performance_tracker = self.performance_monitor  # 向后兼容别名
 
         # 健康检查器
         self.health_checker = HealthChecker(self.main_engine)
@@ -2600,17 +2608,17 @@ class SystemManagerService(BaseService):
 
             # 数据处理性能
             data_processing = self._calculate_data_processing_metrics(
-                all_metrics.get("data_processing", {})
+                all_metrics.get("data_processing", [])
             )
 
             # 策略执行性能
             strategy_execution = self._calculate_strategy_execution_metrics(
-                all_metrics.get("strategy_execution", {})
+                all_metrics.get("strategy_execution", [])
             )
 
             # 交易执行性能
             trading_execution = self._calculate_trading_execution_metrics(
-                all_metrics.get("trading_execution", {})
+                all_metrics.get("trading_execution", [])
             )
 
             return {
@@ -3039,7 +3047,12 @@ class SystemManagerService(BaseService):
             Dict: 规则列表
         """
         try:
-            rules = self.alert_engine.get_all_rules(group)
+            rules = self.alert_engine.get_all_rules()
+
+            # 如果指定了分组，进行过滤
+            if group:
+                rules = [rule for rule in rules if getattr(rule, 'group', None) == group]
+
             rule_list = [rule.to_dict() for rule in rules]
 
             return {
@@ -3618,8 +3631,7 @@ class SystemManagerService(BaseService):
             Dict: 告警记录列表
         """
         try:
-            from backend.core.logging_alert import get_alert_database
-
+            # get_alert_database 在本文件中定义
             alert_db = get_alert_database()
 
             # 查询告警记录
@@ -3663,8 +3675,7 @@ class SystemManagerService(BaseService):
             Dict: 未解决告警列表
         """
         try:
-            from backend.core.logging_alert import get_alert_database
-
+            # get_alert_database 在本文件中定义
             alert_db = get_alert_database()
             alerts = alert_db.get_unresolved_alerts()
 
@@ -3697,9 +3708,7 @@ class SystemManagerService(BaseService):
             Dict: 确认结果
         """
         try:
-            from backend.core.logging_alert import get_alert_database
-            from backend.core.utils import AlertStatus
-
+            # get_alert_database 在本文件中定义
             alert_db = get_alert_database()
 
             success = alert_db.update_alert_status(
@@ -3712,7 +3721,7 @@ class SystemManagerService(BaseService):
                 # 发布告警更新事件
                 alert = alert_db.get_alert(alert_id)
                 if alert:
-                    from backend.core.logging_alert import AlertEventPublisher
+                    # AlertEventPublisher 在本文件中定义
                     from backend.core.base import get_event_engine
 
                     event_engine = get_event_engine()
@@ -3740,9 +3749,7 @@ class SystemManagerService(BaseService):
             Dict: 解决结果
         """
         try:
-            from backend.core.logging_alert import get_alert_database
-            from backend.core.utils import AlertStatus
-
+            # get_alert_database 在本文件中定义
             alert_db = get_alert_database()
 
             success = alert_db.update_alert_status(
@@ -3755,7 +3762,7 @@ class SystemManagerService(BaseService):
                 # 发布告警更新事件
                 alert = alert_db.get_alert(alert_id)
                 if alert:
-                    from backend.core.logging_alert import AlertEventPublisher
+                    # AlertEventPublisher 在本文件中定义
                     from backend.core.base import get_event_engine
 
                     event_engine = get_event_engine()
@@ -3782,8 +3789,7 @@ class SystemManagerService(BaseService):
             Dict: 清理结果
         """
         try:
-            from backend.core.logging_alert import get_alert_database
-
+            # get_alert_database 在本文件中定义
             alert_db = get_alert_database()
             deleted_count = alert_db.delete_resolved_alerts(older_than_days)
 
@@ -3808,8 +3814,7 @@ class SystemManagerService(BaseService):
             Dict: 告警统计信息
         """
         try:
-            from backend.core.logging_alert import get_alert_database
-
+            # get_alert_database 在本文件中定义
             alert_db = get_alert_database()
 
             # 按状态统计

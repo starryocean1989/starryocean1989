@@ -772,8 +772,8 @@ class ServiceInitializer:
             else:
                 # 如果没有，则在当前线程创建（兼容模式）
                 self._report_progress("创建EventEngine...", 25)
-                self.logger.info("创建EventEngine（interval=0.5）...")
-                self.event_engine = EventEngine(interval=0.5)
+                self.logger.info("创建EventEngine（interval=1）...")
+                self.event_engine = EventEngine(interval=1)
                 self.logger.info("✅ EventEngine创建成功（工作线程已自动启动）")
 
                 # 创建主引擎
@@ -833,6 +833,10 @@ class ServiceInitializer:
         try:
             self._report_progress("创建ChinaStockEngine...", 45)
             from backend.infrastructure.data_module_vnpy.core import ChinaStockEngine
+
+            # 确保引擎已初始化
+            assert self.main_engine is not None, "MainEngine 必须在初始化 ChinaStockEngine 之前创建"
+            assert self.event_engine is not None, "EventEngine 必须在初始化 ChinaStockEngine 之前创建"
 
             self.china_stock_engine = ChinaStockEngine(self.main_engine, self.event_engine)
             self.logger.info("✅ ChinaStockEngine 创建成功")
@@ -1271,27 +1275,18 @@ def shutdown_real_services() -> None:
 
 __all__ = [
     # 标准库
-    "os",
-    "sys",
     "json",
     "time",
     "datetime",
     "traceback",
-    "asyncio",
     "threading",
-    "sqlite3",
     "logging",
     "Path",
-    "ThreadPoolExecutor",
     # 类型
     "Dict",
     "List",
     "Optional",
     "Any",
-    "Union",
-    "Tuple",
-    # 网络
-    "requests",
     # 数据处理
     "pd",
     "np",

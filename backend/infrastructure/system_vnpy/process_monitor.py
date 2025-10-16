@@ -11,11 +11,24 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Protocol
 
 import psutil
+from psutil._common import sdiskio, snetio
 
 logger = logging.getLogger(__name__)
+
+
+class DiskIOCounters(Protocol):
+    """磁盘IO计数器协议."""
+    read_bytes: int
+    write_bytes: int
+
+
+class NetIOCounters(Protocol):
+    """网络IO计数器协议."""
+    bytes_recv: int
+    bytes_sent: int
 
 
 @dataclass
@@ -71,8 +84,8 @@ class ProcessMonitor:
 
         # 缓存主进程信息
         self._main_process = psutil.Process()
-        self._last_disk_io = psutil.disk_io_counters()
-        self._last_net_io = psutil.net_io_counters()
+        self._last_disk_io: Optional[sdiskio] = psutil.disk_io_counters()  # type: ignore[assignment]
+        self._last_net_io: Optional[snetio] = psutil.net_io_counters()  # type: ignore[assignment]
         self._last_check_time = time.time()
 
         # 🚀 性能优化：初始化CPU采样（建立baseline）
@@ -178,13 +191,13 @@ class ProcessMonitor:
             disk_read_mbps = 0.0
             disk_write_mbps = 0.0
             try:
-                current_disk_io = psutil.disk_io_counters()
+                current_disk_io: Optional[sdiskio] = psutil.disk_io_counters()  # type: ignore[assignment]
                 if current_disk_io and self._last_disk_io:
                     read_bytes = current_disk_io.read_bytes - self._last_disk_io.read_bytes
                     write_bytes = current_disk_io.write_bytes - self._last_disk_io.write_bytes
                     disk_read_mbps = (read_bytes / time_delta) / (1024 * 1024)
                     disk_write_mbps = (write_bytes / time_delta) / (1024 * 1024)
-                    self._last_disk_io = current_disk_io
+                    self._last_disk_io = current_disk_io  # type: ignore[assignment]
             except Exception as e:
                 self.logger.debug("获取磁盘IO失败: %s", e)
 
@@ -192,13 +205,13 @@ class ProcessMonitor:
             network_recv_mbps = 0.0
             network_send_mbps = 0.0
             try:
-                current_net_io = psutil.net_io_counters()
+                current_net_io: Optional[snetio] = psutil.net_io_counters()  # type: ignore[assignment]
                 if current_net_io and self._last_net_io:
                     recv_bytes = current_net_io.bytes_recv - self._last_net_io.bytes_recv
                     sent_bytes = current_net_io.bytes_sent - self._last_net_io.bytes_sent
                     network_recv_mbps = (recv_bytes / time_delta) / (1024 * 1024)
                     network_send_mbps = (sent_bytes / time_delta) / (1024 * 1024)
-                    self._last_net_io = current_net_io
+                    self._last_net_io = current_net_io  # type: ignore[assignment]
             except Exception as e:
                 self.logger.debug("获取网络IO失败: %s", e)
 
