@@ -3,7 +3,8 @@
 品种管理模块
 
 负责品种列表的获取、分类和缓存管理，包括：
-- 从mootdx API获取完整品种列表
+- 从mootdx API获取完整品种列表（仅市场代码0=深交所、1=上交所）
+- 从addedcode_bj.cfg获取北证A股品种列表（市场代码2为硬编码值）
 - 按照需求逻辑分类品种（上证A股、深证A股、北证A股、T+0基金、可转债）
 - 缓存分类结果到本地JSON文件
 - 解析通达信板块文件和配置文件
@@ -352,8 +353,13 @@ class BlockParser:
 class SymbolLoader:
     """品种列表加载器"""
 
-    def __init__(self):
-        """初始化加载器"""
+    def __init__(self, event_engine=None):
+        """
+        初始化加载器
+
+        Args:
+            event_engine: vnpy事件引擎（可选，传入后可推送事件）
+        """
         self.logger = logging.getLogger(__name__)
 
         # 初始化配置文件解析器
@@ -365,17 +371,31 @@ class SymbolLoader:
         self.cache_dir = config_manager.get_cache_dir()
         self.cache_file = self.cache_dir / "stock_list_classified.json"
 
-    def load_from_api(self) -> Dict[str, List[Dict[str, Any]]]:
+        # 事件发布器（从core.py迁移）
+        self.event_engine = event_engine
+        if event_engine:
+            from .events import DownloadEventPublisher, EventPublisher
+
+            self.event_publisher = EventPublisher(event_engine)
+            self.download_publisher = DownloadEventPublisher(event_engine)
+        else:
+            self.event_publisher = None
+            self.download_publisher = None
+
+    def load_from_api(self) -> Dict[str, Any]:
         """
         从API加载完整品种列表并分类
 
         Returns:
-            分类后的品种字典 {
-                "上证A股": [{"code": "600000", "name": "浦发银行", "market": 1}, ...],
-                "深证A股": [...],
-                "北证A股": [...],
-                "T+0基金": [...],
-                "可转债": [...]
+            Dict {
+                "classified": {
+                    "上证A股": [{"code": "600000", "name": "浦发银行", "market": 1}, ...],
+                    "深证A股": [...],
+                    "北证A股": [...],
+                    "T+0基金": [...],
+                    "可转债": [...]
+                },
+                "empty_categories": List[str]  # 为空的品种类别列表
             }
         """
         self.logger.info("=" * 60)
@@ -388,6 +408,21 @@ class SymbolLoader:
         # 步骤2: 分类品种
         classified = self._classify_stocks(complete_df)
 
+        # 步骤2.5: 检查空集合（集合E,F,G,H,I）
+        empty_categories = []
+        category_names = {
+            "上证A股": "集合E",
+            "深证A股": "集合F",
+            "北证A股": "集合I",
+            "T+0基金": "集合H",
+            "可转债": "集合G",
+        }
+
+        for category, category_code in category_names.items():
+            if not classified.get(category):
+                empty_categories.append(category)
+                self.logger.warning("⚠️ %s（%s）为空，请排查相关问题", category, category_code)
+
         # 步骤3: 缓存到本地
         self._save_cache(classified)
 
@@ -395,9 +430,11 @@ class SymbolLoader:
         self.logger.info(
             "API加载完成，共获取 %d 个品种", sum(len(stocks) for stocks in classified.values())
         )
+        if empty_categories:
+            self.logger.warning("⚠️ 存在空品种类别: %s", ", ".join(empty_categories))
         self.logger.info("=" * 60)
 
-        return classified
+        return {"classified": classified, "empty_categories": empty_categories}
 
     def load_from_cache(self) -> Optional[Dict[str, List[Dict[str, Any]]]]:
         """
@@ -434,7 +471,8 @@ class SymbolLoader:
         """
         获取完整品种列表（集合D）
 
-        分别调用market=0、1、2，手动添加market列后合并
+        分别调用market=0、1，手动添加market列后合并
+        注意：北交所（market=2）品种不从API获取，完全从addedcode_bj.cfg解析获得
 
         Returns:
             包含market列的完整DataFrame
@@ -444,8 +482,8 @@ class SymbolLoader:
         quotes = Quotes.factory()
         stocks_list = []
 
-        # 支持的市场：0=深交所, 1=上交所, 2=北交所
-        for market in [0, 1, 2]:
+        # 支持的市场：0=深交所, 1=上交所（北交所通过addedcode_bj.cfg获取，市场代码2已硬编码）
+        for market in [0, 1]:
             try:
                 self.logger.info("  → 调用 stocks(market=%d)...", market)
                 df = quotes.stocks(market)
@@ -554,6 +592,8 @@ class SymbolLoader:
         获取北证A股（集合B → 集合I）
 
         从addedcode_bj.cfg读取9开头的代码和简称，添加固定市场代码2
+        注意：北交所品种的代码、简称完全来源于addedcode_bj.cfg的解析，
+        市场代码2为硬编码值，不从API或其他文件获取
 
         Returns:
             [{"code": "9xxxxx", "name": "xxx", "market": 2}, ...]
@@ -568,7 +608,7 @@ class SymbolLoader:
 
             for stock in beijing_stocks:
                 result.append(
-                    {"code": stock["code"], "name": stock["name"], "market": 2}  # 固定市场代码
+                    {"code": stock["code"], "name": stock["name"], "market": 2}  # 市场代码2为硬编码值
                 )
 
             count = len(result)
@@ -727,3 +767,220 @@ class SymbolLoader:
         except Exception as e:
             self.logger.error("  ✗ 保存缓存失败: %s", e, exc_info=True)
             raise
+
+    def clear_cache(self) -> bool:
+        """
+        删除品种列表缓存（清理集合A-I的所有缓存）
+
+        Returns:
+            是否成功删除
+        """
+        try:
+            if self.cache_file.exists():
+                self.cache_file.unlink()
+                self.logger.info("✓ 已删除品种列表缓存: %s", self.cache_file)
+                return True
+            else:
+                self.logger.warning("品种列表缓存文件不存在: %s", self.cache_file)
+                return True  # 文件不存在也算成功
+
+        except Exception as e:
+            self.logger.error("删除品种列表缓存失败: %s", e, exc_info=True)
+            return False
+
+    # ==================== 高级业务接口（从core.py迁移） ====================
+
+    def reload_and_classify(self) -> Dict[str, Any]:
+        """
+        重新加载品种列表并分类（完整业务逻辑，从core.py迁移）
+
+        Returns:
+            Dict {
+                "success": bool,
+                "total_count": int,
+                "empty_categories": List[str],  # 为空的品种类别列表
+                "classified": Dict  # 分类后的品种字典
+            }
+        """
+        try:
+            self.logger.info("开始更新品种列表...")
+
+            # 调用load_from_api从API加载
+            result = self.load_from_api()
+            classified = result.get("classified", {})
+            empty_categories = result.get("empty_categories", [])
+
+            # 验证数据
+            total_count = sum(len(stocks) for stocks in classified.values())
+            if total_count == 0:
+                self.logger.error("获取品种列表失败: 数据为空")
+
+                # 推送下载事件（自己推送）
+                if self.download_publisher:
+                    self.download_publisher.push_download_event("stock_list", "error", 0, "获取的数据为空")
+                if self.event_publisher:
+                    self.event_publisher.push_log_event("获取品种列表失败: 数据为空", "ERROR")
+
+                return {
+                    "success": False,
+                    "total_count": 0,
+                    "empty_categories": [],
+                    "classified": {},
+                }
+
+            # 成功 - 推送事件
+            if self.download_publisher:
+                self.download_publisher.push_download_event("stock_list", "success", total_count)
+
+            if empty_categories:
+                warning_msg = (
+                    f"品种列表更新成功: {total_count} 个品种，"
+                    f"但存在空类别: {', '.join(empty_categories)}"
+                )
+                self.logger.warning(warning_msg)
+                if self.event_publisher:
+                    self.event_publisher.push_log_event(warning_msg, "WARNING")
+            else:
+                self.logger.info("品种列表更新成功: %d 个品种", total_count)
+                if self.event_publisher:
+                    self.event_publisher.push_log_event(f"品种列表更新成功: {total_count} 个品种")
+
+            return {
+                "success": True,
+                "total_count": total_count,
+                "empty_categories": empty_categories,
+                "classified": classified,
+            }
+
+        except Exception as e:
+            # 最外层兜底异常处理
+            self.logger.error("更新品种列表失败: %s", e, exc_info=True)
+
+            # 推送错误事件
+            if self.download_publisher:
+                self.download_publisher.push_download_event("stock_list", "error", 0, f"错误: {str(e)}")
+            if self.event_publisher:
+                self.event_publisher.push_log_event(f"更新品种列表失败: {e}", "ERROR")
+
+            return {
+                "success": False,
+                "total_count": 0,
+                "empty_categories": [],
+                "classified": {},
+            }
+
+    def get_market_stocks(self, market_type: str) -> List[Dict[str, Any]]:
+        """
+        获取指定市场的品种列表（从core.py迁移）
+
+        Args:
+            market_type: 市场类型（如 "上证A股", "深证A股" 等）
+
+        Returns:
+            品种列表，每个品种包含 code, name, market
+        """
+        try:
+            classified = self.load_from_cache()
+            if classified is None:
+                self.logger.warning("本地缓存不存在")
+                return []
+            return classified.get(market_type, [])
+        except Exception as e:
+            self.logger.error("获取 %s 品种列表失败: %s", market_type, e)
+            return []
+
+    def get_all_classified(self) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        获取所有市场的品种分类（从core.py迁移）
+
+        Returns:
+            所有市场的品种分类字典，每个品种包含 code, name, market
+        """
+        try:
+            classified = self.load_from_cache()
+            if classified is None:
+                self.logger.warning("本地缓存不存在")
+                return {}
+            return classified
+        except Exception as e:
+            self.logger.error("获取所有品种分类失败: %s", e)
+            return {}
+
+    def extract_all_codes(self) -> List[str]:
+        """
+        从所有分类中提取品种代码（扁平化，从core.py迁移）
+
+        自动处理两种格式：
+        - 字符串列表: ["600000", "000001"]
+        - 字典列表: [{"code": "600000", "name": "浦发银行"}, ...]
+
+        Returns:
+            所有品种代码的扁平列表
+        """
+        classified = self.get_all_classified()
+        all_codes: List[str] = []
+
+        for stocks in classified.values():
+            if not stocks:
+                continue
+
+            # 判断格式并提取代码
+            first_item = stocks[0]
+            if isinstance(first_item, str):
+                # 字符串列表格式
+                all_codes.extend([code for code in stocks if isinstance(code, str) and code])
+            elif isinstance(first_item, dict):
+                # 字典列表格式
+                all_codes.extend([
+                    stock.get("code", "").strip()
+                    for stock in stocks
+                    if isinstance(stock, dict) and stock.get("code")
+                ])
+
+        return all_codes
+
+    def extract_codes_by_market(
+        self, market_types: Optional[List[str]] = None
+    ) -> List[str]:
+        """
+        从指定市场类型中提取品种代码（从core.py迁移）
+
+        自动处理两种格式，并支持市场类型筛选。
+
+        Args:
+            market_types: 市场类型列表（默认全部）
+
+        Returns:
+            品种代码列表
+        """
+        if market_types is None:
+            market_types = ["上证A股", "深证A股", "北证A股", "T+0基金", "可转债"]
+
+        classified = self.get_all_classified()
+        all_stocks: List[str] = []
+
+        for market_type in market_types:
+            stocks = classified.get(market_type, [])
+
+            if not stocks:
+                continue
+
+            # 判断格式：字符串列表还是字典列表
+            first_item = stocks[0] if stocks else None
+
+            if isinstance(first_item, str):
+                # 字符串列表
+                stock_codes = [code for code in stocks if isinstance(code, str) and code]
+            elif isinstance(first_item, dict):
+                # 字典列表: {"code": "600000", "name": "浦发银行", "market": 1}
+                stock_codes = [
+                    stock.get("code", "").strip()
+                    for stock in stocks
+                    if isinstance(stock, dict) and stock.get("code")
+                ]
+            else:
+                stock_codes = []
+
+            all_stocks.extend(stock_codes)
+
+        return all_stocks

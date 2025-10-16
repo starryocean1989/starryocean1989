@@ -13,10 +13,456 @@ import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from datetime import datetime
+from enum import Enum
 
-from backend.core.service_base import BaseService
-from backend.core.backtest_renderers import BacktestRendererFactory
-from backend.core.logging_alert import LoggerMixin
+from backend.core.service_base import BaseService, LoggerMixin
+from backend.services.database_adapter import get_db_manager
+
+
+# =============================================================================
+# 回测结果渲染器（从backtest_renderers.py合并）
+# =============================================================================
+
+
+class StrategyType(Enum):
+    """策略类型枚举."""
+
+    CTA = "ctastrategy"
+    ALGO = "algotrading"
+    OPTION = "optionmaster"
+    PORTFOLIO = "portfoliostrategy"
+    SPREAD = "spreadtrading"
+    SCRIPT = "scripttrader"
+
+
+class BacktestRenderer:
+    """回测结果渲染器基类."""
+
+    def render(self, backtest_result: Dict[str, Any]) -> Dict[str, Any]:  # noqa: U100
+        """渲染回测结果.
+
+        Args:
+            backtest_result: 回测结果数据
+
+        Returns:
+            Dict: 渲染后的展示数据
+        """
+        raise NotImplementedError
+
+
+class CTABacktestRenderer(BacktestRenderer):
+    """CTA策略回测结果渲染器."""
+
+    def render(self, backtest_result: Dict[str, Any]) -> Dict[str, Any]:
+        """渲染CTA策略回测结果.
+
+        重点：资金曲线、回撤曲线、交易统计
+
+        Args:
+            backtest_result: 回测结果
+
+        Returns:
+            Dict: 渲染数据
+        """
+        statistics = backtest_result.get("statistics", {})
+        daily_results = backtest_result.get("daily_results", [])
+
+        # 提取关键指标
+        total_return = statistics.get("total_return", 0)
+        sharpe_ratio = statistics.get("sharpe_ratio", 0)
+        max_drawdown = statistics.get("max_drawdown", 0)
+        win_rate = statistics.get("win_rate", 0)
+        profit_loss_ratio = statistics.get("profit_loss_ratio", 0)
+        total_trades = statistics.get("total_trades", 0)
+
+        # 构建展示数据
+        rendered = {
+            "template_type": "cta",
+            "title": "CTA策略回测结果",
+            "summary": {
+                "总收益率": f"{total_return:.2%}",
+                "夏普比率": f"{sharpe_ratio:.2f}",
+                "最大回撤": f"{max_drawdown:.2%}",
+                "胜率": f"{win_rate:.2%}",
+                "盈亏比": f"{profit_loss_ratio:.2f}",
+                "总交易次数": total_trades,
+            },
+            "charts": [
+                {
+                    "type": "line",
+                    "title": "资金曲线",
+                    "data": self._extract_equity_curve(daily_results),
+                },
+                {
+                    "type": "line",
+                    "title": "回撤曲线",
+                    "data": self._extract_drawdown_curve(daily_results),
+                },
+                {
+                    "type": "bar",
+                    "title": "月度收益分布",
+                    "data": self._extract_monthly_returns(daily_results),
+                },
+            ],
+            "raw_statistics": statistics,
+        }
+
+        return rendered
+
+    def _extract_equity_curve(self, daily_results: List[Dict]) -> List[Dict]:
+        """提取资金曲线数据."""
+        return [{"date": day.get("date"), "value": day.get("balance", 0)} for day in daily_results]
+
+    def _extract_drawdown_curve(self, daily_results: List[Dict]) -> List[Dict]:
+        """提取回撤曲线数据."""
+        return [{"date": day.get("date"), "value": day.get("drawdown", 0)} for day in daily_results]
+
+    def _extract_monthly_returns(self, daily_results: List[Dict]) -> List[Dict]:  # noqa: U100
+        """提取月度收益数据."""
+        # 简化实现：返回空列表，实际需要按月聚合
+        return []
+
+
+class OptionBacktestRenderer(BacktestRenderer):
+    """期权策略回测结果渲染器."""
+
+    def render(self, backtest_result: Dict[str, Any]) -> Dict[str, Any]:
+        """渲染期权策略回测结果.
+
+        重点：Greeks曲线、期权组合盈亏、波动率敏感性
+
+        Args:
+            backtest_result: 回测结果
+
+        Returns:
+            Dict: 渲染数据
+        """
+        statistics = backtest_result.get("statistics", {})
+        greeks_history = backtest_result.get("greeks_history", [])
+
+        rendered = {
+            "template_type": "option",
+            "title": "期权策略回测结果",
+            "summary": {
+                "总收益率": f"{statistics.get('total_return', 0):.2%}",
+                "最大Delta暴露": statistics.get("max_delta_exposure", 0),
+                "平均Gamma": statistics.get("avg_gamma", 0),
+                "Vega敏感度": statistics.get("vega_sensitivity", 0),
+            },
+            "charts": [
+                {
+                    "type": "multi_line",
+                    "title": "Greeks曲线",
+                    "series": [
+                        {"name": "Delta", "data": self._extract_greek(greeks_history, "delta")},
+                        {"name": "Gamma", "data": self._extract_greek(greeks_history, "gamma")},
+                        {"name": "Vega", "data": self._extract_greek(greeks_history, "vega")},
+                        {"name": "Theta", "data": self._extract_greek(greeks_history, "theta")},
+                    ],
+                },
+                {
+                    "type": "heatmap",
+                    "title": "波动率敏感性矩阵",
+                    "data": statistics.get("volatility_sensitivity_matrix", []),
+                },
+            ],
+            "raw_statistics": statistics,
+        }
+
+        return rendered
+
+    def _extract_greek(self, greeks_history: List[Dict], greek_name: str) -> List[Dict]:
+        """提取指定Greek值历史."""
+        return [
+            {"date": item.get("date"), "value": item.get(greek_name, 0)} for item in greeks_history
+        ]
+
+
+class PortfolioBacktestRenderer(BacktestRenderer):
+    """组合策略回测结果渲染器."""
+
+    def render(self, backtest_result: Dict[str, Any]) -> Dict[str, Any]:
+        """渲染组合策略回测结果.
+
+        重点：各品种收益贡献、相关性矩阵、风险分散效果
+
+        Args:
+            backtest_result: 回测结果
+
+        Returns:
+            Dict: 渲染数据
+        """
+        statistics = backtest_result.get("statistics", {})
+        symbol_performance = backtest_result.get("symbol_performance", {})
+
+        rendered = {
+            "template_type": "portfolio",
+            "title": "组合策略回测结果",
+            "summary": {
+                "总收益率": f"{statistics.get('total_return', 0):.2%}",
+                "组合波动率": f"{statistics.get('portfolio_volatility', 0):.2%}",
+                "品种数量": len(symbol_performance),
+                "分散度": f"{statistics.get('diversification_ratio', 0):.2f}",
+            },
+            "charts": [
+                {
+                    "type": "pie",
+                    "title": "品种收益贡献度",
+                    "data": self._extract_symbol_contribution(symbol_performance),
+                },
+                {
+                    "type": "heatmap",
+                    "title": "品种相关性矩阵",
+                    "data": statistics.get("correlation_matrix", []),
+                },
+                {
+                    "type": "bar",
+                    "title": "各品种收益对比",
+                    "data": self._extract_symbol_returns(symbol_performance),
+                },
+            ],
+            "symbol_details": symbol_performance,
+            "raw_statistics": statistics,
+        }
+
+        return rendered
+
+    def _extract_symbol_contribution(self, symbol_performance: Dict) -> List[Dict]:
+        """提取品种收益贡献度."""
+        return [
+            {"name": symbol, "value": perf.get("contribution", 0)}
+            for symbol, perf in symbol_performance.items()
+        ]
+
+    def _extract_symbol_returns(self, symbol_performance: Dict) -> List[Dict]:
+        """提取各品种收益."""
+        return [
+            {"name": symbol, "value": perf.get("return", 0)}
+            for symbol, perf in symbol_performance.items()
+        ]
+
+
+class AlgoBacktestRenderer(BacktestRenderer):
+    """算法交易策略回测结果渲染器."""
+
+    def render(self, backtest_result: Dict[str, Any]) -> Dict[str, Any]:
+        """渲染算法交易策略回测结果.
+
+        重点：成交价格分布、滑点分析、VWAP/TWAP偏差
+
+        Args:
+            backtest_result: 回测结果
+
+        Returns:
+            Dict: 渲染数据
+        """
+        statistics = backtest_result.get("statistics", {})
+        execution_details = backtest_result.get("execution_details", [])
+
+        rendered = {
+            "template_type": "algo",
+            "title": "算法交易策略回测结果",
+            "summary": {
+                "总收益率": f"{statistics.get('total_return', 0):.2%}",
+                "平均滑点": f"{statistics.get('avg_slippage', 0):.4f}",
+                "VWAP偏差": f"{statistics.get('vwap_deviation', 0):.4f}",
+                "执行成功率": f"{statistics.get('execution_success_rate', 0):.2%}",
+            },
+            "charts": [
+                {
+                    "type": "histogram",
+                    "title": "成交价格分布",
+                    "data": self._extract_price_distribution(execution_details),
+                },
+                {
+                    "type": "scatter",
+                    "title": "滑点分布",
+                    "data": self._extract_slippage_data(execution_details),
+                },
+                {
+                    "type": "line",
+                    "title": "VWAP对比",
+                    "data": self._extract_vwap_comparison(execution_details),
+                },
+            ],
+            "raw_statistics": statistics,
+        }
+
+        return rendered
+
+    def _extract_price_distribution(self, execution_details: List[Dict]) -> List[Dict]:
+        """提取价格分布数据."""
+        return [
+            {"price": trade.get("price", 0), "volume": trade.get("volume", 0)}
+            for trade in execution_details
+        ]
+
+    def _extract_slippage_data(self, execution_details: List[Dict]) -> List[Dict]:
+        """提取滑点数据."""
+        return [
+            {"x": i, "y": trade.get("slippage", 0)} for i, trade in enumerate(execution_details)
+        ]
+
+    def _extract_vwap_comparison(self, execution_details: List[Dict]) -> List[Dict]:
+        """提取VWAP对比数据."""
+        return [
+            {
+                "time": trade.get("time"),
+                "actual": trade.get("price", 0),
+                "vwap": trade.get("vwap", 0),
+            }
+            for trade in execution_details
+        ]
+
+
+class SpreadBacktestRenderer(BacktestRenderer):
+    """价差交易策略回测结果渲染器."""
+
+    def render(self, backtest_result: Dict[str, Any]) -> Dict[str, Any]:
+        """渲染价差交易策略回测结果.
+
+        重点：价差序列、价差分布、套利机会统计
+
+        Args:
+            backtest_result: 回测结果
+
+        Returns:
+            Dict: 渲染数据
+        """
+        statistics = backtest_result.get("statistics", {})
+        spread_history = backtest_result.get("spread_history", [])
+
+        rendered = {
+            "template_type": "spread",
+            "title": "价差交易策略回测结果",
+            "summary": {
+                "总收益率": f"{statistics.get('total_return', 0):.2%}",
+                "平均价差": f"{statistics.get('avg_spread', 0):.4f}",
+                "套利机会次数": statistics.get("arbitrage_opportunities", 0),
+                "平均持仓时间": f"{statistics.get('avg_holding_period', 0):.1f}分钟",
+            },
+            "charts": [
+                {
+                    "type": "line",
+                    "title": "价差序列",
+                    "data": self._extract_spread_series(spread_history),
+                },
+                {
+                    "type": "histogram",
+                    "title": "价差分布",
+                    "data": self._extract_spread_distribution(spread_history),
+                },
+                {
+                    "type": "scatter",
+                    "title": "套利机会识别",
+                    "data": self._extract_arbitrage_points(spread_history),
+                },
+            ],
+            "raw_statistics": statistics,
+        }
+
+        return rendered
+
+    def _extract_spread_series(self, spread_history: List[Dict]) -> List[Dict]:
+        """提取价差序列数据."""
+        return [
+            {"time": item.get("time"), "spread": item.get("spread", 0)} for item in spread_history
+        ]
+
+    def _extract_spread_distribution(self, spread_history: List[Dict]) -> List[Dict]:  # noqa: U100
+        """提取价差分布数据."""
+        # 简化实现
+        return []
+
+    def _extract_arbitrage_points(self, spread_history: List[Dict]) -> List[Dict]:
+        """提取套利点数据."""
+        return [
+            {"x": i, "y": item.get("spread", 0)}
+            for i, item in enumerate(spread_history)
+            if item.get("is_arbitrage", False)
+        ]
+
+
+class DefaultBacktestRenderer(BacktestRenderer):
+    """默认回测结果渲染器（用于脚本交易等通用情况）."""
+
+    def render(self, backtest_result: Dict[str, Any]) -> Dict[str, Any]:
+        """渲染默认回测结果.
+
+        基础统计信息展示
+
+        Args:
+            backtest_result: 回测结果
+
+        Returns:
+            Dict: 渲染数据
+        """
+        statistics = backtest_result.get("statistics", {})
+
+        rendered = {
+            "template_type": "default",
+            "title": "策略回测结果",
+            "summary": {
+                "总收益率": f"{statistics.get('total_return', 0):.2%}",
+                "夏普比率": f"{statistics.get('sharpe_ratio', 0):.2f}",
+                "最大回撤": f"{statistics.get('max_drawdown', 0):.2%}",
+                "总交易次数": statistics.get("total_trades", 0),
+            },
+            "raw_statistics": statistics,
+            "raw_data": backtest_result,
+        }
+
+        return rendered
+
+
+class BacktestRendererFactory:
+    """回测结果渲染器工厂."""
+
+    _renderers = {
+        StrategyType.CTA: CTABacktestRenderer(),
+        StrategyType.ALGO: AlgoBacktestRenderer(),
+        StrategyType.OPTION: OptionBacktestRenderer(),
+        StrategyType.PORTFOLIO: PortfolioBacktestRenderer(),
+        StrategyType.SPREAD: SpreadBacktestRenderer(),
+        StrategyType.SCRIPT: DefaultBacktestRenderer(),
+    }
+
+    @classmethod
+    def get_renderer(cls, strategy_type: str) -> BacktestRenderer:
+        """获取渲染器.
+
+        Args:
+            strategy_type: 策略类型
+
+        Returns:
+            BacktestRenderer: 渲染器实例
+        """
+        try:
+            strategy_enum = StrategyType(strategy_type)
+            return cls._renderers.get(strategy_enum, DefaultBacktestRenderer())
+        except ValueError:
+            return DefaultBacktestRenderer()
+
+    @classmethod
+    def render_backtest_result(
+        cls, strategy_type: str, backtest_result: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """渲染回测结果.
+
+        Args:
+            strategy_type: 策略类型
+            backtest_result: 回测结果数据
+
+        Returns:
+            Dict: 渲染后的展示数据
+        """
+        renderer = cls.get_renderer(strategy_type)
+        return renderer.render(backtest_result)
+
+
+# =============================================================================
+# 策略中心服务
+# =============================================================================
 
 
 class StrategyCenterService(BaseService, LoggerMixin):
@@ -39,8 +485,11 @@ class StrategyCenterService(BaseService, LoggerMixin):
         # 回测引擎
         self.backtest_engine = None
 
-        # 回测任务
+        # 回测任务（内存缓存）
         self._backtest_tasks: Dict[str, Dict[str, Any]] = {}
+
+        # 数据库管理器（使用统一database）
+        self.db_manager = get_db_manager()
 
     def _do_initialize(self) -> bool:
         """初始化策略中心服务."""
@@ -54,6 +503,9 @@ class StrategyCenterService(BaseService, LoggerMixin):
             # 初始化回测引擎
             self._init_backtest_engine()
 
+            # 加载历史回测任务
+            self._load_historical_backtests()
+
             self.log_operation_success("策略中心服务初始化")
             return True
 
@@ -66,13 +518,13 @@ class StrategyCenterService(BaseService, LoggerMixin):
         """关闭策略中心服务."""
         try:
             self.log_operation_start("策略中心服务关闭")
-            
+
             # 停止所有回测任务
             active_tasks = len([t for t in self._backtest_tasks.values() if t.get("status") == "running"])
             if active_tasks > 0:
                 self.logger.info(f"停止 {active_tasks} 个运行中的回测任务")
             self._stop_all_backtests()
-            
+
             self.log_operation_success("策略中心服务关闭")
             return True
         except Exception as e:
@@ -88,11 +540,56 @@ class StrategyCenterService(BaseService, LoggerMixin):
             "active_backtests": len(self._backtest_tasks),
         }
 
+    def _load_historical_backtests(self):
+        """从数据库加载历史回测任务（使用统一database）."""
+        try:
+            # 从database加载回测任务（最近30天）
+            import json
+            tasks = self.db_manager.execute_query("""
+                SELECT task_id, strategy_file, config, status, progress, created_at
+                FROM backtest_tasks
+                WHERE created_at >= datetime('now', '-30 days')
+                ORDER BY created_at DESC
+                LIMIT 100
+            """)
+
+            loaded_count = 0
+            for task_row in tasks:
+                task_id = task_row.get("task_id")
+                if not task_id:
+                    continue
+
+                # 解析config
+                config_str = task_row.get("config", "{}")
+                try:
+                    config = json.loads(config_str) if isinstance(config_str, str) else config_str
+                except:
+                    config = {}
+
+                # 恢复任务到内存
+                self._backtest_tasks[task_id] = {
+                    "status": task_row.get("status", "unknown"),
+                    "strategy_file": task_row.get("strategy_file"),
+                    "config": config,
+                    "start_time": datetime.fromisoformat(task_row.get("created_at")) if task_row.get("created_at") else datetime.now(),
+                    "progress": task_row.get("progress", 0),
+                    "result": None,  # result需要从backtest_results表加载
+                }
+                loaded_count += 1
+
+            if loaded_count > 0:
+                self.logger.info(f"从数据库加载了 {loaded_count} 个历史回测任务")
+            else:
+                self.logger.info("没有历史回测任务")
+
+        except Exception as e:
+            self.logger.warning(f"加载历史回测任务失败: {e}")
+
     def _init_backtest_engine(self):
         """初始化回测引擎."""
         try:
             self.logger.debug("初始化回测引擎...")
-            
+
             # 检查main_engine是否可用
             if self.main_engine:
                 # 回测引擎需要main_engine和event_engine
@@ -756,7 +1253,7 @@ class MyPortfolioStrategy(StrategyTemplate):
         """
         try:
             task_id = f"backtest_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            
+
             self.log_operation_start("启动回测任务", task_id=task_id, strategy=strategy_file)
 
             # 检查回测引擎是否可用
@@ -788,7 +1285,7 @@ class MyPortfolioStrategy(StrategyTemplate):
                 self.logger.info(f"回测配置: {symbol} {start_date}~{end_date}, 初始资金: {capital}")
 
                 # 注册任务（实际回测在后台执行）
-                self._backtest_tasks[task_id] = {
+                task_data = {
                     "status": "running",
                     "strategy_file": strategy_file,
                     "config": config,
@@ -796,8 +1293,25 @@ class MyPortfolioStrategy(StrategyTemplate):
                     "progress": 0,  # 真实进度，从0开始
                     "result": None,
                 }
-                
-                self.logger.debug(f"回测任务已注册: {task_id}")
+                self._backtest_tasks[task_id] = task_data
+
+                # 保存到数据库（使用统一database）
+                import json
+                self.db_manager.execute_update("""
+                    INSERT INTO backtest_tasks
+                    (task_id, strategy_file, config, status, progress, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    task_id,
+                    strategy_file,
+                    json.dumps(config, ensure_ascii=False),
+                    "running",
+                    0,
+                    task_data["start_time"].isoformat(),
+                    task_data["start_time"].isoformat(),
+                ))
+
+                self.logger.debug(f"回测任务已注册并保存到数据库: {task_id}")
 
                 # 在后台线程执行实际回测
                 import threading
@@ -806,7 +1320,7 @@ class MyPortfolioStrategy(StrategyTemplate):
                     """后台线程执行回测."""
                     import time
                     start_time = time.time()
-                    
+
                     try:
                         task = self._backtest_tasks[task_id]
 
@@ -938,7 +1452,7 @@ class MyPortfolioStrategy(StrategyTemplate):
                                 capital=int(capital),
                                 setting=config.get("strategy_setting", {}),
                             )
-                            
+
                             backtest_duration = (time.time() - backtest_start) * 1000
                             self.logger.info(f"[回测-{task_id}] 回测执行完成，耗时: {backtest_duration:.2f}ms")
 
@@ -990,14 +1504,39 @@ class MyPortfolioStrategy(StrategyTemplate):
                                 "chart_data": chart_data,  # 图表数据
                                 "message": "回测执行成功",
                             }
-                            
+
+                            # 更新数据库（使用统一database）
+                            self.db_manager.execute_update("""
+                                UPDATE backtest_tasks
+                                SET status = ?, progress = ?, updated_at = ?
+                                WHERE task_id = ?
+                            """, ("completed", 100, datetime.now().isoformat(), task_id))
+
+                            # 保存回测结果到database
+                            import json
+                            self.db_manager.execute_update("""
+                                INSERT INTO backtest_results
+                                (task_id, total_return, sharpe_ratio, max_drawdown,
+                                 total_trades, winning_rate, statistics, created_at)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            """, (
+                                task_id,
+                                float(total_return),
+                                float(sharpe_ratio),
+                                float(max_drawdown),
+                                int(total_trades),
+                                float(winning_rate),
+                                json.dumps(statistics, ensure_ascii=False),
+                                datetime.now().isoformat(),
+                            ))
+
                             # 记录性能日志和结果日志
                             self.log_performance("回测执行", total_duration, True, {
                                 "task_id": task_id,
                                 "strategy": strategy_file,
                                 "total_trades": total_trades
                             })
-                            
+
                             self.logger.info(
                                 f"[回测-{task_id}] 完成 - "
                                 f"总收益: {total_return:.2%}, "
@@ -1019,6 +1558,13 @@ class MyPortfolioStrategy(StrategyTemplate):
                                 "error": "vnpy_ctabacktester包未安装",
                             }
 
+                            # 更新数据库状态
+                            self.db_manager.execute_update("""
+                                UPDATE backtest_tasks
+                                SET status = ?, progress = ?, updated_at = ?
+                                WHERE task_id = ?
+                            """, ("failed", 0, datetime.now().isoformat(), task_id))
+
                     except Exception as e:
                         total_duration = (time.time() - start_time) * 1000
                         self.log_performance("回测执行", total_duration, False, {
@@ -1032,10 +1578,17 @@ class MyPortfolioStrategy(StrategyTemplate):
                             "error": str(e),
                         }
 
+                        # 更新数据库状态
+                        self.db_manager.execute_update("""
+                            UPDATE backtest_tasks
+                            SET status = ?, progress = ?, updated_at = ?
+                            WHERE task_id = ?
+                        """, ("failed", 0, datetime.now().isoformat(), task_id))
+
                 # 启动后台线程
                 backtest_thread = threading.Thread(target=run_backtest, daemon=True)
                 backtest_thread.start()
-                
+
                 self.log_operation_success("启动回测任务", task_id=task_id)
                 self.logger.info(f"回测任务 {task_id} 已在后台线程启动")
 

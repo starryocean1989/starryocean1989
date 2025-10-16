@@ -265,7 +265,7 @@ class SystemManager(BaseWidget, LoggerMixin):
                 logger.warning("系统管理服务未注册，尝试手动创建...")
                 # 如果服务未注册，尝试手动创建并注册
                 try:
-                    from backend.modules.system_manager.service import SystemManagerService
+                    from backend.services.system_manager_service import SystemManagerService
 
                     self.system_service = SystemManagerService()
                     # 初始化服务

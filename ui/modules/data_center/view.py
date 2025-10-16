@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from PySide6.QtCore import QDate, QThread, QTimer, Signal, Qt
 from PySide6.QtWidgets import (
+    QAbstractSpinBox,
     QComboBox,
     QDateEdit,
     QDoubleSpinBox,
@@ -150,12 +151,21 @@ class DownloadThread(QThread):
     def run(self):
         """线程执行函数（在后台线程中运行）."""
         import logging
+        from datetime import datetime
 
         logger = logging.getLogger(__name__)
 
         # 使用print确保能看到输出
         print(
-            f">>> [DOWNLOAD THREAD] DownloadThread.run() 开始执行，开始日期: {self.start_date}",
+            f">>> [DOWNLOAD THREAD] DownloadThread.run() 开始执行",
+            flush=True,
+        )
+        print(
+            f">>> [DOWNLOAD THREAD] 开始时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            flush=True,
+        )
+        print(
+            f">>> [DOWNLOAD THREAD] 开始日期: {self.start_date}",
             flush=True,
         )
         logger.info(">>> [DOWNLOAD THREAD] DownloadThread.run() 开始执行")
@@ -171,7 +181,11 @@ class DownloadThread(QThread):
 
             try:
                 print(
-                    f">>> [DOWNLOAD THREAD] 开始增量下载，开始日期: {self.start_date}...",
+                    f">>> [DOWNLOAD THREAD] 调用后端服务开始增量下载...",
+                    flush=True,
+                )
+                print(
+                    f">>> [DOWNLOAD THREAD] 调用时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
                     flush=True,
                 )
                 # 优先调用带进度的新方法；不存在则回退旧方法
@@ -183,10 +197,22 @@ class DownloadThread(QThread):
                         except Exception:
                             pass
 
+                    print(
+                        f">>> [DOWNLOAD THREAD] 调用 start_incremental_download_with_progress()",
+                        flush=True,
+                    )
                     result = self.data_center_service.start_incremental_download_with_progress(
                         self.start_date, _cb
                     )
+                    print(
+                        f">>> [DOWNLOAD THREAD] start_incremental_download_with_progress() 返回",
+                        flush=True,
+                    )
                 else:
+                    print(
+                        f">>> [DOWNLOAD THREAD] 调用 start_incremental_download()",
+                        flush=True,
+                    )
                     result = self.data_center_service.start_incremental_download(self.start_date)
             except Exception as download_error:
                 logger.error("下载过程异常: %s", download_error, exc_info=True)
@@ -195,7 +221,30 @@ class DownloadThread(QThread):
                 return
 
             elapsed = time.time() - start_time
-            print(f">>> [DOWNLOAD THREAD] 下载完成，耗时: {elapsed:.2f}秒", flush=True)
+            print(
+                f">>> [DOWNLOAD THREAD] 后端服务调用完成",
+                flush=True,
+            )
+            print(
+                f">>> [DOWNLOAD THREAD] 完成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                flush=True,
+            )
+            print(
+                f">>> [DOWNLOAD THREAD] 总耗时: {elapsed:.2f}秒",
+                flush=True,
+            )
+            print(
+                f">>> [DOWNLOAD THREAD] 返回结果: {result}",
+                flush=True,
+            )
+
+            # 检查是否过快完成（可能有问题）
+            if elapsed < 5.0:
+                print(
+                    f"⚠️ [DOWNLOAD THREAD] 警告: 下载在{elapsed:.2f}秒内完成，可能存在问题！",
+                    flush=True,
+                )
+                logger.warning(f"下载过快完成（{elapsed:.2f}秒），请检查是否正常")
 
             # 发送完成信号
             print(
@@ -405,6 +454,11 @@ class DataCenter(BaseWidget, LoggerMixin):
         refresh_btn.clicked.connect(self._refresh_symbols)
         toolbar_layout.addWidget(refresh_btn)
 
+        clear_cache_btn = QPushButton("🗑️ 删除品种列表")
+        clear_cache_btn.setToolTip("删除品种列表缓存（清理集合A-I的所有缓存）")
+        clear_cache_btn.clicked.connect(self._clear_symbol_cache)
+        toolbar_layout.addWidget(clear_cache_btn)
+
         toolbar_layout.addStretch()
         toolbar_layout.addWidget(QLabel("每页显示:"))
         page_size_combo = QComboBox()
@@ -524,14 +578,14 @@ class DataCenter(BaseWidget, LoggerMixin):
         self.start_date_input.setCalendarPopup(True)
         self.start_date_input.setDisplayFormat("yyyy-MM-dd")  # 设置日期显示格式
         self.start_date_input.setDate(QDate.currentDate().addMonths(-1))
-        # 不设置按钮样式，使用默认的下拉按钮（会自动显示日历图标）
+        self.start_date_input.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.UpDownArrows)
         query_layout.addRow("开始日期:", self.start_date_input)
 
         self.end_date_input = QDateEdit()
         self.end_date_input.setCalendarPopup(True)
         self.end_date_input.setDisplayFormat("yyyy-MM-dd")  # 设置日期显示格式
         self.end_date_input.setDate(QDate.currentDate())
-        # 不设置按钮样式，使用默认的下拉按钮（会自动显示日历图标）
+        self.end_date_input.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.UpDownArrows)
         query_layout.addRow("结束日期:", self.end_date_input)
 
         query_btn = QPushButton("查询")
@@ -671,6 +725,7 @@ class DataCenter(BaseWidget, LoggerMixin):
         self.download_start_date = QDateEdit()
         self.download_start_date.setCalendarPopup(True)
         self.download_start_date.setDisplayFormat("yyyy-MM-dd")
+        self.download_start_date.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.UpDownArrows)
 
         # 设置日期范围：最多最近100天
         min_date = QDate.currentDate().addDays(-100)
@@ -883,7 +938,12 @@ class DataCenter(BaseWidget, LoggerMixin):
                 # 显示加载成功信息
                 self.show_info(f"✅ 成功加载 {result['symbol_count']} 个品种")
 
-                # 如果有警告信息，显示警告
+                # 检查空品种类别并弹窗提醒
+                empty_categories = result.get("empty_categories", [])
+                if empty_categories:
+                    self._show_empty_categories_warning(empty_categories)
+
+                # 如果有其他警告信息，显示警告
                 if result.get("warning"):
                     self.show_warning(result["warning"])
             else:
@@ -951,6 +1011,86 @@ class DataCenter(BaseWidget, LoggerMixin):
         except Exception as e:
             self.logger.error("刷新品种失败: %s", e)
             self.show_error(f"刷新失败: {e}")
+
+    def _clear_symbol_cache(self):
+        """删除品种列表缓存（清理集合A-I的所有缓存）."""
+        try:
+            from PySide6.QtWidgets import QMessageBox
+
+            # 确认对话框
+            reply = QMessageBox.question(
+                self,
+                "确认删除",
+                "确定要删除品种列表缓存吗？\n\n"
+                "这将清理所有品种相关的缓存数据（集合A-I），\n"
+                "删除后需要重新加载品种列表。",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
+            if not self.data_center_service:
+                self.show_error("数据中心服务未初始化")
+                return
+
+            self.logger.info("开始删除品种列表缓存...")
+            result = self.data_center_service.clear_symbol_cache()
+
+            if result.get("success"):
+                # 清空内存数据
+                self.all_symbols_data = []
+                self.filtered_symbols_data = []
+                self._update_symbols_table()
+
+                self.show_info("✅ 品种列表缓存已删除")
+                self.logger.info("品种列表缓存删除成功")
+            else:
+                self.show_error(f"删除失败: {result.get('message', '未知错误')}")
+                self.logger.error("删除品种列表缓存失败: %s", result.get("message"))
+
+        except Exception as e:
+            self.logger.error("删除品种列表缓存异常: %s", e, exc_info=True)
+            self.show_error(f"删除失败: {e}")
+
+    def _show_empty_categories_warning(self, empty_categories: List[str]):
+        """显示空品种类别警告弹窗.
+
+        Args:
+            empty_categories: 为空的品种类别列表
+        """
+        try:
+            from PySide6.QtWidgets import QMessageBox
+
+            # 构造警告消息
+            categories_str = "、".join(empty_categories)
+            warning_msg = (
+                f"⚠️ 品种列表获取完成，但以下品种列表为空：\n\n"
+                f"【{categories_str}】\n\n"
+                f"请排查相关问题：\n"
+                f"• 上证A股/深证A股为空：API接口可能异常\n"
+                f"• 北证A股为空：addedcode_bj.cfg文件可能不完整或解析失败\n"
+                f"• T+0基金为空：spblock.dat文件可能缺失或不包含T+0基金板块\n"
+                f"• 可转债为空：tdxstat2.cfg文件可能缺失或不包含可转债数据\n\n"
+                f"建议操作：\n"
+                f"• 检查通达信软件根目录配置是否正确\n"
+                f"• 确认配置文件是否完整且可读\n"
+                f"• 重新安装通达信软件或更新配置文件"
+            )
+
+            # 显示警告对话框
+            msg_box = QMessageBox(self)
+            msg_box.setIcon(QMessageBox.Icon.Warning)
+            msg_box.setWindowTitle("品种列表警告")
+            msg_box.setText(warning_msg)
+            msg_box.setStandardButtons(QMessageBox.StandardButton.Ok)
+            msg_box.exec()
+
+            self.logger.warning("已显示空品种类别警告弹窗: %s", empty_categories)
+
+        except Exception as e:
+            self.logger.error("显示空品种类别警告失败: %s", e, exc_info=True)
 
     def _load_symbols_data(self):
         """初始加载品种数据."""

@@ -16,22 +16,52 @@ data_module_vnpy - 中国A股数据管理模块
 from pathlib import Path
 from vnpy.trader.app import BaseApp
 
-from .core import APP_NAME, ChinaStockEngine
+from .events import (
+    APP_NAME,
+    EVENT_CHINASTOCK_LOG,
+    EVENT_CHINASTOCK_VALIDATION,
+    EVENT_CHINASTOCK_DOWNLOAD,
+    EVENT_DATA_QUALITY_UPDATE,
+    EventPublisher,
+    ValidationEventPublisher,
+    DownloadEventPublisher,
+    QualityEventPublisher,
+)
+from .core import ChinaStockEngine
 from .gateways import PollingGateway, VirtualGateway
 from .data_readers import BaseReader, TdxBinaryReader
 from .preload_service import PreloadService
 from .unified_data_manager import UnifiedDataManager
+from .symbol_management import SymbolLoader
+from .data_fetcher import MultiProcessStockFetcher, download_incremental_unified
+from .health_checker import HealthChecker
 
 __all__ = [
+    # 常量和事件
     "APP_NAME",
+    "EVENT_CHINASTOCK_LOG",
+    "EVENT_CHINASTOCK_VALIDATION",
+    "EVENT_CHINASTOCK_DOWNLOAD",
+    "EVENT_DATA_QUALITY_UPDATE",
+    # 核心引擎
     "ChinaStockEngine",
     "ChinaStockApp",
+    # 事件发布器
+    "EventPublisher",
+    "ValidationEventPublisher",
+    "DownloadEventPublisher",
+    "QualityEventPublisher",
+    # 功能模块
+    "SymbolLoader",
+    "MultiProcessStockFetcher",
+    "download_incremental_unified",
     "PollingGateway",
     "VirtualGateway",
     "BaseReader",
     "TdxBinaryReader",
     "PreloadService",
     "UnifiedDataManager",
+    "HealthChecker",
 ]
 
 __version__ = "2.0.0"  # 升级到2.0.0版本

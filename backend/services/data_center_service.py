@@ -15,8 +15,7 @@ from datetime import datetime, timedelta
 from contextlib import suppress
 from pathlib import Path
 
-from backend.core.service_base import BaseService
-from backend.core.logging_alert import LoggerMixin
+from backend.core.service_base import BaseService, LoggerMixin
 
 
 class DataCenterService(BaseService, LoggerMixin):
@@ -557,7 +556,7 @@ class DataCenterService(BaseService, LoggerMixin):
 
             # 调用实际的品种列表获取方法
             self.logger.info("【步骤1】调用 _fetch_symbols_from_china_stock()...")
-            symbols = self._fetch_symbols_from_china_stock()
+            symbols, empty_categories = self._fetch_symbols_from_china_stock()
             self.logger.info("【步骤1完成】获取到 %d 个品种", len(symbols))
 
             # 更新缓存
@@ -573,18 +572,27 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.info("【成功】品种列表加载完成: %d 个品种", len(symbols))
             self.logger.info("=" * 60)
 
-            # 检查通达信根目录配置
-            warning_message = None
+            # 检查通达信根目录配置和空品种类别
+            warning_messages = []
+
             if self.china_stock_engine:
                 # 检查BlockParser是否可用
                 block_parser = getattr(self.china_stock_engine, "block_parser", None)
                 if block_parser and not block_parser.is_available():
-                    warning_message = (
+                    warning_messages.append(
                         "⚠️ 未配置通达信根目录，品种列表可能不完整。"
                         "缺少：T+0基金、可转债等特殊品种。"
                         "请在系统配置中设置通达信软件根目录。"
                     )
-                    self.logger.warning(warning_message)
+
+            # 检查空品种类别（集合E,F,G,H,I）
+            if empty_categories:
+                empty_warning = f"⚠️ 以下品种列表为空，请排查相关问题：{', '.join(empty_categories)}"
+                warning_messages.append(empty_warning)
+                self.logger.warning(empty_warning)
+
+            # 合并所有警告消息
+            warning_message = "\n".join(warning_messages) if warning_messages else None
 
             return {
                 "success": True,
@@ -592,6 +600,7 @@ class DataCenterService(BaseService, LoggerMixin):
                 "message": "品种列表加载成功",
                 "data": symbols,
                 "warning": warning_message,  # 添加警告信息
+                "empty_categories": empty_categories,  # 添加空品种类别列表
             }
 
         except Exception as e:
@@ -633,6 +642,57 @@ class DataCenterService(BaseService, LoggerMixin):
                 "symbol_count": 0,
                 "message": f"刷新失败: {str(e)}",
                 "data": [],
+            }
+
+    def clear_symbol_cache(self) -> Dict[str, Any]:
+        """删除品种列表缓存（清理集合A-I的所有缓存）.
+
+        Returns:
+            Dict: 包含success, message的字典
+        """
+        try:
+            self._log_operation("删除品种列表缓存")
+            self.logger.info("=" * 60)
+            self.logger.info("【开始】删除品种列表缓存")
+            self.logger.info("=" * 60)
+
+            # 调用china_stock_engine删除缓存
+            if self.china_stock_engine is None:
+                self.logger.error("ChinaStockEngine不可用")
+                return {
+                    "success": False,
+                    "message": "ChinaStockEngine不可用",
+                }
+
+            # 调用引擎的删除方法
+            success = self.china_stock_engine.clear_symbol_cache()
+
+            # 清空内存缓存
+            if success:
+                self._symbol_cache = None
+                self._symbol_cache_time = None
+                self.logger.info("内存缓存已清空")
+
+            self.logger.info("=" * 60)
+            if success:
+                self.logger.info("【成功】品种列表缓存删除完成")
+            else:
+                self.logger.warning("【失败】品种列表缓存删除失败")
+            self.logger.info("=" * 60)
+
+            return {
+                "success": success,
+                "message": "品种列表缓存删除成功" if success else "品种列表缓存删除失败",
+            }
+
+        except Exception as e:
+            self._log_error("删除品种列表缓存", e)
+            self.logger.error("=" * 60)
+            self.logger.error("【失败】删除品种列表缓存异常: %s", e, exc_info=True)
+            self.logger.error("=" * 60)
+            return {
+                "success": False,
+                "message": f"删除失败: {str(e)}",
             }
 
     def filter_symbols(
@@ -731,26 +791,29 @@ class DataCenterService(BaseService, LoggerMixin):
 
         return mapping.get(market_name, ("未知", "未知"))
 
-    def _fetch_symbols_from_china_stock(self) -> List[Dict[str, Any]]:
+    def _fetch_symbols_from_china_stock(self) -> tuple:
         """从ChinaStockEngine获取品种列表.
 
         Returns:
-            List[Dict]: 品种列表
+            tuple: (品种列表, 空品种类别列表)
         """
         try:
             # 调用ChinaStockEngine的reload_stock_list方法
             if self.china_stock_engine is None:
                 self.logger.warning("ChinaStockEngine不可用")
-                return []
+                return [], []
 
-            # 第1步：调用reload_stock_list更新缓存（返回bool）
+            # 第1步：调用reload_stock_list更新缓存（返回Dict）
             self.logger.info("  → 调用 china_stock_engine.reload_stock_list()...")
-            success = self.china_stock_engine.reload_stock_list()
-            self.logger.info("  ← reload_stock_list 返回: %s", success)
+            reload_result = self.china_stock_engine.reload_stock_list()
+            self.logger.info("  ← reload_stock_list 返回: %s", reload_result)
 
-            if not success:
+            if not reload_result.get("success"):
                 self.logger.warning("更新品种缓存失败")
-                return []
+                return [], []
+
+            # 获取空品种类别信息
+            empty_categories = reload_result.get("empty_categories", [])
 
             # 第2步：调用get_all_market_stocks获取分类后的品种字典
             self.logger.info("  → 调用 china_stock_engine.get_all_market_stocks()...")
@@ -846,11 +909,11 @@ class DataCenterService(BaseService, LoggerMixin):
                 for i, sym in enumerate(symbols[:3]):
                     self.logger.info("    [%d] %s", i + 1, sym)
 
-            return symbols
+            return symbols, empty_categories
 
         except Exception as e:
             self.logger.error("获取品种列表失败: %s", e, exc_info=True)
-            return []
+            return [], []
 
     # ==================== 数据下载管理 ====================
 
@@ -867,8 +930,9 @@ class DataCenterService(BaseService, LoggerMixin):
             Dict: 下载任务结果（阻塞直至完成或失败）
         """
         import time
+
         download_start_time = time.time()
-        
+
         try:
             self.log_operation_start("增量数据下载", start_date=start_date)
 
@@ -918,8 +982,10 @@ class DataCenterService(BaseService, LoggerMixin):
                 "start_date": start_date,
                 "progress": 0,
             }
-            
-            self.logger.info(f"下载任务已创建: {task_id}，开始日期: {start_date}，预计下载 {days_diff} 天数据")
+
+            self.logger.info(
+                f"下载任务已创建: {task_id}，开始日期: {start_date}，预计下载 {days_diff} 天数据"
+            )
 
             # 启动底层后台下载任务（引擎内部自建线程）
             import time
@@ -932,15 +998,25 @@ class DataCenterService(BaseService, LoggerMixin):
                     "task_id": None,
                     "message": "已有下载任务在运行，或启动失败",
                 }
-            
+
             self.logger.info(f"[下载-{task_id}] 引擎已启动，开始轮询进度...")
+            print(f">>> [SERVICE] 引擎已启动，正在初始化下载任务...", flush=True)
+            print(f">>> [SERVICE] 提示：初始化可能需要15-30秒（发现服务器、构建任务列表）", flush=True)
 
             last_pct = -1
             last_log_time = time.time()
+            last_progress_time = time.time()  # 记录最后一次有进度的时间
+            last_completed = 0  # 记录上次的完成数
+            timeout_seconds = 300  # 5分钟超时
+            no_progress_timeout = 60  # 60秒无进度超时
+            initialization_notified = False  # 是否已通知初始化完成
+
             # 直接轮询引擎进度，直到下载结束
             while True:
                 try:
                     prog = self.china_stock_engine.get_download_progress()
+                    current_time = time.time()
+
                     if isinstance(prog, dict):
                         is_downloading = prog.get("is_downloading", False)
                         completed = int(prog.get("completed", 0))
@@ -948,34 +1024,100 @@ class DataCenterService(BaseService, LoggerMixin):
                         pct = int((completed / total) * 100) if total > 0 else 0
                         cur_sym = prog.get("current_symbol", "") or ""
                         cur_itv = prog.get("current_interval", "") or ""
-                        
+
+                        # 检测进度是否有更新
+                        if completed > last_completed:
+                            last_progress_time = current_time
+                            last_completed = completed
+
+                        # 通知初始化完成（只通知一次）
+                        if not initialization_notified and is_downloading and total > 0:
+                            initialization_notified = True
+                            elapsed_init = current_time - download_start_time
+                            print(
+                                f">>> [SERVICE] ✓ 初始化完成！耗时 {elapsed_init:.1f}秒，开始下载 {total} 个任务...",
+                                flush=True
+                            )
+
                         # 进度更新：回调通知
-                        if progress_callback and (pct != last_pct):
+                        if progress_callback and (pct != last_pct or completed != last_completed):
                             detail = f"{cur_sym} {cur_itv}".strip()
                             suffix = f" - {detail}" if detail else ""
                             msg = f"📥 进度 {pct:.0f}%（{completed}/{total}）{suffix}"
                             with suppress(Exception):
                                 progress_callback(pct, msg)
                             last_pct = pct
-                        
-                        # 定期记录进度日志（每10秒）
-                        current_time = time.time()
+
+                        # 定期记录详细进度日志（每10秒）并强制输出到terminal
                         if current_time - last_log_time >= 10:
-                            self.logger.info(f"[下载-{task_id}] 进度: {pct}% ({completed}/{total}) - {cur_sym} {cur_itv}")
+                            self.logger.info(
+                                f"[下载-{task_id}] 进度: {pct}% ({completed}/{total}) - {cur_sym} {cur_itv}"
+                            )
+                            print(
+                                f">>> [SERVICE] 进度: {pct}% ({completed}/{total}) - {cur_sym} {cur_itv}",
+                                flush=True
+                            )
                             last_log_time = current_time
-                        
-                        if not is_downloading:
-                            self.logger.info(f"[下载-{task_id}] 引擎下载已结束")
+
+                        # 检查超时
+                        elapsed = current_time - download_start_time
+                        no_progress_elapsed = current_time - last_progress_time
+
+                        if elapsed > timeout_seconds:
+                            self.logger.error(f"[下载-{task_id}] 下载超时（{timeout_seconds}秒），停止轮询")
                             break
-                    time.sleep(0.5)
-                except Exception:
+
+                        if no_progress_elapsed > no_progress_timeout and completed > 0:
+                            self.logger.warning(
+                                f"[下载-{task_id}] {no_progress_timeout}秒无进度更新，可能卡住了"
+                            )
+
+                        # 检查是否完成
+                        if not is_downloading:
+                            # 确认是否真的完成
+                            if total > 0 and completed >= total:
+                                self.logger.info(
+                                    f"[下载-{task_id}] 引擎下载已完成 ({completed}/{total})"
+                                )
+                                print(f">>> [SERVICE] ✓ 下载已完成 ({completed}/{total})", flush=True)
+                                break
+                            elif total > 0 and completed < total:
+                                self.logger.warning(
+                                    f"[下载-{task_id}] is_downloading=False 但未完成 ({completed}/{total})，继续等待..."
+                                )
+                                # 继续等待，可能是进度更新延迟
+                                time.sleep(1.0)
+                            else:
+                                # total=0的情况，可能是初始化未完成（服务器发现、任务构建阶段）
+                                # 只在超过30秒后才警告，给初始化留足时间
+                                elapsed = current_time - download_start_time
+                                if elapsed > 30:
+                                    self.logger.warning(
+                                        f"[下载-{task_id}] is_downloading=False 且 total=0 已持续 {elapsed:.0f}秒，可能失败"
+                                    )
+                                    print(f">>> [SERVICE] ⚠️ 下载初始化超过30秒，可能存在问题", flush=True)
+                                time.sleep(1.0)
+                        else:
+                            # 正常下载中，每20秒输出一次状态确认
+                            if current_time - last_log_time >= 20:
+                                print(
+                                    f">>> [SERVICE] 下载进行中: {pct}% ({completed}/{total})",
+                                    flush=True
+                                )
+                            time.sleep(0.5)
+                    else:
+                        self.logger.warning(f"[下载-{task_id}] 获取进度失败，prog={prog}")
+                        time.sleep(0.5)
+
+                except Exception as poll_error:
+                    self.logger.error(f"[下载-{task_id}] 轮询异常: {poll_error}", exc_info=True)
                     time.sleep(0.5)
 
             # 线程已结束，做一次最终上报与事件广播
             if progress_callback:
                 with suppress(Exception):
                     progress_callback(100.0, "✅ 下载完成，正在整理结果...")
-            
+
             download_duration = (time.time() - download_start_time) * 1000
             self.logger.info(f"[下载-{task_id}] 整理结果...")
 
@@ -992,15 +1134,16 @@ class DataCenterService(BaseService, LoggerMixin):
                     "task_id": task_id,
                     "message": error_msg,
                 }
-            
+
             # 记录性能日志
-            self.log_performance("增量数据下载", download_duration, True, {
-                "task_id": task_id,
-                "start_date": start_date,
-                "days": days_diff
-            })
+            self.log_performance(
+                "增量数据下载",
+                download_duration,
+                True,
+                {"task_id": task_id, "start_date": start_date, "days": days_diff},
+            )
             self.log_operation_success("增量数据下载", task_id=task_id, days=days_diff)
-            
+
             return {
                 "success": True,
                 "task_id": task_id,
@@ -2041,7 +2184,7 @@ class DataCenterService(BaseService, LoggerMixin):
             self._log_operation("启动数据录制")
 
             # 获取录制路径配置
-            from backend.config import get_settings
+            from backend.core.config import get_settings
 
             settings = get_settings()
             recording_path = custom_path or settings.vnpy.recording_data_path

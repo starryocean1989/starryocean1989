@@ -15,8 +15,8 @@ from typing import Any, Dict, List, Optional
 from datetime import datetime
 from enum import Enum
 
-from backend.core.service_base import BaseService
-from backend.core.logging_alert import LoggerMixin
+from backend.core.service_base import BaseService, LoggerMixin
+from backend.services.database_adapter import get_db_manager
 
 
 class GatewayType(Enum):
@@ -110,7 +110,7 @@ class TradingGatewayService(BaseService, LoggerMixin):
     def __init__(self):
         """初始化交易网关服务."""
         super().__init__()
-        
+
         # 记录已加载的策略应用
         self.loaded_apps = set()
 
@@ -129,8 +129,11 @@ class TradingGatewayService(BaseService, LoggerMixin):
         # 风险管理引擎
         self.risk_engine = None
 
-        # 配置文件路径
+        # 配置文件路径（保留用于兼容性）
         self.config_file = Path("config/terminal_config.json")
+
+        # 数据库管理器（使用统一database）
+        self.db_manager = get_db_manager()
 
         self.logger.info("交易网关服务已创建")
 
@@ -286,14 +289,13 @@ class TradingGatewayService(BaseService, LoggerMixin):
             except ImportError:
                 self.logger.warning("⚠️ CTP网关类不可用")
 
-            # PaperAccount（使用适配器集成）
+            # PaperAccount（使用内部适配器）
             try:
-                from backend.infrastructure.gateway_adapters import PaperAccountGateway
-
-                self.gateway_classes[GatewayType.PAPER_ACCOUNT.value] = PaperAccountGateway
-                self.logger.info("✅ PaperAccount网关类可用")
-            except ImportError:
-                self.logger.warning("⚠️ PaperAccount网关类不可用")
+                # 使用文件末尾定义的PaperAccountGatewayAdapter
+                self.gateway_classes[GatewayType.PAPER_ACCOUNT.value] = PaperAccountGatewayAdapter
+                self.logger.info("✅ PaperAccount网关类可用（内部适配器）")
+            except Exception as e:
+                self.logger.warning(f"⚠️ PaperAccount网关类不可用: {e}")
 
             # CTP Mini
             try:
@@ -332,14 +334,13 @@ class TradingGatewayService(BaseService, LoggerMixin):
                 # IB网关是可选功能，降低日志级别
                 self.logger.debug("⚠️ IB网关类不可用")
 
-            # TradeX Gateway（国内股票交易）
+            # TradeX Gateway（国内股票交易，使用内部适配器）
             try:
-                from backend.infrastructure.gateway_adapters import TradeXGateway
-
-                self.gateway_classes[GatewayType.TRADEX_GATEWAY.value] = TradeXGateway
-                self.logger.info("✅ TradeX网关类可用")
-            except ImportError:
-                self.logger.warning("⚠️ TradeX网关类不可用")
+                # 使用文件末尾定义的TradeXGatewayAdapter
+                self.gateway_classes[GatewayType.TRADEX_GATEWAY.value] = TradeXGatewayAdapter
+                self.logger.info("✅ TradeX网关类可用（内部适配器）")
+            except Exception as e:
+                self.logger.warning(f"⚠️ TradeX网关类不可用: {e}")
 
         except Exception as e:
             self.logger.error("初始化网关类失败: %s", e, exc_info=True)
@@ -397,29 +398,33 @@ class TradingGatewayService(BaseService, LoggerMixin):
             self.logger.debug("设置风控参数失败: %s", e)
 
     def _load_gateway_configs(self):
-        """从配置文件加载网关配置."""
+        """从数据库加载网关配置（使用统一database）."""
         try:
-            if not self.config_file.exists():
-                self.logger.info("配置文件不存在，跳过网关配置加载")
-                return
+            # 从database加载网关配置
+            gateways = self.db_manager.execute_query("""
+                SELECT name, gateway_type, config, status
+                FROM gateway_instances
+                ORDER BY created_at
+            """)
 
-            with open(self.config_file, "r", encoding="utf-8") as f:
-                config = json.load(f)
-
-            gateways = config.get("gateways", [])
             if not gateways:
                 self.logger.info("没有保存的网关配置")
                 return
 
             self.logger.info(f"开始加载 {len(gateways)} 个网关配置")
 
-            for gateway_config in gateways:
-                gateway_name = gateway_config.get("name")
-                gateway_type = gateway_config.get("type")
-                config_data = gateway_config.get("config", {})
+            for gateway_row in gateways:
+                gateway_name = gateway_row.get("name")
+                gateway_type = gateway_row.get("gateway_type")
+                config_str = gateway_row.get("config", "{}")
+
+                try:
+                    config_data = json.loads(config_str) if isinstance(config_str, str) else config_str
+                except:
+                    config_data = {}
 
                 if not gateway_name or not gateway_type:
-                    self.logger.warning(f"无效的网关配置: {gateway_config}")
+                    self.logger.warning(f"无效的网关配置: {gateway_row}")
                     continue
 
                 # 创建网关实例
@@ -438,33 +443,21 @@ class TradingGatewayService(BaseService, LoggerMixin):
             self.logger.error(f"加载网关配置失败: {e}", exc_info=True)
 
     def _save_gateway_configs(self):
-        """保存网关配置到配置文件."""
+        """保存网关配置到数据库（使用统一database）."""
         try:
-            # 读取现有配置
-            if self.config_file.exists():
-                with open(self.config_file, "r", encoding="utf-8") as f:
-                    config = json.load(f)
-            else:
-                config = {}
-
-            # 构建网关配置列表
-            gateways = []
+            # 保存每个网关到database
             for name, info in self.gateway_instances.items():
-                gateway_config = {
-                    "name": name,
-                    "type": info["type"],
-                    "config": info["config"],
-                }
-                gateways.append(gateway_config)
+                config_json = json.dumps(info["config"], ensure_ascii=False)
+                status = info.get("status", "disconnected")
 
-            # 更新配置
-            config["gateways"] = gateways
+                # 使用INSERT OR REPLACE保存
+                self.db_manager.execute_update("""
+                    INSERT OR REPLACE INTO gateway_instances
+                    (name, gateway_type, config, status, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """, (name, info["type"], config_json, status))
 
-            # 保存到文件
-            with open(self.config_file, "w", encoding="utf-8") as f:
-                json.dump(config, f, indent=2, ensure_ascii=False)
-
-            self.logger.info(f"网关配置已保存，共 {len(gateways)} 个网关")
+            self.logger.info(f"网关配置已保存，共 {len(self.gateway_instances)} 个网关")
 
         except Exception as e:
             self.logger.error(f"保存网关配置失败: {e}", exc_info=True)
@@ -2355,3 +2348,282 @@ class TradingGatewayService(BaseService, LoggerMixin):
             )
 
         return base_data
+
+
+# =============================================================================
+# Part 2: Gateway Adapters (整合自infrastructure/gateway_adapters)
+# =============================================================================
+
+
+class PaperAccountGatewayAdapter:
+    """
+    PaperAccount网关适配器.
+
+    将vnpy_paperaccount.PaperAccountEngine适配为标准的vnpy Gateway接口。
+
+    特点：
+    - 纯本地模拟交易，无需服务器连接
+    - 支持完整的交易功能（下单、撤单、查询等）
+    - 提供虚拟资金和持仓管理
+    - 实时P&L计算
+    """
+
+    def __init__(self, event_engine, gateway_name: str):
+        """初始化网关适配器."""
+        self.event_engine = event_engine
+        self.gateway_name = gateway_name
+
+        # PaperAccount引擎
+        self.paper_engine = None
+
+        # 配置参数
+        self.initial_capital = 1000000.0
+        self.slippage = 0.0
+        self.commission_rate = 0.0003
+        self.size = 1
+
+        # 连接状态
+        self.connected = False
+
+        # 数据字典
+        self.contracts: Dict = {}
+        self.orders: Dict = {}
+        self.positions: Dict = {}
+        self.account = None
+
+        self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
+
+    def connect(self, setting: dict) -> bool:
+        """连接网关."""
+        try:
+            # 获取配置参数
+            self.initial_capital = setting.get("initial_capital", 1000000.0)
+            self.slippage = setting.get("slippage", 0.0)
+            self.commission_rate = setting.get("commission_rate", 0.0003)
+            self.size = setting.get("size", 1)
+
+            # 初始化PaperAccount引擎
+            from vnpy_paperaccount import PaperAccountEngine
+
+            self.paper_engine = PaperAccountEngine(self.event_engine)
+            self.paper_engine.init_engine()
+            self.paper_engine.set_capital(self.initial_capital)
+            self.paper_engine.set_parameters(
+                commission_rate=self.commission_rate,
+                slippage=self.slippage,
+                size=self.size
+            )
+
+            self.connected = True
+            self.logger.info("PaperAccount网关连接成功")
+            return True
+
+        except ImportError as e:
+            self.logger.error(f"vnpy_paperaccount未安装: {e}")
+            return False
+        except Exception as e:
+            self.logger.error(f"PaperAccount连接失败: {e}")
+            return False
+
+    def close(self) -> None:
+        """关闭网关."""
+        if self.paper_engine:
+            try:
+                self.paper_engine.close()
+            except Exception as e:
+                self.logger.error(f"关闭PaperAccount引擎失败: {e}")
+
+        self.connected = False
+        self.logger.info("PaperAccount网关已关闭")
+
+    def send_order(self, req) -> str:
+        """发送委托."""
+        if not self.connected or not self.paper_engine:
+            return ""
+
+        try:
+            order_id = self.paper_engine.send_order(req)
+            return order_id
+        except Exception as e:
+            self.logger.error(f"发送订单失败: {e}")
+            return ""
+
+    def cancel_order(self, req) -> None:
+        """撤销委托."""
+        if not self.connected or not self.paper_engine:
+            return
+
+        try:
+            self.paper_engine.cancel_order(req)
+        except Exception as e:
+            self.logger.error(f"撤销订单失败: {e}")
+
+
+class TradeXGatewayAdapter:
+    """
+    TradeX网关适配器.
+
+    通过ctypes调用TradeX.dll，提供国内股票交易功能。
+    支持标准trade.dll接口的27个函数（9个核心 + 5个批量 + 13个行情）。
+    """
+
+    def __init__(self, event_engine, gateway_name: str):
+        """初始化网关适配器."""
+        import ctypes
+        import os
+
+        self.event_engine = event_engine
+        self.gateway_name = gateway_name
+
+        # TradeX API
+        dll_path = os.path.join(
+            os.path.dirname(__file__), "..", "..", "infrastructure", "Trademy-src", "TradeX.dll"
+        )
+        dll_path = os.path.abspath(dll_path)
+
+        self.api = None
+        self.connected = False
+        self.shareholder_codes: Dict[str, str] = {}
+        self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
+
+        # 加载DLL
+        try:
+            if os.path.exists(dll_path):
+                self.dll = ctypes.WinDLL(dll_path)
+                self._setup_dll_functions()
+                self.logger.info(f"TradeX.dll加载成功: {dll_path}")
+            else:
+                self.logger.warning(f"TradeX.dll文件不存在: {dll_path}")
+                self.dll = None
+        except Exception as e:
+            self.logger.error(f"加载TradeX.dll失败: {e}")
+            self.dll = None
+
+    def _setup_dll_functions(self):
+        """设置DLL函数签名."""
+        if not self.dll:
+            return
+
+        import ctypes
+
+        # OpenTdx
+        self.dll.OpenTdx.argtypes = []
+        self.dll.OpenTdx.restype = None
+
+        # CloseTdx
+        self.dll.CloseTdx.argtypes = []
+        self.dll.CloseTdx.restype = None
+
+        # Logon
+        self.dll.Logon.argtypes = [
+            ctypes.c_char_p, ctypes.c_short, ctypes.c_char_p, ctypes.c_short,
+            ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p,
+            ctypes.c_char_p
+        ]
+        self.dll.Logon.restype = ctypes.c_int
+
+        # QueryData
+        self.dll.QueryData.argtypes = [
+            ctypes.c_int, ctypes.c_int, ctypes.c_char_p, ctypes.c_char_p
+        ]
+        self.dll.QueryData.restype = None
+
+        # SendOrder
+        self.dll.SendOrder.argtypes = [
+            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_char_p,
+            ctypes.c_char_p, ctypes.c_float, ctypes.c_int, ctypes.c_char_p,
+            ctypes.c_char_p
+        ]
+        self.dll.SendOrder.restype = None
+
+        # CancelOrder
+        self.dll.CancelOrder.argtypes = [
+            ctypes.c_int, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p,
+            ctypes.c_char_p
+        ]
+        self.dll.CancelOrder.restype = None
+
+    def connect(self, setting: dict) -> bool:
+        """连接网关."""
+        if not self.dll:
+            self.logger.error("TradeX.dll不可用")
+            return False
+
+        try:
+            import ctypes
+
+            # 打开通达信实例
+            self.dll.OpenTdx()
+
+            # 准备登录参数
+            server_ip = setting.get("server_ip", "")
+            server_port = setting.get("server_port", 7708)
+            version = setting.get("version", "6.40")
+            yyb_id = setting.get("yyb_id", 9000)
+            account_no = setting.get("account_no", "")
+            trade_account = setting.get("trade_account", "")
+            password = setting.get("password", "")
+            tx_password = setting.get("tx_password", "")
+
+            err_info = ctypes.create_string_buffer(256)
+
+            # 登录
+            client_id = self.dll.Logon(
+                server_ip.encode("gbk"),
+                server_port,
+                version.encode("gbk"),
+                yyb_id,
+                account_no.encode("gbk"),
+                trade_account.encode("gbk"),
+                password.encode("gbk"),
+                tx_password.encode("gbk"),
+                err_info,
+            )
+
+            if client_id <= 0:
+                error_msg = err_info.value.decode("gbk", errors="ignore")
+                self.logger.error(f"登录失败: {error_msg}")
+                return False
+
+            self.client_id = client_id
+            self.connected = True
+            self.logger.info(f"TradeX网关连接成功，ClientID: {client_id}")
+
+            return True
+
+        except Exception as e:
+            self.logger.error(f"连接TradeX网关失败: {e}")
+            return False
+
+    def close(self) -> None:
+        """关闭网关."""
+        if self.dll and self.connected:
+            try:
+                if hasattr(self, 'client_id'):
+                    self.dll.Logoff(self.client_id)
+                self.dll.CloseTdx()
+            except Exception as e:
+                self.logger.error(f"关闭TradeX网关失败: {e}")
+
+        self.connected = False
+        self.logger.info("TradeX网关已关闭")
+
+    def query_data(self, category: int) -> tuple:
+        """查询交易数据."""
+        if not self.connected or not self.dll:
+            return "", "未连接"
+
+        try:
+            import ctypes
+
+            result = ctypes.create_string_buffer(1024 * 1024)
+            err_info = ctypes.create_string_buffer(256)
+
+            self.dll.QueryData(self.client_id, category, result, err_info)
+
+            result_str = result.value.decode("gbk", errors="ignore")
+            error_msg = err_info.value.decode("gbk", errors="ignore")
+
+            return result_str, error_msg
+        except Exception as e:
+            return "", str(e)

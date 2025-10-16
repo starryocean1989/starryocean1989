@@ -1202,7 +1202,7 @@ class PortfolioService(BaseService):
             List[Dict]: 交易记录列表
         """
         try:
-            from backend.core.database import get_db_manager
+            from backend.services.database_adapter import get_db_manager
 
             self.logger.info(
                 "加载组合 %s 的历史交易记录 (%s ~ %s)", portfolio_name, start_date, end_date
@@ -1488,7 +1488,7 @@ class PortfolioService(BaseService):
             Dict: 保存结果
         """
         try:
-            from backend.core.database import get_db_manager
+            from backend.services.database_adapter import get_db_manager
             from datetime import datetime
 
             db_manager = get_db_manager()
@@ -1543,7 +1543,7 @@ class PortfolioService(BaseService):
             Dict: 保存结果
         """
         try:
-            from backend.core.database import get_db_manager
+            from backend.services.database_adapter import get_db_manager
             from datetime import datetime
 
             db_manager = get_db_manager()

@@ -110,6 +110,98 @@ class UnifiedDataManager:
         return result
 
     # ------------------------------------------------------------------
+    def query_unified(
+        self,
+        symbol: Optional[str] = None,
+        interval: str = "1d",
+        start_date: Optional[Union[str, date]] = None,
+        end_date: Optional[Union[str, date]] = None,
+        **kwargs,
+    ) -> Optional[Union[pd.DataFrame, Dict]]:
+        """
+        统一查询接口（从core.py迁移）
+
+        自动判断单品种还是多品种查询，返回适当的格式。
+
+        Args:
+            symbol: 单品种代码（可选）
+            interval: 周期（默认"1d"）
+            start_date: 开始日期（可选）
+            end_date: 结束日期（可选）
+            **kwargs: 其他参数
+                - symbols: 多品种列表（与symbol互斥）
+                - frequency: 周期别名（优先级低于interval）
+                - check_gaps: 是否检查缺口（默认True）
+
+        Returns:
+            单品种：DataFrame 或 None
+            多品种：Dict {"success": bool, "data": {symbol: []}, "interval": str, "message": str}
+        """
+        symbols_param = kwargs.get("symbols")
+        frequency = kwargs.get("frequency") or interval
+        check_gaps = kwargs.get("check_gaps", True)
+
+        # 多品种查询路径
+        if symbols_param is not None:
+            symbols_list = (
+                [symbols_param] if isinstance(symbols_param, str) else list(symbols_param)
+            )
+            if not symbols_list:
+                return {"success": True, "data": {}, "interval": frequency, "message": None}
+
+            # 调用多品种查询
+            datasets = self.get_multi_kline_data(
+                symbols_list,
+                interval=frequency,
+                start_date=start_date,
+                end_date=end_date,
+                check_gaps=check_gaps,
+            )
+
+            # 转换为字典格式
+            payload = {
+                sym: (df.to_dict("records") if df is not None else [])
+                for sym, df in datasets.items()
+            }
+
+            success = any(payload.values())
+            return {
+                "success": success,
+                "data": payload,
+                "interval": frequency,
+                "message": None if success else "未查询到数据",
+            }
+
+        # 单品种查询路径
+        target_symbol = symbol or kwargs.get("symbols")
+        if isinstance(target_symbol, (list, tuple)):
+            target_symbol = target_symbol[0] if target_symbol else None
+        if target_symbol is None:
+            return None
+
+        try:
+            data = self.get_kline_data(
+                target_symbol,
+                interval=interval,
+                start_date=start_date,
+                end_date=end_date,
+                check_gaps=check_gaps,
+            )
+
+            if data is not None and hasattr(data, "__len__"):
+                self.logger.info(
+                    "查询数据成功: %s %s, %d 条记录", target_symbol, interval, len(data)
+                )
+            else:
+                self.logger.warning("未找到数据: %s %s", target_symbol, interval)
+
+            return data
+
+        except Exception as e:
+            self.logger.error("查询数据失败: %s %s, %s", target_symbol, interval, e)
+            return None
+
+    # ------------------------------------------------------------------
     def subscribe(self, module: str, symbols: Iterable[str]) -> bool:
         gateway_name = self._resolve_gateway(module)
         gateway = self._get_gateway(gateway_name)

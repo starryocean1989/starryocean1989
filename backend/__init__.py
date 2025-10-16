@@ -43,17 +43,17 @@ from .core import (
     setup_logging,
 )
 
-# 导出服务
-from .modules.data_center.service import DataCenterService
-from .modules.market_board.service import MarketBoardService
-from .modules.portfolio.service import PortfolioService
-from .modules.strategy_center.service import StrategyCenterService
-from .modules.strategy_center.ai_assistant import AIAssistantService
-from .modules.system_manager.service import SystemManagerService
-from .modules.trading_gateway.service import TradingGatewayService
+# 导出服务（扁平化后的路径）
+from .services.data_center_service import DataCenterService
+from .services.market_board_service import MarketBoardService
+from .services.portfolio_service import PortfolioService
+from .services.strategy_center_service import StrategyCenterService
+from .services.ai_assistant_service import AIAssistantService
+from .services.system_manager_service import SystemManagerService
+from .services.trading_gateway_service import TradingGatewayService
 
-# 导出仓库
-from .repositories import (
+# 导出仓库（从core导入）
+from .core.repositories import (
     SymbolRepository,
     DataSourceRepository,
     DownloadTaskRepository,
@@ -65,6 +65,9 @@ from .repositories import (
     ConfigRepository,
     PortfolioRepository,
 )
+
+# 导出配置（从core导入）
+from .core.config import get_settings
 
 # 导出工具
 from .core.utils import (
@@ -131,4 +134,6 @@ __all__ = [
     "validate_required_fields",
     "SimpleCache",
     "setup_logging",
+    # 配置管理
+    "get_settings",
 ]

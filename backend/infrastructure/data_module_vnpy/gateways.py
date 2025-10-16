@@ -33,6 +33,168 @@ from .config import config_manager
 from .data_fetcher import MultiProcessStockFetcher
 from .data_quality import StorageManager
 
+# ==================== 网关管理器（从core.py迁移） ====================
+
+
+class GatewayManager:
+    """网关生命周期管理器 - 封装网关的启动/停止逻辑"""
+
+    @staticmethod
+    def start_polling(event_engine, existing_gateway=None, setting=None):
+        """
+        启动轮询网关（完整业务逻辑，从core.py迁移）
+
+        Args:
+            event_engine: vnpy事件引擎
+            existing_gateway: 现有网关实例（可选）
+            setting: 网关设置（可选）
+
+        Returns:
+            网关实例（成功）或 None（失败）
+        """
+        from .events import EventPublisher
+
+        logger = logging.getLogger(__name__)
+        event_publisher = EventPublisher(event_engine)
+
+        try:
+            if existing_gateway is None:
+                gateway = PollingGateway.create_and_start(event_engine, setting)
+            else:
+                gateway = existing_gateway
+                gateway.connect(setting or {})
+
+            event_publisher.push_log_event("✅ 轮询网关已成功启动", "INFO")
+            return gateway
+
+        except Exception as e:
+            error_msg = f"启动轮询网关失败: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            event_publisher.push_log_event(error_msg, "ERROR")
+            return None
+
+    @staticmethod
+    def stop_polling(gateway):
+        """
+        停止轮询网关（完整业务逻辑，从core.py迁移）
+
+        Args:
+            gateway: 网关实例
+
+        Returns:
+            是否停止成功
+        """
+        logger = logging.getLogger(__name__)
+
+        try:
+            if gateway:
+                gateway.close()
+                logger.info("轮询网关已停止")
+            return True
+
+        except Exception as e:
+            logger.error("停止轮询网关失败: %s", e)
+            return False
+
+    @staticmethod
+    def init_virtual_gateway(event_engine):
+        """
+        初始化虚拟网关（完整业务逻辑，从core.py迁移）
+
+        Args:
+            event_engine: vnpy事件引擎
+
+        Returns:
+            网关实例
+        """
+        from datetime import datetime, timedelta
+
+        logger = logging.getLogger(__name__)
+
+        try:
+            # 使用默认配置创建
+            default_start_time = config_manager.get("chinastock.virtual_gateway.start_datetime", "")
+
+            if not default_start_time:
+                default_start_time = (datetime.now() - timedelta(days=1)).strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
+
+            gateway = VirtualGateway.create_and_start(event_engine, default_start_time)
+            logger.info("虚拟网关已初始化")
+            return gateway
+
+        except Exception as e:
+            logger.error("初始化虚拟网关失败: %s", e)
+            return None
+
+    @staticmethod
+    def start_virtual(event_engine, existing_gateway=None, start_datetime="", speed=1.0, symbols=None):
+        """
+        启动虚拟网关（完整业务逻辑，从core.py迁移）
+
+        Args:
+            event_engine: vnpy事件引擎
+            existing_gateway: 现有网关实例（可选）
+            start_datetime: 起始时间
+            speed: 推送速度
+            symbols: 品种列表
+
+        Returns:
+            网关实例（成功）或 None（失败）
+        """
+        from .events import EventPublisher
+
+        logger = logging.getLogger(__name__)
+        event_publisher = EventPublisher(event_engine)
+
+        try:
+            if existing_gateway is None:
+                gateway = VirtualGateway.create_and_start(
+                    event_engine, start_datetime, speed, symbols
+                )
+            else:
+                gateway = existing_gateway
+                setting = {
+                    "起始时间": start_datetime,
+                    "推送速度": speed,
+                    "品种列表": ",".join(symbols) if symbols else "",
+                }
+                gateway.connect(setting)
+
+            event_publisher.push_log_event("✅ 虚拟网关已成功启动", "INFO")
+            return gateway
+
+        except Exception as e:
+            error_msg = f"启动虚拟网关失败: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            event_publisher.push_log_event(error_msg, "ERROR")
+            return None
+
+    @staticmethod
+    def stop_virtual(gateway):
+        """
+        停止虚拟网关（完整业务逻辑，从core.py迁移）
+
+        Args:
+            gateway: 网关实例
+
+        Returns:
+            是否停止成功
+        """
+        logger = logging.getLogger(__name__)
+
+        try:
+            if gateway:
+                gateway.close()
+                logger.info("虚拟网关已停止")
+            return True
+
+        except Exception as e:
+            logger.error("停止虚拟网关失败: %s", e)
+            return False
+
+
 # ==================== 轮询网关 ====================
 
 
@@ -72,6 +234,24 @@ class PollingGateway(BaseGateway):
         self.stock_fetcher = MultiProcessStockFetcher()
 
         self.logger.info("轮询数据源转换网关初始化完成")
+
+    @classmethod
+    def create_and_start(
+        cls, event_engine: EventEngine, setting: Optional[dict] = None
+    ) -> "PollingGateway":
+        """
+        创建并启动网关（工厂方法，从core.py迁移）
+
+        Args:
+            event_engine: 事件引擎
+            setting: 网关设置（可选）
+
+        Returns:
+            已启动的网关实例
+        """
+        gateway = cls(event_engine, cls.default_name)
+        gateway.connect(setting or {})
+        return gateway
 
     def connect(self, setting: dict) -> None:
         """
@@ -307,6 +487,35 @@ class VirtualGateway(BaseGateway):
 
         self.logger.info("虚拟推送数据网关初始化完成")
 
+    @classmethod
+    def create_and_start(
+        cls,
+        event_engine: EventEngine,
+        start_datetime: str,
+        speed: float = 1.0,
+        symbols: Optional[List[str]] = None,
+    ) -> "VirtualGateway":
+        """
+        创建并启动网关（工厂方法，从core.py迁移）
+
+        Args:
+            event_engine: 事件引擎
+            start_datetime: 起始时间（格式：YYYY-MM-DD HH:MM:SS）
+            speed: 推送速度倍数
+            symbols: 品种列表（可选）
+
+        Returns:
+            已启动的网关实例
+        """
+        gateway = cls(event_engine, cls.default_name)
+        setting = {
+            "起始时间": start_datetime,
+            "推送速度": speed,
+            "品种列表": ",".join(symbols) if symbols else "",
+        }
+        gateway.connect(setting)
+        return gateway
+
     def connect(self, setting: dict) -> None:
         """
         连接网关
@@ -439,7 +648,7 @@ class VirtualGateway(BaseGateway):
             if self.start_datetime is None:
                 self.logger.warning("起始时间未设置，使用当前时间")
                 self.start_datetime = datetime.now()
-            
+
             current_time = self.start_datetime
 
             for symbol in list(self.subscribed_symbols):

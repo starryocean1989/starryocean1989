@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 from datetime import datetime
 
 from backend.core.service_base import BaseService
-from backend.config import get_settings
+from backend.core.config import get_settings
 
 try:
     import requests
@@ -71,7 +71,7 @@ class AIAssistantService(BaseService):
                 return False
 
             # 检查API密钥（使用最新配置）
-            from backend.config import get_settings
+            from backend.core.config import get_settings
 
             current_settings = get_settings()
             current_api_key = current_settings.ai.api_key
@@ -154,7 +154,7 @@ class AIAssistantService(BaseService):
                 }
 
             # 检查API密钥（使用最新配置）
-            from backend.config import get_settings
+            from backend.core.config import get_settings
 
             current_settings = get_settings()
             current_api_key = current_settings.ai.api_key
@@ -219,7 +219,7 @@ class AIAssistantService(BaseService):
         """
         try:
             # 每次调用时重新获取最新配置（支持热更新）
-            from backend.config import get_settings
+            from backend.core.config import get_settings
 
             current_settings = get_settings()
             current_api_key = current_settings.ai.api_key

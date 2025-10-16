@@ -439,7 +439,7 @@ class DataValidator:
             # 获取日期范围
             min_date = date_series.min()
             max_date = date_series.max()
-            
+
             # 检查是否有效
             if bool(pd.isna(min_date)) or bool(pd.isna(max_date)):
                 return []
@@ -665,6 +665,9 @@ class DataSensor:
         # 缓存质量概览
         self._quality_overview: Optional[QualityOverview] = None
 
+        # 文件监控器
+        self.data_file_watcher: Optional[DataFileWatcher] = None
+
     def scan_all_data(
         self,
         reference_symbols: List[str],
@@ -772,6 +775,162 @@ class DataSensor:
                 scanned_intervals=[],
                 details=[],
             )
+
+    def trigger_scan_with_symbols(
+        self,
+        symbol_loader,
+        intervals: Optional[List[str]] = None,
+        force_refresh: bool = False,
+    ) -> QualityOverview:
+        """
+        触发数据质量扫描（自动获取品种列表，从core.py迁移）
+
+        Args:
+            symbol_loader: SymbolLoader实例（用于获取品种列表）
+            intervals: 扫描周期列表（可选，默认 ["1d", "5m", "1m"]）
+            force_refresh: 是否强制刷新（忽略缓存）
+
+        Returns:
+            质量概览
+        """
+        try:
+            # 从SymbolLoader获取所有品种代码
+            reference_symbols = symbol_loader.extract_all_codes()
+
+            if not reference_symbols:
+                self.logger.warning("品种列表为空，无法执行扫描")
+                return QualityOverview(
+                    total_symbols=0,
+                    missing_symbols=0,
+                    error_symbols=0,
+                    warning_symbols=0,
+                    quality_score=0,
+                    last_scan_time=datetime.now(),
+                    base_date=date.today(),
+                    scanned_intervals=[],
+                    details=[],
+                )
+
+            self.logger.info("开始数据质量扫描，品种数量: %d", len(reference_symbols))
+
+            # 执行扫描
+            overview = self.scan_all_data(
+                reference_symbols=reference_symbols,
+                intervals=intervals,
+                force_refresh=force_refresh,
+            )
+
+            return overview
+
+        except Exception as e:
+            self.logger.error("触发数据质量扫描失败: %s", e, exc_info=True)
+            return QualityOverview(
+                total_symbols=0,
+                missing_symbols=0,
+                error_symbols=0,
+                warning_symbols=0,
+                quality_score=0,
+                last_scan_time=datetime.now(),
+                base_date=date.today(),
+                scanned_intervals=[],
+                details=[],
+            )
+
+    def start_sensing_async(self, symbol_loader):
+        """
+        启动数据感知（异步，从core.py迁移）
+
+        Args:
+            symbol_loader: SymbolLoader实例
+        """
+        import threading
+
+        def scan_in_background():
+            try:
+                self.logger.info("【后台线程】开始数据质量扫描...")
+
+                # 使用统一方法（自动获取品种列表）
+                overview = self.trigger_scan_with_symbols(
+                    symbol_loader=symbol_loader,
+                    force_refresh=True,
+                )
+
+                self.logger.info(
+                    "【后台线程】数据质量扫描完成: 评分=%s, 缺失=%s, 错误=%s",
+                    overview.quality_score,
+                    overview.missing_symbols,
+                    overview.error_symbols,
+                )
+
+                # 启动文件监控
+                self.start_file_watcher()
+
+            except Exception as e:
+                self.logger.error("【后台线程】数据质量扫描失败: %s", e, exc_info=True)
+
+        # 启动守护线程
+        scan_thread = threading.Thread(
+            target=scan_in_background,
+            daemon=True,
+            name="DataSensingScanThread",
+        )
+        scan_thread.start()
+        self.logger.info("数据感知后台扫描线程已启动")
+
+    def start_file_watcher(self) -> bool:
+        """
+        启动数据文件监控（从core.py迁移）
+
+        Returns:
+            是否启动成功
+        """
+        from .config import config_manager
+
+        try:
+            if self.data_file_watcher and self.data_file_watcher.is_running:
+                self.logger.warning("数据文件监控已在运行")
+                return False
+
+            # 创建文件监控器
+            data_dir = config_manager.get_data_dir()
+            self.data_file_watcher = DataFileWatcher(
+                data_dir=data_dir,
+                callback=self.on_file_changed,
+            )
+
+            # 启动监控
+            success = self.data_file_watcher.start()
+
+            if success:
+                self.logger.info("✅ 数据文件监控已启动")
+            else:
+                self.logger.warning("⚠️ 数据文件监控启动失败（可能是watchdog不可用）")
+
+            return success
+
+        except Exception as e:
+            self.logger.error("启动数据文件监控失败: %s", e, exc_info=True)
+            return False
+
+    def stop_sensing(self) -> bool:
+        """
+        停止数据感知（从core.py迁移）
+
+        Returns:
+            是否停止成功
+        """
+        try:
+            # 停止文件监控
+            if self.data_file_watcher:
+                self.data_file_watcher.stop()
+                self.data_file_watcher = None
+                self.logger.info("数据文件监控已停止")
+
+            return True
+
+        except Exception as e:
+            self.logger.error("停止数据感知失败: %s", e)
+            return False
 
     def _scan_symbol_quality(self, symbol: str, intervals: List[str]) -> SymbolQuality:
         """扫描单个品种的质量"""

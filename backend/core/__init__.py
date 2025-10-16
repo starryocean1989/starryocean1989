@@ -97,20 +97,35 @@ from .base import (
     get_main_engine,
     get_service_manager,
 )
-from .system_monitoring import (
-    AsyncDataProcessor,
-    AsyncTaskManager,
-    Cache,
-    DataCache,
-    PerformanceOptimizer,
-    get_performance_optimizer,
-    reset_performance_optimizer,
-    HealthChecker,
-    MonitoringManager,
-    PerformanceMonitor,
-    TestRunner,
+# Cache和DataCache已迁移到utils.py
+from .utils import Cache, DataCache
+
+# 配置管理
+from .config import (
+    Settings,
+    get_settings,
+    DatabaseConfig,
+    VnPyConfig,
+    APIConfig,
+    AIConfig,
+    DataModuleConfig,
 )
-from .database import DatabaseManager
+
+# 数据仓库
+from .repositories import (
+    BaseRepository,
+    InMemoryRepository,
+    SymbolRepository,
+    DataSourceRepository,
+    DownloadTaskRepository,
+    GatewayRepository,
+    StrategyRepository,
+    BacktestRepository,
+    AlertRepository,
+    LogRepository,
+    ConfigRepository,
+    PortfolioRepository,
+)
 
 __all__ = [
     # 版本信息
@@ -188,19 +203,28 @@ __all__ = [
     "get_main_engine",
     "get_event_engine",
     "get_china_stock_engine",
-    # 性能优化
+    # 缓存系统
     "Cache",
     "DataCache",
-    "AsyncTaskManager",
-    "PerformanceOptimizer",
-    "AsyncDataProcessor",
-    "get_performance_optimizer",
-    "reset_performance_optimizer",
-    # 监控
-    "PerformanceMonitor",
-    "HealthChecker",
-    "MonitoringManager",
-    "TestRunner",
-    # 数据库
-    "DatabaseManager",
+    # 配置管理
+    "Settings",
+    "get_settings",
+    "DatabaseConfig",
+    "VnPyConfig",
+    "APIConfig",
+    "AIConfig",
+    "DataModuleConfig",
+    # 数据仓库
+    "BaseRepository",
+    "InMemoryRepository",
+    "SymbolRepository",
+    "DataSourceRepository",
+    "DownloadTaskRepository",
+    "GatewayRepository",
+    "StrategyRepository",
+    "BacktestRepository",
+    "AlertRepository",
+    "LogRepository",
+    "ConfigRepository",
+    "PortfolioRepository",
 ]
