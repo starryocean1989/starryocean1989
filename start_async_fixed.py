@@ -177,40 +177,40 @@ def main():
 
                 main_engine.add_app(CtaStrategyApp)
                 logger.info("[VNPY-CORE] ✅ CtaStrategyApp 已添加")
-            except ImportError:
-                logger.warning("[VNPY-CORE] ⚠️ vnpy_ctastrategy 未安装")
+            except ImportError as e:
+                logger.warning("[VNPY-CORE] ⚠️ vnpy_ctastrategy 未安装: %s", e)
             except Exception as e:
-                logger.error("[VNPY-CORE] ❌ 添加 CtaStrategyApp 失败: %s", e)
+                logger.error("[VNPY-CORE] ❌ 添加 CtaStrategyApp 失败: %s (类型: %s)", e, type(e).__name__, exc_info=True)
 
             try:
                 from vnpy_algotrading import AlgoTradingApp
 
                 main_engine.add_app(AlgoTradingApp)
                 logger.info("[VNPY-CORE] ✅ AlgoTradingApp 已添加")
-            except ImportError:
-                logger.warning("[VNPY-CORE] ⚠️ vnpy_algotrading 未安装")
+            except ImportError as e:
+                logger.warning("[VNPY-CORE] ⚠️ vnpy_algotrading 未安装: %s", e)
             except Exception as e:
-                logger.error("[VNPY-CORE] ❌ 添加 AlgoTradingApp 失败: %s", e)
+                logger.error("[VNPY-CORE] ❌ 添加 AlgoTradingApp 失败: %s (类型: %s)", e, type(e).__name__, exc_info=True)
 
             try:
                 from vnpy_optionmaster import OptionMasterApp
 
                 main_engine.add_app(OptionMasterApp)
                 logger.info("[VNPY-CORE] ✅ OptionMasterApp 已添加")
-            except ImportError:
-                logger.warning("[VNPY-CORE] ⚠️ vnpy_optionmaster 未安装")
+            except ImportError as e:
+                logger.warning("[VNPY-CORE] ⚠️ vnpy_optionmaster 未安装: %s", e)
             except Exception as e:
-                logger.error("[VNPY-CORE] ❌ 添加 OptionMasterApp 失败: %s", e)
+                logger.error("[VNPY-CORE] ❌ 添加 OptionMasterApp 失败: %s (类型: %s)", e, type(e).__name__, exc_info=True)
 
             try:
                 from vnpy_portfoliostrategy import PortfolioStrategyApp
 
                 main_engine.add_app(PortfolioStrategyApp)
                 logger.info("[VNPY-CORE] ✅ PortfolioStrategyApp 已添加")
-            except ImportError:
-                logger.warning("[VNPY-CORE] ⚠️ vnpy_portfoliostrategy 未安装")
+            except ImportError as e:
+                logger.warning("[VNPY-CORE] ⚠️ vnpy_portfoliostrategy 未安装: %s", e)
             except Exception as e:
-                logger.error("[VNPY-CORE] ❌ 添加 PortfolioStrategyApp 失败: %s", e)
+                logger.error("[VNPY-CORE] ❌ 添加 PortfolioStrategyApp 失败: %s (类型: %s)", e, type(e).__name__, exc_info=True)
 
             vnpy_time = (time.time() - vnpy_start) * 1000
             print(f"[VNPY-CORE] ✅ VnPy 核心初始化完成 ({vnpy_time:.0f}ms)")

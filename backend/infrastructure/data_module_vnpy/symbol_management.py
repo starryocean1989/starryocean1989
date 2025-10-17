@@ -3,7 +3,7 @@
 品种管理模块
 
 负责品种列表的获取、分类和缓存管理，包括：
-- 从mootdx API获取完整品种列表（仅市场代码0=深交所、1=上交所）
+- 从tdx_asyncio API获取完整品种列表（仅市场代码0=深交所、1=上交所）
 - 从addedcode_bj.cfg获取北证A股品种列表（市场代码2为硬编码值）
 - 按照需求逻辑分类品种（上证A股、深证A股、北证A股、T+0基金、可转债）
 - 缓存分类结果到本地JSON文件
@@ -12,6 +12,7 @@
 合并来源：symbol_loader.py + block_parser.py
 """
 
+import asyncio
 import json
 import logging
 from datetime import datetime
@@ -19,7 +20,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
-from mootdx.quotes import Quotes
+from backend.infrastructure.tdx_asyncio import AsyncTdxHq_API, HQ_HOSTS_ALL
 
 from .config import config_manager, TdxConfigFileParser
 
@@ -479,33 +480,75 @@ class SymbolLoader:
         """
         self.logger.info("步骤1: 获取完整品种缓存（集合D）")
 
-        quotes = Quotes.factory()
-        stocks_list = []
+        # 从 tdx_asyncio API 获取品种列表
+        self.logger.info("→ 从 tdx_asyncio API 获取品种列表...")
 
-        # 支持的市场：0=深交所, 1=上交所（北交所通过addedcode_bj.cfg获取，市场代码2已硬编码）
-        for market in [0, 1]:
-            try:
-                self.logger.info("  → 调用 stocks(market=%d)...", market)
-                df = quotes.stocks(market)
+        # 定义异步获取函数
+        async def _fetch_all_securities():
+            # 使用 tdx_asyncio 的服务器列表
+            servers = [(h[1], h[2]) for h in HQ_HOSTS_ALL[:10]]  # 使用前10个服务器
 
-                if df is None or df.empty:
-                    self.logger.warning("  ⚠ market=%d 返回空数据", market)
+            client = None
+            for server in servers:
+                try:
+                    self.logger.info(f"  → 尝试连接服务器: {server[0]}:{server[1]}")
+                    client = await AsyncTdxHq_API.factory(
+                        server=server,
+                        timeout=10.0,
+                        heartbeat=False,
+                        raise_exception=False
+                    )
+                    if client:
+                        self.logger.info(f"  ✓ 连接成功: {server[0]}:{server[1]}")
+                        break
+                except Exception as e:
+                    self.logger.warning(f"  ✗ 连接失败 {server[0]}:{server[1]}: {e}")
                     continue
 
-                # 手动添加market列
-                df["market"] = market
-                stocks_list.append(df)
+            if not client:
+                raise RuntimeError("无法连接到任何tdx服务器")
 
-                self.logger.info("  ✓ market=%d: %d 个品种", market, len(df))
+            stocks_list = []
+            try:
+                # 支持的市场：0=深交所, 1=上交所
+                for market in [0, 1]:
+                    try:
+                        self.logger.info(f"  → 获取 market={market} 品种列表...")
 
-            except Exception as e:
-                self.logger.error("  ✗ market=%d 获取失败: %s", market, e)
+                        # 分页获取（每次最多1000条）
+                        all_stocks = []
+                        start = 0
+                        while True:
+                            stocks = await client.get_security_list(market=market, start=start)
+                            if not stocks:
+                                break
+                            all_stocks.extend(stocks)
+                            self.logger.debug(f"    已获取 {len(all_stocks)} 条")
+                            if len(stocks) < 1000:  # 最后一页
+                                break
+                            start += 1000
 
-        if not stocks_list:
-            raise RuntimeError("未能获取任何品种数据")
+                        if all_stocks:
+                            df = pd.DataFrame(all_stocks)
+                            df["market"] = market
+                            stocks_list.append(df)
+                            self.logger.info(f"  ✓ market={market}: {len(all_stocks)} 个品种")
+                        else:
+                            self.logger.warning(f"  ⚠ market={market} 返回空数据")
 
-        # 合并
-        complete_df = pd.concat(stocks_list, ignore_index=True)
+                    except Exception as e:
+                        self.logger.error(f"  ✗ market={market} 获取失败: {e}")
+
+            finally:
+                await client.close()
+
+            if not stocks_list:
+                raise RuntimeError("未能获取任何品种数据")
+
+            return pd.concat(stocks_list, ignore_index=True)
+
+        # 在同步方法中调用异步函数
+        complete_df = asyncio.run(_fetch_all_securities())
 
         # 补齐代码位数
         complete_df["code"] = complete_df["code"].astype(str).str.zfill(6)

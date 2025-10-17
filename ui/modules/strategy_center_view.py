@@ -2617,8 +2617,10 @@ class StrategyCenter(BaseWidget, LoggerMixin):
             self.logger.info("🔍 [DEBUG] 已清空下拉框")
 
             # 🔧 关键修复：使用绝对路径确保正确找到目录
+            # __file__ = ui/modules/strategy_center_view.py
+            # parent = ui/modules, parent.parent = ui, parent.parent.parent = 项目根目录
             strategy_dir = (
-                Path(__file__).parent.parent.parent.parent / "strategies" / "user_strategies"
+                Path(__file__).parent.parent.parent / "strategies" / "user_strategies"
             )
             abs_strategy_dir = str(strategy_dir.resolve())
             self.logger.info("🔍 [DEBUG] 策略目录（绝对）: %s", abs_strategy_dir)
@@ -2626,13 +2628,14 @@ class StrategyCenter(BaseWidget, LoggerMixin):
             self.logger.info("🔍 [DEBUG] 目录是否存在: %s", strategy_dir.exists())
 
             if strategy_dir.exists():
-                all_files = list(strategy_dir.iterdir())
+                # 递归查找所有子目录中的策略文件
+                all_files = list(strategy_dir.rglob("*.py"))
                 self.logger.info("🔍 [DEBUG] 目录中所有文件: %s", [f.name for f in all_files])
 
                 strategy_files = [
-                    f.name
+                    str(f.relative_to(strategy_dir))  # 使用相对路径
                     for f in all_files
-                    if f.is_file() and f.name.endswith(".py") and not f.name.startswith("__")
+                    if f.is_file() and not f.name.startswith("__")
                 ]
                 self.logger.info("🔍 [DEBUG] 过滤后的策略文件: %s", strategy_files)
 

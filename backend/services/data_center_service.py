@@ -85,6 +85,9 @@ class DataCenterService(BaseService, LoggerMixin):
             # 🔧 修复：启动时加载品种缓存（如果存在）
             self._load_symbol_cache_on_startup()
 
+            # 🆕 启动服务器验证（后台线程）- 重新启用，确保下载时有可用服务器
+            self._start_server_verification()
+
             self.log_operation_success("数据中心服务初始化")
             return True
 
@@ -366,6 +369,88 @@ class DataCenterService(BaseService, LoggerMixin):
 
         except Exception as e:
             self.logger.error("定时清理录制数据异常: %s", e, exc_info=True)
+
+    def _start_server_verification(self):
+        """启动服务器验证（后台线程）"""
+        if not self.china_stock_engine:
+            self.logger.warning("ChinaStockEngine不可用，跳过服务器验证")
+            return
+
+        try:
+            # 获取stock_fetcher（ChinaStockEngine中的属性名是stock_fetcher）
+            stock_fetcher = getattr(self.china_stock_engine, 'stock_fetcher', None)
+            if not stock_fetcher:
+                self.logger.warning("无法获取stock_fetcher，跳过服务器验证")
+                return
+
+            # 检查是否有server_manager
+            server_manager = getattr(stock_fetcher, 'server_manager', None)
+            if not server_manager:
+                self.logger.warning("stock_fetcher没有server_manager，跳过服务器验证")
+                return
+
+            # 在后台线程中验证服务器
+            def verify_servers():
+                try:
+                    self.logger.info("后台线程开始验证服务器...")
+                    server_manager.verify_all_servers_sync(timeout=5, max_workers=20)
+                    self.logger.info("服务器验证完成")
+                except Exception as e:
+                    self.logger.error(f"服务器验证失败: {e}", exc_info=True)
+
+            import threading
+            thread = threading.Thread(target=verify_servers, daemon=True, name="ServerVerifier")
+            thread.start()
+            self.logger.info("服务器验证已在后台启动")
+
+        except Exception as e:
+            self.logger.error(f"启动服务器验证失败: {e}", exc_info=True)
+
+    def get_server_status(self) -> Dict[str, Any]:
+        """获取服务器状态（供UI调用）
+
+        Returns:
+            Dict包含可用服务器数量、总数量、验证状态等信息
+        """
+        try:
+            if not self.china_stock_engine:
+                return {
+                    "available_count": 0,
+                    "total_count": 0,
+                    "status": "engine_unavailable",
+                    "message": "ChinaStockEngine不可用"
+                }
+
+            # ChinaStockEngine中的属性是stock_fetcher
+            stock_fetcher = getattr(self.china_stock_engine, 'stock_fetcher', None)
+            if not stock_fetcher:
+                return {
+                    "available_count": 0,
+                    "total_count": 0,
+                    "status": "fetcher_unavailable",
+                    "message": "StockFetcher不可用"
+                }
+
+            server_manager = getattr(stock_fetcher, 'server_manager', None)
+            if not server_manager:
+                return {
+                    "available_count": 0,
+                    "total_count": 0,
+                    "status": "no_server_manager",
+                    "message": "服务器管理器不可用"
+                }
+
+            # 返回服务器状态
+            return server_manager.get_server_status()
+
+        except Exception as e:
+            self.logger.error(f"获取服务器状态失败: {e}", exc_info=True)
+            return {
+                "available_count": 0,
+                "total_count": 0,
+                "status": "error",
+                "message": f"获取状态失败: {str(e)}"
+            }
 
     def _load_symbol_cache_on_startup(self):
         """启动时加载品种缓存（异步）.

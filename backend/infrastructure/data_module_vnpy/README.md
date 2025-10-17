@@ -1,16 +1,22 @@
 # data_module_vnpy - 中国A股数据管理模块
 
-**版本**: v2.1.0（模块化重构版）
-**最后更新**: 2025-01-16
+**版本**: v2.2.0（tdx_asyncio迁移版）
+**最后更新**: 2025-10-17
 **维护者**: 开发团队
 
-基于vnpy架构的量化交易数据管理模块，集成mootdx接口获取中国A股数据，提供**历史数据、实时数据集成式的数据服务**，供各个功能模块使用。
+基于vnpy架构的量化交易数据管理模块，集成**tdx_asyncio纯异步接口**获取中国A股数据，提供**历史数据、实时数据集成式的数据服务**，供各个功能模块使用。
 
 ## 🎯 核心定位
 
 **data_module_vnpy提供历史数据、实时数据集成式的数据服务，供各个功能模块使用。**
 
-## ⭐ 架构特点（v2.1重构）
+## ⭐ 架构特点（v2.2迁移）
+
+### 核心优化
+- **纯异步架构**：从 mootdx 同步接口迁移到 tdx_asyncio 纯异步接口
+- **性能提升**：避免 `asyncio.to_thread` 线程开销，提高并发效率
+- **简化维护**：删除冗余的 ServerManager 和 TdxDateTimeDecoder 类
+- **自动日期处理**：tdx_asyncio 协议层自动处理日期解码
 
 ### 模块化设计
 - **Core纯接入层**：411行，所有方法1-5行极简代理调用
@@ -21,11 +27,12 @@
 ### 职责清晰
 ```
 core.py (411行)           - vnpy接入层（纯代理）
-symbol_management.py (987行) - 品种管理（含事件）
-data_fetcher.py (1591行)    - 数据下载（含异步管理）
+symbol_management.py (987行) - 品种管理（含事件，使用 tdx_asyncio）
+data_fetcher.py (1200行)    - 数据下载（纯异步，使用 tdx_asyncio）
 data_quality.py (1233行)    - 数据质量（含文件监控）
 unified_data_manager.py (446行) - 统一查询
 gateways.py (742行)         - 网关管理
+data_readers/tdx_reader.py  - 本地文件读取（使用 tdx_asyncio 读取器）
 events.py (216行)           - 事件工具
 health_checker.py (84行)    - 健康检查
 lifecycle_manager.py (118行) - 生命周期管理
@@ -46,10 +53,12 @@ lifecycle_manager.py (118行) - 生命周期管理
 - **预加载服务**：智能预加载常用品种数据，提升查询响应速度
 
 ### 技术特点
+- **纯异步架构**：基于 tdx_asyncio 的纯异步 API，高效并发
+- **智能连接池**：使用 tdx_asyncio 的 AsyncSmartIPPool 管理连接
 - **vnpy标准架构**：完全集成vnpy生态系统
 - **事件驱动**：基于vnpy事件引擎的异步通知
 - **模块自治**：各功能模块可独立使用（vnpy兼容可选）
-- **多进程下载**：支持多服务器并行下载，自动任务分配
+- **多进程下载**：支持多服务器并行下载，自动任务分配（12进程×30连接=360并发）
 - **配置驱动**：所有参数均可配置
 - **实时监控**：基于watchdog的文件系统监控
 - **四层数据融合**：历史数据、录制数据、实时数据、预加载缓存的智能融合
@@ -65,12 +74,14 @@ pip install -r requirements.txt
 
 ### 依赖包
 - vnpy>=4.1.0
-- mootdx>=0.11.7
+- backend.infrastructure.tdx_asyncio（内部模块，纯异步tdx接口）
 - pyarrow>=10.0.0
 - watchdog>=3.0.0
 - pandas>=1.5.0
 - numpy>=1.21.0
-- pytdx>=1.72
+- pytdx>=1.72（tdx_asyncio 可能依赖）
+
+**注意**：v2.2.0 已从 mootdx 迁移到 tdx_asyncio，不再需要 mootdx 依赖。
 
 ## 快速开始
 
@@ -413,11 +424,13 @@ data_module_vnpy/
 │   │   ├── BlockParser - 板块解析
 │   │   └── 自带事件推送 ✓
 │   │
-│   ├── data_fetcher.py (1591行) - 数据下载
+│   ├── data_fetcher.py (1200行) - 数据下载（纯异步）
 │   │   ├── MultiProcessStockFetcher - 多进程下载器
 │   │   ├── download_incremental_unified - 统一下载函数
-│   │   ├── ServerPool - 服务器池管理
-│   │   ├── 异步下载管理（含线程）
+│   │   ├── download_worker_async - 纯异步工作进程
+│   │   ├── _download_single_kline_async - 纯异步单品种下载
+│   │   ├── 使用 tdx_asyncio.AsyncTdxHq_API
+│   │   ├── 使用 tdx_asyncio 智能IP池（HQ_HOSTS_ALL）
 │   │   └── 自带事件推送 ✓
 │   │
 │   ├── data_quality.py (1233行) - 数据质量
@@ -676,14 +689,16 @@ data/kline/
 - **索引**：datetime列
 - **优势**：高效压缩、快速查询、列式存储
 
-## 重构成果（v2.1）
+## 重构成果
 
-### Core精简
-- **重构前**：1459行（包含大量业务逻辑）
-- **重构后**：411行（纯vnpy接入层）
-- **优化幅度**：减少71.8%
+### v2.2.0 - tdx_asyncio迁移
+- **data_fetcher.py**：从1591行减少到约1200行（-25%）
+- **删除冗余类**：ServerManager（130行）、TdxDateTimeDecoder（90行）
+- **性能提升**：纯异步API，避免线程开销
+- **维护性**：统一使用 tdx_asyncio，简化依赖
 
-### 模块化
+### v2.1.0 - 模块化重构
+- **Core精简**：从1459行减少到411行（-71.8%）
 - **新增模块**：events.py, health_checker.py, lifecycle_manager.py
 - **增强模块**：所有功能模块都vnpy兼容，可独立使用
 - **删除冗余**：download_manager.py（已合并到data_fetcher.py）
@@ -694,6 +709,7 @@ data/kline/
 - ✅ 无Linter错误
 - ✅ 无循环导入
 - ✅ Service层完全兼容
+- ✅ 纯异步架构（v2.2.0）
 
 ## 常见问题
 
@@ -766,6 +782,42 @@ def test_with_engine():
 ```
 
 ## 更新日志
+
+### v2.2.0 (2025-10-17) - tdx_asyncio迁移版 🚀
+**核心变更**：从 mootdx 同步接口迁移到 tdx_asyncio 纯异步接口
+
+#### 主要改进
+- ✅ **data_fetcher.py** 迁移
+  - 删除 `ServerManager` 类（使用 tdx_asyncio.AsyncSmartIPPool）
+  - 删除 `TdxDateTimeDecoder` 类（tdx_asyncio 协议层自动处理）
+  - 重写 `download_worker_async` 使用 `AsyncTdxHq_API`
+  - 新增 `_download_single_kline_async` 纯异步下载函数
+  - 使用 `HQ_HOSTS_ALL` 服务器列表（前50个服务器）
+
+- ✅ **symbol_management.py** 迁移
+  - 重写 `_fetch_complete_stocks` 使用 `AsyncTdxHq_API.get_security_list()`
+  - 支持分页获取品种列表（每次1000条）
+  - 通过 `asyncio.run()` 保持向后兼容
+
+- ✅ **data_readers/tdx_reader.py** 迁移
+  - 替换 `mootdx.reader.Reader` 为 tdx_asyncio 异步读取器
+  - 使用 `read_day_data()`, `read_minute_data()`, `read_lc5_data()`
+  - 保持北证市场（bj）自定义解码器
+
+- ✅ **依赖更新**
+  - 移除 `mootdx>=0.11.7` 依赖
+  - 改用内部 `tdx_asyncio` 模块
+
+#### 性能优势
+- 🚀 **纯异步 API**：避免 `asyncio.to_thread` 线程开销
+- 🚀 **连接复用**：使用 tdx_asyncio 的智能连接池
+- 🚀 **自动日期解码**：无需手动处理日期格式
+- 🚀 **并发模型**：12进程×30连接=360个TCP并发连接
+
+#### 架构优化
+- 🎯 **代码简化**：删除约400行冗余代码
+- 🎯 **维护性提升**：统一使用 tdx_asyncio API
+- 🎯 **向后兼容**：外部接口完全不变
 
 ### v2.1.0 (2025-01-16) - 模块化重构版
 - ✅ Core精简：从1459行减少到411行（-71.8%）

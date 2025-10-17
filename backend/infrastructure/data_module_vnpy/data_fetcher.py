@@ -12,811 +12,331 @@
 """
 
 # ==================== 导入声明 ====================
+import asyncio
 import logging
-import signal
+import os
 import threading
 import time
 import queue
 from datetime import date, datetime
 from multiprocessing import Manager, Process, cpu_count
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
 
-from mootdx.quotes import Quotes
+from backend.infrastructure.tdx_asyncio import (
+    AsyncTdxHq_API,
+    AsyncSmartIPPool,
+    HQ_HOSTS_ALL,
+)
 
 from .config import config_manager
 
-# ==================== 工具类和异常 ====================
+# ==================== (ServerManager 已删除，使用 tdx_asyncio.AsyncSmartIPPool) ====================
+# ==================== (TdxDateTimeDecoder 已删除，tdx_asyncio 协议层已自动处理) ====================
 
 
-class NetworkTimeoutError(Exception):
-    """网络超时异常"""
 
-    def __init__(self, message="操作超时"):
-        self.message = message
-        super().__init__(self.message)
+# ==================== 工作进程函数（已废弃，使用异步版本） ====================
+# download_worker_pooled 已废弃，不再使用同步 mootdx
 
 
-def timeout_handler(signum, frame):
-    """超时处理器"""
-    raise NetworkTimeoutError("操作超时")
+# ==================== 异步工作进程函数 ====================
 
 
-class timeout_context:
-    """超时上下文管理器（仅用于Unix系统，Windows使用其他方式）"""
-
-    def __init__(self, seconds):
-        self.seconds = seconds
-
-    def __enter__(self):
-        if hasattr(signal, "SIGALRM"):
-            signal.signal(signal.SIGALRM, timeout_handler)
-            signal.alarm(self.seconds)
-        return self
-
-    def __exit__(self, exc_type, exc_value, exc_traceback):
-        if hasattr(signal, "SIGALRM"):
-            signal.alarm(0)
-
-
-# ==================== 日期时间解码器 ====================
-
-
-class TdxDateTimeDecoder:
-    """通达信日期时间解码器"""
-
-    DAILY_BASE_DATE = datetime(1990, 1, 1)
-
-    @staticmethod
-    def decode_minute_datetime(date_str: str, time_str: str = "00:00") -> Optional[datetime]:
-        """解码分钟线日期时间"""
-        try:
-            parts = date_str.split("-")
-            if len(parts) != 3:
-                return None
-
-            year = int(parts[0])
-            day = int(parts[2])
-
-            # 分钟线格式：YYYY-MM-DDD，DDD是年初开始的天数
-            if day > 366:  # 无效天数
-                return None
-
-            # 计算实际日期
-            base_date = datetime(year, 1, 1)
-            timedelta_result = base_date + pd.Timedelta(days=day - 1)
-
-            # 转换为datetime对象
-            actual_date: datetime
-            if isinstance(timedelta_result, datetime):
-                actual_date = timedelta_result
-            else:
-                # 如果是Timestamp或其他类型，尝试转换为datetime
-                try:
-                    if hasattr(timedelta_result, "to_pydatetime") and callable(
-                        timedelta_result.to_pydatetime
-                    ):
-                        converted = timedelta_result.to_pydatetime()
-                        if not isinstance(converted, datetime):
-                            return None
-                        actual_date = converted
-                    else:
-                        year_val = int(timedelta_result.year)
-                        month_val = int(timedelta_result.month)
-                        day_val = int(timedelta_result.day)
-                        actual_date = datetime(year_val, month_val, day_val)
-                except (ValueError, TypeError, AttributeError):
-                    return None
-
-            # 解析时间
-            time_parts = time_str.split(":")
-            if len(time_parts) >= 2:
-                hour = int(time_parts[0])
-                minute = int(time_parts[1])
-                replaced_date = actual_date.replace(hour=hour, minute=minute)
-                if not isinstance(replaced_date, datetime):
-                    return None
-                actual_date = replaced_date
-
-            return actual_date
-
-        except (ValueError, IndexError, OverflowError):
-            return None
-
-    @staticmethod
-    def decode_daily_datetime(date_str: str) -> Optional[datetime]:
-        """解码日线日期时间"""
-        try:
-            # 日线格式：DDDD-MM-DD，DDDD是从1990-01-01开始的总天数
-            parts = date_str.split("-")
-            if len(parts) != 3:
-                return None
-
-            total_days = int(parts[0])
-            month = int(parts[1])
-            day = int(parts[2])
-
-            # 从基准日期计算实际日期
-            timedelta_result = TdxDateTimeDecoder.DAILY_BASE_DATE + pd.Timedelta(
-                days=total_days - 1
-            )
-
-            # 转换为datetime对象
-            actual_date: datetime
-            if isinstance(timedelta_result, datetime):
-                actual_date = timedelta_result
-            else:
-                # 如果是Timestamp或其他类型，尝试转换为datetime
-                try:
-                    if hasattr(timedelta_result, "to_pydatetime") and callable(
-                        timedelta_result.to_pydatetime
-                    ):
-                        converted = timedelta_result.to_pydatetime()
-                        if not isinstance(converted, datetime):
-                            return None
-                        actual_date = converted
-                    else:
-                        year_val = int(timedelta_result.year)
-                        month_val = int(timedelta_result.month)
-                        day_val = int(timedelta_result.day)
-                        actual_date = datetime(year_val, month_val, day_val)
-                except (ValueError, TypeError, AttributeError):
-                    return None
-
-            replaced_date = actual_date.replace(month=month, day=day)
-            if not isinstance(replaced_date, datetime):
-                return None
-            actual_date = replaced_date
-
-            return actual_date
-
-        except (ValueError, IndexError, OverflowError):
-            return None
-
-    @staticmethod
-    def decode_dataframe(data: pd.DataFrame, interval: str) -> pd.DataFrame:
-        """解码DataFrame中的日期时间"""
-        data = data.copy()
-
-        if data.empty:
-            return data
-
-        # 根据周期选择解码函数
-        if interval in ["1m", "5m"]:
-            decode_func = TdxDateTimeDecoder.decode_minute_datetime
-        else:
-            decode_func = TdxDateTimeDecoder.decode_daily_datetime
-
-        decoded_datetimes = []
-
-        for _, row in data.iterrows():
-            if "date" in row and "time" in row:
-                # 分钟线格式：date="YYYY-MM-DDD", time="HH:MM"
-                if interval in ["1m", "5m"]:
-                    decoded = TdxDateTimeDecoder.decode_minute_datetime(
-                        str(row["date"]), str(row["time"])
-                    )
-                else:
-                    decoded = decode_func(str(row["date"]))
-            elif "date" in row:
-                # 日线格式：date="DDDD-MM-DD"
-                decoded = decode_func(str(row["date"]))
-            else:
-                decoded = None
-
-            decoded_datetimes.append(decoded)
-
-        data["datetime"] = decoded_datetimes
-        mask = data["datetime"].notna()
-        filtered_data = data[mask]
-
-        # 确保返回DataFrame类型
-        if isinstance(filtered_data, pd.DataFrame):
-            result = filtered_data.copy()
-        else:
-            result = pd.DataFrame(filtered_data)
-
-        return result
-
-
-# ==================== 服务器池管理 ====================
-
-
-class QuotesWrapper:
-    """包装TdxHq_API，提供与Quotes兼容的接口"""
-
-    def __init__(self, client, server_info):
-        self.client = client
-        self.server = server_info
-
-    def close(self):
-        try:
-            if hasattr(self.client, "close"):
-                self.client.close()
-        except Exception:
-            pass
-
-
-class ServerPool:
-    """服务器池管理器"""
-
-    def __init__(self, max_servers: int = 5, timeout: int = 5):
-        """
-        初始化服务器池
-
-        Args:
-            max_servers: 最多测试的服务器数量
-            timeout: 每个服务器的连接超时时间（秒），默认5秒
-        """
-        self.max_servers = max_servers
-        self.timeout = timeout  # 从15秒减少到5秒，加快发现速度
-        self.available_servers: List[Tuple[str, int]] = []
-        self.quotes_instances: Dict[Tuple[str, int], Quotes] = {}
-        self.logger = logging.getLogger(__name__)
-        self._lock = threading.Lock()
-
-    def discover_servers(self, force_check: bool = False) -> List[Tuple[str, int]]:
-        """发现可用的mootdx服务器"""
-        print(f">>> [SERVER_POOL] discover_servers 被调用，force_check={force_check}", flush=True)
-
-        if not force_check and self.available_servers:
-            print(f">>> [SERVER_POOL] 使用缓存的服务器列表: {len(self.available_servers)} 个", flush=True)
-            return self.available_servers
-
-        # 清空现有列表
-        self.available_servers.clear()
-
-        # mootdx内置服务器列表（从源码中提取）
-        builtin_servers = [
-            ("119.147.212.81", 7709),
-            ("61.152.107.141", 7709),
-            ("47.116.66.204", 7709),
-            ("119.147.171.188", 7709),
-            ("218.6.170.47", 7709),
-            ("218.6.170.55", 7709),
-            ("47.116.66.205", 7709),
-            ("47.116.66.206", 7709),
-        ]
-
-        print(f">>> [SERVER_POOL] 准备测试最多 {min(self.max_servers, len(builtin_servers))} 个服务器", flush=True)
-        print(f">>> [SERVER_POOL] 每个服务器超时时间: {self.timeout} 秒", flush=True)
-        print(f">>> [SERVER_POOL] 早停策略: 找到3个可用服务器即停止", flush=True)
-
-        # 测试服务器可用性（早停策略：找到3个可用服务器即可）
-        available_servers = []
-        min_servers_needed = min(3, self.max_servers)  # 至少需要3个，或max_servers
-
-        for idx, server in enumerate(builtin_servers[: self.max_servers], 1):
-            print(f">>> [SERVER_POOL] [{idx}/{self.max_servers}] 测试服务器 {server[0]}:{server[1]}...", flush=True)
-            if self._test_server_connection(server):
-                available_servers.append(server)
-                print(f">>> [SERVER_POOL] ✓ 服务器 {server[0]}:{server[1]} 可用 ({len(available_servers)}/{min_servers_needed})", flush=True)
-                self.logger.info("✅ 服务器 %s:%d 可用", server[0], server[1])
-
-                # 早停：如果已经找到足够的服务器，就不再测试剩余的
-                if len(available_servers) >= min_servers_needed:
-                    print(f">>> [SERVER_POOL] ✓ 已找到 {len(available_servers)} 个可用服务器，提前停止测试", flush=True)
-                    break
-            else:
-                print(f">>> [SERVER_POOL] ✗ 服务器 {server[0]}:{server[1]} 不可用", flush=True)
-
-        self.available_servers = available_servers
-        print(f">>> [SERVER_POOL] ✓ 总共发现 {len(available_servers)} 个可用服务器", flush=True)
-        self.logger.info("发现 %d 个可用服务器", len(available_servers))
-
-        return available_servers
-
-    def _test_server_connection(self, server: Tuple[str, int]) -> bool:
-        """测试服务器连接"""
-        import time
-        test_start = time.time()
-
-        try:
-            print(f">>> [SERVER_POOL] 正在连接 {server[0]}:{server[1]}...", flush=True)
-            quotes = Quotes.factory(server=server, timeout=self.timeout)
-            # 简单的连接测试：获取一个品种的基本信息
-            # 使用client API直接测试连接
-            test_result = hasattr(quotes, "client") or hasattr(quotes, "close")
-            quotes.close()
-
-            test_elapsed = time.time() - test_start
-            print(f">>> [SERVER_POOL] 连接测试完成，耗时 {test_elapsed:.2f}秒，结果: {test_result}", flush=True)
-            return test_result
-
-        except Exception as e:
-            test_elapsed = time.time() - test_start
-            print(f">>> [SERVER_POOL] 连接测试失败，耗时 {test_elapsed:.2f}秒，错误: {str(e)[:100]}", flush=True)
-            self.logger.debug("服务器 %s:%d 测试失败: %s", server[0], server[1], e)
-            return False
-
-    def get_server_pool(self, num_servers: int) -> List[Tuple[str, int]]:
-        """获取服务器池"""
-        if not self.available_servers:
-            self.discover_servers()
-
-        return self.available_servers[:num_servers]
-
-    def create_quotes_for_server(self, server: Tuple[str, int]):
-        """为指定服务器创建独立的Quotes实例"""
-        quotes = Quotes.factory(server=server, timeout=self.timeout)
-        return quotes
-
-
-# ==================== 工作进程函数 ====================
-
-
-def download_worker_process(
-    worker_id: int,
-    server: Tuple[str, int],
+async def download_worker_async(
+    worker_id,
     task_queue,
     result_queue,
     progress_queue,
+    server_list,
+    server_index,
+    timeout,
+    retry_times,
     stop_event,
     pause_event,
+    connections_per_worker=30,
 ):
-    """工作进程函数"""
-    logger = logging.getLogger(f"Worker-{worker_id}")
-    logger.setLevel(logging.INFO)
+    """异步Worker - 每个进程维护多个 tdx_asyncio 连接
 
-    quotes = None
-    processed_count = 0
+    Args:
+        worker_id: Worker进程ID
+        task_queue: 共享任务队列
+        result_queue: 结果队列
+        progress_queue: 进度队列
+        server_list: 共享的可用服务器列表
+        server_index: 共享的服务器索引（用于轮询）
+        timeout: 连接超时时间
+        retry_times: 重试次数（暂未使用）
+        stop_event: 停止事件
+        pause_event: 暂停事件
+        connections_per_worker: 每个worker的异步连接数（默认30）
+    """
+    logger = logging.getLogger(f"AsyncWorker-{worker_id}")
+    logger.info(f"异步Worker {worker_id} 启动，PID: {os.getpid()}，连接数: {connections_per_worker}")
 
-    # 强制输出，确保能看到
-    print(f">>> [WORKER-{worker_id}] 工作进程启动，服务器: {server[0]}:{server[1]}", flush=True)
+    if not server_list:
+        logger.error("无可用服务器")
+        return
 
+    # 创建多个 tdx_asyncio 连接
+    connections = []
     try:
-        # 创建独立的mootdx连接
-        print(f">>> [WORKER-{worker_id}] 正在连接服务器...", flush=True)
-        logger.info("进程 %d 正在连接服务器 %s:%d", worker_id, server[0], server[1])
+        for i in range(connections_per_worker):
+            # 轮询选择服务器
+            current_idx = server_index.value
+            server_index.value = current_idx + 1
+            idx = current_idx % len(server_list)
+            server = server_list[idx]
 
-        try:
-            from mootdx.quotes import Quotes
-
-            quotes = Quotes.factory(server=server, timeout=5, heartbeat=False)
-            print(f">>> [WORKER-{worker_id}] ✓ 使用mootdx连接成功", flush=True)
-            logger.info(
-                "✅ 进程 %d 使用mootdx.Quotes连接成功: %s:%d", worker_id, server[0], server[1]
-            )
-        except Exception as e:
-            print(f">>> [WORKER-{worker_id}] mootdx连接失败，尝试TdxHq_API: {str(e)[:50]}", flush=True)
-            logger.warning("进程 %d mootdx.Quotes连接失败: %s，尝试TdxHq_API降级", worker_id, e)
-            # 降级方案：使用TdxHq_API
+            # 创建 tdx_asyncio 异步连接
             try:
-                from tdxpy.hq import TdxHq_API
-
-                client = TdxHq_API(heartbeat=False, auto_retry=False, raise_exception=False)
-                client.connect(server[0], server[1], time_out=5)
-                quotes = QuotesWrapper(client, server)
-                print(f">>> [WORKER-{worker_id}] ✓ 使用TdxHq_API连接成功", flush=True)
-                logger.info(
-                    "✅ 进程 %d 使用TdxHq_API连接成功: %s:%d", worker_id, server[0], server[1]
+                client = await AsyncTdxHq_API.factory(
+                    server=server,
+                    timeout=timeout,
+                    heartbeat=False,
+                    raise_exception=False
                 )
-            except Exception as e2:
-                print(f">>> [WORKER-{worker_id}] ❌ 两种连接方式都失败: {str(e2)[:50]}", flush=True)
-                logger.error("进程 %d TdxHq_API连接也失败: %s", worker_id, e2)
-                return
+                if client:
+                    connections.append((i, client, server))
+                    logger.debug(f"Worker {worker_id} 连接 {i} 已建立: {server[0]}:{server[1]}")
+                else:
+                    logger.warning(f"Worker {worker_id} 连接 {i} 建立失败: {server[0]}:{server[1]}")
+            except Exception as e:
+                logger.warning(f"Worker {worker_id} 连接 {i} 建立异常: {e}")
 
-        # 主循环：从队列获取任务并执行
-        print(f">>> [WORKER-{worker_id}] 开始任务循环...", flush=True)
-        empty_count = 0  # 连续空队列计数
-        task_count = 0  # 记录处理的任务数
+        logger.info(f"Worker {worker_id} 成功建立 {len(connections)}/{connections_per_worker} 个连接")
 
-        while not stop_event.is_set():
-            try:
-                # 等待暂停信号
-                pause_event.wait()
+        if not connections:
+            logger.error(f"Worker {worker_id} 无可用连接，退出")
+            return
 
-                # 获取任务（非阻塞）
+        # 为每个连接创建下载协程
+        async def download_loop(conn_id, client, server):
+            processed = 0
+            failed = 0
+
+            while not stop_event.is_set():
+                # 等待暂停事件
+                while not pause_event.is_set():
+                    if stop_event.is_set():
+                        break
+                    await asyncio.sleep(0.1)
+
+                if stop_event.is_set():
+                    break
+
+                # 从队列获取任务
                 try:
-                    task = task_queue.get_nowait()
-                    empty_count = 0  # 重置空计数
-                    task_count += 1
+                    task = await asyncio.to_thread(task_queue.get, timeout=0.5)
+                except queue.Empty:
+                    logger.debug(f"Worker {worker_id} 连接 {conn_id} 队列为空")
+                    break
+                except Exception as e:
+                    logger.debug(f"Worker {worker_id} 连接 {conn_id} 获取任务失败: {e}")
+                    break
 
-                    symbol, interval, start_date = task
+                symbol, interval, start_date = task
 
-                    # 每处理100个任务输出一次
-                    if task_count % 100 == 1:
-                        print(f">>> [WORKER-{worker_id}] 已处理 {task_count} 个任务，当前: {symbol} {interval}", flush=True)
-
-                    logger.debug("进程 %d 处理任务: %s %s", worker_id, symbol, interval)
-
-                    # 执行下载
-                    data = _download_single_kline_incremental(quotes, symbol, interval, start_date)
+                try:
+                    # 纯异步下载（使用 tdx_asyncio）
+                    data = await _download_single_kline_async(
+                        client,
+                        symbol,
+                        interval,
+                        start_date
+                    )
 
                     if data is not None and not data.empty:
-                        # 发送进度
-                        progress_queue.put((symbol, interval))
-
-                        # 发送结果（转换为字典格式）
-                        data_dict = data.to_dict("records")
-                        result_key = f"{symbol}_{interval}"
-                        result_queue.put((result_key, data_dict))
-
-                        processed_count += 1
-                        logger.debug("进程 %d 完成: %s %s", worker_id, symbol, interval)
+                        await asyncio.to_thread(
+                            result_queue.put,
+                            (f"{symbol}_{interval}", data.to_dict("records"))
+                        )
+                        await asyncio.to_thread(
+                            progress_queue.put,
+                            (symbol, interval, "success")
+                        )
+                        processed += 1
                     else:
-                        # 下载失败或空数据也要报告进度，否则监控线程会卡住
-                        if task_count <= 10:  # 只输出前10个失败的详情
-                            if data is None:
-                                print(f">>> [WORKER-{worker_id}] ⚠️ 下载失败（返回None）: {symbol} {interval}", flush=True)
-                            else:
-                                print(f">>> [WORKER-{worker_id}] ⚠️ 下载空数据: {symbol} {interval}", flush=True)
-                        logger.debug("进程 %d 跳过空数据: %s %s", worker_id, symbol, interval)
-                        # 即使失败也发送进度，确保监控线程不卡住
-                        progress_queue.put((symbol, interval))
+                        await asyncio.to_thread(
+                            progress_queue.put,
+                            (symbol, interval, "failed")
+                        )
+                        failed += 1
 
-                except queue.Empty:
-                    empty_count += 1
-                    if empty_count >= 10:  # 连续10次空队列则退出
-                        print(f">>> [WORKER-{worker_id}] 队列空，退出 (连续空{empty_count}次)", flush=True)
-                        logger.info("进程 %d 队列空，退出 (连续空%d次)", worker_id, empty_count)
-                        break
-                    time.sleep(0.5)  # 短暂等待
+                except Exception as e:
+                    logger.debug(f"Worker {worker_id} 连接 {conn_id} 下载 {symbol}_{interval} 失败: {e}")
+                    await asyncio.to_thread(
+                        progress_queue.put,
+                        (symbol, interval, "failed")
+                    )
+                    failed += 1
 
-            except Exception as e:
-                logger.error("进程 %d 处理任务异常: %s", worker_id, e)
+            logger.info(f"Worker {worker_id} 连接 {conn_id} 完成, 成功: {processed}, 失败: {failed}")
+            return processed, failed
 
-        print(f">>> [WORKER-{worker_id}] 正常退出，已处理 {processed_count} 个任务", flush=True)
-        logger.info("进程 %d 正常退出，已处理 %d 个任务", worker_id, processed_count)
+        # N个协程并发工作
+        results = await asyncio.gather(*[
+            download_loop(conn_id, client, server)
+            for conn_id, client, server in connections
+        ], return_exceptions=True)
+
+        # 统计总数
+        total_processed = sum(r[0] for r in results if isinstance(r, tuple))
+        total_failed = sum(r[1] for r in results if isinstance(r, tuple))
+        logger.info(f"Worker {worker_id} 总计完成, 成功: {total_processed}, 失败: {total_failed}")
 
     finally:
-        # 确保连接被关闭
-        if quotes and hasattr(quotes, "close"):
+        # 关闭所有连接
+        for conn_id, client, server in connections:
             try:
-                quotes.close()
+                await client.close()
+                logger.debug(f"Worker {worker_id} 连接 {conn_id} 已关闭")
             except Exception as e:
-                logger.debug("关闭连接异常: %s", e)
+                logger.debug(f"Worker {worker_id} 连接 {conn_id} 关闭失败: {e}")
 
 
-def _download_single_kline_incremental(
-    quotes, symbol: str, interval: str, start_date: Union[str, date]
+def _run_async_worker(*args):
+    """在进程中运行异步事件循环的辅助函数"""
+    asyncio.run(download_worker_async(*args))
+
+
+async def _download_single_kline_async(
+    client: AsyncTdxHq_API, symbol: str, interval: str, start_date: Union[str, date]
 ) -> Optional[pd.DataFrame]:
-    """下载单个品种的增量K线数据"""
+    """下载单个品种的K线数据（异步版本，使用 tdx_asyncio）"""
     try:
-        # 转换日期格式
+        # 参数验证和转换
         if isinstance(start_date, str):
             start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
 
-        # 计算从开始日期到现在的天数
         days_diff = (date.today() - start_date).days
 
-        # 转换周期格式
-        frequency_map = {
-            "1d": 9,  # 日线
-            "5m": 0,  # 5分钟
-            "1m": 8,  # 1分钟
-        }
+        # 频率映射（tdx_asyncio 使用 category 参数）
+        category_map = {"1d": 9, "5m": 5, "1m": 8}  # 9=日K, 5=5分钟, 8=1分钟
+        category = category_map.get(interval, 9)
 
-        frequency = frequency_map.get(interval, 9)
+        # 计算下载数量
+        offset_multipliers = {"1d": 1.5, "5m": 50, "1m": 250}
+        multiplier = offset_multipliers.get(interval, 1.5)
+        count = min(int(days_diff * multiplier), 800)
 
-        # 根据周期设置合理的下载数量
-        if interval == "1d":
-            offset = min(int(days_diff * 1.5), 800)
-        elif interval == "5m":
-            offset = min(int(days_diff * 50), 800)
-        elif interval == "1m":
-            offset = min(int(days_diff * 250), 800)
+        # 市场代码判断
+        if symbol.startswith("6"):
+            market = 1  # 上海
+        elif symbol.startswith("9") and len(symbol) == 6:
+            market = 2  # 北交所
         else:
-            offset = 800
+            market = 0  # 深圳
 
-        # 确定市场代码
-        market = 1 if symbol.startswith("6") else 0
-
-        # 调用底层API获取原始数据
+        # 调用 tdx_asyncio API
         try:
-            raw_data = quotes.client.get_security_bars(
-                int(frequency), int(market), str(symbol), 0, int(offset)
+            raw_data = await client.get_security_bars(
+                category=category,
+                market=market,
+                code=symbol,
+                start=0,
+                count=count
             )
-        except Exception as api_error:
-            print(f">>> [DOWNLOAD] API调用失败 {symbol} {interval}: {str(api_error)[:100]}", flush=True)
-            logging.getLogger(__name__).error("API调用失败 %s %s: %s", symbol, interval, api_error)
+            if not raw_data:
+                return None
+        except Exception as e:
+            logging.getLogger(__name__).error(f"API调用失败 {symbol} {interval}: {e}")
             return None
 
-        if not raw_data:
-            # 只输出前3个空数据的情况
-            import random
-            if random.random() < 0.01:  # 1%概率输出
-                print(f">>> [DOWNLOAD] API返回空数据: {symbol} {interval}", flush=True)
-            return None
-
-        # 转换为DataFrame
+        # 数据处理（tdx_asyncio 已自动处理日期格式）
         data = pd.DataFrame(raw_data)
 
-        # 解码日期
-        data = TdxDateTimeDecoder.decode_dataframe(data, interval)
+        if data.empty or "datetime" not in data.columns:
+            return None
 
-        # 设置index
-        if not data.empty and "datetime" in data.columns:
-            data = data.set_index("datetime", drop=False)
+        # 设置索引
+        data["datetime"] = pd.to_datetime(data["datetime"], errors="coerce")
+        data = data.dropna(subset=["datetime"])
 
-        # 标准化列名
-        if "vol" in data.columns:
-            data["volume"] = data["vol"]
+        if data.empty:
+            return None
 
-        # 标准化列名
-        data = _standardize_columns(data, symbol, interval)
+        data = data.set_index("datetime", drop=False)
 
-        if data is not None and not data.empty:
-            # 过滤日期
-            data = _filter_by_date(data, start_date)
+        # 列名标准化
+        column_mapping = {
+            "vol": "volume",
+            "amount": "turnover"
+        }
+        data = data.rename(columns=column_mapping)
 
-        return data
+        # 添加元数据
+        data["symbol"] = symbol
+        data["interval"] = interval
+
+        # 数值类型转换
+        for col in ["open", "high", "low", "close", "volume"]:
+            if col in data.columns:
+                data[col] = pd.to_numeric(data[col], errors="coerce")
+
+        # 日期过滤
+        if pd.api.types.is_datetime64_any_dtype(data.index):
+            start_timestamp = pd.Timestamp(start_date)
+            filtered_data = data[data.index >= start_timestamp]
+            data = filtered_data if isinstance(filtered_data, pd.DataFrame) else pd.DataFrame()
+
+        return data if not data.empty else None
 
     except Exception as e:
-        logging.getLogger(__name__).error("下载 %s %s 增量数据失败: %s", symbol, interval, e)
+        logging.getLogger(__name__).error(f"下载失败 {symbol} {interval}: {e}", exc_info=True)
         return None
 
 
-def _standardize_columns(data: pd.DataFrame, symbol: str, interval: str) -> pd.DataFrame:
-    """标准化DataFrame列名和格式"""
-    data = data.copy()
-
-    # 重命名列
-    column_mapping = {
-        "date": "datetime",
-        "time": "datetime",
-        "open_price": "open",
-        "high_price": "high",
-        "low_price": "low",
-        "close_price": "close",
-        "vol": "volume",
-        "amount": "turnover",
-    }
-
-    data = data.rename(columns=column_mapping)
-
-    # 添加品种和周期信息
-    data["symbol"] = symbol
-    data["interval"] = interval
-
-    # 确保datetime列是datetime类型
-    if "datetime" in data.columns and not data.empty:
-        # 确保datetime列是可序列化的类型
-        datetime_col = data["datetime"]
-        if isinstance(datetime_col, pd.Series) and len(datetime_col) > 0:
-            data["datetime"] = pd.to_datetime(datetime_col, errors="coerce")
-            # 过滤掉无效的datetime
-            filtered_data = data[data["datetime"].notna()]
-            data = (
-                filtered_data.copy()
-                if isinstance(filtered_data, pd.DataFrame)
-                else pd.DataFrame(filtered_data)
-            )
-
-    # 确保数值列是float类型
-    numeric_columns = ["open", "high", "low", "close", "volume"]
-    for col in numeric_columns:
-        if col in data.columns:
-            data[col] = pd.to_numeric(data[col], errors="coerce")
-
-    return data
 
 
-def _filter_by_date(data: pd.DataFrame, start_date: date) -> pd.DataFrame:
-    """按日期过滤数据"""
-    try:
-        if data.empty:
-            return data
-
-        data = data.copy()
-
-        if pd.api.types.is_datetime64_any_dtype(data.index):
-            start_datetime = pd.Timestamp(start_date)
-            filtered = data[data.index >= start_datetime]
-            result_df: pd.DataFrame = (
-                filtered if isinstance(filtered, pd.DataFrame) else pd.DataFrame(filtered)
-            )
-            return result_df
-
-        if "datetime" not in data.columns:
-            return data
-
-        if not pd.api.types.is_datetime64_any_dtype(data["datetime"]):
-            datetime_series = data["datetime"]
-            # 添加类型检查
-            if isinstance(datetime_series, pd.Series) and len(datetime_series) > 0:
-                datetime_series = pd.to_datetime(datetime_series, errors="coerce")
-            else:
-                return data
-        else:
-            datetime_series = data["datetime"]
-
-        valid_mask = datetime_series.notna()
-        # 检查是否有任何有效值
-        has_valid_values = bool(valid_mask.sum() > 0)
-        if not has_valid_values:
-            return pd.DataFrame()
-
-        start_datetime = pd.Timestamp(start_date)
-        date_mask = valid_mask & (datetime_series >= start_datetime)
-
-        filtered_result = data[date_mask]
-        final_result: pd.DataFrame = (
-            filtered_result.copy()
-            if isinstance(filtered_result, pd.DataFrame)
-            else pd.DataFrame(filtered_result)
-        )
-        return final_result
-
-    except Exception as e:
-        logging.getLogger(__name__).error("按日期过滤失败: %s，返回原始数据", e)
-        return data
-
-
-# ==================== 基础数据获取器 ====================
-
-
-class StockFetcher:
-    """股票数据获取器基类"""
-
-    MARKET_SHANGHAI = 0
-    MARKET_SHENZHEN = 1
-
-    SH_PREFIXES = ["688", "60"]
-    SZ_PREFIXES = ["000", "001", "002", "300", "301"]
-    BJ_PREFIXES = ["43", "83", "87", "88"]
-
-    def __init__(self, block_parser=None):  # pylint: disable=unused-argument
-        # block_parser 参数为向后兼容性保留，目前未使用
-        # 异步下载控制
-        self._stop_event = threading.Event()
-        self._pause_event = threading.Event()
-        self._pause_event.set()
-
-        # 下载进度跟踪
-        self._download_progress = {
-            "is_downloading": False,
-            "completed": 0,
-            "total": 0,
-            "current_symbol": "",
-            "current_interval": "",
-            "start_time": None,
-        }
-
-        # 服务器池
-        server_pool_size = config_manager.get("chinastock.server_pool_size", 5)
-        self.server_pool = ServerPool(max_servers=server_pool_size, timeout=5)
-        self.logger = logging.getLogger(__name__)
-
-        # 保留quotes用于向后兼容
-        self._quotes = None
-
-    @property
-    def quotes(self):
-        """向后兼容：延迟初始化单一Quotes实例"""
-        if self._quotes is None:
-            self._quotes = Quotes.factory()
-            self.logger.info("延迟初始化默认Quotes实例（向后兼容）")
-        return self._quotes
-
-    # 下载控制方法
-    def stop_download(self):
-        self._stop_event.set()
-        self.logger.info("下载停止信号已设置")
-
-    def pause_download(self):
-        self._pause_event.clear()
-        self.logger.info("下载暂停信号已设置")
-
-    def resume_download(self):
-        self._pause_event.set()
-        self.logger.info("下载恢复信号已设置")
-
-    def reset_download_state(self):
-        self._stop_event.clear()
-        self._pause_event.set()
-        self._download_progress = {
-            "is_downloading": False,
-            "completed": 0,
-            "total": 0,
-            "current_symbol": "",
-            "current_interval": "",
-            "start_time": None,
-        }
-        self.logger.info("下载状态已重置")
-
-    def get_download_progress(self) -> dict:
-        return self._download_progress.copy()
-
-    def is_stopped(self) -> bool:
-        return self._stop_event.is_set()
-
-    def is_paused(self) -> bool:
-        return not self._pause_event.is_set()
-
-    def download_incremental_kline(
-        self,
-        symbols: List[str],
-        start_date: Union[str, date],
-        intervals: Optional[List[str]] = None,
-        progress_callback: Optional[Callable[[int, int, str, str], None]] = None,
-    ) -> Dict[str, pd.DataFrame]:
-        """增量下载K线数据
-
-        基类方法，多线程并行下载架构已取消。
-        只保留MultiProcessStockFetcher类中的多进程版本实现。
-        """
-        raise NotImplementedError(
-            "StockFetcher基类的download_incremental_kline()方法已取消多线程实现。"
-            "请使用MultiProcessStockFetcher类中的多进程版本。"
-        )
-
-    def get_all_market_stocks(self) -> Dict[str, List[Dict[str, Any]]]:
-        """
-        获取所有市场的股票列表
-
-        Returns:
-            分类后的股票字典，格式：
-            {
-                "上证A股": [{"code": "600000", "name": "浦发银行", "market": 1}, ...],
-                "深证A股": [{"code": "000001", "name": "平安银行", "market": 0}, ...],
-                "北证A股": [...],
-                "T+0基金": [...],
-                "可转债": [...]
-            }
-        """
-        from .symbol_management import SymbolLoader
-
-        try:
-            # 使用SymbolLoader获取分类后的股票列表
-            symbol_loader = SymbolLoader()
-
-            # 优先从缓存加载
-            stocks_dict = symbol_loader.load_from_cache()
-            if stocks_dict is None:
-                # 缓存不存在，从API加载
-                stocks_dict = symbol_loader.load_from_api()
-
-            return stocks_dict
-
-        except Exception as e:
-            self.logger.error("获取所有市场股票失败: %s", e)
-            # 返回空的分类字典
-            return {"上证A股": [], "深证A股": [], "北证A股": [], "T+0基金": [], "可转债": []}
+# ==================== (旧StockSymbolManager已删除，使用symbol_management.SymbolLoader替代) ====================
 
 
 # ==================== 多进程数据获取器 ====================
 
 
-class MultiProcessStockFetcher(StockFetcher):
-    """多进程股票数据获取器（集成异步下载管理，从download_manager.py合并）"""
+class MultiProcessStockFetcher:
+    """多进程股票数据获取器（进程池+动态任务分配模式）"""
 
-    def __init__(self, block_parser=None, event_engine=None):
-        # 先调用父类初始化
-        super().__init__(block_parser)
-
+    def __init__(self, event_engine=None):
         self.logger = logging.getLogger(__name__)
+        self.event_engine = event_engine
 
-        # 获取进程数配置
-        pool_size = config_manager.get("chinastock.server_pool_size", 5)
+        # 使用 tdx_asyncio 的智能IP池（延迟初始化）
+        self.ip_pool = None  # 将在下载时初始化
+
+        # 进程池配置
+        pool_size = config_manager.get("chinastock.server_pool_size", 12)
         cpu_cores = cpu_count()
-        max_processes = min(pool_size, cpu_cores * 2, 30)
-        self.num_processes = max_processes
+        # IO密集型任务，不受CPU核心数限制，只限制最大值
+        self.num_processes = min(pool_size, 50)
+        self.timeout = config_manager.get("chinastock.timeout", 30)
+        self.retry_times = config_manager.get("chinastock.retry_times", 3)
+
+        # 异步连接配置
+        self.async_connections_per_process = 30  # 每个进程30个异步连接
 
         self.logger.info(
-            "初始化多进程下载器: %d个进程（CPU核心数: %d，配置: %d）",
+            "初始化异步下载器: %d进程 × %d连接 = %d总并发 (CPU核心数: %d [参考])",
             self.num_processes,
+            self.async_connections_per_process,
+            self.num_processes * self.async_connections_per_process,
             cpu_cores,
-            pool_size,
         )
 
         # 多进程共享对象
         self.manager = None
-        self.task_queue = None
-        self.result_queue = None
-        self.progress_queue = None
+        self.task_queue: Optional[queue.Queue] = None
+        self.result_queue: Optional[queue.Queue] = None
+        self.progress_queue: Optional[queue.Queue] = None
         self.stop_event = None
         self.pause_event = None
-        self._pause_set = True
 
         self.processes: List[Process] = []
 
-        # ServerPool
-        self.server_pool = ServerPool(max_servers=max_processes, timeout=5)
-
-        # 事件发布器（从download_manager.py合并）
-        self.event_engine = event_engine
+        # 事件发布器
         if event_engine:
             from .events import DownloadEventPublisher, EventPublisher
 
@@ -826,12 +346,13 @@ class MultiProcessStockFetcher(StockFetcher):
             self.download_publisher = None
             self.log_publisher = None
 
-        # 异步下载管理（从download_manager.py合并）
+        # 异步下载管理
         self._download_thread = None
         self._download_lock = threading.Lock()
+        self._download_progress = None  # 将在_init_multiprocess_objects中初始化
 
     def _init_multiprocess_objects(self):
-        """延迟初始化多进程对象"""
+        """初始化多进程对象"""
         if self.manager is None:
             self.manager = Manager()
             self.task_queue = self.manager.Queue()
@@ -839,19 +360,18 @@ class MultiProcessStockFetcher(StockFetcher):
             self.progress_queue = self.manager.Queue()
             self.stop_event = self.manager.Event()
             self.pause_event = self.manager.Event()
-            if self._pause_set:
-                self.pause_event.set()
+            self.pause_event.set()
 
-            self._download_progress = self.manager.dict(
-                {
-                    "is_downloading": False,
-                    "completed": 0,
-                    "total": 0,
-                    "current_symbol": "",
-                    "current_interval": "",
-                    "start_time": None,
-                }
-            )
+        # 每次调用都重新初始化_download_progress
+        if self.manager:
+            self._download_progress = self.manager.dict({
+                "is_downloading": False,
+                "completed": 0,
+                "total": 0,
+                "current_symbol": "",
+                "current_interval": "",
+                "start_time": None,
+            })
 
     def download_incremental_kline(
         self,
@@ -860,243 +380,212 @@ class MultiProcessStockFetcher(StockFetcher):
         intervals: Optional[List[str]] = None,
         progress_callback=None,
     ) -> Dict[str, pd.DataFrame]:
-        """增量下载K线数据（多进程版本）"""
-        result = {}
-        import time as time_module
-        download_start_time = time_module.time()
+        """主下载方法 - 使用进程池+动态任务分配"""
+        if not symbols:
+            self.logger.error("品种列表为空")
+            return {}
 
-        # 强制输出，确保能看到
-        print(f">>> [FETCHER] download_incremental_kline 被调用", flush=True)
-        print(f">>> [FETCHER] 品种数量: {len(symbols)}", flush=True)
-        print(f">>> [FETCHER] 开始日期: {start_date}", flush=True)
+        intervals = intervals or ["1d", "5m", "1m"]
+        total_tasks = len(symbols) * len(intervals)
 
-        if intervals is None:
-            intervals = ["1d", "5m", "1m"]
-
-        print(f">>> [FETCHER] 周期列表: {intervals}", flush=True)
-        print(f">>> [FETCHER] 进程数: {self.num_processes}", flush=True)
-
-        self.logger.info("=" * 60)
-        self.logger.info("【多进程并行下载】开始增量下载K线数据")
-        self.logger.info("  开始时间: %s", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-        self.logger.info("  品种数量: %d", len(symbols))
-        self.logger.info("  周期列表: %s", intervals)
-        self.logger.info("  起始日期: %s", start_date)
-        self.logger.info("  进程数: %d", self.num_processes)
-
-        # 🔧 诊断：检查symbols参数
-        if not symbols or len(symbols) == 0:
-            print(f">>> [FETCHER] ❌ 品种列表为空，无法下载！", flush=True)
-            self.logger.error("❌ 品种列表为空，无法下载！")
-            self.logger.error("  symbols参数: %s", symbols)
-            return result
-
-        self.logger.info("  品种样例（前5个）: %s", symbols[:5])
-        self.logger.info("=" * 60)
+        self.logger.info(f"开始多进程下载: {len(symbols)}品种 × {len(intervals)}周期 = {total_tasks}任务")
 
         try:
-            # 步骤1：发现可用服务器
-            print(f">>> [FETCHER] 步骤1: 开始发现可用服务器...", flush=True)
-            available_servers = self.server_pool.discover_servers()[: self.num_processes]
-            print(f">>> [FETCHER] 发现 {len(available_servers)} 个可用服务器", flush=True)
+            # 1. 使用 tdx_asyncio 的服务器列表（直接使用，无需验证）
+            available_servers = [(h[1], h[2]) for h in HQ_HOSTS_ALL[:50]]  # 使用前50个服务器
+            self.logger.info(f"使用 tdx_asyncio 服务器列表: {len(available_servers)} 个服务器")
 
-            if not available_servers:
-                self.logger.error("❌ 没有可用服务器，无法下载")
-                return result
-
-            num_servers = len(available_servers)
-            self.logger.info("✅ 发现 %d 个可用服务器", num_servers)
-
-            # 步骤2：构建任务列表
-            print(f">>> [FETCHER] 步骤2: 构建任务列表...", flush=True)
-            tasks = [(symbol, interval, start_date) for symbol in symbols for interval in intervals]
-            total_tasks = len(tasks)
-
-            print(f">>> [FETCHER] 任务列表构建完成: {total_tasks} 个任务", flush=True)
-            self.logger.info("✅ 任务列表构建完成: 总计 %d 个任务", total_tasks)
-
-            # 初始化多进程对象
-            print(f">>> [FETCHER] 初始化多进程对象...", flush=True)
+            # 2. 初始化Manager和队列
             self._init_multiprocess_objects()
-
-            # 清空队列
-            print(f">>> [FETCHER] 清空队列...", flush=True)
             self._clear_queues()
 
-            # 填充任务队列
-            print(f">>> [FETCHER] 填充任务队列...", flush=True)
-            if self.task_queue is not None:
-                for task in tasks:
-                    self.task_queue.put(task)
-                print(f">>> [FETCHER] 任务队列已填充: {total_tasks} 个任务", flush=True)
+            # 3. 创建共享服务器列表和索引
+            assert self.manager is not None, "Manager未初始化"
+            server_list = self.manager.list(available_servers)  # type: ignore
+            server_index = self.manager.Value('i', 0)  # type: ignore
 
-            # 初始化进度
-            print(f">>> [FETCHER] 设置 is_downloading = True", flush=True)
-            self._download_progress["is_downloading"] = True
-            self._download_progress["completed"] = 0
-            self._download_progress["total"] = total_tasks
-            self._download_progress["start_time"] = datetime.now().isoformat()
-            print(f">>> [FETCHER] ✓ 进度状态已初始化: is_downloading=True, total={total_tasks}", flush=True)
+            # 4. 填充任务队列
+            tasks = [(symbol, interval, start_date) for symbol in symbols for interval in intervals]
+            assert self.task_queue is not None
+            for task in tasks:
+                self.task_queue.put(task)
 
-            # 步骤3：启动工作进程
-            print(f">>> [FETCHER] 步骤3: 启动工作进程...", flush=True)
-            self._start_worker_processes(available_servers)
-            print(f">>> [FETCHER] ✓ 工作进程已启动", flush=True)
+            # 5. 设置进度状态
+            if self._download_progress:
+                self._download_progress.update({
+                    "is_downloading": True,
+                    "completed": 0,
+                    "total": total_tasks,
+                    "start_time": datetime.now().isoformat()
+                })
 
-            # 步骤4：监控进度并收集结果
-            print(f">>> [FETCHER] 步骤4: 开始监控进度并收集结果...", flush=True)
-            result = self._monitor_progress_and_collect_results(total_tasks, progress_callback)
-            print(f">>> [FETCHER] ✓ 监控完成，收集到 {len(result)} 个结果", flush=True)
+            # 6. 启动worker进程池
+            self._start_worker_pool(server_list, server_index)
 
-            # 等待进程自动退出
-            time.sleep(6.0)
+            # 7. 监控进度并收集结果
+            results = self._monitor_progress_and_collect_results(total_tasks, progress_callback)
 
-            # 步骤5：清理进程
+            # 8. 清理资源
             self._cleanup_processes()
+            if self._download_progress:
+                self._download_progress["is_downloading"] = False
 
-            valid_count = sum(1 for v in result.values() if v is not None and not v.empty)
-            empty_count = len(result) - valid_count
-            download_elapsed = time_module.time() - download_start_time
+            # 统计结果
+            valid_count = sum(1 for v in results.values() if v is not None and not v.empty)
+            self.logger.info(f"下载完成: {valid_count}/{total_tasks} 有效任务")
 
-            self.logger.info("=" * 60)
-            self.logger.info("【完成】多进程下载完成")
-            self.logger.info("  结束时间: %s", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-            self.logger.info("  总耗时: %.2f 秒", download_elapsed)
-            self.logger.info("  总任务数: %d", total_tasks)
-            self.logger.info("  下载结果数: %d", len(result))
-            self.logger.info("  有效数据: %d", valid_count)
-            self.logger.info("  空数据: %d", empty_count)
-            self.logger.info("  平均速度: %.2f 任务/秒", total_tasks / download_elapsed if download_elapsed > 0 else 0)
+            return results
 
         except Exception as e:
-            download_elapsed = time_module.time() - download_start_time
-            self.logger.error("多进程下载异常 (耗时: %.2f秒): %s", download_elapsed, e, exc_info=True)
-            self._download_progress["is_downloading"] = False
+            self.logger.error(f"多进程下载异常: {e}", exc_info=True)
+            if self._download_progress:
+                self._download_progress["is_downloading"] = False
             self._cleanup_processes()
-            return result
-        finally:
-            self._download_progress["is_downloading"] = False
+            return {}
 
-        return result
+    def _start_worker_pool(self, server_list, server_index):
+        """启动异步worker进程池
 
-    def _start_worker_processes(self, servers: List[Tuple[str, int]]):
-        """启动工作进程"""
-        for i, server in enumerate(servers):
+        Args:
+            server_list: Manager.list()共享的服务器列表
+            server_index: Manager.Value()共享的服务器索引
+        """
+        for i in range(self.num_processes):
             try:
+                # 使用异步worker
                 p = Process(
-                    target=download_worker_process,
+                    target=_run_async_worker,
                     args=(
                         i,
-                        server,
                         self.task_queue,
                         self.result_queue,
                         self.progress_queue,
+                        server_list,
+                        server_index,
+                        self.timeout,
+                        self.retry_times,
                         self.stop_event,
                         self.pause_event,
+                        self.async_connections_per_process,  # 传递异步连接数
                     ),
                 )
+
                 p.start()
                 self.processes.append(p)
-                self.logger.info(
-                    "✅ 进程 %d 已启动，PID: %d，服务器: %s:%d", i, p.pid, server[0], server[1]
-                )
-            except Exception as e:
-                self.logger.error("启动进程 %d 失败: %s", i, e)
+                self.logger.debug(f"启动异步进程 {i} (PID: {p.pid})")
 
-        self.logger.info("总计启动 %d 个工作进程", len(self.processes))
+                # 给进程一点启动时间
+                time.sleep(0.1)
+
+            except Exception as e:
+                self.logger.error(f"启动进程{i}失败: {e}")
+
+        self.logger.info(f"启动{len(self.processes)}个工作进程（进程池模式）")
+
+        # 等待所有进程启动完成
+        time.sleep(0.5)
 
     def _monitor_progress_and_collect_results(
         self, total_tasks: int, progress_callback
     ) -> Dict[str, pd.DataFrame]:
-        """监控进度并收集结果"""
+        """改进的监控和结果收集"""
         results = {}
         completed = 0
+        timeout_count = 0
+        max_timeout_count = 600  # ✅ 增加到60秒（600 * 0.1秒），给足时间下载
+
+        self.logger.info(
+            f"开始异步下载监控: {self.num_processes}进程 × {self.async_connections_per_process}连接 = "
+            f"{self.num_processes * self.async_connections_per_process}并发, 总任务数: {total_tasks}"
+        )
 
         while completed < total_tasks:
-            if self.stop_event is not None and self.stop_event.is_set():
+            if self.stop_event and self.stop_event.is_set():
+                self.logger.info("检测到停止信号，退出监控")
                 break
 
             # 收集进度
+            progress_received = False
             try:
-                if self.progress_queue is None:
-                    break
-                symbol, interval = self.progress_queue.get(timeout=0.1)
-                completed += 1
-                self._download_progress["completed"] = completed
-                self._download_progress["current_symbol"] = symbol
-                self._download_progress["current_interval"] = interval
+                if self.progress_queue is not None:
+                    progress_data = self.progress_queue.get(timeout=0.1)
+                    # 兼容新格式：(symbol, interval, status) 或旧格式：(symbol, interval)
+                    if len(progress_data) == 3:
+                        symbol, interval, status = progress_data
+                    else:
+                        symbol, interval = progress_data
+                        status = "unknown"
 
-                if completed % 10 == 0 or completed == total_tasks:
-                    progress_pct = (completed / total_tasks) * 100
-                    self.logger.info(
-                        "📊 进度: [%d/%d (%.1f%%)] - %s %s",
-                        completed,
-                        total_tasks,
-                        progress_pct,
-                        symbol,
-                        interval,
-                    )
+                    completed += 1
+                    progress_received = True
+                    timeout_count = 0  # 重置超时计数
 
-                if progress_callback:
-                    progress_callback(completed, total_tasks, symbol, interval)
+                    if self._download_progress:
+                        self._download_progress["completed"] = completed
+                        self._download_progress["current_symbol"] = symbol
+                        self._download_progress["current_interval"] = interval
 
+                    if progress_callback:
+                        progress_callback(completed, total_tasks, symbol, interval)
+
+                    self.logger.debug(f"收到进度: {symbol} {interval} ({completed}/{total_tasks})")
             except queue.Empty:
-                if all(not p.is_alive() for p in self.processes):
-                    self._drain_queues(results)
-                    completed = len(results)
-                    break
+                timeout_count += 1
+                if timeout_count >= max_timeout_count:
+                    self.logger.warning(f"进度监控超时（{max_timeout_count * 0.1}秒），已完成: {completed}/{total_tasks}")
+                    # ✅ 检查所有进程状态并诊断
+                    alive_processes = [p for p in self.processes if p.is_alive()]
+                    self.logger.warning(f"存活进程数: {len(alive_processes)}/{len(self.processes)}")
 
-            # 收集结果
+                    # ✅ 检查队列状态
+                    try:
+                        task_qsize = self.task_queue.qsize() if self.task_queue else 0
+                        progress_qsize = self.progress_queue.qsize() if self.progress_queue else 0
+                        result_qsize = self.result_queue.qsize() if self.result_queue else 0
+                        self.logger.warning(f"队列状态 - 任务: {task_qsize}, 进度: {progress_qsize}, 结果: {result_qsize}")
+                    except Exception as e:
+                        self.logger.debug(f"检查队列状态失败: {e}")
+
+                    if not alive_processes:
+                        self.logger.warning("所有进程已结束，但任务未完成！强制退出监控")
+                        break
+
+                    # ✅ 重置超时计数，继续等待（进程还在工作）
+                    timeout_count = 0
+                    self.logger.info("进程仍在运行，重置超时计数器，继续等待...")
+
+            # 收集结果（非阻塞）
             try:
-                if self.result_queue is not None:
+                if self.result_queue:
                     key, data_dict = self.result_queue.get_nowait()
                     if data_dict is not None:
                         df = pd.DataFrame(data_dict)
-                        if "datetime" in df.columns:
-                            try:
-                                # 确保datetime列是可转换的类型
-                                if not pd.api.types.is_datetime64_any_dtype(df["datetime"]):
-                                    df["datetime"] = pd.to_datetime(df["datetime"], errors='coerce')
-                            except Exception as e:
-                                # 转换失败时记录错误但不影响其他数据
-                                self.logger.error("datetime列转换失败 %s: %s", key, str(e))
                         results[key] = df
+                        self.logger.debug(f"收到结果: {key} ({len(df)} 条数据)")
             except queue.Empty:
                 pass
 
-        return results
-
-    def _drain_queues(self, results: Dict):
-        """排空队列"""
-        if self.result_queue is not None:
-            while True:
-                try:
+        # 最后收集剩余的结果
+        self.logger.info("收集剩余结果...")
+        remaining_results = 0
+        while True:
+            try:
+                if self.result_queue:
                     key, data_dict = self.result_queue.get_nowait()
                     if data_dict is not None:
                         df = pd.DataFrame(data_dict)
-                        if "datetime" in df.columns:
-                            try:
-                                # 确保datetime列是可转换的类型
-                                if not pd.api.types.is_datetime64_any_dtype(df["datetime"]):
-                                    df["datetime"] = pd.to_datetime(df["datetime"], errors='coerce')
-                            except Exception as e:
-                                # 转换失败时记录错误但不影响其他数据
-                                self.logger.error("datetime列转换失败 %s: %s", key, str(e))
                         results[key] = df
-                except queue.Empty:
-                    break
+                        remaining_results += 1
+                        self.logger.debug(f"收集剩余结果: {key} ({len(df)} 条数据)")
+            except queue.Empty:
+                break
 
-        extra_progress = 0
-        if self.progress_queue is not None:
-            while True:
-                try:
-                    self.progress_queue.get_nowait()
-                    extra_progress += 1
-                except queue.Empty:
-                    break
+        if remaining_results > 0:
+            self.logger.info(f"收集到 {remaining_results} 个剩余结果")
 
-        if extra_progress > 0:
-            self.logger.info("从队列中收集到额外 %d 个进度", extra_progress)
+        self.logger.info(f"监控完成: 收到 {len(results)} 个结果，完成 {completed} 个任务")
+        return results
+
 
     def _cleanup_processes(self):
         """清理所有工作进程"""
@@ -1105,25 +594,15 @@ class MultiProcessStockFetcher(StockFetcher):
 
         for p in self.processes:
             if p.is_alive():
-                try:
-                    p.join(timeout=2)
-                except Exception:
-                    pass
-
-            if p.is_alive():
-                try:
-                    p.terminate()
-                    p.join(timeout=1)
-                except Exception:
-                    pass
+                p.terminate()
+                p.join(timeout=1)
 
         self.processes.clear()
-        self.logger.info("✅ 进程清理完成")
+        self.logger.info("进程清理完成")
 
     def _clear_queues(self):
         """清空所有队列"""
-        queues = [self.task_queue, self.result_queue, self.progress_queue]
-        for q in queues:
+        for q in [self.task_queue, self.result_queue, self.progress_queue]:
             if q is not None:
                 while True:
                     try:
@@ -1133,15 +612,58 @@ class MultiProcessStockFetcher(StockFetcher):
 
     def set_server_count(self, num_servers: int) -> None:
         """
-        动态设置服务器数量（从core.py迁移的功能）
+        动态设置进程池大小
 
         Args:
-            num_servers: 服务器数量（1-30）
+            num_servers: 进程数量（1-30）
         """
         cpu_cores = cpu_count()
         self.num_processes = min(num_servers, cpu_cores * 2, 30)
-        self.server_pool = ServerPool(max_servers=self.num_processes, timeout=5)
-        self.logger.info("服务器数量已更新: %d", self.num_processes)
+        self.logger.info("进程池大小已更新: %d", self.num_processes)
+
+    def get_download_progress(self) -> Dict[str, Any]:
+        """
+        获取下载进度（供外部查询）
+
+        Returns:
+            进度信息字典
+        """
+        if self._download_progress is None:
+            return {
+                "is_downloading": False,
+                "completed": 0,
+                "total": 0,
+                "current_symbol": "",
+                "current_interval": "",
+                "start_time": None,
+            }
+
+        # 返回进度字典的副本
+        return dict(self._download_progress)
+
+    def stop_download(self):
+        """停止当前下载任务"""
+        if self.stop_event:
+            self.stop_event.set()
+            self.logger.info("已发送停止信号")
+        else:
+            self.logger.warning("停止事件未初始化")
+
+    def pause_download(self):
+        """暂停当前下载任务"""
+        if self.pause_event:
+            self.pause_event.clear()
+            self.logger.info("已发送暂停信号")
+        else:
+            self.logger.warning("暂停事件未初始化")
+
+    def resume_download(self):
+        """恢复暂停的下载任务"""
+        if self.pause_event:
+            self.pause_event.set()
+            self.logger.info("已发送恢复信号")
+        else:
+            self.logger.warning("恢复事件未初始化")
 
     # ==================== 异步下载管理（从download_manager.py合并） ====================
 
@@ -1170,8 +692,19 @@ class MultiProcessStockFetcher(StockFetcher):
                 self.logger.warning("已有下载任务正在运行")
                 return False
 
+            # 初始化多进程对象（如果还没初始化）
+            self._init_multiprocess_objects()
+
             # 重置下载状态
-            self.reset_download_state()
+            if self._download_progress:
+                self._download_progress.update({
+                    "is_downloading": False,
+                    "completed": 0,
+                    "total": 0,
+                    "current_symbol": "",
+                    "current_interval": "",
+                    "start_time": None,
+                })
 
             # 创建并启动后台下载线程
             self._download_thread = threading.Thread(
@@ -1196,29 +729,75 @@ class MultiProcessStockFetcher(StockFetcher):
             market_types: 市场类型列表
         """
         try:
-            # 定义进度回调（事件推送）
+            # 定义进度回调（限制频率，避免UI崩溃）
             def progress_callback(completed: int, total: int, symbol: str, interval: str):
-                should_push = completed % 100 == 0 or completed == 1 or completed == total
+                # ✅ 方案2：严格限制UI更新频率
+                should_push = (
+                    completed == 1 or  # 第一个任务
+                    completed == total or  # 最后一个任务
+                    completed % 200 == 0  # 每200个任务更新一次（降低频率）
+                )
+
+                # ✅ 使用日志输出，避免UI更新
+                if completed % 500 == 0 or completed == 1 or completed == total:
+                    self.logger.info(f"下载进度: {completed}/{total} ({completed*100/total:.1f}%) - {symbol} {interval}")
+
+                # ✅ 方案1：添加异常保护，使用信号传递
                 if should_push and self.download_publisher:
-                    progress_pct = (completed / total) * 100
-                    self.download_publisher.push_download_progress_event(
-                        "incremental_kline", progress_pct, completed, total, f"{symbol} {interval}"
-                    )
+                    try:
+                        progress_pct = (completed / total) * 100
+                        self.download_publisher.push_download_progress_event(
+                            "incremental_kline", progress_pct, completed, total, f"{symbol} {interval}"
+                        )
+                    except Exception as e:
+                        # 捕获异常避免崩溃
+                        self.logger.debug(f"推送进度事件失败: {e}")
 
-            # 调用统一下载接口
-            num_servers = config_manager.get("chinastock.server_pool_size", 5)
+            # 🔧 修复：直接使用当前实例的download_incremental_kline，而不是创建新实例
+            # 获取品种列表
+            if market_types:
+                symbols = symbol_loader.extract_codes_by_market(market_types)
+            else:
+                symbols = symbol_loader.extract_all_codes()
 
-            result = download_incremental_unified(
-                symbols=[],  # 空列表，让函数自动从symbol_loader提取
-                start_date=start_date,
-                symbol_loader=symbol_loader,
-                market_types=market_types,
-                intervals=None,
-                num_servers=num_servers,
-                storage_callback=storage_manager.save_kline,
-                progress_callback=progress_callback,
-                event_callback=self.download_publisher.push_download_event if self.download_publisher else None,
-            )
+            if not symbols:
+                result = {
+                    "success": False,
+                    "total_tasks": 0,
+                    "completed": 0,
+                    "saved_count": 0,
+                    "skipped_count": 0,
+                    "failed_count": 0,
+                    "message": "未找到可下载的品种",
+                }
+            else:
+                # 直接调用当前实例的方法，确保_download_progress被正确更新
+                download_results = self.download_incremental_kline(
+                    symbols=symbols,
+                    start_date=start_date,
+                    intervals=["1d", "5m", "1m"],
+                    progress_callback=progress_callback
+                )
+
+                # 存储数据
+                saved_count = 0
+                for key, data_records in download_results.items():
+                    if data_records:
+                        symbol, interval = key.split("_", 1)
+                        data_df = pd.DataFrame(data_records)
+                        if not data_df.empty:
+                            storage_manager.save_kline(symbol, interval, data_df)
+                            saved_count += 1
+
+                result = {
+                    "success": True,
+                    "total_tasks": len(symbols) * 3,  # 3个周期
+                    "completed": len(download_results),
+                    "saved_count": saved_count,
+                    "skipped_count": 0,
+                    "failed_count": len(download_results) - saved_count,
+                    "message": f"下载完成，保存了 {saved_count} 个品种的数据",
+                }
 
             # 推送最终事件
             if result["success"]:
@@ -1500,7 +1079,7 @@ def download_incremental_unified(
         }
 
     # 检查是否被停止
-    if fetcher.is_stopped():
+    if fetcher.stop_event and fetcher.stop_event.is_set():
         logger.warning("⛔ 下载被停止")
         if event_callback:
             event_callback("incremental_kline", "stopped", len(download_results), "下载已停止")
@@ -1589,3 +1168,4 @@ def download_incremental_unified(
         "failed_count": failed_count,
         "message": f"成功保存{saved_count}个数据集（跳过{skipped_count}个空数据）",
     }
+

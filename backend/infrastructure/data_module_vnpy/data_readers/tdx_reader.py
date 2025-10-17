@@ -15,13 +15,21 @@
 - bj: 北证
 """
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
-from mootdx.reader import Reader
+from backend.infrastructure.tdx_asyncio import (
+    AsyncTdxDayReader,
+    AsyncTdxMinuteReader,
+    AsyncTdxLc5Reader,
+    read_day_data,
+    read_minute_data,
+    read_lc5_data
+)
 
 from .base_reader import BaseReader
 from .bj_decoder import BjStockDecoder
@@ -62,9 +70,8 @@ class TdxBinaryReader(BaseReader):
 
         self.logger = logging.getLogger(__name__)
         self.storage_manager = StorageManager()
-        # Reader.factory() 返回标准读取器，需要传递 tdxdir 参数
-        self.reader = Reader.factory(market="std", tdxdir=str(source_path))
-        # 北证数据解码器（mootdx不支持北证，使用自定义解码器）
+        # 不再使用 mootdx Reader，改用 tdx_asyncio 的异步读取器
+        # 北证数据解码器（tdx_asyncio不支持北证，使用自定义解码器）
         self.bj_decoder = BjStockDecoder()
 
     def read(
@@ -129,8 +136,18 @@ class TdxBinaryReader(BaseReader):
 
                 self.logger.info("使用北证解码器读取: %s", data_file.name)
             else:
-                # 使用mootdx.reader读取上证/深证数据
-                df = self.reader.daily(str(data_file))
+                # 使用 tdx_asyncio 异步读取器读取上证/深证数据
+                async def _read_async():
+                    if data_type == 'day':
+                        return await read_day_data(data_file)
+                    elif data_type == '1min':
+                        return await read_minute_data(data_file)
+                    elif data_type == '5min':
+                        return await read_lc5_data(data_file)
+                    else:
+                        raise ValueError(f"不支持的数据类型: {data_type}")
+
+                df = asyncio.run(_read_async())
 
             if df is None or df.empty:
                 self.logger.warning("读取的数据为空: %s", data_file)
@@ -259,21 +276,21 @@ class TdxBinaryReader(BaseReader):
                 # 增量更新：合并现有数据和新数据，去重
                 # 先查询现有数据
                 existing_df = self.storage_manager.query_kline(symbol, interval)
-                
+
                 if existing_df is not None and not existing_df.empty:
                     # 合并新旧数据
                     merged_df = pd.concat([existing_df, dataframe], ignore_index=True)
-                    
+
                     # 按 datetime 排序并去重
                     if "datetime" in merged_df.columns:
                         merged_df = merged_df.sort_values("datetime")
                         merged_df = merged_df.drop_duplicates(subset=["datetime"], keep="last")
-                    
+
                     # 保存合并后的数据
                     file_path = self.storage_manager.save_kline(symbol, interval, merged_df)
                     if file_path:
                         self.logger.info(
-                            "数据增量保存成功: %s %s (合并模式，合并后共 %d 条)", 
+                            "数据增量保存成功: %s %s (合并模式，合并后共 %d 条)",
                             symbol, interval, len(merged_df)
                         )
                         return True

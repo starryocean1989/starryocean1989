@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QScrollArea,
     QProgressBar,
     QPushButton,
     QSpinBox,
@@ -90,16 +91,48 @@ class ServerConfigDialog(QDialog):
         info_label.setWordWrap(True)
         layout.addWidget(info_label)
 
+        # 🆕 服务器状态显示
+        self.server_status_label = QLabel("可用服务器: 检测中...")
+        self.server_status_label.setStyleSheet(
+            "color: #0066cc; font-weight: bold; padding: 8px; "
+            "background-color: #f0f8ff; border-radius: 4px;"
+        )
+        layout.addWidget(self.server_status_label)
+
+        # 🆕 刷新按钮
+        refresh_btn = QPushButton("🔄 重新检测服务器")
+        refresh_btn.setToolTip("重新验证所有服务器的可用性")
+        refresh_btn.clicked.connect(lambda: self._refresh_server_status(trigger_verification=True))
+        layout.addWidget(refresh_btn)
+
         # 表单布局
         form_layout = QFormLayout()
 
-        # 并行服务器数量
+        # 并行进程数量（异步架构）
         self.server_count_spin = QSpinBox()
-        self.server_count_spin.setRange(1, 30)
-        self.server_count_spin.setValue(5)
+        self.server_count_spin.setRange(1, 50)
+        self.server_count_spin.setValue(12)
         self.server_count_spin.setSuffix(" 个")
-        self.server_count_spin.setToolTip("同时使用的服务器数量（1-30）")
-        form_layout.addRow("并行服务器数量:", self.server_count_spin)
+        self.server_count_spin.setToolTip(
+            "并行进程数量（1-50）\n"
+            "每个进程维护30个异步连接\n"
+            "总并发 = 进程数 × 30\n"
+            "推荐: 12-24（匹配CPU核心数）"
+        )
+        form_layout.addRow("并行进程数:", self.server_count_spin)
+        
+        # 添加异步架构说明标签
+        self.async_info_label = QLabel(
+            f"💡 异步架构: 每进程30个连接\n"
+            f"   当前配置: {self.server_count_spin.value()} × 30 = "
+            f"{self.server_count_spin.value() * 30} 总并发"
+        )
+        self.async_info_label.setStyleSheet("color: #0066cc; font-size: 11px; padding: 5px;")
+        self.async_info_label.setWordWrap(True)
+        form_layout.addRow(self.async_info_label)
+        
+        # 连接信号更新显示
+        self.server_count_spin.valueChanged.connect(self._update_async_info)
 
         # 连接超时时间
         self.timeout_spin = QSpinBox()
@@ -122,8 +155,9 @@ class ServerConfigDialog(QDialog):
         # 提示信息
         hint_label = QLabel(
             "💡 提示：\n"
-            "• 服务器数量越多，下载速度越快，但也会增加网络负载\n"
-            "• 建议服务器数量设置为 3-10 个\n"
+            "• 异步架构：每个进程维护30个异步连接，高效利用网络IO\n"
+            "• 进程数建议：12-24（匹配CPU核心数），可根据实际情况调整\n"
+            "• 总并发数 = 进程数 × 30，如12进程=360并发，20进程=600并发\n"
             "• 如果网络不稳定，可以适当增加超时时间和重试次数"
         )
         hint_label.setStyleSheet("color: #888; font-size: 11px; padding: 10px;")
@@ -148,18 +182,36 @@ class ServerConfigDialog(QDialog):
                     # 从 config_manager 读取配置
                     from backend.infrastructure.data_module_vnpy.config import config_manager
 
-                    server_pool_size = config_manager.get("chinastock.server_pool_size", 5)
+                    server_pool_size = config_manager.get("chinastock.server_pool_size", 12)
                     timeout = config_manager.get("chinastock.timeout", 30)
                     retry_times = config_manager.get("chinastock.retry_times", 3)
 
                     self.server_count_spin.setValue(int(server_pool_size))
                     self.timeout_spin.setValue(int(timeout))
                     self.retry_spin.setValue(int(retry_times))
+                    
+                    # 更新异步信息显示
+                    self._update_async_info(int(server_pool_size))
+
+            # 🆕 加载服务器状态
+            self._refresh_server_status()
 
         except Exception as e:
             import logging
 
             logging.getLogger(__name__).error("加载服务器配置失败: %s", e)
+    
+    def _update_async_info(self, value):
+        """更新异步架构信息显示
+        
+        Args:
+            value: 进程数量
+        """
+        total_concurrent = value * 30
+        self.async_info_label.setText(
+            f"💡 异步架构: 每进程30个连接\n"
+            f"   当前配置: {value} × 30 = {total_concurrent} 总并发"
+        )
 
     def _save_and_accept(self):
         """保存配置并关闭对话框."""
@@ -177,11 +229,14 @@ class ServerConfigDialog(QDialog):
             config_manager.set("chinastock.retry_times", retry_times)
 
             # 显示成功消息
+            total_concurrent = server_pool_size * 30
             QMessageBox.information(
                 self,
                 "配置保存成功",
-                f"服务器配置已保存：\n"
-                f"• 并行服务器数量：{server_pool_size} 个\n"
+                f"异步下载配置已保存：\n"
+                f"• 并行进程数：{server_pool_size} 个\n"
+                f"• 每进程连接数：30 个\n"
+                f"• 总并发数：{total_concurrent} 个\n"
                 f"• 连接超时时间：{timeout} 秒\n"
                 f"• 重试次数：{retry_times} 次\n\n"
                 f"配置将在下次下载时生效。",
@@ -195,6 +250,178 @@ class ServerConfigDialog(QDialog):
             logging.getLogger(__name__).error("保存服务器配置失败: %s", e, exc_info=True)
 
             QMessageBox.warning(self, "保存失败", f"保存配置时发生错误：{str(e)}")
+
+    def _refresh_server_status(self, trigger_verification=False):
+        """刷新服务器状态显示
+
+        Args:
+            trigger_verification: 是否重新触发服务器验证
+        """
+        try:
+            if not self.data_center_service:
+                return
+
+            # 如果需要重新验证服务器
+            if trigger_verification:
+                self.server_status_label.setText("可用服务器: 正在异步检测中 (0/38)...")
+                self.server_status_label.setStyleSheet(
+                    "color: #0066cc; font-weight: bold; padding: 8px; "
+                    "background-color: #f0f8ff; border-radius: 4px;"
+                )
+
+                # 启动一个定时器，定期更新验证进度
+                self._start_verification_progress_timer()
+
+                # 在后台线程中重新验证
+                def verify_and_update():
+                    try:
+                        import logging
+                        logger = logging.getLogger(__name__)
+                        logger.info("开始重新验证服务器...")
+
+                        # 获取stock_fetcher和server_manager
+                        if hasattr(self.data_center_service, 'china_stock_engine'):
+                            engine = self.data_center_service.china_stock_engine
+                            if engine:
+                                # ChinaStockEngine的属性是stock_fetcher，不是fetcher
+                                stock_fetcher = getattr(engine, 'stock_fetcher', None)
+                                if stock_fetcher:
+                                    server_manager = getattr(stock_fetcher, 'server_manager', None)
+                                    if server_manager:
+                                        # 重新验证服务器（并发测试，但同步等待）
+                                        logger.info(f"开始并发验证{len(server_manager.all_servers)}个服务器...")
+                                        server_manager.verify_all_servers_sync(timeout=5, max_workers=20)
+                                        logger.info("服务器验证完成")
+
+                                        # 在主线程中停止定时器并更新UI
+                                        from PySide6.QtCore import QTimer
+                                        QTimer.singleShot(0, self._on_verification_completed)
+                                    else:
+                                        logger.warning("无法获取server_manager")
+                                else:
+                                    logger.warning("无法获取stock_fetcher（ChinaStockEngine中应该有stock_fetcher属性）")
+                            else:
+                                logger.warning("无法获取china_stock_engine")
+                    except Exception as e:
+                        import logging
+                        logging.getLogger(__name__).error(f"重新验证服务器失败: {e}", exc_info=True)
+                        # 在主线程中处理错误
+                        from PySide6.QtCore import QTimer
+                        QTimer.singleShot(0, self._on_verification_failed)
+
+                import threading
+                thread = threading.Thread(target=verify_and_update, daemon=True, name="ServerVerificationThread")
+                thread.start()
+            else:
+                # 只更新显示
+                self._update_server_status_display()
+
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error("刷新服务器状态失败: %s", e)
+            self.server_status_label.setText("可用服务器: 获取失败")
+            self.server_status_label.setStyleSheet(
+                "color: #cc0000; font-weight: bold; padding: 8px; "
+                "background-color: #fff0f0; border-radius: 4px;"
+            )
+
+    def _start_verification_progress_timer(self):
+        """启动验证进度定时器"""
+        from PySide6.QtCore import QTimer
+
+        if not hasattr(self, '_verification_timer') or not self._verification_timer:
+            self._verification_timer = QTimer(self)
+            self._verification_timer.timeout.connect(self._update_verification_progress)
+
+        self._verification_timer.start(500)  # 每500ms更新一次
+
+    def _update_verification_progress(self):
+        """更新验证进度（定时器回调）"""
+        try:
+            if self.data_center_service:
+                status = self.data_center_service.get_server_status()
+                available = status.get("available_count", 0)
+                unavailable_count = len(status.get("unavailable_servers", []))
+                total = status.get("total_count", 38)
+                tested = available + unavailable_count
+
+                verify_status = status.get("status", "unknown")
+
+                if verify_status == "verifying":
+                    self.server_status_label.setText(
+                        f"可用服务器: 正在异步检测中 ({tested}/{total})..."
+                    )
+                elif verify_status == "completed":
+                    # 验证完成，停止定时器
+                    if hasattr(self, '_verification_timer') and self._verification_timer:
+                        self._verification_timer.stop()
+                    self._update_server_status_display()
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"更新验证进度失败: {e}")
+
+    def _on_verification_completed(self):
+        """验证完成回调（在主线程中执行）"""
+        # 停止进度定时器
+        if hasattr(self, '_verification_timer') and self._verification_timer:
+            self._verification_timer.stop()
+        # 更新显示
+        self._update_server_status_display()
+
+    def _on_verification_failed(self):
+        """验证失败回调（在主线程中执行）"""
+        # 停止进度定时器
+        if hasattr(self, '_verification_timer') and self._verification_timer:
+            self._verification_timer.stop()
+        # 显示错误
+        self.server_status_label.setText("可用服务器: 验证失败")
+        self.server_status_label.setStyleSheet(
+            "color: #cc0000; font-weight: bold; padding: 8px; "
+            "background-color: #fff0f0; border-radius: 4px;"
+        )
+
+    def _update_server_status_display(self):
+        """更新服务器状态显示（从当前状态读取）"""
+        try:
+            if self.data_center_service:
+                status = self.data_center_service.get_server_status()
+                available = status.get("available_count", 0)
+                total = status.get("total_count", 0)
+                verify_status = status.get("status", "unknown")
+
+                if verify_status == "verifying":
+                    self.server_status_label.setText("可用服务器: 正在检测中...")
+                    self.server_status_label.setStyleSheet(
+                        "color: #0066cc; font-weight: bold; padding: 8px; "
+                        "background-color: #f0f8ff; border-radius: 4px;"
+                    )
+                elif verify_status == "completed":
+                    self.server_status_label.setText(f"可用服务器: {available}/{total}")
+                    if available == 0:
+                        self.server_status_label.setStyleSheet(
+                            "color: #cc0000; font-weight: bold; padding: 8px; "
+                            "background-color: #fff0f0; border-radius: 4px;"
+                        )
+                    else:
+                        self.server_status_label.setStyleSheet(
+                            "color: #009900; font-weight: bold; padding: 8px; "
+                            "background-color: #f0fff0; border-radius: 4px;"
+                        )
+                else:
+                    # idle 或其他未知状态 - 显示未验证状态
+                    self.server_status_label.setText(f"可用服务器: 0/{total} (未验证)")
+                    self.server_status_label.setStyleSheet(
+                        "color: #888888; font-weight: bold; padding: 8px; "
+                        "background-color: #f5f5f5; border-radius: 4px;"
+                    )
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error("更新服务器状态显示失败: %s", e)
+            self.server_status_label.setText("可用服务器: 获取失败")
+            self.server_status_label.setStyleSheet(
+                "color: #cc0000; font-weight: bold; padding: 8px; "
+                "background-color: #fff0f0; border-radius: 4px;"
+            )
 
     @staticmethod
     def show_config_dialog(data_center_service, parent=None):
@@ -506,7 +733,7 @@ class DataCenter(BaseWidget, LoggerMixin):
         self.download_start_date: Optional[QDateEdit] = None
         self.download_progress: Optional[QProgressBar] = None
         self.progress_label: Optional[QLabel] = None
-        self.progress_text: Optional[QTextEdit] = None  # 🔧 进度文本显示
+        self.progress_text: Optional[QLabel] = None  # ✅ 进度文本显示（纯文本Label）
         self.detail_progress_table: Optional[QTableWidget] = None
         self.toggle_detail_btn: Optional[QPushButton] = None
         self.start_download_btn: Optional[QPushButton] = None
@@ -940,12 +1167,19 @@ class DataCenter(BaseWidget, LoggerMixin):
         self.download_progress = QProgressBar()
         progress_layout.addWidget(self.download_progress)
 
-        # 🚀 添加文本进度显示（只追加，不重绘）
-        self.progress_text = QTextEdit()
-        self.progress_text.setReadOnly(True)
+        # ✅ 改用纯文本Label显示（避免QTextEdit的重绘问题）
+        self.progress_text = QLabel("下载进度将显示在这里...")
+        self.progress_text.setWordWrap(True)  # 自动换行
+        self.progress_text.setAlignment(Qt.AlignLeft | Qt.AlignTop)  # 左上对齐
         self.progress_text.setMaximumHeight(150)
-        self.progress_text.setPlaceholderText("下载进度将显示在这里...")
-        progress_layout.addWidget(self.progress_text)
+        self.progress_text.setStyleSheet("QLabel { padding: 5px; background-color: #f5f5f5; border: 1px solid #ddd; }")
+        
+        # 使用滚动区域包装Label
+        scroll_area = QScrollArea()
+        scroll_area.setWidget(self.progress_text)
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setMaximumHeight(150)
+        progress_layout.addWidget(scroll_area)
 
         # 详细进度
         self.toggle_detail_btn = QPushButton("显示详细进度")
@@ -1775,10 +2009,9 @@ class DataCenter(BaseWidget, LoggerMixin):
             self.download_thread.start()
             self.logger.info(">>> 线程已启动，isRunning: %s", self.download_thread.isRunning())
 
-            # 🚀 清空进度文本并显示开始信息
+            # ✅ 设置初始进度文本（QLabel用setText）
             if self.progress_text:
-                self.progress_text.clear()
-                self.progress_text.append(f"开始增量下载... (开始日期: {start_date})\n")
+                self.progress_text.setText(f"开始增量下载... (开始日期: {start_date})")
 
             # 更新按钮状态
             if self.start_download_btn:
@@ -1992,19 +2225,17 @@ class DataCenter(BaseWidget, LoggerMixin):
             self.show_error(f"停止操作出错，但状态已清理: {e}")
 
     def _append_progress_text(self, text: str):
-        """追加进度文本到QTextEdit（不重绘）
+        """追加进度文本（使用setText更新整个文本）
 
         Args:
             text: 进度文本
         """
         try:
             if hasattr(self, "progress_text") and self.progress_text:
-                # 使用append而非setText，只追加不重绘整体
-                self.progress_text.append(text)
-                # 滚动到底部
-                self.progress_text.verticalScrollBar().setValue(
-                    self.progress_text.verticalScrollBar().maximum()
-                )
+                # ✅ QLabel使用setText，追加到现有文本
+                current_text = self.progress_text.text()
+                new_text = current_text + "\n" + text if current_text and current_text != "下载进度将显示在这里..." else text
+                self.progress_text.setText(new_text)
         except Exception as e:
             self.logger.debug("追加进度文本失败: %s", e)
 
@@ -2065,7 +2296,7 @@ class DataCenter(BaseWidget, LoggerMixin):
             if status == "progress" and self.progress_text:
                 completed = event_data.get("completed", 0)
                 if completed == 1:  # 第一个进度事件
-                    self.progress_text.append("✓ 收到下载进度事件，开始显示进度...\n")
+                    self.progress_text.setText("✓ 收到下载进度事件，开始显示进度...")
 
             if status == "progress":
                 # 进度更新事件
@@ -2083,17 +2314,23 @@ class DataCenter(BaseWidget, LoggerMixin):
                         f"📥 下载中: {completed}/{total} ({progress_pct:.1f}%) - {current_item}"
                     )
 
-                # 🚀 文本进度显示（每100个显示一次，避免刷屏）
+                # ✅ 使用纯文本Label显示进度（无重绘问题）
                 if self.progress_text:
-                    if completed % 100 == 0:
-                        self.progress_text.append(
-                            f"✓ 已下载 {completed}/{total} 个数据集 ({progress_pct:.1f}%)"
+                    try:
+                        # ✅ 进一步降低UI更新频率
+                        should_update = (
+                            completed == 1 or  # 第一个
+                            completed == total or  # 最后一个
+                            completed % 200 == 0  # 每200个显示一次
                         )
-                    elif completed == total:
-                        # 最后一个也显示
-                        self.progress_text.append(
-                            f"✓ 已下载 {completed}/{total} 个数据集 ({progress_pct:.1f}%)"
-                        )
+                        
+                        if should_update:
+                            # ✅ 直接设置文本，不触发重绘
+                            progress_text = f"✓ 正在下载: {completed}/{total} ({progress_pct:.1f}%)\n最后更新: {current_item}"
+                            self.progress_text.setText(progress_text)
+                    except Exception as e:
+                        # ✅ 捕获异常避免崩溃
+                        self.logger.debug(f"更新进度文本失败: {e}")
 
                 # 每100个打印一次日志
                 if completed % 100 == 0:
@@ -2110,12 +2347,13 @@ class DataCenter(BaseWidget, LoggerMixin):
                 if self.progress_label:
                     self.progress_label.setText(f"✅ 下载完成：{count} 个数据集")
 
-                # 🚀 文本显示下载完成摘要
+                # ✅ 文本显示下载完成摘要
                 if self.progress_text:
-                    self.progress_text.append(
+                    summary = (
                         f"\n{'='*50}\n下载完成摘要:\n{'='*50}\n"
                         f"✅ 下载完成，共成功保存 {count} 个数据集"
                     )
+                    self._append_progress_text(summary)
 
                 # 重置状态
                 self._reset_download_state()
@@ -2129,11 +2367,12 @@ class DataCenter(BaseWidget, LoggerMixin):
                 if self.progress_label:
                     self.progress_label.setText("❌ 下载失败")
 
-                # 🚀 文本显示失败摘要
+                # ✅ 文本显示失败摘要
                 if self.progress_text:
-                    self.progress_text.append(
+                    error_summary = (
                         f"\n{'='*50}\n下载失败:\n{'='*50}\n" f"❌ {error_msg}"
                     )
+                    self._append_progress_text(error_summary)
 
                 self._reset_download_state()
                 self.show_error(f"下载失败: {error_msg}")
@@ -2146,12 +2385,13 @@ class DataCenter(BaseWidget, LoggerMixin):
                 if self.progress_label:
                     self.progress_label.setText(f"⛔ 下载已停止：{count} 个数据集")
 
-                # 🚀 文本显示停止摘要
+                # ✅ 文本显示停止摘要
                 if self.progress_text:
-                    self.progress_text.append(
+                    stop_summary = (
                         f"\n{'='*50}\n下载已停止:\n{'='*50}\n"
                         f"⛔ 已下载 {count} 个数据集（用户手动停止）"
                     )
+                    self._append_progress_text(stop_summary)
 
                 self._reset_download_state()
                 self.show_info(f"下载已停止，已完成 {count} 个数据集")

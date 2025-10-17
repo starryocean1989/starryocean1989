@@ -546,7 +546,7 @@ class StrategyCenterService(BaseService, LoggerMixin):
             # 从database加载回测任务（最近30天）
             import json
             tasks = self.db_manager.execute_query("""
-                SELECT task_id, strategy_file, config, status, progress, created_at
+                SELECT id as task_id, strategy_id as strategy_file, parameters as config, status, progress, created_at
                 FROM backtest_tasks
                 WHERE created_at >= datetime('now', '-30 days')
                 ORDER BY created_at DESC
