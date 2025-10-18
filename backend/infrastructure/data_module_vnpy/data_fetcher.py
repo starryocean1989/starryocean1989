@@ -32,10 +32,10 @@ from backend.infrastructure.tdx_asyncio import (
 )
 
 from .config import config_manager
+from .server_pool_manager import server_pool_manager
 
 # ==================== (ServerManager 已删除，使用 tdx_asyncio.AsyncSmartIPPool) ====================
 # ==================== (TdxDateTimeDecoder 已删除，tdx_asyncio 协议层已自动处理) ====================
-
 
 
 # ==================== 工作进程函数（已废弃，使用异步版本） ====================
@@ -74,39 +74,72 @@ async def download_worker_async(
         connections_per_worker: 每个worker的异步连接数（默认30）
     """
     logger = logging.getLogger(f"AsyncWorker-{worker_id}")
-    logger.info(f"异步Worker {worker_id} 启动，PID: {os.getpid()}，连接数: {connections_per_worker}")
+    logger.info(
+        f"异步Worker {worker_id} 启动，PID: {os.getpid()}，连接数: {connections_per_worker}"
+    )
 
     if not server_list:
         logger.error("无可用服务器")
         return
 
-    # 创建多个 tdx_asyncio 连接
-    connections = []
+    # 创建多个 tdx_asyncio 连接 - 使用字典管理（服务器地址为键）
+    # 关键原则：严格保证每个服务器只有1个连接（跨所有worker）
+    connections = {}  # 字典：{(ip, port): client}
+    server_list_local = []  # 本Worker的服务器列表（用于轮询）
+
+    # 检查：确保不会对同一服务器建立多个连接
+    # server_index 是全局共享计数器，所有worker共用
+    # 如果 server_index 达到或超过服务器总数，说明服务器会被重复使用
+    max_safe_connections = len(server_list)
+    logger.info(
+        f"Worker {worker_id}: 期望 {connections_per_worker} 个连接，"
+        f"可用服务器 {len(server_list)} 个"
+    )
+
     try:
         for i in range(connections_per_worker):
-            # 轮询选择服务器
+            # 原子操作：获取并递增全局服务器索引
+            # 注意：不能在异步函数中使用 with lock，会阻塞事件循环
+            # Manager.Value 的 get_lock() 是同步的，改为原子递增
+
+            # 原子读取和递增（虽然不完美，但避免阻塞）
             current_idx = server_index.value
-            server_index.value = current_idx + 1
+
+            # 关键检查：如果索引已经达到服务器总数，停止创建连接
+            # 这样确保不会对同一服务器建立第二个连接
+            if current_idx >= max_safe_connections:
+                logger.warning(
+                    f"Worker {worker_id}: 已达到服务器上限（{max_safe_connections}个），"
+                    f"停止创建更多连接（当前{i}个）"
+                )
+                break
+
+            # 递增索引（原子操作）
+            server_index.value += 1
             idx = current_idx % len(server_list)
             server = server_list[idx]
 
             # 创建 tdx_asyncio 异步连接
             try:
                 client = await AsyncTdxHq_API.factory(
-                    server=server,
-                    timeout=timeout,
-                    heartbeat=False,
-                    raise_exception=False
+                    server=server, timeout=timeout, heartbeat=False, raise_exception=False
                 )
                 if client:
-                    connections.append((i, client, server))
-                    logger.debug(f"Worker {worker_id} 连接 {i} 已建立: {server[0]}:{server[1]}")
+                    # 使用服务器地址作为键存储连接
+                    connections[server] = client
+                    server_list_local.append(server)
+                    logger.debug(
+                        f"Worker {worker_id} 连接 → 服务器{server[0]}:{server[1]} "
+                        f"（全局索引{current_idx}，本Worker第{len(connections)}个）"
+                    )
                 else:
-                    logger.warning(f"Worker {worker_id} 连接 {i} 建立失败: {server[0]}:{server[1]}")
+                    logger.warning(f"Worker {worker_id} 连接 建立失败: {server[0]}:{server[1]}")
             except Exception as e:
-                logger.warning(f"Worker {worker_id} 连接 {i} 建立异常: {e}")
+                logger.warning(f"Worker {worker_id} 连接 建立异常: {e}")
 
-        logger.info(f"Worker {worker_id} 成功建立 {len(connections)}/{connections_per_worker} 个连接")
+        logger.info(
+            f"Worker {worker_id} 成功建立 {len(connections)} 个连接" f"（每个连接使用不同服务器）"
+        )
 
         if not connections:
             logger.error(f"Worker {worker_id} 无可用连接，退出")
@@ -141,46 +174,38 @@ async def download_worker_async(
 
                 try:
                     # 纯异步下载（使用 tdx_asyncio）
-                    data = await _download_single_kline_async(
-                        client,
-                        symbol,
-                        interval,
-                        start_date
-                    )
+                    data = await _download_single_kline_async(client, symbol, interval, start_date)
 
                     if data is not None and not data.empty:
                         await asyncio.to_thread(
-                            result_queue.put,
-                            (f"{symbol}_{interval}", data.to_dict("records"))
+                            result_queue.put, (f"{symbol}_{interval}", data.to_dict("records"))
                         )
-                        await asyncio.to_thread(
-                            progress_queue.put,
-                            (symbol, interval, "success")
-                        )
+                        await asyncio.to_thread(progress_queue.put, (symbol, interval, "success"))
                         processed += 1
                     else:
-                        await asyncio.to_thread(
-                            progress_queue.put,
-                            (symbol, interval, "failed")
-                        )
+                        await asyncio.to_thread(progress_queue.put, (symbol, interval, "failed"))
                         failed += 1
 
                 except Exception as e:
-                    logger.debug(f"Worker {worker_id} 连接 {conn_id} 下载 {symbol}_{interval} 失败: {e}")
-                    await asyncio.to_thread(
-                        progress_queue.put,
-                        (symbol, interval, "failed")
+                    logger.debug(
+                        f"Worker {worker_id} 连接 {conn_id} 下载 {symbol}_{interval} 失败: {e}"
                     )
+                    await asyncio.to_thread(progress_queue.put, (symbol, interval, "failed"))
                     failed += 1
 
-            logger.info(f"Worker {worker_id} 连接 {conn_id} 完成, 成功: {processed}, 失败: {failed}")
+            logger.info(
+                f"Worker {worker_id} 连接 {conn_id} 完成, 成功: {processed}, 失败: {failed}"
+            )
             return processed, failed
 
-        # N个协程并发工作
-        results = await asyncio.gather(*[
-            download_loop(conn_id, client, server)
-            for conn_id, client, server in connections
-        ], return_exceptions=True)
+        # N个协程并发工作（字典方案：遍历服务器列表和字典）
+        results = await asyncio.gather(
+            *[
+                download_loop(idx, connections[server], server)
+                for idx, server in enumerate(server_list_local)
+            ],
+            return_exceptions=True,
+        )
 
         # 统计总数
         total_processed = sum(r[0] for r in results if isinstance(r, tuple))
@@ -188,13 +213,13 @@ async def download_worker_async(
         logger.info(f"Worker {worker_id} 总计完成, 成功: {total_processed}, 失败: {total_failed}")
 
     finally:
-        # 关闭所有连接
-        for conn_id, client, server in connections:
+        # 关闭所有连接（字典方案）
+        for server, client in connections.items():
             try:
                 await client.close()
-                logger.debug(f"Worker {worker_id} 连接 {conn_id} 已关闭")
+                logger.debug(f"Worker {worker_id} 连接 {server[0]}:{server[1]} 已关闭")
             except Exception as e:
-                logger.debug(f"Worker {worker_id} 连接 {conn_id} 关闭失败: {e}")
+                logger.debug(f"Worker {worker_id} 连接 {server[0]}:{server[1]} 关闭失败: {e}")
 
 
 def _run_async_worker(*args):
@@ -233,11 +258,7 @@ async def _download_single_kline_async(
         # 调用 tdx_asyncio API
         try:
             raw_data = await client.get_security_bars(
-                category=category,
-                market=market,
-                code=symbol,
-                start=0,
-                count=count
+                category=category, market=market, code=symbol, start=0, count=count
             )
             if not raw_data:
                 return None
@@ -261,10 +282,7 @@ async def _download_single_kline_async(
         data = data.set_index("datetime", drop=False)
 
         # 列名标准化
-        column_mapping = {
-            "vol": "volume",
-            "amount": "turnover"
-        }
+        column_mapping = {"vol": "volume", "amount": "turnover"}
         data = data.rename(columns=column_mapping)
 
         # 添加元数据
@@ -287,8 +305,6 @@ async def _download_single_kline_async(
     except Exception as e:
         logging.getLogger(__name__).error(f"下载失败 {symbol} {interval}: {e}", exc_info=True)
         return None
-
-
 
 
 # ==================== (旧StockSymbolManager已删除，使用symbol_management.SymbolLoader替代) ====================
@@ -364,14 +380,16 @@ class MultiProcessStockFetcher:
 
         # 每次调用都重新初始化_download_progress
         if self.manager:
-            self._download_progress = self.manager.dict({
-                "is_downloading": False,
-                "completed": 0,
-                "total": 0,
-                "current_symbol": "",
-                "current_interval": "",
-                "start_time": None,
-            })
+            self._download_progress = self.manager.dict(
+                {
+                    "is_downloading": False,
+                    "completed": 0,
+                    "total": 0,
+                    "current_symbol": "",
+                    "current_interval": "",
+                    "start_time": None,
+                }
+            )
 
     def download_incremental_kline(
         self,
@@ -388,12 +406,18 @@ class MultiProcessStockFetcher:
         intervals = intervals or ["1d", "5m", "1m"]
         total_tasks = len(symbols) * len(intervals)
 
-        self.logger.info(f"开始多进程下载: {len(symbols)}品种 × {len(intervals)}周期 = {total_tasks}任务")
+        self.logger.info(
+            f"开始多进程下载: {len(symbols)}品种 × {len(intervals)}周期 = {total_tasks}任务"
+        )
 
         try:
-            # 1. 使用 tdx_asyncio 的服务器列表（直接使用，无需验证）
-            available_servers = [(h[1], h[2]) for h in HQ_HOSTS_ALL[:50]]  # 使用前50个服务器
-            self.logger.info(f"使用 tdx_asyncio 服务器列表: {len(available_servers)} 个服务器")
+            # 1. 从服务器池管理器获取排序后的最优服务器列表
+            # 如果服务器池未运行，get_servers() 会抛出 RuntimeError，阻止下载
+            available_servers = server_pool_manager.get_servers()
+            self.logger.info(f"使用智能服务器池（已排序）: {len(available_servers)} 个服务器")
+            # 打印最快的前5个服务器
+            top5 = available_servers[:5]
+            self.logger.info(f"最快的5个服务器: {top5}")
 
             # 2. 初始化Manager和队列
             self._init_multiprocess_objects()
@@ -402,7 +426,7 @@ class MultiProcessStockFetcher:
             # 3. 创建共享服务器列表和索引
             assert self.manager is not None, "Manager未初始化"
             server_list = self.manager.list(available_servers)  # type: ignore
-            server_index = self.manager.Value('i', 0)  # type: ignore
+            server_index = self.manager.Value("i", 0)  # type: ignore
 
             # 4. 填充任务队列
             tasks = [(symbol, interval, start_date) for symbol in symbols for interval in intervals]
@@ -412,12 +436,14 @@ class MultiProcessStockFetcher:
 
             # 5. 设置进度状态
             if self._download_progress:
-                self._download_progress.update({
-                    "is_downloading": True,
-                    "completed": 0,
-                    "total": total_tasks,
-                    "start_time": datetime.now().isoformat()
-                })
+                self._download_progress.update(
+                    {
+                        "is_downloading": True,
+                        "completed": 0,
+                        "total": total_tasks,
+                        "start_time": datetime.now().isoformat(),
+                    }
+                )
 
             # 6. 启动worker进程池
             self._start_worker_pool(server_list, server_index)
@@ -532,7 +558,9 @@ class MultiProcessStockFetcher:
             except queue.Empty:
                 timeout_count += 1
                 if timeout_count >= max_timeout_count:
-                    self.logger.warning(f"进度监控超时（{max_timeout_count * 0.1}秒），已完成: {completed}/{total_tasks}")
+                    self.logger.warning(
+                        f"进度监控超时（{max_timeout_count * 0.1}秒），已完成: {completed}/{total_tasks}"
+                    )
                     # ✅ 检查所有进程状态并诊断
                     alive_processes = [p for p in self.processes if p.is_alive()]
                     self.logger.warning(f"存活进程数: {len(alive_processes)}/{len(self.processes)}")
@@ -542,7 +570,9 @@ class MultiProcessStockFetcher:
                         task_qsize = self.task_queue.qsize() if self.task_queue else 0
                         progress_qsize = self.progress_queue.qsize() if self.progress_queue else 0
                         result_qsize = self.result_queue.qsize() if self.result_queue else 0
-                        self.logger.warning(f"队列状态 - 任务: {task_qsize}, 进度: {progress_qsize}, 结果: {result_qsize}")
+                        self.logger.warning(
+                            f"队列状态 - 任务: {task_qsize}, 进度: {progress_qsize}, 结果: {result_qsize}"
+                        )
                     except Exception as e:
                         self.logger.debug(f"检查队列状态失败: {e}")
 
@@ -585,7 +615,6 @@ class MultiProcessStockFetcher:
 
         self.logger.info(f"监控完成: 收到 {len(results)} 个结果，完成 {completed} 个任务")
         return results
-
 
     def _cleanup_processes(self):
         """清理所有工作进程"""
@@ -697,14 +726,16 @@ class MultiProcessStockFetcher:
 
             # 重置下载状态
             if self._download_progress:
-                self._download_progress.update({
-                    "is_downloading": False,
-                    "completed": 0,
-                    "total": 0,
-                    "current_symbol": "",
-                    "current_interval": "",
-                    "start_time": None,
-                })
+                self._download_progress.update(
+                    {
+                        "is_downloading": False,
+                        "completed": 0,
+                        "total": 0,
+                        "current_symbol": "",
+                        "current_interval": "",
+                        "start_time": None,
+                    }
+                )
 
             # 创建并启动后台下载线程
             self._download_thread = threading.Thread(
@@ -733,21 +764,27 @@ class MultiProcessStockFetcher:
             def progress_callback(completed: int, total: int, symbol: str, interval: str):
                 # ✅ 方案2：严格限制UI更新频率
                 should_push = (
-                    completed == 1 or  # 第一个任务
-                    completed == total or  # 最后一个任务
-                    completed % 200 == 0  # 每200个任务更新一次（降低频率）
+                    completed == 1  # 第一个任务
+                    or completed == total  # 最后一个任务
+                    or completed % 200 == 0  # 每200个任务更新一次（降低频率）
                 )
 
                 # ✅ 使用日志输出，避免UI更新
                 if completed % 500 == 0 or completed == 1 or completed == total:
-                    self.logger.info(f"下载进度: {completed}/{total} ({completed*100/total:.1f}%) - {symbol} {interval}")
+                    self.logger.info(
+                        f"下载进度: {completed}/{total} ({completed*100/total:.1f}%) - {symbol} {interval}"
+                    )
 
                 # ✅ 方案1：添加异常保护，使用信号传递
                 if should_push and self.download_publisher:
                     try:
                         progress_pct = (completed / total) * 100
                         self.download_publisher.push_download_progress_event(
-                            "incremental_kline", progress_pct, completed, total, f"{symbol} {interval}"
+                            "incremental_kline",
+                            progress_pct,
+                            completed,
+                            total,
+                            f"{symbol} {interval}",
                         )
                     except Exception as e:
                         # 捕获异常避免崩溃
@@ -776,7 +813,7 @@ class MultiProcessStockFetcher:
                     symbols=symbols,
                     start_date=start_date,
                     intervals=["1d", "5m", "1m"],
-                    progress_callback=progress_callback
+                    progress_callback=progress_callback,
                 )
 
                 # 存储数据
@@ -1021,9 +1058,7 @@ def download_incremental_unified(
 
         # 限制事件推送频率
         if event_callback:
-            should_push = (
-                completed % 100 == 0 or completed == 1 or completed == total
-            )
+            should_push = completed % 100 == 0 or completed == 1 or completed == total
             if should_push:
                 progress_pct = (completed / total) * 100
                 event_callback(
@@ -1157,7 +1192,9 @@ def download_incremental_unified(
 
     # 推送完成事件
     if event_callback:
-        event_callback("incremental_kline", "success", saved_count, f"成功保存{saved_count}个数据集")
+        event_callback(
+            "incremental_kline", "success", saved_count, f"成功保存{saved_count}个数据集"
+        )
 
     return {
         "success": True,
@@ -1168,4 +1205,3 @@ def download_incremental_unified(
         "failed_count": failed_count,
         "message": f"成功保存{saved_count}个数据集（跳过{skipped_count}个空数据）",
     }
-

@@ -272,6 +272,13 @@ class ConfigManager:
         "chinastock.watcher_interval": 5,
         # 多服务器并行下载配置
         "chinastock.server_pool_size": 5,  # 并行服务器数量（默认5个，可设置1-30）
+        # 服务器池管理器配置
+        "chinastock.server_pool.server_count": 132,  # 测速服务器数量（默认132个，使用所有可用服务器）
+        "chinastock.server_pool.use_multiprocess": True,  # 是否使用多进程测速（默认True）
+        "chinastock.server_pool.max_coroutines_per_process": 50,  # 每进程最多协程数（默认50）
+        "chinastock.server_pool.update_interval": 600.0,  # 服务器池更新间隔（秒，默认10分钟）
+        "chinastock.server_pool.test_timeout": 2.0,  # 单个服务器测试超时（秒）
+        "chinastock.server_pool.max_fail_time": 10.0,  # 服务器失败阈值（秒，超过则视为不可用）
         # 轮询数据源转换器配置
         "chinastock.polling_gateway.enabled": False,
         "chinastock.polling_gateway.interval": 60,  # 轮询间隔（秒）

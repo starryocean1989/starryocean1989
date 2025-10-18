@@ -120,7 +120,7 @@ class ServerConfigDialog(QDialog):
             "推荐: 12-24（匹配CPU核心数）"
         )
         form_layout.addRow("并行进程数:", self.server_count_spin)
-        
+
         # 添加异步架构说明标签
         self.async_info_label = QLabel(
             f"💡 异步架构: 每进程30个连接\n"
@@ -130,7 +130,7 @@ class ServerConfigDialog(QDialog):
         self.async_info_label.setStyleSheet("color: #0066cc; font-size: 11px; padding: 5px;")
         self.async_info_label.setWordWrap(True)
         form_layout.addRow(self.async_info_label)
-        
+
         # 连接信号更新显示
         self.server_count_spin.valueChanged.connect(self._update_async_info)
 
@@ -189,7 +189,7 @@ class ServerConfigDialog(QDialog):
                     self.server_count_spin.setValue(int(server_pool_size))
                     self.timeout_spin.setValue(int(timeout))
                     self.retry_spin.setValue(int(retry_times))
-                    
+
                     # 更新异步信息显示
                     self._update_async_info(int(server_pool_size))
 
@@ -200,10 +200,10 @@ class ServerConfigDialog(QDialog):
             import logging
 
             logging.getLogger(__name__).error("加载服务器配置失败: %s", e)
-    
+
     def _update_async_info(self, value):
         """更新异步架构信息显示
-        
+
         Args:
             value: 进程数量
         """
@@ -1173,7 +1173,7 @@ class DataCenter(BaseWidget, LoggerMixin):
         self.progress_text.setAlignment(Qt.AlignLeft | Qt.AlignTop)  # 左上对齐
         self.progress_text.setMaximumHeight(150)
         self.progress_text.setStyleSheet("QLabel { padding: 5px; background-color: #f5f5f5; border: 1px solid #ddd; }")
-        
+
         # 使用滚动区域包装Label
         scroll_area = QScrollArea()
         scroll_area.setWidget(self.progress_text)
@@ -1243,7 +1243,11 @@ class DataCenter(BaseWidget, LoggerMixin):
     # ==================== 品种列表事件处理 ====================
 
     def _reload_symbols(self):
-        """重新加载品种（异步版本）."""
+        """重新加载品种（异步版本）.
+
+        注意：此方法用于从服务器重新获取品种列表，无需检查缓存是否存在。
+        即使缓存被删除，也可以通过此方法重新获取数据。
+        """
         try:
             self.logger.info("=" * 60)
             self.logger.info(">>> _reload_symbols() 被调用")
@@ -1375,6 +1379,22 @@ class DataCenter(BaseWidget, LoggerMixin):
         try:
             if not self.data_center_service:
                 self.show_error("数据中心服务未初始化")
+                return
+
+            # 🔧 关键修复：检查品种列表缓存是否存在
+            if not self.data_center_service.has_symbol_cache():
+                self.logger.warning("品种列表缓存不存在，阻止刷新操作")
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.warning(
+                    self,
+                    "无法刷新",
+                    "品种列表缓存不存在！\n\n"
+                    "请先点击「🔄 重新加载品种」按钮来初始化品种数据。\n\n"
+                    "提示：\n"
+                    "• 「🔄 重新加载品种」：从通达信服务器获取完整品种列表\n"
+                    "• 「↻ 刷新品种」：从本地缓存刷新品种列表",
+                    QMessageBox.StandardButton.Ok
+                )
                 return
 
             result = self.data_center_service.refresh_symbol_list()
@@ -2323,7 +2343,7 @@ class DataCenter(BaseWidget, LoggerMixin):
                             completed == total or  # 最后一个
                             completed % 200 == 0  # 每200个显示一次
                         )
-                        
+
                         if should_update:
                             # ✅ 直接设置文本，不触发重绘
                             progress_text = f"✓ 正在下载: {completed}/{total} ({progress_pct:.1f}%)\n最后更新: {current_item}"

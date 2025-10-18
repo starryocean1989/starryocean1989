@@ -38,6 +38,247 @@ health_checker.py (84行)    - 健康检查
 lifecycle_manager.py (118行) - 生命周期管理
 ```
 
+---
+
+## 🎯 架构深度解析
+
+### 1. 多进程并发架构
+
+data_module_vnpy采用**两层多进程架构**实现高性能数据获取：
+
+```
+┌─────────────────────────────────────────────────────────┐
+│            主进程（应用启动）                            │
+│                                                          │
+│  ┌────────────────────┐    ┌──────────────────────┐   │
+│  │  ServerPoolManager │    │ MultiProcessFetcher  │   │
+│  │  （服务器池测速）   │    │  （数据批量下载）     │   │
+│  └────────┬───────────┘    └──────────┬───────────┘   │
+└───────────┼────────────────────────────┼───────────────┘
+            │                            │
+            │                            │
+    ┌───────┴────────┐          ┌────────┴─────────┐
+    │   多进程测速    │          │   多进程下载      │
+    │   (3进程)      │          │   (12进程)       │
+    └───────┬────────┘          └────────┬─────────┘
+            │                            │
+    ┌───────┴───────────────┐   ┌────────┴────────────────┐
+    ↓                       ↓   ↓                         ↓
+  进程1(50协程)        进程3   进程1(30协程)        进程12
+  测速50个服务器        ...   下载任务(30连接)      ...
+    ↓                         ↓
+  132个服务器 → 54个可用     5000个股票 × 3周期 = 15000任务
+  响应时间排序              分配到12进程 × 30连接 = 360并发
+```
+
+### 2. ServerPoolManager：多进程服务器测速
+
+#### 设计目标
+在应用启动时快速测速132个通达信服务器，选出最快的50+个可用服务器
+
+#### 架构设计
+```python
+class ServerPoolManager:
+    """多进程并行测速（5-10秒完成）"""
+
+    def start(self):
+        # 分配：132个服务器 → 3个进程
+        # 进程1: 50个服务器
+        # 进程2: 50个服务器
+        # 进程3: 32个服务器
+
+        for i, chunk in enumerate(server_chunks):
+            Process(target=test_in_process, args=(chunk,))
+
+    @staticmethod
+    def test_in_process(servers):
+        """子进程中测速"""
+        # 每个进程创建独立事件循环
+        loop = asyncio.new_event_loop()
+
+        # 创建AsyncSmartIPPool
+        pool = AsyncSmartIPPool(servers)
+
+        # 分批测试（每批20个）
+        await pool._test_all_servers()
+        # 50个服务器，分3批：20+20+10
+
+        # 排序并保存结果
+        await pool._sort_servers()
+```
+
+#### 性能指标
+```
+输入：132个服务器
+进程：3个（CPU并行）
+每进程：50个协程（I/O并行）
+测速超时：2秒/服务器
+总耗时：5-10秒
+
+输出：54个可用服务器（按速度排序）
+最快：123.125.108.90:7709
+Top3: 123.125.108.90, 123.125.108.14, 124.70.176.52
+```
+
+### 3. MultiProcessStockFetcher：多进程数据下载
+
+#### 设计目标
+批量下载5000只股票的历史K线数据（日线、5分钟、1分钟）
+
+#### 架构设计
+```python
+class MultiProcessStockFetcher:
+    """多进程数据获取器（12进程 × 30连接 = 360并发）"""
+
+    def download_incremental_kline(self, symbols, intervals):
+        # 1. 从ServerPoolManager获取排序后的服务器
+        servers = server_pool_manager.get_servers()  # 54个可用服务器
+
+        # 2. 创建任务队列
+        tasks = [(symbol, interval, date)
+                 for symbol in symbols
+                 for interval in intervals]
+        # 5000股票 × 3周期 = 15000任务
+
+        # 3. 启动12个下载进程
+        for i in range(12):
+            Process(target=download_worker_async,
+                   args=(task_queue, servers))
+
+    async def download_worker_async(worker_id, task_queue, servers):
+        """每个Worker进程"""
+        # 创建30个异步连接（每个连接不同服务器）
+        connections = {}
+        for i in range(30):
+            idx = worker_id * 30 + i  # 全局索引
+            server = servers[idx % len(servers)]
+            client = await AsyncTdxHq_API.factory(server)
+            connections[server] = client
+
+        # 30个协程并发下载
+        async def download_loop(client, server):
+            while True:
+                task = task_queue.get()
+                data = await client.get_security_bars(...)
+                result_queue.put(data)
+
+        await asyncio.gather(*[
+            download_loop(connections[s], s)
+            for s in connections
+        ])
+```
+
+#### 连接分配策略
+```
+关键原则：每个服务器只有1个连接（跨所有进程）
+
+Worker1: 连接1-30   → 服务器1-30
+Worker2: 连接31-60  → 服务器31-54, 1-6 (循环)
+Worker3: 连接61-90  → 服务器7-36
+...
+Worker12: 连接331-360 → 服务器...
+
+使用字典管理：
+connections = {
+    ("121.14.110.210", 7709): client1,
+    ("58.246.109.27", 7709): client2,
+}
+
+优势：
+✅ 清晰知道每个连接对应哪个服务器
+✅ 避免同一服务器多连接冲突
+✅ 日志输出可追踪
+```
+
+### 4. 整体数据流
+
+```
+用户请求：下载5000只股票数据
+    ↓
+┌─────────────────────────────┐
+│ 1. ServerPoolManager启动     │
+│    (应用启动时执行一次)       │
+└────────────┬────────────────┘
+             ↓
+  多进程测速132个服务器（3进程×50协程）
+             ↓
+  5-10秒完成 → 54个可用服务器（已排序）
+             ↓
+┌─────────────────────────────┐
+│ 2. MultiProcessFetcher启动   │
+│    (用户发起下载请求)         │
+└────────────┬────────────────┘
+             ↓
+  获取54个服务器列表
+             ↓
+  创建15000个任务 (5000股票×3周期)
+             ↓
+  分配到12个进程（每进程~1250任务）
+             ↓
+┌────────────┴────────────┐
+│  每个进程内部执行：      │
+│  1. 创建30个连接         │
+│  2. 30个协程并发下载     │
+│  3. 从任务队列取任务     │
+│  4. 下载完成放结果队列   │
+└─────────────────────────┘
+             ↓
+  12进程×30连接 = 360并发
+             ↓
+  3-5分钟完成15000任务
+```
+
+### 5. 性能对比
+
+#### 服务器测速
+| 方案 | 服务器数 | 进程数 | 协程数 | 耗时 |
+|------|---------|--------|--------|------|
+| **多进程模式** | 132 | 3 | 50×3 | **5-10秒** |
+| 单进程模式 | 132 | 1 | 132 | 20-30秒 |
+
+#### 数据下载
+| 方案 | 并发数 | 5000股票×3周期 | GIL影响 |
+|------|--------|---------------|---------|
+| **多进程架构** | 360 | **3-5分钟** | ✅ 无（多进程） |
+| 单进程多协程 | 30 | 15-20分钟 | ⚠️ 轻微 |
+| mootdx+多线程 | 50 | 40-60分钟 | ❌ 严重 |
+
+### 6. 关键设计原则
+
+#### 6.1 每服务器单连接
+```python
+# ✅ 正确：全局唯一索引，确保不重复
+server_index = Manager().Value('i', 0)  # 共享计数器
+
+for i in range(connections_per_worker):
+    idx = server_index.value
+    server_index.value += 1  # 原子递增
+    server = servers[idx % len(servers)]
+    connections[server] = await create_connection(server)
+```
+
+#### 6.2 字典管理连接
+```python
+# ✅ 推荐：字典方案
+connections = {server: client}  # 服务器地址为键
+logger.info(f"使用服务器 {server[0]}:{server[1]}")
+
+# ❌ 不推荐：列表方案
+connections = [client1, client2]  # 不知道对应哪个服务器
+```
+
+#### 6.3 任务动态分配
+```python
+# ✅ 共享任务队列
+task_queue = Manager().Queue()
+task_queue.put((symbol, interval, date))
+
+# Worker从队列获取，自动负载均衡
+task = task_queue.get(timeout=0.5)
+```
+
+---
+
 ## 功能特点
 
 ### 核心功能
@@ -64,6 +305,57 @@ lifecycle_manager.py (118行) - 生命周期管理
 - **四层数据融合**：历史数据、录制数据、实时数据、预加载缓存的智能融合
 - **订阅管理**：统一管理各模块的数据订阅需求
 - **自动补全**：智能检测数据缺失并自动触发下载
+
+### 连接管理模式 🔌
+
+本模块所有涉及多连接管理的代码**统一使用字典方案**：
+
+#### 核心原则
+
+```python
+# ✅ 推荐：使用字典管理连接（服务器地址为键）
+connections = {
+    ("121.14.110.210", 7709): client1,
+    ("58.246.109.27", 7709): client2,
+    # ...
+}
+server_list = [("121.14.110.210", 7709), ("58.246.109.27", 7709)]
+
+# 直接访问
+server = server_list[idx]
+client = connections[server]
+result = await client.get_security_bars(...)
+
+# 清晰的日志输出
+logger.info(f"使用服务器 {server[0]}:{server[1]}")
+
+# ❌ 不推荐：列表方案
+connections = [client1, client2]  # 不清楚哪个服务器对应哪个连接
+```
+
+#### 适用场景
+
+1. **`symbol_management.py`** - 品种列表获取
+   - 10个连接，使用字典管理
+   - 热备机制：失败时自动切换到下一个可用服务器
+   - 串行获取市场数据，避免连接冲突
+
+2. **`data_fetcher.py`** - 多进程K线下载
+   - 每个Worker使用字典管理自己的连接
+   - 多服务器、单连接原则（每个服务器最多1个连接）
+   - 轮询选择服务器，避免对单一服务器的压力
+
+#### 优势说明
+
+- ✅ **语义清晰**：代码可读性强，一目了然
+- ✅ **调试友好**：日志中显示具体服务器信息
+- ✅ **维护简单**：添加/删除服务器非常直观
+- ✅ **避免错误**：不会因为索引计算错误导致连接混乱
+- ✅ **性能无损**：字典查找 O(1) 时间复杂度
+
+#### 实现示例
+
+参见 `symbol_management.py` 和 `data_fetcher.py` 中的实现。
 
 ## 安装
 

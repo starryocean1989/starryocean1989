@@ -12,7 +12,6 @@
 合并来源：symbol_loader.py + block_parser.py
 """
 
-import asyncio
 import json
 import logging
 from datetime import datetime
@@ -20,7 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
-from backend.infrastructure.tdx_asyncio import AsyncTdxHq_API, HQ_HOSTS_ALL
+from backend.infrastructure.tdx_asyncio import AsyncTdxHq_API
 
 from .config import config_manager, TdxConfigFileParser
 
@@ -475,80 +474,106 @@ class SymbolLoader:
         分别调用market=0、1，手动添加market列后合并
         注意：北交所（market=2）品种不从API获取，完全从addedcode_bj.cfg解析获得
 
+        架构设计（双进程模式）：
+        - 进程1：处理市场0（深圳），单线程，单服务器，单连接，串行请求所有页
+        - 进程2：处理市场1（上海），单线程，单服务器，单连接，串行请求所有页
+        - 两个进程并行运行，充分利用双核CPU
+
         Returns:
             包含market列的完整DataFrame
         """
         self.logger.info("步骤1: 获取完整品种缓存（集合D）")
+        self.logger.info("→ 双进程模式：市场0和市场1各用独立进程...")
 
-        # 从 tdx_asyncio API 获取品种列表
-        self.logger.info("→ 从 tdx_asyncio API 获取品种列表...")
+        # 获取最优服务器
+        from .server_pool_manager import server_pool_manager
 
-        # 定义异步获取函数
-        async def _fetch_all_securities():
-            # 使用 tdx_asyncio 的服务器列表
-            servers = [(h[1], h[2]) for h in HQ_HOSTS_ALL[:10]]  # 使用前10个服务器
+        best_servers = server_pool_manager.get_servers()
+        self.logger.info("  ✓ 获取到 %d 个已排序的最优服务器", len(best_servers))
 
-            client = None
-            for server in servers:
-                try:
-                    self.logger.info(f"  → 尝试连接服务器: {server[0]}:{server[1]}")
-                    client = await AsyncTdxHq_API.factory(
-                        server=server,
-                        timeout=10.0,
-                        heartbeat=False,
-                        raise_exception=False
-                    )
-                    if client:
-                        self.logger.info(f"  ✓ 连接成功: {server[0]}:{server[1]}")
-                        break
-                except Exception as e:
-                    self.logger.warning(f"  ✗ 连接失败 {server[0]}:{server[1]}: {e}")
-                    continue
+        # 为两个市场分配服务器（前2个最快的）
+        if len(best_servers) < 2:
+            raise RuntimeError(f"可用服务器不足（需要2个，实际{len(best_servers)}个）")
 
-            if not client:
-                raise RuntimeError("无法连接到任何tdx服务器")
+        market_servers = {
+            0: best_servers[0],  # 市场0（深圳）用最快的服务器
+            1: best_servers[1],  # 市场1（上海）用第二快的服务器
+        }
 
-            stocks_list = []
-            try:
-                # 支持的市场：0=深交所, 1=上交所
-                for market in [0, 1]:
-                    try:
-                        self.logger.info(f"  → 获取 market={market} 品种列表...")
+        self.logger.info("  → 深圳市场：%s:%s", market_servers[0][0], market_servers[0][1])
+        self.logger.info("  → 上海市场：%s:%s", market_servers[1][0], market_servers[1][1])
 
-                        # 分页获取（每次最多1000条）
-                        all_stocks = []
-                        start = 0
-                        while True:
-                            stocks = await client.get_security_list(market=market, start=start)
-                            if not stocks:
-                                break
-                            all_stocks.extend(stocks)
-                            self.logger.debug(f"    已获取 {len(all_stocks)} 条")
-                            if len(stocks) < 1000:  # 最后一页
-                                break
-                            start += 1000
+        # 使用multiprocessing创建共享内存
+        from multiprocessing import Process, Manager
+        import time
 
-                        if all_stocks:
-                            df = pd.DataFrame(all_stocks)
-                            df["market"] = market
-                            stocks_list.append(df)
-                            self.logger.info(f"  ✓ market={market}: {len(all_stocks)} 个品种")
-                        else:
-                            self.logger.warning(f"  ⚠ market={market} 返回空数据")
+        manager = Manager()
+        shared_results = manager.dict()  # 共享字典：{market: [stocks]}
 
-                    except Exception as e:
-                        self.logger.error(f"  ✗ market={market} 获取失败: {e}")
+        # 创建2个进程
+        processes = []
+        for market in [0, 1]:
+            p = Process(
+                target=self._fetch_market_in_process,
+                args=(market, market_servers[market], shared_results),
+                name=f"MarketFetch-{market}",
+            )
+            p.start()
+            processes.append(p)
+            market_name = "深圳" if market == 0 else "上海"
+            self.logger.info("  🚀 %s市场进程已启动（PID: %s）", market_name, p.pid)
 
-            finally:
-                await client.close()
+        # 等待所有进程完成
+        self.logger.info("  ⏳ 等待2个进程完成...")
+        start_time = time.time()
 
-            if not stocks_list:
-                raise RuntimeError("未能获取任何品种数据")
+        for i, p in enumerate(processes):
+            p.join()
+            market_name = "深圳" if i == 0 else "上海"
+            self.logger.info("  ✅ %s市场进程完成", market_name)
 
-            return pd.concat(stocks_list, ignore_index=True)
+        elapsed = time.time() - start_time
+        self.logger.info("  ✅ 双进程获取完成，耗时: %.1f秒", elapsed)
 
-        # 在同步方法中调用异步函数
-        complete_df = asyncio.run(_fetch_all_securities())
+        # 从共享内存提取结果
+        market_data = dict(shared_results)
+
+        if not market_data:
+            raise RuntimeError("所有进程均未返回数据")
+
+        # 构建DataFrame
+        stocks_list = []
+        for market in [0, 1]:
+            if market in market_data and market_data[market]:
+                df = pd.DataFrame(market_data[market])
+                df["market"] = market
+                df = df.drop_duplicates(subset=["code"], keep="first")
+                stocks_list.append(df)
+                market_name = "深圳" if market == 0 else "上海"
+                self.logger.info("  ✓ %s市场: %d 个品种", market_name, len(df))
+
+                # 验证market字段的正确性
+                if "market" in df.columns:
+                    actual_markets = df["market"].unique()
+                    if len(actual_markets) != 1 or actual_markets[0] != market:
+                        self.logger.error(
+                            "  ❌ %s市场数据异常！期望market=%d，实际包含%s",
+                            market_name,
+                            market,
+                            actual_markets.tolist(),
+                        )
+                    # 显示代码前缀分布（帮助诊断数据来源）
+                    if "code" in df.columns:
+                        code_prefixes = df["code"].astype(str).str[:2].value_counts().head(5)
+                        self.logger.info("  代码前缀分布TOP5: %s", dict(code_prefixes))
+            else:
+                market_name = "深圳" if market == 0 else "上海"
+                self.logger.warning("  ⚠ %s市场: 无数据", market_name)
+
+        if not stocks_list:
+            raise RuntimeError("未能获取任何品种数据")
+
+        complete_df = pd.concat(stocks_list, ignore_index=True)
 
         # 补齐代码位数
         complete_df["code"] = complete_df["code"].astype(str).str.zfill(6)
@@ -556,6 +581,142 @@ class SymbolLoader:
         self.logger.info("  ← 集合D: %d 个品种（含market列）", len(complete_df))
 
         return complete_df
+
+    @staticmethod
+    def _fetch_market_in_process(market: int, server: tuple, shared_results: dict):
+        """
+        在子进程中运行的市场数据获取函数
+
+        Args:
+            market: 市场代码（0=深圳，1=上海）
+            server: 服务器地址 (ip, port)
+            shared_results: 共享内存字典，用于存储结果
+        """
+        import logging
+        import asyncio
+
+        # 为子进程设置日志
+        market_name = "深圳" if market == 0 else "上海"
+        logger = logging.getLogger(f"MarketFetch-{market}")
+
+        async def fetch_market():
+            """
+            子进程中的异步函数：连接服务器并串行获取所有页
+            """
+            try:
+                logger.info("[%s] 开始连接服务器 %s:%s", market_name, server[0], server[1])
+
+                # 建立连接
+                client = await asyncio.wait_for(
+                    AsyncTdxHq_API.factory(
+                        server=server, timeout=3.0, heartbeat=False, raise_exception=False
+                    ),
+                    timeout=5.0,
+                )
+
+                if not client:
+                    raise RuntimeError(f"无法连接到服务器 {server[0]}:{server[1]}")
+
+                logger.info("[%s] ✓ 连接成功，开始串行分页请求...", market_name)
+                # 记录使用的服务器
+                logger.info("[%s] 使用服务器: %s:%s", market_name, server[0], server[1])
+
+                all_stocks = []
+                start = 0
+                page = 1
+                max_retries = 3
+
+                try:
+                    while True:
+                        stocks = None
+
+                        # 重试机制（使用同一个连接）
+                        for retry in range(max_retries):
+                            try:
+                                stocks = await asyncio.wait_for(
+                                    client.get_security_list(market=market, start=start),
+                                    timeout=10.0,
+                                )
+
+                                if stocks:
+                                    # 显示样本代码以便诊断
+                                    sample_codes = (
+                                        [s.get("code", "") for s in stocks[:3]]
+                                        if len(stocks) >= 3
+                                        else []
+                                    )
+                                    logger.info(
+                                        "[%s] 第%d页: %d条 (样本代码: %s)",
+                                        market_name,
+                                        page,
+                                        len(stocks),
+                                        ", ".join(sample_codes) if sample_codes else "N/A",
+                                    )
+                                    break
+                                else:
+                                    logger.debug("[%s] 第%d页返回空数据", market_name, page)
+                                    break
+
+                            except asyncio.TimeoutError:
+                                logger.warning(
+                                    "[%s] 第%d页超时 (尝试%d/%d)",
+                                    market_name,
+                                    page,
+                                    retry + 1,
+                                    max_retries,
+                                )
+                            except Exception as e:
+                                logger.debug(
+                                    "[%s] 第%d页失败: %s (尝试%d/%d)",
+                                    market_name,
+                                    page,
+                                    e,
+                                    retry + 1,
+                                    max_retries,
+                                )
+
+                        # 检查是否继续
+                        if not stocks:
+                            break
+
+                        all_stocks.extend(stocks)
+
+                        if len(stocks) < 1000:
+                            break
+
+                        start += 1000
+                        page += 1
+
+                    logger.info(
+                        "[%s] ✓ 获取完成: %d条原始数据（共%d页）",
+                        market_name,
+                        len(all_stocks),
+                        page,
+                    )
+
+                    # 存入共享内存
+                    shared_results[market] = all_stocks
+
+                finally:
+                    await client.close()
+                    logger.debug("[%s] 连接已关闭", market_name)
+
+            except Exception as e:
+                logger.error("[%s] ❌ 获取失败: %s", market_name, e, exc_info=True)
+                logger.error("[%s] 失败详情:", market_name)
+                logger.error("  - 服务器: %s:%s", server[0], server[1])
+                logger.error("  - 已获取数据量: %d", len(all_stocks))
+                logger.error("  - 异常类型: %s", type(e).__name__)
+                shared_results[market] = []
+
+        # 创建新事件循环并运行
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        try:
+            loop.run_until_complete(fetch_market())
+        finally:
+            loop.close()
 
     def _classify_stocks(self, complete_df: pd.DataFrame) -> Dict[str, List[Dict[str, Any]]]:
         """
@@ -651,7 +812,11 @@ class SymbolLoader:
 
             for stock in beijing_stocks:
                 result.append(
-                    {"code": stock["code"], "name": stock["name"], "market": 2}  # 市场代码2为硬编码值
+                    {
+                        "code": stock["code"],
+                        "name": stock["name"],
+                        "market": 2,
+                    }  # 市场代码2为硬编码值
                 )
 
             count = len(result)
@@ -860,7 +1025,9 @@ class SymbolLoader:
 
                 # 推送下载事件（自己推送）
                 if self.download_publisher:
-                    self.download_publisher.push_download_event("stock_list", "error", 0, "获取的数据为空")
+                    self.download_publisher.push_download_event(
+                        "stock_list", "error", 0, "获取的数据为空"
+                    )
                 if self.event_publisher:
                     self.event_publisher.push_log_event("获取品种列表失败: 数据为空", "ERROR")
 
@@ -901,7 +1068,9 @@ class SymbolLoader:
 
             # 推送错误事件
             if self.download_publisher:
-                self.download_publisher.push_download_event("stock_list", "error", 0, f"错误: {str(e)}")
+                self.download_publisher.push_download_event(
+                    "stock_list", "error", 0, f"错误: {str(e)}"
+                )
             if self.event_publisher:
                 self.event_publisher.push_log_event(f"更新品种列表失败: {e}", "ERROR")
 
@@ -974,17 +1143,17 @@ class SymbolLoader:
                 all_codes.extend([code for code in stocks if isinstance(code, str) and code])
             elif isinstance(first_item, dict):
                 # 字典列表格式
-                all_codes.extend([
-                    stock.get("code", "").strip()
-                    for stock in stocks
-                    if isinstance(stock, dict) and stock.get("code")
-                ])
+                all_codes.extend(
+                    [
+                        stock.get("code", "").strip()
+                        for stock in stocks
+                        if isinstance(stock, dict) and stock.get("code")
+                    ]
+                )
 
         return all_codes
 
-    def extract_codes_by_market(
-        self, market_types: Optional[List[str]] = None
-    ) -> List[str]:
+    def extract_codes_by_market(self, market_types: Optional[List[str]] = None) -> List[str]:
         """
         从指定市场类型中提取品种代码（从core.py迁移）
 

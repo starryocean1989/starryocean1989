@@ -180,7 +180,12 @@ def main():
             except ImportError as e:
                 logger.warning("[VNPY-CORE] ⚠️ vnpy_ctastrategy 未安装: %s", e)
             except Exception as e:
-                logger.error("[VNPY-CORE] ❌ 添加 CtaStrategyApp 失败: %s (类型: %s)", e, type(e).__name__, exc_info=True)
+                logger.error(
+                    "[VNPY-CORE] ❌ 添加 CtaStrategyApp 失败: %s (类型: %s)",
+                    e,
+                    type(e).__name__,
+                    exc_info=True,
+                )
 
             try:
                 from vnpy_algotrading import AlgoTradingApp
@@ -190,7 +195,12 @@ def main():
             except ImportError as e:
                 logger.warning("[VNPY-CORE] ⚠️ vnpy_algotrading 未安装: %s", e)
             except Exception as e:
-                logger.error("[VNPY-CORE] ❌ 添加 AlgoTradingApp 失败: %s (类型: %s)", e, type(e).__name__, exc_info=True)
+                logger.error(
+                    "[VNPY-CORE] ❌ 添加 AlgoTradingApp 失败: %s (类型: %s)",
+                    e,
+                    type(e).__name__,
+                    exc_info=True,
+                )
 
             try:
                 from vnpy_optionmaster import OptionMasterApp
@@ -200,7 +210,12 @@ def main():
             except ImportError as e:
                 logger.warning("[VNPY-CORE] ⚠️ vnpy_optionmaster 未安装: %s", e)
             except Exception as e:
-                logger.error("[VNPY-CORE] ❌ 添加 OptionMasterApp 失败: %s (类型: %s)", e, type(e).__name__, exc_info=True)
+                logger.error(
+                    "[VNPY-CORE] ❌ 添加 OptionMasterApp 失败: %s (类型: %s)",
+                    e,
+                    type(e).__name__,
+                    exc_info=True,
+                )
 
             try:
                 from vnpy_portfoliostrategy import PortfolioStrategyApp
@@ -210,7 +225,12 @@ def main():
             except ImportError as e:
                 logger.warning("[VNPY-CORE] ⚠️ vnpy_portfoliostrategy 未安装: %s", e)
             except Exception as e:
-                logger.error("[VNPY-CORE] ❌ 添加 PortfolioStrategyApp 失败: %s (类型: %s)", e, type(e).__name__, exc_info=True)
+                logger.error(
+                    "[VNPY-CORE] ❌ 添加 PortfolioStrategyApp 失败: %s (类型: %s)",
+                    e,
+                    type(e).__name__,
+                    exc_info=True,
+                )
 
             vnpy_time = (time.time() - vnpy_start) * 1000
             print(f"[VNPY-CORE] ✅ VnPy 核心初始化完成 ({vnpy_time:.0f}ms)")
@@ -219,6 +239,40 @@ def main():
         except Exception as e:
             logger.error("[VNPY-CORE] ❌ VnPy 核心初始化失败: %s", e, exc_info=True)
             print(f"[VNPY-CORE] ❌ VnPy 核心初始化失败: {e}")
+            # 不中断启动流程，继续执行
+
+        # ==================== 阶段2.6：初始化服务器池管理器 ====================
+        print("\n[SERVER-POOL] 🚀 正在初始化智能服务器池...")
+        logger.info("[SERVER-POOL] 开始初始化服务器池管理器")
+
+        server_pool_start = time.time()
+
+        try:
+            from backend.infrastructure.data_module_vnpy import server_pool_manager
+
+            # 启动服务器池管理器（多进程并行测速）
+            print("[SERVER-POOL] 🔧 正在启动服务器池（多进程测速）...")
+            success = server_pool_manager.start()
+
+            if success:
+                server_pool_time = (time.time() - server_pool_start) * 1000
+                print(f"[SERVER-POOL] ✅ 服务器池启动完成 ({server_pool_time:.0f}ms)")
+                logger.info(
+                    "[SERVER-POOL] ✅ 服务器池管理器启动完成，耗时 %.0fms", server_pool_time
+                )
+                # 获取统计信息
+                stats = server_pool_manager.get_stats()
+                print(f"[SERVER-POOL] 📊 可用服务器: {stats['available']}/{stats['total']}个")
+                logger.info("[SERVER-POOL] 可用服务器: %d/%d个", stats["available"], stats["total"])
+            else:
+                logger.error("[SERVER-POOL] ❌ 服务器池管理器启动失败")
+                print("[SERVER-POOL] ❌ 启动失败！下载功能将不可用")
+                print("[SERVER-POOL] ⚠️  请检查网络连接或查看日志了解详情")
+
+        except Exception as e:
+            logger.error("[SERVER-POOL] ❌ 服务器池管理器初始化异常: %s", e, exc_info=True)
+            print(f"[SERVER-POOL] ❌ 初始化异常: {e}")
+            print("[SERVER-POOL] ⚠️  下载功能将不可用，请检查网络连接")
             # 不中断启动流程，继续执行
 
         # ==================== 连接后端初始化回调 ====================

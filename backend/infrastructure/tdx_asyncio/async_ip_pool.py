@@ -15,7 +15,6 @@
 import asyncio
 import time
 from typing import List, Tuple, Optional, Dict
-from collections import OrderedDict
 
 from .async_hq import AsyncTdxHq_API
 from .logger import logger
@@ -60,6 +59,7 @@ class AsyncRandomIPPool(AsyncIPPool):
         获取随机打乱的服务器列表
         """
         import random
+
         shuffled = self.servers.copy()
         random.shuffle(shuffled)
         return shuffled
@@ -82,7 +82,7 @@ class AsyncSmartIPPool(AsyncIPPool):
         servers: List[Tuple[str, int]],
         update_interval: float = 600.0,  # 10分钟
         test_timeout: float = 2.0,
-        max_fail_time: float = 10.0  # 超过此时间视为不可用
+        max_fail_time: float = 10.0,  # 超过此时间视为不可用
     ):
         """
         初始化智能IP池
@@ -101,13 +101,15 @@ class AsyncSmartIPPool(AsyncIPPool):
         self.server_scores: Dict[Tuple[str, int], float] = {}
 
         # 排序后的服务器列表（按速度排序）
-        self.sorted_servers: List[Tuple[str, int]] = servers.copy()
+        # 🔥 关键：初始化为空列表，必须等待首次测速完成后才有数据
+        self.sorted_servers: List[Tuple[str, int]] = []
 
         # 后台任务控制
         self._monitor_task: Optional[asyncio.Task] = None
         self._stop_event = asyncio.Event()
 
-        logger.info(f"智能IP池初始化: {len(servers)}个服务器, 更新间隔{update_interval}秒")
+        logger.info(f"智能IP池初始化: {len(servers)}个候选服务器, 更新间隔{update_interval}秒")
+        logger.info("注意: sorted_servers 初始为空，必须等待首次测速完成后才有数据")
 
     async def start(self):
         """
@@ -116,8 +118,34 @@ class AsyncSmartIPPool(AsyncIPPool):
         开始定期测速和排序
         """
         if self._monitor_task is None:
+            # 🔥 关键：启动时先清空 sorted_servers，确保在测速完成前为空
+            self.sorted_servers = []
+            logger.info("🔍 智能IP池：开始首次服务器速度分析（异步进行）...")
+            logger.info(f"⏳ 正在并发测试 {len(self.servers)} 个服务器，预计耗时10-30秒")
+
+            try:
+                # 执行首次测速和排序
+                await self._test_all_servers()
+                await self._sort_servers()
+
+                if self.sorted_servers:
+                    logger.info(
+                        f"✅ 智能IP池：服务器分析完成！"
+                        f"可用服务器: {len(self.sorted_servers)}个，"
+                        f"最快: {self.sorted_servers[0][0]}:{self.sorted_servers[0][1]}"
+                    )
+                    logger.info("💡 现在可以安全使用下载功能了")
+                else:
+                    logger.error("❌ 智能IP池：服务器分析完成，但没有可用服务器！")
+                    logger.error("⚠️  下载功能将不可用，请检查网络连接")
+            except Exception as e:
+                logger.error(f"❌ 智能IP池：首次测速失败: {e}")
+                logger.error("⚠️  服务器测速异常，下载功能将不可用")
+                # 🔥 关键：失败时保持 sorted_servers 为空，强制阻止下载
+
+            # 启动后台监控任务
             self._monitor_task = asyncio.create_task(self._monitor_loop())
-            logger.info("智能IP池监控任务已启动")
+            logger.info("🔄 智能IP池：后台持续监控已启动（定期重新评估服务器速度）")
 
     async def stop(self):
         """
@@ -144,10 +172,7 @@ class AsyncSmartIPPool(AsyncIPPool):
 
                 # 等待下次更新（可中断）
                 try:
-                    await asyncio.wait_for(
-                        self._stop_event.wait(),
-                        timeout=self.update_interval
-                    )
+                    await asyncio.wait_for(self._stop_event.wait(), timeout=self.update_interval)
                 except asyncio.TimeoutError:
                     # 超时，继续下一轮测试
                     pass
@@ -156,10 +181,7 @@ class AsyncSmartIPPool(AsyncIPPool):
                 logger.error(f"IP池监控循环异常: {e}")
                 # 异常时等待1分钟后重试
                 try:
-                    await asyncio.wait_for(
-                        self._stop_event.wait(),
-                        timeout=60.0
-                    )
+                    await asyncio.wait_for(self._stop_event.wait(), timeout=60.0)
                 except asyncio.TimeoutError:
                     pass
 
@@ -170,37 +192,42 @@ class AsyncSmartIPPool(AsyncIPPool):
         并发测试所有服务器（纯异步）
 
         使用asyncio.gather并发测试，提升效率
+        分批测试，每批最多20个，避免资源竞争
         """
-        logger.debug(f"开始测试{len(self.servers)}个服务器")
+        total_servers = len(self.servers)
+        logger.info(f"📊 开始测试 {total_servers} 个服务器...")
 
-        # 创建测试任务
-        tasks = [
-            self._test_single_server(server)
-            for server in self.servers
-        ]
+        # 🔥 关键改进：分批测试，避免一次性并发过多
+        batch_size = 20  # 每批最多20个服务器
+        all_results = []
 
-        # 并发执行所有测试
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for batch_start in range(0, total_servers, batch_size):
+            batch_end = min(batch_start + batch_size, total_servers)
+            batch = self.servers[batch_start:batch_end]
+
+            logger.info(f"   测试进度: {batch_start+1}-{batch_end}/{total_servers}")
+
+            # 创建测试任务
+            tasks = [self._test_single_server(server) for server in batch]
+
+            # 并发执行批次测试
+            batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+            all_results.extend(batch_results)
 
         # 处理结果
-        success_count = sum(1 for r in results if not isinstance(r, Exception))
-        logger.debug(f"服务器测试完成: {success_count}/{len(self.servers)}个成功")
+        success_count = sum(
+            1 for r in all_results if not isinstance(r, Exception) and r is not None
+        )
+        logger.info(f"✅ 服务器测试完成: {success_count}/{total_servers} 个可用")
 
     async def _test_single_server(self, server: Tuple[str, int]):
         """
-        最优服务器测速算法（融合三版本优点）
-
-        融合特性：
-        1. pytdx：真实请求测速，验证数据完整性（>800条）
-        2. mootdx：perf_counter精确计时，多种测试方法
-        3. 现有：纯异步实现，后台监控
+        服务器测速算法（简化版：仅TCP连接测试）
 
         测试流程：
         1. 精确计时开始（perf_counter）
-        2. 连接测试（timeout=0.7秒，快速失败）
-        3. API调用（get_security_list验证真实服务质量）
-        4. 数据验证（len(result) > 800，防止半死服务器）
-        5. 精确计时结束
+        2. TCP连接测试（timeout=2秒，添加整体超时保护）
+        3. 记录连接响应时间
 
         :param server: (ip, port) 元组
         :return: 测试结果（成功返回响应时间，失败返回None）
@@ -211,64 +238,56 @@ class AsyncSmartIPPool(AsyncIPPool):
         start_time = time.perf_counter()
 
         try:
-            # 创建客户端并测试连接（快速超时0.7秒，来自pytdx）
-            client = await AsyncTdxHq_API.factory(
-                server=server,
-                timeout=0.7,  # pytdx推荐：快速超时，避免等待过久
-                heartbeat=False,
-                raise_exception=False
+            # 🔥 关键改进：为整个测试过程添加超时保护（防止卡死）
+            # 创建客户端并测试TCP连接
+            client = await asyncio.wait_for(
+                AsyncTdxHq_API.factory(
+                    server=server,
+                    timeout=self.test_timeout * 0.8,  # 稍微小于总超时
+                    heartbeat=False,
+                    raise_exception=False,
+                ),
+                timeout=self.test_timeout,
             )
 
             if client:
-                try:
-                    # 真实API请求验证（来自pytdx.util.best_ip）
-                    # 调用get_security_list而非简单心跳，确保服务器真正可用
-                    result = await client.get_security_list(0, 1)
+                # TCP连接成功，记录响应时间
+                response_time = time.perf_counter() - start_time
 
-                    # 数据完整性验证（pytdx核心逻辑）
-                    if result is not None and len(result) > 800:
-                        # 数据完整，服务器健康
-                        response_time = time.perf_counter() - start_time
+                # 记录响应时间
+                self.server_scores[server] = response_time
 
-                        # 记录响应时间（毫秒级精度，来自mootdx）
-                        self.server_scores[server] = response_time
+                # 智能分级日志
+                if response_time < 0.1:
+                    level = "优秀"
+                elif response_time < 0.3:
+                    level = "良好"
+                elif response_time < 0.7:
+                    level = "可用"
+                else:
+                    level = "较慢"
 
-                        # 智能分级日志
-                        if response_time < 0.1:
-                            level = "优秀"
-                        elif response_time < 0.5:
-                            level = "良好"
-                        elif response_time < 2.0:
-                            level = "可用"
-                        else:
-                            level = "较慢"
+                logger.debug(f"服务器 {ip}:{port} [{level}] TCP连接: {response_time*1000:.2f}ms")
 
-                        logger.debug(f"服务器 {ip}:{port} [{level}] 响应: {response_time*1000:.2f}ms, 数据: {len(result)}条")
-                        return response_time
-                    else:
-                        # 数据不完整，标记为不可用（pytdx核心逻辑）
-                        self.server_scores[server] = self.max_fail_time + 1
-                        logger.debug(f"服务器 {ip}:{port} 数据不完整: {len(result) if result else 0}条")
-                        return None
-
-                finally:
-                    await client.close()
+                # 关闭连接
+                await client.close()
+                return response_time
             else:
                 # 连接失败
                 self.server_scores[server] = self.max_fail_time + 1
-                logger.debug(f"服务器 {ip}:{port} 连接失败")
+                logger.debug(f"服务器 {ip}:{port} TCP连接失败")
                 return None
 
         except asyncio.TimeoutError:
             # 超时（快速失败机制）
             self.server_scores[server] = self.max_fail_time + 1
-            logger.debug(f"服务器 {ip}:{port} 测试超时(>0.7s)")
+            logger.debug(f"服务器 {ip}:{port} TCP连接超时(>{self.test_timeout}s)")
             return None
 
         except Exception as e:
             # 其他异常
             self.server_scores[server] = self.max_fail_time + 1
-            logger.debug(f"服务器 {ip}:{port} 测试异常: {e}")
+            logger.debug(f"服务器 {ip}:{port} TCP连接异常: {e}")
             return None
 
     async def _sort_servers(self):
@@ -279,7 +298,8 @@ class AsyncSmartIPPool(AsyncIPPool):
         """
         # 过滤掉不可用的服务器（响应时间>max_fail_time秒）
         available_servers = [
-            (server, score) for server, score in self.server_scores.items()
+            (server, score)
+            for server, score in self.server_scores.items()
             if score <= self.max_fail_time
         ]
 
@@ -293,7 +313,9 @@ class AsyncSmartIPPool(AsyncIPPool):
         # 更新排序列表
         self.sorted_servers = [server for server, _ in available_servers]
 
-        logger.debug(f"服务器重新排序完成，最快服务器: {self.sorted_servers[0] if self.sorted_servers else '无'}")
+        logger.debug(
+            f"服务器重新排序完成，最快服务器: {self.sorted_servers[0] if self.sorted_servers else '无'}"
+        )
 
     async def get_servers(self) -> List[Tuple[str, int]]:
         """
@@ -322,14 +344,11 @@ class AsyncSmartIPPool(AsyncIPPool):
         available = len([s for s in self.server_scores.values() if s <= self.max_fail_time])
         unavailable = total - available
 
-        return {
-            "total": total,
-            "available": available,
-            "unavailable": unavailable
-        }
+        return {"total": total, "available": available, "unavailable": unavailable}
 
 
 # ==================== 使用示例 ====================
+
 
 async def example_usage():
     """
@@ -344,9 +363,7 @@ async def example_usage():
 
     # 2. 创建智能IP池（动态测速）
     smart_pool = AsyncSmartIPPool(
-        servers=HQ_HOSTS_ALL[:20],
-        update_interval=300.0,  # 5分钟更新
-        test_timeout=2.0
+        servers=HQ_HOSTS_ALL[:20], update_interval=300.0, test_timeout=2.0  # 5分钟更新
     )
 
     # 启动监控

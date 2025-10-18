@@ -857,6 +857,14 @@ class DataCenterService(BaseService, LoggerMixin):
         # 不再检查时间，缓存永久有效
         return True
 
+    def has_symbol_cache(self) -> bool:
+        """检查品种缓存是否存在（公开方法）.
+
+        Returns:
+            bool: 缓存是否存在
+        """
+        return self._symbol_cache is not None
+
     def _map_market_to_exchange_and_type(self, market_name: str) -> tuple:
         """将市场名称映射到交易所和品种类型.
 

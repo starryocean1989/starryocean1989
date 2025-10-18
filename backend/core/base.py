@@ -1265,6 +1265,17 @@ def shutdown_real_services() -> None:
         except Exception as e:
             logging.getLogger(__name__).error("❌ 关闭 MainEngine 失败: %s", e)
 
+    # 关闭服务器池管理器（在最后关闭，确保其他服务不再需要它）
+    try:
+        from backend.infrastructure.data_module_vnpy import server_pool_manager
+
+        if server_pool_manager.is_running():
+            logging.getLogger(__name__).info("正在关闭服务器池管理器...")
+            server_pool_manager.stop()
+            logging.getLogger(__name__).info("✅ 服务器池管理器已关闭")
+    except Exception as e:
+        logging.getLogger(__name__).error("❌ 关闭服务器池管理器失败: %s", e)
+
     # ✅ 单进程多线程架构：日志和告警系统在主进程中，无需额外关闭
     logging.getLogger(__name__).info("✅ 所有服务已关闭")
 

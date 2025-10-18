@@ -35,6 +35,13 @@ from .unified_data_manager import UnifiedDataManager
 from .symbol_management import SymbolLoader
 from .data_fetcher import MultiProcessStockFetcher, download_incremental_unified
 from .health_checker import HealthChecker
+from .server_pool_manager import (
+    ServerPoolManager,
+    server_pool_manager,
+    get_best_servers,
+    get_best_server,
+    get_all_servers,
+)
 
 __all__ = [
     # 常量和事件
@@ -62,6 +69,12 @@ __all__ = [
     "PreloadService",
     "UnifiedDataManager",
     "HealthChecker",
+    # 服务器池管理
+    "ServerPoolManager",
+    "server_pool_manager",
+    "get_best_servers",
+    "get_best_server",
+    "get_all_servers",
 ]
 
 __version__ = "2.0.0"  # 升级到2.0.0版本
