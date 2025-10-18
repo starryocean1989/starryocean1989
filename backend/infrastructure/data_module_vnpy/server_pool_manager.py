@@ -210,6 +210,9 @@ class ServerPoolManager:
             )
         self.logger.info("=" * 60)
 
+        # 推送服务器状态更新事件
+        self._push_server_status_event()
+
         return True
 
     @staticmethod
@@ -390,6 +393,34 @@ class ServerPoolManager:
             bool: 是否运行中且有可用服务器
         """
         return self._running and len(self._sorted_servers) > 0
+
+    def _push_server_status_event(self):
+        """推送服务器状态更新事件（vnpy事件）"""
+        try:
+            from vnpy.event import Event
+            from backend.core.base import get_event_engine
+
+            event_engine = get_event_engine()
+            if not event_engine:
+                self.logger.debug("事件引擎不可用，跳过状态推送")
+                return
+
+            # 构建事件数据
+            event_data = {
+                "available": len(self._sorted_servers),
+                "total": self.server_count,
+                "status": "available" if self._running else "stopped",
+                "timestamp": datetime.now().isoformat(),
+            }
+
+            event = Event("EVENT_SERVER_POOL_STATUS", event_data)
+            event_engine.put(event)
+
+            self.logger.info(
+                "📢 推送服务器状态事件: %d/%d 可用", event_data["available"], event_data["total"]
+            )
+        except Exception as e:
+            self.logger.warning("推送服务器状态失败: %s", e)
 
 
 # ==================== 全局单例实例 ====================

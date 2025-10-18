@@ -30,6 +30,7 @@ from .data_readers import TdxBinaryReader
 from .data_quality import DataSensor, QualityOverview
 from .preload_service import PreloadService
 from .unified_data_manager import UnifiedDataManager
+from .file_watcher import KlineFileWatcher
 
 
 # 从events模块导入常量
@@ -69,6 +70,9 @@ class ChinaStockEngine(BaseEngine):
         # 新增：数据感知器
         self.data_sensor = DataSensor(event_engine)
         self.data_file_watcher: Optional[DataFileWatcher] = None
+
+        # 🆕 新增：K线文件监听器
+        self.kline_file_watcher: Optional[KlineFileWatcher] = None
 
         # 新增：轮询网关和虚拟网关
         self.polling_gateway: Optional[PollingGateway] = None
@@ -141,6 +145,27 @@ class ChinaStockEngine(BaseEngine):
         # except Exception:
         #     pass
 
+        # 🆕 启动后台任务：初始数据质量扫描
+        scan_thread = threading.Thread(target=self._initial_quality_scan, daemon=True)
+        scan_thread.start()
+        self.logger.info("✓ 后台数据质量扫描已启动")
+
+        # 🆕 启动K线文件监听器
+        try:
+            from pathlib import Path
+
+            kline_path = config_manager.get("kline_path", "data/kline")
+            kline_dir = Path(kline_path)
+            if kline_dir.exists():
+                self.kline_file_watcher = KlineFileWatcher(
+                    data_dir=str(kline_dir), callback=self._on_kline_file_changed
+                )
+                self.kline_file_watcher.start()
+            else:
+                self.logger.warning(f"K线数据目录不存在: {kline_dir}，文件监听未启动")
+        except Exception as e:
+            self.logger.warning(f"启动K线文件监听器失败: {e}", exc_info=True)
+
     # ==================== 健康检查与就绪 ====================
 
     def _ensure_lazy_init(self) -> None:
@@ -169,16 +194,99 @@ class ChinaStockEngine(BaseEngine):
         return True
         # return bool(getattr(self, "_ready", False))
 
+    def _initial_quality_scan(self):
+        """初始数据质量扫描（后台线程）"""
+        import time
+
+        time.sleep(3)  # 等待3秒，确保引擎完全初始化
+
+        try:
+            self.logger.info("开始初始数据质量扫描...")
+            # 触发扫描
+            overview = self.trigger_data_quality_scan(force_refresh=True)
+
+            if overview:
+                # 推送vnpy事件
+                self._push_quality_overview_event(overview)
+                self.logger.info(f"✓ 初始数据质量扫描完成，评分: {overview.quality_score}")
+            else:
+                self.logger.warning("初始数据质量扫描未返回结果")
+        except Exception as e:
+            self.logger.error(f"初始数据质量扫描失败: {e}", exc_info=True)
+
+    def _push_quality_overview_event(self, overview: QualityOverview):
+        """推送数据质量概览事件
+
+        Args:
+            overview: 数据质量概览对象
+        """
+        try:
+            event_engine = self.event_engine
+            if not event_engine:
+                self.logger.warning("事件引擎不可用，无法推送质量概览")
+                return
+
+            # 构建事件数据
+            event_data = {
+                "total_symbols": overview.total_symbols,
+                "local_symbols": overview.total_symbols - overview.missing_symbols,
+                "missing_symbols": overview.missing_symbols,
+                "error_symbols": overview.error_symbols,
+                "warning_symbols": overview.warning_symbols,
+                "quality_score": overview.quality_score,
+                "last_scan_time": (
+                    overview.last_scan_time.isoformat() if overview.last_scan_time else None
+                ),
+            }
+
+            event = Event(EVENT_DATA_QUALITY_UPDATE, event_data)
+            event_engine.put(event)
+
+            self.logger.info(
+                f"📊 推送数据质量概览: 评分{overview.quality_score}, "
+                f"总品种{overview.total_symbols}, 缺失{overview.missing_symbols}"
+            )
+        except Exception as e:
+            self.logger.warning(f"推送数据质量概览失败: {e}", exc_info=True)
+
+    def _on_kline_file_changed(self, event_type: str, file_path: str):
+        """K线文件变化回调
+
+        Args:
+            event_type: 事件类型（created/modified）
+            file_path: 文件路径
+        """
+        from pathlib import Path
+
+        self.logger.info(f"检测到K线文件变化: {event_type} - {Path(file_path).name}")
+
+        # 触发增量扫描（不强制刷新，只扫描新文件）
+        try:
+            overview = self.trigger_data_quality_scan(force_refresh=False)
+            if overview:
+                self._push_quality_overview_event(overview)
+        except Exception as e:
+            self.logger.error(f"文件变化后质量扫描失败: {e}", exc_info=True)
+
     def close(self) -> None:
         """关闭引擎（代理调用）"""
         from .lifecycle_manager import LifecycleManager
 
-        LifecycleManager.close_all({
-            "data_sensor": self.data_sensor,
-            "preload": self.preload_service,
-            "polling": self.polling_gateway,
-            "virtual": self.virtual_gateway,
-        })
+        # 🆕 停止文件监听器
+        if self.kline_file_watcher:
+            try:
+                self.kline_file_watcher.stop()
+            except Exception as e:
+                self.logger.warning(f"停止文件监听器失败: {e}")
+
+        LifecycleManager.close_all(
+            {
+                "data_sensor": self.data_sensor,
+                "preload": self.preload_service,
+                "polling": self.polling_gateway,
+                "virtual": self.virtual_gateway,
+            }
+        )
         self.logger.info("中国A股数据管理引擎已关闭")
 
     def refresh_stock_list(self) -> Optional[Dict[str, List[Dict[str, Any]]]]:
@@ -198,7 +306,6 @@ class ChinaStockEngine(BaseEngine):
         return self.stock_fetcher.start_incremental_download_async(
             start_date, self.symbol_loader, self.storage_manager, market_types
         )
-
 
     def query_data(
         self,
@@ -230,9 +337,7 @@ class ChinaStockEngine(BaseEngine):
             if target_symbol is None:
                 return None
 
-            return self.storage_manager.query_kline(
-                target_symbol, interval, start_date, end_date
-            )
+            return self.storage_manager.query_kline(target_symbol, interval, start_date, end_date)
 
     def get_validation_result(self, force_refresh: bool = False) -> Optional[ValidationSummary]:
         """获取数据感知结果（代理调用）"""
@@ -306,7 +411,9 @@ class ChinaStockEngine(BaseEngine):
         from .events import DownloadEventPublisher
 
         publisher = DownloadEventPublisher(self.event_engine)
-        publisher.push_download_progress_event(download_type, progress_pct, completed, total, current_item)
+        publisher.push_download_progress_event(
+            download_type, progress_pct, completed, total, current_item
+        )
 
     # ==================== 下载控制方法 ====================
 
@@ -404,7 +511,9 @@ class ChinaStockEngine(BaseEngine):
 
     def trigger_data_quality_scan(self, force_refresh: bool = False) -> Optional[QualityOverview]:
         """手动触发数据质量扫描（代理调用）"""
-        return self.data_sensor.trigger_scan_with_symbols(self.symbol_loader, force_refresh=force_refresh)
+        return self.data_sensor.trigger_scan_with_symbols(
+            self.symbol_loader, force_refresh=force_refresh
+        )
 
     def scan_corrupted_files(self, auto_delete: bool = False) -> Dict[str, List[str]]:
         """扫描并修复损坏的Parquet文件（代理调用）"""

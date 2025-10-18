@@ -191,8 +191,19 @@ class AsyncBaseSocketClient:
         if self.writer:
             logger.debug("disconnecting")
             try:
-                self.writer.close()
-                await self.writer.wait_closed()
+                # 🔧 检查连接是否仍然有效
+                if not self.writer.is_closing():
+                    self.writer.close()
+                    # 🔧 添加短暂超时，避免长时间等待
+                    await asyncio.wait_for(self.writer.wait_closed(), timeout=2.0)
+                else:
+                    logger.debug("writer already closing, skip")
+            except asyncio.TimeoutError:
+                # 🔧 超时不算错误，静默处理
+                logger.debug("disconnect timeout, connection may already closed")
+            except (ConnectionError, BrokenPipeError, OSError) as e:
+                # 🔧 连接已断开的常见异常，静默处理
+                logger.debug(f"disconnect: connection already closed ({type(e).__name__})")
             except Exception as e:
                 logger.debug(f"disconnect err: {e}")
                 if self.raise_exception:
@@ -200,6 +211,7 @@ class AsyncBaseSocketClient:
             finally:
                 self.writer = None
                 self.reader = None
+                self.closed = True  # 🔧 确保标记为已关闭
 
             logger.debug("disconnected")
 

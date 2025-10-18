@@ -216,14 +216,27 @@ async def download_worker_async(
         # 关闭所有连接（字典方案）
         for server, client in connections.items():
             try:
-                await client.close()
-                logger.debug(f"Worker {worker_id} 连接 {server[0]}:{server[1]} 已关闭")
+                # 🔧 检查连接是否还存在且未关闭
+                if client and not client.closed:
+                    await client.close()
+                    logger.debug(f"Worker {worker_id} 连接 {server[0]}:{server[1]} 已关闭")
+                else:
+                    logger.debug(f"Worker {worker_id} 连接 {server[0]}:{server[1]} 已经关闭，跳过")
+            except (ConnectionError, BrokenPipeError, OSError) as e:
+                # 🔧 捕获常见的连接关闭异常，避免输出警告
+                logger.debug(f"Worker {worker_id} 连接 {server[0]}:{server[1]} 关闭时连接已断开")
             except Exception as e:
                 logger.debug(f"Worker {worker_id} 连接 {server[0]}:{server[1]} 关闭失败: {e}")
 
 
 def _run_async_worker(*args):
     """在进程中运行异步事件循环的辅助函数"""
+    import warnings
+
+    # 🔧 抑制 socket.send() 相关的 ResourceWarning
+    # 这些警告通常在连接已断开时尝试关闭连接时出现，不影响功能
+    warnings.filterwarnings("ignore", category=ResourceWarning, message=".*socket.*")
+
     asyncio.run(download_worker_async(*args))
 
 
@@ -323,23 +336,21 @@ class MultiProcessStockFetcher:
         # 使用 tdx_asyncio 的智能IP池（延迟初始化）
         self.ip_pool = None  # 将在下载时初始化
 
-        # 进程池配置
-        pool_size = config_manager.get("chinastock.server_pool_size", 12)
-        cpu_cores = cpu_count()
-        # IO密集型任务，不受CPU核心数限制，只限制最大值
-        self.num_processes = min(pool_size, 50)
-        self.timeout = config_manager.get("chinastock.timeout", 30)
-        self.retry_times = config_manager.get("chinastock.retry_times", 3)
+        # 进程池配置（动态计算，在download时根据服务器数量确定）
+        self.num_processes = 1  # 初始值，将在下载时动态计算
+
+        # 硬编码超时和重试参数（优化后的快速失败策略）
+        self.timeout = 2  # 连接超时2秒
+        self.retry_times = 0  # 不重试，直接换热备服务器
 
         # 异步连接配置
         self.async_connections_per_process = 30  # 每个进程30个异步连接
 
         self.logger.info(
-            "初始化异步下载器: %d进程 × %d连接 = %d总并发 (CPU核心数: %d [参考])",
-            self.num_processes,
+            "初始化异步下载器: 超时=%d秒, 重试=%d次, 每进程连接数=%d",
+            self.timeout,
+            self.retry_times,
             self.async_connections_per_process,
-            self.num_processes * self.async_connections_per_process,
-            cpu_cores,
         )
 
         # 多进程共享对象
@@ -418,6 +429,20 @@ class MultiProcessStockFetcher:
             # 打印最快的前5个服务器
             top5 = available_servers[:5]
             self.logger.info(f"最快的5个服务器: {top5}")
+
+            # 1.5 动态计算进程数：服务器数/30向上取整
+            import math
+
+            optimal_processes = math.ceil(len(available_servers) / 30)
+            self.num_processes = optimal_processes
+            self.logger.info(
+                f"动态计算进程数: {len(available_servers)}个服务器 / 30 = {optimal_processes}个进程"
+            )
+            self.logger.info(
+                f"预计总并发: 进程1~{optimal_processes-1}各30连接, "
+                f"进程{optimal_processes}有{len(available_servers) % 30 or 30}连接 "
+                f"(总计{len(available_servers)}连接)"
+            )
 
             # 2. 初始化Manager和队列
             self._init_multiprocess_objects()
@@ -819,9 +844,16 @@ class MultiProcessStockFetcher:
                 # 存储数据
                 saved_count = 0
                 for key, data_records in download_results.items():
-                    if data_records:
+                    # 🔧 修复DataFrame判断问题
+                    # data_records可能是list/dict/DataFrame/None，需要安全判断
+                    if data_records is not None:
                         symbol, interval = key.split("_", 1)
-                        data_df = pd.DataFrame(data_records)
+                        # 如果已经是DataFrame，直接使用；否则转换
+                        if isinstance(data_records, pd.DataFrame):
+                            data_df = data_records
+                        else:
+                            data_df = pd.DataFrame(data_records)
+
                         if not data_df.empty:
                             storage_manager.save_kline(symbol, interval, data_df)
                             saved_count += 1

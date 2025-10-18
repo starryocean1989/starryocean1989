@@ -378,13 +378,13 @@ class DataCenterService(BaseService, LoggerMixin):
 
         try:
             # 获取stock_fetcher（ChinaStockEngine中的属性名是stock_fetcher）
-            stock_fetcher = getattr(self.china_stock_engine, 'stock_fetcher', None)
+            stock_fetcher = getattr(self.china_stock_engine, "stock_fetcher", None)
             if not stock_fetcher:
                 self.logger.warning("无法获取stock_fetcher，跳过服务器验证")
                 return
 
             # 检查是否有server_manager
-            server_manager = getattr(stock_fetcher, 'server_manager', None)
+            server_manager = getattr(stock_fetcher, "server_manager", None)
             if not server_manager:
                 self.logger.warning("stock_fetcher没有server_manager，跳过服务器验证")
                 return
@@ -399,6 +399,7 @@ class DataCenterService(BaseService, LoggerMixin):
                     self.logger.error(f"服务器验证失败: {e}", exc_info=True)
 
             import threading
+
             thread = threading.Thread(target=verify_servers, daemon=True, name="ServerVerifier")
             thread.start()
             self.logger.info("服务器验证已在后台启动")
@@ -407,41 +408,24 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.error(f"启动服务器验证失败: {e}", exc_info=True)
 
     def get_server_status(self) -> Dict[str, Any]:
-        """获取服务器状态（供UI调用）
+        """获取服务器状态（从server_pool_manager获取）
 
         Returns:
             Dict包含可用服务器数量、总数量、验证状态等信息
         """
         try:
-            if not self.china_stock_engine:
-                return {
-                    "available_count": 0,
-                    "total_count": 0,
-                    "status": "engine_unavailable",
-                    "message": "ChinaStockEngine不可用"
-                }
+            from backend.infrastructure.data_module_vnpy.server_pool_manager import (
+                server_pool_manager,
+            )
 
-            # ChinaStockEngine中的属性是stock_fetcher
-            stock_fetcher = getattr(self.china_stock_engine, 'stock_fetcher', None)
-            if not stock_fetcher:
-                return {
-                    "available_count": 0,
-                    "total_count": 0,
-                    "status": "fetcher_unavailable",
-                    "message": "StockFetcher不可用"
-                }
+            stats = server_pool_manager.get_stats()
 
-            server_manager = getattr(stock_fetcher, 'server_manager', None)
-            if not server_manager:
-                return {
-                    "available_count": 0,
-                    "total_count": 0,
-                    "status": "no_server_manager",
-                    "message": "服务器管理器不可用"
-                }
-
-            # 返回服务器状态
-            return server_manager.get_server_status()
+            return {
+                "available_count": stats["available"],
+                "total_count": stats["total"],
+                "status": "available" if stats["running"] else "stopped",
+                "message": f"可用 {stats['available']}/{stats['total']}",
+            }
 
         except Exception as e:
             self.logger.error(f"获取服务器状态失败: {e}", exc_info=True)
@@ -449,7 +433,7 @@ class DataCenterService(BaseService, LoggerMixin):
                 "available_count": 0,
                 "total_count": 0,
                 "status": "error",
-                "message": f"获取状态失败: {str(e)}"
+                "message": f"获取状态失败: {str(e)}",
             }
 
     def _load_symbol_cache_on_startup(self):
@@ -488,7 +472,7 @@ class DataCenterService(BaseService, LoggerMixin):
                                 {
                                     "symbol": code,
                                     "code": code,
-                                    "name": code,  # JSON中只有代码，名称暂时用代码代替
+                                    "name": code,  # 实际品种名称（来自通达信API）
                                     "exchange": self._map_market_to_exchange(market_type),
                                     "product_type": self._map_market_to_product_type(market_type),
                                 }
@@ -728,6 +712,21 @@ class DataCenterService(BaseService, LoggerMixin):
                 "message": f"刷新失败: {str(e)}",
                 "data": [],
             }
+
+    def get_symbols_from_cache(self) -> List[Dict[str, Any]]:
+        """从缓存获取品种列表（用于智能联想等功能）
+
+        Returns:
+            List[Dict]: 品种列表，每个元素包含code、name等字段
+        """
+        try:
+            result = self.refresh_symbol_list()
+            if result.get("success"):
+                return result.get("data", [])
+            return []
+        except Exception as e:
+            self.logger.warning(f"从缓存获取品种列表失败: {e}")
+            return []
 
     def clear_symbol_cache(self) -> Dict[str, Any]:
         """删除品种列表缓存（清理集合A-I的所有缓存）.
@@ -1093,8 +1092,10 @@ class DataCenterService(BaseService, LoggerMixin):
                 }
 
             self.logger.info(f"[下载-{task_id}] 引擎已启动，开始轮询进度...")
-            print(f">>> [SERVICE] 引擎已启动，正在初始化下载任务...", flush=True)
-            print(f">>> [SERVICE] 提示：初始化可能需要15-30秒（发现服务器、构建任务列表）", flush=True)
+            print(">>> [SERVICE] 引擎已启动，正在初始化下载任务...", flush=True)
+            print(
+                ">>> [SERVICE] 提示：初始化可能需要15-30秒（发现服务器、构建任务列表）", flush=True
+            )
 
             last_pct = -1
             last_log_time = time.time()
@@ -1129,7 +1130,7 @@ class DataCenterService(BaseService, LoggerMixin):
                             elapsed_init = current_time - download_start_time
                             print(
                                 f">>> [SERVICE] ✓ 初始化完成！耗时 {elapsed_init:.1f}秒，开始下载 {total} 个任务...",
-                                flush=True
+                                flush=True,
                             )
 
                         # 进度更新：回调通知
@@ -1148,7 +1149,7 @@ class DataCenterService(BaseService, LoggerMixin):
                             )
                             print(
                                 f">>> [SERVICE] 进度: {pct}% ({completed}/{total}) - {cur_sym} {cur_itv}",
-                                flush=True
+                                flush=True,
                             )
                             last_log_time = current_time
 
@@ -1157,7 +1158,9 @@ class DataCenterService(BaseService, LoggerMixin):
                         no_progress_elapsed = current_time - last_progress_time
 
                         if elapsed > timeout_seconds:
-                            self.logger.error(f"[下载-{task_id}] 下载超时（{timeout_seconds}秒），停止轮询")
+                            self.logger.error(
+                                f"[下载-{task_id}] 下载超时（{timeout_seconds}秒），停止轮询"
+                            )
                             break
 
                         if no_progress_elapsed > no_progress_timeout and completed > 0:
@@ -1172,7 +1175,9 @@ class DataCenterService(BaseService, LoggerMixin):
                                 self.logger.info(
                                     f"[下载-{task_id}] 引擎下载已完成 ({completed}/{total})"
                                 )
-                                print(f">>> [SERVICE] ✓ 下载已完成 ({completed}/{total})", flush=True)
+                                print(
+                                    f">>> [SERVICE] ✓ 下载已完成 ({completed}/{total})", flush=True
+                                )
                                 break
                             elif total > 0 and completed < total:
                                 self.logger.warning(
@@ -1188,14 +1193,17 @@ class DataCenterService(BaseService, LoggerMixin):
                                     self.logger.warning(
                                         f"[下载-{task_id}] is_downloading=False 且 total=0 已持续 {elapsed:.0f}秒，可能失败"
                                     )
-                                    print(f">>> [SERVICE] ⚠️ 下载初始化超过30秒，可能存在问题", flush=True)
+                                    print(
+                                        ">>> [SERVICE] ⚠️ 下载初始化超过30秒，可能存在问题",
+                                        flush=True,
+                                    )
                                 time.sleep(1.0)
                         else:
                             # 正常下载中，每20秒输出一次状态确认
                             if current_time - last_log_time >= 20:
                                 print(
                                     f">>> [SERVICE] 下载进行中: {pct}% ({completed}/{total})",
-                                    flush=True
+                                    flush=True,
                                 )
                             time.sleep(0.5)
                     else:
@@ -2011,46 +2019,53 @@ class DataCenterService(BaseService, LoggerMixin):
                 "quality_score": 0,
             }
 
-    def trigger_data_quality_scan(self, force_refresh: bool = False) -> Dict[str, Any]:
-        """手动触发数据质量扫描.
+    def trigger_data_quality_scan(self, force_refresh: bool = False) -> bool:
+        """手动触发数据质量扫描（异步后台执行）.
 
         Args:
             force_refresh: 是否强制刷新（忽略缓存）
 
         Returns:
-            Dict: 扫描结果
+            bool: 是否成功触发
         """
         try:
             if not self.china_stock_engine:
-                return {
-                    "success": False,
-                    "message": "ChinaStockEngine不可用",
-                }
+                self.logger.warning("ChinaStockEngine不可用，无法触发扫描")
+                return False
 
-            self.logger.info("手动触发数据质量扫描...")
+            self.logger.info("手动触发数据质量扫描（后台执行）...")
 
-            # 触发扫描
-            overview = self.china_stock_engine.trigger_data_quality_scan(force_refresh)
+            # 🆕 后台线程执行扫描
+            import threading
 
-            if not overview:
-                return {
-                    "success": False,
-                    "message": "扫描失败",
-                }
-
-            return {
-                "success": True,
-                "message": "数据质量扫描完成",
-                "total_symbols": overview.total_symbols,
-                "quality_score": overview.quality_score,
-            }
+            thread = threading.Thread(
+                target=self._do_quality_scan, args=(force_refresh,), daemon=True
+            )
+            thread.start()
+            return True
 
         except Exception as e:
-            self.logger.error("触发数据质量扫描失败: %s", e, exc_info=True)
-            return {
-                "success": False,
-                "message": f"扫描失败: {str(e)}",
-            }
+            self.logger.error(f"触发数据质量扫描失败: {e}", exc_info=True)
+            return False
+
+    def _do_quality_scan(self, force_refresh: bool):
+        """执行数据质量扫描（后台线程）
+
+        Args:
+            force_refresh: 是否强制刷新
+        """
+        try:
+            overview = self.china_stock_engine.trigger_data_quality_scan(
+                force_refresh=force_refresh
+            )
+            if overview:
+                # 推送事件
+                self.china_stock_engine._push_quality_overview_event(overview)
+                self.logger.info(f"✓ 数据质量扫描完成，评分: {overview.quality_score}")
+            else:
+                self.logger.warning("数据质量扫描未返回结果")
+        except Exception as e:
+            self.logger.error(f"数据质量扫描失败: {e}", exc_info=True)
 
     # ==================== 数据源管理 ====================
 

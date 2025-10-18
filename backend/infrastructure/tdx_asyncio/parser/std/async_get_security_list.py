@@ -42,12 +42,26 @@ class AsyncGetSecurityList(AsyncBaseParser):
         for _ in range(num):
             one_bytes = body_buf[pos : pos + 29]
 
-            code, volunit, name_bytes, reversed_bytes1, decimal_point, pre_close_raw, reversed_bytes2 = struct.unpack(
-                "<6sH8s4sBI4s", one_bytes
-            )
+            (
+                code,
+                volunit,
+                name_bytes,
+                reversed_bytes1,
+                decimal_point,
+                pre_close_raw,
+                reversed_bytes2,
+            ) = struct.unpack("<6sH8s4sBI4s", one_bytes)
 
             code = code.decode("utf-8", errors="ignore")
-            name = name_bytes.decode("gbk", errors="ignore")
+            # 改进的字符解码逻辑，支持多种编码方式
+            try:
+                name = name_bytes.decode("gbk")
+            except UnicodeDecodeError:
+                try:
+                    name = name_bytes.decode("utf-8")
+                except UnicodeDecodeError:
+                    # 如果都失败，使用replace模式保留数据
+                    name = name_bytes.decode("gbk", errors="replace")
 
             pre_close = get_volume(pre_close_raw)
             pos += 29
@@ -65,4 +79,3 @@ class AsyncGetSecurityList(AsyncBaseParser):
             symbols.append(rows)
 
         return symbols
-
