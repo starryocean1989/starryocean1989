@@ -32,10 +32,8 @@ from .local_data.data_quality import (
 )
 from .data_acquisition.gateways import PollingGateway, VirtualGateway
 from .data_readers import TdxBinaryReader
-from .local_data.data_quality import DataSensor, QualityOverview
-from .local_data.preload_service import PreloadService
-from .local_data.unified_data_manager import UnifiedDataManager
-from .local_data.file_watcher import KlineFileWatcher
+from .local_data.data_quality import DataSensor, QualityOverview, KlineFileWatcher
+from .local_data.unified_data_manager import PreloadService, UnifiedDataManager
 
 
 # 从events模块导入常量
@@ -180,7 +178,7 @@ class ChinaStockEngine(BaseEngine):
 
     def healthcheck(self) -> Dict[str, Any]:
         """健康检查（代理调用）"""
-        from .health_checker import HealthChecker
+        from .local_data.data_quality import HealthChecker
 
         result = HealthChecker.check_system_health()
         setattr(self, "_ready", result["ready"])

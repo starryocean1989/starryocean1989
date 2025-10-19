@@ -2,25 +2,27 @@
 """
 数据质量管理模块
 
-负责数据存储、校验、感知和文件监控，包括：
+负责数据存储、校验、感知、文件监控和系统健康检查，包括：
 - 数据存储管理（Parquet格式）
 - 数据校验和感知
-- 文件监控和变化检测
+- 文件监控和变化检测（增强防抖机制）
+- 系统健康检查
 - 数据质量概览和报告
 
-合并来源：storage.py + validator.py + data_sensor.py + file_watcher.py
+合并来源：storage.py + validator.py + data_sensor.py + file_watcher.py (v2)
 """
 
 # ==================== 导入声明 ====================
 import logging
 import json
+import os
+import time
 import threading
+from threading import Thread, Event as ThreadEvent
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
-import asyncio
 
 import pandas as pd
 
@@ -1975,17 +1977,19 @@ except Exception:  # pragma: no cover
 
 
 class DataFileEventHandler(_FSHandler):
-    """数据文件事件处理器（继承FileSystemEventHandler，提供安全dispatch）"""
+    """数据文件事件处理器（继承FileSystemEventHandler，提供安全dispatch和增强防抖）"""
 
-    def __init__(self, callback):
+    def __init__(self, callback, debounce_seconds: float = 5.0):
         if _WATCHDOG_AVAILABLE:
             super().__init__()
         self.callback = callback
         self.logger = logging.getLogger(__name__)
 
-        # 防抖动：记录最近处理的文件和时间
-        self.recent_files: Dict[str, Tuple[datetime, str]] = {}
-        self.debounce_seconds = 2
+        # 增强的防抖机制（线程延迟方案）
+        self.debounce_seconds = debounce_seconds
+        self.pending_event = ThreadEvent()
+        self.last_event_time = 0.0
+        self._debounce_thread: Optional[Thread] = None
 
     # 核心：提供安全的 dispatch，避免异常导致观察线程崩溃
     def dispatch(self, event):  # type: ignore[override]
@@ -2037,25 +2041,108 @@ class DataFileEventHandler(_FSHandler):
         return path.suffix == ".parquet" and "data" in path.name
 
     def _handle_file_change(self, file_path: str, event_type: str):
-        """处理文件变化"""
-        now = datetime.now()
+        """处理文件变化（带线程延迟防抖）"""
+        current_time = time.time()
 
-        # 防抖动：忽略短时间内重复的事件
-        if file_path in self.recent_files:
-            last_time, last_type = self.recent_files[file_path]
-            if (now - last_time).seconds < self.debounce_seconds and event_type == last_type:
-                self.logger.debug("忽略重复的文件事件: %s %s", file_path, event_type)
-                return
+        # 如果距离上次事件时间太短，取消之前的延迟任务
+        if current_time - self.last_event_time < self.debounce_seconds:
+            self.pending_event.set()  # 取消之前的任务
 
-        # 更新最近处理记录
-        self.recent_files[file_path] = (now, event_type)
+        self.last_event_time = current_time
+        self.pending_event.clear()
 
-        # 调用回调函数
+        # 启动延迟任务
+        self._debounce_thread = Thread(
+            target=self._delayed_callback, args=(file_path, event_type), daemon=True
+        )
+        self._debounce_thread.start()
+
+    def _delayed_callback(self, file_path: str, event_type: str):
+        """延迟回调执行"""
+        if self.pending_event.wait(self.debounce_seconds):
+            # 事件被取消
+            self.logger.debug("防抖取消事件: %s %s", file_path, event_type)
+            return
+
+        # 执行回调
         if self.callback:
             try:
                 self.callback(Path(file_path))
             except Exception as e:
-                self.logger.error("文件变化回调失败: %s", e)
+                self.logger.error("文件变化回调失败: %s", e, exc_info=True)
+
+
+# ==================== 系统健康检查 ====================
+
+
+class HealthChecker:
+    """系统健康检查器
+
+    验证关键目录与最小数据可用性
+    """
+
+    @staticmethod
+    def check_system_health() -> Dict[str, Any]:
+        """
+        健康检查：验证关键目录与最小数据可用性
+
+        Returns:
+            {"ready": bool, "message": str, "details": {...}}
+        """
+        details: Dict[str, Any] = {}
+        ready = True
+        message = "OK"
+        logger = logging.getLogger(__name__)
+
+        try:
+            cache_dir = config_manager.get_cache_dir()
+            data_dir = config_manager.get_data_dir()
+            details["cache_dir"] = str(cache_dir)
+            details["data_dir"] = str(data_dir)
+
+            # 目录存在性与可写性
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            data_dir.mkdir(parents=True, exist_ok=True)
+            details["cache_dir_exists"] = cache_dir.exists()
+            details["data_dir_exists"] = data_dir.exists()
+
+            # 尝试写入/读取探针文件（权限检测）
+            probe = cache_dir / ".probe"
+            try:
+                probe.write_text("ok", encoding="utf-8")
+                details["cache_dir_writable"] = True
+                with probe.open("r", encoding="utf-8") as f:
+                    _ = f.read()
+                probe.unlink(missing_ok=True)
+            except Exception:
+                details["cache_dir_writable"] = False
+                ready = False
+                message = "cache_dir 不可写"
+
+            # 最小数据可用性（非强制）
+            parquet_count = 0
+            try:
+                for root, _, files in os.walk(data_dir):
+                    for fn in files:
+                        if fn.lower().endswith(".parquet"):
+                            parquet_count += 1
+                            if parquet_count >= 1:
+                                break
+                    if parquet_count >= 1:
+                        break
+            except Exception:
+                pass
+            details["parquet_files"] = parquet_count
+
+            if parquet_count == 0 and ready:
+                message = "未检测到最小数据集（可后续通过增量下载或导入TDX生成）"
+
+        except Exception as e:
+            ready = False
+            message = f"健康检查异常: {e}"
+            logger.error("健康检查异常: %s", e, exc_info=True)
+
+        return {"ready": bool(ready), "message": message, "details": details}
 
 
 # ==================== 全局实例 ====================
@@ -2065,3 +2152,9 @@ storage_manager = StorageManager()
 data_validator = DataValidator()
 data_sensor = DataSensor()
 data_file_watcher = DataFileWatcher(config_manager.get_data_dir())
+
+# ==================== 向后兼容别名 ====================
+
+# 为保持向后兼容，提供别名（file_watcher.py 已合并至此）
+KlineFileWatcher = DataFileWatcher
+KlineFileHandler = DataFileEventHandler

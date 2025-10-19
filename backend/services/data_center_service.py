@@ -414,7 +414,7 @@ class DataCenterService(BaseService, LoggerMixin):
             Dict包含可用服务器数量、总数量、验证状态等信息
         """
         try:
-            from backend.infrastructure.data_module_vnpy.data_acquisition.server_pool_manager import (
+            from backend.infrastructure.data_module_vnpy.server_pool_manager import (
                 server_pool_manager,
             )
 

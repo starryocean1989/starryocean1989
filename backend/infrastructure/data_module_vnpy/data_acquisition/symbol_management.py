@@ -486,7 +486,7 @@ class SymbolLoader:
         self.logger.info("→ 双进程模式：市场0和市场1各用独立进程...")
 
         # 获取最优服务器
-        from .server_pool_manager import server_pool_manager
+        from ..server_pool_manager import server_pool_manager
 
         best_servers = server_pool_manager.get_servers()
         self.logger.info("  ✓ 获取到 %d 个已排序的最优服务器", len(best_servers))

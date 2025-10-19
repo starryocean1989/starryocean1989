@@ -26,8 +26,11 @@ import pandas as pd
 
 from backend.infrastructure.tdx_asyncio import AsyncTdxHq_API
 
-from .server_pool_manager import server_pool_manager, get_verified_servers_random
-from .adaptive_config import AdaptiveDownloadConfig
+from ..server_pool_manager import (
+    server_pool_manager,
+    get_verified_servers_random,
+    AdaptiveDownloadConfig,
+)
 
 # ==================== (ServerManager 已删除，使用 tdx_asyncio.AsyncSmartIPPool) ====================
 # ==================== (TdxDateTimeDecoder 已删除，tdx_asyncio 协议层已自动处理) ====================
@@ -1545,7 +1548,7 @@ def download_ipo_dates(
         }
     """
     from ..local_data.data_quality import IPODateCache
-    from .adaptive_config import get_adaptive_config_for_tasks, get_random_servers
+    from ..server_pool_manager import get_adaptive_config_for_tasks, get_random_servers
     from multiprocessing import Process, Manager, Event, Queue
     import time
 
