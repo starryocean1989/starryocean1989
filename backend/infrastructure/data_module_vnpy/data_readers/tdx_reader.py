@@ -31,7 +31,7 @@ from backend.infrastructure.tdx_asyncio import (
 from .base_reader import BaseReader
 from .bj_decoder import BjStockDecoder
 from ..config import config_manager
-from ..data_quality import StorageManager
+from ..local_data.data_quality import StorageManager
 
 
 class TdxBinaryReader(BaseReader):

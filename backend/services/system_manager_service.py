@@ -5094,7 +5094,9 @@ class SystemManagerService(BaseService):
         """
         try:
             # 直接导入并使用StorageManager
-            from backend.infrastructure.data_module_vnpy.data_quality import StorageManager
+            from backend.infrastructure.data_module_vnpy.local_data.data_quality import (
+                StorageManager,
+            )
 
             storage_manager = StorageManager()
 

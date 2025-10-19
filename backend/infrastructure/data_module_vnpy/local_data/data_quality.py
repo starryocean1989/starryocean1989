@@ -13,14 +13,188 @@
 
 # ==================== 导入声明 ====================
 import logging
+import json
+import threading
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+import asyncio
 
 import pandas as pd
 
-from .config import config_manager
+from ..config import config_manager
+
+# ==================== IPO日期缓存管理 ====================
+
+
+class IPODateCache:
+    """IPO日期持久化缓存管理器
+
+    实现两级缓存架构：
+    - L1: 内存字典（进程运行期间有效）
+    - L2: JSON文件（永久存储）
+    """
+
+    def __init__(self, cache_file: Optional[Path] = None):
+        """初始化IPO缓存
+
+        Args:
+            cache_file: 缓存文件路径，默认使用data/cache/ipo_dates.json
+        """
+        self.logger = logging.getLogger(__name__)
+
+        # L1缓存：内存字典
+        self._memory_cache: Dict[str, Optional[date]] = {}
+
+        # L2缓存：JSON文件
+        if cache_file is None:
+            cache_dir = config_manager.get_cache_dir()
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            self.cache_file = cache_dir / "ipo_dates.json"
+        else:
+            self.cache_file = cache_file
+            self.cache_file.parent.mkdir(parents=True, exist_ok=True)
+
+        # 线程锁
+        self._lock = threading.RLock()
+
+        # 统计信息
+        self._stats = {
+            "hits": 0,
+            "misses": 0,
+            "errors": 0,
+            "api_calls": 0,
+            "api_success": 0,
+            "api_timeout": 0,
+        }
+
+        # 加载持久化缓存
+        self._load_from_file()
+
+    def _load_from_file(self) -> None:
+        """从JSON文件加载缓存"""
+        try:
+            if not self.cache_file.exists():
+                self.logger.info("IPO缓存文件不存在，将创建新缓存")
+                return
+
+            with open(self.cache_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            # 解析缓存数据
+            cache_data = data.get("data", {})
+            for symbol, info in cache_data.items():
+                ipo_date_str = info.get("ipo_date")
+                if ipo_date_str:
+                    try:
+                        self._memory_cache[symbol] = datetime.strptime(
+                            ipo_date_str, "%Y-%m-%d"
+                        ).date()
+                    except ValueError:
+                        self.logger.warning("无效的IPO日期格式: %s -> %s", symbol, ipo_date_str)
+                else:
+                    # 缓存了None值（表示查询失败）
+                    self._memory_cache[symbol] = None
+
+            self.logger.info("✓ IPO缓存加载完成: %d条记录", len(self._memory_cache))
+
+        except json.JSONDecodeError as e:
+            self.logger.error("IPO缓存文件损坏: %s, 将重建缓存", e)
+            self._memory_cache.clear()
+        except Exception as e:
+            self.logger.error("加载IPO缓存失败: %s", e)
+
+    def _save_to_file(self) -> None:
+        """保存缓存到JSON文件"""
+        try:
+            # 构建JSON数据结构
+            cache_data = {}
+            for symbol, ipo_date in self._memory_cache.items():
+                cache_data[symbol] = {
+                    "ipo_date": ipo_date.strftime("%Y-%m-%d") if ipo_date else None,
+                    "update_time": datetime.now().strftime("%Y-%m-%d"),
+                    "source": "tdx_api",
+                }
+
+            data = {
+                "version": "1.0",
+                "last_update": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "data": cache_data,
+            }
+
+            # 写入文件（原子操作）
+            temp_file = self.cache_file.with_suffix(".tmp")
+            with open(temp_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+
+            temp_file.replace(self.cache_file)
+            self.logger.debug("IPO缓存已保存: %d条记录", len(cache_data))
+
+        except Exception as e:
+            self.logger.error("保存IPO缓存失败: %s", e)
+
+    def get(self, symbol: str) -> Tuple[Optional[date], bool]:
+        """从缓存获取IPO日期
+
+        Args:
+            symbol: 品种代码
+
+        Returns:
+            (ipo_date, is_cached): IPO日期和是否来自缓存
+        """
+        with self._lock:
+            if symbol in self._memory_cache:
+                self._stats["hits"] += 1
+                return self._memory_cache[symbol], True
+            else:
+                self._stats["misses"] += 1
+                return None, False
+
+    def set(self, symbol: str, ipo_date: Optional[date], save_immediately: bool = False) -> None:
+        """设置IPO日期到缓存
+
+        Args:
+            symbol: 品种代码
+            ipo_date: IPO日期（None表示查询失败）
+            save_immediately: 是否立即保存到文件
+        """
+        with self._lock:
+            self._memory_cache[symbol] = ipo_date
+
+            if save_immediately:
+                self._save_to_file()
+
+    def batch_save(self) -> None:
+        """批量保存缓存到文件"""
+        with self._lock:
+            self._save_to_file()
+
+    def get_stats(self) -> Dict[str, int]:
+        """获取缓存统计信息"""
+        with self._lock:
+            total_queries = self._stats["hits"] + self._stats["misses"]
+            hit_rate = (self._stats["hits"] / total_queries * 100) if total_queries > 0 else 0
+
+            return {
+                **self._stats,
+                "total_queries": total_queries,
+                "hit_rate": round(hit_rate, 2),
+                "cache_size": len(self._memory_cache),
+            }
+
+    def record_api_call(self, success: bool, timeout: bool = False) -> None:
+        """记录API调用统计"""
+        with self._lock:
+            self._stats["api_calls"] += 1
+            if success:
+                self._stats["api_success"] += 1
+            elif timeout:
+                self._stats["api_timeout"] += 1
+            else:
+                self._stats["errors"] += 1
+
 
 # ==================== 数据存储管理 ====================
 
@@ -375,126 +549,138 @@ class DataValidator:
         # 交易日历实例（用于数据更新状态检测）
         self._trading_calendar = None
         self._latest_trading_day_cache = None  # 缓存最新交易日，避免重复查询
-        self._ipo_date_cache = {}  # 缓存品种上市日期
 
-    def _get_ipo_date(self, symbol: str) -> Optional[date]:
-        """获取品种上市日期（带缓存）
+        # IPO缓存实例
+        self._ipo_cache = IPODateCache()
+
+    def preload_ipo_dates_batch(
+        self, symbols: List[str], force_refresh: bool = False
+    ) -> Dict[str, Any]:
+        """批量预加载IPO日期
+
+        在数据质量扫描前调用，避免单个查询的低效率
 
         Args:
-            symbol: 品种代码（6位数字）
+            symbols: 品种列表
+            force_refresh: 是否强制刷新
 
         Returns:
-            上市日期，失败返回None
+            下载结果统计
         """
-        try:
-            # 检查缓存
-            if symbol in self._ipo_date_cache:
-                return self._ipo_date_cache[symbol]
+        from ..data_acquisition.data_fetcher import download_ipo_dates
 
-            # 判断市场：6开头=上海(1)，9开头且6位=北交所(0)，其他=深圳(0)
-            if symbol.startswith("6"):
-                market = 1
-            else:
-                market = 0
+        self.logger.info(f"批量预加载IPO日期: {len(symbols)}个品种")
 
-            # 调用tdx_asyncio获取财务信息
-            from backend.infrastructure.tdx_asyncio import AsyncTdxHq_API
-            from backend.infrastructure.tdx_asyncio.constants import HQ_HOSTS
-            import asyncio
-            from concurrent.futures import ThreadPoolExecutor
+        result = download_ipo_dates(symbols=symbols, force_refresh=force_refresh, use_adaptive=True)
 
-            async def fetch_ipo():
-                # HQ_HOSTS[0]返回(name, ip, port)，需要提取(ip, port)
-                server = (HQ_HOSTS[0][1], HQ_HOSTS[0][2])
-                api = await AsyncTdxHq_API.factory(server)
-                try:
-                    finance_info = await api.get_finance_info(market, symbol)
-                    return finance_info.get("ipo_date")
-                finally:
-                    await api.close()
+        self.logger.info(
+            f"IPO批量下载完成: 总计{result['total']}, "
+            f"跳过缓存{result['cached']}, "
+            f"下载{result['downloaded']}, "
+            f"成功{result['succeeded']}, "
+            f"失败{result['failed']}"
+        )
 
-            # 🆕 使用线程池执行异步调用（避免事件循环冲突）
-            def run_async_in_thread():
-                """在新线程中运行异步代码"""
-                new_loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(new_loop)
-                try:
-                    return new_loop.run_until_complete(fetch_ipo())
-                finally:
-                    new_loop.close()
+        return result
 
-            try:
-                with ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(run_async_in_thread)
-                    ipo_timestamp = future.result(timeout=10)
-            except Exception as e:
-                self.logger.error("获取上市日期异步调用失败: %s", e, exc_info=True)
-                # 缓存失败结果，避免重复尝试
-                self._ipo_date_cache[symbol] = None
-                return None
+    def _get_ipo_date(self, symbol: str) -> Optional[date]:
+        """获取单个品种IPO日期（优先缓存）
 
-            # 解析时间戳为日期（ipo_date是整数格式，需要转换）
-            if ipo_timestamp and ipo_timestamp > 0:
-                # 通达信时间戳格式：YYYYMMDD
-                ipo_str = str(int(ipo_timestamp))
-                if len(ipo_str) == 8:
-                    ipo_date = datetime.strptime(ipo_str, "%Y%m%d").date()
+        改为完全依赖缓存，不再主动查询
+        如果缓存未命中，返回None并记录警告
 
-                    # 🆕 验证：上市日期应该在合理范围内
-                    from datetime import date as date_class
-                    from datetime import timedelta
+        Args:
+            symbol: 品种代码
 
-                    today = date_class.today()
+        Returns:
+            上市日期，缓存未命中返回None
+        """
+        cached_date, is_cached = self._ipo_cache.get(symbol)
 
-                    # 验证1：不能超过今天30天（允许一定的误差）
-                    if ipo_date > today + timedelta(days=30):
-                        self.logger.warning(
-                            "品种 %s 上市日期异常（远期未来）: %s，原始值: %s，忽略",
-                            symbol,
-                            ipo_date,
-                            ipo_timestamp,
-                        )
-                        self._ipo_date_cache[symbol] = None
-                        return None
-
-                    # 验证2：上市日期应该在1990年后
-                    if ipo_date.year < 1990:
-                        self.logger.warning(
-                            "品种 %s 上市日期异常（过早）: %s，原始值: %s，忽略",
-                            symbol,
-                            ipo_date,
-                            ipo_timestamp,
-                        )
-                        self._ipo_date_cache[symbol] = None
-                        return None
-
-                    self._ipo_date_cache[symbol] = ipo_date
-                    self.logger.debug("获取品种 %s 上市日期: %s", symbol, ipo_date)
-                    return ipo_date
-                elif len(ipo_str) == 7:
-                    # 处理0开头被省略的情况（不太可能，但兼容）
-                    ipo_str = ipo_str.zfill(8)
-                    ipo_date = datetime.strptime(ipo_str, "%Y%m%d").date()
-                    self._ipo_date_cache[symbol] = ipo_date
-                    self.logger.debug("获取品种 %s 上市日期（补零）: %s", symbol, ipo_date)
-                    return ipo_date
-                else:
-                    self.logger.warning(
-                        "品种 %s 上市日期格式异常: 长度=%d, 原始值=%s",
-                        symbol,
-                        len(ipo_str),
-                        ipo_timestamp,
-                    )
-
-            # 无法解析，缓存None避免重复查询
-            self._ipo_date_cache[symbol] = None
+        if is_cached:
+            return cached_date
+        else:
+            self.logger.warning(
+                f"品种 {symbol} IPO日期未缓存，建议先调用 preload_ipo_dates_batch()"
+            )
             return None
 
-        except Exception as e:
-            self.logger.debug("获取品种 %s 上市日期失败: %s", symbol, e)
-            # 缓存None避免重复查询
-            self._ipo_date_cache[symbol] = None
+    def _validate_ipo_date(self, symbol: str, ipo_date: date) -> Optional[date]:
+        """验证IPO日期合理性
+
+        Args:
+            symbol: 品种代码
+            ipo_date: 待验证的IPO日期
+
+        Returns:
+            验证通过返回原日期，否则返回None
+        """
+        today = date.today()
+
+        # 规则1：不能超过今天+30天
+        if ipo_date > today + timedelta(days=30):
+            self.logger.warning("品种 %s IPO日期异常（未来日期）: %s，拒绝", symbol, ipo_date)
             return None
+
+        # 规则2：不能早于1990年
+        if ipo_date.year < 1990:
+            self.logger.warning("品种 %s IPO日期异常（过早）: %s，拒绝", symbol, ipo_date)
+            return None
+
+        return ipo_date
+
+    def _compute_effective_start_date(
+        self, symbol: str, data_start: Optional[date], base_date: Optional[date]
+    ) -> date:
+        """计算有效起始日期（智能起点计算算法）
+
+        不使用推测，通过逻辑计算得出唯一正确值。
+
+        逻辑：
+        1. 如果IPO日期可用，使用IPO日期
+        2. 否则使用max(数据起点, 基准日期)
+        3. 如果都不可用，使用默认值2020-01-01
+
+        Args:
+            symbol: 品种代码
+            data_start: 本地数据起点
+            base_date: 配置的基准日期
+
+        Returns:
+            有效起始日期
+        """
+        # 1. 尝试获取IPO日期
+        ipo_date = self._get_ipo_date(symbol)
+
+        # 2. 计算有效起点
+        candidates = []
+
+        if ipo_date:
+            candidates.append(ipo_date)
+
+        if data_start:
+            candidates.append(data_start)
+
+        if base_date:
+            candidates.append(base_date)
+
+        # 3. 选择最大值（最近的日期）
+        if candidates:
+            effective_start = max(candidates)
+            self.logger.debug(
+                "品种 %s 有效起点: %s (IPO=%s, 数据起点=%s, 基准日=%s)",
+                symbol,
+                effective_start,
+                ipo_date,
+                data_start,
+                base_date,
+            )
+            return effective_start
+        else:
+            # 4. 所有都不可用，使用默认值
+            default_date = date(2020, 1, 1)
+            self.logger.debug("品种 %s 使用默认起点: %s", symbol, default_date)
+            return default_date
 
     def validate_symbol(self, symbol: str, interval: str) -> ValidationResult:
         """校验单个品种的数据"""
@@ -621,7 +807,7 @@ class DataValidator:
         return errors, warnings
 
     def _check_missing_dates(self, df: pd.DataFrame, symbol: str = None) -> List[date]:
-        """检查缺失日期（改进版：整合交易日历、基日、上市日期）
+        """检查缺失日期（优化版：使用智能起点计算算法）
 
         Args:
             df: 数据DataFrame
@@ -643,83 +829,65 @@ class DataValidator:
             if not actual_dates:
                 return []
 
-            # 2. 确定检测起点（考虑基日、上市日、数据起点）
+            # 2. 获取数据范围
             data_start = min(actual_dates)
             data_end = max(actual_dates)
 
-            # 获取基日
-            from .config import config_manager
-            from datetime import date as date_class
-
+            # 3. 获取基准日期
             base_date = config_manager.get_base_date()
 
-            # 获取上市日期（如果提供了symbol）
-            ipo_date = None
-            if symbol:
-                ipo_date = self._get_ipo_date(symbol)
+            # 4. 计算有效起点（使用智能起点计算算法）
+            effective_start = self._compute_effective_start_date(
+                symbol=symbol, data_start=data_start, base_date=base_date
+            )
 
-            # 确定有效起点：max(基日, 上市日, 数据起点)
-            effective_start = data_start
-            if base_date and base_date > effective_start:
-                effective_start = base_date
-            if ipo_date and ipo_date > effective_start:
-                effective_start = ipo_date
-
-            # 🆕 关键修复：确定检测终点（不能超过最近一个交易日）
-            # 原因：交易日历包含未来日期，但历史数据只到今天
+            # 5. 确定检测终点（不能超过最近一个交易日）
             latest_trading_day = self._get_latest_trading_day()
             if latest_trading_day:
-                # 检测终点 = min(数据最后日期, 最近交易日)
                 check_end_date = min(data_end, latest_trading_day)
             else:
                 # 如果获取最近交易日失败，使用今天作为上限
-                today = date_class.today()
-                check_end_date = min(data_end, today)
+                check_end_date = min(data_end, date.today())
 
-            # 🆕 验证：如果effective_start > check_end_date，说明日期范围有问题
+            # 6. 验证日期范围
             if effective_start > check_end_date:
                 self.logger.warning(
                     "品种 %s 日期范围异常: effective_start(%s) > check_end_date(%s), "
-                    "data_start=%s, data_end=%s, base_date=%s, ipo_date=%s, latest_trading_day=%s, 跳过缺失检测",
+                    "数据范围[%s~%s], 基准日=%s, 跳过缺失检测",
                     symbol,
                     effective_start,
                     check_end_date,
                     data_start,
                     data_end,
                     base_date,
-                    ipo_date,
-                    latest_trading_day,
                 )
                 return []
 
-            # 3. 使用交易日历获取期望的交易日范围（只检查到最近交易日）
+            # 7. 使用交易日历获取期望的交易日范围
             expected_trading_days = self._get_trading_days_range(effective_start, check_end_date)
 
             if not expected_trading_days:
-                # 交易日历获取失败，返回空列表（降级处理）
                 self.logger.warning("交易日历获取失败，跳过缺失日期检测")
                 return []
 
-            # 4. 计算缺失的交易日
+            # 8. 计算缺失的交易日
             expected_dates = {
                 datetime.strptime(d, "%Y-%m-%d").date() for d in expected_trading_days
             }
             missing_dates = list(expected_dates - actual_dates)
             missing_dates.sort()
 
-            # 5. 调试日志
+            # 9. 日志输出
             if symbol and missing_dates:
                 self.logger.debug(
                     "品种 %s 缺失检测: 数据范围[%s~%s], 检测范围[%s~%s], "
-                    "基日=%s, 上市日=%s, 最近交易日=%s, "
-                    "期望交易日=%d个, 实际=%d个, 缺失=%d个",
+                    "基准日=%s, 最近交易日=%s, 期望=%d个, 实际=%d个, 缺失=%d个",
                     symbol,
                     data_start,
                     data_end,
                     effective_start,
                     check_end_date,
                     base_date,
-                    ipo_date,
                     latest_trading_day,
                     len(expected_dates),
                     len(actual_dates),
@@ -729,7 +897,7 @@ class DataValidator:
             return missing_dates
 
         except Exception as e:
-            self.logger.error("检查缺失日期失败: %s", e)
+            self.logger.error("检查缺失日期失败: %s", e, exc_info=True)
             return []
 
     def _extract_date_series(self, df: pd.DataFrame):
@@ -875,7 +1043,7 @@ class DataValidator:
             # 获取所有品种（需要从配置文件或数据库获取品种列表）
             # 这里简化处理，假设从配置获取
             try:
-                from .config import config_manager
+                from ..config import config_manager
 
                 reference_symbols = config_manager.get("chinastock.symbols", [])
                 if not reference_symbols:
@@ -1337,10 +1505,15 @@ class DataSensor:
 
             self._quality_overview = overview
 
-            # 发送事件
+            #  发送事件
             if self.event_engine:
                 self._send_quality_update_event(overview)
 
+            # 🆕 保存IPO缓存
+            self.validator._ipo_cache.batch_save()
+
+            # 🆕 输出IPO缓存统计信息
+            cache_stats = self.validator._ipo_cache.get_stats()
             self.logger.info(
                 "✓ 数据质量扫描完成: 评分=%d, 总计=%d, 缺失=%d, 错误=%d, 警告=%d, 过时=%d, 平均滞后=%d天, 问题品种=%d个",
                 quality_score,
@@ -1351,6 +1524,19 @@ class DataSensor:
                 outdated_symbols,
                 avg_gap_days,
                 len(problem_details),
+            )
+
+            self.logger.info(
+                "📈 IPO缓存统计: 缓存大小=%d, 命中率=%.1f%%, API调用=%d次, 成功率=%.1f%%, 超时=%d次",
+                cache_stats["cache_size"],
+                cache_stats["hit_rate"],
+                cache_stats["api_calls"],
+                (
+                    (cache_stats["api_success"] / cache_stats["api_calls"] * 100)
+                    if cache_stats["api_calls"] > 0
+                    else 0
+                ),
+                cache_stats["api_timeout"],
             )
 
             return overview
@@ -1477,7 +1663,7 @@ class DataSensor:
         Returns:
             是否启动成功
         """
-        from .config import config_manager
+        from ..config import config_manager
 
         try:
             if self.data_file_watcher and self.data_file_watcher.is_running:

@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 from backend.infrastructure.tdx_asyncio import AsyncTdxHq_API
 
-from .config import config_manager, TdxConfigFileParser
+from ..config import config_manager, TdxConfigFileParser
 
 logger = logging.getLogger(__name__)
 

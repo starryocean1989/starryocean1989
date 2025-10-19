@@ -15,33 +15,33 @@ ChinaStockEngine继承vnpy的BaseEngine，集成所有功能模块：
 
 import logging
 import threading
-from datetime import date, datetime
+from datetime import date
 from typing import Any, Dict, List, Optional, Union
 
 from vnpy.event import Event, EventEngine
 from vnpy.trader.engine import BaseEngine, MainEngine
 
 from .config import config_manager
-from .symbol_management import SymbolLoader
-from .data_fetcher import MultiProcessStockFetcher
-from .data_quality import StorageManager, DataValidator, ValidationSummary, DataFileWatcher
-from .gateways import PollingGateway, VirtualGateway
+from .data_acquisition.symbol_management import SymbolLoader
+from .data_acquisition.data_fetcher import MultiProcessStockFetcher
+from .local_data.data_quality import (
+    StorageManager,
+    DataValidator,
+    ValidationSummary,
+    DataFileWatcher,
+)
+from .data_acquisition.gateways import PollingGateway, VirtualGateway
 from .data_readers import TdxBinaryReader
-from .data_quality import DataSensor, QualityOverview
-from .preload_service import PreloadService
-from .unified_data_manager import UnifiedDataManager
-from .file_watcher import KlineFileWatcher
+from .local_data.data_quality import DataSensor, QualityOverview
+from .local_data.preload_service import PreloadService
+from .local_data.unified_data_manager import UnifiedDataManager
+from .local_data.file_watcher import KlineFileWatcher
 
 
 # 从events模块导入常量
 from .events import (
     APP_NAME,
-    EVENT_CHINASTOCK_LOG,
-    EVENT_CHINASTOCK_VALIDATION,
-    EVENT_CHINASTOCK_FILE_CHANGE,
-    EVENT_CHINASTOCK_DOWNLOAD,
     EVENT_DATA_QUALITY_UPDATE,
-    EVENT_DATA_SCAN_COMPLETE,
     EventPublisher,
 )
 
@@ -228,9 +228,22 @@ class ChinaStockEngine(BaseEngine):
         if elapsed >= max_wait_time:
             self.logger.warning("⚠️ 等待品种列表超时，使用当前可用品种开始扫描")
 
-        # 🆕 步骤3：开始数据质量扫描
+        # 🆕 步骤3：批量预加载IPO日期
         try:
-            final_count = len(self.symbol_loader.extract_all_codes())
+            all_symbols = self.symbol_loader.extract_all_codes()
+            final_count = len(all_symbols)
+
+            self.logger.info("🔄 批量预加载IPO日期...")
+            try:
+                self.data_sensor.validator.preload_ipo_dates_batch(
+                    symbols=all_symbols, force_refresh=False  # 增量模式
+                )
+                self.logger.info("✓ IPO日期预加载完成")
+            except Exception as e:
+                self.logger.error(f"IPO日期预加载失败: {e}", exc_info=True)
+                self.logger.warning("继续进行数据质量扫描...")
+
+            # 🆕 步骤4：开始数据质量扫描
             self.logger.info(f"🚀 开始初始数据质量扫描（品种数: {final_count}）...")
 
             # 触发扫描
@@ -332,12 +345,25 @@ class ChinaStockEngine(BaseEngine):
         return self.symbol_loader.reload_and_classify()
 
     def download_incremental(
-        self, start_date: Union[str, date], market_types: Optional[List[str]] = None
+        self,
+        start_date: Union[str, date],
+        market_types: Optional[List[str]] = None,
+        use_adaptive: bool = True,
     ) -> bool:
-        """增量下载K线数据（代理调用）"""
+        """
+        增量下载K线数据（代理调用）
+
+        Args:
+            start_date: 起始日期
+            market_types: 市场类型列表
+            use_adaptive: 是否使用自适应配置（默认True，企业级推荐）
+
+        Returns:
+            是否成功启动下载任务
+        """
         self._ensure_lazy_init()
         return self.stock_fetcher.start_incremental_download_async(
-            start_date, self.symbol_loader, self.storage_manager, market_types
+            start_date, self.symbol_loader, self.storage_manager, market_types, use_adaptive
         )
 
     def query_data(

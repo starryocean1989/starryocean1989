@@ -28,14 +28,14 @@ from .events import (
     QualityEventPublisher,
 )
 from .core import ChinaStockEngine
-from .gateways import PollingGateway, VirtualGateway
+from .data_acquisition.gateways import PollingGateway, VirtualGateway
 from .data_readers import BaseReader, TdxBinaryReader
-from .preload_service import PreloadService
-from .unified_data_manager import UnifiedDataManager
-from .symbol_management import SymbolLoader
-from .data_fetcher import MultiProcessStockFetcher, download_incremental_unified
-from .health_checker import HealthChecker
-from .server_pool_manager import (
+from .local_data.preload_service import PreloadService
+from .local_data.unified_data_manager import UnifiedDataManager
+from .data_acquisition.symbol_management import SymbolLoader
+from .data_acquisition.data_fetcher import MultiProcessStockFetcher, download_incremental_unified
+from .local_data.health_checker import HealthChecker
+from .data_acquisition.server_pool_manager import (
     ServerPoolManager,
     server_pool_manager,
     get_best_servers,

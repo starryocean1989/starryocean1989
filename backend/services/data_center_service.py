@@ -414,7 +414,7 @@ class DataCenterService(BaseService, LoggerMixin):
             Dict包含可用服务器数量、总数量、验证状态等信息
         """
         try:
-            from backend.infrastructure.data_module_vnpy.server_pool_manager import (
+            from backend.infrastructure.data_module_vnpy.data_acquisition.server_pool_manager import (
                 server_pool_manager,
             )
 
@@ -1808,7 +1808,9 @@ class DataCenterService(BaseService, LoggerMixin):
 
             # 调用validator进行质量检查
             try:
-                from backend.infrastructure.data_module_vnpy.data_quality import DataValidator
+                from backend.infrastructure.data_module_vnpy.local_data.data_quality import (
+                    DataValidator,
+                )
 
                 validator = DataValidator()
 
@@ -1966,7 +1968,7 @@ class DataCenterService(BaseService, LoggerMixin):
                 }
 
             # 从数据感知器获取质量概览
-            from backend.infrastructure.data_module_vnpy.data_quality import data_sensor
+            from backend.infrastructure.data_module_vnpy.local_data.data_quality import data_sensor
 
             quality_overview = data_sensor.get_quality_overview()
 
@@ -3198,7 +3200,7 @@ class DataCenterService(BaseService, LoggerMixin):
 
             # 导入网关类
             try:
-                from backend.infrastructure.data_module_vnpy.gateways import (
+                from backend.infrastructure.data_module_vnpy.data_acquisition.gateways import (
                     PollingGateway,
                 )
             except ImportError as e:
@@ -3450,7 +3452,7 @@ class DataCenterService(BaseService, LoggerMixin):
 
             # 导入网关类
             try:
-                from backend.infrastructure.data_module_vnpy.gateways import (
+                from backend.infrastructure.data_module_vnpy.data_acquisition.gateways import (
                     VirtualGateway,
                 )
             except ImportError as e:

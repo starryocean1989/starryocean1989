@@ -29,9 +29,9 @@ from vnpy.trader.object import (
     TickData,
 )
 
-from .config import config_manager
+from ..config import config_manager
 from .data_fetcher import MultiProcessStockFetcher
-from .data_quality import StorageManager
+from ..local_data.data_quality import StorageManager
 
 # ==================== 网关管理器（从core.py迁移） ====================
 
@@ -129,7 +129,9 @@ class GatewayManager:
             return None
 
     @staticmethod
-    def start_virtual(event_engine, existing_gateway=None, start_datetime="", speed=1.0, symbols=None):
+    def start_virtual(
+        event_engine, existing_gateway=None, start_datetime="", speed=1.0, symbols=None
+    ):
         """
         启动虚拟网关（完整业务逻辑，从core.py迁移）
 

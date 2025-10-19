@@ -12,10 +12,10 @@ from typing import Any, Deque, Dict, Iterable, Optional, Set, Tuple, TYPE_CHECKI
 
 import pandas as pd
 
-from .config import config_manager
+from ..config import config_manager
 
 if TYPE_CHECKING:  # pragma: no cover
-    from .core import ChinaStockEngine
+    from ..core import ChinaStockEngine
 
 
 class PreloadService:
@@ -65,7 +65,9 @@ class PreloadService:
         self.logger.info("预加载服务已停止")
 
     # ------------------------------------------------------------------
-    def enqueue(self, symbol: str, *, intervals: Optional[Iterable[str]] = None, priority: bool = False) -> None:
+    def enqueue(
+        self, symbol: str, *, intervals: Optional[Iterable[str]] = None, priority: bool = False
+    ) -> None:
         if not symbol:
             return
         canonical = symbol.strip()

@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict
 
-from .config import config_manager
+from ..config import config_manager
 
 
 logger = logging.getLogger(__name__)
@@ -80,4 +80,3 @@ class HealthChecker:
             logger.error("健康检查异常: %s", e, exc_info=True)
 
         return {"ready": bool(ready), "message": message, "details": details}
-

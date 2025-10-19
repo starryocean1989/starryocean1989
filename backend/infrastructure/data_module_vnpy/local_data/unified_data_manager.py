@@ -14,10 +14,10 @@ from pandas import Timestamp
 from vnpy.trader.constant import Exchange
 from vnpy.trader.object import SubscribeRequest
 
-from .config import config_manager
+from ..config import config_manager
 
 if TYPE_CHECKING:  # pragma: no cover
-    from .core import ChinaStockEngine
+    from ..core import ChinaStockEngine
     from .preload_service import PreloadService
 
 
@@ -58,7 +58,9 @@ class UnifiedDataManager:
             if cached is not None and not cached.empty:
                 frames.append(cached)
 
-        storage_frame = self.engine.storage_manager.query_kline(symbol, interval, start_date, end_date)
+        storage_frame = self.engine.storage_manager.query_kline(
+            symbol, interval, start_date, end_date
+        )
         if storage_frame is not None and not storage_frame.empty:
             frames.append(storage_frame)
 
@@ -78,7 +80,9 @@ class UnifiedDataManager:
                 storage_frame = self.engine.storage_manager.query_kline(
                     symbol, interval, start_date, end_date
                 )
-                merged = self._merge_frames([storage_frame] if storage_frame is not None else [], interval)
+                merged = self._merge_frames(
+                    [storage_frame] if storage_frame is not None else [], interval
+                )
 
         if merged is None or merged.empty:
             return None
@@ -301,7 +305,9 @@ class UnifiedDataManager:
             gateway = self.engine.virtual_gateway
             if gateway is None:
                 if not self.engine.start_virtual_gateway(
-                    start_datetime=config_manager.get("chinastock.virtual_gateway.start_datetime", ""),
+                    start_datetime=config_manager.get(
+                        "chinastock.virtual_gateway.start_datetime", ""
+                    ),
                     speed=config_manager.get_virtual_gateway_speed(),
                     symbols=None,
                 ):
@@ -339,7 +345,9 @@ class UnifiedDataManager:
         return None
 
     # ------------------------------------------------------------------
-    def _merge_frames(self, frames: Iterable[Optional[pd.DataFrame]], interval: str) -> Optional[pd.DataFrame]:
+    def _merge_frames(
+        self, frames: Iterable[Optional[pd.DataFrame]], interval: str
+    ) -> Optional[pd.DataFrame]:
         normalized = []
         for frame in frames:
             prepared = self._normalize_frame(frame)

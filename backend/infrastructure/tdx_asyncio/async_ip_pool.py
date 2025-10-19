@@ -317,6 +317,46 @@ class AsyncSmartIPPool(AsyncIPPool):
             f"服务器重新排序完成，最快服务器: {self.sorted_servers[0] if self.sorted_servers else '无'}"
         )
 
+    async def test_once(self) -> Dict[Tuple[str, int], float]:
+        """
+        一次性测速所有服务器（公开接口）
+
+        适用场景：
+        - 外部已有持续监控机制（如多进程定期测速）
+        - 只需要获取一次测速结果
+
+        Returns:
+            Dict[server, response_time]: 测速结果字典
+
+        示例：
+            pool = AsyncSmartIPPool(servers)
+            scores = await pool.test_once()
+            # 外部自己处理排序和过滤
+        """
+        await self._test_all_servers()
+        await self._sort_servers()
+        return self.server_scores.copy()
+
+    async def get_sorted_servers_with_scores(self) -> List[Tuple[Tuple[str, int], float]]:
+        """
+        获取排序后的服务器及其响应时间（公开接口）
+
+        Returns:
+            List[(server, response_time)]: 按响应时间排序的列表
+
+        示例：
+            sorted_results = await pool.get_sorted_servers_with_scores()
+            for (ip, port), score in sorted_results:
+                if score <= 2.0:  # 只要2秒内的
+                    print(f"{ip}:{port} - {score:.2f}s")
+        """
+        if not self.sorted_servers:
+            return []
+
+        return [
+            (server, self.server_scores.get(server, float("inf"))) for server in self.sorted_servers
+        ]
+
     async def get_servers(self) -> List[Tuple[str, int]]:
         """
         获取排序后的服务器列表

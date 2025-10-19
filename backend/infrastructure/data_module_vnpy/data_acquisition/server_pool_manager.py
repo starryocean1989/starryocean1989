@@ -24,7 +24,7 @@ from backend.infrastructure.tdx_asyncio import (
     HQ_HOSTS_ALL,
 )
 
-from .config import config_manager
+from ..config import config_manager
 
 
 class ServerPoolManager:
@@ -251,13 +251,12 @@ class ServerPoolManager:
                     max_fail_time=max_fail_time,
                 )
 
-                # 执行测速（不启动后台监控）
-                await pool._test_all_servers()
-                await pool._sort_servers()
+                # 执行测速（使用公开接口）
+                scores = await pool.test_once()
 
                 # 保存结果到共享内存
                 success_count = 0
-                for server, score in pool.server_scores.items():
+                for server, score in scores.items():
                     shared_results[server] = score
                     if score <= max_fail_time:
                         success_count += 1
@@ -463,3 +462,53 @@ def get_all_servers() -> List[Tuple[str, int]]:
         服务器列表 [(ip, port), ...]
     """
     return server_pool_manager.get_servers()
+
+
+def get_verified_servers_random(count: Optional[int] = None) -> List[Tuple[str, int]]:
+    """
+    获取已验证的服务器（随机排列）- 便捷函数
+
+    此函数从constants.py的BROKER_SERVERS_7709获取服务器列表，
+    并随机打乱顺序。如果server_pool_manager已运行且有测速结果，
+    则优先使用测速后的服务器（保持质量优先但随机排列）。
+
+    Args:
+        count: 需要的服务器数量，None表示返回所有
+
+    Returns:
+        随机排列的服务器列表 [(ip, port), ...]
+
+    使用场景:
+        - 大规模下载任务需要随机分配服务器
+        - 避免所有客户端同时访问相同服务器
+        - 负载均衡
+    """
+    import random
+    from backend.infrastructure.tdx_asyncio.constants import BROKER_SERVERS_7709
+
+    # 尝试获取已测速的服务器
+    if server_pool_manager.is_running():
+        try:
+            # 如果服务器池已运行，获取已测速的服务器
+            servers = server_pool_manager.get_servers()
+            # 随机打乱已测速的服务器
+            servers_copy = servers.copy()
+            random.shuffle(servers_copy)
+            servers = servers_copy
+
+            if count is not None:
+                servers = servers[:count]
+
+            return servers
+        except Exception:
+            # 如果获取失败，使用fallback方案
+            pass
+
+    # Fallback: 从constants.py获取所有服务器并随机打乱
+    servers = [(ip, port) for name, ip, port in BROKER_SERVERS_7709]
+    random.shuffle(servers)
+
+    if count is not None:
+        servers = servers[:count]
+
+    return servers

@@ -915,7 +915,7 @@ async def get_history_transaction_data(
 #### 10. 财务信息 ⭐
 ```python
 async def get_finance_info(
-    market: int,  # 市场：0=深圳，1=上海
+    market: int,  # 市场：0=深圳，1=上海，2=北京
     code: str     # 股票代码
 ) -> dict
 ```
@@ -924,9 +924,53 @@ async def get_finance_info(
 - 资产负债: zongzichan, jingzichan, liudongzichan, gudingzichan, liudongfuzhai, changqifuzhai
 - 经营成果: zhuyingshouru, zhuyinglirun, yingyelirun, jinglirun
 - 现金流量: jingyingxianjinliu, zongxianjinliu
-- 财务指标: meigujingzichan, industry, province, ipo_date, updated_date
+- 财务指标: meigujingzichan, industry, province, **ipo_date**, updated_date
+
+**重要字段说明**:
+- **ipo_date**: 上市日期（整数时间戳，格式YYYYMMDD，例如20100101）
+  - 支持品种：深圳可转债、上海/深圳ETF、上海/深圳LOF基金
+  - 不支持：北交所股票、上海可转债
+  - 解析示例：`datetime.strptime(str(int(ipo_timestamp)).zfill(8), "%Y%m%d").date()`
 
 **性能**: 单次 ~29ms，批量100只 ~2.9秒（同步需要125秒，43倍提升）
+
+**典型应用场景**:
+```python
+# IPO日期查询示例
+async def get_ipo_date(api, symbol: str, market: int) -> Optional[date]:
+    """查询品种上市日期"""
+    finance_info = await api.get_finance_info(market, symbol)
+    ipo_timestamp = finance_info.get("ipo_date")
+
+    if ipo_timestamp and ipo_timestamp > 0:
+        ipo_str = str(int(ipo_timestamp)).zfill(8)
+        if len(ipo_str) == 8:
+            return datetime.strptime(ipo_str, "%Y%m%d").date()
+
+    return None
+
+# 批量查询IPO日期（使用连接池）
+async def batch_get_ipo_dates(symbols: List[str]) -> Dict[str, date]:
+    """批量查询多个品种的IPO日期"""
+    pool = AsyncConnectionPool(servers=get_servers(), max_connections=38)
+
+    async with pool:
+        tasks = []
+        for symbol in symbols:
+            market = 1 if symbol.startswith("6") else 0
+            conn = await pool.acquire()
+            task = get_ipo_date(conn, symbol, market)
+            tasks.append((symbol, task))
+            await pool.release(conn)
+
+        results = {}
+        for symbol, task in tasks:
+            ipo_date = await task
+            if ipo_date:
+                results[symbol] = ipo_date
+
+        return results
+```
 
 ---
 
