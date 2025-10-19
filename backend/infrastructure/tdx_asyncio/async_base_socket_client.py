@@ -195,23 +195,29 @@ class AsyncBaseSocketClient:
                 if not self.writer.is_closing():
                     self.writer.close()
                     # 🔧 添加短暂超时，避免长时间等待
-                    await asyncio.wait_for(self.writer.wait_closed(), timeout=2.0)
+                    try:
+                        await asyncio.wait_for(self.writer.wait_closed(), timeout=2.0)
+                    except asyncio.TimeoutError:
+                        # 🔧 超时不算错误，静默处理
+                        logger.debug("wait_closed timeout, connection may already closed")
+                    except (ConnectionError, BrokenPipeError, OSError, RuntimeError) as e:
+                        # 🔧 连接已断开或事件循环已关闭，静默处理
+                        logger.debug(f"wait_closed: {type(e).__name__}")
                 else:
                     logger.debug("writer already closing, skip")
-            except asyncio.TimeoutError:
-                # 🔧 超时不算错误，静默处理
-                logger.debug("disconnect timeout, connection may already closed")
-            except (ConnectionError, BrokenPipeError, OSError) as e:
-                # 🔧 连接已断开的常见异常，静默处理
-                logger.debug(f"disconnect: connection already closed ({type(e).__name__})")
+            except (ConnectionError, BrokenPipeError, OSError, RuntimeError, AttributeError) as e:
+                # 🔧 连接已断开或对象已释放的常见异常，静默处理
+                logger.debug(f"disconnect: connection issue ({type(e).__name__})")
             except Exception as e:
-                logger.debug(f"disconnect err: {e}")
+                # 🔧 其他未知异常，记录但不崩溃
+                logger.debug(f"disconnect unexpected err: {type(e).__name__}: {e}")
                 if self.raise_exception:
                     raise TdxConnectionError(f"disconnect err: {e}")
             finally:
+                # 🔧 确保资源清理，即使出现异常
                 self.writer = None
                 self.reader = None
-                self.closed = True  # 🔧 确保标记为已关闭
+                self.closed = True
 
             logger.debug("disconnected")
 
@@ -259,35 +265,55 @@ class AsyncBaseSocketClient:
             raise TdxConnectionError("connection is closed")
 
         async with self.lock:
-            # 发送数据
-            self.writer.write(pkg_bytes)
-            await self.writer.drain()
+            try:
+                # 发送数据
+                self.writer.write(pkg_bytes)
+                await self.writer.drain()
 
-            self.send_pkg_num += 1
-            self.send_pkg_bytes += len(pkg_bytes)
+                self.send_pkg_num += 1
+                self.send_pkg_bytes += len(pkg_bytes)
 
-            logger.debug(f"send pkg: {len(pkg_bytes)} bytes")
+                logger.debug(f"send pkg: {len(pkg_bytes)} bytes")
 
-            # 接收响应头
-            header = await self.reader.readexactly(RECV_HEADER_LEN)
-            self.recv_pkg_bytes += len(header)
+                # 接收响应头
+                header = await self.reader.readexactly(RECV_HEADER_LEN)
+                self.recv_pkg_bytes += len(header)
 
-            # 解析响应体长度
-            body_len = AsyncRawParser.parse_pkg_header(header)
+                # 解析响应体长度
+                body_len = AsyncRawParser.parse_pkg_header(header)
 
-            logger.debug(f"recv header, body_len: {body_len}")
+                logger.debug(f"recv header, body_len: {body_len}")
 
-            # 接收响应体
-            if body_len > 0:
-                body = await self.reader.readexactly(body_len)
-                self.recv_pkg_bytes += len(body)
-                self.recv_pkg_num += 1
+                # 接收响应体
+                if body_len > 0:
+                    body = await self.reader.readexactly(body_len)
+                    self.recv_pkg_bytes += len(body)
+                    self.recv_pkg_num += 1
 
-                logger.debug(f"recv body: {len(body)} bytes")
+                    logger.debug(f"recv body: {len(body)} bytes")
 
-                return header + body
-            else:
-                return header
+                    return header + body
+                else:
+                    return header
+            except (ConnectionResetError, BrokenPipeError) as e:
+                # 连接被对端重置或管道已断开
+                logger.error(f"连接已断开: {type(e).__name__}: {e}, server={self.ip}:{self.port}")
+                self.closed = True
+                raise TdxConnectionError(f"连接已断开 ({type(e).__name__}): {e}")
+            except asyncio.TimeoutError as e:
+                # 超时错误
+                logger.error(f"操作超时: {e}, server={self.ip}:{self.port}")
+                raise TdxConnectionError(f"操作超时: {e}")
+            except asyncio.IncompleteReadError as e:
+                # 读取不完整
+                logger.error(f"数据读取不完整: {e}, server={self.ip}:{self.port}")
+                self.closed = True
+                raise TdxConnectionError(f"数据读取不完整: {e}")
+            except Exception as e:
+                # 其他未知异常
+                logger.error(f"发送/接收数据时发生异常: {type(e).__name__}: {e}, server={self.ip}:{self.port}", exc_info=True)
+                self.closed = True
+                raise TdxConnectionError(f"通信异常 ({type(e).__name__}): {e}")
 
     def get_traffic_stats(self):
         """

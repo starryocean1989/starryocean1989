@@ -152,10 +152,8 @@ class ChinaStockEngine(BaseEngine):
 
         # 🆕 启动K线文件监听器
         try:
-            from pathlib import Path
-
-            kline_path = config_manager.get("kline_path", "data/kline")
-            kline_dir = Path(kline_path)
+            # 🔧 修复：使用标准方法获取数据目录，确保使用绝对路径
+            kline_dir = config_manager.get_data_dir()
             if kline_dir.exists():
                 self.kline_file_watcher = KlineFileWatcher(
                     data_dir=str(kline_dir), callback=self._on_kline_file_changed
@@ -195,20 +193,55 @@ class ChinaStockEngine(BaseEngine):
         # return bool(getattr(self, "_ready", False))
 
     def _initial_quality_scan(self):
-        """初始数据质量扫描（后台线程）"""
+        """初始数据质量扫描（后台线程）
+
+        ⚠️ 重要：必须在品种列表更新完成后才开始扫描
+        """
         import time
 
-        time.sleep(3)  # 等待3秒，确保引擎完全初始化
+        # 🆕 步骤1：等待引擎完全初始化
+        time.sleep(3)
+        self.logger.info("🔍 准备启动数据质量扫描...")
 
+        # 🆕 步骤2：等待品种列表加载/更新完成
+        max_wait_time = 60  # 最多等待60秒
+        wait_interval = 2  # 每2秒检查一次
+        elapsed = 0
+
+        while elapsed < max_wait_time:
+            try:
+                # 检查品种列表是否已加载
+                current_codes = self.symbol_loader.extract_all_codes()
+
+                if len(current_codes) > 0:
+                    self.logger.info(f"✓ 品种列表已就绪: {len(current_codes)}个品种")
+                    break
+                else:
+                    self.logger.debug(f"品种列表为空，继续等待... ({elapsed}s/{max_wait_time}s)")
+                    time.sleep(wait_interval)
+                    elapsed += wait_interval
+            except Exception as e:
+                self.logger.warning(f"检查品种列表失败: {e}，继续等待...")
+                time.sleep(wait_interval)
+                elapsed += wait_interval
+
+        if elapsed >= max_wait_time:
+            self.logger.warning("⚠️ 等待品种列表超时，使用当前可用品种开始扫描")
+
+        # 🆕 步骤3：开始数据质量扫描
         try:
-            self.logger.info("开始初始数据质量扫描...")
+            final_count = len(self.symbol_loader.extract_all_codes())
+            self.logger.info(f"🚀 开始初始数据质量扫描（品种数: {final_count}）...")
+
             # 触发扫描
             overview = self.trigger_data_quality_scan(force_refresh=True)
 
             if overview:
                 # 推送vnpy事件
                 self._push_quality_overview_event(overview)
-                self.logger.info(f"✓ 初始数据质量扫描完成，评分: {overview.quality_score}")
+                self.logger.info(
+                    f"✓ 初始数据质量扫描完成，品种: {overview.total_symbols}，评分: {overview.quality_score}"
+                )
             else:
                 self.logger.warning("初始数据质量扫描未返回结果")
         except Exception as e:
@@ -369,6 +402,14 @@ class ChinaStockEngine(BaseEngine):
         except Exception as e:
             self.logger.error("获取存储统计失败: %s", e)
             return {}
+
+    def get_local_data_index(self) -> List[str]:
+        """获取本地数据索引（已下载的品种代码列表，代理调用）"""
+        try:
+            return self.storage_manager.get_local_data_index()
+        except Exception as e:
+            self.logger.error("获取本地数据索引失败: %s", e)
+            return []
 
     def get_config(self) -> Dict[str, Any]:
         """获取配置信息（代理调用）"""

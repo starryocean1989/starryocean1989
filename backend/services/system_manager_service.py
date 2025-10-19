@@ -48,6 +48,7 @@ EVENT_ALERT_UPDATED = "eAlertUpdated"
 # Part 1: 日志管理（从log_manager.py合并）
 # =============================================================================
 
+
 class LogDatabase:
     """日志数据库管理器（使用统一database_adapter）.
 
@@ -76,24 +77,29 @@ class LogDatabase:
         """
         try:
             # 使用database_adapter的统一接口
-            self.db_manager.execute_update("""
+            self.db_manager.execute_update(
+                """
                 INSERT OR IGNORE INTO system_logs
                 (timestamp, level, module, message, extra)
                 VALUES (?, ?, ?, ?, ?)
-            """, (
-                log_data["timestamp"],
-                log_data["level"],
-                log_data["module"],
-                log_data["message"],
-                json.dumps({
-                    "logger_name": log_data.get("logger_name"),
-                    "function": log_data.get("function"),
-                    "line": log_data.get("line"),
-                    "exception": log_data.get("exception"),
-                    "thread": log_data.get("thread"),
-                    "filename": log_data.get("filename"),
-                }),
-            ))
+            """,
+                (
+                    log_data["timestamp"],
+                    log_data["level"],
+                    log_data["module"],
+                    log_data["message"],
+                    json.dumps(
+                        {
+                            "logger_name": log_data.get("logger_name"),
+                            "function": log_data.get("function"),
+                            "line": log_data.get("line"),
+                            "exception": log_data.get("exception"),
+                            "thread": log_data.get("thread"),
+                            "filename": log_data.get("filename"),
+                        }
+                    ),
+                ),
+            )
 
         except Exception as e:
             # 静默失败，避免日志循环
@@ -158,9 +164,9 @@ class LogDatabase:
 
             # 解析extra字段
             for log in results:
-                if log.get('extra'):
+                if log.get("extra"):
                     try:
-                        extra_data = json.loads(log['extra'])
+                        extra_data = json.loads(log["extra"])
                         log.update(extra_data)
                     except:
                         pass
@@ -181,27 +187,37 @@ class LogDatabase:
             cutoff_time = (datetime.now() - timedelta(days=7)).isoformat()
 
             # 按级别统计
-            level_results = self.db_manager.execute_query("""
+            level_results = self.db_manager.execute_query(
+                """
                 SELECT level, COUNT(*) as count
                 FROM system_logs
                 WHERE timestamp >= ?
                 GROUP BY level
-            """, (cutoff_time,))
+            """,
+                (cutoff_time,),
+            )
             level_stats = {row["level"]: row["count"] for row in level_results}
 
             # 按模块统计
-            module_results = self.db_manager.execute_query("""
+            module_results = self.db_manager.execute_query(
+                """
                 SELECT module, COUNT(*) as count
                 FROM system_logs
                 WHERE timestamp >= ? AND module IS NOT NULL
                 GROUP BY module
                 ORDER BY count DESC
                 LIMIT 10
-            """, (cutoff_time,))
-            module_stats = [{"module": row["module"], "count": row["count"]} for row in module_results]
+            """,
+                (cutoff_time,),
+            )
+            module_stats = [
+                {"module": row["module"], "count": row["count"]} for row in module_results
+            ]
 
             # 总记录数
-            total_results = self.db_manager.execute_query("SELECT COUNT(*) as total FROM system_logs")
+            total_results = self.db_manager.execute_query(
+                "SELECT COUNT(*) as total FROM system_logs"
+            )
             total_count = total_results[0]["total"] if total_results else 0
 
             return {
@@ -229,8 +245,7 @@ class LogDatabase:
 
             # 使用database_adapter删除
             deleted_count = self.db_manager.execute_update(
-                "DELETE FROM system_logs WHERE timestamp < ?",
-                (cutoff_time,)
+                "DELETE FROM system_logs WHERE timestamp < ?", (cutoff_time,)
             )
 
             self.logger.info(f"清理了 {deleted_count} 条旧日志")
@@ -263,9 +278,7 @@ class LogRecordHandler(logging.Handler):
         self.setLevel(logging.DEBUG)
 
         # 设置格式化器
-        formatter = logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-        )
+        formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
         self.setFormatter(formatter)
 
     def emit(self, record: logging.LogRecord) -> None:
@@ -276,11 +289,11 @@ class LogRecordHandler(logging.Handler):
         """
         try:
             # 跳过日志系统本身的记录，避免递归
-            if record.name.startswith('backend.services.system_manager.log_manager'):
+            if record.name.startswith("backend.services.system_manager.log_manager"):
                 return
 
             # 增强递归检测：检查是否在日志处理过程中
-            if hasattr(record, '_in_log_handler'):
+            if hasattr(record, "_in_log_handler"):
                 return
 
             # 标记当前记录正在被日志处理器处理
@@ -308,7 +321,7 @@ class LogRecordHandler(logging.Handler):
             }
 
             # 只在非日志系统模块时才推送，避免递归
-            if not record.name.startswith('backend.services.system_manager'):
+            if not record.name.startswith("backend.services.system_manager"):
                 try:
                     # 推送到事件引擎（实时推送）
                     self.log_manager.publish_log_record(log_data)
@@ -325,8 +338,8 @@ class LogRecordHandler(logging.Handler):
             pass  # 避免任何形式的递归记录错误
         finally:
             # 清理标记
-            if hasattr(record, '_in_log_handler'):
-                delattr(record, '_in_log_handler')
+            if hasattr(record, "_in_log_handler"):
+                delattr(record, "_in_log_handler")
 
 
 # =============================================================================
@@ -454,7 +467,7 @@ class LogManager:
 
         try:
             # 检查事件引擎是否活跃
-            if hasattr(self.event_engine, 'is_active') and not self.event_engine.is_active():
+            if hasattr(self.event_engine, "is_active") and not self.event_engine.is_active():
                 return
 
             from vnpy.event import Event
@@ -536,8 +549,10 @@ class LogManager:
             # 写入文件
             with open(file_path, "w", encoding="utf-8") as f:
                 for log in logs:
-                    f.write(f"[{log['timestamp']}] {log['level']} {log['module']}.{log['function_name']}:{log['line_number']} - {log['message']}\n")
-                    if log['exception']:
+                    f.write(
+                        f"[{log['timestamp']}] {log['level']} {log['module']}.{log['function_name']}:{log['line_number']} - {log['message']}\n"
+                    )
+                    if log["exception"]:
                         f.write(f"Exception: {log['exception']}\n")
 
             self.logger.info("日志已导出到: %s，共 %d 条记录", file_path, len(logs))
@@ -622,10 +637,10 @@ __all__ = [
 ]
 
 
-
 # =============================================================================
 # Part 2: 告警管理（从alert_manager.py合并）
 # =============================================================================
+
 
 class AlertSeverity(Enum):
     """告警严重程度."""
@@ -772,7 +787,7 @@ class LogAlertRule(AlertRule):
             description=description,
         )
 
-        self.log_levels = log_levels or ['ERROR', 'CRITICAL']
+        self.log_levels = log_levels or ["ERROR", "CRITICAL"]
         self.modules = modules or []
         self.keywords = keywords or []
         self.suppression_window = suppression_window
@@ -785,21 +800,23 @@ class LogAlertRule(AlertRule):
 
         try:
             # 检查日志级别
-            if self.log_levels and log_data.get('level') not in self.log_levels:
+            if self.log_levels and log_data.get("level") not in self.log_levels:
                 return False
 
             # 检查模块
-            if self.modules and log_data.get('module') not in self.modules:
+            if self.modules and log_data.get("module") not in self.modules:
                 return False
 
             # 检查关键字
             if self.keywords:
-                message = log_data.get('message', '').lower()
+                message = log_data.get("message", "").lower()
                 if not any(keyword.lower() in message for keyword in self.keywords):
                     return False
 
             # 检查抑制窗口
-            suppression_key = f"{self.rule_id}:{log_data.get('module', '')}:{log_data.get('level', '')}"
+            suppression_key = (
+                f"{self.rule_id}:{log_data.get('module', '')}:{log_data.get('level', '')}"
+            )
             if suppression_key in self._last_trigger_times:
                 last_time = self._last_trigger_times[suppression_key]
                 if datetime.now() - last_time < timedelta(seconds=self.suppression_window):
@@ -906,7 +923,7 @@ class AlertEngine:
 
     def __init__(self):
         """初始化告警引擎."""
-        if hasattr(self, '_initialized'):
+        if hasattr(self, "_initialized"):
             return
 
         self._initialized = True
@@ -1019,7 +1036,7 @@ class AlertEngine:
         alert.status = AlertStatus.ACKNOWLEDGED
         alert.acknowledged_at = datetime.now()
         if note:
-            alert.notes = getattr(alert, 'notes', []) + [f"[ACKNOWLEDGED] {note}"]
+            alert.notes = getattr(alert, "notes", []) + [f"[ACKNOWLEDGED] {note}"]
 
         return True
 
@@ -1032,11 +1049,13 @@ class AlertEngine:
         alert.status = AlertStatus.RESOLVED
         alert.resolved_at = datetime.now()
         if note:
-            alert.notes = getattr(alert, 'notes', []) + [f"[RESOLVED] {note}"]
+            alert.notes = getattr(alert, "notes", []) + [f"[RESOLVED] {note}"]
 
         return True
 
-    def configure_notifications(self, notification_type: NotificationType, config: Dict[str, Any]) -> bool:
+    def configure_notifications(
+        self, notification_type: NotificationType, config: Dict[str, Any]
+    ) -> bool:
         """配置通知设置."""
         # 这里可以添加通知配置逻辑
         # 目前只是一个占位符实现
@@ -1069,29 +1088,38 @@ class AlertDatabase:
         """保存告警记录（使用统一database）."""
         try:
             # 使用database_adapter保存
-            self.db_manager.execute_update("""
+            self.db_manager.execute_update(
+                """
                 INSERT OR REPLACE INTO alert_records
                 (alert_id, rule_id, severity, status, message, context,
                  created_at, updated_at, acknowledged_at, resolved_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                alert.alert_id,
-                alert.rule.rule_id,
-                alert.severity.value,
-                alert.status.value,
-                alert.message,
-                json.dumps({
-                    "rule_name": alert.rule.name,
-                    "context": alert.context,
-                    "source_type": getattr(alert, 'source_type', 'log'),
-                    "source_data": getattr(alert, 'source_data', None),
-                    "notes": alert.notes,
-                }) if (alert.context or alert.notes) else None,
-                alert.created_at.isoformat(),
-                alert.updated_at.isoformat(),
-                alert.acknowledged_at.isoformat() if alert.acknowledged_at else None,
-                alert.resolved_at.isoformat() if alert.resolved_at else None,
-            ))
+            """,
+                (
+                    alert.alert_id,
+                    alert.rule.rule_id,
+                    alert.severity.value,
+                    alert.status.value,
+                    alert.message,
+                    (
+                        json.dumps(
+                            {
+                                "rule_name": alert.rule.name,
+                                "context": alert.context,
+                                "source_type": getattr(alert, "source_type", "log"),
+                                "source_data": getattr(alert, "source_data", None),
+                                "notes": alert.notes,
+                            }
+                        )
+                        if (alert.context or alert.notes)
+                        else None
+                    ),
+                    alert.created_at.isoformat(),
+                    alert.updated_at.isoformat(),
+                    alert.acknowledged_at.isoformat() if alert.acknowledged_at else None,
+                    alert.resolved_at.isoformat() if alert.resolved_at else None,
+                ),
+            )
 
         except Exception as e:
             self.logger.error(f"告警数据库保存失败: {e}")
@@ -1134,9 +1162,9 @@ class AlertDatabase:
 
             # 解析context字段
             for alert in results:
-                if alert.get('context'):
+                if alert.get("context"):
                     try:
-                        context_data = json.loads(alert['context'])
+                        context_data = json.loads(alert["context"])
                         alert.update(context_data)
                     except:
                         pass
@@ -1153,23 +1181,32 @@ class AlertDatabase:
             now = datetime.now().isoformat()
 
             if status == AlertStatus.ACKNOWLEDGED:
-                self.db_manager.execute_update("""
+                self.db_manager.execute_update(
+                    """
                     UPDATE alert_records
                     SET status = ?, acknowledged_at = ?, updated_at = ?
                     WHERE alert_id = ?
-                """, (status.value, now, now, alert_id))
+                """,
+                    (status.value, now, now, alert_id),
+                )
             elif status == AlertStatus.RESOLVED:
-                self.db_manager.execute_update("""
+                self.db_manager.execute_update(
+                    """
                     UPDATE alert_records
                     SET status = ?, resolved_at = ?, updated_at = ?
                     WHERE alert_id = ?
-                """, (status.value, now, now, alert_id))
+                """,
+                    (status.value, now, now, alert_id),
+                )
             else:
-                self.db_manager.execute_update("""
+                self.db_manager.execute_update(
+                    """
                     UPDATE alert_records
                     SET status = ?, updated_at = ?
                     WHERE alert_id = ?
-                """, (status.value, now, alert_id))
+                """,
+                    (status.value, now, alert_id),
+                )
 
             return True
 
@@ -1183,11 +1220,13 @@ class AlertDatabase:
             with sqlite3.connect(self.db_path) as conn:
                 conn.row_factory = sqlite3.Row
 
-                cursor = conn.execute("""
+                cursor = conn.execute(
+                    """
                     SELECT * FROM alerts
                     WHERE status != 'resolved'
                     ORDER BY created_at DESC
-                """)
+                """
+                )
 
                 results = []
                 for row in cursor.fetchall():
@@ -1204,12 +1243,15 @@ class AlertDatabase:
         try:
             with self._lock:
                 with sqlite3.connect(self.db_path) as conn:
-                    cutoff_time = (datetime.now().timestamp() - (older_than_days * 24 * 3600))
+                    cutoff_time = datetime.now().timestamp() - (older_than_days * 24 * 3600)
 
-                    cursor = conn.execute("""
+                    cursor = conn.execute(
+                        """
                         DELETE FROM alerts
                         WHERE status = 'resolved' AND created_at < ?
-                    """, (cutoff_time,))
+                    """,
+                        (cutoff_time,),
+                    )
 
                     deleted_count = cursor.rowcount
                     conn.commit()
@@ -1240,7 +1282,9 @@ class AlertEventPublisher:
         try:
             alert_engine = AlertEngine()
 
-            if hasattr(alert_engine, 'evaluate_rules') and not hasattr(alert_engine, '_original_evaluate_rules'):
+            if hasattr(alert_engine, "evaluate_rules") and not hasattr(
+                alert_engine, "_original_evaluate_rules"
+            ):
                 original_evaluate_rules = alert_engine.evaluate_rules
 
                 def patched_evaluate_rules(context: Dict[str, Any]) -> List[Alert]:
@@ -1248,8 +1292,8 @@ class AlertEventPublisher:
                         triggered_alerts = original_evaluate_rules(context)
 
                         for alert in triggered_alerts:
-                            if hasattr(alert.rule, 'log_levels'):
-                                alert.source_type = 'log'
+                            if hasattr(alert.rule, "log_levels"):
+                                alert.source_type = "log"
                                 alert.source_data = context
 
                                 try:
@@ -1289,7 +1333,7 @@ class AlertEventPublisher:
                 "message": alert.message,
                 "context": alert.context,
                 "created_at": alert.created_at.isoformat(),
-                "source_type": getattr(alert, 'source_type', 'unknown'),
+                "source_type": getattr(alert, "source_type", "unknown"),
             }
 
             event = Event(EVENT_ALERT_CREATED, event_data)
@@ -1315,7 +1359,7 @@ class AlertEventPublisher:
                 "message": alert.message,
                 "context": alert.context,
                 "updated_at": alert.updated_at.isoformat(),
-                "source_type": getattr(alert, 'source_type', 'unknown'),
+                "source_type": getattr(alert, "source_type", "unknown"),
             }
 
             event = Event(EVENT_ALERT_UPDATED, event_data)
@@ -1335,52 +1379,66 @@ def get_default_log_alert_rules() -> List[LogAlertRule]:
     rules = []
 
     # ERROR级别日志监控
-    rules.append(LogAlertRule(
-        rule_id="log_error_monitoring",
-        name="ERROR级别日志监控",
-        log_levels=["ERROR"],
-        severity=AlertSeverity.ERROR,
-        description="监控所有ERROR级别日志记录",
-        suppression_window=60,
-        enabled=True,
-        priority=2,
-    ))
+    rules.append(
+        LogAlertRule(
+            rule_id="log_error_monitoring",
+            name="ERROR级别日志监控",
+            log_levels=["ERROR"],
+            severity=AlertSeverity.ERROR,
+            description="监控所有ERROR级别日志记录",
+            suppression_window=60,
+            enabled=True,
+            priority=2,
+        )
+    )
 
     # CRITICAL级别日志监控
-    rules.append(LogAlertRule(
-        rule_id="log_critical_monitoring",
-        name="CRITICAL级别日志监控",
-        log_levels=["CRITICAL"],
-        severity=AlertSeverity.CRITICAL,
-        description="监控所有CRITICAL级别日志记录",
-        suppression_window=30,
-        enabled=True,
-        priority=1,
-    ))
+    rules.append(
+        LogAlertRule(
+            rule_id="log_critical_monitoring",
+            name="CRITICAL级别日志监控",
+            log_levels=["CRITICAL"],
+            severity=AlertSeverity.CRITICAL,
+            description="监控所有CRITICAL级别日志记录",
+            suppression_window=30,
+            enabled=True,
+            priority=1,
+        )
+    )
 
     # 连接失败监控
-    rules.append(LogAlertRule(
-        rule_id="log_connection_failures",
-        name="连接失败监控",
-        keywords=["连接失败", "连接超时", "网络错误", "Connection failed", "Connection timeout"],
-        severity=AlertSeverity.WARNING,
-        description="监控连接相关的错误日志",
-        suppression_window=120,
-        enabled=True,
-        priority=3,
-    ))
+    rules.append(
+        LogAlertRule(
+            rule_id="log_connection_failures",
+            name="连接失败监控",
+            keywords=[
+                "连接失败",
+                "连接超时",
+                "网络错误",
+                "Connection failed",
+                "Connection timeout",
+            ],
+            severity=AlertSeverity.WARNING,
+            description="监控连接相关的错误日志",
+            suppression_window=120,
+            enabled=True,
+            priority=3,
+        )
+    )
 
     # 数据库错误监控
-    rules.append(LogAlertRule(
-        rule_id="log_database_errors",
-        name="数据库错误监控",
-        keywords=["数据库错误", "SQL错误", "连接池", "Database error", "SQL error"],
-        severity=AlertSeverity.ERROR,
-        description="监控数据库相关的错误日志",
-        suppression_window=60,
-        enabled=True,
-        priority=2,
-    ))
+    rules.append(
+        LogAlertRule(
+            rule_id="log_database_errors",
+            name="数据库错误监控",
+            keywords=["数据库错误", "SQL错误", "连接池", "Database error", "SQL error"],
+            severity=AlertSeverity.ERROR,
+            description="监控数据库相关的错误日志",
+            suppression_window=60,
+            enabled=True,
+            priority=2,
+        )
+    )
 
     return rules
 
@@ -1389,27 +1447,31 @@ def get_default_system_alert_rules() -> List[AlertRule]:
     """获取默认的系统告警规则."""
     rules = []
 
-    rules.append(AlertRule(
-        rule_id="system_cpu_high",
-        name="CPU使用率过高",
-        condition="cpu_percent > 90",
-        severity=AlertSeverity.WARNING,
-        enabled=True,
-        priority=3,
-        group="system_resource",
-        description="CPU使用率超过90%时触发告警",
-    ))
+    rules.append(
+        AlertRule(
+            rule_id="system_cpu_high",
+            name="CPU使用率过高",
+            condition="cpu_percent > 90",
+            severity=AlertSeverity.WARNING,
+            enabled=True,
+            priority=3,
+            group="system_resource",
+            description="CPU使用率超过90%时触发告警",
+        )
+    )
 
-    rules.append(AlertRule(
-        rule_id="system_memory_low",
-        name="内存不足",
-        condition="memory_percent > 85",
-        severity=AlertSeverity.ERROR,
-        enabled=True,
-        priority=2,
-        group="system_resource",
-        description="内存使用率超过85%时触发告警",
-    ))
+    rules.append(
+        AlertRule(
+            rule_id="system_memory_low",
+            name="内存不足",
+            condition="memory_percent > 85",
+            severity=AlertSeverity.ERROR,
+            enabled=True,
+            priority=2,
+            group="system_resource",
+            description="内存使用率超过85%时触发告警",
+        )
+    )
 
     return rules
 
@@ -1418,16 +1480,18 @@ def get_default_business_alert_rules() -> List[AlertRule]:
     """获取默认的业务告警规则."""
     rules = []
 
-    rules.append(AlertRule(
-        rule_id="business_data_download_failure_rate",
-        name="数据下载失败率过高",
-        condition="download_failure_rate > 10",
-        severity=AlertSeverity.ERROR,
-        enabled=True,
-        priority=3,
-        group="data_quality",
-        description="数据下载失败率超过10%时触发告警",
-    ))
+    rules.append(
+        AlertRule(
+            rule_id="business_data_download_failure_rate",
+            name="数据下载失败率过高",
+            condition="download_failure_rate > 10",
+            severity=AlertSeverity.ERROR,
+            enabled=True,
+            priority=3,
+            group="data_quality",
+            description="数据下载失败率超过10%时触发告警",
+        )
+    )
 
     return rules
 
@@ -1534,10 +1598,10 @@ __all__ = [
 ]
 
 
-
 # =============================================================================
 # Part 3: 性能监控（从performance_monitor.py合并）
 # =============================================================================
+
 
 class PerformanceMonitor:
     """性能监控器."""
@@ -1770,7 +1834,9 @@ class PerformanceMonitor:
         summary = {
             "monitoring_active": self._state["monitoring"],
             "total_alerts": len(self._alerts),
-            "metrics_count": {category: len(metrics) for category, metrics in self._metrics.items()},
+            "metrics_count": {
+                category: len(metrics) for category, metrics in self._metrics.items()
+            },
             "thresholds": self._thresholds.copy(),
         }
 
@@ -1890,7 +1956,9 @@ class TestRunner:
             "errors": len(result.errors),
             "success": len(result.failures) == 0 and len(result.errors) == 0,
             "details": {
-                "failures": [{"test": str(test), "error": error} for test, error in result.failures],
+                "failures": [
+                    {"test": str(test), "error": error} for test, error in result.failures
+                ],
                 "errors": [{"test": str(test), "error": error} for test, error in result.errors],
             },
         }
@@ -2005,10 +2073,10 @@ __all__ = [
 ]
 
 
-
 # =============================================================================
 # Part 4: 健康检查（从health_checker.py合并）
 # =============================================================================
+
 
 class HealthChecker:
     """健康检查器."""
@@ -2167,10 +2235,10 @@ __all__ = [
 ]
 
 
-
 # =============================================================================
 # Part 5: 异步任务管理（从async_task_manager.py合并）
 # =============================================================================
+
 
 class AsyncTaskManager:
     """异步任务管理器."""
@@ -2374,7 +2442,6 @@ __all__ = [
     "AsyncTaskManager",
     "AsyncDataProcessor",
 ]
-
 
 
 # =============================================================================
@@ -2635,9 +2702,7 @@ class SystemManagerService(BaseService):
             self._log_error("获取性能指标", e)
             return {"success": False, "message": str(e)}
 
-    def _calculate_data_processing_metrics(
-        self, metrics: List[Dict[str, Any]]
-    ) -> Dict[str, Any]:
+    def _calculate_data_processing_metrics(self, metrics: List[Dict[str, Any]]) -> Dict[str, Any]:
         """计算数据处理性能指标.
 
         Args:
@@ -2741,9 +2806,7 @@ class SystemManagerService(BaseService):
             "metrics_detail": metrics,
         }
 
-    def _calculate_trading_execution_metrics(
-        self, metrics: List[Dict[str, Any]]
-    ) -> Dict[str, Any]:
+    def _calculate_trading_execution_metrics(self, metrics: List[Dict[str, Any]]) -> Dict[str, Any]:
         """计算交易执行性能指标.
 
         Args:
@@ -3051,7 +3114,7 @@ class SystemManagerService(BaseService):
 
             # 如果指定了分组，进行过滤
             if group:
-                rules = [rule for rule in rules if getattr(rule, 'group', None) == group]
+                rules = [rule for rule in rules if getattr(rule, "group", None) == group]
 
             rule_list = [rule.to_dict() for rule in rules]
 
@@ -3106,7 +3169,6 @@ class SystemManagerService(BaseService):
         except Exception as e:
             self._log_error("查询告警历史", e)
             return {"success": False, "alerts": [], "message": str(e)}
-
 
     def configure_alert_notifications(
         self, notification_type: str, config: Dict[str, Any]
@@ -4069,9 +4131,13 @@ class SystemManagerService(BaseService):
             try:
                 from backend.infrastructure.data_module_vnpy.config import config_manager
 
+                # 🔧 使用get_cache_dir()和get_data_dir()方法，自动转换相对路径为绝对路径并持久化
+                cache_dir = str(config_manager.get_cache_dir())
+                data_dir = str(config_manager.get_data_dir())
+
                 configs["data_center"] = {
-                    "cache_dir": config_manager.get("chinastock.cache_dir"),
-                    "data_dir": config_manager.get("chinastock.data_dir"),
+                    "cache_dir": cache_dir,  # 已转换为绝对路径
+                    "data_dir": data_dir,  # 已转换为绝对路径
                     "tdx_dir": config_manager.get("chinastock.tdx_dir"),
                     "base_date": config_manager.get("chinastock.base_date"),
                     "max_workers": config_manager.get("chinastock.max_workers"),
@@ -4510,7 +4576,12 @@ class SystemManagerService(BaseService):
             markets = config.get("markets", [])
             tdx_root = config.get("tdx_root")
             use_symbol_cache = config.get("use_symbol_cache", True)
-            max_workers = config.get("max_workers", 4)
+            # 优化：默认使用更多线程
+            import os
+
+            cpu_count = os.cpu_count() or 4
+            default_workers = min(max(cpu_count * 2, 8), 16)
+            max_workers = config.get("max_workers", default_workers)
 
             if not data_types or not markets or not tdx_root:
                 return {
@@ -4529,7 +4600,25 @@ class SystemManagerService(BaseService):
             # 获取品种列表
             if use_symbol_cache:
                 symbols_by_market = self._get_symbols_from_cache(markets)
+
+                # 🔍 DEBUG: 强制打印品种获取统计到控制台
+                total_symbols = sum(len(symbols) for symbols in symbols_by_market.values())
+                print("\n" + "=" * 60)
+                print("📊 品种缓存获取结果:")
+                for market_code, symbols in symbols_by_market.items():
+                    print(f"  - 市场 {market_code.upper()}: {len(symbols)} 个品种")
+                print(f"  - 总计: {total_symbols} 个品种")
+                print("=" * 60 + "\n")
+
+                self.logger.info("=" * 60)
+                self.logger.info("📊 品种缓存获取结果:")
+                for market_code, symbols in symbols_by_market.items():
+                    self.logger.info(f"  - 市场 {market_code.upper()}: {len(symbols)} 个品种")
+                self.logger.info(f"  - 总计: {total_symbols} 个品种")
+                self.logger.info("=" * 60)
+
                 if not any(symbols_by_market.values()):
+                    self.logger.error("❌ 品种缓存为空！请先在数据中心重新加载品种列表")
                     return {
                         "success": False,
                         "message": "品种缓存为空，请先在数据中心重新加载品种列表",
@@ -4561,12 +4650,30 @@ class SystemManagerService(BaseService):
             )
 
             if total_tasks == 0:
+                self.logger.error("❌ 没有找到符合条件的品种，无法开始处理")
                 return {
                     "success": False,
                     "message": "没有找到符合条件的品种",
                 }
 
-            self.logger.info("开始批量读取: %d 个任务", total_tasks)
+            # 🔍 DEBUG: 打印详细的任务分组信息
+            self.logger.info("=" * 60)
+            self.logger.info("📋 批量读取任务详情:")
+            self.logger.info(f"  - 总任务数: {total_tasks}")
+            self.logger.info(f"  - 数据类型: {', '.join(data_types)}")
+            self.logger.info(f"  - 市场: {', '.join([m.upper() for m in markets])}")
+            self.logger.info(f"  - 最大线程数: {max_workers}")
+            self.logger.info(f"  - 批量保存阈值: 10 个品种/次")
+            self.logger.info("  - 任务分组:")
+            for market in markets:
+                symbols = symbols_by_market.get(market, [])
+                if symbols:
+                    tasks_per_market = len(symbols) * len(data_types)
+                    self.logger.info(
+                        f"    • {market.upper()}: {len(symbols)} 个品种 × {len(data_types)} 种数据类型 = {tasks_per_market} 个任务"
+                    )
+            self.logger.info("=" * 60)
+            self.logger.info("🚀 开始批量读取...")
 
             # 重置停止标志
             self._tdx_reader_stop_flag = False
@@ -4583,6 +4690,7 @@ class SystemManagerService(BaseService):
 
                 symbols = symbols_by_market.get(market, [])
                 if not symbols:
+                    self.logger.warning(f"⚠️  市场 {market.upper()} 没有品种，跳过")
                     continue
 
                 for data_type in data_types:
@@ -4590,6 +4698,14 @@ class SystemManagerService(BaseService):
                     if self._tdx_reader_stop_flag:
                         self.logger.info("检测到停止标志，中断批量读取")
                         break
+
+                    # 🔍 DEBUG: 打印开始处理的信息
+                    self.logger.info("")
+                    self.logger.info("─" * 60)
+                    self.logger.info(
+                        f"📂 开始处理: 市场={market.upper()}, 数据类型={data_type}, 品种数={len(symbols)}"
+                    )
+                    self.logger.info("─" * 60)
 
                     # 定义进度回调包装器
                     def wrapped_callback(current, total, symbol, success):
@@ -4602,7 +4718,7 @@ class SystemManagerService(BaseService):
                         # 检查停止标志
                         return not self._tdx_reader_stop_flag
 
-                    # 批量处理
+                    # 批量处理（每10个品种保存一次 - DEBUG模式）
                     results = reader.process_batch(
                         symbols=symbols,
                         data_type=data_type,
@@ -4610,6 +4726,7 @@ class SystemManagerService(BaseService):
                         progress_callback=wrapped_callback,
                         max_workers=max_workers,
                         stop_check=lambda: self._tdx_reader_stop_flag,
+                        batch_save_size=10,  # 🔍 DEBUG: 批量保存：每10个品种保存一次
                     )
 
                     # 合并结果
@@ -4705,7 +4822,12 @@ class SystemManagerService(BaseService):
                 return {}
 
             symbols = result.get("data", [])
+
+            # 🔍 DEBUG: 打印获取到的原始品种数量
+            self.logger.info(f"🔍 从品种缓存获取到 {len(symbols)} 个品种")
+
             if not symbols:
+                self.logger.warning("⚠️  品种缓存中没有任何品种数据")
                 return {}
 
             # 市场映射
@@ -4720,7 +4842,20 @@ class SystemManagerService(BaseService):
 
             for symbol_info in symbols:
                 exchange = symbol_info.get("exchange", "")
-                symbol_code = symbol_info.get("symbol", "")
+                # 优先使用 "symbol" 字段，如果没有则使用 "code" 字段
+                symbol_code = symbol_info.get("symbol") or symbol_info.get("code", "")
+
+                # 跳过空的 symbol_code
+                if not symbol_code:
+                    self.logger.warning(f"跳过无效品种: {symbol_info}")
+                    continue
+
+                # 确保 symbol_code 是字符串
+                if not isinstance(symbol_code, str):
+                    self.logger.warning(
+                        f"品种代码不是字符串类型: {symbol_code}, 类型: {type(symbol_code)}"
+                    )
+                    continue
 
                 # 匹配市场
                 for market_code, exchange_name in market_mapping.items():
@@ -4728,14 +4863,21 @@ class SystemManagerService(BaseService):
                         symbols_by_market[market_code].append(symbol_code)
                         break
 
-            # 打印统计
+            # 🔍 DEBUG: 打印详细的市场分类统计
+            self.logger.info("─" * 60)
+            self.logger.info("🏢 市场品种分类统计:")
             for market in markets:
-                count = len(symbols_by_market.get(market, []))
-                self.logger.info(
-                    "市场 %s: 找到 %d 个品种",
-                    market.upper(),
-                    count,
-                )
+                market_symbols = symbols_by_market.get(market, [])
+                count = len(market_symbols)
+                self.logger.info(f"  • 市场 {market.upper()}: {count} 个品种")
+
+                # 输出前10个品种示例（如果有的话）
+                if count > 0:
+                    sample_symbols = market_symbols[:10]
+                    self.logger.info(f"    示例: {', '.join(sample_symbols)}")
+                    if count > 10:
+                        self.logger.info(f"    ... 还有 {count - 10} 个品种")
+            self.logger.info("─" * 60)
 
             return symbols_by_market
 

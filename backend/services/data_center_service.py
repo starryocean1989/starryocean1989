@@ -467,12 +467,25 @@ class DataCenterService(BaseService, LoggerMixin):
                     # 将分类数据转换为前端需要的格式
                     symbols = []
                     for market_type, codes in classified.items():
-                        for code in codes:
+                        for code_item in codes:
+                            # 兼容两种格式：字符串或字典
+                            if isinstance(code_item, str):
+                                code = code_item
+                                name = code_item
+                            elif isinstance(code_item, dict):
+                                code = code_item.get("code", "")
+                                name = code_item.get("name", code)
+                            else:
+                                continue  # 跳过无效数据
+
+                            if not code:
+                                continue  # 跳过空代码
+
                             symbols.append(
                                 {
                                     "symbol": code,
                                     "code": code,
-                                    "name": code,  # 实际品种名称（来自通达信API）
+                                    "name": name,  # 使用实际品种名称
                                     "exchange": self._map_market_to_exchange(market_type),
                                     "product_type": self._map_market_to_product_type(market_type),
                                 }
@@ -726,6 +739,57 @@ class DataCenterService(BaseService, LoggerMixin):
             return []
         except Exception as e:
             self.logger.warning(f"从缓存获取品种列表失败: {e}")
+            return []
+
+    def get_local_data_index(self) -> List[Dict[str, Any]]:
+        """获取本地数据标题索引（已下载的品种列表，用于本地数据搜索框联想）
+
+        从本地数据文件目录扫描，返回所有已下载的品种代码和名称。
+        这是搜索本地数据时的唯一联想源。
+
+        Returns:
+            List[Dict]: 品种列表，每个元素包含 {"code": str, "name": str}
+        """
+        try:
+            if not self.china_stock_engine:
+                self.logger.warning("ChinaStockEngine不可用")
+                return []
+
+            # 获取本地数据索引（品种代码列表）
+            symbol_codes = self.china_stock_engine.get_local_data_index()
+
+            if not symbol_codes:
+                self.logger.info("本地数据索引为空，没有已下载的品种")
+                return []
+
+            # 从品种列表缓存获取名称映射
+            symbols_cache = self.get_symbols_from_cache()
+            code_to_name = {}
+
+            if symbols_cache:
+                for s in symbols_cache:
+                    if not isinstance(s, dict):
+                        continue
+
+                    # 提取code，确保是字符串类型
+                    code = s.get("symbol") or s.get("code")
+                    if code and isinstance(code, str):
+                        # 提取name，确保是字符串类型
+                        name = s.get("name", "")
+                        if isinstance(name, str):
+                            code_to_name[code] = name
+
+            # 构建结果列表
+            result = []
+            for code in symbol_codes:
+                name = code_to_name.get(code, "")
+                result.append({"code": code, "name": name})
+
+            self.logger.info("获取本地数据索引成功，共 %d 个品种", len(result))
+            return result
+
+        except Exception as e:
+            self.logger.error(f"获取本地数据索引失败: {e}", exc_info=True)
             return []
 
     def clear_symbol_cache(self) -> Dict[str, Any]:
@@ -1806,6 +1870,13 @@ class DataCenterService(BaseService, LoggerMixin):
                     if missing_dates:
                         issues.append(f"缺失 {len(missing_dates)} 个交易日的数据")
 
+                    # 🆕 检查数据更新状态
+                    freshness = validator.check_data_freshness(symbol, interval)
+                    gap_days = freshness.get("gap_days", -1)
+                    is_up_to_date = freshness.get("is_up_to_date", False)
+                    latest_trading_day = freshness.get("latest_trading_day")
+                    local_latest_date = freshness.get("local_latest_date")
+
                     return {
                         "success": True,
                         "message": f"{status_text}，共 {record_count} 条记录",
@@ -1818,6 +1889,15 @@ class DataCenterService(BaseService, LoggerMixin):
                         "warnings_count": len(warnings),
                         "issues": issues,
                         "can_repair": len(errors) > 0 or len(missing_dates) > 0,
+                        # 🆕 数据更新状态
+                        "gap_days": gap_days,
+                        "is_up_to_date": is_up_to_date,
+                        "latest_trading_day": (
+                            latest_trading_day.strftime("%Y-%m-%d") if latest_trading_day else None
+                        ),
+                        "local_latest_date": (
+                            local_latest_date.strftime("%Y-%m-%d") if local_latest_date else None
+                        ),
                     }
                 else:
                     # 所有品种校验（返回简化的汇总）
@@ -1857,6 +1937,67 @@ class DataCenterService(BaseService, LoggerMixin):
                 "quality_score": 0,
                 "issues": [str(e)],
                 "can_repair": False,
+            }
+
+    def get_data_freshness_overview(self) -> Dict[str, Any]:
+        """获取全局数据更新状态概览
+
+        Returns:
+            Dict: {
+                "success": bool,
+                "outdated_symbols": int,       # 过时品种数
+                "avg_gap_days": int,           # 平均滞后天数
+                "max_gap_days": int,           # 最大滞后天数
+                "latest_trading_day": str,     # 最新交易日
+                "message": str
+            }
+        """
+        try:
+            self._log_operation("获取数据更新状态概览")
+
+            if not self.china_stock_engine:
+                return {
+                    "success": False,
+                    "message": "ChinaStockEngine不可用",
+                    "outdated_symbols": 0,
+                    "avg_gap_days": 0,
+                    "max_gap_days": 0,
+                    "latest_trading_day": None,
+                }
+
+            # 从数据感知器获取质量概览
+            from backend.infrastructure.data_module_vnpy.data_quality import data_sensor
+
+            quality_overview = data_sensor.get_quality_overview()
+
+            if quality_overview is None:
+                return {
+                    "success": False,
+                    "message": "数据质量扫描尚未完成，请稍后再试",
+                    "outdated_symbols": 0,
+                    "avg_gap_days": 0,
+                    "max_gap_days": 0,
+                    "latest_trading_day": None,
+                }
+
+            return {
+                "success": True,
+                "message": f"成功获取数据更新状态，共 {quality_overview.outdated_symbols} 个品种过时",
+                "outdated_symbols": quality_overview.outdated_symbols,
+                "avg_gap_days": quality_overview.avg_gap_days,
+                "max_gap_days": quality_overview.max_gap_days,
+                "latest_trading_day": quality_overview.base_date.strftime("%Y-%m-%d"),
+            }
+
+        except Exception as e:
+            self._log_error("获取数据更新状态概览", e)
+            return {
+                "success": False,
+                "message": f"获取失败: {str(e)}",
+                "outdated_symbols": 0,
+                "avg_gap_days": 0,
+                "max_gap_days": 0,
+                "latest_trading_day": None,
             }
 
     def _calculate_quality_score(

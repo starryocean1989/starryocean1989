@@ -133,7 +133,9 @@ async def download_worker_async(
                         f"（全局索引{current_idx}，本Worker第{len(connections)}个）"
                     )
                 else:
-                    logger.warning(f"Worker {worker_id} 连接 建立失败: {server[0]}:{server[1]}")
+                    logger.debug(
+                        f"Worker {worker_id} 连接 建立失败: {server[0]}:{server[1]} (正常现象，会尝试其他服务器)"
+                    )
             except Exception as e:
                 logger.warning(f"Worker {worker_id} 连接 建立异常: {e}")
 
@@ -841,6 +843,37 @@ class MultiProcessStockFetcher:
                     progress_callback=progress_callback,
                 )
 
+                # 🔍 诊断日志：检查下载结果
+                self.logger.info("=" * 60)
+                self.logger.info("🔍 下载结果诊断")
+                self.logger.info(f"download_results类型: {type(download_results)}")
+                self.logger.info(f"download_results键数量: {len(download_results)}")
+                if download_results:
+                    # 统计数据状态
+                    none_count = sum(1 for v in download_results.values() if v is None)
+                    empty_count = sum(
+                        1
+                        for v in download_results.values()
+                        if v is not None and (not isinstance(v, pd.DataFrame) or v.empty)
+                    )
+                    valid_count = len(download_results) - none_count - empty_count
+                    self.logger.info(f"  - None数据: {none_count}")
+                    self.logger.info(f"  - 空DataFrame: {empty_count}")
+                    self.logger.info(f"  - 有效数据: {valid_count}")
+
+                    # 显示前3个结果的详情
+                    for i, (key, data) in enumerate(list(download_results.items())[:3]):
+                        if data is not None:
+                            if isinstance(data, pd.DataFrame):
+                                self.logger.info(f"  示例{i+1}: {key} -> DataFrame({len(data)}行)")
+                            else:
+                                self.logger.info(f"  示例{i+1}: {key} -> {type(data).__name__}")
+                        else:
+                            self.logger.info(f"  示例{i+1}: {key} -> None")
+                else:
+                    self.logger.critical("❌ download_results为空字典！")
+                self.logger.info("=" * 60)
+
                 # 存储数据
                 saved_count = 0
                 for key, data_records in download_results.items():
@@ -855,8 +888,22 @@ class MultiProcessStockFetcher:
                             data_df = pd.DataFrame(data_records)
 
                         if not data_df.empty:
-                            storage_manager.save_kline(symbol, interval, data_df)
-                            saved_count += 1
+                            self.logger.info(f"💾 正在保存: {symbol} {interval} ({len(data_df)}行)")
+                            result_path = storage_manager.save_kline(symbol, interval, data_df)
+                            if result_path:
+                                saved_count += 1
+                                self.logger.info(f"✅ 保存成功: {result_path}")
+                            else:
+                                self.logger.error(f"❌ 保存失败: {symbol} {interval}")
+
+                # 🔍 保存统计日志
+                self.logger.info("=" * 60)
+                self.logger.info("📊 保存统计")
+                self.logger.info(f"总任务数: {len(symbols) * 3}")
+                self.logger.info(f"下载结果数: {len(download_results)}")
+                self.logger.info(f"✅ 保存成功: {saved_count}")
+                self.logger.info(f"❌ 保存失败/跳过: {len(download_results) - saved_count}")
+                self.logger.info("=" * 60)
 
                 result = {
                     "success": True,

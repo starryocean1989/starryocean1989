@@ -107,6 +107,9 @@ tzlocal>=4.0.0
 # mootdx>=0.11.7  # 已迁移至 tdx_asyncio，不再需要
 pytdx>=1.72
 
+# 交易日历（tdx_asyncio使用）
+pandas_market_calendars>=5.0.0
+
 # ========== AI助手 ==========
 openai>=1.0.0
 

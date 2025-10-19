@@ -123,7 +123,8 @@ class AlertCard(QWidget):
             # 新告警：确认和解决按钮
             acknowledge_btn = QPushButton("确认")
             acknowledge_btn.clicked.connect(self._acknowledge_alert)
-            acknowledge_btn.setStyleSheet("""
+            acknowledge_btn.setStyleSheet(
+                """
                 QPushButton {
                     background-color: #17a2b8;
                     color: white;
@@ -134,12 +135,14 @@ class AlertCard(QWidget):
                 QPushButton:hover {
                     background-color: #138496;
                 }
-            """)
+            """
+            )
             button_layout.addWidget(acknowledge_btn)
 
             resolve_btn = QPushButton("解决")
             resolve_btn.clicked.connect(self._resolve_alert)
-            resolve_btn.setStyleSheet("""
+            resolve_btn.setStyleSheet(
+                """
                 QPushButton {
                     background-color: #28a745;
                     color: white;
@@ -150,13 +153,15 @@ class AlertCard(QWidget):
                 QPushButton:hover {
                     background-color: #218838;
                 }
-            """)
+            """
+            )
             button_layout.addWidget(resolve_btn)
         elif status == "acknowledged":
             # 已确认：解决按钮
             resolve_btn = QPushButton("解决")
             resolve_btn.clicked.connect(self._resolve_alert)
-            resolve_btn.setStyleSheet("""
+            resolve_btn.setStyleSheet(
+                """
                 QPushButton {
                     background-color: #28a745;
                     color: white;
@@ -167,7 +172,8 @@ class AlertCard(QWidget):
                 QPushButton:hover {
                     background-color: #218838;
                 }
-            """)
+            """
+            )
             button_layout.addWidget(resolve_btn)
         else:
             # 已解决或忽略：无操作按钮
@@ -193,11 +199,20 @@ class AlertCard(QWidget):
 
         if status == "new":
             if severity == "critical":
-                return base_style + "QWidget { background-color: #ffebee; border-left: 4px solid #d32f2f; }"
+                return (
+                    base_style
+                    + "QWidget { background-color: #ffebee; border-left: 4px solid #d32f2f; }"
+                )
             elif severity == "error":
-                return base_style + "QWidget { background-color: #fff3e0; border-left: 4px solid #f57c00; }"
+                return (
+                    base_style
+                    + "QWidget { background-color: #fff3e0; border-left: 4px solid #f57c00; }"
+                )
             else:
-                return base_style + "QWidget { background-color: #e3f2fd; border-left: 4px solid #2196f3; }"
+                return (
+                    base_style
+                    + "QWidget { background-color: #e3f2fd; border-left: 4px solid #2196f3; }"
+                )
         else:
             return base_style + "QWidget { background-color: #f5f5f5; }"
 
@@ -239,14 +254,16 @@ class AlertCard(QWidget):
 
                 if result.get("success"):
                     # 更新卡片样式
-                    self.alert_data["status"] = "acknowledged" if action == "acknowledge" else "resolved"
+                    self.alert_data["status"] = (
+                        "acknowledged" if action == "acknowledge" else "resolved"
+                    )
                     self.setStyleSheet(self._get_card_style())
 
                     # 重新加载告警列表（直接调用父组件方法）
                     parent = self.parent()
-                    while parent and not hasattr(parent, 'refresh_alerts'):
+                    while parent and not hasattr(parent, "refresh_alerts"):
                         parent = parent.parent()
-                    if parent and hasattr(parent, 'refresh_alerts'):
+                    if parent and hasattr(parent, "refresh_alerts"):
                         # 类型断言：确保parent是AlertManagerWidget类型
                         if isinstance(parent, AlertManagerWidget):
                             parent.refresh_alerts()
@@ -542,8 +559,16 @@ class AlertManagerWidget(QWidget):
     def get_current_filters(self) -> Dict[str, Any]:
         """获取当前筛选条件."""
         return {
-            "status": self.status_combo.currentText() if self.status_combo.currentText() != "全部" else None,
-            "severity": self.severity_combo.currentText() if self.severity_combo.currentText() != "全部" else None,
+            "status": (
+                self.status_combo.currentText()
+                if self.status_combo.currentText() != "全部"
+                else None
+            ),
+            "severity": (
+                self.severity_combo.currentText()
+                if self.severity_combo.currentText() != "全部"
+                else None
+            ),
         }
 
     def apply_filters_from_dict(self, filters: Dict[str, Any]) -> None:
@@ -1320,13 +1345,18 @@ class SystemManager(BaseWidget, LoggerMixin):
 
         # 延迟创建子界面（在事件循环后执行）
         from PySide6.QtCore import QTimer
+
         QTimer.singleShot(300, self._safe_create_sub_interfaces)
 
     def _safe_create_sub_interfaces(self):
         """安全延迟创建子界面（失败显示错误占位，不让应用崩溃）."""
         try:
             # 清理占位Tab
-            if self.tab_widget and self.tab_widget.count() > 0 and self.tab_widget.tabText(0) == "加载中":
+            if (
+                self.tab_widget
+                and self.tab_widget.count() > 0
+                and self.tab_widget.tabText(0) == "加载中"
+            ):
                 self.tab_widget.removeTab(0)
             # 实际创建
             self._create_sub_interfaces()
@@ -2743,55 +2773,90 @@ class SystemManager(BaseWidget, LoggerMixin):
         # 数据标准化读取器组
         reader_group = QGroupBox("数据标准化读取器 - 批量自动化处理")
         reader_layout = QVBoxLayout(reader_group)
+        # 🔧 压缩优化：减少组件间距
+        reader_layout.setSpacing(2)  # 从默认6px减少到2px
+        reader_layout.setContentsMargins(9, 5, 9, 9)  # 减少顶部margin从9到5
 
         # 提示信息
         hint_label = QLabel("💡 勾选市场和数据类型后，程序会自动从品种缓存中获取对应品种并批量读取")
-        hint_label.setStyleSheet("color: #666; font-size: 12px; padding: 5px;")
+        # 🔧 压缩优化：减少padding从5px到2px
+        hint_label.setStyleSheet("color: #666; font-size: 12px; padding: 2px;")
         hint_label.setWordWrap(True)
         reader_layout.addWidget(hint_label)
 
         # 表单布局
         form_layout = QFormLayout()
+        # 🔧 设置字段增长策略，让输入框占据更多空间
+        form_layout.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        # 设置标签右对齐，视觉上更整洁
+        form_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        # 🔧 关键修复：增加垂直间距，防止输入框放大后互相遮挡
+        form_layout.setVerticalSpacing(15)  # 默认6px，增加到15px
+        form_layout.setHorizontalSpacing(10)  # 标签和字段之间的间距
 
         # 数据源类型（只读）
         type_label = QLabel("通达信")
         type_label.setStyleSheet("font-weight: bold;")
+        # 🔧 统一高度：设置标签最小高度32px
+        type_label.setMinimumHeight(32)
         form_layout.addRow("数据源类型:", type_label)
 
         # 数据类型（多选）
         data_type_layout = QHBoxLayout()
+        data_type_layout.setSpacing(5)  # 🔧 设置控件间距
+        data_type_layout.setContentsMargins(0, 0, 0, 0)  # 🔧 去掉边距
+
         self.reader_day_check = QCheckBox("日线")
         self.reader_day_check.setChecked(True)
+        # 🔧 统一高度：设置复选框最小高度32px
+        self.reader_day_check.setMinimumHeight(32)
         data_type_layout.addWidget(self.reader_day_check)
 
         self.reader_5min_check = QCheckBox("5分钟线")
+        self.reader_5min_check.setMinimumHeight(32)
         data_type_layout.addWidget(self.reader_5min_check)
 
         self.reader_1min_check = QCheckBox("1分钟线")
+        self.reader_1min_check.setMinimumHeight(32)
         data_type_layout.addWidget(self.reader_1min_check)
 
         data_type_layout.addStretch()
+        # 🔧 关键修复：直接addRow(QLayout)，不用QWidget包装
         form_layout.addRow("数据类型:", data_type_layout)
 
         # 市场（多选）
         market_layout = QHBoxLayout()
+        market_layout.setSpacing(5)  # 🔧 设置控件间距
+        market_layout.setContentsMargins(0, 0, 0, 0)  # 🔧 去掉边距
+
         self.reader_sh_check = QCheckBox("上证")
         self.reader_sh_check.setChecked(True)
+        # 🔧 统一高度：设置复选框最小高度32px
+        self.reader_sh_check.setMinimumHeight(32)
         market_layout.addWidget(self.reader_sh_check)
 
         self.reader_sz_check = QCheckBox("深证")
+        self.reader_sz_check.setMinimumHeight(32)
         market_layout.addWidget(self.reader_sz_check)
 
         self.reader_bj_check = QCheckBox("北证")
+        self.reader_bj_check.setMinimumHeight(32)
         market_layout.addWidget(self.reader_bj_check)
 
         market_layout.addStretch()
+        # 🔧 关键修复：直接addRow(QLayout)，不用QWidget包装
         form_layout.addRow("市场:", market_layout)
 
         # 通达信根目录
         tdx_layout = QHBoxLayout()
+        tdx_layout.setSpacing(5)  # 🔧 设置控件间距
+        tdx_layout.setContentsMargins(0, 0, 0, 0)  # 🔧 去掉边距
+
         self.reader_tdx_path_edit = QLineEdit()
         self.reader_tdx_path_edit.setPlaceholderText("只需填写根目录，例如: C:\\new_tdx")
+        # 🔧 关键修复：设置输入框最小高度，确保内部文字完整显示
+        self.reader_tdx_path_edit.setMinimumHeight(32)
+        self.reader_tdx_path_edit.setMinimumWidth(300)
         self.reader_tdx_path_edit.setToolTip(
             "填写通达信软件的根目录即可，例如: C:\\new_tdx\n"
             "程序会根据您选择的市场和数据类型自动拼接完整路径：\n"
@@ -2802,19 +2867,30 @@ class SystemManager(BaseWidget, LoggerMixin):
         tdx_layout.addWidget(self.reader_tdx_path_edit)
 
         tdx_browse_btn = QPushButton("📁 浏览")
+        tdx_browse_btn.setFixedWidth(80)
+        # 🔧 按钮也设置相同高度，保持视觉一致
+        tdx_browse_btn.setMinimumHeight(32)
         tdx_browse_btn.clicked.connect(self._browse_tdx_root)
         tdx_layout.addWidget(tdx_browse_btn)
 
+        # 🔧 关键修复：直接addRow(QLayout)，不用QWidget包装
         form_layout.addRow("通达信根目录:", tdx_layout)
 
         # 线程数
         thread_layout = QHBoxLayout()
+        thread_layout.setSpacing(5)  # 🔧 设置控件间距
+        thread_layout.setContentsMargins(0, 0, 0, 0)  # 🔧 去掉边距
+
         self.reader_thread_spin = QSpinBox()
         self.reader_thread_spin.setRange(1, 16)
         self.reader_thread_spin.setValue(4)
         self.reader_thread_spin.setSuffix(" 线程")
+        # 🔧 关键修复：设置输入框最小高度，确保内部文字完整显示
+        self.reader_thread_spin.setMinimumHeight(32)
+        self.reader_thread_spin.setMinimumWidth(120)
         thread_layout.addWidget(self.reader_thread_spin)
         thread_layout.addStretch()
+        # 🔧 关键修复：直接addRow(QLayout)，不用QWidget包装
         form_layout.addRow("并发线程数:", thread_layout)
 
         reader_layout.addLayout(form_layout)
@@ -2822,6 +2898,9 @@ class SystemManager(BaseWidget, LoggerMixin):
         # 进度组
         progress_group = QGroupBox("处理进度")
         progress_layout = QVBoxLayout(progress_group)
+        # 🔧 压缩优化：减少进度组内部间距
+        progress_layout.setSpacing(3)  # 从默认6px减少到3px
+        progress_layout.setContentsMargins(9, 5, 9, 5)  # 减少上下margin
 
         # 状态标签
         self.reader_status_label = QLabel("状态: 就绪")
@@ -2831,6 +2910,8 @@ class SystemManager(BaseWidget, LoggerMixin):
         self.reader_progress_bar = QProgressBar()
         self.reader_progress_bar.setRange(0, 100)
         self.reader_progress_bar.setValue(0)
+        # 🔧 压缩优化：限制进度条最大高度
+        self.reader_progress_bar.setMaximumHeight(20)
         progress_layout.addWidget(self.reader_progress_bar)
 
         # 详细进度标签
@@ -3084,8 +3165,13 @@ class SystemManager(BaseWidget, LoggerMixin):
                 self.show_warning("请输入通达信根目录")
                 return
 
-            # 获取线程数
-            max_workers = 4
+            # 获取线程数（优化：默认使用更多线程）
+            import os
+
+            cpu_count = os.cpu_count() or 4
+            # 默认使用 CPU 核心数的 2 倍，最少 8 个，最多 16 个
+            default_workers = min(max(cpu_count * 2, 8), 16)
+            max_workers = default_workers
             if self.reader_thread_spin:
                 max_workers = self.reader_thread_spin.value()
 
@@ -3095,18 +3181,25 @@ class SystemManager(BaseWidget, LoggerMixin):
             if self.reader_detail_label:
                 self.reader_detail_label.setText("")
 
-            # 连接信号到槽函数
-            try:
-                self.reader_progress_signal.disconnect()
-            except Exception:
-                pass  # 第一次连接时会失败，忽略
+            # 连接信号到槽函数（安全断开，避免警告）
+            import warnings
+
+            # 抑制 RuntimeWarning
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=RuntimeWarning)
+                try:
+                    self.reader_progress_signal.disconnect()
+                except (TypeError, RuntimeError):
+                    pass  # 如果没有连接，忽略
 
             self.reader_progress_signal.connect(self._update_reader_progress)
 
-            try:
-                self.reader_finished_signal.disconnect()
-            except Exception:
-                pass
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=RuntimeWarning)
+                try:
+                    self.reader_finished_signal.disconnect()
+                except (TypeError, RuntimeError):
+                    pass
 
             self.reader_finished_signal.connect(self._update_reader_finished)
 
@@ -3298,9 +3391,7 @@ class SystemManager(BaseWidget, LoggerMixin):
 
             # 在详细文本中添加扫描完成摘要
             if self.cleaner_detail_text:
-                self.cleaner_detail_text.append(
-                    f"\n{'='*50}\n扫描完成摘要:\n{'='*50}"
-                )
+                self.cleaner_detail_text.append(f"\n{'='*50}\n扫描完成摘要:\n{'='*50}")
 
             # 更新界面
             if len(corrupted_files) == 0:
@@ -4110,7 +4201,7 @@ class SystemManager(BaseWidget, LoggerMixin):
             for key in self.performance_history:
                 if len(self.performance_history[key]) > self.max_history_points:
                     self.performance_history[key] = self.performance_history[key][
-                        -self.max_history_points:
+                        -self.max_history_points :
                     ]
 
             # 更新图表

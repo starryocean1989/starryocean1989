@@ -768,7 +768,33 @@ class SymbolLoader:
         for category, stocks in result.items():
             self.logger.info("    • %s: %d 个", category, len(stocks))
 
-        return result
+        # 🔧 验证所有品种数据的完整性（确保code和name都有效）
+        validated_result = {}
+        total_filtered = 0
+
+        for category, stocks in result.items():
+            validated_stocks = []
+            for stock in stocks:
+                code = stock.get("code", "").strip()
+                name = stock.get("name", "").strip()
+                # 确保code和name都有效
+                if code and name:
+                    validated_stocks.append(stock)
+                else:
+                    total_filtered += 1
+                    self.logger.debug(
+                        "过滤无效品种: code=%s, name=%s, category=%s", code, name, category
+                    )
+            validated_result[category] = validated_stocks
+
+        if total_filtered > 0:
+            self.logger.info("  ⚠️ 过滤了 %d 个无效品种（缺少有效code或name）", total_filtered)
+            # 输出验证后的统计
+            self.logger.info("  ← 验证后统计:")
+            for category, stocks in validated_result.items():
+                self.logger.info("    • %s: %d 个", category, len(stocks))
+
+        return validated_result
 
     def _build_stock_list(self, df: pd.DataFrame) -> List[Dict[str, Any]]:
         """
@@ -869,15 +895,15 @@ class SymbolLoader:
                     name = str(matched.iloc[0].get("name", ""))
                     result.append({"code": code, "name": name, "market": market})
                 else:
-                    # 无匹配，仍保留但名称为空
+                    # API中无匹配的品种视为不存在（已退市/到期），直接跳过
                     unmatched_count += 1
                     if len(unmatched_samples) < 3:
                         unmatched_samples.append({"market": market, "code": code})
-                    result.append({"code": code, "name": "", "market": market})
+                    # 不再添加空名称品种到结果列表
 
             matched_count = total - unmatched_count
             self.logger.info(
-                "  → T+0基金: %d 个（匹配到名称: %d，未匹配: %d，示例未匹配: %s）",
+                "  → T+0基金: %d 个（匹配到名称: %d，API中不存在已过滤: %d，示例: %s）",
                 len(result),
                 matched_count,
                 unmatched_count,
@@ -931,15 +957,15 @@ class SymbolLoader:
                         name = str(matched.iloc[0].get("name", ""))
                         result.append({"code": code, "name": name, "market": mkt})
                     else:
-                        # 无匹配，仍保留但名称为空
+                        # API中无匹配的品种视为不存在（已退市/到期），直接跳过
                         unmatched_count += 1
                         if len(unmatched_samples) < 3:
                             unmatched_samples.append({"market": mkt, "code": code})
-                        result.append({"code": code, "name": "", "market": mkt})
+                        # 不再添加空名称品种到结果列表
 
             matched_count = total - unmatched_count
             self.logger.info(
-                "  → 可转债: %d 个（匹配到名称: %d，未匹配: %d，示例未匹配: %s）",
+                "  → 可转债: %d 个（匹配到名称: %d，API中不存在已过滤: %d，示例: %s）",
                 len(result),
                 matched_count,
                 unmatched_count,

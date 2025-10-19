@@ -25,6 +25,29 @@ from vnpy.trader.utility import load_json, save_json
 logger = logging.getLogger(__name__)
 
 
+def get_project_root() -> Path:
+    """获取项目根目录
+
+    从当前文件向上查找，直到找到标记文件（pyproject.toml, requirements.txt等）
+    """
+    current = Path(__file__).resolve().parent
+
+    # 向上查找，最多10层
+    for _ in range(10):
+        # 检查标记文件
+        markers = ["pyproject.toml", "requirements.txt", ".git", "venv310"]
+        if any((current / marker).exists() for marker in markers):
+            return current
+
+        parent = current.parent
+        if parent == current:  # 到达根目录
+            break
+        current = parent
+
+    # 如果没找到，返回当前工作目录
+    return Path.cwd()
+
+
 class TdxConfigFileParser:
     """通达信配置文件解析器
 
@@ -330,6 +353,9 @@ class ConfigManager:
         except Exception:
             pass
 
+        # 🔧 新增：初始化时主动转换相对路径为绝对路径
+        self._normalize_paths_on_init()
+
     def get(self, key: str, default: Any = None) -> Any:
         """获取配置值"""
         return self._config.get(key, default)
@@ -339,15 +365,88 @@ class ConfigManager:
         self._config[key] = value
         self._save_to_file()
 
+    def _normalize_paths_on_init(self) -> None:
+        """初始化时主动转换相对路径为绝对路径
+
+        检查 cache_dir 和 data_dir 配置，如果是相对路径则转换为绝对路径并持久化
+        """
+        try:
+            project_root = get_project_root()
+            path_updated = False
+
+            # 1. 检查并转换 cache_dir
+            cache_dir_str = self._config.get("chinastock.cache_dir", "./data/cache")
+            if cache_dir_str:
+                cache_path = Path(cache_dir_str)
+                if not cache_path.is_absolute():
+                    abs_cache_path = project_root / cache_path
+                    abs_cache_str = str(abs_cache_path.resolve())
+                    self._config["chinastock.cache_dir"] = abs_cache_str
+                    path_updated = True
+                    print("\n🔧 初始化配置转换: 品种缓存目录")
+                    print(f"   原配置: {cache_dir_str} (相对路径)")
+                    print(f"   新配置: {abs_cache_str} (绝对路径)")
+
+            # 2. 检查并转换 data_dir
+            data_dir_str = self._config.get("chinastock.data_dir", "./data/kline")
+            if data_dir_str:
+                data_path = Path(data_dir_str)
+                if not data_path.is_absolute():
+                    abs_data_path = project_root / data_path
+                    abs_data_str = str(abs_data_path.resolve())
+                    self._config["chinastock.data_dir"] = abs_data_str
+                    path_updated = True
+                    print("🔧 初始化配置转换: K线数据目录")
+                    print(f"   原配置: {data_dir_str} (相对路径)")
+                    print(f"   新配置: {abs_data_str} (绝对路径)")
+
+            # 3. 如果有路径更新，保存到配置文件
+            if path_updated:
+                print(f"   项目根目录: {project_root}")
+                print("✅ 配置已自动转换并持久化\n")
+                self._save_to_file()
+                logger.info("路径配置已在初始化时转换为绝对路径并持久化")
+
+        except Exception as e:
+            logger.warning("初始化路径转换失败: %s", e)
+
     def get_cache_dir(self) -> Path:
-        """获取品种列表缓存目录"""
-        cache_dir = Path(self.get("chinastock.cache_dir", "./data/cache"))
+        """获取品种列表缓存目录
+
+        注意：相对路径已在初始化时转换，此方法作为双重保险
+        """
+        cache_dir_str = self.get("chinastock.cache_dir", "./data/cache")
+        cache_dir = Path(cache_dir_str)
+
+        # 🔧 双重保险：如果仍是相对路径（用户手动修改配置后），再次转换
+        if not cache_dir.is_absolute():
+            project_root = get_project_root()
+            cache_dir = project_root / cache_dir
+            abs_path_str = str(cache_dir.resolve())
+            self._config["chinastock.cache_dir"] = abs_path_str
+            self._save_to_file()
+            logger.warning("检测到相对路径配置，已转换: %s -> %s", cache_dir_str, abs_path_str)
+
         cache_dir.mkdir(parents=True, exist_ok=True)
         return cache_dir
 
     def get_data_dir(self) -> Path:
-        """获取K线数据存储目录"""
-        data_dir = Path(self.get("chinastock.data_dir", "./data/kline"))
+        """获取K线数据存储目录
+
+        注意：相对路径已在初始化时转换，此方法作为双重保险
+        """
+        data_dir_str = self.get("chinastock.data_dir", "./data/kline")
+        data_dir = Path(data_dir_str)
+
+        # 🔧 双重保险：如果仍是相对路径（用户手动修改配置后），再次转换
+        if not data_dir.is_absolute():
+            project_root = get_project_root()
+            data_dir = project_root / data_dir
+            abs_path_str = str(data_dir.resolve())
+            self._config["chinastock.data_dir"] = abs_path_str
+            self._save_to_file()
+            logger.warning("检测到相对路径配置，已转换: %s -> %s", data_dir_str, abs_path_str)
+
         data_dir.mkdir(parents=True, exist_ok=True)
         return data_dir
 

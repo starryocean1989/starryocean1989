@@ -13,7 +13,6 @@
 
 # ==================== 导入声明 ====================
 import logging
-import shutil
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -65,14 +64,31 @@ class StorageManager:
             # 保存文件
             file_path = interval_dir / "data.parquet"
 
+            # 🔍 DEBUG: 强制打印到控制台
+            print(f"      🔍 准备保存: {symbol} ({interval})")
+            print(f"         数据目录: {self.data_dir}")
+            print(f"         完整路径: {file_path}")
+            print(f"         数据记录数: {len(dataframe)}")
+
+            # 🔍 DEBUG: 打印即将保存的完整路径
+            self.logger.debug(f"🔍 准备保存数据: {symbol} ({interval})")
+            self.logger.debug(f"   数据目录: {self.data_dir}")
+            self.logger.debug(f"   完整路径: {file_path}")
+            self.logger.debug(f"   数据记录数: {len(dataframe)}")
+
             # 使用zstd压缩保存
             dataframe.to_parquet(file_path, compression="zstd", index=False)
 
-            self.logger.info("保存K线数据成功: %s %s, %d条记录", symbol, interval, len(dataframe))
+            # 🔍 DEBUG: 强制打印保存成功信息
+            print(f"      ✅ 保存成功！文件路径: {file_path.absolute()}")
+
+            # 🔍 DEBUG: 保存成功后打印完整的文件路径
+            self.logger.info(f"💾 保存成功: {symbol} ({interval}), {len(dataframe)}条记录")
+            self.logger.info(f"   → 文件路径: {file_path.absolute()}")
             return file_path
 
         except Exception as e:
-            self.logger.error("保存K线数据失败: %s %s, %s", symbol, interval, e)
+            self.logger.error(f"❌ 保存失败: {symbol} ({interval}) - {e}", exc_info=True)
             return None
 
     def query_kline(
@@ -107,24 +123,88 @@ class StorageManager:
             if df.empty:
                 return df
 
+            # 确保 datetime 列存在且无重复（优化：直接处理，减少检查）
+            if "datetime" in df.columns and len(df) > 0:
+                # 快速去重：直接排序和去重，不检查
+                df = df.sort_values("datetime")
+                df = df.drop_duplicates(subset=["datetime"], keep="last")
+                df = df.reset_index(drop=True)
+
             # 过滤日期
             if start_date is not None:
                 if isinstance(start_date, str):
                     start_date = pd.to_datetime(start_date).date()  # type: ignore
-                df = df[df.index >= pd.Timestamp(start_date)]  # type: ignore
+                if "datetime" in df.columns:
+                    df = df[df["datetime"] >= pd.Timestamp(start_date)]  # type: ignore
+                else:
+                    df = df[df.index >= pd.Timestamp(start_date)]  # type: ignore
 
             if end_date is not None:
                 if isinstance(end_date, str):
                     end_date = pd.to_datetime(end_date).date()  # type: ignore
-                df = df[df.index <= pd.Timestamp(end_date)]  # type: ignore
+                if "datetime" in df.columns:
+                    df = df[df["datetime"] <= pd.Timestamp(end_date)]  # type: ignore
+                else:
+                    df = df[df.index <= pd.Timestamp(end_date)]  # type: ignore
 
-            self.logger.info("查询数据成功: %s %s, %d条记录", symbol, interval, len(df))
+            # 优化：减少日志输出
             # 确保返回类型为 DataFrame
             return df if isinstance(df, pd.DataFrame) else None
 
         except Exception as e:
             self.logger.error("查询数据失败: %s %s, %s", symbol, interval, e)
             return None
+
+    def get_local_data_index(self) -> List[str]:
+        """获取本地数据索引（已下载的品种代码列表）
+
+        扫描data/kline目录，返回所有至少有一个周期有效数据的品种代码。
+
+        注意：不仅检查文件是否存在，还要确保文件有有效记录（与数据质量概览一致）
+
+        Returns:
+            List[str]: 品种代码列表（按代码排序）
+        """
+        try:
+            symbol_codes = []
+
+            # 扫描数据目录
+            for symbol_dir in self.data_dir.iterdir():
+                if not symbol_dir.is_dir():
+                    continue
+
+                symbol_code = symbol_dir.name
+
+                # 检查是否有任何周期的有效数据（文件存在且有记录）
+                has_data = False
+                for interval_dir in symbol_dir.iterdir():
+                    if interval_dir.is_dir():
+                        data_file = interval_dir / "data.parquet"
+                        if data_file.exists():
+                            # 🔧 改进：检查文件是否有有效数据，而不仅仅是文件存在
+                            try:
+                                import pandas as pd
+
+                                df = pd.read_parquet(data_file)
+                                if df is not None and not df.empty:
+                                    has_data = True
+                                    break
+                            except Exception:
+                                # 文件损坏或无法读取，跳过
+                                continue
+
+                if has_data:
+                    symbol_codes.append(symbol_code)
+
+            # 按代码排序
+            symbol_codes.sort()
+
+            self.logger.info("扫描本地数据索引完成，共 %d 个品种有有效数据", len(symbol_codes))
+            return symbol_codes
+
+        except Exception as e:
+            self.logger.error("获取本地数据索引失败: %s", e)
+            return []
 
     def get_storage_stats(self) -> Dict[str, Any]:
         """获取存储统计信息"""
@@ -226,7 +306,9 @@ class StorageManager:
                                         file_path.unlink()
                                         deleted_files.append(str(file_path))
                                     except Exception as del_e:
-                                        self.logger.error("删除损坏文件失败: %s, 错误: %s", file_path, del_e)
+                                        self.logger.error(
+                                            "删除损坏文件失败: %s, 错误: %s", file_path, del_e
+                                        )
 
             result = {
                 "corrupted": corrupted_files,
@@ -240,7 +322,7 @@ class StorageManager:
                 "文件扫描完成: 扫描 %d 个文件，发现 %d 个损坏文件%s",
                 processed_files,
                 len(corrupted_files),
-                f"，删除 {len(deleted_files)} 个" if auto_delete else ""
+                f"，删除 {len(deleted_files)} 个" if auto_delete else "",
             )
 
             return result
@@ -289,6 +371,130 @@ class DataValidator:
     def __init__(self):
         self.logger = logging.getLogger(__name__)
         self.storage_manager = StorageManager()
+
+        # 交易日历实例（用于数据更新状态检测）
+        self._trading_calendar = None
+        self._latest_trading_day_cache = None  # 缓存最新交易日，避免重复查询
+        self._ipo_date_cache = {}  # 缓存品种上市日期
+
+    def _get_ipo_date(self, symbol: str) -> Optional[date]:
+        """获取品种上市日期（带缓存）
+
+        Args:
+            symbol: 品种代码（6位数字）
+
+        Returns:
+            上市日期，失败返回None
+        """
+        try:
+            # 检查缓存
+            if symbol in self._ipo_date_cache:
+                return self._ipo_date_cache[symbol]
+
+            # 判断市场：6开头=上海(1)，9开头且6位=北交所(0)，其他=深圳(0)
+            if symbol.startswith("6"):
+                market = 1
+            else:
+                market = 0
+
+            # 调用tdx_asyncio获取财务信息
+            from backend.infrastructure.tdx_asyncio import AsyncTdxHq_API
+            from backend.infrastructure.tdx_asyncio.constants import HQ_HOSTS
+            import asyncio
+            from concurrent.futures import ThreadPoolExecutor
+
+            async def fetch_ipo():
+                # HQ_HOSTS[0]返回(name, ip, port)，需要提取(ip, port)
+                server = (HQ_HOSTS[0][1], HQ_HOSTS[0][2])
+                api = await AsyncTdxHq_API.factory(server)
+                try:
+                    finance_info = await api.get_finance_info(market, symbol)
+                    return finance_info.get("ipo_date")
+                finally:
+                    await api.close()
+
+            # 🆕 使用线程池执行异步调用（避免事件循环冲突）
+            def run_async_in_thread():
+                """在新线程中运行异步代码"""
+                new_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(new_loop)
+                try:
+                    return new_loop.run_until_complete(fetch_ipo())
+                finally:
+                    new_loop.close()
+
+            try:
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(run_async_in_thread)
+                    ipo_timestamp = future.result(timeout=10)
+            except Exception as e:
+                self.logger.error("获取上市日期异步调用失败: %s", e, exc_info=True)
+                # 缓存失败结果，避免重复尝试
+                self._ipo_date_cache[symbol] = None
+                return None
+
+            # 解析时间戳为日期（ipo_date是整数格式，需要转换）
+            if ipo_timestamp and ipo_timestamp > 0:
+                # 通达信时间戳格式：YYYYMMDD
+                ipo_str = str(int(ipo_timestamp))
+                if len(ipo_str) == 8:
+                    ipo_date = datetime.strptime(ipo_str, "%Y%m%d").date()
+
+                    # 🆕 验证：上市日期应该在合理范围内
+                    from datetime import date as date_class
+                    from datetime import timedelta
+
+                    today = date_class.today()
+
+                    # 验证1：不能超过今天30天（允许一定的误差）
+                    if ipo_date > today + timedelta(days=30):
+                        self.logger.warning(
+                            "品种 %s 上市日期异常（远期未来）: %s，原始值: %s，忽略",
+                            symbol,
+                            ipo_date,
+                            ipo_timestamp,
+                        )
+                        self._ipo_date_cache[symbol] = None
+                        return None
+
+                    # 验证2：上市日期应该在1990年后
+                    if ipo_date.year < 1990:
+                        self.logger.warning(
+                            "品种 %s 上市日期异常（过早）: %s，原始值: %s，忽略",
+                            symbol,
+                            ipo_date,
+                            ipo_timestamp,
+                        )
+                        self._ipo_date_cache[symbol] = None
+                        return None
+
+                    self._ipo_date_cache[symbol] = ipo_date
+                    self.logger.debug("获取品种 %s 上市日期: %s", symbol, ipo_date)
+                    return ipo_date
+                elif len(ipo_str) == 7:
+                    # 处理0开头被省略的情况（不太可能，但兼容）
+                    ipo_str = ipo_str.zfill(8)
+                    ipo_date = datetime.strptime(ipo_str, "%Y%m%d").date()
+                    self._ipo_date_cache[symbol] = ipo_date
+                    self.logger.debug("获取品种 %s 上市日期（补零）: %s", symbol, ipo_date)
+                    return ipo_date
+                else:
+                    self.logger.warning(
+                        "品种 %s 上市日期格式异常: 长度=%d, 原始值=%s",
+                        symbol,
+                        len(ipo_str),
+                        ipo_timestamp,
+                    )
+
+            # 无法解析，缓存None避免重复查询
+            self._ipo_date_cache[symbol] = None
+            return None
+
+        except Exception as e:
+            self.logger.debug("获取品种 %s 上市日期失败: %s", symbol, e)
+            # 缓存None避免重复查询
+            self._ipo_date_cache[symbol] = None
+            return None
 
     def validate_symbol(self, symbol: str, interval: str) -> ValidationResult:
         """校验单个品种的数据"""
@@ -345,7 +551,9 @@ class DataValidator:
                                 # 确保返回的是 date 类型而不是 NaTType
                                 min_date_val = dt_min.date()
                                 max_date_val = dt_max.date()
-                                if isinstance(min_date_val, date) and isinstance(max_date_val, date):
+                                if isinstance(min_date_val, date) and isinstance(
+                                    max_date_val, date
+                                ):
                                     date_range = (min_date_val, max_date_val)
             except Exception:
                 # 如果日期计算失败，保持为None
@@ -360,7 +568,7 @@ class DataValidator:
                 warnings=warnings,
                 record_count=len(df),
                 date_range=date_range,
-                missing_dates=self._check_missing_dates(df),
+                missing_dates=self._check_missing_dates(df, symbol=symbol),
                 logic_errors=self._check_logic_errors(df),
                 format_errors=self._check_format_errors(df),
             )
@@ -412,81 +620,188 @@ class DataValidator:
 
         return errors, warnings
 
-    def _check_missing_dates(self, df: pd.DataFrame) -> List[date]:
-        """检查缺失日期"""
+    def _check_missing_dates(self, df: pd.DataFrame, symbol: str = None) -> List[date]:
+        """检查缺失日期（改进版：整合交易日历、基日、上市日期）
+
+        Args:
+            df: 数据DataFrame
+            symbol: 品种代码（可选，用于获取上市日期）
+
+        Returns:
+            缺失的交易日列表
+        """
         if df.empty or "datetime" not in df.columns:
             return []
 
         try:
-            # 确保使用datetime列作为日期源
-            if not pd.api.types.is_datetime64_any_dtype(df.index):
-                # 如果索引不是datetime类型，使用datetime列
-                if pd.api.types.is_datetime64_any_dtype(df["datetime"]):
-                    date_series = df["datetime"]
-                else:
-                    # 尝试转换datetime列
-                    date_series = pd.to_datetime(df["datetime"], errors="coerce")
+            # 1. 获取数据中的实际日期
+            date_series = self._extract_date_series(df)
+            if date_series is None or date_series.empty:
+                return []
+
+            actual_dates = self._convert_to_date_set(date_series)
+            if not actual_dates:
+                return []
+
+            # 2. 确定检测起点（考虑基日、上市日、数据起点）
+            data_start = min(actual_dates)
+            data_end = max(actual_dates)
+
+            # 获取基日
+            from .config import config_manager
+            from datetime import date as date_class
+
+            base_date = config_manager.get_base_date()
+
+            # 获取上市日期（如果提供了symbol）
+            ipo_date = None
+            if symbol:
+                ipo_date = self._get_ipo_date(symbol)
+
+            # 确定有效起点：max(基日, 上市日, 数据起点)
+            effective_start = data_start
+            if base_date and base_date > effective_start:
+                effective_start = base_date
+            if ipo_date and ipo_date > effective_start:
+                effective_start = ipo_date
+
+            # 🆕 关键修复：确定检测终点（不能超过最近一个交易日）
+            # 原因：交易日历包含未来日期，但历史数据只到今天
+            latest_trading_day = self._get_latest_trading_day()
+            if latest_trading_day:
+                # 检测终点 = min(数据最后日期, 最近交易日)
+                check_end_date = min(data_end, latest_trading_day)
             else:
-                # 索引是datetime类型
-                date_series = df.index
+                # 如果获取最近交易日失败，使用今天作为上限
+                today = date_class.today()
+                check_end_date = min(data_end, today)
 
-            # 移除无效日期
-            date_series = date_series.dropna()
-
-            if date_series.empty:
+            # 🆕 验证：如果effective_start > check_end_date，说明日期范围有问题
+            if effective_start > check_end_date:
+                self.logger.warning(
+                    "品种 %s 日期范围异常: effective_start(%s) > check_end_date(%s), "
+                    "data_start=%s, data_end=%s, base_date=%s, ipo_date=%s, latest_trading_day=%s, 跳过缺失检测",
+                    symbol,
+                    effective_start,
+                    check_end_date,
+                    data_start,
+                    data_end,
+                    base_date,
+                    ipo_date,
+                    latest_trading_day,
+                )
                 return []
 
-            # 获取日期范围
-            min_date = date_series.min()
-            max_date = date_series.max()
+            # 3. 使用交易日历获取期望的交易日范围（只检查到最近交易日）
+            expected_trading_days = self._get_trading_days_range(effective_start, check_end_date)
 
-            # 检查是否有效
-            if bool(pd.isna(min_date)) or bool(pd.isna(max_date)):
+            if not expected_trading_days:
+                # 交易日历获取失败，返回空列表（降级处理）
+                self.logger.warning("交易日历获取失败，跳过缺失日期检测")
                 return []
 
-            # 确保是datetime类型，然后转换为date
-            if pd.api.types.is_datetime64_any_dtype(date_series):
-                start_date = pd.Timestamp(min_date).date()  # type: ignore
-                end_date = pd.Timestamp(max_date).date()  # type: ignore
-            else:
-                # 如果不是datetime类型，尝试转换
-                try:
-                    start_date = pd.Timestamp(pd.to_datetime(min_date)).date()  # type: ignore
-                    end_date = pd.Timestamp(pd.to_datetime(max_date)).date()  # type: ignore
-                except (ValueError, TypeError):
-                    return []
-
-            # 生成完整日期范围
-            expected_dates = pd.date_range(start=start_date, end=end_date, freq="D")
-
-            # 找出缺失的日期
-            try:
-                if pd.api.types.is_datetime64_any_dtype(date_series):
-                    # 如果是 Series，使用 .dt；如果是 DatetimeIndex，直接使用 .date
-                    if isinstance(date_series, pd.Series):
-                        actual_dates = set(date_series.dt.date)
-                    else:
-                        actual_dates = {pd.Timestamp(d).date() for d in date_series}
-                else:
-                    converted_series = pd.to_datetime(date_series, errors="coerce")
-                    if isinstance(converted_series, pd.Series):
-                        actual_dates = set(converted_series.dt.date.dropna())
-                    else:
-                        actual_dates = {pd.Timestamp(d).date() for d in converted_series if pd.notna(d)}
-            except (AttributeError, TypeError):
-                return []
-
-            expected_date_set = {pd.Timestamp(d).date() for d in expected_dates}
-
-            missing_dates_set = expected_date_set - actual_dates
-            # 过滤掉可能的 NaTType，确保返回 List[date]
-            missing_dates: List[date] = [d for d in missing_dates_set if isinstance(d, date)]
+            # 4. 计算缺失的交易日
+            expected_dates = {
+                datetime.strptime(d, "%Y-%m-%d").date() for d in expected_trading_days
+            }
+            missing_dates = list(expected_dates - actual_dates)
             missing_dates.sort()
+
+            # 5. 调试日志
+            if symbol and missing_dates:
+                self.logger.debug(
+                    "品种 %s 缺失检测: 数据范围[%s~%s], 检测范围[%s~%s], "
+                    "基日=%s, 上市日=%s, 最近交易日=%s, "
+                    "期望交易日=%d个, 实际=%d个, 缺失=%d个",
+                    symbol,
+                    data_start,
+                    data_end,
+                    effective_start,
+                    check_end_date,
+                    base_date,
+                    ipo_date,
+                    latest_trading_day,
+                    len(expected_dates),
+                    len(actual_dates),
+                    len(missing_dates),
+                )
 
             return missing_dates
 
         except Exception as e:
             self.logger.error("检查缺失日期失败: %s", e)
+            return []
+
+    def _extract_date_series(self, df: pd.DataFrame):
+        """从DataFrame提取日期序列"""
+        if not pd.api.types.is_datetime64_any_dtype(df.index):
+            if pd.api.types.is_datetime64_any_dtype(df["datetime"]):
+                return df["datetime"]
+            else:
+                return pd.to_datetime(df["datetime"], errors="coerce")
+        else:
+            return df.index
+
+    def _convert_to_date_set(self, date_series) -> set:
+        """将日期序列转换为date对象集合"""
+        date_series = date_series.dropna()
+        if date_series.empty:
+            return set()
+
+        try:
+            if isinstance(date_series, pd.Series):
+                return set(date_series.dt.date)
+            else:
+                return {pd.Timestamp(d).date() for d in date_series}
+        except (AttributeError, TypeError):
+            return set()
+
+    def _get_trading_days_range(self, start_date: date, end_date: date) -> List[str]:
+        """获取交易日范围（利用TradingCalendar的24h缓存）"""
+        try:
+            from backend.infrastructure.tdx_asyncio.calendar import TradingCalendar
+            import asyncio
+            from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+
+            if self._trading_calendar is None:
+                self._trading_calendar = TradingCalendar()
+
+            # 使用线程池执行异步调用（避免事件循环冲突）
+            def run_async_in_thread():
+                """在新线程中运行异步代码"""
+                try:
+                    new_loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(new_loop)
+                    try:
+                        result = new_loop.run_until_complete(
+                            self._trading_calendar.get_trading_days_in_range(
+                                start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d")
+                            )
+                        )
+                        return result
+                    finally:
+                        new_loop.close()
+                        asyncio.set_event_loop(None)
+                except Exception as e:
+                    self.logger.error("线程内部异常: %s", e, exc_info=True)
+                    raise
+
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(run_async_in_thread)
+                try:
+                    result = future.result(timeout=30)
+                    if not result:
+                        self.logger.warning("交易日范围为空: %s 至 %s", start_date, end_date)
+                    return result
+                except FutureTimeoutError:
+                    self.logger.error("获取交易日范围超时（30秒）: %s 至 %s", start_date, end_date)
+                    return []
+
+        except FutureTimeoutError:
+            self.logger.error("获取交易日范围超时: %s 至 %s", start_date, end_date)
+            return []
+        except Exception as e:
+            self.logger.error("获取交易日范围失败: %s", e, exc_info=True)
             return []
 
     def _check_logic_errors(self, df: pd.DataFrame) -> List[Dict[str, Any]]:
@@ -561,6 +876,7 @@ class DataValidator:
             # 这里简化处理，假设从配置获取
             try:
                 from .config import config_manager
+
                 reference_symbols = config_manager.get("chinastock.symbols", [])
                 if not reference_symbols:
                     # 如果配置中没有品种列表，返回空结果
@@ -622,6 +938,206 @@ class DataValidator:
                 base_date=date.today(),
             )
 
+    def check_data_freshness(self, symbol: str, interval: str = "1d") -> Dict[str, Any]:
+        """检查数据更新状态（数据是否包含最新交易日）
+
+        Args:
+            symbol: 品种代码
+            interval: K线周期，默认"1d"
+
+        Returns:
+            Dict: {
+                "latest_trading_day": date,      # 最新交易日
+                "local_latest_date": date,       # 本地最新数据日期
+                "gap_days": int,                 # 滞后天数（交易日）
+                "is_up_to_date": bool,          # 是否最新
+                "has_data": bool                 # 是否有数据
+            }
+        """
+        try:
+            # 获取最新交易日（使用缓存避免重复查询）
+            latest_trading_day = self._get_latest_trading_day()
+
+            if latest_trading_day is None:
+                # 交易日历获取失败，使用降级方案
+                self.logger.warning("无法获取交易日历，使用当前日期作为降级方案")
+                latest_trading_day = date.today()
+
+            # 读取本地数据
+            df = self.storage_manager.query_kline(symbol, interval)
+
+            if df is None or df.empty:
+                return {
+                    "latest_trading_day": latest_trading_day,
+                    "local_latest_date": None,
+                    "gap_days": -1,  # -1表示无数据
+                    "is_up_to_date": False,
+                    "has_data": False,
+                }
+
+            # 获取本地最新数据日期
+            local_latest_date = self._get_latest_date_from_df(df)
+
+            if local_latest_date is None:
+                return {
+                    "latest_trading_day": latest_trading_day,
+                    "local_latest_date": None,
+                    "gap_days": -1,
+                    "is_up_to_date": False,
+                    "has_data": False,
+                }
+
+            # 计算滞后天数（交易日维度）
+            gap_days = self._calculate_trading_days_gap(local_latest_date, latest_trading_day)
+
+            # 判断是否最新（允许1个交易日的延迟）
+            is_up_to_date = gap_days <= 1
+
+            return {
+                "latest_trading_day": latest_trading_day,
+                "local_latest_date": local_latest_date,
+                "gap_days": gap_days,
+                "is_up_to_date": is_up_to_date,
+                "has_data": True,
+            }
+
+        except Exception as e:
+            self.logger.error("检查数据更新状态失败: %s %s, %s", symbol, interval, e)
+            return {
+                "latest_trading_day": date.today(),
+                "local_latest_date": None,
+                "gap_days": -1,
+                "is_up_to_date": False,
+                "has_data": False,
+            }
+
+    def _get_latest_trading_day(self) -> Optional[date]:
+        """获取最新交易日（带缓存）"""
+        try:
+            # 检查缓存是否有效（当天缓存）
+            if self._latest_trading_day_cache is not None:
+                cache_date, cached_value = self._latest_trading_day_cache
+                if cache_date == date.today():
+                    return cached_value
+
+            # 缓存失效，重新获取
+            from backend.infrastructure.tdx_asyncio.calendar import TradingCalendar
+            import asyncio
+            from concurrent.futures import ThreadPoolExecutor
+
+            if self._trading_calendar is None:
+                self._trading_calendar = TradingCalendar()
+
+            # 🆕 使用线程池执行异步调用（避免事件循环冲突）
+            def run_async_in_thread():
+                """在新线程中运行异步代码"""
+                new_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(new_loop)
+                try:
+                    return new_loop.run_until_complete(
+                        self._trading_calendar.get_previous_trading_day()
+                    )
+                finally:
+                    new_loop.close()
+
+            try:
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(run_async_in_thread)
+                    result_str = future.result(timeout=10)
+            except Exception as e:
+                self.logger.error("交易日历异步调用失败: %s", e, exc_info=True)
+                return None
+
+            if result_str:
+                # 解析日期字符串 "YYYY-MM-DD"
+                latest_day = datetime.strptime(result_str, "%Y-%m-%d").date()
+                # 更新缓存
+                self._latest_trading_day_cache = (date.today(), latest_day)
+                return latest_day
+
+            return None
+
+        except Exception as e:
+            self.logger.error("获取最新交易日失败: %s", e)
+            return None
+
+    def _get_latest_date_from_df(self, df: pd.DataFrame) -> Optional[date]:
+        """从DataFrame中获取最新数据日期"""
+        try:
+            if df.empty:
+                return None
+
+            # 尝试从索引获取
+            if pd.api.types.is_datetime64_any_dtype(df.index):
+                max_val = df.index.max()
+                if bool(pd.notna(max_val)):
+                    return pd.Timestamp(max_val).date()  # type: ignore
+
+            # 尝试从datetime列获取
+            if "datetime" in df.columns:
+                if pd.api.types.is_datetime64_any_dtype(df["datetime"]):
+                    max_val = df["datetime"].max()
+                    if bool(pd.notna(max_val)):
+                        return pd.Timestamp(max_val).date()  # type: ignore
+                else:
+                    # 尝试转换
+                    datetime_series = pd.to_datetime(df["datetime"], errors="coerce")
+                    max_val = datetime_series.max()
+                    if bool(pd.notna(max_val)):
+                        return pd.Timestamp(max_val).date()  # type: ignore
+
+            return None
+
+        except Exception as e:
+            self.logger.error("获取最新数据日期失败: %s", e)
+            return None
+
+    def _calculate_trading_days_gap(self, local_date: date, latest_trading_day: date) -> int:
+        """计算滞后的交易日天数"""
+        try:
+            if local_date >= latest_trading_day:
+                return 0
+
+            # 使用交易日历计算交易日数量
+            from backend.infrastructure.tdx_asyncio.calendar import TradingCalendar
+            import asyncio
+
+            if self._trading_calendar is None:
+                self._trading_calendar = TradingCalendar()
+
+            # 同步包装异步调用
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    future = asyncio.run_coroutine_threadsafe(
+                        self._trading_calendar.get_trading_days_in_range(
+                            local_date.strftime("%Y-%m-%d"), latest_trading_day.strftime("%Y-%m-%d")
+                        ),
+                        loop,
+                    )
+                    trading_days = future.result(timeout=5)
+                else:
+                    trading_days = asyncio.run(
+                        self._trading_calendar.get_trading_days_in_range(
+                            local_date.strftime("%Y-%m-%d"), latest_trading_day.strftime("%Y-%m-%d")
+                        )
+                    )
+            except RuntimeError:
+                trading_days = asyncio.run(
+                    self._trading_calendar.get_trading_days_in_range(
+                        local_date.strftime("%Y-%m-%d"), latest_trading_day.strftime("%Y-%m-%d")
+                    )
+                )
+
+            # 交易日列表包含起始日期，所以gap = len - 1
+            gap = max(0, len(trading_days) - 1)
+            return gap
+
+        except Exception as e:
+            self.logger.error("计算交易日差距失败: %s", e)
+            # 降级方案：使用自然日差距
+            return (latest_trading_day - local_date).days
+
 
 # ==================== 数据感知器 ====================
 
@@ -639,6 +1155,11 @@ class QualityOverview:
     base_date: date
     scanned_intervals: List[str]
     details: List[Dict[str, Any]]
+
+    # 🆕 数据更新状态字段
+    outdated_symbols: int = 0  # 数据过时的品种数
+    avg_gap_days: int = 0  # 平均滞后天数（交易日）
+    max_gap_days: int = 0  # 最大滞后天数（交易日）
 
 
 @dataclass
@@ -674,7 +1195,7 @@ class DataSensor:
         intervals: Optional[List[str]] = None,
         force_refresh: bool = False,
     ) -> QualityOverview:
-        """扫描所有数据质量"""
+        """扫描所有数据质量（优化版：并发扫描，只返回有问题的品种详情）"""
         if intervals is None:
             intervals = ["1d", "5m", "1m"]
 
@@ -682,28 +1203,82 @@ class DataSensor:
             return self._quality_overview
 
         try:
-            self.logger.info("开始全量数据质量扫描...")
+            # 🆕 优化1：跳过无数据的品种
+            local_data_index = self.storage_manager.get_local_data_index()
+            symbols_with_data = [s for s in reference_symbols if s in local_data_index]
+
+            self.logger.info(
+                "开始数据质量扫描: 总品种%d个，本地有数据%d个（将并发扫描）",
+                len(reference_symbols),
+                len(symbols_with_data),
+            )
 
             total_symbols = len(reference_symbols)
-            missing_symbols = 0
+            missing_symbols = total_symbols - len(symbols_with_data)
             error_symbols = 0
             warning_symbols = 0
+
+            # 🆕 数据更新状态统计
+            outdated_symbols = 0
+            gap_days_list = []  # 收集所有滞后天数用于计算平均值
 
             symbol_qualities = []
             scanned_intervals = []
 
-            for symbol in reference_symbols:
-                symbol_quality = self._scan_symbol_quality(symbol, intervals)
-                symbol_qualities.append(symbol_quality)
+            # 🆕 优化2：使用线程池并发扫描
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            import threading
 
-                if symbol_quality.is_missing:
-                    missing_symbols += 1
-                if symbol_quality.has_errors:
-                    error_symbols += 1
-                if symbol_quality.has_warnings:
-                    warning_symbols += 1
+            lock = threading.Lock()
 
-                scanned_intervals.extend(intervals)
+            def scan_single(symbol):
+                """扫描单个品种（线程安全）"""
+                try:
+                    symbol_quality = self._scan_symbol_quality(symbol, intervals)
+                    return symbol_quality
+                except Exception as e:
+                    self.logger.error("扫描品种 %s 失败: %s", symbol, e)
+                    return None
+
+            # 使用线程池并发扫描（最多10个线程）
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                futures = {executor.submit(scan_single, s): s for s in symbols_with_data}
+
+                completed = 0
+                for future in as_completed(futures):
+                    symbol_quality = future.result()
+                    if symbol_quality:
+                        with lock:
+                            symbol_qualities.append(symbol_quality)
+
+                            if symbol_quality.has_errors:
+                                error_symbols += 1
+                            if symbol_quality.has_warnings:
+                                warning_symbols += 1
+
+                            scanned_intervals.extend(intervals)
+
+                        completed += 1
+                        if completed % 500 == 0:
+                            self.logger.info("扫描进度: %d/%d", completed, len(symbols_with_data))
+
+            # 🆕 批量检测数据更新状态（仅检测1d周期，避免重复）
+            self.logger.info("开始检测数据更新状态...")
+            for symbol in symbols_with_data:
+                try:
+                    freshness = self.validator.check_data_freshness(symbol, "1d")
+                    if freshness["has_data"]:
+                        gap_days = freshness["gap_days"]
+                        if gap_days > 1:  # 滞后超过1个交易日则算过时
+                            outdated_symbols += 1
+                        if gap_days >= 0:  # -1表示无数据，不计入平均值
+                            gap_days_list.append(gap_days)
+                except Exception as e:
+                    self.logger.debug("检测品种 %s 数据更新状态失败: %s", symbol, e)
+
+            # 计算数据更新状态指标
+            avg_gap_days = int(sum(gap_days_list) / len(gap_days_list)) if gap_days_list else 0
+            max_gap_days = max(gap_days_list) if gap_days_list else 0
 
             # 计算整体质量评分
             if total_symbols > 0:
@@ -724,6 +1299,26 @@ class DataSensor:
 
             quality_score = max(0, min(100, quality_score))
 
+            # 🆕 优化3：只保留有问题的品种详情
+            problem_details = [
+                {
+                    "symbol": sq.symbol,
+                    "status": self._determine_status(sq),
+                    "score": sq.overall_score,
+                    "has_errors": sq.has_errors,
+                    "has_warnings": sq.has_warnings,
+                    "is_missing": sq.is_missing,
+                    "issues": self._collect_issues(sq),
+                }
+                for sq in symbol_qualities
+                if sq.has_errors or sq.has_warnings or sq.is_missing
+            ]
+
+            # 🆕 按问题严重程度排序
+            problem_details.sort(
+                key=lambda d: {"missing": 1, "error": 2, "warning": 3}.get(d["status"], 4)
+            )
+
             overview = QualityOverview(
                 total_symbols=total_symbols,
                 missing_symbols=missing_symbols,
@@ -733,16 +1328,11 @@ class DataSensor:
                 last_scan_time=datetime.now(),
                 base_date=date.today(),
                 scanned_intervals=list(set(scanned_intervals)),
-                details=[
-                    {
-                        "symbol": sq.symbol,
-                        "overall_score": sq.overall_score,
-                        "has_errors": sq.has_errors,
-                        "has_warnings": sq.has_warnings,
-                        "is_missing": sq.is_missing,
-                    }
-                    for sq in symbol_qualities
-                ],
+                details=problem_details,  # 🆕 只包含有问题的品种
+                # 🆕 数据更新状态
+                outdated_symbols=outdated_symbols,
+                avg_gap_days=avg_gap_days,
+                max_gap_days=max_gap_days,
             )
 
             self._quality_overview = overview
@@ -752,12 +1342,15 @@ class DataSensor:
                 self._send_quality_update_event(overview)
 
             self.logger.info(
-                "数据质量扫描完成: 评分=%d, 总计=%d, 缺失=%d, 错误=%d, 警告=%d",
+                "✓ 数据质量扫描完成: 评分=%d, 总计=%d, 缺失=%d, 错误=%d, 警告=%d, 过时=%d, 平均滞后=%d天, 问题品种=%d个",
                 quality_score,
                 total_symbols,
                 missing_symbols,
                 error_symbols,
                 warning_symbols,
+                outdated_symbols,
+                avg_gap_days,
+                len(problem_details),
             )
 
             return overview
@@ -932,6 +1525,56 @@ class DataSensor:
             self.logger.error("停止数据感知失败: %s", e)
             return False
 
+    def _determine_status(self, symbol_quality: SymbolQuality) -> str:
+        """确定品种状态
+
+        Args:
+            symbol_quality: 品种质量信息
+
+        Returns:
+            状态字符串：missing/error/warning/normal
+        """
+        if symbol_quality.is_missing:
+            return "missing"
+        elif symbol_quality.has_errors:
+            return "error"
+        elif symbol_quality.has_warnings:
+            return "warning"
+        else:
+            return "normal"
+
+    def _collect_issues(self, symbol_quality: SymbolQuality) -> str:
+        """收集品种的问题描述
+
+        Args:
+            symbol_quality: 品种质量信息
+
+        Returns:
+            问题描述字符串（最多显示3个问题）
+        """
+        issues = []
+
+        for interval, result in symbol_quality.intervals.items():
+            # 收集错误
+            if result.errors:
+                for error in result.errors[:2]:  # 每个周期最多2个错误
+                    issues.append(f"[{interval}] {error}")
+
+            # 收集警告
+            if result.warnings:
+                for warning in result.warnings[:2]:  # 每个周期最多2个警告
+                    issues.append(f"[{interval}] {warning}")
+
+            # 如果已收集足够问题，提前退出
+            if len(issues) >= 3:
+                break
+
+        if not issues:
+            return "无问题"
+
+        # 最多显示3个问题
+        return "; ".join(issues[:3])
+
     def _scan_symbol_quality(self, symbol: str, intervals: List[str]) -> SymbolQuality:
         """扫描单个品种的质量"""
         interval_results = {}
@@ -1006,6 +1649,10 @@ class DataSensor:
                     "warning_symbols": overview.warning_symbols,
                     "quality_score": overview.quality_score,
                     "last_scan_time": overview.last_scan_time.isoformat(),
+                    # 🆕 数据更新状态
+                    "outdated_symbols": overview.outdated_symbols,
+                    "avg_gap_days": overview.avg_gap_days,
+                    "max_gap_days": overview.max_gap_days,
                 },
                 "timestamp": datetime.now(),
             }
@@ -1129,9 +1776,11 @@ class DataFileWatcher:
 # 兼容 watchdog 不可用场景
 try:
     from watchdog.events import FileSystemEventHandler as _FSHandler  # type: ignore
+
     _WATCHDOG_AVAILABLE = True
 except Exception:  # pragma: no cover
     _WATCHDOG_AVAILABLE = False
+
     # 提供一个空基类
     class _FSHandler:  # type: ignore
         def dispatch(self, event):  # type: ignore

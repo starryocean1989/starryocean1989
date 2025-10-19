@@ -295,6 +295,29 @@ class DatabaseManager:
             """
             )
 
+            # 下载历史表
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS download_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id TEXT NOT NULL,
+                    start_time TIMESTAMP NOT NULL,
+                    end_time TIMESTAMP NOT NULL,
+                    duration REAL NOT NULL,
+                    status TEXT NOT NULL,
+                    total_tasks INTEGER DEFAULT 0,
+                    completed_tasks INTEGER DEFAULT 0,
+                    success_count INTEGER DEFAULT 0,
+                    failed_count INTEGER DEFAULT 0,
+                    skipped_count INTEGER DEFAULT 0,
+                    start_date TEXT,
+                    message TEXT,
+                    log_text TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """
+            )
+
             # 日志表
             cursor.execute(
                 """
@@ -340,6 +363,14 @@ class DatabaseManager:
             # 账户快照表索引
             cursor.execute(
                 "CREATE INDEX IF NOT EXISTS idx_account_snapshots_portfolio ON account_snapshots(portfolio_id, snapshot_date)"
+            )
+
+            # 下载历史表索引
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_download_history_task_id ON download_history(task_id)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_download_history_start_time ON download_history(start_time DESC)"
             )
 
             conn.commit()
@@ -417,6 +448,120 @@ class DatabaseManager:
             cursor.executemany(query, params_list)
             conn.commit()
             return cursor.rowcount
+
+    # ========== 下载历史管理 ==========
+
+    def save_download_history(self, history_data: Dict[str, Any]) -> bool:
+        """
+        保存下载历史记录
+
+        Args:
+            history_data: 历史数据字典
+
+        Returns:
+            是否保存成功
+        """
+        try:
+            query = """
+                INSERT INTO download_history (
+                    task_id, start_time, end_time, duration, status,
+                    total_tasks, completed_tasks, success_count,
+                    failed_count, skipped_count, start_date, message, log_text
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """
+            params = (
+                history_data.get("task_id", ""),
+                history_data.get("start_time"),
+                history_data.get("end_time"),
+                history_data.get("duration", 0.0),
+                history_data.get("status", "unknown"),
+                history_data.get("total_tasks", 0),
+                history_data.get("completed_tasks", 0),
+                history_data.get("success_count", 0),
+                history_data.get("failed_count", 0),
+                history_data.get("skipped_count", 0),
+                history_data.get("start_date", ""),
+                history_data.get("message", ""),
+                history_data.get("log_text", ""),
+            )
+            self.execute_update(query, params)
+            logger.info("下载历史记录已保存: %s", history_data.get("task_id"))
+            return True
+        except Exception as e:
+            logger.error("保存下载历史失败: %s", e, exc_info=True)
+            return False
+
+    def get_download_history(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """
+        获取下载历史记录
+
+        Args:
+            limit: 限制数量（默认20条）
+
+        Returns:
+            历史记录列表
+        """
+        try:
+            query = """
+                SELECT id, task_id, start_time, end_time, duration, status,
+                       total_tasks, completed_tasks, success_count, failed_count,
+                       skipped_count, start_date, message, log_text, created_at
+                FROM download_history
+                ORDER BY start_time DESC
+                LIMIT ?
+            """
+            results = self.execute_query(query, (limit,))
+            return results
+        except Exception as e:
+            logger.error("获取下载历史失败: %s", e, exc_info=True)
+            return []
+
+    def delete_download_history(self, record_id: int) -> bool:
+        """
+        删除下载历史记录
+
+        Args:
+            record_id: 记录ID
+
+        Returns:
+            是否删除成功
+        """
+        try:
+            query = "DELETE FROM download_history WHERE id = ?"
+            self.execute_update(query, (record_id,))
+            logger.info("下载历史记录已删除: ID=%d", record_id)
+            return True
+        except Exception as e:
+            logger.error("删除下载历史失败: %s", e, exc_info=True)
+            return False
+
+    def cleanup_old_download_history(self, keep_count: int = 20) -> int:
+        """
+        清理旧的下载历史记录，只保留最近的N条
+
+        Args:
+            keep_count: 保留数量（默认20条）
+
+        Returns:
+            删除的记录数
+        """
+        try:
+            # 删除超出保留数量的旧记录
+            query = """
+                DELETE FROM download_history
+                WHERE id NOT IN (
+                    SELECT id FROM download_history
+                    ORDER BY start_time DESC
+                    LIMIT ?
+                )
+            """
+            count = self.execute_update(query, (keep_count,))
+            if count > 0:
+                logger.info("清理旧下载历史：删除了 %d 条记录", count)
+            return count
+        except Exception as e:
+            logger.error("清理旧下载历史失败: %s", e, exc_info=True)
+            return 0
 
 
 # =============================================================================

@@ -140,3 +140,9 @@ pyautotrading.ini
 # 特定安装文件
 python-3.10.11-32bit.exe
 install_32bit_packages.py
+
+# 数据文件
+*.parquet
+data/kline/
+data/cache/
+cache/

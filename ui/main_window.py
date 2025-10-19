@@ -106,7 +106,8 @@ class MainWindow(QMainWindow, LoggerMixin):
         self.function_interfaces: Dict[str, Any] = {}
         # 按需加载器：记录需要延迟创建的界面
         self.lazy_loaders: Dict[str, Any] = {}
-        self.interface_order = ["data", "market", "strategy", "trading", "portfolio", "system"]
+        # 🔧 调整顺序：系统管理提到第一位
+        self.interface_order = ["system", "data", "market", "strategy", "trading", "portfolio"]
 
         # 界面元数据
         self.interface_metadata = {
@@ -507,15 +508,8 @@ class MainWindow(QMainWindow, LoggerMixin):
 
     def create_function_interfaces(self):
         """创建6个功能界面."""
-        # 定义所有功能界面（使用延迟加载，interface_class=None）
-        interfaces = [
-            ("data", None),
-            ("market", None),
-            ("strategy", None),
-            ("trading", None),
-            ("portfolio", None),
-            ("system", None),
-        ]
+        # ✅ 使用 interface_order 定义界面创建顺序（使用延迟加载，interface_class=None）
+        interfaces = [(interface_id, None) for interface_id in self.interface_order]
 
         self.logger.info("准备创建%d个功能界面", len(interfaces))
         print("[SERIAL] 准备创建6个界面（严格串行模式）")
@@ -680,9 +674,9 @@ class MainWindow(QMainWindow, LoggerMixin):
             self.logger.error("按需加载 '%s' 失败: %s", interface_id, e, exc_info=True)
 
     def _trigger_lazy_loads_sequentially(self):
-        """严格串行触发所有按需加载（100%避免并发）.
+        """异步串行触发所有按需加载（避免阻塞UI）.
 
-        使用就绪标志确保每次只加载一个界面，完全避免并发。
+        使用QTimer异步加载，避免长时间阻塞主线程。
         """
         if self._is_loading_interface:
             self.logger.warning("⚠️ 已有界面正在加载，跳过重复触发")
@@ -694,65 +688,74 @@ class MainWindow(QMainWindow, LoggerMixin):
 
         self._is_loading_interface = True
         self.logger.info("=" * 70)
-        self.logger.info("开始严格串行加载，共 %d 个界面", len(self.lazy_loaders))
+        self.logger.info("开始异步串行加载，共 %d 个界面", len(self.lazy_loaders))
         self.logger.info("=" * 70)
 
-        loaded_count = 0
-        failed_count = 0
+        # 准备加载队列
+        self._load_queue = [
+            interface_id
+            for interface_id in self.interface_order
+            if interface_id in self.lazy_loaders
+        ]
+        self._loaded_count = 0
+        self._failed_count = 0
+        self._load_index = 0
 
-        for idx, interface_id in enumerate(self.interface_order, 1):
-            if interface_id in self.lazy_loaders:
-                try:
-                    metadata = self.interface_metadata.get(interface_id, {})
-                    interface_name = metadata.get("name", interface_id)
+        # 启动异步加载
+        self._load_next_interface()
 
-                    self.logger.info("-" * 60)
-                    self.logger.info(
-                        "[%d/%d] 正在加载: %s (%s)",
-                        idx,
-                        len(self.lazy_loaders),
-                        interface_name,
-                        interface_id,
-                    )
-                    self.logger.info("-" * 60)
-                    print(
-                        f"[LAZY-LOAD] [{idx}/{len(self.lazy_loaders)}] 正在加载: {interface_name}"
-                    )
+    def _load_next_interface(self):
+        """加载下一个界面（异步）"""
+        if self._load_index >= len(self._load_queue):
+            # 所有界面加载完成
+            self._interfaces_loaded = True
+            self._is_loading_interface = False
 
-                    # 严格串行：等待上一个完全完成再加载下一个
-                    self._trigger_lazy_load(interface_id)
+            self.logger.info("=" * 70)
+            self.logger.info("✅ 所有按需加载已完成")
+            self.logger.info("   - 成功: %d 个", self._loaded_count)
+            self.logger.info("   - 失败: %d 个", self._failed_count)
+            self.logger.info("=" * 70)
+            return
 
-                    loaded_count += 1
-                    self.logger.info(
-                        "✅ [%d/%d] %s 加载完成", idx, len(self.lazy_loaders), interface_name
-                    )
-                    print(
-                        f"[LAZY-LOAD] ✅ [{idx}/{len(self.lazy_loaders)}] {interface_name} 加载完成"
-                    )
+        interface_id = self._load_queue[self._load_index]
+        self._load_index += 1
 
-                except Exception as e:
-                    failed_count += 1
-                    self.logger.error(
-                        "❌ [%d/%d] %s 加载失败: %s",
-                        idx,
-                        len(self.lazy_loaders),
-                        interface_id,
-                        e,
-                        exc_info=True,
-                    )
-                    print(
-                        f"[LAZY-LOAD] ❌ [{idx}/{len(self.lazy_loaders)}] {interface_id} 加载失败: {e}"
-                    )
-                    # 继续加载下一个，不中断流程
+        try:
+            metadata = self.interface_metadata.get(interface_id, {})
+            interface_name = metadata.get("name", interface_id)
 
-        self._interfaces_loaded = True
-        self._is_loading_interface = False
+            self.logger.info("-" * 60)
+            self.logger.info(
+                "[%d/%d] 正在加载: %s (%s)",
+                self._load_index,
+                len(self._load_queue),
+                interface_name,
+                interface_id,
+            )
+            self.logger.info("-" * 60)
 
-        self.logger.info("=" * 70)
-        self.logger.info("✅ 所有按需加载已完成")
-        self.logger.info("   - 成功: %d 个", loaded_count)
-        self.logger.info("   - 失败: %d 个", failed_count)
-        self.logger.info("=" * 70)
+            # 加载界面
+            self._trigger_lazy_load(interface_id)
+
+            self._loaded_count += 1
+            self.logger.info(
+                "✅ [%d/%d] %s 加载完成", self._load_index, len(self._load_queue), interface_name
+            )
+
+        except Exception as e:
+            self._failed_count += 1
+            self.logger.error(
+                "❌ [%d/%d] %s 加载失败: %s",
+                self._load_index,
+                len(self._load_queue),
+                interface_id,
+                e,
+                exc_info=True,
+            )
+
+        # 使用QTimer异步加载下一个界面，避免阻塞UI
+        QTimer.singleShot(50, self._load_next_interface)
 
     def _instantiate_and_replace(self, interface_id: str, interface_class: type | None):
         """实例化真实界面并替换占位."""
@@ -1248,6 +1251,7 @@ def main_sync():
 # ==================== 以下为内部组件（从 shared_widgets 合并） ====================
 # 合并说明：AlertTicker, ResponsiveHelper 只被 main_window 引用，故合并到此处
 
+
 class AlertTicker(QWidget):
     """告警滚动条组件."""
 
@@ -1260,13 +1264,15 @@ class AlertTicker(QWidget):
 
         # 设置固定高度和背景色
         self.setFixedHeight(30)
-        self.setStyleSheet("""
+        self.setStyleSheet(
+            """
             QWidget {
                 background-color: #dc3545;
                 border-radius: 5px;
                 margin: 2px;
             }
-        """)
+        """
+        )
 
         # 告警信息
         self.current_alert: Optional[Dict[str, Any]] = None
@@ -1274,6 +1280,7 @@ class AlertTicker(QWidget):
 
         # 动画相关
         from PySide6.QtCore import QPropertyAnimation, QPoint
+
         self.animation: Optional[QPropertyAnimation] = None
         self.slide_timer: Optional[QTimer] = None
 
@@ -1480,6 +1487,7 @@ class ResponsiveHelper:
     def update_size(self, size):
         """更新尺寸并发出信号."""
         from PySide6.QtCore import QSize
+
         width = size.width()
         new_class = self.get_size_class(width)
 

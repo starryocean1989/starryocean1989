@@ -1,7 +1,7 @@
 # data_module_vnpy - 中国A股数据管理模块
 
-**版本**: v2.2.0（tdx_asyncio迁移版）
-**最后更新**: 2025-10-17
+**版本**: v2.2.1（数据质量检测增强版）
+**最后更新**: 2025-10-19
 **维护者**: 开发团队
 
 基于vnpy架构的量化交易数据管理模块，集成**tdx_asyncio纯异步接口**获取中国A股数据，提供**历史数据、实时数据集成式的数据服务**，供各个功能模块使用。
@@ -607,19 +607,29 @@ overview = engine.trigger_data_quality_scan(force_refresh=True)
 
 # 获取质量概览
 overview = engine.get_data_quality_overview()
-# 返回: QualityOverview对象（quality_score, missing_symbols等）
+# 返回: QualityOverview对象（quality_score, missing_symbols, outdated_symbols等）
+
+# 🆕 获取数据更新状态（v2.2.1新增）
+freshness = engine.get_data_freshness_overview()
+# 返回: {
+#   "outdated_symbols": 123,    # 过时品种数
+#   "avg_gap_days": 5,          # 平均滞后天数
+#   "max_gap_days": 30,         # 最大滞后天数
+#   "latest_trading_day": "2025-10-19"
+# }
 
 # 扫描并修复损坏文件
 result = engine.scan_corrupted_files(auto_delete=True)
 # 返回: {"corrupted": [...], "deleted": [...]}
 
-# 获取校验结果
+# 获取校验结果（含数据更新状态）
 validation = engine.get_validation_result()
+# v2.2.1新增字段：gap_days, is_up_to_date, latest_trading_day, local_latest_date
 ```
 
 #### 直接使用DataSensor
 ```python
-from backend.infrastructure.data_module_vnpy.data_quality import DataSensor
+from backend.infrastructure.data_module_vnpy.data_quality import DataSensor, DataValidator
 from backend.infrastructure.data_module_vnpy.symbol_management import SymbolLoader
 
 # 创建数据感知器
@@ -632,11 +642,24 @@ overview = sensor.trigger_scan_with_symbols(
     force_refresh=True
 )
 
+# 🆕 v2.2.1新增：质量概览包含数据更新状态
+print(f"过时品种数: {overview.outdated_symbols}")
+print(f"平均滞后: {overview.avg_gap_days}天")
+print(f"最大滞后: {overview.max_gap_days}天")
+
 # 启动异步感知（后台扫描+文件监控）
 sensor.start_sensing_async(symbol_loader)
 
 # 停止感知
 sensor.stop_sensing()
+
+# 🆕 v2.2.1新增：检查单个品种的数据更新状态
+validator = DataValidator()
+freshness = validator.check_data_freshness("600000", "1d")
+print(f"最新交易日: {freshness['latest_trading_day']}")
+print(f"本地最新: {freshness['local_latest_date']}")
+print(f"滞后天数: {freshness['gap_days']}")
+print(f"是否最新: {freshness['is_up_to_date']}")
 ```
 
 ---
@@ -1074,6 +1097,92 @@ def test_with_engine():
 ```
 
 ## 更新日志
+
+### v2.2.1 (2025-10-19) - 数据质量检测增强版 📊
+**核心变更**：修复缺失数据检测逻辑，整合交易日历、基日和上市日期三个因素
+
+#### 主要改进
+- ✅ **缺失数据检测优化**
+  - 新增 `_get_ipo_date()` 方法：从 tdx_asyncio 获取品种上市日期（带缓存）
+  - 重写 `_check_missing_dates()` 方法：整合交易日历、基日配置、上市日期
+  - 新增辅助方法：`_extract_date_series()`, `_convert_to_date_set()`, `_get_trading_days_range()`
+  - 支持品种级别的缺失日期检测（传递symbol参数）
+
+- ✅ **检测逻辑改进**
+  - **交易日过滤**：只检查交易日的缺失，周末和节假日不再算作缺失
+  - **基日限制**：基日（默认2020-01-01）之前的数据不算缺失
+  - **上市日期限制**：品种上市日之前的数据不算缺失
+  - **有效起点计算**：`effective_start = max(数据起点, 基日, 上市日)`
+
+- ✅ **性能优化**
+  - 上市日期永久缓存（不会变更）
+  - 交易日历复用，避免重复查询
+  - 失败时缓存None，避免重复尝试
+  - 网络超时控制（5秒）
+
+- ✅ **容错处理**
+  - 上市日期获取失败时使用基日作为起点
+  - 交易日历获取失败时跳过检测（降级处理）
+  - 所有异常都有日志记录
+  - 不影响其他数据质量检测功能
+
+#### 修复的问题
+- ❌ **修复前**：将周末、节假日、基日前、上市前的日期都算作缺失
+- ✅ **修复后**：只有真正缺失的交易日才被识别为缺失
+- ✅ **准确区分**："远端缺失"（历史数据缺失）vs "近端缺失"（过时数据）
+
+#### 技术细节
+```python
+# 新增API调用
+from tdx_asyncio import AsyncTdxHq_API
+finance_info = await api.get_finance_info(market, symbol)
+ipo_date = finance_info['ipo_date']  # 上市日期（YYYYMMDD格式）
+
+# 有效起点计算逻辑
+effective_start = data_start
+if base_date and base_date > effective_start:
+    effective_start = base_date
+if ipo_date and ipo_date > effective_start:
+    effective_start = ipo_date
+
+# 交易日范围获取
+trading_days = calendar.get_trading_days_in_range(
+    effective_start.strftime("%Y-%m-%d"),
+    data_end.strftime("%Y-%m-%d")
+)
+```
+
+#### 使用示例
+```python
+# 自动应用于数据质量检测
+validator = DataValidator()
+result = validator.validate_symbol("600000", "1d")
+
+# 缺失日期将正确排除：
+# - 周末和节假日
+# - 2020-01-01之前的日期（基日限制）
+# - 品种上市日之前的日期
+print(f"缺失交易日数量: {len(result.missing_dates)}")
+print(f"缺失日期列表: {result.missing_dates}")
+```
+
+#### 调试日志
+```python
+# 启用DEBUG级别可查看详细信息
+import logging
+logging.getLogger('backend.infrastructure.data_module_vnpy.data_quality').setLevel(logging.DEBUG)
+
+# 日志输出示例：
+# 品种 600000 缺失检测: 数据范围[2020-01-02~2025-10-18],
+#   基日=2020-01-01, 上市日=1999-11-10, 有效起点=2020-01-02,
+#   期望交易日=1234个, 实际=1230个, 缺失=4个
+```
+
+#### 注意事项
+- 首次扫描时会批量查询上市日期，可能需要一些时间
+- 上市日期查询需要网络连接（使用通达信服务器）
+- 停牌数据（volume=0）不会被误判为错误（原有逻辑正确）
+- 建议在日志中启用DEBUG级别以查看详细的检测过程
 
 ### v2.2.0 (2025-10-17) - tdx_asyncio迁移版 🚀
 **核心变更**：从 mootdx 同步接口迁移到 tdx_asyncio 纯异步接口
