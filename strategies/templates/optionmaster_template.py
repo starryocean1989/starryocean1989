@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 # flake8: noqa
 # pylint: skip-file
+# pyright: basic
+# type: ignore
 """
 期权策略模板
 

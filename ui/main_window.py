@@ -239,6 +239,14 @@ class MainWindow(QMainWindow, LoggerMixin):
                 "是否为主线程: %s", threading.current_thread() == threading.main_thread()
             )
 
+            # 🆕 连接后台初始化进度信号
+            self.logger.info("步骤0: 连接后台进度信号...")
+            try:
+                self._connect_backend_progress_signals()
+                self.logger.info("✅ 后台进度信号连接完成")
+            except Exception as e:
+                self.logger.error("❌ 后台进度信号连接失败: %s", e, exc_info=True)
+
             # 创建功能界面
             self.logger.info("步骤1: 创建6个功能界面...")
             try:
@@ -330,6 +338,48 @@ class MainWindow(QMainWindow, LoggerMixin):
 
         except Exception as e:
             logging.getLogger(__name__).warning("后端服务初始化失败: %s", e)
+
+    def _connect_backend_progress_signals(self):
+        """连接后台初始化进度信号."""
+        try:
+            from backend.core.base import get_china_stock_engine
+
+            # 获取data_module_vnpy引擎
+            engine = get_china_stock_engine()
+            if engine and hasattr(engine, "progress_emitter"):
+                # 连接进度信号到UI更新槽
+                engine.progress_emitter.progress_updated.connect(
+                    self._update_cache_validation_progress
+                )
+                self.logger.info("✓ 已连接后台进度信号")
+            else:
+                self.logger.warning("⚠️ 后端引擎或进度发射器不可用")
+
+        except Exception as e:
+            self.logger.error("连接后台进度信号失败: %s", e, exc_info=True)
+
+    def _update_cache_validation_progress(self, stage: str, percent: int):
+        """更新缓存验证进度（在状态栏显示）.
+
+        Args:
+            stage: 当前阶段描述
+            percent: 进度百分比 (0-100)
+        """
+        try:
+            if self.status_label:
+                self.status_label.setText(f"后台初始化: {stage} ({percent}%)")
+
+            # 当进度达到100%时，显示"系统就绪"
+            if percent >= 100:
+                QTimer.singleShot(2000, self._set_status_ready)
+
+        except Exception as e:
+            self.logger.error("更新进度显示失败: %s", e)
+
+    def _set_status_ready(self):
+        """设置状态栏为"系统就绪"."""
+        if self.status_label:
+            self.status_label.setText("系统就绪")
 
     def setup_ui(self):
         """设置主界面."""
@@ -1279,7 +1329,7 @@ class AlertTicker(QWidget):
         self.display_text = ""
 
         # 动画相关
-        from PySide6.QtCore import QPropertyAnimation, QPoint
+        from PySide6.QtCore import QPropertyAnimation
 
         self.animation: Optional[QPropertyAnimation] = None
         self.slide_timer: Optional[QTimer] = None
@@ -1486,8 +1536,6 @@ class ResponsiveHelper:
 
     def update_size(self, size):
         """更新尺寸并发出信号."""
-        from PySide6.QtCore import QSize
-
         width = size.width()
         new_class = self.get_size_class(width)
 

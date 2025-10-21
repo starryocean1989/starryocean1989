@@ -1,10 +1,152 @@
-# data_module_vnpy - 中国A股数据管理模块（v2.3重构版）
+# data_module_vnpy - 中国A股数据管理模块（v2.4优化版）
 
-**版本**: v2.3.0（企业级自适应下载控制器 + IPO批量下载 + 架构重构）
+**版本**: v2.4.0（启动缓存优化 + 服务器池改造 + 企业级自适应下载）
 **最后更新**: 2025-10-19
 **维护者**: 开发团队
 
 基于vnpy架构的量化交易数据管理模块，集成**tdx_asyncio纯异步接口**获取中国A股数据，提供**历史数据、实时数据集成式的数据服务**，供各个功能模块使用。
+
+## 🚀 v2.4 启动缓存优化（NEW）
+
+### 核心改进
+
+**问题**：启动时必然执行服务器池测速（7秒），即使昨天已测速过
+**解决**：引入智能缓存机制，次日0时自动失效，常规启动仅需2-3秒
+
+### 优化效果
+
+| 场景 | 优化前 | 优化后 | 提升 |
+|-----|-------|-------|------|
+| 首次启动 | 9-12秒 | 9-10秒 | 持平 |
+| 常规启动 | 9-12秒 | **2-3秒** | **✅ 70%+** |
+| 次日首次启动 | 9-12秒 | 9-10秒 | 持平（需重新测速） |
+
+### 智能缓存机制
+
+#### 1. 统一缓存管理器（`cache_manager.py`）
+
+所有缓存使用统一的日期失效策略：
+
+```python
+from backend.infrastructure.data_module_vnpy.cache_manager import DailyCacheManager
+
+# 保存缓存（自动带日期）
+DailyCacheManager.save_with_date(data, "my_cache.json")
+
+# 加载缓存（自动验证日期）
+data, cache_date, is_valid = DailyCacheManager.load_with_validation("my_cache.json")
+```
+
+**缓存文件格式**：
+```json
+{
+    "cache_date": "2025-10-19",
+    "data": { ... }
+}
+```
+
+**失效策略**：次日0时后，`is_valid = False`
+
+#### 2. 服务器池缓存（核心优化）
+
+**改进逻辑**：
+```python
+# 启动时：必然验证 + 或然测速
+server_pool_manager.start()
+  ├─ 加载缓存
+  ├─ 验证日期（次日0时失效）
+  ├─ 如果有效：跳过测速（<100ms）✅
+  └─ 如果失效：重新测速（7秒）⚠️
+
+# 下载时：使用缓存（每次打乱顺序）
+servers = server_pool_manager.get_servers_shuffled()
+  ├─ 如果缓存可用：返回打乱后的服务器列表
+  └─ 如果缓存不可用：抛出RuntimeError，强制阻止下载
+```
+
+**缓存文件**：`data/cache/server_pool_cache.json`
+
+**强制阻止机制**：
+```python
+# 如果缓存不可用，下载会被阻止并提示：
+RuntimeError: """
+服务器池缓存不可用，无法下载数据！
+
+操作步骤：
+1. 打开'系统管理'模块
+2. 点击'测速服务器'按钮
+3. 等待测速完成（约7秒）
+4. 重新尝试下载
+"""
+```
+
+#### 3. 其他缓存
+
+| 缓存类型 | 文件 | 失效策略 | 说明 |
+|---------|------|---------|------|
+| 交易日历 | `trading_calendar.json` | 次日0时 | 自动重新获取 |
+| 服务器池 | `server_pool_cache.json` | 次日0时 | 需手动测速或启动时自动测速 |
+| 品种列表 | `stock_list_classified.json` | 次日0时 | 增量/减量更新 |
+| IPO日期 | `ipo_dates.json` | 次日0时 | 与品种列表联动更新 |
+
+### 启动流程对比
+
+**优化前**：
+```
+主线程启动 → Qt初始化 → UI显示
+→ [阶段2.6] 服务器池测速（必然7秒）⏳
+→ 后端初始化 → 启动完成（9-12秒）
+```
+
+**优化后**：
+```
+主线程启动 → Qt初始化 → UI显示
+→ [阶段2.6] 验证服务器池缓存
+    ├─ 有效：跳过测速（<100ms）✅
+    └─ 失效：重新测速（7秒）⚠️
+→ 后端初始化 → 启动完成（2-3秒 或 9-10秒）
+```
+
+### 手动测速
+
+如果缓存失效，用户可手动测速：
+
+1. 打开"系统管理"模块
+2. 点击"测速服务器"按钮
+3. 等待测速完成（约7秒）
+4. 缓存自动更新，次日0时前有效
+
+### 使用示例
+
+#### 检查缓存状态
+
+```python
+from backend.infrastructure.data_module_vnpy import server_pool_manager
+
+# 检查缓存是否有效
+if server_pool_manager.is_cache_valid():
+    print("✅ 缓存有效")
+else:
+    print("⚠️ 缓存失效，需要重新测速")
+
+# 获取统计信息
+stats = server_pool_manager.get_stats()
+print(f"可用服务器: {stats['available']}/{stats['total']}")
+```
+
+#### 数据下载（自动使用缓存）
+
+```python
+# 所有下载方法自动使用服务器池缓存
+try:
+    china_stock_engine.download_incremental(...)
+except RuntimeError as e:
+    # 缓存不可用时会抛出异常
+    print(f"错误：{e}")
+    # UI应弹窗提示用户测速
+```
+
+---
 
 ## 🎯 架构重构亮点（v2.3）
 

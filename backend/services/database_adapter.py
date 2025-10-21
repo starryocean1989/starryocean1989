@@ -579,8 +579,10 @@ class SQLiteManager:
             db_path: 数据库文件路径，默认为data/terminal.db
         """
         if db_path is None:
-            # 默认数据库路径
-            db_path = Path("data/terminal.db")
+            # 默认数据库路径（使用绝对路径）
+            from backend.infrastructure.data_module_vnpy.config import config_manager
+
+            db_path = config_manager.get_db_file()
 
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1144,4 +1146,3 @@ __all__ = [
     "get_sqlite_manager",
     "get_database_manager",
 ]
-

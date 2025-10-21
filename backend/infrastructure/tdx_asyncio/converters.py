@@ -93,7 +93,7 @@ def to_dataframe(data: Any, set_index: bool = True) -> pd.DataFrame:
 
 async def to_file_async(
     df: pd.DataFrame,
-    filepath: str,
+    filepath: Union[str, Path],
     format_hint: Optional[str] = None
 ) -> bool:
     """
@@ -120,12 +120,12 @@ async def to_file_async(
         logger.warning("数据为空，跳过保存")
         return False
 
-    filepath = Path(filepath)
-    format_hint = format_hint or filepath.suffix.lower()
+    filepath_obj = Path(filepath)
+    format_hint = format_hint or filepath_obj.suffix.lower()
 
     # 自动创建目录
     try:
-        filepath.parent.mkdir(parents=True, exist_ok=True)
+        filepath_obj.parent.mkdir(parents=True, exist_ok=True)
     except Exception as e:
         logger.error(f"创建目录失败: {e}")
         return False
@@ -135,15 +135,15 @@ async def to_file_async(
         if format_hint == '.csv':
             # 异步CSV写入
             csv_content = df.to_csv(index=False, encoding='utf-8')
-            await _async_write_text(filepath, csv_content)
+            await _async_write_text(filepath_obj, csv_content)
 
         elif format_hint in ['.xlsx', '.xls']:
             # Excel格式（需要openpyxl）
             try:
-                await _async_write_excel(df, filepath)
+                await _async_write_excel(df, filepath_obj)
             except ImportError:
                 logger.warning("未安装openpyxl，使用CSV格式保存")
-                csv_path = filepath.with_suffix('.csv')
+                csv_path = filepath_obj.with_suffix('.csv')
                 csv_content = df.to_csv(index=False, encoding='utf-8')
                 await _async_write_text(csv_path, csv_content)
                 return True
@@ -151,26 +151,30 @@ async def to_file_async(
         elif format_hint == '.json':
             # JSON格式
             json_content = df.to_json(orient='records', indent=2)
-            await _async_write_text(filepath, json_content)
+            if json_content is None:
+                json_content = "[]"
+            await _async_write_text(filepath_obj, json_content)
 
         elif format_hint == '.h5':
             # HDF5格式（需要tables）
             try:
-                await _async_write_hdf5(df, filepath)
+                await _async_write_hdf5(df, filepath_obj)
             except ImportError:
                 logger.warning("未安装tables，使用JSON格式保存")
-                json_path = filepath.with_suffix('.json')
+                json_path = filepath_obj.with_suffix('.json')
                 json_content = df.to_json(orient='records', indent=2)
+                if json_content is None:
+                    json_content = "[]"
                 await _async_write_text(json_path, json_content)
                 return True
 
         elif format_hint == '.parquet':
             # Parquet格式（需要pyarrow）
             try:
-                await _async_write_parquet(df, filepath)
+                await _async_write_parquet(df, filepath_obj)
             except ImportError:
                 logger.warning("未安装pyarrow，使用CSV格式保存")
-                csv_path = filepath.with_suffix('.csv')
+                csv_path = filepath_obj.with_suffix('.csv')
                 csv_content = df.to_csv(index=False, encoding='utf-8')
                 await _async_write_text(csv_path, csv_content)
                 return True
@@ -179,7 +183,7 @@ async def to_file_async(
             logger.error(f"不支持的文件格式: {format_hint}")
             return False
 
-        logger.info(f"数据已保存到: {filepath}")
+        logger.info(f"数据已保存到: {filepath_obj}")
         return True
 
     except Exception as e:

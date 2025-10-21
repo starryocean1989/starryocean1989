@@ -30,7 +30,7 @@ from datetime import datetime, timedelta
 from enum import Enum
 from io import StringIO
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Callable
+from typing import Any, Dict, List, Optional, Callable, Union
 
 from backend.core.service_base import BaseService
 from backend.core.models import UnifiedMarketData, get_data_model_manager
@@ -1214,6 +1214,39 @@ class AlertDatabase:
             self.logger.error(f"更新告警状态失败: {e}")
             return False
 
+    def get_alert(self, alert_id: str) -> Optional[Dict[str, Any]]:
+        """根据告警ID获取单个告警记录.
+        
+        Args:
+            alert_id: 告警ID
+            
+        Returns:
+            告警记录字典，如果不存在则返回None
+        """
+        try:
+            query = """
+                SELECT * FROM alert_records
+                WHERE alert_id = ?
+            """
+            
+            results = self.db_manager.execute_query(query, (alert_id,))
+            
+            if results:
+                alert = results[0]
+                # 解析context字段
+                if alert.get("context"):
+                    try:
+                        context_data = json.loads(alert["context"])
+                        alert.update(context_data)
+                    except:
+                        pass
+                return alert
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"获取告警失败: {e}")
+            return None
+
     def get_unresolved_alerts(self) -> List[Dict[str, Any]]:
         """获取未解决的告警."""
         try:
@@ -1342,25 +1375,44 @@ class AlertEventPublisher:
         except Exception:
             pass
 
-    def publish_alert_updated(self, alert: Alert) -> None:
-        """发布告警更新事件."""
+    def publish_alert_updated(self, alert: Union[Alert, Dict[str, Any]]) -> None:
+        """发布告警更新事件.
+        
+        Args:
+            alert: Alert对象或告警字典
+        """
         if not self.event_engine:
             return
 
         try:
             from vnpy.event import Event
 
-            event_data = {
-                "alert_id": alert.alert_id,
-                "rule_id": alert.rule.rule_id,
-                "rule_name": alert.rule.name,
-                "severity": alert.severity.value,
-                "status": alert.status.value,
-                "message": alert.message,
-                "context": alert.context,
-                "updated_at": alert.updated_at.isoformat(),
-                "source_type": getattr(alert, "source_type", "unknown"),
-            }
+            # 处理字典类型
+            if isinstance(alert, dict):
+                event_data = {
+                    "alert_id": alert.get("alert_id"),
+                    "rule_id": alert.get("rule_id"),
+                    "rule_name": alert.get("rule_name"),
+                    "severity": alert.get("severity"),
+                    "status": alert.get("status"),
+                    "message": alert.get("message"),
+                    "context": alert.get("context"),
+                    "updated_at": alert.get("updated_at"),
+                    "source_type": alert.get("source_type", "unknown"),
+                }
+            # 处理Alert对象
+            else:
+                event_data = {
+                    "alert_id": alert.alert_id,
+                    "rule_id": alert.rule.rule_id,
+                    "rule_name": alert.rule.name,
+                    "severity": alert.severity.value,
+                    "status": alert.status.value,
+                    "message": alert.message,
+                    "context": alert.context,
+                    "updated_at": alert.updated_at.isoformat(),
+                    "source_type": getattr(alert, "source_type", "unknown"),
+                }
 
             event = Event(EVENT_ALERT_UPDATED, event_data)
             self.event_engine.put(event)
@@ -3556,7 +3608,9 @@ class SystemManagerService(BaseService):
     def _diagnose_database(self) -> Dict[str, Any]:
         """数据库诊断."""
         try:
-            db_file = Path("data/terminal.db")
+            from backend.infrastructure.data_module_vnpy.config import config_manager
+
+            db_file = config_manager.get_db_file()
 
             if not db_file.exists():
                 return {
@@ -3705,8 +3759,8 @@ class SystemManagerService(BaseService):
                 offset=offset,
             )
 
-            # 转换告警对象为字典
-            alert_list = [alert.to_dict() for alert in alerts]
+            # get_alerts已经返回字典列表，无需转换
+            alert_list = alerts
 
             return {
                 "success": True,
@@ -4349,10 +4403,10 @@ class SystemManagerService(BaseService):
         """
         try:
             import json
+            from backend.infrastructure.data_module_vnpy.config import config_manager
 
-            # 配置文件路径
-            config_file = Path("config/terminal_config.json")
-            config_file.parent.mkdir(parents=True, exist_ok=True)
+            # 配置文件路径（使用绝对路径）
+            config_file = config_manager.get_config_file()
 
             # 加载现有配置（如果存在）
             if config_file.exists():
@@ -4391,8 +4445,9 @@ class SystemManagerService(BaseService):
         """
         try:
             import json
+            from backend.infrastructure.data_module_vnpy.config import config_manager
 
-            config_file = Path("config/terminal_config.json")
+            config_file = config_manager.get_config_file()
 
             if not config_file.exists():
                 return {
@@ -4554,7 +4609,7 @@ class SystemManagerService(BaseService):
             }
 
     def read_tdx_data(self, config: Dict[str, Any], progress_callback=None) -> Dict[str, Any]:
-        """读取通达信数据并标准化保存（多市场、多周期、多线程）.
+        """读取通达信数据并标准化保存（多市场、多周期、自适应多线程）.
 
         Args:
             config: 配置信息
@@ -4562,11 +4617,16 @@ class SystemManagerService(BaseService):
                 - markets: 市场代码列表 ['sh', 'sz', 'bj']
                 - tdx_root: 通达信根目录
                 - use_symbol_cache: 是否使用品种缓存（自动获取品种列表）
-                - max_workers: 最大线程数
             progress_callback: 进度回调 callback(current, total, info)
 
         Returns:
             Dict: 处理结果
+            
+        Note:
+            线程数将根据以下因素自适应计算：
+            - CPU核心数
+            - 可用内存
+            - 任务总数（小任务<50，中任务<500，大任务>=500）
         """
         try:
             self._log_operation("读取通达信数据")
@@ -4576,12 +4636,6 @@ class SystemManagerService(BaseService):
             markets = config.get("markets", [])
             tdx_root = config.get("tdx_root")
             use_symbol_cache = config.get("use_symbol_cache", True)
-            # 优化：默认使用更多线程
-            import os
-
-            cpu_count = os.cpu_count() or 4
-            default_workers = min(max(cpu_count * 2, 8), 16)
-            max_workers = config.get("max_workers", default_workers)
 
             if not data_types or not markets or not tdx_root:
                 return {
@@ -4656,13 +4710,49 @@ class SystemManagerService(BaseService):
                     "message": "没有找到符合条件的品种",
                 }
 
+            # ==================== 自适应线程数计算 ====================
+            import os
+            import psutil
+
+            cpu_cores = os.cpu_count() or 4
+            available_memory_gb = psutil.virtual_memory().available / (1024**3)
+
+            # 根据任务规模自适应计算线程数
+            if total_tasks < 50:
+                # 小任务：使用少量线程避免开销
+                optimal_workers = min(4, cpu_cores)
+                strategy = "小任务模式"
+            elif total_tasks < 500:
+                # 中等任务：使用CPU核心数
+                optimal_workers = min(cpu_cores, 8)
+                strategy = "中等任务模式"
+            else:
+                # 大任务：使用双倍CPU核心，最多16线程
+                optimal_workers = min(cpu_cores * 2, 16)
+                strategy = "大任务模式"
+
+            # 内存检查：每个线程约消耗50MB（读取+处理）
+            estimated_memory_mb = optimal_workers * 50
+            if estimated_memory_mb / 1024 > available_memory_gb * 0.5:
+                # 如果预估内存超过可用内存50%，降低线程数
+                optimal_workers = max(2, int(available_memory_gb * 0.5 * 1024 / 50))
+                strategy += " (内存限制)"
+
+            max_workers = optimal_workers
+
             # 🔍 DEBUG: 打印详细的任务分组信息
             self.logger.info("=" * 60)
             self.logger.info("📋 批量读取任务详情:")
             self.logger.info(f"  - 总任务数: {total_tasks}")
             self.logger.info(f"  - 数据类型: {', '.join(data_types)}")
             self.logger.info(f"  - 市场: {', '.join([m.upper() for m in markets])}")
-            self.logger.info(f"  - 最大线程数: {max_workers}")
+            self.logger.info("  - 系统资源:")
+            self.logger.info(f"    • CPU核心数: {cpu_cores}")
+            self.logger.info(f"    • 可用内存: {available_memory_gb:.2f} GB")
+            self.logger.info("  - 自适应配置:")
+            self.logger.info(f"    • 最优线程数: {max_workers}")
+            self.logger.info(f"    • 策略: {strategy}")
+            self.logger.info(f"    • 预计内存: {estimated_memory_mb:.0f} MB")
             self.logger.info(f"  - 批量保存阈值: 10 个品种/次")
             self.logger.info("  - 任务分组:")
             for market in markets:

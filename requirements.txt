@@ -66,6 +66,7 @@ idna>=2.10
 
 # aiohttp依赖
 async-timeout>=4.0.0
+aiofiles>=23.1.0  # 异步文件I/O，用于混合异步架构
 attrs>=20.0.0
 multidict>=5.0.0
 yarl>=1.6.0

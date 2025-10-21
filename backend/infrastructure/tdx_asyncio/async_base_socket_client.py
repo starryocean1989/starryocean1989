@@ -129,7 +129,7 @@ class AsyncBaseSocketClient:
 
     async def connect(
         self,
-        ip: str = None,
+        ip: Optional[str] = None,
         port: int = 7709,
         time_out=CONNECT_TIMEOUT
     ):
@@ -261,7 +261,7 @@ class AsyncBaseSocketClient:
         :param pkg_bytes: 要发送的字节数据
         :return: 接收到的响应数据
         """
-        if self.closed or not self.writer:
+        if self.closed or not self.writer or not self.reader:
             raise TdxConnectionError("connection is closed")
 
         async with self.lock:

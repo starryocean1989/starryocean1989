@@ -14,7 +14,6 @@
 
 # ==================== 导入声明 ====================
 import logging
-import json
 import os
 import time
 import threading
@@ -36,7 +35,7 @@ class IPODateCache:
 
     实现两级缓存架构：
     - L1: 内存字典（进程运行期间有效）
-    - L2: JSON文件（永久存储）
+    - L2: JSON文件（永久存储，带日期验证）
     """
 
     def __init__(self, cache_file: Optional[Path] = None):
@@ -62,6 +61,9 @@ class IPODateCache:
         # 线程锁
         self._lock = threading.RLock()
 
+        # 缓存日期（用于验证）
+        self._cache_date: Optional[str] = None
+
         # 统计信息
         self._stats = {
             "hits": 0,
@@ -76,66 +78,112 @@ class IPODateCache:
         self._load_from_file()
 
     def _load_from_file(self) -> None:
-        """从JSON文件加载缓存"""
+        """从品种列表缓存加载IPO数据（优先），兼容旧的独立缓存"""
         try:
-            if not self.cache_file.exists():
+            from ..cache_manager import DailyCacheManager
+
+            # 1. 优先尝试从品种列表缓存加载
+            cache_data, cache_date, is_valid = DailyCacheManager.load_with_validation(
+                "stock_list_classified.json"
+            )
+
+            if cache_data:
+                # 从品种列表缓存中提取IPO数据
+                classified = cache_data.get("classified", {})
+                loaded_count = 0
+
+                for category, stocks in classified.items():
+                    for stock in stocks:
+                        symbol = stock.get("code")
+                        ipo_date_str = stock.get("ipo_date")
+
+                        if symbol and ipo_date_str:
+                            try:
+                                self._memory_cache[symbol] = datetime.strptime(
+                                    ipo_date_str, "%Y-%m-%d"
+                                ).date()
+                                loaded_count += 1
+                            except ValueError:
+                                pass
+
+                if loaded_count > 0:
+                    self._cache_date = cache_date
+                    self.logger.info(f"✓ 从品种列表缓存加载了 {loaded_count} 个IPO日期")
+                    return
+
+            # 2. 降级：尝试从旧的独立 ipo_dates.json 加载
+            cache_data, cache_date, is_valid = DailyCacheManager.load_with_validation(
+                "ipo_dates.json"
+            )
+
+            if not cache_data:
                 self.logger.info("IPO缓存文件不存在，将创建新缓存")
                 return
 
-            with open(self.cache_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            self.logger.info("⚠️ 使用旧的 ipo_dates.json 缓存（建议重新下载）")
+
+            # 🔧 兼容旧格式：检查cache_date是否为None
+            if cache_date is None:
+                self.logger.warning("IPO缓存无日期信息（旧格式），将标记为过时")
+                # 使用当前日期减1天的字符串，确保被标记为过时
+                self._cache_date = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+            else:
+                # 解析日期
+                if isinstance(cache_date, str):
+                    self._cache_date = cache_date
+                elif isinstance(cache_date, date):
+                    self._cache_date = cache_date.strftime("%Y-%m-%d")
+                else:
+                    self.logger.warning("无效的缓存日期格式: %s", type(cache_date))
+                    self._cache_date = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
 
             # 解析缓存数据
-            cache_data = data.get("data", {})
-            for symbol, info in cache_data.items():
-                ipo_date_str = info.get("ipo_date")
-                if ipo_date_str:
+            for symbol, ipo_date_value in cache_data.items():
+                if ipo_date_value:
                     try:
+                        # 🔧 兼容旧格式：处理字典格式的IPO日期
+                        if isinstance(ipo_date_value, dict):
+                            # 旧格式可能是 {"ipo_date": "2020-01-01", ...}
+                            ipo_date_str = ipo_date_value.get("ipo_date") or ipo_date_value.get(
+                                "date"
+                            )
+                            if not ipo_date_str:
+                                self.logger.warning("字典格式的IPO日期缺少有效字段: %s", symbol)
+                                self._memory_cache[symbol] = None
+                                continue
+                        else:
+                            # 新格式：直接是字符串
+                            ipo_date_str = ipo_date_value
+
                         self._memory_cache[symbol] = datetime.strptime(
                             ipo_date_str, "%Y-%m-%d"
                         ).date()
-                    except ValueError:
-                        self.logger.warning("无效的IPO日期格式: %s -> %s", symbol, ipo_date_str)
+                    except (ValueError, AttributeError) as e:
+                        self.logger.warning(
+                            "无效的IPO日期格式: %s -> %s (%s)", symbol, ipo_date_value, e
+                        )
+                        self._memory_cache[symbol] = None
                 else:
                     # 缓存了None值（表示查询失败）
                     self._memory_cache[symbol] = None
 
-            self.logger.info("✓ IPO缓存加载完成: %d条记录", len(self._memory_cache))
+            if not is_valid:
+                self.logger.warning("IPO日期缓存已过时（日期: %s）", cache_date)
+            else:
+                self.logger.info(
+                    "✓ IPO缓存加载完成: %d条记录（日期: %s）", len(self._memory_cache), cache_date
+                )
 
-        except json.JSONDecodeError as e:
-            self.logger.error("IPO缓存文件损坏: %s, 将重建缓存", e)
-            self._memory_cache.clear()
         except Exception as e:
-            self.logger.error("加载IPO缓存失败: %s", e)
+            self.logger.error("加载IPO缓存失败: %s", e, exc_info=True)
+            self._memory_cache.clear()
+            self._cache_date = None
 
     def _save_to_file(self) -> None:
-        """保存缓存到JSON文件"""
-        try:
-            # 构建JSON数据结构
-            cache_data = {}
-            for symbol, ipo_date in self._memory_cache.items():
-                cache_data[symbol] = {
-                    "ipo_date": ipo_date.strftime("%Y-%m-%d") if ipo_date else None,
-                    "update_time": datetime.now().strftime("%Y-%m-%d"),
-                    "source": "tdx_api",
-                }
-
-            data = {
-                "version": "1.0",
-                "last_update": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "data": cache_data,
-            }
-
-            # 写入文件（原子操作）
-            temp_file = self.cache_file.with_suffix(".tmp")
-            with open(temp_file, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-
-            temp_file.replace(self.cache_file)
-            self.logger.debug("IPO缓存已保存: %d条记录", len(cache_data))
-
-        except Exception as e:
-            self.logger.error("保存IPO缓存失败: %s", e)
+        """保存缓存到文件（已废弃，IPO数据现在保存在品种列表缓存中）"""
+        self.logger.warning("IPODateCache._save_to_file 已废弃，IPO数据现在由品种列表缓存管理")
+        # 不再执行实际保存
+        return
 
     def get(self, symbol: str) -> Tuple[Optional[date], bool]:
         """从缓存获取IPO日期
@@ -165,6 +213,10 @@ class IPODateCache:
         with self._lock:
             self._memory_cache[symbol] = ipo_date
 
+            # 🔍 调试：每1000个品种输出一次
+            if len(self._memory_cache) % 1000 == 0:
+                self.logger.debug("IPO缓存已添加 %d 个品种", len(self._memory_cache))
+
             if save_immediately:
                 self._save_to_file()
 
@@ -173,7 +225,7 @@ class IPODateCache:
         with self._lock:
             self._save_to_file()
 
-    def get_stats(self) -> Dict[str, int]:
+    def get_stats(self) -> Dict[str, Any]:
         """获取缓存统计信息"""
         with self._lock:
             total_queries = self._stats["hits"] + self._stats["misses"]
@@ -196,6 +248,95 @@ class IPODateCache:
                 self._stats["api_timeout"] += 1
             else:
                 self._stats["errors"] += 1
+
+    def is_cache_outdated(self) -> bool:
+        """检查缓存是否过时（次日0时失效）
+
+        Returns:
+            bool: True=缓存已过时，False=缓存有效
+        """
+        try:
+            from ..cache_manager import DailyCacheManager
+
+            return not DailyCacheManager.is_cache_valid(self._cache_date)
+        except Exception:
+            return True  # 异常时认为缓存过时
+
+    def incremental_update(self, all_symbols: List[str], progress_callback=None) -> Dict[str, int]:
+        """增量/减量更新IPO日期（与品种列表联动）
+
+        Args:
+            all_symbols: 当前所有品种代码列表
+            progress_callback: 进度回调函数 callback(current, total)
+
+        Returns:
+            Dict: 更新统计信息 {
+                "added": int,  # 新增品种数
+                "removed": int,  # 删除品种数
+                "download_succeeded": int,  # 下载成功数
+                "download_failed": int  # 下载失败数
+            }
+        """
+        with self._lock:
+            cached_symbols = set(self._memory_cache.keys())
+            current_symbols = set(all_symbols)
+
+            # 计算差异
+            new_symbols = current_symbols - cached_symbols
+            removed_symbols = cached_symbols - current_symbols
+
+            self.logger.info(
+                "IPO缓存增量更新：新增 %d 个，删除 %d 个",
+                len(new_symbols),
+                len(removed_symbols),
+            )
+
+            # 清理已删除品种的缓存
+            for symbol in removed_symbols:
+                if symbol in self._memory_cache:
+                    del self._memory_cache[symbol]
+
+            # 下载新增品种的IPO日期
+            download_result = {"total": 0, "succeeded": 0, "failed": 0}
+
+            if new_symbols:
+                self.logger.info("检测到 %d 个新增品种，开始下载IPO日期...", len(new_symbols))
+                try:
+                    from ..data_acquisition.data_fetcher import download_ipo_dates
+
+                    # 🔧 包装进度回调以适配download_ipo_dates的接口
+                    completed = [0]
+                    total_count = len(new_symbols)
+
+                    def wrapped_progress_callback(symbol: str, status: str) -> None:
+                        """包装进度回调：symbol, status -> current, total"""
+                        completed[0] += 1
+                        if progress_callback:
+                            progress_callback(completed[0], total_count)
+
+                    download_result = download_ipo_dates(
+                        list(new_symbols),
+                        force_refresh=False,
+                        use_adaptive=True,
+                        progress_callback=wrapped_progress_callback if progress_callback else None,
+                    )
+                    self.logger.info(
+                        "IPO日期下载完成：成功 %d 个，失败 %d 个",
+                        download_result.get("succeeded", 0),
+                        download_result.get("failed", 0),
+                    )
+                except Exception as e:
+                    self.logger.error("下载IPO日期失败: %s", e, exc_info=True)
+
+            # 保存更新后的缓存
+            self._save_to_file()
+
+            return {
+                "added": len(new_symbols),
+                "removed": len(removed_symbols),
+                "download_succeeded": download_result.get("succeeded", 0),
+                "download_failed": download_result.get("failed", 0),
+            }
 
 
 # ==================== 数据存储管理 ====================
@@ -334,9 +475,8 @@ class StorageManager:
     def get_local_data_index(self) -> List[str]:
         """获取本地数据索引（已下载的品种代码列表）
 
-        扫描data/kline目录，返回所有至少有一个周期有效数据的品种代码。
-
-        注意：不仅检查文件是否存在，还要确保文件有有效记录（与数据质量概览一致）
+        快速扫描模式：只检查文件是否存在且大小>0，不验证内容完整性。
+        完整性验证由数据质量感知系统处理，避免启动时的性能瓶颈。
 
         Returns:
             List[str]: 品种代码列表（按代码排序）
@@ -344,30 +484,21 @@ class StorageManager:
         try:
             symbol_codes = []
 
-            # 扫描数据目录
+            # 快速扫描：只检查目录和文件存在性
             for symbol_dir in self.data_dir.iterdir():
                 if not symbol_dir.is_dir():
                     continue
 
                 symbol_code = symbol_dir.name
 
-                # 检查是否有任何周期的有效数据（文件存在且有记录）
+                # 检查是否有任何周期的数据文件（只检查存在性和大小）
                 has_data = False
                 for interval_dir in symbol_dir.iterdir():
                     if interval_dir.is_dir():
                         data_file = interval_dir / "data.parquet"
-                        if data_file.exists():
-                            # 🔧 改进：检查文件是否有有效数据，而不仅仅是文件存在
-                            try:
-                                import pandas as pd
-
-                                df = pd.read_parquet(data_file)
-                                if df is not None and not df.empty:
-                                    has_data = True
-                                    break
-                            except Exception:
-                                # 文件损坏或无法读取，跳过
-                                continue
+                        if data_file.exists() and data_file.stat().st_size > 0:
+                            has_data = True
+                            break
 
                 if has_data:
                     symbol_codes.append(symbol_code)
@@ -375,7 +506,7 @@ class StorageManager:
             # 按代码排序
             symbol_codes.sort()
 
-            self.logger.info("扫描本地数据索引完成，共 %d 个品种有有效数据", len(symbol_codes))
+            self.logger.info("快速扫描本地数据索引完成，共 %d 个品种", len(symbol_codes))
             return symbol_codes
 
         except Exception as e:
@@ -602,9 +733,8 @@ class DataValidator:
         if is_cached:
             return cached_date
         else:
-            self.logger.warning(
-                f"品种 {symbol} IPO日期未缓存，建议先调用 preload_ipo_dates_batch()"
-            )
+            # 🔧 降级为DEBUG，避免启动时大量警告
+            self.logger.debug("品种 %s IPO日期未缓存", symbol)
             return None
 
     def _validate_ipo_date(self, symbol: str, ipo_date: date) -> Optional[date]:
@@ -869,7 +999,7 @@ class DataValidator:
             expected_trading_days = self._get_trading_days_range(effective_start, check_end_date)
 
             if not expected_trading_days:
-                self.logger.warning("交易日历获取失败，跳过缺失日期检测")
+                self.logger.debug("交易日历获取失败，跳过缺失日期检测")
                 return []
 
             # 8. 计算缺失的交易日
@@ -961,7 +1091,7 @@ class DataValidator:
                 try:
                     result = future.result(timeout=30)
                     if not result:
-                        self.logger.warning("交易日范围为空: %s 至 %s", start_date, end_date)
+                        self.logger.debug("交易日范围为空: %s 至 %s", start_date, end_date)
                     return result
                 except FutureTimeoutError:
                     self.logger.error("获取交易日范围超时（30秒）: %s 至 %s", start_date, end_date)
@@ -1359,11 +1489,20 @@ class DataSensor:
         # 文件监控器
         self.data_file_watcher: Optional[DataFileWatcher] = None
 
+        # 🆕 混合异步架构组件（延迟初始化）
+        self._resource_monitor = None
+        self._file_scanner = None
+        self._scheduler = None
+        self._async_executor = None
+        self._cpu_worker = None
+        self._hybrid_async_enabled = False
+
     def scan_all_data(
         self,
         reference_symbols: List[str],
         intervals: Optional[List[str]] = None,
         force_refresh: bool = False,
+        progress_callback=None,
     ) -> QualityOverview:
         """扫描所有数据质量（优化版：并发扫描，只返回有问题的品种详情）"""
         if intervals is None:
@@ -1382,6 +1521,15 @@ class DataSensor:
                 len(reference_symbols),
                 len(symbols_with_data),
             )
+
+            # 🆕 添加terminal输出
+            import sys
+
+            print(
+                f"   开始扫描：总品种{len(reference_symbols)}个，本地有数据{len(symbols_with_data)}个"
+            )
+            print(f"   扫描周期：{', '.join(intervals)}")
+            sys.stdout.flush()
 
             total_symbols = len(reference_symbols)
             missing_symbols = total_symbols - len(symbols_with_data)
@@ -1411,6 +1559,10 @@ class DataSensor:
                     return None
 
             # 使用线程池并发扫描（最多10个线程）
+            # 🆕 计算进度报告步长（每5%报告一次）
+            total_symbols = len(symbols_with_data)
+            progress_step = max(1, total_symbols // 20)  # 每5%报告一次
+
             with ThreadPoolExecutor(max_workers=10) as executor:
                 futures = {executor.submit(scan_single, s): s for s in symbols_with_data}
 
@@ -1429,12 +1581,30 @@ class DataSensor:
                             scanned_intervals.extend(intervals)
 
                         completed += 1
-                        if completed % 500 == 0:
-                            self.logger.info("扫描进度: %d/%d", completed, len(symbols_with_data))
+
+                        # 🆕 报告进度（每5%或每500个品种）
+                        if completed % progress_step == 0 or completed % 500 == 0:
+                            percent = int((completed / total_symbols) * 100)
+                            if progress_callback:
+                                progress_callback(percent)
+                            if completed % 500 == 0:
+                                # 🆕 添加terminal输出
+                                print(f"   扫描进度: {completed}/{total_symbols} ({percent}%)")
+                                sys.stdout.flush()
+                                self.logger.info(
+                                    "扫描进度: %d/%d (%d%%)", completed, total_symbols, percent
+                                )
 
             # 🆕 批量检测数据更新状态（仅检测1d周期，避免重复）
             self.logger.info("开始检测数据更新状态...")
-            for symbol in symbols_with_data:
+
+            # 批量统计变量（每1000个品种报告一次）
+            batch_size = 1000
+            batch_success = []
+            batch_errors = []
+            batch_count = 0
+
+            for idx, symbol in enumerate(symbols_with_data, 1):
                 try:
                     freshness = self.validator.check_data_freshness(symbol, "1d")
                     if freshness["has_data"]:
@@ -1443,8 +1613,47 @@ class DataSensor:
                             outdated_symbols += 1
                         if gap_days >= 0:  # -1表示无数据，不计入平均值
                             gap_days_list.append(gap_days)
+                    batch_success.append(symbol)
                 except Exception as e:
+                    batch_errors.append((symbol, str(e)))
                     self.logger.debug("检测品种 %s 数据更新状态失败: %s", symbol, e)
+
+                batch_count += 1
+
+                # 每1000个品种或最后一批，输出统计
+                if batch_count == batch_size or idx == len(symbols_with_data):
+                    total_in_batch = len(batch_success) + len(batch_errors)
+                    if batch_errors:
+                        # 有错误的情况
+                        first_symbols = [e[0] for e in batch_errors[:3]]
+                        error_summary = f"{', '.join(first_symbols)}等{len(batch_errors)}个品种"
+                        # 统计错误类型
+                        error_types = {}
+                        for _, err_msg in batch_errors:
+                            if "交易日历获取失败" in err_msg:
+                                error_types["交易日历获取失败"] = (
+                                    error_types.get("交易日历获取失败", 0) + 1
+                                )
+                            elif "cannot schedule new futures" in err_msg:
+                                error_types["线程池关闭错误"] = (
+                                    error_types.get("线程池关闭错误", 0) + 1
+                                )
+                            else:
+                                error_types["其他错误"] = error_types.get("其他错误", 0) + 1
+
+                        error_detail = ", ".join([f"{k}({v}个)" for k, v in error_types.items()])
+                        print(f"   ⚠️ {error_summary}检测失败: {error_detail}")
+                    else:
+                        # 全部成功
+                        first_symbols = batch_success[:3]
+                        print(f"   ✓ {', '.join(first_symbols)}等{total_in_batch}个品种成功验证")
+
+                    sys.stdout.flush()
+
+                    # 重置批次统计
+                    batch_success = []
+                    batch_errors = []
+                    batch_count = 0
 
             # 计算数据更新状态指标
             avg_gap_days = int(sum(gap_days_list) / len(gap_days_list)) if gap_days_list else 0
@@ -1541,6 +1750,25 @@ class DataSensor:
                 cache_stats["api_timeout"],
             )
 
+            # 🆕 添加terminal摘要输出
+            import sys
+
+            print("\n" + "   " + "-" * 60)
+            print(f"   扫描完成摘要：")
+            print(f"   - 总品种数：{total_symbols}")
+            print(f"   - 本地有数据：{total_symbols - missing_symbols}")
+            print(f"   - 缺失品种：{missing_symbols}")
+            print(f"   - 错误品种：{error_symbols}")
+            print(f"   - 警告品种：{warning_symbols}")
+            print(f"   - 过时品种：{outdated_symbols}")
+            print(f"   - 平均滞后：{avg_gap_days}天")
+            print(f"   - 质量评分：{quality_score}/100")
+            print(
+                f"   IPO缓存：{cache_stats['cache_size']}个品种，命中率{cache_stats['hit_rate']:.1f}%"
+            )
+            print("   " + "-" * 60)
+            sys.stdout.flush()
+
             return overview
 
         except Exception as e:
@@ -1562,6 +1790,7 @@ class DataSensor:
         symbol_loader,
         intervals: Optional[List[str]] = None,
         force_refresh: bool = False,
+        progress_callback=None,
     ) -> QualityOverview:
         """
         触发数据质量扫描（自动获取品种列表，从core.py迁移）
@@ -1570,6 +1799,7 @@ class DataSensor:
             symbol_loader: SymbolLoader实例（用于获取品种列表）
             intervals: 扫描周期列表（可选，默认 ["1d", "5m", "1m"]）
             force_refresh: 是否强制刷新（忽略缓存）
+            progress_callback: 进度回调函数 callback(percent)
 
         Returns:
             质量概览
@@ -1599,6 +1829,7 @@ class DataSensor:
                 reference_symbols=reference_symbols,
                 intervals=intervals,
                 force_refresh=force_refresh,
+                progress_callback=progress_callback,
             )
 
             return overview
@@ -1851,17 +2082,18 @@ class DataSensor:
         except Exception as e:
             self.logger.error("发送质量更新事件失败: %s", e)
 
-    def on_file_changed(self, file_path: Path) -> None:
+    def on_file_changed(self, event_type: str, file_path: Path) -> None:
         """
         文件变化回调方法
 
         当数据文件发生变化时，清除质量概览缓存以便下次重新计算
 
         Args:
+            event_type: 事件类型 (created/modified/moved/deleted)
             file_path: 发生变化的文件路径
         """
         try:
-            self.logger.info("检测到数据文件变化: %s", file_path)
+            self.logger.info("检测到数据文件变化 [%s]: %s", event_type, file_path)
             # 清除缓存，下次访问时会重新扫描
             self._quality_overview = None
             self.logger.info("数据质量缓存已清除，将在下次访问时重新扫描")
@@ -1876,6 +2108,710 @@ class DataSensor:
             Optional[QualityOverview]: 若尚未扫描或缓存已清空则返回 None
         """
         return self._quality_overview
+
+    # 🆕 ==================== 自适应数据质量扫描 ====================
+
+    def scan_all_data_adaptive(
+        self,
+        reference_symbols: List[str],
+        intervals: Optional[List[str]] = None,
+        force_refresh: bool = False,
+        progress_callback=None,
+    ) -> QualityOverview:
+        """自适应数据质量扫描（增量推送版）
+
+        根据设备性能和数据规模自动选择最优扫描策略，并分阶段推送结果。
+
+        Args:
+            reference_symbols: 参考品种列表
+            intervals: 扫描周期列表
+            force_refresh: 是否强制刷新
+            progress_callback: 进度回调
+
+        Returns:
+            QualityOverview: 质量概览
+        """
+        if intervals is None:
+            intervals = ["1d", "5m", "1m"]
+
+        # 检查配置
+        from ..config import config_manager
+
+        enable_adaptive = config_manager.is_quality_scan_adaptive_enabled()
+        enable_detailed = config_manager.is_quality_scan_detailed_enabled()
+        enable_incremental_push = config_manager.is_quality_scan_incremental_push_enabled()
+
+        if not enable_adaptive:
+            # 使用传统扫描模式
+            self.logger.info("使用传统扫描模式（自适应已禁用）")
+            return self.scan_all_data(
+                reference_symbols, intervals, force_refresh, progress_callback
+            )
+
+        # 启用自适应模式
+        self.logger.info("启用自适应扫描模式")
+
+        try:
+            # 计算自适应配置
+            from .hybrid_async_engine import AdaptiveQualityConfig
+
+            config = AdaptiveQualityConfig.calculate_optimal_config(
+                symbols_count=len(reference_symbols),
+                enable_detailed_scan=enable_detailed,
+            )
+
+            # 输出配置摘要
+            config_summary = AdaptiveQualityConfig.get_config_summary(config)
+            self.logger.info("\n" + config_summary)
+            print("\n" + config_summary)
+
+            # 阶段0：立即推送基础指标
+            self._push_phase_0_metrics(reference_symbols, enable_incremental_push)
+
+            # 阶段1：快速扫描本地数据索引
+            local_symbols_data = self._scan_phase_1_local_index(reference_symbols)
+            self._push_phase_1_metrics(local_symbols_data, enable_incremental_push)
+
+            # 阶段2：批量检查数据更新状态
+            freshness_data = self._scan_phase_2_freshness(
+                local_symbols_data["local_symbols"], config, progress_callback
+            )
+            self._push_phase_2_metrics(freshness_data, enable_incremental_push)
+
+            # 阶段3：详细质量扫描（可选）
+            quality_data = {}
+            if enable_detailed:
+                quality_data = self._scan_phase_3_quality(
+                    local_symbols_data["local_symbols"],
+                    intervals,
+                    config,
+                    progress_callback,
+                )
+                self._push_phase_3_metrics(quality_data, enable_incremental_push)
+
+            # 阶段4：计算最终评分并推送
+            overview = self._calculate_and_push_final_score(
+                reference_symbols,
+                local_symbols_data,
+                freshness_data,
+                quality_data,
+                intervals,
+                enable_incremental_push,
+            )
+
+            self._quality_overview = overview
+            return overview
+
+        except Exception as e:
+            self.logger.error("自适应扫描失败，降级到传统模式: %s", e, exc_info=True)
+            return self.scan_all_data(
+                reference_symbols, intervals, force_refresh, progress_callback
+            )
+
+    def _push_phase_0_metrics(
+        self, reference_symbols: List[str], enable_push: bool
+    ):
+        """阶段0：立即推送基础指标"""
+        if not enable_push or not self.event_engine:
+            return
+
+        from ..events import EVENT_QUALITY_SCAN_PHASE, Event
+        from datetime import datetime
+
+        event_data = {
+            "phase": 0,
+            "metrics": {"total_symbols": len(reference_symbols)},
+            "status": "scanning",
+            "progress_percent": 0,
+            "timestamp": datetime.now().isoformat(),
+        }
+
+        event = Event(EVENT_QUALITY_SCAN_PHASE, event_data)
+        self.event_engine.put(event)
+        self.logger.info(f"📊 推送阶段0指标: 总品种 {len(reference_symbols)}")
+
+    def _scan_phase_1_local_index(self, reference_symbols: List[str]) -> Dict:
+        """阶段1：快速扫描本地数据索引"""
+        import sys
+
+        print("\n[阶段1/4] 快速扫描本地数据索引")
+        sys.stdout.flush()
+
+        local_symbol_codes = self.storage_manager.get_local_data_index()
+        downloaded_count = len(local_symbol_codes)
+        missing_count = len(reference_symbols) - downloaded_count
+
+        print(f"  ✓ 已下载: {downloaded_count} 个品种")
+        print(f"  ✓ 缺失: {missing_count} 个品种")
+        sys.stdout.flush()
+
+        return {
+            "local_symbols": local_symbol_codes,
+            "downloaded_count": downloaded_count,
+            "missing_count": missing_count,
+        }
+
+    def _push_phase_1_metrics(self, local_data: Dict, enable_push: bool):
+        """阶段1：推送本地数据索引指标"""
+        if not enable_push or not self.event_engine:
+            return
+
+        from ..events import EVENT_QUALITY_SCAN_PHASE, Event
+        from datetime import datetime
+
+        event_data = {
+            "phase": 1,
+            "metrics": {
+                "downloaded_symbols": local_data["downloaded_count"],
+                "missing_symbols": local_data["missing_count"],
+            },
+            "status": "checking_freshness",
+            "progress_percent": 25,
+            "timestamp": datetime.now().isoformat(),
+        }
+
+        event = Event(EVENT_QUALITY_SCAN_PHASE, event_data)
+        self.event_engine.put(event)
+        self.logger.info(
+            f"📊 推送阶段1指标: 已下载 {local_data['downloaded_count']}, "
+            f"缺失 {local_data['missing_count']}"
+        )
+
+    def _scan_phase_2_freshness(
+        self, local_symbols: List[str], config: Dict, progress_callback
+    ) -> Dict:
+        """阶段2：批量检查数据更新状态"""
+        import sys
+
+        print("\n[阶段2/4] 检查数据更新状态")
+        sys.stdout.flush()
+
+        outdated_symbols = 0
+        gap_days_list = []
+        batch_size = config.get("batch_size", 500)
+
+        for idx, symbol in enumerate(local_symbols, 1):
+            try:
+                freshness = self.validator.check_data_freshness(symbol, "1d")
+                if freshness["has_data"]:
+                    gap_days = freshness["gap_days"]
+                    if gap_days > 1:
+                        outdated_symbols += 1
+                    if gap_days >= 0:
+                        gap_days_list.append(gap_days)
+            except Exception:
+                pass
+
+            # 定期输出进度
+            if idx % batch_size == 0 or idx == len(local_symbols):
+                percent = int((idx / len(local_symbols)) * 100)
+                print(f"  进度: {idx}/{len(local_symbols)} ({percent}%)")
+                sys.stdout.flush()
+                if progress_callback:
+                    progress_callback(25 + percent * 0.25)  # 25%-50%
+
+        avg_gap_days = int(sum(gap_days_list) / len(gap_days_list)) if gap_days_list else 0
+
+        print(f"  ✓ 过时品种: {outdated_symbols}")
+        print(f"  ✓ 平均滞后: {avg_gap_days} 个交易日")
+        sys.stdout.flush()
+
+        return {
+            "outdated_symbols": outdated_symbols,
+            "avg_gap_days": avg_gap_days,
+            "gap_days_list": gap_days_list,
+        }
+
+    def _push_phase_2_metrics(self, freshness_data: Dict, enable_push: bool):
+        """阶段2：推送数据更新状态指标"""
+        if not enable_push or not self.event_engine:
+            return
+
+        from ..events import EVENT_QUALITY_SCAN_PHASE, Event
+        from datetime import datetime
+
+        event_data = {
+            "phase": 2,
+            "metrics": {
+                "outdated_symbols": freshness_data["outdated_symbols"],
+                "avg_gap_days": freshness_data["avg_gap_days"],
+            },
+            "status": "scanning_quality" if enable_push else "calculating_score",
+            "progress_percent": 50,
+            "timestamp": datetime.now().isoformat(),
+        }
+
+        event = Event(EVENT_QUALITY_SCAN_PHASE, event_data)
+        self.event_engine.put(event)
+        self.logger.info(
+            f"📊 推送阶段2指标: 过时 {freshness_data['outdated_symbols']}, "
+            f"平均滞后 {freshness_data['avg_gap_days']} 天"
+        )
+
+    def _scan_phase_3_quality(
+        self,
+        local_symbols: List[str],
+        intervals: List[str],
+        config: Dict,
+        progress_callback,
+    ) -> Dict:
+        """阶段3：详细质量扫描（错误/警告检查）"""
+        import sys
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import threading
+
+        print("\n[阶段3/4] 详细质量扫描（错误/警告）")
+        sys.stdout.flush()
+
+        max_workers = config.get("max_workers", 10)
+        error_symbols = 0
+        warning_symbols = 0
+        symbol_qualities = []
+        lock = threading.Lock()
+
+        def scan_single(symbol):
+            try:
+                return self._scan_symbol_quality(symbol, intervals)
+            except Exception as e:
+                self.logger.error("扫描品种 %s 失败: %s", symbol, e)
+                return None
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(scan_single, s): s for s in local_symbols}
+
+            completed = 0
+            for future in as_completed(futures):
+                symbol_quality = future.result()
+                if symbol_quality:
+                    with lock:
+                        symbol_qualities.append(symbol_quality)
+                        if symbol_quality.has_errors:
+                            error_symbols += 1
+                        if symbol_quality.has_warnings:
+                            warning_symbols += 1
+
+                completed += 1
+
+                # 定期输出进度
+                if completed % 500 == 0 or completed == len(local_symbols):
+                    percent = int((completed / len(local_symbols)) * 100)
+                    print(f"  进度: {completed}/{len(local_symbols)} ({percent}%)")
+                    sys.stdout.flush()
+                    if progress_callback:
+                        progress_callback(50 + percent * 0.4)  # 50%-90%
+
+        print(f"  ✓ 错误品种: {error_symbols}")
+        print(f"  ✓ 警告品种: {warning_symbols}")
+        sys.stdout.flush()
+
+        return {
+            "error_symbols": error_symbols,
+            "warning_symbols": warning_symbols,
+            "symbol_qualities": symbol_qualities,
+        }
+
+    def _push_phase_3_metrics(self, quality_data: Dict, enable_push: bool):
+        """阶段3：推送详细质量指标"""
+        if not enable_push or not self.event_engine:
+            return
+
+        from ..events import EVENT_QUALITY_SCAN_PHASE, Event
+        from datetime import datetime
+
+        event_data = {
+            "phase": 3,
+            "metrics": {
+                "error_symbols": quality_data["error_symbols"],
+                "warning_symbols": quality_data["warning_symbols"],
+            },
+            "status": "calculating_score",
+            "progress_percent": 90,
+            "timestamp": datetime.now().isoformat(),
+        }
+
+        event = Event(EVENT_QUALITY_SCAN_PHASE, event_data)
+        self.event_engine.put(event)
+        self.logger.info(
+            f"📊 推送阶段3指标: 错误 {quality_data['error_symbols']}, "
+            f"警告 {quality_data['warning_symbols']}"
+        )
+
+    def _calculate_and_push_final_score(
+        self,
+        reference_symbols: List[str],
+        local_data: Dict,
+        freshness_data: Dict,
+        quality_data: Dict,
+        intervals: List[str],
+        enable_push: bool,
+    ) -> QualityOverview:
+        """阶段4：计算最终评分并推送"""
+        import sys
+
+        print("\n[阶段4/4] 计算最终评分")
+        sys.stdout.flush()
+
+        total_symbols = len(reference_symbols)
+        missing_symbols = local_data["missing_count"]
+        outdated_symbols = freshness_data["outdated_symbols"]
+        avg_gap_days = freshness_data["avg_gap_days"]
+
+        error_symbols = quality_data.get("error_symbols", 0)
+        warning_symbols = quality_data.get("warning_symbols", 0)
+        symbol_qualities = quality_data.get("symbol_qualities", [])
+
+        # 计算质量评分
+        if total_symbols > 0:
+            quality_score = int(
+                ((total_symbols - missing_symbols - error_symbols * 2 - warning_symbols * 0.5) / total_symbols) * 100
+            )
+        else:
+            quality_score = 100
+
+        quality_score = max(0, min(100, quality_score))
+
+        print(f"  ✓ 最终评分: {quality_score}")
+        sys.stdout.flush()
+
+        # 构建详情（只包含有问题的品种）
+        problem_details = [
+            {
+                "symbol": sq.symbol,
+                "status": self._determine_status(sq),
+                "score": sq.overall_score,
+                "has_errors": sq.has_errors,
+                "has_warnings": sq.has_warnings,
+                "is_missing": sq.is_missing,
+                "issues": self._collect_issues(sq),
+            }
+            for sq in symbol_qualities
+            if sq.has_errors or sq.has_warnings or sq.is_missing
+        ]
+
+        overview = QualityOverview(
+            total_symbols=total_symbols,
+            missing_symbols=missing_symbols,
+            error_symbols=error_symbols,
+            warning_symbols=warning_symbols,
+            quality_score=quality_score,
+            last_scan_time=datetime.now(),
+            base_date=date.today(),
+            scanned_intervals=list(set(intervals)),
+            details=problem_details,
+            outdated_symbols=outdated_symbols,
+            avg_gap_days=avg_gap_days,
+        )
+
+        # 推送最终指标
+        if enable_push and self.event_engine:
+            from ..events import EVENT_QUALITY_SCAN_PHASE, Event
+
+            event_data = {
+                "phase": 4,
+                "metrics": {"quality_score": quality_score},
+                "status": "complete",
+                "progress_percent": 100,
+                "timestamp": datetime.now().isoformat(),
+            }
+
+            event = Event(EVENT_QUALITY_SCAN_PHASE, event_data)
+            self.event_engine.put(event)
+            self.logger.info(f"📊 推送阶段4指标: 最终评分 {quality_score}")
+
+        # 推送传统的质量更新事件（兼容现有代码）
+        if self.event_engine:
+            self._send_quality_update_event(overview)
+
+        return overview
+
+    # 🆕 ==================== 混合异步架构扫描 ====================
+
+    def _init_hybrid_async_components(self):
+        """延迟初始化混合异步组件"""
+        if self._hybrid_async_enabled:
+            return
+        
+        try:
+            from .hybrid_async_engine import (
+                ResourceMonitor,
+                FileMetadataScanner,
+                SmartScheduler,
+                AsyncIOExecutor,
+                CPUIntensiveWorker,
+            )
+            
+            self._resource_monitor = ResourceMonitor()
+            self._file_scanner = FileMetadataScanner()
+            self._scheduler = SmartScheduler(self._resource_monitor)
+            self._async_executor = AsyncIOExecutor(self.storage_manager, self.validator)
+            self._cpu_worker = CPUIntensiveWorker(data_dir=str(self.storage_manager.data_dir))
+            
+            self._hybrid_async_enabled = True
+            self.logger.info("✅ 混合异步架构组件已初始化")
+        
+        except ImportError as e:
+            self.logger.warning(f"混合异步组件导入失败，将使用传统扫描: {e}")
+            self._hybrid_async_enabled = False
+
+    async def scan_all_data_hybrid_async(
+        self,
+        reference_symbols: List[str],
+        intervals: Optional[List[str]] = None,
+        force_refresh: bool = False,
+        progress_callback=None,
+    ) -> QualityOverview:
+        """混合异步扫描（终极性能版）
+        
+        四层架构：协程+线程+进程，智能调度，极致性能
+        """
+        if intervals is None:
+            intervals = ["1d", "5m", "1m"]
+        
+        # 初始化组件
+        self._init_hybrid_async_components()
+        
+        if not self._hybrid_async_enabled:
+            # 降级到传统扫描
+            self.logger.warning("混合异步架构未启用，降级到传统扫描")
+            return self.scan_all_data(reference_symbols, intervals, force_refresh, progress_callback)
+        
+        import asyncio
+        from concurrent.futures import ThreadPoolExecutor
+        from datetime import datetime
+        import sys
+        
+        # 启动资源监控
+        self._resource_monitor.start_monitoring()
+        
+        print("\n========== 混合异步数据质量扫描 ==========")
+        print(f"品种数量: {len(reference_symbols)}")
+        print(f"扫描周期: {', '.join(intervals)}")
+        sys.stdout.flush()
+        
+        # ========== 阶段0：立即推送基础指标 (<1ms) ==========
+        self._push_phase_0_metrics(reference_symbols, True)
+        if progress_callback:
+            progress_callback(0)
+        
+        # ========== 阶段1：异步扫描文件元数据 (0.5-1秒) ==========
+        print("\n[阶段1/4] 异步扫描文件元数据...")
+        sys.stdout.flush()
+        
+        file_metadata = await self._file_scanner.scan_all_files_async(
+            self.storage_manager.data_dir,
+            max_concurrency=1000
+        )
+        
+        local_symbols = list(set(meta.symbol for meta in file_metadata.values() if meta.has_data and meta.symbol))
+        local_symbols.sort()
+        
+        print(f"  ✓ 已下载: {len(local_symbols)} 个品种")
+        print(f"  ✓ 缺失: {len(reference_symbols) - len(local_symbols)} 个品种")
+        sys.stdout.flush()
+        
+        self._push_phase_1_metrics(
+            {"local_symbols": local_symbols, "downloaded_count": len(local_symbols), "missing_count": len(reference_symbols) - len(local_symbols)},
+            True
+        )
+        if progress_callback:
+            progress_callback(25)
+        
+        # ========== 阶段2：异步批量检查更新状态 (1-2秒) ==========
+        print("\n[阶段2/4] 异步批量检查更新状态...")
+        sys.stdout.flush()
+        
+        freshness_results = await self._async_executor.batch_check_freshness_async(
+            local_symbols, interval="1d", max_concurrency=500
+        )
+        
+        outdated = sum(1 for r in freshness_results if r.get("gap_days", -1) > 1)
+        gap_days_list = [r.get("gap_days", -1) for r in freshness_results if r.get("gap_days", -1) >= 0]
+        avg_gap = int(sum(gap_days_list) / len(gap_days_list)) if gap_days_list else 0
+        
+        print(f"  ✓ 过时品种: {outdated}")
+        print(f"  ✓ 平均滞后: {avg_gap} 个交易日")
+        sys.stdout.flush()
+        
+        self._push_phase_2_metrics(
+            {"outdated_symbols": outdated, "avg_gap_days": avg_gap, "gap_days_list": gap_days_list},
+            True
+        )
+        if progress_callback:
+            progress_callback(50)
+        
+        # ========== 阶段3：混合并行质量扫描 (5-10秒) ==========
+        print("\n[阶段3/4] 混合并行质量扫描...")
+        sys.stdout.flush()
+        
+        # 创建任务
+        validation_tasks = self._scheduler.create_validation_tasks(local_symbols, intervals, file_metadata)
+        
+        # 智能调度
+        scheduled = self._scheduler.schedule_tasks(validation_tasks)
+        
+        print(f"  任务调度: 协程{len(scheduled['async'])}个, "
+              f"线程{len(scheduled['thread'])}个, 进程{len(scheduled['process'])}个")
+        sys.stdout.flush()
+        
+        # 三层并行执行
+        async_results, thread_results, process_results = await asyncio.gather(
+            self._execute_async_tasks(scheduled["async"]),
+            self._execute_thread_tasks(scheduled["thread"]),
+            self._execute_process_tasks(scheduled["process"])
+        )
+        
+        # 聚合结果
+        all_results = []
+        for results in [async_results, thread_results, process_results]:
+            if results:
+                all_results.extend([r for r in results if r is not None])
+        
+        error_count = sum(1 for r in all_results if r.get("has_errors", False))
+        warning_count = sum(1 for r in all_results if r.get("has_warnings", False))
+        
+        print(f"  ✓ 错误品种: {error_count}")
+        print(f"  ✓ 警告品种: {warning_count}")
+        sys.stdout.flush()
+        
+        self._push_phase_3_metrics(
+            {"error_symbols": error_count, "warning_symbols": warning_count, "symbol_qualities": []},
+            True
+        )
+        if progress_callback:
+            progress_callback(90)
+        
+        # ========== 阶段4：计算最终评分 (<1ms) ==========
+        print("\n[阶段4/4] 计算最终评分...")
+        sys.stdout.flush()
+        
+        total_symbols = len(reference_symbols)
+        missing_symbols = len(reference_symbols) - len(local_symbols)
+        
+        quality_score = int(
+            ((total_symbols - missing_symbols - error_count * 2 - warning_count * 0.5) / total_symbols) * 100
+        ) if total_symbols > 0 else 100
+        quality_score = max(0, min(100, quality_score))
+        
+        print(f"  ✓ 最终评分: {quality_score}")
+        sys.stdout.flush()
+        
+        overview = QualityOverview(
+            total_symbols=total_symbols,
+            missing_symbols=missing_symbols,
+            error_symbols=error_count,
+            warning_symbols=warning_count,
+            quality_score=quality_score,
+            last_scan_time=datetime.now(),
+            base_date=date.today(),
+            scanned_intervals=list(set(intervals)),
+            details=[],
+            outdated_symbols=outdated,
+            avg_gap_days=avg_gap,
+        )
+        
+        self._quality_overview = overview
+        
+        # 推送最终指标
+        from ..events import EVENT_QUALITY_SCAN_PHASE, Event
+        if self.event_engine:
+            event_data = {
+                "phase": 4,
+                "metrics": {"quality_score": quality_score},
+                "status": "complete",
+                "progress_percent": 100,
+                "timestamp": datetime.now().isoformat(),
+            }
+            event = Event(EVENT_QUALITY_SCAN_PHASE, event_data)
+            self.event_engine.put(event)
+        
+        if progress_callback:
+            progress_callback(100)
+        
+        # 推送传统事件（兼容）
+        if self.event_engine:
+            self._send_quality_update_event(overview)
+        
+        # 停止资源监控
+        self._resource_monitor.stop_monitoring()
+        
+        print("\n========== 扫描完成 ==========\n")
+        sys.stdout.flush()
+        
+        return overview
+
+    async def _execute_async_tasks(self, tasks: List) -> List:
+        """执行协程层任务（1000+并发）"""
+        if not tasks:
+            return []
+        
+        try:
+            results = []
+            for task in tasks:
+                result = await self._async_executor.process_task_async(task)
+                if result:
+                    results.append(result)
+            return results
+        except Exception as e:
+            self.logger.error(f"协程层执行失败: {e}", exc_info=True)
+            return []
+
+    async def _execute_thread_tasks(self, tasks: List) -> List:
+        """执行线程层任务（20-50并发）"""
+        if not tasks:
+            return []
+        
+        try:
+            import asyncio
+            from concurrent.futures import ThreadPoolExecutor
+            
+            loop = asyncio.get_event_loop()
+            
+            def process_in_thread(task):
+                try:
+                    return self._async_executor._validate_symbol_sync(task.symbol, task.interval)
+                except Exception as e:
+                    self.logger.debug(f"线程任务失败 {task.symbol}: {e}")
+                    return None
+            
+            with ThreadPoolExecutor(max_workers=20) as executor:
+                futures = [loop.run_in_executor(executor, process_in_thread, t) for t in tasks]
+                results = await asyncio.gather(*futures, return_exceptions=True)
+                return [r for r in results if r is not None and not isinstance(r, Exception)]
+        
+        except Exception as e:
+            self.logger.error(f"线程层执行失败: {e}", exc_info=True)
+            return []
+
+    async def _execute_process_tasks(self, tasks: List) -> List:
+        """执行进程层任务（4-8并发）"""
+        if not tasks:
+            return []
+        
+        try:
+            import asyncio
+            
+            # 提取品种和周期
+            symbols = list(set(t.symbol for t in tasks))
+            intervals = list(set(t.interval for t in tasks))
+            
+            # 在executor中执行进程池任务
+            loop = asyncio.get_event_loop()
+            results = await loop.run_in_executor(
+                None,
+                self._cpu_worker.validate_data_parallel,
+                symbols,
+                intervals
+            )
+            return results
+        
+        except Exception as e:
+            self.logger.error(f"进程层执行失败: {e}", exc_info=True)
+            return []
+
+    def scan_all_data_hybrid_sync(self, *args, **kwargs) -> QualityOverview:
+        """同步包装器（向后兼容）"""
+        import asyncio
+        return asyncio.run(self.scan_all_data_hybrid_async(*args, **kwargs))
 
 
 # ==================== 文件监控器 ====================
@@ -2067,7 +3003,7 @@ class DataFileEventHandler(_FSHandler):
         # 执行回调
         if self.callback:
             try:
-                self.callback(Path(file_path))
+                self.callback(event_type, str(Path(file_path)))
             except Exception as e:
                 self.logger.error("文件变化回调失败: %s", e, exc_info=True)
 

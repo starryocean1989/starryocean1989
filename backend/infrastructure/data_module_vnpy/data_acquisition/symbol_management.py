@@ -12,9 +12,7 @@
 合并来源：symbol_loader.py + block_parser.py
 """
 
-import json
 import logging
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -374,7 +372,7 @@ class SymbolLoader:
         # 事件发布器（从core.py迁移）
         self.event_engine = event_engine
         if event_engine:
-            from .events import DownloadEventPublisher, EventPublisher
+            from ..events import DownloadEventPublisher, EventPublisher
 
             self.event_publisher = EventPublisher(event_engine)
             self.download_publisher = DownloadEventPublisher(event_engine)
@@ -438,34 +436,57 @@ class SymbolLoader:
 
     def load_from_cache(self) -> Optional[Dict[str, List[Dict[str, Any]]]]:
         """
-        从本地缓存加载品种分类
+        从本地缓存加载品种分类（不验证日期，兼容旧代码）
 
         Returns:
             分类后的品种字典，如果缓存不存在返回None
         """
-        if not self.cache_file.exists():
-            self.logger.info("本地缓存不存在: %s", self.cache_file)
-            return None
+        classified, _ = self.load_from_cache_with_validation()
+        return classified
 
+    def load_from_cache_with_validation(
+        self,
+    ) -> tuple[Optional[Dict[str, List[Dict[str, Any]]]], bool]:
+        """
+        从缓存加载品种列表并验证日期
+
+        Returns:
+            Tuple[classified, is_outdated]:
+            - classified: 分类后的品种字典（None表示不存在）
+            - is_outdated: 是否过时（True=需要更新）
+        """
         try:
-            with open(self.cache_file, "r", encoding="utf-8") as f:
-                cache_data = json.load(f)
+            from ..cache_manager import DailyCacheManager
+
+            cache_data, cache_date, is_valid = DailyCacheManager.load_with_validation(
+                "stock_list_classified.json"
+            )
+
+            if not cache_data:
+                self.logger.info("品种列表缓存不存在")
+                return None, False
 
             classified = cache_data.get("classified", {})
-            cache_time = cache_data.get("cache_time", "")
 
-            self.logger.info("成功加载本地缓存: %s (缓存时间: %s)", self.cache_file, cache_time)
+            # 🔧 记录缓存日期供core.py输出使用
+            self._last_cache_date = cache_date
+
+            if not is_valid:
+                self.logger.warning("品种列表缓存已过时（日期: %s），建议更新", cache_date)
+            else:
+                self.logger.info("品种列表缓存有效（日期: %s）", cache_date)
+
             self.logger.info("  - 上证A股: %d", len(classified.get("上证A股", [])))
             self.logger.info("  - 深证A股: %d", len(classified.get("深证A股", [])))
             self.logger.info("  - 北证A股: %d", len(classified.get("北证A股", [])))
             self.logger.info("  - T+0基金: %d", len(classified.get("T+0基金", [])))
             self.logger.info("  - 可转债: %d", len(classified.get("可转债", [])))
 
-            return classified
+            return classified, not is_valid
 
         except Exception as e:
-            self.logger.error("加载本地缓存失败: %s", e, exc_info=True)
-            return None
+            self.logger.error("加载品种列表缓存失败: %s", e, exc_info=True)
+            return None, False
 
     def _fetch_complete_stocks(self) -> pd.DataFrame:
         """
@@ -503,17 +524,20 @@ class SymbolLoader:
         self.logger.info("  → 深圳市场：%s:%s", market_servers[0][0], market_servers[0][1])
         self.logger.info("  → 上海市场：%s:%s", market_servers[1][0], market_servers[1][1])
 
-        # 使用multiprocessing创建共享内存
-        from multiprocessing import Process, Manager
+        # 使用multiprocessing创建共享内存（使用spawn上下文）
+        from multiprocessing import get_context
         import time
 
-        manager = Manager()
+        self.logger.info("  创建multiprocessing上下文（spawn模式）")
+        ctx = get_context("spawn")
+        manager = ctx.Manager()
+        self.logger.info("  ✓ Manager创建成功")
         shared_results = manager.dict()  # 共享字典：{market: [stocks]}
 
         # 创建2个进程
         processes = []
         for market in [0, 1]:
-            p = Process(
+            p = ctx.Process(
                 target=self._fetch_market_in_process,
                 args=(market, market_servers[market], shared_results),
                 name=f"MarketFetch-{market}",
@@ -979,7 +1003,7 @@ class SymbolLoader:
 
     def _save_cache(self, classified: Dict[str, List[Dict[str, Any]]]) -> None:
         """
-        保存分类结果到本地缓存
+        保存分类结果到本地缓存（使用DailyCacheManager）
 
         Args:
             classified: 分类后的品种字典
@@ -987,16 +1011,21 @@ class SymbolLoader:
         self.logger.info("步骤3: 保存缓存")
 
         try:
+            from ..cache_manager import DailyCacheManager
+
             cache_data = {
-                "cache_time": datetime.now().isoformat(),
                 "total_count": sum(len(stocks) for stocks in classified.values()),
                 "classified": classified,
             }
 
-            with open(self.cache_file, "w", encoding="utf-8") as f:
-                json.dump(cache_data, f, ensure_ascii=False, indent=2)
+            # 使用DailyCacheManager保存缓存（带日期）
+            success = DailyCacheManager.save_with_date(cache_data, "stock_list_classified.json")
 
-            self.logger.info("  ✓ 缓存已保存: %s", self.cache_file)
+            if success:
+                self.logger.info("  ✓ 缓存已保存: %s", self.cache_file)
+            else:
+                self.logger.error("  ✗ 保存缓存失败")
+                raise RuntimeError("保存缓存失败")
 
         except Exception as e:
             self.logger.error("  ✗ 保存缓存失败: %s", e, exc_info=True)
@@ -1020,6 +1049,66 @@ class SymbolLoader:
 
         except Exception as e:
             self.logger.error("删除品种列表缓存失败: %s", e, exc_info=True)
+            return False
+
+    def update_ipo_dates_and_remove_unlisted(
+        self, ipo_data: Dict[str, Any], unlisted_symbols: List[str]
+    ) -> bool:
+        """将 IPO 数据写入品种列表缓存，并删除未上市品种
+
+        Args:
+            ipo_data: {symbol: ipo_date} 映射（ipo_date 是 date 对象）
+            unlisted_symbols: 未上市品种代码列表
+
+        Returns:
+            是否成功更新
+        """
+        try:
+            # 1. 加载当前缓存
+            classified, _ = self.load_from_cache_with_validation()
+            if not classified:
+                self.logger.error("无法加载品种列表缓存")
+                return False
+
+            # 2. 更新 ipo_date 字段
+            updated_count = 0
+            for category, stocks in classified.items():
+                for stock in stocks:
+                    symbol = stock.get("code")
+                    if symbol in ipo_data:
+                        # 将 date 对象转换为字符串
+                        ipo_date = ipo_data[symbol]
+                        if hasattr(ipo_date, "strftime"):
+                            stock["ipo_date"] = ipo_date.strftime("%Y-%m-%d")
+                        else:
+                            stock["ipo_date"] = str(ipo_date)
+                        updated_count += 1
+
+            self.logger.info(f"✓ 已更新 {updated_count} 个品种的 IPO 日期")
+
+            # 3. 删除未上市品种
+            removed_count = 0
+            unlisted_set = set(unlisted_symbols)
+            for category in classified:
+                original_count = len(classified[category])
+                classified[category] = [
+                    stock for stock in classified[category] if stock.get("code") not in unlisted_set
+                ]
+                removed = original_count - len(classified[category])
+                if removed > 0:
+                    self.logger.info(f"  - {category}: 删除 {removed} 个未上市品种")
+                    removed_count += 1
+
+            self.logger.info(f"✓ 已删除 {len(unlisted_symbols)} 个未上市品种")
+
+            # 4. 保存更新后的缓存
+            self._save_cache(classified)
+            self.logger.info("✓ 品种列表缓存已更新")
+
+            return True
+
+        except Exception as e:
+            self.logger.error(f"更新品种列表缓存失败: {e}", exc_info=True)
             return False
 
     # ==================== 高级业务接口（从core.py迁移） ====================
@@ -1222,3 +1311,113 @@ class SymbolLoader:
             all_stocks.extend(stock_codes)
 
         return all_stocks
+
+    # ==================== 增量/减量更新功能 ====================
+
+    def reload_with_incremental_update(self) -> Dict[str, Any]:
+        """
+        增量/减量更新品种列表
+
+        Returns:
+            Dict: {
+                "success": bool,
+                "new_data": Dict,  # 新的品种列表
+                "added": List[str],  # 新增的品种代码
+                "removed": List[str],  # 删除的品种代码
+                "unchanged": int  # 未变化的品种数
+            }
+        """
+        try:
+            # 1. 加载旧缓存
+            old_classified, _ = self.load_from_cache_with_validation()
+
+            # 2. 从API获取最新数据
+            self.logger.info("开始从API获取最新品种列表...")
+            result = self.load_from_api()
+            new_classified = result.get("classified", {})
+
+            if not new_classified:
+                self.logger.error("从API获取的品种列表为空")
+                return {
+                    "success": False,
+                    "new_data": {},
+                    "added": [],
+                    "removed": [],
+                    "unchanged": 0,
+                }
+
+            # 3. 对比差异
+            diff = self._compare_symbol_lists(old_classified, new_classified)
+
+            self.logger.info(
+                "品种列表对比完成：新增 %d 个，删除 %d 个，未变 %d 个",
+                len(diff["added"]),
+                len(diff["removed"]),
+                diff["unchanged"],
+            )
+
+            # 4. 推送差异事件
+            if self.event_publisher and (diff["added"] or diff["removed"]):
+                self.event_publisher.push_log_event(
+                    f"品种列表更新：新增 {len(diff['added'])} 个，删除 {len(diff['removed'])} 个"
+                )
+
+            return {
+                "success": True,
+                "new_data": new_classified,
+                "added": diff["added"],
+                "removed": diff["removed"],
+                "unchanged": diff["unchanged"],
+            }
+
+        except Exception as e:
+            self.logger.error("增量更新品种列表失败: %s", e, exc_info=True)
+            return {
+                "success": False,
+                "new_data": {},
+                "added": [],
+                "removed": [],
+                "unchanged": 0,
+            }
+
+    def _compare_symbol_lists(self, old_data: Optional[Dict], new_data: Dict) -> Dict[str, Any]:
+        """
+        对比品种列表差异
+
+        Args:
+            old_data: 旧的品种列表
+            new_data: 新的品种列表
+
+        Returns:
+            差异信息字典
+        """
+        # 提取所有代码
+        old_codes = set(self._extract_codes_from_classified(old_data)) if old_data else set()
+        new_codes = set(self._extract_codes_from_classified(new_data))
+
+        added = list(new_codes - old_codes)
+        removed = list(old_codes - new_codes)
+        unchanged = len(old_codes & new_codes)
+
+        return {"added": added, "removed": removed, "unchanged": unchanged}
+
+    def _extract_codes_from_classified(self, classified: Dict) -> List[str]:
+        """
+        从分类数据中提取所有品种代码
+
+        Args:
+            classified: 分类后的品种字典
+
+        Returns:
+            品种代码列表
+        """
+        all_codes = []
+        for stocks in classified.values():
+            for stock in stocks:
+                if isinstance(stock, dict):
+                    code = stock.get("code")
+                    if code:
+                        all_codes.append(code)
+                elif isinstance(stock, str):
+                    all_codes.append(stock)
+        return all_codes

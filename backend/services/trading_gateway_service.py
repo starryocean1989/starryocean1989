@@ -130,8 +130,10 @@ class TradingGatewayService(BaseService, LoggerMixin):
         # 风险管理引擎
         self.risk_engine = None
 
-        # 配置文件路径（保留用于兼容性）
-        self.config_file = Path("config/terminal_config.json")
+        # 配置文件路径（使用绝对路径）
+        from backend.infrastructure.data_module_vnpy.config import config_manager
+
+        self.config_file = config_manager.get_config_file()
 
         # 数据库管理器（使用统一database）
         self.db_manager = get_db_manager()
@@ -402,11 +404,13 @@ class TradingGatewayService(BaseService, LoggerMixin):
         """从数据库加载网关配置（使用统一database）."""
         try:
             # 从database加载网关配置
-            gateways = self.db_manager.execute_query("""
+            gateways = self.db_manager.execute_query(
+                """
                 SELECT name, gateway_type, config, status
                 FROM gateway_instances
                 ORDER BY created_at
-            """)
+            """
+            )
 
             if not gateways:
                 self.logger.info("没有保存的网关配置")
@@ -420,7 +424,9 @@ class TradingGatewayService(BaseService, LoggerMixin):
                 config_str = gateway_row.get("config", "{}")
 
                 try:
-                    config_data = json.loads(config_str) if isinstance(config_str, str) else config_str
+                    config_data = (
+                        json.loads(config_str) if isinstance(config_str, str) else config_str
+                    )
                 except:
                     config_data = {}
 
@@ -452,11 +458,14 @@ class TradingGatewayService(BaseService, LoggerMixin):
                 status = info.get("status", "disconnected")
 
                 # 使用INSERT OR REPLACE保存
-                self.db_manager.execute_update("""
+                self.db_manager.execute_update(
+                    """
                     INSERT OR REPLACE INTO gateway_instances
                     (name, gateway_type, config, status, created_at, updated_at)
                     VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                """, (name, info["type"], config_json, status))
+                """,
+                    (name, info["type"], config_json, status),
+                )
 
             self.logger.info(f"网关配置已保存，共 {len(self.gateway_instances)} 个网关")
 
@@ -1978,7 +1987,9 @@ class TradingGatewayService(BaseService, LoggerMixin):
                 "strategy_name": strategy_name,
                 "status": status,
                 "engine_name": engine_name,
-                "engine_type": engine_name.lower() if isinstance(engine_name, str) else "ctastrategy",
+                "engine_type": (
+                    engine_name.lower() if isinstance(engine_name, str) else "ctastrategy"
+                ),
                 "timestamp": datetime.now().isoformat(),
                 "active_count": self._count_active_strategies(gateway_name),
             }
@@ -1994,9 +2005,7 @@ class TradingGatewayService(BaseService, LoggerMixin):
         except Exception as e:
             self.logger.warning(f"发送策略状态事件失败: {e}")
 
-    def _emit_gateway_status_event(
-        self, gateway_name: str, status: str, gateway_type: str
-    ):
+    def _emit_gateway_status_event(self, gateway_name: str, status: str, gateway_type: str):
         """发送网关状态变化事件.
 
         Args:
@@ -2067,14 +2076,16 @@ class TradingGatewayService(BaseService, LoggerMixin):
                     engine_name.lower() if isinstance(engine_name, str) else "ctastrategy"
                 )
 
-                single_strategy_gateways.append({
-                    "gateway_name": gateway_name,
-                    "strategy_name": strategy.get("name", ""),
-                    "strategy_class": strategy.get("class", ""),
-                    "engine_name": engine_name,
-                    "strategy_type": strategy_type,
-                    "monitor_template": self.get_monitor_template_for_strategy(strategy_type),
-                })
+                single_strategy_gateways.append(
+                    {
+                        "gateway_name": gateway_name,
+                        "strategy_name": strategy.get("name", ""),
+                        "strategy_class": strategy.get("class", ""),
+                        "engine_name": engine_name,
+                        "strategy_type": strategy_type,
+                        "monitor_template": self.get_monitor_template_for_strategy(strategy_type),
+                    }
+                )
 
         return single_strategy_gateways
 
@@ -2410,9 +2421,7 @@ class PaperAccountGatewayAdapter:
             self.paper_engine.init_engine()
             self.paper_engine.set_capital(self.initial_capital)
             self.paper_engine.set_parameters(
-                commission_rate=self.commission_rate,
-                slippage=self.slippage,
-                size=self.size
+                commission_rate=self.commission_rate, slippage=self.slippage, size=self.size
             )
 
             self.connected = True
@@ -2517,30 +2526,43 @@ class TradeXGatewayAdapter:
 
         # Logon
         self.dll.Logon.argtypes = [
-            ctypes.c_char_p, ctypes.c_short, ctypes.c_char_p, ctypes.c_short,
-            ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p,
-            ctypes.c_char_p
+            ctypes.c_char_p,
+            ctypes.c_short,
+            ctypes.c_char_p,
+            ctypes.c_short,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
         ]
         self.dll.Logon.restype = ctypes.c_int
 
         # QueryData
-        self.dll.QueryData.argtypes = [
-            ctypes.c_int, ctypes.c_int, ctypes.c_char_p, ctypes.c_char_p
-        ]
+        self.dll.QueryData.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_char_p, ctypes.c_char_p]
         self.dll.QueryData.restype = None
 
         # SendOrder
         self.dll.SendOrder.argtypes = [
-            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_char_p,
-            ctypes.c_char_p, ctypes.c_float, ctypes.c_int, ctypes.c_char_p,
-            ctypes.c_char_p
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+            ctypes.c_float,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
         ]
         self.dll.SendOrder.restype = None
 
         # CancelOrder
         self.dll.CancelOrder.argtypes = [
-            ctypes.c_int, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p,
-            ctypes.c_char_p
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
         ]
         self.dll.CancelOrder.restype = None
 
@@ -2600,7 +2622,7 @@ class TradeXGatewayAdapter:
         """关闭网关."""
         if self.dll and self.connected:
             try:
-                if hasattr(self, 'client_id'):
+                if hasattr(self, "client_id"):
                     self.dll.Logoff(self.client_id)
                 self.dll.CloseTdx()
             except Exception as e:

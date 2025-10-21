@@ -441,9 +441,8 @@ class DataCenterService(BaseService, LoggerMixin):
 
         逻辑：
         1. 先尝试从 data/cache/stock_list_classified.json 加载缓存
-        2. 如果新格式缓存存在，加载到内存
-        3. 兼容旧格式：如果只有parquet文件，也能加载（会自动迁移）
-        4. 如果缓存不存在，启动后台线程异步加载（不阻塞启动）
+        2. 如果缓存存在，加载到内存
+        3. 如果缓存不存在，启动后台线程异步加载（不阻塞启动）
         """
         try:
             self.logger.info("检查品种列表缓存...")
@@ -454,9 +453,8 @@ class DataCenterService(BaseService, LoggerMixin):
 
             cache_dir = config_manager.get_cache_dir()
             json_cache_file = cache_dir / "stock_list_classified.json"
-            parquet_cache_file = cache_dir / "stock_list.parquet"
 
-            # 优先加载新格式JSON文件
+            # 加载JSON文件
             if json_cache_file.exists():
                 try:
                     with open(json_cache_file, "r", encoding="utf-8") as f:
@@ -502,41 +500,7 @@ class DataCenterService(BaseService, LoggerMixin):
                     return
 
                 except Exception as e:
-                    self.logger.warning("加载JSON缓存失败: %s，尝试旧格式", e)
-
-            # 兼容旧格式parquet（会触发一次迁移）
-            if parquet_cache_file.exists():
-                try:
-                    import pandas as pd
-
-                    df = pd.read_parquet(parquet_cache_file)
-
-                    # 将DataFrame转换为字典列表
-                    symbols = []
-                    for _, row in df.iterrows():
-                        symbols.append(
-                            {
-                                "code": row.get("code", ""),
-                                "name": row.get("name", ""),
-                                "exchange": row.get("exchange", ""),
-                                "type": row.get("product", ""),
-                            }
-                        )
-
-                    # 更新内存缓存
-                    self._symbol_cache = {
-                        "symbols": symbols,
-                        "timestamp": datetime.now(),
-                    }
-                    self._symbol_cache_time = datetime.now()
-
-                    self.logger.info(
-                        "✅ 从旧格式parquet加载了 %d 个品种（下次启动将自动迁移）", len(symbols)
-                    )
-                    return
-
-                except Exception as e:
-                    self.logger.warning("加载parquet缓存失败: %s，将异步重新加载", e)
+                    self.logger.warning("加载JSON缓存失败: %s，将异步重新加载", e)
 
             # 缓存不存在或加载失败，启动后台线程异步加载
             self.logger.info("缓存文件不存在，启动后台线程异步加载品种列表...")
@@ -595,8 +559,100 @@ class DataCenterService(BaseService, LoggerMixin):
 
     # ==================== 品种列表管理 ====================
 
+    def _delete_symbol_cache_file(self):
+        """删除品种列表缓存文件"""
+        try:
+            from backend.infrastructure.data_module_vnpy.config import config_manager
+
+            cache_dir = config_manager.get_cache_dir()
+            cache_file = cache_dir / "stock_list_classified.json"
+            if cache_file.exists():
+                cache_file.unlink()
+                self.logger.info("已删除品种列表缓存文件: %s", cache_file)
+        except Exception as e:
+            self.logger.error("删除缓存文件失败: %s", e, exc_info=True)
+
+    def _async_filter_unlisted_symbols(self, symbols):
+        """后台执行IPO下载和未上市品种过滤"""
+        try:
+            self.logger.info("=" * 60)
+            self.logger.info("【后台流程5开始】下载IPO日期并过滤未上市品种")
+            self.logger.info("=" * 60)
+
+            # 1. 执行流程5：下载IPO日期
+            from backend.infrastructure.data_module_vnpy.data_acquisition.data_fetcher import (
+                download_ipo_dates,
+            )
+
+            codes = [s["code"] for s in symbols]
+            self.logger.info("开始下载 %d 个品种的IPO日期...", len(codes))
+
+            result = download_ipo_dates(codes, force_refresh=True, use_adaptive=True)
+
+            self.logger.info(
+                "IPO下载完成: 成功%d个, 失败%d个",
+                result.get("succeeded", 0),
+                result.get("failed", 0),
+            )
+
+            # 2. update_ipo_dates_and_remove_unlisted 已经自动更新缓存
+            # 此方法内部已经包含了删除未上市品种的逻辑
+
+            # 3. 更新内存缓存（使用过滤后的数据）
+            from backend.infrastructure.data_module_vnpy.data_acquisition.symbol_management import (
+                SymbolLoader,
+            )
+
+            loader = SymbolLoader()
+            classified, _ = loader.load_from_cache_with_validation()
+
+            if classified:
+                # 将分类数据转换为前端需要的格式（添加 exchange 和 product_type 字段）
+                filtered_symbols = []
+                for market_type, codes in classified.items():
+                    for code_item in codes:
+                        # 兼容两种格式：字符串或字典
+                        if isinstance(code_item, str):
+                            code = code_item
+                            name = code_item
+                        elif isinstance(code_item, dict):
+                            code = code_item.get("code", "")
+                            name = code_item.get("name", code)
+                        else:
+                            continue  # 跳过无效数据
+
+                        if not code:
+                            continue  # 跳过空代码
+
+                        filtered_symbols.append(
+                            {
+                                "symbol": code,
+                                "code": code,
+                                "name": name,
+                                "exchange": self._map_market_to_exchange(market_type),
+                                "product_type": self._map_market_to_product_type(market_type),
+                            }
+                        )
+
+                self._symbol_cache = {
+                    "symbols": filtered_symbols,
+                    "timestamp": datetime.now(),
+                }
+                self._symbol_cache_time = datetime.now()
+
+                self.logger.info("=" * 60)
+                self.logger.info(
+                    "【后台流程5完成】内存缓存已更新，过滤后品种数: %d", len(filtered_symbols)
+                )
+                self.logger.info("=" * 60)
+            else:
+                self.logger.warning("后台流程5：无法加载过滤后的缓存")
+
+        except Exception as e:
+            self.logger.error("后台流程5失败: %s", e, exc_info=True)
+
     def reload_symbol_list(self, force: bool = False) -> Dict[str, Any]:
-        """重新加载品种列表（调用API请求）.
+        """重新加载品种列表（删除缓存→流程4→立即返回→后台流程5）.
 
         Args:
             force: 是否强制重新加载，即使缓存有效
@@ -606,27 +662,22 @@ class DataCenterService(BaseService, LoggerMixin):
                 "success": bool,
                 "symbol_count": int,
                 "message": str,
-                "data": List[Dict]  # 品种列表
+                "data": List[Dict]  # 品种列表（包含未上市）
             }
         """
         try:
+            import threading
+
             self._log_operation("重新加载品种列表", force=force)
             self.logger.info("=" * 60)
             self.logger.info("【开始】重新加载品种列表 (force=%s)", force)
             self.logger.info("=" * 60)
 
-            # 检查缓存是否有效（如果不强制刷新）
-            if not force and self._is_symbol_cache_valid():
-                symbols = self._symbol_cache.get("symbols", []) if self._symbol_cache else []
-                self.logger.info("使用缓存的品种列表: %d 个品种", len(symbols))
-                return {
-                    "success": True,
-                    "symbol_count": len(symbols),
-                    "message": "使用缓存的品种列表",
-                    "data": symbols,
-                }
+            # 步骤1：删除缓存文件
+            self.logger.info("【步骤1】删除现有缓存文件...")
+            self._delete_symbol_cache_file()
 
-            # 调用china_stock_engine获取品种列表
+            # 步骤2：执行流程4 - 从API获取品种（包含未上市）
             if self.china_stock_engine is None:
                 self.logger.error("ChinaStockEngine不可用")
                 return {
@@ -636,22 +687,30 @@ class DataCenterService(BaseService, LoggerMixin):
                     "data": [],
                 }
 
-            # 调用实际的品种列表获取方法
-            self.logger.info("【步骤1】调用 _fetch_symbols_from_china_stock()...")
+            self.logger.info("【步骤2】执行流程4：从API获取品种列表...")
             symbols, empty_categories = self._fetch_symbols_from_china_stock()
-            self.logger.info("【步骤1完成】获取到 %d 个品种", len(symbols))
+            self.logger.info("【步骤2完成】获取到 %d 个品种（包含未上市）", len(symbols))
 
-            # 更新缓存
-            self.logger.info("【步骤2】更新内存缓存...")
+            # 步骤3：更新内存缓存（立即返回给UI）
+            self.logger.info("【步骤3】更新内存缓存...")
             self._symbol_cache = {
                 "symbols": symbols,
                 "timestamp": datetime.now(),
             }
             self._symbol_cache_time = datetime.now()
-            self.logger.info("【步骤2完成】缓存已更新")
+            self.logger.info("【步骤3完成】缓存已更新")
+
+            # 步骤4：启动后台线程执行流程5（IPO下载+过滤）
+            self.logger.info("【步骤4】启动后台线程执行流程5...")
+            threading.Thread(
+                target=self._async_filter_unlisted_symbols, args=(symbols,), daemon=True
+            ).start()
+            self.logger.info("【步骤4完成】后台线程已启动")
 
             self.logger.info("=" * 60)
-            self.logger.info("【成功】品种列表加载完成: %d 个品种", len(symbols))
+            self.logger.info(
+                "【成功】品种列表加载完成: %d 个品种（正在后台过滤未上市品种）", len(symbols)
+            )
             self.logger.info("=" * 60)
 
             # 检查通达信根目录配置和空品种类别
@@ -679,10 +738,11 @@ class DataCenterService(BaseService, LoggerMixin):
             return {
                 "success": True,
                 "symbol_count": len(symbols),
-                "message": "品种列表加载成功",
+                "message": "品种列表加载成功（正在后台过滤未上市品种）",
                 "data": symbols,
                 "warning": warning_message,  # 添加警告信息
                 "empty_categories": empty_categories,  # 添加空品种类别列表
+                "filtering_in_background": True,  # 标记后台正在过滤
             }
 
         except Exception as e:
@@ -698,23 +758,70 @@ class DataCenterService(BaseService, LoggerMixin):
             }
 
     def refresh_symbol_list(self) -> Dict[str, Any]:
-        """刷新品种列表（使用缓存，不调用API）.
+        """刷新品种列表（从缓存文件，已过滤未上市品种）.
 
         Returns:
-            Dict: 包含success, symbol_count, message, data的字典
+            Dict: 包含success, symbol_count, message, data, is_outdated的字典
         """
         try:
             self._log_operation("刷新品种列表")
 
-            if self._symbol_cache is None:
-                # 如果缓存为空，调用reload
-                return self.reload_symbol_list(force=False)
+            # 强制从文件重新加载（不使用内存缓存）
+            from backend.infrastructure.data_module_vnpy.data_acquisition.symbol_management import (
+                SymbolLoader,
+            )
+
+            loader = SymbolLoader()
+            classified, is_outdated = loader.load_from_cache_with_validation()
+
+            if not classified:
+                self.logger.warning("品种列表缓存不存在")
+                return {
+                    "success": False,
+                    "symbol_count": 0,
+                    "message": "缓存不存在，请先点击【重新加载品种】",
+                    "data": [],
+                }
+
+            # 将分类数据转换为前端需要的格式（添加 exchange 和 product_type 字段）
+            symbols = []
+            for market_type, codes in classified.items():
+                for code_item in codes:
+                    # 兼容两种格式：字符串或字典
+                    if isinstance(code_item, str):
+                        code = code_item
+                        name = code_item
+                    elif isinstance(code_item, dict):
+                        code = code_item.get("code", "")
+                        name = code_item.get("name", code)
+                    else:
+                        continue  # 跳过无效数据
+
+                    if not code:
+                        continue  # 跳过空代码
+
+                    symbols.append(
+                        {
+                            "symbol": code,
+                            "code": code,
+                            "name": name,  # 使用实际品种名称
+                            "exchange": self._map_market_to_exchange(market_type),
+                            "product_type": self._map_market_to_product_type(market_type),
+                        }
+                    )
+
+            # 更新内存缓存
+            self._symbol_cache = {"symbols": symbols, "timestamp": datetime.now()}
+            self._symbol_cache_time = datetime.now()
+
+            self.logger.info("从文件缓存刷新成功: %d 个品种（已过滤未上市）", len(symbols))
 
             return {
                 "success": True,
-                "symbol_count": len(self._symbol_cache.get("symbols", [])),
-                "message": "品种列表刷新成功（使用缓存）",
-                "data": self._symbol_cache.get("symbols", []),
+                "symbol_count": len(symbols),
+                "message": "从缓存刷新成功（已过滤未上市品种）",
+                "data": symbols,
+                "is_outdated": is_outdated,
             }
 
         except Exception as e:
@@ -2198,6 +2305,11 @@ class DataCenterService(BaseService, LoggerMixin):
             force_refresh: 是否强制刷新
         """
         try:
+            # 确保 china_stock_engine 可用
+            if not self.china_stock_engine:
+                self.logger.warning("ChinaStockEngine 不可用，无法执行数据质量扫描")
+                return
+            
             overview = self.china_stock_engine.trigger_data_quality_scan(
                 force_refresh=force_refresh
             )
@@ -2447,7 +2559,7 @@ class DataCenterService(BaseService, LoggerMixin):
             # 调用vnpy_datarecorder启动录制
             try:
                 # 尝试导入vnpy_datarecorder
-                from vnpy_datarecorder import DataRecorderApp
+                from vnpy_datarecorder import DataRecorderApp  # type: ignore[import-untyped]
                 from backend.core.base import get_main_engine
 
                 # 获取主引擎
@@ -2609,7 +2721,7 @@ class DataCenterService(BaseService, LoggerMixin):
 
             # 尝试导入vnpy_datarecorder
             try:
-                from vnpy_datarecorder import DataRecorderApp
+                from vnpy_datarecorder import DataRecorderApp  # type: ignore[import-untyped]
             except ImportError:
                 return {
                     "success": False,

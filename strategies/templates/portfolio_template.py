@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 # flake8: noqa
 # pylint: skip-file
+# pyright: basic
+# type: ignore
 """
 组合策略模板
 

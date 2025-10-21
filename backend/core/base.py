@@ -21,7 +21,7 @@ import threading
 import time
 import traceback
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from enum import Enum
 
 # 从vnpy_imports导入所有VnPy相关功能
@@ -196,7 +196,7 @@ class ServiceManager:
                 return False
 
             self.services[name] = service
-            self.logger.info("服务 '%s' 注册成功", name)
+            self.logger.debug("服务 '%s' 注册成功", name)
             return True
 
         except Exception as e:
@@ -691,7 +691,7 @@ class ServiceInitializer:
 
         # 5. 脚本交易应用
         try:
-            from vnpy_scripttrader import ScriptTraderApp
+            from vnpy_scripttrader import ScriptTraderApp  # pyright: ignore[reportMissingModuleSource]
 
             self.main_engine.add_app(ScriptTraderApp)
             self.logger.info("✅ ScriptTraderApp 已添加")
@@ -836,7 +836,9 @@ class ServiceInitializer:
 
             # 确保引擎已初始化
             assert self.main_engine is not None, "MainEngine 必须在初始化 ChinaStockEngine 之前创建"
-            assert self.event_engine is not None, "EventEngine 必须在初始化 ChinaStockEngine 之前创建"
+            assert (
+                self.event_engine is not None
+            ), "EventEngine 必须在初始化 ChinaStockEngine 之前创建"
 
             self.china_stock_engine = ChinaStockEngine(self.main_engine, self.event_engine)
             self.logger.info("✅ ChinaStockEngine 创建成功")
@@ -867,7 +869,7 @@ class ServiceInitializer:
             self._configure_datafeed()
 
         except ImportError as e:
-            self.logger.warning("⚠️ ChinaStockEngine 不可用: %s", e)
+            self.logger.warning("⚠️ ChinaStockEngine 不可用: %s", e, exc_info=True)
             self.china_stock_engine = None
             set_china_stock_engine(None)
         except Exception as e:
@@ -1142,13 +1144,13 @@ def initialize_services(progress_callback=None) -> Dict[str, Any]:
     try:
         service_manager = get_service_manager()
 
-        # 记录初始化开始
-        service_manager.record_error(
-            "ServiceManager",
-            "INITIALIZATION_START",
-            "开始初始化所有服务",
-            severity=ErrorSeverity.INFO,
-        )
+        # 记录初始化开始（简化输出）
+        # service_manager.record_error(
+        #     "ServiceManager",
+        #     "INITIALIZATION_START",
+        #     "开始初始化所有服务",
+        #     severity=ErrorSeverity.INFO,
+        # )
 
         # 执行初始化
         success = initialize_real_services(progress_callback=progress_callback)
@@ -1157,13 +1159,7 @@ def initialize_services(progress_callback=None) -> Dict[str, Any]:
 
         # 生成初始化报告
         if success:
-            service_manager.record_error(
-                "ServiceManager",
-                "INITIALIZATION_SUCCESS",
-                "所有服务初始化成功",
-                severity=ErrorSeverity.INFO,
-            )
-            logging.getLogger(__name__).info("服务初始化完成")
+            logging.getLogger(__name__).info("[ServiceManager] ✓ 所有服务初始化成功")
         else:
             service_manager.record_error(
                 "ServiceManager",

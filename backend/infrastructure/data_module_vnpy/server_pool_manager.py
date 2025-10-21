@@ -19,9 +19,9 @@ import math
 import multiprocessing
 import random
 import threading
-from typing import List, Tuple, Optional, Dict
+from typing import List, Tuple, Optional, Dict, Any
 from datetime import datetime
-from multiprocessing import Process, Manager
+from multiprocessing import get_context, Process
 
 try:
     import psutil
@@ -78,9 +78,10 @@ class ServerPoolManager:
         # 运行状态
         self._running = False
         self._start_time: Optional[datetime] = None
+        self._cache_date: Optional[str] = None  # 缓存日期
 
         # 多进程相关
-        self._processes: List[Process] = []
+        self._processes: List[Any] = []  # 支持不同上下文的Process类型（spawn/fork等）
         self._sorted_servers: List[Tuple[str, int]] = []  # 存储排序后的服务器结果
 
         # 配置参数
@@ -93,28 +94,73 @@ class ServerPoolManager:
             "chinastock.server_pool.max_coroutines_per_process", 50  # 每进程最多50个协程
         )
 
+        # 缓存文件配置
+        self._cache_file = "server_pool_cache.json"
+
         num_processes = math.ceil(self.server_count / self.max_coroutines_per_process)
-        self.logger.info("服务器池管理器初始化完成（多进程模式）")
-        self.logger.info(f"配置: {self.server_count}个服务器 → {num_processes}个进程")
+        self.logger.debug("服务器池管理器初始化完成（多进程模式）")  # INFO → DEBUG
+        self.logger.debug(
+            f"配置: {self.server_count}个服务器 → {num_processes}个进程"
+        )  # INFO → DEBUG
 
     def start(self) -> bool:
         """
-        启动服务器池管理器（多进程模式）
+        启动服务器池管理器（验证缓存 + 按需测速）
 
-        在应用启动时调用一次，使用多进程并行测速所有服务器。
-        注意：此方法会同步等待测速完成（通常5-10秒）
+        流程：
+        1. 加载缓存文件
+        2. 验证缓存日期（次日0时失效）
+        3. 如果有效：跳过测速，直接使用（<100ms）
+        4. 如果失效/不存在：重新测速并更新缓存（~7秒）
 
         Returns:
-            bool: 是否启动成功（返回True时测速已完成）
+            bool: 是否启动成功（缓存可用或测速完成）
         """
         if self._running:
             self.logger.warning("服务器池管理器已在运行")
             return True
 
         try:
-            return self._start_multiprocess()
+            # 1. 尝试加载缓存
+            cache_data, cache_date, is_valid = self.load_server_cache()
+
+            if cache_data and is_valid:
+                # ✅ 缓存有效，跳过测速
+                self._sorted_servers = cache_data
+                self._cache_date = cache_date
+                self._running = True
+                self._start_time = datetime.now()
+
+                # ✅ 同步更新server_count为实际的BROKER_SERVERS_7709数量
+                self.server_count = len(BROKER_SERVERS_7709)
+
+                self.logger.info("✅ 服务器池缓存有效（%s），跳过测速", cache_date)
+                self.logger.info("   可用服务器: %d个", len(self._sorted_servers))
+
+                # 推送服务器状态事件
+                self._push_server_status_event()
+
+                return True
+
+            elif cache_data and not is_valid:
+                # ⚠️ 缓存失效，需要重新测速
+                self.logger.warning("⚠️ 服务器池缓存已过期（%s），开始重新测速...", cache_date)
+            else:
+                # ⚠️ 缓存不存在
+                self.logger.warning("⚠️ 服务器池缓存不存在，开始首次测速...")
+
+            # 2. 执行测速
+            success = self._start_multiprocess()
+
+            if success:
+                # 3. 保存缓存
+                self.save_server_cache(self._sorted_servers)
+                self.logger.info("✅ 服务器池测速完成，缓存已更新")
+
+            return success
+
         except Exception as e:
-            self.logger.error(f"启动服务器池管理器失败: {e}", exc_info=True)
+            self.logger.error("启动服务器池管理器失败: %s", e, exc_info=True)
             self._running = False
             return False
 
@@ -131,8 +177,13 @@ class ServerPoolManager:
 
         start_time = time.time()
 
-        # 获取服务器列表
-        all_servers = [(h[1], h[2]) for h in HQ_HOSTS_ALL[: self.server_count]]
+        # 获取服务器列表（使用BROKER_SERVERS_7709全量测试）
+        all_servers = [(ip, port) for name, ip, port in BROKER_SERVERS_7709]
+
+        # ✅ 更新server_count为实际测试的服务器数量
+        self.server_count = len(all_servers)
+
+        self.logger.info("准备测试 %d 个7709服务器", len(all_servers))
 
         # 按每进程50个服务器分配
         server_chunks = []
@@ -142,19 +193,22 @@ class ServerPoolManager:
 
         num_processes = len(server_chunks)
 
-        self.logger.info("正在启动服务器池管理器（多进程模式）...")
-        self.logger.info("📊 服务器分配方案：")
+        self.logger.info("正在启动服务器池管理器（多进程模式），共%d个服务器...", len(all_servers))
+        self.logger.debug("📊 服务器分配方案：")
         for i, chunk in enumerate(server_chunks):
-            self.logger.info("   进程%d: %d个服务器", i + 1, len(chunk))
+            self.logger.debug("   进程%d: %d个服务器", i + 1, len(chunk))
 
-        # 创建共享内存存储结果
-        manager = Manager()
+        # 创建共享内存存储结果（使用spawn上下文）
+        self.logger.debug("创建multiprocessing上下文（spawn模式）")
+        ctx = get_context("spawn")
+        manager = ctx.Manager()
+        self.logger.debug("✓ Manager创建成功")
         shared_results = manager.dict()
 
         # 启动测速进程
         self._processes = []
         for i, chunk in enumerate(server_chunks):
-            p = Process(
+            p = ctx.Process(
                 target=self._test_servers_in_process,
                 args=(
                     i,
@@ -167,13 +221,13 @@ class ServerPoolManager:
             )
             p.start()
             self._processes.append(p)
-            self.logger.info(f"🚀 进程{i+1}已启动（PID: {p.pid}）")
+            self.logger.debug("🚀 进程%d已启动（PID: %d）", i + 1, p.pid)
 
         # 等待所有进程完成
-        self.logger.info(f"⏳ 等待{num_processes}个进程完成测速...")
+        self.logger.info("⏳ 等待%d个进程完成测速...", num_processes)
         for i, p in enumerate(self._processes):
             p.join()
-            self.logger.info(f"✅ 进程{i+1}完成")
+            self.logger.info("✅ 进程%d完成", i + 1)
 
         # 合并结果并排序
         all_scores = dict(shared_results)
@@ -253,7 +307,7 @@ class ServerPoolManager:
         async def run_tests():
             """异步测速任务"""
             try:
-                logger.info(f"[进程{process_id+1}] 开始测速 {len(servers)} 个服务器")
+                logger.info("[进程%d] 开始测速 %d 个服务器", process_id + 1, len(servers))
 
                 # 创建智能IP池
                 pool = AsyncSmartIPPool(
@@ -274,12 +328,14 @@ class ServerPoolManager:
                         success_count += 1
 
                 logger.info(
-                    f"[进程{process_id+1}] 测速完成: "
-                    f"测试 {len(servers)} 个, 可用 {success_count} 个"
+                    "[进程%d] 测速完成: 测试 %d 个, 可用 %d 个",
+                    process_id + 1,
+                    len(servers),
+                    success_count,
                 )
 
             except Exception as e:
-                logger.error(f"[进程{process_id+1}] 测速异常: {e}", exc_info=True)
+                logger.error("[进程%d] 测速异常: %s", process_id + 1, e, exc_info=True)
 
         # 创建新事件循环（每个进程独立）
         loop = asyncio.new_event_loop()
@@ -315,13 +371,13 @@ class ServerPoolManager:
             self.logger.info("服务器池管理器已停止")
 
         except Exception as e:
-            self.logger.error(f"停止服务器池管理器失败: {e}", exc_info=True)
+            self.logger.error("停止服务器池管理器失败: %s", e, exc_info=True)
 
     # ==================== 公共接口 ====================
 
     def get_servers(self, count: Optional[int] = None) -> List[Tuple[str, int]]:
         """
-        获取排序后的服务器列表
+        获取排序后的服务器列表（保持原顺序）
 
         Args:
             count: 返回的服务器数量，None表示返回所有
@@ -332,17 +388,78 @@ class ServerPoolManager:
         Raises:
             RuntimeError: 服务器池未运行或获取失败
         """
+        # 🔧 自动初始化：如果未运行，尝试启动
         if not self._running:
-            error_msg = "服务器池未运行！请确保在应用启动时调用了 server_pool_manager.start()"
+            self.logger.info("服务器池未初始化，正在自动启动...")
+            self.start()
+
+        if not self._running:
+            error_msg = "服务器池缓存不可用！\n请在系统管理中点击'测速服务器'按钮重新测速。"
             self.logger.error(error_msg)
             raise RuntimeError(error_msg)
 
         if not self._sorted_servers:
-            error_msg = "服务器列表为空，测速可能失败"
+            error_msg = "服务器列表为空！\n请在系统管理中点击'测速服务器'按钮进行测速。"
             self.logger.error(error_msg)
             raise RuntimeError(error_msg)
 
         return self._sorted_servers[:count] if count else self._sorted_servers
+
+    def get_servers_shuffled(self, count: Optional[int] = None) -> List[Tuple[str, int]]:
+        """
+        获取打乱顺序的服务器列表（推荐用于下载）
+
+        每次调用都会重新打乱顺序，实现负载均衡。
+
+        Args:
+            count: 返回的服务器数量，None表示返回所有
+
+        Returns:
+            随机顺序的服务器列表 [(ip, port), ...]
+
+        Raises:
+            RuntimeError: 服务器池缓存不可用
+        """
+        if not self._running or not self._sorted_servers:
+            # 检查缓存是否失效
+            if self._cache_date:
+                from .cache_manager import DailyCacheManager
+
+                if not DailyCacheManager.is_cache_valid(self._cache_date):
+                    error_msg = (
+                        f"服务器池缓存已过期（生成日期：{self._cache_date}）！\n"
+                        "为保证下载质量，请重新测速。\n\n"
+                        "操作步骤：\n"
+                        "1. 打开'系统管理'模块\n"
+                        "2. 点击'测速服务器'按钮\n"
+                        "3. 等待测速完成（约7秒）"
+                    )
+                else:
+                    error_msg = (
+                        "服务器池缓存不可用！\n\n"
+                        "操作步骤：\n"
+                        "1. 打开'系统管理'模块\n"
+                        "2. 点击'测速服务器'按钮\n"
+                        "3. 等待测速完成（约7秒）"
+                    )
+            else:
+                error_msg = (
+                    "服务器池缓存不存在，无法下载数据！\n\n"
+                    "请点击'立即测速'按钮进行服务器测速。\n\n"
+                    "操作步骤：\n"
+                    "1. 打开'系统管理'模块\n"
+                    "2. 点击'测速服务器'按钮\n"
+                    "3. 等待测速完成（约7秒）"
+                )
+
+            self.logger.error(error_msg)
+            raise RuntimeError(error_msg)
+
+        # 打乱顺序（每次调用都重新打乱）
+        servers = self._sorted_servers.copy()
+        random.shuffle(servers)
+
+        return servers[:count] if count else servers
 
     def get_best_server(self) -> Tuple[str, int]:
         """
@@ -422,6 +539,7 @@ class ServerPoolManager:
                 "total": self.server_count,
                 "status": "available" if self._running else "stopped",
                 "timestamp": datetime.now().isoformat(),
+                "cache_date": self._cache_date,
             }
 
             event = Event("EVENT_SERVER_POOL_STATUS", event_data)
@@ -432,6 +550,79 @@ class ServerPoolManager:
             )
         except Exception as e:
             self.logger.warning("推送服务器状态失败: %s", e)
+
+    # ==================== 缓存管理 ====================
+
+    def load_server_cache(self) -> Tuple[Optional[List[Tuple[str, int]]], Optional[str], bool]:
+        """
+        加载服务器池缓存
+
+        Returns:
+            Tuple[servers, cache_date, is_valid]:
+            - servers: 服务器列表（None表示不存在）
+            - cache_date: 缓存日期
+            - is_valid: 是否有效
+        """
+        try:
+            from .cache_manager import DailyCacheManager
+
+            data, cache_date, is_valid = DailyCacheManager.load_with_validation(
+                self._cache_file, validate_date=True
+            )
+
+            if data:
+                # 数据格式：[[ip, port], ...]
+                servers = [tuple(server) for server in data]
+                return servers, cache_date, is_valid
+
+            return None, None, False
+
+        except Exception as e:
+            self.logger.error("加载服务器池缓存失败: %s", e, exc_info=True)
+            return None, None, False
+
+    def save_server_cache(self, servers: List[Tuple[str, int]]) -> bool:
+        """
+        保存服务器池缓存
+
+        Args:
+            servers: 服务器列表
+
+        Returns:
+            bool: 是否保存成功
+        """
+        try:
+            from .cache_manager import DailyCacheManager
+
+            # 转换为可JSON序列化的格式
+            server_data = [[ip, port] for ip, port in servers]
+
+            # 保存缓存（带日期）
+            success = DailyCacheManager.save_with_date(server_data, self._cache_file)
+
+            if success:
+                self._cache_date = DailyCacheManager.get_today()
+                self.logger.info("服务器池缓存已保存: %d个服务器", len(servers))
+
+            return success
+
+        except Exception as e:
+            self.logger.error("保存服务器池缓存失败: %s", e, exc_info=True)
+            return False
+
+    def is_cache_valid(self) -> bool:
+        """
+        检查缓存是否有效
+
+        Returns:
+            bool: True=有效，False=失效
+        """
+        try:
+            from .cache_manager import DailyCacheManager
+
+            return DailyCacheManager.is_cache_valid(self._cache_date)
+        except Exception:
+            return False
 
 
 # ==================== 全局单例实例 ====================
@@ -626,7 +817,9 @@ class AdaptiveDownloadConfig:
                 processes = 1
                 coroutines_per_process = min(task_count, max_coroutines_per_process)
                 total_connections = coroutines_per_process
-                logger.info(f"小任务优化: {task_count}个任务 → 1进程×{coroutines_per_process}协程")
+                logger.info(
+                    "小任务优化: %d个任务 → 1进程×%d协程", task_count, coroutines_per_process
+                )
 
             elif task_count <= 100:
                 # 11-100个任务：动态计算进程数
@@ -664,7 +857,7 @@ class AdaptiveDownloadConfig:
             safe_connections = int((available_memory_gb * 0.8 * 1024) / memory_per_connection_mb)
             coroutines_per_process = safe_connections // processes
             total_connections = processes * coroutines_per_process
-            logger.warning(f"内存限制：调整连接数至{total_connections}以确保系统稳定")
+            logger.warning("内存限制：调整连接数至%d以确保系统稳定", total_connections)
 
         # 8. 生成配置说明
         reasons = []
@@ -714,7 +907,9 @@ class AdaptiveDownloadConfig:
         count: Optional[int] = None, shuffle: bool = True
     ) -> List[Tuple[str, int]]:
         """
-        从constants.py获取已验证的7709服务器并随机打乱顺序
+        获取已测速的可用服务器并随机打乱顺序
+
+        优先使用server_pool_manager的测速缓存，如果缓存不可用则抛出异常。
 
         Args:
             count: 需要的服务器数量，None表示返回所有
@@ -722,24 +917,45 @@ class AdaptiveDownloadConfig:
 
         Returns:
             服务器列表 [(ip, port), ...]
+
+        Raises:
+            RuntimeError: 如果server_pool_manager未初始化或缓存失效
         """
         logger = logging.getLogger(__name__)
 
-        # 从BROKER_SERVERS_7709提取IP和端口
-        # BROKER_SERVERS_7709格式: [(name, ip, port), ...]
-        servers = [(ip, port) for name, ip, port in BROKER_SERVERS_7709]
+        # ✅ 优先使用server_pool_manager的测速缓存
+        try:
+            if server_pool_manager.is_running() and server_pool_manager._sorted_servers:
+                servers = server_pool_manager._sorted_servers.copy()
+                logger.debug("使用server_pool_manager的测速缓存: %d个可用服务器", len(servers))
+            else:
+                # ❌ 缓存不可用，抛出异常强制用户手动测速
+                raise RuntimeError(
+                    "服务器池缓存不可用！请手动测速：\n"
+                    "1. 打开数据中心\n"
+                    "2. 点击【重新测速】按钮\n"
+                    "3. 等待测速完成后重试"
+                )
+        except RuntimeError:
+            raise
+        except Exception as e:
+            logger.error("获取服务器池缓存失败: %s", e)
+            raise RuntimeError(
+                "服务器池缓存异常！请手动测速：\n"
+                "1. 打开数据中心\n"
+                "2. 点击【重新测速】按钮\n"
+                "3. 等待测速完成后重试"
+            )
 
         # 随机打乱顺序
         if shuffle:
-            servers_copy = servers.copy()
-            random.shuffle(servers_copy)
-            servers = servers_copy
+            random.shuffle(servers)
 
         # 返回指定数量
         if count is not None:
             servers = servers[:count]
 
-        logger.info(f"获取到{len(servers)}个已验证服务器（随机排列={shuffle}）")
+        logger.info("获取到%d个已测速服务器（随机排列=%s）", len(servers), shuffle)
 
         return servers
 

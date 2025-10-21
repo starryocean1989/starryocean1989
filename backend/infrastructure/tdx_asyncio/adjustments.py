@@ -76,7 +76,7 @@ async def apply_adjustment(
         # 获取除权除息信息
         xdxr_data = await _get_xdxr_info_async(symbol, market, client)
 
-        if not xdxr_data or xdxr_data.empty:
+        if xdxr_data is None or xdxr_data.empty:
             logger.warning(f"股票{symbol}无除权除息信息，返回原始数据")
             return df
 

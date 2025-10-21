@@ -86,10 +86,15 @@ class ServiceHealthChecker:
                     all_metrics = performance_tracker.get_all_metrics()
                     # 查找与服务相关的指标
                     service_metrics = {}
-                    for _category, metrics_dict in all_metrics.items():
-                        for metric_name, metric_data in metrics_dict.items():
-                            if service_name.replace("_service", "") in metric_name.lower():
-                                service_metrics[metric_name] = metric_data
+                    for _category, metrics_list in all_metrics.items():
+                        # metrics_list 是一个列表，包含多个指标字典
+                        for metric_dict in metrics_list:
+                            # 遍历字典中的每个指标
+                            for metric_name, metric_value in metric_dict.items():
+                                if service_name.replace("_service", "") in metric_name.lower():
+                                    # 存储指标值（注意：这里的 metric_value 可能是数值，不是字典）
+                                    if isinstance(metric_value, dict):
+                                        service_metrics[metric_name] = metric_value
 
                     # 聚合业务指标
                     if service_metrics:
@@ -232,8 +237,9 @@ class ServiceHealthChecker:
         try:
             import sqlite3
             from pathlib import Path
+            from backend.infrastructure.data_module_vnpy.config import config_manager
 
-            db_file = Path("data/terminal.db")
+            db_file = config_manager.get_db_file()
             if db_file.exists():
                 # 尝试连接数据库
                 conn = sqlite3.connect(str(db_file), timeout=1)

@@ -470,7 +470,7 @@ class SubplotIndicatorManager:
         self.chart = chart_widget
         self.indicators: Dict[str, Any] = {}  # 指标名称 -> 指标实例
 
-    def add_macd(self, plot_name: str = "macd", macd_data: Dict = None):
+    def add_macd(self, plot_name: str = "macd", macd_data: Optional[Dict[str, Any]] = None):
         """添加MACD副图.
 
         Args:
@@ -547,7 +547,7 @@ class SubplotIndicatorManager:
             logger.error(f"❌ 添加MACD副图失败: {e}", exc_info=True)
             return False
 
-    def add_rsi(self, plot_name: str = "rsi", rsi_data: List = None, period: int = 14):
+    def add_rsi(self, plot_name: str = "rsi", rsi_data: Optional[List[Any]] = None, period: int = 14):
         """添加RSI副图.
 
         Args:
@@ -608,7 +608,7 @@ class SubplotIndicatorManager:
             logger.error(f"❌ 添加RSI副图失败: {e}", exc_info=True)
             return False
 
-    def add_kdj(self, plot_name: str = "kdj", kdj_data: Dict = None):
+    def add_kdj(self, plot_name: str = "kdj", kdj_data: Optional[Dict[str, Any]] = None):
         """添加KDJ副图.
 
         Args:
@@ -760,7 +760,8 @@ class IndicatorPlotWidget(QWidget):
 
         # 图表区域
         self._create_plot_widget()
-        layout.addWidget(self.plot_widget)
+        if self.plot_widget:
+            layout.addWidget(self.plot_widget)
 
     def _create_toolbar(self) -> QWidget:
         """创建工具栏.
@@ -801,6 +802,10 @@ class IndicatorPlotWidget(QWidget):
     def _create_plot_widget(self):
         """创建图表组件."""
         # 使用pyqtgraph创建图表
+        if not PYQTGRAPH_AVAILABLE or pg is None:
+            logger.warning("pyqtgraph不可用，无法创建图表组件")
+            return
+            
         self.plot_widget = pg.GraphicsLayoutWidget()
         self.plot_widget.setBackground(QColor(26, 26, 26))
         self.plot_widget.setMinimumHeight(100)
@@ -888,6 +893,9 @@ class IndicatorPlotWidget(QWidget):
         Args:
             data: MACD数据 {macd: [], signal: [], hist: []}
         """
+        if not self.plot_item or not PYQTGRAPH_AVAILABLE or pg is None:
+            return
+            
         macd_line = data.get("macd", [])
         signal_line = data.get("signal", [])
         hist = data.get("hist", [])
@@ -913,6 +921,12 @@ class IndicatorPlotWidget(QWidget):
         Args:
             data: RSI数据，可以是列表或字典 {rsi: []}
         """
+        if not self.plot_item or not PYQTGRAPH_AVAILABLE or pg is None:
+            return
+        
+        # 保存 plot_item 到局部变量，避免类型检查器的 None 警告
+        plot_item = self.plot_item
+            
         if isinstance(data, list):
             rsi_data = data
         else:
@@ -922,11 +936,11 @@ class IndicatorPlotWidget(QWidget):
             return
 
         x = list(range(len(rsi_data)))
-        self.plot_item.plot(x, rsi_data, pen="g", name="RSI")
+        plot_item.plot(x, rsi_data, pen="g", name="RSI")
 
         # 添加超买超卖线
-        self.plot_item.addLine(y=70, pen=pg.mkPen("r", width=1, style=Qt.PenStyle.DashLine))
-        self.plot_item.addLine(y=30, pen=pg.mkPen("g", width=1, style=Qt.PenStyle.DashLine))
+        plot_item.addLine(y=70, pen=pg.mkPen("r", width=1, style=Qt.PenStyle.DashLine))
+        plot_item.addLine(y=30, pen=pg.mkPen("g", width=1, style=Qt.PenStyle.DashLine))
 
     def _plot_kdj(self, data: Dict[str, Any]):
         """绘制KDJ指标.
@@ -934,6 +948,12 @@ class IndicatorPlotWidget(QWidget):
         Args:
             data: KDJ数据 {k: [], d: [], j: []}
         """
+        if not self.plot_item or not PYQTGRAPH_AVAILABLE or pg is None:
+            return
+        
+        # 保存 plot_item 到局部变量，避免类型检查器的 None 警告
+        plot_item = self.plot_item
+            
         k_line = data.get("k", [])
         d_line = data.get("d", [])
         j_line = data.get("j", [])
@@ -942,9 +962,9 @@ class IndicatorPlotWidget(QWidget):
             return
 
         x = list(range(len(k_line)))
-        self.plot_item.plot(x, k_line, pen="r", name="K")
-        self.plot_item.plot(x, d_line, pen="g", name="D")
-        self.plot_item.plot(x, j_line, pen="b", name="J")
+        plot_item.plot(x, k_line, pen="r", name="K")
+        plot_item.plot(x, d_line, pen="g", name="D")
+        plot_item.plot(x, j_line, pen="b", name="J")
 
     def _plot_boll(self, data: Dict[str, Any]):
         """绘制BOLL指标.
@@ -952,6 +972,12 @@ class IndicatorPlotWidget(QWidget):
         Args:
             data: BOLL数据 {upper: [], middle: [], lower: []}
         """
+        if not self.plot_item or not PYQTGRAPH_AVAILABLE or pg is None:
+            return
+        
+        # 保存 plot_item 到局部变量，避免类型检查器的 None 警告
+        plot_item = self.plot_item
+            
         upper = data.get("upper", [])
         middle = data.get("middle", [])
         lower = data.get("lower", [])
@@ -960,9 +986,9 @@ class IndicatorPlotWidget(QWidget):
             return
 
         x = list(range(len(middle)))
-        self.plot_item.plot(x, upper, pen="r", name="Upper")
-        self.plot_item.plot(x, middle, pen="y", name="Middle")
-        self.plot_item.plot(x, lower, pen="g", name="Lower")
+        plot_item.plot(x, upper, pen="r", name="Upper")
+        plot_item.plot(x, middle, pen="y", name="Middle")
+        plot_item.plot(x, lower, pen="g", name="Lower")
 
     def _plot_volume(self, data: Dict[str, Any]):
         """绘制成交量.
@@ -970,6 +996,12 @@ class IndicatorPlotWidget(QWidget):
         Args:
             data: 成交量数据，可以是列表或字典 {volume: []}
         """
+        if not self.plot_item or not PYQTGRAPH_AVAILABLE or pg is None:
+            return
+        
+        # 保存 plot_item 到局部变量，避免类型检查器的 None 警告
+        plot_item = self.plot_item
+            
         if isinstance(data, list):
             volume_data = data
         else:
@@ -984,7 +1016,7 @@ class IndicatorPlotWidget(QWidget):
         from pyqtgraph import BarGraphItem
 
         bg = BarGraphItem(x=x, height=volume_data, width=0.8, brush="b")
-        self.plot_item.addItem(bg)
+        plot_item.addItem(bg)
 
     def clear(self):
         """清空图表."""

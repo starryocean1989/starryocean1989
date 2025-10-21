@@ -20,6 +20,11 @@ EVENT_CHINASTOCK_FILE_CHANGE = "eChinaStockFileChange"
 EVENT_CHINASTOCK_DOWNLOAD = "eChinaStockDownload"
 EVENT_DATA_QUALITY_UPDATE = "eDataQualityUpdate"
 EVENT_DATA_SCAN_COMPLETE = "eDataScanComplete"
+EVENT_LOCAL_DATA_INDEX_READY = "eLocalDataIndexReady"  # 🆕 本地数据索引就绪事件
+
+# 🆕 数据质量感知阶段性推送事件
+EVENT_QUALITY_SCAN_PHASE = "eQualityScanPhase"  # 阶段完成事件
+EVENT_QUALITY_METRIC_UPDATE = "eQualityMetricUpdate"  # 单个指标更新事件
 
 # 应用名称
 APP_NAME = "ChinaStock"

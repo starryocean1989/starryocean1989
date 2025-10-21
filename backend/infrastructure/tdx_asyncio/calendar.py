@@ -3,22 +3,22 @@
 异步交易日历系统模块
 
 提供中国股票市场交易日历功能，完全异步化实现。
-现使用 pandas_market_calendars 作为底层实现（专业、可靠的市场日历库）
+现使用 pandas_market_calendars 作为底层实现（支持1990年至今的完整历史数据）
 
 核心功能：
-- 基于 pandas_market_calendars 的中国A股交易日历
+- 基于 pandas_market_calendars 的中国A股交易日历（1990年至今）
 - 异步接口（保持原有API兼容性）
 - 缓存机制（24小时刷新）
 - 便捷的交易日判断函数
 
 作者：[项目名称]
-版本：3.0 - 使用 pandas_market_calendars 重构
+版本：5.0 - 使用 pandas_market_calendars 重构，支持完整历史数据
 """
 
 import asyncio
 from datetime import datetime, date, timedelta
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, cast
 
 import pandas as pd
 import pandas_market_calendars as mcal
@@ -30,83 +30,190 @@ class TradingCalendar:
     """
     异步交易日历管理器
 
-    使用 pandas_market_calendars 作为底层实现，提供中国A股交易日历
+    使用 pandas_market_calendars 作为底层实现，提供中国A股交易日历（1990年至今）
     """
 
     def __init__(self, cache_dir: str = "cache"):
         """
         初始化交易日历
 
-        :param cache_dir: 缓存目录（保持接口兼容，实际使用mcal内置缓存）
+        :param cache_dir: 缓存目录
         """
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-        # 初始化中国A股市场日历
-        # XSHG = 上海证券交易所 (Shanghai Stock Exchange)
-        try:
-            self.calendar = mcal.get_calendar("XSHG")
-            logger.info("✓ 成功加载中国A股交易日历 (XSHG)")
-        except Exception as e:
-            logger.error(f"加载交易日历失败: {e}")
-            # 降级：尝试使用深圳交易所
-            try:
-                self.calendar = mcal.get_calendar("XSHE")
-                logger.warning("使用深圳交易所日历 (XSHE) 作为备选")
-            except Exception as e2:
-                logger.error(f"降级方案也失败: {e2}")
-                raise RuntimeError("无法加载任何中国A股交易日历") from e2
+        # pandas_market_calendars无需初始化，直接调用API即可
+        logger.debug("✓ 交易日历管理器初始化完成 (pandas_market_calendars数据源)")
 
         # 缓存交易日历数据（内存缓存）
         self._calendar_cache: Optional[pd.DataFrame] = None
         self._cache_timestamp: Optional[datetime] = None
         self._cache_ttl = 86400  # 24小时缓存
 
+        # 文件缓存配置
+        self._cache_file = "trading_calendar.json"
+
+    def _load_from_file_cache(self) -> Optional[pd.DataFrame]:
+        """从文件缓存加载交易日历（使用DailyCacheManager）
+
+        Returns:
+            DataFrame 或 None（如果缓存无效或不存在）
+        """
+        try:
+            # 🔧 延迟导入避免循环依赖
+            import sys
+            from pathlib import Path
+
+            # 添加项目根目录到sys.path
+            project_root = Path(__file__).parent.parent.parent.parent
+            if str(project_root) not in sys.path:
+                sys.path.insert(0, str(project_root))
+
+            from backend.infrastructure.data_module_vnpy.cache_manager import DailyCacheManager
+
+            cache_data, cache_date, is_valid = DailyCacheManager.load_with_validation(
+                self._cache_file
+            )
+
+            if not cache_data or not is_valid:
+                return None
+
+            # 将缓存数据转换回DataFrame
+            if isinstance(cache_data, list):
+                # 格式：[{"date": "YYYY-MM-DD", "year": YYYY}, ...]
+                df = pd.DataFrame(cache_data)
+                # 将date列从字符串转换为date对象
+                df["date"] = pd.to_datetime(df["date"]).dt.date
+                return df
+
+            return None
+
+        except Exception as e:
+            logger.debug(f"加载交易日历文件缓存失败: {e}")
+            return None
+
+    def _save_to_file_cache(self, calendar_df: pd.DataFrame) -> bool:
+        """保存交易日历到文件缓存（使用DailyCacheManager）
+
+        Args:
+            calendar_df: 交易日历DataFrame
+
+        Returns:
+            是否保存成功
+        """
+        try:
+            # 🔧 延迟导入避免循环依赖
+            import sys
+            from pathlib import Path
+
+            # 添加项目根目录到sys.path
+            project_root = Path(__file__).parent.parent.parent.parent
+            if str(project_root) not in sys.path:
+                sys.path.insert(0, str(project_root))
+
+            from backend.infrastructure.data_module_vnpy.cache_manager import DailyCacheManager
+
+            # 转换DataFrame为可序列化格式
+            cache_data = calendar_df.to_dict("records")
+
+            # 将date对象转换为字符串
+            for record in cache_data:
+                if "date" in record and hasattr(record["date"], "strftime"):
+                    record["date"] = record["date"].strftime("%Y-%m-%d")
+
+            # 使用DailyCacheManager保存（带日期）
+            success = DailyCacheManager.save_with_date(cache_data, self._cache_file)
+
+            if success:
+                logger.debug(f"交易日历已保存到文件缓存: {self._cache_file}")
+            else:
+                logger.warning(f"保存交易日历文件缓存失败")
+
+            return success
+
+        except Exception as e:
+            logger.error(f"保存交易日历文件缓存异常: {e}", exc_info=True)
+            return False
+
     async def get_trading_calendar(self, start_year: Optional[int] = None) -> pd.DataFrame:
         """
         异步获取交易日历数据
 
-        :param start_year: 开始年份，None为最近几年
+        :param start_year: 开始年份，None为从1990年开始（pandas_market_calendars支持1990年至今）
         :return: DataFrame包含交易日，列名：['date', 'year']
         """
         try:
-            # 检查缓存
+            # 🆕 先尝试从文件缓存加载
+            cached_df = self._load_from_file_cache()
+            if cached_df is not None:
+                logger.debug("使用文件缓存的交易日历数据")
+                self._calendar_cache = cached_df
+                self._cache_timestamp = datetime.now()
+
+                # 如果指定了start_year，筛选数据
+                if start_year is not None:
+                    cached_df = cast(pd.DataFrame, cached_df[cached_df["year"] >= start_year].copy())
+
+                return cached_df
+
+            # 检查内存缓存
             if self._calendar_cache is not None and self._cache_timestamp is not None:
                 if (datetime.now() - self._cache_timestamp).total_seconds() < self._cache_ttl:
-                    logger.debug("使用缓存的交易日历数据")
+                    logger.debug("使用内存缓存的交易日历数据")
+
+                    # 如果指定了start_year，筛选数据
+                    if start_year is not None:
+                        return cast(pd.DataFrame, self._calendar_cache[
+                            self._calendar_cache["year"] >= start_year
+                        ].copy())
+
                     return self._calendar_cache
 
-            # 确定日期范围
-            if start_year is None:
-                start_year = datetime.now().year - 5  # 默认最近5年
-
-            start_date = f"{start_year}-01-01"
-            end_date = f"{datetime.now().year + 1}-12-31"  # 包含未来一年
-
-            # 在异步环境中执行同步操作
+            # 在异步环境中执行同步操作（调用 pandas_market_calendars API）
+            sse = await asyncio.to_thread(mcal.get_calendar, 'SSE')  # 上海证券交易所
             schedule = await asyncio.to_thread(
-                self.calendar.schedule, start_date=start_date, end_date=end_date
+                sse.schedule,
+                start_date='1990-01-01',
+                end_date=(datetime.now() + timedelta(days=365)).strftime('%Y-%m-%d')
             )
+            # 将 DatetimeIndex 转换为日期列表
+            trade_dates_dt = schedule.index
+            trade_dates = [d.date() for d in trade_dates_dt]
 
             # 转换为所需格式
-            trading_days = schedule.index.date
-            calendar_df = pd.DataFrame(
-                {"date": trading_days, "year": [d.year for d in trading_days]}
-            )
+            calendar_df = pd.DataFrame({
+                'date': trade_dates,
+                'year': [d.year for d in trade_dates]
+            })
 
-            # 更新缓存
+            # 排序（确保一致性）
+            calendar_df = calendar_df.sort_values("date").reset_index(drop=True)
+
+            # 更新缓存（缓存完整数据）
             self._calendar_cache = calendar_df
             self._cache_timestamp = datetime.now()
 
-            logger.info(
-                f"✓ 成功获取交易日历：{len(calendar_df)}个交易日 ({start_year}-{datetime.now().year+1})"
-            )
+            # 🆕 保存到文件缓存
+            self._save_to_file_cache(calendar_df)
+
+            # 获取日期范围用于日志
+            min_year = calendar_df["year"].min()
+            max_year = calendar_df["year"].max()
+
+            logger.info(f"✓ 成功获取交易日历：{len(calendar_df)}个交易日 ({min_year}-{max_year})")
+
+            # 如果指定了start_year，筛选数据
+            if start_year is not None:
+                calendar_df = cast(pd.DataFrame, calendar_df[calendar_df["year"] >= start_year].copy())
+                logger.debug(f"筛选{start_year}年及以后的数据：{len(calendar_df)}个交易日")
+
             return calendar_df
 
         except Exception as e:
             logger.error(f"获取交易日历失败: {e}", exc_info=True)
             # 返回空DataFrame保持兼容性
-            return pd.DataFrame(columns=["date", "year"])
+            empty_df = pd.DataFrame({"date": [], "year": []})
+            return cast(pd.DataFrame, empty_df)
 
     async def is_trading_day(self, date_str: Optional[str] = None) -> bool:
         """
@@ -296,11 +403,13 @@ async def get_trading_days_in_range_global(start: str, end: str) -> List[str]:
 async def example_usage():
     """使用示例"""
 
-    print("=== 交易日历系统演示 (pandas_market_calendars版本) ===")
+    print("=== 交易日历系统演示 (pandas_market_calendars版本 - 支持1990年至今) ===")
 
-    # 1. 获取交易日历
+    # 1. 获取交易日历（完整历史数据）
     calendar = await get_trading_calendar_global()
     print(f"获取到 {len(calendar)} 个交易日")
+    print(f"最早日期: {calendar['date'].min()}")
+    print(f"最晚日期: {calendar['date'].max()}")
 
     # 2. 判断今天是否交易日
     is_today_trading = await is_trading_day_global()

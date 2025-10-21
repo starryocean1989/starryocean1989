@@ -1,8 +1,10 @@
 {
     "$schema": "https://raw.githubusercontent.com/microsoft/pyright/main/packages/pyright/schema/pyrightconfig.schema.json",
     "typeCheckingMode": "basic",
+    "stubPath": "typings",
     "reportMissingImports": "none",
     "reportMissingTypeStubs": "none",
+    "reportMissingModuleSource": "none",
     "reportOptionalSubscript": "none",
     "reportUndefinedVariable": "warning",
     "exclude": [

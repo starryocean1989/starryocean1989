@@ -28,15 +28,19 @@ logger = logging.getLogger(__name__)
 def get_project_root() -> Path:
     """获取项目根目录
 
-    从当前文件向上查找，直到找到标记文件（pyproject.toml, requirements.txt等）
+    从当前文件向上查找，直到找到真正的项目根目录标记文件
+    优先查找 pyproject.toml 和 venv310 目录（项目特有），避免被子模块的 requirements.txt 误导
     """
     current = Path(__file__).resolve().parent
 
     # 向上查找，最多10层
     for _ in range(10):
-        # 检查标记文件
-        markers = ["pyproject.toml", "requirements.txt", ".git", "venv310"]
-        if any((current / marker).exists() for marker in markers):
+        # 优先级1：pyproject.toml 或 venv310 目录（最可靠）
+        if (current / "pyproject.toml").exists() or (current / "venv310").exists():
+            return current
+
+        # 优先级2：检查是否同时有 requirements.txt 和 ui 目录（避免子模块干扰）
+        if (current / "requirements.txt").exists() and (current / "ui").exists():
             return current
 
         parent = current.parent
@@ -315,9 +319,9 @@ class ConfigManager:
         "chinastock.data_readers.tdx_root_dir": "C:/new_tdx",  # 通达信软件根目录
         # 统一数据管理器与预加载配置
         "chinastock.unified_manager.enabled": True,
-        "chinastock.unified_manager.auto_download": True,
+        "chinastock.unified_manager.auto_download": False,  # 禁用自动下载，需要用户手动触发
         "chinastock.preload.enabled": True,
-        "chinastock.preload.auto_start": True,
+        "chinastock.preload.auto_start": False,  # 禁用自动启动预加载
         "chinastock.preload.max_cache_symbols": 64,
         "chinastock.preload.intervals": ["1d", "5m"],
         "chinastock.preload.frequently_used_symbols": [
@@ -327,6 +331,19 @@ class ConfigManager:
             "600036",
             "600519",
         ],
+        # 🆕 数据质量感知配置
+        "chinastock.quality_scan.enable_adaptive": True,  # 启用自适应配置
+        "chinastock.quality_scan.enable_detailed_scan": True,  # 启用详细扫描（错误/警告）
+        "chinastock.quality_scan.enable_incremental_push": True,  # 启用增量推送
+        "chinastock.quality_scan.min_push_interval_ms": 500,  # 最小推送间隔（避免UI刷新过快）
+        # 🆕 混合异步架构配置
+        "chinastock.quality_scan.enable_hybrid_async": True,  # 启用混合异步架构
+        "chinastock.quality_scan.max_async_workers": 1000,  # 协程层最大并发数
+        "chinastock.quality_scan.max_thread_workers": 20,  # 线程层最大并发数
+        "chinastock.quality_scan.max_process_workers": 8,  # 进程层最大并发数
+        "chinastock.quality_scan.enable_dynamic_tuning": True,  # 启用动态并发调节
+        "chinastock.quality_scan.file_size_threshold_small_kb": 1024,  # <1MB用协程
+        "chinastock.quality_scan.file_size_threshold_large_kb": 10240,  # >10MB用进程
     }
 
     def __init__(self):
@@ -400,7 +417,48 @@ class ConfigManager:
                     print(f"   原配置: {data_dir_str} (相对路径)")
                     print(f"   新配置: {abs_data_str} (绝对路径)")
 
-            # 3. 如果有路径更新，保存到配置文件
+            # 3. 检查并转换 db_file
+            db_file_str = self._config.get("chinastock.db_file", "./data/terminal.db")
+            if db_file_str:
+                db_path = Path(db_file_str)
+                if not db_path.is_absolute():
+                    abs_db_path = project_root / db_path
+                    abs_db_str = str(abs_db_path.resolve())
+                    self._config["chinastock.db_file"] = abs_db_str
+                    path_updated = True
+                    print("🔧 初始化配置转换: 数据库文件")
+                    print(f"   原配置: {db_file_str} (相对路径)")
+                    print(f"   新配置: {abs_db_str} (绝对路径)")
+
+            # 4. 检查并转换 config_file
+            config_file_str = self._config.get(
+                "chinastock.config_file", "./config/terminal_config.json"
+            )
+            if config_file_str:
+                config_path = Path(config_file_str)
+                if not config_path.is_absolute():
+                    abs_config_path = project_root / config_path
+                    abs_config_str = str(abs_config_path.resolve())
+                    self._config["chinastock.config_file"] = abs_config_str
+                    path_updated = True
+                    print("🔧 初始化配置转换: 终端配置文件")
+                    print(f"   原配置: {config_file_str} (相对路径)")
+                    print(f"   新配置: {abs_config_str} (绝对路径)")
+
+            # 5. 检查并转换 logs_dir
+            logs_dir_str = self._config.get("chinastock.logs_dir", "./logs")
+            if logs_dir_str:
+                logs_path = Path(logs_dir_str)
+                if not logs_path.is_absolute():
+                    abs_logs_path = project_root / logs_path
+                    abs_logs_str = str(abs_logs_path.resolve())
+                    self._config["chinastock.logs_dir"] = abs_logs_str
+                    path_updated = True
+                    print("🔧 初始化配置转换: 日志目录")
+                    print(f"   原配置: {logs_dir_str} (相对路径)")
+                    print(f"   新配置: {abs_logs_str} (绝对路径)")
+
+            # 6. 如果有路径更新，保存到配置文件
             if path_updated:
                 print(f"   项目根目录: {project_root}")
                 print("✅ 配置已自动转换并持久化\n")
@@ -449,6 +507,66 @@ class ConfigManager:
 
         data_dir.mkdir(parents=True, exist_ok=True)
         return data_dir
+
+    def get_db_file(self) -> Path:
+        """获取数据库文件路径
+
+        注意：相对路径已在初始化时转换，此方法作为双重保险
+        """
+        db_file_str = self.get("chinastock.db_file", "./data/terminal.db")
+        db_file = Path(db_file_str)
+
+        # 🔧 双重保险：如果仍是相对路径（用户手动修改配置后），再次转换
+        if not db_file.is_absolute():
+            project_root = get_project_root()
+            db_file = project_root / db_file
+            abs_path_str = str(db_file.resolve())
+            self._config["chinastock.db_file"] = abs_path_str
+            self._save_to_file()
+            logger.warning("检测到相对路径配置，已转换: %s -> %s", db_file_str, abs_path_str)
+
+        db_file.parent.mkdir(parents=True, exist_ok=True)
+        return db_file
+
+    def get_config_file(self) -> Path:
+        """获取终端配置文件路径
+
+        注意：相对路径已在初始化时转换，此方法作为双重保险
+        """
+        config_file_str = self.get("chinastock.config_file", "./config/terminal_config.json")
+        config_file = Path(config_file_str)
+
+        # 🔧 双重保险：如果仍是相对路径（用户手动修改配置后），再次转换
+        if not config_file.is_absolute():
+            project_root = get_project_root()
+            config_file = project_root / config_file
+            abs_path_str = str(config_file.resolve())
+            self._config["chinastock.config_file"] = abs_path_str
+            self._save_to_file()
+            logger.warning("检测到相对路径配置，已转换: %s -> %s", config_file_str, abs_path_str)
+
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+        return config_file
+
+    def get_logs_dir(self) -> Path:
+        """获取日志目录
+
+        注意：相对路径已在初始化时转换，此方法作为双重保险
+        """
+        logs_dir_str = self.get("chinastock.logs_dir", "./logs")
+        logs_dir = Path(logs_dir_str)
+
+        # 🔧 双重保险：如果仍是相对路径（用户手动修改配置后），再次转换
+        if not logs_dir.is_absolute():
+            project_root = get_project_root()
+            logs_dir = project_root / logs_dir
+            abs_path_str = str(logs_dir.resolve())
+            self._config["chinastock.logs_dir"] = abs_path_str
+            self._save_to_file()
+            logger.warning("检测到相对路径配置，已转换: %s -> %s", logs_dir_str, abs_path_str)
+
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        return logs_dir
 
     def get_tdx_dir(self) -> Optional[Path]:
         """获取通达信软件根目录"""
@@ -549,6 +667,56 @@ class ConfigManager:
         if isinstance(symbols, list):
             return [str(item).strip() for item in symbols if str(item).strip()]
         return []
+
+    # 🆕 数据质量感知配置访问方法
+
+    def is_quality_scan_adaptive_enabled(self) -> bool:
+        """是否启用自适应质量扫描"""
+        return bool(self.get("chinastock.quality_scan.enable_adaptive", True))
+
+    def is_quality_scan_detailed_enabled(self) -> bool:
+        """是否启用详细质量扫描（错误/警告检查）"""
+        return bool(self.get("chinastock.quality_scan.enable_detailed_scan", True))
+
+    def is_quality_scan_incremental_push_enabled(self) -> bool:
+        """是否启用增量推送"""
+        return bool(self.get("chinastock.quality_scan.enable_incremental_push", True))
+
+    def get_quality_scan_min_push_interval(self) -> int:
+        """获取最小推送间隔（毫秒）"""
+        return int(self.get("chinastock.quality_scan.min_push_interval_ms", 500))
+
+    # 🆕 混合异步架构配置访问方法
+
+    def is_quality_scan_hybrid_async_enabled(self) -> bool:
+        """是否启用混合异步架构"""
+        return bool(self.get("chinastock.quality_scan.enable_hybrid_async", True))
+
+    def get_quality_scan_max_async_workers(self) -> int:
+        """获取协程层最大并发数"""
+        return int(self.get("chinastock.quality_scan.max_async_workers", 1000))
+
+    def get_quality_scan_max_thread_workers(self) -> int:
+        """获取线程层最大并发数"""
+        return int(self.get("chinastock.quality_scan.max_thread_workers", 20))
+
+    def get_quality_scan_max_process_workers(self) -> int:
+        """获取进程层最大并发数"""
+        return int(self.get("chinastock.quality_scan.max_process_workers", 8))
+
+    def is_quality_scan_dynamic_tuning_enabled(self) -> bool:
+        """是否启用动态并发调节"""
+        return bool(self.get("chinastock.quality_scan.enable_dynamic_tuning", True))
+
+    def get_quality_scan_file_size_threshold_small(self) -> int:
+        """获取小文件大小阈值（字节）"""
+        kb = int(self.get("chinastock.quality_scan.file_size_threshold_small_kb", 1024))
+        return kb * 1024
+
+    def get_quality_scan_file_size_threshold_large(self) -> int:
+        """获取大文件大小阈值（字节）"""
+        kb = int(self.get("chinastock.quality_scan.file_size_threshold_large_kb", 10240))
+        return kb * 1024
 
     def _save_to_file(self) -> None:
         """保存配置到文件"""

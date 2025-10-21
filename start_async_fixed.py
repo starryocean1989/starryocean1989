@@ -241,39 +241,11 @@ def main():
             print(f"[VNPY-CORE] ❌ VnPy 核心初始化失败: {e}")
             # 不中断启动流程，继续执行
 
-        # ==================== 阶段2.6：初始化服务器池管理器 ====================
-        print("\n[SERVER-POOL] 🚀 正在初始化智能服务器池...")
-        logger.info("[SERVER-POOL] 开始初始化服务器池管理器")
-
-        server_pool_start = time.time()
-
-        try:
-            from backend.infrastructure.data_module_vnpy import server_pool_manager
-
-            # 启动服务器池管理器（多进程并行测速）
-            print("[SERVER-POOL] 🔧 正在启动服务器池（多进程测速）...")
-            success = server_pool_manager.start()
-
-            if success:
-                server_pool_time = (time.time() - server_pool_start) * 1000
-                print(f"[SERVER-POOL] ✅ 服务器池启动完成 ({server_pool_time:.0f}ms)")
-                logger.info(
-                    "[SERVER-POOL] ✅ 服务器池管理器启动完成，耗时 %.0fms", server_pool_time
-                )
-                # 获取统计信息
-                stats = server_pool_manager.get_stats()
-                print(f"[SERVER-POOL] 📊 可用服务器: {stats['available']}/{stats['total']}个")
-                logger.info("[SERVER-POOL] 可用服务器: %d/%d个", stats["available"], stats["total"])
-            else:
-                logger.error("[SERVER-POOL] ❌ 服务器池管理器启动失败")
-                print("[SERVER-POOL] ❌ 启动失败！下载功能将不可用")
-                print("[SERVER-POOL] ⚠️  请检查网络连接或查看日志了解详情")
-
-        except Exception as e:
-            logger.error("[SERVER-POOL] ❌ 服务器池管理器初始化异常: %s", e, exc_info=True)
-            print(f"[SERVER-POOL] ❌ 初始化异常: {e}")
-            print("[SERVER-POOL] ⚠️  下载功能将不可用，请检查网络连接")
-            # 不中断启动流程，继续执行
+        # ==================== 阶段2.6：服务器池延迟初始化 ====================
+        # 🔧 服务器池延迟初始化：由后台线程在首次使用时自动启动
+        # 移除主线程的验证以避免冗余输出
+        print("\n[SERVER-POOL] ⏭️  服务器池将在后台线程首次使用时自动初始化")
+        logger.info("[SERVER-POOL] 服务器池延迟初始化模式（后台线程按需启动）")
 
         # ==================== 连接后端初始化回调 ====================
         def on_startup_completed():

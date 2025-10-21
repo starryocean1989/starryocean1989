@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 # cython: language_level=3
+from typing import Optional
 
 
 class TdxConnectionError(Exception):
@@ -17,7 +18,7 @@ class TdxFunctionCallError(Exception):
 
     def __init__(self, *args):
         super().__init__(*args)
-        self.original_exception = None
+        self.original_exception: Optional[Exception] = None
 
 
 class ValidationException(Exception):

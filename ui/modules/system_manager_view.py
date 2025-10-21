@@ -1236,7 +1236,6 @@ class SystemManager(BaseWidget, LoggerMixin):
         self.reader_sz_check: Optional[QCheckBox] = None
         self.reader_bj_check: Optional[QCheckBox] = None
         self.reader_tdx_path_edit: Optional[QLineEdit] = None
-        self.reader_thread_spin: Optional[QSpinBox] = None
         self.reader_status_label: Optional[QLabel] = None
         self.reader_progress_bar: Optional[QProgressBar] = None
         self.reader_detail_label: Optional[QLabel] = None
@@ -2778,7 +2777,10 @@ class SystemManager(BaseWidget, LoggerMixin):
         reader_layout.setContentsMargins(9, 5, 9, 9)  # 减少顶部margin从9到5
 
         # 提示信息
-        hint_label = QLabel("💡 勾选市场和数据类型后，程序会自动从品种缓存中获取对应品种并批量读取")
+        hint_label = QLabel(
+            "💡 勾选市场和数据类型后，程序会自动从品种缓存中获取对应品种并批量读取\n"
+            "⚡ 系统将根据CPU核心数、可用内存和任务总数自动计算最优线程数"
+        )
         # 🔧 压缩优化：减少padding从5px到2px
         hint_label.setStyleSheet("color: #666; font-size: 12px; padding: 2px;")
         hint_label.setWordWrap(True)
@@ -2875,23 +2877,6 @@ class SystemManager(BaseWidget, LoggerMixin):
 
         # 🔧 关键修复：直接addRow(QLayout)，不用QWidget包装
         form_layout.addRow("通达信根目录:", tdx_layout)
-
-        # 线程数
-        thread_layout = QHBoxLayout()
-        thread_layout.setSpacing(5)  # 🔧 设置控件间距
-        thread_layout.setContentsMargins(0, 0, 0, 0)  # 🔧 去掉边距
-
-        self.reader_thread_spin = QSpinBox()
-        self.reader_thread_spin.setRange(1, 16)
-        self.reader_thread_spin.setValue(4)
-        self.reader_thread_spin.setSuffix(" 线程")
-        # 🔧 关键修复：设置输入框最小高度，确保内部文字完整显示
-        self.reader_thread_spin.setMinimumHeight(32)
-        self.reader_thread_spin.setMinimumWidth(120)
-        thread_layout.addWidget(self.reader_thread_spin)
-        thread_layout.addStretch()
-        # 🔧 关键修复：直接addRow(QLayout)，不用QWidget包装
-        form_layout.addRow("并发线程数:", thread_layout)
 
         reader_layout.addLayout(form_layout)
 
@@ -3165,16 +3150,6 @@ class SystemManager(BaseWidget, LoggerMixin):
                 self.show_warning("请输入通达信根目录")
                 return
 
-            # 获取线程数（优化：默认使用更多线程）
-            import os
-
-            cpu_count = os.cpu_count() or 4
-            # 默认使用 CPU 核心数的 2 倍，最少 8 个，最多 16 个
-            default_workers = min(max(cpu_count * 2, 8), 16)
-            max_workers = default_workers
-            if self.reader_thread_spin:
-                max_workers = self.reader_thread_spin.value()
-
             # 初始化进度
             if self.reader_progress_bar:
                 self.reader_progress_bar.setValue(0)
@@ -3225,14 +3200,12 @@ class SystemManager(BaseWidget, LoggerMixin):
                 "markets": markets,
                 "tdx_root": tdx_root,
                 "use_symbol_cache": True,
-                "max_workers": max_workers,
             }
 
             self.logger.info(
-                "开始批量读取: 数据类型=%s, 市场=%s, 线程数=%d",
+                "开始批量读取: 数据类型=%s, 市场=%s (自适应线程数)",
                 data_types,
                 markets,
-                max_workers,
             )
 
             # 在单独的线程中执行（避免阻塞UI）
