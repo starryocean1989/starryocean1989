@@ -274,11 +274,15 @@ class ChinaStockEngine(BaseEngine):
                 self._validate_and_update_ipo_cache(symbols_result["all_symbols"])
             self.progress_emitter.progress_updated.emit("验证IPO日期缓存", 45)
 
-            # 步骤7：使用最新缓存进行数据质量感知 (45%-95%)
+            # 步骤6.1：推送本地数据索引（立即可用，不等待质量扫描）
+            self.logger.info("[6.1/7] 推送本地数据索引...")
+            self._push_local_data_index_event()
+            
+            # 步骤6.2：使用最新缓存进行数据质量感知 (45%-95%)
             print("\n" + "-" * 70)
             print("【步骤6/7】数据质量感知")
             print("-" * 70)
-            self.logger.info("[6/7] 开始数据质量扫描...")
+            self.logger.info("[6.2/7] 开始数据质量扫描...")
             self._start_data_sensing_with_validated_cache()
 
             # 步骤8：启动文件监控 (100%)
@@ -653,8 +657,7 @@ class ChinaStockEngine(BaseEngine):
                 overview.error_symbols,
             )
 
-            # 🆕 扫描完成后，推送本地数据索引给UI（复用扫描结果，避免重复扫描）
-            self._push_local_data_index_event()
+            # 注意：本地数据索引已在扫描前推送，此处无需重复推送
 
         except Exception as e:
             self.logger.error("数据质量扫描失败: %s", e, exc_info=True)
@@ -750,6 +753,10 @@ class ChinaStockEngine(BaseEngine):
                 "last_scan_time": (
                     overview.last_scan_time.isoformat() if overview.last_scan_time else None
                 ),
+                # 🆕 数据缺失与滞后
+                "data_missing_symbols": overview.data_missing_symbols,
+                "data_lagging_days": overview.data_lagging_days,
+                "outdated_symbols": overview.outdated_symbols,
             }
 
             event = Event(EVENT_DATA_QUALITY_UPDATE, event_data)
@@ -765,7 +772,8 @@ class ChinaStockEngine(BaseEngine):
     def _push_local_data_index_event(self):
         """推送本地数据索引事件（品种列表）给UI
         
-        在数据质量扫描完成后调用，复用扫描结果避免UI层重复扫描。
+        在缓存验证完成后立即调用（不等待质量扫描），让UI能快速获得联想功能。
+        索引生成仅需扫描本地文件，耗时很短（通常<1秒）。
         """
         try:
             event_engine = self.event_engine

@@ -359,7 +359,8 @@ class DataCenter(BaseWidget, LoggerMixin):
         self.quality_overview_widget: Optional[QWidget] = None
         self.total_symbols_label: Optional[QLabel] = None
         self.downloaded_symbols_label: Optional[QLabel] = None  # 🚀 新增
-        self.missing_symbols_label: Optional[QLabel] = None
+        self.missing_symbols_label: Optional[QLabel] = None  # 品种缺失
+        self.data_missing_symbols_label: Optional[QLabel] = None  # 数据缺失（新增）
         self.error_symbols_label: Optional[QLabel] = None
         self.warning_symbols_label: Optional[QLabel] = None
         self.quality_score_label: Optional[QLabel] = None
@@ -428,9 +429,10 @@ class DataCenter(BaseWidget, LoggerMixin):
         QTimer.singleShot(2000, self._load_symbol_cache_for_autocomplete)
 
         # 🆕 本地数据索引加载策略：优先使用后台数据质量扫描的结果（推送事件），超时后才启动后备方案
-        # 后备方案延迟15秒启动（给数据质量扫描留出时间，通常5-10秒完成）
+        # 后备方案延迟3秒启动（快速提供联想功能，避免用户等待过久）
+        # 如果事件先到达，后备方案会跳过；如果事件延迟，后备方案保证用户体验
         self._local_data_index_loaded = False  # 标记是否已加载
-        QTimer.singleShot(15000, self._load_local_data_index_fallback)
+        QTimer.singleShot(3000, self._load_local_data_index_fallback)
 
     def setup_ui(self):
         """设置用户界面."""
@@ -679,7 +681,8 @@ class DataCenter(BaseWidget, LoggerMixin):
         # 🚀 添加说明提示
         hint_label = QLabel(
             "💡 说明：「总品种」=品种缓存总数（5724个已过滤品种），「已下载」=本地有数据的品种数，"
-            "「缺失」=缓存中有但本地无数据，「警告」=已下载但数据不完整，「过时」=数据未更新到最新交易日的品种数"
+            "「品种缺失」=完全无数据的品种，「数据缺失」=有数据但部分日期缺失的品种（排除滞后），"
+            "「数据错误」=数据文件损坏或格式错误，「警告」=数据不完整，「过时」=未更新到最新交易日"
         )
         hint_label.setStyleSheet("color: #666; font-size: 11px; padding: 5px;")
         hint_label.setWordWrap(True)
@@ -702,11 +705,17 @@ class DataCenter(BaseWidget, LoggerMixin):
         self.downloaded_symbols_label.setToolTip("本地已下载数据的品种数")
         overview_layout.addWidget(self.downloaded_symbols_label)
 
-        # 缺失品种
-        self.missing_symbols_label = QLabel("缺失: 正在扫描...")
+        # 品种缺失（原"缺失"）
+        self.missing_symbols_label = QLabel("品种缺失: 正在扫描...")
         self.missing_symbols_label.setStyleSheet("color: #999;")
         self.missing_symbols_label.setToolTip("品种列表中有但本地完全无数据的品种数")
         overview_layout.addWidget(self.missing_symbols_label)
+
+        # 数据缺失（新增）
+        self.data_missing_symbols_label = QLabel("数据缺失: 正在扫描...")
+        self.data_missing_symbols_label.setStyleSheet("color: #999;")
+        self.data_missing_symbols_label.setToolTip("有数据但部分交易日缺失的品种数（排除数据滞后）")
+        overview_layout.addWidget(self.data_missing_symbols_label)
 
         # 错误品种
         self.error_symbols_label = QLabel("错误: 正在扫描...")
@@ -1850,6 +1859,7 @@ class DataCenter(BaseWidget, LoggerMixin):
         """在主线程中更新本地数据缓存"""
         print(f"🔍 DEBUG: _update_local_data_cache() 被调用！cache大小={len(cache)}")  # 调试语句6
         self.local_data_cache = cache
+        self._local_data_index_loaded = True  # 🔧 标记已加载，避免重复加载
         print(f"✅ DEBUG: local_data_cache 已更新！大小={len(self.local_data_cache)}")  # 调试语句7
         # 所有无效品种应在后端早期阶段已过滤，前端只记录最终加载结果
         if error_count > 0:
@@ -1898,9 +1908,8 @@ class DataCenter(BaseWidget, LoggerMixin):
                 except Exception as e:
                     self.logger.debug(f"处理品种失败: {e}")
             
-            # 更新缓存
+            # 更新缓存（_update_local_data_cache 会自动设置 _local_data_index_loaded 标志）
             self._update_local_data_cache(temp_cache, len(temp_cache), 0)
-            self._local_data_index_loaded = True
             
         except Exception as e:
             self.logger.error(f"处理本地数据索引事件失败: {e}", exc_info=True)
@@ -1941,8 +1950,14 @@ class DataCenter(BaseWidget, LoggerMixin):
             
             if "missing_symbols" in metrics:
                 if self.missing_symbols_label:
-                    self.missing_symbols_label.setText(f"缺失: {metrics['missing_symbols']}")
+                    self.missing_symbols_label.setText(f"品种缺失: {metrics['missing_symbols']}")
                     self.missing_symbols_label.setStyleSheet("color: #FF9800;")
+            
+            # 🆕 更新数据缺失
+            if "data_missing_symbols" in metrics:
+                if self.data_missing_symbols_label:
+                    self.data_missing_symbols_label.setText(f"数据缺失: {metrics['data_missing_symbols']}")
+                    self.data_missing_symbols_label.setStyleSheet("color: #FF9800;")
             
             if "outdated_symbols" in metrics:
                 if self.outdated_symbols_label:
@@ -3570,6 +3585,7 @@ class DataCenter(BaseWidget, LoggerMixin):
             total = overview_data.get("total_symbols", 0)
             local = overview_data.get("local_symbols", 0)  # 🚀 新增
             missing = overview_data.get("missing_symbols", 0)
+            data_missing = overview_data.get("data_missing_symbols", 0)  # 🆕 数据缺失
             errors = overview_data.get("error_symbols", 0)
             warnings = overview_data.get("warning_symbols", 0)
             score = overview_data.get("quality_score", 0)
@@ -3577,6 +3593,14 @@ class DataCenter(BaseWidget, LoggerMixin):
             # 🆕 数据更新状态
             outdated = overview_data.get("outdated_symbols", 0)
             avg_gap = overview_data.get("avg_gap_days", 0)
+            data_lagging = overview_data.get("data_lagging_days", 0)  # 🆕 数据滞后天数
+            
+            # 🔍 DEBUG: 输出接收到的数据
+            print(f"\n🔍 [UI DEBUG] _update_quality_overview_ui 接收到数据:")
+            print(f"   total={total}, local={local}, missing={missing}")
+            print(f"   data_missing={data_missing}, errors={errors}, warnings={warnings}")
+            print(f"   score={score}, outdated={outdated}, data_lagging={data_lagging}")
+            print(f"   details数量={len(overview_data.get('details', []))}")
 
             # 🚀 更新显示
             if self.total_symbols_label:
@@ -3587,7 +3611,15 @@ class DataCenter(BaseWidget, LoggerMixin):
                 self.downloaded_symbols_label.setText(f"已下载: {local}")
 
             if self.missing_symbols_label:
-                self.missing_symbols_label.setText(f"缺失: {missing}")
+                self.missing_symbols_label.setText(f"品种缺失: {missing}")
+
+            # 🆕 更新数据缺失品种数
+            if self.data_missing_symbols_label:
+                self.data_missing_symbols_label.setText(f"数据缺失: {data_missing}")
+                if data_missing > 0:
+                    self.data_missing_symbols_label.setStyleSheet("color: #FF9800;")
+                else:
+                    self.data_missing_symbols_label.setStyleSheet("color: #4CAF50;")
 
             if self.error_symbols_label:
                 self.error_symbols_label.setText(f"错误: {errors}")
@@ -3630,8 +3662,13 @@ class DataCenter(BaseWidget, LoggerMixin):
                 self.quality_score_label.setStyleSheet(f"color: {color}; font-weight: bold;")
 
             # 更新详情表格（如果展开）
+            details_data = overview_data.get("details", [])
+            print(f"   toggle_quality_detail_btn.isChecked={self.toggle_quality_detail_btn.isChecked() if self.toggle_quality_detail_btn else 'N/A'}")
+            print(f"   准备更新详情表格，details={len(details_data)}个")
             if self.toggle_quality_detail_btn and self.toggle_quality_detail_btn.isChecked():
-                self._update_quality_detail_table(overview_data.get("details", []))
+                self._update_quality_detail_table(details_data)
+            else:
+                print("   ℹ️ 详情表格未展开，跳过更新")
 
             # 🎯 新增：联动更新本地数据状态组件
             if self.data_status_label:
@@ -3684,9 +3721,9 @@ class DataCenter(BaseWidget, LoggerMixin):
         status = detail.get("status", "normal")
 
         status_map = {
-            "missing": ("缺失", "❌", 1),
-            "error": ("错误", "🔴", 2),
-            "warning": ("警告", "⚠️", 3),
+            "missing": ("品种缺失", "❌", 1),
+            "error": ("数据错误", "🔴", 2),
+            "warning": ("数据缺失", "⚠️", 3),  # warning表示有数据但部分日期缺失
             "normal": ("正常", "✅", 4),
         }
 
@@ -3699,7 +3736,14 @@ class DataCenter(BaseWidget, LoggerMixin):
             details: 详情列表（后端已过滤为有问题的品种并排序）
         """
         try:
+            print(f"\n🔍 [UI DEBUG] _update_quality_detail_table 被调用")
+            print(f"   details类型: {type(details)}")
+            print(f"   details大小: {len(details) if details else 'None'}")
+            if details and len(details) > 0:
+                print(f"   前3个: {[d.get('symbol', '?') + '(' + d.get('status', '?') + ')' for d in details[:3]]}")
+            
             if not self.quality_detail_table:
+                print("   ✗ quality_detail_table 为 None")
                 return
 
             # 清空表格
@@ -3708,6 +3752,7 @@ class DataCenter(BaseWidget, LoggerMixin):
             # 🆕 检查是否有问题品种
             if not details:
                 # 🆕 无问题时显示友好提示
+                print("   ℹ️ details为空，显示'无问题'提示")
                 self.quality_detail_table.insertRow(0)
                 no_issue_item = QTableWidgetItem("🎉 所有品种数据质量良好，无需修复")
                 no_issue_item.setForeground(Qt.GlobalColor.darkGreen)
@@ -3716,6 +3761,7 @@ class DataCenter(BaseWidget, LoggerMixin):
                 self.logger.info("质量详情表格：无问题品种")
                 return
 
+            print(f"   ✓ 开始填充表格，共{len(details)}个问题品种")
             self.logger.info("质量详情表格：显示 %d 个有问题的品种", len(details))
 
             # 填充数据（后端已过滤并排序）
@@ -3796,9 +3842,12 @@ class DataCenter(BaseWidget, LoggerMixin):
                         "total_symbols": data.get("total_symbols", 0),
                         "local_symbols": data.get("local_symbols", 0),
                         "missing_symbols": data.get("missing_symbols", 0),
+                        "data_missing_symbols": data.get("data_missing_symbols", 0),  # 新增
                         "error_symbols": data.get("error_symbols", 0),
                         "warning_symbols": data.get("warning_symbols", 0),
                         "quality_score": data.get("quality_score", 0),
+                        "data_lagging_days": data.get("data_lagging_days", 0),  # 新增
+                        "outdated_symbols": data.get("outdated_symbols", 0),
                     }
                 )
 

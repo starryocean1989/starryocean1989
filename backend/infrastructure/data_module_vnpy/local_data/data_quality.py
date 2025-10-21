@@ -1447,7 +1447,7 @@ class QualityOverview:
     """数据质量概览"""
 
     total_symbols: int
-    missing_symbols: int
+    missing_symbols: int  # 品种缺失（完全无数据）
     error_symbols: int
     warning_symbols: int
     quality_score: int
@@ -1460,6 +1460,10 @@ class QualityOverview:
     outdated_symbols: int = 0  # 数据过时的品种数
     avg_gap_days: int = 0  # 平均滞后天数（交易日）
     max_gap_days: int = 0  # 最大滞后天数（交易日）
+    
+    # 🆕 数据缺失与滞后字段
+    data_missing_symbols: int = 0  # 数据缺失（有数据但部分日期缺失，排除数据滞后）
+    data_lagging_days: int = 0  # 数据滞后天数（连续的全品种缺失）
 
 
 @dataclass
@@ -1659,6 +1663,16 @@ class DataSensor:
             avg_gap_days = int(sum(gap_days_list) / len(gap_days_list)) if gap_days_list else 0
             max_gap_days = max(gap_days_list) if gap_days_list else 0
 
+            # 🆕 计算数据滞后和数据缺失
+            print("\n" + "🔍 开始调用 _calculate_lagging_and_missing...", flush=True)
+            data_lagging_days, data_missing_symbols = self._calculate_lagging_and_missing(
+                symbols_with_data=symbols_with_data,
+                reference_symbols=reference_symbols,
+                base_date=date.today(),  # TODO: 从配置读取
+                interval="1d"
+            )
+            print(f"✅ 计算结果: 滞后={data_lagging_days}天, 缺失={data_missing_symbols}个品种\n", flush=True)
+
             # 计算整体质量评分
             if total_symbols > 0:
                 quality_score = int(
@@ -1697,6 +1711,10 @@ class DataSensor:
             problem_details.sort(
                 key=lambda d: {"missing": 1, "error": 2, "warning": 3}.get(d["status"], 4)
             )
+            
+            print(f"📋 问题品种详情: {len(problem_details)}个有问题品种", flush=True)
+            if problem_details:
+                print(f"   前3个问题品种: {[d['symbol'] + '(' + d['status'] + ')' for d in problem_details[:3]]}", flush=True)
 
             overview = QualityOverview(
                 total_symbols=total_symbols,
@@ -1712,6 +1730,9 @@ class DataSensor:
                 outdated_symbols=outdated_symbols,
                 avg_gap_days=avg_gap_days,
                 max_gap_days=max_gap_days,
+                # 🆕 数据缺失与滞后
+                data_missing_symbols=data_missing_symbols,
+                data_lagging_days=data_lagging_days,
             )
 
             self._quality_overview = overview
@@ -1994,6 +2015,209 @@ class DataSensor:
         # 最多显示3个问题
         return "; ".join(issues[:3])
 
+    def _calculate_lagging_and_missing(
+        self,
+        symbols_with_data: List[str],
+        reference_symbols: List[str],
+        base_date: date,
+        interval: str = "1d"
+    ) -> tuple:
+        """计算数据滞后和数据缺失
+        
+        逻辑：
+        1. 从最新交易日往前遍历
+        2. 找到第一段连续的"所有品种都缺失数据"的日期范围 → 数据滞后
+        3. 这段范围之前的日期，有数据的品种中，缺失部分日期的品种数 → 数据缺失
+        
+        Args:
+            symbols_with_data: 本地有数据的品种列表
+            reference_symbols: 参考品种列表（全部品种）
+            base_date: 基准日期
+            interval: 时间周期（默认1d）
+        
+        Returns:
+            (data_lagging_days, data_missing_symbols)
+        """
+        import sys
+        print("\n" + "="*70, file=sys.stderr)
+        print("🔍 [DEBUG] 开始计算数据滞后和数据缺失", file=sys.stderr)
+        print(f"   本地有数据品种: {len(symbols_with_data)}个", file=sys.stderr)
+        print(f"   参考品种: {len(reference_symbols)}个", file=sys.stderr)
+        print(f"   基准日期: {base_date}", file=sys.stderr)
+        print("="*70, file=sys.stderr)
+        sys.stderr.flush()
+        
+        try:
+            from backend.infrastructure.tdx_asyncio.calendar import TradingCalendar
+            import asyncio
+            from concurrent.futures import ThreadPoolExecutor
+            
+            # 获取交易日历
+            trading_calendar_obj = TradingCalendar()
+            
+            # 在新线程中运行异步代码
+            def run_async_in_thread():
+                """在新线程中运行异步代码"""
+                new_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(new_loop)
+                try:
+                    today = date.today()
+                    # 获取今年和去年的交易日历
+                    df_this_year = new_loop.run_until_complete(
+                        trading_calendar_obj.get_trading_calendar(today.year)
+                    )
+                    df_last_year = new_loop.run_until_complete(
+                        trading_calendar_obj.get_trading_calendar(today.year - 1)
+                    )
+                    # 合并两年的交易日
+                    trading_days = []
+                    if df_this_year is not None and not df_this_year.empty:
+                        trading_days.extend(df_this_year['date'].tolist())
+                    if df_last_year is not None and not df_last_year.empty:
+                        trading_days.extend(df_last_year['date'].tolist())
+                    return trading_days
+                finally:
+                    new_loop.close()
+            
+            try:
+                print("   步骤1: 获取交易日历...", file=sys.stderr)
+                sys.stderr.flush()
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(run_async_in_thread)
+                    trading_calendar = future.result(timeout=10)
+                print(f"   ✓ 获取到交易日: {len(trading_calendar) if trading_calendar else 0}天", file=sys.stderr)
+                sys.stderr.flush()
+            except Exception as e:
+                print(f"   ✗ 交易日历获取失败: {e}", file=sys.stderr)
+                sys.stderr.flush()
+                self.logger.error("交易日历异步调用失败: %s", e, exc_info=True)
+                return (0, 0)
+            
+            if not trading_calendar:
+                print("   ✗ 交易日历为空", file=sys.stderr)
+                sys.stderr.flush()
+                self.logger.warning("交易日历不可用，无法计算数据滞后和缺失")
+                return (0, 0)
+            
+            # 获取从base_date到今天的所有交易日
+            today = date.today()
+            trading_days = [
+                d for d in trading_calendar
+                if isinstance(d, date) and base_date <= d <= today
+            ]
+            
+            if not trading_days:
+                return (0, 0)
+            
+            trading_days.sort()
+            latest_trading_day = trading_days[-1]
+            
+            # 步骤1：从最新交易日往前遍历，统计每个交易日有数据的品种数
+            # 构建每个品种的数据日期集合
+            print(f"   步骤2: 构建品种数据日期集合（{len(symbols_with_data)}个品种）...", file=sys.stderr)
+            sys.stderr.flush()
+            symbol_date_sets = {}
+            for idx, symbol in enumerate(symbols_with_data):
+                try:
+                    # 获取品种的所有数据
+                    df = self.storage_manager.query_kline(symbol, interval)
+                    if df is not None and not df.empty:
+                        # 从DataFrame中提取日期
+                        if 'date' in df.columns:
+                            data_dates = [d.date() if isinstance(d, datetime) else d for d in df['date'].tolist()]
+                        elif df.index.name == 'date' or 'datetime' in str(df.index.dtype):
+                            data_dates = [d.date() if isinstance(d, datetime) else d for d in df.index.tolist()]
+                        else:
+                            continue
+                        symbol_date_sets[symbol] = set(data_dates)
+                    
+                    # 每1000个品种输出一次进度
+                    if (idx + 1) % 1000 == 0:
+                        print(f"      已处理 {idx + 1}/{len(symbols_with_data)} 品种", file=sys.stderr)
+                        sys.stderr.flush()
+                except Exception as e:
+                    self.logger.debug(f"获取品种{symbol}数据日期失败: {e}")
+                    continue
+            
+            print(f"   ✓ 构建完成，有效品种: {len(symbol_date_sets)}个", file=sys.stderr)
+            sys.stderr.flush()
+            
+            # 步骤2：从最新交易日往前找连续的全品种缺失段
+            print(f"   步骤3: 计算数据滞后天数（从{len(trading_days)}个交易日倒序检查）...", file=sys.stderr)
+            sys.stderr.flush()
+            data_lagging_days = 0
+            lagging_start_idx = len(trading_days)  # 数据滞后开始的索引（不含）
+            
+            for idx in range(len(trading_days) - 1, -1, -1):
+                trading_day = trading_days[idx]
+                # 统计这一天有数据的品种数
+                symbols_with_data_on_day = sum(
+                    1 for date_set in symbol_date_sets.values()
+                    if trading_day in date_set
+                )
+                
+                if symbols_with_data_on_day == 0:
+                    # 这一天所有品种都缺失数据
+                    data_lagging_days += 1
+                else:
+                    # 找到第一个有数据的日期，滞后计算结束
+                    lagging_start_idx = idx + 1
+                    print(f"   ✓ 数据滞后: {data_lagging_days}天 (从{trading_days[idx]}往后)", file=sys.stderr)
+                    sys.stderr.flush()
+                    break
+            
+            # 步骤3：统计数据缺失品种数（排除滞后日期）
+            # 数据缺失定义：在非滞后日期范围内，品种有数据但部分日期缺失
+            print(f"   步骤4: 计算数据缺失品种数（检查非滞后日期范围）...", file=sys.stderr)
+            sys.stderr.flush()
+            data_missing_symbols = 0
+            
+            if lagging_start_idx > 0:
+                # 只检查非滞后的日期范围
+                non_lagging_trading_days = trading_days[:lagging_start_idx]
+                
+                if non_lagging_trading_days:
+                    expected_days_count = len(non_lagging_trading_days)
+                    print(f"      非滞后日期范围: {expected_days_count}个交易日", file=sys.stderr)
+                    sys.stderr.flush()
+                    
+                    for symbol, date_set in symbol_date_sets.items():
+                        # 统计该品种在非滞后日期范围内的数据完整性
+                        actual_days_in_range = sum(
+                            1 for d in non_lagging_trading_days
+                            if d in date_set
+                        )
+                        
+                        # 如果有数据但不完整，计为数据缺失
+                        if 0 < actual_days_in_range < expected_days_count:
+                            data_missing_symbols += 1
+                    
+                    print(f"   ✓ 数据缺失: {data_missing_symbols}个品种", file=sys.stderr)
+                    sys.stderr.flush()
+            else:
+                print(f"   ✓ 数据缺失: 0个品种（全部数据滞后）", file=sys.stderr)
+                sys.stderr.flush()
+            
+            print("\n" + "="*70, file=sys.stderr)
+            print(f"✅ [DEBUG] 计算完成", file=sys.stderr)
+            print(f"   数据滞后: {data_lagging_days}天", file=sys.stderr)
+            print(f"   数据缺失: {data_missing_symbols}个品种", file=sys.stderr)
+            print("="*70 + "\n", file=sys.stderr)
+            sys.stderr.flush()
+            
+            self.logger.info(
+                f"数据滞后与缺失统计: 滞后{data_lagging_days}天, "
+                f"数据缺失{data_missing_symbols}个品种"
+            )
+            
+            return (data_lagging_days, data_missing_symbols)
+            
+        except Exception as e:
+            print(f"\n❌ [DEBUG] 计算失败: {e}", file=sys.stderr)
+            sys.stderr.flush()
+            self.logger.error(f"计算数据滞后和缺失失败: {e}", exc_info=True)
+            return (0, 0)
+
     def _scan_symbol_quality(self, symbol: str, intervals: List[str]) -> SymbolQuality:
         """扫描单个品种的质量"""
         interval_results = {}
@@ -2072,6 +2296,9 @@ class DataSensor:
                     "outdated_symbols": overview.outdated_symbols,
                     "avg_gap_days": overview.avg_gap_days,
                     "max_gap_days": overview.max_gap_days,
+                    # 🆕 数据缺失与滞后
+                    "data_missing_symbols": overview.data_missing_symbols,
+                    "data_lagging_days": overview.data_lagging_days,
                 },
                 "timestamp": datetime.now(),
             }
@@ -2473,6 +2700,19 @@ class DataSensor:
         print(f"  ✓ 最终评分: {quality_score}")
         sys.stdout.flush()
 
+        # 🆕 计算数据滞后和数据缺失
+        print(f"  步骤4.1: 计算数据滞后和数据缺失...")
+        sys.stdout.flush()
+        local_symbols = local_data.get("local_symbols", [])
+        data_lagging_days, data_missing_symbols = self._calculate_lagging_and_missing(
+            symbols_with_data=local_symbols,
+            reference_symbols=reference_symbols,
+            base_date=date.today(),
+            interval="1d"
+        )
+        print(f"  ✓ 数据滞后: {data_lagging_days}天, 数据缺失: {data_missing_symbols}个品种")
+        sys.stdout.flush()
+
         # 构建详情（只包含有问题的品种）
         problem_details = [
             {
@@ -2500,6 +2740,8 @@ class DataSensor:
             details=problem_details,
             outdated_symbols=outdated_symbols,
             avg_gap_days=avg_gap_days,
+            data_missing_symbols=data_missing_symbols,  # 🆕 添加数据缺失
+            data_lagging_days=data_lagging_days,  # 🆕 添加数据滞后
         )
 
         # 推送最终指标
@@ -2680,13 +2922,51 @@ class DataSensor:
         if progress_callback:
             progress_callback(90)
         
-        # ========== 阶段4：计算最终评分 (<1ms) ==========
-        print("\n[阶段4/4] 计算最终评分...")
+        # ========== 阶段4：计算最终评分和数据缺失 ==========
+        print("\n[阶段4/4] 计算最终评分和数据缺失...")
         sys.stdout.flush()
         
         total_symbols = len(reference_symbols)
         missing_symbols = len(reference_symbols) - len(local_symbols)
         
+        # 🆕 计算数据滞后和数据缺失
+        print(f"  步骤4.1: 计算数据滞后和数据缺失...")
+        sys.stdout.flush()
+        data_lagging_days, data_missing_symbols = self._calculate_lagging_and_missing(
+            symbols_with_data=local_symbols,
+            reference_symbols=reference_symbols,
+            base_date=date.today(),
+            interval="1d"
+        )
+        print(f"  ✓ 数据滞后: {data_lagging_days}天, 数据缺失: {data_missing_symbols}个品种")
+        sys.stdout.flush()
+        
+        # 🆕 构建问题品种详情
+        print(f"  步骤4.2: 构建问题品种详情...")
+        sys.stdout.flush()
+        problem_details = []
+        for result in all_results:
+            if result.get("has_errors") or result.get("has_warnings") or result.get("is_missing"):
+                symbol = result.get("symbol", "")
+                status = "missing" if result.get("is_missing") else ("error" if result.get("has_errors") else "warning")
+                problem_details.append({
+                    "symbol": symbol,
+                    "status": status,
+                    "score": result.get("overall_score", 0),
+                    "has_errors": result.get("has_errors", False),
+                    "has_warnings": result.get("has_warnings", False),
+                    "is_missing": result.get("is_missing", False),
+                    "issues": result.get("issues", ""),
+                })
+        
+        # 按问题严重程度排序
+        problem_details.sort(
+            key=lambda d: {"missing": 1, "error": 2, "warning": 3}.get(d["status"], 4)
+        )
+        print(f"  ✓ 问题品种: {len(problem_details)}个")
+        sys.stdout.flush()
+        
+        # 计算质量评分
         quality_score = int(
             ((total_symbols - missing_symbols - error_count * 2 - warning_count * 0.5) / total_symbols) * 100
         ) if total_symbols > 0 else 100
@@ -2704,9 +2984,11 @@ class DataSensor:
             last_scan_time=datetime.now(),
             base_date=date.today(),
             scanned_intervals=list(set(intervals)),
-            details=[],
+            details=problem_details,  # 🔧 修复：使用实际的问题品种详情
             outdated_symbols=outdated,
             avg_gap_days=avg_gap,
+            data_missing_symbols=data_missing_symbols,  # 🆕 添加数据缺失
+            data_lagging_days=data_lagging_days,  # 🆕 添加数据滞后
         )
         
         self._quality_overview = overview

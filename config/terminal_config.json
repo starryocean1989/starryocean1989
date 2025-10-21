@@ -8,6 +8,10 @@
     "postgres_user": null,
     "postgres_password": null
   },
+  "data_quality": {
+    "base_date": "2024-01-01",
+    "description": "数据质量感知的基准日期，用于计算数据缺失统计"
+  },
   "vnpy": {
     "event_engine_timer_interval": 1.0,
     "event_engine_timer_interval_ms": 1000,
