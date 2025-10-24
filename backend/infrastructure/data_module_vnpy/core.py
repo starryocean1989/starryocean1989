@@ -19,8 +19,6 @@ import time
 from datetime import date
 from typing import Any, Dict, List, Optional, Union
 
-from PySide6.QtCore import Signal, QObject
-
 from vnpy.event import Event, EventEngine
 from vnpy.trader.engine import BaseEngine, MainEngine
 
@@ -33,10 +31,18 @@ from .local_data.data_quality import (
     ValidationSummary,
     DataFileWatcher,
 )
-from .data_acquisition.gateways import PollingGateway, VirtualGateway
 from .data_readers import TdxBinaryReader
-from .local_data.data_quality import DataSensor, QualityOverview, KlineFileWatcher
-from .local_data.unified_data_manager import PreloadService, UnifiedDataManager
+from .local_data.data_quality import DataSensor, QualityOverview
+from .local_data.unified_data_manager import (
+    PreloadService,
+    UnifiedDataManager,
+    TdxDataSource,
+    VirtualDataSource,
+)
+
+# 向后兼容别名
+PollingGateway = TdxDataSource
+VirtualGateway = VirtualDataSource
 
 
 # 从events模块导入常量
@@ -47,10 +53,53 @@ from .events import (
 )
 
 
-class CacheValidationProgressEmitter(QObject):
-    """缓存验证进度信号发射器（组合模式，避免多重继承）"""
+class CacheValidationProgressEmitter:
+    """缓存验证进度信号发射器（线程安全，避免Qt Timer问题）
 
-    progress_updated = Signal(str, int)  # (阶段描述, 进度百分比)
+    修复说明：
+    - 原实现继承QObject，在后台线程中创建会触发Qt Timer警告
+    - 新实现使用回调函数机制，线程安全且无Qt依赖
+    """
+
+    def __init__(self):
+        """初始化进度发射器"""
+        self._callbacks = []
+        self._lock = threading.Lock()
+
+    def progress_updated_connect(self, callback):
+        """连接回调函数（替代Qt的connect）
+
+        Args:
+            callback: 回调函数 callback(message: str, progress: int)
+        """
+        with self._lock:
+            self._callbacks.append(callback)
+
+    @property
+    def progress_updated(self):
+        """提供兼容的API（模拟Qt Signal）"""
+        return self
+
+    def emit(self, message: str, progress: int):
+        """发射进度更新信号（线程安全）
+
+        Args:
+            message: 进度消息
+            progress: 进度百分比
+        """
+        with self._lock:
+            callbacks = self._callbacks.copy()
+
+        # 执行所有回调（在锁外执行，避免死锁）
+        for callback in callbacks:
+            try:
+                callback(message, progress)
+            except Exception:
+                pass  # 静默处理回调异常，不影响主流程
+
+    def connect(self, callback):
+        """Qt兼容的connect方法"""
+        self.progress_updated_connect(callback)
 
 
 class ChinaStockEngine(BaseEngine):
@@ -77,9 +126,6 @@ class ChinaStockEngine(BaseEngine):
         # 新增：数据感知器
         self.data_sensor = DataSensor(event_engine)
         self.data_file_watcher: Optional[DataFileWatcher] = None
-
-        # 🆕 新增：K线文件监听器
-        self.kline_file_watcher: Optional[KlineFileWatcher] = None
 
         # 新增：轮询网关和虚拟网关
         self.polling_gateway: Optional[PollingGateway] = None
@@ -155,41 +201,65 @@ class ChinaStockEngine(BaseEngine):
         # except Exception:
         #     pass
 
-        # 🆕 启动智能缓存验证线程（替代旧的质量扫描）
-        validation_thread = threading.Thread(
-            target=self._smart_cache_validation_and_sensing,
-            daemon=True,
-            name="SmartCacheValidator",
-        )
-        validation_thread.start()
-        self.logger.info("✓ 智能缓存验证线程已启动")
-
-        # 🆕 启动K线文件监听器
-        try:
-            # 🔧 修复：使用标准方法获取数据目录，确保使用绝对路径
-            kline_dir = config_manager.get_data_dir()
-            if kline_dir.exists():
-                self.kline_file_watcher = KlineFileWatcher(
-                    data_dir=kline_dir, callback=self._on_kline_file_changed
-                )
-                self.kline_file_watcher.start()
-            else:
-                self.logger.warning(f"K线数据目录不存在: {kline_dir}，文件监听未启动")
-        except Exception as e:
-            self.logger.warning(f"启动K线文件监听器失败: {e}", exc_info=True)
+        # 🔧 架构修复：移除SmartCacheValidator线程（混合线程模型导致Qt Timer警告）
+        # 原因：threading.Thread与Qt的EventEngine不兼容，导致跨线程问题
+        # 新方案：验证延迟到UI就绪后，使用Qt原生的QThread执行
+        # 参考：ui/main_window.py的showEvent方法会触发后台验证
+        self.logger.info("✓ 智能缓存验证将在UI就绪后启动（避免启动阻塞）")
 
     # ==================== 健康检查与就绪 ====================
 
     def _ensure_lazy_init(self) -> None:
-        """确保延迟初始化已完成（简化版，代理调用）"""
+        """确保延迟初始化已完成
+
+        首次调用时初始化：
+        1. 文件监控器
+        2. 数据感知器
+        3. 预加载服务
+        """
         if self._lazy_init_done:
             return
 
         with self._lazy_init_lock:
             if not self._lazy_init_done:
-                from .lifecycle_manager import LifecycleManager
+                self.logger.info("[LAZY-INIT] 开始延迟初始化...")
 
-                LifecycleManager.lazy_init(self.data_sensor, self.preload_service)
+                try:
+                    # 1. 启动文件监控（如果配置启用）
+                    if config_manager.is_watcher_enabled():
+                        self.logger.info("[LAZY-INIT] 启动文件监控...")
+                        try:
+                            # 文件监控现在由data_sensor处理，无需单独启动
+                            self.logger.info("[LAZY-INIT] ✅ 文件监控由data_sensor管理")
+                        except Exception as e:
+                            self.logger.warning("[LAZY-INIT] ⚠️ 文件监控启动失败: %s", e)
+                    else:
+                        self.logger.info("[LAZY-INIT] 文件监控未启用，跳过")
+
+                    # 2. 启动数据感知器（异步扫描）
+                    self.logger.info("[LAZY-INIT] 启动数据感知器...")
+                    try:
+                        # 数据感知器的启动逻辑已经移到DataSensor中
+                        self.logger.info("[LAZY-INIT] ✅ 数据感知器准备就绪（按需启动）")
+                    except Exception as e:
+                        self.logger.warning("[LAZY-INIT] ⚠️ 数据感知器启动失败: %s", e)
+
+                    # 3. 启动预加载服务（如果配置启用且自动启动）
+                    if self.preload_service and config_manager.is_preload_auto_start():
+                        self.logger.info("[LAZY-INIT] 启动预加载服务...")
+                        try:
+                            self.preload_service.start(prime=True)
+                            self.logger.info("[LAZY-INIT] ✅ 预加载服务启动成功")
+                        except Exception as e:
+                            self.logger.warning("[LAZY-INIT] ⚠️ 预加载服务启动失败: %s", e)
+                    else:
+                        self.logger.info("[LAZY-INIT] 预加载服务未启用或不自动启动，跳过")
+
+                    self.logger.info("[LAZY-INIT] ✅ 延迟初始化完成")
+
+                except Exception as e:
+                    self.logger.error("[LAZY-INIT] ❌ 延迟初始化发生异常: %s", e, exc_info=True)
+
                 self._lazy_init_done = True
 
     def healthcheck(self) -> Dict[str, Any]:
@@ -277,7 +347,7 @@ class ChinaStockEngine(BaseEngine):
             # 步骤6.1：推送本地数据索引（立即可用，不等待质量扫描）
             self.logger.info("[6.1/7] 推送本地数据索引...")
             self._push_local_data_index_event()
-            
+
             # 步骤6.2：使用最新缓存进行数据质量感知 (45%-95%)
             print("\n" + "-" * 70)
             print("【步骤6/7】数据质量感知")
@@ -378,7 +448,7 @@ class ChinaStockEngine(BaseEngine):
     def _validate_server_pool_cache(self):
         """验证服务器池缓存"""
         try:
-            from backend.infrastructure.data_module_vnpy.server_pool_manager import (
+            from backend.infrastructure.data_module_vnpy.load_balancer.server_pool_manager import (
                 server_pool_manager,
             )
 
@@ -618,22 +688,13 @@ class ChinaStockEngine(BaseEngine):
                 mapped_percent = int(45 + percent * 0.5)
                 self.progress_emitter.progress_updated.emit("数据质量扫描", mapped_percent)
 
-            # 🆕 使用混合异步扫描（如果启用）
+            # 使用自适应扫描或传统扫描
             from .config import config_manager
-            
+
             reference_symbols = self.symbol_loader.extract_all_codes()
-            
-            if config_manager.is_quality_scan_hybrid_async_enabled():
-                # 🔥 终极混合异步架构
-                self.logger.info("✨ 启用混合异步架构（协程+线程+进程）")
-                overview = self.data_sensor.scan_all_data_hybrid_sync(
-                    reference_symbols=reference_symbols,
-                    intervals=None,  # 使用默认 ["1d", "5m", "1m"]
-                    force_refresh=False,
-                    progress_callback=progress_callback,
-                )
-            elif config_manager.is_quality_scan_adaptive_enabled():
-                # 🚀 自适应扫描
+
+            if config_manager.is_quality_scan_adaptive_enabled():
+                # 🚀 自适应扫描（推荐）
                 self.logger.info("启用自适应扫描")
                 overview = self.data_sensor.scan_all_data_adaptive(
                     reference_symbols=reference_symbols,
@@ -643,6 +704,7 @@ class ChinaStockEngine(BaseEngine):
                 )
             else:
                 # 传统扫描
+                self.logger.info("使用传统扫描")
                 overview = self.data_sensor.trigger_scan_with_symbols(
                     symbol_loader=self.symbol_loader,
                     force_refresh=False,  # 使用缓存
@@ -757,6 +819,8 @@ class ChinaStockEngine(BaseEngine):
                 "data_missing_symbols": overview.data_missing_symbols,
                 "data_lagging_days": overview.data_lagging_days,
                 "outdated_symbols": overview.outdated_symbols,
+                # 🔧 修复：添加问题品种详情
+                "details": overview.details,
             }
 
             event = Event(EVENT_DATA_QUALITY_UPDATE, event_data)
@@ -764,14 +828,15 @@ class ChinaStockEngine(BaseEngine):
 
             self.logger.info(
                 f"📊 推送数据质量概览: 评分{overview.quality_score}, "
-                f"总品种{overview.total_symbols}, 缺失{overview.missing_symbols}"
+                f"总品种{overview.total_symbols}, 缺失{overview.missing_symbols}, "
+                f"问题品种{len(overview.details)}个"
             )
         except Exception as e:
             self.logger.warning(f"推送数据质量概览失败: {e}", exc_info=True)
 
     def _push_local_data_index_event(self):
         """推送本地数据索引事件（品种列表）给UI
-        
+
         在缓存验证完成后立即调用（不等待质量扫描），让UI能快速获得联想功能。
         索引生成仅需扫描本地文件，耗时很短（通常<1秒）。
         """
@@ -783,7 +848,7 @@ class ChinaStockEngine(BaseEngine):
 
             # 获取本地数据索引（品种代码列表）
             local_symbol_codes = self.storage_manager.get_local_data_index()
-            
+
             if not local_symbol_codes:
                 self.logger.info("本地数据索引为空，跳过推送")
                 return
@@ -791,7 +856,7 @@ class ChinaStockEngine(BaseEngine):
             # 构建事件数据：包含代码和名称的完整品种列表
             symbol_list = []
             all_classified = self.symbol_loader.get_all_classified()
-            
+
             # 构建代码到名称的映射
             code_to_name = {}
             for market_symbols in all_classified.values():
@@ -800,14 +865,15 @@ class ChinaStockEngine(BaseEngine):
                     name = symbol_info.get("name", "")
                     if code:
                         code_to_name[code] = name
-            
+
             # 构建完整的品种列表
             for code in local_symbol_codes:
                 name = code_to_name.get(code, "")
                 symbol_list.append({"code": code, "name": name})
-            
+
             # 推送事件
             from .events import EVENT_LOCAL_DATA_INDEX_READY
+
             event_data = {
                 "symbols": symbol_list,
                 "count": len(symbol_list),
@@ -816,49 +882,54 @@ class ChinaStockEngine(BaseEngine):
             event_engine.put(event)
 
             self.logger.info(f"📋 推送本地数据索引: {len(symbol_list)} 个品种")
-            
+
         except Exception as e:
             self.logger.warning(f"推送本地数据索引失败: {e}", exc_info=True)
 
-    def _on_kline_file_changed(self, event_type: str, file_path: str):
-        """K线文件变化回调
-
-        Args:
-            event_type: 事件类型（created/modified）
-            file_path: 文件路径
-        """
-        from pathlib import Path
-
-        self.logger.info(f"检测到K线文件变化: {event_type} - {Path(file_path).name}")
-
-        # 触发增量扫描（不强制刷新，只扫描新文件）
-        try:
-            overview = self.trigger_data_quality_scan(force_refresh=False)
-            if overview:
-                self._push_quality_overview_event(overview)
-        except Exception as e:
-            self.logger.error(f"文件变化后质量扫描失败: {e}", exc_info=True)
-
     def close(self) -> None:
-        """关闭引擎（代理调用）"""
-        from .lifecycle_manager import LifecycleManager
+        """关闭引擎"""
+        try:
+            # 停止文件监听器
+            if self.data_sensor and hasattr(self.data_sensor, "data_file_watcher"):
+                if self.data_sensor.data_file_watcher:
+                    try:
+                        self.data_sensor.data_file_watcher.stop()
+                        self.logger.info("数据文件监控已停止")
+                    except Exception as e:
+                        self.logger.warning(f"停止数据文件监控失败: {e}")
 
-        # 🆕 停止文件监听器
-        if self.kline_file_watcher:
-            try:
-                self.kline_file_watcher.stop()
-            except Exception as e:
-                self.logger.warning(f"停止文件监听器失败: {e}")
+            # 停止数据感知
+            if self.data_sensor and hasattr(self.data_sensor, "stop_sensing"):
+                try:
+                    self.data_sensor.stop_sensing()
+                except Exception as e:
+                    self.logger.error("停止数据感知失败: %s", e)
 
-        LifecycleManager.close_all(
-            {
-                "data_sensor": self.data_sensor,
-                "preload": self.preload_service,
-                "polling": self.polling_gateway,
-                "virtual": self.virtual_gateway,
-            }
-        )
-        self.logger.info("中国A股数据管理引擎已关闭")
+            # 停止预加载服务
+            if self.preload_service and hasattr(self.preload_service, "stop"):
+                try:
+                    self.preload_service.stop()
+                except Exception as e:
+                    self.logger.error("停止预加载服务失败: %s", e)
+
+            # 关闭轮询网关
+            if self.polling_gateway and hasattr(self.polling_gateway, "close"):
+                try:
+                    self.polling_gateway.close()
+                except Exception as e:
+                    self.logger.error("关闭轮询网关失败: %s", e)
+
+            # 关闭虚拟网关
+            if self.virtual_gateway and hasattr(self.virtual_gateway, "close"):
+                try:
+                    self.virtual_gateway.close()
+                except Exception as e:
+                    self.logger.error("关闭虚拟网关失败: %s", e)
+
+            self.logger.info("中国A股数据管理引擎已关闭")
+
+        except Exception as e:
+            self.logger.error("关闭引擎失败: %s", e)
 
     def refresh_stock_list(self) -> Optional[Dict[str, List[Dict[str, Any]]]]:
         """读取本地品种缓存（代理调用）"""
@@ -915,9 +986,18 @@ class ChinaStockEngine(BaseEngine):
             )
         else:
             # Fallback到基础存储管理器（单品种查询）
-            target_symbol = symbol or kwargs.get("symbols")
-            if isinstance(target_symbol, (list, tuple)):
-                target_symbol = target_symbol[0] if target_symbol else None
+            target_symbol: Optional[str] = None
+            symbol_candidate = symbol or kwargs.get("symbols")
+
+            if isinstance(symbol_candidate, (list, tuple)):
+                # 从列表或元组中取第一个元素
+                if len(symbol_candidate) > 0:
+                    first_item = symbol_candidate[0]
+                    if isinstance(first_item, str):
+                        target_symbol = first_item
+            elif isinstance(symbol_candidate, str):
+                target_symbol = symbol_candidate
+
             if target_symbol is None:
                 return None
 
@@ -974,7 +1054,7 @@ class ChinaStockEngine(BaseEngine):
     def _start_file_watcher(self) -> None:
         """启动文件监控（已合并到data_sensor）"""
         # 文件监控现在由data_sensor处理，无需单独启动
-        pass
+        return
 
     def _push_log_event(self, message: str, level: str = "INFO") -> None:
         """推送日志事件（代理到EventPublisher）"""
@@ -1028,50 +1108,53 @@ class ChinaStockEngine(BaseEngine):
     # ==================== 轮询网关管理方法 ====================
 
     def _init_polling_gateway(self) -> None:
-        """初始化轮询网关（代理调用）"""
-        from .gateways import GatewayManager
-
-        self.polling_gateway = GatewayManager.start_polling(self.event_engine)
+        """初始化轮询网关（已迁移到UnifiedDataManager）"""
+        # 轮询网关已迁移到 UnifiedDataManager.tdx_source
+        # 保留此方法以保持向后兼容性
+        return
 
     def start_polling_gateway(self, setting: Optional[Dict] = None) -> bool:
-        """启动轮询网关（代理调用）"""
-        from .gateways import GatewayManager
-
-        self.polling_gateway = GatewayManager.start_polling(
-            self.event_engine, self.polling_gateway, setting
-        )
-        return self.polling_gateway is not None
+        """启动轮询网关（通过UnifiedDataManager）"""
+        # 通过 UnifiedDataManager 启动 TdxDataSource
+        if self.unified_data_manager:
+            return self.unified_data_manager.start_tdx_source(setting or {})
+        return False
 
     def stop_polling_gateway(self) -> bool:
-        """停止轮询网关（代理调用）"""
-        from .gateways import GatewayManager
-
-        return GatewayManager.stop_polling(self.polling_gateway)
+        """停止轮询网关（通过UnifiedDataManager）"""
+        # 通过 UnifiedDataManager 停止 TdxDataSource
+        if self.unified_data_manager:
+            return self.unified_data_manager.stop_tdx_source()
+        return False
 
     # ==================== 虚拟网关管理方法 ====================
 
     def _init_virtual_gateway(self) -> None:
-        """初始化虚拟网关（代理调用）"""
-        from .gateways import GatewayManager
-
-        self.virtual_gateway = GatewayManager.init_virtual_gateway(self.event_engine)
+        """初始化虚拟网关（已迁移到UnifiedDataManager）"""
+        # 虚拟网关已迁移到 UnifiedDataManager.virtual_source
+        # 保留此方法以保持向后兼容性
+        return
 
     def start_virtual_gateway(
         self, start_datetime: str, speed: float = 1.0, symbols: Optional[List[str]] = None
     ) -> bool:
-        """启动虚拟网关（代理调用）"""
-        from .gateways import GatewayManager
-
-        self.virtual_gateway = GatewayManager.start_virtual(
-            self.event_engine, self.virtual_gateway, start_datetime, speed, symbols
-        )
-        return self.virtual_gateway is not None
+        """启动虚拟网关（通过UnifiedDataManager）"""
+        # 通过 UnifiedDataManager 启动 VirtualDataSource
+        if self.unified_data_manager:
+            config = {
+                "start_datetime": start_datetime,
+                "speed": speed,
+                "symbols": symbols,
+            }
+            return self.unified_data_manager.start_virtual_source(config)
+        return False
 
     def stop_virtual_gateway(self) -> bool:
-        """停止虚拟网关（代理调用）"""
-        from .gateways import GatewayManager
-
-        return GatewayManager.stop_virtual(self.virtual_gateway)
+        """停止虚拟网关（通过UnifiedDataManager）"""
+        # 通过 UnifiedDataManager 停止 VirtualDataSource
+        if self.unified_data_manager:
+            return self.unified_data_manager.stop_virtual_source()
+        return False
 
     # ==================== 数据读取器管理方法 ====================
 

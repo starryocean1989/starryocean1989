@@ -38,6 +38,31 @@ class DataCenterService(BaseService, LoggerMixin):
         # recorder_engine（在start_data_recording中初始化）
         self.recorder_engine = None
 
+        # 业务指标埋点 - 数据中心服务 ✅
+        # 已启用基础架构，可在业务方法中调用 self.metrics_collector.record_metric()
+        from backend.infrastructure.system_vnpy import get_business_metrics_collector
+
+        self.metrics_collector = get_business_metrics_collector()
+        self.logger.info("业务指标采集器已启用（数据中心服务）")
+
+        # 支持的指标类型：
+        # - data_query_latency_ms: 数据查询延迟
+        # - download_speed_mbps: 下载速度
+        # - download_concurrency: 下载并发数
+        # - cache_hit_rate: 缓存命中率
+        #
+        # 使用示例（在具体业务方法中）：
+        # start_time = time.time()
+        # result = await query_operation()
+        # latency_ms = (time.time() - start_time) * 1000
+        # self.metrics_collector.record_metric('data_query_latency_ms', latency_ms,
+        #                                      {'table': 'kline_data'})
+        #
+        # TODO: 在以下方法中添加实际埋点:
+        # - load_all_symbols(): 记录加载耗时
+        # - download_history(): 记录下载速度
+        # - query_bar_data(): 记录查询延迟
+
         # 数据源连接状态
         self.datafeeds: Dict[str, Any] = {
             "polling_gateway": None,
@@ -85,8 +110,10 @@ class DataCenterService(BaseService, LoggerMixin):
             # 🔧 修复：启动时加载品种缓存（如果存在）
             self._load_symbol_cache_on_startup()
 
-            # 🆕 启动服务器验证（后台线程）- 重新启用，确保下载时有可用服务器
-            self._start_server_verification()
+            # 🔧 修复Qt Timer跨线程问题：服务器验证改为延迟到首次使用
+            # 不再在启动时创建Python threading.Thread，避免与EventEngine冲突
+            # self._start_server_verification()  # ← 已禁用
+            self.logger.info("服务器验证已禁用（按需验证模式）")
 
             self.log_operation_success("数据中心服务初始化")
             return True
@@ -105,9 +132,9 @@ class DataCenterService(BaseService, LoggerMixin):
             self._china_stock_engine_checked = True
 
             if self._china_stock_engine:
-                self.logger.info("✅ ChinaStockEngine 可用")
+                self.logger.info("✅ ChinaStockEngine可用")
             else:
-                self.logger.warning("⚠️ ChinaStockEngine 不可用，部分功能受限")
+                self.logger.warning("⚠️ ChinaStockEngine不可用，部分功能受限")
 
     @property
     def china_stock_engine(self):
@@ -118,7 +145,7 @@ class DataCenterService(BaseService, LoggerMixin):
     def _do_shutdown(self) -> bool:
         """关闭数据中心服务."""
         try:
-            self.logger.info("关闭数据中心服务...")
+            self.logger.info("正在关闭数据中心服务...")
 
             # 停止任务调度器
             if self.scheduler and self.scheduler.running:
@@ -212,7 +239,7 @@ class DataCenterService(BaseService, LoggerMixin):
                 data = result["data"].get(index_code, [])
 
                 if data:
-                    self.logger.info("✅ 查询到 %s 数据: %d 条", index_name, len(data))
+                    self.logger.info("✅ 查询到 %s 数据：%d 条", index_name, len(data))
                     return {
                         "success": True,
                         "data": data,
@@ -348,7 +375,7 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.debug("⚠️ APScheduler未安装，定时清理功能不可用")
             return False
         except Exception as e:
-            self.logger.error("任务调度器初始化失败: %s", e, exc_info=True)
+            self.logger.error("任务调度器初始化失败：%s", e, exc_info=True)
             return False
 
     def _cleanup_recorded_data_daily(self, days_to_keep: int = 1):
@@ -358,17 +385,17 @@ class DataCenterService(BaseService, LoggerMixin):
             days_to_keep: 保留天数
         """
         try:
-            self.logger.info("开始执行定时清理录制数据任务...")
+            self.logger.info("正在执行定时清理录制数据任务...")
             result = self.cleanup_recorded_data(days_to_keep)
 
             if result.get("success"):
                 deleted_count = result.get("deleted_count", 0)
-                self.logger.info("✅ 定时清理完成：已删除 %s 条录制数据", deleted_count)
+                self.logger.info("✅ 定时清理完成：已删除 %d 条录制数据", deleted_count)
             else:
-                self.logger.warning("⚠️ 定时清理失败: %s", result.get("message", "未知错误"))
+                self.logger.warning("⚠️ 定时清理失败：%s", result.get("message", "未知错误"))
 
         except Exception as e:
-            self.logger.error("定时清理录制数据异常: %s", e, exc_info=True)
+            self.logger.error("定时清理录制数据异常：%s", e, exc_info=True)
 
     def _start_server_verification(self):
         """启动服务器验证（后台线程）"""
@@ -392,11 +419,11 @@ class DataCenterService(BaseService, LoggerMixin):
             # 在后台线程中验证服务器
             def verify_servers():
                 try:
-                    self.logger.info("后台线程开始验证服务器...")
+                    self.logger.info("后台线程正在验证服务器...")
                     server_manager.verify_all_servers_sync(timeout=5, max_workers=20)
                     self.logger.info("服务器验证完成")
                 except Exception as e:
-                    self.logger.error(f"服务器验证失败: {e}", exc_info=True)
+                    self.logger.error("服务器验证失败：%s", e, exc_info=True)
 
             import threading
 
@@ -405,7 +432,7 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.info("服务器验证已在后台启动")
 
         except Exception as e:
-            self.logger.error(f"启动服务器验证失败: {e}", exc_info=True)
+            self.logger.error("启动服务器验证失败：%s", e, exc_info=True)
 
     def get_server_status(self) -> Dict[str, Any]:
         """获取服务器状态（从server_pool_manager获取）
@@ -414,7 +441,7 @@ class DataCenterService(BaseService, LoggerMixin):
             Dict包含可用服务器数量、总数量、验证状态等信息
         """
         try:
-            from backend.infrastructure.data_module_vnpy.server_pool_manager import (
+            from backend.infrastructure.data_module_vnpy.load_balancer.server_pool_manager import (
                 server_pool_manager,
             )
 
@@ -428,7 +455,7 @@ class DataCenterService(BaseService, LoggerMixin):
             }
 
         except Exception as e:
-            self.logger.error(f"获取服务器状态失败: {e}", exc_info=True)
+            self.logger.error("获取服务器状态失败：%s", e, exc_info=True)
             return {
                 "available_count": 0,
                 "total_count": 0,
@@ -445,7 +472,7 @@ class DataCenterService(BaseService, LoggerMixin):
         3. 如果缓存不存在，启动后台线程异步加载（不阻塞启动）
         """
         try:
-            self.logger.info("检查品种列表缓存...")
+            self.logger.info("正在检查品种列表缓存...")
 
             # 尝试从JSON文件加载（使用data_module的配置管理器）
             from backend.infrastructure.data_module_vnpy.config import config_manager
@@ -500,14 +527,14 @@ class DataCenterService(BaseService, LoggerMixin):
                     return
 
                 except Exception as e:
-                    self.logger.warning("加载JSON缓存失败: %s，将异步重新加载", e)
+                    self.logger.warning("加载JSON缓存失败：%s，将异步重新加载", e)
 
             # 缓存不存在或加载失败，启动后台线程异步加载
             self.logger.info("缓存文件不存在，启动后台线程异步加载品种列表...")
             self._async_load_symbols_in_background()
 
         except Exception as e:
-            self.logger.error("启动时加载缓存失败: %s", e, exc_info=True)
+            self.logger.error("启动时加载缓存失败：%s", e, exc_info=True)
 
     def _map_market_to_exchange(self, market_type: str) -> str:
         """将市场类型映射到交易所."""
@@ -537,12 +564,12 @@ class DataCenterService(BaseService, LoggerMixin):
 
         def load_symbols():
             try:
-                self.logger.info("【后台线程】开始异步加载品种列表...")
+                self.logger.info("【后台线程】正在异步加载品种列表...")
                 result = self.reload_symbol_list(force=False)
 
                 if result.get("success"):
                     self.logger.info(
-                        "【后台线程】✅ 品种列表加载成功: %d 个品种", result.get("symbol_count", 0)
+                        "【后台线程】✅ 品种列表加载成功：%d 个品种", result.get("symbol_count", 0)
                     )
                 else:
                     self.logger.warning(
@@ -1806,6 +1833,37 @@ class DataCenterService(BaseService, LoggerMixin):
 
     # ==================== 本地数据查询 ====================
 
+    def check_symbol_exists(self, symbol: str) -> bool:
+        """检查品种代码是否存在于交易所品种列表中.
+
+        Args:
+            symbol: 品种代码（如：600000、000001）
+
+        Returns:
+            bool: True表示品种存在，False表示不存在
+        """
+        try:
+            # 从内存缓存中查找
+            if self._symbol_cache and "symbols" in self._symbol_cache:
+                symbols_list = self._symbol_cache["symbols"]
+                # 检查品种代码是否在列表中
+                for symbol_item in symbols_list:
+                    if isinstance(symbol_item, dict):
+                        if symbol_item.get("code") == symbol:
+                            return True
+                    elif isinstance(symbol_item, str):
+                        if symbol_item == symbol:
+                            return True
+                return False
+
+            # 如果缓存不存在，返回True（容错：假设品种存在）
+            self.logger.warning("品种缓存不存在，无法验证品种 %s", symbol)
+            return True
+
+        except Exception as e:
+            self.logger.error("检查品种是否存在失败: %s", e, exc_info=True)
+            return True  # 容错：出错时假设品种存在
+
     def query_local_data(
         self, symbol: str, start_date: str, end_date: str, interval: str = "1d"
     ) -> Dict[str, Any]:
@@ -1839,9 +1897,13 @@ class DataCenterService(BaseService, LoggerMixin):
                 start_dt = dt.strptime(start_date, "%Y-%m-%d").date()
                 end_dt = dt.strptime(end_date, "%Y-%m-%d").date()
 
-                # 查询数据
+                # 查询数据（禁用自动下载：用户主动查询不应触发下载）
                 data = self.china_stock_engine.query_data(
-                    symbol=symbol, interval=interval, start_date=start_dt, end_date=end_dt
+                    symbol=symbol,
+                    interval=interval,
+                    start_date=start_dt,
+                    end_date=end_dt,
+                    check_gaps=False,  # 显式禁用缺口检查和自动下载
                 )
 
                 if data is not None and not data.empty:
@@ -2309,7 +2371,7 @@ class DataCenterService(BaseService, LoggerMixin):
             if not self.china_stock_engine:
                 self.logger.warning("ChinaStockEngine 不可用，无法执行数据质量扫描")
                 return
-            
+
             overview = self.china_stock_engine.trigger_data_quality_scan(
                 force_refresh=force_refresh
             )
@@ -2691,6 +2753,8 @@ class DataCenterService(BaseService, LoggerMixin):
         return {
             "success": True,
             "datafeeds": status,
+            "active_datafeed": self.active_datafeed,
+            "realtime_push_active": self.realtime_push_active,
             "recording": recording_status,
         }
 
@@ -3271,32 +3335,36 @@ class DataCenterService(BaseService, LoggerMixin):
     # ==================== 轮询转推送网关管理 ====================
 
     def start_polling_gateway(self, config: Dict[str, Any]) -> Dict[str, Any]:
-        """启动轮询转推送网关.
+        """启动轮询转推送网关（TDX数据源）.
 
         Args:
             config: 网关配置
-                - interval: 轮询间隔（秒）
-                - symbols: 订阅品种列表
+                - polling_interval: 轮询间隔（秒）
+                - max_servers: 最大服务器数（可选）
+                - symbols: 订阅品种列表（可选，建议使用自动注册机制）
 
         Returns:
             Dict: 启动结果
         """
         try:
-            self._log_operation("启动轮询转推送网关")
+            self._log_operation("启动TDX数据源（通道激活）")
 
             # 检查是否已有网关运行
             if self.polling_gateway is not None:
                 return {
                     "success": False,
-                    "message": "轮询网关已在运行，请先停止",
+                    "message": "TDX数据源已在运行，请先停止",
                 }
 
-            # 检查虚拟网关是否在运行（互斥）
+            # 检查虚拟网关是否在运行（自动停止）
             if self.virtual_gateway is not None:
-                return {
-                    "success": False,
-                    "message": "虚拟网关正在运行，同时只能运行一个推送网关",
-                }
+                self.logger.info("检测到虚拟数据源正在运行，自动停止...")
+                stop_result = self.stop_virtual_gateway()
+                if stop_result.get("success"):
+                    self.logger.info("✅ 虚拟数据源已自动停止")
+                else:
+                    self.logger.warning("⚠️ 停止虚拟数据源失败: %s", stop_result.get("message"))
+                    # 继续启动TDX数据源，忽略停止失败
 
             # 获取MainEngine和EventEngine
             from backend.core.base import get_main_engine, get_event_engine
@@ -3310,16 +3378,19 @@ class DataCenterService(BaseService, LoggerMixin):
                     "message": "MainEngine或EventEngine不可用",
                 }
 
-            # 导入网关类
+            # 导入数据源类（从unified_data_manager）
             try:
-                from backend.infrastructure.data_module_vnpy.data_acquisition.gateways import (
-                    PollingGateway,
+                from backend.infrastructure.data_module_vnpy.local_data.unified_data_manager import (
+                    TdxDataSource,
                 )
+
+                # 向后兼容：PollingGateway别名
+                PollingGateway = TdxDataSource
             except ImportError as e:
-                self.logger.error("导入PollingGateway失败: %s", e)
+                self.logger.error("导入TdxDataSource失败: %s", e)
                 return {
                     "success": False,
-                    "message": f"导入网关失败: {str(e)}",
+                    "message": f"导入数据源失败: {str(e)}",
                 }
 
             # 注册网关类到MainEngine（确保MainEngine能识别和管理该网关）
@@ -3334,10 +3405,11 @@ class DataCenterService(BaseService, LoggerMixin):
             gateway_name = "POLLING"
             self.polling_gateway = PollingGateway(event_engine, gateway_name)
 
-            # 准备配置
+            # 准备配置（不包含symbols，使用自动注册机制）
             gateway_setting = {
-                "轮询间隔（秒）": config.get("interval", 60),
-                "品种列表": ",".join(config.get("symbols", [])),
+                "轮询间隔（秒）": config.get("polling_interval", config.get("interval", 3)),
+                "最大服务器数": config.get("max_servers", 5),
+                # 注意：不再设置"品种列表"，订阅由各模块通过UnifiedDataManager.subscribe_data()自动注册
             }
 
             # 连接网关
@@ -3415,6 +3487,12 @@ class DataCenterService(BaseService, LoggerMixin):
 
         except Exception as e:
             self._log_error("停止轮询网关", e)
+            # 强制清理状态，避免状态不一致
+            self.polling_gateway = None
+            self.datafeeds["polling_gateway"] = None
+            if self.active_datafeed == "polling_gateway":
+                self.active_datafeed = None
+                self.realtime_push_active = False
             return {
                 "success": False,
                 "message": f"停止失败: {str(e)}",
@@ -3436,9 +3514,9 @@ class DataCenterService(BaseService, LoggerMixin):
 
             # 如果网关在运行，获取更多状态信息
             if is_running and self.polling_gateway:
-                # 获取订阅的品种数量
-                if hasattr(self.polling_gateway, "subscribed_symbols"):
-                    status["subscribed_count"] = len(self.polling_gateway.subscribed_symbols)
+                # 获取订阅的品种数量（TdxDataSource使用_subscribed_symbols私有属性）
+                if hasattr(self.polling_gateway, "_subscribed_symbols"):
+                    status["subscribed_count"] = len(self.polling_gateway._subscribed_symbols)
 
             return {
                 "success": True,
@@ -3514,33 +3592,36 @@ class DataCenterService(BaseService, LoggerMixin):
     # ==================== 虚拟推送网关管理 ====================
 
     def start_virtual_gateway(self, config: Dict[str, Any]) -> Dict[str, Any]:
-        """启动虚拟推送网关.
+        """启动虚拟推送网关（虚拟数据源）.
 
         Args:
             config: 网关配置
                 - start_datetime: 起始时间（格式：YYYY-MM-DD HH:MM:SS）
-                - speed: 推送速度倍数
-                - symbols: 订阅品种列表
+                - speed: 推送速度倍数（0.1 ~ 1000）
+                - symbols: 订阅品种列表（可选，建议使用自动注册机制）
 
         Returns:
             Dict: 启动结果
         """
         try:
-            self._log_operation("启动虚拟推送网关")
+            self._log_operation("启动虚拟数据源（回放通道激活）")
 
             # 检查是否已有网关运行
             if self.virtual_gateway is not None:
                 return {
                     "success": False,
-                    "message": "虚拟网关已在运行，请先停止",
+                    "message": "虚拟数据源已在运行，请先停止",
                 }
 
-            # 检查轮询网关是否在运行（互斥）
+            # 检查轮询网关是否在运行（自动停止）
             if self.polling_gateway is not None:
-                return {
-                    "success": False,
-                    "message": "轮询网关正在运行，同时只能运行一个推送网关",
-                }
+                self.logger.info("检测到TDX数据源正在运行，自动停止...")
+                stop_result = self.stop_polling_gateway()
+                if stop_result.get("success"):
+                    self.logger.info("✅ TDX数据源已自动停止")
+                else:
+                    self.logger.warning("⚠️ 停止TDX数据源失败: %s", stop_result.get("message"))
+                    # 继续启动虚拟数据源，忽略停止失败
 
             # 验证起始时间
             start_datetime_str = config.get("start_datetime", "")
@@ -3562,16 +3643,19 @@ class DataCenterService(BaseService, LoggerMixin):
                     "message": "MainEngine或EventEngine不可用",
                 }
 
-            # 导入网关类
+            # 导入数据源类（从unified_data_manager）
             try:
-                from backend.infrastructure.data_module_vnpy.data_acquisition.gateways import (
-                    VirtualGateway,
+                from backend.infrastructure.data_module_vnpy.local_data.unified_data_manager import (
+                    VirtualDataSource,
                 )
+
+                # 向后兼容：VirtualGateway别名
+                VirtualGateway = VirtualDataSource
             except ImportError as e:
-                self.logger.error("导入VirtualGateway失败: %s", e)
+                self.logger.error("导入VirtualDataSource失败: %s", e)
                 return {
                     "success": False,
-                    "message": f"导入网关失败: {str(e)}",
+                    "message": f"导入数据源失败: {str(e)}",
                 }
 
             # 注册网关类到MainEngine（确保MainEngine能识别和管理该网关）
@@ -3586,11 +3670,11 @@ class DataCenterService(BaseService, LoggerMixin):
             gateway_name = "VIRTUAL"
             self.virtual_gateway = VirtualGateway(event_engine, gateway_name)
 
-            # 准备配置
+            # 准备配置（不包含symbols，使用自动注册机制）
             gateway_setting = {
                 "起始时间": start_datetime_str,
                 "推送速度": config.get("speed", 1.0),
-                "品种列表": ",".join(config.get("symbols", [])),
+                # 注意：不再设置"品种列表"，订阅由各模块通过UnifiedDataManager.subscribe_data()自动注册
             }
 
             # 连接网关
@@ -3603,18 +3687,15 @@ class DataCenterService(BaseService, LoggerMixin):
 
             self.logger.info("✅ 虚拟推送网关已启动")
 
-            # ✨ 自动启动数据录制（需求：实时数据推送时应有recording功能，该功能无需手动启动）
-            auto_record_result = self._auto_start_recording_on_push()
-            if auto_record_result.get("success"):
-                self.logger.info("✅ 数据录制已自动启动")
-            else:
-                self.logger.warning("⚠️ 数据录制自动启动失败: %s", auto_record_result.get("message"))
+            # ✨ 虚拟数据源不需要数据录制功能（回放历史数据，不是实时数据）
+            # 因此跳过自动启动录制
+            self.logger.info("虚拟数据源不启用数据录制功能（仅用于历史数据回放）")
 
             return {
                 "success": True,
                 "message": "虚拟推送网关已启动",
                 "gateway_name": gateway_name,
-                "recording_started": auto_record_result.get("success", False),
+                "recording_started": False,  # 虚拟数据源不启用录制
             }
 
         except Exception as e:
@@ -3668,6 +3749,12 @@ class DataCenterService(BaseService, LoggerMixin):
 
         except Exception as e:
             self._log_error("停止虚拟网关", e)
+            # 强制清理状态，避免状态不一致
+            self.virtual_gateway = None
+            self.datafeeds["virtual_gateway"] = None
+            if self.active_datafeed == "virtual_gateway":
+                self.active_datafeed = None
+                self.realtime_push_active = False
             return {
                 "success": False,
                 "message": f"停止失败: {str(e)}",

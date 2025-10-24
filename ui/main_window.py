@@ -47,7 +47,7 @@ from backend.core.config import ConfigManager
 from backend.core.service_base import LoggerMixin
 from backend.core.base import setup_logging
 
-from ui.themes.theme_manager import ThemeManager
+from ui.components.theme_system import ThemeManager
 from ui.core.boot_orchestrator import get_boot_orchestrator
 
 
@@ -293,10 +293,11 @@ class MainWindow(QMainWindow, LoggerMixin):
 
             self.logger.info("=" * 70)
             self.logger.info("✅ UI功能界面初始化完成")
-            # 标记就绪阶段（异步模式）
+            # 🔧 修复：不在这里触发backend_ready，而是在后端真正就绪时触发
+            # backend_ready应该由start_async_fixed.py在收到initialization_completed信号后触发
             try:
                 if getattr(self, "boot_orchestrator", None):
-                    self.boot_orchestrator.mark_ready("backend_ready")
+                    # 只标记ui_ready，backend_ready由后端初始化完成时触发
                     self.boot_orchestrator.mark_ready("ui_ready")
             except Exception:
                 pass
@@ -1070,6 +1071,135 @@ class MainWindow(QMainWindow, LoggerMixin):
             </ul>
             """,
         )
+
+    def showEvent(self, event):  # pylint: disable=invalid-name
+        """窗口显示事件（Qt原生事件）.
+
+        在窗口首次显示后触发后台验证，使用Qt原生的QThread机制。
+
+        架构说明：
+        - 移除了SmartCacheValidator (threading.Thread)，避免跨线程Qt警告
+        - 改用Qt原生的QThread + QObject模式，完全兼容EventEngine
+        - 验证延迟到UI完全就绪后，不阻塞启动
+        """
+        super().showEvent(event)
+
+        # 只在首次显示时触发
+        if not hasattr(self, "_validation_triggered"):
+            self._validation_triggered = True
+            self.logger.info("🚀 UI已显示，准备启动后台验证...")
+
+            # 延迟500ms后启动验证（确保UI完全就绪）
+            QTimer.singleShot(500, self._start_background_validation)
+
+    def _start_background_validation(self):
+        """启动后台验证（使用Qt原生QThread）.
+
+        使用Qt的QThread替代Python的threading.Thread，确保：
+        1. 完全兼容EventEngine（基于Qt实现）
+        2. 信号槽通信线程安全
+        3. 不产生Qt Timer跨线程警告
+        """
+        try:
+            # 获取ChinaStockEngine实例
+            from backend.core.base import get_china_stock_engine
+
+            engine = get_china_stock_engine()
+            if not engine:
+                self.logger.warning("ChinaStockEngine未就绪，跳过后台验证")
+                return
+
+            self.logger.info("创建Qt原生验证工作对象...")
+
+            # 导入Qt原生的验证工作对象
+            from PySide6.QtCore import QThread
+            from backend.infrastructure.data_module_vnpy.validation_worker import (
+                CacheValidationWorker,
+            )
+
+            # 创建工作对象和线程
+            self._validation_worker = CacheValidationWorker(engine)
+            self._validation_thread = QThread()
+
+            # 将工作对象移到线程中（Qt的moveToThread模式）
+            self._validation_worker.moveToThread(self._validation_thread)
+
+            # 连接信号
+            self._validation_thread.started.connect(self._validation_worker.run)
+            self._validation_worker.finished.connect(self._validation_thread.quit)
+            self._validation_worker.finished.connect(self._on_validation_finished)
+            self._validation_worker.progress.connect(self._on_validation_progress)
+            self._validation_worker.error.connect(self._on_validation_error)
+
+            # 启动线程（Qt原生，EventEngine安全）
+            self._validation_thread.start()
+            self.logger.info("✅ 后台验证线程已启动（Qt QThread）")
+
+        except Exception as e:
+            self.logger.error("启动后台验证失败: %s", e, exc_info=True)
+
+    def _on_validation_progress(self, message: str, progress: int):
+        """验证进度回调.
+
+        Args:
+            message: 进度消息
+            progress: 进度百分比 (0-100)
+        """
+        self.logger.debug("验证进度: %s (%d%%)", message, progress)
+        # 可以在这里更新状态栏或进度条
+        if self.status_label:
+            self.status_label.setText(f"后台验证: {message} ({progress}%)")
+
+    def _on_validation_finished(self, success: bool):
+        """验证完成回调.
+
+        Args:
+            success: 是否成功
+        """
+        if success:
+            self.logger.info("✅ 后台验证完成")
+            if self.status_label:
+                self.status_label.setText("系统就绪")
+        else:
+            self.logger.warning("⚠️ 后台验证失败")
+            if self.status_label:
+                self.status_label.setText("验证失败")
+
+    def _on_validation_error(self, error_msg: str):
+        """验证错误回调.
+
+        Args:
+            error_msg: 错误消息
+        """
+        self.logger.error("验证错误: %s", error_msg)
+
+    def on_service_ready(self, service_name: str, success: bool):
+        """服务就绪回调（快速启动优化）.
+
+        当可选服务在后台加载完成后，此方法会被调用以动态启用对应的UI功能。
+
+        Args:
+            service_name: 服务名称
+            success: 服务是否成功初始化
+        """
+        status = "成功" if success else "失败"
+        icon = "✅" if success else "⚠️"
+        self.logger.info("%s 服务就绪: %s (%s)", icon, service_name, status)
+
+        # 🎯 架构修复：转发服务就绪通知到对应的UI模块
+        # 服务映射关系：
+        # - system_manager_service -> 系统管理tab
+        # - trading_gateway_service -> 交易接口tab
+        # - strategy_center_service -> 策略管理tab
+        # - auxiliary_services -> 辅助功能
+
+        # 转发到SystemManagerView
+        if service_name == "system_manager_service":
+            if hasattr(self, "system_manager_view") and self.system_manager_view:
+                try:
+                    self.system_manager_view.on_service_ready(service_name, success)
+                except Exception as e:
+                    self.logger.error("转发服务就绪通知到SystemManagerView失败: %s", e)
 
     def closeEvent(self, event):  # pylint: disable=invalid-name
         """窗口关闭事件."""

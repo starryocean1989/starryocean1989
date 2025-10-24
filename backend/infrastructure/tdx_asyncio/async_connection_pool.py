@@ -349,6 +349,8 @@ class AsyncConnectionPoolContext:
 
     async def __aenter__(self) -> AsyncTdxHq_API:
         self.connection = await self.pool.acquire()
+        if self.connection is None:
+            raise RuntimeError("Failed to acquire connection from pool")
         return self.connection
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -367,9 +369,11 @@ async def example_usage():
     pool = AsyncConnectionPool(max_connections=10)
     async with pool:
         conn = await pool.acquire()
-        bars = await conn.get_security_bars(9, 1, "600000", 0, 10)
-        print(f"基本功能: 获取到{len(bars)}根K线")
-        pool.release(conn)
+        if conn:
+            bars = await conn.get_security_bars(9, 1, "600000", 0, 10)
+            if bars:
+                print(f"基本功能: 获取到{len(bars)}根K线")
+            pool.release(conn)
 
     # 2. 高级配置（主备切换）
     config = ConnectionPoolConfig(
@@ -385,8 +389,9 @@ async def example_usage():
     async with pool:
         # 连接自动故障转移，无需手动处理
         conn = await pool.acquire()
-        data = await conn.get_security_bars(9, 1, "600000", 0, 100)
-        pool.release(conn)
+        if conn:
+            data = await conn.get_security_bars(9, 1, "600000", 0, 100)
+            pool.release(conn)
 
     # 3. 使用IP池（独立使用）
     ip_pool = AsyncSmartIPPool(

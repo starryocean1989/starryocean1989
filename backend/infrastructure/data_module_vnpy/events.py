@@ -6,7 +6,7 @@
 """
 
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Optional
 import logging
 
 from vnpy.event import Event, EventEngine
@@ -204,12 +204,19 @@ class QualityEventPublisher(EventPublisher):
             event_data = {
                 "quality_score": overview.quality_score,
                 "total_symbols": overview.total_symbols,
+                "local_symbols": overview.total_symbols - overview.missing_symbols,
                 "missing_symbols": overview.missing_symbols,
                 "error_symbols": overview.error_symbols,
                 "warning_symbols": overview.warning_symbols,
                 "last_scan_time": overview.last_scan_time.isoformat(),
                 "timestamp": datetime.now(),
                 "engine": self.app_name,
+                # 🔧 修复：添加所有必要字段
+                "outdated_symbols": getattr(overview, "outdated_symbols", 0),
+                "avg_gap_days": getattr(overview, "avg_gap_days", 0),
+                "data_missing_symbols": getattr(overview, "data_missing_symbols", 0),
+                "data_lagging_days": getattr(overview, "data_lagging_days", 0),
+                "details": getattr(overview, "details", []),
             }
 
             event = Event(EVENT_DATA_QUALITY_UPDATE, event_data)
@@ -218,3 +225,25 @@ class QualityEventPublisher(EventPublisher):
         except Exception as e:
             self.logger.error("推送数据质量事件失败: %s", e)
 
+
+# ==================== 导出 ====================
+
+__all__ = [
+    # 事件类型常量
+    "EVENT_CHINASTOCK_LOG",
+    "EVENT_CHINASTOCK_VALIDATION",
+    "EVENT_CHINASTOCK_FILE_CHANGE",
+    "EVENT_CHINASTOCK_DOWNLOAD",
+    "EVENT_DATA_QUALITY_UPDATE",
+    "EVENT_DATA_SCAN_COMPLETE",
+    "EVENT_LOCAL_DATA_INDEX_READY",
+    "EVENT_QUALITY_SCAN_PHASE",
+    "EVENT_QUALITY_METRIC_UPDATE",
+    # 应用名称
+    "APP_NAME",
+    # 事件发布器
+    "EventPublisher",
+    "ValidationEventPublisher",
+    "DownloadEventPublisher",
+    "QualityEventPublisher",
+]

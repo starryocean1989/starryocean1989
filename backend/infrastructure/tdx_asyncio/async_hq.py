@@ -47,7 +47,7 @@ class AsyncTdxHq_API(AsyncBaseSocketClient):
         code: str,
         start: int,
         count: int
-    ) -> List[dict]:
+    ) -> Optional[List[dict]]:
         """
         获取K线数据（异步）
 
@@ -64,7 +64,7 @@ class AsyncTdxHq_API(AsyncBaseSocketClient):
         return await cmd.call_api()
 
     @async_last_ack_time
-    async def get_security_quotes(self, all_stock=None, code=None) -> List[dict]:
+    async def get_security_quotes(self, all_stock=None, code=None) -> Optional[List[dict]]:
         """
         获取实时行情（异步，支持批量查询）
 
@@ -92,7 +92,7 @@ class AsyncTdxHq_API(AsyncBaseSocketClient):
         return await cmd.call_api()
 
     @async_last_ack_time
-    async def get_security_list(self, market: int, start: int) -> List[dict]:
+    async def get_security_list(self, market: int, start: int) -> Optional[List[dict]]:
         """
         获取证券列表（异步，支持分页）
 
@@ -106,7 +106,7 @@ class AsyncTdxHq_API(AsyncBaseSocketClient):
         return await cmd.call_api()
 
     @async_last_ack_time
-    async def get_xdxr_info(self, market: int, code: str) -> List[dict]:
+    async def get_xdxr_info(self, market: int, code: str) -> Optional[List[dict]]:
         """
         获取除权除息信息（异步）
 
@@ -120,7 +120,7 @@ class AsyncTdxHq_API(AsyncBaseSocketClient):
         return await cmd.call_api()
 
     @async_last_ack_time
-    async def get_minute_time_data(self, market: int, code: str) -> List[dict]:
+    async def get_minute_time_data(self, market: int, code: str) -> Optional[List[dict]]:
         """
         获取当日分时图数据（异步）
 
@@ -141,7 +141,7 @@ class AsyncTdxHq_API(AsyncBaseSocketClient):
         code: str,
         start: int,
         count: int
-    ) -> List[dict]:
+    ) -> Optional[List[dict]]:
         """
         获取指数K线数据（异步）
 
@@ -158,7 +158,7 @@ class AsyncTdxHq_API(AsyncBaseSocketClient):
         return await cmd.call_api()
 
     @async_last_ack_time
-    async def get_history_minute_time_data(self, market: int, code: str, date: int) -> List[dict]:
+    async def get_history_minute_time_data(self, market: int, code: str, date: int) -> Optional[List[dict]]:
         """
         获取历史分时图数据（异步）
 
@@ -173,7 +173,7 @@ class AsyncTdxHq_API(AsyncBaseSocketClient):
         return await cmd.call_api()
 
     @async_last_ack_time
-    async def get_transaction_data(self, market: int, code: str, start: int, count: int) -> List[dict]:
+    async def get_transaction_data(self, market: int, code: str, start: int, count: int) -> Optional[List[dict]]:
         """
         获取当日逐笔成交数据（异步）
 
@@ -196,7 +196,7 @@ class AsyncTdxHq_API(AsyncBaseSocketClient):
         start: int,
         count: int,
         date: int
-    ) -> List[dict]:
+    ) -> Optional[List[dict]]:
         """
         获取历史逐笔成交数据（异步）
 
@@ -213,7 +213,7 @@ class AsyncTdxHq_API(AsyncBaseSocketClient):
         return await cmd.call_api()
 
     @async_last_ack_time
-    async def get_finance_info(self, market: int, code: str) -> dict:
+    async def get_finance_info(self, market: int, code: str) -> Optional[dict]:
         """
         获取财务信息（异步）
 

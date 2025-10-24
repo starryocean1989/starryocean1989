@@ -11,7 +11,6 @@
 import contextlib
 import json
 import logging
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 from enum import Enum
@@ -129,6 +128,35 @@ class TradingGatewayService(BaseService, LoggerMixin):
 
         # 风险管理引擎
         self.risk_engine = None
+
+        # 业务指标埋点 - 交易网关服务 ✅
+        # 已启用基础架构，可在业务方法中调用 self.metrics_collector.record_metric()
+        from backend.infrastructure.system_vnpy import get_business_metrics_collector
+
+        self.metrics_collector = get_business_metrics_collector()
+        self.logger.info("业务指标采集器已启用（交易网关服务）")
+
+        # 支持的指标类型：
+        # - order_response_time_ms: 订单响应时间（下单到确认）
+        # - order_success_rate: 订单成功率
+        # - trading_queue_length: 交易指令队列长度
+        # - position_update_latency_ms: 持仓更新延迟
+        # - network_latency_ms: 网关网络延迟
+        #
+        # 使用示例（在订单处理方法中）：
+        # # 订单发送时记录时间戳
+        # order_sent_time = time.time()
+        # send_order(order)
+        #
+        # # 订单回报时计算响应时间
+        # response_time_ms = (time.time() - order_sent_time) * 1000
+        # self.metrics_collector.record_metric('order_response_time_ms', response_time_ms,
+        #                                      {'gateway': gateway_name, 'symbol': symbol})
+        #
+        # TODO: 在以下方法中添加实际埋点:
+        # - send_order(): 记录订单响应时间
+        # - on_order(): 记录订单成功率
+        # - on_trade(): 记录成交延迟
 
         # 配置文件路径（使用绝对路径）
         from backend.infrastructure.data_module_vnpy.config import config_manager
@@ -298,7 +326,7 @@ class TradingGatewayService(BaseService, LoggerMixin):
                 self.gateway_classes[GatewayType.PAPER_ACCOUNT.value] = PaperAccountGatewayAdapter
                 self.logger.info("✅ PaperAccount网关类可用（内部适配器）")
             except Exception as e:
-                self.logger.warning(f"⚠️ PaperAccount网关类不可用: {e}")
+                self.logger.warning("⚠️ PaperAccount网关类不可用：%s", e)
 
             # CTP Mini
             try:
@@ -343,10 +371,10 @@ class TradingGatewayService(BaseService, LoggerMixin):
                 self.gateway_classes[GatewayType.TRADEX_GATEWAY.value] = TradeXGatewayAdapter
                 self.logger.info("✅ TradeX网关类可用（内部适配器）")
             except Exception as e:
-                self.logger.warning(f"⚠️ TradeX网关类不可用: {e}")
+                self.logger.warning("⚠️ TradeX网关类不可用：%s", e)
 
         except Exception as e:
-            self.logger.error("初始化网关类失败: %s", e, exc_info=True)
+            self.logger.error("初始化网关类失败：%s", e, exc_info=True)
 
     def _init_risk_manager(self):
         """初始化风险管理引擎."""
@@ -374,7 +402,7 @@ class TradingGatewayService(BaseService, LoggerMixin):
                 self.logger.warning("⚠️ vnpy_riskmanager未安装")
 
         except Exception as e:
-            self.logger.error("风险管理引擎初始化失败: %s", e, exc_info=True)
+            self.logger.error("风险管理引擎初始化失败：%s", e, exc_info=True)
 
     def _set_default_risk_parameters(self):
         """设置默认风控参数."""
@@ -398,7 +426,7 @@ class TradingGatewayService(BaseService, LoggerMixin):
 
         except Exception as e:
             # 风控参数设置失败是常见情况，降低日志级别
-            self.logger.debug("设置风控参数失败: %s", e)
+            self.logger.debug("设置风控参数失败：%s", e)
 
     def _load_gateway_configs(self):
         """从数据库加载网关配置（使用统一database）."""
@@ -416,7 +444,7 @@ class TradingGatewayService(BaseService, LoggerMixin):
                 self.logger.info("没有保存的网关配置")
                 return
 
-            self.logger.info(f"开始加载 {len(gateways)} 个网关配置")
+            self.logger.info("开始加载 %d 个网关配置", len(gateways))
 
             for gateway_row in gateways:
                 gateway_name = gateway_row.get("name")
@@ -427,27 +455,27 @@ class TradingGatewayService(BaseService, LoggerMixin):
                     config_data = (
                         json.loads(config_str) if isinstance(config_str, str) else config_str
                     )
-                except:
+                except Exception:
                     config_data = {}
 
                 if not gateway_name or not gateway_type:
-                    self.logger.warning(f"无效的网关配置: {gateway_row}")
+                    self.logger.warning("无效的网关配置：%s", gateway_row)
                     continue
 
                 # 创建网关实例
                 result = self.create_gateway(gateway_name, gateway_type, config_data)
 
                 if result.get("success"):
-                    self.logger.info(f"✓ 网关 '{gateway_name}' 加载成功")
+                    self.logger.info("✓ 网关 '%s' 加载成功", gateway_name)
                 else:
                     self.logger.warning(
-                        f"✗ 网关 '{gateway_name}' 加载失败: {result.get('message')}"
+                        "✗ 网关 '%s' 加载失败：%s", gateway_name, result.get("message")
                     )
 
             self.logger.info("网关配置加载完成")
 
         except Exception as e:
-            self.logger.error(f"加载网关配置失败: {e}", exc_info=True)
+            self.logger.error("加载网关配置失败：%s", e, exc_info=True)
 
     def _save_gateway_configs(self):
         """保存网关配置到数据库（使用统一database）."""
@@ -467,10 +495,10 @@ class TradingGatewayService(BaseService, LoggerMixin):
                     (name, info["type"], config_json, status),
                 )
 
-            self.logger.info(f"网关配置已保存，共 {len(self.gateway_instances)} 个网关")
+            self.logger.info("网关配置已保存，共 %d 个网关", len(self.gateway_instances))
 
         except Exception as e:
-            self.logger.error(f"保存网关配置失败: {e}", exc_info=True)
+            self.logger.error("保存网关配置失败：%s", e, exc_info=True)
 
     # ==================== 网关管理 ====================
 
@@ -555,7 +583,7 @@ class TradingGatewayService(BaseService, LoggerMixin):
             # 初始化该网关的策略池
             self.strategy_instances[gateway_name] = {}
 
-            self.logger.info("网关 '%s' (类型: %s) 创建成功", gateway_name, gateway_type)
+            self.logger.info("网关 '%s' (类型：%s) 创建成功", gateway_name, gateway_type)
 
             # 保存网关配置到文件
             self._save_gateway_configs()
@@ -771,7 +799,7 @@ class TradingGatewayService(BaseService, LoggerMixin):
             if result.get("success"):
                 return result.get("strategies", [])
             else:
-                self.logger.error(f"获取策略列表失败: {result.get('message')}")
+                self.logger.error("获取策略列表失败：%s", result.get("message"))
                 return []
 
         except Exception as e:
@@ -986,7 +1014,7 @@ class TradingGatewayService(BaseService, LoggerMixin):
                 deployed_info = deploy_result["info"]
 
             except Exception as e:
-                self.logger.error("添加策略失败: %s", e, exc_info=True)
+                self.logger.error("添加策略失败：%s", e, exc_info=True)
                 return {
                     "success": False,
                     "message": f"添加策略失败: {str(e)}",
@@ -1083,7 +1111,7 @@ class TradingGatewayService(BaseService, LoggerMixin):
             # 初始化并启动策略
             try:
                 # 先初始化策略
-                self.logger.info("正在初始化策略 '%s'...", strategy_name)
+                self.logger.info("正在初始化策略 '%s'... ", strategy_name)
                 strategy_engine.init_strategy(strategy_name)
                 self.logger.info("✅ 策略 '%s' 初始化完成", strategy_name)
 
@@ -1093,12 +1121,12 @@ class TradingGatewayService(BaseService, LoggerMixin):
                 time.sleep(0.5)
 
                 # 启动策略
-                self.logger.info("正在启动策略 '%s'...", strategy_name)
+                self.logger.info("正在启动策略 '%s'... ", strategy_name)
                 strategy_engine.start_strategy(strategy_name)
                 self.logger.info("✅ 策略 '%s' 已启动", strategy_name)
 
             except Exception as e:
-                self.logger.error("启动策略失败: %s", e, exc_info=True)
+                self.logger.error("启动策略失败：%s", e, exc_info=True)
                 return {
                     "success": False,
                     "message": f"启动策略失败: {str(e)}",
@@ -1185,7 +1213,7 @@ class TradingGatewayService(BaseService, LoggerMixin):
                 self.logger.info("策略 '%s' 已停止", strategy_name)
 
             except Exception as e:
-                self.logger.error("停止策略失败: %s", e, exc_info=True)
+                self.logger.error("停止策略失败：%s", e, exc_info=True)
                 return {
                     "success": False,
                     "message": f"停止策略失败: {str(e)}",
@@ -1405,7 +1433,7 @@ class TradingGatewayService(BaseService, LoggerMixin):
                     setting=setting,
                 )
 
-                self.logger.info("✅ CTA策略 '%s' 已部署，合约: %s", strategy_name, vt_symbol)
+                self.logger.info("✅ CTA策略 '%s' 已部署，合约：%s", strategy_name, vt_symbol)
                 return {
                     "success": True,
                     "info": {"vt_symbol": vt_symbol, "type": "cta"},
@@ -1436,7 +1464,7 @@ class TradingGatewayService(BaseService, LoggerMixin):
                     setting=setting,
                 )
 
-                self.logger.info("✅ 组合策略 '%s' 已部署，合约: %s", strategy_name, vt_symbols)
+                self.logger.info("✅ 组合策略 '%s' 已部署，合约：%s", strategy_name, vt_symbols)
                 return {
                     "success": True,
                     "info": {"vt_symbols": vt_symbols, "type": "portfolio"},
@@ -1462,7 +1490,7 @@ class TradingGatewayService(BaseService, LoggerMixin):
                 )
 
                 self.logger.info(
-                    "✅ 价差交易策略 '%s' 已部署，价差: %s", strategy_name, spread_name
+                    "✅ 价差交易策略 '%s' 已部署，价差：%s", strategy_name, spread_name
                 )
                 return {
                     "success": True,
@@ -1539,7 +1567,7 @@ class TradingGatewayService(BaseService, LoggerMixin):
                 }
 
         except Exception as e:
-            self.logger.error("部署策略到引擎失败: %s", e, exc_info=True)
+            self.logger.error("部署策略到引擎失败：%s", e, exc_info=True)
             return {
                 "success": False,
                 "message": f"部署失败: {str(e)}",
@@ -1615,7 +1643,7 @@ class TradingGatewayService(BaseService, LoggerMixin):
                 if missing_contracts:
                     issues.append(f"找不到合约: {', '.join(missing_contracts)}")
                     self.logger.warning(
-                        "⚠️ 找不到合约数据: %s (网关可能未连接或未订阅该合约)", missing_contracts
+                        "⚠️ 找不到合约数据：%s (网关可能未连接或未订阅该合约)", missing_contracts
                     )
 
         # 如果有问题，返回友好提示
@@ -1659,7 +1687,7 @@ class TradingGatewayService(BaseService, LoggerMixin):
 
         # 获取应用类信息
         if engine_name not in self.APP_CLASS_MAP:
-            self.logger.error("未知的策略引擎: %s", engine_name)
+            self.logger.error("未知的策略引擎：%s", engine_name)
             return False
 
         module_name, class_name = self.APP_CLASS_MAP[engine_name]
@@ -1687,13 +1715,13 @@ class TradingGatewayService(BaseService, LoggerMixin):
             return True
 
         except ImportError as e:
-            self.logger.error("❌ 策略包 %s 导入失败: %s", module_name, e)
+            self.logger.error("❌ 策略包 %s 导入失败：%s", module_name, e)
             return False
         except AttributeError as e:
-            self.logger.error("❌ 策略应用类 %s 不存在: %s", class_name, e)
+            self.logger.error("❌ 策略应用类 %s 不存在：%s", class_name, e)
             return False
         except Exception as e:
-            self.logger.error("❌ 加载策略应用 %s 失败: %s", engine_name, e, exc_info=True)
+            self.logger.error("❌ 加载策略应用 %s 失败：%s", engine_name, e, exc_info=True)
             return False
 
     def get_available_engine_types(self) -> List[Dict[str, Any]]:
@@ -1902,7 +1930,7 @@ class TradingGatewayService(BaseService, LoggerMixin):
 
             if hasattr(self.risk_engine, "update_setting"):
                 self.risk_engine.update_setting(parameters)
-                self.logger.info(f"风控参数已更新: {list(parameters.keys())}")
+                self.logger.info("风控参数已更新：%s", list(parameters.keys()))
 
                 return {
                     "success": True,
@@ -1940,7 +1968,7 @@ class TradingGatewayService(BaseService, LoggerMixin):
             if hasattr(self.risk_engine, "set_active"):
                 self.risk_engine.set_active(active)
                 action = "启用" if active else "禁用"
-                self.logger.info(f"风控已{action}")
+                self.logger.info("风控已%s", action)
 
                 return {
                     "success": True,
@@ -2003,7 +2031,7 @@ class TradingGatewayService(BaseService, LoggerMixin):
             )
 
         except Exception as e:
-            self.logger.warning(f"发送策略状态事件失败: {e}")
+            self.logger.warning("发送策略状态事件失败：%s", e)
 
     def _emit_gateway_status_event(self, gateway_name: str, status: str, gateway_type: str):
         """发送网关状态变化事件.
@@ -2038,7 +2066,7 @@ class TradingGatewayService(BaseService, LoggerMixin):
             self.logger.debug(f"📢 已发送网关状态变化事件: {gateway_name} -> {status}")
 
         except Exception as e:
-            self.logger.warning(f"发送网关状态事件失败: {e}")
+            self.logger.warning("发送网关状态事件失败：%s", e)
 
     def _count_active_strategies(self, gateway_name: str) -> int:
         """统计网关的激活策略数量.
@@ -2131,7 +2159,7 @@ class TradingGatewayService(BaseService, LoggerMixin):
             return None
 
         except Exception as e:
-            self.logger.error("获取监控策略失败: %s", e)
+            self.logger.error("获取监控策略失败：%s", e)
             return None
 
     def identify_strategy_type(
@@ -2198,7 +2226,7 @@ class TradingGatewayService(BaseService, LoggerMixin):
             return StrategyEngineType.CTA_STRATEGY.value
 
         except Exception as e:
-            self.logger.error(f"识别策略类型失败: {e}")
+            self.logger.error("识别策略类型失败：%s", e)
             return StrategyEngineType.CTA_STRATEGY.value
 
     def get_monitor_template_for_strategy(
@@ -2235,7 +2263,7 @@ class TradingGatewayService(BaseService, LoggerMixin):
             return monitor_templates.get(strategy_type, "default_monitor")  # 默认返回通用监控模板
 
         except Exception as e:
-            self.logger.error(f"获取监控模板失败: {e}")
+            self.logger.error("获取监控模板失败：%s", e)
             return "default_monitor"
 
     def get_strategy_monitoring_data(self, gateway_name: str, strategy_name: str) -> Dict[str, Any]:
@@ -2429,10 +2457,10 @@ class PaperAccountGatewayAdapter:
             return True
 
         except ImportError as e:
-            self.logger.error(f"vnpy_paperaccount未安装: {e}")
+            self.logger.error("vnpy_paperaccount未安装：%s", e)
             return False
         except Exception as e:
-            self.logger.error(f"PaperAccount连接失败: {e}")
+            self.logger.error("PaperAccount连接失败：%s", e)
             return False
 
     def close(self) -> None:

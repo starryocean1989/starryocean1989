@@ -210,10 +210,10 @@ def main():
 
         # 初始化配置和服务
         from backend.core.config import init_settings
-        from backend.core.base import init_services
+        from backend.core.base import initialize_services
 
         init_settings()
-        init_services()
+        initialize_services()
         logger.info("✅ 服务初始化完成\n")
 
     except Exception as e:

@@ -27,6 +27,14 @@ class BackendInitializerWorker(QObject):
         super().__init__()
         self.logger = logging.getLogger(self.__class__.__name__)
 
+        # 🔧 确保日志能输出到控制台
+        if not self.logger.handlers:
+            console_handler = logging.StreamHandler()
+            console_handler.setLevel(logging.DEBUG)
+            formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+            console_handler.setFormatter(formatter)
+            self.logger.addHandler(console_handler)
+            self.logger.setLevel(logging.DEBUG)
 
     def run(self):
         """运行后端初始化.
@@ -56,6 +64,21 @@ class BackendInitializerWorker(QObject):
                 return
 
             self.progress_updated.emit("正在准备后端环境...", 5)
+
+            # 🔧 配置后端日志输出到控制台
+            import logging
+
+            backend_logger = logging.getLogger("backend")
+            if not backend_logger.handlers:
+                console_handler = logging.StreamHandler()
+                console_handler.setLevel(logging.DEBUG)
+                formatter = logging.Formatter(
+                    "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+                )
+                console_handler.setFormatter(formatter)
+                backend_logger.addHandler(console_handler)
+                backend_logger.setLevel(logging.DEBUG)
+                self.logger.info("[BACKEND-INIT] ✅ 后端日志配置完成（输出到控制台）")
 
             # 导入后端模块
             self.logger.info("[BACKEND-INIT] 阶段0: 导入后端服务模块...")
@@ -337,15 +360,36 @@ class StartupCoordinator(QObject):
         """初始化超时处理."""
         self.logger.warning("[COORDINATOR] ⚠️ 后端初始化超时（%d秒）", self.initialization_timeout)
 
-        # 显示超时警告
+        # 优先尝试降级继续：如果核心服务部分就绪，则允许UI继续工作（功能受限）
+        try:
+            from backend.core.base import get_service_manager
+
+            service_manager = get_service_manager()
+            status = service_manager.get_service_status()
+
+            # 判定核心服务可用性（任一关键服务就绪即允许降级继续）
+            core_candidates = [
+                "data_center_service",
+                "system_manager_service",
+                "market_board_service",
+            ]
+            core_ready = any(name in status for name in core_candidates)
+
+            if core_ready:
+                self.logger.warning("[COORDINATOR] 启动降级：核心服务部分就绪，继续完成UI启动")
+                self.show_message("后端部分就绪，已进入降级模式（功能可能受限）", 80)
+                # 允许完成启动流程
+                self._complete_startup()
+                return
+        except Exception as e:
+            self.logger.error("[COORDINATOR] 降级检测异常: %s", e)
+
+        # 无法降级继续，保持提示并发出失败信号（不强制退出，交给外部处理）
         self.show_message(
-            f"后端初始化超时（{self.initialization_timeout}秒），可能存在阻塞...\n"
-            "系统将继续等待，或您可以强制退出",
+            f"后端初始化超时（{self.initialization_timeout}秒），请检查日志后重试",
             50,
         )
-
-        # 注意：不强制中断，继续等待，让用户决定是否退出
-        # 如果需要强制继续，可以发送 startup_failed 信号
+        self.startup_failed.emit("后端初始化超时")
 
     def _on_backend_progress(self, message: str, progress: int):
         """后端初始化进度更新."""

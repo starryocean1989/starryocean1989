@@ -127,13 +127,15 @@ class OptionDeltaHedgeStrategy(OptionTemplate):
 
     def on_order(self, order: OrderData):
         """委托回报"""
-        self.write_log(f"委托回报: {order.vt_orderid}, 状态={order.status.value}")
+        status_value = order.status.value if order.status else "未知"
+        self.write_log(f"委托回报: {order.vt_orderid}, 状态={status_value}")
 
     def on_trade(self, trade: TradeData):
         """成交回报"""
+        direction_value = trade.direction.value if trade.direction else "未知"
         self.write_log(
             f"成交回报: {trade.vt_tradeid}, "
-            f"方向={trade.direction.value}, "
+            f"方向={direction_value}, "
             f"数量={trade.volume}"
         )
 

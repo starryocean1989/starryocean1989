@@ -27,7 +27,7 @@ import pyqtgraph as pg
 from backend.core.base import get_service_manager
 from backend.core.service_base import LoggerMixin
 
-from ui.shared_widgets.base_widget import BaseWidget
+from ui.components.widgets import BaseWidget
 
 
 class PortfolioInvestment(BaseWidget, LoggerMixin):
@@ -362,7 +362,7 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
         vnpy_monitors_layout = QVBoxLayout(vnpy_monitors_group)
 
         from backend.core.base import get_event_engine
-        from ui.shared_widgets.basic_monitors import (
+        from ui.components.basic_monitors import (
             OrderMonitor,
             TradeMonitor,
             PositionMonitor,

@@ -21,7 +21,7 @@ import threading
 import time
 import traceback
 from pathlib import Path
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional
 from enum import Enum
 
 # 从vnpy_imports导入所有VnPy相关功能
@@ -95,6 +95,7 @@ from backend.services.vnpy_imports import (
 class ErrorSeverity(Enum):
     """错误严重程度."""
 
+    DEBUG = "debug"  # 🆕 架构修复：添加DEBUG级别（用于非关键路径的信息记录）
     INFO = "info"
     WARNING = "warning"
     ERROR = "error"
@@ -180,11 +181,14 @@ class ServiceManager:
         """注册服务并记录任何错误"""
         try:
             if name in self.services:
+                # 🎯 架构修复：重复注册降级为DEBUG
+                # 在快速启动模式下，调用方已经检查服务是否存在
+                # 如果到达这里说明是防御性检查，不应该输出WARNING
                 self.record_error(
                     name,
                     "DUPLICATE_REGISTRATION",
                     f"服务 '{name}' 已经注册过了",
-                    severity=ErrorSeverity.WARNING,
+                    severity=ErrorSeverity.DEBUG,  # 降级为DEBUG
                 )
                 return False
 
@@ -209,39 +213,63 @@ class ServiceManager:
             )
             return False
 
-    def get_service(self, name: str) -> Any:
-        """获取服务，记录访问错误"""
+    def get_service(self, name: str, silent: bool = False) -> Any:
+        """获取服务.
+
+        Args:
+            name: 服务名称
+            silent: 是否静默模式（服务不存在时不记录错误，适用于可选服务查询）
+
+        Returns:
+            服务实例，如果不存在则返回None
+        """
         try:
             if name not in self.services:
-                self.record_error(
-                    name,
-                    "SERVICE_NOT_FOUND",
-                    f"请求的服务 '{name}' 未找到。可用服务: {list(self.services.keys())}",
-                    severity=ErrorSeverity.ERROR,
-                )
+                if not silent:
+                    # 🎯 架构修复：在快速启动模式下，查询可选服务是正常行为
+                    # 只有在非静默模式下才记录错误（用于核心服务的严格检查）
+                    self.record_error(
+                        name,
+                        "SERVICE_NOT_FOUND",
+                        f"请求的服务 '{name}' 未找到。可用服务: {list(self.services.keys())}",
+                        severity=ErrorSeverity.DEBUG,  # 降级为DEBUG，避免误导
+                    )
                 return None
 
             service = self.services[name]
             if service is None:
-                self.record_error(
-                    name,
-                    "NULL_SERVICE_RETRIEVED",
-                    f"服务 '{name}' 存在但为空",
-                    severity=ErrorSeverity.ERROR,
-                )
+                if not silent:
+                    self.record_error(
+                        name,
+                        "NULL_SERVICE_RETRIEVED",
+                        f"服务 '{name}' 存在但为空",
+                        severity=ErrorSeverity.ERROR,
+                    )
                 return None
 
             return service
 
         except Exception as e:
-            self.record_error(
-                name,
-                "SERVICE_ACCESS_EXCEPTION",
-                f"访问服务 '{name}' 时发生异常: {str(e)}",
-                exception=e,
-                severity=ErrorSeverity.ERROR,
-            )
+            if not silent:
+                self.record_error(
+                    name,
+                    "SERVICE_ACCESS_EXCEPTION",
+                    f"访问服务 '{name}' 时发生异常: {str(e)}",
+                    exception=e,
+                    severity=ErrorSeverity.ERROR,
+                )
             return None
+
+    def has_service(self, name: str) -> bool:
+        """检查服务是否已注册.
+
+        Args:
+            name: 服务名称
+
+        Returns:
+            bool: 服务是否存在
+        """
+        return name in self.services
 
     def record_error(
         self,
@@ -262,7 +290,9 @@ class ServiceManager:
                 self.errors = self.errors[-self._max_errors_per_service * 5 :]
 
         # 同时记录到日志
+        # 🎯 架构修复：添加DEBUG级别的日志映射
         log_level = {
+            ErrorSeverity.DEBUG: self.logger.debug,  # DEBUG级别使用debug日志
             ErrorSeverity.INFO: self.logger.info,
             ErrorSeverity.WARNING: self.logger.warning,
             ErrorSeverity.ERROR: self.logger.error,
@@ -270,8 +300,13 @@ class ServiceManager:
         }.get(severity, self.logger.error)
 
         log_level("[%s] %s: %s", service_name, error_type, message)
+
+        # 🎯 架构修复：DEBUG级别的异常详情也用debug输出，避免误导
         if exception and hasattr(exception, "__traceback__"):
-            self.logger.error("异常详情: %s", str(exception))
+            if severity == ErrorSeverity.DEBUG:
+                self.logger.debug("异常详情：%s", str(exception))
+            else:
+                self.logger.error("异常详情：%s", str(exception))
 
     def get_error_summary(self) -> Dict[str, Any]:
         """获取错误统计摘要"""
@@ -435,7 +470,7 @@ class ServiceManager:
             with open(file_path, "w", encoding="utf-8") as f:
                 json.dump(report_data, f, indent=2, ensure_ascii=False)
 
-            self.logger.info("错误报告已导出到: %s", file_path)
+            self.logger.info("错误报告已导出到：%s", file_path)
             return True
 
         except Exception as e:
@@ -577,27 +612,172 @@ class ServiceInitializer:
             try:
                 self.progress_callback(message, progress)
             except Exception as e:
-                self.logger.warning("进度回调失败: %s", e)
+                self.logger.warning("进度回调失败：%s", e)
 
-    def initialize_all_services(self) -> bool:
-        """初始化所有服务.
+    def initialize_core_services(self) -> bool:
+        """初始化核心服务（快速启动模式）.
+
+        仅初始化系统运行的最小必要服务：
+        - VNPY核心框架 (MainEngine + EventEngine)
+        - 数据引擎 (ChinaStockEngine)
+        - 数据服务 (DataCenterService)
 
         Returns:
-            bool: 是否成功初始化（允许部分失败）
+            bool: 是否成功初始化核心服务
         """
         try:
             self.logger.info("=" * 60)
-            self.logger.info("开始初始化服务...")
+            self.logger.info("🚀 快速启动模式：初始化核心服务...")
             self.logger.info("=" * 60)
 
             # 配置已在主线程初始化，无需重复初始化
             from backend.core.config import get_settings
 
             settings = get_settings()
-            self.logger.info("使用已加载的配置: %s", settings.config_file)
+            self.logger.info("使用已加载的配置：%s", settings.config_file)
+
+            # 阶段1: 初始化VNPY核心框架
+            self._report_progress("初始化VNPY核心框架...", 20)
+            phase1_success = self._initialize_vnpy_core()
+            if not phase1_success:
+                self.logger.error("❌ VNPY核心框架初始化失败")
+                return False
+
+            # 阶段2: 初始化数据服务
+            self._report_progress("初始化数据服务...", 70)
+            phase2_success = self._initialize_data_services()
+            if not phase2_success:
+                self.logger.error("❌ 数据服务初始化失败")
+                return False
+
+            # 🔧 修复：提前初始化SystemManagerService到核心阶段
+            # 原因：LogManagerWidget等UI组件依赖SystemManagerService
+            self._report_progress("初始化系统管理服务...", 85)
+            phase2_5_success = self._initialize_system_manager_early()
+            if not phase2_5_success:
+                self.logger.warning("⚠️ 系统管理服务初始化失败（不影响核心功能）")
+                # 不返回False，允许系统继续启动
+
+            self.logger.info("✅ 核心服务初始化完成，系统可以启动")
+            self._report_progress("核心服务就绪", 100)
+            return True
+
+        except Exception as e:
+            self.logger.error("核心服务初始化异常：%s", e, exc_info=True)
+            self.service_manager.record_error(
+                "ServiceInitializer",
+                "CORE_INITIALIZATION_ERROR",
+                f"核心服务初始化异常: {str(e)}",
+                exception=e,
+            )
+            return False
+
+    def initialize_optional_services(self, service_ready_callback=None) -> Dict[str, bool]:
+        """初始化可选服务（后台加载模式）.
+
+        在UI激活后后台初始化非核心服务：
+        - 系统监控服务 (SystemManagerService)
+        - 交易网关服务 (TradingGatewayService)
+        - 策略中心服务 (StrategyCenterService)
+        - 辅助服务 (Portfolio, Market等)
+
+        Args:
+            service_ready_callback: 回调函数 callback(service_name: str, success: bool)
+                                   每个服务初始化完成后调用
+
+        Returns:
+            Dict[str, bool]: 服务名称到初始化结果的映射
+        """
+        results = {}
+
+        try:
+            self.logger.info("=" * 60)
+            self.logger.info("📦 后台加载可选服务...")
+            self.logger.info("=" * 60)
+
+            # 服务列表：(服务名称, 初始化方法)
+            optional_services = [
+                ("system_manager_service", self._initialize_system_manager_early),
+                ("trading_gateway_service", self._initialize_trading_services),
+                ("strategy_center_service", self._initialize_strategy_services),
+                ("auxiliary_services", self._initialize_auxiliary_services),
+            ]
+
+            for service_name, init_method in optional_services:
+                # 🎯 架构修复：检查服务是否已存在，避免重复初始化
+                if self.service_manager.has_service(service_name):
+                    self.logger.info("ℹ️ %s 已存在，跳过重复初始化", service_name)
+                    results[service_name] = True
+                    if service_ready_callback:
+                        try:
+                            service_ready_callback(service_name, True)
+                        except Exception as e:
+                            self.logger.warning("服务就绪回调失败 (%s): %s", service_name, e)
+                    continue
+
+                # 服务不存在，执行初始化
+                try:
+                    self.logger.info("初始化可选服务: %s...", service_name)
+                    success = init_method()
+                    results[service_name] = success
+
+                    status_icon = "✅" if success else "⚠️"
+                    self.logger.info(
+                        "%s %s 初始化%s", status_icon, service_name, "成功" if success else "失败"
+                    )
+
+                    # 通知UI服务就绪
+                    if service_ready_callback:
+                        try:
+                            service_ready_callback(service_name, success)
+                        except Exception as e:
+                            self.logger.warning("服务就绪回调失败 (%s): %s", service_name, e)
+
+                except Exception as e:
+                    self.logger.error("❌ %s 初始化异常: %s", service_name, e, exc_info=True)
+                    results[service_name] = False
+                    if service_ready_callback:
+                        try:
+                            service_ready_callback(service_name, False)
+                        except Exception:  # pylint: disable=broad-except
+                            pass
+
+            # 生成初始化报告
+            self.logger.info("生成初始化报告...")
+            self._generate_initialization_report()
+
+            success_count = sum(1 for v in results.values() if v)
+            total_count = len(results)
+            self.logger.info("✅ 可选服务加载完成: %s/%s 成功", success_count, total_count)
+
+            return results
+
+        except Exception as e:
+            self.logger.error("可选服务初始化过程异常：%s", e, exc_info=True)
+            return results
+
+    def initialize_all_services(self) -> bool:
+        """初始化所有服务（传统模式，保留用于回退）.
+
+        Returns:
+            bool: 是否成功初始化（允许部分失败）
+        """
+        try:
+            self.logger.info("=" * 60)
+            self.logger.info("正在初始化服务...")
+            self.logger.info("=" * 60)
+
+            # 配置已在主线程初始化，无需重复初始化
+            from backend.core.config import get_settings
+
+            settings = get_settings()
+            self.logger.info("使用已加载的配置：%s", settings.config_file)
 
             # 阶段1: 初始化VNPY核心框架（如果尚未初始化）
             phase1_success = self._initialize_vnpy_core()
+
+            # 阶段1.5: 提前初始化SystemManagerService（监控集成优先就绪）
+            phase1_5_success = self._initialize_system_manager_early()
 
             # 阶段2: 初始化数据服务
             phase2_success = self._initialize_data_services()
@@ -616,7 +796,9 @@ class ServiceInitializer:
             self._generate_initialization_report()
 
             # 如果核心服务初始化成功，即使部分服务失败也返回True
-            core_services_ok = phase1_success or phase2_success or phase3_success
+            core_services_ok = (
+                phase1_success or phase1_5_success or phase2_success or phase3_success
+            )
 
             if core_services_ok:
                 self.logger.info("✅ 核心服务初始化成功，系统可以启动")
@@ -628,7 +810,7 @@ class ServiceInitializer:
                 return False
 
         except Exception as e:
-            self.logger.error("服务初始化过程发生严重异常: %s", e, exc_info=True)
+            self.logger.error("服务初始化过程发生严重异常：%s", e, exc_info=True)
             self.service_manager.record_error(
                 "ServiceInitializer",
                 "CRITICAL_INITIALIZATION_ERROR",
@@ -643,7 +825,7 @@ class ServiceInitializer:
             self.logger.warning("⚠️ MainEngine不可用，无法添加策略应用")
             return
 
-        self.logger.info("开始添加策略应用...")
+        self.logger.info("正在添加策略应用...")
 
         # 1. CTA策略应用
         try:
@@ -652,9 +834,9 @@ class ServiceInitializer:
             self.main_engine.add_app(CtaStrategyApp)
             self.logger.info("✅ CtaStrategyApp 已添加")
         except ImportError:
-            self.logger.warning("⚠️ vnpy_ctastrategy 未安装")
+            self.logger.warning("⚠️ vnpy_ctastrategy未安装")
         except Exception as e:
-            self.logger.error("❌ 添加 CtaStrategyApp 失败: %s", e)
+            self.logger.error("❌ 添加 CtaStrategyApp 失败：%s", e)
 
         # 2. 算法交易应用
         try:
@@ -691,7 +873,9 @@ class ServiceInitializer:
 
         # 5. 脚本交易应用
         try:
-            from vnpy_scripttrader import ScriptTraderApp  # pyright: ignore[reportMissingModuleSource]
+            from vnpy_scripttrader import (
+                ScriptTraderApp,
+            )  # pyright: ignore[reportMissingModuleSource]
 
             self.main_engine.add_app(ScriptTraderApp)
             self.logger.info("✅ ScriptTraderApp 已添加")
@@ -842,6 +1026,7 @@ class ServiceInitializer:
 
             self.china_stock_engine = ChinaStockEngine(self.main_engine, self.event_engine)
             self.logger.info("✅ ChinaStockEngine 创建成功")
+            print("[DATA-INIT] ✅ ChinaStockEngine 创建成功")
 
             # 注册到全局
             set_china_stock_engine(self.china_stock_engine)
@@ -867,6 +1052,112 @@ class ServiceInitializer:
             # 直接配置数据源，健康检查延迟到首次使用
             self.logger.info("✅ ChinaStockEngine 创建成功，健康检查延迟到首次使用")
             self._configure_datafeed()
+
+            # 🔧 注入 UnifiedDataManager 的 vnpy 兼容接口到 MainEngine
+            try:
+                self.logger.info("=" * 60)
+                self.logger.info("🔧 开始注入 UnifiedDataManager 数据接口到 MainEngine")
+                self.logger.info("=" * 60)
+                print("\n" + "=" * 70)
+                print("[DATA-INJECT] 🔧 开始注入 UnifiedDataManager 数据接口到 MainEngine")
+                print("=" * 70)
+
+                # 检查前置条件
+                self.logger.info("检查前置条件：")
+                self.logger.info(
+                    "  - ChinaStockEngine: %s",
+                    "✅ 可用" if self.china_stock_engine else "❌ 不可用",
+                )
+                self.logger.info(
+                    "  - MainEngine: %s", "✅ 可用" if self.main_engine else "❌ 不可用"
+                )
+
+                if self.china_stock_engine and self.main_engine:
+                    # 检查 MainEngine 当前是否已有方法（占位方法）
+                    has_get_contracts = hasattr(self.main_engine, "get_all_contracts")
+                    has_load_bar = hasattr(self.main_engine, "load_bar_data")
+                    self.logger.info(
+                        "  - MainEngine.get_all_contracts: %s",
+                        "✅ 已存在" if has_get_contracts else "❌ 不存在",
+                    )
+                    self.logger.info(
+                        "  - MainEngine.load_bar_data: %s",
+                        "✅ 已存在" if has_load_bar else "❌ 不存在",
+                    )
+
+                    # 获取 UnifiedDataManager
+                    self.logger.info("正在获取 UnifiedDataManager...")
+                    unified_data_manager = self.china_stock_engine.get_unified_data_manager()
+
+                    if unified_data_manager:
+                        self.logger.info("✅ UnifiedDataManager 获取成功")
+
+                        # 检查 UnifiedDataManager 是否有所需方法
+                        has_udm_get_contracts = hasattr(unified_data_manager, "get_all_contracts")
+                        has_udm_load_bar = hasattr(unified_data_manager, "load_bar_data")
+                        self.logger.info(
+                            "  - UnifiedDataManager.get_all_contracts: %s",
+                            "✅" if has_udm_get_contracts else "❌",
+                        )
+                        self.logger.info(
+                            "  - UnifiedDataManager.load_bar_data: %s",
+                            "✅" if has_udm_load_bar else "❌",
+                        )
+
+                        if has_udm_get_contracts and has_udm_load_bar:
+                            # 注入品种列表查询方法
+                            self.logger.info("正在注入 get_all_contracts 方法...")
+                            self.main_engine.get_all_contracts = (  # pyright: ignore[reportAttributeAccessIssue]
+                                unified_data_manager.get_all_contracts
+                            )
+
+                            # 注入历史K线查询方法
+                            self.logger.info("正在注入 load_bar_data 方法...")
+                            self.main_engine.load_bar_data = unified_data_manager.load_bar_data  # type: ignore[reportAttributeAccessIssue]
+
+                            # 验证注入成功
+                            verify_get_contracts = hasattr(self.main_engine, "get_all_contracts")
+                            verify_load_bar = hasattr(self.main_engine, "load_bar_data")
+
+                            self.logger.info("=" * 60)
+                            self.logger.info("✅ MainEngine 已集成 UnifiedDataManager 数据接口")
+                            self.logger.info("  验证结果：")
+                            self.logger.info(
+                                "  - get_all_contracts: %s",
+                                "✅ 已注入" if verify_get_contracts else "❌ 注入失败",
+                            )
+                            self.logger.info(
+                                "  - load_bar_data: %s",
+                                "✅ 已注入" if verify_load_bar else "❌ 注入失败",
+                            )
+                            self.logger.info("=" * 60)
+
+                            # 🔧 新增：同时输出到控制台确认
+                            print("=" * 70)
+                            print("✅ [DATA-INJECT] MainEngine 已集成 UnifiedDataManager 数据接口")
+                            print(
+                                f"  - get_all_contracts: {'✅ 已注入' if verify_get_contracts else '❌ 注入失败'}"
+                            )
+                            print(
+                                f"  - load_bar_data: {'✅ 已注入' if verify_load_bar else '❌ 注入失败'}"
+                            )
+                            print("=" * 70)
+                        else:
+                            self.logger.error("❌ UnifiedDataManager 缺少必要方法")
+                            print("=" * 70)
+                            print("❌ [DATA-INJECT] UnifiedDataManager 缺少必要方法")
+                            print("=" * 70)
+                    else:
+                        self.logger.warning(
+                            "⚠️ UnifiedDataManager 不可用，vnpy_chartwizard 可能无法显示数据"
+                        )
+                        self.logger.warning("  将保持占位方法，等待后续更新")
+                else:
+                    self.logger.warning("⚠️ ChinaStockEngine 或 MainEngine 不可用，跳过注入")
+
+            except Exception as e:
+                self.logger.error("❌ 注入 UnifiedDataManager 接口失败: %s", e, exc_info=True)
+                self.logger.error("  将保持占位方法，等待后续更新")
 
         except ImportError as e:
             self.logger.warning("⚠️ ChinaStockEngine 不可用: %s", e, exc_info=True)
@@ -1071,27 +1362,33 @@ class ServiceInitializer:
             self.failed_services.append("market_board_service")
 
         # 初始化SystemManagerService
-        # 🔧 修复点3：SystemManagerService 专门处理（即使初始化失败也注册服务）
+        # ⚠️ 关键服务：如果 SystemManagerService 初始化失败（EventEngine不可用），
+        # 整个系统将失去监控能力，因此必须确保初始化成功
         try:
-            from backend.services.system_manager_service import SystemManagerService
-
-            system_manager_service = SystemManagerService()
-            init_success = system_manager_service.initialize()
-
-            if init_success:
-                self.service_manager.register_service(
-                    "system_manager_service", system_manager_service
-                )
-                self.initialized_services["system_manager_service"] = system_manager_service
-                self.logger.info("✅ SystemManagerService 初始化成功")
-                success_count += 1
+            # 如果已在阶段1.5初始化并注册，则跳过重复初始化
+            if "system_manager_service" in self.initialized_services:
+                self.logger.info("ℹ️ SystemManagerService 已在前置阶段就绪，跳过阶段5重复初始化")
             else:
-                self.logger.warning("⚠️ SystemManagerService 初始化失败（但已注册服务）")
-                # 即使初始化失败，也注册服务（让UI能够访问）
-                self.service_manager.register_service(
-                    "system_manager_service", system_manager_service
-                )
-                self.failed_services.append("system_manager_service")
+                from backend.services.system_manager_service import SystemManagerService
+
+                system_manager_service = SystemManagerService()
+                init_success = system_manager_service.initialize()
+
+                if init_success:
+                    self.service_manager.register_service(
+                        "system_manager_service", system_manager_service
+                    )
+                    self.initialized_services["system_manager_service"] = system_manager_service
+                    self.logger.info("✅ SystemManagerService 初始化成功")
+                    success_count += 1
+                else:
+                    # 监控功能是系统核心，初始化失败应该明确标记
+                    self.logger.error("❌ SystemManagerService 初始化失败（监控功能不可用）")
+                    # 依然注册服务，让其他功能可用，但标记为失败
+                    self.service_manager.register_service(
+                        "system_manager_service", system_manager_service
+                    )
+                    self.failed_services.append("system_manager_service")
 
         except Exception as e:
             self.logger.error("❌ SystemManagerService 创建失败: %s", e, exc_info=True)
@@ -1107,6 +1404,51 @@ class ServiceInitializer:
         self.logger.info("阶段5完成，耗时 %.2f秒", elapsed)
         self._report_progress("辅助服务初始化完成", 95)
         return success_count > 0
+
+    def _initialize_system_manager_early(self) -> bool:
+        """阶段1.5: 提前初始化 SystemManagerService.
+
+        目的：尽早建立与独立监控进程的ZMQ连接，减少告警丢失窗口，提升启动可观测性。
+
+        进度: 40%（紧随VNPY核心）
+
+        Returns:
+            bool: 是否成功
+        """
+        try:
+            # 🎯 架构修复：检查服务是否已存在，避免重复初始化
+            if self.service_manager.has_service("system_manager_service"):
+                self.logger.info("ℹ️ SystemManagerService已存在，跳过重复初始化")
+                return True
+
+            self._report_progress("阶段1.5: 初始化系统管理服务...", 40)
+
+            from backend.services.system_manager_service import SystemManagerService
+
+            system_manager_service = SystemManagerService()
+            init_success = system_manager_service.initialize()
+
+            if init_success:
+                self.service_manager.register_service(
+                    "system_manager_service", system_manager_service
+                )
+                self.initialized_services["system_manager_service"] = system_manager_service
+                self.logger.info("✅ SystemManagerService（前置）初始化成功")
+                return True
+            else:
+                # 前置失败不阻断整体启动，稍后阶段5会再次尝试/保持注册
+                self.logger.warning("⚠️ SystemManagerService（前置）初始化失败，将在阶段5重试")
+                return False
+
+        except Exception as e:
+            self.logger.error("❌ SystemManagerService（前置）创建失败: %s", e, exc_info=True)
+            self.service_manager.record_error(
+                "SystemManagerService",
+                "EARLY_SERVICE_CREATION_FAILED",
+                f"前置创建服务失败: {str(e)}",
+                exception=e,
+            )
+            return False
 
     def _generate_initialization_report(self):
         """生成初始化报告."""
@@ -1135,48 +1477,78 @@ class ServiceInitializer:
         self.logger.info("=" * 60)
 
 
-def initialize_services(progress_callback=None) -> Dict[str, Any]:
-    """初始化所有服务，返回详细的初始化报告
+def initialize_services(progress_callback=None, fast_startup=True) -> Dict[str, Any]:
+    """初始化服务，返回详细的初始化报告.
 
     Args:
         progress_callback: 进度回调函数 callback(message: str, progress: int)
+        fast_startup: 是否使用快速启动模式（默认True，仅初始化核心服务）
     """
     try:
         service_manager = get_service_manager()
 
-        # 记录初始化开始（简化输出）
-        # service_manager.record_error(
-        #     "ServiceManager",
-        #     "INITIALIZATION_START",
-        #     "开始初始化所有服务",
-        #     severity=ErrorSeverity.INFO,
-        # )
-
         # 执行初始化
-        success = initialize_real_services(progress_callback=progress_callback)
-        service_manager.initialization_attempted = True
-        service_manager.initialization_completed = success
+        result = initialize_real_services(
+            progress_callback=progress_callback, fast_startup=fast_startup
+        )
 
-        # 生成初始化报告
-        if success:
-            logging.getLogger(__name__).info("[ServiceManager] ✓ 所有服务初始化成功")
+        if fast_startup:
+            # 快速启动模式：返回核心服务初始化结果和initializer实例
+            success = result.get("success", False)
+            initializer = result.get("initializer")
+
+            service_manager.initialization_attempted = True
+            service_manager.initialization_completed = success
+
+            if success:
+                logging.getLogger(__name__).info(
+                    "[ServiceManager] ✓ 核心服务初始化成功（快速启动）"
+                )
+            else:
+                service_manager.record_error(
+                    "ServiceManager",
+                    "CORE_INITIALIZATION_FAILURE",
+                    "核心服务初始化失败",
+                    severity=ErrorSeverity.CRITICAL,
+                )
+                logging.getLogger(__name__).error("核心服务初始化失败")
+
+            # 返回详细报告（包含initializer供后续使用）
+            return {
+                "success": success,
+                "fast_startup": True,
+                "initializer": initializer,
+                "initialization_completed": success,
+                "error_summary": service_manager.get_error_summary(),
+                "service_status": service_manager.get_service_status(),
+                "user_friendly_report": service_manager.get_user_friendly_error_report(),
+            }
         else:
-            service_manager.record_error(
-                "ServiceManager",
-                "INITIALIZATION_PARTIAL_FAILURE",
-                "部分服务初始化失败，请查看详细错误信息",
-                severity=ErrorSeverity.WARNING,
-            )
-            logging.getLogger(__name__).warning("服务初始化部分失败")
+            # 传统模式：所有服务初始化
+            success = result
+            service_manager.initialization_attempted = True
+            service_manager.initialization_completed = success
 
-        # 返回详细报告
-        return {
-            "success": success,
-            "initialization_completed": success,
-            "error_summary": service_manager.get_error_summary(),
-            "service_status": service_manager.get_service_status(),
-            "user_friendly_report": service_manager.get_user_friendly_error_report(),
-        }
+            if success:
+                logging.getLogger(__name__).info("[ServiceManager] ✓ 所有服务初始化成功")
+            else:
+                service_manager.record_error(
+                    "ServiceManager",
+                    "INITIALIZATION_PARTIAL_FAILURE",
+                    "部分服务初始化失败，请查看详细错误信息",
+                    severity=ErrorSeverity.WARNING,
+                )
+                logging.getLogger(__name__).warning("服务初始化部分失败")
+
+            # 返回详细报告
+            return {
+                "success": success,
+                "fast_startup": False,
+                "initialization_completed": success,
+                "error_summary": service_manager.get_error_summary(),
+                "service_status": service_manager.get_service_status(),
+                "user_friendly_report": service_manager.get_user_friendly_error_report(),
+            }
 
     except Exception as e:
         service_manager = get_service_manager()
@@ -1198,14 +1570,16 @@ def initialize_services(progress_callback=None) -> Dict[str, Any]:
         }
 
 
-def initialize_real_services(progress_callback=None) -> bool:
-    """初始化所有服务的入口函数.
+def initialize_real_services(progress_callback=None, fast_startup=False) -> Dict[str, Any]:
+    """初始化服务的入口函数.
 
     Args:
         progress_callback: 进度回调函数 callback(message: str, progress: int)
+        fast_startup: 是否使用快速启动模式（仅初始化核心服务）
 
     Returns:
-        bool: 是否初始化成功
+        Dict: {"success": bool, "initializer": ServiceInitializer} (fast_startup=True时)
+        bool: 是否初始化成功 (fast_startup=False时)
     """
     # ✅ 单进程多线程架构：日志和告警系统在主进程中运行
     # 通过Qt信号槽机制确保线程安全的UI更新
@@ -1216,7 +1590,15 @@ def initialize_real_services(progress_callback=None) -> bool:
     # 初始化业务服务
     service_manager = get_service_manager()
     initializer = ServiceInitializer(service_manager, progress_callback=progress_callback)
-    return initializer.initialize_all_services()
+
+    if fast_startup:
+        # 快速启动：仅初始化核心服务
+        success = initializer.initialize_core_services()
+        return {"success": success, "initializer": initializer}
+    else:
+        # 传统模式：初始化所有服务
+        success = initializer.initialize_all_services()
+        return success
 
 
 def shutdown_services() -> None:
@@ -1263,7 +1645,7 @@ def shutdown_real_services() -> None:
 
     # 关闭服务器池管理器（在最后关闭，确保其他服务不再需要它）
     try:
-        from backend.infrastructure.data_module_vnpy import server_pool_manager
+        from backend.infrastructure.data_module_vnpy.load_balancer import server_pool_manager
 
         if server_pool_manager.is_running():
             logging.getLogger(__name__).info("正在关闭服务器池管理器...")

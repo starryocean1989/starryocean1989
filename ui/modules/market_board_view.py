@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """行情看板界面 - 主视图（vnpy_chartwizard版）.
 
 多标签页界面：基于 vnpy_chartwizard 的专业图表应用。
@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 from backend.core.base import get_service_manager
 from backend.core.service_base import LoggerMixin
 
-from ui.shared_widgets.base_widget import BaseWidget
+from ui.components.widgets import BaseWidget
 
 
 class MarketDashboard(BaseWidget, LoggerMixin):
@@ -37,17 +37,22 @@ class MarketDashboard(BaseWidget, LoggerMixin):
         self._initialize_service()
 
     def _initialize_service(self):
-        """获取行情看板服务."""
+        """获取行情看板服务（延迟获取）."""
         try:
-            # 从服务管理器获取行情看板服务
-            self.market_service = self.service_manager.get_service("market_board_service")
+            # 🎯 架构修复：使用silent模式查询可选服务
+            # market_board_service作为辅助服务在后台加载，启动时可能尚未就绪
+            # silent=True避免ServiceManager输出误导性ERROR日志
+            self.market_service = self.service_manager.get_service(
+                "market_board_service", silent=True
+            )
             if self.market_service:
-                self.logger.info("行情看板服务获取成功")
+                self.logger.info("行情看板服务已就绪")
             else:
-                self.logger.warning("行情看板服务未注册")
+                # 服务未就绪不是错误，只记录DEBUG信息
+                self.logger.debug("行情看板服务尚未就绪（后台加载中）")
         except Exception as e:
-            self.logger.error("获取行情看板服务失败: %s", e)
-            self.show_error(f"服务获取失败: {e}")
+            # 获取失败也不是严重错误，只记录DEBUG
+            self.logger.debug("获取行情看板服务失败: %s", e)
 
     def setup_ui(self):
         """设置用户界面."""
@@ -122,7 +127,7 @@ class MarketDashboard(BaseWidget, LoggerMixin):
 # 合并说明：ChartWizardEnhanced 只被 market_board_view 引用，故合并到此处
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtWidgets import (
@@ -130,7 +135,6 @@ from PySide6.QtWidgets import (
     QWidget,
     QLineEdit,
     QPushButton,
-    QGroupBox,
     QRadioButton,
     QComboBox,
     QLabel,
@@ -154,6 +158,104 @@ except ImportError as e:
     VnpyChartWizard = None
     ChartWizardEngine = None
     logger.warning(f"⚠️ vnpy_chartwizard 不可用: {e}")
+
+
+class SymbolCompleterLineEdit(QLineEdit):
+    """品种代码输入框（支持自动联想）."""
+
+    def __init__(self, parent=None):
+        """初始化品种输入框.
+
+        Args:
+            parent: 父组件
+        """
+        super().__init__(parent)
+        self._completer_widget: Optional[Any] = None
+        self.symbol_list: List[str] = []
+        self.symbol_map: Dict[str, Dict[str, Any]] = {}  # 用于快速查找：显示文本 -> 品种信息
+        self._setup_completer()
+
+    def _setup_completer(self):
+        """设置自动完成器."""
+        from PySide6.QtWidgets import QCompleter
+        from PySide6.QtCore import Qt
+
+        # 加载品种列表
+        self._load_symbol_list()
+
+        # 创建 QCompleter
+        self._completer_widget = QCompleter(self.symbol_list, self)
+        self._completer_widget.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self._completer_widget.setFilterMode(Qt.MatchFlag.MatchContains)  # 支持模糊匹配
+        self._completer_widget.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        self.setCompleter(self._completer_widget)
+
+        logger.info(f"✅ 品种联想器已初始化，加载 {len(self.symbol_list)} 个品种")
+
+    def _load_symbol_list(self):
+        """从品种列表缓存加载数据."""
+        try:
+            from backend.core.base import get_service_manager
+
+            service_mgr = get_service_manager()
+            if not service_mgr:
+                logger.warning("服务管理器不可用")
+                return
+
+            data_center = service_mgr.get_service("data_center_service")
+            if not data_center:
+                logger.warning("数据中心服务不可用")
+                return
+
+            # 从缓存获取品种列表
+            if hasattr(data_center, "_symbol_cache") and data_center._symbol_cache:
+                cache = data_center._symbol_cache
+                symbols = cache.get("symbols", [])
+
+                if symbols:
+                    # 格式: "代码 名称 (交易所)"
+                    for s in symbols:
+                        symbol_code = s.get("symbol", "")
+                        name = s.get("name", "")
+                        exchange = s.get("exchange", "")
+
+                        if symbol_code:
+                            display_text = f"{symbol_code} {name} ({exchange})"
+                            self.symbol_list.append(display_text)
+                            self.symbol_map[display_text] = s
+
+                    logger.info(f"从缓存加载了 {len(self.symbol_list)} 个品种")
+                else:
+                    logger.warning("品种缓存为空")
+            else:
+                logger.warning("品种缓存不存在")
+
+        except Exception as e:
+            logger.error(f"加载品种列表失败: {e}", exc_info=True)
+
+    def get_symbol_code(self) -> str:
+        """获取输入的品种代码（去除名称和交易所）.
+
+        Returns:
+            品种代码
+        """
+        text = self.text().strip()
+        if not text:
+            return ""
+
+        # 提取第一个空格前的代码
+        return text.split()[0]
+
+    def get_symbol_info(self) -> Optional[Dict[str, Any]]:
+        """获取当前输入品种的完整信息.
+
+        Returns:
+            品种信息字典，如果找不到返回 None
+        """
+        text = self.text().strip()
+        return self.symbol_map.get(text)
+
+
 class ChartWizardEnhanced(BaseWidget):
     """ChartWizard增强版组件.
 
@@ -200,7 +302,7 @@ class ChartWizardEnhanced(BaseWidget):
         self.retry_interval = 500  # 每500ms重试一次
 
         # UI组件
-        self.symbol_input: Optional[QLineEdit] = None
+        self.symbol_input: Optional[SymbolCompleterLineEdit] = None
         self.new_chart_btn: Optional[QPushButton] = None
         self.chart_type_combo: Optional[QComboBox] = None
         self.coord_linear_radio: Optional[QRadioButton] = None
@@ -212,6 +314,8 @@ class ChartWizardEnhanced(BaseWidget):
         self.gap_warning_label: Optional[QLabel] = None
         self.gap_fix_btn: Optional[QPushButton] = None
         self.push_status_label: Optional[QLabel] = None
+        self.current_chart_label: Optional[QLabel] = None
+        self.chart_extension_toolbar: Optional[QWidget] = None
 
         # 等待UI组件
         self.waiting_label: Optional[QLabel] = None
@@ -223,13 +327,31 @@ class ChartWizardEnhanced(BaseWidget):
         # 初始化引擎
         self._initialize_engines()
 
-        # 如果引擎已就绪，立即完成初始化
+        # 如果引擎已就绪，检查数据接口是否也就绪
         if self.main_engine and self.event_engine:
-            self.initialization_state = "ready"
-            # 加载品种列表到叠加选择器
-            self._load_symbols_to_overlay_combo()
-            # 注册vnpy事件监听器（监听实时数据）
-            self._register_vnpy_events()
+            # 🔧 关键修复：检查数据接口是否真实可用
+            data_interface_ready = False
+
+            if hasattr(self.main_engine, "get_all_contracts"):
+                try:
+                    test_contracts = self.main_engine.get_all_contracts()
+                    if test_contracts and len(test_contracts) > 0:
+                        data_interface_ready = True
+                        self.logger.info(f"✅ 数据接口立即可用（品种数：{len(test_contracts)}）")
+                except Exception as e:
+                    self.logger.warning(f"数据接口测试失败: {e}")
+
+            if data_interface_ready:
+                # 数据接口就绪，立即完成初始化
+                self.initialization_state = "ready"
+                # 加载品种列表到叠加选择器
+                self._load_symbols_to_overlay_combo()
+                # 注册vnpy事件监听器（监听实时数据）
+                self._register_vnpy_events()
+            else:
+                # 数据接口未就绪，进入等待状态
+                self.logger.info("引擎已就绪，但数据接口未就绪，进入等待模式...")
+                self.initialization_state = "waiting"
 
     def _initialize_engines(self):
         """初始化VnPy引擎."""
@@ -246,6 +368,25 @@ class ChartWizardEnhanced(BaseWidget):
             if not self.event_engine:
                 self.logger.warning("⚠️ EventEngine 不可用")
                 return
+
+            # 🔧 关键修复：检查 MainEngine 是否已注入真实数据接口
+            if hasattr(self.main_engine, "get_all_contracts"):
+                try:
+                    # 测试调用，检查是否返回真实数据
+                    test_contracts = self.main_engine.get_all_contracts()
+                    if test_contracts and len(test_contracts) > 0:
+                        self.logger.info(
+                            f"✅ MainEngine 数据接口可用（品种数：{len(test_contracts)}）"
+                        )
+                    else:
+                        self.logger.warning(
+                            "⚠️ MainEngine.get_all_contracts() 返回空列表（可能是占位方法）"
+                        )
+                        self.logger.warning("  需要等待 UnifiedDataManager 注入完成")
+                except Exception as e:
+                    self.logger.warning(f"⚠️ 测试 MainEngine.get_all_contracts() 失败: {e}")
+            else:
+                self.logger.warning("⚠️ MainEngine 缺少 get_all_contracts 方法")
 
             self.logger.info("✅ VnPy引擎初始化成功")
 
@@ -329,6 +470,10 @@ class ChartWizardEnhanced(BaseWidget):
         layout.addWidget(self.gap_warning_frame)
         self.gap_warning_frame.hide()
 
+        # 创建图表扩展工具栏（作用于当前激活的标签页）
+        self.chart_extension_toolbar = self._create_chart_extension_toolbar()
+        layout.addWidget(self.chart_extension_toolbar)
+
         # 创建 vnpy_chartwizard 核心组件
         try:
             if self.main_engine is None or self.event_engine is None:
@@ -345,6 +490,15 @@ class ChartWizardEnhanced(BaseWidget):
             self.chart_wizard = VnpyChartWizard(self.main_engine, self.event_engine)
             layout.addWidget(self.chart_wizard, 1)
             self.logger.info("✅ ChartWizard组件创建成功")
+
+            # 监听标签页切换
+            if hasattr(self.chart_wizard, "tab") and self.chart_wizard.tab:
+                self.chart_wizard.tab.currentChanged.connect(self._on_tab_changed)
+                self.logger.info("✅ 已连接标签页切换信号")
+
+            # 尝试隐藏 vnpy_chartwizard 原生的输入框和按钮
+            self._hide_native_input_widgets()
+
         except Exception as e:
             self.logger.error(f"❌ 创建ChartWizard组件失败: {e}", exc_info=True)
             self._setup_error_ui(layout, f"创建图表组件失败: {e}")
@@ -385,7 +539,7 @@ class ChartWizardEnhanced(BaseWidget):
         layout.addWidget(info_label)
 
     def _create_toolbar(self) -> QHBoxLayout:
-        """创建顶部扩展工具栏（仅包含vnpy_chartwizard不支持的扩展功能）.
+        """创建顶部工具栏（仅包含新建图表组件）.
 
         Returns:
             工具栏布局
@@ -393,40 +547,21 @@ class ChartWizardEnhanced(BaseWidget):
         toolbar = QHBoxLayout()
         toolbar.setSpacing(10)
 
-        # 注意：品种输入框和新建图表按钮由vnpy_chartwizard原生提供
-        # 这里只添加vnpy_chartwizard不支持的扩展功能
+        # 品种代码输入（替换"本地代码"）
+        toolbar.addWidget(QLabel("品种代码:"))
 
-        toolbar.addWidget(QLabel("扩展功能:"))
-        toolbar.addSpacing(10)
+        # 创建自定义品种输入框（支持联想）
+        self.symbol_input = SymbolCompleterLineEdit(self)
+        self.symbol_input.setPlaceholderText("输入代码或名称")
+        self.symbol_input.setMinimumWidth(200)
+        # 支持回车键快速新建图表
+        self.symbol_input.returnPressed.connect(self._on_new_chart_custom)
+        toolbar.addWidget(self.symbol_input)
 
-        # 坐标类型切换（扩展功能）
-        coord_group = QGroupBox("坐标类型")
-        coord_layout = QHBoxLayout(coord_group)
-        coord_layout.setContentsMargins(5, 5, 5, 5)
-
-        self.coord_linear_radio = QRadioButton("线性")
-        self.coord_linear_radio.setChecked(True)
-        self.coord_linear_radio.toggled.connect(self._on_coord_type_changed)
-
-        self.coord_log_radio = QRadioButton("对数")
-
-        coord_layout.addWidget(self.coord_linear_radio)
-        coord_layout.addWidget(self.coord_log_radio)
-        toolbar.addWidget(coord_group)
-
-        toolbar.addSpacing(10)
-
-        # 品种叠加（扩展功能）
-        toolbar.addWidget(QLabel("叠加品种:"))
-        self.overlay_symbol_combo = QComboBox()
-        self.overlay_symbol_combo.setPlaceholderText("选择品种")
-        self.overlay_symbol_combo.setMinimumWidth(150)
-        toolbar.addWidget(self.overlay_symbol_combo)
-
-        add_overlay_btn = QPushButton("➕ 叠加")
-        add_overlay_btn.clicked.connect(self._on_add_overlay_symbol)
-        add_overlay_btn.setMaximumWidth(60)
-        toolbar.addWidget(add_overlay_btn)
+        # 新建图表按钮
+        self.new_chart_btn = QPushButton("新建图表")
+        self.new_chart_btn.clicked.connect(self._on_new_chart_custom)
+        toolbar.addWidget(self.new_chart_btn)
 
         toolbar.addStretch()
 
@@ -438,18 +573,208 @@ class ChartWizardEnhanced(BaseWidget):
 
         return toolbar
 
-    def _on_new_chart(self):
-        """新建图表 - 直接使用vnpy_chartwizard原生功能.
+    def _create_chart_extension_toolbar(self) -> QWidget:
+        """创建图表扩展工具栏（作用于当前激活的标签页）.
 
-        注意：vnpy_chartwizard已内置品种输入框和新建按钮，
-        这里保留此方法仅为外部调用接口。
+        Returns:
+            工具栏组件
         """
-        if not self.chart_wizard:
-            self.show_warning("图表组件未就绪")
+        toolbar_widget = QWidget()
+        toolbar = QHBoxLayout(toolbar_widget)
+        toolbar.setContentsMargins(5, 5, 5, 5)
+        toolbar.setSpacing(10)
+
+        # 当前图表标识
+        toolbar.addWidget(QLabel("当前图表:"))
+        self.current_chart_label = QLabel("(未选择)")
+        self.current_chart_label.setStyleSheet("font-weight: bold; color: #2196F3;")
+        toolbar.addWidget(self.current_chart_label)
+
+        toolbar.addSpacing(20)
+
+        # 坐标类型
+        toolbar.addWidget(QLabel("坐标:"))
+        self.coord_linear_radio = QRadioButton("线性")
+        self.coord_linear_radio.setChecked(True)
+        self.coord_linear_radio.toggled.connect(self._on_coord_type_changed)
+        self.coord_log_radio = QRadioButton("对数")
+        toolbar.addWidget(self.coord_linear_radio)
+        toolbar.addWidget(self.coord_log_radio)
+
+        toolbar.addSpacing(20)
+
+        # 品种叠加
+        toolbar.addWidget(QLabel("叠加品种:"))
+        self.overlay_symbol_combo = QComboBox()
+        self.overlay_symbol_combo.setPlaceholderText("选择品种")
+        self.overlay_symbol_combo.setMinimumWidth(150)
+        toolbar.addWidget(self.overlay_symbol_combo)
+
+        add_overlay_btn = QPushButton("叠加")
+        add_overlay_btn.clicked.connect(self._on_add_overlay_symbol)
+        add_overlay_btn.setMaximumWidth(60)
+        toolbar.addWidget(add_overlay_btn)
+
+        toolbar.addStretch()
+
+        return toolbar_widget
+
+    def _on_tab_changed(self, index: int):
+        """标签页切换回调.
+
+        Args:
+            index: 标签页索引
+        """
+        try:
+            if index >= 0 and self.chart_wizard and hasattr(self.chart_wizard, "tab"):
+                vt_symbol = self.chart_wizard.tab.tabText(index)
+                if self.current_chart_label:
+                    self.current_chart_label.setText(vt_symbol)
+                self.logger.info(f"切换到图表: {vt_symbol}")
+
+                # 加载该标签页的品种列表到叠加选择器
+                self._load_symbols_to_overlay_combo()
+
+        except Exception as e:
+            self.logger.error(f"标签页切换处理失败: {e}", exc_info=True)
+
+    def _hide_native_input_widgets(self):
+        """尝试隐藏 vnpy_chartwizard 原生的输入框和按钮."""
+        try:
+            if not self.chart_wizard:
+                return
+
+            # 查找并隐藏原生的品种输入控件
+            hidden_count = 0
+            for widget in self.chart_wizard.findChildren(QLineEdit):
+                # 尝试根据对象名称或父级判断
+                if (
+                    widget.objectName() in ["symbol_line", ""]
+                    and widget.parent() == self.chart_wizard
+                ):
+                    widget.hide()
+                    hidden_count += 1
+                    self.logger.debug(f"已隐藏输入框: {widget.objectName()}")
+
+            for widget in self.chart_wizard.findChildren(QPushButton):
+                text = widget.text()
+                if any(keyword in text for keyword in ["新建", "添加", "Add", "New"]):
+                    widget.hide()
+                    hidden_count += 1
+                    self.logger.debug(f"已隐藏按钮: {text}")
+
+            if hidden_count > 0:
+                self.logger.info(f"✅ 已隐藏 {hidden_count} 个原生控件")
+            else:
+                self.logger.info("未找到需要隐藏的原生控件（可能已被集成到标签页）")
+
+        except Exception as e:
+            self.logger.warning(f"隐藏原生控件失败（可忽略）: {e}")
+
+    def _on_new_chart_custom(self):
+        """自定义新建图表逻辑."""
+        if not self.symbol_input:
+            self.show_warning("输入框未初始化")
             return
 
-        # vnpy_chartwizard已内置新建功能，直接使用即可
-        self.logger.info("✅ 请使用vnpy_chartwizard原生的品种输入框和新建按钮")
+        symbol_code = self.symbol_input.get_symbol_code()
+        if not symbol_code:
+            self.show_warning("请输入品种代码")
+            return
+
+        # 构造 vt_symbol（需要确定交易所）
+        vt_symbol = self._build_vt_symbol(symbol_code)
+        if not vt_symbol:
+            self.show_error(f"无法构造品种标识：{symbol_code}")
+            return
+
+        self.logger.info(f"新建图表: {symbol_code} -> {vt_symbol}")
+
+        # 调用 vnpy_chartwizard 的新建图表接口
+        if self.chart_wizard and hasattr(self.chart_wizard, "add_chart"):
+            try:
+                self.chart_wizard.add_chart(vt_symbol)
+                self.show_info(f"已创建图表: {vt_symbol}")
+                # 清空输入框
+                self.symbol_input.clear()
+            except Exception as e:
+                self.logger.error(f"创建图表失败: {e}", exc_info=True)
+                self.show_error(f"创建图表失败: {e}")
+        else:
+            # 兼容方案：通过 MainEngine 创建
+            self._create_chart_via_main_engine(vt_symbol)
+
+    def _build_vt_symbol(self, symbol_code: str) -> str:
+        """根据品种代码构造 vt_symbol.
+
+        Args:
+            symbol_code: 品种代码（如 000001）
+
+        Returns:
+            vt_symbol（如 000001.SZSE）
+        """
+        try:
+            # 从缓存查找对应的交易所
+            from backend.core.base import get_service_manager
+
+            service_mgr = get_service_manager()
+            if not service_mgr:
+                self.logger.warning("服务管理器不可用，使用默认推测")
+            else:
+                data_center = service_mgr.get_service("data_center_service")
+                if data_center and hasattr(data_center, "_symbol_cache"):
+                    cache = data_center._symbol_cache
+                    if cache and "symbols" in cache:
+                        for symbol_info in cache["symbols"]:
+                            if symbol_info.get("symbol") == symbol_code:
+                                exchange = symbol_info.get("exchange", "")
+                                exchange_code = (
+                                    "SSE"
+                                    if exchange == "上交所"
+                                    else "SZSE" if exchange == "深交所" else "BSE"
+                                )
+                                vt_symbol = f"{symbol_code}.{exchange_code}"
+                                self.logger.info(f"从缓存匹配交易所: {symbol_code} -> {vt_symbol}")
+                                return vt_symbol
+
+            # 默认推测（6开头为上交所，其他为深交所）
+            exchange_code = "SSE" if symbol_code.startswith("6") else "SZSE"
+            vt_symbol = f"{symbol_code}.{exchange_code}"
+            self.logger.info(f"使用默认推测: {symbol_code} -> {vt_symbol}")
+            return vt_symbol
+
+        except Exception as e:
+            self.logger.error(f"构造vt_symbol失败: {e}", exc_info=True)
+            return ""
+
+    def _create_chart_via_main_engine(self, vt_symbol: str):
+        """通过 MainEngine 直接创建图表（兼容方案）.
+
+        Args:
+            vt_symbol: 品种标识
+        """
+        try:
+            if not self.chart_wizard:
+                self.show_error("图表组件未就绪")
+                return
+
+            # 尝试直接添加标签页
+            self.logger.info(f"尝试通过兼容方案创建图表: {vt_symbol}")
+
+            # 如果 chart_wizard 有 charts 属性，尝试手动创建
+            if hasattr(self.chart_wizard, "charts"):
+                # 发射信号通知图表创建
+                self.chart_created.emit(vt_symbol)
+                self.show_info(f"已请求创建图表: {vt_symbol}")
+                # 清空输入框
+                if self.symbol_input:
+                    self.symbol_input.clear()
+            else:
+                self.show_warning("vnpy_chartwizard 不支持动态创建图表，请使用原生界面")
+
+        except Exception as e:
+            self.logger.error(f"创建图表失败: {e}", exc_info=True)
+            self.show_error(f"创建图表失败: {e}")
 
     def _on_coord_type_changed(self, checked: bool):
         """坐标类型变化处理.
@@ -550,7 +875,11 @@ class ChartWizardEnhanced(BaseWidget):
                 return
 
             # 获取当前品种
-            if not self.chart_wizard or not hasattr(self.chart_wizard, "tab") or self.chart_wizard.tab is None:
+            if (
+                not self.chart_wizard
+                or not hasattr(self.chart_wizard, "tab")
+                or self.chart_wizard.tab is None
+            ):
                 self.show_warning("图表组件不支持多标签")
                 return
 
@@ -743,7 +1072,11 @@ class ChartWizardEnhanced(BaseWidget):
                 return
 
             # 获取当前品种
-            if not self.chart_wizard or not hasattr(self.chart_wizard, "tab") or self.chart_wizard.tab is None:
+            if (
+                not self.chart_wizard
+                or not hasattr(self.chart_wizard, "tab")
+                or self.chart_wizard.tab is None
+            ):
                 self.show_warning("图表组件不支持多标签")
                 return
 
@@ -935,7 +1268,11 @@ class ChartWizardEnhanced(BaseWidget):
                 return
 
             # 获取当前品种
-            if not self.chart_wizard or not hasattr(self.chart_wizard, "tab") or self.chart_wizard.tab is None:
+            if (
+                not self.chart_wizard
+                or not hasattr(self.chart_wizard, "tab")
+                or self.chart_wizard.tab is None
+            ):
                 self.show_warning("图表组件不支持多标签")
                 return
 
@@ -1010,7 +1347,11 @@ class ChartWizardEnhanced(BaseWidget):
                 return
 
             # 获取当前品种
-            if not self.chart_wizard or not hasattr(self.chart_wizard, "tab") or self.chart_wizard.tab is None:
+            if (
+                not self.chart_wizard
+                or not hasattr(self.chart_wizard, "tab")
+                or self.chart_wizard.tab is None
+            ):
                 self.show_warning("图表组件不支持多标签")
                 return
 
@@ -1478,7 +1819,11 @@ class ChartWizardEnhanced(BaseWidget):
                 return
 
             # 获取当前品种
-            if not self.chart_wizard or not hasattr(self.chart_wizard, "tab") or self.chart_wizard.tab is None:
+            if (
+                not self.chart_wizard
+                or not hasattr(self.chart_wizard, "tab")
+                or self.chart_wizard.tab is None
+            ):
                 self.show_warning("图表组件不支持多标签")
                 return
 
@@ -1677,23 +2022,65 @@ class ChartWizardEnhanced(BaseWidget):
 
         # 检查引擎是否就绪
         if self.main_engine and self.event_engine:
-            self.logger.info(f"✅ 引擎就绪！重试{self.retry_count}次后成功")
+            # 🔧 关键修复：同时检查数据接口是否真实可用
+            data_interface_ready = False
 
-            # 停止定时器
-            if self.retry_timer:
-                self.retry_timer.stop()
-                self.retry_timer = None
+            if hasattr(self.main_engine, "get_all_contracts"):
+                try:
+                    test_contracts = self.main_engine.get_all_contracts()
+                    if test_contracts and len(test_contracts) > 0:
+                        data_interface_ready = True
+                        self.logger.info(f"✅ 数据接口已就绪（品种数：{len(test_contracts)}）")
+                    else:
+                        self.logger.debug(
+                            f"等待数据接口... ({self.retry_count}/{self.max_retries})"
+                        )
 
-            # 更新状态
-            self.initialization_state = "ready"
+                        # 🔧 备选方案：如果后台注入失败，UI线程主动注入
+                        if self.retry_count >= 5:  # 重试5次后尝试主动注入
+                            from backend.core.base import get_china_stock_engine
 
-            # 完成后续初始化
-            self._load_symbols_to_overlay_combo()
-            self._register_vnpy_events()
+                            china_stock_engine = get_china_stock_engine()
+                            if china_stock_engine:
+                                udm = china_stock_engine.get_unified_data_manager()
+                                if udm and hasattr(udm, "get_all_contracts"):
+                                    # 主动注入
+                                    self.main_engine.get_all_contracts = udm.get_all_contracts
+                                    self.main_engine.load_bar_data = udm.load_bar_data
+                                    self.logger.warning("⚠️ UI线程主动注入 UnifiedDataManager 方法")
 
-            # 重建UI
-            self._rebuild_ui_with_chart()
-            return
+                                    # 再次测试
+                                    test_contracts = self.main_engine.get_all_contracts()
+                                    if test_contracts and len(test_contracts) > 0:
+                                        data_interface_ready = True
+                                        self.logger.info(
+                                            f"✅ UI主动注入成功（品种数：{len(test_contracts)}）"
+                                        )
+                except Exception as e:
+                    self.logger.debug(f"数据接口测试失败: {e}")
+
+            # 只有引擎和数据接口都就绪才继续
+            if data_interface_ready:
+                self.logger.info(f"✅ 引擎和数据接口就绪！重试{self.retry_count}次后成功")
+
+                # 停止定时器
+                if self.retry_timer:
+                    self.retry_timer.stop()
+                    self.retry_timer = None
+
+                # 更新状态
+                self.initialization_state = "ready"
+
+                # 完成后续初始化
+                self._load_symbols_to_overlay_combo()
+                self._register_vnpy_events()
+
+                # 重建UI
+                self._rebuild_ui_with_chart()
+                return
+            else:
+                self.logger.debug("引擎就绪，但数据接口未就绪，继续等待...")
+                return
 
         # 检查是否超时
         if self.retry_count >= self.max_retries:
@@ -1760,6 +2147,8 @@ class ChartWizardEnhanced(BaseWidget):
         # ChartWizard 会自动清理资源
         self.logger.info("ChartWizard增强版已关闭")
         super().on_close()
+
+
 class SubplotIndicatorManager:
     """副图指标管理器.
 
@@ -2011,4 +2400,3 @@ class SubplotIndicatorManager:
             指标类型列表
         """
         return list(self.indicators.keys())
-

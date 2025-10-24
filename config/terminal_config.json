@@ -1,56 +1,93 @@
 {
-  "database": {
-    "sqlite_path": "data/terminal.db",
-    "sqlite_timeout": 30,
-    "postgres_host": null,
-    "postgres_port": 5432,
-    "postgres_db": null,
-    "postgres_user": null,
-    "postgres_password": null
-  },
-  "data_quality": {
-    "base_date": "2024-01-01",
-    "description": "数据质量感知的基准日期，用于计算数据缺失统计"
-  },
-  "vnpy": {
-    "event_engine_timer_interval": 1.0,
-    "event_engine_timer_interval_ms": 1000,
-    "data_storage_path": "data",
-    "recording_data_path": "data/recordings",
-    "log_level": "INFO",
-    "log_file": null
-  },
-  "api": {
-    "host": "0.0.0.0",
-    "port": 8000,
-    "debug": false,
-    "secret_key": "your-secret-key-here",
-    "access_token_expire_minutes": 30,
-    "cors_origins": [
-      "http://localhost:3000",
-      "http://localhost:5173",
-      "http://127.0.0.1:3000",
-      "http://127.0.0.1:5173"
-    ],
-    "rate_limit_per_minute": 100
-  },
-  "logging": {
-    "level": "INFO",
-    "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    "file_path": "logs/backend.log",
-    "max_file_size": 10485760,
-    "backup_count": 5
-  },
-  "ai": {
-    "provider": "deepseek",
-    "api_key": "sk-095ed1289fba4f9cb67fd4ac0ce0345b",
-    "api_url": "https://api.deepseek.com/v1/chat/completions",
-    "model": "deepseek-chat",
-    "max_tokens": 2000,
-    "temperature": 0.7,
-    "timeout": 90,
-    "max_history": 10,
-    "system_prompt": "你是一个专业的量化交易策略编写助手，擅长Python和VnPy框架。",
-    "enable_tools": false
-  }
+    "database": {
+        "sqlite_path": "data/terminal.db",
+        "sqlite_timeout": 30,
+        "postgres_host": null,
+        "postgres_port": 5432,
+        "postgres_db": null,
+        "postgres_user": null,
+        "postgres_password": null
+    },
+    "data_quality": {
+        "base_date": "2024-01-01",
+        "description": "数据质量感知的基准日期，用于计算数据缺失统计"
+    },
+    "vnpy": {
+        "event_engine_timer_interval": 1.0,
+        "event_engine_timer_interval_ms": 1000,
+        "data_storage_path": "data",
+        "recording_data_path": "data/recordings",
+        "log_level": "INFO",
+        "log_file": null
+    },
+    "api": {
+        "host": "0.0.0.0",
+        "port": 8000,
+        "debug": false,
+        "secret_key": "your-secret-key-here",
+        "access_token_expire_minutes": 30,
+        "cors_origins": [
+            "http://localhost:3000",
+            "http://localhost:5173",
+            "http://127.0.0.1:3000",
+            "http://127.0.0.1:5173"
+        ],
+        "rate_limit_per_minute": 100
+    },
+    "logging": {
+        "level": "INFO",
+        "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        "file_path": "logs/backend.log",
+        "max_file_size": 10485760,
+        "backup_count": 5
+    },
+    "ai": {
+        "provider": "deepseek",
+        "api_key": "sk-095ed1289fba4f9cb67fd4ac0ce0345b",
+        "api_url": "https://api.deepseek.com/v1/chat/completions",
+        "model": "deepseek-chat",
+        "max_tokens": 2000,
+        "temperature": 0.7,
+        "timeout": 90,
+        "max_history": 10,
+        "system_prompt": "你是一个专业的量化交易策略编写助手，擅长Python和VnPy框架。",
+        "enable_tools": false
+    },
+    "adaptive": {
+        "strategy": "intelligent",
+        "intelligent_tuning": null
+    },
+    "startup": {
+        "mode": "ui_first",
+        "admin_policy": "auto",
+        "monitor_handshake_timeout_ms": 3000,
+        "monitor_max_restarts_per_minute": 3,
+        "ui_target_ms": 2000
+    },
+    "monitor": {
+        "port_alert_push": 5555,
+        "port_status_pull": 5556,
+        "port_query_rep": 5557,
+        "bind_addr": "127.0.0.1",
+        "port_fallback_enabled": true,
+        "port_fallback_base": 5565,
+        "port_fallback_span": 3
+    },
+    "system_monitor_thresholds": {
+        "description": "系统监控性能阈值配置（超过阈值表示性能瓶颈）",
+        "cpu_percent": 90,
+        "memory_percent": 85,
+        "disk_io_read_kbps": 400000,
+        "disk_io_write_kbps": 300000,
+        "disk_type_comment": "磁盘类型建议: HDD(100000/80000), SATA_SSD(400000/300000), NVMe_SSD(2000000/1500000)",
+        "network_upload_kbps": 125000,
+        "network_download_kbps": 125000,
+        "bandwidth_percent": 100,
+        "context_switches_per_sec": 50000,
+        "cpu_interrupts_per_sec": 20000,
+        "memory_swap_kbps": 1000,
+        "disk_latency_ms": 20,
+        "packet_loss_percent": 1,
+        "smart_sectors": 0
+    }
 }

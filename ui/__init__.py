@@ -2,6 +2,6 @@
 """前端界面层模块."""
 
 from .main_window import MainWindow
-from .themes.theme_manager import ThemeManager
+from .components.theme_system import ThemeManager
 
 __all__ = ["MainWindow", "ThemeManager"]

@@ -17,8 +17,6 @@ from typing import Any, Dict, List, Optional, Callable
 import threading
 import logging
 
-import requests
-
 # Qt支持检测
 try:
     from PySide6.QtCore import Signal
@@ -169,7 +167,7 @@ class ErrorHandler:
 
         # 默认自动重试逻辑
         if auto_retry and error.retry_count < error.max_retries:
-            delay = min(2 ** error.retry_count, 60)  # 指数退避，最大60秒
+            delay = min(2**error.retry_count, 60)  # 指数退避，最大60秒
             self.logger.info("将在 %s 秒后重试 (第 %s 次)", delay, error.retry_count + 1)
 
             try:
@@ -238,7 +236,11 @@ class ErrorHandler:
             by_category[cat] = by_category.get(cat, 0) + 1
             by_severity[sev] = by_severity.get(sev, 0) + 1
 
-        return {"total": len(self._error_history), "by_category": by_category, "by_severity": by_severity}
+        return {
+            "total": len(self._error_history),
+            "by_category": by_category,
+            "by_severity": by_severity,
+        }
 
 
 # =============================================================================
@@ -265,7 +267,9 @@ def success_response(data: Any = None, message: str = "success") -> Dict[str, An
     }
 
 
-def error_response(message: str, error_code: Optional[str] = None, data: Any = None) -> Dict[str, Any]:
+def error_response(
+    message: str, error_code: Optional[str] = None, data: Any = None
+) -> Dict[str, Any]:
     """
     错误响应格式.
 

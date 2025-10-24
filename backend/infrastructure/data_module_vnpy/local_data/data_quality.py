@@ -17,6 +17,7 @@ import logging
 import os
 import time
 import threading
+import multiprocessing as mp
 from threading import Thread, Event as ThreadEvent
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -24,8 +25,16 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import pandas as pd
+import psutil
 
 from ..config import config_manager
+from ..load_balancer import (
+    LoadBalancer,
+    LocalProcessingTask,
+    TaskMetrics,
+    TaskType,
+    ResourceProfile,
+)
 
 # ==================== IPO日期缓存管理 ====================
 
@@ -686,6 +695,27 @@ class DataValidator:
         # IPO缓存实例
         self._ipo_cache = IPODateCache()
 
+        # 日期范围异常统计（用于减少日志刷屏）
+        self._date_range_exception_count = 0
+        self._date_range_exception_symbols = []
+
+    def reset_date_range_exception_stats(self):
+        """重置日期范围异常统计（在新的扫描任务开始时调用）"""
+        self._date_range_exception_count = 0
+        self._date_range_exception_symbols = []
+
+    def log_final_date_range_exception_stats(self):
+        """输出最终的日期范围异常统计"""
+        if self._date_range_exception_count > 0:
+            unique_symbols = len(set(self._date_range_exception_symbols))
+            self.logger.info(
+                "日期范围异常最终统计: 共 %d 个任务异常，涉及 %d 个唯一品种",
+                self._date_range_exception_count,
+                unique_symbols,
+            )
+            # 重置统计
+            self.reset_date_range_exception_stats()
+
     def preload_ipo_dates_batch(
         self, symbols: List[str], force_refresh: bool = False
     ) -> Dict[str, Any]:
@@ -762,7 +792,7 @@ class DataValidator:
         return ipo_date
 
     def _compute_effective_start_date(
-        self, symbol: str, data_start: Optional[date], base_date: Optional[date]
+        self, symbol: Optional[str], data_start: Optional[date], base_date: Optional[date]
     ) -> date:
         """计算有效起始日期（智能起点计算算法）
 
@@ -774,7 +804,7 @@ class DataValidator:
         3. 如果都不可用，使用默认值2020-01-01
 
         Args:
-            symbol: 品种代码
+            symbol: 品种代码（可选）
             data_start: 本地数据起点
             base_date: 配置的基准日期
 
@@ -782,7 +812,7 @@ class DataValidator:
             有效起始日期
         """
         # 1. 尝试获取IPO日期
-        ipo_date = self._get_ipo_date(symbol)
+        ipo_date = self._get_ipo_date(symbol) if symbol else None
 
         # 2. 计算有效起点
         candidates = []
@@ -799,19 +829,14 @@ class DataValidator:
         # 3. 选择最大值（最近的日期）
         if candidates:
             effective_start = max(candidates)
-            self.logger.debug(
-                "品种 %s 有效起点: %s (IPO=%s, 数据起点=%s, 基准日=%s)",
-                symbol,
-                effective_start,
-                ipo_date,
-                data_start,
-                base_date,
-            )
+            # 🎯 架构修复：移除批量扫描中的逐项DEBUG日志，避免刷屏
+            # 5000+品种会产生5000+条相同格式的DEBUG日志，无实际价值
+            # 批量操作应该只输出汇总INFO，不应该逐项DEBUG
             return effective_start
         else:
             # 4. 所有都不可用，使用默认值
             default_date = date(2020, 1, 1)
-            self.logger.debug("品种 %s 使用默认起点: %s", symbol, default_date)
+            # 🎯 架构修复：移除批量扫描中的逐项DEBUG日志
             return default_date
 
     def validate_symbol(self, symbol: str, interval: str) -> ValidationResult:
@@ -938,7 +963,7 @@ class DataValidator:
 
         return errors, warnings
 
-    def _check_missing_dates(self, df: pd.DataFrame, symbol: str = None) -> List[date]:
+    def _check_missing_dates(self, df: pd.DataFrame, symbol: Optional[str] = None) -> List[date]:
         """检查缺失日期（优化版：使用智能起点计算算法）
 
         Args:
@@ -983,16 +1008,19 @@ class DataValidator:
 
             # 6. 验证日期范围
             if effective_start > check_end_date:
-                self.logger.warning(
-                    "品种 %s 日期范围异常: effective_start(%s) > check_end_date(%s), "
-                    "数据范围[%s~%s], 基准日=%s, 跳过缺失检测",
-                    symbol,
-                    effective_start,
-                    check_end_date,
-                    data_start,
-                    data_end,
-                    base_date,
-                )
+                # 统计异常品种，每1000个任务输出一次汇总
+                self._date_range_exception_count += 1
+                self._date_range_exception_symbols.append(symbol)
+
+                # 每1000个任务输出一次汇总信息
+                if self._date_range_exception_count % 1000 == 0:
+                    unique_symbols = len(set(self._date_range_exception_symbols[-1000:]))
+                    self.logger.warning(
+                        "日期范围异常统计: 已处理 %d 个任务，最近1000个任务中有 %d 个唯一品种异常",
+                        self._date_range_exception_count,
+                        unique_symbols,
+                    )
+
                 return []
 
             # 7. 使用交易日历获取期望的交易日范围
@@ -1009,22 +1037,9 @@ class DataValidator:
             missing_dates = list(expected_dates - actual_dates)
             missing_dates.sort()
 
-            # 9. 日志输出
-            if symbol and missing_dates:
-                self.logger.debug(
-                    "品种 %s 缺失检测: 数据范围[%s~%s], 检测范围[%s~%s], "
-                    "基准日=%s, 最近交易日=%s, 期望=%d个, 实际=%d个, 缺失=%d个",
-                    symbol,
-                    data_start,
-                    data_end,
-                    effective_start,
-                    check_end_date,
-                    base_date,
-                    latest_trading_day,
-                    len(expected_dates),
-                    len(actual_dates),
-                    len(missing_dates),
-                )
+            # 🎯 架构修复：移除批量扫描中的逐项DEBUG日志，避免刷屏
+            # 9. 不再逐项输出缺失检测日志（批量扫描会产生5000+条日志）
+            # 批量操作应该在完成后输出汇总INFO，异常情况才记录WARNING
 
             return missing_dates
 
@@ -1057,49 +1072,54 @@ class DataValidator:
             return set()
 
     def _get_trading_days_range(self, start_date: date, end_date: date) -> List[str]:
-        """获取交易日范围（利用TradingCalendar的24h缓存）"""
+        """获取交易日范围（利用TradingCalendar的24h缓存）
+
+        ⚠️ 架构修复：移除ThreadPoolExecutor，改为直接同步执行
+        原因：即使在QThread中，ThreadPoolExecutor也会创建Python threading.Thread（Dummy-XX），
+        导致混合线程模型和Qt Timer警告。
+
+        Qt应用应使用纯Qt线程体系，不混用concurrent.futures.ThreadPoolExecutor。
+        """
         try:
             from backend.infrastructure.tdx_asyncio.calendar import TradingCalendar
             import asyncio
-            from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
             if self._trading_calendar is None:
                 self._trading_calendar = TradingCalendar()
 
-            # 使用线程池执行异步调用（避免事件循环冲突）
-            def run_async_in_thread():
-                """在新线程中运行异步代码"""
-                try:
-                    new_loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(new_loop)
-                    try:
-                        result = new_loop.run_until_complete(
-                            self._trading_calendar.get_trading_days_in_range(
-                                start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d")
-                            )
-                        )
-                        return result
-                    finally:
-                        new_loop.close()
-                        asyncio.set_event_loop(None)
-                except Exception as e:
-                    self.logger.error("线程内部异常: %s", e, exc_info=True)
-                    raise
+            # Type assertion for type checker
+            assert self._trading_calendar is not None
+            trading_calendar = self._trading_calendar
 
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(run_async_in_thread)
+            # ✅ 直接在当前线程（QThread）中同步执行asyncio
+            # 在QThread中是安全的，因为每个QThread有独立的事件循环
+            try:
+                # 获取或创建当前线程的事件循环
                 try:
-                    result = future.result(timeout=30)
-                    if not result:
-                        self.logger.debug("交易日范围为空: %s 至 %s", start_date, end_date)
-                    return result
-                except FutureTimeoutError:
-                    self.logger.error("获取交易日范围超时（30秒）: %s 至 %s", start_date, end_date)
-                    return []
+                    loop = asyncio.get_event_loop()
+                except RuntimeError:
+                    # 如果没有事件循环，创建新的
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
 
-        except FutureTimeoutError:
-            self.logger.error("获取交易日范围超时: %s 至 %s", start_date, end_date)
-            return []
+                # 同步执行异步任务
+                result = loop.run_until_complete(
+                    trading_calendar.get_trading_days_in_range(
+                        start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d")
+                    )
+                )
+
+                if not result:
+                    self.logger.debug("交易日范围为空: %s 至 %s", start_date, end_date)
+                return result
+
+            except asyncio.TimeoutError:
+                self.logger.error("获取交易日范围超时: %s 至 %s", start_date, end_date)
+                return []
+            except Exception as e:
+                self.logger.error("异步执行失败: %s", e, exc_info=True)
+                return []
+
         except Exception as e:
             self.logger.error("获取交易日范围失败: %s", e, exc_info=True)
             return []
@@ -1328,15 +1348,17 @@ class DataValidator:
             if self._trading_calendar is None:
                 self._trading_calendar = TradingCalendar()
 
+            # Type assertion for type checker
+            assert self._trading_calendar is not None
+            trading_calendar = self._trading_calendar
+
             # 🆕 使用线程池执行异步调用（避免事件循环冲突）
             def run_async_in_thread():
                 """在新线程中运行异步代码"""
                 new_loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(new_loop)
                 try:
-                    return new_loop.run_until_complete(
-                        self._trading_calendar.get_previous_trading_day()
-                    )
+                    return new_loop.run_until_complete(trading_calendar.get_previous_trading_day())
                 finally:
                     new_loop.close()
 
@@ -1460,7 +1482,7 @@ class QualityOverview:
     outdated_symbols: int = 0  # 数据过时的品种数
     avg_gap_days: int = 0  # 平均滞后天数（交易日）
     max_gap_days: int = 0  # 最大滞后天数（交易日）
-    
+
     # 🆕 数据缺失与滞后字段
     data_missing_symbols: int = 0  # 数据缺失（有数据但部分日期缺失，排除数据滞后）
     data_lagging_days: int = 0  # 数据滞后天数（连续的全品种缺失）
@@ -1478,6 +1500,229 @@ class SymbolQuality:
     is_missing: bool
 
 
+# ==================== 自适应配置计算器 ====================
+
+
+class DataQualityScanTask(LocalProcessingTask):
+    """数据质量扫描任务"""
+
+    def __init__(self, name: str, symbols_count: int):
+        """初始化数据质量扫描任务
+
+        Args:
+            name: 任务名称
+            symbols_count: 品种数量
+        """
+        super().__init__(name)
+        self.symbols_count = symbols_count
+        # 更新预估工作数：根据品种数量计算
+        if symbols_count < 1000:
+            self.metrics.estimated_workers = min(10, mp.cpu_count())
+        elif symbols_count < 3000:
+            self.metrics.estimated_workers = min(16, mp.cpu_count())
+        else:
+            self.metrics.estimated_workers = min(max(4, int(mp.cpu_count() * 0.75)), 16)
+
+    def _define_metrics(self) -> TaskMetrics:
+        return TaskMetrics(
+            task_name="data_quality_scan",
+            task_type=TaskType.LOCAL_PROCESSING,
+            resource_profile=ResourceProfile.MIXED,  # 磁盘+CPU
+            critical_metrics=[
+                "disk_io_speed",
+                "average_io_latency_ms",
+                "cpu_percent",
+                "memory_percent",
+            ],
+            estimated_duration=60,  # 预计1分钟
+            estimated_memory_mb=500,  # 根据品种数量调整
+            estimated_workers=16,  # 默认值，会在__init__中更新
+        )
+
+    def execute(self, config: Dict[str, Any]) -> Any:
+        """执行质量扫描（占位方法）
+
+        实际扫描由DataSensor.scan_all_data执行。
+        """
+        # 这个方法不会被直接调用
+        pass
+
+
+class AdaptiveQualityConfig:
+    """自适应数据质量配置计算器（已弃用）
+
+    注意：calculate_optimal_config已改用LoadBalancer，建议直接使用LoadBalancer。
+    """
+
+    @staticmethod
+    def calculate_optimal_config(
+        symbols_count: int,
+        enable_detailed_scan: bool = True,
+        min_workers: int = 1,
+        max_workers: Optional[int] = None,
+        memory_per_symbol_mb: float = 0.1,  # 每个品种约0.1MB
+    ) -> Dict:
+        """计算最优的质量扫描配置（已弃用，现使用LoadBalancer）
+
+        Args:
+            symbols_count: 品种数量
+            enable_detailed_scan: 是否启用详细扫描（已忽略）
+            min_workers: 最小工作线程数（已忽略）
+            max_workers: 最大工作线程数（已忽略）
+            memory_per_symbol_mb: 每个品种的内存消耗（已忽略）
+
+        Returns:
+            Dict 包含：
+            - scan_mode: 扫描模式 ("fast" | "balanced" | "thorough")
+            - max_workers: 推荐的最大工作线程数
+            - batch_size: 批量处理大小
+            - enable_multiprocessing: 是否启用多进程
+            - num_processes: 进程数（如果启用多进程）
+            - workers_per_process: 每个进程的线程数
+            - chunk_size: 每个进程处理的品种数
+            - estimated_memory_mb: 预计内存消耗
+            - cpu_cores: CPU核心数
+            - available_memory_gb: 可用内存（GB）
+            - reason: 配置选择原因
+        """
+        logger = logging.getLogger(__name__)
+        logger.warning(
+            "AdaptiveQualityConfig.calculate_optimal_config已弃用，" "建议使用LoadBalancer"
+        )
+
+        # 使用LoadBalancer获取配置
+        try:
+            # ✅ 架构修复后：使用Qt原生线程体系，LoadBalancer可直接使用EventEngine
+            # 不再需要线程检测，因为所有代码都在Qt线程体系中运行
+            task = DataQualityScanTask("quality_scan", symbols_count)
+            load_balancer = LoadBalancer(event_engine=None)
+            lb_config = load_balancer.get_optimal_config(task)
+
+            # 获取系统资源信息
+            cpu_cores = mp.cpu_count()
+            memory = psutil.virtual_memory()
+            available_memory_gb = memory.available / (1024**3)
+
+            # 根据品种数量推断扫描模式
+            if symbols_count < 100:
+                scan_mode = "fast"
+            elif symbols_count < 3000:
+                scan_mode = "balanced"
+            else:
+                scan_mode = "thorough"
+
+            # 从LoadBalancer配置构造兼容格式
+            max_workers_lb = lb_config.get("max_workers", 4)
+            batch_size = lb_config.get("batch_size", 200)
+            enable_mp = lb_config.get("use_multiprocessing", False)
+
+            config = {
+                "scan_mode": scan_mode,
+                "max_workers": max_workers_lb,
+                "batch_size": batch_size,
+                "enable_multiprocessing": enable_mp,
+                "estimated_memory_mb": symbols_count * 0.1,
+                "cpu_cores": cpu_cores,
+                "available_memory_gb": available_memory_gb,
+                "symbols_count": symbols_count,
+                "enable_detailed_scan": enable_detailed_scan,
+                "reason": lb_config.get("reason", "基于LoadBalancer动态配置"),
+            }
+
+            # 如果启用多进程，添加进程相关配置
+            if enable_mp:
+                num_processes = max(2, max_workers_lb // 10)
+                workers_per_process = 10
+                chunk_size = (symbols_count + num_processes - 1) // num_processes
+                config.update(
+                    {
+                        "num_processes": num_processes,
+                        "workers_per_process": workers_per_process,
+                        "chunk_size": chunk_size,
+                    }
+                )
+
+            logger.info("=" * 60)
+            logger.info("【自适应质量扫描配置】（使用LoadBalancer）")
+            logger.info("  扫描模式: %s", scan_mode)
+            logger.info("  品种数量: %d", symbols_count)
+            logger.info("  CPU核心: %d", cpu_cores)
+            logger.info("  可用内存: %.2f GB", available_memory_gb)
+            logger.info("  工作线程: %d", max_workers_lb)
+            logger.info("  批量大小: %d", batch_size)
+            logger.info("  多进程: %s", "是" if enable_mp else "否")
+            if enable_mp:
+                logger.info("  进程数: %d", num_processes)
+                logger.info("  每进程线程: %d", workers_per_process)
+                logger.info("  每进程品种数: %d", chunk_size)
+            logger.info("  压力评分: %.1f/100", lb_config.get("pressure_score", 0))
+            logger.info("  瓶颈维度: %s", lb_config.get("bottleneck", "unknown"))
+            logger.info("=" * 60)
+
+            return config
+
+        except Exception as e:
+            logger.error(f"LoadBalancer配置失败，使用默认值: {e}")
+            # 降级方案：返回保守配置
+            cpu_cores = mp.cpu_count()
+            memory = psutil.virtual_memory()
+            available_memory_gb = memory.available / (1024**3)
+
+            return {
+                "scan_mode": "balanced",
+                "max_workers": 4,
+                "batch_size": 200,
+                "enable_multiprocessing": False,
+                "estimated_memory_mb": symbols_count * 0.1,
+                "cpu_cores": cpu_cores,
+                "available_memory_gb": available_memory_gb,
+                "symbols_count": symbols_count,
+                "enable_detailed_scan": enable_detailed_scan,
+                "reason": "默认配置（LoadBalancer失败降级）",
+            }
+
+    @staticmethod
+    def get_config_summary(config: Dict) -> str:
+        """生成配置摘要（用于日志输出）
+
+        Args:
+            config: 配置字典
+
+        Returns:
+            str: 配置摘要
+        """
+        lines = [
+            "【自适应数据质量扫描配置】",
+            f"  扫描模式: {config['scan_mode']}",
+            f"  品种数量: {config['symbols_count']}",
+            f"  CPU核心: {config['cpu_cores']}",
+            f"  可用内存: {config['available_memory_gb']:.2f} GB",
+        ]
+
+        if config["enable_multiprocessing"]:
+            lines.extend(
+                [
+                    f"  进程数: {config['num_processes']}",
+                    f"  每进程线程: {config['workers_per_process']}",
+                    f"  每进程品种: {config['chunk_size']}",
+                    f"  总工作线程: {config['max_workers']}",
+                ]
+            )
+        else:
+            lines.append(f"  工作线程: {config['max_workers']}")
+
+        lines.extend(
+            [
+                f"  批量大小: {config['batch_size']}",
+                f"  详细扫描: {'是' if config['enable_detailed_scan'] else '否'}",
+                f"  预计内存: {config['estimated_memory_mb']:.2f} MB",
+                f"  配置原因: {config['reason']}",
+            ]
+        )
+
+        return "\n".join(lines)
+
+
 class DataSensor:
     """数据感知器"""
 
@@ -1492,14 +1737,6 @@ class DataSensor:
 
         # 文件监控器
         self.data_file_watcher: Optional[DataFileWatcher] = None
-
-        # 🆕 混合异步架构组件（延迟初始化）
-        self._resource_monitor = None
-        self._file_scanner = None
-        self._scheduler = None
-        self._async_executor = None
-        self._cpu_worker = None
-        self._hybrid_async_enabled = False
 
     def scan_all_data(
         self,
@@ -1669,9 +1906,12 @@ class DataSensor:
                 symbols_with_data=symbols_with_data,
                 reference_symbols=reference_symbols,
                 base_date=date.today(),  # TODO: 从配置读取
-                interval="1d"
+                interval="1d",
             )
-            print(f"✅ 计算结果: 滞后={data_lagging_days}天, 缺失={data_missing_symbols}个品种\n", flush=True)
+            print(
+                f"✅ 计算结果: 滞后={data_lagging_days}天, 缺失={data_missing_symbols}个品种\n",
+                flush=True,
+            )
 
             # 计算整体质量评分
             if total_symbols > 0:
@@ -1711,10 +1951,13 @@ class DataSensor:
             problem_details.sort(
                 key=lambda d: {"missing": 1, "error": 2, "warning": 3}.get(d["status"], 4)
             )
-            
+
             print(f"📋 问题品种详情: {len(problem_details)}个有问题品种", flush=True)
             if problem_details:
-                print(f"   前3个问题品种: {[d['symbol'] + '(' + d['status'] + ')' for d in problem_details[:3]]}", flush=True)
+                print(
+                    f"   前3个问题品种: {[d['symbol'] + '(' + d['status'] + ')' for d in problem_details[:3]]}",
+                    flush=True,
+                )
 
             overview = QualityOverview(
                 total_symbols=total_symbols,
@@ -1736,6 +1979,27 @@ class DataSensor:
             )
 
             self._quality_overview = overview
+
+            # 🔧 修复：在传统扫描模式中也推送本地数据索引事件，供UI联想使用
+            if self.event_engine:
+                try:
+                    local_data_index = self.storage_manager.get_local_data_index()
+                    if local_data_index:
+                        from ..events import EVENT_LOCAL_DATA_INDEX_READY, Event
+
+                        # 构建本地数据索引事件数据（名称留空）
+                        symbol_list = [{"code": code, "name": ""} for code in local_data_index]
+                        event_data = {
+                            "symbols": symbol_list,
+                            "count": len(symbol_list),
+                        }
+                        event = Event(EVENT_LOCAL_DATA_INDEX_READY, event_data)
+                        self.event_engine.put(event)
+                        self.logger.info(
+                            f"📋(传统模式) 推送本地数据索引: {len(symbol_list)} 个品种"
+                        )
+                except Exception as e:
+                    self.logger.warning(f"推送本地数据索引事件失败: {e}")
 
             #  发送事件
             if self.event_engine:
@@ -1775,7 +2039,7 @@ class DataSensor:
             import sys
 
             print("\n" + "   " + "-" * 60)
-            print(f"   扫描完成摘要：")
+            print("   扫描完成摘要：")
             print(f"   - 总品种数：{total_symbols}")
             print(f"   - 本地有数据：{total_symbols - missing_symbols}")
             print(f"   - 缺失品种：{missing_symbols}")
@@ -1789,6 +2053,9 @@ class DataSensor:
             )
             print("   " + "-" * 60)
             sys.stdout.flush()
+
+            # 输出日期范围异常最终统计
+            self.validator.log_final_date_range_exception_stats()
 
             return overview
 
@@ -1845,13 +2112,19 @@ class DataSensor:
 
             self.logger.info("开始数据质量扫描，品种数量: %d", len(reference_symbols))
 
-            # 执行扫描
-            overview = self.scan_all_data(
+            # 🆕 执行自适应扫描（支持增量推送）
+            overview = self.scan_all_data_adaptive(
                 reference_symbols=reference_symbols,
                 intervals=intervals,
                 force_refresh=force_refresh,
                 progress_callback=progress_callback,
             )
+
+            # 🔧 修复：扫描完成后确保文件监控已启动
+            try:
+                self.start_file_watcher()
+            except Exception as watcher_error:
+                self.logger.warning(f"启动文件监控失败: {watcher_error}")
 
             return overview
 
@@ -1871,44 +2144,37 @@ class DataSensor:
 
     def start_sensing_async(self, symbol_loader):
         """
-        启动数据感知（异步，从core.py迁移）
+        启动数据感知（同步执行，已废弃threading.Thread）
+
+        ⚠️ 重要：此方法不再创建threading.Thread，因为：
+        1. 它会在Qt的QThread中被调用（来自validation_worker.py）
+        2. threading.Thread与EventEngine不兼容，导致Qt Timer警告
+        3. Qt应用应使用纯Qt线程体系（QThread），不混用threading.Thread
 
         Args:
             symbol_loader: SymbolLoader实例
         """
-        import threading
+        try:
+            self.logger.info("开始数据质量扫描（Qt QThread模式）...")
 
-        def scan_in_background():
-            try:
-                self.logger.info("【后台线程】开始数据质量扫描...")
+            # 直接同步执行（因为已经在QThread中）
+            overview = self.trigger_scan_with_symbols(
+                symbol_loader=symbol_loader,
+                force_refresh=True,
+            )
 
-                # 使用统一方法（自动获取品种列表）
-                overview = self.trigger_scan_with_symbols(
-                    symbol_loader=symbol_loader,
-                    force_refresh=True,
-                )
+            self.logger.info(
+                "数据质量扫描完成: 评分=%s, 缺失=%s, 错误=%s",
+                overview.quality_score,
+                overview.missing_symbols,
+                overview.error_symbols,
+            )
 
-                self.logger.info(
-                    "【后台线程】数据质量扫描完成: 评分=%s, 缺失=%s, 错误=%s",
-                    overview.quality_score,
-                    overview.missing_symbols,
-                    overview.error_symbols,
-                )
+            # 启动文件监控
+            self.start_file_watcher()
 
-                # 启动文件监控
-                self.start_file_watcher()
-
-            except Exception as e:
-                self.logger.error("【后台线程】数据质量扫描失败: %s", e, exc_info=True)
-
-        # 启动守护线程
-        scan_thread = threading.Thread(
-            target=scan_in_background,
-            daemon=True,
-            name="DataSensingScanThread",
-        )
-        scan_thread.start()
-        self.logger.info("数据感知后台扫描线程已启动")
+        except Exception as e:
+            self.logger.error("数据质量扫描失败: %s", e, exc_info=True)
 
     def start_file_watcher(self) -> bool:
         """
@@ -2020,41 +2286,42 @@ class DataSensor:
         symbols_with_data: List[str],
         reference_symbols: List[str],
         base_date: date,
-        interval: str = "1d"
+        interval: str = "1d",
     ) -> tuple:
         """计算数据滞后和数据缺失
-        
+
         逻辑：
         1. 从最新交易日往前遍历
         2. 找到第一段连续的"所有品种都缺失数据"的日期范围 → 数据滞后
         3. 这段范围之前的日期，有数据的品种中，缺失部分日期的品种数 → 数据缺失
-        
+
         Args:
             symbols_with_data: 本地有数据的品种列表
             reference_symbols: 参考品种列表（全部品种）
             base_date: 基准日期
             interval: 时间周期（默认1d）
-        
+
         Returns:
             (data_lagging_days, data_missing_symbols)
         """
         import sys
-        print("\n" + "="*70, file=sys.stderr)
+
+        print("\n" + "=" * 70, file=sys.stderr)
         print("🔍 [DEBUG] 开始计算数据滞后和数据缺失", file=sys.stderr)
         print(f"   本地有数据品种: {len(symbols_with_data)}个", file=sys.stderr)
         print(f"   参考品种: {len(reference_symbols)}个", file=sys.stderr)
         print(f"   基准日期: {base_date}", file=sys.stderr)
-        print("="*70, file=sys.stderr)
+        print("=" * 70, file=sys.stderr)
         sys.stderr.flush()
-        
+
         try:
             from backend.infrastructure.tdx_asyncio.calendar import TradingCalendar
             import asyncio
             from concurrent.futures import ThreadPoolExecutor
-            
+
             # 获取交易日历
             trading_calendar_obj = TradingCalendar()
-            
+
             # 在新线程中运行异步代码
             def run_async_in_thread():
                 """在新线程中运行异步代码"""
@@ -2072,146 +2339,243 @@ class DataSensor:
                     # 合并两年的交易日
                     trading_days = []
                     if df_this_year is not None and not df_this_year.empty:
-                        trading_days.extend(df_this_year['date'].tolist())
+                        trading_days.extend(df_this_year["date"].tolist())
                     if df_last_year is not None and not df_last_year.empty:
-                        trading_days.extend(df_last_year['date'].tolist())
+                        trading_days.extend(df_last_year["date"].tolist())
                     return trading_days
                 finally:
                     new_loop.close()
-            
+
             try:
                 print("   步骤1: 获取交易日历...", file=sys.stderr)
                 sys.stderr.flush()
                 with ThreadPoolExecutor(max_workers=1) as executor:
                     future = executor.submit(run_async_in_thread)
                     trading_calendar = future.result(timeout=10)
-                print(f"   ✓ 获取到交易日: {len(trading_calendar) if trading_calendar else 0}天", file=sys.stderr)
+                print(
+                    f"   ✓ 获取到交易日: {len(trading_calendar) if trading_calendar else 0}天",
+                    file=sys.stderr,
+                )
                 sys.stderr.flush()
             except Exception as e:
                 print(f"   ✗ 交易日历获取失败: {e}", file=sys.stderr)
                 sys.stderr.flush()
                 self.logger.error("交易日历异步调用失败: %s", e, exc_info=True)
                 return (0, 0)
-            
+
             if not trading_calendar:
                 print("   ✗ 交易日历为空", file=sys.stderr)
                 sys.stderr.flush()
                 self.logger.warning("交易日历不可用，无法计算数据滞后和缺失")
                 return (0, 0)
-            
+
             # 获取从base_date到今天的所有交易日
             today = date.today()
             trading_days = [
-                d for d in trading_calendar
-                if isinstance(d, date) and base_date <= d <= today
+                d for d in trading_calendar if isinstance(d, date) and base_date <= d <= today
             ]
-            
+
             if not trading_days:
                 return (0, 0)
-            
+
             trading_days.sort()
-            latest_trading_day = trading_days[-1]
-            
+
             # 步骤1：从最新交易日往前遍历，统计每个交易日有数据的品种数
             # 构建每个品种的数据日期集合
-            print(f"   步骤2: 构建品种数据日期集合（{len(symbols_with_data)}个品种）...", file=sys.stderr)
+            # 🚀 优化：只采样前500个品种（避免处理5000+品种太慢）
+            sampled_symbols = symbols_with_data[:500]
+            print(
+                f"   步骤2: 构建品种数据日期集合（采样 {len(sampled_symbols)}/{len(symbols_with_data)} 个品种）...",
+                file=sys.stderr,
+            )
             sys.stderr.flush()
             symbol_date_sets = {}
-            for idx, symbol in enumerate(symbols_with_data):
+            successful_reads = 0
+            failed_reads = 0
+
+            for idx, symbol in enumerate(sampled_symbols):
                 try:
                     # 获取品种的所有数据
                     df = self.storage_manager.query_kline(symbol, interval)
-                    if df is not None and not df.empty:
-                        # 从DataFrame中提取日期
-                        if 'date' in df.columns:
-                            data_dates = [d.date() if isinstance(d, datetime) else d for d in df['date'].tolist()]
-                        elif df.index.name == 'date' or 'datetime' in str(df.index.dtype):
-                            data_dates = [d.date() if isinstance(d, datetime) else d for d in df.index.tolist()]
+
+                    # 🐛 调试：输出前3个品种的详细信息
+                    if idx < 3:
+                        print(
+                            f"      [DEBUG] 品种{symbol}: df类型={type(df)}, ",
+                            file=sys.stderr,
+                            end="",
+                        )
+                        if df is not None:
+                            print(
+                                f"shape={df.shape if hasattr(df, 'shape') else 'N/A'}, ",
+                                file=sys.stderr,
+                                end="",
+                            )
+                            print(
+                                f"columns={list(df.columns) if hasattr(df, 'columns') else 'N/A'}, ",
+                                file=sys.stderr,
+                                end="",
+                            )
+                            print(
+                                f"index.name={df.index.name if hasattr(df, 'index') else 'N/A'}",
+                                file=sys.stderr,
+                            )
                         else:
-                            continue
-                        symbol_date_sets[symbol] = set(data_dates)
-                    
-                    # 每1000个品种输出一次进度
-                    if (idx + 1) % 1000 == 0:
-                        print(f"      已处理 {idx + 1}/{len(symbols_with_data)} 品种", file=sys.stderr)
+                            print("df=None", file=sys.stderr)
+                        sys.stderr.flush()
+
+                    if df is not None and not df.empty:
+                        data_dates = None
+
+                        # 尝试多种方式提取日期
+                        # 方式1: 检查列名（date, datetime, timestamp, time）
+                        for col_name in ["date", "datetime", "timestamp", "time"]:
+                            if col_name in df.columns:
+                                try:
+                                    dates = df[col_name].tolist()
+                                    data_dates = []
+                                    for d in dates:
+                                        if isinstance(d, datetime):
+                                            data_dates.append(d.date())
+                                        elif isinstance(d, date):
+                                            data_dates.append(d)
+                                        elif isinstance(d, str):
+                                            # 尝试解析字符串日期
+                                            from datetime import datetime as dt
+
+                                            parsed = dt.strptime(d.split()[0], "%Y-%m-%d")
+                                            data_dates.append(parsed.date())
+                                    if data_dates:
+                                        break
+                                except Exception as e:
+                                    if idx < 3:
+                                        print(
+                                            f"      [DEBUG] 列{col_name}解析失败: {e}",
+                                            file=sys.stderr,
+                                        )
+                                    continue
+
+                        # 方式2: 检查索引
+                        if not data_dates and hasattr(df, "index"):
+                            try:
+                                index_dates = df.index.tolist()
+                                data_dates = []
+                                for d in index_dates:
+                                    if isinstance(d, datetime):
+                                        data_dates.append(d.date())
+                                    elif isinstance(d, date):
+                                        data_dates.append(d)
+                                    elif hasattr(d, "to_pydatetime"):  # pandas Timestamp
+                                        data_dates.append(d.to_pydatetime().date())
+                            except Exception as e:
+                                if idx < 3:
+                                    print(f"      [DEBUG] 索引解析失败: {e}", file=sys.stderr)
+                                data_dates = None
+
+                        if data_dates:
+                            symbol_date_sets[symbol] = set(data_dates)
+                            successful_reads += 1
+                        else:
+                            failed_reads += 1
+                            if idx < 5:  # 前5个失败的输出详细信息
+                                print(f"      [WARN] 品种{symbol}无法提取日期", file=sys.stderr)
+                    else:
+                        failed_reads += 1
+
+                    # 每100个品种输出一次进度
+                    if (idx + 1) % 100 == 0:
+                        print(
+                            f"      已处理 {idx + 1}/{len(sampled_symbols)} 品种 (成功{successful_reads}, 失败{failed_reads})",
+                            file=sys.stderr,
+                        )
                         sys.stderr.flush()
                 except Exception as e:
+                    failed_reads += 1
+                    if idx < 5:
+                        print(f"      [ERROR] 品种{symbol}处理异常: {e}", file=sys.stderr)
                     self.logger.debug(f"获取品种{symbol}数据日期失败: {e}")
                     continue
-            
-            print(f"   ✓ 构建完成，有效品种: {len(symbol_date_sets)}个", file=sys.stderr)
+
+            print(
+                f"   ✓ 构建完成，有效品种: {len(symbol_date_sets)}个 (成功率: {successful_reads}/{len(sampled_symbols)})",
+                file=sys.stderr,
+            )
             sys.stderr.flush()
-            
+
             # 步骤2：从最新交易日往前找连续的全品种缺失段
-            print(f"   步骤3: 计算数据滞后天数（从{len(trading_days)}个交易日倒序检查）...", file=sys.stderr)
+            print(
+                f"   步骤3: 计算数据滞后天数（从{len(trading_days)}个交易日倒序检查）...",
+                file=sys.stderr,
+            )
             sys.stderr.flush()
             data_lagging_days = 0
             lagging_start_idx = len(trading_days)  # 数据滞后开始的索引（不含）
-            
+
             for idx in range(len(trading_days) - 1, -1, -1):
                 trading_day = trading_days[idx]
                 # 统计这一天有数据的品种数
                 symbols_with_data_on_day = sum(
-                    1 for date_set in symbol_date_sets.values()
-                    if trading_day in date_set
+                    1 for date_set in symbol_date_sets.values() if trading_day in date_set
                 )
-                
+
                 if symbols_with_data_on_day == 0:
                     # 这一天所有品种都缺失数据
                     data_lagging_days += 1
                 else:
                     # 找到第一个有数据的日期，滞后计算结束
                     lagging_start_idx = idx + 1
-                    print(f"   ✓ 数据滞后: {data_lagging_days}天 (从{trading_days[idx]}往后)", file=sys.stderr)
+                    print(
+                        f"   ✓ 数据滞后: {data_lagging_days}天 (从{trading_days[idx]}往后)",
+                        file=sys.stderr,
+                    )
                     sys.stderr.flush()
                     break
-            
+
             # 步骤3：统计数据缺失品种数（排除滞后日期）
             # 数据缺失定义：在非滞后日期范围内，品种有数据但部分日期缺失
-            print(f"   步骤4: 计算数据缺失品种数（检查非滞后日期范围）...", file=sys.stderr)
+            print("   步骤4: 计算数据缺失品种数（检查非滞后日期范围）...", file=sys.stderr)
             sys.stderr.flush()
             data_missing_symbols = 0
-            
+
             if lagging_start_idx > 0:
                 # 只检查非滞后的日期范围
                 non_lagging_trading_days = trading_days[:lagging_start_idx]
-                
+
                 if non_lagging_trading_days:
                     expected_days_count = len(non_lagging_trading_days)
                     print(f"      非滞后日期范围: {expected_days_count}个交易日", file=sys.stderr)
                     sys.stderr.flush()
-                    
+
                     for symbol, date_set in symbol_date_sets.items():
                         # 统计该品种在非滞后日期范围内的数据完整性
                         actual_days_in_range = sum(
-                            1 for d in non_lagging_trading_days
-                            if d in date_set
+                            1 for d in non_lagging_trading_days if d in date_set
                         )
-                        
+
                         # 如果有数据但不完整，计为数据缺失
                         if 0 < actual_days_in_range < expected_days_count:
                             data_missing_symbols += 1
-                    
+
                     print(f"   ✓ 数据缺失: {data_missing_symbols}个品种", file=sys.stderr)
                     sys.stderr.flush()
             else:
-                print(f"   ✓ 数据缺失: 0个品种（全部数据滞后）", file=sys.stderr)
+                print("   ✓ 数据缺失: 0个品种（全部数据滞后）", file=sys.stderr)
                 sys.stderr.flush()
-            
-            print("\n" + "="*70, file=sys.stderr)
-            print(f"✅ [DEBUG] 计算完成", file=sys.stderr)
+
+            print("\n" + "=" * 70, file=sys.stderr)
+            print("✅ [DEBUG] 计算完成", file=sys.stderr)
             print(f"   数据滞后: {data_lagging_days}天", file=sys.stderr)
             print(f"   数据缺失: {data_missing_symbols}个品种", file=sys.stderr)
-            print("="*70 + "\n", file=sys.stderr)
+            print("=" * 70 + "\n", file=sys.stderr)
             sys.stderr.flush()
-            
+
             self.logger.info(
                 f"数据滞后与缺失统计: 滞后{data_lagging_days}天, "
                 f"数据缺失{data_missing_symbols}个品种"
             )
-            
+
             return (data_lagging_days, data_missing_symbols)
-            
+
         except Exception as e:
             print(f"\n❌ [DEBUG] 计算失败: {e}", file=sys.stderr)
             sys.stderr.flush()
@@ -2284,27 +2648,36 @@ class DataSensor:
 
             from vnpy.event import Event
 
+            # 🔧 修复：使用顶层格式，与UI期望一致
             event_data = {
-                "overview": {
-                    "total_symbols": overview.total_symbols,
-                    "missing_symbols": overview.missing_symbols,
-                    "error_symbols": overview.error_symbols,
-                    "warning_symbols": overview.warning_symbols,
-                    "quality_score": overview.quality_score,
-                    "last_scan_time": overview.last_scan_time.isoformat(),
-                    # 🆕 数据更新状态
-                    "outdated_symbols": overview.outdated_symbols,
-                    "avg_gap_days": overview.avg_gap_days,
-                    "max_gap_days": overview.max_gap_days,
-                    # 🆕 数据缺失与滞后
-                    "data_missing_symbols": overview.data_missing_symbols,
-                    "data_lagging_days": overview.data_lagging_days,
-                },
-                "timestamp": datetime.now(),
+                "total_symbols": overview.total_symbols,
+                "local_symbols": overview.total_symbols - overview.missing_symbols,
+                "missing_symbols": overview.missing_symbols,
+                "error_symbols": overview.error_symbols,
+                "warning_symbols": overview.warning_symbols,
+                "quality_score": overview.quality_score,
+                "last_scan_time": overview.last_scan_time.isoformat(),
+                # 🆕 数据更新状态
+                "outdated_symbols": overview.outdated_symbols,
+                "avg_gap_days": overview.avg_gap_days,
+                "max_gap_days": overview.max_gap_days,
+                # 🆕 数据缺失与滞后
+                "data_missing_symbols": overview.data_missing_symbols,
+                "data_lagging_days": overview.data_lagging_days,
+                # 🔧 修复：添加问题品种详情
+                "details": overview.details,
             }
 
-            event = Event("eDataQualityUpdate", event_data)
+            from ..events import EVENT_DATA_QUALITY_UPDATE
+
+            event = Event(EVENT_DATA_QUALITY_UPDATE, event_data)
             self.event_engine.put(event)
+
+            self.logger.info(
+                f"📊 推送数据质量概览: 评分{overview.quality_score}, "
+                f"总品种{overview.total_symbols}, 缺失{overview.missing_symbols}, "
+                f"问题品种{len(overview.details)}个"
+            )
 
         except Exception as e:
             self.logger.error("发送质量更新事件失败: %s", e)
@@ -2379,15 +2752,89 @@ class DataSensor:
         self.logger.info("启用自适应扫描模式")
 
         try:
-            # 计算自适应配置
-            from .hybrid_async_engine import AdaptiveQualityConfig
+            # 🎯 架构修复：直接使用LoadBalancer，移除已弃用的AdaptiveQualityConfig
+            # 🔧 修复：添加超时保护，避免LoadBalancer查询阻塞扫描
+            import multiprocessing as mp
+            import psutil
 
-            config = AdaptiveQualityConfig.calculate_optimal_config(
-                symbols_count=len(reference_symbols),
-                enable_detailed_scan=enable_detailed,
-            )
+            cpu_cores = mp.cpu_count()
+            memory = psutil.virtual_memory()
+            available_memory_gb = memory.available / (1024**3)
 
-            # 输出配置摘要
+            # 根据品种数量推断扫描模式
+            symbols_count = len(reference_symbols)
+            if symbols_count < 100:
+                scan_mode = "fast"
+            elif symbols_count < 3000:
+                scan_mode = "balanced"
+            else:
+                scan_mode = "thorough"
+
+            # 默认配置（如果LoadBalancer查询失败则使用）
+            config = {
+                "scan_mode": scan_mode,
+                "max_workers": 4,
+                "batch_size": 50,
+                "enable_multiprocessing": False,
+                "enable_detailed_scan": True,  # 默认启用详细扫描
+                "cpu_cores": cpu_cores,
+                "available_memory_gb": available_memory_gb,
+                "symbols_count": symbols_count,
+                "estimated_memory_mb": symbols_count * 0.1,  # 估算内存使用
+                "reason": "默认配置（LoadBalancer不可用）",
+            }
+
+            # 尝试从LoadBalancer获取优化配置（带超时保护）
+            try:
+                # DataQualityScanTask在本文件第1506行定义，无需导入
+                task = DataQualityScanTask("quality_scan", len(reference_symbols))
+
+                # 🔧 关键修复：将LoadBalancer初始化与查询都放入线程，避免阻塞
+                import threading
+
+                lb_config = None
+                config_ready = threading.Event()
+
+                def get_config_with_timeout():
+                    nonlocal lb_config
+                    try:
+                        from backend.infrastructure.data_module_vnpy.load_balancer.core import (
+                            LoadBalancer,
+                        )
+
+                        lb = LoadBalancer(event_engine=None)
+                        lb_config = lb.get_optimal_config(task)
+                        config_ready.set()
+                    except Exception as e:
+                        self.logger.warning(f"LoadBalancer初始化/查询失败: {e}")
+                        config_ready.set()
+
+                # 启动查询线程
+                query_thread = threading.Thread(target=get_config_with_timeout, daemon=True)
+                query_thread.start()
+
+                # 等待最多2秒
+                if config_ready.wait(timeout=2.0) and lb_config:
+                    # 查询成功，使用LoadBalancer配置
+                    config.update(
+                        {
+                            "max_workers": lb_config.get("max_workers", 4),
+                            "batch_size": lb_config.get("batch_size", 50),
+                            "enable_detailed_scan": True,  # 默认启用详细扫描
+                            "symbols_count": symbols_count,
+                            "estimated_memory_mb": symbols_count * 0.1,  # 估算内存使用
+                            "reason": f"LoadBalancer配置: {lb_config.get('reason', 'auto')}",
+                        }
+                    )
+                    self.logger.info("✅ LoadBalancer配置获取成功")
+                else:
+                    # 超时或失败，使用默认配置
+                    self.logger.warning("⚠️ LoadBalancer初始化/查询超时，使用默认配置")
+
+            except Exception as e:
+                self.logger.warning(f"LoadBalancer线程启动失败，使用默认配置: {e}")
+
+            # 输出配置摘要（使用现有方法）
             config_summary = AdaptiveQualityConfig.get_config_summary(config)
             self.logger.info("\n" + config_summary)
             print("\n" + config_summary)
@@ -2427,6 +2874,13 @@ class DataSensor:
             )
 
             self._quality_overview = overview
+
+            # 🔧 修复：扫描完成后确保文件监控已启动
+            try:
+                self.start_file_watcher()
+            except Exception as watcher_error:
+                self.logger.warning(f"启动文件监控失败: {watcher_error}")
+
             return overview
 
         except Exception as e:
@@ -2435,9 +2889,7 @@ class DataSensor:
                 reference_symbols, intervals, force_refresh, progress_callback
             )
 
-    def _push_phase_0_metrics(
-        self, reference_symbols: List[str], enable_push: bool
-    ):
+    def _push_phase_0_metrics(self, reference_symbols: List[str], enable_push: bool):
         """阶段0：立即推送基础指标"""
         if not enable_push or not self.event_engine:
             return
@@ -2472,10 +2924,15 @@ class DataSensor:
         print(f"  ✓ 缺失: {missing_count} 个品种")
         sys.stdout.flush()
 
+        # 🆕 计算缺失品种详情（用于增量推送）
+        local_symbols_set = set(local_symbol_codes)
+        missing_symbols = [s for s in reference_symbols if s not in local_symbols_set]
+
         return {
             "local_symbols": local_symbol_codes,
             "downloaded_count": downloaded_count,
             "missing_count": missing_count,
+            "missing_symbols": missing_symbols,  # 🆕 新增
         }
 
     def _push_phase_1_metrics(self, local_data: Dict, enable_push: bool):
@@ -2486,11 +2943,29 @@ class DataSensor:
         from ..events import EVENT_QUALITY_SCAN_PHASE, Event
         from datetime import datetime
 
+        # 🆕 构建品种缺失的details（用于增量推送）
+        missing_details = []
+        missing_symbols_list = local_data.get("missing_symbols", [])
+        # 只推送前100个缺失品种的详情（避免推送数据过大）
+        for symbol in missing_symbols_list[:100]:
+            missing_details.append(
+                {
+                    "symbol": symbol,
+                    "status": "missing",
+                    "score": 0,
+                    "has_errors": False,
+                    "has_warnings": False,
+                    "is_missing": True,
+                    "issues": "品种完全无数据",
+                }
+            )
+
         event_data = {
             "phase": 1,
             "metrics": {
                 "downloaded_symbols": local_data["downloaded_count"],
                 "missing_symbols": local_data["missing_count"],
+                "details": missing_details,  # 🆕 新增
             },
             "status": "checking_freshness",
             "progress_percent": 25,
@@ -2501,8 +2976,24 @@ class DataSensor:
         self.event_engine.put(event)
         self.logger.info(
             f"📊 推送阶段1指标: 已下载 {local_data['downloaded_count']}, "
-            f"缺失 {local_data['missing_count']}"
+            f"缺失 {local_data['missing_count']}, 推送{len(missing_details)}个缺失详情"
         )
+
+        # 🔧 修复：阶段1完成后立即推送本地数据索引事件，供UI联想使用
+        try:
+            local_symbols_list = local_data.get("local_symbols", [])
+            symbol_list = [{"code": code, "name": ""} for code in local_symbols_list]
+            if symbol_list:
+                from ..events import EVENT_LOCAL_DATA_INDEX_READY
+
+                index_event = Event(
+                    EVENT_LOCAL_DATA_INDEX_READY,
+                    {"symbols": symbol_list, "count": len(symbol_list)},
+                )
+                self.event_engine.put(index_event)
+                self.logger.info(f"📋(阶段1) 推送本地数据索引: {len(symbol_list)} 个品种")
+        except Exception as e:
+            self.logger.warning(f"阶段1推送本地数据索引事件失败: {e}")
 
     def _scan_phase_2_freshness(
         self, local_symbols: List[str], config: Dict, progress_callback
@@ -2516,6 +3007,8 @@ class DataSensor:
         outdated_symbols = 0
         gap_days_list = []
         batch_size = config.get("batch_size", 500)
+        # 🆕 保存过时品种详情（用于增量推送）
+        outdated_details = []
 
         for idx, symbol in enumerate(local_symbols, 1):
             try:
@@ -2524,6 +3017,9 @@ class DataSensor:
                     gap_days = freshness["gap_days"]
                     if gap_days > 1:
                         outdated_symbols += 1
+                        # 🆕 记录过时品种详情（只保留前50个）
+                        if len(outdated_details) < 50:
+                            outdated_details.append({"symbol": symbol, "gap_days": gap_days})
                     if gap_days >= 0:
                         gap_days_list.append(gap_days)
             except Exception:
@@ -2547,6 +3043,7 @@ class DataSensor:
             "outdated_symbols": outdated_symbols,
             "avg_gap_days": avg_gap_days,
             "gap_days_list": gap_days_list,
+            "outdated_details": outdated_details,  # 🆕 新增
         }
 
     def _push_phase_2_metrics(self, freshness_data: Dict, enable_push: bool):
@@ -2557,11 +3054,28 @@ class DataSensor:
         from ..events import EVENT_QUALITY_SCAN_PHASE, Event
         from datetime import datetime
 
+        # 🆕 构建过时品种的details（用于增量推送）
+        outdated_details_raw = freshness_data.get("outdated_details", [])
+        outdated_details = []
+        for item in outdated_details_raw:
+            outdated_details.append(
+                {
+                    "symbol": item["symbol"],
+                    "status": "warning",
+                    "score": 50,
+                    "has_errors": False,
+                    "has_warnings": True,
+                    "is_missing": False,
+                    "issues": f"数据滞后 {item['gap_days']} 个交易日",
+                }
+            )
+
         event_data = {
             "phase": 2,
             "metrics": {
                 "outdated_symbols": freshness_data["outdated_symbols"],
                 "avg_gap_days": freshness_data["avg_gap_days"],
+                "details": outdated_details,  # 🆕 新增
             },
             "status": "scanning_quality" if enable_push else "calculating_score",
             "progress_percent": 50,
@@ -2572,7 +3086,7 @@ class DataSensor:
         self.event_engine.put(event)
         self.logger.info(
             f"📊 推送阶段2指标: 过时 {freshness_data['outdated_symbols']}, "
-            f"平均滞后 {freshness_data['avg_gap_days']} 天"
+            f"平均滞后 {freshness_data['avg_gap_days']} 天, 推送{len(outdated_details)}个过时详情"
         )
 
     def _scan_phase_3_quality(
@@ -2645,11 +3159,29 @@ class DataSensor:
         from ..events import EVENT_QUALITY_SCAN_PHASE, Event
         from datetime import datetime
 
+        # 🆕 构建错误品种的details（用于增量推送，只推送前50个）
+        symbol_qualities = quality_data.get("symbol_qualities", [])
+        error_details = []
+        for sq in symbol_qualities:
+            if sq.has_errors and len(error_details) < 50:
+                error_details.append(
+                    {
+                        "symbol": sq.symbol,
+                        "status": "error",
+                        "score": sq.overall_score,
+                        "has_errors": True,
+                        "has_warnings": sq.has_warnings,
+                        "is_missing": sq.is_missing,
+                        "issues": self._collect_issues(sq),
+                    }
+                )
+
         event_data = {
             "phase": 3,
             "metrics": {
                 "error_symbols": quality_data["error_symbols"],
                 "warning_symbols": quality_data["warning_symbols"],
+                "details": error_details,  # 🆕 新增
             },
             "status": "calculating_score",
             "progress_percent": 90,
@@ -2660,7 +3192,7 @@ class DataSensor:
         self.event_engine.put(event)
         self.logger.info(
             f"📊 推送阶段3指标: 错误 {quality_data['error_symbols']}, "
-            f"警告 {quality_data['warning_symbols']}"
+            f"警告 {quality_data['warning_symbols']}, 推送{len(error_details)}个错误详情"
         )
 
     def _calculate_and_push_final_score(
@@ -2690,7 +3222,11 @@ class DataSensor:
         # 计算质量评分
         if total_symbols > 0:
             quality_score = int(
-                ((total_symbols - missing_symbols - error_symbols * 2 - warning_symbols * 0.5) / total_symbols) * 100
+                (
+                    (total_symbols - missing_symbols - error_symbols * 2 - warning_symbols * 0.5)
+                    / total_symbols
+                )
+                * 100
             )
         else:
             quality_score = 100
@@ -2701,14 +3237,14 @@ class DataSensor:
         sys.stdout.flush()
 
         # 🆕 计算数据滞后和数据缺失
-        print(f"  步骤4.1: 计算数据滞后和数据缺失...")
+        print("  步骤4.1: 计算数据滞后和数据缺失...")
         sys.stdout.flush()
         local_symbols = local_data.get("local_symbols", [])
         data_lagging_days, data_missing_symbols = self._calculate_lagging_and_missing(
             symbols_with_data=local_symbols,
             reference_symbols=reference_symbols,
             base_date=date.today(),
-            interval="1d"
+            interval="1d",
         )
         print(f"  ✓ 数据滞后: {data_lagging_days}天, 数据缺失: {data_missing_symbols}个品种")
         sys.stdout.flush()
@@ -2764,336 +3300,46 @@ class DataSensor:
         if self.event_engine:
             self._send_quality_update_event(overview)
 
+        # 输出日期范围异常最终统计
+        self.validator.log_final_date_range_exception_stats()
+
+        # 🎯 架构修复：添加批量扫描汇总INFO日志（替代数万条逐项DEBUG）
+        self.logger.info(
+            "✅ 数据质量扫描完成: 总品种=%d, 缺失=%d, 错误=%d, 警告=%d, 评分=%.1f%%",
+            total_symbols,
+            missing_symbols,
+            error_symbols,
+            warning_symbols,
+            quality_score,
+        )
+
+        # 🔧 修复：扫描完成后发布本地数据索引事件（用于UI联想功能）
+        try:
+            # 需要通过 china_stock_engine 访问
+            # 由于 DataSensor 不直接持有 engine 引用，需要通过事件引擎推送
+            if self.event_engine:
+                from ..events import EVENT_LOCAL_DATA_INDEX_READY, Event
+
+                # 构建本地数据索引事件数据
+                local_symbols_list = local_data.get("local_symbols", [])
+
+                # 获取品种名称映射（从symbol_loader，如果可用）
+                symbol_list = []
+                for code in local_symbols_list:
+                    symbol_list.append({"code": code, "name": ""})  # 名称由UI端补充
+
+                event_data = {
+                    "symbols": symbol_list,
+                    "count": len(symbol_list),
+                }
+                event = Event(EVENT_LOCAL_DATA_INDEX_READY, event_data)
+                self.event_engine.put(event)
+
+                self.logger.info(f"📋 推送本地数据索引: {len(symbol_list)} 个品种")
+        except Exception as e:
+            self.logger.warning(f"推送本地数据索引事件失败: {e}")
+
         return overview
-
-    # 🆕 ==================== 混合异步架构扫描 ====================
-
-    def _init_hybrid_async_components(self):
-        """延迟初始化混合异步组件"""
-        if self._hybrid_async_enabled:
-            return
-        
-        try:
-            from .hybrid_async_engine import (
-                ResourceMonitor,
-                FileMetadataScanner,
-                SmartScheduler,
-                AsyncIOExecutor,
-                CPUIntensiveWorker,
-            )
-            
-            self._resource_monitor = ResourceMonitor()
-            self._file_scanner = FileMetadataScanner()
-            self._scheduler = SmartScheduler(self._resource_monitor)
-            self._async_executor = AsyncIOExecutor(self.storage_manager, self.validator)
-            self._cpu_worker = CPUIntensiveWorker(data_dir=str(self.storage_manager.data_dir))
-            
-            self._hybrid_async_enabled = True
-            self.logger.info("✅ 混合异步架构组件已初始化")
-        
-        except ImportError as e:
-            self.logger.warning(f"混合异步组件导入失败，将使用传统扫描: {e}")
-            self._hybrid_async_enabled = False
-
-    async def scan_all_data_hybrid_async(
-        self,
-        reference_symbols: List[str],
-        intervals: Optional[List[str]] = None,
-        force_refresh: bool = False,
-        progress_callback=None,
-    ) -> QualityOverview:
-        """混合异步扫描（终极性能版）
-        
-        四层架构：协程+线程+进程，智能调度，极致性能
-        """
-        if intervals is None:
-            intervals = ["1d", "5m", "1m"]
-        
-        # 初始化组件
-        self._init_hybrid_async_components()
-        
-        if not self._hybrid_async_enabled:
-            # 降级到传统扫描
-            self.logger.warning("混合异步架构未启用，降级到传统扫描")
-            return self.scan_all_data(reference_symbols, intervals, force_refresh, progress_callback)
-        
-        import asyncio
-        from concurrent.futures import ThreadPoolExecutor
-        from datetime import datetime
-        import sys
-        
-        # 启动资源监控
-        self._resource_monitor.start_monitoring()
-        
-        print("\n========== 混合异步数据质量扫描 ==========")
-        print(f"品种数量: {len(reference_symbols)}")
-        print(f"扫描周期: {', '.join(intervals)}")
-        sys.stdout.flush()
-        
-        # ========== 阶段0：立即推送基础指标 (<1ms) ==========
-        self._push_phase_0_metrics(reference_symbols, True)
-        if progress_callback:
-            progress_callback(0)
-        
-        # ========== 阶段1：异步扫描文件元数据 (0.5-1秒) ==========
-        print("\n[阶段1/4] 异步扫描文件元数据...")
-        sys.stdout.flush()
-        
-        file_metadata = await self._file_scanner.scan_all_files_async(
-            self.storage_manager.data_dir,
-            max_concurrency=1000
-        )
-        
-        local_symbols = list(set(meta.symbol for meta in file_metadata.values() if meta.has_data and meta.symbol))
-        local_symbols.sort()
-        
-        print(f"  ✓ 已下载: {len(local_symbols)} 个品种")
-        print(f"  ✓ 缺失: {len(reference_symbols) - len(local_symbols)} 个品种")
-        sys.stdout.flush()
-        
-        self._push_phase_1_metrics(
-            {"local_symbols": local_symbols, "downloaded_count": len(local_symbols), "missing_count": len(reference_symbols) - len(local_symbols)},
-            True
-        )
-        if progress_callback:
-            progress_callback(25)
-        
-        # ========== 阶段2：异步批量检查更新状态 (1-2秒) ==========
-        print("\n[阶段2/4] 异步批量检查更新状态...")
-        sys.stdout.flush()
-        
-        freshness_results = await self._async_executor.batch_check_freshness_async(
-            local_symbols, interval="1d", max_concurrency=500
-        )
-        
-        outdated = sum(1 for r in freshness_results if r.get("gap_days", -1) > 1)
-        gap_days_list = [r.get("gap_days", -1) for r in freshness_results if r.get("gap_days", -1) >= 0]
-        avg_gap = int(sum(gap_days_list) / len(gap_days_list)) if gap_days_list else 0
-        
-        print(f"  ✓ 过时品种: {outdated}")
-        print(f"  ✓ 平均滞后: {avg_gap} 个交易日")
-        sys.stdout.flush()
-        
-        self._push_phase_2_metrics(
-            {"outdated_symbols": outdated, "avg_gap_days": avg_gap, "gap_days_list": gap_days_list},
-            True
-        )
-        if progress_callback:
-            progress_callback(50)
-        
-        # ========== 阶段3：混合并行质量扫描 (5-10秒) ==========
-        print("\n[阶段3/4] 混合并行质量扫描...")
-        sys.stdout.flush()
-        
-        # 创建任务
-        validation_tasks = self._scheduler.create_validation_tasks(local_symbols, intervals, file_metadata)
-        
-        # 智能调度
-        scheduled = self._scheduler.schedule_tasks(validation_tasks)
-        
-        print(f"  任务调度: 协程{len(scheduled['async'])}个, "
-              f"线程{len(scheduled['thread'])}个, 进程{len(scheduled['process'])}个")
-        sys.stdout.flush()
-        
-        # 三层并行执行
-        async_results, thread_results, process_results = await asyncio.gather(
-            self._execute_async_tasks(scheduled["async"]),
-            self._execute_thread_tasks(scheduled["thread"]),
-            self._execute_process_tasks(scheduled["process"])
-        )
-        
-        # 聚合结果
-        all_results = []
-        for results in [async_results, thread_results, process_results]:
-            if results:
-                all_results.extend([r for r in results if r is not None])
-        
-        error_count = sum(1 for r in all_results if r.get("has_errors", False))
-        warning_count = sum(1 for r in all_results if r.get("has_warnings", False))
-        
-        print(f"  ✓ 错误品种: {error_count}")
-        print(f"  ✓ 警告品种: {warning_count}")
-        sys.stdout.flush()
-        
-        self._push_phase_3_metrics(
-            {"error_symbols": error_count, "warning_symbols": warning_count, "symbol_qualities": []},
-            True
-        )
-        if progress_callback:
-            progress_callback(90)
-        
-        # ========== 阶段4：计算最终评分和数据缺失 ==========
-        print("\n[阶段4/4] 计算最终评分和数据缺失...")
-        sys.stdout.flush()
-        
-        total_symbols = len(reference_symbols)
-        missing_symbols = len(reference_symbols) - len(local_symbols)
-        
-        # 🆕 计算数据滞后和数据缺失
-        print(f"  步骤4.1: 计算数据滞后和数据缺失...")
-        sys.stdout.flush()
-        data_lagging_days, data_missing_symbols = self._calculate_lagging_and_missing(
-            symbols_with_data=local_symbols,
-            reference_symbols=reference_symbols,
-            base_date=date.today(),
-            interval="1d"
-        )
-        print(f"  ✓ 数据滞后: {data_lagging_days}天, 数据缺失: {data_missing_symbols}个品种")
-        sys.stdout.flush()
-        
-        # 🆕 构建问题品种详情
-        print(f"  步骤4.2: 构建问题品种详情...")
-        sys.stdout.flush()
-        problem_details = []
-        for result in all_results:
-            if result.get("has_errors") or result.get("has_warnings") or result.get("is_missing"):
-                symbol = result.get("symbol", "")
-                status = "missing" if result.get("is_missing") else ("error" if result.get("has_errors") else "warning")
-                problem_details.append({
-                    "symbol": symbol,
-                    "status": status,
-                    "score": result.get("overall_score", 0),
-                    "has_errors": result.get("has_errors", False),
-                    "has_warnings": result.get("has_warnings", False),
-                    "is_missing": result.get("is_missing", False),
-                    "issues": result.get("issues", ""),
-                })
-        
-        # 按问题严重程度排序
-        problem_details.sort(
-            key=lambda d: {"missing": 1, "error": 2, "warning": 3}.get(d["status"], 4)
-        )
-        print(f"  ✓ 问题品种: {len(problem_details)}个")
-        sys.stdout.flush()
-        
-        # 计算质量评分
-        quality_score = int(
-            ((total_symbols - missing_symbols - error_count * 2 - warning_count * 0.5) / total_symbols) * 100
-        ) if total_symbols > 0 else 100
-        quality_score = max(0, min(100, quality_score))
-        
-        print(f"  ✓ 最终评分: {quality_score}")
-        sys.stdout.flush()
-        
-        overview = QualityOverview(
-            total_symbols=total_symbols,
-            missing_symbols=missing_symbols,
-            error_symbols=error_count,
-            warning_symbols=warning_count,
-            quality_score=quality_score,
-            last_scan_time=datetime.now(),
-            base_date=date.today(),
-            scanned_intervals=list(set(intervals)),
-            details=problem_details,  # 🔧 修复：使用实际的问题品种详情
-            outdated_symbols=outdated,
-            avg_gap_days=avg_gap,
-            data_missing_symbols=data_missing_symbols,  # 🆕 添加数据缺失
-            data_lagging_days=data_lagging_days,  # 🆕 添加数据滞后
-        )
-        
-        self._quality_overview = overview
-        
-        # 推送最终指标
-        from ..events import EVENT_QUALITY_SCAN_PHASE, Event
-        if self.event_engine:
-            event_data = {
-                "phase": 4,
-                "metrics": {"quality_score": quality_score},
-                "status": "complete",
-                "progress_percent": 100,
-                "timestamp": datetime.now().isoformat(),
-            }
-            event = Event(EVENT_QUALITY_SCAN_PHASE, event_data)
-            self.event_engine.put(event)
-        
-        if progress_callback:
-            progress_callback(100)
-        
-        # 推送传统事件（兼容）
-        if self.event_engine:
-            self._send_quality_update_event(overview)
-        
-        # 停止资源监控
-        self._resource_monitor.stop_monitoring()
-        
-        print("\n========== 扫描完成 ==========\n")
-        sys.stdout.flush()
-        
-        return overview
-
-    async def _execute_async_tasks(self, tasks: List) -> List:
-        """执行协程层任务（1000+并发）"""
-        if not tasks:
-            return []
-        
-        try:
-            results = []
-            for task in tasks:
-                result = await self._async_executor.process_task_async(task)
-                if result:
-                    results.append(result)
-            return results
-        except Exception as e:
-            self.logger.error(f"协程层执行失败: {e}", exc_info=True)
-            return []
-
-    async def _execute_thread_tasks(self, tasks: List) -> List:
-        """执行线程层任务（20-50并发）"""
-        if not tasks:
-            return []
-        
-        try:
-            import asyncio
-            from concurrent.futures import ThreadPoolExecutor
-            
-            loop = asyncio.get_event_loop()
-            
-            def process_in_thread(task):
-                try:
-                    return self._async_executor._validate_symbol_sync(task.symbol, task.interval)
-                except Exception as e:
-                    self.logger.debug(f"线程任务失败 {task.symbol}: {e}")
-                    return None
-            
-            with ThreadPoolExecutor(max_workers=20) as executor:
-                futures = [loop.run_in_executor(executor, process_in_thread, t) for t in tasks]
-                results = await asyncio.gather(*futures, return_exceptions=True)
-                return [r for r in results if r is not None and not isinstance(r, Exception)]
-        
-        except Exception as e:
-            self.logger.error(f"线程层执行失败: {e}", exc_info=True)
-            return []
-
-    async def _execute_process_tasks(self, tasks: List) -> List:
-        """执行进程层任务（4-8并发）"""
-        if not tasks:
-            return []
-        
-        try:
-            import asyncio
-            
-            # 提取品种和周期
-            symbols = list(set(t.symbol for t in tasks))
-            intervals = list(set(t.interval for t in tasks))
-            
-            # 在executor中执行进程池任务
-            loop = asyncio.get_event_loop()
-            results = await loop.run_in_executor(
-                None,
-                self._cpu_worker.validate_data_parallel,
-                symbols,
-                intervals
-            )
-            return results
-        
-        except Exception as e:
-            self.logger.error(f"进程层执行失败: {e}", exc_info=True)
-            return []
-
-    def scan_all_data_hybrid_sync(self, *args, **kwargs) -> QualityOverview:
-        """同步包装器（向后兼容）"""
-        import asyncio
-        return asyncio.run(self.scan_all_data_hybrid_async(*args, **kwargs))
 
 
 # ==================== 文件监控器 ====================
@@ -3278,8 +3524,7 @@ class DataFileEventHandler(_FSHandler):
     def _delayed_callback(self, file_path: str, event_type: str):
         """延迟回调执行"""
         if self.pending_event.wait(self.debounce_seconds):
-            # 事件被取消
-            self.logger.debug("防抖取消事件: %s %s", file_path, event_type)
+            # 事件被取消（降噪：不再记录DEBUG以避免刷屏）
             return
 
         # 执行回调

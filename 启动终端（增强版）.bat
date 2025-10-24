@@ -6,6 +6,17 @@ REM ========================================
 REM 星辰金融终端 - 增强版启动脚本
 REM ========================================
 
+REM 检查管理员权限
+net session >nul 2>&1
+if %errorLevel% neq 0 (
+    echo 请求管理员权限...
+    echo.
+    echo 如果出现UAC提示，请点击"是"
+    echo.
+    powershell -Command "Start-Process '%~f0' -Verb RunAs"
+    exit /b
+)
+
 title 星辰金融终端 v5.0 - 启动中...
 
 echo.
@@ -20,6 +31,14 @@ cd /d "%~dp0"
 set "PROJECT_ROOT=%CD%"
 
 echo [✓] 项目根目录: %PROJECT_ROOT%
+echo.
+
+REM ========================================
+REM 提示管理员权限
+REM ========================================
+echo [提示] 硬件温度监控需要管理员权限
+echo        如果出现UAC提示，请点击"是"
+echo        或右键此脚本选择"以管理员身份运行"
 echo.
 
 REM ========================================

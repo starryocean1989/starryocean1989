@@ -194,8 +194,8 @@ except ImportError:
 
 # Infrastructure模块
 try:
-    from backend.infrastructure.system_vnpy.system_monitor import SystemMonitor  # type: ignore
-    from backend.infrastructure.system_vnpy.process_manager import ProcessManager  # type: ignore
+    from backend.infrastructure.system_vnpy.monitors import SystemMonitor  # type: ignore
+    from backend.infrastructure.system_vnpy.managers import ProcessManager  # type: ignore
 
     SYSTEM_MODULE_AVAILABLE = True
 except ImportError:
@@ -208,12 +208,12 @@ def setup_logging(
     name: str = "terminal", level: str = "INFO", log_file: Optional[str] = None
 ) -> logging.Logger:
     """
-    配置日志系统.
+    配置日志系统（仅控制台输出，数据库日志由LogRecordHandler自动处理）.
 
     Args:
         name: 日志名称
         level: 日志级别
-        log_file: 日志文件路径（可选）
+        log_file: 日志文件路径（已废弃，保留参数为了向后兼容）
 
     Returns:
         配置好的Logger对象
@@ -224,28 +224,15 @@ def setup_logging(
     if logger.handlers:
         return logger
 
-    # 控制台处理器
+    # 控制台处理器（Terminal输出）
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
     console_formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
     console_handler.setFormatter(console_formatter)
     logger.addHandler(console_handler)
 
-    # 文件处理器
-    if log_file:
-        try:
-            log_path = Path(log_file)
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-
-            file_handler = logging.FileHandler(log_file, encoding="utf-8")
-            file_handler.setLevel(logging.DEBUG)
-            file_formatter = logging.Formatter(
-                "%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s"
-            )
-            file_handler.setFormatter(file_formatter)
-            logger.addHandler(file_handler)
-        except OSError as e:
-            logger.warning("无法创建日志文件: %s", e)
+    # 注意：文件日志已移除，所有日志通过LogRecordHandler自动写入数据库
+    # log_file参数保留仅为向后兼容，实际不再使用
 
     return logger
 
@@ -383,4 +370,3 @@ __all__ = [
     "RqdataDatafeed",
     "TushareDatafeed",
 ]
-

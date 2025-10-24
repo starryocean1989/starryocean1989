@@ -1,0 +1,8 @@
+{
+  "pid": 19848,
+  "timestamp": "2025-10-23T18:56:18.443860",
+  "alert_push": 5565,
+  "status_pull": 5566,
+  "query_rep": 5567,
+  "bind_addr": "127.0.0.1"
+}

@@ -26,14 +26,106 @@ import pandas as pd
 
 from backend.infrastructure.tdx_asyncio import AsyncTdxHq_API
 
-from ..server_pool_manager import (
+from ..load_balancer.server_pool_manager import (
     server_pool_manager,
-    get_verified_servers_random,
     AdaptiveDownloadConfig,
+)
+from ..load_balancer import (
+    NetworkTask,
+    TaskMetrics,
+    TaskType,
+    ResourceProfile,
 )
 
 # ==================== (ServerManager 已删除，使用 tdx_asyncio.AsyncSmartIPPool) ====================
 # ==================== (TdxDateTimeDecoder 已删除，tdx_asyncio 协议层已自动处理) ====================
+
+
+# ==================== 负载均衡任务类 ====================
+
+
+class KlineDownloadTask(NetworkTask):
+    """K线批量下载任务
+
+    用于批量下载股票K线数据，支持多周期（日线、5分钟、1分钟）。
+    """
+
+    def __init__(self, name: str, task_count: int):
+        """初始化K线下载任务
+
+        Args:
+            name: 任务名称
+            task_count: 预计任务数量（品种数×周期数）
+        """
+        super().__init__(name)
+        self.task_count = task_count
+        # 更新预估连接数
+        self.metrics.estimated_connections = min(task_count * 2, 640)
+
+    def _define_metrics(self) -> TaskMetrics:
+        return TaskMetrics(
+            task_name="kline_batch_download",
+            task_type=TaskType.NETWORK,
+            resource_profile=ResourceProfile.MIXED,  # 网络+磁盘
+            critical_metrics=[
+                "network_speed",
+                "disk_io_speed",
+                "average_io_latency_ms",
+                "concurrent_task_count",
+            ],
+            estimated_duration=300,  # 预计5分钟
+            estimated_memory_mb=320,  # 640连接×0.5MB
+            estimated_connections=640,  # 默认值，会在__init__中更新
+        )
+
+    def execute(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        """执行K线下载（占位方法）
+
+        实际下载由MultiProcessStockFetcher.download_incremental_kline执行。
+        """
+        # 这个方法不会被直接调用
+        return {}
+
+
+class IPODownloadTask(NetworkTask):
+    """IPO日期批量下载任务
+
+    用于批量下载股票IPO日期信息。
+    """
+
+    def __init__(self, name: str, task_count: int):
+        """初始化IPO下载任务
+
+        Args:
+            name: 任务名称
+            task_count: 预计任务数量（品种数）
+        """
+        super().__init__(name)
+        self.task_count = task_count
+        # IPO请求比K线轻量，连接数更少
+        self.metrics.estimated_connections = min(task_count, 200)
+
+    def _define_metrics(self) -> TaskMetrics:
+        return TaskMetrics(
+            task_name="ipo_batch_download",
+            task_type=TaskType.NETWORK,
+            resource_profile=ResourceProfile.NETWORK_IO_INTENSIVE,
+            critical_metrics=[
+                "network_speed",
+                "concurrent_task_count",
+            ],
+            estimated_duration=60,  # 预计1分钟
+            estimated_memory_mb=50,  # 200连接×0.25MB（轻量级请求）
+            estimated_connections=200,  # 默认值，会在__init__中更新
+        )
+
+    def execute(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        """执行IPO下载（占位方法）
+
+        实际下载由MultiProcessStockFetcher.download_ipo_dates执行。
+        """
+        # 这个方法不会被直接调用
+        return {}
 
 
 # ==================== 工作进程函数（已废弃，使用异步版本） ====================
@@ -41,6 +133,349 @@ from ..server_pool_manager import (
 
 
 # ==================== 异步工作进程函数 ====================
+
+
+async def download_worker_two_phase_async(
+    worker_id,
+    task_queue,
+    result_queue,
+    progress_queue,
+    regular_servers,
+    standby_servers,
+    broker_map,
+    threshold,
+    timeout,
+    stop_event,
+    pause_event,
+    connections_per_worker=30,
+):
+    """两段式异步Worker - 先用regular服务器，剩余任务用standby服务器
+
+    Args:
+        worker_id: Worker进程ID
+        task_queue: 共享任务队列
+        result_queue: 结果队列
+        progress_queue: 进度队列
+        regular_servers: 乱序服务器列表
+        standby_servers: 热备服务器列表
+        broker_map: 服务器到券商的映射
+        threshold: 任务剩余阈值（切换到第二阶段的触发点）
+        timeout: 连接超时时间
+        stop_event: 停止事件
+        pause_event: 暂停事件
+        connections_per_worker: 每个worker的异步连接数
+    """
+    logger = logging.getLogger(f"TwoPhaseWorker-{worker_id}")
+    logger.info("两段式Worker %s 启动，PID：%s", worker_id, os.getpid())
+
+    # ========== 第一阶段：使用regular服务器 ==========
+    logger.info(
+        "[Phase1] Worker %s 正在第一阶段，使用 %s 个regular连接", worker_id, connections_per_worker
+    )
+
+    phase1_connections = {}
+    phase1_servers = []
+
+    try:
+        # 建立regular连接
+        for i in range(min(connections_per_worker, len(regular_servers))):
+            if i >= len(regular_servers):
+                break
+            server = regular_servers[i]
+            try:
+                client = await AsyncTdxHq_API.factory(
+                    server=server, timeout=timeout, heartbeat=False, raise_exception=False
+                )
+                if client:
+                    phase1_connections[server] = client
+                    phase1_servers.append(server)
+                    broker = broker_map.get(server, "未知")
+                    logger.debug(
+                        "[Phase1] Worker %s 连接成功: %s %s:%s",
+                        worker_id,
+                        broker,
+                        server[0],
+                        server[1],
+                    )
+            except Exception:
+                logger.debug("[Phase1] Worker %s 连接失败：%s:%s", worker_id, server[0], server[1])
+
+        logger.info("[Phase1] Worker %s 建立 %s 个连接", worker_id, len(phase1_connections))
+
+        if not phase1_connections:
+            logger.error("[Phase1] Worker %s 无可用连接，退出", worker_id)
+            return
+
+        # 第一阶段下载逻辑
+        async def phase1_download_loop(conn_id, client, _server):
+            processed = 0
+            failed = 0
+
+            while not stop_event.is_set():
+                # 检查任务队列大小
+                try:
+                    queue_size = task_queue.qsize()
+                    if queue_size <= threshold:
+                        logger.info(
+                            "[Phase1] Worker %s 连接 %s 达到阈值（剩余%s），停止",
+                            worker_id,
+                            conn_id,
+                            queue_size,
+                        )
+                        break
+                except Exception:
+                    pass  # qsize() 可能在某些平台不可用
+
+                # 等待暂停
+                while not pause_event.is_set():
+                    if stop_event.is_set():
+                        break
+                    await asyncio.sleep(0.1)
+
+                if stop_event.is_set():
+                    break
+
+                # 获取任务
+                try:
+                    task = await asyncio.to_thread(task_queue.get, timeout=0.5)
+                except queue.Empty:
+                    break
+                except Exception as e:
+                    logger.debug("[Phase1] Worker %s 获取任务失败：%s", worker_id, e)
+                    break
+
+                symbol, interval, start_date = task
+
+                try:
+                    data = await _download_single_kline_async(client, symbol, interval, start_date)
+                    if data is not None and not data.empty:
+                        await asyncio.to_thread(
+                            result_queue.put, (f"{symbol}_{interval}", data.to_dict("records"))
+                        )
+                        await asyncio.to_thread(progress_queue.put, (symbol, interval, "success"))
+                        processed += 1
+                    else:
+                        await asyncio.to_thread(progress_queue.put, (symbol, interval, "failed"))
+                        failed += 1
+                except Exception as e:
+                    logger.debug(
+                        "[Phase1] Worker %s 下载失败 %s_%s: %s", worker_id, symbol, interval, e
+                    )
+                    await asyncio.to_thread(progress_queue.put, (symbol, interval, "failed"))
+                    failed += 1
+
+            return processed, failed
+
+        # 并发执行第一阶段
+        results = await asyncio.gather(
+            *[
+                phase1_download_loop(idx, phase1_connections[server], server)
+                for idx, server in enumerate(phase1_servers)
+            ],
+            return_exceptions=True,
+        )
+
+        total_phase1 = sum(r[0] for r in results if isinstance(r, tuple))
+        logger.info("[Phase1] Worker %s 完成，下载：%s", worker_id, total_phase1)
+
+    finally:
+        # 关闭所有phase1连接
+        for server, client in phase1_connections.items():
+            try:
+                if client and not client.closed:
+                    await client.close()
+            except Exception:
+                pass
+        logger.debug("[Phase1] Worker %s 所有连接已关闭", worker_id)
+
+    # ========== 预热阶段：连接standby服务器 ==========
+    logger.info("[Warmup] Worker %s 开始预热热备服务器...", worker_id)
+
+    phase2_connections = {}
+    phase2_servers = []
+    failed_standby = []
+    warmup_timeout = 1.5
+
+    # 为每个worker分配standby服务器
+    worker_standby_start = worker_id * connections_per_worker
+    worker_standby_servers = standby_servers[
+        worker_standby_start : worker_standby_start + connections_per_worker
+    ]
+
+    # 连接standby服务器
+    for server in worker_standby_servers:
+        try:
+            client = await asyncio.wait_for(
+                AsyncTdxHq_API.factory(
+                    server=server, timeout=warmup_timeout, heartbeat=False, raise_exception=False
+                ),
+                timeout=warmup_timeout,
+            )
+            if client:
+                phase2_connections[server] = client
+                phase2_servers.append(server)
+                broker = broker_map.get(server, "未知")
+                logger.debug(
+                    "[Warmup] Worker %s 热备连接成功: %s %s:%s",
+                    worker_id,
+                    broker,
+                    server[0],
+                    server[1],
+                )
+            else:
+                failed_standby.append(server)
+                broker = broker_map.get(server, "未知")
+                logger.warning(
+                    "[Warmup] Worker %s 热备连接失败: %s %s:%s",
+                    worker_id,
+                    broker,
+                    server[0],
+                    server[1],
+                )
+        except asyncio.TimeoutError:
+            failed_standby.append(server)
+            broker = broker_map.get(server, "未知")
+            logger.warning(
+                "[Warmup] Worker %s 热备连接超时: %s %s:%s", worker_id, broker, server[0], server[1]
+            )
+        except Exception as e:
+            failed_standby.append(server)
+            logger.debug(
+                "[Warmup] Worker %s 热备连接异常: %s:%s - %s", worker_id, server[0], server[1], e
+            )
+
+    # 尝试从regular池替换失败的standby
+    if failed_standby:
+        logger.info(
+            "[Warmup] Worker %s 尝试替换 %s 个失败的热备服务器...", worker_id, len(failed_standby)
+        )
+        used_brokers = set(broker_map.get(s, "未知") for s in phase2_servers)
+
+        for failed_server in failed_standby:
+            failed_broker = broker_map.get(failed_server, "未知")
+            # 从regular服务器中找不同券商的替换
+            for regular_server in regular_servers:
+                if regular_server in phase2_servers:
+                    continue
+                regular_broker = broker_map.get(regular_server, "未知")
+                if regular_broker != failed_broker and regular_broker not in used_brokers:
+                    try:
+                        client = await asyncio.wait_for(
+                            AsyncTdxHq_API.factory(
+                                server=regular_server,
+                                timeout=warmup_timeout,
+                                heartbeat=False,
+                                raise_exception=False,
+                            ),
+                            timeout=warmup_timeout,
+                        )
+                        if client:
+                            phase2_connections[regular_server] = client
+                            phase2_servers.append(regular_server)
+                            used_brokers.add(regular_broker)
+                            logger.info(
+                                "[Warmup] Worker %s 替换成功: %s %s:%s",
+                                worker_id,
+                                regular_broker,
+                                regular_server[0],
+                                regular_server[1],
+                            )
+                            break
+                    except Exception:
+                        continue
+
+    logger.info("[Warmup] Worker %s 预热完成，热备连接: %s 个", worker_id, len(phase2_connections))
+
+    # 降级检查
+    if len(phase2_connections) < 10:
+        logger.warning("[Warmup] Worker %s 热备连接不足10个，但继续执行", worker_id)
+
+    # ========== 第二阶段：使用standby服务器 ==========
+    if not phase2_connections:
+        logger.error("[Phase2] Worker %s 无可用热备连接，跳过第二阶段", worker_id)
+        return
+
+    logger.info(
+        "[Phase2] Worker %s 开始第二阶段，使用 %s 个热备连接", worker_id, len(phase2_connections)
+    )
+
+    try:
+        # 第二阶段下载逻辑
+        async def phase2_download_loop(conn_id, client, _server):
+            processed = 0
+            failed = 0
+
+            while not stop_event.is_set():
+                # 等待暂停
+                while not pause_event.is_set():
+                    if stop_event.is_set():
+                        break
+                    await asyncio.sleep(0.1)
+
+                if stop_event.is_set():
+                    break
+
+                # 获取任务
+                try:
+                    task = await asyncio.to_thread(task_queue.get, timeout=0.5)
+                except queue.Empty:
+                    logger.debug("[Phase2] Worker %s 连接 %s 队列为空", worker_id, conn_id)
+                    break
+                except Exception as e:
+                    logger.debug("[Phase2] Worker %s 获取任务失败: %s", worker_id, e)
+                    break
+
+                symbol, interval, start_date = task
+
+                try:
+                    data = await _download_single_kline_async(client, symbol, interval, start_date)
+                    if data is not None and not data.empty:
+                        await asyncio.to_thread(
+                            result_queue.put, (f"{symbol}_{interval}", data.to_dict("records"))
+                        )
+                        await asyncio.to_thread(progress_queue.put, (symbol, interval, "success"))
+                        processed += 1
+                    else:
+                        await asyncio.to_thread(progress_queue.put, (symbol, interval, "failed"))
+                        failed += 1
+                except Exception as e:
+                    logger.debug(
+                        "[Phase2] Worker %s 下载失败 %s_%s: %s", worker_id, symbol, interval, e
+                    )
+                    await asyncio.to_thread(progress_queue.put, (symbol, interval, "failed"))
+                    failed += 1
+
+            return processed, failed
+
+        # 并发执行第二阶段
+        results = await asyncio.gather(
+            *[
+                phase2_download_loop(idx, phase2_connections[server], server)
+                for idx, server in enumerate(phase2_servers)
+            ],
+            return_exceptions=True,
+        )
+
+        total_phase2 = sum(r[0] for r in results if isinstance(r, tuple))
+        logger.info("[Phase2] Worker %s 完成，下载: %s", worker_id, total_phase2)
+
+    finally:
+        # 关闭所有phase2连接
+        for server, client in phase2_connections.items():
+            try:
+                if client and not client.closed:
+                    await client.close()
+            except Exception:
+                pass
+        logger.info("[Phase2] Worker %s 所有热备连接已关闭", worker_id)
+
+
+def _run_two_phase_worker(*args):
+    """在进程中运行两段式异步事件循环的辅助函数"""
+    import warnings
+
+    warnings.filterwarnings("ignore", category=ResourceWarning, message=".*socket.*")
+    asyncio.run(download_worker_two_phase_async(*args))
 
 
 async def download_worker_async(
@@ -51,7 +486,7 @@ async def download_worker_async(
     server_list,
     server_index,
     timeout,
-    retry_times,
+    _retry_times,
     stop_event,
     pause_event,
     connections_per_worker=30,
@@ -135,18 +570,18 @@ async def download_worker_async(
                         f"Worker {worker_id} 连接 建立失败: {server[0]}:{server[1]} (正常现象，会尝试其他服务器)"
                     )
             except Exception as e:
-                logger.warning(f"Worker {worker_id} 连接 建立异常: {e}")
+                logger.warning("Worker %s 连接 建立异常: %s", worker_id, e)
 
         logger.info(
-            f"Worker {worker_id} 成功建立 {len(connections)} 个连接" f"（每个连接使用不同服务器）"
+            "Worker %s 成功建立 %s 个连接（每个连接使用不同服务器）", worker_id, len(connections)
         )
 
         if not connections:
-            logger.error(f"Worker {worker_id} 无可用连接，退出")
+            logger.error("Worker %s 无可用连接，退出", worker_id)
             return
 
         # 为每个连接创建下载协程
-        async def download_loop(conn_id, client, server):
+        async def download_loop(conn_id, client, _server):
             processed = 0
             failed = 0
 
@@ -164,10 +599,10 @@ async def download_worker_async(
                 try:
                     task = await asyncio.to_thread(task_queue.get, timeout=0.5)
                 except queue.Empty:
-                    logger.debug(f"Worker {worker_id} 连接 {conn_id} 队列为空")
+                    logger.debug("Worker %s 连接 %s 队列为空", worker_id, conn_id)
                     break
                 except Exception as e:
-                    logger.debug(f"Worker {worker_id} 连接 {conn_id} 获取任务失败: {e}")
+                    logger.debug("Worker %s 连接 %s 获取任务失败: %s", worker_id, conn_id, e)
                     break
 
                 symbol, interval, start_date = task
@@ -222,7 +657,7 @@ async def download_worker_async(
                     logger.debug(f"Worker {worker_id} 连接 {server[0]}:{server[1]} 已关闭")
                 else:
                     logger.debug(f"Worker {worker_id} 连接 {server[0]}:{server[1]} 已经关闭，跳过")
-            except (ConnectionError, BrokenPipeError, OSError) as e:
+            except (ConnectionError, BrokenPipeError, OSError):
                 # 🔧 捕获常见的连接关闭异常，避免输出警告
                 logger.debug(f"Worker {worker_id} 连接 {server[0]}:{server[1]} 关闭时连接已断开")
             except Exception as e:
@@ -345,6 +780,14 @@ async def _download_single_ipo_async(
 
     try:
         finance_info = await client.get_finance_info(market, symbol)
+
+        # 如果finance_info为None，视为服务器问题
+        if finance_info is None:
+            return None, 0, {}
+
+        # 类型断言：此时finance_info一定是dict类型
+        assert isinstance(finance_info, dict)
+
         ipo_timestamp = finance_info.get("ipo_date", 0)
         industry = finance_info.get("industry", 0)
 
@@ -356,7 +799,7 @@ async def _download_single_ipo_async(
         # ipo_date=0，返回None、industry和完整数据
         return None, industry, finance_info
     except Exception as e:
-        local_logger.debug(f"查询IPO失败 {symbol}: {e}")
+        local_logger.debug("查询IPO失败 %s: %s", symbol, e)
         # 异常视为服务器问题
         return None, 0, {}
 
@@ -381,18 +824,20 @@ async def download_ipo_dates_simple(
     """
     import asyncio
     import logging
-    from ..server_pool_manager import get_random_servers
+    from ..load_balancer.server_pool_manager import get_random_servers
 
     local_logger = logging.getLogger(__name__)
 
     if not tasks_list:
         return {}, [], []
 
-    local_logger.info(f"开始单进程多协程IPO下载: {len(tasks_list)}个品种, {num_coroutines}个协程")
+    local_logger.info(
+        "开始单进程多协程IPO下载: %s个品种, %s个协程", len(tasks_list), num_coroutines
+    )
 
     # 1. 准备连接池
     servers = get_random_servers(count=num_coroutines)
-    local_logger.info(f"获取到 {len(servers)} 个服务器")
+    local_logger.info("获取到 %s 个服务器", len(servers))
 
     # 2. 创建异步连接（并发连接以提速）
     async def connect_single_server(server):
@@ -431,7 +876,7 @@ async def download_ipo_dates_simple(
         local_logger.error("无法连接任何服务器")
         return {}, [], tasks_list
 
-    local_logger.info(f"成功连接 {len(clients)} 个服务器")
+    local_logger.info("成功连接 %s 个服务器", len(clients))
 
     # 3. 结果收集
     results = {}  # {symbol: ipo_date}
@@ -503,7 +948,7 @@ async def download_ipo_dates_simple(
                 )
 
         except Exception as e:
-            local_logger.debug(f"下载 {symbol} 失败: {e}")
+            local_logger.debug("下载 %s 失败: %s", symbol, e)
             failed_tasks.append(task)
             completed_count += 1
 
@@ -525,14 +970,14 @@ async def download_ipo_dates_simple(
         if not failed_tasks:
             break
 
-        local_logger.info(f"第{retry_round+1}次重试: {len(failed_tasks)}个品种")
-        print(f"⚠️ 重试 {len(failed_tasks)} 个失败品种 (第{retry_round+1}/5次)")
+        local_logger.info("第%s次重试: %s个品种", retry_round + 1, len(failed_tasks))
+        print(f"⚠️ 重试 {len(failed_tasks)} 个失败品种 (第{retry_round + 1}/5次)")
 
         # 不关闭连接，直接使用现有的clients进行重试
         # 如果失败次数过多（>=3次）或连接数不足，则切换服务器
         if retry_round >= 3 or len(clients) < 10:
-            local_logger.info(f"第{retry_round+1}次重试：切换服务器...")
-            print(f"   → 切换服务器以提升成功率")
+            local_logger.info("第%s次重试：切换服务器...", retry_round + 1)
+            print("   → 切换服务器以提升成功率")
 
             # 关闭旧连接
             for client in clients:
@@ -543,7 +988,7 @@ async def download_ipo_dates_simple(
 
             # 重新获取服务器并创建新连接
             retry_servers = get_random_servers(count=min(num_coroutines, len(failed_tasks) * 2))
-            local_logger.info(f"重试获取到 {len(retry_servers)} 个新服务器")
+            local_logger.info("重试获取到 %s 个新服务器", len(retry_servers))
 
             clients = []
             for i, server in enumerate(retry_servers):
@@ -562,10 +1007,10 @@ async def download_ipo_dates_simple(
                     await client.connect(server_ip, server_port, time_out=10)
                     clients.append(client)
                 except Exception as e:
-                    local_logger.debug(f"重试连接服务器 {server_ip}:{server_port} 失败: {e}")
+                    local_logger.debug("重试连接服务器 %s:%s 失败: %s", server_ip, server_port, e)
 
             if not clients:
-                local_logger.warning(f"第{retry_round+1}次重试：无法连接任何服务器，停止重试")
+                local_logger.warning("第%s次重试：无法连接任何服务器，停止重试", retry_round + 1)
                 break
 
         # 使用现有或新建的连接进行重试
@@ -599,9 +1044,9 @@ async def download_worker_ipo_async(
     result_queue,
     progress_queue,
     server_list,
-    server_index,
+    _server_index,
     timeout,
-    retry_times,
+    _retry_times,
     stop_event,
     pause_event,
     connections_per_worker=30,
@@ -624,14 +1069,14 @@ async def download_worker_ipo_async(
         unlisted_debug_queue: 用于收集unlisted品种的完整数据（调试用）
     """
     worker_logger = logging.getLogger(__name__)
-    worker_logger.info(f"Worker {worker_id} 启动 (IPO模式)")
+    worker_logger.info("Worker %s 启动 (IPO模式)", worker_id)
 
     try:
         # 从共享服务器列表中获取N个服务器（每个协程1个）
         server_list_local = list(server_list)[:connections_per_worker]
 
         if not server_list_local:
-            worker_logger.error(f"Worker {worker_id} 无可用服务器，退出")
+            worker_logger.error("Worker %s 无可用服务器，退出", worker_id)
             return
 
         # 为每个服务器创建客户端连接
@@ -641,16 +1086,18 @@ async def download_worker_ipo_async(
                 client = await AsyncTdxHq_API.factory(server, timeout=timeout)
                 if client:
                     connections[server] = client
-                    worker_logger.debug(f"Worker {worker_id} 连接到服务器 {server[0]}:{server[1]}")
+                    worker_logger.debug(
+                        "Worker %s 连接到服务器 %s:%s", worker_id, server[0], server[1]
+                    )
             except Exception as e:
-                worker_logger.debug(f"Worker {worker_id} 连接失败 {server}: {e}")
+                worker_logger.debug("Worker %s 连接失败 %s: %s", worker_id, server, e)
 
         if not connections:
-            worker_logger.error(f"Worker {worker_id} 无可用连接，退出")
+            worker_logger.error("Worker %s 无可用连接，退出", worker_id)
             return
 
         # 为每个连接创建下载协程
-        async def download_loop(conn_id, client, server):
+        async def download_loop(conn_id, client, _server):
             processed = 0
             failed = 0
 
@@ -668,10 +1115,10 @@ async def download_worker_ipo_async(
                 try:
                     task = await asyncio.to_thread(task_queue.get, timeout=0.5)
                 except queue.Empty:
-                    worker_logger.debug(f"Worker {worker_id} 连接 {conn_id} 队列为空")
+                    worker_logger.debug("Worker %s 连接 %s 队列为空", worker_id, conn_id)
                     break
                 except Exception as e:
-                    worker_logger.debug(f"Worker {worker_id} 连接 {conn_id} 获取任务失败: {e}")
+                    worker_logger.debug("Worker %s 连接 %s 获取任务失败: %s", worker_id, conn_id, e)
                     break
 
                 symbol, market = task
@@ -748,16 +1195,16 @@ async def download_worker_ipo_async(
                 tasks.append(download_loop(idx, connections[server], server))
 
         if not tasks:
-            worker_logger.warning(f"Worker {worker_id} 没有可用连接，退出")
+            worker_logger.warning("Worker %s 没有可用连接，退出", worker_id)
             return
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         # 统计总数
-        total_processed = sum(r[0] for r in results if isinstance(r, tuple))
-        total_failed = sum(r[1] for r in results if isinstance(r, tuple))
+        total_processed = sum((r[0] for r in results if isinstance(r, tuple)), 0)
+        total_failed = sum((r[1] for r in results if isinstance(r, tuple)), 0)
         worker_logger.info(
-            f"Worker {worker_id} 总计完成, 成功: {total_processed}, 失败: {total_failed}"
+            "Worker %s 总计完成, 成功: %s, 失败: %s", worker_id, total_processed, total_failed
         )
 
     finally:
@@ -766,9 +1213,11 @@ async def download_worker_ipo_async(
             try:
                 if client and not client.closed:
                     await client.close()
-                    worker_logger.debug(f"Worker {worker_id} 连接 {server[0]}:{server[1]} 已关闭")
+                    worker_logger.debug(
+                        "Worker %s 连接 %s:%s 已关闭", worker_id, server[0], server[1]
+                    )
             except Exception as e:
-                worker_logger.debug(f"Worker {worker_id} 关闭连接失败 {server}: {e}")
+                worker_logger.debug("Worker %s 关闭连接失败 %s: %s", worker_id, server, e)
 
 
 def _run_async_worker_ipo(*args):
@@ -868,6 +1317,7 @@ class MultiProcessStockFetcher:
         intervals: Optional[List[str]] = None,
         progress_callback=None,
         use_adaptive: bool = True,
+        use_two_phase: bool = True,
     ) -> Union[Dict[str, pd.DataFrame], Dict[str, str]]:
         """主下载方法 - 使用进程池+动态任务分配
 
@@ -877,6 +1327,7 @@ class MultiProcessStockFetcher:
             intervals: 周期列表（默认["1d", "5m", "1m"]）
             progress_callback: 进度回调函数
             use_adaptive: 是否使用自适应配置（默认True，企业级推荐）
+            use_two_phase: 是否使用两段式下载（默认True，热备服务器优化）
         """
         if not symbols:
             self.logger.error("品种列表为空")
@@ -891,12 +1342,32 @@ class MultiProcessStockFetcher:
 
         try:
             # 1. 获取服务器列表（统一使用服务器池缓存）
+            # 两段式下载：获取分层服务器（热备 + 乱序）
+            standby_servers = []
+            regular_servers = []
+            broker_map = {}
+            threshold = 0
+
             try:
-                # 🔥 关键：统一从服务器池缓存获取服务器（每次打乱顺序）
-                available_servers = server_pool_manager.get_servers_shuffled()
-                self.logger.info(
-                    f"✅ 使用缓存的服务器池: {len(available_servers)}个可用服务器（已打乱）"
-                )
+                if use_two_phase:
+                    # 两段式模式：获取分层服务器
+                    self.logger.info("使用两段式下载模式")
+                    server_layers = server_pool_manager.get_servers_with_standby(standby_count=30)
+                    standby_servers = server_layers["standby"]
+                    regular_servers = server_layers["regular"]
+                    broker_map = server_layers["broker_map"]
+                    available_servers = regular_servers  # 第一阶段使用regular服务器
+
+                    # 计算阈值：min(100, total_tasks * 5%)
+                    threshold = min(100, int(total_tasks * 0.05))
+                    self.logger.info(
+                        f"两段式下载阈值: {threshold} 任务（剩余任务低于此值时切换到热备服务器）"
+                    )
+                else:
+                    # 单段式模式：获取打乱的服务器
+                    available_servers = server_pool_manager.get_servers_shuffled()
+
+                self.logger.info("✅ 使用缓存的服务器池: %s个可用服务器", len(available_servers))
             except RuntimeError as e:
                 # ❌ 缓存不可用，阻止下载
                 error_msg = (
@@ -943,10 +1414,12 @@ class MultiProcessStockFetcher:
                 self.logger.info("=" * 60)
             else:
                 # ===== 传统模式 =====
-                self.logger.info(f"使用服务器池缓存（打乱顺序）: {len(available_servers)} 个服务器")
+                self.logger.info(
+                    "使用服务器池缓存（打乱顺序）: %s 个服务器", len(available_servers)
+                )
                 # 打印前5个服务器（已打乱）
                 top5 = available_servers[:5]
-                self.logger.info(f"前5个服务器（打乱后）: {top5}")
+                self.logger.info("前5个服务器（打乱后）: %s", top5)
 
                 # 动态计算进程数：服务器数/30向上取整
                 import math
@@ -989,7 +1462,14 @@ class MultiProcessStockFetcher:
                 )
 
             # 6. 启动worker进程池
-            self._start_worker_pool(server_list, server_index)
+            if use_two_phase:
+                # 使用两段式worker
+                self._start_two_phase_worker_pool(
+                    regular_servers, standby_servers, broker_map, threshold
+                )
+            else:
+                # 使用单段式worker
+                self._start_worker_pool(server_list, server_index)
 
             # 7. 监控进度并收集结果
             results = self._monitor_progress_and_collect_results(total_tasks, progress_callback)
@@ -1001,12 +1481,12 @@ class MultiProcessStockFetcher:
 
             # 统计结果
             valid_count = sum(1 for v in results.values() if v is not None and not v.empty)
-            self.logger.info(f"下载完成: {valid_count}/{total_tasks} 有效任务")
+            self.logger.info("下载完成: %s/%s 有效任务", valid_count, total_tasks)
 
             return results
 
         except Exception as e:
-            self.logger.error(f"多进程下载异常: {e}", exc_info=True)
+            self.logger.error("多进程下载异常: %s", e, exc_info=True)
             if self._download_progress:
                 self._download_progress["is_downloading"] = False
             self._cleanup_processes()
@@ -1054,6 +1534,57 @@ class MultiProcessStockFetcher:
         # 等待所有进程启动完成
         time.sleep(0.5)
 
+    def _start_two_phase_worker_pool(self, regular_servers, standby_servers, broker_map, threshold):
+        """启动两段式异步worker进程池
+
+        Args:
+            regular_servers: 乱序服务器列表
+            standby_servers: 热备服务器列表
+            broker_map: 服务器到券商的映射
+            threshold: 任务剩余阈值
+        """
+        # 为manager创建共享对象
+        assert self.manager is not None, "Manager未初始化"
+        shared_regular_servers = self.manager.list(regular_servers)  # type: ignore
+        shared_standby_servers = self.manager.list(standby_servers)  # type: ignore
+        shared_broker_map = self.manager.dict(broker_map)  # type: ignore
+
+        for i in range(self.num_processes):
+            try:
+                # 使用两段式异步worker
+                p = Process(
+                    target=_run_two_phase_worker,
+                    args=(
+                        i,
+                        self.task_queue,
+                        self.result_queue,
+                        self.progress_queue,
+                        shared_regular_servers,
+                        shared_standby_servers,
+                        shared_broker_map,
+                        threshold,
+                        self.timeout,
+                        self.stop_event,
+                        self.pause_event,
+                        self.async_connections_per_process,  # 传递异步连接数
+                    ),
+                )
+
+                p.start()
+                self.processes.append(p)
+                self.logger.debug(f"启动两段式进程 {i} (PID: {p.pid})")
+
+                # 给进程一点启动时间
+                time.sleep(0.1)
+
+            except Exception as e:
+                self.logger.error(f"启动两段式进程{i}失败: {e}")
+
+        self.logger.info(f"启动{len(self.processes)}个两段式工作进程")
+
+        # 等待所有进程启动完成
+        time.sleep(0.5)
+
     def _monitor_progress_and_collect_results(
         self, total_tasks: int, progress_callback
     ) -> Dict[str, pd.DataFrame]:
@@ -1074,19 +1605,16 @@ class MultiProcessStockFetcher:
                 break
 
             # 收集进度
-            progress_received = False
             try:
                 if self.progress_queue is not None:
                     progress_data = self.progress_queue.get(timeout=0.1)
                     # 兼容新格式：(symbol, interval, status) 或旧格式：(symbol, interval)
                     if len(progress_data) == 3:
-                        symbol, interval, status = progress_data
+                        symbol, interval, _ = progress_data
                     else:
                         symbol, interval = progress_data
-                        status = "unknown"
 
                     completed += 1
-                    progress_received = True
                     timeout_count = 0  # 重置超时计数
 
                     if self._download_progress:
@@ -1762,7 +2290,11 @@ def download_incremental_unified(
     if storage_callback:
         # 统计下载结果的详细状态
         none_count = sum(1 for v in download_results.values() if v is None)
-        empty_count = sum(1 for v in download_results.values() if v is not None and isinstance(v, pd.DataFrame) and v.empty)
+        empty_count = sum(
+            1
+            for v in download_results.values()
+            if v is not None and isinstance(v, pd.DataFrame) and v.empty
+        )
 
         logger.info("=" * 60)
         logger.info("开始保存下载结果...")
@@ -1775,6 +2307,7 @@ def download_incremental_unified(
             len(download_results) - none_count - empty_count,
         )
 
+        # pylint: disable=no-member
         for key, data in download_results.items():
             parts = key.split("_", 1)
             if len(parts) != 2:
@@ -1785,25 +2318,31 @@ def download_incremental_unified(
             if data is None:
                 logger.debug("跳过保存（下载失败）: %s %s", symbol, interval)
                 skipped_count += 1
-            elif not isinstance(data, pd.DataFrame):
+                continue
+
+            if not isinstance(data, pd.DataFrame):
                 logger.debug("跳过保存（无效数据类型）: %s %s", symbol, interval)
                 skipped_count += 1
-            elif data.empty or len(data) == 0:
+                continue
+
+            # 此时data确定是DataFrame类型
+            if data.empty or len(data) == 0:  # pylint: disable=no-member
                 logger.debug("跳过保存（空数据）: %s %s", symbol, interval)
                 skipped_count += 1
-            else:
-                # 有数据，尝试保存
-                try:
-                    result_path = storage_callback(symbol, interval, data)
-                    if result_path is not None:
-                        saved_count += 1
-                        logger.debug("✓ 保存成功: %s %s (%d行)", symbol, interval, len(data))
-                    else:
-                        failed_count += 1
-                        logger.error("✗ 保存失败: %s %s", symbol, interval)
-                except Exception as e:
-                    logger.error("保存 %s %s 异常: %s", symbol, interval, e)
+                continue
+
+            # 有数据，尝试保存
+            try:
+                result_path = storage_callback(symbol, interval, data)
+                if result_path is not None:
+                    saved_count += 1
+                    logger.debug("✓ 保存成功: %s %s (%d行)", symbol, interval, len(data))
+                else:
                     failed_count += 1
+                    logger.error("✗ 保存失败: %s %s", symbol, interval)
+            except Exception as e:
+                logger.error("保存 %s %s 异常: %s", symbol, interval, e)
+                failed_count += 1
 
         # 统计汇总
         logger.info("=" * 60)
@@ -1844,7 +2383,8 @@ def download_ipo_dates(
     force_refresh: bool = False,
     progress_callback: Optional[Callable] = None,
     event_callback: Optional[Callable] = None,
-    use_adaptive: bool = True,
+    _use_adaptive: bool = True,
+    _use_two_phase: bool = True,
 ) -> Dict[str, Any]:
     """批量下载IPO日期
 
@@ -1854,6 +2394,7 @@ def download_ipo_dates(
         progress_callback: 进度回调函数 callback(symbol, status)
         event_callback: 事件回调函数 callback(event_type, status, count, message)
         use_adaptive: 是否使用自适应配置
+        use_two_phase: 是否使用两段式下载（默认True，热备服务器优化）
 
     Returns:
         {
@@ -1867,8 +2408,6 @@ def download_ipo_dates(
         }
     """
     from ..local_data.data_quality import IPODateCache
-    from ..server_pool_manager import get_adaptive_config_for_tasks, get_random_servers
-    from multiprocessing import get_context
     import time
 
     local_logger = logging.getLogger(__name__)
@@ -1880,7 +2419,7 @@ def download_ipo_dates(
     if not force_refresh:
         uncached = []
         for symbol in symbols:
-            cached_date, is_cached = ipo_cache.get(symbol)
+            _cached_date, is_cached = ipo_cache.get(symbol)
             if not is_cached:
                 uncached.append(symbol)
 
@@ -1916,7 +2455,7 @@ def download_ipo_dates(
         classified = symbol_loader.get_all_classified()
 
         # 构建 code -> market 映射
-        for category, stocks in classified.items():
+        for _category, stocks in classified.items():
             for stock in stocks:
                 if isinstance(stock, dict):
                     code = stock.get("code")
@@ -1962,7 +2501,7 @@ def download_ipo_dates(
     # 执行异步下载
     import asyncio
 
-    def simple_progress_callback(current, total, status):
+    def simple_progress_callback(_current, _total, status):
         """简化的进度回调"""
         if progress_callback:
             # 模拟品种名称（实际可从任务列表获取）

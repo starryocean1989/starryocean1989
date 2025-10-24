@@ -164,9 +164,10 @@ class DailyCacheManager:
             # 验证日期
             if validate_date:
                 is_valid = cls.is_cache_valid(cache_date)
-                if is_valid:
-                    logger.debug("缓存有效: %s (日期: %s)", cache_file, cache_date)
-                else:
+                # 🎯 架构修复：移除高频DEBUG日志，避免刷屏
+                # 缓存有效是正常行为，不需要记录（每次查询都会调用，5000+品种会产生数万条日志）
+                # 只在缓存失效时记录WARNING（异常情况）
+                if not is_valid:
                     logger.warning("缓存已失效: %s (日期: %s)", cache_file, cache_date)
             else:
                 is_valid = True  # 不验证则认为有效

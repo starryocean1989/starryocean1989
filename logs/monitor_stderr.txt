@@ -1,0 +1,45 @@
+2025-10-22 14:00:42,924 - MonitorProcess - INFO - ============================================================
+2025-10-22 14:00:42,926 - MonitorProcess - INFO - 独立监控进程启动（V2 - 混合并发架构）
+2025-10-22 14:00:42,929 - MonitorProcess - INFO - ============================================================
+2025-10-22 14:00:42,972 - MonitorProcess - INFO - ✅ 已设置Windows SelectorEventLoop策略
+2025-10-22 14:00:42,973 - MonitorProcess - INFO - 正在导入MonitoringProcessV2...
+2025-10-22 14:00:43,489 - MonitorProcess - INFO - ✅ MonitoringProcessV2导入成功
+2025-10-22 14:00:43,490 - MonitorProcess - INFO - 正在创建MonitoringProcessV2实例...
+2025-10-22 14:00:46,404 - backend.infrastructure.system_vnpy.librehardwaremonitor.lhm_extended - INFO - ✅ ExtendedLHMWrapper初始化成功
+2025-10-22 14:00:46,405 - backend.infrastructure.system_vnpy.monitor_core - INFO - ✅ 使用 LibreHardwareMonitor Extended
+2025-10-22 14:00:46,422 - backend.infrastructure.system_vnpy.monitor_core - INFO - ✅ pySMART 可用
+2025-10-22 14:00:46,423 - backend.infrastructure.system_vnpy.monitor_core - INFO - MonitoringProcessV2 初始化完成
+2025-10-22 14:00:46,423 - MonitorProcess - INFO - ✅ MonitoringProcessV2实例创建成功
+2025-10-22 14:00:46,423 - MonitorProcess - INFO - 正在启动监控进程主循环...
+2025-10-22 14:00:46,423 - backend.infrastructure.system_vnpy.monitor_core - INFO - ============================================================
+2025-10-22 14:00:46,424 - backend.infrastructure.system_vnpy.monitor_core - INFO - 监控进程V2 启动
+2025-10-22 14:00:46,424 - backend.infrastructure.system_vnpy.monitor_core - INFO - ============================================================
+2025-10-22 14:00:46,424 - backend.infrastructure.system_vnpy.monitor_core - INFO - [INIT] 初始化组件...
+2025-10-22 14:00:46,435 - backend.infrastructure.system_vnpy.monitor_core - INFO - [ZMQ] 所有socket已配置
+2025-10-22 14:00:46,437 - backend.services.database_adapter - INFO - 数据库表初始化完成
+2025-10-22 14:00:46,437 - backend.infrastructure.system_vnpy.monitor_core - INFO - 自适应阈值管理器初始化完成
+2025-10-22 14:00:46,437 - backend.infrastructure.system_vnpy.monitor_core - INFO - 注册指标: cpu_temp (默认警告=80.0, 默认严重=90.0)
+2025-10-22 14:00:46,437 - backend.infrastructure.system_vnpy.monitor_core - INFO - 注册指标: gpu_temp (默认警告=85.0, 默认严重=95.0)
+2025-10-22 14:00:46,438 - backend.infrastructure.system_vnpy.monitor_core - INFO - 注册指标: cpu_power (默认警告=95.0, 默认严重=125.0)
+2025-10-22 14:00:46,438 - backend.infrastructure.system_vnpy.monitor_core - INFO - 注册指标: cpu_percent (默认警告=85.0, 默认严重=95.0)
+2025-10-22 14:00:46,438 - backend.infrastructure.system_vnpy.monitor_core - INFO - 注册指标: memory_percent (默认警告=85.0, 默认严重=95.0)
+2025-10-22 14:00:46,438 - backend.infrastructure.system_vnpy.monitor_core - INFO - [THRESHOLD] 已注册 5 个监控指标
+2025-10-22 14:00:46,439 - backend.infrastructure.system_vnpy.monitor_core - INFO - 从数据库加载了 0 个阈值配置
+2025-10-22 14:00:46,440 - backend.infrastructure.system_vnpy.monitor_core - INFO - [INIT] ✅ 组件初始化完成
+2025-10-22 14:00:46,440 - backend.infrastructure.system_vnpy.monitor_core - INFO - [WORKERS] 启动工作线程...
+2025-10-22 14:00:46,440 - backend.infrastructure.system_vnpy.monitor_core - INFO - [HARDWARE-THREAD] 硬件传感器采集线程启动
+2025-10-22 14:00:46,440 - backend.infrastructure.system_vnpy.monitor_core - INFO - [SMART-THREAD] SMART采集线程启动
+2025-10-22 14:00:46,440 - backend.infrastructure.system_vnpy.monitor_core - INFO - [WORKERS] ✅ 工作线程已启动
+2025-10-22 14:00:46,449 - backend.infrastructure.system_vnpy.monitor_core - INFO - [SMART] 开始采集SMART数据...
+2025-10-22 14:00:46,454 - backend.infrastructure.system_vnpy.monitor_core - INFO - [INIT] 等待所有协程启动...
+2025-10-22 14:00:46,454 - backend.infrastructure.system_vnpy.monitor_core - INFO - 成功读取 0 个硬盘的SMART数据
+2025-10-22 14:00:46,455 - backend.infrastructure.system_vnpy.monitor_core - INFO - [ZMQ] 通信处理协程启动
+2025-10-22 14:00:46,455 - backend.infrastructure.system_vnpy.monitor_core - INFO - [SMART] ✅ 采集完成，耗时0.00s，0个硬盘
+2025-10-22 14:00:46,455 - backend.infrastructure.system_vnpy.monitor_core - INFO - [ZMQ] ✅ 协程就绪
+2025-10-22 14:00:46,456 - backend.infrastructure.system_vnpy.monitor_core - INFO - [FAST-METRICS] 快速指标采集协程启动
+2025-10-22 14:00:46,456 - backend.infrastructure.system_vnpy.monitor_core - INFO - [FAST-METRICS] ✅ 协程就绪
+2025-10-22 14:00:46,457 - backend.infrastructure.system_vnpy.monitor_core - INFO - [DB-WRITER] 数据库写入协程启动
+2025-10-22 14:00:46,470 - backend.infrastructure.system_vnpy.monitor_core - INFO - [DB-WRITER] ✅ 协程就绪
+2025-10-22 14:00:46,470 - backend.infrastructure.system_vnpy.monitor_core - INFO - [ALERT-EVAL] 告警评估协程启动
+2025-10-22 14:00:46,470 - backend.infrastructure.system_vnpy.monitor_core - INFO - [ALERT-EVAL] ✅ 协程就绪
+2025-10-22 14:00:46,476 - backend.infrastructure.system_vnpy.monitor_core - INFO - [INIT] ✅ 所有协程已就绪

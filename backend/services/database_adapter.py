@@ -331,6 +331,62 @@ class DatabaseManager:
                 )
             """
             )
+            
+            # 🔧 关键修复：为timestamp创建降序索引，优化日志查询性能
+            # 避免ORDER BY timestamp DESC时全表扫描，防止UI卡死
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_system_logs_timestamp 
+                ON system_logs(timestamp DESC)
+            """
+            )
+
+            # 监控数据历史表（每5分钟一条记录）
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS monitoring_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TIMESTAMP NOT NULL,
+                    metric_type TEXT NOT NULL,
+                    metric_name TEXT NOT NULL,
+                    value REAL NOT NULL,
+                    unit TEXT,
+                    metadata TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """
+            )
+
+            # 自适应阈值学习数据表
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS adaptive_thresholds (
+                    metric_name TEXT PRIMARY KEY,
+                    mean REAL,
+                    stddev REAL,
+                    p95 REAL,
+                    p99 REAL,
+                    sample_count INTEGER,
+                    last_updated TIMESTAMP,
+                    threshold_warning REAL,
+                    threshold_critical REAL
+                )
+            """
+            )
+
+            # 硬盘SMART历史表
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS smart_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    disk_name TEXT NOT NULL,
+                    timestamp TIMESTAMP NOT NULL,
+                    smart_data TEXT NOT NULL,
+                    health_status TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """
+            )
 
             # 创建索引
             cursor.execute(
@@ -346,6 +402,15 @@ class DatabaseManager:
                 "CREATE INDEX IF NOT EXISTS idx_system_logs_timestamp ON system_logs(timestamp)"
             )
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_system_logs_level ON system_logs(level)")
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_monitoring_history_timestamp ON monitoring_history(timestamp)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_monitoring_history_metric ON monitoring_history(metric_name)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_smart_history_disk ON smart_history(disk_name)"
+            )
 
             # 交易历史表索引
             cursor.execute(
@@ -485,10 +550,10 @@ class DatabaseManager:
                 history_data.get("log_text", ""),
             )
             self.execute_update(query, params)
-            logger.info("下载历史记录已保存: %s", history_data.get("task_id"))
+            logger.info("下载历史记录已保存：%s", history_data.get("task_id"))
             return True
         except Exception as e:
-            logger.error("保存下载历史失败: %s", e, exc_info=True)
+            logger.error("保存下载历史失败：%s", e, exc_info=True)
             return False
 
     def get_download_history(self, limit: int = 20) -> List[Dict[str, Any]]:
@@ -513,7 +578,7 @@ class DatabaseManager:
             results = self.execute_query(query, (limit,))
             return results
         except Exception as e:
-            logger.error("获取下载历史失败: %s", e, exc_info=True)
+            logger.error("获取下载历史失败：%s", e, exc_info=True)
             return []
 
     def delete_download_history(self, record_id: int) -> bool:
@@ -529,10 +594,10 @@ class DatabaseManager:
         try:
             query = "DELETE FROM download_history WHERE id = ?"
             self.execute_update(query, (record_id,))
-            logger.info("下载历史记录已删除: ID=%d", record_id)
+            logger.info("下载历史记录已删除：ID=%d", record_id)
             return True
         except Exception as e:
-            logger.error("删除下载历史失败: %s", e, exc_info=True)
+            logger.error("删除下载历史失败：%s", e, exc_info=True)
             return False
 
     def cleanup_old_download_history(self, keep_count: int = 20) -> int:
@@ -560,7 +625,7 @@ class DatabaseManager:
                 logger.info("清理旧下载历史：删除了 %d 条记录", count)
             return count
         except Exception as e:
-            logger.error("清理旧下载历史失败: %s", e, exc_info=True)
+            logger.error("清理旧下载历史失败：%s", e, exc_info=True)
             return 0
 
 
@@ -591,7 +656,7 @@ class SQLiteManager:
         self.database: Any = None  # 类型: sqlite3.Connection or VnpyDriver
         self._initialized = False
 
-        logger.info("SQLite管理器初始化: %s", self.db_path)
+        logger.info("SQLite管理器初始化：%s", self.db_path)
 
     def initialize(self) -> bool:
         """初始化数据库连接.
@@ -627,7 +692,7 @@ class SQLiteManager:
             logger.warning("   请安装: pip install git+https://github.com/vnpy/vnpy_sqlite.git")
             return False
         except Exception as e:
-            logger.error("❌ SQLite数据库初始化失败: %s", e, exc_info=True)
+            logger.error("❌ SQLite数据库初始化失败：%s", e, exc_info=True)
             return False
 
     def _create_tables(self):
@@ -757,7 +822,7 @@ class SQLiteManager:
             logger.info("✅ 数据表结构创建完成")
 
         except Exception as e:
-            logger.error("创建数据表失败: %s", e, exc_info=True)
+            logger.error("创建数据表失败：%s", e, exc_info=True)
 
     # ========== 配置管理 ==========
 
@@ -787,7 +852,7 @@ class SQLiteManager:
 
             return True
         except Exception as e:
-            logger.error("保存配置失败: %s", e)
+            logger.error("保存配置失败：%s", e)
             return False
 
     def get_config(self, module: str, key: str, default: str = "") -> str:
@@ -814,7 +879,7 @@ class SQLiteManager:
 
             return result[0] if result else default
         except Exception as e:
-            logger.error("获取配置失败: %s", e)
+            logger.error("获取配置失败：%s", e)
             return default
 
     def get_module_configs(self, module: str) -> Dict[str, str]:
@@ -839,7 +904,7 @@ class SQLiteManager:
 
             return {row[0]: row[1] for row in results}
         except Exception as e:
-            logger.error("获取模块配置失败: %s", e)
+            logger.error("获取模块配置失败：%s", e)
             return {}
 
     # ========== 交易记录管理 ==========
@@ -881,7 +946,7 @@ class SQLiteManager:
 
             return True
         except Exception as e:
-            logger.error("保存交易记录失败: %s", e)
+            logger.error("保存交易记录失败：%s", e)
             return False
 
     def get_trades(
@@ -946,7 +1011,7 @@ class SQLiteManager:
 
             return trades
         except Exception as e:
-            logger.error("查询交易记录失败: %s", e)
+            logger.error("查询交易记录失败：%s", e)
             return []
 
     # ========== 回测结果管理 ==========
@@ -988,7 +1053,7 @@ class SQLiteManager:
 
             return True
         except Exception as e:
-            logger.error("保存回测结果失败: %s", e)
+            logger.error("保存回测结果失败：%s", e)
             return False
 
     def get_backtest_results(
@@ -1041,7 +1106,7 @@ class SQLiteManager:
 
             return backtests
         except Exception as e:
-            logger.error("查询回测结果失败: %s", e)
+            logger.error("查询回测结果失败：%s", e)
             return []
 
     # ========== 系统日志管理 ==========
@@ -1072,7 +1137,7 @@ class SQLiteManager:
 
             return True
         except Exception as e:
-            logger.error("保存日志失败: %s", e)
+            logger.error("保存日志失败：%s", e)
             return False
 
     # ========== 通用方法 ==========
@@ -1084,7 +1149,7 @@ class SQLiteManager:
                 self.database.close()
                 logger.info("SQLite数据库连接已关闭")
             except Exception as e:
-                logger.error("关闭数据库连接失败: %s", e)
+                logger.error("关闭数据库连接失败：%s", e)
 
         self._initialized = False
 

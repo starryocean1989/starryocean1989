@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
 from backend.core.base import get_service_manager
 from backend.core.service_base import LoggerMixin
 
-from ui.shared_widgets.base_widget import BaseWidget
+from ui.components.widgets import BaseWidget
 
 
 # 网关类型配置
@@ -283,7 +283,7 @@ class TradingGateway(BaseWidget, LoggerMixin):
     def _create_default_monitor(self):
         """创建默认监控界面（通用）- 集成VnPy核心监控组件."""
         from backend.core.base import get_event_engine
-        from ui.shared_widgets.basic_monitors import (
+        from ui.components.basic_monitors import (
             OrderMonitor,
             TradeMonitor,
             PositionMonitor,
@@ -338,7 +338,7 @@ class TradingGateway(BaseWidget, LoggerMixin):
     def _create_cta_monitor(self):
         """创建CTA策略专用监控界面 - 集成VnPy核心监控."""
         from backend.core.base import get_event_engine
-        from ui.shared_widgets.basic_monitors import (
+        from ui.components.basic_monitors import (
             OrderMonitor,
             TradeMonitor,
             PositionMonitor,
@@ -381,12 +381,13 @@ class TradingGateway(BaseWidget, LoggerMixin):
     def _create_algo_monitor(self):
         """创建算法交易专用监控界面 - 集成VnPy核心监控."""
         from backend.core.base import get_event_engine
-        from ui.shared_widgets.basic_monitors import (
+        from ui.components.basic_monitors import (
             OrderMonitor,
             TradeMonitor,
             PositionMonitor,
             AccountMonitor,
         )
+
         # 获取事件引擎和网关名称
         event_engine = get_event_engine()
         gateway_name = self._get_selected_gateway_name() or ""
@@ -428,12 +429,13 @@ class TradingGateway(BaseWidget, LoggerMixin):
     def _create_option_monitor(self):
         """创建期权策略专用监控界面 - 集成VnPy核心监控."""
         from backend.core.base import get_event_engine
-        from ui.shared_widgets.basic_monitors import (
+        from ui.components.basic_monitors import (
             OrderMonitor,
             TradeMonitor,
             PositionMonitor,
             AccountMonitor,
         )
+
         # 获取事件引擎和网关名称
         event_engine = get_event_engine()
         gateway_name = self._get_selected_gateway_name() or ""
@@ -475,12 +477,13 @@ class TradingGateway(BaseWidget, LoggerMixin):
     def _create_portfolio_monitor(self):
         """创建组合策略专用监控界面 - 集成VnPy核心监控."""
         from backend.core.base import get_event_engine
-        from ui.shared_widgets.basic_monitors import (
+        from ui.components.basic_monitors import (
             OrderMonitor,
             TradeMonitor,
             PositionMonitor,
             AccountMonitor,
         )
+
         # 获取事件引擎和网关名称
         event_engine = get_event_engine()
         gateway_name = self._get_selected_gateway_name() or ""
@@ -523,7 +526,7 @@ class TradingGateway(BaseWidget, LoggerMixin):
     def _create_spread_monitor(self):
         """创建价差交易专用监控界面 - 集成VnPy核心监控."""
         from backend.core.base import get_event_engine
-        from ui.shared_widgets.basic_monitors import (
+        from ui.components.basic_monitors import (
             OrderMonitor,
             TradeMonitor,
             PositionMonitor,
@@ -566,7 +569,7 @@ class TradingGateway(BaseWidget, LoggerMixin):
     def _create_script_monitor(self):
         """创建脚本交易专用监控界面 - 集成VnPy核心监控."""
         from backend.core.base import get_event_engine
-        from ui.shared_widgets.basic_monitors import (
+        from ui.components.basic_monitors import (
             OrderMonitor,
             TradeMonitor,
             PositionMonitor,

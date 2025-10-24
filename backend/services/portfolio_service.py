@@ -54,7 +54,7 @@ class PortfolioService(BaseService):
     def _do_initialize(self) -> bool:
         """初始化组合投资服务."""
         try:
-            self.logger.info("初始化组合投资服务...")
+            self.logger.info("正在初始化组合投资服务...")
 
             # 注册vnpy事件处理器（用于实时数据获取）
             self._register_trading_events()
@@ -102,7 +102,7 @@ class PortfolioService(BaseService):
                 self.logger.warning("无法导入vnpy事件类型，实时数据获取功能不可用")
 
         except Exception as e:
-            self.logger.error("注册事件处理器失败: %s", e, exc_info=True)
+            self.logger.error("注册事件处理器失败：%s", e, exc_info=True)
 
     def _on_position_update(self, event):
         """处理持仓更新事件（增强版：实时缓存）.
@@ -143,7 +143,7 @@ class PortfolioService(BaseService):
             )
 
         except Exception as e:
-            self.logger.error("处理持仓更新失败: %s", e)
+            self.logger.error("处理持仓更新失败：%s", e)
 
     def _on_account_update(self, event):
         """处理资金更新事件（增强版：实时缓存）.
@@ -182,7 +182,7 @@ class PortfolioService(BaseService):
             )
 
         except Exception as e:
-            self.logger.error("处理资金更新失败: %s", e)
+            self.logger.error("处理资金更新失败：%s", e)
 
     def _on_trade_update(self, event):
         """处理成交更新事件（增强版：实时缓存和成本追踪）.

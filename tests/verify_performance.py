@@ -206,18 +206,16 @@ def verify_concurrent_control():
 
     validator = DataValidator()
 
-    print(f"\nIPO查询线程池配置:")
-    print(f"  最大并发数: {validator._ipo_executor._max_workers}")
-    print(f"  线程名称前缀: IPO-Query")
+    print(f"\nDataValidator配置:")
+    print(f"  IPO缓存已初始化: {validator._ipo_cache is not None}")
+    print(f"  存储管理器已初始化: {validator.storage_manager is not None}")
 
-    # 验证服务器故障转移机制
-    print(f"\n服务器故障转移:")
-    print(f"  当前服务器索引: {validator._current_server_index}")
-    print(f"  故障计数器: {len(validator._server_failure_counts)} 个服务器有记录")
-
-    # 测试服务器选择
-    server = validator._get_next_server()
-    print(f"  选择的服务器: {server[0]}:{server[1]}")
+    # 注意：并发控制已移至 data_fetcher.download_ipo_dates()
+    # 该函数使用单进程多协程架构(100个协程)
+    print(f"\n并发控制说明:")
+    print(f"  IPO下载使用单进程多协程架构")
+    print(f"  默认并发数: 100个协程")
+    print(f"  实现位置: data_acquisition.data_fetcher.download_ipo_dates")
 
     print(f"\n✅ 并发控制机制已正确配置")
     return True

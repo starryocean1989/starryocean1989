@@ -32,6 +32,57 @@ from .base_reader import BaseReader
 from .bj_decoder import BjStockDecoder
 from ..config import config_manager
 from ..local_data.data_quality import StorageManager
+from ..load_balancer import (
+    LoadBalancer,
+    LocalProcessingTask,
+    TaskMetrics,
+    TaskType,
+    ResourceProfile,
+)
+
+
+class TdxBatchReadTask(LocalProcessingTask):
+    """TDX本地文件批量读取任务"""
+
+    def __init__(self, name: str, symbols_count: int):
+        """初始化TDX批量读取任务
+
+        Args:
+            name: 任务名称
+            symbols_count: 品种数量
+        """
+        super().__init__(name)
+        self.symbols_count = symbols_count
+        # 更新预估工作数：根据品种数量计算
+        if symbols_count < 50:
+            self.metrics.estimated_workers = 1
+        elif symbols_count < 500:
+            self.metrics.estimated_workers = 4
+        else:
+            self.metrics.estimated_workers = 8
+
+    def _define_metrics(self) -> TaskMetrics:
+        return TaskMetrics(
+            task_name="tdx_batch_read",
+            task_type=TaskType.LOCAL_PROCESSING,
+            resource_profile=ResourceProfile.DISK_IO_INTENSIVE,
+            critical_metrics=[
+                "disk_io_speed",
+                "average_io_latency_ms",
+                "cpu_percent",
+            ],
+            estimated_duration=30,  # 预计30秒
+            estimated_memory_mb=100,  # 约100MB
+            estimated_workers=4,  # 默认值，会在__init__中更新
+        )
+
+    def execute(self, config: Dict[str, Any]) -> Any:
+        """执行TDX批量读取（占位方法）
+
+        实际读取由TdxBinaryReader.process_batch执行。
+        """
+        # 这个方法不会被直接调用
+        pass
 
 
 class TdxBinaryReader(BaseReader):
@@ -383,7 +434,7 @@ class TdxBinaryReader(BaseReader):
         data_type: str = "day",
         market: str = "sh",
         progress_callback=None,
-        max_workers: int = 4,
+        max_workers: Optional[int] = None,
         stop_check=None,
         batch_save_size: int = 10,  # 🔍 DEBUG: 批量保存大小（默认10个品种/次）
     ) -> Dict[str, bool]:
@@ -395,7 +446,7 @@ class TdxBinaryReader(BaseReader):
             data_type: 数据类型
             market: 市场代码
             progress_callback: 进度回调函数 callback(current, total, symbol, success)
-            max_workers: 最大线程数
+            max_workers: 最大线程数（None表示使用LoadBalancer动态获取）
             stop_check: 停止检查函数，返回True时停止处理
             batch_save_size: 批量保存大小（每N个品种保存一次）
 
@@ -405,9 +456,28 @@ class TdxBinaryReader(BaseReader):
         results = {}
         total = len(symbols)
 
+        # 使用LoadBalancer动态获取max_workers
+        if max_workers is None:
+            try:
+                # ✅ 架构修复后：使用Qt原生线程体系，LoadBalancer可直接使用EventEngine
+                # 不再需要线程检测，因为所有代码都在Qt线程体系中运行
+                task = TdxBatchReadTask("tdx_batch_read", total)
+                load_balancer = LoadBalancer(event_engine=None)
+                lb_config = load_balancer.get_optimal_config(task)
+                max_workers = lb_config.get("max_workers", 4)
+                self.logger.info(
+                    "🎯 LoadBalancer动态配置: max_workers=%d " "(压力评分=%.1f/100, 瓶颈=%s)",
+                    max_workers,
+                    lb_config.get("pressure_score", 0),
+                    lb_config.get("bottleneck", "unknown"),
+                )
+            except Exception as e:
+                self.logger.warning(f"LoadBalancer获取配置失败，使用默认值: {e}")
+                max_workers = 4
+
         # 🔍 DEBUG: 打印批量处理开始信息（强制输出到控制台）
         print(f"\n{'='*60}")
-        print(f"📖 TdxBinaryReader 开始批量处理:")
+        print("📖 TdxBinaryReader 开始批量处理:")
         print(f"  - 品种数量: {total}")
         print(f"  - 数据类型: {data_type}")
         print(f"  - 市场代码: {market}")
@@ -450,11 +520,11 @@ class TdxBinaryReader(BaseReader):
                     success = self.save(df)
                     if success:
                         saved_count += 1
-                        print(f"    ✅ 保存成功")
+                        print("    ✅ 保存成功")
                         self.logger.debug(f"  ✅ 保存成功: {symbol} ({interval}), {len(df)} 条记录")
                     else:
                         failed_symbols.append(symbol)
-                        print(f"    ❌ 保存失败（返回False）")
+                        print("    ❌ 保存失败（返回False）")
                         self.logger.warning(f"  ❌ 保存失败: {symbol} ({interval})")
                 except Exception as e:
                     failed_symbols.append(symbol)

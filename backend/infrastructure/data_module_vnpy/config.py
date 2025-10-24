@@ -306,6 +306,13 @@ class ConfigManager:
         "chinastock.server_pool.update_interval": 600.0,  # 服务器池更新间隔（秒，默认10分钟）
         "chinastock.server_pool.test_timeout": 2.0,  # 单个服务器测试超时（秒）
         "chinastock.server_pool.max_fail_time": 10.0,  # 服务器失败阈值（秒，超过则视为不可用）
+        # 热备服务器配置
+        "chinastock.standby_servers.count": 30,  # 热备服务器数量（从不同券商中选择）
+        "chinastock.standby_servers.warmup_timeout": 1.5,  # 热备服务器预热超时（秒）
+        # 两段式下载配置
+        "chinastock.two_phase_download.enabled": True,  # 是否启用两段式下载（默认启用）
+        "chinastock.two_phase_download.threshold_ratio": 0.05,  # 阈值比例（任务剩余5%时切换）
+        "chinastock.two_phase_download.min_threshold": 100,  # 最小阈值（任务数）
         # 轮询数据源转换器配置
         "chinastock.polling_gateway.enabled": False,
         "chinastock.polling_gateway.interval": 60,  # 轮询间隔（秒）
@@ -338,9 +345,9 @@ class ConfigManager:
         "chinastock.quality_scan.min_push_interval_ms": 500,  # 最小推送间隔（避免UI刷新过快）
         # 🆕 混合异步架构配置
         "chinastock.quality_scan.enable_hybrid_async": True,  # 启用混合异步架构
-        "chinastock.quality_scan.max_async_workers": 1000,  # 协程层最大并发数
-        "chinastock.quality_scan.max_thread_workers": 20,  # 线程层最大并发数
-        "chinastock.quality_scan.max_process_workers": 8,  # 进程层最大并发数
+        "chinastock.quality_scan.max_async_workers": 2000,  # 🚀 协程层最大并发数（优化：1000→2000）
+        "chinastock.quality_scan.max_thread_workers": 50,  # 🚀 线程层最大并发数（优化：20→50）
+        "chinastock.quality_scan.max_process_workers": 16,  # 🚀 进程层最大并发数（优化：8→16）
         "chinastock.quality_scan.enable_dynamic_tuning": True,  # 启用动态并发调节
         "chinastock.quality_scan.file_size_threshold_small_kb": 1024,  # <1MB用协程
         "chinastock.quality_scan.file_size_threshold_large_kb": 10240,  # >10MB用进程
@@ -636,7 +643,7 @@ class ConfigManager:
 
     def is_unified_manager_auto_download_enabled(self) -> bool:
         """统一数据管理器是否允许自动补全下载"""
-        return bool(self.get("chinastock.unified_manager.auto_download", True))
+        return bool(self.get("chinastock.unified_manager.auto_download", False))
 
     def is_preload_enabled(self) -> bool:
         """是否启用预加载服务"""
@@ -685,38 +692,6 @@ class ConfigManager:
     def get_quality_scan_min_push_interval(self) -> int:
         """获取最小推送间隔（毫秒）"""
         return int(self.get("chinastock.quality_scan.min_push_interval_ms", 500))
-
-    # 🆕 混合异步架构配置访问方法
-
-    def is_quality_scan_hybrid_async_enabled(self) -> bool:
-        """是否启用混合异步架构"""
-        return bool(self.get("chinastock.quality_scan.enable_hybrid_async", True))
-
-    def get_quality_scan_max_async_workers(self) -> int:
-        """获取协程层最大并发数"""
-        return int(self.get("chinastock.quality_scan.max_async_workers", 1000))
-
-    def get_quality_scan_max_thread_workers(self) -> int:
-        """获取线程层最大并发数"""
-        return int(self.get("chinastock.quality_scan.max_thread_workers", 20))
-
-    def get_quality_scan_max_process_workers(self) -> int:
-        """获取进程层最大并发数"""
-        return int(self.get("chinastock.quality_scan.max_process_workers", 8))
-
-    def is_quality_scan_dynamic_tuning_enabled(self) -> bool:
-        """是否启用动态并发调节"""
-        return bool(self.get("chinastock.quality_scan.enable_dynamic_tuning", True))
-
-    def get_quality_scan_file_size_threshold_small(self) -> int:
-        """获取小文件大小阈值（字节）"""
-        kb = int(self.get("chinastock.quality_scan.file_size_threshold_small_kb", 1024))
-        return kb * 1024
-
-    def get_quality_scan_file_size_threshold_large(self) -> int:
-        """获取大文件大小阈值（字节）"""
-        kb = int(self.get("chinastock.quality_scan.file_size_threshold_large_kb", 10240))
-        return kb * 1024
 
     def _save_to_file(self) -> None:
         """保存配置到文件"""

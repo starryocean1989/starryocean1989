@@ -102,6 +102,10 @@ async def test_sync_ipo_query():
             return
         classified = symbol_loader.load_from_cache()
 
+    if not classified:
+        logger.error("加载品种列表后仍为空")
+        return
+
     # 提取所有品种代码（上证A股 + 深证A股）
     all_symbols = []
 
@@ -235,6 +239,10 @@ async def test_sync_ipo_query_limited():
             logger.error("加载品种列表失败")
             return
         classified = symbol_loader.load_from_cache()
+
+    if not classified:
+        logger.error("加载品种列表后仍为空")
+        return
 
     # 提取前100个品种
     all_symbols = []

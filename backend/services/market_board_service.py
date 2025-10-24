@@ -45,7 +45,7 @@ class MarketBoardService(BaseService):
     def _do_initialize(self) -> bool:
         """初始化行情看板服务."""
         try:
-            self.logger.info("初始化行情看板服务（重构版）...")
+            self.logger.info("正在初始化行情看板服务（重构版）...")
 
             # 初始化技术指标库
             self._init_talib()
@@ -71,7 +71,7 @@ class MarketBoardService(BaseService):
                 return
 
             # 获取统一数据管理器
-            if hasattr(china_stock_engine, 'get_unified_data_manager'):
+            if hasattr(china_stock_engine, "get_unified_data_manager"):
                 self.unified_data_manager = china_stock_engine.get_unified_data_manager()
                 if self.unified_data_manager:
                     self.logger.info("✅ 已获取data_module_vnpy统一数据管理器")
@@ -80,12 +80,11 @@ class MarketBoardService(BaseService):
             self.logger.warning("⚠️ 无法获取统一数据管理器，将使用DataCenterService")
 
         except Exception as e:
-            self.logger.error("获取统一数据管理器失败: %s", e, exc_info=True)
+            self.logger.error("获取统一数据管理器失败：%s", e, exc_info=True)
 
     def _do_shutdown(self) -> bool:
         """关闭行情看板服务."""
         try:
-            self.logger.info("关闭行情看板服务")
             return True
         except Exception as e:
             self._log_error("关闭", e)
@@ -147,21 +146,27 @@ class MarketBoardService(BaseService):
                         start_date=start_date,
                         end_date=end_date,
                         check_gaps=check_gaps,
-                        use_preload=True
+                        use_preload=True,
                     )
 
                     if df is not None and not df.empty:
                         # 将DataFrame转换为Dict格式
                         data = []
                         for idx, row in df.iterrows():
-                            data.append({
-                                "datetime": idx.isoformat() if isinstance(idx, pd.Timestamp) else str(idx),
-                                "open": float(row.get("open", 0)),
-                                "high": float(row.get("high", 0)),
-                                "low": float(row.get("low", 0)),
-                                "close": float(row.get("close", 0)),
-                                "volume": float(row.get("volume", 0)),
-                            })
+                            data.append(
+                                {
+                                    "datetime": (
+                                        idx.isoformat()
+                                        if isinstance(idx, pd.Timestamp)
+                                        else str(idx)
+                                    ),
+                                    "open": float(row.get("open", 0)),
+                                    "high": float(row.get("high", 0)),
+                                    "low": float(row.get("low", 0)),
+                                    "close": float(row.get("close", 0)),
+                                    "volume": float(row.get("volume", 0)),
+                                }
+                            )
 
                         return {
                             "success": True,
@@ -176,7 +181,9 @@ class MarketBoardService(BaseService):
                         }
 
                 except Exception as e:
-                    self.logger.warning("从 data_module_vnpy 查询失败: %s，尝试使用DataCenterService", e)
+                    self.logger.warning(
+                        "从data_module_vnpy查询失败：%s，尝试使用DataCenterService", e
+                    )
 
             # 备用方案：使用DataCenterService
             from backend.core.base import get_service_manager
@@ -259,14 +266,21 @@ class MarketBoardService(BaseService):
                 upper, middle, lower = self.talib.BBANDS(
                     price_array, timeperiod=timeperiod, nbdevup=nbdevup, nbdevdn=nbdevdn
                 )
-                result = {"upper": upper.tolist(), "middle": middle.tolist(), "lower": lower.tolist()}
+                result = {
+                    "upper": upper.tolist(),
+                    "middle": middle.tolist(),
+                    "lower": lower.tolist(),
+                }
 
             elif indicator_name.upper() == "MACD":
                 fastperiod = params.get("fastperiod", 12)
                 slowperiod = params.get("slowperiod", 26)
                 signalperiod = params.get("signalperiod", 9)
                 macd, signal, hist = self.talib.MACD(
-                    price_array, fastperiod=fastperiod, slowperiod=slowperiod, signalperiod=signalperiod
+                    price_array,
+                    fastperiod=fastperiod,
+                    slowperiod=slowperiod,
+                    signalperiod=signalperiod,
                 )
                 result = {"macd": macd.tolist(), "signal": signal.tolist(), "hist": hist.tolist()}
 

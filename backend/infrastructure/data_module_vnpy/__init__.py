@@ -28,13 +28,20 @@ from .events import (
     QualityEventPublisher,
 )
 from .core import ChinaStockEngine
-from .data_acquisition.gateways import PollingGateway, VirtualGateway
 from .data_readers import BaseReader, TdxBinaryReader
-from .local_data.unified_data_manager import UnifiedDataManager, PreloadService
+from .local_data.unified_data_manager import (
+    UnifiedDataManager,
+    PreloadService,
+    TdxDataSource,
+    VirtualDataSource,
+    # 向后兼容别名
+    PollingGateway,
+    VirtualGateway,
+)
 from .data_acquisition.symbol_management import SymbolLoader
 from .data_acquisition.data_fetcher import MultiProcessStockFetcher, download_incremental_unified
 from .local_data.data_quality import HealthChecker
-from .server_pool_manager import (
+from .load_balancer.server_pool_manager import (
     ServerPoolManager,
     server_pool_manager,
     get_best_servers,
@@ -61,8 +68,13 @@ __all__ = [
     "SymbolLoader",
     "MultiProcessStockFetcher",
     "download_incremental_unified",
+    # 数据源（新架构）
+    "TdxDataSource",
+    "VirtualDataSource",
+    # 数据源（向后兼容别名）
     "PollingGateway",
     "VirtualGateway",
+    # 数据管理
     "BaseReader",
     "TdxBinaryReader",
     "PreloadService",

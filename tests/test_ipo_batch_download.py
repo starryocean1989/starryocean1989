@@ -81,11 +81,15 @@ def test_medium_task():
         loader.reload_and_classify()
         classified = loader.load_from_cache()
 
-    test_symbols = []
-    for market_name in ["上证A股", "深证A股"]:
-        if market_name in classified:
-            symbols = [item["code"] for item in classified[market_name]]
-            test_symbols.extend(symbols)
+    if not classified:
+        print("重新加载后仍无数据，使用空列表")
+        test_symbols = []
+    else:
+        test_symbols = []
+        for market_name in ["上证A股", "深证A股"]:
+            if market_name in classified:
+                symbols = [item["code"] for item in classified[market_name]]
+                test_symbols.extend(symbols)
 
     test_symbols = test_symbols[:100]
 

@@ -1,32 +1,750 @@
-# data_module_vnpy - 中国A股数据管理模块（v2.4优化版）
+# -*- coding: utf-8 -*-
+# data_module_vnpy - 中国A股量化数据管理模块
 
-**版本**: v2.4.0（启动缓存优化 + 服务器池改造 + 企业级自适应下载）
-**最后更新**: 2025-10-19
-**维护者**: 开发团队
+**版本**: v3.0.0
+**最后更新**: 2025-10-23
+**架构**: 基于 VNPy + TDX异步接口
 
-基于vnpy架构的量化交易数据管理模块，集成**tdx_asyncio纯异步接口**获取中国A股数据，提供**历史数据、实时数据集成式的数据服务**，供各个功能模块使用。
+---
 
-## 🚀 v2.4 启动缓存优化（NEW）
+## 📑 目录
 
-### 核心改进
+- [模块简介](#模块简介)
+- [核心定位](#核心定位)
+- [架构总览](#架构总览)
+- [目录结构](#目录结构)
+- [核心组件](#核心组件)
+- [功能特性](#功能特性)
+- [技术架构](#技术架构)
+- [上下游调用](#上下游调用)
+- [快速开始](#快速开始)
+- [API参考](#api参考)
+- [配置说明](#配置说明)
+- [性能优化](#性能优化)
+- [维护指南](#维护指南)
 
-**问题**：启动时必然执行服务器池测速（7秒），即使昨天已测速过
-**解决**：引入智能缓存机制，次日0时自动失效，常规启动仅需2-3秒
+---
 
-### 优化效果
+## 模块简介
 
-| 场景 | 优化前 | 优化后 | 提升 |
-|-----|-------|-------|------|
-| 首次启动 | 9-12秒 | 9-10秒 | 持平 |
-| 常规启动 | 9-12秒 | **2-3秒** | **✅ 70%+** |
-| 次日首次启动 | 9-12秒 | 9-10秒 | 持平（需重新测速） |
+`data_module_vnpy` 是一个企业级的中国A股数据管理模块，完全集成到 VNPy 量化交易框架中，提供从数据获取、存储、质量管理到实时推送的全链路数据服务。
 
-### 智能缓存机制
+### 核心能力
 
-#### 1. 统一缓存管理器（`cache_manager.py`）
+- ✅ **品种管理**: 自动获取和分类上证/深证/北证A股、ETF、可转债等
+- ✅ **数据下载**: 多进程+异步协程架构，智能负载均衡
+- ✅ **质量管理**: 实时数据质量监控、自动校验和修复
+- ✅ **智能缓存**: 统一缓存管理，日期失效机制
+- ✅ **实时推送**: 轮询转推送、虚拟回放、外部网关适配
+- ✅ **统一查询**: 四层数据融合（历史+录制+实时+预加载）
 
-所有缓存使用统一的日期失效策略：
+### 技术特色
 
+- 🚀 **纯异步架构**: 基于 `tdx_asyncio` 的纯异步实现
+- 🎯 **智能负载均衡**: 根据系统资源动态调整并发配置
+- 🔄 **两段式下载**: 热备服务器池，优化下载性能
+- 📊 **企业级监控**: 集成系统监控，木桶理论评分模型
+- 🧠 **自适应配置**: CPU/内存/网络自动评估和优化
+
+---
+
+## 核心定位
+
+**data_module_vnpy 提供历史数据、实时数据集成式的数据服务，供各个功能模块使用。**
+
+作为系统的数据中枢，本模块为以下上层模块提供数据支撑：
+- **行情看板**: 实时行情展示和K线图表
+- **数据中心**: 数据下载、品种管理、质量监控
+- **策略中心**: 策略回测和实盘交易
+- **交易网关**: CTP、IB等外部网关的数据适配
+
+---
+
+## 架构总览
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    上层应用（UI层）                          │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐   │
+│  │行情看板  │  │数据中心  │  │策略中心  │  │交易网关  │   │
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘   │
+└───────┼─────────────┼─────────────┼─────────────┼──────────┘
+        │             │             │             │
+        └─────────────┴─────────────┴─────────────┘
+                      │
+        ┌─────────────▼──────────────────────────────────────┐
+        │         服务层 (Service Layer)                      │
+        │  ┌─────────────────────────────────────────────┐   │
+        │  │  DataCenterService                          │   │
+        │  │  - 品种列表管理                              │   │
+        │  │  - 数据下载任务调度                          │   │
+        │  │  - 数据查询接口                              │   │
+        │  └──────────────────┬──────────────────────────┘   │
+        └─────────────────────┼────────────────────────────────┘
+                              │
+        ┌─────────────────────▼────────────────────────────────┐
+        │     核心引擎 (ChinaStockEngine)                       │
+        │  ┌─────────────────────────────────────────────┐    │
+        │  │  协调所有功能模块，提供统一的数据管理接口    │    │
+        │  └──────────────────┬──────────────────────────┘    │
+        └─────────────────────┼──────────────────────────────────┘
+                              │
+        ┌─────────────────────▼────────────────────────────────┐
+        │          data_module_vnpy 内部架构                    │
+        ├──────────────────────────────────────────────────────┤
+        │                                                       │
+        │  ┌─────────────────────────────────────────────┐    │
+        │  │  data_acquisition (远程数据获取)            │    │
+        │  │  ├─ symbol_management.py  品种管理          │    │
+        │  │  └─ data_fetcher.py       多进程下载        │    │
+        │  └─────────────────────────────────────────────┘    │
+        │                                                       │
+        │  ┌─────────────────────────────────────────────┐    │
+        │  │  local_data (本地数据管理)                  │    │
+        │  │  ├─ data_quality.py       质量管理          │    │
+        │  │  └─ unified_data_manager.py 统一管理        │    │
+        │  └─────────────────────────────────────────────┘    │
+        │                                                       │
+        │  ┌─────────────────────────────────────────────┐    │
+        │  │  load_balancer (负载均衡)                   │    │
+        │  │  ├─ server_pool_manager.py 服务器池         │    │
+        │  │  └─ core.py               负载均衡器        │    │
+        │  └─────────────────────────────────────────────┘    │
+        │                                                       │
+        │  ┌─────────────────────────────────────────────┐    │
+        │  │  data_readers (本地文件读取)                │    │
+        │  │  └─ tdx_reader.py         通达信文件读取    │    │
+        │  └─────────────────────────────────────────────┘    │
+        │                                                       │
+        │  ┌─────────────────────────────────────────────┐    │
+        │  │  共享组件                                    │    │
+        │  │  ├─ config.py             配置管理          │    │
+        │  │  ├─ cache_manager.py      缓存管理          │    │
+        │  │  └─ events.py             事件系统          │    │
+        │  └─────────────────────────────────────────────┘    │
+        │                                                       │
+        └───────────────────────────────────────────────────────┘
+                              │
+        ┌─────────────────────▼────────────────────────────────┐
+        │          底层依赖                                     │
+        │  ┌──────────────┐  ┌──────────────┐                 │
+        │  │ tdx_asyncio  │  │    VNPy      │                 │
+        │  │ 纯异步TDX接口 │  │  事件引擎    │                 │
+        │  └──────────────┘  └──────────────┘                 │
+        └───────────────────────────────────────────────────────┘
+```
+
+---
+
+## 目录结构
+
+```
+data_module_vnpy/
+│
+├── 📄 核心文件
+│   ├── __init__.py                     # 模块导出接口
+│   ├── core.py                         # ChinaStockEngine 核心引擎
+│   ├── config.py                       # 配置管理器
+│   ├── cache_manager.py                # 统一缓存管理（日期失效机制）
+│   ├── events.py                       # 事件发布器
+│   └── README.md                       # 本文档
+│
+├── 📁 data_acquisition/                # 远程数据获取模块
+│   ├── __init__.py
+│   ├── symbol_management.py            # 品种列表获取和分类
+│   │   ├── SymbolLoader               # 品种加载器（1424行）
+│   │   └── BlockParser                # 板块解析器
+│   └── data_fetcher.py                 # K线数据下载
+│       ├── MultiProcessStockFetcher   # 多进程下载器（2768行）
+│       ├── download_incremental_unified # 统一下载接口
+│       └── download_ipo_dates         # IPO日期批量下载
+│
+├── 📁 local_data/                      # 本地数据管理模块
+│   ├── __init__.py
+│   ├── data_quality.py                 # 数据质量管理（3486行）
+│   │   ├── IPODateCache               # IPO日期缓存
+│   │   ├── StorageManager             # 存储管理（Parquet）
+│   │   ├── DataValidator              # 数据校验
+│   │   ├── DataSensor                 # 数据质量感知
+│   │   ├── DataFileWatcher            # 文件监控
+│   │   └── HealthChecker              # 系统健康检查
+│   ├── unified_data_manager.py         # 统一数据管理（2286行）
+│   │   ├── UnifiedDataManager         # 四层数据融合
+│   │   ├── PreloadService             # 智能预加载
+│   │   ├── TdxDataSource              # TDX数据源（轮询转推送）
+│   │   └── VirtualDataSource          # 虚拟数据源（历史回放）
+│   └── intelligent_adaptive_tuner.py   # 智能自适应调优器
+│
+├── 📁 load_balancer/                   # 负载均衡模块
+│   ├── __init__.py
+│   ├── README.md                       # 负载均衡详细文档
+│   ├── core.py                         # LoadBalancer 核心（单例）
+│   ├── server_pool_manager.py          # 服务器池管理器
+│   ├── tasks.py                        # 任务基类定义
+│   ├── monitors.py                     # 系统监控指标获取
+│   ├── evaluators.py                   # 资源压力评估器
+│   └── configs.py                      # 动态配置计算器
+│
+├── 📁 data_readers/                    # 本地文件读取模块
+│   ├── __init__.py
+│   ├── base_reader.py                  # 读取器基类
+│   ├── tdx_reader.py                   # 通达信文件读取器
+│   └── bj_decoder.py                   # 北交所数据解码器
+│
+└── 📄 配置和依赖
+    ├── requirements.txt                # Python依赖包
+    └── UNIFIED_DATA_MANAGER_API.md     # 统一数据管理器API文档
+```
+
+### 文件统计
+
+| 模块 | 文件数 | 代码行数 | 核心类数 |
+|------|--------|----------|----------|
+| **核心文件** | 5个 | ~2000行 | 6个 |
+| **data_acquisition** | 2个 | ~4200行 | 5个 |
+| **local_data** | 3个 | ~6000行 | 15个 |
+| **load_balancer** | 7个 | ~3000行 | 10个 |
+| **data_readers** | 3个 | ~800行 | 3个 |
+| **总计** | **20个** | **~16000行** | **39个类** |
+
+---
+
+## 核心组件
+
+### 1. ChinaStockEngine - 核心引擎
+
+`core.py` (1149行)
+
+**职责**: 作为整个模块的中枢，协调所有功能组件，提供统一的对外接口。
+
+**核心功能**:
+- ✅ 集成所有子模块（品种管理、数据下载、质量管理、统一查询）
+- ✅ 智能缓存验证流程（启动时7步验证，2-3秒启动）
+- ✅ 生命周期管理（初始化、启动、停止、健康检查）
+- ✅ 事件协调（日志、进度、数据质量、下载状态）
+- ✅ 配置管理（统一配置接口）
+
+**关键方法**:
+```python
+# 品种管理
+engine.reload_stock_list()          # 重新加载品种列表
+engine.get_market_stocks("上证A股")  # 获取指定市场品种
+
+# 数据下载
+engine.download_incremental("2024-01-01")  # 增量下载
+
+# 数据查询
+engine.query_data("000001", "1d", "2024-01-01", "2024-12-31")
+
+# 质量管理
+engine.trigger_data_quality_scan()  # 触发质量扫描
+engine.get_data_quality_overview()  # 获取质量概览
+
+# 系统管理
+engine.healthcheck()                # 健康检查
+```
+
+**上游调用者**:
+- `backend/core/base.py` - ServiceInitializer 在系统启动时创建
+- `backend/services/data_center_service.py` - DataCenterService 调用其方法
+- `ui/modules/data_center_view.py` - 数据中心UI直接调用
+
+---
+
+### 2. SymbolLoader - 品种管理器
+
+`data_acquisition/symbol_management.py` (1424行)
+
+**职责**: 品种列表的获取、分类、缓存和解析。
+
+**核心功能**:
+- ✅ 从 TDX API 获取完整品种列表（沪深两市）
+- ✅ 从通达信配置文件解析北交所品种和可转债
+- ✅ 智能分类（上证A股、深证A股、北证A股、T+0基金、可转债）
+- ✅ 本地缓存管理（JSON格式，日期失效机制）
+- ✅ 增量更新机制（自动检测新增/退市品种）
+- ✅ IPO日期集成（品种信息包含上市日期）
+
+**分类逻辑**:
+```python
+上证A股: market=1, code以60/68开头
+深证A股: market=0, code以00/30开头
+北证A股: market=2, code以8/4/920开头（从配置文件）
+T+0基金: code以511/159/512/513/515/516/518等开头
+可转债: code以11/12开头（从tdxstat2.cfg）
+```
+
+**关键方法**:
+```python
+loader = SymbolLoader(event_engine)
+
+# 重新加载并分类
+result = loader.reload_and_classify()
+# 返回: {"success": True, "total": 5200, "classified": {...}}
+
+# 提取品种代码
+all_codes = loader.extract_all_codes()
+market_codes = loader.extract_codes_by_market(["上证A股"])
+
+# 获取缓存数据
+cache = loader.get_cached_data()
+```
+
+**数据格式**:
+```python
+{
+    "cache_date": "2025-10-23",
+    "data": {
+        "classified": {
+            "上证A股": [
+                {
+                    "code": "600000",
+                    "name": "浦发银行",
+                    "market": 1,
+                    "ipo_date": "1999-11-10"  # 集成IPO日期
+                },
+                ...
+            ],
+            ...
+        },
+        "total_count": 5200
+    }
+}
+```
+
+---
+
+### 3. MultiProcessStockFetcher - 数据下载器
+
+`data_acquisition/data_fetcher.py` (2768行)
+
+**职责**: 高性能的多进程+异步协程K线数据下载。
+
+**核心功能**:
+- ✅ 多进程架构（充分利用多核CPU）
+- ✅ 纯异步协程（单进程内高并发）
+- ✅ 智能负载均衡（根据系统资源动态调整）
+- ✅ 两段式下载（乱序服务器池 + 热备服务器池）
+- ✅ IPO日期批量下载（复用下载架构）
+- ✅ 实时进度推送（UI实时显示）
+- ✅ 断点续传（支持暂停/恢复）
+
+**性能指标**:
+| 系统配置 | 并发数 | 5000股票×3周期 | 耗时 |
+|---------|--------|---------------|------|
+| 8核CPU  | 320连接 | 15000任务 | ~3分钟 |
+| 12核CPU | 480连接 | 15000任务 | ~2分钟 |
+| 16核CPU | 640连接 | 15000任务 | ~1.5分钟 |
+
+**关键方法**:
+```python
+fetcher = MultiProcessStockFetcher(event_engine)
+
+# 增量下载（推荐）
+result = fetcher.download_incremental_kline(
+    symbols=["000001", "600000"],
+    start_date="2024-01-01",
+    intervals=["1d", "5m", "1m"],
+    use_adaptive=True,      # 自适应配置
+    use_two_phase=True      # 两段式下载
+)
+
+# IPO日期批量下载
+result = download_ipo_dates(
+    symbols=all_symbols,
+    force_refresh=False,    # 增量模式
+    use_adaptive=True
+)
+
+# 控制下载
+fetcher.stop_download()
+fetcher.pause_download()
+fetcher.resume_download()
+progress = fetcher.get_download_progress()
+```
+
+**两段式下载机制**:
+```
+阶段1: 使用650+个乱序服务器，高速下载至剩余5%
+      ↓
+预热: 连接30个热备服务器（不同券商）
+      ↓
+阶段2: 使用30个热备服务器，精准完成剩余任务
+```
+
+---
+
+### 4. DataSensor - 数据质量感知器
+
+`local_data/data_quality.py` (3486行)
+
+**职责**: 全方位的数据质量监控、校验和报告。
+
+**核心功能**:
+- ✅ 四维度检查（品种缺失、历史缺失、逻辑错误、格式错误）
+- ✅ 混合异步架构（协程+线程+进程，最大2000并发）
+- ✅ 智能自适应扫描（根据文件大小选择处理方式）
+- ✅ 增量推送机制（500ms最小间隔，避免UI卡顿）
+- ✅ IPO日期缓存管理（两级缓存，95%+命中率）
+- ✅ 文件监控（实时检测数据变化）
+
+**质量指标**:
+```python
+class QualityOverview:
+    quality_score: float           # 总体质量分数 (0-100)
+    total_symbols: int             # 总品种数
+    missing_symbols: int           # 品种缺失数
+    outdated_symbols: int          # 数据过时数
+    avg_gap_days: float           # 平均滞后天数
+    max_gap_days: int             # 最大滞后天数
+    error_count: int              # 错误数量
+    warning_count: int            # 警告数量
+```
+
+**关键方法**:
+```python
+sensor = DataSensor(event_engine)
+
+# 触发质量扫描
+overview = sensor.trigger_scan_with_symbols(
+    symbol_loader=symbol_loader,
+    force_refresh=True
+)
+
+# 获取质量概览
+overview = sensor.get_quality_overview()
+
+# 启动文件监控
+sensor.start_file_watcher()
+
+# 检查单个品种
+validation = sensor.validate_symbol("000001")
+```
+
+**混合异步架构**:
+```
+├─ 协程层: 小文件 (<1MB)  → asyncio pool (2000并发)
+├─ 线程层: 中等文件 (1-10MB) → ThreadPoolExecutor (50线程)
+└─ 进程层: 大文件 (>10MB)    → ProcessPoolExecutor (16进程)
+```
+
+---
+
+### 5. UnifiedDataManager - 统一数据管理器
+
+`local_data/unified_data_manager.py` (2286行)
+
+**职责**: 多源数据融合、统一查询、实时推送。
+
+**核心功能**:
+- ✅ 四层数据融合（历史Parquet + 录制数据 + 实时推送 + 预加载缓存）
+- ✅ 智能预加载（常用品种自动预加载，亚秒级响应）
+- ✅ TDX数据源（轮询转推送，符合VNPy Gateway标准）
+- ✅ 虚拟数据源（历史回放，用于回测）
+- ✅ 订阅管理（多模块订阅，去重优化）
+- ✅ 自动补全（检测数据缺失，自动触发下载）
+
+**查询优先级**:
+```
+1. 预加载缓存 (内存, 最快)
+   ↓ 未命中
+2. 历史Parquet文件 (磁盘, 快)
+   ↓ 未命中
+3. 录制数据 (如果启用)
+   ↓ 未命中
+4. 实时推送 (如果已订阅)
+```
+
+**关键方法**:
+```python
+manager = UnifiedDataManager(china_stock_engine)
+
+# 统一查询（自动融合）
+data = manager.query_unified(
+    symbol="000001",
+    interval="1d",
+    start_date="2024-01-01",
+    end_date="2024-12-31",
+    check_gaps=True  # 自动检测缺失
+)
+
+# 订阅管理
+manager.subscribe(module="strategy", symbols=["000001", "600000"])
+manager.unsubscribe(module="strategy")
+
+# 预加载服务
+manager.preload_symbols(["000001", "600000"], intervals=["1d", "5m"])
+```
+
+**TDX数据源（轮询转推送）**:
+```python
+tdx_source = TdxDataSource(gateway_name="TDX_POLLING")
+tdx_source.connect({
+    "轮询间隔（秒）": 3,
+    "品种列表": "000001,600000"
+})
+# 自动推送 TickData/BarData 到 VNPy 事件引擎
+```
+
+---
+
+### 6. LoadBalancer - 智能负载均衡器
+
+`load_balancer/core.py` + 相关模块 (~3000行)
+
+**职责**: 根据系统资源动态调整任务并发配置。
+
+**核心功能**:
+- ✅ 单例模式（全局唯一实例）
+- ✅ 混合监控（事件订阅 + ZMQ查询 + 智能fallback）
+- ✅ 木桶理论评分（CPU 40分 + 内存 30分 + 磁盘 15分 + 网络 15分）
+- ✅ 动态缩放（0.3-1.6倍并发调整）
+- ✅ 智能缓存（3秒TTL，减少评估开销）
+- ✅ 任务标准化（8个标准任务类型）
+
+**评分模型**:
+```
+总分 = min(CPU分40, 内存分30, 磁盘分15, 网络分15) × 评分因子
+
+压力级别:
+- 0-30分: 紧急 (0.3x并发)
+- 31-50分: 高压 (0.5x-0.7x并发)
+- 51-70分: 中等 (0.8x-1.0x并发)
+- 71-100分: 正常 (1.0x-1.6x并发)
+```
+
+**标准任务类型**:
+```python
+# 网络任务 (4个)
+- ServerPoolTestTask      # 服务器池测速
+- KlineDownloadTask       # K线批量下载
+- IPODownloadTask         # IPO日期下载
+- RealtimePollingTask     # 实时行情轮询
+
+# 本地处理任务 (4个)
+- DataQualityScanTask     # 数据质量扫描
+- TdxBatchReadTask        # TDX文件批量读取
+- VirtualReplayTask       # 虚拟推送回放
+- PreloadTask             # 数据预加载
+```
+
+**关键方法**:
+```python
+load_balancer = LoadBalancer(event_engine)
+
+# 定义任务
+task = KlineDownloadTask("kline_download", task_count=15000)
+
+# 获取最优配置
+config = load_balancer.get_optimal_config(task)
+# 返回: {
+#     "processes": 16,
+#     "coroutines_per_process": 40,
+#     "total_connections": 640,
+#     "pressure_score": 85.3,
+#     "scale_factor": 1.2,
+#     "reason": "系统正常，提升20%并发"
+# }
+
+# 执行任务
+result = task.execute(config)
+```
+
+---
+
+### 7. ServerPoolManager - 服务器池管理器
+
+`load_balancer/server_pool_manager.py` (1100行)
+
+**职责**: 通达信服务器的测速、排序、故障剔除和热备管理。
+
+**核心功能**:
+- ✅ 多进程并行测速（3进程×50协程，5-10秒完成）
+- ✅ 智能排序（按响应时间排序，故障服务器剔除）
+- ✅ 热备服务器池（30个不同券商的最快服务器）
+- ✅ 两段式下载支持（乱序池 + 热备池）
+- ✅ 缓存机制（次日0时失效）
+- ✅ 线程安全（多线程获取服务器）
+
+**关键方法**:
+```python
+# 全局单例
+from backend.infrastructure.data_module_vnpy import server_pool_manager
+
+# 启动时测速
+server_pool_manager.start()  # 5-10秒，可并发执行
+
+# 获取最快的服务器
+best = server_pool_manager.get_best_server()
+
+# 获取前N个服务器
+top10 = server_pool_manager.get_servers(count=10)
+
+# 获取打乱后的服务器（用于下载）
+servers = server_pool_manager.get_servers_shuffled()
+
+# 检查缓存状态
+is_valid = server_pool_manager.is_cache_valid()
+stats = server_pool_manager.get_stats()
+```
+
+**测速性能**:
+```
+输入: 132个服务器
+进程: 3个（CPU并行）
+协程: 50×3=150个（I/O并行）
+超时: 2秒/服务器
+耗时: 5-10秒
+
+输出: 54个可用服务器（按速度排序）
+最快: 123.125.108.90:7709
+Top3: 123.125.108.90, 123.125.108.14, 124.70.176.52
+```
+
+---
+
+## 功能特性
+
+### 🎯 品种管理
+
+#### 支持的品种类型
+- ✅ **上证A股**: 60xxxx, 68xxxx（科创板）
+- ✅ **深证A股**: 00xxxx, 30xxxx（创业板）
+- ✅ **北证A股**: 8xxxxx, 4xxxxx, 920xxx（从配置文件）
+- ✅ **T+0基金**: 511xxx, 159xxx, 512xxx, 513xxx, 515xxx, 516xxx, 518xxx
+- ✅ **可转债**: 11xxxx（深市）, 12xxxx（沪市）
+
+#### 核心能力
+- 自动获取完整品种列表（~5200个）
+- 智能分类和标签
+- IPO日期集成
+- 增量更新机制
+- 本地缓存（次日0时失效）
+- 通达信板块文件解析
+
+---
+
+### 🚀 数据下载
+
+#### 多维度下载
+- ✅ **增量下载**: 从指定日期开始增量更新
+- ✅ **全量下载**: 从IPO日期开始全量下载
+- ✅ **多周期支持**: 日线(1d)、5分钟(5m)、1分钟(1m)
+- ✅ **批量下载**: 支持数千品种并行下载
+
+#### 性能优化
+```
+传统方案 (单进程单线程):
+5000品种 × 3周期 = 15000任务
+耗时: ~6小时
+
+优化方案1 (多线程):
+50线程并发
+耗时: ~40分钟
+
+优化方案2 (多进程+异步):
+16进程 × 40协程 = 640并发
+耗时: ~1.5分钟  ✅ 性能提升240倍！
+```
+
+#### 智能特性
+- **自适应配置**: 根据CPU/内存自动调整并发数
+- **两段式下载**: 乱序池高速下载 + 热备池精准完成
+- **断点续传**: 支持暂停/恢复
+- **实时进度**: UI实时显示下载进度
+- **故障重试**: 自动重试失败任务
+- **服务器轮换**: 避免单一服务器压力过大
+
+---
+
+### 📊 数据质量管理
+
+#### 四维度检查
+1. **品种缺失检查**: 检测本地没有数据的品种
+2. **历史缺失检查**: 检测数据不完整的品种（未覆盖到最新交易日）
+3. **逻辑错误检查**: 检测数据异常（如价格为0、交易量异常等）
+4. **格式错误检查**: 检测文件损坏或格式错误
+
+#### 质量评分
+```python
+质量分数 = (1 - 缺失率) × 100
+
+评级标准:
+90-100分: 优秀 ✅
+70-89分:  良好 ⚠️
+50-69分:  中等 ⚠️
+0-49分:   差   ❌
+```
+
+#### 智能扫描
+- **混合异步架构**: 协程+线程+进程，最大2000并发
+- **自适应模式**: 根据文件大小选择处理方式
+- **增量推送**: 500ms最小间隔，避免UI卡顿
+- **文件监控**: 实时检测数据变化
+- **自动修复**: 检测到问题自动触发下载
+
+---
+
+### 🎨 统一数据管理
+
+#### 四层数据融合
+```
+查询优先级:
+1. 预加载缓存 (内存)     → 亚秒级响应
+2. 历史Parquet (磁盘)    → 秒级响应
+3. 录制数据 (如启用)      → 秒级响应
+4. 实时推送 (如已订阅)    → 实时推送
+```
+
+#### 智能预加载
+- 常用品种自动预加载（可配置）
+- LRU缓存淘汰策略
+- 最大缓存64个品种（可配置）
+- 支持多周期预加载
+
+#### 订阅管理
+- 多模块订阅支持
+- 自动去重优化
+- 订阅数量统计
+- 动态订阅/取消订阅
+
+---
+
+### 🔄 实时数据推送
+
+#### TDX数据源（轮询转推送）
+```python
+# 符合VNPy Gateway标准
+tdx_source = TdxDataSource(gateway_name="TDX_POLLING")
+tdx_source.connect({
+    "轮询间隔（秒）": 3,
+    "品种列表": "000001,600000,600519"
+})
+
+# 自动推送到VNPy事件引擎
+# - EVENT_TICK (实时行情)
+# - EVENT_BAR (K线数据)
+```
+
+#### 虚拟数据源（历史回放）
+```python
+# 用于策略回测
+virtual_source = VirtualDataSource(gateway_name="VIRTUAL")
+virtual_source.connect({
+    "起始时间": "2024-01-01 09:30:00",
+    "回放速度": 2.0,  # 2倍速
+    "品种列表": "000001,600000"
+})
+
+# 按历史时间顺序推送
+# 支持暂停/恢复/快进
+```
+
+---
+
+### ⚙️ 配置管理
+
+#### 统一缓存机制
 ```python
 from backend.infrastructure.data_module_vnpy.cache_manager import DailyCacheManager
 
@@ -35,1326 +753,243 @@ DailyCacheManager.save_with_date(data, "my_cache.json")
 
 # 加载缓存（自动验证日期）
 data, cache_date, is_valid = DailyCacheManager.load_with_validation("my_cache.json")
-```
 
-**缓存文件格式**：
-```json
+# 缓存文件格式
 {
-    "cache_date": "2025-10-19",
+    "cache_date": "2025-10-23",
     "data": { ... }
 }
 ```
 
-**失效策略**：次日0时后，`is_valid = False`
-
-#### 2. 服务器池缓存（核心优化）
-
-**改进逻辑**：
-```python
-# 启动时：必然验证 + 或然测速
-server_pool_manager.start()
-  ├─ 加载缓存
-  ├─ 验证日期（次日0时失效）
-  ├─ 如果有效：跳过测速（<100ms）✅
-  └─ 如果失效：重新测速（7秒）⚠️
-
-# 下载时：使用缓存（每次打乱顺序）
-servers = server_pool_manager.get_servers_shuffled()
-  ├─ 如果缓存可用：返回打乱后的服务器列表
-  └─ 如果缓存不可用：抛出RuntimeError，强制阻止下载
-```
-
-**缓存文件**：`data/cache/server_pool_cache.json`
-
-**强制阻止机制**：
-```python
-# 如果缓存不可用，下载会被阻止并提示：
-RuntimeError: """
-服务器池缓存不可用，无法下载数据！
-
-操作步骤：
-1. 打开'系统管理'模块
-2. 点击'测速服务器'按钮
-3. 等待测速完成（约7秒）
-4. 重新尝试下载
-"""
-```
-
-#### 3. 其他缓存
-
-| 缓存类型 | 文件 | 失效策略 | 说明 |
-|---------|------|---------|------|
-| 交易日历 | `trading_calendar.json` | 次日0时 | 自动重新获取 |
-| 服务器池 | `server_pool_cache.json` | 次日0时 | 需手动测速或启动时自动测速 |
-| 品种列表 | `stock_list_classified.json` | 次日0时 | 增量/减量更新 |
-| IPO日期 | `ipo_dates.json` | 次日0时 | 与品种列表联动更新 |
-
-### 启动流程对比
-
-**优化前**：
-```
-主线程启动 → Qt初始化 → UI显示
-→ [阶段2.6] 服务器池测速（必然7秒）⏳
-→ 后端初始化 → 启动完成（9-12秒）
-```
-
-**优化后**：
-```
-主线程启动 → Qt初始化 → UI显示
-→ [阶段2.6] 验证服务器池缓存
-    ├─ 有效：跳过测速（<100ms）✅
-    └─ 失效：重新测速（7秒）⚠️
-→ 后端初始化 → 启动完成（2-3秒 或 9-10秒）
-```
-
-### 手动测速
-
-如果缓存失效，用户可手动测速：
-
-1. 打开"系统管理"模块
-2. 点击"测速服务器"按钮
-3. 等待测速完成（约7秒）
-4. 缓存自动更新，次日0时前有效
-
-### 使用示例
-
-#### 检查缓存状态
-
-```python
-from backend.infrastructure.data_module_vnpy import server_pool_manager
-
-# 检查缓存是否有效
-if server_pool_manager.is_cache_valid():
-    print("✅ 缓存有效")
-else:
-    print("⚠️ 缓存失效，需要重新测速")
-
-# 获取统计信息
-stats = server_pool_manager.get_stats()
-print(f"可用服务器: {stats['available']}/{stats['total']}")
-```
-
-#### 数据下载（自动使用缓存）
-
-```python
-# 所有下载方法自动使用服务器池缓存
-try:
-    china_stock_engine.download_incremental(...)
-except RuntimeError as e:
-    # 缓存不可用时会抛出异常
-    print(f"错误：{e}")
-    # UI应弹窗提示用户测速
-```
+#### 失效策略
+- 次日0时自动失效
+- 确保数据时效性
+- 避免过期数据干扰
 
 ---
 
-## 🎯 架构重构亮点（v2.3）
+## 上下游调用
 
-### 📊 重构成果
-- **文件精简**：15个文件 → 11个文件（精简26%）
-- **模块合并**：3个核心合并，职责更清晰
-- **架构优化**：按业务功能重新组织，结构更合理
-
-### 🏗️ 核心优化
-1. **文件合并**：相关功能集中管理
-2. **职责分离**：远程获取、本地管理、工具层清晰划分
-3. **导入优化**：减少层级，提高可维护性
-
----
-
-## 🎯 核心定位
-
-**data_module_vnpy提供历史数据、实时数据集成式的数据服务，供各个功能模块使用。**
-
-## ⭐ 架构特点（v2.2迁移）
-
-### 核心优化
-- **纯异步架构**：从 mootdx 同步接口迁移到 tdx_asyncio 纯异步接口
-- **性能提升**：避免 `asyncio.to_thread` 线程开销，提高并发效率
-- **简化维护**：删除冗余的 ServerManager 和 TdxDateTimeDecoder 类
-- **自动日期处理**：tdx_asyncio 协议层自动处理日期解码
-
-### 模块化设计
-- **Core纯接入层**：411行，所有方法1-5行极简代理调用
-- **功能模块自治**：每个模块完全独立，可单独使用
-- **事件自主推送**：各模块自己管理vnpy事件推送
-- **业务逻辑下沉**：所有计算和判断在专门模块中
-
-### 职责清晰
-```
-core.py (411行)           - vnpy接入层（纯代理）
-symbol_management.py (987行) - 品种管理（含事件，使用 tdx_asyncio）
-data_fetcher.py (1200行)    - 数据下载（纯异步，使用 tdx_asyncio）
-data_quality.py (1233行)    - 数据质量（含文件监控）
-unified_data_manager.py (446行) - 统一查询
-gateways.py (742行)         - 网关管理
-data_readers/tdx_reader.py  - 本地文件读取（使用 tdx_asyncio 读取器）
-events.py (216行)           - 事件工具
-health_checker.py (84行)    - 健康检查
-lifecycle_manager.py (118行) - 生命周期管理
-```
-
----
-
-## 🎯 架构深度解析
-
-### 1. 多进程并发架构
-
-data_module_vnpy采用**两层多进程架构**实现高性能数据获取：
+### 下游依赖
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│            主进程（应用启动）                            │
-│                                                          │
-│  ┌────────────────────┐    ┌──────────────────────┐   │
-│  │  ServerPoolManager │    │ MultiProcessFetcher  │   │
-│  │  （服务器池测速）   │    │  （数据批量下载）     │   │
-│  └────────┬───────────┘    └──────────┬───────────┘   │
-└───────────┼────────────────────────────┼───────────────┘
-            │                            │
-            │                            │
-    ┌───────┴────────┐          ┌────────┴─────────┐
-    │   多进程测速    │          │   多进程下载      │
-    │   (3进程)      │          │   (12进程)       │
-    └───────┬────────┘          └────────┬─────────┘
-            │                            │
-    ┌───────┴───────────────┐   ┌────────┴────────────────┐
-    ↓                       ↓   ↓                         ↓
-  进程1(50协程)        进程3   进程1(30协程)        进程12
-  测速50个服务器        ...   下载任务(30连接)      ...
-    ↓                         ↓
-  132个服务器 → 54个可用     5000个股票 × 3周期 = 15000任务
-  响应时间排序              分配到12进程 × 30连接 = 360并发
+data_module_vnpy
+    ├─> tdx_asyncio (纯异步TDX接口)
+    │   ├─ AsyncTdxHq_API (异步行情API)
+    │   ├─ AsyncSmartIPPool (智能连接池)
+    │   └─ TradingCalendar (交易日历)
+    │
+    ├─> VNPy (量化交易框架)
+    │   ├─ EventEngine (事件引擎)
+    │   ├─ BaseEngine (引擎基类)
+    │   └─ BaseGateway (网关基类)
+    │
+    └─> Python标准库
+        ├─ asyncio (异步IO)
+        ├─ multiprocessing (多进程)
+        ├─ threading (多线程)
+        ├─ pandas (数据处理)
+        └─ pyarrow (Parquet文件)
 ```
 
-### 2. ServerPoolManager：多进程服务器测速
+### 上游调用者
 
-#### 设计目标
-在应用启动时快速测速132个通达信服务器，选出最快的50+个可用服务器
+#### 1. UI层调用
 
-#### 架构设计
+```
+ui/modules/
+├─ data_center_view.py          # 数据中心界面
+│  ├─ 品种管理
+│  ├─ 数据下载
+│  ├─ 质量监控
+│  └─ 数据查询
+│
+├─ market_board_view.py          # 行情看板界面
+│  └─ 实时行情展示
+│
+└─ strategy_center_view.py       # 策略中心界面
+   └─ 策略回测数据查询
+```
+
+**调用方式**:
 ```python
-class ServerPoolManager:
-    """多进程并行测速（5-10秒完成）"""
+# UI通过全局访问器获取引擎
+from backend.core.base import get_china_stock_engine
 
-    def start(self):
-        # 分配：132个服务器 → 3个进程
-        # 进程1: 50个服务器
-        # 进程2: 50个服务器
-        # 进程3: 32个服务器
-
-        for i, chunk in enumerate(server_chunks):
-            Process(target=test_in_process, args=(chunk,))
-
-    @staticmethod
-    def test_in_process(servers):
-        """子进程中测速"""
-        # 每个进程创建独立事件循环
-        loop = asyncio.new_event_loop()
-
-        # 创建AsyncSmartIPPool
-        pool = AsyncSmartIPPool(servers)
-
-        # 分批测试（每批20个）
-        await pool._test_all_servers()
-        # 50个服务器，分3批：20+20+10
-
-        # 排序并保存结果
-        await pool._sort_servers()
+engine = get_china_stock_engine()
+if engine:
+    # 调用引擎方法
+    result = engine.reload_stock_list()
+    data = engine.query_data("000001", "1d", "2024-01-01")
 ```
 
-#### 性能指标
+#### 2. 服务层调用
+
 ```
-输入：132个服务器
-进程：3个（CPU并行）
-每进程：50个协程（I/O并行）
-测速超时：2秒/服务器
-总耗时：5-10秒
-
-输出：54个可用服务器（按速度排序）
-最快：123.125.108.90:7709
-Top3: 123.125.108.90, 123.125.108.14, 124.70.176.52
+backend/services/
+├─ data_center_service.py        # 数据中心服务
+│  ├─ _ensure_china_stock_engine()
+│  ├─ reload_symbol_list()
+│  ├─ start_incremental_download()
+│  └─ query_historical_data()
+│
+├─ trading_gateway_service.py    # 交易网关服务
+│  └─ 使用TdxDataSource作为行情源
+│
+└─ strategy_center_service.py    # 策略中心服务
+   └─ 使用UnifiedDataManager查询数据
 ```
 
-### 3. MultiProcessStockFetcher：多进程数据下载
-
-#### 设计目标
-批量下载5000只股票的历史K线数据（日线、5分钟、1分钟）
-
-#### 架构设计
+**调用方式**:
 ```python
-class MultiProcessStockFetcher:
-    """多进程数据获取器（12进程 × 30连接 = 360并发）"""
+class DataCenterService(BaseService):
+    def _ensure_china_stock_engine(self):
+        """获取ChinaStockEngine实例"""
+        from backend.core.base import get_china_stock_engine
+        self.china_stock_engine = get_china_stock_engine()
 
-    def download_incremental_kline(self, symbols, intervals):
-        # 1. 从ServerPoolManager获取排序后的服务器
-        servers = server_pool_manager.get_servers()  # 54个可用服务器
-
-        # 2. 创建任务队列
-        tasks = [(symbol, interval, date)
-                 for symbol in symbols
-                 for interval in intervals]
-        # 5000股票 × 3周期 = 15000任务
-
-        # 3. 启动12个下载进程
-        for i in range(12):
-            Process(target=download_worker_async,
-                   args=(task_queue, servers))
-
-    async def download_worker_async(worker_id, task_queue, servers):
-        """每个Worker进程"""
-        # 创建30个异步连接（每个连接不同服务器）
-        connections = {}
-        for i in range(30):
-            idx = worker_id * 30 + i  # 全局索引
-            server = servers[idx % len(servers)]
-            client = await AsyncTdxHq_API.factory(server)
-            connections[server] = client
-
-        # 30个协程并发下载
-        async def download_loop(client, server):
-            while True:
-                task = task_queue.get()
-                data = await client.get_security_bars(...)
-                result_queue.put(data)
-
-        await asyncio.gather(*[
-            download_loop(connections[s], s)
-            for s in connections
-        ])
+    def reload_symbol_list(self) -> Dict[str, Any]:
+        """重新加载品种列表"""
+        if self.china_stock_engine:
+            result = self.china_stock_engine.reload_stock_list()
+            return result
+        return {"success": False, "message": "引擎未就绪"}
 ```
 
-#### 连接分配策略
-```
-关键原则：每个服务器只有1个连接（跨所有进程）
-
-Worker1: 连接1-30   → 服务器1-30
-Worker2: 连接31-60  → 服务器31-54, 1-6 (循环)
-Worker3: 连接61-90  → 服务器7-36
-...
-Worker12: 连接331-360 → 服务器...
-
-使用字典管理：
-connections = {
-    ("121.14.110.210", 7709): client1,
-    ("58.246.109.27", 7709): client2,
-}
-
-优势：
-✅ 清晰知道每个连接对应哪个服务器
-✅ 避免同一服务器多连接冲突
-✅ 日志输出可追踪
-```
-
-### 4. 整体数据流
+#### 3. 核心层调用
 
 ```
-用户请求：下载5000只股票数据
-    ↓
-┌─────────────────────────────┐
-│ 1. ServerPoolManager启动     │
-│    (应用启动时执行一次)       │
-└────────────┬────────────────┘
-             ↓
-  多进程测速132个服务器（3进程×50协程）
-             ↓
-  5-10秒完成 → 54个可用服务器（已排序）
-             ↓
-┌─────────────────────────────┐
-│ 2. MultiProcessFetcher启动   │
-│    (用户发起下载请求)         │
-└────────────┬────────────────┘
-             ↓
-  获取54个服务器列表
-             ↓
-  创建15000个任务 (5000股票×3周期)
-             ↓
-  分配到12个进程（每进程~1250任务）
-             ↓
-┌────────────┴────────────┐
-│  每个进程内部执行：      │
-│  1. 创建30个连接         │
-│  2. 30个协程并发下载     │
-│  3. 从任务队列取任务     │
-│  4. 下载完成放结果队列   │
-└─────────────────────────┘
-             ↓
-  12进程×30连接 = 360并发
-             ↓
-  3-5分钟完成15000任务
+backend/core/
+└─ base.py                       # 系统初始化器
+   └─ ServiceInitializer
+      ├─ _initialize_vnpy_core()       # 阶段1: 初始化VNPy
+      ├─ _initialize_data_services()   # 阶段2: 创建ChinaStockEngine
+      ├─ _initialize_trading_services() # 阶段3: 初始化交易服务
+      └─ _initialize_auxiliary_services() # 阶段4: 初始化辅助服务
 ```
 
-### 5. 性能对比
-
-#### 服务器测速
-| 方案 | 服务器数 | 进程数 | 协程数 | 耗时 |
-|------|---------|--------|--------|------|
-| **多进程模式** | 132 | 3 | 50×3 | **5-10秒** |
-| 单进程模式 | 132 | 1 | 132 | 20-30秒 |
-
-#### 数据下载
-| 方案 | 并发数 | 5000股票×3周期 | GIL影响 |
-|------|--------|---------------|---------|
-| **多进程架构** | 360 | **3-5分钟** | ✅ 无（多进程） |
-| 单进程多协程 | 30 | 15-20分钟 | ⚠️ 轻微 |
-| mootdx+多线程 | 50 | 40-60分钟 | ❌ 严重 |
-
-### 6. 关键设计原则
-
-#### 6.1 每服务器单连接
+**初始化流程**:
 ```python
-# ✅ 正确：全局唯一索引，确保不重复
-server_index = Manager().Value('i', 0)  # 共享计数器
-
-for i in range(connections_per_worker):
-    idx = server_index.value
-    server_index.value += 1  # 原子递增
-    server = servers[idx % len(servers)]
-    connections[server] = await create_connection(server)
-```
-
-#### 6.2 字典管理连接
-```python
-# ✅ 推荐：字典方案
-connections = {server: client}  # 服务器地址为键
-logger.info(f"使用服务器 {server[0]}:{server[1]}")
-
-# ❌ 不推荐：列表方案
-connections = [client1, client2]  # 不知道对应哪个服务器
-```
-
-#### 6.3 任务动态分配
-```python
-# ✅ 共享任务队列
-task_queue = Manager().Queue()
-task_queue.put((symbol, interval, date))
-
-# Worker从队列获取，自动负载均衡
-task = task_queue.get(timeout=0.5)
-```
-
----
-
-## 功能特点
-
-### 核心功能
-- **品种列表获取**：支持上证A股、深证A股、北证A股、T+0基金、可转债
-- **K线数据下载**：增量下载，支持日线、5分钟、1分钟，多服务器并行优化
-- **数据存储**：Parquet列式压缩格式（zstd压缩），高效存储和查询
-- **数据感知**：品种缺失、历史缺失、逻辑错误、格式错误检查
-- **文件监控**：实时监控数据变化并推送结果
-- **轮询转推送网关**：将轮询型数据源转换为推送型，符合vnpy Gateway标准
-- **虚拟推送网关**：使用历史数据模拟实时推送，用于回测和测试
-- **数据标准化读取**：读取通达信等本地数据文件并标准化保存
-- **统一数据管理器**：提供统一的数据查询接口，融合四层数据源
-- **预加载服务**：智能预加载常用品种数据，提升查询响应速度
-
-### 技术特点
-- **纯异步架构**：基于 tdx_asyncio 的纯异步 API，高效并发
-- **智能连接池**：使用 tdx_asyncio 的 AsyncSmartIPPool 管理连接
-- **vnpy标准架构**：完全集成vnpy生态系统
-- **事件驱动**：基于vnpy事件引擎的异步通知
-- **模块自治**：各功能模块可独立使用（vnpy兼容可选）
-- **🚀 企业级自适应下载**：根据CPU/内存自动计算最优配置（16核→16进程×40协程=640并发，性能提升4.3倍）
-- **大规模服务器池**：使用683个已验证券商服务器，随机分配避免热点
-- **动态任务调度**：智能队列模式，边执行边分配，确保各核心负载均衡
-- **配置驱动**：所有参数均可配置
-- **实时监控**：基于watchdog的文件系统监控
-- **四层数据融合**：历史数据、录制数据、实时数据、预加载缓存的智能融合
-- **订阅管理**：统一管理各模块的数据订阅需求
-- **自动补全**：智能检测数据缺失并自动触发下载
-
-### 连接管理模式 🔌
-
-本模块所有涉及多连接管理的代码**统一使用字典方案**：
-
-#### 核心原则
-
-```python
-# ✅ 推荐：使用字典管理连接（服务器地址为键）
-connections = {
-    ("121.14.110.210", 7709): client1,
-    ("58.246.109.27", 7709): client2,
-    # ...
-}
-server_list = [("121.14.110.210", 7709), ("58.246.109.27", 7709)]
-
-# 直接访问
-server = server_list[idx]
-client = connections[server]
-result = await client.get_security_bars(...)
-
-# 清晰的日志输出
-logger.info(f"使用服务器 {server[0]}:{server[1]}")
-
-# ❌ 不推荐：列表方案
-connections = [client1, client2]  # 不清楚哪个服务器对应哪个连接
-```
-
-#### 适用场景
-
-1. **`symbol_management.py`** - 品种列表获取
-   - 10个连接，使用字典管理
-   - 热备机制：失败时自动切换到下一个可用服务器
-   - 串行获取市场数据，避免连接冲突
-
-2. **`data_fetcher.py`** - 多进程K线下载
-   - 每个Worker使用字典管理自己的连接
-   - 多服务器、单连接原则（每个服务器最多1个连接）
-   - 轮询选择服务器，避免对单一服务器的压力
-
-#### 优势说明
-
-- ✅ **语义清晰**：代码可读性强，一目了然
-- ✅ **调试友好**：日志中显示具体服务器信息
-- ✅ **维护简单**：添加/删除服务器非常直观
-- ✅ **避免错误**：不会因为索引计算错误导致连接混乱
-- ✅ **性能无损**：字典查找 O(1) 时间复杂度
-
-#### 实现示例
-
-参见 `symbol_management.py` 和 `data_fetcher.py` 中的实现。
-
----
-
-## 🚀 企业级自适应下载控制器
-
-**版本**: v1.0
-**更新日期**: 2025-10-19
-**状态**: ✅ 生产就绪
-
-### 概述
-
-企业级自适应下载控制器是一个智能化的数据下载解决方案，能够根据系统资源（CPU核心数、可用内存）和可用服务器数量，**自动计算最优配置参数**，实现高效的多进程、多协程下载架构。
-
-### 核心特性
-
-#### 1. 🎯 智能自适应配置
-
-系统启动时自动评估并计算最优配置：
-
-```
-配置算法：
-- 进程数 = min(CPU核心数, 可用服务器数 // 40)
-- 每进程协程数 = min(40, 可用服务器数 // 进程数)
-- 总连接数 = 进程数 × 每进程协程数
-- 内存检查 = 总连接数 × 0.5MB ≤ 可用内存 × 80%
-```
-
-**示例输出**（16核CPU系统）：
-```
-CPU核心: 16
-可用内存: 35.09 GB
-可用服务器: 683 (来自 BROKER_SERVERS_7709)
-推荐进程数: 16
-每进程协程: 40
-总连接数: 640
-预计内存: 320.00 MB (0.89%可用内存)
-配置原因: 基于16核CPU，35.1GB可用内存，683个可用服务器，使用640/683个服务器
-```
-
-#### 2. 🌐 大规模服务器池
-
-- **服务器来源**: 从 `BROKER_SERVERS_7709` 获取**683个**已验证券商服务器
-- **随机分配**: 每次下载随机打乱服务器顺序，避免热点
-- **智能Fallback**:
-  - 优先使用已测速服务器（如果服务器池管理器已运行）
-  - Fallback到全量服务器列表（随机排列）
-
-#### 3. 📊 动态任务调度
-
-采用**智能队列**模式，确保各进程负载均衡：
-
-```python
-# 任务调度机制
-1. 所有任务一次性放入共享队列 (Manager().Queue())
-2. 各Worker进程从同一队列动态获取任务
-3. 处理完立即获取下一个任务
-4. 自动负载均衡，确保各核心基本同时完成
-```
-
-**场景**: 18000任务（6000品种 × 3周期）
-- ✅ **不预分配**：避免某些进程先完成，某些进程还在执行
-- ✅ **边执行边分配**：动态分配确保最优负载均衡
-- ✅ **自动适配**：无论多少任务都能高效分配
-
-#### 4. ⚡ 显著性能提升
-
-| 系统配置 | 传统模式 | 自适应模式 | 性能提升 |
-|---------|---------|-----------|---------|
-| **8核CPU** | 5进程×30=150并发 | 8进程×40=320并发 | **快2.1倍** |
-| **12核CPU** | 5进程×30=150并发 | 12进程×40=480并发 | **快3.2倍** |
-| **16核CPU** | 5进程×30=150并发 | 16进程×40=640并发 | **快4.3倍** |
-
-**实际测试**（16核CPU，18000任务）：
-```
-传统模式: 150并发 → 120轮 → 6.0秒
-自适应模式: 640并发 → 28轮 → 1.4秒
-提升: 快 4.3倍 🚀
-```
-
-### 技术架构
-
-#### 模块组成
-
-```
-adaptive_config.py           - 自适应配置计算器
-  ├── AdaptiveDownloadConfig - 配置计算类
-  ├── calculate_optimal_config() - 计算最优配置
-  ├── get_verified_servers() - 获取随机服务器
-  └── get_download_config_summary() - 配置摘要
-
-server_pool_manager.py       - 服务器池管理器（增强）
-  └── get_verified_servers_random() - 随机服务器获取
-
-data_fetcher.py              - 数据下载器（增强）
-  ├── MultiProcessStockFetcher.download_incremental_kline()
-  └── download_incremental_unified()
-
-core.py                      - 引擎代理（增强）
-  └── download_incremental()
-```
-
-#### 配置计算逻辑
-
-```python
-from backend.infrastructure.data_module_vnpy.adaptive_config import AdaptiveDownloadConfig
-
-# 自动计算最优配置
-config = AdaptiveDownloadConfig.calculate_optimal_config()
-
-# 返回配置字典
-{
-    "cpu_cores": 16,              # CPU核心数
-    "available_memory_gb": 35.09, # 可用内存(GB)
-    "available_servers": 683,     # 可用服务器数
-    "processes": 16,              # 推荐进程数
-    "coroutines_per_process": 40, # 每进程协程数
-    "total_connections": 640,     # 总连接数
-    "estimated_memory_mb": 320.0, # 预计内存消耗(MB)
-    "reason": "配置原因说明"       # 配置原因
-}
-```
-
-### 使用方式
-
-#### 方式1：UI调用（推荐，无需修改）
-
-UI的"数据中心 → 数据下载 → 增量数据下载"功能**已自动启用**企业级自适应配置。
-
-- ✅ **默认启用**：无需任何配置
-- ✅ **自动优化**：根据系统自动调整
-- ✅ **透明升级**：用户无感知，性能自动提升
-
-#### 方式2：代码调用 - 通过引擎
-
-```python
-from backend.infrastructure.data_module_vnpy import core
-
-# 自动使用企业级自适应配置（默认）
-result = core.download_incremental(
-    start_date='2025-01-01',
-    market_types=['沪A', '深A']
-)
-
-# 或显式指定
-result = core.download_incremental(
-    start_date='2025-01-01',
-    market_types=['沪A', '深A'],
-    use_adaptive=True  # 企业级自适应配置（默认）
-)
-
-# 切换回传统模式（不推荐）
-result = core.download_incremental(
-    start_date='2025-01-01',
-    market_types=['沪A', '深A'],
-    use_adaptive=False  # 使用传统固定配置
-)
-```
-
-#### 方式3：代码调用 - 统一下载接口
-
-```python
-from backend.infrastructure.data_module_vnpy.data_fetcher import download_incremental_unified
-
-result = download_incremental_unified(
-    symbols=['000001', '000002', '600000'],
-    start_date='2025-01-01',
-    intervals=['1d', '5m', '1m'],
-    use_adaptive=True,  # 企业级自适应配置（默认）
-    symbol_loader=symbol_loader,
-    storage_callback=storage_callback,
-    progress_callback=progress_callback,
-    event_callback=event_callback
-)
-
-# 返回结果
-{
-    "success": True,
-    "total_tasks": 9,
-    "completed": 9,
-    "saved_count": 9,
-    "skipped_count": 0,
-    "failed_count": 0,
-    "message": "成功保存9个数据集"
-}
-```
-
-#### 方式4：代码调用 - 直接使用Fetcher
-
-```python
-from backend.infrastructure.data_module_vnpy.data_fetcher import MultiProcessStockFetcher
-
-fetcher = MultiProcessStockFetcher()
-results = fetcher.download_incremental_kline(
-    symbols=['000001', '000002'],
-    start_date='2025-01-01',
-    intervals=['1d', '5m', '1m'],
-    use_adaptive=True  # 企业级自适应配置（默认）
-)
-
-# 返回: Dict[str, pd.DataFrame]
-# 键格式: "品种_周期"，例如 "000001_1d"
-```
-
-### 配置日志
-
-启用自适应配置后，下载前会输出详细配置信息：
-
-```
-============================================================
-【企业级自适应下载】启动
-【配置信息】
-  CPU核心: 16
-  可用内存: 35.09 GB
-  可用服务器: 683
-  进程数: 16
-  每进程协程: 40
-  总连接数: 640
-  预计内存: 320.00 MB
-  服务器来源: BROKER_SERVERS_7709 (随机排列)
-  配置原因: 基于16核CPU，35.1GB可用内存，683个可用服务器，使用640/683个服务器
-============================================================
-```
-
-### 向后兼容性
-
-#### ✅ 完全兼容
-
-- **默认行为**: 新版本默认启用自适应配置
-- **传统模式**: 可通过 `use_adaptive=False` 切换回传统模式
-- **接口不变**: 所有现有接口保持向后兼容
-- **平滑升级**: 无需修改任何现有代码
-
-#### 迁移建议
-
-**不需要迁移！** 现有代码自动享受性能提升：
-
-```python
-# 旧代码（仍然有效）
-core.download_incremental(start_date='2025-01-01')
-
-# 等同于新代码
-core.download_incremental(start_date='2025-01-01', use_adaptive=True)
-```
-
-### 配置参数说明
-
-| 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `use_adaptive` | bool | `True` | 是否使用自适应配置 |
-| `min_processes` | int | 4 | 最小进程数 |
-| `max_processes` | int | None | 最大进程数（None=不限制） |
-| `min_coroutines_per_process` | int | 30 | 每进程最小协程数 |
-| `max_coroutines_per_process` | int | 40 | 每进程最大协程数 |
-| `memory_per_connection_mb` | float | 0.5 | 每连接内存消耗(MB) |
-
-### 性能监控
-
-#### 配置摘要
-
-```python
-from backend.infrastructure.data_module_vnpy.adaptive_config import get_adaptive_config
-
-config = get_adaptive_config()
-summary = AdaptiveDownloadConfig.get_download_config_summary(config)
-
-print(summary)
-# 输出: 进程数: 16 | 每进程协程: 40 | 总连接: 640 | 服务器: 683
-```
-
-#### 服务器获取
-
-```python
-from backend.infrastructure.data_module_vnpy.adaptive_config import get_random_servers
-
-# 获取随机排列的服务器
-servers = get_random_servers(count=100)
-print(f"获取到 {len(servers)} 个服务器")
-
-# 输出示例
-# [('139.159.214.78', 7709), ('103.221.142.65', 7709), ...]
-```
-
-### 优势总结
-
-#### ✅ 性能优势
-- **自动优化**: 根据硬件自动计算最优配置
-- **充分利用**: 16核CPU → 16进程，100% CPU利用率
-- **显著提升**: 下载速度提升2-4倍（取决于CPU核心数）
-
-#### ✅ 资源优势
-- **内存安全**: 仅占0.5-1%可用内存，不影响系统
-- **服务器充足**: 使用683个已验证服务器，93%+利用率
-- **负载均衡**: 动态任务队列确保各核心同时完成
-
-#### ✅ 使用优势
-- **零配置**: 默认启用，无需任何配置
-- **零感知**: 用户无感知，性能自动提升
-- **零风险**: 完全向后兼容，可随时切换回传统模式
-
-#### ✅ 维护优势
-- **代码简洁**: 新增224行配置模块，核心逻辑清晰
-- **测试完善**: 4/4测试通过，生产就绪
-- **文档完整**: 实施报告、测试脚本、使用文档齐全
-
-### 测试验证
-
-运行测试脚本验证功能：
-
-```bash
-# 运行自适应下载控制器测试
-python tests/test_adaptive_download.py
-
-# 测试结果
-============================================================
-测试结果汇总
-============================================================
-自适应配置计算: ✅ PASS
-随机服务器获取: ✅ PASS
-小批量下载验证: ✅ PASS
-配置摘要生成: ✅ PASS
-============================================================
-总计: 4/4 通过
-============================================================
-```
-
-### 相关文档
-
-- **实施报告**: `企业级自适应下载控制器实施报告.md`
-- **测试脚本**: `tests/test_adaptive_download.py`
-
----
-
-## ⭐ 5. IPO日期批量下载功能（v2.3新增）
-
-### 功能概述
-
-基于企业级自适应下载控制器，新增**IPO日期批量下载**功能，支持全量和增量模式，自动优化小任务场景下的资源使用。
-
-### 核心特性
-
-#### 1. 🚀 智能自适应配置
-
-**小任务优化**：根据任务数量动态调整worker数量，避免资源浪费
-
-| 任务数量 | 配置策略 | 示例 |
-|---------|---------|------|
-| 1-10个 | 单进程 | 5个任务 → 1进程×5协程 |
-| 11-100个 | 动态调整 | 100个任务 → 3-4进程×30协程 |
-| 100+个 | 标准配置+缩减 | 5000个任务 → 16进程×40协程 |
-
-**性能对比**：
-```
-传统方案：5个任务 → 16进程×40协程 = 640个worker（资源浪费99%）
-优化方案：5个任务 → 1进程×5协程 = 5个worker（资源利用100%）
-```
-
-#### 2. 💾 两级缓存架构
-
-**IPODateCache**：
-- **L1缓存（内存）**：进程运行期间有效，快速查询
-- **L2缓存（JSON文件）**：持久化存储，跨进程共享
-- **线程安全**：使用 `threading.RLock` 保护并发访问
-- **自动管理**：批量保存、统计监控、缓存命中率跟踪
-
-#### 3. 🔄 增量模式
-
-**智能过滤**：
-```python
-# 增量模式（默认）
-download_ipo_dates(symbols, force_refresh=False)
-# → 自动跳过已缓存品种，只下载新品种
-
-# 全量模式
-download_ipo_dates(symbols, force_refresh=True)
-# → 强制刷新所有品种
-```
-
-**场景示例**：
-```
-第一次：5000个品种，全部下载
-第二次：5000个品种，4950已缓存 → 只下载50个新品种
-缓存命中率：99%，下载速度提升50倍
-```
-
-#### 4. 🏗️ 架构复用
-
-完全复用现有K线下载架构：
-- 多进程+任务队列
-- 每进程多协程
-- 共享服务器池
-- 进度监控和事件推送
-
-**差异点**：
-| 维度 | K线下载 | IPO下载 |
-|------|---------|---------|
-| 任务格式 | `(symbol, interval, start_date)` | `(symbol, market)` |
-| 下载函数 | `_download_single_kline_async()` | `_download_single_ipo_async()` |
-| 任务数量 | `len(symbols) * len(intervals)` | `len(symbols)` |
-| 数据存储 | Parquet文件 | JSON缓存（IPODateCache）|
-
-### 使用方式
-
-#### 方式1：批量预加载（推荐）
-
-在数据质量扫描前批量预加载IPO日期：
-
-```python
-from backend.infrastructure.data_module_vnpy.data_quality import DataQualityValidator
-
-validator = DataQualityValidator()
-
-# 批量预加载IPO日期
-result = validator.preload_ipo_dates_batch(
-    symbols=['000001', '000002', '600000', ...],
-    force_refresh=False  # 增量模式
-)
-
-# 返回结果
-{
-    "success": True,
-    "total": 5000,
-    "cached": 4950,      # 跳过的缓存数
-    "downloaded": 50,    # 实际下载数
-    "succeeded": 48,     # 成功获取IPO的数量
-    "failed": 2          # 失败数量
-}
-```
-
-#### 方式2：直接调用下载函数
-
-```python
-from backend.infrastructure.data_module_vnpy.data_fetcher import download_ipo_dates
-
-# 小任务（自动优化为1进程×5协程）
-result = download_ipo_dates(
-    symbols=['000001', '000002', '600000', '600519', '300750'],
-    force_refresh=True,  # 强制刷新
-    use_adaptive=True    # 使用自适应配置
-)
-
-# 大任务（自动配置16进程×40协程）
-result = download_ipo_dates(
-    symbols=all_5000_symbols,
-    force_refresh=False,  # 增量模式
-    use_adaptive=True
-)
-
-# 返回结果
-{
-    "success": True,
-    "total": 5,
-    "cached": 0,
-    "downloaded": 5,
-    "succeeded": 5,
-    "failed": 0,
-    "data": {
-        "000001": date(1991, 4, 3),
-        "000002": date(1991, 1, 29),
-        "600000": date(1999, 11, 10),
-        "600519": date(2001, 8, 27),
-        "300750": date(2017, 9, 19)
-    }
-}
-```
-
-#### 方式3：集成到Core引擎
-
-Core引擎在初始数据质量扫描前自动批量预加载：
-
-```python
-# core.py中的自动集成（无需手动调用）
-def _initial_quality_scan(self):
-    """初始数据质量扫描（后台线程）"""
-    # 获取所有品种
-    all_symbols = self.symbol_loader.extract_all_codes()
-
-    # 🆕 批量预加载IPO日期
-    self.logger.info("🔄 批量预加载IPO日期...")
-    self.data_sensor.validator.preload_ipo_dates_batch(
-        symbols=all_symbols,
-        force_refresh=False  # 增量模式
+def _initialize_data_services(self) -> bool:
+    """阶段2: 初始化数据引擎"""
+    from backend.infrastructure.data_module_vnpy.core import ChinaStockEngine
+
+    # 创建引擎
+    self.china_stock_engine = ChinaStockEngine(
+        self.main_engine,
+        self.event_engine
     )
 
-    # 执行数据质量扫描
-    self.data_sensor.scan_all_data(...)
+    # 注册到全局
+    set_china_stock_engine(self.china_stock_engine)
+
+    return True
 ```
 
-### 技术架构
-
-#### 模块组成
+### 调用链路图
 
 ```
-adaptive_config.py              - 自适应配置计算器（增强）
-  └── calculate_optimal_config(task_count=None)  # 新增task_count参数
-
-data_fetcher.py                 - 数据下载器（新增IPO功能）
-  ├── _download_single_ipo_async()           # 单个IPO下载
-  ├── download_worker_ipo_async()            # IPO下载Worker
-  ├── _run_async_worker_ipo()                # 进程入口
-  └── download_ipo_dates()                   # 统一批量接口
-
-data_quality.py                 - 数据质量管理（重构）
-  ├── IPODateCache                           # 两级缓存管理器
-  ├── preload_ipo_dates_batch()             # 批量预加载
-  └── _get_ipo_date()                        # 单个查询（纯缓存）
-
-core.py                         - 引擎代理（集成）
-  └── _initial_quality_scan()                # 自动批量预加载
-```
-
-#### 工作流程
-
-```
-用户请求：查询5000个品种的IPO日期
+用户操作 (UI点击)
     ↓
-┌──────────────────────────────────────┐
-│ 1. 增量过滤                          │
-│    检查缓存 → 4950已缓存            │
-│    待下载：50个新品种                │
-└──────────────┬───────────────────────┘
-               ↓
-┌──────────────────────────────────────┐
-│ 2. 自适应配置                        │
-│    任务数：50                        │
-│    配置：2进程×25协程 = 50连接       │
-│    （避免启动640个worker浪费资源）   │
-└──────────────┬───────────────────────┘
-               ↓
-┌──────────────────────────────────────┐
-│ 3. 多进程下载                        │
-│    进程1: 25个异步连接               │
-│    进程2: 25个异步连接               │
-│    每个连接串行处理任务队列          │
-└──────────────┬───────────────────────┘
-               ↓
-┌──────────────────────────────────────┐
-│ 4. 结果收集与缓存                    │
-│    成功：48个                        │
-│    失败：2个                         │
-│    批量写入L2缓存（JSON文件）        │
-└──────────────────────────────────────┘
+UI视图 (data_center_view.py)
+    ├─ 直接调用: engine.reload_stock_list()
+    └─ 或通过服务: data_center_service.reload_symbol_list()
+        ↓
+服务层 (data_center_service.py)
+    └─ 调用: china_stock_engine.reload_stock_list()
+        ↓
+核心引擎 (ChinaStockEngine)
+    └─ 委托: symbol_loader.reload_and_classify()
+        ↓
+品种管理器 (SymbolLoader)
+    ├─ 调用: AsyncTdxHq_API.get_security_list()
+    ├─ 解析: TdxConfigFileParser
+    ├─ 分类: 按规则分类品种
+    ├─ 缓存: DailyCacheManager.save_with_date()
+    └─ 推送: EventEngine.put(EVENT_CHINASTOCK_LOG)
+        ↓
+事件引擎 (EventEngine)
+    └─ 通知: 所有订阅者（UI、服务）
 ```
-
-### 性能指标
-
-#### 测试场景
-
-| 场景 | 任务数 | 配置 | 耗时 | 速度 |
-|------|-------|------|------|------|
-| 小任务 | 5个 | 1进程×5协程 | 2秒 | 2.5个/秒 |
-| 中等任务 | 100个 | 3进程×30协程 | 8秒 | 12.5个/秒 |
-| 大任务（增量） | 5000个→50个 | 2进程×25协程 | 4秒 | 12.5个/秒 |
-| 大任务（全量） | 5000个 | 16进程×40协程 | 180秒 | 27.8个/秒 |
-
-#### 资源效率对比
-
-| 场景 | 传统方案 | 优化方案 | 资源节省 |
-|------|---------|---------|---------|
-| 5个任务 | 640 worker | 5 worker | **99.2%** |
-| 50个任务 | 640 worker | 50 worker | **92.2%** |
-| 100个任务 | 640 worker | 90 worker | **85.9%** |
-| 5000个任务 | 640 worker | 640 worker | 0% |
-
-### 缓存管理
-
-#### 缓存文件位置
-
-```
-data/cache/ipo_dates.json
-```
-
-#### 缓存统计
-
-```python
-from backend.infrastructure.data_module_vnpy.data_quality import IPODateCache
-
-cache = IPODateCache()
-stats = cache.get_stats()
-
-print(stats)
-{
-    "cache_size": 5000,       # 缓存大小
-    "total_queries": 10000,   # 总查询数
-    "hits": 9500,             # 命中数
-    "misses": 500,            # 未命中数
-    "hit_rate": 95.0,         # 命中率（%）
-    "api_calls": 500,         # API调用数
-    "api_success": 480,       # API成功数
-    "api_timeout": 20         # API超时数
-}
-```
-
-#### 缓存操作
-
-```python
-# 查询IPO日期（优先缓存）
-ipo_date, is_cached = cache.get('000001')
-
-# 设置IPO日期
-cache.set('000001', date(1991, 4, 3))
-
-# 批量保存到文件
-cache.batch_save()
-
-# 清理缓存（如需重建）
-cache._memory_cache.clear()
-cache.batch_save()
-```
-
-### 支持的品种类型
-
-根据 `get_finance_info` 接口测试报告：
-
-| 品种类型 | 支持状态 | 说明 |
-|---------|---------|------|
-| 深圳可转债 | ✅ 支持 | 完全支持 |
-| 上海ETF | ✅ 支持 | 完全支持 |
-| 深圳ETF | ✅ 支持 | 完全支持 |
-| 上海LOF | ✅ 支持 | 完全支持 |
-| 深圳LOF | ✅ 支持 | 完全支持 |
-| 北交所股票 | ❌ 不支持 | 返回0或无效值 |
-| 上海可转债 | ❌ 不支持 | 返回0或无效值 |
-| A股股票 | ⚠️ 部分支持 | 部分品种返回有效值 |
-
-### 错误处理
-
-#### 日期验证
-
-内置日期合理性验证：
-```python
-# 规则1：不能超过今天+30天
-# 规则2：不能早于1990年
-
-def _validate_ipo_date(self, symbol: str, ipo_date: date) -> Optional[date]:
-    today = date.today()
-
-    if ipo_date > today + timedelta(days=30):
-        logger.warning(f"品种 {symbol} IPO日期异常（未来日期）: {ipo_date}")
-        return None
-
-    if ipo_date.year < 1990:
-        logger.warning(f"品种 {symbol} IPO日期异常（过早）: {ipo_date}")
-        return None
-
-    return ipo_date
-```
-
-#### 降级机制
-
-单个查询失败时，优雅降级：
-```python
-def _get_ipo_date(self, symbol: str) -> Optional[date]:
-    """获取单个品种IPO日期（优先缓存）"""
-    cached_date, is_cached = self._ipo_cache.get(symbol)
-
-    if is_cached:
-        return cached_date
-    else:
-        # 缓存未命中，记录警告
-        self.logger.warning(
-            f"品种 {symbol} IPO日期未缓存，"
-            f"建议先调用 preload_ipo_dates_batch()"
-        )
-        return None
-```
-
-### 测试验证
-
-运行测试脚本验证功能：
-
-```bash
-# 测试小任务优化
-python tests/test_ipo_batch_download.py --test small
-
-# 测试中等任务
-python tests/test_ipo_batch_download.py --test medium
-
-# 测试大任务增量模式
-python tests/test_ipo_batch_download.py --test large
-
-# 测试缓存持久化
-python tests/test_ipo_batch_download.py --test cache
-
-# 运行所有测试
-python tests/test_ipo_batch_download.py --test all
-```
-
-**测试结果示例**：
-```
-================================================================================
-IPO批量下载功能测试套件
-================================================================================
-测试时间: 2025-10-19 18:54:18
-================================================================================
-
-测试1：小任务优化（5个品种）
-自适应配置: 1进程 × 5协程 = 5连接
-总耗时: 1.76秒
-平均速度: 2.85个/秒
-✓ 成功 (5/5)
-
-测试2：中等任务优化（100个品种）
-自适应配置: 3进程 × 30协程 = 90连接
-总耗时: 8.23秒
-下载速度: 12.15个/秒
-✓ 成功 (98/100)
-
-测试3：大任务增量模式（全量品种）
-自适应配置: 2进程 × 25协程 = 50连接
-跳过缓存: 4950
-实际下载: 50
-总耗时: 4.12秒
-缓存命中率: 99.0%
-✓ 成功 (48/50)
-
-================================================================================
-测试总结
-================================================================================
-小任务测试: ✓ 成功 (5/5)
-中等任务测试: ✓ 成功 (98/100)
-大任务测试: ✓ 成功 (48/50)
-缓存测试: ✓ 成功 (缓存大小: 5000)
-================================================================================
-```
-
-### 优势总结
-
-#### ✅ 资源效率
-- **智能缩减**：小任务自动缩减worker数量，资源节省高达99%
-- **按需分配**：根据任务数量动态调整配置
-- **零浪费**：5个任务只启动5个worker，不再启动640个
-
-#### ✅ 性能优势
-- **批量下载**：复用多进程架构，支持大规模并发
-- **增量模式**：自动跳过已缓存品种，减少重复查询
-- **持久化**：两级缓存架构，跨进程共享，缓存命中率99%+
-
-#### ✅ 架构优势
-- **完全复用**：100%复用现有K线下载架构
-- **模块独立**：IPO功能独立模块，不影响现有功能
-- **易于维护**：代码结构清晰，职责明确
-
-#### ✅ 使用优势
-- **自动集成**：Core引擎自动批量预加载，无需手动调用
-- **透明使用**：数据质量扫描前自动完成，用户无感知
-- **灵活调用**：支持批量、单个、增量、全量多种模式
-
-### 相关文档
-
-- **实施方案**: `ipo------.plan.md`
-- **测试脚本**: `tests/test_ipo_batch_download.py`
-- **接口测试**: `tests/get_finance_info接口测试报告.md`
-- **配置模块**: `backend/infrastructure/data_module_vnpy/adaptive_config.py`
-- **服务器池**: `backend/infrastructure/data_module_vnpy/server_pool_manager.py`
 
 ---
-
-## 安装
-
-### 依赖要求
-```bash
-pip install -r requirements.txt
-```
-
-### 依赖包
-- vnpy>=4.1.0
-- backend.infrastructure.tdx_asyncio（内部模块，纯异步tdx接口）
-- pyarrow>=10.0.0
-- watchdog>=3.0.0
-- pandas>=1.5.0
-- numpy>=1.21.0
-- pytdx>=1.72（tdx_asyncio 可能依赖）
-
-**注意**：v2.2.0 已从 mootdx 迁移到 tdx_asyncio，不再需要 mootdx 依赖。
 
 ## 快速开始
 
-### 方式1：通过vnpy引擎使用（完整功能）
+### 安装依赖
+
+```bash
+# 安装Python依赖
+pip install -r requirements.txt
+
+# 主要依赖包
+- vnpy>=4.1.0
+- pandas>=1.5.0
+- pyarrow>=10.0.0
+- watchdog>=3.0.0
+- psutil>=5.9.0
+```
+
+### 基本使用
+
+#### 方式1: 通过VNPy引擎（推荐）
 
 ```python
 from vnpy.event import EventEngine
 from vnpy.trader.engine import MainEngine
 from backend.infrastructure.data_module_vnpy import ChinaStockApp
 
-# 创建vnpy主引擎
+# 1. 创建VNPy主引擎
 event_engine = EventEngine()
 main_engine = MainEngine(event_engine)
 
-# 添加中国A股数据管理应用
+# 2. 添加中国A股数据管理应用
 engine = main_engine.add_app(ChinaStockApp)
 
-# 使用数据管理功能（通过core.py代理）
+# 3. 使用数据管理功能
 result = engine.reload_stock_list()
 engine.download_incremental("2024-01-01")
 data = engine.query_data("000001", "1d", "2024-01-01", "2024-12-31")
 ```
 
-### 方式2：直接使用功能模块（独立使用）
+#### 方式2: 直接使用功能模块
 
 ```python
 from backend.infrastructure.data_module_vnpy import (
     SymbolLoader,
-    download_incremental_unified,
-    MultiProcessStockFetcher
+    MultiProcessStockFetcher,
+    UnifiedDataManager
 )
 
-# 品种管理（不依赖vnpy）
+# 品种管理（不依赖VNPy）
 symbol_loader = SymbolLoader()  # 不传event_engine
 result = symbol_loader.reload_and_classify()
 symbols = symbol_loader.extract_all_codes()
 
-# 数据下载（完全封装，一个函数搞定）
-result = download_incremental_unified(
+# 数据下载
+fetcher = MultiProcessStockFetcher()
+results = fetcher.download_incremental_kline(
     symbols=["600000", "000001"],
     start_date="2024-01-01",
-    num_servers=10,  # 服务器数量
-    # 不传event_engine，不推送事件
-)
-
-# 或者自动提取品种
-result = download_incremental_unified(
-    symbols=[],  # 留空
-    start_date="2024-01-01",
-    num_servers=10,
-    symbol_loader=symbol_loader,  # 自动提取品种
-    market_types=["上证A股", "深证A股"]
+    intervals=["1d", "5m"]
 )
 ```
 
-## 主要功能调用
+---
 
-### 1. 品种列表管理
+## API参考
 
-#### 通过Core.py（推荐）
+### ChinaStockEngine
+
+#### 品种管理
+
 ```python
-# 读取本地品种缓存
-stock_list = engine.refresh_stock_list()
-
-# 更新品种列表（调用API）
+# 重新加载品种列表
 result = engine.reload_stock_list()
 # 返回: {"success": bool, "total_count": int, "empty_categories": List[str]}
+
+# 读取本地缓存
+stock_list = engine.refresh_stock_list()
 
 # 获取指定市场品种
 shanghai_stocks = engine.get_market_stocks("上证A股")
@@ -1367,35 +1002,13 @@ all_stocks = engine.get_all_market_stocks()
 engine.clear_symbol_cache()
 ```
 
-#### 直接使用SymbolLoader
+#### 数据下载
+
 ```python
-from backend.infrastructure.data_module_vnpy.symbol_management import SymbolLoader
-
-# 创建加载器（可选传入event_engine推送事件）
-loader = SymbolLoader(event_engine)  # 带事件推送
-# 或
-loader = SymbolLoader()  # 纯数据处理
-
-# 重新加载并分类（自动推送事件）
-result = loader.reload_and_classify()
-
-# 提取所有品种代码
-all_codes = loader.extract_all_codes()
-
-# 按市场类型提取品种
-codes = loader.extract_codes_by_market(["上证A股", "深证A股"])
-```
-
----
-
-### 2. K线数据下载
-
-#### 通过Core.py（推荐，带vnpy集成）
-```python
-# 增量下载K线数据（从指定日期开始）
+# 增量下载（从指定日期开始）
 success = engine.download_incremental("2024-01-01")
 
-# 下载指定市场数据
+# 下载指定市场
 success = engine.download_incremental("2024-01-01", ["上证A股", "深证A股"])
 
 # 下载控制
@@ -1405,75 +1018,17 @@ engine.resume_download() # 恢复下载
 
 # 获取下载进度
 progress = engine.get_download_progress()
-# 返回: {"is_downloading": bool, "completed": int, "total": int, ...}
-```
-
-#### 直接使用统一下载函数（最灵活）
-```python
-from backend.infrastructure.data_module_vnpy.data_fetcher import download_incremental_unified
-from backend.infrastructure.data_module_vnpy.symbol_management import SymbolLoader
-
-# 完全自动化下载（推荐）
-symbol_loader = SymbolLoader()
-result = download_incremental_unified(
-    symbols=[],  # 留空，自动提取
-    start_date="2024-01-01",  # 开始日期
-    num_servers=10,  # 服务器数量（1-30）
-    symbol_loader=symbol_loader,  # 自动提取品种
-    market_types=["上证A股", "深证A股"],  # 市场类型筛选
-    # 所有参数封装在一个函数中！
-)
-
-# 手动指定品种下载
-result = download_incremental_unified(
-    symbols=["600000", "000001"],
-    start_date="2024-01-01",
-    num_servers=10,
-)
-
-# 返回详细结果
-# {
-#     "success": bool,
-#     "total_tasks": int,
+# 返回: {
+#     "is_downloading": bool,
 #     "completed": int,
-#     "saved_count": int,
-#     "skipped_count": int,
-#     "failed_count": int,
-#     "message": str
+#     "total": int,
+#     "progress_percent": float,
+#     ...
 # }
 ```
 
-#### 使用MultiProcessStockFetcher（异步控制）
-```python
-from backend.infrastructure.data_module_vnpy.data_fetcher import MultiProcessStockFetcher
-from backend.infrastructure.data_module_vnpy.symbol_management import SymbolLoader
+#### 数据查询
 
-# 创建下载器（可选传入event_engine推送事件）
-fetcher = MultiProcessStockFetcher(event_engine=event_engine)
-
-# 启动异步下载
-symbol_loader = SymbolLoader()
-storage_manager = my_storage_manager
-
-success = fetcher.start_incremental_download_async(
-    start_date="2024-01-01",
-    symbol_loader=symbol_loader,
-    storage_manager=storage_manager,
-    market_types=["上证A股"]
-)
-
-# 控制下载
-fetcher.stop_download()
-fetcher.pause_download()
-fetcher.resume_download()
-progress = fetcher.get_download_progress()
-```
-
----
-
-### 3. 数据查询
-
-#### 通过Core.py（推荐）
 ```python
 # 单品种查询
 data = engine.query_data(
@@ -1492,240 +1047,377 @@ result = engine.query_data(
 # 返回: {"success": bool, "data": {symbol: [...]}, "interval": str}
 ```
 
-#### 直接使用UnifiedDataManager
+#### 质量管理
+
 ```python
-# 获取统一数据管理器
-manager = engine.get_unified_data_manager()
-
-# 单品种查询（融合四层数据源）
-data = manager.query_unified(
-    symbol="000001",
-    interval="1d",
-    start_date="2024-01-01",
-    check_gaps=True  # 自动检测缺失并补全
-)
-
-# 订阅管理
-manager.subscribe(module="my_module", symbols=["000001", "600000"])
-manager.unsubscribe(module="my_module")
-```
-
----
-
-### 4. 数据质量管理
-
-#### 通过Core.py
-```python
-# 手动触发质量扫描
+# 触发质量扫描
 overview = engine.trigger_data_quality_scan(force_refresh=True)
 
 # 获取质量概览
 overview = engine.get_data_quality_overview()
-# 返回: QualityOverview对象（quality_score, missing_symbols, outdated_symbols等）
+# 返回: QualityOverview对象
 
-# 🆕 获取数据更新状态（v2.2.1新增）
-freshness = engine.get_data_freshness_overview()
-# 返回: {
-#   "outdated_symbols": 123,    # 过时品种数
-#   "avg_gap_days": 5,          # 平均滞后天数
-#   "max_gap_days": 30,         # 最大滞后天数
-#   "latest_trading_day": "2025-10-19"
-# }
-
-# 扫描并修复损坏文件
+# 扫描损坏文件
 result = engine.scan_corrupted_files(auto_delete=True)
 # 返回: {"corrupted": [...], "deleted": [...]}
 
-# 获取校验结果（含数据更新状态）
+# 获取校验结果
 validation = engine.get_validation_result()
-# v2.2.1新增字段：gap_days, is_up_to_date, latest_trading_day, local_latest_date
 ```
 
-#### 直接使用DataSensor
-```python
-from backend.infrastructure.data_module_vnpy.data_quality import DataSensor, DataValidator
-from backend.infrastructure.data_module_vnpy.symbol_management import SymbolLoader
-
-# 创建数据感知器
-sensor = DataSensor(event_engine)
-
-# 触发扫描（自动获取品种列表）
-symbol_loader = SymbolLoader()
-overview = sensor.trigger_scan_with_symbols(
-    symbol_loader=symbol_loader,
-    force_refresh=True
-)
-
-# 🆕 v2.2.1新增：质量概览包含数据更新状态
-print(f"过时品种数: {overview.outdated_symbols}")
-print(f"平均滞后: {overview.avg_gap_days}天")
-print(f"最大滞后: {overview.max_gap_days}天")
-
-# 启动异步感知（后台扫描+文件监控）
-sensor.start_sensing_async(symbol_loader)
-
-# 停止感知
-sensor.stop_sensing()
-
-# 🆕 v2.2.1新增：检查单个品种的数据更新状态
-validator = DataValidator()
-freshness = validator.check_data_freshness("600000", "1d")
-print(f"最新交易日: {freshness['latest_trading_day']}")
-print(f"本地最新: {freshness['local_latest_date']}")
-print(f"滞后天数: {freshness['gap_days']}")
-print(f"是否最新: {freshness['is_up_to_date']}")
-```
-
----
-
-### 5. 网关管理
-
-#### 通过Core.py（推荐）
-```python
-# 启动轮询网关
-setting = {
-    "轮询间隔（秒）": 60,
-    "品种列表": "000001,600000"
-}
-success = engine.start_polling_gateway(setting)
-
-# 启动虚拟网关（回放）
-success = engine.start_virtual_gateway(
-    start_datetime="2024-01-01 09:30:00",
-    speed=2.0,
-    symbols=["000001", "600000"]
-)
-
-# 停止网关
-engine.stop_polling_gateway()
-engine.stop_virtual_gateway()
-```
-
-#### 直接使用GatewayManager
-```python
-from backend.infrastructure.data_module_vnpy.gateways import GatewayManager
-
-# 启动轮询网关
-gateway = GatewayManager.start_polling(event_engine, setting={"轮询间隔（秒）": 60})
-
-# 启动虚拟网关
-gateway = GatewayManager.start_virtual(
-    event_engine,
-    start_datetime="2024-01-01 09:30:00",
-    speed=2.0,
-    symbols=["000001"]
-)
-
-# 停止网关
-GatewayManager.stop_polling(gateway)
-GatewayManager.stop_virtual(gateway)
-```
-
----
-
-### 6. 健康检查和配置
+#### 系统管理
 
 ```python
 # 健康检查
 result = engine.healthcheck()
 # 返回: {"ready": bool, "message": str, "details": {...}}
 
-# 或直接使用
-from backend.infrastructure.data_module_vnpy.health_checker import HealthChecker
-result = HealthChecker.check_system_health()
-
 # 配置管理
 config = engine.get_config()
 engine.update_config({"chinastock.server_pool_size": 10})
 ```
 
-## 模块结构（v2.3重构版）
+---
 
-### 📁 架构概览
+### SymbolLoader
 
+```python
+from backend.infrastructure.data_module_vnpy.data_acquisition.symbol_management import SymbolLoader
+
+# 创建加载器
+loader = SymbolLoader(event_engine)  # 带事件推送
+# 或
+loader = SymbolLoader()  # 纯数据处理
+
+# 重新加载并分类
+result = loader.reload_and_classify()
+# 返回: {
+#     "success": bool,
+#     "total_count": int,
+#     "classified": {
+#         "上证A股": [...],
+#         "深证A股": [...],
+#         ...
+#     }
+# }
+
+# 提取品种代码
+all_codes = loader.extract_all_codes()
+market_codes = loader.extract_codes_by_market(["上证A股", "深证A股"])
+
+# 获取缓存数据
+cache = loader.get_cached_data()
 ```
-data_module_vnpy/
-│
-├── 📄 核心接入层和共享底层服务
-│   ├── core.py (411行) - ChinaStockEngine（vnpy接入，纯代理）
-│   ├── lifecycle_manager.py (118行) - 生命周期管理
-│   ├── events.py (216行) - 事件工具系统
-│   ├── config.py - 配置管理
-│   └── server_pool_manager.py (782行) - 服务器池管理 + 自适应配置 ⭐合并版
-│       ├── ServerPoolManager - 多进程服务器测速
-│       ├── AdaptiveDownloadConfig - 自适应配置计算器
-│       ├── get_adaptive_config() - 快捷配置获取
-│       └── 智能Fallback机制（已测速 → 全量服务器）
-│
-├── 📁 data_acquisition/ - 信息获取模块（远程数据获取）
-│   ├── symbol_management.py (1225行) - 品种列表获取和管理
-│   │   ├── SymbolLoader - 品种加载、分类、缓存
-│   │   ├── BlockParser - 板块解析
-│   │   └── 自带事件推送 ✓
-│   │
-│   ├── data_fetcher.py (1746行) - 增量K线下载（纯异步）
-│   │   ├── MultiProcessStockFetcher - 多进程下载器
-│   │   ├── download_incremental_unified - 统一下载函数
-│   │   ├── download_worker_async - 纯异步工作进程
-│   │   ├── _download_single_kline_async - 纯异步单品种下载
-│   │   ├── 使用 tdx_asyncio.AsyncTdxHq_API
-│   │   ├── 使用 tdx_asyncio 智能IP池（HQ_HOSTS_ALL）
-│   │   ├── 🚀 企业级自适应配置（默认启用）
-│   │   └── 自带事件推送 ✓
-│   │
-│   └── gateways.py (744行) - 实时数据源管理
-│       ├── GatewayManager - 网关生命周期管理
-│       ├── PollingGateway - 轮询网关
-│       ├── VirtualGateway - 虚拟网关
-│       └── 自带事件推送 ✓
-│
-├── 📁 local_data/ - 本地数据管理模块（本地数据存储、感知、校验）
-│   ├── unified_data_manager.py (648行) - 统一数据管理器 + 预加载 ⭐合并版
-│   │   ├── UnifiedDataManager - 四层数据融合、订阅管理
-│   │   ├── PreloadService - 智能预加载与缓存服务
-│   │   └── 深度集成：预加载作为统一管理器核心功能
-│   │
-│   ├── data_quality.py (2068行) - 数据质量感知和校验
-│   │   ├── DataSensor - 数据感知（品种缺失、历史缺失、逻辑错误、格式错误）
-│   │   ├── StorageManager - 存储管理
-│   │   ├── DataValidator - 数据校验
-│   │   ├── IPODateCache - IPO日期缓存（>95%命中率目标）
-│   │   └── 自带事件推送 ✓
-│   │
-│   └── file_watcher.py (222行) - 文件监视器 + 健康检查 ⭐合并版
-│       ├── KlineFileWatcher - 实时监控数据文件变化
-│       ├── HealthChecker - 系统健康检查
-│       └── 防抖机制：避免频繁扫描同一文件
-│
-├── 📁 data_readers/ - 二进制数据读取器（工具层）
-│   ├── TdxBinaryReader - 通达信二进制文件读取
-│   └── BaseReader - 读取器基类
-│
-└── __init__.py - 模块统一导出接口
-```
-
-### 🏗️ 重构优化（v2.3）
-
-#### 1. 文件合并优化
-- **server_pool_manager.py ← adaptive_config.py**：服务器管理和自适应配置合并
-- **unified_data_manager.py ← preload_service.py**：统一管理器和预加载服务合并
-- **file_watcher.py ← health_checker.py**：文件监控和健康检查合并
-
-#### 2. 架构清晰化
-- **共享底层服务**：核心引擎和共享服务放在根目录
-- **远程数据获取**：`data_acquisition/` - 纯远程数据源功能
-- **本地数据管理**：`local_data/` - 纯本地数据存储、感知、校验
-- **工具层**：`data_readers/` - 二进制数据读取工具
-
-#### 3. 文件数量精简
-- **重构前**：15个Python文件
-- **重构后**：11个Python文件（精简26%）
-
-#### 4. 模块职责更清晰
-每个模块专注单一职责，便于理解和维护
 
 ---
 
-## 核心定位
+### MultiProcessStockFetcher
 
-**data_module_vnpy提供历史数据、实时数据集成式的数据服务，供各个功能模块使用。**
+```python
+from backend.infrastructure.data_module_vnpy.data_acquisition.data_fetcher import (
+    MultiProcessStockFetcher,
+    download_incremental_unified,
+    download_ipo_dates
+)
+
+# 创建下载器
+fetcher = MultiProcessStockFetcher(event_engine=event_engine)
+
+# K线下载
+results = fetcher.download_incremental_kline(
+    symbols=["000001", "000002"],
+    start_date="2024-01-01",
+    intervals=["1d", "5m", "1m"],
+    use_adaptive=True,      # 自适应配置（默认）
+    use_two_phase=True      # 两段式下载（默认）
+)
+# 返回: Dict[str, pd.DataFrame]  # 键格式: "品种_周期"
+
+# 统一下载接口（推荐）
+result = download_incremental_unified(
+    symbols=["600000", "000001"],
+    start_date="2024-01-01",
+    intervals=["1d", "5m"],
+    symbol_loader=symbol_loader,  # 可选，自动提取品种
+    market_types=["上证A股"],       # 市场类型筛选
+)
+# 返回: {
+#     "success": bool,
+#     "total_tasks": int,
+#     "completed": int,
+#     "saved_count": int,
+#     "message": str
+# }
+
+# IPO日期批量下载
+result = download_ipo_dates(
+    symbols=all_symbols,
+    force_refresh=False,    # 增量模式
+    use_adaptive=True
+)
+# 返回: {
+#     "success": bool,
+#     "total": int,
+#     "cached": int,
+#     "downloaded": int,
+#     "succeeded": int,
+#     "data": {symbol: date}
+# }
+```
+
+---
+
+### UnifiedDataManager
+
+```python
+from backend.infrastructure.data_module_vnpy.local_data.unified_data_manager import (
+    UnifiedDataManager,
+    PreloadService
+)
+
+# 创建管理器
+manager = UnifiedDataManager(china_stock_engine)
+
+# 统一查询（自动融合四层数据）
+data = manager.query_unified(
+    symbol="000001",
+    interval="1d",
+    start_date="2024-01-01",
+    end_date="2024-12-31",
+    check_gaps=True  # 自动检测缺失并补全
+)
+
+# 订阅管理
+manager.subscribe(module="strategy", symbols=["000001", "600000"])
+manager.unsubscribe(module="strategy")
+subscriptions = manager.get_subscriptions()
+
+# 预加载服务
+manager.preload_symbols(["000001", "600000"], intervals=["1d", "5m"])
+```
+
+---
+
+## 配置说明
+
+### 配置文件位置
+
+```
+vt_setting.json  # VNPy全局配置文件
+```
+
+### 主要配置项
+
+```python
+{
+    # 基础配置
+    "chinastock.cache_dir": "./data/cache",      # 缓存目录
+    "chinastock.data_dir": "./data/kline",       # K线数据目录
+    "chinastock.tdx_dir": "C:/new_tdx",         # 通达信目录
+
+    # 服务器池配置
+    "chinastock.server_pool.server_count": 132,  # 测速服务器数量
+    "chinastock.server_pool.use_multiprocess": true,  # 使用多进程测速
+    "chinastock.server_pool.test_timeout": 2.0,  # 测速超时（秒）
+
+    # 热备服务器配置
+    "chinastock.standby_servers.count": 30,  # 热备服务器数量
+    "chinastock.standby_servers.warmup_timeout": 1.5,  # 预热超时
+
+    # 两段式下载配置
+    "chinastock.two_phase_download.enabled": true,  # 启用两段式
+    "chinastock.two_phase_download.threshold_ratio": 0.05,  # 阈值比例5%
+    "chinastock.two_phase_download.min_threshold": 100,  # 最小阈值100任务
+
+    # 数据质量扫描配置
+    "chinastock.quality_scan.enable_adaptive": true,  # 启用自适应
+    "chinastock.quality_scan.max_async_workers": 2000,  # 协程最大并发
+    "chinastock.quality_scan.max_thread_workers": 50,  # 线程最大并发
+    "chinastock.quality_scan.max_process_workers": 16,  # 进程最大并发
+
+    # 预加载配置
+    "chinastock.preload.enabled": true,  # 启用预加载
+    "chinastock.preload.max_cache_symbols": 64,  # 最大缓存品种数
+    "chinastock.preload.intervals": ["1d", "5m"],  # 预加载周期
+    "chinastock.preload.frequently_used_symbols": [  # 常用品种
+        "000001", "000002", "600000", "600519"
+    ]
+}
+```
+
+### 代码配置
+
+```python
+from backend.infrastructure.data_module_vnpy.config import config_manager
+
+# 获取配置
+cache_dir = config_manager.get_cache_dir()
+data_dir = config_manager.get_data_dir()
+
+# 设置配置
+config_manager.set("chinastock.server_pool_size", 10)
+
+# 批量更新
+config_manager.update_config({
+    "chinastock.server_pool_size": 10,
+    "chinastock.timeout": 30
+})
+```
+
+---
+
+## 性能优化
+
+### 启动性能
+
+| 场景 | 优化前 | 优化后 | 提升 |
+|------|-------|-------|------|
+| 首次启动 | 9-12秒 | 9-10秒 | 持平 |
+| 常规启动 | 9-12秒 | **2-3秒** | **70%+** |
+| 次日首次启动 | 9-12秒 | 9-10秒 | 持平 |
+
+**优化点**:
+- 智能缓存验证（次日0时失效）
+- 并行组件初始化
+- 延迟数据质量扫描
+
+---
+
+### 下载性能
+
+| 系统配置 | 并发数 | 5000股票×3周期 | 耗时 | 提升 |
+|---------|--------|---------------|------|------|
+| 传统方案 | 单进程单线程 | 15000任务 | ~6小时 | - |
+| 多线程 | 50线程 | 15000任务 | ~40分钟 | 9倍 |
+| **多进程+异步** | **640连接** | **15000任务** | **~1.5分钟** | **240倍** |
+
+**优化点**:
+- 多进程架构（充分利用多核CPU）
+- 纯异步协程（单进程内高并发）
+- 智能负载均衡（根据系统资源动态调整）
+- 两段式下载（热备服务器优化）
+
+---
+
+### 质量扫描性能
+
+| 品种数 | 文件数 | 传统方案 | 混合异步架构 | 提升 |
+|-------|-------|---------|-------------|------|
+| 5000  | 15000 | ~120秒  | **~15秒**   | **8倍** |
+
+**优化点**:
+- 混合异步架构（协程+线程+进程）
+- 智能自适应（根据文件大小选择处理方式）
+- 最大2000并发
+- 增量推送（避免UI卡顿）
+
+---
+
+## 维护指南
+
+### 日志配置
+
+日志文件位置: `logs/terminal_v0.50.log`
+
+```python
+import logging
+
+# 设置日志级别
+logging.getLogger("backend.infrastructure.data_module_vnpy").setLevel(logging.DEBUG)
+```
+
+### 缓存清理
+
+```python
+from backend.infrastructure.data_module_vnpy.cache_manager import DailyCacheManager
+
+# 删除特定缓存
+DailyCacheManager.delete_cache("stock_list_classified.json")
+
+# 获取缓存信息
+info = DailyCacheManager.get_cache_info("stock_list_classified.json")
+```
+
+### 常见问题
+
+#### 1. 服务器池缓存失效
+
+**问题**: 下载时提示"服务器池缓存不可用"
+
+**解决**:
+```python
+# 方式1: 通过UI手动测速
+# 打开"系统管理" → 点击"测速服务器"
+
+# 方式2: 通过代码触发
+from backend.infrastructure.data_module_vnpy import server_pool_manager
+server_pool_manager.start()  # 等待5-10秒
+```
+
+#### 2. 品种列表缺失
+
+**问题**: 数据下载时提示"品种列表为空"
+
+**解决**:
+```python
+# 重新加载品种列表
+result = engine.reload_stock_list()
+```
+
+#### 3. 数据质量扫描卡顿
+
+**问题**: 质量扫描导致系统卡顿
+
+**解决**:
+```python
+# 调整并发配置
+config_manager.update_config({
+    "chinastock.quality_scan.max_async_workers": 1000,  # 降低协程数
+    "chinastock.quality_scan.max_thread_workers": 20    # 降低线程数
+})
+```
+
+---
+
+## 技术债务和TODO
+
+### 已完成 ✅
+
+- [x] 从 mootdx 迁移到 tdx_asyncio 纯异步架构
+- [x] 智能负载均衡器集成
+- [x] 两段式下载机制
+- [x] 统一缓存管理（日期失效机制）
+- [x] IPO日期批量下载
+- [x] 混合异步数据质量扫描
+- [x] 文件监控和自动修复
+
+### 计划中 📋
+
+- [ ] 增加数据校验规则（更多逻辑错误检测）
+- [ ] 支持更多周期（周线、月线）
+- [ ] 增加数据导出功能（CSV、Excel）
+- [ ] Web界面支持
+- [ ] 数据压缩优化（减少存储空间）
+
+---
+
+## 许可证
+
+本模块为内部使用，未开源。
+
+---
+
+## 联系方式
+
+如有问题或建议，请联系开发团队。
+
+---
+
+**文档版本**: v3.0.0
+**生成日期**: 2025-10-23
+**文档状态**: ✅ 完整
+
+---
+
+_文档生成完毕_
+

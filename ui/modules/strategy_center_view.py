@@ -43,7 +43,7 @@ from PySide6.QtWidgets import (
 
 from backend.core.base import get_service_manager
 from backend.core.service_base import LoggerMixin
-from ui.shared_widgets.base_widget import BaseWidget
+from ui.components.widgets import BaseWidget
 
 
 # ==================== Monaco Editor 导入 ====================
@@ -53,7 +53,7 @@ _editor_widget_class = None
 _editor_widget_name = None
 
 try:
-    from ui.shared_widgets.monaco_editor_widget import MonacoEditorWidget, HAS_WEBENGINE
+    from ui.components.widgets import MonacoEditorWidget, HAS_WEBENGINE
 
     if HAS_WEBENGINE:
         _editor_widget_class = MonacoEditorWidget
@@ -2619,9 +2619,7 @@ class StrategyCenter(BaseWidget, LoggerMixin):
             # 🔧 关键修复：使用绝对路径确保正确找到目录
             # __file__ = ui/modules/strategy_center_view.py
             # parent = ui/modules, parent.parent = ui, parent.parent.parent = 项目根目录
-            strategy_dir = (
-                Path(__file__).parent.parent.parent / "strategies" / "user_strategies"
-            )
+            strategy_dir = Path(__file__).parent.parent.parent / "strategies" / "user_strategies"
             abs_strategy_dir = str(strategy_dir.resolve())
             self.logger.info("🔍 [DEBUG] 策略目录（绝对）: %s", abs_strategy_dir)
             self.logger.info("🔍 [DEBUG] 当前工作目录: %s", os.getcwd())

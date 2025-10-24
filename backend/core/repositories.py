@@ -37,37 +37,37 @@ class BaseRepository(ABC, Generic[T]):
     @abstractmethod
     async def create(self, entity: T) -> T:  # noqa: U100
         """创建实体."""
-        ...
+        pass
 
     @abstractmethod
     async def get_by_id(self, entity_id: str) -> Optional[T]:  # noqa: U100
         """根据ID获取实体."""
-        ...
+        pass
 
     @abstractmethod
     async def get_all(self, limit: int = 100, offset: int = 0) -> List[T]:  # noqa: U100
         """获取所有实体."""
-        ...
+        pass
 
     @abstractmethod
     async def update(self, entity: T) -> T:  # noqa: U100
         """更新实体."""
-        ...
+        pass
 
     @abstractmethod
     async def delete(self, entity_id: str) -> bool:  # noqa: U100
         """删除实体."""
-        ...
+        pass
 
     @abstractmethod
     async def count(self) -> int:
         """获取实体总数."""
-        ...
+        pass
 
     @abstractmethod
     async def exists(self, entity_id: str) -> bool:  # noqa: U100
         """检查实体是否存在."""
-        ...
+        pass
 
     def _log_operation(self, operation: str, **kwargs) -> None:
         """记录操作日志."""

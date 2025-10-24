@@ -100,15 +100,15 @@ class APIConfig(BaseSettings):
 
 
 class LoggingConfig(BaseSettings):
-    """日志配置."""
+    """日志配置（文件日志已废弃，仅数据库日志和Terminal输出）."""
 
     model_config = ConfigDict(env_prefix="LOG_") if ConfigDict else None  # type: ignore
 
     level: str = Field(default="INFO")
     format: str = Field(default="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-    file_path: Optional[str] = Field(default="logs/backend.log")
-    max_file_size: int = Field(default=10 * 1024 * 1024)  # 10MB
-    backup_count: int = Field(default=5)
+    file_path: Optional[str] = Field(default=None)  # 已废弃，保留字段为向后兼容
+    max_file_size: int = Field(default=10 * 1024 * 1024)  # 已废弃
+    backup_count: int = Field(default=5)  # 已废弃
 
 
 class AIConfig(BaseSettings):
@@ -135,6 +135,58 @@ class AIConfig(BaseSettings):
     enable_tools: bool = Field(default=False)  # 默认禁用，避免兼容性问题
 
 
+class AdaptiveConfig(BaseSettings):
+    """自适应并发/监控相关配置."""
+
+    model_config = ConfigDict(env_prefix="ADAPTIVE_") if ConfigDict else None  # type: ignore
+
+    # 策略选择：classic | intelligent
+    strategy: str = Field(default="classic")
+
+    # 可选：智能策略调优参数（保留占位，默认None）
+    intelligent_tuning: Optional[dict] = Field(default=None)
+
+
+class StartupConfig(BaseSettings):
+    """启动流程相关配置."""
+
+    model_config = ConfigDict(env_prefix="STARTUP_") if ConfigDict else None  # type: ignore
+
+    # 启动模式：ui_first | backend_first | server
+    mode: str = Field(default="ui_first")
+
+    # 管理员策略：auto | never | ask
+    admin_policy: str = Field(default="auto")
+
+    # 监控握手超时（毫秒）
+    monitor_handshake_timeout_ms: int = Field(default=3000)
+
+    # 监控重启限流（每分钟最多重启次数）
+    monitor_max_restarts_per_minute: int = Field(default=3)
+
+    # UI首屏目标预算（毫秒，用于日志指标与预警）
+    ui_target_ms: int = Field(default=2000)
+
+
+class MonitorConfig(BaseSettings):
+    """监控系统集成相关配置."""
+
+    model_config = ConfigDict(env_prefix="MONITOR_") if ConfigDict else None  # type: ignore
+
+    # ZMQ端口
+    port_alert_push: int = Field(default=5555)
+    port_status_pull: int = Field(default=5556)
+    port_query_rep: int = Field(default=5557)
+
+    # 地址
+    bind_addr: str = Field(default="127.0.0.1")
+
+    # 端口退避（当默认端口被占用时）
+    port_fallback_enabled: bool = Field(default=True)
+    port_fallback_base: int = Field(default=5565)
+    port_fallback_span: int = Field(default=3)
+
+
 class Settings:
     """统一配置管理类."""
 
@@ -148,6 +200,9 @@ class Settings:
         self.api = APIConfig()
         self.logging = LoggingConfig()
         self.ai = AIConfig()
+        self.adaptive = AdaptiveConfig()
+        self.startup = StartupConfig()
+        self.monitor = MonitorConfig()
 
         # 加载配置文件（如果提供了路径就尝试加载）
         if config_file:
@@ -203,6 +258,21 @@ class Settings:
                     else self.logging.dict()
                 ),
                 "ai": self.ai.model_dump() if hasattr(self.ai, "model_dump") else self.ai.dict(),
+                "adaptive": (
+                    self.adaptive.model_dump()
+                    if hasattr(self.adaptive, "model_dump")
+                    else self.adaptive.dict()
+                ),
+                "startup": (
+                    self.startup.model_dump()
+                    if hasattr(self.startup, "model_dump")
+                    else self.startup.dict()
+                ),
+                "monitor": (
+                    self.monitor.model_dump()
+                    if hasattr(self.monitor, "model_dump")
+                    else self.monitor.dict()
+                ),
             }
 
             # 确保目录存在
@@ -260,6 +330,21 @@ class Settings:
                 else self.logging.dict()
             ),
             "ai": self.ai.model_dump() if hasattr(self.ai, "model_dump") else self.ai.dict(),
+            "adaptive": (
+                self.adaptive.model_dump()
+                if hasattr(self.adaptive, "model_dump")
+                else self.adaptive.dict()
+            ),
+            "startup": (
+                self.startup.model_dump()
+                if hasattr(self.startup, "model_dump")
+                else self.startup.dict()
+            ),
+            "monitor": (
+                self.monitor.model_dump()
+                if hasattr(self.monitor, "model_dump")
+                else self.monitor.dict()
+            ),
         }
 
 
@@ -383,6 +468,9 @@ __all__ = [
     "APIConfig",
     "LoggingConfig",
     "AIConfig",
+    "AdaptiveConfig",
+    "StartupConfig",
+    "MonitorConfig",
     "Settings",
     "get_settings",
     "init_settings",
@@ -391,3 +479,28 @@ __all__ = [
     "UIConfig",
     "ConfigManager",
 ]
+
+
+# =========================
+# 运行期能力位（全局注入）
+# =========================
+
+_capabilities: Dict[str, Any] = {
+    "is_admin": False,
+    "hardware_monitoring_enabled": True,
+    "smart_enabled": True,
+}
+
+
+def update_capabilities(values: Dict[str, Any]) -> None:
+    """更新运行期能力位（线程安全需求较低，使用简单合并）。"""
+    try:
+        _capabilities.update(values)
+        logger.info("运行期能力位已更新: %s", values)
+    except Exception as e:
+        logger.error("更新能力位失败: %s", e)
+
+
+def get_capabilities() -> Dict[str, Any]:
+    """获取当前运行期能力位副本."""
+    return dict(_capabilities)

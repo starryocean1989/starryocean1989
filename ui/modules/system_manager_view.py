@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from PySide6.QtCore import QDate, QDateTime, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QIcon
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -18,7 +18,6 @@ from PySide6.QtWidgets import (
     QDateTimeEdit,
     QFileDialog,
     QFormLayout,
-    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -34,6 +33,7 @@ from PySide6.QtWidgets import (
     QSlider,
     QSpinBox,
     QSplitter,
+    QStackedWidget,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -46,17 +46,18 @@ import psutil
 import pyqtgraph as pg
 
 from backend.core.base import get_service_manager
+from ui.components.widgets import (
+    BaseWidget,
+    GaugeWidget,
+    MetricCard,
+)
+from ui.components.theme_system import DashboardTheme
 from backend.core.service_base import LoggerMixin
 from backend.core.utils import (
-    EVENT_SYSTEM_STATUS,
-    EVENT_PERFORMANCE_METRICS,
-    EVENT_SERVICE_STATUS,
     EVENT_ALERT_CREATED,
     EVENT_ALERT_UPDATED,
     EVENT_LOG_RECORD,
 )
-from backend.services.system_manager_service import AlertSeverity, AlertStatus
-from ui.shared_widgets.base_widget import BaseWidget
 from ui.core.boot_orchestrator import get_boot_orchestrator
 
 
@@ -242,7 +243,7 @@ class AlertCard(QWidget):
         """调用告警操作."""
         try:
             service_manager = get_service_manager()
-            system_service = service_manager.get_service("system_manager_service")
+            system_service = service_manager.get_service("system_manager_service", silent=True)
 
             if system_service:
                 if action == "acknowledge":
@@ -447,7 +448,7 @@ class AlertManagerWidget(QWidget):
         try:
             # 调用后端API获取最新告警
             service_manager = get_service_manager()
-            system_service = service_manager.get_service("system_manager_service")
+            system_service = service_manager.get_service("system_manager_service", silent=True)
 
             if system_service:
                 # 获取所有告警
@@ -468,7 +469,7 @@ class AlertManagerWidget(QWidget):
         """清理已解决的告警."""
         try:
             service_manager = get_service_manager()
-            system_service = service_manager.get_service("system_manager_service")
+            system_service = service_manager.get_service("system_manager_service", silent=True)
 
             if system_service:
                 result = system_service.clear_resolved_alerts()
@@ -616,6 +617,9 @@ class LogManagerWidget(QWidget):
             "logger_name": None,
         }
 
+        # 模块列表（用于下拉框）
+        self.available_modules: List[str] = ["全部"]
+
         # 自动滚动标志
         self.auto_scroll = True
 
@@ -665,6 +669,13 @@ class LogManagerWidget(QWidget):
         self.level_combo.addItems(["全部", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
         layout.addWidget(level_label)
         layout.addWidget(self.level_combo)
+
+        # 模块筛选
+        module_label = QLabel("模块:")
+        self.module_combo = QComboBox()
+        self.module_combo.addItem("全部")  # 初始只有"全部"
+        layout.addWidget(module_label)
+        layout.addWidget(self.module_combo)
 
         layout.addStretch()
 
@@ -755,6 +766,7 @@ class LogManagerWidget(QWidget):
     def _connect_signals(self) -> None:
         """连接信号槽."""
         self.level_combo.currentTextChanged.connect(self._apply_filters)
+        self.module_combo.currentTextChanged.connect(self._apply_filters)
         self.start_time_edit.dateTimeChanged.connect(self._apply_filters)
         self.end_time_edit.dateTimeChanged.connect(self._apply_filters)
         self.search_edit.textChanged.connect(self._apply_filters)
@@ -766,11 +778,48 @@ class LogManagerWidget(QWidget):
         """切换自动滚动."""
         self.auto_scroll = self.auto_scroll_checkbox.isChecked()
 
+    def _update_module_list(self) -> None:
+        """动态更新模块列表（从现有日志记录中提取）."""
+        try:
+            # 从当前日志记录中提取所有模块名
+            modules = set()
+            for record in self.log_records:
+                module = record.get("module", "")
+                if module:
+                    modules.add(module)
+
+            # 更新模块列表
+            new_modules = sorted(list(modules))
+
+            # 只有当模块列表发生变化时才更新下拉框
+            if new_modules != self.available_modules[1:]:  # 跳过"全部"
+                self.available_modules = ["全部"] + new_modules
+
+                # 记住当前选中的模块
+                current_module = self.module_combo.currentText()
+
+                # 清空并重新填充模块下拉框
+                self.module_combo.clear()
+                self.module_combo.addItems(self.available_modules)
+
+                # 恢复之前选中的模块（如果还存在）
+                if current_module in self.available_modules:
+                    self.module_combo.setCurrentText(current_module)
+                else:
+                    self.module_combo.setCurrentText("全部")
+
+        except Exception as e:
+            # 更新模块列表失败不影响主要功能
+            print(f"更新模块列表失败: {e}")
+
     def _apply_filters(self) -> None:
         """应用筛选条件."""
         # 获取筛选条件
         level_text = self.level_combo.currentText()
         level = level_text if level_text != "全部" else None
+
+        module_text = self.module_combo.currentText()
+        module = module_text if module_text != "全部" else None
 
         start_time = self.start_time_edit.dateTime().toString("yyyy-MM-ddTHH:mm:ss")
         end_time = self.end_time_edit.dateTime().toString("yyyy-MM-ddTHH:mm:ss")
@@ -783,6 +832,10 @@ class LogManagerWidget(QWidget):
         for record in self.log_records:
             # 级别筛选
             if level and record.get("level") != level:
+                continue
+
+            # 模块筛选
+            if module and record.get("module") != module:
                 continue
 
             # 时间筛选
@@ -869,26 +922,72 @@ class LogManagerWidget(QWidget):
         self.stats_label.setText(f"日志统计: 显示 {filtered} 条 / 总计 {total} 条")
 
     def _refresh_logs(self) -> None:
-        """刷新日志数据."""
-        try:
-            # 调用后端API获取最新日志
-            service_manager = get_service_manager()
-            system_service = service_manager.get_service("system_manager_service")
+        """刷新日志数据（异步执行，避免阻塞主线程）."""
+        import threading
+        from PySide6.QtCore import QTimer
+        
+        # 禁用刷新按钮，显示加载状态
+        if hasattr(self, 'refresh_btn'):
+            self.refresh_btn.setEnabled(False)
+            self.refresh_btn.setText("加载中...")
+        
+        # 🔧 关键修复：在后台线程执行查询，避免阻塞主线程导致UI卡死
+        def query_in_background():
+            try:
+                # 调用后端API获取最新日志
+                service_manager = get_service_manager()
+                system_service = service_manager.get_service("system_manager_service", silent=True)
 
-            if system_service:
-                # 获取最近1000条日志
-                result = system_service.query_logs(limit=1000)
-
-                if result.get("success"):
-                    self.log_records = result.get("logs", [])
-                    self._apply_filters()
+                if system_service:
+                    # 获取最近1000条日志
+                    result = system_service.query_logs(limit=1000)
+                    
+                    # 调度回主线程更新UI
+                    QTimer.singleShot(0, lambda r=result: self._handle_logs_result(r, system_service))
                 else:
-                    QMessageBox.warning(self, "错误", f"获取日志失败: {result.get('message')}")
+                    # 服务不可用，调度错误消息到主线程
+                    QTimer.singleShot(0, lambda: self._handle_service_unavailable())
+                    
+            except Exception as e:
+                # 调度错误消息到主线程
+                QTimer.singleShot(0, lambda err=str(e): self._handle_query_error(err))
+        
+        # 启动后台线程
+        thread = threading.Thread(target=query_in_background, daemon=True)
+        thread.start()
+    
+    def _handle_logs_result(self, result: Dict[str, Any], system_service) -> None:
+        """处理日志查询结果（主线程）."""
+        try:
+            if result.get("success"):
+                self.log_records = result.get("logs", [])
+                
+                # 动态更新模块列表
+                self._update_module_list()
+                
+                # 应用筛选
+                self._apply_filters()
             else:
-                QMessageBox.warning(self, "错误", "系统管理服务不可用")
-
-        except Exception as e:
-            QMessageBox.critical(self, "错误", f"刷新日志失败: {str(e)}")
+                QMessageBox.warning(self, "错误", f"获取日志失败: {result.get('message')}")
+        finally:
+            # 恢复刷新按钮
+            if hasattr(self, 'refresh_btn'):
+                self.refresh_btn.setEnabled(True)
+                self.refresh_btn.setText("刷新")
+    
+    def _handle_service_unavailable(self) -> None:
+        """处理服务不可用（主线程）."""
+        QMessageBox.warning(self, "错误", "系统管理服务不可用")
+        if hasattr(self, 'refresh_btn'):
+            self.refresh_btn.setEnabled(True)
+            self.refresh_btn.setText("刷新")
+    
+    def _handle_query_error(self, error_msg: str) -> None:
+        """处理查询错误（主线程）."""
+        QMessageBox.critical(self, "错误", f"刷新日志失败: {error_msg}")
+        if hasattr(self, 'refresh_btn'):
+            self.refresh_btn.setEnabled(True)
+            self.refresh_btn.setText("刷新")
 
     def _export_logs(self) -> None:
         """导出日志."""
@@ -906,18 +1005,21 @@ class LogManagerWidget(QWidget):
 
             # 调用后端API导出日志
             service_manager = get_service_manager()
-            system_service = service_manager.get_service("system_manager_service")
+            system_service = service_manager.get_service("system_manager_service", silent=True)
 
             if system_service:
                 # 获取筛选条件
                 level_text = self.level_combo.currentText()
                 level = level_text if level_text != "全部" else None
 
+                module_text = self.module_combo.currentText()
+                module = module_text if module_text != "全部" else None
+
                 start_time = self.start_time_edit.dateTime().toString("yyyy-MM-ddTHH:mm:ss")
                 end_time = self.end_time_edit.dateTime().toString("yyyy-MM-ddTHH:mm:ss")
 
+                # 搜索文本（当前未使用，后续可扩展）
                 search_text = self.search_edit.text().strip()
-                module = search_text if search_text else None
 
                 # 导出日志
                 result = system_service.export_logs(
@@ -1177,24 +1279,48 @@ class SystemManager(BaseWidget, LoggerMixin):
         self.disk_io_chart: Optional[Any] = None
         self.network_speed_chart: Optional[Any] = None
         self.disk_space_chart: Optional[Any] = None
+        self.temperature_chart: Optional[Any] = None  # 温度折线图
+        self.temperature_cards_widget: Optional[QWidget] = None  # 温度卡片
+        self.temperature_card_labels: Dict[str, Dict[str, QLabel]] = {}  # 温度卡片标签
         self.status_details_table: Optional[QTableWidget] = None
 
         # 新增：历史数据存储
         self.system_status_history: Dict[str, Any] = {
             "cpu": deque(maxlen=100),
             "memory": deque(maxlen=100),
-            "disk_io": {},
             "network": {"upload": deque(maxlen=100), "download": deque(maxlen=100)},
+            # 温度历史数据
+            "temp_cpu": deque(maxlen=100),
+            "temp_gpu": deque(maxlen=100),
+            "temp_disk": deque(maxlen=100),
+            # 新增指标历史数据
+            "bandwidth": deque(maxlen=100),
+            "context_switches": deque(maxlen=100),
+            "cpu_interrupts": deque(maxlen=100),
+            "memory_swap": deque(maxlen=100),
+            "packet_loss": deque(maxlen=100),
+            # 磁盘数据按挂载点分组
+            "disks": {},  # 格式: {"C:\\": {"read": deque(), "write": deque(), "latency": deque()}, ...}
         }
 
-        # 新增：统计数据存储（用于计算平均值和峰值）
-        self.system_stats: Dict[str, Dict[str, float]] = {
-            "cpu": {"current": 0, "avg": 0, "peak": 0},
-            "memory": {"current": 0, "avg": 0, "peak": 0},
-            "disk": {"current": 0, "avg": 0, "peak": 0},
-            "network_upload": {"current": 0, "avg": 0, "peak": 0},
-            "network_download": {"current": 0, "avg": 0, "peak": 0},
+        # 新增：统计数据存储（用于计算平均值）
+        self.system_stats: Dict[str, Any] = {
+            "cpu": {"current": 0, "avg": 0},
+            "memory": {"current": 0, "avg": 0},
+            "network_upload": {"current": 0, "avg": 0},
+            "network_download": {"current": 0, "avg": 0},
+            "bandwidth": {"current": 0, "avg": 0},
+            "context_switches": {"current": 0, "avg": 0},
+            "cpu_interrupts": {"current": 0, "avg": 0},
+            "memory_swap": {"current": 0, "avg": 0},
+            "packet_loss": {"current": 0, "avg": 0},
+            # 磁盘统计按挂载点分组
+            "disks": {},  # 格式: {"C:\\": {"read": {"current": 0, "avg": 0}, "write": {"current": 0, "avg": 0}, ...}, ...}
         }
+
+        # 新增：指标阈值定义（达到该值为瓶颈）
+        # 从配置文件加载，如果配置文件不存在则使用默认值
+        self.metric_thresholds: Dict[str, Any] = self._load_thresholds_from_config()
 
         # 新增：性能指标组件引用
         self.data_processing_widgets: Optional[List[QLabel]] = None
@@ -1251,7 +1377,9 @@ class SystemManager(BaseWidget, LoggerMixin):
         self._cleaner_corrupted_files: List[str] = []  # 缓存扫描到的损坏文件列表
 
         # 新增：事件引擎
-        self.event_engine: Optional[Any] = None
+        from backend.core.base import get_event_engine
+
+        self.event_engine: Optional[Any] = get_event_engine()
 
         # 🔧 关键修复：在调用父类初始化之前就初始化服务
         # 因为 super().__init__() 会调用 setup_ui()，而 setup_ui() 会创建标签页
@@ -1261,10 +1389,133 @@ class SystemManager(BaseWidget, LoggerMixin):
         # 调用父类初始化
         super().__init__(parent, "系统管理")
 
-        # 注册事件监听器
-        self._register_event_listeners()
+        # 🔧 新增：UI更新节流机制（避免频繁渲染）- 使用原子操作避免锁
+        self._last_ui_update_time = 0.0
+        self._ui_update_interval = 1.0  # 至少间隔1秒更新一次UI（降低频率）
+        self._pending_update_scheduled = False  # 标记是否已有待处理的更新
+
+        # 注册监控事件（事件驱动架构）
+        self._register_monitoring_events()
+
+        # 启动数据源连通性定时更新（每10秒刷新一次）
+        self.datasource_connectivity_timer = QTimer(self)
+        self.datasource_connectivity_timer.timeout.connect(self._update_datasource_connectivity)
+        self.datasource_connectivity_timer.start(10000)  # 10秒
+        # 立即执行一次
+        QTimer.singleShot(1000, self._update_datasource_connectivity)
 
         self.logger.info("系统管理界面初始化完成")
+
+    def _load_thresholds_from_config(self) -> Dict[str, Any]:
+        """从配置文件加载系统监控阈值.
+
+        注意：磁盘I/O阈值将在运行时从后端获取（自动检测磁盘类型）
+
+        Returns:
+            阈值配置字典
+        """
+        # 默认阈值（磁盘阈值将从后端获取）
+        default_thresholds = {
+            "cpu": 90.0,  # CPU使用率阈值：90%
+            "memory": 85.0,  # 内存使用率阈值：85%
+            # 磁盘阈值将动态填充到 disks 字典中
+            "network_upload": 125000.0,  # 网络上传阈值：125 MB/s (1 Gbps)
+            "network_download": 125000.0,  # 网络下载阈值：125 MB/s (1 Gbps)
+            "bandwidth": 100.0,  # 带宽占用阈值：100%
+            "context_switches": 50000,  # 上下文切换阈值：50000/秒
+            "cpu_interrupts": 20000,  # CPU中断阈值：20000/秒
+            "memory_swap": 1000,  # 内存交换阈值：1 MB/s（少量交换可接受）
+            "disk_latency": 20.0,  # 磁盘延迟阈值：20ms
+            "packet_loss": 1.0,  # 网络丢包率阈值：1%
+            "smart_reallocated": 0,  # SMART重映射扇区阈值：0
+            "smart_pending": 0,  # SMART待映射扇区阈值：0
+            # 磁盘阈值（按挂载点分组，动态填充）
+            "disks": {},  # 格式: {"C:\\": {"read": 2000000, "write": 1500000, "type": "nvme"}, ...}
+        }
+
+        try:
+            # 尝试从配置文件读取
+            from pathlib import Path
+            import json
+
+            config_path = Path("config/terminal_config.json")
+            if config_path.exists():
+                with open(config_path, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+                    thresholds_config = config.get("system_monitor_thresholds", {})
+
+                    # 从配置文件覆盖默认值
+                    if thresholds_config:
+                        default_thresholds["cpu"] = float(
+                            thresholds_config.get("cpu_percent", default_thresholds["cpu"])
+                        )
+                        default_thresholds["memory"] = float(
+                            thresholds_config.get("memory_percent", default_thresholds["memory"])
+                        )
+                        # 磁盘阈值从后端自动获取，不从配置文件读取
+                        default_thresholds["network_upload"] = float(
+                            thresholds_config.get(
+                                "network_upload_kbps", default_thresholds["network_upload"]
+                            )
+                        )
+                        default_thresholds["network_download"] = float(
+                            thresholds_config.get(
+                                "network_download_kbps", default_thresholds["network_download"]
+                            )
+                        )
+                        default_thresholds["bandwidth"] = float(
+                            thresholds_config.get(
+                                "bandwidth_percent", default_thresholds["bandwidth"]
+                            )
+                        )
+                        default_thresholds["context_switches"] = int(
+                            thresholds_config.get(
+                                "context_switches_per_sec", default_thresholds["context_switches"]
+                            )
+                        )
+                        default_thresholds["cpu_interrupts"] = int(
+                            thresholds_config.get(
+                                "cpu_interrupts_per_sec", default_thresholds["cpu_interrupts"]
+                            )
+                        )
+                        default_thresholds["memory_swap"] = float(
+                            thresholds_config.get(
+                                "memory_swap_kbps", default_thresholds["memory_swap"]
+                            )
+                        )
+                        default_thresholds["disk_latency"] = float(
+                            thresholds_config.get(
+                                "disk_latency_ms", default_thresholds["disk_latency"]
+                            )
+                        )
+                        default_thresholds["packet_loss"] = float(
+                            thresholds_config.get(
+                                "packet_loss_percent", default_thresholds["packet_loss"]
+                            )
+                        )
+                        default_thresholds["smart_reallocated"] = int(
+                            thresholds_config.get(
+                                "smart_sectors", default_thresholds["smart_reallocated"]
+                            )
+                        )
+                        default_thresholds["smart_pending"] = int(
+                            thresholds_config.get(
+                                "smart_sectors", default_thresholds["smart_pending"]
+                            )
+                        )
+
+                        # 打印加载的配置（用于调试）
+                        import logging
+
+                        logger = logging.getLogger(self.__class__.__name__)
+                        logger.info("✅ 已从配置文件加载系统监控阈值")
+        except Exception as e:
+            import logging
+
+            logger = logging.getLogger(self.__class__.__name__)
+            logger.warning("加载配置文件失败，使用默认阈值: %s", e)
+
+        return default_thresholds
 
     def _initialize_service_before_ui(self):
         """在UI创建之前初始化服务（关键修复）.
@@ -1280,36 +1531,40 @@ class SystemManager(BaseWidget, LoggerMixin):
         logger = logging.getLogger(self.__class__.__name__)
 
         try:
-            # 从服务管理器获取系统管理服务
-            self.system_service = self.service_manager.get_service("system_manager_service")
+            # 🎯 架构修复：使用silent模式查询可选服务，避免竞态条件
+            # system_manager_service在快速启动模式下会后台加载，UI不应手动创建
+            self.system_service = self.service_manager.get_service(
+                "system_manager_service", silent=True
+            )
             if self.system_service:
-                logger.info("系统管理服务获取成功")
+                logger.info("系统管理服务已就绪")
             else:
-                logger.warning("系统管理服务未注册，尝试手动创建...")
-                # 如果服务未注册，尝试手动创建并注册
-                try:
-                    from backend.services.system_manager_service import SystemManagerService
-
-                    self.system_service = SystemManagerService()
-                    # 初始化服务
-                    init_success = self.system_service.initialize()
-
-                    # 注册到服务管理器（无论初始化是否成功）
-                    self.service_manager.register_service(
-                        "system_manager_service", self.system_service
-                    )
-
-                    if init_success:
-                        logger.info("系统管理服务手动创建并注册成功")
-                    else:
-                        logger.warning("系统管理服务初始化失败，但服务已注册（可能部分功能不可用）")
-                        # 保留服务引用，不要设为None
-                except Exception as create_error:
-                    logger.error("手动创建系统管理服务失败: %s", create_error, exc_info=True)
-                    self.system_service = None
+                logger.info("系统管理服务尚未就绪，等待后台加载...")
+                # 服务将通过on_service_ready回调就绪
         except Exception as e:
             logger.error("获取系统管理服务失败: %s", e, exc_info=True)
             self.system_service = None
+
+    def on_service_ready(self, service_name: str, success: bool):
+        """服务就绪回调（快速启动模式下，可选服务加载完成后调用）.
+
+        Args:
+            service_name: 服务名称
+            success: 服务是否成功初始化
+        """
+        if service_name == "system_manager_service" and success:
+            from backend.core.base import get_service_manager
+
+            service_manager = get_service_manager()
+
+            # 重新获取服务（此时应该已就绪）
+            self.system_service = service_manager.get_service("system_manager_service", silent=True)
+            if self.system_service:
+                self.logger.info("✅ 系统管理服务已就绪，启用功能")
+                # 注册监控事件
+                if not hasattr(self, "_monitoring_events_registered"):
+                    self._register_monitoring_events()
+                    self._monitoring_events_registered = True
 
     def setup_ui(self):
         """设置用户界面（延迟加载重资源，构造期仅占位）."""
@@ -1418,50 +1673,446 @@ class SystemManager(BaseWidget, LoggerMixin):
         if self.tab_widget:
             self.tab_widget.addTab(self.tools_tab, "🛠️ 系统工具")
 
-    def _register_event_listeners(self):
-        """注册vnpy事件监听器."""
-        try:
-            from backend.core.base import get_event_engine
-            from backend.core.utils import EVENT_PROCESS_STATUS
+    def _register_monitoring_events(self):
+        """注册监控事件（事件驱动架构核心）."""
+        if not self.event_engine:
+            self.logger.warning("EventEngine不可用，无法订阅监控事件")
+            return
 
-            self.event_engine = get_event_engine()
-            if self.event_engine:
-                self.event_engine.register(EVENT_SYSTEM_STATUS, self._on_system_status_event)
-                self.event_engine.register(EVENT_PERFORMANCE_METRICS, self._on_performance_event)
-                self.event_engine.register(EVENT_SERVICE_STATUS, self._on_service_status_event)
-                self.event_engine.register(EVENT_PROCESS_STATUS, self._on_process_status_event)
-                self.logger.info("事件监听器已注册（包含进程状态事件）")
-            else:
-                self.logger.warning("EventEngine不可用，无法注册事件监听器")
+        from backend.core.monitoring_events import (
+            EVENT_SYSTEM_METRICS,
+            EVENT_HARDWARE_SENSORS,
+            EVENT_BOTTLENECK_ANALYSIS,
+            EVENT_PROCESS_MONITORING,
+            EVENT_SERVICE_MONITORING,
+        )
+
+        # 订阅系统指标事件
+        self.event_engine.register(EVENT_SYSTEM_METRICS, self._on_system_metrics_event)
+
+        # 订阅硬件传感器事件
+        self.event_engine.register(EVENT_HARDWARE_SENSORS, self._on_hardware_sensors_event)
+
+        # 订阅瓶颈分析事件
+        self.event_engine.register(EVENT_BOTTLENECK_ANALYSIS, self._on_bottleneck_analysis_event)
+
+        # 订阅进程信息事件
+        self.event_engine.register(EVENT_PROCESS_MONITORING, self._on_process_monitoring_event)
+
+        # 订阅服务状态事件
+        self.event_engine.register(EVENT_SERVICE_MONITORING, self._on_service_monitoring_event)
+
+        self.logger.info("✅ 已订阅监控事件（事件驱动模式）")
+
+    # ========== 事件处理器（事件驱动架构核心）==========
+
+    def _do_throttled_ui_update(self, metrics: Dict[str, Any]):
+        """执行节流的UI更新（在主线程中调用，无锁设计）."""
+        try:
+            # 检查是否应该更新
+            current_time = time.time()
+            if current_time - self._last_ui_update_time < self._ui_update_interval:
+                # 距离上次更新太近，跳过本次更新
+                return
+            
+            # 更新UI
+            self._update_system_status_from_data(metrics)
+            
+            # 更新动态阈值显示
+            if "thresholds" in metrics:
+                self._update_thresholds_display(metrics["thresholds"])
+
+            # 更新并发任务统计显示
+            if "concurrent_tasks" in metrics:
+                self._update_concurrent_tasks_display(metrics["concurrent_tasks"])
+            
+            # 更新时间戳和标记
+            self._last_ui_update_time = current_time
+            self._pending_update_scheduled = False
+            
         except Exception as e:
-            self.logger.error("注册事件监听器失败: %s", e)
+            self.logger.error("UI更新失败: %s", e)
+            self._pending_update_scheduled = False
+
+    def _on_system_metrics_event(self, event):
+        """处理系统指标事件（独立，不依赖其他数据）- 无锁设计避免死锁."""
+        try:
+            metrics = event.data
+            if not metrics:
+                return
+
+            # 🔧 使用简化的节流机制：只在主线程检查时间间隔
+            # 避免在后台线程使用锁，防止死锁
+            
+            # 如果已有待处理的更新，跳过本次
+            if self._pending_update_scheduled:
+                return
+            
+            # 标记有待处理的更新
+            self._pending_update_scheduled = True
+            
+            # 调度到主线程执行（带节流检查）
+            QTimer.singleShot(0, lambda m=metrics.copy(): self._do_throttled_ui_update(m))
+
+        except Exception as e:
+            self.logger.error("处理系统指标事件失败: %s", e)
+            self._pending_update_scheduled = False
+
+    def _on_hardware_sensors_event(self, event):
+        """处理硬件传感器事件（独立）."""
+        try:
+            hardware_data = event.data
+            if not hardware_data:
+                return
+
+            # 复用现有的更新逻辑
+            self._update_hardware_sensors_from_data(hardware_data)
+
+            # 🔥 更新CPU温度卡片（需要hardware数据）
+            if hasattr(self, "metric_card_cpu_temp"):
+                temperature_data = hardware_data.get("temperature", {})
+                cpu_temp = None
+                for device, sensors in temperature_data.items():
+                    if not sensors or not isinstance(sensors, list):
+                        continue
+                    sensor = sensors[0]
+                    temp = sensor.get("current", 0)
+                    if (
+                        "CPU" in device
+                        or "ACPI" in device
+                        or "processor" in device.lower()
+                        or "Ryzen" in device
+                        or "Intel" in device
+                        or "Threadripper" in device
+                    ):
+                        cpu_temp = temp
+                        break
+                if cpu_temp is not None:
+                    self.metric_card_cpu_temp.update_value(cpu_temp)
+
+            # 🔥 更新SMART扇区告警卡片（新增）
+            if "smart" in hardware_data and hardware_data["smart"]:
+                smart_data = hardware_data["smart"]
+                if hasattr(self, "smart_reallocated_card"):
+                    total_reallocated = sum(
+                        disk.get("reallocated_sectors", 0)
+                        for disk in smart_data.values()
+                        if isinstance(disk, dict)
+                    )
+                    self.smart_reallocated_card.update_value(total_reallocated)
+
+                if hasattr(self, "smart_pending_card"):
+                    total_pending = sum(
+                        disk.get("pending_sectors", 0)
+                        for disk in smart_data.values()
+                        if isinstance(disk, dict)
+                    )
+                    self.smart_pending_card.update_value(total_pending)
+
+        except Exception as e:
+            self.logger.error("处理硬件传感器事件失败: %s", e)
+
+    def _on_bottleneck_analysis_event(self, event):
+        """处理瓶颈分析事件（可选，独立）."""
+        try:
+            bottleneck_data = event.data
+            if not bottleneck_data:
+                return
+
+            # 复用现有的更新逻辑
+            self._update_bottleneck_card(bottleneck_data)
+
+            # 更新性能指标Tab（如果存在）
+            if hasattr(self, "scenario_stack"):
+                self._refresh_current_scenario_view()
+
+        except Exception as e:
+            self.logger.error("处理瓶颈分析事件失败: %s", e)
+
+    def _on_process_monitoring_event(self, event):
+        """处理进程监控事件（独立）."""
+        try:
+            process_data = event.data
+            if not process_data:
+                return
+
+            # 复用现有的更新逻辑
+            self._update_process_status_from_data(process_data)
+
+        except Exception as e:
+            self.logger.error("处理进程监控事件失败: %s", e)
+
+    def _on_service_monitoring_event(self, event):
+        """处理服务状态事件（独立）."""
+        try:
+            service_data = event.data
+            if not service_data:
+                return
+
+            # 复用现有的更新逻辑
+            self._update_service_status_from_data(service_data)
+
+        except Exception as e:
+            self.logger.error("处理服务状态事件失败: %s", e)
+
+    def closeEvent(self, event):
+        """关闭事件处理，取消事件订阅."""
+        try:
+            # 取消事件订阅
+            if self.event_engine:
+                from backend.core.monitoring_events import (
+                    EVENT_SYSTEM_METRICS,
+                    EVENT_HARDWARE_SENSORS,
+                    EVENT_BOTTLENECK_ANALYSIS,
+                    EVENT_PROCESS_MONITORING,
+                    EVENT_SERVICE_MONITORING,
+                )
+
+                self.event_engine.unregister(EVENT_SYSTEM_METRICS, self._on_system_metrics_event)
+                self.event_engine.unregister(
+                    EVENT_HARDWARE_SENSORS, self._on_hardware_sensors_event
+                )
+                self.event_engine.unregister(
+                    EVENT_BOTTLENECK_ANALYSIS, self._on_bottleneck_analysis_event
+                )
+                self.event_engine.unregister(
+                    EVENT_PROCESS_MONITORING, self._on_process_monitoring_event
+                )
+                self.event_engine.unregister(
+                    EVENT_SERVICE_MONITORING, self._on_service_monitoring_event
+                )
+
+                self.logger.info("已取消监控事件订阅")
+
+        except Exception as e:
+            self.logger.error("取消事件订阅失败: %s", e)
+
+        # 调用父类的closeEvent
+        super().closeEvent(event)
+
+    def _update_system_status_from_data(self, metrics: Dict[str, Any]):
+        """从监控数据更新系统状态显示."""
+        try:
+            # 🔥 关键修复：更新MetricCard卡片
+            self._update_metric_cards(metrics)
+
+            # 更新CPU图表
+            cpu_percent = metrics.get("cpu_percent", 0)
+            if self.cpu_chart:
+                self._update_line_chart(self.cpu_chart, "cpu", cpu_percent)
+
+            # 更新内存图表
+            memory_percent = metrics.get("memory_percent", 0)
+            if self.memory_chart:
+                self._update_line_chart(self.memory_chart, "memory", memory_percent)
+
+            # 更新磁盘I/O图表
+            disk_io_speed = metrics.get("disk_io_speed", {})
+            if disk_io_speed:
+                self._update_disk_io_chart(disk_io_speed)
+
+            # 更新网络速度图表
+            network_speed = metrics.get("network_speed", {})
+            if network_speed:
+                self._update_network_chart(network_speed)
+
+            # 更新磁盘空间图表
+            disk_info = metrics.get("disk_info", {})
+            if disk_info:
+                self._update_disk_space_chart(disk_info)
+
+            # 更新温度图表和卡片
+            temperature = metrics.get("temperature", {})
+            if temperature:
+                self._update_temperature_chart(temperature)
+                self._update_temperature_cards(temperature)
+
+            # 更新详细数据表格
+            if self.status_details_table:
+                self._update_status_details_table(metrics)
+
+            # 更新热力图
+            if hasattr(self, "heatmap_cpu"):
+                self._update_heatmaps(metrics)
+
+        except Exception as e:
+            self.logger.error("更新系统状态显示失败: %s", e)
+
+    def _update_process_status_from_data(self, metrics: Dict[str, Any]):
+        """从监控数据更新进程状态显示."""
+        try:
+            if not self.process_table:
+                return
+
+            python_processes = metrics.get("python_processes", [])
+            bottlenecks = metrics.get("bottlenecks", [])
+
+            # 更新进程表格
+            self.process_table.setRowCount(0)
+            for proc in python_processes:
+                row = self.process_table.rowCount()
+                self.process_table.insertRow(row)
+
+                self.process_table.setItem(row, 0, QTableWidgetItem(str(proc.get("id", ""))))
+                self.process_table.setItem(row, 1, QTableWidgetItem(proc.get("name", "")))
+                self.process_table.setItem(row, 2, QTableWidgetItem(proc.get("type", "")))
+                self.process_table.setItem(
+                    row, 3, QTableWidgetItem(f"{proc.get('cpu_percent', 0):.1f}%")
+                )
+                self.process_table.setItem(
+                    row, 4, QTableWidgetItem(f"{proc.get('memory_mb', 0):.1f} MB")
+                )
+
+                # 标记瓶颈进程
+                is_bottleneck = any(b.get("pid") == proc.get("id") for b in bottlenecks)
+                if is_bottleneck:
+                    for col in range(self.process_table.columnCount()):
+                        item = self.process_table.item(row, col)
+                        if item:
+                            item.setBackground(QColor("#FFE5E5"))
+
+        except Exception as e:
+            self.logger.error("更新进程状态显示失败: %s", e)
+
+    def _update_service_status_from_data(self, metrics: Dict[str, Any]):
+        """从监控数据更新服务状态显示."""
+        try:
+            if not self.services_table:
+                return
+
+            services = metrics.get("services", [])
+            healthy_count = sum(
+                1 for s in services if s.get("status") == "运行中" and s.get("health") == "健康"
+            )
+            total_count = len(services)
+
+            # 更新健康度进度条
+            if self.health_progress:
+                health_percent = int((healthy_count / total_count * 100) if total_count > 0 else 0)
+                self.health_progress.setValue(health_percent)
+
+            # 更新服务表格
+            self.services_table.setRowCount(0)
+            for service_info in services:
+                row = self.services_table.rowCount()
+                self.services_table.insertRow(row)
+
+                self.services_table.setItem(row, 0, QTableWidgetItem(service_info.get("name", "")))
+                self.services_table.setItem(
+                    row, 1, QTableWidgetItem(service_info.get("status", ""))
+                )
+                self.services_table.setItem(
+                    row, 2, QTableWidgetItem(service_info.get("health", ""))
+                )
+
+                # 根据健康状态着色
+                health = service_info.get("health", "")
+                color = QColor("#E8F5E9") if health == "健康" else QColor("#FFE5E5")
+                for col in range(self.services_table.columnCount()):
+                    item = self.services_table.item(row, col)
+                    if item:
+                        item.setBackground(color)
+
+        except Exception as e:
+            self.logger.error("更新服务状态显示失败: %s", e)
+
+    def _update_datasource_connectivity(self):
+        """更新数据源连通性显示."""
+        try:
+            if not hasattr(self, "tdx_connectivity_label"):
+                return
+
+            service = self.service_manager.get_service("system_manager_service", silent=True)
+            if not service:
+                return
+
+            connectivity = service.get_data_source_connectivity()
+
+            # 更新TDX服务器状态
+            tdx = connectivity.get("tdx_servers", {})
+            available = tdx.get("available", 0)
+            total = tdx.get("total", 0)
+            rate = tdx.get("connectivity_rate", 0)
+
+            if rate > 50:
+                icon = "✅"
+            elif rate > 20:
+                icon = "⚠️"
+            else:
+                icon = "❌"
+
+            tdx_text = f"{icon} TDX服务器: {available}/{total} 可用 ({rate:.1f}%)"
+            self.tdx_connectivity_label.setText(tdx_text)
+
+            # 更新交易网关状态
+            gateways = connectivity.get("trading_gateways", {})
+            ctp_status = gateways.get("ctp", "unknown")
+            ib_status = gateways.get("ib", "unknown")
+
+            status_icons = {
+                "connected": "✅",
+                "disconnected": "❌",
+                "not_configured": "⚪",
+                "unknown": "❓",
+            }
+
+            ctp_icon = status_icons.get(ctp_status, "❓")
+            ib_icon = status_icons.get(ib_status, "❓")
+
+            gateway_text = f"交易网关: CTP {ctp_icon} IB {ib_icon}"
+            self.gateway_connectivity_label.setText(gateway_text)
+
+        except Exception as e:
+            self.logger.error("更新数据源连通性失败: %s", e)
 
     # ==================== 1.1 系统状态监控 ====================
 
     def _create_system_status_tab(self) -> QWidget:
-        """创建系统状态监控子界面（图表化增强版）."""
+        """创建系统状态监控子界面（左右布局，紧凑优化版）."""
         tab = QWidget()
-        layout = QVBoxLayout(tab)
+        main_layout = QVBoxLayout(tab)
+        main_layout.setSpacing(5)
+        main_layout.setContentsMargins(8, 8, 8, 8)
 
         # 工具栏
         toolbar = QHBoxLayout()
-        toolbar.addWidget(QLabel("🔍 系统状态实时监控"))
+        toolbar.setSpacing(10)
+        title_label = QLabel("🔍 系统状态实时监控")
+        title_label.setStyleSheet(DashboardTheme.get_title_style())
+        toolbar.addWidget(title_label)
         toolbar.addStretch()
 
         auto_refresh = QCheckBox("自动刷新（事件驱动）")
         auto_refresh.setChecked(True)
-        auto_refresh.setEnabled(False)  # 事件驱动自动更新
+        auto_refresh.setEnabled(False)
+        auto_refresh.setStyleSheet(DashboardTheme.get_checkbox_style())
         toolbar.addWidget(auto_refresh)
 
-        layout.addLayout(toolbar)
+        main_layout.addLayout(toolbar)
 
-        # 使用QSplitter分隔图表和详细数据
-        main_splitter = QSplitter(Qt.Orientation.Vertical)
+        # 主分隔器：左右布局
+        main_splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        # 图表区域（3行2列）
+        # 左侧区域：瓶颈卡片 + 指标网格 + 图表
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setSpacing(6)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+
+        # 瓶颈提示卡片（紧凑高度）
+        self.bottleneck_card = self._create_bottleneck_card_v2()
+        self.bottleneck_card.setMaximumHeight(70)
+        left_layout.addWidget(self.bottleneck_card)
+
+        # 核心指标网格：2x4 = 8个指标卡片
+        metrics_grid = self._create_metrics_grid()
+        left_layout.addWidget(metrics_grid)
+
+        # 图表区域（紧凑布局）
         charts_widget = QWidget()
         charts_layout = QGridLayout(charts_widget)
-        charts_layout.setSpacing(10)
+        charts_layout.setSpacing(6)
+        charts_layout.setContentsMargins(0, 0, 0, 0)
 
         # 第1行：CPU和内存
         self.cpu_chart = self._create_line_chart("CPU使用率 (%)", "#FF6B6B")
@@ -1479,88 +2130,662 @@ class SystemManager(BaseWidget, LoggerMixin):
         self.disk_space_chart = self._create_disk_space_chart("硬盘空间占用")
         charts_layout.addWidget(self.disk_space_chart, 2, 0, 1, 2)
 
-        main_splitter.addWidget(charts_widget)
+        # 第4行：硬件温度监控
+        self.temperature_chart = self._create_temperature_chart("硬件温度 (°C)")
+        self.temperature_cards_widget = self._create_temperature_cards()
+        charts_layout.addWidget(self.temperature_chart, 3, 0)
+        charts_layout.addWidget(self.temperature_cards_widget, 3, 1)
 
-        # 详细数据表格
-        details_group = QGroupBox("详细数据")
+        # 第5行：SMART健康告警（新增）
+        self.smart_warning_cards_widget = self._create_smart_warning_cards()
+        charts_layout.addWidget(self.smart_warning_cards_widget, 4, 0, 1, 2)
+
+        left_layout.addWidget(charts_widget)
+        main_splitter.addWidget(left_widget)
+
+        # 右侧区域：详细数据表格
+        details_group = QGroupBox("📋 详细数据")
         details_layout = QVBoxLayout(details_group)
+        details_layout.setSpacing(5)
+        details_layout.setContentsMargins(8, 8, 8, 8)
 
-        self.status_details_table = QTableWidget(0, 4)
-        self.status_details_table.setHorizontalHeaderLabels(["指标", "当前值", "平均值", "峰值"])
+        self.status_details_table = QTableWidget(0, 5)
+        self.status_details_table.setHorizontalHeaderLabels(
+            ["指标", "当前值", "平均值", "阈值", "瓶颈状态"]
+        )
         header = self.status_details_table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+
+        # 设置表格样式使其更紧凑
+        self.status_details_table.verticalHeader().setDefaultSectionSize(28)
+        self.status_details_table.setAlternatingRowColors(True)
 
         details_layout.addWidget(self.status_details_table)
         main_splitter.addWidget(details_group)
 
-        # 设置分隔比例：图表区域占70%，详细数据占30%
+        # 设置分隔比例：左侧占70%，右侧占30%
         main_splitter.setSizes([700, 300])
         main_splitter.setStretchFactor(0, 7)
         main_splitter.setStretchFactor(1, 3)
 
-        layout.addWidget(main_splitter)
+        main_layout.addWidget(main_splitter)
 
         return tab
 
     # ==================== 1.2 性能指标展示 ====================
 
     def _create_performance_tab(self) -> QWidget:
-        """创建性能指标子界面（重构版 - 专注业务性能）."""
+        """创建性能指标子界面（重构版 - 按量化场景分组）."""
         tab = QWidget()
         layout = QVBoxLayout(tab)
+        layout.setSpacing(10)
 
-        # 工具栏
+        # 顶部工具栏
         toolbar_layout = QHBoxLayout()
-        toolbar_layout.addWidget(QLabel("📊 业务性能指标"))
+        toolbar_layout.addWidget(QLabel("📊 性能指标 - 量化场景分析"))
         toolbar_layout.addStretch()
 
-        auto_refresh_check = QCheckBox("自动刷新（事件驱动）")
+        auto_refresh_check = QCheckBox("自动刷新")
         auto_refresh_check.setChecked(True)
         auto_refresh_check.setEnabled(False)
         toolbar_layout.addWidget(auto_refresh_check)
 
         layout.addLayout(toolbar_layout)
 
-        # 1. 数据处理性能
-        data_group, data_labels = self._create_performance_group(
-            "数据处理性能",
-            [
-                ("平均查询时间", "ms"),
-                ("下载速度", "Mbps"),
-                ("缓存命中率", "%"),
-                ("总查询数", "次"),
-            ],
-        )
-        layout.addWidget(data_group)
-        self.data_processing_widgets = data_labels
+        # 场景选择器
+        selector_layout = QHBoxLayout()
+        selector_layout.addWidget(QLabel("场景:"))
 
-        # 2. 策略执行性能
-        strategy_group, strategy_labels = self._create_performance_group(
-            "策略执行性能",
-            [
-                ("平均信号延迟", "ms"),
-                ("K线处理时间", "ms"),
-                ("策略吞吐量", "次/秒"),
-                ("错误率", "%"),
-                ("总调用次数", "次"),
-            ],
+        self.scenario_selector = QComboBox()
+        self.scenario_selector.addItems(
+            ["全局概览", "数据下载", "实时行情", "策略回测", "策略编写", "实盘交易"]
         )
-        layout.addWidget(strategy_group)
-        self.strategy_execution_widgets = strategy_labels
+        self.scenario_selector.currentTextChanged.connect(self._on_scenario_changed)
+        selector_layout.addWidget(self.scenario_selector)
+        selector_layout.addStretch()
 
-        # 3. 交易执行性能
-        trading_group, trading_labels = self._create_performance_group(
-            "交易执行性能",
-            [
-                ("平均订单延迟", "ms"),
-                ("订单成功率", "%"),
-                ("持仓更新延迟", "ms"),
-            ],
-        )
-        layout.addWidget(trading_group)
-        self.trading_execution_widgets = trading_labels
+        layout.addLayout(selector_layout)
+
+        # 场景堆栈（可切换的内容区）
+        self.scenario_stack = QStackedWidget()
+
+        # 创建6个场景视图
+        self.scenario_stack.addWidget(self._create_global_overview())
+        self.scenario_stack.addWidget(self._create_download_scenario_view())
+        self.scenario_stack.addWidget(self._create_realtime_scenario_view())
+        self.scenario_stack.addWidget(self._create_backtest_scenario_view())
+        self.scenario_stack.addWidget(self._create_strategy_edit_scenario_view())
+        self.scenario_stack.addWidget(self._create_trading_scenario_view())
+
+        layout.addWidget(self.scenario_stack)
 
         return tab
+
+    def _on_scenario_changed(self, scenario_text: str):
+        """场景切换事件."""
+        try:
+            index = self.scenario_selector.currentIndex()
+            self.scenario_stack.setCurrentIndex(index)
+            self.logger.debug("切换到场景: %s (索引: %d)", scenario_text, index)
+
+            # 刷新当前场景数据
+            self._refresh_current_scenario_view()
+
+        except Exception as e:
+            self.logger.error("场景切换失败: %s", e)
+
+    def _create_global_overview(self) -> QWidget:
+        """创建全局概览视图."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setSpacing(15)
+
+        # 顶部：5大场景健康度卡片
+        scenarios_group = QGroupBox("📋 场景健康度")
+        scenarios_layout = QGridLayout(scenarios_group)
+        scenarios_layout.setSpacing(10)
+
+        # 创建5个场景卡片（存储引用以便更新）
+        self.scenario_health_cards = {}
+        scenario_names = [
+            ("data_download", "数据下载", "📥"),
+            ("realtime_market", "实时行情", "📊"),
+            ("backtest", "策略回测", "🔬"),
+            ("strategy_edit", "策略编写", "✏️"),
+            ("live_trading", "实盘交易", "💹"),
+        ]
+
+        for idx, (key, name, icon) in enumerate(scenario_names):
+            card = self._create_scenario_health_card(key, name, icon)
+            self.scenario_health_cards[key] = card
+            row = idx // 3
+            col = idx % 3
+            scenarios_layout.addWidget(card, row, col)
+
+        layout.addWidget(scenarios_group)
+
+        # 中部：当前瓶颈提示
+        bottleneck_group = QGroupBox("⚠️ 当前最严重瓶颈")
+        bottleneck_layout = QVBoxLayout(bottleneck_group)
+
+        self.global_bottleneck_label = QLabel("正在分析...")
+        self.global_bottleneck_label.setWordWrap(True)
+        self.global_bottleneck_label.setStyleSheet("font-size: 13px; padding: 10px;")
+        bottleneck_layout.addWidget(self.global_bottleneck_label)
+
+        layout.addWidget(bottleneck_group)
+
+        # 底部：自适应并发建议
+        adaptive_group = QGroupBox("🎯 自适应调优建议")
+        adaptive_layout = QGridLayout(adaptive_group)
+
+        # 缩放因子
+        adaptive_layout.addWidget(QLabel("缩放因子:"), 0, 0)
+        self.global_scale_factor_label = QLabel("--")
+        self.global_scale_factor_label.setStyleSheet("font-size: 16px; font-weight: bold;")
+        adaptive_layout.addWidget(self.global_scale_factor_label, 0, 1)
+
+        # 建议并发数
+        adaptive_layout.addWidget(QLabel("建议并发:"), 1, 0)
+        self.global_concurrency_label = QLabel("--")
+        adaptive_layout.addWidget(self.global_concurrency_label, 1, 1)
+
+        # 原因
+        adaptive_layout.addWidget(QLabel("原因:"), 2, 0)
+        self.global_adaptive_reason_label = QLabel("--")
+        self.global_adaptive_reason_label.setWordWrap(True)
+        adaptive_layout.addWidget(self.global_adaptive_reason_label, 2, 1)
+
+        layout.addWidget(adaptive_group)
+
+        # 并发任务统计组（新增）
+        concurrent_group = QGroupBox("📊 并发任务统计")
+        concurrent_layout = QGridLayout(concurrent_group)
+        concurrent_layout.setSpacing(10)
+
+        self.concurrent_download_label = QLabel("下载任务: 0")
+        self.concurrent_download_label.setStyleSheet("font-size: 13px; padding: 5px;")
+        concurrent_layout.addWidget(self.concurrent_download_label, 0, 0)
+
+        self.concurrent_backtest_label = QLabel("回测任务: 0")
+        self.concurrent_backtest_label.setStyleSheet("font-size: 13px; padding: 5px;")
+        concurrent_layout.addWidget(self.concurrent_backtest_label, 0, 1)
+
+        self.concurrent_trading_label = QLabel("交易任务: 0")
+        self.concurrent_trading_label.setStyleSheet("font-size: 13px; padding: 5px;")
+        concurrent_layout.addWidget(self.concurrent_trading_label, 1, 0)
+
+        self.concurrent_total_label = QLabel("总计: 0")
+        self.concurrent_total_label.setStyleSheet(
+            "font-size: 14px; font-weight: bold; padding: 5px;"
+        )
+        concurrent_layout.addWidget(self.concurrent_total_label, 1, 1)
+
+        layout.addWidget(concurrent_group)
+        layout.addStretch()
+
+        return widget
+
+    def _create_scenario_health_card(self, key: str, name: str, icon: str) -> QWidget:
+        """创建场景健康度卡片."""
+        card = QGroupBox(f"{icon} {name}")
+        card.setMaximumHeight(120)
+        layout = QVBoxLayout(card)
+
+        # 健康度评分
+        score_label = QLabel("--")
+        score_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        score_label.setStyleSheet("font-size: 24px; font-weight: bold; color: #10B981;")
+        layout.addWidget(score_label)
+
+        # 状态文本
+        status_label = QLabel("正常")
+        status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        status_label.setStyleSheet("font-size: 11px; color: #94A3B8;")
+        layout.addWidget(status_label)
+
+        # 保存引用
+        card.score_label = score_label  # type: ignore[attr-defined]
+        card.status_label = status_label  # type: ignore[attr-defined]
+
+        return card
+
+    def _create_download_scenario_view(self) -> QWidget:
+        """创建数据下载场景视图."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        # 关键指标卡片
+        metrics_group = QGroupBox("📊 关键指标")
+        metrics_layout = QGridLayout(metrics_group)
+
+        self.download_metrics_labels = {}
+        metrics_def = [
+            ("network_speed", "网络带宽", "MB/s"),
+            ("disk_write", "磁盘写入", "MB/s"),
+            ("io_latency", "I/O延迟", "ms"),
+            ("concurrency", "下载并发", "个"),
+        ]
+
+        for idx, (key, name, unit) in enumerate(metrics_def):
+            row = idx // 2
+            col = (idx % 2) * 2
+
+            metrics_layout.addWidget(QLabel(name + ":"), row, col)
+            value_label = QLabel("--")
+            value_label.setStyleSheet("font-weight: bold;")
+            metrics_layout.addWidget(value_label, row, col + 1)
+            self.download_metrics_labels[key] = value_label
+
+        layout.addWidget(metrics_group)
+
+        # 瓶颈分析
+        bottleneck_group = QGroupBox("⚠️ 瓶颈分析")
+        bottleneck_layout = QVBoxLayout(bottleneck_group)
+
+        self.download_bottleneck_label = QLabel("正在分析...")
+        self.download_bottleneck_label.setWordWrap(True)
+        bottleneck_layout.addWidget(self.download_bottleneck_label)
+
+        self.download_hints_label = QLabel("")
+        self.download_hints_label.setWordWrap(True)
+        self.download_hints_label.setStyleSheet("color: #3B82F6;")
+        bottleneck_layout.addWidget(self.download_hints_label)
+
+        layout.addWidget(bottleneck_group)
+        layout.addStretch()
+
+        return widget
+
+    def _create_realtime_scenario_view(self) -> QWidget:
+        """创建实时行情场景视图."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        # 关键指标
+        metrics_group = QGroupBox("📊 关键指标")
+        metrics_layout = QGridLayout(metrics_group)
+
+        self.realtime_metrics_labels = {}
+        metrics_def = [
+            ("event_queue", "事件队列深度", "个"),
+            ("processing_latency", "处理延迟", "ms"),
+            ("context_switches", "上下文切换", "/秒"),
+            ("packet_loss", "丢包率", "%"),
+        ]
+
+        for idx, (key, name, unit) in enumerate(metrics_def):
+            row = idx // 2
+            col = (idx % 2) * 2
+
+            metrics_layout.addWidget(QLabel(name + ":"), row, col)
+            value_label = QLabel("--")
+            value_label.setStyleSheet("font-weight: bold;")
+            metrics_layout.addWidget(value_label, row, col + 1)
+            self.realtime_metrics_labels[key] = value_label
+
+        layout.addWidget(metrics_group)
+
+        # 瓶颈分析
+        bottleneck_group = QGroupBox("⚠️ 瓶颈分析")
+        bottleneck_layout = QVBoxLayout(bottleneck_group)
+
+        self.realtime_bottleneck_label = QLabel("正在分析...")
+        self.realtime_bottleneck_label.setWordWrap(True)
+        bottleneck_layout.addWidget(self.realtime_bottleneck_label)
+
+        self.realtime_hints_label = QLabel("")
+        self.realtime_hints_label.setWordWrap(True)
+        self.realtime_hints_label.setStyleSheet("color: #3B82F6;")
+        bottleneck_layout.addWidget(self.realtime_hints_label)
+
+        layout.addWidget(bottleneck_group)
+        layout.addStretch()
+
+        return widget
+
+    def _create_backtest_scenario_view(self) -> QWidget:
+        """创建策略回测场景视图."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        # 关键指标
+        metrics_group = QGroupBox("📊 关键指标")
+        metrics_layout = QGridLayout(metrics_group)
+
+        self.backtest_metrics_labels = {}
+        metrics_def = [
+            ("cpu", "CPU使用率", "%"),
+            ("memory", "内存使用率", "%"),
+            ("swap", "交换活动", "KB/s"),
+            ("kline_time", "K线计算", "ms"),
+        ]
+
+        for idx, (key, name, unit) in enumerate(metrics_def):
+            row = idx // 2
+            col = (idx % 2) * 2
+
+            metrics_layout.addWidget(QLabel(name + ":"), row, col)
+            value_label = QLabel("--")
+            value_label.setStyleSheet("font-weight: bold;")
+            metrics_layout.addWidget(value_label, row, col + 1)
+            self.backtest_metrics_labels[key] = value_label
+
+        layout.addWidget(metrics_group)
+
+        # 自适应建议（回测专用）
+        adaptive_group = QGroupBox("🎯 自适应调优")
+        adaptive_layout = QVBoxLayout(adaptive_group)
+
+        self.backtest_adaptive_label = QLabel("--")
+        self.backtest_adaptive_label.setWordWrap(True)
+        adaptive_layout.addWidget(self.backtest_adaptive_label)
+
+        layout.addWidget(adaptive_group)
+
+        # 瓶颈分析
+        bottleneck_group = QGroupBox("⚠️ 瓶颈分析")
+        bottleneck_layout = QVBoxLayout(bottleneck_group)
+
+        self.backtest_bottleneck_label = QLabel("正在分析...")
+        self.backtest_bottleneck_label.setWordWrap(True)
+        bottleneck_layout.addWidget(self.backtest_bottleneck_label)
+
+        self.backtest_hints_label = QLabel("")
+        self.backtest_hints_label.setWordWrap(True)
+        self.backtest_hints_label.setStyleSheet("color: #3B82F6;")
+        bottleneck_layout.addWidget(self.backtest_hints_label)
+
+        layout.addWidget(bottleneck_group)
+        layout.addStretch()
+
+        return widget
+
+    def _create_strategy_edit_scenario_view(self) -> QWidget:
+        """创建策略编写场景视图."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        # 关键指标
+        metrics_group = QGroupBox("📊 关键指标")
+        metrics_layout = QGridLayout(metrics_group)
+
+        self.strategyedit_metrics_labels = {}
+        metrics_def = [("cpu", "CPU使用率", "%"), ("memory", "内存使用率", "%")]
+
+        for idx, (key, name, unit) in enumerate(metrics_def):
+            metrics_layout.addWidget(QLabel(name + ":"), idx, 0)
+            value_label = QLabel("--")
+            value_label.setStyleSheet("font-weight: bold;")
+            metrics_layout.addWidget(value_label, idx, 1)
+            self.strategyedit_metrics_labels[key] = value_label
+
+        layout.addWidget(metrics_group)
+
+        # 提示信息
+        info_label = QLabel("策略编写场景通常负载较低，系统资源充足。")
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet("color: #94A3B8; font-style: italic; padding: 10px;")
+        layout.addWidget(info_label)
+
+        layout.addStretch()
+
+        return widget
+
+    def _create_trading_scenario_view(self) -> QWidget:
+        """创建实盘交易场景视图."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        # 关键指标
+        metrics_group = QGroupBox("📊 关键指标")
+        metrics_layout = QGridLayout(metrics_group)
+
+        self.trading_metrics_labels = {}
+        metrics_def = [
+            ("order_response", "订单响应", "ms"),
+            ("queue_length", "交易队列", "个"),
+            ("packet_loss", "丢包率", "%"),
+            ("cpu_temp", "CPU温度", "°C"),
+        ]
+
+        for idx, (key, name, unit) in enumerate(metrics_def):
+            row = idx // 2
+            col = (idx % 2) * 2
+
+            metrics_layout.addWidget(QLabel(name + ":"), row, col)
+            value_label = QLabel("--")
+            value_label.setStyleSheet("font-weight: bold;")
+            metrics_layout.addWidget(value_label, row, col + 1)
+            self.trading_metrics_labels[key] = value_label
+
+        layout.addWidget(metrics_group)
+
+        # 瓶颈分析
+        bottleneck_group = QGroupBox("⚠️ 瓶颈分析")
+        bottleneck_layout = QVBoxLayout(bottleneck_group)
+
+        self.trading_bottleneck_label = QLabel("正在分析...")
+        self.trading_bottleneck_label.setWordWrap(True)
+        bottleneck_layout.addWidget(self.trading_bottleneck_label)
+
+        self.trading_hints_label = QLabel("")
+        self.trading_hints_label.setWordWrap(True)
+        self.trading_hints_label.setStyleSheet("color: #3B82F6;")
+        bottleneck_layout.addWidget(self.trading_hints_label)
+
+        layout.addWidget(bottleneck_group)
+        layout.addStretch()
+
+        return widget
+
+    def _refresh_current_scenario_view(self):
+        """刷新当前场景视图（从缓存数据更新）."""
+        try:
+            if not self.system_service:
+                return
+
+            # 获取性能摘要
+            summary = self.system_service.get_performance_summary()
+            if not summary:
+                return
+
+            current_index = self.scenario_stack.currentIndex()
+
+            if current_index == 0:  # 全局概览
+                self._update_global_overview(summary)
+            elif current_index == 1:  # 数据下载
+                self._update_download_scenario(summary)
+            elif current_index == 2:  # 实时行情
+                self._update_realtime_scenario(summary)
+            elif current_index == 3:  # 策略回测
+                self._update_backtest_scenario(summary)
+            elif current_index == 4:  # 策略编写
+                self._update_strategyedit_scenario(summary)
+            elif current_index == 5:  # 实盘交易
+                self._update_trading_scenario(summary)
+
+        except Exception as e:
+            self.logger.error("刷新场景视图失败: %s", e)
+
+    def _update_global_overview(self, summary: Dict[str, Any]):
+        """更新全局概览."""
+        try:
+            # 更新瓶颈提示
+            bottleneck = summary.get("bottleneck", {})
+            if bottleneck:
+                dimension = bottleneck.get("bottleneck_dimension", "unknown")
+                score = bottleneck.get("total_score", 100)
+                suggestions = bottleneck.get("suggestions", [])
+
+                text = f"瓶颈维度: {dimension} | 压力评分: {score:.0f}/100"
+                if suggestions:
+                    text += f"\n建议: {suggestions[0]}"
+                self.global_bottleneck_label.setText(text)
+
+            # 更新自适应建议
+            adaptive = summary.get("adaptive_suggestion", {})
+            if adaptive:
+                scale = adaptive.get("scale_factor", 1.0)
+                reason = adaptive.get("reason", "")
+                concurrency = adaptive.get("suggested_concurrency", {})
+
+                self.global_scale_factor_label.setText(f"{scale:.2f}")
+                self.global_adaptive_reason_label.setText(reason)
+
+                if concurrency:
+                    conc_text = f"async={concurrency.get('async_workers', 0)}, "
+                    conc_text += f"thread={concurrency.get('thread_workers', 0)}, "
+                    conc_text += f"proc={concurrency.get('process_workers', 0)}"
+                    self.global_concurrency_label.setText(conc_text)
+
+            # TODO: 更新场景健康度卡片（需要各场景的得分）
+
+        except Exception as e:
+            self.logger.error("更新全局概览失败: %s", e)
+
+    def _update_download_scenario(self, summary: Dict[str, Any]):
+        """更新数据下载场景."""
+        try:
+            scenario_details = summary.get("scenario_details", {})
+            current_values = scenario_details.get("current_values", {})
+
+            # 更新指标
+            if "network_download_mbps" in current_values:
+                self.download_metrics_labels["network_speed"].setText(
+                    f"{current_values['network_download_mbps']:.1f} MB/s"
+                )
+            if "disk_write_mbps" in current_values:
+                self.download_metrics_labels["disk_write"].setText(
+                    f"{current_values['disk_write_mbps']:.1f} MB/s"
+                )
+            if "io_latency_ms" in current_values:
+                self.download_metrics_labels["io_latency"].setText(
+                    f"{current_values['io_latency_ms']:.1f} ms"
+                )
+
+            # 更新瓶颈分析
+            bottleneck_reason = scenario_details.get("bottleneck_reason", "正常")
+            self.download_bottleneck_label.setText(bottleneck_reason)
+
+            hints = scenario_details.get("optimization_hints", [])
+            if hints:
+                self.download_hints_label.setText("建议: " + " / ".join(hints))
+
+        except Exception as e:
+            self.logger.error("更新下载场景失败: %s", e)
+
+    def _update_realtime_scenario(self, summary: Dict[str, Any]):
+        """更新实时行情场景."""
+        try:
+            scenario_details = summary.get("scenario_details", {})
+            current_values = scenario_details.get("current_values", {})
+
+            # 更新指标
+            if "context_switches_per_sec" in current_values:
+                self.realtime_metrics_labels["context_switches"].setText(
+                    f"{current_values['context_switches_per_sec']:.0f}"
+                )
+            if "packet_loss_rate" in current_values:
+                self.realtime_metrics_labels["packet_loss"].setText(
+                    f"{current_values['packet_loss_rate']:.2f}%"
+                )
+
+            # 更新瓶颈分析
+            bottleneck_reason = scenario_details.get("bottleneck_reason", "正常")
+            self.realtime_bottleneck_label.setText(bottleneck_reason)
+
+            hints = scenario_details.get("optimization_hints", [])
+            if hints:
+                self.realtime_hints_label.setText("建议: " + " / ".join(hints))
+
+        except Exception as e:
+            self.logger.error("更新行情场景失败: %s", e)
+
+    def _update_backtest_scenario(self, summary: Dict[str, Any]):
+        """更新回测场景."""
+        try:
+            key_metrics = summary.get("key_metrics", {})
+            scenario_details = summary.get("scenario_details", {})
+            current_values = scenario_details.get("current_values", {})
+
+            # 更新指标
+            if "cpu_percent" in key_metrics:
+                self.backtest_metrics_labels["cpu"].setText(f"{key_metrics['cpu_percent']:.1f}%")
+            if "memory_percent" in key_metrics:
+                self.backtest_metrics_labels["memory"].setText(
+                    f"{key_metrics['memory_percent']:.1f}%"
+                )
+            if "swap_activity_kbps" in current_values:
+                self.backtest_metrics_labels["swap"].setText(
+                    f"{current_values['swap_activity_kbps']:.1f} KB/s"
+                )
+
+            # 更新自适应建议
+            adaptive = summary.get("adaptive_suggestion", {})
+            if adaptive:
+                scale = adaptive.get("scale_factor", 1.0)
+                reason = adaptive.get("reason", "")
+                self.backtest_adaptive_label.setText(f"缩放因子: {scale:.2f}\n{reason}")
+
+            # 更新瓶颈
+            bottleneck_reason = scenario_details.get("bottleneck_reason", "正常")
+            self.backtest_bottleneck_label.setText(bottleneck_reason)
+
+            hints = scenario_details.get("optimization_hints", [])
+            if hints:
+                self.backtest_hints_label.setText("建议: " + " / ".join(hints))
+
+        except Exception as e:
+            self.logger.error("更新回测场景失败: %s", e)
+
+    def _update_strategyedit_scenario(self, summary: Dict[str, Any]):
+        """更新策略编写场景."""
+        try:
+            key_metrics = summary.get("key_metrics", {})
+
+            if "cpu_percent" in key_metrics:
+                self.strategyedit_metrics_labels["cpu"].setText(
+                    f"{key_metrics['cpu_percent']:.1f}%"
+                )
+            if "memory_percent" in key_metrics:
+                self.strategyedit_metrics_labels["memory"].setText(
+                    f"{key_metrics['memory_percent']:.1f}%"
+                )
+
+        except Exception as e:
+            self.logger.error("更新策略编写场景失败: %s", e)
+
+    def _update_trading_scenario(self, summary: Dict[str, Any]):
+        """更新交易场景."""
+        try:
+            scenario_details = summary.get("scenario_details", {})
+            current_values = scenario_details.get("current_values", {})
+
+            # 更新指标
+            if "packet_loss_rate" in current_values:
+                self.trading_metrics_labels["packet_loss"].setText(
+                    f"{current_values['packet_loss_rate']:.2f}%"
+                )
+            if "cpu_temperature" in current_values:
+                self.trading_metrics_labels["cpu_temp"].setText(
+                    f"{current_values['cpu_temperature']:.1f}°C"
+                )
+
+            # 更新瓶颈
+            bottleneck_reason = scenario_details.get("bottleneck_reason", "正常")
+            self.trading_bottleneck_label.setText(bottleneck_reason)
+
+            hints = scenario_details.get("optimization_hints", [])
+            if hints:
+                self.trading_hints_label.setText("建议: " + " / ".join(hints))
+
+        except Exception as e:
+            self.logger.error("更新交易场景失败: %s", e)
 
     def _create_performance_group(self, title: str, metrics: List[tuple]):
         """创建性能指标分组框.
@@ -1707,6 +2932,22 @@ class SystemManager(BaseWidget, LoggerMixin):
         dependencies_layout.addWidget(self.dependencies_table)
 
         layout.addWidget(dependencies_group)
+
+        # 数据源连通性组（新增）
+        datasource_group = QGroupBox("📡 数据源连通性")
+        datasource_layout = QVBoxLayout(datasource_group)
+
+        # TDX服务器状态
+        self.tdx_connectivity_label = QLabel("TDX服务器: 检测中...")
+        self.tdx_connectivity_label.setStyleSheet("font-size: 12px; padding: 5px;")
+        datasource_layout.addWidget(self.tdx_connectivity_label)
+
+        # 交易网关状态
+        self.gateway_connectivity_label = QLabel("交易网关: 未配置")
+        self.gateway_connectivity_label.setStyleSheet("font-size: 12px; padding: 5px;")
+        datasource_layout.addWidget(self.gateway_connectivity_label)
+
+        layout.addWidget(datasource_group)
 
         # 健康检查组（显示综合健康评分）
         health_group = QGroupBox("整体健康评分")
@@ -2100,6 +3341,30 @@ class SystemManager(BaseWidget, LoggerMixin):
 
         layout.addWidget(ai_config_group)
 
+        # 动态阈值监控组
+        thresholds_group = QGroupBox("📊 动态阈值监控（自适应学习）")
+        thresholds_layout = QVBoxLayout(thresholds_group)
+
+        # 说明文本
+        info_label = QLabel(
+            "系统会根据历史数据自动学习阈值，计算P95和P99百分位数作为警告和严重告警的参考值。"
+        )
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet("color: #64748B; font-size: 11px; padding: 5px;")
+        thresholds_layout.addWidget(info_label)
+
+        self.thresholds_table = QTableWidget(0, 6)
+        self.thresholds_table.setHorizontalHeaderLabels(
+            ["指标名称", "P95值", "P99值", "警告阈值", "严重阈值", "样本数"]
+        )
+        self.thresholds_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.thresholds_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.thresholds_table.setAlternatingRowColors(True)
+        self.thresholds_table.horizontalHeader().setStretchLastSection(True)
+        thresholds_layout.addWidget(self.thresholds_table)
+
+        layout.addWidget(thresholds_group)
+
         # 加载配置
         self._load_config()
 
@@ -2253,12 +3518,22 @@ class SystemManager(BaseWidget, LoggerMixin):
         # 使用QSplitter左右分隔：进程列表（左） + 整体设备监控热力图（右）
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        # 左侧：进程列表（7列）
+        # 左侧：进程列表（9列，分离网络接收/发送）
         list_widget = QWidget()
         list_layout = QVBoxLayout(list_widget)
 
-        self.process_table = QTableWidget(0, 7)
-        headers = ["进程名称", "状态", "CPU%", "内存(MB)", "磁盘IO(MB/s)", "网速(MB/s)", "瓶颈点"]
+        self.process_table = QTableWidget(0, 9)
+        headers = [
+            "进程名称",
+            "场景类型",
+            "状态",
+            "CPU%",
+            "内存(MB)",
+            "磁盘IO(MB/s)",
+            "网络接收",
+            "网络发送",
+            "瓶颈点",
+        ]
         self.process_table.setHorizontalHeaderLabels(headers)
         header = self.process_table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
@@ -2388,7 +3663,7 @@ class SystemManager(BaseWidget, LoggerMixin):
             self.show_error(f"刷新失败: {e}")
 
     def _update_process_table(self, processes: List[Dict[str, Any]]):
-        """更新进程表格（新设计 - 7列含磁盘IO和网络速度）.
+        """更新进程表格（新设计 - 8列含场景类型）.
 
         Args:
             processes: 进程数据列表
@@ -2407,7 +3682,11 @@ class SystemManager(BaseWidget, LoggerMixin):
                 process_name = proc.get("process_name", "")
                 self.process_table.setItem(row, 0, QTableWidgetItem(process_name))
 
-                # 列1: 状态
+                # 列1: 场景类型（根据进程名推断）
+                scenario_type = self._infer_scenario_type(process_name)
+                self.process_table.setItem(row, 1, QTableWidgetItem(scenario_type))
+
+                # 列2: 状态
                 status = proc.get("status", "unknown")
                 status_map = {
                     "running": "🟢 运行中",
@@ -2415,29 +3694,31 @@ class SystemManager(BaseWidget, LoggerMixin):
                     "stopped": "🔴 已停止",
                 }
                 status_text = status_map.get(status, status)
-                self.process_table.setItem(row, 1, QTableWidgetItem(str(status_text)))
+                self.process_table.setItem(row, 2, QTableWidgetItem(str(status_text)))
 
-                # 列2: CPU%
+                # 列3: CPU%
                 cpu_percent = proc.get("cpu_percent", 0)
-                self.process_table.setItem(row, 2, QTableWidgetItem(f"{cpu_percent:.1f}"))
+                self.process_table.setItem(row, 3, QTableWidgetItem(f"{cpu_percent:.1f}"))
 
-                # 列3: 内存(MB)
+                # 列4: 内存(MB)
                 memory_mb = proc.get("memory_mb", 0)
-                self.process_table.setItem(row, 3, QTableWidgetItem(f"{memory_mb:.1f}"))
+                self.process_table.setItem(row, 4, QTableWidgetItem(f"{memory_mb:.1f}"))
 
-                # 列4: 磁盘IO(MB/s) - 取读写最大值
+                # 列5: 磁盘IO(MB/s) - 取读写最大值
                 disk_read = proc.get("disk_read_mbps", 0)
                 disk_write = proc.get("disk_write_mbps", 0)
                 disk_io = max(disk_read, disk_write)
-                self.process_table.setItem(row, 4, QTableWidgetItem(f"{disk_io:.1f}"))
+                self.process_table.setItem(row, 5, QTableWidgetItem(f"{disk_io:.1f}"))
 
-                # 列5: 网速(MB/s) - 取收发最大值
+                # 列6: 网络接收(MB/s)
                 network_recv = proc.get("network_recv_mbps", 0)
-                network_send = proc.get("network_send_mbps", 0)
-                network_speed = max(network_recv, network_send)
-                self.process_table.setItem(row, 5, QTableWidgetItem(f"{network_speed:.1f}"))
+                self.process_table.setItem(row, 6, QTableWidgetItem(f"{network_recv:.2f}"))
 
-                # 列6: 瓶颈点
+                # 列7: 网络发送(MB/s)
+                network_send = proc.get("network_send_mbps", 0)
+                self.process_table.setItem(row, 7, QTableWidgetItem(f"{network_send:.2f}"))
+
+                # 列8: 瓶颈点
                 bottleneck = proc.get("bottleneck", "balanced")
                 bottleneck_map = {
                     "cpu": "🔴 CPU",
@@ -2447,10 +3728,40 @@ class SystemManager(BaseWidget, LoggerMixin):
                     "balanced": "🟢 均衡",
                 }
                 bottleneck_text = bottleneck_map.get(bottleneck, bottleneck)
-                self.process_table.setItem(row, 6, QTableWidgetItem(str(bottleneck_text)))
+                self.process_table.setItem(row, 8, QTableWidgetItem(str(bottleneck_text)))
 
         except Exception as e:
             self.logger.error("更新进程表格失败: %s", e)
+
+    def _infer_scenario_type(self, process_name: str) -> str:
+        """根据进程名推断场景类型.
+
+        Args:
+            process_name: 进程名称
+
+        Returns:
+            场景类型文本
+        """
+        if not process_name:
+            return "通用"
+
+        process_name_lower = process_name.lower()
+
+        # 关键字匹配
+        if any(kw in process_name_lower for kw in ["download", "下载", "fetch", "data_center"]):
+            return "📥 数据下载"
+        elif any(kw in process_name_lower for kw in ["realtime", "实时", "tick", "market_board"]):
+            return "📊 实时行情"
+        elif any(kw in process_name_lower for kw in ["backtest", "回测", "simulation"]):
+            return "🔬 策略回测"
+        elif any(kw in process_name_lower for kw in ["strategy", "策略", "editor"]):
+            return "✏️ 策略编写"
+        elif any(kw in process_name_lower for kw in ["trading", "交易", "order", "gateway"]):
+            return "💹 实盘交易"
+        elif any(kw in process_name_lower for kw in ["monitor", "监控"]):
+            return "👁️ 系统监控"
+        else:
+            return "通用"
 
     def _update_heatmaps(self, metrics: Dict[str, Any]):
         """更新热力图（整体设备监控）.
@@ -2789,9 +4100,9 @@ class SystemManager(BaseWidget, LoggerMixin):
         # 表单布局
         form_layout = QFormLayout()
         # 🔧 设置字段增长策略，让输入框占据更多空间
-        form_layout.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        form_layout.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
         # 设置标签右对齐，视觉上更整洁
-        form_layout.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        form_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         # 🔧 关键修复：增加垂直间距，防止输入框放大后互相遮挡
         form_layout.setVerticalSpacing(15)  # 默认6px，增加到15px
         form_layout.setHorizontalSpacing(10)  # 标签和字段之间的间距
@@ -4287,12 +5598,344 @@ class SystemManager(BaseWidget, LoggerMixin):
         colors = ["#FF6B6B", "#4ECDC4", "#45B7D1", "#FFA07A", "#98D8C8"]
         return colors[index % len(colors)]
 
+    def _create_temperature_chart(self, title: str):
+        """创建温度折线图（CPU/GPU/硬盘）."""
+        chart_widget = pg.GraphicsLayoutWidget()
+        chart_widget.setBackground(QColor(26, 26, 26))
+
+        plot = chart_widget.addPlot(title=title)  # type: ignore[attr-defined]
+        plot.showGrid(x=True, y=True, alpha=0.3)
+        plot.setRange(yRange=[0, 100])
+        plot.setLabel("bottom", "时间")
+        plot.setLabel("left", "温度 (°C)")
+        plot.addLegend()
+
+        # 添加温度警戒线
+        # 高温警戒线 (70°C) - 黄色虚线
+        warning_line = pg.InfiniteLine(
+            pos=70, angle=0, pen=pg.mkPen(color="#FFA500", width=1, style=Qt.PenStyle.DashLine)
+        )
+        plot.addItem(warning_line)
+
+        # 临界温度线 (85°C) - 红色虚线
+        critical_line = pg.InfiniteLine(
+            pos=85, angle=0, pen=pg.mkPen(color="#FF0000", width=1, style=Qt.PenStyle.DashLine)
+        )
+        plot.addItem(critical_line)
+
+        # CPU温度曲线（红色）
+        cpu_pen = pg.mkPen(color="#FF6B6B", width=2)
+        cpu_curve = plot.plot(pen=cpu_pen, name="CPU")
+
+        # GPU温度曲线（绿色）
+        gpu_pen = pg.mkPen(color="#51CF66", width=2)
+        gpu_curve = plot.plot(pen=gpu_pen, name="GPU")
+
+        # 硬盘温度曲线（蓝色）
+        disk_pen = pg.mkPen(color="#4ECDC4", width=2)
+        disk_curve = plot.plot(pen=disk_pen, name="硬盘")
+
+        # 存储引用
+        chart_widget.plot_ref = plot  # type: ignore[attr-defined]
+        chart_widget.cpu_curve = cpu_curve  # type: ignore[attr-defined]
+        chart_widget.gpu_curve = gpu_curve  # type: ignore[attr-defined]
+        chart_widget.disk_curve = disk_curve  # type: ignore[attr-defined]
+
+        return chart_widget
+
+    def _create_bottleneck_card_v2(self) -> QWidget:
+        """创建瓶颈提示卡片V2（紧凑版，70px高）."""
+        card = QWidget()
+        card.setFixedHeight(70)
+        card.setStyleSheet(DashboardTheme.get_card_style())
+
+        layout = QHBoxLayout(card)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(12)
+
+        # 左侧：压力评分半圆仪表盘
+        self.bottleneck_gauge = GaugeWidget(max_value=100, warning=70, critical=85)
+        self.bottleneck_gauge.setFixedSize(60, 40)
+        layout.addWidget(self.bottleneck_gauge)
+
+        # 分隔线
+        separator = QWidget()
+        separator.setFixedWidth(2)
+        separator.setStyleSheet(f"background-color: {DashboardTheme.border_light};")
+        layout.addWidget(separator)
+
+        # 中间：瓶颈维度
+        dimension_layout = QVBoxLayout()
+        dimension_layout.setSpacing(1)
+
+        dim_title = QLabel("当前瓶颈")
+        dim_title.setStyleSheet(DashboardTheme.get_subtitle_style(DashboardTheme.text_secondary))
+        dimension_layout.addWidget(dim_title)
+
+        self.bottleneck_dimension_label = QLabel("均衡")
+        self.bottleneck_dimension_label.setStyleSheet(
+            DashboardTheme.get_metric_value_style(size=16)
+        )
+        dimension_layout.addWidget(self.bottleneck_dimension_label)
+
+        layout.addLayout(dimension_layout)
+
+        # 分隔线
+        separator2 = QWidget()
+        separator2.setFixedWidth(2)
+        separator2.setStyleSheet(f"background-color: {DashboardTheme.border_light};")
+        layout.addWidget(separator2)
+
+        # 右侧：优化建议（滚动文字）
+        suggestion_layout = QVBoxLayout()
+        suggestion_layout.setSpacing(1)
+
+        sugg_title = QLabel("优化建议")
+        sugg_title.setStyleSheet(DashboardTheme.get_subtitle_style(DashboardTheme.text_secondary))
+        suggestion_layout.addWidget(sugg_title)
+
+        self.bottleneck_suggestion_label = QLabel("系统运行正常")
+        self.bottleneck_suggestion_label.setWordWrap(True)
+        self.bottleneck_suggestion_label.setStyleSheet(
+            f"color: {DashboardTheme.text_primary}; font-size: 12px;"
+        )
+        suggestion_layout.addWidget(self.bottleneck_suggestion_label)
+
+        layout.addLayout(suggestion_layout, 1)  # 建议占更多空间
+
+        return card
+
+    def _create_metrics_grid(self) -> QWidget:
+        """创建核心指标网格（2x4 = 8个大指标卡片）."""
+        container = QWidget()
+        layout = QGridLayout(container)
+        layout.setSpacing(6)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        # 第1行：CPU、内存、磁盘I/O、网络速度
+        self.metric_card_cpu = MetricCard(title="CPU使用率", unit="%", color=DashboardTheme.cpu)
+        self.metric_card_memory = MetricCard(
+            title="内存使用率", unit="%", color=DashboardTheme.memory
+        )
+        self.metric_card_disk_io = MetricCard(
+            title="磁盘I/O", unit="MB/s", color=DashboardTheme.disk
+        )
+        self.metric_card_network = MetricCard(
+            title="网络速度", unit="MB/s", color=DashboardTheme.network
+        )
+
+        layout.addWidget(self.metric_card_cpu, 0, 0)
+        layout.addWidget(self.metric_card_memory, 0, 1)
+        layout.addWidget(self.metric_card_disk_io, 0, 2)
+        layout.addWidget(self.metric_card_network, 0, 3)
+
+        # 第2行：CPU温度、磁盘使用、进程数、负载均衡
+        self.metric_card_cpu_temp = MetricCard(
+            title="CPU温度", unit="°C", color=DashboardTheme.temp
+        )
+        self.metric_card_disk_usage = MetricCard(
+            title="磁盘使用", unit="%", color=DashboardTheme.disk
+        )
+        self.metric_card_process_count = MetricCard(
+            title="进程数", unit="个", color=DashboardTheme.primary
+        )
+        self.metric_card_load_avg = MetricCard(
+            title="负载均衡", unit="", color=DashboardTheme.warning
+        )
+
+        layout.addWidget(self.metric_card_cpu_temp, 1, 0)
+        layout.addWidget(self.metric_card_disk_usage, 1, 1)
+        layout.addWidget(self.metric_card_process_count, 1, 2)
+        layout.addWidget(self.metric_card_load_avg, 1, 3)
+
+        return container
+
+    def _create_bottleneck_card(self) -> QWidget:
+        """创建瓶颈提示卡片（系统状态监控顶部）."""
+        card = QGroupBox("🎯 系统瓶颈分析")
+        card.setMaximumHeight(120)
+        card.setStyleSheet(
+            """
+            QGroupBox {
+                font-weight: bold;
+                font-size: 13px;
+                border: 2px solid #3B82F6;
+                border-radius: 8px;
+                margin-top: 10px;
+                padding: 10px;
+                background-color: #1E293B;
+            }
+            QGroupBox::title {
+                color: #3B82F6;
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                padding: 0 5px;
+            }
+        """
+        )
+
+        layout = QHBoxLayout(card)
+        layout.setSpacing(15)
+
+        # 左侧：压力评分
+        score_container = QWidget()
+        score_layout = QVBoxLayout(score_container)
+        score_layout.setSpacing(5)
+        score_layout.setContentsMargins(0, 0, 0, 0)
+
+        score_title = QLabel("压力评分")
+        score_title.setStyleSheet("font-size: 11px; color: #94A3B8;")
+        score_layout.addWidget(score_title)
+
+        self.bottleneck_score_label = QLabel("--/100")
+        self.bottleneck_score_label.setStyleSheet(
+            "font-size: 24px; font-weight: bold; color: #10B981;"
+        )
+        score_layout.addWidget(self.bottleneck_score_label)
+
+        self.bottleneck_severity_label = QLabel("正常")
+        self.bottleneck_severity_label.setStyleSheet("font-size: 11px; color: #10B981;")
+        score_layout.addWidget(self.bottleneck_severity_label)
+
+        layout.addWidget(score_container)
+
+        # 分隔线
+        separator = QWidget()
+        separator.setFixedWidth(2)
+        separator.setStyleSheet("background-color: #475569;")
+        layout.addWidget(separator)
+
+        # 中间：当前瓶颈维度
+        dimension_container = QWidget()
+        dimension_layout = QVBoxLayout(dimension_container)
+        dimension_layout.setSpacing(5)
+        dimension_layout.setContentsMargins(0, 0, 0, 0)
+
+        dim_title = QLabel("当前瓶颈")
+        dim_title.setStyleSheet("font-size: 11px; color: #94A3B8;")
+        dimension_layout.addWidget(dim_title)
+
+        self.bottleneck_dimension_label = QLabel("均衡")
+        self.bottleneck_dimension_label.setStyleSheet(
+            "font-size: 18px; font-weight: bold; color: #3B82F6;"
+        )
+        dimension_layout.addWidget(self.bottleneck_dimension_label)
+
+        dimension_layout.addStretch()
+        layout.addWidget(dimension_container)
+
+        # 分隔线
+        separator2 = QWidget()
+        separator2.setFixedWidth(2)
+        separator2.setStyleSheet("background-color: #475569;")
+        layout.addWidget(separator2)
+
+        # 右侧：优化建议
+        suggestion_container = QWidget()
+        suggestion_layout = QVBoxLayout(suggestion_container)
+        suggestion_layout.setSpacing(5)
+        suggestion_layout.setContentsMargins(0, 0, 0, 0)
+
+        sugg_title = QLabel("优化建议")
+        sugg_title.setStyleSheet("font-size: 11px; color: #94A3B8;")
+        suggestion_layout.addWidget(sugg_title)
+
+        self.bottleneck_suggestion_label = QLabel("系统运行正常")
+        self.bottleneck_suggestion_label.setWordWrap(True)
+        self.bottleneck_suggestion_label.setStyleSheet("font-size: 12px; color: #E2E8F0;")
+        suggestion_layout.addWidget(self.bottleneck_suggestion_label)
+
+        layout.addWidget(suggestion_container, 1)  # 建议占更多空间
+
+        return card
+
+    def _create_temperature_cards(self) -> QWidget:
+        """创建温度状态卡片."""
+        container = QWidget()
+        container.setStyleSheet("background-color: #2C2C2C; border-radius: 5px;")
+        layout = QVBoxLayout(container)
+        layout.setSpacing(10)
+        layout.setContentsMargins(10, 10, 10, 10)
+
+        # 标题
+        title_label = QLabel("🌡️ 硬件温度")
+        title_label.setStyleSheet("font-weight: bold; font-size: 13px; color: #FFFFFF;")
+        layout.addWidget(title_label)
+
+        # 创建三个温度卡片：CPU、GPU、硬盘
+        for device_type, device_name, icon in [
+            ("cpu", "CPU", "🖥️"),
+            ("gpu", "GPU", "🎮"),
+            ("disk", "硬盘", "💾"),
+        ]:
+            card = QWidget()
+            card.setStyleSheet(
+                """
+                QWidget {
+                    background-color: #1E1E1E;
+                    border-radius: 5px;
+                    padding: 8px;
+                }
+                """
+            )
+            card_layout = QHBoxLayout(card)
+            card_layout.setContentsMargins(8, 8, 8, 8)
+
+            # 设备图标和名称
+            icon_label = QLabel(f"{icon} {device_name}")
+            icon_label.setStyleSheet("font-size: 12px; font-weight: bold;")
+            card_layout.addWidget(icon_label)
+
+            card_layout.addStretch()
+
+            # 温度值
+            temp_label = QLabel("--°C")
+            temp_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #51CF66;")
+            temp_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            card_layout.addWidget(temp_label)
+
+            # 状态图标
+            status_label = QLabel("●")
+            status_label.setStyleSheet("font-size: 16px; color: #51CF66;")
+            card_layout.addWidget(status_label)
+
+            layout.addWidget(card)
+
+            # 保存标签引用
+            self.temperature_card_labels[device_type] = {
+                "temp": temp_label,
+                "status": status_label,
+            }
+
+        layout.addStretch()
+        return container
+
+    def _create_smart_warning_cards(self) -> QWidget:
+        """创建SMART扇区告警卡片（硬盘健康关键指标）."""
+        widget = QWidget()
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+
+        # 重映射扇区卡片
+        self.smart_reallocated_card = MetricCard(title="重映射扇区", unit="个", color="#FF4444")
+        layout.addWidget(self.smart_reallocated_card)
+
+        # 待映射扇区卡片
+        self.smart_pending_card = MetricCard(title="待映射扇区", unit="个", color="#FF8800")
+        layout.addWidget(self.smart_pending_card)
+
+        return widget
+
     # ==================== 事件处理回调 ====================
 
     def _on_system_status_event(self, event):
         """处理系统状态更新事件."""
         try:
             metrics = event.data
+
+            # 新增：更新指标卡片（Dashboard Pro风格）
+            self._update_metric_cards(metrics)
 
             # 更新CPU图表
             cpu_percent = metrics.get("cpu_percent", 0)
@@ -4423,6 +6066,93 @@ class SystemManager(BaseWidget, LoggerMixin):
             self.logger.error("处理进程状态事件失败: %s", e)
 
     # ==================== 图表更新方法 ====================
+
+    def _update_metric_cards(self, metrics: Dict[str, Any]):
+        """更新指标卡片（Dashboard Pro风格）.
+
+        Args:
+            metrics: 系统指标数据
+        """
+        try:
+            # 更新CPU使用率卡片
+            if hasattr(self, "metric_card_cpu"):
+                cpu_percent = metrics.get("cpu_percent", 0)
+                self.metric_card_cpu.update_value(cpu_percent)
+
+            # 更新内存使用率卡片
+            if hasattr(self, "metric_card_memory"):
+                memory_percent = metrics.get("memory_percent", 0)
+                self.metric_card_memory.update_value(memory_percent)
+
+            # 更新磁盘I/O卡片（取最大值）
+            if hasattr(self, "metric_card_disk_io"):
+                disk_io_speed = metrics.get("disk_io_speed", {})
+                max_io = 0.0
+                for disk, speeds in disk_io_speed.items():
+                    if disk == "io_counters":
+                        continue
+                    read_speed = speeds.get("read_speed", 0)
+                    write_speed = speeds.get("write_speed", 0)
+                    max_io = max(max_io, read_speed, write_speed)
+                self.metric_card_disk_io.update_value(max_io)
+
+            # 更新网络速度卡片（取最大值，转MB/s）
+            if hasattr(self, "metric_card_network"):
+                network_speed = metrics.get("network_speed", {})
+                upload_kbps = network_speed.get("upload_speed_kbps", 0)
+                download_kbps = network_speed.get("download_speed_kbps", 0)
+                max_speed_mbps = max(upload_kbps, download_kbps) / 1024
+                self.metric_card_network.update_value(max_speed_mbps)
+
+            # 更新CPU温度卡片
+            if hasattr(self, "metric_card_cpu_temp"):
+                # 从hardware数据中提取CPU温度
+                hardware_data = metrics.get("hardware", {})
+                temperature_data = hardware_data.get("temperature", {})
+                cpu_temp = None
+                for device, sensors in temperature_data.items():
+                    if not sensors or not isinstance(sensors, list):
+                        continue
+                    sensor = sensors[0]
+                    temp = sensor.get("current", 0)
+                    if (
+                        "CPU" in device
+                        or "ACPI" in device
+                        or "processor" in device.lower()
+                        or "Ryzen" in device
+                        or "Intel" in device
+                        or "Threadripper" in device
+                    ):
+                        cpu_temp = temp
+                        break
+                if cpu_temp is not None:
+                    self.metric_card_cpu_temp.update_value(cpu_temp)
+
+            # 更新磁盘使用卡片（取平均值）
+            if hasattr(self, "metric_card_disk_usage"):
+                disk_info = metrics.get("disk_info", {})
+                total_percent = 0
+                count = 0
+                for disk, info in disk_info.items():
+                    if disk == "io_counters":
+                        continue
+                    total_percent += info.get("percent", 0)
+                    count += 1
+                avg_percent = total_percent / count if count > 0 else 0
+                self.metric_card_disk_usage.update_value(avg_percent)
+
+            # 更新进程数卡片
+            if hasattr(self, "metric_card_process_count"):
+                process_count = metrics.get("process_count", 0)
+                self.metric_card_process_count.update_value(process_count)
+
+            # 更新负载均衡卡片（CPU负载）
+            if hasattr(self, "metric_card_load_avg"):
+                load_avg = metrics.get("load_average", [0])[0] if metrics.get("load_average") else 0
+                self.metric_card_load_avg.update_value(load_avg)
+
+        except Exception as e:
+            self.logger.error("更新指标卡片失败: %s", e)
 
     def _update_line_chart(self, chart_widget, key: str, value: float):
         """更新单线图表."""
@@ -4601,23 +6331,473 @@ class SystemManager(BaseWidget, LoggerMixin):
         except Exception as e:
             self.logger.error("更新磁盘空间图表失败: %s", e)
 
+    def _update_temperature_chart(self, temperature_data: Dict[str, Any]):
+        """更新温度折线图."""
+        try:
+            if not self.temperature_chart or not hasattr(self.temperature_chart, "cpu_curve"):
+                return
+
+            current_time = time.time()
+
+            # 分类提取温度数据
+            cpu_temp = None
+            gpu_temp = None
+            disk_temp = None
+
+            for device, sensors in temperature_data.items():
+                if not sensors or not isinstance(sensors, list):
+                    continue
+
+                sensor = sensors[0]  # 取第一个传感器
+                temp = sensor.get("current", 0)
+
+                # 根据设备名称分类
+                device_lower = device.lower()
+                if (
+                    "CPU" in device
+                    or "ACPI" in device
+                    or "processor" in device_lower
+                    or "Ryzen" in device
+                    or "Intel" in device
+                    or "Threadripper" in device
+                ):
+                    if cpu_temp is None:  # 只取第一个CPU温度
+                        cpu_temp = temp
+                elif (
+                    "GPU" in device
+                    or "NVIDIA" in device
+                    or "Radeon" in device
+                    or "GeForce" in device
+                    or "RTX" in device
+                    or "GTX" in device
+                ):
+                    if gpu_temp is None:  # 只取第一个GPU温度
+                        gpu_temp = temp
+                elif (
+                    "Disk" in device
+                    or "Drive" in device
+                    or "SSD" in device
+                    or "HDD" in device
+                    or "WDC" in device
+                    or "Samsung" in device
+                    or "Seagate" in device
+                    or "Crucial" in device
+                ):
+                    if disk_temp is None:  # 只取第一个硬盘温度
+                        disk_temp = temp
+
+            # 更新CPU温度曲线
+            if cpu_temp is not None:
+                self.system_status_history["temp_cpu"].append((current_time, cpu_temp))
+                if self.system_status_history["temp_cpu"]:
+                    times, values = zip(*self.system_status_history["temp_cpu"])
+                    self.temperature_chart.cpu_curve.setData(times, values)
+
+            # 更新GPU温度曲线
+            if gpu_temp is not None:
+                self.system_status_history["temp_gpu"].append((current_time, gpu_temp))
+                if self.system_status_history["temp_gpu"]:
+                    times, values = zip(*self.system_status_history["temp_gpu"])
+                    self.temperature_chart.gpu_curve.setData(times, values)
+
+            # 更新硬盘温度曲线
+            if disk_temp is not None:
+                self.system_status_history["temp_disk"].append((current_time, disk_temp))
+                if self.system_status_history["temp_disk"]:
+                    times, values = zip(*self.system_status_history["temp_disk"])
+                    self.temperature_chart.disk_curve.setData(times, values)
+
+        except Exception as e:
+            self.logger.error("更新温度图表失败: %s", e)
+
+    def _update_hardware_sensors_from_data(self, hardware_data: Dict[str, Any]):
+        """从监控数据更新硬件传感器显示.
+
+        Args:
+            hardware_data: 硬件数据字典，包含temperature, power, voltage, fan等
+        """
+        try:
+            # 更新温度数据（卡片和图表）
+            if "temperature" in hardware_data and hardware_data["temperature"]:
+                temperature_data = hardware_data["temperature"]
+                self._update_temperature_cards(temperature_data)
+                self._update_temperature_chart(temperature_data)
+
+            # TODO: 可以在此添加其他硬件数据的更新（功率、电压、风扇等）
+
+        except Exception as e:
+            self.logger.error("更新硬件传感器数据失败: %s", e, exc_info=True)
+
+    def _update_bottleneck_card(self, bottleneck_data: Dict[str, Any]):
+        """更新瓶颈提示卡片（并缓存瓶颈维度供详细表格使用）.
+
+        Args:
+            bottleneck_data: {
+                "total_score": 75,
+                "bottleneck_dimension": "disk_io",
+                "scores": {...},
+                "suggestions": [...],
+                "severity": "warning"
+            }
+        """
+        try:
+            # 缓存瓶颈数据供详细表格使用
+            self._cached_bottleneck_data = bottleneck_data
+
+            total_score = bottleneck_data.get("total_score", 100)
+            severity = bottleneck_data.get("severity", "good")
+            dimension = bottleneck_data.get("bottleneck_dimension", "balanced")
+            suggestions = bottleneck_data.get("suggestions", [])
+
+            # 更新仪表盘（新版使用GaugeWidget）
+            if hasattr(self, "bottleneck_gauge"):
+                self.bottleneck_gauge.set_value(int(total_score))
+
+            # 兼容旧版本（如果有bottleneck_score_label说明是旧卡片）
+            if hasattr(self, "bottleneck_score_label"):
+                self.bottleneck_score_label.setText(f"{int(total_score)}/100")
+
+                # 根据严重程度设置颜色
+                severity_map = {
+                    "good": ("性能充足", "#10B981"),
+                    "normal": ("正常", "#3B82F6"),
+                    "warning": ("压力大", "#F59E0B"),
+                    "critical": ("瓶颈", "#EF4444"),
+                }
+                severity_text, severity_color = severity_map.get(severity, ("未知", "#94A3B8"))
+
+                self.bottleneck_score_label.setStyleSheet(
+                    f"font-size: 24px; font-weight: bold; color: {severity_color};"
+                )
+                self.bottleneck_severity_label.setText(severity_text)
+                self.bottleneck_severity_label.setStyleSheet(
+                    f"font-size: 11px; color: {severity_color};"
+                )
+
+            # 更新瓶颈维度（新旧版本通用）
+            dimension_map = {
+                "cpu": "CPU",
+                "memory": "内存",
+                "disk": "磁盘I/O",
+                "disk_io": "磁盘I/O",
+                "network": "网络",
+                "balanced": "均衡",
+            }
+            dimension_text = dimension_map.get(dimension, dimension or "unknown")
+            self.bottleneck_dimension_label.setText(dimension_text)
+
+            # 瓶颈高亮显示
+            if severity in ["warning", "critical"]:
+                color = DashboardTheme.error
+            else:
+                color = DashboardTheme.primary
+
+            self.bottleneck_dimension_label.setStyleSheet(
+                DashboardTheme.get_metric_value_style(size=18, color=color)
+            )
+
+            # 更新建议（显示前2条）
+            suggestion_text_base = ""
+            if suggestions:
+                suggestion_text_base = " / ".join(suggestions[:2])
+            else:
+                suggestion_text_base = "系统运行正常"
+
+            # 显示自适应并发因子（新增）
+            if "adaptive_scale_factor" in bottleneck_data:
+                scale_factor = bottleneck_data["adaptive_scale_factor"]
+                suggestion_text_base += f"\n\n📊 建议并发倍数: {scale_factor}x"
+
+                if scale_factor < 0.5:
+                    suggestion_text_base += " (系统压力大，建议降低并发)"
+                elif scale_factor > 1.2:
+                    suggestion_text_base += " (系统性能充足，可提高并发)"
+
+            self.bottleneck_suggestion_label.setText(suggestion_text_base)
+
+        except Exception as e:
+            self.logger.error("更新瓶颈卡片失败: %s", e)
+
+    def _update_thresholds_display(self, thresholds_data: Dict[str, Any]):
+        """更新动态阈值显示.
+
+        Args:
+            thresholds_data: {
+                "cpu_percent": {
+                    "warning": 85.5,
+                    "critical": 95.2,
+                    "p95": 82.3,
+                    "p99": 94.1,
+                    "sample_count": 500,
+                    "using_default": False
+                },
+                ...
+            }
+        """
+        try:
+            if not hasattr(self, "thresholds_table"):
+                return
+
+            self.thresholds_table.setRowCount(0)
+
+            # 中文名称映射
+            metric_names_cn = {
+                "cpu_percent": "CPU使用率",
+                "memory_percent": "内存使用率",
+                "disk_usage_percent": "磁盘使用率",
+                "network_io": "网络IO",
+                "disk_io_mbps": "磁盘IO速率",
+            }
+
+            for metric_name, data in thresholds_data.items():
+                row = self.thresholds_table.rowCount()
+                self.thresholds_table.insertRow(row)
+
+                # 列0: 指标名称（中文）
+                display_name = metric_names_cn.get(metric_name, metric_name)
+                self.thresholds_table.setItem(row, 0, QTableWidgetItem(display_name))
+
+                # 列1: P95值
+                p95 = data.get("p95")
+                p95_text = f"{p95:.2f}" if p95 is not None else "--"
+                self.thresholds_table.setItem(row, 1, QTableWidgetItem(p95_text))
+
+                # 列2: P99值
+                p99 = data.get("p99")
+                p99_text = f"{p99:.2f}" if p99 is not None else "--"
+                self.thresholds_table.setItem(row, 2, QTableWidgetItem(p99_text))
+
+                # 列3: 警告阈值
+                warning = data.get("warning", 0)
+                self.thresholds_table.setItem(row, 3, QTableWidgetItem(f"{warning:.2f}"))
+
+                # 列4: 严重阈值
+                critical = data.get("critical", 0)
+                self.thresholds_table.setItem(row, 4, QTableWidgetItem(f"{critical:.2f}"))
+
+                # 列5: 样本数
+                sample_count = data.get("sample_count", 0)
+                using_default = data.get("using_default", True)
+                sample_text = f"{sample_count}" + (" (默认)" if using_default else "")
+                self.thresholds_table.setItem(row, 5, QTableWidgetItem(sample_text))
+
+        except Exception as e:
+            self.logger.error("更新动态阈值显示失败: %s", e)
+
+    def _update_concurrent_tasks_display(self, tasks_data: Dict[str, int]):
+        """更新并发任务数显示.
+
+        Args:
+            tasks_data: {"download": 0, "backtest": 0, "trading": 0, "total": 0}
+        """
+        try:
+            if not hasattr(self, "concurrent_download_label"):
+                return
+
+            self.concurrent_download_label.setText(f"下载任务: {tasks_data.get('download', 0)}")
+            self.concurrent_backtest_label.setText(f"回测任务: {tasks_data.get('backtest', 0)}")
+            self.concurrent_trading_label.setText(f"交易任务: {tasks_data.get('trading', 0)}")
+            self.concurrent_total_label.setText(f"总计: {tasks_data.get('total', 0)}")
+
+        except Exception as e:
+            self.logger.error("更新并发任务统计显示失败: %s", e)
+
+    def _update_temperature_cards(self, temperature_data: Dict[str, Any]):
+        """更新温度状态卡片."""
+        try:
+            if not self.temperature_card_labels:
+                return
+
+            # 分类提取温度数据
+            temps = {"cpu": None, "gpu": None, "disk": None}
+
+            for device, sensors in temperature_data.items():
+                if not sensors or not isinstance(sensors, list):
+                    continue
+
+                sensor = sensors[0]
+                temp = sensor.get("current", 0)
+
+                # 根据设备名称分类
+                device_lower = device.lower()
+                if (
+                    "CPU" in device
+                    or "ACPI" in device
+                    or "processor" in device_lower
+                    or "Ryzen" in device
+                    or "Intel" in device
+                    or "Threadripper" in device
+                ):
+                    if temps["cpu"] is None:
+                        temps["cpu"] = temp
+                elif (
+                    "GPU" in device
+                    or "NVIDIA" in device
+                    or "Radeon" in device
+                    or "GeForce" in device
+                    or "RTX" in device
+                    or "GTX" in device
+                ):
+                    if temps["gpu"] is None:
+                        temps["gpu"] = temp
+                elif (
+                    "Disk" in device
+                    or "Drive" in device
+                    or "SSD" in device
+                    or "HDD" in device
+                    or "WDC" in device
+                    or "Samsung" in device
+                    or "Seagate" in device
+                    or "Crucial" in device
+                ):
+                    if temps["disk"] is None:
+                        temps["disk"] = temp
+
+            # 更新卡片显示
+            for device_type, temp in temps.items():
+                if device_type not in self.temperature_card_labels:
+                    continue
+
+                labels = self.temperature_card_labels[device_type]
+
+                if temp is not None:
+                    # 更新温度显示
+                    labels["temp"].setText(f"{temp:.1f}°C")
+
+                    # 根据温度设置颜色
+                    if temp < 60:
+                        # 正常温度 - 绿色
+                        color = "#51CF66"
+                        status = "●"
+                    elif temp < 80:
+                        # 警告温度 - 黄色
+                        color = "#FFA500"
+                        status = "●"
+                    else:
+                        # 危险温度 - 红色
+                        color = "#FF6B6B"
+                        status = "●"
+
+                    labels["temp"].setStyleSheet(
+                        f"font-size: 14px; font-weight: bold; color: {color};"
+                    )
+                    labels["status"].setStyleSheet(f"font-size: 16px; color: {color};")
+                    labels["status"].setText(status)
+                else:
+                    # 未检测到温度
+                    if device_type == "gpu":
+                        # GPU特殊提示
+                        labels["temp"].setText("不支持")
+                        labels["temp"].setStyleSheet(
+                            "font-size: 12px; font-weight: normal; color: #999;"
+                        )
+                    else:
+                        labels["temp"].setText("--°C")
+                        labels["temp"].setStyleSheet(
+                            "font-size: 14px; font-weight: bold; color: #666;"
+                        )
+                    labels["status"].setStyleSheet("font-size: 16px; color: #666;")
+                    labels["status"].setText("○")
+
+        except Exception as e:
+            self.logger.error("更新温度卡片失败: %s", e)
+
+    def _get_bottleneck_status_for_metric(self, metric_name: str, bottleneck_dimension: str) -> str:
+        """获取指标的瓶颈状态标记.
+
+        Args:
+            metric_name: 指标名称
+            bottleneck_dimension: 当前系统瓶颈维度 (cpu/memory/disk_io/network/balanced)
+
+        Returns:
+            瓶颈状态文本
+        """
+        # 指标名称到瓶颈维度的映射
+        metric_to_dimension = {
+            "CPU使用率": "cpu",
+            "上下文切换": "cpu",
+            "CPU中断": "cpu",
+            "内存使用率": "memory",
+            "内存交换": "memory",
+            "磁盘I/O": "disk_io",  # 匹配"磁盘I/O读取"和"磁盘I/O写入"
+            "磁盘延迟": "disk_io",
+            "网络上传": "network",
+            "网络下载": "network",
+            "带宽占用": "network",
+            "网络丢包率": "network",
+        }
+
+        # 检查指标是否匹配瓶颈维度
+        for key, dimension in metric_to_dimension.items():
+            if key in metric_name:
+                if dimension == bottleneck_dimension:
+                    return "🔴 短板"
+                break
+
+        return "--"
+
     def _update_status_details_table(self, metrics: Dict[str, Any]):
-        """更新状态详细数据表格."""
+        """更新状态详细数据表格（含瓶颈状态列）."""
         try:
             if not self.status_details_table:
                 return
 
+            # 获取瓶颈维度（从缓存的监控数据中）
+            bottleneck_dimension = "balanced"  # 默认均衡
+            if hasattr(self, "_cached_bottleneck_data"):
+                bottleneck_dimension = self._cached_bottleneck_data.get(
+                    "bottleneck_dimension", "balanced"
+                )
+
             # 更新统计数据
             cpu_percent = metrics.get("cpu_percent", 0)
             memory_percent = metrics.get("memory_percent", 0)
-            disk_percent = metrics.get("disk_percent", 0)
+
+            # 获取磁盘I/O速度（按磁盘分组）
+            disk_io_speed = metrics.get("disk_io_speed", {})
 
             # 更新CPU统计
             self._update_stat("cpu", cpu_percent)
             # 更新内存统计
             self._update_stat("memory", memory_percent)
-            # 更新磁盘统计
-            self._update_stat("disk", disk_percent)
+
+            # 更新每个磁盘的I/O统计
+            current_time = time.time()
+            for mount_point, disk_data in disk_io_speed.items():
+                # 初始化该磁盘的统计结构（如果不存在）
+                if mount_point not in self.system_stats["disks"]:
+                    self.system_stats["disks"][mount_point] = {
+                        "read": {"current": 0, "avg": 0},
+                        "write": {"current": 0, "avg": 0},
+                    }
+                if mount_point not in self.system_status_history["disks"]:
+                    self.system_status_history["disks"][mount_point] = {
+                        "read": deque(maxlen=100),
+                        "write": deque(maxlen=100),
+                    }
+                if mount_point not in self.metric_thresholds["disks"]:
+                    # 从后端获取的阈值
+                    self.metric_thresholds["disks"][mount_point] = {
+                        "read": disk_data.get("read_threshold", 400000),
+                        "write": disk_data.get("write_threshold", 300000),
+                        "type": disk_data.get("disk_type", "unknown"),
+                    }
+
+                # 获取当前速度
+                read_speed_kbps = disk_data.get("read_speed_kbps", 0)
+                write_speed_kbps = disk_data.get("write_speed_kbps", 0)
+
+                # 记录历史数据
+                self.system_status_history["disks"][mount_point]["read"].append(
+                    (current_time, read_speed_kbps)
+                )
+                self.system_status_history["disks"][mount_point]["write"].append(
+                    (current_time, write_speed_kbps)
+                )
+
+                # 更新统计（使用 _update_disk_stat 方法）
+                self._update_disk_stat(mount_point, "read", read_speed_kbps)
+                self._update_disk_stat(mount_point, "write", write_speed_kbps)
 
             # 网络速度统计
             network_speed = metrics.get("network_speed", {})
@@ -4625,62 +6805,289 @@ class SystemManager(BaseWidget, LoggerMixin):
             download = network_speed.get("download_speed_kbps", 0)
             bandwidth = network_speed.get("bandwidth_percent", 0)
 
+            # 记录历史数据（带时间戳）
+            self.system_status_history["bandwidth"].append((current_time, bandwidth))
+
             self._update_stat("network_upload", upload)
             self._update_stat("network_download", download)
+            self._update_stat("bandwidth", bandwidth)
 
-            # 构建表格行
+            # 构建表格行（当前值、平均值、阈值、瓶颈状态）
             rows = [
                 (
                     "CPU使用率",
                     f"{self.system_stats['cpu']['current']:.1f}%",
                     f"{self.system_stats['cpu']['avg']:.1f}%",
-                    f"{self.system_stats['cpu']['peak']:.1f}%",
+                    f"{self.metric_thresholds['cpu']:.0f}%",
                 ),
                 (
                     "内存使用率",
                     f"{self.system_stats['memory']['current']:.1f}%",
                     f"{self.system_stats['memory']['avg']:.1f}%",
-                    f"{self.system_stats['memory']['peak']:.1f}%",
-                ),
-                (
-                    "磁盘使用率",
-                    f"{self.system_stats['disk']['current']:.1f}%",
-                    f"{self.system_stats['disk']['avg']:.1f}%",
-                    f"{self.system_stats['disk']['peak']:.1f}%",
-                ),
-                (
-                    "网络上传",
-                    f"{self.system_stats['network_upload']['current']:.1f} KB/s",
-                    f"{self.system_stats['network_upload']['avg']:.1f} KB/s",
-                    f"{self.system_stats['network_upload']['peak']:.1f} KB/s",
-                ),
-                (
-                    "网络下载",
-                    f"{self.system_stats['network_download']['current']:.1f} KB/s",
-                    f"{self.system_stats['network_download']['avg']:.1f} KB/s",
-                    f"{self.system_stats['network_download']['peak']:.1f} KB/s",
-                ),
-                (
-                    "带宽占用",
-                    f"{bandwidth:.1f}%",
-                    "--",
-                    "--",
+                    f"{self.metric_thresholds['memory']:.0f}%",
                 ),
             ]
 
+            # 添加每个磁盘的I/O行
+            for mount_point in sorted(self.system_stats["disks"].keys()):
+                disk_stats = self.system_stats["disks"][mount_point]
+                disk_thresholds = self.metric_thresholds["disks"].get(mount_point, {})
+                disk_type = disk_thresholds.get("type", "unknown")
+
+                # 磁盘类型标签
+                type_label = {
+                    "nvme": "NVMe",
+                    "ssd": "SSD",
+                    "hdd": "HDD",
+                    "unknown": "",
+                }.get(disk_type, "")
+
+                # 读取行
+                rows.append(
+                    (
+                        (
+                            f"磁盘{mount_point} I/O读取 ({type_label})"
+                            if type_label
+                            else f"磁盘{mount_point} I/O读取"
+                        ),
+                        f"{disk_stats['read']['current']:.1f} KB/s",
+                        f"{disk_stats['read']['avg']:.1f} KB/s",
+                        f"{disk_thresholds.get('read', 400000):.0f} KB/s",
+                    )
+                )
+                # 写入行
+                rows.append(
+                    (
+                        (
+                            f"磁盘{mount_point} I/O写入 ({type_label})"
+                            if type_label
+                            else f"磁盘{mount_point} I/O写入"
+                        ),
+                        f"{disk_stats['write']['current']:.1f} KB/s",
+                        f"{disk_stats['write']['avg']:.1f} KB/s",
+                        f"{disk_thresholds.get('write', 300000):.0f} KB/s",
+                    )
+                )
+
+            # 网络行
+            rows.extend(
+                [
+                    (
+                        "网络上传",
+                        f"{self.system_stats['network_upload']['current']:.1f} KB/s",
+                        f"{self.system_stats['network_upload']['avg']:.1f} KB/s",
+                        f"{self.metric_thresholds['network_upload']:.0f} KB/s",
+                    ),
+                    (
+                        "网络下载",
+                        f"{self.system_stats['network_download']['current']:.1f} KB/s",
+                        f"{self.system_stats['network_download']['avg']:.1f} KB/s",
+                        f"{self.metric_thresholds['network_download']:.0f} KB/s",
+                    ),
+                    (
+                        "带宽占用",
+                        f"{self.system_stats['bandwidth']['current']:.1f}%",
+                        f"{self.system_stats['bandwidth']['avg']:.1f}%",
+                        f"{self.metric_thresholds['bandwidth']:.0f}%",
+                    ),
+                ]
+            )
+
+            # 新增：CPU详细指标
+            cpu_detailed = metrics.get("cpu_detailed", {})
+            if cpu_detailed:
+                ctx_switches = cpu_detailed.get("context_switches_per_sec", 0)
+                interrupts = cpu_detailed.get("interrupts_per_sec", 0)
+
+                # 记录历史数据
+                self.system_status_history["context_switches"].append((current_time, ctx_switches))
+                self.system_status_history["cpu_interrupts"].append((current_time, interrupts))
+
+                # 更新统计
+                self._update_stat("context_switches", ctx_switches)
+                self._update_stat("cpu_interrupts", interrupts)
+
+                rows.extend(
+                    [
+                        (
+                            "上下文切换",
+                            f"{self.system_stats['context_switches']['current']:.0f}/秒",
+                            f"{self.system_stats['context_switches']['avg']:.0f}/秒",
+                            f"{self.metric_thresholds['context_switches']:.0f}/秒",
+                        ),
+                        (
+                            "CPU中断",
+                            f"{self.system_stats['cpu_interrupts']['current']:.0f}/秒",
+                            f"{self.system_stats['cpu_interrupts']['avg']:.0f}/秒",
+                            f"{self.metric_thresholds['cpu_interrupts']:.0f}/秒",
+                        ),
+                    ]
+                )
+
+            # 新增：内存子系统
+            memory_subsystem = metrics.get("memory_subsystem", {})
+            if memory_subsystem:
+                swap_in = memory_subsystem.get("swap_in_kbps", 0)
+                swap_out = memory_subsystem.get("swap_out_kbps", 0)
+                total_swap = swap_in + swap_out
+
+                # 记录历史数据
+                self.system_status_history["memory_swap"].append((current_time, total_swap))
+
+                # 更新统计
+                self._update_stat("memory_swap", total_swap)
+
+                if swap_in > 0 or swap_out > 0:
+                    rows.append(
+                        (
+                            "内存交换",
+                            f"入{swap_in:.0f} 出{swap_out:.0f} KB/s",
+                            f"{self.system_stats['memory_swap']['avg']:.1f} KB/s",
+                            f"{self.metric_thresholds['memory_swap']:.0f} KB/s",
+                        )
+                    )
+                else:
+                    rows.append(
+                        (
+                            "内存交换",
+                            "无交换 (0 KB/s)",
+                            f"{self.system_stats['memory_swap']['avg']:.1f} KB/s",
+                            f"{self.metric_thresholds['memory_swap']:.0f} KB/s",
+                        )
+                    )
+
+            # 新增：存储子系统（磁盘延迟）
+            storage_subsystem = metrics.get("storage_subsystem", {})
+            if storage_subsystem:
+                disks = storage_subsystem.get("disks", {})
+                for disk_name, disk_info in disks.items():
+                    latency = disk_info.get("average_io_latency_ms", 0)
+                    if latency > 0:
+                        # 为每个磁盘单独记录统计
+                        stat_key = f"disk_latency_{disk_name}"
+                        if stat_key not in self.system_stats:
+                            self.system_stats[stat_key] = {"current": 0, "avg": 0}
+                            if disk_name not in self.system_status_history.get("disk_latency", {}):
+                                if not isinstance(
+                                    self.system_status_history.get("disk_latency"), dict
+                                ):
+                                    self.system_status_history["disk_latency"] = {}
+                                self.system_status_history["disk_latency"][disk_name] = deque(
+                                    maxlen=100
+                                )
+
+                        # 记录历史数据
+                        self.system_status_history["disk_latency"][disk_name].append(
+                            (current_time, latency)
+                        )
+
+                        self._update_stat(stat_key, latency)
+
+                        rows.append(
+                            (
+                                f"磁盘延迟({disk_name})",
+                                f"{self.system_stats[stat_key]['current']:.1f} ms",
+                                f"{self.system_stats[stat_key]['avg']:.1f} ms",
+                                f"{self.metric_thresholds['disk_latency']:.0f} ms",
+                            )
+                        )
+
+            # 新增：网络子系统（丢包率）
+            network_subsystem = metrics.get("network_subsystem", {})
+            if network_subsystem:
+                loss_in = network_subsystem.get("packet_loss_rate_in", 0)
+                loss_out = network_subsystem.get("packet_loss_rate_out", 0)
+                # 使用平均丢包率作为统计值
+                avg_loss = (loss_in + loss_out) / 2
+
+                # 记录历史数据
+                self.system_status_history["packet_loss"].append((current_time, avg_loss * 100))
+
+                # 更新统计
+                self._update_stat("packet_loss", avg_loss * 100)  # 转换为百分比
+
+                rows.append(
+                    (
+                        "网络丢包率",
+                        f"入{loss_in*100:.2f}% 出{loss_out*100:.2f}%",
+                        f"{self.system_stats['packet_loss']['avg']:.2f}%",
+                        f"{self.metric_thresholds['packet_loss']:.1f}%",
+                    )
+                )
+
+            # 新增：SMART扇区告警（硬盘健康关键指标）
+            smart_data = metrics.get("smart", {})
+            if smart_data:
+                total_reallocated = sum(
+                    disk.get("reallocated_sectors", 0)
+                    for disk in smart_data.values()
+                    if isinstance(disk, dict)
+                )
+                total_pending = sum(
+                    disk.get("pending_sectors", 0)
+                    for disk in smart_data.values()
+                    if isinstance(disk, dict)
+                )
+
+                # 为SMART指标添加统计支持
+                if "smart_reallocated" not in self.system_stats:
+                    self.system_stats["smart_reallocated"] = {"current": 0, "avg": 0}
+                    self.system_status_history["smart_reallocated"] = deque(maxlen=100)
+                if "smart_pending" not in self.system_stats:
+                    self.system_stats["smart_pending"] = {"current": 0, "avg": 0}
+                    self.system_status_history["smart_pending"] = deque(maxlen=100)
+
+                # 记录历史数据
+                self.system_status_history["smart_reallocated"].append(
+                    (current_time, float(total_reallocated))
+                )
+                self.system_status_history["smart_pending"].append(
+                    (current_time, float(total_pending))
+                )
+
+                self._update_stat("smart_reallocated", float(total_reallocated))
+                self._update_stat("smart_pending", float(total_pending))
+
+                rows.append(
+                    (
+                        "SMART-重映射扇区",
+                        f"{total_reallocated}个",
+                        f"{self.system_stats['smart_reallocated']['avg']:.1f}个",
+                        f"{self.metric_thresholds['smart_reallocated']}个",
+                    )
+                )
+
+                rows.append(
+                    (
+                        "SMART-待映射扇区",
+                        f"{total_pending}个",
+                        f"{self.system_stats['smart_pending']['avg']:.1f}个",
+                        f"{self.metric_thresholds['smart_pending']}个",
+                    )
+                )
+
             self.status_details_table.setRowCount(0)
-            for i, (name, current, avg, peak) in enumerate(rows):
+            for i, (name, current, avg, threshold) in enumerate(rows):
                 self.status_details_table.insertRow(i)
                 self.status_details_table.setItem(i, 0, QTableWidgetItem(name))
                 self.status_details_table.setItem(i, 1, QTableWidgetItem(current))
                 self.status_details_table.setItem(i, 2, QTableWidgetItem(avg))
-                self.status_details_table.setItem(i, 3, QTableWidgetItem(peak))
+                self.status_details_table.setItem(i, 3, QTableWidgetItem(threshold))
+
+                # 新增：第5列瓶颈状态
+                bottleneck_status = self._get_bottleneck_status_for_metric(
+                    name, bottleneck_dimension
+                )
+                status_item = QTableWidgetItem(bottleneck_status)
+                if bottleneck_status == "🔴 短板":
+                    status_item.setForeground(QColor("#EF4444"))  # 红色高亮
+                self.status_details_table.setItem(i, 4, status_item)
 
         except Exception as e:
             self.logger.error("更新状态详细表格失败: %s", e)
 
     def _update_stat(self, key: str, value: float):
-        """更新统计数据（当前值、平均值、峰值）.
+        """更新统计数据（当前值、平均值）.
 
         Args:
             key: 统计项键名
@@ -4688,37 +7095,86 @@ class SystemManager(BaseWidget, LoggerMixin):
         """
         try:
             if key not in self.system_stats:
-                self.system_stats[key] = {"current": 0, "avg": 0, "peak": 0}
+                self.system_stats[key] = {"current": 0, "avg": 0}
 
             # 更新当前值
             self.system_stats[key]["current"] = value
 
-            # 更新峰值
-            if value > self.system_stats[key]["peak"]:
-                self.system_stats[key]["peak"] = value
-
             # 计算平均值（基于历史数据）
-            history_key = key
+            history_data = None
+
             if key == "network_upload":
-                history_key = "network"
-                history_data = self.system_status_history.get(history_key, {}).get("upload", [])
+                history_data = self.system_status_history.get("network", {}).get("upload", [])
             elif key == "network_download":
-                history_key = "network"
-                history_data = self.system_status_history.get(history_key, {}).get("download", [])
+                history_data = self.system_status_history.get("network", {}).get("download", [])
+            elif key.startswith("disk_latency_"):
+                # 磁盘延迟特殊处理
+                disk_name = key.replace("disk_latency_", "")
+                disk_latency_dict = self.system_status_history.get("disk_latency", {})
+                if isinstance(disk_latency_dict, dict):
+                    history_data = disk_latency_dict.get(disk_name, [])
             else:
                 history_data = self.system_status_history.get(key, [])
 
             if history_data and len(history_data) > 0:
                 # 从历史数据计算平均值
-                values = [v for t, v in history_data]
-                avg_value = sum(values) / len(values)
-                self.system_stats[key]["avg"] = avg_value
+                try:
+                    # 检查是否是带时间戳的数据 (time, value)
+                    if isinstance(history_data, (deque, list)) and len(history_data) > 0:
+                        first_item = next(iter(history_data))
+                        if isinstance(first_item, tuple) and len(first_item) == 2:
+                            # 带时间戳的数据，提取值
+                            values = [v for t, v in history_data]
+                        else:
+                            # 纯数值数据
+                            values = list(history_data)
+
+                        if values:
+                            avg_value = sum(values) / len(values)
+                            self.system_stats[key]["avg"] = avg_value
+                        else:
+                            self.system_stats[key]["avg"] = value
+                    else:
+                        self.system_stats[key]["avg"] = value
+                except (TypeError, ValueError):
+                    # 数据格式异常时使用当前值
+                    self.system_stats[key]["avg"] = value
             else:
                 # 没有历史数据时，平均值等于当前值
                 self.system_stats[key]["avg"] = value
 
         except Exception as e:
             self.logger.error("更新统计数据失败 %s: %s", key, e)
+
+    def _update_disk_stat(self, mount_point: str, metric: str, value: float):
+        """更新磁盘统计数据（当前值、平均值）.
+
+        Args:
+            mount_point: 挂载点（如 "C:\\"）
+            metric: 指标名（"read" 或 "write"）
+            value: 当前值
+        """
+        try:
+            # 更新当前值
+            self.system_stats["disks"][mount_point][metric]["current"] = value
+
+            # 计算平均值（基于历史数据）
+            history_data = self.system_status_history["disks"][mount_point][metric]
+
+            if history_data and len(history_data) > 0:
+                # 提取时间戳数据中的值
+                values = [v for t, v in history_data]
+                if values:
+                    avg_value = sum(values) / len(values)
+                    self.system_stats["disks"][mount_point][metric]["avg"] = avg_value
+                else:
+                    self.system_stats["disks"][mount_point][metric]["avg"] = value
+            else:
+                # 没有历史数据时，平均值等于当前值
+                self.system_stats["disks"][mount_point][metric]["avg"] = value
+
+        except Exception as e:
+            self.logger.error("更新磁盘统计数据失败 %s[%s]: %s", mount_point, metric, e)
 
     # ==================== 通用方法 ====================
 

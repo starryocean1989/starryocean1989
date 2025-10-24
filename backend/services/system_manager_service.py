@@ -28,15 +28,15 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from enum import Enum
-from io import StringIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Callable, Union
 
 from backend.core.service_base import BaseService
 from backend.core.models import UnifiedMarketData, get_data_model_manager
-from backend.infrastructure.system_vnpy.system_monitor import SystemMonitor
-from backend.infrastructure.system_vnpy.network_utils import NetworkTester, PortScanner
+from backend.infrastructure.system_vnpy.monitors import SystemMonitor
+from backend.infrastructure.system_vnpy.tools import NetworkTester, PortScanner
 from backend.services.database_adapter import get_db_manager
+from backend.core.config import get_settings
 
 # 事件常量
 EVENT_LOG_RECORD = "eLogRecord"
@@ -67,7 +67,7 @@ class LogDatabase:
         self.logger = logging.getLogger(__name__)
 
         # system_logs表由DatabaseManager在_init_tables中创建
-        self.logger.info("日志数据库使用统一database: %s", db_path)
+        self.logger.info("日志数据库使用统一database：%s", db_path)
 
     def add_log_record(self, log_data: Dict[str, Any]) -> None:
         """添加日志记录（使用统一database）.
@@ -101,7 +101,7 @@ class LogDatabase:
                 ),
             )
 
-        except Exception as e:
+        except Exception:
             # 静默失败，避免日志循环
             pass
 
@@ -168,13 +168,13 @@ class LogDatabase:
                     try:
                         extra_data = json.loads(log["extra"])
                         log.update(extra_data)
-                    except:
+                    except (json.JSONDecodeError, TypeError, ValueError):
                         pass
 
             return results
 
         except Exception as e:
-            self.logger.error(f"日志查询失败: {e}")
+            self.logger.error("日志查询失败：%s", e)
             return []
 
     def get_log_stats(self) -> Dict[str, Any]:
@@ -228,7 +228,7 @@ class LogDatabase:
             }
 
         except Exception as e:
-            self.logger.error(f"获取日志统计失败: {e}")
+            self.logger.error("获取日志统计失败：%s", e)
             return {}
 
     def cleanup_old_logs(self, retention_days: int = 30) -> int:
@@ -248,11 +248,11 @@ class LogDatabase:
                 "DELETE FROM system_logs WHERE timestamp < ?", (cutoff_time,)
             )
 
-            self.logger.info(f"清理了 {deleted_count} 条旧日志")
+            self.logger.info("清理了 %d 条旧日志", deleted_count)
             return deleted_count
 
         except Exception as e:
-            self.logger.error(f"清理旧日志失败: {e}")
+            self.logger.error("清理旧日志失败：%s", e)
             return 0
 
 
@@ -302,7 +302,47 @@ class LogRecordHandler(logging.Handler):
             # 提取异常信息
             exception_text = ""
             if record.exc_info:
-                exception_text = self.formatException(record.exc_info)  # type: ignore
+                exception_text = (
+                    self.formatter.formatException(record.exc_info) if self.formatter else ""
+                )
+
+            # 原始消息
+            original_message = record.getMessage()
+            message_to_store = original_message
+
+            # 🔥 周期性错误计数处理（对DEBUG、WARNING、ERROR和CRITICAL级别）
+            if record.levelno >= logging.DEBUG:
+                try:
+                    from backend.core.error_counter import get_error_counter
+
+                    error_counter = get_error_counter()
+                    exc_type_name = (
+                        record.exc_info[0].__name__
+                        if record.exc_info and record.exc_info[0]
+                        else record.levelname
+                    )
+
+                    # 记录错误并获取计数信息
+                    need_detail, count, is_milestone = error_counter.record_error(
+                        exc_type_name, original_message, exception_text
+                    )
+
+                    # 如果是重复错误（非首次且非里程碑），修改消息
+                    if not need_detail and not is_milestone:
+                        message_to_store = f"[重复错误×{count}] {original_message}"
+
+                    # Terminal输出处理（仅首次或里程碑时详细输出）
+                    if need_detail or is_milestone:
+                        # 保持原始详细输出
+                        pass
+                    else:
+                        # 简化Terminal输出（通过修改record.msg）
+                        # 注意：这不会影响数据库存储，因为我们已经提取了message_to_store
+                        pass
+
+                except Exception:
+                    # 错误计数器失败不影响日志记录
+                    pass
 
             # 构建日志数据
             log_data = {
@@ -312,7 +352,7 @@ class LogRecordHandler(logging.Handler):
                 "module": record.module,
                 "function": record.funcName,
                 "line": record.lineno,
-                "message": record.getMessage(),
+                "message": message_to_store,  # 使用处理后的消息
                 "exception": exception_text,
                 "thread": record.thread,
                 "thread_name": getattr(record, "threadName", ""),
@@ -378,8 +418,11 @@ class LogManager:
 
         # 批量插入缓冲区
         self._batch_buffer: List[Dict[str, Any]] = []
-        self._batch_lock = threading.Lock()
+        self._batch_lock = threading.RLock()  # 使用可重入锁，避免死锁
         self._batch_timer: Optional[threading.Timer] = None
+
+        # 处理器注册标志
+        self._handler_registered: bool = False
 
     def initialize(self) -> bool:
         """初始化日志管理系统.
@@ -390,7 +433,7 @@ class LogManager:
         try:
             init_start = time.time()
 
-            print(f"[启动] 日志管理系统初始化开始...")
+            print("[启动] 日志管理系统初始化开始...")
 
             # 创建自定义日志处理器
             log_handler = LogRecordHandler(self)
@@ -400,6 +443,10 @@ class LogManager:
             root_logger.addHandler(log_handler)
             root_logger.setLevel(logging.DEBUG)
 
+            # 🔧 修复：启动定期刷新定时器，确保少量日志也能写入数据库
+            # 之前只有缓冲区>=10条才刷新，导致少量日志永远不会写入
+            self._start_batch_flush_timer()
+
             total_time = time.time() - init_start
             print(f"[启动] ✅ 日志管理系统初始化完成，总耗时: {total_time:.3f}s")
 
@@ -407,13 +454,36 @@ class LogManager:
 
         except Exception as e:
             print(f"[启动] ❌ 日志管理系统初始化异常: {e}")
-            self.logger.error("日志管理系统初始化失败: %s", e)
+            self.logger.error("日志管理系统初始化失败：%s", e)
             return False
+    
+    def _start_batch_flush_timer(self) -> None:
+        """启动批量刷新定时器（定期刷新，确保日志不会积压）."""
+        if self._batch_timer:
+            self._batch_timer.cancel()
+        
+        self._batch_timer = threading.Timer(2.0, self._batch_flush_loop)
+        self._batch_timer.daemon = True
+        self._batch_timer.start()
+    
+    def _batch_flush_loop(self) -> None:
+        """批量刷新循环（每2秒刷新一次）."""
+        try:
+            self._flush_batch_buffer()
+        except Exception:
+            pass
+        finally:
+            # 重新启动定时器
+            if not hasattr(self, '_is_shutting_down') or not self._is_shutting_down:
+                self._start_batch_flush_timer()
 
     def shutdown(self) -> None:
         """关闭日志管理系统."""
         try:
-            print(f"[DEBUG] 关闭日志管理系统...")
+            print("[DEBUG] 关闭日志管理系统...")
+
+            # 标记正在关闭，停止定时器循环
+            self._is_shutting_down = True
 
             # 刷新剩余的批量缓冲区
             self._flush_batch_buffer()
@@ -428,12 +498,12 @@ class LogManager:
                 if isinstance(handler, LogRecordHandler):
                     root_logger.removeHandler(handler)
 
-            print(f"[DEBUG] ✅ 日志管理系统已关闭")
+            print("[DEBUG] ✅ 日志管理系统已关闭")
             self.logger.info("日志管理系统已关闭")
 
         except Exception as e:
             print(f"[DEBUG] 关闭日志管理系统失败: {e}")
-            self.logger.error("关闭日志管理系统失败: %s", e)
+            self.logger.error("关闭日志管理系统失败：%s", e)
 
     def add_log_record(self, log_data: Dict[str, Any]) -> None:
         """添加日志记录到缓冲区.
@@ -497,7 +567,7 @@ class LogManager:
                 try:
                     self.database.add_log_record(log_data)
                 except Exception:
-                    pass
+                    pass  # 静默处理，避免日志循环
 
         except Exception:
             pass
@@ -555,11 +625,11 @@ class LogManager:
                     if log["exception"]:
                         f.write(f"Exception: {log['exception']}\n")
 
-            self.logger.info("日志已导出到: %s，共 %d 条记录", file_path, len(logs))
+            self.logger.info("日志已导出到：%s，共 %d 条记录", file_path, len(logs))
             return True
 
         except Exception as e:
-            self.logger.error("导出日志失败: %s", e)
+            self.logger.error("导出日志失败：%s", e)
             return False
 
 
@@ -571,13 +641,31 @@ _log_manager: Optional[LogManager] = None
 _log_manager_lock = threading.Lock()
 
 
-def get_log_manager() -> LogManager:
-    """获取全局日志管理器实例."""
+def get_log_manager(event_engine=None, force_reinit: bool = False) -> LogManager:
+    """获取全局日志管理器实例.
+
+    Args:
+        event_engine: VnPy事件引擎实例（可选）
+        force_reinit: 是否强制重新初始化（用于注入event_engine）
+
+    Returns:
+        LogManager实例
+    """
     global _log_manager
     if _log_manager is None:
         with _log_manager_lock:
             if _log_manager is None:
                 _log_manager = LogManager()
+                # 🔧 关键修复：创建后立即初始化，确保LogRecordHandler被注册
+                # 否则日志永远不会写入数据库
+                _log_manager.initialize()
+                _log_manager._handler_registered = True
+
+    # 如果需要注入event_engine
+    if event_engine is not None and _log_manager.event_engine is None:
+        with _log_manager_lock:
+            _log_manager.event_engine = event_engine
+
     return _log_manager
 
 
@@ -585,7 +673,7 @@ def initialize_logging_system(event_engine=None, config: Optional[Dict[str, Any]
     """初始化日志系统（使用统一database）."""
     try:
         start_time = time.time()
-        print(f"[启动] 日志系统初始化开始...")
+        print("[启动] 日志系统初始化开始...")
 
         if config is None:
             config = {"db_path": "data/terminal.db", "retention_days": 30}
@@ -1082,7 +1170,7 @@ class AlertDatabase:
         self.logger = logging.getLogger(__name__)
 
         # alert_rules和alert_records表由DatabaseManager在_init_tables中创建
-        self.logger.info("告警数据库使用统一database: %s", db_path)
+        self.logger.info("告警数据库使用统一database：%s", db_path)
 
     def save_alert(self, alert: Alert) -> None:
         """保存告警记录（使用统一database）."""
@@ -1122,7 +1210,7 @@ class AlertDatabase:
             )
 
         except Exception as e:
-            self.logger.error(f"告警数据库保存失败: {e}")
+            self.logger.error("告警数据库保存失败：%s", e)
 
     def get_alerts(
         self,
@@ -1166,13 +1254,13 @@ class AlertDatabase:
                     try:
                         context_data = json.loads(alert["context"])
                         alert.update(context_data)
-                    except:
+                    except (json.JSONDecodeError, TypeError, ValueError):
                         pass
 
             return results
 
         except Exception as e:
-            self.logger.error(f"查询告警失败: {e}")
+            self.logger.error("查询告警失败：%s", e)
             return []
 
     def update_alert_status(self, alert_id: str, status: AlertStatus, note: str = "") -> bool:
@@ -1211,15 +1299,15 @@ class AlertDatabase:
             return True
 
         except Exception as e:
-            self.logger.error(f"更新告警状态失败: {e}")
+            self.logger.error("更新告警状态失败：%s", e)
             return False
 
     def get_alert(self, alert_id: str) -> Optional[Dict[str, Any]]:
         """根据告警ID获取单个告警记录.
-        
+
         Args:
             alert_id: 告警ID
-            
+
         Returns:
             告警记录字典，如果不存在则返回None
         """
@@ -1228,9 +1316,9 @@ class AlertDatabase:
                 SELECT * FROM alert_records
                 WHERE alert_id = ?
             """
-            
+
             results = self.db_manager.execute_query(query, (alert_id,))
-            
+
             if results:
                 alert = results[0]
                 # 解析context字段
@@ -1238,13 +1326,13 @@ class AlertDatabase:
                     try:
                         context_data = json.loads(alert["context"])
                         alert.update(context_data)
-                    except:
+                    except (json.JSONDecodeError, TypeError, ValueError):
                         pass
                 return alert
             return None
-            
+
         except Exception as e:
-            self.logger.error(f"获取告警失败: {e}")
+            self.logger.error("获取告警失败：%s", e)
             return None
 
     def get_unresolved_alerts(self) -> List[Dict[str, Any]]:
@@ -1377,7 +1465,7 @@ class AlertEventPublisher:
 
     def publish_alert_updated(self, alert: Union[Alert, Dict[str, Any]]) -> None:
         """发布告警更新事件.
-        
+
         Args:
             alert: Alert对象或告警字典
         """
@@ -1575,7 +1663,7 @@ def initialize_alert_system(event_engine, config: Optional[Dict[str, Any]] = Non
     """初始化扩展告警系统."""
     try:
         start_time = time.time()
-        print(f"[启动] 告警系统初始化开始...")
+        print("[启动] 告警系统初始化开始...")
 
         if config is None:
             config = {"db_path": "data/alerts.db", "suppression_window": 300}
@@ -1584,8 +1672,8 @@ def initialize_alert_system(event_engine, config: Optional[Dict[str, Any]] = Non
         with _alert_database_lock:
             _alert_database = AlertDatabase(config.get("db_path", "data/alerts.db"))
 
-        # 创建告警事件发布器
-        alert_publisher = AlertEventPublisher(event_engine, _alert_database)
+        # 创建告警事件发布器（在构造函数中注册事件监听器）
+        _alert_publisher = AlertEventPublisher(event_engine, _alert_database)  # noqa: F841
 
         # 初始化默认告警规则（延迟到后台线程）
         def _create_default_rules_async():
@@ -1596,7 +1684,7 @@ def initialize_alert_system(event_engine, config: Optional[Dict[str, Any]] = Non
                 for rule in get_default_log_alert_rules():
                     alert_engine.add_rule(rule)
 
-                print(f"[DEBUG] ✅ 默认日志告警规则创建完成")
+                print("[DEBUG] ✅ 默认日志告警规则创建完成")
             except Exception as e:
                 print(f"[DEBUG] ❌ 创建默认告警规则失败: {e}")
 
@@ -1702,7 +1790,7 @@ class PerformanceMonitor:
             target=lambda: self._monitoring_loop(interval), daemon=True
         )
         self._state["monitor_thread"].start()
-        self.logger.info("性能监控已启动，间隔: %s秒", interval)
+        self.logger.info("性能监控已启动，间隔：%s秒", interval)
 
     def stop_monitoring(self):
         """停止性能监控."""
@@ -1726,7 +1814,7 @@ class PerformanceMonitor:
                 self._cleanup_old_metrics()
                 self._state["stop_event"].wait(interval)
             except Exception as e:
-                self.logger.error("监控循环异常: %s", e)
+                self.logger.error("监控循环异常：%s", e)
                 time.sleep(interval)
 
     def _collect_metrics(self):
@@ -1767,7 +1855,7 @@ class PerformanceMonitor:
                 self._metrics["core"].append(core_metrics)
 
         except Exception as e:
-            self.logger.error("收集性能指标失败: %s", e)
+            self.logger.error("收集性能指标失败：%s", e)
 
     def _measure_response_time(self) -> float:
         """测量响应时间."""
@@ -1793,7 +1881,7 @@ class PerformanceMonitor:
             return metrics if metrics else None
 
         except Exception as e:
-            self.logger.error("收集核心模块指标失败: %s", e)
+            self.logger.error("收集核心模块指标失败：%s", e)
             return None
 
     def _check_thresholds(self):
@@ -1819,7 +1907,7 @@ class PerformanceMonitor:
                 )
 
         except Exception as e:
-            self.logger.error("检查阈值失败: %s", e)
+            self.logger.error("检查阈值失败：%s", e)
 
     def _add_alert(self, alert_type: str, title: str, message: str):
         """添加告警."""
@@ -1836,7 +1924,7 @@ class PerformanceMonitor:
         if len(self._alerts) > 1000:
             self._alerts = self._alerts[-500:]
 
-        self.logger.warning("监控告警: %s - %s", title, message)
+        self.logger.warning("监控告警：%s - %s", title, message)
 
     def _cleanup_old_metrics(self):
         """清理旧的监控数据."""
@@ -1922,7 +2010,7 @@ class PerformanceMonitor:
         """
         if category in self._metrics:
             self._metrics[category].clear()
-            self.logger.info(f"已重置类别指标: {category}")
+            self.logger.info("已重置类别指标：%s", category)
 
     def reset(self):
         """重置所有指标（向后兼容）."""
@@ -1990,7 +2078,7 @@ class TestRunner:
                 loader = unittest.TestLoader()
                 suite = loader.loadTestsFromModule(module)
             except Exception as e:
-                self.logger.error("加载测试模块失败 %s: %s", test_module, e)
+                self.logger.error("加载测试模块失败 %s：%s", test_module, e)
                 return {"success": False, "error": str(e)}
         else:
             suite = unittest.TestSuite()
@@ -2017,7 +2105,7 @@ class TestRunner:
 
         self._test_results[datetime.now().isoformat()] = test_result
         self.logger.info(
-            "单元测试完成: %s 个测试, %s 个失败, %s 个错误",
+            "单元测试完成：%s 个测试, %s 个失败, %s 个错误",
             test_result["tests_run"],
             test_result["failures"],
             test_result["errors"],
@@ -2076,7 +2164,7 @@ class MonitoringManager:
 
     def run_comprehensive_test(self) -> Dict[str, Any]:
         """运行综合测试."""
-        self.logger.info("开始运行综合测试")
+        self.logger.info("正在运行综合测试")
 
         # 健康检查（由外部提供）
         health_result = {}
@@ -2097,7 +2185,7 @@ class MonitoringManager:
             },
         }
 
-        self.logger.info("综合测试完成 - 健康评分: %s", report["summary"]["health_score"])
+        self.logger.info("综合测试完成 - 健康评分：%s", report["summary"]["health_score"])
         return report
 
     def get_status(self) -> Dict[str, Any]:
@@ -2315,14 +2403,14 @@ class AsyncTaskManager:
                     if self.loop is not None:
                         self.loop.run_forever()
                 except Exception as e:
-                    self.logger.error("事件循环异常: %s", e)
+                    self.logger.error("事件循环异常：%s", e)
 
             loop_thread = threading.Thread(target=run_loop, daemon=True)
             loop_thread.start()
             self.logger.info("异步任务管理器启动完成")
 
         except Exception as e:
-            self.logger.error("启动事件循环失败: %s", e)
+            self.logger.error("启动事件循环失败：%s", e)
 
     def stop_event_loop(self):
         """停止事件循环."""
@@ -2332,7 +2420,7 @@ class AsyncTaskManager:
                 self.executor.shutdown(wait=True)
                 self.logger.info("异步任务管理器停止完成")
             except Exception as e:
-                self.logger.error("停止事件循环失败: %s", e)
+                self.logger.error("停止事件循环失败：%s", e)
 
     def get_task_stats(self) -> Dict[str, int]:
         """获取任务统计信息."""
@@ -2350,7 +2438,7 @@ class AsyncTaskManager:
                 result = func(*args, **kwargs)
                 self._results[task_id] = {"success": True, "result": result}
             except Exception as e:
-                self.logger.error("任务执行失败 %s: %s", task_id, e)
+                self.logger.error("任务执行失败 %s：%s", task_id, e)
                 self._results[task_id] = {"success": False, "error": str(e)}
 
         future = self.executor.submit(task_wrapper)
@@ -2372,7 +2460,7 @@ class AsyncTaskManager:
                     result = coroutine_func(*args, **kwargs)
                 self._results[task_id] = {"success": True, "result": result}
             except Exception as e:
-                self.logger.error("异步任务执行失败 %s: %s", task_id, e)
+                self.logger.error("异步任务执行失败 %s：%s", task_id, e)
                 self._results[task_id] = {"success": False, "error": str(e)}
 
         if self.loop is None:
@@ -2467,7 +2555,7 @@ class AsyncDataProcessor:
             future = self.task_manager.executor.submit(self._sync_process_data, data_list)
             return future.result(timeout=30)
         except Exception as e:
-            self.logger.error("同步数据处理失败: %s", e)
+            self.logger.error("同步数据处理失败：%s", e)
             return {}
 
     def _sync_process_data(self, data_list: List["UnifiedMarketData"]) -> Dict[str, Any]:
@@ -2558,7 +2646,7 @@ class SystemManagerService(BaseService):
         self.test_runner = TestRunner()
 
         # 新增：诊断工具
-        from backend.infrastructure.system_vnpy.diagnostic_tools import (
+        from backend.infrastructure.system_vnpy.tools import (
             LogAnalyzer,
             PerformanceAnalyzer,
             AutoFixer,
@@ -2569,7 +2657,7 @@ class SystemManagerService(BaseService):
         self.auto_fixer = AutoFixer()
 
         # 新增：服务管理工具
-        from backend.infrastructure.system_vnpy.service_manager import (
+        from backend.infrastructure.system_vnpy.managers import (
             ServiceHealthChecker,
             ServiceRestarter,
         )
@@ -2578,27 +2666,131 @@ class SystemManagerService(BaseService):
         self.service_restarter = ServiceRestarter()
 
         # 新增：进程监控工具
-        from backend.infrastructure.system_vnpy.process_monitor import (
+        from backend.infrastructure.system_vnpy.monitors import (
             ProcessMonitor,
-            BottleneckAnalyzer,
+            ProcessBottleneckAnalyzer,
         )
 
         self.process_monitor = ProcessMonitor()
-        self.bottleneck_analyzer = BottleneckAnalyzer()
+        self.bottleneck_analyzer = ProcessBottleneckAnalyzer()
+
+        # ZeroMQ通信（连接到独立监控进程）
+        self._zmq_context = None
+        self._zmq_push_socket = None  # 推送服务状态到监控进程
+        self._zmq_req_socket = None  # 查询监控数据
+        self._zmq_pull_socket = None  # 接收监控进程推送的告警（新增）
+        self._monitoring_interval = 2  # 默认2秒
+
+        # 监控数据缓存（避免频繁跨进程查询）
+        self._monitor_data_cache: Dict[str, Any] = {}
+        self._cache_lock = threading.Lock()
+        self._last_query_time = 0.0
+        self._cache_ttl = 1.0  # 缓存1秒
+
+        # 告警缓存（接收监控进程推送的告警）- 新增
+        self._alert_cache: List[Dict[str, Any]] = []
+        self._alert_cache_lock = threading.Lock()
+
+        # 监控数据推送线程（事件驱动架构）
+        self._monitoring_push_running = False
+        self._monitoring_push_thread: Optional[threading.Thread] = None
+        self._max_alert_cache_size = 1000  # 最多缓存1000条告警
+
+        # 服务状态推送定时器（QTimer在主线程）
+        self._status_push_timer = None
+
+        # 告警接收线程
+        self._alert_receiver_thread = None
+        self._alert_receiver_running = False
 
         self.logger.info("系统管理服务已创建")
 
     def _do_initialize(self) -> bool:
-        """初始化系统管理服务."""
+        """初始化系统管理服务（无后台线程，Qt线程安全）."""
         try:
-            self.logger.info("初始化系统管理服务...")
+            self.logger.info("=" * 60)
+            self.logger.info("正在初始化系统管理服务...")
+            self.logger.info("=" * 60)
 
-            # 初始化监控（跳过，避免阻塞）
-            self.logger.info("系统监控初始化已跳过（避免启动阻塞）")
+            # 检查 EventEngine 是否可用
+            if not self.event_engine:
+                self.logger.error("❌ EventEngine不可用")
+                return False
 
-            # ✅ 单进程多线程架构：使用线程安全的UI更新机制
-            # 日志和告警系统在主进程中运行，但通过Qt信号槽确保线程安全
-            self.logger.info("✅ 使用线程安全的单进程多线程架构")
+            self.logger.info("✅ EventEngine可用")
+
+            # 初始化日志管理系统（注入EventEngine）
+            try:
+                self.logger.info("正在初始化日志管理系统...")
+                self.log_manager = get_log_manager(
+                    event_engine=self.event_engine, force_reinit=True
+                )
+                self.logger.info("✅ 日志管理系统初始化完成（已注入EventEngine）")
+            except Exception as e:
+                self.logger.error("❌ 日志管理系统初始化失败：%s", e, exc_info=True)
+                # 不中断启动流程
+
+            # 初始化ZeroMQ（客户端模式，无线程）
+            import zmq
+            from PySide6.QtCore import QTimer
+
+            self._zmq_context = zmq.Context()
+
+            # 读取生效端口（优先 logs/monitor_ports.json，其次配置）
+            addr = str(getattr(get_settings().monitor, "bind_addr", "127.0.0.1"))
+            port_alert_push = int(getattr(get_settings().monitor, "port_alert_push", 5555))
+            port_status_pull = int(getattr(get_settings().monitor, "port_status_pull", 5556))
+            port_query_rep = int(getattr(get_settings().monitor, "port_query_rep", 5557))
+            try:
+                ports_file = Path("logs") / "monitor_ports.json"
+                if ports_file.exists():
+                    with open(ports_file, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    addr = str(data.get("bind_addr", addr))
+                    port_alert_push = int(data.get("alert_push", port_alert_push))
+                    port_status_pull = int(data.get("status_pull", port_status_pull))
+                    port_query_rep = int(data.get("query_rep", port_query_rep))
+            except Exception:
+                pass
+
+            # PUSH socket：推送服务状态（连接到监控进程的 PULL）
+            self._zmq_push_socket = self._zmq_context.socket(zmq.PUSH)
+            self._zmq_push_socket.connect(f"tcp://{addr}:{port_status_pull}")
+            self.logger.info(
+                "✅ ZeroMQ PUSH连接到监控进程（addr=%s, port=%d）", addr, port_status_pull
+            )
+
+            # REQ socket：查询监控数据（连接到监控进程的 REP）
+            self._zmq_req_socket = self._zmq_context.socket(zmq.REQ)
+            self._zmq_req_socket.connect(f"tcp://{addr}:{port_query_rep}")
+            self._zmq_req_socket.setsockopt(zmq.RCVTIMEO, 1000)  # 1秒超时（快速失败）
+            self._zmq_req_socket.setsockopt(zmq.SNDTIMEO, 1000)  # 1秒发送超时
+            self.logger.info(
+                "✅ ZeroMQ REQ连接到监控进程（addr=%s, port=%d，超时1秒）", addr, port_query_rep
+            )
+
+            # 🎯 架构修复：测试ZMQ连接，仅在成功时启动定时器
+            zmq_connection_ok = self._test_zmq_connection()
+
+            if zmq_connection_ok:
+                # 使用QTimer在主线程定时推送服务状态
+                self._status_push_timer = QTimer()
+                self._status_push_timer.timeout.connect(self._push_service_status)
+                self._status_push_timer.start(self._monitoring_interval * 1000)
+                self.logger.info("✅ 服务状态推送定时器已启动（Qt主线程）")
+            else:
+                self.logger.warning("⚠️ ZMQ连接失败，状态推送定时器未启动（降级模式）")
+
+            # 启动告警接收线程（监听监控进程推送的告警）
+            self._start_alert_receiver(addr, port_alert_push)
+            self.logger.info("✅ 告警接收线程已启动")
+
+            # 启动监控数据推送线程（事件驱动架构）
+            self._start_monitoring_push_thread()
+
+            self.logger.info("=" * 60)
+            self.logger.info("✅ 系统管理服务初始化完成（含告警接收线程）")
+            self.logger.info("=" * 60)
 
             return True
 
@@ -2606,12 +2798,536 @@ class SystemManagerService(BaseService):
             self._log_error("初始化", e)
             return False
 
+    def _test_zmq_connection(self) -> bool:
+        """测试ZMQ连接是否可用.
+
+        Returns:
+            bool: 连接是否成功
+        """
+        import zmq
+
+        try:
+            if not self._zmq_req_socket:
+                return False
+
+            # 使用监控进程支持的get_data action
+            # (health_check action在当前监控进程版本中不被支持)
+            self._zmq_req_socket.send_json({"action": "get_data"})
+            response = self._zmq_req_socket.recv_json()
+
+            # 检查响应（get_data返回包含timestamp或其他监控数据的字典）
+            if isinstance(response, dict):
+                # 成功接收到监控数据
+                if "timestamp" in response or "cpu_percent" in response or response.get("status") == "ok":
+                    self.logger.info("✅ ZMQ连接测试成功")
+                    return True
+                # 如果返回错误，但至少有响应
+                elif "error" in response:
+                    self.logger.warning("⚠️ ZMQ响应包含错误: %s", response.get("error"))
+                    return False
+                else:
+                    self.logger.warning("⚠️ ZMQ响应格式异常: %s", response)
+                    return False
+            else:
+                self.logger.warning("⚠️ ZMQ响应类型异常: %s", type(response))
+                return False
+
+        except zmq.Again:
+            # 超时
+            self.logger.warning("⚠️ ZMQ连接测试超时（监控进程未响应）")
+            # 重置socket以避免后续请求卡住
+            self._reset_req_socket()
+            return False
+        except Exception as e:
+            self.logger.warning("⚠️ ZMQ连接测试失败: %s", e)
+            self._reset_req_socket()
+            return False
+
+    def _reset_req_socket(self):
+        """重置REQ socket（避免卡住）."""
+        import zmq
+
+        try:
+            if self._zmq_req_socket:
+                self._zmq_req_socket.close()
+
+            # 检查context是否存在
+            if not self._zmq_context:
+                self.logger.error("ZMQ context未初始化，无法重置socket")
+                return
+
+            # 重新创建socket
+            from backend.core.config import get_settings
+            from pathlib import Path
+            import json
+
+            addr = str(getattr(get_settings().monitor, "bind_addr", "127.0.0.1"))
+            port_query_rep = int(getattr(get_settings().monitor, "port_query_rep", 5557))
+
+            try:
+                ports_file = Path("logs") / "monitor_ports.json"
+                if ports_file.exists():
+                    with open(ports_file, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    addr = str(data.get("bind_addr", addr))
+                    port_query_rep = int(data.get("query_rep", port_query_rep))
+            except Exception:
+                pass
+
+            self._zmq_req_socket = self._zmq_context.socket(zmq.REQ)
+            self._zmq_req_socket.connect(f"tcp://{addr}:{port_query_rep}")
+            self._zmq_req_socket.setsockopt(zmq.RCVTIMEO, 1000)
+            self._zmq_req_socket.setsockopt(zmq.SNDTIMEO, 1000)
+            self.logger.debug("REQ socket已重置（超时1秒）")
+
+        except Exception as e:
+            self.logger.error("重置REQ socket失败: %s", e)
+
+    def _push_service_status(self):
+        """推送服务状态（在主线程通过QTimer调用）."""
+        try:
+            import zmq
+            from backend.core.base import get_service_manager
+
+            if not self._zmq_push_socket:
+                return
+
+            # 采集服务状态
+            service_manager = get_service_manager()
+            result = self.service_health_checker.check_all_services(service_manager)
+
+            # 推送到监控进程（非阻塞）
+            self._zmq_push_socket.send_json(result, zmq.NOBLOCK)
+            # 移除DEBUG日志，避免刷屏（每2秒执行一次的周期性操作无需记录）
+
+        except Exception as e:
+            self.logger.error("推送服务状态失败：%s", e)
+
+    def _start_alert_receiver(self, addr: str = "127.0.0.1", port_alert_push: int = 5555):
+        """启动告警接收线程.
+
+        Args:
+            addr: 监控进程绑定地址
+            port_alert_push: 监控进程 PUSH（我们PULL）对应端口
+        """
+        import zmq
+
+        # 创建独立的ZMQ context和socket（线程专用）
+        # PULL socket: 接收监控进程推送的告警
+        assert self._zmq_context is not None, "ZMQ context not initialized"
+        self._zmq_pull_socket = self._zmq_context.socket(zmq.PULL)
+        self._zmq_pull_socket.connect(f"tcp://{addr}:{port_alert_push}")
+        self._zmq_pull_socket.setsockopt(zmq.RCVTIMEO, 1000)  # 1秒超时
+
+        self._alert_receiver_running = True
+        self._alert_receiver_thread = threading.Thread(
+            target=self._alert_receiver_loop, name="AlertReceiverThread", daemon=True
+        )
+        self._alert_receiver_thread.start()
+        self.logger.info("✅ 告警接收线程已启动（addr=%s, port=%d）", addr, port_alert_push)
+
+    def _alert_receiver_loop(self):
+        """告警接收循环（在独立线程中运行）."""
+        import zmq
+
+        self.logger.info("[AlertReceiver] 正在监听监控进程推送的告警...")
+
+        while self._alert_receiver_running:
+            try:
+                # 接收告警（阻塞，带超时）
+                assert self._zmq_pull_socket is not None, "PULL socket not initialized"
+                alert = self._zmq_pull_socket.recv_json()
+
+                # 验证告警格式
+                if not isinstance(alert, dict):
+                    self.logger.warning("[AlertReceiver] 收到无效告警格式：%s", type(alert))
+                    continue
+
+                if alert.get("type") != "alert":
+                    self.logger.debug("[AlertReceiver] 收到非告警消息：%s", alert.get("type"))
+                    continue
+
+                # 添加到缓存（线程安全）
+                with self._alert_cache_lock:
+                    self._alert_cache.append(alert)
+
+                    # 限制缓存大小（FIFO）
+                    if len(self._alert_cache) > self._max_alert_cache_size:
+                        self._alert_cache.pop(0)
+
+                # 记录告警
+                severity = alert.get("severity", "unknown")
+                message = alert.get("message", "")
+
+                if severity == "critical":
+                    self.logger.error("[ALERT-CRITICAL] %s", message)
+                elif severity == "warning":
+                    self.logger.warning("[ALERT-WARNING] %s", message)
+                else:
+                    self.logger.info("[ALERT-INFO] %s", message)
+
+                # 发送事件到EventEngine（UI可以监听）
+                if self.event_engine:
+                    from backend.core.utils import EVENT_ALERT_CREATED
+
+                    self.event_engine.put(
+                        EVENT_ALERT_CREATED,
+                        {
+                            "alert": alert,
+                            "timestamp": alert.get("timestamp"),
+                            "severity": severity,
+                            "message": message,
+                        },
+                    )
+
+            except zmq.Again:
+                # 超时，继续循环
+                continue
+            except Exception as e:
+                self.logger.error("[AlertReceiver] 接收告警失败：%s", e)
+                import time
+
+                time.sleep(1)
+
+        self.logger.info("[AlertReceiver] 告警接收线程已停止")
+
+    def get_alert_cache(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """获取缓存的告警（供UI查询）.
+
+        Args:
+            limit: 返回的最大告警数量（默认100条）
+
+        Returns:
+            List[Dict]: 告警列表，按时间倒序
+        """
+        with self._alert_cache_lock:
+            # 返回最新的limit条告警（副本）
+            return list(reversed(self._alert_cache[-limit:]))
+
+    def clear_alert_cache(self):
+        """清空告警缓存."""
+        with self._alert_cache_lock:
+            self._alert_cache.clear()
+        self.logger.info("告警缓存已清空")
+
+    # ========== 事件驱动监控数据推送 ==========
+
+    def _start_monitoring_push_thread(self):
+        """启动监控数据推送线程（事件驱动架构核心）."""
+        self._monitoring_push_running = True
+        self._monitoring_push_thread = threading.Thread(
+            target=self._monitoring_push_loop, name="MonitoringPushThread", daemon=True
+        )
+        self._monitoring_push_thread.start()
+        self.logger.info("✅ 监控数据推送线程已启动（事件驱动模式）")
+
+    def _monitoring_push_loop(self):
+        """监控数据推送循环（替代UI轮询）."""
+        import time
+
+        self.logger.info("[MonitoringPush] 正在监控数据推送循环...")
+        
+        # 🔧 新增：连续失败计数器和降级模式
+        consecutive_failures = 0
+        max_consecutive_failures = 5
+        degraded_mode = False
+
+        while self._monitoring_push_running:
+            try:
+                # 1. 查询监控数据
+                data = self._query_monitoring_data_safe()
+
+                if not data:
+                    consecutive_failures += 1
+                    if consecutive_failures >= max_consecutive_failures and not degraded_mode:
+                        self.logger.warning(
+                            "[MonitoringPush] 连续%d次查询失败，进入降级模式（降低查询频率）",
+                            consecutive_failures
+                        )
+                        degraded_mode = True
+                    
+                    # 降级模式下延长等待时间
+                    wait_time = 5 if degraded_mode else 2
+                    time.sleep(wait_time)
+                    continue
+
+                # 2. 查询成功，重置失败计数器
+                if consecutive_failures > 0:
+                    if degraded_mode:
+                        self.logger.info("[MonitoringPush] 监控数据恢复，退出降级模式")
+                        degraded_mode = False
+                    consecutive_failures = 0
+
+                # 3. 分发事件（解耦关键）
+                self._dispatch_monitoring_events(data)
+
+                # 4. 间隔时间：正常2秒，降级5秒
+                wait_time = 5 if degraded_mode else 2
+                time.sleep(wait_time)
+
+            except Exception as e:
+                consecutive_failures += 1
+                self.logger.error("[MonitoringPush] 推送失败（%d/%d）：%s", 
+                                consecutive_failures, max_consecutive_failures, e)
+                wait_time = 5 if degraded_mode else 2
+                time.sleep(wait_time)
+
+        self.logger.info("[MonitoringPush] 推送线程已停止")
+
+    def _query_monitoring_data_safe(self) -> Dict[str, Any]:
+        """安全查询监控数据（内部使用）."""
+        try:
+            import zmq
+
+            with self._cache_lock:
+                if not self._zmq_req_socket or not self._zmq_context:
+                    return {}
+
+                self._zmq_req_socket.send_json({"action": "get_data"})
+                data = self._zmq_req_socket.recv_json()
+                return data if isinstance(data, dict) else {}
+
+        except zmq.Again:
+            self.logger.warning("查询监控数据超时")
+            self._reset_req_socket()
+            return {}
+        except Exception as e:
+            self.logger.error("查询监控数据失败：%s", e)
+            return {}
+
+    def _dispatch_monitoring_events(self, data: Dict[str, Any]):
+        """分发监控事件到EventEngine（解耦核心）."""
+        if not self.event_engine:
+            return
+
+        from vnpy.event import Event
+        from backend.core.monitoring_events import (
+            EVENT_SYSTEM_METRICS,
+            EVENT_HARDWARE_SENSORS,
+            EVENT_BOTTLENECK_ANALYSIS,
+            EVENT_SCENARIO_ANALYSIS,
+            EVENT_PROCESS_MONITORING,
+            EVENT_SERVICE_MONITORING,
+            EVENT_SMART_DATA,
+        )
+
+        # 事件1：系统指标
+        if "system" in data and data["system"]:
+            event = Event(EVENT_SYSTEM_METRICS, data["system"])
+            self.event_engine.put(event)
+
+        # 事件2：硬件传感器
+        if "hardware" in data and data["hardware"]:
+            event = Event(EVENT_HARDWARE_SENSORS, data["hardware"])
+            self.event_engine.put(event)
+
+        # 事件3：分析数据（独立）
+        if "analysis" in data and data["analysis"]:
+            analysis = data["analysis"]
+            if "bottleneck" in analysis and analysis["bottleneck"]:
+                event = Event(EVENT_BOTTLENECK_ANALYSIS, analysis["bottleneck"])
+                self.event_engine.put(event)
+            if "scenario" in analysis and analysis["scenario"]:
+                event = Event(EVENT_SCENARIO_ANALYSIS, analysis["scenario"])
+                self.event_engine.put(event)
+
+        # 事件4：进程信息
+        if "process" in data and data["process"]:
+            event = Event(EVENT_PROCESS_MONITORING, data["process"])
+            self.event_engine.put(event)
+
+        # 事件5：服务状态
+        if "service" in data and data["service"]:
+            event = Event(EVENT_SERVICE_MONITORING, data["service"])
+            self.event_engine.put(event)
+
+        # 事件6：SMART数据
+        if "smart" in data and data["smart"]:
+            event = Event(EVENT_SMART_DATA, data["smart"])
+            self.event_engine.put(event)
+
+    # ========== 旧API已移除，请使用事件订阅 ==========
+    # 旧的 get_monitoring_data()、get_bottleneck_analysis()、get_scenario_analysis()
+    # 已完全移除，UI组件应订阅相应的事件类型
+
+    def get_scenario_analysis_deprecated(self) -> Dict[str, Any]:
+        """【已废弃】获取场景分析结果.
+
+        Returns:
+            {
+                "scenario": "data_download",
+                "scenario_name": "数据下载",
+                "bottleneck_metrics": [...],
+                "current_values": {...},
+                "optimization_hints": [...]
+            }
+        """
+        try:
+            data = self._query_monitoring_data_safe()
+            analysis = data.get("analysis", {})
+            return analysis.get("scenario", {})
+        except Exception as e:
+            self.logger.error("获取场景分析失败：%s", e)
+            return {}
+
+    def get_performance_summary(self, scenario: Optional[str] = None) -> Dict[str, Any]:
+        """获取性能指标摘要（按场景）.
+
+        Args:
+            scenario: 指定场景（可选），None则使用当前检测到的场景
+
+        Returns:
+            {
+                "current_scenario": "backtest",
+                "scenario_name": "策略回测",
+                "bottleneck": {...},
+                "key_metrics": {
+                    "cpu_percent": 85,
+                    "memory_percent": 70,
+                    ...
+                },
+                "adaptive_suggestion": {
+                    "scale_factor": 0.8,
+                    "reason": "CPU负载过高"
+                }
+            }
+        """
+        try:
+            data = self._query_monitoring_data_safe()
+            system_metrics = data.get("system", {})
+            analysis = data.get("analysis", {})
+            bottleneck = analysis.get("bottleneck", {})
+            scenario_analysis = analysis.get("scenario", {})
+
+            # 使用指定场景或当前检测到的场景
+            current_scenario = scenario or scenario_analysis.get("scenario", "unknown")
+            scenario_name = scenario_analysis.get("scenario_name", "未知")
+
+            # 提取关键指标
+            key_metrics = {
+                "cpu_percent": system_metrics.get("cpu_percent", 0),
+                "memory_percent": system_metrics.get("memory_percent", 0),
+                "disk_percent": system_metrics.get("disk_percent", 0),
+            }
+
+            # 获取自适应建议
+            adaptive_suggestion = self.get_adaptive_concurrency_suggestion()
+
+            return {
+                "current_scenario": current_scenario,
+                "scenario_name": scenario_name,
+                "bottleneck": bottleneck,
+                "key_metrics": key_metrics,
+                "adaptive_suggestion": adaptive_suggestion,
+                "scenario_details": scenario_analysis,
+            }
+        except Exception as e:
+            self.logger.error("获取性能摘要失败：%s", e)
+            return {}
+
+    def get_adaptive_concurrency_suggestion(self) -> Dict[str, Any]:
+        """获取自适应并发调优建议.
+
+        Returns:
+            {
+                "scale_factor": 0.8,
+                "reason": "CPU负载85%, 建议降低并发",
+                "suggested_concurrency": {
+                    "async_workers": 64,
+                    "thread_workers": 8,
+                    "process_workers": 2
+                },
+                "status": "auto_applied"  # 已自动应用 / not_applied / manual
+            }
+        """
+        try:
+            data = self._query_monitoring_data_safe()
+            system_metrics = data.get("system", {})
+
+            cpu_percent = system_metrics.get("cpu_percent", 0)
+            memory_percent = system_metrics.get("memory_percent", 0)
+
+            # 计算缩放因子
+            if cpu_percent > 85 or memory_percent > 85:
+                scale_factor = 0.7
+                reason = f"CPU {cpu_percent:.1f}% 或内存 {memory_percent:.1f}% 负载过高"
+            elif cpu_percent > 70 or memory_percent > 70:
+                scale_factor = 0.9
+                reason = f"CPU {cpu_percent:.1f}% 或内存 {memory_percent:.1f}% 负载偏高"
+            elif cpu_percent < 40 and memory_percent < 50:
+                scale_factor = 1.3
+                reason = f"CPU {cpu_percent:.1f}% 和内存 {memory_percent:.1f}% 负载较低，可提升并发"
+            elif cpu_percent < 60 and memory_percent < 65:
+                scale_factor = 1.1
+                reason = "系统负载适中，可小幅提升并发"
+            else:
+                scale_factor = 1.0
+                reason = "系统负载正常，保持当前并发"
+
+            # TODO: 从配置读取基准并发数，当前使用假设值
+            base_async = 80
+            base_thread = 10
+            base_process = 2
+
+            suggested_concurrency = {
+                "async_workers": int(base_async * scale_factor),
+                "thread_workers": int(base_thread * scale_factor),
+                "process_workers": max(1, int(base_process * scale_factor)),
+            }
+
+            return {
+                "scale_factor": round(scale_factor, 2),
+                "reason": reason,
+                "suggested_concurrency": suggested_concurrency,
+                "status": "auto_applied",  # TODO: 从自适应并发模块获取真实状态
+            }
+        except Exception as e:
+            self.logger.error("获取自适应建议失败：%s", e)
+            return {
+                "scale_factor": 1.0,
+                "reason": "获取建议失败",
+                "suggested_concurrency": {},
+                "status": "error",
+            }
+
     def _do_shutdown(self) -> bool:
         """关闭系统管理服务."""
         try:
-            # 停止监控
-            self._stop_monitoring()
+            self.logger.info("正在关闭系统管理服务...")
+
+            # 停止QTimer
+            if self._status_push_timer:
+                self._status_push_timer.stop()
+                self.logger.info("服务状态推送定时器已停止")
+
+            # 停止监控推送线程
+            if hasattr(self, "_monitoring_push_running"):
+                self._monitoring_push_running = False
+            if hasattr(self, "_monitoring_push_thread") and self._monitoring_push_thread:
+                self._monitoring_push_thread.join(timeout=2)
+                self.logger.info("监控推送线程已停止")
+
+            # 停止告警接收线程
+            if hasattr(self, "_alert_receiver_running"):
+                self._alert_receiver_running = False
+            if hasattr(self, "_alert_receiver_thread") and self._alert_receiver_thread:
+                self._alert_receiver_thread.join(timeout=2)
+                self.logger.info("告警接收线程已停止")
+
+            # 关闭ZeroMQ socket
+            if self._zmq_push_socket:
+                self._zmq_push_socket.close()
+            if self._zmq_req_socket:
+                self._zmq_req_socket.close()
+            if self._zmq_context:
+                self._zmq_context.term()
+
+            # 清空监控数据
+            self.monitoring_data.clear()
+
+            self.logger.info("✅ 系统管理服务关闭完成")
             return True
+
         except Exception as e:
             self._log_error("关闭", e)
             return False
@@ -2619,22 +3335,15 @@ class SystemManagerService(BaseService):
     def _do_health_check(self) -> Dict[str, Any]:
         """健康检查."""
         return {
-            "monitoring_active": len(self.monitoring_data) > 0,
+            "monitoring_active": (
+                self._status_push_timer.isActive() if self._status_push_timer else False
+            ),
+            "zmq_connected": self._zmq_push_socket is not None and self._zmq_req_socket is not None,
+            "monitoring_interval": self._monitoring_interval,
+            "cache_size": len(self._monitor_data_cache),
             "alert_rule_count": len(self.alert_rules),
             "tool_count": len(self.registered_tools),
         }
-
-    def _init_monitoring(self):
-        """初始化监控."""
-        try:
-            # 跳过监控初始化，避免阻塞
-            self.logger.info("系统监控初始化已跳过（避免启动阻塞）")
-        except Exception as e:
-            self.logger.error("系统监控初始化失败: %s", e)
-
-    def _stop_monitoring(self):
-        """停止监控."""
-        self.monitoring_data.clear()
 
     def _init_logging_and_alert_system(self) -> None:
         """初始化日志和告警系统.
@@ -2705,7 +3414,7 @@ class SystemManagerService(BaseService):
                 "默认告警规则已加载（CPU、内存、磁盘、服务离线监控规则，支持特殊条件评估）"
             )
         except Exception as e:
-            self.logger.error("加载默认告警规则失败: %s", str(e))
+            self.logger.error("加载默认告警规则失败：%s", str(e))
 
     # ==================== 性能指标展示（三维度：数据处理、策略执行、交易执行） ====================
 
@@ -2993,21 +3702,37 @@ class SystemManagerService(BaseService):
             try:
                 disk_io_speed = self.system_monitor.get_disk_io_speed()
             except Exception as e:
-                self.logger.debug("获取磁盘I/O速度失败: %s", e)
+                self.logger.debug("获取磁盘I/O速度失败：%s", e)
 
             # 网络速度
             network_speed = {}
             try:
                 network_speed = self.system_monitor.get_network_speed()
             except Exception as e:
-                self.logger.debug("获取网络速度失败: %s", e)
+                self.logger.debug("获取网络速度失败：%s", e)
 
             # 磁盘详细信息（各磁盘空间）
             disk_info = {}
             try:
                 disk_info = self.system_monitor.get_disk_info()
             except Exception as e:
-                self.logger.debug("获取磁盘信息失败: %s", e)
+                self.logger.debug("获取磁盘信息失败：%s", e)
+
+            # 🌡️ 硬件温度监控（CPU、GPU、硬盘）
+            temperature_info = {}
+            try:
+                from backend.infrastructure.system_vnpy.hardware_temp import (
+                    get_pure_hardware_monitor,
+                )
+
+                temp_monitor = get_pure_hardware_monitor()
+                temperature_info = temp_monitor.get_all_temperatures()
+                self.logger.debug(
+                    "获取温度监控数据成功: %d 个设备",
+                    len(temperature_info) if temperature_info else 0,
+                )
+            except Exception as e:
+                self.logger.debug("获取温度监控数据失败: %s", e)
 
             metrics = {
                 # 基础指标
@@ -3023,6 +3748,7 @@ class SystemManagerService(BaseService):
                 "disk_io_speed": disk_io_speed,  # 各磁盘I/O速度
                 "network_speed": network_speed,  # 网络速度和带宽占用
                 "disk_info": disk_info,  # 磁盘详细信息
+                "temperature": temperature_info,  # 🌡️ 硬件温度（CPU、GPU、硬盘）
             }
 
             return {
@@ -3098,11 +3824,11 @@ class SystemManagerService(BaseService):
                 description=rule_data.get("description", ""),
             )
 
-            success = self.alert_engine.add_rule(rule)
+            self.alert_engine.add_rule(rule)  # pylint: disable=assignment-from-no-return
 
             return {
-                "success": success,
-                "message": "规则已添加" if success else "规则添加失败",
+                "success": True,
+                "message": "规则已添加",
             }
 
         except Exception as e:
@@ -4621,7 +5347,7 @@ class SystemManagerService(BaseService):
 
         Returns:
             Dict: 处理结果
-            
+
         Note:
             线程数将根据以下因素自适应计算：
             - CPU核心数
@@ -4753,7 +5479,7 @@ class SystemManagerService(BaseService):
             self.logger.info(f"    • 最优线程数: {max_workers}")
             self.logger.info(f"    • 策略: {strategy}")
             self.logger.info(f"    • 预计内存: {estimated_memory_mb:.0f} MB")
-            self.logger.info(f"  - 批量保存阈值: 10 个品种/次")
+            self.logger.info("  - 批量保存阈值: 10 个品种/次")
             self.logger.info("  - 任务分组:")
             for market in markets:
                 symbols = symbols_by_market.get(market, [])
@@ -5042,6 +5768,49 @@ class SystemManagerService(BaseService):
                 "message": str(e),
             }
 
+    def get_data_source_connectivity(self) -> Dict[str, Any]:
+        """获取数据源连通性状态.
+
+        Returns:
+            {
+                "tdx_servers": {
+                    "total": 132,
+                    "available": 54,
+                    "connectivity_rate": 40.9
+                },
+                "trading_gateways": {
+                    "ctp": "disconnected",
+                    "ib": "disconnected"
+                }
+            }
+        """
+        result = {}
+
+        # TDX服务器连通性
+        try:
+            from backend.infrastructure.data_module_vnpy.load_balancer.server_pool_manager import (
+                ServerPoolManager,
+            )
+
+            pool_manager = ServerPoolManager()
+            stats = pool_manager.get_stats()
+
+            result["tdx_servers"] = {
+                "total": stats.get("total", 0),
+                "available": stats.get("available", 0),
+                "connectivity_rate": round(
+                    (stats.get("available", 0) / max(stats.get("total", 1), 1)) * 100, 1
+                ),
+            }
+        except Exception as e:
+            self.logger.debug("获取TDX服务器状态失败: %s", e)
+            result["tdx_servers"] = {"total": 0, "available": 0, "connectivity_rate": 0}
+
+        # 交易网关连通性（占位，待交易模块实现）
+        result["trading_gateways"] = {"ctp": "not_configured", "ib": "not_configured"}
+
+        return result
+
     def get_process_details(
         self, process_id: str, process_name: str, process_type: str
     ) -> Dict[str, Any]:
@@ -5154,8 +5923,18 @@ class SystemManagerService(BaseService):
             Dict: 设置结果
         """
         try:
+            # 验证参数
+            interval = max(1, min(10, interval))
+            self._monitoring_interval = interval
+
             # 设置ServiceHealthChecker的推送频率
             self.service_health_checker.set_monitoring_interval(interval)
+
+            # 更新QTimer的间隔
+            if self._status_push_timer:
+                self._status_push_timer.setInterval(interval * 1000)
+
+            self.logger.info("监控推送频率已更新为 %d 秒", interval)
 
             return {
                 "success": True,
@@ -5164,11 +5943,7 @@ class SystemManagerService(BaseService):
             }
 
         except Exception as e:
-            self._log_error("设置监控频率", e)
-            return {
-                "success": False,
-                "message": str(e),
-            }
+            return {"success": False, "message": str(e)}
 
     def scan_corrupted_files(
         self, auto_delete: bool = False, progress_callback=None
@@ -5208,3 +5983,49 @@ class SystemManagerService(BaseService):
                 "message": str(e),
                 "result": {"corrupted": [], "deleted": []},
             }
+
+    def get_system_summary(self) -> Dict[str, Any]:
+        """提供给UI的简要系统摘要（便于最小改动展示新指标）。
+
+        Returns:
+            Dict[str, Any]:
+                {
+                  "cpu_percent": float,
+                  "memory_percent": float,
+                  "storage_avg_latency_ms": float|None,
+                  "network_packet_loss_in": float|None,
+                  "network_packet_loss_out": float|None,
+                }
+        """
+        try:
+            data = self._query_monitoring_data_safe() or {}
+            sysd = data.get("system", {}) or {}
+
+            cpu_percent = float(sysd.get("cpu_percent", 0.0))
+            memory_percent = float(sysd.get("memory_percent", 0.0))
+
+            storage = sysd.get("storage_subsystem", {}) or {}
+            disks = storage.get("disks", {}) or {}
+            latencies = []
+            for info in disks.values():
+                lat = info.get("average_io_latency_ms")
+                if isinstance(lat, (int, float)):
+                    latencies.append(float(lat))
+            storage_avg_latency = round(sum(latencies) / len(latencies), 2) if latencies else None
+
+            net = sysd.get("network_subsystem", {}) or {}
+            loss_in = net.get("packet_loss_rate_in")
+            loss_out = net.get("packet_loss_rate_out")
+            loss_in = float(loss_in) if isinstance(loss_in, (int, float)) else None
+            loss_out = float(loss_out) if isinstance(loss_out, (int, float)) else None
+
+            return {
+                "cpu_percent": round(cpu_percent, 2),
+                "memory_percent": round(memory_percent, 2),
+                "storage_avg_latency_ms": storage_avg_latency,
+                "network_packet_loss_in": loss_in,
+                "network_packet_loss_out": loss_out,
+            }
+        except Exception as e:
+            self.logger.error("获取系统摘要失败: %s", e)
+            return {}

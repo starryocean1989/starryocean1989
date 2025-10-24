@@ -8,6 +8,8 @@
 作者: VnPy团队
 """
 
+from typing import Optional
+
 from vnpy_scripttrader import ScriptEngine
 from vnpy.trader.object import TickData, OrderData, TradeData, PositionData
 from vnpy.trader.constant import Direction, Offset, OrderType
@@ -155,7 +157,7 @@ class ScriptTraderAssistant(ScriptEngine):
         self.cover(vt_symbol, price, volume)
         self.write_log(f"手动平空: {vt_symbol}, 价格={price}, 数量={volume}")
 
-    def get_position(self, vt_symbol: str) -> PositionData:
+    def get_position(self, vt_symbol: str) -> Optional[PositionData]:
         """获取持仓"""
         positions = self.main_engine.get_all_positions()
         for pos in positions:

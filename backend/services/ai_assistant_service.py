@@ -62,7 +62,7 @@ class AIAssistantService(BaseService):
     def _do_initialize(self) -> bool:
         """初始化AI助手服务."""
         try:
-            self.logger.info("初始化AI助手服务...")
+            self.logger.info("正在初始化AI助手服务...")
 
             # 检查requests库
             if not HAS_REQUESTS:
@@ -262,8 +262,6 @@ class AIAssistantService(BaseService):
             if enable_tools:
                 payload["tools"] = self.tools
                 self.logger.info("工具调用已启用，包含 %d 个工具", len(self.tools))
-            else:
-                self.logger.debug("工具调用未启用")
 
             # 工具调用循环（最多10轮，避免无限循环）
             max_tool_rounds = 10
@@ -275,7 +273,7 @@ class AIAssistantService(BaseService):
 
                 # 检查响应状态
                 if response.status_code != 200:
-                    error_msg = f"API调用失败: {response.status_code} - {response.text}"
+                    error_msg = f"API调用失败：{response.status_code} - {response.text}"
                     self.logger.error(error_msg)
                     return {
                         "success": False,
@@ -377,19 +375,19 @@ class AIAssistantService(BaseService):
                 "message": "API请求超时。如果AI正在调用文件操作工具，请增加超时时间（在系统管理→系统配置中设置）。建议超时时间：60-90秒。",
             }
         except requests.exceptions.ConnectionError as e:
-            self.logger.error("连接错误: %s", e, exc_info=True)
+            self.logger.error("连接错误：%s", e, exc_info=True)
             return {
                 "success": False,
                 "message": "连接错误: 服务器关闭了连接。可能原因：1) 请求过大 2) 服务器繁忙 3) 网络不稳定。建议：分步骤操作，避免一次性复杂请求。",
             }
         except requests.exceptions.RequestException as e:
-            self.logger.error("网络请求失败: %s", e, exc_info=True)
+            self.logger.error("网络请求失败：%s", e, exc_info=True)
             return {
                 "success": False,
                 "message": f"网络请求失败: {str(e)}",
             }
         except Exception as e:
-            self.logger.error("API调用异常: %s", e, exc_info=True)
+            self.logger.error("API调用异常：%s", e, exc_info=True)
             return {
                 "success": False,
                 "message": f"API调用异常: {str(e)}",
@@ -532,7 +530,7 @@ class AIAssistantService(BaseService):
             system_messages = [msg for msg in self.conversation_history if msg["role"] == "system"]
             self.conversation_history = system_messages
 
-            self.logger.info("对话历史已清空")
+            self.logger.info("AI对话历史已清空")
 
             return {
                 "success": True,
@@ -806,12 +804,12 @@ class AIAssistantService(BaseService):
             is_safe = target.is_relative_to(self.strategy_dir)
 
             if not is_safe:
-                self.logger.warning("路径安全检查失败: %s 不在策略目录内", file_path)
+                self.logger.warning("路径安全检查失败：%s 不在策略目录内", file_path)
 
             return is_safe
 
         except Exception as e:
-            self.logger.error("路径安全检查异常: %s", e)
+            self.logger.error("路径安全检查异常：%s", e)
             return False
 
     def _execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> str:
@@ -825,7 +823,7 @@ class AIAssistantService(BaseService):
             str: 工具执行结果
         """
         try:
-            self.logger.info("执行工具: %s, 参数: %s", tool_name, arguments)
+            self.logger.info("正在执行工具：%s，参数：%s", tool_name, arguments)
 
             if tool_name == "read_file":
                 return self._tool_read_file(arguments.get("file_path", ""))
@@ -841,7 +839,7 @@ class AIAssistantService(BaseService):
                 return f"错误：未知工具 '{tool_name}'"
 
         except Exception as e:
-            self.logger.error("工具执行失败: %s", e, exc_info=True)
+            self.logger.error("工具执行失败：%s", e, exc_info=True)
             return f"错误：工具执行失败 - {str(e)}"
 
     def _tool_read_file(self, file_path: str) -> str:
@@ -883,7 +881,7 @@ class AIAssistantService(BaseService):
             with open(target, "r", encoding="utf-8") as f:
                 content = f.read()
 
-            self.logger.info("成功读取文件: %s (%d 字节)", file_path, len(content))
+            self.logger.info("成功读取文件：%s（%d 字节）", file_path, len(content))
             return f"文件内容（{file_path}）：\n\n{content}"
 
         except UnicodeDecodeError:
@@ -891,7 +889,7 @@ class AIAssistantService(BaseService):
         except PermissionError:
             return f"错误：没有读取权限 - {file_path}"
         except Exception as e:
-            self.logger.error("读取文件失败: %s", e, exc_info=True)
+            self.logger.error("读取文件失败：%s", e, exc_info=True)
             return f"错误：读取文件失败 - {str(e)}"
 
     def _tool_write_file(self, file_path: str, content: str) -> str:
@@ -935,13 +933,13 @@ class AIAssistantService(BaseService):
             with open(target, "w", encoding="utf-8") as f:
                 f.write(content)
 
-            self.logger.info("成功写入文件: %s (%d 字节)", file_path, len(content))
+            self.logger.info("成功写入文件：%s（%d 字节）", file_path, len(content))
             return f"✅ 成功写入文件：{file_path} ({len(content)} 字节)"
 
         except PermissionError:
             return f"错误：没有写入权限 - {file_path}"
         except Exception as e:
-            self.logger.error("写入文件失败: %s", e, exc_info=True)
+            self.logger.error("写入文件失败：%s", e, exc_info=True)
             return f"错误：写入文件失败 - {str(e)}"
 
     def _tool_delete_file(self, file_path: str) -> str:
@@ -980,13 +978,13 @@ class AIAssistantService(BaseService):
             # 删除文件
             target.unlink()
 
-            self.logger.info("成功删除文件: %s", file_path)
+            self.logger.info("成功删除文件：%s", file_path)
             return f"✅ 成功删除文件：{file_path}"
 
         except PermissionError:
             return f"错误：没有删除权限 - {file_path}"
         except Exception as e:
-            self.logger.error("删除文件失败: %s", e, exc_info=True)
+            self.logger.error("删除文件失败：%s", e, exc_info=True)
             return f"错误：删除文件失败 - {str(e)}"
 
     def _tool_list_strategy_files(self) -> str:
@@ -1013,9 +1011,9 @@ class AIAssistantService(BaseService):
 
             result = f"找到 {len(strategy_files)} 个策略文件：\n\n" + "\n".join(file_list)
 
-            self.logger.info("列出策略文件: %d 个", len(strategy_files))
+            self.logger.info("列出策略文件：%d 个", len(strategy_files))
             return result
 
         except Exception as e:
-            self.logger.error("列出策略文件失败: %s", e, exc_info=True)
+            self.logger.error("列出策略文件失败：%s", e, exc_info=True)
             return f"错误：列出文件失败 - {str(e)}"

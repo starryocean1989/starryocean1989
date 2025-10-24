@@ -1,0 +1,187 @@
+{
+  "dark": {
+    "name": "暗黑主题",
+    "version": "1.0.0",
+    "colors": {
+      "primary": "#1e88e5",
+      "secondary": "#424242",
+      "success": "#4caf50",
+      "warning": "#ff9800",
+      "error": "#f44336",
+      "info": "#2196f3",
+
+      "background": {
+        "main": "#121212",
+        "secondary": "#1e1e1e",
+        "elevated": "#2d2d2d"
+      },
+
+      "surface": {
+        "main": "#1e1e1e",
+        "secondary": "#2d2d2d",
+        "hover": "#383838"
+      },
+
+      "text": {
+        "primary": "#ffffff",
+        "secondary": "#b3b3b3",
+        "disabled": "#808080"
+      },
+
+      "border": {
+        "main": "#404040",
+        "secondary": "#2d2d2d"
+      },
+
+      "chart": {
+        "background": "#1a1a1a",
+        "grid": "#2d2d2d",
+        "axis": "#ffffff",
+        "candlestick": {
+          "up": "#4caf50",
+          "down": "#f44336",
+          "border": "#ffffff"
+        },
+        "line": "#1e88e5",
+        "volume": "#ff9800"
+      },
+
+      "button": {
+        "default": "#2d2d2d",
+        "hover": "#383838",
+        "pressed": "#1e1e1e",
+        "disabled": "#1a1a1a"
+      },
+
+      "input": {
+        "background": "#2d2d2d",
+        "border": "#404040",
+        "focus": "#1e88e5",
+        "text": "#ffffff"
+      },
+
+      "tab": {
+        "background": "#1e1e1e",
+        "selected": "#2d2d2d",
+        "hover": "#383838"
+      },
+
+      "toolbar": {
+        "background": "#1a1a1a",
+        "border": "#2d2d2d"
+      },
+
+      "status_bar": {
+        "background": "#1a1a1a",
+        "success": "#4caf50",
+        "warning": "#ff9800",
+        "error": "#f44336"
+      },
+
+      "scrollbar": {
+        "background": "#2d2d2d",
+        "thumb": "#404040",
+        "hover": "#4a4a4a"
+      },
+
+      "tooltip": {
+        "background": "#383838",
+        "text": "#ffffff",
+        "border": "#404040"
+      },
+
+      "overlay": {
+        "background": "rgba(0, 0, 0, 0.6)",
+        "border": "#404040"
+      }
+    },
+
+    "typography": {
+      "font_family": "Microsoft YaHei, SimSun, sans-serif",
+      "font_size": {
+        "xs": 10,
+        "sm": 12,
+        "md": 14,
+        "lg": 16,
+        "xl": 18,
+        "xxl": 24
+      }
+    },
+
+    "spacing": {
+      "xs": 4,
+      "sm": 8,
+      "md": 16,
+      "lg": 24,
+      "xl": 32,
+      "xxl": 48
+    },
+
+    "border_radius": {
+      "sm": 4,
+      "md": 8,
+      "lg": 12,
+      "xl": 16
+    },
+
+    "shadow": {
+      "sm": "0 1px 2px 0 rgba(0, 0, 0, 0.5)",
+      "md": "0 4px 6px -1px rgba(0, 0, 0, 0.3)",
+      "lg": "0 10px 15px -3px rgba(0, 0, 0, 0.3)",
+      "xl": "0 20px 25px -5px rgba(0, 0, 0, 0.3)"
+    },
+
+    "animation": {
+      "duration": {
+        "fast": 150,
+        "normal": 300,
+        "slow": 500
+      },
+      "easing": {
+        "ease_in_out": "cubic-bezier(0.4, 0, 0.2, 1)",
+        "ease_out": "cubic-bezier(0, 0, 0.2, 1)",
+        "ease_in": "cubic-bezier(0.4, 0, 1, 1)"
+      }
+    }
+  },
+
+  "light": {
+    "name": "Modern Light",
+    "type": "light",
+    "colors": {
+      "primary": "#2196F3",
+      "secondary": "#FFC107",
+      "success": "#4CAF50",
+      "danger": "#F44336",
+      "warning": "#FF9800",
+      "info": "#00BCD4",
+      "background": "#FAFAFA",
+      "surface": "#FFFFFF",
+      "text_primary": "#212121",
+      "text_secondary": "#757575",
+      "border": "#E0E0E0",
+      "hover": "#F5F5F5",
+      "selected": "#E3F2FD",
+      "disabled": "#BDBDBD"
+    },
+    "fonts": {
+      "family": "Microsoft YaHei, SimHei, Arial",
+      "size": {
+        "normal": 10,
+        "large": 12,
+        "title": 14
+      }
+    },
+    "spacing": {
+      "small": 4,
+      "medium": 8,
+      "large": 16
+    },
+    "border_radius": {
+      "small": 3,
+      "medium": 5,
+      "large": 8
+    }
+  }
+}
+

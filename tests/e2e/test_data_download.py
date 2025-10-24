@@ -78,6 +78,7 @@ def validate_progress_monitoring(
         "status_changes": [],
         "error_count": 0,
         "max_progress": 0,
+        "error_message": "",
     }
 
     start_time = time.time()
@@ -138,6 +139,7 @@ def validate_task_control(data_center_service, task_id: str) -> Dict[str, Any]:
         "pause_successful": False,
         "resume_successful": False,
         "control_available": False,
+        "error_message": "",
     }
 
     try:
@@ -181,6 +183,7 @@ def validate_download_history(data_center_service) -> Dict[str, Any]:
         "history_count": 0,
         "has_recent_tasks": False,
         "history_format_valid": False,
+        "error_message": "",
     }
 
     try:

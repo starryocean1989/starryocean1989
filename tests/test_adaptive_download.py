@@ -16,7 +16,7 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from backend.infrastructure.data_module_vnpy.server_pool_manager import (
+from backend.infrastructure.data_module_vnpy.load_balancer.server_pool_manager import (
     AdaptiveDownloadConfig,
     get_adaptive_config,
     get_random_servers,

@@ -30,12 +30,17 @@ def qapp() -> Generator[QApplication, None, None]:
         QApplication实例
     """
     # 检查是否已有QApplication实例
-    app = QApplication.instance()
-    if app is None:
+    instance = QApplication.instance()
+    if instance is None:
         app = QApplication([])
         logger.info("创建新的QApplication实例")
-    else:
+    elif isinstance(instance, QApplication):
+        app = instance
         logger.info("使用已存在的QApplication实例")
+    else:
+        # instance is QCoreApplication but not QApplication, create a new QApplication
+        app = QApplication([])
+        logger.info("已有QCoreApplication实例，创建新的QApplication实例")
 
     yield app
 
