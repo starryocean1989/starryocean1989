@@ -67,7 +67,7 @@ class AsyncTdxDayReader:
                 data = await f.read()
 
             # 解析数据
-            records = self._parse_day_data(data)
+            records = await asyncio.to_thread(self._parse_day_data, data)
 
             if not records:
                 return pd.DataFrame()
@@ -177,7 +177,7 @@ class AsyncTdxMinuteReader:
                 data = await f.read()
 
             # 解析数据
-            records = self._parse_minute_data(data)
+            records = await asyncio.to_thread(self._parse_minute_data, data)
 
             if not records:
                 return pd.DataFrame()
@@ -285,7 +285,7 @@ class AsyncTdxLc5Reader:
                 data = await f.read()
 
             # 解析数据（与分钟线相同）
-            records = self._parse_lc5_data(data)
+            records = await asyncio.to_thread(self._parse_lc5_data, data)
 
             if not records:
                 return pd.DataFrame()

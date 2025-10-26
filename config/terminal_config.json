@@ -89,5 +89,35 @@
         "disk_latency_ms": 20,
         "packet_loss_percent": 1,
         "smart_sectors": 0
+    },
+    "loadbalancer": {
+        "description": "LoadBalancer任务队列和资源限制配置",
+        "task_queue": {
+            "max_size": 10000,
+            "max_workers": 4,
+            "enable_priority": true,
+            "task_size_threshold": 1000
+        },
+        "resource_limits": {
+            "small_task": {
+                "cpu_percent": 30.0,
+                "memory_percent": 50.0,
+                "description": "小任务(<1000单元)资源限制，保证UI响应性"
+            },
+            "large_task": {
+                "cpu_percent": 80.0,
+                "memory_percent": 70.0,
+                "description": "大任务(>=1000单元)资源限制，效率优先"
+            },
+            "enable_windows_job_object": false,
+            "job_cpu_rate": 80,
+            "job_memory_limit_mb": 4096,
+            "monitor_interval_ms": 500
+        },
+        "scheduler": {
+            "small_task_threshold": 100,
+            "medium_task_threshold": 1000,
+            "enable_adaptive_scheduling": true
+        }
     }
 }

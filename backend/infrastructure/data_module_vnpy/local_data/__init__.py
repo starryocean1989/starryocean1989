@@ -21,11 +21,37 @@ from .data_quality import (
     QualityOverview,
     KlineFileWatcher,
     HealthChecker,
-    AdaptiveQualityConfig,
+    format_quality_config_summary,
 )
 
 # 统一数据管理器
 from .unified_data_manager import UnifiedDataManager, PreloadService
+
+# 中期优化：无状态验证器和共享内存（已合并到validators.py）
+from .validators import (
+    StatelessValidator,
+    StatelessValidationResult,
+    ValidationContext,
+    validate_symbol_stateless,
+    IncrementalScanManager,
+    ScanRecord,
+    ScanMetadata,
+    create_incremental_scan_manager,
+    GPUValidator,
+    GPUDetector,
+    create_gpu_validator,
+    detect_and_log_gpu,
+)
+from .cache_and_memory import (
+    # 缓存管理
+    LRUCacheManager,
+    CacheStats,
+    create_lru_cache,
+    lru_cache,
+    # 共享内存管理
+    SharedMemoryManager,
+    create_shared_validation_context,
+)
 
 __all__ = [
     # 传统数据质量
@@ -37,8 +63,29 @@ __all__ = [
     "QualityOverview",
     "KlineFileWatcher",
     "HealthChecker",
-    "AdaptiveQualityConfig",
+    "format_quality_config_summary",
     # 统一数据管理
     "UnifiedDataManager",
     "PreloadService",
+    # 中期优化
+    "StatelessValidator",
+    "StatelessValidationResult",
+    "ValidationContext",
+    "validate_symbol_stateless",
+    "SharedMemoryManager",
+    "create_shared_validation_context",
+    "IncrementalScanManager",
+    "ScanRecord",
+    "ScanMetadata",
+    "create_incremental_scan_manager",
+    # 长期优化
+    "GPUValidator",
+    "GPUDetector",
+    "create_gpu_validator",
+    "detect_and_log_gpu",
+    # Cache Management
+    "LRUCacheManager",
+    "CacheStats",
+    "create_lru_cache",
+    "lru_cache",
 ]

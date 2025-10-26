@@ -127,7 +127,7 @@ class CacheValidationWorker(QObject):
         self.logger.info("[3/6] 验证服务器池缓存...")
 
         try:
-            from .load_balancer.server_pool_manager import server_pool_manager
+            from .load_balancer import server_pool_manager
 
             if server_pool_manager.is_cache_valid():
                 stats = server_pool_manager.get_stats()
@@ -168,20 +168,27 @@ class CacheValidationWorker(QObject):
             self.logger.error("验证品种列表缓存失败: %s", e)
 
     def _validate_ipo_cache(self):
-        """步骤5：验证IPO日期缓存"""
+        """步骤5：验证IPO日期缓存状态（不执行下载）
+
+        架构修复：验证流程只检查状态，不执行长时间的下载操作。
+        IPO缓存更新延迟到数据质量扫描前执行，避免启动时大批量下载阻塞。
+        """
         self.progress.emit("验证IPO日期缓存", 60)
         self.logger.info("[5/6] 验证IPO日期缓存...")
 
         try:
-            ipo_cache = self.validator._ipo_cache
+            ipo_cache = self.validator._ipo_cache  # noqa: SLF001
+            cached_count = (
+                len(ipo_cache._memory_cache) if hasattr(ipo_cache, "_memory_cache") else 0
+            )
 
             if not ipo_cache.is_cache_outdated():
-                cached_count = (
-                    len(ipo_cache._memory_cache) if hasattr(ipo_cache, "_memory_cache") else 0
-                )
                 self.logger.info("✓ IPO日期缓存有效：%d 个品种", cached_count)
             else:
+                # 🎯 架构修复：只记录状态，不执行下载
                 self.logger.warning("⚠ IPO日期缓存需要更新")
+                self.logger.info("   → 缓存更新将在数据质量扫描前自动执行（延迟加载）")
+                self.logger.info("   → 这样避免了启动时的大批量下载，提升启动速度")
 
         except Exception as e:
             self.logger.error("验证IPO日期缓存失败: %s", e)

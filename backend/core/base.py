@@ -86,6 +86,9 @@ from backend.services.vnpy_imports import (
     TushareDatafeed,
 )
 
+# 导入监控版EventEngine（用于队列深度和延迟监控）
+from backend.core.monitored_event_engine import MonitoredEventEngine
+
 
 # =============================================================================
 # Part 2: 共享服务管理器 (来自 shared_services.py)
@@ -953,12 +956,29 @@ class ServiceInitializer:
                 self.event_engine = existing_event_engine
                 self.main_engine = existing_main_engine
                 self.logger.info("✅ 使用主线程初始化的 VnPy 核心引擎")
+            elif existing_event_engine:
+                # 🎯 新增：有EventEngine但没有MainEngine，创建MainEngine
+                self.logger.info("✅ 检测到主线程预创建的EventEngine")
+                self.event_engine = existing_event_engine
+
+                self._report_progress("创建MainEngine...", 30)
+                self.logger.info("基于预创建的EventEngine创建MainEngine...")
+                self.main_engine = MainEngine(self.event_engine)
+                self.logger.info("✅ MainEngine创建成功")
+
+                # 注册到全局
+                set_main_engine(self.main_engine)
+                # EventEngine已在全局，无需重复设置
+
+                # 添加策略应用
+                self._report_progress("加载策略应用...", 35)
+                self._add_strategy_apps()
             else:
                 # 如果没有，则在当前线程创建（兼容模式）
-                self._report_progress("创建EventEngine...", 25)
-                self.logger.info("创建EventEngine（interval=1）...")
-                self.event_engine = EventEngine(interval=1)
-                self.logger.info("✅ EventEngine创建成功（工作线程已自动启动）")
+                self._report_progress("创建MonitoredEventEngine...", 25)
+                self.logger.info("创建MonitoredEventEngine（带监控）...")
+                self.event_engine = MonitoredEventEngine()
+                self.logger.info("✅ MonitoredEventEngine创建成功（支持队列深度和延迟监控）")
 
                 # 创建主引擎
                 self._report_progress("创建MainEngine...", 30)
@@ -970,6 +990,9 @@ class ServiceInitializer:
                 set_main_engine(self.main_engine)
                 set_event_engine(self.event_engine)
 
+                # 🚀 注入BusinessMetricsCollector到MonitoredEventEngine
+                self._inject_business_metrics_collector()
+
                 # 添加策略应用
                 self._report_progress("加载策略应用...", 35)
                 self._add_strategy_apps()
@@ -980,21 +1003,63 @@ class ServiceInitializer:
             return True
 
         except Exception as e:
-            # 如果VNPY初始化失败，使用占位符
+            # 如果VNPY初始化失败，检查是否有预创建的EventEngine
             elapsed = time.time() - start_time
             self.logger.error("❌ VNPY初始化失败: %s（耗时 %.2f秒）", e, elapsed, exc_info=True)
-            self.logger.warning("⚠️ 使用占位符模式，系统将以数据功能模式运行")
 
-            # 创建空占位符
-            self.event_engine = None
-            self.main_engine = None
+            # 🎯 架构修复：检查是否有预创建的EventEngine
+            existing_event_engine = get_event_engine()
 
-            set_main_engine(None)
-            set_event_engine(None)
+            if existing_event_engine:
+                # 有预创建的EventEngine，保留它
+                self.logger.warning("⚠️ MainEngine创建失败，但EventEngine已在主线程预创建")
+                self.logger.warning("⚠️ 系统将以基础服务模式运行（无交易功能）")
+                self.event_engine = existing_event_engine
+                self.main_engine = None
+                set_main_engine(None)
+                # 🎯 关键修复：不清空EventEngine，保留给SystemManagerService使用
+                self._report_progress("VNPY初始化失败，基础服务可用", 40)
+                return True  # 基础服务可用，允许继续
+            else:
+                # 没有预创建的EventEngine，这是致命错误
+                self.logger.error("❌ 致命错误：EventEngine和MainEngine都不可用")
+                self.logger.error("❌ 系统无法启动")
+                self.event_engine = None
+                self.main_engine = None
+                set_main_engine(None)
+                set_event_engine(None)
+                self._report_progress("VNPY初始化失败，系统无法启动", 40)
+                return False  # 🎯 关键修复：返回False停止启动
 
-            self._report_progress("VNPY初始化失败，使用占位符模式", 40)
-            # 返回True让后续流程继续（数据功能不依赖VNPY）
-            return True
+    def _inject_business_metrics_collector(self):
+        """注入BusinessMetricsCollector到MonitoredEventEngine
+
+        此方法在EventEngine创建后调用，用于启用事件队列监控。
+        """
+        try:
+            # 检查是否是MonitoredEventEngine
+            if not isinstance(self.event_engine, MonitoredEventEngine):
+                self.logger.debug("EventEngine不是MonitoredEventEngine类型，跳过注入")
+                return
+
+            # 延迟导入，避免循环依赖
+            from backend.infrastructure.system_vnpy.monitor_system import (
+                get_business_metrics_collector,
+            )
+
+            # 获取BusinessMetricsCollector实例
+            collector = get_business_metrics_collector()
+
+            # 注入到EventEngine
+            self.event_engine.set_business_metrics_collector(collector)
+
+            self.logger.info("✅ BusinessMetricsCollector已注入到MonitoredEventEngine")
+            self.logger.info("✅ 事件队列监控已启用（队列深度+处理延迟）")
+
+        except Exception as e:
+            # 如果注入失败，不影响系统启动，只记录警告
+            self.logger.warning(f"⚠️ BusinessMetricsCollector注入失败: {e}")
+            self.logger.warning("⚠️ 事件队列监控将不可用")
 
     def _initialize_data_services(self) -> bool:
         """阶段2: 初始化数据服务.

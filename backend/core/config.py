@@ -100,15 +100,12 @@ class APIConfig(BaseSettings):
 
 
 class LoggingConfig(BaseSettings):
-    """日志配置（文件日志已废弃，仅数据库日志和Terminal输出）."""
+    """日志配置（仅数据库日志和Terminal输出，文件日志已于v0.50移除）."""
 
     model_config = ConfigDict(env_prefix="LOG_") if ConfigDict else None  # type: ignore
 
     level: str = Field(default="INFO")
     format: str = Field(default="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-    file_path: Optional[str] = Field(default=None)  # 已废弃，保留字段为向后兼容
-    max_file_size: int = Field(default=10 * 1024 * 1024)  # 已废弃
-    backup_count: int = Field(default=5)  # 已废弃
 
 
 class AIConfig(BaseSettings):
@@ -145,6 +142,11 @@ class AdaptiveConfig(BaseSettings):
 
     # 可选：智能策略调优参数（保留占位，默认None）
     intelligent_tuning: Optional[dict] = Field(default=None)
+
+    # 基准并发配置
+    baseline_async_concurrency: int = Field(default=80, description="基准异步并发数")
+    baseline_thread_concurrency: int = Field(default=10, description="基准线程并发数")
+    baseline_process_concurrency: int = Field(default=2, description="基准进程并发数")
 
 
 class StartupConfig(BaseSettings):
@@ -292,9 +294,6 @@ class Settings:
             Path(self.vnpy.data_storage_path),
             Path(self.database.sqlite_path).parent,
         ]
-
-        if self.logging.file_path:
-            directories.append(Path(self.logging.file_path).parent)
 
         for directory in directories:
             directory.mkdir(parents=True, exist_ok=True)

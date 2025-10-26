@@ -58,6 +58,15 @@ class BackendInitializerWorker(QObject):
                 threading.current_thread() == threading.main_thread(),
             )
 
+            # 🎯 验证EventEngine是否已预创建
+            from backend.core.base import get_event_engine
+            existing_ee = get_event_engine()
+            if existing_ee:
+                self.logger.info("[BACKEND-INIT] ✅ 检测到主线程预创建的EventEngine")
+            else:
+                self.logger.warning("[BACKEND-INIT] ⚠️ 未检测到预创建的EventEngine")
+                self.logger.warning("[BACKEND-INIT] ⚠️ 这可能导致SystemManagerService初始化失败")
+
             # 🔧 检查中断请求
             if self.thread() and self.thread().isInterruptionRequested():
                 self.logger.info("[BACKEND-INIT] 收到中断请求，停止初始化")

@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
+    QTableView,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -46,10 +47,13 @@ import psutil
 import pyqtgraph as pg
 
 from backend.core.base import get_service_manager
+from ui.modules.log_table_model import LogTableModel
+from ui.modules.log_checkbox_delegate import LogCheckboxDelegate
 from ui.components.widgets import (
     BaseWidget,
     GaugeWidget,
     MetricCard,
+    ThresholdHeatmap,
 )
 from ui.components.theme_system import DashboardTheme
 from backend.core.service_base import LoggerMixin
@@ -306,13 +310,21 @@ class AlertManagerWidget(QWidget):
         # 连接信号
         self._connect_signals()
 
-        # 启动定时器改为就绪后启动
+        # 🎯 关键修复：处理懒加载场景（当用户点击选项卡时才创建组件）
+        # 此时backend可能已经就绪，需要立即初始化而不是等待事件
         try:
             orch = get_boot_orchestrator()
-            orch.on_all_ready(
-                ["backend_ready", "ui_ready", "ui_visible"],
-                lambda: QTimer.singleShot(0, self._init_after_backend),
-            )
+
+            # 检查backend是否已经就绪
+            if orch.is_ready("backend_ready") and orch.is_ready("ui_ready"):
+                # backend已就绪（懒加载场景），立即初始化
+                QTimer.singleShot(0, self._init_after_backend)
+            else:
+                # backend未就绪，注册回调等待
+                orch.on_all_ready(
+                    ["backend_ready", "ui_ready", "ui_visible"],
+                    lambda: QTimer.singleShot(0, self._init_after_backend),
+                )
         except Exception:
             # 回退：若编排器不可用，仍按旧逻辑启动
             self.start_update_timer()
@@ -599,10 +611,19 @@ class LogManagerWidget(QWidget):
 
     # 信号定义
     log_record_received = Signal(dict)  # 接收到新的日志记录
+    logs_query_completed = Signal(dict)  # 日志查询完成信号（用于跨线程传递结果）
 
     def __init__(self):
         """初始化日志管理界面."""
         super().__init__()
+
+        # 🎯 立即添加调试日志
+        import logging
+
+        logger = logging.getLogger(__name__)
+        logger.info("=" * 70)
+        logger.info("[LogManagerWidget] __init__ 被调用 - 组件正在创建")
+        logger.info("=" * 70)
 
         # 日志数据
         self.log_records: List[Dict[str, Any]] = []
@@ -632,16 +653,37 @@ class LogManagerWidget(QWidget):
         # 连接信号
         self._connect_signals()
 
-        # 启动定时器改为就绪后启动
+        # 🎯 关键修复：处理懒加载场景（当用户点击选项卡时才创建组件）
+        # 此时backend可能已经就绪，需要立即初始化而不是等待事件
         try:
+            logger.info("[LogManagerWidget] 检查BootOrchestrator状态...")
             orch = get_boot_orchestrator()
-            orch.on_all_ready(
-                ["backend_ready", "ui_ready", "ui_visible"],
-                lambda: QTimer.singleShot(0, self._init_after_backend),
-            )
-        except Exception:
+            logger.info("[LogManagerWidget] BootOrchestrator获取成功")
+
+            # 检查backend是否已经就绪
+            backend_ready = orch.is_ready("backend_ready")
+            ui_ready = orch.is_ready("ui_ready")
+            logger.info(f"[LogManagerWidget] backend_ready={backend_ready}, ui_ready={ui_ready}")
+
+            if backend_ready and ui_ready:
+                # backend已就绪（懒加载场景），立即初始化
+                logger.info("[LogManagerWidget] Backend已就绪，立即初始化")
+                QTimer.singleShot(0, self._init_after_backend)
+            else:
+                # backend未就绪，注册回调等待
+                logger.info("[LogManagerWidget] Backend未就绪，注册回调等待")
+                orch.on_all_ready(
+                    ["backend_ready", "ui_ready", "ui_visible"],
+                    lambda: QTimer.singleShot(0, self._init_after_backend),
+                )
+        except Exception as e:
             # 回退：若编排器不可用，仍按旧逻辑启动
+            logger.error(f"[LogManagerWidget] BootOrchestrator异常: {e}")
+            logger.error("[LogManagerWidget] 回退到旧逻辑，启动更新定时器")
             self.start_update_timer()
+
+        logger.info("[LogManagerWidget] __init__ 完成")
+        logger.info("=" * 70)
 
     def _init_ui(self) -> None:
         """初始化用户界面."""
@@ -682,13 +724,14 @@ class LogManagerWidget(QWidget):
         # 时间范围选择
         time_label = QLabel("时间范围:")
         self.start_time_edit = QDateTimeEdit()
-        # PySide6: 使用 currentDateTime() 然后调整时间
-        start_time = QDateTime.currentDateTime().addSecs(-3600)  # 1小时前
+        # 🔧 修复：默认从很久以前开始，避免过滤新日志
+        start_time = QDateTime.currentDateTime().addDays(-7)  # 7天前
         self.start_time_edit.setDateTime(start_time)
         self.start_time_edit.setDisplayFormat("yyyy-MM-dd hh:mm:ss")
 
         self.end_time_edit = QDateTimeEdit()
-        self.end_time_edit.setDateTime(QDateTime.currentDateTime())
+        # 🔧 修复：设置为未来时间，确保新日志不被过滤
+        self.end_time_edit.setDateTime(QDateTime.currentDateTime().addDays(1))  # 明天
         self.end_time_edit.setDisplayFormat("yyyy-MM-dd hh:mm:ss")
 
         layout.addWidget(time_label)
@@ -714,35 +757,128 @@ class LogManagerWidget(QWidget):
         self.export_btn = QPushButton("导出")
         layout.addWidget(self.export_btn)
 
+        # 删除选中按钮
+        self.delete_selected_btn = QPushButton("删除选中")
+        self.delete_selected_btn.setStyleSheet("color: darkred;")
+        layout.addWidget(self.delete_selected_btn)
+
         # 清空按钮
         self.clear_btn = QPushButton("清空显示")
         layout.addWidget(self.clear_btn)
 
+        # 删除全部日志按钮
+        self.delete_all_btn = QPushButton("删除全部日志")
+        self.delete_all_btn.setStyleSheet("color: red; font-weight: bold;")
+        layout.addWidget(self.delete_all_btn)
+
         return layout
 
-    def _create_log_table(self) -> QTableWidget:
-        """创建日志表格."""
-        table = QTableWidget(0, 6)
-        table.setHorizontalHeaderLabels(["时间", "级别", "模块", "函数", "行号", "消息"])
+    def _create_log_table(self) -> QTableView:
+        """创建日志表格（使用Model/View架构）.
 
-        # 设置表头属性
+        架构优势：
+        - 数据-视图分离，性能更高
+        - 支持虚拟滚动，只渲染可见行
+        - 批量更新，减少重绘次数
+        """
+        # 🔧 关键架构改进：使用QTableView + Model
+        table = QTableView()
+
+        # 创建并设置Model
+        self.log_model = LogTableModel(self)
+        table.setModel(self.log_model)
+        # 为第0列设置无白底复选框委托
+        table.setItemDelegateForColumn(0, LogCheckboxDelegate(table))
+
+        # 设置表头属性（注意：现在有复选框列，索引+1）
         header = table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)  # 时间
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)  # 级别
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)  # 模块
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)  # 函数
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)  # 行号
-        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)  # 消息
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)  # 复选框列固定宽度
+        header.resizeSection(0, 50)  # 设置复选框列宽度为50px
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)  # 时间
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)  # 级别
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)  # 模块
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)  # 函数
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)  # 行号
+        header.setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)  # 消息
+
+        # 🔧 移除setHeaderData调用，改为在Model的headerData()中直接处理
+        # (避免Qt内部状态不一致导致渲染问题)
+
+        # 连接表头点击事件（第一列点击时全选/取消全选）
+        header.sectionClicked.connect(self._on_header_clicked)
+
+        # 设置表头样式（让复选框列更突出）
+        header.setStyleSheet(
+            """
+            QHeaderView::section:first {
+                background-color: #E8F4F8;
+                font-weight: bold;
+            }
+        """
+        )
 
         # 设置表格属性
         table.setAlternatingRowColors(True)
-        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
+        # 🔧 关键修复：复选框通过ItemIsUserCheckable工作，不需要EditTriggers
+        # 设置NoEditTriggers防止误触发编辑模式（会显示白色编辑器框）
+        table.setEditTriggers(QTableView.EditTrigger.NoEditTriggers)
+
+        # 🔧 性能优化：启用虚拟滚动
+        table.setVerticalScrollMode(QTableView.ScrollMode.ScrollPerPixel)
+        table.setHorizontalScrollMode(QTableView.ScrollMode.ScrollPerPixel)
 
         # 双击查看详情
         table.doubleClicked.connect(self._show_log_detail)
+        # 单击复选框列支持单条选中/反选
+        table.clicked.connect(self._on_table_clicked)
+
+        # 🔧 复选框指示器样式：未选中透明底，避免白块与表格不一致
+        table.setStyleSheet(
+            """
+            QTableView::indicator {
+                width: 16px;
+                height: 16px;
+                background-color: transparent;
+            }
+            QTableView::indicator:unchecked {
+                background-color: transparent;
+                border: 1px solid #A0A0A0;
+            }
+            QTableView::indicator:unchecked:hover {
+                border: 1px solid #0078D7;
+            }
+            QTableView::indicator:checked {
+                background-color: #0078D7;
+                border: 1px solid #0078D7;
+            }
+            QTableView::indicator:indeterminate {
+                background-color: #66A3E0;
+                border: 1px solid #0078D7;
+            }
+            """
+        )
 
         return table
+
+    def _on_table_clicked(self, index) -> None:
+        """表格单击处理：第一列复选框支持单条切换。"""
+        try:
+            if not index or not index.isValid():
+                return
+            if index.column() != 0:
+                return
+            current_state = self.log_model.data(index, Qt.ItemDataRole.CheckStateRole)
+            new_state = (
+                Qt.CheckState.Unchecked
+                if current_state == Qt.CheckState.Checked
+                else Qt.CheckState.Checked
+            )
+            self.log_model.setData(index, new_state, Qt.ItemDataRole.CheckStateRole)
+            self._update_stats()
+        except Exception:
+            # 单击切换失败不影响主流程
+            pass
 
     def _create_status_bar(self) -> QHBoxLayout:
         """创建底部状态栏."""
@@ -772,7 +908,15 @@ class LogManagerWidget(QWidget):
         self.search_edit.textChanged.connect(self._apply_filters)
         self.refresh_btn.clicked.connect(self._refresh_logs)
         self.export_btn.clicked.connect(self._export_logs)
+        self.delete_selected_btn.clicked.connect(self._delete_selected_logs)
         self.clear_btn.clicked.connect(self._clear_display)
+        self.delete_all_btn.clicked.connect(self._delete_all_logs)
+
+        # 连接Model数据变化信号以更新统计信息
+        self.log_model.dataChanged.connect(lambda: self._update_stats())
+
+        # 🔧 关键修复：连接跨线程信号，确保查询结果能正确传递到主线程
+        self.logs_query_completed.connect(self._handle_logs_result)
 
     def _toggle_auto_scroll(self) -> None:
         """切换自动滚动."""
@@ -865,46 +1009,31 @@ class LogManagerWidget(QWidget):
         self._update_stats()
 
     def _update_table(self) -> None:
-        """更新表格显示."""
-        self.log_table.setRowCount(len(self.display_records))
+        """更新表格显示（高性能实现）.
 
-        for row, record in enumerate(self.display_records):
-            # 时间
-            time_item = QTableWidgetItem(record.get("timestamp", ""))
-            self.log_table.setItem(row, 0, time_item)
+        架构优势：
+        - 一次性批量更新，而不是逐行操作
+        - Model自动通知View刷新，最小化UI操作
+        - 性能从O(n*m)降低到O(1)，n=行数，m=列数
+        """
+        import logging
 
-            # 级别（带颜色）
-            level = record.get("level", "")
-            level_item = QTableWidgetItem(level)
-            level_color = self._get_level_color(level)
-            level_item.setBackground(level_color)
-            self.log_table.setItem(row, 1, level_item)
+        logger = logging.getLogger(__name__)
+        logger.debug(
+            f"[LogManagerWidget] _update_table被调用，准备显示{len(self.display_records)}条记录"
+        )
 
-            # 模块
-            module_item = QTableWidgetItem(record.get("module", ""))
-            self.log_table.setItem(row, 2, module_item)
-
-            # 函数
-            func_item = QTableWidgetItem(record.get("function", ""))
-            self.log_table.setItem(row, 3, func_item)
-
-            # 行号
-            line_item = QTableWidgetItem(str(record.get("line", "")))
-            self.log_table.setItem(row, 4, line_item)
-
-            # 消息（截断过长内容）
-            message = record.get("message", "")
-            if len(message) > 200:
-                message = message[:200] + "..."
-            message_item = QTableWidgetItem(message)
-            self.log_table.setItem(row, 5, message_item)
+        # 🔧 关键性能优化：使用Model批量更新，一次性通知View
+        # 而不是逐行setItem（600行×6列=3600次UI操作 → 1次批量更新）
+        self.log_model.update_data(self.display_records)
 
         # 如果自动滚动，滚动到最后一行
         if self.auto_scroll and self.display_records:
             self.log_table.scrollToBottom()
 
     def _get_level_color(self, level: str) -> QColor:
-        """获取日志级别对应的颜色."""
+        """获取日志级别对应的颜色（保留以兼容其他代码）."""
+        # 注意：颜色逻辑已移至LogTableModel，此方法保留以防其他地方调用
         color_map = {
             "DEBUG": QColor(200, 200, 200),  # 灰色
             "INFO": QColor(173, 216, 230),  # 浅蓝色
@@ -916,126 +1045,162 @@ class LogManagerWidget(QWidget):
 
     def _update_stats(self) -> None:
         """更新统计信息."""
+        import logging
+
+        logger = logging.getLogger(__name__)
+
         total = len(self.log_records)
         filtered = len(self.display_records)
+        selected = self.log_model.get_selected_count()
 
-        self.stats_label.setText(f"日志统计: 显示 {filtered} 条 / 总计 {total} 条")
+        logger.debug(
+            f"[LogManagerWidget] _update_stats被调用，显示{filtered}条/总计{total}条，选中{selected}条"
+        )
+
+        if selected > 0:
+            self.stats_label.setText(
+                f"日志统计: 显示 {filtered} 条 / 总计 {total} 条 | 已选中 {selected} 条"
+            )
+        else:
+            self.stats_label.setText(f"日志统计: 显示 {filtered} 条 / 总计 {total} 条")
 
     def _refresh_logs(self) -> None:
         """刷新日志数据（异步执行，避免阻塞主线程）."""
         import threading
         from PySide6.QtCore import QTimer
-        
+        import logging
+
+        logger = logging.getLogger(__name__)
+        logger.debug("[LogManagerWidget] _refresh_logs被调用")  # 🔧 改为debug级别，避免刷屏
+
         # 禁用刷新按钮，显示加载状态
-        if hasattr(self, 'refresh_btn'):
+        if hasattr(self, "refresh_btn"):
             self.refresh_btn.setEnabled(False)
             self.refresh_btn.setText("加载中...")
-        
+
         # 🔧 关键修复：在后台线程执行查询，避免阻塞主线程导致UI卡死
         def query_in_background():
             try:
+                logger.debug("[LogManagerWidget] 后台线程开始查询")  # 改为debug
                 # 调用后端API获取最新日志
                 service_manager = get_service_manager()
                 system_service = service_manager.get_service("system_manager_service", silent=True)
 
                 if system_service:
+                    logger.debug(
+                        "[LogManagerWidget] SystemManagerService可用，开始查询日志"
+                    )  # 改为debug
                     # 获取最近1000条日志
                     result = system_service.query_logs(limit=1000)
-                    
-                    # 调度回主线程更新UI
-                    QTimer.singleShot(0, lambda r=result: self._handle_logs_result(r, system_service))
+                    logger.debug(
+                        f"[LogManagerWidget] 查询完成，success={result.get('success')}, 记录数={len(result.get('logs', []))}"
+                    )  # 改为debug
+
+                    # 🔧 关键修复：使用信号传递结果到主线程（Qt推荐的跨线程通信方式）
+                    self.logs_query_completed.emit(result)
                 else:
+                    logger.warning("[LogManagerWidget] SystemManagerService不可用")  # 保留warning
                     # 服务不可用，调度错误消息到主线程
                     QTimer.singleShot(0, lambda: self._handle_service_unavailable())
-                    
+
             except Exception as e:
+                logger.error(f"[LogManagerWidget] 查询异常: {e}", exc_info=True)
                 # 调度错误消息到主线程
                 QTimer.singleShot(0, lambda err=str(e): self._handle_query_error(err))
-        
+
         # 启动后台线程
         thread = threading.Thread(target=query_in_background, daemon=True)
         thread.start()
-    
-    def _handle_logs_result(self, result: Dict[str, Any], system_service) -> None:
-        """处理日志查询结果（主线程）."""
+
+    def _handle_logs_result(self, result: Dict[str, Any]) -> None:
+        """处理日志查询结果（主线程）.
+
+        Args:
+            result: 查询结果字典
+        """
+        import logging
+
+        logger = logging.getLogger(__name__)
+
         try:
+            logger.debug(
+                f"[LogManagerWidget] _handle_logs_result被调用，success={result.get('success')}"
+            )  # 改为debug
             if result.get("success"):
                 self.log_records = result.get("logs", [])
-                
+                logger.debug(
+                    f"[LogManagerWidget] log_records已更新，数量={len(self.log_records)}"
+                )  # 改为debug
+
                 # 动态更新模块列表
                 self._update_module_list()
-                
+
                 # 应用筛选
                 self._apply_filters()
+                logger.debug(
+                    f"[LogManagerWidget] display_records数量={len(self.display_records)}"
+                )  # 改为debug
             else:
+                logger.error(f"[LogManagerWidget] 查询失败: {result.get('message')}")
                 QMessageBox.warning(self, "错误", f"获取日志失败: {result.get('message')}")
         finally:
             # 恢复刷新按钮
-            if hasattr(self, 'refresh_btn'):
+            if hasattr(self, "refresh_btn"):
                 self.refresh_btn.setEnabled(True)
                 self.refresh_btn.setText("刷新")
-    
+
     def _handle_service_unavailable(self) -> None:
         """处理服务不可用（主线程）."""
         QMessageBox.warning(self, "错误", "系统管理服务不可用")
-        if hasattr(self, 'refresh_btn'):
+        if hasattr(self, "refresh_btn"):
             self.refresh_btn.setEnabled(True)
             self.refresh_btn.setText("刷新")
-    
+
     def _handle_query_error(self, error_msg: str) -> None:
         """处理查询错误（主线程）."""
         QMessageBox.critical(self, "错误", f"刷新日志失败: {error_msg}")
-        if hasattr(self, 'refresh_btn'):
+        if hasattr(self, "refresh_btn"):
             self.refresh_btn.setEnabled(True)
             self.refresh_btn.setText("刷新")
 
     def _export_logs(self) -> None:
-        """导出日志."""
+        """导出日志（优先导出选中的，无选中则导出当前筛选结果）."""
         try:
+            # 检查是否有选中的日志
+            selected_records = self.log_model.get_selected_records()
+
+            # 如果有选中，导出选中的；否则导出全部筛选结果
+            if selected_records:
+                export_data = selected_records
+                default_name = f"logs_selected_{len(selected_records)}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            else:
+                export_data = self.display_records
+                default_name = f"logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+
             # 选择保存路径
             file_path, _ = QFileDialog.getSaveFileName(
-                self,
-                "导出日志",
-                f"logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-                "文本文件 (*.txt);;所有文件 (*.*)",
+                self, "导出日志", default_name, "文本文件 (*.txt);;所有文件 (*.*)"
             )
 
             if not file_path:
                 return
 
-            # 调用后端API导出日志
-            service_manager = get_service_manager()
-            system_service = service_manager.get_service("system_manager_service", silent=True)
+            # 直接写入文件（本地导出，不需要后端API）
+            with open(file_path, "w", encoding="utf-8") as f:
+                for record in export_data:
+                    f.write(f"时间: {record.get('timestamp', '')}\n")
+                    f.write(f"级别: {record.get('level', '')}\n")
+                    f.write(f"模块: {record.get('module', '')}\n")
+                    f.write(f"函数: {record.get('function', '')}\n")
+                    f.write(f"行号: {record.get('line', '')}\n")
+                    f.write(f"消息: {record.get('message', '')}\n")
+                    if record.get("exception"):
+                        f.write(f"异常: {record.get('exception')}\n")
+                    f.write("-" * 80 + "\n\n")
 
-            if system_service:
-                # 获取筛选条件
-                level_text = self.level_combo.currentText()
-                level = level_text if level_text != "全部" else None
-
-                module_text = self.module_combo.currentText()
-                module = module_text if module_text != "全部" else None
-
-                start_time = self.start_time_edit.dateTime().toString("yyyy-MM-ddTHH:mm:ss")
-                end_time = self.end_time_edit.dateTime().toString("yyyy-MM-ddTHH:mm:ss")
-
-                # 搜索文本（当前未使用，后续可扩展）
-                search_text = self.search_edit.text().strip()
-
-                # 导出日志
-                result = system_service.export_logs(
-                    file_path=file_path,
-                    level=level,
-                    start_time=start_time,
-                    end_time=end_time,
-                    module=module,
-                )
-
-                if result.get("success"):
-                    QMessageBox.information(self, "成功", f"日志已导出到: {file_path}")
-                else:
-                    QMessageBox.warning(self, "错误", f"导出失败: {result.get('message')}")
-            else:
-                QMessageBox.warning(self, "错误", "系统管理服务不可用")
+            QMessageBox.information(
+                self, "导出成功", f"已导出 {len(export_data)} 条日志到:\n{file_path}"
+            )
 
         except Exception as e:
             QMessageBox.critical(self, "错误", f"导出日志失败: {str(e)}")
@@ -1043,15 +1208,114 @@ class LogManagerWidget(QWidget):
     def _clear_display(self) -> None:
         """清空显示."""
         self.display_records.clear()
-        self.log_table.setRowCount(0)
+        # 🔧 使用Model清空数据
+        self.log_model.clear()
         self._update_stats()
+
+    def _on_header_clicked(self, logical_index: int) -> None:
+        """处理表头点击（第一列时全选/取消全选）.
+
+        Args:
+            logical_index: 被点击的列索引
+        """
+        if logical_index == 0:  # 复选框列
+            if (
+                self.log_model.get_selected_count() == len(self.display_records)
+                and len(self.display_records) > 0
+            ):
+                # 当前全选，改为取消全选
+                self.log_model.clear_selection()
+            else:
+                # 当前未全选，改为全选
+                self.log_model.select_all()
+            self._update_stats()  # 更新统计信息显示选中数
+
+    def _delete_selected_logs(self) -> None:
+        """删除选中的日志."""
+        selected_records = self.log_model.get_selected_records()
+
+        if not selected_records:
+            QMessageBox.information(self, "提示", "请先选择要删除的日志")
+            return
+
+        # 二次确认
+        reply = QMessageBox.question(
+            self,
+            "确认删除",
+            f"确定要删除选中的 {len(selected_records)} 条日志吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            service_manager = get_service_manager()
+            system_service = service_manager.get_service("system_manager_service", silent=True)
+
+            if system_service:
+                # 提取日志ID列表
+                log_ids = [record.get("id") for record in selected_records if record.get("id")]
+
+                if not log_ids:
+                    QMessageBox.warning(self, "错误", "选中的日志没有有效的ID，无法删除")
+                    return
+
+                result = system_service.delete_logs_by_ids(log_ids)
+                if result.get("success"):
+                    QMessageBox.information(
+                        self, "删除成功", f"已删除 {result.get('deleted_count', 0)} 条日志"
+                    )
+                    self._refresh_logs()
+                else:
+                    QMessageBox.warning(self, "删除失败", result.get("message"))
+            else:
+                QMessageBox.warning(self, "错误", "系统管理服务不可用")
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"删除日志失败: {str(e)}")
+
+    def _delete_all_logs(self) -> None:
+        """删除所有日志（需要输入delete确认）."""
+        # 弹出输入对话框
+        text, ok = QInputDialog.getText(
+            self,
+            "危险操作确认",
+            "此操作将永久删除数据库中的所有日志记录！\n请输入 'delete' 确认：",
+            QLineEdit.EchoMode.Normal,
+            "",
+        )
+
+        if not ok or text != "delete":
+            if ok:  # 用户点了确定但输入错误
+                QMessageBox.warning(self, "取消操作", "输入不匹配，操作已取消")
+            return
+
+        # 调用后端API删除所有日志
+        try:
+            service_manager = get_service_manager()
+            system_service = service_manager.get_service("system_manager_service", silent=True)
+
+            if system_service:
+                result = system_service.delete_all_logs()
+                if result.get("success"):
+                    QMessageBox.information(
+                        self, "删除成功", f"已删除 {result.get('deleted_count', 0)} 条日志记录"
+                    )
+                    # 刷新UI
+                    self._refresh_logs()
+                else:
+                    QMessageBox.warning(self, "删除失败", result.get("message", "未知错误"))
+            else:
+                QMessageBox.warning(self, "错误", "系统管理服务不可用")
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"删除日志失败: {str(e)}")
 
     def _show_log_detail(self, index) -> None:
         """显示日志详情."""
-        if index.row() >= len(self.display_records):
+        # 🔧 使用Model获取数据
+        record = self.log_model.get_record(index.row())
+        if not record:
             return
-
-        record = self.display_records[index.row()]
 
         # 创建详情对话框
         detail_text = f"""
@@ -1092,10 +1356,10 @@ class LogManagerWidget(QWidget):
         if self.update_timer:
             self.update_timer.stop()
 
-        # 每5秒自动刷新一次
+        # 🔧 修复：增加刷新间隔，从5秒改为30秒，减少刷屏和性能开销
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self._refresh_logs)
-        self.update_timer.start(5000)  # 5秒
+        self.update_timer.start(30000)  # 30秒
 
     def stop_update_timer(self) -> None:
         """停止更新定时器."""
@@ -1116,11 +1380,18 @@ class LogManagerWidget(QWidget):
 
     def _init_after_backend(self) -> None:
         """在后端与UI就绪后启动刷新与定时器."""
+        import logging
+
+        logger = logging.getLogger(__name__)
+        logger.info("[LogManagerWidget] _init_after_backend被调用")
+
         try:
             # 先做一次首刷
+            logger.info("[LogManagerWidget] 开始首次刷新")
             self._refresh_logs()
         finally:
             # 启动定时器
+            logger.info("[LogManagerWidget] 启动更新定时器")
             self.start_update_timer()
 
     def get_current_filters(self) -> Dict[str, Any]:
@@ -1183,6 +1454,9 @@ class SystemManager(BaseWidget, LoggerMixin):
     # 定义信号用于跨线程通信
     reader_progress_signal = Signal(int, int, str, bool)  # current, total, info, success
     reader_finished_signal = Signal(dict)  # result
+
+    # 🔥 新增：用于线程安全的UI更新信号
+    ui_update_signal = Signal(dict)  # metrics_data
 
     def __init__(self, parent=None):
         """初始化系统管理界面."""
@@ -1376,12 +1650,7 @@ class SystemManager(BaseWidget, LoggerMixin):
         self.cleaner_clean_btn: Optional[QPushButton] = None
         self._cleaner_corrupted_files: List[str] = []  # 缓存扫描到的损坏文件列表
 
-        # 新增：事件引擎
-        from backend.core.base import get_event_engine
-
-        self.event_engine: Optional[Any] = get_event_engine()
-
-        # 🔧 关键修复：在调用父类初始化之前就初始化服务
+        # 🔧 架构修复：在调用父类初始化之前就初始化服务
         # 因为 super().__init__() 会调用 setup_ui()，而 setup_ui() 会创建标签页
         # 标签页创建时会调用 _load_config()，此时需要 system_service 已经就绪
         self._initialize_service_before_ui()
@@ -1389,13 +1658,44 @@ class SystemManager(BaseWidget, LoggerMixin):
         # 调用父类初始化
         super().__init__(parent, "系统管理")
 
+        # 🔍 调试注入：使用专门的DEBUG文件日志
+        try:
+            import sys
+
+            if "__debug_logger__" in sys.modules:
+                self._debug_logger = sys.modules["__debug_logger__"]
+                self._debug_logger.info("=" * 60)
+                self._debug_logger.info("SystemManager 调试会话开始")
+                self._debug_logger.info("=" * 60)
+            else:
+                self._debug_logger = self.logger
+        except:
+            self._debug_logger = self.logger
+
+        # 🔧 关键修复：缓存EventEngine实例，避免property动态获取导致的多线程竞态
+        # 必须在 super().__init__() 之后，因为 _init_event_engine_cache() 使用 self.logger
+        self._cached_event_engine: Optional[Any] = None
+        self._init_event_engine_cache()
+
+        # 🔍 创建专门的DEBUG文件日志（用于调试，不影响终端输出）
+        self._setup_debug_file_logger()
+
         # 🔧 新增：UI更新节流机制（避免频繁渲染）- 使用原子操作避免锁
         self._last_ui_update_time = 0.0
         self._ui_update_interval = 1.0  # 至少间隔1秒更新一次UI（降低频率）
         self._pending_update_scheduled = False  # 标记是否已有待处理的更新
 
-        # 注册监控事件（事件驱动架构）
-        self._register_monitoring_events()
+        # 🔧 关键修复：延迟事件订阅，等EventEngine可用时再订阅
+        self._events_subscribed = False  # 标记事件是否已订阅
+
+        # 🔥 FIX: 缓存hardware数据（用于跨事件使用）
+        self._cached_hardware_data = {}
+
+        self._start_delayed_event_subscription()
+
+        # 🔥 连接线程安全的UI更新信号
+        self.ui_update_signal.connect(self._do_throttled_ui_update)
+        print("[SystemManager] ✅ UI更新信号已连接")
 
         # 启动数据源连通性定时更新（每10秒刷新一次）
         self.datasource_connectivity_timer = QTimer(self)
@@ -1405,6 +1705,87 @@ class SystemManager(BaseWidget, LoggerMixin):
         QTimer.singleShot(1000, self._update_datasource_connectivity)
 
         self.logger.info("系统管理界面初始化完成")
+
+    def _init_event_engine_cache(self):
+        """初始化EventEngine缓存（关键修复）.
+
+        缓存EventEngine实例，避免property动态获取导致的多线程竞态条件。
+        确保整个生命周期使用同一个EventEngine引用。
+        """
+        # 优先从SystemManagerService获取（确保与后端使用同一实例）
+        if self.system_service and hasattr(self.system_service, "event_engine"):
+            self._cached_event_engine = self.system_service.event_engine
+            self.logger.info(
+                f"[EventEngine缓存] 从SystemManagerService获取, ID={id(self._cached_event_engine)}"
+            )
+            return
+
+        # 降级方案：从全局获取
+        from backend.core.base import get_event_engine
+
+        self._cached_event_engine = get_event_engine()
+        if self._cached_event_engine:
+            self.logger.warning(
+                f"[EventEngine缓存] 降级：从全局获取, ID={id(self._cached_event_engine)}"
+            )
+        else:
+            self.logger.error("[EventEngine缓存] ❌ 无法获取EventEngine！")
+
+    def _setup_debug_file_logger(self):
+        """设置DEBUG文件日志（不影响终端输出）"""
+        try:
+            import logging
+            from pathlib import Path
+
+            # 确保logs目录存在
+            log_dir = Path("logs")
+            log_dir.mkdir(exist_ok=True)
+
+            # 创建专门的DEBUG logger
+            self._debug_logger = logging.getLogger(f"SystemManager.DEBUG.{id(self)}")
+            self._debug_logger.setLevel(logging.DEBUG)
+            self._debug_logger.propagate = False  # 不传播到父logger
+
+            # 清除旧的handlers
+            for handler in self._debug_logger.handlers[:]:
+                self._debug_logger.removeHandler(handler)
+
+            # 文件handler
+            log_file = log_dir / "systemmanager_debug.log"
+            file_handler = logging.FileHandler(log_file, mode="w", encoding="utf-8")
+            file_handler.setLevel(logging.DEBUG)
+
+            # 格式化器
+            formatter = logging.Formatter(
+                "%(asctime)s.%(msecs)03d - %(levelname)s - %(message)s", datefmt="%H:%M:%S"
+            )
+            file_handler.setFormatter(formatter)
+            self._debug_logger.addHandler(file_handler)
+
+            self._debug_logger.info("=" * 60)
+            self._debug_logger.info("SystemManager DEBUG日志启动")
+            self._debug_logger.info("=" * 60)
+
+            # 强制输出确认
+            print(f"[SystemManager] ✅ DEBUG日志文件已创建: {log_file.absolute()}")
+            self.logger.info(f"✅ DEBUG日志已启用: {log_file}")
+
+        except Exception as e:
+            print(f"[SystemManager] ❌ DEBUG日志设置失败: {e}")
+            import traceback
+
+            traceback.print_exc()
+            self.logger.error(f"DEBUG日志设置失败: {e}", exc_info=True)
+            self._debug_logger = self.logger  # 降级使用普通logger
+
+    @property
+    def event_engine(self):
+        """获取缓存的EventEngine实例.
+
+        Returns:
+            缓存的EventEngine实例，确保整个生命周期使用同一个引用
+        """
+        return self._cached_event_engine
 
     def _load_thresholds_from_config(self) -> Dict[str, Any]:
         """从配置文件加载系统监控阈值.
@@ -1561,6 +1942,11 @@ class SystemManager(BaseWidget, LoggerMixin):
             self.system_service = service_manager.get_service("system_manager_service", silent=True)
             if self.system_service:
                 self.logger.info("✅ 系统管理服务已就绪，启用功能")
+
+                # 🔧 关键修复：重新初始化EventEngine缓存（确保使用service的EventEngine）
+                if not self._cached_event_engine:
+                    self._init_event_engine_cache()
+
                 # 注册监控事件
                 if not hasattr(self, "_monitoring_events_registered"):
                     self._register_monitoring_events()
@@ -1604,6 +1990,9 @@ class SystemManager(BaseWidget, LoggerMixin):
 
     def _safe_create_sub_interfaces(self):
         """安全延迟创建子界面（失败显示错误占位，不让应用崩溃）."""
+        self.logger.info("=" * 70)
+        self.logger.info("[SystemManager] _safe_create_sub_interfaces 被调用")
+        self.logger.info("=" * 70)
         try:
             # 清理占位Tab
             if (
@@ -1611,11 +2000,15 @@ class SystemManager(BaseWidget, LoggerMixin):
                 and self.tab_widget.count() > 0
                 and self.tab_widget.tabText(0) == "加载中"
             ):
+                self.logger.info("[SystemManager] 清理占位Tab")
                 self.tab_widget.removeTab(0)
             # 实际创建
+            self.logger.info("[SystemManager] 开始创建子界面...")
             self._create_sub_interfaces()
+            self.logger.info("[SystemManager] 子界面创建完成")
         except Exception as e:
             # 创建失败，显示错误占位
+            self.logger.error("[SystemManager] 子界面创建失败: %s", e, exc_info=True)
             error_tab = QWidget()
             layout = QVBoxLayout(error_tab)
             layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1628,25 +2021,35 @@ class SystemManager(BaseWidget, LoggerMixin):
 
     def _create_sub_interfaces(self):
         """创建8个子界面（按新顺序）."""
+        self.logger.info("[SystemManager] _create_sub_interfaces 开始执行")
+
         # 1. 系统状态监控
+        self.logger.info("[SystemManager] 创建系统状态监控Tab...")
         self.system_status_tab = self._create_system_status_tab()
         if self.tab_widget:
             self.tab_widget.addTab(self.system_status_tab, "🔍 系统状态监控")
+        self.logger.info("[SystemManager] ✅ 系统状态监控Tab创建完成")
 
         # 2. 性能指标
+        self.logger.info("[SystemManager] 创建性能指标Tab...")
         self.performance_tab = self._create_performance_tab()
         if self.tab_widget:
             self.tab_widget.addTab(self.performance_tab, "📊 性能指标")
+        self.logger.info("[SystemManager] ✅ 性能指标Tab创建完成")
 
         # 3. 服务监控（重构）
+        self.logger.info("[SystemManager] 创建服务监控Tab...")
         self.services_tab = self._create_services_tab()
         if self.tab_widget:
             self.tab_widget.addTab(self.services_tab, "💚 服务监控")
+        self.logger.info("[SystemManager] ✅ 服务监控Tab创建完成")
 
         # 4. 进程监控（新设计）
+        self.logger.info("[SystemManager] 创建进程监控Tab...")
         self.process_monitor_tab = self._create_process_monitor_tab()
         if self.tab_widget:
             self.tab_widget.addTab(self.process_monitor_tab, "🔧 进程监控")
+        self.logger.info("[SystemManager] ✅ 进程监控Tab创建完成")
 
         # 保留原诊断Tab作为兼容（可选）
         # self.diagnosis_tab = self._create_diagnosis_tab()
@@ -1654,14 +2057,18 @@ class SystemManager(BaseWidget, LoggerMixin):
         #     self.tab_widget.addTab(self.diagnosis_tab, "🔍 系统诊断（旧版）")
 
         # 5. 告警管理
+        self.logger.info("[SystemManager] 创建告警管理Tab...")
         self.alerts_tab = self._create_alerts_tab()
         if self.tab_widget:
             self.tab_widget.addTab(self.alerts_tab, "🚨 告警管理")
+        self.logger.info("[SystemManager] ✅ 告警管理Tab创建完成")
 
         # 6. 日志管理
+        self.logger.info("[SystemManager] 创建日志管理Tab...")
         self.logs_tab = self._create_logs_tab()
         if self.tab_widget:
             self.tab_widget.addTab(self.logs_tab, "📝 日志管理")
+        self.logger.info("[SystemManager] ✅ 日志管理Tab创建完成")
 
         # 7. 系统配置
         self.config_tab = self._create_config_tab()
@@ -1673,11 +2080,50 @@ class SystemManager(BaseWidget, LoggerMixin):
         if self.tab_widget:
             self.tab_widget.addTab(self.tools_tab, "🛠️ 系统工具")
 
-    def _register_monitoring_events(self):
-        """注册监控事件（事件驱动架构核心）."""
-        if not self.event_engine:
-            self.logger.warning("EventEngine不可用，无法订阅监控事件")
+    def _start_delayed_event_subscription(self):
+        """启动延迟事件订阅机制（等待EventEngine可用）."""
+        # 立即尝试一次
+        if self._try_subscribe_events():
             return
+
+        # 如果失败，启动定时器每秒重试
+        self._event_subscription_timer = QTimer(self)
+        self._event_subscription_timer.timeout.connect(self._try_subscribe_events)
+        self._event_subscription_timer.start(1000)  # 每秒重试
+        self.logger.info("EventEngine暂时不可用，启动定时器等待（每秒重试）")
+
+    def _try_subscribe_events(self) -> bool:
+        """尝试订阅事件.
+
+        Returns:
+            bool: 是否订阅成功
+        """
+        if self._events_subscribed:
+            return True
+
+        # 使用property动态获取EventEngine（无需赋值）
+        if not self.event_engine:
+            return False
+
+        # EventEngine可用，立即订阅
+        if self._register_monitoring_events():
+            self._events_subscribed = True
+            # 停止重试定时器
+            if hasattr(self, "_event_subscription_timer") and self._event_subscription_timer:
+                self._event_subscription_timer.stop()
+            self.logger.info("✅ EventEngine已就绪，事件订阅成功")
+            return True
+
+        return False
+
+    def _register_monitoring_events(self) -> bool:
+        """注册监控事件（事件驱动架构核心）.
+
+        Returns:
+            bool: 是否注册成功
+        """
+        if not self.event_engine:
+            return False
 
         from backend.core.monitoring_events import (
             EVENT_SYSTEM_METRICS,
@@ -1703,6 +2149,7 @@ class SystemManager(BaseWidget, LoggerMixin):
         self.event_engine.register(EVENT_SERVICE_MONITORING, self._on_service_monitoring_event)
 
         self.logger.info("✅ 已订阅监控事件（事件驱动模式）")
+        return True
 
     # ========== 事件处理器（事件驱动架构核心）==========
 
@@ -1711,13 +2158,18 @@ class SystemManager(BaseWidget, LoggerMixin):
         try:
             # 检查是否应该更新
             current_time = time.time()
-            if current_time - self._last_ui_update_time < self._ui_update_interval:
+            time_since_last = current_time - self._last_ui_update_time
+            if time_since_last < self._ui_update_interval:
                 # 距离上次更新太近，跳过本次更新
+                self._debug_logger.info(
+                    f"[UIUpdate] 节流跳过（距上次 {time_since_last:.2f}s < {self._ui_update_interval}s）"
+                )
                 return
-            
+
             # 更新UI
+            self._debug_logger.debug("[UIUpdate] 开始更新UI")
             self._update_system_status_from_data(metrics)
-            
+
             # 更新动态阈值显示
             if "thresholds" in metrics:
                 self._update_thresholds_display(metrics["thresholds"])
@@ -1725,37 +2177,60 @@ class SystemManager(BaseWidget, LoggerMixin):
             # 更新并发任务统计显示
             if "concurrent_tasks" in metrics:
                 self._update_concurrent_tasks_display(metrics["concurrent_tasks"])
-            
-            # 更新时间戳和标记
+
+            # 更新时间戳
             self._last_ui_update_time = current_time
-            self._pending_update_scheduled = False
-            
+            self._debug_logger.debug("[UIUpdate] UI更新完成")
+
         except Exception as e:
-            self.logger.error("UI更新失败: %s", e)
+            self._debug_logger.error("[UIUpdate] UI更新失败: %s", e, exc_info=True)
+        finally:
+            # 🔧 关键修复：无论成功/失败/提前返回，都要重置标志
             self._pending_update_scheduled = False
+            self._debug_logger.debug("[UIUpdate] 节流标志已重置")
 
     def _on_system_metrics_event(self, event):
         """处理系统指标事件（独立，不依赖其他数据）- 无锁设计避免死锁."""
         try:
+            # 首次接收时记录日志
+            if not hasattr(self, "_first_event_logged"):
+                self.logger.info("✅ 系统监控事件流已建立")
+                self._first_event_logged = True
+
+            # 事件计数
+            if not hasattr(self, "_event_counter"):
+                self._event_counter = 0
+            self._event_counter += 1
+
+            # DEBUG日志
+            if hasattr(self, "_debug_logger") and self._event_counter % 10 == 0:
+                self._debug_logger.debug(f"[EventHandler] 已接收 {self._event_counter} 个事件")
+
             metrics = event.data
             if not metrics:
+                self._debug_logger.warning("[EventHandler] 数据为空")
                 return
 
-            # 🔧 使用简化的节流机制：只在主线程检查时间间隔
-            # 避免在后台线程使用锁，防止死锁
-            
             # 如果已有待处理的更新，跳过本次
             if self._pending_update_scheduled:
+                if hasattr(self, "_debug_logger"):
+                    self._debug_logger.debug(
+                        f"[EventHandler] 已有待处理更新，跳过（事件#{self._event_counter}）"
+                    )
                 return
-            
+
             # 标记有待处理的更新
             self._pending_update_scheduled = True
-            
-            # 调度到主线程执行（带节流检查）
-            QTimer.singleShot(0, lambda m=metrics.copy(): self._do_throttled_ui_update(m))
+
+            # DEBUG日志
+            if hasattr(self, "_debug_logger"):
+                self._debug_logger.debug(f"[EventHandler] 安排UI更新（事件#{self._event_counter}）")
+
+            # 使用信号发射，线程安全调度到主线程
+            self.ui_update_signal.emit(metrics.copy())
 
         except Exception as e:
-            self.logger.error("处理系统指标事件失败: %s", e)
+            self.logger.error("处理系统指标事件失败: %s", e, exc_info=True)
             self._pending_update_scheduled = False
 
     def _on_hardware_sensors_event(self, event):
@@ -1764,6 +2239,9 @@ class SystemManager(BaseWidget, LoggerMixin):
             hardware_data = event.data
             if not hardware_data:
                 return
+
+            # 🔥 FIX: 缓存hardware数据，供system事件使用
+            self._cached_hardware_data = hardware_data.copy()
 
             # 复用现有的更新逻辑
             self._update_hardware_sensors_from_data(hardware_data)
@@ -1891,49 +2369,109 @@ class SystemManager(BaseWidget, LoggerMixin):
         super().closeEvent(event)
 
     def _update_system_status_from_data(self, metrics: Dict[str, Any]):
-        """从监控数据更新系统状态显示."""
+        """从监控数据更新系统状态显示（重构版：支持热力图+趋势图）."""
         try:
-            # 🔥 关键修复：更新MetricCard卡片
-            self._update_metric_cards(metrics)
-
-            # 更新CPU图表
+            # 提取基础指标
             cpu_percent = metrics.get("cpu_percent", 0)
-            if self.cpu_chart:
-                self._update_line_chart(self.cpu_chart, "cpu", cpu_percent)
-
-            # 更新内存图表
             memory_percent = metrics.get("memory_percent", 0)
-            if self.memory_chart:
-                self._update_line_chart(self.memory_chart, "memory", memory_percent)
-
-            # 更新磁盘I/O图表
             disk_io_speed = metrics.get("disk_io_speed", {})
-            if disk_io_speed:
-                self._update_disk_io_chart(disk_io_speed)
-
-            # 更新网络速度图表
             network_speed = metrics.get("network_speed", {})
+
+            # 🔥 FIX: 磁盘I/O速度数据结构修复
+            # 后端返回的read_speed/write_speed已经是MB/s，不需要再除以1024
+            disk_io_data = {}
+            if disk_io_speed:
+                for disk_name, speeds in disk_io_speed.items():
+                    if isinstance(speeds, dict):
+                        read_speed = speeds.get("read_speed", 0)  # 已经是MB/s
+                        write_speed = speeds.get("write_speed", 0)  # 已经是MB/s
+                        disk_io_data[disk_name] = {"read": read_speed, "write": write_speed}
+
+            # 🔥 FIX: 网络速度数据修复
+            # 后端返回的是KB/s，需要除以1024转换为MB/s
+            network_upload_mbps = 0.0
+            network_download_mbps = 0.0
             if network_speed:
-                self._update_network_chart(network_speed)
+                upload_kbps = network_speed.get("upload_speed_kbps", 0)
+                download_kbps = network_speed.get("download_speed_kbps", 0)
+                network_upload_mbps = upload_kbps / 1024  # KB/s -> MB/s
+                network_download_mbps = download_kbps / 1024  # KB/s -> MB/s
 
-            # 更新磁盘空间图表
-            disk_info = metrics.get("disk_info", {})
-            if disk_info:
-                self._update_disk_space_chart(disk_info)
+            # 获取磁盘使用率
+            disk_percent = metrics.get("disk_percent", 0)
 
-            # 更新温度图表和卡片
-            temperature = metrics.get("temperature", {})
-            if temperature:
-                self._update_temperature_chart(temperature)
-                self._update_temperature_cards(temperature)
+            # 获取CPU温度（🔥 FIX: 使用缓存的hardware数据）
+            cpu_temp = 0.0
+            # system事件不包含hardware数据，使用缓存的hardware数据
+            hardware_data = getattr(self, "_cached_hardware_data", {})
+            if hardware_data:
+                temperature_data = hardware_data.get("temperature", {})
+                for device, sensors in temperature_data.items():
+                    if sensors and isinstance(sensors, list) and len(sensors) > 0:
+                        if any(
+                            keyword in device
+                            for keyword in ["CPU", "ACPI", "processor", "Ryzen", "Intel"]
+                        ):
+                            cpu_temp = sensors[0].get("current", 0)
+                            break
+
+            # 更新热力图组件（系统状态监控Tab专用）
+            if hasattr(self, "status_heatmap_cpu_usage"):
+                self.status_heatmap_cpu_usage.update_value(cpu_percent)
+            if hasattr(self, "status_heatmap_memory_usage"):
+                self.status_heatmap_memory_usage.update_value(memory_percent)
+
+            # 🔥 FIX: 动态创建和更新每个磁盘的读写热力图
+            if hasattr(self, "status_heatmap_disks") and hasattr(self, "disk_heatmap_layout"):
+                for disk_name, io_data in disk_io_data.items():
+                    # 如果磁盘热力图不存在，则动态创建
+                    if disk_name not in self.status_heatmap_disks:
+                        # 创建该磁盘的读热力图
+                        read_heatmap = ThresholdHeatmap(
+                            f"{disk_name} 读",
+                            "MB/s",
+                            warning_threshold=100,
+                            critical_threshold=200,
+                            max_value=300,
+                        )
+                        self.disk_heatmap_layout.addWidget(read_heatmap)
+
+                        # 创建该磁盘的写热力图
+                        write_heatmap = ThresholdHeatmap(
+                            f"{disk_name} 写",
+                            "MB/s",
+                            warning_threshold=80,
+                            critical_threshold=150,
+                            max_value=250,
+                        )
+                        self.disk_heatmap_layout.addWidget(write_heatmap)
+
+                        # 保存到字典
+                        self.status_heatmap_disks[disk_name] = {
+                            "read": read_heatmap,
+                            "write": write_heatmap,
+                        }
+
+                    # 更新热力图值
+                    self.status_heatmap_disks[disk_name]["read"].update_value(io_data["read"])
+                    self.status_heatmap_disks[disk_name]["write"].update_value(io_data["write"])
+
+            # 🔥 FIX: 更新网络上传和下载热力图
+            if hasattr(self, "status_heatmap_network_upload"):
+                self.status_heatmap_network_upload.update_value(network_upload_mbps)
+            if hasattr(self, "status_heatmap_network_download"):
+                self.status_heatmap_network_download.update_value(network_download_mbps)
+
+            if hasattr(self, "status_heatmap_disk_usage"):
+                self.status_heatmap_disk_usage.update_value(disk_percent)
+            if hasattr(self, "status_heatmap_cpu_temp"):
+                self.status_heatmap_cpu_temp.update_value(cpu_temp)
+
+            # 🔥 FIX: 已删除时间趋势折线图更新逻辑
 
             # 更新详细数据表格
-            if self.status_details_table:
+            if hasattr(self, "status_details_table") and self.status_details_table:
                 self._update_status_details_table(metrics)
-
-            # 更新热力图
-            if hasattr(self, "heatmap_cpu"):
-                self._update_heatmaps(metrics)
 
         except Exception as e:
             self.logger.error("更新系统状态显示失败: %s", e)
@@ -2068,91 +2606,90 @@ class SystemManager(BaseWidget, LoggerMixin):
     # ==================== 1.1 系统状态监控 ====================
 
     def _create_system_status_tab(self) -> QWidget:
-        """创建系统状态监控子界面（左右布局，紧凑优化版）."""
+        """创建系统状态监控子界面（重构版：深色极简，热力图+趋势图）."""
         tab = QWidget()
         main_layout = QVBoxLayout(tab)
-        main_layout.setSpacing(5)
+        main_layout.setSpacing(8)
         main_layout.setContentsMargins(8, 8, 8, 8)
 
         # 工具栏
         toolbar = QHBoxLayout()
         toolbar.setSpacing(10)
         title_label = QLabel("🔍 系统状态实时监控")
-        title_label.setStyleSheet(DashboardTheme.get_title_style())
+        title_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #E0E0E0;")
         toolbar.addWidget(title_label)
         toolbar.addStretch()
 
         auto_refresh = QCheckBox("自动刷新（事件驱动）")
         auto_refresh.setChecked(True)
         auto_refresh.setEnabled(False)
-        auto_refresh.setStyleSheet(DashboardTheme.get_checkbox_style())
+        auto_refresh.setStyleSheet("color: #AAA;")
         toolbar.addWidget(auto_refresh)
 
         main_layout.addLayout(toolbar)
 
-        # 主分隔器：左右布局
+        # 主分隔器：左右布局（70:30）
         main_splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        # 左侧区域：瓶颈卡片 + 指标网格 + 图表
-        left_widget = QWidget()
-        left_layout = QVBoxLayout(left_widget)
-        left_layout.setSpacing(6)
-        left_layout.setContentsMargins(0, 0, 0, 0)
+        # 🔥 FIX: 删除时间趋势折线图，只保留热力图
+        # 左侧：实时阈值类热力图
+        heatmap_container = self._create_heatmap_section()
+        main_splitter.addWidget(heatmap_container)
 
-        # 瓶颈提示卡片（紧凑高度）
-        self.bottleneck_card = self._create_bottleneck_card_v2()
-        self.bottleneck_card.setMaximumHeight(70)
-        left_layout.addWidget(self.bottleneck_card)
-
-        # 核心指标网格：2x4 = 8个指标卡片
-        metrics_grid = self._create_metrics_grid()
-        left_layout.addWidget(metrics_grid)
-
-        # 图表区域（紧凑布局）
-        charts_widget = QWidget()
-        charts_layout = QGridLayout(charts_widget)
-        charts_layout.setSpacing(6)
-        charts_layout.setContentsMargins(0, 0, 0, 0)
-
-        # 第1行：CPU和内存
-        self.cpu_chart = self._create_line_chart("CPU使用率 (%)", "#FF6B6B")
-        self.memory_chart = self._create_line_chart("内存使用率 (%)", "#4ECDC4")
-        charts_layout.addWidget(self.cpu_chart, 0, 0)
-        charts_layout.addWidget(self.memory_chart, 0, 1)
-
-        # 第2行：磁盘I/O和网速
-        self.disk_io_chart = self._create_multi_line_chart("磁盘I/O速度 (MB/s)")
-        self.network_speed_chart = self._create_network_chart("网络速度 (KB/s)")
-        charts_layout.addWidget(self.disk_io_chart, 1, 0)
-        charts_layout.addWidget(self.network_speed_chart, 1, 1)
-
-        # 第3行：硬盘空间（跨两列）
-        self.disk_space_chart = self._create_disk_space_chart("硬盘空间占用")
-        charts_layout.addWidget(self.disk_space_chart, 2, 0, 1, 2)
-
-        # 第4行：硬件温度监控
-        self.temperature_chart = self._create_temperature_chart("硬件温度 (°C)")
-        self.temperature_cards_widget = self._create_temperature_cards()
-        charts_layout.addWidget(self.temperature_chart, 3, 0)
-        charts_layout.addWidget(self.temperature_cards_widget, 3, 1)
-
-        # 第5行：SMART健康告警（新增）
-        self.smart_warning_cards_widget = self._create_smart_warning_cards()
-        charts_layout.addWidget(self.smart_warning_cards_widget, 4, 0, 1, 2)
-
-        left_layout.addWidget(charts_widget)
-        main_splitter.addWidget(left_widget)
-
-        # 右侧区域：详细数据表格
+        # 右侧：详细数据表格
         details_group = QGroupBox("📋 详细数据")
+        details_group.setStyleSheet(
+            """
+            QGroupBox {
+                font-size: 12px;
+                font-weight: bold;
+                color: #E0E0E0;
+                border: 1px solid #333;
+                border-radius: 4px;
+                margin-top: 10px;
+                padding-top: 10px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px 0 5px;
+            }
+        """
+        )
         details_layout = QVBoxLayout(details_group)
         details_layout.setSpacing(5)
-        details_layout.setContentsMargins(8, 8, 8, 8)
+        details_layout.setContentsMargins(8, 15, 8, 8)
 
         self.status_details_table = QTableWidget(0, 5)
         self.status_details_table.setHorizontalHeaderLabels(
-            ["指标", "当前值", "平均值", "阈值", "瓶颈状态"]
+            ["指标", "当前值", "平均值", "阈值", "状态"]
         )
+
+        # 深色表格样式
+        self.status_details_table.setStyleSheet(
+            """
+            QTableWidget {
+                background-color: #1E1E1E;
+                color: #E0E0E0;
+                gridline-color: #333;
+                border: 1px solid #333;
+            }
+            QHeaderView::section {
+                background-color: #2A2A2A;
+                color: #E0E0E0;
+                padding: 5px;
+                border: 1px solid #333;
+                font-weight: bold;
+            }
+            QTableWidget::item {
+                padding: 5px;
+            }
+            QTableWidget::item:selected {
+                background-color: #3A3A3A;
+            }
+        """
+        )
+
         header = self.status_details_table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
@@ -2160,14 +2697,13 @@ class SystemManager(BaseWidget, LoggerMixin):
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
 
-        # 设置表格样式使其更紧凑
         self.status_details_table.verticalHeader().setDefaultSectionSize(28)
         self.status_details_table.setAlternatingRowColors(True)
 
         details_layout.addWidget(self.status_details_table)
         main_splitter.addWidget(details_group)
 
-        # 设置分隔比例：左侧占70%，右侧占30%
+        # 设置左右比例 70:30
         main_splitter.setSizes([700, 300])
         main_splitter.setStretchFactor(0, 7)
         main_splitter.setStretchFactor(1, 3)
@@ -2175,6 +2711,68 @@ class SystemManager(BaseWidget, LoggerMixin):
         main_layout.addWidget(main_splitter)
 
         return tab
+
+    def _create_heatmap_section(self) -> QWidget:
+        """创建实时阈值类热力图区域（🔥 FIX: 支持多磁盘读写分离和网络上传下载分离）."""
+        container = QWidget()
+        container.setStyleSheet("background-color: transparent;")
+        layout = QVBoxLayout(container)  # 纵向布局
+        layout.setSpacing(10)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        # 🔥 FIX: 已删除 trend_data 初始化（不再需要趋势图）
+
+        # 1. CPU使用率（阈值：80%警告，90%严重）
+        self.status_heatmap_cpu_usage = ThresholdHeatmap(
+            "CPU使用率", "%", warning_threshold=80, critical_threshold=90, max_value=100
+        )
+        layout.addWidget(self.status_heatmap_cpu_usage)
+
+        # 2. 内存使用率（阈值：75%警告，85%严重）
+        self.status_heatmap_memory_usage = ThresholdHeatmap(
+            "内存使用率", "%", warning_threshold=75, critical_threshold=85, max_value=100
+        )
+        layout.addWidget(self.status_heatmap_memory_usage)
+
+        # 🔥 FIX: 3-N. 动态创建磁盘读写热力图（每个物理磁盘有独立的读和写热力图）
+        # 初始化磁盘热力图字典
+        self.status_heatmap_disks = {}
+        # 创建容器来存放磁盘热力图
+        self.disk_heatmap_container = QWidget()
+        self.disk_heatmap_layout = QVBoxLayout(self.disk_heatmap_container)
+        self.disk_heatmap_layout.setSpacing(4)
+        self.disk_heatmap_layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.disk_heatmap_container)
+
+        # 🔥 FIX: N+1. 网络上传速度（阈值：10MB/s警告，50MB/s严重）
+        self.status_heatmap_network_upload = ThresholdHeatmap(
+            "网络上传", "MB/s", warning_threshold=10, critical_threshold=50, max_value=100
+        )
+        layout.addWidget(self.status_heatmap_network_upload)
+
+        # 🔥 FIX: N+2. 网络下载速度（阈值：50MB/s警告，80MB/s严重）
+        self.status_heatmap_network_download = ThresholdHeatmap(
+            "网络下载", "MB/s", warning_threshold=50, critical_threshold=80, max_value=100
+        )
+        layout.addWidget(self.status_heatmap_network_download)
+
+        # N+3. 磁盘使用率（阈值：80%警告，90%严重）
+        self.status_heatmap_disk_usage = ThresholdHeatmap(
+            "磁盘使用率", "%", warning_threshold=80, critical_threshold=90, max_value=100
+        )
+        layout.addWidget(self.status_heatmap_disk_usage)
+
+        # N+4. CPU温度（阈值：70°C警告，85°C严重）
+        self.status_heatmap_cpu_temp = ThresholdHeatmap(
+            "CPU温度", "°C", warning_threshold=70, critical_threshold=85, max_value=100
+        )
+        layout.addWidget(self.status_heatmap_cpu_temp)
+
+        layout.addStretch()
+        return container
+
+    # 🔥 FIX: 已删除 _create_trend_section() 和 _create_threshold_trend_chart() 方法
+    # 用户要求删除所有时间趋势折线图
 
     # ==================== 1.2 性能指标展示 ====================
 
@@ -2643,10 +3241,131 @@ class SystemManager(BaseWidget, LoggerMixin):
                     conc_text += f"proc={concurrency.get('process_workers', 0)}"
                     self.global_concurrency_label.setText(conc_text)
 
-            # TODO: 更新场景健康度卡片（需要各场景的得分）
+            # 更新场景健康度卡片
+            self._update_scenario_health_cards(summary)
 
         except Exception as e:
             self.logger.error("更新全局概览失败: %s", e)
+
+    def _update_scenario_health_cards(self, summary: Dict[str, Any]):
+        """更新场景健康度卡片
+
+        Args:
+            summary: 系统监控摘要数据
+        """
+        try:
+            scenario_details = summary.get("scenario_details", {})
+
+            # 场景名称映射
+            scenario_mapping = {
+                "data_download": "data_download",
+                "realtime_market": "realtime_quote",
+                "strategy_backtest": "strategy_backtest",
+                "trading_gateway": "realtime_trading",
+                "system_monitor": "system_monitor",
+            }
+
+            # 更新各场景的健康度显示
+            for card_key, scenario_key in scenario_mapping.items():
+                if card_key not in self.scenario_health_cards:
+                    continue
+
+                card = self.scenario_health_cards[card_key]
+                scenario_data = scenario_details.get(scenario_key, {})
+
+                # 计算健康度评分（基于当前值和阈值）
+                health_score = self._calculate_scenario_health(scenario_data)
+                bottleneck = scenario_data.get("bottleneck_analysis", {}).get(
+                    "is_bottleneck", False
+                )
+
+                # 更新评分显示
+                if hasattr(card, "score_label"):
+                    card.score_label.setText(f"{health_score:.0f}")
+
+                    # 根据评分设置颜色
+                    if health_score >= 80:
+                        color = "#10B981"  # 绿色 - 健康
+                    elif health_score >= 60:
+                        color = "#F59E0B"  # 黄色 - 警告
+                    else:
+                        color = "#EF4444"  # 红色 - 异常
+
+                    card.score_label.setStyleSheet(
+                        f"font-size: 24px; font-weight: bold; color: {color};"
+                    )
+
+                # 更新状态文本
+                if hasattr(card, "status_label"):
+                    if bottleneck:
+                        status_text = "存在瓶颈"
+                        status_color = "#F59E0B"
+                    elif health_score >= 80:
+                        status_text = "正常"
+                        status_color = "#10B981"
+                    elif health_score >= 60:
+                        status_text = "警告"
+                        status_color = "#F59E0B"
+                    else:
+                        status_text = "异常"
+                        status_color = "#EF4444"
+
+                    card.status_label.setText(status_text)
+                    card.status_label.setStyleSheet(f"font-size: 11px; color: {status_color};")
+
+        except Exception as e:
+            self.logger.error(f"更新场景健康度卡片失败: {e}")
+
+    def _calculate_scenario_health(self, scenario_data: Dict[str, Any]) -> float:
+        """计算场景健康度评分
+
+        Args:
+            scenario_data: 场景数据
+
+        Returns:
+            健康度评分 (0-100)
+        """
+        try:
+            current_values = scenario_data.get("current_values", {})
+            bottleneck_analysis = scenario_data.get("bottleneck_analysis", {})
+
+            # 基础评分从100开始
+            score = 100.0
+
+            # 如果存在瓶颈，降低评分
+            if bottleneck_analysis.get("is_bottleneck", False):
+                score -= 30
+
+            # 根据具体指标调整评分（示例逻辑）
+            # CPU使用率
+            if "cpu_percent" in current_values:
+                cpu = current_values["cpu_percent"]
+                if cpu > 90:
+                    score -= 20
+                elif cpu > 80:
+                    score -= 10
+
+            # 内存使用率
+            if "memory_percent" in current_values:
+                mem = current_values["memory_percent"]
+                if mem > 90:
+                    score -= 20
+                elif mem > 80:
+                    score -= 10
+
+            # 磁盘使用率
+            if "disk_usage_percent" in current_values:
+                disk = current_values["disk_usage_percent"]
+                if disk > 95:
+                    score -= 15
+                elif disk > 85:
+                    score -= 8
+
+            # 确保评分在0-100范围内
+            return max(0.0, min(100.0, score))
+
+        except Exception:
+            return 50.0  # 默认中等评分
 
     def _update_download_scenario(self, summary: Dict[str, Any]):
         """更新数据下载场景."""
@@ -2667,6 +3386,11 @@ class SystemManager(BaseWidget, LoggerMixin):
                 self.download_metrics_labels["io_latency"].setText(
                     f"{current_values['io_latency_ms']:.1f} ms"
                 )
+            # TODO #9: 下载并发数
+            if "download_concurrency" in current_values:
+                self.download_metrics_labels["concurrency"].setText(
+                    f"{current_values['download_concurrency']:.0f}"
+                )
 
             # 更新瓶颈分析
             bottleneck_reason = scenario_details.get("bottleneck_reason", "正常")
@@ -2686,6 +3410,15 @@ class SystemManager(BaseWidget, LoggerMixin):
             current_values = scenario_details.get("current_values", {})
 
             # 更新指标
+            # TODO #10: 事件队列深度和处理延迟
+            if "event_queue_depth" in current_values:
+                self.realtime_metrics_labels["event_queue"].setText(
+                    f"{current_values['event_queue_depth']:.0f}"
+                )
+            if "processing_latency" in current_values:
+                self.realtime_metrics_labels["processing_latency"].setText(
+                    f"{current_values['processing_latency']:.2f}"
+                )
             if "context_switches_per_sec" in current_values:
                 self.realtime_metrics_labels["context_switches"].setText(
                     f"{current_values['context_switches_per_sec']:.0f}"
@@ -3374,8 +4107,11 @@ class SystemManager(BaseWidget, LoggerMixin):
 
     def _create_logs_tab(self) -> QWidget:
         """创建日志管理子界面."""
+        self.logger.info("[SystemManager] _create_logs_tab 开始执行")
         # 创建日志管理组件
+        self.logger.info("[SystemManager] 正在创建LogManagerWidget实例...")
         self.log_manager_widget = LogManagerWidget()
+        self.logger.info("[SystemManager] ✅ LogManagerWidget实例创建成功")
 
         return self.log_manager_widget
 
@@ -6423,10 +7159,71 @@ class SystemManager(BaseWidget, LoggerMixin):
                 self._update_temperature_cards(temperature_data)
                 self._update_temperature_chart(temperature_data)
 
-            # TODO: 可以在此添加其他硬件数据的更新（功率、电压、风扇等）
+            # 更新扩展硬件数据（功率、电压、风扇等）
+            self._update_extended_hardware_data(hardware_data)
 
         except Exception as e:
             self.logger.error("更新硬件传感器数据失败: %s", e, exc_info=True)
+
+    def _update_extended_hardware_data(self, hardware_data: Dict[str, Any]):
+        """更新扩展硬件数据（功率、电压、风扇等）
+
+        Args:
+            hardware_data: 硬件数据字典
+        """
+        try:
+            # 1. 更新功率数据
+            if "power" in hardware_data:
+                power_data = hardware_data["power"]
+                if hasattr(self, "power_usage_label"):
+                    total_power = power_data.get("total_watts", 0)
+                    self.power_usage_label.setText(f"{total_power:.1f} W")
+
+                # 电池信息（如果是笔记本）
+                if "battery_percent" in power_data and hasattr(self, "battery_label"):
+                    battery_pct = power_data.get("battery_percent", 0)
+                    plugged = power_data.get("power_plugged", False)
+                    status = "充电中" if plugged else "使用电池"
+                    self.battery_label.setText(f"{status}: {battery_pct:.0f}%")
+
+            # 2. 更新电压数据
+            if "voltage" in hardware_data:
+                voltage_data = hardware_data["voltage"]
+                if hasattr(self, "voltage_label"):
+                    cpu_voltage = voltage_data.get("cpu_voltage", 0)
+                    self.voltage_label.setText(f"{cpu_voltage:.2f} V")
+
+            # 3. 更新风扇数据
+            if "fans" in hardware_data:
+                fans_data = hardware_data["fans"]
+                for idx, fan in enumerate(fans_data):
+                    fan_label = getattr(self, f"fan_{idx}_label", None)
+                    if fan_label:
+                        rpm = fan.get("rpm", 0)
+                        fan_name = fan.get("name", f"风扇{idx+1}")
+                        fan_label.setText(f"{fan_name}: {rpm} RPM")
+
+            # 4. 更新GPU数据（如果有）
+            if "gpu" in hardware_data:
+                gpu_data = hardware_data["gpu"]
+                if hasattr(self, "gpu_power_label"):
+                    gpu_power = gpu_data.get("power_watts", 0)
+                    self.gpu_power_label.setText(f"{gpu_power:.1f} W")
+
+                if hasattr(self, "gpu_voltage_label"):
+                    gpu_voltage = gpu_data.get("voltage", 0)
+                    self.gpu_voltage_label.setText(f"{gpu_voltage:.3f} V")
+
+                if hasattr(self, "gpu_temp_label"):
+                    gpu_temp = gpu_data.get("temperature", 0)
+                    self.gpu_temp_label.setText(f"{gpu_temp:.1f} °C")
+
+                if hasattr(self, "gpu_util_label"):
+                    gpu_util = gpu_data.get("utilization", 0)
+                    self.gpu_util_label.setText(f"{gpu_util:.1f}%")
+
+        except Exception as e:
+            self.logger.debug(f"更新扩展硬件数据失败（部分硬件不支持）: {e}")
 
     def _update_bottleneck_card(self, bottleneck_data: Dict[str, Any]):
         """更新瓶颈提示卡片（并缓存瓶颈维度供详细表格使用）.
@@ -6441,6 +7238,14 @@ class SystemManager(BaseWidget, LoggerMixin):
             }
         """
         try:
+            # 🔧 V2优化：检查UI组件是否已创建，避免循环ERROR日志刷屏
+            if (
+                not hasattr(self, "bottleneck_dimension_label")
+                or self.bottleneck_dimension_label is None
+            ):
+                # UI组件尚未创建，静默跳过（不输出日志，避免刷屏）
+                return
+
             # 缓存瓶颈数据供详细表格使用
             self._cached_bottleneck_data = bottleneck_data
 
@@ -7084,7 +7889,7 @@ class SystemManager(BaseWidget, LoggerMixin):
                 self.status_details_table.setItem(i, 4, status_item)
 
         except Exception as e:
-            self.logger.error("更新状态详细表格失败: %s", e)
+            self.logger.error("更新状态详细表格失败: %s", e, exc_info=True)
 
     def _update_stat(self, key: str, value: float):
         """更新统计数据（当前值、平均值）.

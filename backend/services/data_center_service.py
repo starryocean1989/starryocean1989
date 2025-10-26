@@ -441,7 +441,7 @@ class DataCenterService(BaseService, LoggerMixin):
             Dict包含可用服务器数量、总数量、验证状态等信息
         """
         try:
-            from backend.infrastructure.data_module_vnpy.load_balancer.server_pool_manager import (
+            from backend.infrastructure.data_module_vnpy.load_balancer import (
                 server_pool_manager,
             )
 
@@ -462,6 +462,46 @@ class DataCenterService(BaseService, LoggerMixin):
                 "status": "error",
                 "message": f"获取状态失败: {str(e)}",
             }
+
+    # ==================== 服务器池管理（公开API） ====================
+    def retest_server_pool(self) -> Dict[str, Any]:
+        """强制重新测速服务器池并刷新缓存与事件。
+
+        Returns:
+            Dict: { success, stats, message }
+        """
+        try:
+            from backend.infrastructure.data_module_vnpy.load_balancer import (
+                server_pool_manager,
+            )
+
+            # 停止当前管理器
+            with suppress(Exception):
+                server_pool_manager.stop()
+
+            # 强制测速（调用内部多进程测速）
+            success = False
+            try:
+                success = server_pool_manager._start_multiprocess()  # noqa: SLF001 (允许内部调用)
+            except Exception:
+                success = False
+
+            # 成功则保存缓存并推送事件
+            if success:
+                try:
+                    servers = getattr(server_pool_manager, "_sorted_servers", [])
+                    server_pool_manager.save_server_cache(servers)
+                except Exception:
+                    pass
+                with suppress(Exception):
+                    server_pool_manager._push_server_status_event()  # noqa: SLF001
+
+            stats = server_pool_manager.get_stats()
+            return {"success": success, "stats": stats}
+
+        except Exception as e:
+            self.logger.error("重新测速服务器池失败：%s", e, exc_info=True)
+            return {"success": False, "message": str(e)}
 
     def _load_symbol_cache_on_startup(self):
         """启动时加载品种缓存（异步）.
@@ -614,7 +654,8 @@ class DataCenterService(BaseService, LoggerMixin):
             codes = [s["code"] for s in symbols]
             self.logger.info("开始下载 %d 个品种的IPO日期...", len(codes))
 
-            result = download_ipo_dates(codes, force_refresh=True, use_adaptive=True)
+            # 兼容当前签名：去掉未支持的 use_adaptive 参数
+            result = download_ipo_dates(codes, force_refresh=True)
 
             self.logger.info(
                 "IPO下载完成: 成功%d个, 失败%d个",
@@ -626,7 +667,7 @@ class DataCenterService(BaseService, LoggerMixin):
             # 此方法内部已经包含了删除未上市品种的逻辑
 
             # 3. 更新内存缓存（使用过滤后的数据）
-            from backend.infrastructure.data_module_vnpy.data_acquisition.symbol_management import (
+            from backend.infrastructure.data_module_vnpy.data_acquisition import (
                 SymbolLoader,
             )
 
@@ -794,7 +835,7 @@ class DataCenterService(BaseService, LoggerMixin):
             self._log_operation("刷新品种列表")
 
             # 强制从文件重新加载（不使用内存缓存）
-            from backend.infrastructure.data_module_vnpy.data_acquisition.symbol_management import (
+            from backend.infrastructure.data_module_vnpy.data_acquisition import (
                 SymbolLoader,
             )
 
@@ -1345,10 +1386,7 @@ class DataCenterService(BaseService, LoggerMixin):
                             self.logger.info(
                                 f"[下载-{task_id}] 进度: {pct}% ({completed}/{total}) - {cur_sym} {cur_itv}"
                             )
-                            print(
-                                f">>> [SERVICE] 进度: {pct}% ({completed}/{total}) - {cur_sym} {cur_itv}",
-                                flush=True,
-                            )
+                            # print(...)  # 🔧 已移除：防止刷屏，logger.info已足够
                             last_log_time = current_time
 
                         # 检查超时
@@ -2371,6 +2409,10 @@ class DataCenterService(BaseService, LoggerMixin):
             if not self.china_stock_engine:
                 self.logger.warning("ChinaStockEngine 不可用，无法执行数据质量扫描")
                 return
+
+            # 🔧 修复：移除LoadBalancer预热逻辑，避免在后台线程中创建Qt相关对象
+            # LoadBalancer的事件订阅和缓存机制已经足够高效，不需要额外预热
+            # 在后台线程中创建LoadBalancer可能导致Qt Timer错误和内存损坏
 
             overview = self.china_stock_engine.trigger_data_quality_scan(
                 force_refresh=force_refresh

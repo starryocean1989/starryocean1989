@@ -1,0 +1,221 @@
+{
+  "_comment": "LoadBalancer场景化配置文件",
+  "_version": "2.3.0",
+  "_last_updated": "2025-10-25",
+
+  "profiles": {
+    "small_task_optimized": {
+      "name": "小任务优化配置",
+      "description": "适用于小于100品种的快速扫描，注重启动速度和资源节省",
+      "use_case": "日常快速查询、单一品种分析、测试验证",
+      "worker_count": 4,
+      "batch_size": 30,
+      "queue_size": 500,
+      "cpu_limit": 30,
+      "memory_limit": 200,
+      "check_interval": 2.0,
+      "adjustment_step_increase": 0.05,
+      "adjustment_step_decrease": 0.10,
+      "safe_zone_lower": 55.0,
+      "safe_zone_upper": 65.0,
+      "priority": "latency",
+      "recommended_scenarios": [
+        "CI/CD集成测试",
+        "用户交互式查询",
+        "单一品种深度分析"
+      ]
+    },
+
+    "medium_task_balanced": {
+      "name": "中等任务均衡配置",
+      "description": "适用于100-1000品种的日常扫描，平衡性能和资源使用",
+      "use_case": "日常数据质量扫描、板块分析、策略筛选",
+      "worker_count": 8,
+      "batch_size": 50,
+      "queue_size": 1000,
+      "cpu_limit": 50,
+      "memory_limit": 500,
+      "check_interval": 1.5,
+      "adjustment_step_increase": 0.05,
+      "adjustment_step_decrease": 0.10,
+      "safe_zone_lower": 60.0,
+      "safe_zone_upper": 70.0,
+      "priority": "balanced",
+      "recommended_scenarios": [
+        "日常数据质量扫描",
+        "行业板块分析",
+        "策略批量筛选",
+        "定时任务"
+      ]
+    },
+
+    "large_task_performance": {
+      "name": "大任务性能配置",
+      "description": "适用于大于1000品种的全量扫描，最大化吞吐量",
+      "use_case": "全市场扫描、大批量数据处理、离线分析",
+      "worker_count": 16,
+      "batch_size": 100,
+      "queue_size": 2000,
+      "cpu_limit": 80,
+      "memory_limit": 1000,
+      "check_interval": 1.0,
+      "adjustment_step_increase": 0.10,
+      "adjustment_step_decrease": 0.15,
+      "safe_zone_lower": 65.0,
+      "safe_zone_upper": 75.0,
+      "priority": "throughput",
+      "recommended_scenarios": [
+        "全市场数据扫描",
+        "大批量历史数据处理",
+        "离线分析任务",
+        "夜间批处理"
+      ]
+    },
+
+    "network_intensive": {
+      "name": "网络密集型配置",
+      "description": "适用于网络请求密集的任务，注重连接管理和网络优化",
+      "use_case": "服务器K线请求、实时数据更新、多源数据同步",
+      "worker_count": 12,
+      "batch_size": 40,
+      "queue_size": 1500,
+      "cpu_limit": 40,
+      "memory_limit": 400,
+      "check_interval": 1.0,
+      "adjustment_step_increase": 0.08,
+      "adjustment_step_decrease": 0.12,
+      "safe_zone_lower": 50.0,
+      "safe_zone_upper": 65.0,
+      "priority": "network",
+      "recommended_scenarios": [
+        "服务器K线批量请求",
+        "实时行情数据更新",
+        "多源数据同步",
+        "外部API调用"
+      ]
+    },
+
+    "disk_intensive": {
+      "name": "磁盘密集型配置",
+      "description": "适用于本地数据读写密集的任务，注重IO优化",
+      "use_case": "TDX数据读取、Parquet数据扫描、文件批量处理",
+      "worker_count": 6,
+      "batch_size": 60,
+      "queue_size": 800,
+      "cpu_limit": 50,
+      "memory_limit": 600,
+      "check_interval": 1.5,
+      "adjustment_step_increase": 0.05,
+      "adjustment_step_decrease": 0.10,
+      "safe_zone_lower": 60.0,
+      "safe_zone_upper": 70.0,
+      "priority": "disk_io",
+      "recommended_scenarios": [
+        "TDX本地数据读取",
+        "Parquet数据质量扫描",
+        "本地文件批量处理",
+        "数据导入导出"
+      ]
+    },
+
+    "memory_conservative": {
+      "name": "内存保守配置",
+      "description": "适用于内存受限环境，严格控制内存使用",
+      "use_case": "低内存服务器、并行运行多任务、内存敏感场景",
+      "worker_count": 4,
+      "batch_size": 20,
+      "queue_size": 500,
+      "cpu_limit": 40,
+      "memory_limit": 100,
+      "check_interval": 2.0,
+      "adjustment_step_increase": 0.03,
+      "adjustment_step_decrease": 0.15,
+      "safe_zone_lower": 55.0,
+      "safe_zone_upper": 65.0,
+      "priority": "memory",
+      "recommended_scenarios": [
+        "低内存服务器",
+        "多任务并行场景",
+        "Docker容器环境",
+        "云服务器节省成本"
+      ]
+    },
+
+    "high_availability": {
+      "name": "高可用配置",
+      "description": "适用于7x24生产环境，注重稳定性和容错",
+      "use_case": "生产环境监控、关键数据处理、容错要求高的场景",
+      "worker_count": 8,
+      "batch_size": 40,
+      "queue_size": 1000,
+      "cpu_limit": 60,
+      "memory_limit": 500,
+      "check_interval": 1.0,
+      "adjustment_step_increase": 0.03,
+      "adjustment_step_decrease": 0.20,
+      "safe_zone_lower": 40.0,
+      "safe_zone_upper": 60.0,
+      "priority": "stability",
+      "recommended_scenarios": [
+        "7x24生产环境",
+        "关键数据处理",
+        "实时监控系统",
+        "容错要求高的场景"
+      ]
+    }
+  },
+
+  "parameter_descriptions": {
+    "worker_count": "并发工作进程数量，影响并行处理能力",
+    "batch_size": "批次大小，每批处理的任务数量",
+    "queue_size": "任务队列最大长度",
+    "cpu_limit": "CPU使用率限制（百分比）",
+    "memory_limit": "内存使用限制（MB）",
+    "check_interval": "资源检查间隔（秒）",
+    "adjustment_step_increase": "并发增加步长（百分比）",
+    "adjustment_step_decrease": "并发减少步长（百分比）",
+    "safe_zone_lower": "安全区间下限（百分比）",
+    "safe_zone_upper": "安全区间上限（百分比）",
+    "priority": "优化优先级（latency/balanced/throughput/network/disk_io/memory/stability）"
+  },
+
+  "usage_guide": {
+    "selection_criteria": {
+      "by_task_size": {
+        "< 100品种": "small_task_optimized",
+        "100-1000品种": "medium_task_balanced",
+        "> 1000品种": "large_task_performance"
+      },
+      "by_workload_type": {
+        "网络请求密集": "network_intensive",
+        "本地文件密集": "disk_intensive",
+        "内存受限": "memory_conservative",
+        "生产环境": "high_availability"
+      }
+    },
+
+    "customization_tips": [
+      "根据实际硬件配置调整worker_count和memory_limit",
+      "网络不稳定时降低batch_size和worker_count",
+      "IO密集任务可适当增大batch_size",
+      "内存紧张时优先降低worker_count",
+      "生产环境建议使用high_availability配置"
+    ],
+
+    "performance_tuning": [
+      "监控CPU/内存/磁盘/网络瓶颈，选择对应的优化配置",
+      "使用benchmark_2000tasks.py测试不同配置的实际性能",
+      "根据A/B测试结果微调参数",
+      "定期使用performance_monitoring.py建立和更新基线"
+    ]
+  },
+
+  "recommended_workflow": {
+    "development": "small_task_optimized",
+    "testing": "medium_task_balanced",
+    "production": "high_availability",
+    "batch_processing": "large_task_performance",
+    "real_time": "network_intensive"
+  }
+}
+

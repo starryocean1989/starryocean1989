@@ -267,7 +267,7 @@ class AsyncSmartIPPool(AsyncIPPool):
                 else:
                     level = "较慢"
 
-                logger.debug(f"服务器 {ip}:{port} [{level}] TCP连接: {response_time*1000:.2f}ms")
+                # logger.debug(...)  # 🔧 已移除：防止650+行输出，改为统计摘要
 
                 # 关闭连接
                 await client.close()
@@ -275,7 +275,7 @@ class AsyncSmartIPPool(AsyncIPPool):
             else:
                 # 连接失败
                 self.server_scores[server] = self.max_fail_time + 1
-                logger.debug(f"服务器 {ip}:{port} TCP连接失败")
+                # logger.debug(...)  # 🔧 已移除：防止刷屏
                 return None
 
         except asyncio.TimeoutError:

@@ -33,8 +33,8 @@ from typing import Any, Dict, List, Optional, Callable, Union
 
 from backend.core.service_base import BaseService
 from backend.core.models import UnifiedMarketData, get_data_model_manager
-from backend.infrastructure.system_vnpy.monitors import SystemMonitor
-from backend.infrastructure.system_vnpy.tools import NetworkTester, PortScanner
+from backend.infrastructure.system_vnpy.monitor_system import SystemMonitor
+from backend.infrastructure.system_vnpy.utilities import NetworkTester, PortScanner
 from backend.services.database_adapter import get_db_manager
 from backend.core.config import get_settings
 
@@ -255,6 +255,53 @@ class LogDatabase:
             self.logger.error("清理旧日志失败：%s", e)
             return 0
 
+    def delete_all_logs(self) -> int:
+        """删除所有日志记录（使用统一database）.
+
+        Returns:
+            删除的记录数量
+        """
+        with self._lock:
+            try:
+                # 先获取总数
+                count_results = self.db_manager.execute_query(
+                    "SELECT COUNT(*) as total FROM system_logs"
+                )
+                count = count_results[0]["total"] if count_results else 0
+
+                # 删除所有记录
+                self.db_manager.execute_update("DELETE FROM system_logs")
+                self.logger.info("已删除所有日志记录，共 %d 条", count)
+                return count
+
+            except Exception as e:
+                self.logger.error("删除所有日志失败：%s", e)
+                raise
+
+    def delete_logs_by_ids(self, log_ids: List[int]) -> int:
+        """根据ID列表删除日志（使用统一database）.
+
+        Args:
+            log_ids: 日志ID列表
+
+        Returns:
+            删除的记录数量
+        """
+        if not log_ids:
+            return 0
+
+        with self._lock:
+            try:
+                placeholders = ",".join("?" * len(log_ids))
+                sql = f"DELETE FROM system_logs WHERE id IN ({placeholders})"
+                deleted_count = self.db_manager.execute_update(sql, tuple(log_ids))
+                self.logger.info("已删除 %d 条日志记录", deleted_count)
+                return deleted_count
+
+            except Exception as e:
+                self.logger.error("批量删除日志失败：%s", e)
+                raise
+
 
 # =============================================================================
 # 日志记录处理器
@@ -456,16 +503,16 @@ class LogManager:
             print(f"[启动] ❌ 日志管理系统初始化异常: {e}")
             self.logger.error("日志管理系统初始化失败：%s", e)
             return False
-    
+
     def _start_batch_flush_timer(self) -> None:
         """启动批量刷新定时器（定期刷新，确保日志不会积压）."""
         if self._batch_timer:
             self._batch_timer.cancel()
-        
+
         self._batch_timer = threading.Timer(2.0, self._batch_flush_loop)
         self._batch_timer.daemon = True
         self._batch_timer.start()
-    
+
     def _batch_flush_loop(self) -> None:
         """批量刷新循环（每2秒刷新一次）."""
         try:
@@ -474,7 +521,7 @@ class LogManager:
             pass
         finally:
             # 重新启动定时器
-            if not hasattr(self, '_is_shutting_down') or not self._is_shutting_down:
+            if not hasattr(self, "_is_shutting_down") or not self._is_shutting_down:
                 self._start_batch_flush_timer()
 
     def shutdown(self) -> None:
@@ -631,6 +678,25 @@ class LogManager:
         except Exception as e:
             self.logger.error("导出日志失败：%s", e)
             return False
+
+    def delete_all_logs(self) -> int:
+        """删除所有日志记录.
+
+        Returns:
+            删除的记录数量
+        """
+        return self.database.delete_all_logs()
+
+    def delete_logs_by_ids(self, log_ids: List[int]) -> int:
+        """根据ID列表删除日志记录.
+
+        Args:
+            log_ids: 日志ID列表
+
+        Returns:
+            删除的记录数量
+        """
+        return self.database.delete_logs_by_ids(log_ids)
 
 
 # =============================================================================
@@ -2646,7 +2712,7 @@ class SystemManagerService(BaseService):
         self.test_runner = TestRunner()
 
         # 新增：诊断工具
-        from backend.infrastructure.system_vnpy.tools import (
+        from backend.infrastructure.system_vnpy.utilities import (
             LogAnalyzer,
             PerformanceAnalyzer,
             AutoFixer,
@@ -2657,7 +2723,7 @@ class SystemManagerService(BaseService):
         self.auto_fixer = AutoFixer()
 
         # 新增：服务管理工具
-        from backend.infrastructure.system_vnpy.managers import (
+        from backend.infrastructure.system_vnpy.utilities import (
             ServiceHealthChecker,
             ServiceRestarter,
         )
@@ -2666,7 +2732,7 @@ class SystemManagerService(BaseService):
         self.service_restarter = ServiceRestarter()
 
         # 新增：进程监控工具
-        from backend.infrastructure.system_vnpy.monitors import (
+        from backend.infrastructure.system_vnpy.monitor_system import (
             ProcessMonitor,
             ProcessBottleneckAnalyzer,
         )
@@ -2715,6 +2781,9 @@ class SystemManagerService(BaseService):
             # 检查 EventEngine 是否可用
             if not self.event_engine:
                 self.logger.error("❌ EventEngine不可用")
+                self.logger.error("这通常意味着VNPy核心初始化失败")
+                self.logger.error("SystemManagerService需要EventEngine用于事件通信")
+                # 🎯 不再尝试创建，因为EventEngine应该已在主线程创建
                 return False
 
             self.logger.info("✅ EventEngine可用")
@@ -2818,7 +2887,11 @@ class SystemManagerService(BaseService):
             # 检查响应（get_data返回包含timestamp或其他监控数据的字典）
             if isinstance(response, dict):
                 # 成功接收到监控数据
-                if "timestamp" in response or "cpu_percent" in response or response.get("status") == "ok":
+                if (
+                    "timestamp" in response
+                    or "cpu_percent" in response
+                    or response.get("status") == "ok"
+                ):
                     self.logger.info("✅ ZMQ连接测试成功")
                     return True
                 # 如果返回错误，但至少有响应
@@ -2882,6 +2955,38 @@ class SystemManagerService(BaseService):
 
         except Exception as e:
             self.logger.error("重置REQ socket失败: %s", e)
+
+    def _try_reconnect_zmq(self) -> bool:
+        """尝试重新连接ZMQ监控进程.
+
+        Returns:
+            bool: 连接是否成功
+        """
+        import zmq
+
+        try:
+            # 1. 重置socket
+            self._reset_req_socket()
+
+            # 2. 测试连接
+            if not self._zmq_req_socket:
+                return False
+
+            # 3. 发送测试请求
+            self._zmq_req_socket.send_json({"action": "ping"})
+            response = self._zmq_req_socket.recv_json()
+
+            if isinstance(response, dict) and response.get("status") == "ok":
+                return True
+            else:
+                return False
+
+        except zmq.Again:
+            # 超时
+            return False
+        except Exception as e:
+            self.logger.debug("ZMQ重连测试失败: %s", e)
+            return False
 
     def _push_service_status(self):
         """推送服务状态（在主线程通过QTimer调用）."""
@@ -3019,35 +3124,60 @@ class SystemManagerService(BaseService):
             target=self._monitoring_push_loop, name="MonitoringPushThread", daemon=True
         )
         self._monitoring_push_thread.start()
-        self.logger.info("✅ 监控数据推送线程已启动（事件驱动模式）")
+        self.logger.info("✅ 监控数据推送线程已启动（事件驱动模式，1秒间隔）")
 
     def _monitoring_push_loop(self):
-        """监控数据推送循环（替代UI轮询）."""
+        """监控数据推送循环（替代UI轮询）
+
+        推送频率：正常1秒，降级3秒
+        """
         import time
 
-        self.logger.info("[MonitoringPush] 正在监控数据推送循环...")
-        
+        self.logger.info("[MonitoringPush] 监控数据推送循环已启动（1秒间隔）")
+
         # 🔧 新增：连续失败计数器和降级模式
         consecutive_failures = 0
         max_consecutive_failures = 5
         degraded_mode = False
+
+        # 🔧 新增：ZMQ重连计数器
+        zmq_retry_interval = 5  # 每5次失败尝试重连一次
+        zmq_retry_counter = 0
 
         while self._monitoring_push_running:
             try:
                 # 1. 查询监控数据
                 data = self._query_monitoring_data_safe()
 
+                # 🔍 诊断日志
+                self.logger.debug(
+                    f"[MonitoringPush] 查询结果: data={'有数据' if data else '空'}, keys={list(data.keys()) if data else 'N/A'}"
+                )
+
                 if not data:
                     consecutive_failures += 1
+                    zmq_retry_counter += 1
+
                     if consecutive_failures >= max_consecutive_failures and not degraded_mode:
                         self.logger.warning(
                             "[MonitoringPush] 连续%d次查询失败，进入降级模式（降低查询频率）",
-                            consecutive_failures
+                            consecutive_failures,
                         )
                         degraded_mode = True
-                    
+
+                    # 🔧 关键修复：每5次失败后尝试重连ZMQ
+                    if zmq_retry_counter >= zmq_retry_interval:
+                        self.logger.info("[MonitoringPush] 尝试重新连接监控进程...")
+                        zmq_retry_counter = 0
+                        if self._try_reconnect_zmq():
+                            self.logger.info("[MonitoringPush] ✅ ZMQ重连成功")
+                            consecutive_failures = 0
+                            degraded_mode = False
+                        else:
+                            self.logger.warning("[MonitoringPush] ❌ ZMQ重连失败")
+
                     # 降级模式下延长等待时间
-                    wait_time = 5 if degraded_mode else 2
+                    wait_time = 3 if degraded_mode else 1
                     time.sleep(wait_time)
                     continue
 
@@ -3061,15 +3191,19 @@ class SystemManagerService(BaseService):
                 # 3. 分发事件（解耦关键）
                 self._dispatch_monitoring_events(data)
 
-                # 4. 间隔时间：正常2秒，降级5秒
-                wait_time = 5 if degraded_mode else 2
+                # 4. 间隔时间：正常1秒，降级3秒（优化：更及时的监控数据）
+                wait_time = 3 if degraded_mode else 1
                 time.sleep(wait_time)
 
             except Exception as e:
                 consecutive_failures += 1
-                self.logger.error("[MonitoringPush] 推送失败（%d/%d）：%s", 
-                                consecutive_failures, max_consecutive_failures, e)
-                wait_time = 5 if degraded_mode else 2
+                self.logger.error(
+                    "[MonitoringPush] 推送失败（%d/%d）：%s",
+                    consecutive_failures,
+                    max_consecutive_failures,
+                    e,
+                )
+                wait_time = 3 if degraded_mode else 1
                 time.sleep(wait_time)
 
         self.logger.info("[MonitoringPush] 推送线程已停止")
@@ -3095,9 +3229,18 @@ class SystemManagerService(BaseService):
             self.logger.error("查询监控数据失败：%s", e)
             return {}
 
+    def get_current_monitoring_data(self) -> Dict[str, Any]:
+        """获取当前监控数据（供UI初始化使用）.
+
+        Returns:
+            Dict: 完整的监控数据，包含system, process, service等字段
+        """
+        return self._query_monitoring_data_safe()
+
     def _dispatch_monitoring_events(self, data: Dict[str, Any]):
         """分发监控事件到EventEngine（解耦核心）."""
         if not self.event_engine:
+            self.logger.warning("[DispatchEvents] EventEngine不可用，跳过事件分发")
             return
 
         from vnpy.event import Event
@@ -3111,15 +3254,28 @@ class SystemManagerService(BaseService):
             EVENT_SMART_DATA,
         )
 
+        # 🔍 诊断日志（仅记录一次）
+        if not hasattr(self, "_dispatch_engine_id_logged"):
+            self.logger.info(
+                f"[分发EventEngine] ID={id(self.event_engine)}, 类型={type(self.event_engine)}"
+            )
+            self._dispatch_engine_id_logged = True
+
         # 事件1：系统指标
         if "system" in data and data["system"]:
             event = Event(EVENT_SYSTEM_METRICS, data["system"])
             self.event_engine.put(event)
+            self.logger.debug(
+                f"[DispatchEvents] ✅ 已分发 EVENT_SYSTEM_METRICS, 数据keys: {list(data['system'].keys())}"
+            )
 
         # 事件2：硬件传感器
         if "hardware" in data and data["hardware"]:
             event = Event(EVENT_HARDWARE_SENSORS, data["hardware"])
             self.event_engine.put(event)
+            self.logger.debug(
+                f"[DispatchEvents] ✅ 已分发 EVENT_HARDWARE_SENSORS, 数据keys: {list(data['hardware'].keys())}"
+            )
 
         # 事件3：分析数据（独立）
         if "analysis" in data and data["analysis"]:
@@ -3150,26 +3306,6 @@ class SystemManagerService(BaseService):
     # 旧的 get_monitoring_data()、get_bottleneck_analysis()、get_scenario_analysis()
     # 已完全移除，UI组件应订阅相应的事件类型
 
-    def get_scenario_analysis_deprecated(self) -> Dict[str, Any]:
-        """【已废弃】获取场景分析结果.
-
-        Returns:
-            {
-                "scenario": "data_download",
-                "scenario_name": "数据下载",
-                "bottleneck_metrics": [...],
-                "current_values": {...},
-                "optimization_hints": [...]
-            }
-        """
-        try:
-            data = self._query_monitoring_data_safe()
-            analysis = data.get("analysis", {})
-            return analysis.get("scenario", {})
-        except Exception as e:
-            self.logger.error("获取场景分析失败：%s", e)
-            return {}
-
     def get_performance_summary(self, scenario: Optional[str] = None) -> Dict[str, Any]:
         """获取性能指标摘要（按场景）.
 
@@ -3189,6 +3325,11 @@ class SystemManagerService(BaseService):
                 "adaptive_suggestion": {
                     "scale_factor": 0.8,
                     "reason": "CPU负载过高"
+                },
+                "scenario_details": {
+                    "data_download": {...},
+                    "realtime_quote": {...},
+                    ...
                 }
             }
         """
@@ -3213,13 +3354,40 @@ class SystemManagerService(BaseService):
             # 获取自适应建议
             adaptive_suggestion = self.get_adaptive_concurrency_suggestion()
 
+            # 构造所有场景的详细信息（使用当前场景数据填充）
+            scenario_details = {}
+
+            # 将当前场景的分析结果放入对应的键中
+            if current_scenario and scenario_analysis:
+                # 场景名称映射
+                scenario_key_map = {
+                    "data_download": "data_download",
+                    "realtime_market": "realtime_quote",
+                    "backtest": "strategy_backtest",
+                    "live_trading": "realtime_trading",
+                    "idle": "system_monitor",
+                }
+
+                scenario_key = scenario_key_map.get(current_scenario, current_scenario)
+                scenario_details[scenario_key] = scenario_analysis
+
+                # 为其他场景填充默认数据（避免UI出错）
+                default_scenario_data = {
+                    "current_values": system_metrics,
+                    "bottleneck_analysis": {"is_bottleneck": False},
+                }
+
+                for key in scenario_key_map.values():
+                    if key not in scenario_details:
+                        scenario_details[key] = default_scenario_data.copy()
+
             return {
                 "current_scenario": current_scenario,
                 "scenario_name": scenario_name,
                 "bottleneck": bottleneck,
                 "key_metrics": key_metrics,
                 "adaptive_suggestion": adaptive_suggestion,
-                "scenario_details": scenario_analysis,
+                "scenario_details": scenario_details,
             }
         except Exception as e:
             self.logger.error("获取性能摘要失败：%s", e)
@@ -3264,10 +3432,13 @@ class SystemManagerService(BaseService):
                 scale_factor = 1.0
                 reason = "系统负载正常，保持当前并发"
 
-            # TODO: 从配置读取基准并发数，当前使用假设值
-            base_async = 80
-            base_thread = 10
-            base_process = 2
+            # 从配置读取基准并发数
+            from backend.core.config import get_settings
+
+            config = get_settings()
+            base_async = config.adaptive.baseline_async_concurrency
+            base_thread = config.adaptive.baseline_thread_concurrency
+            base_process = config.adaptive.baseline_process_concurrency
 
             suggested_concurrency = {
                 "async_workers": int(base_async * scale_factor),
@@ -3275,11 +3446,32 @@ class SystemManagerService(BaseService):
                 "process_workers": max(1, int(base_process * scale_factor)),
             }
 
+            # 从LoadBalancer获取真实自适应状态
+            status = "auto_applied"  # 默认值
+            try:
+                from backend.infrastructure.data_module_vnpy.load_balancer import get_load_balancer
+
+                lb = get_load_balancer()
+                if hasattr(lb, "get_current_status"):
+                    current_status = lb.get_current_status()
+
+                    # 状态映射
+                    status_mapping = {
+                        "idle": "not_applied",
+                        "adjusting": "applying",
+                        "applied": "auto_applied",
+                        "rejected": "rejected_by_limiter",
+                    }
+
+                    status = status_mapping.get(current_status, "auto_applied")
+            except Exception as e:
+                self.logger.warning(f"获取LoadBalancer状态失败，使用默认值: {e}")
+
             return {
                 "scale_factor": round(scale_factor, 2),
                 "reason": reason,
                 "suggested_concurrency": suggested_concurrency,
-                "status": "auto_applied",  # TODO: 从自适应并发模块获取真实状态
+                "status": status,
             }
         except Exception as e:
             self.logger.error("获取自适应建议失败：%s", e)
@@ -4162,6 +4354,35 @@ class SystemManagerService(BaseService):
 
         except Exception as e:
             self._log_error("导出日志", e)
+            return {"success": False, "message": str(e)}
+
+    def delete_all_logs(self) -> Dict[str, Any]:
+        """删除所有日志记录.
+
+        Returns:
+            Dict: 包含success和deleted_count的字典
+        """
+        try:
+            count = self.log_manager.delete_all_logs()
+            return {"success": True, "deleted_count": count}
+        except Exception as e:
+            self.logger.error("删除所有日志失败: %s", e)
+            return {"success": False, "message": str(e)}
+
+    def delete_logs_by_ids(self, log_ids: List[int]) -> Dict[str, Any]:
+        """根据ID列表删除日志记录.
+
+        Args:
+            log_ids: 日志ID列表
+
+        Returns:
+            Dict: 包含success和deleted_count的字典
+        """
+        try:
+            count = self.log_manager.delete_logs_by_ids(log_ids)
+            return {"success": True, "deleted_count": count}
+        except Exception as e:
+            self.logger.error("批量删除日志失败: %s", e)
             return {"success": False, "message": str(e)}
 
     # ==================== 系统诊断 ====================
@@ -5409,20 +5630,20 @@ class SystemManagerService(BaseService):
                     "message": "手动指定品种功能已移除，请使用品种缓存",
                 }
 
-            # 导入TdxBinaryReader
+            # 导入TdxDynamicExecutor（替代TdxBinaryReader.process_batch）
             try:
-                from backend.infrastructure.data_module_vnpy.data_readers.tdx_reader import (
-                    TdxBinaryReader,
+                from backend.infrastructure.data_module_vnpy.data_readers.tdx_dynamic_executor import (
+                    TdxDynamicExecutor,
                 )
             except ImportError as e:
-                self.logger.error("导入TdxBinaryReader失败: %s", e)
+                self.logger.error("导入TdxDynamicExecutor失败: %s", e)
                 return {
                     "success": False,
-                    "message": f"导入读取器失败: {str(e)}",
+                    "message": f"导入执行器失败: {str(e)}",
                 }
 
-            # 创建读取器实例
-            reader = TdxBinaryReader(source_path=tdx_path)
+            # 创建动态执行器实例
+            executor = TdxDynamicExecutor(tdx_dir=tdx_path, logger=self.logger)
 
             # 计算总任务数
             total_tasks = sum(
@@ -5436,50 +5657,40 @@ class SystemManagerService(BaseService):
                     "message": "没有找到符合条件的品种",
                 }
 
-            # ==================== 自适应线程数计算 ====================
+            # ==================== 动态执行器配置 ====================
+            # TdxDynamicExecutor内部已集成LoadBalancer，会根据实时资源压力动态调整
+            # 这里只需设置初始配置
             import os
-            import psutil
 
             cpu_cores = os.cpu_count() or 4
-            available_memory_gb = psutil.virtual_memory().available / (1024**3)
 
-            # 根据任务规模自适应计算线程数
+            # 根据任务规模设置初始进程数和协程数
             if total_tasks < 50:
-                # 小任务：使用少量线程避免开销
-                optimal_workers = min(4, cpu_cores)
+                initial_processes = min(2, cpu_cores // 2)
+                initial_coroutines = 20
                 strategy = "小任务模式"
             elif total_tasks < 500:
-                # 中等任务：使用CPU核心数
-                optimal_workers = min(cpu_cores, 8)
+                initial_processes = min(4, cpu_cores)
+                initial_coroutines = 40
                 strategy = "中等任务模式"
             else:
-                # 大任务：使用双倍CPU核心，最多16线程
-                optimal_workers = min(cpu_cores * 2, 16)
+                initial_processes = min(8, cpu_cores)
+                initial_coroutines = 60
                 strategy = "大任务模式"
-
-            # 内存检查：每个线程约消耗50MB（读取+处理）
-            estimated_memory_mb = optimal_workers * 50
-            if estimated_memory_mb / 1024 > available_memory_gb * 0.5:
-                # 如果预估内存超过可用内存50%，降低线程数
-                optimal_workers = max(2, int(available_memory_gb * 0.5 * 1024 / 50))
-                strategy += " (内存限制)"
-
-            max_workers = optimal_workers
 
             # 🔍 DEBUG: 打印详细的任务分组信息
             self.logger.info("=" * 60)
-            self.logger.info("📋 批量读取任务详情:")
+            self.logger.info("📋 批量读取任务详情（TdxDynamicExecutor）:")
             self.logger.info(f"  - 总任务数: {total_tasks}")
             self.logger.info(f"  - 数据类型: {', '.join(data_types)}")
             self.logger.info(f"  - 市场: {', '.join([m.upper() for m in markets])}")
             self.logger.info("  - 系统资源:")
             self.logger.info(f"    • CPU核心数: {cpu_cores}")
-            self.logger.info(f"    • 可用内存: {available_memory_gb:.2f} GB")
-            self.logger.info("  - 自适应配置:")
-            self.logger.info(f"    • 最优线程数: {max_workers}")
+            self.logger.info("  - 动态执行器配置:")
+            self.logger.info(f"    • 初始进程数: {initial_processes}")
+            self.logger.info(f"    • 初始协程数/进程: {initial_coroutines}")
             self.logger.info(f"    • 策略: {strategy}")
-            self.logger.info(f"    • 预计内存: {estimated_memory_mb:.0f} MB")
-            self.logger.info("  - 批量保存阈值: 10 个品种/次")
+            self.logger.info("    • 动态调整: 每0.3秒根据资源压力自动调整并发")
             self.logger.info("  - 任务分组:")
             for market in markets:
                 symbols = symbols_by_market.get(market, [])
@@ -5489,66 +5700,91 @@ class SystemManagerService(BaseService):
                         f"    • {market.upper()}: {len(symbols)} 个品种 × {len(data_types)} 种数据类型 = {tasks_per_market} 个任务"
                     )
             self.logger.info("=" * 60)
-            self.logger.info("🚀 开始批量读取...")
+            self.logger.info("🚀 开始批量读取（使用动态负载均衡）...")
 
             # 重置停止标志
             self._tdx_reader_stop_flag = False
 
-            # 批量处理（多市场、多周期）
+            # 批量处理（多市场、多周期）- 使用TdxDynamicExecutor
             all_results = {}
             completed = 0
 
-            for market in markets:
-                # 检查停止标志
-                if self._tdx_reader_stop_flag:
-                    self.logger.info("检测到停止标志，中断批量读取")
-                    break
+            import asyncio
 
-                symbols = symbols_by_market.get(market, [])
-                if not symbols:
-                    self.logger.warning(f"⚠️  市场 {market.upper()} 没有品种，跳过")
-                    continue
+            async def run_batch_processing():
+                """异步批量处理函数"""
+                nonlocal completed
 
-                for data_type in data_types:
+                for market in markets:
                     # 检查停止标志
                     if self._tdx_reader_stop_flag:
                         self.logger.info("检测到停止标志，中断批量读取")
                         break
 
-                    # 🔍 DEBUG: 打印开始处理的信息
-                    self.logger.info("")
-                    self.logger.info("─" * 60)
-                    self.logger.info(
-                        f"📂 开始处理: 市场={market.upper()}, 数据类型={data_type}, 品种数={len(symbols)}"
-                    )
-                    self.logger.info("─" * 60)
+                    symbols = symbols_by_market.get(market, [])
+                    if not symbols:
+                        self.logger.warning(f"⚠️  市场 {market.upper()} 没有品种，跳过")
+                        continue
 
-                    # 定义进度回调包装器
-                    def wrapped_callback(current, total, symbol, success):
-                        nonlocal completed
-                        completed += 1
-                        if progress_callback:
-                            info = f"{market.upper()} {data_type} {symbol}"
-                            progress_callback(completed, total_tasks, info, success)
-
+                    for data_type in data_types:
                         # 检查停止标志
-                        return not self._tdx_reader_stop_flag
+                        if self._tdx_reader_stop_flag:
+                            self.logger.info("检测到停止标志，中断批量读取")
+                            break
 
-                    # 批量处理（每10个品种保存一次 - DEBUG模式）
-                    results = reader.process_batch(
-                        symbols=symbols,
-                        data_type=data_type,
-                        market=market,
-                        progress_callback=wrapped_callback,
-                        max_workers=max_workers,
-                        stop_check=lambda: self._tdx_reader_stop_flag,
-                        batch_save_size=10,  # 🔍 DEBUG: 批量保存：每10个品种保存一次
-                    )
+                        # 🔍 DEBUG: 打印开始处理的信息
+                        self.logger.info("")
+                        self.logger.info("─" * 60)
+                        self.logger.info(
+                            f"📂 开始处理: 市场={market.upper()}, 数据类型={data_type}, 品种数={len(symbols)}"
+                        )
+                        self.logger.info("─" * 60)
 
-                    # 合并结果
-                    for symbol, success in results.items():
-                        key = f"{market}_{data_type}_{symbol}"
-                        all_results[key] = success
+                        # 使用TdxDynamicExecutor批量处理
+                        try:
+                            results = await executor.execute_batch(
+                                symbols=symbols,
+                                data_type=data_type,
+                                market=market,
+                                initial_processes=initial_processes,
+                                initial_coroutines=initial_coroutines,
+                            )
+
+                            # 处理结果和进度
+                            for symbol, success, error_msg, duration in results:
+                                completed += 1
+                                key = f"{market}_{data_type}_{symbol}"
+                                all_results[key] = success
+
+                                # 进度回调
+                                if progress_callback:
+                                    info = f"{market.upper()} {data_type} {symbol}"
+                                    progress_callback(completed, total_tasks, info, success)
+
+                                # 检查停止标志
+                                if self._tdx_reader_stop_flag:
+                                    self.logger.info("检测到停止标志，中断批量读取")
+                                    return
+
+                        except Exception as e:
+                            self.logger.error(
+                                f"处理 {market.upper()} {data_type} 失败: {e}", exc_info=True
+                            )
+                            # 标记所有品种为失败
+                            for symbol in symbols:
+                                key = f"{market}_{data_type}_{symbol}"
+                                all_results[key] = False
+                                completed += 1
+
+            # 在同步方法中运行异步函数
+            try:
+                asyncio.run(run_batch_processing())
+            except Exception as e:
+                self.logger.error(f"批量处理执行失败: {e}", exc_info=True)
+                return {
+                    "success": False,
+                    "message": f"批量处理执行失败: {str(e)}",
+                }
 
             # 统计结果
             success_count = sum(1 for v in all_results.values() if v)
@@ -5788,7 +6024,7 @@ class SystemManagerService(BaseService):
 
         # TDX服务器连通性
         try:
-            from backend.infrastructure.data_module_vnpy.load_balancer.server_pool_manager import (
+            from backend.infrastructure.data_module_vnpy.load_balancer import (
                 ServerPoolManager,
             )
 

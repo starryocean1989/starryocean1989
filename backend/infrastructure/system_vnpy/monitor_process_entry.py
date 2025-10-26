@@ -40,7 +40,7 @@ def main():
             logger.info("✅ 已设置Windows SelectorEventLoop策略")
 
         logger.info("正在导入MonitoringProcessV2...")
-        from backend.infrastructure.system_vnpy.monitor_core import MonitoringProcessV2
+        from backend.infrastructure.system_vnpy.monitor_system import MonitoringProcessV2
 
         logger.info("✅ MonitoringProcessV2导入成功")
 
@@ -69,7 +69,7 @@ def main():
 
     except ImportError as e:
         logger.error("❌ 导入MonitoringProcessV2失败: %s", e, exc_info=True)
-        logger.error("monitor_core.py可能有语法错误或依赖缺失")
+        logger.error("monitor_system.py可能有语法错误或依赖缺失")
         sys.exit(1)
     except KeyboardInterrupt:
         logger.info("收到中断信号")

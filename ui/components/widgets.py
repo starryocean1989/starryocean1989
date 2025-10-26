@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPlainTextEdit,
+    QProgressBar,
     QTableWidget,
     QTextEdit,
     QVBoxLayout,
@@ -284,14 +285,14 @@ class MetricCard(QWidget):
         self.title = title
         self.color = color or DashboardTheme.get_metric_color(title)
 
-        # 设置固定高度（紧凑版）
-        self.setFixedHeight(105)
+        # 设置固定高度（优化版：增加高度以容纳所有内容）
+        self.setFixedHeight(125)
         self.setStyleSheet(DashboardTheme.get_card_style())
 
-        # 主布局（紧凑版）
+        # 主布局（优化版：增加间距避免拥挤）
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 8)
-        layout.setSpacing(4)
+        layout.setSpacing(6)
 
         # 标题行（图标 + 标题）
         title_layout = QHBoxLayout()
@@ -314,13 +315,13 @@ class MetricCard(QWidget):
         value_layout.setSpacing(4)
 
         self.value_label = QLabel(value)
-        self.value_label.setStyleSheet(f"font-size: 28px; font-weight: bold; color: {self.color};")
+        self.value_label.setStyleSheet(f"font-size: 24px; font-weight: bold; color: {self.color};")
         value_layout.addWidget(self.value_label)
 
         if unit:
             unit_label = QLabel(unit)
             unit_label.setStyleSheet(
-                f"font-size: 13px; color: {DashboardTheme.COLORS['text_dim']}; padding-top: 8px;"
+                f"font-size: 11px; color: {DashboardTheme.COLORS['text_dim']}; padding-top: 6px;"
             )
             unit_label.setAlignment(Qt.AlignmentFlag.AlignBottom)
             value_layout.addWidget(unit_label)
@@ -376,8 +377,8 @@ class MiniSparkline(QWidget):
         self.color = QColor(color or DashboardTheme.COLORS["primary"])
         self.data_points: deque = deque(maxlen=max_points)
 
-        # 设置固定高度
-        self.setFixedHeight(40)
+        # 设置固定高度（优化版：减小高度为数值留出更多空间）
+        self.setFixedHeight(35)
         self.setMinimumWidth(100)
 
     def add_point(self, value: float):
@@ -927,11 +928,8 @@ class MonacoEditorWidget(QPlainTextEdit):
                 selection.cursor = self.textCursor()  # type: ignore
             except (AttributeError, TypeError):
                 # 如果标准方式失败，使用兼容的方式
-                ExtraSelection = namedtuple('ExtraSelection', ['format', 'cursor'])
-                selection = ExtraSelection(
-                    format=QTextCharFormat(),
-                    cursor=self.textCursor()
-                )
+                ExtraSelection = namedtuple("ExtraSelection", ["format", "cursor"])
+                selection = ExtraSelection(format=QTextCharFormat(), cursor=self.textCursor())
 
             # Monaco当前行颜色
             line_color = QColor("#2a2d2e")
@@ -1046,3 +1044,156 @@ class MonacoEditorWidget(QPlainTextEdit):
             """
             )
             self.logger.info("编辑器设置为编辑模式")
+
+
+# ==================== 第3部分：带阈值的热力图组件 ====================
+
+
+class ThresholdHeatmap(QWidget):
+    """带阈值标记的热力图组件（深色极简风格）.
+
+    显示单个指标的当前值，并在进度条上显示警告和严重阈值线。
+    参考进程监控界面的整体设备监控组件设计。
+    """
+
+    def __init__(
+        self,
+        title: str,
+        unit: str = "%",
+        warning_threshold: float = 80.0,
+        critical_threshold: float = 90.0,
+        max_value: float = 100.0,
+        parent: Optional[QWidget] = None,
+    ):
+        """初始化带阈值的热力图组件.
+
+        Args:
+            title: 指标标题
+            unit: 单位
+            warning_threshold: 警告阈值
+            critical_threshold: 严重阈值
+            max_value: 最大值（用于计算百分比）
+            parent: 父组件
+        """
+        super().__init__(parent)
+        self.title = title
+        self.unit = unit
+        self.warning_threshold = warning_threshold
+        self.critical_threshold = critical_threshold
+        self.max_value = max_value
+        self.current_value = 0.0
+
+        # 设置固定高度和最小宽度
+        self.setMinimumHeight(60)
+        self.setMaximumHeight(80)
+        self.setMinimumWidth(200)
+
+        # 深色背景样式
+        self.setStyleSheet(
+            """
+            QWidget {
+                background-color: #1E1E1E;
+                border: 1px solid #333333;
+                border-radius: 4px;
+            }
+        """
+        )
+
+        # 主布局
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(5)
+
+        # 标题和当前值（水平布局）
+        header_layout = QHBoxLayout()
+        header_layout.setSpacing(10)
+
+        title_label = QLabel(title)
+        title_label.setStyleSheet("font-size: 12px; color: #AAA; border: none;")
+        header_layout.addWidget(title_label)
+
+        header_layout.addStretch()
+
+        self.value_label = QLabel(f"0.0{unit}")
+        self.value_label.setStyleSheet(
+            "font-size: 14px; font-weight: bold; color: #FFF; border: none;"
+        )
+        header_layout.addWidget(self.value_label)
+
+        layout.addLayout(header_layout)
+
+        # 进度条（热力图）
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setMinimumHeight(30)
+
+        # 渐变色样式（绿→黄→红）
+        self.progress_bar.setStyleSheet(
+            """
+            QProgressBar {
+                border: 2px solid #444;
+                border-radius: 5px;
+                background-color: #1E1E1E;
+            }
+            QProgressBar::chunk {
+                background: qlineargradient(
+                    x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #00FF00,
+                    stop:0.5 #FFFF00,
+                    stop:1 #FF0000
+                );
+            }
+        """
+        )
+
+        layout.addWidget(self.progress_bar)
+
+    def update_value(self, value: float):
+        """更新当前值.
+
+        Args:
+            value: 当前值
+        """
+        self.current_value = value
+
+        # 计算百分比
+        percentage = min((value / self.max_value) * 100, 100) if self.max_value > 0 else 0
+
+        # 更新显示
+        self.value_label.setText(f"{value:.1f}{self.unit}")
+        self.progress_bar.setValue(int(percentage))
+
+        # 触发重绘（绘制阈值线）
+        self.update()
+
+    def paintEvent(self, event):
+        """绘制事件（绘制阈值标记线）."""
+        super().paintEvent(event)
+
+        if self.max_value <= 0:
+            return
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # 获取进度条的几何位置
+        bar_rect = self.progress_bar.geometry()
+
+        # 计算阈值线的X坐标
+        warning_percent = (self.warning_threshold / self.max_value) * 100
+        critical_percent = (self.critical_threshold / self.max_value) * 100
+
+        warning_x = bar_rect.x() + int((warning_percent / 100.0) * bar_rect.width())
+        critical_x = bar_rect.x() + int((critical_percent / 100.0) * bar_rect.width())
+
+        # 绘制警告阈值线（黄色）
+        if 0 <= warning_percent <= 100:
+            painter.setPen(QPen(QColor("#FFFF00"), 3))
+            painter.drawLine(warning_x, bar_rect.y(), warning_x, bar_rect.y() + bar_rect.height())
+
+        # 绘制严重阈值线（红色）
+        if 0 <= critical_percent <= 100:
+            painter.setPen(QPen(QColor("#FF0000"), 3))
+            painter.drawLine(critical_x, bar_rect.y(), critical_x, bar_rect.y() + bar_rect.height())

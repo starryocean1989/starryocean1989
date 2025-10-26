@@ -32,8 +32,9 @@ from .logger import logger
 @dataclass
 class ConnectionPoolConfig:
     """连接池配置"""
-    max_primary_connections: int = 38  # 主连接数
-    max_standby_connections: int = 10  # 备用连接数
+
+    max_primary_connections: Optional[int] = None  # None 表示按服务器数量自动配置
+    max_standby_connections: Optional[int] = None  # None 表示根据剩余服务器数自动配置
     timeout: float = 5.0  # 连接超时
     max_retries: int = 3  # 最大重试次数
     retry_interval: float = 0.2  # 重试间隔
@@ -59,9 +60,9 @@ class AsyncConnectionPool:
     def __init__(
         self,
         servers: Optional[List[Tuple[str, int]]] = None,
-        max_connections: int = 38,
+        max_connections: Optional[int] = None,
         timeout: float = 5.0,
-        config: Optional[ConnectionPoolConfig] = None
+        config: Optional[ConnectionPoolConfig] = None,
     ):
         """
         初始化连接池
@@ -70,10 +71,7 @@ class AsyncConnectionPool:
         """
         # 兼容原有API
         if config is None:
-            config = ConnectionPoolConfig(
-                max_primary_connections=max_connections,
-                timeout=timeout
-            )
+            config = ConnectionPoolConfig(max_primary_connections=max_connections, timeout=timeout)
 
         self.config = config
 
@@ -82,11 +80,29 @@ class AsyncConnectionPool:
             servers = [(host[1], host[2]) for host in HQ_HOSTS_ALL]
         self.all_servers = servers
 
+        total_servers = len(self.all_servers)
+
+        # 自动推导主连接数量
+        if self.config.max_primary_connections is None:
+            self.config.max_primary_connections = total_servers or 1
+        else:
+            # 防止超过可用服务器数量
+            self.config.max_primary_connections = max(
+                1, min(self.config.max_primary_connections, total_servers or 1)
+            )
+
+        # 自动推导备用连接数量
+        if self.config.max_standby_connections is None:
+            remaining = max(0, total_servers - self.config.max_primary_connections)
+            self.config.max_standby_connections = remaining
+        else:
+            max_standby = max(0, total_servers - self.config.max_primary_connections)
+            self.config.max_standby_connections = max(
+                0, min(self.config.max_standby_connections, max_standby)
+            )
+
         # IP池管理（智能排序）
-        self.ip_pool = AsyncSmartIPPool(
-            servers=servers,
-            update_interval=config.monitor_interval
-        )
+        self.ip_pool = AsyncSmartIPPool(servers=servers, update_interval=config.monitor_interval)
 
         # 主连接池
         self.primary_connections: List[Optional[AsyncTdxHq_API]] = []
@@ -98,13 +114,16 @@ class AsyncConnectionPool:
         self.connection_usage: Dict[AsyncTdxHq_API, bool] = {}  # True=使用中
 
         # 并发控制
-        self.semaphore = asyncio.Semaphore(config.max_primary_connections)
+        semaphore_limit = max(1, self.config.max_primary_connections)
+        self.semaphore = asyncio.Semaphore(semaphore_limit)
 
         # 初始化状态
         self.initialized = False
 
-        logger.info(f"异步连接池v2初始化: 主连接{config.max_primary_connections}个, "
-                   f"备用{config.max_standby_connections}个")
+        logger.info(
+            f"异步连接池v2初始化: 主连接{self.config.max_primary_connections}个, "
+            f"备用{self.config.max_standby_connections}个"
+        )
 
     async def initialize(self):
         """
@@ -124,16 +143,20 @@ class AsyncConnectionPool:
 
         # 创建主连接
         logger.info(f"创建{self.config.max_primary_connections}个主连接...")
-        primary_servers = best_servers[:self.config.max_primary_connections]
+        primary_servers = best_servers[: self.config.max_primary_connections]
         self.primary_connections = await self._create_connections(primary_servers)
 
         # 创建备用连接
-        logger.info(f"创建{self.config.max_standby_connections}个备用连接...")
-        standby_servers = best_servers[
-            self.config.max_primary_connections:
-            self.config.max_primary_connections + self.config.max_standby_connections
-        ]
-        self.standby_connections = await self._create_connections(standby_servers)
+        standby_count = self.config.max_standby_connections
+        logger.info(f"创建{standby_count}个备用连接...")
+        if standby_count:
+            standby_servers = best_servers[
+                self.config.max_primary_connections : self.config.max_primary_connections
+                + standby_count
+            ]
+            self.standby_connections = await self._create_connections(standby_servers)
+        else:
+            self.standby_connections = []
 
         self.initialized = True
 
@@ -142,8 +165,7 @@ class AsyncConnectionPool:
         logger.info(f"连接池就绪: 主连接{success_count}个, 备用{standby_count}个")
 
     async def _create_connections(
-        self,
-        servers: List[Tuple[str, int]]
+        self, servers: List[Tuple[str, int]]
     ) -> List[Optional[AsyncTdxHq_API]]:
         """
         并发创建多个连接
@@ -151,16 +173,10 @@ class AsyncConnectionPool:
         :param servers: 服务器列表
         :return: 连接列表
         """
-        tasks = [
-            self._create_single_connection(server)
-            for server in servers
-        ]
+        tasks = [self._create_single_connection(server) for server in servers]
         return await asyncio.gather(*tasks, return_exceptions=False)
 
-    async def _create_single_connection(
-        self,
-        server: Tuple[str, int]
-    ) -> Optional[AsyncTdxHq_API]:
+    async def _create_single_connection(self, server: Tuple[str, int]) -> Optional[AsyncTdxHq_API]:
         """
         创建单个连接
 
@@ -169,10 +185,7 @@ class AsyncConnectionPool:
         """
         try:
             client = await AsyncTdxHq_API.factory(
-                server=server,
-                timeout=self.config.timeout,
-                heartbeat=False,
-                raise_exception=False
+                server=server, timeout=self.config.timeout, heartbeat=False, raise_exception=False
             )
 
             if client:
@@ -268,8 +281,7 @@ class AsyncConnectionPool:
 
             # 选择一个未使用的服务器
             used_servers = {
-                (c.ip, c.port) for c in self.primary_connections + self.standby_connections
-                if c
+                (c.ip, c.port) for c in self.primary_connections + self.standby_connections if c
             }
 
             for server in servers:
@@ -359,6 +371,7 @@ class AsyncConnectionPoolContext:
 
 # ==================== 使用示例和便捷函数 ====================
 
+
 async def example_usage():
     """
     使用示例展示新特性
@@ -379,9 +392,9 @@ async def example_usage():
     config = ConnectionPoolConfig(
         max_primary_connections=38,  # 主连接
         max_standby_connections=10,  # 备用连接
-        enable_monitoring=True,      # 启用监控
-        monitor_interval=600.0,      # 10分钟更新
-        max_retries=3                # 最大重试
+        enable_monitoring=True,  # 启用监控
+        monitor_interval=600.0,  # 10分钟更新
+        max_retries=3,  # 最大重试
     )
 
     pool = AsyncConnectionPool(config=config)
@@ -395,8 +408,7 @@ async def example_usage():
 
     # 3. 使用IP池（独立使用）
     ip_pool = AsyncSmartIPPool(
-        servers=[(h[1], h[2]) for h in HQ_HOSTS_ALL[:50]],
-        update_interval=300.0  # 5分钟更新
+        servers=[(h[1], h[2]) for h in HQ_HOSTS_ALL[:50]], update_interval=300.0  # 5分钟更新
     )
 
     await ip_pool.start()
@@ -415,4 +427,3 @@ async def example_usage():
 if __name__ == "__main__":
     # 运行示例（仅用于测试）
     asyncio.run(example_usage())
-

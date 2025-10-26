@@ -911,7 +911,12 @@ class DataCenter(BaseWidget, LoggerMixin):
 
         control_layout.addStretch()
 
-        # 添加服务器状态显示
+        # 添加服务器状态显示与刷新测速按钮
+        self.refresh_servers_btn = QPushButton("🔄 刷新")
+        self.refresh_servers_btn.setToolTip("重新测速服务器池并刷新可用服务器")
+        self.refresh_servers_btn.clicked.connect(self._retest_servers)
+        control_layout.addWidget(self.refresh_servers_btn)
+
         self.server_status_label = QLabel("可用服务器: 检测中...")
         self.server_status_label.setStyleSheet(
             "color: #0066cc; font-weight: bold; padding: 8px; "
@@ -970,6 +975,108 @@ class DataCenter(BaseWidget, LoggerMixin):
         layout.addWidget(history_container)
 
         return tab
+
+    def _retest_servers(self) -> None:
+        """手动触发服务器池重新测速并刷新状态（使用QThread+Signal）。"""
+        try:
+            if not self.refresh_servers_btn or not self.server_status_label:
+                return
+
+            # 获取服务实例（容错）
+            if not self.data_center_service:
+                self.data_center_service = self.service_manager.get_service("data_center_service")
+                if not self.data_center_service:
+                    self.show_warning("数据中心服务不可用，无法刷新服务器池")
+                    return
+
+            # UI 禁用，提示中
+            self.refresh_servers_btn.setEnabled(False)
+            self.server_status_label.setText("⏳ 正在重新测速...")
+            self.server_status_label.setStyleSheet(
+                "color: #0066cc; font-weight: bold; padding: 8px; "
+                "background-color: #f0f8ff; border-radius: 4px;"
+            )
+
+            # 创建QThread工作线程（Qt原生，支持事件循环）
+            from PySide6.QtCore import QThread, Signal
+
+            class ServerRetestThread(QThread):
+                """服务器重新测速工作线程（Qt原生）。"""
+
+                finished_signal = Signal(dict)  # 完成信号，传递结果
+
+                def __init__(self, service, parent=None):
+                    super().__init__(parent)
+                    self.service = service
+
+                def run(self):
+                    """后台执行测速。"""
+                    result = None
+                    try:
+                        if self.service and hasattr(self.service, "retest_server_pool"):
+                            result = self.service.retest_server_pool()
+                        else:
+                            result = {"success": False, "message": "后端未实现刷新API"}
+                    except Exception as e:  # pylint: disable=broad-except
+                        result = {"success": False, "message": str(e)}
+
+                    # 发射信号（线程安全，Qt会自动调度到主线程）
+                    self.finished_signal.emit(result)
+
+            # 创建并启动线程
+            self._retest_thread = ServerRetestThread(self.data_center_service, self)
+
+            # 连接信号（QueuedConnection确保在主线程执行）
+            self._retest_thread.finished_signal.connect(
+                self._on_retest_finished, Qt.ConnectionType.QueuedConnection
+            )
+
+            # 启动线程
+            self._retest_thread.start()
+            self.logger.info("后台测速线程已启动（QThread）")
+
+        except Exception as e:  # pylint: disable=broad-except
+            self.logger.error("刷新服务器池失败: %s", e, exc_info=True)
+            self.show_error(f"刷新服务器池失败: {e}")
+            # 恢复按钮状态
+            if hasattr(self, "refresh_servers_btn") and self.refresh_servers_btn:
+                self.refresh_servers_btn.setEnabled(True)
+
+    def _on_retest_finished(self, result: dict) -> None:
+        """测速完成回调（在主线程中执行，线程安全）。
+
+        Args:
+            result: 测速结果字典
+        """
+        try:
+            success = bool(result.get("success"))
+            if success:
+                stats = result.get("stats", {})
+                available = stats.get("available", 0)
+                total = stats.get("total", 0)
+                if self.server_status_label:
+                    self.server_status_label.setText(f"✅ 可用服务器: {available}/{total}")
+                    self.server_status_label.setStyleSheet(
+                        "color: #00aa00; font-weight: bold; padding: 8px; "
+                        "background-color: #f0fff0; border-radius: 4px;"
+                    )
+                self.logger.info("UI更新成功：%d/%d 可用", available, total)
+            else:
+                msg = result.get("message", "刷新失败")
+                if self.server_status_label:
+                    self.server_status_label.setText(f"⚠️ 刷新失败: {msg}")
+                    self.server_status_label.setStyleSheet(
+                        "color: #ff6600; font-weight: bold; padding: 8px; "
+                        "background-color: #fff8f0; border-radius: 4px;"
+                    )
+                self.logger.warning("UI更新失败：%s", msg)
+        except Exception as e:  # pylint: disable=broad-except
+            self.logger.error("UI更新异常: %s", e, exc_info=True)
+        finally:
+            # 确保按钮始终恢复（在主线程，线程安全）
+            if self.refresh_servers_btn:
+                self.refresh_servers_btn.setEnabled(True)
+                self.logger.info("刷新按钮已恢复启用")
 
     def _create_download_history_group(self) -> QGroupBox:
         """创建下载历史组件."""
@@ -1724,18 +1831,18 @@ class DataCenter(BaseWidget, LoggerMixin):
         Args:
             text: 输入的文本
         """
-        print(f"🔍 DEBUG: _on_symbol_input_changed() 被调用！text='{text}'")  # 调试语句8
+        # print(...)  # 🔧 已移除：DEBUG调试输出
         if not text or len(text) < 1:
             self.logger.debug("输入为空，跳过联想")
             return
 
         # 检查缓存是否已加载
         if not self.local_data_cache:
-            print(f"❌ DEBUG: local_data_cache 为空！cache={self.local_data_cache}")  # 调试语句9
+            # print(...)  # 🔧 已移除：DEBUG调试输出
             self.logger.debug("⚠️  local_data_cache为空，联想功能不可用（可能还未加载或本地无数据）")
             return
 
-        print(f"✅ DEBUG: local_data_cache 有数据！大小={len(self.local_data_cache)}")  # 调试语句10
+        # print(...)  # 🔧 已移除：DEBUG调试输出
 
         try:
             self.logger.debug(f"🔍 联想查询: '{text}', 缓存大小: {len(self.local_data_cache)}")
@@ -1905,10 +2012,10 @@ class DataCenter(BaseWidget, LoggerMixin):
 
     def _update_local_data_cache(self, cache, success_count, error_count):
         """在主线程中更新本地数据缓存"""
-        print(f"🔍 DEBUG: _update_local_data_cache() 被调用！cache大小={len(cache)}")  # 调试语句6
+        # print(...)  # 🔧 已移除：DEBUG调试输出
         self.local_data_cache = cache
         self._local_data_index_loaded = True  # 🔧 标记已加载，避免重复加载
-        print(f"✅ DEBUG: local_data_cache 已更新！大小={len(self.local_data_cache)}")  # 调试语句7
+        # print(...)  # 🔧 已移除：DEBUG调试输出
         # 所有无效品种应在后端早期阶段已过滤，前端只记录最终加载结果
         if error_count > 0:
             self.logger.debug(f"本地数据索引加载时跳过了{error_count}个无效数据")
@@ -1993,16 +2100,13 @@ class DataCenter(BaseWidget, LoggerMixin):
             metrics = data.get("metrics", {})
             status = data.get("status", "")
 
-            # 🔍 调试日志
-            import sys
+            # 🔧 已移除：UI调试print（防止刷屏）
 
-            print("\n🔍 [DEBUG] _on_quality_scan_phase() 被调用")
-            print(f"   phase={phase}, status={status}")
-            print(f"   metrics keys={list(metrics.keys())}")
-            print(f"   details count={len(metrics.get('details', []))}")
-            sys.stdout.flush()
-
-            self.logger.info(f"📊 收到阶段{phase}推送: {metrics}")
+            # 🔧 修复：只输出摘要信息，不输出完整的details列表（防止刷屏）
+            metrics_summary = {k: v for k, v in metrics.items() if k != "details"}
+            if "details" in metrics:
+                metrics_summary["details_count"] = len(metrics["details"])
+            self.logger.info(f"📊 收到阶段{phase}推送: {metrics_summary}")
 
             # 🆕 阶段0开始时清空详情表格，为增量更新做准备（phase 0是扫描开始的第一个信号）
             if phase == 0 and self.quality_detail_table:
@@ -2282,18 +2386,6 @@ class DataCenter(BaseWidget, LoggerMixin):
         except Exception as e:
             self.logger.error("❌ 查询本地数据异常: %s", e, exc_info=True)
             self.show_error(f"查询失败: {e}")
-
-    # 🚫 已废弃：单品种质量检查方法（改为全局质量概览联动）
-    # def _check_data_quality_for_symbol(self, symbol: str, interval: str = "1d"):
-    #     """检查指定品种的数据质量（数据感知功能）.
-    #
-    #     Args:
-    #         symbol: 品种代码
-    #         interval: K线周期，默认"1d"
-    #
-    #     注意：此方法已废弃，本地数据状态现在由质量概览组件联动更新
-    #     """
-    #     pass
 
     # ==================== 数据下载事件处理 ====================
 
@@ -3956,11 +4048,11 @@ class DataCenter(BaseWidget, LoggerMixin):
             data_lagging = overview_data.get("data_lagging_days", 0)  # 🆕 数据滞后天数
 
             # 🔍 DEBUG: 输出接收到的数据
-            print("\n🔍 [UI DEBUG] _update_quality_overview_ui 接收到数据:")
-            print(f"   total={total}, local={local}, missing={missing}")
-            print(f"   data_missing={data_missing}, errors={errors}, warnings={warnings}")
-            print(f"   score={score}, outdated={outdated}, data_lagging={data_lagging}")
-            print(f"   details数量={len(overview_data.get('details', []))}")
+            # print(...)  # 🔧 已移除：DEBUG调试输出
+            # print(...)  # 🔧 已移除：DEBUG调试输出
+            # print(...)  # 🔧 已移除：DEBUG调试输出
+            # print(...)  # 🔧 已移除：DEBUG调试输出
+            # print(...)  # 🔧 已移除：DEBUG调试输出
 
             # 🚀 更新显示
             if self.total_symbols_label:
@@ -4027,7 +4119,7 @@ class DataCenter(BaseWidget, LoggerMixin):
             print(
                 f"   toggle_quality_detail_btn.isChecked={self.toggle_quality_detail_btn.isChecked() if self.toggle_quality_detail_btn else 'N/A'}"
             )
-            print(f"   扫描完成，收到details={len(details_data)}个问题品种")
+            # print(...)  # 🔧 已移除：DEBUG调试输出
 
             # 🔧 修复：如果有details数据，更新详情表格（无论表格是否展开）
             # 这样可以确保用户点击"显示详细信息"时能看到完整数据
@@ -4075,7 +4167,7 @@ class DataCenter(BaseWidget, LoggerMixin):
                     # 🔍 调试日志
                     import sys
 
-                    print("\n🔍 [DEBUG] _toggle_quality_detail(checked=True)")
+                    # print(...)  # 🔧 已移除：DEBUG调试输出
                     print(
                         f"   table rowCount={self.quality_detail_table.rowCount() if self.quality_detail_table else 'None'}"
                     )
@@ -4119,7 +4211,7 @@ class DataCenter(BaseWidget, LoggerMixin):
             details: 详情列表（后端已过滤为有问题的品种并排序）
         """
         try:
-            print("\n🔍 [UI DEBUG] _update_quality_detail_table 被调用")
+            # print(...)  # 🔧 已移除：DEBUG调试输出
             print(f"   details类型: {type(details)}")
             print(f"   details大小: {len(details) if details else 'None'}")
             if details and len(details) > 0:
@@ -4216,8 +4308,8 @@ class DataCenter(BaseWidget, LoggerMixin):
             # 🔍 调试日志
             import sys
 
-            print("\n🔍 [DEBUG] _append_quality_details() 被调用")
-            print(f"   new_details count={len(new_details)}")
+            # print(...)  # 🔧 已移除：DEBUG调试输出
+            # print(...)  # 🔧 已移除：DEBUG调试输出
             print(
                 f"   table rowCount before={self.quality_detail_table.rowCount() if self.quality_detail_table else 'None'}"
             )
@@ -4302,7 +4394,7 @@ class DataCenter(BaseWidget, LoggerMixin):
             # 🔍 调试日志
             import sys
 
-            print(f"   ✅ table rowCount after={self.quality_detail_table.rowCount()}（已刷新UI）")
+            # print(...)  # 🔧 已移除：DEBUG调试输出
             sys.stdout.flush()
 
             self.logger.info(

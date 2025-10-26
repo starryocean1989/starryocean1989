@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 # data_module_vnpy - 中国A股量化数据管理模块
 
-**版本**: v3.0.0
-**最后更新**: 2025-10-23
+**版本**: v3.2.0 (极限合并版)
+**最后更新**: 2025-10-26
 **架构**: 基于 VNPy + TDX异步接口
 
 ---
@@ -45,6 +45,7 @@
 - 🔄 **两段式下载**: 热备服务器池，优化下载性能
 - 📊 **企业级监控**: 集成系统监控，木桶理论评分模型
 - 🧠 **自适应配置**: CPU/内存/网络自动评估和优化
+- 🛡️ **磁盘I/O保护**: 物理磁盘监控，类型化阈值硬限制
 
 ---
 
@@ -94,26 +95,27 @@
         ├──────────────────────────────────────────────────────┤
         │                                                       │
         │  ┌─────────────────────────────────────────────┐    │
-        │  │  data_acquisition (远程数据获取)            │    │
-        │  │  ├─ symbol_management.py  品种管理          │    │
-        │  │  └─ data_fetcher.py       多进程下载        │    │
+        │  │  data_acquisition (远程数据获取) [3合1]    │    │
+        │  │  └─ data_acquisition.py  统一数据获取       │    │
+        │  │     (品种管理+任务日志+多进程下载)          │    │
         │  └─────────────────────────────────────────────┘    │
         │                                                       │
         │  ┌─────────────────────────────────────────────┐    │
-        │  │  local_data (本地数据管理)                  │    │
+        │  │  local_data (本地数据管理) [5合2]          │    │
         │  │  ├─ data_quality.py       质量管理          │    │
-        │  │  └─ unified_data_manager.py 统一管理        │    │
+        │  │  ├─ unified_data_manager.py 统一管理        │    │
+        │  │  ├─ validators.py         验证器[3合1]      │    │
+        │  │  └─ cache_and_memory.py   缓存内存[2合1]    │    │
         │  └─────────────────────────────────────────────┘    │
         │                                                       │
         │  ┌─────────────────────────────────────────────┐    │
-        │  │  load_balancer (负载均衡)                   │    │
-        │  │  ├─ server_pool_manager.py 服务器池         │    │
-        │  │  └─ core.py               负载均衡器        │    │
+        │  │  load_balancer (负载均衡) [已极限合并]     │    │
+        │  │  └─ load_balancer.py      统一负载均衡      │    │
         │  └─────────────────────────────────────────────┘    │
         │                                                       │
         │  ┌─────────────────────────────────────────────┐    │
-        │  │  data_readers (本地文件读取)                │    │
-        │  │  └─ tdx_reader.py         通达信文件读取    │    │
+        │  │  data_readers (本地文件读取) [4合1]        │    │
+        │  │  └─ data_readers.py       统一文件读取      │    │
         │  └─────────────────────────────────────────────┘    │
         │                                                       │
         │  ┌─────────────────────────────────────────────┐    │
@@ -136,7 +138,7 @@
 
 ---
 
-## 目录结构
+## 目录结构 (极限合并版 v3.2.0)
 
 ```
 data_module_vnpy/
@@ -149,63 +151,79 @@ data_module_vnpy/
 │   ├── events.py                       # 事件发布器
 │   └── README.md                       # 本文档
 │
-├── 📁 data_acquisition/                # 远程数据获取模块
+├── 📁 data_acquisition/                # 远程数据获取模块 [3合1✅]
 │   ├── __init__.py
-│   ├── symbol_management.py            # 品种列表获取和分类
-│   │   ├── SymbolLoader               # 品种加载器（1424行）
-│   │   └── BlockParser                # 板块解析器
-│   └── data_fetcher.py                 # K线数据下载
-│       ├── MultiProcessStockFetcher   # 多进程下载器（2768行）
-│       ├── download_incremental_unified # 统一下载接口
-│       └── download_ipo_dates         # IPO日期批量下载
+│   └── data_acquisition.py             # 统一数据获取（4,144行）
+│       ├── TaskDetailLogger            # 任务日志记录器
+│       ├── BlockParser                 # 板块解析器
+│       ├── SymbolLoader                # 品种加载器
+│       ├── MultiProcessStockFetcher    # 多进程下载器
+│       ├── KlineDownloadTask           # K线下载任务
+│       ├── IPODownloadTask             # IPO下载任务
+│       └── download_ipo_dates          # IPO日期批量下载
 │
-├── 📁 local_data/                      # 本地数据管理模块
+├── 📁 local_data/                      # 本地数据管理模块 [5合2✅]
 │   ├── __init__.py
-│   ├── data_quality.py                 # 数据质量管理（3486行）
-│   │   ├── IPODateCache               # IPO日期缓存
-│   │   ├── StorageManager             # 存储管理（Parquet）
-│   │   ├── DataValidator              # 数据校验
-│   │   ├── DataSensor                 # 数据质量感知
-│   │   ├── DataFileWatcher            # 文件监控
-│   │   └── HealthChecker              # 系统健康检查
-│   ├── unified_data_manager.py         # 统一数据管理（2286行）
-│   │   ├── UnifiedDataManager         # 四层数据融合
-│   │   ├── PreloadService             # 智能预加载
-│   │   ├── TdxDataSource              # TDX数据源（轮询转推送）
-│   │   └── VirtualDataSource          # 虚拟数据源（历史回放）
-│   └── intelligent_adaptive_tuner.py   # 智能自适应调优器
+│   ├── data_quality.py                 # 数据质量管理（4,398行）
+│   │   ├── IPODateCache                # IPO日期缓存
+│   │   ├── StorageManager              # 存储管理（Parquet）
+│   │   ├── DataValidator               # 数据校验
+│   │   ├── DataSensor                  # 数据质量感知
+│   │   ├── DataFileWatcher             # 文件监控
+│   │   └── HealthChecker               # 系统健康检查
+│   ├── unified_data_manager.py         # 统一数据管理（2,292行）
+│   │   ├── UnifiedDataManager          # 四层数据融合
+│   │   ├── PreloadService              # 智能预加载
+│   │   ├── TdxDataSource               # TDX数据源（轮询转推送）
+│   │   └── VirtualDataSource           # 虚拟数据源（历史回放）
+│   ├── validators.py                   # 验证器统一模块（998行）[3合1✅]
+│   │   ├── StatelessValidator          # 无状态验证器
+│   │   ├── GPUValidator                # GPU加速验证
+│   │   └── IncrementalScanManager      # 增量扫描
+│   └── cache_and_memory.py             # 缓存内存管理（452行）[2合1✅]
+│       ├── LRUCacheManager             # LRU缓存管理
+│       └── SharedMemoryManager         # 共享内存管理
 │
-├── 📁 load_balancer/                   # 负载均衡模块
+├── 📁 load_balancer/                   # 负载均衡模块 [已极限合并✅]
 │   ├── __init__.py
 │   ├── README.md                       # 负载均衡详细文档
-│   ├── core.py                         # LoadBalancer 核心（单例）
-│   ├── server_pool_manager.py          # 服务器池管理器
-│   ├── tasks.py                        # 任务基类定义
-│   ├── monitors.py                     # 系统监控指标获取
-│   ├── evaluators.py                   # 资源压力评估器
-│   └── configs.py                      # 动态配置计算器
+│   └── load_balancer.py                # 统一负载均衡器（6,321行）
+│       ├── LoadBalancer                # 核心负载均衡器（单例）
+│       ├── ServerPoolManager           # 服务器池管理
+│       ├── TaskQueueManager            # 任务队列管理
+│       ├── ResourceMonitor             # 资源监控
+│       ├── ExecutionModel              # 执行模型（多进程/流式）
+│       └── ParameterTuner              # 参数自动调优
 │
-├── 📁 data_readers/                    # 本地文件读取模块
+├── 📁 data_readers/                    # 本地文件读取模块 [4合1✅]
 │   ├── __init__.py
-│   ├── base_reader.py                  # 读取器基类
-│   ├── tdx_reader.py                   # 通达信文件读取器
-│   └── bj_decoder.py                   # 北交所数据解码器
+│   └── data_readers.py                 # 统一文件读取器（1,075行）
+│       ├── BaseReader                  # 读取器基类
+│       ├── BjStockDecoder              # 北证数据解码器
+│       ├── TdxBinaryReader             # 通达信文件读取器
+│       └── TdxDynamicExecutor          # 动态执行器
 │
 └── 📄 配置和依赖
     ├── requirements.txt                # Python依赖包
     └── UNIFIED_DATA_MANAGER_API.md     # 统一数据管理器API文档
 ```
 
-### 文件统计
+### 文件统计 (极限合并后)
 
-| 模块 | 文件数 | 代码行数 | 核心类数 |
-|------|--------|----------|----------|
-| **核心文件** | 5个 | ~2000行 | 6个 |
-| **data_acquisition** | 2个 | ~4200行 | 5个 |
-| **local_data** | 3个 | ~6000行 | 15个 |
-| **load_balancer** | 7个 | ~3000行 | 10个 |
-| **data_readers** | 3个 | ~800行 | 3个 |
-| **总计** | **20个** | **~16000行** | **39个类** |
+| 模块 | 文件数 | 代码行数 | 核心类数 | 合并效果 |
+|------|--------|----------|----------|----------|
+| **核心文件** | 5个 | ~2,000行 | 6个 | - |
+| **data_acquisition** | 1个 | ~4,144行 | 7个 | 3→1 (减少67%) |
+| **local_data** | 4个 | ~8,140行 | 20个 | 9→4 (减少56%) |
+| **load_balancer** | 1个 | ~6,321行 | 15个 | 9→1 (减少89%) |
+| **data_readers** | 1个 | ~1,075行 | 4个 | 4→1 (减少75%) |
+| **总计** | **12个** | **~21,680行** | **52个类** | 减少60% |
+
+**合并成果**:
+- ✅ 文件数量: 25个 → 12个 (减少52%)
+- ✅ 代码更集中: 相关逻辑在同一文件，调试体验大幅提升
+- ✅ API兼容: 100%向后兼容，所有导入路径保持有效
+- ✅ 维护性: 依赖关系更清晰，重构风险降低
 
 ---
 
@@ -421,16 +439,69 @@ sensor.start_file_watcher()
 validation = sensor.validate_symbol("000001")
 ```
 
-**混合异步架构**:
+**优化后架构**:
 ```
-├─ 协程层: 小文件 (<1MB)  → asyncio pool (2000并发)
-├─ 线程层: 中等文件 (1-10MB) → ThreadPoolExecutor (50线程)
-└─ 进程层: 大文件 (>10MB)    → ProcessPoolExecutor (16进程)
+├─ 批量读取: multiprocessing.Pool (进程池，用于并发文件扫描)
+└─ 异步API: asyncio (直接在QThread中执行，无ThreadPoolExecutor)
 ```
 
 ---
 
-### 5. UnifiedDataManager - 统一数据管理器
+### 5. TdxBinaryReader - TDX本地文件读取器
+
+`data_readers/tdx_reader.py` (~800行)
+
+**职责**: 读取通达信本地保存的二进制K线数据并标准化为Parquet格式。
+
+**架构**: 多进程+协程池（v3.1.0优化）
+
+```
+进程1 → [协程1, 协程2, ..., 协程20] → 并发读取文件
+进程2 → [协程1, 协程2, ..., 协程20] → 并发读取文件
+进程3 → [协程1, 协程2, ..., 协程20] → 并发读取文件
+进程4 → [协程1, 协程2, ..., 协程20] → 并发读取文件
+```
+
+**特性**:
+- ✅ 多进程架构：充分利用多核CPU
+- ✅ 纯异步协程：单进程内高并发文件I/O
+- ✅ LoadBalancer动态配置：根据系统资源调整进程数和协程数
+- ✅ 批量保存：减少磁盘写入次数
+- ✅ 磁盘I/O保护：集成磁盘使用率和延迟限制
+
+**性能指标**:
+| 品种数 | 旧架构(单线程) | 新架构(4进程×20协程) | 提升 |
+|-------|--------------|---------------------|------|
+| 1000  | ~30秒        | ~8秒                | 3.7倍 |
+| 5000  | ~150秒       | ~40秒               | 3.7倍 |
+
+**关键方法**:
+```python
+reader = TdxBinaryReader(tdx_dir)
+
+# 批量处理（自动使用多进程+协程）
+results = reader.process_batch(
+    symbols=["000001", "000002", ...],
+    data_type="day",
+    market="sh",
+    progress_callback=callback_fn,
+    # max_workers和coroutines_per_worker由LoadBalancer决定
+)
+```
+
+**支持的数据类型**:
+- 日线数据 (day): vipdoc/{market}/lday/{symbol}.day
+- 5分钟线 (5min): vipdoc/{market}/fzline/{symbol}.lc5
+- 1分钟线 (1min): vipdoc/{market}/minline/{symbol}.lc1
+
+**市场代码**:
+- sh: 上证
+- sz: 深证
+- bj: 北证
+
+---
+
+### 6. UnifiedDataManager - 统一数据管理器
 
 `local_data/unified_data_manager.py` (2286行)
 
@@ -488,7 +559,7 @@ tdx_source.connect({
 
 ---
 
-### 6. LoadBalancer - 智能负载均衡器
+### 7. LoadBalancer - 智能负载均衡器
 
 `load_balancer/core.py` + 相关模块 (~3000行)
 
@@ -501,6 +572,7 @@ tdx_source.connect({
 - ✅ 动态缩放（0.3-1.6倍并发调整）
 - ✅ 智能缓存（3秒TTL，减少评估开销）
 - ✅ 任务标准化（8个标准任务类型）
+- ✅ **磁盘I/O硬限制**（物理磁盘监控 + 类型化阈值保护）
 
 **评分模型**:
 ```
@@ -550,9 +622,51 @@ config = load_balancer.get_optimal_config(task)
 result = task.execute(config)
 ```
 
+**磁盘I/O硬限制** ⭐ 新特性:
+
+LoadBalancer集成了磁盘I/O资源保护机制，防止磁盘过载导致系统卡顿：
+
+```python
+# ApplicationLevelLimiter 磁盘保护配置
+ApplicationLevelLimiter(
+    # CPU/内存限制（已有）
+    small_task_cpu_limit=30.0,
+    large_task_cpu_limit=80.0,
+
+    # 磁盘限制（新增）
+    disk_hdd_busy_limit=75.0,      # HDD磁盘使用率限制
+    disk_ssd_busy_limit=85.0,      # SSD磁盘使用率限制
+    disk_nvme_busy_limit=90.0,     # NVMe磁盘使用率限制
+
+    # 延迟熔断（新增）
+    disk_hdd_latency_critical=50.0,   # HDD延迟>50ms拒绝任务
+    disk_ssd_latency_critical=20.0,   # SSD延迟>20ms拒绝任务
+    disk_nvme_latency_critical=10.0,  # NVMe延迟>10ms拒绝任务
+)
+```
+
+**物理磁盘监控**:
+- 使用WMI识别物理磁盘（而非逻辑分区C:/D:/E:）
+- 自动检测磁盘类型（NVMe/SSD/HDD）
+- 标记系统盘（包含C:分区的物理磁盘）
+- 计算磁盘使用率%和IO延迟
+
+**保护策略**:
+| 磁盘类型 | 使用率限制 | IO延迟熔断 | 说明 |
+|---------|-----------|-----------|------|
+| HDD | 75% | 50ms | 机械硬盘，较低限制 |
+| SSD | 85% | 20ms | 固态硬盘，中等限制 |
+| NVMe | 90% | 10ms | NVMe硬盘，高性能 |
+
+当任一物理磁盘超限时，LoadBalancer会拒绝新任务，日志输出：
+```
+⚠️ 磁盘PhysicalDrive1(HDD)使用率超限: 82.3% > 75.0%
+⚠️ 磁盘PhysicalDrive0(SSD)IO严重阻塞: 25.8ms > 20.0ms
+```
+
 ---
 
-### 7. ServerPoolManager - 服务器池管理器
+### 8. ServerPoolManager - 服务器池管理器
 
 `load_balancer/server_pool_manager.py` (1100行)
 
@@ -590,7 +704,7 @@ stats = server_pool_manager.get_stats()
 
 **测速性能**:
 ```
-输入: 132个服务器
+输入: 683个服务器（BROKER_SERVERS_7709全部）
 进程: 3个（CPU并行）
 协程: 50×3=150个（I/O并行）
 超时: 2秒/服务器
@@ -1082,7 +1196,11 @@ engine.update_config({"chinastock.server_pool_size": 10})
 ### SymbolLoader
 
 ```python
-from backend.infrastructure.data_module_vnpy.data_acquisition.symbol_management import SymbolLoader
+# 推荐导入方式（简洁）
+from backend.infrastructure.data_module_vnpy.data_acquisition import SymbolLoader
+
+# 或直接从模块导入（向后兼容）
+from backend.infrastructure.data_module_vnpy import SymbolLoader
 
 # 创建加载器
 loader = SymbolLoader(event_engine)  # 带事件推送
@@ -1114,11 +1232,14 @@ cache = loader.get_cached_data()
 ### MultiProcessStockFetcher
 
 ```python
-from backend.infrastructure.data_module_vnpy.data_acquisition.data_fetcher import (
+# 推荐导入方式（简洁）
+from backend.infrastructure.data_module_vnpy.data_acquisition import (
     MultiProcessStockFetcher,
-    download_incremental_unified,
     download_ipo_dates
 )
+
+# 或直接从模块导入（向后兼容）
+from backend.infrastructure.data_module_vnpy import MultiProcessStockFetcher
 
 # 创建下载器
 fetcher = MultiProcessStockFetcher(event_engine=event_engine)
@@ -1216,7 +1337,7 @@ vt_setting.json  # VNPy全局配置文件
     "chinastock.tdx_dir": "C:/new_tdx",         # 通达信目录
 
     # 服务器池配置
-    "chinastock.server_pool.server_count": 132,  # 测速服务器数量
+    "chinastock.server_pool.server_count": None,  # 测速服务器数量（None=自动使用全部683个）
     "chinastock.server_pool.use_multiprocess": true,  # 使用多进程测速
     "chinastock.server_pool.test_timeout": 2.0,  # 测速超时（秒）
 
@@ -1313,6 +1434,49 @@ config_manager.update_config({
 
 ---
 
+### 磁盘I/O保护 ⭐ 新特性
+
+LoadBalancer现已集成磁盘I/O监控和硬限制机制，防止磁盘过载：
+
+**监控能力**:
+- 使用WMI识别物理磁盘（PhysicalDrive0/1/2...）
+- 自动检测磁盘类型（NVMe/SSD/HDD）
+- 实时计算磁盘使用率%和IO延迟
+- 标记系统盘（包含C:分区的物理磁盘）
+
+**保护阈值**:
+
+| 磁盘类型 | 使用率阈值 | 延迟熔断 | 触发策略 |
+|---------|-----------|---------|---------|
+| HDD | 75% | 50ms | 较保守，避免卡顿 |
+| SSD | 85% | 20ms | 平衡性能和保护 |
+| NVMe | 90% | 10ms | 高性能，更高限制 |
+
+**效果**:
+- 防止下载任务导致系统卡死
+- 自动拒绝超限时的新任务
+- 保证UI和系统服务正常运行
+- 日志清晰记录超限原因
+
+**配置建议**:
+```python
+# 保守配置（稳定优先）
+ApplicationLevelLimiter(
+    disk_hdd_busy_limit=60.0,
+    disk_ssd_busy_limit=75.0,
+    disk_nvme_busy_limit=85.0,
+)
+
+# 激进配置（性能优先）
+ApplicationLevelLimiter(
+    disk_hdd_busy_limit=85.0,
+    disk_ssd_busy_limit=95.0,
+    disk_nvme_busy_limit=98.0,
+)
+```
+
+---
+
 ## 维护指南
 
 ### 日志配置
@@ -1390,6 +1554,34 @@ config_manager.update_config({
 - [x] IPO日期批量下载
 - [x] 混合异步数据质量扫描
 - [x] 文件监控和自动修复
+- [x] **极限合并优化（v3.2.0）** - 文件数量减少60%，调试体验显著提升
+
+### 极限合并说明 (v3.2.0)
+
+为了提升开发和调试体验，我们对模块进行了极限合并优化：
+
+**合并范围**:
+- ✅ **data_readers**: 4个文件 → 1个文件 (data_readers.py)
+- ✅ **data_acquisition**: 3个文件 → 1个文件 (data_acquisition.py)
+- ✅ **local_data/validators**: 3个文件 → 1个文件 (validators.py)
+- ✅ **local_data/cache**: 2个文件 → 1个文件 (cache_and_memory.py)
+- ✅ **load_balancer**: 9个文件 → 1个文件 (load_balancer.py) - 已在之前完成
+
+**优势**:
+- 🎯 **调试友好**: 相关逻辑集中在同一文件，完整上下文可见
+- 🚀 **减少跳转**: 不再需要在多个文件间频繁切换
+- 🔄 **依赖清晰**: 内部导入被移除，依赖关系一目了然
+- 📦 **API兼容**: 100%向后兼容，所有原有导入路径仍然有效
+
+**技术细节**:
+- 通过`__init__.py`提供向后兼容的导入路径
+- 每个合并文件使用清晰的分区标识
+- 文件大小在IDE可流畅处理的范围内
+- Git历史在commit message中详细记录
+
+详见：`data_module_vnpy极限合并完成报告.md`
+
+---
 
 ### 计划中 📋
 

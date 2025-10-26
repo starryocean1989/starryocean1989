@@ -23,8 +23,7 @@ from vnpy.event import Event, EventEngine
 from vnpy.trader.engine import BaseEngine, MainEngine
 
 from .config import config_manager
-from .data_acquisition.symbol_management import SymbolLoader
-from .data_acquisition.data_fetcher import MultiProcessStockFetcher
+from .data_acquisition import SymbolLoader, MultiProcessStockFetcher
 from .local_data.data_quality import (
     StorageManager,
     DataValidator,
@@ -448,7 +447,7 @@ class ChinaStockEngine(BaseEngine):
     def _validate_server_pool_cache(self):
         """验证服务器池缓存"""
         try:
-            from backend.infrastructure.data_module_vnpy.load_balancer.server_pool_manager import (
+            from backend.infrastructure.data_module_vnpy.load_balancer import (
                 server_pool_manager,
             )
 
@@ -1161,10 +1160,34 @@ class ChinaStockEngine(BaseEngine):
     def read_tdx_data(
         self, symbols: List[str], data_type: str = "day", market: str = "sh"
     ) -> Dict[str, bool]:
-        """读取通达信本地数据并保存（代理调用）"""
-        if self.tdx_reader is None:
-            self.tdx_reader = TdxBinaryReader()
-        return self.tdx_reader.process_batch(symbols, data_type, market)
+        """读取通达信本地数据并保存（使用TdxDynamicExecutor）"""
+        import asyncio
+        from pathlib import Path
+        from .data_readers import TdxDynamicExecutor
+
+        # 获取TDX目录
+        tdx_dir = config_manager.get_tdx_reader_root_dir()
+        if tdx_dir is None:
+            self.logger.error("TDX根目录未配置")
+            return {symbol: False for symbol in symbols}
+
+        # 创建执行器
+        executor = TdxDynamicExecutor(tdx_dir=Path(tdx_dir))
+
+        # 同步调用异步方法
+        results = asyncio.run(
+            executor.execute_batch(
+                symbols=symbols,
+                data_type=data_type,
+                market=market,
+                initial_processes=4,
+                initial_coroutines=20,
+                enable_throttling=False,
+            )
+        )
+
+        # 转换结果格式：ExecutionResult -> bool
+        return {symbol: result.success for symbol, result in results.items()}
 
     # ==================== 数据感知管理方法 ====================
 

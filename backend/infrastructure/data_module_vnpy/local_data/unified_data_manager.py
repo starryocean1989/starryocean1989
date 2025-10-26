@@ -1866,10 +1866,8 @@ class UnifiedDataManager:
         if frame is None or frame.empty:
             self.preload_service.enqueue(symbol, intervals=[interval], priority=True)
 
-    def _query_recording_layer(
-        self, symbol: str, interval: str
-    ) -> Optional[pd.DataFrame]:  # noqa: ARG002
-        """查询录制数据层（预留接口）
+    def _query_recording_layer(self, symbol: str, interval: str) -> Optional[pd.DataFrame]:
+        """查询录制数据层（vnpy_datarecorder）
 
         Args:
             symbol: 品种代码
@@ -1878,14 +1876,95 @@ class UnifiedDataManager:
         Returns:
             DataFrame或None
         """
-        # TODO: 实现录制数据查询逻辑
-        _ = symbol, interval  # 预留参数
-        return None
+        try:
+            # 检查是否有可用的引擎
+            if not hasattr(self, "engine") or not self.engine:
+                return None
 
-    def _query_realtime_layer(
-        self, symbol: str, interval: str
-    ) -> Optional[pd.DataFrame]:  # noqa: ARG002
-        """查询实时数据层（预留接口）
+            # 尝试获取DataRecorder引擎
+            try:
+                from vnpy_datarecorder import DataRecorderEngine  # noqa: F401
+            except ImportError:
+                self.logger.debug("vnpy_datarecorder未安装，跳过录制数据查询")
+                return None
+
+            # 从engine获取main_engine（ChinaStockEngine继承自BaseEngine）
+            main_engine = getattr(self.engine, "main_engine", None)
+            if not main_engine:
+                return None
+
+            recorder = main_engine.get_engine("DataRecorder")
+            if not recorder:
+                return None
+
+            # 转换周期格式
+            interval_map = {
+                "1d": "1d",
+                "1h": "1h",
+                "30m": "30m",
+                "15m": "15m",
+                "5m": "5m",
+                "1m": "1m",
+            }
+
+            vnpy_interval = interval_map.get(interval)
+            if not vnpy_interval:
+                return None
+
+            # 查询录制的K线数据
+            from vnpy.trader.object import Exchange
+            from datetime import datetime, timedelta
+
+            # 查询最近一年的数据
+            end = datetime.now()
+            start = end - timedelta(days=365)
+
+            # 构造vt_symbol（需要交易所后缀）
+            # 根据代码判断交易所
+            if symbol.startswith("6"):
+                exchange = Exchange.SSE
+            elif symbol.startswith(("0", "3")):
+                exchange = Exchange.SZSE
+            elif symbol.startswith(("8", "4")):
+                exchange = Exchange.BSE
+            else:
+                exchange = Exchange.SSE
+
+            vt_symbol = f"{symbol}.{exchange.value}"
+
+            # 查询K线数据
+            bars = recorder.query_bar_data(
+                vt_symbol=vt_symbol, interval=vnpy_interval, start=start, end=end
+            )
+
+            if not bars:
+                return None
+
+            # 转换为DataFrame
+            data = pd.DataFrame(
+                [
+                    {
+                        "datetime": bar.datetime,
+                        "open": bar.open_price,
+                        "high": bar.high_price,
+                        "low": bar.low_price,
+                        "close": bar.close_price,
+                        "volume": bar.volume,
+                        "turnover": getattr(bar, "turnover", 0),
+                    }
+                    for bar in bars
+                ]
+            )
+
+            self.logger.debug(f"从录制数据查询到 {len(data)} 条K线: {symbol} {interval}")
+            return data
+
+        except Exception as e:
+            self.logger.warning(f"查询录制数据失败: {symbol} {interval} - {e}")
+            return None
+
+    def _query_realtime_layer(self, symbol: str, interval: str) -> Optional[pd.DataFrame]:
+        """查询实时推送缓存数据
 
         Args:
             symbol: 品种代码
@@ -1894,9 +1973,60 @@ class UnifiedDataManager:
         Returns:
             DataFrame或None
         """
-        # TODO: 实现实时数据查询逻辑
-        _ = symbol, interval  # 预留参数
-        return None
+        try:
+            import time
+
+            # 检查是否有实时数据缓存
+            if not hasattr(self, "_realtime_cache"):
+                self._realtime_cache = {}
+
+            # 构造缓存键
+            cache_key = f"{symbol}_{interval}"
+
+            # 从内存缓存中获取
+            if cache_key in self._realtime_cache:
+                cached_data = self._realtime_cache[cache_key]
+
+                # 检查缓存是否过期（5分钟）
+                cache_time = cached_data.get("timestamp", 0)
+                if time.time() - cache_time < 300:  # 5分钟内有效
+                    data = cached_data.get("data")
+                    if data is not None and not data.empty:
+                        self.logger.debug(
+                            f"从实时缓存获取到 {len(data)} 条K线: {symbol} {interval}"
+                        )
+                        return data.copy()
+
+            # 缓存未命中或过期
+            return None
+
+        except Exception as e:
+            self.logger.warning(f"查询实时推送数据失败: {symbol} {interval} - {e}")
+            return None
+
+    def _update_realtime_cache(self, symbol: str, interval: str, data: pd.DataFrame):
+        """更新实时数据缓存（由数据推送回调调用）
+
+        Args:
+            symbol: 品种代码
+            interval: 周期
+            data: K线数据
+        """
+        import time
+
+        if not hasattr(self, "_realtime_cache"):
+            self._realtime_cache = {}
+
+        cache_key = f"{symbol}_{interval}"
+        self._realtime_cache[cache_key] = {"data": data.copy(), "timestamp": time.time()}
+
+        # 限制缓存大小（最多保留100个品种×周期）
+        if len(self._realtime_cache) > 100:
+            # 删除最旧的缓存
+            oldest_key = min(
+                self._realtime_cache.keys(), key=lambda k: self._realtime_cache[k]["timestamp"]
+            )
+            del self._realtime_cache[oldest_key]
 
     # ==================== vnpy 标准接口（供 vnpy_chartwizard 使用）====================
 

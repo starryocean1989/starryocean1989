@@ -70,6 +70,8 @@ class MainWindow(QMainWindow, LoggerMixin):
             backend_ready: 后端服务是否已就绪（True=同步模式，False=异步模式）
         """
         super().__init__()
+        # 🔧 关键修复：多重继承需要显式初始化LoggerMixin
+        LoggerMixin.__init__(self)
 
         self.backend_ready = backend_ready
 
@@ -1306,7 +1308,7 @@ def main():
         if not os.environ.get("QT_WEBENGINE_PYTHON_EXECUTABLE"):
             os.environ["QT_WEBENGINE_PYTHON_EXECUTABLE"] = sys.executable
 
-        setup_logging(name="terminal_v0.50", level="INFO", log_file="logs/terminal_v0.50.log")
+        setup_logging(name="terminal_v0.50", level="INFO")
 
         # 🔧 设置Qt属性以避免QStyleHints连接问题
         os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
@@ -1407,7 +1409,7 @@ def main_sync():
         if not os.environ.get("QT_WEBENGINE_PYTHON_EXECUTABLE"):
             os.environ["QT_WEBENGINE_PYTHON_EXECUTABLE"] = sys.executable
 
-        setup_logging(name="terminal_v0.50", level="INFO", log_file="logs/terminal_v0.50.log")
+        setup_logging(name="terminal_v0.50", level="INFO")
 
         # 🔧 设置Qt属性以避免QStyleHints连接问题
         os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"

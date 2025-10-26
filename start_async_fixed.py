@@ -47,6 +47,23 @@ def setup_environment():
 
 def setup_logging():
     """设置日志系统（仅Terminal输出，数据库日志自动记录）."""
+    import logging
+
+    # 🔧 关键修复：配置root logger，让所有logger都有输出
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+
+    # 如果root logger还没有handler，添加控制台handler
+    if not root_logger.handlers:
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.INFO)
+        console_formatter = logging.Formatter(
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        )
+        console_handler.setFormatter(console_formatter)
+        root_logger.addHandler(console_handler)
+
+    # 返回StartupOptimized专用logger
     from backend.core.base import setup_logging as base_setup_logging
 
     return base_setup_logging(name="StartupOptimized", level="INFO")
@@ -618,7 +635,7 @@ def main():
                             )
 
                             # 等待新进程初始化
-                            logger.info("[WATCHDOG] 第4步：等待新进程初始化...")
+                            # logger.info(...)  # 🔧 已精简：避免重启时刷屏
                             time.sleep(2)
 
                             # 验证新进程是否存活
@@ -813,7 +830,7 @@ def main():
                     def _warmup_server_pool():
                         try:
                             # ✅ 修复：导入模块中的单例实例，而不是模块本身
-                            from backend.infrastructure.data_module_vnpy.load_balancer.server_pool_manager import (
+                            from backend.infrastructure.data_module_vnpy.load_balancer import (
                                 server_pool_manager,
                             )
 
