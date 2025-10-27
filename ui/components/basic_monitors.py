@@ -9,6 +9,7 @@
 - AccountMonitor: 资金监控
 """
 
+import logging
 from typing import Any, Dict, Optional
 
 from PySide6.QtCore import Qt, Signal
@@ -28,6 +29,10 @@ from PySide6.QtWidgets import (
 
 from vnpy.event import Event, EventEngine
 from vnpy.trader.event import EVENT_ORDER, EVENT_TRADE, EVENT_POSITION, EVENT_ACCOUNT
+
+# ✅ 添加logger定义
+logger = logging.getLogger("ui.components.basic_monitors")
+logger_user = logging.getLogger("ui.user_feedback")  # 用户操作反馈专用
 
 
 # ===== 1. 订单监控 =====
@@ -143,7 +148,8 @@ class OrderMonitor(QWidget):
             self.order_event_signal.emit(order_data)
 
         except Exception as e:
-            print(f"发射订单事件信号失败: {e}")
+            # ✅ 使用logger，线程安全
+            logger.exception("订单事件处理失败: %s", e)
 
     def _update_order_ui(self, order_data: dict):
         """更新订单 UI（Qt 主线程，线程安全）.
@@ -158,11 +164,20 @@ class OrderMonitor(QWidget):
             orderid = order_data["orderid"]
             self.orders[orderid] = order_data
 
+            # ✅ 记录关键订单状态变化
+            if order_data["status"] in ["已成交", "已撤单", "拒单"]:
+                logger.info(
+                    "订单状态更新: ID=%s, 品种=%s, 状态=%s",
+                    orderid,
+                    order_data["symbol"],
+                    order_data["status"],
+                )
+
             # 更新表格
             self._update_table()
 
         except Exception as e:
-            print(f"更新订单 UI 失败: {e}")
+            logger.exception("订单UI更新失败: %s", e)
 
     def _format_direction(self, direction) -> str:
         """格式化方向.
@@ -316,7 +331,7 @@ class OrderMonitor(QWidget):
 
             return True
         except Exception as e:
-            print(f"导出CSV失败: {e}")
+            logger.exception("导出CSV失败: %s", e)
             return False
 
     def closeEvent(self, event):
@@ -460,7 +475,7 @@ class TradeMonitor(QWidget):
             self.trade_event_signal.emit(trade_data)
 
         except Exception as e:
-            print(f"发射成交事件信号失败: {e}")
+            logger.exception("成交事件处理失败: %s", e)
 
     def _update_trade_ui(self, trade_data: dict):
         """更新成交 UI（Qt 主线程，线程安全）.
@@ -480,7 +495,7 @@ class TradeMonitor(QWidget):
             self._update_statistics()
 
         except Exception as e:
-            print(f"更新成交 UI 失败: {e}")
+            logger.exception("成交UI更新失败: %s", e)
 
     def _format_direction(self, direction) -> str:
         """格式化方向.
@@ -600,7 +615,7 @@ class TradeMonitor(QWidget):
 
             return True
         except Exception as e:
-            print(f"导出CSV失败: {e}")
+            logger.exception("导出CSV失败: %s", e)
             return False
 
     def closeEvent(self, event):
@@ -759,7 +774,7 @@ class PositionMonitor(QWidget):
             self.position_event_signal.emit(position_data)
 
         except Exception as e:
-            print(f"发射持仓事件信号失败: {e}")
+            logger.exception("持仓事件处理失败: %s", e)
 
     def _update_position_ui(self, position_data: dict):
         """更新持仓 UI（Qt 主线程，线程安全）.
@@ -779,7 +794,7 @@ class PositionMonitor(QWidget):
             self._update_statistics()
 
         except Exception as e:
-            print(f"更新持仓 UI 失败: {e}")
+            logger.exception("持仓UI更新失败: %s", e)
 
     def _format_direction(self, direction) -> str:
         """格式化方向.
@@ -937,7 +952,7 @@ class PositionMonitor(QWidget):
 
             return True
         except Exception as e:
-            print(f"导出CSV失败: {e}")
+            logger.exception("导出CSV失败: %s", e)
             return False
 
     def closeEvent(self, event):
@@ -1147,7 +1162,7 @@ class AccountMonitor(QWidget):
             self.account_event_signal.emit(account_data)
 
         except Exception as e:
-            print(f"发射资金事件信号失败: {e}")
+            logger.exception("资金事件处理失败: %s", e)
 
     def _update_account_ui(self, account_data: dict):
         """更新资金 UI（Qt 主线程，线程安全）.
@@ -1171,7 +1186,7 @@ class AccountMonitor(QWidget):
             self._update_accounts_table()
 
         except Exception as e:
-            print(f"更新资金 UI 失败: {e}")
+            logger.exception("资金UI更新失败: %s", e)
 
     def _update_main_display(self, account_data: Dict[str, Any]):
         """更新主显示区域.
@@ -1311,7 +1326,7 @@ class AccountMonitor(QWidget):
 
             return True
         except Exception as e:
-            print(f"导出CSV失败: {e}")
+            logger.exception("导出CSV失败: %s", e)
             return False
 
     def closeEvent(self, event):
@@ -1329,4 +1344,3 @@ __all__ = [
     "PositionMonitor",
     "AccountMonitor",
 ]
-

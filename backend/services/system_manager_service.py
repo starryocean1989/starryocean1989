@@ -17,6 +17,7 @@ import asyncio
 import gc
 import json
 import logging
+import os
 import platform
 import psutil
 import sqlite3
@@ -37,6 +38,10 @@ from backend.infrastructure.system_vnpy.monitor_system import SystemMonitor
 from backend.infrastructure.system_vnpy.utilities import NetworkTester, PortScanner
 from backend.services.database_adapter import get_db_manager
 from backend.core.config import get_settings
+
+# 专用logger - 日志埋点v4.0
+logger_monitor = logging.getLogger("backend.system.monitor")
+logger_alert = logging.getLogger("backend.system.alert")
 
 # 事件常量
 EVENT_LOG_RECORD = "eLogRecord"
@@ -2693,9 +2698,95 @@ class SystemManagerService(BaseService):
         # 数据读取任务控制
         self._tdx_reader_stop_flag = False
 
-        # ========== 新的模块化组件（从core迁移） ==========
+        # ========== 🆕 托管模式统一日志系统 ==========
 
-        # 日志管理器
+        # 1. 获取现有的Handler（启动时配置的）
+        root_logger = logging.getLogger()
+        existing_handlers = list(root_logger.handlers)
+
+        console_handler = None
+        file_handler = None
+
+        for handler in existing_handlers:
+            if isinstance(handler, logging.StreamHandler) and not isinstance(
+                handler, logging.FileHandler
+            ):
+                console_handler = handler
+                self.logger.info("📋 检测到控制台Handler: %s", type(handler).__name__)
+            elif isinstance(handler, logging.FileHandler):
+                file_handler = handler
+                self.logger.info(
+                    "📋 检测到文件Handler: %s (%s)", type(handler).__name__, handler.baseFilename
+                )
+
+        # 2. 移除所有现有Handler（LoggingHub将接管）
+        for handler in existing_handlers:
+            root_logger.removeHandler(handler)
+        self.logger.info(
+            "✅ 已移除 %d 个现有Handler，准备启用LoggingHub统一托管", len(existing_handlers)
+        )
+
+        # 3. 初始化LoggingHub
+        from backend.infrastructure.system_vnpy.unified_logging import get_logging_hub, LogType
+        from backend.services.database_adapter import get_db_manager
+
+        self.logging_hub = get_logging_hub()
+        if hasattr(self.main_engine, "event_engine") and self.main_engine.event_engine:
+            self.logging_hub.set_event_engine(self.main_engine.event_engine)
+        self.logging_hub.set_db_manager(get_db_manager())
+
+        # 4. 将现有Handler注入LoggingHub（由LoggingHub托管）
+        if console_handler:
+            self.logging_hub.set_console_handler(console_handler)
+        else:
+            # 创建默认控制台Handler
+            import sys
+
+            default_console = logging.StreamHandler(sys.stdout)
+            default_console.setLevel(logging.INFO)
+            default_console.setFormatter(
+                logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+            )
+            self.logging_hub.set_console_handler(default_console)
+            self.logger.info("✅ 创建默认控制台Handler")
+
+        if file_handler:
+            self.logging_hub.set_file_handler(file_handler)
+        else:
+            # 创建默认文件Handler
+            import os
+
+            os.makedirs("logs", exist_ok=True)
+            default_file = logging.FileHandler("logs/terminal_unified.log", encoding="utf-8")
+            default_file.setLevel(logging.DEBUG)
+            default_file.setFormatter(
+                logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+            )
+            self.logging_hub.set_file_handler(default_file)
+            self.logger.info("✅ 创建默认文件Handler: logs/terminal_unified.log")
+
+        # 5. 配置控制台输出（可选：不输出DEBUG和PROGRESS）
+        self.logging_hub.configure_console_output(
+            {
+                LogType.SYSTEM,
+                LogType.NOTIFICATION,
+                LogType.ALERT,
+                # LogType.PROGRESS,  # 不输出到控制台（减少噪音）
+                # LogType.DEBUG,     # 不输出到控制台（减少噪音）
+            }
+        )
+
+        # 6. 将LoggingHub注册为唯一Handler
+        root_logger.addHandler(self.logging_hub)
+        root_logger.setLevel(logging.DEBUG)
+
+        self.logger.info("=" * 80)
+        self.logger.info("✅ LoggingHub已注册为唯一Handler，托管模式已启用")
+        self.logger.info("   - 控制台: %s", "已托管" if console_handler else "已创建")
+        self.logger.info("   - 文件: %s", "已托管" if file_handler else "已创建")
+        self.logger.info("=" * 80)
+
+        # 日志管理器（保留查询功能）
         self.log_manager = get_log_manager()
 
         # 告警引擎
@@ -2769,6 +2860,10 @@ class SystemManagerService(BaseService):
         self._alert_receiver_thread = None
         self._alert_receiver_running = False
 
+        # 🔄 设置日志阶段为启动阶段
+        self.logging_hub.set_stage("startup")
+        self.logger.info("📍 日志阶段切换: startup（启动阶段）")
+
         self.logger.info("系统管理服务已创建")
 
     def _do_initialize(self) -> bool:
@@ -2805,22 +2900,79 @@ class SystemManagerService(BaseService):
 
             self._zmq_context = zmq.Context()
 
-            # 读取生效端口（优先 logs/monitor_ports.json，其次配置）
-            addr = str(getattr(get_settings().monitor, "bind_addr", "127.0.0.1"))
-            port_alert_push = int(getattr(get_settings().monitor, "port_alert_push", 5555))
-            port_status_pull = int(getattr(get_settings().monitor, "port_status_pull", 5556))
-            port_query_rep = int(getattr(get_settings().monitor, "port_query_rep", 5557))
-            try:
-                ports_file = Path("logs") / "monitor_ports.json"
-                if ports_file.exists():
-                    with open(ports_file, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    addr = str(data.get("bind_addr", addr))
-                    port_alert_push = int(data.get("alert_push", port_alert_push))
-                    port_status_pull = int(data.get("status_pull", port_status_pull))
-                    port_query_rep = int(data.get("query_rep", port_query_rep))
-            except Exception:
-                pass
+            # 三级fallback端口读取（优化版）
+            # 优先级1：环境变量（最可靠，主进程直接设置）
+            # 优先级2：就绪信号文件
+            # 优先级3：配置文件默认值
+
+            addr = "127.0.0.1"
+            port_alert_push = 5555
+            port_status_pull = 5556
+            port_query_rep = 5557
+            ports_source = "default"
+
+            # 优先级1：从环境变量读取
+            if os.environ.get("MONITOR_READY") == "1":
+                try:
+                    port_alert_push = int(os.environ["MONITOR_ALERT_PUSH"])
+                    port_status_pull = int(os.environ["MONITOR_STATUS_PULL"])
+                    port_query_rep = int(os.environ["MONITOR_QUERY_REP"])
+                    ports_source = "environment"
+                    self.logger.info(
+                        "✅ 从环境变量读取监控端口: %d/%d/%d",
+                        port_alert_push,
+                        port_status_pull,
+                        port_query_rep,
+                    )
+                except (KeyError, ValueError) as e:
+                    self.logger.warning("环境变量端口格式错误: %s", e)
+
+            # 优先级2：从就绪信号文件读取
+            elif Path("logs/monitor_ready.signal").exists():
+                try:
+                    with open("logs/monitor_ready.signal", "r", encoding="utf-8") as f:
+                        signal_data = json.load(f)
+                    if signal_data.get("status") == "ready":
+                        ports = signal_data.get("ports", {})
+                        addr = str(signal_data.get("bind_addr", addr))
+                        port_alert_push = int(ports.get("alert_push", port_alert_push))
+                        port_status_pull = int(ports.get("status_pull", port_status_pull))
+                        port_query_rep = int(ports.get("query_rep", port_query_rep))
+                        ports_source = "signal_file"
+                        self.logger.info(
+                            "✅ 从就绪信号文件读取监控端口: %d/%d/%d",
+                            port_alert_push,
+                            port_status_pull,
+                            port_query_rep,
+                        )
+                except Exception as e:
+                    self.logger.warning("读取就绪信号文件失败: %s", e)
+
+            # 优先级3：使用配置文件默认值
+            else:
+                try:
+                    addr = str(getattr(get_settings().monitor, "bind_addr", addr))
+                    port_alert_push = int(
+                        getattr(get_settings().monitor, "port_alert_push", port_alert_push)
+                    )
+                    port_status_pull = int(
+                        getattr(get_settings().monitor, "port_status_pull", port_status_pull)
+                    )
+                    port_query_rep = int(
+                        getattr(get_settings().monitor, "port_query_rep", port_query_rep)
+                    )
+                    ports_source = "config"
+                except Exception:
+                    pass
+
+                self.logger.info(
+                    "使用配置文件默认端口: %d/%d/%d",
+                    port_alert_push,
+                    port_status_pull,
+                    port_query_rep,
+                )
+
+            self.logger.info("端口来源: %s", ports_source)
 
             # PUSH socket：推送服务状态（连接到监控进程的 PULL）
             self._zmq_push_socket = self._zmq_context.socket(zmq.PUSH)
@@ -2857,9 +3009,16 @@ class SystemManagerService(BaseService):
             # 启动监控数据推送线程（事件驱动架构）
             self._start_monitoring_push_thread()
 
+            # 🆕 启动监控日志接收线程（ZMQ PULL，接收监控进程的日志）
+            self._start_monitor_log_receiver(addr, 5558)
+
             self.logger.info("=" * 60)
-            self.logger.info("✅ 系统管理服务初始化完成（含告警接收线程）")
+            self.logger.info("✅ 系统管理服务初始化完成（含告警接收线程和监控日志接收）")
             self.logger.info("=" * 60)
+
+            # 🔄 启动完成，切换日志阶段到数据感知阶段
+            self.logging_hub.set_stage("sensing")
+            self.logger.info("📍 日志阶段切换: sensing（数据感知阶段）")
 
             return True
 
@@ -3008,6 +3167,40 @@ class SystemManagerService(BaseService):
         except Exception as e:
             self.logger.error("推送服务状态失败：%s", e)
 
+    def trigger_smart_collection(self) -> bool:
+        """触发监控进程执行SMART数据采集.
+
+        用于UI界面按需触发SMART数据采集，而非持续轮询。
+
+        Returns:
+            bool: 是否成功发送触发命令
+        """
+        try:
+            import zmq
+
+            if not self._zmq_req_socket:
+                logger_monitor.warning("ZMQ连接不可用，无法触发SMART采集")
+                return False
+
+            request = {"action": "trigger_smart"}
+            self._zmq_req_socket.send_json(request)
+
+            # 等待响应
+            if self._zmq_req_socket.poll(timeout=1000):
+                response = self._zmq_req_socket.recv_json()
+                if isinstance(response, dict) and response.get("status") == "success":
+                    logger_monitor.info("✅ SMART采集触发成功")
+                    return True
+
+            logger_monitor.warning("SMART采集触发超时或失败")
+            return False
+        except zmq.Again:
+            logger_monitor.warning("SMART采集触发超时")
+            return False
+        except Exception as e:
+            logger_monitor.error("触发SMART采集失败: %s", e)
+            return False
+
     def _start_alert_receiver(self, addr: str = "127.0.0.1", port_alert_push: int = 5555):
         """启动告警接收线程.
 
@@ -3126,6 +3319,91 @@ class SystemManagerService(BaseService):
         self._monitoring_push_thread.start()
         self.logger.info("✅ 监控数据推送线程已启动（事件驱动模式，1秒间隔）")
 
+    def _start_monitor_log_receiver(self, addr: str, port: int):
+        """启动监控日志接收线程（ZMQ PULL）.
+
+        接收监控进程通过ZMQ发送的日志，转发到LoggingHub。
+
+        Args:
+            addr: 监听地址
+            port: 监听端口（默认5558）
+        """
+        from PySide6.QtCore import QThread
+
+        class MonitorLogReceiverThread(QThread):
+            """监控日志接收线程."""
+
+            def __init__(self, parent, addr: str, port: int):
+                super().__init__()
+                self.parent = parent
+                self.addr = addr
+                self.port = port
+                self.running = True
+
+            def run(self):
+                """线程主循环."""
+                import zmq
+
+                try:
+                    context = zmq.Context()
+                    socket = context.socket(zmq.PULL)
+                    socket.bind(f"tcp://{self.addr}:{self.port}")
+                    socket.setsockopt(zmq.RCVTIMEO, 5000)  # 5秒超时
+
+                    parent_logger = logging.getLogger("system_manager")
+                    parent_logger.info(
+                        "✅ 监控日志接收线程已绑定: tcp://%s:%d", self.addr, self.port
+                    )
+
+                    while self.running:
+                        try:
+                            data = socket.recv_json()
+
+                            if isinstance(data, dict) and data.get("type") == "monitor_log":
+                                # 转发到LoggingHub（通过标准logger）
+                                log_data = data.get("data", {})
+                                if isinstance(log_data, dict):
+                                    level_str = log_data.get("level", "INFO")
+                                    message = log_data.get("message", "")
+                                    module = log_data.get("module", "monitor_process")
+
+                                    # 使用标准logger，LoggingHub会拦截
+                                    monitor_logger = logging.getLogger(f"monitor_process.{module}")
+                                    if isinstance(level_str, str):
+                                        log_level = getattr(logging, level_str, logging.INFO)
+                                        monitor_logger.log(log_level, message)
+
+                        except zmq.Again:
+                            # 超时，继续等待
+                            continue
+                        except Exception as e:
+                            parent_logger = logging.getLogger("system_manager")
+                            parent_logger.error("接收监控日志失败: %s", e)
+
+                except Exception as e:
+                    parent_logger = logging.getLogger("system_manager")
+                    parent_logger.error("监控日志接收线程启动失败: %s", e)
+                finally:
+                    try:
+                        if socket:
+                            socket.close()
+                        if context:
+                            context.term()
+                    except Exception:
+                        pass
+
+                    parent_logger = logging.getLogger("system_manager")
+                    parent_logger.info("监控日志接收线程已停止")
+
+            def stop(self):
+                """停止线程."""
+                self.running = False
+
+        # 创建并启动接收线程
+        self._monitor_log_receiver = MonitorLogReceiverThread(self, addr, port)
+        self._monitor_log_receiver.start()
+        self.logger.info("✅ 监控日志接收线程已启动（tcp://%s:%d）", addr, port)
+
     def _monitoring_push_loop(self):
         """监控数据推送循环（替代UI轮询）
 
@@ -3149,10 +3427,7 @@ class SystemManagerService(BaseService):
                 # 1. 查询监控数据
                 data = self._query_monitoring_data_safe()
 
-                # 🔍 诊断日志
-                self.logger.debug(
-                    f"[MonitoringPush] 查询结果: data={'有数据' if data else '空'}, keys={list(data.keys()) if data else 'N/A'}"
-                )
+                # 日志已删除：循环输出过于频繁
 
                 if not data:
                     consecutive_failures += 1
@@ -3237,6 +3512,54 @@ class SystemManagerService(BaseService):
         """
         return self._query_monitoring_data_safe()
 
+    def get_bandwidth_info(self) -> Dict[str, Any]:
+        """获取带宽信息（包含完整测试和延迟测试结果）.
+
+        Returns:
+            Dict: {
+                "full_test": {"download_mbps": float, "upload_mbps": float, "ping_ms": float, "status": str},
+                "ping_test": {"ping_ms": float, "status": str}
+            }
+        """
+        try:
+            # 尝试从监控进程获取
+            import zmq
+
+            with self._cache_lock:
+                if not self._zmq_req_socket or not self._zmq_context:
+                    # 降级到本地SystemMonitor
+                    return self.system_monitor.get_bandwidth_info()
+
+                self._zmq_req_socket.send_json({"action": "get_bandwidth"})
+                result = self._zmq_req_socket.recv_json()
+
+                if isinstance(result, dict) and result.get("status") == "success":
+                    data = result.get("data", {})
+                    return data if isinstance(data, dict) else {}
+                else:
+                    # 降级到本地SystemMonitor
+                    return self.system_monitor.get_bandwidth_info()
+
+        except zmq.Again:
+            self.logger.warning("获取带宽信息超时，使用本地SystemMonitor")
+            return self.system_monitor.get_bandwidth_info()
+        except Exception as e:
+            self.logger.error("获取带宽信息失败：%s", e)
+            # 降级到本地SystemMonitor
+            try:
+                return self.system_monitor.get_bandwidth_info()
+            except Exception as e2:
+                self.logger.error("本地SystemMonitor获取带宽信息失败：%s", e2)
+                return {
+                    "full_test": {
+                        "download_mbps": None,
+                        "upload_mbps": None,
+                        "ping_ms": None,
+                        "status": "错误",
+                    },
+                    "ping_test": {"ping_ms": None, "status": "错误"},
+                }
+
     def _dispatch_monitoring_events(self, data: Dict[str, Any]):
         """分发监控事件到EventEngine（解耦核心）."""
         if not self.event_engine:
@@ -3265,17 +3588,13 @@ class SystemManagerService(BaseService):
         if "system" in data and data["system"]:
             event = Event(EVENT_SYSTEM_METRICS, data["system"])
             self.event_engine.put(event)
-            self.logger.debug(
-                f"[DispatchEvents] ✅ 已分发 EVENT_SYSTEM_METRICS, 数据keys: {list(data['system'].keys())}"
-            )
+            # 日志已删除：循环输出过于频繁
 
         # 事件2：硬件传感器
         if "hardware" in data and data["hardware"]:
             event = Event(EVENT_HARDWARE_SENSORS, data["hardware"])
             self.event_engine.put(event)
-            self.logger.debug(
-                f"[DispatchEvents] ✅ 已分发 EVENT_HARDWARE_SENSORS, 数据keys: {list(data['hardware'].keys())}"
-            )
+            # 日志已删除：循环输出过于频繁
 
         # 事件3：分析数据（独立）
         if "analysis" in data and data["analysis"]:
@@ -3465,7 +3784,7 @@ class SystemManagerService(BaseService):
 
                     status = status_mapping.get(current_status, "auto_applied")
             except Exception as e:
-                self.logger.warning(f"获取LoadBalancer状态失败，使用默认值: {e}")
+                self.logger.warning("获取LoadBalancer状态失败，使用默认值: %s", e)
 
             return {
                 "scale_factor": round(scale_factor, 2),
@@ -5029,7 +5348,7 @@ class SystemManagerService(BaseService):
                         ),
                     }
                 except Exception as e:
-                    self.logger.warning(f"获取数据中心指标失败: {e}")
+                    self.logger.warning("获取数据中心指标失败: %s", e)
                     metrics["data_center"] = {"error": str(e)}
 
             # 2. 交易网关指标
@@ -5057,7 +5376,7 @@ class SystemManagerService(BaseService):
                         "active_strategies": active_strategies,
                     }
                 except Exception as e:
-                    self.logger.warning(f"获取交易网关指标失败: {e}")
+                    self.logger.warning("获取交易网关指标失败: %s", e)
                     metrics["trading_gateway"] = {"error": str(e)}
 
             # 3. 组合投资指标
@@ -5078,7 +5397,7 @@ class SystemManagerService(BaseService):
                     else:
                         metrics["portfolio_investment"] = {"error": "无法获取组合列表"}
                 except Exception as e:
-                    self.logger.warning(f"获取组合投资指标失败: {e}")
+                    self.logger.warning("获取组合投资指标失败: %s", e)
                     metrics["portfolio_investment"] = {"error": str(e)}
 
             # 4. 策略中心指标
@@ -5097,7 +5416,7 @@ class SystemManagerService(BaseService):
                         "active_backtests": len(strategy_service._backtest_tasks),
                     }
                 except Exception as e:
-                    self.logger.warning(f"获取策略中心指标失败: {e}")
+                    self.logger.warning("获取策略中心指标失败: %s", e)
                     metrics["strategy_center"] = {"error": str(e)}
 
             return {
@@ -5148,7 +5467,7 @@ class SystemManagerService(BaseService):
                     "watcher_interval": config_manager.get("chinastock.watcher_interval"),
                 }
             except Exception as e:
-                self.logger.warning(f"获取数据中心配置失败: {e}")
+                self.logger.warning("获取数据中心配置失败: %s", e)
                 configs["data_center"] = {}
 
             # 2. VnPy配置
@@ -5163,7 +5482,7 @@ class SystemManagerService(BaseService):
                     "log_file": settings.vnpy.log_file,
                 }
             except Exception as e:
-                self.logger.warning(f"获取VnPy配置失败: {e}")
+                self.logger.warning("获取VnPy配置失败: %s", e)
                 configs["vnpy"] = {}
 
             # 3. AI助手配置
@@ -5183,7 +5502,7 @@ class SystemManagerService(BaseService):
                     "system_prompt": settings.ai.system_prompt,
                 }
             except Exception as e:
-                self.logger.warning(f"获取AI配置失败: {e}")
+                self.logger.warning("获取AI配置失败: %s", e)
                 configs["ai"] = {}
 
             # 4. 数据库配置
@@ -5196,7 +5515,7 @@ class SystemManagerService(BaseService):
                     "sqlite_timeout": settings.database.sqlite_timeout,
                 }
             except Exception as e:
-                self.logger.warning(f"获取数据库配置失败: {e}")
+                self.logger.warning("获取数据库配置失败: %s", e)
                 configs["database"] = {}
 
             # 5. 网络配置（API）
@@ -5210,7 +5529,7 @@ class SystemManagerService(BaseService):
                     "api_debug": settings.api.debug,
                 }
             except Exception as e:
-                self.logger.warning(f"获取网络配置失败: {e}")
+                self.logger.warning("获取网络配置失败: %s", e)
                 configs["network"] = {}
 
             return {
@@ -5311,7 +5630,7 @@ class SystemManagerService(BaseService):
                     "message": f"未知模块: {module}",
                 }
 
-            self.logger.info(f"配置已更新: {module} - {list(config_data.keys())}")
+            self.logger.info("配置已更新: %s - %s", module, list(config_data.keys()))
 
             # 如果AI配置被更新，自动重新加载AI服务
             result = {
@@ -5369,7 +5688,7 @@ class SystemManagerService(BaseService):
             with open(config_file, "w", encoding="utf-8") as f:
                 json.dump(existing_config, f, indent=4, ensure_ascii=False)
 
-            self.logger.info(f"配置已保存: {list(config_data.keys())}")
+            self.logger.info("配置已保存: %s", list(config_data.keys()))
 
             return {
                 "success": True,
@@ -5406,7 +5725,7 @@ class SystemManagerService(BaseService):
             with open(config_file, "r", encoding="utf-8") as f:
                 config = json.load(f)
 
-            self.logger.info(f"配置已加载: {len(config)}项")
+            self.logger.info("配置已加载: %d项", len(config))
 
             return {
                 "success": True,
@@ -5456,7 +5775,7 @@ class SystemManagerService(BaseService):
                 "registered_at": datetime.now().isoformat(),
             }
 
-            self.logger.info(f"工具已注册: {tool_name}")
+            self.logger.info("工具已注册: %s", tool_name)
 
             return {
                 "success": True,
@@ -5509,7 +5828,7 @@ class SystemManagerService(BaseService):
 
             del self.registered_tools[tool_name]
 
-            self.logger.info(f"工具已移除: {tool_name}")
+            self.logger.info("工具已移除: %s", tool_name)
 
             return {
                 "success": True,
@@ -5614,8 +5933,8 @@ class SystemManagerService(BaseService):
                 self.logger.info("=" * 60)
                 self.logger.info("📊 品种缓存获取结果:")
                 for market_code, symbols in symbols_by_market.items():
-                    self.logger.info(f"  - 市场 {market_code.upper()}: {len(symbols)} 个品种")
-                self.logger.info(f"  - 总计: {total_symbols} 个品种")
+                    self.logger.info("  - 市场 %s: %d 个品种", market_code.upper(), len(symbols))
+                self.logger.info("  - 总计: %d 个品种", total_symbols)
                 self.logger.info("=" * 60)
 
                 if not any(symbols_by_market.values()):
@@ -5681,8 +6000,8 @@ class SystemManagerService(BaseService):
             # 🔍 DEBUG: 打印详细的任务分组信息
             self.logger.info("=" * 60)
             self.logger.info("📋 批量读取任务详情（TdxDynamicExecutor）:")
-            self.logger.info(f"  - 总任务数: {total_tasks}")
-            self.logger.info(f"  - 数据类型: {', '.join(data_types)}")
+            self.logger.info("  - 总任务数: %d", total_tasks)
+            self.logger.info("  - 数据类型: %s", ", ".join(data_types))
             self.logger.info(f"  - 市场: {', '.join([m.upper() for m in markets])}")
             self.logger.info("  - 系统资源:")
             self.logger.info(f"    • CPU核心数: {cpu_cores}")

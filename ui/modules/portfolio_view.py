@@ -4,9 +4,13 @@
 混合架构：两个固有业务组件，无独立子界面。
 通过PortfolioService访问组合管理和监控功能。
 """
+import logging
 from typing import Any, Dict, List, Optional
 
 from PySide6.QtCore import Qt
+
+# UI层专用logger
+logger_user = logging.getLogger("ui.user_feedback")
 from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
@@ -968,6 +972,9 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
             )
 
             if result.get("success"):
+                # 记录用户创建组合操作
+                logger_user.info("用户创建组合: 名称=%s, 网关数=%d", portfolio_name, len(gateway_list))
+
                 self.show_info(f"组合 '{portfolio_name}' 创建成功")
                 self.refresh_data()
             else:
@@ -982,6 +989,13 @@ class PortfolioInvestment(BaseWidget, LoggerMixin):
         if current_row < 0:
             self.show_warning("请先选择要删除的组合")
             return
+
+        # 获取组合名称（假设在第0列）
+        portfolio_name_item = self.custom_portfolio_table.item(current_row, 0)
+        portfolio_name = portfolio_name_item.text() if portfolio_name_item else "未知组合"
+
+        # 记录用户删除组合操作
+        logger_user.info("用户删除组合: 名称=%s", portfolio_name)
 
         self.custom_portfolio_table.removeRow(current_row)
         self.show_info("组合已删除")

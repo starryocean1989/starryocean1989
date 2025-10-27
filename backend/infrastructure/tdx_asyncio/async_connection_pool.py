@@ -142,13 +142,13 @@ class AsyncConnectionPool:
         best_servers = await self.ip_pool.get_servers()
 
         # 创建主连接
-        logger.info(f"创建{self.config.max_primary_connections}个主连接...")
+        logger.info("创建%d个主连接...", self.config.max_primary_connections)
         primary_servers = best_servers[: self.config.max_primary_connections]
         self.primary_connections = await self._create_connections(primary_servers)
 
         # 创建备用连接
         standby_count = self.config.max_standby_connections
-        logger.info(f"创建{standby_count}个备用连接...")
+        logger.info("创建%d个备用连接...", standby_count)
         if standby_count:
             standby_servers = best_servers[
                 self.config.max_primary_connections : self.config.max_primary_connections
@@ -162,7 +162,7 @@ class AsyncConnectionPool:
 
         success_count = sum(1 for c in self.primary_connections if c)
         standby_count = sum(1 for c in self.standby_connections if c)
-        logger.info(f"连接池就绪: 主连接{success_count}个, 备用{standby_count}个")
+        logger.info("连接池就绪: 主连接=%d个, 备用=%d个", success_count, standby_count)
 
     async def _create_connections(
         self, servers: List[Tuple[str, int]]
@@ -190,14 +190,14 @@ class AsyncConnectionPool:
 
             if client:
                 self.connection_usage[client] = False
-                logger.debug(f"连接已建立: {server[0]}:{server[1]}")
+                logger.debug("连接已建立: IP=%s, 端口=%d", server[0], server[1])
                 return client
             else:
-                logger.warning(f"连接失败: {server[0]}:{server[1]}")
+                logger.warning("连接失败: IP=%s, 端口=%d", server[0], server[1])
                 return None
 
         except Exception as e:
-            logger.warning(f"连接异常: {server} - {e}")
+            logger.warning("连接异常: 服务器=%s, 错误=%s", server, e)
             return None
 
     async def acquire(self) -> Optional[AsyncTdxHq_API]:

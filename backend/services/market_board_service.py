@@ -13,8 +13,12 @@
 """
 
 from typing import Any, Dict, List, Optional
+import logging
 
 from backend.core.service_base import BaseService
+
+# 专用logger - 日志埋点v4.0
+logger_alert = logging.getLogger("backend.market.alert")
 
 
 class MarketBoardService(BaseService):

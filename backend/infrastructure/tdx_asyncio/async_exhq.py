@@ -52,18 +52,18 @@ class AsyncTdxExHq_API(AsyncBaseSocketClient):
         try:
             # 扩展市场代码（来自pytdx）
             markets = [
-                {'market': 47, 'name': '郑州商品交易所', 'code': 'CZCE'},
-                {'market': 28, 'name': '大连商品交易所', 'code': 'DCE'},
-                {'market': 29, 'name': '上海期货交易所', 'code': 'SHFE'},
-                {'market': 30, 'name': '中国金融期货交易所', 'code': 'CFFEX'},
-                {'market': 60, 'name': '上海能源交易所', 'code': 'INE'},
+                {"market": 47, "name": "郑州商品交易所", "code": "CZCE"},
+                {"market": 28, "name": "大连商品交易所", "code": "DCE"},
+                {"market": 29, "name": "上海期货交易所", "code": "SHFE"},
+                {"market": 30, "name": "中国金融期货交易所", "code": "CFFEX"},
+                {"market": 60, "name": "上海能源交易所", "code": "INE"},
             ]
 
-            logger.debug(f"获取扩展市场列表: {len(markets)}个市场")
+            logger.debug("获取扩展市场列表: %d个市场", len(markets))
             return markets
 
         except Exception as e:
-            logger.error(f"获取扩展市场列表失败: {e}")
+            logger.error("获取扩展市场列表失败: %s", e)
             return None
 
     async def get_instrument_count(self, market: int = 0) -> Optional[int]:
@@ -83,9 +83,9 @@ class AsyncTdxExHq_API(AsyncBaseSocketClient):
             market_counts = {
                 47: 100,  # 郑州商品
                 28: 120,  # 大连商品
-                29: 80,   # 上海期货
-                30: 50,   # 中金所
-                60: 30,   # 上海能源
+                29: 80,  # 上海期货
+                30: 50,  # 中金所
+                60: 30,  # 上海能源
             }
 
             if market == 0:
@@ -94,16 +94,11 @@ class AsyncTdxExHq_API(AsyncBaseSocketClient):
                 return market_counts.get(market, 0)
 
         except Exception as e:
-            logger.error(f"获取品种数量失败: {e}")
+            logger.error("获取品种数量失败: %s", e)
             return None
 
     async def get_instrument_bars(
-        self,
-        market: int,
-        code: str,
-        frequency: int,
-        start: int = 0,
-        count: int = 800
+        self, market: int, code: str, frequency: int, start: int = 0, count: int = 800
     ) -> Optional[List[dict]]:
         """
         获取期货/期权K线数据
@@ -133,14 +128,10 @@ class AsyncTdxExHq_API(AsyncBaseSocketClient):
             return []
 
         except Exception as e:
-            logger.error(f"获取K线数据失败: {e}")
+            logger.error("获取K线数据失败: %s", e)
             return None
 
-    async def get_instrument_quote(
-        self,
-        market: int,
-        code: str
-    ) -> Optional[dict]:
+    async def get_instrument_quote(self, market: int, code: str) -> Optional[dict]:
         """
         获取期货/期权实时行情
 
@@ -156,20 +147,16 @@ class AsyncTdxExHq_API(AsyncBaseSocketClient):
             # 2. 发送请求到扩展行情服务器
             # 3. 解析返回的行情数据
 
-            logger.debug(f"获取实时行情: 市场={market}, 代码={code}")
+            logger.debug("获取实时行情: 市场=%d, 代码=%s", market, code)
 
             # 返回空字典（实际需要实现协议）
             return {}
 
         except Exception as e:
-            logger.error(f"获取实时行情失败: {e}")
+            logger.error("获取实时行情失败: %s", e)
             return None
 
-    async def get_instrument_info(
-        self,
-        market: int,
-        code: str
-    ) -> Optional[dict]:
+    async def get_instrument_info(self, market: int, code: str) -> Optional[dict]:
         """
         获取品种详细信息
 
@@ -180,25 +167,21 @@ class AsyncTdxExHq_API(AsyncBaseSocketClient):
         try:
             logger.warning("get_instrument_info接口暂未完整实现，需补充TDX协议")
 
-            logger.debug(f"获取品种信息: 市场={market}, 代码={code}")
+            logger.debug("获取品种信息: 市场=%d, 代码=%s", market, code)
 
             # 返回基础信息（实际需要实现协议）
             return {
-                'market': market,
-                'code': code,
-                'name': code,  # 实际需要查询
-                'status': 'unknown'
+                "market": market,
+                "code": code,
+                "name": code,  # 实际需要查询
+                "status": "unknown",
             }
 
         except Exception as e:
-            logger.error(f"获取品种信息失败: {e}")
+            logger.error("获取品种信息失败: %s", e)
             return None
 
-    async def get_instrument_list(
-        self,
-        market: int,
-        start: int = 0
-    ) -> Optional[List[dict]]:
+    async def get_instrument_list(self, market: int, start: int = 0) -> Optional[List[dict]]:
         """
         获取扩展市场品种列表
 
@@ -214,13 +197,13 @@ class AsyncTdxExHq_API(AsyncBaseSocketClient):
             # 2. 发送请求到扩展行情服务器
             # 3. 解析返回的品种列表
 
-            logger.debug(f"获取品种列表: 市场={market}, 起始={start}")
+            logger.debug("获取品种列表: 市场=%d, 起始=%d", market, start)
 
             # 返回空列表（实际需要实现协议）
             return []
 
         except Exception as e:
-            logger.error(f"获取品种列表失败: {e}")
+            logger.error("获取品种列表失败: %s", e)
             return None
 
     @staticmethod
@@ -229,8 +212,8 @@ class AsyncTdxExHq_API(AsyncBaseSocketClient):
         timeout: float = 5.0,
         heartbeat: bool = False,
         auto_retry: bool = False,
-        raise_exception: bool = False
-    ) -> Optional['AsyncTdxExHq_API']:
+        raise_exception: bool = False,
+    ) -> Optional["AsyncTdxExHq_API"]:
         """
         工厂方法：创建并连接异步扩展行情客户端
 
@@ -253,9 +236,7 @@ class AsyncTdxExHq_API(AsyncBaseSocketClient):
         ip, port = server
 
         client = AsyncTdxExHq_API(
-            heartbeat=heartbeat,
-            auto_retry=auto_retry,
-            raise_exception=raise_exception
+            heartbeat=heartbeat, auto_retry=auto_retry, raise_exception=raise_exception
         )
 
         result = await client.connect(ip=ip, port=port, time_out=timeout)
@@ -267,6 +248,7 @@ class AsyncTdxExHq_API(AsyncBaseSocketClient):
 
 
 # ==================== 便捷函数 ====================
+
 
 async def get_future_markets() -> Optional[List[dict]]:
     """
@@ -284,10 +266,7 @@ async def get_future_markets() -> Optional[List[dict]]:
 
 
 async def get_future_bars(
-    market: int,
-    code: str,
-    frequency: int = 4,
-    count: int = 800
+    market: int, code: str, frequency: int = 4, count: int = 800
 ) -> Optional[List[dict]]:
     """
     便捷函数：获取期货K线数据
@@ -309,6 +288,7 @@ async def get_future_bars(
 
 # ==================== 使用示例 ====================
 
+
 async def example_usage():
     """使用示例"""
 
@@ -323,7 +303,7 @@ async def example_usage():
 
     # 2. 获取期货K线
     print("\n获取螺纹钢主力合约日K线...")
-    bars = await get_future_bars(29, 'RB2510', frequency=4, count=100)
+    bars = await get_future_bars(29, "RB2510", frequency=4, count=100)
     if bars:
         print(f"获取到 {len(bars)} 条K线数据")
 
@@ -336,7 +316,7 @@ async def example_usage():
             print(f"\n上海期货交易所品种数量: {count}")
 
             # 获取实时行情
-            quote = await client.get_instrument_quote(29, 'RB2510')
+            quote = await client.get_instrument_quote(29, "RB2510")
             if quote:
                 print(f"螺纹钢实时行情: {quote}")
         finally:
@@ -345,4 +325,3 @@ async def example_usage():
 
 if __name__ == "__main__":
     asyncio.run(example_usage())
-

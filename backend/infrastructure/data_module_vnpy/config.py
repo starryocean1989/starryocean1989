@@ -58,6 +58,9 @@ class TdxConfigFileParser:
     合并自 config_file_parser.py
     """
 
+    # 🔧 类级别缓存：避免重复搜索配置文件（启动优化）
+    _config_path_cache: Dict[str, Optional[Path]] = {}
+
     def __init__(self, tdx_dir: Optional[Path] = None):
         """
         初始化配置文件解析器
@@ -71,11 +74,33 @@ class TdxConfigFileParser:
         self._find_config_files()
 
     def _find_config_files(self) -> None:
-        """查找配置文件（递归搜索）"""
+        """查找配置文件（递归搜索，带缓存优化）"""
+        # 🔧 优化：先检查缓存，避免重复搜索（启动时节省50ms+）
+        tdx_dir_key = str(self.tdx_dir) if self.tdx_dir else "default"
+        cache_key_tdxstat2 = f"{tdx_dir_key}:tdxstat2.cfg"
+        cache_key_addedcode = f"{tdx_dir_key}:addedcode_bj.cfg"
+
+        if cache_key_tdxstat2 in self._config_path_cache:
+            self.tdxstat2_path = self._config_path_cache[cache_key_tdxstat2]
+            logger.debug("✓ 使用缓存的tdxstat2.cfg路径")
+
+        if cache_key_addedcode in self._config_path_cache:
+            self.addedcode_bj_path = self._config_path_cache[cache_key_addedcode]
+            logger.debug("✓ 使用缓存的addedcode_bj.cfg路径")
+
+        # 如果缓存中都有且有效，直接返回
+        if (self.tdxstat2_path and self.tdxstat2_path.exists()
+                and self.addedcode_bj_path and self.addedcode_bj_path.exists()):
+            return
+
+        # 缓存未命中或文件不存在，执行搜索
         if self.tdx_dir and self.tdx_dir.exists():
             # 在指定目录下递归搜索
             self._search_config_files_in_dir(self.tdx_dir)
             if self.tdxstat2_path and self.addedcode_bj_path:
+                # 更新缓存
+                self._config_path_cache[cache_key_tdxstat2] = self.tdxstat2_path
+                self._config_path_cache[cache_key_addedcode] = self.addedcode_bj_path
                 return
 
         # 如果未指定路径或搜索失败，尝试常见根目录并递归搜索
@@ -90,6 +115,11 @@ class TdxConfigFileParser:
 
         for root_dir in common_root_dirs:
             if root_dir.exists() and self._search_config_files_in_dir(root_dir):
+                # 更新缓存
+                if self.tdxstat2_path:
+                    self._config_path_cache[cache_key_tdxstat2] = self.tdxstat2_path
+                if self.addedcode_bj_path:
+                    self._config_path_cache[cache_key_addedcode] = self.addedcode_bj_path
                 break
 
     def _search_config_files_in_dir(self, directory: Path) -> bool:

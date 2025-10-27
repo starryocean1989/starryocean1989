@@ -9,15 +9,21 @@
     "data": { ... }
 }
 
+v1.1 改进：
+- 使用网络时间替代系统时间，避免系统时间不准确导致的缓存验证错误
+
 作者：星辰科技
-版本：1.0
+版本：1.1
 """
 
 import json
 import logging
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
+
+# 导入网络时间同步模块
+from .utils.network_time import get_real_date
 
 
 class DailyCacheManager:
@@ -50,16 +56,20 @@ class DailyCacheManager:
 
     @staticmethod
     def get_today() -> str:
-        """获取今天的日期字符串
+        """获取今天的日期字符串（使用网络时间）
+
+        使用网络时间同步，避免系统时间不准确导致的缓存验证错误
 
         Returns:
             str: YYYY-MM-DD格式的日期字符串
         """
-        return date.today().isoformat()
+        return get_real_date().isoformat()
 
     @staticmethod
     def is_cache_valid(cache_date: Optional[str]) -> bool:
-        """判断缓存是否有效（次日0时失效）
+        """判断缓存是否有效（次日0时失效，使用网络时间）
+
+        使用网络时间同步，避免系统时间不准确导致的误判
 
         Args:
             cache_date: 缓存日期（YYYY-MM-DD格式）
@@ -72,7 +82,8 @@ class DailyCacheManager:
 
         try:
             cached = datetime.strptime(cache_date, "%Y-%m-%d").date()
-            today = date.today()
+            # 使用网络时间替代系统时间
+            today = get_real_date()
 
             # 只有当天的缓存才有效
             return cached >= today

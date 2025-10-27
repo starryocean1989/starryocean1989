@@ -15,10 +15,14 @@ project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 # 配置日志（仅Terminal输出，文件日志已移除）
+# 确保stdout使用UTF-8编码
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+stream_handler = logging.StreamHandler(sys.stdout)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler()],
+    handlers=[stream_handler],
 )
 logger = logging.getLogger("MonitorProcess")
 

@@ -7,8 +7,10 @@ VnPy导入适配器模块.
 """
 
 import logging
-from pathlib import Path
 from typing import Any, List, Optional
+
+# 专用logger - 日志埋点v4.0
+logger_alert = logging.getLogger("backend.vnpy.alert")
 
 # 数据处理库
 try:
@@ -221,12 +223,18 @@ def setup_logging(name: str = "terminal", level: str = "INFO") -> logging.Logger
     """
     logger = logging.getLogger(name)
     logger.setLevel(getattr(logging, level.upper(), logging.INFO))
+    logger.propagate = False  # 阻止传播到root logger，避免重复输出
 
     if logger.handlers:
         return logger
 
     # 控制台处理器（Terminal输出）
-    console_handler = logging.StreamHandler()
+    import sys
+
+    # 确保stdout使用UTF-8编码
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.INFO)
     console_formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
     console_handler.setFormatter(console_formatter)

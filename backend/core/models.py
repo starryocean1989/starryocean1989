@@ -17,10 +17,15 @@ from pydantic import BaseModel, Field
 # 直接导入pandas，避免循环导入
 try:
     import pandas as pd
+
     PANDAS_AVAILABLE = True
 except ImportError:
     pd = None
     PANDAS_AVAILABLE = False
+
+# ✅ 添加logger定义
+logger = logging.getLogger("backend.core.models")
+logger_quality = logging.getLogger("backend.data.quality")  # 数据质量专用
 
 
 class DataCategory(Enum):
@@ -100,61 +105,113 @@ class UnifiedMarketData:  # pylint: disable=too-many-instance-attributes
     @classmethod
     def from_vnpy_tick(cls, tick: Any) -> "UnifiedMarketData":
         """从VNPY TickData创建统一数据."""
-        return cls(
-            symbol=tick.symbol,
-            exchange=tick.exchange if hasattr(tick, "exchange") else "",
-            data_type="tick",
-            datetime=tick.datetime,
-            timestamp=int(tick.datetime.timestamp()) if tick.datetime else 0,
-            open_price=tick.open_price,
-            high_price=tick.high_price,
-            low_price=tick.low_price,
-            close_price=tick.last_price,
-            pre_close=tick.pre_close,
-            volume=tick.volume,
-            turnover=tick.turnover,
-            open_interest=tick.open_interest,
-            bid_price=tick.bid_price_1,
-            bid_volume=tick.bid_volume_1,
-            ask_price=tick.ask_price_1,
-            ask_volume=tick.ask_volume_1,
-            metadata=DataMetadata(
-                DataCategory.MARKET_DATA,
-                DataSource.VNPY,
+        try:
+            # ✅ 数据验证
+            if not hasattr(tick, "symbol") or not tick.symbol:
+                logger.warning("Tick数据缺少symbol字段")
+                raise ValueError("Invalid tick: missing symbol")
+
+            # ✅ 数据转换
+            data = cls(
                 symbol=tick.symbol,
-                exchange=tick.exchange if hasattr(tick, "exchange") else "",
-                count=1,
-                last_updated=tick.datetime,
-            ),
-        )
+                exchange=getattr(tick, "exchange", ""),
+                data_type="tick",
+                datetime=tick.datetime,
+                timestamp=int(tick.datetime.timestamp()) if tick.datetime else 0,
+                open_price=getattr(tick, "open_price", 0.0),
+                high_price=getattr(tick, "high_price", 0.0),
+                low_price=getattr(tick, "low_price", 0.0),
+                close_price=getattr(tick, "last_price", 0.0),
+                pre_close=getattr(tick, "pre_close", 0.0),
+                volume=getattr(tick, "volume", 0),
+                turnover=getattr(tick, "turnover", 0.0),
+                open_interest=getattr(tick, "open_interest", 0),
+                bid_price=getattr(tick, "bid_price_1", 0.0),
+                bid_volume=getattr(tick, "bid_volume_1", 0),
+                ask_price=getattr(tick, "ask_price_1", 0.0),
+                ask_volume=getattr(tick, "ask_volume_1", 0),
+                metadata=DataMetadata(
+                    DataCategory.MARKET_DATA,
+                    DataSource.VNPY,
+                    symbol=tick.symbol,
+                    exchange=getattr(tick, "exchange", ""),
+                    count=1,
+                    last_updated=tick.datetime,
+                ),
+            )
+
+            # ✅ 数据质量检查
+            if data.close_price <= 0:
+                logger_quality.warning(
+                    "Tick数据价格异常: 品种=%s, 价格=%.2f", tick.symbol, data.close_price
+                )
+
+            return data
+
+        except AttributeError as e:
+            logger.exception(
+                "Tick数据字段缺失: 品种=%s, 错误=%s", getattr(tick, "symbol", "UNKNOWN"), e
+            )
+            raise
+        except Exception as e:
+            logger.exception("Tick数据转换失败: %s", e)
+            raise
 
     @classmethod
     def from_vnpy_bar(cls, bar_data: Any) -> "UnifiedMarketData":
         """从VNPY BarData创建统一数据."""
-        return cls(
-            symbol=bar_data.symbol,
-            exchange=bar_data.exchange,
-            data_type="bar",
-            datetime=bar_data.datetime,
-            timestamp=(int(bar_data.datetime.timestamp()) if bar_data.datetime else 0),
-            open_price=bar_data.open_price,
-            high_price=bar_data.high_price,
-            low_price=bar_data.low_price,
-            close_price=bar_data.close_price,
-            pre_close=0.0,  # BarData中没有pre_close
-            volume=bar_data.volume,
-            turnover=bar_data.turnover,
-            open_interest=bar_data.open_interest,
-            metadata=DataMetadata(
-                DataCategory.MARKET_DATA,
-                DataSource.VNPY,
+        try:
+            # ✅ 数据验证
+            if not hasattr(bar_data, "symbol") or not bar_data.symbol:
+                logger.warning("Bar数据缺少symbol字段")
+                raise ValueError("Invalid bar: missing symbol")
+
+            # ✅ 数据转换
+            data = cls(
                 symbol=bar_data.symbol,
-                exchange=bar_data.exchange,
-                frequency=(f"{bar_data.interval}m" if bar_data.interval else "1m"),
-                count=1,
-                last_updated=bar_data.datetime,
-            ),
-        )
+                exchange=getattr(bar_data, "exchange", ""),
+                data_type="bar",
+                datetime=bar_data.datetime,
+                timestamp=(int(bar_data.datetime.timestamp()) if bar_data.datetime else 0),
+                open_price=getattr(bar_data, "open_price", 0.0),
+                high_price=getattr(bar_data, "high_price", 0.0),
+                low_price=getattr(bar_data, "low_price", 0.0),
+                close_price=getattr(bar_data, "close_price", 0.0),
+                pre_close=0.0,  # BarData中没有pre_close
+                volume=getattr(bar_data, "volume", 0),
+                turnover=getattr(bar_data, "turnover", 0.0),
+                open_interest=getattr(bar_data, "open_interest", 0),
+                metadata=DataMetadata(
+                    DataCategory.MARKET_DATA,
+                    DataSource.VNPY,
+                    symbol=bar_data.symbol,
+                    exchange=getattr(bar_data, "exchange", ""),
+                    frequency=(
+                        f"{bar_data.interval}m"
+                        if hasattr(bar_data, "interval") and bar_data.interval
+                        else "1m"
+                    ),
+                    count=1,
+                    last_updated=bar_data.datetime,
+                ),
+            )
+
+            # ✅ 数据质量检查
+            if data.close_price <= 0:
+                logger_quality.warning(
+                    "Bar数据价格异常: 品种=%s, 价格=%.2f", bar_data.symbol, data.close_price
+                )
+
+            return data
+
+        except AttributeError as e:
+            logger.exception(
+                "Bar数据字段缺失: 品种=%s, 错误=%s", getattr(bar_data, "symbol", "UNKNOWN"), e
+            )
+            raise
+        except Exception as e:
+            logger.exception("Bar数据转换失败: %s", e)
+            raise
 
     def to_pandas_row(self) -> Dict[str, Any]:
         """转换为pandas行数据."""

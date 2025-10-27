@@ -14,6 +14,7 @@
 import json
 import logging
 import sqlite3
+import threading
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -49,6 +50,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# 专用logger - 日志埋点v4.0
+logger_alert = logging.getLogger("backend.database.alert")
+
 
 # =============================================================================
 # Part 1: DatabaseManager类（基于标准sqlite3）
@@ -72,8 +76,31 @@ class DatabaseManager:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
+        # ✅ 连接池优化：使用共享连接，启用WAL模式
+        self._connection: Optional[sqlite3.Connection] = None
+        self._connection_lock = threading.Lock()
+        self._initialize_connection()
+
         # 初始化数据库表
         self._init_tables()
+
+    def _initialize_connection(self) -> None:
+        """初始化共享连接并启用WAL模式."""
+        self._connection = sqlite3.connect(
+            str(self.db_path),
+            check_same_thread=False,  # 允许多线程共享连接
+            timeout=30.0,  # 增加锁超时到30秒
+        )
+        self._connection.row_factory = sqlite3.Row
+
+        # ✅ 启用WAL模式：允许并发读写，避免锁竞争
+        self._connection.execute("PRAGMA journal_mode=WAL")
+        # ✅ 同步模式优化：NORMAL模式在WAL下安全且快速
+        self._connection.execute("PRAGMA synchronous=NORMAL")
+        # ✅ 增加缓存大小：减少磁盘I/O
+        self._connection.execute("PRAGMA cache_size=10000")
+
+        logger.info("✅ 数据库连接池已初始化：WAL模式，共享连接")
 
     def _init_tables(self) -> None:
         """初始化所有数据库表"""
@@ -331,12 +358,12 @@ class DatabaseManager:
                 )
             """
             )
-            
+
             # 🔧 关键修复：为timestamp创建降序索引，优化日志查询性能
             # 避免ORDER BY timestamp DESC时全表扫描，防止UI卡死
             cursor.execute(
                 """
-                CREATE INDEX IF NOT EXISTS idx_system_logs_timestamp 
+                CREATE INDEX IF NOT EXISTS idx_system_logs_timestamp
                 ON system_logs(timestamp DESC)
             """
             )
@@ -441,20 +468,49 @@ class DatabaseManager:
             conn.commit()
             logger.info("数据库表初始化完成")
 
+    def close(self) -> None:
+        """关闭数据库连接（程序退出时调用）."""
+        with self._connection_lock:
+            if self._connection:
+                try:
+                    self._connection.close()
+                    logger.info("✅ 数据库连接已关闭")
+                except Exception as e:
+                    logger.warning("关闭数据库连接时出错：%s", e)
+                finally:
+                    self._connection = None
+
+    def __del__(self):
+        """析构函数：确保连接被关闭."""
+        self.close()
+
     @contextmanager
     def get_connection(self):
         """
         获取数据库连接（上下文管理器）
 
+        ✅ 优化：使用共享连接+线程锁，避免频繁创建连接导致的锁竞争
+
         Yields:
             sqlite3.Connection: 数据库连接
         """
-        conn = sqlite3.connect(str(self.db_path))
-        conn.row_factory = sqlite3.Row  # 使结果可以通过列名访问
-        try:
-            yield conn
-        finally:
-            conn.close()
+        with self._connection_lock:
+            # 检查连接是否有效
+            if self._connection is None:
+                self._initialize_connection()
+
+            try:
+                # 验证连接有效性
+                if self._connection:
+                    self._connection.execute("SELECT 1")
+            except (sqlite3.ProgrammingError, sqlite3.OperationalError):
+                # 连接失效，重新初始化
+                self._initialize_connection()
+
+            # 断言连接不为None（类型检查）
+            assert self._connection is not None
+            yield self._connection
+            # ✅ 不关闭连接，保持连接池
 
     def execute_query(self, query: str, params: Optional[Tuple] = None) -> List[Dict[str, Any]]:
         """
@@ -467,6 +523,11 @@ class DatabaseManager:
         Returns:
             查询结果列表
         """
+        # 慢查询监控 - 日志埋点v4.0
+        import time
+
+        start_time = time.time()
+
         with self.get_connection() as conn:
             cursor = conn.cursor()
             if params:
@@ -475,7 +536,16 @@ class DatabaseManager:
                 cursor.execute(query)
 
             rows = cursor.fetchall()
-            return [dict(row) for row in rows]
+            result = [dict(row) for row in rows]
+
+        # 慢查询告警 - 日志埋点v4.0
+        elapsed = time.time() - start_time
+        if elapsed > 1.0:  # 超过1秒的慢查询
+            logger_alert.warning(
+                "慢查询检测: 耗时=%.2fs, 结果数=%d, SQL=%s", elapsed, len(result), query[:200]
+            )
+
+        return result
 
     def execute_update(self, query: str, params: Optional[Tuple] = None) -> int:
         """
@@ -488,6 +558,11 @@ class DatabaseManager:
         Returns:
             受影响的行数
         """
+        # 慢查询监控 - 日志埋点v4.0
+        import time
+
+        start_time = time.time()
+
         with self.get_connection() as conn:
             cursor = conn.cursor()
             if params:
@@ -495,7 +570,16 @@ class DatabaseManager:
             else:
                 cursor.execute(query)
             conn.commit()
-            return cursor.rowcount
+            rowcount = cursor.rowcount
+
+        # 慢查询告警 - 日志埋点v4.0
+        elapsed = time.time() - start_time
+        if elapsed > 1.0:  # 超过1秒的慢查询
+            logger_alert.warning(
+                "慢更新检测: 耗时=%.2fs, 影响行数=%d, SQL=%s", elapsed, rowcount, query[:200]
+            )
+
+        return rowcount
 
     def execute_many(self, query: str, params_list: List[Tuple]) -> int:
         """

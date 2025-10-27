@@ -10,6 +10,7 @@
 - 阶段4: UI功能激活（主线程，1-2s）
 """
 
+import logging
 import os
 import sys
 import time
@@ -47,7 +48,13 @@ def setup_environment():
 
 def setup_logging():
     """设置日志系统（仅Terminal输出，数据库日志自动记录）."""
-    import logging
+    import sys
+
+    # 🔧 修复编码问题：确保stdout/stderr使用UTF-8编码
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")  # type: ignore
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8")  # type: ignore
 
     # 🔧 关键修复：配置root logger，让所有logger都有输出
     root_logger = logging.getLogger()
@@ -55,7 +62,7 @@ def setup_logging():
 
     # 如果root logger还没有handler，添加控制台handler
     if not root_logger.handlers:
-        console_handler = logging.StreamHandler()
+        console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setLevel(logging.INFO)
         console_formatter = logging.Formatter(
             "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -66,7 +73,9 @@ def setup_logging():
     # 返回StartupOptimized专用logger
     from backend.core.base import setup_logging as base_setup_logging
 
-    return base_setup_logging(name="StartupOptimized", level="INFO")
+    logger = base_setup_logging(name="StartupOptimized", level="INFO")
+    logger.propagate = False  # 关键：阻止传播到root logger，避免重复输出
+    return logger
 
 
 def main():
@@ -81,6 +90,8 @@ def main():
     """
     startup_start = time.time()
 
+    # ==================== 启动早期阶段：使用print ====================
+    # 注：此时日志系统尚未初始化，使用print输出
     print("=" * 70)
     print("🚀 星辰金融终端 - 启动中（单进程多线程模式）")
     print("=" * 70)
@@ -118,6 +129,7 @@ def main():
             error_detail="硬件传感器/SMART将禁用；系统指标仍可用。",
         )
         if admin_policy == "auto":
+            # 注：此时日志系统尚未初始化，使用print输出
             print("\n正在请求管理员权限...")
             print("（如果出现UAC提示，请点击'是'）\n")
             # 自动以管理员身份重启（失败则继续降级）
@@ -138,6 +150,14 @@ def main():
 
         # 初始化日志系统
         logger = setup_logging()
+
+        # ==================== 阶段切换：进入startup阶段 ====================
+        from backend.infrastructure.system_vnpy.logging_context import get_logging_context
+
+        ctx = get_logging_context()
+        ctx.set_stage("startup")
+        logger.info("📍 切换到启动阶段")
+
         logger.info("[ENV-SETUP] 环境准备完成，耗时 %.0fms", env_time)
         logger.info("=" * 60)
         logger.info("系统启动优化流程开始")
@@ -219,7 +239,8 @@ def main():
         )
         # 启动指标：UI可见时延
         try:
-            logger.info("[METRIC] startup.ui_visible_ms=%d", int(ui_visible_time))
+            logger_metric = logging.getLogger("metric.startup")
+            logger_metric.info("ui_visible_ms=%d", int(ui_visible_time))
         except Exception:
             pass
 
@@ -270,71 +291,13 @@ def main():
                 )
 
             except Exception as e:
-                logger.error("[VNPY-CORE] ❌ 注入占位方法失败: %s", e, exc_info=True)
+                logger.exception("[VNPY-CORE] ❌ 注入占位方法失败: %s", e)
 
-            # 添加策略应用（静默失败）
-            app_failed = []
-            try:
-                from vnpy_ctastrategy import CtaStrategyApp
-
-                main_engine.add_app(CtaStrategyApp)
-                logger.info("[VNPY-CORE] ✅ CtaStrategyApp 已添加")
-            except Exception as e:
-                logger.error(
-                    "[VNPY-CORE] ❌ 添加 CtaStrategyApp 失败: %s (类型: %s)",
-                    e,
-                    type(e).__name__,
-                    exc_info=True,
-                )
-                app_failed.append("CtaStrategy")
-
-            try:
-                from vnpy_algotrading import AlgoTradingApp
-
-                main_engine.add_app(AlgoTradingApp)
-                logger.info("[VNPY-CORE] ✅ AlgoTradingApp 已添加")
-            except Exception as e:
-                logger.error(
-                    "[VNPY-CORE] ❌ 添加 AlgoTradingApp 失败: %s (类型: %s)",
-                    e,
-                    type(e).__name__,
-                    exc_info=True,
-                )
-                app_failed.append("AlgoTrading")
-
-            try:
-                from vnpy_optionmaster import OptionMasterApp
-
-                main_engine.add_app(OptionMasterApp)
-                logger.info("[VNPY-CORE] ✅ OptionMasterApp 已添加")
-            except Exception as e:
-                logger.error(
-                    "[VNPY-CORE] ❌ 添加 OptionMasterApp 失败: %s (类型: %s)",
-                    e,
-                    type(e).__name__,
-                    exc_info=True,
-                )
-                app_failed.append("OptionMaster")
-
-            try:
-                from vnpy_portfoliostrategy import PortfolioStrategyApp
-
-                main_engine.add_app(PortfolioStrategyApp)
-                logger.info("[VNPY-CORE] ✅ PortfolioStrategyApp 已添加")
-            except Exception as e:
-                logger.error(
-                    "[VNPY-CORE] ❌ 添加 PortfolioStrategyApp 失败: %s (类型: %s)",
-                    e,
-                    type(e).__name__,
-                    exc_info=True,
-                )
-                app_failed.append("PortfolioStrategy")
+            # VnPy Apps延迟加载：移至后台线程
+            logger.info("[VNPY-CORE] VnPy Apps将在后台线程加载")
 
             vnpy_time = (time.time() - vnpy_start) * 1000
             logger.info("[VNPY-CORE] ✅ VnPy 核心初始化完成，耗时 %.0fms", vnpy_time)
-
-            if app_failed:
-                vnpy_error_detail = f"部分应用未能加载: {', '.join(app_failed)}"
 
             # ==================== 阶段2.55：初始化日志管理系统 ====================
             # 🔧 关键修复：在EventEngine创建后立即初始化LogManager
@@ -350,12 +313,12 @@ def main():
                 print_stage("LOG-MANAGER", "日志持久化已启用", success=True)
 
             except Exception as e:
-                logger.error("[LOG-MANAGER] ❌ 日志管理系统初始化失败: %s", e, exc_info=True)
+                logger.exception("[LOG-MANAGER] ❌ 日志管理系统初始化失败: %s", e)
                 print_stage("LOG-MANAGER", "日志持久化启用失败", success=False, error_detail=str(e))
                 # 不中断启动流程
 
         except Exception as e:
-            logger.error("[VNPY-CORE] ❌ VnPy 核心初始化失败: %s", e, exc_info=True)
+            logger.exception("[VNPY-CORE] ❌ VnPy 核心初始化失败: %s", e)
             vnpy_success = False
             vnpy_error_detail = str(e)
 
@@ -647,7 +610,7 @@ def main():
                             else:
                                 logger.info("[WATCHDOG] ✅ 新进程运行正常")
                         except Exception as e:
-                            logger.error("[WATCHDOG] ❌ 重启监控进程失败: %s", e, exc_info=True)
+                            logger.exception("[WATCHDOG] ❌ 重启监控进程失败: %s", e)
 
                     # 检查间隔
                     time.sleep(3)
@@ -670,9 +633,124 @@ def main():
             "MONITOR-PROCESS", f"监控进程已启动（PID: {monitor_process.pid}）", success=True
         )
 
-        # 🎯 架构修复：监控握手延迟到SystemManagerService初始化时
-        # 不在主流程中等待握手，避免阻塞启动（原来阻塞6.31秒）
-        logger.info("[MONITOR-PROCESS] 监控进程已启动（握手延迟到SystemManagerService初始化）")
+        # 🎯 架构修复：等待监控进程就绪信号（优化版）
+        # 最多等待10秒，使用就绪信号文件而非端口文件
+        logger.info("[MONITOR-PROCESS] 等待监控进程就绪...")
+
+        import json
+        from pathlib import Path as _Path
+
+        signal_file = _Path("logs/monitor_ready.signal")
+
+        # 🔧 优化：启动前清理旧的信号文件
+        if signal_file.exists():
+            try:
+                signal_file.unlink()
+                logger.debug("[MONITOR-PROCESS] 已清理旧的就绪信号文件")
+            except Exception as e:
+                logger.debug("[MONITOR-PROCESS] 清理信号文件失败: %s", e)
+
+        wait_start = time.time()
+        max_wait = 10.0  # 最多等待10秒
+        ports_ready = False
+
+        while (time.time() - wait_start) < max_wait:
+            # 检查进程是否存活
+            if monitor_process.poll() is not None:
+                logger.error(
+                    "[MONITOR-PROCESS] ❌ 监控进程异常退出（退出码: %d）",
+                    monitor_process.returncode,
+                )
+                break
+
+            # 检查就绪信号文件
+            if signal_file.exists():
+                try:
+                    with open(signal_file, "r", encoding="utf-8") as f:
+                        signal_data = json.load(f)
+
+                    # 🔧 修复：不再严格验证PID，改为验证进程状态
+                    # 原因：Windows下subprocess.Popen.pid可能与实际监控进程PID不一致
+                    signal_pid = signal_data.get("pid")
+                    if signal_pid:
+                        # 验证信号文件中的PID进程是否存活
+                        try:
+                            import psutil
+
+                            if not psutil.pid_exists(signal_pid):
+                                logger.debug(
+                                    "[MONITOR-PROCESS] 信号文件中的PID %d 不存在，继续等待",
+                                    signal_pid,
+                                )
+                                time.sleep(0.1)
+                                continue
+                        except ImportError:
+                            # psutil不可用，跳过PID验证
+                            pass
+
+                    # 检查状态
+                    status = signal_data.get("status")
+                    level = signal_data.get("level", 1)
+
+                    if status == "initializing":
+                        # 仍在初始化，继续等待
+                        time.sleep(0.1)
+                        continue
+                    elif status in ["ports_ready", "fully_ready"] and level >= 1:
+                        # 就绪！（接受Level 1或Level 2）
+                        ports = signal_data.get("ports", {})
+                        elapsed = time.time() - wait_start
+
+                        # 验证端口信息完整性
+                        if not all(
+                            ports.get(k) for k in ["alert_push", "status_pull", "query_rep"]
+                        ):
+                            logger.debug("[MONITOR-PROCESS] 端口信息不完整，继续等待")
+                            time.sleep(0.1)
+                            continue
+
+                        logger.info(
+                            "[MONITOR-PROCESS] ✅ 监控进程端口就绪（PID: %d, 端口: %d/%d/%d，耗时: %.1fs, Level: %d）",
+                            signal_pid,
+                            ports.get("alert_push", 0),
+                            ports.get("status_pull", 0),
+                            ports.get("query_rep", 0),
+                            elapsed,
+                            level,
+                        )
+
+                        # 提示功能后台加载
+                        if level == 1:
+                            logger.info(
+                                "[MONITOR-PROCESS] 监控功能正在后台初始化（不影响主进程启动）"
+                            )
+
+                        # 设置环境变量供SystemManagerService使用
+                        os.environ["MONITOR_READY"] = "1"
+                        os.environ["MONITOR_ALERT_PUSH"] = str(ports.get("alert_push", 5555))
+                        os.environ["MONITOR_STATUS_PULL"] = str(ports.get("status_pull", 5556))
+                        os.environ["MONITOR_QUERY_REP"] = str(ports.get("query_rep", 5557))
+                        ports_ready = True
+                        break
+
+                except (json.JSONDecodeError, IOError) as e:
+                    # 文件可能正在写入，重试
+                    logger.debug("[MONITOR-PROCESS] 读取就绪信号失败（重试中）: %s", e)
+                    time.sleep(0.1)
+                    continue
+
+            time.sleep(0.2)  # 200ms间隔检查
+
+        if not ports_ready:
+            error_msg = (
+                f"监控进程启动失败（超时{max_wait}s）\n"
+                f"可能原因：\n"
+                f"1. 端口被占用（5555/5556/5557）\n"
+                f"2. 监控进程崩溃（查看logs/monitor_stderr.log）\n"
+                f"3. 权限不足（需要管理员权限）"
+            )
+            logger.error("[MONITOR-PROCESS] ❌ %s", error_msg)
+            raise RuntimeError(f"监控进程启动失败: {error_msg}")
 
         # 设置环境变量，告知服务监控进程PID
         os.environ["MONITOR_PROCESS_PID"] = str(monitor_process.pid)
@@ -733,7 +811,7 @@ def main():
                             self.all_completed.emit(results)
 
                         except Exception as e:
-                            self.logger.error("可选服务后台加载异常: %s", e, exc_info=True)
+                            self.logger.exception("可选服务后台加载异常: %s", e)
                             self.all_completed.emit({})
 
                 # 创建加载器和线程
@@ -765,7 +843,7 @@ def main():
                 main_window_instance._optional_loader_thread = loader_thread
 
             except Exception as e:
-                logger.error("[OPTIONAL-SERVICES] 启动后台加载器失败: %s", e, exc_info=True)
+                logger.exception("[OPTIONAL-SERVICES] 启动后台加载器失败: %s", e)
 
         # ==================== 连接后端初始化回调 ====================
         def on_startup_completed():
@@ -775,13 +853,17 @@ def main():
             try:
                 activation_start = time.time()
 
+                # ==================== 阶段切换：切换到sensing阶段 ====================
+                ctx.set_stage("sensing")
+                logger.info("📍 启动完成，切换到数据感知阶段")
+
                 # 🔧 修复：在后端真正完成后，先标记backend_ready
                 try:
                     if hasattr(main_window, "boot_orchestrator") and main_window.boot_orchestrator:
                         main_window.boot_orchestrator.mark_ready("backend_ready")
                         logger.info("[UI-ACTIVATE] ✅ backend_ready事件已触发")
                 except Exception as e:
-                    logger.error("[UI-ACTIVATE] ❌ 触发backend_ready事件失败: %s", e)
+                    logger.exception("[UI-ACTIVATE] ❌ 触发backend_ready事件失败: %s", e)
 
                 # 步骤1: 初始化主窗口的功能界面
                 logger.info("[UI-ACTIVATE] 调用 initialize_function_interfaces_after_backend()")
@@ -809,10 +891,10 @@ def main():
 
                 print_stage("UI-ACTIVATE", "UI功能激活完成", success=True)
 
-                print("\n" + "=" * 70)
-                print("✅ 系统启动完成！")
-                print(f"   - 总启动时间: {total_time:.0f}ms")
-                print("=" * 70)
+                logger.info("\n" + "=" * 70)
+                logger.info("✅ 系统启动完成！")
+                logger.info("   - 总启动时间: %.0fms", total_time)
+                logger.info("=" * 70)
 
                 logger.info("[UI-ACTIVATE] ✅ UI功能激活完成，耗时 %.0fms", activation_time)
                 logger.info("=" * 60)
@@ -820,7 +902,9 @@ def main():
                 logger.info("=" * 60)
                 # 启动指标：后端就绪时延
                 try:
-                    logger.info("[METRIC] startup.backend_ready_ms=%d", int(total_time))
+                    logger_metric = logging.getLogger("metric.startup")
+                    logger_metric.info("backend_ready_ms=%d", int(total_time))
+                    logger_metric.info("total_startup_ms=%d", int(total_time))
                 except Exception:
                     pass
 
@@ -860,11 +944,12 @@ def main():
                             warm_ms = int((time.time() - t0) * 1000)
                             logger.info("[SERVER-POOL] ✅ 预热完成，用时 %dms", warm_ms)
                             try:
-                                logger.info("[METRIC] server_pool.warmup_ms=%d", warm_ms)
+                                logger_metric = logging.getLogger("metric.server_pool")
+                                logger_metric.info("warmup_ms=%d", warm_ms)
                             except Exception:
                                 pass
                         except Exception as warm_e:
-                            logger.error("[SERVER-POOL] 预热失败: %s", warm_e, exc_info=True)
+                            logger.exception("[SERVER-POOL] 预热失败: %s", warm_e)
 
                     import threading as _th
 
@@ -875,7 +960,7 @@ def main():
                     logger.error("[SERVER-POOL] 启动后台预热线程失败: %s", e)
 
             except Exception as e:
-                logger.error("[UI-ACTIVATE] ❌ UI激活过程发生异常: %s", e, exc_info=True)
+                logger.exception("[UI-ACTIVATE] ❌ UI激活过程发生异常: %s", e)
                 print_stage(
                     "UI-ACTIVATE",
                     "UI激活失败",
@@ -906,11 +991,12 @@ def main():
 
         # ==================== 启动Qt事件循环 ====================
         logger.info("[EVENT-LOOP] 启动Qt主事件循环")
-        print("=" * 70)
+        logger.info("=" * 70)
 
         return app.exec()
 
     except Exception as e:
+        # 使用print输出，因为logger可能已损坏
         print("\n" + "=" * 70)
         print(f"❌ 启动失败: {e}")
         print("=" * 70)
@@ -919,7 +1005,7 @@ def main():
         traceback.print_exc()
 
         if "logger" in locals():
-            logger.error("💥 启动流程发生严重异常", exc_info=True)
+            logger.exception("💥 启动流程发生严重异常: %s", e)
 
         return 1
 

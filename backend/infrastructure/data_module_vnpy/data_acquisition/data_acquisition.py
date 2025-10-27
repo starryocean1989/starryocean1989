@@ -35,6 +35,12 @@ import time
 from datetime import datetime
 from typing import Dict, Optional, Tuple
 from pathlib import Path
+import logging
+
+# ==================== 日志配置 ====================
+# 创建专用logger（模块级别）
+logger = logging.getLogger("backend.data_module.download")
+logger_alert = logging.getLogger("backend.data_module.alert")
 
 
 class TaskDetailLogger:
@@ -613,7 +619,8 @@ class SymbolLoader:
         Args:
             event_engine: vnpy事件引擎（可选，传入后可推送事件）
         """
-        self.logger = logging.getLogger(__name__)
+        self.logger = logger
+        self.logger_alert = logger_alert
 
         # 初始化配置文件解析器
         tdx_dir = config_manager.get_tdx_dir()
@@ -770,16 +777,17 @@ class SymbolLoader:
         分别调用market=0、1，手动添加market列后合并
         注意：北交所（market=2）品种不从API获取，完全从addedcode_bj.cfg解析获得
 
-        架构设计（双进程模式）：
-        - 进程1：处理市场0（深圳），单线程，单服务器，单连接，串行请求所有页
-        - 进程2：处理市场1（上海），单线程，单服务器，单连接，串行请求所有页
-        - 两个进程并行运行，充分利用双核CPU
+        架构设计（asyncio并发模式）：
+        - 使用asyncio.gather并发获取深圳和上海两个市场
+        - 每个市场：单连接，串行请求所有页
+        - 网络I/O密集型任务，asyncio比multiprocessing更高效
+        - 避免在QThread中创建子进程导致的Windows spawn死锁问题
 
         Returns:
             包含market列的完整DataFrame
         """
         self.logger.info("步骤1: 获取完整品种缓存（集合D）")
-        self.logger.info("→ 双进程模式：市场0和市场1各用独立进程...")
+        self.logger.info("→ asyncio并发模式：市场0和市场1并发获取...")
 
         # 获取最优服务器
         from ..load_balancer import server_pool_manager
@@ -799,46 +807,32 @@ class SymbolLoader:
         self.logger.info("  → 深圳市场：%s:%s", market_servers[0][0], market_servers[0][1])
         self.logger.info("  → 上海市场：%s:%s", market_servers[1][0], market_servers[1][1])
 
-        # 使用multiprocessing创建共享内存（使用spawn上下文）
-        from multiprocessing import get_context
+        # 🚀 修复：使用asyncio并发替代multiprocessing，避免Windows spawn死锁
+        import asyncio
         import time
 
-        self.logger.info("  创建multiprocessing上下文（spawn模式）")
-        ctx = get_context("spawn")
-        manager = ctx.Manager()
-        self.logger.info("  ✓ Manager创建成功")
-        shared_results = manager.dict()  # 共享字典：{market: [stocks]}
-
-        # 创建2个进程
-        processes = []
-        for market in [0, 1]:
-            p = ctx.Process(
-                target=self._fetch_market_in_process,
-                args=(market, market_servers[market], shared_results),
-                name=f"MarketFetch-{market}",
-            )
-            p.start()
-            processes.append(p)
-            market_name = "深圳" if market == 0 else "上海"
-            self.logger.info("  🚀 %s市场进程已启动（PID: %s）", market_name, p.pid)
-
-        # 等待所有进程完成
-        self.logger.info("  ⏳ 等待2个进程完成...")
+        self.logger.info("  创建asyncio事件循环...")
         start_time = time.time()
 
-        for i, p in enumerate(processes):
-            p.join()
-            market_name = "深圳" if i == 0 else "上海"
-            self.logger.info("  ✅ %s市场进程完成", market_name)
+        # 在当前线程中创建并运行asyncio事件循环
+        try:
+            # 如果已有事件循环，使用它；否则创建新的
+            loop = asyncio.get_event_loop()
+            if loop.is_closed():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+        # 并发获取两个市场的数据
+        market_data = loop.run_until_complete(self._fetch_both_markets_async(market_servers))
 
         elapsed = time.time() - start_time
-        self.logger.info("  ✅ 双进程获取完成，耗时: %.1f秒", elapsed)
-
-        # 从共享内存提取结果
-        market_data = dict(shared_results)
+        self.logger.info("  ✅ asyncio并发获取完成，耗时: %.1f秒", elapsed)
 
         if not market_data:
-            raise RuntimeError("所有进程均未返回数据")
+            raise RuntimeError("获取市场数据失败：所有市场均未返回数据")
 
         # 构建DataFrame
         stocks_list = []
@@ -880,6 +874,149 @@ class SymbolLoader:
         self.logger.info("  ← 集合D: %d 个品种（含market列）", len(complete_df))
 
         return complete_df
+
+    async def _fetch_both_markets_async(self, market_servers: dict[int, tuple[str, int]]) -> dict:
+        """
+        使用asyncio并发获取两个市场的数据
+
+        Args:
+            market_servers: {0: (ip, port), 1: (ip, port)}
+
+        Returns:
+            {0: [stocks_list], 1: [stocks_list]}
+        """
+        import asyncio
+
+        # 并发执行两个市场的获取任务
+        tasks = [
+            self._fetch_single_market_async(0, market_servers[0]),
+            self._fetch_single_market_async(1, market_servers[1]),
+        ]
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # 处理结果
+        market_data = {}
+        for i, result in enumerate(results):
+            market = i  # 0=深圳, 1=上海
+            if isinstance(result, Exception):
+                market_name = "深圳" if market == 0 else "上海"
+                self.logger.error("  ❌ %s市场获取失败: %s", market_name, result)
+            else:
+                market_data[market] = result
+
+        return market_data
+
+    async def _fetch_single_market_async(self, market: int, server: tuple[str, int]) -> list:
+        """
+        异步获取单个市场的数据（从_fetch_market_in_process迁移）
+
+        Args:
+            market: 市场代码（0=深圳，1=上海）
+            server: 服务器地址 (ip, port)
+
+        Returns:
+            stocks列表
+        """
+        import asyncio
+        from backend.infrastructure.tdx_asyncio import AsyncTdxHq_API
+
+        market_name = "深圳" if market == 0 else "上海"
+
+        try:
+            self.logger.info("[%s] 开始连接服务器 %s:%s", market_name, server[0], server[1])
+
+            # 建立连接
+            client = await asyncio.wait_for(
+                AsyncTdxHq_API.factory(
+                    server=server, timeout=3.0, heartbeat=False, raise_exception=False
+                ),
+                timeout=5.0,
+            )
+
+            if not client:
+                raise RuntimeError(f"无法连接到服务器 {server[0]}:{server[1]}")
+
+            self.logger.info("[%s] ✓ 连接成功，开始串行分页请求...", market_name)
+            self.logger.info("[%s] 使用服务器: %s:%s", market_name, server[0], server[1])
+
+            all_stocks = []
+            start = 0
+            page = 1
+            max_retries = 3
+
+            try:
+                while True:
+                    stocks = None
+
+                    # 重试机制（使用同一个连接）
+                    for retry in range(max_retries):
+                        try:
+                            stocks = await asyncio.wait_for(
+                                client.get_security_list(market=market, start=start),
+                                timeout=10.0,
+                            )
+
+                            if stocks:
+                                # 显示样本代码以便诊断
+                                sample_codes = (
+                                    [s.get("code", "") for s in stocks[:3]]
+                                    if len(stocks) >= 3
+                                    else []
+                                )
+                                self.logger.info(
+                                    "[%s] 第%d页: %d条 (样本代码: %s)",
+                                    market_name,
+                                    page,
+                                    len(stocks),
+                                    ", ".join(sample_codes) if sample_codes else "N/A",
+                                )
+                                break
+                            else:
+                                self.logger.debug("[%s] 第%d页返回空数据", market_name, page)
+                                break
+
+                        except asyncio.TimeoutError:
+                            self.logger.warning(
+                                "[%s] 第%d页超时 (尝试%d/%d)",
+                                market_name,
+                                page,
+                                retry + 1,
+                                max_retries,
+                            )
+                        except Exception as e:
+                            self.logger.debug(
+                                "[%s] 第%d页失败: %s (尝试%d/%d)",
+                                market_name,
+                                page,
+                                e,
+                                retry + 1,
+                                max_retries,
+                            )
+
+                    # 检查是否继续
+                    if not stocks:
+                        break
+
+                    all_stocks.extend(stocks)
+
+                    if len(stocks) < 1000:
+                        break
+
+                    start += len(stocks)
+                    page += 1
+
+            finally:
+                # 关闭连接
+                if client:
+                    await client.close()
+
+            self.logger.info("[%s] ✓ 获取完成: %d 个品种", market_name, len(all_stocks))
+            return all_stocks
+
+        except Exception as e:
+            self.logger.error("[%s] 获取失败: %s", market_name, e, exc_info=True)
+            raise
 
     @staticmethod
     def _fetch_market_in_process(market: int, server: tuple[str, int], shared_results: dict):
@@ -1825,6 +1962,7 @@ async def download_worker_two_phase_async(
     worker_id,
     task_queue,
     result_queue,
+    metrics_queue,  # 🆕 v3.6: 添加独立的监控指标队列
     progress_queue,
     regular_servers,
     standby_servers,
@@ -1841,6 +1979,7 @@ async def download_worker_two_phase_async(
         worker_id: Worker进程ID
         task_queue: 共享任务队列
         result_queue: 结果队列
+        metrics_queue: 监控指标队列（v3.6新增）
         progress_queue: 进度队列
         regular_servers: 乱序服务器列表
         standby_servers: 热备服务器列表
@@ -1853,6 +1992,19 @@ async def download_worker_two_phase_async(
     """
     logger = logging.getLogger(f"TwoPhaseWorker-{worker_id}")
     logger.info("两段式Worker %s 启动，PID：%s", worker_id, os.getpid())
+
+    # 🆕 v3.6: 启动lag监控（使用独立的metrics_queue）
+    from ..load_balancer import LagMonitor
+
+    lag_monitor_task = asyncio.create_task(
+        LagMonitor.monitor_and_report(
+            metrics_queue=metrics_queue,  # 🆕 v3.6: 使用独立的监控队列
+            worker_id=worker_id,
+            stop_event=stop_event,
+            interval_seconds=0.3,
+        )
+    )
+    logger.info(f"[Worker-{worker_id}] ✅ 已启动lag监控（K线下载-两阶段模式，使用metrics_queue）")
 
     # 初始化任务详细日志记录器
     task_logger = None
@@ -2499,6 +2651,9 @@ async def download_worker_two_phase_async(
         # Phase2的连接已在各自的download_loop中关闭
         logger.debug("[Phase2] Worker %s 所有IPv6连接已关闭", worker_id)
 
+        # 🆕 v3.4: 停止lag监控
+        await LagMonitor.cancel_monitor(lag_monitor_task)
+
         # 关闭任务详细日志记录器
         if task_logger:
             task_logger.close()
@@ -2506,7 +2661,10 @@ async def download_worker_two_phase_async(
 
 
 def _run_two_phase_worker(*args):
-    """在进程中运行两段式异步事件循环的辅助函数"""
+    """在进程中运行两段式异步事件循环的辅助函数
+
+    v3.6改进：支持传递metrics_queue
+    """
     import warnings
 
     warnings.filterwarnings("ignore", category=ResourceWarning, message=".*socket.*")
@@ -2517,6 +2675,7 @@ async def download_worker_async(
     worker_id,
     task_queue,
     result_queue,
+    metrics_queue,  # 🆕 v3.6: 添加独立的监控指标队列
     progress_queue,
     server_list,
     server_index,
@@ -2532,6 +2691,7 @@ async def download_worker_async(
         worker_id: Worker进程ID
         task_queue: 共享任务队列
         result_queue: 结果队列
+        metrics_queue: 监控指标队列（v3.6新增）
         progress_queue: 进度队列
         server_list: 共享的可用服务器列表
         server_index: 共享的服务器索引（用于轮询）
@@ -2545,6 +2705,19 @@ async def download_worker_async(
     logger.info(
         f"异步Worker {worker_id} 启动，PID: {os.getpid()}，连接数: {connections_per_worker}"
     )
+
+    # 🆕 v3.6: 启动lag监控（使用独立的metrics_queue）
+    from ..load_balancer import LagMonitor
+
+    lag_monitor_task = asyncio.create_task(
+        LagMonitor.monitor_and_report(
+            metrics_queue=metrics_queue,  # 🆕 v3.6: 使用独立的监控队列
+            worker_id=worker_id,
+            stop_event=stop_event,
+            interval_seconds=0.3,
+        )
+    )
+    logger.info(f"[Worker-{worker_id}] ✅ 已启动lag监控（K线下载-标准模式，使用metrics_queue）")
 
     if not server_list:
         logger.error("无可用服务器")
@@ -2698,9 +2871,15 @@ async def download_worker_async(
             except Exception as e:
                 logger.debug(f"Worker {worker_id} 连接 {server[0]}:{server[1]} 关闭失败: {e}")
 
+        # 🆕 v3.4: 停止lag监控
+        await LagMonitor.cancel_monitor(lag_monitor_task)
+
 
 def _run_async_worker(*args):
-    """在进程中运行异步事件循环的辅助函数"""
+    """在进程中运行异步事件循环的辅助函数
+
+    v3.6改进：支持传递metrics_queue
+    """
     import warnings
 
     # 🔧 抑制 socket.send() 相关的 ResourceWarning
@@ -2708,6 +2887,167 @@ def _run_async_worker(*args):
     warnings.filterwarnings("ignore", category=ResourceWarning, message=".*socket.*")
 
     asyncio.run(download_worker_async(*args))
+
+
+# ==================== IPO下载Worker ====================
+
+
+def _run_ipo_worker(*args):
+    """IPO下载worker进程包装函数"""
+    import warnings
+
+    warnings.filterwarnings("ignore", category=ResourceWarning, message=".*socket.*")
+    asyncio.run(_ipo_worker_async(*args))
+
+
+async def _ipo_worker_async(
+    worker_id,
+    task_queue,
+    result_queue,
+    metrics_queue,
+    progress_queue,
+    server_list,
+    timeout,
+    stop_event,
+    pause_event,
+    connections_per_worker,
+):
+    """IPO下载异步worker（统一架构版本）
+
+    复用K线下载的worker架构，但针对IPO下载优化：
+    - 单次请求（不需要多周期）
+    - 结果为ipo_date或unlisted标记
+    - 更宽松的延时策略
+    """
+    worker_logger = logging.getLogger(__name__)
+    worker_logger.info(f"IPO Worker {worker_id} 启动")
+
+    # 启动lag监控
+    from ..load_balancer import LagMonitor
+
+    lag_monitor_task = asyncio.create_task(
+        LagMonitor.monitor_and_report(
+            metrics_queue=metrics_queue,
+            worker_id=worker_id,
+            stop_event=stop_event,
+            interval_seconds=0.3,
+        )
+    )
+
+    try:
+        # 获取服务器并创建连接
+        server_list_local = list(server_list)[:connections_per_worker]
+
+        if not server_list_local:
+            worker_logger.error(f"Worker {worker_id} 无可用服务器")
+            return
+
+        # 并发连接所有服务器
+        connections = {}
+        for server in server_list_local:
+            try:
+                client = await AsyncTdxHq_API.factory(server, timeout=timeout)
+                if client:
+                    connections[server] = client
+            except Exception as e:
+                worker_logger.debug(f"Worker {worker_id} 连接 {server} 失败: {e}")
+
+        if not connections:
+            worker_logger.error(f"Worker {worker_id} 无可用连接")
+            return
+
+        worker_logger.info(f"Worker {worker_id} 成功连接 {len(connections)} 个服务器")
+
+        # 为每个连接创建下载协程
+        async def download_loop(conn_id, client):
+            processed = 0
+
+            while not stop_event.is_set():
+                # 检查暂停
+                while not pause_event.is_set():
+                    if stop_event.is_set():
+                        break
+                    await asyncio.sleep(0.1)
+
+                if stop_event.is_set():
+                    break
+
+                # 获取任务
+                try:
+                    task = await asyncio.to_thread(task_queue.get, timeout=0.5)
+                except queue.Empty:
+                    break
+
+                task_type, symbol, market = task
+
+                if task_type != "ipo":
+                    continue
+
+                try:
+                    # 下载IPO数据
+                    ipo_date, industry, finance_info = await _download_single_ipo_async(
+                        client, symbol, market
+                    )
+
+                    if ipo_date is not None:
+                        # 已上市
+                        result_data = {"status": "listed", "ipo_date": ipo_date}
+                        await asyncio.to_thread(result_queue.put, (symbol, result_data))
+                        await asyncio.to_thread(progress_queue.put, (symbol, "success"))
+                    elif industry > 0:
+                        # 未上市但有行业数据
+                        result_data = {
+                            "status": "unlisted",
+                            "industry": industry,
+                            "finance_info": finance_info,
+                        }
+                        await asyncio.to_thread(result_queue.put, (symbol, result_data))
+                        await asyncio.to_thread(progress_queue.put, (symbol, "unlisted"))
+                    else:
+                        # 数据异常，重试
+                        await asyncio.to_thread(task_queue.put, task)
+                        await asyncio.to_thread(progress_queue.put, (symbol, "retry"))
+
+                    processed += 1
+
+                    # 动态延时（IPO下载可以更快）
+                    try:
+                        queue_size = task_queue.qsize()
+                        if queue_size <= 50:
+                            await asyncio.sleep(0.05)
+                        elif queue_size <= 200:
+                            await asyncio.sleep(0.02)
+                        # 大量任务时不延时
+                    except Exception:
+                        await asyncio.sleep(0.02)
+
+                except Exception as e:
+                    worker_logger.debug(f"Worker {worker_id} 下载 {symbol} 失败: {e}")
+                    await asyncio.to_thread(task_queue.put, task)
+                    await asyncio.to_thread(progress_queue.put, (symbol, "retry"))
+
+            worker_logger.debug(f"Worker {worker_id} 连接 {conn_id} 完成，处理 {processed} 个任务")
+
+        # 启动所有下载协程
+        download_tasks = [download_loop(i, client) for i, client in enumerate(connections.values())]
+        await asyncio.gather(*download_tasks, return_exceptions=True)
+
+        # 关闭所有连接
+        for client in connections.values():
+            try:
+                await client.close()
+            except Exception:
+                pass
+
+    finally:
+        lag_monitor_task.cancel()
+        try:
+            await lag_monitor_task
+        except asyncio.CancelledError:
+            pass
+
+
+# ==================== K线下载Worker ====================
 
 
 async def _download_single_kline_async(
@@ -2852,472 +3192,7 @@ async def _download_single_ipo_async(
         return None, 0, {}
 
 
-async def download_ipo_dates_simple(
-    tasks_list: list[tuple[str, int]],
-    num_coroutines: int = 100,
-    progress_callback=None,
-) -> tuple[dict, list, list]:
-    """单进程多协程IPO下载（简化版）
-
-    Args:
-        tasks_list: 任务列表 [(symbol, market), ...]
-        num_coroutines: 协程数量（默认100）
-        progress_callback: 进度回调函数 callback(current, total, status)
-
-    Returns:
-        (results, unlisted_data, failed_tasks)
-        - results: {symbol: ipo_date} 已上市品种
-        - unlisted_data: [{'symbol': str, 'finance_info': dict}, ...] 未上市品种
-        - failed_tasks: [(symbol, market), ...] 失败的任务
-    """
-    import asyncio
-    import logging
-    from ..load_balancer import get_random_servers
-
-    local_logger = logging.getLogger(__name__)
-
-    if not tasks_list:
-        return {}, [], []
-
-    local_logger.info(
-        "开始单进程多协程IPO下载: %s个品种, %s个协程", len(tasks_list), num_coroutines
-    )
-
-    # 1. 准备连接池
-    servers = get_random_servers(count=num_coroutines)
-    local_logger.info("获取到 %s 个服务器", len(servers))
-
-    # 2. 创建异步连接（并发连接以提速）
-    async def connect_single_server(server):
-        """并发连接单个服务器"""
-        server_ip = None
-        server_port = None
-        try:
-            # 🔧 修复：关闭心跳包，避免多协程并发时的socket竞态冲突
-            client = AsyncTdxHq_API(heartbeat=False, auto_retry=False, raise_exception=False)
-            # server 可能是元组 (ip, port) 或字典 {'ip': ..., 'port': ...}
-            if isinstance(server, tuple):
-                server_ip, server_port = server
-            elif isinstance(server, dict):
-                server_ip = server.get("ip", "")
-                server_port = server.get("port", 0)
-            else:
-                return None
-
-            await client.connect(server_ip, server_port, time_out=5)  # 缩短超时到5秒
-            return client
-        except Exception as e:
-            local_logger.debug(f"连接服务器 {server_ip}:{server_port} 失败: {e}")
-            return None
-
-    # 并发连接所有服务器
-    local_logger.info(f"开始并发连接 {len(servers)} 个服务器...")
-    connection_tasks = [connect_single_server(server) for server in servers]
-    connected_clients = await asyncio.gather(*connection_tasks, return_exceptions=True)
-
-    # 过滤成功的连接
-    clients: List[AsyncTdxHq_API] = []
-    for c in connected_clients:
-        if isinstance(c, AsyncTdxHq_API):
-            clients.append(c)
-
-    if not clients:
-        local_logger.error("无法连接任何服务器")
-        return {}, [], tasks_list
-
-    local_logger.info("成功连接 %s 个服务器", len(clients))
-
-    # 3. 结果收集
-    results = {}  # {symbol: ipo_date}
-    unlisted_data = []  # [{'symbol': str, 'finance_info': dict}, ...]
-    failed_tasks = []  # [(symbol, market), ...]
-    completed_count = 0
-    total_count = len(tasks_list)
-
-    # 4. 并发下载
-    async def download_single_task(task, client):
-        nonlocal completed_count
-        symbol, market = task
-
-        try:
-            ipo_date, industry, finance_info = await _download_single_ipo_async(
-                client, symbol, market
-            )
-
-            if ipo_date is not None:
-                # 已上市
-                results[symbol] = ipo_date
-                status = "success"
-            elif industry > 0:
-                # 检查是否是数据异常的品种（有industry但其他财务数据全为0）
-                # 判断关键字段：zongzichan, liudongzichan, zhuyingshouru
-                is_data_valid = (
-                    finance_info.get("zongzichan", 0) > 0
-                    or finance_info.get("liudongzichan", 0) > 0
-                    or finance_info.get("zhuyingshouru", 0) > 0
-                )
-
-                if is_data_valid:
-                    # 真正的未上市品种（有完整财务数据）
-                    unlisted_data.append(
-                        {"symbol": symbol, "market": market, "finance_info": finance_info}
-                    )
-                    status = "unlisted"
-                else:
-                    # 数据异常（只有industry但无其他财务数据），视为失败重试
-                    local_logger.debug(
-                        f"品种 {symbol} 财务数据异常，仅有industry={industry}，其他字段为0"
-                    )
-                    failed_tasks.append(task)
-                    status = "retry"
-            else:
-                # 服务器问题，稍后重试
-                failed_tasks.append(task)
-                status = "retry"
-
-            completed_count += 1
-
-            # 动态延时机制
-            remaining = total_count - completed_count
-            if remaining <= 30:
-                await asyncio.sleep(0.2)
-            elif remaining <= 100:
-                await asyncio.sleep(0.1)
-            elif remaining <= 200:
-                await asyncio.sleep(0.05)
-
-            # 进度回调
-            if progress_callback:
-                progress_callback(completed_count, total_count, status)
-
-            # 输出进度
-            if completed_count % 100 == 0:
-                print(
-                    f"进度: {completed_count}/{total_count} ({completed_count/total_count*100:.1f}%)"
-                )
-
-        except Exception as e:
-            local_logger.debug("下载 %s 失败: %s", symbol, e)
-            failed_tasks.append(task)
-            completed_count += 1
-
-    # 5. 使用任务队列模式（修复：避免多个协程共享同一客户端）
-    # 创建任务队列
-    task_queue = asyncio.Queue()
-    for task in tasks_list:
-        await task_queue.put(task)
-
-    # 为每个客户端创建一个专属worker
-    async def worker(worker_id: int, client):
-        """每个worker独占一个客户端，从队列中取任务处理"""
-        processed = 0
-        while True:
-            try:
-                # 从队列获取任务（0.1秒超时）
-                task = await asyncio.wait_for(task_queue.get(), timeout=0.1)
-                await download_single_task(task, client)
-                processed += 1
-                task_queue.task_done()
-            except asyncio.TimeoutError:
-                # 队列为空，检查是否真的完成了
-                if task_queue.empty():
-                    break
-                # 超时但队列未空，继续循环
-                continue
-            except Exception as e:
-                # 处理其他异常，记录后继续
-                local_logger.debug(f"Worker {worker_id} 处理任务异常: {e}")
-                continue
-
-        local_logger.debug(f"Worker {worker_id} 完成，处理了 {processed} 个任务")
-        return processed
-
-    # 启动所有worker（每个客户端一个worker）
-    workers = [worker(i, client) for i, client in enumerate(clients)]
-    await asyncio.gather(*workers, return_exceptions=True)
-
-    # 6. 重试失败的品种（最多5次，使用现有连接）
-    for retry_round in range(5):
-        if not failed_tasks:
-            break
-
-        local_logger.info("第%s次重试: %s个品种", retry_round + 1, len(failed_tasks))
-        print(f"⚠️ 重试 {len(failed_tasks)} 个失败品种 (第{retry_round + 1}/5次)")
-
-        # 不关闭连接，直接使用现有的clients进行重试
-        # 如果失败次数过多（>=3次）或连接数不足，则切换服务器
-        if retry_round >= 3 or len(clients) < 10:
-            local_logger.info("第%s次重试：切换服务器...", retry_round + 1)
-            print("   → 切换服务器以提升成功率")
-
-            # 关闭旧连接
-            for client in clients:
-                try:
-                    await client.close()
-                except Exception:
-                    pass
-
-            # 重新获取服务器并创建新连接
-            retry_servers = get_random_servers(count=min(num_coroutines, len(failed_tasks) * 2))
-            local_logger.info("重试获取到 %s 个新服务器", len(retry_servers))
-
-            clients = []
-            for i, server in enumerate(retry_servers):
-                server_ip = None
-                server_port = None
-                try:
-                    client = AsyncTdxHq_API(heartbeat=True, auto_retry=False, raise_exception=False)
-                    if isinstance(server, tuple):
-                        server_ip, server_port = server
-                    elif isinstance(server, dict):
-                        server_ip = server.get("ip", "")
-                        server_port = server.get("port", 0)
-                    else:
-                        continue
-
-                    await client.connect(server_ip, server_port, time_out=10)
-                    clients.append(client)
-                except Exception as e:
-                    local_logger.debug("重试连接服务器 %s:%s 失败: %s", server_ip, server_port, e)
-
-            if not clients:
-                local_logger.warning("第%s次重试：无法连接任何服务器，停止重试", retry_round + 1)
-                break
-
-        # 使用现有或新建的连接进行重试（使用队列模式）
-        retry_batch = failed_tasks[:]
-        failed_tasks.clear()
-
-        # 创建重试任务队列
-        retry_queue = asyncio.Queue()
-        for task in retry_batch:
-            await retry_queue.put(task)
-
-        # 为每个客户端创建重试worker
-        async def retry_worker(worker_id: int, client):
-            """重试worker：每个worker独占一个客户端"""
-            processed = 0
-            while True:
-                try:
-                    task = await asyncio.wait_for(retry_queue.get(), timeout=0.1)
-                    await download_single_task(task, client)
-                    processed += 1
-                    retry_queue.task_done()
-                except asyncio.TimeoutError:
-                    if retry_queue.empty():
-                        break
-                    continue
-                except Exception as e:
-                    local_logger.debug(f"重试Worker {worker_id} 异常: {e}")
-                    continue
-            return processed
-
-        # 启动所有重试worker
-        retry_workers = [retry_worker(i, client) for i, client in enumerate(clients)]
-        await asyncio.gather(*retry_workers, return_exceptions=True)
-
-    # 7. 关闭连接
-    for client in clients:
-        try:
-            await client.close()
-        except Exception:
-            pass
-
-    local_logger.info(
-        f"下载完成: 已上市{len(results)}个, 未上市{len(unlisted_data)}个, 失败{len(failed_tasks)}个"
-    )
-
-    return results, unlisted_data, failed_tasks
-
-
-async def download_worker_ipo_async(
-    worker_id,
-    task_queue,
-    result_queue,
-    progress_queue,
-    server_list,
-    _server_index,
-    timeout,
-    _retry_times,
-    stop_event,
-    pause_event,
-    connections_per_worker=999999,  # 🔧 移除连接上限，让系统展现真实瓶颈
-    unlisted_debug_queue=None,
-):
-    """IPO下载Worker（异步版本，复用K线下载架构）
-
-    Args:
-        worker_id: Worker进程ID
-        task_queue: 共享任务队列
-        result_queue: 结果队列
-        progress_queue: 进度队列
-        server_list: 共享的可用服务器列表
-        server_index: 共享的服务器索引（用于轮询）
-        timeout: 连接超时时间
-        retry_times: 重试次数（暂未使用）
-        stop_event: 停止事件
-        pause_event: 暂停事件
-        connections_per_worker: 每个worker的异步连接数（默认无上限）
-        unlisted_debug_queue: 用于收集unlisted品种的完整数据（调试用）
-    """
-    worker_logger = logging.getLogger(__name__)
-    worker_logger.info("Worker %s 启动 (IPO模式)", worker_id)
-
-    try:
-        # 从共享服务器列表中获取N个服务器（每个协程1个）
-        server_list_local = list(server_list)[:connections_per_worker]
-
-        if not server_list_local:
-            worker_logger.error("Worker %s 无可用服务器，退出", worker_id)
-            return
-
-        # 为每个服务器创建客户端连接
-        connections = {}
-        for server in server_list_local:
-            try:
-                client = await AsyncTdxHq_API.factory(server, timeout=timeout)
-                if client:
-                    connections[server] = client
-                    worker_logger.debug(
-                        "Worker %s 连接到服务器 %s:%s", worker_id, server[0], server[1]
-                    )
-            except Exception as e:
-                worker_logger.debug("Worker %s 连接失败 %s: %s", worker_id, server, e)
-
-        if not connections:
-            worker_logger.error("Worker %s 无可用连接，退出", worker_id)
-            return
-
-        # 为每个连接创建下载协程
-        async def download_loop(conn_id, client, _server):
-            processed = 0
-            failed = 0
-
-            while not stop_event.is_set():
-                # 等待暂停事件
-                while not pause_event.is_set():
-                    if stop_event.is_set():
-                        break
-                    await asyncio.sleep(0.1)
-
-                if stop_event.is_set():
-                    break
-
-                # 从队列获取任务
-                try:
-                    task = await asyncio.to_thread(task_queue.get, timeout=0.5)
-                except queue.Empty:
-                    worker_logger.debug("Worker %s 连接 %s 队列为空", worker_id, conn_id)
-                    break
-                except Exception as e:
-                    worker_logger.debug("Worker %s 连接 %s 获取任务失败: %s", worker_id, conn_id, e)
-                    break
-
-                symbol, market = task
-
-                try:
-                    # 异步下载IPO日期和行业代码
-                    ipo_date, industry, finance_info = await _download_single_ipo_async(
-                        client, symbol, market
-                    )
-
-                    if ipo_date is not None:
-                        # 已上市，成功
-                        await asyncio.to_thread(result_queue.put, (symbol, ipo_date, "listed"))
-                        await asyncio.to_thread(progress_queue.put, (symbol, "success"))
-                        processed += 1
-                    elif industry > 0:
-                        # 未上市品种（ipo_date=0 但 industry>0）
-                        await asyncio.to_thread(result_queue.put, (symbol, None, "unlisted"))
-                        await asyncio.to_thread(progress_queue.put, (symbol, "unlisted"))
-
-                        # 🔧 保存unlisted品种的完整finance_info数据用于调试
-                        if unlisted_debug_queue is not None:
-                            debug_data = {
-                                "symbol": symbol,
-                                "market": market,
-                                "finance_info": finance_info,
-                                "worker_id": worker_id,
-                                "conn_id": conn_id,
-                            }
-                            await asyncio.to_thread(unlisted_debug_queue.put, debug_data)
-
-                        processed += 1
-                    else:
-                        # 服务器问题（ipo_date=0 且 industry=0），重试
-                        await asyncio.to_thread(task_queue.put, (symbol, market))
-                        await asyncio.to_thread(progress_queue.put, (symbol, "retry"))
-                        failed += 1
-
-                except Exception as e:
-                    worker_logger.debug(
-                        f"Worker {worker_id} 连接 {conn_id} 下载 {symbol} IPO失败: {e}"
-                    )
-                    # 异常也视为服务器问题，重试
-                    await asyncio.to_thread(task_queue.put, (symbol, market))
-                    await asyncio.to_thread(progress_queue.put, (symbol, "retry"))
-                    failed += 1
-
-                # 🔧 动态延时机制：根据队列剩余量调整延时，降低服务器压力
-                try:
-                    queue_size = task_queue.qsize()
-                    if queue_size <= 30:
-                        # 剩余30个以下：延时0.2秒
-                        await asyncio.sleep(0.2)
-                    elif queue_size <= 100:
-                        # 剩余30-100个：延时0.1秒
-                        await asyncio.sleep(0.1)
-                    elif queue_size <= 200:
-                        # 剩余100-200个：延时0.05秒
-                        await asyncio.sleep(0.05)
-                    # 队列>200个：不延时，全速运行
-                except Exception:
-                    # 获取队列大小失败时，使用默认延时
-                    pass
-
-            worker_logger.info(
-                f"Worker {worker_id} 连接 {conn_id} 完成, 成功: {processed}, 失败: {failed}"
-            )
-            return processed, failed
-
-        # N个协程并发工作
-        tasks = []
-        for idx, server in enumerate(server_list_local):
-            if server in connections:
-                tasks.append(download_loop(idx, connections[server], server))
-
-        if not tasks:
-            worker_logger.warning("Worker %s 没有可用连接，退出", worker_id)
-            return
-
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        # 统计总数
-        total_processed = sum((r[0] for r in results if isinstance(r, tuple)), 0)
-        total_failed = sum((r[1] for r in results if isinstance(r, tuple)), 0)
-        worker_logger.info(
-            "Worker %s 总计完成, 成功: %s, 失败: %s", worker_id, total_processed, total_failed
-        )
-
-    finally:
-        # 关闭所有连接
-        for server, client in connections.items():
-            try:
-                if client and not client.closed:
-                    await client.close()
-                    worker_logger.debug(
-                        "Worker %s 连接 %s:%s 已关闭", worker_id, server[0], server[1]
-                    )
-            except Exception as e:
-                worker_logger.debug("Worker %s 关闭连接失败 %s: %s", worker_id, server, e)
-
-
-def _run_async_worker_ipo(*args):
-    """在进程中运行IPO异步worker的辅助函数"""
-    import warnings
-
-    warnings.filterwarnings("ignore", category=ResourceWarning, message=".*socket.*")
-    asyncio.run(download_worker_ipo_async(*args))
+# ==================== (旧download_ipo_dates_simple、download_worker_ipo_async已删除，使用统一多进程架构) ====================
 
 
 # ==================== (旧StockSymbolManager已删除，使用symbol_management.SymbolLoader替代) ====================
@@ -3330,7 +3205,8 @@ class MultiProcessStockFetcher:
     """多进程股票数据获取器（进程池+动态任务分配模式）"""
 
     def __init__(self, event_engine=None):
-        self.logger = logging.getLogger(__name__)
+        self.logger = logger
+        self.logger_alert = logger_alert
         self.event_engine = event_engine
 
         # 使用 tdx_asyncio 的智能IP池（延迟初始化）
@@ -3365,13 +3241,15 @@ class MultiProcessStockFetcher:
 
         # 事件发布器
         if event_engine:
-            from ..events import DownloadEventPublisher, EventPublisher
+            from ..events import DownloadEventPublisher, EventPublisher, AsyncioMetricsPublisher
 
             self.download_publisher = DownloadEventPublisher(event_engine)
             self.log_publisher = EventPublisher(event_engine)
+            self.asyncio_publisher = AsyncioMetricsPublisher(event_engine)
         else:
             self.download_publisher = None
             self.log_publisher = None
+            self.asyncio_publisher = None
 
         # 异步下载管理
         self._download_thread = None
@@ -3410,6 +3288,7 @@ class MultiProcessStockFetcher:
             self.manager = Manager()
             self.task_queue = self.manager.Queue()
             self.result_queue = self.manager.Queue()
+            self.metrics_queue = self.manager.Queue()  # 🆕 v3.6: 独立的监控指标队列
             self.progress_queue = self.manager.Queue()
             self.stop_event = self.manager.Event()
             self.pause_event = self.manager.Event()
@@ -3515,7 +3394,6 @@ class MultiProcessStockFetcher:
                 # 使用LoadBalancer计算自适应配置
                 from backend.infrastructure.data_module_vnpy.load_balancer import (
                     get_load_balancer,
-                    KlineDownloadTask,
                 )
 
                 task = KlineDownloadTask("kline_download", total_tasks)
@@ -3651,6 +3529,7 @@ class MultiProcessStockFetcher:
                         i,
                         self.task_queue,
                         self.result_queue,
+                        self.metrics_queue,  # 🆕 v3.6: 传递独立的监控指标队列
                         self.progress_queue,
                         server_list,
                         server_index,
@@ -3700,6 +3579,7 @@ class MultiProcessStockFetcher:
                         i,
                         self.task_queue,
                         self.result_queue,
+                        self.metrics_queue,  # 🆕 v3.6: 传递独立的监控指标队列
                         self.progress_queue,
                         regular_servers,  # 直接传递原始list
                         standby_servers,  # 直接传递原始list
@@ -3777,6 +3657,9 @@ class MultiProcessStockFetcher:
             f"{self.num_processes * self.async_connections_per_process}并发, 总任务数: {total_tasks}"
         )
 
+        # 🆕 v3.4: 预先导入LagMonitor（避免循环中重复导入）
+        from ..load_balancer import LagMonitor
+
         while completed < total_tasks:
             if self.stop_event and self.stop_event.is_set():
                 self.logger.info("检测到停止信号，退出监控")
@@ -3833,10 +3716,23 @@ class MultiProcessStockFetcher:
                     timeout_count = 0
                     self.logger.info("进程仍在运行，重置超时计数器，继续等待...")
 
+            # 🆕 v3.6: 处理监控指标（从独立的metrics_queue）
+            try:
+                if self.metrics_queue:
+                    msg = self.metrics_queue.get_nowait()
+                    LagMonitor.process_lag_message(msg, self.load_balancer, self.logger)
+            except queue.Empty:
+                pass
+            except Exception as e:
+                self.logger.debug(f"处理监控指标失败: {e}")
+
             # 收集结果（非阻塞）
             try:
                 if self.result_queue:
-                    key, data_dict = self.result_queue.get_nowait()
+                    msg = self.result_queue.get_nowait()
+
+                    # 普通结果消息
+                    key, data_dict = msg
                     if data_dict is not None:
                         df = pd.DataFrame(data_dict)
                         results[key] = df
@@ -3844,13 +3740,30 @@ class MultiProcessStockFetcher:
             except queue.Empty:
                 pass
 
-        # 最后收集剩余的结果
+        # 最后收集剩余的结果和监控指标
         self.logger.info("收集剩余结果...")
         remaining_results = 0
+
+        # 🆕 v3.6: 收集剩余的监控指标
+        while True:
+            try:
+                if self.metrics_queue:
+                    msg = self.metrics_queue.get_nowait()
+                    LagMonitor.process_lag_message(msg, self.load_balancer, self.logger)
+            except queue.Empty:
+                break
+            except Exception as e:
+                self.logger.debug(f"处理剩余监控指标失败: {e}")
+                break
+
+        # 收集剩余的数据结果
         while True:
             try:
                 if self.result_queue:
-                    key, data_dict = self.result_queue.get_nowait()
+                    msg = self.result_queue.get_nowait()
+
+                    # 普通结果消息
+                    key, data_dict = msg
                     if data_dict is not None:
                         df = pd.DataFrame(data_dict)
                         results[key] = df
@@ -3942,6 +3855,222 @@ class MultiProcessStockFetcher:
             self.logger.info("已发送恢复信号")
         else:
             self.logger.warning("恢复事件未初始化")
+
+    # ==================== IPO日期下载（统一多进程架构）====================
+
+    def download_ipo_dates_multiprocess(
+        self,
+        symbols_with_markets: List[Tuple[str, int]],
+        progress_callback=None,
+        use_adaptive: bool = True,
+    ) -> Dict[str, Any]:
+        """多进程IPO日期下载（统一架构版本）
+
+        Args:
+            symbols_with_markets: [(symbol, market), ...] 品种和市场代码列表
+            progress_callback: 进度回调函数 callback(symbol, status)
+            use_adaptive: 是否使用自适应配置（默认True）
+
+        Returns:
+            {
+                "success": bool,
+                "total": int,
+                "downloaded": int,
+                "succeeded": int,
+                "failed": int,
+                "data": {symbol: ipo_date},  # 已上市品种
+                "unlisted": [symbol, ...],    # 未上市品种
+                "error": str (if failed)
+            }
+        """
+        if not symbols_with_markets:
+            self.logger.error("品种列表为空")
+            return {
+                "success": False,
+                "total": 0,
+                "downloaded": 0,
+                "succeeded": 0,
+                "failed": 0,
+                "data": {},
+                "unlisted": [],
+                "error": "品种列表为空",
+            }
+
+        total_symbols = len(symbols_with_markets)
+        self.logger.info(f"开始多进程IPO下载: {total_symbols}个品种")
+
+        try:
+            # 1. 获取服务器列表（复用K线下载的服务器池）
+            try:
+                from ..load_balancer import server_pool_manager
+
+                available_servers = server_pool_manager.get_servers_shuffled()
+                self.logger.info(f"✅ 使用缓存的服务器池: {len(available_servers)}个可用服务器")
+            except RuntimeError as e:
+                error_msg = f"服务器池缓存不可用，无法下载IPO数据！原因：{e}"
+                self.logger.error(error_msg)
+                return {
+                    "success": False,
+                    "total": total_symbols,
+                    "downloaded": 0,
+                    "succeeded": 0,
+                    "failed": total_symbols,
+                    "data": {},
+                    "unlisted": [],
+                    "error": error_msg,
+                    "action_required": "test_servers",
+                }
+
+            # 2. 使用LoadBalancer计算自适应配置
+            if use_adaptive:
+                from ..load_balancer import get_load_balancer, IPODownloadTask
+
+                task = IPODownloadTask("ipo_download", total_symbols)
+                load_balancer = get_load_balancer()
+                lb_config = load_balancer.get_optimal_config(task)
+
+                self.num_processes = lb_config["num_processes"]
+                self.async_connections_per_process = lb_config["coroutines_per_process"]
+
+                total_concurrency = self.num_processes * self.async_connections_per_process
+
+                self.logger.info("=" * 60)
+                self.logger.info("【智能IPO下载】LoadBalancer自适应配置")
+                self.logger.info(f"  进程数: {self.num_processes}")
+                self.logger.info(f"  每进程协程数: {self.async_connections_per_process}")
+                self.logger.info(f"  总并发度: {total_concurrency}")
+                self.logger.info("=" * 60)
+            else:
+                # 手动模式：保守配置
+                self.num_processes = min(4, len(available_servers) // 10)
+                self.async_connections_per_process = 15
+                self.logger.info(
+                    f"手动模式：{self.num_processes}进程 × {self.async_connections_per_process}协程"
+                )
+
+            # 3. 初始化多进程对象
+            self._init_multiprocess_objects()
+
+            # 4. 准备任务队列
+            for symbol, market in symbols_with_markets:
+                self.task_queue.put(("ipo", symbol, market))  # 任务格式: (type, symbol, market)
+
+            # 5. 选取服务器子集
+            num_servers_needed = self.num_processes * self.async_connections_per_process
+            server_list = self.manager.list(available_servers[:num_servers_needed])
+
+            # 6. 启动worker进程池
+            self._start_ipo_worker_pool(server_list)
+
+            # 7. 监控进度并收集结果
+            results = self._monitor_ipo_progress(total_symbols, progress_callback)
+
+            # 8. 清理资源
+            self._cleanup_processes()
+
+            # 9. 统计结果
+            ipo_data = {}
+            unlisted_symbols = []
+            failed_count = 0
+
+            for symbol, result_data in results.items():
+                if result_data and result_data.get("status") == "listed":
+                    ipo_data[symbol] = result_data.get("ipo_date")
+                elif result_data and result_data.get("status") == "unlisted":
+                    unlisted_symbols.append(symbol)
+                else:
+                    failed_count += 1
+
+            success_count = len(ipo_data) + len(unlisted_symbols)
+
+            self.logger.info(
+                f"IPO下载完成: 已上市={len(ipo_data)}, 未上市={len(unlisted_symbols)}, 失败={failed_count}"
+            )
+
+            return {
+                "success": True,
+                "total": total_symbols,
+                "downloaded": total_symbols - failed_count,
+                "succeeded": success_count,
+                "failed": failed_count,
+                "data": ipo_data,
+                "unlisted": unlisted_symbols,
+            }
+
+        except Exception as e:
+            self.logger.error(f"多进程IPO下载异常: {e}", exc_info=True)
+            self._cleanup_processes()
+            return {
+                "success": False,
+                "total": total_symbols,
+                "downloaded": 0,
+                "succeeded": 0,
+                "failed": total_symbols,
+                "data": {},
+                "unlisted": [],
+                "error": str(e),
+            }
+
+    def _start_ipo_worker_pool(self, server_list):
+        """启动IPO下载worker进程池
+
+        Args:
+            server_list: Manager.list()共享的服务器列表
+        """
+        for i in range(self.num_processes):
+            try:
+                p = Process(
+                    target=_run_ipo_worker,
+                    args=(
+                        i,
+                        self.task_queue,
+                        self.result_queue,
+                        self.metrics_queue,
+                        self.progress_queue,
+                        server_list,
+                        self.timeout,
+                        self.stop_event,
+                        self.pause_event,
+                        self.async_connections_per_process,
+                    ),
+                )
+
+                p.start()
+                self.processes.append(p)
+                self.logger.debug(f"启动IPO下载进程 {i} (PID: {p.pid})")
+                time.sleep(0.1)
+
+            except Exception as e:
+                self.logger.error(f"启动IPO进程{i}失败: {e}")
+
+        self.logger.info(f"启动{len(self.processes)}个IPO下载工作进程")
+
+    def _monitor_ipo_progress(self, total_symbols: int, progress_callback) -> Dict:
+        """监控IPO下载进度并收集结果"""
+        results = {}
+        completed = 0
+
+        while completed < total_symbols:
+            try:
+                symbol, result_data = self.result_queue.get(timeout=1)
+                results[symbol] = result_data
+                completed += 1
+
+                if progress_callback:
+                    status = result_data.get("status", "unknown")
+                    progress_callback(symbol, status)
+
+                if completed % 100 == 0:
+                    self.logger.info(f"IPO下载进度: {completed}/{total_symbols}")
+
+            except queue.Empty:
+                # 检查进程是否还在运行
+                if not any(p.is_alive() for p in self.processes):
+                    self.logger.warning("所有进程已退出但任务未完成")
+                    break
+                continue
+
+        return results
 
     # ==================== 异步下载管理（从download_manager.py合并） ====================
 
@@ -4558,442 +4687,166 @@ def download_incremental_unified(
 
 def download_ipo_dates(
     symbols: List[str],
-    force_refresh: bool = False,
-    progress_callback: Optional[Callable] = None,
-    event_callback: Optional[Callable] = None,
-    _use_adaptive: bool = True,
-    _use_two_phase: bool = True,
+    progress_callback=None,
+    use_multiprocess: bool = True,
 ) -> Dict[str, Any]:
-    """批量下载IPO日期
+    """IPO日期下载入口（统一多进程架构版本）
 
     Args:
         symbols: 品种代码列表
-        force_refresh: 是否强制刷新（False=跳过已缓存）
-        progress_callback: 进度回调函数 callback(symbol, status)
-        event_callback: 事件回调函数 callback(event_type, status, count, message)
-        use_adaptive: 是否使用自适应配置
-        use_two_phase: 是否使用两段式下载（默认True，热备服务器优化）
+        progress_callback: 进度回调 callback(symbol, status)
+        use_multiprocess: 是否使用多进程（默认True，推荐）
 
     Returns:
         {
             "success": bool,
             "total": int,
-            "cached": int,        # 跳过的缓存数
-            "downloaded": int,    # 实际下载数
-            "succeeded": int,     # 成功获取IPO的数量
-            "failed": int,        # 失败数量
-            "data": {symbol: ipo_date, ...}
+            "cached": int,
+            "downloaded": int,
+            "succeeded": int,
+            "failed": int,
+            "data": {symbol: ipo_date},
+            "unlisted": [symbol, ...],
+            "error": str (可选)
         }
     """
-    from ..local_data.data_quality import IPODateCache
-    import time
-
     local_logger = logging.getLogger(__name__)
-    local_logger.info(f"开始IPO批量下载: {len(symbols)}个品种")
 
-    # 1. 增量过滤
+    if not symbols:
+        return {
+            "success": False,
+            "total": 0,
+            "cached": 0,
+            "downloaded": 0,
+            "succeeded": 0,
+            "failed": 0,
+            "data": {},
+            "unlisted": [],
+            "error": "品种列表为空",
+        }
+
+    # 1. 从缓存加载已有的IPO数据
+    from ..local_data.data_quality import IPODateCache
+
     ipo_cache = IPODateCache()
 
-    if not force_refresh:
-        uncached = []
-        for symbol in symbols:
-            _cached_date, is_cached = ipo_cache.get(symbol)
-            if not is_cached:
-                uncached.append(symbol)
+    cached_data = {}
+    symbols_to_download = []
 
-        local_logger.info(
-            f"增量模式: {len(symbols)}个品种 → 跳过{len(symbols)-len(uncached)}个已缓存 → 下载{len(uncached)}个"
-        )
-        symbols_to_download = uncached
-        cached_count = len(symbols) - len(uncached)
-    else:
-        symbols_to_download = symbols
-        cached_count = 0
+    for symbol in symbols:
+        cached_date = ipo_cache.get(symbol)
+        if cached_date is not None:
+            cached_data[symbol] = cached_date
+        else:
+            symbols_to_download.append(symbol)
+
+    cached_count = len(cached_data)
+    local_logger.info(f"IPO数据加载: 缓存命中={cached_count}, 需下载={len(symbols_to_download)}")
 
     if not symbols_to_download:
-        local_logger.info("所有品种均已缓存，无需下载")
         return {
             "success": True,
             "total": len(symbols),
             "cached": cached_count,
             "downloaded": 0,
-            "succeeded": 0,
+            "succeeded": cached_count,
             "failed": 0,
-            "data": {},
+            "data": cached_data,
+            "unlisted": [],
         }
 
-    # 2. 准备任务列表（从品种列表缓存获取市场代码）
-    # 🆕 从品种列表缓存中获取市场代码映射
-    local_logger.info("从品种列表缓存中加载市场代码...")
+    # 2. 加载市场代码映射
+    symbol_loader = SymbolLoader()
+    classified = symbol_loader.get_all_classified()
+
     symbol_market_map = {}
-    try:
-        # SymbolLoader已在本文件第2部分定义，无需导入
-        symbol_loader = SymbolLoader()
-        classified = symbol_loader.get_all_classified()
+    for _category, stocks in classified.items():
+        for stock in stocks:
+            if isinstance(stock, dict):
+                code = stock.get("code")
+                market = stock.get("market")
+                if code and market is not None:
+                    symbol_market_map[code] = market
 
-        # 构建 code -> market 映射
-        for _category, stocks in classified.items():
-            for stock in stocks:
-                if isinstance(stock, dict):
-                    code = stock.get("code")
-                    market = stock.get("market")
-                    if code and market is not None:
-                        symbol_market_map[code] = market
-
-        local_logger.info(f"✓ 成功加载 {len(symbol_market_map)} 个品种的市场代码")
-    except Exception as e:
-        local_logger.warning(f"加载品种市场代码失败，将使用代码前缀判断: {e}")
-
-    # 构建任务列表
-    tasks = []
-    fallback_count = 0  # 使用默认判断的数量
-
+    symbols_with_markets = []
     for symbol in symbols_to_download:
-        # 优先从缓存获取市场代码
-        if symbol in symbol_market_map:
-            market = symbol_market_map[symbol]
-        else:
-            # 兜底：使用代码前缀判断（兼容性）
-            if symbol.startswith("6"):
-                market = 1  # 上海
-            elif symbol.startswith("8") or symbol.startswith("4"):
-                market = 2  # 北交所
-            else:
-                market = 0  # 深圳
-            fallback_count += 1
+        market = symbol_market_map.get(symbol, 1 if symbol[0] == "6" else 0)
+        symbols_with_markets.append((symbol, market))
 
-        tasks.append((symbol, market))
-
-    if fallback_count > 0:
-        local_logger.info(f"⚠️ {fallback_count}个品种使用代码前缀判断市场")
-
-    task_count = len(tasks)
-
-    # 3. 使用简化的单进程多协程架构
-    print("✓ 使用单进程多协程架构（100个协程）")
-    local_logger.info("开始单进程多协程IPO下载")
-
-    start_time = time.time()
-
-    # 执行异步下载
-    import asyncio
-
-    def simple_progress_callback(_current, _total, status):
-        """简化的进度回调"""
-        if progress_callback:
-            # 模拟品种名称（实际可从任务列表获取）
-            progress_callback("", status)
-
-    results, unlisted_data, failed_tasks = asyncio.run(
-        download_ipo_dates_simple(
-            tasks, num_coroutines=100, progress_callback=simple_progress_callback
+    # 3. 使用多进程下载器
+    if use_multiprocess:
+        fetcher = MultiProcessStockFetcher()
+        result = fetcher.download_ipo_dates_multiprocess(
+            symbols_with_markets=symbols_with_markets,
+            progress_callback=progress_callback,
+            use_adaptive=True,
         )
-    )
-
-    # 4. 处理结果和调试数据
-    # 将unlisted_data转换为简单的symbol列表用于后续统计
-    unlisted_symbols = [item["symbol"] for item in unlisted_data]
-
-    # 保存调试数据到JSON文件
-    import json
-    from pathlib import Path
-
-    # 使用配置管理器获取正确的缓存目录
-    try:
-        from backend.infrastructure.data_module_vnpy.config import config_manager
-
-        cache_dir = config_manager.get_cache_dir()
-        debug_file_path = cache_dir / "unlisted_symbols_debug.json"
-    except Exception:
-        # 兜底方案：直接指定绝对路径
-        debug_file_path = (
-            Path(__file__).parent.parent.parent.parent.parent
-            / "data"
-            / "cache"
-            / "unlisted_symbols_debug.json"
-        )
-    debug_file_path.parent.mkdir(parents=True, exist_ok=True)
-
-    if unlisted_data:
-        with open(debug_file_path, "w", encoding="utf-8") as f:
-            json.dump(unlisted_data, f, ensure_ascii=False, indent=2, default=str)
-
-        local_logger.info(
-            f"✓ 已保存 {len(unlisted_data)} 个unlisted品种的调试数据到: {debug_file_path}"
-        )
-        print(f"✓ 已保存 {len(unlisted_data)} 个unlisted品种的调试数据到: {debug_file_path}")
-
-    # 🔧 V2优化：使用环境变量控制详细调试输出，避免正常使用时刷屏
-    import os
-
-    debug_unlisted = os.getenv("DEBUG_UNLISTED", "0") == "1"
-
-    if debug_unlisted:
-        # 输出详细分析（仅当DEBUG_UNLISTED=1时）
-        print("\n" + "=" * 70)
-        print("【Unlisted品种详细分析】")
-        print(f"  - 通过worker标记的unlisted品种数: {len(unlisted_data)}")
-        print(f"  - unlisted_symbols列表长度: {len(unlisted_symbols)}")
-
-        # 检查重复
-        unlisted_set = set(unlisted_symbols)
-        if len(unlisted_set) != len(unlisted_symbols):
-            print(f"  ⚠️ 发现重复！去重后: {len(unlisted_set)} 个")
-            from collections import Counter
-
-            duplicates = [item for item, count in Counter(unlisted_symbols).items() if count > 1]
-            print(f"  重复的品种: {duplicates}")
-
-        # 检查results和unlisted_symbols的交集
-        results_set = set(results.keys())
-        intersection = unlisted_set & results_set
     else:
-        # 简化输出：仅汇总信息
-        unlisted_set = set(unlisted_symbols)
-        results_set = set(results.keys())
-        intersection = unlisted_set & results_set
+        # 降级：单进程模式（保留简单版本用于调试）
+        local_logger.warning("使用单进程降级模式，性能受限")
+        result = {"success": False, "error": "单进程模式暂未实现，请使用多进程模式"}
+        return result
 
-    if intersection and debug_unlisted:
-        print(f"\n  🚨 发现关键问题：{len(intersection)}个品种同时在results和unlisted_symbols中！")
-        print("  这些品种被重复计数（既标记为已上市，又标记为未上市）：")
-        intersection_list = sorted(list(intersection))
-        for i in range(0, len(intersection_list), 10):
-            batch = intersection_list[i : i + 10]
-            print(f"    {', '.join(batch)}")
+    if not result.get("success"):
+        return result
 
-        # 分析这些重复品种
-        duplicate_bonds = [s for s in intersection_list if s.startswith(("11", "12", "13"))]
-        duplicate_stocks = [s for s in intersection_list if not s.startswith(("11", "12", "13"))]
-        print(f"\n  其中可转债{len(duplicate_bonds)}个, 股票{len(duplicate_stocks)}个")
+    # 4. 合并缓存数据和新下载数据
+    all_data = {**cached_data, **result["data"]}
 
-    # 🔧 V2优化：详细列表仅在DEBUG模式输出
-    if debug_unlisted:
-        # 输出完整列表
-        if unlisted_symbols:
-            print(f"\n  完整unlisted品种列表（共{len(unlisted_symbols)}个）")
-            for i in range(0, len(unlisted_symbols), 10):
-                batch = unlisted_symbols[i : i + 10]
-                print(f"    {', '.join(batch)}")
+    # 5. 更新缓存（注意：IPODateCache从品种列表缓存加载，无需单独保存）
+    for symbol, ipo_date in result["data"].items():
+        ipo_cache.set(symbol, ipo_date)
 
-        # 对比debug数据
-        if unlisted_data:
-            debug_symbols = [item["symbol"] for item in unlisted_data]
-            print(f"\n  Debug队列中的品种（共{len(debug_symbols)}个）")
-            for i in range(0, len(debug_symbols), 10):
-                batch = debug_symbols[i : i + 10]
-                print(f"    {', '.join(batch)}")
-
-            # 找出差异（这在单进程架构中不应该存在）
-            missing_from_debug = set(unlisted_symbols) - set(debug_symbols)
-            if missing_from_debug:
-                print(
-                    f"\n  ⚠️ 在unlisted_symbols中但不在debug数据中的品种（{len(missing_from_debug)}个）"
-                )
-                missing_list = sorted(list(missing_from_debug))
-                for i in range(0, len(missing_list), 10):
-                    batch = missing_list[i : i + 10]
-                    print(f"    {', '.join(batch)}")
-
-        print("=" * 70 + "\n")
-    else:
-        # 简化输出：仅关键信息
-        local_logger.info(
-            "Unlisted品种: %d个（详细信息已保存，如需查看设置DEBUG_UNLISTED=1）",
-            len(unlisted_symbols),
-        )
-
-    total_time = time.time() - start_time
-    local_logger.info(f"IPO下载完成，总耗时: {total_time:.2f}秒")
-
-    # 5. 统计结果
-    succeeded = len(results)  # 已上市品种数
-    unlisted_count = len(unlisted_symbols)  # 未上市品种数
-    failed = len(failed_tasks)  # 失败数
-    initial_task_count = task_count
-    total_retry_count = 0  # 新架构中重试次数由函数内部管理
-
-    # 收集失败品种
-    failed_symbols = [task[0] for task in failed_tasks]
-
-    # 6. 统计结果（跳过旧的多进程监控代码）
-    # 以下代码直接使用简化版函数的返回结果
-
-    # 7. 输出三个集合的详细统计
-    print("\n" + "=" * 70)
-    print("【三个集合详细统计】")
-    print(f"  初始任务总数: {initial_task_count}")
-    print(f"  已上市品种数 (results): {succeeded}")
-    print(f"  未上市品种数 (unlisted_symbols): {unlisted_count}")
-    print(f"  失败品种数 (计算得出): {failed}")
-    print(
-        f"  总和验证: {succeeded} + {unlisted_count} + {failed} = {succeeded + unlisted_count + failed}"
-    )
-    if succeeded + unlisted_count + failed != initial_task_count:
-        print(f"  ⚠️ 总和不匹配！差异: {initial_task_count - (succeeded + unlisted_count + failed)}")
-
-    # 真实去重统计
-    results_set = set(results.keys())
-    unlisted_set = set(unlisted_symbols)
-    intersection = results_set & unlisted_set
-    unique_succeeded = len(results_set - intersection)
-    unique_unlisted = len(unlisted_set - intersection)
-    unique_total = unique_succeeded + unique_unlisted + failed
-
-    print("\n  【去重后的真实统计】")
-    print(f"  去重后已上市品种: {unique_succeeded} (原{succeeded}, 去除{len(intersection)}个重复)")
-    print(
-        f"  去重后未上市品种: {unique_unlisted} (原{unlisted_count}, 去除{len(intersection)}个重复)"
-    )
-    print(f"  失败品种: {failed}")
-    print(f"  去重后总计: {unique_succeeded} + {unique_unlisted} + {failed} = {unique_total}")
-
-    if unique_total == initial_task_count:
-        print("  ✓ 去重后总和正确！")
-    else:
-        print(f"  ⚠️ 去重后总和仍不匹配！差异: {initial_task_count - unique_total}")
-
-    print("=" * 70 + "\n")
-
-    # 8. 更新品种列表缓存（合并IPO数据并删除未上市品种）
-    if results or unlisted_symbols:
-        local_logger.info("=" * 60)
-        local_logger.info("【更新品种列表缓存】")
-
-        # 去重：只删除真正的未上市品种（不在results中的）
-        results_set = set(results.keys())
-        unlisted_set = set(unlisted_symbols)
-        true_unlisted = list(unlisted_set - results_set)  # 真正的未上市品种
-
-        local_logger.info(f"  - 已上市品种: {succeeded} 个（将写入IPO日期）")
-        local_logger.info(f"  - 原未上市品种数: {unlisted_count} 个")
-        if len(true_unlisted) != unlisted_count:
-            local_logger.warning(
-                f"  - 发现重复标记: {unlisted_count - len(true_unlisted)} 个品种同时被标记为已上市和未上市"
-            )
-            local_logger.info(f"  - 真正未上市品种: {len(true_unlisted)} 个（将从列表中删除）")
-            print(
-                f"\n   🔧 去重修正：实际删除 {len(true_unlisted)} 个未上市品种（而非原来的 {unlisted_count} 个）"
-            )
-        else:
-            local_logger.info(f"  - 未上市品种: {unlisted_count} 个（将从列表中删除）")
-
+    # 6. 处理未上市品种（从品种列表中移除）
+    unlisted_symbols = result.get("unlisted", [])
+    if unlisted_symbols:
+        local_logger.info(f"发现 {len(unlisted_symbols)} 个未上市品种")
         try:
-            # SymbolLoader已在本文件第2部分定义，无需导入
-            symbol_loader = SymbolLoader()
-            success = symbol_loader.update_ipo_dates_and_remove_unlisted(results, true_unlisted)
-            if success:
-                local_logger.info("✓ 品种列表缓存已更新（包含IPO日期，已删除未上市品种）")
-            else:
-                local_logger.warning("⚠️ 品种列表缓存更新失败")
+            symbol_loader.update_ipo_dates_and_remove_unlisted(result["data"], unlisted_symbols)
+            local_logger.info("✓ 品种列表缓存已更新（包含IPO日期，已删除未上市品种）")
         except Exception as e:
             local_logger.error(f"更新品种列表缓存时出错: {e}", exc_info=True)
-        local_logger.info("=" * 60)
-
-    # 9. 输出最终统计
-    local_logger.info("=" * 60)
-    local_logger.info("IPO批量下载统计:")
-    local_logger.info(f"  总品种数: {len(symbols)}")
-    local_logger.info(f"  跳过缓存: {cached_count}")
-    local_logger.info(f"  实际下载: {task_count}")
-    local_logger.info(f"  已上市品种: {succeeded}")
-    local_logger.info(f"  未上市品种: {unlisted_count}")
-    local_logger.info(f"  失败/无数据: {failed}")
-    local_logger.info(f"  总重试次数: {total_retry_count}")
-    if task_count > 0:
-        local_logger.info(f"  成功率: {(succeeded + unlisted_count)/task_count*100:.1f}%")
-        if total_retry_count > 0:
-            local_logger.info(f"  平均重试: {total_retry_count/task_count:.2f}次/品种")
-
-    # 输出失败品种详情（前10个）
-    if failed_symbols:
-        local_logger.warning("  失败品种示例（前10个）: %s", ", ".join(failed_symbols[:10]))
-        if len(failed_symbols) > 10:
-            local_logger.warning("    ... 还有%d个失败品种", len(failed_symbols) - 10)
-
-    local_logger.info("=" * 60)
-
-    # 10. 添加terminal输出
-    import sys
-
-    print("\n   IPO下载完成：")
-    print(f"   - 总品种数: {len(symbols)}")
-    print(f"   - 跳过缓存: {cached_count}")
-    print(f"   - 实际下载: {task_count}")
-    print(f"   - 已上市品种: {succeeded}")
-    print(f"   - 未上市品种: {unlisted_count}")
-
-    # 如果存在重复，显示去重后的真实数据
-    if intersection:
-        print(f"   ⚠️ 发现{len(intersection)}个品种被重复计数")
-        print(f"   - 去重后已上市: {unique_succeeded}")
-        print(f"   - 去重后未上市: {unique_unlisted}")
-
-    print(f"   - 失败/无数据: {failed}")
-    print(f"   - 总重试次数: {total_retry_count}")
-    if total_retry_count > 0 and task_count > 0:
-        print(f"   - 平均重试: {total_retry_count/task_count:.2f}次/品种")
-    if task_count > 0:
-        print(f"   - 成功率: {(succeeded + unlisted_count)/task_count*100:.1f}%")
-
-    # 🔧 V2优化：失败品种列表汇总输出，详细列表记录到logger
-    if failed_symbols:
-        print(f"   - 失败品种: {len(failed_symbols)}个（前5个）: {', '.join(failed_symbols[:5])}")
-        # 完整列表记录到logger（DEBUG级别可查看）
-        local_logger.debug(
-            "完整失败品种列表（%d个）: %s", len(failed_symbols), ", ".join(failed_symbols)
-        )
-
-        # 将完整失败品种列表保存到文件（用于分析）
-        try:
-            from pathlib import Path
-            from backend.infrastructure.data_module_vnpy.config import config_manager
-
-            cache_dir = config_manager.get_cache_dir()
-            failed_file = cache_dir / "ipo_failed_symbols.json"
-
-            import json
-
-            with open(failed_file, "w", encoding="utf-8") as f:
-                json.dump(
-                    {
-                        "timestamp": str(datetime.now()),
-                        "total_failed": len(failed_symbols),
-                        "failed_symbols": failed_symbols,
-                    },
-                    f,
-                    ensure_ascii=False,
-                    indent=2,
-                )
-
-            local_logger.info(f"✓ 失败品种列表已保存到: {failed_file}")
-        except Exception as e:
-            local_logger.warning(f"保存失败品种列表失败: {e}")
-
-    sys.stdout.flush()
-
-    # 11. 推送事件
-    if event_callback:
-        # 使用去重后的真实数据
-        true_succeeded = len(results)  # results本身是字典，已去重
-        true_unlisted_list = list(set(unlisted_symbols) - set(results.keys()))
-        event_callback(
-            "ipo_download",
-            "success",
-            true_succeeded + len(true_unlisted_list),
-            f"成功处理{true_succeeded + len(true_unlisted_list)}个品种（已上市{true_succeeded}个，未上市{len(true_unlisted_list)}个）",
-        )
 
     return {
         "success": True,
         "total": len(symbols),
         "cached": cached_count,
-        "downloaded": task_count,
-        "succeeded": succeeded,
-        "unlisted": unlisted_symbols,  # 保持原始数据供调试
-        "failed": failed,
-        "data": results,
-        "duplicate_count": (len(intersection) if "intersection" in locals() else 0),  # 添加重复计数
-        "true_unlisted": (
-            true_unlisted if "true_unlisted" in locals() else unlisted_symbols
-        ),  # 真正的未上市品种
+        "downloaded": result["downloaded"],
+        "succeeded": len(all_data) + len(unlisted_symbols),
+        "failed": result["failed"],
+        "data": all_data,
+        "unlisted": unlisted_symbols,
     }
+
+
+# ==================== 加载市场映射辅助函数 ====================
+
+
+def load_market_mapping() -> Dict[str, int]:
+    """加载品种到市场代码的映射
+
+    Returns:
+        {symbol: market}字典，market: 0=深圳, 1=上海, 2=北交所
+    """
+    symbol_loader = SymbolLoader()
+    classified = symbol_loader.get_all_classified()
+
+    mapping = {}
+    for _category, stocks in classified.items():
+        for stock in stocks:
+            if isinstance(stock, dict):
+                code = stock.get("code")
+                market = stock.get("market")
+                if code and market is not None:
+                    mapping[code] = market
+
+    return mapping
+
+
+# ==================== 已删除的函数 ====================
+# download_ipo_dates_simple() - 已删除（使用download_ipo_dates_multiprocess替代）
+# download_worker_ipo_async() - 已删除（使用_ipo_worker_async替代）
+# _run_async_worker_ipo() - 已删除（使用_run_ipo_worker替代）
+
+
+# ==================== 文件结尾 ====================

@@ -91,6 +91,7 @@ from .load_balancer import (
     TaskMetrics,
     BaseTask,
     NetworkTask,
+    IPODownloadTask,
     LocalProcessingTask,
     # ========== 第2部分：策略配置 ==========
     ModelConfig,
@@ -101,6 +102,7 @@ from .load_balancer import (
     ExecutionPolicy,
     DynamicConfigCalculator,
     # ========== 第3部分：监控评估 ==========
+    LagMonitor,
     SystemMetricsMonitor,
     ResourcePressure,
     ResourceMonitor,
@@ -173,6 +175,9 @@ from .load_balancer import (
     IntelligentAdaptiveTuner,
 )
 
+# ========== v3.6新增：动态进程池管理器 ==========
+from .dynamic_process_pool import DynamicProcessPool
+
 __all__ = [
     # ========== 第1部分：任务定义 ==========
     "TaskType",
@@ -180,6 +185,7 @@ __all__ = [
     "TaskMetrics",
     "BaseTask",
     "NetworkTask",
+    "IPODownloadTask",
     "LocalProcessingTask",
     # ========== 第2部分：策略配置 ==========
     "ModelConfig",
@@ -190,6 +196,7 @@ __all__ = [
     "ExecutionPolicy",
     "DynamicConfigCalculator",
     # ========== 第3部分：监控评估 ==========
+    "LagMonitor",
     "SystemMetricsMonitor",
     "ResourcePressure",
     "ResourceMonitor",
@@ -216,6 +223,7 @@ __all__ = [
     "EnhancedStreamProcessor",
     "get_process_pool",
     "get_adaptive_batch_calculator",
+    "DynamicProcessPool",
     # ========== 第5部分：队列系统 ==========
     "TaskPriority",
     "TaskStatus",

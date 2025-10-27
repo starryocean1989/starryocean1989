@@ -8,6 +8,7 @@
 - 底部：回测面板、终端、调试控制台（可折叠）
 """
 
+import logging
 import os
 import re
 import shutil
@@ -15,6 +16,9 @@ import sys
 from io import StringIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
+
+# UI层专用logger
+logger_user = logging.getLogger("ui.user_feedback")
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QFont, QKeySequence, QShortcut, QTextCursor
@@ -419,6 +423,10 @@ class EditorTabWidget(QTabWidget, LoggerMixin):
             self.file_saved.emit(file_path)
 
             self.logger.info(f"成功保存文件: {file_path}")
+
+            # 记录用户保存策略操作
+            logger_user.info("用户保存策略文件: 文件=%s", Path(file_path).name)
+
             return True
 
         except Exception as e:
@@ -2673,6 +2681,10 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         if not strategy_name or not start_date or not end_date:
             self.show_warning("请填写完整的回测参数")
             return
+
+        # 记录用户回测操作
+        logger_user.info("用户启动策略回测: 策略=%s, 开始日期=%s, 结束日期=%s",
+                         strategy_name, start_date, end_date)
 
         self.show_info(f"开始运行回测: {strategy_name}")
 

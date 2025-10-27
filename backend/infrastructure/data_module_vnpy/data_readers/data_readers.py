@@ -18,16 +18,16 @@ API兼容性：100%向后兼容，所有导入路径保持有效
 """
 
 import asyncio
-import concurrent.futures
+
 import logging
-import os
+
 import struct
 import time
 from abc import ABC, abstractmethod
 from collections import Counter, deque
 from dataclasses import dataclass
 import multiprocessing
-from multiprocessing import Process, Event
+from multiprocessing import Event
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, cast
 import queue
@@ -662,13 +662,13 @@ class TdxBinaryReader(BaseReader):
         try:
             # 判断是否为北证市场，使用不同的解码器
             if market == "bj":
-                # 使用自定义北证解码器（放在线程池避免阻塞事件循环）
+                # 使用自定义北证解码器（直接同步调用，worker进程不阻塞主循环）
                 if data_type == "day":
-                    df = await asyncio.to_thread(self.bj_decoder.read_day_file, data_file)
+                    df = self.bj_decoder.read_day_file(data_file)
                 elif data_type == "5min":
-                    df = await asyncio.to_thread(self.bj_decoder.read_5min_file, data_file)
+                    df = self.bj_decoder.read_5min_file(data_file)
                 elif data_type == "1min":
-                    df = await asyncio.to_thread(self.bj_decoder.read_1min_file, data_file)
+                    df = self.bj_decoder.read_1min_file(data_file)
                 else:
                     raise ValueError(f"不支持的数据类型: {data_type}")
 
@@ -704,8 +704,11 @@ class TdxBinaryReader(BaseReader):
         return self._standardize_impl(raw_data)
 
     async def standardize_async(self, raw_data: Any) -> pd.DataFrame:
-        """异步标准化，避免阻塞事件循环"""
-        return await asyncio.to_thread(self._standardize_impl, raw_data)
+        """异步标准化，避免阻塞事件循环
+
+        v3.3: 改为直接调用，worker进程中不需要线程池
+        """
+        return self._standardize_impl(raw_data)
 
     def _standardize_impl(self, raw_data: Any) -> pd.DataFrame:
         if raw_data is None or (isinstance(raw_data, pd.DataFrame) and raw_data.empty):
@@ -896,8 +899,11 @@ class TdxBinaryReader(BaseReader):
     async def save_async(
         self, dataframe: pd.DataFrame, target_path: Optional[Path] = None, merge: bool = True
     ) -> bool:
-        """异步保存包装，避免阻塞事件循环"""
-        return await asyncio.to_thread(self.save, dataframe, target_path, merge)
+        """异步保存包装，避免阻塞事件循环
+
+        v3.3: 改为直接调用，worker进程中不需要线程池
+        """
+        return self.save(dataframe, target_path, merge)
 
     async def read_batch(
         self,
@@ -1000,16 +1006,21 @@ class AdjustableAsyncSemaphore:
 
 def _tdx_worker_process(
     worker_id: int,
-    symbols: List[str],
+    task_queue,  # 🆕 v3.6: 改为从共享任务队列拉取任务
     data_type: str,
     market: str,
     tdx_dir_str: str,
     result_queue,
+    metrics_queue,  # 🆕 v3.5: 独立的监控指标队列
     stop_event,
     config_queue=None,
     initial_coroutines: Optional[int] = None,
 ):
-    """Worker进程入口点（模块级函数，可以被pickle）"""
+    """Worker进程入口点（模块级函数，可以被pickle）
+
+    v3.5改进：分离数据队列和监控队列，防止队列阻塞
+    v3.6改进：从共享task_queue拉取任务，支持动态进程管理
+    """
     import sys
     from pathlib import Path
     import asyncio
@@ -1024,10 +1035,11 @@ def _tdx_worker_process(
         _tdx_worker_async(
             worker_id,
             worker_reader,
-            symbols,
+            task_queue,  # 🆕 v3.6: 传递共享任务队列
             data_type,
             market,
             result_queue,
+            metrics_queue,  # 🆕 传递独立的监控队列
             stop_event,
             config_queue=config_queue,
             initial_coroutines=initial_coroutines,
@@ -1038,48 +1050,67 @@ def _tdx_worker_process(
 async def _tdx_worker_async(
     worker_id: int,
     reader,
-    symbols: List[str],
+    task_queue,  # 🆕 v3.6: 改为从共享任务队列拉取任务
     data_type: str,
     market: str,
     result_queue,
+    metrics_queue,  # 🆕 v3.5: 独立的监控指标队列
     stop_event,
     config_queue=None,
     initial_coroutines: Optional[int] = None,
 ):
-    """Worker的异步处理逻辑（模块级函数）"""
+    """Worker的异步处理逻辑（模块级函数）
+
+    v3.5改进：
+    - 使用独立的metrics_queue传递监控指标
+    - 数据结果使用非阻塞put+重试机制
+    - 彻底防止队列阻塞导致的死锁
+
+    v3.6改进：
+    - 从共享task_queue循环拉取任务
+    - 支持运行时动态增减进程
+    """
     import logging
+    import time
+    import queue
 
     logger = logging.getLogger(__name__)
 
-    logger.info("[Worker-%d] 启动，处理%d个品种", worker_id, len(symbols))
+    logger.info("[Worker-%d] 启动，从共享任务队列拉取任务", worker_id)
 
-    throttling_enabled = config_queue is not None and initial_coroutines is not None
-    semaphore: Optional[AdjustableAsyncSemaphore]
-    if throttling_enabled:
-        semaphore = AdjustableAsyncSemaphore(initial_coroutines, logger=logger)
-        current_coroutines: Optional[int] = initial_coroutines
-    else:
-        semaphore = None
-        current_coroutines = None
-        logger.info("[Worker-%d] 协程限流已禁用，按符号全并发处理", worker_id)
+    # 🔧 v3.6: 从共享任务队列循环拉取任务
+    logger.info("[Worker-%d] 启动全并发模式，从共享队列拉取任务", worker_id)
 
-    loop = asyncio.get_running_loop()
-    cpu_count = os.cpu_count() or 4
-    if throttling_enabled:
-        base_limit = max(initial_coroutines or cpu_count, cpu_count)
-    else:
-        base_limit = max(len(symbols), cpu_count)
-    executor_capacity = min(max(base_limit, cpu_count), 2048)
-    thread_executors: List[concurrent.futures.ThreadPoolExecutor] = []
-    thread_executor = concurrent.futures.ThreadPoolExecutor(max_workers=executor_capacity)
-    thread_executors.append(thread_executor)
-    loop.set_default_executor(thread_executor)
-    logger.info(
-        "[Worker-%d] 配置线程池: max_workers=%d (throttling=%s)",
-        worker_id,
-        executor_capacity,
-        throttling_enabled,
+    # 🆕 v3.5: 使用独立的metrics_queue启动lag监控
+    from ..load_balancer import LagMonitor
+
+    lag_monitor_task = asyncio.create_task(
+        LagMonitor.monitor_and_report(
+            metrics_queue=metrics_queue,  # 🆕 使用独立的监控队列
+            worker_id=worker_id,
+            stop_event=stop_event,
+            interval_seconds=0.3,
+        )
     )
+    logger.info(f"[Worker-{worker_id}] ✅ 已启动lag监控协程（使用独立metrics_queue）")
+
+    # 🆕 v3.6: 跟踪已处理任务数
+    processed_count = 0
+
+    # 🆕 v3.5: 非阻塞put辅助函数（防止队列满时阻塞）
+    async def _safe_put_result(msg: tuple, max_retries: int = 5):
+        """非阻塞put+重试，防止队列满时阻塞worker进程"""
+        for attempt in range(max_retries):
+            try:
+                result_queue.put_nowait(msg)
+                return True
+            except Exception:
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(0.02)  # 20ms后重试
+                else:
+                    logger.warning(f"[Worker-{worker_id}] 队列满，丢弃结果: {msg[0]}")
+                    return False
+        return False
 
     async def _execute_symbol(symbol: str):
         if stop_event.is_set():
@@ -1096,7 +1127,10 @@ async def _tdx_worker_async(
 
             if raw_df.empty:
                 stage_metrics["reason"] = "empty_raw"
-                result_queue.put((symbol, False, stage_metrics, time.perf_counter() - start_time))
+                # 🆕 v3.5: 使用非阻塞put+重试
+                await _safe_put_result(
+                    (symbol, False, stage_metrics, time.perf_counter() - start_time)
+                )
                 return
 
             # 2. 标准化数据（添加symbol和interval列）
@@ -1107,7 +1141,10 @@ async def _tdx_worker_async(
 
             if standardized_df.empty:
                 stage_metrics["reason"] = "standardize_empty"
-                result_queue.put((symbol, False, stage_metrics, time.perf_counter() - start_time))
+                # 🆕 v3.5: 使用非阻塞put+重试
+                await _safe_put_result(
+                    (symbol, False, stage_metrics, time.perf_counter() - start_time)
+                )
                 return
 
             # 3. 保存标准化数据（异步包装避免阻塞事件循环）
@@ -1121,90 +1158,59 @@ async def _tdx_worker_async(
             stage_metrics["save_details"] = reader.get_last_save_metrics()
 
             if save_result:
-                result_queue.put((symbol, True, stage_metrics, time.perf_counter() - start_time))
+                # 🆕 v3.5: 使用非阻塞put+重试
+                await _safe_put_result(
+                    (symbol, True, stage_metrics, time.perf_counter() - start_time)
+                )
             else:
                 stage_metrics["reason"] = "save_failed"
-                result_queue.put((symbol, False, stage_metrics, time.perf_counter() - start_time))
+                # 🆕 v3.5: 使用非阻塞put+重试
+                await _safe_put_result(
+                    (symbol, False, stage_metrics, time.perf_counter() - start_time)
+                )
 
         except Exception as e:
             stage_metrics["reason"] = "exception"
             stage_metrics["error"] = str(e)
-            result_queue.put((symbol, False, stage_metrics, time.perf_counter() - start_time))
+            # 🆕 v3.5: 使用非阻塞put+重试
+            await _safe_put_result((symbol, False, stage_metrics, time.perf_counter() - start_time))
 
-    async def process_symbol(symbol: str):
-        if semaphore is not None:
-            async with semaphore:
-                await _execute_symbol(symbol)
-        else:
+    # 🆕 v3.6: 从共享任务队列循环拉取任务
+    empty_count = 0  # 连续空队列计数
+    max_empty_before_exit = 3  # 连续3次空队列后退出
+
+    logger.info(f"[Worker-{worker_id}] 开始从共享队列拉取任务...")
+
+    while not stop_event.is_set():
+        try:
+            # 从队列拉取任务（超时1秒）
+            symbol = task_queue.get(timeout=1.0)
+            empty_count = 0  # 重置空队列计数
+
+            # 执行任务
             await _execute_symbol(symbol)
+            processed_count += 1
 
-    # 创建所有任务
-    tasks = [asyncio.create_task(process_symbol(symbol)) for symbol in symbols]
+            # 每处理100个任务输出一次进度
+            if processed_count % 100 == 0:
+                logger.info(f"[Worker-{worker_id}] 已处理 {processed_count} 个任务")
 
-    # 定期检查配置队列，动态调整
-    monitor_task: Optional[asyncio.Task]
+        except queue.Empty:
+            # 队列为空，等待新任务
+            empty_count += 1
+            if empty_count >= max_empty_before_exit:
+                # 连续多次空队列，可能没有更多任务了
+                logger.info(f"[Worker-{worker_id}] 队列连续{empty_count}次为空，准备退出")
+                break
+            await asyncio.sleep(0.1)  # 短暂等待
+        except Exception as e:
+            logger.error(f"[Worker-{worker_id}] 处理任务时发生错误: {e}")
+            await asyncio.sleep(0.1)
 
-    if throttling_enabled:
-        async def config_monitor():
-            nonlocal current_coroutines, executor_capacity, thread_executor
-            while not stop_event.is_set():
-                try:
-                    new_coroutines = config_queue.get_nowait()
-                    if semaphore is None:
-                        current_coroutines = new_coroutines
-                        continue
-                    if new_coroutines != current_coroutines:
-                        old = current_coroutines
-                        _, effective_limit, in_use = await semaphore.set_limit(new_coroutines)
-                        current_coroutines = effective_limit
-                        backlog = (
-                            max(0, in_use - effective_limit)
-                            if effective_limit is not None
-                            else 0
-                        )
-                        logger.info(
-                            "[Worker-%d] 📊 协程调整: %s → %s (in_use=%d, backlog=%d)",
-                            worker_id,
-                            old,
-                            effective_limit,
-                            in_use,
-                            backlog,
-                        )
-                    if (
-                        semaphore is not None
-                        and effective_limit is not None
-                        and effective_limit > executor_capacity
-                    ):
-                        new_capacity = min(max(effective_limit, cpu_count), 2048)
-                        if new_capacity > executor_capacity:
-                            logger.info(
-                                "[Worker-%d] 扩容线程池: %d → %d",
-                                worker_id,
-                                executor_capacity,
-                                new_capacity,
-                            )
-                            new_executor = concurrent.futures.ThreadPoolExecutor(
-                                max_workers=new_capacity
-                            )
-                            thread_executors.append(new_executor)
-                            loop.set_default_executor(new_executor)
-                            executor_capacity = new_capacity
-                except queue.Empty:
-                    pass
-                await asyncio.sleep(0.5)
+    # 停止lag监控（使用LagMonitor工具）
+    await LagMonitor.cancel_monitor(lag_monitor_task)
 
-        monitor_task = asyncio.create_task(config_monitor())
-    else:
-        monitor_task = None
-
-    # 等待所有任务完成
-    await asyncio.gather(*tasks, return_exceptions=True)
-    if monitor_task is not None:
-        monitor_task.cancel()
-
-    logger.info("[Worker-%d] 完成", worker_id)
-    for executor in thread_executors:
-        executor.shutdown(wait=True)
+    logger.info(f"[Worker-{worker_id}] 完成，共处理 {processed_count} 个任务")
 
 
 # ==================== 数据类 ====================
@@ -1276,6 +1282,11 @@ class TdxDynamicExecutor:
 
         self.load_balancer = get_load_balancer()
 
+        # 协程性能监控发布器（event_engine需要在使用时注入）
+        from ..events import AsyncioMetricsPublisher
+
+        self.asyncio_publisher = AsyncioMetricsPublisher(event_engine=None)
+
     async def execute_batch(
         self,
         symbols: List[str],
@@ -1303,9 +1314,7 @@ class TdxDynamicExecutor:
         self.logger.info("=" * 80)
         self.logger.info("🚀 TdxDynamicExecutor 开始执行")
         self.logger.info("  - 品种数: %d", total_count)
-        throttle_label = (
-            str(initial_coroutines) if enable_throttling else "∞"
-        )
+        throttle_label = str(initial_coroutines) if enable_throttling else "∞"
         self.logger.info("  - 初始配置: %d进程 × %s协程", initial_processes, throttle_label)
         if enable_throttling:
             self.logger.info("  - 动态调整: 每%.1f秒", self.adjustment_interval)
@@ -1325,42 +1334,49 @@ class TdxDynamicExecutor:
         # 创建任务
         task = TdxLocalReadTask("tdx_batch_read", total_count)
 
-        # 使用multiprocessing共享数据结构
+        # 🔍 测量事件循环延迟（批量任务开始前）
+        if hasattr(self, "asyncio_publisher") and self.asyncio_publisher.event_engine:
+            await self.asyncio_publisher.measure_and_publish_lag("TdxDynamicExecutor_Start")
+
+        # 🆕 v3.6: 使用动态进程池架构（支持运行时进程增减）
         ctx = multiprocessing.get_context("spawn")
-        result_queue = ctx.Queue()
+        task_queue = ctx.Queue()  # 🆕 v3.6: 共享任务队列
+        result_queue = ctx.Queue(maxsize=5000)  # 数据结果队列（大容量）
+        metrics_queue = ctx.Queue(maxsize=200)  # 监控指标队列（独立通道）
         stop_event = ctx.Event()
         config_queue = ctx.Queue() if enable_throttling else None  # 用于传递动态配置
 
-        # 平均分配symbols到各进程
-        symbols_per_process = (total_count + self.current_processes - 1) // self.current_processes
-        symbol_batches = [
-            symbols[i : i + symbols_per_process] for i in range(0, total_count, symbols_per_process)
-        ]
+        self.logger.info("📊 队列架构: 任务队列(共享) + 数据队列(5000) + 监控队列(200)")
 
-        self.logger.info(
-            "📦 任务分配: %d个进程，每进程约%d个品种", len(symbol_batches), symbols_per_process
+        # 🆕 v3.6: 将所有任务放入共享队列（而不是预分配）
+        for symbol in symbols:
+            task_queue.put(symbol)
+
+        self.logger.info(f"📦 任务队列: 已加入{total_count}个品种")
+
+        # 🆕 v3.6: 使用DynamicProcessPool管理进程
+        from ..load_balancer import DynamicProcessPool
+
+        self.pool = DynamicProcessPool(
+            initial_processes=initial_processes,
+            worker_function=_tdx_worker_process,
+            shared_queues={
+                "task_queue": task_queue,
+                "result_queue": result_queue,
+                "metrics_queue": metrics_queue,
+            },
+            worker_kwargs={
+                "data_type": data_type,
+                "market": market,
+                "tdx_dir_str": str(self.tdx_dir),
+                "config_queue": config_queue,
+                "initial_coroutines": initial_coroutines if enable_throttling else None,
+            },
+            logger=self.logger,
         )
 
-        # 启动worker进程（使用模块级函数）
-        processes = []
-        for i, batch in enumerate(symbol_batches):
-            per_process_limit = initial_coroutines if enable_throttling else None
-            p = Process(
-                target=_tdx_worker_process,  # 模块级函数，可以被pickle
-                args=(
-                    i,
-                    batch,
-                    data_type,
-                    market,
-                    str(self.tdx_dir),
-                    result_queue,
-                    stop_event,
-                    config_queue,
-                    per_process_limit,
-                ),
-            )
-            p.start()
-            processes.append(p)
+        await self.pool.start()
+        processes = self.pool.processes  # 保留对进程列表的引用，用于监控
 
         # 启动动态调整监控（如启用限流）
         adjustment_task: Optional[asyncio.Task]
@@ -1371,9 +1387,66 @@ class TdxDynamicExecutor:
         else:
             adjustment_task = None
 
-        # 异步等待所有进程完成（不阻塞事件循环）
-        while any(p.is_alive() for p in processes):
-            await asyncio.sleep(0.5)  # 每0.5秒检查一次
+        # 🆕 v3.5: 使用专用队列消费协程（最佳实践）
+        results = {}
+        from ..load_balancer import LagMonitor
+
+        # 数据结果消费协程
+        async def result_consumer():
+            """专用协程：高效消费数据结果队列"""
+            while any(p.is_alive() for p in processes):
+                batch = []
+                # 批量读取（最多100个）
+                while len(batch) < 100:
+                    try:
+                        msg = result_queue.get_nowait()
+                        batch.append(msg)
+                    except queue.Empty:
+                        break
+
+                # 批量处理
+                for msg in batch:
+                    symbol, success, payload, duration = msg
+                    message: Optional[str]
+                    details: Optional[Dict[str, Any]]
+                    if isinstance(payload, dict):
+                        details = payload
+                        message = payload.get("reason") if not success else None
+                    else:
+                        details = None
+                        message = str(payload) if payload is not None else None
+
+                    results[symbol] = ExecutionResult(
+                        success=success,
+                        symbol=symbol,
+                        message=message,
+                        duration=duration,
+                        details=details,
+                    )
+
+                await asyncio.sleep(0)  # 只让出控制权
+
+        # 监控指标消费协程
+        async def metrics_consumer():
+            """专用协程：消费监控指标队列"""
+            while any(p.is_alive() for p in processes):
+                try:
+                    while not metrics_queue.empty():
+                        msg = metrics_queue.get_nowait()
+                        LagMonitor.process_lag_message(msg, self.load_balancer, self.logger)
+                except queue.Empty:
+                    pass
+                except Exception as e:
+                    self.logger.debug(f"处理监控指标失败: {e}")
+
+                await asyncio.sleep(0.1)  # 监控指标可以稍慢
+
+        # 启动两个消费协程
+        result_task = asyncio.create_task(result_consumer())
+        metrics_task = asyncio.create_task(metrics_consumer())
+
+        # 等待消费协程完成
+        await asyncio.gather(result_task, metrics_task)
 
         # 停止监控
         stop_event.set()
@@ -1383,11 +1456,12 @@ class TdxDynamicExecutor:
             except asyncio.TimeoutError:
                 self.logger.warning("调整监控停止超时")
 
-        # 收集结果
-        results = {}
+        # 🆕 v3.5: 分别收集剩余结果（两个独立队列）
+        # 1. 收集剩余的数据结果
         while not result_queue.empty():
             try:
-                symbol, success, payload, duration = result_queue.get_nowait()
+                msg = result_queue.get_nowait()
+                symbol, success, payload, duration = msg
                 message: Optional[str]
                 details: Optional[Dict[str, Any]]
                 if isinstance(payload, dict):
@@ -1407,6 +1481,14 @@ class TdxDynamicExecutor:
             except queue.Empty:
                 break
 
+        # 2. 收集剩余的监控指标
+        while not metrics_queue.empty():
+            try:
+                msg = metrics_queue.get_nowait()
+                LagMonitor.process_lag_message(msg, self.load_balancer, self.logger)
+            except queue.Empty:
+                break
+
         success_count = sum(1 for r in results.values() if r.success)
         self.logger.info("=" * 80)
         self.logger.info("✅ 执行完成: 成功%d/%d", success_count, total_count)
@@ -1415,9 +1497,7 @@ class TdxDynamicExecutor:
         duration = time.time() - overall_start
         avg_speed = success_count / duration if duration > 0 else 0.0
         actions = Counter(entry.get("action") for entry in self.adjustment_history)
-        per_process_coroutines = (
-            self.current_coroutines_per_process if enable_throttling else 0
-        )
+        per_process_coroutines = self.current_coroutines_per_process if enable_throttling else 0
         self.last_run_summary = {
             "total_symbols": total_count,
             "success": success_count,
@@ -1429,14 +1509,8 @@ class TdxDynamicExecutor:
             "adjustment_counts": dict(actions),
             "throttling_enabled": enable_throttling,
         }
-        total_label = (
-            str(self.total_coroutines)
-            if enable_throttling
-            else f"无上限(≈{total_count})"
-        )
-        per_process_label = (
-            str(per_process_coroutines) if enable_throttling else "无上限"
-        )
+        total_label = str(self.total_coroutines) if enable_throttling else f"无上限(≈{total_count})"
+        per_process_label = str(per_process_coroutines) if enable_throttling else "无上限"
         self.logger.info(
             "📈 运行摘要: 用时%.2fs, 平均%.2f个/秒, 最终并发=%s (每进程=%s), 调整统计=%s",
             duration,
@@ -1449,7 +1523,7 @@ class TdxDynamicExecutor:
         return results
 
     async def _adjustment_monitor(
-        self, task: TdxLocalReadTask, config_queue, stop_event: Event  # MPQueue
+        self, task: TdxLocalReadTask, config_queue, stop_event: "Event"  # MPQueue
     ):
         """动态调整监控循环"""
         adjustment_count = 0
@@ -1482,66 +1556,95 @@ class TdxDynamicExecutor:
             call_timestamp = time.time()
             elapsed_since_start = call_timestamp - start_time
 
-            # 调用LoadBalancer动态调整（传递进程数）
-            # LoadBalancer内部会检查时间间隔，无需在此重复检查
+            # v3.3: 使用event_loop_lag指导的并发决策
             try:
                 lb_start = time.time()
-                config = self.load_balancer.get_optimal_config_with_adjustment(
-                    task,
-                    self.total_coroutines,
+                decision = self.load_balancer.get_concurrency_decision_with_lag(
+                    task=task,
+                    current_processes=self.current_processes,
+                    current_coroutines=self.current_coroutines_per_process,
                     force_realtime=True,
-                    processes=self.current_processes,
                 )
                 lb_elapsed = (time.time() - lb_start) * 1000
 
-                action = config.get("action", "hold")
-                new_coroutines_total = config.get("new_concurrency", self.total_coroutines)
-                new_coroutines_per_process = new_coroutines_total // self.current_processes
-                reason = config.get("reason", "")
+                action = decision["action"]
+                suggested_coroutines = decision["suggested_coroutines_per_process"]
+                suggested_processes = decision["suggested_processes"]  # 🆕 v3.6: 读取建议进程数
+                reason = decision["reason"]
+                lag_ms = decision["lag_ms"]
+                pressure = decision["pressure_score"]
 
-                # 从config中获取资源指标（LoadBalancer已经读取过了）
-                cpu = config.get("cpu_percent", 0)
-                mem = config.get("memory_percent", 0)
-                queue_depth = config.get("disk_queue_depth", 0)
+                # 🆕 v3.6: 应用决策（支持运行时动态进程调整）
+                new_coroutines_per_process = suggested_coroutines
+                new_processes = suggested_processes  # 🆕 v3.6: 使用建议的进程数
+                new_coroutines_total = new_processes * new_coroutines_per_process
 
-                if new_coroutines_total != self.total_coroutines:
+                # 判断是否需要调整
+                need_adjustment = (
+                    new_processes != self.current_processes
+                    or new_coroutines_per_process != self.current_coroutines_per_process
+                )
+
+                if need_adjustment:
                     old_total = self.total_coroutines
-                    self.current_coroutines_per_process = new_coroutines_per_process
-                    self.total_coroutines = new_coroutines_total
+                    old_coroutines_per_process = self.current_coroutines_per_process
+                    old_processes = self.current_processes
 
-                    # 广播新配置到所有worker
-                    for _ in range(self.current_processes):
-                        config_queue.put(new_coroutines_per_process)
+                    # 🆕 v3.6: 调整进程数（如有变化）
+                    if new_processes != self.current_processes:
+                        self.logger.info(
+                            f"🔧 调整进程数: {self.current_processes} → {new_processes}"
+                        )
+                        await self.pool.adjust_processes(new_processes)
+                        self.current_processes = new_processes
+
+                    # 调整协程数（如有变化）
+                    if new_coroutines_per_process != self.current_coroutines_per_process:
+                        self.logger.info(
+                            f"🔧 调整协程数: {self.current_coroutines_per_process} → {new_coroutines_per_process}"
+                        )
+                        self.current_coroutines_per_process = new_coroutines_per_process
+                        self.total_coroutines = new_coroutines_total
+
+                        # 广播新配置到所有worker
+                        for _ in range(self.current_processes):
+                            config_queue.put(new_coroutines_per_process)
 
                     adjustment_count += 1
 
                     self.logger.info(
-                        "📊 [调用%d/调整%d] %.1fs ⏱️睡眠%.0fms+LB%.0fms 决策=%-8s 协程: %d → %d | CPU:%.1f%% 内存:%.1f%% 队列:%.1f",
+                        "📊 [调用%d/调整%d] %.1fs ⏱️睡眠%.0fms+LB%.0fms\n"
+                        "   决策=%s | 原因: %s\n"
+                        "   进程: %d → %d | 协程/进程: %d → %d | 总协程: %d → %d\n"
+                        "   延迟: %.1fms | 压力: %.1f",
                         call_count,
                         adjustment_count,
                         elapsed_since_start,
                         sleep_elapsed,
                         lb_elapsed,
-                        action.upper(),
+                        action,
+                        reason,
+                        old_processes,
+                        new_processes,
+                        old_coroutines_per_process,
+                        new_coroutines_per_process,
                         old_total,
                         new_coroutines_total,
-                        cpu,
-                        mem,
-                        queue_depth,
+                        lag_ms,
+                        pressure,
                     )
                 else:
                     # hold状态也输出，便于观察
                     self.logger.info(
-                        "📊 [调用%d] %.1fs ⏱️睡眠%.0fms+LB%.0fms 决策=%-8s 协程: %d (不变) | CPU:%.1f%% 内存:%.1f%% 队列:%.1f",
+                        "📊 [调用%d] %.1fs ⏱️睡眠%.0fms+LB%.0fms 决策=%s | 协程: %d (不变) | 延迟: %.1fms | 压力: %.1f",
                         call_count,
                         elapsed_since_start,
                         sleep_elapsed,
                         lb_elapsed,
-                        action.upper(),
+                        action,
                         self.total_coroutines,
-                        cpu,
-                        mem,
-                        queue_depth,
+                        lag_ms,
+                        pressure,
                     )
 
                 self.adjustment_history.append(
@@ -1550,11 +1653,8 @@ class TdxDynamicExecutor:
                         "action": action,
                         "requested_concurrency": new_coroutines_total,
                         "applied_concurrency": self.total_coroutines,
-                        "cpu_percent": cpu,
-                        "memory_percent": mem,
-                        "disk_queue_depth": queue_depth,
-                        "disk_util_percent": config.get("disk_util_percent"),
-                        "pressure_score": config.get("pressure_score"),
+                        "lag_ms": lag_ms,
+                        "pressure_score": pressure,
                         "reason": reason,
                         "lb_latency_ms": lb_elapsed,
                         "sleep_elapsed_ms": sleep_elapsed,

@@ -25,16 +25,8 @@ class BackendInitializerWorker(QObject):
     def __init__(self):
         """初始化后端初始化工作线程."""
         super().__init__()
-        self.logger = logging.getLogger(self.__class__.__name__)
-
-        # 🔧 确保日志能输出到控制台
-        if not self.logger.handlers:
-            console_handler = logging.StreamHandler()
-            console_handler.setLevel(logging.DEBUG)
-            formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-            console_handler.setFormatter(formatter)
-            self.logger.addHandler(console_handler)
-            self.logger.setLevel(logging.DEBUG)
+        # ✅ 使用标准logger命名，依赖LoggingHub进行统一管理
+        self.logger = logging.getLogger("ui.startup.worker")
 
     def run(self):
         """运行后端初始化.
@@ -60,6 +52,7 @@ class BackendInitializerWorker(QObject):
 
             # 🎯 验证EventEngine是否已预创建
             from backend.core.base import get_event_engine
+
             existing_ee = get_event_engine()
             if existing_ee:
                 self.logger.info("[BACKEND-INIT] ✅ 检测到主线程预创建的EventEngine")
@@ -73,21 +66,6 @@ class BackendInitializerWorker(QObject):
                 return
 
             self.progress_updated.emit("正在准备后端环境...", 5)
-
-            # 🔧 配置后端日志输出到控制台
-            import logging
-
-            backend_logger = logging.getLogger("backend")
-            if not backend_logger.handlers:
-                console_handler = logging.StreamHandler()
-                console_handler.setLevel(logging.DEBUG)
-                formatter = logging.Formatter(
-                    "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-                )
-                console_handler.setFormatter(formatter)
-                backend_logger.addHandler(console_handler)
-                backend_logger.setLevel(logging.DEBUG)
-                self.logger.info("[BACKEND-INIT] ✅ 后端日志配置完成（输出到控制台）")
 
             # 导入后端模块
             self.logger.info("[BACKEND-INIT] 阶段0: 导入后端服务模块...")
@@ -143,7 +121,7 @@ class BackendInitializerWorker(QObject):
             self.logger.error("=" * 70)
             self.logger.error("[BACKEND-INIT] 💥 后端初始化工作线程发生异常")
             self.logger.error("=" * 70)
-            self.logger.error(error_msg, exc_info=True)
+            self.logger.exception("后端初始化异常: %s", e)
             self.error_occurred.emit(error_msg)
             self.initialization_completed.emit(False, {"success": False, "message": error_msg})
 
@@ -212,7 +190,7 @@ class StartupCoordinator(QObject):
             self._start_backend_initialization()
 
         except Exception as e:
-            self.logger.error("[COORDINATOR] 启动失败: %s", e, exc_info=True)
+            self.logger.exception("启动失败: %s", e)
             self.startup_failed.emit(str(e))
 
     def _initialize_config(self):
@@ -367,7 +345,7 @@ class StartupCoordinator(QObject):
 
     def _on_initialization_timeout(self):
         """初始化超时处理."""
-        self.logger.warning("[COORDINATOR] ⚠️ 后端初始化超时（%d秒）", self.initialization_timeout)
+        self.logger.warning("后端初始化超时: %d秒", self.initialization_timeout)
 
         # 优先尝试降级继续：如果核心服务部分就绪，则允许UI继续工作（功能受限）
         try:
@@ -375,6 +353,30 @@ class StartupCoordinator(QObject):
 
             service_manager = get_service_manager()
             status = service_manager.get_service_status()
+
+            # 记录哪些服务就绪、哪些服务失败
+            ready_services = [
+                name
+                for name, info in status.items()
+                if isinstance(info, dict) and info.get("status") == "running"
+            ]
+            failed_services = [
+                name
+                for name, info in status.items()
+                if isinstance(info, dict) and info.get("status") == "error"
+            ]
+            pending_services = [
+                name
+                for name, info in status.items()
+                if isinstance(info, dict) and info.get("status") not in ("running", "error")
+            ]
+
+            self.logger.warning(
+                "降级模式: 就绪服务=%s, 失败服务=%s, 待启动=%s",
+                ready_services,
+                failed_services,
+                pending_services,
+            )
 
             # 判定核心服务可用性（任一关键服务就绪即允许降级继续）
             core_candidates = [
@@ -385,15 +387,16 @@ class StartupCoordinator(QObject):
             core_ready = any(name in status for name in core_candidates)
 
             if core_ready:
-                self.logger.warning("[COORDINATOR] 启动降级：核心服务部分就绪，继续完成UI启动")
+                self.logger.info("启动降级成功: 核心服务可用")
                 self.show_message("后端部分就绪，已进入降级模式（功能可能受限）", 80)
                 # 允许完成启动流程
                 self._complete_startup()
                 return
         except Exception as e:
-            self.logger.error("[COORDINATOR] 降级检测异常: %s", e)
+            self.logger.exception("降级检测失败: %s", e)
 
         # 无法降级继续，保持提示并发出失败信号（不强制退出，交给外部处理）
+        self.logger.error("启动失败: 无可用服务")
         self.show_message(
             f"后端初始化超时（{self.initialization_timeout}秒），请检查日志后重试",
             50,
@@ -464,7 +467,7 @@ class StartupCoordinator(QObject):
                 print("[COORDINATOR] ✅ 启动画面已隐藏")
                 self.logger.info("[COORDINATOR] ✅ 启动画面已成功隐藏")
             except Exception as e:
-                self.logger.error("[COORDINATOR] 隐藏启动画面失败: %s", e, exc_info=True)
+                self.logger.exception("隐藏启动画面失败: %s", e)
                 print(f"[COORDINATOR] ❌ 隐藏启动画面失败: {e}")
                 # 即使失败，也设置为None避免重复操作
                 self.splash = None

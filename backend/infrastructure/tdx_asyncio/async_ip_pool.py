@@ -108,7 +108,7 @@ class AsyncSmartIPPool(AsyncIPPool):
         self._monitor_task: Optional[asyncio.Task] = None
         self._stop_event = asyncio.Event()
 
-        logger.info(f"智能IP池初始化: {len(servers)}个候选服务器, 更新间隔{update_interval}秒")
+        logger.info("智能IP池初始化: 候选服务器=%d个, 更新间隔=%d秒", len(servers), update_interval)
         logger.info("注意: sorted_servers 初始为空，必须等待首次测速完成后才有数据")
 
     async def start(self):
@@ -121,7 +121,7 @@ class AsyncSmartIPPool(AsyncIPPool):
             # 🔥 关键：启动时先清空 sorted_servers，确保在测速完成前为空
             self.sorted_servers = []
             logger.info("🔍 智能IP池：开始首次服务器速度分析（异步进行）...")
-            logger.info(f"⏳ 正在并发测试 {len(self.servers)} 个服务器，预计耗时10-30秒")
+            logger.info("⏳ 正在并发测试 %d 个服务器，预计耗时10-30秒", len(self.servers))
 
             try:
                 # 执行首次测速和排序
@@ -139,7 +139,7 @@ class AsyncSmartIPPool(AsyncIPPool):
                     logger.error("❌ 智能IP池：服务器分析完成，但没有可用服务器！")
                     logger.error("⚠️  下载功能将不可用，请检查网络连接")
             except Exception as e:
-                logger.error(f"❌ 智能IP池：首次测速失败: {e}")
+                logger.error("❌ 智能IP池：首次测速失败: %s", e)
                 logger.error("⚠️  服务器测速异常，下载功能将不可用")
                 # 🔥 关键：失败时保持 sorted_servers 为空，强制阻止下载
 
@@ -178,7 +178,7 @@ class AsyncSmartIPPool(AsyncIPPool):
                     pass
 
             except Exception as e:
-                logger.error(f"IP池监控循环异常: {e}")
+                logger.error("IP池监控循环异常: %s", e)
                 # 异常时等待1分钟后重试
                 try:
                     await asyncio.wait_for(self._stop_event.wait(), timeout=60.0)
@@ -189,36 +189,26 @@ class AsyncSmartIPPool(AsyncIPPool):
 
     async def _test_all_servers(self):
         """
-        并发测试所有服务器（纯异步）
+        并发测试所有服务器（纯异步，无限并发）
 
         使用asyncio.gather并发测试，提升效率
-        分批测试，每批最多20个，避免资源竞争
+        一次性创建所有协程任务，充分利用异步I/O优势
         """
         total_servers = len(self.servers)
-        logger.info(f"📊 开始测试 {total_servers} 个服务器...")
+        logger.info("📊 开始测试 %d 个服务器（无限协程并发模式）...", total_servers)
 
-        # 🔥 关键改进：分批测试，避免一次性并发过多
-        batch_size = 20  # 每批最多20个服务器
-        all_results = []
+        # 🚀 性能优化：一次性并发所有任务，不分批
+        # asyncio可以高效处理成千上万的并发协程（纯I/O操作）
+        tasks = [self._test_single_server(server) for server in self.servers]
 
-        for batch_start in range(0, total_servers, batch_size):
-            batch_end = min(batch_start + batch_size, total_servers)
-            batch = self.servers[batch_start:batch_end]
-
-            logger.info(f"   测试进度: {batch_start+1}-{batch_end}/{total_servers}")
-
-            # 创建测试任务
-            tasks = [self._test_single_server(server) for server in batch]
-
-            # 并发执行批次测试
-            batch_results = await asyncio.gather(*tasks, return_exceptions=True)
-            all_results.extend(batch_results)
+        # 一次性并发执行所有测试任务
+        all_results = await asyncio.gather(*tasks, return_exceptions=True)
 
         # 处理结果
         success_count = sum(
             1 for r in all_results if not isinstance(r, Exception) and r is not None
         )
-        logger.info(f"✅ 服务器测试完成: {success_count}/{total_servers} 个可用")
+        logger.info("✅ 服务器测试完成: %d/%d 个可用", success_count, total_servers)
 
     async def _test_single_server(self, server: Tuple[str, int]):
         """
@@ -404,9 +394,9 @@ async def example_usage():
 
     # 2. 创建智能IP池（动态测速）
     smart_pool = AsyncSmartIPPool(
-        servers=[(ip, port) for _, ip, port in HQ_HOSTS_ALL[:20]], 
-        update_interval=300.0, 
-        test_timeout=2.0  # 5分钟更新
+        servers=[(ip, port) for _, ip, port in HQ_HOSTS_ALL[:20]],
+        update_interval=300.0,
+        test_timeout=2.0,  # 5分钟更新
     )
 
     # 启动监控

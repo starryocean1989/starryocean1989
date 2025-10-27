@@ -14,9 +14,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 from enum import Enum
+import logging
 
 from backend.core.service_base import BaseService, LoggerMixin
 from backend.services.database_adapter import get_db_manager
+
+# 专用logger - 日志埋点v4.0
+logger_backtest = logging.getLogger("backend.strategy.backtest")
+logger_alert = logging.getLogger("backend.strategy.alert")
 
 
 # =============================================================================
@@ -1368,12 +1373,32 @@ class MyPortfolioStrategy(StrategyTemplate):
 
                     start_time = time.time()
 
+                    # 切换到回测阶段 - 日志埋点v4.0
+                    try:
+                        from backend.infrastructure.system_vnpy.logging_context import (
+                            get_logging_context,
+                        )
+
+                        ctx = get_logging_context()
+                        ctx.set_stage("backtest")
+                        self.logger.info("📍 切换到回测阶段")
+                    except ImportError:
+                        ctx = None
+                        self.logger.debug("logging_context模块不可用，跳过阶段切换")
+
                     try:
                         task = self._backtest_tasks[task_id]
 
+                        # 使用场景上下文 - 日志埋点v4.0
+                        if ctx:
+                            scenario_ctx = ctx.scenario("backtest_run")
+                            scenario_ctx.__enter__()
+                        else:
+                            scenario_ctx = None
+
                         # 更新进度：准备阶段
                         task["progress"] = 10
-                        self.logger.info("[回测-%s] 准备阶段...", task_id)
+                        logger_backtest.info("[回测-%s] 准备阶段...", task_id)
 
                         # 尝试导入回测引擎
                         try:
@@ -1564,6 +1589,16 @@ class MyPortfolioStrategy(StrategyTemplate):
                                 "message": "回测执行成功",
                             }
 
+                            # 回测完成通知 - 日志埋点v4.0
+                            self.logger.info(
+                                "回测完成: 策略=%s, 收益率=%.2f%%, 夏普比率=%.2f, 最大回撤=%.2f%%, 总交易次数=%d",
+                                strategy_file,
+                                total_return * 100,
+                                sharpe_ratio,
+                                max_drawdown * 100,
+                                total_trades,
+                            )
+
                             # 更新数据库（使用统一database）
                             self.db_manager.execute_update(
                                 """
@@ -1646,7 +1681,7 @@ class MyPortfolioStrategy(StrategyTemplate):
                         self.log_performance(
                             "回测执行", total_duration, False, {"task_id": task_id, "error": str(e)}
                         )
-                        self.logger.error("[回测-%s] 失败：%s", task_id, e, exc_info=True)
+                        logger_alert.error("[回测-%s] 失败：%s", task_id, e, exc_info=True)
                         task["status"] = "failed"
                         task["progress"] = 0
                         task["result"] = {
@@ -1662,6 +1697,19 @@ class MyPortfolioStrategy(StrategyTemplate):
                         """,
                             ("failed", 0, datetime.now().isoformat(), task_id),
                         )
+                    finally:
+                        # 退出场景上下文并恢复阶段 - 日志埋点v4.0
+                        if scenario_ctx:
+                            try:
+                                scenario_ctx.__exit__(None, None, None)
+                            except Exception:
+                                pass
+                        if ctx:
+                            try:
+                                ctx.set_stage("sensing")
+                                self.logger.info("📍 回测结束，恢复到数据感知阶段")
+                            except Exception:
+                                pass
 
                 # 启动后台线程
                 backtest_thread = threading.Thread(target=run_backtest, daemon=True)

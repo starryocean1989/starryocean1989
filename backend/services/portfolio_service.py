@@ -11,8 +11,12 @@ import hashlib
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 from threading import Timer
+import logging
 
 from backend.core.service_base import BaseService
+
+# 专用logger - 日志埋点v4.0
+logger_alert = logging.getLogger("backend.portfolio.alert")
 
 
 class PortfolioService(BaseService):
@@ -613,6 +617,16 @@ class PortfolioService(BaseService):
             # 总盈亏 = 持仓盈亏 + 交易盈亏
             total_pnl = total_holding_pnl + total_trading_pnl
 
+            # 业绩计算完成通知 - 日志埋点v4.0
+            self.logger.info(
+                "实时盈亏计算完成: 组合=%s, 总盈亏=%.2f, 持仓盈亏=%.2f, 交易盈亏=%.2f, 持仓数=%d",
+                portfolio_name,
+                total_pnl,
+                total_holding_pnl,
+                total_trading_pnl,
+                len(positions_detail),
+            )
+
             return {
                 "success": True,
                 "portfolio_name": portfolio_name,
@@ -1098,7 +1112,34 @@ class PortfolioService(BaseService):
             excess_returns = np.mean(returns) * 252 - risk_free_rate
             sharpe_ratio = excess_returns / volatility if volatility > 0 else 0.0
 
-            self.logger.info(f"组合 {portfolio_name} 风险指标计算完成")
+            self.logger.info(
+                "组合 %s 风险指标计算完成: VaR=%.2f, CVaR=%.2f, 最大回撤=%.2f%%, 夏普比率=%.2f",
+                portfolio_name,
+                var_amount,
+                cvar_amount,
+                max_drawdown * 100,
+                sharpe_ratio,
+            )
+
+            # 风险告警检查 - 日志埋点v4.0
+            if abs(max_drawdown) > 0.20:  # 最大回撤超过20%
+                logger_alert.warning(
+                    "风险告警: 最大回撤过大, 组合=%s, 最大回撤=%.2f%%",
+                    portfolio_name,
+                    max_drawdown * 100,
+                )
+
+            if volatility > 0.40:  # 年化波动率超过40%
+                logger_alert.warning(
+                    "风险告警: 波动率过高, 组合=%s, 年化波动率=%.2f%%",
+                    portfolio_name,
+                    volatility * 100,
+                )
+
+            if sharpe_ratio < 0:  # 夏普比率为负
+                logger_alert.error(
+                    "风险告警: 夏普比率为负, 组合=%s, 夏普比率=%.2f", portfolio_name, sharpe_ratio
+                )
 
             return {
                 "success": True,

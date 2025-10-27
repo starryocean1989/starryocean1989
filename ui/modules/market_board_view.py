@@ -226,9 +226,9 @@ class SymbolCompleterLineEdit(QLineEdit):
 
                     logger.info(f"从缓存加载了 {len(self.symbol_list)} 个品种")
                 else:
-                    logger.warning("品种缓存为空")
+                    logger.debug("品种缓存为空（后端可能正在初始化）")
             else:
-                logger.warning("品种缓存不存在")
+                logger.debug("品种缓存不存在（后端可能正在初始化）")
 
         except Exception as e:
             logger.error(f"加载品种列表失败: {e}", exc_info=True)

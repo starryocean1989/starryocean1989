@@ -1,17 +1,19 @@
 # -*- coding: utf-8 -*-
-"""çæ§ç³»ç»æ ¸å¿æ¨¡å - å®æ´åå¹¶çï¼monitor_core.py + monitors.pyï¼.
+"""监控系统核心模块 - 完整合并版（monitor_core.py + monitors.py）.
 
-æ¬æä»¶åå«ææçæ§æ ¸å¿ç»ä»¶ï¼æ¹ä¾¿è°è¯ï¼
-- Part 1-6: æ¥èª monitor_core.pyï¼çæ§è¿ç¨V2æ ¸å¿ï¼
-- Part 7-10: æ¥èª monitors.pyï¼ç³»ç»/è¿ç¨çæ§åä¸å¡ææ ï¼
 
-è°è¯æç¤ºï¼åæä»¶å¯å®æ´æ¥çè°ç¨æ ï¼æææ ¸å¿é»è¾é½å¨æ­¤æä»¶
+包含所有监控核心组件，方便调试：
+- Part 1-6: 来自 monitor_core.py（监控进程V2核心）
+- Part 7-10: 来自 monitors.py（系统/进程监控和业务指标）
 
-ä½èæç¤ºï¼è°è¯æ¶ä¼åå¨ä»¥ä¸ä½ç½®è®¾ç½®æ­ç¹
-- MonitoringProcessV2.start() - è¿ç¨å¯å¨å¥å£
-- MonitoringProcessV2._evaluate_alerts() - åè­¦è¯ä¼°
-- AdaptiveThresholdManager._update_threshold() - éå¼æ´æ°
-- SmartMonitor.get_smart_data() - SMARTéé
+调试提示：单文件可完整查看调用栈，所有核心逻辑都在此文件
+
+
+提示：调试时优先在以下位置设置断点
+- MonitoringProcessV2.start() - 进程启动入口
+- MonitoringProcessV2._evaluate_alerts() - 告警评估
+- AdaptiveThresholdManager._update_threshold() - 阈值更新
+- SmartMonitor.get_smart_data() - SMART采集
 """
 
 import asyncio
@@ -31,7 +33,12 @@ import numpy as np
 import zmq
 import zmq.asyncio
 
-logger = logging.getLogger(__name__)
+# ==================== 日志配置 ====================
+# 创建专用logger（模块级别，监控进程独立）
+logger = logging.getLogger("monitor_process")
+logger_alert = logging.getLogger("monitor_process.alert")
+logger_sensor = logging.getLogger("monitor_process.sensor")
+logger_zmq = logging.getLogger("monitor_process.zmq")
 
 # 尝试导入psutil,如果没有则使用基础实现
 try:
@@ -50,17 +57,26 @@ try:
     HAS_WMI = True
 except ImportError:
     HAS_WMI = False
-    logger.debug("WMI模块未安装，将使用简化的磁盘检测")
+    logger.debug("WMI模块未安装，将使用简化磁盘检测")
+
+# 尝试导入speedtest-cli（运营商带宽测试）
+try:
+    import speedtest
+
+    HAS_SPEEDTEST = True
+except ImportError:
+    HAS_SPEEDTEST = False
+    logger.warning("speedtest-cli模块未安装，带宽测试功能将不可用")
 
 
 # =============================================================================
-# Part 1: æ°æ®ç»æåéç½®
+# Part 1: 数据结构和配置
 # =============================================================================
 
 
 @dataclass
 class ThresholdConfig:
-    """éå¼éç½®."""
+    """阈值配置."""
 
     metric_name: str
     default_warning: Optional[float] = None
@@ -75,7 +91,7 @@ class ThresholdConfig:
 
 @dataclass
 class ThresholdResult:
-    """éå¼ç»æ."""
+    """阈值结果."""
 
     metric_name: str
     warning_threshold: Optional[float]
@@ -91,7 +107,7 @@ class ThresholdResult:
 
 @dataclass
 class SmartAttribute:
-    """SMARTå±æ§."""
+    """SMART属性."""
 
     id: int
     name: str
@@ -104,7 +120,7 @@ class SmartAttribute:
 
 @dataclass
 class DiskSmartData:
-    """ç¡¬çSMARTæ°æ®."""
+    """硬盘SMART数据."""
 
     disk_name: str
     model: str
@@ -122,12 +138,12 @@ class DiskSmartData:
 
 
 # =============================================================================
-# Part 2: èªéåºéå¼ç®¡çå¨
+# Part 2: 自适应阈值管理器
 # =============================================================================
 
 
 class AdaptiveThresholdManager:
-    """èªéåºéå¼ç®¡çå¨ - åºäºæ»å¨çªå£çç»è®¡å­¦ä¹ ."""
+    """自适应阈值管理器 - 基于滑动窗口统计学习."""
 
     def __init__(self, db_manager=None):
         self.db_manager = db_manager
@@ -136,12 +152,12 @@ class AdaptiveThresholdManager:
         self._current_thresholds: Dict[str, ThresholdResult] = {}
         self._last_update_time: Dict[str, float] = {}
         self._update_interval = 3600
-        logger.info("èªéåºéå¼ç®¡çå¨åå§åå®æ")
+        logger.info("自适应阈值管理器初始化完成")
 
     def register_metric(self, config: ThresholdConfig):
         self._configs[config.metric_name] = config
         logger.info(
-            "æ³¨åææ : %s (é»è®¤è­¦å=%s, é»è®¤ä¸¥é=%s)",
+            "注册指标: %s (默认警告=%s, 默认严重=%s)",
             config.metric_name,
             config.default_warning,
             config.default_critical,
@@ -172,7 +188,7 @@ class AdaptiveThresholdManager:
         return None
 
     def get_all_thresholds(self) -> Dict[str, Dict[str, Any]]:
-        """è·åææææ çå¨æéå¼.
+        """获取所有指标动态阈值.
 
         Returns:
             {
@@ -210,6 +226,18 @@ class AdaptiveThresholdManager:
         sample_count = len(history)
 
         if sample_count < config.min_samples:
+            logger.debug(
+                "阈值学习: 指标=%s, 样本不足=%d/%d (使用默认阈值)",
+                metric_name,
+                sample_count,
+                config.min_samples,
+            )
+            logger.debug(
+                "阈值学习: 指标=%s, 样本不足=%d/%d (使用默认阈值)",
+                metric_name,
+                sample_count,
+                config.min_samples,
+            )
             result = ThresholdResult(
                 metric_name=metric_name,
                 warning_threshold=config.default_warning,
@@ -232,7 +260,7 @@ class AdaptiveThresholdManager:
             p95 = float(np.percentile(history, 95))
             p99 = float(np.percentile(history, 99))
         except Exception as e:
-            logger.error("è®¡ç®ç»è®¡éå¤±è´¥ (%s): %s", metric_name, e)
+            logger.exception("计算统计量失败 (%s): %s", metric_name, e)
             return
 
         warning_learned = self._calculate_threshold(p95, p99, stddev, config.warning_formula)
@@ -261,12 +289,21 @@ class AdaptiveThresholdManager:
         self._current_thresholds[metric_name] = result
         self._last_update_time[metric_name] = time.time()
 
+        # 详细学习过程日志
         logger.info(
-            "æ´æ°éå¼ [%s]: warning=%.2f, critical=%.2f (æ ·æ¬=%d)",
+            "阈值学习完成: 指标=%s, 样本=%d, "
+            "均值=%.2f, 标准差=%.2f, P95=%.2f, P99=%.2f, "
+            "告警阈值=%.2f->%.2f, 严重阈值=%.2f->%.2f",
             metric_name,
-            warning_threshold or 0,
-            critical_threshold or 0,
             sample_count,
+            mean,
+            stddev,
+            p95,
+            p99,
+            config.default_warning or 0,
+            warning_threshold or 0,
+            config.default_critical or 0,
+            critical_threshold or 0,
         )
 
         if self.db_manager:
@@ -313,7 +350,7 @@ class AdaptiveThresholdManager:
                 ),
             )
         except Exception as e:
-            logger.error("ä¿å­éå¼å°æ°æ®åºå¤±è´¥: %s", e)
+            logger.exception("保存阈值将数据库失败: %s", e)
 
     def load_from_database(self):
         if not self.db_manager:
@@ -334,170 +371,92 @@ class AdaptiveThresholdManager:
                     last_updated=datetime.fromisoformat(row["last_updated"]),
                 )
                 self._current_thresholds[result.metric_name] = result
-            logger.info("ä»æ°æ®åºå è½½äº %d ä¸ªéå¼éç½®", len(rows))
+            logger.info("从数据库加载了 %d 个阈值配置", len(rows))
         except Exception as e:
-            logger.error("ä»æ°æ®åºå è½½éå¼å¤±è´¥: %s", e)
+            logger.exception("从数据库加载阈值失败: %s", e)
 
 
 # =============================================================================
-# Part 3: ç¡¬çSMARTçæ§
+# Part 3: 硬盘SMART监控
 # =============================================================================
 
 
 class SmartMonitor:
-    """ç¡¬çSMARTçæ§å¨ - ä½¿ç¨pySMARTåº."""
+    """硬盘SMART监控器 - 纯Python WMI方案（无需外部工具）."""
 
     def __init__(self):
-        self._has_pysmart = False
-        self._Device = None
-        try:
-            from pySMART import Device  # type: ignore
+        self._wmi_monitor = None
 
-            self._Device = Device
-            self._has_pysmart = True
-            logger.info("â pySMART å¯ç¨")
-        except ImportError:
-            logger.warning("pySMART æªå®è£ï¼SMARTçæ§ä¸å¯ç¨")
+        # 初始化WMI方案（唯一方案）
+        try:
+            from backend.infrastructure.system_vnpy.wmi_smart_monitor import get_wmi_smart_monitor
+
+            self._wmi_monitor = get_wmi_smart_monitor()
+            if self._wmi_monitor.is_available():
+                logger.info("✅ WMI SMART监控已启用（纯Python，无需smartctl）")
+            else:
+                logger.error("❌ WMI SMART监控初始化失败：WMI不可用")
         except Exception as e:
-            logger.warning("pySMART åå§åå¤±è´¥: %s", e)
+            logger.error("❌ WMI SMART初始化失败: %s", e, exc_info=True)
 
     def is_available(self) -> bool:
-        return self._has_pysmart
+        return self._wmi_monitor is not None and self._wmi_monitor.is_available()
 
     def get_smart_data(self) -> Dict[str, DiskSmartData]:
-        if not self._has_pysmart:
+        """获取SMART数据（仅WMI方案）."""
+        if not self._wmi_monitor or not self._wmi_monitor.is_available():
+            logger.warning("[SMART] WMI监控器不可用")
             return {}
-        result = {}
-        try:
-            disks = self._get_disk_list()
-            for disk_name in disks:
-                try:
-                    smart_data = self._read_disk_smart(disk_name)
-                    if smart_data:
-                        result[disk_name] = smart_data
-                except Exception as e:
-                    logger.error("è¯»åç¡¬çSMARTå¤±è´¥ (%s): %s", disk_name, e)
-            logger.info("æåè¯»å %d ä¸ªç¡¬ççSMARTæ°æ®", len(result))
-        except Exception as e:
-            logger.error("è·åç¡¬çåè¡¨å¤±è´¥: %s", e)
-        return result
-
-    def _get_disk_list(self) -> List[str]:
-        if not self._Device:
-            return []
-
-        system = platform.system()
-        if system == "Windows":
-            disks = []
-            for i in range(10):
-                disk_name = f"/dev/pd{i}"
-                try:
-                    device = self._Device(disk_name)
-                    if device and device.name:
-                        disks.append(disk_name)
-                except Exception:
-                    break
-            return disks
-        elif system == "Linux":
-            disks = []
-            for letter in "abcdefghijklmnopqrstuvwxyz":
-                disk_name = f"/dev/sd{letter}"
-                try:
-                    device = self._Device(disk_name)
-                    if device and device.name:
-                        disks.append(disk_name)
-                except Exception:
-                    continue
-            return disks
-        return []
-
-    def _read_disk_smart(self, disk_name: str) -> Optional[DiskSmartData]:
-        if not self._Device:
-            return None
 
         try:
-            device = self._Device(disk_name)
-            if not device:
-                return None
-
-            model = str(device.model) if device.model else "Unknown"
-            serial = str(device.serial) if device.serial else "Unknown"
-            capacity = str(device.capacity) if device.capacity else "Unknown"
-            interface = str(device.interface) if device.interface else "Unknown"
-            assessment = str(device.assessment) if device.assessment else "UNKNOWN"
-
-            temperature = None
-            power_on_hours = None
-            reallocated_sectors = None
-            pending_sectors = None
-            uncorrectable_errors = None
-            attributes = []
-
-            if device.attributes and hasattr(device.attributes, "items"):
-                for attr_id, attr in device.attributes.items():  # type: ignore
-                    try:
-                        smart_attr = SmartAttribute(
-                            id=int(attr_id),
-                            name=str(attr.name) if hasattr(attr, "name") else f"Attr_{attr_id}",
-                            value=int(attr.value) if hasattr(attr, "value") else 0,
-                            worst=int(attr.worst) if hasattr(attr, "worst") else 0,
-                            threshold=int(attr.thresh) if hasattr(attr, "thresh") else 0,
-                            raw_value=int(attr.raw) if hasattr(attr, "raw") else 0,
-                            status="OK",
-                        )
-                        if smart_attr.value < smart_attr.threshold:
-                            smart_attr.status = "CRITICAL"
-                        elif smart_attr.value < smart_attr.worst:
-                            smart_attr.status = "WARNING"
-                        attributes.append(smart_attr)
-
-                        if attr_id == 194:
-                            temperature = smart_attr.raw_value
-                        elif attr_id == 9:
-                            power_on_hours = smart_attr.raw_value
-                        elif attr_id == 5:
-                            reallocated_sectors = smart_attr.raw_value
-                        elif attr_id == 197:
-                            pending_sectors = smart_attr.raw_value
-                        elif attr_id == 187:
-                            uncorrectable_errors = smart_attr.raw_value
-                    except Exception as e:
-                        logger.debug("è§£æSMARTå±æ§å¤±è´¥ (%s): %s", attr_id, e)
-
-            return DiskSmartData(
-                disk_name=disk_name,
-                model=model,
-                serial=serial,
-                capacity=capacity,
-                interface=interface,
-                assessment=assessment,
-                temperature=temperature,
-                power_on_hours=power_on_hours,
-                reallocated_sectors=reallocated_sectors,
-                pending_sectors=pending_sectors,
-                uncorrectable_errors=uncorrectable_errors,
-                attributes=attributes,
-                timestamp=datetime.now(),
-            )
+            result = self._wmi_monitor.get_smart_data()
+            self._process_smart_alerts(result)
+            return result
         except Exception as e:
-            logger.error("è¯»åSMARTæ°æ®å¤±è´¥ (%s): %s", disk_name, e)
-            return None
+            logger.exception("[SMART] WMI数据获取失败: %s", e)
+            return {}
+
+    def _process_smart_alerts(self, result: Dict[str, DiskSmartData]):
+        """处理SMART告警"""
+        for smart_data in result.values():
+            # 健康评估告警
+            if smart_data.assessment in ["FAILING", "FAIL"]:
+                logger_alert.critical(
+                    "硬盘即将故障: 硬盘=%s, 型号=%s, 序列号=%s",
+                    smart_data.disk_name,
+                    smart_data.model,
+                    smart_data.serial,
+                )
+            elif smart_data.assessment == "WARNING":
+                logger_alert.warning(
+                    "硬盘健康警告: 硬盘=%s, 重分配扇区=%s, 待处理扇区=%s",
+                    smart_data.disk_name,
+                    smart_data.reallocated_sectors or 0,
+                    smart_data.pending_sectors or 0,
+                )
+            # 温度告警
+            if smart_data.temperature and smart_data.temperature > 60:
+                logger_alert.warning(
+                    "硬盘温度过高: 硬盘=%s, 温度=%d°C",
+                    smart_data.disk_name,
+                    smart_data.temperature,
+                )
 
 
 # =============================================================================
-# Part 4: ç¡¬ä»¶çæ§å¨å·¥å
+# Part 4: 硬件监控器工厂
 # =============================================================================
 
 
 class HardwareMonitorFactory:
-    """ç¡¬ä»¶çæ§å¨å·¥å - å¼ºå¶ä½¿ç¨LibreHardwareMonitor."""
+    """硬件监控器工厂 - 强制使用LibreHardwareMonitor."""
 
     @staticmethod
     def create_monitor():
-        """åå»ºç¡¬ä»¶çæ§å¨ï¼å¿é¡»ä½¿ç¨LibreHardwareMonitor Extendedï¼.
+        """创建硬件监控器（必须使用LibreHardwareMonitor Extended）.
 
         Returns:
-            ExtendedLHMWrapperå®ä¾æNoneï¼å¦æä¸å¯ç¨ï¼
+            ExtendedLHMWrapper实例或None（如果不可用）
         """
         try:
             from backend.infrastructure.system_vnpy.librehardwaremonitor.lhm_extended import (
@@ -506,44 +465,44 @@ class HardwareMonitorFactory:
 
             monitor = ExtendedLHMWrapper()
             if monitor.is_available():
-                logger.info("â ä½¿ç¨ LibreHardwareMonitor Extended")
+                logger.info("✅ 使用 LibreHardwareMonitor Extended")
                 return monitor
             else:
-                logger.error("â LibreHardwareMonitor ä¸å¯ç¨ï¼è¯·ç¡®ä¿ï¼")
-                logger.error("   1. å·²å®è£ pythonnet: pip install pythonnet")
-                logger.error("   2. LibreHardwareMonitor.dll å¨æ­£ç¡®è·¯å¾")
-                logger.error("   3. ä»¥ç®¡çåæéè¿è¡ç¨åº")
+                logger.error("❌ LibreHardwareMonitor 不可用，请确保：")
+                logger.error("   1. 已安装 pythonnet: pip install pythonnet")
+                logger.error("   2. LibreHardwareMonitor.dll 在正确路径")
+                logger.error("   3. 以管理员权限运行程序")
                 return None
         except Exception as e:
-            logger.error("â LibreHardwareMonitor åå§åå¤±è´¥: %s", e)
-            logger.error("   ç¡¬ä»¶çæ§åè½å°ä¸å¯ç¨")
+            logger.exception("❌ LibreHardwareMonitor 初始化失败: %s", e)
+            logger.error("   硬件监控功能将不可用")
             return None
 
 
 # =============================================================================
-# Part 5: ç³»ç»åæå¨ï¼ä»ç¬ç«æä»¶åå¹¶ï¼
+# Part 5: 系统分析器（从独立文件合并）
 # =============================================================================
 
 
 class SystemBottleneckAnalyzer:
-    """ç³»ç»çº§ç¶é¢åæå¼æï¼ä» bottleneck_analyzer.py åå¹¶ï¼.
+    """系统级瓶颈分析引擎（从 bottleneck_analyzer.py 合并）.
 
-    åºäºæ¨æ¡¶çè®ºï¼è¯ä¼°ç³»ç»åç»´åº¦çæ§è½ï¼è¯å«ç­æ¿ã
-    è¯åè§åï¼
-    - CPUç»´åº¦: 40åæ»¡å
-    - åå­ç»´åº¦: 30åæ»¡å
-    - ç£çI/Oç»´åº¦: 15åæ»¡å
-    - ç½ç»ç»´åº¦: 15åæ»¡å
-    - æ»å: 100å
+    基于木桶理论，评估系统各维度性能，识别短板。
+    评分规则：
+    - CPU维度: 40分满分
+    - 内存维度: 30分满分
+    - 磁盘I/O维度: 15分满分
+    - 网络维度: 15分满分
+    - 总分: 100分
 
-    ç¶é¢å¤æ­ï¼å¾åæä½çç»´åº¦å³ä¸ºç¶é¢
+    瓶颈判断：得分最低维度即为瓶颈
     """
 
     def __init__(self):
-        """åå§åç¶é¢åæå¨."""
+        """初始化瓶颈分析器."""
         self.logger = logging.getLogger(__name__)
 
-        # è¯åæééç½®
+        # 评分权重配置
         self.weights = {
             "cpu": 40,
             "memory": 30,
@@ -551,24 +510,24 @@ class SystemBottleneckAnalyzer:
             "network": 15,
         }
 
-        # ä¸¥éç¨åº¦éå¼
+        # 严重程度阈值
         self.severity_thresholds = {
-            "critical": 50,  # <50å = ä¸¥éç¶é¢
-            "warning": 70,  # 50-70å = ååå¤§
-            "normal": 85,  # 70-85å = æ­£å¸¸
-            # >85å = æ§è½åè¶³
+            "critical": 50,  # <50分 = 严重瓶颈
+            "warning": 70,  # 50-70分 = 压力大
+            "normal": 85,  # 70-85分 = 正常
+            # >85分 = 性能充足
         }
 
     def analyze(self, metrics: Dict[str, Any]) -> Dict[str, Any]:
-        """åæç³»ç»ç¶é¢.
+        """分析系统瓶颈.
 
         Args:
-            metrics: ç³»ç»ææ æ°æ®ï¼åå«system, processç­å­æ®µ
+            metrics: 系统指标数据，包含system, process等字段
 
         Returns:
             {
-                "total_score": 75,  # ç»¼åè¯å 0-100
-                "bottleneck_dimension": "disk_io",  # ç¶é¢ç»´åº¦
+                "total_score": 75,  # 综合评分 0-100
+                "bottleneck_dimension": "disk_io",  # 瓶颈维度
                 "scores": {
                     "cpu": 35,
                     "memory": 25,
@@ -581,15 +540,15 @@ class SystemBottleneckAnalyzer:
                     "disk": {...},
                     "network": {...}
                 },
-                "suggestions": ["ä½¿ç¨SSD", "åå°å¹¶åI/O"],
+                "suggestions": ["使用SSD", "减少并发I/O"],
                 "severity": "warning"  # normal/warning/critical
             }
         """
         try:
-            # æåç³»ç»ææ 
+            # 提取系统指标
             system_metrics = metrics.get("system", {})
 
-            # è®¡ç®åç»´åº¦å¾å
+            # 计算各维度得分
             cpu_score, cpu_details = self._calculate_cpu_score(system_metrics)
             memory_score, memory_details = self._calculate_memory_score(system_metrics)
             disk_score, disk_details = self._calculate_disk_score(system_metrics)
@@ -609,21 +568,21 @@ class SystemBottleneckAnalyzer:
                 "network": network_details,
             }
 
-            # æ»å
+            # 总分
             total_score = sum(scores.values())
 
-            # è¯å«ç¶é¢ç»´åº¦ï¼å¾åæä½ï¼
+            # 识别瓶颈维度（得分最低）
             bottleneck_dimension = min(scores.keys(), key=lambda k: scores[k])
 
-            # å¤æ­ä¸¥éç¨åº¦
+            # 判断严重程度
             severity = self._get_severity(total_score)
 
-            # çæä¼åå»ºè®®
+            # 生成优化建议
             suggestions = self._generate_suggestions(
                 bottleneck_dimension, details[bottleneck_dimension], system_metrics
             )
 
-            # è®¡ç®èªéåºå¹¶åç¼©æ¾å å­ï¼0.3-1.6èå´ï¼
+            # 计算自适应并发缩放因子（0.3-1.6范围）
             adaptive_scale_factor = 0.3 + (total_score / 100) * 1.3
 
             return {
@@ -638,35 +597,35 @@ class SystemBottleneckAnalyzer:
             }
 
         except Exception as e:
-            self.logger.error("ç¶é¢åæå¤±è´¥: %s", e, exc_info=True)
-            # è¿åé»è®¤å®å¨å¼
+            self.logger.error("瓶颈分析失败: %s", e, exc_info=True)
+            # 返回默认安全值
             return {
                 "total_score": 100,
                 "bottleneck_dimension": "balanced",
                 "scores": {"cpu": 40, "memory": 30, "disk": 15, "network": 15},
                 "details": {},
-                "suggestions": ["åæè¿ç¨åºéï¼è¯·æ£æ¥æ¥å¿"],
+                "suggestions": ["分析过程出错，请检查日志"],
                 "severity": "normal",
                 "error": str(e),
             }
 
     def _calculate_cpu_score(self, metrics: Dict) -> tuple[float, Dict]:
-        """è®¡ç®CPUç»´åº¦å¾åï¼æ»¡å40ï¼.
+        """计算CPU维度得分（满分40）.
 
-        è¯åå ç´ ï¼
-        1. CPUä½¿ç¨ç (æé0.6)
-        2. ä¸ä¸æåæ¢é¢ç (æé0.4)
+        评分因素：
+        1. CPU使用率 (权重0.6)
+        2. 上下文切换频率 (权重0.4)
         """
         cpu_percent = metrics.get("cpu_percent", 0)
 
-        # è·åCPUè¯¦ç»ææ 
+        # 获取CPU详细指标
         cpu_detailed = metrics.get("cpu_detailed", {})
         context_switches = cpu_detailed.get("context_switches_per_sec", 0)
 
-        # CPUä½¿ç¨çè¯å (0-100% -> 24-0å)
+        # CPU使用率评分 (0-100% -> 24-0分)
         cpu_usage_score = 24 * (1 - cpu_percent / 100)
 
-        # ä¸ä¸æåæ¢è¯å (0-100K -> 16-0å)
+        # 上下文切换评分 (0-100K -> 16-0分)
         ctx_switch_score = 16 * (1 - min(context_switches / 100000, 1))
 
         total = cpu_usage_score + ctx_switch_score
@@ -681,24 +640,24 @@ class SystemBottleneckAnalyzer:
         return max(0, min(40, total)), details
 
     def _calculate_memory_score(self, metrics: Dict) -> tuple[float, Dict]:
-        """è®¡ç®åå­ç»´åº¦å¾åï¼æ»¡å30ï¼.
+        """计算内存维度得分（满分30）.
 
-        è¯åå ç´ ï¼
-        1. åå­ä½¿ç¨ç (æé0.6)
-        2. äº¤æ¢æ´»å¨ (æé0.4, swapæ´»å¨=0å)
+        评分因素：
+        1. 内存使用率 (权重0.6)
+        2. 交换活动 (权重0.4, swap活动=0分)
         """
         memory_percent = metrics.get("memory_percent", 0)
 
-        # è·ååå­å­ç³»ç»ææ 
+        # 获取内存子系统指标
         memory_subsystem = metrics.get("memory_subsystem", {})
         swap_in = memory_subsystem.get("swap_in_kbps", 0)
         swap_out = memory_subsystem.get("swap_out_kbps", 0)
         has_swap = swap_in > 0 or swap_out > 0
 
-        # åå­ä½¿ç¨çè¯å (0-100% -> 18-0å)
+        # 内存使用率评分 (0-100% -> 18-0分)
         memory_usage_score = 18 * (1 - memory_percent / 100)
 
-        # äº¤æ¢æ´»å¨è¯å (æswap=0å, æ swap=12å)
+        # 交换活动评分 (有swap=0分, 无swap=12分)
         swap_score = 0 if has_swap else 12
 
         total = memory_usage_score + swap_score
@@ -715,16 +674,16 @@ class SystemBottleneckAnalyzer:
         return max(0, min(30, total)), details
 
     def _calculate_disk_score(self, metrics: Dict) -> tuple[float, Dict]:
-        """è®¡ç®ç£çI/Oç»´åº¦å¾åï¼æ»¡å15ï¼.
+        """计算磁盘I/O维度得分（满分15）.
 
-        è¯åå ç´ ï¼
-        1. I/Oå»¶è¿ (æé1.0)
+        评分因素：
+        1. I/O延迟 (权重1.0)
         """
-        # è·åå­å¨å­ç³»ç»ææ 
+        # 获取存储子系统指标
         storage_subsystem = metrics.get("storage_subsystem", {})
         disks = storage_subsystem.get("disks", {})
 
-        # åææç£ççå¹³åå»¶è¿
+        # 取所有磁盘平均延迟
         latencies = []
         for disk_info in disks.values():
             latency = disk_info.get("average_io_latency_ms", 0)
@@ -733,8 +692,8 @@ class SystemBottleneckAnalyzer:
 
         avg_latency = sum(latencies) / len(latencies) if latencies else 0
 
-        # I/Oå»¶è¿è¯å (0-50ms -> 15-0å)
-        # <10ms=æ»¡å, 10-20ms=æ­£å¸¸, >20ms=ç¶é¢, >50ms=0å
+        # I/O延迟评分 (0-50ms -> 15-0分)
+        # <10ms=满分, 10-20ms=正常, >20ms=瓶颈, >50ms=0分
         latency_score = 15 * (1 - min(avg_latency / 50, 1))
 
         details = {
@@ -746,19 +705,19 @@ class SystemBottleneckAnalyzer:
         return max(0, min(15, latency_score)), details
 
     def _calculate_network_score(self, metrics: Dict) -> tuple[float, Dict]:
-        """è®¡ç®ç½ç»ç»´åº¦å¾åï¼æ»¡å15ï¼.
+        """计算网络维度得分（满分15）.
 
-        è¯åå ç´ ï¼
-        1. ä¸¢åç (æé1.0)
+        评分因素：
+        1. 丢包率 (权重1.0)
         """
-        # è·åç½ç»å­ç³»ç»ææ 
+        # 获取网络子系统指标
         network_subsystem = metrics.get("network_subsystem", {})
         loss_in = network_subsystem.get("packet_loss_rate_in", 0)
         loss_out = network_subsystem.get("packet_loss_rate_out", 0)
         max_loss = max(loss_in, loss_out)
 
-        # ä¸¢åçè¯å (0-5% -> 15-0å)
-        # <0.5%=æ»¡å, 0.5-2%=æ­£å¸¸, >2%=ç¶é¢, >5%=0å
+        # 丢包率评分 (0-5% -> 15-0分)
+        # <0.5%=满分, 0.5-2%=正常, >2%=瓶颈, >5%=0分
         loss_score = 15 * (1 - min(max_loss / 0.05, 1))
 
         details = {
@@ -771,7 +730,7 @@ class SystemBottleneckAnalyzer:
         return max(0, min(15, loss_score)), details
 
     def _get_severity(self, total_score: float) -> str:
-        """æ ¹æ®æ»åå¤æ­ä¸¥éç¨åº¦."""
+        """根据总分判断严重程度."""
         if total_score < self.severity_thresholds["critical"]:
             return "critical"
         elif total_score < self.severity_thresholds["warning"]:
@@ -784,12 +743,12 @@ class SystemBottleneckAnalyzer:
     def _generate_suggestions(
         self, bottleneck: str, details: Dict, system_metrics: Dict
     ) -> List[str]:
-        """çæä¼åå»ºè®®.
+        """生成优化建议.
 
         Args:
-            bottleneck: ç¶é¢ç»´åº¦
-            details: è¯¥ç»´åº¦çè¯¦ç»ä¿¡æ¯
-            system_metrics: å®æ´ç³»ç»ææ 
+            bottleneck: 瓶颈维度
+            details: 该维度详细信息
+            system_metrics: 完整系统指标
         """
         suggestions = []
 
@@ -798,93 +757,93 @@ class SystemBottleneckAnalyzer:
             ctx_switches = details.get("context_switches_per_sec", 0)
 
             if cpu_percent > 85:
-                suggestions.append("CPUä½¿ç¨çè¿é«ï¼å»ºè®®ä¼åç®æ³å¤æåº¦æä½¿ç¨å¤è¿ç¨å¹¶è¡")
+                suggestions.append("CPU使用率过高，建议优化算法复杂度或使用多进程并行")
             if ctx_switches > 50000:
-                suggestions.append("ä¸ä¸æåæ¢é¢ç¹ï¼å»ºè®®åå°çº¿ç¨æ°æä½¿ç¨åç¨")
+                suggestions.append("上下文切换频繁，建议减少线程数或使用协程")
             if cpu_percent > 70:
-                suggestions.append("èèéä½æ°æ®å¤çå¹¶åæ°")
+                suggestions.append("考虑降低数据处理并发数")
 
         elif bottleneck == "memory":
             memory_percent = details.get("memory_percent", 0)
             has_swap = details.get("has_swap_activity", False)
 
             if has_swap:
-                suggestions.append("â ï¸ æ£æµå°åå­äº¤æ¢æ´»å¨ï¼ä¸¥éå½±åæ§è½ï¼ç«å³éä½è´è½½50%")
-                suggestions.append("æ£æ¥æ¯å¦å­å¨åå­æ³æ¼")
-                suggestions.append("èèå¢å ç©çåå­")
+                suggestions.append("⚠️ 检测到内存交换活动，严重影响性能，立即降低负载50%")
+                suggestions.append("检查是否存在内存泄漏")
+                suggestions.append("考虑增加物理内存")
             elif memory_percent > 85:
-                suggestions.append("åå­ä½¿ç¨çè¿é«ï¼å»ºè®®åå°æ°æ®ç¼å­æåæ¹å¤ç")
+                suggestions.append("内存使用率过高，建议减少数据缓存或分批处理")
 
         elif bottleneck == "disk":
             latency = details.get("average_io_latency_ms", 0)
 
             if latency > 20:
-                suggestions.append("ç£çI/Oå»¶è¿è¿é«ï¼å»ºè®®ä½¿ç¨SSD")
-                suggestions.append("åå°ç£çI/Oæä½æéä½I/Oå¹¶åæ°")
-                suggestions.append("æ£æ¥SMARTç¶æï¼æé¤ç¡¬çæé")
+                suggestions.append("磁盘I/O延迟过高，建议使用SSD")
+                suggestions.append("减少磁盘I/O操作或降低I/O并发数")
+                suggestions.append("检查SMART状态，排除硬盘故障")
             if latency > 10:
-                suggestions.append("ä½¿ç¨å¼æ­¥I/Oæå¢å ç¼å²")
+                suggestions.append("使用异步I/O或增加缓冲")
 
         elif bottleneck == "network":
             max_loss = details.get("max_packet_loss", 0)
 
             if max_loss > 0.02:
-                suggestions.append("ç½ç»ä¸¢åçè¿é«ï¼æ£æ¥ç½ç»è´¨é")
-                suggestions.append("èèåæ¢æ´ç¨³å®çç½ç»ææå¡å¨")
+                suggestions.append("网络丢包率过高，检查网络质量")
+                suggestions.append("考虑切换更稳定网络或服务器")
             if max_loss > 0.005:
-                suggestions.append("ç½ç»å­å¨æ³¢å¨ï¼å»ºè®®æ·»å éè¯æºå¶")
+                suggestions.append("网络存在波动，建议添加重试机制")
 
         if not suggestions:
-            suggestions.append("ç³»ç»æ§è½åè¡¡ï¼æ ææ¾ç¶é¢")
+            suggestions.append("系统性能均衡，无明显瓶颈")
 
         return suggestions
 
 
 class ScenarioAnalyzer:
-    """éååºæ¯åæå¨ï¼ä» scenario_analyzer.py åå¹¶ï¼.
+    """量化场景分析器（从 scenario_analyzer.py 合并）.
 
-    è¯å«å½åè¿è¡çä¸»è¦éååºæ¯ï¼å¹¶æä¾åºæ¯ç¹å®çç¶é¢åæåä¼åå»ºè®®ã
-    æ¯æ5å¤§éååºæ¯ï¼æ°æ®ä¸è½½ãå®æ¶è¡æãç­ç¥åæµãç­ç¥ç¼åãå®çäº¤æã
+    识别当前运行主要量化场景，并提供场景特定瓶颈分析和优化建议。
+    支持5大量化场景：数据下载、实时行情、策略回测、策略编写、实盘交易。
     """
 
     def __init__(self):
-        """åå§ååºæ¯åæå¨."""
+        """初始化场景分析器."""
         self.logger = logging.getLogger(__name__)
 
-        # åºæ¯å³é®å­æ å°
+        # 场景关键字映射
         self.scenario_keywords = {
-            "data_download": ["download", "æ°æ®ä¸è½½", "åå²æ°æ®", "tdx", "akshare"],
-            "realtime_market": ["market", "è¡æ", "tick", "websocket", "quote"],
-            "backtest": ["backtest", "åæµ", "ç­ç¥åæµ", "strategy"],
-            "strategy_edit": ["ç¼è¾", "ç¼è¯", "ide", "code"],
-            "live_trading": ["trading", "äº¤æ", "gateway", "order", "å®ç"],
+            "data_download": ["download", "数据下载", "历史数据", "tdx", "akshare"],
+            "realtime_market": ["market", "行情", "tick", "websocket", "quote"],
+            "backtest": ["backtest", "回测", "策略回测", "strategy"],
+            "strategy_edit": ["编辑", "编译", "ide", "code"],
+            "live_trading": ["trading", "交易", "gateway", "order", "实盘"],
         }
 
-        # åºæ¯æ¾ç¤ºåç§°
+        # 场景显示名称
         self.scenario_names = {
-            "data_download": "æ°æ®ä¸è½½",
-            "realtime_market": "å®æ¶è¡æ",
-            "backtest": "ç­ç¥åæµ",
-            "strategy_edit": "ç­ç¥ç¼å",
-            "live_trading": "å®çäº¤æ",
-            "idle": "ç©ºé²",
+            "data_download": "数据下载",
+            "realtime_market": "实时行情",
+            "backtest": "策略回测",
+            "strategy_edit": "策略编写",
+            "live_trading": "实盘交易",
+            "idle": "空闲",
         }
 
     def detect_scenario(self, process_data: List[Dict]) -> str:
-        """æ£æµå½åä¸»è¦åºæ¯.
+        """检测当前主要场景.
 
         Args:
-            process_data: è¿ç¨åè¡¨æ°æ®
+            process_data: 进程列表数据
 
         Returns:
-            åºæ¯æ è¯: data_download / realtime_market / backtest /
+            场景标识: data_download / realtime_market / backtest /
                      strategy_edit / live_trading / idle
         """
         try:
             if not process_data:
                 return "idle"
 
-            # ç»è®¡ååºæ¯çè¿ç¨æ°åCPUå ç¨
+            # 统计各场景进程数和CPU占用
             scenario_scores = {
                 "data_download": 0,
                 "realtime_market": 0,
@@ -898,40 +857,40 @@ class ScenarioAnalyzer:
                 proc_type = proc.get("type", "").lower()
                 cpu_percent = proc.get("cpu_percent", 0)
 
-                # æ ¹æ®è¿ç¨ååç±»åè¯å
+                # 根据进程名和类型评分
                 for scenario, keywords in self.scenario_keywords.items():
                     for keyword in keywords:
                         if keyword in proc_name or keyword in proc_type:
-                            # è¯å = 1 + CPUå ç¨æé
+                            # 评分 = 1 + CPU占用权重
                             scenario_scores[scenario] += 1 + (cpu_percent / 100)
                             break
 
-            # è¿åå¾åæé«çåºæ¯
+            # 返回得分最高场景
             if max(scenario_scores.values()) > 0:
                 return max(scenario_scores.keys(), key=lambda k: scenario_scores[k])
             else:
                 return "idle"
 
         except Exception as e:
-            self.logger.error("åºæ¯æ£æµå¤±è´¥: %s", e)
+            self.logger.error("场景检测失败: %s", e)
             return "idle"
 
     def analyze_scenario(self, scenario: str, metrics: Dict[str, Any]) -> Dict[str, Any]:
-        """åºæ¯ä¸é¡¹åæ.
+        """场景专项分析.
 
         Args:
-            scenario: åºæ¯æ è¯
-            metrics: ç³»ç»ææ æ°æ®
+            scenario: 场景标识
+            metrics: 系统指标数据
 
         Returns:
             {
                 "scenario": "data_download",
-                "scenario_name": "æ°æ®ä¸è½½",
+                "scenario_name": "数据下载",
                 "bottleneck_metrics": ["network_speed", "disk_io"],
                 "current_values": {...},
                 "thresholds": {...},
                 "is_bottleneck": True,
-                "bottleneck_reason": "ç½ç»å¸¦å®½æ¥è¿ä¸é",
+                "bottleneck_reason": "网络带宽接近上限",
                 "optimization_hints": [...]
             }
         """
@@ -952,15 +911,15 @@ class ScenarioAnalyzer:
                 return self._analyze_idle_scenario(system_metrics)
 
         except Exception as e:
-            self.logger.error("åºæ¯åæå¤±è´¥: %s", e, exc_info=True)
+            self.logger.error("场景分析失败: %s", e, exc_info=True)
             return {
                 "scenario": scenario,
-                "scenario_name": self.scenario_names.get(scenario, "æªç¥"),
+                "scenario_name": self.scenario_names.get(scenario, "未知"),
                 "error": str(e),
             }
 
     def _analyze_download_scenario(self, metrics: Dict) -> Dict[str, Any]:
-        """åææ°æ®ä¸è½½åºæ¯."""
+        """分析数据下载场景."""
         network_speed = metrics.get("network_speed", {})
         disk_io = metrics.get("disk_io_speed", {})
         storage_subsystem = metrics.get("storage_subsystem", {})
@@ -968,16 +927,15 @@ class ScenarioAnalyzer:
         download_mbps = network_speed.get("download_kbps", 0) / 1024
         write_mbps = disk_io.get("write_mbps", 0)
 
-        # è·åå¹³åI/Oå»¶è¿
+        # 获取平均I/O延迟
         disks = storage_subsystem.get("disks", {})
         latencies = [d.get("average_io_latency_ms", 0) for d in disks.values()]
         avg_latency = sum(latencies) / len(latencies) if latencies else 0
 
-        # TODO: ä»ä¸å¡ææ è·åä¸è½½å¹¶åæ°
-        # ✅ 从业务指标获取下载并发数（TODO #9已完成）
+        # TODO: 从业务指标获取下载并发数
+        # ✓ 从业务指标获取下载并发数（TODO #9已完成）
         download_concurrency = self.business_metrics.get_latest_value(
-            "download_concurrency",
-            default=8
+            "download_concurrency", default=8
         )
 
         current_values = {
@@ -987,31 +945,31 @@ class ScenarioAnalyzer:
             "download_concurrency": download_concurrency,
         }
 
-        # ç¶é¢å¤æ­
+        # 瓶颈判断
         is_bottleneck = False
         bottleneck_reason = ""
         hints = []
 
         if download_mbps < 50 and write_mbps > download_mbps * 1.5:
             is_bottleneck = True
-            bottleneck_reason = "ç½ç»å¸¦å®½æ¯ç¶é¢ï¼ç£çåå¥è½ååè¶³ï¼"
-            hints.append("åçº§ç½ç»å¸¦å®½æä½¿ç¨CDN")
-            hints.append("èèå¤çº¿ç¨ä¸è½½")
+            bottleneck_reason = "网络带宽是瓶颈（磁盘写入能力充足）"
+            hints.append("升级网络带宽或使用CDN")
+            hints.append("考虑多线程下载")
         elif avg_latency > 20:
             is_bottleneck = True
-            bottleneck_reason = "ç£çI/Oå»¶è¿è¿é«"
-            hints.append("ä½¿ç¨SSDæååå¥æ§è½")
-            hints.append("åå°ä¸è½½å¹¶åæ°ä»¥éä½I/Oåå")
+            bottleneck_reason = "磁盘I/O延迟过高"
+            hints.append("使用SSD提升写入性能")
+            hints.append("减少下载并发数以降低I/O压力")
         elif write_mbps < 50:
             is_bottleneck = True
-            bottleneck_reason = "ç£çåå¥éåº¦è¾æ¢"
-            hints.append("æ£æ¥ç£çæ§è½ï¼èèåçº§")
+            bottleneck_reason = "磁盘写入速度较慢"
+            hints.append("检查磁盘性能，考虑升级")
         else:
-            hints.append("ä¸è½½æ§è½æ­£å¸¸")
+            hints.append("下载性能正常")
 
         return {
             "scenario": "data_download",
-            "scenario_name": "æ°æ®ä¸è½½",
+            "scenario_name": "数据下载",
             "bottleneck_metrics": ["network_download_mbps", "disk_write_mbps", "io_latency_ms"],
             "current_values": current_values,
             "thresholds": {
@@ -1025,22 +983,18 @@ class ScenarioAnalyzer:
         }
 
     def _analyze_realtime_scenario(self, metrics: Dict) -> Dict[str, Any]:
-        """åæå®æ¶è¡æåºæ¯."""
+        """分析实时行情场景."""
         cpu_detailed = metrics.get("cpu_detailed", {})
         network_subsystem = metrics.get("network_subsystem", {})
 
         ctx_switches = cpu_detailed.get("context_switches_per_sec", 0)
         loss_in = network_subsystem.get("packet_loss_rate_in", 0)
 
-        # TODO: ä»ä¸å¡ææ è·åäºä»¶éåæ·±åº¦åå¤çå»¶è¿
-        # ✅ 从业务指标获取事件队列深度和处理延迟（TODO #10已完成）
-        event_queue_depth = self.business_metrics.get_latest_value(
-            "event_queue_depth",
-            default=0
-        )
+        # TODO: 从业务指标获取事件队列深度和处理延迟
+        # ✓ 从业务指标获取事件队列深度和处理延迟（TODO #10已完成）
+        event_queue_depth = self.business_metrics.get_latest_value("event_queue_depth", default=0)
         processing_latency = self.business_metrics.get_latest_value(
-            "event_processing_latency_ms",
-            default=0
+            "event_processing_latency_ms", default=0
         )
 
         current_values = {
@@ -1050,30 +1004,30 @@ class ScenarioAnalyzer:
             "packet_loss_rate": round(loss_in * 100, 3),
         }
 
-        # ç¶é¢å¤æ­
+        # 瓶颈判断
         is_bottleneck = False
         bottleneck_reason = ""
         hints = []
 
         if event_queue_depth > 1000:
             is_bottleneck = True
-            bottleneck_reason = "äºä»¶éåç§¯åï¼æ¶è´¹è½åä¸è¶³"
-            hints.append("å¢å äºä»¶å¤ççº¿ç¨æ°")
-            hints.append("ä¼åäºä»¶å¤çé»è¾")
+            bottleneck_reason = "事件队列积压，消费能力不足"
+            hints.append("增加事件处理线程数")
+            hints.append("优化事件处理逻辑")
         elif ctx_switches > 50000:
             is_bottleneck = True
-            bottleneck_reason = "ä¸ä¸æåæ¢é¢ç¹ï¼è°åº¦ååå¤§"
-            hints.append("åå°çº¿ç¨æ°æä½¿ç¨åç¨")
+            bottleneck_reason = "上下文切换频繁，调度压力大"
+            hints.append("减少线程数或使用协程")
         elif loss_in > 0.005:
             is_bottleneck = True
-            bottleneck_reason = "ç½ç»ä¸¢åçåé«"
-            hints.append("æ£æ¥ç½ç»è´¨éï¼èèåæ¢æå¡å¨")
+            bottleneck_reason = "网络丢包率偏高"
+            hints.append("检查网络质量，考虑切换服务器")
         else:
-            hints.append("è¡æå¤çæ§è½æ­£å¸¸")
+            hints.append("行情处理性能正常")
 
         return {
             "scenario": "realtime_market",
-            "scenario_name": "å®æ¶è¡æ",
+            "scenario_name": "实时行情",
             "bottleneck_metrics": [
                 "event_queue_depth",
                 "processing_latency_ms",
@@ -1091,7 +1045,7 @@ class ScenarioAnalyzer:
         }
 
     def _analyze_backtest_scenario(self, metrics: Dict) -> Dict[str, Any]:
-        """åæç­ç¥åæµåºæ¯."""
+        """分析策略回测场景."""
         cpu_percent = metrics.get("cpu_percent", 0)
         memory_percent = metrics.get("memory_percent", 0)
         memory_subsystem = metrics.get("memory_subsystem", {})
@@ -1099,8 +1053,8 @@ class ScenarioAnalyzer:
         swap_in = memory_subsystem.get("swap_in_kbps", 0)
         swap_out = memory_subsystem.get("swap_out_kbps", 0)
 
-        # TODO: ä»ä¸å¡ææ è·åKçº¿è®¡ç®æ¶é´
-        kline_calc_time = 0  # é»è®¤å¼
+        # TODO: 从业务指标获取K线计算时间
+        kline_calc_time = 0  # 默认值
 
         current_values = {
             "cpu_percent": round(cpu_percent, 1),
@@ -1109,34 +1063,34 @@ class ScenarioAnalyzer:
             "kline_calc_time_ms": kline_calc_time,
         }
 
-        # ç¶é¢å¤æ­
+        # 瓶颈判断
         is_bottleneck = False
         bottleneck_reason = ""
         hints = []
 
         if swap_in > 0 or swap_out > 0:
             is_bottleneck = True
-            bottleneck_reason = "â ï¸ åå­äº¤æ¢æ´»å¨ï¼ä¸¥éå½±ååæµéåº¦"
-            hints.append("ç«å³åå°åæµæ°æ®éæéä½å¹¶åæ°")
-            hints.append("æ£æ¥æ¯å¦å­å¨åå­æ³æ¼")
+            bottleneck_reason = "⚠️ 内存交换活动，严重影响吞吐速度"
+            hints.append("立即减少回测数据量或降低并发数")
+            hints.append("检查是否存在内存泄漏")
         elif cpu_percent > 85:
             is_bottleneck = True
-            bottleneck_reason = "CPUè´è½½è¿é«ï¼è®¡ç®å¯é"
-            hints.append("éä½åæµå¹¶åæ°")
-            hints.append("ä¼åç­ç¥ç®æ³å¤æåº¦")
+            bottleneck_reason = "CPU负载过高，计算密集"
+            hints.append("降低回测并发数")
+            hints.append("优化策略算法复杂度")
         elif memory_percent > 85:
             is_bottleneck = True
-            bottleneck_reason = "åå­ä½¿ç¨çè¿é«"
-            hints.append("åæ¹åæµæåå°æ°æ®ç¼å­")
+            bottleneck_reason = "内存使用率过高"
+            hints.append("分批回测或减少数据缓存")
         else:
-            hints.append("åæµæ§è½æ­£å¸¸")
+            hints.append("回测性能正常")
             hints.append(
-                f"å»ºè®®å¹¶åç¼©æ¾å å­: {self._suggest_scale_factor(cpu_percent, memory_percent)}"
+                f"建议并发缩放因子: {self._suggest_scale_factor(cpu_percent, memory_percent)}"
             )
 
         return {
             "scenario": "backtest",
-            "scenario_name": "ç­ç¥åæµ",
+            "scenario_name": "策略回测",
             "bottleneck_metrics": ["cpu_percent", "memory_percent", "swap_activity_kbps"],
             "current_values": current_values,
             "thresholds": {
@@ -1150,7 +1104,7 @@ class ScenarioAnalyzer:
         }
 
     def _analyze_strategyedit_scenario(self, metrics: Dict) -> Dict[str, Any]:
-        """åæç­ç¥ç¼ååºæ¯."""
+        """分析策略编写场景."""
         cpu_percent = metrics.get("cpu_percent", 0)
         memory_percent = metrics.get("memory_percent", 0)
 
@@ -1159,12 +1113,12 @@ class ScenarioAnalyzer:
             "memory_percent": round(memory_percent, 1),
         }
 
-        # ç­ç¥ç¼åéå¸¸è´è½½è¾ä½
-        hints = ["ç­ç¥ç¼ååºæ¯ï¼ç³»ç»è´è½½æ­£å¸¸"]
+        # 策略编写通常负载较低
+        hints = ["策略编写场景，系统负载正常"]
 
         return {
             "scenario": "strategy_edit",
-            "scenario_name": "ç­ç¥ç¼å",
+            "scenario_name": "策略编写",
             "bottleneck_metrics": ["cpu_percent", "memory_percent"],
             "current_values": current_values,
             "thresholds": {
@@ -1177,15 +1131,15 @@ class ScenarioAnalyzer:
         }
 
     def _analyze_trading_scenario(self, metrics: Dict) -> Dict[str, Any]:
-        """åæå®çäº¤æåºæ¯."""
+        """分析实盘交易场景."""
         network_subsystem = metrics.get("network_subsystem", {})
         cpu_temp = metrics.get("temperature", {}).get("cpu", 0)
 
         loss_in = network_subsystem.get("packet_loss_rate_in", 0)
 
-        # TODO: ä»ä¸å¡ææ è·åè®¢åååºæ¶é´åäº¤æéåé¿åº¦
-        order_response_ms = 0  # é»è®¤å¼
-        trading_queue_len = 0  # é»è®¤å¼
+        # TODO: 从业务指标获取订单响应时间和交易队列长度
+        order_response_ms = 0  # 默认值
+        trading_queue_len = 0  # 默认值
 
         current_values = {
             "order_response_time_ms": order_response_ms,
@@ -1194,29 +1148,29 @@ class ScenarioAnalyzer:
             "cpu_temperature": round(cpu_temp, 1),
         }
 
-        # ç¶é¢å¤æ­
+        # 瓶颈判断
         is_bottleneck = False
         bottleneck_reason = ""
         hints = []
 
         if order_response_ms > 500:
             is_bottleneck = True
-            bottleneck_reason = "è®¢åååºå»¶è¿è¿é«"
-            hints.append("ä¼åäº¤æééï¼åå°ç½ç»å»¶è¿")
+            bottleneck_reason = "订单响应延迟过高"
+            hints.append("优化交易通道，减少网络延迟")
         elif loss_in > 0.005:
             is_bottleneck = True
-            bottleneck_reason = "ç½ç»ä¸¢åçåé«ï¼å¯è½å½±åè®¢å"
-            hints.append("æ£æ¥ç½ç»ç¨³å®æ§")
+            bottleneck_reason = "网络丢包率偏高，可能影响订单"
+            hints.append("检查网络稳定性")
         elif cpu_temp > 80:
             is_bottleneck = True
-            bottleneck_reason = "CPUæ¸©åº¦è¿é«ï¼å¯è½éé¢"
-            hints.append("æ¹åæ£ç­ï¼é¿åå½±åäº¤æç¨³å®æ§")
+            bottleneck_reason = "CPU温度过高，可能降频"
+            hints.append("改善散热，避免影响交易稳定性")
         else:
-            hints.append("äº¤æç³»ç»è¿è¡ç¨³å®")
+            hints.append("交易系统运行稳定")
 
         return {
             "scenario": "live_trading",
-            "scenario_name": "å®çäº¤æ",
+            "scenario_name": "实盘交易",
             "bottleneck_metrics": ["order_response_time_ms", "packet_loss_rate", "cpu_temperature"],
             "current_values": current_values,
             "thresholds": {
@@ -1230,20 +1184,20 @@ class ScenarioAnalyzer:
         }
 
     def _analyze_idle_scenario(self, metrics: Dict) -> Dict[str, Any]:
-        """åæç©ºé²åºæ¯."""
+        """分析空闲场景."""
         return {
             "scenario": "idle",
-            "scenario_name": "ç©ºé²",
+            "scenario_name": "空闲",
             "bottleneck_metrics": [],
             "current_values": {},
             "thresholds": {},
             "is_bottleneck": False,
             "bottleneck_reason": "",
-            "optimization_hints": ["ç³»ç»å½åç©ºé²"],
+            "optimization_hints": ["系统当前空闲"],
         }
 
     def _suggest_scale_factor(self, cpu_percent: float, memory_percent: float) -> float:
-        """æ ¹æ®CPUååå­ä½¿ç¨çå»ºè®®å¹¶åç¼©æ¾å å­."""
+        """根据CPU和内存使用率建议并发缩放因子."""
         if cpu_percent > 85 or memory_percent > 85:
             return 0.7
         elif cpu_percent > 70 or memory_percent > 70:
@@ -1257,48 +1211,48 @@ class ScenarioAnalyzer:
 
 
 # =============================================================================
-# Part 6: çæ§è¿ç¨V2ä¸»ç±»ï¼æ··åå¹¶åæ¶æï¼
+# Part 6: 监控进程V2主类（混合并发架构）
 # =============================================================================
 
+
 class MonitoringProcessV2:
-    """çæ§è¿ç¨V2 - æ··åå¹¶åæ¶æ.
+    """监控进程V2 - 混合并发架构.
 
-    æ¶æ:
-    - ä¸»äºä»¶å¾ªç¯ (asyncio): ZMQéä¿¡ãå¿«éææ éé
-    - é»å¡ä»»å¡çº¿ç¨æ± : ç¡¬ä»¶ä¼ æå¨ééãSMARTæ¥è¯¢
-    - æ°æ®åºåå¥åç¨: æ¹éæä¹å
+    架构:
+    - 主事件循环 (asyncio): ZMQ通信、快速指标采集
+    - 阻塞任务线程池: 硬件传感器采集、SMART查询
+    - 数据库写入协程: 批量持久化
 
-    è°è¯æç¤º:
-    - è®¾ç½®æ­ç¹å¨ start() æ¥çå¯å¨æµç¨
-    - è®¾ç½®æ­ç¹å¨ _evaluate_alerts() æ¥çåè­¦è¯ä¼°
-    - è®¾ç½®æ­ç¹å¨ _hardware_collector_thread() æ¥çç¡¬ä»¶éé
+    调试提示:
+    - 设置断点在 start() 查看启动流程
+    - 设置断点在 _evaluate_alerts() 查看告警评估
+    - 设置断点在 _hardware_collector_thread() 查看硬件采集
     """
 
     def __init__(self, db_path: str = "data/terminal.db", parent_pid: Optional[int] = None):
         self.running = False
         self.loop: Optional[asyncio.AbstractEventLoop] = None
 
-        # ç¶è¿ç¨çæ§ï¼é²æ­¢æä¸ºå­¤å¿è¿ç¨ï¼
+        # 父进程监控（防止成为孤儿进程）
         import os
 
         if parent_pid is None:
-            self.parent_pid = os.getppid()  # å¦ææªæä¾ï¼åèªå¨è·å
+            self.parent_pid = os.getppid()  # 如果未提供，则自动获取
         else:
-            self.parent_pid = parent_pid  # ä½¿ç¨ä¼ å¥çç¶è¿ç¨PID
+            self.parent_pid = parent_pid  # 使用传入父进程PID
 
         logger.info(
-            "[PARENT-MONITOR] ç¶è¿ç¨PIDï¼ä¸»åºç¨ï¼: %d, å½åè¿ç¨PIDï¼çæ§è¿ç¨ï¼: %d",
+            "[PARENT-MONITOR] 父进程PID（主应用）: %d, 当前进程PID（监控进程）: %d",
             self.parent_pid,
             os.getpid(),
         )
 
-        # ð¥ Debug: åå§åæ­¥éª¤1 - åºç¡éç½®
+        # 🔥 Debug: 初始化步骤1 - 基础配置
         try:
-            from backend.core.debug_logger import get_debug_logger
-
-            self.debug_logger = get_debug_logger("monitor")
+            # debug_logger已废弃，使用标准logging
+            pass
             self.debug_logger.debug_init_step(
-                "åºç¡éç½®",
+                "基础配置",
                 {
                     "db_path": db_path,
                     "parent_pid": self.parent_pid,
@@ -1306,15 +1260,15 @@ class MonitoringProcessV2:
                 },
             )
         except Exception:
-            pass  # Debugæ¥å¿å¤±è´¥ä¸å½±ååè½
+            pass  # Debug日志失败不影响功能
 
-        # ZMQéä¿¡
+        # ZMQ通信
         self.zmq_context: Optional[zmq.asyncio.Context] = None
         self.push_socket: Optional[zmq.asyncio.Socket] = None
         self.rep_socket: Optional[zmq.asyncio.Socket] = None
         self.pull_socket: Optional[zmq.asyncio.Socket] = None
 
-        # æ°æ®ç¼å­
+        # 数据缓存
         self.monitoring_data = {
             "system": {},
             "hardware": {},
@@ -1323,54 +1277,53 @@ class MonitoringProcessV2:
             "smart": {},
         }
 
-        # çæ§å·¥å·
+        # 监控工具
         # 监控工具（所有类已在本文件中定义，无需导入）
         # SystemMonitor, ProcessMonitor等已在本文件Part 7-10中定义
 
-
-        # ð¥ Debug: åå§åæ­¥éª¤2 - åå»ºçæ§ç»ä»¶
+        # 🔥 Debug: 初始化步骤2 - 创建监控组件
         try:
-            self.debug_logger.debug_init_step("å¼å§åå»ºçæ§ç»ä»¶")
+            self.debug_logger.debug_init_step("开始创建监控组件")
         except Exception:
             pass
 
         self.system_monitor = SystemMonitor()
         self.process_monitor = ProcessMonitor()
-        self.process_bottleneck_analyzer = ProcessBottleneckAnalyzer()  # è¿ç¨çº§ç¶é¢åæå¨
-        self.system_bottleneck_analyzer = SystemBottleneckAnalyzer()  # ç³»ç»çº§ç¶é¢åæå¨ï¼æ¬å°ï¼
-        self.scenario_analyzer = ScenarioAnalyzer()  # åºæ¯åæå¨ï¼æ¬å°ï¼
-        self.business_metrics_collector = get_business_metrics_collector()  # ä¸å¡ææ ééå¨
+        self.process_bottleneck_analyzer = ProcessBottleneckAnalyzer()  # 进程级瓶颈分析器
+        self.system_bottleneck_analyzer = SystemBottleneckAnalyzer()  # 系统级瓶颈分析器（本地）
+        self.scenario_analyzer = ScenarioAnalyzer()  # 场景分析器（本地）
+        self.business_metrics_collector = get_business_metrics_collector()  # 业务指标采集器
         self.hardware_monitor = HardwareMonitorFactory.create_monitor()
         self.smart_monitor = SmartMonitor()
 
-        # åè­¦åéå¼
+        # 告警和阈值
         self.adaptive_threshold: Optional[AdaptiveThresholdManager] = None
 
-        # çº¿ç¨æ± 
+        # 线程池
         self.executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="MonitorWorker")
 
-        # åç¨å¯å¨å±éï¼ç¡®ä¿ææåç¨é½å®æåå§åï¼
+        # 协程启动屏障（确保所有协程都完成初始化）
         self.coroutine_ready_events: Dict[str, asyncio.Event] = {}
 
-        # æ°æ®åºåå¥éå
+        # 数据库写入队列
         self.db_write_queue: Optional[asyncio.Queue] = None
         self.db_path = db_path
 
-        # çº¿ç¨é´éä¿¡éå
+        # 线程间通信队列
         self.hardware_queue: Optional[asyncio.Queue] = None
         self.smart_queue: Optional[asyncio.Queue] = None
         self.smart_trigger_event: Optional[asyncio.Event] = None
 
-        # ééé´é
-        self.fast_interval = 1  # ç³»ç»ãè¿ç¨
-        self.slow_interval = 5  # ç¡¬ä»¶ä¼ æå¨
+        # 采集间隔
+        self.fast_interval = 1  # 系统、进程
+        self.slow_interval = 5  # 硬件传感器
 
-        logger.info("MonitoringProcessV2 åå§åå®æ")
+        logger.info("MonitoringProcessV2 初始化完成")
 
-        # ð¥ Debug: åå§åå®æ
+        # 🔥 Debug: 初始化完成
         try:
             self.debug_logger.debug_init_step(
-                "åå§åå®æ",
+                "初始化完成",
                 {
                     "fast_interval": self.fast_interval,
                     "slow_interval": self.slow_interval,
@@ -1380,24 +1333,24 @@ class MonitoringProcessV2:
             pass
 
     async def _check_and_cleanup_old_process(self):
-        """æ£æ¥å¹¶æ¸çå ç¨ç«¯å£çæ§çæ§è¿ç¨ï¼åºäºç«¯å£æ£æµï¼ä¸ä¾èµæä»¶ï¼."""
+        """检查并清理占用端口旧监控进程（基于端口检测，不依赖文件）."""
         try:
             import psutil
 
-            # ð§ å³é®ä¿®å¤ï¼ç´æ¥æ£æ¥ç«¯å£å ç¨ï¼ä¸ä¾èµæä»¶è®°å½
-            # æ£æ¥é»è®¤ç«¯å£5557æ¯å¦è¢«å ç¨
-            target_ports = [5555, 5556, 5557]  # çæ§è¿ç¨ä½¿ç¨çä¸ä¸ªç«¯å£
+            # 🔧 关键修复：直接检查端口占用，不依赖文件记录
+            # 检查默认端口5557是否被占用
+            target_ports = [5555, 5556, 5557]  # 监控进程使用三个端口
 
             killed_any = False
             for port in target_ports:
-                # æ¥æ¾å ç¨è¯¥ç«¯å£çè¿ç¨
-                for conn in psutil.net_connections(kind='inet'):
-                    if conn.laddr.port == port and conn.status == 'LISTEN':
+                # 查找占用该端口进程
+                for conn in psutil.net_connections(kind="inet"):
+                    if conn.laddr.port == port and conn.status == "LISTEN":
                         pid = conn.pid
                         if not pid:
                             continue
 
-                        # æ£æ¥æ¯å¦æ¯å½åè¿ç¨
+                        # 检查是否是当前进程
                         current_pid = __import__("os").getpid()
                         if pid == current_pid:
                             continue
@@ -1406,80 +1359,83 @@ class MonitoringProcessV2:
                             proc = psutil.Process(pid)
                             cmdline = " ".join(proc.cmdline())
 
-                            # æ£æ¥æ¯å¦æ¯çæ§è¿ç¨
+                            # 检查是否是监控进程
                             if "monitor_process_entry" in cmdline or "monitor_core" in cmdline:
                                 logger.warning(
-                                    "[æ¸ç] åç°æ§çæ§è¿ç¨å ç¨ç«¯å£%d (PID=%d)ï¼æ­£å¨ç»æ­¢...",
-                                    port, pid
+                                    "[清理] 发现旧监控进程占用端口%d (PID=%d)，正在终止...",
+                                    port,
+                                    pid,
                                 )
                                 proc.terminate()
 
-                                # ç­å¾è¿ç¨éåº
+                                # 等待进程退出
                                 try:
                                     proc.wait(timeout=3)
-                                    logger.info("[æ¸ç] â æ§çæ§è¿ç¨ (PID=%d) å·²æ­£å¸¸ç»æ­¢", pid)
+                                    logger.info("[清理] ✅ 旧监控进程 (PID=%d) 已正常终止", pid)
                                     killed_any = True
                                 except psutil.TimeoutExpired:
-                                    logger.warning("[æ¸ç] æ§è¿ç¨æªååºï¼å¼ºå¶ææ­»...")
+                                    logger.warning("[清理] 旧进程未响应，强制杀死...")
                                     proc.kill()
-                                    logger.info("[æ¸ç] â æ§çæ§è¿ç¨ (PID=%d) å·²å¼ºå¶ç»æ­¢", pid)
+                                    logger.info("[清理] ✅ 旧监控进程 (PID=%d) 已强制终止", pid)
                                     killed_any = True
                             else:
                                 logger.warning(
-                                    "[æ¸ç] ç«¯å£%dè¢«PID=%då ç¨ï¼ä½ä¸æ¯çæ§è¿ç¨: %s",
-                                    port, pid, cmdline[:100]
+                                    "[清理] 端口%d被PID=%d占用，但不是监控进程: %s",
+                                    port,
+                                    pid,
+                                    cmdline[:100],
                                 )
                         except psutil.NoSuchProcess:
-                            logger.debug("[æ¸ç] è¿ç¨ PID=%d å·²ä¸å­å¨", pid)
+                            logger.debug("[清理] 进程 PID=%d 已不存在", pid)
                         except psutil.AccessDenied:
-                            logger.warning("[æ¸ç] æ æéè®¿é®è¿ç¨ PID=%d", pid)
+                            logger.warning("[清理] 无权限访问进程 PID=%d", pid)
 
-                        # åªå¤çç¬¬ä¸ä¸ªå ç¨è¿ç¨
+                        # 只处理第一个占用进程
                         break
 
-            # å¦æææ­»äºè¿ç¨ï¼ç­å¾ç«¯å£éæ¾
+            # 如果杀死了进程，等待端口释放
             if killed_any:
-                logger.info("[æ¸ç] ç­å¾ç«¯å£éæ¾...")
-                await asyncio.sleep(1.0)  # ç­å¾1ç§ç¡®ä¿ç«¯å£å®å¨éæ¾
-                logger.info("[æ¸ç] â ç«¯å£æ¸çå®æ")
+                logger.info("[清理] 等待端口释放...")
+                await asyncio.sleep(1.0)  # 等待1秒确保端口完全释放
+                logger.info("[清理] ✅ 端口清理完成")
             else:
-                logger.info("[æ¸ç] æªåç°éè¦æ¸ççæ§çæ§è¿ç¨")
+                logger.info("[清理] 未发现需要清理旧监控进程")
 
         except Exception as e:
-            logger.error("[æ¸ç] æ¸çæ§è¿ç¨æ¶åºé: %s", e, exc_info=True)
-            # ä¸æåºå¼å¸¸ï¼ç»§ç»­å¯å¨æµç¨
+            logger.error("[清理] 清理旧进程时出错: %s", e, exc_info=True)
+            # 不抛出异常，继续启动流程
 
     async def start(self):
-        """å¯å¨çæ§è¿ç¨ï¼å¼æ­¥ä¸»å¥å£ï¼- DEBUGå¥å£ç¹."""
+        """启动监控进程（异步主入口）- DEBUG入口点."""
         self.running = True
         self.loop = asyncio.get_event_loop()
 
         logger.info("=" * 60)
-        logger.info("çæ§è¿ç¨V2 å¯å¨")
+        logger.info("监控进程V2 启动")
         logger.info("=" * 60)
 
-        # ð¥ Debug: å¯å¨æµç¨å¼å§
+        # 🔥 Debug: 启动流程开始
         try:
-            self.debug_logger.debug_init_step("å¯å¨çæ§è¿ç¨")
+            self.debug_logger.debug_init_step("启动监控进程")
         except Exception:
             pass
 
         try:
-            # ð¥ Debug: ç»ä»¶åå§å
+            # 🔥 Debug: 组件初始化
             try:
-                self.debug_logger.debug_init_step("å¼å§åå§åç»ä»¶ï¼ZMQãæ°æ®åºç­ï¼")
+                self.debug_logger.debug_init_step("开始初始化组件（ZMQ、数据库等）")
             except Exception:
                 pass
 
             await self._initialize_components()
 
-            # ð¥ Debug: ç»ä»¶åå§åå®æ
+            # 🔥 Debug: 组件初始化完成
             try:
-                self.debug_logger.debug_init_step("ç»ä»¶åå§åå®æï¼å¼å§å¯å¨åç¨")
+                self.debug_logger.debug_init_step("组件初始化完成，开始启动协程")
             except Exception:
                 pass
 
-            # åå»ºå¯å¨äºä»¶
+            # 创建启动事件
             self.coroutine_ready_events = {
                 "zmq_handler": asyncio.Event(),
                 "fast_metrics": asyncio.Event(),
@@ -1490,7 +1446,7 @@ class MonitoringProcessV2:
 
             self._start_worker_threads()
 
-            # åå»ºææåç¨ä»»å¡
+            # 创建所有协程任务
             tasks = [
                 asyncio.create_task(self.zmq_handler(), name="zmq_handler"),
                 asyncio.create_task(self.fast_metrics_collector(), name="fast_metrics"),
@@ -1499,8 +1455,8 @@ class MonitoringProcessV2:
                 asyncio.create_task(self.parent_process_watcher(), name="parent_watcher"),
             ]
 
-            # ç­å¾ææåç¨å®æåå§åï¼æå¤ç­å¾5ç§ï¼
-            logger.info("[INIT] ç­å¾ææåç¨å¯å¨...")
+            # 等待所有协程完成初始化（最多等待5秒）
+            logger.info("[INIT] 等待所有协程启动...")
             try:
                 await asyncio.wait_for(
                     asyncio.gather(
@@ -1508,22 +1464,44 @@ class MonitoringProcessV2:
                     ),
                     timeout=5.0,
                 )
-                logger.info("[INIT] â ææåç¨å·²å°±ç»ª")
+                logger.info("[INIT] ✅ 所有协程已就绪")
 
-                # ð¥ Debug: ææåç¨å°±ç»ª
+                # 🆕 更新就绪信号为Level 2
+                try:
+                    from pathlib import Path
+
+                    signal_file = Path("logs/monitor_ready.signal")
+                    if signal_file.exists():
+                        with open(signal_file, "r", encoding="utf-8") as f:
+                            ready_signal = json.load(f)
+
+                        ready_signal["status"] = "fully_ready"
+                        ready_signal["level"] = 2
+                        ready_signal["coroutines_ready_at"] = time.time()
+
+                        with open(signal_file, "w", encoding="utf-8") as f:
+                            json.dump(ready_signal, f, ensure_ascii=False, indent=2)
+                            f.flush()
+                            os.fsync(f.fileno())
+
+                        logger.info("[INIT] ✓ 就绪信号已更新（Level 2: 功能完整）")
+                except Exception as e:
+                    logger.warning("[INIT] 更新就绪信号失败: %s", e)
+
+                # 🔥 Debug: 所有协程就绪
                 try:
                     self.debug_logger.debug_init_step(
-                        "ææåç¨å·²å°±ç»ª",
+                        "所有协程已就绪",
                         {
-                            "åç¨æ°é": len(tasks),
-                            "åç¨åè¡¨": list(self.coroutine_ready_events.keys()),
+                            "协程数量": len(tasks),
+                            "协程列表": list(self.coroutine_ready_events.keys()),
                         },
                     )
                 except Exception:
                     pass
 
             except asyncio.TimeoutError:
-                logger.error("[INIT] â åç¨å¯å¨è¶æ¶ï¼")
+                logger.error("[INIT] ❌ 协程启动超时！")
                 ready = [
                     name for name, event in self.coroutine_ready_events.items() if event.is_set()
                 ]
@@ -1532,14 +1510,14 @@ class MonitoringProcessV2:
                     for name, event in self.coroutine_ready_events.items()
                     if not event.is_set()
                 ]
-                logger.error(f"[INIT] å·²å°±ç»ª: {ready}")
-                logger.error(f"[INIT] æªå°±ç»ª: {not_ready}")
+                logger.error(f"[INIT] 已就绪: {ready}")
+                logger.error(f"[INIT] 未就绪: {not_ready}")
 
-                # ð¥ Debug: åç¨å¯å¨è¶æ¶
+                # 🔥 Debug: 协程启动超时
                 try:
                     self.debug_logger.debug_exception(
-                        "åç¨å¯å¨è¶æ¶",
-                        TimeoutError(f"å·²å°±ç»ª: {ready}, æªå°±ç»ª: {not_ready}"),
+                        "协程启动超时",
+                        TimeoutError(f"已就绪: {ready}, 未就绪: {not_ready}"),
                         {"ready": ready, "not_ready": not_ready},
                     )
                 except Exception:
@@ -1547,51 +1525,55 @@ class MonitoringProcessV2:
 
                 raise
 
-            # ç­å¾ææåç¨ï¼return_exceptions=True é²æ­¢åä¸ªåç¨å¼å¸¸å¯¼è´æ´ä¸ªè¿ç¨éåº
-            # åæ¶çæ§ä»»å¡æ¯å¦æå¤éåº
+            # 启动带宽测试任务
+            asyncio.create_task(self._test_bandwidth_on_startup())
+            asyncio.create_task(self._periodic_ping_test())
+
+            # 等待所有协程，return_exceptions=True 防止单个协程异常导致整个进程退出
+            # 同时监控任务是否意外退出
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            # æ£æ¥æ¯å¦æä»»å¡æå¤éåº
+            # 检查是否有任务意外退出
             for i, result in enumerate(results):
                 task_name = tasks[i].get_name()
                 if isinstance(result, Exception):
                     logger.error(
-                        f"[TASK-EXIT] â ä»»å¡ {task_name} å¼å¸¸éåº: {result}", exc_info=result
+                        f"[TASK-EXIT] ❌ 任务 {task_name} 异常退出: {result}", exc_info=result
                     )
 
-                    # ð¥ Debug: ä»»å¡å¼å¸¸éåº
+                    # 🔥 Debug: 任务异常退出
                     try:
                         self.debug_logger.debug_exception(
-                            f"ä»»å¡ {task_name} å¼å¸¸éåº", result, {"task_name": task_name}
+                            f"任务 {task_name} 异常退出", result, {"task_name": task_name}
                         )
                     except Exception:
                         pass
 
                 elif result is not None:
-                    logger.warning(f"[TASK-EXIT] â ï¸  ä»»å¡ {task_name} æå¤è¿å: {result}")
+                    logger.warning(f"[TASK-EXIT] ⚠️  任务 {task_name} 意外返回: {result}")
 
         except KeyboardInterrupt:
-            logger.info("æ¶å°ä¸­æ­ä¿¡å·ï¼æ­£å¨å³é­...")
+            logger.info("收将中断信号，正在关闭...")
         except Exception as e:
-            logger.error("çæ§è¿ç¨å¼å¸¸: %s", e, exc_info=True)
+            logger.error("监控进程异常: %s", e, exc_info=True)
 
-            # ð¥ Debug: çæ§è¿ç¨å¼å¸¸
+            # 🔥 Debug: 监控进程异常
             try:
-                self.debug_logger.debug_exception("çæ§è¿ç¨å¼å¸¸", e)
+                self.debug_logger.debug_exception("监控进程异常", e)
             except Exception:
                 pass
         finally:
             await self.stop()
 
     async def _initialize_components(self):
-        """åå§åç»ä»¶ - DEBUGæ£æ¥ç¹."""
-        logger.info("[INIT] åå§åç»ä»¶...")
+        """初始化组件 - DEBUG检查点."""
+        logger.info("[INIT] 初始化组件...")
 
-        # åå§åZMQ
+        # 初始化ZMQ
         self.zmq_context = zmq.asyncio.Context()
-        ctx: zmq.asyncio.Context = self.zmq_context  # ä¸ºç±»åæ£æ¥å¨æä¾éNoneä¿è¯
+        ctx: zmq.asyncio.Context = self.zmq_context  # 为类型检查器提供非None保证
 
-        # è¯»åéç½®ï¼ç«¯å£éé¿ï¼
+        # 读取配置（端口退避）
         try:
             from backend.core.config import get_settings
 
@@ -1601,20 +1583,20 @@ class MonitoringProcessV2:
             fallback_span = int(getattr(_settings.monitor, "port_fallback_span", 3))
             bind_addr = str(getattr(_settings.monitor, "bind_addr", "127.0.0.1"))
         except Exception:
-            # éç½®ä¸å¯ç¨æ¶ä½¿ç¨é»è®¤å¼
+            # 配置不可用时使用默认值
             fallback_enabled = True
             fallback_base = 5565
             fallback_span = 3
             bind_addr = "127.0.0.1"
 
-        # ð§ æ°å¢ï¼æ£æ¥å¹¶æ¸çå ç¨ç«¯å£çæ§è¿ç¨
+        # 🔧 新增：检查并清理占用端口旧进程
         await self._check_and_cleanup_old_process()
 
-        # åéç«¯å£ç»ï¼ä¼åé»è®¤ï¼å¶æ¬¡éé¿ç»ï¼base, base+1, base+2ï¼
+        # 候选端口组：优先默认，其次退避组（base, base+1, base+2）
         default_group: Tuple[int, int, int] = (5555, 5556, 5557)
         candidate_groups: List[Tuple[int, int, int]] = [default_group]
         if fallback_enabled:
-            # æ ¹æ® fallback_span çæåç§»åè¡¨ï¼è³å°3ï¼
+            # 根据 fallback_span 生成偏移列表（至少3）
             span = max(3, int(fallback_span))
             offsets = list(range(span))
             candidate_groups.append(
@@ -1625,7 +1607,7 @@ class MonitoringProcessV2:
                 )
             )
 
-        # å·¥å·å½æ°ï¼åå»ºä¸ç»ä¸ä¸ªsocketï¼å±é¨åéï¼æåååèµç» selfï¼
+        # 工具函数：创建同一个socket（局部变量，成功后再赋值给 self）
         def _create_socket_group() -> (
             Tuple[zmq.asyncio.Socket, zmq.asyncio.Socket, zmq.asyncio.Socket]
         ):
@@ -1637,7 +1619,7 @@ class MonitoringProcessV2:
             rep_sock.setsockopt(zmq.LINGER, 0)
             return push_sock, pull_sock, rep_sock
 
-        # åå§ååé
+        # 初始化变量
         chosen_group: Optional[Tuple[int, int, int]] = None
         last_error = None
 
@@ -1645,12 +1627,12 @@ class MonitoringProcessV2:
             p_push, p_pull, p_rep = group
             push_sock, pull_sock, rep_sock = _create_socket_group()
             try:
-                # ä¸¥æ ¼é¡ºåºï¼PUSH -> PULL -> REP
+                # 严格顺序：PUSH -> PULL -> REP
                 push_sock.bind(f"tcp://{bind_addr}:{p_push}")
                 pull_sock.bind(f"tcp://{bind_addr}:{p_pull}")
                 rep_sock.bind(f"tcp://{bind_addr}:{p_rep}")
                 chosen_group = group
-                # ç»å®æåååèµç»å®ä¾å±æ§
+                # 绑定成功后再赋给实例属性
                 self.push_socket = push_sock
                 self.pull_socket = pull_sock
                 self.rep_socket = rep_sock
@@ -1658,13 +1640,13 @@ class MonitoringProcessV2:
             except zmq.error.ZMQError as e:
                 last_error = e
                 logger.error(
-                    "[ZMQ] ç«¯å£ç»ç»å®å¤±è´¥ push=%d pull=%d rep=%d: %s",
+                    "[ZMQ] 端口组绑定失败 push=%d pull=%d rep=%d: %s",
                     p_push,
                     p_pull,
                     p_rep,
                     e,
                 )
-                # ä¸ä¸ç»ååæ¸ç
+                # 下一组前先清理
                 try:
                     push_sock.close(linger=0)
                     pull_sock.close(linger=0)
@@ -1675,7 +1657,7 @@ class MonitoringProcessV2:
                 continue
             except Exception as e:
                 last_error = e
-                logger.error("[ZMQ] ç«¯å£ç»å¼å¸¸: %s", e)
+                logger.error("[ZMQ] 端口组异常: %s", e)
                 try:
                     push_sock.close(linger=0)
                     pull_sock.close(linger=0)
@@ -1686,12 +1668,12 @@ class MonitoringProcessV2:
                 continue
 
         if not chosen_group:
-            # æªè½ç»å®ä»»ä½ç«¯å£ç»
+            # 未能绑定任何端口组
             if last_error:
                 raise last_error
-            raise RuntimeError("ZMQç«¯å£ç»å®å¤±è´¥ï¼æªç¥åå ï¼")
+            raise RuntimeError("ZMQ端口绑定失败（未知原因）")
 
-        # åå¥çæç«¯å£æä»¶
+        # 写入生效端口文件
         try:
             import os
             from datetime import datetime as _dt
@@ -1708,42 +1690,93 @@ class MonitoringProcessV2:
             with open("logs/monitor_ports.json", "w", encoding="utf-8") as f:
                 json.dump(ports_info, f, ensure_ascii=False, indent=2)
             logger.info(
-                "[ZMQ] â çæç«¯å£: push=%d pull=%d rep=%d (éé¿å¯ç¨=%s)",
+                "[ZMQ] ✅ 生效端口: push=%d pull=%d rep=%d (退避启用=%s)",
                 chosen_group[0],
                 chosen_group[1],
                 chosen_group[2],
                 str(fallback_enabled),
             )
         except Exception as e:
-            logger.warning("[ZMQ] åå¥çæç«¯å£æä»¶å¤±è´¥: %s", e)
+            logger.warning("[ZMQ] 写入生效端口文件失败: %s", e)
+
+        # 创建就绪信号文件（主进程等待此文件）
+        try:
+            from pathlib import Path
+
+            ready_signal = {
+                "pid": os.getpid(),
+                "timestamp": time.time(),
+                "status": "ports_ready",  # Level 1: 端口就绪
+                "level": 1,  # 就绪级别
+                "ports": {
+                    "alert_push": chosen_group[0],
+                    "status_pull": chosen_group[1],
+                    "query_rep": chosen_group[2],
+                },
+                "bind_addr": bind_addr,
+            }
+
+            signal_file = Path("logs/monitor_ready.signal")
+            with open(signal_file, "w", encoding="utf-8") as f:
+                json.dump(ready_signal, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())  # 强制写入磁盘
+
+            logger.info("[ZMQ] ✓ 就绪信号文件已创建（Level 1: 端口就绪）")
+        except Exception as e:
+            logger.warning("[ZMQ] 创建就绪信号文件失败: %s", e)
 
         logger.info(
-            "[ZMQ] ææsocketå·²éç½®ï¼push=%d, pull=%d, rep=%dï¼",
+            "[ZMQ] 所有socket已配置（push=%d, pull=%d, rep=%d）",
             chosen_group[0],
             chosen_group[1],
             chosen_group[2],
         )
 
-        # åå§åéå
+        # 初始化队列
         self.db_write_queue = asyncio.Queue()
         self.hardware_queue = asyncio.Queue()
         self.smart_queue = asyncio.Queue()
         self.smart_trigger_event = asyncio.Event()
 
-        # åå§åèªéåºéå¼ç®¡çå¨
+        # 初始化自适应阈值管理器
         from backend.services.database_adapter import get_db_manager
 
         db_manager = get_db_manager()
         self.adaptive_threshold = AdaptiveThresholdManager(db_manager)
 
-        # æ³¨åçæ§ææ 
+        # 注册监控指标
         self._register_metrics()
         self.adaptive_threshold.load_from_database()
 
-        logger.info("[INIT] â ç»ä»¶åå§åå®æ")
+        # 🆕 初始化日志代理（将监控进程日志发送将主进程）
+        try:
+            from backend.infrastructure.system_vnpy.unified_logging import (
+                MonitorLogProxy,
+                MonitorProxyHandler,
+            )
+
+            # 创建日志代理（使用ZMQ PUSH socket发送将主进程PULL socket）
+            self.log_proxy = MonitorLogProxy(
+                zmq_context=self.zmq_context, push_address="tcp://127.0.0.1:5558"  # 主进程监听端口
+            )
+
+            # 创建Handler并添加将监控进程logger
+            self.log_proxy_handler = MonitorProxyHandler(self.log_proxy)
+            monitor_logger = logging.getLogger("monitor_process")
+            monitor_logger.addHandler(self.log_proxy_handler)
+            monitor_logger.setLevel(logging.INFO)  # 只发送INFO及以上级别
+
+            logger.info("✓ 监控进程日志代理已启用（发送将主进程tcp://127.0.0.1:5558）")
+
+        except Exception as e:
+            logger.warning("⚠️ 监控进程日志代理启用失败: %s", e)
+            # 失败不影响监控进程运行
+
+        logger.info("[INIT] ✅ 组件初始化完成")
 
     def _register_metrics(self):
-        """æ³¨åçæ§ææ ."""
+        """注册监控指标."""
         if not self.adaptive_threshold:
             return
 
@@ -1762,18 +1795,18 @@ class MonitoringProcessV2:
                 )
             )
 
-        logger.info("[THRESHOLD] å·²æ³¨å %d ä¸ªçæ§ææ ", len(metrics))
+        logger.info("[THRESHOLD] 已注册 %d 个监控指标", len(metrics))
 
     def _start_worker_threads(self):
-        """å¯å¨å·¥ä½çº¿ç¨."""
-        logger.info("[WORKERS] å¯å¨å·¥ä½çº¿ç¨...")
+        """启动工作线程."""
+        logger.info("[WORKERS] 启动工作线程...")
         self.executor.submit(self._hardware_collector_thread)
         self.executor.submit(self._smart_collector_thread)
-        logger.info("[WORKERS] â å·¥ä½çº¿ç¨å·²å¯å¨")
+        logger.info("[WORKERS] ✅ 工作线程已启动")
 
     def _hardware_collector_thread(self):
-        """ç¡¬ä»¶ä¼ æå¨ééçº¿ç¨ - DEBUGæ­ç¹ä½ç½®."""
-        logger.info("[HARDWARE-THREAD] ç¡¬ä»¶ä¼ æå¨ééçº¿ç¨å¯å¨")
+        """硬件传感器采集线程 - DEBUG断点位置."""
+        logger.info("[HARDWARE-THREAD] 硬件传感器采集线程启动")
 
         while self.running:
             try:
@@ -1797,80 +1830,87 @@ class MonitoringProcessV2:
                 time.sleep(sleep_time)
 
             except Exception as e:
-                logger.error("[HARDWARE-THREAD] ééå¤±è´¥: %s", e)
+                logger.exception("[HARDWARE-THREAD] 采集失败: %s", e)
                 time.sleep(self.slow_interval)
 
-        logger.info("[HARDWARE-THREAD] ç¡¬ä»¶ä¼ æå¨ééçº¿ç¨åæ­¢")
+        logger.info("[HARDWARE-THREAD] 硬件传感器采集线程停止")
 
     def _smart_collector_thread(self):
-        """SMARTééçº¿ç¨."""
-        logger.info("[SMART-THREAD] SMARTééçº¿ç¨å¯å¨")
-        self._collect_smart_once()
+        """SMART采集线程（事件触发模式）."""
+        logger.info("[SMART-THREAD] SMART采集线程启动（按需触发模式）")
 
+        # 启动时采集一次
+        self._collect_smart_once()
+        logger.info("[SMART-THREAD] 启动时SMART采集完成，进入事件等待模式")
+
+        # 进入事件等待循环
         while self.running:
             try:
                 if self.loop and self.smart_trigger_event:
+                    # 等待触发事件（60秒超时仅用于检查running状态）
                     future = asyncio.run_coroutine_threadsafe(
-                        asyncio.wait_for(self.smart_trigger_event.wait(), timeout=5), self.loop
+                        asyncio.wait_for(self.smart_trigger_event.wait(), timeout=60), self.loop
                     )
                     try:
-                        future.result(timeout=6)
+                        future.result(timeout=61)
                         if self.smart_trigger_event.is_set():
+                            logger.info("[SMART] 收到触发信号，开始采集")
                             self.smart_trigger_event.clear()
                             self._collect_smart_once()
                     except Exception:
+                        # 超时不是错误，继续等待
                         pass
                 else:
                     time.sleep(5)
             except Exception as e:
-                logger.error("[SMART-THREAD] éè¯¯: %s", e)
+                logger.exception("[SMART-THREAD] 错误: %s", e)
                 time.sleep(5)
 
-        logger.info("[SMART-THREAD] SMARTééçº¿ç¨åæ­¢")
+        logger.info("[SMART-THREAD] SMART采集线程停止")
 
     def _collect_smart_once(self):
-        """ééä¸æ¬¡SMARTæ°æ®."""
+        """采集一次SMART数据."""
         try:
             if not self.smart_monitor.is_available():
-                logger.warning("[SMART] pySMARTä¸å¯ç¨")
+                logger.warning("[SMART] pySMART不可用")
                 return
 
-            logger.info("[SMART] å¼å§ééSMARTæ°æ®...")
+            logger.info("[SMART] 开始采集SMART数据...")
             start_time = time.time()
             smart_data = self.smart_monitor.get_smart_data()
             elapsed = time.time() - start_time
-            logger.info("[SMART] â ééå®æï¼èæ¶%.2fsï¼%dä¸ªç¡¬ç", elapsed, len(smart_data))
+            logger.info("[SMART] ✅ 采集完成，耗时%.2fs，%d个硬盘", elapsed, len(smart_data))
 
             if self.loop and smart_data and self.smart_queue:
                 asyncio.run_coroutine_threadsafe(self.smart_queue.put(smart_data), self.loop)
         except Exception as e:
-            logger.error("[SMART] ééå¤±è´¥: %s", e)
+            logger.exception("[SMART] 采集失败: %s", e)
 
     async def zmq_handler(self):
-        """ZMQéä¿¡å¤ç."""
-        logger.info("[ZMQ] éä¿¡å¤çåç¨å¯å¨")
+        """ZMQ通信处理."""
+        logger.info("[ZMQ] 通信处理协程启动")
 
-        # åæ è®°åç¨å·²å°±ç»ªï¼å¨ä»»ä½å¯è½é»å¡çæä½ä¹åï¼
+        # 先标记协程已就绪（在任何可能阻塞的操作之前）
         if "zmq_handler" in self.coroutine_ready_events:
             self.coroutine_ready_events["zmq_handler"].set()
-            logger.info("[ZMQ] â åç¨å°±ç»ª")
+            logger.info("[ZMQ] ✅ 协程就绪")
 
         try:
-            # å¨åç¨å¤é¨åå»ºPollerï¼åªåå»ºä¸æ¬¡ï¼
-            logger.debug("[ZMQ] åå»ºPoller...")
+            # 在协程外部创建Poller（只创建一次）
+            logger.debug("[ZMQ] 创建Poller...")
             poller = zmq.asyncio.Poller()
-            logger.debug("[ZMQ] æ³¨årep_socket...")
+            logger.debug("[ZMQ] 注册rep_socket...")
             poller.register(self.rep_socket, zmq.POLLIN)
-            logger.debug("[ZMQ] æ³¨åpull_socket...")
+            logger.debug("[ZMQ] 注册pull_socket...")
             poller.register(self.pull_socket, zmq.POLLIN)
-            logger.debug("[ZMQ] Polleråå§åå®æ")
+            logger.debug("[ZMQ] Poller初始化完成")
 
-            logger.info("[ZMQ] å¼å§ä¸»å¾ªç¯ï¼self.running=%sï¼", self.running)
+            logger.info("[ZMQ] 开始主循环（self.running=%s）", self.running)
             while self.running:
                 try:
-                    logger.debug("[ZMQ] ç­å¾poll...")
+                    logger.debug("[ZMQ] 等待poll...")
                     socks = dict(await poller.poll(timeout=100))
-                    logger.debug("[ZMQ] pollè¿å: %dä¸ªsocket", len(socks))
+                    logger.debug("[ZMQ] poll返回: %d个socket", len(socks))
 
                     if self.rep_socket in socks:
                         await self._handle_query_request()
@@ -1878,18 +1918,18 @@ class MonitoringProcessV2:
                         await self._handle_service_status()
 
                 except Exception as e:
-                    logger.error("[ZMQ] å¤çéè¯¯: %s", e, exc_info=True)
+                    logger.error("[ZMQ] 处理错误: %s", e, exc_info=True)
                     await asyncio.sleep(0.1)
 
-            logger.warning("[ZMQ] â ï¸  whileå¾ªç¯éåºï¼self.running=%sï¼", self.running)
+            logger.warning("[ZMQ] ⚠️  while循环退出（self.running=%s）", self.running)
 
         except Exception as e:
-            logger.error("[ZMQ] â åç¨å¼å¸¸éåº: %s", e, exc_info=True)
+            logger.error("[ZMQ] ❌ 协程异常退出: %s", e, exc_info=True)
         finally:
-            logger.info("[ZMQ] éä¿¡å¤çåç¨åæ­¢")
+            logger.info("[ZMQ] 通信处理协程停止")
 
     async def _handle_query_request(self):
-        """å¤çæ¥è¯¢è¯·æ±."""
+        """处理查询请求."""
         if not self.rep_socket:
             return
 
@@ -1898,11 +1938,11 @@ class MonitoringProcessV2:
             action = request.get("action", "get_data")
 
             if action == "get_data":
-                # æå»ºååºï¼åå«å¨æéå¼æ°æ®åå¹¶åä»»å¡æ°
+                # 构建响应，包含动态阈值数据和并发任务数
                 response = {"timestamp": datetime.now().isoformat(), **self.monitoring_data}
                 if self.adaptive_threshold:
                     response["thresholds"] = self.adaptive_threshold.get_all_thresholds()
-                # æ·»å å¹¶åä»»å¡æ°
+                # 添加并发任务数
                 try:
                     concurrent_tasks = self.business_metrics_collector.get_concurrent_tasks()
                     response["concurrent_tasks"] = concurrent_tasks
@@ -1917,52 +1957,96 @@ class MonitoringProcessV2:
             elif action == "trigger_smart":
                 if self.smart_trigger_event:
                     self.smart_trigger_event.set()
-                await self.rep_socket.send_json({"success": True})
+                await self.rep_socket.send_json({"status": "success"})
+            elif action == "test_bandwidth_full":
+                # 手动触发完整带宽测试（重量级）
+                try:
+                    result = await self.system_monitor.bandwidth_monitor.test_bandwidth_full_async()
+                    if result is None:
+                        error_msg = self.system_monitor.bandwidth_monitor._last_error or "测试失败"
+                        await self.rep_socket.send_json({"status": "error", "message": error_msg})
+                    else:
+                        await self.rep_socket.send_json({"status": "success", "data": result})
+                except Exception as e:
+                    await self.rep_socket.send_json({"status": "error", "message": str(e)})
+            elif action == "test_ping":
+                # 手动触发延迟测试（轻量级）
+                try:
+                    result = await self.system_monitor.bandwidth_monitor.test_ping_only_async()
+                    if result is None:
+                        error_msg = self.system_monitor.bandwidth_monitor._last_error or "测试失败"
+                        await self.rep_socket.send_json({"status": "error", "message": error_msg})
+                    else:
+                        await self.rep_socket.send_json({"status": "success", "data": result})
+                except Exception as e:
+                    await self.rep_socket.send_json({"status": "error", "message": str(e)})
+            elif action == "get_bandwidth":
+                # 获取最新带宽结果（包含完整测试和延迟测试）
+                try:
+                    result = self.system_monitor.get_bandwidth_info()
+                    await self.rep_socket.send_json({"status": "success", "data": result})
+                except Exception as e:
+                    await self.rep_socket.send_json({"status": "error", "message": str(e)})
+            elif action == "get_all":
+                # 获取所有监控数据（包含带宽信息）
+                try:
+                    response = {
+                        "status": "success",
+                        "data": {
+                            "system": self.monitoring_data.get("system", {}),
+                            "hardware": self.monitoring_data.get("hardware", {}),
+                            "process": self.monitoring_data.get("process", {}),
+                            "bandwidth": self.system_monitor.get_bandwidth_info(),
+                        },
+                    }
+                    await self.rep_socket.send_json(response)
+                except Exception as e:
+                    await self.rep_socket.send_json({"status": "error", "message": str(e)})
             else:
                 await self.rep_socket.send_json({"error": f"Unknown action: {action}"})
         except Exception as e:
-            logger.error("[ZMQ] å¤çæ¥è¯¢å¤±è´¥: %s", e)
+            logger.error("[ZMQ] 处理查询失败: %s", e)
             try:
                 await self.rep_socket.send_json({"error": str(e)})
             except Exception:
                 pass
 
     async def _handle_service_status(self):
-        """å¤çæå¡ç¶ææ¨é."""
+        """处理服务状态推送."""
         if not self.pull_socket:
             return
 
         try:
             status = await self.pull_socket.recv_json()
             self.monitoring_data["service"] = status
-            logger.debug("[ZMQ] æ¶å°æå¡ç¶ææ´æ°")
+            logger.debug("[ZMQ] 收将服务状态更新")
         except Exception as e:
-            logger.error("[ZMQ] æ¥æ¶æå¡ç¶æå¤±è´¥: %s", e)
+            logger.exception("[ZMQ] 接收服务状态失败: %s", e)
 
     async def fast_metrics_collector(self):
-        """å¿«éææ éé - DEBUGæ­ç¹ä½ç½®."""
-        logger.info("[FAST-METRICS] å¿«éææ ééåç¨å¯å¨")
+        """快速指标采集 - DEBUG断点位置."""
+        logger.info("[FAST-METRICS] 快速指标采集协程启动")
 
-        # æ è®°åç¨å·²å°±ç»ª
+        # 标记协程已就绪
         if "fast_metrics" in self.coroutine_ready_events:
             self.coroutine_ready_events["fast_metrics"].set()
-            logger.info("[FAST-METRICS] â åç¨å°±ç»ª")
+            logger.info("[FAST-METRICS] ✅ 协程就绪")
 
         try:
-            logger.info("[FAST-METRICS] å¼å§ä¸»å¾ªç¯ï¼self.running=%sï¼", self.running)
+            logger.info("[FAST-METRICS] 开始主循环（self.running=%s）", self.running)
             while self.running:
                 try:
                     start_time = time.time()
 
-                    # ééç³»ç»ææ  - å¼æ­¥
+                    # 采集系统指标 - 异步
                     t1 = time.time()
-                    logger.debug("[FAST-METRICS] å¼å§ééç³»ç»ææ ...")
+                    logger.debug("[FAST-METRICS] 开始采集系统指标...")
                     system_metrics = await self._collect_system_metrics()
-                    logger.debug("[FAST-METRICS] ç³»ç»ææ ééå®æ")
+                    logger.debug("[FAST-METRICS] 系统指标采集完成")
                     self.monitoring_data["system"] = system_metrics
-                    # logger.debug("[PERF] ç³»ç»ææ ééèæ¶: %.3fs", time.time() - t1)  # 🔧 已优化：降低输出频率
+                    # logger.debug("[PERF] 系统指标采集耗时: %.3fs", time.time() - t1)  # 🔧 已优化：降低输出频率
 
-                    # å­¦ä¹ åºçº¿
+                    # 学习基线
                     if self.adaptive_threshold:
                         self.adaptive_threshold.learn_baseline(
                             "cpu_percent", system_metrics.get("cpu_percent", 0)
@@ -1971,67 +2055,67 @@ class MonitoringProcessV2:
                             "memory_percent", system_metrics.get("memory_percent", 0)
                         )
 
-                    # ééè¿ç¨çæ§ - å¼æ­¥
+                    # 采集进程监控 - 异步
                     t2 = time.time()
                     process_metrics = await self._collect_process_metrics()
                     self.monitoring_data["process"] = process_metrics
-                    # logger.debug("[PERF] è¿ç¨ææ ééèæ¶: %.3fs", time.time() - t2)  # 🔧 已优化：降低输出频率
+                    # logger.debug("[PERF] 进程指标采集耗时: %.3fs", time.time() - t2)  # 🔧 已优化：降低输出频率
 
-                    # æ£æ¥ç¡¬ä»¶éå
+                    # 检查硬件队列
                     if self.hardware_queue and not self.hardware_queue.empty():
                         hardware_data = await self.hardware_queue.get()
                         self.monitoring_data["hardware"] = hardware_data
                         self._learn_hardware_baselines(hardware_data)
 
-                    # æ£æ¥SMARTéå
+                    # 检查SMART队列
                     if self.smart_queue and not self.smart_queue.empty():
                         smart_data = await self.smart_queue.get()
                         self.monitoring_data["smart"] = self._serialize_smart_data(smart_data)
 
-                    # æ°å¢ï¼æ§è¡ç¶é¢åæååºæ¯åæ
+                    # 新增：执行瓶颈分析和场景分析
                     t3 = time.time()
                     analysis_result = await self._perform_analysis()
                     self.monitoring_data["analysis"] = analysis_result
-                    # logger.debug("[PERF] ç¶é¢åæèæ¶: %.3fs", time.time() - t3)  # 🔧 已优化：降低输出频率
+                    # logger.debug("[PERF] 瓶颈分析耗时: %.3fs", time.time() - t3)  # 🔧 已优化：降低输出频率
 
-                    # å°æ°æ®å å¥æ°æ®åºåå¥éå
+                    # 将数据加入数据库写入队列
                     await self._queue_for_database()
 
-                    # æ»èæ¶ç»è®¡
+                    # 总耗时统计
                     total_time = time.time() - start_time
-                    # logger.debug("[PERF] æ»ééèæ¶: %.3fs", total_time)  # 🔧 已优化：降低输出频率
+                    # logger.debug("[PERF] 总采集耗时: %.3fs", total_time)  # 🔧 已优化：降低输出频率
 
                     elapsed = time.time() - start_time
                     sleep_time = max(0, self.fast_interval - elapsed)
                     await asyncio.sleep(sleep_time)
 
                 except Exception as e:
-                    logger.error("[FAST-METRICS] ééå¤±è´¥: %s", e, exc_info=True)
+                    logger.error("[FAST-METRICS] 采集失败: %s", e, exc_info=True)
                     await asyncio.sleep(self.fast_interval)
 
-            logger.warning("[FAST-METRICS] â ï¸  whileå¾ªç¯éåºï¼self.running=%sï¼", self.running)
+            logger.warning("[FAST-METRICS] ⚠️  while循环退出（self.running=%s）", self.running)
 
         except Exception as e:
-            logger.error("[FAST-METRICS] â åç¨å¼å¸¸éåº: %s", e, exc_info=True)
+            logger.error("[FAST-METRICS] ❌ 协程异常退出: %s", e, exc_info=True)
         finally:
-            logger.info("[FAST-METRICS] å¿«éææ ééåç¨åæ­¢")
+            logger.info("[FAST-METRICS] 快速指标采集协程停止")
 
     async def _collect_system_metrics(self) -> Dict[str, Any]:
-        """ééç³»ç»ææ ï¼å¼æ­¥çæ¬ï¼ã"""
+        """采集系统指标（异步版本）。"""
         try:
-            # å¨executorä¸­æ§è¡é»å¡çpsutilè°ç¨
+            # 在executor中执行阻塞psutil调用
             loop = asyncio.get_event_loop()
             resource_usage = await loop.run_in_executor(
                 self.executor, self.system_monitor.get_resource_usage
             )
 
-            # å¹¶åæ§è¡IOéåº¦ééï¼é½æ¯asyncæ¹æ³ï¼
+            # 并发执行IO速度采集（都是async方法）
             disk_io_speed, network_speed = await asyncio.gather(
                 self.system_monitor.get_disk_io_speed_async(),
                 self.system_monitor.get_network_speed_async(),
             )
 
-            # å¨executorä¸­ééæ°å¢å­ç³»ç»ææ ï¼é¿åé»å¡äºä»¶å¾ªç¯ï¼
+            # 在executor中采集新增子系统指标（避免阻塞事件循环）
             cpu_detailed, memory_subsystem, storage_subsystem, network_subsystem = (
                 await asyncio.gather(
                     loop.run_in_executor(self.executor, self.system_monitor.get_cpu_os_detailed),
@@ -2064,13 +2148,13 @@ class MonitoringProcessV2:
                 "network_subsystem": network_subsystem,
             }
         except Exception as e:
-            logger.error("ééç³»ç»ææ å¤±è´¥: %s", e)
+            logger.error("采集系统指标失败: %s", e)
             return {}
 
     async def _collect_process_metrics(self) -> Dict[str, Any]:
-        """ééè¿ç¨ææ ï¼å¼æ­¥çæ¬ï¼."""
+        """采集进程指标（异步版本）."""
         try:
-            # å¨executorä¸­æ§è¡é»å¡çè¿ç¨è¯å«
+            # 在executor中执行阻塞进程识别
             loop = asyncio.get_event_loop()
             all_processes = await loop.run_in_executor(
                 self.executor, self.process_monitor.identify_processes
@@ -2085,7 +2169,7 @@ class MonitoringProcessV2:
             bottlenecks = []
             for proc in python_processes[:5]:
                 try:
-                    # å¨executorä¸­æ§è¡é»å¡çè¿ç¨ææ è·å
+                    # 在executor中执行阻塞进程指标获取
                     metrics = await loop.run_in_executor(
                         self.executor,
                         self.process_monitor.get_process_metrics,
@@ -2114,11 +2198,11 @@ class MonitoringProcessV2:
                 "process_count": len(python_processes),
             }
         except Exception as e:
-            logger.error("ééè¿ç¨ææ å¤±è´¥: %s", e)
+            logger.exception("采集进程指标失败: %s", e)
             return {}
 
     async def _perform_analysis(self) -> Dict[str, Any]:
-        """æ§è¡ç¶é¢åæååºæ¯åæ.
+        """执行瓶颈分析和场景分析.
 
         Returns:
             {
@@ -2130,7 +2214,7 @@ class MonitoringProcessV2:
                 },
                 "scenario": {
                     "scenario": "data_download",
-                    "scenario_name": "æ°æ®ä¸è½½",
+                    "scenario_name": "数据下载",
                     "bottleneck_metrics": [...],
                     "optimization_hints": [...]
                 }
@@ -2139,7 +2223,7 @@ class MonitoringProcessV2:
         try:
             loop = asyncio.get_event_loop()
 
-            # å¨executorä¸­æ§è¡åæï¼é¿åé»å¡äºä»¶å¾ªç¯ï¼
+            # 在executor中执行分析（避免阻塞事件循环）
             bottleneck_result, scenario_result = await asyncio.gather(
                 loop.run_in_executor(
                     self.executor,
@@ -2158,7 +2242,7 @@ class MonitoringProcessV2:
                 "timestamp": datetime.now().isoformat(),
             }
         except Exception as e:
-            logger.error("æ§è¡åæå¤±è´¥: %s", e, exc_info=True)
+            logger.error("执行分析失败: %s", e, exc_info=True)
             return {
                 "bottleneck": {},
                 "scenario": {},
@@ -2166,32 +2250,32 @@ class MonitoringProcessV2:
             }
 
     def _analyze_scenario_wrapper(self) -> Dict[str, Any]:
-        """åºæ¯åæåè£å¨ï¼ç¨äºexecutoræ§è¡ï¼."""
+        """场景分析包装器（用于executor执行）."""
         try:
-            # æ£æµå½ååºæ¯
+            # 检测当前场景
             process_data = self.monitoring_data.get("process", {}).get("python_processes", [])
             current_scenario = self.scenario_analyzer.detect_scenario(process_data)
 
-            # åæåºæ¯
+            # 分析场景
             scenario_result = self.scenario_analyzer.analyze_scenario(
                 current_scenario, self.monitoring_data
             )
 
             return scenario_result
         except Exception as e:
-            logger.error("åºæ¯åæå¤±è´¥: %s", e)
+            logger.error("场景分析失败: %s", e)
             return {
                 "scenario": "unknown",
                 "error": str(e),
             }
 
     def _learn_hardware_baselines(self, hardware_data: Dict[str, Dict]):
-        """å­¦ä¹ ç¡¬ä»¶ææ åºçº¿."""
+        """学习硬件指标基线."""
         if not self.adaptive_threshold:
             return
 
         try:
-            # CPUæ¸©åº¦
+            # CPU温度
             if "temperature" in hardware_data:
                 for device, sensors in hardware_data["temperature"].items():
                     if "CPU" in device or "processor" in device.lower():
@@ -2201,7 +2285,7 @@ class MonitoringProcessV2:
                                 self.adaptive_threshold.learn_baseline("cpu_temp", cpu_temp)
                                 break
 
-            # GPUæ¸©åº¦
+            # GPU温度
             if "temperature" in hardware_data:
                 for device, sensors in hardware_data["temperature"].items():
                     if "GPU" in device or "NVIDIA" in device or "AMD" in device:
@@ -2211,7 +2295,7 @@ class MonitoringProcessV2:
                                 self.adaptive_threshold.learn_baseline("gpu_temp", gpu_temp)
                                 break
 
-            # CPUåè
+            # CPU功耗
             if "power" in hardware_data:
                 for device, sensors in hardware_data["power"].items():
                     if "CPU" in device or "Package" in device:
@@ -2221,10 +2305,10 @@ class MonitoringProcessV2:
                                 self.adaptive_threshold.learn_baseline("cpu_power", cpu_power)
                                 break
         except Exception as e:
-            logger.debug("å­¦ä¹ ç¡¬ä»¶åºçº¿å¤±è´¥: %s", e)
+            logger.debug("学习硬件基线失败: %s", e)
 
     def _serialize_smart_data(self, smart_data: Dict) -> Dict[str, Any]:
-        """åºååSMARTæ°æ®."""
+        """序列化SMART数据."""
         result = {}
         for disk_name, data in smart_data.items():
             result[disk_name] = {
@@ -2234,15 +2318,20 @@ class MonitoringProcessV2:
                 "assessment": data.assessment,
                 "temperature": data.temperature,
                 "power_on_hours": data.power_on_hours,
-                "reallocated_sectors": data.reallocated_sectors,
-                "pending_sectors": data.pending_sectors,
-                "uncorrectable_errors": data.uncorrectable_errors,
+                # 🔧 修复：二次防御，确保None值转换为0
+                "reallocated_sectors": (
+                    data.reallocated_sectors if data.reallocated_sectors is not None else 0
+                ),
+                "pending_sectors": data.pending_sectors if data.pending_sectors is not None else 0,
+                "uncorrectable_errors": (
+                    data.uncorrectable_errors if data.uncorrectable_errors is not None else 0
+                ),
                 "timestamp": data.timestamp.isoformat(),
             }
         return result
 
     async def _queue_for_database(self):
-        """å°çæ§æ°æ®å å¥æ°æ®åºåå¥éå."""
+        """将监控数据加入数据库写入队列."""
         try:
             if not hasattr(self, "_db_save_counter"):
                 self._db_save_counter = 0
@@ -2287,7 +2376,7 @@ class MonitoringProcessV2:
                                     "metric_type": "hardware",
                                     "metric_name": "cpu_temp",
                                     "value": sensors[0].get("current", 0),
-                                    "unit": "Â°C",
+                                    "unit": "°C",
                                     "metadata": json.dumps({"device": device}),
                                 }
                             )
@@ -2313,16 +2402,16 @@ class MonitoringProcessV2:
                         await self.db_write_queue.put(record)
 
         except Exception as e:
-            logger.error("å å¥æ°æ®åºéåå¤±è´¥: %s", e)
+            logger.exception("加入数据库队列失败: %s", e)
 
     async def db_writer_loop(self):
-        """æ°æ®åºåå¥å¾ªç¯."""
-        logger.info("[DB-WRITER] æ°æ®åºåå¥åç¨å¯å¨")
+        """数据库写入循环."""
+        logger.info("[DB-WRITER] 数据库写入协程启动")
 
-        # æ è®°åç¨å·²å°±ç»ª
+        # 标记协程已就绪
         if "db_writer" in self.coroutine_ready_events:
             self.coroutine_ready_events["db_writer"].set()
-            logger.info("[DB-WRITER] â åç¨å°±ç»ª")
+            logger.info("[DB-WRITER] ✅ 协程就绪")
 
         try:
             batch = []
@@ -2353,19 +2442,19 @@ class MonitoringProcessV2:
                         last_flush_time = current_time
 
                 except Exception as e:
-                    logger.error("[DB-WRITER] éè¯¯: %s", e)
+                    logger.exception("[DB-WRITER] 错误: %s", e)
                     await asyncio.sleep(1)
 
             if batch:
                 await self._flush_to_database(batch)
 
         except Exception as e:
-            logger.error("[DB-WRITER] â åç¨å¼å¸¸éåº: %s", e, exc_info=True)
+            logger.error("[DB-WRITER] ❌ 协程异常退出: %s", e, exc_info=True)
         finally:
-            logger.info("[DB-WRITER] æ°æ®åºåå¥åç¨åæ­¢")
+            logger.info("[DB-WRITER] 数据库写入协程停止")
 
     async def _flush_to_database(self, batch: List[Dict]):
-        """æ¹éåå¥æ°æ®åº."""
+        """批量写入数据库."""
         if not batch:
             return
 
@@ -2389,19 +2478,19 @@ class MonitoringProcessV2:
                     ),
                 )
 
-            logger.info("[DB-WRITER] â æ¹éåå¥ %d æ¡è®°å½", len(batch))
+            logger.info("[DB-WRITER] ✅ 批量写入 %d 条记录", len(batch))
 
         except Exception as e:
-            logger.error("[DB-WRITER] æ¹éåå¥å¤±è´¥: %s", e)
+            logger.error("[DB-WRITER] 批量写入失败: %s", e)
 
     async def alert_evaluator_loop(self):
-        """åè­¦è¯ä¼°å¾ªç¯ - DEBUGæ­ç¹ä½ç½®."""
-        logger.info("[ALERT-EVAL] åè­¦è¯ä¼°åç¨å¯å¨")
+        """告警评估循环 - DEBUG断点位置."""
+        logger.info("[ALERT-EVAL] 告警评估协程启动")
 
-        # æ è®°åç¨å·²å°±ç»ª
+        # 标记协程已就绪
         if "alert_eval" in self.coroutine_ready_events:
             self.coroutine_ready_events["alert_eval"].set()
-            logger.info("[ALERT-EVAL] â åç¨å°±ç»ª")
+            logger.info("[ALERT-EVAL] ✅ 协程就绪")
 
         try:
             while self.running:
@@ -2411,70 +2500,101 @@ class MonitoringProcessV2:
                     for alert in alerts:
                         await self._push_alert(alert)
                 except Exception as e:
-                    logger.error("[ALERT-EVAL] è¯ä¼°å¤±è´¥: %s", e)
+                    logger.exception("[ALERT-EVAL] 评估失败: %s", e)
                     await asyncio.sleep(self.fast_interval)
 
         except Exception as e:
-            logger.error("[ALERT-EVAL] â åç¨å¼å¸¸éåº: %s", e, exc_info=True)
+            logger.error("[ALERT-EVAL] ❌ 协程异常退出: %s", e, exc_info=True)
         finally:
-            logger.info("[ALERT-EVAL] åè­¦è¯ä¼°åç¨åæ­¢")
+            logger.info("[ALERT-EVAL] 告警评估协程停止")
 
     async def parent_process_watcher(self):
-        """çæ§ç¶è¿ç¨æ¯å¦å­æ´»ï¼é²æ­¢æä¸ºå­¤å¿è¿ç¨."""
-        logger.info("[PARENT-WATCHER] ç¶è¿ç¨çæ§åç¨å¯å¨")
+        """监控父进程是否存活，防止成为孤儿进程."""
+        logger.info("[PARENT-WATCHER] 父进程监控协程启动")
 
-        # æ è®°åç¨å·²å°±ç»ª
+        # 标记协程已就绪
         if "parent_watcher" in self.coroutine_ready_events:
             self.coroutine_ready_events["parent_watcher"].set()
-            logger.info("[PARENT-WATCHER] â åç¨å°±ç»ª")
+            logger.info("[PARENT-WATCHER] ✅ 协程就绪")
 
         import psutil
 
         try:
             while self.running:
                 try:
-                    # æ¯10ç§æ£æ¥ä¸æ¬¡ç¶è¿ç¨
+                    # 每10秒检查一次父进程
                     await asyncio.sleep(10)
 
-                    # æ£æ¥ç¶è¿ç¨æ¯å¦å­å¨
+                    # 检查父进程是否存在
                     if not psutil.pid_exists(self.parent_pid):
                         logger.error(
-                            "[PARENT-WATCHER] â ç¶è¿ç¨(PID:%d)å·²æ­»äº¡ï¼çæ§è¿ç¨å³å°éåº...",
+                            "[PARENT-WATCHER] ❌ 父进程(PID:%d)已死亡，监控进程即将退出...",
                             self.parent_pid,
                         )
-                        # ç¶è¿ç¨å·²æ­»ï¼ä¸»å¨éåºä»¥é¿åæä¸ºå­¤å¿è¿ç¨
+                        # 父进程已死，主动退出以避免成为孤儿进程
                         self.running = False
                         break
 
-                    # é¢å¤éªè¯ï¼æ£æ¥ç¶è¿ç¨æ¯å¦æ¯é¢æçè¿ç¨
+                    # 额外验证：检查父进程是否是预期进程
                     try:
                         parent = psutil.Process(self.parent_pid)
                         if not parent.is_running():
                             logger.error(
-                                "[PARENT-WATCHER] â ç¶è¿ç¨(PID:%d)å·²åæ­¢è¿è¡ï¼çæ§è¿ç¨å³å°éåº...",
+                                "[PARENT-WATCHER] ❌ 父进程(PID:%d)已停止运行，监控进程即将退出...",
                                 self.parent_pid,
                             )
                             self.running = False
                             break
                     except psutil.NoSuchProcess:
                         logger.error(
-                            "[PARENT-WATCHER] â ç¶è¿ç¨(PID:%d)ä¸å­å¨ï¼çæ§è¿ç¨å³å°éåº...",
+                            "[PARENT-WATCHER] ❌ 父进程(PID:%d)不存在，监控进程即将退出...",
                             self.parent_pid,
                         )
                         self.running = False
                         break
 
                 except Exception as e:
-                    logger.error("[PARENT-WATCHER] æ£æ¥å¤±è´¥: %s", e)
+                    logger.error("[PARENT-WATCHER] 检查失败: %s", e)
                     await asyncio.sleep(10)
 
         except Exception as e:
-            logger.error("[PARENT-WATCHER] â åç¨å¼å¸¸éåº: %s", e, exc_info=True)
+            logger.error("[PARENT-WATCHER] ❌ 协程异常退出: %s", e, exc_info=True)
         finally:
-            logger.info("[PARENT-WATCHER] ç¶è¿ç¨çæ§åç¨åæ­¢")
+            logger.info("[PARENT-WATCHER] 父进程监控协程停止")
+
+    async def _test_bandwidth_on_startup(self):
+        """启动时测试完整带宽（延迟5秒后执行）."""
+        await asyncio.sleep(5)
+        try:
+            result = await self.system_monitor.bandwidth_monitor.test_bandwidth_full_async()
+            if result:
+                logger.info(
+                    f"启动带宽测试完成: 下载 {result['download_mbps']:.2f}Mbps, "
+                    f"上传 {result['upload_mbps']:.2f}Mbps, 延迟 {result['ping_ms']:.2f}ms"
+                )
+        except Exception as e:
+            logger.warning(f"启动带宽测试失败: {e}")
+
+    async def _periodic_ping_test(self):
+        """定期测试延迟（每1分钟，轻量级）."""
+        await asyncio.sleep(60)  # 启动后1分钟开始
+
+        while self.running:
+            try:
+                result = await self.system_monitor.bandwidth_monitor.test_ping_only_async()
+                if result:
+                    self.logger.info(f"定期延迟测试: {result['ping_ms']:.2f}ms")
+                else:
+                    self.logger.warning(
+                        "定期延迟测试失败：返回None（可能speedtest未安装或测试冲突）"
+                    )
+            except Exception as e:
+                self.logger.warning(f"定期延迟测试异常: {e}")
+
+            await asyncio.sleep(60)  # 每1分钟测试一次
 
     async def _evaluate_alerts(self) -> List[Dict[str, Any]]:
-        """è¯ä¼°åè­¦è§å - DEBUGæ ¸å¿é»è¾."""
+        """评估告警规则 - DEBUG核心逻辑."""
         alerts = []
 
         if not self.adaptive_threshold:
@@ -2484,7 +2604,7 @@ class MonitoringProcessV2:
             system_data = self.monitoring_data.get("system", {})
             hardware_data = self.monitoring_data.get("hardware", {})
 
-            # CPUä½¿ç¨çåè­¦
+            # CPU使用率告警
             cpu_percent = system_data.get("cpu_percent")
             if cpu_percent:
                 warning_threshold = self.adaptive_threshold.get_threshold("cpu_percent", "warning")
@@ -2497,7 +2617,7 @@ class MonitoringProcessV2:
                         self._create_alert(
                             "cpu_percent_critical",
                             "critical",
-                            f"CPUä½¿ç¨çä¸¥éè¿é«: {cpu_percent:.1f}%",
+                            f"CPU使用率严重过高: {cpu_percent:.1f}%",
                             {"cpu_percent": cpu_percent, "threshold": critical_threshold},
                         )
                     )
@@ -2506,12 +2626,12 @@ class MonitoringProcessV2:
                         self._create_alert(
                             "cpu_percent_warning",
                             "warning",
-                            f"CPUä½¿ç¨çè¿é«: {cpu_percent:.1f}%",
+                            f"CPU使用率过高: {cpu_percent:.1f}%",
                             {"cpu_percent": cpu_percent, "threshold": warning_threshold},
                         )
                     )
 
-            # CPUæ¸©åº¦åè­¦
+            # CPU温度告警
             temp_data = hardware_data.get("temperature", {})
             for device, sensors in temp_data.items():
                 if "CPU" in device and sensors:
@@ -2529,7 +2649,7 @@ class MonitoringProcessV2:
                                 self._create_alert(
                                     "cpu_temp_critical",
                                     "critical",
-                                    f"CPUæ¸©åº¦ä¸¥éè¿é«: {cpu_temp:.1f}Â°C",
+                                    f"CPU温度严重过高: {cpu_temp:.1f}°C",
                                     {
                                         "cpu_temp": cpu_temp,
                                         "threshold": critical_threshold,
@@ -2542,7 +2662,7 @@ class MonitoringProcessV2:
                                 self._create_alert(
                                     "cpu_temp_warning",
                                     "warning",
-                                    f"CPUæ¸©åº¦è¿é«: {cpu_temp:.1f}Â°C",
+                                    f"CPU温度过高: {cpu_temp:.1f}°C",
                                     {
                                         "cpu_temp": cpu_temp,
                                         "threshold": warning_threshold,
@@ -2552,7 +2672,7 @@ class MonitoringProcessV2:
                             )
                     break
 
-            # é£æåè½¬åè­¦
+            # 风扇停转告警
             fan_data = hardware_data.get("fan", {})
             for device, sensors in fan_data.items():
                 for sensor in sensors:
@@ -2569,20 +2689,20 @@ class MonitoringProcessV2:
                                 self._create_alert(
                                     "fan_stopped_critical",
                                     "critical",
-                                    f"æ£ç­é£æåè½¬: {sensor.get('label')} (CPUæ¸©åº¦: {cpu_temp:.1f}Â°C)",
+                                    f"散热风扇停转: {sensor.get('label')} (CPU温度: {cpu_temp:.1f}°C)",
                                     {"fan_rpm": rpm, "cpu_temp": cpu_temp, "device": device},
                                 )
                             )
 
         except Exception as e:
-            logger.error("è¯ä¼°åè­¦å¤±è´¥: %s", e)
+            logger.error("评估告警失败: %s", e)
 
         return alerts
 
     def _create_alert(
         self, rule_id: str, severity: str, message: str, context: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """åå»ºåè­¦å¯¹è±¡."""
+        """创建告警对象."""
         return {
             "type": "alert",
             "alert_id": f"{rule_id}_{int(time.time())}",
@@ -2594,72 +2714,84 @@ class MonitoringProcessV2:
         }
 
     async def _push_alert(self, alert: Dict[str, Any]):
-        """æ¨éåè­¦å°ä¸»è¿ç¨."""
+        """推送告警将主进程."""
         if not self.push_socket:
             return
 
         try:
             await self.push_socket.send_json(alert)
-            logger.info("[ALERT] æ¨éåè­¦: %s", alert["message"])
+            logger.info("[ALERT] 推送告警: %s", alert["message"])
         except Exception as e:
-            logger.error("[ALERT] æ¨éå¤±è´¥: %s", e)
+            logger.exception("[ALERT] 推送失败: %s", e)
 
     async def stop(self):
-        """åæ­¢çæ§è¿ç¨."""
-        logger.info("æ­£å¨åæ­¢çæ§è¿ç¨...")
+        """停止监控进程."""
+        logger.info("正在停止监控进程...")
         self.running = False
 
-        # åå³é­socketï¼åå³é­context
+        # 先关闭socket，再关闭context
         if self.push_socket:
             try:
                 self.push_socket.close(linger=0)
             except Exception as e:
-                logger.debug("å³é­push_socketå¼å¸¸: %s", e)
+                logger.debug("关闭push_socket异常: %s", e)
 
         if self.rep_socket:
             try:
                 self.rep_socket.close(linger=0)
             except Exception as e:
-                logger.debug("å³é­rep_socketå¼å¸¸: %s", e)
+                logger.debug("关闭rep_socket异常: %s", e)
 
         if self.pull_socket:
             try:
                 self.pull_socket.close(linger=0)
             except Exception as e:
-                logger.debug("å³é­pull_socketå¼å¸¸: %s", e)
+                logger.debug("关闭pull_socket异常: %s", e)
 
         if self.zmq_context:
             try:
                 self.zmq_context.term()
             except Exception as e:
-                logger.debug("å³é­zmq_contextå¼å¸¸: %s", e)
+                logger.debug("关闭zmq_context异常: %s", e)
 
-        # ç­å¾çº¿ç¨æ± å³é­
+        # 等待线程池关闭
         try:
             self.executor.shutdown(wait=True)
         except Exception as e:
-            logger.debug("å³é­executorå¼å¸¸: %s", e)
+            logger.debug("关闭executor异常: %s", e)
 
         if self.hardware_monitor and hasattr(self.hardware_monitor, "close"):
             try:
                 self.hardware_monitor.close()
             except Exception as e:
-                logger.debug("å³é­hardware_monitorå¼å¸¸: %s", e)
+                logger.debug("关闭hardware_monitor异常: %s", e)
 
-        logger.info("çæ§è¿ç¨å·²åæ­¢")
+        logger.info("监控进程已停止")
 
 
 def main():
-    """çæ§è¿ç¨å¥å£å½æ°."""
+    """监控进程入口函数."""
     import sys
     import logging
+
+    # 🔧 修复编码问题：确保stdout使用UTF-8编码
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")  # type: ignore
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8")  # type: ignore
+
+    # 创建带UTF-8编码StreamHandler
+    stream_handler = logging.StreamHandler(sys.stdout)
+    stream_handler.setFormatter(
+        logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    )
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         handlers=[
-            logging.FileHandler("logs/monitor_process.log"),
-            logging.StreamHandler(sys.stdout),
+            logging.FileHandler("logs/monitor_process.log", encoding="utf-8"),
+            stream_handler,
         ],
     )
 
@@ -2668,9 +2800,9 @@ def main():
     try:
         asyncio.run(monitor.start())
     except KeyboardInterrupt:
-        logger.info("æ¶å°ä¸­æ­ä¿¡å·")
+        logger.info("收将中断信号")
     except Exception as e:
-        logger.error("çæ§è¿ç¨å¼å¸¸éåº: %s", e, exc_info=True)
+        logger.error("监控进程异常退出: %s", e, exc_info=True)
         sys.exit(1)
 
 
@@ -2678,17 +2810,16 @@ if __name__ == "__main__":
     main()
 
 
-
 # =============================================================================
-# Part 7-10: ç³»ç»/è¿ç¨çæ§åä¸å¡ææ ï¼æ¥èª monitors.pyï¼
+# Part 7-10: 系统/进程监控和业务指标（来自 monitors.py）
 # =============================================================================
 
-# å¸¸éå®ä¹
+# 常量定义
 # =============================================================================
 
 
 class DiskType:
-    """ç£çç±»åå¸¸é."""
+    """磁盘类型常量."""
 
     HDD = "hdd"
     SSD = "ssd"
@@ -2696,23 +2827,23 @@ class DiskType:
     UNKNOWN = "unknown"
 
 
-# ç£çç±»åå¯¹åºçI/Oéå¼ (KB/s)
+# 磁盘类型对应I/O阈值 (KB/s)
 DISK_THRESHOLDS = {
     DiskType.HDD: {"read": 100000, "write": 80000},  # 100 MB/s, 80 MB/s
     DiskType.SSD: {"read": 400000, "write": 300000},  # 400 MB/s, 300 MB/s
     DiskType.NVME: {"read": 2000000, "write": 1500000},  # 2000 MB/s, 1500 MB/s
-    DiskType.UNKNOWN: {"read": 400000, "write": 300000},  # é»è®¤ä½¿ç¨SSDéå¼
+    DiskType.UNKNOWN: {"read": 400000, "write": 300000},  # 默认使用SSD阈值
 }
 
 
 # =============================================================================
-# æ°æ®ç±»å®ä¹
+# 数据类定义
 # =============================================================================
 
 
 @dataclass
 class SystemInfo:
-    """ç³»ç»ä¿¡æ¯."""
+    """系统信息."""
 
     platform: str
     platform_version: str
@@ -2728,7 +2859,7 @@ class SystemInfo:
 
 @dataclass
 class ResourceUsage:
-    """èµæºä½¿ç¨æåµ."""
+    """资源使用情况."""
 
     cpu_percent: float
     memory_percent: float
@@ -2742,92 +2873,277 @@ class ResourceUsage:
 
 @dataclass
 class ProcessMetrics:
-    """è¿ç¨ææ æ°æ®ç±»."""
+    """进程指标数据类."""
 
-    process_id: str  # è¿ç¨/çº¿ç¨æ è¯
-    process_name: str  # è¿ç¨/çº¿ç¨åç§°
-    process_type: str  # è¿ç¨ç±»å: download | data_io | backtest | trading | unknown
-    status: str  # ç¶æ: running | idle | stopped
-    cpu_percent: float  # CPUä½¿ç¨ç (%)
-    memory_mb: float  # åå­å ç¨ (MB)
-    memory_percent: float  # åå­ä½¿ç¨ç (%)
-    disk_read_mbps: float  # ç£çè¯»åéåº¦ (MB/s)
-    disk_write_mbps: float  # ç£çåå¥éåº¦ (MB/s)
-    network_recv_mbps: float  # ç½ç»æ¥æ¶éåº¦ (MB/s)
-    network_send_mbps: float  # ç½ç»åééåº¦ (MB/s)
-    timestamp: datetime  # ééæ¶é´
+    process_id: str  # 进程/线程标识
+    process_name: str  # 进程/线程名称
+    process_type: str  # 进程类型: download | data_io | backtest | trading | unknown
+    status: str  # 状态: running | idle | stopped
+    cpu_percent: float  # CPU使用率 (%)
+    memory_mb: float  # 内存占用 (MB)
+    memory_percent: float  # 内存使用率 (%)
+    disk_read_mbps: float  # 磁盘读取速度 (MB/s)
+    disk_write_mbps: float  # 磁盘写入速度 (MB/s)
+    network_recv_mbps: float  # 网络接收速度 (MB/s)
+    network_send_mbps: float  # 网络发送速度 (MB/s)
+    timestamp: datetime  # 采集时间
 
 
 @dataclass
 class BottleneckResult:
-    """ç¶é¢åæç»æ."""
+    """瓶颈分析结果."""
 
     process_id: str
     process_name: str
     process_type: str
     bottleneck: str  # cpu | memory | disk_io | network | balanced
-    bottleneck_percent: float  # ç¶é¢é¡¹çä½¿ç¨ç
-    details: str  # è¯¦ç»æè¿°
-    suggestion: str  # ä¼åå»ºè®®
-    metrics: ProcessMetrics  # åå§ææ æ°æ®
+    bottleneck_percent: float  # 瓶颈项使用率
+    details: str  # 详细描述
+    suggestion: str  # 优化建议
+    metrics: ProcessMetrics  # 原始指标数据
 
     @property
     def has_bottleneck(self) -> bool:
-        """æ¯å¦å­å¨ç¶é¢."""
+        """是否存在瓶颈."""
         return self.bottleneck != "balanced"
 
 
-# Protocolå®ä¹ï¼ç¨äºç±»åæ£æ¥ï¼
+# Protocol定义（用于类型检查）
 if HAS_PSUTIL:
 
     class DiskIOCounters(Protocol):
-        """ç£çIOè®¡æ°å¨åè®®."""
+        """磁盘IO计数器协议."""
 
         read_bytes: int
         write_bytes: int
 
     class NetIOCounters(Protocol):
-        """ç½ç»IOè®¡æ°å¨åè®®."""
+        """网络IO计数器协议."""
 
         bytes_recv: int
         bytes_sent: int
 
 
 # =============================================================================
-# ç³»ç»çæ§å¨
+# 系统监控器
 # =============================================================================
 
 
+# =============================================================================
+# 运营商带宽监控器
+# =============================================================================
+
+
+class BandwidthMonitor:
+    """运营商带宽监控器（支持完整测试和轻量延迟测试）."""
+
+    def __init__(self, speedtest_available: bool = False):
+        """初始化带宽监控器.
+
+        Args:
+            speedtest_available: speedtest-cli 是否可用
+        """
+        self._last_full_result: Optional[Dict[str, Any]] = None
+        self._last_ping_result: Optional[Dict[str, Any]] = None
+        self._full_test_time: Optional[datetime] = None
+        self._ping_test_time: Optional[datetime] = None
+        self._testing = False
+        self._speedtest_available = speedtest_available
+        self._last_error: str = ""
+
+    def test_bandwidth_full(self) -> Optional[Dict[str, Any]]:
+        """完整带宽测试（重量级，包含下载/上传/延迟）.
+
+        Returns:
+            测试结果字典，包含下载速度、上传速度、延迟
+        """
+        if not self._speedtest_available:
+            logger.warning("speedtest-cli未安装，无法执行带宽测试")
+            self._last_error = "speedtest-cli未安装"
+            return None
+
+        if self._testing:
+            logger.warning("带宽测试正在进行中，请稍后再试")
+            self._last_error = "测试正在进行中，请稍后再试"
+            return None
+
+        try:
+            self._testing = True
+            logger.info("开始完整带宽测试（预计耗时10-30秒）...")
+
+            import speedtest
+
+            st = speedtest.Speedtest()
+            st.get_best_server()
+
+            download_bps = st.download()
+            download_mbps = download_bps / 1_000_000
+
+            upload_bps = st.upload()
+            upload_mbps = upload_bps / 1_000_000
+
+            ping_ms = st.results.ping
+
+            result = {
+                "download_mbps": round(download_mbps, 2),
+                "upload_mbps": round(upload_mbps, 2),
+                "ping_ms": round(ping_ms, 2),
+                "test_time": datetime.now().isoformat(),
+                "test_type": "full",
+            }
+
+            self._last_full_result = result
+            self._full_test_time = datetime.now()
+
+            logger.info(
+                f"完整带宽测试完成: 下载 {result['download_mbps']}Mbps, "
+                f"上传 {result['upload_mbps']}Mbps, 延迟 {result['ping_ms']}ms"
+            )
+
+            return result
+
+        except Exception as e:
+            logger.error(f"完整带宽测试失败: {e}")
+            return None
+
+        finally:
+            self._testing = False
+
+    def test_ping_only(self) -> Optional[Dict[str, Any]]:
+        """仅测试延迟（轻量级，只ping不测速）.
+
+        Returns:
+            测试结果字典，仅包含延迟
+        """
+        if not self._speedtest_available:
+            logger.debug("speedtest-cli未安装，无法执行延迟测试")
+            self._last_error = "speedtest-cli未安装"
+            return None
+
+        if self._testing:
+            logger.debug("测试正在进行中，跳过本次延迟测试")
+            self._last_error = "测试正在进行中，请稍后再试"
+            return None
+
+        try:
+            self._testing = True
+
+            import speedtest
+
+            st = speedtest.Speedtest()
+            st.get_best_server()
+
+            ping_ms = st.results.ping
+
+            result = {
+                "ping_ms": round(ping_ms, 2),
+                "test_time": datetime.now().isoformat(),
+                "test_type": "ping_only",
+            }
+
+            self._last_ping_result = result
+            self._ping_test_time = datetime.now()
+
+            return result
+
+        except Exception as e:
+            logger.debug(f"延迟测试失败: {e}")
+            return None
+
+        finally:
+            self._testing = False
+
+    async def test_bandwidth_full_async(self) -> Optional[Dict[str, Any]]:
+        """完整带宽测试（异步版本）.
+
+        Returns:
+            测试结果字典
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self.test_bandwidth_full)
+
+    async def test_ping_only_async(self) -> Optional[Dict[str, Any]]:
+        """仅测试延迟（异步版本）.
+
+        Returns:
+            测试结果字典
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self.test_ping_only)
+
+    def get_last_full_result(self) -> Optional[Dict[str, Any]]:
+        """获取最新完整测试结果.
+
+        Returns:
+            最新完整测试结果，如果未测试则返回None
+        """
+        return self._last_full_result
+
+    def get_last_ping_result(self) -> Optional[Dict[str, Any]]:
+        """获取最新延迟测试结果.
+
+        Returns:
+            最新延迟测试结果，如果未测试则返回None
+        """
+        return self._last_ping_result
+
+
 class SystemMonitor:
-    """ç³»ç»çæ§å¨."""
+    """系统监控器."""
 
     def __init__(self):
-        """åå§åç³»ç»çæ§å¨."""
+        """初始化系统监控器."""
         self.monitoring = False
         self.history = []
         self.max_history = 1000
 
-        # ð æ§è½ä¼åï¼åå§åCPUéæ ·ï¼å»ºç«baselineï¼
-        # ç¬¬ä¸æ¬¡è°ç¨cpu_percent()å»ºç«åºçº¿ï¼åç»­è°ç¨interval=Noneæææä¹
+        # 🚀 性能优化：初始化CPU采样（建立baseline）
+        # 第一次调用cpu_percent()建立基线，后续调用interval=None才有意义
         if HAS_PSUTIL:
             try:
                 psutil.cpu_percent(interval=None)
             except Exception:
                 pass
 
-        # ç£çç±»åç¼å­
+        # 磁盘类型缓存
         self._disk_type_cache: Dict[str, str] = {}
 
-    def _detect_disk_type(self, device_name: str) -> str:
-        """æ£æµåä¸ªç£ççç±»å.
+        # 添加带宽监控器
+        self.bandwidth_monitor = BandwidthMonitor(HAS_SPEEDTEST)
 
-        Args:
-            device_name: è®¾å¤åï¼Windows: PhysicalDrive0, Linux: sdaï¼
+    def get_bandwidth_info(self) -> Dict[str, Any]:
+        """获取运营商带宽信息（返回缓存结果）.
 
         Returns:
-            ç£çç±»åï¼hdd/ssd/nvme/unknown
+            包含完整测试和延迟测试结果字典
         """
-        # æ£æ¥ç¼å­
+        full_result = self.bandwidth_monitor.get_last_full_result()
+        ping_result = self.bandwidth_monitor.get_last_ping_result()
+
+        return {
+            "full_test": (
+                full_result
+                if full_result
+                else {
+                    "download_mbps": None,
+                    "upload_mbps": None,
+                    "ping_ms": None,
+                    "status": "未测试",
+                }
+            ),
+            "ping_test": ping_result if ping_result else {"ping_ms": None, "status": "未测试"},
+        }
+
+    def _detect_disk_type(self, device_name: str) -> str:
+        """检测单个磁盘类型.
+
+        Args:
+            device_name: 设备名（Windows: PhysicalDrive0, Linux: sda）
+
+        Returns:
+            磁盘类型：hdd/ssd/nvme/unknown
+        """
+        # 检查缓存
         if device_name in self._disk_type_cache:
             return self._disk_type_cache[device_name]
 
@@ -2837,41 +3153,41 @@ class SystemMonitor:
             system = platform.system()
 
             if system == "Windows":
-                # Windowså¹³å°ä½¿ç¨WMI
+                # Windows平台使用WMI
                 try:
                     import wmi
 
                     c = wmi.WMI()
                     for disk in c.Win32_DiskDrive():
-                        # å¹éè®¾å¤å
+                        # 匹配设备名
                         if device_name in disk.DeviceID or disk.DeviceID in device_name:
-                            # NVMeæ£æµ
+                            # NVMe检测
                             if disk.InterfaceType and "NVMe" in disk.InterfaceType:
                                 disk_type = DiskType.NVME
-                            # SSDæ£æµï¼éè¿åå·åç§°ï¼
+                            # SSD检测（通过型号名称）
                             elif disk.Model and any(
                                 keyword in disk.Model.upper()
                                 for keyword in ["SSD", "SOLID STATE", "NVME", "PSSD"]
                             ):
                                 disk_type = DiskType.SSD
-                            # HDDæ£æµ
+                            # HDD检测
                             elif disk.MediaType and "fixed" in disk.MediaType.lower():
                                 disk_type = DiskType.HDD
                             break
                 except ImportError:
-                    logger.debug("WMIæ¨¡åæªå®è£ï¼æ æ³æ£æµç£çç±»å")
+                    logger.debug("WMI模块未安装，无法检测磁盘类型")
                 except Exception as e:
-                    logger.debug("Windowsç£çç±»åæ£æµå¤±è´¥: %s", e)
+                    logger.debug("Windows磁盘类型检测失败: %s", e)
 
             elif system == "Linux":
-                # Linuxå¹³å°æ£æµ
+                # Linux平台检测
                 from pathlib import Path
 
-                # NVMeæ£æµï¼éè¿è®¾å¤åï¼
+                # NVMe检测（通过设备名）
                 if device_name.startswith("nvme"):
                     disk_type = DiskType.NVME
                 else:
-                    # éè¿rotationalæä»¶å¤æ­
+                    # 通过rotational文件判断
                     rotational_path = Path(f"/sys/block/{device_name}/queue/rotational")
                     if rotational_path.exists():
                         try:
@@ -2882,24 +3198,24 @@ class SystemMonitor:
                                 elif value == "1":
                                     disk_type = DiskType.HDD
                         except (IOError, PermissionError) as e:
-                            logger.debug("è¯»årotationalæä»¶å¤±è´¥: %s", e)
+                            logger.debug("读取rotational文件失败: %s", e)
 
         except Exception as e:
-            logger.debug("æ£æµç£çç±»åå¤±è´¥ (%s): %s", device_name, e)
+            logger.debug("检测磁盘类型失败 (%s): %s", device_name, e)
 
-        # ç¼å­ç»æ
+        # 缓存结果
         self._disk_type_cache[device_name] = disk_type
         return disk_type
 
     def get_physical_disks_info(self) -> Dict[str, Dict[str, Any]]:
-        """è·åç©çç£çä¿¡æ¯ï¼ä½¿ç¨WMIåºåç©çç£çåé»è¾ååºï¼
+        """获取物理磁盘信息（使用WMI区分物理磁盘和逻辑分区）
 
         Returns:
             {
                 "PhysicalDrive0": {
                     "device_id": "\\\\.\\PHYSICALDRIVE0",
                     "disk_type": "ssd",  # hdd/ssd/nvme
-                    "is_system_disk": True,  # C:æå¨çç£ç
+                    "is_system_disk": True,  # C:所在磁盘
                     "partitions": ["C:", "D:"],
                     "interface_type": "NVMe",
                     "size_bytes": 512000000000,
@@ -2912,13 +3228,13 @@ class SystemMonitor:
             system = platform.system()
 
             if system == "Windows" and HAS_WMI and HAS_PSUTIL:
-                # ä½¿ç¨WMIè·åç©çç£çä¿¡æ¯
+                # 使用WMI获取物理磁盘信息
                 try:
                     c = wmi.WMI()
 
-                    # è·åææç©çç£ç
+                    # 获取所有物理磁盘
                     for disk in c.Win32_DiskDrive():
-                        # ä»DeviceIDæåç£çç¼å·: \\.\PHYSICALDRIVE0 -> PhysicalDrive0
+                        # 从DeviceID提取磁盘编号: \\.\PHYSICALDRIVE0 -> PhysicalDrive0
                         device_id = disk.DeviceID
                         if "PHYSICALDRIVE" in device_id.upper():
                             # 提取并标准化为驼峰式格式 (与psutil一致)
@@ -2931,7 +3247,7 @@ class SystemMonitor:
                         else:
                             continue
 
-                        # æ£æµç£çç±»å
+                        # 检测磁盘类型
                         disk_type = DiskType.UNKNOWN
                         if disk.InterfaceType and "NVMe" in disk.InterfaceType:
                             disk_type = DiskType.NVME
@@ -2941,10 +3257,10 @@ class SystemMonitor:
                         ):
                             disk_type = DiskType.SSD
                         else:
-                            # 未检测到SSD关键词，默认为HDD（机械硬盘）
+                            # 未检测将SSD关键词，默认为HDD（机械硬盘）
                             disk_type = DiskType.HDD
 
-                        # è·åè¯¥ç©çç£ççååº
+                        # 获取该物理磁盘分区
                         partitions = []
                         for partition in disk.associators("Win32_DiskDriveToDiskPartition"):
                             for logical_disk in partition.associators(
@@ -2952,11 +3268,11 @@ class SystemMonitor:
                             ):
                                 partitions.append(logical_disk.DeviceID)  # C:, D:, etc.
 
-                        # å¤æ­æ¯å¦ä¸ºç³»ç»ç
-                        # æ¹æ¡1a: æ£æ¥æ¯å¦åå«C:ååº
+                        # 判断是否为系统盘
+                        # 方案1a: 检查是否包含C:分区
                         is_system_disk = "C:" in partitions
 
-                        # æ¹æ¡2açfallbackï¼å¦ææ²¡æC:çï¼æ£æ¥ç³»ç»ç®å½
+                        # 方案2afallback：如果没有C:盘，检查系统目录
                         if not is_system_disk and partitions:
                             try:
                                 import os
@@ -2976,11 +3292,11 @@ class SystemMonitor:
                         }
 
                 except Exception as e:
-                    logger.warning("WMIè·åç©çç£çä¿¡æ¯å¤±è´¥: %sï¼å°ä½¿ç¨ç®åæ¹æ¡", e)
+                    logger.warning("WMI获取物理磁盘信息失败: %s，将使用简化方案", e)
 
-            # å¦æWMIå¤±è´¥æéWindowsç³»ç»ï¼ä½¿ç¨ç®åæ¹æ¡
+            # 如果WMI失败或非Windows系统，使用简化方案
             if not physical_disks and HAS_PSUTIL:
-                # ç®åæ¹æ¡ï¼éè¿psutilè·ååºæ¬ä¿¡æ¯
+                # 简化方案：通过psutil获取基本信息
                 partitions = psutil.disk_partitions()
                 processed_disks = set()
 
@@ -2988,18 +3304,18 @@ class SystemMonitor:
                     if not partition.fstype:
                         continue
 
-                    # ç®åç£çåç§°æ å°
+                    # 简化磁盘名称映射
                     if system == "Windows":
-                        # åè®¾ææååºå¨åä¸ä¸ªç©çç£çï¼PhysicalDrive0ï¼
+                        # 假设所有分区在同一个物理磁盘（PhysicalDrive0）
                         disk_name = "PhysicalDrive0"
                     else:
-                        # Linux: ä»/dev/sda1æåsda
+                        # Linux: 从/dev/sda1提取sda
                         disk_name = partition.device.split("/")[-1].rstrip("0123456789")
 
                     if disk_name not in processed_disks:
                         disk_type = self._detect_disk_type(disk_name)
 
-                        # æ¶éè¯¥ç£ççææååº
+                        # 收集该磁盘所有分区
                         disk_partitions = []
                         for p in partitions:
                             if system == "Windows":
@@ -3007,7 +3323,7 @@ class SystemMonitor:
                             elif disk_name in p.device:
                                 disk_partitions.append(p.mountpoint)
 
-                        # å¤æ­æ¯å¦ç³»ç»ç
+                        # 判断是否系统盘
                         is_system_disk = False
                         if system == "Windows":
                             is_system_disk = "C:" in disk_partitions
@@ -3026,15 +3342,15 @@ class SystemMonitor:
                         processed_disks.add(disk_name)
 
         except Exception as e:
-            logger.error("è·åç©çç£çä¿¡æ¯å¤±è´¥: %s", e)
+            logger.error("获取物理磁盘信息失败: %s", e)
 
         return physical_disks
 
     def get_disks_with_types(self) -> Dict[str, Dict[str, Any]]:
-        """è·åææç£çåå¶ç±»åä¿¡æ¯.
+        """获取所有磁盘及其类型信息.
 
         Returns:
-            å­å¸æ ¼å¼ï¼{
+            字典格式：{
                 "C:\\": {
                     "type": "nvme",
                     "mount": "C:\\",
@@ -3055,7 +3371,7 @@ class SystemMonitor:
 
             for partition in partitions:
                 try:
-                    # è·³è¿èææä»¶ç³»ç»
+                    # 跳过虚拟文件系统
                     if not partition.fstype:
                         continue
                     if system == "Linux" and partition.fstype in ["squashfs", "tmpfs"]:
@@ -3064,19 +3380,19 @@ class SystemMonitor:
                     mount_point = partition.mountpoint
                     device = partition.device
 
-                    # æåç©çç£çè®¾å¤å
+                    # 提取物理磁盘设备名
                     if system == "Windows":
-                        # Windows: å°è¯ä»WMIè·åç©çç£çç¼å·
-                        # ç®åå¤çï¼åè®¾ç¬¬ä¸ä¸ªç©çç£ç
+                        # Windows: 尝试从WMI获取物理磁盘编号
+                        # 简化处理：假设第一个物理磁盘
                         device_name = "PhysicalDrive0"
                     else:
-                        # Linux: ä» /dev/sda1 æå sda
+                        # Linux: 从 /dev/sda1 提取 sda
                         device_name = device.split("/")[-1].rstrip("0123456789")
 
-                    # æ£æµç£çç±»å
+                    # 检测磁盘类型
                     disk_type = self._detect_disk_type(device_name)
 
-                    # è·åå¯¹åºéå¼
+                    # 获取对应阈值
                     thresholds = DISK_THRESHOLDS.get(disk_type, DISK_THRESHOLDS[DiskType.UNKNOWN])
 
                     disks_info[mount_point] = {
@@ -3088,22 +3404,22 @@ class SystemMonitor:
                     }
 
                 except (PermissionError, OSError) as e:
-                    logger.debug("æ æ³è®¿é®ç£ç %s: %s", partition.device, e)
+                    logger.debug("无法访问磁盘 %s: %s", partition.device, e)
                     continue
 
         except Exception as e:
-            logger.error("è·åç£çç±»åä¿¡æ¯å¤±è´¥: %s", e)
+            logger.exception("获取磁盘类型信息失败: %s", e)
 
         return disks_info
 
     def get_system_info(self) -> SystemInfo:
-        """è·åç³»ç»åºæ¬ä¿¡æ¯."""
+        """获取系统基本信息."""
         try:
             if HAS_PSUTIL:
-                # è·åç½ç»æ¥å£
+                # 获取网络接口
                 network_interfaces = list(psutil.net_if_addrs().keys())
 
-                # è·åç£çæ»ç©ºé´
+                # 获取磁盘总空间
                 disk_usage = psutil.disk_usage("/")
 
                 return SystemInfo(
@@ -3119,7 +3435,7 @@ class SystemMonitor:
                     boot_time=datetime.fromtimestamp(psutil.boot_time()),
                 )
             else:
-                # åºç¡å®ç°
+                # 基础实现
                 return SystemInfo(
                     platform=platform.system(),
                     platform_version=platform.version(),
@@ -3127,71 +3443,71 @@ class SystemMonitor:
                     hostname=platform.node(),
                     cpu_count=os.cpu_count() or 1,
                     cpu_count_logical=os.cpu_count() or 1,
-                    memory_total=1024 * 1024 * 1024,  # 1GB é»è®¤å¼
-                    disk_total=100 * 1024 * 1024 * 1024,  # 100GB é»è®¤å¼
+                    memory_total=1024 * 1024 * 1024,  # 1GB 默认值
+                    disk_total=100 * 1024 * 1024 * 1024,  # 100GB 默认值
                     network_interfaces=["eth0"],
                     boot_time=datetime.now(),
                 )
         except (OSError, AttributeError, ImportError) as e:
-            logger.error("è·åç³»ç»ä¿¡æ¯å¤±è´¥: %s", e)
+            logger.error("获取系统信息失败: %s", e)
             raise
 
     def get_resource_usage(self) -> ResourceUsage:
-        """è·åèµæºä½¿ç¨æåµ."""
+        """获取资源使用情况."""
         try:
             if HAS_PSUTIL:
-                # CPUä½¿ç¨ç
-                # ð æ§è½ä¼åï¼ä½¿ç¨interval=Noneï¼éé»å¡æ¨¡å¼ï¼
-                # interval=1ä¼é»å¡çº¿ç¨1ç§ï¼ä¸¥éå½±åæ§è½
-                # Noneè¡¨ç¤ºè¿åèªä¸æ¬¡è°ç¨ä»¥æ¥çCPUä½¿ç¨çï¼ä¸é»å¡
+                # CPU使用率
+                # 🚀 性能优化：使用interval=None（非阻塞模式）
+                # interval=1会阻塞线程1秒！严重影响性能
+                # None表示返回自上次调用以来CPU使用率，不阻塞
                 cpu_percent_raw = psutil.cpu_percent(interval=None)
-                # ç¡®ä¿è¿åå¼æ¯floatç±»åï¼èä¸æ¯listï¼
+                # 确保返回值是float类型（而不是list）
                 cpu_percent = (
                     float(cpu_percent_raw) if not isinstance(cpu_percent_raw, list) else 0.0
                 )
 
-                # åå­ä½¿ç¨ç
+                # 内存使用率
                 memory = psutil.virtual_memory()
 
-                # ç£çä½¿ç¨çï¼ç®åçï¼ç§»é¤signalå¤çé¿åWindowså¼å®¹é®é¢ï¼
+                # 磁盘使用率（简化版，移除signal处理避免Windows兼容问题）
                 disk: Any = None
                 try:
                     disk = psutil.disk_usage("/")
                 except (OSError, AttributeError):
-                    # å¦æå¤±è´¥ï¼ä½¿ç¨é»è®¤å¼
-                    logger.debug("ç£çä½¿ç¨çè·åå¤±è´¥ï¼ä½¿ç¨é»è®¤å¼")
+                    # 如果失败，使用默认值
+                    logger.debug("磁盘使用率获取失败，使用默认值")
                     disk = type(
                         "DiskUsage",
                         (),
                         {"used": 50 * 1024 * 1024 * 1024, "total": 100 * 1024 * 1024 * 1024},
                     )()
 
-                # ç½ç»æµé
+                # 网络流量
                 network: Any = None
                 try:
                     network = psutil.net_io_counters()
                 except (OSError, AttributeError):
-                    # å¦æå¤±è´¥ï¼ä½¿ç¨é»è®¤å¼
-                    logger.debug("ç½ç»æµéè·åå¤±è´¥ï¼ä½¿ç¨é»è®¤å¼")
+                    # 如果失败，使用默认值
+                    logger.debug("网络流量获取失败，使用默认值")
                     network = type(
                         "NetIO", (), {"bytes_sent": 1024 * 1024, "bytes_recv": 2048 * 1024}
                     )()
 
-                # è¿ç¨æ°éï¼å¸¦è¶æ¶ä¿æ¤ï¼
-                process_count = 150  # é»è®¤å¼
+                # 进程数量（带超时保护）
+                process_count = 150  # 默认值
                 try:
-                    # åªè·åå100ä¸ªè¿ç¨ï¼é¿åè¿å¤
+                    # 只获取前100个进程，避免过多
                     pids = psutil.pids()[:100]
                     process_count = len(pids)
                 except (OSError, AttributeError):
-                    logger.debug("è¿ç¨æ°éè·åå¤±è´¥ï¼ä½¿ç¨é»è®¤å¼")
+                    logger.debug("进程数量获取失败，使用默认值")
 
-                # è´è½½å¹³åå¼(Linux/Unix)
+                # 负载平均值(Linux/Unix)
                 load_average = []
                 try:
                     load_average = list(psutil.getloadavg())
                 except (AttributeError, OSError):
-                    # Windowsä¸æ¯ægetloadavg
+                    # Windows不支持getloadavg
                     load_average = [0.0, 0.0, 0.0]
 
                 return ResourceUsage(
@@ -3205,7 +3521,7 @@ class SystemMonitor:
                     timestamp=datetime.now(),
                 )
             else:
-                # åºç¡å®ç°(æ psutilæ¶è¿åé»è®¤å¼)
+                # 基础实现(无psutil时返回默认值)
                 return ResourceUsage(
                     cpu_percent=25.0,
                     memory_percent=60.0,
@@ -3217,11 +3533,11 @@ class SystemMonitor:
                     timestamp=datetime.now(),
                 )
         except (OSError, AttributeError, ImportError) as e:
-            logger.error("è·åèµæºä½¿ç¨æåµå¤±è´¥: %s", e)
+            logger.error("获取资源使用情况失败: %s", e)
             raise
 
     def get_cpu_info(self) -> Dict[str, Any]:
-        """è·åCPUè¯¦ç»ä¿¡æ¯."""
+        """获取CPU详细信息."""
         try:
             if HAS_PSUTIL:
                 cpu_freq = psutil.cpu_freq()
@@ -3259,11 +3575,11 @@ class SystemMonitor:
                     },
                 }
         except (OSError, AttributeError, ImportError) as e:
-            logger.error("è·åCPUä¿¡æ¯å¤±è´¥: %s", e)
+            logger.error("获取CPU信息失败: %s", e)
             return {}
 
     def get_memory_info(self) -> Dict[str, Any]:
-        """è·ååå­è¯¦ç»ä¿¡æ¯."""
+        """获取内存详细信息."""
         try:
             if HAS_PSUTIL:
                 virtual_memory = psutil.virtual_memory()
@@ -3301,11 +3617,11 @@ class SystemMonitor:
                     },
                 }
         except (OSError, AttributeError, ImportError) as e:
-            logger.error("è·ååå­ä¿¡æ¯å¤±è´¥: %s", e)
+            logger.error("获取内存信息失败: %s", e)
             return {}
 
     def get_disk_info(self) -> Dict[str, Any]:
-        """è·åç£çè¯¦ç»ä¿¡æ¯."""
+        """获取磁盘详细信息."""
         try:
             if not HAS_PSUTIL:
                 return {
@@ -3336,7 +3652,7 @@ class SystemMonitor:
                 except PermissionError:
                     continue
 
-            # ç£çIOç»è®¡
+            # 磁盘IO统计
             disk_io: Any = psutil.disk_io_counters()
             if disk_io:
                 disk_info["io_counters"] = {
@@ -3348,22 +3664,22 @@ class SystemMonitor:
 
             return disk_info
         except (OSError, AttributeError, ImportError) as e:
-            logger.error("è·åç£çä¿¡æ¯å¤±è´¥: %s", e)
+            logger.error("获取磁盘信息失败: %s", e)
             return {}
 
     def get_network_info(self) -> Dict[str, Any]:
-        """è·åç½ç»è¯¦ç»ä¿¡æ¯."""
+        """获取网络详细信息."""
         try:
             network_info = {}
 
-            # ç½ç»æ¥å£ä¿¡æ¯
+            # 网络接口信息
             net_if_addrs = psutil.net_if_addrs()
             net_if_stats = psutil.net_if_stats()
 
             for interface, addresses in net_if_addrs.items():
                 interface_info = {"addresses": [], "stats": {}}
 
-                # å°åä¿¡æ¯
+                # 地址信息
                 for addr in addresses:
                     interface_info["addresses"].append(
                         {
@@ -3374,7 +3690,7 @@ class SystemMonitor:
                         }
                     )
 
-                # ç»è®¡ä¿¡æ¯
+                # 统计信息
                 if interface in net_if_stats:
                     stats = net_if_stats[interface]
                     interface_info["stats"] = {
@@ -3386,7 +3702,7 @@ class SystemMonitor:
 
                 network_info[interface] = interface_info
 
-            # ç½ç»IOç»è®¡
+            # 网络IO统计
             net_io: Any = psutil.net_io_counters()
             if net_io:
                 network_info["io_counters"] = {
@@ -3402,14 +3718,14 @@ class SystemMonitor:
 
             return network_info
         except (OSError, AttributeError, ImportError) as e:
-            logger.error("è·åç½ç»ä¿¡æ¯å¤±è´¥: %s", e)
+            logger.error("获取网络信息失败: %s", e)
             return {}
 
     def get_disk_io_speed(self) -> Dict[str, Dict[str, Any]]:
-        """è·ååç£çI/Oéåº¦ (MB/s).
+        """获取各磁盘I/O速度 (MB/s).
 
         Returns:
-            Dict: åç£ççè¯»åéåº¦åç±»åä¿¡æ¯ï¼æ ¼å¼: {
+            Dict: 各磁盘读写速度和类型信息，格式: {
                 "C:\\": {
                     "read_speed": 50.2,
                     "write_speed": 30.1,
@@ -3439,7 +3755,7 @@ class SystemMonitor:
             if not io_counters_1 or not io_counters_2:
                 return {}
 
-            # 直接遍历物理磁盘的I/O计数器
+            # 直接遍历物理磁盘I/O计数器
             for disk_name, counter_1 in io_counters_1.items():
                 try:
                     if disk_name not in io_counters_2:
@@ -3456,7 +3772,7 @@ class SystemMonitor:
                     read_speed_kbps = read_speed_mbps * 1024
                     write_speed_kbps = write_speed_mbps * 1024
 
-                    # 获取该物理磁盘的详细信息
+                    # 获取该物理磁盘详细信息
                     physical_disk_info = physical_disks.get(disk_name, {})
                     disk_type = physical_disk_info.get("disk_type", DiskType.UNKNOWN)
                     partitions = physical_disk_info.get("partitions", [])
@@ -3465,7 +3781,7 @@ class SystemMonitor:
                     # 获取阈值信息
                     thresholds = DISK_THRESHOLDS.get(disk_type, DISK_THRESHOLDS[DiskType.UNKNOWN])
 
-                    # 转换为友好的中文显示名称
+                    # 转换为友好中文显示名称
                     if disk_name.startswith("PhysicalDrive"):
                         disk_num = disk_name.replace("PhysicalDrive", "")
                         display_name = f"物理磁盘{disk_num}"
@@ -3486,26 +3802,26 @@ class SystemMonitor:
                     }
 
                 except (PermissionError, OSError) as e:
-                    logger.debug("无法获取磁盘 %s 的I/O速度: %s", disk_name, e)
+                    logger.debug("无法获取磁盘 %s I/O速度: %s", disk_name, e)
                     continue
 
             return io_speeds
 
         except Exception as e:
-            logger.error("è·åç£çI/Oéåº¦å¤±è´¥: %s", e)
+            logger.exception("获取磁盘I/O速度失败: %s", e)
             return {}
 
     async def get_disk_io_speed_async(self) -> Dict[str, Dict[str, Any]]:
-        """è·ååç£çI/Oéåº¦ (MB/s) - å¼æ­¥çæ¬.
+        """获取各磁盘I/O速度 (MB/s) - 异步版本.
 
         Returns:
-            Dict: åç£ççè¯»åéåº¦ï¼æ ¼å¼: {"C:": {"read_speed": 50.2, "write_speed": 30.1}, ...}
+            Dict: 各磁盘读写速度，格式: {"C:": {"read_speed": 50.2, "write_speed": 30.1}, ...}
         """
         try:
             if not HAS_PSUTIL:
                 return {}
 
-            # å¯¼å¥asyncio
+            # 导入asyncio
             import asyncio
 
             io_speeds = {}
@@ -3521,7 +3837,7 @@ class SystemMonitor:
             if not io_counters_1 or not io_counters_2:
                 return {}
 
-            # 直接遍历物理磁盘的I/O计数器
+            # 直接遍历物理磁盘I/O计数器
             for disk_name, counter_1 in io_counters_1.items():
                 try:
                     if disk_name not in io_counters_2:
@@ -3538,7 +3854,7 @@ class SystemMonitor:
                     read_speed_kbps = read_speed_mbps * 1024
                     write_speed_kbps = write_speed_mbps * 1024
 
-                    # 获取该物理磁盘的详细信息
+                    # 获取该物理磁盘详细信息
                     physical_disk_info = physical_disks.get(disk_name, {})
                     disk_type = physical_disk_info.get("disk_type", DiskType.UNKNOWN)
                     partitions = physical_disk_info.get("partitions", [])
@@ -3547,7 +3863,7 @@ class SystemMonitor:
                     # 获取阈值信息
                     thresholds = DISK_THRESHOLDS.get(disk_type, DISK_THRESHOLDS[DiskType.UNKNOWN])
 
-                    # 转换为友好的中文显示名称
+                    # 转换为友好中文显示名称
                     if disk_name.startswith("PhysicalDrive"):
                         disk_num = disk_name.replace("PhysicalDrive", "")
                         display_name = f"物理磁盘{disk_num}"
@@ -3568,57 +3884,57 @@ class SystemMonitor:
                     }
 
                 except (PermissionError, OSError) as e:
-                    logger.debug("无法获取磁盘 %s 的I/O速度: %s", disk_name, e)
+                    logger.debug("无法获取磁盘 %s I/O速度: %s", disk_name, e)
                     continue
 
             return io_speeds
 
         except Exception as e:
-            logger.error("è·åç£çI/Oéåº¦å¤±è´¥(å¼æ­¥): %s", e)
+            logger.exception("获取磁盘I/O速度失败(异步): %s", e)
             return {}
 
     def get_network_speed(self) -> Dict[str, Any]:
-        """è·åç½ç»éåº¦åå¸¦å®½å ç¨.
+        """获取网络速度和带宽占用.
 
         Returns:
-            Dict: ç½ç»éåº¦ä¿¡æ¯ï¼æ ¼å¼:
+            Dict: 网络速度信息，格式:
             {
                 "upload_speed_kbps": 1024.5,
                 "download_speed_kbps": 5120.8,
                 "bandwidth_percent": 45.2,
-                "interface": "ä»¥å¤ªç½"
+                "interface": "以太网"
             }
         """
         try:
             if not HAS_PSUTIL:
                 return {}
 
-            # è·åç¬¬ä¸æ¬¡ç½ç»I/Oè®¡æ°
+            # 获取第一次网络I/O计数
             net_io_1: Any = psutil.net_io_counters()
-            time.sleep(0.1)  # ç­å¾100ms
+            time.sleep(0.1)  # 等待100ms
             net_io_2: Any = psutil.net_io_counters()
 
             if not net_io_1 or not net_io_2:
                 return {}
 
-            # è®¡ç®ä¸ä¼ /ä¸è½½éåº¦ (å­è/ç§ -> KB/ç§)
+            # 计算上传/下载速度 (字节/秒 -> KB/秒)
             upload_bytes_diff = net_io_2.bytes_sent - net_io_1.bytes_sent
             download_bytes_diff = net_io_2.bytes_recv - net_io_1.bytes_recv
 
-            upload_speed_kbps = (upload_bytes_diff / 0.1) / 1024  # 0.1ç§é´é
+            upload_speed_kbps = (upload_bytes_diff / 0.1) / 1024  # 0.1秒间隔
             download_speed_kbps = (download_bytes_diff / 0.1) / 1024
 
-            # ä¼°ç®å¸¦å®½å ç¨ç¾åæ¯ï¼åè®¾1Gbpsç½å¡ = 125MB/s = 128000KB/sï¼
-            # è¿éä½¿ç¨ä¸ä¸ªä¿å®çä¼°ç®
+            # 估算带宽占用百分比（假设1Gbps网卡 = 125MB/s = 128000KB/s）
+            # 这里使用一个保守估算
             total_speed_kbps = upload_speed_kbps + download_speed_kbps
-            assumed_bandwidth_kbps = 128000  # 1Gbpsç½å¡
+            assumed_bandwidth_kbps = 128000  # 1Gbps网卡
 
-            # å°è¯è·åå®éç½å¡éåº¦
+            # 尝试获取实际网卡速度
             try:
                 net_if_stats = psutil.net_if_stats()
                 for interface, stats in net_if_stats.items():
                     if stats.isup and stats.speed > 0:
-                        # speedåä½æ¯Mbpsï¼è½¬æ¢ä¸ºKBps
+                        # speed单位是Mbps，转换为KBps
                         assumed_bandwidth_kbps = stats.speed * 1024 / 8
                         break
             except Exception:
@@ -3630,8 +3946,8 @@ class SystemMonitor:
                 else 0
             )
 
-            # è·åä¸»è¦ç½ç»æ¥å£åç§°
-            interface_name = "æªç¥"
+            # 获取主要网络接口名称
+            interface_name = "未知"
             try:
                 net_if_stats = psutil.net_if_stats()
                 for interface, stats in net_if_stats.items():
@@ -3649,13 +3965,13 @@ class SystemMonitor:
             }
 
         except Exception as e:
-            logger.error("è·åç½ç»éåº¦å¤±è´¥: %s", e)
+            logger.exception("获取网络速度失败: %s", e)
             return {}
 
     def get_cpu_os_detailed(self) -> Dict[str, Any]:
-        """è·åæ´ç»ç²åº¦çCPU/OSææ ï¼å°½åèä¸ºï¼è·¨å¹³å°å®¹éï¼.
+        """获取更细粒度CPU/OS指标（尽力而为，跨平台容错）.
 
-        è¿å:
+        返回:
             {
                 "interrupts_per_sec": float|None,
                 "context_switches_per_sec": float|None,
@@ -3668,7 +3984,7 @@ class SystemMonitor:
             if not HAS_PSUTIL:
                 return {}
 
-            # éæ ·ä¸¤æ¬¡ï¼ä¼°ç®æ¯ç§éç
+            # 采样两次，估算每秒速率
             cpu_stats_1: Any = getattr(psutil, "cpu_stats", lambda: None)()
             cpu_times_1: Any = psutil.cpu_times() if hasattr(psutil, "cpu_times") else None
             time.sleep(0.1)
@@ -3678,7 +3994,7 @@ class SystemMonitor:
             result: Dict[str, Any] = {}
 
             if cpu_stats_1 and cpu_stats_2:
-                # å­æ®µå¯è½ä¸å­å¨ï¼éå®¹é
+                # 字段可能不存在，需容错
                 def diff(key: str) -> Optional[int]:
                     try:
                         v1 = getattr(cpu_stats_1, key)
@@ -3692,7 +4008,7 @@ class SystemMonitor:
                 syscalls = diff("syscalls")
                 soft_interrupts = diff("soft_interrupts")
 
-                scale = 10.0  # 0.1s â æ¯ç§
+                scale = 10.0  # 0.1s ↔ 每秒
                 result.update(
                     {
                         "interrupts_per_sec": (
@@ -3708,7 +4024,7 @@ class SystemMonitor:
                     }
                 )
 
-            # steal timeï¼ä»é¨åå¹³å°æä¾ï¼
+            # steal time（仅部分平台提供）
             try:
                 if (
                     cpu_times_1
@@ -3717,7 +4033,7 @@ class SystemMonitor:
                     and hasattr(cpu_times_2, "steal")
                 ):
                     steal_delta = float(cpu_times_2.steal - cpu_times_1.steal)
-                    # 0.1s æ¶é´çªï¼è½¬æ¢ä¸ºç¾åæ¯ä¼°è®¡ï¼è¿ä¼¼ï¼
+                    # 0.1s 时间窗，转换为百分比估计（近似）
                     result["steal_time_percent"] = max(0.0, min(100.0, (steal_delta / 0.1) * 100.0))
                 else:
                     result["steal_time_percent"] = None
@@ -3726,13 +4042,13 @@ class SystemMonitor:
 
             return result
         except Exception as e:
-            logger.error("è·åCPU/OSè¯¦ç»ææ å¤±è´¥: %s", e)
+            logger.exception("获取CPU/OS详细指标失败: %s", e)
             return {}
 
     def get_memory_subsystem_metrics(self) -> Dict[str, Any]:
-        """è·ååå­å­ç³»ç»ææ ï¼å°½åèä¸ºï¼è·¨å¹³å°å®¹éï¼.
+        """获取内存子系统指标（尽力而为，跨平台容错）.
 
-        è¿å:
+        返回:
             {
                 "page_faults_per_sec": float|None,
                 "swap_in_kbps": float|None,
@@ -3745,7 +4061,7 @@ class SystemMonitor:
             if not HAS_PSUTIL:
                 return {}
 
-            # è¿ä¼¼ï¼éè¿ swap_memory ç sin/soutï¼Linuxä¸ºä¸»ï¼
+            # 近似：通过 swap_memory  sin/sout（Linux为主）
             swap1: Any = psutil.swap_memory()
             time.sleep(0.1)
             swap2: Any = psutil.swap_memory()
@@ -3762,8 +4078,8 @@ class SystemMonitor:
             except Exception:
                 pass
 
-            # page faultsï¼ç³»ç»çº§è·¨å¹³å°ä¸å¯å¾ï¼è¿åNoneï¼
-            # cache å½ä¸­çä¸åå­å¸¦å®½è·¨å¹³å°ä¸å¯å¾ï¼è¿åNone
+            # page faults（系统级跨平台不可得，返回None）
+            # cache 命中率与内存带宽跨平台不可得，返回None
             return {
                 "page_faults_per_sec": None,
                 "swap_in_kbps": round(swap_in_kbps, 2) if swap_in_kbps is not None else None,
@@ -3772,19 +4088,19 @@ class SystemMonitor:
                 "memory_bandwidth_kbps": None,
             }
         except Exception as e:
-            logger.error("è·ååå­å­ç³»ç»ææ å¤±è´¥: %s", e)
+            logger.exception("获取内存子系统指标失败: %s", e)
             return {}
 
     def get_storage_subsystem_metrics(self) -> Dict[str, Any]:
-        """è·åå­å¨å­ç³»ç»ææ ï¼æç©çç£çç»ç»ï¼ä½¿ç¨WMIéåæ·±åº¦ï¼."""
+        """获取存储子系统指标（按物理磁盘组织，使用WMI队列深度）."""
         try:
             if not HAS_PSUTIL:
                 return {}
 
-            # è·åç©çç£çä¿¡æ¯
+            # 获取物理磁盘信息
             physical_disks_info = self.get_physical_disks_info()
 
-            # è·åI/Oè®¡æ°å¨ï¼ç¨äºè®¡ç®å»¶è¿ï¼ä¿çä½ä¸ºç´§æ¥çæ­ææ ï¼
+            # 获取I/O计数器（用于计算延迟，保留作为紧急熔断指标）
             io1: Any = psutil.disk_io_counters(perdisk=True)
             time.sleep(0.1)
             io2: Any = psutil.disk_io_counters(perdisk=True)
@@ -3792,12 +4108,12 @@ class SystemMonitor:
             if not io1 or not io2:
                 return {}
 
-            # æç©çç£çç»ç»æ°æ®
+            # 按物理磁盘组织数据
             physical_disks: Dict[str, Any] = {}
 
             for disk_name, disk_info in physical_disks_info.items():
                 try:
-                    # å¨Windowsä¸ï¼psutilçkeyå¯è½æ¯ "PhysicalDrive0" æéè¦æ å°
+                    # 在Windows上，psutilkey可能是 "PhysicalDrive0" 或需要映射
                     io_key = None
                     for k in io1.keys():
                         if disk_name.lower() in k.lower() or k.lower() in disk_name.lower():
@@ -3805,7 +4121,7 @@ class SystemMonitor:
                             break
 
                     if not io_key or io_key not in io2:
-                        # æ²¡ææ¾å°å¯¹åºçI/Oè®¡æ°å¨ï¼ä½¿ç¨é»è®¤å¼
+                        # 没有找将对应I/O计数器，使用默认值
                         physical_disks[disk_name] = {
                             "disk_type": disk_info["disk_type"],
                             "is_system_disk": disk_info["is_system_disk"],
@@ -3821,13 +4137,13 @@ class SystemMonitor:
                     a1 = io1[io_key]
                     a2 = io2[io_key]
 
-                    # è®¡ç®I/Oæä½æ°
+                    # 计算I/O操作数
                     read_ios = max(0, a2.read_count - a1.read_count)
                     write_ios = max(0, a2.write_count - a1.write_count)
                     read_bytes = max(0, a2.read_bytes - a1.read_bytes)
                     write_bytes = max(0, a2.write_bytes - a1.write_bytes)
 
-                    # è®¡ç®å¹³åI/Oå»¶è¿ï¼ä»ä½ä¸ºç´§æ¥çæ­ææ ï¼
+                    # 计算平均I/O延迟（仅作为紧急熔断指标）
                     read_time_ms = getattr(a2, "read_time", 0) - getattr(a1, "read_time", 0)
                     write_time_ms = getattr(a2, "write_time", 0) - getattr(a1, "write_time", 0)
                     io_ops = max(1, read_ios + write_ios)
@@ -3839,7 +4155,7 @@ class SystemMonitor:
                     except Exception:
                         avg_latency_ms = None
 
-                    # è®¡ç®å¹³åè¯»åå¤§å°
+                    # 计算平均读写大小
                     avg_read_size = (read_bytes / read_ios) if read_ios > 0 else None
                     avg_write_size = (write_bytes / write_ios) if write_ios > 0 else None
 
@@ -3850,15 +4166,15 @@ class SystemMonitor:
                         "average_io_latency_ms": (
                             round(avg_latency_ms, 2) if avg_latency_ms is not None else None
                         ),
-                        "queue_depth": None,  # ç¨åéè¿WMIå¡«å
-                        "avg_queue_depth": None,  # ç¨åéè¿WMIå¡«å
+                        "queue_depth": None,  # 稍后通过WMI填充
+                        "avg_queue_depth": None,  # 稍后通过WMI填充
                         "avg_read_size_bytes": int(avg_read_size) if avg_read_size else None,
                         "avg_write_size_bytes": int(avg_write_size) if avg_write_size else None,
                     }
 
                 except Exception as e:
-                    logger.debug("å¤çç£ç %s çææ å¤±è´¥: %s", disk_name, e)
-                    # è³å°è¿ååºæ¬ä¿¡æ¯
+                    logger.debug("处理磁盘 %s 指标失败: %s", disk_name, e)
+                    # 至少返回基本信息
                     physical_disks[disk_name] = {
                         "disk_type": disk_info["disk_type"],
                         "is_system_disk": disk_info["is_system_disk"],
@@ -3870,7 +4186,7 @@ class SystemMonitor:
                         "avg_write_size_bytes": None,
                     }
 
-            # éè¿WMIè·åéåæ·±åº¦ï¼Windowsç¬æï¼
+            # 通过WMI获取队列深度（Windows独有）
             if HAS_WMI and platform.system() == "Windows":
                 try:
                     c = wmi.WMI()
@@ -3880,19 +4196,19 @@ class SystemMonitor:
                         if wmi_disk.Name == "_Total":
                             continue
 
-                        # WMIçNameæ ¼å¼ï¼"0 C: D:" æ "0 C:"
-                        # æåç£çç¼å·ï¼ç¬¬ä¸ä¸ªå­ç¬¦ï¼
+                        # WMIName格式："0 C: D:" 或 "0 C:"
+                        # 提取磁盘编号（第一个字符）
                         wmi_name = wmi_disk.Name
                         disk_index = wmi_name.split()[0] if wmi_name else None
 
                         if disk_index is None:
                             continue
 
-                        # æ å°å°PhysicalDriveåç§°
+                        # 映射将PhysicalDrive名称
                         physical_drive_name = f"PhysicalDrive{disk_index}"
 
                         if physical_drive_name in physical_disks:
-                            # è·åéåæ·±åº¦
+                            # 获取队列深度
                             current_queue = getattr(wmi_disk, "CurrentDiskQueueLength", None)
                             avg_queue = getattr(wmi_disk, "AvgDiskQueueLength", None)
 
@@ -3906,23 +4222,23 @@ class SystemMonitor:
                                 )
 
                             logger.debug(
-                                "WMIéåæ·±åº¦ %s: current=%s, avg=%s",
+                                "WMI队列深度 %s: current=%s, avg=%s",
                                 physical_drive_name,
                                 current_queue,
                                 avg_queue,
                             )
 
                 except Exception as e:
-                    logger.debug("WMIè·åéåæ·±åº¦å¤±è´¥ï¼å°ä½¿ç¨Noneï¼: %s", e)
+                    logger.debug("WMI获取队列深度失败（将使用None）: %s", e)
 
             return {"disks": physical_disks}
 
         except Exception as e:
-            logger.error("è·åå­å¨å­ç³»ç»ææ å¤±è´¥: %s", e)
+            logger.exception("获取存储子系统指标失败: %s", e)
             return {}
 
     def get_network_subsystem_metrics(self) -> Dict[str, Any]:
-        """è·åç½ç»å­ç³»ç»ææ ï¼éä¼ /RTTè·¨å¹³å°ä¸å¯å¾ï¼å°½åä¼°è®¡ä¸¢åçï¼."""
+        """获取网络子系统指标（重传/RTT跨平台不可得，尽力估计丢包率）."""
         try:
             if not HAS_PSUTIL:
                 return {}
@@ -3944,58 +4260,58 @@ class SystemMonitor:
             return {
                 "packet_loss_rate_in": round(loss_in * 100, 4),
                 "packet_loss_rate_out": round(loss_out * 100, 4),
-                "tcp_retransmissions_per_sec": None,  # æ ç´æ¥è·¨å¹³å°ææ 
-                "rtt_ms": None,  # ä¸åä¸»å¨æ¢æµ
+                "tcp_retransmissions_per_sec": None,  # 无直接跨平台指标
+                "rtt_ms": None,  # 不做主动探测
             }
         except Exception as e:
-            logger.error("è·åç½ç»å­ç³»ç»ææ å¤±è´¥: %s", e)
+            logger.exception("获取网络子系统指标失败: %s", e)
             return {}
 
     async def get_network_speed_async(self) -> Dict[str, Any]:
-        """è·åç½ç»éåº¦åå¸¦å®½å ç¨ - å¼æ­¥çæ¬.
+        """获取网络速度和带宽占用 - 异步版本.
 
         Returns:
-            Dict: ç½ç»éåº¦ä¿¡æ¯ï¼æ ¼å¼:
+            Dict: 网络速度信息，格式:
             {
                 "upload_speed_kbps": 1024.5,
                 "download_speed_kbps": 5120.8,
                 "bandwidth_percent": 45.2,
-                "interface": "ä»¥å¤ªç½"
+                "interface": "以太网"
             }
         """
         try:
             if not HAS_PSUTIL:
                 return {}
 
-            # å¯¼å¥asyncio
+            # 导入asyncio
             import asyncio
 
-            # è·åç¬¬ä¸æ¬¡ç½ç»I/Oè®¡æ°
+            # 获取第一次网络I/O计数
             net_io_1: Any = psutil.net_io_counters()
-            await asyncio.sleep(0.1)  # å¼æ­¥ç­å¾100ms
+            await asyncio.sleep(0.1)  # 异步等待100ms
             net_io_2: Any = psutil.net_io_counters()
 
             if not net_io_1 or not net_io_2:
                 return {}
 
-            # è®¡ç®ä¸ä¼ /ä¸è½½éåº¦ (å­è/ç§ -> KB/ç§)
+            # 计算上传/下载速度 (字节/秒 -> KB/秒)
             upload_bytes_diff = net_io_2.bytes_sent - net_io_1.bytes_sent
             download_bytes_diff = net_io_2.bytes_recv - net_io_1.bytes_recv
 
-            upload_speed_kbps = (upload_bytes_diff / 0.1) / 1024  # 0.1ç§é´é
+            upload_speed_kbps = (upload_bytes_diff / 0.1) / 1024  # 0.1秒间隔
             download_speed_kbps = (download_bytes_diff / 0.1) / 1024
 
-            # ä¼°ç®å¸¦å®½å ç¨ç¾åæ¯ï¼åè®¾1Gbpsç½å¡ = 125MB/s = 128000KB/sï¼
-            # è¿éä½¿ç¨ä¸ä¸ªä¿å®çä¼°ç®
+            # 估算带宽占用百分比（假设1Gbps网卡 = 125MB/s = 128000KB/s）
+            # 这里使用一个保守估算
             total_speed_kbps = upload_speed_kbps + download_speed_kbps
-            assumed_bandwidth_kbps = 128000  # 1Gbpsç½å¡
+            assumed_bandwidth_kbps = 128000  # 1Gbps网卡
 
-            # å°è¯è·åå®éç½å¡éåº¦
+            # 尝试获取实际网卡速度
             try:
                 net_if_stats = psutil.net_if_stats()
                 for interface, stats in net_if_stats.items():
                     if stats.isup and stats.speed > 0:
-                        # speedåä½æ¯Mbpsï¼è½¬æ¢ä¸ºKBps
+                        # speed单位是Mbps，转换为KBps
                         assumed_bandwidth_kbps = stats.speed * 1024 / 8
                         break
             except Exception:
@@ -4007,8 +4323,8 @@ class SystemMonitor:
                 else 0
             )
 
-            # è·åä¸»è¦ç½ç»æ¥å£åç§°
-            interface_name = "æªç¥"
+            # 获取主要网络接口名称
+            interface_name = "未知"
             try:
                 net_if_stats = psutil.net_if_stats()
                 for interface, stats in net_if_stats.items():
@@ -4026,14 +4342,14 @@ class SystemMonitor:
             }
 
         except Exception as e:
-            logger.error("è·åç½ç»éåº¦å¤±è´¥(å¼æ­¥): %s", e)
+            logger.exception("获取网络速度失败(异步): %s", e)
             return {}
 
     def get_process_list(self, sort_by: str = "cpu_percent") -> List[Dict[str, Any]]:
-        """è·åè¿ç¨åè¡¨."""
+        """获取进程列表."""
         try:
             if not HAS_PSUTIL:
-                # è¿åé»è®¤æ°æ®(æ psutilæ¶)
+                # 返回默认数据(无psutil时)
                 return [
                     {
                         "pid": 1,
@@ -4067,7 +4383,7 @@ class SystemMonitor:
                 ["pid", "name", "cpu_percent", "memory_percent", "status"]
             ):
                 try:
-                    # ä½¿ç¨ cast æ¥åè¯ç±»åæ£æ¥å¨ proc æ¯ Any ç±»å
+                    # 使用 cast 来告诉类型检查器 proc 是 Any 类型
                     proc_any: Any = proc
                     proc_info: Any = proc_any.info
                     proc_info["memory_mb"] = proc_any.memory_info().rss / 1024 / 1024
@@ -4075,18 +4391,18 @@ class SystemMonitor:
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     continue
 
-            # æåº
+            # 排序
             if sort_by in ["cpu_percent", "memory_percent", "memory_mb"]:
                 processes.sort(key=lambda x: x.get(sort_by, 0), reverse=True)
 
-            return processes[:50]  # è¿åå50ä¸ªè¿ç¨
+            return processes[:50]  # 返回前50个进程
         except (OSError, AttributeError, ImportError) as e:
-            logger.error("è·åè¿ç¨åè¡¨å¤±è´¥: %s", e)
+            logger.error("获取进程列表失败: %s", e)
             return []
 
 
 class ResourceMonitor:
-    """èµæºçæ§å¨."""
+    """资源监控器."""
 
     def __init__(
         self,
@@ -4094,14 +4410,14 @@ class ResourceMonitor:
         threshold_memory: float = 80.0,
         threshold_disk: float = 90.0,
     ):
-        """åå§åèµæºçæ§å¨."""
+        """初始化资源监控器."""
         self.threshold_cpu = threshold_cpu
         self.threshold_memory = threshold_memory
         self.threshold_disk = threshold_disk
         self.alerts = []
 
     def check_thresholds(self, usage: ResourceUsage) -> List[Dict[str, Any]]:
-        """æ£æ¥éå¼åè­¦."""
+        """检查阈值告警."""
         alerts = []
 
         if usage.cpu_percent > self.threshold_cpu:
@@ -4109,7 +4425,7 @@ class ResourceMonitor:
                 {
                     "type": "cpu_high",
                     "level": "warning",
-                    "message": f"CPUä½¿ç¨çè¿é«: {usage.cpu_percent:.1f}%",
+                    "message": f"CPU使用率过高: {usage.cpu_percent:.1f}%",
                     "threshold": self.threshold_cpu,
                     "current": usage.cpu_percent,
                     "timestamp": usage.timestamp,
@@ -4121,7 +4437,7 @@ class ResourceMonitor:
                 {
                     "type": "memory_high",
                     "level": "warning",
-                    "message": f"åå­ä½¿ç¨çè¿é«: {usage.memory_percent:.1f}%",
+                    "message": f"内存使用率过高: {usage.memory_percent:.1f}%",
                     "threshold": self.threshold_memory,
                     "current": usage.memory_percent,
                     "timestamp": usage.timestamp,
@@ -4133,62 +4449,62 @@ class ResourceMonitor:
                 {
                     "type": "disk_high",
                     "level": "critical",
-                    "message": f"ç£çä½¿ç¨çè¿é«: {usage.disk_percent:.1f}%",
+                    "message": f"磁盘使用率过高: {usage.disk_percent:.1f}%",
                     "threshold": self.threshold_disk,
                     "current": usage.disk_percent,
                     "timestamp": usage.timestamp,
                 }
             )
 
-        # ä¿å­åè­¦åå²
+        # 保存告警历史
         self.alerts.extend(alerts)
 
         return alerts
 
 
 class HardwareMonitor:
-    """ç¡¬ä»¶çæ§å¨."""
+    """硬件监控器."""
 
     def __init__(self):
-        """åå§åç¡¬ä»¶çæ§å¨."""
-        # ð ä½¿ç¨çº¯Pythonçæ§å¨ï¼æ éå¤é¨è½¯ä»¶ï¼
+        """初始化硬件监控器."""
+        # 🚀 使用纯Python监控器（无需外部软件）
         try:
             from backend.infrastructure.system_vnpy.hardware_temp import get_pure_hardware_monitor
 
             self._pure_monitor = get_pure_hardware_monitor()
-            logger.info("â çº¯Pythonæ¸©åº¦çæ§åå§åæå")
+            logger.info("✅ 纯Python温度监控初始化成功")
         except Exception as e:
-            logger.warning("çº¯Pythonæ¸©åº¦çæ§åå§åå¤±è´¥: %s", e)
+            logger.warning("纯Python温度监控初始化失败: %s", e)
             self._pure_monitor = None
 
     def get_temperature_wmi(self) -> Dict[str, Any]:
-        """éè¿WMIè·åæ¸©åº¦ä¿¡æ¯ï¼ä¿çå¼å®¹æ§ï¼ä¼åä½¿ç¨çº¯Pythonæ¹æ¡ï¼."""
-        # ð ä¼åä½¿ç¨çº¯Pythonçæ§å¨
+        """通过WMI获取温度信息（保留兼容性，优先使用纯Python方案）."""
+        # 🚀 优先使用纯Python监控器
         if self._pure_monitor:
             try:
                 temps = self._pure_monitor.get_all_temperatures()
                 if temps:
                     return temps
             except Exception as e:
-                logger.debug("çº¯Pythonæ¸©åº¦çæ§å¤±è´¥ï¼åéå°WMI: %s", e)
+                logger.debug("纯Python温度监控失败，回退将WMI: %s", e)
 
-        # Fallback: æ§çWMIæ¹æ¡ï¼LibreHardwareMonitorï¼
+        # Fallback: 旧WMI方案（LibreHardwareMonitor）
         try:
             import wmi
             import pythoncom
 
-            # åå§åCOM
+            # 初始化COM
             pythoncom.CoInitialize()
 
             try:
-                # è¿æ¥å° LibreHardwareMonitor WMI namespace
+                # 连接将 LibreHardwareMonitor WMI namespace
                 w = wmi.WMI(namespace="root\\LibreHardwareMonitor")
                 sensors = w.Sensor()
 
                 temp_info = {}
                 for sensor in sensors:
                     if sensor.SensorType == "Temperature":
-                        # æåè®¾å¤ç±»åï¼CPU/GPUç­ï¼
+                        # 提取设备类型（CPU/GPU等）
                         parent = sensor.Parent if hasattr(sensor, "Parent") else "Unknown"
                         device_type = parent.split("/")[-1] if "/" in parent else parent
 
@@ -4214,31 +4530,31 @@ class HardwareMonitor:
                 pythoncom.CoUninitialize()
 
         except Exception as e:
-            logger.debug("WMIæ¸©åº¦è¯»åå¤±è´¥: %s", e)
+            logger.debug("WMI温度读取失败: %s", e)
             return {}
 
     def get_temperature_info(self) -> Dict[str, Any]:
-        """è·åæ¸©åº¦ä¿¡æ¯ï¼ä¼åçº¯Pythonï¼fallbackå°WMIåpsutilï¼."""
-        # ð æ¹æ¡1: çº¯Pythonçæ§å¨ï¼æ¨èï¼
+        """获取温度信息（优先纯Python，fallback将WMI和psutil）."""
+        # 🚀 方案1: 纯Python监控器（推荐）
         if self._pure_monitor:
             try:
                 temps = self._pure_monitor.get_all_temperatures()
                 if temps:
                     return temps
             except Exception as e:
-                logger.debug("çº¯Pythonæ¸©åº¦çæ§å¤±è´¥: %s", e)
+                logger.debug("纯Python温度监控失败: %s", e)
 
-        # æ¹æ¡2: WMIï¼LibreHardwareMonitorï¼
+        # 方案2: WMI（LibreHardwareMonitor）
         temp_info = self.get_temperature_wmi()
         if temp_info:
             return temp_info
 
-        # æ¹æ¡3: psutilï¼Linux/æäºWindowséç½®ï¼
+        # 方案3: psutil（Linux/某些Windows配置）
         try:
             if not HAS_PSUTIL:
                 return {}
 
-            # ä½¿ç¨try-exceptå¤çå¹³å°å¼å®¹æ§é®é¢
+            # 使用try-except处理平台兼容性问题
             try:
                 temps = psutil.sensors_temperatures()  # type: ignore
                 temp_info = {}
@@ -4257,20 +4573,59 @@ class HardwareMonitor:
 
                 return temp_info
             except AttributeError:
-                logger.debug("psutilä¸æ¯ææ¸©åº¦ä¼ æå¨ï¼æ­£å¸¸ï¼")
+                logger.debug("psutil不支持温度传感器（正常）")
                 return {}
 
         except (OSError, ImportError) as e:
-            logger.debug("è·åæ¸©åº¦ä¿¡æ¯å¤±è´¥: %s", e)
+            logger.debug("获取温度信息失败: %s", e)
             return {}
 
+    def get_bandwidth_info(self) -> Dict[str, Any]:
+        """获取运营商带宽信息（返回缓存结果）.
+
+        Returns:
+            包含完整测试和延迟测试结果字典
+        """
+        full_result = self.bandwidth_monitor.get_last_full_result()
+        ping_result = self.bandwidth_monitor.get_last_ping_result()
+
+        return {
+            "full_test": (
+                full_result
+                if full_result
+                else {
+                    "download_mbps": None,
+                    "upload_mbps": None,
+                    "ping_ms": None,
+                    "status": "未测试",
+                }
+            ),
+            "ping_test": ping_result if ping_result else {"ping_ms": None, "status": "未测试"},
+        }
+
+    def test_bandwidth_full_now(self) -> Optional[Dict[str, Any]]:
+        """立即测试带宽（手动触发，重量级）.
+
+        Returns:
+            测试结果字典
+        """
+        return self.bandwidth_monitor.test_bandwidth_full()
+
+    def test_ping_now(self) -> Optional[Dict[str, Any]]:
+        """立即测试延迟（手动触发，轻量级）.
+
+        Returns:
+            测试结果字典
+        """
+        return self.bandwidth_monitor.test_ping_only()
+
     def get_fan_info(self) -> Dict[str, Any]:
-        """è·åé£æä¿¡æ¯."""
+        """获取风扇信息."""
         try:
             if not HAS_PSUTIL:
                 return {}
 
-            # ä½¿ç¨try-exceptå¤çå¹³å°å¼å®¹æ§é®é¢
+            # 使用try-except处理平台兼容性问题
             try:
                 fans = psutil.sensors_fans()  # type: ignore
                 fan_info = {}
@@ -4287,15 +4642,15 @@ class HardwareMonitor:
 
                 return fan_info
             except AttributeError:
-                logger.warning("å½åå¹³å°ä¸æ¯æé£æä¼ æå¨")
+                logger.warning("当前平台不支持风扇传感器")
                 return {}
 
         except (OSError, ImportError) as e:
-            logger.warning("è·åé£æä¿¡æ¯å¤±è´¥(å¯è½ä¸æ¯æ): %s", e)
+            logger.warning("获取风扇信息失败(可能不支持): %s", e)
             return {}
 
     def get_battery_info(self) -> Dict[str, Any]:
-        """è·åçµæ± ä¿¡æ¯."""
+        """获取电池信息."""
         try:
             battery = psutil.sensors_battery()
             if battery:
@@ -4306,58 +4661,58 @@ class HardwareMonitor:
                 }
             return {}
         except (OSError, AttributeError, ImportError) as e:
-            logger.warning("è·åçµæ± ä¿¡æ¯å¤±è´¥(å¯è½ä¸æ¯æ): %s", e)
+            logger.warning("获取电池信息失败(可能不支持): %s", e)
             return {}
 
 
 # =============================================================================
-# è¿ç¨çæ§å¨
+# 进程监控器
 # =============================================================================
 
 
 class ProcessMonitor:
-    """è¿ç¨çæ§å¨ - èªå¨è¯å«åçæ§å³é®è¿ç¨."""
+    """进程监控器 - 自动识别和监控关键进程."""
 
     def __init__(self):
-        """åå§åè¿ç¨çæ§å¨."""
+        """初始化进程监控器."""
         self.logger = logging.getLogger(__name__)
 
-        # è¿ç¨è¯å«å³é®è¯
+        # 进程识别关键词
         self.process_keywords = {
-            "download": ["download", "fetch", "mootdx", "è¡ç¥¨ä¸è½½", "æ°æ®ä¸è½½"],
-            "data_io": ["tdx_reader", "data_io", "æ°æ®è¯»å", "æ°æ®ä¿å­", "TdxReader"],
-            "backtest": ["backtest", "BacktestEngine", "åæµ", "ç­ç¥åæµ"],
-            "trading": ["trading", "send_order", "TradingEngine", "äº¤ææ§è¡", "ä¸å"],
+            "download": ["download", "fetch", "mootdx", "股票下载", "数据下载"],
+            "data_io": ["tdx_reader", "data_io", "数据读取", "数据保存", "TdxReader"],
+            "backtest": ["backtest", "BacktestEngine", "回测", "策略回测"],
+            "trading": ["trading", "send_order", "TradingEngine", "交易执行", "下单"],
         }
 
-        # è¿ç¨ææ åå²ï¼ç¨äºè®¡ç®éçï¼
+        # 进程指标历史（用于计算速率）
         self._metrics_history: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
         self._lock = threading.Lock()
 
-        # ç¼å­ä¸»è¿ç¨ä¿¡æ¯
+        # 缓存主进程信息
         if HAS_PSUTIL:
             self._main_process = psutil.Process()
             self._last_disk_io: Optional[sdiskio] = psutil.disk_io_counters()  # type: ignore[assignment]
             self._last_net_io: Optional[snetio] = psutil.net_io_counters()  # type: ignore[assignment]
             self._last_check_time = time.time()
 
-            # ð æ§è½ä¼åï¼åå§åCPUéæ ·ï¼å»ºç«baselineï¼
-            # ç¬¬ä¸æ¬¡è°ç¨cpu_percent()å»ºç«åºçº¿ï¼åç»­è°ç¨interval=Noneæææä¹
+            # 🚀 性能优化：初始化CPU采样（建立baseline）
+            # 第一次调用cpu_percent()建立基线，后续调用interval=None才有意义
             try:
                 self._main_process.cpu_percent(interval=None)
             except Exception:
                 pass
 
     def identify_processes(self) -> List[Dict[str, Any]]:
-        """è¯å«ææå³é®è¿ç¨.
+        """识别所有关键进程.
 
         Returns:
-            List: è¿ç¨ä¿¡æ¯åè¡¨
+            List: 进程信息列表
         """
         processes = []
 
         try:
-            # 1. è¯å«å½åè¿ç¨çææçº¿ç¨
+            # 1. 识别当前进程所有线程
             threads = []
             for thread in threading.enumerate():
                 thread_info = {
@@ -4369,7 +4724,7 @@ class ProcessMonitor:
                 threads.append(thread_info)
                 processes.append(thread_info)
 
-            # 2. è¯å«å­è¿ç¨ï¼å¦ææï¼
+            # 2. 识别子进程（如果有）
             if HAS_PSUTIL:
                 try:
                     children = self._main_process.children(recursive=True)
@@ -4385,23 +4740,23 @@ class ProcessMonitor:
                         except (psutil.NoSuchProcess, psutil.AccessDenied):
                             continue
                 except Exception as e:
-                    self.logger.debug("è·åå­è¿ç¨å¤±è´¥: %s", e)
+                    self.logger.debug("获取子进程失败: %s", e)
 
-            self.logger.debug("è¯å«å° %d ä¸ªè¿ç¨", len(processes))
+            self.logger.debug("识别将 %d 个进程", len(processes))
             return processes
 
         except Exception as e:
-            self.logger.error("è¯å«è¿ç¨å¤±è´¥: %s", e)
+            self.logger.exception("识别进程失败: %s", e)
             return []
 
     def _identify_process_type(self, process_name: str) -> str:
-        """æ ¹æ®è¿ç¨åç§°è¯å«è¿ç¨ç±»å.
+        """根据进程名称识别进程类型.
 
         Args:
-            process_name: è¿ç¨/çº¿ç¨åç§°
+            process_name: 进程/线程名称
 
         Returns:
-            str: è¿ç¨ç±»å
+            str: 进程类型
         """
         name_lower = process_name.lower()
 
@@ -4415,15 +4770,15 @@ class ProcessMonitor:
     def get_process_metrics(
         self, process_id: str, process_name: str = "", process_type: str = ""
     ) -> Optional[ProcessMetrics]:
-        """è·åè¿ç¨çæ§è½ææ .
+        """获取进程性能指标.
 
         Args:
-            process_id: è¿ç¨ID
-            process_name: è¿ç¨åç§°
-            process_type: è¿ç¨ç±»å
+            process_id: 进程ID
+            process_name: 进程名称
+            process_type: 进程类型
 
         Returns:
-            Optional[ProcessMetrics]: è¿ç¨ææ ï¼å¦æè·åå¤±è´¥è¿åNone
+            Optional[ProcessMetrics]: 进程指标，如果获取失败返回None
         """
         if not HAS_PSUTIL:
             return None
@@ -4432,19 +4787,19 @@ class ProcessMonitor:
             current_time = time.time()
             time_delta = current_time - self._last_check_time
 
-            if time_delta < 0.1:  # é¿åé¢ç¹éé
+            if time_delta < 0.1:  # 避免频繁采集
                 time_delta = 0.1
 
-            # è·åCPUååå­ææ 
-            # ð æ§è½ä¼åï¼ä½¿ç¨interval=Noneï¼éé»å¡æ¨¡å¼ï¼
-            # interval=0.1ä¼é»å¡çº¿ç¨0.1ç§ï¼å¨é«é¢çæ§æ¶ä¼ä¸¥éå½±åæ§è½
-            # Noneæ0è¡¨ç¤ºè¿åèªä¸æ¬¡è°ç¨ä»¥æ¥çCPUä½¿ç¨çï¼ä¸é»å¡
+            # 获取CPU和内存指标
+            # 🚀 性能优化：使用interval=None（非阻塞模式）
+            # interval=0.1会阻塞线程0.1秒，在高频监控时会严重影响性能
+            # None或0表示返回自上次调用以来CPU使用率，不阻塞
             cpu_percent = self._main_process.cpu_percent(interval=None)
             memory_info = self._main_process.memory_info()
             memory_mb = memory_info.rss / (1024 * 1024)
             memory_percent = self._main_process.memory_percent()
 
-            # è·åç£çIOææ 
+            # 获取磁盘IO指标
             disk_read_mbps = 0.0
             disk_write_mbps = 0.0
             try:
@@ -4456,9 +4811,9 @@ class ProcessMonitor:
                     disk_write_mbps = (write_bytes / time_delta) / (1024 * 1024)
                     self._last_disk_io = current_disk_io  # type: ignore[assignment]
             except Exception as e:
-                self.logger.debug("è·åç£çIOå¤±è´¥: %s", e)
+                self.logger.debug("获取磁盘IO失败: %s", e)
 
-            # è·åç½ç»IOææ 
+            # 获取网络IO指标
             network_recv_mbps = 0.0
             network_send_mbps = 0.0
             try:
@@ -4470,11 +4825,11 @@ class ProcessMonitor:
                     network_send_mbps = (sent_bytes / time_delta) / (1024 * 1024)
                     self._last_net_io = current_net_io  # type: ignore[assignment]
             except Exception as e:
-                self.logger.debug("è·åç½ç»IOå¤±è´¥: %s", e)
+                self.logger.debug("获取网络IO失败: %s", e)
 
             self._last_check_time = current_time
 
-            # ç¡®å®è¿ç¨ç¶æ
+            # 确定进程状态
             status = "running" if cpu_percent > 1.0 else "idle"
 
             metrics = ProcessMetrics(
@@ -4492,7 +4847,7 @@ class ProcessMonitor:
                 timestamp=datetime.now(),
             )
 
-            # ä¿å­åå²æ°æ®
+            # 保存历史数据
             with self._lock:
                 history = self._metrics_history[process_id]
                 history.append(
@@ -4506,40 +4861,40 @@ class ProcessMonitor:
                         "network_send": network_send_mbps,
                     }
                 )
-                # åªä¿çæè¿100ä¸ªæ°æ®ç¹
+                # 只保留最近100个数据点
                 if len(history) > 100:
                     history.pop(0)
 
             return metrics
 
         except Exception as e:
-            self.logger.error("è·åè¿ç¨ææ å¤±è´¥ [%s]: %s", process_id, e)
+            self.logger.exception("获取进程指标失败 [%s]: %s", process_id, e)
             return None
 
     def monitor_process(
         self, process_id: str, process_name: str, process_type: str
     ) -> Optional[ProcessMetrics]:
-        """æç»­çæ§åä¸ªè¿ç¨ï¼ç®åçï¼è¿åå½åææ ï¼.
+        """持续监控单个进程（简化版，返回当前指标）.
 
         Args:
-            process_id: è¿ç¨ID
-            process_name: è¿ç¨åç§°
-            process_type: è¿ç¨ç±»å
+            process_id: 进程ID
+            process_name: 进程名称
+            process_type: 进程类型
 
         Returns:
-            Optional[ProcessMetrics]: å½åè¿ç¨ææ 
+            Optional[ProcessMetrics]: 当前进程指标
         """
         return self.get_process_metrics(process_id, process_name, process_type)
 
     def get_metrics_history(self, process_id: str, limit: int = 100) -> List[Dict[str, Any]]:
-        """è·åè¿ç¨ææ åå²æ°æ®.
+        """获取进程指标历史数据.
 
         Args:
-            process_id: è¿ç¨ID
-            limit: è¿åæ°ééå¶
+            process_id: 进程ID
+            limit: 返回数量限制
 
         Returns:
-            List: åå²æ°æ®åè¡¨
+            List: 历史数据列表
         """
         with self._lock:
             history = self._metrics_history.get(process_id, [])
@@ -4547,53 +4902,53 @@ class ProcessMonitor:
 
 
 class ProcessBottleneckAnalyzer:
-    """è¿ç¨çº§ç¶é¢åæå¨ - éç¨"æç­æ¨æ¿"åçè¯å«è¿ç¨ç¶é¢."""
+    """进程级瓶颈分析器 - 采用"最短木板"原理识别进程瓶颈."""
 
     def __init__(self):
-        """åå§åç¶é¢åæå¨."""
+        """初始化瓶颈分析器."""
         self.logger = logging.getLogger(__name__)
 
-        # çè®ºæå¤§å¼ï¼ç¨äºè®¡ç®ä½¿ç¨çï¼
+        # 理论最大值（用于计算使用率）
         self.theoretical_limits = {
-            "cpu_percent": 100.0,  # CPUä½¿ç¨çä¸é
-            "memory_percent": 100.0,  # åå­ä½¿ç¨çä¸é
-            "disk_io_mbps": 150.0,  # åè®¾HDDåå¥éåº¦ä¸é150MB/sï¼SSDä¼æ´é«ï¼
-            "network_mbps": 100.0,  # åè®¾ååç½ç»çè®ºéåº¦100MB/s
+            "cpu_percent": 100.0,  # CPU使用率上限
+            "memory_percent": 100.0,  # 内存使用率上限
+            "disk_io_mbps": 150.0,  # 假设HDD写入速度上限150MB/s（SSD会更高）
+            "network_mbps": 100.0,  # 假设千兆网络理论速度100MB/s
         }
 
-        # ç¶é¢éå¼ï¼è¶è¿æ­¤å¼è®¤ä¸ºå­å¨ç¶é¢ï¼
+        # 瓶颈阈值（超过此值认为存在瓶颈）
         self.bottleneck_thresholds = {
             "cpu": 70.0,
             "memory": 70.0,
-            "disk_io": 60.0,  # ç£çIOæ´å®¹ææä¸ºç¶é¢
+            "disk_io": 60.0,  # 磁盘IO更容易成为瓶颈
             "network": 50.0,
         }
 
     def analyze_download_process(self, metrics: ProcessMetrics) -> BottleneckResult:
-        """åææ°æ®ä¸è½½è¿ç¨ç¶é¢.
+        """分析数据下载进程瓶颈.
 
-        æ°æ®ä¸è½½å³æ³¨ï¼ç½ç»éåº¦ vs ç£çIOåå¥éåº¦
+        数据下载关注：网络速度 vs 磁盘IO写入速度
         """
         return self.find_bottleneck(metrics, focus_areas=["network", "disk_io"])
 
     def analyze_data_io_process(self, metrics: ProcessMetrics) -> BottleneckResult:
-        """åææ°æ®è¯»åè¿ç¨ç¶é¢.
+        """分析数据读写进程瓶颈.
 
-        æ°æ®è¯»åå³æ³¨ï¼ç£çIO vs CPUè§£æ vs åå­ç¼å²
+        数据读写关注：磁盘IO vs CPU解析 vs 内存缓冲
         """
         return self.find_bottleneck(metrics, focus_areas=["disk_io", "cpu", "memory"])
 
     def analyze_backtest_process(self, metrics: ProcessMetrics) -> BottleneckResult:
-        """åæåæµè¿ç¨ç¶é¢.
+        """分析回测进程瓶颈.
 
-        åæµå³æ³¨ï¼CPUè®¡ç® vs åå­è®¿é® vs æ°æ®IO
+        回测关注：CPU计算 vs 内存访问 vs 数据IO
         """
         return self.find_bottleneck(metrics, focus_areas=["cpu", "memory", "disk_io"])
 
     def analyze_trading_process(self, metrics: ProcessMetrics) -> BottleneckResult:
-        """åæäº¤ææ§è¡è¿ç¨ç¶é¢.
+        """分析交易执行进程瓶颈.
 
-        äº¤ææ§è¡å³æ³¨ï¼ç½ç»å»¶è¿ vs CPUå¤çæ¶é´
+        交易执行关注：网络延迟 vs CPU处理时间
         """
         return self.find_bottleneck(metrics, focus_areas=["network", "cpu"])
 
@@ -4602,19 +4957,19 @@ class ProcessBottleneckAnalyzer:
         metrics: ProcessMetrics,
         focus_areas: Optional[List[str]] = None,
     ) -> BottleneckResult:
-        """éç¨ç¶é¢è¯å« - æ¾å°éå¶è¿ç¨éåº¦ç"æç­æ¨æ¿".
+        """通用瓶颈识别 - 找将限制进程速度"最短木板".
 
         Args:
-            metrics: è¿ç¨ææ 
-            focus_areas: å³æ³¨çé¢ååè¡¨ï¼Noneè¡¨ç¤ºå³æ³¨ææé¢å
+            metrics: 进程指标
+            focus_areas: 关注领域列表，None表示关注所有领域
 
         Returns:
-            BottleneckResult: ç¶é¢åæç»æ
+            BottleneckResult: 瓶颈分析结果
         """
         if focus_areas is None:
             focus_areas = ["cpu", "memory", "disk_io", "network"]
 
-        # è®¡ç®åé¡¹ææ çä½¿ç¨çï¼ç¸å¯¹äºçè®ºæå¤§å¼ï¼
+        # 计算各项指标使用率（相对于理论最大值）
         usage_rates: dict[str, float] = {}
 
         if "cpu" in focus_areas:
@@ -4624,53 +4979,53 @@ class ProcessBottleneckAnalyzer:
             usage_rates["memory"] = min(metrics.memory_percent, 100.0)
 
         if "disk_io" in focus_areas:
-            # ç£çIOåè¯»åéåº¦çæå¤§å¼
+            # 磁盘IO取读写速度最大值
             max_disk_speed = max(metrics.disk_read_mbps, metrics.disk_write_mbps)
             disk_usage_percent = (max_disk_speed / self.theoretical_limits["disk_io_mbps"]) * 100
             usage_rates["disk_io"] = min(disk_usage_percent, 100.0)
 
         if "network" in focus_areas:
-            # ç½ç»åæ¶åéåº¦çæå¤§å¼
+            # 网络取收发速度最大值
             max_network_speed = max(metrics.network_recv_mbps, metrics.network_send_mbps)
             network_usage_percent = (
                 max_network_speed / self.theoretical_limits["network_mbps"]
             ) * 100
             usage_rates["network"] = min(network_usage_percent, 100.0)
 
-        # æ¾åºä½¿ç¨çæé«çé¡¹ï¼æç­æ¨æ¿ï¼
+        # 找出使用率最高项（最短木板）
         if not usage_rates:
-            # æ²¡æå¯åæçææ 
+            # 没有可分析指标
             return BottleneckResult(
                 process_id=metrics.process_id,
                 process_name=metrics.process_name,
                 process_type=metrics.process_type,
                 bottleneck="balanced",
                 bottleneck_percent=0.0,
-                details="ææ è¶³å¤æ°æ®è¿è¡åæ",
-                suggestion="ç»§ç»­çæ§ä»¥æ¶éæ´å¤æ°æ®",
+                details="暂无足够数据进行分析",
+                suggestion="继续监控以收集更多数据",
                 metrics=metrics,
             )
 
         bottleneck_type = max(usage_rates, key=lambda x: usage_rates.get(x, 0.0))
         bottleneck_percent = usage_rates[bottleneck_type]
 
-        # å¤æ­æ¯å¦ççå­å¨ç¶é¢
+        # 判断是否真存在瓶颈
         threshold = self.bottleneck_thresholds.get(bottleneck_type, 70.0)
 
         if bottleneck_percent < threshold:
-            # ææææ é½æªè¾¾å°ç¶é¢éå¼ï¼ç³»ç»åè¡¡
+            # 所有指标都未达将瓶颈阈值，系统均衡
             return BottleneckResult(
                 process_id=metrics.process_id,
                 process_name=metrics.process_name,
                 process_type=metrics.process_type,
                 bottleneck="balanced",
                 bottleneck_percent=max(usage_rates.values()),
-                details=f"ç³»ç»è¿è¡åè¡¡ï¼æé«ä½¿ç¨çä¸º {max(usage_rates.values()):.1f}%",
-                suggestion="ç³»ç»è¿è¡è¯å¥½ï¼ç»§ç»­ä¿æ",
+                details=f"系统运行均衡，最高使用率为 {max(usage_rates.values()):.1f}%",
+                suggestion="系统运行良好，继续保持",
                 metrics=metrics,
             )
 
-        # çæè¯¦ç»æè¿°åå»ºè®®
+        # 生成详细描述和建议
         details, suggestion = self._generate_bottleneck_info(
             bottleneck_type, bottleneck_percent, metrics
         )
@@ -4689,56 +5044,56 @@ class ProcessBottleneckAnalyzer:
     def _generate_bottleneck_info(
         self, bottleneck_type: str, percent: float, metrics: ProcessMetrics
     ) -> tuple:
-        """çæç¶é¢è¯¦ç»ä¿¡æ¯åä¼åå»ºè®®.
+        """生成瓶颈详细信息和优化建议.
 
         Args:
-            bottleneck_type: ç¶é¢ç±»å
-            percent: ä½¿ç¨çç¾åæ¯
-            metrics: è¿ç¨ææ 
+            bottleneck_type: 瓶颈类型
+            percent: 使用率百分比
+            metrics: 进程指标
 
         Returns:
-            tuple: (è¯¦ç»æè¿°, ä¼åå»ºè®®)
+            tuple: (详细描述, 优化建议)
         """
         if bottleneck_type == "cpu":
-            details = f"CPUä½¿ç¨çè¾¾å° {metrics.cpu_percent:.1f}%ï¼å¤çå¨è®¡ç®è½åå·²æ¥è¿æé"
+            details = f"CPU使用率达将 {metrics.cpu_percent:.1f}%，处理器计算能力已接近极限"
             suggestion = (
-                "å»ºè®®ï¼1) ä¼åç®æ³éä½è®¡ç®å¤æåº¦ 2) å¯ç¨å¤è¿ç¨å¹¶è¡å¤ç 3) ä½¿ç¨ç¼å­åå°éå¤è®¡ç®"
+                "建议：1) 优化算法降低计算复杂度 2) 启用多进程并行处理 3) 使用缓存减少重复计算"
             )
 
         elif bottleneck_type == "memory":
-            details = f"åå­ä½¿ç¨çè¾¾å° {metrics.memory_percent:.1f}%ï¼åå­å®¹éä¸è¶³"
-            suggestion = "å»ºè®®ï¼1) å¯ç¨æ°æ®åé¡µå è½½ 2) åæ¶éæ¾ä¸ç¨çå¯¹è±¡ 3) ä½¿ç¨çæå¨ä»£æ¿åè¡¨ 4) æ©å±ç©çåå­"
+            details = f"内存使用率达将 {metrics.memory_percent:.1f}%，内存容量不足"
+            suggestion = "建议：1) 启用数据分页加载 2) 及时释放不用对象 3) 使用生成器代替列表 4) 扩展物理内存"
 
         elif bottleneck_type == "disk_io":
             max_speed = max(metrics.disk_read_mbps, metrics.disk_write_mbps)
-            io_type = "åå¥" if metrics.disk_write_mbps > metrics.disk_read_mbps else "è¯»å"
-            details = f"ç£çIO{io_type}éåº¦è¾¾å° {max_speed:.1f}MB/sï¼ç£çååéå·²æ¥è¿æé"
+            io_type = "写入" if metrics.disk_write_mbps > metrics.disk_read_mbps else "读取"
+            details = f"磁盘IO{io_type}速度达将 {max_speed:.1f}MB/s，磁盘吞吐量已接近极限"
             suggestion = (
-                "å»ºè®®ï¼1) ä½¿ç¨SSDåºæç¡¬çæ¿ä»£æºæ¢°ç¡¬ç 2) å¯ç¨æ¹éè¯»ååå°IOæ¬¡æ° 3) ä½¿ç¨å¼æ­¥IOæä½"
+                "建议：1) 使用SSD固态硬盘替代机械硬盘 2) 启用批量读写减少IO次数 3) 使用异步IO操作"
             )
 
         elif bottleneck_type == "network":
             max_speed = max(metrics.network_recv_mbps, metrics.network_send_mbps)
-            net_type = "ä¸è½½" if metrics.network_recv_mbps > metrics.network_send_mbps else "ä¸ä¼ "
-            details = f"ç½ç»{net_type}éåº¦è¾¾å° {max_speed:.1f}MB/sï¼ç½ç»å¸¦å®½å·²æ¥è¿æé"
+            net_type = "下载" if metrics.network_recv_mbps > metrics.network_send_mbps else "上传"
+            details = f"网络{net_type}速度达将 {max_speed:.1f}MB/s，网络带宽已接近极限"
             suggestion = (
-                "å»ºè®®ï¼1) åçº§ç½ç»å¸¦å®½ 2) å¯ç¨æ°æ®åç¼© 3) ä½¿ç¨å¤çº¿ç¨å¹¶åä¸è½½ 4) ä¼åç½ç»è¯·æ±ç­ç¥"
+                "建议：1) 升级网络带宽 2) 启用数据压缩 3) 使用多线程并发下载 4) 优化网络请求策略"
             )
 
         else:
-            details = f"æ£æµå°ç¶é¢ï¼{bottleneck_type} ({percent:.1f}%)"
-            suggestion = "å»ºè®®æ¥çè¯¦ç»æ¥å¿ä»¥è·åæ´å¤ä¿¡æ¯"
+            details = f"检测将瓶颈：{bottleneck_type} ({percent:.1f}%)"
+            suggestion = "建议查看详细日志以获取更多信息"
 
         return details, suggestion
 
     def analyze_by_type(self, metrics: ProcessMetrics) -> BottleneckResult:
-        """æ ¹æ®è¿ç¨ç±»åèªå¨éæ©åææ¹æ³.
+        """根据进程类型自动选择分析方法.
 
         Args:
-            metrics: è¿ç¨ææ 
+            metrics: 进程指标
 
         Returns:
-            BottleneckResult: ç¶é¢åæç»æ
+            BottleneckResult: 瓶颈分析结果
         """
         if metrics.process_type == "download":
             return self.analyze_download_process(metrics)
@@ -4749,58 +5104,58 @@ class ProcessBottleneckAnalyzer:
         elif metrics.process_type == "trading":
             return self.analyze_trading_process(metrics)
         else:
-            # æªç¥ç±»åï¼ä½¿ç¨éç¨åæ
+            # 未知类型，使用通用分析
             return self.find_bottleneck(metrics)
 
 
 # =============================================================================
-# ç¬ç«çæ§è¿ç¨
+# 独立监控进程
 # =============================================================================
 
 
 class MonitoringProcess:
-    """çæ§è¿ç¨ä¸»ç±» - ç¬ç«è¿ç¨ï¼éè¿ZeroMQä¸ä¸»è¿ç¨éä¿¡."""
+    """监控进程主类 - 独立进程，通过ZeroMQ与主进程通信."""
 
     def __init__(self):
-        """åå§åçæ§è¿ç¨."""
+        """初始化监控进程."""
         self.running = False
-        self.interval = 2  # æ¨éé´éï¼ç§ï¼
+        self.interval = 2  # 推送间隔（秒）
         self.latest_service_status = {}
 
-        # ZeroMQä¸ä¸æ
-        self.context = zmq.Context()
+        # ZeroMQ上下文
+        self.context = zmq.asyncio.Context()
 
-        # PULL socketï¼æ¥æ¶æå¡ç¶æ
+        # PULL socket：接收服务状态
         self.pull_socket = self.context.socket(zmq.PULL)
         self.pull_socket.bind("tcp://127.0.0.1:5555")
-        self.pull_socket.setsockopt(zmq.RCVTIMEO, 100)  # 100msè¶æ¶
+        self.pull_socket.setsockopt(zmq.RCVTIMEO, 100)  # 100ms超时
 
-        # REP socketï¼ååºçæ§æ°æ®æ¥è¯¢
+        # REP socket：响应监控数据查询
         self.rep_socket = self.context.socket(zmq.REP)
         self.rep_socket.bind("tcp://127.0.0.1:5557")
-        self.rep_socket.setsockopt(zmq.RCVTIMEO, 100)  # 100msè¶æ¶
+        self.rep_socket.setsockopt(zmq.RCVTIMEO, 100)  # 100ms超时
 
-        # ç¼å­ææ°çæ§æ°æ®
+        # 缓存最新监控数据
         self.cached_data = {"system": {}, "process": {}, "service": {}}
 
-        # åå»ºçæ§å·¥å·
+        # 创建监控工具
         self.system_monitor = SystemMonitor()
         self.process_monitor = ProcessMonitor()
         self.bottleneck_analyzer = ProcessBottleneckAnalyzer()
 
-        logger.info("çæ§è¿ç¨åå§åå®æ")
-        logger.info("  - PULLç«¯å£: tcp://127.0.0.1:5555ï¼æ¥æ¶æå¡ç¶æï¼")
-        logger.info("  - REPç«¯å£: tcp://127.0.0.1:5557ï¼ååºæ°æ®æ¥è¯¢ï¼")
+        logger.info("监控进程初始化完成")
+        logger.info("  - PULL端口: tcp://127.0.0.1:5555（接收服务状态）")
+        logger.info("  - REP端口: tcp://127.0.0.1:5557（响应数据查询）")
 
     def start(self):
-        """å¯å¨çæ§å¾ªç¯ï¼ä½¿ç¨Polleræç»­çå¬ï¼."""
+        """启动监控循环（使用Poller持续监听）."""
         self.running = True
-        logger.info("çæ§è¿ç¨å¯å¨ï¼æ¨éé´é: %dç§", self.interval)
+        logger.info("监控进程启动，推送间隔: %d秒", self.interval)
 
-        # åå»ºPolleråæ¶çå¬å¤ä¸ªsocket
+        # 创建Poller同时监听多个socket
         poller = zmq.Poller()
-        poller.register(self.rep_socket, zmq.POLLIN)  # çå¬æ¥è¯¢è¯·æ±
-        poller.register(self.pull_socket, zmq.POLLIN)  # çå¬æå¡ç¶æ
+        poller.register(self.rep_socket, zmq.POLLIN)  # 监听查询请求
+        poller.register(self.pull_socket, zmq.POLLIN)  # 监听服务状态
 
         last_collect_time = 0
 
@@ -4808,17 +5163,17 @@ class MonitoringProcess:
             while self.running:
                 current_time = time.time()
 
-                # 1. æ£æ¥æ¯å¦éè¦ééæ°æ®ï¼å®æ¶ï¼
+                # 1. 检查是否需要采集数据（定时）
                 if current_time - last_collect_time >= self.interval:
-                    logger.debug("å¼å§ééçæ§æ°æ®...")
+                    logger.debug("开始采集监控数据...")
 
-                    # ééç³»ç»ææ 
+                    # 采集系统指标
                     system_metrics = self._collect_system_metrics()
 
-                    # ééè¿ç¨ææ 
+                    # 采集进程指标
                     process_metrics = self._collect_process_metrics()
 
-                    # æ´æ°ç¼å­
+                    # 更新缓存
                     self.cached_data = {
                         "system": system_metrics,
                         "process": process_metrics,
@@ -4826,49 +5181,49 @@ class MonitoringProcess:
                     }
 
                     last_collect_time = current_time
-                    logger.debug("çæ§æ°æ®å·²æ´æ°")
+                    logger.debug("监控数据已更新")
 
-                # 2. éé»å¡æ£æ¥socketäºä»¶ï¼100msè¶æ¶ï¼
-                # è¿æ ·å¯ä»¥æç»­å¤çæ¥è¯¢è¯·æ±ï¼èä¸ä¼éè¿
+                # 2. 非阻塞检查socket事件（100ms超时）
+                # 这样可以持续处理查询请求，而不会错过
                 socks = dict(poller.poll(100))
 
-                # 3. å¤çæå¡ç¶ææ´æ°
+                # 3. 处理服务状态更新
                 if self.pull_socket in socks:
                     try:
                         message = self.pull_socket.recv_json(zmq.NOBLOCK)
                         self.latest_service_status = message
-                        logger.debug("æ¶å°æå¡ç¶ææ´æ°")
+                        logger.debug("收将服务状态更新")
                     except zmq.Again:
                         pass
                     except Exception as e:
-                        logger.error("æ¥æ¶æå¡ç¶æå¤±è´¥: %s", e)
+                        logger.exception("接收服务状态失败: %s", e)
 
-                # 4. å¤çæ¥è¯¢è¯·æ±ï¼æç»­çå¬ï¼ä¸ä¼éè¿ï¼
+                # 4. 处理查询请求（持续监听，不会错过）
                 if self.rep_socket in socks:
                     try:
                         _ = self.rep_socket.recv_json(zmq.NOBLOCK)
                         self.rep_socket.send_json(self.cached_data, zmq.NOBLOCK)
-                        logger.debug("å·²ååºçæ§æ°æ®æ¥è¯¢")
+                        logger.debug("已响应监控数据查询")
                     except zmq.Again:
                         pass
                     except Exception as e:
-                        logger.error("å¤çæ¥è¯¢å¤±è´¥: %s", e)
+                        logger.exception("处理查询失败: %s", e)
 
         except KeyboardInterrupt:
-            logger.info("æ¶å°ä¸­æ­ä¿¡å·ï¼æ­£å¨å³é­...")
+            logger.info("收将中断信号，正在关闭...")
         except Exception as e:
-            logger.error("çæ§è¿ç¨å¼å¸¸: %s", e, exc_info=True)
+            logger.error("监控进程异常: %s", e, exc_info=True)
         finally:
             self.stop()
 
     def _collect_system_metrics(self) -> Dict[str, Any]:
-        """ééç³»ç»ææ ï¼åå«æ¸©åº¦ï¼."""
+        """采集系统指标（包含温度）."""
         try:
             resource_usage = self.system_monitor.get_resource_usage()
             disk_io_speed = self.system_monitor.get_disk_io_speed()
             network_speed = self.system_monitor.get_network_speed()
 
-            # è·åç¡¬ä»¶æ¸©åº¦ä¿¡æ¯
+            # 获取硬件温度信息
             hardware_monitor = HardwareMonitor()
             temperature_info = hardware_monitor.get_temperature_info()
 
@@ -4883,28 +5238,28 @@ class MonitoringProcess:
                 "load_average": resource_usage.load_average,
                 "disk_io_speed": disk_io_speed,
                 "network_speed": network_speed,
-                "temperature": temperature_info,  # ð¡ï¸ æ°å¢ï¼æ¸©åº¦ä¿¡æ¯
+                "temperature": temperature_info,  # 🌡️ 新增：温度信息
             }
         except Exception as e:
-            logger.error("ééç³»ç»ææ å¤±è´¥: %s", e)
+            logger.error("采集系统指标失败: %s", e)
             return {}
 
     def _collect_process_metrics(self) -> Dict[str, Any]:
-        """ééè¿ç¨ææ ."""
+        """采集进程指标."""
         try:
-            # è¯å«ææè¿ç¨
+            # 识别所有进程
             all_processes = self.process_monitor.identify_processes()
 
-            # åªä¿çPythonç¸å³è¿ç¨
+            # 只保留Python相关进程
             python_processes = [
                 p
                 for p in all_processes
                 if p.get("type") in ["python", "trading", "download", "backtest"]
             ]
 
-            # ç¶é¢åæï¼ç®åçï¼
+            # 瓶颈分析（简化版）
             bottlenecks = []
-            for proc in python_processes[:5]:  # åªåæå5ä¸ªè¿ç¨
+            for proc in python_processes[:5]:  # 只分析前5个进程
                 try:
                     metrics = self.process_monitor.get_process_metrics(
                         proc.get("id", ""), proc.get("name", ""), proc.get("type", "")
@@ -4925,99 +5280,99 @@ class MonitoringProcess:
 
             return {
                 "timestamp": datetime.now().isoformat(),
-                "python_processes": python_processes[:10],  # åªåå10ä¸ª
+                "python_processes": python_processes[:10],  # 只取前10个
                 "bottlenecks": bottlenecks,
                 "process_count": len(python_processes),
             }
         except Exception as e:
-            logger.error("ééè¿ç¨ææ å¤±è´¥: %s", e)
+            logger.exception("采集进程指标失败: %s", e)
             return {}
 
     def stop(self):
-        """åæ­¢çæ§è¿ç¨."""
+        """停止监控进程."""
         self.running = False
         self.pull_socket.close()
         self.rep_socket.close()
         self.context.term()
-        logger.info("çæ§è¿ç¨å·²åæ­¢")
+        logger.info("监控进程已停止")
 
 
 # =============================================================================
-# ä¾¿æ·å½æ°
+# 便捷函数
 # =============================================================================
 
 
 def get_system_info() -> SystemInfo:
-    """è·åç³»ç»ä¿¡æ¯."""
+    """获取系统信息."""
     monitor = SystemMonitor()
     return monitor.get_system_info()
 
 
 def get_resource_usage() -> ResourceUsage:
-    """è·åèµæºä½¿ç¨æåµ."""
+    """获取资源使用情况."""
     monitor = SystemMonitor()
     return monitor.get_resource_usage()
 
 
 # =============================================================================
-# å¯¼åº
+# 导出
 # =============================================================================
 
 __all__ = [
-    # æ°æ®ç±»
+    # 数据类
     "SystemInfo",
     "ResourceUsage",
     "ProcessMetrics",
     "BottleneckResult",
-    # ç³»ç»çæ§
+    # 系统监控
     "SystemMonitor",
     "ResourceMonitor",
     "HardwareMonitor",
-    # è¿ç¨çæ§
+    # 进程监控
     "ProcessMonitor",
-    "ProcessBottleneckAnalyzer",  # éå½å
-    # ç¬ç«çæ§è¿ç¨
+    "ProcessBottleneckAnalyzer",  # 重命名
+    # 独立监控进程
     "MonitoringProcess",
-    # ä¸å¡ææ éé
+    # 业务指标采集
     "BusinessMetricsCollector",
     "get_business_metrics_collector",
-    # ä¾¿æ·å½æ°
+    # 便捷函数
     "get_system_info",
     "get_resource_usage",
 ]
 
 
 # =============================================================================
-# ä¸å¡ææ ééå¨ï¼ä» business_metrics_collector.py åå¹¶ï¼
+# 业务指标采集器（从 business_metrics_collector.py 合并）
 # =============================================================================
 
 
 class BusinessMetricsCollector:
-    """ä¸å¡ææ ééå¨ï¼ä» business_metrics_collector.py åå¹¶ï¼.
+    """业务指标采集器（从 business_metrics_collector.py 合并）.
 
-    æ¥æ¶åä¸å¡æå¡ï¼data_center_service, trading_gateway_serviceç­ï¼
-    æ¨éçä¸å¡ææ ï¼å­å¨å¨åå­éåä¸­ï¼æä¾ç»è®¡æè¦ã
+    接收各业务服务（data_center_service, trading_gateway_service等）
+    推送业务指标，存储在内存队列中，提供统计摘要。
 
-    TODO: åç»­ä¼å
-    1. å®ç°æ¶åºæ°æ®åºå­å¨ï¼InfluxDB/Prometheusï¼
-    2. å¨åä¸å¡æå¡ä¸­åç¹å¹¶æ¨éææ 
-    3. å®ç°P95/P99ç­ç»è®¡ææ 
+    TODO: 后续优化
+    1. 实现时序数据库存储（InfluxDB/Prometheus）
+    2. 在各业务服务中埋点并推送指标
+    3. 实现P95/P99等统计指标
     """
 
     def __init__(self, window_size: int = 300):
-        """åå§åä¸å¡ææ ééå¨.
+        """初始化业务指标采集器.
 
         Args:
-            window_size: æ¶é´çªå£å¤§å°ï¼ç§ï¼ï¼é»è®¤5åé
+            window_size: 时间窗口大小（秒），默认5分钟
         """
         self.logger = logging.getLogger(__name__)
         self.window_size = window_size
 
-        # ææ å­å¨ï¼{metric_type: deque[(timestamp, value, metadata)]}
+        # 指标存储：{metric_type: deque[(timestamp, value, metadata)]}
         self._metrics_storage: Dict[str, deque] = defaultdict(lambda: deque(maxlen=1000))
         self._lock = threading.Lock()
 
-        # å¹¶åä»»å¡è®¡æ°å¨
+        # 并发任务计数器
         self._concurrent_tasks: Dict[str, int] = {
             "download": 0,
             "backtest": 0,
@@ -5026,15 +5381,15 @@ class BusinessMetricsCollector:
         }
         self._task_lock = threading.Lock()
 
-        self.logger.info("ä¸å¡ææ ééå¨å·²åå§åï¼çªå£å¤§å°: %dç§ï¼", window_size)
+        self.logger.info("业务指标采集器已初始化，窗口大小: %d秒", window_size)
 
     def record_metric(self, metric_type: str, value: float, metadata: Optional[Dict] = None):
-        """è®°å½ä¸å¡ææ .
+        """记录业务指标.
 
         Args:
-            metric_type: ææ ç±»åï¼å¦ 'event_queue_depth', 'order_response_time_ms'
-            value: ææ å¼
-            metadata: é¢å¤åæ°æ®ï¼å¯éï¼ï¼å¦ {'gateway': 'ctp', 'symbol': 'IF2401'}
+            metric_type: 指标类型，如 'event_queue_depth', 'order_response_time_ms'
+            value: 指标值
+            metadata: 额外元数据（可选），如 {'gateway': 'ctp', 'symbol': 'IF2401'}
 
         Examples:
             >>> collector.record_metric('event_queue_depth', 1500)
@@ -5045,14 +5400,14 @@ class BusinessMetricsCollector:
         with self._lock:
             self._metrics_storage[metric_type].append((timestamp, value, metadata or {}))
 
-        # ææ¶åªè®°å½æ¥å¿
-        self.logger.debug("è®°å½ä¸å¡ææ : %s = %.2f, metadata=%s", metric_type, value, metadata)
+        # 暂时只记录日志
+        self.logger.debug("记录业务指标: %s = %.2f, metadata=%s", metric_type, value, metadata)
 
     def increment_task(self, task_type: str = "total"):
-        """å¢å ä»»å¡è®¡æ°.
+        """增加任务计数.
 
         Args:
-            task_type: ä»»å¡ç±»å ("download", "backtest", "trading", "total")
+            task_type: 任务类型 ("download", "backtest", "trading", "total")
         """
         with self._task_lock:
             if task_type in self._concurrent_tasks:
@@ -5060,10 +5415,10 @@ class BusinessMetricsCollector:
             self._concurrent_tasks["total"] += 1
 
     def decrement_task(self, task_type: str = "total"):
-        """åå°ä»»å¡è®¡æ°.
+        """减少任务计数.
 
         Args:
-            task_type: ä»»å¡ç±»å ("download", "backtest", "trading", "total")
+            task_type: 任务类型 ("download", "backtest", "trading", "total")
         """
         with self._task_lock:
             if task_type in self._concurrent_tasks:
@@ -5071,7 +5426,7 @@ class BusinessMetricsCollector:
             self._concurrent_tasks["total"] = max(0, self._concurrent_tasks["total"] - 1)
 
     def get_concurrent_tasks(self) -> Dict[str, int]:
-        """è·åå½åå¹¶åä»»å¡æ°.
+        """获取当前并发任务数.
 
         Returns:
             {"download": 0, "backtest": 0, "trading": 0, "total": 0}
@@ -5080,7 +5435,7 @@ class BusinessMetricsCollector:
             return self._concurrent_tasks.copy()
 
     def get_metrics_summary(self) -> Dict[str, Any]:
-        """è·åä¸å¡ææ æè¦.
+        """获取业务指标摘要.
 
         Returns:
             {
@@ -5103,7 +5458,7 @@ class BusinessMetricsCollector:
 
         with self._lock:
             for metric_type, data_queue in self._metrics_storage.items():
-                # è¿æ»¤æ¶é´çªå£
+                # 过滤时间窗口
                 windowed_data = [
                     (ts, val, meta) for ts, val, meta in data_queue if ts >= window_start
                 ]
@@ -5113,7 +5468,7 @@ class BusinessMetricsCollector:
 
                 values = [val for _, val, _ in windowed_data]
 
-                # è®¡ç®P95/P99ï¼çº¯Pythonå®ç°ï¼
+                # 计算P95/P99（纯Python实现）
                 sorted_values = sorted(values)
                 n = len(sorted_values)
                 p95_index = int(n * 0.95) if n > 0 else 0
@@ -5132,14 +5487,14 @@ class BusinessMetricsCollector:
         return summary
 
     def get_latest_value(self, metric_type: str, default: float = 0) -> float:
-        """获取指定指标的最新值.
+        """获取指定指标最新值.
 
         Args:
             metric_type: 指标类型
             default: 默认值（如果没有数据）
 
         Returns:
-            最新的指标值，如果没有数据则返回default
+            最新指标值，如果没有数据则返回default
 
         Examples:
             >>> collector.get_latest_value('event_queue_depth', default=0)
@@ -5150,16 +5505,16 @@ class BusinessMetricsCollector:
             if not data_queue or len(data_queue) == 0:
                 return default
 
-            # 返回最新的值（队列最后一个元素）
+            # 返回最新值（队列最后一个元素）
             _, latest_value, _ = data_queue[-1]
             return latest_value
 
     def get_metric_history(self, metric_type: str, duration_sec: int = 60) -> List[Dict[str, Any]]:
-        """è·åæå®ææ çåå²æ°æ®.
+        """获取指定指标历史数据.
 
         Args:
-            metric_type: ææ ç±»å
-            duration_sec: æ¶é´èå´ï¼ç§ï¼
+            metric_type: 指标类型
+            duration_sec: 时间范围（秒）
 
         Returns:
             [
@@ -5186,28 +5541,28 @@ class BusinessMetricsCollector:
         return history
 
     def clear_metrics(self, metric_type: Optional[str] = None):
-        """æ¸çææ æ°æ®.
+        """清理指标数据.
 
         Args:
-            metric_type: æå®ææ ç±»åï¼Noneè¡¨ç¤ºæ¸çææ
+            metric_type: 指定指标类型，None表示清理所有
         """
         with self._lock:
             if metric_type:
                 if metric_type in self._metrics_storage:
                     self._metrics_storage[metric_type].clear()
-                    self.logger.info("å·²æ¸çææ : %s", metric_type)
+                    self.logger.info("已清理指标: %s", metric_type)
             else:
                 self._metrics_storage.clear()
-                self.logger.info("å·²æ¸çææä¸å¡ææ ")
+                self.logger.info("已清理所有业务指标")
 
 
-# å¨å±åä¾
+# 全局单例
 _business_metrics_collector_instance: Optional[BusinessMetricsCollector] = None
 _collector_lock = threading.Lock()
 
 
 def get_business_metrics_collector() -> BusinessMetricsCollector:
-    """è·åä¸å¡ææ ééå¨çå¨å±åä¾."""
+    """获取业务指标采集器全局单例."""
     global _business_metrics_collector_instance
     if _business_metrics_collector_instance is None:
         with _collector_lock:
@@ -5243,4 +5598,3 @@ __all__ = [
     "get_resource_usage",
     "get_business_metrics_collector",
 ]
-

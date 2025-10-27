@@ -12,11 +12,14 @@
 """
 
 import logging
+import time
 from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Any, Dict, Generic, List, Optional, TypeVar
 
-logger = logging.getLogger(__name__)
+# ✅ 使用业务命名
+logger = logging.getLogger("backend.core.repository")
+logger_alert = logging.getLogger("backend.core.repository.alert")  # 性能告警专用
 
 T = TypeVar("T")
 
@@ -71,18 +74,22 @@ class BaseRepository(ABC, Generic[T]):
 
     def _log_operation(self, operation: str, **kwargs) -> None:
         """记录操作日志."""
-        self.logger.info(
-            "数据库操作: %s - %s",
+        # ✅ 数据库操作使用DEBUG级别，避免污染日志
+        self.logger.debug(
+            "数据库操作: 表=%s, 操作=%s, 参数=%s",
+            self.table_name,
             operation,
             ", ".join(f"{k}={v}" for k, v in kwargs.items()),
         )
 
     def _log_error(self, operation: str, error: Exception, **kwargs) -> None:
         """记录错误日志."""
-        self.logger.error(
-            "数据库操作错误: %s - %s - %s",
+        # ✅ 错误使用exception()获取堆栈
+        self.logger.exception(
+            "数据库操作失败: 表=%s, 操作=%s, 错误=%s, 参数=%s",
+            self.table_name,
             operation,
-            str(error),
+            error,
             ", ".join(f"{k}={v}" for k, v in kwargs.items()),
         )
 
@@ -139,14 +146,27 @@ class InMemoryRepository(BaseRepository[T]):
 
     async def get_all(self, limit: int = 100, offset: int = 0) -> List[T]:
         """获取所有实体."""
+        start_time = time.time()
         try:
             entities = list(self._data.values())[offset : offset + limit]
+            elapsed = time.time() - start_time
+
+            # ✅ 慢查询告警（>100ms）
+            if elapsed > 0.1:
+                logger_alert.warning(
+                    "慢查询: 表=%s, 操作=get_all, 耗时=%.3fs, limit=%d",
+                    self.table_name,
+                    elapsed,
+                    limit,
+                )
+
             self._log_operation(
                 "get_all",
                 table=self.table_name,
                 limit=limit,
                 offset=offset,
                 count=len(entities),
+                elapsed=f"{elapsed:.3f}s",
             )
             return entities
 

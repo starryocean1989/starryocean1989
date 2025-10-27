@@ -14,8 +14,13 @@ from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta
 from contextlib import suppress
 from pathlib import Path
+import logging
 
 from backend.core.service_base import BaseService, LoggerMixin
+
+# 专用logger - 日志埋点v4.0
+logger_download = logging.getLogger("backend.data_center.download")
+logger_alert = logging.getLogger("backend.data_center.alert")
 
 
 class DataCenterService(BaseService, LoggerMixin):
@@ -350,8 +355,14 @@ class DataCenterService(BaseService, LoggerMixin):
         """初始化任务调度器."""
         try:
             from apscheduler.schedulers.background import BackgroundScheduler
+            from apscheduler.executors.pool import ThreadPoolExecutor
 
-            self.scheduler = BackgroundScheduler()
+            # 🔧 修复Qt Timer跨线程问题：强制使用threading executor，禁用Qt executor
+            # APScheduler在检测到Qt环境时会尝试使用QTimer，这在后台线程中会导致错误
+            executors = {"default": ThreadPoolExecutor(max_workers=2)}
+
+            # 创建调度器时指定executors配置
+            self.scheduler = BackgroundScheduler(executors=executors)
 
             # 添加定时清理任务：每天凌晨0点清理录制数据
             self.scheduler.add_job(
@@ -368,6 +379,7 @@ class DataCenterService(BaseService, LoggerMixin):
             # 启动调度器
             self.scheduler.start()
             self.logger.info("✅ 任务调度器已启动，已添加定时清理任务（每日0:00）")
+            self.logger.debug("任务调度器初始化完成")
             return True
 
         except ImportError:
@@ -504,77 +516,77 @@ class DataCenterService(BaseService, LoggerMixin):
             return {"success": False, "message": str(e)}
 
     def _load_symbol_cache_on_startup(self):
-        """启动时加载品种缓存（异步）.
+        """启动时加载品种缓存（同步，使用SymbolLoader）.
 
-        逻辑：
-        1. 先尝试从 data/cache/stock_list_classified.json 加载缓存
-        2. 如果缓存存在，加载到内存
-        3. 如果缓存不存在，启动后台线程异步加载（不阻塞启动）
+        优化逻辑：
+        1. 直接使用 data_module 的 SymbolLoader（已有有效缓存）
+        2. 避免依赖可能不存在的 JSON 文件
+        3. 确保启动时缓存立即可用，提升用户体验
+        4. 与 refresh_symbol_list() 保持一致的数据源
         """
         try:
             self.logger.info("正在检查品种列表缓存...")
 
-            # 尝试从JSON文件加载（使用data_module的配置管理器）
-            from backend.infrastructure.data_module_vnpy.config import config_manager
-            import json
+            # 🔧 优化：直接使用 SymbolLoader，与 refresh_symbol_list() 保持一致
+            from backend.infrastructure.data_module_vnpy.data_acquisition import (
+                SymbolLoader,
+            )
 
-            cache_dir = config_manager.get_cache_dir()
-            json_cache_file = cache_dir / "stock_list_classified.json"
+            loader = SymbolLoader()
+            classified, is_outdated = loader.load_from_cache_with_validation()
 
-            # 加载JSON文件
-            if json_cache_file.exists():
-                try:
-                    with open(json_cache_file, "r", encoding="utf-8") as f:
-                        cache_data = json.load(f)
+            if not classified:
+                self.logger.warning("品种列表缓存不存在，启动后台异步加载")
+                self._async_load_symbols_in_background()
+                return
 
-                    classified = cache_data.get("classified", {})
+            # 将分类数据转换为前端需要的格式
+            symbols = []
+            for market_type, codes in classified.items():
+                for code_item in codes:
+                    # 兼容两种格式：字符串或字典
+                    if isinstance(code_item, str):
+                        code = code_item
+                        name = code_item
+                    elif isinstance(code_item, dict):
+                        code = code_item.get("code", "")
+                        name = code_item.get("name", code)
+                    else:
+                        continue  # 跳过无效数据
 
-                    # 将分类数据转换为前端需要的格式
-                    symbols = []
-                    for market_type, codes in classified.items():
-                        for code_item in codes:
-                            # 兼容两种格式：字符串或字典
-                            if isinstance(code_item, str):
-                                code = code_item
-                                name = code_item
-                            elif isinstance(code_item, dict):
-                                code = code_item.get("code", "")
-                                name = code_item.get("name", code)
-                            else:
-                                continue  # 跳过无效数据
+                    if not code:
+                        continue  # 跳过空代码
 
-                            if not code:
-                                continue  # 跳过空代码
+                    symbols.append(
+                        {
+                            "symbol": code,
+                            "code": code,
+                            "name": name,  # 使用实际品种名称
+                            "exchange": self._map_market_to_exchange(market_type),
+                            "product_type": self._map_market_to_product_type(market_type),
+                        }
+                    )
 
-                            symbols.append(
-                                {
-                                    "symbol": code,
-                                    "code": code,
-                                    "name": name,  # 使用实际品种名称
-                                    "exchange": self._map_market_to_exchange(market_type),
-                                    "product_type": self._map_market_to_product_type(market_type),
-                                }
-                            )
+            # 更新内存缓存
+            self._symbol_cache = {
+                "symbols": symbols,
+                "timestamp": datetime.now(),
+            }
+            self._symbol_cache_time = datetime.now()
 
-                    # 更新内存缓存
-                    self._symbol_cache = {
-                        "symbols": symbols,
-                        "timestamp": datetime.now(),
-                    }
-                    self._symbol_cache_time = datetime.now()
-
-                    self.logger.info("✅ 从JSON缓存加载了 %d 个品种（5个市场）", len(symbols))
-                    return
-
-                except Exception as e:
-                    self.logger.warning("加载JSON缓存失败：%s，将异步重新加载", e)
-
-            # 缓存不存在或加载失败，启动后台线程异步加载
-            self.logger.info("缓存文件不存在，启动后台线程异步加载品种列表...")
-            self._async_load_symbols_in_background()
+            # 记录加载结果（包含是否过时的提示）
+            outdated_hint = " [缓存已过时，建议重新加载]" if is_outdated else ""
+            self.logger.info(
+                "✅ 从SymbolLoader加载了 %d 个品种（%d个市场）%s",
+                len(symbols),
+                len(classified),
+                outdated_hint,
+            )
 
         except Exception as e:
             self.logger.error("启动时加载缓存失败：%s", e, exc_info=True)
+            # 失败时启动后台异步加载作为降级方案
+            self._async_load_symbols_in_background()
 
     def _map_market_to_exchange(self, market_type: str) -> str:
         """将市场类型映射到交易所."""
@@ -604,17 +616,44 @@ class DataCenterService(BaseService, LoggerMixin):
 
         def load_symbols():
             try:
-                self.logger.info("【后台线程】正在异步加载品种列表...")
-                result = self.reload_symbol_list(force=False)
+                # 品种加载场景上下文 - 日志埋点v4.0
+                try:
+                    from backend.infrastructure.system_vnpy.logging_context import (
+                        get_logging_context,
+                    )
 
-                if result.get("success"):
-                    self.logger.info(
-                        "【后台线程】✅ 品种列表加载成功：%d 个品种", result.get("symbol_count", 0)
-                    )
+                    ctx = get_logging_context()
+                except ImportError:
+                    ctx = None
+
+                if ctx:
+                    with ctx.scenario("reload_symbols"):
+                        self.logger.info("【后台线程】正在异步加载品种列表...")
+                        result = self.reload_symbol_list(force=False)
+
+                        if result.get("success"):
+                            self.logger.info(
+                                "【后台线程】✅ 品种列表加载成功：%d 个品种",
+                                result.get("symbol_count", 0),
+                            )
+                        else:
+                            self.logger.warning(
+                                "【后台线程】⚠️ 品种列表加载失败: %s", result.get("message", "")
+                            )
                 else:
-                    self.logger.warning(
-                        "【后台线程】⚠️ 品种列表加载失败: %s", result.get("message", "")
-                    )
+                    # 无场景上下文时的fallback
+                    self.logger.info("【后台线程】正在异步加载品种列表...")
+                    result = self.reload_symbol_list(force=False)
+
+                    if result.get("success"):
+                        self.logger.info(
+                            "【后台线程】✅ 品种列表加载成功：%d 个品种",
+                            result.get("symbol_count", 0),
+                        )
+                    else:
+                        self.logger.warning(
+                            "【后台线程】⚠️ 品种列表加载失败: %s", result.get("message", "")
+                        )
 
             except Exception as e:
                 self.logger.error("【后台线程】品种列表加载异常: %s", e, exc_info=True)
@@ -832,9 +871,31 @@ class DataCenterService(BaseService, LoggerMixin):
             Dict: 包含success, symbol_count, message, data, is_outdated的字典
         """
         try:
+            # 🔧 优化：检查内存缓存是否在TTL内，避免重复文件I/O
+            # TTL设置为3秒，避免短时间内多次加载相同数据
+            if self._symbol_cache and self._symbol_cache_time:
+                from datetime import timedelta
+
+                cache_age = datetime.now() - self._symbol_cache_time
+                if cache_age < timedelta(seconds=3):
+                    symbols = self._symbol_cache.get("symbols", [])
+                    self.logger.debug(
+                        "品种列表使用内存缓存（缓存年龄: %.2f秒，共%d个品种）",
+                        cache_age.total_seconds(),
+                        len(symbols),
+                    )
+                    return {
+                        "success": True,
+                        "symbol_count": len(symbols),
+                        "message": "使用内存缓存",
+                        "data": symbols,
+                        "is_outdated": False,
+                        "source": "memory_cache",
+                    }
+
             self._log_operation("刷新品种列表")
 
-            # 强制从文件重新加载（不使用内存缓存）
+            # 从文件重新加载
             from backend.infrastructure.data_module_vnpy.data_acquisition import (
                 SymbolLoader,
             )
@@ -913,7 +974,7 @@ class DataCenterService(BaseService, LoggerMixin):
                 return result.get("data", [])
             return []
         except Exception as e:
-            self.logger.warning(f"从缓存获取品种列表失败: {e}")
+            self.logger.warning("从缓存获取品种列表失败: %s", e, exc_info=True)
             return []
 
     def get_local_data_index(self) -> List[Dict[str, Any]]:
@@ -964,7 +1025,7 @@ class DataCenterService(BaseService, LoggerMixin):
             return result
 
         except Exception as e:
-            self.logger.error(f"获取本地数据索引失败: {e}", exc_info=True)
+            logger_alert.error("获取本地数据索引失败: %s", e, exc_info=True)
             return []
 
     def clear_symbol_cache(self) -> Dict[str, Any]:
@@ -1264,6 +1325,16 @@ class DataCenterService(BaseService, LoggerMixin):
 
         download_start_time = time.time()
 
+        # 切换到下载阶段，使用场景上下文 - 日志埋点v4.0
+        try:
+            from backend.infrastructure.system_vnpy.logging_context import get_logging_context
+
+            ctx = get_logging_context()
+            ctx.set_stage("downloading")
+        except ImportError:
+            ctx = None
+            self.logger.debug("logging_context模块不可用，跳过阶段切换")
+
         try:
             self.log_operation_start("增量数据下载", start_date=start_date)
 
@@ -1280,9 +1351,9 @@ class DataCenterService(BaseService, LoggerMixin):
 
             try:
                 start_dt = dt.strptime(start_date, "%Y-%m-%d").date()
-                self.logger.debug(f"解析开始日期: {start_dt}")
+                self.logger.debug("解析开始日期: %s", start_dt)
             except ValueError as e:
-                self.logger.error(f"日期格式错误: {e}")
+                self.logger.error("日期格式错误: %s", e, exc_info=True)
                 return {
                     "success": False,
                     "task_id": None,
@@ -1330,7 +1401,14 @@ class DataCenterService(BaseService, LoggerMixin):
                     "message": "已有下载任务在运行，或启动失败",
                 }
 
-            self.logger.info(f"[下载-{task_id}] 引擎已启动，开始轮询进度...")
+            # 批量下载场景上下文 - 日志埋点v4.0
+            if ctx:
+                ctx_scenario = ctx.scenario("bulk_download")
+                ctx_scenario.__enter__()
+            else:
+                ctx_scenario = None
+
+            logger_download.info("[下载-%s] 引擎已启动，开始轮询进度...", task_id)
             print(">>> [SERVICE] 引擎已启动，正在初始化下载任务...", flush=True)
             print(
                 ">>> [SERVICE] 提示：初始化可能需要15-30秒（发现服务器、构建任务列表）", flush=True
@@ -1416,8 +1494,11 @@ class DataCenterService(BaseService, LoggerMixin):
                                 )
                                 break
                             elif total > 0 and completed < total:
-                                self.logger.warning(
-                                    f"[下载-{task_id}] is_downloading=False 但未完成 ({completed}/{total})，继续等待..."
+                                logger_download.warning(
+                                    "[下载-%s] is_downloading=False 但未完成 (%d/%d)，继续等待...",
+                                    task_id,
+                                    completed,
+                                    total,
                                 )
                                 # 继续等待，可能是进度更新延迟
                                 time.sleep(1.0)
@@ -1426,8 +1507,10 @@ class DataCenterService(BaseService, LoggerMixin):
                                 # 只在超过30秒后才警告，给初始化留足时间
                                 elapsed = current_time - download_start_time
                                 if elapsed > 30:
-                                    self.logger.warning(
-                                        f"[下载-{task_id}] is_downloading=False 且 total=0 已持续 {elapsed:.0f}秒，可能失败"
+                                    logger_download.warning(
+                                        "[下载-%s] is_downloading=False 且 total=0 已持续 %.0f秒，可能失败",
+                                        task_id,
+                                        elapsed,
                                     )
                                     print(
                                         ">>> [SERVICE] ⚠️ 下载初始化超过30秒，可能存在问题",
@@ -1443,11 +1526,11 @@ class DataCenterService(BaseService, LoggerMixin):
                                 )
                             time.sleep(0.5)
                     else:
-                        self.logger.warning(f"[下载-{task_id}] 获取进度失败，prog={prog}")
+                        logger_download.warning("[下载-%s] 获取进度失败，prog=%s", task_id, prog)
                         time.sleep(0.5)
 
                 except Exception as poll_error:
-                    self.logger.error(f"[下载-{task_id}] 轮询异常: {poll_error}", exc_info=True)
+                    logger_alert.error("[下载-%s] 轮询异常: %s", task_id, poll_error, exc_info=True)
                     time.sleep(0.5)
 
             # 线程已结束，做一次最终上报与事件广播
@@ -1456,7 +1539,14 @@ class DataCenterService(BaseService, LoggerMixin):
                     progress_callback(100.0, "✅ 下载完成，正在整理结果...")
 
             download_duration = (time.time() - download_start_time) * 1000
-            self.logger.info(f"[下载-{task_id}] 整理结果...")
+            logger_download.info("[下载-%s] 整理结果...", task_id)
+
+            # 退出场景上下文 - 日志埋点v4.0
+            if ctx_scenario:
+                try:
+                    ctx_scenario.__exit__(None, None, None)
+                except Exception:
+                    pass
 
             self._emit_download_complete_event(task_id, "incremental", start_date)
 
@@ -2395,7 +2485,7 @@ class DataCenterService(BaseService, LoggerMixin):
             return True
 
         except Exception as e:
-            self.logger.error(f"触发数据质量扫描失败: {e}", exc_info=True)
+            logger_alert.error("触发数据质量扫描失败: %s", e, exc_info=True)
             return False
 
     def _do_quality_scan(self, force_refresh: bool):
@@ -2404,6 +2494,15 @@ class DataCenterService(BaseService, LoggerMixin):
         Args:
             force_refresh: 是否强制刷新
         """
+        # 质量扫描场景上下文 - 日志埋点v4.0
+        try:
+            from backend.infrastructure.system_vnpy.logging_context import get_logging_context
+
+            ctx = get_logging_context()
+            ctx.set_stage("quality_scan")
+        except ImportError:
+            ctx = None
+
         try:
             # 确保 china_stock_engine 可用
             if not self.china_stock_engine:
@@ -2414,17 +2513,46 @@ class DataCenterService(BaseService, LoggerMixin):
             # LoadBalancer的事件订阅和缓存机制已经足够高效，不需要额外预热
             # 在后台线程中创建LoadBalancer可能导致Qt Timer错误和内存损坏
 
-            overview = self.china_stock_engine.trigger_data_quality_scan(
-                force_refresh=force_refresh
-            )
-            if overview:
-                # 推送事件
-                self.china_stock_engine._push_quality_overview_event(overview)
-                self.logger.info(f"✓ 数据质量扫描完成，评分: {overview.quality_score}")
+            # 使用场景上下文
+            if ctx:
+                with ctx.scenario("quality_scan"):
+                    overview = self.china_stock_engine.trigger_data_quality_scan(
+                        force_refresh=force_refresh
+                    )
+                    if overview:
+                        # 推送事件
+                        self.china_stock_engine._push_quality_overview_event(overview)
+                        self.logger.info("✓ 数据质量扫描完成，评分: %.2f", overview.quality_score)
+
+                        # 数据质量告警 - 日志埋点v4.0
+                        if overview.quality_score < 60:
+                            logger_alert.warning(
+                                "数据质量告警: 评分过低=%.2f, 建议检查数据完整性",
+                                overview.quality_score,
+                            )
+                    else:
+                        self.logger.warning("数据质量扫描未返回结果")
             else:
-                self.logger.warning("数据质量扫描未返回结果")
+                overview = self.china_stock_engine.trigger_data_quality_scan(
+                    force_refresh=force_refresh
+                )
+                if overview:
+                    self.china_stock_engine._push_quality_overview_event(overview)
+                    self.logger.info("✓ 数据质量扫描完成，评分: %.2f", overview.quality_score)
+                else:
+                    self.logger.warning("数据质量扫描未返回结果")
+
+            # 恢复阶段
+            if ctx:
+                ctx.set_stage("sensing")
         except Exception as e:
-            self.logger.error(f"数据质量扫描失败: {e}", exc_info=True)
+            logger_alert.error("数据质量扫描失败: %s", e, exc_info=True)
+            # 恢复阶段
+            if ctx:
+                try:
+                    ctx.set_stage("sensing")
+                except Exception:
+                    pass
 
     # ==================== 数据源管理 ====================
 

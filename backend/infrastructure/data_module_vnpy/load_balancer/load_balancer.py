@@ -157,6 +157,40 @@ class NetworkTask(BaseTask):
         )
 
 
+class IPODownloadTask(NetworkTask):
+    """IPO日期下载任务
+
+    特点：
+    - 单个品种单个请求（不像K线需要多周期）
+    - 网络IO密集，CPU开销小
+    - 可容忍较高并发度
+    """
+
+    def __init__(self, name: str, total_symbols: int):
+        super().__init__(name)
+        self.total_symbols = total_symbols
+        self.task_type = "ipo_download"
+
+    def estimate_task_count(self) -> int:
+        """估算任务数量（IPO是单次请求）"""
+        return self.total_symbols
+
+    def estimate_io_intensity(self) -> float:
+        """估算IO强度（0-1），IPO下载是IO密集型"""
+        return 0.9  # 高IO强度
+
+    def estimate_cpu_intensity(self) -> float:
+        """估算CPU强度（0-1），IPO下载CPU开销小"""
+        return 0.1  # 低CPU强度
+
+    def execute(self, config: Dict[str, Any]) -> Any:
+        """执行IPO下载任务（占位方法）
+
+        实际执行由MultiProcessStockFetcher.download_ipo_dates_multiprocess()完成
+        """
+        pass
+
+
 class LocalProcessingTask(BaseTask):
     """本地数据处理任务基类
 
@@ -702,12 +736,104 @@ class DynamicConfigCalculator:
     """动态配置计算器
 
     根据资源压力和任务特征，计算最优的并发配置参数。
+
+    v3.3新增：基于event_loop_lag的并发决策
     """
 
     def __init__(self, evaluator):
         """初始化配置计算器"""
         self.evaluator = evaluator
         self.logger = logging.getLogger(__name__)
+
+    def make_concurrency_decision(
+        self,
+        task: BaseTask,
+        pressure: ResourcePressure,
+        event_loop_lag_ms: Optional[float] = None,
+        current_processes: int = 1,
+        current_coroutines: int = 10,
+    ) -> Dict[str, Any]:
+        """基于资源压力与event_loop_lag的并发决策（v3.3新增）
+
+        决策优先级：
+        1. 资源限制触发（超出高阈值/紧急）→ 优先降低协程
+        2. 资源处于低负载区 → 优先增加协程
+        3. 出现协程排队（event_loop_lag > 20ms）→ 增加进程
+        4. 其他情况 → 保持
+
+        Args:
+            task: 任务对象
+            pressure: 资源压力对象
+            event_loop_lag_ms: 事件循环延迟（毫秒）
+            current_processes: 当前进程数
+            current_coroutines: 当前每进程协程数
+
+        Returns:
+            {
+                'action': 'INCREASE_PROCESS' | 'DECREASE_COROUTINE' | 'INCREASE_COROUTINE' | 'HOLD',
+                'reason': str,
+                'suggested_processes': int,
+                'suggested_coroutines_per_process': int,
+                'lag_ms': float,
+                'pressure_score': float,
+            }
+        """
+        cpu_cores = multiprocessing.cpu_count()
+
+        # 1️⃣ 优先处理资源限制：触发高阈值或紧急状态时先降协程
+        resource_overloaded = (
+            pressure.emergency or pressure.above_high_threshold or (pressure.scale_suggestion < 1.0)
+        )
+        if resource_overloaded:
+            suggested_coroutines = max(5, int(current_coroutines * 0.8))
+            return {
+                "action": "DECREASE_COROUTINE",
+                "reason": pressure.reason or f"资源压力{pressure.score:.1f}，优先减少协程",
+                "suggested_processes": current_processes,
+                "suggested_coroutines_per_process": suggested_coroutines,
+                "lag_ms": event_loop_lag_ms or 0,
+                "pressure_score": pressure.score,
+            }
+
+        # 2️⃣ 资源充裕时优先增加协程
+        low_load = pressure.below_low_threshold or pressure.scale_suggestion > 1.0
+        if low_load and (event_loop_lag_ms is None or event_loop_lag_ms < 10):
+            suggested_coroutines = current_coroutines + 5  # 移除上限，允许真正的高并发测试
+            lag_desc = (
+                f"且事件循环流畅({event_loop_lag_ms:.1f}ms)"
+                if event_loop_lag_ms is not None
+                else ""
+            )
+            return {
+                "action": "INCREASE_COROUTINE",
+                "reason": f"系统处于低负载(压力{pressure.score:.1f}){lag_desc}，优先增加协程",
+                "suggested_processes": current_processes,
+                "suggested_coroutines_per_process": suggested_coroutines,
+                "lag_ms": event_loop_lag_ms or 0,
+                "pressure_score": pressure.score,
+            }
+
+        # 3️⃣ lag触发协程排队，尝试增加进程（进程数受CPU限制）
+        if event_loop_lag_ms is not None and event_loop_lag_ms > 20:
+            suggested_processes = min(current_processes + 1, cpu_cores)
+            return {
+                "action": "INCREASE_PROCESS",
+                "reason": f"事件循环延迟{event_loop_lag_ms:.1f}ms，协程排队，尝试增加进程",
+                "suggested_processes": suggested_processes,
+                "suggested_coroutines_per_process": current_coroutines,
+                "lag_ms": event_loop_lag_ms,
+                "pressure_score": pressure.score,
+            }
+
+        # 4️⃣ 默认保持当前配置
+        return {
+            "action": "HOLD",
+            "reason": f"当前配置合理(压力{pressure.score:.1f}, lag={event_loop_lag_ms or 0:.1f}ms)",
+            "suggested_processes": current_processes,
+            "suggested_coroutines_per_process": current_coroutines,
+            "lag_ms": event_loop_lag_ms or 0,
+            "pressure_score": pressure.score,
+        }
 
     def calculate_for_task(self, task: BaseTask, pressure_eval: Dict[str, Any]) -> Dict[str, Any]:
         """为特定任务计算最优配置"""
@@ -974,6 +1100,193 @@ class IntelligentAdaptiveTuner:
 # ==============================================================================
 # 第3部分：监控评估系统（SystemMetricsMonitor、ResourcePressureEvaluator、指标收集、性能告警）
 # ==============================================================================
+
+
+class LagMonitor:
+    """通用事件循环延迟监控工具（v3.4新增）
+
+    功能：
+    1. 测量asyncio事件循环的调度延迟（schedule lag）
+    2. 测量回调响应延迟（callback lag）
+    3. 统计pending tasks数量（协程排队指标）
+    4. 计算综合延迟（考虑排队压力）
+    5. 通过queue上报指标到主进程
+
+    使用场景：
+    - TDX本地数据读取
+    - K线网络下载
+    - 本地数据感知下载
+    - 任何需要监控协程性能的场景
+
+    使用方法：
+    ```python
+    # 在worker进程的异步函数中启动监控
+    lag_task = asyncio.create_task(
+        LagMonitor.monitor_and_report(
+            result_queue=result_queue,
+            worker_id=worker_id,
+            stop_event=stop_event,
+            interval_seconds=0.3
+        )
+    )
+
+    # 任务结束时取消监控
+    await LagMonitor.cancel_monitor(lag_task)
+    ```
+    """
+
+    @staticmethod
+    async def monitor_and_report(
+        metrics_queue,  # 🆕 v3.5: 改为独立的metrics_queue
+        worker_id: int,
+        stop_event,
+        interval_seconds: float = 0.3,
+        queue_pressure_factor: float = 10.0,
+        pending_threshold: int = 100,
+    ):
+        """在worker进程中持续监控event_loop_lag并通过独立队列上报
+
+        v3.5改进：使用独立的metrics_queue，与数据结果队列分离，防止阻塞
+
+        Args:
+            metrics_queue: 用于上报指标的独立multiprocessing.Queue
+            worker_id: worker进程ID
+            stop_event: 停止信号（multiprocessing.Event）
+            interval_seconds: 监控间隔（秒），默认0.3秒
+            queue_pressure_factor: 排队压力系数，默认10.0（每100个pending任务贡献10ms）
+            pending_threshold: pending任务计算阈值，默认100
+        """
+        import asyncio
+        import time
+
+        while not stop_event.is_set():
+            try:
+                # 1. 获取当前事件循环和任务统计
+                loop = asyncio.get_running_loop()
+                all_tasks = asyncio.all_tasks(loop)
+                pending_count = sum(1 for t in all_tasks if not t.done() and not t.cancelled())
+                done_count = sum(1 for t in all_tasks if t.done())
+
+                # 2. 测量调度延迟（schedule lag）
+                schedule_start = time.perf_counter()
+                await asyncio.sleep(0)
+                schedule_lag_ms = (time.perf_counter() - schedule_start) * 1000
+
+                # 3. 测量回调延迟（callback lag）
+                callback_start = time.perf_counter()
+                callback_done = asyncio.Future()
+
+                def callback_measure():
+                    if not callback_done.done():
+                        callback_done.set_result(time.perf_counter() - callback_start)
+
+                loop.call_soon(callback_measure)
+
+                try:
+                    callback_lag_s = await asyncio.wait_for(callback_done, timeout=1.0)
+                    callback_lag_ms = callback_lag_s * 1000
+                except asyncio.TimeoutError:
+                    # 超时说明事件循环严重阻塞
+                    callback_lag_ms = 1000.0
+
+                # 4. 计算排队压力（queue pressure）
+                # 公式：(pending_count / pending_threshold) * queue_pressure_factor
+                # 例如：500个pending任务 / 100 * 10 = 50ms
+                queue_pressure_ms = (pending_count / pending_threshold) * queue_pressure_factor
+
+                # 5. 计算综合延迟
+                # lag = max(调度延迟, 回调延迟) + 排队压力
+                lag_ms = max(schedule_lag_ms, callback_lag_ms) + queue_pressure_ms
+
+                # 6. 通过result_queue上报指标（使用特殊标记）
+                lag_data = {
+                    "lag_ms": round(lag_ms, 3),
+                    "pending_tasks": pending_count,
+                    "done_tasks": done_count,
+                    "total_tasks": len(all_tasks),
+                    "schedule_lag_ms": round(schedule_lag_ms, 3),
+                    "callback_lag_ms": round(callback_lag_ms, 3),
+                    "queue_pressure_ms": round(queue_pressure_ms, 3),
+                    "timestamp": time.time(),
+                }
+
+                # 🔧 v3.5: 使用独立的metrics_queue（非阻塞）
+                try:
+                    metrics_queue.put_nowait(("__LAG_METRICS__", worker_id, lag_data))
+                except:
+                    # queue满了就跳过这次上报，lag监控不应阻塞主任务
+                    pass
+
+                # 7. 等待下一次监控
+                await asyncio.sleep(interval_seconds)
+
+            except Exception as e:
+                # 监控失败不应该影响主任务
+                try:
+                    import logging
+
+                    logger = logging.getLogger(__name__)
+                    logger.error(f"[Worker-{worker_id}] lag监控失败: {e}")
+                except:
+                    pass
+                await asyncio.sleep(1.0)
+
+    @staticmethod
+    async def cancel_monitor(lag_monitor_task):
+        """取消lag监控任务
+
+        Args:
+            lag_monitor_task: asyncio.Task对象
+        """
+        if lag_monitor_task and not lag_monitor_task.done():
+            lag_monitor_task.cancel()
+            try:
+                await lag_monitor_task
+            except asyncio.CancelledError:
+                pass
+
+    @staticmethod
+    def process_lag_message(
+        msg: tuple,
+        load_balancer,
+        logger=None,
+        warn_threshold_ms: float = 20.0,
+    ) -> bool:
+        """在主进程中处理lag指标消息
+
+        Args:
+            msg: 从queue接收的消息tuple
+            load_balancer: LoadBalancer实例
+            logger: 日志记录器（可选）
+            warn_threshold_ms: 警告阈值（毫秒），超过此值记录警告
+
+        Returns:
+            bool: 如果是lag消息返回True，否则返回False
+        """
+        # 识别lag指标消息
+        if not (isinstance(msg, tuple) and len(msg) == 3 and msg[0] == "__LAG_METRICS__"):
+            return False
+
+        _, worker_id, lag_data = msg
+        lag_ms = lag_data.get("lag_ms", 0)
+        pending_tasks = lag_data.get("pending_tasks", 0)
+
+        # 更新resource_monitor的lag缓存
+        if load_balancer and hasattr(load_balancer, "resource_monitor"):
+            monitor = load_balancer.resource_monitor
+            source = f"Worker-{worker_id}"
+            monitor._event_loop_lag_cache[source] = lag_ms
+            monitor._event_loop_lag_history.append((lag_ms, source))
+            monitor._last_lag_update = time.time()
+
+            # 如果lag较大，记录警告
+            if lag_ms > warn_threshold_ms and logger:
+                logger.warning(
+                    f"⚠️ Worker-{worker_id} 事件循环拥堵: "
+                    f"lag={lag_ms:.1f}ms, pending_tasks={pending_tasks}"
+                )
+
+        return True
 
 
 class SystemMetricsMonitor:
@@ -1289,7 +1602,10 @@ class ResourcePressure:
 
 
 class ResourceMonitor:
-    """资源监控器（整合监控+评估+双阈值检测）"""
+    """资源监控器（整合监控+评估+双阈值检测）
+
+    v3.3新增：集成event_loop_lag_ms监控
+    """
 
     def __init__(
         self,
@@ -1305,6 +1621,20 @@ class ResourceMonitor:
 
         self.low_threshold = low_threshold
         self.high_threshold = high_threshold
+
+        # 🆕 v3.3: event_loop_lag监控
+        self.event_engine = event_engine
+        self._event_loop_lag_cache: Dict[str, float] = {}  # {source: lag_ms}
+        self._event_loop_lag_history: Deque[Tuple[float, str]] = deque(
+            maxlen=100
+        )  # (lag_ms, source)
+        self._last_lag_update = 0.0
+
+        # 订阅协程性能指标事件
+        if event_engine:
+            from ..events import EVENT_ASYNCIO_METRICS
+
+            event_engine.register(EVENT_ASYNCIO_METRICS, self._on_asyncio_metrics)
 
         self.logger.info(
             "✅ ResourceMonitor初始化完成（低阈值=%.1f%%, 高阈值=%.1f%%）",
@@ -1346,8 +1676,63 @@ class ResourceMonitor:
 
         return pressure
 
+    def _on_asyncio_metrics(self, event: Event):
+        """处理协程性能指标事件（事件回调）
+
+        事件数据格式：
+        {
+            'event_loop_lag_ms': 15.2,
+            'source': 'TdxDynamicExecutor',
+            'timestamp': '2025-10-26T...'
+        }
+        """
+        try:
+            data = event.data
+            lag_ms = data.get("event_loop_lag_ms", 0)
+            source = data.get("source", "unknown")
+
+            # 更新缓存
+            self._event_loop_lag_cache[source] = lag_ms
+            self._event_loop_lag_history.append((lag_ms, source))
+            self._last_lag_update = time.time()
+
+            # 严重拥堵时记录警告
+            if lag_ms > 20:
+                self.logger.warning(f"⚠️ 事件循环严重拥堵: {source} lag={lag_ms:.1f}ms")
+        except Exception as e:
+            self.logger.error(f"处理asyncio指标事件失败: {e}")
+
+    def get_event_loop_lag(self) -> Optional[float]:
+        """获取当前最大的事件循环延迟（毫秒）
+
+        Returns:
+            最近的最大延迟值，如果没有数据则返回None
+        """
+        if not self._event_loop_lag_cache:
+            return None
+
+        # 返回所有模块中的最大延迟
+        return max(self._event_loop_lag_cache.values())
+
+    def get_event_loop_lag_by_source(self) -> Dict[str, float]:
+        """获取各模块的事件循环延迟
+
+        Returns:
+            {source: lag_ms} 字典
+        """
+        return self._event_loop_lag_cache.copy()
+
     def close(self):
         """关闭监控器，释放资源"""
+        # 取消事件订阅
+        if self.event_engine:
+            try:
+                from ..events import EVENT_ASYNCIO_METRICS
+
+                self.event_engine.unregister(EVENT_ASYNCIO_METRICS, self._on_asyncio_metrics)
+            except Exception as e:
+                self.logger.debug(f"取消事件订阅失败: {e}")
+
         self.metrics_monitor.close()
         self.logger.info("ResourceMonitor已关闭")
 
@@ -4775,7 +5160,12 @@ class ServerPoolManager:
 
         # 🔥 关键修复：确保logger有handler，否则错误信息会被静默
         if not self.logger.handlers:
-            console_handler = logging.StreamHandler()
+            import sys
+
+            # 确保stdout使用UTF-8编码
+            if hasattr(sys.stdout, "reconfigure"):
+                sys.stdout.reconfigure(encoding="utf-8")  # type: ignore
+            console_handler = logging.StreamHandler(sys.stdout)
             console_handler.setLevel(logging.INFO)
             formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
             console_handler.setFormatter(formatter)
@@ -4784,6 +5174,8 @@ class ServerPoolManager:
 
         # 运行状态
         self._running = False
+        self._starting = False  # 🔧 新增：防止多次并发启动
+        self._start_lock = threading.Lock()  # 🔧 新增：启动锁
         self._start_time: Optional[datetime] = None
         self._cache_date: Optional[str] = None  # 缓存日期
 
@@ -4821,16 +5213,45 @@ class ServerPoolManager:
         Returns:
             bool: 是否启动成功（缓存可用或测速完成）
         """
-        if self._running:
-            self.logger.warning("服务器池管理器已在运行")
-            return True
+        # 🔧 修复：使用锁防止多次并发启动
+        with self._start_lock:
+            if self._running:
+                self.logger.debug("服务器池管理器已在运行，跳过启动")
+                return True
+
+            if self._starting:
+                self.logger.debug("服务器池管理器正在启动中，等待完成...")
+                # 等待其他线程完成启动
+                import time
+
+                max_wait = 30  # 最多等待30秒
+                waited = 0
+                while self._starting and waited < max_wait:
+                    time.sleep(0.1)
+                    waited += 0.1
+                return self._running
+
+            # 标记为正在启动
+            self._starting = True
 
         try:
             # 1. 尝试加载缓存
             cache_data, cache_date, is_valid = self.load_server_cache()
 
+            # 2. 强制检查缓存是否为当天（使用网络时间）
+            from backend.infrastructure.data_module_vnpy.utils.network_time import get_real_date
+
+            today = get_real_date().isoformat()  # 使用网络时间
+
+            # 如果缓存日期不是今天，强制失效
+            if cache_date and cache_date != today:
+                is_valid = False
+                self.logger.warning(
+                    "服务器池缓存非当天（%s != %s），强制重新测速", cache_date, today
+                )
+
             if cache_data and is_valid:
-                # ✅ 缓存有效，跳过测速
+                # ✅ 缓存有效且是当天，跳过测速
                 self._sorted_servers = cache_data
                 self._cache_date = cache_date
                 self._running = True
@@ -4870,6 +5291,9 @@ class ServerPoolManager:
             self.logger.error("启动服务器池管理器失败：%s", e, exc_info=True)
             self._running = False
             return False
+        finally:
+            # 🔧 确保清除启动标志
+            self._starting = False
 
     def _start_multiprocess(self) -> bool:
         """多进程模式启动
@@ -5938,9 +6362,13 @@ class LoadBalancer:
         self._initialized = True
         self.logger = logging.getLogger(__name__)
 
-        # 直接引用同文件内的类（无需延迟导入）
-        self.metrics_monitor = SystemMetricsMonitor(event_engine)
-        self.evaluator = ResourcePressureEvaluator()
+        # v3.3: 使用ResourceMonitor（集成了event_loop_lag监控）
+        self.resource_monitor = ResourceMonitor(event_engine=event_engine)
+
+        # 保留旧的引用以兼容现有代码
+        self.metrics_monitor = self.resource_monitor.metrics_monitor
+        self.evaluator = self.resource_monitor.evaluator
+
         self.config_calculator = DynamicConfigCalculator(self.evaluator)
 
         self._config_cache: Dict[str, tuple] = {}
@@ -5961,7 +6389,7 @@ class LoadBalancer:
         # 新增：配置应用状态跟踪
         self._current_status = "idle"  # idle | adjusting | applied | rejected
 
-        self.logger.info("✅ LoadBalancer初始化完成（支持动态并发调整）")
+        self.logger.info("✅ LoadBalancer初始化完成（支持动态并发调整 + event_loop_lag监控）")
 
     def get_optimal_config(
         self, task: BaseTask, force_realtime: bool = False, extended_cache: bool = False
@@ -5984,6 +6412,16 @@ class LoadBalancer:
             metrics = self.metrics_monitor.get_metrics(force_realtime=force_realtime)
             pressure_eval = self.evaluator.evaluate(metrics)
             config = self.config_calculator.calculate_for_task(task, pressure_eval)
+
+            # 根据任务类型调整策略
+            if hasattr(task, "task_type") and task.task_type == "ipo_download":
+                # IPO下载：IO密集，可以更高并发
+                # 每进程协程数增加50%
+                coroutines_per_process = config.get("coroutines_per_process", 10)
+                coroutines_per_process = min(int(coroutines_per_process * 1.5), 50)  # 但不超过50
+                config["coroutines_per_process"] = coroutines_per_process
+                self.logger.info("IPO下载任务优化：每进程协程数调整为 %d", coroutines_per_process)
+
             self._cache_config(task.name, config, extended_cache)
 
             elapsed = (time.time() - start_time) * 1000
@@ -6010,6 +6448,81 @@ class LoadBalancer:
             self.logger.error("配置评估失败: %s", str(e), exc_info=True)
             self._set_status("rejected")
             return self._get_default_config(task)
+
+    def get_concurrency_decision_with_lag(
+        self,
+        task: BaseTask,
+        current_processes: int = 1,
+        current_coroutines: int = 10,
+        force_realtime: bool = False,
+    ) -> Dict[str, Any]:
+        """基于event_loop_lag和资源压力做并发决策（v3.3新增）
+
+        结合事件循环延迟和资源压力，智能决定增加进程、增加协程还是减少协程。
+
+        Args:
+            task: 任务对象
+            current_processes: 当前进程数
+            current_coroutines: 当前每进程协程数
+            force_realtime: 是否强制实时评估
+
+        Returns:
+            {
+                'action': 'INCREASE_PROCESS' | 'DECREASE_COROUTINE' | 'INCREASE_COROUTINE' | 'HOLD',
+                'reason': str,
+                'suggested_processes': int,
+                'suggested_coroutines_per_process': int,
+                'lag_ms': float,
+                'pressure_score': float,
+            }
+        """
+        try:
+            # 1. 获取event_loop_lag
+            event_loop_lag = self.resource_monitor.get_event_loop_lag()
+
+            # 2. 获取资源压力
+            pressure = self.resource_monitor.get_current_pressure(force_realtime=force_realtime)
+
+            # 3. 调用配置计算器做决策
+            decision = self.config_calculator.make_concurrency_decision(
+                task=task,
+                pressure=pressure,
+                event_loop_lag_ms=event_loop_lag,
+                current_processes=current_processes,
+                current_coroutines=current_coroutines,
+            )
+
+            # 4. 记录决策日志
+            if decision["action"] != "HOLD":
+                self.logger.info(
+                    "🔧 [%s] 并发决策: %s\n"
+                    "   原因: %s\n"
+                    "   当前: %d进程 × %d协程\n"
+                    "   建议: %d进程 × %d协程\n"
+                    "   延迟: %.1fms | 压力: %.1f",
+                    task.name,
+                    decision["action"],
+                    decision["reason"],
+                    current_processes,
+                    current_coroutines,
+                    decision["suggested_processes"],
+                    decision["suggested_coroutines_per_process"],
+                    decision["lag_ms"],
+                    decision["pressure_score"],
+                )
+
+            return decision
+
+        except Exception as e:
+            self.logger.error("并发决策失败: %s", str(e), exc_info=True)
+            return {
+                "action": "HOLD",
+                "reason": f"决策失败: {e}",
+                "suggested_processes": current_processes,
+                "suggested_coroutines_per_process": current_coroutines,
+                "lag_ms": 0,
+                "pressure_score": 0,
+            }
 
     def get_optimal_config_with_adjustment(
         self,
@@ -6359,6 +6872,7 @@ __all__ = [
     "ExecutionPolicy",
     "DynamicConfigCalculator",
     # 第3部分：监控评估
+    "LagMonitor",
     "SystemMetricsMonitor",
     "ResourcePressure",
     "ResourceMonitor",

@@ -51,6 +51,12 @@ from .events import (
     EventPublisher,
 )
 
+# ==================== 日志配置 ====================
+# 创建专用logger（模块级别）
+logger = logging.getLogger("backend.data_module.engine")
+logger_download = logging.getLogger("backend.data_module.download")
+logger_alert = logging.getLogger("backend.data_module.alert")
+
 
 class CacheValidationProgressEmitter:
     """缓存验证进度信号发射器（线程安全，避免Qt Timer问题）
@@ -137,8 +143,10 @@ class ChinaStockEngine(BaseEngine):
         self.preload_service: Optional[PreloadService] = None
         self.unified_data_manager: Optional[UnifiedDataManager] = None
 
-        # 日志记录器
-        self.logger = logging.getLogger(__name__)
+        # 日志记录器（使用专用logger）
+        self.logger = logger
+        self.logger_download = logger_download
+        self.logger_alert = logger_alert
 
         # 通用事件发布器（用于日志等通用事件）
         self.event_publisher = EventPublisher(event_engine)
@@ -177,7 +185,7 @@ class ChinaStockEngine(BaseEngine):
                 #     self.preload_service.start(prime=True)
                 self.logger.info("预加载服务已创建（延迟启动）")
             except Exception as exc:
-                self.logger.error("预加载服务初始化失败: %s", exc, exc_info=True)
+                self.logger.exception("预加载服务初始化失败: %s", exc)
                 self.preload_service = None
 
         # ⚡ 优化：统一数据管理器立即初始化（不涉及耗时操作）
@@ -188,10 +196,24 @@ class ChinaStockEngine(BaseEngine):
                     preload_service=self.preload_service,
                 )
             except Exception as exc:
-                self.logger.error("统一数据管理器初始化失败: %s", exc, exc_info=True)
+                self.logger.exception("统一数据管理器初始化失败: %s", exc)
                 self.unified_data_manager = None
 
-        self.logger.info("中国A股数据管理引擎初始化完成（快速启动模式）")
+        # 阶段感知的初始化日志
+        try:
+            from backend.infrastructure.system_vnpy.logging_context import get_logging_context
+
+            ctx = get_logging_context()
+            if ctx.get_current_stage() == "startup":
+                self.logger.info(
+                    "中国A股数据引擎初始化完成: 模式=快速启动, "
+                    "组件=[品种加载器,数据下载器,数据验证器,数据感知器,统一数据管理器]"
+                )
+            else:
+                self.logger.debug("数据引擎重新初始化")
+        except Exception:
+            # 如果logging_context未就绪，使用简单日志
+            self.logger.info("中国A股数据管理引擎初始化完成（快速启动模式）")
 
         # ⚡ 优化：健康检查也延迟执行，避免阻塞
         # 健康检查将在首次查询时自动执行
@@ -257,7 +279,7 @@ class ChinaStockEngine(BaseEngine):
                     self.logger.info("[LAZY-INIT] ✅ 延迟初始化完成")
 
                 except Exception as e:
-                    self.logger.error("[LAZY-INIT] ❌ 延迟初始化发生异常: %s", e, exc_info=True)
+                    self.logger.exception("[LAZY-INIT] ❌ 延迟初始化发生异常: %s", e)
 
                 self._lazy_init_done = True
 
@@ -370,7 +392,7 @@ class ChinaStockEngine(BaseEngine):
             self.logger.info("=" * 60)
 
         except Exception as e:
-            self.logger.error("智能缓存验证失败: %s", e, exc_info=True)
+            self.logger.exception("智能缓存验证失败: %s", e)
 
     def _validate_trading_calendar_cache(self):
         """验证交易日历缓存"""
@@ -509,10 +531,28 @@ class ChinaStockEngine(BaseEngine):
                 self.logger.warning("品种列表缓存不存在，开始首次加载...")
                 # 🔧 发射进度更新：提示用户正在加载（避免误以为卡住）
                 self.progress_emitter.progress_updated.emit("加载品种列表（首次，耗时约30秒）", 36)
-                _ = self.symbol_loader.load_from_api()
-                all_codes = self.symbol_loader.extract_all_codes()
-                print(f"   加载结果: 共{len(all_codes)}个品种")
-                return {"all_symbols": all_codes, "is_new": True}
+
+                try:
+                    result = self.symbol_loader.load_from_api()
+
+                    # 验证加载结果
+                    if not result or "classified" not in result:
+                        raise RuntimeError("品种列表加载失败：返回结果为空")
+
+                    all_codes = self.symbol_loader.extract_all_codes()
+
+                    if len(all_codes) == 0:
+                        raise RuntimeError("品种列表加载失败：品种数量为0")
+
+                    print(f"   ✓ 加载结果: 共{len(all_codes)}个品种")
+                    self.logger.info("✓ 品种列表首次加载成功：%d个品种", len(all_codes))
+                    return {"all_symbols": all_codes, "is_new": True}
+
+                except Exception as e:
+                    print(f"   ✗ 加载失败: {e}")
+                    self.logger.error("品种列表首次加载失败: %s", e, exc_info=True)
+                    # 品种列表是关键基础数据，加载失败必须中止流程
+                    raise  # 让异常向上抛出，由外层try-except保护应用不崩溃
 
             if is_outdated:
                 # 获取缓存日期
@@ -544,7 +584,7 @@ class ChinaStockEngine(BaseEngine):
                 else:
                     print("   更新失败")
                     self.logger.error("品种列表更新失败")
-                    return {"all_symbols": [], "error": True}
+                    raise RuntimeError("品种列表增量更新失败")
             else:
                 # 🆕 检查缓存内容完整性
                 cache_date = getattr(self.symbol_loader, "_last_cache_date", None)
@@ -596,7 +636,7 @@ class ChinaStockEngine(BaseEngine):
                     else:
                         print("   更新失败")
                         self.logger.error("品种列表更新失败")
-                        return {"all_symbols": [], "error": True}
+                        raise RuntimeError("品种列表修复缺失分类失败")
                 else:
                     # 缓存完整且有效
                     print("   缓存状态: 有效且完整")
@@ -607,8 +647,8 @@ class ChinaStockEngine(BaseEngine):
                     return {"all_symbols": all_codes, "is_valid": True}
 
         except Exception as e:
-            self.logger.error("验证品种列表缓存失败: %s", e, exc_info=True)
-            return {"all_symbols": [], "error": True}
+            self.logger.exception("验证品种列表缓存失败: %s", e)
+            raise  # 向上抛出异常，由外层处理
 
     def _validate_and_update_ipo_cache(self, all_symbols):
         """验证并增量更新IPO日期缓存（与品种列表联动）"""
@@ -619,7 +659,58 @@ class ChinaStockEngine(BaseEngine):
                 len(ipo_cache._memory_cache) if hasattr(ipo_cache, "_memory_cache") else 0
             )
 
-            if ipo_cache.is_cache_outdated():
+            # 检查缓存是否存在
+            cache_exists = hasattr(ipo_cache, "_memory_cache") and len(ipo_cache._memory_cache) > 0
+
+            if not cache_exists:
+                print("   缓存状态: 不存在")
+                print("   操作: 首次加载（耗时约1-2分钟）...")
+                self.logger.warning("IPO日期缓存不存在，开始首次下载...")
+                self.progress_emitter.progress_updated.emit("下载IPO日期（首次）", 46)
+
+                try:
+                    # 首次下载所有品种的IPO日期
+                    from .data_acquisition import download_ipo_dates
+
+                    # 🔧 定义进度回调函数（46%-48%范围）
+                    last_update_time = [time.time()]
+
+                    def ipo_progress_callback(current, total):
+                        """IPO下载进度回调 - 限制更新频率避免UI卡顿"""
+                        if total > 0:
+                            now = time.time()
+                            # 每0.5秒或每100个品种更新一次
+                            if (
+                                (now - last_update_time[0] >= 0.5)
+                                or (current % 100 == 0)
+                                or (current == total)
+                            ):
+                                # 计算进度（46%-48%）
+                                percent = int(46 + (current / total) * 2)
+                                last_update_time[0] = now
+
+                                self.progress_emitter.progress_updated.emit(
+                                    f"下载IPO日期 ({current}/{total})", percent
+                                )
+                                self.logger.debug("IPO下载进度: %d/%d", current, total)
+
+                    result = download_ipo_dates(
+                        symbols=all_symbols,
+                        force_refresh=True,
+                        _use_adaptive=True,
+                        progress_callback=ipo_progress_callback,
+                    )
+
+                    print(f"   ✓ 下载结果: 成功{result['succeeded']}个, 失败{result['failed']}个")
+                    self.logger.info("✓ IPO日期首次下载完成：成功 %d 个", result["succeeded"])
+
+                except Exception as e:
+                    print(f"   ⚠️ 下载异常: {e}")
+                    self.logger.error("IPO日期首次下载失败: %s", e, exc_info=True)
+                    # 不阻塞后续流程（用户需求2c）
+                    self.progress_emitter.progress_updated.emit("IPO缓存下载失败（已跳过）", 48)
+
+            elif ipo_cache.is_cache_outdated():
                 print(f"   缓存状态: 已过时（日期: {cache_date}）")
                 print(f"   已缓存: {cached_count}个品种的IPO日期")
                 print("   操作: 增量更新...")
@@ -674,7 +765,7 @@ class ChinaStockEngine(BaseEngine):
 
         except Exception as e:
             print(f"   验证异常: {e}")
-            self.logger.error("验证IPO日期缓存失败: %s", e, exc_info=True)
+            self.logger.exception("验证IPO日期缓存失败: %s", e)
             # 🔧 IPO缓存验证失败，显示错误状态但不阻塞后续流程
             self.progress_emitter.progress_updated.emit("IPO缓存验证失败（已跳过）", 48)
 
@@ -694,34 +785,35 @@ class ChinaStockEngine(BaseEngine):
 
             if config_manager.is_quality_scan_adaptive_enabled():
                 # 🚀 自适应扫描（推荐）
-                self.logger.info("启用自适应扫描")
+                self.logger.info("启用自适应扫描（启动快速模式：阶段0-2）")
                 overview = self.data_sensor.scan_all_data_adaptive(
                     reference_symbols=reference_symbols,
                     intervals=None,  # 使用默认 ["1d", "5m", "1m"]
                     force_refresh=False,
                     progress_callback=progress_callback,
+                    max_phase=2,  # 新增：启动时只执行到阶段2
                 )
             else:
                 # 传统扫描
-                self.logger.info("使用传统扫描")
+                self.logger.info("使用传统扫描（启动快速模式：阶段0-2）")
                 overview = self.data_sensor.trigger_scan_with_symbols(
                     symbol_loader=self.symbol_loader,
                     force_refresh=False,  # 使用缓存
                     progress_callback=progress_callback,
+                    max_phase=2,  # 新增：启动时只执行到阶段2
                 )
 
             self.logger.info(
-                "✓ 数据质量扫描完成：评分=%d, 总计=%d, 缺失=%d, 错误=%d",
-                overview.quality_score,
+                "✓ 启动快速扫描完成：总计=%d, 缺失=%d, 过时=%d（详细扫描已跳过）",
                 overview.total_symbols,
                 overview.missing_symbols,
-                overview.error_symbols,
+                overview.outdated_symbols,
             )
 
             # 注意：本地数据索引已在扫描前推送，此处无需重复推送
 
         except Exception as e:
-            self.logger.error("数据质量扫描失败: %s", e, exc_info=True)
+            self.logger.exception("数据质量扫描失败: %s", e)
 
     def _initial_quality_scan(self):
         """初始数据质量扫描（后台线程）- 已废弃，保留用于兼容
@@ -745,14 +837,14 @@ class ChinaStockEngine(BaseEngine):
                 current_codes = self.symbol_loader.extract_all_codes()
 
                 if len(current_codes) > 0:
-                    self.logger.info(f"✓ 品种列表已就绪: {len(current_codes)}个品种")
+                    self.logger.info("✓ 品种列表已就绪: %d个品种", len(current_codes))
                     break
                 else:
-                    self.logger.debug(f"品种列表为空，继续等待... ({elapsed}s/{max_wait_time}s)")
+                    self.logger.debug("品种列表为空，继续等待... (%ds/%ds)", elapsed, max_wait_time)
                     time.sleep(wait_interval)
                     elapsed += wait_interval
             except Exception as e:
-                self.logger.warning(f"检查品种列表失败: {e}，继续等待...")
+                self.logger.warning("检查品种列表失败: %s，继续等待...", e)
                 time.sleep(wait_interval)
                 elapsed += wait_interval
 
@@ -771,11 +863,11 @@ class ChinaStockEngine(BaseEngine):
                 )
                 self.logger.info("✓ IPO日期预加载完成")
             except Exception as e:
-                self.logger.error(f"IPO日期预加载失败: {e}", exc_info=True)
+                self.logger.exception("IPO日期预加载失败: %s", e)
                 self.logger.warning("继续进行数据质量扫描...")
 
             # 🆕 步骤4：开始数据质量扫描
-            self.logger.info(f"🚀 开始初始数据质量扫描（品种数: {final_count}）...")
+            self.logger.info("🚀 开始初始数据质量扫描（品种数: %d）...", final_count)
 
             # 触发扫描
             overview = self.trigger_data_quality_scan(force_refresh=True)
@@ -784,12 +876,14 @@ class ChinaStockEngine(BaseEngine):
                 # 推送vnpy事件
                 self._push_quality_overview_event(overview)
                 self.logger.info(
-                    f"✓ 初始数据质量扫描完成，品种: {overview.total_symbols}，评分: {overview.quality_score}"
+                    "✓ 初始数据质量扫描完成，品种: %d，评分: %s",
+                    overview.total_symbols,
+                    overview.quality_score,
                 )
             else:
                 self.logger.warning("初始数据质量扫描未返回结果")
         except Exception as e:
-            self.logger.error(f"初始数据质量扫描失败: {e}", exc_info=True)
+            self.logger.exception("初始数据质量扫描失败: %s", e)
 
     def _push_quality_overview_event(self, overview: QualityOverview):
         """推送数据质量概览事件
@@ -826,12 +920,14 @@ class ChinaStockEngine(BaseEngine):
             event_engine.put(event)
 
             self.logger.info(
-                f"📊 推送数据质量概览: 评分{overview.quality_score}, "
-                f"总品种{overview.total_symbols}, 缺失{overview.missing_symbols}, "
-                f"问题品种{len(overview.details)}个"
+                "📊 推送数据质量概览: 评分%s, 总品种%d, 缺失%d, 问题品种%d个",
+                overview.quality_score,
+                overview.total_symbols,
+                overview.missing_symbols,
+                len(overview.details),
             )
         except Exception as e:
-            self.logger.warning(f"推送数据质量概览失败: {e}", exc_info=True)
+            self.logger.warning("推送数据质量概览失败: %s", e, exc_info=True)
 
     def _push_local_data_index_event(self):
         """推送本地数据索引事件（品种列表）给UI
@@ -880,10 +976,10 @@ class ChinaStockEngine(BaseEngine):
             event = Event(EVENT_LOCAL_DATA_INDEX_READY, event_data)
             event_engine.put(event)
 
-            self.logger.info(f"📋 推送本地数据索引: {len(symbol_list)} 个品种")
+            self.logger.info("📋 推送本地数据索引: %d 个品种", len(symbol_list))
 
         except Exception as e:
-            self.logger.warning(f"推送本地数据索引失败: {e}", exc_info=True)
+            self.logger.warning("推送本地数据索引失败: %s", e, exc_info=True)
 
     def close(self) -> None:
         """关闭引擎"""
@@ -895,7 +991,7 @@ class ChinaStockEngine(BaseEngine):
                         self.data_sensor.data_file_watcher.stop()
                         self.logger.info("数据文件监控已停止")
                     except Exception as e:
-                        self.logger.warning(f"停止数据文件监控失败: {e}")
+                        self.logger.warning("停止数据文件监控失败: %s", e)
 
             # 停止数据感知
             if self.data_sensor and hasattr(self.data_sensor, "stop_sensing"):
@@ -957,9 +1053,44 @@ class ChinaStockEngine(BaseEngine):
             是否成功启动下载任务
         """
         self._ensure_lazy_init()
-        return self.stock_fetcher.start_incremental_download_async(
-            start_date, self.symbol_loader, self.storage_manager, market_types, use_adaptive
-        )
+
+        # 使用场景上下文和阶段切换
+        try:
+            from backend.infrastructure.system_vnpy.logging_context import get_logging_context
+
+            ctx = get_logging_context()
+
+            # 切换到下载阶段
+            old_stage = ctx.get_current_stage()
+            ctx.set_stage("downloading")
+
+            # 使用下载场景上下文
+            with ctx.scenario("bulk_download"):
+                self.logger_download.info(
+                    "开始增量下载: 起始日期=%s, 市场=%s, 自适应=%s",
+                    start_date,
+                    market_types or "全部",
+                    use_adaptive,
+                )
+
+                result = self.stock_fetcher.start_incremental_download_async(
+                    start_date, self.symbol_loader, self.storage_manager, market_types, use_adaptive
+                )
+
+                if result:
+                    self.logger_download.info("增量下载任务已启动")
+                else:
+                    self.logger_alert.warning("增量下载任务启动失败")
+
+                # 恢复阶段
+                ctx.set_stage(old_stage)
+                return result
+        except Exception as e:
+            # 如果上下文管理失败，回退到简单调用
+            self.logger.warning("场景上下文初始化失败，使用默认日志: %s", e)
+            return self.stock_fetcher.start_incremental_download_async(
+                start_date, self.symbol_loader, self.storage_manager, market_types, use_adaptive
+            )
 
     def query_data(
         self,

@@ -18,6 +18,10 @@ from enum import Enum
 from backend.core.service_base import BaseService, LoggerMixin
 from backend.services.database_adapter import get_db_manager
 
+# 专用logger - 日志埋点v4.0
+logger_order = logging.getLogger("backend.trading.order")
+logger_alert = logging.getLogger("backend.trading.alert")
+
 
 class GatewayType(Enum):
     """网关类型枚举."""
@@ -1110,6 +1114,18 @@ class TradingGatewayService(BaseService, LoggerMixin):
 
             # 初始化并启动策略
             try:
+                # 切换到交易阶段 - 日志埋点v4.0
+                try:
+                    from backend.infrastructure.system_vnpy.logging_context import (
+                        get_logging_context,
+                    )
+
+                    ctx = get_logging_context()
+                    ctx.set_stage("trading")
+                    self.logger.info("📍 切换到交易阶段，启动策略实盘交易")
+                except ImportError:
+                    self.logger.debug("logging_context模块不可用，跳过阶段切换")
+
                 # 先初始化策略
                 self.logger.info("正在初始化策略 '%s'... ", strategy_name)
                 strategy_engine.init_strategy(strategy_name)
@@ -1123,6 +1139,12 @@ class TradingGatewayService(BaseService, LoggerMixin):
                 # 启动策略
                 self.logger.info("正在启动策略 '%s'... ", strategy_name)
                 strategy_engine.start_strategy(strategy_name)
+                logger_order.info(
+                    "策略启动: 策略名=%s, 网关=%s, 引擎=%s",
+                    strategy_name,
+                    gateway_name,
+                    engine_name,
+                )
                 self.logger.info("✅ 策略 '%s' 已启动", strategy_name)
 
             except Exception as e:
@@ -1900,6 +1922,27 @@ class TradingGatewayService(BaseService, LoggerMixin):
                 with contextlib.suppress(Exception):
                     status["active"] = self.risk_engine.is_active()
 
+            # 风控告警检查 - 日志埋点v4.0
+            params = status.get("parameters", {})
+            if params:
+                # 检查交易流控是否接近上限
+                if "flow_limit" in params and "flow_count" in params:
+                    flow_limit = params.get("flow_limit", 0)
+                    flow_count = params.get("flow_count", 0)
+                    if flow_limit > 0 and flow_count >= flow_limit * 0.8:
+                        logger_alert.warning(
+                            "风控告警: 交易流控接近上限, 当前=%d, 限额=%d", flow_count, flow_limit
+                        )
+
+                # 检查单日亏损是否接近上限
+                if "trade_limit" in params and "trade_count" in params:
+                    trade_limit = params.get("trade_limit", 0)
+                    trade_count = params.get("trade_count", 0)
+                    if trade_limit > 0 and trade_count >= trade_limit * 0.9:
+                        logger_alert.error(
+                            "风控告警: 交易次数接近上限, 当前=%d, 限额=%d", trade_count, trade_limit
+                        )
+
             return {
                 "success": True,
                 "status": status,
@@ -2063,7 +2106,7 @@ class TradingGatewayService(BaseService, LoggerMixin):
             event = Event(EVENT_GATEWAY_STATUS_CHANGED, event_data)
             event_engine.put(event)
 
-            self.logger.debug(f"📢 已发送网关状态变化事件: {gateway_name} -> {status}")
+            self.logger.debug("📢 已发送网关状态变化事件: %s -> %s", gateway_name, status)
 
         except Exception as e:
             self.logger.warning("发送网关状态事件失败：%s", e)
@@ -2469,7 +2512,7 @@ class PaperAccountGatewayAdapter:
             try:
                 self.paper_engine.close()
             except Exception as e:
-                self.logger.error(f"关闭PaperAccount引擎失败: {e}")
+                self.logger.error("关闭PaperAccount引擎失败: %s", e, exc_info=True)
 
         self.connected = False
         self.logger.info("PaperAccount网关已关闭")
@@ -2481,9 +2524,18 @@ class PaperAccountGatewayAdapter:
 
         try:
             order_id = self.paper_engine.send_order(req)
+            # 订单提交日志 - 日志埋点v4.0
+            logger_order.info(
+                "订单提交: 品种=%s, 方向=%s, 价格=%.2f, 数量=%d, 订单号=%s",
+                req.symbol,
+                req.direction.value if hasattr(req.direction, "value") else req.direction,
+                req.price,
+                req.volume,
+                order_id,
+            )
             return order_id
         except Exception as e:
-            self.logger.error(f"发送订单失败: {e}")
+            self.logger.error("发送订单失败: %s", e, exc_info=True)
             return ""
 
     def cancel_order(self, req) -> None:
@@ -2493,8 +2545,12 @@ class PaperAccountGatewayAdapter:
 
         try:
             self.paper_engine.cancel_order(req)
+            # 订单撤销日志 - 日志埋点v4.0
+            logger_order.info(
+                "订单撤销请求: 订单号=%s", req.orderid if hasattr(req, "orderid") else "unknown"
+            )
         except Exception as e:
-            self.logger.error(f"撤销订单失败: {e}")
+            self.logger.error("撤销订单失败: %s", e, exc_info=True)
 
 
 class TradeXGatewayAdapter:
@@ -2529,12 +2585,12 @@ class TradeXGatewayAdapter:
             if os.path.exists(dll_path):
                 self.dll = ctypes.WinDLL(dll_path)
                 self._setup_dll_functions()
-                self.logger.info(f"TradeX.dll加载成功: {dll_path}")
+                self.logger.info("TradeX.dll加载成功: %s", dll_path)
             else:
-                self.logger.warning(f"TradeX.dll文件不存在: {dll_path}")
+                self.logger.warning("TradeX.dll文件不存在: %s", dll_path)
                 self.dll = None
         except Exception as e:
-            self.logger.error(f"加载TradeX.dll失败: {e}")
+            self.logger.error("加载TradeX.dll失败: %s", e, exc_info=True)
             self.dll = None
 
     def _setup_dll_functions(self):
@@ -2633,17 +2689,17 @@ class TradeXGatewayAdapter:
 
             if client_id <= 0:
                 error_msg = err_info.value.decode("gbk", errors="ignore")
-                self.logger.error(f"登录失败: {error_msg}")
+                logger_alert.error("TradeX登录失败: %s", error_msg)
                 return False
 
             self.client_id = client_id
             self.connected = True
-            self.logger.info(f"TradeX网关连接成功，ClientID: {client_id}")
+            self.logger.info("TradeX网关连接成功，ClientID: %d", client_id)
 
             return True
 
         except Exception as e:
-            self.logger.error(f"连接TradeX网关失败: {e}")
+            self.logger.error("连接TradeX网关失败: %s", e, exc_info=True)
             return False
 
     def close(self) -> None:
@@ -2654,7 +2710,7 @@ class TradeXGatewayAdapter:
                     self.dll.Logoff(self.client_id)
                 self.dll.CloseTdx()
             except Exception as e:
-                self.logger.error(f"关闭TradeX网关失败: {e}")
+                self.logger.error("关闭TradeX网关失败: %s", e, exc_info=True)
 
         self.connected = False
         self.logger.info("TradeX网关已关闭")

@@ -1,0 +1,32 @@
+# 全局默认规则（兜底规则，最低优先级）
+# 所有未被阶段/模块/场景规则覆盖的日志使用此规则
+
+SYSTEM:
+  DEBUG: [file]
+  INFO: [file, console]
+  WARNING: [file, console, database, event]
+  ERROR: [file, console, database, event]
+  CRITICAL: [file, console, database, event, ui_dialog]
+
+PROGRESS:
+  INFO: [file, event_throttled]  # 不输出到控制台，减少噪音
+  WARNING: [file, console, event]
+  ERROR: [file, console, database, event]
+
+NOTIFICATION:
+  INFO: [file, console, statusbar, event]
+  WARNING: [file, console, database, event]
+  ERROR: [file, console, database, event]
+
+ALERT:
+  WARNING: [file, console, database, statusbar, event]
+  ERROR: [file, console, database, statusbar, ui_dialog, event]
+  CRITICAL: [file, console, database, statusbar, ui_dialog, event]
+
+USER_FEEDBACK:
+  INFO: [statusbar]
+  ERROR: [ui_dialog]
+
+DEBUG:
+  DEBUG: [file]  # 仅文件，不输出到控制台
+

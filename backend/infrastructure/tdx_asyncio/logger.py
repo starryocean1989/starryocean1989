@@ -6,14 +6,15 @@ import logging
 import time
 from typing import Dict, Optional
 
-formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-console = logging.StreamHandler()
-console.setLevel(logging.INFO)
-console.setFormatter(formatter)
+import sys
 
+# 确保stdout使用UTF-8编码
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
+# ✅ 不手动创建handler，依赖LoggingHub统一管理
 logger = logging.getLogger("tdx_asyncio")
-logger.addHandler(console)
-logger.setLevel(logging.INFO)
+logger_perf = logging.getLogger("metric.tdx_asyncio")  # 性能专用logger
 
 
 def async_timeit(func):
@@ -28,17 +29,22 @@ def async_timeit(func):
         await asyncio.sleep(1)
         return "result"
     """
+
     @functools.wraps(func)
     async def wrapper(*args, **kwargs):
-        start = time.time()
+        start = time.perf_counter()  # ✅ 使用perf_counter更精确
         result = await func(*args, **kwargs)
-        elapsed = time.time() - start
+        elapsed = time.perf_counter() - start
 
-        # 根据执行时间选择合适的单位
+        # ✅ 使用性能logger，DEBUG级别
         if elapsed > 1:
-            logger.debug(f"{func.__name__} 耗时: {elapsed:.2f}s")
+            logger_perf.debug("函数=%s, 耗时=%.2fs", func.__name__, elapsed)
         else:
-            logger.debug(f"{func.__name__} 耗时: {elapsed*1000:.2f}ms")
+            logger_perf.debug("函数=%s, 耗时=%.2fms", func.__name__, elapsed * 1000)
+
+        # ✅ 慢查询告警（>5s）
+        if elapsed > 5:
+            logger.warning("TDX慢查询: 函数=%s, 耗时=%.2fs", func.__name__, elapsed)
 
         return result
 
@@ -58,20 +64,22 @@ def sync_timeit(func):
         time.sleep(1)
         return "result"
     """
+
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         start = time.perf_counter()  # 使用perf_counter获取更精确的计时
         result = func(*args, **kwargs)
-        delta = time.perf_counter() - start
+        elapsed = time.perf_counter() - start
 
-        # 自动选择合适的时间单位（参考mootdx）
-        if delta > 1:
-            time_str = f'{delta:.1f}s'
+        # ✅ 使用性能logger，DEBUG级别
+        if elapsed > 1:
+            logger_perf.debug("函数=%s, 耗时=%.2fs", func.__name__, elapsed)
         else:
-            time_str = f'{delta*1000:.1f}ms'
+            logger_perf.debug("函数=%s, 耗时=%.2fms", func.__name__, elapsed * 1000)
 
-        # 优化输出格式
-        logger.debug(f'Function {func.__name__} time: {time_str}')
+        # ✅ 慢查询告警（>5s）
+        if elapsed > 5:
+            logger.warning("TDX慢查询: 函数=%s, 耗时=%.2fs", func.__name__, elapsed)
 
         return result
 
@@ -91,12 +99,12 @@ class PerformanceMonitor:
     def record(self, func_name: str, elapsed: float):
         """记录函数执行统计"""
         if func_name not in self.stats:
-            self.stats[func_name] = {'count': 0, 'total_time': 0.0, 'avg_time': 0.0}
+            self.stats[func_name] = {"count": 0, "total_time": 0.0, "avg_time": 0.0}
 
         stats = self.stats[func_name]
-        stats['count'] += 1
-        stats['total_time'] += elapsed
-        stats['avg_time'] = stats['total_time'] / stats['count']
+        stats["count"] += 1
+        stats["total_time"] += elapsed
+        stats["avg_time"] = stats["total_time"] / stats["count"]
 
     def get_stats(self, func_name: Optional[str] = None) -> dict:
         """获取统计信息"""
@@ -115,15 +123,18 @@ class PerformanceMonitor:
     def print_summary(self):
         """打印统计摘要"""
         if not self.stats:
-            logger.info("无性能统计数据")
+            logger_perf.debug("无性能统计数据")
             return
 
-        logger.info("=== 性能统计摘要 ===")
+        logger_perf.info("=== TDX性能统计摘要 ===")
         for func_name, stats in sorted(self.stats.items()):
-            logger.info(
-                f"{func_name}: 调用{stats['count']}次, "
-                f"总耗时{stats['total_time']:.3f}s, "
-                f"平均{stats['avg_time']:.3f}s"
+            # ✅ 使用%格式化
+            logger_perf.info(
+                "函数=%s, 调用=%d次, 总耗时=%.3fs, 平均=%.3fs",
+                func_name,
+                stats["count"],
+                stats["total_time"],
+                stats["avg_time"],
             )
 
 
@@ -142,22 +153,26 @@ def async_timeit_with_stats(func):
     async def my_function():
         await asyncio.sleep(0.1)
     """
+
     @functools.wraps(func)
     async def wrapper(*args, **kwargs):
-        start = time.time()
+        start = time.perf_counter()  # ✅ 使用perf_counter更精确
         result = await func(*args, **kwargs)
-        elapsed = time.time() - start
+        elapsed = time.perf_counter() - start
 
         # 记录统计
         performance_monitor.record(func.__name__, elapsed)
 
-        # 根据执行时间选择合适的单位
+        # ✅ 使用性能logger，DEBUG级别
         if elapsed > 1:
-            logger.debug(f"{func.__name__} 耗时: {elapsed:.2f}s")
+            logger_perf.debug("函数=%s, 耗时=%.2fs", func.__name__, elapsed)
         else:
-            logger.debug(f"{func.__name__} 耗时: {elapsed*1000:.2f}ms")
+            logger_perf.debug("函数=%s, 耗时=%.2fms", func.__name__, elapsed * 1000)
+
+        # ✅ 慢查询告警（>5s）
+        if elapsed > 5:
+            logger.warning("TDX慢查询: 函数=%s, 耗时=%.2fs", func.__name__, elapsed)
 
         return result
 
     return wrapper
-

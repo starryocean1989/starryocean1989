@@ -9,11 +9,15 @@ AI助手服务.
 - 对话历史管理
 """
 
+import logging
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 
 from backend.core.service_base import BaseService
 from backend.core.config import get_settings
+
+# 专用logger - 日志埋点v4.0
+logger_alert = logging.getLogger("backend.ai_assistant.alert")
 
 try:
     import requests
@@ -253,6 +257,19 @@ class AIAssistantService(BaseService):
                 "temperature": current_temperature,
             }
 
+            # API调用详细日志 - 日志埋点v4.0
+            total_messages = len(self.conversation_history)
+            last_message_length = (
+                len(self.conversation_history[-1]["content"]) if self.conversation_history else 0
+            )
+            self.logger.info(
+                "调用DeepSeek API: 消息数=%d, 最后消息长度=%d, 模型=%s, 最大token=%d",
+                total_messages,
+                last_message_length,
+                current_model,
+                current_max_tokens,
+            )
+
             # 🔧 仅在启用工具调用时添加 tools 参数
             enable_tools = (
                 current_settings.ai.enable_tools
@@ -273,14 +290,28 @@ class AIAssistantService(BaseService):
 
                 # 检查响应状态
                 if response.status_code != 200:
-                    error_msg = f"API调用失败：{response.status_code} - {response.text}"
-                    self.logger.error(error_msg)
+                    error_msg = "API调用失败: 状态码=%d, 响应=%s"
+                    # 分类异常处理 - 日志埋点v4.0
+                    if response.status_code == 429:
+                        logger_alert.warning(error_msg, response.status_code, response.text[:200])
+                    else:
+                        logger_alert.error(error_msg, response.status_code, response.text[:200])
                     return {
                         "success": False,
-                        "message": error_msg,
+                        "message": f"API调用失败：{response.status_code} - {response.text}",
                     }
 
                 result = response.json()
+
+                # API响应详细日志 - 日志埋点v4.0
+                if "usage" in result:
+                    usage = result["usage"]
+                    self.logger.info(
+                        "DeepSeek API响应成功: prompt_tokens=%d, completion_tokens=%d, total_tokens=%d",
+                        usage.get("prompt_tokens", 0),
+                        usage.get("completion_tokens", 0),
+                        usage.get("total_tokens", 0),
+                    )
 
                 # 提取AI回复
                 if "choices" not in result or len(result["choices"]) == 0:

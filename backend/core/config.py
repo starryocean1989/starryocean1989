@@ -223,8 +223,14 @@ class Settings:
     def load_from_file(self, config_file: str) -> None:
         """从配置文件加载配置."""
         try:
+            logger.info("开始加载配置文件: %s", config_file)
+
             with open(config_file, "r", encoding="utf-8") as f:
                 config_data = json.load(f)
+
+            # 统计配置信息
+            config_sections = len(config_data)
+            total_configs = sum(len(v) for v in config_data.values() if isinstance(v, dict))
 
             # 更新配置
             for section, values in config_data.items():
@@ -234,10 +240,19 @@ class Settings:
                         if hasattr(section_obj, key):
                             setattr(section_obj, key, value)
 
-            logger.info("配置文件加载完成: %s", config_file)
+            logger.info(
+                "配置文件加载完成: 文件=%s, 配置节=%d, 配置项=%d",
+                config_file,
+                config_sections,
+                total_configs,
+            )
 
-        except Exception as e:
-            logger.error("配置文件加载失败: %s", e)
+        except FileNotFoundError:
+            logger.error("配置文件不存在: %s", config_file)
+        except json.JSONDecodeError:
+            logger.exception("配置文件JSON格式错误: 文件=%s", config_file)
+        except Exception:
+            logger.exception("配置文件加载失败: 文件=%s", config_file)
 
     def save_to_file(self, config_file: str) -> None:
         """保存配置到文件."""
@@ -278,15 +293,24 @@ class Settings:
             }
 
             # 确保目录存在
-            Path(config_file).parent.mkdir(parents=True, exist_ok=True)
+            config_path = Path(config_file)
+            config_path.parent.mkdir(parents=True, exist_ok=True)
 
-            with open(config_file, "w", encoding="utf-8") as f:
+            # 原子写入：先写临时文件，再重命名
+            temp_file = config_path.with_suffix(".tmp")
+            with open(temp_file, "w", encoding="utf-8") as f:
                 json.dump(config_data, f, indent=2, ensure_ascii=False)
 
-            logger.info("配置文件保存完成: %s", config_file)
+            # 重命名（原子操作）
+            temp_file.replace(config_path)
 
-        except Exception as e:
-            logger.error("配置文件保存失败: %s", e)
+            # 获取文件大小
+            file_size = config_path.stat().st_size
+
+            logger.info("配置保存完成: 文件=%s, 大小=%d字节", config_file, file_size)
+
+        except Exception:
+            logger.exception("配置文件保存失败: 文件=%s", config_file)
 
     def _create_directories(self) -> None:
         """创建必要的目录."""
@@ -371,10 +395,48 @@ def init_settings(config_file: Optional[str] = None) -> Settings:
         # 🔧 修复点2：优先从环境变量获取配置文件路径
         config_file = os.getenv("CONFIG_FILE") or "config/terminal_config.json"
 
+    # 阶段感知：启动阶段详细日志（P2优化）
+    try:
+        from backend.infrastructure.system_vnpy.logging_context import get_logging_context
+
+        ctx = get_logging_context()
+        if ctx.routing_engine.current_stage == "startup":
+            logger.info("开始初始化全局配置: 文件=%s", config_file)
+        else:
+            logger.debug("重新初始化全局配置: 文件=%s", config_file)
+    except (ImportError, AttributeError):
+        # logging_context未初始化，使用默认INFO级别
+        logger.info("开始初始化全局配置: 文件=%s", config_file)
+
     # 强制重新创建配置对象，确保加载最新文件
     _settings = Settings(config_file)
 
-    logger.info("全局配置已初始化: %s", config_file)
+    # 统计配置信息
+    config_dict = _settings.to_dict()
+    config_sections = len(config_dict)
+    total_items = sum(len(v) if isinstance(v, dict) else 1 for v in config_dict.values())
+
+    try:
+        from backend.infrastructure.system_vnpy.logging_context import get_logging_context
+
+        ctx = get_logging_context()
+        if ctx.routing_engine.current_stage == "startup":
+            logger.info(
+                "全局配置初始化完成: 文件=%s, 配置节=%d, 配置项=%d",
+                config_file,
+                config_sections,
+                total_items,
+            )
+        else:
+            logger.debug("全局配置重新初始化完成: 文件=%s", config_file)
+    except (ImportError, AttributeError):
+        logger.info(
+            "全局配置初始化完成: 文件=%s, 配置节=%d, 配置项=%d",
+            config_file,
+            config_sections,
+            total_items,
+        )
+
     return _settings
 
 

@@ -4,9 +4,13 @@
 混合架构：网关管理器（固有组件）+ 2个子界面。
 通过TradingGatewayService访问网关和策略功能。
 """
+import logging
 from typing import Any, Dict, Optional
 
 from PySide6.QtCore import Qt
+
+# UI层专用logger
+logger_user = logging.getLogger("ui.user_feedback")
 
 from PySide6.QtWidgets import (
     QComboBox,
@@ -912,6 +916,9 @@ class TradingGateway(BaseWidget, LoggerMixin):
 
         gateway_type = type_item.text()
 
+        # 记录用户连接网关操作
+        logger_user.info("用户连接网关: 名称=%s, 类型=%s", gateway_name, gateway_type)
+
         # 对于需要密码的网关，弹出密码输入对话框
         password = None
         if gateway_type != "paperaccount":
@@ -958,6 +965,9 @@ class TradingGateway(BaseWidget, LoggerMixin):
             return
 
         gateway_name = gateway_item.text()
+
+        # 记录用户断开网关操作
+        logger_user.info("用户断开网关: 名称=%s", gateway_name)
 
         # 检查服务是否可用
         if not self.trading_service:

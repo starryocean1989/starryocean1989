@@ -26,7 +26,7 @@ def async_last_ack_time(func):
     async def wrapper(self, *args, **kw):
         self.last_ack_time = time.time()
 
-        logger.debug(f"last ack time update to {self.last_ack_time}")
+        logger.debug("last ack time update to %s", self.last_ack_time)
 
         ret = None
 
@@ -36,7 +36,7 @@ def async_last_ack_time(func):
             raise ValidationException(*e.args)
         except Exception as e:
             current_exception = e
-            logger.debug(f"hit exception on req exception is {e}")
+            logger.debug("hit exception on req exception is %s", e)
 
             if self.auto_retry:
                 for time_interval in self.retry_strategy.generate():
@@ -87,12 +87,7 @@ class AsyncBaseSocketClient:
     使用asyncio.open_connection替代socket.socket
     """
 
-    def __init__(
-        self,
-        heartbeat=False,
-        auto_retry=False,
-        raise_exception=False
-    ):
+    def __init__(self, heartbeat=False, auto_retry=False, raise_exception=False):
         """
         构造函数
         :param heartbeat: 是否心跳
@@ -127,12 +122,7 @@ class AsyncBaseSocketClient:
         self.send_pkg_bytes = 0
         self.recv_pkg_bytes = 0
 
-    async def connect(
-        self,
-        ip: Optional[str] = None,
-        port: int = 7709,
-        time_out=CONNECT_TIMEOUT
-    ):
+    async def connect(self, ip: Optional[str] = None, port: int = 7709, time_out=CONNECT_TIMEOUT):
         """
         连接服务器（异步）
 
@@ -144,12 +134,11 @@ class AsyncBaseSocketClient:
         if not ip:
             raise ValidationException("IP Address bad.")
 
-        logger.debug(f"connecting to server: {ip} on port: {port}")
+        logger.debug("TDX连接: IP=%s, 端口=%d", ip, port)
 
         try:
             self.reader, self.writer = await asyncio.wait_for(
-                asyncio.open_connection(ip, port),
-                timeout=time_out
+                asyncio.open_connection(ip, port), timeout=time_out
             )
         except asyncio.TimeoutError:
             logger.debug("connection expired")
@@ -157,7 +146,7 @@ class AsyncBaseSocketClient:
                 raise TdxConnectionError("connection timeout error")
             return False
         except Exception as e:
-            logger.debug(f"connection error: {e}")
+            logger.warning("TDX连接失败: IP=%s, 端口=%d, 错误=%s", ip, port, e)
             if self.raise_exception:
                 raise TdxConnectionError(f"connection error: {e}")
             return False
@@ -297,21 +286,33 @@ class AsyncBaseSocketClient:
                     return header
             except (ConnectionResetError, BrokenPipeError) as e:
                 # 连接被对端重置或管道已断开
-                logger.error(f"连接已断开: {type(e).__name__}: {e}, server={self.ip}:{self.port}")
+                logger.error(
+                    "连接已断开: 类型=%s, 错误=%s, 服务器=%s:%d",
+                    type(e).__name__,
+                    e,
+                    self.ip,
+                    self.port,
+                )
                 self.closed = True
                 raise TdxConnectionError(f"连接已断开 ({type(e).__name__}): {e}")
             except asyncio.TimeoutError as e:
                 # 超时错误
-                logger.error(f"操作超时: {e}, server={self.ip}:{self.port}")
+                logger.error("操作超时: 错误=%s, 服务器=%s:%d", e, self.ip, self.port)
                 raise TdxConnectionError(f"操作超时: {e}")
             except asyncio.IncompleteReadError as e:
                 # 读取不完整
-                logger.error(f"数据读取不完整: {e}, server={self.ip}:{self.port}")
+                logger.error("数据读取不完整: 错误=%s, 服务器=%s:%d", e, self.ip, self.port)
                 self.closed = True
                 raise TdxConnectionError(f"数据读取不完整: {e}")
             except Exception as e:
                 # 其他未知异常
-                logger.error(f"发送/接收数据时发生异常: {type(e).__name__}: {e}, server={self.ip}:{self.port}", exc_info=True)
+                logger.exception(
+                    "发送/接收数据时发生异常: 类型=%s, 错误=%s, 服务器=%s:%d",
+                    type(e).__name__,
+                    e,
+                    self.ip,
+                    self.port,
+                )
                 self.closed = True
                 raise TdxConnectionError(f"通信异常 ({type(e).__name__}): {e}")
 
@@ -325,4 +326,3 @@ class AsyncBaseSocketClient:
             "send_pkg_bytes": self.send_pkg_bytes,
             "recv_pkg_bytes": self.recv_pkg_bytes,
         }
-

@@ -105,7 +105,7 @@ class ErrorHandler:
 
     def __init__(self):
         """初始化错误处理器."""
-        self.logger = logging.getLogger(__name__)
+        self.logger = logging.getLogger("backend.core.error_handler")
         self._error_history: List[ErrorInfo] = []
         self._handlers: Dict[str, Callable] = {}
 
@@ -144,10 +144,25 @@ class ErrorHandler:
         """处理错误."""
         self._error_history.append(error)
 
-        # 记录错误日志
-        log_level = logging.ERROR if error.severity == ErrorSeverity.HIGH else logging.WARNING
+        # 记录错误日志 - 完整的ErrorSeverity映射
+        severity_mapping = {
+            ErrorSeverity.LOW: logging.INFO,
+            ErrorSeverity.MEDIUM: logging.WARNING,
+            ErrorSeverity.HIGH: logging.ERROR,
+            ErrorSeverity.CRITICAL: logging.CRITICAL,
+        }
+        log_level = severity_mapping.get(error.severity, logging.WARNING)
+
+        # 增强日志：包含完整错误上下文
         self.logger.log(
-            log_level, "错误 [%s/%s]: %s", error.category.value, error.severity.value, error.message
+            log_level,
+            "错误处理: 类别=%s, 严重性=%s, ID=%s, 消息=%s, 重试=%d/%d",
+            error.category.value,
+            error.severity.value,
+            error.error_id,
+            error.message,
+            error.retry_count,
+            error.max_retries,
         )
 
         # 发射错误信号
@@ -235,6 +250,14 @@ class ErrorHandler:
 
             by_category[cat] = by_category.get(cat, 0) + 1
             by_severity[sev] = by_severity.get(sev, 0) + 1
+
+        # ✅ 输出错误统计日志
+        self.logger.info(
+            "错误统计: 总计=%d, 类别=%s, 严重程度=%s",
+            len(self._error_history),
+            ", ".join(f"{k}={v}" for k, v in by_category.items()),
+            ", ".join(f"{k}={v}" for k, v in by_severity.items()),
+        )
 
         return {
             "total": len(self._error_history),

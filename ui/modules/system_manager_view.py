@@ -4,6 +4,7 @@
 标准架构：8个子界面采用选项卡形式。
 合并handlers逻辑，统一backend调用。
 """
+import logging
 import time
 from collections import deque
 from datetime import datetime
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (
     QDateTimeEdit,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -53,7 +55,7 @@ from ui.components.widgets import (
     BaseWidget,
     GaugeWidget,
     MetricCard,
-    ThresholdHeatmap,
+    VerticalThresholdHeatmap,
 )
 from ui.components.theme_system import DashboardTheme
 from backend.core.service_base import LoggerMixin
@@ -63,6 +65,9 @@ from backend.core.utils import (
     EVENT_LOG_RECORD,
 )
 from ui.core.boot_orchestrator import get_boot_orchestrator
+
+# UI层专用logger
+logger_user = logging.getLogger("ui.user_feedback")
 
 
 # ==================== 告警管理组件 ====================
@@ -235,12 +240,18 @@ class AlertCard(QWidget):
         """确认告警."""
         note, ok = QInputDialog.getText(self, "确认告警", "请输入确认备注（可选）:")
         if ok:
+            # 记录用户操作
+            logger_user.info(
+                "用户确认告警: ID=%s, 类型=%s", self.alert_id, self.alert_data.get("severity")
+            )
             self._call_alert_action("acknowledge", note if note else "")
 
     def _resolve_alert(self) -> None:
         """解决告警."""
         note, ok = QInputDialog.getText(self, "解决告警", "请输入解决备注（可选）:")
         if ok:
+            # 记录用户操作
+            logger_user.info("用户解决告警: ID=%s", self.alert_id)
             self._call_alert_action("resolve", note if note else "")
 
     def _call_alert_action(self, action: str, note: str) -> None:
@@ -279,6 +290,751 @@ class AlertCard(QWidget):
 
         except Exception as e:
             QMessageBox.critical(self, "错误", f"操作失败: {str(e)}")
+
+
+# ==================== 系统状态监控组件 ====================
+
+
+class _UnifiedHeatmapCanvas(QWidget):
+    """整合的热力图画布 - 绘制9个修长的热力条."""
+
+    def __init__(self, parent: "UnifiedMonitorCard"):
+        """初始化画布."""
+        super().__init__(parent)
+        self.parent_card = parent
+        self.setStyleSheet("background-color: #2A2A2A; border: none;")
+        # 移除高度限制，让它自动伸展
+        self.setMinimumHeight(180)
+
+    def paintEvent(self, event):
+        """绘制9个热力条."""
+        from PySide6.QtGui import QPainter, QPen, QLinearGradient
+        from PySide6.QtCore import QRect
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        rect = self.rect()
+        if rect.width() <= 0 or rect.height() <= 0:
+            return
+
+        metrics_config = self.parent_card.all_metrics
+        metric_values = self.parent_card.metric_values
+
+        num_metrics = len(metrics_config)
+        if num_metrics == 0:
+            return
+
+        # 计算每个热力条的宽度和间距（均匀分布，宽度一致）
+        bar_spacing = 8
+        total_spacing = bar_spacing * (num_metrics + 1)
+        available_width = rect.width() - total_spacing
+        bar_width = available_width // num_metrics  # 均匀分配宽度
+
+        # 绘制每个指标的热力条
+        for i, metric in enumerate(metrics_config):
+            metric_key = metric["key"]
+            current_value = metric_values.get(metric_key, 0.0)
+            max_value = metric["max_value"]
+            # warning_threshold = metric.get("warning", 0)  # 暂不绘制阈值线
+            # critical_threshold = metric.get("critical", 0)
+
+            # 计算热力条位置（使用更多垂直空间）
+            x_pos = bar_spacing + i * (bar_width + bar_spacing)
+            bar_rect = QRect(x_pos, 5, bar_width, rect.height() - 10)  # 减少上下边距
+
+            # 绘制背景
+            painter.setBrush(QColor("#1E1E1E"))
+            painter.setPen(QPen(QColor("#555"), 1))
+            painter.drawRoundedRect(bar_rect, 3, 3)
+
+            # 计算填充高度（从下到上）
+            fill_percent = min((current_value / max_value) * 100, 100) if max_value > 0 else 0
+            fill_height = int((fill_percent / 100.0) * bar_rect.height())
+
+            if fill_height > 0:
+                # 创建垂直渐变（绿→黄→红，从下到上）
+                gradient = QLinearGradient(
+                    bar_rect.x(),
+                    bar_rect.y() + bar_rect.height(),  # 底部
+                    bar_rect.x(),
+                    bar_rect.y(),  # 顶部
+                )
+                gradient.setColorAt(0.0, QColor("#00FF00"))  # 底部：绿色
+                gradient.setColorAt(0.5, QColor("#FFFF00"))  # 中间：黄色
+                gradient.setColorAt(1.0, QColor("#FF0000"))  # 顶部：红色
+
+                # 绘制填充区域（从底部向上）
+                fill_rect = QRect(
+                    bar_rect.x(),
+                    bar_rect.y() + bar_rect.height() - fill_height,
+                    bar_rect.width(),
+                    fill_height,
+                )
+                painter.setBrush(gradient)
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.drawRoundedRect(fill_rect, 3, 3)
+
+            # 绘制分组分隔线（在第4和第7个热力条后）
+            if i == 3 or i == 6:  # CPU后和网络后
+                sep_x = x_pos + bar_width + bar_spacing // 2
+                painter.setPen(QPen(QColor("#666"), 2))
+                painter.drawLine(sep_x, 5, sep_x, rect.height() - 5)
+
+
+class UnifiedMonitorCard(QWidget):
+    """整合的系统监控卡片 - CPU/网络/内存的9个热力图."""
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        """初始化整合监控卡片."""
+        super().__init__(parent)
+
+        # 设置最小尺寸
+        self.setMinimumHeight(280)
+        self.setMinimumWidth(800)
+
+        # 深色背景样式
+        self.setStyleSheet(
+            """
+            QWidget {
+                background-color: #1E1E1E;
+                border: 2px solid #444444;
+                border-radius: 6px;
+            }
+            """
+        )
+
+        # 主布局 - 减小边距和间距
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(10, 8, 10, 8)
+        main_layout.setSpacing(5)
+
+        # 标题 - 减小字体
+        title_label = QLabel("📊 系统性能监控（CPU · 网络 · 内存）")
+        title_label.setStyleSheet(
+            "font-size: 11px; font-weight: bold; color: #E0E0E0; border: none;"
+        )
+        main_layout.addWidget(title_label)
+
+        # 9个指标的配置
+        self.all_metrics = [
+            # CPU指标（4个）
+            {
+                "group": "CPU",
+                "key": "cpu_usage",
+                "label": "CPU\n使用率",
+                "unit": "%",
+                "warning": 80,
+                "critical": 90,
+                "max_value": 100,
+            },
+            {
+                "group": "CPU",
+                "key": "context_switches",
+                "label": "上下文\n切换",
+                "unit": "K/s",
+                "warning": 50,
+                "critical": 100,
+                "max_value": 150,
+            },
+            {
+                "group": "CPU",
+                "key": "temperature",
+                "label": "CPU\n温度",
+                "unit": "°C",
+                "warning": 70,
+                "critical": 85,
+                "max_value": 100,
+            },
+            {
+                "group": "CPU",
+                "key": "freq_ratio",
+                "label": "频率\n比",
+                "unit": "%",
+                "warning": 0,
+                "critical": 0,
+                "max_value": 100,
+            },
+            # 网络指标（3个）
+            {
+                "group": "NET",
+                "key": "packet_loss",
+                "label": "网络\n丢包率",
+                "unit": "%",
+                "warning": 0.5,
+                "critical": 2.0,
+                "max_value": 5.0,
+            },
+            {
+                "group": "NET",
+                "key": "latency",
+                "label": "网络\n延迟",
+                "unit": "ms",
+                "warning": 50,
+                "critical": 100,
+                "max_value": 200,
+            },
+            {
+                "group": "NET",
+                "key": "bandwidth_usage",
+                "label": "带宽\n占用",
+                "unit": "%",
+                "warning": 70,
+                "critical": 90,
+                "max_value": 100,
+            },
+            # 内存指标（2个）
+            {
+                "group": "MEM",
+                "key": "memory_usage",
+                "label": "内存\n使用率",
+                "unit": "%",
+                "warning": 75,
+                "critical": 85,
+                "max_value": 100,
+            },
+            {
+                "group": "MEM",
+                "key": "swap_total",
+                "label": "内存\n交换",
+                "unit": "MB/s",
+                "warning": 10,
+                "critical": 50,
+                "max_value": 100,
+            },
+        ]
+
+        self.metric_values = {m["key"]: 0.0 for m in self.all_metrics}
+
+        # 热力图画布（自定义高度）
+        self.heatmap_area = _UnifiedHeatmapCanvas(self)
+        main_layout.addWidget(self.heatmap_area, 1)
+
+        # 数值显示区域 - 紧凑布局
+        values_layout = QHBoxLayout()
+        values_layout.setSpacing(3)
+        values_layout.setContentsMargins(0, 0, 0, 0)
+        self.value_labels = {}
+
+        for metric in self.all_metrics:
+            value_container = QWidget()
+            value_container.setStyleSheet("border: none;")
+            value_layout = QVBoxLayout(value_container)
+            value_layout.setContentsMargins(0, 0, 0, 0)
+            value_layout.setSpacing(1)
+
+            # 指标名称（带分组标识）
+            name_label = QLabel(metric["label"])
+            name_label.setStyleSheet("font-size: 11px; color: #AAA; border: none;")
+            name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            name_label.setWordWrap(True)
+            value_layout.addWidget(name_label)
+
+            # 指标数值
+            value_label = QLabel(f"0.0{metric['unit']}")
+            value_label.setStyleSheet(
+                "font-size: 12px; font-weight: bold; color: #FFF; border: none;"
+            )
+            value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            value_layout.addWidget(value_label)
+
+            self.value_labels[metric["key"]] = value_label
+            values_layout.addWidget(value_container)
+
+        main_layout.addLayout(values_layout)
+
+        # 带宽详情标签（特殊处理） - 紧凑样式
+        self.bandwidth_detail_label = QLabel("带宽未测试")
+        self.bandwidth_detail_label.setStyleSheet(
+            "font-size: 10px; color: #666; border: none; padding: 2px;"
+        )
+        self.bandwidth_detail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        main_layout.addWidget(self.bandwidth_detail_label)
+
+    def update_metrics(self, values: Dict[str, float]):
+        """批量更新指标."""
+        for key, value in values.items():
+            if key in self.metric_values:
+                self.metric_values[key] = value
+                if key in self.value_labels:
+                    metric_config = next((m for m in self.all_metrics if m["key"] == key), None)
+                    if metric_config:
+                        unit = metric_config["unit"]
+                        self.value_labels[key].setText(f"{value:.1f}{unit}")
+        self.heatmap_area.update()
+
+    def update_bandwidth_detail(self, download_mbps: float, total_mbps: float, percent: float):
+        """更新带宽详情."""
+        if total_mbps > 0:
+            self.bandwidth_detail_label.setText(
+                f"实时带宽: {download_mbps:.1f}/{total_mbps:.1f}Mbps ({percent:.1f}%)"
+            )
+        else:
+            self.bandwidth_detail_label.setText("带宽未测试")
+
+
+class CPUMonitorCard(VerticalThresholdHeatmap):
+    """CPU监控卡片（第一行第一列）- 已废弃，使用UnifiedMonitorCard."""
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        """初始化CPU监控卡片."""
+        metrics = [
+            {
+                "key": "cpu_usage",
+                "label": "使用率",
+                "unit": "%",
+                "warning": 80,
+                "critical": 90,
+                "max_value": 100,
+            },
+            {
+                "key": "context_switches",
+                "label": "上下文切换",
+                "unit": "K/s",
+                "warning": 50,
+                "critical": 100,
+                "max_value": 150,
+            },
+            {
+                "key": "temperature",
+                "label": "温度",
+                "unit": "°C",
+                "warning": 70,
+                "critical": 85,
+                "max_value": 100,
+            },
+            {
+                "key": "freq_ratio",
+                "label": "频率比",
+                "unit": "%",
+                "warning": 0,
+                "critical": 0,
+                "max_value": 100,
+            },
+        ]
+        super().__init__("🖥️ CPU监控", metrics, parent)
+
+
+class NetworkMonitorCard(VerticalThresholdHeatmap):
+    """网络监控卡片（第一行第二列）.
+
+    显示3个指标:
+    - 网络丢包率 (%)
+    - 延迟 (ms)
+    - 带宽占用 (%) + 详细带宽信息
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        """初始化网络监控卡片."""
+        metrics = [
+            {
+                "key": "packet_loss",
+                "label": "丢包率",
+                "unit": "%",
+                "warning": 0.5,
+                "critical": 2.0,
+                "max_value": 5.0,
+            },
+            {
+                "key": "latency",
+                "label": "延迟",
+                "unit": "ms",
+                "warning": 50,
+                "critical": 100,
+                "max_value": 200,
+            },
+            {
+                "key": "bandwidth_usage",
+                "label": "带宽占用",
+                "unit": "%",
+                "warning": 70,
+                "critical": 90,
+                "max_value": 100,
+            },
+        ]
+        super().__init__("🌐 网络监控", metrics, parent)
+
+        # 在带宽占用列下方添加详细信息
+        # 获取带宽占用对应的value_container（第3个）
+        bandwidth_container = self.values_layout.itemAt(2).widget()
+        if bandwidth_container:
+            container_layout = bandwidth_container.layout()
+            if container_layout:
+                # 添加带宽详情标签
+                self.bandwidth_detail_label = QLabel("--")
+                self.bandwidth_detail_label.setStyleSheet(
+                    "font-size: 9px; color: #888; border: none;"
+                )
+                self.bandwidth_detail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.bandwidth_detail_label.setWordWrap(True)
+                container_layout.addWidget(self.bandwidth_detail_label)
+
+    def update_bandwidth_detail(self, download_mbps: float, total_mbps: float, percent: float):
+        """更新带宽详情显示.
+
+        Args:
+            download_mbps: 实时下载速度
+            total_mbps: 总带宽（运营商提供的带宽上限）
+            percent: 百分比
+        """
+        if hasattr(self, "bandwidth_detail_label"):
+            if total_mbps > 0:
+                self.bandwidth_detail_label.setText(
+                    f"{download_mbps:.1f}/{total_mbps:.1f}Mbps\n({percent:.1f}%)"
+                )
+            else:
+                self.bandwidth_detail_label.setText("未测试")
+
+
+class MemoryMonitorCard(VerticalThresholdHeatmap):
+    """内存监控卡片（第一行第三列）.
+
+    显示2个指标:
+    - 内存使用率 (%)
+    - 内存交换 (MB/s)
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        """初始化内存监控卡片."""
+        metrics = [
+            {
+                "key": "memory_usage",
+                "label": "使用率",
+                "unit": "%",
+                "warning": 75,
+                "critical": 85,
+                "max_value": 100,
+            },
+            {
+                "key": "swap_total",
+                "label": "内存交换",
+                "unit": "MB/s",
+                "warning": 10,
+                "critical": 50,
+                "max_value": 100,
+            },
+        ]
+        super().__init__("💾 内存监控", metrics, parent)
+
+
+class SingleDiskCard(QWidget):
+    """单个硬盘的信息卡片 - 扩展版，展示更多SMART信息."""
+
+    def __init__(self, disk_name: str, parent: Optional[QWidget] = None):
+        """初始化单个硬盘卡片."""
+        super().__init__(parent)
+
+        self.disk_name = disk_name
+
+        # 卡片样式 - 自适应宽度
+        self.setMinimumWidth(250)
+        self.setMinimumHeight(150)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+
+        self.setStyleSheet(
+            """
+            SingleDiskCard {
+                background-color: #252525;
+                border: 1px solid #555;
+                border-radius: 5px;
+            }
+            """
+        )
+
+        # 主布局
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(5)
+
+        # 硬盘名称标题 - 增大字体
+        self.name_label = QLabel(disk_name)
+        self.name_label.setStyleSheet(
+            "font-size: 15px; font-weight: bold; color: #CCC; border: none;"
+        )
+        self.name_label.setWordWrap(True)
+        layout.addWidget(self.name_label)
+
+        # 分隔线
+        line = QFrame()
+        line.setFrameShape(QFrame.Shape.HLine)
+        line.setStyleSheet("background-color: #444; border: none;")
+        line.setFixedHeight(1)
+        layout.addWidget(line)
+
+        # 信息标签字典
+        self.info_labels = {}
+
+        # 添加更多SMART信息行
+        self._add_info_row("型号", "model", layout)
+        self._add_info_row("容量", "capacity", layout)
+        self._add_info_row("健康评估", "assessment", layout)
+        self._add_info_row("温度", "temperature", layout)
+        self._add_info_row("开机时长", "power_on_hours", layout)
+        self._add_info_row("重分配扇区", "reallocated_sectors", layout)
+        self._add_info_row("待处理扇区", "pending_sectors", layout)
+        self._add_info_row("不可修复错误", "uncorrectable_errors", layout)
+
+        layout.addStretch()
+
+    def _add_info_row(self, label_text: str, key: str, layout: QVBoxLayout):
+        """添加信息行."""
+        row = QHBoxLayout()
+        row.setSpacing(8)
+
+        # 标签 - 增大字体
+        label = QLabel(label_text + ":")
+        label.setStyleSheet("font-size: 13px; color: #999; border: none;")
+        label.setMinimumWidth(75)
+        row.addWidget(label)
+
+        # 值 - 增大字体
+        value_label = QLabel("--")
+        value_label.setStyleSheet("font-size: 13px; color: #EEE; border: none;")
+        value_label.setWordWrap(True)
+        row.addWidget(value_label, 1)
+
+        self.info_labels[key] = value_label
+        layout.addLayout(row)
+
+    def update_data(self, attrs: Dict[str, Any]):
+        """更新硬盘数据."""
+        # 型号
+        if "model" in attrs:
+            model = attrs["model"]
+            # 简化型号显示
+            if len(model) > 35:
+                model = model[:32] + "..."
+            self.info_labels["model"].setText(model)
+
+        # 容量
+        if "capacity" in attrs:
+            self.info_labels["capacity"].setText(str(attrs["capacity"]))
+
+        # 健康评估（带颜色）
+        if "assessment" in attrs:
+            assessment = attrs["assessment"]
+            color = "#00FF00"  # 绿色
+            if "警告" in assessment:
+                color = "#FFAA00"
+            elif "故障" in assessment:
+                color = "#FF0000"
+            elif "未知" in assessment:
+                color = "#888888"
+
+            self.info_labels["assessment"].setText(assessment)
+            self.info_labels["assessment"].setStyleSheet(
+                f"font-size: 12px; color: {color}; border: none; font-weight: bold;"
+            )
+
+        # 温度
+        if "temperature" in attrs and attrs["temperature"]:
+            temp = attrs["temperature"]
+            self.info_labels["temperature"].setText(f"{temp}°C")
+        else:
+            self.info_labels["temperature"].setText("--")
+
+        # 开机时长
+        if "power_on_hours" in attrs and attrs["power_on_hours"]:
+            hours = attrs["power_on_hours"]
+            days = hours // 24
+            self.info_labels["power_on_hours"].setText(f"{hours:,}h ({days}天)")
+        else:
+            self.info_labels["power_on_hours"].setText("--")
+
+        # 重新分配扇区数
+        if "reallocated_sectors" in attrs:
+            value = attrs["reallocated_sectors"]
+            if value == 0:
+                self.info_labels["reallocated_sectors"].setText("0 ✓")
+                self.info_labels["reallocated_sectors"].setStyleSheet(
+                    "font-size: 11px; color: #0F0; border: none;"
+                )
+            else:
+                self.info_labels["reallocated_sectors"].setText(f"{value} ⚠️")
+                self.info_labels["reallocated_sectors"].setStyleSheet(
+                    "font-size: 11px; color: #FA0; border: none; font-weight: bold;"
+                )
+
+        # 待处理扇区数
+        if "pending_sectors" in attrs:
+            value = attrs["pending_sectors"]
+            if value == 0:
+                self.info_labels["pending_sectors"].setText("0 ✓")
+                self.info_labels["pending_sectors"].setStyleSheet(
+                    "font-size: 11px; color: #0F0; border: none;"
+                )
+            else:
+                self.info_labels["pending_sectors"].setText(f"{value} ⚠️")
+                self.info_labels["pending_sectors"].setStyleSheet(
+                    "font-size: 11px; color: #FA0; border: none; font-weight: bold;"
+                )
+
+        # 不可修复错误数
+        if "uncorrectable_errors" in attrs:
+            value = attrs["uncorrectable_errors"]
+            if value == 0:
+                self.info_labels["uncorrectable_errors"].setText("0 ✓")
+                self.info_labels["uncorrectable_errors"].setStyleSheet(
+                    "font-size: 11px; color: #0F0; border: none;"
+                )
+            else:
+                self.info_labels["uncorrectable_errors"].setText(f"{value} ⚠️")
+                self.info_labels["uncorrectable_errors"].setStyleSheet(
+                    "font-size: 11px; color: #FA0; border: none; font-weight: bold;"
+                )
+
+
+class DiskMonitorCard(QWidget):
+    """硬盘监控卡片 - 横向排列，自适应字体."""
+
+    # 🔧 线程安全信号：用于跨线程更新UI
+    update_requested = Signal(str, dict)  # (health_status, smart_attributes)
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        """初始化硬盘监控卡片."""
+        super().__init__(parent)
+
+        # 🔧 连接信号到槽函数（Qt会自动在主线程执行槽函数）
+        self.update_requested.connect(self._safe_update_ui)
+
+        # 设置最小尺寸
+        self.setMinimumHeight(180)
+        self.setMinimumWidth(400)
+
+        # 深色背景样式（增强边框）
+        self.setStyleSheet(
+            """
+            QWidget {
+                background-color: #1E1E1E;
+                border: 2px solid #444444;
+                border-radius: 6px;
+            }
+            """
+        )
+
+        # 主布局
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(8)
+
+        # 标题和健康状态（横向）
+        header_layout = QHBoxLayout()
+        header_layout.setSpacing(15)
+
+        # 标题 - 增大字体
+        title_label = QLabel("💿 硬盘监控")
+        title_label.setStyleSheet(
+            "font-size: 14px; font-weight: bold; color: #E0E0E0; border: none;"
+        )
+        header_layout.addWidget(title_label)
+
+        # SMART健康状态 - 增大字体
+        self.health_label = QLabel("健康状态: --")
+        self.health_label.setStyleSheet(
+            "font-size: 13px; color: #FFF; border: none; padding: 5px; font-weight: bold;"
+        )
+        header_layout.addWidget(self.health_label)
+        header_layout.addStretch()
+
+        main_layout.addLayout(header_layout)
+
+        # 硬盘卡片容器（横向滚动）
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet(
+            """
+            QScrollArea {
+                background-color: #2A2A2A;
+                border: 1px solid #444;
+                border-radius: 3px;
+            }
+            QScrollBar:horizontal {
+                background-color: #1E1E1E;
+                height: 10px;
+                border: none;
+            }
+            QScrollBar::handle:horizontal {
+                background-color: #555;
+                border-radius: 5px;
+                min-width: 30px;
+            }
+            QScrollBar::handle:horizontal:hover {
+                background-color: #777;
+            }
+            """
+        )
+
+        # 硬盘卡片容器widget - 设置自适应策略
+        self.disks_container = QWidget()
+        self.disks_container.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        self.disks_layout = QHBoxLayout(self.disks_container)
+        self.disks_layout.setContentsMargins(5, 5, 5, 5)
+        self.disks_layout.setSpacing(15)  # 增加间距
+        # 不添加弹簧，让卡片均匀分布填充空间
+
+        scroll.setWidget(self.disks_container)
+        main_layout.addWidget(scroll, 1)
+
+        # 硬盘卡片字典
+        self.disk_cards = {}
+
+    def update_smart_data(self, health_status: str, smart_attributes: Dict[str, Any]):
+        """线程安全的SMART数据更新入口.
+
+        通过信号槽机制确保UI更新在主线程执行，避免跨线程错误。
+
+        Args:
+            health_status: 健康状态 (如 "良好", "警告", "故障", "不可用")
+            smart_attributes: SMART属性字典
+        """
+        # 🔧 发射信号（Qt会自动在主线程执行槽函数）
+        self.update_requested.emit(health_status, smart_attributes)
+
+    def _safe_update_ui(self, health_status: str, smart_attributes: Dict[str, Any]):
+        """线程安全的UI更新方法（在主线程执行）- 横向卡片布局."""
+        # 更新整体健康状态
+        status_color = "#00FF00"  # 绿色（默认：正常）
+        if "警告" in health_status:
+            status_color = "#FFAA00"  # 橙黄色
+        elif "故障" in health_status or "危险" in health_status:
+            status_color = "#FF0000"  # 红色
+        elif "未知" in health_status or "不可用" in health_status:
+            status_color = "#888888"  # 灰色
+
+        self.health_label.setText(f"健康状态: {health_status}")
+        self.health_label.setStyleSheet(
+            f"font-size: 11px; color: {status_color}; border: none; padding: 5px; font-weight: bold;"
+        )
+
+        # 更新或创建硬盘卡片
+        if smart_attributes:
+            # 移除不存在的硬盘卡片
+            current_disks = set(smart_attributes.keys())
+            for disk_name in list(self.disk_cards.keys()):
+                if disk_name not in current_disks:
+                    card = self.disk_cards.pop(disk_name)
+                    self.disks_layout.removeWidget(card)
+                    card.deleteLater()
+
+            # 更新或创建硬盘卡片
+            for idx, (disk_name, attrs) in enumerate(smart_attributes.items()):
+                if disk_name not in self.disk_cards:
+                    # 创建新卡片
+                    card = SingleDiskCard(disk_name, parent=self.disks_container)
+                    self.disk_cards[disk_name] = card
+                    # 插入到弹簧之前
+                    self.disks_layout.insertWidget(idx, card)
+
+                # 更新卡片数据
+                self.disk_cards[disk_name].update_data(attrs)
+
+    def _create_single_disk_card(self, disk_name: str, attrs: Dict[str, Any]) -> QWidget:
+        """创建单个硬盘卡片（已废弃，使用SingleDiskCard类）."""
+        return SingleDiskCard(disk_name, parent=self)
 
 
 class AlertManagerWidget(QWidget):
@@ -971,6 +1727,16 @@ class LogManagerWidget(QWidget):
         search_text = self.search_edit.text().strip()
         search_terms = [term.strip() for term in search_text.split()] if search_text else []
 
+        # 记录用户日志查询操作（审计）
+        logger_user.info(
+            "用户查询日志: 级别=%s, 模块=%s, 时间范围=%s至%s, 搜索=%s",
+            level or "全部",
+            module or "全部",
+            start_time,
+            end_time,
+            search_text or "无",
+        )
+
         # 应用筛选
         filtered_records = []
         for record in self.log_records:
@@ -1142,7 +1908,8 @@ class LogManagerWidget(QWidget):
                 )  # 改为debug
             else:
                 logger.error(f"[LogManagerWidget] 查询失败: {result.get('message')}")
-                QMessageBox.warning(self, "错误", f"获取日志失败: {result.get('message')}")
+                # 🚀 修复UI卡死：不使用模态对话框，只记录日志
+                logger.warning(f"获取日志失败: {result.get('message')}")
         finally:
             # 恢复刷新按钮
             if hasattr(self, "refresh_btn"):
@@ -1151,14 +1918,22 @@ class LogManagerWidget(QWidget):
 
     def _handle_service_unavailable(self) -> None:
         """处理服务不可用（主线程）."""
-        QMessageBox.warning(self, "错误", "系统管理服务不可用")
+        # 🚀 修复UI卡死：不使用模态对话框，只记录日志
+        import logging
+
+        logger = logging.getLogger(__name__)
+        logger.warning("系统管理服务不可用")
         if hasattr(self, "refresh_btn"):
             self.refresh_btn.setEnabled(True)
             self.refresh_btn.setText("刷新")
 
     def _handle_query_error(self, error_msg: str) -> None:
         """处理查询错误（主线程）."""
-        QMessageBox.critical(self, "错误", f"刷新日志失败: {error_msg}")
+        # 🚀 修复UI卡死：不使用模态对话框，只记录日志
+        import logging
+
+        logger = logging.getLogger(__name__)
+        logger.error(f"刷新日志失败: {error_msg}")
         if hasattr(self, "refresh_btn"):
             self.refresh_btn.setEnabled(True)
             self.refresh_btn.setText("刷新")
@@ -2131,6 +2906,7 @@ class SystemManager(BaseWidget, LoggerMixin):
             EVENT_BOTTLENECK_ANALYSIS,
             EVENT_PROCESS_MONITORING,
             EVENT_SERVICE_MONITORING,
+            EVENT_SMART_DATA,
         )
 
         # 订阅系统指标事件
@@ -2138,6 +2914,9 @@ class SystemManager(BaseWidget, LoggerMixin):
 
         # 订阅硬件传感器事件
         self.event_engine.register(EVENT_HARDWARE_SENSORS, self._on_hardware_sensors_event)
+
+        # 订阅SMART健康状态事件
+        self.event_engine.register(EVENT_SMART_DATA, self._on_smart_data_event)
 
         # 订阅瓶颈分析事件
         self.event_engine.register(EVENT_BOTTLENECK_ANALYSIS, self._on_bottleneck_analysis_event)
@@ -2148,7 +2927,7 @@ class SystemManager(BaseWidget, LoggerMixin):
         # 订阅服务状态事件
         self.event_engine.register(EVENT_SERVICE_MONITORING, self._on_service_monitoring_event)
 
-        self.logger.info("✅ 已订阅监控事件（事件驱动模式）")
+        self.logger.info("✅ 已订阅监控事件（包括SMART状态，事件驱动模式）")
         return True
 
     # ========== 事件处理器（事件驱动架构核心）==========
@@ -2273,7 +3052,7 @@ class SystemManager(BaseWidget, LoggerMixin):
                 smart_data = hardware_data["smart"]
                 if hasattr(self, "smart_reallocated_card"):
                     total_reallocated = sum(
-                        disk.get("reallocated_sectors", 0)
+                        (disk.get("reallocated_sectors") or 0)
                         for disk in smart_data.values()
                         if isinstance(disk, dict)
                     )
@@ -2281,7 +3060,7 @@ class SystemManager(BaseWidget, LoggerMixin):
 
                 if hasattr(self, "smart_pending_card"):
                     total_pending = sum(
-                        disk.get("pending_sectors", 0)
+                        (disk.get("pending_sectors") or 0)
                         for disk in smart_data.values()
                         if isinstance(disk, dict)
                     )
@@ -2289,6 +3068,38 @@ class SystemManager(BaseWidget, LoggerMixin):
 
         except Exception as e:
             self.logger.error("处理硬件传感器事件失败: %s", e)
+
+    def _on_smart_data_event(self, event):
+        """处理SMART健康数据事件（独立）."""
+        try:
+            smart_data = event.data
+            if not smart_data:
+                return
+
+            # 缓存SMART数据
+            self._cached_smart_data = smart_data.copy()
+
+            # 更新硬盘监控卡片
+            if hasattr(self, "disk_monitor_card"):
+                # 判断整体健康状态
+                health_status = "良好"
+                for disk_name, disk_attrs in smart_data.items():
+                    if isinstance(disk_attrs, dict):
+                        # 🔧 修复：三次防御，使用or运算符确保None值转换为0
+                        reallocated = disk_attrs.get("reallocated_sectors") or 0
+                        pending = disk_attrs.get("pending_sectors") or 0
+                        uncorrectable = disk_attrs.get("uncorrectable_errors") or 0
+
+                        if reallocated > 50 or pending > 50 or uncorrectable > 10:
+                            health_status = "危险"
+                            break
+                        elif reallocated > 10 or pending > 10 or uncorrectable > 0:
+                            health_status = "警告"
+
+                self.disk_monitor_card.update_smart_data(health_status, smart_data)
+
+        except Exception as e:
+            self.logger.error("处理SMART数据事件失败: %s", e, exc_info=True)
 
     def _on_bottleneck_analysis_event(self, event):
         """处理瓶颈分析事件（可选，独立）."""
@@ -2332,6 +3143,34 @@ class SystemManager(BaseWidget, LoggerMixin):
 
         except Exception as e:
             self.logger.error("处理服务状态事件失败: %s", e)
+
+    def showEvent(self, event):
+        """界面显示事件 - 触发SMART数据采集."""
+        super().showEvent(event)
+
+        # 首次显示时触发SMART采集（按需加载）
+        if not hasattr(self, "_smart_triggered_once"):
+            self._smart_triggered_once = True
+            self._trigger_smart_collection()
+
+    def _trigger_smart_collection(self):
+        """触发SMART数据采集."""
+        try:
+            if self.system_service:
+                # 🔧 防御性检查：确保方法存在（避免服务未完全初始化或版本不匹配）
+                if hasattr(self.system_service, "trigger_smart_collection"):
+                    # 通过service发送ZMQ命令到监控进程
+                    success = self.system_service.trigger_smart_collection()
+                    if success:
+                        self.logger.info("✅ 已触发SMART数据采集")
+                    else:
+                        self.logger.warning("⚠️ SMART数据采集触发失败")
+                else:
+                    self.logger.warning(
+                        "⚠️ SystemManagerService不支持trigger_smart_collection方法（版本不匹配或未完全初始化）"
+                    )
+        except Exception as e:
+            self.logger.error("触发SMART采集失败: %s", e)
 
     def closeEvent(self, event):
         """关闭事件处理，取消事件订阅."""
@@ -2389,16 +3228,10 @@ class SystemManager(BaseWidget, LoggerMixin):
 
             # 🔥 FIX: 网络速度数据修复
             # 后端返回的是KB/s，需要除以1024转换为MB/s
-            network_upload_mbps = 0.0
             network_download_mbps = 0.0
             if network_speed:
-                upload_kbps = network_speed.get("upload_speed_kbps", 0)
                 download_kbps = network_speed.get("download_speed_kbps", 0)
-                network_upload_mbps = upload_kbps / 1024  # KB/s -> MB/s
                 network_download_mbps = download_kbps / 1024  # KB/s -> MB/s
-
-            # 获取磁盘使用率
-            disk_percent = metrics.get("disk_percent", 0)
 
             # 获取CPU温度（🔥 FIX: 使用缓存的hardware数据）
             cpu_temp = 0.0
@@ -2415,59 +3248,95 @@ class SystemManager(BaseWidget, LoggerMixin):
                             cpu_temp = sensors[0].get("current", 0)
                             break
 
-            # 更新热力图组件（系统状态监控Tab专用）
-            if hasattr(self, "status_heatmap_cpu_usage"):
-                self.status_heatmap_cpu_usage.update_value(cpu_percent)
-            if hasattr(self, "status_heatmap_memory_usage"):
-                self.status_heatmap_memory_usage.update_value(memory_percent)
+            # 更新4个监控卡片
 
-            # 🔥 FIX: 动态创建和更新每个磁盘的读写热力图
-            if hasattr(self, "status_heatmap_disks") and hasattr(self, "disk_heatmap_layout"):
-                for disk_name, io_data in disk_io_data.items():
-                    # 如果磁盘热力图不存在，则动态创建
-                    if disk_name not in self.status_heatmap_disks:
-                        # 创建该磁盘的读热力图
-                        read_heatmap = ThresholdHeatmap(
-                            f"{disk_name} 读",
-                            "MB/s",
-                            warning_threshold=100,
-                            critical_threshold=200,
-                            max_value=300,
-                        )
-                        self.disk_heatmap_layout.addWidget(read_heatmap)
+            # 统一监控卡片（CPU+网络+内存的9个热力图）
+            if hasattr(self, "unified_monitor_card"):
+                # 1. CPU指标
+                cpu_detailed = metrics.get("cpu_detailed", {})
+                context_switches_per_sec = cpu_detailed.get("context_switches_per_sec", 0)
+                context_switches_k = context_switches_per_sec / 1000  # 转换为K/s
 
-                        # 创建该磁盘的写热力图
-                        write_heatmap = ThresholdHeatmap(
-                            f"{disk_name} 写",
-                            "MB/s",
-                            warning_threshold=80,
-                            critical_threshold=150,
-                            max_value=250,
-                        )
-                        self.disk_heatmap_layout.addWidget(write_heatmap)
+                # CPU频率比率
+                clock_data = hardware_data.get("clock", {})
+                freq_ratio = 0.0
+                if clock_data:
+                    for device, clocks in clock_data.items():
+                        if "CPU" in device and clocks and isinstance(clocks, list):
+                            current_freq = clocks[0].get("current", 0)
+                            max_freq = clocks[0].get("max", 0)
+                            if max_freq > 0:
+                                freq_ratio = (current_freq / max_freq) * 100
+                                break
 
-                        # 保存到字典
-                        self.status_heatmap_disks[disk_name] = {
-                            "read": read_heatmap,
-                            "write": write_heatmap,
-                        }
+                # 2. 网络指标
+                packet_loss_percent = 0.0
+                if network_speed:
+                    if "packet_loss_rate_in" in network_speed:
+                        packet_loss_percent = network_speed.get("packet_loss_rate_in", 0) * 100
+                    else:
+                        network_subsystem = metrics.get("network_subsystem", {})
+                        packet_loss_rate = network_subsystem.get("packet_loss_rate_in", 0)
+                        packet_loss_percent = packet_loss_rate * 100
 
-                    # 更新热力图值
-                    self.status_heatmap_disks[disk_name]["read"].update_value(io_data["read"])
-                    self.status_heatmap_disks[disk_name]["write"].update_value(io_data["write"])
+                # 延迟和带宽信息
+                service = self.service_manager.get_service("system_manager_service", silent=True)
+                latency_ms = 0.0
+                total_bandwidth_mbps = 0.0
+                bandwidth_percent = 0.0
 
-            # 🔥 FIX: 更新网络上传和下载热力图
-            if hasattr(self, "status_heatmap_network_upload"):
-                self.status_heatmap_network_upload.update_value(network_upload_mbps)
-            if hasattr(self, "status_heatmap_network_download"):
-                self.status_heatmap_network_download.update_value(network_download_mbps)
+                if service:
+                    try:
+                        bandwidth_info = service.get_bandwidth_info()
+                        ping_result = bandwidth_info.get("ping_test", {})
+                        full_result = bandwidth_info.get("full_test", {})
 
-            if hasattr(self, "status_heatmap_disk_usage"):
-                self.status_heatmap_disk_usage.update_value(disk_percent)
-            if hasattr(self, "status_heatmap_cpu_temp"):
-                self.status_heatmap_cpu_temp.update_value(cpu_temp)
+                        if ping_result and ping_result.get("ping_ms") is not None:
+                            latency_ms = ping_result.get("ping_ms", 0)
+                        elif full_result and full_result.get("ping_ms") is not None:
+                            latency_ms = full_result.get("ping_ms", 0)
 
-            # 🔥 FIX: 已删除时间趋势折线图更新逻辑
+                        if full_result and full_result.get("download_mbps") is not None:
+                            total_bandwidth_mbps = full_result.get("download_mbps", 0)
+
+                        if total_bandwidth_mbps == 0 and network_speed:
+                            total_bandwidth_mbps = 100
+
+                        if total_bandwidth_mbps > 0:
+                            bandwidth_percent = (network_download_mbps / total_bandwidth_mbps) * 100
+                            bandwidth_percent = min(bandwidth_percent, 100)
+                    except Exception as e:
+                        self.logger.debug(f"获取带宽信息失败: {e}", exc_info=True)
+
+                # 3. 内存指标
+                memory_subsystem = metrics.get("memory_subsystem", {})
+                swap_in_kbps = memory_subsystem.get("swap_in_kbps", 0)
+                swap_out_kbps = memory_subsystem.get("swap_out_kbps", 0)
+                swap_total_mbps = (swap_in_kbps + swap_out_kbps) / 1024  # KB/s -> MB/s
+
+                # 统一更新所有9个指标
+                self.unified_monitor_card.update_metrics(
+                    {
+                        "cpu_usage": cpu_percent,
+                        "context_switches": context_switches_k,
+                        "temperature": cpu_temp,
+                        "freq_ratio": freq_ratio,
+                        "packet_loss": packet_loss_percent,
+                        "latency": latency_ms,
+                        "bandwidth_usage": bandwidth_percent,
+                        "memory_usage": memory_percent,
+                        "swap_total": swap_total_mbps,
+                    }
+                )
+
+                # 更新带宽详情
+                self.unified_monitor_card.update_bandwidth_detail(
+                    network_download_mbps, total_bandwidth_mbps, bandwidth_percent
+                )
+
+            # 4. 硬盘监控卡片
+            # SMART数据现在通过EVENT_SMART_STATUS事件更新
+            # 这里不需要处理，保持现有状态
 
             # 更新详细数据表格
             if hasattr(self, "status_details_table") and self.status_details_table:
@@ -2631,10 +3500,33 @@ class SystemManager(BaseWidget, LoggerMixin):
         # 主分隔器：左右布局（70:30）
         main_splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        # 🔥 FIX: 删除时间趋势折线图，只保留热力图
-        # 左侧：实时阈值类热力图
-        heatmap_container = self._create_heatmap_section()
-        main_splitter.addWidget(heatmap_container)
+        # 左侧：监控组件网格（第一行3列，第二行独占）
+        grid_container = QWidget()
+        grid_container.setStyleSheet("background-color: transparent;")
+        grid_layout = QGridLayout(grid_container)
+        grid_layout.setSpacing(15)  # 增加组件之间间距
+        grid_layout.setContentsMargins(0, 0, 0, 0)
+
+        # 创建监控卡片：使用统一组件（9个热力图均匀排列）
+        self.unified_monitor_card = UnifiedMonitorCard()
+        self.disk_monitor_card = DiskMonitorCard()
+
+        # 第一行：统一监控组件（CPU+网络+内存的9个热力图）
+        grid_layout.addWidget(self.unified_monitor_card, 0, 0, 1, 3)
+
+        # 第二行：硬盘监控（独占，跨3列）
+        grid_layout.addWidget(self.disk_monitor_card, 1, 0, 1, 3)
+
+        # 设置行列比例
+        # 行：第一行和第二行均分
+        grid_layout.setRowStretch(0, 1)
+        grid_layout.setRowStretch(1, 1)
+        # 列：3列均分（虽然现在只用了跨列布局）
+        grid_layout.setColumnStretch(0, 1)
+        grid_layout.setColumnStretch(1, 1)
+        grid_layout.setColumnStretch(2, 1)
+
+        main_splitter.addWidget(grid_container)
 
         # 右侧：详细数据表格
         details_group = QGroupBox("📋 详细数据")
@@ -2712,67 +3604,7 @@ class SystemManager(BaseWidget, LoggerMixin):
 
         return tab
 
-    def _create_heatmap_section(self) -> QWidget:
-        """创建实时阈值类热力图区域（🔥 FIX: 支持多磁盘读写分离和网络上传下载分离）."""
-        container = QWidget()
-        container.setStyleSheet("background-color: transparent;")
-        layout = QVBoxLayout(container)  # 纵向布局
-        layout.setSpacing(10)
-        layout.setContentsMargins(0, 0, 0, 0)
-
-        # 🔥 FIX: 已删除 trend_data 初始化（不再需要趋势图）
-
-        # 1. CPU使用率（阈值：80%警告，90%严重）
-        self.status_heatmap_cpu_usage = ThresholdHeatmap(
-            "CPU使用率", "%", warning_threshold=80, critical_threshold=90, max_value=100
-        )
-        layout.addWidget(self.status_heatmap_cpu_usage)
-
-        # 2. 内存使用率（阈值：75%警告，85%严重）
-        self.status_heatmap_memory_usage = ThresholdHeatmap(
-            "内存使用率", "%", warning_threshold=75, critical_threshold=85, max_value=100
-        )
-        layout.addWidget(self.status_heatmap_memory_usage)
-
-        # 🔥 FIX: 3-N. 动态创建磁盘读写热力图（每个物理磁盘有独立的读和写热力图）
-        # 初始化磁盘热力图字典
-        self.status_heatmap_disks = {}
-        # 创建容器来存放磁盘热力图
-        self.disk_heatmap_container = QWidget()
-        self.disk_heatmap_layout = QVBoxLayout(self.disk_heatmap_container)
-        self.disk_heatmap_layout.setSpacing(4)
-        self.disk_heatmap_layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.disk_heatmap_container)
-
-        # 🔥 FIX: N+1. 网络上传速度（阈值：10MB/s警告，50MB/s严重）
-        self.status_heatmap_network_upload = ThresholdHeatmap(
-            "网络上传", "MB/s", warning_threshold=10, critical_threshold=50, max_value=100
-        )
-        layout.addWidget(self.status_heatmap_network_upload)
-
-        # 🔥 FIX: N+2. 网络下载速度（阈值：50MB/s警告，80MB/s严重）
-        self.status_heatmap_network_download = ThresholdHeatmap(
-            "网络下载", "MB/s", warning_threshold=50, critical_threshold=80, max_value=100
-        )
-        layout.addWidget(self.status_heatmap_network_download)
-
-        # N+3. 磁盘使用率（阈值：80%警告，90%严重）
-        self.status_heatmap_disk_usage = ThresholdHeatmap(
-            "磁盘使用率", "%", warning_threshold=80, critical_threshold=90, max_value=100
-        )
-        layout.addWidget(self.status_heatmap_disk_usage)
-
-        # N+4. CPU温度（阈值：70°C警告，85°C严重）
-        self.status_heatmap_cpu_temp = ThresholdHeatmap(
-            "CPU温度", "°C", warning_threshold=70, critical_threshold=85, max_value=100
-        )
-        layout.addWidget(self.status_heatmap_cpu_temp)
-
-        layout.addStretch()
-        return container
-
-    # 🔥 FIX: 已删除 _create_trend_section() 和 _create_threshold_trend_chart() 方法
-    # 用户要求删除所有时间趋势折线图
+    # 注意：旧的_create_heatmap_section方法已被删除，现在使用网格布局（第一行3列+第二行独占）的4个监控卡片代替
 
     # ==================== 1.2 性能指标展示 ====================
 
@@ -4816,6 +5648,73 @@ class SystemManager(BaseWidget, LoggerMixin):
         tab = QWidget()
         layout = QVBoxLayout(tab)
 
+        # 网络测速工具组
+        network_test_group = QGroupBox("🌐 网络测速工具")
+        network_test_layout = QVBoxLayout(network_test_group)
+        network_test_layout.setSpacing(8)
+        network_test_layout.setContentsMargins(12, 10, 12, 10)
+
+        # 提示信息
+        hint_label = QLabel(
+            "💡 测试服务商带宽：完整测试（约30秒），测试下载、上传速度和延迟\n"
+            "⚡ 测试实时延迟：快速测试（约2秒），仅测试网络延迟"
+        )
+        hint_label.setStyleSheet("color: #666; font-size: 12px; padding: 5px;")
+        hint_label.setWordWrap(True)
+        network_test_layout.addWidget(hint_label)
+
+        # 测试结果显示区域
+        result_group = QGroupBox("测试结果")
+        result_layout = QFormLayout(result_group)
+        result_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        result_layout.setVerticalSpacing(12)  # 增加垂直间距，防止字体重叠
+        result_layout.setHorizontalSpacing(15)
+
+        # 设置统一样式
+        label_style = "font-size: 13px; color: #CCC; padding: 5px;"
+
+        self.bandwidth_download_label = QLabel("--")
+        self.bandwidth_download_label.setStyleSheet(label_style)
+        self.bandwidth_download_label.setMinimumWidth(150)
+
+        self.bandwidth_upload_label = QLabel("--")
+        self.bandwidth_upload_label.setStyleSheet(label_style)
+        self.bandwidth_upload_label.setMinimumWidth(150)
+
+        self.bandwidth_ping_label = QLabel("--")
+        self.bandwidth_ping_label.setStyleSheet(label_style)
+        self.bandwidth_ping_label.setMinimumWidth(150)
+
+        self.bandwidth_test_time_label = QLabel("--")
+        self.bandwidth_test_time_label.setStyleSheet(label_style)
+        self.bandwidth_test_time_label.setMinimumWidth(150)
+
+        result_layout.addRow("下载速度:", self.bandwidth_download_label)
+        result_layout.addRow("上传速度:", self.bandwidth_upload_label)
+        result_layout.addRow("网络延迟:", self.bandwidth_ping_label)
+        result_layout.addRow("测试时间:", self.bandwidth_test_time_label)
+
+        network_test_layout.addWidget(result_group)
+
+        # 按钮组
+        button_layout = QHBoxLayout()
+
+        self.test_bandwidth_btn = QPushButton("📊 测服务商带宽")
+        self.test_bandwidth_btn.setStyleSheet("font-size: 14px; padding: 10px;")
+        self.test_bandwidth_btn.setMinimumHeight(40)
+        self.test_bandwidth_btn.clicked.connect(self._test_bandwidth_full)
+        button_layout.addWidget(self.test_bandwidth_btn)
+
+        self.test_latency_btn = QPushButton("⚡ 测实时延迟")
+        self.test_latency_btn.setStyleSheet("font-size: 14px; padding: 10px;")
+        self.test_latency_btn.setMinimumHeight(40)
+        self.test_latency_btn.clicked.connect(self._test_latency_only)
+        button_layout.addWidget(self.test_latency_btn)
+
+        network_test_layout.addLayout(button_layout)
+
+        layout.addWidget(network_test_group)
+
         # 数据标准化读取器组
         reader_group = QGroupBox("数据标准化读取器 - 批量自动化处理")
         reader_layout = QVBoxLayout(reader_group)
@@ -5287,6 +6186,221 @@ class SystemManager(BaseWidget, LoggerMixin):
                 self.reader_status_label.setText("状态: 启动失败")
 
             self.show_error(f"启动失败: {e}")
+
+    # ==================== 网络测速工具方法 ====================
+
+    def _test_bandwidth_full(self):
+        """测试服务商带宽（完整测试）."""
+        try:
+            self.test_bandwidth_btn.setEnabled(False)
+            self.test_latency_btn.setEnabled(False)
+            self.test_bandwidth_btn.setText("测试中...")
+
+            # 清空之前的结果
+            self.bandwidth_download_label.setText("测试中...")
+            self.bandwidth_upload_label.setText("测试中...")
+            self.bandwidth_ping_label.setText("测试中...")
+
+            # 在后台线程执行测试
+            from threading import Thread
+
+            def run_test():
+                try:
+                    service = self.service_manager.get_service(
+                        "system_manager_service", silent=True
+                    )
+                    if not service:
+                        self._update_bandwidth_result_error("无法获取系统服务")
+                        return
+
+                    # 通过ZMQ向监控进程发送测试请求
+                    import zmq
+                    import json
+                    from pathlib import Path
+
+                    # 读取监控进程端口配置
+                    addr = "127.0.0.1"
+                    port = 5557  # 默认端口
+                    try:
+                        ports_file = Path("logs") / "monitor_ports.json"
+                        if ports_file.exists():
+                            with open(ports_file, "r", encoding="utf-8") as f:
+                                ports_data = json.load(f)
+                            addr = str(ports_data.get("bind_addr", addr))
+                            port = int(ports_data.get("query_rep", port))
+                    except Exception:
+                        pass  # 使用默认值
+
+                    context = zmq.Context()
+                    socket = context.socket(zmq.REQ)
+                    socket.connect(f"tcp://{addr}:{port}")
+                    socket.setsockopt(zmq.RCVTIMEO, 45000)  # 45秒超时
+
+                    socket.send_json({"action": "test_bandwidth_full"})
+                    response = socket.recv_json()
+
+                    socket.close()
+                    context.term()
+
+                    if isinstance(response, dict) and response.get("status") == "success":
+                        result = response.get("data", {})
+                        if isinstance(result, dict):
+                            self._update_bandwidth_result_success(result)
+                        else:
+                            self._update_bandwidth_result_error("返回数据格式错误")
+                    else:
+                        error_msg = (
+                            response.get("message", "测试失败")
+                            if isinstance(response, dict)
+                            else "测试失败"
+                        )
+                        self._update_bandwidth_result_error(str(error_msg))
+
+                except zmq.Again:
+                    self._update_bandwidth_result_error("测试超时（45秒）")
+                except Exception as e:
+                    self.logger.error("带宽测试异常: %s", e, exc_info=True)
+                    self._update_bandwidth_result_error(f"连接失败: {str(e)[:50]}")
+
+            test_thread = Thread(target=run_test, daemon=True)
+            test_thread.start()
+
+        except Exception as e:
+            self.logger.error("启动带宽测试失败: %s", e)
+            self._update_bandwidth_result_error(str(e))
+
+    def _test_latency_only(self):
+        """测试实时延迟（轻量级）."""
+        try:
+            self.test_bandwidth_btn.setEnabled(False)
+            self.test_latency_btn.setEnabled(False)
+            self.test_latency_btn.setText("测试中...")
+
+            self.bandwidth_ping_label.setText("测试中...")
+
+            from threading import Thread
+
+            def run_test():
+                try:
+                    service = self.service_manager.get_service(
+                        "system_manager_service", silent=True
+                    )
+                    if not service:
+                        self._update_latency_result_error("无法获取系统服务")
+                        return
+
+                    import zmq
+                    import json
+                    from pathlib import Path
+
+                    # 读取监控进程端口配置
+                    addr = "127.0.0.1"
+                    port = 5557  # 默认端口
+                    try:
+                        ports_file = Path("logs") / "monitor_ports.json"
+                        if ports_file.exists():
+                            with open(ports_file, "r", encoding="utf-8") as f:
+                                ports_data = json.load(f)
+                            addr = str(ports_data.get("bind_addr", addr))
+                            port = int(ports_data.get("query_rep", port))
+                    except Exception:
+                        pass  # 使用默认值
+
+                    context = zmq.Context()
+                    socket = context.socket(zmq.REQ)
+                    socket.connect(f"tcp://{addr}:{port}")
+                    socket.setsockopt(zmq.RCVTIMEO, 5000)  # 5秒超时
+
+                    socket.send_json({"action": "test_ping"})
+                    response = socket.recv_json()
+
+                    socket.close()
+                    context.term()
+
+                    if isinstance(response, dict) and response.get("status") == "success":
+                        result = response.get("data", {})
+                        if isinstance(result, dict):
+                            self._update_latency_result_success(result)
+                        else:
+                            self._update_latency_result_error("返回数据格式错误")
+                    else:
+                        error_msg = (
+                            response.get("message", "测试失败")
+                            if isinstance(response, dict)
+                            else "测试失败"
+                        )
+                        self._update_latency_result_error(str(error_msg))
+
+                except zmq.Again:
+                    self._update_latency_result_error("测试超时（5秒）")
+                except Exception as e:
+                    self.logger.error("延迟测试异常: %s", e, exc_info=True)
+                    self._update_latency_result_error(f"连接失败: {str(e)[:50]}")
+
+            test_thread = Thread(target=run_test, daemon=True)
+            test_thread.start()
+
+        except Exception as e:
+            self.logger.error("启动延迟测试失败: %s", e)
+            self._update_latency_result_error(str(e))
+
+    def _update_bandwidth_result_success(self, result: Dict[str, Any]):
+        """更新完整带宽测试结果（成功）."""
+        from datetime import datetime
+
+        download_mbps = result.get("download_mbps", 0)
+        upload_mbps = result.get("upload_mbps", 0)
+        ping_ms = result.get("ping_ms", 0)
+
+        self.bandwidth_download_label.setText(f"{download_mbps:.2f} Mbps")
+        self.bandwidth_download_label.setStyleSheet("color: #0F0; font-weight: bold;")
+
+        self.bandwidth_upload_label.setText(f"{upload_mbps:.2f} Mbps")
+        self.bandwidth_upload_label.setStyleSheet("color: #0F0; font-weight: bold;")
+
+        self.bandwidth_ping_label.setText(f"{ping_ms:.2f} ms")
+        self.bandwidth_ping_label.setStyleSheet("color: #0F0; font-weight: bold;")
+
+        self.bandwidth_test_time_label.setText(datetime.now().strftime("%H:%M:%S"))
+
+        self.test_bandwidth_btn.setText("📊 测服务商带宽")
+        self.test_bandwidth_btn.setEnabled(True)
+        self.test_latency_btn.setEnabled(True)
+
+    def _update_bandwidth_result_error(self, error_msg: str):
+        """更新完整带宽测试结果（失败）."""
+        self.bandwidth_download_label.setText(error_msg)
+        self.bandwidth_download_label.setStyleSheet("color: #F00;")
+        self.bandwidth_upload_label.setText("--")
+        self.bandwidth_ping_label.setText("--")
+
+        self.test_bandwidth_btn.setText("📊 测服务商带宽")
+        self.test_bandwidth_btn.setEnabled(True)
+        self.test_latency_btn.setEnabled(True)
+
+    def _update_latency_result_success(self, result: Dict[str, Any]):
+        """更新延迟测试结果（成功）."""
+        from datetime import datetime
+
+        ping_ms = result.get("ping_ms", 0)
+
+        self.bandwidth_ping_label.setText(f"{ping_ms:.2f} ms")
+        self.bandwidth_ping_label.setStyleSheet("color: #0F0; font-weight: bold;")
+
+        self.bandwidth_test_time_label.setText(datetime.now().strftime("%H:%M:%S"))
+
+        self.test_latency_btn.setText("⚡ 测实时延迟")
+        self.test_bandwidth_btn.setEnabled(True)
+        self.test_latency_btn.setEnabled(True)
+
+    def _update_latency_result_error(self, error_msg: str):
+        """更新延迟测试结果（失败）."""
+        self.bandwidth_ping_label.setText(error_msg)
+        self.bandwidth_ping_label.setStyleSheet("color: #F00;")
+
+        self.test_latency_btn.setText("⚡ 测实时延迟")
+        self.test_bandwidth_btn.setEnabled(True)
+        self.test_latency_btn.setEnabled(True)
 
     # ==================== 损坏文件清理工具方法 ====================
 
@@ -5865,6 +6979,9 @@ class SystemManager(BaseWidget, LoggerMixin):
     def _diagnose_config(self):
         """诊断配置状态."""
         try:
+            # 记录用户诊断操作
+            logger_user.info("用户执行系统诊断: 配置诊断")
+
             self.logger.info("开始诊断配置...")
 
             if not self.system_service:
@@ -7824,12 +8941,12 @@ class SystemManager(BaseWidget, LoggerMixin):
             smart_data = metrics.get("smart", {})
             if smart_data:
                 total_reallocated = sum(
-                    disk.get("reallocated_sectors", 0)
+                    (disk.get("reallocated_sectors") or 0)
                     for disk in smart_data.values()
                     if isinstance(disk, dict)
                 )
                 total_pending = sum(
-                    disk.get("pending_sectors", 0)
+                    (disk.get("pending_sectors") or 0)
                     for disk in smart_data.values()
                     if isinstance(disk, dict)
                 )

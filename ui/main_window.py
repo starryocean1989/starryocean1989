@@ -26,6 +26,10 @@ try:
 except ImportError:
     psutil = None
 
+# UI层专用logger
+logger = logging.getLogger("ui.main_window")
+logger_user = logging.getLogger("ui.user_feedback")
+
 from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtGui import QAction, QFont
 from PySide6.QtWidgets import (
@@ -70,7 +74,13 @@ class MainWindow(QMainWindow, LoggerMixin):
             backend_ready: 后端服务是否已就绪（True=同步模式，False=异步模式）
         """
         super().__init__()
-        # 🔧 关键修复：多重继承需要显式初始化LoggerMixin
+
+        # 🔧 关键修复：在LoggerMixin初始化之前设置自定义logger
+        # LoggerMixin使用@property返回self._logger，所以直接设置_logger即可
+        self._logger = logger
+        self._logger_user = logger_user
+
+        # 现在初始化LoggerMixin（它会使用我们设置的_logger）
         LoggerMixin.__init__(self)
 
         self.backend_ready = backend_ready
@@ -86,14 +96,18 @@ class MainWindow(QMainWindow, LoggerMixin):
         # 初始化组件
         try:
             self.theme_manager = ThemeManager()
+            self.logger.debug("主题管理器初始化成功")
         except Exception as e:
-            self.logger.error("初始化主题管理器失败: %s", e)
+            self.logger.exception("初始化主题管理器失败: %s", e)
             self.theme_manager = None
+            # 向用户显示友好错误
+            QMessageBox.warning(self, "初始化警告", "主题管理器初始化失败，将使用默认主题")
 
         try:
             self.config_manager = ConfigManager()
+            self.logger.debug("配置管理器初始化成功")
         except Exception as e:
-            self.logger.error("初始化配置管理器失败: %s", e)
+            self.logger.exception("初始化配置管理器失败: %s", e)
             # 先设置为 None，后面会处理
             self.config_manager = None
 
@@ -149,7 +163,7 @@ class MainWindow(QMainWindow, LoggerMixin):
         self.setup_status_bar()
 
         # 如果后端已就绪，立即创建功能界面
-        if backend_ready:
+        if self.backend_ready:
             self.create_function_interfaces()
 
             # 应用主题
@@ -158,21 +172,40 @@ class MainWindow(QMainWindow, LoggerMixin):
             # 连接信号
             self.connect_signals()
 
-            # 启动更新定时器
-            self.start_update_timer()
-
-            # 标记就绪阶段（同步模式）
-            try:
-                if getattr(self, "boot_orchestrator", None):
-                    self.boot_orchestrator.mark_ready("backend_ready")
-                    self.boot_orchestrator.mark_ready("ui_ready")
-            except Exception:
-                pass
-            self.logger.info("主窗口初始化完成（同步模式）")
+            # 完成同步初始化的剩余部分
+            self._complete_sync_init()
         else:
-            # 异步模式：功能界面稍后创建
-            self.apply_theme()
-            self.logger.info("主窗口框架初始化完成（异步模式，等待后端就绪）")
+            # 完成异步初始化
+            self._complete_async_init()
+
+    @property
+    def logger_user(self) -> logging.Logger:
+        """获取用户反馈日志记录器.
+
+        Returns:
+            logging.Logger: 用户反馈日志记录器实例
+        """
+        return self._logger_user
+
+    def _complete_sync_init(self):
+        """完成同步模式的初始化（原__init__的后续代码）."""
+        # 启动更新定时器
+        self.start_update_timer()
+
+        # 标记就绪阶段（同步模式）
+        try:
+            if getattr(self, "boot_orchestrator", None):
+                self.boot_orchestrator.mark_ready("backend_ready")
+                self.boot_orchestrator.mark_ready("ui_ready")
+        except Exception:
+            pass
+        self.logger.info("主窗口初始化完成（同步模式）")
+
+    def _complete_async_init(self):
+        """完成异步模式的初始化."""
+        # 异步模式：功能界面稍后创建
+        self.apply_theme()
+        self.logger.info("主窗口框架初始化完成（异步模式，等待后端就绪）")
 
     def show(self):
         """重写show方法以确保窗口正确显示."""
@@ -201,34 +234,65 @@ class MainWindow(QMainWindow, LoggerMixin):
             import os
             from backend.core.config import init_settings, get_settings
 
+            # 使用专用logger记录启动流程
+            logger.info("开始初始化配置模块")
+
             # 从环境变量获取配置文件路径
             config_file = os.getenv("CONFIG_FILE")
 
             if config_file:
-                logging.getLogger(__name__).info("从环境变量加载配置: %s", config_file)
+                logger.info("从环境变量加载配置文件: %s", config_file)
                 init_settings(config_file)
             else:
-                logging.getLogger(__name__).info("使用默认配置文件")
+                logger.info("使用默认配置文件")
                 init_settings()
 
             # 验证配置已加载
             settings = get_settings()
             if settings.ai.api_key:
                 masked_key = (
-                    f"{settings.ai.api_key[:4]}...{settings.ai.api_key[-4:]}"
+                    "%s...%s" % (settings.ai.api_key[:4], settings.ai.api_key[-4:])
                     if len(settings.ai.api_key) > 8
                     else "***"
                 )
-                logging.getLogger(__name__).info("配置已加载，API Key: %s", masked_key)
+                logger.info("配置加载完成: API Key=%s", masked_key)
             else:
-                logging.getLogger(__name__).warning("配置已加载，但API Key未设置")
+                logger.warning("配置加载完成，但API Key未设置")
 
         except Exception as e:
-            logging.getLogger(__name__).error("配置初始化失败: %s", e, exc_info=True)
+            logger.exception("配置初始化失败: %s", e)
 
     def initialize_function_interfaces_after_backend(self):
         """在后端就绪后初始化功能界面（异步模式）."""
         try:
+            # 升级状态栏（如果尚未升级）
+            if not hasattr(self, "enhanced_statusbar") or self.enhanced_statusbar is None:
+                try:
+                    from backend.core.base import get_event_engine
+                    from ui.components.enhanced_statusbar import EnhancedStatusBar
+
+                    event_engine = get_event_engine()
+                    if event_engine:
+                        # 移除占位状态栏
+                        if hasattr(self, "status_label") and self.status_label:
+                            self.status_bar.removeWidget(self.status_label)
+                        if hasattr(self, "alert_ticker") and self.alert_ticker:
+                            self.status_bar.removeWidget(self.alert_ticker)
+                        if hasattr(self, "system_info_label") and self.system_info_label:
+                            self.status_bar.removeWidget(self.system_info_label)
+
+                        # 创建增强状态栏
+                        self.enhanced_statusbar = EnhancedStatusBar(event_engine)
+                        self.status_bar.addWidget(self.enhanced_statusbar, 1)
+
+                        # 保留兼容性引用
+                        self.status_label = self.enhanced_statusbar.status_label
+                        self.system_info_label = self.enhanced_statusbar.resource_label
+
+                        self.logger.info("✅ 状态栏已升级为增强模式")
+                except Exception as e:
+                    self.logger.warning("状态栏升级失败: %s", e)
+
             self.logger.info("=" * 70)
             self.logger.info("🎨 开始创建UI功能界面（主线程）")
             self.logger.info("=" * 70)
@@ -329,18 +393,19 @@ class MainWindow(QMainWindow, LoggerMixin):
         try:
             from backend.core.base import initialize_services
 
+            logger.info("开始初始化后端服务")
             init_result = initialize_services()
             success = init_result.get("success", False)
             if success:
-                logging.getLogger(__name__).info("后端服务初始化完成")
+                logger.info("后端服务初始化完成")
             else:
-                logging.getLogger(__name__).warning("后端服务初始化失败")
+                logger.warning("后端服务初始化失败")
                 error_report = init_result.get("user_friendly_report", "")
                 if error_report:
-                    logging.getLogger(__name__).warning("错误详情: %s", error_report)
+                    logger.warning("错误详情: %s", error_report)
 
         except Exception as e:
-            logging.getLogger(__name__).warning("后端服务初始化失败: %s", e)
+            logger.exception("后端服务初始化异常: %s", e)
 
     def _connect_backend_progress_signals(self):
         """连接后台初始化进度信号."""
@@ -531,9 +596,41 @@ class MainWindow(QMainWindow, LoggerMixin):
         help_menu.addAction(about_action)
 
     def setup_status_bar(self):
-        """设置状态栏."""
+        """设置状态栏（使用增强版）."""
         self.status_bar = self.statusBar()
 
+        # 检查backend是否就绪
+        if not self.backend_ready:
+            # 后端未就绪，创建占位状态栏
+            self.logger.info("后端未就绪，使用占位状态栏（将在backend就绪后升级）")
+            self._setup_fallback_status_bar()
+            return
+
+        try:
+            # 🆕 使用增强状态栏
+            from ui.components.enhanced_statusbar import EnhancedStatusBar
+            from backend.core.base import get_event_engine
+
+            event_engine = get_event_engine()
+            if event_engine:
+                self.enhanced_statusbar = EnhancedStatusBar(event_engine)
+                self.status_bar.addWidget(self.enhanced_statusbar, 1)
+                self.logger.info("✅ 增强状态栏已加载")
+
+                # 保留兼容性引用（供现有代码使用）
+                self.status_label = self.enhanced_statusbar.status_label
+                self.system_info_label = self.enhanced_statusbar.resource_label
+            else:
+                # 降级：使用传统状态栏
+                self._setup_fallback_status_bar()
+                self.logger.warning("⚠️ EventEngine不可用，使用传统状态栏")
+        except Exception as e:
+            # 降级：使用传统状态栏
+            self.logger.error("增强状态栏加载失败: %s，使用传统状态栏", e)
+            self._setup_fallback_status_bar()
+
+    def _setup_fallback_status_bar(self):
+        """设置传统状态栏（降级方案）."""
         # 左侧状态信息
         self.status_label = QLabel("就绪")
         self.status_bar.addWidget(self.status_label, 1)
@@ -999,19 +1096,22 @@ class MainWindow(QMainWindow, LoggerMixin):
                     metadata = self.interface_metadata.get(interface_id, {})
                     interface_name = metadata.get("name", "未知")
 
+                    # 用户操作反馈日志
+                    self.logger_user.info("用户切换界面: %s", interface_name)
+
                     # ✅ 禁用自动触发按需加载，避免并发
                     # 所有加载由_trigger_lazy_loads_sequentially()严格控制
                     # if interface_id in getattr(self, "lazy_loaders", {}):
                     #     self._trigger_lazy_load(interface_id)
 
-                    # 更新状态栏
+                    # 更新状态栏（用户可见反馈）
                     if self.status_label:
                         self.status_label.setText(f"当前界面: {interface_name}")
 
                     # 发送界面切换信号
                     self.interface_changed.emit(interface_id)
 
-                    self.logger.info("切换到界面: %s (%s)", interface_name, interface_id)
+                    self.logger.info("界面已切换: %s (%s)", interface_name, interface_id)
 
     def on_interface_error(self, message: str):
         """界面错误回调."""

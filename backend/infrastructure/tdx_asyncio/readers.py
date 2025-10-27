@@ -66,8 +66,10 @@ class AsyncTdxDayReader:
             async with aiofiles.open(self.filepath, 'rb') as f:
                 data = await f.read()
 
-            # 解析数据
-            records = await asyncio.to_thread(self._parse_day_data, data)
+            # 🔧 优化：直接在协程中解析，避免线程池排队
+            # 数据解析很快（通常<1ms），不需要放到线程池
+            # 如果数据量很大可以分块处理并定期 await asyncio.sleep(0)
+            records = self._parse_day_data(data)
 
             if not records:
                 return pd.DataFrame()
@@ -176,8 +178,8 @@ class AsyncTdxMinuteReader:
             async with aiofiles.open(self.filepath, 'rb') as f:
                 data = await f.read()
 
-            # 解析数据
-            records = await asyncio.to_thread(self._parse_minute_data, data)
+            # 🔧 优化：直接在协程中解析，避免线程池排队
+            records = self._parse_minute_data(data)
 
             if not records:
                 return pd.DataFrame()
@@ -284,8 +286,8 @@ class AsyncTdxLc5Reader:
             async with aiofiles.open(self.filepath, 'rb') as f:
                 data = await f.read()
 
-            # 解析数据（与分钟线相同）
-            records = await asyncio.to_thread(self._parse_lc5_data, data)
+            # 🔧 优化：直接在协程中解析，避免线程池排队
+            records = self._parse_lc5_data(data)
 
             if not records:
                 return pd.DataFrame()

@@ -15,6 +15,9 @@ from PySide6.QtGui import QColor, QFont, QPalette
 if TYPE_CHECKING:
     from PySide6.QtWidgets import QApplication
 
+# ✅ 添加用户反馈logger
+logger_user = logging.getLogger("ui.user_feedback")
+
 
 class DashboardTheme:
     """Dashboard主题配置类 - 提供统一的色板和样式生成器."""
@@ -386,7 +389,8 @@ class ThemeManager:
 
     def __init__(self, theme_path: Optional[str] = None):
         """初始化主题管理器."""
-        self._logger = logging.getLogger(self.__class__.__name__)
+        # ✅ 使用规范命名
+        self._logger = logging.getLogger("ui.components.theme")
         self.current_theme = "dark"
         self.theme_path = theme_path or str(Path(__file__).parent / "themes.json")
         self.themes: Dict[str, Dict[str, Any]] = {}
@@ -813,6 +817,8 @@ class ThemeManager:
                     qss_content = f.read()
                 app.setStyleSheet(qss_content)
                 self._logger.info("成功切换到%s主题", theme_name)
+                # ✅ 用户操作反馈
+                logger_user.info("用户切换主题: %s", theme_name)
             else:
                 # 回退到调色板方式
                 self._set_dark_palette(app, self.themes)

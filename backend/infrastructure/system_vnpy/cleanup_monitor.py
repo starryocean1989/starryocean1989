@@ -17,7 +17,15 @@ import time
 from pathlib import Path
 
 # 配置日志
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+# 确保stdout使用UTF-8编码
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8')
+stream_handler = logging.StreamHandler(sys.stdout)
+logging.basicConfig(
+    level=logging.INFO, 
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[stream_handler]
+)
 logger = logging.getLogger(__name__)
 
 

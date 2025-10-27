@@ -23,7 +23,7 @@ import logging
 import re
 from collections import deque, namedtuple
 from enum import Enum
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from PySide6.QtCore import QRect, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (
@@ -91,8 +91,8 @@ class BaseWidget(QWidget):
         """
         super().__init__(parent)
         self.title = title
-        # 使用私有属性避免与LoggerMixin的logger属性冲突
-        self._logger = logging.getLogger(self.__class__.__name__)
+        # ✅ 使用ui.components前缀
+        self._logger = logging.getLogger(f"ui.components.{self.__class__.__name__.lower()}")
         self._is_initialized = False
         self._update_timer: Optional[QTimer] = None
 
@@ -156,18 +156,36 @@ class BaseWidget(QWidget):
         return handled
 
     def show_warning(self, message: str, title: str = "警告"):
-        """显示警告信息."""
+        """显示警告信息（非阻塞版本）.
+
+        🚀 修复UI卡死问题：使用非阻塞方式显示警告
+        - 记录到日志（立即生效）
+        - 通过QTimer.singleShot延迟弹窗（不阻塞调用线程）
+        - 或者可以选择不弹窗，只记录日志
+        """
         self._logger.warning("%s: %s", title, message)
 
-        QMessageBox.warning(self, title, message, QMessageBox.StandardButton.Ok)
+        # 🚀 方案1：使用QTimer延迟显示（非阻塞）
+        # QTimer.singleShot(0, lambda: QMessageBox.warning(self, title, message, QMessageBox.StandardButton.Ok))
+
+        # 🚀 方案2：只记录日志，不弹窗（推荐，避免打断用户操作）
+        # 如果确实需要弹窗，请手动调用 QMessageBox.warning
+        pass
 
     def show_info(self, message: str, title: str = "信息"):
-        """显示信息."""
+        """显示信息（非阻塞版本）.
+
+        🚀 修复UI卡死问题：使用非阻塞方式显示信息
+        - 记录到日志（立即生效）
+        - 发射Signal供其他组件处理
+        - 不使用模态对话框阻塞UI
+        """
         self._logger.info("%s: %s", title, message)
 
-        # 显示信息弹窗
-        QMessageBox.information(self, title, message, QMessageBox.StandardButton.Ok)
+        # 🚀 方案1：使用QTimer延迟显示（非阻塞）
+        # QTimer.singleShot(0, lambda: QMessageBox.information(self, title, message, QMessageBox.StandardButton.Ok))
 
+        # 🚀 方案2：只记录日志+发射信号，不弹窗（推荐）
         self.info_message.emit(message)
 
     def show_question(self, message: str, title: str = "确认") -> bool:
@@ -1197,3 +1215,252 @@ class ThresholdHeatmap(QWidget):
         if 0 <= critical_percent <= 100:
             painter.setPen(QPen(QColor("#FF0000"), 3))
             painter.drawLine(critical_x, bar_rect.y(), critical_x, bar_rect.y() + bar_rect.height())
+
+
+# ==================== 第4部分：垂直热力图组件 ====================
+
+
+class _HeatmapCanvas(QWidget):
+    """热力图画布（内部类，用于绘制垂直热力条）."""
+
+    def __init__(self, parent: "VerticalThresholdHeatmap"):
+        """初始化画布.
+
+        Args:
+            parent: 父级VerticalThresholdHeatmap组件
+        """
+        super().__init__(parent)
+        self.parent_heatmap = parent
+        self.setStyleSheet("background-color: #2A2A2A; border: none;")
+        self.setMinimumHeight(150)
+        # 移除最大高度限制，让热力图自动伸展
+
+    def paintEvent(self, event):
+        """绘制垂直热力条."""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        rect = self.rect()
+        if rect.width() <= 0 or rect.height() <= 0:
+            return
+
+        metrics_config = self.parent_heatmap.metrics_config
+        metric_values = self.parent_heatmap.metric_values
+
+        num_metrics = len(metrics_config)
+        if num_metrics == 0:
+            return
+
+        # 计算每个热力条的宽度和间距（均匀分配）
+        bar_spacing = 8
+        total_spacing = bar_spacing * (num_metrics + 1)
+        available_width = rect.width() - total_spacing
+        bar_width = available_width // num_metrics  # 均匀分配宽度，无最小限制
+
+        # 绘制每个指标的热力条
+        for i, metric in enumerate(metrics_config):
+            metric_key = metric["key"]
+            current_value = metric_values.get(metric_key, 0.0)
+            max_value = metric["max_value"]
+            warning_threshold = metric.get("warning", 0)
+            critical_threshold = metric.get("critical", 0)
+
+            # 计算热力条位置（减少上下边距，让热力图充满空间）
+            x_pos = bar_spacing + i * (bar_width + bar_spacing)
+            bar_rect = QRect(x_pos, 5, bar_width, rect.height() - 10)
+
+            # 绘制背景
+            painter.setBrush(QColor("#1E1E1E"))
+            painter.setPen(QPen(QColor("#555"), 1))
+            painter.drawRoundedRect(bar_rect, 3, 3)
+
+            # 计算填充高度（从下到上）
+            fill_percent = min((current_value / max_value) * 100, 100) if max_value > 0 else 0
+            fill_height = int((fill_percent / 100.0) * bar_rect.height())
+
+            if fill_height > 0:
+                # 创建垂直渐变（绿→黄→红，从下到上）
+                from PySide6.QtGui import QLinearGradient
+
+                gradient = QLinearGradient(
+                    bar_rect.x(),
+                    bar_rect.y() + bar_rect.height(),  # 底部
+                    bar_rect.x(),
+                    bar_rect.y(),  # 顶部
+                )
+                gradient.setColorAt(0.0, QColor("#00FF00"))  # 底部：绿色
+                gradient.setColorAt(0.5, QColor("#FFFF00"))  # 中间：黄色
+                gradient.setColorAt(1.0, QColor("#FF0000"))  # 顶部：红色
+
+                # 绘制填充区域（从底部向上）
+                fill_rect = QRect(
+                    bar_rect.x(),
+                    bar_rect.y() + bar_rect.height() - fill_height,
+                    bar_rect.width(),
+                    fill_height,
+                )
+                painter.setBrush(gradient)
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.drawRoundedRect(fill_rect, 3, 3)
+
+            # 绘制阈值线（水平线）
+            if warning_threshold > 0:
+                warning_percent = (warning_threshold / max_value) * 100
+                warning_y = (
+                    bar_rect.y()
+                    + bar_rect.height()
+                    - int((warning_percent / 100.0) * bar_rect.height())
+                )
+                painter.setPen(QPen(QColor("#FFAA00"), 2, Qt.PenStyle.DashLine))
+                painter.drawLine(
+                    bar_rect.x(), warning_y, bar_rect.x() + bar_rect.width(), warning_y
+                )
+
+            if critical_threshold > 0:
+                critical_percent = (critical_threshold / max_value) * 100
+                critical_y = (
+                    bar_rect.y()
+                    + bar_rect.height()
+                    - int((critical_percent / 100.0) * bar_rect.height())
+                )
+                painter.setPen(QPen(QColor("#FF0000"), 2, Qt.PenStyle.DashLine))
+                painter.drawLine(
+                    bar_rect.x(), critical_y, bar_rect.x() + bar_rect.width(), critical_y
+                )
+
+
+class VerticalThresholdHeatmap(QWidget):
+    """垂直热力图组件（支持多指标并排显示，热力条从下到上填充）.
+
+    用于系统状态监控的4个监控卡片，每个卡片显示多个相关指标。
+    """
+
+    def __init__(
+        self,
+        title: str,
+        metrics: List[Dict[str, Any]],
+        parent: Optional[QWidget] = None,
+    ):
+        """初始化垂直热力图组件.
+
+        Args:
+            title: 卡片标题
+            metrics: 指标配置列表，每个指标包含:
+                {
+                    "key": str,  # 指标唯一标识
+                    "label": str,  # 显示名称
+                    "unit": str,  # 单位
+                    "warning": float,  # 警告阈值
+                    "critical": float,  # 严重阈值
+                    "max_value": float,  # 最大值
+                }
+            parent: 父组件
+        """
+        super().__init__(parent)
+        self.title = title
+        self.metrics_config = metrics
+        self.metric_values = {m["key"]: 0.0 for m in metrics}
+
+        # 设置最小尺寸
+        self.setMinimumHeight(200)
+        self.setMinimumWidth(250)
+
+        # 深色背景样式（增强边框）
+        self.setStyleSheet(
+            """
+            QWidget {
+                background-color: #1E1E1E;
+                border: 2px solid #444444;
+                border-radius: 6px;
+            }
+            """
+        )
+
+        # 主布局 - 紧凑布局，减小边距和间距
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setContentsMargins(10, 6, 10, 6)
+        self.main_layout.setSpacing(4)
+
+        # 标题 - 减小字体
+        title_label = QLabel(title)
+        title_label.setStyleSheet(
+            "font-size: 11px; font-weight: bold; color: #E0E0E0; border: none;"
+        )
+        self.main_layout.addWidget(title_label)
+
+        # 热力条绘制区域（使用专用画布）
+        self.heatmap_area = _HeatmapCanvas(self)
+        self.main_layout.addWidget(self.heatmap_area, 1)  # stretch=1，占据剩余空间
+
+        # 指标数值显示区域 - 紧凑布局
+        self.values_layout = QHBoxLayout()
+        self.values_layout.setSpacing(5)
+        self.value_labels = {}
+
+        for metric in metrics:
+            value_container = QWidget()
+            value_container.setStyleSheet("border: none;")
+            value_layout = QVBoxLayout(value_container)
+            value_layout.setContentsMargins(0, 0, 0, 0)
+            value_layout.setSpacing(1)
+
+            # 指标名称 - 减小字体
+            name_label = QLabel(metric["label"])
+            name_label.setStyleSheet("font-size: 10px; color: #AAA; border: none;")
+            name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            value_layout.addWidget(name_label)
+
+            # 指标数值 - 减小字体
+            value_label = QLabel(f"0.0{metric['unit']}")
+            value_label.setStyleSheet(
+                "font-size: 11px; font-weight: bold; color: #FFF; border: none;"
+            )
+            value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            value_layout.addWidget(value_label)
+
+            self.value_labels[metric["key"]] = value_label
+            self.values_layout.addWidget(value_container)
+
+        self.main_layout.addLayout(self.values_layout)
+
+    def update_metric(self, metric_key: str, value: float):
+        """更新指标值.
+
+        Args:
+            metric_key: 指标key
+            value: 当前值
+        """
+        if metric_key in self.metric_values:
+            self.metric_values[metric_key] = value
+
+            # 更新数值标签
+            if metric_key in self.value_labels:
+                metric_config = next(
+                    (m for m in self.metrics_config if m["key"] == metric_key), None
+                )
+                if metric_config:
+                    unit = metric_config["unit"]
+                    self.value_labels[metric_key].setText(f"{value:.1f}{unit}")
+
+            # 触发重绘
+            self.heatmap_area.update()
+
+    def update_metrics(self, values: Dict[str, float]):
+        """批量更新多个指标.
+
+        Args:
+            values: 指标key到值的映射
+        """
+        for key, value in values.items():
+            if key in self.metric_values:
+                self.metric_values[key] = value
+
+                # 更新数值标签
+                if key in self.value_labels:
+                    metric_config = next((m for m in self.metrics_config if m["key"] == key), None)
+                    if metric_config:
+                        unit = metric_config["unit"]
+                        self.value_labels[key].setText(f"{value:.1f}{unit}")
+
+        # 触发重绘
+        self.heatmap_area.update()

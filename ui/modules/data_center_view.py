@@ -4,6 +4,7 @@
 标准架构：4个子界面采用选项卡形式。
 合并tabs/handlers/utils逻辑，统一backend调用。
 """
+import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -50,6 +51,9 @@ EVENT_CHINASTOCK_DOWNLOAD = "eChinaStockDownload"
 EVENT_DATA_QUALITY_UPDATE = "eDataQualityUpdate"  # 数据质量更新事件
 EVENT_DATA_SCAN_COMPLETE = "eDataScanComplete"  # 扫描完成事件
 
+# UI层专用logger
+logger_user = logging.getLogger("ui.user_feedback")
+
 # ==================== 常量定义 ====================
 
 EXCHANGES = ["全部", "上交所", "深交所", "北交所"]
@@ -82,56 +86,33 @@ class ReloadSymbolsThread(QThread):
         """
         super().__init__(parent)
         self.data_center_service = data_center_service
+        # UI专用logger
+        import logging
+
+        self.logger = logging.getLogger("ui.data_center.worker")
 
     def run(self):
         """线程执行函数（在后台线程中运行）."""
-        import logging
-
-        logger = logging.getLogger(__name__)
-
-        # 同时使用print和logging，确保能看到输出
-        print(">>> [THREAD] ReloadSymbolsThread.run() 开始执行", flush=True)
-        logger.info(">>> [THREAD] ReloadSymbolsThread.run() 开始执行")
+        import time
 
         try:
-            print(">>> [THREAD] 发送进度信号...", flush=True)
+            self.logger.debug("品种重载工作线程开始")
             self.progress_signal.emit("正在连接服务器...")
-            logger.info(">>> [THREAD] 发送进度信号: 正在连接服务器...")
 
             # 在后台线程中执行耗时操作
-            print(">>> [THREAD] 开始调用 reload_symbol_list()...", flush=True)
-            logger.info(">>> [THREAD] 开始调用 reload_symbol_list()...")
-            import time
-
             start_time = time.time()
             result = self.data_center_service.reload_symbol_list(force=True)
             elapsed = time.time() - start_time
 
-            print(f">>> [THREAD] reload_symbol_list() 完成，耗时: {elapsed:.2f}秒", flush=True)
-            logger.info(">>> [THREAD] reload_symbol_list() 完成，耗时: %.2f秒", elapsed)
+            self.logger.info(
+                "品种重载完成: 耗时=%.2fs, 数量=%d", elapsed, result.get("symbol_count", 0)
+            )
 
-            # 发送完成信号
-            print(
-                f">>> [THREAD] 发送完成信号: success={result.get('success')}, count={result.get('symbol_count')}",
-                flush=True,
-            )
-            logger.info(
-                ">>> [THREAD] 发送完成信号，结果: success=%s, count=%s",
-                result.get("success"),
-                result.get("symbol_count"),
-            )
             self.finished_signal.emit(result)
 
-            print(">>> [THREAD] ReloadSymbolsThread.run() 执行完成", flush=True)
-            logger.info(">>> [THREAD] ReloadSymbolsThread.run() 执行完成")
-
         except Exception as e:
-            # 发送错误信号
-            print(f">>> [THREAD] 发生异常: {e}", flush=True)
-            logger.error(">>> [THREAD] 发生异常: %s", e, exc_info=True)
-            import traceback
-
-            traceback.print_exc()
+            # 记录异常并发送错误信号
+            self.logger.exception("品种重载失败: %s", e)
             self.error_signal.emit(f"加载失败: {str(e)}")
 
 
@@ -158,153 +139,87 @@ class DownloadThread(QThread):
         self.start_date = start_date
         self.end_date = end_date  # 可选：结束日期
         self.symbols = symbols  # 可选：指定品种列表（用于修复下载）
+        # UI专用logger
+        import logging
+
+        self.logger = logging.getLogger("ui.data_center.worker")
 
     def run(self):
         """线程执行函数（在后台线程中运行）."""
-        import logging
         from datetime import datetime
-
-        logger = logging.getLogger(__name__)
-
-        # 使用print确保能看到输出
-        print(
-            ">>> [DOWNLOAD THREAD] DownloadThread.run() 开始执行",
-            flush=True,
-        )
-        print(
-            f">>> [DOWNLOAD THREAD] 开始时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            flush=True,
-        )
-        print(
-            f">>> [DOWNLOAD THREAD] 开始日期: {self.start_date}",
-            flush=True,
-        )
-        logger.info(">>> [DOWNLOAD THREAD] DownloadThread.run() 开始执行")
+        import time
 
         try:
-            # 🆕 记录开始时间（用于历史记录）
+            # 记录开始时间（用于历史记录）
             self.start_time = datetime.now()
 
-            print(">>> [DOWNLOAD THREAD] 发送进度信号...", flush=True)
+            # 记录下载开始
+            if self.symbols:
+                self.logger.info(
+                    "开始批量下载: 开始日期=%s, 品种数=%d", self.start_date, len(self.symbols)
+                )
+            else:
+                self.logger.info("开始增量下载: 开始日期=%s", self.start_date)
+
             self.progress_signal.emit("正在准备下载...")
 
             # 在后台线程中执行耗时操作
-            import time
-
             start_time = time.time()
 
             try:
-                print(
-                    ">>> [DOWNLOAD THREAD] 调用后端服务开始增量下载...",
-                    flush=True,
-                )
-                print(
-                    f">>> [DOWNLOAD THREAD] 调用时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-                    flush=True,
-                )
                 # 优先调用带进度的新方法；不存在则回退旧方法
                 if hasattr(self.data_center_service, "start_incremental_download_with_progress"):
 
                     def _cb(percent, message):
                         try:
+                            # 下载进度通过信号发送，不打日志
                             self.progress_signal.emit(str(message))
                         except Exception:
                             pass
 
-                    # 🆕 如果指定了品种列表，使用批量下载方法
-                    if self.symbols:
-                        # 修复下载：下载指定品种列表
-                        print(
-                            f">>> [DOWNLOAD THREAD] 修复下载模式，品种数: {len(self.symbols)}",
-                            flush=True,
-                        )
-                        # 注：这里假设后端会使用指定的品种列表，如果不支持需要修改后端
-                        result = self.data_center_service.start_incremental_download_with_progress(
-                            self.start_date, _cb
-                        )
-                    else:
-                        # 普通增量下载：下载所有品种
-                        print(
-                            ">>> [DOWNLOAD THREAD] 调用 start_incremental_download_with_progress()",
-                            flush=True,
-                        )
-                        result = self.data_center_service.start_incremental_download_with_progress(
-                            self.start_date, _cb
-                        )
-                    print(
-                        ">>> [DOWNLOAD THREAD] start_incremental_download_with_progress() 返回",
-                        flush=True,
+                    # 调用下载方法
+                    result = self.data_center_service.start_incremental_download_with_progress(
+                        self.start_date, _cb
                     )
                 else:
-                    print(
-                        ">>> [DOWNLOAD THREAD] 调用 start_incremental_download()",
-                        flush=True,
-                    )
                     result = self.data_center_service.start_incremental_download(self.start_date)
+
             except Exception as download_error:
-                logger.error("下载过程异常: %s", download_error, exc_info=True)
-                print(f">>> [DOWNLOAD THREAD] 下载异常: {download_error}", flush=True)
+                self.logger.exception("下载过程异常: %s", download_error)
                 self.error_signal.emit(f"下载失败: {str(download_error)}")
                 return
 
             elapsed = time.time() - start_time
 
-            # 🆕 记录耗时（用于历史记录）
+            # 记录耗时（用于历史记录）
             self.duration = elapsed
 
-            print(
-                ">>> [DOWNLOAD THREAD] 后端服务调用完成",
-                flush=True,
-            )
-            print(
-                f">>> [DOWNLOAD THREAD] 完成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-                flush=True,
-            )
-            print(
-                f">>> [DOWNLOAD THREAD] 总耗时: {elapsed:.2f}秒",
-                flush=True,
-            )
-            print(
-                f">>> [DOWNLOAD THREAD] 返回结果: {result}",
-                flush=True,
+            # 记录下载完成
+            success_count = result.get("success_count", 0)
+            failed_count = result.get("failed_count", 0)
+            self.logger.info(
+                "批量下载完成: 总耗时=%.2fs, 成功=%d, 失败=%d", elapsed, success_count, failed_count
             )
 
             # 检查是否过快完成（可能有问题）
             if elapsed < 5.0:
-                print(
-                    f"⚠️ [DOWNLOAD THREAD] 警告: 下载在{elapsed:.2f}秒内完成，可能存在问题！",
-                    flush=True,
-                )
-                logger.warning(f"下载过快完成（{elapsed:.2f}秒），请检查是否正常")
+                self.logger.warning("下载过快完成: 耗时=%.2fs, 请检查是否正常", elapsed)
 
             # 发送完成信号
-            print(
-                f">>> [DOWNLOAD THREAD] 发送完成信号: success={result.get('success')}", flush=True
-            )
-
             try:
                 self.finished_signal.emit(result)
-                print(">>> [DOWNLOAD THREAD] 完成信号已发送", flush=True)
             except Exception as signal_err:
-                print(f">>> [DOWNLOAD THREAD] 发送完成信号失败: {signal_err}", flush=True)
-                logger.error("发送完成信号失败: %s", signal_err, exc_info=True)
-
-            print(">>> [DOWNLOAD THREAD] DownloadThread.run() 执行完成", flush=True)
+                self.logger.exception("发送完成信号失败: %s", signal_err)
 
         except Exception as e:
-            # 发送错误信号
-            print(f">>> [DOWNLOAD THREAD] 发生异常: {e}", flush=True)
-            logger.error(">>> [DOWNLOAD THREAD] 发生异常: %s", e, exc_info=True)
-            import traceback
-
-            traceback.print_exc()
+            # 记录异常并发送错误信号
+            self.logger.exception("下载线程发生异常: %s", e)
 
             # 确保信号发送成功
             try:
                 self.error_signal.emit(f"下载失败: {str(e)}")
             except Exception as signal_err:
-                print(f">>> [DOWNLOAD THREAD] 发送错误信号失败: {signal_err}", flush=True)
-                logger.error("发送错误信号失败: %s", signal_err)
+                self.logger.exception("发送错误信号失败: %s", signal_err)
 
 
 class DataCenter(BaseWidget, LoggerMixin):
@@ -367,6 +282,9 @@ class DataCenter(BaseWidget, LoggerMixin):
 
         # 品种智能联想相关
         self.symbol_cache: List[Dict[str, Any]] = []  # 品种缓存（用于品种列表搜索框的拼音匹配）
+        self.symbol_pinyin_dict: Dict[tuple, str] = (
+            {}
+        )  # 🚀 品种拼音字典索引：(code, name) -> pinyin（O(1)查找）
         self.local_data_cache: List[Dict[str, Any]] = []  # 本地数据索引（用于本地数据搜索框联想）
         self.symbol_completer: Optional[QCompleter] = None  # 本地数据搜索框自动补全器
         # 注意：品种列表搜索框不再使用QCompleter，搜索直接触发品种列表过滤
@@ -452,7 +370,8 @@ class DataCenter(BaseWidget, LoggerMixin):
         if self.data_center_service:
             QTimer.singleShot(5000, self._load_quality_overview_with_retry)
 
-        # 🆕 延迟加载品种缓存用于品种列表搜索框的拼音匹配
+        # 🚀 性能优化：启动时延迟加载品种缓存用于品种列表搜索框的拼音匹配
+        # 字典构建已移到后台线程，主线程只做O(1)赋值，不会卡顿
         QTimer.singleShot(2000, self._load_symbol_cache_for_autocomplete)
 
         # 🆕 本地数据索引加载策略：优先使用后台数据质量扫描的结果（推送事件），超时后才启动后备方案
@@ -856,6 +775,18 @@ class DataCenter(BaseWidget, LoggerMixin):
         """创建数据下载子界面."""
         tab = QWidget()
         layout = QVBoxLayout(tab)
+
+        # ✅ 新增：前置条件提示
+        prerequisite_label = QLabel(
+            "📌 <b>下载前置条件</b>：请确保已在【品种列表】选项卡中点击【🔄 重新加载品种】或【↻ 刷新品种】按钮，"
+            "等待品种列表加载完成后再开始下载。否则会提示'未找到可下载的品种'。"
+        )
+        prerequisite_label.setStyleSheet(
+            "background-color: #FFF3CD; color: #856404; padding: 10px; "
+            "border: 1px solid #FFEEBA; border-radius: 5px; margin-bottom: 10px;"
+        )
+        prerequisite_label.setWordWrap(True)
+        layout.addWidget(prerequisite_label)
 
         # 下载配置组（仅增量下载）
         config_group = QGroupBox("增量下载配置")
@@ -1280,6 +1211,9 @@ class DataCenter(BaseWidget, LoggerMixin):
         即使缓存被删除，也可以通过此方法重新获取数据。
         """
         try:
+            # 记录用户操作
+            logger_user.info("用户点击刷新品种列表按钮")
+
             self.logger.info("=" * 60)
             self.logger.info(">>> _reload_symbols() 被调用")
             self.logger.info("=" * 60)
@@ -1291,8 +1225,9 @@ class DataCenter(BaseWidget, LoggerMixin):
 
             # 检查是否已有线程在运行
             if self.reload_thread and self.reload_thread.isRunning():
-                self.logger.warning(">>> 已有线程在运行")
-                self.show_warning("品种列表正在加载中，请稍候...")
+                self.logger.warning(">>> 已有线程在运行，品种列表正在加载中")
+                # 🚀 修复UI卡死：不弹出模态对话框，只记录日志
+                # self.show_warning("品种列表正在加载中，请稍候...")
                 return
 
             # 创建工作线程
@@ -1309,8 +1244,9 @@ class DataCenter(BaseWidget, LoggerMixin):
             self.reload_thread.error_signal.connect(
                 self._on_reload_error, Qt.ConnectionType.QueuedConnection
             )
+            # 🚀 修复UI卡死：progress_signal改为连接到日志输出，而不是模态对话框
             self.reload_thread.progress_signal.connect(
-                self.show_info, Qt.ConnectionType.QueuedConnection
+                lambda msg: self.logger.info("进度: %s", msg), Qt.ConnectionType.QueuedConnection
             )
             self.logger.info(">>> 信号连接完成")
 
@@ -1323,8 +1259,9 @@ class DataCenter(BaseWidget, LoggerMixin):
             if self.symbol_loading_progress:
                 self.symbol_loading_progress.setVisible(True)
 
-            # 显示加载提示
-            self.show_info("正在重新加载品种列表，请稍候...")
+            # 🚀 修复：使用非模态的状态栏消息替代模态对话框，避免阻塞UI
+            # self.show_info("正在重新加载品种列表，请稍候...")  # ← 模态对话框，会阻塞UI
+            self.logger.info("正在重新加载品种列表...")
             self.logger.info(">>> _reload_symbols() 执行完成")
 
         except Exception as e:
@@ -1338,6 +1275,8 @@ class DataCenter(BaseWidget, LoggerMixin):
             result: reload_symbol_list的返回结果
         """
         try:
+            import time
+
             self.logger.info("=" * 60)
             self.logger.info(">>> _on_reload_finished() 被调用")
             self.logger.info(
@@ -1357,30 +1296,44 @@ class DataCenter(BaseWidget, LoggerMixin):
                 self.all_symbols_data = data
                 self.logger.info(">>> all_symbols_data已更新: %d个", len(self.all_symbols_data))
 
+                # 🚀 性能优化：重新加载品种时清空搜索条件，避免对5000+品种进行搜索匹配
+                if self.search_input:
+                    self.search_input.clear()
+                    self.logger.info(">>> 已清空搜索条件")
+
                 # 🔧 关键：重新加载品种后立即更新联想缓存
+                t1 = time.time()
                 self._load_symbol_cache_for_autocomplete()
-                self.logger.info(">>> 品种联想缓存已更新")
+                t2 = time.time()
+                self.logger.info(">>> 品种联想缓存已启动（后台），耗时: %.3f秒", t2 - t1)
 
-                self._apply_filters()
-                self.logger.info(">>> _apply_filters()完成")
+                # 🚀 延迟执行_apply_filters，等待拼音字典构建完成（500ms足够）
+                # 避免在字典未构建时进行过滤，减少不必要的计算
+                t3 = time.time()
+                QTimer.singleShot(500, lambda: self._delayed_apply_filters(t3))
+                self.logger.info(">>> _apply_filters已安排延迟执行")
 
-                # 显示加载成功信息（带后台过滤提示）
+                # 🚀 修复：将模态对话框改为日志输出，避免阻塞UI
+                # 用户体验：不再弹出对话框打断用户操作，改为在日志中记录
                 if result.get("filtering_in_background"):
-                    self.show_info(
-                        f"✅ 成功加载 {result['symbol_count']} 个品种\n"
-                        f"💡 正在后台过滤未上市品种，完成后将自动更新..."
+                    self.logger.info(
+                        "✅ 成功加载 %d 个品种（正在后台过滤未上市品种）", result["symbol_count"]
                     )
                 else:
-                    self.show_info(f"✅ 成功加载 {result['symbol_count']} 个品种")
+                    self.logger.info("✅ 成功加载 %d 个品种", result["symbol_count"])
 
-                # 检查空品种类别并弹窗提醒
+                # 检查空品种类别 - 记录到日志而不是弹窗
                 empty_categories = result.get("empty_categories", [])
                 if empty_categories:
-                    self._show_empty_categories_warning(empty_categories)
+                    self.logger.warning("以下品种类别为空: %s", ", ".join(empty_categories))
+                    # 不再弹窗，避免阻塞UI
+                    # self._show_empty_categories_warning(empty_categories)
 
-                # 如果有其他警告信息，显示警告
+                # 如果有其他警告信息 - 记录到日志而不是弹窗
                 if result.get("warning"):
-                    self.show_warning(result["warning"])
+                    self.logger.warning("品种加载警告: %s", result["warning"])
+                    # 不再弹窗，避免阻塞UI
+                    # self.show_warning(result["warning"])
             else:
                 self.logger.error(">>> 加载失败: %s", result.get("message"))
                 self.show_error(f"加载失败: {result.get('message', '未知错误')}")
@@ -1429,15 +1382,10 @@ class DataCenter(BaseWidget, LoggerMixin):
                 # 缓存不存在
                 if "缓存不存在" in result.get("message", ""):
                     self.logger.warning("品种列表缓存不存在")
-                    QMessageBox.warning(
-                        self,
-                        "无法刷新",
-                        "品种列表缓存不存在！\n\n"
-                        "请先点击「🔄 重新加载品种」按钮来初始化品种数据。\n\n"
-                        "提示：\n"
-                        "• 「🔄 重新加载品种」：从通达信服务器获取完整品种列表\n"
-                        "• 「↻ 刷新品种」：从本地缓存刷新品种列表",
-                        QMessageBox.StandardButton.Ok,
+                    # 🚀 修复UI卡死：使用非阻塞日志替代模态对话框
+                    self.logger.warning(
+                        "品种列表缓存不存在！请先点击「🔄 重新加载品种」按钮来初始化品种数据。"
+                        "提示：「🔄 重新加载品种」从通达信服务器获取完整品种列表，「↻ 刷新品种」从本地缓存刷新品种列表"
                     )
                 else:
                     self.show_error(f"刷新失败: {result.get('message', '未知错误')}")
@@ -1448,26 +1396,20 @@ class DataCenter(BaseWidget, LoggerMixin):
             is_outdated = result.get("is_outdated", False)
 
             if not data or len(data) == 0:
-                self.logger.warning("品种缓存为空")
+                self.logger.debug("品种缓存为空（可能正在初始化或需要重新加载）")
                 self.show_warning("⚠️ 无品种缓存，请先点击【重新加载品种】按钮获取品种列表")
                 self.all_symbols_data = []
                 self.filtered_symbols_data = []
                 self._update_symbols_table()
                 return
 
-            # 显示缓存状态（如果过时，询问用户是否继续）
+            # 显示缓存状态（如果过时，记录日志但继续）
             if is_outdated:
-                reply = QMessageBox.information(
-                    self,
-                    "缓存过时提示",
-                    "品种列表缓存已过时（次日0时已失效）\n\n"
-                    "建议点击「🔄 重新加载品种」进行增量更新。\n\n"
-                    "是否继续使用过时缓存？",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                    QMessageBox.StandardButton.No,
+                # 🚀 修复UI卡死：不再使用模态对话框询问用户，直接记录日志并继续
+                self.logger.warning(
+                    "品种列表缓存已过时（次日0时已失效），建议点击「🔄 重新加载品种」进行增量更新"
                 )
-                if reply == QMessageBox.StandardButton.No:
-                    return
+                # 继续使用过时缓存，不中断用户操作
 
             # 更新数据
             self.all_symbols_data = data
@@ -1509,15 +1451,8 @@ class DataCenter(BaseWidget, LoggerMixin):
                 f"• 重新安装通达信软件或更新配置文件"
             )
 
-            # 显示警告对话框
-            msg_box = QMessageBox(self)
-            msg_box.setIcon(QMessageBox.Icon.Warning)
-            msg_box.setWindowTitle("品种列表警告")
-            msg_box.setText(warning_msg)
-            msg_box.setStandardButtons(QMessageBox.StandardButton.Ok)
-            msg_box.exec()
-
-            self.logger.warning("已显示空品种类别警告弹窗: %s", empty_categories)
+            # 🚀 修复UI卡死：不使用模态对话框，只记录日志
+            self.logger.warning("空品种类别警告: %s - %s", empty_categories, warning_msg)
 
         except Exception as e:
             self.logger.error("显示空品种类别警告失败: %s", e, exc_info=True)
@@ -1526,19 +1461,37 @@ class DataCenter(BaseWidget, LoggerMixin):
         """初始加载品种数据."""
         self._refresh_symbols()
 
+    def _delayed_apply_filters(self, start_time):
+        """延迟执行_apply_filters（用于等待拼音字典构建完成）
+
+        Args:
+            start_time: 开始时间戳（用于计算总耗时）
+        """
+        import time
+
+        self._apply_filters()
+        end_time = time.time()
+        self.logger.info(">>> _apply_filters延迟执行完成，总耗时: %.3f秒", end_time - start_time)
+
     def _apply_filters(self):
         """应用筛选条件."""
+        import time
+
+        t_start = time.time()
+
         if not self.all_symbols_data:
             self.filtered_symbols_data = []
             self._update_symbols_table()
             return
 
         filtered = self.all_symbols_data
+        self.logger.info(">>> [_apply_filters] 开始过滤，总数据: %d", len(filtered))
 
         # 搜索关键字
         if self.search_input:
             search_text = self.search_input.text().strip().lower()
             if search_text:
+                t1 = time.time()
 
                 def matches_symbol(symbol_data):
                     """检查品种是否匹配搜索条件"""
@@ -1546,15 +1499,10 @@ class DataCenter(BaseWidget, LoggerMixin):
                         code = self._extract_symbol_code(symbol_data).lower()
                         name = self._extract_symbol_name(symbol_data).lower()
 
-                        # 查找该品种的拼音首字母（如果在联想缓存中）
-                        pinyin = ""
-                        for cached_symbol in self.symbol_cache:
-                            if (
-                                cached_symbol.get("code") == code
-                                and cached_symbol.get("name") == name
-                            ):
-                                pinyin = cached_symbol.get("pinyin", "").lower()
-                                break
+                        # 🚀 性能优化：使用O(1)字典查找替代O(n)列表遍历
+                        # 从拼音字典索引中查找（避免嵌套循环）
+                        key = (code, name)
+                        pinyin = self.symbol_pinyin_dict.get(key, "")
 
                         # 三种匹配方式：代码、名称、拼音首字母
                         return search_text in code or search_text in name or search_text in pinyin
@@ -1565,25 +1513,54 @@ class DataCenter(BaseWidget, LoggerMixin):
                         return search_text in code or search_text in name
 
                 filtered = [s for s in filtered if matches_symbol(s)]
+                t2 = time.time()
+                self.logger.info(
+                    ">>> [_apply_filters] 搜索过滤完成，耗时: %.3f秒，结果: %d",
+                    t2 - t1,
+                    len(filtered),
+                )
 
         # 交易所筛选
         if self.exchange_combo:
             exchange = self.exchange_combo.currentText()
             if exchange != "全部":
+                t1 = time.time()
                 filtered = [s for s in filtered if s.get("exchange") == exchange]
+                t2 = time.time()
+                self.logger.info(
+                    ">>> [_apply_filters] 交易所过滤完成，耗时: %.3f秒，结果: %d",
+                    t2 - t1,
+                    len(filtered),
+                )
 
         # 品种类型筛选
         if self.symbol_type_combo:
             symbol_type = self.symbol_type_combo.currentText()
             if symbol_type != "全部":
+                t1 = time.time()
                 filtered = [s for s in filtered if s.get("product_type") == symbol_type]
+                t2 = time.time()
+                self.logger.info(
+                    ">>> [_apply_filters] 品种类型过滤完成，耗时: %.3f秒，结果: %d",
+                    t2 - t1,
+                    len(filtered),
+                )
 
         self.filtered_symbols_data = filtered
         self.current_page = 1
+
+        t_table_start = time.time()
         self._update_symbols_table()
+        t_table_end = time.time()
+
+        t_end = time.time()
+        self.logger.info(">>> [_apply_filters] 表格更新耗时: %.3f秒", t_table_end - t_table_start)
+        self.logger.info(">>> [_apply_filters] 总耗时: %.3f秒", t_end - t_start)
 
     def _update_symbols_table(self):
         """更新品种表格."""
+        import time
+
         if not self.symbols_table:
             return
 
@@ -1597,6 +1574,8 @@ class DataCenter(BaseWidget, LoggerMixin):
                 self.page_label.setText("第 1 页 / 共 1 页")
             return
 
+        t_start = time.time()
+
         # 计算分页
         total_items = len(self.filtered_symbols_data)
         self.total_pages = max(1, (total_items + self.page_size - 1) // self.page_size)
@@ -1604,80 +1583,112 @@ class DataCenter(BaseWidget, LoggerMixin):
         end_idx = min(start_idx + self.page_size, total_items)
         page_data = self.filtered_symbols_data[start_idx:end_idx]
 
-        # 更新表格
-        self.symbols_table.setRowCount(len(page_data))
-        for i, symbol in enumerate(page_data):
-            try:
-                # 🚀 兼容性处理：symbol可能是字典或字符串
-                if isinstance(symbol, dict):
-                    # 🔧 处理嵌套字典结构：后端返回的数据结构
-                    # symbol = {
-                    #     'symbol': {'code': '600000', 'name': '浦发银行', 'market': 1},
-                    #     'code': {'code': '600000', 'name': '浦发银行', 'market': 1},
-                    #     'name': {'code': '600000', 'name': '浦发银行', 'market': 1},
-                    #     'exchange': '上交所',
-                    #     'product_type': '股票'
-                    # }
+        self.logger.info(">>> [_update_symbols_table] 开始更新表格，数据量: %d行", len(page_data))
 
-                    # 获取品种信息字典（优先从symbol键获取，这是后端主要返回的）
-                    symbol_info = None
-                    if "symbol" in symbol and isinstance(symbol["symbol"], dict):
-                        symbol_info = symbol["symbol"]
-                    elif "code" in symbol and isinstance(symbol["code"], dict):
-                        symbol_info = symbol["code"]
-                    elif "name" in symbol and isinstance(symbol["name"], dict):
-                        symbol_info = symbol["name"]
+        # 🚀 性能优化：禁用排序和更新，避免每次插入都触发重绘
+        t1 = time.time()
+        self.symbols_table.setSortingEnabled(False)
+        self.symbols_table.setUpdatesEnabled(False)
+        t2 = time.time()
+        self.logger.info(">>> [_update_symbols_table] 禁用排序和更新，耗时: %.3f秒", t2 - t1)
 
-                    if symbol_info:
-                        symbol_code = symbol_info.get("code", "")
-                        symbol_name = symbol_info.get("name", "")
-                        symbol_exchange = symbol.get("exchange", "")
-                        symbol_type = symbol.get("product_type", "")
-                    else:
-                        # 备用处理：如果嵌套结构不匹配，尝试直接获取
-                        symbol_code = symbol.get("code", "")
-                        if isinstance(symbol_code, dict) and "code" in symbol_code:
-                            symbol_code = symbol_code["code"]
-                        symbol_name = symbol.get("name", "")
-                        if isinstance(symbol_name, dict) and "name" in symbol_name:
-                            symbol_name = symbol_name["name"]
-                        symbol_exchange = symbol.get("exchange", "")
-                        symbol_type = symbol.get("product_type", "")
-                else:
-                    # 旧格式：字符串
-                    symbol_code = str(symbol)
-                    symbol_name = ""
-                    symbol_exchange = ""
-                    symbol_type = ""
+        try:
+            # 更新表格
+            t3 = time.time()
+            self.symbols_table.setRowCount(len(page_data))
+            t4 = time.time()
+            self.logger.info(">>> [_update_symbols_table] setRowCount完成，耗时: %.3f秒", t4 - t3)
 
-                # 🔧 数据验证：确保品种代码不为空
-                if not symbol_code:
-                    self.logger.warning(f"第{i}行品种数据无效，跳过: {symbol}")
-                    # 🔧 调试日志：记录数据结构类型
-                    self.logger.debug(
-                        f"数据结构类型: symbol={type(symbol)}, symbol_code={type(symbol_code)}"
-                    )
+            t5 = time.time()
+            for i, symbol in enumerate(page_data):
+                try:
+                    # 🚀 兼容性处理：symbol可能是字典或字符串
                     if isinstance(symbol, dict):
-                        self.logger.debug(f"symbol.keys()={list(symbol.keys())}")
-                        for k, v in symbol.items():
-                            self.logger.debug(f"  {k}: {type(v)} = {v}")
+                        # 🔧 处理嵌套字典结构：后端返回的数据结构
+                        # symbol = {
+                        #     'symbol': {'code': '600000', 'name': '浦发银行', 'market': 1},
+                        #     'code': {'code': '600000', 'name': '浦发银行', 'market': 1},
+                        #     'name': {'code': '600000', 'name': '浦发银行', 'market': 1},
+                        #     'exchange': '上交所',
+                        #     'product_type': '股票'
+                        # }
+
+                        # 获取品种信息字典（优先从symbol键获取，这是后端主要返回的）
+                        symbol_info = None
+                        if "symbol" in symbol and isinstance(symbol["symbol"], dict):
+                            symbol_info = symbol["symbol"]
+                        elif "code" in symbol and isinstance(symbol["code"], dict):
+                            symbol_info = symbol["code"]
+                        elif "name" in symbol and isinstance(symbol["name"], dict):
+                            symbol_info = symbol["name"]
+
+                        if symbol_info:
+                            symbol_code = symbol_info.get("code", "")
+                            symbol_name = symbol_info.get("name", "")
+                            symbol_exchange = symbol.get("exchange", "")
+                            symbol_type = symbol.get("product_type", "")
+                        else:
+                            # 备用处理：如果嵌套结构不匹配，尝试直接获取
+                            symbol_code = symbol.get("code", "")
+                            if isinstance(symbol_code, dict) and "code" in symbol_code:
+                                symbol_code = symbol_code["code"]
+                            symbol_name = symbol.get("name", "")
+                            if isinstance(symbol_name, dict) and "name" in symbol_name:
+                                symbol_name = symbol_name["name"]
+                            symbol_exchange = symbol.get("exchange", "")
+                            symbol_type = symbol.get("product_type", "")
+                    else:
+                        # 旧格式：字符串
+                        symbol_code = str(symbol)
+                        symbol_name = ""
+                        symbol_exchange = ""
+                        symbol_type = ""
+
+                    # 🔧 数据验证：确保品种代码不为空
+                    if not symbol_code:
+                        self.logger.warning(f"第{i}行品种数据无效，跳过: {symbol}")
+                        # 🔧 调试日志：记录数据结构类型
+                        self.logger.debug(
+                            f"数据结构类型: symbol={type(symbol)}, symbol_code={type(symbol_code)}"
+                        )
+                        if isinstance(symbol, dict):
+                            self.logger.debug(f"symbol.keys()={list(symbol.keys())}")
+                            for k, v in symbol.items():
+                                self.logger.debug(f"  {k}: {type(v)} = {v}")
+                        continue
+
+                    # 确保所有字段都是字符串类型，避免类型错误
+                    symbol_code_str = str(symbol_code) if symbol_code else ""
+                    symbol_name_str = str(symbol_name) if symbol_name else ""
+                    symbol_exchange_str = str(symbol_exchange) if symbol_exchange else ""
+                    symbol_type_str = str(symbol_type) if symbol_type else ""
+
+                    self.symbols_table.setItem(i, 0, QTableWidgetItem(symbol_code_str))
+                    self.symbols_table.setItem(i, 1, QTableWidgetItem(symbol_name_str))
+                    self.symbols_table.setItem(i, 2, QTableWidgetItem(symbol_exchange_str))
+                    self.symbols_table.setItem(i, 3, QTableWidgetItem(symbol_type_str))
+                    self.symbols_table.setItem(i, 4, QTableWidgetItem("正常"))
+                except Exception as e:
+                    self.logger.error(
+                        f"更新第{i}行品种数据失败: {e}, symbol={symbol}", exc_info=True
+                    )
+                    # 继续处理下一行，不中断整个表格更新
                     continue
 
-                # 确保所有字段都是字符串类型，避免类型错误
-                symbol_code_str = str(symbol_code) if symbol_code else ""
-                symbol_name_str = str(symbol_name) if symbol_name else ""
-                symbol_exchange_str = str(symbol_exchange) if symbol_exchange else ""
-                symbol_type_str = str(symbol_type) if symbol_type else ""
+            t6 = time.time()
+            self.logger.info(
+                ">>> [_update_symbols_table] 填充%d行数据，耗时: %.3f秒", len(page_data), t6 - t5
+            )
 
-                self.symbols_table.setItem(i, 0, QTableWidgetItem(symbol_code_str))
-                self.symbols_table.setItem(i, 1, QTableWidgetItem(symbol_name_str))
-                self.symbols_table.setItem(i, 2, QTableWidgetItem(symbol_exchange_str))
-                self.symbols_table.setItem(i, 3, QTableWidgetItem(symbol_type_str))
-                self.symbols_table.setItem(i, 4, QTableWidgetItem("正常"))
-            except Exception as e:
-                self.logger.error(f"更新第{i}行品种数据失败: {e}, symbol={symbol}", exc_info=True)
-                # 继续处理下一行，不中断整个表格更新
-                continue
+        finally:
+            # 🚀 性能优化：重新启用排序和更新
+            t7 = time.time()
+            self.symbols_table.setUpdatesEnabled(True)
+            self.symbols_table.setSortingEnabled(True)
+            t8 = time.time()
+            self.logger.info(
+                ">>> [_update_symbols_table] 重新启用排序和更新，耗时: %.3f秒", t8 - t7
+            )
 
         # 更新统计和分页
         if self.symbols_count_label:
@@ -1688,6 +1699,9 @@ class DataCenter(BaseWidget, LoggerMixin):
             self.prev_page_btn.setEnabled(self.current_page > 1)
         if self.next_page_btn:
             self.next_page_btn.setEnabled(self.current_page < self.total_pages)
+
+        t_end = time.time()
+        self.logger.info(">>> [_update_symbols_table] 总耗时: %.3f秒", t_end - t_start)
 
     def _on_search_text_changed(self, text: str):
         """搜索文本改变，直接触发品种列表过滤（品种列表本身就是联想结果）"""
@@ -1875,77 +1889,124 @@ class DataCenter(BaseWidget, LoggerMixin):
             self.logger.error(f"❌ 更新本地数据搜索联想失败: {e}", exc_info=True)
 
     def _load_symbol_cache_for_autocomplete(self):
-        """加载品种缓存用于品种列表搜索框的拼音匹配
+        """加载品种缓存用于品种列表搜索框的拼音匹配（异步后台加载）
 
         注意：此缓存仅用于品种列表搜索框的拼音首字母匹配，
         搜索框不使用QCompleter，搜索直接触发品种列表过滤。
+
+        ⚠️ 重要：使用后台线程加载，避免阻塞UI主线程
         """
-        try:
-            if not self.data_center_service:
-                self.logger.debug("[品种列表搜索框] 数据中心服务不可用")
-                return
+        import threading
 
-            # 从缓存读取品种列表
-            symbols = self.data_center_service.get_symbols_from_cache()
-            if not symbols:
-                self.logger.debug("[品种列表搜索框] 品种缓存为空，拼音匹配暂不可用")
-                return
+        def load_in_background():
+            """后台线程执行数据加载"""
+            try:
+                if not self.data_center_service:
+                    self.logger.debug("[品种列表搜索框] 数据中心服务不可用")
+                    return
 
-            # 预处理：添加拼音首字母（分批处理，避免内存问题）
-            self.symbol_cache = []
-            success_count = 0
-            error_count = 0
+                self.logger.info("[后台] 开始加载品种缓存用于搜索联想...")
 
-            # 分批处理，每批处理1000个品种，避免一次性处理过多数据
-            batch_size = 1000
-            for i in range(0, len(symbols), batch_size):
-                batch = symbols[i : i + batch_size]
-                self.logger.debug(
-                    f"处理品种批次 {i//batch_size + 1}/{(len(symbols) + batch_size - 1)//batch_size}"
-                )
+                # 从缓存读取品种列表
+                symbols = self.data_center_service.get_symbols_from_cache()
+                if not symbols:
+                    self.logger.debug("[品种列表搜索框] 品种缓存为空，拼音匹配暂不可用")
+                    return
 
-                for symbol in batch:
-                    try:
-                        if isinstance(symbol, dict):
-                            # 直接从品种数据中提取代码和名称
-                            code = self._extract_symbol_code(symbol)
-                            raw_name = str(symbol.get("name") or "")
-                            name = self._clean_symbol_name_encoding(raw_name)
+                # 预处理：添加拼音首字母（分批处理，避免内存问题）
+                temp_cache = []
+                temp_pinyin_dict = {}  # 🚀 在后台线程构建拼音字典索引
+                success_count = 0
+                error_count = 0
 
-                            # 使用清理后的名称（后端已过滤掉API中不存在的品种）
-                            final_name = name
+                # 分批处理，每批处理1000个品种，避免一次性处理过多数据
+                batch_size = 1000
+                for i in range(0, len(symbols), batch_size):
+                    batch = symbols[i : i + batch_size]
+                    self.logger.debug(
+                        f"[后台] 处理品种批次 {i//batch_size + 1}/{(len(symbols) + batch_size - 1)//batch_size}"
+                    )
 
-                            # 确保品种代码和最终名称都有效
-                            if code and final_name:
-                                pinyin = self._get_pinyin_initials(final_name)
-                                self.symbol_cache.append(
-                                    {"code": code, "name": final_name, "pinyin": pinyin}
-                                )
-                                success_count += 1
+                    for symbol in batch:
+                        try:
+                            if isinstance(symbol, dict):
+                                # 直接从品种数据中提取代码和名称
+                                code = self._extract_symbol_code(symbol)
+                                raw_name = str(symbol.get("name") or "")
+                                name = self._clean_symbol_name_encoding(raw_name)
+
+                                # 使用清理后的名称（后端已过滤掉API中不存在的品种）
+                                final_name = name
+
+                                # 确保品种代码和最终名称都有效
+                                if code and final_name:
+                                    pinyin = self._get_pinyin_initials(final_name)
+                                    temp_cache.append(
+                                        {"code": code, "name": final_name, "pinyin": pinyin}
+                                    )
+
+                                    # 🚀 同时在后台构建拼音字典索引（避免在主线程中构建）
+                                    key = (code.lower(), final_name.lower())
+                                    temp_pinyin_dict[key] = pinyin.lower()
+
+                                    success_count += 1
+                                else:
+                                    error_count += 1
+                                    self.logger.debug(
+                                        f"[后台] 跳过无效品种数据: code={code}, raw_name='{raw_name}', cleaned_name='{name}', final_name='{final_name}'"
+                                    )
                             else:
                                 error_count += 1
-                                self.logger.debug(
-                                    f"跳过无效品种数据: code={code}, raw_name='{raw_name}', cleaned_name='{name}', final_name='{final_name}'"
-                                )
-                        else:
+                                self.logger.debug(f"[后台] 跳过非字典品种数据: {symbol}")
+                        except Exception as e:
                             error_count += 1
-                            self.logger.debug(f"跳过非字典品种数据: {symbol}")
-                    except Exception as e:
-                        error_count += 1
-                        self.logger.debug(f"处理品种数据失败: {e}, data={symbol}")
+                            self.logger.debug(f"[后台] 处理品种数据失败: {e}, data={symbol}")
 
-                # 处理一批后强制垃圾回收，避免内存累积
-                import gc
+                    # 处理一批后强制垃圾回收，避免内存累积
+                    import gc
 
-                gc.collect()
+                    gc.collect()
+
+                # 使用QTimer在主线程中更新缓存（传递已构建好的字典）
+                QTimer.singleShot(
+                    0,
+                    lambda: self._update_symbol_cache(
+                        temp_cache, temp_pinyin_dict, success_count, error_count
+                    ),
+                )
+
+            except Exception as e:
+                self.logger.error(f"[后台] 加载品种缓存失败: {e}", exc_info=True)
+
+        # 启动后台线程
+        thread = threading.Thread(target=load_in_background, daemon=True, name="LoadSymbolCache")
+        thread.start()
+        self.logger.info("品种缓存加载已启动（后台线程）")
+
+    def _update_symbol_cache(self, cache, pinyin_dict, success_count, error_count):
+        """在主线程中更新品种缓存（用于搜索框拼音匹配）
+
+        Args:
+            cache: 品种缓存列表
+            pinyin_dict: 拼音字典索引（已在后台构建）
+            success_count: 成功处理的品种数
+            error_count: 跳过的无效品种数
+        """
+        try:
+            # 🚀 性能优化：只做O(1)赋值操作，字典已在后台线程中构建完成
+            # 避免在主线程中执行5000次循环，防止UI卡顿
+            self.symbol_cache = cache  # O(1) 引用赋值
+            self.symbol_pinyin_dict = pinyin_dict  # O(1) 引用赋值
 
             # 所有无效品种应在后端早期阶段已过滤，前端只记录最终加载结果
             if error_count > 0:
                 self.logger.debug(f"品种缓存加载时跳过了{error_count}个无效数据")
-            self.logger.info(f"品种缓存加载完成: {success_count} 个品种")
+            self.logger.info(
+                f"✅ 品种缓存加载完成: {success_count} 个品种（拼音联想已就绪，字典索引已构建）"
+            )
 
         except Exception as e:
-            self.logger.error(f"加载品种缓存失败: {e}", exc_info=True)
+            self.logger.error(f"更新品种缓存失败: {e}", exc_info=True)
 
     def _load_local_data_index_for_autocomplete(self):
         """异步加载本地数据索引用于本地数据搜索框联想
@@ -2285,6 +2346,15 @@ class DataCenter(BaseWidget, LoggerMixin):
             interval = self.interval_combo.currentText() if self.interval_combo else "1day"
             self.logger.info(f"  周期: {interval}")
 
+            # 记录用户操作
+            logger_user.info(
+                "用户查询本地数据: 品种=%s, 周期=%s, 时间范围=%s至%s",
+                symbol,
+                interval,
+                start_date_str,
+                end_date_str,
+            )
+
             # 检查data_table
             if not self.data_table:
                 self.logger.error("❌ data_table 未初始化")
@@ -2479,6 +2549,21 @@ class DataCenter(BaseWidget, LoggerMixin):
                 self.show_error("数据中心服务未初始化")
                 return
 
+            # ✅ 新增：检查品种缓存是否存在（避免"未找到可下载的品种"错误）
+            symbols = self.data_center_service.get_symbols_from_cache()
+            if not symbols or len(symbols) == 0:
+                self.logger.warning(">>> 品种列表缓存为空，无法开始下载")
+                # 🚀 修复UI卡死：直接切换到品种列表Tab，不使用模态对话框
+                self.logger.warning(
+                    "品种列表缓存为空，无法开始下载。请先切换到【品种列表】选项卡，点击【🔄 重新加载品种】或【↻ 刷新品种】按钮"
+                )
+                # 自动切换到品种列表选项卡（第0个选项卡）
+                if self.tab_widget:
+                    self.tab_widget.setCurrentIndex(0)
+                return
+
+            self.logger.info(f">>> 品种缓存检查通过，共 {len(symbols)} 个品种")
+
             # 检查是否已有线程在运行
             if self.download_thread and self.download_thread.isRunning():
                 self.logger.warning(">>> 已有下载线程在运行")
@@ -2491,6 +2576,11 @@ class DataCenter(BaseWidget, LoggerMixin):
                 start_date = qdate.toString("yyyy-MM-dd")
             else:
                 start_date = datetime.now().strftime("%Y-%m-%d")
+
+            # 记录用户操作
+            logger_user.info(
+                "用户点击开始下载按钮: 开始日期=%s, 品种数=%d", start_date, len(symbols)
+            )
 
             self.logger.info(">>> 增量下载，开始日期: %s", start_date)
 
@@ -2545,9 +2635,9 @@ class DataCenter(BaseWidget, LoggerMixin):
             if self.stop_download_btn:
                 self.stop_download_btn.setEnabled(True)
 
-            # 显示加载提示（改用print，避免UI更新）
+            # 显示加载提示（使用logger，避免UI更新）
             # self.show_info(f"正在启动下载任务...")
-            print(f"正在启动下载任务... (任务ID: {task_id})")
+            self.logger.info("正在启动下载任务: 任务ID=%s", task_id)
             self.logger.info(">>> _start_download() 执行完成")
 
         except Exception as e:
@@ -2585,9 +2675,8 @@ class DataCenter(BaseWidget, LoggerMixin):
                     # 禁用show_info，避免UI崩溃
                     # self.show_info(f"✅ {message}（任务ID: {task_id}）")
                     # self.show_info("📊 下载正在后台进行...")
-                    self.logger.info(">>> 下载任务已启动（异步）: %s", task_id)
-                    print(f"✅ {message}（任务ID: {task_id}）")
-                    print("📊 下载正在后台进行，请查看终端进度...")
+                    self.logger.info("下载任务已启动(异步): 任务ID=%s, 消息=%s", task_id, message)
+                    self.logger.info("下载正在后台进行，请查看终端进度")
 
                     # 🔧 启动进度轮询定时器
                     self._start_progress_polling()
@@ -2597,17 +2686,14 @@ class DataCenter(BaseWidget, LoggerMixin):
                     # 同步下载或真正完成
                     # 禁用show_info，避免UI崩溃
                     # self.show_info(f"✅ 下载任务已完成！任务ID: {task_id}")
-                    self.logger.info(">>> 下载任务完成成功: %s", task_id)
-                    print(f"✅ 下载任务已完成！任务ID: {task_id}")
+                    self.logger.info("下载任务完成成功: 任务ID=%s", task_id)
 
                     # 🆕 记录下载历史
                     self._add_download_history(result)
 
                     self._reset_download_state()
             else:
-                self.logger.error(">>> 下载任务失败: %s", result.get("message"))
-                # 🔧 避免UI操作导致崩溃，只打印错误信息
-                print(f"❌ 下载任务失败: {result.get('message', '未知错误')}")
+                self.logger.error("下载任务失败: %s", result.get("message", "未知错误"))
 
                 # 🆕 记录下载历史（即使失败也要记录）
                 if result.get("task_id"):
@@ -2616,9 +2702,7 @@ class DataCenter(BaseWidget, LoggerMixin):
                 self._reset_download_state()
 
         except Exception as e:
-            self.logger.error(">>> 处理下载结果失败: %s", e, exc_info=True)
-            # 🔧 避免UI操作导致崩溃，只打印错误信息
-            print(f"❌ 处理下载结果失败: {e}")
+            self.logger.exception("处理下载结果失败: %s", e)
             self._reset_download_state()
 
     def _on_download_error(self, error_message: str):
@@ -2628,8 +2712,6 @@ class DataCenter(BaseWidget, LoggerMixin):
             error_message: 错误消息
         """
         self.logger.error("下载失败: %s", error_message)
-        # 🔧 避免UI操作导致崩溃，只打印错误信息
-        print(f"❌ 下载失败: {error_message}")
 
         # 🔧 修复：统一使用 _reset_download_state() 清理状态
         self._reset_download_state()
@@ -2707,8 +2789,7 @@ class DataCenter(BaseWidget, LoggerMixin):
             if result.get("success"):
                 # 不调用show_info，避免UI更新导致崩溃
                 # self.show_info("⛔ 已发送停止信号...")
-                self.logger.info(">>> 停止信号已发送")
-                print("⛔ 停止信号已发送，下载将在当前品种完成后停止...")
+                self.logger.info("停止信号已发送，下载将在当前品种完成后停止")
             else:
                 self.show_warning(f"停止请求失败: {result.get('message')}")
                 self.logger.warning(">>> 停止请求失败: %s", result.get("message"))
@@ -4116,8 +4197,13 @@ class DataCenter(BaseWidget, LoggerMixin):
             # 🔧 修复：扫描完成时更新详情表格（作为后备方案，确保数据完整）
             # 虽然阶段性推送已增量更新，但最终更新可以确保数据一致性
             details_data = overview_data.get("details", [])
-            print(
-                f"   toggle_quality_detail_btn.isChecked={self.toggle_quality_detail_btn.isChecked() if self.toggle_quality_detail_btn else 'N/A'}"
+            self.logger.debug(
+                "toggle_quality_detail_btn.isChecked=%s",
+                (
+                    self.toggle_quality_detail_btn.isChecked()
+                    if self.toggle_quality_detail_btn
+                    else "N/A"
+                ),
             )
             # print(...)  # 🔧 已移除：DEBUG调试输出
 
@@ -4125,8 +4211,7 @@ class DataCenter(BaseWidget, LoggerMixin):
             # 这样可以确保用户点击"显示详细信息"时能看到完整数据
             if details_data:
                 self._update_quality_detail_table(details_data)
-                print(f"   ✅ 已更新详情表格: {len(details_data)}个问题品种")
-                self.logger.info(f"详情表格已更新: {len(details_data)}个问题品种")
+                self.logger.info("详情表格已更新: %d个问题品种", len(details_data))
             else:
                 # 如果没有问题品种，清空表格并显示友好提示
                 if self.quality_detail_table:
@@ -4141,7 +4226,6 @@ class DataCenter(BaseWidget, LoggerMixin):
                     no_issue_item.setForeground(Qt.GlobalColor.darkGreen)
                     self.quality_detail_table.setItem(0, 0, no_issue_item)
                     self.quality_detail_table.setSpan(0, 0, 1, 4)  # 合并单元格
-                print("   ℹ️ 无问题品种，已清空详情表格")
                 self.logger.info("无问题品种，详情表格已清空")
 
             self.logger.info("质量概览UI已更新")
@@ -4168,8 +4252,13 @@ class DataCenter(BaseWidget, LoggerMixin):
                     import sys
 
                     # print(...)  # 🔧 已移除：DEBUG调试输出
-                    print(
-                        f"   table rowCount={self.quality_detail_table.rowCount() if self.quality_detail_table else 'None'}"
+                    self.logger.debug(
+                        "展开质量详情表格: rowCount=%s",
+                        (
+                            self.quality_detail_table.rowCount()
+                            if self.quality_detail_table
+                            else "None"
+                        ),
                     )
 
                     # 🆕 展开时强制刷新一次，确保显示最新数据
@@ -4212,15 +4301,17 @@ class DataCenter(BaseWidget, LoggerMixin):
         """
         try:
             # print(...)  # 🔧 已移除：DEBUG调试输出
-            print(f"   details类型: {type(details)}")
-            print(f"   details大小: {len(details) if details else 'None'}")
+            self.logger.debug(
+                "details类型=%s, 大小=%s", type(details), len(details) if details else "None"
+            )
             if details and len(details) > 0:
-                print(
-                    f"   前3个: {[d.get('symbol', '?') + '(' + d.get('status', '?') + ')' for d in details[:3]]}"
+                self.logger.debug(
+                    "前3个问题品种: %s",
+                    [d.get("symbol", "?") + "(" + d.get("status", "?") + ")" for d in details[:3]],
                 )
 
             if not self.quality_detail_table:
-                print("   ✗ quality_detail_table 为 None")
+                self.logger.warning("quality_detail_table 为 None")
                 return
 
             # 清空表格
@@ -4229,7 +4320,7 @@ class DataCenter(BaseWidget, LoggerMixin):
             # 🆕 检查是否有问题品种
             if not details:
                 # 🆕 无问题时显示友好提示
-                print("   ℹ️ details为空，显示'无问题'提示")
+                self.logger.debug("details为空，显示'无问题'提示")
                 self.quality_detail_table.insertRow(0)
                 no_issue_item = QTableWidgetItem("🎉 所有品种数据质量良好，无需修复")
                 no_issue_item.setForeground(Qt.GlobalColor.darkGreen)
@@ -4238,8 +4329,7 @@ class DataCenter(BaseWidget, LoggerMixin):
                 self.logger.info("质量详情表格：无问题品种")
                 return
 
-            print(f"   ✓ 开始填充表格，共{len(details)}个问题品种")
-            self.logger.info("质量详情表格：显示 %d 个有问题的品种", len(details))
+            self.logger.info("质量详情表格：开始填充，共%d个问题品种", len(details))
 
             # 填充数据（后端已过滤并排序）
             for i, detail in enumerate(details):
@@ -4310,13 +4400,14 @@ class DataCenter(BaseWidget, LoggerMixin):
 
             # print(...)  # 🔧 已移除：DEBUG调试输出
             # print(...)  # 🔧 已移除：DEBUG调试输出
-            print(
-                f"   table rowCount before={self.quality_detail_table.rowCount() if self.quality_detail_table else 'None'}"
+            self.logger.debug(
+                "table rowCount before=%s",
+                self.quality_detail_table.rowCount() if self.quality_detail_table else "None",
             )
             sys.stdout.flush()
 
             if not self.quality_detail_table:
-                print("   ❌ quality_detail_table is None!")
+                self.logger.warning("quality_detail_table is None")
                 sys.stdout.flush()
                 return
 
@@ -4398,15 +4489,16 @@ class DataCenter(BaseWidget, LoggerMixin):
             sys.stdout.flush()
 
             self.logger.info(
-                f"增量追加 {len(new_details)} 个问题品种，当前表格行数: {self.quality_detail_table.rowCount()}（已刷新UI）"
+                "增量追加 %d 个问题品种，当前表格行数: %d（已刷新UI）",
+                len(new_details),
+                self.quality_detail_table.rowCount(),
             )
 
         except Exception as e:
             import sys
 
-            print(f"   ❌ 异常: {e}")
             sys.stdout.flush()
-            self.logger.error("增量追加质量详情失败: %s", e, exc_info=True)
+            self.logger.exception("增量追加质量详情失败: %s", e)
 
     def _trigger_repair_download(self) -> None:
         """触发修复下载（智能下载有问题的品种）"""
@@ -4487,20 +4579,9 @@ class DataCenter(BaseWidget, LoggerMixin):
                     f"下载进度在数据下载界面展示。"
                 )
 
-            # 6. 显示确认提示
-            from PySide6.QtWidgets import QMessageBox
-
-            reply = QMessageBox.information(
-                self,
-                "开始修复下载",
-                msg,
-                QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
-                QMessageBox.StandardButton.Ok,
-            )
-
-            if reply != QMessageBox.StandardButton.Ok:
-                self.logger.info("用户取消修复下载")
-                return
+            # 6. 记录日志并直接开始修复（不使用模态对话框）
+            # 🚀 修复UI卡死：不使用模态对话框询问用户，直接开始修复
+            self.logger.info(msg)
 
             # 7. 设置下载日期范围（最近100天）
             start_date = limit_date

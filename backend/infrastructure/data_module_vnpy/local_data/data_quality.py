@@ -9,6 +9,9 @@
 - 系统健康检查
 - 数据质量概览和报告
 
+v2.1 改进：
+- 使用网络时间替代系统时间进行数据新鲜度计算
+
 合并来源：storage.py + validator.py + data_sensor.py + file_watcher.py (v2)
 """
 
@@ -32,6 +35,14 @@ import psutil
 
 from ..config import config_manager
 
+# 导入网络时间同步模块
+from ..utils.network_time import get_real_date
+
+# ==================== 日志配置 ====================
+# 创建专用logger（模块级别）
+logger = logging.getLogger("backend.data_module.quality")
+logger_alert = logging.getLogger("backend.data_module.alert")
+
 # 旧架构（向后兼容）
 from ..load_balancer import (
     LoadBalancer,
@@ -50,6 +61,205 @@ from ..load_balancer import (
 )
 
 # ==================== 辅助函数（用于多进程） ====================
+
+
+def _quality_scan_worker_process(
+    worker_id: int,
+    task_queue,
+    result_queue,
+    metrics_queue,
+    stop_event,
+    data_dir: str,
+    interval: str,
+    min_rows: int,
+):
+    """质量扫描worker进程（v3.6新增）
+
+    从task_queue循环拉取品种代码，扫描数据质量并上报结果
+
+    Args:
+        worker_id: Worker进程ID
+        task_queue: 共享任务队列
+        result_queue: 结果队列
+        metrics_queue: 监控指标队列
+        stop_event: 停止事件
+        data_dir: 数据目录
+        interval: K线周期
+        min_rows: 最小行数阈值
+    """
+    import asyncio
+    import queue
+    import logging
+
+    logger = logging.getLogger(f"QualityScanWorker-{worker_id}")
+    logger.info(f"[Worker-{worker_id}] 质量扫描worker启动")
+
+    asyncio.run(
+        _quality_scan_worker_async(
+            worker_id,
+            task_queue,
+            result_queue,
+            metrics_queue,
+            stop_event,
+            data_dir,
+            interval,
+            min_rows,
+        )
+    )
+
+
+async def _quality_scan_worker_async(
+    worker_id: int,
+    task_queue,
+    result_queue,
+    metrics_queue,
+    stop_event,
+    data_dir: str,
+    interval: str,
+    min_rows: int,
+):
+    """质量扫描worker的异步逻辑"""
+    import queue
+    import logging
+    import time
+    from pathlib import Path
+
+    logger = logging.getLogger(f"QualityScanWorker-{worker_id}")
+
+    # 启动lag监控
+    from ...load_balancer import LagMonitor
+
+    lag_monitor_task = asyncio.create_task(
+        LagMonitor.monitor_and_report(
+            metrics_queue=metrics_queue,
+            worker_id=worker_id,
+            stop_event=stop_event,
+            interval_seconds=0.3,
+        )
+    )
+    logger.info(f"[Worker-{worker_id}] ✅ 已启动lag监控（质量扫描模式）")
+
+    processed_count = 0
+    empty_count = 0
+    max_empty_before_exit = 3
+
+    # 非阻塞put辅助函数
+    async def _safe_put_result(msg: tuple, max_retries: int = 5):
+        """非阻塞put+重试"""
+        for attempt in range(max_retries):
+            try:
+                result_queue.put_nowait(msg)
+                return True
+            except Exception:
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(0.02)
+                else:
+                    logger.warning(f"[Worker-{worker_id}] 队列满，丢弃结果")
+                    return False
+        return False
+
+    logger.info(f"[Worker-{worker_id}] 开始从共享队列拉取扫描任务...")
+
+    while not stop_event.is_set():
+        try:
+            # 从队列拉取任务
+            symbol = task_queue.get(timeout=1.0)
+            empty_count = 0
+
+            # 扫描数据质量
+            start_time = time.perf_counter()
+            quality_info = _scan_single_quality(
+                symbol,
+                data_dir,
+                interval,
+                min_rows,
+            )
+            duration = time.perf_counter() - start_time
+
+            # 上报结果
+            await _safe_put_result((symbol, quality_info, duration))
+            processed_count += 1
+
+            if processed_count % 100 == 0:
+                logger.info(f"[Worker-{worker_id}] 已扫描 {processed_count} 个品种")
+
+        except queue.Empty:
+            empty_count += 1
+            if empty_count >= max_empty_before_exit:
+                logger.info(f"[Worker-{worker_id}] 队列连续{empty_count}次为空，准备退出")
+                break
+            await asyncio.sleep(0.1)
+        except Exception as e:
+            logger.error(f"[Worker-{worker_id}] 扫描任务时发生错误: {e}")
+            await asyncio.sleep(0.1)
+
+    # 停止lag监控
+    await LagMonitor.cancel_monitor(lag_monitor_task)
+    logger.info(f"[Worker-{worker_id}] 完成，共扫描 {processed_count} 个品种")
+
+
+def _scan_single_quality(
+    symbol: str,
+    data_dir: str,
+    interval: str,
+    min_rows: int,
+) -> Optional[Dict[str, Any]]:
+    """扫描单个品种的数据质量
+
+    Args:
+        symbol: 品种代码
+        data_dir: 数据目录
+        interval: K线周期
+        min_rows: 最小行数阈值
+
+    Returns:
+        Optional[Dict]: 质量信息或None
+    """
+    try:
+        from pathlib import Path
+
+        file_path = Path(data_dir) / symbol / interval / "data.parquet"
+
+        if not file_path.exists():
+            return None
+
+        # 读取数据
+        df = pd.read_parquet(file_path)
+
+        if df.empty:
+            return {
+                "symbol": symbol,
+                "has_data": False,
+                "row_count": 0,
+                "meets_threshold": False,
+            }
+
+        row_count = len(df)
+        meets_threshold = row_count >= min_rows
+
+        # 获取日期范围
+        if "datetime" in df.columns:
+            start_date = df["datetime"].min()
+            end_date = df["datetime"].max()
+        else:
+            start_date = df.index.min() if hasattr(df.index, "min") else None
+            end_date = df.index.max() if hasattr(df.index, "max") else None
+
+        return {
+            "symbol": symbol,
+            "has_data": True,
+            "row_count": row_count,
+            "meets_threshold": meets_threshold,
+            "start_date": start_date,
+            "end_date": end_date,
+        }
+
+    except Exception as e:
+        return {
+            "symbol": symbol,
+            "has_data": False,
+            "error": str(e),
+        }
 
 
 def _read_single_kline(
@@ -232,8 +442,40 @@ def _scan_single_symbol(scan_data: tuple) -> Optional[dict]:
 # ==================== IPO日期缓存管理 ====================
 
 
+# 全局IPO缓存单例
+_global_ipo_cache_instance: Optional["IPODateCache"] = None
+_global_ipo_cache_lock = threading.RLock()
+
+
+def get_ipo_cache(cache_file: Optional[Path] = None) -> "IPODateCache":
+    """获取全局IPO缓存单例
+
+    使用双重检查锁定(Double-Check Locking)保证线程安全的单例创建
+
+    Args:
+        cache_file: 缓存文件路径（仅在首次创建时有效）
+
+    Returns:
+        IPODateCache: 全局单例实例
+    """
+    global _global_ipo_cache_instance
+
+    # 第一次检查（无锁，快速路径）
+    if _global_ipo_cache_instance is not None:
+        return _global_ipo_cache_instance
+
+    # 需要创建实例，获取锁
+    with _global_ipo_cache_lock:
+        # 第二次检查（有锁，确保只创建一次）
+        if _global_ipo_cache_instance is None:
+            _global_ipo_cache_instance = IPODateCache(cache_file)
+            logger.info("✓ 创建IPO缓存全局单例")
+
+        return _global_ipo_cache_instance
+
+
 class IPODateCache:
-    """IPO日期持久化缓存管理器
+    """IPO日期持久化缓存管理器（单例模式）
 
     实现两级缓存架构：
     - L1: LRU内存缓存（容量限制5000，TTL 24小时）
@@ -243,6 +485,8 @@ class IPODateCache:
     - 自动容量管理（最多5000个品种）
     - TTL过期（24小时）
     - 缓存命中率统计
+
+    注意：建议使用get_ipo_cache()函数获取全局单例，而不是直接实例化此类
     """
 
     def __init__(self, cache_file: Optional[Path] = None):
@@ -333,8 +577,8 @@ class IPODateCache:
             # 🔧 兼容旧格式：检查cache_date是否为None
             if cache_date is None:
                 self.logger.warning("IPO缓存无日期信息（旧格式），将标记为过时")
-                # 使用当前日期减1天的字符串，确保被标记为过时
-                self._cache_date = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+                # 使用网络时间减1天的字符串，确保被标记为过时
+                self._cache_date = (get_real_date() - timedelta(days=1)).strftime("%Y-%m-%d")
             else:
                 # 解析日期
                 if isinstance(cache_date, str):
@@ -343,7 +587,7 @@ class IPODateCache:
                     self._cache_date = cache_date.strftime("%Y-%m-%d")
                 else:
                     self.logger.warning("无效的缓存日期格式: %s", type(cache_date))
-                    self._cache_date = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+                    self._cache_date = (get_real_date() - timedelta(days=1)).strftime("%Y-%m-%d")
 
             # 解析缓存数据
             for symbol, ipo_date_value in cache_data.items():
@@ -577,7 +821,7 @@ class StorageManager:
     def __init__(self):
         """初始化存储管理器"""
         self.data_dir = config_manager.get_data_dir()
-        self.logger = logging.getLogger(__name__)
+        self.logger = logger
 
         # 确保数据目录存在
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -643,7 +887,7 @@ class StorageManager:
             return file_path
 
         except Exception as e:
-            self.logger.error(f"❌ 保存失败: {symbol} ({interval}) - {e}", exc_info=True)
+            self.logger.exception("保存失败: 品种=%s, 周期=%s, 错误=%s", symbol, interval, e)
             return None
 
     def query_kline(
@@ -798,6 +1042,140 @@ class StorageManager:
             self.logger.error(f"批量查询失败: {e}", exc_info=True)
             # 失败时返回所有None
             return {symbol: None for symbol in symbols}
+
+    async def scan_quality_batch_dynamic(
+        self,
+        symbols: List[str],
+        interval: str = "1day",
+        min_rows: int = 100,
+        initial_processes: int = 2,
+    ) -> Dict[str, Optional[Dict[str, Any]]]:
+        """批量扫描数据质量（使用DynamicProcessPool）
+
+        v3.6新增：支持运行时动态进程管理
+
+        Args:
+            symbols: 品种代码列表
+            interval: K线周期
+            min_rows: 最小行数阈值
+            initial_processes: 初始进程数
+
+        Returns:
+            Dict[str, Optional[Dict]]: 品种代码 → 质量信息映射
+        """
+        import asyncio
+        import multiprocessing
+        import queue
+
+        if not symbols:
+            return {}
+
+        self.logger.info(f"=" * 80)
+        self.logger.info(f"🔍 开始批量质量扫描")
+        self.logger.info(f"  - 品种数: {len(symbols)}")
+        self.logger.info(f"  - 周期: {interval}")
+        self.logger.info(f"  - 初始进程数: {initial_processes}")
+        self.logger.info(f"=" * 80)
+
+        # 创建队列
+        ctx = multiprocessing.get_context("spawn")
+        task_queue = ctx.Queue()
+        result_queue = ctx.Queue(maxsize=5000)
+        metrics_queue = ctx.Queue(maxsize=200)
+        stop_event = ctx.Event()
+
+        # 将所有任务放入队列
+        for symbol in symbols:
+            task_queue.put(symbol)
+
+        self.logger.info(f"📦 任务队列: 已加入{len(symbols)}个品种")
+
+        # 使用DynamicProcessPool
+        from ...load_balancer import DynamicProcessPool
+
+        pool = DynamicProcessPool(
+            initial_processes=initial_processes,
+            worker_function=_quality_scan_worker_process,
+            shared_queues={
+                "task_queue": task_queue,
+                "result_queue": result_queue,
+                "metrics_queue": metrics_queue,
+            },
+            worker_kwargs={
+                "data_dir": str(self.data_dir),
+                "interval": interval,
+                "min_rows": min_rows,
+            },
+            logger=self.logger,
+        )
+
+        await pool.start()
+
+        # 收集结果
+        results = {}
+        from ...load_balancer import LagMonitor
+
+        # 结果消费协程
+        async def result_consumer():
+            """专用协程：消费数据结果队列"""
+            while any(p.is_alive() for p in pool.processes):
+                batch = []
+                # 批量读取
+                while len(batch) < 100:
+                    try:
+                        msg = result_queue.get_nowait()
+                        batch.append(msg)
+                    except queue.Empty:
+                        break
+
+                # 批量处理
+                for msg in batch:
+                    symbol, quality_info, duration = msg
+                    results[symbol] = quality_info
+
+                await asyncio.sleep(0)
+
+        # 监控指标消费协程
+        async def metrics_consumer():
+            """专用协程：消费监控指标队列"""
+            while any(p.is_alive() for p in pool.processes):
+                try:
+                    while not metrics_queue.empty():
+                        msg = metrics_queue.get_nowait()
+                        # 可以在这里处理lag指标
+                        # LagMonitor.process_lag_message(msg, self.load_balancer, self.logger)
+                except queue.Empty:
+                    pass
+                except Exception as e:
+                    self.logger.debug(f"处理监控指标失败: {e}")
+
+                await asyncio.sleep(0.1)
+
+        # 启动两个消费协程
+        result_task = asyncio.create_task(result_consumer())
+        metrics_task = asyncio.create_task(metrics_consumer())
+
+        # 等待消费协程完成
+        await asyncio.gather(result_task, metrics_task)
+
+        # 停止进程池
+        stop_event.set()
+        await pool.stop(timeout=5.0)
+
+        # 收集剩余结果
+        while not result_queue.empty():
+            try:
+                msg = result_queue.get_nowait()
+                symbol, quality_info, duration = msg
+                results[symbol] = quality_info
+            except queue.Empty:
+                break
+
+        self.logger.info(f"=" * 80)
+        self.logger.info(f"✅ 质量扫描完成: {len(results)}/{len(symbols)}个品种")
+        self.logger.info(f"=" * 80)
+
+        return results
 
     def get_local_data_index(self, use_cache: bool = True) -> List[str]:
         """获取本地数据索引（已下载的品种代码列表）
@@ -1052,15 +1430,16 @@ class DataValidator:
     """数据校验器"""
 
     def __init__(self):
-        self.logger = logging.getLogger(__name__)
+        self.logger = logger
+        self.logger_alert = logger_alert
         self.storage_manager = StorageManager()
 
         # 交易日历实例（用于数据更新状态检测）
         self._trading_calendar = None
         self._latest_trading_day_cache = None  # 缓存最新交易日，避免重复查询
 
-        # IPO缓存实例
-        self._ipo_cache = IPODateCache()
+        # IPO缓存实例（使用全局单例）
+        self._ipo_cache = get_ipo_cache()
 
         # 日期范围异常统计（用于减少日志刷屏）
         self._date_range_exception_count = 0
@@ -1137,7 +1516,7 @@ class DataValidator:
             return None
 
     def _validate_ipo_date(self, symbol: str, ipo_date: date) -> Optional[date]:
-        """验证IPO日期合理性
+        """验证IPO日期合理性（使用网络时间）
 
         Args:
             symbol: 品种代码
@@ -1146,7 +1525,8 @@ class DataValidator:
         Returns:
             验证通过返回原日期，否则返回None
         """
-        today = date.today()
+        # 使用网络时间作为基准
+        today = get_real_date()
 
         # 规则1：不能超过今天+30天
         if ipo_date > today + timedelta(days=30):
@@ -1372,8 +1752,8 @@ class DataValidator:
             if latest_trading_day:
                 check_end_date = min(data_end, latest_trading_day)
             else:
-                # 如果获取最近交易日失败，使用今天作为上限
-                check_end_date = min(data_end, date.today())
+                # 如果获取最近交易日失败，使用网络时间作为上限
+                check_end_date = min(data_end, get_real_date())
 
             # 6. 验证日期范围
             if effective_start > check_end_date:
@@ -1648,9 +2028,9 @@ class DataValidator:
             latest_trading_day = self._get_latest_trading_day()
 
             if latest_trading_day is None:
-                # 交易日历获取失败，使用降级方案
-                self.logger.warning("无法获取交易日历，使用当前日期作为降级方案")
-                latest_trading_day = date.today()
+                # 交易日历获取失败，使用网络时间作为降级方案
+                self.logger.warning("无法获取交易日历，使用网络时间作为降级方案")
+                latest_trading_day = get_real_date()
 
             # 读取本地数据
             df = self.storage_manager.query_kline(symbol, interval)
@@ -1693,7 +2073,7 @@ class DataValidator:
         except Exception as e:
             self.logger.error("检查数据更新状态失败: %s %s, %s", symbol, interval, e)
             return {
-                "latest_trading_day": date.today(),
+                "latest_trading_day": get_real_date(),
                 "local_latest_date": None,
                 "gap_days": -1,
                 "is_up_to_date": False,
@@ -1723,7 +2103,7 @@ class DataValidator:
         # 获取最新交易日（全局一次查询）
         latest_trading_day = self._get_latest_trading_day()
         if latest_trading_day is None:
-            latest_trading_day = date.today()
+            latest_trading_day = get_real_date()
 
         def check_single_symbol(symbol: str) -> Tuple[str, Dict[str, Any]]:
             """检查单个品种（只读文件元数据）"""
@@ -1798,12 +2178,12 @@ class DataValidator:
         return results
 
     def _get_latest_trading_day(self) -> Optional[date]:
-        """获取最新交易日（带缓存）"""
+        """获取最新交易日（带缓存，使用网络时间）"""
         try:
-            # 检查缓存是否有效（当天缓存）
+            # 检查缓存是否有效（当天缓存，使用网络时间）
             if self._latest_trading_day_cache is not None:
                 cache_date, cached_value = self._latest_trading_day_cache
-                if cache_date == date.today():
+                if cache_date == get_real_date():
                     return cached_value
 
             # 缓存失效，重新获取
@@ -1834,8 +2214,8 @@ class DataValidator:
             if result_str:
                 # 解析日期字符串 "YYYY-MM-DD"
                 latest_day = datetime.strptime(result_str, "%Y-%m-%d").date()
-                # 更新缓存
-                self._latest_trading_day_cache = (date.today(), latest_day)
+                # 更新缓存（使用网络时间）
+                self._latest_trading_day_cache = (get_real_date(), latest_day)
                 return latest_day
 
             return None
@@ -2126,7 +2506,8 @@ class DataSensor:
     """数据感知器"""
 
     def __init__(self, event_engine=None):
-        self.logger = logging.getLogger(__name__)
+        self.logger = logger
+        self.logger_alert = logger_alert
         self.storage_manager = StorageManager()
         self.validator = DataValidator()
         self.event_engine = event_engine
@@ -2137,14 +2518,56 @@ class DataSensor:
         # 文件监控器
         self.data_file_watcher: Optional[DataFileWatcher] = None
 
+        # 协程性能监控发布器
+        if event_engine:
+            from ..events import AsyncioMetricsPublisher
+
+            self.asyncio_publisher = AsyncioMetricsPublisher(event_engine)
+        else:
+            self.asyncio_publisher = None
+
+    def _measure_event_loop_lag_sync(self, source: str):
+        """同步方法中测量事件循环延迟的包装
+
+        在QThread中创建临时事件循环进行测量
+        """
+        if not self.asyncio_publisher:
+            return
+
+        try:
+            import asyncio
+
+            # 获取或创建事件循环
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_closed():
+                    raise RuntimeError("Loop is closed")
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+
+            # 运行测量
+            loop.run_until_complete(self.asyncio_publisher.measure_and_publish_lag(source))
+        except Exception as e:
+            self.logger.debug(f"测量事件循环延迟失败: {e}")
+
     def scan_all_data(
         self,
         reference_symbols: List[str],
         intervals: Optional[List[str]] = None,
         force_refresh: bool = False,
         progress_callback=None,
+        max_phase: Optional[int] = None,
     ) -> QualityOverview:
-        """扫描所有数据质量（优化版：并发扫描，只返回有问题的品种详情）"""
+        """扫描所有数据质量（优化版：并发扫描，只返回有问题的品种详情）
+
+        Args:
+            reference_symbols: 参考品种列表
+            intervals: 扫描周期列表
+            force_refresh: 是否强制刷新
+            progress_callback: 进度回调
+            max_phase: 最大执行阶段（传统模式简化实现，<3时跳过详细质量扫描）
+        """
         if intervals is None:
             intervals = ["1d", "5m", "1m"]
 
@@ -2548,6 +2971,7 @@ class DataSensor:
         intervals: Optional[List[str]] = None,
         force_refresh: bool = False,
         progress_callback=None,
+        max_phase: Optional[int] = None,
     ) -> QualityOverview:
         """
         触发数据质量扫描（自动获取品种列表，从core.py迁移）
@@ -2557,6 +2981,7 @@ class DataSensor:
             intervals: 扫描周期列表（可选，默认 ["1d", "5m", "1m"]）
             force_refresh: 是否强制刷新（忽略缓存）
             progress_callback: 进度回调函数 callback(percent)
+            max_phase: 最大执行阶段（None=全部执行，用于手动触发完整扫描）
 
         Returns:
             质量概览
@@ -2587,6 +3012,7 @@ class DataSensor:
                 intervals=intervals,
                 force_refresh=force_refresh,
                 progress_callback=progress_callback,
+                max_phase=max_phase,  # 传递max_phase参数
             )
 
             # 🔧 修复：扫描完成后确保文件监控已启动
@@ -3141,6 +3567,7 @@ class DataSensor:
         intervals: Optional[List[str]] = None,
         force_refresh: bool = False,
         progress_callback=None,
+        max_phase: Optional[int] = None,
     ) -> QualityOverview:
         """自适应数据质量扫描（增量推送版）
 
@@ -3151,6 +3578,7 @@ class DataSensor:
             intervals: 扫描周期列表
             force_refresh: 是否强制刷新
             progress_callback: 进度回调
+            max_phase: 最大执行阶段（0/1/2/3），None表示执行全部阶段
 
         Returns:
             QualityOverview: 质量概览
@@ -3168,7 +3596,7 @@ class DataSensor:
             # 使用传统扫描模式
             self.logger.info("使用传统扫描模式（自适应已禁用）")
             return self.scan_all_data(
-                reference_symbols, intervals, force_refresh, progress_callback
+                reference_symbols, intervals, force_refresh, progress_callback, max_phase
             )
 
         # 启用自适应模式
@@ -3284,7 +3712,52 @@ class DataSensor:
             )
             self._push_phase_2_metrics(freshness_data, enable_incremental_push)
 
-            # 阶段3：详细质量扫描
+            # 检查是否只执行到阶段2（启动快速扫描模式）
+            if max_phase is not None and max_phase < 3:
+                self.logger.info(f"启动快速扫描模式：只执行到阶段{max_phase}，跳过阶段3")
+
+                # 构建部分扫描结果
+                overview = QualityOverview(
+                    total_symbols=len(reference_symbols),
+                    missing_symbols=local_symbols_data["missing_count"],
+                    error_symbols=0,  # 未扫描
+                    warning_symbols=0,  # 未扫描
+                    quality_score=0,  # 部分扫描不计算评分
+                    last_scan_time=datetime.now(),
+                    base_date=date.today(),
+                    scanned_intervals=intervals,
+                    details=[],
+                    outdated_symbols=freshness_data["outdated_symbols"],
+                    avg_gap_days=freshness_data["avg_gap_days"],
+                    max_gap_days=freshness_data["max_gap_days"],
+                    data_missing_symbols=0,  # 未扫描
+                    data_lagging_days=freshness_data.get("data_lagging_days", 0),
+                )
+
+                # 推送部分扫描完成事件
+                if enable_incremental_push and self.event_engine:
+                    from ..events import EVENT_QUALITY_SCAN_PHASE
+                    from vnpy.event import Event
+
+                    event_data = {
+                        "phase": 2,
+                        "metrics": {
+                            "total_symbols": len(reference_symbols),
+                            "missing_symbols": local_symbols_data["missing_count"],
+                            "outdated_symbols": freshness_data["outdated_symbols"],
+                        },
+                        "status": "startup_complete",  # 标记为启动扫描完成
+                        "progress_percent": 100,
+                        "timestamp": datetime.now().isoformat(),
+                        "message": "启动快速扫描完成（阶段0-2），详细质量扫描已跳过",
+                    }
+                    event = Event(EVENT_QUALITY_SCAN_PHASE, event_data)
+                    self.event_engine.put(event)
+                    self.logger.info("推送启动快速扫描完成事件")
+
+                return overview
+
+            # 阶段3：详细质量扫描（仅在max_phase>=3或None时执行）
             quality_data = self._scan_phase_3_quality(
                 local_symbols_data["local_symbols"],
                 intervals,
@@ -3430,6 +3903,9 @@ class DataSensor:
         - 修复全量扫描问题：只返回reference_symbols中存在于本地的品种
         - 避免后续阶段扫描全部本地品种
         """
+        # 🔍 测量事件循环延迟
+        self._measure_event_loop_lag_sync("DataSensor_Phase1")
+
         start_time = time.time()
 
         print("\n[阶段1/3] 快速扫描本地数据索引")
@@ -3526,6 +4002,9 @@ class DataSensor:
         self, local_symbols: List[str], config: Dict, progress_callback
     ) -> Dict:
         """🚀 阶段2：批量检查数据更新状态（优化版：批量处理+线程池并行+无刷屏输出）"""
+        # 🔍 测量事件循环延迟
+        self._measure_event_loop_lag_sync("DataSensor_Phase2")
+
         start_time = time.time()
 
         print("\n[阶段2/3] 检查数据更新状态")
@@ -3645,6 +4124,9 @@ class DataSensor:
         progress_callback,
     ) -> Dict:
         """阶段3：详细质量扫描（使用新架构ThreadPoolBatchModel + 动态并发调整）"""
+        # 🔍 测量事件循环延迟
+        self._measure_event_loop_lag_sync("DataSensor_Phase3")
+
         import sys
 
         print("\n[阶段3/3] 详细质量扫描（错误/警告）")

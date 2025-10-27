@@ -58,7 +58,9 @@ class BaseService(ABC):
     def __init__(self) -> None:
         """初始化基础服务."""
         self.service_name = self.__class__.__name__
-        self._logger = logging.getLogger(f"{__name__}.{self.service_name}")
+        # 使用子类的模块名而不是BaseService的模块名
+        child_module = self.__class__.__module__
+        self._logger = logging.getLogger(child_module)
         self.status = ServiceStatus.STOPPED
         self.is_initialized = False
         self.start_time: Optional[datetime] = None
@@ -68,7 +70,7 @@ class BaseService(ABC):
         self.main_engine = None
         self.event_engine = None
 
-        self.logger.info(f"服务 {self.service_name} 创建完成")
+        self.logger.info("服务 %s 创建完成", self.service_name)
 
     @property
     def logger(self) -> logging.Logger:
@@ -87,7 +89,19 @@ class BaseService(ABC):
         """
         try:
             self.status = ServiceStatus.STARTING
-            self.logger.info(f"正在初始化服务: {self.service_name}")
+
+            # 阶段感知：启动阶段详细日志
+            try:
+                from backend.infrastructure.system_vnpy.logging_context import get_logging_context
+
+                ctx = get_logging_context()
+                if ctx.routing_engine.current_stage == "startup":
+                    self.logger.info("正在初始化服务: %s", self.service_name)
+                else:
+                    self.logger.debug("重新初始化服务: %s", self.service_name)
+            except ImportError:
+                # 如果logging_context未初始化，使用默认INFO级别
+                self.logger.info("正在初始化服务: %s", self.service_name)
 
             # 获取全局VNPY引擎
             from backend.core.base import get_main_engine, get_event_engine
@@ -102,17 +116,17 @@ class BaseService(ABC):
                 self.is_initialized = True
                 self.start_time = datetime.now()
                 self.status = ServiceStatus.RUNNING
-                self.logger.info(f"服务 {self.service_name} 初始化成功")
+                self.logger.info("服务 %s 初始化成功", self.service_name)
             else:
                 self.status = ServiceStatus.ERROR
-                self.logger.error(f"服务 {self.service_name} 初始化失败")
+                self.logger.error("服务 %s 初始化失败", self.service_name)
 
             return result
 
         except Exception as e:
             self.status = ServiceStatus.ERROR
-            self._errors.append(f"初始化异常: {str(e)}")
-            self.logger.error(f"服务 {self.service_name} 初始化异常: {e}", exc_info=True)
+            self._errors.append("初始化异常: %s" % str(e))
+            self.logger.exception("服务 %s 初始化异常", self.service_name)
             return False
 
     def shutdown(self) -> bool:
@@ -123,21 +137,21 @@ class BaseService(ABC):
         """
         try:
             self.status = ServiceStatus.STOPPING
-            self.logger.info(f"正在关闭服务: {self.service_name}")
+            self.logger.info("正在关闭服务: %s", self.service_name)
 
             # 调用子类的具体关闭逻辑
             result = self._do_shutdown()
 
             self.is_initialized = False
             self.status = ServiceStatus.STOPPED
-            self.logger.info(f"服务 {self.service_name} 关闭完成")
+            self.logger.info("服务 %s 关闭完成", self.service_name)
 
             return result
 
         except Exception as e:
             self.status = ServiceStatus.ERROR
-            self._errors.append(f"关闭异常: {str(e)}")
-            self.logger.error(f"服务 {self.service_name} 关闭异常: {e}", exc_info=True)
+            self._errors.append("关闭异常: %s" % str(e))
+            self.logger.exception("服务 %s 关闭异常", self.service_name)
             return False
 
     def health_check(self) -> Dict[str, Any]:
@@ -157,17 +171,38 @@ class BaseService(ABC):
             # 调用子类的具体健康检查逻辑
             custom_health = self._do_health_check()
 
+            uptime = self._get_uptime()
+            error_count = len(self._errors)
+
+            # 记录健康检查日志（P2优化）
+            if not is_healthy:
+                self.logger.warning(
+                    "服务 %s 健康检查异常: 状态=%s, 已初始化=%s, 错误数=%d",
+                    self.service_name,
+                    self.status.value,
+                    self.is_initialized,
+                    error_count,
+                )
+            else:
+                self.logger.debug(
+                    "服务 %s 健康检查通过: 运行时长=%.2fs, 错误数=%d",
+                    self.service_name,
+                    uptime if uptime else 0,
+                    error_count,
+                )
+
             return {
                 "service_name": self.service_name,
                 "status": self.status.value,
                 "is_healthy": is_healthy,
                 "is_initialized": self.is_initialized,
-                "uptime": self._get_uptime(),
+                "uptime": uptime,
                 "errors": self._errors[-5:],  # 最近5个错误
                 "custom": custom_health,
             }
 
         except Exception as e:
+            self.logger.exception("服务 %s 健康检查失败", self.service_name)
             return {
                 "service_name": self.service_name,
                 "status": "error",
@@ -222,23 +257,26 @@ class BaseService(ABC):
 
     def _log_operation(self, operation: str, **kwargs) -> None:
         """记录操作日志."""
-        details = ", ".join(f"{k}={v}" for k, v in kwargs.items())
-        self.logger.info(f"[{self.service_name}] {operation} {details if details else ''}")
+        details = ", ".join("%s=%s" % (k, v) for k, v in kwargs.items())
+        if details:
+            self.logger.info("[%s] %s %s", self.service_name, operation, details)
+        else:
+            self.logger.info("[%s] %s", self.service_name, operation)
 
     def _log_error(self, operation: str, error: Exception, **kwargs) -> None:
         """记录错误日志."""
-        error_msg = f"{operation}: {str(error)}"
+        error_msg = "%s: %s" % (operation, str(error))
         self._errors.append(error_msg)
 
         # 限制错误列表大小
         if len(self._errors) > 100:
             self._errors = self._errors[-50:]
 
-        details = ", ".join(f"{k}={v}" for k, v in kwargs.items())
-        self.logger.error(
-            f"[{self.service_name}] {operation} 失败 - {error} {details if details else ''}",
-            exc_info=True,
-        )
+        details = ", ".join("%s=%s" % (k, v) for k, v in kwargs.items())
+        if details:
+            self.logger.exception("[%s] %s 失败 - %s", self.service_name, operation, details)
+        else:
+            self.logger.exception("[%s] %s 失败", self.service_name, operation)
 
     def clear_errors(self):
         """清空错误记录."""
@@ -652,7 +690,7 @@ class LoggerMixin:
         level: int,
         message: str,
         extra: Optional[Dict[str, Any]] = None,
-        exc_info: bool = False
+        exc_info: bool = False,
     ) -> None:
         """记录带上下文信息的日志.
 
@@ -670,7 +708,7 @@ class LoggerMixin:
         operation: str,
         duration_ms: float,
         success: bool = True,
-        extra: Optional[Dict[str, Any]] = None
+        extra: Optional[Dict[str, Any]] = None,
     ) -> None:
         """记录性能日志.
 
@@ -681,18 +719,22 @@ class LoggerMixin:
             extra: 额外的上下文信息
         """
         log_extra = extra or {}
-        log_extra.update({
-            "operation": operation,
-            "duration_ms": duration_ms,
-            "success": success,
-        })
+        log_extra.update(
+            {
+                "operation": operation,
+                "duration_ms": duration_ms,
+                "success": success,
+            }
+        )
 
         if success:
-            message = f"[性能] {operation} 完成，耗时: {duration_ms:.2f}ms"
-            self._logger.debug(message, extra=log_extra)
+            self._logger.debug(
+                "[性能] %s 完成，耗时: %.2fms", operation, duration_ms, extra=log_extra
+            )
         else:
-            message = f"[性能] {operation} 失败，耗时: {duration_ms:.2f}ms"
-            self._logger.warning(message, extra=log_extra)
+            self._logger.warning(
+                "[性能] %s 失败，耗时: %.2fms", operation, duration_ms, extra=log_extra
+            )
 
     def log_operation_start(self, operation: str, **kwargs) -> None:
         """记录操作开始日志.
@@ -701,11 +743,11 @@ class LoggerMixin:
             operation: 操作名称
             **kwargs: 操作参数
         """
-        params_str = ", ".join([f"{k}={v}" for k, v in kwargs.items()])
-        message = f"[开始] {operation}"
+        params_str = ", ".join(["%s=%s" % (k, v) for k, v in kwargs.items()])
         if params_str:
-            message += f" ({params_str})"
-        self._logger.info(message)
+            self._logger.info("[开始] %s (%s)", operation, params_str)
+        else:
+            self._logger.info("[开始] %s", operation)
 
     def log_operation_success(self, operation: str, **kwargs) -> None:
         """记录操作成功日志.
@@ -714,18 +756,13 @@ class LoggerMixin:
             operation: 操作名称
             **kwargs: 结果信息
         """
-        result_str = ", ".join([f"{k}={v}" for k, v in kwargs.items()])
-        message = f"[成功] {operation}"
+        result_str = ", ".join(["%s=%s" % (k, v) for k, v in kwargs.items()])
         if result_str:
-            message += f" ({result_str})"
-        self._logger.info(message)
+            self._logger.info("[成功] %s (%s)", operation, result_str)
+        else:
+            self._logger.info("[成功] %s", operation)
 
-    def log_operation_failure(
-        self,
-        operation: str,
-        error: Exception,
-        **kwargs
-    ) -> None:
+    def log_operation_failure(self, operation: str, error: Exception, **kwargs) -> None:
         """记录操作失败日志.
 
         Args:
@@ -733,11 +770,11 @@ class LoggerMixin:
             error: 错误异常
             **kwargs: 错误上下文
         """
-        context_str = ", ".join([f"{k}={v}" for k, v in kwargs.items()])
-        message = f"[失败] {operation}: {str(error)}"
+        context_str = ", ".join(["%s=%s" % (k, v) for k, v in kwargs.items()])
         if context_str:
-            message += f" ({context_str})"
-        self._logger.error(message, exc_info=True)
+            self._logger.exception("[失败] %s: %s (%s)", operation, str(error), context_str)
+        else:
+            self._logger.exception("[失败] %s: %s", operation, str(error))
 
 
 # =============================================================================

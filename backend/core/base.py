@@ -149,7 +149,7 @@ class ServiceError:
         prefix = severity_prefix.get(self.severity, "❌")
         time_str = self.timestamp.strftime("%H:%M:%S")
 
-        return f"{prefix} [{time_str}] {self.service_name}: {self.message}"
+        return "%s [%s] %s: %s" % (prefix, time_str, self.service_name, self.message)
 
 
 class ServiceManager:
@@ -166,19 +166,14 @@ class ServiceManager:
         self._max_errors_per_service = 50  # 每个服务最多保留50个错误
 
     def _setup_logger(self):
-        """设置错误追踪日志记录器"""
+        """设置错误追踪日志记录器.
+
+        简化版：依赖LoggingHub的托管模式，不手动创建handler
+        """
         import logging
 
-        logger = logging.getLogger("ServiceManager")
-        logger.setLevel(logging.DEBUG)
-
-        if not logger.handlers:
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-            handler.setFormatter(formatter)
-            logger.addHandler(handler)
-
-        return logger
+        # 使用标准logger命名，handler由LoggingHub统一管理
+        return logging.getLogger("backend.core.service_manager")
 
     def register_service(self, name: str, service: Any) -> bool:
         """注册服务并记录任何错误"""
@@ -190,7 +185,7 @@ class ServiceManager:
                 self.record_error(
                     name,
                     "DUPLICATE_REGISTRATION",
-                    f"服务 '{name}' 已经注册过了",
+                    "服务 '%s' 已经注册过了" % name,
                     severity=ErrorSeverity.DEBUG,  # 降级为DEBUG
                 )
                 return False
@@ -198,7 +193,7 @@ class ServiceManager:
             # 验证服务是否可用
             if service is None:
                 self.record_error(
-                    name, "NULL_SERVICE", f"尝试注册空服务 '{name}'", severity=ErrorSeverity.ERROR
+                    name, "NULL_SERVICE", "尝试注册空服务 '%s'" % name, severity=ErrorSeverity.ERROR
                 )
                 return False
 
@@ -210,7 +205,7 @@ class ServiceManager:
             self.record_error(
                 name,
                 "REGISTRATION_EXCEPTION",
-                f"注册服务 '{name}' 时发生异常: {str(e)}",
+                "注册服务 '%s' 时发生异常: %s" % (name, str(e)),
                 exception=e,
                 severity=ErrorSeverity.ERROR,
             )
@@ -234,7 +229,7 @@ class ServiceManager:
                     self.record_error(
                         name,
                         "SERVICE_NOT_FOUND",
-                        f"请求的服务 '{name}' 未找到。可用服务: {list(self.services.keys())}",
+                        "请求的服务 '%s' 未找到。可用服务: %s" % (name, list(self.services.keys())),
                         severity=ErrorSeverity.DEBUG,  # 降级为DEBUG，避免误导
                     )
                 return None
@@ -245,7 +240,7 @@ class ServiceManager:
                     self.record_error(
                         name,
                         "NULL_SERVICE_RETRIEVED",
-                        f"服务 '{name}' 存在但为空",
+                        "服务 '%s' 存在但为空" % name,
                         severity=ErrorSeverity.ERROR,
                     )
                 return None
@@ -257,7 +252,7 @@ class ServiceManager:
                 self.record_error(
                     name,
                     "SERVICE_ACCESS_EXCEPTION",
-                    f"访问服务 '{name}' 时发生异常: {str(e)}",
+                    "访问服务 '%s' 时发生异常: %s" % (name, str(e)),
                     exception=e,
                     severity=ErrorSeverity.ERROR,
                 )
@@ -345,7 +340,7 @@ class ServiceManager:
             "by_severity": by_severity,
             "by_service": by_service,
             "by_error_type": by_error_type,
-            "summary": f"共记录 {len(self.errors)} 个错误/警告",
+            "summary": "共记录 %d 个错误/警告" % len(self.errors),
         }
 
     def get_user_friendly_error_report(self) -> str:
@@ -359,7 +354,7 @@ class ServiceManager:
 
         # 错误统计概览
         summary = self.get_error_summary()
-        report_lines.append(f"📊 错误统计: {summary['summary']}")
+        report_lines.append("📊 错误统计: %s" % summary["summary"])
 
         # 按严重程度分组显示
         severity_order = [
@@ -382,17 +377,19 @@ class ServiceManager:
             }
 
             icon = severity_icons.get(severity, "❓")
-            report_lines.append(f"\n{icon} {severity.value.upper()} ({len(severity_errors)} 项):")
+            report_lines.append(
+                "\n%s %s (%d 项):" % (icon, severity.value.upper(), len(severity_errors))
+            )
             report_lines.append("-" * 30)
 
             for error in severity_errors:
                 time_str = error.timestamp.strftime("%H:%M:%S")
-                report_lines.append(f"  [{time_str}] {error.service_name}")
-                report_lines.append(f"    错误类型: {error.error_type}")
-                report_lines.append(f"    详细信息: {error.message}")
+                report_lines.append("  [%s] %s" % (time_str, error.service_name))
+                report_lines.append("    错误类型: %s" % error.error_type)
+                report_lines.append("    详细信息: %s" % error.message)
 
                 if error.exception:
-                    report_lines.append(f"    异常: {str(error.exception)}")
+                    report_lines.append("    异常: %s" % str(error.exception))
 
                 report_lines.append("")
 
@@ -406,19 +403,19 @@ class ServiceManager:
         if critical_errors:
             report_lines.append("🔴 严重错误需要立即修复:")
             for error in critical_errors[:3]:  # 只显示前3个
-                report_lines.append(f"  - {error.service_name}: {error.message}")
+                report_lines.append("  - %s: %s" % (error.service_name, error.message))
 
         if major_errors:
             report_lines.append("❌ 主要错误需要优先处理:")
             for error in major_errors[:3]:  # 只显示前3个
-                report_lines.append(f"  - {error.service_name}: {error.message}")
+                report_lines.append("  - %s: %s" % (error.service_name, error.message))
 
         # 服务状态概览
         report_lines.append("\n🔍 服务状态概览:")
         report_lines.append("-" * 30)
-        report_lines.append(f"已注册服务数量: {len(self.services)}")
+        report_lines.append("已注册服务数量: %d" % len(self.services))
         if self.services:
-            report_lines.append(f"可用服务: {', '.join(self.services.keys())}")
+            report_lines.append("可用服务: %s" % ", ".join(self.services.keys()))
         else:
             report_lines.append("⚠️ 当前没有任何已注册的服务")
 
@@ -444,11 +441,11 @@ class ServiceManager:
                         status[name] = "✅ 已连接" if is_connected else "⚠️ 未连接"
                     elif hasattr(service, "status") and callable(service.status):
                         service_status = service.status()
-                        status[name] = f"📊 {service_status}"
+                        status[name] = "📊 %s" % service_status
                     else:
                         status[name] = "✅ 已注册"
                 except Exception as e:
-                    status[name] = f"❌ 检查失败: {str(e)}"
+                    status[name] = "❌ 检查失败: %s" % str(e)
 
         return status
 
@@ -480,7 +477,7 @@ class ServiceManager:
             self.record_error(
                 "ServiceManager",
                 "EXPORT_ERROR",
-                f"导出错误报告失败: {str(e)}",
+                "导出错误报告失败: %s" % str(e),
                 exception=e,
                 severity=ErrorSeverity.ERROR,
             )
@@ -616,6 +613,45 @@ class ServiceInitializer:
                 self.progress_callback(message, progress)
             except Exception as e:
                 self.logger.warning("进度回调失败：%s", e)
+
+    def _load_vnpy_apps_background(self, main_engine):
+        """后台加载VnPy Apps（非阻塞）."""
+        import threading
+
+        def load_apps():
+            apps_loaded = []
+            apps_failed = []
+
+            app_list = [
+                ("vnpy_ctastrategy", "CtaStrategyApp", "CtaStrategy"),
+                ("vnpy_algotrading", "AlgoTradingApp", "AlgoTrading"),
+                ("vnpy_optionmaster", "OptionMasterApp", "OptionMaster"),
+                ("vnpy_portfoliostrategy", "PortfolioStrategyApp", "PortfolioStrategy"),
+            ]
+
+            for module_name, class_name, display_name in app_list:
+                try:
+                    module = __import__(module_name, fromlist=[class_name])
+                    app_class = getattr(module, class_name)
+                    main_engine.add_app(app_class)
+                    apps_loaded.append(display_name)
+                    self.logger.info("[VNPY-APPS] ✅ %s 已添加", display_name)
+                except ImportError:
+                    self.logger.info("[VNPY-APPS] ℹ️  %s 未安装（可选扩展包）", display_name)
+                    apps_failed.append(display_name)
+                except Exception as e:
+                    self.logger.warning("[VNPY-APPS] ⚠️  添加 %s 失败: %s", display_name, e)
+                    apps_failed.append(display_name)
+
+            self.logger.info(
+                "[VNPY-APPS] ✅ Apps后台加载完成（成功: %d, 失败: %d）",
+                len(apps_loaded),
+                len(apps_failed),
+            )
+
+        thread = threading.Thread(target=load_apps, name="VnPyAppsLoader", daemon=True)
+        thread.start()
+        self.logger.info("[VNPY-APPS] ✅ Apps后台加载线程已启动")
 
     def initialize_core_services(self) -> bool:
         """初始化核心服务（快速启动模式）.
@@ -927,6 +963,52 @@ class ServiceInitializer:
             self.logger.warning("⚠️ 配置数据服务失败: %s", e)
             self.logger.info("策略可以在没有历史数据的情况下运行（仅使用实时行情）")
 
+    def _initialize_network_time_sync(self) -> bool:
+        """阶段0: 初始化网络时间同步.
+
+        在所有服务初始化之前执行，确保数据新鲜度计算的准确性。
+
+        Returns:
+            bool: 是否成功（失败不影响后续启动）
+        """
+        try:
+            self.logger.info("\n" + "=" * 60)
+            self.logger.info("阶段0: 网络时间同步")
+            self.logger.info("=" * 60)
+
+            from backend.infrastructure.data_module_vnpy.utils.network_time import (
+                sync_network_time,
+                get_time_stats,
+            )
+
+            self.logger.info("开始网络时间同步...")
+            success = sync_network_time()
+
+            if success:
+                stats = get_time_stats()
+                offset = stats.get("cached_offset", 0)
+                abs_offset = abs(offset) if offset is not None else 0
+
+                if abs_offset > 1.0:
+                    direction = "慢" if offset > 0 else "快"
+                    self.logger.info(
+                        f"✓ 网络时间同步成功，系统时间{direction}了 {abs_offset:.3f}秒"
+                    )
+                else:
+                    self.logger.info(f"✓ 网络时间同步成功，偏差 {abs_offset*1000:.1f}毫秒")
+
+                self.logger.info("✓ 数据新鲜度计算将使用网络时间")
+                return True
+            else:
+                self.logger.warning("⚠️ 网络时间同步失败，将使用系统时间")
+                self.logger.warning("⚠️ 如果系统时间不准确，可能导致数据新鲜度误判")
+                return False
+
+        except Exception as e:
+            self.logger.warning(f"⚠️ 时间同步异常: {e}")
+            self.logger.warning("⚠️ 将使用系统时间（可能不准确）")
+            return False
+
     def _initialize_vnpy_core(self) -> bool:
         """阶段1: 初始化VNPY核心框架（完整模式）.
 
@@ -935,6 +1017,9 @@ class ServiceInitializer:
         Returns:
             bool: 是否成功
         """
+        # 阶段0: 网络时间同步（在所有服务之前）
+        self._initialize_network_time_sync()
+
         self._report_progress("阶段1: 检查VNPY核心引擎...", 20)
 
         self.logger.info("\n" + "=" * 60)
@@ -956,6 +1041,10 @@ class ServiceInitializer:
                 self.event_engine = existing_event_engine
                 self.main_engine = existing_main_engine
                 self.logger.info("✅ 使用主线程初始化的 VnPy 核心引擎")
+
+                # 后台加载VnPy Apps
+                self.logger.info("[VNPY-APPS] 开始后台加载VnPy应用...")
+                self._load_vnpy_apps_background(self.main_engine)
             elif existing_event_engine:
                 # 🎯 新增：有EventEngine但没有MainEngine，创建MainEngine
                 self.logger.info("✅ 检测到主线程预创建的EventEngine")
@@ -1058,7 +1147,7 @@ class ServiceInitializer:
 
         except Exception as e:
             # 如果注入失败，不影响系统启动，只记录警告
-            self.logger.warning(f"⚠️ BusinessMetricsCollector注入失败: {e}")
+            self.logger.warning("⚠️ BusinessMetricsCollector注入失败: %s", e)
             self.logger.warning("⚠️ 事件队列监控将不可用")
 
     def _initialize_data_services(self) -> bool:

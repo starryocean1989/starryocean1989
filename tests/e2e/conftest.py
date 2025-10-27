@@ -161,3 +161,9 @@ def china_stock_engine():
     logger.info("ChinaStockEngine已准备就绪")
 
     return engine
+
+
+# ==================== 网络请求E2E测试专用Fixture ====================
+
+# 从fixtures模块导入
+pytest_plugins = ["tests.e2e.fixtures.network_request_fixtures"]

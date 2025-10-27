@@ -32,7 +32,8 @@ import numpy as np
 
 from ui.components.widgets import BaseWidget
 
-logger = logging.getLogger(__name__)
+# ✅ 使用规范命名
+logger = logging.getLogger("ui.components.charts")
 
 # Backend imports - 检查vnpy可用性
 try:
@@ -856,7 +857,7 @@ class IndicatorPlotWidget(QWidget):
 
     def _on_close_clicked(self):
         """关闭按钮点击."""
-        logger.info(f"请求关闭副图: {self.indicator_type}")
+        logger.info("请求关闭副图: %s", self.indicator_type)
         self.close_requested.emit()
 
     def update_data(self, data: Dict[str, Any]):
@@ -866,6 +867,11 @@ class IndicatorPlotWidget(QWidget):
             data: 指标数据
         """
         try:
+            # ✅ 数据验证
+            if data is None or not isinstance(data, dict):
+                logger.warning("图表数据无效: 数据为空或类型错误")
+                return
+
             if not self.plot_item or not self.is_visible:
                 return
 
@@ -884,10 +890,12 @@ class IndicatorPlotWidget(QWidget):
             elif self.indicator_type == "VOLUME":
                 self._plot_volume(data)
             else:
-                logger.warning(f"未实现的指标类型: {self.indicator_type}")
+                logger.warning("未实现的指标类型: %s", self.indicator_type)
+
+            logger.debug("图表更新完成: 指标=%s", self.indicator_type)
 
         except Exception as e:
-            logger.error(f"更新指标数据失败: {e}", exc_info=True)
+            logger.exception("更新指标数据失败: 指标=%s, 错误=%s", self.indicator_type, e)
 
     def _plot_macd(self, data: Dict[str, Any]):
         """绘制MACD指标.
