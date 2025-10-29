@@ -1196,7 +1196,7 @@ class MainWindow(QMainWindow, LoggerMixin):
 
             # 导入Qt原生的验证工作对象
             from PySide6.QtCore import QThread
-            from backend.infrastructure.data_module_vnpy.validation_worker import (
+            from backend.infrastructure.data_module_vnpy import (
                 CacheValidationWorker,
             )
 

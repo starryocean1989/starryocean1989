@@ -10,10 +10,20 @@ from collections import deque
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from PySide6.QtCore import QDate, QDateTime, Qt, QTimer, Signal, QSize, QRect, QPoint, QModelIndex
+from PySide6.QtCore import (
+    QAbstractTableModel,
+    QDate,
+    QDateTime,
+    Qt,
+    QTimer,
+    Signal,
+    QSize,
+    QRect,
+    QPoint,
+    QModelIndex,
+)
 from PySide6.QtGui import QColor, QPainter, QPen, QBrush, QPalette
 from PySide6.QtWidgets import (
-    QAbstractTableModel,
     QCheckBox,
     QComboBox,
     QDateEdit,

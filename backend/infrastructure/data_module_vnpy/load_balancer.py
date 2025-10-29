@@ -1635,7 +1635,7 @@ class ResourceMonitor:
 
         # 订阅协程性能指标事件
         if event_engine:
-            from ..events import EVENT_ASYNCIO_METRICS
+            from .data_module import EVENT_ASYNCIO_METRICS
 
             event_engine.register(EVENT_ASYNCIO_METRICS, self._on_asyncio_metrics)
 
@@ -1730,7 +1730,7 @@ class ResourceMonitor:
         # 取消事件订阅
         if self.event_engine:
             try:
-                from ..events import EVENT_ASYNCIO_METRICS
+                from .data_module import EVENT_ASYNCIO_METRICS
 
                 self.event_engine.unregister(EVENT_ASYNCIO_METRICS, self._on_asyncio_metrics)
             except Exception as e:
@@ -5315,9 +5315,10 @@ class ServerPoolManager:
             cache_data_ipv4, cache_data_ipv6, cache_date, is_valid = self.load_server_cache()
 
             # 2. 强制检查缓存是否为当天（使用网络时间）
-            from backend.infrastructure.data_module_vnpy.utils.network_time import get_real_date
+            from .data_module import get_real_datetime
+            from datetime import datetime
 
-            today = get_real_date().isoformat()  # 使用网络时间
+            today = get_real_datetime().date().isoformat()  # 使用网络时间
 
             # 如果缓存日期不是今天，强制失效
             if cache_date and cache_date != today:
@@ -5903,7 +5904,7 @@ class ServerPoolManager:
             Tuple[ipv4_servers, ipv6_servers, cache_date, is_valid]
         """
         try:
-            from backend.infrastructure.data_module_vnpy.cache_manager import DailyCacheManager
+            from backend.infrastructure.data_module_vnpy.data_module import DailyCacheManager
 
             data, cache_date, is_valid = DailyCacheManager.load_with_validation(
                 self._cache_file, validate_date=True
@@ -5942,7 +5943,7 @@ class ServerPoolManager:
             bool: 是否保存成功
         """
         try:
-            from backend.infrastructure.data_module_vnpy.cache_manager import DailyCacheManager
+            from backend.infrastructure.data_module_vnpy.data_module import DailyCacheManager
 
             # 转换为可JSON序列化的格式
             server_data = {
@@ -5975,7 +5976,7 @@ class ServerPoolManager:
             bool: True=有效，False=失效
         """
         try:
-            from backend.infrastructure.data_module_vnpy.cache_manager import DailyCacheManager
+            from backend.infrastructure.data_module_vnpy.data_module import DailyCacheManager
 
             return DailyCacheManager.is_cache_valid(self._cache_date)
         except Exception:

@@ -33,10 +33,10 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import pandas as pd
 import psutil
 
-from ..config import config_manager
+from .data_module import config_manager
 
 # 导入网络时间同步模块
-from ..utils.network_time import get_real_date
+from .data_module import get_real_date
 
 # ==================== 日志配置 ====================
 # 创建专用logger（模块级别）
@@ -44,7 +44,7 @@ logger = logging.getLogger("backend.data_module.quality")
 logger_alert = logging.getLogger("backend.data_module.alert")
 
 # 旧架构（向后兼容）
-from ..load_balancer import (
+from .load_balancer import (
     LoadBalancer,
     LocalProcessingTask,
     TaskMetrics,
@@ -53,7 +53,7 @@ from ..load_balancer import (
 )
 
 # 新架构（动态并发调整）
-from ..load_balancer import (
+from .load_balancer import (
     ResourceMonitor,
     ExecutionPolicy,
     MultiProcessBatchModel,
@@ -127,7 +127,7 @@ async def _quality_scan_worker_async(
     logger = logging.getLogger(f"QualityScanWorker-{worker_id}")
 
     # 启动lag监控
-    from ...load_balancer import LagMonitor
+    from .load_balancer import LagMonitor
 
     lag_monitor_task = asyncio.create_task(
         LagMonitor.monitor_and_report(
@@ -762,7 +762,7 @@ class IPODateCache:
             bool: True=缓存已过时，False=缓存有效
         """
         try:
-            from ..cache_manager import DailyCacheManager
+            from .data_module import DailyCacheManager
 
             return not DailyCacheManager.is_cache_valid(self._cache_date)
         except Exception:
@@ -832,7 +832,7 @@ class IPODateCache:
             if new_symbols:
                 self.logger.info("检测到 %d 个新增品种，开始下载IPO日期...", len(new_symbols))
                 try:
-                    from ..data_acquisition import download_ipo_dates
+                    from .data_acquisition import download_ipo_dates
 
                     # 🔧 进度回调已修复，直接传递（期望 current, total）
                     # download_ipo_dates 内部的 _monitor_ipo_progress 会调用 callback(completed, total_symbols)
@@ -1140,7 +1140,7 @@ class StorageManager:
         self.logger.info(f"📦 任务队列: 已加入{len(symbols)}个品种")
 
         # 使用DynamicProcessPool
-        from ...load_balancer import DynamicProcessPool
+        from .load_balancer import DynamicProcessPool
 
         pool = DynamicProcessPool(
             initial_processes=initial_processes,
@@ -1162,7 +1162,7 @@ class StorageManager:
 
         # 收集结果
         results = {}
-        from ...load_balancer import LagMonitor
+        from .load_balancer import LagMonitor
 
         # 结果消费协程
         async def result_consumer():
@@ -1572,7 +1572,7 @@ class DataValidator:
         Returns:
             下载结果统计
         """
-        from ..data_acquisition import download_ipo_dates
+        from .data_acquisition import download_ipo_dates
 
         self.logger.info(f"批量预加载IPO日期: {len(symbols)}个品种")
 
@@ -2041,7 +2041,7 @@ class DataValidator:
             # 获取所有品种（需要从配置文件或数据库获取品种列表）
             # 这里简化处理，假设从配置获取
             try:
-                from ..config import config_manager
+                from .data_module import config_manager
 
                 reference_symbols = config_manager.get("chinastock.symbols", [])
                 if not reference_symbols:
@@ -2617,7 +2617,7 @@ class DataSensor:
 
         # 协程性能监控发布器
         if event_engine:
-            from ..events import AsyncioMetricsPublisher
+            from .data_module import AsyncioMetricsPublisher
 
             self.asyncio_publisher = AsyncioMetricsPublisher(event_engine)
         else:
@@ -2714,7 +2714,7 @@ class DataSensor:
 
                 try:
                     # 导入LoadBalancer相关组件
-                    from ..load_balancer import (
+                    from .load_balancer import (
                         ResourceMonitor,
                         ExecutionPolicy,
                         MultiProcessBatchModel,
@@ -2981,7 +2981,8 @@ class DataSensor:
                 try:
                     local_data_index = self.storage_manager.get_local_data_index()
                     if local_data_index:
-                        from ..events import EVENT_LOCAL_DATA_INDEX_READY, Event
+                        from .data_module import EVENT_LOCAL_DATA_INDEX_READY
+                        from vnpy.event import Event
 
                         # 构建本地数据索引事件数据（名称留空）
                         symbol_list = [{"code": code, "name": ""} for code in local_data_index]
@@ -3177,7 +3178,7 @@ class DataSensor:
         Returns:
             是否启动成功
         """
-        from ..config import config_manager
+        from .data_module import config_manager
 
         try:
             if self.data_file_watcher and self.data_file_watcher.is_running:
@@ -3621,7 +3622,8 @@ class DataSensor:
                 "details": overview.details,
             }
 
-            from ..events import EVENT_DATA_QUALITY_UPDATE
+            from .data_module import EVENT_DATA_QUALITY_UPDATE
+            from vnpy.event import Event
 
             event = Event(EVENT_DATA_QUALITY_UPDATE, event_data)
             self.event_engine.put(event)
@@ -3690,7 +3692,7 @@ class DataSensor:
             intervals = ["1d", "5m", "1m"]
 
         # 检查配置
-        from ..config import config_manager
+        from .data_module import config_manager
 
         enable_adaptive = config_manager.is_quality_scan_adaptive_enabled()
         enable_incremental_push = config_manager.is_quality_scan_incremental_push_enabled()
@@ -3839,7 +3841,7 @@ class DataSensor:
 
                 # 推送部分扫描完成事件
                 if enable_incremental_push and self.event_engine:
-                    from ..events import EVENT_QUALITY_SCAN_PHASE
+                    from .data_module import EVENT_QUALITY_SCAN_PHASE
                     from vnpy.event import Event
 
                     event_data = {
@@ -3984,7 +3986,8 @@ class DataSensor:
         if not enable_push or not self.event_engine:
             return
 
-        from ..events import EVENT_QUALITY_SCAN_PHASE, Event
+        from .data_module import EVENT_QUALITY_SCAN_PHASE
+        from vnpy.event import Event
         from datetime import datetime
 
         event_data = {
@@ -4048,7 +4051,8 @@ class DataSensor:
         if not enable_push or not self.event_engine:
             return
 
-        from ..events import EVENT_QUALITY_SCAN_PHASE, Event
+        from .data_module import EVENT_QUALITY_SCAN_PHASE
+        from vnpy.event import Event
         from datetime import datetime
 
         # 🆕 构建品种缺失的details（用于增量推送）
@@ -4092,7 +4096,8 @@ class DataSensor:
             local_symbols_list = local_data.get("local_symbols", [])
             symbol_list = [{"code": code, "name": ""} for code in local_symbols_list]
             if symbol_list:
-                from ..events import EVENT_LOCAL_DATA_INDEX_READY
+                from .data_module import EVENT_LOCAL_DATA_INDEX_READY
+                from vnpy.event import Event
 
                 index_event = Event(
                     EVENT_LOCAL_DATA_INDEX_READY,
@@ -4187,7 +4192,8 @@ class DataSensor:
         if not enable_push or not self.event_engine:
             return
 
-        from ..events import EVENT_QUALITY_SCAN_PHASE, Event
+        from .data_module import EVENT_QUALITY_SCAN_PHASE
+        from vnpy.event import Event
         from datetime import datetime
 
         # 🆕 构建过时品种的details（用于增量推送）
@@ -4374,7 +4380,8 @@ class DataSensor:
         if not enable_push or not self.event_engine:
             return
 
-        from ..events import EVENT_QUALITY_SCAN_PHASE, Event
+        from .data_module import EVENT_QUALITY_SCAN_PHASE
+        from vnpy.event import Event
         from datetime import datetime
 
         # 🆕 构建错误品种的details（用于增量推送，只推送前50个）
@@ -4500,7 +4507,8 @@ class DataSensor:
 
         # 推送最终指标
         if enable_push and self.event_engine:
-            from ..events import EVENT_QUALITY_SCAN_PHASE, Event
+            from .data_module import EVENT_QUALITY_SCAN_PHASE
+            from vnpy.event import Event
 
             event_data = {
                 "phase": 4,
@@ -4536,7 +4544,8 @@ class DataSensor:
             # 需要通过 china_stock_engine 访问
             # 由于 DataSensor 不直接持有 engine 引用，需要通过事件引擎推送
             if self.event_engine:
-                from ..events import EVENT_LOCAL_DATA_INDEX_READY, Event
+                from .data_module import EVENT_LOCAL_DATA_INDEX_READY
+                from vnpy.event import Event
 
                 # 构建本地数据索引事件数据
                 local_symbols_list = local_data.get("local_symbols", [])
@@ -4585,7 +4594,7 @@ class DataSensor:
             error_count = 0
 
             # 简单的文件存在性检查（不读取文件内容）
-            from ..config import config_manager
+            from .data_module import config_manager
 
             intervals = ["1d", "5m", "1m"]  # 默认周期
             data_dir = config_manager.get_data_dir()
@@ -4622,7 +4631,8 @@ class DataSensor:
 
             # 推送完成事件
             if self.event_engine:
-                from ..events import EVENT_DATA_SCAN_FINISHED, Event
+                from .data_module import EVENT_DATA_SCAN_FINISHED
+                from vnpy.event import Event
 
                 event_data = {
                     "scan_type": "errors_and_missing",

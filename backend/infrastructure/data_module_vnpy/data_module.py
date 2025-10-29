@@ -303,7 +303,7 @@ def sync_network_time(force: bool = False) -> bool:
     if force:
         return sync.force_sync()
     else:
-        success, _ = sync.time()
+        success, _ = sync.sync_time()
         return success
 
 

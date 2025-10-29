@@ -279,7 +279,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 from backend.infrastructure.tdx_asyncio import AsyncTdxHq_API
 
-from ..config import config_manager, TdxConfigFileParser
+from .data_module import config_manager, TdxConfigFileParser
 
 # 创建模块级logger实例
 logger = logging.getLogger(__name__)
@@ -634,7 +634,7 @@ class SymbolLoader:
         # 事件发布器（从core.py迁移）
         self.event_engine = event_engine
         if event_engine:
-            from ..events import DownloadEventPublisher, EventPublisher
+            from .data_module import DownloadEventPublisher, EventPublisher
 
             self.event_publisher = EventPublisher(event_engine)
             self.download_publisher = DownloadEventPublisher(event_engine)
@@ -718,7 +718,7 @@ class SymbolLoader:
             - is_outdated: 是否过时（True=需要更新）
         """
         try:
-            from ..cache_manager import DailyCacheManager
+            from .data_module import DailyCacheManager
 
             cache_data, cache_date, is_valid = DailyCacheManager.load_with_validation(
                 "stock_list_classified.json"
@@ -790,7 +790,7 @@ class SymbolLoader:
         self.logger.info("→ asyncio并发模式：市场0和市场1并发获取...")
 
         # 获取最优服务器（使用IPv4池）
-        from ..load_balancer import server_pool_manager
+        from .load_balancer import server_pool_manager
 
         best_servers = server_pool_manager.get_servers(pool_type="ipv4")
         self.logger.info("  ✓ 获取到 %d 个已排序的最优IPv4服务器", len(best_servers))
@@ -1507,7 +1507,7 @@ class SymbolLoader:
         self.logger.info("步骤3: 保存缓存")
 
         try:
-            from ..cache_manager import DailyCacheManager
+            from .data_module import DailyCacheManager
 
             cache_data = {
                 "total_count": sum(len(stocks) for stocks in classified.values()),
@@ -1590,7 +1590,7 @@ class SymbolLoader:
             # 4. 同步清理 IPO 缓存文件中的未上市品种
             if unlisted_symbols:
                 try:
-                    from ..local_data.data_quality import get_ipo_cache
+                    from .data_quality import get_ipo_cache
 
                     ipo_cache = get_ipo_cache()
 
@@ -1609,7 +1609,7 @@ class SymbolLoader:
             # 🆕 保存未上市品种到专用缓存文件
             if unlisted_symbols:
                 try:
-                    from ..cache_manager import DailyCacheManager
+                    from .data_module import DailyCacheManager
 
                     # 保存未上市品种列表
                     unlisted_data = {
@@ -1968,7 +1968,7 @@ import pandas as pd
 from backend.infrastructure.tdx_asyncio import AsyncTdxHq_API
 
 # TaskDetailLogger已在本文件第1部分定义，无需导入
-from ..load_balancer import (
+from .load_balancer import (
     server_pool_manager,
     NetworkTask,
     TaskMetrics,
@@ -2108,7 +2108,7 @@ async def download_worker_two_phase_async(
     logger.info("两段式Worker %s 启动，PID：%s", worker_id, os.getpid())
 
     # 🆕 v3.6: 启动lag监控（使用独立的metrics_queue）
-    from ..load_balancer import LagMonitor, ConnectionLifecycleManager
+    from .load_balancer import LagMonitor, ConnectionLifecycleManager
 
     lag_monitor_task = asyncio.create_task(
         LagMonitor.monitor_and_report(
@@ -2815,7 +2815,7 @@ async def download_worker_async(
     )
 
     # 🆕 v3.6: 启动lag监控（使用独立的metrics_queue）
-    from ..load_balancer import LagMonitor, ConnectionLifecycleManager
+    from .load_balancer import LagMonitor, ConnectionLifecycleManager
 
     lag_monitor_task = asyncio.create_task(
         LagMonitor.monitor_and_report(
@@ -3063,7 +3063,7 @@ async def _ipo_worker_async(
     worker_logger.info(f"IPO Worker {worker_id} 启动")
 
     # 启动lag监控
-    from ..load_balancer import LagMonitor, ConnectionLifecycleManager
+    from .load_balancer import LagMonitor, ConnectionLifecycleManager
 
     lag_monitor_task = asyncio.create_task(
         LagMonitor.monitor_and_report(
@@ -3393,7 +3393,7 @@ async def download_worker_finance_two_phase_async(
     logger_local.info("财务信息2段式Worker %s 启动，PID：%s", worker_id, os.getpid())
 
     # 启动lag监控
-    from ..load_balancer import LagMonitor, ConnectionLifecycleManager
+    from .load_balancer import LagMonitor, ConnectionLifecycleManager
 
     lag_monitor_task = asyncio.create_task(
         LagMonitor.monitor_and_report(
@@ -3750,7 +3750,7 @@ class MultiProcessStockFetcher:
 
         # 事件发布器
         if event_engine:
-            from ..events import DownloadEventPublisher, EventPublisher, AsyncioMetricsPublisher
+            from .data_module import DownloadEventPublisher, EventPublisher, AsyncioMetricsPublisher
 
             self.download_publisher = DownloadEventPublisher(event_engine)
             self.log_publisher = EventPublisher(event_engine)
@@ -5346,7 +5346,7 @@ def download_ipo_dates(
         }
 
     # 1. 从缓存加载已有的IPO数据
-    from ..local_data.data_quality import IPODateCache
+    from backend.infrastructure.data_module_vnpy.data_quality import IPODateCache
 
     # 🔧 修复：使用传入的 ipo_cache 实例，避免创建新实例导致数据丢失
     if ipo_cache is None:
@@ -5509,14 +5509,13 @@ def load_market_mapping() -> Dict[str, int]:
 # ==================== 文件结尾 ====================
 
 
-
 # ==============================================================================
 # 第4部分：数据读取器（原data_readers/data_readers.py）
 # ==============================================================================
 # 合并来源：
 # 1. base_reader.py - 基础读取器和数据结构
 # 2. bj_decoder.py - 北交所数据解码器
-# 3. tdx_reader.py - TDX二进制文件读取器  
+# 3. tdx_reader.py - TDX二进制文件读取器
 # 4. tdx_dynamic_executor.py - 动态并发执行器
 # ==============================================================================
 
@@ -5540,7 +5539,7 @@ from backend.infrastructure.tdx_asyncio import (
     read_minute_data,
     read_lc5_data,
 )
-from backend.infrastructure.data_module_vnpy.load_balancer.load_balancer import (
+from backend.infrastructure.data_module_vnpy.load_balancer import (
     LocalProcessingTask,
 )
 
@@ -6097,8 +6096,8 @@ class TdxBinaryReader(BaseReader):
             source_path: 通达信软件根目录（如不指定则从配置读取）
         """
         # 延迟导入避免循环依赖
-        from ..config import config_manager
-        from ..local_data.data_quality import StorageManager
+        from .data_module import config_manager
+        from .data_quality import StorageManager
 
         if source_path is None:
             source_path = config_manager.get_tdx_reader_root_dir()
@@ -6784,7 +6783,7 @@ class TdxDynamicExecutor:
         self.load_balancer = get_load_balancer()
 
         # 协程性能监控发布器（event_engine需要在使用时注入）
-        from ..events import AsyncioMetricsPublisher
+        from .data_module import AsyncioMetricsPublisher
 
         self.asyncio_publisher = AsyncioMetricsPublisher(event_engine=None)
 

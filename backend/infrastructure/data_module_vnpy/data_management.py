@@ -758,7 +758,6 @@ def create_shared_validation_context(
     return manager, context
 
 
-
 # ==============================================================================
 # 第3部分：数据验证器（原validators.py）
 # ==============================================================================
@@ -1357,7 +1356,6 @@ def validate_symbol_stateless(task_data: Dict[str, Any]) -> StatelessValidationR
     )
 
 
-
 # ==============================================================================
 # 第2部分：GPU加速验证器（原gpu_validator.py）
 # ==============================================================================
@@ -1720,7 +1718,6 @@ def detect_and_log_gpu():
     return GPUDetector.log_gpu_info()
 
 
-
 # ==============================================================================
 # 第3部分：增量扫描器（原incremental_scan.py）
 # ==============================================================================
@@ -2051,12 +2048,9 @@ def create_incremental_scan_manager(cache_dir: str = "./cache") -> IncrementalSc
     return IncrementalScanManager(cache_dir=cache_dir)
 
 
-
-
-# ==============================================================================  
+# ==============================================================================
 # 第4部分：统一数据管理器（原unified_data_manager.py）
 # ==============================================================================
-from __future__ import annotations
 
 import asyncio
 import logging
@@ -2100,8 +2094,8 @@ from vnpy.trader.constant import Interval, Product
 from backend.infrastructure.tdx_asyncio.async_hq import AsyncTdxHq_API
 from backend.infrastructure.data_module_vnpy.load_balancer import ServerPoolManager
 
-from ..config import config_manager
-from ..load_balancer import (
+from .data_module import config_manager
+from .load_balancer import (
     NetworkTask,
     LocalProcessingTask,
     TaskMetrics,
@@ -2110,7 +2104,7 @@ from ..load_balancer import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover
-    from ..core import ChinaStockEngine
+    from .data_module import ChinaStockEngine
 
 
 # ==================== LoadBalancer任务类定义 ====================
@@ -2863,7 +2857,7 @@ class VirtualDataSource(BaseGateway):
         try:
             # 延迟导入StorageManager
             if self.storage_manager is None:
-                from ..local_data.data_quality import StorageManager
+                from .data_quality import StorageManager
 
                 self.storage_manager = StorageManager()
 
@@ -4470,7 +4464,6 @@ class PreloadService:
 # 为了兼容旧代码，提供别名
 PollingGateway = TdxDataSource
 VirtualGateway = VirtualDataSource
-
 
 
 # ==============================================================================

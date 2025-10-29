@@ -69,7 +69,7 @@ class TradingCalendar:
             if str(project_root) not in sys.path:
                 sys.path.insert(0, str(project_root))
 
-            from backend.infrastructure.data_module_vnpy.cache_manager import DailyCacheManager
+            from backend.infrastructure.data_module_vnpy import DailyCacheManager
 
             cache_data, cache_date, is_valid = DailyCacheManager.load_with_validation(
                 self._cache_file
@@ -111,7 +111,7 @@ class TradingCalendar:
             if str(project_root) not in sys.path:
                 sys.path.insert(0, str(project_root))
 
-            from backend.infrastructure.data_module_vnpy.cache_manager import DailyCacheManager
+            from backend.infrastructure.data_module_vnpy import DailyCacheManager
 
             # 转换DataFrame为可序列化格式
             cache_data = calendar_df.to_dict("records")
@@ -152,7 +152,9 @@ class TradingCalendar:
 
                 # 如果指定了start_year，筛选数据
                 if start_year is not None:
-                    cached_df = cast(pd.DataFrame, cached_df[cached_df["year"] >= start_year].copy())
+                    cached_df = cast(
+                        pd.DataFrame, cached_df[cached_df["year"] >= start_year].copy()
+                    )
 
                 return cached_df
 
@@ -163,28 +165,26 @@ class TradingCalendar:
 
                     # 如果指定了start_year，筛选数据
                     if start_year is not None:
-                        return cast(pd.DataFrame, self._calendar_cache[
-                            self._calendar_cache["year"] >= start_year
-                        ].copy())
+                        return cast(
+                            pd.DataFrame,
+                            self._calendar_cache[self._calendar_cache["year"] >= start_year].copy(),
+                        )
 
                     return self._calendar_cache
 
             # 在异步环境中执行同步操作（调用 pandas_market_calendars API）
-            sse = await asyncio.to_thread(mcal.get_calendar, 'SSE')  # 上海证券交易所
+            sse = await asyncio.to_thread(mcal.get_calendar, "SSE")  # 上海证券交易所
             schedule = await asyncio.to_thread(
                 sse.schedule,
-                start_date='1990-01-01',
-                end_date=(datetime.now() + timedelta(days=365)).strftime('%Y-%m-%d')
+                start_date="1990-01-01",
+                end_date=(datetime.now() + timedelta(days=365)).strftime("%Y-%m-%d"),
             )
             # 将 DatetimeIndex 转换为日期列表
             trade_dates_dt = schedule.index
             trade_dates = [d.date() for d in trade_dates_dt]
 
             # 转换为所需格式
-            calendar_df = pd.DataFrame({
-                'date': trade_dates,
-                'year': [d.year for d in trade_dates]
-            })
+            calendar_df = pd.DataFrame({"date": trade_dates, "year": [d.year for d in trade_dates]})
 
             # 排序（确保一致性）
             calendar_df = calendar_df.sort_values("date").reset_index(drop=True)
@@ -204,7 +204,9 @@ class TradingCalendar:
 
             # 如果指定了start_year，筛选数据
             if start_year is not None:
-                calendar_df = cast(pd.DataFrame, calendar_df[calendar_df["year"] >= start_year].copy())
+                calendar_df = cast(
+                    pd.DataFrame, calendar_df[calendar_df["year"] >= start_year].copy()
+                )
                 logger.debug(f"筛选{start_year}年及以后的数据：{len(calendar_df)}个交易日")
 
             return calendar_df

@@ -1170,7 +1170,7 @@ class ServiceInitializer:
         # 初始化ChinaStockEngine（作为数据引擎）
         try:
             self._report_progress("创建ChinaStockEngine...", 45)
-            from backend.infrastructure.data_module_vnpy.core import ChinaStockEngine
+            from backend.infrastructure.data_module_vnpy.data_module import ChinaStockEngine
 
             # 确保引擎已初始化
             assert self.main_engine is not None, "MainEngine 必须在初始化 ChinaStockEngine 之前创建"

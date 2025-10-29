@@ -40,9 +40,11 @@ from .data_module import (
     # 缓存管理
     DailyCacheManager,
     # Qt工作线程
-    DataValidationWorker,
+    CacheValidationWorker,
     # 工具函数
-    get_network_time,
+    get_real_datetime,
+    sync_network_time,
+    get_time_stats,
 )
 
 # ==================== 第2部分：数据获取模块（data_acquisition.py）====================
@@ -83,9 +85,13 @@ from .data_management import (
 from .data_quality import (
     HealthChecker,
     StorageManager,
-    DataQualityManager,
-    FileWatcher,
+    DataSensor,
+    DataFileWatcher,
 )
+
+# 向后兼容别名
+DataQualityManager = DataSensor
+FileWatcher = DataFileWatcher
 
 # ==================== 第5部分：负载均衡模块（load_balancer.py）====================
 from .load_balancer import (
@@ -118,9 +124,11 @@ __all__ = [
     "LRUCacheManager",
     "SharedMemoryManager",
     # ==================== Qt工作线程 ====================
-    "DataValidationWorker",
+    "CacheValidationWorker",
     # ==================== 工具函数 ====================
-    "get_network_time",
+    "get_real_datetime",
+    "sync_network_time",
+    "get_time_stats",
     # ==================== 品种管理 ====================
     "SymbolLoader",
     # ==================== K线下载 ====================
@@ -147,8 +155,10 @@ __all__ = [
     # ==================== 数据质量管理 ====================
     "HealthChecker",
     "StorageManager",
-    "DataQualityManager",
-    "FileWatcher",
+    "DataSensor",
+    "DataFileWatcher",
+    "DataQualityManager",  # 别名，向后兼容
+    "FileWatcher",  # 别名，向后兼容
     # ==================== 服务器池管理 ====================
     "ServerPoolManager",
     "server_pool_manager",
