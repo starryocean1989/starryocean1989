@@ -26,6 +26,55 @@ API兼容性：100%向后兼容，所有导入路径保持有效
 
 
 # ==============================================================================
+# 子进程日志配置（统一日志系统集成）
+# ==============================================================================
+
+
+def _configure_subprocess_logging(worker_id: int, task_type: str = "worker"):
+    """配置子进程日志系统，接入LogHub统一路由
+
+    Args:
+        worker_id: 子进程ID
+        task_type: 任务类型（kline/ipo/finance/server_test等）
+
+    Returns:
+        配置好的logger实例
+    """
+    import logging
+    import sys
+
+    try:
+        # 1. 获取LogHub实例
+        from backend.infrastructure.system_vnpy.unified_log_system import get_logging_hub
+
+        hub = get_logging_hub()
+
+        # 2. 清理子进程继承的所有handler（避免重复输出）
+        root_logger = logging.getLogger()
+        for handler in root_logger.handlers[:]:
+            root_logger.removeHandler(handler)
+            handler.close()
+
+        # 3. 将LogHub添加到root logger
+        root_logger.addHandler(hub)
+        root_logger.setLevel(logging.DEBUG)
+
+        # 4. 创建子进程专用logger（带worker_id标识）
+        logger_name = f"subprocess.{task_type}.{worker_id}"
+        subprocess_logger = logging.getLogger(logger_name)
+        subprocess_logger.propagate = True  # 让日志传播到root logger
+
+        subprocess_logger.info(f"✅ 子进程 {worker_id} 日志系统已接入LogHub")
+        return subprocess_logger
+
+    except Exception as e:
+        # 降级：如果LogHub配置失败，使用标准logger
+        fallback_logger = logging.getLogger(__name__)
+        fallback_logger.warning(f"⚠️ 子进程 {worker_id} LogHub配置失败，使用降级日志: {e}")
+        return fallback_logger
+
+
+# ==============================================================================
 # 第1部分：任务日志记录器（原task_logger.py）
 # ==============================================================================
 
@@ -2104,11 +2153,16 @@ async def download_worker_two_phase_async(
         pause_event: 暂停事件
         connections_per_worker: 每个worker的异步连接数（默认无上限）
     """
-    logger = logging.getLogger(f"TwoPhaseWorker-{worker_id}")
+    # ✅ 配置子进程日志，接入LogHub统一路由
+    logger = _configure_subprocess_logging(worker_id, task_type="kline_twophase")
     logger.info("两段式Worker %s 启动，PID：%s", worker_id, os.getpid())
 
     # 🆕 v3.6: 启动lag监控（使用独立的metrics_queue）
-    from .load_balancer import LagMonitor, ConnectionLifecycleManager
+    # ✅ 修复：使用绝对导入，避免多进程中的导入失败
+    from backend.infrastructure.data_module_vnpy.load_balancer import (
+        LagMonitor,
+        ConnectionLifecycleManager,
+    )
 
     lag_monitor_task = asyncio.create_task(
         LagMonitor.monitor_and_report(
@@ -2809,13 +2863,18 @@ async def download_worker_async(
         pause_event: 暂停事件
         connections_per_worker: 每个worker的异步连接数（默认无上限）
     """
-    logger = logging.getLogger(f"AsyncWorker-{worker_id}")
+    # ✅ 配置子进程日志，接入LogHub统一路由
+    logger = _configure_subprocess_logging(worker_id, task_type="kline")
     logger.info(
         f"异步Worker {worker_id} 启动，PID: {os.getpid()}，连接数: {connections_per_worker}"
     )
 
     # 🆕 v3.6: 启动lag监控（使用独立的metrics_queue）
-    from .load_balancer import LagMonitor, ConnectionLifecycleManager
+    # ✅ 修复：使用绝对导入，避免多进程中的导入失败
+    from backend.infrastructure.data_module_vnpy.load_balancer import (
+        LagMonitor,
+        ConnectionLifecycleManager,
+    )
 
     lag_monitor_task = asyncio.create_task(
         LagMonitor.monitor_and_report(
@@ -3059,11 +3118,16 @@ async def _ipo_worker_async(
     - 结果为ipo_date或unlisted标记
     - 更宽松的延时策略
     """
-    worker_logger = logging.getLogger(__name__)
+    # ✅ 配置子进程日志，接入LogHub统一路由
+    worker_logger = _configure_subprocess_logging(worker_id, task_type="ipo")
     worker_logger.info(f"IPO Worker {worker_id} 启动")
 
     # 启动lag监控
-    from .load_balancer import LagMonitor, ConnectionLifecycleManager
+    # ✅ 修复：使用绝对导入，避免多进程中的导入失败
+    from backend.infrastructure.data_module_vnpy.load_balancer import (
+        LagMonitor,
+        ConnectionLifecycleManager,
+    )
 
     lag_monitor_task = asyncio.create_task(
         LagMonitor.monitor_and_report(
@@ -3389,11 +3453,16 @@ async def download_worker_finance_two_phase_async(
         connections_per_worker: 每个worker的异步连接数
         ipo_cache: IPODateCache实例（用于保存到SQLite）
     """
-    logger_local = logging.getLogger(f"FinanceWorker-{worker_id}")
+    # ✅ 配置子进程日志，接入LogHub统一路由
+    logger_local = _configure_subprocess_logging(worker_id, task_type="finance")
     logger_local.info("财务信息2段式Worker %s 启动，PID：%s", worker_id, os.getpid())
 
     # 启动lag监控
-    from .load_balancer import LagMonitor, ConnectionLifecycleManager
+    # ✅ 修复：使用绝对导入，避免多进程中的导入失败
+    from backend.infrastructure.data_module_vnpy.load_balancer import (
+        LagMonitor,
+        ConnectionLifecycleManager,
+    )
 
     lag_monitor_task = asyncio.create_task(
         LagMonitor.monitor_and_report(
@@ -4165,7 +4234,8 @@ class MultiProcessStockFetcher:
         )
 
         # 🆕 v3.4: 预先导入LagMonitor（避免循环中重复导入）
-        from ..load_balancer import LagMonitor
+        # ✅ 修复：使用绝对导入，避免多进程中的导入失败
+        from backend.infrastructure.data_module_vnpy.load_balancer import LagMonitor
 
         while completed < total_tasks:
             if self.stop_event and self.stop_event.is_set():
@@ -4411,7 +4481,10 @@ class MultiProcessStockFetcher:
             # 1. 获取服务器列表（复用K线下载的服务器池）
             # 🔥 关键修复：增加服务器池就绪检查和等待逻辑
             try:
-                from ..load_balancer import server_pool_manager
+                # ✅ 修复：使用绝对导入，避免多进程中的导入失败
+                from backend.infrastructure.data_module_vnpy.load_balancer import (
+                    server_pool_manager,
+                )
                 import time
 
                 # 检查服务器池是否就绪
@@ -4485,7 +4558,11 @@ class MultiProcessStockFetcher:
 
             # 2. 使用LoadBalancer计算自适应配置
             if use_adaptive:
-                from ..load_balancer import get_load_balancer, IPODownloadTask
+                # ✅ 修复：使用绝对导入，避免多进程中的导入失败
+                from backend.infrastructure.data_module_vnpy.load_balancer import (
+                    get_load_balancer,
+                    IPODownloadTask,
+                )
 
                 task = IPODownloadTask("ipo_download", total_symbols)
                 load_balancer = get_load_balancer()
@@ -4655,14 +4732,20 @@ class MultiProcessStockFetcher:
         self.logger.info(f"启动{len(self.processes)}个财务信息2段式下载工作进程")
 
     def _monitor_ipo_progress(self, total_symbols: int, progress_callback, ipo_cache=None) -> Dict:
-        """监控IPO下载进度并收集结果，主进程统一保存到SQLite"""
+        """监控IPO下载进度并收集结果，主进程统一保存到SQLite
+
+        增强版：添加管道通信异常处理，防止启动卡死
+        """
         results = {}
         completed = 0
+        consecutive_errors = 0  # 连续错误计数器
+        max_consecutive_errors = 5  # 最大容忍连续错误数
 
         while completed < total_symbols:
             try:
                 symbol, result_data = self.result_queue.get(timeout=1)
                 results[symbol] = result_data
+                consecutive_errors = 0  # 成功后重置计数器
 
                 # 主进程统一保存到SQLite（避免子进程数据库锁冲突）
                 if ipo_cache and result_data:
@@ -4686,6 +4769,52 @@ class MultiProcessStockFetcher:
                 if not any(p.is_alive() for p in self.processes):
                     self.logger.warning("所有进程已退出但任务未完成")
                     break
+                continue
+
+            except (EOFError, BrokenPipeError, ConnectionError, ConnectionResetError) as e:
+                # 🔧 关键修复：捕获管道通信异常，防止启动卡死
+                consecutive_errors += 1
+                self.logger.error(
+                    f"管道通信异常 ({consecutive_errors}/{max_consecutive_errors}): "
+                    f"{type(e).__name__}: {e}"
+                )
+
+                # 检查所有子进程状态
+                alive_processes = [p for p in self.processes if p.is_alive()]
+                self.logger.warning(f"存活进程数: {len(alive_processes)}/{len(self.processes)}")
+
+                if consecutive_errors >= max_consecutive_errors:
+                    self.logger.error("⚠️ 连续管道通信错误超过阈值，终止IPO下载流程")
+                    self.logger.error(f"已完成 {completed}/{total_symbols} 个品种的IPO信息下载")
+                    self._cleanup_processes()  # 清理所有进程
+                    break
+
+                # 如果所有进程都已退出，直接终止
+                if not alive_processes:
+                    self.logger.error("⚠️ 所有子进程已异常退出，终止IPO下载流程")
+                    self.logger.error(f"已完成 {completed}/{total_symbols} 个品种的IPO信息下载")
+                    break
+
+                # 短暂延迟后继续尝试
+                import time
+
+                time.sleep(0.5)
+                continue
+
+            except Exception as e:
+                # 捕获其他未预期的异常
+                self.logger.error(
+                    f"IPO监控进程遇到未预期异常: {type(e).__name__}: {e}", exc_info=True
+                )
+                consecutive_errors += 1
+
+                if consecutive_errors >= max_consecutive_errors:
+                    self.logger.error("连续异常超过阈值，终止IPO下载流程")
+                    break
+
+                import time
+
+                time.sleep(0.5)
                 continue
 
         return results
@@ -6574,7 +6703,8 @@ async def _tdx_worker_async(
     import time
     import queue
 
-    logger = logging.getLogger(__name__)
+    # ✅ 配置子进程日志，接入LogHub统一路由
+    logger = _configure_subprocess_logging(worker_id, task_type="tdx_read")
 
     logger.info("[Worker-%d] 启动，从共享任务队列拉取任务", worker_id)
 
@@ -6582,7 +6712,8 @@ async def _tdx_worker_async(
     logger.info("[Worker-%d] 启动全并发模式，从共享队列拉取任务", worker_id)
 
     # 🆕 v3.5: 使用独立的metrics_queue启动lag监控
-    from ..load_balancer import LagMonitor
+    # ✅ 修复：使用绝对导入，避免多进程中的导入失败
+    from backend.infrastructure.data_module_vnpy.load_balancer import LagMonitor
 
     lag_monitor_task = asyncio.create_task(
         LagMonitor.monitor_and_report(
@@ -6778,7 +6909,8 @@ class TdxDynamicExecutor:
         self.last_run_summary: Optional[Dict[str, Any]] = None
 
         # LoadBalancer在主进程创建（用于调整监控）
-        from ..load_balancer import get_load_balancer
+        # ✅ 修复：使用绝对导入，避免多进程中的导入失败
+        from backend.infrastructure.data_module_vnpy.load_balancer import get_load_balancer
 
         self.load_balancer = get_load_balancer()
 
@@ -6855,7 +6987,8 @@ class TdxDynamicExecutor:
         self.logger.info(f"📦 任务队列: 已加入{total_count}个品种")
 
         # 🆕 v3.6: 使用DynamicProcessPool管理进程
-        from ..load_balancer import DynamicProcessPool
+        # ✅ 修复：使用绝对导入，避免多进程中的导入失败
+        from backend.infrastructure.data_module_vnpy.load_balancer import DynamicProcessPool
 
         self.pool = DynamicProcessPool(
             initial_processes=initial_processes,
@@ -6889,7 +7022,8 @@ class TdxDynamicExecutor:
 
         # 🆕 v3.5: 使用专用队列消费协程（最佳实践）
         results = {}
-        from ..load_balancer import LagMonitor
+        # ✅ 修复：使用绝对导入，避免多进程中的导入失败
+        from backend.infrastructure.data_module_vnpy.load_balancer import LagMonitor
 
         # 数据结果消费协程
         async def result_consumer():

@@ -3342,11 +3342,20 @@ class SystemManagerService(BaseService):
     def _monitoring_push_loop(self):
         """监控数据推送循环（替代UI轮询）
 
-        推送频率：正常1秒，降级3秒
+        推送频率优化：
+        - 启动阶段（前30秒）：3秒间隔（降低CPU负载，减少上下文切换）
+        - 正常运行：1秒间隔
+        - 降级模式：3秒间隔
         """
         import time
 
-        self.logger.info("[MonitoringPush] 监控数据推送循环已启动（1秒间隔）")
+        self.logger.info(
+            "[MonitoringPush] 监控数据推送循环已启动（启动阶段3秒间隔，30秒后切换为1秒）"
+        )
+
+        # 🔧 新增：启动阶段检测（降低启动时CPU负载）
+        start_time = time.time()
+        startup_phase_duration = 30  # 启动阶段30秒
 
         # 🔧 新增：连续失败计数器和降级模式
         consecutive_failures = 0
@@ -3387,7 +3396,11 @@ class SystemManagerService(BaseService):
                             self.logger.warning("[MonitoringPush] ❌ ZMQ重连失败")
 
                     # 降级模式下延长等待时间
-                    wait_time = 3 if degraded_mode else 1
+                    elapsed = time.time() - start_time
+                    if elapsed < startup_phase_duration:
+                        wait_time = 3  # 启动阶段降低频率
+                    else:
+                        wait_time = 3 if degraded_mode else 1
                     time.sleep(wait_time)
                     continue
 
@@ -3401,8 +3414,12 @@ class SystemManagerService(BaseService):
                 # 3. 分发事件（解耦关键）
                 self._dispatch_monitoring_events(data)
 
-                # 4. 间隔时间：正常1秒，降级3秒（优化：更及时的监控数据）
-                wait_time = 3 if degraded_mode else 1
+                # 4. 间隔时间优化：启动阶段3秒，正常1秒，降级3秒
+                elapsed = time.time() - start_time
+                if elapsed < startup_phase_duration:
+                    wait_time = 3  # 启动阶段降低频率，减少CPU负载和上下文切换
+                else:
+                    wait_time = 3 if degraded_mode else 1
                 time.sleep(wait_time)
 
             except Exception as e:
@@ -3413,7 +3430,11 @@ class SystemManagerService(BaseService):
                     max_consecutive_failures,
                     e,
                 )
-                wait_time = 3 if degraded_mode else 1
+                elapsed = time.time() - start_time
+                if elapsed < startup_phase_duration:
+                    wait_time = 3  # 启动阶段降低频率
+                else:
+                    wait_time = 3 if degraded_mode else 1
                 time.sleep(wait_time)
 
         self.logger.info("[MonitoringPush] 推送线程已停止")

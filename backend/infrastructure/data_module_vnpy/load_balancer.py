@@ -1357,7 +1357,9 @@ class SystemMetricsMonitor:
             self._cached_metrics["system"] = event.data
             self._cache_timestamp = time.time()
 
-            self.logger.debug("✅ 收到系统指标事件更新，缓存已刷新")
+            # 🔧 优化：移除高频DEBUG日志，减少CPU负载和上下文切换
+            # 系统指标事件每秒推送，DEBUG日志会严重增加开销
+            # self.logger.debug("✅ 收到系统指标事件更新，缓存已刷新")
 
     def _on_hardware_sensors_event(self, event: Event):
         """接收硬件传感器事件（原子更新缓存）"""
@@ -1367,7 +1369,9 @@ class SystemMetricsMonitor:
 
             self._cached_metrics["hardware"] = event.data
 
-            self.logger.debug("✅ 收到硬件传感器事件更新")
+            # 🔧 优化：移除高频DEBUG日志，减少CPU负载和上下文切换
+            # 硬件传感器事件每秒推送，DEBUG日志会严重增加开销
+            # self.logger.debug("✅ 收到硬件传感器事件更新")
 
     def get_metrics(self, force_realtime: bool = False) -> Dict[str, Any]:
         """获取监控指标（纯事件订阅模式）

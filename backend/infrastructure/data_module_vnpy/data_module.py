@@ -1772,6 +1772,9 @@ class CacheValidationWorker(QObject):
         此方法在QThread中执行，可以安全使用EventEngine。
         """
         try:
+            # ✅ 不启动新的AI流程，继续使用startup流程
+            # 所有日志都会被记录到同一个AI日志文件中
+
             self.logger.info("=" * 70)
             self.logger.info("【后台进程】智能缓存验证与数据感知流程启动")
             self.logger.info("=" * 70)
@@ -1786,6 +1789,14 @@ class CacheValidationWorker(QObject):
 
             self.progress.emit("缓存验证完成", 100)
             self.logger.info("✅ 智能缓存验证流程完成")
+
+            # ✅ 切换到sensing阶段
+            from backend.infrastructure.system_vnpy.unified_log_system import get_logging_hub
+
+            hub = get_logging_hub()
+            hub.set_stage("sensing")
+            self.logger.info("📍 数据验证完成，切换到sensing阶段")
+
             self.finished.emit(True)
 
         except Exception as e:
@@ -2526,11 +2537,23 @@ class ChinaStockEngine(BaseEngine):
                 self.logger.info("   操作: 首次加载（耗时约1-2分钟）...")
                 self.logger.warning("IPO日期缓存不存在，开始首次下载...")
 
-                # 输出IPO下载前总品种数
+                # 🆕 增强日志：输出详细的下载信息
                 import sys
 
-                print(f"\n[IPO下载] IPO下载前总品种数: {len(all_symbols)}个")
+                estimated_seconds = len(all_symbols) * 0.02  # 每个品种约0.02秒
+                estimated_minutes = estimated_seconds / 60
+
+                print("\n" + "=" * 70)
+                print(f"[IPO下载] 准备下载 {len(all_symbols)} 个品种的IPO信息")
+                print(f"[IPO下载] 预计耗时: {estimated_minutes:.1f} 分钟")
+                print("[IPO下载] 请耐心等待，系统正在后台多进程处理...")
+                print("=" * 70)
                 sys.stdout.flush()
+
+                self.logger.info(
+                    f"IPO下载准备: {len(all_symbols)}个品种, 预计耗时{estimated_minutes:.1f}分钟",
+                    extra={"log_type": "stage_node"},
+                )
 
                 self.progress_emitter.progress_updated.emit("下载IPO日期（首次）", 46)
 
@@ -2540,25 +2563,55 @@ class ChinaStockEngine(BaseEngine):
 
                     # 定义进度回调函数（46%-48%范围）
                     last_update_time = [time.time()]
+                    download_start_time = time.time()  # 🆕 记录开始时间
 
                     def ipo_progress_callback(current, total):
-                        """IPO下载进度回调 - 限制更新频率避免UI卡顿"""
+                        """IPO下载进度回调 - 增强版，包含ETA信息"""
                         if total > 0:
                             now = time.time()
-                            # 每0.5秒或每100个品种更新一次
+                            # 🔧 优化：降低更新频率，减少CPU负载
+                            # 每3秒或每500个品种更新一次
                             if (
-                                (now - last_update_time[0] >= 0.5)
-                                or (current % 100 == 0)
+                                (now - last_update_time[0] >= 3.0)
+                                or (current % 500 == 0)
                                 or (current == total)
                             ):
                                 # 计算进度（46%-48%）
                                 percent = int(46 + (current / total) * 2)
+                                progress_pct = (current / total) * 100
+
+                                # 🆕 计算ETA
+                                elapsed = now - download_start_time
+                                if current > 0:
+                                    avg_time_per_item = elapsed / current
+                                    remaining_items = total - current
+                                    eta_seconds = avg_time_per_item * remaining_items
+                                    eta_minutes = eta_seconds / 60
+
+                                    # 🆕 详细的进度日志
+                                    self.logger.info(
+                                        f"[IPO下载] 进度: {current}/{total} ({progress_pct:.1f}%), "
+                                        f"剩余约 {eta_minutes:.1f} 分钟",
+                                        extra={"log_type": "stage_node"},
+                                    )
+
+                                    # 🆕 输出到控制台（每3秒一次）
+                                    print(
+                                        f"[IPO下载] {current}/{total} ({progress_pct:.1f}%) - "
+                                        f"剩余约 {eta_minutes:.1f} 分钟"
+                                    )
+                                    sys.stdout.flush()
+
                                 last_update_time[0] = now
 
                                 self.progress_emitter.progress_updated.emit(
                                     f"下载IPO日期 ({current}/{total})", percent
                                 )
-                                self.logger.debug("IPO下载进度: %d/%d", current, total)
+
+                    # 🆕 开始时间记录
+                    self.logger.info(
+                        "[IPO下载] 开始多进程下载...", extra={"log_type": "stage_node"}
+                    )
 
                     result = download_ipo_dates(
                         symbols=all_symbols,
@@ -2566,6 +2619,16 @@ class ChinaStockEngine(BaseEngine):
                         use_multiprocess=True,
                         ipo_cache=ipo_cache,  # 传递全局IPODateCache实例
                     )
+
+                    # 🆕 结束时间记录
+                    download_elapsed = time.time() - download_start_time
+                    self.logger.info(
+                        f"[IPO下载] 完成！实际耗时: {download_elapsed:.1f}秒 ({download_elapsed/60:.1f}分钟)",
+                        extra={"log_type": "stage_node"},
+                    )
+
+                    print(f"\n[IPO下载] ✅ 下载完成！耗时: {download_elapsed/60:.1f}分钟")
+                    sys.stdout.flush()
 
                     # 输出IPO过滤详细统计
                     unlisted_symbols = result.get("unlisted", [])
@@ -2642,8 +2705,29 @@ class ChinaStockEngine(BaseEngine):
                     self.logger.info("✓ IPO日期首次下载完成：成功 %d 个", result["succeeded"])
 
                 except Exception as e:
-                    self.logger.error("   ⚠️ 下载异常: %s", e)
+                    # 🆕 增强错误日志：详细的错误信息和用户指引
+                    error_type = type(e).__name__
+                    error_msg = str(e)
+
+                    self.logger.error("   ⚠️ 下载异常: %s: %s", error_type, error_msg)
                     self.logger.error("IPO日期首次下载失败: %s", e, exc_info=True)
+
+                    # 🆕 输出到控制台，提供用户友好的错误信息
+                    import sys
+
+                    print("\n" + "=" * 70)
+                    print(f"❌ [IPO下载] 下载失败: {error_type}")
+                    print(f"   错误详情: {error_msg}")
+                    print("-" * 70)
+                    print("💡 可能的原因和解决方案：")
+                    print("   1. 网络连接问题 → 检查网络连接，重试启动")
+                    print("   2. 服务器响应超时 → 稍后重试，或在系统管理中重新测速服务器")
+                    print("   3. 多进程通信异常 → 已自动降级处理，不影响主要功能")
+                    print("-" * 70)
+                    print("ℹ️  系统将继续启动，IPO信息可稍后手动更新")
+                    print("=" * 70)
+                    sys.stdout.flush()
+
                     # 不阻塞后续流程（用户需求2c）
                     self.progress_emitter.progress_updated.emit("IPO缓存下载失败（已跳过）", 48)
 
@@ -2661,10 +2745,11 @@ class ChinaStockEngine(BaseEngine):
                     """IPO下载进度回调 - 限制更新频率避免UI卡顿"""
                     if total > 0:
                         now = time.time()
-                        # 每0.5秒或每100个品种更新一次
+                        # 🔧 优化：降低更新频率，减少CPU负载
+                        # 每1秒或每500个品种更新一次（原来每100个）
                         if (
-                            (now - last_update_time[0] >= 0.5)
-                            or (current % 100 == 0)
+                            (now - last_update_time[0] >= 1.0)
+                            or (current % 500 == 0)
                             or (current == total)
                         ):
                             # 计算进度（46%-48%）
@@ -2675,13 +2760,28 @@ class ChinaStockEngine(BaseEngine):
                             self.progress_emitter.progress_updated.emit(
                                 f"更新IPO日期 ({current}/{total})", percent
                             )
-                            self.logger.debug("IPO下载进度: %d/%d", current, total)
+                            # 🔧 优化：降低日志频率，每500个或完成时记录
+                            if current % 500 == 0 or current == total:
+                                self.logger.debug("IPO下载进度: %d/%d", current, total)
 
                 # 初始提示
                 self.progress_emitter.progress_updated.emit("更新IPO日期缓存（准备中）", 46)
-                result = ipo_cache.incremental_update(
-                    all_symbols, progress_callback=ipo_progress_callback
-                )
+
+                # 🔧 优化：增加错误处理，确保不阻塞后续流程
+                try:
+                    result = ipo_cache.incremental_update(
+                        all_symbols, progress_callback=ipo_progress_callback
+                    )
+                except Exception as update_error:
+                    self.logger.error("IPO增量更新异常: %s", update_error, exc_info=True)
+                    # 不阻塞后续流程，返回空结果
+                    result = {
+                        "added": 0,
+                        "removed": 0,
+                        "download_succeeded": 0,
+                        "download_failed": len(all_symbols) if all_symbols else 0,
+                    }
+                    self.logger.warning("IPO增量更新失败，已跳过（不阻塞后续流程）")
 
                 self.logger.info(
                     "   更新结果: 新增%d个, 删除%d个, 下载成功%d个",

@@ -255,7 +255,11 @@ def main():
     if str(project_root_path) not in sys.path:
         sys.path.insert(0, str(project_root_path))
 
-    from backend.infrastructure.system_vnpy.system_toolkit import is_admin, run_as_admin, print_stage
+    from backend.infrastructure.system_vnpy.system_toolkit import (
+        is_admin,
+        run_as_admin,
+        print_stage,
+    )
     from backend.core.config import get_settings, update_capabilities
 
     # 读取启动策略
@@ -306,11 +310,7 @@ def main():
         # 此时所有日志调用都会被MemoryHandler缓冲，不会输出到控制台
         # 只有print_stage的直接打印会显示
 
-        # ==================== 阶段切换：进入startup阶段 ====================
-        from backend.infrastructure.system_vnpy.unified_log_system import get_logging_hub
-
-        hub = get_logging_hub()
-        hub.set_stage("startup")
+        # ✅ 移除：阶段切换将在LoggingHub初始化完成后设置
 
         # 创建阶段logger（在LoggingHub初始化前，日志会被缓冲）
         stage_logger = logging.getLogger("startup.stage")
@@ -359,6 +359,11 @@ def main():
         logging_hub = initialize_logging_hub(logger, memory_handler)
         if not logging_hub:
             logger.warning("LoggingHub初始化失败，使用降级日志输出")
+
+        # ✅ 在LoggingHub初始化完成后，设置startup阶段（只设置一次）
+        if logging_hub:
+            logging_hub.set_stage("startup")
+            stage_logger.info("✅ 日志路由引擎已启动，当前阶段：startup")
 
         # 创建启动协调器
         from ui.startup_coordinator import StartupCoordinator
@@ -693,12 +698,9 @@ def main():
             try:
                 activation_start = time.time()
 
-                # ==================== 阶段切换：切换到sensing阶段 ====================
-                from backend.infrastructure.system_vnpy.unified_log_system import get_logging_hub
-
-                ctx = get_logging_hub()
-                ctx.set_stage("sensing")
-                logger.info("📍 启动完成，切换到数据感知阶段")
+                # ✅ 阶段切换优化：不在这里立即切换到sensing阶段
+                # 等待ValidationWorker完成后，由其负责切换到sensing阶段
+                logger.info("📍 后端服务初始化完成，等待数据验证...")
 
                 # 🔧 修复：在后端真正完成后，先标记backend_ready
                 try:
