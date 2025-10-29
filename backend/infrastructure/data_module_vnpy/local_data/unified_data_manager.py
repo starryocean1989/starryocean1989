@@ -301,9 +301,11 @@ class TdxDataSource(BaseGateway):
             if "最大服务器数" in setting:
                 max_servers = int(setting["最大服务器数"])
 
-            sorted_servers = self.server_pool_manager.get_servers(count=max_servers)
+            sorted_servers = self.server_pool_manager.get_servers(
+                count=max_servers, pool_type="ipv4"
+            )
             if not sorted_servers:
-                self.logger.error("无可用服务器")
+                self.logger.error("无可用IPv4服务器")
                 return
 
             # 转换为包含响应时间的格式（假设响应时间为索引的倍数）
@@ -1144,6 +1146,9 @@ class UnifiedDataManager:
             "polling": set(),  # 兼容旧代码
         }
         self._lock = Lock()
+
+        # === 防止日志刷屏的标志位 ===
+        self._cache_warning_shown = False  # 股票列表缓存缺失warning只显示一次
 
     # ==================== 对外接口：查询式 ====================
 
@@ -2044,7 +2049,12 @@ class UnifiedDataManager:
             cache_file = config_manager.get_cache_dir() / "stock_list_classified.json"
 
             if not cache_file.exists():
-                self.logger.warning("股票列表缓存文件不存在: %s", cache_file)
+                # 只在首次缺失时warning，避免刷屏
+                if not self._cache_warning_shown:
+                    self.logger.warning("股票列表缓存文件不存在: %s（后续将静默）", cache_file)
+                    self._cache_warning_shown = True
+                else:
+                    self.logger.debug("股票列表缓存文件不存在: %s", cache_file)
                 return []
 
             import json

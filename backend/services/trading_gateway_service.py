@@ -1120,7 +1120,7 @@ class TradingGatewayService(BaseService, LoggerMixin):
                         get_logging_context,
                     )
 
-                    ctx = get_logging_context()
+                    ctx = get_logging_hub()
                     ctx.set_stage("trading")
                     self.logger.info("📍 切换到交易阶段，启动策略实盘交易")
                 except ImportError:

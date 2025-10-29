@@ -41,18 +41,13 @@ class AsyncTdxHq_API(AsyncBaseSocketClient):
 
     @async_last_ack_time
     async def get_security_bars(
-        self,
-        category: int,
-        market: int,
-        code: str,
-        start: int,
-        count: int
+        self, category: int, market: int, code: str, start: int, count: int
     ) -> Optional[List[dict]]:
         """
         获取K线数据（异步）
 
         :param category: K线类型 (0=5分钟, 4=日K线, 8=1分钟)
-        :param market: 市场 (0=深圳, 1=上海)
+        :param market: 市场 (0=深圳, 1=上海, 2=北交所)
         :param code: 股票代码
         :param start: 起始位置
         :param count: 数量（最大800）
@@ -96,7 +91,7 @@ class AsyncTdxHq_API(AsyncBaseSocketClient):
         """
         获取证券列表（异步，支持分页）
 
-        :param market: 市场 (0=深圳, 1=上海)
+        :param market: 市场 (0=深圳, 1=上海, 2=北交所)
         :param start: 开始位置
         :return: 证券列表数据
         """
@@ -110,7 +105,7 @@ class AsyncTdxHq_API(AsyncBaseSocketClient):
         """
         获取除权除息信息（异步）
 
-        :param market: 市场 (0=深圳, 1=上海)
+        :param market: 市场 (0=深圳, 1=上海, 2=北交所)
         :param code: 股票代码
         :return: 除权除息数据列表
         """
@@ -124,7 +119,7 @@ class AsyncTdxHq_API(AsyncBaseSocketClient):
         """
         获取当日分时图数据（异步）
 
-        :param market: 市场 (0=深圳, 1=上海)
+        :param market: 市场 (0=深圳, 1=上海, 2=北交所)
         :param code: 股票代码
         :return: 分时图数据列表（242个分钟点）
         """
@@ -135,18 +130,13 @@ class AsyncTdxHq_API(AsyncBaseSocketClient):
 
     @async_last_ack_time
     async def get_index_bars(
-        self,
-        category: int,
-        market: int,
-        code: str,
-        start: int,
-        count: int
+        self, category: int, market: int, code: str, start: int, count: int
     ) -> Optional[List[dict]]:
         """
         获取指数K线数据（异步）
 
         :param category: K线类型 (0=5分钟, 4=日K线, 8=1分钟)
-        :param market: 市场 (0=深圳, 1=上海)
+        :param market: 市场 (0=深圳, 1=上海, 2=北交所)
         :param code: 指数代码
         :param start: 起始位置
         :param count: 数量（最大800）
@@ -158,11 +148,13 @@ class AsyncTdxHq_API(AsyncBaseSocketClient):
         return await cmd.call_api()
 
     @async_last_ack_time
-    async def get_history_minute_time_data(self, market: int, code: str, date: int) -> Optional[List[dict]]:
+    async def get_history_minute_time_data(
+        self, market: int, code: str, date: int
+    ) -> Optional[List[dict]]:
         """
         获取历史分时图数据（异步）
 
-        :param market: 市场 (0=深圳, 1=上海)
+        :param market: 市场 (0=深圳, 1=上海, 2=北交所)
         :param code: 股票代码
         :param date: 日期，格式20161201的整型
         :return: 分时图数据列表（242个分钟点）
@@ -173,11 +165,13 @@ class AsyncTdxHq_API(AsyncBaseSocketClient):
         return await cmd.call_api()
 
     @async_last_ack_time
-    async def get_transaction_data(self, market: int, code: str, start: int, count: int) -> Optional[List[dict]]:
+    async def get_transaction_data(
+        self, market: int, code: str, start: int, count: int
+    ) -> Optional[List[dict]]:
         """
         获取当日逐笔成交数据（异步）
 
-        :param market: 市场 (0=深圳, 1=上海)
+        :param market: 市场 (0=深圳, 1=上海, 2=北交所)
         :param code: 股票代码
         :param start: 起始位置
         :param count: 数量（最大2000）
@@ -190,17 +184,12 @@ class AsyncTdxHq_API(AsyncBaseSocketClient):
 
     @async_last_ack_time
     async def get_history_transaction_data(
-        self,
-        market: int,
-        code: str,
-        start: int,
-        count: int,
-        date: int
+        self, market: int, code: str, start: int, count: int, date: int
     ) -> Optional[List[dict]]:
         """
         获取历史逐笔成交数据（异步）
 
-        :param market: 市场 (0=深圳, 1=上海)
+        :param market: 市场 (0=深圳, 1=上海, 2=北交所)
         :param code: 股票代码
         :param start: 起始位置
         :param count: 数量（最大2000）
@@ -217,7 +206,7 @@ class AsyncTdxHq_API(AsyncBaseSocketClient):
         """
         获取财务信息（异步）
 
-        :param market: 市场 (0=深圳, 1=上海)
+        :param market: 市场 (0=深圳, 1=上海, 2=北交所)
         :param code: 股票代码
         :return: 财务信息字典（包含33个字段：股本、资产、利润等）
         """
@@ -232,8 +221,8 @@ class AsyncTdxHq_API(AsyncBaseSocketClient):
         timeout: float = 5.0,
         heartbeat: bool = False,
         auto_retry: bool = False,
-        raise_exception: bool = True
-    ) -> Optional['AsyncTdxHq_API']:
+        raise_exception: bool = True,
+    ) -> Optional["AsyncTdxHq_API"]:
         """
         工厂方法：创建并连接异步行情客户端
 
@@ -247,9 +236,7 @@ class AsyncTdxHq_API(AsyncBaseSocketClient):
         ip, port = server
 
         client = AsyncTdxHq_API(
-            heartbeat=heartbeat,
-            auto_retry=auto_retry,
-            raise_exception=raise_exception
+            heartbeat=heartbeat, auto_retry=auto_retry, raise_exception=raise_exception
         )
 
         result = await client.connect(ip=ip, port=port, time_out=timeout)
@@ -258,4 +245,3 @@ class AsyncTdxHq_API(AsyncBaseSocketClient):
             return None
 
         return client
-

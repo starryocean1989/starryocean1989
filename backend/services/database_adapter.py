@@ -401,6 +401,27 @@ class DatabaseManager:
             """
             )
 
+            # 本地数据索引表（用于追踪已下载的品种）
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS local_data_index (
+                    symbol TEXT PRIMARY KEY,
+                    updated_at TEXT
+                )
+            """
+            )
+
+            # 失效品种表（用于追踪不再有效的品种）
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS invalid_symbols (
+                    symbol TEXT PRIMARY KEY,
+                    reason TEXT,
+                    detected_at TEXT
+                )
+            """
+            )
+
             # 硬盘SMART历史表
             cursor.execute(
                 """
@@ -464,6 +485,75 @@ class DatabaseManager:
             cursor.execute(
                 "CREATE INDEX IF NOT EXISTS idx_download_history_start_time ON download_history(start_time DESC)"
             )
+
+            # 财务信息表（存储完整33字段财务数据，替代JSON ipo_dates.json）
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS finance_info (
+                    symbol TEXT PRIMARY KEY,
+                    market INTEGER NOT NULL,
+
+                    -- 基础信息
+                    industry INTEGER,
+                    province INTEGER,
+                    updated_date INTEGER,
+                    ipo_date INTEGER,
+
+                    -- 股本结构（万股）
+                    liutongguben REAL,
+                    zongguben REAL,
+                    guojiagu REAL,
+                    faqirenfarengu REAL,
+                    farengu REAL,
+                    bgu REAL,
+                    hgu REAL,
+                    zhigonggu REAL,
+                    gudongrenshu REAL,
+
+                    -- 资产负债（万元）
+                    zongzichan REAL,
+                    liudongzichan REAL,
+                    gudingzichan REAL,
+                    wuxingzichan REAL,
+                    liudongfuzhai REAL,
+                    changqifuzhai REAL,
+                    zibengongjijin REAL,
+                    jingzichan REAL,
+
+                    -- 经营成果（万元）
+                    zhuyingshouru REAL,
+                    zhuyinglirun REAL,
+                    yingshouzhangkuan REAL,
+                    yingyelirun REAL,
+                    touzishouyu REAL,
+                    lirunzonghe REAL,
+                    shuihoulirun REAL,
+                    jinglirun REAL,
+                    weifenpeilirun REAL,
+                    cunhuo REAL,
+
+                    -- 现金流量（万元）
+                    jingyingxianjinliu REAL,
+                    zongxianjinliu REAL,
+
+                    -- 财务指标
+                    meigujingzichan REAL,
+
+                    -- 元数据
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """
+            )
+
+            # 财务信息表索引
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_finance_ipo_date ON finance_info(ipo_date)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_finance_industry ON finance_info(industry)"
+            )
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_finance_market ON finance_info(market)")
 
             conn.commit()
             logger.info("数据库表初始化完成")
@@ -711,6 +801,114 @@ class DatabaseManager:
         except Exception as e:
             logger.error("清理旧下载历史失败：%s", e, exc_info=True)
             return 0
+
+    # ========== 本地数据索引管理 ==========
+
+    def upsert_local_data_index(self, symbols: List[str]) -> bool:
+        """
+        批量更新本地数据索引
+
+        Args:
+            symbols: 品种代码列表
+
+        Returns:
+            是否成功
+        """
+        try:
+            from datetime import datetime
+
+            updated_at = datetime.now().isoformat()
+
+            query = "INSERT OR REPLACE INTO local_data_index (symbol, updated_at) VALUES (?, ?)"
+            params_list = [(symbol, updated_at) for symbol in symbols]
+
+            self.execute_many(query, params_list)
+            logger.info("本地数据索引已更新：%d 个品种", len(symbols))
+            return True
+        except Exception as e:
+            logger.error("更新本地数据索引失败：%s", e, exc_info=True)
+            return False
+
+    def get_local_data_index(self) -> List[str]:
+        """
+        获取本地数据索引
+
+        Returns:
+            品种代码列表
+        """
+        try:
+            query = "SELECT symbol FROM local_data_index ORDER BY symbol"
+            results = self.execute_query(query)
+            return [row["symbol"] for row in results]
+        except Exception as e:
+            logger.error("获取本地数据索引失败：%s", e, exc_info=True)
+            return []
+
+    # ========== 失效品种管理 ==========
+
+    def upsert_invalid_symbols(self, symbols: List[str], reason: str = "not_in_reference") -> bool:
+        """
+        批量更新失效品种池
+
+        Args:
+            symbols: 失效品种代码列表
+            reason: 失效原因
+
+        Returns:
+            是否成功
+        """
+        try:
+            from datetime import datetime
+
+            detected_at = datetime.now().isoformat()
+
+            # 先清空旧数据，再写入新数据
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM invalid_symbols")
+                conn.commit()
+
+            if symbols:
+                query = "INSERT INTO invalid_symbols (symbol, reason, detected_at) VALUES (?, ?, ?)"
+                params_list = [(symbol, reason, detected_at) for symbol in symbols]
+                self.execute_many(query, params_list)
+
+            logger.info("失效品种池已更新：%d 个品种", len(symbols))
+            return True
+        except Exception as e:
+            logger.error("更新失效品种池失败：%s", e, exc_info=True)
+            return False
+
+    def get_invalid_symbols(self) -> List[str]:
+        """
+        获取失效品种列表
+
+        Returns:
+            失效品种代码列表
+        """
+        try:
+            query = "SELECT symbol FROM invalid_symbols ORDER BY symbol"
+            results = self.execute_query(query)
+            return [row["symbol"] for row in results]
+        except Exception as e:
+            logger.error("获取失效品种列表失败：%s", e, exc_info=True)
+            return []
+
+    def clear_invalid_symbols(self) -> bool:
+        """
+        清空失效品种池
+
+        Returns:
+            是否成功
+        """
+        try:
+            query = "DELETE FROM invalid_symbols"
+            self.execute_update(query)
+            logger.info("失效品种池已清空")
+            return True
+        except Exception as e:
+            logger.error("清空失效品种池失败：%s", e, exc_info=True)
+            return False
 
 
 # =============================================================================

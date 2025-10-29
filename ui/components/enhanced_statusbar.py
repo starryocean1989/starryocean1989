@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
 
 from vnpy.event import Event, EventEngine
 
-from backend.infrastructure.system_vnpy.unified_logging import (
+from backend.infrastructure.system_vnpy.unified_log_system import (
     EVENT_LOG_ALERT,
     EVENT_LOG_NOTIFICATION,
     EVENT_LOG_PROGRESS,

@@ -1379,7 +1379,7 @@ class MyPortfolioStrategy(StrategyTemplate):
                             get_logging_context,
                         )
 
-                        ctx = get_logging_context()
+                        ctx = get_logging_hub()
                         ctx.set_stage("backtest")
                         self.logger.info("📍 切换到回测阶段")
                     except ImportError:
@@ -1389,12 +1389,9 @@ class MyPortfolioStrategy(StrategyTemplate):
                     try:
                         task = self._backtest_tasks[task_id]
 
-                        # 使用场景上下文 - 日志埋点v4.0
-                        if ctx:
-                            scenario_ctx = ctx.scenario("backtest_run")
-                            scenario_ctx.__enter__()
-                        else:
-                            scenario_ctx = None
+                        # 使用场景上下文 - 日志埋点v4.0 (已移除scenario)
+                        # 直接执行,不使用scenario上下文
+                        scenario_ctx = None
 
                         # 更新进度：准备阶段
                         task["progress"] = 10

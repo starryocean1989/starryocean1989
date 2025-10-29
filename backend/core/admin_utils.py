@@ -97,18 +97,18 @@ def ensure_admin(auto_elevate: bool = True, message: Optional[str] = None) -> bo
         return True
 
     if message:
-        print(message)
+        logger.warning(message)
     else:
-        print("=" * 80)
-        print("⚠️  此应用需要管理员权限才能访问硬件传感器")
-        print("=" * 80)
+        logger.warning("=" * 80)
+        logger.warning("⚠️  此应用需要管理员权限才能访问硬件传感器")
+        logger.warning("=" * 80)
 
     if not auto_elevate:
-        print("\n请以管理员身份运行此程序。")
+        logger.warning("\n请以管理员身份运行此程序。")
         return False
 
-    print("\n正在请求管理员权限...")
-    print("（如果出现UAC提示，请点击'是'）")
+    logger.warning("\n正在请求管理员权限...")
+    logger.warning("（如果出现UAC提示，请点击'是'）")
 
     run_as_admin()
 

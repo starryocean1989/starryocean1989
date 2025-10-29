@@ -1232,6 +1232,9 @@ class MonitoringProcessV2:
     def __init__(self, db_path: str = "data/terminal.db", parent_pid: Optional[int] = None):
         self.running = False
         self.loop: Optional[asyncio.AbstractEventLoop] = None
+        
+        # ✅ 初始化logger（使用模块级logger）
+        self.logger = logger
 
         # 父进程监控（防止成为孤儿进程）
         import os
@@ -1293,7 +1296,8 @@ class MonitoringProcessV2:
         self.system_bottleneck_analyzer = SystemBottleneckAnalyzer()  # 系统级瓶颈分析器（本地）
         self.scenario_analyzer = ScenarioAnalyzer()  # 场景分析器（本地）
         self.business_metrics_collector = get_business_metrics_collector()  # 业务指标采集器
-        self.hardware_monitor = HardwareMonitorFactory.create_monitor()
+        # ✅ 优化：延迟创建硬件监控器（避免阻塞启动，在_initialize_components中异步创建）
+        self.hardware_monitor = None  # 将在start()中后台异步创建
         self.smart_monitor = SmartMonitor()
 
         # 告警和阈值
@@ -1318,7 +1322,7 @@ class MonitoringProcessV2:
         self.fast_interval = 1  # 系统、进程
         self.slow_interval = 5  # 硬件传感器
 
-        logger.info("MonitoringProcessV2 初始化完成")
+        logger.info("MonitoringProcessV2 初始化完成（硬件监控器将在start()中后台创建）")
 
         # 🔥 Debug: 初始化完成
         try:
@@ -1733,6 +1737,38 @@ class MonitoringProcessV2:
             chosen_group[2],
         )
 
+        # ✅ 优化：在后台异步创建硬件监控器（避免阻塞主循环）
+        if self.hardware_monitor is None:
+            logger.info("[INIT] 开始后台初始化硬件监控器（LibreHardwareMonitor可能需要30-60秒）...")
+            
+            def _create_hardware_monitor():
+                """在后台线程中创建硬件监控器"""
+                import time
+                start_time = time.time()
+                try:
+                    monitor = HardwareMonitorFactory.create_monitor()
+                    elapsed = time.time() - start_time
+                    logger.info(
+                        "[INIT] ✅ 硬件监控器初始化完成（耗时: %.1fs）",
+                        elapsed
+                    )
+                    return monitor
+                except Exception as e:
+                    logger.error("[INIT] ❌ 硬件监控器初始化失败: %s", e)
+                    return None
+            
+            # 在后台线程池中创建（不阻塞主循环）
+            loop = asyncio.get_event_loop()
+            self.hardware_monitor = await loop.run_in_executor(
+                self.executor,
+                _create_hardware_monitor
+            )
+            
+            if self.hardware_monitor:
+                logger.info("[INIT] ✅ 硬件监控器已就绪，功能完整")
+            else:
+                logger.warning("[INIT] ⚠️ 硬件监控器初始化失败，系统将以降级模式运行（无硬件温度监控）")
+
         # 初始化队列
         self.db_write_queue = asyncio.Queue()
         self.hardware_queue = asyncio.Queue()
@@ -1751,7 +1787,7 @@ class MonitoringProcessV2:
 
         # 🆕 初始化日志代理（将监控进程日志发送将主进程）
         try:
-            from backend.infrastructure.system_vnpy.unified_logging import (
+            from backend.infrastructure.system_vnpy.unified_log_system import (
                 MonitorLogProxy,
                 MonitorProxyHandler,
             )
@@ -4467,28 +4503,11 @@ class HardwareMonitor:
 
     def __init__(self):
         """初始化硬件监控器."""
-        # 🚀 使用纯Python监控器（无需外部软件）
-        try:
-            from backend.infrastructure.system_vnpy.hardware_temp import get_pure_hardware_monitor
-
-            self._pure_monitor = get_pure_hardware_monitor()
-            logger.info("✅ 纯Python温度监控初始化成功")
-        except Exception as e:
-            logger.warning("纯Python温度监控初始化失败: %s", e)
-            self._pure_monitor = None
+        pass  # 简化初始化，仅保留WMI方案
 
     def get_temperature_wmi(self) -> Dict[str, Any]:
-        """通过WMI获取温度信息（保留兼容性，优先使用纯Python方案）."""
-        # 🚀 优先使用纯Python监控器
-        if self._pure_monitor:
-            try:
-                temps = self._pure_monitor.get_all_temperatures()
-                if temps:
-                    return temps
-            except Exception as e:
-                logger.debug("纯Python温度监控失败，回退将WMI: %s", e)
-
-        # Fallback: 旧WMI方案（LibreHardwareMonitor）
+        """通过WMI获取温度信息（LibreHardwareMonitor）."""
+        # WMI方案（LibreHardwareMonitor）
         try:
             import wmi
             import pythoncom
@@ -4534,51 +4553,14 @@ class HardwareMonitor:
             return {}
 
     def get_temperature_info(self) -> Dict[str, Any]:
-        """获取温度信息（优先纯Python，fallback将WMI和psutil）."""
-        # 🚀 方案1: 纯Python监控器（推荐）
-        if self._pure_monitor:
-            try:
-                temps = self._pure_monitor.get_all_temperatures()
-                if temps:
-                    return temps
-            except Exception as e:
-                logger.debug("纯Python温度监控失败: %s", e)
-
-        # 方案2: WMI（LibreHardwareMonitor）
+        """获取温度信息（WMI方案）."""
+        # 使用WMI方案（LibreHardwareMonitor）
         temp_info = self.get_temperature_wmi()
         if temp_info:
             return temp_info
-
-        # 方案3: psutil（Linux/某些Windows配置）
-        try:
-            if not HAS_PSUTIL:
-                return {}
-
-            # 使用try-except处理平台兼容性问题
-            try:
-                temps = psutil.sensors_temperatures()  # type: ignore
-                temp_info = {}
-
-                for name, entries in temps.items():
-                    temp_info[name] = []
-                    for entry in entries:
-                        temp_info[name].append(
-                            {
-                                "label": entry.label or "Unknown",
-                                "current": entry.current,
-                                "high": entry.high,
-                                "critical": entry.critical,
-                            }
-                        )
-
-                return temp_info
-            except AttributeError:
-                logger.debug("psutil不支持温度传感器（正常）")
-                return {}
-
-        except (OSError, ImportError) as e:
-            logger.debug("获取温度信息失败: %s", e)
-            return {}
+        
+        # 如果WMI不可用，返回空字典
+        return {}
 
     def get_bandwidth_info(self) -> Dict[str, Any]:
         """获取运营商带宽信息（返回缓存结果）.

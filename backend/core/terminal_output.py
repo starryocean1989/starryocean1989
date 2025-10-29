@@ -74,22 +74,18 @@ def configure_debug(
         "terminal_output": terminal_output,
     }
 
-    # 配置对应模块的日志级别
+    # ✅ 修复：所有模块的logger都设置为DEBUG级别，让LoggingHub的路由规则决定输出
+    # Terminal输出的简洁性由LoggingHub的console_enabled_types控制
+    # AI日志文件需要完整的DEBUG信息，不应该在这里过滤
     for module_name in enabled_modules:
         logger = logging.getLogger(module_name)
-
-        # 根据debug_level设置日志级别
-        if debug_level == "detailed":
-            logger.setLevel(logging.DEBUG)
-        elif debug_level == "normal":
-            logger.setLevel(logging.INFO)
-        else:  # brief
-            logger.setLevel(logging.WARNING)
+        # ✅ 统一设置为DEBUG，确保所有日志都能到达LoggingHub
+        logger.setLevel(logging.DEBUG)
 
     # 记录配置信息
     logger = logging.getLogger("startup")
     logger.info(
-        "Debug配置: 模块=%s, 级别=%s, 终端输出=%s",
+        "Debug配置: 模块=%s, 级别=%s（所有模块logger设为DEBUG，由LoggingHub控制输出）, 终端输出=%s",
         ", ".join(enabled_modules),
         debug_level,
         terminal_output,

@@ -9,8 +9,8 @@ import logging
 import time
 import unittest
 
-from backend.infrastructure.system_vnpy.routing_engine import RoutingRuleEngine
-from backend.infrastructure.system_vnpy.unified_logging import UnifiedLogRecord, LogType
+from backend.infrastructure.system_vnpy.unified_log_system import RoutingRuleEngine
+from backend.infrastructure.system_vnpy.unified_log_system import UnifiedLogRecord, LogType
 
 
 class TestRoutingPerformance(unittest.TestCase):
@@ -142,7 +142,7 @@ class TestCachePerformance(unittest.TestCase):
 
     def test_cache_lru_eviction(self):
         """测试LRU淘汰性能"""
-        from backend.infrastructure.system_vnpy.rule_cache import RuleCache
+        from backend.infrastructure.system_vnpy.unified_log_system import RuleCache
 
         # 创建小缓存（max_size=10）
         cache = RuleCache(ttl_seconds=60, max_size=10)

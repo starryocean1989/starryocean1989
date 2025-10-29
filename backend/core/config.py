@@ -8,7 +8,7 @@
 import os
 import json
 import logging
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from pathlib import Path
 
 if TYPE_CHECKING:
@@ -106,6 +106,10 @@ class LoggingConfig(BaseSettings):
 
     level: str = Field(default="INFO")
     format: str = Field(default="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    replay_targets: List[str] = Field(
+        default=["file", "database", "ai_log"],
+        description="重放目标：console, file, database, ai_log, event",
+    )
 
 
 class AIConfig(BaseSettings):
@@ -397,10 +401,10 @@ def init_settings(config_file: Optional[str] = None) -> Settings:
 
     # 阶段感知：启动阶段详细日志（P2优化）
     try:
-        from backend.infrastructure.system_vnpy.logging_context import get_logging_context
+        from backend.infrastructure.system_vnpy.unified_log_system import get_logging_hub
 
-        ctx = get_logging_context()
-        if ctx.routing_engine.current_stage == "startup":
+        hub = get_logging_hub()
+        if hub._routing_engine and hub._routing_engine.current_stage == "startup":
             logger.info("开始初始化全局配置: 文件=%s", config_file)
         else:
             logger.debug("重新初始化全局配置: 文件=%s", config_file)
@@ -417,10 +421,10 @@ def init_settings(config_file: Optional[str] = None) -> Settings:
     total_items = sum(len(v) if isinstance(v, dict) else 1 for v in config_dict.values())
 
     try:
-        from backend.infrastructure.system_vnpy.logging_context import get_logging_context
+        from backend.infrastructure.system_vnpy.unified_log_system import get_logging_hub
 
-        ctx = get_logging_context()
-        if ctx.routing_engine.current_stage == "startup":
+        hub = get_logging_hub()
+        if hub._routing_engine and hub._routing_engine.current_stage == "startup":
             logger.info(
                 "全局配置初始化完成: 文件=%s, 配置节=%d, 配置项=%d",
                 config_file,

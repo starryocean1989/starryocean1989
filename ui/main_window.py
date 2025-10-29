@@ -1002,31 +1002,6 @@ class MainWindow(QMainWindow, LoggerMixin):
                 self.logger.warning("无法获取 QApplication 实例")
         except (AttributeError, RuntimeError, ImportError) as e:
             self.logger.error("应用主题失败: %s", e)
-            # 应用基本样式作为回退方案
-            try:
-                self._apply_fallback_style()
-            except Exception as fallback_error:
-                self.logger.error("应用回退样式也失败: %s", fallback_error)
-
-    def _apply_fallback_style(self):
-        """应用回退样式（当主题管理器失败时）."""
-        self.setStyleSheet(
-            """
-            QMainWindow {
-                background-color: #1e1e1e;
-                color: #ffffff;
-            }
-            QListWidget {
-                background-color: #2d2d2d;
-                color: #ffffff;
-                border: none;
-            }
-            QListWidget::item:selected {
-                background-color: #1e88e5;
-            }
-        """
-        )
-        self.logger.info("已应用回退样式")
 
     def switch_theme(self, theme_name: str):
         """切换主题."""
@@ -1177,22 +1152,22 @@ class MainWindow(QMainWindow, LoggerMixin):
     def showEvent(self, event):  # pylint: disable=invalid-name
         """窗口显示事件（Qt原生事件）.
 
-        在窗口首次显示后触发后台验证，使用Qt原生的QThread机制。
+        注意：后台验证现在由coordinator的initialization_completed信号触发，
+        不再在showEvent中自动启动。
 
         架构说明：
-        - 移除了SmartCacheValidator (threading.Thread)，避免跨线程Qt警告
-        - 改用Qt原生的QThread + QObject模式，完全兼容EventEngine
-        - 验证延迟到UI完全就绪后，不阻塞启动
+        - 验证由BackendInitializerWorker完成后触发
+        - 使用Qt原生的QThread + QObject模式，完全兼容EventEngine
+        - 消除了500ms延迟，启动更快
         """
         super().showEvent(event)
 
-        # 只在首次显示时触发
+        # 只在首次显示时记录日志
         if not hasattr(self, "_validation_triggered"):
             self._validation_triggered = True
-            self.logger.info("🚀 UI已显示，准备启动后台验证...")
-
-            # 延迟500ms后启动验证（确保UI完全就绪）
-            QTimer.singleShot(500, self._start_background_validation)
+            self.logger.info("🚀 UI已显示，等待后端初始化完成...")
+            # 不再调用 QTimer.singleShot(500, self._start_background_validation)
+            # validation由coordinator.initialization_completed信号触发
 
     def _start_background_validation(self):
         """启动后台验证（使用Qt原生QThread）.
@@ -1203,14 +1178,20 @@ class MainWindow(QMainWindow, LoggerMixin):
         3. 不产生Qt Timer跨线程警告
         """
         try:
+            # 🔍 DEBUG: 确认方法被调用
+            print("[DEBUG-IPO] _start_background_validation() 被调用")
+            self.logger.info("[DEBUG-IPO] _start_background_validation() 被调用")
+
             # 获取ChinaStockEngine实例
             from backend.core.base import get_china_stock_engine
 
             engine = get_china_stock_engine()
             if not engine:
                 self.logger.warning("ChinaStockEngine未就绪，跳过后台验证")
+                print("[DEBUG-IPO] ChinaStockEngine未就绪，跳过后台验证")
                 return
 
+            print("[DEBUG-IPO] ChinaStockEngine已就绪，准备创建验证工作对象")
             self.logger.info("创建Qt原生验证工作对象...")
 
             # 导入Qt原生的验证工作对象
@@ -1266,6 +1247,18 @@ class MainWindow(QMainWindow, LoggerMixin):
             self.logger.warning("⚠️ 后台验证失败")
             if self.status_label:
                 self.status_label.setText("验证失败")
+
+        # ✅ 在后台验证完成后结束AI日志流程
+        try:
+            from backend.infrastructure.system_vnpy.unified_log_system import end_ai_process
+
+            end_ai_process(
+                success=success,
+                summary=f"系统完整启动完成（包括后台验证：{'成功' if success else '失败'}）",
+            )
+            self.logger.info("✅ AI日志流程已结束（startup流程完整记录）")
+        except Exception as e:
+            self.logger.warning(f"❌ 结束AI日志流程失败: {e}")
 
     def _on_validation_error(self, error_msg: str):
         """验证错误回调.

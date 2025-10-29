@@ -89,8 +89,12 @@ class TdxConfigFileParser:
             logger.debug("✓ 使用缓存的addedcode_bj.cfg路径")
 
         # 如果缓存中都有且有效，直接返回
-        if (self.tdxstat2_path and self.tdxstat2_path.exists()
-                and self.addedcode_bj_path and self.addedcode_bj_path.exists()):
+        if (
+            self.tdxstat2_path
+            and self.tdxstat2_path.exists()
+            and self.addedcode_bj_path
+            and self.addedcode_bj_path.exists()
+        ):
             return
 
         # 缓存未命中或文件不存在，执行搜索
@@ -330,12 +334,11 @@ class ConfigManager:
         # 多服务器并行下载配置
         "chinastock.server_pool_size": 5,  # 并行服务器数量（默认5个，可设置1-30）
         # 服务器池管理器配置
-        "chinastock.server_pool.server_count": None,  # 测速服务器数量（None=自动使用BROKER_SERVERS_7709全部服务器）
+        "chinastock.server_pool.server_count": None,  # 测速服务器数量（None=自动使用HQ_HOSTS_ALL+BROKER_SERVERS_7709合并后全部服务器）
         "chinastock.server_pool.use_multiprocess": True,  # 是否使用多进程测速（默认True）
         "chinastock.server_pool.max_coroutines_per_process": None,  # None 表示不限并发，由运行时动态控制
         "chinastock.server_pool.update_interval": 600.0,  # 服务器池更新间隔（秒，默认10分钟）
-        "chinastock.server_pool.test_timeout": 0.5,  # 单个服务器测试超时（秒）- 优化后：测试速度提升2倍，筛选高质量服务器
-        "chinastock.server_pool.max_fail_time": 1.0,  # 服务器失败阈值（秒，超过则视为不可用）- 优化后：1秒内响应的高质量服务器
+        # 注意：test_timeout和max_fail_time在代码中硬编码为2.0秒
         # 热备服务器配置
         "chinastock.standby_servers.count": 30,  # 热备服务器数量（从不同券商中选择）
         "chinastock.standby_servers.warmup_timeout": 1.5,  # 热备服务器预热超时（秒）

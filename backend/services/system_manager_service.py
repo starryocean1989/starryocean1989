@@ -2700,91 +2700,21 @@ class SystemManagerService(BaseService):
 
         # ========== 🆕 托管模式统一日志系统 ==========
 
-        # 1. 获取现有的Handler（启动时配置的）
-        root_logger = logging.getLogger()
-        existing_handlers = list(root_logger.handlers)
-
-        console_handler = None
-        file_handler = None
-
-        for handler in existing_handlers:
-            if isinstance(handler, logging.StreamHandler) and not isinstance(
-                handler, logging.FileHandler
-            ):
-                console_handler = handler
-                self.logger.info("📋 检测到控制台Handler: %s", type(handler).__name__)
-            elif isinstance(handler, logging.FileHandler):
-                file_handler = handler
-                self.logger.info(
-                    "📋 检测到文件Handler: %s (%s)", type(handler).__name__, handler.baseFilename
-                )
-
-        # 2. 移除所有现有Handler（LoggingHub将接管）
-        for handler in existing_handlers:
-            root_logger.removeHandler(handler)
-        self.logger.info(
-            "✅ 已移除 %d 个现有Handler，准备启用LoggingHub统一托管", len(existing_handlers)
-        )
-
-        # 3. 初始化LoggingHub
-        from backend.infrastructure.system_vnpy.unified_logging import get_logging_hub, LogType
+        # 获取LoggingHub实例（已在启动时配置好handlers）
+        from backend.infrastructure.system_vnpy.unified_log_system import get_logging_hub
         from backend.services.database_adapter import get_db_manager
 
         self.logging_hub = get_logging_hub()
+
+        # 只配置EventEngine和DatabaseManager（handlers已在启动时配置）
         if hasattr(self.main_engine, "event_engine") and self.main_engine.event_engine:
             self.logging_hub.set_event_engine(self.main_engine.event_engine)
+            self.logger.info("✅ LoggingHub已注入EventEngine")
+
         self.logging_hub.set_db_manager(get_db_manager())
+        self.logger.info("✅ LoggingHub已注入DatabaseManager")
 
-        # 4. 将现有Handler注入LoggingHub（由LoggingHub托管）
-        if console_handler:
-            self.logging_hub.set_console_handler(console_handler)
-        else:
-            # 创建默认控制台Handler
-            import sys
-
-            default_console = logging.StreamHandler(sys.stdout)
-            default_console.setLevel(logging.INFO)
-            default_console.setFormatter(
-                logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-            )
-            self.logging_hub.set_console_handler(default_console)
-            self.logger.info("✅ 创建默认控制台Handler")
-
-        if file_handler:
-            self.logging_hub.set_file_handler(file_handler)
-        else:
-            # 创建默认文件Handler
-            import os
-
-            os.makedirs("logs", exist_ok=True)
-            default_file = logging.FileHandler("logs/terminal_unified.log", encoding="utf-8")
-            default_file.setLevel(logging.DEBUG)
-            default_file.setFormatter(
-                logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-            )
-            self.logging_hub.set_file_handler(default_file)
-            self.logger.info("✅ 创建默认文件Handler: logs/terminal_unified.log")
-
-        # 5. 配置控制台输出（可选：不输出DEBUG和PROGRESS）
-        self.logging_hub.configure_console_output(
-            {
-                LogType.SYSTEM,
-                LogType.NOTIFICATION,
-                LogType.ALERT,
-                # LogType.PROGRESS,  # 不输出到控制台（减少噪音）
-                # LogType.DEBUG,     # 不输出到控制台（减少噪音）
-            }
-        )
-
-        # 6. 将LoggingHub注册为唯一Handler
-        root_logger.addHandler(self.logging_hub)
-        root_logger.setLevel(logging.DEBUG)
-
-        self.logger.info("=" * 80)
-        self.logger.info("✅ LoggingHub已注册为唯一Handler，托管模式已启用")
-        self.logger.info("   - 控制台: %s", "已托管" if console_handler else "已创建")
-        self.logger.info("   - 文件: %s", "已托管" if file_handler else "已创建")
-        self.logger.info("=" * 80)
+        self.logger.info("✅ LoggingHub配置完成（handlers已在启动时配置）")
 
         # 日志管理器（保留查询功能）
         self.log_manager = get_log_manager()
@@ -2984,10 +2914,11 @@ class SystemManagerService(BaseService):
             # REQ socket：查询监控数据（连接到监控进程的 REP）
             self._zmq_req_socket = self._zmq_context.socket(zmq.REQ)
             self._zmq_req_socket.connect(f"tcp://{addr}:{port_query_rep}")
-            self._zmq_req_socket.setsockopt(zmq.RCVTIMEO, 1000)  # 1秒超时（快速失败）
-            self._zmq_req_socket.setsockopt(zmq.SNDTIMEO, 1000)  # 1秒发送超时
+            # 🔧 修复：增加超时时间到3秒，避免频繁超时
+            self._zmq_req_socket.setsockopt(zmq.RCVTIMEO, 3000)  # 3秒超时（避免频繁重连）
+            self._zmq_req_socket.setsockopt(zmq.SNDTIMEO, 3000)  # 3秒发送超时
             self.logger.info(
-                "✅ ZeroMQ REQ连接到监控进程（addr=%s, port=%d，超时1秒）", addr, port_query_rep
+                "✅ ZeroMQ REQ连接到监控进程（addr=%s, port=%d，超时3秒）", addr, port_query_rep
             )
 
             # 🎯 架构修复：测试ZMQ连接，仅在成功时启动定时器
@@ -3108,9 +3039,10 @@ class SystemManagerService(BaseService):
 
             self._zmq_req_socket = self._zmq_context.socket(zmq.REQ)
             self._zmq_req_socket.connect(f"tcp://{addr}:{port_query_rep}")
-            self._zmq_req_socket.setsockopt(zmq.RCVTIMEO, 1000)
-            self._zmq_req_socket.setsockopt(zmq.SNDTIMEO, 1000)
-            self.logger.debug("REQ socket已重置（超时1秒）")
+            # 🔧 修复：增加超时时间到3秒，避免频繁超时
+            self._zmq_req_socket.setsockopt(zmq.RCVTIMEO, 3000)
+            self._zmq_req_socket.setsockopt(zmq.SNDTIMEO, 3000)
+            self.logger.debug("REQ socket已重置（超时3秒）")
 
         except Exception as e:
             self.logger.error("重置REQ socket失败: %s", e)
@@ -3131,11 +3063,12 @@ class SystemManagerService(BaseService):
             if not self._zmq_req_socket:
                 return False
 
-            # 3. 发送测试请求
-            self._zmq_req_socket.send_json({"action": "ping"})
+            # 3. 发送测试请求（使用 get_data 而非 ping，因为监控进程支持 get_data）
+            self._zmq_req_socket.send_json({"action": "get_data"})
             response = self._zmq_req_socket.recv_json()
 
-            if isinstance(response, dict) and response.get("status") == "ok":
+            # 检查响应是否包含 timestamp 字段（表示监控进程正常响应）
+            if isinstance(response, dict) and "timestamp" in response:
                 return True
             else:
                 return False
@@ -3497,7 +3430,8 @@ class SystemManagerService(BaseService):
                 return data if isinstance(data, dict) else {}
 
         except zmq.Again:
-            self.logger.warning("查询监控数据超时")
+            # 🔧 修复：超时日志降级为 DEBUG，避免日志刷屏
+            self.logger.debug("查询监控数据超时（3秒无响应）")
             self._reset_req_socket()
             return {}
         except Exception as e:

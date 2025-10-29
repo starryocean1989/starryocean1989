@@ -11,7 +11,7 @@ from ..async_base import AsyncBaseParser
 class AsyncGetFinanceInfo(AsyncBaseParser):
     """
     获取财务信息命令（异步）
-    
+
     返回字段说明：
     - liutongguben: 流通股本（万股）
     - zongguben: 总股本（万股）
@@ -29,7 +29,7 @@ class AsyncGetFinanceInfo(AsyncBaseParser):
     def setParams(self, market, code):
         """
         设置请求参数
-        :param market: 市场 (0=深圳, 1=上海)
+        :param market: 市场 (0=深圳, 1=上海, 2=北交所)
         :param code: 股票代码
         """
         if type(code) is str:
@@ -137,4 +137,3 @@ class AsyncGetFinanceInfo(AsyncBaseParser):
         )
 
         return result
-

@@ -61,6 +61,9 @@ except ImportError:
 
 from vnpy.event import Event, EventEngine
 
+# AsyncTdxHq_API导入（用于ConnectionLifecycleManager）
+from backend.infrastructure.tdx_asyncio import AsyncTdxHq_API
+
 
 # ==============================================================================
 # 第1部分：基础定义（任务类型、资源配置、任务基类）
@@ -3129,13 +3132,22 @@ class MultiProcessBatchModel(ExecutionModel):
 
 def _process_task_unit(task_unit: TaskUnit) -> TaskResult:
     """处理单个任务单元（顶层函数，用于multiprocessing.Pool.map）"""
+    # 优化原因：统一子进程日志格式
+    # 问题：子进程使用标准logging.getLogger，日志输出到stderr，与主进程日志格式不统一
+    # 解决：为每个子进程创建带PID的logger，日志会自动被主进程的loghub拦截并路由到AI日志文件
+    # 效果：1) 子进程日志输出到logs/ai/目录 2) 可追踪每个进程的执行过程 3) 日志格式统一
+    import logging
+    logger = logging.getLogger(f"load_balancer.subprocess.{multiprocessing.current_process().pid}")
+    
     try:
+        logger.debug(f"处理任务单元: {task_unit.unit_id}")
         if task_unit.processor:
             result_data = task_unit.processor(task_unit.data)
             return TaskResult(unit_id=task_unit.unit_id, success=True, data=result_data)
         else:
             return TaskResult(unit_id=task_unit.unit_id, success=True, data=task_unit.data)
     except Exception as e:
+        logger.error(f"处理任务单元失败: {e}", exc_info=True)
         return TaskResult(unit_id=task_unit.unit_id, success=False, error=str(e))
 
 
@@ -3144,7 +3156,15 @@ def _process_async_batch(batch_info: tuple) -> List[TaskResult]:
 
     每个进程运行一个asyncio事件循环，并发执行多个协程。
     """
+    # 优化原因：统一子进程日志格式（与_process_task_unit保持一致）
+    # 问题：多进程异步任务的日志散落在stderr，难以追踪和调试
+    # 解决：为每个子进程初始化logger，命名包含PID便于区分不同进程
+    # 效果：服务器池测速等异步任务的日志都会归集到AI日志文件，便于排查问题
+    import logging
+    logger = logging.getLogger(f"load_balancer.subprocess.{multiprocessing.current_process().pid}")
+    
     task_units, coroutines_count = batch_info
+    logger.debug(f"处理异步任务批次: {len(task_units)} 个任务，协程数={coroutines_count}")
 
     async def process_task_async(task_unit: TaskUnit) -> TaskResult:
         """异步处理单个任务单元"""
@@ -5131,6 +5151,70 @@ class HybridResourceLimiter:
 # -------------------- 服务器池管理器 --------------------
 
 
+def _is_ipv6(ip: str) -> bool:
+    """
+    判断IP地址是否为IPv6
+
+    Args:
+        ip: IP地址字符串
+
+    Returns:
+        bool: True=IPv6, False=IPv4
+    """
+    return ":" in ip or ip.startswith("[")
+
+
+def _get_all_servers() -> Tuple[List[Tuple[str, int]], List[Tuple[str, int]]]:
+    """
+    获取所有服务器列表（合并HQ_HOSTS_ALL和BROKER_SERVERS_7709），并分为IPv4和IPv6两个池
+
+    Returns:
+        Tuple[ipv4_servers, ipv6_servers]: IPv4和IPv6服务器列表
+    """
+    from backend.infrastructure.tdx_asyncio.constants import (
+        HQ_HOSTS_ALL,
+        BROKER_SERVERS_7709,
+    )
+
+    # 使用集合来去重（基于ip:port）
+    server_set = set()
+    ipv4_servers = []
+    ipv6_servers = []
+
+    # 合并所有服务器列表
+    all_server_lists = [
+        HQ_HOSTS_ALL,
+        BROKER_SERVERS_7709,
+    ]
+
+    for server_list in all_server_lists:
+        if not server_list:
+            continue
+        for item in server_list:
+            if not item or len(item) < 2:
+                continue
+            # 处理(name, ip, port)格式
+            if len(item) == 3:
+                _, ip, port = item
+            # 处理(ip, port)格式
+            elif len(item) == 2:
+                ip, port = item[0], item[1]  # 显式索引避免类型推断问题
+            else:
+                continue
+
+            # 去重：使用ip:port作为唯一标识
+            key = f"{ip}:{port}"
+            if key not in server_set:
+                server_set.add(key)
+                # 根据IP类型分类
+                if _is_ipv6(ip):
+                    ipv6_servers.append((ip, port))
+                else:
+                    ipv4_servers.append((ip, port))
+
+    return ipv4_servers, ipv6_servers
+
+
 class ServerPoolManager:
     """
     服务器池管理器 - 单例模式
@@ -5158,19 +5242,8 @@ class ServerPoolManager:
         self._initialized = True
         self.logger = logging.getLogger(__name__)
 
-        # 🔥 关键修复：确保logger有handler，否则错误信息会被静默
-        if not self.logger.handlers:
-            import sys
-
-            # 确保stdout使用UTF-8编码
-            if hasattr(sys.stdout, "reconfigure"):
-                sys.stdout.reconfigure(encoding="utf-8")  # type: ignore
-            console_handler = logging.StreamHandler(sys.stdout)
-            console_handler.setLevel(logging.INFO)
-            formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-            console_handler.setFormatter(formatter)
-            self.logger.addHandler(console_handler)
-            self.logger.setLevel(logging.INFO)
+        # ✅ 日志统一由 LoggingHub 处理，不再手动添加handler
+        # 这样避免了日志重复输出的问题
 
         # 运行状态
         self._running = False
@@ -5181,16 +5254,17 @@ class ServerPoolManager:
 
         # 多进程相关
         self._processes: List[Any] = []  # 支持不同上下文的Process类型（spawn/fork等）
-        self._sorted_servers: List[Tuple[str, int]] = []  # 存储排序后的服务器结果
+        self._sorted_servers_ipv4: List[Tuple[str, int]] = []  # 存储排序后的IPv4服务器结果
+        self._sorted_servers_ipv6: List[Tuple[str, int]] = []  # 存储排序后的IPv6服务器结果
+        # 向后兼容：合并两个池
+        self._sorted_servers: List[Tuple[str, int]] = []  # 存储合并后的服务器结果
 
         # 配置参数（这些配置来自config_manager，这里使用默认值）
         self.test_timeout = 2.0
         self.max_fail_time = 2.0
-        # 动态获取BROKER_SERVERS_7709的实际数量，避免硬编码
-        # 注意：这里需要外部导入constants，保持原有导入不变
-        from backend.infrastructure.tdx_asyncio.constants import BROKER_SERVERS_7709
-
-        self.server_count = len(BROKER_SERVERS_7709)
+        # 动态获取所有服务器的实际数量（合并HQ_HOSTS_ALL和BROKER_SERVERS_7709）
+        ipv4_servers, ipv6_servers = _get_all_servers()
+        self.server_count = len(ipv4_servers) + len(ipv6_servers)
         self.max_coroutines_per_process: Optional[int] = None  # None 表示单进程可覆盖全部服务器
 
         # 缓存文件配置
@@ -5236,7 +5310,7 @@ class ServerPoolManager:
 
         try:
             # 1. 尝试加载缓存
-            cache_data, cache_date, is_valid = self.load_server_cache()
+            cache_data_ipv4, cache_data_ipv6, cache_date, is_valid = self.load_server_cache()
 
             # 2. 强制检查缓存是否为当天（使用网络时间）
             from backend.infrastructure.data_module_vnpy.utils.network_time import get_real_date
@@ -5250,27 +5324,30 @@ class ServerPoolManager:
                     "服务器池缓存非当天（%s != %s），强制重新测速", cache_date, today
                 )
 
-            if cache_data and is_valid:
+            if cache_data_ipv4 is not None and cache_data_ipv6 is not None and is_valid:
                 # ✅ 缓存有效且是当天，跳过测速
-                self._sorted_servers = cache_data
+                self._sorted_servers_ipv4 = cache_data_ipv4
+                self._sorted_servers_ipv6 = cache_data_ipv6
+                self._sorted_servers = cache_data_ipv4 + cache_data_ipv6  # 向后兼容
                 self._cache_date = cache_date
                 self._running = True
                 self._start_time = datetime.now()
 
-                # ✅ 同步更新server_count为实际的BROKER_SERVERS_7709数量
-                from backend.infrastructure.tdx_asyncio.constants import BROKER_SERVERS_7709
-
-                self.server_count = len(BROKER_SERVERS_7709)
+                # ✅ 同步更新server_count为实际的所有服务器数量（合并HQ_HOSTS_ALL和BROKER_SERVERS_7709）
+                ipv4_servers, ipv6_servers = _get_all_servers()
+                self.server_count = len(ipv4_servers) + len(ipv6_servers)
 
                 self.logger.info("✅ 服务器池缓存有效（%s），跳过测速", cache_date)
-                self.logger.info("   可用服务器：%d个", len(self._sorted_servers))
+                self.logger.info("   IPv4服务器：%d个", len(self._sorted_servers_ipv4))
+                self.logger.info("   IPv6服务器：%d个", len(self._sorted_servers_ipv6))
+                self.logger.info("   总服务器：%d个", len(self._sorted_servers))
 
                 # 推送服务器状态事件
                 self._push_server_status_event()
 
                 return True
 
-            elif cache_data and not is_valid:
+            elif (cache_data_ipv4 is not None or cache_data_ipv6 is not None) and not is_valid:
                 # ⚠️ 缓存失效，需要重新测速
                 self.logger.warning("⚠️ 服务器池缓存已过期（%s），正在重新测速...", cache_date)
             else:
@@ -5282,8 +5359,20 @@ class ServerPoolManager:
 
             if success:
                 # 3. 保存缓存
-                self.save_server_cache(self._sorted_servers)
-                self.logger.info("✅ 服务器池测速完成，缓存已更新")
+                self.save_server_cache(self._sorted_servers_ipv4, self._sorted_servers_ipv6)
+                self.logger.info(
+                    "✅ 服务器池测速完成，缓存已更新", extra={"log_type": "stage_node"}
+                )
+                self.logger.info(
+                    "   IPv4服务器：%d个",
+                    len(self._sorted_servers_ipv4),
+                    extra={"log_type": "stage_node"},
+                )
+                self.logger.info(
+                    "   IPv6服务器：%d个",
+                    len(self._sorted_servers_ipv6),
+                    extra={"log_type": "stage_node"},
+                )
 
             return success
 
@@ -5295,51 +5384,44 @@ class ServerPoolManager:
             # 🔧 确保清除启动标志
             self._starting = False
 
-    def _start_multiprocess(self) -> bool:
-        """多进程模式启动
+    def _test_server_pool(
+        self, servers: List[Tuple[str, int]], pool_name: str
+    ) -> Dict[Tuple[str, int], float]:
+        """测速单个服务器池（IPv4或IPv6）
 
-        将服务器列表分配到多个进程，每个进程最多处理50个服务器。
+        Args:
+            servers: 要测试的服务器列表
+            pool_name: 池名称（用于日志）
 
         Returns:
-            bool: 是否启动成功
+            Dict[server_tuple, score]: 测速结果字典
         """
-        import time
-        from backend.infrastructure.tdx_asyncio.constants import BROKER_SERVERS_7709
-
-        start_time = time.time()
-
-        # 获取服务器列表（使用BROKER_SERVERS_7709）
-        all_servers = [(ip, port) for name, ip, port in BROKER_SERVERS_7709]
-
-        # ✅ 更新server_count为实际测试的服务器数量
-        self.server_count = len(all_servers)
-
-        self.logger.info("准备测试 %d 个7709服务器", len(all_servers))
-
-        # 按配置分配服务器到不同进程；None 表示单进程处理全部服务器
-        chunk_size = self.max_coroutines_per_process or len(all_servers) or 1
+        # 按配置分配服务器到不同进程
+        chunk_size = self.max_coroutines_per_process or len(servers) or 1
 
         server_chunks = []
-        for i in range(0, len(all_servers), chunk_size):
-            chunk = all_servers[i : i + chunk_size]
+        for i in range(0, len(servers), chunk_size):
+            chunk = servers[i : i + chunk_size]
             server_chunks.append(chunk)
 
         num_processes = len(server_chunks)
 
-        self.logger.info("正在启动服务器池管理器（多进程模式），共%d个服务器...", len(all_servers))
-        self.logger.debug("📊 服务器分配方案：")
-        for i, chunk in enumerate(server_chunks):
-            self.logger.debug("   进程%d: %d个服务器", i + 1, len(chunk))
+        self.logger.info(
+            "测速%s池: %d个服务器分配到%d个进程",
+            pool_name,
+            len(servers),
+            num_processes,
+            extra={"log_type": "stage_node"},
+        )
 
-        # 创建共享内存存储结果（使用spawn上下文）
-        self.logger.debug("创建multiprocessing上下文（spawn模式）")
+        # 创建共享内存存储结果
         ctx = get_context("spawn")
         manager = ctx.Manager()
-        self.logger.debug("✓ Manager创建成功")
         shared_results = manager.dict()
+        self.logger.info("[%s] 共享内存管理器已创建", pool_name, extra={"log_type": "stage_node"})
 
         # 启动测速进程
-        self._processes = []
+        processes = []
         for i, chunk in enumerate(server_chunks):
             p = ctx.Process(
                 target=self._test_servers_in_process,
@@ -5350,62 +5432,163 @@ class ServerPoolManager:
                     self.test_timeout,
                     self.max_fail_time,
                 ),
-                name=f"ServerTest-{i+1}",
+                name=f"{pool_name}Test-{i+1}",
+            )
+            self.logger.info(
+                "[%s] 启动子进程%d，负责%d个服务器",
+                pool_name,
+                i + 1,
+                len(chunk),
+                extra={"log_type": "stage_node"},
             )
             p.start()
-            self._processes.append(p)
-            self.logger.debug("🚀 进程%d已启动（PID: %d）", i + 1, p.pid)
+            processes.append(p)
 
-        # 等待所有进程完成
-        self.logger.info("⏳ 等待%d个进程完成测速...", num_processes)
-        for i, p in enumerate(self._processes):
-            p.join()
-            self.logger.info("✅ 进程%d完成", i + 1)
+        # 等待所有进程完成（设置超时避免卡死）
+        timeout_per_process = 180  # 每个进程最多等待3分钟
+        for i, p in enumerate(processes):
+            self.logger.info("[%s] 等待子进程%d完成...", pool_name, i + 1)
+            p.join(timeout=timeout_per_process)
+            if p.is_alive():
+                self.logger.error(
+                    "[%s] 子进程%d超时（>%ds），强制终止",
+                    pool_name,
+                    i + 1,
+                    timeout_per_process,
+                    extra={"log_type": "stage_node"},
+                )
+                p.terminate()
+                p.join(timeout=5)
+            else:
+                self.logger.info("[%s] 子进程%d已完成", pool_name, i + 1)
 
-        # 合并结果并排序
-        all_scores = dict(shared_results)
+        # 返回结果
+        result_dict = dict(shared_results)
+        self.logger.info(
+            "[%s] 测速完成，收集到%d个结果",
+            pool_name,
+            len(result_dict),
+            extra={"log_type": "stage_node"},
+        )
+        return result_dict
 
-        if not all_scores:
+    def _start_multiprocess(self) -> bool:
+        """多进程模式启动
+
+        将服务器列表分配到多个进程，每个进程最多处理50个服务器。
+        分别测速IPv4和IPv6服务器。
+
+        Returns:
+            bool: 是否启动成功
+        """
+        import time
+
+        start_time = time.time()
+
+        # 获取服务器列表（合并HQ_HOSTS_ALL和BROKER_SERVERS_7709），分为IPv4和IPv6
+        ipv4_servers, ipv6_servers = _get_all_servers()
+
+        # ✅ 记录原始和去重后的服务器数量
+        from backend.infrastructure.tdx_asyncio.constants import HQ_HOSTS_ALL, BROKER_SERVERS_7709
+
+        original_count = len(HQ_HOSTS_ALL) + len(BROKER_SERVERS_7709)
+        self.server_count = len(ipv4_servers) + len(ipv6_servers)  # 去重后的数量
+        self._original_server_count = original_count  # 保存原始数量用于日志
+
+        self.logger.info(
+            "准备测试 %d 个IPv4服务器 + %d 个IPv6服务器（去重后共%d个，原始%d个）",
+            len(ipv4_servers),
+            len(ipv6_servers),
+            self.server_count,
+            original_count,
+        )
+
+        # 分别测速IPv4和IPv6
+        all_results = {}
+
+        # 测速IPv4
+        if ipv4_servers:
+            self.logger.info("开始测速IPv4服务器池...", extra={"log_type": "stage_node"})
+            ipv4_results = self._test_server_pool(ipv4_servers, "IPv4")
+            self.logger.info(
+                "IPv4测速返回%d个结果", len(ipv4_results), extra={"log_type": "stage_node"}
+            )
+            all_results.update(ipv4_results)
+
+        # 测速IPv6
+        if ipv6_servers:
+            self.logger.info("开始测速IPv6服务器池...", extra={"log_type": "stage_node"})
+            ipv6_results = self._test_server_pool(ipv6_servers, "IPv6")
+            self.logger.info(
+                "IPv6测速返回%d个结果", len(ipv6_results), extra={"log_type": "stage_node"}
+            )
+            all_results.update(ipv6_results)
+
+        if not all_results:
             self.logger.error("❌ 所有进程测速失败，没有可用服务器")
             self._running = False
             return False
 
-        # 过滤可用服务器（响应时间 <= max_fail_time）
-        available_servers = [
-            (server, score) for server, score in all_scores.items() if score <= self.max_fail_time
-        ]
+        # 分离IPv4和IPv6结果
+        ipv4_available = []
+        ipv6_available = []
 
-        if not available_servers:
-            self.logger.error(
-                f"❌ 测速完成，但没有可用服务器（全部响应时间 > {self.max_fail_time}秒）"
-            )
-            self._running = False
-            return False
+        for server_tuple, score in all_results.items():
+            ip, port = server_tuple
+            if _is_ipv6(ip):
+                ipv6_available.append((server_tuple, score))
+            else:
+                ipv4_available.append((server_tuple, score))
 
         # 按响应时间排序（从小到大）
-        available_servers.sort(key=lambda x: x[1])
-        self._sorted_servers = [server for server, _ in available_servers]
+        ipv4_available.sort(key=lambda x: x[1])
+        ipv6_available.sort(key=lambda x: x[1])
+
+        self._sorted_servers_ipv4 = [server for server, _ in ipv4_available]
+        self._sorted_servers_ipv6 = [server for server, _ in ipv6_available]
+        self._sorted_servers = self._sorted_servers_ipv4 + self._sorted_servers_ipv6  # 向后兼容
 
         elapsed = time.time() - start_time
 
         self._running = True
         self._start_time = datetime.now()
 
-        # 输出统计信息
-        self.logger.info("=" * 60)
-        self.logger.info("✅ 多进程测速完成！")
-        self.logger.info("   总耗时: %.0fms", elapsed * 1000)
-        self.logger.info("   测试服务器: %d个", len(all_scores))
-        self.logger.info("   可用服务器: %d个", len(available_servers))
+        # 输出统计信息（添加stage_node标记确保terminal输出）
+        self.logger.info("=" * 60, extra={"log_type": "stage_node"})
+        self.logger.info("✅ 多进程测速完成！", extra={"log_type": "stage_node"})
+        self.logger.info("   总耗时: %.0fms", elapsed * 1000, extra={"log_type": "stage_node"})
         self.logger.info(
-            "   最快服务器: %s:%d", self._sorted_servers[0][0], self._sorted_servers[0][1]
+            "   测试服务器: %d个（去重后）", self.server_count, extra={"log_type": "stage_node"}
         )
-        if len(self._sorted_servers) >= 3:
+        self.logger.info("   成功连接: %d个", len(all_results), extra={"log_type": "stage_node"})
+        self.logger.info(
+            "   失败: %d个", self.server_count - len(all_results), extra={"log_type": "stage_node"}
+        )
+        self.logger.info(
+            "   IPv4: 测试%d个, 成功%d个 (%.1f%%)",
+            len(ipv4_servers),
+            len(self._sorted_servers_ipv4),
+            len(self._sorted_servers_ipv4) / len(ipv4_servers) * 100 if ipv4_servers else 0,
+            extra={"log_type": "stage_node"},
+        )
+        self.logger.info(
+            "   IPv6: 测试%d个, 成功%d个 (%.1f%%)",
+            len(ipv6_servers),
+            len(self._sorted_servers_ipv6),
+            len(self._sorted_servers_ipv6) / len(ipv6_servers) * 100 if ipv6_servers else 0,
+            extra={"log_type": "stage_node"},
+        )
+        if self._sorted_servers_ipv4:
             self.logger.info(
-                "   Top3: %s, %s, %s",
-                self._sorted_servers[0][0],
-                self._sorted_servers[1][0],
-                self._sorted_servers[2][0],
+                "   IPv4最快: %s:%d",
+                self._sorted_servers_ipv4[0][0],
+                self._sorted_servers_ipv4[0][1],
+            )
+        if self._sorted_servers_ipv6:
+            self.logger.info(
+                "   IPv6最快: %s:%d",
+                self._sorted_servers_ipv6[0][0],
+                self._sorted_servers_ipv6[0][1],
             )
         self.logger.info("=" * 60)
 
@@ -5434,8 +5617,23 @@ class ServerPoolManager:
         import logging
         from backend.infrastructure.tdx_asyncio import AsyncSmartIPPool
 
-        # 为子进程设置日志
-        logger = logging.getLogger(f"ServerTest-{process_id}")
+        # 子进程需要独立初始化LogHub（子进程无法访问父进程的LogHub实例）
+        # 但我们可以使用基本的logger，日志会通过共享的AI日志文件输出
+        logger = logging.getLogger(f"load_balancer.subprocess.{process_id}")
+        logger.setLevel(logging.DEBUG)
+
+        # 如果logger还没有handler，添加一个StreamHandler用于AI日志捕获
+        if not logger.handlers:
+            import sys
+
+            handler = logging.StreamHandler(sys.stdout)
+            handler.setLevel(logging.DEBUG)
+            formatter = logging.Formatter(
+                "[子进程%(process)d-%(name)s] %(levelname)s - %(message)s",
+                defaults={"process": process_id},
+            )
+            handler.setFormatter(formatter)
+            logger.addHandler(handler)
 
         async def run_tests():
             """异步测速任务"""
@@ -5453,18 +5651,23 @@ class ServerPoolManager:
                 # 执行测速（使用公开接口）
                 scores = await pool.test_once()
 
-                # 保存结果到共享内存
+                # 保存结果到共享内存（只保存成功的服务器）
                 success_count = 0
+                failed_count = 0
                 for server, score in scores.items():
-                    shared_results[server] = score
                     if score <= max_fail_time:
+                        # 只将成功的服务器加入共享结果
+                        shared_results[server] = score
                         success_count += 1
+                    else:
+                        failed_count += 1
 
                 logger.info(
-                    "[进程%d] 测速完成: 测试 %d 个, 可用 %d 个",
+                    "[进程%d] 测速完成: 测试 %d 个, 可用 %d 个, 失败 %d 个",
                     process_id + 1,
                     len(servers),
                     success_count,
+                    failed_count,
                 )
 
             except Exception as e:
@@ -5507,11 +5710,14 @@ class ServerPoolManager:
 
     # ==================== 公共接口 ====================
 
-    def get_servers(self, count: Optional[int] = None) -> List[Tuple[str, int]]:
+    def get_servers(
+        self, count: Optional[int] = None, pool_type: str = "ipv4"
+    ) -> List[Tuple[str, int]]:
         """获取排序后的服务器列表（保持原顺序）
 
         Args:
             count: 返回的服务器数量，None表示返回所有
+            pool_type: 池类型，"ipv4"或"ipv6"，默认"ipv4"
 
         Returns:
             按速度排序的服务器列表 [(ip, port), ...]
@@ -5529,20 +5735,31 @@ class ServerPoolManager:
             self.logger.error(error_msg)
             raise RuntimeError(error_msg)
 
-        if not self._sorted_servers:
-            error_msg = "服务器列表为空！\n请在系统管理中点击'测速服务器'按钮进行测速。"
+        # 根据pool_type选择对应的池
+        if pool_type == "ipv6":
+            selected_servers = self._sorted_servers_ipv6
+        else:
+            selected_servers = self._sorted_servers_ipv4
+
+        if not selected_servers:
+            error_msg = (
+                f"{pool_type.upper()}服务器列表为空！\n请在系统管理中点击'测速服务器'按钮进行测速。"
+            )
             self.logger.error(error_msg)
             raise RuntimeError(error_msg)
 
-        return self._sorted_servers[:count] if count else self._sorted_servers
+        return selected_servers[:count] if count else selected_servers
 
-    def get_servers_shuffled(self, count: Optional[int] = None) -> List[Tuple[str, int]]:
+    def get_servers_shuffled(
+        self, count: Optional[int] = None, pool_type: str = "ipv4"
+    ) -> List[Tuple[str, int]]:
         """获取打乱顺序的服务器列表（推荐用于下载）
 
         每次调用都会重新打乱顺序，实现负载均衡。
 
         Args:
             count: 返回的服务器数量，None表示返回所有
+            pool_type: 池类型，"ipv4"或"ipv6"，默认"ipv4"
 
         Returns:
             随机顺序的服务器列表 [(ip, port), ...]
@@ -5550,19 +5767,33 @@ class ServerPoolManager:
         Raises:
             RuntimeError: 服务器池缓存不可用
         """
-        if not self._running or not self._sorted_servers:
+        if not self._running:
             error_msg = "服务器池缓存不可用！请先测速服务器。"
             self.logger.error(error_msg)
             raise RuntimeError(error_msg)
 
+        # 根据pool_type选择对应的池
+        if pool_type == "ipv6":
+            selected_servers = self._sorted_servers_ipv6
+        else:
+            selected_servers = self._sorted_servers_ipv4
+
+        if not selected_servers:
+            error_msg = f"{pool_type.upper()}服务器列表为空！请先测速服务器。"
+            self.logger.error(error_msg)
+            raise RuntimeError(error_msg)
+
         # 打乱顺序（每次调用都重新打乱）
-        servers = self._sorted_servers.copy()
+        servers = selected_servers.copy()
         random.shuffle(servers)
 
         return servers[:count] if count else servers
 
-    def get_best_server(self) -> Tuple[str, int]:
+    def get_best_server(self, pool_type: str = "ipv4") -> Tuple[str, int]:
         """获取最快的服务器
+
+        Args:
+            pool_type: 池类型，"ipv4"或"ipv6"，默认"ipv4"
 
         Returns:
             最快的服务器 (ip, port)
@@ -5575,18 +5806,24 @@ class ServerPoolManager:
             self.logger.error(error_msg)
             raise RuntimeError(error_msg)
 
-        if not self._sorted_servers:
-            error_msg = "服务器列表为空，测速可能失败"
+        # 根据pool_type选择对应的池
+        if pool_type == "ipv6":
+            selected_servers = self._sorted_servers_ipv6
+        else:
+            selected_servers = self._sorted_servers_ipv4
+
+        if not selected_servers:
+            error_msg = f"{pool_type.upper()}服务器列表为空，测速可能失败"
             self.logger.error(error_msg)
             raise RuntimeError(error_msg)
 
-        return self._sorted_servers[0]
+        return selected_servers[0]
 
     def get_stats(self) -> Dict:
         """获取服务器池统计信息
 
         Returns:
-            统计字典
+            统计字典，包含IPv4和IPv6的统计信息
         """
         stats = {
             "running": self._running,
@@ -5595,6 +5832,8 @@ class ServerPoolManager:
             "available": len(self._sorted_servers),
             "unavailable": self.server_count - len(self._sorted_servers),
             "mode": "multiprocess",
+            "ipv4_available": len(self._sorted_servers_ipv4),
+            "ipv6_available": len(self._sorted_servers_ipv6),
         }
 
         # 计算运行时长
@@ -5607,9 +5846,11 @@ class ServerPoolManager:
         """检查服务器池是否运行中并有可用服务器
 
         Returns:
-            bool: 是否运行中且有可用服务器
+            bool: 是否运行中且有可用服务器（IPv4或IPv6）
         """
-        return self._running and len(self._sorted_servers) > 0
+        return self._running and (
+            len(self._sorted_servers_ipv4) > 0 or len(self._sorted_servers_ipv6) > 0
+        )
 
     def _push_server_status_event(self):
         """推送服务器状态更新事件（vnpy事件）"""
@@ -5626,6 +5867,8 @@ class ServerPoolManager:
             event_data = {
                 "available": len(self._sorted_servers),
                 "total": self.server_count,
+                "ipv4_available": len(self._sorted_servers_ipv4),
+                "ipv6_available": len(self._sorted_servers_ipv6),
                 "status": "available" if self._running else "stopped",
                 "timestamp": datetime.now().isoformat(),
                 "cache_date": self._cache_date,
@@ -5635,18 +5878,27 @@ class ServerPoolManager:
             event_engine.put(event)
 
             self.logger.info(
-                "📢 推送服务器状态事件: %d/%d 可用", event_data["available"], event_data["total"]
+                "📢 推送服务器状态事件: IPv4=%d个, IPv6=%d个 (可用=%d/%d)",
+                event_data["ipv4_available"],
+                event_data["ipv6_available"],
+                event_data["available"],
+                event_data["total"],
+                extra={"log_type": "stage_node"},
             )
         except Exception as e:
             self.logger.warning("推送服务器状态失败: %s", e)
 
     # ==================== 缓存管理 ====================
 
-    def load_server_cache(self) -> Tuple[Optional[List[Tuple[str, int]]], Optional[str], bool]:
-        """加载服务器池缓存
+    def load_server_cache(
+        self,
+    ) -> Tuple[
+        Optional[List[Tuple[str, int]]], Optional[List[Tuple[str, int]]], Optional[str], bool
+    ]:
+        """加载服务器池缓存（支持IPv4和IPv6双池）
 
         Returns:
-            Tuple[servers, cache_date, is_valid]
+            Tuple[ipv4_servers, ipv6_servers, cache_date, is_valid]
         """
         try:
             from backend.infrastructure.data_module_vnpy.cache_manager import DailyCacheManager
@@ -5656,21 +5908,33 @@ class ServerPoolManager:
             )
 
             if data:
-                # 数据格式：[[ip, port], ...]
-                servers = [tuple(server) for server in data]
-                return servers, cache_date, is_valid
+                # 新格式：{"ipv4": [[ip, port], ...], "ipv6": [[ip, port], ...]}
+                if isinstance(data, dict) and "ipv4" in data and "ipv6" in data:
+                    ipv4_servers = [tuple(server) for server in data["ipv4"]]
+                    ipv6_servers = [tuple(server) for server in data["ipv6"]]
+                    return ipv4_servers, ipv6_servers, cache_date, is_valid
+                # 旧格式（向后兼容）：[[ip, port], ...]
+                elif isinstance(data, list):
+                    servers = [tuple(server) for server in data]
+                    # 分离IPv4和IPv6
+                    ipv4_servers = [s for s in servers if not _is_ipv6(s[0])]
+                    ipv6_servers = [s for s in servers if _is_ipv6(s[0])]
+                    return ipv4_servers, ipv6_servers, cache_date, is_valid
 
-            return None, None, False
+            return None, None, None, False
 
         except Exception as e:
             self.logger.error("加载服务器池缓存失败: %s", e, exc_info=True)
-            return None, None, False
+            return None, None, None, False
 
-    def save_server_cache(self, servers: List[Tuple[str, int]]) -> bool:
-        """保存服务器池缓存
+    def save_server_cache(
+        self, ipv4_servers: List[Tuple[str, int]], ipv6_servers: List[Tuple[str, int]]
+    ) -> bool:
+        """保存服务器池缓存（IPv4和IPv6双池）
 
         Args:
-            servers: 服务器列表
+            ipv4_servers: IPv4服务器列表
+            ipv6_servers: IPv6服务器列表
 
         Returns:
             bool: 是否保存成功
@@ -5679,14 +5943,22 @@ class ServerPoolManager:
             from backend.infrastructure.data_module_vnpy.cache_manager import DailyCacheManager
 
             # 转换为可JSON序列化的格式
-            server_data = [[ip, port] for ip, port in servers]
+            server_data = {
+                "ipv4": [[ip, port] for ip, port in ipv4_servers],
+                "ipv6": [[ip, port] for ip, port in ipv6_servers],
+            }
 
             # 保存缓存（带日期）
             success = DailyCacheManager.save_with_date(server_data, self._cache_file)
 
             if success:
                 self._cache_date = DailyCacheManager.get_today()
-                self.logger.info("服务器池缓存已保存: %d个服务器", len(servers))
+                self.logger.info(
+                    "服务器池缓存已保存: IPv4=%d个, IPv6=%d个 (仅保存测试通过的服务器)",
+                    len(ipv4_servers),
+                    len(ipv6_servers),
+                    extra={"log_type": "stage_node"},
+                )
 
             return success
 
@@ -5717,30 +5989,49 @@ server_pool_manager = ServerPoolManager()
 # -------------------- 便捷函数 --------------------
 
 
-def get_best_servers(count: int = 10) -> List[Tuple[str, int]]:
-    """获取最快的N个服务器（便捷函数）"""
-    return server_pool_manager.get_servers(count=count)
+def get_best_servers(count: int = 10, pool_type: str = "ipv4") -> List[Tuple[str, int]]:
+    """获取最快的N个服务器（便捷函数）
+
+    Args:
+        count: 返回的服务器数量
+        pool_type: 池类型，"ipv4"或"ipv6"，默认"ipv4"
+    """
+    return server_pool_manager.get_servers(count=count, pool_type=pool_type)
 
 
-def get_best_server() -> Optional[Tuple[str, int]]:
-    """获取最快的服务器（便捷函数）"""
-    return server_pool_manager.get_best_server()
+def get_best_server(pool_type: str = "ipv4") -> Optional[Tuple[str, int]]:
+    """获取最快的服务器（便捷函数）
+
+    Args:
+        pool_type: 池类型，"ipv4"或"ipv6"，默认"ipv4"
+    """
+    return server_pool_manager.get_best_server(pool_type=pool_type)
 
 
-def get_all_servers() -> List[Tuple[str, int]]:
-    """获取所有排序后的服务器（便捷函数）"""
-    return server_pool_manager.get_servers()
+def get_all_servers(pool_type: str = "ipv4") -> List[Tuple[str, int]]:
+    """获取所有排序后的服务器（便捷函数）
+
+    Args:
+        pool_type: 池类型，"ipv4"或"ipv6"，默认"ipv4"
+    """
+    return server_pool_manager.get_servers(pool_type=pool_type)
 
 
-def get_verified_servers_random(count: Optional[int] = None) -> List[Tuple[str, int]]:
-    """获取已验证的服务器（随机排列）- 便捷函数"""
+def get_verified_servers_random(
+    count: Optional[int] = None, pool_type: str = "ipv4"
+) -> List[Tuple[str, int]]:
+    """获取已验证的服务器（随机排列）- 便捷函数
+
+    Args:
+        count: 返回的服务器数量
+        pool_type: 池类型，"ipv4"或"ipv6"，默认"ipv4"
+    """
     import random
-    from backend.infrastructure.tdx_asyncio.constants import BROKER_SERVERS_7709
 
     # 尝试获取已测速的服务器
     if server_pool_manager.is_running():
         try:
-            servers = server_pool_manager.get_servers()
+            servers = server_pool_manager.get_servers(pool_type=pool_type)
             servers_copy = servers.copy()
             random.shuffle(servers_copy)
             servers = servers_copy
@@ -5752,8 +6043,9 @@ def get_verified_servers_random(count: Optional[int] = None) -> List[Tuple[str, 
         except Exception:
             pass
 
-    # Fallback: 从constants.py获取所有服务器并随机打乱
-    servers = [(ip, port) for name, ip, port in BROKER_SERVERS_7709]
+    # Fallback: 从constants.py获取所有服务器并随机打乱（使用指定类型的池）
+    ipv4_servers, ipv6_servers = _get_all_servers()
+    servers = (ipv6_servers if pool_type == "ipv6" else ipv4_servers).copy()
     random.shuffle(servers)
 
     if count is not None:
@@ -5763,18 +6055,34 @@ def get_verified_servers_random(count: Optional[int] = None) -> List[Tuple[str, 
 
 
 def get_verified_servers(
-    count: Optional[int] = None, shuffle: bool = True
+    count: Optional[int] = None, shuffle: bool = True, pool_type: str = "ipv4"
 ) -> List[Tuple[str, int]]:
-    """获取已测速的可用服务器并随机打乱顺序"""
+    """获取已测速的可用服务器并随机打乱顺序
+
+    Args:
+        count: 返回的服务器数量
+        shuffle: 是否打乱顺序
+        pool_type: 池类型，"ipv4"或"ipv6"，默认"ipv4"
+    """
     logger = logging.getLogger(__name__)
 
     try:
-        if server_pool_manager.is_running() and server_pool_manager._sorted_servers:
-            servers = server_pool_manager._sorted_servers.copy()
-            logger.debug("使用server_pool_manager的测速缓存: %d个可用服务器", len(servers))
+        # 使用指定类型的池
+        if pool_type == "ipv6":
+            selected_servers = server_pool_manager._sorted_servers_ipv6
+        else:
+            selected_servers = server_pool_manager._sorted_servers_ipv4
+
+        if server_pool_manager.is_running() and selected_servers:
+            servers = selected_servers.copy()
+            logger.debug(
+                "使用server_pool_manager的测速缓存: %d个%s可用服务器",
+                len(servers),
+                pool_type.upper(),
+            )
         else:
             raise RuntimeError(
-                "服务器池缓存不可用！请手动测速：\n"
+                f"{pool_type.upper()}服务器池缓存不可用！请手动测速：\n"
                 "1. 打开数据中心\n"
                 "2. 点击【重新测速】按钮\n"
                 "3. 等待测速完成后重试"
@@ -5784,7 +6092,7 @@ def get_verified_servers(
     except Exception as e:
         logger.error("获取服务器池缓存失败: %s", e)
         raise RuntimeError(
-            "服务器池缓存异常！请手动测速：\n"
+            f"{pool_type.upper()}服务器池缓存异常！请手动测速：\n"
             "1. 打开数据中心\n"
             "2. 点击【重新测速】按钮\n"
             "3. 等待测速完成后重试"
@@ -5796,14 +6104,21 @@ def get_verified_servers(
     if count is not None:
         servers = servers[:count]
 
-    logger.info("获取到%d个已测速服务器（随机排列=%s）", len(servers), shuffle)
+    logger.info("获取到%d个已测速%s服务器（随机排列=%s）", len(servers), pool_type.upper(), shuffle)
 
     return servers
 
 
-def get_random_servers(count: Optional[int] = None) -> List[Tuple[str, int]]:
-    """获取随机排列的服务器（快捷方式）"""
-    return get_verified_servers(count=count, shuffle=True)
+def get_random_servers(
+    count: Optional[int] = None, pool_type: str = "ipv4"
+) -> List[Tuple[str, int]]:
+    """获取随机排列的服务器（快捷方式）
+
+    Args:
+        count: 返回的服务器数量
+        pool_type: 池类型，"ipv4"或"ipv6"，默认"ipv4"
+    """
+    return get_verified_servers(count=count, shuffle=True, pool_type=pool_type)
 
 
 # -------------------- 服务器池测速任务 --------------------
@@ -6943,4 +7258,452 @@ __all__ = [
     "get_load_balancer",
     # 智能调优器
     "IntelligentAdaptiveTuner",
+    # 第10部分：进程池与连接管理
+    "DynamicProcessPool",
+    "ConnectionLifecycleManager",
 ]
+
+
+# ==============================================================================
+# 第11部分：进程池与连接管理（v3.7新增 - DynamicProcessPool + ConnectionLifecycleManager）
+# ==============================================================================
+
+
+# -------------------- 动态进程池管理器 --------------------
+
+
+class DynamicProcessPool:
+    """运行时动态增减进程的进程池管理器（v3.6集成）
+
+    核心功能：
+    1. 支持运行时增加进程（创建新worker并启动）
+    2. 支持运行时减少进程（优雅停止worker）
+    3. 所有worker从共享task_queue拉取任务
+    4. 支持独立的result_queue和metrics_queue
+
+    使用方式：
+    ```python
+    pool = DynamicProcessPool(
+        initial_processes=4,
+        worker_function=my_worker_process,
+        shared_queues={
+            'task_queue': task_queue,
+            'result_queue': result_queue,
+            'metrics_queue': metrics_queue,
+        },
+        worker_kwargs={'param1': value1, ...}
+    )
+
+    await pool.start()
+    await pool.adjust_processes(6)  # 动态调整
+    await pool.stop()
+    ```
+    """
+
+    def __init__(
+        self,
+        initial_processes: int,
+        worker_function: Callable,
+        shared_queues: Dict[str, Any],
+        worker_kwargs: Optional[Dict[str, Any]] = None,
+        logger: Optional[logging.Logger] = None,
+    ):
+        """初始化动态进程池
+
+        Args:
+            initial_processes: 初始进程数
+            worker_function: worker进程入口函数
+            shared_queues: 共享队列字典，必须包含：
+                - task_queue: 任务队列
+                - result_queue: 结果队列
+                - metrics_queue: 监控指标队列
+                可选：
+                - progress_queue: 进度队列
+                - config_queue: 配置队列
+            worker_kwargs: 传递给worker函数的其他参数
+            logger: 日志记录器
+        """
+        self.initial_processes = initial_processes
+        self.worker_function = worker_function
+        self.shared_queues = shared_queues
+        self.worker_kwargs = worker_kwargs or {}
+        self.logger = logger or logging.getLogger(__name__)
+
+        # 进程管理
+        self.processes: List[multiprocessing.Process] = []
+        self.next_worker_id = 0
+        self.stop_event: Optional[multiprocessing.Event] = None
+
+        # 验证必需的队列
+        required_queues = ["task_queue", "result_queue", "metrics_queue"]
+        for queue_name in required_queues:
+            if queue_name not in shared_queues:
+                raise ValueError(f"缺少必需的队列: {queue_name}")
+
+    async def start(self):
+        """启动初始进程池"""
+        self.logger.info("=" * 80)
+        self.logger.info(f"🚀 启动动态进程池: {self.initial_processes}个进程")
+        self.logger.info("=" * 80)
+
+        # 创建停止事件
+        ctx = multiprocessing.get_context("spawn")
+        self.stop_event = ctx.Event()
+
+        # 启动初始进程
+        for _ in range(self.initial_processes):
+            self._create_and_start_worker()
+
+        self.logger.info(f"✅ {len(self.processes)}个worker进程已启动")
+
+    def _create_and_start_worker(self) -> multiprocessing.Process:
+        """创建并启动一个新的worker进程"""
+        worker_id = self.next_worker_id
+        self.next_worker_id += 1
+
+        # 准备worker参数
+        worker_args = {
+            "worker_id": worker_id,
+            "stop_event": self.stop_event,
+            **self.shared_queues,
+            **self.worker_kwargs,
+        }
+
+        # 创建进程
+        p = multiprocessing.Process(
+            target=self.worker_function, kwargs=worker_args, name=f"Worker-{worker_id}"
+        )
+        p.start()
+        self.processes.append(p)
+
+        self.logger.info(f"✅ 创建新worker进程: Worker-{worker_id} (PID: {p.pid})")
+        return p
+
+    async def adjust_processes(self, target_count: int):
+        """动态调整进程数量
+
+        Args:
+            target_count: 目标进程数
+        """
+        current_count = len([p for p in self.processes if p.is_alive()])
+
+        if target_count == current_count:
+            return
+
+        if target_count > current_count:
+            # 增加进程
+            to_add = target_count - current_count
+            self.logger.info(f"📈 增加进程: {current_count} → {target_count} (+{to_add})")
+
+            for _ in range(to_add):
+                self._create_and_start_worker()
+                await asyncio.sleep(0.1)  # 短暂延迟，避免同时创建大量进程
+
+            self.logger.info(
+                f"✅ 进程增加完成，当前活跃进程: {len([p for p in self.processes if p.is_alive()])}"
+            )
+
+        elif target_count < current_count:
+            # 减少进程（优雅停止）
+            to_remove = current_count - target_count
+            self.logger.info(f"📉 减少进程: {current_count} → {target_count} (-{to_remove})")
+
+            alive_processes = [p for p in self.processes if p.is_alive()]
+            to_stop = alive_processes[target_count:]
+
+            # 记录待停止的进程
+            for p in to_stop:
+                self.logger.info(f"🔻 标记进程待停止: {p.name} (PID: {p.pid})")
+
+            # 保留前target_count个活跃进程
+            self.processes = alive_processes[:target_count]
+
+            self.logger.info(f"✅ 进程减少标记完成，保留进程数: {len(self.processes)}")
+            self.logger.info("   注意：被移除的进程将在完成当前任务后自然退出")
+
+    def get_active_process_count(self) -> int:
+        """获取当前活跃进程数"""
+        return len([p for p in self.processes if p.is_alive()])
+
+    async def stop(self, timeout: float = 5.0):
+        """停止所有进程
+
+        Args:
+            timeout: 等待进程结束的超时时间（秒）
+        """
+        self.logger.info("=" * 80)
+        self.logger.info("🛑 停止动态进程池")
+        self.logger.info("=" * 80)
+
+        # 设置停止事件
+        if self.stop_event:
+            self.stop_event.set()
+
+        # 等待所有进程结束
+        alive_count = len([p for p in self.processes if p.is_alive()])
+        self.logger.info(f"等待{alive_count}个进程结束（超时{timeout}秒）...")
+
+        for p in self.processes:
+            if p.is_alive():
+                p.join(timeout=timeout / len(self.processes))
+                if p.is_alive():
+                    self.logger.warning(f"⚠️ 进程{p.name}未能在超时内结束，强制终止")
+                    p.terminate()
+                    p.join(timeout=1.0)
+
+        self.logger.info("✅ 所有进程已停止")
+
+    def get_status(self) -> Dict[str, Any]:
+        """获取进程池状态"""
+        alive_processes = [p for p in self.processes if p.is_alive()]
+        return {
+            "total_processes": len(self.processes),
+            "alive_processes": len(alive_processes),
+            "dead_processes": len(self.processes) - len(alive_processes),
+            "next_worker_id": self.next_worker_id,
+            "process_pids": [p.pid for p in alive_processes],
+        }
+
+
+# -------------------- 连接生命周期管理器 --------------------
+
+
+class ConnectionLifecycleManager:
+    """连接生命周期管理器（v3.7新增）
+
+    提供标准化的连接创建、健康检查、清理流程，
+    供所有worker函数使用，确保资源正确管理，
+    彻底解决 socket.send() raised exception 问题。
+
+    核心功能：
+    1. 批量创建连接（带超时和健康检查）
+    2. 批量关闭连接（带超时和详细统计）
+    3. 连接健康检查
+    4. 统一的错误处理和日志记录
+
+    设计原则：
+    - 不维护连接池（因为asyncio连接无法跨进程共享）
+    - 提供工具方法（由worker在进程内调用）
+    - 确保资源一定被释放
+
+    使用方式：
+    ```python
+    # 在worker函数内部
+    conn_manager = ConnectionLifecycleManager(worker_id, logger)
+
+    try:
+        # 创建连接
+        connections = await conn_manager.create_connections(
+            servers=server_list,
+            timeout=5.0,
+            health_check=True
+        )
+
+        # 使用连接进行业务逻辑
+        # ...
+
+    finally:
+        # 确保连接被关闭
+        stats = await conn_manager.close_all_connections(timeout=3.0)
+    ```
+    """
+
+    def __init__(self, worker_id: int, logger: Optional[logging.Logger] = None):
+        """初始化连接生命周期管理器
+
+        Args:
+            worker_id: Worker进程ID（用于日志）
+            logger: 日志记录器
+        """
+        self.worker_id = worker_id
+        self.logger = logger or logging.getLogger(__name__)
+        self.created_connections: List[AsyncTdxHq_API] = []
+
+    async def create_connections(
+        self,
+        servers: List[Tuple[str, int]],
+        timeout: float = 5.0,
+        health_check: bool = True,
+        health_check_timeout: float = 2.0,
+    ) -> List[AsyncTdxHq_API]:
+        """批量创建连接（带健康检查）
+
+        Args:
+            servers: 服务器列表 [(ip, port), ...]
+            timeout: 连接超时时间
+            health_check: 是否进行健康检查
+            health_check_timeout: 健康检查超时时间
+
+        Returns:
+            成功创建的连接列表
+        """
+        self.logger.info(f"Worker {self.worker_id} 开始创建 {len(servers)} 个连接...")
+
+        async def create_single_connection(server: Tuple[str, int]) -> Optional[AsyncTdxHq_API]:
+            """创建单个连接（带健康检查）"""
+            try:
+                # 创建连接（带超时）
+                client = await asyncio.wait_for(
+                    AsyncTdxHq_API.factory(server, timeout=timeout), timeout=timeout + 2
+                )
+
+                if not client:
+                    return None
+
+                # 健康检查（可选）
+                if health_check:
+                    try:
+                        # 发送一个轻量级请求测试连接
+                        test_result = await asyncio.wait_for(
+                            client.get_finance_info(1, "600000"), timeout=health_check_timeout
+                        )
+
+                        if test_result is None:
+                            # 连接虽然建立但返回无效数据
+                            self.logger.debug(
+                                f"Worker {self.worker_id} 连接 {server} "
+                                f"健康检查失败（返回None）"
+                            )
+                            await asyncio.wait_for(client.close(), timeout=2.0)
+                            return None
+
+                        return client
+
+                    except asyncio.TimeoutError:
+                        self.logger.debug(f"Worker {self.worker_id} 连接 {server} " f"健康检查超时")
+                        await asyncio.wait_for(client.close(), timeout=2.0)
+                        return None
+                    except Exception as e:
+                        self.logger.debug(
+                            f"Worker {self.worker_id} 连接 {server} "
+                            f"健康检查失败: {type(e).__name__}"
+                        )
+                        await asyncio.wait_for(client.close(), timeout=2.0)
+                        return None
+                else:
+                    return client
+
+            except asyncio.TimeoutError:
+                self.logger.debug(f"Worker {self.worker_id} 连接 {server} 创建超时")
+                return None
+            except Exception as e:
+                self.logger.debug(
+                    f"Worker {self.worker_id} 连接 {server} 创建失败: " f"{type(e).__name__}: {e}"
+                )
+                return None
+
+        # 并发创建所有连接
+        connection_results = await asyncio.gather(
+            *[create_single_connection(server) for server in servers], return_exceptions=True
+        )
+
+        # 过滤出成功的连接
+        connections: List[AsyncTdxHq_API] = []
+        for result in connection_results:
+            if result and not isinstance(result, Exception):
+                connections.append(result)
+                self.created_connections.append(result)
+
+        success_rate = len(connections) / len(servers) * 100 if servers else 0
+        self.logger.info(
+            f"Worker {self.worker_id} 连接创建完成: "
+            f"{len(connections)}/{len(servers)} ({success_rate:.1f}%)"
+        )
+
+        if len(connections) == 0:
+            self.logger.error(f"Worker {self.worker_id} ❌ 所有连接创建失败！")
+        elif success_rate < 50:
+            self.logger.warning(
+                f"Worker {self.worker_id} ⚠️ 连接成功率低于50%，" f"可能存在网络问题"
+            )
+
+        return connections
+
+    async def close_all_connections(self, timeout: float = 3.0) -> Dict[str, Any]:
+        """关闭所有已创建的连接（带超时和统计）
+
+        Args:
+            timeout: 单个连接关闭的超时时间
+
+        Returns:
+            关闭统计信息 {"success": int, "timeout": int, "error": int}
+        """
+        if not self.created_connections:
+            self.logger.debug(f"Worker {self.worker_id} 无需关闭连接")
+            return {"success": 0, "timeout": 0, "error": 0}
+
+        self.logger.info(
+            f"Worker {self.worker_id} 开始关闭 {len(self.created_connections)} 个连接..."
+        )
+
+        async def close_single_connection(
+            conn: AsyncTdxHq_API, index: int
+        ) -> Tuple[int, str, Optional[str]]:
+            """关闭单个连接（带超时和错误记录）
+
+            Returns:
+                (索引, 状态, 错误信息)
+            """
+            try:
+                await asyncio.wait_for(conn.close(), timeout=timeout)
+                return (index, "success", None)
+            except asyncio.TimeoutError:
+                return (index, "timeout", f"close timeout after {timeout}s")
+            except Exception as e:
+                return (index, "error", f"{type(e).__name__}: {e}")
+
+        # 并发关闭所有连接
+        close_results = await asyncio.gather(
+            *[close_single_connection(conn, i) for i, conn in enumerate(self.created_connections)],
+            return_exceptions=True,
+        )
+
+        # 统计结果
+        stats = {"success": 0, "timeout": 0, "error": 0}
+        timeout_indices = []
+        error_details = []
+
+        for result in close_results:
+            if isinstance(result, Exception):
+                stats["error"] += 1
+                error_details.append(f"unexpected: {result}")
+            else:
+                index, status, error = result
+                stats[status] += 1
+                if status == "timeout":
+                    timeout_indices.append(index)
+                elif status == "error":
+                    error_details.append(f"conn#{index}: {error}")
+
+        # 记录详细日志
+        if stats["success"] == len(self.created_connections):
+            self.logger.info(
+                f"Worker {self.worker_id} ✅ 所有 {stats['success']} " f"个连接已安全关闭"
+            )
+        else:
+            self.logger.warning(
+                f"Worker {self.worker_id} 连接关闭完成: "
+                f"成功{stats['success']}/{len(self.created_connections)}, "
+                f"超时{stats['timeout']}, "
+                f"错误{stats['error']}"
+            )
+
+            if timeout_indices:
+                shown = timeout_indices[:5]
+                more = len(timeout_indices) - 5
+                self.logger.warning(
+                    f"  超时连接索引: {shown}" + (f" ...({more}个更多)" if more > 0 else "")
+                )
+
+            if error_details:
+                shown = error_details[:5]
+                more = len(error_details) - 5
+                for detail in shown:
+                    self.logger.warning(f"  错误: {detail}")
+                if more > 0:
+                    self.logger.warning(f"  ...还有{more}个错误")
+
+        # 清空连接列表
+        self.created_connections.clear()
+
+        return stats

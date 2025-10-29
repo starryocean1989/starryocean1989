@@ -39,7 +39,27 @@
         "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         "file_path": "logs/backend.log",
         "max_file_size": 10485760,
-        "backup_count": 5
+        "backup_count": 5,
+        "terminal_mode": "normal",
+        "console_enabled_types": [
+            "DEBUG",
+            "STAGE_NODE",
+            "NOTIFICATION",
+            "ALERT",
+            "USER_FEEDBACK"
+        ],
+        "debug_modules": [],
+        "exception_detail_level": "full",
+        "progress_summary_only": true,
+        "file_log_level": "DEBUG",
+        "database_log_level": "WARNING",
+        "console_log_level": "INFO",
+        "replay_targets": [
+            "file",
+            "database",
+            "ai_log"
+        ],
+        "replay_targets_comment": "重放目标选项: console, file, database, ai_log, event"
     },
     "ai": {
         "provider": "deepseek",

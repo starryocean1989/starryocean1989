@@ -573,48 +573,6 @@ class UnifiedMonitorCard(QWidget):
             self.bandwidth_detail_label.setText("带宽未测试")
 
 
-class CPUMonitorCard(VerticalThresholdHeatmap):
-    """CPU监控卡片（第一行第一列）- 已废弃，使用UnifiedMonitorCard."""
-
-    def __init__(self, parent: Optional[QWidget] = None):
-        """初始化CPU监控卡片."""
-        metrics = [
-            {
-                "key": "cpu_usage",
-                "label": "使用率",
-                "unit": "%",
-                "warning": 80,
-                "critical": 90,
-                "max_value": 100,
-            },
-            {
-                "key": "context_switches",
-                "label": "上下文切换",
-                "unit": "K/s",
-                "warning": 50,
-                "critical": 100,
-                "max_value": 150,
-            },
-            {
-                "key": "temperature",
-                "label": "温度",
-                "unit": "°C",
-                "warning": 70,
-                "critical": 85,
-                "max_value": 100,
-            },
-            {
-                "key": "freq_ratio",
-                "label": "频率比",
-                "unit": "%",
-                "warning": 0,
-                "critical": 0,
-                "max_value": 100,
-            },
-        ]
-        super().__init__("🖥️ CPU监控", metrics, parent)
-
-
 class NetworkMonitorCard(VerticalThresholdHeatmap):
     """网络监控卡片（第一行第二列）.
 
@@ -1031,10 +989,6 @@ class DiskMonitorCard(QWidget):
 
                 # 更新卡片数据
                 self.disk_cards[disk_name].update_data(attrs)
-
-    def _create_single_disk_card(self, disk_name: str, attrs: Dict[str, Any]) -> QWidget:
-        """创建单个硬盘卡片（已废弃，使用SingleDiskCard类）."""
-        return SingleDiskCard(disk_name, parent=self)
 
 
 class AlertManagerWidget(QWidget):

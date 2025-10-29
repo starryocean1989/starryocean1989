@@ -29,6 +29,17 @@ EVENT_QUALITY_METRIC_UPDATE = "eQualityMetricUpdate"  # 单个指标更新事件
 # 🆕 协程性能监控事件
 EVENT_ASYNCIO_METRICS = "eAsyncioMetrics"  # 协程性能指标事件
 
+# 🆕 新增事件类型（8步流程改造）
+EVENT_DATA_METRICS_UPDATED = "eDataMetricsUpdated"  # 数据指标更新事件
+EVENT_INVALID_SYMBOLS_UPDATED = "eInvalidSymbolsUpdated"  # 失效品种更新事件
+EVENT_FILE_WATCHER_STARTED = "eFileWatcherStarted"  # 文件监控启动事件
+EVENT_DATA_SCAN_FINISHED = "eDataScanFinished"  # 数据扫描完成事件
+
+# 8步验证流程事件
+EVENT_SYMBOL_CACHE_LOADED = "eSymbolCacheLoaded"  # 品种列表缓存加载完成
+EVENT_IPO_CACHE_UPDATED = "eIPOCacheUpdated"  # IPO缓存更新完成
+EVENT_VALIDATION_COMPLETED = "eValidationCompleted"  # 8步验证流程完成
+
 # 应用名称
 APP_NAME = "ChinaStock"
 
@@ -350,6 +361,10 @@ __all__ = [
     "EVENT_QUALITY_SCAN_PHASE",
     "EVENT_QUALITY_METRIC_UPDATE",
     "EVENT_ASYNCIO_METRICS",
+    "EVENT_DATA_METRICS_UPDATED",
+    "EVENT_INVALID_SYMBOLS_UPDATED",
+    "EVENT_FILE_WATCHER_STARTED",
+    "EVENT_DATA_SCAN_FINISHED",
     # 应用名称
     "APP_NAME",
     # 事件发布器

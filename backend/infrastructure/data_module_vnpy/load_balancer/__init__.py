@@ -173,10 +173,10 @@ from .load_balancer import (
     get_load_balancer,
     # ========== 智能调优器 ==========
     IntelligentAdaptiveTuner,
+    # v3.7新增：进程池与连接管理（已集成到load_balancer.py）
+    DynamicProcessPool,
+    ConnectionLifecycleManager,
 )
-
-# ========== v3.6新增：动态进程池管理器 ==========
-from .dynamic_process_pool import DynamicProcessPool
 
 __all__ = [
     # ========== 第1部分：任务定义 ==========
@@ -224,6 +224,7 @@ __all__ = [
     "get_process_pool",
     "get_adaptive_batch_calculator",
     "DynamicProcessPool",
+    "ConnectionLifecycleManager",
     # ========== 第5部分：队列系统 ==========
     "TaskPriority",
     "TaskStatus",

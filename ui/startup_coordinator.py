@@ -1,9 +1,16 @@
 # -*- coding: utf-8 -*-
 """启动协调器 - 管理应用启动顺序."""
 
+import atexit
+import json
 import logging
 import os
+import subprocess
+import sys
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import QObject, QThread, Signal, Qt, QTimer
@@ -28,8 +35,21 @@ class BackendInitializerWorker(QObject):
         # ✅ 使用标准logger命名，依赖LoggingHub进行统一管理
         self.logger = logging.getLogger("ui.startup.worker")
 
+        # 监控进程管理
+        self.monitor_process_handle = None
+        self.monitor_file_handles = []
+        self.watchdog_running = False
+        self.watchdog_thread = None
+
+        # 项目根目录
+        self.project_root = Path(__file__).parent.parent
+
     def run(self):
-        """运行后端初始化.
+        """运行后端初始化（并行优化版）.
+
+        并行启动两个任务：
+        1. 异步线程A：启动监控进程（1-2秒）
+        2. 主任务：执行六阶段服务初始化（0.3秒，内部串行）
 
         六阶段初始化流程：
         1. VNPY核心（EventEngine, MainEngine）
@@ -41,7 +61,7 @@ class BackendInitializerWorker(QObject):
         """
         try:
             self.logger.info("=" * 70)
-            self.logger.info("[BACKEND-INIT] 🔧 后端初始化工作线程启动")
+            self.logger.info("[BACKEND-INIT] 🔧 后端初始化工作线程启动（并行优化版）")
             self.logger.info("=" * 70)
             self.logger.info("[BACKEND-INIT] 线程ID: %s", threading.current_thread().ident)
             self.logger.info("[BACKEND-INIT] 线程名: %s", threading.current_thread().name)
@@ -78,11 +98,15 @@ class BackendInitializerWorker(QObject):
                 self.logger.info("[BACKEND-INIT] 收到中断请求，停止初始化")
                 return
 
-            self.progress_updated.emit("正在启动后端服务...", 10)
+            self.progress_updated.emit("正在启动后端服务（并行优化）...", 10)
 
-            # 执行初始化
-            self.logger.info("[BACKEND-INIT] 开始执行六阶段后端服务初始化...")
-            self.logger.info("[BACKEND-INIT] ⚠️ 注意：此过程中不应创建任何Qt GUI对象")
+            # ==================== 并行执行优化 ====================
+            self.logger.info("=" * 70)
+            self.logger.info("[BACKEND-INIT] 开始并行启动：监控进程 + 六阶段服务初始化")
+            self.logger.info("=" * 70)
+
+            monitor_result = None
+            service_result = None
 
             # 创建进度回调函数
             def progress_callback(message: str, progress: int):
@@ -90,31 +114,60 @@ class BackendInitializerWorker(QObject):
                 self.logger.info("[BACKEND-INIT] [进度 %d%%] %s", progress, message)
                 self.progress_updated.emit(message, progress)
 
-            # 执行初始化（传入回调）
-            result = initialize_services(progress_callback=progress_callback)
+            # 使用ThreadPoolExecutor并行执行
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                # 提交监控进程启动任务
+                self.logger.info("[BACKEND-INIT] 提交任务1: 启动监控进程（异步）")
+                monitor_future = executor.submit(self._start_monitor_process)
 
-            self.logger.info("[BACKEND-INIT] ✅ initialize_services() 执行完成")
+                # 主线程执行六阶段服务初始化
+                self.logger.info("[BACKEND-INIT] 执行任务2: 六阶段服务初始化（串行）")
+                service_result = initialize_services(progress_callback=progress_callback)
+                self.logger.info("[BACKEND-INIT] ✅ 六阶段服务初始化完成")
+
+                # 等待监控进程完成（非阻塞，超时保护）
+                # 超时设置为20秒（略大于_wait_monitor_ready的15秒max_wait）
+                # 正常情况下2-3秒完成，20秒已非常宽松
+                self.logger.info("[BACKEND-INIT] 等待监控进程启动完成...")
+                try:
+                    monitor_result = monitor_future.result(timeout=20)
+                    self.logger.info(
+                        "[BACKEND-INIT] ✅ 监控进程启动成功（PID: %d, 耗时: %.2fs）",
+                        monitor_result["pid"],
+                        monitor_result["elapsed"],
+                    )
+                except Exception as e:
+                    # 监控进程失败，抛出异常（不降级）
+                    error_msg = f"监控进程启动失败: {str(e)}"
+                    self.logger.error("[BACKEND-INIT] ❌ %s", error_msg)
+                    raise RuntimeError(error_msg)
+
+            self.logger.info("=" * 70)
+            self.logger.info("[BACKEND-INIT] 并行任务全部完成")
+            self.logger.info("=" * 70)
 
             # 最后检查中断请求
             if self.thread() and self.thread().isInterruptionRequested():
                 self.logger.info("[BACKEND-INIT] 收到中断请求，停止初始化")
                 return
 
-            success = result.get("success", False)
+            success = service_result.get("success", False)
 
             if success:
                 self.progress_updated.emit("后端服务初始化完成", 100)
                 self.logger.info("=" * 70)
                 self.logger.info("[BACKEND-INIT] ✅ 后端服务初始化成功")
                 self.logger.info("=" * 70)
-                self.initialization_completed.emit(True, result)
+                # 将监控进程信息添加到结果中
+                service_result["monitor_process"] = monitor_result
+                self.initialization_completed.emit(True, service_result)
             else:
-                error_msg = result.get("message", "未知错误")
+                error_msg = service_result.get("message", "未知错误")
                 self.progress_updated.emit(f"初始化失败: {error_msg}", 100)
                 self.logger.error("=" * 70)
                 self.logger.error("[BACKEND-INIT] ❌ 后端服务初始化失败: %s", error_msg)
                 self.logger.error("=" * 70)
-                self.initialization_completed.emit(False, result)
+                self.initialization_completed.emit(False, service_result)
 
         except Exception as e:
             error_msg = f"后端初始化异常: {str(e)}"
@@ -124,6 +177,331 @@ class BackendInitializerWorker(QObject):
             self.logger.exception("后端初始化异常: %s", e)
             self.error_occurred.emit(error_msg)
             self.initialization_completed.emit(False, {"success": False, "message": error_msg})
+
+    def _start_monitor_process(self):
+        """启动监控进程（并行任务）.
+
+        从start_async_fixed.py移植的监控进程启动逻辑。
+        注意：监控进程是关键组件，失败将抛出异常而非降级运行。
+
+        Returns:
+            dict: 监控进程信息 {"pid": int, "ports": dict}
+
+        Raises:
+            RuntimeError: 监控进程启动失败
+        """
+        start_time = time.time()
+        self.logger.info("=" * 60)
+        self.logger.info("[MONITOR-PROCESS] 启动监控进程...")
+        self.logger.info("=" * 60)
+
+        monitor_script = (
+            self.project_root
+            / "backend"
+            / "infrastructure"
+            / "system_vnpy"
+            / "monitor_process_entry.py"
+        )
+
+        # 准备日志文件
+        log_dir = self.project_root / "logs"
+        log_dir.mkdir(exist_ok=True)
+
+        monitor_stdout_file = open(log_dir / "monitor_stdout.log", "w", encoding="utf-8")
+        monitor_stderr_file = open(log_dir / "monitor_stderr.log", "w", encoding="utf-8")
+        self.monitor_file_handles = [monitor_stdout_file, monitor_stderr_file]
+
+        # 启动监控进程（指定工作目录为项目根目录）
+        self.monitor_process_handle = subprocess.Popen(
+            [sys.executable, str(monitor_script)],
+            stdout=monitor_stdout_file,
+            stderr=monitor_stderr_file,
+            cwd=str(self.project_root),  # 确保监控进程在项目根目录工作
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        )
+
+        self.logger.info("[MONITOR-PROCESS] 进程已启动（PID: %d）", self.monitor_process_handle.pid)
+
+        # 注册清理函数
+        atexit.register(self.cleanup_monitor)
+
+        # 启动看门狗线程
+        self._start_watchdog()
+
+        # 等待监控进程就绪
+        # 正常2-3秒，设置15秒超时（已非常宽松）
+        ports_info = self._wait_monitor_ready(max_wait=15.0)
+
+        elapsed = time.time() - start_time
+        self.logger.info("=" * 60)
+        self.logger.info("[MONITOR-PROCESS] ✅ 监控进程启动完成，耗时: %.2fs", elapsed)
+        self.logger.info("=" * 60)
+
+        return {"pid": self.monitor_process_handle.pid, "ports": ports_info, "elapsed": elapsed}
+
+    def _start_watchdog(self):
+        """启动监控进程看门狗线程（自动重启崩溃的监控进程）."""
+        self.watchdog_running = True
+
+        def monitor_watchdog():
+            self.logger.info("[WATCHDOG] 监控进程看门狗线程已启动")
+            restart_count = 0
+            max_restarts_per_minute = 3
+            restart_timestamps = []
+
+            while self.watchdog_running:
+                try:
+                    if (
+                        self.monitor_process_handle
+                        and self.monitor_process_handle.poll() is not None
+                    ):
+                        exit_code = self.monitor_process_handle.returncode
+                        self.logger.warning(
+                            "[WATCHDOG] 监控进程已退出（退出码: %d），准备重启...", exit_code
+                        )
+
+                        # 检查重启频率
+                        current_time = time.time()
+                        restart_timestamps = [
+                            t for t in restart_timestamps if current_time - t < 60
+                        ]
+
+                        if len(restart_timestamps) >= max_restarts_per_minute:
+                            self.logger.error(
+                                "[WATCHDOG] ❌ 监控进程在1分钟内重启了%d次，超过限制，停止重启",
+                                max_restarts_per_minute,
+                            )
+                            break
+
+                        restart_timestamps.append(current_time)
+                        restart_count += 1
+
+                        # 清理旧进程
+                        self.logger.info("[WATCHDOG] 清理旧进程...")
+                        if self.monitor_process_handle.poll() is None:
+                            self.monitor_process_handle.kill()
+                            try:
+                                self.monitor_process_handle.wait(timeout=2)
+                            except Exception as e:
+                                self.logger.error("[WATCHDOG] 强制终止旧进程失败: %s", e)
+
+                        # 关闭旧文件句柄
+                        for f in self.monitor_file_handles:
+                            try:
+                                if f:
+                                    f.close()
+                            except Exception:
+                                pass
+
+                        # 等待端口释放
+                        self.logger.info("[WATCHDOG] 等待10秒确保ZMQ端口完全释放...")
+                        time.sleep(10)
+
+                        # 重启监控进程
+                        self.logger.info(
+                            "[WATCHDOG] 启动新的监控进程（第%d次重启）...", restart_count
+                        )
+                        try:
+                            log_dir = self.project_root / "logs"
+                            stdout_file = open(
+                                log_dir / "monitor_stdout.log", "a", encoding="utf-8"
+                            )
+                            stderr_file = open(
+                                log_dir / "monitor_stderr.log", "a", encoding="utf-8"
+                            )
+                            self.monitor_file_handles = [stdout_file, stderr_file]
+
+                            monitor_script = (
+                                self.project_root
+                                / "backend"
+                                / "infrastructure"
+                                / "system_vnpy"
+                                / "monitor_process_entry.py"
+                            )
+
+                            self.monitor_process_handle = subprocess.Popen(
+                                [sys.executable, str(monitor_script)],
+                                stdout=stdout_file,
+                                stderr=stderr_file,
+                                cwd=str(self.project_root),  # 确保工作目录正确
+                                creationflags=(
+                                    subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+                                ),
+                            )
+                            self.logger.info(
+                                "[WATCHDOG] ✅ 监控进程已重启（PID: %d）",
+                                self.monitor_process_handle.pid,
+                            )
+
+                            time.sleep(2)
+
+                            if self.monitor_process_handle.poll() is not None:
+                                self.logger.error(
+                                    "[WATCHDOG] ❌ 新进程启动后立即退出（退出码: %d）",
+                                    self.monitor_process_handle.returncode,
+                                )
+                            else:
+                                self.logger.info("[WATCHDOG] ✅ 新进程运行正常")
+                        except Exception as e:
+                            self.logger.exception("[WATCHDOG] ❌ 重启监控进程失败: %s", e)
+
+                    time.sleep(3)
+
+                except Exception as e:
+                    self.logger.error("[WATCHDOG] 看门狗线程异常: %s", e)
+                    time.sleep(5)
+
+            self.logger.info("[WATCHDOG] 监控进程看门狗线程已停止")
+
+        self.watchdog_thread = threading.Thread(
+            target=monitor_watchdog, name="MonitorWatchdog", daemon=True
+        )
+        self.watchdog_thread.start()
+
+    def _wait_monitor_ready(self, max_wait=60.0):
+        """等待监控进程就绪信号.
+
+        Args:
+            max_wait: 最大等待时间（秒）
+
+        Returns:
+            dict: 端口信息
+
+        Raises:
+            RuntimeError: 超时或进程异常退出
+        """
+        signal_file = self.project_root / "logs" / "monitor_ready.signal"
+
+        # 清理旧信号文件
+        if signal_file.exists():
+            try:
+                signal_file.unlink()
+                self.logger.debug("[MONITOR-PROCESS] 已清理旧的就绪信号文件")
+            except Exception as e:
+                self.logger.debug("[MONITOR-PROCESS] 清理信号文件失败: %s", e)
+
+        wait_start = time.time()
+        ports_ready = False
+        ports = {}
+
+        while (time.time() - wait_start) < max_wait:
+            # 检查进程是否存活
+            if self.monitor_process_handle and self.monitor_process_handle.poll() is not None:
+                error_msg = f"监控进程异常退出（退出码: {self.monitor_process_handle.returncode}）"
+                self.logger.error("[MONITOR-PROCESS] ❌ %s", error_msg)
+                raise RuntimeError(error_msg)
+
+            # 检查就绪信号文件
+            if signal_file.exists():
+                try:
+                    with open(signal_file, "r", encoding="utf-8") as f:
+                        signal_data = json.load(f)
+
+                    signal_pid = signal_data.get("pid")
+                    if signal_pid:
+                        try:
+                            import psutil
+
+                            if not psutil.pid_exists(signal_pid):
+                                time.sleep(0.1)
+                                continue
+                        except ImportError:
+                            pass
+
+                    status = signal_data.get("status")
+                    level = signal_data.get("level", 1)
+
+                    if status == "initializing":
+                        time.sleep(0.1)
+                        continue
+                    elif status in ["ports_ready", "fully_ready"] and level >= 1:
+                        ports = signal_data.get("ports", {})
+                        elapsed = time.time() - wait_start
+
+                        if not all(
+                            ports.get(k) for k in ["alert_push", "status_pull", "query_rep"]
+                        ):
+                            time.sleep(0.1)
+                            continue
+
+                        self.logger.info(
+                            "[MONITOR-PROCESS] 监控进程端口就绪（PID: %d, 端口: %d/%d/%d，耗时: %.1fs）",
+                            signal_pid,
+                            ports.get("alert_push", 0),
+                            ports.get("status_pull", 0),
+                            ports.get("query_rep", 0),
+                            elapsed,
+                        )
+
+                        # 设置环境变量供SystemManagerService使用
+                        os.environ["MONITOR_READY"] = "1"
+                        os.environ["MONITOR_ALERT_PUSH"] = str(ports.get("alert_push", 5555))
+                        os.environ["MONITOR_STATUS_PULL"] = str(ports.get("status_pull", 5556))
+                        os.environ["MONITOR_QUERY_REP"] = str(ports.get("query_rep", 5557))
+                        os.environ["MONITOR_PROCESS_PID"] = str(signal_pid)
+
+                        ports_ready = True
+                        break
+
+                except (json.JSONDecodeError, IOError) as e:
+                    self.logger.debug("[MONITOR-PROCESS] 读取就绪信号失败（重试中）: %s", e)
+                    time.sleep(0.1)
+                    continue
+
+            time.sleep(0.2)
+
+        if not ports_ready:
+            error_msg = (
+                f"监控进程启动失败（超时{max_wait}s）\\n"
+                f"可能原因：\\n"
+                f"1. 端口被占用（5555/5556/5557）\\n"
+                f"2. 监控进程崩溃（查看logs/monitor_stderr.log）\\n"
+                f"3. 权限不足（需要管理员权限）"
+            )
+            self.logger.error("[MONITOR-PROCESS] ❌ %s", error_msg)
+            raise RuntimeError(f"监控进程启动失败: {error_msg}")
+
+        return ports
+
+    def cleanup_monitor(self):
+        """清理监控进程（主进程退出时调用）."""
+        self.watchdog_running = False
+        self.logger.info("[CLEANUP] 开始清理监控进程...")
+
+        if self.monitor_process_handle:
+            if self.monitor_process_handle.poll() is None:
+                self.logger.info("[CLEANUP] 发送SIGTERM信号...")
+                self.monitor_process_handle.terminate()
+                try:
+                    self.monitor_process_handle.wait(timeout=3)
+                    self.logger.info("[CLEANUP] ✅ 监控进程已正常退出")
+                except subprocess.TimeoutExpired:
+                    self.logger.warning("[CLEANUP] 监控进程未响应，强制终止...")
+                    self.monitor_process_handle.kill()
+                    try:
+                        self.monitor_process_handle.wait(timeout=2)
+                        self.logger.info("[CLEANUP] ✅ 监控进程已强制终止")
+                    except Exception as e:
+                        self.logger.error("[CLEANUP] ❌ 强制终止失败: %s", e)
+            else:
+                self.logger.info(
+                    "[CLEANUP] 监控进程已退出（退出码: %d）",
+                    self.monitor_process_handle.returncode,
+                )
+
+        # 等待端口释放
+        self.logger.info("[CLEANUP] 等待5秒确保端口释放...")
+        time.sleep(5)
+
+        # 关闭文件句柄
+        for f in self.monitor_file_handles:
+            try:
+                if f:
+                    f.close()
+            except Exception:
+                pass
+
+        self.logger.info("[CLEANUP] ✅ 监控进程清理完成")
 
 
 class StartupCoordinator(QObject):
@@ -137,8 +515,9 @@ class StartupCoordinator(QObject):
     """
 
     # 信号定义
-    startup_completed = Signal()  # 启动完成
+    startup_completed = Signal()  # 启动完成（旧版，兼容保留）
     startup_failed = Signal(str)  # 启动失败
+    initialization_completed = Signal(bool, dict)  # 后端初始化完成（新增，用于触发validation）
 
     def __init__(self, app: QApplication, config_already_initialized: bool = False):
         """初始化启动协调器.
@@ -278,6 +657,9 @@ class StartupCoordinator(QObject):
         self.backend_worker.progress_updated.connect(self._on_backend_progress)
         self.backend_worker.initialization_completed.connect(self._on_backend_completed)
         self.backend_worker.error_occurred.connect(self._on_backend_error)
+
+        # 🆕 转发initialization_completed信号（用于触发validation）
+        self.backend_worker.initialization_completed.connect(self.initialization_completed)
 
         # 安全清理机制
         self.backend_worker.initialization_completed.connect(self._safe_cleanup_thread)

@@ -24,6 +24,10 @@ def setup_environment():
     """
     start_time = time.time()
 
+    # 禁用Python字节码缓存，确保总是使用最新代码
+    os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+    sys.dont_write_bytecode = True
+
     # 设置项目路径
     project_root = Path(__file__).parent
     if str(project_root) not in sys.path:
@@ -47,8 +51,13 @@ def setup_environment():
 
 
 def setup_logging():
-    """设置日志系统（仅Terminal输出，数据库日志自动记录）."""
+    """设置日志系统 - 使用MemoryHandler缓冲.
+
+    Returns:
+        tuple: (logger, memory_handler) - 启动logger和MemoryHandler实例
+    """
     import sys
+    from logging.handlers import MemoryHandler
 
     # 🔧 修复编码问题：确保stdout/stderr使用UTF-8编码
     if hasattr(sys.stdout, "reconfigure"):
@@ -56,26 +65,170 @@ def setup_logging():
     if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(encoding="utf-8")  # type: ignore
 
-    # 🔧 关键修复：配置root logger，让所有logger都有输出
+    # 🔧 配置root logger
     root_logger = logging.getLogger()
-    root_logger.setLevel(logging.INFO)
+    root_logger.setLevel(logging.DEBUG)  # 接收所有级别的日志
 
-    # 如果root logger还没有handler，添加控制台handler
-    if not root_logger.handlers:
-        console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setLevel(logging.INFO)
-        console_formatter = logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-        )
-        console_handler.setFormatter(console_formatter)
-        root_logger.addHandler(console_handler)
+    # 创建MemoryHandler作为临时缓冲（容量10000条）
+    # target先设为None，LoggingHub初始化后再设置
+    memory_handler = MemoryHandler(capacity=10000, target=None)
+    memory_handler.setLevel(logging.DEBUG)
+    root_logger.addHandler(memory_handler)
 
-    # 返回StartupOptimized专用logger
+    # 返回logger和memory_handler供后续使用
     from backend.core.base import setup_logging as base_setup_logging
 
     logger = base_setup_logging(name="StartupOptimized", level="INFO")
-    logger.propagate = False  # 关键：阻止传播到root logger，避免重复输出
-    return logger
+
+    # ✅ 关键修复：移除logger自己的handlers，避免绕过LoggingHub
+    # base_setup_logging会给logger添加StreamHandler，导致日志直接输出到stdout
+    # 我们需要所有日志都通过LoggingHub统一路由
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+        handler.close()
+
+    # ✅ 设置propagate=True，让日志传播到root logger，经过LoggingHub处理
+    logger.propagate = True
+
+    return logger, memory_handler
+
+
+def cleanup_all_logger_handlers():
+    """清理所有logger的handlers，确保所有日志都经过LoggingHub.
+
+    这个函数会：
+    1. 移除所有logger的StreamHandler（避免绕过LoggingHub直接输出）
+    2. 设置所有logger的propagate=True（让日志传播到root logger）
+    """
+    import logging
+
+    # 获取所有已创建的logger
+    # 使用getattr避免linter错误，loggerDict是标准的logging API
+    logger_dict = getattr(logging.root.manager, "loggerDict", {})
+    all_loggers = [logging.getLogger(name) for name in logger_dict]
+    all_loggers.append(logging.root)
+
+    cleaned_count = 0
+
+    for lgr in all_loggers:
+        # 跳过root logger（它应该只有LoggingHub和MemoryHandler）
+        if lgr == logging.root:
+            continue
+
+        # 移除所有StreamHandler（这些会直接输出到stdout，绕过LoggingHub）
+        handlers_to_remove = []
+        for handler in lgr.handlers[:]:
+            if isinstance(handler, logging.StreamHandler):
+                handlers_to_remove.append(handler)
+
+        for handler in handlers_to_remove:
+            lgr.removeHandler(handler)
+            handler.close()
+            cleaned_count += 1
+
+        # 设置propagate=True，让日志传播到root logger
+        if not lgr.propagate:
+            lgr.propagate = True
+
+    return cleaned_count
+
+
+def initialize_logging_hub(logger, memory_handler):
+    """初始化LoggingHub并重放缓冲日志.
+
+    Args:
+        logger: 启动logger
+        memory_handler: MemoryHandler实例
+
+    Returns:
+        logging_hub实例或None
+    """
+    try:
+        from backend.infrastructure.system_vnpy.unified_log_system import get_ai_log_handler
+        from backend.infrastructure.system_vnpy.unified_log_system import get_logging_hub
+        from backend.infrastructure.system_vnpy.unified_log_system import start_ai_process
+
+        root_logger = logging.getLogger()
+
+        # 1. 初始化LoggingHub
+        logging_hub = get_logging_hub()
+
+        # 2. v5.0已移除set_replay_targets，不再需要配置重放目标
+        # LoggingHub会自动处理所有日志分发
+
+        # 3. 创建并注入handlers
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(logging.DEBUG)  # LoggingHub内部会根据规则过滤
+        formatter = logging.Formatter(
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+        )
+        console_handler.setFormatter(formatter)
+        logging_hub.set_console_handler(console_handler)
+
+        # ✅ 创建常规文件Handler（logs/terminal.log）
+        log_dir = Path("logs")
+        log_dir.mkdir(exist_ok=True)
+        file_handler = logging.FileHandler(log_dir / "terminal.log", mode="a", encoding="utf-8")
+        file_handler.setLevel(logging.DEBUG)  # 接收所有级别
+        file_handler.setFormatter(formatter)
+        logging_hub.set_file_handler(file_handler)
+
+        ai_handler = get_ai_log_handler()
+        logging_hub.set_ai_log_handler(ai_handler)
+
+        # 4. 启动AI流程
+        ai_log_file = start_ai_process(
+            "startup",
+            metadata={
+                "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+                "platform": sys.platform,
+            },
+        )
+
+        # 5. 将LoggingHub添加到root logger
+        root_logger.addHandler(logging_hub)
+
+        # 6. 设置MemoryHandler的target为LoggingHub
+        memory_handler.setTarget(logging_hub)
+
+        # 7. v5.0不再需要replay模式，直接刷新MemoryHandler
+        # LoggingHub会自动通过emit方法处理所有日志
+        buffered_count = len(memory_handler.buffer)
+        memory_handler.flush()
+
+        # 8. 移除MemoryHandler（已完成使命）
+        root_logger.removeHandler(memory_handler)
+        memory_handler.close()
+
+        # 11. 全局清理：移除所有logger的StreamHandler，确保所有日志都经过LoggingHub
+        cleaned_count = cleanup_all_logger_handlers()
+
+        # 12. 使用logger输出（此时已经过LoggingHub）
+        logger.info(f"✅ LoggingHub已初始化（v5.0），重放了 {buffered_count} 条缓冲日志")
+        logger.info(f"✅ 全局清理了 {cleaned_count} 个StreamHandler，确保所有日志统一路由")
+        logger.info(f"AI日志文件: {ai_log_file}")
+
+        return logging_hub
+
+    except Exception as e:
+        # 降级处理
+        print(f"[日志系统] ❌ LoggingHub初始化失败: {e}")
+        import traceback
+
+        traceback.print_exc()
+
+        # 添加简单的StreamHandler作为降级
+        root_logger = logging.getLogger()
+        if not any(isinstance(h, logging.StreamHandler) for h in root_logger.handlers):
+            fallback = logging.StreamHandler(sys.stdout)
+            fallback.setLevel(logging.INFO)
+            root_logger.addHandler(fallback)
+
+        # 刷新MemoryHandler到降级handler
+        memory_handler.setTarget(fallback)
+        memory_handler.flush()
+
+        return None
 
 
 def main():
@@ -148,20 +301,23 @@ def main():
         env_time = setup_environment()
         print_stage("ENV-SETUP", "环境准备完成", success=True)
 
-        # 初始化日志系统
-        logger = setup_logging()
+        # 初始化日志系统（使用MemoryHandler缓冲）
+        logger, memory_handler = setup_logging()
+
+        # 此时所有日志调用都会被MemoryHandler缓冲，不会输出到控制台
+        # 只有print_stage的直接打印会显示
 
         # ==================== 阶段切换：进入startup阶段 ====================
-        from backend.infrastructure.system_vnpy.logging_context import get_logging_context
+        from backend.infrastructure.system_vnpy.unified_log_system import get_logging_hub
 
-        ctx = get_logging_context()
-        ctx.set_stage("startup")
-        logger.info("📍 切换到启动阶段")
+        hub = get_logging_hub()
+        hub.set_stage("startup")
 
-        logger.info("[ENV-SETUP] 环境准备完成，耗时 %.0fms", env_time)
-        logger.info("=" * 60)
-        logger.info("系统启动优化流程开始")
-        logger.info("=" * 60)
+        # 创建阶段logger（在LoggingHub初始化前，日志会被缓冲）
+        stage_logger = logging.getLogger("startup.stage")
+        stage_logger.info("📍 系统启动开始")
+
+        logger.debug("[ENV-SETUP] 环境准备完成，耗时 %.0fms", env_time)
 
         # 配置Debug输出
         from backend.core.terminal_output import configure_debug
@@ -172,11 +328,11 @@ def main():
             debug_level="normal",  # brief | normal | detailed
             terminal_output=True,
         )
-        logger.info("[DEBUG-CONFIG] Debug输出已配置（normal级别）")
+        logger.debug("[DEBUG-CONFIG] Debug输出已配置（normal级别）")
 
         # ==================== 阶段1：Qt框架初始化 ====================
         stage1_start = time.time()
-        logger.info("[QT-INIT] 开始Qt框架初始化")
+        logger.debug("[QT-INIT] Qt框架初始化中...")
 
         from PySide6.QtWidgets import QApplication
 
@@ -186,18 +342,24 @@ def main():
         app.setOrganizationName("星辰科技")
 
         stage1_time = (time.time() - stage1_start) * 1000
-        logger.info("[QT-INIT] ✅ QApplication创建成功，耗时 %.0fms", stage1_time)
+        logger.debug("[QT-INIT] QApplication创建成功，耗时 %.0fms", stage1_time)
 
         # 加载配置文件
         from backend.core.config import init_settings
 
         config_file = os.getenv("CONFIG_FILE")
         if config_file:
-            logger.info("[QT-INIT] 从环境变量加载配置: %s", config_file)
+            logger.debug("[QT-INIT] 从环境变量加载配置: %s", config_file)
             init_settings(config_file)
         else:
-            logger.info("[QT-INIT] 使用默认配置")
+            logger.debug("[QT-INIT] 使用默认配置")
             init_settings()
+
+        # ==================== 初始化LoggingHub并重放缓冲日志 ====================
+        # 在配置加载完成后，初始化LoggingHub并重放所有缓冲的日志
+        logging_hub = initialize_logging_hub(logger, memory_handler)
+        if not logging_hub:
+            logger.warning("LoggingHub初始化失败，使用降级日志输出")
 
         # 创建启动协调器
         from ui.startup_coordinator import StartupCoordinator
@@ -206,18 +368,18 @@ def main():
 
         qt_total_time = (time.time() - stage1_start) * 1000
         print_stage("QT-INIT", "Qt框架初始化完成", success=True)
-        logger.info("[QT-INIT] ✅ Qt框架初始化完成，总耗时 %.0fms", qt_total_time)
+        stage_logger.info("Qt框架初始化完成（耗时: %.0fms）", qt_total_time)
 
         # ==================== 阶段2：UI框架创建 ====================
         stage2_start = time.time()
-        logger.info("[UI-FRAME] 开始创建UI框架（backend_ready=False）")
+        logger.debug("[UI-FRAME] 创建UI框架中...")
 
         from ui.main_window import MainWindow
 
         main_window = MainWindow(backend_ready=False)
 
         stage2_time = (time.time() - stage2_start) * 1000
-        logger.info("[UI-FRAME] ✅ 主窗口框架创建完成，耗时 %.0fms", stage2_time)
+        logger.debug("[UI-FRAME] 主窗口框架创建完成，耗时 %.0fms", stage2_time)
 
         # 显示主窗口
         main_window.show()
@@ -226,14 +388,15 @@ def main():
 
         ui_visible_time = (time.time() - startup_start) * 1000
         print_stage("UI-FRAME", "主窗口已显示", success=True)
+        stage_logger.info("主窗口已显示（耗时: %.0fms）", ui_visible_time)
         try:
             from backend.core.config import get_settings as _get_settings
 
             target_ms = int(getattr(_get_settings().startup, "ui_target_ms", 2000))
         except Exception:
             target_ms = 2000
-        logger.info(
-            "[UI-FRAME] ✅ 主窗口已显示，从启动到UI可见耗时 %.0fms（目标：< %dms）",
+        logger.debug(
+            "[UI-FRAME] 从启动到UI可见耗时 %.0fms（目标：< %dms）",
             ui_visible_time,
             target_ms,
         )
@@ -245,7 +408,7 @@ def main():
             pass
 
         # ==================== 阶段2.5：主线程初始化 EventEngine/MainEngine ====================
-        logger.info("[VNPY-CORE] 开始在主线程初始化 EventEngine 和 MainEngine")
+        logger.debug("[VNPY-CORE] VnPy核心初始化中...")
 
         vnpy_start = time.time()
         vnpy_success = True
@@ -258,20 +421,20 @@ def main():
 
             # 创建 EventEngine（会自动启动工作线程）
             event_engine = EventEngine(interval=1)
-            logger.info("[VNPY-CORE] ✅ EventEngine 创建成功（工作线程已启动）")
+            logger.debug("[VNPY-CORE] EventEngine 创建成功（工作线程已启动）")
 
             # 创建 MainEngine
             main_engine = MainEngine(event_engine)
-            logger.info("[VNPY-CORE] ✅ MainEngine 创建成功")
+            logger.debug("[VNPY-CORE] MainEngine 创建成功")
 
             # 注册到全局
             set_event_engine(event_engine)
             set_main_engine(main_engine)
-            logger.info("[VNPY-CORE] ✅ EventEngine 和 MainEngine 已注册到全局")
+            logger.debug("[VNPY-CORE] EventEngine 和 MainEngine 已注册到全局")
 
             # 🔧 立即注入占位方法（供 vnpy_chartwizard 使用）
             try:
-                logger.info("[VNPY-CORE] 开始注入 MainEngine 数据接口占位方法...")
+                logger.debug("[VNPY-CORE] 注入 MainEngine 数据接口占位方法...")
 
                 def placeholder_get_contracts():
                     """占位方法：返回空列表，等待后台更新"""
@@ -286,39 +449,39 @@ def main():
                 main_engine.get_all_contracts = placeholder_get_contracts  # type: ignore[attr-defined]
                 main_engine.load_bar_data = placeholder_load_bars  # type: ignore[attr-defined]
 
-                logger.info(
-                    "[VNPY-CORE] ✅ MainEngine 占位方法已注入（后续将由 UnifiedDataManager 更新）"
+                logger.debug(
+                    "[VNPY-CORE] MainEngine 占位方法已注入（后续将由 UnifiedDataManager 更新）"
                 )
 
             except Exception as e:
-                logger.exception("[VNPY-CORE] ❌ 注入占位方法失败: %s", e)
+                logger.exception("[VNPY-CORE] 注入占位方法失败: %s", e)
 
             # VnPy Apps延迟加载：移至后台线程
-            logger.info("[VNPY-CORE] VnPy Apps将在后台线程加载")
+            logger.debug("[VNPY-CORE] VnPy Apps将在后台线程加载")
 
             vnpy_time = (time.time() - vnpy_start) * 1000
-            logger.info("[VNPY-CORE] ✅ VnPy 核心初始化完成，耗时 %.0fms", vnpy_time)
+            stage_logger.info("VnPy核心初始化完成（耗时: %.0fms）", vnpy_time)
 
             # ==================== 阶段2.55：初始化日志管理系统 ====================
             # 🔧 关键修复：在EventEngine创建后立即初始化LogManager
             # 这样后续的所有日志都会被记录到数据库
-            logger.info("[LOG-MANAGER] 开始初始化日志持久化系统")
+            logger.debug("[LOG-MANAGER] 日志持久化系统初始化中...")
 
             try:
                 from backend.services.system_manager_service import get_log_manager
 
                 # 获取LogManager并强制初始化（注入EventEngine）
                 _ = get_log_manager(event_engine=event_engine, force_reinit=True)
-                logger.info("[LOG-MANAGER] ✅ 日志管理系统初始化成功（日志将持久化到数据库）")
+                stage_logger.info("日志持久化已启用")
                 print_stage("LOG-MANAGER", "日志持久化已启用", success=True)
 
             except Exception as e:
-                logger.exception("[LOG-MANAGER] ❌ 日志管理系统初始化失败: %s", e)
+                logger.exception("[LOG-MANAGER] 日志管理系统初始化失败: %s", e)
                 print_stage("LOG-MANAGER", "日志持久化启用失败", success=False, error_detail=str(e))
                 # 不中断启动流程
 
         except Exception as e:
-            logger.exception("[VNPY-CORE] ❌ VnPy 核心初始化失败: %s", e)
+            logger.exception("[VNPY-CORE] VnPy 核心初始化失败: %s", e)
             vnpy_success = False
             vnpy_error_detail = str(e)
 
@@ -427,334 +590,9 @@ def main():
         except Exception as _e:
             logger.warning("[CLEANUP-BG] 启动后台清理线程失败: %s", _e)
 
-        # ==================== 阶段2.6：服务器池延迟初始化 ====================
-        # 🔧 服务器池延迟初始化：由后台线程在首次使用时自动启动
-        print_stage("SERVER-POOL", "延迟初始化（后台按需启动）", success=True)
-        logger.info("[SERVER-POOL] 服务器池延迟初始化模式（后台线程按需启动）")
-
-        # ==================== 阶段2.7：启动独立监控进程 ====================
-        logger.info("[MONITOR-PROCESS] 启动独立监控进程")
-
-        import subprocess
-
-        # Path已在文件顶部导入，无需重复导入
-
-        project_root = Path(__file__).parent
-        monitor_script = (
-            project_root / "backend" / "infrastructure" / "system_vnpy" / "monitor_process_entry.py"
-        )
-
-        # 修复：重定向到文件而不是PIPE，避免PIPE缓冲区填满导致死锁
-        log_dir = project_root / "logs"
-        log_dir.mkdir(exist_ok=True)
-
-        monitor_stdout_file = open(log_dir / "monitor_stdout.log", "w", encoding="utf-8")
-        monitor_stderr_file = open(log_dir / "monitor_stderr.log", "w", encoding="utf-8")
-
-        monitor_process = subprocess.Popen(
-            [sys.executable, str(monitor_script)],
-            stdout=monitor_stdout_file,  # 重定向到文件
-            stderr=monitor_stderr_file,  # 重定向到文件
-            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
-        )
-
-        # 保存进程句柄和文件句柄到全局，以便退出时清理
-        import atexit
-        import threading
-
-        # 监控进程控制变量
-        monitor_process_handle = [monitor_process]  # 使用列表以便在闭包中修改
-        monitor_file_handles = [monitor_stdout_file, monitor_stderr_file]  # 文件句柄
-        watchdog_running = [True]
-
-        def cleanup_monitor():
-            """清理监控进程（主进程退出时调用）."""
-            watchdog_running[0] = False  # 停止看门狗线程
-            logger.info("[CLEANUP] 开始清理监控进程...")
-
-            if monitor_process_handle[0]:
-                if monitor_process_handle[0].poll() is None:
-                    # 进程仍在运行，先尝试优雅关闭
-                    logger.info("[CLEANUP] 发送SIGTERM信号...")
-                    monitor_process_handle[0].terminate()
-                    try:
-                        monitor_process_handle[0].wait(timeout=3)
-                        logger.info("[CLEANUP] ✅ 监控进程已正常退出")
-                    except subprocess.TimeoutExpired:
-                        # 超时，强制kill
-                        logger.warning("[CLEANUP] 监控进程未响应，强制终止...")
-                        monitor_process_handle[0].kill()
-                        try:
-                            monitor_process_handle[0].wait(timeout=2)
-                            logger.info("[CLEANUP] ✅ 监控进程已强制终止")
-                        except Exception as e:
-                            logger.error("[CLEANUP] ❌ 强制终止失败: %s", e)
-                else:
-                    logger.info(
-                        "[CLEANUP] 监控进程已退出（退出码: %d）",
-                        monitor_process_handle[0].returncode,
-                    )
-
-            # 额外等待，确保ZMQ端口完全释放
-            logger.info("[CLEANUP] 等待5秒确保端口释放...")
-            time.sleep(5)
-
-            # 关闭文件句柄
-            for f in monitor_file_handles:
-                try:
-                    if f:
-                        f.close()
-                except Exception:
-                    pass
-
-            logger.info("[CLEANUP] ✅ 监控进程清理完成")
-
-        atexit.register(cleanup_monitor)
-
-        def start_monitor_process():
-            """启动监控进程（供看门狗调用）."""
-            # 重新打开日志文件（追加模式）
-            stdout_file = open(log_dir / "monitor_stdout.log", "a", encoding="utf-8")
-            stderr_file = open(log_dir / "monitor_stderr.log", "a", encoding="utf-8")
-
-            # 保存新的文件句柄
-            monitor_file_handles[0] = stdout_file
-            monitor_file_handles[1] = stderr_file
-
-            return subprocess.Popen(
-                [sys.executable, str(monitor_script)],
-                stdout=stdout_file,  # 重定向到文件
-                stderr=stderr_file,  # 重定向到文件
-                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
-            )
-
-        def monitor_watchdog():
-            """监控进程看门狗线程（自动重启崩溃的监控进程）."""
-            logger.info("[WATCHDOG] 监控进程看门狗线程已启动")
-            restart_count = 0
-            max_restarts_per_minute = 3  # 每分钟最多重启3次
-            restart_timestamps = []
-
-            while watchdog_running[0]:
-                try:
-                    # 检查监控进程是否存活
-                    if monitor_process_handle[0] and monitor_process_handle[0].poll() is not None:
-                        # 进程已退出
-                        exit_code = monitor_process_handle[0].returncode
-                        logger.warning(
-                            "[WATCHDOG] 监控进程已退出（退出码: %d），准备重启...", exit_code
-                        )
-
-                        # 检查重启频率（防止无限重启）
-                        current_time = time.time()
-                        restart_timestamps = [
-                            t for t in restart_timestamps if current_time - t < 60
-                        ]
-
-                        if len(restart_timestamps) >= max_restarts_per_minute:
-                            logger.error(
-                                "[WATCHDOG] ❌ 监控进程在1分钟内重启了%d次，超过限制，停止重启",
-                                max_restarts_per_minute,
-                            )
-                            break
-
-                        # 记录重启时间
-                        restart_timestamps.append(current_time)
-                        restart_count += 1
-
-                        # 第1步：确保旧进程彻底终止
-                        logger.info("[WATCHDOG] 第1步：清理旧进程...")
-                        old_process = monitor_process_handle[0]
-                        if old_process.poll() is None:
-                            # 如果还在运行（不应该发生，但以防万一）
-                            logger.warning("[WATCHDOG] 旧进程仍在运行，强制终止...")
-                            old_process.kill()
-                            try:
-                                old_process.wait(timeout=2)
-                            except Exception as e:
-                                logger.error("[WATCHDOG] 强制终止旧进程失败: %s", e)
-
-                        # 关闭旧的文件句柄
-                        for f in monitor_file_handles:
-                            try:
-                                if f:
-                                    f.close()
-                            except Exception:
-                                pass
-
-                        # 第2步：等待端口释放
-                        logger.info("[WATCHDOG] 第2步：等待10秒确保ZMQ端口完全释放...")
-                        time.sleep(10)
-
-                        # 第3步：重启监控进程
-                        logger.info(
-                            "[WATCHDOG] 第3步：启动新的监控进程（第%d次重启）...", restart_count
-                        )
-                        try:
-                            monitor_process_handle[0] = start_monitor_process()
-                            logger.info(
-                                "[WATCHDOG] ✅ 监控进程已重启（PID: %d）",
-                                monitor_process_handle[0].pid,
-                            )
-
-                            # 等待新进程初始化
-                            # logger.info(...)  # 🔧 已精简：避免重启时刷屏
-                            time.sleep(2)
-
-                            # 验证新进程是否存活
-                            if monitor_process_handle[0].poll() is not None:
-                                logger.error(
-                                    "[WATCHDOG] ❌ 新进程启动后立即退出（退出码: %d）",
-                                    monitor_process_handle[0].returncode,
-                                )
-                            else:
-                                logger.info("[WATCHDOG] ✅ 新进程运行正常")
-                        except Exception as e:
-                            logger.exception("[WATCHDOG] ❌ 重启监控进程失败: %s", e)
-
-                    # 检查间隔
-                    time.sleep(3)
-
-                except Exception as e:
-                    logger.error("[WATCHDOG] 看门狗线程异常: %s", e)
-                    time.sleep(5)
-
-            logger.info("[WATCHDOG] 监控进程看门狗线程已停止")
-
-        # 启动看门狗线程
-        watchdog_thread = threading.Thread(
-            target=monitor_watchdog, name="MonitorWatchdog", daemon=True
-        )
-        watchdog_thread.start()
-
-        logger.info("[MONITOR-PROCESS] ✅ 监控进程已启动（PID: %d）", monitor_process.pid)
-        logger.info("[MONITOR-PROCESS] ✅ 监控进程看门狗已启动")
-        print_stage(
-            "MONITOR-PROCESS", f"监控进程已启动（PID: {monitor_process.pid}）", success=True
-        )
-
-        # 🎯 架构修复：等待监控进程就绪信号（优化版）
-        # 最多等待10秒，使用就绪信号文件而非端口文件
-        logger.info("[MONITOR-PROCESS] 等待监控进程就绪...")
-
-        import json
-        from pathlib import Path as _Path
-
-        signal_file = _Path("logs/monitor_ready.signal")
-
-        # 🔧 优化：启动前清理旧的信号文件
-        if signal_file.exists():
-            try:
-                signal_file.unlink()
-                logger.debug("[MONITOR-PROCESS] 已清理旧的就绪信号文件")
-            except Exception as e:
-                logger.debug("[MONITOR-PROCESS] 清理信号文件失败: %s", e)
-
-        wait_start = time.time()
-        max_wait = 10.0  # 最多等待10秒
-        ports_ready = False
-
-        while (time.time() - wait_start) < max_wait:
-            # 检查进程是否存活
-            if monitor_process.poll() is not None:
-                logger.error(
-                    "[MONITOR-PROCESS] ❌ 监控进程异常退出（退出码: %d）",
-                    monitor_process.returncode,
-                )
-                break
-
-            # 检查就绪信号文件
-            if signal_file.exists():
-                try:
-                    with open(signal_file, "r", encoding="utf-8") as f:
-                        signal_data = json.load(f)
-
-                    # 🔧 修复：不再严格验证PID，改为验证进程状态
-                    # 原因：Windows下subprocess.Popen.pid可能与实际监控进程PID不一致
-                    signal_pid = signal_data.get("pid")
-                    if signal_pid:
-                        # 验证信号文件中的PID进程是否存活
-                        try:
-                            import psutil
-
-                            if not psutil.pid_exists(signal_pid):
-                                logger.debug(
-                                    "[MONITOR-PROCESS] 信号文件中的PID %d 不存在，继续等待",
-                                    signal_pid,
-                                )
-                                time.sleep(0.1)
-                                continue
-                        except ImportError:
-                            # psutil不可用，跳过PID验证
-                            pass
-
-                    # 检查状态
-                    status = signal_data.get("status")
-                    level = signal_data.get("level", 1)
-
-                    if status == "initializing":
-                        # 仍在初始化，继续等待
-                        time.sleep(0.1)
-                        continue
-                    elif status in ["ports_ready", "fully_ready"] and level >= 1:
-                        # 就绪！（接受Level 1或Level 2）
-                        ports = signal_data.get("ports", {})
-                        elapsed = time.time() - wait_start
-
-                        # 验证端口信息完整性
-                        if not all(
-                            ports.get(k) for k in ["alert_push", "status_pull", "query_rep"]
-                        ):
-                            logger.debug("[MONITOR-PROCESS] 端口信息不完整，继续等待")
-                            time.sleep(0.1)
-                            continue
-
-                        logger.info(
-                            "[MONITOR-PROCESS] ✅ 监控进程端口就绪（PID: %d, 端口: %d/%d/%d，耗时: %.1fs, Level: %d）",
-                            signal_pid,
-                            ports.get("alert_push", 0),
-                            ports.get("status_pull", 0),
-                            ports.get("query_rep", 0),
-                            elapsed,
-                            level,
-                        )
-
-                        # 提示功能后台加载
-                        if level == 1:
-                            logger.info(
-                                "[MONITOR-PROCESS] 监控功能正在后台初始化（不影响主进程启动）"
-                            )
-
-                        # 设置环境变量供SystemManagerService使用
-                        os.environ["MONITOR_READY"] = "1"
-                        os.environ["MONITOR_ALERT_PUSH"] = str(ports.get("alert_push", 5555))
-                        os.environ["MONITOR_STATUS_PULL"] = str(ports.get("status_pull", 5556))
-                        os.environ["MONITOR_QUERY_REP"] = str(ports.get("query_rep", 5557))
-                        ports_ready = True
-                        break
-
-                except (json.JSONDecodeError, IOError) as e:
-                    # 文件可能正在写入，重试
-                    logger.debug("[MONITOR-PROCESS] 读取就绪信号失败（重试中）: %s", e)
-                    time.sleep(0.1)
-                    continue
-
-            time.sleep(0.2)  # 200ms间隔检查
-
-        if not ports_ready:
-            error_msg = (
-                f"监控进程启动失败（超时{max_wait}s）\n"
-                f"可能原因：\n"
-                f"1. 端口被占用（5555/5556/5557）\n"
-                f"2. 监控进程崩溃（查看logs/monitor_stderr.log）\n"
-                f"3. 权限不足（需要管理员权限）"
-            )
-            logger.error("[MONITOR-PROCESS] ❌ %s", error_msg)
-            raise RuntimeError(f"监控进程启动失败: {error_msg}")
-
-        # 设置环境变量，告知服务监控进程PID
-        os.environ["MONITOR_PROCESS_PID"] = str(monitor_process.pid)
-        logger.info("[MONITOR-PROCESS] 已设置环境变量 MONITOR_PROCESS_PID=%s", monitor_process.pid)
+        # ==================== 阶段2.6-2.7：已移至BackendInitializerWorker ====================
+        # 服务器池和监控进程现在在BackendInitializerWorker中并行启动
+        # 优化效果：主线程减少阻塞3-5秒
 
         # ==================== 定义可选服务后台加载器 ====================
         def _start_optional_services_loader(backend_result, main_window_instance):
@@ -848,12 +686,18 @@ def main():
         # ==================== 连接后端初始化回调 ====================
         def on_startup_completed():
             """阶段4：UI功能激活（后端就绪后）."""
+            # 🔍 DEBUG: 确认回调被调用
+            print("[DEBUG-IPO] on_startup_completed() 被调用")
+            logger.info("[DEBUG-IPO] on_startup_completed() 被调用")
             logger.info("[UI-ACTIVATE] 开始激活UI功能...")
 
             try:
                 activation_start = time.time()
 
                 # ==================== 阶段切换：切换到sensing阶段 ====================
+                from backend.infrastructure.system_vnpy.unified_log_system import get_logging_hub
+
+                ctx = get_logging_hub()
                 ctx.set_stage("sensing")
                 logger.info("📍 启动完成，切换到数据感知阶段")
 
@@ -875,12 +719,9 @@ def main():
                 coordinator.hide_splash(main_window)
                 logger.info("[UI-ACTIVATE] ✅ 启动画面已隐藏")
 
-                # 🔧 修复Qt Timer跨线程问题：在UI激活完成后触发Qt原生的后台验证
-                # 延迟500ms确保UI完全就绪
-                logger.info("[UI-ACTIVATE] 准备启动Qt原生后台验证...")
-                from PySide6.QtCore import QTimer
-
-                QTimer.singleShot(500, lambda: main_window._start_background_validation())
+                # 后台验证现在由coordinator的initialization_completed信号触发
+                # 不再需要延迟500ms，立即触发
+                logger.info("[UI-ACTIVATE] 后台验证将由coordinator信号触发")
 
                 # 步骤3: 启动后台服务加载器（快速启动优化）
                 logger.info("[UI-ACTIVATE] 启动可选服务后台加载...")
@@ -907,6 +748,9 @@ def main():
                     logger_metric.info("total_startup_ms=%d", int(total_time))
                 except Exception:
                     pass
+
+                # ❌ 不在这里结束AI日志流程，等待ValidationWorker完成后再结束
+                # AI日志流程将在MainWindow._on_validation_finished()中结束
 
                 # ==================== 服务器池后台预热（非阻塞） ====================
                 try:
@@ -983,6 +827,12 @@ def main():
         coordinator.startup_completed.connect(on_startup_completed)
         coordinator.startup_failed.connect(on_startup_failed)
 
+        # 🆕 连接后端初始化完成信号到validation启动
+        # 当BackendInitializerWorker完成后，自动触发CacheValidationWorker
+        coordinator.initialization_completed.connect(
+            lambda success, result: main_window._start_background_validation() if success else None
+        )
+
         # ==================== 阶段3：启动后端初始化（异步）====================
         logger.info("[BACKEND-INIT] 启动后端初始化工作线程")
         coordinator.start()
@@ -992,6 +842,9 @@ def main():
         # ==================== 启动Qt事件循环 ====================
         logger.info("[EVENT-LOOP] 启动Qt主事件循环")
         logger.info("=" * 70)
+
+        # ❌ 不再在这里结束AI日志流程，让它持续运行直到后台初始化完成
+        # AI日志流程将在on_startup_completed()中结束，确保所有后台初始化日志都被记录
 
         return app.exec()
 

@@ -92,10 +92,10 @@ class BaseService(ABC):
 
             # 阶段感知：启动阶段详细日志
             try:
-                from backend.infrastructure.system_vnpy.logging_context import get_logging_context
+                from backend.infrastructure.system_vnpy.unified_log_system import get_logging_hub
 
-                ctx = get_logging_context()
-                if ctx.routing_engine.current_stage == "startup":
+                ctx = get_logging_hub()
+                if ctx and ctx._routing_engine and ctx._routing_engine.current_stage == "startup":
                     self.logger.info("正在初始化服务: %s", self.service_name)
                 else:
                     self.logger.debug("重新初始化服务: %s", self.service_name)

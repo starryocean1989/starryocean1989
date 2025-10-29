@@ -704,13 +704,13 @@ stats = server_pool_manager.get_stats()
 
 **测速性能**:
 ```
-输入: 683个服务器（BROKER_SERVERS_7709全部）
+输入: ~800个服务器（HQ_HOSTS_ALL + BROKER_SERVERS_7709合并去重）
 进程: 3个（CPU并行）
 协程: 50×3=150个（I/O并行）
 超时: 2秒/服务器
-耗时: 5-10秒
+耗时: 6-12秒
 
-输出: 54个可用服务器（按速度排序）
+输出: 60+个可用服务器（按速度排序）
 最快: 123.125.108.90:7709
 Top3: 123.125.108.90, 123.125.108.14, 124.70.176.52
 ```
@@ -1337,9 +1337,9 @@ vt_setting.json  # VNPy全局配置文件
     "chinastock.tdx_dir": "C:/new_tdx",         # 通达信目录
 
     # 服务器池配置
-    "chinastock.server_pool.server_count": None,  # 测速服务器数量（None=自动使用全部683个）
+    "chinastock.server_pool.server_count": None,  # 测速服务器数量（None=自动使用HQ_HOSTS_ALL+BROKER_SERVERS_7709合并后全部服务器）
     "chinastock.server_pool.use_multiprocess": true,  # 使用多进程测速
-    "chinastock.server_pool.test_timeout": 2.0,  # 测速超时（秒）
+    # 注意：test_timeout和max_fail_time在代码中硬编码为2.0秒
 
     # 热备服务器配置
     "chinastock.standby_servers.count": 30,  # 热备服务器数量

@@ -300,6 +300,7 @@ class ChartWizardEnhanced(BaseWidget):
         self.retry_timer: Optional[Any] = None
         self.max_retries = 30  # 最多重试30次（15秒）
         self.retry_interval = 500  # 每500ms重试一次
+        self._inject_warning_shown = False  # 主动注入warning只显示一次
 
         # UI组件
         self.symbol_input: Optional[SymbolCompleterLineEdit] = None
@@ -2047,7 +2048,14 @@ class ChartWizardEnhanced(BaseWidget):
                                     # 主动注入
                                     self.main_engine.get_all_contracts = udm.get_all_contracts
                                     self.main_engine.load_bar_data = udm.load_bar_data
-                                    self.logger.warning("⚠️ UI线程主动注入 UnifiedDataManager 方法")
+                                    # 只在首次注入时warning，避免刷屏
+                                    if not self._inject_warning_shown:
+                                        self.logger.warning(
+                                            "⚠️ UI线程主动注入 UnifiedDataManager 方法（后续静默）"
+                                        )
+                                        self._inject_warning_shown = True
+                                    else:
+                                        self.logger.debug("UI线程主动注入 UnifiedDataManager 方法")
 
                                     # 再次测试
                                     test_contracts = self.main_engine.get_all_contracts()

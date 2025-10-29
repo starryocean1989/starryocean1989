@@ -21,7 +21,7 @@ import threading
 import time
 import traceback
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 from enum import Enum
 
 # 从vnpy_imports导入所有VnPy相关功能
@@ -1648,6 +1648,7 @@ def initialize_services(progress_callback=None, fast_startup=True) -> Dict[str, 
 
         if fast_startup:
             # 快速启动模式：返回核心服务初始化结果和initializer实例
+            assert isinstance(result, dict), "fast_startup=True时，result应该是dict"
             success = result.get("success", False)
             initializer = result.get("initializer")
 
@@ -1679,6 +1680,7 @@ def initialize_services(progress_callback=None, fast_startup=True) -> Dict[str, 
             }
         else:
             # 传统模式：所有服务初始化
+            assert isinstance(result, bool), "fast_startup=False时，result应该是bool"
             success = result
             service_manager.initialization_attempted = True
             service_manager.initialization_completed = success
@@ -1724,7 +1726,9 @@ def initialize_services(progress_callback=None, fast_startup=True) -> Dict[str, 
         }
 
 
-def initialize_real_services(progress_callback=None, fast_startup=False) -> Dict[str, Any]:
+def initialize_real_services(
+    progress_callback=None, fast_startup=False
+) -> Union[Dict[str, Any], bool]:
     """初始化服务的入口函数.
 
     Args:

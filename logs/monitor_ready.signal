@@ -1,0 +1,13 @@
+{
+  "pid": 12172,
+  "timestamp": 1761719491.1787608,
+  "status": "fully_ready",
+  "level": 2,
+  "ports": {
+    "alert_push": 5555,
+    "status_pull": 5556,
+    "query_rep": 5557
+  },
+  "bind_addr": "127.0.0.1",
+  "coroutines_ready_at": 1761719492.9861555
+}

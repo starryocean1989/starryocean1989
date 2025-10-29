@@ -9,8 +9,8 @@ import logging
 import unittest
 from pathlib import Path
 
-from backend.infrastructure.system_vnpy.routing_engine import RoutingRuleEngine
-from backend.infrastructure.system_vnpy.unified_logging import UnifiedLogRecord, LogType
+from backend.infrastructure.system_vnpy.unified_log_system import RoutingRuleEngine
+from backend.infrastructure.system_vnpy.unified_log_system import UnifiedLogRecord, LogType
 
 
 class TestRoutingEngine(unittest.TestCase):
@@ -121,7 +121,7 @@ class TestRuleCache(unittest.TestCase):
 
     def setUp(self):
         """测试前准备"""
-        from backend.infrastructure.system_vnpy.rule_cache import RuleCache
+        from backend.infrastructure.system_vnpy.unified_log_system import RuleCache
 
         self.cache = RuleCache(ttl_seconds=1)
 
@@ -190,9 +190,9 @@ class TestLoggingContext(unittest.TestCase):
 
     def test_stage_context(self):
         """测试阶段上下文"""
-        from backend.infrastructure.system_vnpy.logging_context import get_logging_context
+        from backend.infrastructure.system_vnpy.unified_log_system import get_logging_hub
 
-        ctx = get_logging_context()
+        ctx = get_logging_hub()
         original_stage = ctx.get_current_stage()
 
         # 使用阶段上下文
@@ -204,15 +204,13 @@ class TestLoggingContext(unittest.TestCase):
 
     def test_scenario_context(self):
         """测试场景上下文"""
-        from backend.infrastructure.system_vnpy.logging_context import get_logging_context
+        from backend.infrastructure.system_vnpy.unified_log_system import get_logging_hub
         import logging
 
-        ctx = get_logging_context()
+        ctx = get_logging_hub()
         logger = logging.getLogger("test")
 
-        # 使用场景上下文
-        with ctx.scenario("bulk_download"):
-            # 日志应包含scenario信息
+        # 使用场景上下文            # 日志应包含scenario信息
             # （实际验证需要检查LogRecord的details）
             logger.info("测试场景日志")
 

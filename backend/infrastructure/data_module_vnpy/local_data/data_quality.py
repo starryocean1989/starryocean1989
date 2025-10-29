@@ -475,49 +475,48 @@ def get_ipo_cache(cache_file: Optional[Path] = None) -> "IPODateCache":
 
 
 class IPODateCache:
-    """IPO日期持久化缓存管理器（单例模式）
+    """财务信息持久化缓存管理器（单例模式，SQLite后端）
 
     实现两级缓存架构：
-    - L1: LRU内存缓存（容量限制5000，TTL 24小时）
-    - L2: JSON文件（永久存储，带日期验证）
+    - L1: 内存缓存（Dict，快速访问）
+    - L2: SQLite数据库（永久存储，完整33字段财务数据）
 
-    优化：使用LRU缓存管理器替代简单字典，提供：
-    - 自动容量管理（最多5000个品种）
-    - TTL过期（24小时）
-    - 缓存命中率统计
+    优化：
+    - 内存缓存提升查询性能
+    - SQLite索引加速查询
+    - 支持完整财务信息存储
 
     注意：建议使用get_ipo_cache()函数获取全局单例，而不是直接实例化此类
     """
 
-    def __init__(self, cache_file: Optional[Path] = None):
-        """初始化IPO缓存
+    def __init__(self, db_path: Optional[Path] = None):
+        """初始化财务信息缓存（SQLite后端）
 
         Args:
-            cache_file: 缓存文件路径，默认使用data/cache/ipo_dates.json
+            db_path: 数据库文件路径，默认使用data/terminal.db
         """
         self.logger = logging.getLogger(__name__)
 
-        # L1缓存：LRU内存缓存（容量5000，TTL 24小时）
-        from .cache_and_memory import create_lru_cache
+        # 进程内缓存：简单dict（提升查询性能）
+        self._memory_cache: Dict[str, Optional[date]] = {}
 
-        self._memory_cache = create_lru_cache(capacity=5000, ttl=86400)  # 24小时
+        # 初始化SQLite数据库连接
+        if db_path is None:
+            from backend.services.database_adapter import DatabaseManager
 
-        # L2缓存：JSON文件
-        if cache_file is None:
-            cache_dir = config_manager.get_cache_dir()
-            cache_dir.mkdir(parents=True, exist_ok=True)
-            self.cache_file = cache_dir / "ipo_dates.json"
+            self.db = DatabaseManager()
         else:
-            self.cache_file = cache_file
-            self.cache_file.parent.mkdir(parents=True, exist_ok=True)
+            from backend.services.database_adapter import DatabaseManager
 
-        # 线程锁（LRUCacheManager已有线程锁，这里保留用于文件操作）
+            self.db = DatabaseManager(str(db_path))
+
+        # 线程锁（用于数据库操作和缓存访问）
         self._lock = threading.RLock()
 
-        # 缓存日期（用于验证）
+        # 缓存日期（用于验证，从数据库读取最新更新时间）
         self._cache_date: Optional[str] = None
 
-        # 统计信息（现在使用LRU缓存的统计）
+        # 统计信息
         self._stats = {
             "hits": 0,
             "misses": 0,
@@ -527,122 +526,88 @@ class IPODateCache:
             "api_timeout": 0,
         }
 
-        # 加载持久化缓存
-        self._load_from_file()
+        # 加载缓存统计（从SQLite）
+        self._load_cache_stats()
 
-    def _load_from_file(self) -> None:
-        """从品种列表缓存加载IPO数据（优先），兼容旧的独立缓存"""
+    def _load_cache_stats(self) -> None:
+        """从SQLite加载缓存统计信息"""
         try:
-            from ..cache_manager import DailyCacheManager
+            with self.db.get_connection() as conn:
+                # 查询记录数
+                result = conn.execute("SELECT COUNT(*) FROM finance_info").fetchone()
+                count = result[0] if result else 0
 
-            # 1. 优先尝试从品种列表缓存加载
-            cache_data, cache_date, is_valid = DailyCacheManager.load_with_validation(
-                "stock_list_classified.json"
-            )
+                # 查询最新更新时间
+                result = conn.execute("SELECT MAX(updated_at) FROM finance_info").fetchone()
+                if result and result[0]:
+                    self._cache_date = result[0]
 
-            if cache_data:
-                # 从品种列表缓存中提取IPO数据
-                classified = cache_data.get("classified", {})
-                loaded_count = 0
-
-                for category, stocks in classified.items():
-                    for stock in stocks:
-                        symbol = stock.get("code")
-                        ipo_date_str = stock.get("ipo_date")
-
-                        if symbol and ipo_date_str:
-                            try:
-                                ipo_date = datetime.strptime(ipo_date_str, "%Y-%m-%d").date()
-                                self._memory_cache.set(symbol, ipo_date)
-                                loaded_count += 1
-                            except ValueError:
-                                pass
-
-                if loaded_count > 0:
-                    self._cache_date = cache_date
-                    self.logger.info(f"✓ 从品种列表缓存加载了 {loaded_count} 个IPO日期")
-                    return
-
-            # 2. 降级：尝试从旧的独立 ipo_dates.json 加载
-            cache_data, cache_date, is_valid = DailyCacheManager.load_with_validation(
-                "ipo_dates.json"
-            )
-
-            if not cache_data:
-                self.logger.info("IPO缓存文件不存在，将创建新缓存")
-                return
-
-            self.logger.info("⚠️ 使用旧的 ipo_dates.json 缓存（建议重新下载）")
-
-            # 🔧 兼容旧格式：检查cache_date是否为None
-            if cache_date is None:
-                self.logger.warning("IPO缓存无日期信息（旧格式），将标记为过时")
-                # 使用网络时间减1天的字符串，确保被标记为过时
-                self._cache_date = (get_real_date() - timedelta(days=1)).strftime("%Y-%m-%d")
-            else:
-                # 解析日期
-                if isinstance(cache_date, str):
-                    self._cache_date = cache_date
-                elif isinstance(cache_date, date):
-                    self._cache_date = cache_date.strftime("%Y-%m-%d")
+                if count > 0:
+                    self.logger.info(
+                        "✓ 财务信息缓存统计: %d条记录（最后更新: %s）", count, self._cache_date
+                    )
                 else:
-                    self.logger.warning("无效的缓存日期格式: %s", type(cache_date))
-                    self._cache_date = (get_real_date() - timedelta(days=1)).strftime("%Y-%m-%d")
-
-            # 解析缓存数据
-            for symbol, ipo_date_value in cache_data.items():
-                if ipo_date_value:
-                    try:
-                        # 🔧 兼容旧格式：处理字典格式的IPO日期
-                        if isinstance(ipo_date_value, dict):
-                            # 旧格式可能是 {"ipo_date": "2020-01-01", ...}
-                            ipo_date_str = ipo_date_value.get("ipo_date") or ipo_date_value.get(
-                                "date"
-                            )
-                            if not ipo_date_str:
-                                self.logger.warning("字典格式的IPO日期缺少有效字段: %s", symbol)
-                                self._memory_cache[symbol] = None
-                                continue
-                        else:
-                            # 新格式：直接是字符串
-                            ipo_date_str = ipo_date_value
-
-                        ipo_date = datetime.strptime(ipo_date_str, "%Y-%m-%d").date()
-                        self._memory_cache.set(symbol, ipo_date)
-                    except (ValueError, AttributeError) as e:
-                        self.logger.warning(
-                            "无效的IPO日期格式: %s -> %s (%s)", symbol, ipo_date_value, e
-                        )
-                        self._memory_cache.set(symbol, None)
-                else:
-                    # 缓存了None值（表示查询失败）
-                    self._memory_cache.set(symbol, None)
-
-            # 获取LRU缓存统计
-            cache_stats = self._memory_cache.get_stats()
-
-            if not is_valid:
-                self.logger.warning("IPO日期缓存已过时（日期: %s）", cache_date)
-            else:
-                self.logger.info(
-                    "✓ IPO缓存加载完成: %d条记录（日期: %s，容量: %d）",
-                    cache_stats.size,
-                    cache_date,
-                    cache_stats.capacity,
-                )
+                    self.logger.info("财务信息缓存为空，等待首次下载")
 
         except Exception as e:
-            self.logger.error("加载IPO缓存失败: %s", e, exc_info=True)
-            self._memory_cache.clear()
+            self.logger.error("加载缓存统计失败: %s", e, exc_info=True)
             self._cache_date = None
 
-        # 首次加载后清理过期条目
-        expired_count = self._memory_cache.cleanup_expired()
-        if expired_count > 0:
-            self.logger.info("清理了%d个过期的IPO缓存条目", expired_count)
+    def _parse_ipo_date(self, ipo_timestamp: int) -> Optional[date]:
+        """解析IPO日期时间戳（YYYYMMDD格式）
+
+        Args:
+            ipo_timestamp: IPO日期时间戳（如20100101）
+
+        Returns:
+            解析后的日期，失败返回None
+        """
+        if not ipo_timestamp or ipo_timestamp == 0:
+            return None
+
+        try:
+            ipo_str = str(int(ipo_timestamp)).zfill(8)
+            if len(ipo_str) == 8:
+                return datetime.strptime(ipo_str, "%Y%m%d").date()
+        except (ValueError, AttributeError) as e:
+            self.logger.warning("解析IPO日期失败: %s (%s)", ipo_timestamp, e)
+
+        return None
+
+    def _is_all_fields_zero(self, finance_info: Dict) -> bool:
+        """判断财务信息是否全为0或NULL（表示下载失败）
+
+        Args:
+            finance_info: 财务信息字典（33个字段）
+
+        Returns:
+            True=全为0（失败），False=有有效数据
+        """
+        if not finance_info:
+            return True
+
+        # 检查关键字段（至少有10个非零字段才算有效）
+        key_fields = [
+            "industry",
+            "province",
+            "liutongguben",
+            "zongguben",
+            "zongzichan",
+            "jingzichan",
+            "zhuyingshouru",
+            "jinglirun",
+            "meigujingzichan",
+            "gudongrenshu",
+        ]
+
+        non_zero_count = sum(
+            1 for field in key_fields if finance_info.get(field, 0) not in (0, None, "")
+        )
+
+        return non_zero_count < 10
 
     def get(self, symbol: str) -> Tuple[Optional[date], bool]:
-        """从缓存获取IPO日期
+        """从缓存获取IPO日期（优先内存，其次SQLite）
 
         Args:
             symbol: 品种代码
@@ -650,65 +615,133 @@ class IPODateCache:
         Returns:
             (ipo_date, is_cached): IPO日期和是否来自缓存
         """
-        # LRUCacheManager已有线程锁，不需要额外锁
-        ipo_date = self._memory_cache.get(symbol)
+        with self._lock:
+            # 先查内存缓存
+            if symbol in self._memory_cache:
+                self._stats["hits"] += 1
+                return self._memory_cache[symbol], True
 
-        if ipo_date is not None or self._memory_cache.exists(symbol):
-            self._stats["hits"] += 1
-            return ipo_date, True
-        else:
+            # 查询SQLite
+            try:
+                with self.db.get_connection() as conn:
+                    result = conn.execute(
+                        "SELECT ipo_date FROM finance_info WHERE symbol = ?", (symbol,)
+                    ).fetchone()
+
+                    if result and result[0]:
+                        ipo_date = self._parse_ipo_date(result[0])
+                        # 更新内存缓存
+                        self._memory_cache[symbol] = ipo_date
+                        self._stats["hits"] += 1
+                        return ipo_date, True
+
+            except Exception as e:
+                self.logger.error("从SQLite查询IPO日期失败 (%s): %s", symbol, e)
+
             self._stats["misses"] += 1
             return None, False
 
-    def set(self, symbol: str, ipo_date: Optional[date], save_immediately: bool = False) -> None:
-        """设置IPO日期到缓存
+    def set(self, symbol: str, finance_info: Dict) -> None:
+        """保存完整财务信息到SQLite（33个字段）
 
         Args:
             symbol: 品种代码
-            ipo_date: IPO日期（None表示查询失败）
-            save_immediately: 是否立即保存到文件
+            finance_info: 完整财务信息字典
         """
-        self._memory_cache.set(symbol, ipo_date)
+        with self._lock:
+            try:
+                market = finance_info.get("market", 0)
 
-        # 🔍 调试：每1000个品种输出一次
-        cache_stats = self._memory_cache.get_stats()
-        if cache_stats.size % 1000 == 0:
-            self.logger.debug(
-                "IPO缓存已添加 %d 个品种（命中率: %.1f%%）",
-                cache_stats.size,
-                cache_stats.hit_rate,
-            )
+                # 保存完整33字段到SQLite
+                with self.db.get_connection() as conn:
+                    conn.execute(
+                        """
+                        INSERT OR REPLACE INTO finance_info
+                        (symbol, market, industry, province, updated_date, ipo_date,
+                         liutongguben, zongguben, guojiagu, faqirenfarengu, farengu,
+                         bgu, hgu, zhigonggu, gudongrenshu,
+                         zongzichan, liudongzichan, gudingzichan, wuxingzichan,
+                         liudongfuzhai, changqifuzhai, zibengongjijin, jingzichan,
+                         zhuyingshouru, zhuyinglirun, yingshouzhangkuan, yingyelirun,
+                         touzishouyu, lirunzonghe, shuihoulirun, jinglirun,
+                         weifenpeilirun, cunhuo,
+                         jingyingxianjinliu, zongxianjinliu, meigujingzichan)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                                ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            symbol,
+                            market,
+                            finance_info.get("industry"),
+                            finance_info.get("province"),
+                            finance_info.get("updated_date"),
+                            finance_info.get("ipo_date"),
+                            finance_info.get("liutongguben"),
+                            finance_info.get("zongguben"),
+                            finance_info.get("guojiagu"),
+                            finance_info.get("faqirenfarengu"),
+                            finance_info.get("farengu"),
+                            finance_info.get("bgu"),
+                            finance_info.get("hgu"),
+                            finance_info.get("zhigonggu"),
+                            finance_info.get("gudongrenshu"),
+                            finance_info.get("zongzichan"),
+                            finance_info.get("liudongzichan"),
+                            finance_info.get("gudingzichan"),
+                            finance_info.get("wuxingzichan"),
+                            finance_info.get("liudongfuzhai"),
+                            finance_info.get("changqifuzhai"),
+                            finance_info.get("zibengongjijin"),
+                            finance_info.get("jingzichan"),
+                            finance_info.get("zhuyingshouru"),
+                            finance_info.get("zhuyinglirun"),
+                            finance_info.get("yingshouzhangkuan"),
+                            finance_info.get("yingyelirun"),
+                            finance_info.get("touzishouyu"),
+                            finance_info.get("lirunzonghe"),
+                            finance_info.get("shuihoulirun"),
+                            finance_info.get("jinglirun"),
+                            finance_info.get("weifenpeilirun"),
+                            finance_info.get("cunhuo"),
+                            finance_info.get("jingyingxianjinliu"),
+                            finance_info.get("zongxianjinliu"),
+                            finance_info.get("meigujingzichan"),
+                        ),
+                    )
+                    conn.commit()
 
-        if save_immediately:
-            self._save_to_file()
+                # 更新内存缓存
+                ipo_date = self._parse_ipo_date(finance_info.get("ipo_date", 0))
+                self._memory_cache[symbol] = ipo_date
+
+            except Exception as e:
+                self.logger.error("保存财务信息到SQLite失败 (%s): %s", symbol, e)
 
     def batch_save(self) -> None:
-        """批量保存缓存到文件"""
-        with self._lock:
-            self._save_to_file()
+        """批量保存缓存（SQLite自动提交，此方法保留兼容性）"""
+        pass  # SQLite已自动保存，此方法保留向后兼容
 
     def get_stats(self) -> Dict[str, Any]:
-        """获取缓存统计信息（合并LRU统计和自定义统计）"""
-        # 获取LRU缓存统计
-        lru_stats = self._memory_cache.get_stats()
-
+        """获取缓存统计信息（从SQLite）"""
         with self._lock:
             total_queries = self._stats["hits"] + self._stats["misses"]
             hit_rate = (self._stats["hits"] / total_queries * 100) if total_queries > 0 else 0
 
+            # 从SQLite获取实际缓存大小
+            try:
+                with self.db.get_connection() as conn:
+                    result = conn.execute("SELECT COUNT(*) FROM finance_info").fetchone()
+                    db_size = result[0] if result else 0
+            except Exception:
+                db_size = 0
+
             return {
-                # LRU缓存统计
-                "lru_size": lru_stats.size,
-                "lru_capacity": lru_stats.capacity,
-                "lru_hits": lru_stats.hits,
-                "lru_misses": lru_stats.misses,
-                "lru_evictions": lru_stats.evictions,
-                "lru_hit_rate": lru_stats.hit_rate,
-                # 自定义统计
+                "size": db_size,  # SQLite中的记录数
+                "memory_cache_size": len(self._memory_cache),  # 内存缓存大小
                 **self._stats,
                 "total_queries": total_queries,
                 "hit_rate": round(hit_rate, 2),
-                "cache_size": lru_stats.size,  # 使用LRU统计的大小
             }
 
     def record_api_call(self, success: bool, timeout: bool = False) -> None:
@@ -734,6 +767,30 @@ class IPODateCache:
             return not DailyCacheManager.is_cache_valid(self._cache_date)
         except Exception:
             return True  # 异常时认为缓存过时
+
+    def get_unlisted_symbols(self) -> List[str]:
+        """从SQLite查询未上市品种（ipo_date为0或NULL）
+
+        Returns:
+            未上市品种代码列表
+        """
+        with self._lock:
+            try:
+                with self.db.get_connection() as conn:
+                    results = conn.execute(
+                        """
+                        SELECT symbol FROM finance_info
+                        WHERE ipo_date IS NULL OR ipo_date = 0
+                        """
+                    ).fetchall()
+
+                    unlisted = [row[0] for row in results]
+                    self.logger.info("查询到%d个未上市品种", len(unlisted))
+                    return unlisted
+
+            except Exception as e:
+                self.logger.error("查询未上市品种失败: %s", e)
+                return []
 
     def incremental_update(self, all_symbols: List[str], progress_callback=None) -> Dict[str, int]:
         """增量/减量更新IPO日期（与品种列表联动）
@@ -777,21 +834,14 @@ class IPODateCache:
                 try:
                     from ..data_acquisition import download_ipo_dates
 
-                    # 🔧 包装进度回调以适配download_ipo_dates的接口
-                    completed = [0]
-                    total_count = len(new_symbols)
-
-                    def wrapped_progress_callback(symbol: str, status: str) -> None:
-                        """包装进度回调：symbol, status -> current, total"""
-                        completed[0] += 1
-                        if progress_callback:
-                            progress_callback(completed[0], total_count)
-
+                    # 🔧 进度回调已修复，直接传递（期望 current, total）
+                    # download_ipo_dates 内部的 _monitor_ipo_progress 会调用 callback(completed, total_symbols)
+                    # 🔧 传递 self（全局IPODateCache实例），避免创建新实例导致数据丢失
                     download_result = download_ipo_dates(
                         list(new_symbols),
-                        force_refresh=False,
-                        _use_adaptive=True,
-                        progress_callback=wrapped_progress_callback if progress_callback else None,
+                        progress_callback=progress_callback,  # 直接传递，不需要包装
+                        use_multiprocess=True,
+                        ipo_cache=self,  # 使用当前全局实例
                     )
                     self.logger.info(
                         "IPO日期下载完成：成功 %d 个，失败 %d 个",
@@ -801,8 +851,7 @@ class IPODateCache:
                 except Exception as e:
                     self.logger.error("下载IPO日期失败: %s", e, exc_info=True)
 
-            # 保存更新后的缓存
-            self._save_to_file()
+            # SQLite自动提交，无需手动保存
 
             return {
                 "added": len(new_symbols),
@@ -1267,6 +1316,53 @@ class StorageManager:
             self._fs_index_timestamp = None
         self.logger.debug("已清空文件系统索引缓存")
 
+    def delete_symbols(self, symbols: List[str]) -> Dict[str, Any]:
+        """删除指定品种的所有数据文件
+
+        Args:
+            symbols: 品种代码列表
+
+        Returns:
+            Dict: {"deleted": int, "failed": int, "details": List[Dict]}
+        """
+        try:
+            deleted_count = 0
+            failed_count = 0
+            details = []
+
+            for symbol in symbols:
+                try:
+                    symbol_dir = self.data_dir / symbol
+                    if symbol_dir.exists():
+                        # 删除整个品种目录
+                        import shutil
+
+                        shutil.rmtree(symbol_dir)
+                        deleted_count += 1
+                        details.append({"symbol": symbol, "status": "deleted"})
+                        self.logger.info("已删除品种数据: %s", symbol)
+                    else:
+                        # 目录不存在
+                        deleted_count += 1
+                        details.append({"symbol": symbol, "status": "not_found"})
+                except Exception as e:
+                    failed_count += 1
+                    details.append({"symbol": symbol, "status": "failed", "error": str(e)})
+                    self.logger.error("删除品种数据失败: %s, 错误: %s", symbol, e)
+
+            # 清空缓存
+            self.clear_fs_cache()
+
+            return {
+                "deleted": deleted_count,
+                "failed": failed_count,
+                "details": details,
+            }
+
+        except Exception as e:
+            self.logger.exception("批量删除品种数据失败: %s", e)
+            return {"deleted": 0, "failed": len(symbols), "details": []}
+
     def get_storage_stats(self) -> Dict[str, Any]:
         """获取存储统计信息"""
         try:
@@ -1480,9 +1576,7 @@ class DataValidator:
 
         self.logger.info(f"批量预加载IPO日期: {len(symbols)}个品种")
 
-        result = download_ipo_dates(
-            symbols=symbols, force_refresh=force_refresh, _use_adaptive=True
-        )
+        result = download_ipo_dates(symbols=symbols, use_multiprocess=True, ipo_cache=self)
 
         self.logger.info(
             f"IPO批量下载完成: 总计{result['total']}, "
@@ -1843,11 +1937,14 @@ class DataValidator:
             # ✅ 直接在当前线程（QThread）中同步执行asyncio
             # 在QThread中是安全的，因为每个QThread有独立的事件循环
             try:
-                # 获取或创建当前线程的事件循环
+                # 🔧 修复：获取或创建当前线程的事件循环，并检查是否已关闭
                 try:
                     loop = asyncio.get_event_loop()
+                    # 关键修复：检查loop是否已关闭
+                    if loop.is_closed():
+                        raise RuntimeError("Event loop is closed")
                 except RuntimeError:
-                    # 如果没有事件循环，创建新的
+                    # 如果没有事件循环或已关闭，创建新的
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
 
@@ -2537,12 +2634,14 @@ class DataSensor:
         try:
             import asyncio
 
-            # 获取或创建事件循环
+            # 🔧 修复：获取或创建事件循环，并检查是否已关闭
             try:
                 loop = asyncio.get_event_loop()
+                # 关键修复：检查loop是否已关闭
                 if loop.is_closed():
                     raise RuntimeError("Loop is closed")
             except RuntimeError:
+                # 创建新的事件循环
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
 
@@ -3221,10 +3320,14 @@ class DataSensor:
                 trading_calendar_obj = TradingCalendar()
                 today = date.today()
 
-                # 创建或获取事件循环
+                # 🔧 修复：创建或获取事件循环，并检查是否已关闭
                 try:
                     loop = asyncio.get_event_loop()
+                    # 关键修复：检查loop是否已关闭
+                    if loop.is_closed():
+                        raise RuntimeError("Event loop is closed")
                 except RuntimeError:
+                    # 创建新的事件循环
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
 
@@ -3833,9 +3936,9 @@ class DataSensor:
 
             # 检查缓存状态
             if not ipo_cache.is_cache_outdated():
-                cached_count = (
-                    len(ipo_cache._memory_cache) if hasattr(ipo_cache, "_memory_cache") else 0
-                )
+                # 获取缓存大小（实际条目数）
+                cache_stats = ipo_cache.get_stats()
+                cached_count = cache_stats.get("size", 0)
                 self.logger.info("✓ IPO日期缓存有效：%d 个品种", cached_count)
                 return
 
@@ -3923,8 +4026,10 @@ class DataSensor:
 
         elapsed = time.time() - start_time
 
-        print(f"  ✓ 已下载: {downloaded_count} 个品种（来自{len(reference_symbols)}个参考品种）")
-        print(f"  ✓ 缺失: {missing_count} 个品种")
+        # 🆕 输出到terminal，明确说明数据含义
+        print(f"  ✓ 至少存在一个文件的品种数（阶段1）: {downloaded_count}个")
+        print(f"     - 参考品种总数: {len(reference_symbols)}个")
+        print(f"     - 完全无数据品种: {missing_count}个")
         print(f"  ✓ 耗时: {elapsed:.2f}秒")
         sys.stdout.flush()
 
@@ -4030,8 +4135,11 @@ class DataSensor:
         gap_days_list = []
         outdated_details = []
 
+        # 🆕 统计含有效数据的品种数
+        valid_data_count = 0
         for symbol, freshness in freshness_results.items():
             if freshness["has_data"]:
+                valid_data_count += 1
                 gap_days = freshness["gap_days"]
                 if gap_days > 1:
                     outdated_symbols += 1
@@ -4050,9 +4158,12 @@ class DataSensor:
         elapsed = time.time() - start_time
 
         # 🎯 优化：只输出最终结果，无循环刷屏
-        print(f"  ✓ 过时品种: {outdated_symbols}")
-        print(f"  ✓ 平均滞后: {avg_gap_days} 个交易日")
-        print(f"  ✓ 数据滞后: {data_lagging_days} 天")
+        # 🆕 明确说明数据含义
+        print(f"  ✓ 至少有一个周期含有效数据的品种数（阶段2）: {valid_data_count}个")
+        print(f"     - 扫描品种总数: {len(local_symbols)}个")
+        print(f"     - 过时品种（滞后>1天）: {outdated_symbols}个")
+        print(f"     - 平均滞后: {avg_gap_days} 个交易日")
+        print(f"     - 数据滞后: {data_lagging_days} 天")
         print(f"  ✓ 耗时: {elapsed:.2f}秒")
         sys.stdout.flush()
 
@@ -4447,6 +4558,110 @@ class DataSensor:
             self.logger.warning(f"推送本地数据索引事件失败: {e}")
 
         return overview
+
+    def scan_errors_and_missing_only(self, reference_symbols: List[str]) -> QualityOverview:
+        """轻量扫描：仅扫描错误数据和缺失数据（UI按钮触发）
+
+        相比全量扫描，跳过耗时较长的质量评分和全量校验。
+        只做必要的完整性检查。
+
+        Args:
+            reference_symbols: 参考品种列表
+
+        Returns:
+            QualityOverview: 质量概览（仅含错误和缺失统计）
+        """
+        try:
+            self.logger.info("开始轻量扫描（仅错误/缺失数据）...")
+
+            # 阶段1：快速扫描本地数据索引
+            local_data = self._scan_phase_1_local_index(reference_symbols)
+            local_symbols = local_data["local_symbols"]
+            missing_count = local_data["missing_count"]
+
+            # 阶段2：轻量级完整性检查（不做全量质量评分）
+            self.logger.info("执行轻量级完整性检查...")
+            error_symbols = []
+            error_count = 0
+
+            # 简单的文件存在性检查（不读取文件内容）
+            from ..config import config_manager
+
+            intervals = ["1d", "5m", "1m"]  # 默认周期
+            data_dir = config_manager.get_data_dir()
+
+            for symbol in local_symbols:
+                has_error = False
+                for interval in intervals:
+                    symbol_dir = data_dir / interval / symbol
+                    if symbol_dir.exists():
+                        files = list(symbol_dir.glob("*.lc1"))
+                        if not files:
+                            has_error = True
+                            break
+                if has_error:
+                    error_symbols.append(symbol)
+                    error_count += 1
+
+            # 构建QualityOverview
+            overview = QualityOverview(
+                total_symbols=len(reference_symbols),
+                missing_symbols=missing_count,
+                error_symbols=error_count,
+                warning_symbols=0,
+                quality_score=0,
+                last_scan_time=datetime.now(),
+                base_date=date.today(),
+                scanned_intervals=intervals,
+                details=[],  # 详情留给UI从增量推送中获取
+                outdated_symbols=0,
+                avg_gap_days=0,
+                data_missing_symbols=0,
+                data_lagging_days=0,
+            )
+
+            # 推送完成事件
+            if self.event_engine:
+                from ..events import EVENT_DATA_SCAN_FINISHED, Event
+
+                event_data = {
+                    "scan_type": "errors_and_missing",
+                    "overview": {
+                        "total_symbols": overview.total_symbols,
+                        "missing_symbols": overview.missing_symbols,
+                        "error_symbols": overview.error_symbols,
+                    },
+                    "timestamp": datetime.now().isoformat(),
+                }
+                event = Event(EVENT_DATA_SCAN_FINISHED, event_data)
+                self.event_engine.put(event)
+
+            self.logger.info(
+                "✓ 轻量扫描完成: 缺失=%d, 错误=%d",
+                missing_count,
+                error_count,
+            )
+
+            return overview
+
+        except Exception as e:
+            self.logger.exception("轻量扫描失败: %s", e)
+            # 返回空的概览
+            return QualityOverview(
+                total_symbols=len(reference_symbols),
+                missing_symbols=0,
+                error_symbols=0,
+                warning_symbols=0,
+                quality_score=0,
+                last_scan_time=datetime.now(),
+                base_date=date.today(),
+                scanned_intervals=[],
+                details=[],
+                outdated_symbols=0,
+                avg_gap_days=0,
+                data_missing_symbols=0,
+                data_lagging_days=0,
+            )
 
 
 # ==================== 文件监控器 ====================

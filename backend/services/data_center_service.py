@@ -102,6 +102,10 @@ class DataCenterService(BaseService, LoggerMixin):
     def _do_initialize(self) -> bool:
         """初始化数据中心服务."""
         try:
+            # 🆕 创建阶段logger
+            stage_logger = logging.getLogger(f"{self.__class__.__name__}.stage")
+
+            stage_logger.info("数据中心服务初始化开始")
             self.log_operation_start("数据中心服务初始化")
 
             # 初始化任务调度器
@@ -112,15 +116,18 @@ class DataCenterService(BaseService, LoggerMixin):
             # 这样可以确保全局变量已经被正确设置
             self._ensure_china_stock_engine()
 
-            # 🔧 修复：启动时加载品种缓存（如果存在）
-            self._load_symbol_cache_on_startup()
-
-            # 🔧 修复Qt Timer跨线程问题：服务器验证改为延迟到首次使用
-            # 不再在启动时创建Python threading.Thread，避免与EventEngine冲突
-            # self._start_server_verification()  # ← 已禁用
-            self.logger.info("服务器验证已禁用（按需验证模式）")
+            # ✅ 优化：移除主线程缓存检查，完全依赖validation_worker的8步流程
+            # 原因：
+            # 1. 消除重复检查（主线程和后台线程都检查）
+            # 2. 加快启动速度（主线程不需要IO操作）
+            # 3. 职责清晰：validation_worker负责所有数据加载
+            # 4. 通过事件系统接收数据加载完成通知（见_on_symbol_cache_loaded）
+            
+            # 注册validation_worker事件监听器
+            self._register_validation_events()
 
             self.log_operation_success("数据中心服务初始化")
+            stage_logger.info("数据中心服务初始化完成")
             return True
 
         except Exception as e:
@@ -501,8 +508,9 @@ class DataCenterService(BaseService, LoggerMixin):
             # 成功则保存缓存并推送事件
             if success:
                 try:
-                    servers = getattr(server_pool_manager, "_sorted_servers", [])
-                    server_pool_manager.save_server_cache(servers)
+                    ipv4_servers = getattr(server_pool_manager, "_sorted_servers_ipv4", [])
+                    ipv6_servers = getattr(server_pool_manager, "_sorted_servers_ipv6", [])
+                    server_pool_manager.save_server_cache(ipv4_servers, ipv6_servers)
                 except Exception:
                     pass
                 with suppress(Exception):
@@ -514,79 +522,6 @@ class DataCenterService(BaseService, LoggerMixin):
         except Exception as e:
             self.logger.error("重新测速服务器池失败：%s", e, exc_info=True)
             return {"success": False, "message": str(e)}
-
-    def _load_symbol_cache_on_startup(self):
-        """启动时加载品种缓存（同步，使用SymbolLoader）.
-
-        优化逻辑：
-        1. 直接使用 data_module 的 SymbolLoader（已有有效缓存）
-        2. 避免依赖可能不存在的 JSON 文件
-        3. 确保启动时缓存立即可用，提升用户体验
-        4. 与 refresh_symbol_list() 保持一致的数据源
-        """
-        try:
-            self.logger.info("正在检查品种列表缓存...")
-
-            # 🔧 优化：直接使用 SymbolLoader，与 refresh_symbol_list() 保持一致
-            from backend.infrastructure.data_module_vnpy.data_acquisition import (
-                SymbolLoader,
-            )
-
-            loader = SymbolLoader()
-            classified, is_outdated = loader.load_from_cache_with_validation()
-
-            if not classified:
-                self.logger.warning("品种列表缓存不存在，启动后台异步加载")
-                self._async_load_symbols_in_background()
-                return
-
-            # 将分类数据转换为前端需要的格式
-            symbols = []
-            for market_type, codes in classified.items():
-                for code_item in codes:
-                    # 兼容两种格式：字符串或字典
-                    if isinstance(code_item, str):
-                        code = code_item
-                        name = code_item
-                    elif isinstance(code_item, dict):
-                        code = code_item.get("code", "")
-                        name = code_item.get("name", code)
-                    else:
-                        continue  # 跳过无效数据
-
-                    if not code:
-                        continue  # 跳过空代码
-
-                    symbols.append(
-                        {
-                            "symbol": code,
-                            "code": code,
-                            "name": name,  # 使用实际品种名称
-                            "exchange": self._map_market_to_exchange(market_type),
-                            "product_type": self._map_market_to_product_type(market_type),
-                        }
-                    )
-
-            # 更新内存缓存
-            self._symbol_cache = {
-                "symbols": symbols,
-                "timestamp": datetime.now(),
-            }
-            self._symbol_cache_time = datetime.now()
-
-            # 记录加载结果（包含是否过时的提示）
-            outdated_hint = " [缓存已过时，建议重新加载]" if is_outdated else ""
-            self.logger.info(
-                "✅ 从SymbolLoader加载了 %d 个品种（%d个市场）%s",
-                len(symbols),
-                len(classified),
-                outdated_hint,
-            )
-
-        except Exception as e:
-            self.logger.error("启动时加载缓存失败：%s", e, exc_info=True)
-            # 失败时启动后台异步加载作为降级方案
-            self._async_load_symbols_in_background()
 
     def _map_market_to_exchange(self, market_type: str) -> str:
         """将市场类型映射到交易所."""
@@ -609,59 +544,145 @@ class DataCenterService(BaseService, LoggerMixin):
             "可转债": "可转债",
         }
         return mapping.get(market_type, "未知")
-
-    def _async_load_symbols_in_background(self):
-        """在后台线程中异步加载品种列表."""
-        import threading
-
-        def load_symbols():
-            try:
-                # 品种加载场景上下文 - 日志埋点v4.0
-                try:
-                    from backend.infrastructure.system_vnpy.logging_context import (
-                        get_logging_context,
-                    )
-
-                    ctx = get_logging_context()
-                except ImportError:
-                    ctx = None
-
-                if ctx:
-                    with ctx.scenario("reload_symbols"):
-                        self.logger.info("【后台线程】正在异步加载品种列表...")
-                        result = self.reload_symbol_list(force=False)
-
-                        if result.get("success"):
-                            self.logger.info(
-                                "【后台线程】✅ 品种列表加载成功：%d 个品种",
-                                result.get("symbol_count", 0),
-                            )
-                        else:
-                            self.logger.warning(
-                                "【后台线程】⚠️ 品种列表加载失败: %s", result.get("message", "")
-                            )
-                else:
-                    # 无场景上下文时的fallback
-                    self.logger.info("【后台线程】正在异步加载品种列表...")
-                    result = self.reload_symbol_list(force=False)
-
-                    if result.get("success"):
-                        self.logger.info(
-                            "【后台线程】✅ 品种列表加载成功：%d 个品种",
-                            result.get("symbol_count", 0),
-                        )
+    
+    def _check_symbol_cache_readonly(self):
+        """只读加载品种列表缓存到内存（不触发下载）.
+        
+        架构说明：
+        - 此方法只在validation_worker完成数据加载后被事件处理器调用（见_on_symbol_cache_loaded）
+        - 不在主线程初始化时调用，避免重复检查
+        - 只读取已存在的缓存文件，不触发网络下载
+        - 如果缓存不存在，记录日志并返回
+        """
+        try:
+            from backend.infrastructure.data_module_vnpy.data_acquisition import SymbolLoader
+            
+            loader = SymbolLoader()
+            classified = loader.get_all_classified()
+            
+            if not classified:
+                self.logger.info("品种列表缓存不存在，等待后台validation_worker加载")
+                return
+            
+            # 转换为前端格式并更新内存缓存
+            symbols = []
+            for market_type, codes in classified.items():
+                for code_item in codes:
+                    if isinstance(code_item, str):
+                        code = code_item
+                        name = code_item
+                    elif isinstance(code_item, dict):
+                        code = code_item.get("code", "")
+                        name = code_item.get("name", code)
                     else:
-                        self.logger.warning(
-                            "【后台线程】⚠️ 品种列表加载失败: %s", result.get("message", "")
-                        )
-
-            except Exception as e:
-                self.logger.error("【后台线程】品种列表加载异常: %s", e, exc_info=True)
-
-        # 启动守护线程（不阻塞主程序退出）
-        thread = threading.Thread(target=load_symbols, daemon=True, name="SymbolLoader")
-        thread.start()
-        self.logger.info("后台加载线程已启动")
+                        continue
+                    
+                    if not code:
+                        continue
+                    
+                    symbols.append({
+                        "symbol": code,
+                        "code": code,
+                        "name": name,
+                        "exchange": self._map_market_to_exchange(market_type),
+                        "product_type": self._map_market_to_product_type(market_type),
+                    })
+            
+            # 更新内存缓存
+            self._symbol_cache = {
+                "symbols": symbols,
+                "timestamp": datetime.now(),
+            }
+            self._symbol_cache_time = datetime.now()
+            
+            self.logger.info("✅ 从缓存加载了 %d 个品种（%d个市场）", len(symbols), len(classified))
+            
+        except Exception as e:
+            self.logger.error("检查缓存失败：%s", e, exc_info=True)
+    
+    def _register_validation_events(self):
+        """注册validation_worker事件监听器."""
+        try:
+            from backend.core.base import get_event_engine
+            from backend.infrastructure.data_module_vnpy.events import (
+                EVENT_SYMBOL_CACHE_LOADED,
+                EVENT_IPO_CACHE_UPDATED,
+                EVENT_VALIDATION_COMPLETED,
+            )
+            
+            event_engine = get_event_engine()
+            if not event_engine:
+                self.logger.warning("EventEngine不可用，无法注册事件监听器")
+                return
+            
+            event_engine.register(EVENT_SYMBOL_CACHE_LOADED, self._on_symbol_cache_loaded)
+            event_engine.register(EVENT_IPO_CACHE_UPDATED, self._on_ipo_cache_updated)
+            event_engine.register(EVENT_VALIDATION_COMPLETED, self._on_validation_completed)
+            
+            self.logger.info("✅ 已注册validation_worker事件监听器")
+            
+        except Exception as e:
+            self.logger.warning("注册validation事件失败: %s", e)
+    
+    def _on_symbol_cache_loaded(self, event):
+        """响应品种列表加载完成事件.
+        
+        Args:
+            event: Event对象
+        """
+        try:
+            data = event.data
+            symbol_count = data.get("symbol_count", 0)
+            is_new = data.get("is_new", False)
+            
+            self.logger.info(
+                "✅ [事件] validation_worker加载完成：%d个品种（%s）",
+                symbol_count,
+                "首次加载" if is_new else "缓存加载"
+            )
+            
+            # 重新加载内存缓存
+            self._check_symbol_cache_readonly()
+            
+        except Exception as e:
+            self.logger.error("处理品种列表加载事件失败: %s", e)
+    
+    def _on_ipo_cache_updated(self, event):
+        """响应IPO缓存更新完成事件.
+        
+        Args:
+            event: Event对象
+        """
+        try:
+            data = event.data
+            listed_count = data.get("listed_count", 0)
+            
+            self.logger.info("✅ [事件] IPO过滤完成：%d个已上市品种", listed_count)
+            
+            # 重新加载内存缓存（已过滤未上市品种）
+            self._check_symbol_cache_readonly()
+            
+        except Exception as e:
+            self.logger.error("处理IPO更新事件失败: %s", e)
+    
+    def _on_validation_completed(self, event):
+        """响应validation流程完成事件.
+        
+        Args:
+            event: Event对象
+        """
+        try:
+            data = event.data
+            success = data.get("success", False)
+            
+            if success:
+                self.logger.info("✅ [事件] validation_worker 8步流程全部完成")
+            else:
+                error = data.get("error", "未知错误")
+                self.logger.warning("⚠️ [事件] validation_worker流程失败: %s", error)
+            
+        except Exception as e:
+            self.logger.error("处理validation完成事件失败: %s", e)
 
     # ==================== 品种列表管理 ====================
 
@@ -678,88 +699,14 @@ class DataCenterService(BaseService, LoggerMixin):
         except Exception as e:
             self.logger.error("删除缓存文件失败: %s", e, exc_info=True)
 
-    def _async_filter_unlisted_symbols(self, symbols):
-        """后台执行IPO下载和未上市品种过滤"""
-        try:
-            self.logger.info("=" * 60)
-            self.logger.info("【后台流程5开始】下载IPO日期并过滤未上市品种")
-            self.logger.info("=" * 60)
-
-            # 1. 执行流程5：下载IPO日期
-            from backend.infrastructure.data_module_vnpy.data_acquisition.data_fetcher import (
-                download_ipo_dates,
-            )
-
-            codes = [s["code"] for s in symbols]
-            self.logger.info("开始下载 %d 个品种的IPO日期...", len(codes))
-
-            # 兼容当前签名：去掉未支持的 use_adaptive 参数
-            result = download_ipo_dates(codes, force_refresh=True)
-
-            self.logger.info(
-                "IPO下载完成: 成功%d个, 失败%d个",
-                result.get("succeeded", 0),
-                result.get("failed", 0),
-            )
-
-            # 2. update_ipo_dates_and_remove_unlisted 已经自动更新缓存
-            # 此方法内部已经包含了删除未上市品种的逻辑
-
-            # 3. 更新内存缓存（使用过滤后的数据）
-            from backend.infrastructure.data_module_vnpy.data_acquisition import (
-                SymbolLoader,
-            )
-
-            loader = SymbolLoader()
-            classified, _ = loader.load_from_cache_with_validation()
-
-            if classified:
-                # 将分类数据转换为前端需要的格式（添加 exchange 和 product_type 字段）
-                filtered_symbols = []
-                for market_type, codes in classified.items():
-                    for code_item in codes:
-                        # 兼容两种格式：字符串或字典
-                        if isinstance(code_item, str):
-                            code = code_item
-                            name = code_item
-                        elif isinstance(code_item, dict):
-                            code = code_item.get("code", "")
-                            name = code_item.get("name", code)
-                        else:
-                            continue  # 跳过无效数据
-
-                        if not code:
-                            continue  # 跳过空代码
-
-                        filtered_symbols.append(
-                            {
-                                "symbol": code,
-                                "code": code,
-                                "name": name,
-                                "exchange": self._map_market_to_exchange(market_type),
-                                "product_type": self._map_market_to_product_type(market_type),
-                            }
-                        )
-
-                self._symbol_cache = {
-                    "symbols": filtered_symbols,
-                    "timestamp": datetime.now(),
-                }
-                self._symbol_cache_time = datetime.now()
-
-                self.logger.info("=" * 60)
-                self.logger.info(
-                    "【后台流程5完成】内存缓存已更新，过滤后品种数: %d", len(filtered_symbols)
-                )
-                self.logger.info("=" * 60)
-            else:
-                self.logger.warning("后台流程5：无法加载过滤后的缓存")
-
-        except Exception as e:
-            self.logger.error("后台流程5失败: %s", e, exc_info=True)
-
     def reload_symbol_list(self, force: bool = False) -> Dict[str, Any]:
-        """重新加载品种列表（删除缓存→流程4→立即返回→后台流程5）.
+        """重新加载品种列表（用户主动触发）.
+        
+        架构说明：
+        - 此方法仅在用户主动点击"重新加载"按钮时调用
+        - 执行完整的流程4-5（品种列表 + IPO过滤）
+        - 改为同步执行，避免与validation_worker冲突
+        - 不在启动时自动调用（避免与validation_worker重复）
 
         Args:
             force: 是否强制重新加载，即使缓存有效
@@ -769,22 +716,20 @@ class DataCenterService(BaseService, LoggerMixin):
                 "success": bool,
                 "symbol_count": int,
                 "message": str,
-                "data": List[Dict]  # 品种列表（包含未上市）
+                "data": List[Dict]  # 品种列表（已过滤未上市）
             }
         """
         try:
-            import threading
-
             self._log_operation("重新加载品种列表", force=force)
             self.logger.info("=" * 60)
-            self.logger.info("【开始】重新加载品种列表 (force=%s)", force)
+            self.logger.info("【用户触发】品种列表重新加载开始")
             self.logger.info("=" * 60)
 
-            # 步骤1：删除缓存文件
-            self.logger.info("【步骤1】删除现有缓存文件...")
+            # 流程1：删除缓存文件
+            self.logger.info("【流程1】删除现有缓存文件...")
             self._delete_symbol_cache_file()
 
-            # 步骤2：执行流程4 - 从API获取品种（包含未上市）
+            # 流程2：执行流程4 - 从API获取品种（包含未上市）
             if self.china_stock_engine is None:
                 self.logger.error("ChinaStockEngine不可用")
                 return {
@@ -794,30 +739,80 @@ class DataCenterService(BaseService, LoggerMixin):
                     "data": [],
                 }
 
-            self.logger.info("【步骤2】执行流程4：从API获取品种列表...")
+            self.logger.info("【流程2/5】从ChinaStockEngine获取品种列表...")
             symbols, empty_categories = self._fetch_symbols_from_china_stock()
-            self.logger.info("【步骤2完成】获取到 %d 个品种（包含未上市）", len(symbols))
+            self.logger.info("【流程2完成】获取到 %d 个品种（包含未上市）", len(symbols))
 
-            # 步骤3：更新内存缓存（立即返回给UI）
-            self.logger.info("【步骤3】更新内存缓存...")
+            # 流程3：同步执行IPO下载并过滤未上市品种
+            self.logger.info("【流程3/5】同步下载IPO日期并过滤未上市品种...")
+            
+            # 执行IPO下载
+            from backend.infrastructure.data_module_vnpy.data_acquisition import download_ipo_dates
+            
+            # 提取代码列表并过滤无效值
+            codes: List[str] = []
+            for s in symbols:
+                if isinstance(s, dict):
+                    code = s.get("code")
+                    if code and isinstance(code, str):
+                        codes.append(code)
+                elif isinstance(s, str) and s:
+                    codes.append(s)
+            
+            # 获取全局IPODateCache实例
+            ipo_cache = None
+            if self.china_stock_engine and hasattr(self.china_stock_engine, "validator"):
+                ipo_cache = self.china_stock_engine.validator._ipo_cache
+            
+            ipo_result = download_ipo_dates(codes, use_multiprocess=True, ipo_cache=ipo_cache)
+            
+            self.logger.info(
+                "IPO下载完成: 成功%d个, 失败%d个",
+                ipo_result.get("succeeded", 0),
+                ipo_result.get("failed", 0),
+            )
+            
+            # 重新加载缓存（已自动过滤未上市品种）
+            from backend.infrastructure.data_module_vnpy.data_acquisition import SymbolLoader
+            
+            loader = SymbolLoader()
+            classified_after_ipo = loader.get_all_classified()
+            
+            # 转换为前端格式
+            filtered_symbols = []
+            for market_type, codes_list in classified_after_ipo.items():
+                for code_item in codes_list:
+                    if isinstance(code_item, str):
+                        code = code_item
+                        name = code_item
+                    elif isinstance(code_item, dict):
+                        code = code_item.get("code", "")
+                        name = code_item.get("name", code)
+                    else:
+                        continue
+                    
+                    if not code:
+                        continue
+                    
+                    filtered_symbols.append({
+                        "symbol": code,
+                        "code": code,
+                        "name": name,
+                        "exchange": self._map_market_to_exchange(market_type),
+                        "product_type": self._map_market_to_product_type(market_type),
+                    })
+            
+            # 流程4：更新内存缓存
+            self.logger.info("【流程4/5】更新内存缓存...")
             self._symbol_cache = {
-                "symbols": symbols,
+                "symbols": filtered_symbols,
                 "timestamp": datetime.now(),
             }
             self._symbol_cache_time = datetime.now()
-            self.logger.info("【步骤3完成】缓存已更新")
-
-            # 步骤4：启动后台线程执行流程5（IPO下载+过滤）
-            self.logger.info("【步骤4】启动后台线程执行流程5...")
-            threading.Thread(
-                target=self._async_filter_unlisted_symbols, args=(symbols,), daemon=True
-            ).start()
-            self.logger.info("【步骤4完成】后台线程已启动")
+            self.logger.info("【流程4完成】缓存已更新，过滤后品种数: %d", len(filtered_symbols))
 
             self.logger.info("=" * 60)
-            self.logger.info(
-                "【成功】品种列表加载完成: %d 个品种（正在后台过滤未上市品种）", len(symbols)
-            )
+            self.logger.info("【用户触发】品种列表重新加载完成")
             self.logger.info("=" * 60)
 
             # 检查通达信根目录配置和空品种类别
@@ -844,12 +839,11 @@ class DataCenterService(BaseService, LoggerMixin):
 
             return {
                 "success": True,
-                "symbol_count": len(symbols),
-                "message": "品种列表加载成功（正在后台过滤未上市品种）",
-                "data": symbols,
+                "symbol_count": len(filtered_symbols),
+                "message": f"成功加载{len(filtered_symbols)}个品种（已过滤未上市）",
+                "data": filtered_symbols,
                 "warning": warning_message,  # 添加警告信息
                 "empty_categories": empty_categories,  # 添加空品种类别列表
-                "filtering_in_background": True,  # 标记后台正在过滤
             }
 
         except Exception as e:
@@ -1327,9 +1321,9 @@ class DataCenterService(BaseService, LoggerMixin):
 
         # 切换到下载阶段，使用场景上下文 - 日志埋点v4.0
         try:
-            from backend.infrastructure.system_vnpy.logging_context import get_logging_context
+            from backend.infrastructure.system_vnpy.unified_log_system import get_logging_hub
 
-            ctx = get_logging_context()
+            ctx = get_logging_hub()
             ctx.set_stage("downloading")
         except ImportError:
             ctx = None
@@ -1401,12 +1395,9 @@ class DataCenterService(BaseService, LoggerMixin):
                     "message": "已有下载任务在运行，或启动失败",
                 }
 
-            # 批量下载场景上下文 - 日志埋点v4.0
-            if ctx:
-                ctx_scenario = ctx.scenario("bulk_download")
-                ctx_scenario.__enter__()
-            else:
-                ctx_scenario = None
+            # 批量下载场景上下文 - 日志埋点v4.0 (已移除scenario)
+            # 直接执行,不使用scenario上下文
+            ctx_scenario = None
 
             logger_download.info("[下载-%s] 引擎已启动，开始轮询进度...", task_id)
             print(">>> [SERVICE] 引擎已启动，正在初始化下载任务...", flush=True)
@@ -1542,11 +1533,7 @@ class DataCenterService(BaseService, LoggerMixin):
             logger_download.info("[下载-%s] 整理结果...", task_id)
 
             # 退出场景上下文 - 日志埋点v4.0
-            if ctx_scenario:
-                try:
-                    ctx_scenario.__exit__(None, None, None)
-                except Exception:
-                    pass
+            # Scenario context已移除
 
             self._emit_download_complete_event(task_id, "incremental", start_date)
 
@@ -2496,9 +2483,9 @@ class DataCenterService(BaseService, LoggerMixin):
         """
         # 质量扫描场景上下文 - 日志埋点v4.0
         try:
-            from backend.infrastructure.system_vnpy.logging_context import get_logging_context
+            from backend.infrastructure.system_vnpy.unified_log_system import get_logging_hub
 
-            ctx = get_logging_context()
+            ctx = get_logging_hub()
             ctx.set_stage("quality_scan")
         except ImportError:
             ctx = None
@@ -2513,46 +2500,31 @@ class DataCenterService(BaseService, LoggerMixin):
             # LoadBalancer的事件订阅和缓存机制已经足够高效，不需要额外预热
             # 在后台线程中创建LoadBalancer可能导致Qt Timer错误和内存损坏
 
-            # 使用场景上下文
-            if ctx:
-                with ctx.scenario("quality_scan"):
-                    overview = self.china_stock_engine.trigger_data_quality_scan(
-                        force_refresh=force_refresh
+            # 数据质量扫描 - 日志埋点v4.0 (已移除scenario)
+            # 直接执行,不使用scenario上下文
+            overview = self.china_stock_engine.trigger_data_quality_scan(
+                force_refresh=force_refresh
+            )
+            if overview:
+                # 推送事件
+                self.china_stock_engine._push_quality_overview_event(overview)
+                self.logger.info("✓ 数据质量扫描完成，评分: %.2f", overview.quality_score)
+
+                # 数据质量告警 - 日志埋点v4.0
+                if overview.quality_score < 60:
+                    logger_alert.warning(
+                        "数据质量告警: 评分过低=%.2f, 建议检查数据完整性",
+                        overview.quality_score,
                     )
-                    if overview:
-                        # 推送事件
-                        self.china_stock_engine._push_quality_overview_event(overview)
-                        self.logger.info("✓ 数据质量扫描完成，评分: %.2f", overview.quality_score)
-
-                        # 数据质量告警 - 日志埋点v4.0
-                        if overview.quality_score < 60:
-                            logger_alert.warning(
-                                "数据质量告警: 评分过低=%.2f, 建议检查数据完整性",
-                                overview.quality_score,
-                            )
-                    else:
-                        self.logger.warning("数据质量扫描未返回结果")
             else:
-                overview = self.china_stock_engine.trigger_data_quality_scan(
-                    force_refresh=force_refresh
-                )
-                if overview:
-                    self.china_stock_engine._push_quality_overview_event(overview)
-                    self.logger.info("✓ 数据质量扫描完成，评分: %.2f", overview.quality_score)
-                else:
-                    self.logger.warning("数据质量扫描未返回结果")
+                self.logger.warning("数据质量扫描未返回结果")
 
-            # 恢复阶段
-            if ctx:
-                ctx.set_stage("sensing")
+            # 恢复阶段 - 日志埋点v4.0 (已移除scenario)
+            # Scenario context已移除
         except Exception as e:
             logger_alert.error("数据质量扫描失败: %s", e, exc_info=True)
-            # 恢复阶段
-            if ctx:
-                try:
-                    ctx.set_stage("sensing")
-                except Exception:
-                    pass
+            # 恢复阶段 - 日志埋点v4.0 (已移除scenario)
+            # Scenario context已移除
 
     # ==================== 数据源管理 ====================
 
@@ -3963,4 +3935,105 @@ class DataCenterService(BaseService, LoggerMixin):
             return {
                 "success": False,
                 "message": f"获取状态失败: {str(e)}",
+            }
+
+    def scan_errors_missing_only(self) -> Dict[str, Any]:
+        """扫描错误数据和缺失数据（UI按钮触发）
+
+        Returns:
+            Dict: 扫描结果
+        """
+        try:
+            if not self.china_stock_engine:
+                return {
+                    "success": False,
+                    "message": "ChinaStockEngine不可用",
+                }
+
+            # 获取参考品种列表
+            reference_symbols = self.china_stock_engine.symbol_loader.extract_all_codes()
+
+            # 调用DataSensor的轻量扫描方法
+            data_sensor = self.china_stock_engine.data_sensor
+            overview = data_sensor.scan_errors_and_missing_only(reference_symbols)
+
+            return {
+                "success": True,
+                "total_symbols": overview.total_symbols,
+                "missing_symbols": overview.missing_symbols,
+                "error_symbols": overview.error_symbols,
+                "message": f"扫描完成: 缺失={overview.missing_symbols}, 错误={overview.error_symbols}",
+            }
+
+        except Exception as e:
+            self._log_error("扫描错误缺失数据", e)
+            return {
+                "success": False,
+                "message": f"扫描失败: {str(e)}",
+            }
+
+    def delete_invalid_symbols(self) -> Dict[str, Any]:
+        """删除失效品种数据
+
+        Returns:
+            Dict: 删除结果
+        """
+        try:
+            from backend.services.database_adapter import get_db_manager
+
+            # 1. 从数据库读取失效品种列表
+            db_manager = get_db_manager()
+            invalid_symbols = db_manager.get_invalid_symbols()
+
+            if not invalid_symbols:
+                return {
+                    "success": True,
+                    "deleted": 0,
+                    "message": "没有失效品种需要删除",
+                }
+
+            # 2. 调用StorageManager删除文件
+            if not self.china_stock_engine:
+                return {
+                    "success": False,
+                    "message": "ChinaStockEngine不可用",
+                }
+
+            storage_manager = self.china_stock_engine.storage_manager
+            result = storage_manager.delete_symbols(invalid_symbols)
+
+            # 3. 清空失效品种池
+            db_manager.clear_invalid_symbols()
+
+            # 4. 推送更新事件
+            if self.china_stock_engine.event_engine:
+                from backend.infrastructure.data_module_vnpy.events import (
+                    EVENT_DATA_METRICS_UPDATED,
+                    Event,
+                )
+                from datetime import datetime
+
+                event_data = {
+                    "total_symbols": 0,  # 将在后续步骤6中更新
+                    "reference_symbols": 0,
+                    "downloaded": 0,
+                    "missing": 0,
+                    "invalid_count": 0,
+                    "timestamp": datetime.now().isoformat(),
+                }
+                event = Event(EVENT_DATA_METRICS_UPDATED, event_data)
+                self.china_stock_engine.event_engine.put(event)
+
+            return {
+                "success": True,
+                "deleted": result["deleted"],
+                "failed": result["failed"],
+                "message": f"删除完成: 成功={result['deleted']}, 失败={result['failed']}",
+            }
+
+        except Exception as e:
+            self._log_error("删除失效品种", e)
+            return {
+                "success": False,
+                "message": f"删除失败: {str(e)}",
             }

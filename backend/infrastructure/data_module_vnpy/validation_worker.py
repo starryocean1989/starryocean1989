@@ -72,8 +72,7 @@ class CacheValidationWorker(QObject):
                 lambda msg, pct: self.progress.emit(msg, pct)
             )
 
-            # 🔧 修复：调用完整的缓存验证逻辑（包含缓存生成）
-            # 之前的简化版本只做检查不生成，导致缓存不存在时无法自动创建
+            # 执行智能缓存验证逻辑
             self.engine._smart_cache_validation_and_sensing()
 
             self.progress.emit("缓存验证完成", 100)

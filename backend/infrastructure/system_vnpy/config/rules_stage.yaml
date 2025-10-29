@@ -1,18 +1,39 @@
 # 阶段规则（按生命周期阶段切换策略）
 
-# 启动阶段 (5-10秒): 详细输出，便于排查启动问题
+# 启动阶段 (5-10秒): 简洁输出，只显示关键节点
 stage_startup:
   description: "系统启动和初始化阶段"
   duration: "5-10s"
   SYSTEM:
-    DEBUG: [file, console]  # 启动阶段DEBUG也输出
-    INFO: [file, console]
-    WARNING: [file, console, database]
-    ERROR: [file, console, database, ui_dialog]
+    DEBUG: [file, ai_file]  # ✅ 只输出到文件和AI日志
+    INFO: [file, ai_file]  # ✅ 只输出到文件和AI日志
+    WARNING: [file, console, database, event, ai_file]
+    ERROR: [file, console, database, event, ai_file]
+    CRITICAL: [file, console, database, event, ui_dialog, ai_file]
+
+  STAGE_NODE:  # 🆕 流程节点
+    DEBUG: [file, ai_file]  # ✅ 只输出到文件和AI日志
+    INFO: [file, console, ai_file]  # ✅ 阶段节点输出到Terminal（用户需求）
+    WARNING: [file, console, database, event, ai_file]
+    ERROR: [file, console, database, event, ai_file]
+
   PROGRESS:
-    INFO: [file, console]  # 启动进度输出到控制台
+    DEBUG: [file, console]
+    INFO: [file]  # 进度不输出到terminal
+    WARNING: [file, console]
+
   NOTIFICATION:
-    INFO: [file, console, statusbar]
+    INFO: [file, console, event]
+    WARNING: [file, console, database]
+
+  ALERT:
+    WARNING: [file, console, database, event]
+    ERROR: [file, console, database, event]
+
+  # 启动阶段的异常详细化
+  ERROR:
+    level: [file, console, database, event]
+    include_traceback: true  # 🆕 包含完整堆栈
 
 # 数据感知阶段 (10-30秒): 品种加载、缓存验证
 stage_sensing:
@@ -27,29 +48,45 @@ stage_sensing:
   ALERT:
     WARNING: [file, statusbar]
 
-# 下载阶段 (1-3分钟): 静默模式，减少噪音
+# 下载阶段 (1-3分钟): 进度静默，完成输出
 stage_downloading:
   description: "批量数据下载阶段（高频日志）"
   duration: "1-3min"
   PROGRESS:
-    INFO: [file, event_throttled]  # 不输出到控制台
+    DEBUG: [file, console]
+    INFO: [file, event_throttled]  # 🎯 进度不输出到terminal
+    WARNING: [file, console, event]
+    ERROR: [file, console, database, event]
+
+  STAGE_NODE:
+    INFO: [file, console]  # 下载节点输出
+
   NOTIFICATION:
-    INFO: [file, statusbar, event]  # 完成通知仅状态栏
+    INFO: [file, console, event]  # 🎯 下载完成输出
+    WARNING: [file, console, database]
+
   ALERT:
-    WARNING: [file, statusbar]
-    ERROR: [file, console, statusbar, ui_dialog]
+    WARNING: [file, console, database, event]
+    ERROR: [file, console, database, event, ui_dialog]
 
 # 质量扫描阶段 (30-60秒): 进度+告警
 stage_quality_scan:
   description: "数据质量扫描阶段"
   duration: "30-60s"
   PROGRESS:
-    INFO: [file, event_throttled, statusbar]
+    DEBUG: [file, console]
+    INFO: [file, event_throttled]  # 🎯 进度不输出到terminal
+    WARNING: [file, console]
+
+  STAGE_NODE:
+    INFO: [file, console]  # 扫描节点输出
+
   ALERT:
-    WARNING: [file, database, statusbar]  # 质量问题入库
-    ERROR: [file, database, statusbar, ui_dialog]
+    WARNING: [file, console, database, ui_statusbar]  # 🎯 质量问题告警
+    ERROR: [file, console, database, ui_statusbar, ui_dialog]
+
   NOTIFICATION:
-    INFO: [file, statusbar, event]
+    INFO: [file, console, event]  # 🎯 扫描完成输出
 
 # 交易阶段 (持续运行): 全量记录，所有日志入库
 stage_trading:
@@ -57,15 +94,21 @@ stage_trading:
   duration: "持续"
   priority: critical
   SYSTEM:
-    INFO: [file, database]  # INFO也入库（订单追踪）
+    DEBUG: [file, console]
+    INFO: [file, database]  # 🎯 交易日志入库但不输出到terminal
     WARNING: [file, console, database, event]
     ERROR: [file, console, database, ui_dialog, event]
+
+  STAGE_NODE:
+    INFO: [file, console]  # 交易节点输出
+
   ALERT:
-    WARNING: [file, database, statusbar, event]
-    ERROR: [file, database, statusbar, ui_dialog, event, email]  # 交易告警发邮件
-    CRITICAL: [file, database, statusbar, ui_dialog, event, email, sms]  # 紧急告警发短信
+    WARNING: [file, console, database, ui_statusbar, event]
+    ERROR: [file, console, database, ui_statusbar, ui_dialog, event, email]  # 交易告警发邮件
+    CRITICAL: [file, console, database, ui_statusbar, ui_dialog, event, email, sms]  # 紧急告警发短信
+
   NOTIFICATION:
-    INFO: [file, database, statusbar]  # 交易通知入库
+    INFO: [file, console, database, ui_statusbar]  # 🎯 交易通知输出
 
 # 策略回测阶段 (1-5分钟): 进度监控
 stage_backtest:
