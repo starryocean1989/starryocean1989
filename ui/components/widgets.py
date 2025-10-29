@@ -47,7 +47,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from backend.core.utils import ErrorInfo, get_error_handler
 from ui.components.theme_system import DashboardTheme
 
 
@@ -66,12 +65,200 @@ class ErrorCategory(Enum):
 
 
 class ErrorSeverity(Enum):
-    """错误严重程度枚举."""
+    """错误严重程度."""
 
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
     CRITICAL = "critical"
+
+
+class ErrorInfo:
+    """错误信息."""
+
+    def __init__(
+        self,
+        error_id: str,
+        message: str,
+        category: ErrorCategory = ErrorCategory.UNKNOWN,
+        severity: ErrorSeverity = ErrorSeverity.MEDIUM,
+        timestamp: Optional[float] = None,
+        retry_count: int = 0,
+        max_retries: int = 3,
+    ):
+        """初始化错误信息."""
+        import time
+
+        self.error_id = error_id
+        self.message = message
+        self.category = category
+        self.severity = severity
+        self.timestamp = timestamp or time.time()
+        self.retry_count = retry_count
+        self.max_retries = max_retries
+
+
+class ErrorHandler:
+    """错误处理器."""
+
+    def __init__(self):
+        """初始化错误处理器."""
+        self.logger = logging.getLogger("ui.components.error_handler")
+        self._error_history: List[ErrorInfo] = []
+        self._handlers: Dict[str, Callable] = {}
+
+        # 添加信号支持
+        from PySide6.QtCore import Signal
+
+        self.error_occurred = Signal(object)  # ErrorInfo
+        self.error_resolved = Signal(str)  # error_id
+        self.retry_scheduled = Signal(str, float)  # error_id, delay
+
+    def register_handler(self, error_category: str, handler: Callable):
+        """注册错误处理函数."""
+        self._handlers[error_category] = handler
+        self.logger.debug("已注册错误处理函数: %s", error_category)
+
+    def handle_error(self, error: ErrorInfo, auto_retry: bool = True) -> bool:
+        """处理错误."""
+        self._error_history.append(error)
+
+        # 记录错误日志
+        severity_mapping = {
+            ErrorSeverity.LOW: logging.INFO,
+            ErrorSeverity.MEDIUM: logging.WARNING,
+            ErrorSeverity.HIGH: logging.ERROR,
+            ErrorSeverity.CRITICAL: logging.CRITICAL,
+        }
+        log_level = severity_mapping.get(error.severity, logging.WARNING)
+
+        self.logger.log(
+            log_level,
+            "错误处理: 类别=%s, 严重性=%s, ID=%s, 消息=%s, 重试=%d/%d",
+            error.category.value,
+            error.severity.value,
+            error.error_id,
+            error.message,
+            error.retry_count,
+            error.max_retries,
+        )
+
+        # 发射错误信号
+        try:
+            self.error_occurred.emit(error)  # type: ignore
+        except (RuntimeError, AttributeError):
+            pass
+
+        # 调用自定义处理器
+        handler = self._handlers.get(error.category.value)
+        if handler:
+            try:
+                return handler(error)
+            except Exception as e:
+                self.logger.error("错误处理器异常: %s", e)
+                return False
+
+        # 默认自动重试逻辑
+        if auto_retry and error.retry_count < error.max_retries:
+            delay = min(2**error.retry_count, 60)  # 指数退避，最大60秒
+            self.logger.info("将在 %s 秒后重试 (第 %s 次)", delay, error.retry_count + 1)
+
+            try:
+                self.retry_scheduled.emit(error.error_id, delay)  # type: ignore
+            except (RuntimeError, AttributeError):
+                pass
+
+            return False
+
+        return True
+
+    def get_error_history(self, limit: int = 100) -> List[ErrorInfo]:
+        """获取错误历史."""
+        return self._error_history[-limit:]
+
+    def get_errors_by_category(self, category: ErrorCategory) -> List[ErrorInfo]:
+        """获取指定类别的错误."""
+        return [e for e in self._error_history if e.category == category]
+
+    def get_errors_by_severity(self, severity: ErrorSeverity) -> List[ErrorInfo]:
+        """获取指定严重程度的错误."""
+        return [e for e in self._error_history if e.severity == severity]
+
+    def clear_history(self):
+        """清空错误历史."""
+        self._error_history.clear()
+        self.logger.info("错误历史已清空")
+
+    def show_error_dialog(self, error: ErrorInfo):
+        """显示错误对话框."""
+        try:
+            QMessageBox.critical(
+                None,
+                f"错误 - {error.severity.value.upper()}",
+                f"类别: {error.category.value}\n\n{error.message}",
+            )
+        except (RuntimeError, AttributeError) as e:
+            self.logger.error("显示错误对话框失败: %s", e)
+
+    @property
+    def total_errors(self) -> int:
+        """总错误数量."""
+        return len(self._error_history)
+
+    @property
+    def recent_errors(self) -> List[ErrorInfo]:
+        """最近的错误（最多10个）."""
+        return self._error_history[-10:]
+
+    def get_error_summary(self) -> Dict[str, Any]:
+        """获取错误摘要."""
+        if not self._error_history:
+            return {"total": 0, "by_category": {}, "by_severity": {}}
+
+        by_category = {}
+        by_severity = {}
+
+        for error in self._error_history:
+            cat = error.category.value
+            sev = error.severity.value
+
+            by_category[cat] = by_category.get(cat, 0) + 1
+            by_severity[sev] = by_severity.get(sev, 0) + 1
+
+        self.logger.info(
+            "错误统计: 总计=%d, 类别=%s, 严重程度=%s",
+            len(self._error_history),
+            ", ".join(f"{k}={v}" for k, v in by_category.items()),
+            ", ".join(f"{k}={v}" for k, v in by_severity.items()),
+        )
+
+        return {
+            "total": len(self._error_history),
+            "by_category": by_category,
+            "by_severity": by_severity,
+        }
+
+
+# 全局错误处理器实例
+_error_handler: Optional[ErrorHandler] = None
+_error_handler_lock = None  # 延迟初始化
+
+
+def get_error_handler() -> ErrorHandler:
+    """获取全局错误处理器实例."""
+    global _error_handler, _error_handler_lock
+
+    if _error_handler is None:
+        import threading
+
+        if _error_handler_lock is None:
+            _error_handler_lock = threading.Lock()
+
+        with _error_handler_lock:
+            if _error_handler is None:
+                _error_handler = ErrorHandler()
+
+    return _error_handler
 
 
 class BaseWidget(QWidget):

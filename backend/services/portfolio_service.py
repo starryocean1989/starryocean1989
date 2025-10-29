@@ -88,7 +88,9 @@ class PortfolioService(BaseService):
             # 尝试导入vnpy事件类型
             try:
                 from vnpy.trader.event import EVENT_POSITION, EVENT_ACCOUNT, EVENT_TRADE
-                from backend.core.utils import EVENT_STRATEGY_STATUS_CHANGED
+                from backend.infrastructure.system_vnpy.system_toolkit import (
+                    EVENT_STRATEGY_STATUS_CHANGED,
+                )
 
                 # 注册事件处理器
                 event_engine.register(EVENT_POSITION, self._on_position_update)

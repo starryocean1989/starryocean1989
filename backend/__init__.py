@@ -53,30 +53,8 @@ from .services.ai_assistant_service import AIAssistantService
 from .services.system_manager_service import SystemManagerService
 from .services.trading_gateway_service import TradingGatewayService
 
-# 导出仓库（从core导入）
-from .core.repositories import (
-    SymbolRepository,
-    DataSourceRepository,
-    DownloadTaskRepository,
-    GatewayRepository,
-    StrategyRepository,
-    BacktestRepository,
-    AlertRepository,
-    LogRepository,
-    ConfigRepository,
-    PortfolioRepository,
-)
-
 # 导出配置（从core导入）
 from .core.config import get_settings
-
-# 导出工具
-from .core.utils import (
-    success_response,
-    error_response,
-    validate_required_fields,
-    SimpleCache,
-)
 
 __all__ = [
     # 版本信息
@@ -118,22 +96,7 @@ __all__ = [
     "AIAssistantService",
     "SystemManagerService",
     "TradingGatewayService",
-    # 数据仓库
-    "SymbolRepository",
-    "DataSourceRepository",
-    "DownloadTaskRepository",
-    "GatewayRepository",
-    "StrategyRepository",
-    "BacktestRepository",
-    "AlertRepository",
-    "LogRepository",
-    "ConfigRepository",
-    "PortfolioRepository",
     # 工具函数
-    "success_response",
-    "error_response",
-    "validate_required_fields",
-    "SimpleCache",
     "setup_logging",
     # 配置管理
     "get_settings",

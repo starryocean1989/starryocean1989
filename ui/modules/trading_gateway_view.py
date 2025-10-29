@@ -2115,7 +2115,9 @@ class TradingGateway(BaseWidget, LoggerMixin):
         """
         try:
             from backend.core.base import get_event_engine
-            from backend.core.utils import EVENT_STRATEGY_STATUS_CHANGED
+            from backend.infrastructure.system_vnpy.system_toolkit import (
+                EVENT_STRATEGY_STATUS_CHANGED,
+            )
 
             event_engine = get_event_engine()
             if not event_engine:

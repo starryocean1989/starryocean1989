@@ -255,8 +255,7 @@ def main():
     if str(project_root_path) not in sys.path:
         sys.path.insert(0, str(project_root_path))
 
-    from backend.core.admin_utils import is_admin, run_as_admin
-    from backend.core.terminal_output import print_stage
+    from backend.infrastructure.system_vnpy.system_toolkit import is_admin, run_as_admin, print_stage
     from backend.core.config import get_settings, update_capabilities
 
     # 读取启动策略
@@ -320,7 +319,7 @@ def main():
         logger.debug("[ENV-SETUP] 环境准备完成，耗时 %.0fms", env_time)
 
         # 配置Debug输出
-        from backend.core.terminal_output import configure_debug
+        from backend.infrastructure.system_vnpy.system_toolkit import configure_debug
 
         # 启用Debug模块（监控、数据、行情看板）
         configure_debug(

@@ -35,7 +35,7 @@ from typing import Any, Dict, List, Optional, Callable, Union
 from backend.core.service_base import BaseService
 from backend.core.models import UnifiedMarketData, get_data_model_manager
 from backend.infrastructure.system_vnpy.monitor_system import SystemMonitor
-from backend.infrastructure.system_vnpy.utilities import NetworkTester, PortScanner
+from backend.infrastructure.system_vnpy.system_toolkit import NetworkTester, PortScanner
 from backend.services.database_adapter import get_db_manager
 from backend.core.config import get_settings
 
@@ -365,7 +365,7 @@ class LogRecordHandler(logging.Handler):
             # 🔥 周期性错误计数处理（对DEBUG、WARNING、ERROR和CRITICAL级别）
             if record.levelno >= logging.DEBUG:
                 try:
-                    from backend.core.error_counter import get_error_counter
+                    from backend.infrastructure.system_vnpy.system_toolkit import get_error_counter
 
                     error_counter = get_error_counter()
                     exc_type_name = (
@@ -2733,7 +2733,7 @@ class SystemManagerService(BaseService):
         self.test_runner = TestRunner()
 
         # 新增：诊断工具
-        from backend.infrastructure.system_vnpy.utilities import (
+        from backend.infrastructure.system_vnpy.system_toolkit import (
             LogAnalyzer,
             PerformanceAnalyzer,
             AutoFixer,
@@ -2744,7 +2744,7 @@ class SystemManagerService(BaseService):
         self.auto_fixer = AutoFixer()
 
         # 新增：服务管理工具
-        from backend.infrastructure.system_vnpy.utilities import (
+        from backend.infrastructure.system_vnpy.system_toolkit import (
             ServiceHealthChecker,
             ServiceRestarter,
         )
@@ -3199,7 +3199,9 @@ class SystemManagerService(BaseService):
 
                 # 发送事件到EventEngine（UI可以监听）
                 if self.event_engine:
-                    from backend.core.utils import EVENT_ALERT_CREATED
+                    from backend.infrastructure.system_vnpy.system_toolkit import (
+                        EVENT_ALERT_CREATED,
+                    )
 
                     self.event_engine.put(
                         EVENT_ALERT_CREATED,
@@ -3501,7 +3503,7 @@ class SystemManagerService(BaseService):
             return
 
         from vnpy.event import Event
-        from backend.core.monitoring_events import (
+        from backend.infrastructure.system_vnpy.system_toolkit import (
             EVENT_SYSTEM_METRICS,
             EVENT_HARDWARE_SENSORS,
             EVENT_BOTTLENECK_ANALYSIS,
@@ -4808,7 +4810,7 @@ class SystemManagerService(BaseService):
     def _diagnose_database(self) -> Dict[str, Any]:
         """数据库诊断."""
         try:
-            from backend.infrastructure.data_module_vnpy.config import config_manager
+            from backend.infrastructure.data_module_vnpy.data_module import config_manager
 
             db_file = config_manager.get_db_file()
 
@@ -5383,7 +5385,7 @@ class SystemManagerService(BaseService):
 
             # 1. 数据中心配置（来自data_module_vnpy）
             try:
-                from backend.infrastructure.data_module_vnpy.config import config_manager
+                from backend.infrastructure.data_module_vnpy.data_module import config_manager
 
                 # 🔧 使用get_cache_dir()和get_data_dir()方法，自动转换相对路径为绝对路径并持久化
                 cache_dir = str(config_manager.get_cache_dir())
@@ -5492,7 +5494,7 @@ class SystemManagerService(BaseService):
 
             if module == "data_center":
                 # 更新data_module_vnpy配置
-                from backend.infrastructure.data_module_vnpy.config import config_manager
+                from backend.infrastructure.data_module_vnpy.data_module import config_manager
 
                 # 转换为chinastock.前缀
                 chinastock_config = {}
@@ -5603,7 +5605,7 @@ class SystemManagerService(BaseService):
         """
         try:
             import json
-            from backend.infrastructure.data_module_vnpy.config import config_manager
+            from backend.infrastructure.data_module_vnpy.data_module import config_manager
 
             # 配置文件路径（使用绝对路径）
             config_file = config_manager.get_config_file()
@@ -5645,7 +5647,7 @@ class SystemManagerService(BaseService):
         """
         try:
             import json
-            from backend.infrastructure.data_module_vnpy.config import config_manager
+            from backend.infrastructure.data_module_vnpy.data_module import config_manager
 
             config_file = config_manager.get_config_file()
 
@@ -5885,7 +5887,7 @@ class SystemManagerService(BaseService):
 
             # 导入TdxDynamicExecutor（替代TdxBinaryReader.process_batch）
             try:
-                from backend.infrastructure.data_module_vnpy.data_readers.tdx_dynamic_executor import (
+                from backend.infrastructure.data_module_vnpy.data_acquisition import (
                     TdxDynamicExecutor,
                 )
             except ImportError as e:
@@ -6199,7 +6201,7 @@ class SystemManagerService(BaseService):
         try:
             # 从配置管理器获取通达信根目录
             try:
-                from backend.infrastructure.data_module_vnpy.config import config_manager
+                from backend.infrastructure.data_module_vnpy.data_module import config_manager
 
                 tdx_dir = config_manager.get_tdx_reader_root_dir()
             except Exception:
@@ -6448,7 +6450,7 @@ class SystemManagerService(BaseService):
         """
         try:
             # 直接导入并使用StorageManager
-            from backend.infrastructure.data_module_vnpy.local_data.data_quality import (
+            from backend.infrastructure.data_module_vnpy.data_quality import (
                 StorageManager,
             )
 

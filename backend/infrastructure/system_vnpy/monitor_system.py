@@ -68,6 +68,11 @@ except ImportError:
     HAS_SPEEDTEST = False
     logger.warning("speedtest-cli模块未安装，带宽测试功能将不可用")
 
+# 从 system_toolkit 导入 SMART 相关类
+from backend.infrastructure.system_vnpy.system_toolkit import (
+    DiskSmartData,
+    SmartMonitor,
+)
 
 # =============================================================================
 # Part 1: 数据结构和配置
@@ -105,37 +110,7 @@ class ThresholdResult:
     last_updated: datetime
 
 
-@dataclass
-class SmartAttribute:
-    """SMART属性."""
-
-    id: int
-    name: str
-    value: int
-    worst: int
-    threshold: int
-    raw_value: int
-    status: str
-
-
-@dataclass
-class DiskSmartData:
-    """硬盘SMART数据."""
-
-    disk_name: str
-    model: str
-    serial: str
-    capacity: str
-    interface: str
-    assessment: str
-    temperature: Optional[int]
-    power_on_hours: Optional[int]
-    reallocated_sectors: Optional[int]
-    pending_sectors: Optional[int]
-    uncorrectable_errors: Optional[int]
-    attributes: List[SmartAttribute]
-    timestamp: datetime
-
+# SmartAttribute 和 DiskSmartData 已从 system_toolkit 导入
 
 # =============================================================================
 # Part 2: 自适应阈值管理器
@@ -377,70 +352,9 @@ class AdaptiveThresholdManager:
 
 
 # =============================================================================
-# Part 3: 硬盘SMART监控
+# Part 3: 硬盘SMART监控（已迁移到 system_toolkit.py）
 # =============================================================================
-
-
-class SmartMonitor:
-    """硬盘SMART监控器 - 纯Python WMI方案（无需外部工具）."""
-
-    def __init__(self):
-        self._wmi_monitor = None
-
-        # 初始化WMI方案（唯一方案）
-        try:
-            from backend.infrastructure.system_vnpy.wmi_smart_monitor import get_wmi_smart_monitor
-
-            self._wmi_monitor = get_wmi_smart_monitor()
-            if self._wmi_monitor.is_available():
-                logger.info("✅ WMI SMART监控已启用（纯Python，无需smartctl）")
-            else:
-                logger.error("❌ WMI SMART监控初始化失败：WMI不可用")
-        except Exception as e:
-            logger.error("❌ WMI SMART初始化失败: %s", e, exc_info=True)
-
-    def is_available(self) -> bool:
-        return self._wmi_monitor is not None and self._wmi_monitor.is_available()
-
-    def get_smart_data(self) -> Dict[str, DiskSmartData]:
-        """获取SMART数据（仅WMI方案）."""
-        if not self._wmi_monitor or not self._wmi_monitor.is_available():
-            logger.warning("[SMART] WMI监控器不可用")
-            return {}
-
-        try:
-            result = self._wmi_monitor.get_smart_data()
-            self._process_smart_alerts(result)
-            return result
-        except Exception as e:
-            logger.exception("[SMART] WMI数据获取失败: %s", e)
-            return {}
-
-    def _process_smart_alerts(self, result: Dict[str, DiskSmartData]):
-        """处理SMART告警"""
-        for smart_data in result.values():
-            # 健康评估告警
-            if smart_data.assessment in ["FAILING", "FAIL"]:
-                logger_alert.critical(
-                    "硬盘即将故障: 硬盘=%s, 型号=%s, 序列号=%s",
-                    smart_data.disk_name,
-                    smart_data.model,
-                    smart_data.serial,
-                )
-            elif smart_data.assessment == "WARNING":
-                logger_alert.warning(
-                    "硬盘健康警告: 硬盘=%s, 重分配扇区=%s, 待处理扇区=%s",
-                    smart_data.disk_name,
-                    smart_data.reallocated_sectors or 0,
-                    smart_data.pending_sectors or 0,
-                )
-            # 温度告警
-            if smart_data.temperature and smart_data.temperature > 60:
-                logger_alert.warning(
-                    "硬盘温度过高: 硬盘=%s, 温度=%d°C",
-                    smart_data.disk_name,
-                    smart_data.temperature,
-                )
+# SmartMonitor 类已迁移到 system_toolkit.py，在文件顶部导入
 
 
 # =============================================================================
@@ -1232,7 +1146,7 @@ class MonitoringProcessV2:
     def __init__(self, db_path: str = "data/terminal.db", parent_pid: Optional[int] = None):
         self.running = False
         self.loop: Optional[asyncio.AbstractEventLoop] = None
-        
+
         # ✅ 初始化logger（使用模块级logger）
         self.logger = logger
 
@@ -1740,34 +1654,33 @@ class MonitoringProcessV2:
         # ✅ 优化：在后台异步创建硬件监控器（避免阻塞主循环）
         if self.hardware_monitor is None:
             logger.info("[INIT] 开始后台初始化硬件监控器（LibreHardwareMonitor可能需要30-60秒）...")
-            
+
             def _create_hardware_monitor():
                 """在后台线程中创建硬件监控器"""
                 import time
+
                 start_time = time.time()
                 try:
                     monitor = HardwareMonitorFactory.create_monitor()
                     elapsed = time.time() - start_time
-                    logger.info(
-                        "[INIT] ✅ 硬件监控器初始化完成（耗时: %.1fs）",
-                        elapsed
-                    )
+                    logger.info("[INIT] ✅ 硬件监控器初始化完成（耗时: %.1fs）", elapsed)
                     return monitor
                 except Exception as e:
                     logger.error("[INIT] ❌ 硬件监控器初始化失败: %s", e)
                     return None
-            
+
             # 在后台线程池中创建（不阻塞主循环）
             loop = asyncio.get_event_loop()
             self.hardware_monitor = await loop.run_in_executor(
-                self.executor,
-                _create_hardware_monitor
+                self.executor, _create_hardware_monitor
             )
-            
+
             if self.hardware_monitor:
                 logger.info("[INIT] ✅ 硬件监控器已就绪，功能完整")
             else:
-                logger.warning("[INIT] ⚠️ 硬件监控器初始化失败，系统将以降级模式运行（无硬件温度监控）")
+                logger.warning(
+                    "[INIT] ⚠️ 硬件监控器初始化失败，系统将以降级模式运行（无硬件温度监控）"
+                )
 
         # 初始化队列
         self.db_write_queue = asyncio.Queue()
@@ -1785,29 +1698,8 @@ class MonitoringProcessV2:
         self._register_metrics()
         self.adaptive_threshold.load_from_database()
 
-        # 🆕 初始化日志代理（将监控进程日志发送将主进程）
-        try:
-            from backend.infrastructure.system_vnpy.unified_log_system import (
-                MonitorLogProxy,
-                MonitorProxyHandler,
-            )
-
-            # 创建日志代理（使用ZMQ PUSH socket发送将主进程PULL socket）
-            self.log_proxy = MonitorLogProxy(
-                zmq_context=self.zmq_context, push_address="tcp://127.0.0.1:5558"  # 主进程监听端口
-            )
-
-            # 创建Handler并添加将监控进程logger
-            self.log_proxy_handler = MonitorProxyHandler(self.log_proxy)
-            monitor_logger = logging.getLogger("monitor_process")
-            monitor_logger.addHandler(self.log_proxy_handler)
-            monitor_logger.setLevel(logging.INFO)  # 只发送INFO及以上级别
-
-            logger.info("✓ 监控进程日志代理已启用（发送将主进程tcp://127.0.0.1:5558）")
-
-        except Exception as e:
-            logger.warning("⚠️ 监控进程日志代理启用失败: %s", e)
-            # 失败不影响监控进程运行
+        # 注意：监控进程日志已通过 ZMQ 告警端口 (5555) 推送到主进程
+        # 不需要单独的日志代理
 
         logger.info("[INIT] ✅ 组件初始化完成")
 
@@ -4558,7 +4450,7 @@ class HardwareMonitor:
         temp_info = self.get_temperature_wmi()
         if temp_info:
             return temp_info
-        
+
         # 如果WMI不可用，返回空字典
         return {}
 
@@ -5580,3 +5472,71 @@ __all__ = [
     "get_resource_usage",
     "get_business_metrics_collector",
 ]
+
+
+# =============================================================================
+# Part 4: 独立进程入口（合并自 monitor_process_entry.py）
+# =============================================================================
+
+
+def main():
+    """监控进程入口函数（可作为独立进程运行）."""
+    import logging
+    import sys
+
+    # 配置日志（仅Terminal输出）
+    # 确保stdout使用UTF-8编码
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+
+    stream_handler = logging.StreamHandler(sys.stdout)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        handlers=[stream_handler],
+    )
+    logger = logging.getLogger("MonitorProcess")
+
+    logger.info("=" * 60)
+    logger.info("独立监控进程启动（V2 - 混合并发架构）")
+    logger.info("=" * 60)
+
+    try:
+        import asyncio
+        import os
+        import platform
+
+        # Windows需要使用SelectorEventLoop以支持ZMQ asyncio
+        if platform.system() == "Windows":
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+            logger.info("✅ 已设置Windows SelectorEventLoop策略")
+
+        logger.info("正在创建MonitoringProcessV2实例...")
+
+        # 获取父进程PID（主应用的PID）
+        parent_pid = os.getppid()
+        logger.info(
+            f"[PARENT-PID] 父进程PID（主应用）: {parent_pid}, 当前进程PID（监控进程）: {os.getpid()}"
+        )
+
+        monitor = MonitoringProcessV2(parent_pid=parent_pid)
+        logger.info("✅ MonitoringProcessV2实例创建成功")
+
+        logger.info("正在启动监控进程主循环...")
+        # 创建新的事件循环并使用当前策略
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(monitor.start())
+        finally:
+            loop.close()
+
+    except KeyboardInterrupt:
+        logger.info("收到中断信号")
+    except Exception as e:
+        logger.error("❌ 监控进程启动失败: %s", e, exc_info=True)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

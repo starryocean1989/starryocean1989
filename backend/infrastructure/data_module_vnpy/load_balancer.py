@@ -1335,7 +1335,7 @@ class SystemMetricsMonitor:
             return
 
         try:
-            from backend.core.monitoring_events import (
+            from backend.infrastructure.system_vnpy.system_toolkit import (
                 EVENT_SYSTEM_METRICS,
                 EVENT_HARDWARE_SENSORS,
             )
@@ -3137,8 +3137,9 @@ def _process_task_unit(task_unit: TaskUnit) -> TaskResult:
     # 解决：为每个子进程创建带PID的logger，日志会自动被主进程的loghub拦截并路由到AI日志文件
     # 效果：1) 子进程日志输出到logs/ai/目录 2) 可追踪每个进程的执行过程 3) 日志格式统一
     import logging
+
     logger = logging.getLogger(f"load_balancer.subprocess.{multiprocessing.current_process().pid}")
-    
+
     try:
         logger.debug(f"处理任务单元: {task_unit.unit_id}")
         if task_unit.processor:
@@ -3161,8 +3162,9 @@ def _process_async_batch(batch_info: tuple) -> List[TaskResult]:
     # 解决：为每个子进程初始化logger，命名包含PID便于区分不同进程
     # 效果：服务器池测速等异步任务的日志都会归集到AI日志文件，便于排查问题
     import logging
+
     logger = logging.getLogger(f"load_balancer.subprocess.{multiprocessing.current_process().pid}")
-    
+
     task_units, coroutines_count = batch_info
     logger.debug(f"处理异步任务批次: {len(task_units)} 个任务，协程数={coroutines_count}")
 

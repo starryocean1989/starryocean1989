@@ -87,7 +87,7 @@ from backend.services.vnpy_imports import (
 )
 
 # 导入监控版EventEngine（用于队列深度和延迟监控）
-from backend.core.monitored_event_engine import MonitoredEventEngine
+from backend.infrastructure.system_vnpy.system_toolkit import MonitoredEventEngine
 
 
 # =============================================================================
@@ -976,7 +976,7 @@ class ServiceInitializer:
             self.logger.info("阶段0: 网络时间同步")
             self.logger.info("=" * 60)
 
-            from backend.infrastructure.data_module_vnpy.utils.network_time import (
+            from backend.infrastructure.data_module_vnpy.data_module import (
                 sync_network_time,
                 get_time_stats,
             )

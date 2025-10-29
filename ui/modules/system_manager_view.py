@@ -10,9 +10,10 @@ from collections import deque
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from PySide6.QtCore import QDate, QDateTime, Qt, QTimer, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QDate, QDateTime, Qt, QTimer, Signal, QSize, QRect, QPoint, QModelIndex
+from PySide6.QtGui import QColor, QPainter, QPen, QBrush, QPalette
 from PySide6.QtWidgets import (
+    QAbstractTableModel,
     QCheckBox,
     QComboBox,
     QDateEdit,
@@ -36,6 +37,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QSplitter,
     QStackedWidget,
+    QStyledItemDelegate,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -49,8 +51,6 @@ import psutil
 import pyqtgraph as pg
 
 from backend.core.base import get_service_manager
-from ui.modules.log_table_model import LogTableModel
-from ui.modules.log_checkbox_delegate import LogCheckboxDelegate
 from ui.components.widgets import (
     BaseWidget,
     GaugeWidget,
@@ -59,7 +59,7 @@ from ui.components.widgets import (
 )
 from ui.components.theme_system import DashboardTheme
 from backend.core.service_base import LoggerMixin
-from backend.core.utils import (
+from backend.infrastructure.system_vnpy.system_toolkit import (
     EVENT_ALERT_CREATED,
     EVENT_ALERT_UPDATED,
     EVENT_LOG_RECORD,
@@ -68,6 +68,324 @@ from ui.core.boot_orchestrator import get_boot_orchestrator
 
 # UI层专用logger
 logger_user = logging.getLogger("ui.user_feedback")
+
+
+# ==================== 日志表格组件（已合并） ====================
+
+
+class LogCheckboxDelegate(QStyledItemDelegate):
+    """第0列复选框的自定义无白底绘制委托。"""
+
+    INDICATOR_SIZE = 16
+    BORDER_COLOR = QColor(160, 160, 160)
+    HOVER_BORDER_COLOR = QColor(0, 120, 215)
+    CHECKED_COLOR = QColor(0, 120, 215)
+    INDETERMINATE_COLOR = QColor(102, 163, 224)
+
+    def paint(self, painter: QPainter, option, index) -> None:  # type: ignore[override]
+        # 仅处理第0列；其他列使用默认绘制
+        if index.column() != 0:
+            super().paint(painter, option, index)
+            return
+
+        # 计算指示器区域，居中放置
+        rect: QRect = option.rect
+        size = self.INDICATOR_SIZE
+        x = rect.x() + (rect.width() - size) // 2
+        y = rect.y() + (rect.height() - size) // 2
+        indicator_rect = QRect(x, y, size, size)
+
+        # 解析勾选状态
+        check_state = index.data(Qt.ItemDataRole.CheckStateRole)
+        is_checked = check_state == Qt.CheckState.Checked
+        is_indeterminate = check_state == Qt.CheckState.PartiallyChecked
+        # State_MouseOver 在 PySide6 中通过 QStyle.State_MouseOver 表示
+        try:
+            from PySide6.QtWidgets import QStyle
+
+            is_hover = bool(option.state & QStyle.StateFlag.State_MouseOver)
+        except Exception:
+            is_hover = False
+
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        # 边框颜色（悬浮时使用主题蓝）
+        border_color = self.HOVER_BORDER_COLOR if is_hover else self.BORDER_COLOR
+        pen = QPen(border_color)
+        pen.setWidth(1)
+        painter.setPen(pen)
+
+        # 背景：不填充（透明），避免白底
+        # 勾选/半选时使用主题色填充
+        if is_checked:
+            painter.fillRect(indicator_rect, self.CHECKED_COLOR)
+        elif is_indeterminate:
+            painter.fillRect(indicator_rect, self.INDETERMINATE_COLOR)
+
+        # 绘制外边框
+        painter.drawRect(indicator_rect)
+
+        # 勾选符号（白色）
+        if is_checked:
+            painter.setPen(QPen(QColor(255, 255, 255), 2))
+            # 简单的对勾路径
+            p1 = indicator_rect.topLeft() + QPoint(4, indicator_rect.height() // 2)
+            p2 = indicator_rect.topLeft() + QPoint(
+                indicator_rect.width() // 2 - 1, indicator_rect.height() - 4
+            )
+            p3 = indicator_rect.topLeft() + QPoint(indicator_rect.width() - 4, 4)
+            painter.drawLine(p1, p2)
+            painter.drawLine(p2, p3)
+        painter.restore()
+
+    def sizeHint(self, option, index) -> QSize:  # type: ignore[override]
+        if index.column() == 0:
+            return QSize(self.INDICATOR_SIZE, self.INDICATOR_SIZE)
+        return super().sizeHint(option, index)
+
+
+class LogTableModel(QAbstractTableModel):
+    """日志表格数据模型（高性能实现）."""
+
+    # 列定义（第一列为复选框）
+    HEADERS = ["☑", "时间", "级别", "模块", "函数", "行号", "消息"]
+    COLUMN_KEYS = [None, "timestamp", "level", "module", "function", "line", "message"]
+
+    # 级别文字颜色映射（使用深色文字，无背景色）
+    LEVEL_COLORS = {
+        "DEBUG": QColor(100, 100, 100),  # 深灰色
+        "INFO": QColor(0, 100, 200),  # 深蓝色
+        "WARNING": QColor(200, 120, 0),  # 深橙黄色
+        "ERROR": QColor(200, 0, 0),  # 深红色
+        "CRITICAL": QColor(139, 0, 0),  # 暗红色
+    }
+
+    # 选中行视觉反馈：复选框列左侧边框高亮
+    SELECTED_INDICATOR_COLOR = QColor(0, 120, 215)  # 蓝色指示器
+
+    def __init__(self, parent=None):
+        """初始化Model."""
+        super().__init__(parent)
+        self._data: List[Dict[str, Any]] = []
+        self._selected_rows: set = set()  # 存储选中的行索引
+
+    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
+        """返回行数."""
+        if parent.isValid():
+            return 0
+        return len(self._data)
+
+    def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:
+        """返回列数."""
+        if parent.isValid():
+            return 0
+        return len(self.HEADERS)
+
+    def headerData(
+        self, section: int, orientation: Qt.Orientation, role: int = Qt.ItemDataRole.DisplayRole
+    ) -> Any:
+        """返回表头数据。"""
+        if orientation == Qt.Orientation.Horizontal:
+            if 0 <= section < len(self.HEADERS):
+                if role == Qt.ItemDataRole.DisplayRole:
+                    if section == 0:
+                        # 动态三态：全未选☐、部分◩、全选☑
+                        total = len(self._data)
+                        selected = len(self._selected_rows)
+                        if total == 0 or selected == 0:
+                            mark = "☐"
+                        elif selected == total:
+                            mark = "☑"
+                        else:
+                            mark = "◩"
+                        return f"{mark}"
+                    return self.HEADERS[section]
+                elif role == Qt.ItemDataRole.ToolTipRole:
+                    # 🔧 关键修复：处理ToolTipRole，避免与setHeaderData()冲突
+                    if section == 0:  # 复选框列
+                        total = len(self._data)
+                        selected = len(self._selected_rows)
+                        if total == 0:
+                            state = "无数据"
+                        elif selected == 0:
+                            state = "全未选"
+                        elif selected == total:
+                            state = "全选"
+                        else:
+                            state = "部分选择"
+                        return f"点击切换全选/取消全选（当前：{state}）"
+                    return None
+                elif role == Qt.ItemDataRole.BackgroundRole:
+                    # 为第一列表头设置柔和底色，避免白底突兀
+                    if section == 0:
+                        return QBrush(QColor(232, 244, 248))  # #E8F4F8
+                elif role == Qt.ItemDataRole.ForegroundRole:
+                    # 第一列使用深蓝文本以匹配主题
+                    if section == 0:
+                        return QBrush(QColor(0, 85, 170))  # 深蓝
+                elif role == Qt.ItemDataRole.TextAlignmentRole:
+                    # 居中显示三态符号
+                    if section == 0:
+                        return Qt.AlignmentFlag.AlignCenter
+        return None
+
+    def flags(self, index: QModelIndex) -> Qt.ItemFlag:
+        """返回单元格标志（使复选框可交互）。"""
+        if not index.isValid():
+            return Qt.ItemFlag.NoItemFlags
+        if index.column() == 0:  # 复选框列
+            # 为复选框列加入 ItemIsSelectable，确保点击可触发CheckState切换
+            return (
+                Qt.ItemFlag.ItemIsEnabled
+                | Qt.ItemFlag.ItemIsUserCheckable
+                | Qt.ItemFlag.ItemIsSelectable
+            )
+        return Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+
+    def setData(self, index: QModelIndex, value: Any, role: int = Qt.ItemDataRole.EditRole) -> bool:
+        """设置单元格数据（处理复选框点击）。"""
+        if index.column() == 0 and role == Qt.ItemDataRole.CheckStateRole:
+            row = index.row()
+            if value == Qt.CheckState.Checked:
+                self._selected_rows.add(row)
+            else:
+                self._selected_rows.discard(row)
+            # 通知整行数据变化（以便更新行背景色）
+            left_index = self.index(row, 0)
+            right_index = self.index(row, self.columnCount() - 1)
+            self.dataChanged.emit(left_index, right_index)
+            # 刷新表头三态
+            self.headerDataChanged.emit(Qt.Orientation.Horizontal, 0, 0)
+            return True
+        return False
+
+    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
+        """返回单元格数据（按需提供，View调用时才计算）."""
+        if not index.isValid():
+            return None
+
+        row = index.row()
+        col = index.column()
+
+        if row < 0 or row >= len(self._data):
+            return None
+        if col < 0 or col >= len(self.COLUMN_KEYS):
+            return None
+
+        # 第一列：复选框
+        if col == 0:
+            if role == Qt.ItemDataRole.CheckStateRole:
+                return (
+                    Qt.CheckState.Checked if row in self._selected_rows else Qt.CheckState.Unchecked
+                )
+            if role == Qt.ItemDataRole.TextAlignmentRole:
+                # 居中显示复选状态
+                return Qt.AlignmentFlag.AlignCenter
+            if role == Qt.ItemDataRole.BackgroundRole:
+                # 选中：浅蓝高亮；未选中：与表格行底色保持一致（Base/AlternateBase）
+                if row in self._selected_rows:
+                    return QBrush(QColor(220, 235, 255))
+                try:
+                    from PySide6.QtWidgets import QApplication
+
+                    app = QApplication.instance()
+                    palette = QPalette()
+                    if app is not None and isinstance(app, QApplication):
+                        palette = app.palette()
+                except Exception:
+                    palette = QPalette()
+
+                color = (
+                    palette.color(QPalette.ColorRole.AlternateBase)
+                    if (row % 2) == 1
+                    else palette.color(QPalette.ColorRole.Base)
+                )
+                return QBrush(color)
+            # 其他角色：使用默认渲染
+            return None
+
+        record = self._data[row]
+
+        # 显示角色：返回文本
+        if role == Qt.ItemDataRole.DisplayRole:
+            key = self.COLUMN_KEYS[col]
+            value = record.get(key, "")
+
+            # 消息列截断处理
+            if key == "message" and isinstance(value, str) and len(value) > 200:
+                return value[:200] + "..."
+
+            return str(value) if value else ""
+
+        # 前景色角色：级别列使用深色文字区分
+        if role == Qt.ItemDataRole.ForegroundRole:
+            if col == 2:  # 级别列
+                level = record.get("level", "")
+                return QBrush(self.LEVEL_COLORS.get(level, QColor(0, 0, 0)))
+
+        # 其余列的背景色由视图和样式决定，此处不覆盖
+
+        return None
+
+    def update_data(self, new_data: List[Dict[str, Any]]) -> None:
+        """批量更新数据（高性能实现）。"""
+        # 🔧 关键优化：使用beginResetModel/endResetModel一次性通知View
+        # 而不是逐行插入/删除，避免频繁重绘
+        self.beginResetModel()
+        self._data = new_data
+        self._selected_rows.clear()  # 数据更新时清除选择
+        self.endResetModel()
+        # 刷新表头三态
+        self.headerDataChanged.emit(Qt.Orientation.Horizontal, 0, 0)
+
+    def get_record(self, row: int) -> Optional[Dict[str, Any]]:
+        """获取指定行的原始记录."""
+        if 0 <= row < len(self._data):
+            return self._data[row]
+        return None
+
+    def clear(self) -> None:
+        """清空数据。"""
+        self.beginResetModel()
+        self._data.clear()
+        self._selected_rows.clear()
+        self.endResetModel()
+        # 刷新表头三态
+        self.headerDataChanged.emit(Qt.Orientation.Horizontal, 0, 0)
+
+    def select_all(self) -> None:
+        """全选所有行。"""
+        self._selected_rows = set(range(len(self._data)))
+        if self._data:
+            # 通知所有行所有列数据变化（复选框 + 背景色）
+            self.dataChanged.emit(
+                self.index(0, 0),
+                self.index(len(self._data) - 1, self.columnCount() - 1),
+            )
+        # 刷新表头三态
+        self.headerDataChanged.emit(Qt.Orientation.Horizontal, 0, 0)
+
+    def clear_selection(self) -> None:
+        """清除所有选择。"""
+        if self._selected_rows:
+            self._selected_rows.clear()
+            if self._data:
+                # 通知所有行所有列数据变化（复选框 + 背景色）
+                self.dataChanged.emit(
+                    self.index(0, 0),
+                    self.index(len(self._data) - 1, self.columnCount() - 1),
+                )
+        # 刷新表头三态
+        self.headerDataChanged.emit(Qt.Orientation.Horizontal, 0, 0)
+
+    def get_selected_records(self) -> List[Dict[str, Any]]:
+        """获取选中的记录."""
+        return [self._data[i] for i in sorted(self._selected_rows) if i < len(self._data)]
+
+    def get_selected_count(self) -> int:
+        """获取选中数量."""
+        return len(self._selected_rows)
 
 
 # ==================== 告警管理组件 ====================
@@ -2854,7 +3172,7 @@ class SystemManager(BaseWidget, LoggerMixin):
         if not self.event_engine:
             return False
 
-        from backend.core.monitoring_events import (
+        from backend.infrastructure.system_vnpy.system_toolkit import (
             EVENT_SYSTEM_METRICS,
             EVENT_HARDWARE_SENSORS,
             EVENT_BOTTLENECK_ANALYSIS,
@@ -3131,7 +3449,7 @@ class SystemManager(BaseWidget, LoggerMixin):
         try:
             # 取消事件订阅
             if self.event_engine:
-                from backend.core.monitoring_events import (
+                from backend.infrastructure.system_vnpy.monitoring_events import (
                     EVENT_SYSTEM_METRICS,
                     EVENT_HARDWARE_SENSORS,
                     EVENT_BOTTLENECK_ANALYSIS,

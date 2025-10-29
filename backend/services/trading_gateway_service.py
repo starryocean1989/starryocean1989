@@ -163,7 +163,7 @@ class TradingGatewayService(BaseService, LoggerMixin):
         # - on_trade(): 记录成交延迟
 
         # 配置文件路径（使用绝对路径）
-        from backend.infrastructure.data_module_vnpy.config import config_manager
+        from backend.infrastructure.data_module_vnpy.data_module import config_manager
 
         self.config_file = config_manager.get_config_file()
 
@@ -2045,7 +2045,9 @@ class TradingGatewayService(BaseService, LoggerMixin):
         """
         try:
             from backend.core.base import get_event_engine
-            from backend.core.utils import EVENT_STRATEGY_STATUS_CHANGED
+            from backend.infrastructure.system_vnpy.system_toolkit import (
+                EVENT_STRATEGY_STATUS_CHANGED,
+            )
             from vnpy.event import Event
 
             event_engine = get_event_engine()
@@ -2086,7 +2088,9 @@ class TradingGatewayService(BaseService, LoggerMixin):
         """
         try:
             from backend.core.base import get_event_engine
-            from backend.core.utils import EVENT_GATEWAY_STATUS_CHANGED
+            from backend.infrastructure.system_vnpy.system_toolkit import (
+                EVENT_GATEWAY_STATUS_CHANGED,
+            )
             from vnpy.event import Event
 
             event_engine = get_event_engine()

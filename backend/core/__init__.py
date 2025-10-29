@@ -97,8 +97,6 @@ from .base import (
     get_main_engine,
     get_service_manager,
 )
-# Cache和DataCache已迁移到utils.py
-from .utils import Cache, DataCache
 
 # 配置管理
 from .config import (
@@ -110,22 +108,6 @@ from .config import (
     AIConfig,
     ConfigManager,
     init_settings,
-)
-
-# 数据仓库
-from .repositories import (
-    BaseRepository,
-    InMemoryRepository,
-    SymbolRepository,
-    DataSourceRepository,
-    DownloadTaskRepository,
-    GatewayRepository,
-    StrategyRepository,
-    BacktestRepository,
-    AlertRepository,
-    LogRepository,
-    ConfigRepository,
-    PortfolioRepository,
 )
 
 __all__ = [
@@ -204,9 +186,6 @@ __all__ = [
     "get_main_engine",
     "get_event_engine",
     "get_china_stock_engine",
-    # 缓存系统
-    "Cache",
-    "DataCache",
     # 配置管理
     "Settings",
     "get_settings",
@@ -216,17 +195,4 @@ __all__ = [
     "AIConfig",
     "ConfigManager",
     "init_settings",
-    # 数据仓库
-    "BaseRepository",
-    "InMemoryRepository",
-    "SymbolRepository",
-    "DataSourceRepository",
-    "DownloadTaskRepository",
-    "GatewayRepository",
-    "StrategyRepository",
-    "BacktestRepository",
-    "AlertRepository",
-    "LogRepository",
-    "ConfigRepository",
-    "PortfolioRepository",
 ]

@@ -122,7 +122,7 @@ class DataCenterService(BaseService, LoggerMixin):
             # 2. 加快启动速度（主线程不需要IO操作）
             # 3. 职责清晰：validation_worker负责所有数据加载
             # 4. 通过事件系统接收数据加载完成通知（见_on_symbol_cache_loaded）
-            
+
             # 注册validation_worker事件监听器
             self._register_validation_events()
 
@@ -544,10 +544,10 @@ class DataCenterService(BaseService, LoggerMixin):
             "可转债": "可转债",
         }
         return mapping.get(market_type, "未知")
-    
+
     def _check_symbol_cache_readonly(self):
         """只读加载品种列表缓存到内存（不触发下载）.
-        
+
         架构说明：
         - 此方法只在validation_worker完成数据加载后被事件处理器调用（见_on_symbol_cache_loaded）
         - 不在主线程初始化时调用，避免重复检查
@@ -556,14 +556,14 @@ class DataCenterService(BaseService, LoggerMixin):
         """
         try:
             from backend.infrastructure.data_module_vnpy.data_acquisition import SymbolLoader
-            
+
             loader = SymbolLoader()
             classified = loader.get_all_classified()
-            
+
             if not classified:
                 self.logger.info("品种列表缓存不存在，等待后台validation_worker加载")
                 return
-            
+
             # 转换为前端格式并更新内存缓存
             symbols = []
             for market_type, codes in classified.items():
@@ -576,57 +576,59 @@ class DataCenterService(BaseService, LoggerMixin):
                         name = code_item.get("name", code)
                     else:
                         continue
-                    
+
                     if not code:
                         continue
-                    
-                    symbols.append({
-                        "symbol": code,
-                        "code": code,
-                        "name": name,
-                        "exchange": self._map_market_to_exchange(market_type),
-                        "product_type": self._map_market_to_product_type(market_type),
-                    })
-            
+
+                    symbols.append(
+                        {
+                            "symbol": code,
+                            "code": code,
+                            "name": name,
+                            "exchange": self._map_market_to_exchange(market_type),
+                            "product_type": self._map_market_to_product_type(market_type),
+                        }
+                    )
+
             # 更新内存缓存
             self._symbol_cache = {
                 "symbols": symbols,
                 "timestamp": datetime.now(),
             }
             self._symbol_cache_time = datetime.now()
-            
+
             self.logger.info("✅ 从缓存加载了 %d 个品种（%d个市场）", len(symbols), len(classified))
-            
+
         except Exception as e:
             self.logger.error("检查缓存失败：%s", e, exc_info=True)
-    
+
     def _register_validation_events(self):
         """注册validation_worker事件监听器."""
         try:
             from backend.core.base import get_event_engine
-            from backend.infrastructure.data_module_vnpy.events import (
+            from backend.infrastructure.data_module_vnpy.data_module import (
                 EVENT_SYMBOL_CACHE_LOADED,
                 EVENT_IPO_CACHE_UPDATED,
                 EVENT_VALIDATION_COMPLETED,
             )
-            
+
             event_engine = get_event_engine()
             if not event_engine:
                 self.logger.warning("EventEngine不可用，无法注册事件监听器")
                 return
-            
+
             event_engine.register(EVENT_SYMBOL_CACHE_LOADED, self._on_symbol_cache_loaded)
             event_engine.register(EVENT_IPO_CACHE_UPDATED, self._on_ipo_cache_updated)
             event_engine.register(EVENT_VALIDATION_COMPLETED, self._on_validation_completed)
-            
+
             self.logger.info("✅ 已注册validation_worker事件监听器")
-            
+
         except Exception as e:
             self.logger.warning("注册validation事件失败: %s", e)
-    
+
     def _on_symbol_cache_loaded(self, event):
         """响应品种列表加载完成事件.
-        
+
         Args:
             event: Event对象
         """
@@ -634,53 +636,53 @@ class DataCenterService(BaseService, LoggerMixin):
             data = event.data
             symbol_count = data.get("symbol_count", 0)
             is_new = data.get("is_new", False)
-            
+
             self.logger.info(
                 "✅ [事件] validation_worker加载完成：%d个品种（%s）",
                 symbol_count,
-                "首次加载" if is_new else "缓存加载"
+                "首次加载" if is_new else "缓存加载",
             )
-            
+
             # 重新加载内存缓存
             self._check_symbol_cache_readonly()
-            
+
         except Exception as e:
             self.logger.error("处理品种列表加载事件失败: %s", e)
-    
+
     def _on_ipo_cache_updated(self, event):
         """响应IPO缓存更新完成事件.
-        
+
         Args:
             event: Event对象
         """
         try:
             data = event.data
             listed_count = data.get("listed_count", 0)
-            
+
             self.logger.info("✅ [事件] IPO过滤完成：%d个已上市品种", listed_count)
-            
+
             # 重新加载内存缓存（已过滤未上市品种）
             self._check_symbol_cache_readonly()
-            
+
         except Exception as e:
             self.logger.error("处理IPO更新事件失败: %s", e)
-    
+
     def _on_validation_completed(self, event):
         """响应validation流程完成事件.
-        
+
         Args:
             event: Event对象
         """
         try:
             data = event.data
             success = data.get("success", False)
-            
+
             if success:
                 self.logger.info("✅ [事件] validation_worker 8步流程全部完成")
             else:
                 error = data.get("error", "未知错误")
                 self.logger.warning("⚠️ [事件] validation_worker流程失败: %s", error)
-            
+
         except Exception as e:
             self.logger.error("处理validation完成事件失败: %s", e)
 
@@ -689,7 +691,7 @@ class DataCenterService(BaseService, LoggerMixin):
     def _delete_symbol_cache_file(self):
         """删除品种列表缓存文件"""
         try:
-            from backend.infrastructure.data_module_vnpy.config import config_manager
+            from backend.infrastructure.data_module_vnpy.data_module import config_manager
 
             cache_dir = config_manager.get_cache_dir()
             cache_file = cache_dir / "stock_list_classified.json"
@@ -701,7 +703,7 @@ class DataCenterService(BaseService, LoggerMixin):
 
     def reload_symbol_list(self, force: bool = False) -> Dict[str, Any]:
         """重新加载品种列表（用户主动触发）.
-        
+
         架构说明：
         - 此方法仅在用户主动点击"重新加载"按钮时调用
         - 执行完整的流程4-5（品种列表 + IPO过滤）
@@ -745,10 +747,10 @@ class DataCenterService(BaseService, LoggerMixin):
 
             # 流程3：同步执行IPO下载并过滤未上市品种
             self.logger.info("【流程3/5】同步下载IPO日期并过滤未上市品种...")
-            
+
             # 执行IPO下载
             from backend.infrastructure.data_module_vnpy.data_acquisition import download_ipo_dates
-            
+
             # 提取代码列表并过滤无效值
             codes: List[str] = []
             for s in symbols:
@@ -758,26 +760,26 @@ class DataCenterService(BaseService, LoggerMixin):
                         codes.append(code)
                 elif isinstance(s, str) and s:
                     codes.append(s)
-            
+
             # 获取全局IPODateCache实例
             ipo_cache = None
             if self.china_stock_engine and hasattr(self.china_stock_engine, "validator"):
                 ipo_cache = self.china_stock_engine.validator._ipo_cache
-            
+
             ipo_result = download_ipo_dates(codes, use_multiprocess=True, ipo_cache=ipo_cache)
-            
+
             self.logger.info(
                 "IPO下载完成: 成功%d个, 失败%d个",
                 ipo_result.get("succeeded", 0),
                 ipo_result.get("failed", 0),
             )
-            
+
             # 重新加载缓存（已自动过滤未上市品种）
             from backend.infrastructure.data_module_vnpy.data_acquisition import SymbolLoader
-            
+
             loader = SymbolLoader()
             classified_after_ipo = loader.get_all_classified()
-            
+
             # 转换为前端格式
             filtered_symbols = []
             for market_type, codes_list in classified_after_ipo.items():
@@ -790,18 +792,20 @@ class DataCenterService(BaseService, LoggerMixin):
                         name = code_item.get("name", code)
                     else:
                         continue
-                    
+
                     if not code:
                         continue
-                    
-                    filtered_symbols.append({
-                        "symbol": code,
-                        "code": code,
-                        "name": name,
-                        "exchange": self._map_market_to_exchange(market_type),
-                        "product_type": self._map_market_to_product_type(market_type),
-                    })
-            
+
+                    filtered_symbols.append(
+                        {
+                            "symbol": code,
+                            "code": code,
+                            "name": name,
+                            "exchange": self._map_market_to_exchange(market_type),
+                            "product_type": self._map_market_to_product_type(market_type),
+                        }
+                    )
+
             # 流程4：更新内存缓存
             self.logger.info("【流程4/5】更新内存缓存...")
             self._symbol_cache = {
@@ -2092,7 +2096,7 @@ class DataCenterService(BaseService, LoggerMixin):
 
             # 调用validator进行质量检查
             try:
-                from backend.infrastructure.data_module_vnpy.local_data.data_quality import (
+                from backend.infrastructure.data_module_vnpy.data_quality import (
                     DataValidator,
                 )
 
@@ -2252,7 +2256,7 @@ class DataCenterService(BaseService, LoggerMixin):
                 }
 
             # 从数据感知器获取质量概览
-            from backend.infrastructure.data_module_vnpy.local_data.data_quality import data_sensor
+            from backend.infrastructure.data_module_vnpy.data_quality import data_sensor
 
             quality_overview = data_sensor.get_quality_overview()
 
@@ -3329,7 +3333,9 @@ class DataCenterService(BaseService, LoggerMixin):
         """
         try:
             from backend.core.base import get_event_engine
-            from backend.core.utils import EVENT_DATA_DOWNLOAD_COMPLETE
+            from backend.infrastructure.system_vnpy.system_toolkit import (
+                EVENT_DATA_DOWNLOAD_COMPLETE,
+            )
             from vnpy.event import Event
 
             event_engine = get_event_engine()
@@ -3522,7 +3528,7 @@ class DataCenterService(BaseService, LoggerMixin):
 
             # 导入数据源类（从unified_data_manager）
             try:
-                from backend.infrastructure.data_module_vnpy.local_data.unified_data_manager import (
+                from backend.infrastructure.data_module_vnpy.data_management import (
                     TdxDataSource,
                 )
 
@@ -3681,7 +3687,7 @@ class DataCenterService(BaseService, LoggerMixin):
             Dict: 配置信息
         """
         try:
-            from backend.infrastructure.data_module_vnpy.config import config_manager
+            from backend.infrastructure.data_module_vnpy.data_module import config_manager
 
             server_pool_size = config_manager.get("chinastock.server_pool_size", 5)
 
@@ -3715,7 +3721,7 @@ class DataCenterService(BaseService, LoggerMixin):
             if not 1 <= size <= 30:
                 return {"success": False, "message": "服务器池大小必须在1-30之间"}
 
-            from backend.infrastructure.data_module_vnpy.config import config_manager
+            from backend.infrastructure.data_module_vnpy.data_module import config_manager
 
             config_manager.set("chinastock.server_pool_size", size)
 
@@ -3787,7 +3793,7 @@ class DataCenterService(BaseService, LoggerMixin):
 
             # 导入数据源类（从unified_data_manager）
             try:
-                from backend.infrastructure.data_module_vnpy.local_data.unified_data_manager import (
+                from backend.infrastructure.data_module_vnpy.data_management import (
                     VirtualDataSource,
                 )
 
@@ -4007,7 +4013,7 @@ class DataCenterService(BaseService, LoggerMixin):
 
             # 4. 推送更新事件
             if self.china_stock_engine.event_engine:
-                from backend.infrastructure.data_module_vnpy.events import (
+                from backend.infrastructure.data_module_vnpy.data_module import (
                     EVENT_DATA_METRICS_UPDATED,
                     Event,
                 )

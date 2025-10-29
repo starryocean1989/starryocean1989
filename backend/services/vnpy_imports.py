@@ -197,7 +197,7 @@ except ImportError:
 # Infrastructure模块
 try:
     from backend.infrastructure.system_vnpy.monitor_system import SystemMonitor  # type: ignore
-    from backend.infrastructure.system_vnpy.utilities import ProcessManager  # type: ignore
+    from backend.infrastructure.system_vnpy.system_toolkit import ProcessManager  # type: ignore
 
     SYSTEM_MODULE_AVAILABLE = True
 except ImportError:
