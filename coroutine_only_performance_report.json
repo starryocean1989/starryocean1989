@@ -1,0 +1,345 @@
+{
+  "test_time": "2025-10-31T20:50:07.654710",
+  "results": [
+    {
+      "config": {
+        "num_coroutines": 2,
+        "total_concurrency": 2
+      },
+      "performance": {
+        "total_symbols": 1000,
+        "completed": 1000,
+        "success_rate": 1.0,
+        "elapsed_time": 72.61,
+        "throughput_symbols_per_sec": 13.77
+      },
+      "resources": {
+        "cpu": {
+          "initial": 0.9,
+          "final": 3.6,
+          "avg": 13.9,
+          "max": 33.3
+        },
+        "memory": {
+          "initial": 24.3,
+          "final": 24.2,
+          "avg": 24.4,
+          "max": 24.4
+        },
+        "coroutine": {
+          "avg_lag_ms": 50.0,
+          "max_lag_ms": 103.3,
+          "avg_pending_tasks": 499.1,
+          "max_pending_tasks": 1004.0
+        }
+      },
+      "description": "2协程测试"
+    },
+    {
+      "config": {
+        "num_coroutines": 4,
+        "total_concurrency": 4
+      },
+      "performance": {
+        "total_symbols": 1000,
+        "completed": 1000,
+        "success_rate": 1.0,
+        "elapsed_time": 73.82,
+        "throughput_symbols_per_sec": 13.55
+      },
+      "resources": {
+        "cpu": {
+          "initial": 31.2,
+          "final": 8.0,
+          "avg": 14.3,
+          "max": 31.6
+        },
+        "memory": {
+          "initial": 24.3,
+          "final": 24.4,
+          "avg": 24.3,
+          "max": 24.5
+        },
+        "coroutine": {
+          "avg_lag_ms": 49.4,
+          "max_lag_ms": 102.6,
+          "avg_pending_tasks": 492.4,
+          "max_pending_tasks": 1004.0
+        }
+      },
+      "description": "4协程测试"
+    },
+    {
+      "config": {
+        "num_coroutines": 6,
+        "total_concurrency": 6
+      },
+      "performance": {
+        "total_symbols": 1000,
+        "completed": 1000,
+        "success_rate": 1.0,
+        "elapsed_time": 80.86,
+        "throughput_symbols_per_sec": 12.37
+      },
+      "resources": {
+        "cpu": {
+          "initial": 8.0,
+          "final": 11.5,
+          "avg": 19.9,
+          "max": 43.9
+        },
+        "memory": {
+          "initial": 24.4,
+          "final": 24.7,
+          "avg": 24.6,
+          "max": 25.0
+        },
+        "coroutine": {
+          "avg_lag_ms": 50.1,
+          "max_lag_ms": 102.5,
+          "avg_pending_tasks": 500.6,
+          "max_pending_tasks": 1004.0
+        }
+      },
+      "description": "6协程测试"
+    },
+    {
+      "config": {
+        "num_coroutines": 8,
+        "total_concurrency": 8
+      },
+      "performance": {
+        "total_symbols": 1000,
+        "completed": 1000,
+        "success_rate": 1.0,
+        "elapsed_time": 68.38,
+        "throughput_symbols_per_sec": 14.62
+      },
+      "resources": {
+        "cpu": {
+          "initial": 8.9,
+          "final": 5.4,
+          "avg": 12.4,
+          "max": 31.2
+        },
+        "memory": {
+          "initial": 24.7,
+          "final": 24.4,
+          "avg": 24.6,
+          "max": 24.7
+        },
+        "coroutine": {
+          "avg_lag_ms": 50.6,
+          "max_lag_ms": 102.6,
+          "avg_pending_tasks": 505.0,
+          "max_pending_tasks": 1004.0
+        }
+      },
+      "description": "8协程测试"
+    },
+    {
+      "config": {
+        "num_coroutines": 10,
+        "total_concurrency": 10
+      },
+      "performance": {
+        "total_symbols": 1000,
+        "completed": 1000,
+        "success_rate": 1.0,
+        "elapsed_time": 68.62,
+        "throughput_symbols_per_sec": 14.57
+      },
+      "resources": {
+        "cpu": {
+          "initial": 5.4,
+          "final": 4.5,
+          "avg": 12.1,
+          "max": 48.6
+        },
+        "memory": {
+          "initial": 24.4,
+          "final": 24.4,
+          "avg": 24.4,
+          "max": 24.5
+        },
+        "coroutine": {
+          "avg_lag_ms": 50.4,
+          "max_lag_ms": 102.6,
+          "avg_pending_tasks": 502.9,
+          "max_pending_tasks": 1004.0
+        }
+      },
+      "description": "10协程测试"
+    },
+    {
+      "config": {
+        "num_coroutines": 12,
+        "total_concurrency": 12
+      },
+      "performance": {
+        "total_symbols": 1000,
+        "completed": 1000,
+        "success_rate": 1.0,
+        "elapsed_time": 71.68,
+        "throughput_symbols_per_sec": 13.95
+      },
+      "resources": {
+        "cpu": {
+          "initial": 1.8,
+          "final": 5.4,
+          "avg": 13.2,
+          "max": 28.7
+        },
+        "memory": {
+          "initial": 24.4,
+          "final": 24.6,
+          "avg": 24.5,
+          "max": 24.6
+        },
+        "coroutine": {
+          "avg_lag_ms": 50.1,
+          "max_lag_ms": 188.6,
+          "avg_pending_tasks": 495.1,
+          "max_pending_tasks": 1004.0
+        }
+      },
+      "description": "12协程测试"
+    },
+    {
+      "config": {
+        "num_coroutines": 14,
+        "total_concurrency": 14
+      },
+      "performance": {
+        "total_symbols": 1000,
+        "completed": 1000,
+        "success_rate": 1.0,
+        "elapsed_time": 70.68,
+        "throughput_symbols_per_sec": 14.15
+      },
+      "resources": {
+        "cpu": {
+          "initial": 7.1,
+          "final": 2.7,
+          "avg": 13.1,
+          "max": 28.0
+        },
+        "memory": {
+          "initial": 24.6,
+          "final": 24.5,
+          "avg": 24.5,
+          "max": 24.6
+        },
+        "coroutine": {
+          "avg_lag_ms": 51.3,
+          "max_lag_ms": 102.8,
+          "avg_pending_tasks": 511.6,
+          "max_pending_tasks": 1004.0
+        }
+      },
+      "description": "14协程测试"
+    },
+    {
+      "config": {
+        "num_coroutines": 16,
+        "total_concurrency": 16
+      },
+      "performance": {
+        "total_symbols": 1000,
+        "completed": 1000,
+        "success_rate": 1.0,
+        "elapsed_time": 69.49,
+        "throughput_symbols_per_sec": 14.39
+      },
+      "resources": {
+        "cpu": {
+          "initial": 5.4,
+          "final": 25.9,
+          "avg": 12.0,
+          "max": 17.1
+        },
+        "memory": {
+          "initial": 24.5,
+          "final": 24.4,
+          "avg": 24.5,
+          "max": 24.5
+        },
+        "coroutine": {
+          "avg_lag_ms": 50.2,
+          "max_lag_ms": 102.6,
+          "avg_pending_tasks": 501.1,
+          "max_pending_tasks": 1004.0
+        }
+      },
+      "description": "16协程测试"
+    },
+    {
+      "config": {
+        "num_coroutines": 18,
+        "total_concurrency": 18
+      },
+      "performance": {
+        "total_symbols": 1000,
+        "completed": 1000,
+        "success_rate": 1.0,
+        "elapsed_time": 76.76,
+        "throughput_symbols_per_sec": 13.03
+      },
+      "resources": {
+        "cpu": {
+          "initial": 5.4,
+          "final": 9.7,
+          "avg": 14.8,
+          "max": 50.0
+        },
+        "memory": {
+          "initial": 24.4,
+          "final": 24.5,
+          "avg": 24.5,
+          "max": 24.6
+        },
+        "coroutine": {
+          "avg_lag_ms": 51.8,
+          "max_lag_ms": 102.8,
+          "avg_pending_tasks": 517.7,
+          "max_pending_tasks": 1004.0
+        }
+      },
+      "description": "18协程测试"
+    },
+    {
+      "config": {
+        "num_coroutines": 20,
+        "total_concurrency": 20
+      },
+      "performance": {
+        "total_symbols": 1000,
+        "completed": 1000,
+        "success_rate": 1.0,
+        "elapsed_time": 78.04,
+        "throughput_symbols_per_sec": 12.81
+      },
+      "resources": {
+        "cpu": {
+          "initial": 10.6,
+          "final": 9.8,
+          "avg": 15.3,
+          "max": 35.4
+        },
+        "memory": {
+          "initial": 24.5,
+          "final": 24.7,
+          "avg": 24.6,
+          "max": 24.7
+        },
+        "coroutine": {
+          "avg_lag_ms": 50.4,
+          "max_lag_ms": 200.4,
+          "avg_pending_tasks": 499.8,
+          "max_pending_tasks": 1004.0
+        }
+      },
+      "description": "20协程测试"
+    }
+  ]
+}

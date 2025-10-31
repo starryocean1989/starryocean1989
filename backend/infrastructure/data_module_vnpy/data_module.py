@@ -2930,6 +2930,13 @@ class ChinaStockEngine(BaseEngine):
             downloaded = len(reference_set & local_set)
             missing = len(reference_set - local_set)
 
+            # 🔧 关键修复：无论是否有缺失/失效，都要记录和推送（便于调试）
+            self.logger.info(
+                f"📊 [步骤7统计] 参考品种={len(reference_symbols)}, 本地品种={len(local_symbols)}, "
+                f"已下载={downloaded}, 品种缺失={missing}, 失效品种={len(invalid_symbols)}",
+                extra={"log_type": "stage_node"},
+            )
+
             # 🆕 构建详细品种列表（供前端显示详细信息使用）
             details_list = []
 
@@ -3189,6 +3196,7 @@ class ChinaStockEngine(BaseEngine):
         start_date: Union[str, date],
         market_types: Optional[List[str]] = None,
         use_adaptive: bool = True,
+        symbols: Optional[List[str]] = None,
     ) -> bool:
         """
         增量下载K线数据（代理调用）
@@ -3197,6 +3205,7 @@ class ChinaStockEngine(BaseEngine):
             start_date: 起始日期
             market_types: 市场类型列表
             use_adaptive: 是否使用自适应配置（默认True，企业级推荐）
+            symbols: 可选，指定品种列表（用于修复下载）。如果提供，将只下载这些品种。
 
         Returns:
             是否成功启动下载任务
@@ -3213,15 +3222,23 @@ class ChinaStockEngine(BaseEngine):
             ctx.set_stage("downloading")
 
             # 开始增量下载
-            self.logger_download.info(
-                "开始增量下载: 起始日期=%s, 市场=%s, 自适应=%s",
-                start_date,
-                market_types or "全部",
-                use_adaptive,
-            )
+            if symbols:
+                self.logger_download.info(
+                    "开始增量下载: 起始日期=%s, 指定品种=%d个, 自适应=%s",
+                    start_date,
+                    len(symbols),
+                    use_adaptive,
+                )
+            else:
+                self.logger_download.info(
+                    "开始增量下载: 起始日期=%s, 市场=%s, 自适应=%s",
+                    start_date,
+                    market_types or "全部",
+                    use_adaptive,
+                )
 
             result = self.stock_fetcher.start_incremental_download_async(
-                start_date, self.symbol_loader, self.storage_manager, market_types, use_adaptive
+                start_date, self.symbol_loader, self.storage_manager, market_types, use_adaptive, symbols
             )
 
             if result:

@@ -1,0 +1,145 @@
+{
+  "test_time": "2025-10-31T18:46:37.327068",
+  "results": [
+    {
+      "config": {
+        "num_processes": 2,
+        "connections_per_worker": 10,
+        "total_concurrency": 20
+      },
+      "performance": {
+        "total_symbols": 2000,
+        "completed": 2000,
+        "success_rate": 1.0,
+        "elapsed_time": 79.82,
+        "throughput_symbols_per_sec": 25.06
+      },
+      "resources": {
+        "cpu": {
+          "initial": 7.8,
+          "final": 7.1,
+          "avg": 22.5,
+          "max": 29.7
+        },
+        "memory": {
+          "initial": 29.9,
+          "final": 30.0,
+          "avg": 30.7,
+          "max": 31.1
+        },
+        "coroutine": {
+          "avg_lag_ms": 2.7,
+          "max_lag_ms": 50.7,
+          "avg_pending_tasks": 12.0,
+          "max_pending_tasks": 12.0
+        }
+      },
+      "description": "低并发测试"
+    },
+    {
+      "config": {
+        "num_processes": 4,
+        "connections_per_worker": 20,
+        "total_concurrency": 80
+      },
+      "performance": {
+        "total_symbols": 2000,
+        "completed": 2000,
+        "success_rate": 1.0,
+        "elapsed_time": 43.39,
+        "throughput_symbols_per_sec": 46.1
+      },
+      "resources": {
+        "cpu": {
+          "initial": 10.4,
+          "final": 7.8,
+          "avg": 36.6,
+          "max": 42.4
+        },
+        "memory": {
+          "initial": 30.2,
+          "final": 29.9,
+          "avg": 31.7,
+          "max": 32.4
+        },
+        "coroutine": {
+          "avg_lag_ms": 10.5,
+          "max_lag_ms": 150.3,
+          "avg_pending_tasks": 21.9,
+          "max_pending_tasks": 22.0
+        }
+      },
+      "description": "中等并发测试"
+    },
+    {
+      "config": {
+        "num_processes": 6,
+        "connections_per_worker": 30,
+        "total_concurrency": 180
+      },
+      "performance": {
+        "total_symbols": 2000,
+        "completed": 2000,
+        "success_rate": 1.0,
+        "elapsed_time": 34.83,
+        "throughput_symbols_per_sec": 57.43
+      },
+      "resources": {
+        "cpu": {
+          "initial": 5.4,
+          "final": 4.5,
+          "avg": 51.6,
+          "max": 59.2
+        },
+        "memory": {
+          "initial": 30.1,
+          "final": 30.0,
+          "avg": 32.3,
+          "max": 32.9
+        },
+        "coroutine": {
+          "avg_lag_ms": 23.7,
+          "max_lag_ms": 278.4,
+          "avg_pending_tasks": 31.9,
+          "max_pending_tasks": 32.0
+        }
+      },
+      "description": "高并发测试"
+    },
+    {
+      "config": {
+        "num_processes": 8,
+        "connections_per_worker": 40,
+        "total_concurrency": 320
+      },
+      "performance": {
+        "total_symbols": 2000,
+        "completed": 2000,
+        "success_rate": 1.0,
+        "elapsed_time": 32.94,
+        "throughput_symbols_per_sec": 60.71
+      },
+      "resources": {
+        "cpu": {
+          "initial": 2.7,
+          "final": 4.7,
+          "avg": 64.1,
+          "max": 72.3
+        },
+        "memory": {
+          "initial": 30.3,
+          "final": 29.9,
+          "avg": 33.2,
+          "max": 34.0
+        },
+        "coroutine": {
+          "avg_lag_ms": 29.3,
+          "max_lag_ms": 592.0,
+          "avg_pending_tasks": 41.4,
+          "max_pending_tasks": 42.0
+        }
+      },
+      "description": "极高并发测试"
+    }
+  ]
+}

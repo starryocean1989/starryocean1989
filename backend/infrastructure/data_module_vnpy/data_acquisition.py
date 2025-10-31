@@ -4964,6 +4964,7 @@ class MultiProcessStockFetcher:
         storage_manager,
         market_types=None,
         use_adaptive=True,
+        symbols=None,
     ) -> bool:
         """
         启动增量下载（异步执行，立即返回，统一使用LoadBalancer配置）
@@ -4974,6 +4975,7 @@ class MultiProcessStockFetcher:
             storage_manager: StorageManager实例
             market_types: 市场类型列表
             use_adaptive: 是否使用自适应配置（默认True）
+            symbols: 可选，指定品种列表（用于修复下载）。如果提供，将只下载这些品种。
 
         Returns:
             是否成功启动下载任务
@@ -5003,7 +5005,7 @@ class MultiProcessStockFetcher:
             # 创建并启动后台下载线程
             self._download_thread = threading.Thread(
                 target=self._do_download_async,
-                args=(start_date, symbol_loader, storage_manager, market_types, use_adaptive),
+                args=(start_date, symbol_loader, storage_manager, market_types, use_adaptive, symbols),
                 daemon=True,
                 name="IncrementalDownloadThread",
             )
@@ -5019,6 +5021,7 @@ class MultiProcessStockFetcher:
         storage_manager,
         market_types=None,
         use_adaptive=True,
+        symbols=None,
     ):
         """
         实际执行增量下载的后台方法（统一使用LoadBalancer配置）
@@ -5029,6 +5032,7 @@ class MultiProcessStockFetcher:
             storage_manager: StorageManager实例
             market_types: 市场类型列表
             use_adaptive: 是否使用自适应配置（默认True）
+            symbols: 可选，指定品种列表（用于修复下载）。如果提供，将只下载这些品种。
         """
         try:
             # 定义进度回调（限制频率，避免UI崩溃）
@@ -5062,8 +5066,38 @@ class MultiProcessStockFetcher:
                         self.logger.debug(f"推送进度事件失败: {e}")
 
             # 🔧 修复：直接使用当前实例的download_incremental_kline，而不是创建新实例
-            # 获取品种列表
-            if market_types:
+            # 获取品种列表（优先使用传入的symbols参数）
+            # 🔧 关键修复：检查symbols是否为None，以及是否为空列表
+            if symbols is not None:
+                # 使用指定的品种列表（修复下载场景）
+                if len(symbols) == 0:
+                    # 空列表表示所有品种都被过滤（如未上市），应该返回错误
+                    self.logger.warning("指定的品种列表为空（可能所有品种都被过滤），无法下载")
+                    result = {
+                        "success": False,
+                        "total_tasks": 0,
+                        "completed": 0,
+                        "saved_count": 0,
+                        "skipped_count": 0,
+                        "failed_count": 0,
+                        "message": "指定的品种列表为空，无法下载",
+                    }
+                    # 更新下载进度
+                    if self._download_progress:
+                        self._download_progress.update(
+                            {
+                                "is_downloading": False,
+                                "completed": 0,
+                                "total": 0,
+                                "current_symbol": "",
+                                "current_interval": "",
+                                "start_time": None,
+                            }
+                        )
+                    return
+                else:
+                    self.logger.info(f"使用指定品种列表: {len(symbols)}个品种")
+            elif market_types:
                 symbols = symbol_loader.extract_codes_by_market(market_types)
             else:
                 symbols = symbol_loader.extract_all_codes()

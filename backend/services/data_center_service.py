@@ -1280,13 +1280,14 @@ class DataCenterService(BaseService, LoggerMixin):
     # ==================== 数据下载管理 ====================
 
     def start_incremental_download_with_progress(
-        self, start_date: str, progress_callback: Optional[Any] = None
+        self, start_date: str, progress_callback: Optional[Any] = None, symbols: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """启动增量数据下载（带进度回调，线程内轮询引擎进度）.
 
         Args:
             start_date: 开始日期（格式：YYYY-MM-DD）
             progress_callback: 可选回调，形如 callback(percent: float, message: str)
+            symbols: 可选，指定品种列表（用于修复下载）。如果提供，将只下载这些品种。
 
         Returns:
             Dict: 下载任务结果（阻塞直至完成或失败）
@@ -1378,14 +1379,72 @@ class DataCenterService(BaseService, LoggerMixin):
                 "progress": 0,
             }
 
-            self.logger.info(
-                f"下载任务已创建: {task_id}，开始日期: {start_date}，预计下载 {days_diff} 天数据"
-            )
+            # 🔧 过滤未上市品种（如果提供了symbols参数）
+            filtered_symbols = None
+            unlisted_symbols = []
+            if symbols:
+                from datetime import date as date_type
+                from backend.infrastructure.data_module_vnpy.data_quality import get_ipo_cache
+
+                ipo_cache = get_ipo_cache()
+                today = date_type.today()
+                filtered_symbols = []
+
+                for symbol in symbols:
+                    ipo_date = ipo_cache.get(symbol)
+                    # IPO缓存返回的是(Optional[date], bool)元组或Optional[date]
+                    # 需要处理两种情况
+                    if isinstance(ipo_date, tuple):
+                        ipo_date, _ = ipo_date
+
+                    if ipo_date is None:
+                        # IPO日期为None表示未上市
+                        unlisted_symbols.append(symbol)
+                        self.logger.warning(f"⚠️ 品种 {symbol} 未上市，跳过下载")
+                    elif isinstance(ipo_date, date_type) and ipo_date > today:
+                        # IPO日期在未来，还未上市
+                        unlisted_symbols.append(symbol)
+                        self.logger.warning(f"⚠️ 品种 {symbol} 未上市（IPO日期: {ipo_date}），跳过下载")
+                    else:
+                        # 已上市，加入下载列表
+                        filtered_symbols.append(symbol)
+
+                if unlisted_symbols:
+                    self.logger.info(f"已过滤 {len(unlisted_symbols)} 个未上市品种: {unlisted_symbols}")
+                    if progress_callback:
+                        progress_callback(
+                            0,
+                            f"⚠️ 检测到 {len(unlisted_symbols)} 个未上市品种，已自动过滤。"
+                        )
+
+                if not filtered_symbols:
+                    error_msg = f"所有 {len(symbols)} 个品种均为未上市品种，无法下载"
+                    self.logger.warning(error_msg)
+                    if ai_log_started:
+                        end_ai_process(success=False, summary=error_msg)
+                    return {
+                        "success": False,
+                        "task_id": None,
+                        "message": error_msg,
+                        "unlisted_count": len(unlisted_symbols),
+                    }
+
+                self.logger.info(
+                    f"下载任务已创建: {task_id}，开始日期: {start_date}，"
+                    f"指定品种: {len(filtered_symbols)}个（已过滤{len(unlisted_symbols)}个未上市）"
+                )
+            else:
+                self.logger.info(
+                    f"下载任务已创建: {task_id}，开始日期: {start_date}，预计下载 {days_diff} 天数据"
+                )
 
             # 启动底层后台下载任务（引擎内部自建线程）
             import time
 
-            started = self.china_stock_engine.download_incremental(start_date=start_dt)
+            started = self.china_stock_engine.download_incremental(
+                start_date=start_dt,
+                symbols=filtered_symbols  # 🔧 传递过滤后的品种列表
+            )
             if not started:
                 self.logger.error("下载启动失败：已有任务在运行或启动失败")
                 if ai_log_started:
@@ -2280,8 +2339,8 @@ class DataCenterService(BaseService, LoggerMixin):
                 "success": True,
                 "message": f"成功获取数据更新状态，共 {quality_overview.outdated_symbols} 个品种过时",
                 "outdated_symbols": quality_overview.outdated_symbols,
-                "avg_gap_days": quality_overview.avg_gap_days,
-                "max_gap_days": quality_overview.max_gap_days,
+                "avg_gap_days": getattr(quality_overview, "avg_gap_days", 0),  # 🔧 兼容处理：如果属性不存在则返回0
+                "max_gap_days": getattr(quality_overview, "max_gap_days", quality_overview.data_lagging_days if hasattr(quality_overview, "data_lagging_days") else 0),
                 "latest_trading_day": quality_overview.base_date.strftime("%Y-%m-%d"),
             }
 
@@ -2326,91 +2385,6 @@ class DataCenterService(BaseService, LoggerMixin):
 
         # 确保分数在0-100之间
         return max(0, min(100, score))
-
-    def auto_repair_data(self, symbol: str, issues: List[str]) -> Dict[str, Any]:
-        """自动修复数据.
-
-        Args:
-            symbol: 品种代码
-            issues: 需要修复的问题列表
-
-        Returns:
-            Dict: 修复结果
-        """
-        # ✅ 开始AI日志流程
-        ai_log_started = False
-        try:
-            ai_log_file = start_ai_process(
-                "quality_repair",
-                metadata={
-                    "symbol": symbol,
-                    "issues_count": len(issues),
-                    "issues": issues
-                }
-            )
-            ai_log_started = True
-            self.logger.info(f"AI日志文件: {ai_log_file}")
-        except Exception as e:
-            self.logger.warning(f"启动AI日志流程失败: {e}")
-
-        try:
-            self._log_operation("自动修复数据", symbol=symbol, issues_count=len(issues))
-
-            if not self.china_stock_engine:
-                result = {
-                    "success": False,
-                    "message": "ChinaStockEngine不可用",
-                    "repaired_count": 0,
-                }
-                # ✅ 结束AI日志流程（引擎不可用）
-                if ai_log_started:
-                    end_ai_process(success=False, summary="ChinaStockEngine不可用")
-                return result
-
-            # 使用增量下载修复数据
-            try:
-                from datetime import date
-
-                # 修复最近30天的数据
-                start_date = date.today() - timedelta(days=30)
-                self.china_stock_engine.download_incremental(start_date=start_date)
-
-                result = {
-                    "success": True,
-                    "message": f"数据修复完成，已重新下载{symbol}最近30天的数据",
-                    "repaired_count": len(issues),
-                }
-                # ✅ 结束AI日志流程（成功）
-                if ai_log_started:
-                    end_ai_process(
-                        success=True,
-                        summary=f"数据修复完成，品种: {symbol}, 修复问题数: {len(issues)}"
-                    )
-                return result
-
-            except Exception as e:
-                self.logger.error("数据修复失败: %s", e, exc_info=True)
-                result = {
-                    "success": False,
-                    "message": f"修复失败: {str(e)}",
-                    "repaired_count": 0,
-                }
-                # ✅ 结束AI日志流程（修复失败）
-                if ai_log_started:
-                    end_ai_process(success=False, summary=f"数据修复失败: {str(e)}")
-                return result
-
-        except Exception as e:
-            self._log_error("自动修复数据", e, symbol=symbol)
-            result = {
-                "success": False,
-                "message": f"修复失败: {str(e)}",
-                "repaired_count": 0,
-            }
-            # ✅ 结束AI日志流程（异常）
-            if ai_log_started:
-                end_ai_process(success=False, summary=f"自动修复数据异常: {str(e)}")
-            return result
 
     # ==================== 数据感知管理 ====================
 

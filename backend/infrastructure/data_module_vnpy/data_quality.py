@@ -25,6 +25,7 @@ import sys
 import time
 import threading
 import multiprocessing as mp
+from multiprocessing import Manager, Process, cpu_count
 from threading import Thread, Event as ThreadEvent
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -57,14 +58,227 @@ from .load_balancer import (
 from .load_balancer import (
     ResourceMonitor,
     ExecutionPolicy,
-    MultiProcessBatchModel,
-    TaskUnit,
 )
 
 # ==================== 辅助函数（用于多进程） ====================
 
 
-def _quality_scan_worker_process(
+def _run_quality_scan_worker_multiprocess(*args):
+    """在进程中运行异步质量扫描事件循环的辅助函数（复制K线下载模式）"""
+    import warnings
+
+    # 🔧 抑制 socket.send() 相关的 ResourceWarning
+    try:
+        warnings.filterwarnings("ignore", category=ResourceWarning, message=".*socket.*")
+    except NameError:
+        pass
+
+    asyncio.run(_quality_scan_worker_async_multiprocess(*args))
+
+
+async def _quality_scan_worker_async_multiprocess(
+    worker_id: int,
+    task_queue,
+    result_queue,
+    metrics_queue,
+    progress_queue,
+    stop_event,
+    pause_event,
+    connections_per_worker: int,
+    data_dir: str,
+    intervals: List[str],
+):
+    """🚀 质量扫描异步Worker（多进程+多协程版 - 复制K线下载模式）
+
+    每个进程维护多个协程，并发扫描多个品种的质量。
+
+    Args:
+        worker_id: Worker进程ID
+        task_queue: 共享任务队列
+        result_queue: 结果队列
+        metrics_queue: 监控指标队列
+        progress_queue: 进度队列
+        stop_event: 停止事件
+        pause_event: 暂停事件
+        connections_per_worker: 每个worker的协程数
+        data_dir: 数据目录
+        intervals: 要扫描的周期列表
+    """
+    import os
+    import queue
+    import logging
+
+    # ✅ 配置子进程日志，接入LogHub统一路由
+    logger = _configure_subprocess_logging(worker_id, task_type="quality_scan")
+    logger.info(
+        f"🚀 质量扫描异步Worker {worker_id} 启动，PID: {os.getpid()}，协程数: {connections_per_worker}"
+    )
+
+    # 🆕 v3.6: 启动lag监控（使用独立的metrics_queue）
+    from .load_balancer import LagMonitor
+
+    lag_monitor_task = asyncio.create_task(
+        LagMonitor.monitor_and_report(
+            metrics_queue=metrics_queue,
+            worker_id=worker_id,
+            stop_event=stop_event,
+            interval_seconds=0.3,
+        )
+    )
+    logger.info(f"[Worker-{worker_id}] ✅ 已启动lag监控（质量扫描模式，使用metrics_queue）")
+
+    try:
+        # 为每个协程创建扫描循环
+        async def quality_scan_loop(conn_id: int):
+            """单个协程的质量扫描循环"""
+            processed = 0
+            failed = 0
+
+            while not stop_event.is_set():
+                # 等待暂停事件
+                while not pause_event.is_set():
+                    if stop_event.is_set():
+                        break
+                    await asyncio.sleep(0.1)
+
+                if stop_event.is_set():
+                    break
+
+                # 从队列获取任务
+                try:
+                    task = await asyncio.to_thread(task_queue.get, timeout=0.5)
+                except queue.Empty:
+                    logger.debug("Worker %s 协程 %s 队列为空", worker_id, conn_id)
+                    break
+                except Exception as e:
+                    logger.debug("Worker %s 协程 %s 获取任务失败: %s", worker_id, conn_id, e)
+                    break
+
+                symbol = task  # 从队列获取的是symbol字符串
+
+                try:
+                    # 异步扫描品种质量
+                    quality_dict = await _scan_symbol_quality_async(
+                        symbol=symbol,
+                        intervals=intervals,
+                        data_dir=data_dir,
+                    )
+
+                    # 上报结果
+                    if quality_dict:
+                        await asyncio.to_thread(result_queue.put, (symbol, quality_dict))
+                        await asyncio.to_thread(progress_queue.put, (symbol, "success"))
+                        processed += 1
+                    else:
+                        await asyncio.to_thread(progress_queue.put, (symbol, "failed"))
+                        failed += 1
+
+                except Exception as e:
+                    logger.debug(f"Worker {worker_id} 协程 {conn_id} 扫描 {symbol} 失败: {e}")
+                    await asyncio.to_thread(progress_queue.put, (symbol, "failed"))
+                    failed += 1
+
+            logger.info(
+                f"Worker {worker_id} 协程 {conn_id} 完成, 成功: {processed}, 失败: {failed}"
+            )
+            return processed, failed
+
+        # N个协程并发工作
+        results = await asyncio.gather(
+            *[quality_scan_loop(i) for i in range(connections_per_worker)],
+            return_exceptions=True,
+        )
+
+        # 统计总数
+        total_processed = sum(r[0] for r in results if isinstance(r, tuple))
+        total_failed = sum(r[1] for r in results if isinstance(r, tuple))
+        logger.info(f"Worker {worker_id} 总计完成, 成功: {total_processed}, 失败: {total_failed}")
+
+    finally:
+        # 🆕 v3.4: 停止lag监控
+        await LagMonitor.cancel_monitor(lag_monitor_task)
+
+
+def _configure_subprocess_logging(worker_id: int, task_type: str = "quality_scan"):
+    """配置子进程日志系统，接入LogHub统一路由
+
+    Args:
+        worker_id: 子进程ID
+        task_type: 任务类型（quality_scan等）
+
+    Returns:
+        配置好的logger实例
+    """
+    import logging
+    import sys
+
+    try:
+        # 1. 获取LogHub实例
+        from backend.infrastructure.system_vnpy.unified_log_system import get_logging_hub
+
+        hub = get_logging_hub()
+
+        # 2. 清理子进程继承的所有handler（避免重复输出）
+        root_logger = logging.getLogger()
+        for handler in root_logger.handlers[:]:
+            root_logger.removeHandler(handler)
+            handler.close()
+
+        # 3. 将LogHub添加到root logger
+        root_logger.addHandler(hub)
+        root_logger.setLevel(logging.DEBUG)
+
+        # 4. 创建子进程专用logger（带worker_id标识）
+        logger_name = f"subprocess.{task_type}.{worker_id}"
+        subprocess_logger = logging.getLogger(logger_name)
+        subprocess_logger.propagate = True  # 让日志传播到root logger
+
+        subprocess_logger.info(f"✅ 子进程 {worker_id} 日志系统已接入LogHub")
+        return subprocess_logger
+
+    except Exception as e:
+        # 降级：如果LogHub配置失败，使用标准logger
+        fallback_logger = logging.getLogger(__name__)
+        fallback_logger.warning(f"⚠️ 子进程 {worker_id} LogHub配置失败，使用降级日志: {e}")
+        return fallback_logger
+
+
+async def _scan_symbol_quality_async(
+    symbol: str, intervals: List[str], data_dir: str
+) -> Optional[dict]:
+    """异步扫描单个品种的质量（与_scan_symbol_quality_multiprocess功能相同但为异步版本）
+
+    Args:
+        symbol: 品种代码
+        intervals: 周期列表
+        data_dir: 数据目录
+
+    Returns:
+        Optional[dict]: 品种质量信息字典，包含SymbolQuality的所有字段
+    """
+    try:
+        # 在协程中执行同步扫描操作（使用executor避免阻塞事件循环）
+        loop = asyncio.get_event_loop()
+        quality_dict = await loop.run_in_executor(
+            None, _scan_symbol_quality_multiprocess, (symbol, intervals, data_dir)
+        )
+        return quality_dict
+
+    except Exception as e:
+        logger = logging.getLogger(__name__)
+        logger.error(f"异步扫描品种 {symbol} 失败: {e}")
+        return {
+            "symbol": symbol,
+            "intervals": {},
+            "overall_score": 0,
+            "has_errors": True,
+            "has_warnings": False,
+            "is_missing": True,
+            "error": str(e),
+        }
+
+
+def _quality_scan_worker_process_deprecated(
     worker_id: int,
     task_queue,
     result_queue,
@@ -74,7 +288,7 @@ def _quality_scan_worker_process(
     interval: str,
     min_rows: int,
 ):
-    """质量扫描worker进程（v3.6新增）
+    """质量扫描worker进程（DEPRECATED - 旧版本，保留用于兼容）
 
     从task_queue循环拉取品种代码，扫描数据质量并上报结果
 
@@ -89,31 +303,8 @@ def _quality_scan_worker_process(
         min_rows: 最小行数阈值
     """
     import asyncio
-    import queue
-    import logging
 
-    # ✅ 配置子进程日志，接入LogHub统一路由
-    try:
-        from backend.infrastructure.system_vnpy.unified_log_system import get_logging_hub
-
-        hub = get_logging_hub()
-        root_logger = logging.getLogger()
-
-        # 清理继承的handler
-        for handler in root_logger.handlers[:]:
-            root_logger.removeHandler(handler)
-            handler.close()
-
-        # 添加LogHub
-        root_logger.addHandler(hub)
-        root_logger.setLevel(logging.DEBUG)
-
-        logger = logging.getLogger(f"subprocess.quality_scan.{worker_id}")
-        logger.propagate = True
-        logger.info(f"✅ 质量扫描子进程 {worker_id} 日志系统已接入LogHub")
-    except Exception as e:
-        logger = logging.getLogger(f"QualityScanWorker-{worker_id}")
-        logger.warning(f"⚠️ 质量扫描子进程 {worker_id} LogHub配置失败: {e}")
+    _configure_subprocess_logging(worker_id, task_type="quality_scan_old")
 
     asyncio.run(
         _quality_scan_worker_async(
@@ -347,6 +538,126 @@ def _read_single_kline(
     except Exception:
         # 多进程环境中，不输出日志
         return None
+
+
+def _scan_symbol_quality_multiprocess(scan_data: tuple) -> Optional[dict]:
+    """扫描单个品种的质量（用于多进程池调用 - 完整版）
+
+    这个函数必须是顶层函数，以便multiprocessing.Pool可以pickle它。
+    它会在子进程中创建DataValidator并执行完整的质量扫描。
+
+    Args:
+        scan_data: (symbol, intervals, data_dir_str) 元组
+
+    Returns:
+        Optional[dict]: 品种质量信息字典，包含SymbolQuality的所有字段
+    """
+    try:
+        symbol, intervals, data_dir_str = scan_data
+
+        # 在子进程中创建DataValidator（需要重新初始化）
+        from pathlib import Path
+        from backend.infrastructure.data_module_vnpy.data_quality import DataValidator
+
+        data_dir = Path(data_dir_str)
+        # 创建DataValidator实例（子进程中需要重新初始化）
+        validator = DataValidator()
+        # 设置数据目录（DataValidator内部已有StorageManager，只需设置其data_dir）
+        if hasattr(validator, "storage_manager") and validator.storage_manager:
+            validator.storage_manager.data_dir = data_dir
+
+        # 执行扫描
+        interval_results = {}
+        has_data = False
+
+        for interval in intervals:
+            try:
+                result = validator.validate_symbol(symbol, interval)
+
+                # 将ValidationResult转换为字典（可序列化）
+                interval_results[interval] = {
+                    "symbol": result.symbol,
+                    "interval": result.interval,
+                    "check_time": result.check_time.isoformat() if result.check_time else None,
+                    "is_valid": result.is_valid,
+                    "errors": result.errors,
+                    "warnings": result.warnings,
+                    "record_count": result.record_count,
+                    "date_range": (
+                        (
+                            result.date_range[0].isoformat() if result.date_range[0] else None,
+                            result.date_range[1].isoformat() if result.date_range[1] else None,
+                        )
+                        if result.date_range
+                        else (None, None)
+                    ),
+                    "missing_dates": [
+                        d.isoformat() if hasattr(d, "isoformat") else str(d)
+                        for d in (result.missing_dates or [])
+                    ],
+                    "logic_errors": result.logic_errors,
+                    "format_errors": result.format_errors,
+                }
+
+                has_data = has_data or result.record_count > 0
+
+            except Exception as e:
+                interval_results[interval] = {
+                    "symbol": symbol,
+                    "interval": interval,
+                    "check_time": datetime.now().isoformat(),
+                    "is_valid": False,
+                    "errors": [f"扫描失败: {e}"],
+                    "warnings": [],
+                    "record_count": 0,
+                    "date_range": (None, None),
+                    "missing_dates": [],
+                    "logic_errors": [],
+                    "format_errors": [],
+                }
+
+        # 如果没有数据，标记为缺失
+        if not has_data:
+            return {
+                "symbol": symbol,
+                "intervals": interval_results,
+                "overall_score": 0,
+                "has_errors": True,
+                "has_warnings": False,
+                "is_missing": True,
+            }
+
+        # 计算整体评分
+        has_errors = any(r.get("errors") for r in interval_results.values())
+        has_warnings = any(r.get("warnings") for r in interval_results.values())
+
+        valid_results = [r for r in interval_results.values() if r.get("record_count", 0) > 0]
+        if valid_results:
+            avg_score = sum(100 if r.get("is_valid", False) else 50 for r in valid_results) / len(
+                valid_results
+            )
+        else:
+            avg_score = 0
+
+        return {
+            "symbol": symbol,
+            "intervals": interval_results,
+            "overall_score": int(avg_score),
+            "has_errors": has_errors,
+            "has_warnings": has_warnings,
+            "is_missing": False,
+        }
+
+    except Exception as e:
+        return {
+            "symbol": scan_data[0] if scan_data else "unknown",
+            "intervals": {},
+            "overall_score": 0,
+            "has_errors": True,
+            "has_warnings": False,
+            "is_missing": True,
+            "error": str(e),
+        }
 
 
 def _scan_single_symbol(scan_data: tuple) -> Optional[dict]:
@@ -717,6 +1028,7 @@ class IPODateCache:
                     cache_date_str = self._cache_date
                 else:
                     from .data_module import DailyCacheManager
+
                     cache_date_str = DailyCacheManager.get_today()
 
                 # 构建数据结构
@@ -848,12 +1160,11 @@ class IPODateCache:
                 # 品种列表没有变化，但缓存日期可能过时
                 if self.is_cache_outdated():
                     from .data_module import DailyCacheManager
+
                     # 更新缓存日期为今天（使用网络时间）
                     self._cache_date = DailyCacheManager.get_today()
                     cache_date_updated = True
-                    self.logger.info(
-                        "缓存日期已更新（无品种变化）：%s", self._cache_date
-                    )
+                    self.logger.info("缓存日期已更新（无品种变化）：%s", self._cache_date)
 
             # 保存到JSON文件
             if new_symbols or removed_symbols or cache_date_updated:
@@ -1150,7 +1461,7 @@ class StorageManager:
 
         pool = DynamicProcessPool(
             initial_processes=initial_processes,
-            worker_function=_quality_scan_worker_process,
+            worker_function=_quality_scan_worker_process_deprecated,
             shared_queues={
                 "task_queue": task_queue,
                 "result_queue": result_queue,
@@ -1879,12 +2190,166 @@ class DataValidator:
                 self.logger.debug("交易日历获取失败，跳过缺失日期检测")
                 return []
 
-            # 8. 计算缺失的交易日
+            # 8. 计算缺失的交易日（已通过交易日历排除非交易日）
             expected_dates = {
                 datetime.strptime(d, "%Y-%m-%d").date() for d in expected_trading_days
             }
             missing_dates = list(expected_dates - actual_dates)
             missing_dates.sort()
+
+            # 🔧 过滤停牌日期：通过成交量识别停牌
+            # 停牌特征：有价无量（价格存在但成交量为0或极低）
+            # 对于有价无量的日期，虽然数据存在，但应该从expected_dates中排除
+            # 这样这些日期就不会被统计为"数据缺失"，因为它们有数据（只是成交量为0）
+            if not df.empty and "volume" in df.columns and expected_trading_days:
+                # 初始化trading_dates_set（用于有价无量检测）
+                trading_dates_set = {
+                    datetime.strptime(d, "%Y-%m-%d").date() for d in expected_trading_days
+                }
+                trading_dates_list = sorted(trading_dates_set) if trading_dates_set else []
+
+                # 提取日期和成交量
+                date_series = self._extract_date_series(df)
+                if date_series is not None and not date_series.empty:
+                    # 创建日期到成交量的映射
+                    df_with_dates = df.copy()
+                    # 提取日期列
+                    if "datetime" in df_with_dates.columns:
+                        datetime_col = pd.to_datetime(df_with_dates["datetime"], errors="coerce")
+                        df_with_dates["date"] = datetime_col.dt.date
+                    elif pd.api.types.is_datetime64_any_dtype(df_with_dates.index):
+                        # 如果索引是datetime类型，转换为date
+                        index_series = pd.Series(df_with_dates.index)
+                        df_with_dates["date"] = index_series.dt.date
+                    else:
+                        # 无法提取日期，跳过有价无量检测
+                        df_with_dates = None
+
+                    if df_with_dates is not None and "date" in df_with_dates.columns:
+                        # 用于存储有价无量的日期（需要从expected_dates中排除）
+                        zero_volume_dates = set()
+
+                        # 检查每个有数据的交易日，如果是有价无量，标记为停牌日期
+                        for date_val in actual_dates:
+                            if date_val not in expected_dates:
+                                continue  # 不在期望交易日范围内，跳过
+
+                            # 查找该日期的数据行
+                            date_mask = df_with_dates["date"] == date_val
+                            date_rows = df_with_dates[date_mask]
+
+                            if not date_rows.empty and "volume" in date_rows.columns:
+                                # 检查成交量（可能有多个周期，检查所有周期的成交量）
+                                volume_col = date_rows["volume"]
+                                if isinstance(volume_col, pd.Series):
+                                    volumes = volume_col.dropna()
+                                else:
+                                    volumes = pd.Series(volume_col).dropna()
+
+                                if not volumes.empty:
+                                    # 如果所有周期的成交量都是0或极低（<100股），可能是停牌
+                                    try:
+                                        max_volume = float(volumes.max())
+                                    except (ValueError, TypeError):
+                                        max_volume = 0
+
+                                    if max_volume < 100:
+                                        # 检查前后交易日是否有正常成交量
+                                        if trading_dates_list:
+                                            try:
+                                                date_idx = trading_dates_list.index(date_val)
+
+                                                # 检查前一个交易日
+                                                has_normal_prev_volume = False
+                                                if date_idx > 0:
+                                                    prev_trading_day = trading_dates_list[
+                                                        date_idx - 1
+                                                    ]
+                                                    if prev_trading_day in actual_dates:
+                                                        prev_mask = (
+                                                            df_with_dates["date"]
+                                                            == prev_trading_day
+                                                        )
+                                                        prev_rows = df_with_dates[prev_mask]
+                                                        if (
+                                                            not prev_rows.empty
+                                                            and "volume" in prev_rows.columns
+                                                        ):
+                                                            prev_vol_col = prev_rows["volume"]
+                                                            if isinstance(prev_vol_col, pd.Series):
+                                                                prev_volumes = prev_vol_col.dropna()
+                                                            else:
+                                                                prev_volumes = pd.Series(
+                                                                    prev_vol_col
+                                                                ).dropna()
+                                                            if not prev_volumes.empty:
+                                                                try:
+                                                                    prev_max = float(
+                                                                        prev_volumes.max()
+                                                                    )
+                                                                    if prev_max >= 100:
+                                                                        has_normal_prev_volume = (
+                                                                            True
+                                                                        )
+                                                                except (ValueError, TypeError):
+                                                                    pass
+
+                                                # 检查后一个交易日
+                                                has_normal_next_volume = False
+                                                if date_idx < len(trading_dates_list) - 1:
+                                                    next_trading_day = trading_dates_list[
+                                                        date_idx + 1
+                                                    ]
+                                                    if next_trading_day in actual_dates:
+                                                        next_mask = (
+                                                            df_with_dates["date"]
+                                                            == next_trading_day
+                                                        )
+                                                        next_rows = df_with_dates[next_mask]
+                                                        if (
+                                                            not next_rows.empty
+                                                            and "volume" in next_rows.columns
+                                                        ):
+                                                            next_vol_col = next_rows["volume"]
+                                                            if isinstance(next_vol_col, pd.Series):
+                                                                next_volumes = next_vol_col.dropna()
+                                                            else:
+                                                                next_volumes = pd.Series(
+                                                                    next_vol_col
+                                                                ).dropna()
+                                                            if not next_volumes.empty:
+                                                                try:
+                                                                    next_max = float(
+                                                                        next_volumes.max()
+                                                                    )
+                                                                    if next_max >= 100:
+                                                                        has_normal_next_volume = (
+                                                                            True
+                                                                        )
+                                                                except (ValueError, TypeError):
+                                                                    pass
+
+                                                # 如果前后交易日有正常成交量，当前日期有价无量，可能是停牌
+                                                # 从expected_dates中排除，避免被统计为数据缺失
+                                                if has_normal_prev_volume or has_normal_next_volume:
+                                                    zero_volume_dates.add(date_val)
+                                            except (ValueError, IndexError):
+                                                pass
+
+                        # 从expected_dates中排除有价无量的日期
+                        if zero_volume_dates:
+                            for zero_date in zero_volume_dates:
+                                expected_dates.discard(zero_date)
+
+                            # 重新计算缺失日期（排除有价无量的日期后）
+                            missing_dates = list(expected_dates - actual_dates)
+                            missing_dates.sort()
+
+                            # 只在DEBUG级别记录，避免批量扫描时刷屏
+                            if self.logger.isEnabledFor(logging.DEBUG):
+                                self.logger.debug(
+                                    f"品种 {symbol}: 排除 {len(zero_volume_dates)} 个可能的停牌日期（有价无量）"
+                                )
 
             # 🎯 架构修复：移除批量扫描中的逐项DEBUG日志，避免刷屏
             # 9. 不再逐项输出缺失检测日志（批量扫描会产生5000+条日志）
@@ -3668,7 +4133,6 @@ class DataSensor:
             # 🎯 架构修复：直接使用LoadBalancer，移除已弃用的AdaptiveQualityConfig
             # 🔧 修复：添加超时保护，避免LoadBalancer查询阻塞扫描
             import multiprocessing as mp
-            import psutil
 
             cpu_cores = mp.cpu_count()
             memory = psutil.virtual_memory()
@@ -3761,64 +4225,122 @@ class DataSensor:
             # 将IPO缓存更新从启动验证流程迁移到这里，避免启动时大批量下载阻塞
             self._ensure_ipo_cache_ready(reference_symbols)
 
-            # 阶段0：立即推送基础指标
-            self._push_phase_0_metrics(reference_symbols, enable_incremental_push)
+            # 🔧 优化：检查是否跳过阶段1和阶段2（手动扫描时，启动流程已执行过）
+            # 如果max_phase==3或None，说明是手动扫描，直接从缓存获取本地数据索引
+            skip_phase_1_2 = max_phase is None or max_phase >= 3
 
-            # 阶段1：快速扫描本地数据索引
-            local_symbols_data = self._scan_phase_1_local_index(reference_symbols)
-            self._push_phase_1_metrics(local_symbols_data, enable_incremental_push)
+            if skip_phase_1_2:
+                # 🔧 优化：手动扫描时，直接使用启动流程的结果（避免重复扫描）
+                self.logger.info("🔧 手动扫描模式：直接执行详细质量扫描（错误/警告检查）")
 
-            # 阶段2：批量检查数据更新状态
-            freshness_data = self._scan_phase_2_freshness(
-                local_symbols_data["local_symbols"], config, progress_callback
-            )
-            self._push_phase_2_metrics(freshness_data, enable_incremental_push)
+                # 🔧 直接从storage_manager获取本地数据索引（使用缓存，快速）
+                all_local_symbol_codes = self.storage_manager.get_local_data_index(use_cache=True)
+                all_local_symbols_set = set(all_local_symbol_codes)
 
-            # 检查是否只执行到阶段2（启动快速扫描模式）
-            if max_phase is not None and max_phase < 3:
-                self.logger.info(f"启动快速扫描模式：只执行到阶段{max_phase}，跳过阶段3")
+                # 只保留reference_symbols中存在于本地的品种
+                local_symbol_codes = [s for s in reference_symbols if s in all_local_symbols_set]
+                missing_count = len(reference_symbols) - len(local_symbol_codes)
 
-                # 构建部分扫描结果
-                overview = QualityOverview(
-                    total_symbols=len(reference_symbols),
-                    missing_symbols=local_symbols_data["missing_count"],
-                    error_symbols=0,  # 未扫描
-                    warning_symbols=0,  # 未扫描
-                    quality_score=0,  # 部分扫描不计算评分
-                    last_scan_time=datetime.now(),
-                    base_date=date.today(),
-                    scanned_intervals=intervals,
-                    details=[],
-                    outdated_symbols=freshness_data["outdated_symbols"],
-                    max_gap_days=freshness_data["max_gap_days"],
-                    data_missing_symbols=0,  # 未扫描
-                    data_lagging_days=freshness_data.get("data_lagging_days", 0),
+                # 构建local_symbols_data结构（与阶段1的输出格式一致）
+                local_symbols_data = {
+                    "local_symbols": local_symbol_codes,
+                    "downloaded_count": len(local_symbol_codes),
+                    "missing_count": missing_count,
+                    "missing_symbols": [
+                        s for s in reference_symbols if s not in all_local_symbols_set
+                    ],
+                }
+
+                # 🔧 不推送阶段0/1/2的事件（避免重复，启动流程已执行）
+                # 但需要构建一个空的freshness_data用于后续构建overview
+                freshness_data = {
+                    "outdated_symbols": 0,  # 启动流程已检查，这里不重复
+                    "gap_days_list": [],
+                    "outdated_details": [],
+                    "data_lagging_days": 0,
+                }
+
+                self.logger.info(
+                    f"🔧 使用启动流程结果: 本地品种={len(local_symbol_codes)}, 缺失={missing_count}"
                 )
 
-                # 推送部分扫描完成事件
+                # 🔧 推送详细质量扫描开始事件（代替阶段0）
                 if enable_incremental_push and self.event_engine:
                     from .data_module import EVENT_QUALITY_SCAN_PHASE
                     from vnpy.event import Event
 
                     event_data = {
-                        "phase": 2,
-                        "metrics": {
-                            "total_symbols": len(reference_symbols),
-                            "missing_symbols": local_symbols_data["missing_count"],
-                            "outdated_symbols": freshness_data["outdated_symbols"],
-                        },
-                        "status": "startup_complete",  # 标记为启动扫描完成
-                        "progress_percent": 100,
+                        "phase": 3,  # 🔧 直接使用阶段3，跳过阶段0/1/2
+                        "metrics": {"total_symbols": len(reference_symbols)},
+                        "status": "scanning_quality",  # 🔧 直接标记为质量扫描中
+                        "progress_percent": 0,
                         "timestamp": datetime.now().isoformat(),
-                        "message": "启动快速扫描完成（阶段0-2），详细质量扫描已跳过",
                     }
                     event = Event(EVENT_QUALITY_SCAN_PHASE, event_data)
                     self.event_engine.put(event)
-                    self.logger.info("推送启动快速扫描完成事件")
+                    self.logger.info(
+                        f"📊 推送详细质量扫描开始事件: 总品种 {len(reference_symbols)}"
+                    )
+            else:
+                # 启动流程模式：执行阶段1和阶段2
+                # 阶段0：立即推送基础指标
+                self._push_phase_0_metrics(reference_symbols, enable_incremental_push)
 
-                return overview
+                # 阶段1：快速扫描本地数据索引
+                local_symbols_data = self._scan_phase_1_local_index(reference_symbols)
+                self._push_phase_1_metrics(local_symbols_data, enable_incremental_push)
 
-            # 阶段3：详细质量扫描（仅在max_phase>=3或None时执行）
+                # 阶段2：批量检查数据更新状态
+                freshness_data = self._scan_phase_2_freshness(
+                    local_symbols_data["local_symbols"], config, progress_callback
+                )
+                self._push_phase_2_metrics(freshness_data, enable_incremental_push)
+
+                # 检查是否只执行到阶段2（启动快速扫描模式）
+                if max_phase is not None and max_phase < 3:
+                    self.logger.info(f"启动快速扫描模式：只执行到阶段{max_phase}，跳过阶段3")
+
+                    # 构建部分扫描结果
+                    overview = QualityOverview(
+                        total_symbols=len(reference_symbols),
+                        missing_symbols=local_symbols_data["missing_count"],
+                        error_symbols=0,  # 未扫描
+                        warning_symbols=0,  # 未扫描
+                        quality_score=0,  # 部分扫描不计算评分
+                        last_scan_time=datetime.now(),
+                        base_date=date.today(),
+                        scanned_intervals=intervals,
+                        details=[],
+                        outdated_symbols=freshness_data["outdated_symbols"],
+                        max_gap_days=freshness_data["max_gap_days"],
+                        data_missing_symbols=0,  # 未扫描
+                        data_lagging_days=freshness_data.get("data_lagging_days", 0),
+                    )
+
+                    # 推送部分扫描完成事件
+                    if enable_incremental_push and self.event_engine:
+                        from .data_module import EVENT_QUALITY_SCAN_PHASE
+                        from vnpy.event import Event
+
+                        event_data = {
+                            "phase": 2,
+                            "metrics": {
+                                "total_symbols": len(reference_symbols),
+                                "missing_symbols": local_symbols_data["missing_count"],
+                                "outdated_symbols": freshness_data["outdated_symbols"],
+                            },
+                            "status": "startup_complete",  # 标记为启动扫描完成
+                            "progress_percent": 100,
+                            "timestamp": datetime.now().isoformat(),
+                            "message": "启动快速扫描完成（阶段0-2），详细质量扫描已跳过",
+                        }
+                        event = Event(EVENT_QUALITY_SCAN_PHASE, event_data)
+                        self.event_engine.put(event)
+                        self.logger.info("推送启动快速扫描完成事件")
+
+                    return overview
+
+            # 阶段3：详细质量扫描（手动扫描时直接执行，启动流程时不执行）
             quality_data = self._scan_phase_3_quality(
                 local_symbols_data["local_symbols"],
                 intervals,
@@ -3827,13 +4349,19 @@ class DataSensor:
             )
             # 🔥 强制输出到terminal（无法被日志系统过滤）
             import sys
+
             print(f"\n🔍 [CRITICAL-DEBUG] 准备调用_push_phase_3_metrics", file=sys.stderr)
             print(f"  enable_incremental_push={enable_incremental_push}", file=sys.stderr)
             print(f"  quality_data keys={list(quality_data.keys())}", file=sys.stderr)
-            print(f"  symbol_qualities count={len(quality_data.get('symbol_qualities', []))}", file=sys.stderr)
+            print(
+                f"  symbol_qualities count={len(quality_data.get('symbol_qualities', []))}",
+                file=sys.stderr,
+            )
             sys.stderr.flush()
 
-            self.logger.info(f"🔍 [DEBUG] 准备调用_push_phase_3_metrics: enable_incremental_push={enable_incremental_push}, quality_data keys={list(quality_data.keys())}")
+            self.logger.info(
+                f"🔍 [DEBUG] 准备调用_push_phase_3_metrics: enable_incremental_push={enable_incremental_push}, quality_data keys={list(quality_data.keys())}"
+            )
             self._push_phase_3_metrics(quality_data, enable_incremental_push)
 
             # 🚀 任务6：删除阶段4，直接构建QualityOverview（评分无用，设为0）
@@ -4199,219 +4727,380 @@ class DataSensor:
         config: Dict,
         progress_callback,
     ) -> Dict:
-        """阶段3：详细质量扫描（使用新架构ThreadPoolBatchModel + 动态并发调整）"""
+        """🚀 阶段3：详细质量扫描（多进程+多协程版本 - 复制K线下载模式）
+
+        核心改进：
+        1. 完全复制K线下载的多进程+多协程架构
+        2. 绕过GIL限制，大幅提升I/O密集型任务性能
+        3. 动态进程数调整，根据资源压力自动优化
+        4. 实时进度反馈（每5%输出一次）
+        5. 完善的错误处理和日志输出
+        """
+        import sys
+        import time
+        import queue
+
         # 🔍 测量事件循环延迟
         self._measure_event_loop_lag_sync("DataSensor_Phase3")
 
-        import sys
-
-        print("\n[阶段3/3] 详细质量扫描（错误/警告）")
+        print("\n[详细质量扫描] 检查数据错误和警告")
         sys.stdout.flush()
 
-        # 🚀 新架构：初始化资源监控和策略决策
+        self.logger.info(f"🔍 [DEBUG] 阶段3开始执行: 品种数={len(local_symbols)}, 周期={intervals}")
+        print(
+            f"🔍 [DEBUG] 阶段3开始执行: 品种数={len(local_symbols)}, 周期={intervals}",
+            file=sys.stderr,
+        )
+        sys.stderr.flush()
+
+        # 📊 初始化统计变量
+        error_symbols = 0
+        warning_symbols = 0
+        data_missing_symbols = 0
+        symbol_qualities = []
+        failed = 0
+        completed = 0
+
+        # 📊 记录开始时间和资源状态
+        start_time = time.time()
+        initial_cpu = psutil.cpu_percent(interval=0.1)
+        initial_memory = psutil.virtual_memory().percent
+
+        # 🚀 使用LoadBalancer获取执行计划
         try:
             resource_monitor = ResourceMonitor(event_engine=self.event_engine)
             execution_policy = ExecutionPolicy()
-
-            # 创建任务实例（用于策略决策）
             task = DataQualityScanTask("phase3_quality_scan", len(local_symbols))
-
-            # 获取当前资源压力
             pressure = resource_monitor.get_current_pressure()
-
-            # 根据任务和压力选择执行计划
             plan = execution_policy.select_execution_plan(task, pressure)
 
-            self.logger.info(f"🎯 执行计划: {plan.reason}")
-
-            # 🔧 修复pickle错误：数据扫描是I/O密集型任务，使用线程池更合适
-            # 直接使用线程池批量扫描（避免多进程的pickle问题）
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-
-            # 🚀 核心修复：使用LoadBalancer的执行计划配置，而不是传入的config
-            # 问题：传入的config可能来自上层scan_all_data_adaptive的2秒超时配置
-            # 解决：阶段3内部重建LoadBalancer策略，使用plan的配置
-            plan_max_workers = plan.initial_config.max_workers if plan and hasattr(plan.initial_config, 'max_workers') else None
-            max_workers = plan_max_workers if plan_max_workers else config.get("max_workers", 16)
+            # 从plan中提取配置信息
+            num_processes = plan.initial_config.max_workers
+            # 对于质量扫描，我们使用MultiProcessAsyncModel的协程数作为参考
+            # 但由于我们自定义实现，需要自己设定协程数
+            connections_per_worker = 20  # 每个worker的协程数，可根据实际情况调整
 
             self.logger.info(
-                f"阶段3：使用线程池执行质量扫描，max_workers={max_workers} "
-                f"(来源={'LoadBalancer执行计划' if plan_max_workers else 'config'}, {plan.reason if plan else 'N/A'})"
+                f"🎯 LoadBalancer执行计划: {plan.reason}, "
+                f"进程数={num_processes}, 每进程协程数={connections_per_worker}"
             )
+            print(
+                f"🎯 执行计划: {plan.reason}, 进程数={num_processes}, 每进程协程数={connections_per_worker}",
+                file=sys.stderr,
+            )
+            sys.stderr.flush()
 
-            error_symbols = 0
-            warning_symbols = 0
-            data_missing_symbols = 0
-            symbol_qualities = []
-
-            # 🔍 记录开始时间和初始资源状态
-            import time
-            import psutil
-            start_time = time.time()
-            initial_cpu = psutil.cpu_percent(interval=0.1)
-            initial_memory = psutil.virtual_memory().percent
             self.logger.info(
-                f"📊 扫描开始: 品种数={len(local_symbols)}, 线程数={max_workers}, "
+                f"📊 扫描开始: 品种数={len(local_symbols)}, "
+                f"进程数={num_processes}, 每进程协程数={connections_per_worker}, "
                 f"初始CPU={initial_cpu:.1f}%, 初始内存={initial_memory:.1f}%"
             )
+            print(
+                f"📊 扫描开始: 品种数={len(local_symbols)}, 进程数={num_processes}",
+                file=sys.stderr,
+            )
+            sys.stderr.flush()
 
-            with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="QualityScan") as executor:
-                # 提交所有任务
-                future_to_symbol = {
-                    executor.submit(self._scan_symbol_quality, symbol, intervals): symbol
-                    for symbol in local_symbols
-                }
+            # 2. 初始化Manager和队列
+            manager = Manager()
+            task_queue = manager.Queue()
+            result_queue = manager.Queue()
+            metrics_queue = manager.Queue()  # 独立的监控指标队列
+            progress_queue = manager.Queue()
+            stop_event = manager.Event()
+            pause_event = manager.Event()
+            pause_event.set()  # 默认不暂停
 
-                # 收集结果
-                completed = 0
-                failed = 0
-                last_log_time = start_time
-                for future in as_completed(future_to_symbol):
-                    symbol = future_to_symbol[future]
-                    try:
-                        result = future.result(timeout=30)  # 🔧 添加30秒超时，避免单个品种卡住
-                        if result:
-                            symbol_qualities.append(result)
-                            if result.has_errors:
-                                error_symbols += 1
-                            if result.has_warnings:
-                                warning_symbols += 1
-                            # 检查数据缺失
-                            for interval_result in result.intervals.values():
-                                if interval_result.missing_dates and len(interval_result.missing_dates) > 0:
-                                    data_missing_symbols += 1
-                                    break
-                    except TimeoutError:
-                        self.logger.warning(f"⏱️ 扫描品种 {symbol} 超时（30秒），已跳过")
-                        failed += 1
-                    except Exception as e:
-                        self.logger.warning(f"❌ 扫描品种 {symbol} 失败: {e}")
-                        failed += 1
+            # 3. 填充任务队列
+            data_dir_str = str(self.storage_manager.data_dir)
+            for symbol in local_symbols:
+                task_queue.put(symbol)
 
-                    completed += 1
+            # 4. 启动worker进程池
+            processes = []
+            for i in range(num_processes):
+                try:
+                    p = Process(
+                        target=_run_quality_scan_worker_multiprocess,
+                        args=(
+                            i,
+                            task_queue,
+                            result_queue,
+                            metrics_queue,
+                            progress_queue,
+                            stop_event,
+                            pause_event,
+                            connections_per_worker,
+                            data_dir_str,
+                            intervals,
+                        ),
+                    )
+                    p.start()
+                    processes.append(p)
+                    self.logger.debug(f"启动质量扫描进程 {i} (PID: {p.pid})")
+                    time.sleep(0.1)  # 给进程一点启动时间
+                except Exception as e:
+                    self.logger.error(f"启动进程{i}失败: {e}")
 
-                    # 🔧 每10%输出一次进度到terminal，并监控资源使用
-                    if len(local_symbols) > 0:
-                        percent = int((completed / len(local_symbols)) * 100)
-                        # 每10%输出（10%, 20%, ..., 100%）
-                        if percent % 10 == 0 and completed == int(len(local_symbols) * percent / 100):
-                            # 🔍 获取当前资源使用情况
+            self.logger.info(f"启动{len(processes)}个工作进程（进程池模式）")
+            time.sleep(0.5)  # 等待所有进程启动完成
+
+            # 5. 监控进度并收集结果
+            from .load_balancer import LagMonitor
+
+            total_symbols = len(local_symbols)
+            timeout_count = 0
+            max_timeout_count = 600  # 60秒超时
+
+            results_dict = {}  # {symbol: quality_dict}
+
+            self.logger.info(
+                f"开始异步质量扫描监控: {num_processes}进程 × {connections_per_worker}协程 = "
+                f"{num_processes * connections_per_worker}并发, 总任务数: {total_symbols}"
+            )
+
+            while completed < total_symbols:
+                # 收集进度
+                try:
+                    progress_data = progress_queue.get(timeout=0.1)
+                    if len(progress_data) == 2:
+                        symbol = progress_data[0]
+                        completed += 1
+                        timeout_count = 0
+
+                        # 每5%输出一次进度
+                        if (
+                            completed % max(1, total_symbols // 20) == 0
+                            or completed == total_symbols
+                        ):
                             current_time = time.time()
                             elapsed = current_time - start_time
                             current_cpu = psutil.cpu_percent(interval=0)
                             current_memory = psutil.virtual_memory().percent
                             throughput = completed / elapsed if elapsed > 0 else 0
+                            percent = (
+                                int((completed / total_symbols) * 100) if total_symbols > 0 else 0
+                            )
 
                             print(
-                                f"  [阶段3] 进度: {percent}% ({completed}/{len(local_symbols)}, 失败={failed}) "
-                                f"| CPU={current_cpu:.1f}% "
-                                f"| 内存={current_memory:.1f}% "
-                                f"| 吞吐={throughput:.1f}品种/秒"
+                                f"  [详细质量扫描] 进度: {percent}% ({completed}/{total_symbols}) "
+                                f"| CPU={current_cpu:.1f}% | 内存={current_memory:.1f}% | 吞吐={throughput:.1f}品种/秒"
                             )
                             sys.stdout.flush()
                             self.logger.info(
-                                f"阶段3进度: {percent}% ({completed}/{len(local_symbols)}, 失败={failed}), "
-                                f"CPU={current_cpu:.1f}%, "
-                                f"内存={current_memory:.1f}%, "
-                                f"吞吐={throughput:.1f}品种/秒"
+                                f"详细质量扫描进度: {percent}% ({completed}/{total_symbols}), "
+                                f"CPU={current_cpu:.1f}%, 内存={current_memory:.1f}%, 吞吐={throughput:.1f}品种/秒"
                             )
 
                         if progress_callback:
-                            progress_callback(50 + percent * 0.4)  # 50%-90%
+                            try:
+                                percent = (
+                                    int((completed / total_symbols) * 100)
+                                    if total_symbols > 0
+                                    else 0
+                                )
+                                progress_callback(50 + percent * 0.4)  # 50%-90%
+                            except Exception:
+                                pass
 
-                if failed > 0:
-                    self.logger.warning(f"⚠️ 阶段3完成，但有 {failed} 个品种扫描失败")
+                except queue.Empty:
+                    timeout_count += 1
+                    if timeout_count >= max_timeout_count:
+                        self.logger.warning(
+                            f"进度监控超时（{max_timeout_count * 0.1}秒），已完成: {completed}/{total_symbols}"
+                        )
+                        alive_processes = [p for p in processes if p.is_alive()]
+                        self.logger.warning(f"存活进程数: {len(alive_processes)}/{len(processes)}")
+                        if not alive_processes:
+                            self.logger.warning("所有进程已结束，但任务未完成！强制退出监控")
+                            break
+                        timeout_count = 0
+                        self.logger.info("进程仍在运行，重置超时计数器，继续等待...")
 
-            # 🔍 计算总体性能指标
-            end_time = time.time()
-            total_elapsed = end_time - start_time
-            avg_throughput = len(local_symbols) / total_elapsed if total_elapsed > 0 else 0
-            final_cpu = psutil.cpu_percent(interval=0.1)
-            final_memory = psutil.virtual_memory().percent
+                # 处理监控指标（从独立的metrics_queue）
+                try:
+                    msg = metrics_queue.get_nowait()
+                    LagMonitor.process_lag_message(msg, None, self.logger)
+                except queue.Empty:
+                    pass
+                except Exception as e:
+                    self.logger.debug(f"处理监控指标失败: {e}")
 
-            # 阶段完成后输出汇总
-            print(f"  ✓ 扫描完成: {len(local_symbols)} 个品种")
-            print(f"  ✓ 错误品种: {error_symbols}")
-            print(f"  ✓ 警告品种: {warning_symbols}")
-            print(f"  ✓ 数据缺失品种: {data_missing_symbols}")
-            print(f"  ✓ 总耗时: {total_elapsed:.2f}秒")
-            print(f"  ✓ 平均吞吐: {avg_throughput:.1f}品种/秒")
-            print(f"  ✓ 最终CPU: {final_cpu:.1f}%")
-            print(f"  ✓ 最终内存: {final_memory:.1f}%")
-            sys.stdout.flush()
+                # 收集结果（非阻塞）
+                try:
+                    msg = result_queue.get_nowait()
+                    symbol, quality_dict = msg
+                    if quality_dict:
+                        results_dict[symbol] = quality_dict
+                        self.logger.debug(f"收到结果: {symbol}")
+                except queue.Empty:
+                    pass
 
-            self.logger.info(
-                f"📊 阶段3性能统计: 耗时={total_elapsed:.2f}秒, 吞吐={avg_throughput:.1f}品种/秒, "
-                f"线程数={max_workers}, 最终CPU={final_cpu:.1f}%, 最终内存={final_memory:.1f}%"
-            )
+            # 最后收集剩余的结果和监控指标
+            self.logger.info("收集剩余结果...")
+            while True:
+                try:
+                    msg = metrics_queue.get_nowait()
+                    LagMonitor.process_lag_message(msg, None, self.logger)
+                except queue.Empty:
+                    break
+                except Exception as e:
+                    self.logger.debug(f"处理剩余监控指标失败: {e}")
 
-            return {
-                "error_symbols": error_symbols,
-                "warning_symbols": warning_symbols,
-                "symbol_qualities": symbol_qualities,
-                "data_missing_symbols": data_missing_symbols,
-            }
+            while True:
+                try:
+                    msg = result_queue.get_nowait()
+                    symbol, quality_dict = msg
+                    if quality_dict:
+                        results_dict[symbol] = quality_dict
+                except queue.Empty:
+                    break
+
+            self.logger.info(f"收集到 {len(results_dict)} 个结果")
+
+            # 6. 清理进程
+            for p in processes:
+                if p.is_alive():
+                    p.terminate()
+                    p.join(timeout=1)
+            processes.clear()
+
+            # 关闭资源监控器
+            resource_monitor.close()
+
+            # 处理结果：将字典结果转换为SymbolQuality对象
+            for symbol, quality_dict in results_dict.items():
+                # 转换间隔结果
+                interval_results = {}
+                for interval, interval_dict in quality_dict.get("intervals", {}).items():
+                    from datetime import datetime as dt_class
+                    from backend.infrastructure.data_module_vnpy.data_quality import (
+                        ValidationResult,
+                    )
+
+                    # 解析日期范围
+                    date_range = interval_dict.get("date_range", (None, None))
+                    start_date = dt_class.fromisoformat(date_range[0]) if date_range[0] else None
+                    end_date = dt_class.fromisoformat(date_range[1]) if date_range[1] else None
+
+                    # 解析缺失日期
+                    missing_dates = []
+                    for md in interval_dict.get("missing_dates", []):
+                        try:
+                            if isinstance(md, str):
+                                missing_dates.append(dt_class.fromisoformat(md).date())
+                            else:
+                                missing_dates.append(md)
+                        except Exception:
+                            pass
+
+                    interval_results[interval] = ValidationResult(
+                        symbol=interval_dict.get("symbol", symbol),
+                        interval=interval_dict.get("interval", interval),
+                        check_time=(
+                            dt_class.fromisoformat(interval_dict["check_time"])
+                            if interval_dict.get("check_time")
+                            else dt_class.now()
+                        ),
+                        is_valid=interval_dict.get("is_valid", False),
+                        errors=interval_dict.get("errors", []),
+                        warnings=interval_dict.get("warnings", []),
+                        record_count=interval_dict.get("record_count", 0),
+                        date_range=(start_date, end_date),
+                        missing_dates=missing_dates,
+                        logic_errors=interval_dict.get("logic_errors", []),
+                        format_errors=interval_dict.get("format_errors", []),
+                    )
+
+                # 创建SymbolQuality对象
+                symbol_quality = SymbolQuality(
+                    symbol=quality_dict.get("symbol", symbol),
+                    intervals=interval_results,
+                    overall_score=quality_dict.get("overall_score", 0),
+                    has_errors=quality_dict.get("has_errors", False),
+                    has_warnings=quality_dict.get("has_warnings", False),
+                    is_missing=quality_dict.get("is_missing", False),
+                )
+
+                symbol_qualities.append(symbol_quality)
+
+                if symbol_quality.has_errors:
+                    error_symbols += 1
+                if symbol_quality.has_warnings:
+                    warning_symbols += 1
+
+                # 🔧 检查数据缺失（排除品种缺失导致的缺失）
+                if not symbol_quality.is_missing:
+                    for interval_result in symbol_quality.intervals.values():
+                        if interval_result.missing_dates and len(interval_result.missing_dates) > 0:
+                            data_missing_symbols += 1
+                            break
+
+            failed = len(local_symbols) - len(results_dict)
 
         except Exception as e:
-            self.logger.error(f"新架构执行失败，降级到串行实现: {e}", exc_info=True)
+            self.logger.error(f"❌ 多进程+多协程执行异常: {e}", exc_info=True)
+            print(f"❌ 多进程扫描异常: {type(e).__name__}: {e}", file=sys.stderr)
+            sys.stderr.flush()
+            failed = len(local_symbols) - completed
 
-            # 降级到串行实现（避免ThreadPoolExecutor）
-            error_symbols = 0
-            warning_symbols = 0
-            symbol_qualities = []
+        # 📊 计算总体性能指标
+        end_time = time.time()
+        total_elapsed = end_time - start_time
+        avg_throughput = completed / total_elapsed if total_elapsed > 0 else 0
+        final_cpu = psutil.cpu_percent(interval=0.1)
+        final_memory = psutil.virtual_memory().percent
 
-            for idx, symbol in enumerate(local_symbols):
-                try:
-                    symbol_quality = self._scan_symbol_quality(symbol, intervals)
-                    if symbol_quality:
-                        symbol_qualities.append(symbol_quality)
-                        if symbol_quality.has_errors:
-                            error_symbols += 1
-                        if symbol_quality.has_warnings:
-                            warning_symbols += 1
-                except Exception as e2:
-                    self.logger.error("扫描品种 %s 失败: %s", symbol, e2)
+        # 📊 输出最终汇总
+        print(f"  ✓ 扫描完成: {completed} 个品种")
+        print(f"  ✓ 错误品种: {error_symbols}")
+        print(f"  ✓ 警告品种: {warning_symbols}")
+        print(f"  ✓ 数据缺失品种: {data_missing_symbols}")
+        print(f"  ✓ 总耗时: {total_elapsed:.2f}秒")
+        print(f"  ✓ 平均吞吐: {avg_throughput:.1f}品种/秒")
+        print(f"  ✓ 最终CPU: {final_cpu:.1f}%")
+        print(f"  ✓ 最终内存: {final_memory:.1f}%")
+        sys.stdout.flush()
 
-                completed = idx + 1
-                if progress_callback and completed % 500 == 0:
-                    percent = int((completed / len(local_symbols)) * 100)
-                    progress_callback(50 + percent * 0.4)
+        self.logger.info(
+            f"📊 详细质量扫描完成: 耗时={total_elapsed:.2f}秒, 吞吐={avg_throughput:.1f}品种/秒, "
+            f"完成={completed}/{len(local_symbols)}, 失败={failed}, "
+            f"最终CPU={final_cpu:.1f}%, 最终内存={final_memory:.1f}%"
+        )
 
-            data_missing_symbols = 0
-            for sq in symbol_qualities:
-                for interval_result in sq.intervals.values():
-                    if interval_result.missing_dates and len(interval_result.missing_dates) > 0:
-                        data_missing_symbols += 1
-                        break
+        print(
+            f"✅ [DEBUG] 详细质量扫描执行完成: 错误={error_symbols}, 警告={warning_symbols}, 数据缺失={data_missing_symbols}",
+            file=sys.stderr,
+        )
+        sys.stderr.flush()
 
-            print(f"  ✓ 扫描完成: {len(local_symbols)} 个品种（旧实现）")
-            print(f"  ✓ 错误品种: {error_symbols}")
-            print(f"  ✓ 警告品种: {warning_symbols}")
-            print(f"  ✓ 数据缺失品种: {data_missing_symbols}")
-            sys.stdout.flush()
-
-            return {
-                "error_symbols": error_symbols,
-                "warning_symbols": warning_symbols,
-                "symbol_qualities": symbol_qualities,
-                "data_missing_symbols": data_missing_symbols,
-            }
+        return {
+            "error_symbols": error_symbols,
+            "warning_symbols": warning_symbols,
+            "symbol_qualities": symbol_qualities,
+            "data_missing_symbols": data_missing_symbols,
+        }
 
     def _push_phase_3_metrics(self, quality_data: Dict, enable_push: bool):
         """阶段3：推送详细质量指标和最终完成事件"""
         # 🔥 强制输出到terminal（无法被日志系统过滤）
         import sys
+
         print(f"\n🔍 [CRITICAL-DEBUG] _push_phase_3_metrics被调用", file=sys.stderr)
         print(f"  enable_push={enable_push}", file=sys.stderr)
         print(f"  event_engine={self.event_engine is not None}", file=sys.stderr)
         sys.stderr.flush()
 
-        self.logger.info(f"🔍 [DEBUG] _push_phase_3_metrics被调用: enable_push={enable_push}, event_engine={self.event_engine is not None}")
+        self.logger.info(
+            f"🔍 [DEBUG] _push_phase_3_metrics被调用: enable_push={enable_push}, event_engine={self.event_engine is not None}"
+        )
 
         if not enable_push or not self.event_engine:
             print(f"⚠️ [CRITICAL-DEBUG] 阶段3推送被跳过！", file=sys.stderr)
             sys.stderr.flush()
-            self.logger.warning(f"⚠️ 阶段3指标推送已跳过: enable_push={enable_push}, event_engine={self.event_engine is not None}")
+            self.logger.warning(
+                f"⚠️ 阶段3指标推送已跳过: enable_push={enable_push}, event_engine={self.event_engine is not None}"
+            )
             return
 
         from .data_module import EVENT_QUALITY_SCAN_PHASE
@@ -4425,8 +5114,9 @@ class DataSensor:
         symbol_name_map = {}
         try:
             from .data_module import ChinaStockEngine
-            engine = getattr(ChinaStockEngine, '_instance', None)
-            if engine and hasattr(engine, 'symbol_loader') and engine.symbol_loader:
+
+            engine = getattr(ChinaStockEngine, "_instance", None)
+            if engine and hasattr(engine, "symbol_loader") and engine.symbol_loader:
                 symbols_result = engine._validate_symbol_cache_readonly()
                 if symbols_result:
                     all_symbols = symbols_result.get("all_symbols", [])
@@ -4444,7 +5134,9 @@ class DataSensor:
             detail = {
                 "symbol": sq.symbol,
                 "name": symbol_name_map.get(sq.symbol, ""),  # 🆕 添加品种名称
-                "status": "error" if sq.has_errors else ("warning" if sq.has_warnings else "data_missing"),
+                "status": (
+                    "error" if sq.has_errors else ("warning" if sq.has_warnings else "data_missing")
+                ),
                 "score": sq.overall_score,
                 "has_errors": sq.has_errors,
                 "has_warnings": sq.has_warnings,
@@ -4456,35 +5148,45 @@ class DataSensor:
                 error_details.append(detail)
             elif sq.has_warnings:
                 warning_details.append(detail)
-            # 检查数据缺失
-            elif any(interval_result.missing_dates and len(interval_result.missing_dates) > 0
-                    for interval_result in sq.intervals.values()):
+            # 🔧 检查数据缺失（排除品种缺失导致的缺失）
+            # 只统计真正的数据缺失：有数据但部分日期缺失，且不是品种缺失导致的
+            elif not sq.is_missing and any(
+                interval_result.missing_dates and len(interval_result.missing_dates) > 0
+                for interval_result in sq.intervals.values()
+            ):
                 detail["status"] = "data_missing"
                 data_missing_details.append(detail)
 
         # 合并所有问题详情
         all_details = error_details + warning_details + data_missing_details
 
-        # 🚀 任务5：推送最终完成事件（从阶段4迁移过来）
-        # 阶段3是最后阶段，直接推送complete状态
+        # 🚀 推送最终完成事件
+        # 详细质量扫描完成，直接推送complete状态
         event_data = {
-            "phase": 3,
+            "phase": 3,  # 🔧 保持phase=3用于UI识别，但不再有阶段0/1/2
             "metrics": {
                 "error_symbols": quality_data["error_symbols"],
                 "warning_symbols": quality_data["warning_symbols"],
                 "data_missing_symbols": quality_data.get("data_missing_symbols", 0),
                 "details": all_details,  # 🔧 推送所有问题品种的详情
             },
-            "status": "complete",  # 🚀 修改：直接完成，不再有阶段4
-            "progress_percent": 100,  # 🚀 修改：100%完成
+            "status": "complete",  # 扫描完成
+            "progress_percent": 100,  # 100%完成
             "timestamp": datetime.now().isoformat(),
         }
 
         event = Event(EVENT_QUALITY_SCAN_PHASE, event_data)
-        self.event_engine.put(event)
+        # 🔧 关键修复：使用非阻塞方式推送事件，避免阻塞扫描线程
+        try:
+            # VnPy的event_engine.put()通常是线程安全的，但如果队列满了可能会阻塞
+            # 使用try-except确保不会因为事件推送失败而影响扫描流程
+            self.event_engine.put(event)
+        except Exception as e:
+            self.logger.warning(f"推送阶段3事件失败（不影响扫描结果）: {e}")
 
         # 🔥 强制输出到terminal（确认事件已推送）
         import sys
+
         print(f"\n✅ [CRITICAL-DEBUG] 阶段3事件已推送到event_engine", file=sys.stderr)
         print(f"  错误品种={len(error_details)}", file=sys.stderr)
         print(f"  警告品种={len(warning_details)}", file=sys.stderr)

@@ -1,6 +1,6 @@
 {
-  "pid": 7732,
-  "timestamp": 1761885030.6986792,
+  "pid": 2264,
+  "timestamp": 1761897591.8366473,
   "status": "fully_ready",
   "level": 2,
   "ports": {
@@ -9,5 +9,5 @@
     "query_rep": 5557
   },
   "bind_addr": "127.0.0.1",
-  "coroutines_ready_at": 1761885032.6976805
+  "coroutines_ready_at": 1761897593.8651478
 }
