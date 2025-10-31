@@ -104,6 +104,513 @@ class TaskMetrics:
     estimated_workers: int = 1
 
 
+# 🆕 背压控制: 队列统计数据结构
+@dataclass
+class QueueStats:
+    """队列统计信息（用于背压控制）
+
+    收集队列的实时和统计指标，用于背压评估和动态调整。
+    """
+
+    queue_name: str  # 队列名称
+    current_size: int  # 当前大小
+    max_size: int  # 最大容量
+    fill_rate: float  # 填充率 (0-1)
+    enqueue_success_count: int = 0  # 入队成功次数
+    enqueue_failed_count: int = 0  # 入队失败次数
+    dequeue_count: int = 0  # 出队次数
+    peak_size: int = 0  # 历史峰值
+    avg_size: float = 0.0  # 平均大小
+    consumer_rate: float = 0.0  # 消费速率 (items/s)
+    backpressure_active: bool = False  # 背压是否激活
+    timestamp: float = field(default_factory=time.time)  # 采集时间戳
+
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典（用于序列化）"""
+        return asdict(self)
+
+    @classmethod
+    def from_queue(
+        cls, queue_name: str, queue_obj, max_size: int = 10000, **kwargs
+    ) -> "QueueStats":
+        """从队列对象创建统计
+
+        Args:
+            queue_name: 队列名称
+            queue_obj: 队列对象
+            max_size: 队列最大容量
+            **kwargs: 其他统计数据
+        """
+        current_size = queue_obj.qsize() if hasattr(queue_obj, "qsize") else 0
+        fill_rate = current_size / max_size if max_size > 0 else 0.0
+
+        return cls(
+            queue_name=queue_name,
+            current_size=current_size,
+            max_size=max_size,
+            fill_rate=fill_rate,
+            **kwargs,
+        )
+
+
+# 🆕 背压控制: 队列压力评估器
+class QueuePressureEvaluator:
+    """队列压力评估器（用于背压控制和动态调整）
+
+    评估队列的压力状态，计算调整系数。
+    """
+
+    def __init__(
+        self,
+        high_threshold: float = 0.8,
+        critical_threshold: float = 0.95,
+        cooldown_seconds: float = 5.0,
+    ):
+        """初始化队列压力评估器
+
+        Args:
+            high_threshold: 高压阈值(填充率)
+            critical_threshold: 严重阈值(填充率)
+            cooldown_seconds: 调整冷却时间
+        """
+        self.high_threshold = high_threshold
+        self.critical_threshold = critical_threshold
+        self.cooldown_seconds = cooldown_seconds
+        self.last_adjustment_time = 0.0
+        self.logger = logging.getLogger(__name__)
+
+    def evaluate_pressure(self, queue_stats: QueueStats) -> Dict[str, Any]:
+        """评估队列压力
+
+        Args:
+            queue_stats: 队列统计信息
+
+        Returns:
+            {
+                'pressure_level': str,  # 'normal'/'medium'/'high'/'critical'
+                'pressure_score': float,  # 0-100
+                'adjustment_factor': float,  # 批次调整系数 0.3-1.0
+                'should_reject': bool,  # 是否应该拒绝新任务
+                'reason': str,
+            }
+        """
+        fill_rate = queue_stats.fill_rate
+
+        # 计算压力等级和调整系数
+        if fill_rate >= self.critical_threshold:
+            pressure_level = "critical"
+            pressure_score = 95.0 + (fill_rate - self.critical_threshold) * 100
+            adjustment_factor = 0.3  # 严重压力，批次减小70%
+            should_reject = True
+            reason = f"队列填充率{fill_rate:.1%}，超过严重阈值，触发熔断"
+
+        elif fill_rate >= self.high_threshold:
+            pressure_level = "high"
+            range_size = self.critical_threshold - self.high_threshold
+            offset = fill_rate - self.high_threshold
+            pressure_score = 70.0 + (offset / range_size) * 25  # 70-95
+            adjustment_factor = 0.5  # 高压，批次减小50%
+            should_reject = False
+            reason = f"队列填充率{fill_rate:.1%}，超过高压阈值，需要减速"
+
+        elif fill_rate >= 0.5:
+            pressure_level = "medium"
+            pressure_score = 50.0 + (fill_rate - 0.5) * (20.0 / 0.3)  # 50-70
+            adjustment_factor = 0.8  # 中等压力，批次减小20%
+            should_reject = False
+            reason = f"队列填充率{fill_rate:.1%}，中等压力"
+
+        else:
+            pressure_level = "normal"
+            pressure_score = fill_rate * 100  # 0-50
+            adjustment_factor = 1.0  # 正常，不调整
+            should_reject = False
+            reason = f"队列填充率{fill_rate:.1%}，压力正常"
+
+        return {
+            "pressure_level": pressure_level,
+            "pressure_score": min(100.0, pressure_score),
+            "adjustment_factor": adjustment_factor,
+            "should_reject": should_reject,
+            "reason": reason,
+            "fill_rate": fill_rate,
+        }
+
+    def can_adjust(self) -> bool:
+        """检查是否处于冷却期"""
+        elapsed = time.time() - self.last_adjustment_time
+        return elapsed >= self.cooldown_seconds
+
+    def mark_adjusted(self):
+        """标记已调整，启动冷却期"""
+        self.last_adjustment_time = time.time()
+
+
+# 🆕 背压控制: 双因素批次调整器
+class DualFactorBatchAdjuster:
+    """双因素批次调整器（资源+队列）
+
+    综合考虑资源压力和队列压力，动态调整批次大小。
+    """
+
+    def __init__(
+        self,
+        resource_weight: float = 0.6,
+        queue_weight: float = 0.4,
+        max_step: float = 0.2,
+    ):
+        """初始化调整器
+
+        Args:
+            resource_weight: 资源因素权重
+            queue_weight: 队列因素权重
+            max_step: 最大调整步长(±)
+        """
+        self.resource_weight = resource_weight
+        self.queue_weight = queue_weight
+        self.max_step = max_step
+
+    def calculate_batch_size(
+        self,
+        base_batch_size: int,
+        resource_factor: float,
+        queue_factor: float,
+    ) -> int:
+        """计算调整后的批次大小
+
+        Args:
+            base_batch_size: 基准批次大小
+            resource_factor: 资源调整系数 (0.3-1.6)
+            queue_factor: 队列调整系数 (0.3-1.0)
+
+        Returns:
+            调整后的批次大小
+        """
+        # 综合评分
+        combined_factor = (
+            resource_factor * self.resource_weight + queue_factor * self.queue_weight
+        )
+
+        # 限制单步调整幅度
+        if combined_factor > 1.0:
+            combined_factor = min(combined_factor, 1.0 + self.max_step)
+        else:
+            combined_factor = max(combined_factor, 1.0 - self.max_step)
+
+        # 计算最终批次大小
+        adjusted_batch_size = int(base_batch_size * combined_factor)
+
+        # 确保批次大小在合理范围
+        adjusted_batch_size = max(10, adjusted_batch_size)  # 最小10
+
+        return adjusted_batch_size
+
+
+# 🆕 背压控制: 资源压力评估器（增强版）
+class ResourcePressureEvaluator:
+    """资源压力评估器（增强版，支持队列压力维度）
+
+    综合评估系统资源压力，包括：
+    - CPU使用率（30%）
+    - 内存使用率（25%）
+    - 磁盘IO（20%）
+    - 网络带宽（15%）
+    - 队列压力（10%）🆕
+    """
+
+    def __init__(
+        self,
+        cpu_weight: float = 0.30,
+        memory_weight: float = 0.25,
+        disk_weight: float = 0.20,
+        network_weight: float = 0.15,
+        queue_weight: float = 0.10,
+        queue_critical_threshold: float = 0.95,
+        queue_stagnation_seconds: float = 60.0,
+        low_consumer_rate_threshold: float = 5.0,
+        low_rate_duration_seconds: float = 30.0,
+    ):
+        """初始化资源压力评估器
+
+        Args:
+            cpu_weight: CPU权重
+            memory_weight: 内存权重
+            disk_weight: 磁盘权重
+            network_weight: 网络权重
+            queue_weight: 队列权重 🆕
+            queue_critical_threshold: 队列熔断阈值(填充率)
+            queue_stagnation_seconds: 队列积压熔断时长
+            low_consumer_rate_threshold: 低消费速率阈值(items/s)
+            low_rate_duration_seconds: 低速率持续时长
+        """
+        self.cpu_weight = cpu_weight
+        self.memory_weight = memory_weight
+        self.disk_weight = disk_weight
+        self.network_weight = network_weight
+        self.queue_weight = queue_weight
+        self.queue_critical_threshold = queue_critical_threshold
+        self.queue_stagnation_seconds = queue_stagnation_seconds
+        self.low_consumer_rate_threshold = low_consumer_rate_threshold
+        self.low_rate_duration_seconds = low_rate_duration_seconds
+        self.logger = logging.getLogger(__name__)
+
+        # 🆕 队列状态追踪（用于熔断判断）
+        self.queue_high_pressure_start_time: Optional[float] = None
+        self.low_consumer_rate_start_time: Optional[float] = None
+
+    def evaluate_resource_pressure(
+        self,
+        cpu_usage: float = 0.0,
+        memory_usage: float = 0.0,
+        disk_io_usage: float = 0.0,
+        network_usage: float = 0.0,
+        queue_stats: Optional[QueueStats] = None,
+    ) -> Dict[str, Any]:
+        """评估资源压力（5维度）
+
+        Args:
+            cpu_usage: CPU使用率 (0-1)
+            memory_usage: 内存使用率 (0-1)
+            disk_io_usage: 磁盘IO使用率 (0-1)
+            network_usage: 网络使用率 (0-1)
+            queue_stats: 队列统计信息 🆕
+
+        Returns:
+            {
+                'pressure_score': float,  # 0-100综合评分
+                'adjustment_factor': float,  # 批次调整系数 0.3-1.6
+                'pressure_details': dict,  # 各维度详情
+                'should_reject': bool,  # 是否应该熔断 🆕
+                'reject_reason': str,  # 熔断原因
+            }
+        """
+        # 计算各维度评分
+        cpu_score = cpu_usage * 100
+        memory_score = memory_usage * 100
+        disk_score = disk_io_usage * 100
+        network_score = network_usage * 100
+
+        # 🆕 队列维度评分
+        queue_score = 0.0
+        queue_fill_rate = 0.0
+        if queue_stats:
+            queue_fill_rate = queue_stats.fill_rate
+            queue_score = queue_fill_rate * 100
+
+        # 综合评分（加权求和）
+        pressure_score = (
+            cpu_score * self.cpu_weight
+            + memory_score * self.memory_weight
+            + disk_score * self.disk_weight
+            + network_score * self.network_weight
+            + queue_score * self.queue_weight
+        )
+
+        # 计算调整系数（0.3-1.6）
+        if pressure_score >= 90:
+            adjustment_factor = 0.3  # 极高压力，批次减小70%
+        elif pressure_score >= 75:
+            adjustment_factor = 0.5  # 高压，批次减小50%
+        elif pressure_score >= 50:
+            adjustment_factor = 0.8  # 中等压力，批次减小20%
+        elif pressure_score <= 20:
+            adjustment_factor = 1.5  # 低压，批次增加50%
+        elif pressure_score <= 30:
+            adjustment_factor = 1.2  # 较低压力，批次增加20%
+        else:
+            adjustment_factor = 1.0  # 正常
+
+        pressure_details = {
+            "cpu_usage": cpu_usage,
+            "memory_usage": memory_usage,
+            "disk_io_usage": disk_io_usage,
+            "network_usage": network_usage,
+            "queue_fill_rate": queue_fill_rate,
+            "cpu_score": cpu_score,
+            "memory_score": memory_score,
+            "disk_score": disk_score,
+            "network_score": network_score,
+            "queue_score": queue_score,
+        }
+
+        # 🆕 熔断判断
+        should_reject, reject_reason = self.should_reject_task(queue_stats)
+
+        return {
+            "pressure_score": min(100.0, pressure_score),
+            "adjustment_factor": adjustment_factor,
+            "pressure_details": pressure_details,
+            "should_reject": should_reject,
+            "reject_reason": reject_reason,
+        }
+
+    def should_reject_task(self, queue_stats: Optional[QueueStats]) -> tuple[bool, str]:
+        """🆕 判断是否应该熔断拒绝新任务
+
+        熔断条件（满足任一即触发）:
+        1. 队列填充率 > 95%
+        2. 队列高压持续时间 > 60秒
+        3. 消费速率 < 5 items/s 持续 > 30秒
+
+        Args:
+            queue_stats: 队列统计信息
+
+        Returns:
+            (should_reject: bool, reason: str)
+        """
+        if not queue_stats:
+            # 重置状态追踪
+            self.queue_high_pressure_start_time = None
+            self.low_consumer_rate_start_time = None
+            return False, ""
+
+        current_time = time.time()
+        fill_rate = queue_stats.fill_rate
+        consumer_rate = queue_stats.consumer_rate
+
+        # 条件1: 队列填充率 > 95%
+        if fill_rate >= self.queue_critical_threshold:
+            return True, f"队列填充率{fill_rate:.1%}超过临界阈值{self.queue_critical_threshold:.1%}"
+
+        # 条件2: 队列高压持续时间 > 60秒
+        if fill_rate >= 0.8:  # 高压阈值
+            if self.queue_high_pressure_start_time is None:
+                self.queue_high_pressure_start_time = current_time
+            else:
+                stagnation_duration = current_time - self.queue_high_pressure_start_time
+                if stagnation_duration >= self.queue_stagnation_seconds:
+                    return True, f"队列高压(>80%)持续{stagnation_duration:.1f}秒，超过{self.queue_stagnation_seconds}秒阈值"
+        else:
+            # 压力缓解，重置计时
+            self.queue_high_pressure_start_time = None
+
+        # 条件3: 消费速率 < 5 items/s 持续 > 30秒
+        if consumer_rate < self.low_consumer_rate_threshold and consumer_rate > 0:
+            if self.low_consumer_rate_start_time is None:
+                self.low_consumer_rate_start_time = current_time
+            else:
+                low_rate_duration = current_time - self.low_consumer_rate_start_time
+                if low_rate_duration >= self.low_rate_duration_seconds:
+                    return (
+                        True,
+                        f"消费速率{consumer_rate:.2f} items/s持续{low_rate_duration:.1f}秒，低于{self.low_consumer_rate_threshold} items/s阈值",
+                    )
+        else:
+            # 速率恢复，重置计时
+            self.low_consumer_rate_start_time = None
+
+        return False, ""
+
+
+# 🆕 背压控制: 流处理模型（集成双因素调整）
+class StreamProcessingModel:
+    """流处理模型（集成资源+队列双因素动态调整）
+
+    统一管理流处理任务的背压控制，提供:
+    - 队列压力监控
+    - 资源压力监控
+    - 双因素批次调整
+    - 任务熔断机制
+    """
+
+    def __init__(
+        self,
+        queue_evaluator: Optional[QueuePressureEvaluator] = None,
+        resource_evaluator: Optional[ResourcePressureEvaluator] = None,
+        batch_adjuster: Optional[DualFactorBatchAdjuster] = None,
+    ):
+        """初始化流处理模型
+
+        Args:
+            queue_evaluator: 队列压力评估器
+            resource_evaluator: 资源压力评估器
+            batch_adjuster: 批次调整器
+        """
+        self.queue_evaluator = queue_evaluator or QueuePressureEvaluator()
+        self.resource_evaluator = resource_evaluator or ResourcePressureEvaluator()
+        self.batch_adjuster = batch_adjuster or DualFactorBatchAdjuster()
+        self.logger = logging.getLogger(__name__)
+
+    def evaluate_and_adjust(
+        self,
+        base_batch_size: int,
+        queue_stats: Optional[QueueStats] = None,
+        cpu_usage: float = 0.0,
+        memory_usage: float = 0.0,
+        disk_io_usage: float = 0.0,
+        network_usage: float = 0.0,
+    ) -> Dict[str, Any]:
+        """评估压力并计算调整后的批次大小
+
+        Args:
+            base_batch_size: 基准批次大小
+            queue_stats: 队列统计
+            cpu_usage: CPU使用率
+            memory_usage: 内存使用率
+            disk_io_usage: 磁盘使用率
+            network_usage: 网络使用率
+
+        Returns:
+            {
+                'adjusted_batch_size': int,  # 调整后批次大小
+                'should_reject': bool,  # 是否应该熔断
+                'queue_pressure': dict,  # 队列压力详情
+                'resource_pressure': dict,  # 资源压力详情
+                'combined_factor': float,  # 综合调整系数
+                'reject_reason': str,  # 熔断原因
+            }
+        """
+        # 1. 评估队列压力
+        queue_pressure = {"pressure_score": 0.0, "adjustment_factor": 1.0}
+        if queue_stats:
+            queue_pressure = self.queue_evaluator.evaluate_pressure(queue_stats)
+
+        # 2. 评估资源压力
+        resource_pressure = self.resource_evaluator.evaluate_resource_pressure(
+            cpu_usage=cpu_usage,
+            memory_usage=memory_usage,
+            disk_io_usage=disk_io_usage,
+            network_usage=network_usage,
+            queue_stats=queue_stats,
+        )
+
+        # 3. 综合判断是否熔断
+        should_reject = queue_pressure.get("should_reject", False) or resource_pressure.get(
+            "should_reject", False
+        )
+        reject_reason = queue_pressure.get("reason", "") or resource_pressure.get(
+            "reject_reason", ""
+        )
+
+        # 4. 计算调整后批次大小
+        if should_reject:
+            # 熔断状态，批次设为0
+            adjusted_batch_size = 0
+            combined_factor = 0.0
+        else:
+            # 双因素调整
+            queue_factor = queue_pressure["adjustment_factor"]
+            resource_factor = resource_pressure["adjustment_factor"]
+            adjusted_batch_size = self.batch_adjuster.calculate_batch_size(
+                base_batch_size=base_batch_size,
+                resource_factor=resource_factor,
+                queue_factor=queue_factor,
+            )
+            combined_factor = (
+                resource_factor * self.batch_adjuster.resource_weight
+                + queue_factor * self.batch_adjuster.queue_weight
+            )
+
+        return {
+            "adjusted_batch_size": adjusted_batch_size,
+            "should_reject": should_reject,
+            "queue_pressure": queue_pressure,
+            "resource_pressure": resource_pressure,
+            "combined_factor": combined_factor,
+            "reject_reason": reject_reason,
+        }
+
+
 class BaseTask(ABC):
     """任务基类
 

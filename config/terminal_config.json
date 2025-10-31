@@ -139,5 +139,38 @@
             "medium_task_threshold": 1000,
             "enable_adaptive_scheduling": true
         }
+    },
+    "backpressure": {
+        "description": "背压控制配置：防止队列无限增长导致内存溢出",
+        "enabled": true,
+        "queue_max_size": 10000,
+        "queue_put_timeout": 1.0,
+        "queue_skip_warning_threshold": 10,
+        "consumer_block_timeout": 0.5,
+        "queue_pressure_threshold_high": 0.8,
+        "queue_pressure_threshold_critical": 0.95,
+        "backpressure_cooldown_seconds": 5.0,
+        "batch_adjustment_max_step": 0.2,
+        "queue_stats_report_interval": 5.0,
+        "config_comments": {
+            "enabled": "是否启用背压控制",
+            "queue_max_size": "队列最大容量",
+            "queue_put_timeout": "队列入队超时(秒)",
+            "queue_skip_warning_threshold": "连续跳过多少次后告警",
+            "consumer_block_timeout": "消费者出队超时(秒)",
+            "queue_pressure_threshold_high": "高压阈值(填充率)",
+            "queue_pressure_threshold_critical": "严重阈值(填充率)",
+            "backpressure_cooldown_seconds": "背压调整冷却时间",
+            "batch_adjustment_max_step": "批次调整最大步长(±20%)",
+            "queue_stats_report_interval": "统计上报间隔(秒)"
+        }
+    },
+    "gui_async": {
+        "description": "GUI异步集成配置：qasync等待阶段2实施",
+        "enabled": false,
+        "async_task_timeout": 30.0,
+        "task_cleanup_interval": 60.0,
+        "error_retry_max_attempts": 3,
+        "ui_response_check_interval": 1.0
     }
 }

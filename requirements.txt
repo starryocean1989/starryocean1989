@@ -22,6 +22,9 @@ shiboken6>=6.2.0
 # 注意：PySide6 6.2+ 包含WebEngine支持，无需单独安装
 # 注意：已移除 PyQt6-QScintilla（混用问题），使用 Monaco Editor 作为代码编辑器
 
+# Qt + asyncio 集成
+qasync>=0.28.0  # 🆕 GUI异步集成: 统一Qt事件循环与asyncio事件循环
+
 # GUI主题
 QDarkStyle>=3.2.0  # Qt深色主题
 

@@ -14,7 +14,7 @@ from typing import List
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from test_loadbalancer_e2e_basic import performance_collector
+from tests.e2e.test_loadbalancer_e2e_basic import performance_collector
 
 
 def test_scan_with_different_symbol_counts():

@@ -3,6 +3,50 @@
 
 标准架构：4个子界面采用选项卡形式。
 合并tabs/handlers/utils逻辑，统一backend调用。
+
+🆕 GUI异步集成示例:
+
+现有实现(保留,继续工作):
+    # 使用QThread + Signal/Slot
+    class ReloadSymbolsThread(QThread):
+        finished_signal = Signal(dict)
+        
+        def run(self):
+            result = self.data_center_service.reload_symbol_list()
+            self.finished_signal.emit(result)
+    
+    def on_reload_button_clicked(self):
+        self.thread = ReloadSymbolsThread(self.service)
+        self.thread.finished_signal.connect(self._on_reload_finished)
+        self.thread.start()
+
+可选异步实现(需要qasync):
+    # 直接使用 await
+    from ui.core.async_utils import async_slot
+    
+    @async_slot
+    async def on_reload_button_clicked_async(self):
+        '''qasync版本:直接await,无需QThread'''
+        try:
+            self.reload_button.setEnabled(False)
+            self.status_label.setText("正在加载...")
+            
+            # 直接await异步操作(需要后端提供async版本)
+            result = await self.service.reload_symbol_list_async()
+            
+            # 更新UI
+            self._on_reload_finished(result)
+            
+        except Exception as e:
+            logger_user.error(f"加载失败: {e}")
+            self.status_label.setText(f"加载失败: {e}")
+        finally:
+            self.reload_button.setEnabled(True)
+
+使用建议:
+- 现有QThread代码继续工作,不强制迁移
+- 新功能可选择使用async版本(需qasync支持)
+- 异步版本代码更简洁,无需Signal/Slot样板代码
 """
 import logging
 from datetime import datetime

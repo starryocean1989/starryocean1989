@@ -29,6 +29,97 @@ API兼容性：100%向后兼容，所有导入路径保持有效
 # 子进程日志配置（统一日志系统集成）
 # ==============================================================================
 
+# 🆕 背压控制：队列跳过统计（进程级别）
+import threading
+from typing import Dict, Optional
+
+_queue_skip_stats = {}
+_queue_skip_lock = threading.Lock()
+
+
+def _safe_put_queue(
+    q,
+    item,
+    timeout: float = 1.0,
+    queue_name: str = "queue",
+    worker_id: Optional[int] = None,
+) -> bool:
+    """安全入队，支持超时阻塞和跳过策略（背压控制）
+
+    Args:
+        q: 队列对象
+        item: 要入队的数据
+        timeout: 超时时间（秒）
+        queue_name: 队列名称（用于日志）
+        worker_id: Worker ID（用于统计）
+
+    Returns:
+        bool: True=入队成功, False=入队失败（队列满）
+
+    设计原理：
+        1. 阻塞等待（有超时）：队列满时等待timeout秒
+        2. 超时跳过：超时后记录警告并丢弃任务
+        3. 统计监控：记录跳过次数，触发告警
+    """
+    import logging
+
+    logger = logging.getLogger("backend.data_module.download")
+    logger_alert = logging.getLogger("backend.data_module.alert")
+
+    try:
+        # 尝试入队（阻塞等待，最多timeout秒）
+        q.put(item, timeout=timeout)
+        return True
+
+    except Exception as e:
+        # 队列满或其他异常
+        error_type = type(e).__name__
+
+        # 统计跳过次数（线程安全）
+        stats_key = f"{queue_name}_{worker_id}" if worker_id is not None else queue_name
+        with _queue_skip_lock:
+            if stats_key not in _queue_skip_stats:
+                _queue_skip_stats[stats_key] = {"skip_count": 0, "last_warning": 0}
+
+            _queue_skip_stats[stats_key]["skip_count"] += 1
+            skip_count = _queue_skip_stats[stats_key]["skip_count"]
+
+            # 每10次记录一次告警（避免日志轰炸）
+            if skip_count % 10 == 1 or skip_count <= 3:
+                logger.warning(
+                    f"⚠️ 队列入队失败（{error_type}）: "
+                    f"队列={queue_name}, Worker={worker_id}, "
+                    f"累计跳过={skip_count}次, 超时={timeout}s"
+                )
+                _queue_skip_stats[stats_key]["last_warning"] = skip_count
+
+            # 累计跳过>100次，记录严重告警
+            if skip_count == 100 or skip_count % 500 == 0:
+                logger_alert.error(
+                    f"🔥 队列严重积压告警: "
+                    f"队列={queue_name}, Worker={worker_id}, "
+                    f"累计跳过={skip_count}次，消费者可能过慢！"
+                )
+
+        return False
+
+
+def _get_queue_skip_stats() -> Dict[str, Dict[str, int]]:
+    """获取队列跳过统计（用于监控）"""
+    with _queue_skip_lock:
+        return dict(_queue_skip_stats)
+
+
+def _reset_queue_skip_stats():
+    """重置队列跳过统计"""
+    with _queue_skip_lock:
+        _queue_skip_stats.clear()
+
+
+# ==============================================================================
+# 子进程日志配置（统一日志系统集成）
+# ==============================================================================
+
 
 def _configure_subprocess_logging(worker_id: int, task_type: str = "worker"):
     """配置子进程日志系统，接入LogHub统一路由
@@ -3033,11 +3124,24 @@ async def download_worker_async(
                     data = await _download_single_kline_async(client, symbol, interval, start_date)
 
                     if data is not None and not data.empty:
-                        await asyncio.to_thread(
-                            result_queue.put, (f"{symbol}_{interval}", data.to_dict("records"))
+                        # 🆕 背压控制: 使用_safe_put_queue代替原来的无限等待
+                        success = await asyncio.to_thread(
+                            _safe_put_queue,
+                            result_queue,
+                            (f"{symbol}_{interval}", data.to_dict("records")),
+                            timeout=1.0,
+                            queue_name="result_queue",
+                            worker_id=worker_id,
                         )
-                        await asyncio.to_thread(progress_queue.put, (symbol, interval, "success"))
-                        processed += 1
+                        if success:
+                            await asyncio.to_thread(progress_queue.put, (symbol, interval, "success"))
+                            processed += 1
+                        else:
+                            # 队列满，跳过该任务
+                            await asyncio.to_thread(progress_queue.put, (symbol, interval, "skipped"))
+                            logger.warning(
+                                f"Worker {worker_id} 连接 {conn_id} 下载 {symbol}_{interval} 结果队列满，跳过"
+                            )
                     else:
                         await asyncio.to_thread(progress_queue.put, (symbol, interval, "failed"))
                         failed += 1

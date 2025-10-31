@@ -165,5 +165,5 @@ def china_stock_engine():
 
 # ==================== 网络请求E2E测试专用Fixture ====================
 
-# 从fixtures模块导入
-pytest_plugins = ["tests.e2e.fixtures.network_request_fixtures"]
+# pytest_plugins配置已移至顶层tests/conftest.py
+# 原因: pytest不再支持在非顶层conftest中定义pytest_plugins

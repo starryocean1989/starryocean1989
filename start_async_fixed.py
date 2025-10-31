@@ -343,6 +343,32 @@ def main():
         stage1_time = (time.time() - stage1_start) * 1000
         logger.debug("[QT-INIT] QApplication创建成功，耗时 %.0fms", stage1_time)
 
+        # 🆕 GUI异步集成: 安装qasync事件循环
+        try:
+            import qasync
+            import asyncio
+
+            # 创建qasync事件循环(统一Qt+asyncio)
+            loop = qasync.QEventLoop(app)
+            asyncio.set_event_loop(loop)
+
+            logger.debug("[QASYNC] ✅ qasync事件循环已安装，Qt+asyncio统一运行")
+            stage_logger.info("✅ GUI异步集成已启用(qasync)")
+
+            # 保存循环引用,便于UI中使用
+            app._qasync_loop = loop  # type: ignore[attr-defined]
+
+        except ImportError:
+            logger.warning("[QASYNC] ⚠️ qasync未安装,回退到纯Qt模式")
+            logger.warning("[QASYNC] 提示: 运行 'pip install qasync>=0.28.0' 安装")
+            stage_logger.info("⚠️ GUI异步集成未启用(缺少qasync)")
+            app._qasync_loop = None  # type: ignore[attr-defined]
+
+        except Exception as e:
+            logger.exception("[QASYNC] ❗ qasync集成失败: %s", e)
+            stage_logger.warning(f"❗ GUI异步集成失败: {e}")
+            app._qasync_loop = None  # type: ignore[attr-defined]
+
         # 加载配置文件
         from backend.core.config import init_settings
 
@@ -847,7 +873,17 @@ def main():
         # ❌ 不再在这里结束AI日志流程，让它持续运行直到后台初始化完成
         # AI日志流程将在on_startup_completed()中结束，确保所有后台初始化日志都被记录
 
-        return app.exec()
+        # 🆕 根据qasync是否可用，选择不同的事件循环启动方式
+        if hasattr(app, '_qasync_loop') and app._qasync_loop is not None:
+            # qasync模式: 使用loop.run_forever()
+            logger.info("[EVENT-LOOP] 使用qasync事件循环(Qt+asyncio统一)")
+            with app._qasync_loop:
+                app._qasync_loop.run_forever()
+            return 0
+        else:
+            # 纯Qt模式: 使用app.exec()
+            logger.info("[EVENT-LOOP] 使用纯Qt事件循环")
+            return app.exec()
 
     except Exception as e:
         # 使用print输出，因为logger可能已损坏

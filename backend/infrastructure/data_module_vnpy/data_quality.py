@@ -62,6 +62,84 @@ from .load_balancer import (
 
 # ==================== 辅助函数（用于多进程） ====================
 
+# 🆕 背压控制：队列跳过统计（进程级别）
+_queue_skip_stats = {}
+_queue_skip_lock = threading.Lock()
+
+
+def _safe_put_queue(
+    q,
+    item,
+    timeout: float = 1.0,
+    queue_name: str = "queue",
+    worker_id: Optional[int] = None,
+) -> bool:
+    """安全入队，支持超时阻塞和跳过策略（背压控制）
+
+    Args:
+        q: 队列对象
+        item: 要入队的数据
+        timeout: 超时时间（秒）
+        queue_name: 队列名称（用于日志）
+        worker_id: Worker ID（用于统计）
+
+    Returns:
+        bool: True=入队成功, False=入队失败（队列满）
+
+    设计原理：
+        1. 阻塞等待（有超时）：队列满时等待timeout秒
+        2. 超时跳过：超时后记录警告并丢弃任务
+        3. 统计监控：记录跳过次数，触发告警
+    """
+    try:
+        # 尝试入队（阻塞等待，最多timeout秒）
+        q.put(item, timeout=timeout)
+        return True
+
+    except Exception as e:
+        # 队列满或其他异常
+        error_type = type(e).__name__
+
+        # 统计跳过次数（线程安全）
+        stats_key = f"{queue_name}_{worker_id}" if worker_id is not None else queue_name
+        with _queue_skip_lock:
+            if stats_key not in _queue_skip_stats:
+                _queue_skip_stats[stats_key] = {"skip_count": 0, "last_warning": 0}
+
+            _queue_skip_stats[stats_key]["skip_count"] += 1
+            skip_count = _queue_skip_stats[stats_key]["skip_count"]
+
+            # 每10次记录一次告警（避免日志轰炸）
+            if skip_count % 10 == 1 or skip_count <= 3:
+                logger.warning(
+                    f"⚠️ 队列入队失败（{error_type}）: "
+                    f"队列={queue_name}, Worker={worker_id}, "
+                    f"累计跳过={skip_count}次, 超时={timeout}s"
+                )
+                _queue_skip_stats[stats_key]["last_warning"] = skip_count
+
+            # 累计跳过>100次，记录严重告警
+            if skip_count == 100 or skip_count % 500 == 0:
+                logger_alert.error(
+                    f"🔥 队列严重积压告警: "
+                    f"队列={queue_name}, Worker={worker_id}, "
+                    f"累计跳过={skip_count}次，消费者可能过慢！"
+                )
+
+        return False
+
+
+def _get_queue_skip_stats() -> Dict[str, Dict[str, int]]:
+    """获取队列跳过统计（用于监控）"""
+    with _queue_skip_lock:
+        return dict(_queue_skip_stats)
+
+
+def _reset_queue_skip_stats():
+    """重置队列跳过统计"""
+    with _queue_skip_lock:
+        _queue_skip_stats.clear()
+
 
 def _run_quality_scan_worker_multiprocess(*args):
     """在进程中运行异步质量扫描事件循环的辅助函数（复制K线下载模式）"""
@@ -164,11 +242,26 @@ async def _quality_scan_worker_async_multiprocess(
                         data_dir=data_dir,
                     )
 
-                    # 上报结果
+                    # 🆕 背压控制: 使用_safe_put_queue代替原来的无限等待
+                    # 上报结果（队列满时1秒后跳过）
                     if quality_dict:
-                        await asyncio.to_thread(result_queue.put, (symbol, quality_dict))
-                        await asyncio.to_thread(progress_queue.put, (symbol, "success"))
-                        processed += 1
+                        success = await asyncio.to_thread(
+                            _safe_put_queue,
+                            result_queue,
+                            (symbol, quality_dict),
+                            timeout=1.0,
+                            queue_name="result_queue",
+                            worker_id=worker_id,
+                        )
+                        if success:
+                            await asyncio.to_thread(progress_queue.put, (symbol, "success"))
+                            processed += 1
+                        else:
+                            # 队列满，跳过该任务
+                            await asyncio.to_thread(progress_queue.put, (symbol, "skipped"))
+                            logger.warning(
+                                f"Worker {worker_id} 协程 {conn_id} 扫描 {symbol} 结果队列满，跳过"
+                            )
                     else:
                         await asyncio.to_thread(progress_queue.put, (symbol, "failed"))
                         failed += 1
@@ -278,200 +371,9 @@ async def _scan_symbol_quality_async(
         }
 
 
-def _quality_scan_worker_process_deprecated(
-    worker_id: int,
-    task_queue,
-    result_queue,
-    metrics_queue,
-    stop_event,
-    data_dir: str,
-    interval: str,
-    min_rows: int,
-):
-    """质量扫描worker进程（DEPRECATED - 旧版本，保留用于兼容）
-
-    从task_queue循环拉取品种代码，扫描数据质量并上报结果
-
-    Args:
-        worker_id: Worker进程ID
-        task_queue: 共享任务队列
-        result_queue: 结果队列
-        metrics_queue: 监控指标队列
-        stop_event: 停止事件
-        data_dir: 数据目录
-        interval: K线周期
-        min_rows: 最小行数阈值
-    """
-    import asyncio
-
-    _configure_subprocess_logging(worker_id, task_type="quality_scan_old")
-
-    asyncio.run(
-        _quality_scan_worker_async(
-            worker_id,
-            task_queue,
-            result_queue,
-            metrics_queue,
-            stop_event,
-            data_dir,
-            interval,
-            min_rows,
-        )
-    )
-
-
-async def _quality_scan_worker_async(
-    worker_id: int,
-    task_queue,
-    result_queue,
-    metrics_queue,
-    stop_event,
-    data_dir: str,
-    interval: str,
-    min_rows: int,
-):
-    """质量扫描worker的异步逻辑"""
-    import queue
-    import logging
-    import time
-    from pathlib import Path
-
-    logger = logging.getLogger(f"QualityScanWorker-{worker_id}")
-
-    # 启动lag监控
-    from .load_balancer import LagMonitor
-
-    lag_monitor_task = asyncio.create_task(
-        LagMonitor.monitor_and_report(
-            metrics_queue=metrics_queue,
-            worker_id=worker_id,
-            stop_event=stop_event,
-            interval_seconds=0.3,
-        )
-    )
-    logger.info(f"[Worker-{worker_id}] ✅ 已启动lag监控（质量扫描模式）")
-
-    processed_count = 0
-    empty_count = 0
-    max_empty_before_exit = 3
-
-    # 非阻塞put辅助函数
-    async def _safe_put_result(msg: tuple, max_retries: int = 5):
-        """非阻塞put+重试"""
-        for attempt in range(max_retries):
-            try:
-                result_queue.put_nowait(msg)
-                return True
-            except Exception:
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(0.02)
-                else:
-                    logger.warning(f"[Worker-{worker_id}] 队列满，丢弃结果")
-                    return False
-        return False
-
-    logger.info(f"[Worker-{worker_id}] 开始从共享队列拉取扫描任务...")
-
-    while not stop_event.is_set():
-        try:
-            # 从队列拉取任务
-            symbol = task_queue.get(timeout=1.0)
-            empty_count = 0
-
-            # 扫描数据质量
-            start_time = time.perf_counter()
-            quality_info = _scan_single_quality(
-                symbol,
-                data_dir,
-                interval,
-                min_rows,
-            )
-            duration = time.perf_counter() - start_time
-
-            # 上报结果
-            await _safe_put_result((symbol, quality_info, duration))
-            processed_count += 1
-
-            if processed_count % 100 == 0:
-                logger.info(f"[Worker-{worker_id}] 已扫描 {processed_count} 个品种")
-
-        except queue.Empty:
-            empty_count += 1
-            if empty_count >= max_empty_before_exit:
-                logger.info(f"[Worker-{worker_id}] 队列连续{empty_count}次为空，准备退出")
-                break
-            await asyncio.sleep(0.1)
-        except Exception as e:
-            logger.error(f"[Worker-{worker_id}] 扫描任务时发生错误: {e}")
-            await asyncio.sleep(0.1)
-
-    # 停止lag监控
-    await LagMonitor.cancel_monitor(lag_monitor_task)
-    logger.info(f"[Worker-{worker_id}] 完成，共扫描 {processed_count} 个品种")
-
-
-def _scan_single_quality(
-    symbol: str,
-    data_dir: str,
-    interval: str,
-    min_rows: int,
-) -> Optional[Dict[str, Any]]:
-    """扫描单个品种的数据质量
-
-    Args:
-        symbol: 品种代码
-        data_dir: 数据目录
-        interval: K线周期
-        min_rows: 最小行数阈值
-
-    Returns:
-        Optional[Dict]: 质量信息或None
-    """
-    try:
-        from pathlib import Path
-
-        file_path = Path(data_dir) / symbol / interval / "data.parquet"
-
-        if not file_path.exists():
-            return None
-
-        # 读取数据
-        df = pd.read_parquet(file_path)
-
-        if df.empty:
-            return {
-                "symbol": symbol,
-                "has_data": False,
-                "row_count": 0,
-                "meets_threshold": False,
-            }
-
-        row_count = len(df)
-        meets_threshold = row_count >= min_rows
-
-        # 获取日期范围
-        if "datetime" in df.columns:
-            start_date = df["datetime"].min()
-            end_date = df["datetime"].max()
-        else:
-            start_date = df.index.min() if hasattr(df.index, "min") else None
-            end_date = df.index.max() if hasattr(df.index, "max") else None
-
-        return {
-            "symbol": symbol,
-            "has_data": True,
-            "row_count": row_count,
-            "meets_threshold": meets_threshold,
-            "start_date": start_date,
-            "end_date": end_date,
-        }
-
-    except Exception as e:
-        return {
-            "symbol": symbol,
-            "has_data": False,
-            "error": str(e),
-        }
+# 废弃代码已删除: _quality_scan_worker_process_deprecated, _quality_scan_worker_async, _scan_single_quality
+# 原因: 这些函数已被新的多进程+协程架构(_quality_scan_worker_async_multiprocess)替代
+# 删除日期: 2025-10-31
 
 
 def _read_single_kline(
@@ -4926,15 +4828,23 @@ class DataSensor:
                 except Exception as e:
                     self.logger.debug(f"处理监控指标失败: {e}")
 
-                # 收集结果（非阻塞）
+                # 🆕 背压控制: 收集结果（阻塞等待代替get_nowait）
                 try:
-                    msg = result_queue.get_nowait()
+                    msg = result_queue.get(timeout=0.5)  # 阻塞等待，减少CPU空转
                     symbol, quality_dict = msg
                     if quality_dict:
                         results_dict[symbol] = quality_dict
                         self.logger.debug(f"收到结果: {symbol}")
+                        
+                        # 📈 背压监控: 检查队列填充率
+                        queue_size = result_queue.qsize()
+                        if queue_size > 8000:  # 80%填充率告警
+                            self.logger.warning(
+                                f"⚠️ 队列积压告警: result_queue当前大小={queue_size}, "
+                                f"消费者可能过慢！"
+                            )
                 except queue.Empty:
-                    pass
+                    pass  # 超时正常，继续等待
 
             # 最后收集剩余的结果和监控指标
             self.logger.info("收集剩余结果...")
@@ -4947,14 +4857,17 @@ class DataSensor:
                 except Exception as e:
                     self.logger.debug(f"处理剩余监控指标失败: {e}")
 
-            while True:
+            # 🆕 背压控制: 最后收集时使用短超时，确保全部收集
+            timeout_iterations = 0
+            while timeout_iterations < 10:  # 最多尝试10次
                 try:
-                    msg = result_queue.get_nowait()
+                    msg = result_queue.get(timeout=0.2)  # 短超时
                     symbol, quality_dict = msg
                     if quality_dict:
                         results_dict[symbol] = quality_dict
+                    timeout_iterations = 0  # 收到数据后重置计数器
                 except queue.Empty:
-                    break
+                    timeout_iterations += 1  # 空队列，递增计数器
 
             self.logger.info(f"收集到 {len(results_dict)} 个结果")
 
