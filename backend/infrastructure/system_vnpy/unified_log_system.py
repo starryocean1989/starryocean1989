@@ -503,6 +503,11 @@ AI助手专用日志文件 - {process_name}
         with self._lock:
             return self._current_file_path
 
+    def get_current_process(self) -> Optional[str]:
+        """获取当前活动的进程名称."""
+        with self._lock:
+            return self._current_process
+
     def get_statistics(self) -> Dict[str, Any]:
         """获取统计信息."""
         with self._lock:
@@ -887,11 +892,11 @@ class LoggingHub(logging.Handler):
 
     def _to_console(self, record: UnifiedLogRecord):
         """输出到控制台（Terminal）
-        
+
         输出规则：
         1. 特定类型的日志（STAGE_NODE, NOTIFICATION, ALERT）
         2. WARNING及以上级别的日志（WARNING, ERROR, CRITICAL）
-        
+
         # 优化原因：统一Terminal日志输出规则，减少刷屏
         # 问题：原先只输出特定类型，导致WARNING/ERROR不显示在Terminal，用户无法及时发现问题
         # 解决：添加日志级别判断，WARNING及以上级别自动输出到Terminal
@@ -902,14 +907,14 @@ class LoggingHub(logging.Handler):
         """
         if not self._console_handler:
             return
-            
+
         # 检查是否应该输出到console
         # 优化原因：双重过滤机制 - 既按类型过滤，也按级别过滤
         should_output = (
             record.type in self._console_enabled_types  # 特定类型（流程节点、通知、告警）
             or record.level >= logging.WARNING  # WARNING及以上级别（警告、错误、严重）
         )
-        
+
         if not should_output:
             return
 
@@ -958,6 +963,33 @@ class LoggingHub(logging.Handler):
 
     def _to_ai_log_file(self, record: UnifiedLogRecord):
         """输出到AI日志."""
+        # 排除自动延迟测试的日志（每10秒一次，不需要生成AI日志文件）
+        # 1. 检查日志消息中是否包含自动测试标记
+        if "[LATENCY-AUTO]" in record.message:
+            return
+
+        # 2. 排除自动测试循环相关的函数日志
+        if record.function in ("_test_single_latency", "_auto_test_loop", "start_auto_test"):
+            if "monitor_system" in record.logger_name or "monitor_process" in record.logger_name:
+                return
+
+        # 3. 排除初始化服务器时的日志（启动时一次性测试，不需要AI日志）
+        if "[LATENCY-INIT]" in record.message or "[LATENCY-CACHE]" in record.message or "[LATENCY-FALLBACK]" in record.message:
+            return
+
+        # 4. 排除自动测试中调用speedtest_native产生的日志
+        # 手动测试会使用ai_log_process上下文管理器，会创建独立的AI日志文件
+        # 自动测试不会使用ai_log_process，所以speedtest_native的日志如果是自动测试产生的，
+        # 应该被排除。我们通过检查AILogFileHandler是否有活动的process来判断
+        if "speedtest_native" in record.logger_name:
+            # 检查当前是否有活动的AI日志进程（手动测试会在ai_log_process中）
+            if self._ai_log_handler:
+                current_process = self._ai_log_handler.get_current_process()
+                # 如果没有活动的process，说明不在ai_log_process上下文中，可能是自动测试
+                # 排除这些日志（手动测试会设置process_name）
+                if not current_process:
+                    return
+
         if not self._ai_log_handler:
             return
 
@@ -1306,6 +1338,9 @@ class ProcessNames:
     CONFIG_UPDATE = "config_update"
     DATABASE_BACKUP = "database_backup"
     LOG_CLEANUP = "log_cleanup"
+
+    NETWORK_SPEEDTEST_PING = "network_speedtest_ping"
+    NETWORK_SPEEDTEST_BANDWIDTH = "network_speedtest_bandwidth"
 
 
 # =============================================================================

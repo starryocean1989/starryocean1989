@@ -129,3 +129,22 @@ scenario_database_maintenance:
   NOTIFICATION:
     INFO: [file, statusbar]
 
+# 场景: 网络测速（调试专用）
+scenario_network_speedtest:
+  description: "网络带宽和延迟测速"
+  duration: "2-60s"
+  trigger: "用户点击测速按钮或自动定期测试"
+  DEBUG:
+    INFO: [file, ai_file]  # 详细调试信息输出到 logs/ai/network_speedtest_YYYYMMDD.log
+    WARNING: [file, ai_file]
+    ERROR: [file, ai_file, console]
+  SYSTEM:
+    INFO: [file, ai_file]
+    WARNING: [file, ai_file, console]
+    ERROR: [file, ai_file, console, statusbar]
+  NOTIFICATION:
+    INFO: [file, statusbar]
+  ALERT:
+    WARNING: [file, statusbar]
+    ERROR: [file, statusbar, ui_dialog]
+

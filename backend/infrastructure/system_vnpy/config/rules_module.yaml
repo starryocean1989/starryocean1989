@@ -110,3 +110,19 @@ module_ai_assistant:
   NOTIFICATION:
     INFO: [file, statusbar]
 
+# 网络测速模块（调试专用，输出到独立AI日志）
+module_network_speedtest:
+  source_modules:
+    - BandwidthMonitor
+    - NetworkSpeedTest
+    - SystemManager.speedtest
+  priority: debug
+  DEBUG:
+    INFO: [file, ai_file]  # 输出到ai/network_speedtest.log
+    WARNING: [file, ai_file]
+    ERROR: [file, ai_file, console]
+  SYSTEM:
+    INFO: [file, ai_file]
+    WARNING: [file, ai_file, console]
+    ERROR: [file, ai_file, console]
+

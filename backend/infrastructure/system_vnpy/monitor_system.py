@@ -27,6 +27,7 @@ from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Protocol, Tuple
 
 import numpy as np
@@ -59,14 +60,8 @@ except ImportError:
     HAS_WMI = False
     logger.debug("WMI模块未安装，将使用简化磁盘检测")
 
-# 尝试导入speedtest-cli（运营商带宽测试）
-try:
-    import speedtest
-
-    HAS_SPEEDTEST = True
-except ImportError:
-    HAS_SPEEDTEST = False
-    logger.warning("speedtest-cli模块未安装，带宽测试功能将不可用")
+# 网络测速功能使用自研模块（基于公共测速站点，无第三方依赖）
+# 导入将在 BandwidthMonitor 类中按需进行
 
 # 从 system_toolkit 导入 SMART 相关类
 from backend.infrastructure.system_vnpy.system_toolkit import (
@@ -364,6 +359,8 @@ class AdaptiveThresholdManager:
 
 class HardwareMonitorFactory:
     """硬件监控器工厂 - 强制使用LibreHardwareMonitor."""
+    
+    _instance = None  # 单例实例
 
     @staticmethod
     def create_monitor():
@@ -380,6 +377,8 @@ class HardwareMonitorFactory:
             monitor = ExtendedLHMWrapper()
             if monitor.is_available():
                 logger.info("✅ 使用 LibreHardwareMonitor Extended")
+                # 保存单例实例
+                HardwareMonitorFactory._instance = monitor
                 return monitor
             else:
                 logger.error("❌ LibreHardwareMonitor 不可用，请确保：")
@@ -391,6 +390,24 @@ class HardwareMonitorFactory:
             logger.exception("❌ LibreHardwareMonitor 初始化失败: %s", e)
             logger.error("   硬件监控功能将不可用")
             return None
+    
+    @staticmethod
+    def get_instance():
+        """获取硬件监控器单例实例.
+        
+        Returns:
+            ExtendedLHMWrapper实例或None
+        """
+        return HardwareMonitorFactory._instance
+
+
+def get_hardware_monitor_instance():
+    """获取硬件监控器实例（全局访问函数）.
+    
+    Returns:
+        ExtendedLHMWrapper实例或None
+    """
+    return HardwareMonitorFactory.get_instance()
 
 
 # =============================================================================
@@ -720,9 +737,14 @@ class ScenarioAnalyzer:
     支持5大量化场景：数据下载、实时行情、策略回测、策略编写、实盘交易。
     """
 
-    def __init__(self):
-        """初始化场景分析器."""
+    def __init__(self, business_metrics=None):
+        """初始化场景分析器.
+
+        Args:
+            business_metrics: 业务指标采集器（可选，用于获取业务指标）
+        """
         self.logger = logging.getLogger(__name__)
+        self.business_metrics = business_metrics
 
         # 场景关键字映射
         self.scenario_keywords = {
@@ -846,11 +868,12 @@ class ScenarioAnalyzer:
         latencies = [d.get("average_io_latency_ms", 0) for d in disks.values()]
         avg_latency = sum(latencies) / len(latencies) if latencies else 0
 
-        # TODO: 从业务指标获取下载并发数
-        # ✓ 从业务指标获取下载并发数（TODO #9已完成）
-        download_concurrency = self.business_metrics.get_latest_value(
-            "download_concurrency", default=8
-        )
+        # 从业务指标获取下载并发数
+        download_concurrency = 8  # 默认值
+        if self.business_metrics:
+            download_concurrency = self.business_metrics.get_latest_value(
+                "download_concurrency", default=8
+            )
 
         current_values = {
             "network_download_mbps": round(download_mbps, 2),
@@ -904,12 +927,14 @@ class ScenarioAnalyzer:
         ctx_switches = cpu_detailed.get("context_switches_per_sec", 0)
         loss_in = network_subsystem.get("packet_loss_rate_in", 0)
 
-        # TODO: 从业务指标获取事件队列深度和处理延迟
-        # ✓ 从业务指标获取事件队列深度和处理延迟（TODO #10已完成）
-        event_queue_depth = self.business_metrics.get_latest_value("event_queue_depth", default=0)
-        processing_latency = self.business_metrics.get_latest_value(
-            "event_processing_latency_ms", default=0
-        )
+        # 从业务指标获取事件队列深度和处理延迟
+        event_queue_depth = 0  # 默认值
+        processing_latency = 0  # 默认值
+        if self.business_metrics:
+            event_queue_depth = self.business_metrics.get_latest_value("event_queue_depth", default=0)
+            processing_latency = self.business_metrics.get_latest_value(
+                "event_processing_latency_ms", default=0
+            )
 
         current_values = {
             "event_queue_depth": event_queue_depth,
@@ -967,7 +992,7 @@ class ScenarioAnalyzer:
         swap_in = memory_subsystem.get("swap_in_kbps", 0)
         swap_out = memory_subsystem.get("swap_out_kbps", 0)
 
-        # TODO: 从业务指标获取K线计算时间
+        # 从业务指标获取K线计算时间（当前暂无此指标，使用默认值）
         kline_calc_time = 0  # 默认值
 
         current_values = {
@@ -1051,7 +1076,7 @@ class ScenarioAnalyzer:
 
         loss_in = network_subsystem.get("packet_loss_rate_in", 0)
 
-        # TODO: 从业务指标获取订单响应时间和交易队列长度
+        # 从业务指标获取订单响应时间和交易队列长度（当前暂无此指标，使用默认值）
         order_response_ms = 0  # 默认值
         trading_queue_len = 0  # 默认值
 
@@ -1164,20 +1189,13 @@ class MonitoringProcessV2:
             os.getpid(),
         )
 
-        # 🔥 Debug: 初始化步骤1 - 基础配置
-        try:
-            # debug_logger已废弃，使用标准logging
-            pass
-            self.debug_logger.debug_init_step(
-                "基础配置",
-                {
-                    "db_path": db_path,
-                    "parent_pid": self.parent_pid,
-                    "current_pid": os.getpid(),
-                },
-            )
-        except Exception:
-            pass  # Debug日志失败不影响功能
+        # 基础配置初始化完成
+        logger.debug(
+            "基础配置初始化: db_path=%s, parent_pid=%d, current_pid=%d",
+            db_path,
+            self.parent_pid,
+            os.getpid(),
+        )
 
         # ZMQ通信
         self.zmq_context: Optional[zmq.asyncio.Context] = None
@@ -1198,18 +1216,15 @@ class MonitoringProcessV2:
         # 监控工具（所有类已在本文件中定义，无需导入）
         # SystemMonitor, ProcessMonitor等已在本文件Part 7-10中定义
 
-        # 🔥 Debug: 初始化步骤2 - 创建监控组件
-        try:
-            self.debug_logger.debug_init_step("开始创建监控组件")
-        except Exception:
-            pass
+        # 创建监控组件
+        logger.debug("开始创建监控组件")
 
         self.system_monitor = SystemMonitor()
         self.process_monitor = ProcessMonitor()
         self.process_bottleneck_analyzer = ProcessBottleneckAnalyzer()  # 进程级瓶颈分析器
         self.system_bottleneck_analyzer = SystemBottleneckAnalyzer()  # 系统级瓶颈分析器（本地）
-        self.scenario_analyzer = ScenarioAnalyzer()  # 场景分析器（本地）
         self.business_metrics_collector = get_business_metrics_collector()  # 业务指标采集器
+        self.scenario_analyzer = ScenarioAnalyzer(self.business_metrics_collector)  # 场景分析器（注入业务指标）
         # ✅ 优化：延迟创建硬件监控器（避免阻塞启动，在_initialize_components中异步创建）
         self.hardware_monitor = None  # 将在start()中后台异步创建
         self.smart_monitor = SmartMonitor()
@@ -1236,19 +1251,15 @@ class MonitoringProcessV2:
         self.fast_interval = 1  # 系统、进程
         self.slow_interval = 5  # 硬件传感器
 
-        logger.info("MonitoringProcessV2 初始化完成（硬件监控器将在start()中后台创建）")
+        # 后台测试任务追踪（避免阻塞REP socket）
+        self._background_bandwidth_task: Optional[asyncio.Task] = None
 
-        # 🔥 Debug: 初始化完成
-        try:
-            self.debug_logger.debug_init_step(
-                "初始化完成",
-                {
-                    "fast_interval": self.fast_interval,
-                    "slow_interval": self.slow_interval,
-                },
-            )
-        except Exception:
-            pass
+        logger.info("MonitoringProcessV2 初始化完成（硬件监控器将在start()中后台创建）")
+        logger.debug(
+            "初始化完成: fast_interval=%d, slow_interval=%d",
+            self.fast_interval,
+            self.slow_interval,
+        )
 
     async def _check_and_cleanup_old_process(self):
         """检查并清理占用端口旧监控进程（基于端口检测，不依赖文件）."""
@@ -1331,27 +1342,12 @@ class MonitoringProcessV2:
         logger.info("=" * 60)
         logger.info("监控进程V2 启动")
         logger.info("=" * 60)
-
-        # 🔥 Debug: 启动流程开始
-        try:
-            self.debug_logger.debug_init_step("启动监控进程")
-        except Exception:
-            pass
+        logger.debug("启动监控进程")
 
         try:
-            # 🔥 Debug: 组件初始化
-            try:
-                self.debug_logger.debug_init_step("开始初始化组件（ZMQ、数据库等）")
-            except Exception:
-                pass
-
+            logger.debug("开始初始化组件（ZMQ、数据库等）")
             await self._initialize_components()
-
-            # 🔥 Debug: 组件初始化完成
-            try:
-                self.debug_logger.debug_init_step("组件初始化完成，开始启动协程")
-            except Exception:
-                pass
+            logger.debug("组件初始化完成，开始启动协程")
 
             # 创建启动事件
             self.coroutine_ready_events = {
@@ -1384,7 +1380,7 @@ class MonitoringProcessV2:
                 )
                 logger.info("[INIT] ✅ 所有协程已就绪")
 
-                # 🆕 更新就绪信号为Level 2
+                # 更新就绪信号为Level 2
                 try:
                     from pathlib import Path
 
@@ -1406,17 +1402,11 @@ class MonitoringProcessV2:
                 except Exception as e:
                     logger.warning("[INIT] 更新就绪信号失败: %s", e)
 
-                # 🔥 Debug: 所有协程就绪
-                try:
-                    self.debug_logger.debug_init_step(
-                        "所有协程已就绪",
-                        {
-                            "协程数量": len(tasks),
-                            "协程列表": list(self.coroutine_ready_events.keys()),
-                        },
-                    )
-                except Exception:
-                    pass
+                logger.debug(
+                    "所有协程已就绪: 协程数量=%d, 协程列表=%s",
+                    len(tasks),
+                    list(self.coroutine_ready_events.keys()),
+                )
 
             except asyncio.TimeoutError:
                 logger.error("[INIT] ❌ 协程启动超时！")
@@ -1430,22 +1420,17 @@ class MonitoringProcessV2:
                 ]
                 logger.error(f"[INIT] 已就绪: {ready}")
                 logger.error(f"[INIT] 未就绪: {not_ready}")
-
-                # 🔥 Debug: 协程启动超时
-                try:
-                    self.debug_logger.debug_exception(
-                        "协程启动超时",
-                        TimeoutError(f"已就绪: {ready}, 未就绪: {not_ready}"),
-                        {"ready": ready, "not_ready": not_ready},
-                    )
-                except Exception:
-                    pass
-
                 raise
 
-            # 启动带宽测试任务
-            asyncio.create_task(self._test_bandwidth_on_startup())
-            asyncio.create_task(self._periodic_ping_test())
+            # ⚠️ 禁用启动时自动带宽测试（避免Ookla限流）
+            # 用户可通过UI手动触发测试
+            # asyncio.create_task(self._test_bandwidth_on_startup())
+
+            # 初始化并启动延迟监控器（门户网站池，每10秒自动测试）
+            logger.info("[LATENCY] 开始初始化延迟监控器...")
+            await self.system_monitor.latency_monitor.initialize_servers()
+            await self.system_monitor.latency_monitor.start_auto_test()
+            logger.info("[LATENCY] ✅ 延迟监控器已启动")
 
             # 等待所有协程，return_exceptions=True 防止单个协程异常导致整个进程退出
             # 同时监控任务是否意外退出
@@ -1458,28 +1443,13 @@ class MonitoringProcessV2:
                     logger.error(
                         f"[TASK-EXIT] ❌ 任务 {task_name} 异常退出: {result}", exc_info=result
                     )
-
-                    # 🔥 Debug: 任务异常退出
-                    try:
-                        self.debug_logger.debug_exception(
-                            f"任务 {task_name} 异常退出", result, {"task_name": task_name}
-                        )
-                    except Exception:
-                        pass
-
                 elif result is not None:
                     logger.warning(f"[TASK-EXIT] ⚠️  任务 {task_name} 意外返回: {result}")
 
         except KeyboardInterrupt:
-            logger.info("收将中断信号，正在关闭...")
+            logger.info("收到中断信号，正在关闭...")
         except Exception as e:
             logger.error("监控进程异常: %s", e, exc_info=True)
-
-            # 🔥 Debug: 监控进程异常
-            try:
-                self.debug_logger.debug_exception("监控进程异常", e)
-            except Exception:
-                pass
         finally:
             await self.stop()
 
@@ -1887,33 +1857,62 @@ class MonitoringProcessV2:
                     self.smart_trigger_event.set()
                 await self.rep_socket.send_json({"status": "success"})
             elif action == "test_bandwidth_full":
-                # 手动触发完整带宽测试（重量级）
+                # 手动触发完整带宽测试（后台任务模式，避免阻塞REP socket）
                 try:
-                    result = await self.system_monitor.bandwidth_monitor.test_bandwidth_full_async()
-                    if result is None:
-                        error_msg = self.system_monitor.bandwidth_monitor._last_error or "测试失败"
-                        await self.rep_socket.send_json({"status": "error", "message": error_msg})
+                    # 检查是否已有测试在运行
+                    if self._background_bandwidth_task and not self._background_bandwidth_task.done():
+                        logger.warning("[BANDWIDTH] 测试已在运行中，拒绝新请求")
+                        await self.rep_socket.send_json({
+                            "status": "testing",
+                            "message": "带宽测试正在进行中，请稍后查询结果"
+                        })
                     else:
-                        await self.rep_socket.send_json({"status": "success", "data": result})
+                        # 创建后台任务（不await）
+                        self._background_bandwidth_task = asyncio.create_task(
+                            self.system_monitor.bandwidth_monitor.test_bandwidth_full_async()
+                        )
+                        logger.info("[ZMQ] ✅ 带宽测试后台任务已启动（不阻塞REP socket）")
+                        await self.rep_socket.send_json({
+                            "status": "started",
+                            "message": "带宽测试已启动，预计30-60秒完成，请通过get_bandwidth查询结果"
+                        })
+
+                        # 添加任务完成回调（用于日志）
+                        def on_bandwidth_done(task):
+                            try:
+                                result = task.result()
+                                if result:
+                                    logger.info(f"[ZMQ] ✅ 带宽测试后台任务完成：{result}")
+                                else:
+                                    logger.warning(f"[ZMQ] ⚠️ 带宽测试后台任务返回None")
+                            except Exception as e:
+                                logger.error(f"[ZMQ] ❌ 带宽测试后台任务异常：{e}", exc_info=True)
+
+                        self._background_bandwidth_task.add_done_callback(on_bandwidth_done)
+
                 except Exception as e:
+                    logger.error(f"[ZMQ] 启动带宽测试失败：{e}", exc_info=True)
                     await self.rep_socket.send_json({"status": "error", "message": str(e)})
-            elif action == "test_ping":
-                # 手动触发延迟测试（轻量级）
+            elif action == "retry_latency":
+                # 重新初始化延迟监控器（用于重试按钮）
                 try:
-                    result = await self.system_monitor.bandwidth_monitor.test_ping_only_async()
-                    if result is None:
-                        error_msg = self.system_monitor.bandwidth_monitor._last_error or "测试失败"
-                        await self.rep_socket.send_json({"status": "error", "message": error_msg})
-                    else:
-                        await self.rep_socket.send_json({"status": "success", "data": result})
+                    logger.info("[ZMQ] 收到延迟监控重试请求")
+                    await self.system_monitor.latency_monitor.retry_initialize()
+                    await self.rep_socket.send_json({
+                        "status": "success",
+                        "message": "延迟监控器已重新初始化"
+                    })
                 except Exception as e:
+                    logger.error(f"[ZMQ] 重试延迟监控失败：{e}", exc_info=True)
                     await self.rep_socket.send_json({"status": "error", "message": str(e)})
             elif action == "get_bandwidth":
                 # 获取最新带宽结果（包含完整测试和延迟测试）
                 try:
                     result = self.system_monitor.get_bandwidth_info()
+                    logger.debug(f"[ZMQ] get_bandwidth返回：{result}")
                     await self.rep_socket.send_json({"status": "success", "data": result})
                 except Exception as e:
+                    logger.error(f"[ZMQ] get_bandwidth失败：{e}", exc_info=True)
                     await self.rep_socket.send_json({"status": "error", "message": str(e)})
             elif action == "get_all":
                 # 获取所有监控数据（包含带宽信息）
@@ -1947,7 +1946,7 @@ class MonitoringProcessV2:
         try:
             status = await self.pull_socket.recv_json()
             self.monitoring_data["service"] = status
-            logger.debug("[ZMQ] 收将服务状态更新")
+            logger.debug("[ZMQ] 收到服务状态更新")
         except Exception as e:
             logger.exception("[ZMQ] 接收服务状态失败: %s", e)
 
@@ -2044,9 +2043,10 @@ class MonitoringProcessV2:
             )
 
             # 在executor中采集新增子系统指标（避免阻塞事件循环）
-            cpu_detailed, memory_subsystem, storage_subsystem, network_subsystem = (
+            cpu_os_detailed, cpu_info, memory_subsystem, storage_subsystem, network_subsystem = (
                 await asyncio.gather(
                     loop.run_in_executor(self.executor, self.system_monitor.get_cpu_os_detailed),
+                    loop.run_in_executor(self.executor, self.system_monitor.get_cpu_info),
                     loop.run_in_executor(
                         self.executor, self.system_monitor.get_memory_subsystem_metrics
                     ),
@@ -2058,6 +2058,19 @@ class MonitoringProcessV2:
                     ),
                 )
             )
+
+            # 合并 cpu_os_detailed 和 cpu_info 为完整的 cpu_detailed
+            cpu_detailed = {**cpu_os_detailed, **cpu_info}
+
+            # 诊断日志：确认 cpu_frequency 数据采集成功
+            if "cpu_frequency" in cpu_detailed:
+                freq = cpu_detailed["cpu_frequency"]
+                if freq.get("max", 0) > 0:
+                    logger.debug(
+                        f"[CPU频率] current={freq.get('current', 0):.0f}MHz, "
+                        f"max={freq.get('max', 0):.0f}MHz, "
+                        f"ratio={freq.get('current', 0) / freq.get('max', 1) * 100:.1f}%"
+                    )
 
             return {
                 "timestamp": datetime.now().isoformat(),
@@ -2491,35 +2504,20 @@ class MonitoringProcessV2:
             logger.info("[PARENT-WATCHER] 父进程监控协程停止")
 
     async def _test_bandwidth_on_startup(self):
-        """启动时测试完整带宽（延迟5秒后执行）."""
+        """启动时测试完整带宽（延迟5秒后执行）
+
+        注意：已禁用，避免启动时网络请求过多
+        """
         await asyncio.sleep(5)
         try:
             result = await self.system_monitor.bandwidth_monitor.test_bandwidth_full_async()
             if result:
                 logger.info(
                     f"启动带宽测试完成: 下载 {result['download_mbps']:.2f}Mbps, "
-                    f"上传 {result['upload_mbps']:.2f}Mbps, 延迟 {result['ping_ms']:.2f}ms"
+                    f"延迟 {result['ping_ms']:.2f}ms"
                 )
         except Exception as e:
             logger.warning(f"启动带宽测试失败: {e}")
-
-    async def _periodic_ping_test(self):
-        """定期测试延迟（每1分钟，轻量级）."""
-        await asyncio.sleep(60)  # 启动后1分钟开始
-
-        while self.running:
-            try:
-                result = await self.system_monitor.bandwidth_monitor.test_ping_only_async()
-                if result:
-                    self.logger.info(f"定期延迟测试: {result['ping_ms']:.2f}ms")
-                else:
-                    self.logger.warning(
-                        "定期延迟测试失败：返回None（可能speedtest未安装或测试冲突）"
-                    )
-            except Exception as e:
-                self.logger.warning(f"定期延迟测试异常: {e}")
-
-            await asyncio.sleep(60)  # 每1分钟测试一次
 
     async def _evaluate_alerts(self) -> List[Dict[str, Any]]:
         """评估告警规则 - DEBUG核心逻辑."""
@@ -2697,47 +2695,6 @@ class MonitoringProcessV2:
         logger.info("监控进程已停止")
 
 
-def main():
-    """监控进程入口函数."""
-    import sys
-    import logging
-
-    # 🔧 修复编码问题：确保stdout使用UTF-8编码
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")  # type: ignore
-    if hasattr(sys.stderr, "reconfigure"):
-        sys.stderr.reconfigure(encoding="utf-8")  # type: ignore
-
-    # 创建带UTF-8编码StreamHandler
-    stream_handler = logging.StreamHandler(sys.stdout)
-    stream_handler.setFormatter(
-        logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-    )
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        handlers=[
-            logging.FileHandler("logs/monitor_process.log", encoding="utf-8"),
-            stream_handler,
-        ],
-    )
-
-    monitor = MonitoringProcessV2()
-
-    try:
-        asyncio.run(monitor.start())
-    except KeyboardInterrupt:
-        logger.info("收将中断信号")
-    except Exception as e:
-        logger.error("监控进程异常退出: %s", e, exc_info=True)
-        sys.exit(1)
-
-
-if __name__ == "__main__":
-    main()
-
-
 # =============================================================================
 # Part 7-10: 系统/进程监控和业务指标（来自 monitors.py）
 # =============================================================================
@@ -2863,119 +2820,293 @@ if HAS_PSUTIL:
 
 
 class BandwidthMonitor:
-    """运营商带宽监控器（支持完整测试和轻量延迟测试）."""
+    """网络带宽监控器（基于自研测速方案）
 
-    def __init__(self, speedtest_available: bool = False):
-        """初始化带宽监控器.
+    使用公共测速站点进行延迟和下载速度测试，无需第三方测速库。
+    支持用户自定义配置测速服务器，无限流风险。
+    """
 
-        Args:
-            speedtest_available: speedtest-cli 是否可用
-        """
+    def __init__(self):
+        """初始化带宽监控器（仅负责带宽测试，延迟测试已分离到LatencyMonitor）"""
         self._last_full_result: Optional[Dict[str, Any]] = None
-        self._last_ping_result: Optional[Dict[str, Any]] = None
         self._full_test_time: Optional[datetime] = None
-        self._ping_test_time: Optional[datetime] = None
         self._testing = False
-        self._speedtest_available = speedtest_available
         self._last_error: str = ""
 
+        # 测速策略配置（仅带宽测试相关）
+        self._bandwidth_timeout: int = 10
+        self._bandwidth_max_retries: int = 3
+
+        # 加载测速服务器配置
+        self._server_configs: List[Dict[str, Any]] = []
+        self._load_server_config()
+
+        logger.info("[BANDWIDTH-INIT] 带宽监控器初始化完成（自研测速方案）")
+
+    def _load_server_config(self):
+        """加载测速服务器配置（仅加载国内服务器）"""
+        import os
+        import yaml
+
+        config_file = "backend/infrastructure/system_vnpy/config/speedtest_servers.yaml"
+
+        try:
+            if os.path.exists(config_file):
+                with open(config_file, 'r', encoding='utf-8') as f:
+                    config = yaml.safe_load(f)
+
+                # 确保config是字典类型
+                if not isinstance(config, dict):
+                    logger.warning(f"[BANDWIDTH-CONFIG] 配置文件格式错误，使用默认配置")
+                    self._use_default_config()
+                    return
+
+                # 加载默认服务器（仅加载category='domestic'的服务器）
+                servers = config.get('servers', []) or []
+                enabled_servers = [
+                    s for s in servers
+                    if isinstance(s, dict)
+                    and s.get('enabled', True)
+                    and s.get('category') == 'domestic'
+                ]
+
+                # 加载用户自定义服务器（仅加载category='domestic'的服务器）
+                custom_servers = config.get('custom_servers', []) or []
+                enabled_custom = [
+                    s for s in custom_servers
+                    if isinstance(s, dict)
+                    and s.get('enabled', True)
+                    and s.get('category') == 'domestic'
+                ]
+
+                self._server_configs = enabled_servers + enabled_custom
+
+                # 加载策略配置（仅带宽测试相关）
+                strategy = config.get('strategy', {}) or {}
+                if isinstance(strategy, dict):
+                    self._bandwidth_timeout = strategy.get('bandwidth_timeout', 10)
+                    self._bandwidth_max_retries = strategy.get('bandwidth_max_retries', 3)
+
+                logger.info(f"[BANDWIDTH-CONFIG] 加载 {len(self._server_configs)} 个国内测速服务器")
+                for i, server in enumerate(self._server_configs[:3], 1):
+                    logger.info(f"  [{i}] {server.get('name')} - {server.get('category')}")
+                logger.info(
+                    f"[BANDWIDTH-CONFIG] 策略配置: "
+                    f"带宽测试(超时={self._bandwidth_timeout}秒, 重试={self._bandwidth_max_retries}次)"
+                )
+            else:
+                logger.warning(f"[BANDWIDTH-CONFIG] 配置文件不存在: {config_file}，使用默认配置")
+                self._use_default_config()
+
+        except Exception as e:
+            logger.error(f"[BANDWIDTH-CONFIG] 加载配置失败: {e}，使用默认配置")
+            self._use_default_config()
+
+    def _use_default_config(self):
+        """使用默认配置（当配置文件不存在或加载失败时，仅使用国内服务器）"""
+        self._server_configs = [
+            {
+                'name': '阿里云镜像站',
+                'category': 'domestic',
+                'ping_url': 'https://mirrors.aliyun.com',
+                'download_url': 'https://mirrors.aliyun.com/alpine/v3.19/releases/x86_64/alpine-standard-3.19.1-x86_64.iso',
+                'timeout': 10,
+                'enabled': True
+            },
+            {
+                'name': '腾讯云镜像站',
+                'category': 'domestic',
+                'ping_url': 'https://mirrors.cloud.tencent.com',
+                'download_url': 'https://mirrors.cloud.tencent.com/alpine/v3.19/releases/x86_64/alpine-standard-3.19.1-x86_64.iso',
+                'timeout': 10,
+                'enabled': True
+            }
+        ]
+        logger.info(f"[BANDWIDTH-CONFIG] 使用默认配置: {len(self._server_configs)} 个国内服务器")
+
+
     def test_bandwidth_full(self) -> Optional[Dict[str, Any]]:
-        """完整带宽测试（重量级，包含下载/上传/延迟）.
+        """完整带宽测试（包含延迟和下载速度）
+
+        注意：自研方案不支持上传速度测试，返回结果中 upload_mbps 为 0
 
         Returns:
-            测试结果字典，包含下载速度、上传速度、延迟
+            测试结果字典，包含下载速度、延迟
         """
-        if not self._speedtest_available:
-            logger.warning("speedtest-cli未安装，无法执行带宽测试")
-            self._last_error = "speedtest-cli未安装"
-            return None
-
         if self._testing:
             logger.warning("带宽测试正在进行中，请稍后再试")
             self._last_error = "测试正在进行中，请稍后再试"
             return None
 
-        try:
-            self._testing = True
-            logger.info("开始完整带宽测试（预计耗时10-30秒）...")
-
-            import speedtest
-
-            st = speedtest.Speedtest()
-            st.get_best_server()
-
-            download_bps = st.download()
-            download_mbps = download_bps / 1_000_000
-
-            upload_bps = st.upload()
-            upload_mbps = upload_bps / 1_000_000
-
-            ping_ms = st.results.ping
-
-            result = {
-                "download_mbps": round(download_mbps, 2),
-                "upload_mbps": round(upload_mbps, 2),
-                "ping_ms": round(ping_ms, 2),
-                "test_time": datetime.now().isoformat(),
-                "test_type": "full",
-            }
-
-            self._last_full_result = result
-            self._full_test_time = datetime.now()
-
-            logger.info(
-                f"完整带宽测试完成: 下载 {result['download_mbps']}Mbps, "
-                f"上传 {result['upload_mbps']}Mbps, 延迟 {result['ping_ms']}ms"
-            )
-
-            return result
-
-        except Exception as e:
-            logger.error(f"完整带宽测试失败: {e}")
-            return None
-
-        finally:
-            self._testing = False
-
-    def test_ping_only(self) -> Optional[Dict[str, Any]]:
-        """仅测试延迟（轻量级，只ping不测速）.
-
-        Returns:
-            测试结果字典，仅包含延迟
-        """
-        if not self._speedtest_available:
-            logger.debug("speedtest-cli未安装，无法执行延迟测试")
-            self._last_error = "speedtest-cli未安装"
-            return None
-
-        if self._testing:
-            logger.debug("测试正在进行中，跳过本次延迟测试")
-            self._last_error = "测试正在进行中，请稍后再试"
-            return None
+        # 导入AI日志流程管理器
+        from backend.infrastructure.system_vnpy.unified_log_system import (
+            ai_log_process,
+            ProcessNames
+        )
 
         try:
             self._testing = True
 
-            import speedtest
+            # 检查服务器配置
+            if not self._server_configs:
+                logger.error("[BANDWIDTH] 服务器配置为空，无法进行测试")
+                self._last_error = "服务器配置为空"
+                return None
 
-            st = speedtest.Speedtest()
-            st.get_best_server()
+            logger.info(f"[BANDWIDTH] 准备开始测试，服务器池大小: {len(self._server_configs)}")
 
-            ping_ms = st.results.ping
+            # 使用AI日志流程上下文管理器，生成独立AI日志文件
+            # 添加异常处理，确保即使AI日志初始化失败也不影响测试
+            try:
+                with ai_log_process(
+                    ProcessNames.NETWORK_SPEEDTEST_BANDWIDTH,
+                    metadata={
+                        "test_type": "full",
+                        "max_retries": self._bandwidth_max_retries,
+                        "timeout": self._bandwidth_timeout,
+                        "server_count": len(self._server_configs)
+                    }
+                ):
+                    logger.info("开始完整带宽测试（预计耗时10-15秒）...")
 
-            result = {
-                "ping_ms": round(ping_ms, 2),
-                "test_time": datetime.now().isoformat(),
-                "test_type": "ping_only",
-            }
+                    # 导入自研测速模块
+                    from backend.infrastructure.system_vnpy.speedtest_native import NetworkSpeedTester
 
-            self._last_ping_result = result
-            self._ping_test_time = datetime.now()
+                    # 创建测速器
+                    tester = NetworkSpeedTester(timeout=self._bandwidth_timeout)
 
-            return result
+                    # 添加时间追踪
+                    test_start_time = datetime.now()
+                    logger.info(f"[BANDWIDTH] 开始完整带宽测试（随机选择+重试策略），开始时间: {test_start_time.strftime('%H:%M:%S')}")
+
+                    # 使用随机选择+重试策略的带宽测试
+                    result_data = tester.test_bandwidth_with_random_retry(
+                        server_configs=self._server_configs,
+                        max_retries=self._bandwidth_max_retries,
+                        timeout=self._bandwidth_timeout
+                    )
+
+                    test_elapsed = (datetime.now() - test_start_time).total_seconds()
+                    logger.info(f"[BANDWIDTH] 完整带宽测试耗时: {test_elapsed:.2f}秒")
+
+                    # 关闭测速器
+                    tester.close()
+
+                    # 处理测试结果
+                    if result_data.get('status') == 'success':
+                        # 组装结果（保持与原API兼容）
+                        result = {
+                            "download_mbps": result_data.get('download_mbps', 0),
+                            "upload_mbps": 0,  # 自研方案不支持上传测速
+                            "ping_ms": result_data.get('ping_ms', 0),
+                            "test_time": result_data.get('test_time'),
+                            "test_type": "full",
+                            "server_name": result_data.get('server_name', 'Unknown')
+                        }
+
+                        self._last_full_result = result
+                        self._full_test_time = datetime.now()
+
+                        attempt = result_data.get('attempt', 1)
+                        logger.info(
+                            f"✅ 完整带宽测试完成: 下载 {result['download_mbps']}Mbps, "
+                            f"延迟 {result['ping_ms']}ms, 服务器 {result['server_name']} (第{attempt}次尝试)"
+                        )
+                        logger.info(f"[SPEEDTEST-SAVE] 保存完整测速结果: {result}")
+
+                        return result
+                    else:
+                        # 测试失败
+                        error_msg = result_data.get('error', '所有测速服务器均不可用')
+                        logger.error(f"❌ 完整带宽测试失败: {error_msg}")
+                        self._last_error = error_msg
+
+                        result = {
+                            "download_mbps": -1,
+                            "upload_mbps": -1,
+                            "ping_ms": -1,
+                            "test_time": datetime.now().isoformat(),
+                            "test_type": "full",
+                            "error": error_msg
+                        }
+                        self._last_full_result = result
+                        self._full_test_time = datetime.now()
+
+                        return result
+            except Exception as ai_log_error:
+                # AI日志初始化失败，继续执行测试（降级模式）
+                logger.warning(f"[BANDWIDTH] AI日志初始化失败，继续测试（降级模式）: {ai_log_error}")
+
+                logger.info("开始完整带宽测试（预计耗时10-15秒）...")
+
+                # 导入自研测速模块
+                from backend.infrastructure.system_vnpy.speedtest_native import NetworkSpeedTester
+
+                # 创建测速器
+                tester = NetworkSpeedTester(timeout=self._bandwidth_timeout)
+
+                # 添加时间追踪
+                test_start_time = datetime.now()
+                logger.info(f"[BANDWIDTH] 开始完整带宽测试（随机选择+重试策略），开始时间: {test_start_time.strftime('%H:%M:%S')}")
+
+                # 使用随机选择+重试策略的带宽测试
+                result_data = tester.test_bandwidth_with_random_retry(
+                    server_configs=self._server_configs,
+                    max_retries=self._bandwidth_max_retries,
+                    timeout=self._bandwidth_timeout
+                )
+
+                test_elapsed = (datetime.now() - test_start_time).total_seconds()
+                logger.info(f"[BANDWIDTH] 完整带宽测试耗时: {test_elapsed:.2f}秒")
+
+                # 关闭测速器
+                tester.close()
+
+                # 处理测试结果
+                if result_data.get('status') == 'success':
+                    # 组装结果（保持与原API兼容）
+                    result = {
+                        "download_mbps": result_data.get('download_mbps', 0),
+                        "upload_mbps": 0,  # 自研方案不支持上传测速
+                        "ping_ms": result_data.get('ping_ms', 0),
+                        "test_time": result_data.get('test_time'),
+                        "test_type": "full",
+                        "server_name": result_data.get('server_name', 'Unknown')
+                    }
+
+                    self._last_full_result = result
+                    self._full_test_time = datetime.now()
+
+                    attempt = result_data.get('attempt', 1)
+                    logger.info(
+                        f"✅ 完整带宽测试完成: 下载 {result['download_mbps']}Mbps, "
+                        f"延迟 {result['ping_ms']}ms, 服务器 {result['server_name']} (第{attempt}次尝试)"
+                    )
+                    logger.info(f"[SPEEDTEST-SAVE] 保存完整测速结果: {result}")
+
+                    return result
+                else:
+                    # 测试失败
+                    error_msg = result_data.get('error', '所有测速服务器均不可用')
+                    logger.error(f"❌ 完整带宽测试失败: {error_msg}")
+                    self._last_error = error_msg
+
+                    result = {
+                        "download_mbps": -1,
+                        "upload_mbps": -1,
+                        "ping_ms": -1,
+                        "test_time": datetime.now().isoformat(),
+                        "test_type": "full",
+                        "error": error_msg
+                    }
+                    self._last_full_result = result
+                    self._full_test_time = datetime.now()
+
+                    return result
 
         except Exception as e:
-            logger.debug(f"延迟测试失败: {e}")
+            logger.error(f"❌ 完整带宽测试失败: {e}", exc_info=True)
+            self._last_error = str(e)
             return None
 
         finally:
@@ -2990,15 +3121,6 @@ class BandwidthMonitor:
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, self.test_bandwidth_full)
 
-    async def test_ping_only_async(self) -> Optional[Dict[str, Any]]:
-        """仅测试延迟（异步版本）.
-
-        Returns:
-            测试结果字典
-        """
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self.test_ping_only)
-
     def get_last_full_result(self) -> Optional[Dict[str, Any]]:
         """获取最新完整测试结果.
 
@@ -3007,13 +3129,367 @@ class BandwidthMonitor:
         """
         return self._last_full_result
 
-    def get_last_ping_result(self) -> Optional[Dict[str, Any]]:
-        """获取最新延迟测试结果.
+
+class LatencyMonitor:
+    """延迟测试监控器（使用门户网站池，自动测试）
+
+    使用门户网站、视频网站、体育网站等形成服务器池。
+    启动时并发测试所有服务器连通性，生成可用服务器表缓存。
+    之后每10秒自动测试一次延迟，随机选择服务器。
+    """
+
+    def __init__(self):
+        """初始化延迟监控器"""
+        self._available_servers: List[Dict[str, Any]] = []
+        self._all_servers: List[Dict[str, Any]] = []
+
+        # 使用get_root()获取项目根目录，缓存文件放在data/cache目录下
+        root_path = self._get_root()
+        cache_dir = root_path / "data" / "cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        self._server_cache_file = str(cache_dir / "ping_servers_cache.json")
+
+        self._last_ping_result: Optional[Dict[str, Any]] = None
+        self._last_ping_time: Optional[datetime] = None
+        self._auto_test_task: Optional[asyncio.Task] = None
+        self._running = False
+        self._test_interval = 10  # 10秒间隔
+        self._timeout = 5  # 默认超时5秒
+        self._network_disconnected = False  # 无网络连接标志
+
+        # 加载服务器配置
+        self._load_server_config()
+
+        logger.info("[LATENCY-INIT] 延迟监控器初始化完成（门户网站池）")
+
+    def _get_root(self) -> Path:
+        """获取项目根目录路径
 
         Returns:
-            最新延迟测试结果，如果未测试则返回None
+            项目根目录的Path对象
         """
+        # 通过当前文件的路径向上查找项目根目录
+        # monitor_system.py 位于 backend/infrastructure/system_vnpy/
+        # 需要向上3级到达项目根目录
+        current_file = Path(__file__)
+        root_path = current_file.parent.parent.parent.parent
+        return root_path
+
+    def _load_server_config(self):
+        """加载延迟测试服务器配置"""
+        import yaml
+
+        config_file = "backend/infrastructure/system_vnpy/config/ping_servers.yaml"
+
+        try:
+            if os.path.exists(config_file):
+                with open(config_file, 'r', encoding='utf-8') as f:
+                    config = yaml.safe_load(f)
+
+                if not isinstance(config, dict):
+                    logger.warning(f"[LATENCY-CONFIG] 配置文件格式错误，使用默认配置")
+                    self._use_default_config()
+                    return
+
+                # 加载所有启用的服务器
+                servers = config.get('servers', []) or []
+                self._all_servers = [
+                    s for s in servers
+                    if isinstance(s, dict) and s.get('enabled', True)
+                ]
+
+                logger.info(f"[LATENCY-CONFIG] 加载 {len(self._all_servers)} 个延迟测试服务器")
+            else:
+                logger.warning(f"[LATENCY-CONFIG] 配置文件不存在: {config_file}，使用默认配置")
+                self._use_default_config()
+        except Exception as e:
+            logger.error(f"[LATENCY-CONFIG] 加载配置失败: {e}，使用默认配置")
+            self._use_default_config()
+
+    def _use_default_config(self):
+        """使用默认配置（当配置文件不存在或加载失败时）"""
+        # 使用一些常见门户网站作为默认
+        self._all_servers = [
+            {
+                'name': '百度',
+                'category': 'portal',
+                'ping_url': 'https://www.baidu.com',
+                'timeout': 5,
+                'enabled': True
+            },
+            {
+                'name': '网易',
+                'category': 'portal',
+                'ping_url': 'https://www.163.com',
+                'timeout': 5,
+                'enabled': True
+            },
+            {
+                'name': '搜狐',
+                'category': 'portal',
+                'ping_url': 'https://www.sohu.com',
+                'timeout': 5,
+                'enabled': True
+            }
+        ]
+        logger.info(f"[LATENCY-CONFIG] 使用默认配置: {len(self._all_servers)} 个服务器")
+
+    def _load_cache(self) -> bool:
+        """加载文件缓存（如果当天有效）"""
+        try:
+            if not os.path.exists(self._server_cache_file):
+                return False
+
+            with open(self._server_cache_file, 'r', encoding='utf-8') as f:
+                cache_data = json.load(f)
+
+            cache_date = cache_data.get('date')
+            today = datetime.now().strftime('%Y-%m-%d')
+
+            if cache_date == today:
+                self._available_servers = cache_data.get('servers', [])
+                logger.info(f"[LATENCY-CACHE] 加载缓存成功: {len(self._available_servers)} 个可用服务器（日期: {cache_date}）")
+                return True
+            else:
+                logger.info(f"[LATENCY-CACHE] 缓存已过期（缓存日期: {cache_date}, 今天: {today}），将重新测试")
+                return False
+        except Exception as e:
+            logger.warning(f"[LATENCY-CACHE] 加载缓存失败: {e}")
+            return False
+
+    def _save_cache(self):
+        """保存可用服务器缓存到文件"""
+        try:
+            os.makedirs(os.path.dirname(self._server_cache_file), exist_ok=True)
+
+            cache_data = {
+                'date': datetime.now().strftime('%Y-%m-%d'),
+                'servers': self._available_servers
+            }
+
+            with open(self._server_cache_file, 'w', encoding='utf-8') as f:
+                json.dump(cache_data, f, ensure_ascii=False, indent=2)
+
+            logger.info(f"[LATENCY-CACHE] 保存缓存成功: {len(self._available_servers)} 个可用服务器")
+        except Exception as e:
+            logger.warning(f"[LATENCY-CACHE] 保存缓存失败: {e}")
+
+    async def _test_single_latency(self, server: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """测试单个服务器延迟（异步）"""
+        from backend.infrastructure.system_vnpy.speedtest_native import NetworkSpeedTester
+
+        ping_url = server.get('ping_url')
+        if not ping_url:
+            return None
+
+        timeout = server.get('timeout', self._timeout)
+
+        try:
+            # 在线程池中执行同步测试（避免阻塞事件循环）
+            loop = asyncio.get_event_loop()
+            tester = NetworkSpeedTester(timeout=timeout, use_browser_headers=True)
+
+            def sync_test():
+                return tester.test_latency_browser_mode(ping_url)
+
+            result = await loop.run_in_executor(None, sync_test)
+            tester.close()
+
+            if result and result.get('status') == 'success':
+                return {
+                    'server': server,
+                    'ping_ms': result.get('ping_ms'),
+                    'url': ping_url
+                }
+            return None
+        except Exception as e:
+            logger.debug(f"[LATENCY-TEST] 测试失败 {server.get('name')}: {e}")
+            return None
+
+    async def initialize_servers(self):
+        """启动时并发测试所有服务器连通性，生成可用服务器表"""
+        logger.info(f"[LATENCY-INIT] 开始初始化服务器池（共{len(self._all_servers)}个服务器）")
+
+        # 1. 尝试加载文件缓存
+        if self._load_cache():
+            logger.info(f"[LATENCY-INIT] 使用缓存，可用服务器: {len(self._available_servers)} 个")
+            return
+
+        # 2. 并发测试所有服务器（无限制并发）
+        logger.info(f"[LATENCY-INIT] 开始并发测试所有服务器连通性...")
+        start_time = time.time()
+
+        # 创建所有测试任务
+        tasks = [self._test_single_latency(server) for server in self._all_servers]
+
+        # 并发执行所有测试
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # 筛选可用的服务器
+        available = []
+        for result in results:
+            if isinstance(result, dict) and result:
+                available.append(result['server'])
+
+        elapsed = time.time() - start_time
+        logger.info(f"[LATENCY-INIT] 连通性测试完成（耗时{elapsed:.2f}秒）: {len(available)}/{len(self._all_servers)} 个服务器可用")
+
+        # 3. 如果所有服务器都不可用，尝试降级使用镜像站
+        if not available:
+            logger.warning("[LATENCY-INIT] 所有门户网站都不可用，尝试降级使用镜像站...")
+            available = await self._fallback_to_mirrors()
+
+        # 4. 更新可用服务器列表
+        self._available_servers = available
+
+        # 5. 如果仍然没有可用服务器，标记为无网络连接
+        if not self._available_servers:
+            logger.error("[LATENCY-INIT] 所有服务器都不可用，判断为本机已脱离网络")
+            self._network_disconnected = True
+        else:
+            self._network_disconnected = False
+            # 保存缓存
+            self._save_cache()
+
+    async def _fallback_to_mirrors(self) -> List[Dict[str, Any]]:
+        """降级使用镜像站作为延迟测试源"""
+        # 从speedtest_servers.yaml加载镜像站
+        import yaml
+
+        config_file = "backend/infrastructure/system_vnpy/config/speedtest_servers.yaml"
+        fallback_servers = []
+
+        try:
+            if os.path.exists(config_file):
+                with open(config_file, 'r', encoding='utf-8') as f:
+                    config = yaml.safe_load(f)
+
+                # 确保config是字典类型
+                if not isinstance(config, dict):
+                    logger.warning("[LATENCY-FALLBACK] 配置文件格式错误")
+                    return []
+
+                servers = config.get('servers', []) or []
+                mirror_servers = [
+                    {
+                        'name': s.get('name', 'Unknown'),
+                        'category': 'mirror',
+                        'ping_url': s.get('ping_url'),
+                        'timeout': s.get('timeout', 5),
+                        'enabled': True
+                    }
+                    for s in servers
+                    if isinstance(s, dict) and s.get('enabled', True) and s.get('ping_url')
+                ]
+
+                # 测试镜像站连通性
+                tasks = [self._test_single_latency(server) for server in mirror_servers]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                for result in results:
+                    if isinstance(result, dict) and result:
+                        fallback_servers.append(result['server'])
+
+                logger.info(f"[LATENCY-FALLBACK] 镜像站连通性测试: {len(fallback_servers)}/{len(mirror_servers)} 个可用")
+        except Exception as e:
+            logger.warning(f"[LATENCY-FALLBACK] 降级到镜像站失败: {e}")
+
+        return fallback_servers
+
+    async def start_auto_test(self):
+        """启动自动延迟测试循环"""
+        if self._running:
+            logger.warning("[LATENCY-AUTO] 自动测试已在运行中")
+            return
+
+        if not self._available_servers:
+            logger.warning("[LATENCY-AUTO] 没有可用服务器，无法启动自动测试")
+            self._network_disconnected = True
+            return
+
+        self._running = True
+        logger.info(f"[LATENCY-AUTO] 启动自动延迟测试（间隔{self._test_interval}秒，可用服务器{len(self._available_servers)}个）")
+
+        # 创建后台任务
+        self._auto_test_task = asyncio.create_task(self._auto_test_loop())
+
+    async def _auto_test_loop(self):
+        """自动测试循环"""
+        while self._running:
+            try:
+                if not self._available_servers:
+                    logger.warning("[LATENCY-AUTO] 可用服务器池为空，暂停测试")
+                    self._network_disconnected = True
+                    await asyncio.sleep(self._test_interval)
+                    continue
+
+                # 随机选择一个服务器
+                import random
+                selected_server = random.choice(self._available_servers)
+
+                # 测试延迟
+                result = await self._test_single_latency(selected_server)
+
+                if result:
+                    # 测试成功
+                    self._last_ping_result = {
+                        "ping_ms": result['ping_ms'],
+                        "test_time": datetime.now().isoformat(),
+                        "test_type": "auto",
+                        "server_name": selected_server.get('name', 'Unknown')
+                    }
+                    self._last_ping_time = datetime.now()
+                    self._network_disconnected = False
+                    logger.debug(f"[LATENCY-AUTO] ✅ 延迟测试成功: {result['ping_ms']}ms ({selected_server.get('name')})")
+                else:
+                    # 测试失败，可能网络断开
+                    logger.warning(f"[LATENCY-AUTO] ❌ 延迟测试失败: {selected_server.get('name')}")
+                    # 不立即标记为无网络，可能只是这个服务器暂时不可用
+
+                # 等待下一次测试
+                await asyncio.sleep(self._test_interval)
+
+            except asyncio.CancelledError:
+                logger.info("[LATENCY-AUTO] 自动测试循环被取消")
+                break
+            except Exception as e:
+                logger.error(f"[LATENCY-AUTO] 自动测试循环异常: {e}", exc_info=True)
+                await asyncio.sleep(self._test_interval)
+
+    async def retry_initialize(self):
+        """重新初始化服务器池（用于重试按钮）"""
+        logger.info("[LATENCY-RETRY] 重新初始化服务器池...")
+        self._network_disconnected = False
+        await self.initialize_servers()
+
+        # 如果初始化成功且有可用服务器，重启自动测试
+        if self._available_servers and not self._running:
+            await self.start_auto_test()
+        elif self._running:
+            # 如果已经在运行，重启循环
+            self._running = False
+            if self._auto_test_task:
+                self._auto_test_task.cancel()
+            await self.start_auto_test()
+
+    def stop(self):
+        """停止自动测试"""
+        self._running = False
+        if self._auto_test_task:
+            self._auto_test_task.cancel()
+        logger.info("[LATENCY-AUTO] 自动延迟测试已停止")
+
+    def get_last_ping_result(self) -> Optional[Dict[str, Any]]:
+        """获取最新延迟测试结果"""
         return self._last_ping_result
+
+    def is_network_disconnected(self) -> bool:
+        """检查是否无网络连接"""
+        return self._network_disconnected
+
+    def get_available_server_count(self) -> int:
+        """获取可用服务器数量"""
+        return len(self._available_servers)
 
 
 class SystemMonitor:
@@ -3036,8 +3512,11 @@ class SystemMonitor:
         # 磁盘类型缓存
         self._disk_type_cache: Dict[str, str] = {}
 
-        # 添加带宽监控器
-        self.bandwidth_monitor = BandwidthMonitor(HAS_SPEEDTEST)
+        # 添加带宽监控器（仅负责带宽测试）
+        self.bandwidth_monitor = BandwidthMonitor()
+
+        # 添加延迟监控器（负责延迟测试）
+        self.latency_monitor = LatencyMonitor()
 
     def get_bandwidth_info(self) -> Dict[str, Any]:
         """获取运营商带宽信息（返回缓存结果）.
@@ -3046,9 +3525,10 @@ class SystemMonitor:
             包含完整测试和延迟测试结果字典
         """
         full_result = self.bandwidth_monitor.get_last_full_result()
-        ping_result = self.bandwidth_monitor.get_last_ping_result()
+        ping_result = self.latency_monitor.get_last_ping_result()
+        network_disconnected = self.latency_monitor.is_network_disconnected()
 
-        return {
+        result = {
             "full_test": (
                 full_result
                 if full_result
@@ -3060,7 +3540,16 @@ class SystemMonitor:
                 }
             ),
             "ping_test": ping_result if ping_result else {"ping_ms": None, "status": "未测试"},
+            "network_disconnected": network_disconnected,  # 无网络连接标志
         }
+
+        # 🔥 测速专用日志（详细）
+        logger.info(f"[SPEEDTEST-DATA] get_bandwidth_info返回数据:")
+        logger.info(f"  - full_test: {full_result}")
+        logger.info(f"  - ping_test: {ping_result}")
+        logger.info(f"  - network_disconnected: {network_disconnected}")
+
+        return result
 
     def _detect_disk_type(self, device_name: str) -> str:
         """检测单个磁盘类型.
@@ -3465,11 +3954,56 @@ class SystemMonitor:
             raise
 
     def get_cpu_info(self) -> Dict[str, Any]:
-        """获取CPU详细信息."""
+        """获取CPU详细信息.
+        
+        频率获取策略（优先级从高到低）:
+        1. LibreHardwareMonitor: 从硬件监控器获取CPU最大频率（可能包含Turbo Boost上限）
+        2. psutil: 获取基础频率（Windows上通常是基础频率，不是Turbo Boost上限）
+        3. 默认值: 如果都不可用，使用默认值
+        """
         try:
+            # 首先尝试从LibreHardwareMonitor获取CPU最大频率（可能包含Turbo Boost）
+            # 注意：SystemMonitor是独立类，需要通过全局单例或参数传递访问硬件监控器
+            # 使用HardwareMonitorFactory获取单例实例（如果可用）
+            max_freq_from_lhm = None
+            try:
+                # 尝试通过全局方式获取硬件监控器（如果MonitoringProcessV2已初始化）
+                # 这里使用HardwareMonitorFactory的单例模式
+                hardware_monitor = HardwareMonitorFactory.get_instance()
+                
+                if hardware_monitor and hardware_monitor.is_available():
+                    sensor_data = hardware_monitor.get_all_sensor_data()
+                    clock_sensors = sensor_data.get("clock", {})
+                    
+                    # 查找CPU相关的时钟传感器
+                    cpu_max_freqs = []
+                    import math
+                    for device_name, sensors in clock_sensors.items():
+                        # 检查是否是CPU设备（名称包含CPU或处理器相关关键词）
+                        if any(keyword in device_name.lower() for keyword in ["cpu", "processor", "ryzen", "intel", "core"]):
+                            for sensor in sensors:
+                                max_val = sensor.get("max")
+                                if max_val is not None and not math.isnan(max_val) and max_val > 0:
+                                    cpu_max_freqs.append(max_val)
+                    
+                    if cpu_max_freqs:
+                        max_freq_from_lhm = max(cpu_max_freqs)
+                        logger.debug(f"[CPU-FREQ] 从LibreHardwareMonitor获取最大频率: {max_freq_from_lhm:.2f} MHz")
+            except Exception as e:
+                logger.debug(f"[CPU-FREQ] 从LibreHardwareMonitor获取频率失败: {e}")
+            
             if HAS_PSUTIL:
-                cpu_freq = psutil.cpu_freq()
+                # 获取CPU频率（返回单个对象，而非列表）
+                cpu_freq: Any = psutil.cpu_freq()  # scpufreq 对象或 None
                 cpu_times: Any = psutil.cpu_times()
+
+                # 优先使用LibreHardwareMonitor的最大频率（如果可用且更高）
+                max_freq = cpu_freq.max if cpu_freq else 0
+                if max_freq_from_lhm and max_freq_from_lhm > max_freq:
+                    max_freq = max_freq_from_lhm
+                    logger.debug(f"[CPU-FREQ] 使用LibreHardwareMonitor的最大频率（可能包含Turbo Boost）: {max_freq:.2f} MHz")
+                elif max_freq_from_lhm:
+                    logger.debug(f"[CPU-FREQ] LibreHardwareMonitor频率({max_freq_from_lhm:.2f}MHz)不高于psutil({max_freq:.2f}MHz)，使用psutil值")
 
                 return {
                     "cpu_count_physical": psutil.cpu_count(logical=False),
@@ -3478,7 +4012,7 @@ class SystemMonitor:
                     "cpu_frequency": {
                         "current": cpu_freq.current if cpu_freq else 0,
                         "min": cpu_freq.min if cpu_freq else 0,
-                        "max": cpu_freq.max if cpu_freq else 0,
+                        "max": max_freq,  # 可能包含Turbo Boost上限（如果LibreHardwareMonitor可用）
                     },
                     "cpu_times": {
                         "user": cpu_times.user,
@@ -3487,6 +4021,9 @@ class SystemMonitor:
                     },
                 }
             else:
+                # 如果没有psutil，使用LibreHardwareMonitor的值或默认值
+                max_freq = max_freq_from_lhm if max_freq_from_lhm else 3000
+                
                 return {
                     "cpu_count_physical": os.cpu_count() or 1,
                     "cpu_count_logical": os.cpu_count() or 1,
@@ -3494,7 +4031,7 @@ class SystemMonitor:
                     "cpu_frequency": {
                         "current": 2400,
                         "min": 1000,
-                        "max": 3000,
+                        "max": max_freq,
                     },
                     "cpu_times": {
                         "user": 1000.0,
@@ -4405,7 +4942,7 @@ class HardwareMonitor:
             import pythoncom
 
             # 初始化COM
-            pythoncom.CoInitialize()
+            pythoncom.CoInitialize()  # type: ignore[attr-defined]
 
             try:
                 # 连接将 LibreHardwareMonitor WMI namespace
@@ -4438,7 +4975,7 @@ class HardwareMonitor:
                 return temp_info
 
             finally:
-                pythoncom.CoUninitialize()
+                pythoncom.CoUninitialize()  # type: ignore[attr-defined]
 
         except Exception as e:
             logger.debug("WMI温度读取失败: %s", e)
@@ -4453,45 +4990,6 @@ class HardwareMonitor:
 
         # 如果WMI不可用，返回空字典
         return {}
-
-    def get_bandwidth_info(self) -> Dict[str, Any]:
-        """获取运营商带宽信息（返回缓存结果）.
-
-        Returns:
-            包含完整测试和延迟测试结果字典
-        """
-        full_result = self.bandwidth_monitor.get_last_full_result()
-        ping_result = self.bandwidth_monitor.get_last_ping_result()
-
-        return {
-            "full_test": (
-                full_result
-                if full_result
-                else {
-                    "download_mbps": None,
-                    "upload_mbps": None,
-                    "ping_ms": None,
-                    "status": "未测试",
-                }
-            ),
-            "ping_test": ping_result if ping_result else {"ping_ms": None, "status": "未测试"},
-        }
-
-    def test_bandwidth_full_now(self) -> Optional[Dict[str, Any]]:
-        """立即测试带宽（手动触发，重量级）.
-
-        Returns:
-            测试结果字典
-        """
-        return self.bandwidth_monitor.test_bandwidth_full()
-
-    def test_ping_now(self) -> Optional[Dict[str, Any]]:
-        """立即测试延迟（手动触发，轻量级）.
-
-        Returns:
-            测试结果字典
-        """
-        return self.bandwidth_monitor.test_ping_only()
 
     def get_fan_info(self) -> Dict[str, Any]:
         """获取风扇信息."""
@@ -5066,7 +5564,7 @@ class MonitoringProcess:
                     try:
                         message = self.pull_socket.recv_json(zmq.NOBLOCK)
                         self.latest_service_status = message
-                        logger.debug("收将服务状态更新")
+                        logger.debug("收到服务状态更新")
                     except zmq.Again:
                         pass
                     except Exception as e:
@@ -5084,7 +5582,7 @@ class MonitoringProcess:
                         logger.exception("处理查询失败: %s", e)
 
         except KeyboardInterrupt:
-            logger.info("收将中断信号，正在关闭...")
+            logger.info("收到中断信号，正在关闭...")
         except Exception as e:
             logger.error("监控进程异常: %s", e, exc_info=True)
         finally:
@@ -5485,9 +5983,9 @@ def main():
     import sys
 
     # 配置日志（仅Terminal输出）
-    # 确保stdout使用UTF-8编码
+    # 确保stdout使用UTF-8编码（Python 3.7+）
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
 
     stream_handler = logging.StreamHandler(sys.stdout)
     logging.basicConfig(

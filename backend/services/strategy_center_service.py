@@ -18,6 +18,11 @@ import logging
 
 from backend.core.service_base import BaseService, LoggerMixin
 from backend.services.database_adapter import get_db_manager
+from backend.infrastructure.system_vnpy.unified_log_system import (
+    start_ai_process,
+    end_ai_process,
+    get_logging_hub,
+)
 
 # 专用logger - 日志埋点v4.0
 logger_backtest = logging.getLogger("backend.strategy.backtest")
@@ -1299,23 +1304,43 @@ class MyPortfolioStrategy(StrategyTemplate):
         try:
             task_id = f"backtest_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
-            self.log_operation_start("启动回测任务", task_id=task_id, strategy=strategy_file)
-
-            # 检查回测引擎是否可用
-            if not self.backtest_engine:
-                self.logger.error("回测引擎不可用（vnpy_ctabacktester未安装）")
-                return {
-                    "success": False,
-                    "message": "回测引擎不可用（vnpy_ctabacktester未安装）",
-                }
-
-            # 实际的回测逻辑
-            # 注意：实际回测需要在后台线程执行，这里只是启动
+            # ✅ 开始AI日志流程（记录启动信息）
+            ai_log_started = False
             try:
+                ai_log_file = start_ai_process(
+                    "backtest_run",
+                    metadata={
+                        "task_id": task_id,
+                        "strategy_file": strategy_file,
+                        "config": config
+                    }
+                )
+                ai_log_started = True
+                self.logger.info(f"AI日志文件: {ai_log_file}")
+            except Exception as e:
+                self.logger.warning(f"启动AI日志流程失败: {e}")
+
+            try:
+                self.log_operation_start("启动回测任务", task_id=task_id, strategy=strategy_file)
+
+                # 检查回测引擎是否可用
+                if not self.backtest_engine:
+                    self.logger.error("回测引擎不可用（vnpy_ctabacktester未安装）")
+                    if ai_log_started:
+                        end_ai_process(success=False, summary="回测引擎不可用（vnpy_ctabacktester未安装）")
+                    return {
+                        "success": False,
+                        "message": "回测引擎不可用（vnpy_ctabacktester未安装）",
+                    }
+
+                # 实际的回测逻辑
+                # 注意：实际回测需要在后台线程执行，这里只是启动
                 # 验证策略文件存在
                 strategy_path = self.strategy_root / strategy_file
                 if not strategy_path.exists():
                     self.logger.error("策略文件不存在：%s", strategy_file)
+                    if ai_log_started:
+                        end_ai_process(success=False, summary=f"策略文件不存在: {strategy_file}")
                     return {
                         "success": False,
                         "message": f"策略文件不存在: {strategy_file}",
@@ -1373,21 +1398,38 @@ class MyPortfolioStrategy(StrategyTemplate):
 
                     start_time = time.time()
 
+                    # ✅ 开始AI日志流程（实际回测执行）
+                    ai_log_started_backtest = False
+                    try:
+                        ai_log_file = start_ai_process(
+                            "backtest_run",
+                            metadata={
+                                "task_id": task_id,
+                                "strategy_file": strategy_file,
+                                "actual_execution": True
+                            }
+                        )
+                        ai_log_started_backtest = True
+                        self.logger.info(f"AI日志文件（回测执行）: {ai_log_file}")
+                    except Exception as e:
+                        self.logger.warning(f"启动AI日志流程失败: {e}")
+
                     # 切换到回测阶段 - 日志埋点v4.0
                     try:
-                        from backend.infrastructure.system_vnpy.logging_context import (
-                            get_logging_context,
-                        )
-
                         ctx = get_logging_hub()
                         ctx.set_stage("backtest")
                         self.logger.info("📍 切换到回测阶段")
-                    except ImportError:
+                    except Exception:
                         ctx = None
                         self.logger.debug("logging_context模块不可用，跳过阶段切换")
 
                     try:
                         task = self._backtest_tasks[task_id]
+                        # 从task中获取配置
+                        task_config = task.get("config", {})
+                        start_date = task_config.get("start_date", "2024-01-01")
+                        end_date = task_config.get("end_date", "2024-12-31")
+                        capital = task_config.get("capital", 1000000)
 
                         # 使用场景上下文 - 日志埋点v4.0 (已移除scenario)
                         # 直接执行,不使用scenario上下文
@@ -1459,9 +1501,9 @@ class MyPortfolioStrategy(StrategyTemplate):
                             self.logger.info("[回测-%s] 加载历史数据...", task_id)
 
                             # 2. 获取历史数据（通过data_center_service）
-                            symbol = config.get("symbol", "000001")
-                            exchange = config.get("exchange", "SZSE")
-                            interval_str = config.get("interval", "1d")
+                            symbol = task_config.get("symbol", "000001")
+                            exchange = task_config.get("exchange", "SZSE")
+                            interval_str = task_config.get("interval", "1d")
 
                             # 注：vnpy的run_backtesting方法需要interval作为字符串，直接使用interval_str
 
@@ -1522,12 +1564,12 @@ class MyPortfolioStrategy(StrategyTemplate):
                                 interval=interval_str,  # 使用字符串而不是枚举
                                 start=dt.strptime(start_date, "%Y-%m-%d"),
                                 end=dt.strptime(end_date, "%Y-%m-%d"),
-                                rate=config.get("commission_rate", 0.0003),
-                                slippage=config.get("slippage", 0.0),
-                                size=config.get("size", 1),
-                                pricetick=config.get("pricetick", 0.01),
+                                rate=task_config.get("commission_rate", 0.0003),
+                                slippage=task_config.get("slippage", 0.0),
+                                size=task_config.get("size", 1),
+                                pricetick=task_config.get("pricetick", 0.01),
                                 capital=int(capital),
-                                setting=config.get("strategy_setting", {}),
+                                setting=task_config.get("strategy_setting", {}),
                             )
 
                             backtest_duration = (time.time() - backtest_start) * 1000
@@ -1653,6 +1695,13 @@ class MyPortfolioStrategy(StrategyTemplate):
                             if strategy_module_name in sys.modules:
                                 del sys.modules[strategy_module_name]
 
+                            # ✅ 结束AI日志流程（成功）
+                            if ai_log_started_backtest:
+                                end_ai_process(
+                                    success=True,
+                                    summary=f"回测完成 - 总收益: {total_return:.2%}, 夏普比率: {sharpe_ratio:.2f}, 最大回撤: {max_drawdown:.2%}, 交易次数: {total_trades}"
+                                )
+
                         except ImportError as e:
                             self.logger.warning(
                                 "[回测-%s] vnpy_ctabacktester未安装：%s", task_id, e
@@ -1672,6 +1721,10 @@ class MyPortfolioStrategy(StrategyTemplate):
                             """,
                                 ("failed", 0, datetime.now().isoformat(), task_id),
                             )
+
+                            # ✅ 结束AI日志流程（导入失败）
+                            if ai_log_started_backtest:
+                                end_ai_process(success=False, summary=f"vnpy_ctabacktester包未安装: {str(e)}")
 
                     except Exception as e:
                         total_duration = (time.time() - start_time) * 1000
@@ -1694,7 +1747,18 @@ class MyPortfolioStrategy(StrategyTemplate):
                         """,
                             ("failed", 0, datetime.now().isoformat(), task_id),
                         )
+
+                        # ✅ 结束AI日志流程（异常）
+                        if ai_log_started_backtest:
+                            end_ai_process(success=False, summary=f"回测失败: {str(e)}")
                     finally:
+                        # ✅ 确保AI日志流程结束（兜底）
+                        if ai_log_started_backtest:
+                            try:
+                                end_ai_process(success=False, summary="回测流程异常结束")
+                            except Exception:
+                                pass
+
                         # 退出场景上下文并恢复阶段 - 日志埋点v4.0
                         if scenario_ctx:
                             try:
@@ -1723,6 +1787,8 @@ class MyPortfolioStrategy(StrategyTemplate):
 
             except Exception as e:
                 self.log_operation_failure("启动回测任务", e, task_id=task_id)
+                if ai_log_started:
+                    end_ai_process(success=False, summary=f"回测启动失败: {str(e)}")
                 return {
                     "success": False,
                     "message": f"回测启动失败: {str(e)}",
@@ -1730,6 +1796,12 @@ class MyPortfolioStrategy(StrategyTemplate):
 
         except Exception as e:
             self.log_operation_failure("启动回测", e)
+            # 注意：ai_log_started在最外层try中定义，这里可以安全访问
+            if ai_log_started:
+                try:
+                    end_ai_process(success=False, summary=f"启动回测异常: {str(e)}")
+                except Exception:
+                    pass
             return {"success": False, "message": str(e)}
 
     def render_backtest_result(

@@ -69,7 +69,7 @@ dnspython>=2.0.0
 requests>=2.25.0
 aiohttp>=3.8.0
 ntplib>=0.4.0  # NTP网络时间同步
-speedtest-cli>=2.1.3  # 网络测速工具
+# speedtest-cli>=2.1.3  # 已移除：使用自研测速方案替代（基于公共测速站点，无限流风险）
 
 # requests依赖
 urllib3>=1.26.0

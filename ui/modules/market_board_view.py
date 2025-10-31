@@ -296,11 +296,8 @@ class ChartWizardEnhanced(BaseWidget):
 
         # 异步初始化状态
         self.initialization_state = "waiting"  # waiting/ready/failed
-        self.retry_count = 0
-        self.retry_timer: Optional[Any] = None
-        self.max_retries = 30  # 最多重试30次（15秒）
-        self.retry_interval = 500  # 每500ms重试一次
-        self._inject_warning_shown = False  # 主动注入warning只显示一次
+        self._data_ready = False
+        self._data_mode = None  # "online" or "offline"
 
         # UI组件
         self.symbol_input: Optional[SymbolCompleterLineEdit] = None
@@ -325,37 +322,29 @@ class ChartWizardEnhanced(BaseWidget):
         # 调用父类初始化
         super().__init__(parent, "K线图表")
 
-        # 初始化引擎
+        # 🔧 优化启动时序：先只获取引擎引用，不检查数据接口
+        # 数据接口检查将在 UnifiedDataManager 就绪后执行
         self._initialize_engines()
 
-        # 如果引擎已就绪，检查数据接口是否也就绪
-        if self.main_engine and self.event_engine:
-            # 🔧 关键修复：检查数据接口是否真实可用
-            data_interface_ready = False
+        # 订阅UnifiedDataManager就绪事件（必须在获取event_engine之后）
+        if self.event_engine:
+            try:
+                from backend.infrastructure.data_module_vnpy import data_module
 
-            if hasattr(self.main_engine, "get_all_contracts"):
-                try:
-                    test_contracts = self.main_engine.get_all_contracts()
-                    if test_contracts and len(test_contracts) > 0:
-                        data_interface_ready = True
-                        self.logger.info(f"✅ 数据接口立即可用（品种数：{len(test_contracts)}）")
-                except Exception as e:
-                    self.logger.warning(f"数据接口测试失败: {e}")
+                if hasattr(data_module, "EVENT_UNIFIED_DATA_MANAGER_READY"):
+                    EVENT_UNIFIED_DATA_MANAGER_READY = data_module.EVENT_UNIFIED_DATA_MANAGER_READY
+                    self.event_engine.register(
+                        EVENT_UNIFIED_DATA_MANAGER_READY, self._on_data_manager_ready
+                    )
+                    self.logger.info("✅ 已订阅UnifiedDataManager就绪事件")
+            except Exception as e:
+                self.logger.warning(f"订阅UnifiedDataManager事件失败: {e}")
 
-            if data_interface_ready:
-                # 数据接口就绪，立即完成初始化
-                self.initialization_state = "ready"
-                # 加载品种列表到叠加选择器
-                self._load_symbols_to_overlay_combo()
-                # 注册vnpy事件监听器（监听实时数据）
-                self._register_vnpy_events()
-            else:
-                # 数据接口未就绪，进入等待状态
-                self.logger.info("引擎已就绪，但数据接口未就绪，进入等待模式...")
-                self.initialization_state = "waiting"
+        # 等待UnifiedDataManager就绪事件（通过_on_data_manager_ready回调处理）
+        self.logger.info("等待UnifiedDataManager就绪事件...")
 
     def _initialize_engines(self):
-        """初始化VnPy引擎."""
+        """初始化VnPy引擎引用（不检查数据接口，等待UnifiedDataManager就绪后再检查）."""
         try:
             from backend.core.base import get_main_engine, get_event_engine
 
@@ -363,33 +352,17 @@ class ChartWizardEnhanced(BaseWidget):
             self.event_engine = get_event_engine()
 
             if not self.main_engine:
-                self.logger.warning("⚠️ MainEngine 不可用")
+                self.logger.debug("MainEngine 不可用（等待后端初始化）")
                 return
 
             if not self.event_engine:
-                self.logger.warning("⚠️ EventEngine 不可用")
+                self.logger.debug("EventEngine 不可用（等待后端初始化）")
                 return
 
-            # 🔧 关键修复：检查 MainEngine 是否已注入真实数据接口
-            if hasattr(self.main_engine, "get_all_contracts"):
-                try:
-                    # 测试调用，检查是否返回真实数据
-                    test_contracts = self.main_engine.get_all_contracts()
-                    if test_contracts and len(test_contracts) > 0:
-                        self.logger.info(
-                            f"✅ MainEngine 数据接口可用（品种数：{len(test_contracts)}）"
-                        )
-                    else:
-                        self.logger.warning(
-                            "⚠️ MainEngine.get_all_contracts() 返回空列表（可能是占位方法）"
-                        )
-                        self.logger.warning("  需要等待 UnifiedDataManager 注入完成")
-                except Exception as e:
-                    self.logger.warning(f"⚠️ 测试 MainEngine.get_all_contracts() 失败: {e}")
-            else:
-                self.logger.warning("⚠️ MainEngine 缺少 get_all_contracts 方法")
-
-            self.logger.info("✅ VnPy引擎初始化成功")
+            # 🔧 优化启动时序：不在此处检查数据接口
+            # 数据接口检查将在 UnifiedDataManager 就绪事件回调中执行
+            # 避免在注入前产生误导性警告
+            self.logger.debug("✅ VnPy引擎引用已获取，等待UnifiedDataManager注入")
 
         except Exception as e:
             self.logger.error(f"❌ 初始化VnPy引擎失败: {e}", exc_info=True)
@@ -407,12 +380,16 @@ class ChartWizardEnhanced(BaseWidget):
 
         # 检查引擎是否可用
         if not self.main_engine or not self.event_engine:
-            # 显示等待UI并启动自动重试
+            # 显示等待UI（等待UnifiedDataManager就绪事件）
             self._setup_waiting_ui(main_layout)
-            self._start_retry_timer()
             return
 
-        # 引擎已就绪，直接创建图表UI
+        # 引擎已就绪，但需要等待UnifiedDataManager就绪事件
+        if not self._data_ready:
+            self._setup_waiting_ui(main_layout)
+            return
+
+        # 引擎和数据都已就绪，直接创建图表UI
         self._setup_chart_ui(main_layout)
 
     def _setup_waiting_ui(self, layout: QVBoxLayout):
@@ -424,7 +401,7 @@ class ChartWizardEnhanced(BaseWidget):
         from PySide6.QtCore import Qt
 
         # 等待提示
-        self.waiting_label = QLabel("⏳ 等待后端初始化中...")
+        self.waiting_label = QLabel("⏳ 等待数据管理器就绪...")
         self.waiting_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.waiting_label.setStyleSheet("font-size: 16px; color: #2196F3; padding: 20px;")
         layout.addWidget(self.waiting_label)
@@ -446,9 +423,7 @@ class ChartWizardEnhanced(BaseWidget):
 
         # 提示信息
         info_label = QLabel(
-            f"正在初始化VnPy引擎...\n"
-            f"重试次数: {self.retry_count}/{self.max_retries}\n"
-            f"预计等待时间: 5-15秒"
+            "正在加载数据管理器...\n" "等待品种列表和缓存初始化\n" "预计等待时间: 3-10秒"
         )
         info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         info_label.setStyleSheet("color: #666; font-size: 12px; padding: 10px;")
@@ -1908,6 +1883,64 @@ class ChartWizardEnhanced(BaseWidget):
             self.logger.error(f"添加KDJ副图失败: {e}", exc_info=True)
             self.show_error(f"添加KDJ副图失败: {e}")
 
+    def _on_data_manager_ready(self, event):
+        """UnifiedDataManager就绪回调（事件驱动）."""
+        try:
+            contract_count = event.data.get("contract_count", 0)
+            mode = event.data.get("mode", "unknown")
+
+            self.logger.info(f"✅ UnifiedDataManager已就绪：{contract_count}个品种（{mode}模式）")
+
+            # 🔧 优化：验证数据接口是否已注入
+            if self.main_engine and hasattr(self.main_engine, "get_all_contracts"):
+                try:
+                    test_contracts = self.main_engine.get_all_contracts()
+                    if test_contracts and len(test_contracts) > 0:
+                        self.logger.info(
+                            f"✅ MainEngine 数据接口已验证（品种数：{len(test_contracts)}）"
+                        )
+                    else:
+                        self.logger.warning(
+                            "⚠️ MainEngine.get_all_contracts() 返回空列表（可能是占位方法）"
+                        )
+                except Exception as e:
+                    self.logger.warning(f"⚠️ 验证 MainEngine.get_all_contracts() 失败: {e}")
+
+            self._data_ready = True
+            self._data_mode = mode
+            self.initialization_state = "ready"
+
+            # 根据模式初始化UI
+            if mode == "offline" and contract_count == 0:
+                self.logger.warning("离线模式且无本地数据，功能受限")
+                # 可以在这里显示友好的空状态提示
+            else:
+                # 初始化数据相关组件
+                self._initialize_data_components()
+
+        except Exception as e:
+            self.logger.error(f"处理UnifiedDataManager就绪事件失败: {e}", exc_info=True)
+
+    def _initialize_data_components(self):
+        """初始化需要数据的UI组件（事件驱动调用）."""
+        if not self._data_ready:
+            return
+
+        try:
+            # 加载品种列表到叠加选择器
+            self._load_symbols_to_overlay_combo()
+            # 注册vnpy事件监听器（监听实时数据）
+            self._register_vnpy_events()
+
+            # 如果当前是等待UI，重建为完整图表UI
+            if self.waiting_label and self.waiting_label.isVisible():
+                self._rebuild_ui_with_chart()
+
+            self.logger.info(f"✅ 数据组件初始化完成（{self._data_mode}模式）")
+
+        except Exception as e:
+            self.logger.error(f"初始化数据组件失败: {e}", exc_info=True)
+
     def _register_vnpy_events(self):
         """注册vnpy事件监听器."""
         try:
@@ -1995,121 +2028,6 @@ class ChartWizardEnhanced(BaseWidget):
         except Exception:
             pass
 
-    def _start_retry_timer(self):
-        """启动自动重试定时器."""
-        if self.retry_timer:
-            return  # 已经启动
-
-        self.logger.info("启动引擎就绪检测定时器...")
-        self.retry_timer = QTimer(self)
-        self.retry_timer.timeout.connect(self._retry_initialize)
-        self.retry_timer.start(self.retry_interval)
-
-    def _retry_initialize(self):
-        """重试初始化（定时器回调）."""
-        self.retry_count += 1
-
-        # 重新获取引擎
-        from backend.core.base import get_main_engine, get_event_engine
-
-        self.main_engine = get_main_engine()
-        self.event_engine = get_event_engine()
-
-        # 更新等待UI的重试次数提示
-        if self.waiting_label:
-            self.waiting_label.setText(
-                f"⏳ 等待后端初始化中... ({self.retry_count}/{self.max_retries})"
-            )
-
-        # 检查引擎是否就绪
-        if self.main_engine and self.event_engine:
-            # 🔧 关键修复：同时检查数据接口是否真实可用
-            data_interface_ready = False
-
-            if hasattr(self.main_engine, "get_all_contracts"):
-                try:
-                    test_contracts = self.main_engine.get_all_contracts()
-                    if test_contracts and len(test_contracts) > 0:
-                        data_interface_ready = True
-                        self.logger.info(f"✅ 数据接口已就绪（品种数：{len(test_contracts)}）")
-                    else:
-                        self.logger.debug(
-                            f"等待数据接口... ({self.retry_count}/{self.max_retries})"
-                        )
-
-                        # 🔧 备选方案：如果后台注入失败，UI线程主动注入
-                        if self.retry_count >= 5:  # 重试5次后尝试主动注入
-                            from backend.core.base import get_china_stock_engine
-
-                            china_stock_engine = get_china_stock_engine()
-                            if china_stock_engine:
-                                udm = china_stock_engine.get_unified_data_manager()
-                                if udm and hasattr(udm, "get_all_contracts"):
-                                    # 主动注入
-                                    self.main_engine.get_all_contracts = udm.get_all_contracts
-                                    self.main_engine.load_bar_data = udm.load_bar_data
-                                    # 只在首次注入时warning，避免刷屏
-                                    if not self._inject_warning_shown:
-                                        self.logger.warning(
-                                            "⚠️ UI线程主动注入 UnifiedDataManager 方法（后续静默）"
-                                        )
-                                        self._inject_warning_shown = True
-                                    else:
-                                        self.logger.debug("UI线程主动注入 UnifiedDataManager 方法")
-
-                                    # 再次测试
-                                    test_contracts = self.main_engine.get_all_contracts()
-                                    if test_contracts and len(test_contracts) > 0:
-                                        data_interface_ready = True
-                                        self.logger.info(
-                                            f"✅ UI主动注入成功（品种数：{len(test_contracts)}）"
-                                        )
-                except Exception as e:
-                    self.logger.debug(f"数据接口测试失败: {e}")
-
-            # 只有引擎和数据接口都就绪才继续
-            if data_interface_ready:
-                self.logger.info(f"✅ 引擎和数据接口就绪！重试{self.retry_count}次后成功")
-
-                # 停止定时器
-                if self.retry_timer:
-                    self.retry_timer.stop()
-                    self.retry_timer = None
-
-                # 更新状态
-                self.initialization_state = "ready"
-
-                # 完成后续初始化
-                self._load_symbols_to_overlay_combo()
-                self._register_vnpy_events()
-
-                # 重建UI
-                self._rebuild_ui_with_chart()
-                return
-            else:
-                self.logger.debug("引擎就绪，但数据接口未就绪，继续等待...")
-                return
-
-        # 检查是否超时
-        if self.retry_count >= self.max_retries:
-            self.logger.error(f"❌ 引擎初始化超时（{self.max_retries}次重试失败）")
-
-            # 停止定时器
-            if self.retry_timer:
-                self.retry_timer.stop()
-                self.retry_timer = None
-
-            # 更新状态
-            self.initialization_state = "failed"
-
-            # 显示错误UI
-            if self.waiting_label:
-                self.waiting_label.setText("❌ 后端初始化超时")
-                self.waiting_label.setStyleSheet("font-size: 16px; color: #FF5722; padding: 20px;")
-
-            if self.waiting_progress:
-                self.waiting_progress.hide()
-
     def _rebuild_ui_with_chart(self):
         """重建UI为完整图表界面."""
         try:
@@ -2138,17 +2056,26 @@ class ChartWizardEnhanced(BaseWidget):
 
     def on_close(self):
         """关闭处理."""
-        # 停止重试定时器
-        if self.retry_timer:
-            self.retry_timer.stop()
-            self.retry_timer = None
-
         # 取消注册事件监听器
         try:
             if self.event_engine:
                 from vnpy.trader.event import EVENT_TICK
 
                 self.event_engine.unregister(EVENT_TICK, self._on_tick_event)
+
+                # 取消UnifiedDataManager就绪事件订阅
+                try:
+                    from backend.infrastructure.data_module_vnpy import data_module
+
+                    if hasattr(data_module, "EVENT_UNIFIED_DATA_MANAGER_READY"):
+                        EVENT_UNIFIED_DATA_MANAGER_READY = (
+                            data_module.EVENT_UNIFIED_DATA_MANAGER_READY
+                        )
+                        self.event_engine.unregister(
+                            EVENT_UNIFIED_DATA_MANAGER_READY, self._on_data_manager_ready
+                        )
+                except Exception:
+                    pass
         except Exception as e:
             self.logger.debug(f"取消注册事件失败: {e}")
 

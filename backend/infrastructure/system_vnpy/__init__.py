@@ -17,7 +17,7 @@
 - 进程分析: ProcessBottleneckAnalyzer（进程级瓶颈分析）
 - 业务采集: BusinessMetricsCollector（量化业务指标采集）
 - 自适应阈值: AdaptiveThresholdManager（统计学习+动态阈值）
-- 硬盘SMART: SmartMonitor（pySMART集成）+ WMISmartMonitor（WMI纯Python）
+- 硬盘SMART: SmartMonitor（WMI包装器，带告警）+ WMISmartMonitor（WMI纯Python）
 - 硬件监控: HardwareMonitorFactory（LibreHardwareMonitor + 降级）
 - 进程管理: ProcessManager, ServiceHealthChecker, ServiceRestarter
 - 诊断工具: LogAnalyzer, PerformanceAnalyzer, AutoFixer

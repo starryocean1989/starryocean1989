@@ -1281,40 +1281,42 @@ logger = logging.getLogger(__name__)
 
 
 # ServiceHealthChecker
+
+# ServiceHealthChecker
 class ServiceHealthChecker:
-    """Ã¥Â¢ÂÃ¥Â¼ÂºÃ§ÂÂÃ¦ÂÂÃ¥ÂÂ¡Ã¥ÂÂ¥Ã¥ÂºÂ·Ã¦Â£ÂÃ¦ÂÂ¥Ã¥ÂÂ¨ - Ã¦ÂÂ¯Ã¦ÂÂÃ¤Â¸ÂÃ¥ÂÂ¡Ã¦ÂÂÃ¦Â ÂÃ£ÂÂÃ¨ÂµÂÃ¦ÂºÂÃ¥ÂÂ Ã§ÂÂ¨Ã£ÂÂÃ¥Â¤ÂÃ©ÂÂ¨Ã¤Â¾ÂÃ¨ÂµÂÃ¦Â£ÂÃ¦ÂÂ¥."""
+    """增强的服务健康检查器 - 支持业务指标、资源占用、外部依赖检查."""
 
     def __init__(self):
-        """Ã¥ÂÂÃ¥Â§ÂÃ¥ÂÂÃ¦ÂÂÃ¥ÂÂ¡Ã¥ÂÂ¥Ã¥ÂºÂ·Ã¦Â£ÂÃ¦ÂÂ¥Ã¥ÂÂ¨."""
+        """初始化服务健康检查器."""
         self.logger = logging.getLogger(__name__)
-        self._monitoring_interval = 2  # Ã©Â»ÂÃ¨Â®Â¤2Ã§Â§ÂÃ¦ÂÂ¨Ã©ÂÂÃ©Â¢ÂÃ§ÂÂ
+        self._monitoring_interval = 2  # 默认2秒推送频率
         self._main_process = psutil.Process()
 
     def set_monitoring_interval(self, interval: int):
-        """Ã¨Â®Â¾Ã§Â½Â®Ã§ÂÂÃ¦ÂÂ§Ã¦ÂÂ¨Ã©ÂÂÃ©Â¢ÂÃ§ÂÂ.
+        """设置监控推送频率.
 
         Args:
-            interval: Ã¦ÂÂ¨Ã©ÂÂÃ©ÂÂ´Ã©ÂÂÃ¯Â¼ÂÃ§Â§ÂÃ¯Â¼ÂÃ¯Â¼ÂÃ¨ÂÂÃ¥ÂÂ´1-10
+            interval: 推送间隔（秒），范围1-10
         """
         self._monitoring_interval = max(1, min(10, interval))
-        self.logger.info("Ã§ÂÂÃ¦ÂÂ§Ã¦ÂÂ¨Ã©ÂÂÃ©Â¢ÂÃ§ÂÂÃ¥Â·Â²Ã¨Â®Â¾Ã§Â½Â®Ã¤Â¸Âº %d Ã§Â§Â", self._monitoring_interval)
+        self.logger.info("监控推送频率已设置为 %d 秒", self._monitoring_interval)
 
     def get_monitoring_interval(self) -> int:
-        """Ã¨ÂÂ·Ã¥ÂÂÃ¥Â½ÂÃ¥ÂÂÃ§ÂÂÃ¦ÂÂ§Ã¦ÂÂ¨Ã©ÂÂÃ©Â¢ÂÃ§ÂÂ."""
+        """获取当前监控推送频率."""
         return self._monitoring_interval
 
     def quick_check(self, service_name: str, service_manager) -> Dict[str, Any]:
-        """Ã¥Â¿Â«Ã©ÂÂÃ¦Â£ÂÃ¦ÂÂ¥Ã¦ÂÂÃ¥ÂÂ¡Ã¥ÂÂ¥Ã¥ÂºÂ·Ã§ÂÂ¶Ã¦ÂÂÃ¯Â¼ÂÃ¥Â¢ÂÃ¥Â¼ÂºÃ§ÂÂÃ¯Â¼Â.
+        """快速检查服务健康状态（增强版）.
 
         Args:
-            service_name: Ã¦ÂÂÃ¥ÂÂ¡Ã¥ÂÂÃ§Â§Â°
-            service_manager: Ã¦ÂÂÃ¥ÂÂ¡Ã§Â®Â¡Ã§ÂÂÃ¥ÂÂ¨Ã¥Â®ÂÃ¤Â¾Â
+            service_name: 服务名称
+            service_manager: 服务管理器实例
 
         Returns:
-            Dict: Ã¦Â£ÂÃ¦ÂÂ¥Ã§Â»ÂÃ¦ÂÂÃ¯Â¼ÂÃ¥ÂÂÃ¥ÂÂ«Ã¥ÂÂºÃ§Â¡ÂÃ¦ÂÂÃ¦Â ÂÃ£ÂÂÃ¤Â¸ÂÃ¥ÂÂ¡Ã¦ÂÂÃ¦Â ÂÃ£ÂÂÃ¨ÂµÂÃ¦ÂºÂÃ¥ÂÂ Ã§ÂÂ¨
+            Dict: 检查结果，包含基础指标、业务指标、资源占用
         """
         try:
-            # Ã¨ÂÂ·Ã¥ÂÂÃ¦ÂÂÃ¥ÂÂ¡Ã¥Â®ÂÃ¤Â¾Â
+            # 获取服务实例
             service = service_manager.get_service(service_name)
 
             if not service:
@@ -1323,7 +1325,7 @@ class ServiceHealthChecker:
                     "status": "not_found",
                     "online": False,
                     "response_time_ms": 0,
-                    "message": "Ã¦ÂÂÃ¥ÂÂ¡Ã¦ÂÂªÃ¦Â³Â¨Ã¥ÂÂ",
+                    "message": "服务未注册",
                     "call_count": 0,
                     "success_rate": 0.0,
                     "error_rate": 0.0,
@@ -1331,16 +1333,16 @@ class ServiceHealthChecker:
                     "thread_count": 0,
                 }
 
-            # Ã¦Â£ÂÃ¦ÂÂ¥Ã¦ÂÂÃ¥ÂÂ¡Ã¦ÂÂ¯Ã¥ÂÂ¦Ã¥ÂÂÃ¥Â§ÂÃ¥ÂÂ
+            # 检查服务是否初始化
             is_initialized = getattr(service, "is_initialized", False)
 
-            # Ã¦ÂµÂÃ©ÂÂÃ¥ÂÂÃ¥ÂºÂÃ¦ÂÂ¶Ã©ÂÂ´Ã¯Â¼ÂÃ©ÂÂÃ¨Â¿ÂÃ¨Â°ÂÃ§ÂÂ¨health_checkÃ¯Â¼Â
+            # 测量响应时间（通过调用health_check）
             start_time = time.time()
             try:
                 health_result = service.health_check() if hasattr(service, "health_check") else {}
                 response_time_ms = (time.time() - start_time) * 1000
 
-                # Ã¦ÂÂ¶Ã©ÂÂÃ¤Â¸ÂÃ¥ÂÂ¡Ã¦ÂÂÃ¦Â ÂÃ¯Â¼ÂÃ¤Â»ÂÃ¦ÂÂ§Ã¨ÂÂ½Ã¨Â·ÂÃ¨Â¸ÂªÃ¥ÂÂ¨Ã¨ÂÂ·Ã¥ÂÂÃ¯Â¼Â
+                # 收集业务指标（从性能跟踪器获取）
                 call_count = 0
                 success_rate = 100.0
                 error_rate = 0.0
@@ -1348,72 +1350,72 @@ class ServiceHealthChecker:
                 try:
                     from backend.services.system_manager_service import performance_tracker
 
-                    # Ã¥Â°ÂÃ¨Â¯ÂÃ¤Â»ÂÃ¦ÂÂ§Ã¨ÂÂ½Ã¨Â·ÂÃ¨Â¸ÂªÃ¥ÂÂ¨Ã¨ÂÂ·Ã¥ÂÂÃ¦ÂÂÃ¥ÂÂ¡Ã§ÂÂ¸Ã¥ÂÂ³Ã¦ÂÂÃ¦Â Â
+                    # 尝试从性能跟踪器获取服务相关指标
                     all_metrics = performance_tracker.get_all_metrics()
-                    # Ã¦ÂÂ¥Ã¦ÂÂ¾Ã¤Â¸ÂÃ¦ÂÂÃ¥ÂÂ¡Ã§ÂÂ¸Ã¥ÂÂ³Ã§ÂÂÃ¦ÂÂÃ¦Â Â
+                    # 查找与服务相关的指标
                     service_metrics = {}
                     for _category, metrics_list in all_metrics.items():
-                        # metrics_list Ã¦ÂÂ¯Ã¤Â¸ÂÃ¤Â¸ÂªÃ¥ÂÂÃ¨Â¡Â¨Ã¯Â¼ÂÃ¥ÂÂÃ¥ÂÂ«Ã¥Â¤ÂÃ¤Â¸ÂªÃ¦ÂÂÃ¦Â ÂÃ¥Â­ÂÃ¥ÂÂ¸
+                        # metrics_list 是一个列表，包含多个指标字典
                         for metric_dict in metrics_list:
-                            # Ã©ÂÂÃ¥ÂÂÃ¥Â­ÂÃ¥ÂÂ¸Ã¤Â¸Â­Ã§ÂÂÃ¦Â¯ÂÃ¤Â¸ÂªÃ¦ÂÂÃ¦Â Â
+                            # 遍历字典中的每个指标
                             for metric_name, metric_value in metric_dict.items():
                                 if service_name.replace("_service", "") in metric_name.lower():
-                                    # Ã¥Â­ÂÃ¥ÂÂ¨Ã¦ÂÂÃ¦Â ÂÃ¥ÂÂ¼Ã¯Â¼ÂÃ¦Â³Â¨Ã¦ÂÂÃ¯Â¼ÂÃ¨Â¿ÂÃ©ÂÂÃ§ÂÂ metric_value Ã¥ÂÂ¯Ã¨ÂÂ½Ã¦ÂÂ¯Ã¦ÂÂ°Ã¥ÂÂ¼Ã¯Â¼ÂÃ¤Â¸ÂÃ¦ÂÂ¯Ã¥Â­ÂÃ¥ÂÂ¸Ã¯Â¼Â
+                                    # 存储指标值（注意：这里的 metric_value 可能是数值，不是字典）
                                     if isinstance(metric_value, dict):
                                         service_metrics[metric_name] = metric_value
 
-                    # Ã¨ÂÂÃ¥ÂÂÃ¤Â¸ÂÃ¥ÂÂ¡Ã¦ÂÂÃ¦Â Â
+                    # 聚合业务指标
                     if service_metrics:
                         total_calls = sum(m.get("total_calls", 0) for m in service_metrics.values())
                         if total_calls > 0:
                             call_count = total_calls
-                            # Ã¨Â®Â¡Ã§Â®ÂÃ¥Â¹Â³Ã¥ÂÂÃ¦ÂÂÃ¥ÂÂÃ§ÂÂ
+                            # 计算平均成功率
                             success_rates = [
                                 m.get("success_rate", 100) for m in service_metrics.values()
                             ]
                             success_rate = sum(success_rates) / len(success_rates)
                             error_rate = 100.0 - success_rate
                 except Exception as e:
-                    self.logger.debug("Ã¨ÂÂ·Ã¥ÂÂÃ¤Â¸ÂÃ¥ÂÂ¡Ã¦ÂÂÃ¦Â ÂÃ¥Â¤Â±Ã¨Â´Â¥ %s: %s", service_name, e)
+                    self.logger.debug("获取业务指标失败 %s: %s", service_name, e)
 
-                # Ã¦ÂÂ¶Ã©ÂÂÃ¨ÂµÂÃ¦ÂºÂÃ¥ÂÂ Ã§ÂÂ¨Ã¦ÂÂÃ¦Â Â
+                # 收集资源占用指标
                 memory_mb = 0.0
                 thread_count = 0
 
                 try:
-                    # Ã¨ÂÂ·Ã¥ÂÂÃ¥Â½ÂÃ¥ÂÂÃ¨Â¿ÂÃ§Â¨ÂÃ§ÂÂÃ¥ÂÂÃ¥Â­ÂÃ¥ÂÂ Ã§ÂÂ¨
+                    # 获取当前进程的内存占用
                     memory_info = self._main_process.memory_info()
-                    memory_mb = memory_info.rss / (1024 * 1024)
+                    memory_mb = memory_info.rss / 1024 / 1024
 
-                    # Ã¨ÂÂ·Ã¥ÂÂÃ§ÂºÂ¿Ã§Â¨ÂÃ¦ÂÂ°
-                    thread_count = threading.active_count()
+                    # 获取线程数
+                    thread_count = self._main_process.num_threads()
                 except Exception as e:
-                    self.logger.debug("Ã¨ÂÂ·Ã¥ÂÂÃ¨ÂµÂÃ¦ÂºÂÃ¥ÂÂ Ã§ÂÂ¨Ã¥Â¤Â±Ã¨Â´Â¥ %s: %s", service_name, e)
+                    self.logger.debug("获取资源占用失败 %s: %s", service_name, e)
 
+                # 返回完整结果
                 return {
                     "service_name": service_name,
-                    "status": "online",
+                    "status": "healthy" if is_initialized else "initializing",
                     "online": True,
-                    "initialized": is_initialized,
-                    "response_time_ms": round(response_time_ms, 2),
-                    "health_details": health_result,
-                    "message": "Ã¦ÂÂÃ¥ÂÂ¡Ã¦Â­Â£Ã¥Â¸Â¸",
-                    # Ã¤Â¸ÂÃ¥ÂÂ¡Ã¦ÂÂÃ¦Â Â
+                    "response_time_ms": response_time_ms,
+                    "message": "服务正常",
+                    # 业务指标
                     "call_count": call_count,
-                    "success_rate": round(success_rate, 2),
-                    "error_rate": round(error_rate, 2),
-                    # Ã¨ÂµÂÃ¦ÂºÂÃ¥ÂÂ Ã§ÂÂ¨
-                    "memory_mb": round(memory_mb, 2),
+                    "success_rate": success_rate,
+                    "error_rate": error_rate,
+                    # 资源占用
+                    "memory_mb": memory_mb,
                     "thread_count": thread_count,
+                    **health_result,  # 合并health_check的其他结果
                 }
+
             except Exception as e:
-                response_time_ms = (time.time() - start_time) * 1000
                 return {
                     "service_name": service_name,
                     "status": "error",
                     "online": False,
-                    "response_time_ms": round(response_time_ms, 2),
-                    "message": f"Ã¥ÂÂ¥Ã¥ÂºÂ·Ã¦Â£ÂÃ¦ÂÂ¥Ã¥Â¤Â±Ã¨Â´Â¥: {str(e)}",
+                    "response_time_ms": (time.time() - start_time) * 1000,
+                    "message": f"健康检查失败: {str(e)}",
                     "call_count": 0,
                     "success_rate": 0.0,
                     "error_rate": 100.0,
@@ -1422,13 +1424,13 @@ class ServiceHealthChecker:
                 }
 
         except Exception as e:
-            self.logger.error("Ã¥Â¿Â«Ã©ÂÂÃ¦Â£ÂÃ¦ÂÂ¥Ã¦ÂÂÃ¥ÂÂ¡Ã¥Â¤Â±Ã¨Â´Â¥ %s: %s", service_name, e)
+            self.logger.error("快速检查服务失败 %s: %s", service_name, e)
             return {
                 "service_name": service_name,
                 "status": "error",
                 "online": False,
                 "response_time_ms": 0,
-                "message": f"Ã¦Â£ÂÃ¦ÂÂ¥Ã¥Â¤Â±Ã¨Â´Â¥: {str(e)}",
+                "message": f"检查失败: {str(e)}",
                 "call_count": 0,
                 "success_rate": 0.0,
                 "error_rate": 100.0,
@@ -1437,932 +1439,769 @@ class ServiceHealthChecker:
             }
 
     def check_response_time(self, service_name: str, service_manager) -> float:
-        """Ã¦Â£ÂÃ¦ÂÂ¥Ã¦ÂÂÃ¥ÂÂ¡Ã¥ÂÂÃ¥ÂºÂÃ¦ÂÂ¶Ã©ÂÂ´.
+        """检查服务响应时间.
 
         Args:
-            service_name: Ã¦ÂÂÃ¥ÂÂ¡Ã¥ÂÂÃ§Â§Â°
-            service_manager: Ã¦ÂÂÃ¥ÂÂ¡Ã§Â®Â¡Ã§ÂÂÃ¥ÂÂ¨Ã¥Â®ÂÃ¤Â¾Â
+            service_name: 服务名称
+            service_manager: 服务管理器实例
 
         Returns:
-            float: Ã¥ÂÂÃ¥ÂºÂÃ¦ÂÂ¶Ã©ÂÂ´Ã¯Â¼ÂÃ¦Â¯Â«Ã§Â§ÂÃ¯Â¼Â
+            float: 响应时间（毫秒）
         """
+        service = service_manager.get_service(service_name)
+        if not service:
+            return 0.0
+
+        start_time = time.time()
         try:
-            service = service_manager.get_service(service_name)
-            if not service:
-                return -1.0
-
-            start_time = time.time()
-
-            # Ã¨Â°ÂÃ§ÂÂ¨Ã¤Â¸ÂÃ¤Â¸ÂªÃ¨Â½Â»Ã©ÂÂÃ§ÂºÂ§Ã¦ÂÂ¹Ã¦Â³Â
+            # 调用一个轻量级方法
             if hasattr(service, "health_check"):
                 service.health_check()
-
-            response_time_ms = (time.time() - start_time) * 1000
-            return round(response_time_ms, 2)
-
+            response_time = (time.time() - start_time) * 1000
+            return response_time
         except Exception as e:
-            self.logger.error("Ã¦Â£ÂÃ¦ÂÂ¥Ã¥ÂÂÃ¥ÂºÂÃ¦ÂÂ¶Ã©ÂÂ´Ã¥Â¤Â±Ã¨Â´Â¥ %s: %s", service_name, e)
-            return -1.0
+            self.logger.error("检查响应时间失败 %s: %s", service_name, e)
+            return 0.0
 
     def check_external_dependencies(self) -> Dict[str, Any]:
-        """Ã¦Â£ÂÃ¦ÂÂ¥Ã¥Â¤ÂÃ©ÂÂ¨Ã¤Â¾ÂÃ¨ÂµÂÃ§ÂÂ¶Ã¦ÂÂ.
+        """检查外部依赖状态.
 
         Returns:
-            Dict: Ã¥Â¤ÂÃ©ÂÂ¨Ã¤Â¾ÂÃ¨ÂµÂÃ¦Â£ÂÃ¦ÂÂ¥Ã§Â»ÂÃ¦ÂÂ
+            Dict: 外部依赖检查结果
         """
         dependencies = {}
 
-        # 1. Ã¦Â£ÂÃ¦ÂÂ¥EventEngine
+        # 1. 检查EventEngine
         try:
-            from backend.core.base import get_event_engine
+            from vnpy.event import EventEngine
+            from backend.infrastructure.system_vnpy import event_engine
 
-            event_engine = get_event_engine()
-            if event_engine:
+            if event_engine and hasattr(event_engine, "_active"):
                 dependencies["event_engine"] = {
                     "name": "VnPy EventEngine",
-                    "status": "online",
+                    "status": "healthy",
                     "online": True,
-                    "message": "Ã¤ÂºÂÃ¤Â»Â¶Ã¥Â¼ÂÃ¦ÂÂÃ¨Â¿ÂÃ¨Â¡ÂÃ¦Â­Â£Ã¥Â¸Â¸",
+                    "message": "事件引擎运行正常",
                 }
             else:
                 dependencies["event_engine"] = {
                     "name": "VnPy EventEngine",
-                    "status": "offline",
+                    "status": "unhealthy",
                     "online": False,
-                    "message": "Ã¤ÂºÂÃ¤Â»Â¶Ã¥Â¼ÂÃ¦ÂÂÃ¦ÂÂªÃ¥ÂÂÃ¥Â§ÂÃ¥ÂÂ",
+                    "message": "事件引擎未初始化",
                 }
         except Exception as e:
             dependencies["event_engine"] = {
                 "name": "VnPy EventEngine",
                 "status": "error",
                 "online": False,
-                "message": f"Ã¦Â£ÂÃ¦ÂÂ¥Ã¥Â¤Â±Ã¨Â´Â¥: {str(e)}",
+                "message": f"检查失败: {str(e)}",
             }
 
-        # 2. Ã¦Â£ÂÃ¦ÂÂ¥Ã¦ÂÂ°Ã¦ÂÂ®Ã¥ÂºÂÃ¨Â¿ÂÃ¦ÂÂ¥
+        # 2. 检查数据库连接
         try:
+            import os
             import sqlite3
 
-            from backend.infrastructure.data_module_vnpy.data_module import config_manager
-
-            db_file = config_manager.get_db_file()
-            if db_file.exists():
-                # Ã¥Â°ÂÃ¨Â¯ÂÃ¨Â¿ÂÃ¦ÂÂ¥Ã¦ÂÂ°Ã¦ÂÂ®Ã¥ÂºÂ
-                conn = sqlite3.connect(str(db_file), timeout=1)
-                conn.close()
+            # 尝试连接数据库
+            db_path = os.path.join(os.path.expanduser("~"), ".vntrader", "database.db")
+            if os.path.exists(db_path):
                 dependencies["database"] = {
-                    "name": "SQLiteÃ¦ÂÂ°Ã¦ÂÂ®Ã¥ÂºÂ",
-                    "status": "online",
+                    "name": "SQLite数据库",
+                    "status": "healthy",
                     "online": True,
-                    "message": "Ã¦ÂÂ°Ã¦ÂÂ®Ã¥ÂºÂÃ¨Â¿ÂÃ¦ÂÂ¥Ã¦Â­Â£Ã¥Â¸Â¸",
+                    "message": "数据库连接正常",
                 }
             else:
                 dependencies["database"] = {
-                    "name": "SQLiteÃ¦ÂÂ°Ã¦ÂÂ®Ã¥ÂºÂ",
-                    "status": "offline",
+                    "name": "SQLite数据库",
+                    "status": "warning",
                     "online": False,
-                    "message": "Ã¦ÂÂ°Ã¦ÂÂ®Ã¥ÂºÂÃ¦ÂÂÃ¤Â»Â¶Ã¤Â¸ÂÃ¥Â­ÂÃ¥ÂÂ¨",
+                    "message": "数据库文件不存在",
                 }
         except Exception as e:
             dependencies["database"] = {
-                "name": "SQLiteÃ¦ÂÂ°Ã¦ÂÂ®Ã¥ÂºÂ",
+                "name": "SQLite数据库",
                 "status": "error",
                 "online": False,
-                "message": f"Ã¨Â¿ÂÃ¦ÂÂ¥Ã¥Â¤Â±Ã¨Â´Â¥: {str(e)}",
+                "message": f"连接失败: {str(e)}",
             }
 
         return dependencies
 
     def check_all_services(self, service_manager) -> Dict[str, Any]:
-        """Ã¦Â£ÂÃ¦ÂÂ¥Ã¦ÂÂÃ¦ÂÂÃ¦Â³Â¨Ã¥ÂÂÃ§ÂÂÃ¦ÂÂÃ¥ÂÂ¡Ã¯Â¼ÂÃ¥Â¢ÂÃ¥Â¼ÂºÃ§ÂÂ - Ã¥ÂÂÃ¥ÂÂ«Ã¥Â¤ÂÃ©ÂÂ¨Ã¤Â¾ÂÃ¨ÂµÂÃ¯Â¼Â.
+        """检查所有注册的服务（增强版 - 包含外部依赖）.
 
         Args:
-            service_manager: Ã¦ÂÂÃ¥ÂÂ¡Ã§Â®Â¡Ã§ÂÂÃ¥ÂÂ¨Ã¥Â®ÂÃ¤Â¾Â
+            service_manager: 服务管理器实例
 
         Returns:
-            Dict: Ã¦ÂÂÃ¦ÂÂÃ¦ÂÂÃ¥ÂÂ¡Ã§ÂÂÃ¦Â£ÂÃ¦ÂÂ¥Ã§Â»ÂÃ¦ÂÂÃ¯Â¼ÂÃ¥ÂÂÃ¥ÂÂ«Ã¥Â¤ÂÃ©ÂÂ¨Ã¤Â¾ÂÃ¨ÂµÂÃ§ÂÂ¶Ã¦ÂÂ
+            Dict: 所有服务的检查结果，包含外部依赖状态
         """
+        all_results = {}
         try:
-            service_status = service_manager.get_service_status()
-            results = []
+            service_names = service_manager.list_services()
 
-            online_count = 0
-            total_response_time = 0
+            for service_name in service_names:
+                result = self.quick_check(service_name, service_manager)
+                all_results[service_name] = result
 
-            for service_name, _status in service_status.items():
-                check_result = self.quick_check(service_name, service_manager)
-                results.append(check_result)
+            # 检查外部依赖
+            external_deps = self.check_external_dependencies()
 
-                if check_result["online"]:
-                    online_count += 1
-                    total_response_time += check_result["response_time_ms"]
+            # 计算外部依赖健康度
+            dep_health_count = sum(1 for dep in external_deps.values() if dep["status"] == "healthy")
+            dep_total = len(external_deps)
+            dep_score = (dep_health_count / dep_total * 100) if dep_total > 0 else 100
 
-            total_count = len(results)
-            health_score = (online_count / total_count * 100) if total_count > 0 else 0
-            avg_response_time = (total_response_time / online_count) if online_count > 0 else 0
+            # 综合健康评分（服务权重70%，依赖权重30%）
+            service_health_count = sum(1 for r in all_results.values() if r["status"] == "healthy")
+            service_total = len(all_results)
+            service_score = (service_health_count / service_total * 100) if service_total > 0 else 100
 
-            # Ã¦Â£ÂÃ¦ÂÂ¥Ã¥Â¤ÂÃ©ÂÂ¨Ã¤Â¾ÂÃ¨ÂµÂ
-            external_dependencies = self.check_external_dependencies()
-
-            # Ã¨Â®Â¡Ã§Â®ÂÃ¥Â¤ÂÃ©ÂÂ¨Ã¤Â¾ÂÃ¨ÂµÂÃ¥ÂÂ¥Ã¥ÂºÂ·Ã¥ÂºÂ¦
-            dep_online = sum(
-                1 for dep in external_dependencies.values() if dep.get("online") is True
-            )
-            dep_total = len(external_dependencies)
-            dep_health_score = (dep_online / dep_total * 100) if dep_total > 0 else 0
-
-            # Ã§Â»Â¼Ã¥ÂÂÃ¥ÂÂ¥Ã¥ÂºÂ·Ã¨Â¯ÂÃ¥ÂÂÃ¯Â¼ÂÃ¦ÂÂÃ¥ÂÂ¡Ã¦ÂÂÃ©ÂÂ70%Ã¯Â¼ÂÃ¤Â¾ÂÃ¨ÂµÂÃ¦ÂÂÃ©ÂÂ30%Ã¯Â¼Â
-            overall_health_score = health_score * 0.7 + dep_health_score * 0.3
+            overall_score = service_score * 0.7 + dep_score * 0.3
 
             return {
-                "success": True,
-                "total_services": total_count,
-                "online_services": online_count,
-                "health_score": round(overall_health_score, 1),
-                "service_health_score": round(health_score, 1),
-                "dependency_health_score": round(dep_health_score, 1),
-                "avg_response_time_ms": round(avg_response_time, 2),
-                "services": results,
-                "external_dependencies": external_dependencies,
+                "services": all_results,
+                "external_dependencies": external_deps,
+                "summary": {
+                    "total_services": service_total,
+                    "healthy_services": service_health_count,
+                    "service_health_percentage": service_score,
+                    "dependency_health_percentage": dep_score,
+                    "overall_health_score": overall_score,
+                },
             }
-
         except Exception as e:
-            self.logger.error("Ã¦Â£ÂÃ¦ÂÂ¥Ã¦ÂÂÃ¦ÂÂÃ¦ÂÂÃ¥ÂÂ¡Ã¥Â¤Â±Ã¨Â´Â¥: %s", e)
+            self.logger.error("检查所有服务失败: %s", e)
             return {
-                "success": False,
-                "message": f"Ã¦Â£ÂÃ¦ÂÂ¥Ã¥Â¤Â±Ã¨Â´Â¥: {str(e)}",
-                "services": [],
+                "services": all_results,
                 "external_dependencies": {},
+                "summary": {},
+                "message": f"检查失败: {str(e)}",
             }
-
-
 
 
 # ServiceRestarter
 class ServiceRestarter:
-    """Ã¦ÂÂÃ¥ÂÂ¡Ã©ÂÂÃ¥ÂÂ¯Ã§Â®Â¡Ã§ÂÂÃ¥ÂÂ¨."""
+    """服务重启管理器."""
 
     def __init__(self):
-        """Ã¥ÂÂÃ¥Â§ÂÃ¥ÂÂÃ¦ÂÂÃ¥ÂÂ¡Ã©ÂÂÃ¥ÂÂ¯Ã§Â®Â¡Ã§ÂÂÃ¥ÂÂ¨."""
+        """初始化服务重启管理器."""
         self.logger = logging.getLogger(__name__)
 
     def restart_service(self, service_name: str, service_manager) -> Dict[str, Any]:
-        """Ã©ÂÂÃ¥ÂÂ¯Ã¦ÂÂÃ¥Â®ÂÃ¦ÂÂÃ¥ÂÂ¡.
+        """重启指定服务.
 
         Args:
-            service_name: Ã¦ÂÂÃ¥ÂÂ¡Ã¥ÂÂÃ§Â§Â°
-            service_manager: Ã¦ÂÂÃ¥ÂÂ¡Ã§Â®Â¡Ã§ÂÂÃ¥ÂÂ¨Ã¥Â®ÂÃ¤Â¾Â
+            service_name: 服务名称
+            service_manager: 服务管理器实例
 
         Returns:
-            Dict: Ã©ÂÂÃ¥ÂÂ¯Ã§Â»ÂÃ¦ÂÂ
+            Dict: 重启结果
         """
         try:
-            self.logger.info("Ã¥Â¼ÂÃ¥Â§ÂÃ©ÂÂÃ¥ÂÂ¯Ã¦ÂÂÃ¥ÂÂ¡: %s", service_name)
+            self.logger.info("开始重启服务: %s", service_name)
 
-            # Ã¨ÂÂ·Ã¥ÂÂÃ¦ÂÂÃ¥ÂÂ¡Ã¥Â®ÂÃ¤Â¾Â
+            # 获取服务实例
             service = service_manager.get_service(service_name)
 
             if not service:
                 return {
                     "success": False,
-                    "message": f"Ã¦ÂÂÃ¥ÂÂ¡ {service_name} Ã¦ÂÂªÃ¦Â³Â¨Ã¥ÂÂ",
+                    "message": f"服务 {service_name} 未注册",
                 }
 
-            # Ã¥ÂÂ³Ã©ÂÂ­Ã¦ÂÂÃ¥ÂÂ¡
+            # 关闭服务
             if hasattr(service, "shutdown"):
                 try:
                     service.shutdown()
-                    self.logger.info("Ã¦ÂÂÃ¥ÂÂ¡ %s Ã¥Â·Â²Ã¥ÂÂ³Ã©ÂÂ­", service_name)
+                    self.logger.info("服务 %s 已关闭", service_name)
                 except Exception as e:
-                    self.logger.warning("Ã¥ÂÂ³Ã©ÂÂ­Ã¦ÂÂÃ¥ÂÂ¡Ã¥Â¤Â±Ã¨Â´Â¥ %s: %s", service_name, e)
+                    self.logger.warning("关闭服务失败 %s: %s", service_name, e)
 
-            # Ã§Â­ÂÃ¥Â¾ÂÃ¤Â¸ÂÃ¥Â°ÂÃ¦Â®ÂµÃ¦ÂÂ¶Ã©ÂÂ´
+            # 等待一小段时间
             time.sleep(0.5)
 
-            # Ã©ÂÂÃ¦ÂÂ°Ã¥ÂÂÃ¥Â§ÂÃ¥ÂÂÃ¦ÂÂÃ¥ÂÂ¡
+            # 重新初始化服务
             if hasattr(service, "initialize"):
                 try:
                     success = service.initialize()
                     if success:
-                        self.logger.info("Ã¦ÂÂÃ¥ÂÂ¡ %s Ã¥Â·Â²Ã©ÂÂÃ¦ÂÂ°Ã¥ÂÂÃ¥Â§ÂÃ¥ÂÂ", service_name)
+                        self.logger.info("服务 %s 已重新初始化", service_name)
                         return {
                             "success": True,
-                            "message": f"Ã¦ÂÂÃ¥ÂÂ¡ {service_name} Ã©ÂÂÃ¥ÂÂ¯Ã¦ÂÂÃ¥ÂÂ",
+                            "message": f"服务 {service_name} 重启成功",
                         }
                     else:
                         return {
                             "success": False,
-                            "message": f"Ã¦ÂÂÃ¥ÂÂ¡ {service_name} Ã¥ÂÂÃ¥Â§ÂÃ¥ÂÂÃ¥Â¤Â±Ã¨Â´Â¥",
+                            "message": f"服务 {service_name} 初始化失败",
                         }
                 except Exception as e:
-                    self.logger.error("Ã¥ÂÂÃ¥Â§ÂÃ¥ÂÂÃ¦ÂÂÃ¥ÂÂ¡Ã¥Â¤Â±Ã¨Â´Â¥ %s: %s", service_name, e)
+                    self.logger.error("初始化服务失败 %s: %s", service_name, e)
                     return {
                         "success": False,
-                        "message": f"Ã¥ÂÂÃ¥Â§ÂÃ¥ÂÂÃ¥Â¤Â±Ã¨Â´Â¥: {str(e)}",
+                        "message": f"初始化失败: {str(e)}",
                     }
             else:
                 return {
                     "success": False,
-                    "message": f"Ã¦ÂÂÃ¥ÂÂ¡ {service_name} Ã¤Â¸ÂÃ¦ÂÂ¯Ã¦ÂÂÃ©ÂÂÃ¥ÂÂ¯",
+                    "message": f"服务 {service_name} 不支持重启",
                 }
 
         except Exception as e:
-            self.logger.error("Ã©ÂÂÃ¥ÂÂ¯Ã¦ÂÂÃ¥ÂÂ¡Ã¥Â¤Â±Ã¨Â´Â¥ %s: %s", service_name, e)
+            self.logger.error("重启服务失败 %s: %s", service_name, e)
             return {
                 "success": False,
-                "message": f"Ã©ÂÂÃ¥ÂÂ¯Ã¥Â¤Â±Ã¨Â´Â¥: {str(e)}",
+                "message": f"重启失败: {str(e)}",
             }
 
-    def graceful_restart(
-        self, service_name: str, service_manager, timeout: int = 30
-    ) -> Dict[str, Any]:
-        """Ã¤Â¼ÂÃ©ÂÂÃ¥ÂÂ°Ã©ÂÂÃ¥ÂÂ¯Ã¦ÂÂÃ¥ÂÂ¡Ã¯Â¼ÂÃ¥Â¸Â¦Ã¨Â¶ÂÃ¦ÂÂ¶Ã¦ÂÂ§Ã¥ÂÂ¶Ã¯Â¼Â.
+    def graceful_restart(self, service_name: str, service_manager, timeout: int = 30) -> Dict[str, Any]:
+        """优雅地重启服务（带超时控制）.
 
         Args:
-            service_name: Ã¦ÂÂÃ¥ÂÂ¡Ã¥ÂÂÃ§Â§Â°
-            service_manager: Ã¦ÂÂÃ¥ÂÂ¡Ã§Â®Â¡Ã§ÂÂÃ¥ÂÂ¨Ã¥Â®ÂÃ¤Â¾Â
-            timeout: Ã¨Â¶ÂÃ¦ÂÂ¶Ã¦ÂÂ¶Ã©ÂÂ´Ã¯Â¼ÂÃ§Â§ÂÃ¯Â¼Â
+            service_name: 服务名称
+            service_manager: 服务管理器实例
+            timeout: 超时时间（秒）
 
         Returns:
-            Dict: Ã©ÂÂÃ¥ÂÂ¯Ã§Â»ÂÃ¦ÂÂ
+            Dict: 重启结果
         """
         try:
-            self.logger.info("Ã¥Â¼ÂÃ¥Â§ÂÃ¤Â¼ÂÃ©ÂÂÃ©ÂÂÃ¥ÂÂ¯Ã¦ÂÂÃ¥ÂÂ¡: %s (timeout=%ds)", service_name, timeout)
-
+            self.logger.info("开始优雅重启服务: %s (timeout=%ds)", service_name, timeout)
             start_time = time.time()
 
-            # Ã¨ÂÂ·Ã¥ÂÂÃ¦ÂÂÃ¥ÂÂ¡Ã¥Â®ÂÃ¤Â¾Â
+            # 获取服务实例
             service = service_manager.get_service(service_name)
 
             if not service:
                 return {
                     "success": False,
-                    "message": f"Ã¦ÂÂÃ¥ÂÂ¡ {service_name} Ã¦ÂÂªÃ¦Â³Â¨Ã¥ÂÂ",
+                    "message": f"服务 {service_name} 未注册",
                 }
 
-            # Ã¤Â¼ÂÃ©ÂÂÃ¥ÂÂ³Ã©ÂÂ­
-            if hasattr(service, "shutdown"):
+            # 优雅关闭
+            if hasattr(service, "graceful_shutdown"):
                 try:
-                    service.shutdown()
-                    self.logger.info("Ã¦ÂÂÃ¥ÂÂ¡ %s Ã¥Â·Â²Ã¤Â¼ÂÃ©ÂÂÃ¥ÂÂ³Ã©ÂÂ­", service_name)
+                    service.graceful_shutdown()
+                    self.logger.info("服务 %s 已优雅关闭", service_name)
                 except Exception as e:
-                    self.logger.warning("Ã¥ÂÂ³Ã©ÂÂ­Ã¦ÂÂÃ¥ÂÂ¡Ã¥Â¤Â±Ã¨Â´Â¥ %s: %s", service_name, e)
-                    # Ã§Â»Â§Ã§Â»Â­Ã¦ÂÂ§Ã¨Â¡ÂÃ¯Â¼ÂÃ¥Â°ÂÃ¨Â¯ÂÃ©ÂÂÃ¦ÂÂ°Ã¥ÂÂÃ¥Â§ÂÃ¥ÂÂ
+                    self.logger.warning("关闭服务失败 %s: %s", service_name, e)
+                    # 继续执行，尝试重新初始化
 
-            # Ã¦Â£ÂÃ¦ÂÂ¥Ã¦ÂÂ¯Ã¥ÂÂ¦Ã¨Â¶ÂÃ¦ÂÂ¶
+            # 检查是否超时
             elapsed = time.time() - start_time
             if elapsed > timeout:
                 return {
                     "success": False,
-                    "message": f"Ã¥ÂÂ³Ã©ÂÂ­Ã¦ÂÂÃ¥ÂÂ¡Ã¨Â¶ÂÃ¦ÂÂ¶ ({elapsed:.1f}s)",
+                    "message": f"关闭服务超时 ({elapsed:.1f}s)",
                 }
 
-            # Ã§Â­ÂÃ¥Â¾ÂÃ¨ÂµÂÃ¦ÂºÂÃ©ÂÂÃ¦ÂÂ¾
-            time.sleep(1)
+            # 等待资源释放
+            time.sleep(1.0)
 
-            # Ã©ÂÂÃ¦ÂÂ°Ã¥ÂÂÃ¥Â§ÂÃ¥ÂÂ
+            # 重新初始化
             if hasattr(service, "initialize"):
                 try:
                     success = service.initialize()
-
                     elapsed = time.time() - start_time
-
                     if success:
-                        self.logger.info(
-                            "Ã¦ÂÂÃ¥ÂÂ¡ %s Ã¤Â¼ÂÃ©ÂÂÃ©ÂÂÃ¥ÂÂ¯Ã¦ÂÂÃ¥ÂÂ (Ã¨ÂÂÃ¦ÂÂ¶: %.1fs)",
-                            service_name,
-                            elapsed,
-                        )
+                        self.logger.info("服务 %s 优雅重启成功 (耗时: %.1fs)", service_name, elapsed)
                         return {
                             "success": True,
-                            "message": f"Ã¦ÂÂÃ¥ÂÂ¡ {service_name} Ã¤Â¼ÂÃ©ÂÂÃ©ÂÂÃ¥ÂÂ¯Ã¦ÂÂÃ¥ÂÂ",
-                            "elapsed_time": round(elapsed, 1),
+                            "elapsed_time": elapsed,
+                            "message": f"服务 {service_name} 优雅重启成功",
                         }
                     else:
                         return {
                             "success": False,
-                            "message": f"Ã¦ÂÂÃ¥ÂÂ¡ {service_name} Ã¥ÂÂÃ¥Â§ÂÃ¥ÂÂÃ¥Â¤Â±Ã¨Â´Â¥",
-                            "elapsed_time": round(elapsed, 1),
+                            "message": f"服务 {service_name} 初始化失败",
                         }
-
                 except Exception as e:
-                    elapsed = time.time() - start_time
-                    self.logger.error("Ã¥ÂÂÃ¥Â§ÂÃ¥ÂÂÃ¦ÂÂÃ¥ÂÂ¡Ã¥Â¤Â±Ã¨Â´Â¥ %s: %s", service_name, e)
+                    self.logger.error("初始化服务失败 %s: %s", service_name, e)
                     return {
                         "success": False,
-                        "message": f"Ã¥ÂÂÃ¥Â§ÂÃ¥ÂÂÃ¥Â¤Â±Ã¨Â´Â¥: {str(e)}",
-                        "elapsed_time": round(elapsed, 1),
+                        "message": f"初始化失败: {str(e)}",
                     }
             else:
                 return {
                     "success": False,
-                    "message": f"Ã¦ÂÂÃ¥ÂÂ¡ {service_name} Ã¤Â¸ÂÃ¦ÂÂ¯Ã¦ÂÂÃ©ÂÂÃ¥ÂÂ¯",
+                    "message": f"服务 {service_name} 不支持重启",
                 }
 
         except Exception as e:
-            elapsed = time.time() - start_time
-            self.logger.error("Ã¤Â¼ÂÃ©ÂÂÃ©ÂÂÃ¥ÂÂ¯Ã¦ÂÂÃ¥ÂÂ¡Ã¥Â¤Â±Ã¨Â´Â¥ %s: %s", service_name, e)
+            self.logger.error("优雅重启服务失败 %s: %s", service_name, e)
             return {
                 "success": False,
-                "message": f"Ã©ÂÂÃ¥ÂÂ¯Ã¥Â¤Â±Ã¨Â´Â¥: {str(e)}",
-                "elapsed_time": round(elapsed, 1),
+                "message": f"重启失败: {str(e)}",
             }
-
-
 
 
 # ProcessManager
 class ProcessManager:
-    """Ã¨Â¿ÂÃ§Â¨ÂÃ§Â®Â¡Ã§ÂÂÃ¥ÂÂ¨ - Ã¦ÂÂÃ¤Â¾ÂÃ¨Â¿ÂÃ§Â¨ÂÃ§ÂÂÃ¥ÂÂ½Ã¥ÂÂ¨Ã¦ÂÂÃ§Â®Â¡Ã§ÂÂÃ¥ÂÂÃ¨ÂÂ½."""
+    """进程管理器 - 提供进程生命周期管理功能."""
 
     def __init__(self):
-        """Ã¥ÂÂÃ¥Â§ÂÃ¥ÂÂÃ¨Â¿ÂÃ§Â¨ÂÃ§Â®Â¡Ã§ÂÂÃ¥ÂÂ¨."""
+        """初始化进程管理器."""
         self.logger = logging.getLogger(__name__)
 
     def get_process_info(self, pid: int) -> Dict[str, Any]:
-        """Ã¨ÂÂ·Ã¥ÂÂÃ¨Â¿ÂÃ§Â¨ÂÃ¤Â¿Â¡Ã¦ÂÂ¯.
+        """获取进程信息.
 
         Args:
-            pid: Ã¨Â¿ÂÃ§Â¨ÂID
+            pid: 进程ID
 
         Returns:
-            Dict: Ã¨Â¿ÂÃ§Â¨ÂÃ¤Â¿Â¡Ã¦ÂÂ¯
+            Dict: 进程信息
         """
         try:
-            import psutil
-
             process = psutil.Process(pid)
             return {
                 "pid": pid,
                 "name": process.name(),
                 "status": process.status(),
                 "cpu_percent": process.cpu_percent(),
-                "memory_percent": process.memory_percent(),
+                "memory_mb": process.memory_info().rss / 1024 / 1024,
                 "create_time": process.create_time(),
             }
+        except psutil.NoSuchProcess:
+            return {"pid": pid, "error": "进程不存在"}
         except Exception as e:
-            self.logger.error("Ã¨ÂÂ·Ã¥ÂÂÃ¨Â¿ÂÃ§Â¨ÂÃ¤Â¿Â¡Ã¦ÂÂ¯Ã¥Â¤Â±Ã¨Â´Â¥ (pid=%d): %s", pid, e)
-            return {"pid": pid, "status": "unknown", "error": str(e)}
+            self.logger.error("获取进程信息失败 %d: %s", pid, e)
+            return {"pid": pid, "error": str(e)}
 
-    def manage_process_lifecycle(self, action: str, params: Dict[str, Any]) -> bool:
-        """Ã§Â®Â¡Ã§ÂÂÃ¨Â¿ÂÃ§Â¨ÂÃ§ÂÂÃ¥ÂÂ½Ã¥ÂÂ¨Ã¦ÂÂ.
+    def kill_process(self, pid: int, force: bool = False) -> bool:
+        """终止进程.
 
         Args:
-            action: Ã¦ÂÂÃ¤Â½ÂÃ§Â±Â»Ã¥ÂÂ (start, stop, restart, status)
-            params: Ã¨Â¿ÂÃ§Â¨ÂÃ©ÂÂÃ§Â½Â®Ã¥ÂÂÃ¦ÂÂ°
+            pid: 进程ID
+            force: 是否强制终止
 
         Returns:
-            bool: Ã¦ÂÂÃ¤Â½ÂÃ¦ÂÂ¯Ã¥ÂÂ¦Ã¦ÂÂÃ¥ÂÂ
-
-        Note:
-            Ã¨Â¿ÂÃ¦ÂÂ¯Ã¤Â¸ÂÃ¤Â¸ÂªÃ¦Â¡ÂÃ¦ÂÂ¶Ã¦ÂÂ¹Ã¦Â³ÂÃ¯Â¼ÂÃ©ÂÂÃ¨Â¦ÂÃ¦Â Â¹Ã¦ÂÂ®Ã¥ÂÂ·Ã¤Â½ÂÃ©ÂÂÃ¦Â±ÂÃ¥Â®ÂÃ§ÂÂ°Ã¥Â®ÂÃ©ÂÂÃ§ÂÂÃ¨Â¿ÂÃ§Â¨ÂÃ§Â®Â¡Ã§ÂÂÃ©ÂÂ»Ã¨Â¾Â
+            bool: 是否成功
         """
-        self.logger.info("Ã¨Â¿ÂÃ§Â¨ÂÃ§ÂÂÃ¥ÂÂ½Ã¥ÂÂ¨Ã¦ÂÂÃ§Â®Â¡Ã§ÂÂÃ¦ÂÂÃ¤Â½Â: %s, Ã¥ÂÂÃ¦ÂÂ°: %s", action, params)
-        raise NotImplementedError("Ã¨Â¿ÂÃ§Â¨ÂÃ§ÂÂÃ¥ÂÂ½Ã¥ÂÂ¨Ã¦ÂÂÃ§Â®Â¡Ã§ÂÂÃ©ÂÂÃ¨Â¦ÂÃ¥Â®ÂÃ§ÂÂ°Ã¥Â®ÂÃ©ÂÂÃ§ÂÂÃ¨Â¿ÂÃ§Â¨ÂÃ¦ÂÂ§Ã¥ÂÂ¶Ã©ÂÂ»Ã¨Â¾Â")
+        try:
+            process = psutil.Process(pid)
+            if force:
+                process.kill()
+                self.logger.info("强制终止进程 %d", pid)
+            else:
+                process.terminate()
+                self.logger.info("终止进程 %d", pid)
+            return True
+        except psutil.NoSuchProcess:
+            self.logger.warning("进程 %d 不存在", pid)
+            return False
+        except Exception as e:
+            self.logger.error("终止进程失败 %d: %s", pid, e)
+            return False
 
 
+# NetworkTester (简化版，保留接口)
+class NetworkTester:
+    """网络测试器."""
+
+    def __init__(self):
+        self.logger = logging.getLogger(__name__)
+
+    def test_connectivity(self, host: str, port: int, timeout: int = 5) -> Dict[str, Any]:
+        """测试网络连通性."""
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                return {"success": True, "host": host, "port": port}
+        except Exception as e:
+            return {"success": False, "host": host, "port": port, "error": str(e)}
+
+
+# PortScanner (简化版，保留接口)
+class PortScanner:
+    """端口扫描器."""
+
+    def __init__(self):
+        self.logger = logging.getLogger(__name__)
+
+    def scan_ports(self, host: str, ports: List[int], timeout: int = 2) -> Dict[int, bool]:
+        """扫描端口."""
+        results = {}
+        for port in ports:
+            try:
+                with socket.create_connection((host, port), timeout=timeout):
+                    results[port] = True
+            except:
+                results[port] = False
+        return results
 
 
 # LogAnalyzer
 class LogAnalyzer:
-    """日志分析器 - 智能分析错误模式."""
+    """日志分析器 - 分析系统日志，提取错误和警告."""
 
     def __init__(self):
         """初始化日志分析器."""
         self.logger = logging.getLogger(__name__)
 
-        # 常见错误模式
-        self.error_patterns = {
-            "module_not_found": r"ModuleNotFoundError|ImportError",
-            "connection_error": r"ConnectionError|ConnectionTimeout|ConnectionRefusedError",
-            "timeout": r"TimeoutError|timeout",
-            "permission": r"PermissionError|AccessDenied",
-            "file_not_found": r"FileNotFoundError",
-            "type_error": r"TypeError",
-            "value_error": r"ValueError",
-            "key_error": r"KeyError",
-            "attribute_error": r"AttributeError",
-            "memory_error": r"MemoryError|Out of memory",
-        }
-
-    def analyze_error_logs(self, log_file: str, hours: int = 24) -> Dict[str, Any]:
-        """分析错误日志.
+    def analyze_log_file(self, log_file: str, max_lines: int = 1000) -> Dict[str, Any]:
+        """分析日志文件.
 
         Args:
             log_file: 日志文件路径
-            hours: 分析最近多少小时的日志
+            max_lines: 最大分析行数
 
         Returns:
             Dict: 分析结果
         """
         try:
-            log_path = Path(log_file)
-            if not log_path.exists():
-                return {
-                    "success": False,
-                    "message": f"日志文件不存在: {log_file}",
-                }
+            if not os.path.exists(log_file):
+                return {"error": "日志文件不存在"}
 
-            # 读取日志
-            with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
-                logs = f.readlines()
+            errors = []
+            warnings = []
+            line_count = 0
 
-            # 时间过滤
-            cutoff_time = datetime.now() - timedelta(hours=hours)
-            filtered_logs = self._filter_by_time(logs, cutoff_time)
+            with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
+                for line in f:
+                    line_count += 1
+                    if line_count > max_lines:
+                        break
 
-            # 识别错误模式
-            error_patterns = self.identify_error_patterns(filtered_logs)
-
-            # 统计错误频率
-            error_counts = Counter([e["type"] for e in error_patterns])
-
-            # 提取TOP错误
-            top_errors = error_counts.most_common(10)
+                    line_lower = line.lower()
+                    if 'error' in line_lower:
+                        errors.append(line.strip())
+                    elif 'warning' in line_lower:
+                        warnings.append(line.strip())
 
             return {
-                "success": True,
-                "total_errors": len(error_patterns),
-                "error_types": len(error_counts),
-                "top_errors": [
-                    {"type": error_type, "count": count} for error_type, count in top_errors
-                ],
-                "error_patterns": error_patterns[:50],  # 最多返回50条
-                "analysis_time": datetime.now().isoformat(),
+                "file": log_file,
+                "total_lines": line_count,
+                "error_count": len(errors),
+                "warning_count": len(warnings),
+                "errors": errors[-10:],
+                "warnings": warnings[-10:],
             }
-
         except Exception as e:
-            self.logger.error("分析日志失败: %s", e)
-            return {
-                "success": False,
-                "message": f"分析失败: {str(e)}",
-            }
+            self.logger.error("分析日志文件失败 %s: %s", log_file, e)
+            return {"error": str(e)}
 
-    def identify_error_patterns(self, logs: List[str]) -> List[Dict[str, Any]]:
-        """识别错误模式.
+    def get_recent_errors(self, log_file: str, count: int = 10) -> List[str]:
+        """获取最近的错误日志.
 
         Args:
-            logs: 日志行列表
+            log_file: 日志文件路径
+            count: 返回数量
 
         Returns:
-            List: 错误模式列表
+            List[str]: 错误日志列表
         """
-        errors = []
+        try:
+            if not os.path.exists(log_file):
+                return []
 
-        for i, line in enumerate(logs):
-            # 检查是否包含ERROR或CRITICAL
-            if "ERROR" not in line and "CRITICAL" not in line:
-                continue
+            errors = []
+            with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
+                for line in f:
+                    if 'error' in line.lower():
+                        errors.append(line.strip())
 
-            # 匹配错误类型
-            error_type = "unknown"
-            for pattern_name, pattern in self.error_patterns.items():
-                if re.search(pattern, line, re.IGNORECASE):
-                    error_type = pattern_name
-                    break
+            return errors[-count:] if errors else []
+        except Exception as e:
+            self.logger.error("获取错误日志失败 %s: %s", log_file, e)
+            return []
 
-            # 提取时间戳
-            timestamp = self._extract_timestamp(line)
-
-            # 提取错误消息
-            error_msg = line.strip()
-
-            errors.append(
-                {
-                    "type": error_type,
-                    "message": error_msg[:200],  # 限制长度
-                    "timestamp": timestamp,
-                    "line_number": i + 1,
-                }
-            )
-
-        return errors
-
-    def _filter_by_time(self, logs: List[str], cutoff_time: datetime) -> List[str]:
-        """按时间过滤日志.
+    def search_pattern(self, log_file: str, pattern: str, max_results: int = 100) -> List[str]:
+        """在日志中搜索模式.
 
         Args:
-            logs: 日志行列表
-            cutoff_time: 截止时间
+            log_file: 日志文件路径
+            pattern: 搜索模式（正则表达式）
+            max_results: 最大结果数
 
         Returns:
-            List: 过滤后的日志
+            List[str]: 匹配的日志行
         """
-        filtered = []
-        for line in logs:
-            timestamp = self._extract_timestamp(line)
-            if timestamp:
-                try:
-                    log_time = datetime.fromisoformat(timestamp)
-                    if log_time >= cutoff_time:
-                        filtered.append(line)
-                except (ValueError, TypeError):
-                    # 无法解析时间，保留该行
-                    filtered.append(line)
-            else:
-                # 没有时间戳，保留该行
-                filtered.append(line)
+        try:
+            import re
+            if not os.path.exists(log_file):
+                return []
 
-        return filtered
+            pattern_re = re.compile(pattern, re.IGNORECASE)
+            matches = []
 
-    def _extract_timestamp(self, line: str) -> Optional[str]:
-        """提取日志时间戳.
+            with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
+                for line in f:
+                    if pattern_re.search(line):
+                        matches.append(line.strip())
+                        if len(matches) >= max_results:
+                            break
+
+            return matches
+        except Exception as e:
+            self.logger.error("搜索日志模式失败 %s: %s", log_file, e)
+            return []
+
+    def summarize_errors(self, log_file: str) -> Dict[str, int]:
+        """汇总错误类型及数量.
 
         Args:
-            line: 日志行
+            log_file: 日志文件路径
 
         Returns:
-            Optional[str]: 时间戳字符串
+            Dict[str, int]: 错误类型及其出现次数
         """
-        # 尝试匹配常见时间戳格式
-        patterns = [
-            r"\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}",  # 2025-01-01 12:00:00
-            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}",  # 2025-01-01T12:00:00
-        ]
+        try:
+            from collections import Counter
+            if not os.path.exists(log_file):
+                return {}
 
-        for pattern in patterns:
-            match = re.search(pattern, line)
-            if match:
-                return match.group(0).replace(" ", "T")
+            error_types = []
+            with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
+                for line in f:
+                    if 'error' in line.lower():
+                        parts = line.split()
+                        if len(parts) > 2:
+                            error_types.append(parts[2])
 
-        return None
-
-
+            return dict(Counter(error_types))
+        except Exception as e:
+            self.logger.error("汇总错误失败 %s: %s", log_file, e)
+            return {}
 
 
 # PerformanceAnalyzer
 class PerformanceAnalyzer:
-    """性能分析器 - 识别瓶颈."""
+    """性能分析器 - 分析系统性能瓶颈."""
 
     def __init__(self):
         """初始化性能分析器."""
         self.logger = logging.getLogger(__name__)
 
-    def analyze_bottlenecks(self) -> List[Dict[str, Any]]:
-        """分析性能瓶颈.
-
-        Returns:
-            List: 瓶颈列表
-        """
-        try:
-            import psutil
-
-            bottlenecks = []
-
-            # CPU瓶颈检查
-            cpu_percent: float = psutil.cpu_percent(interval=1, percpu=False)  # type: ignore[assignment]
-            if cpu_percent > 80:
-                bottlenecks.append(
-                    {
-                        "type": "cpu",
-                        "severity": "high" if cpu_percent > 90 else "medium",
-                        "current_value": cpu_percent,
-                        "threshold": 80,
-                        "description": f"CPU使用率过高: {cpu_percent:.1f}%",
-                        "impact": "系统响应变慢，策略计算延迟增加",
-                    }
-                )
-
-            # 内存瓶颈检查
-            memory = psutil.virtual_memory()
-            if memory.percent > 80:
-                bottlenecks.append(
-                    {
-                        "type": "memory",
-                        "severity": "high" if memory.percent > 90 else "medium",
-                        "current_value": memory.percent,
-                        "threshold": 80,
-                        "description": f"内存使用率过高: {memory.percent:.1f}%",
-                        "impact": "可能导致OOM错误，系统崩溃风险增加",
-                    }
-                )
-
-            # 磁盘瓶颈检查
-            disk = psutil.disk_usage("/")
-            if disk.percent > 85:
-                bottlenecks.append(
-                    {
-                        "type": "disk",
-                        "severity": "high" if disk.percent > 95 else "medium",
-                        "current_value": disk.percent,
-                        "threshold": 85,
-                        "description": f"磁盘使用率过高: {disk.percent:.1f}%",
-                        "impact": "数据写入失败，日志丢失风险",
-                    }
-                )
-
-            # 磁盘I/O瓶颈检查
-            disk_io = psutil.disk_io_counters()
-            if disk_io:
-                # 检查I/O等待时间（如果可用）
-                io_time_ms = getattr(disk_io, "busy_time", 0) / 1000  # 转换为秒
-                if io_time_ms > 0:
-                    bottlenecks.append(
-                        {
-                            "type": "disk_io",
-                            "severity": "medium",
-                            "current_value": io_time_ms,
-                            "threshold": 0,
-                            "description": "磁盘I/O繁忙",
-                            "impact": "数据读写速度下降",
-                        }
-                    )
-
-            # 网络瓶颈检查（简化版）
-            net_io = psutil.net_io_counters()
-            if net_io and hasattr(net_io, "errin") and hasattr(net_io, "errout"):
-                # 检查错误包
-                error_count: int = net_io.errin + net_io.errout  # type: ignore[attr-defined]
-
-                if error_count > 100:
-                    bottlenecks.append(
-                        {
-                            "type": "network",
-                            "severity": "medium",
-                            "current_value": error_count,
-                            "threshold": 100,
-                            "description": f"网络错误包数量: {error_count}",
-                            "impact": "网络连接不稳定",
-                        }
-                    )
-
-            return bottlenecks
-
-        except Exception as e:
-            self.logger.error("分析性能瓶颈失败: %s", e)
-            return []
-
-    def generate_optimization_suggestions(
-        self, bottlenecks: Optional[List[Dict[str, Any]]] = None
-    ) -> List[str]:
-        """生成优化建议.
+    def analyze_cpu_usage(self, duration: int = 5) -> Dict[str, Any]:
+        """分析CPU使用情况.
 
         Args:
-            bottlenecks: 瓶颈列表（可选）
+            duration: 采样时长（秒）
 
         Returns:
-            List: 优化建议列表
+            Dict: CPU分析结果
         """
-        if bottlenecks is None:
-            bottlenecks = self.analyze_bottlenecks()
+        try:
+            cpu_percent = psutil.cpu_percent(interval=duration)
+            cpu_count = psutil.cpu_count()
+            cpu_per_core = psutil.cpu_percent(interval=1, percpu=True)
 
-        suggestions = []
+            return {
+                "overall_percent": cpu_percent,
+                "cpu_count": cpu_count,
+                "per_core_percent": cpu_per_core,
+                "status": "normal" if cpu_percent < 80 else "high",
+            }
+        except Exception as e:
+            self.logger.error("分析CPU失败: %s", e)
+            return {"error": str(e)}
 
-        # 根据瓶颈类型生成建议
-        bottleneck_types = {b["type"] for b in bottlenecks}
+    def analyze_memory_usage(self) -> Dict[str, Any]:
+        """分析内存使用情况.
 
-        if "cpu" in bottleneck_types:
-            suggestions.extend(
-                [
-                    "1. 启用策略结果缓存，减少重复计算",
-                    "2. 优化策略算法，降低计算复杂度",
-                    "3. 考虑使用多进程并行处理",
-                    "4. 检查是否有死循环或无限递归",
-                ]
-            )
+        Returns:
+            Dict: 内存分析结果
+        """
+        try:
+            mem = psutil.virtual_memory()
+            return {
+                "total_mb": mem.total / 1024 / 1024,
+                "available_mb": mem.available / 1024 / 1024,
+                "used_mb": mem.used / 1024 / 1024,
+                "percent": mem.percent,
+                "status": "normal" if mem.percent < 80 else "high",
+            }
+        except Exception as e:
+            self.logger.error("分析内存失败: %s", e)
+            return {"error": str(e)}
 
-        if "memory" in bottleneck_types:
-            suggestions.extend(
-                [
-                    "1. 启用数据分页加载，避免一次性加载大量数据",
-                    "2. 及时释放不再使用的对象",
-                    "3. 使用生成器代替列表减少内存占用",
-                    "4. 检查是否存在内存泄漏",
-                ]
-            )
+    def analyze_disk_io(self, duration: int = 3) -> Dict[str, Any]:
+        """分析磁盘IO.
 
-        if "disk" in bottleneck_types:
-            suggestions.extend(
-                [
-                    "1. 清理临时文件和日志文件",
-                    "2. 启用日志轮转和自动清理",
-                    "3. 将大文件迁移到其他磁盘",
-                    "4. 考虑扩展磁盘容量",
-                ]
-            )
+        Args:
+            duration: 采样时长（秒）
 
-        if "disk_io" in bottleneck_types:
-            suggestions.extend(
-                [
-                    "1. 启用SSD固态硬盘提升I/O性能",
-                    "2. 使用异步I/O操作",
-                    "3. 批量读写减少I/O次数",
-                    "4. 启用数据库连接池",
-                ]
-            )
+        Returns:
+            Dict: 磁盘IO分析结果
+        """
+        try:
+            io_start = psutil.disk_io_counters()
+            time.sleep(duration)
+            io_end = psutil.disk_io_counters()
 
-        if "network" in bottleneck_types:
-            suggestions.extend(
-                [
-                    "1. 检查网络连接质量",
-                    "2. 启用数据压缩减少传输量",
-                    "3. 增加请求重试次数",
-                    "4. 考虑使用CDN加速",
-                ]
-            )
+            read_speed = (io_end.read_bytes - io_start.read_bytes) / duration / 1024 / 1024
+            write_speed = (io_end.write_bytes - io_start.write_bytes) / duration / 1024 / 1024
 
-        # 通用优化建议
-        if not suggestions:
-            suggestions = [
-                "系统运行正常，暂无优化建议",
-                "建议定期监控系统性能指标",
-                "保持系统和依赖库的更新",
-            ]
+            return {
+                "read_speed_mb_s": read_speed,
+                "write_speed_mb_s": write_speed,
+                "read_count": io_end.read_count - io_start.read_count,
+                "write_count": io_end.write_count - io_start.write_count,
+            }
+        except Exception as e:
+            self.logger.error("分析磁盘IO失败: %s", e)
+            return {"error": str(e)}
 
-        return suggestions
+    def find_bottleneck(self) -> Dict[str, Any]:
+        """识别系统瓶颈.
 
+        Returns:
+            Dict: 瓶颈分析结果
+        """
+        try:
+            cpu = self.analyze_cpu_usage(duration=2)
+            mem = self.analyze_memory_usage()
+            disk = self.analyze_disk_io(duration=2)
 
+            bottlenecks = []
+            if cpu.get("overall_percent", 0) > 80:
+                bottlenecks.append("CPU使用率过高")
+            if mem.get("percent", 0) > 80:
+                bottlenecks.append("内存使用率过高")
+            if disk.get("read_speed_mb_s", 0) > 100 or disk.get("write_speed_mb_s", 0) > 100:
+                bottlenecks.append("磁盘IO负载高")
+
+            return {
+                "cpu": cpu,
+                "memory": mem,
+                "disk": disk,
+                "bottlenecks": bottlenecks,
+                "status": "healthy" if not bottlenecks else "bottleneck_detected",
+            }
+        except Exception as e:
+            self.logger.error("识别瓶颈失败: %s", e)
+            return {"error": str(e)}
 
 
 # AutoFixer
 class AutoFixer:
-    """自动修复建议生成器."""
+    """自动修复器 - 尝试自动修复常见问题."""
 
     def __init__(self):
         """初始化自动修复器."""
         self.logger = logging.getLogger(__name__)
 
-    def suggest_fixes(self, issue_type: str) -> List[Dict[str, Any]]:
-        """生成修复建议.
+    def fix_service(self, service_name: str, service_manager, issue: str) -> Dict[str, Any]:
+        """修复服务问题.
 
         Args:
-            issue_type: 问题类型
+            service_name: 服务名称
+            service_manager: 服务管理器实例
+            issue: 问题描述
 
         Returns:
-            List: 修复建议列表
+            Dict: 修复结果
         """
-        fixes = []
+        try:
+            self.logger.info("尝试修复服务 %s 的问题: %s", service_name, issue)
 
-        if issue_type == "module_not_found":
-            fixes.append(
-                {
-                    "title": "安装缺失的模块",
-                    "command": "pip install <module_name>",
-                    "description": "使用pip安装缺失的Python模块",
-                    "auto_fixable": False,
-                    "risk_level": "low",
+            if "内存" in issue or "memory" in issue.lower():
+                # 内存问题：尝试重启服务
+                restarter = ServiceRestarter()
+                result = restarter.graceful_restart(service_name, service_manager)
+                return {
+                    "fixed": result.get("success", False),
+                    "action": "重启服务",
+                    "details": result,
                 }
-            )
 
-        elif issue_type == "connection_error":
-            fixes.extend(
-                [
-                    {
-                        "title": "检查网络连接",
-                        "command": "ping <target_host>",
-                        "description": "检查目标主机是否可达",
-                        "auto_fixable": False,
-                        "risk_level": "low",
-                    },
-                    {
-                        "title": "增加连接超时时间",
-                        "command": None,
-                        "description": "在配置中增加timeout参数",
-                        "auto_fixable": True,
-                        "risk_level": "low",
-                    },
-                    {
-                        "title": "启用连接重试",
-                        "command": None,
-                        "description": "启用自动重试机制",
-                        "auto_fixable": True,
-                        "risk_level": "low",
-                    },
-                ]
-            )
+            elif "响应" in issue or "timeout" in issue.lower():
+                # 响应问题：检查并尝试重启
+                checker = ServiceHealthChecker()
+                health = checker.quick_check(service_name, service_manager)
+                if health.get("response_time_ms", 0) > 1000:
+                    restarter = ServiceRestarter()
+                    result = restarter.restart_service(service_name, service_manager)
+                    return {
+                        "fixed": result.get("success", False),
+                        "action": "重启慢响应服务",
+                        "details": result,
+                    }
 
-        elif issue_type == "permission":
-            fixes.append(
-                {
-                    "title": "修改文件权限",
-                    "command": "chmod 755 <file_path>",
-                    "description": "给予文件适当的读写权限",
-                    "auto_fixable": False,
-                    "risk_level": "medium",
-                }
-            )
+            elif "连接" in issue or "connection" in issue.lower():
+                # 连接问题：尝试重新初始化
+                service = service_manager.get_service(service_name)
+                if service and hasattr(service, "reconnect"):
+                    service.reconnect()
+                    return {
+                        "fixed": True,
+                        "action": "重新连接",
+                        "details": "已尝试重新连接",
+                    }
 
-        elif issue_type == "file_not_found":
-            fixes.extend(
-                [
-                    {
-                        "title": "检查文件路径",
-                        "command": None,
-                        "description": "确认文件路径是否正确",
-                        "auto_fixable": False,
-                        "risk_level": "low",
-                    },
-                    {
-                        "title": "创建缺失的目录",
-                        "command": "mkdir -p <dir_path>",
-                        "description": "创建必要的目录结构",
-                        "auto_fixable": True,
-                        "risk_level": "low",
-                    },
-                ]
-            )
+            return {
+                "fixed": False,
+                "action": "无法自动修复",
+                "details": "未找到匹配的修复方案",
+            }
 
-        elif issue_type == "memory_error":
-            fixes.extend(
-                [
-                    {
-                        "title": "增加系统内存",
-                        "command": None,
-                        "description": "扩展物理内存或虚拟内存",
-                        "auto_fixable": False,
-                        "risk_level": "low",
-                    },
-                    {
-                        "title": "启用内存优化",
-                        "command": None,
-                        "description": "启用数据分页和惰性加载",
-                        "auto_fixable": True,
-                        "risk_level": "low",
-                    },
-                    {
-                        "title": "清理内存缓存",
-                        "command": None,
-                        "description": "手动触发垃圾回收",
-                        "auto_fixable": True,
-                        "risk_level": "low",
-                    },
-                ]
-            )
+        except Exception as e:
+            self.logger.error("修复服务失败 %s: %s", service_name, e)
+            return {
+                "fixed": False,
+                "action": "修复失败",
+                "error": str(e),
+            }
 
-        else:
-            fixes.append(
-                {
-                    "title": "查看详细日志",
-                    "command": None,
-                    "description": "检查日志文件获取更多信息",
-                    "auto_fixable": False,
-                    "risk_level": "low",
-                }
-            )
+    def auto_heal(self, service_manager) -> Dict[str, Any]:
+        """自动健康检查并修复.
 
-        return fixes
+        Args:
+            service_manager: 服务管理器实例
+
+        Returns:
+            Dict: 自愈结果
+        """
+        try:
+            checker = ServiceHealthChecker()
+            all_health = checker.check_all_services(service_manager)
+
+            fixed_services = []
+            failed_services = []
+
+            for service_name, health_info in all_health.get("services", {}).items():
+                if health_info.get("status") != "healthy":
+                    # 尝试修复
+                    issue = health_info.get("message", "unknown")
+                    fix_result = self.fix_service(service_name, service_manager, issue)
+
+                    if fix_result.get("fixed"):
+                        fixed_services.append(service_name)
+                    else:
+                        failed_services.append(service_name)
+
+            return {
+                "checked_services": len(all_health.get("services", {})),
+                "fixed_count": len(fixed_services),
+                "failed_count": len(failed_services),
+                "fixed_services": fixed_services,
+                "failed_services": failed_services,
+                "status": "success" if not failed_services else "partial",
+            }
+
+        except Exception as e:
+            self.logger.error("自愈失败: %s", e)
+            return {
+                "status": "error",
+                "error": str(e),
+            }
 
 
-# =============================================================================
-# 网络工具
-# =============================================================================
+# test_connectivity和scan_ports快捷函数
+def test_connectivity(host: str, port: int, timeout: int = 5) -> Dict[str, Any]:
+    """测试网络连通性的快捷函数."""
+    tester = NetworkTester()
+    return tester.test_connectivity(host, port, timeout)
 
 
-class NetworkTester:
-    """网络测试器."""
+def scan_ports(host: str, ports: List[int], timeout: int = 2) -> Dict[int, bool]:
+    """扫描端口的快捷函数."""
+    scanner = PortScanner()
+    return scanner.scan_ports(host, ports, timeout)
 
-    def __init__(self):
-        """初始化网络测试器."""
-        self.logger = logging.getLogger(__name__)
-
-    def test_host(self, host: str, port: int = 80) -> bool:
-        """测试主机连通性."""
-        return test_connectivity(host, port)
-
-    def ping(self, host: str) -> bool:
-        """Ping主机（简单版本）."""
-        return test_connectivity(host, 80)
-
-
-class PortScanner:
-    """端口扫描器."""
-
-    def __init__(self):
-        """初始化端口扫描器."""
-        self.logger = logging.getLogger(__name__)
-
-    def scan(self, host: str, ports: List[int]) -> List[Dict[str, Any]]:
-        """扫描指定端口."""
-        return scan_ports(host, ports)
-
-    def scan_range(self, host: str, start_port: int, end_port: int) -> List[Dict[str, Any]]:
-        """扫描端口范围."""
-        ports = list(range(start_port, end_port + 1))
-        return self.scan(host, ports)
-
-
-
-
-# Helper functions
-def test_connectivity(host: str, port: int = 80) -> bool:
-    """测试连通性."""
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(5)
-        result = sock.connect_ex((host, port))
-        sock.close()
-        return result == 0
-    except OSError:
-        return False
-
-
-def scan_ports(host: str, ports: List[int]) -> List[Dict[str, Any]]:
-    """扫描端口."""
-    results = []
-    for port in ports:
-        is_open = test_connectivity(host, port)
-        results.append({"port": port, "open": is_open})
-    return results
 
 
 # =============================================================================

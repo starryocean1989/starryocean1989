@@ -844,7 +844,26 @@ class DynamicConfigCalculator:
         bottleneck = pressure_eval["bottleneck"]
 
         if task.metrics.task_type == TaskType.NETWORK:
-            base_config = self._calculate_network_task_config(task, scale_factor, bottleneck)
+            # 🔧 获取可用服务器数量
+            available_servers_count = None
+            try:
+                from backend.infrastructure.data_module_vnpy.load_balancer import server_pool_manager
+                if server_pool_manager.is_running():
+                    # 优先使用IPv4池，IPv6池为备用
+                    ipv4_count = len(server_pool_manager._sorted_servers_ipv4) if server_pool_manager._sorted_servers_ipv4 else 0
+                    ipv6_count = len(server_pool_manager._sorted_servers_ipv6) if server_pool_manager._sorted_servers_ipv6 else 0
+                    # 使用较大的池作为可用服务器数
+                    available_servers_count = max(ipv4_count, ipv6_count)
+                    self.logger.debug(
+                        "服务器池状态: IPv4=%d, IPv6=%d, 使用=%d",
+                        ipv4_count, ipv6_count, available_servers_count
+                    )
+            except Exception as e:
+                self.logger.debug("获取服务器池数量失败: %s，将不限制并发", e)
+            
+            base_config = self._calculate_network_task_config(
+                task, scale_factor, bottleneck, available_servers_count
+            )
         else:
             base_config = self._calculate_local_task_config(task, scale_factor, bottleneck)
 
@@ -861,9 +880,17 @@ class DynamicConfigCalculator:
         return base_config
 
     def _calculate_network_task_config(
-        self, task: BaseTask, scale_factor: float, bottleneck: str
+        self, task: BaseTask, scale_factor: float, bottleneck: str,
+        available_servers_count: Optional[int] = None
     ) -> Dict[str, Any]:
-        """计算网络任务配置"""
+        """计算网络任务配置
+        
+        Args:
+            task: 任务对象
+            scale_factor: 缩放因子
+            bottleneck: 瓶颈类型
+            available_servers_count: 可用服务器数量（用于限制并发，1服务器=1连接）
+        """
         cpu_cores = multiprocessing.cpu_count()
 
         if HAS_PSUTIL:
@@ -900,11 +927,40 @@ class DynamicConfigCalculator:
             coroutines_per_process = max(10, actual_connections // processes)
             estimated_memory_mb = actual_connections * 0.5
 
+        # 🔧 新增：基于服务器数量限制并发（1服务器=1连接）
+        server_reuse_rate = 0.0
+        if available_servers_count and available_servers_count > 0:
+            # 严格约束：总连接数不超过服务器数
+            max_connections = available_servers_count
+            
+            if actual_connections > max_connections:
+                self.logger.warning(
+                    "⚠️ 并发数(%d)超过服务器数量(%d)，自动降低到%d以保证1服务器=1连接",
+                    actual_connections, available_servers_count, max_connections
+                )
+                actual_connections = max_connections
+                
+                # 优先调整协程数
+                coroutines_per_process = max(10, actual_connections // processes)
+                
+                # 如果协程数调整后仍超标，则降低进程数
+                if processes * coroutines_per_process > max_connections:
+                    processes = max(1, max_connections // coroutines_per_process)
+                    coroutines_per_process = max(10, max_connections // processes)
+                
+                # 重新计算实际连接数
+                actual_connections = processes * coroutines_per_process
+                estimated_memory_mb = actual_connections * 0.5
+            
+            server_reuse_rate = actual_connections / available_servers_count
+
         config = {
             "processes": processes,
             "coroutines_per_process": coroutines_per_process,
             "total_connections": actual_connections,
             "estimated_memory_mb": round(estimated_memory_mb, 2),
+            "server_count": available_servers_count or 0,
+            "server_reuse_rate": round(server_reuse_rate, 2),
         }
 
         return config
@@ -5380,6 +5436,9 @@ class ServerPoolManager:
                     len(self._sorted_servers_ipv6),
                     extra={"log_type": "stage_node"},
                 )
+                
+                # 推送服务器状态事件（修复：测速完成后需要推送事件通知UI）
+                self._push_server_status_event()
 
             return success
 
@@ -5718,13 +5777,14 @@ class ServerPoolManager:
     # ==================== 公共接口 ====================
 
     def get_servers(
-        self, count: Optional[int] = None, pool_type: str = "ipv4"
+        self, count: Optional[int] = None, pool_type: str = "ipv4", allow_fallback: bool = True
     ) -> List[Tuple[str, int]]:
         """获取排序后的服务器列表（保持原顺序）
 
         Args:
             count: 返回的服务器数量，None表示返回所有
             pool_type: 池类型，"ipv4"或"ipv6"，默认"ipv4"
+            allow_fallback: 是否允许降级（IPV6→IPV4或IPV4→IPV6），默认True
 
         Returns:
             按速度排序的服务器列表 [(ip, port), ...]
@@ -5748,17 +5808,33 @@ class ServerPoolManager:
         else:
             selected_servers = self._sorted_servers_ipv4
 
+        # 🔧 降级机制：如果请求的池为空，自动降级到另一个池
+        if not selected_servers and allow_fallback:
+            if pool_type == "ipv6" and self._sorted_servers_ipv4:
+                self.logger.warning(
+                    "⚠️ %s服务器池为空，自动降级使用IPV4服务器池（%d个）",
+                    pool_type.upper(),
+                    len(self._sorted_servers_ipv4)
+                )
+                selected_servers = self._sorted_servers_ipv4
+            elif pool_type == "ipv4" and self._sorted_servers_ipv6:
+                self.logger.warning(
+                    "⚠️ %s服务器池为空，自动降级使用IPV6服务器池（%d个）",
+                    pool_type.upper(),
+                    len(self._sorted_servers_ipv6)
+                )
+                selected_servers = self._sorted_servers_ipv6
+
+        # 如果仍然为空，抛出异常
         if not selected_servers:
-            error_msg = (
-                f"{pool_type.upper()}服务器列表为空！\n请在系统管理中点击'测速服务器'按钮进行测速。"
-            )
+            error_msg = f"{pool_type.upper()}服务器列表为空且无可用降级池！\n请在系统管理中点击'测速服务器'按钮进行测速。"
             self.logger.error(error_msg)
             raise RuntimeError(error_msg)
 
         return selected_servers[:count] if count else selected_servers
 
     def get_servers_shuffled(
-        self, count: Optional[int] = None, pool_type: str = "ipv4"
+        self, count: Optional[int] = None, pool_type: str = "ipv4", allow_fallback: bool = True
     ) -> List[Tuple[str, int]]:
         """获取打乱顺序的服务器列表（推荐用于下载）
 
@@ -5767,6 +5843,7 @@ class ServerPoolManager:
         Args:
             count: 返回的服务器数量，None表示返回所有
             pool_type: 池类型，"ipv4"或"ipv6"，默认"ipv4"
+            allow_fallback: 是否允许降级（IPV6→IPV4或IPV4→IPV6），默认True
 
         Returns:
             随机顺序的服务器列表 [(ip, port), ...]
@@ -5785,8 +5862,26 @@ class ServerPoolManager:
         else:
             selected_servers = self._sorted_servers_ipv4
 
+        # 🔧 降级机制：如果请求的池为空，自动降级到另一个池
+        if not selected_servers and allow_fallback:
+            if pool_type == "ipv6" and self._sorted_servers_ipv4:
+                self.logger.warning(
+                    "⚠️ %s服务器池为空，自动降级使用IPV4服务器池（%d个）",
+                    pool_type.upper(),
+                    len(self._sorted_servers_ipv4)
+                )
+                selected_servers = self._sorted_servers_ipv4
+            elif pool_type == "ipv4" and self._sorted_servers_ipv6:
+                self.logger.warning(
+                    "⚠️ %s服务器池为空，自动降级使用IPV6服务器池（%d个）",
+                    pool_type.upper(),
+                    len(self._sorted_servers_ipv6)
+                )
+                selected_servers = self._sorted_servers_ipv6
+
+        # 如果仍然为空，抛出异常
         if not selected_servers:
-            error_msg = f"{pool_type.upper()}服务器列表为空！请先测速服务器。"
+            error_msg = f"{pool_type.upper()}服务器列表为空且无可用降级池！请先测速服务器。"
             self.logger.error(error_msg)
             raise RuntimeError(error_msg)
 

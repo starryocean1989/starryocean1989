@@ -17,6 +17,10 @@ from pathlib import Path
 import logging
 
 from backend.core.service_base import BaseService, LoggerMixin
+from backend.infrastructure.system_vnpy.unified_log_system import (
+    start_ai_process,
+    end_ai_process,
+)
 
 # 专用logger - 日志埋点v4.0
 logger_download = logging.getLogger("backend.data_center.download")
@@ -116,7 +120,7 @@ class DataCenterService(BaseService, LoggerMixin):
             # 这样可以确保全局变量已经被正确设置
             self._ensure_china_stock_engine()
 
-            # ✅ 优化：移除主线程缓存检查，完全依赖validation_worker的8步流程
+            # ✅ 优化：移除主线程缓存检查，完全依赖validation_worker的9步流程
             # 原因：
             # 1. 消除重复检查（主线程和后台线程都检查）
             # 2. 加快启动速度（主线程不需要IO操作）
@@ -678,7 +682,7 @@ class DataCenterService(BaseService, LoggerMixin):
             success = data.get("success", False)
 
             if success:
-                self.logger.info("✅ [事件] validation_worker 8步流程全部完成")
+                self.logger.info("✅ [事件] validation_worker 9步流程全部完成")
             else:
                 error = data.get("error", "未知错误")
                 self.logger.warning("⚠️ [事件] validation_worker流程失败: %s", error)
@@ -706,7 +710,7 @@ class DataCenterService(BaseService, LoggerMixin):
 
         架构说明：
         - 此方法仅在用户主动点击"重新加载"按钮时调用
-        - 执行完整的流程4-5（品种列表 + IPO过滤）
+        - 执行完整的3步流程（删除缓存 → 获取品种 → 更新缓存）
         - 改为同步执行，避免与validation_worker冲突
         - 不在启动时自动调用（避免与validation_worker重复）
 
@@ -718,7 +722,7 @@ class DataCenterService(BaseService, LoggerMixin):
                 "success": bool,
                 "symbol_count": int,
                 "message": str,
-                "data": List[Dict]  # 品种列表（已过滤未上市）
+                "data": List[Dict]  # 品种列表
             }
         """
         try:
@@ -731,7 +735,7 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.info("【流程1】删除现有缓存文件...")
             self._delete_symbol_cache_file()
 
-            # 流程2：执行流程4 - 从API获取品种（包含未上市）
+            # 流程2：从API获取品种
             if self.china_stock_engine is None:
                 self.logger.error("ChinaStockEngine不可用")
                 return {
@@ -741,79 +745,47 @@ class DataCenterService(BaseService, LoggerMixin):
                     "data": [],
                 }
 
-            self.logger.info("【流程2/5】从ChinaStockEngine获取品种列表...")
+            self.logger.info("【流程2】从ChinaStockEngine获取品种列表...")
             symbols, empty_categories = self._fetch_symbols_from_china_stock()
-            self.logger.info("【流程2完成】获取到 %d 个品种（包含未上市）", len(symbols))
-
-            # 流程3：同步执行IPO下载并过滤未上市品种
-            self.logger.info("【流程3/5】同步下载IPO日期并过滤未上市品种...")
-
-            # 执行IPO下载
-            from backend.infrastructure.data_module_vnpy.data_acquisition import download_ipo_dates
-
-            # 提取代码列表并过滤无效值
-            codes: List[str] = []
-            for s in symbols:
-                if isinstance(s, dict):
-                    code = s.get("code")
-                    if code and isinstance(code, str):
-                        codes.append(code)
-                elif isinstance(s, str) and s:
-                    codes.append(s)
-
-            # 获取全局IPODateCache实例
-            ipo_cache = None
-            if self.china_stock_engine and hasattr(self.china_stock_engine, "validator"):
-                ipo_cache = self.china_stock_engine.validator._ipo_cache
-
-            ipo_result = download_ipo_dates(codes, use_multiprocess=True, ipo_cache=ipo_cache)
-
-            self.logger.info(
-                "IPO下载完成: 成功%d个, 失败%d个",
-                ipo_result.get("succeeded", 0),
-                ipo_result.get("failed", 0),
-            )
-
-            # 重新加载缓存（已自动过滤未上市品种）
-            from backend.infrastructure.data_module_vnpy.data_acquisition import SymbolLoader
-
-            loader = SymbolLoader()
-            classified_after_ipo = loader.get_all_classified()
+            self.logger.info("【流程2完成】获取到 %d 个品种", len(symbols))
 
             # 转换为前端格式
-            filtered_symbols = []
-            for market_type, codes_list in classified_after_ipo.items():
-                for code_item in codes_list:
-                    if isinstance(code_item, str):
-                        code = code_item
-                        name = code_item
-                    elif isinstance(code_item, dict):
-                        code = code_item.get("code", "")
-                        name = code_item.get("name", code)
-                    else:
-                        continue
+            formatted_symbols = []
+            for s in symbols:
+                if isinstance(s, dict):
+                    code = s.get("code", "")
+                    name = s.get("name", code)
+                    exchange = s.get("exchange", "")
+                    product_type = s.get("product_type", "")
+                elif isinstance(s, str):
+                    code = s
+                    name = s
+                    exchange = ""
+                    product_type = ""
+                else:
+                    continue
 
-                    if not code:
-                        continue
+                if not code:
+                    continue
 
-                    filtered_symbols.append(
-                        {
-                            "symbol": code,
-                            "code": code,
-                            "name": name,
-                            "exchange": self._map_market_to_exchange(market_type),
-                            "product_type": self._map_market_to_product_type(market_type),
-                        }
-                    )
+                formatted_symbols.append(
+                    {
+                        "symbol": code,
+                        "code": code,
+                        "name": name,
+                        "exchange": exchange,
+                        "product_type": product_type,
+                    }
+                )
 
-            # 流程4：更新内存缓存
-            self.logger.info("【流程4/5】更新内存缓存...")
+            # 流程3：更新内存缓存
+            self.logger.info("【流程3】更新内存缓存...")
             self._symbol_cache = {
-                "symbols": filtered_symbols,
+                "symbols": formatted_symbols,
                 "timestamp": datetime.now(),
             }
             self._symbol_cache_time = datetime.now()
-            self.logger.info("【流程4完成】缓存已更新，过滤后品种数: %d", len(filtered_symbols))
+            self.logger.info("【流程3完成】缓存已更新，品种数: %d", len(formatted_symbols))
 
             self.logger.info("=" * 60)
             self.logger.info("【用户触发】品种列表重新加载完成")
@@ -843,9 +815,9 @@ class DataCenterService(BaseService, LoggerMixin):
 
             return {
                 "success": True,
-                "symbol_count": len(filtered_symbols),
-                "message": f"成功加载{len(filtered_symbols)}个品种（已过滤未上市）",
-                "data": filtered_symbols,
+                "symbol_count": len(formatted_symbols),
+                "message": f"成功加载{len(formatted_symbols)}个品种",
+                "data": formatted_symbols,
                 "warning": warning_message,  # 添加警告信息
                 "empty_categories": empty_categories,  # 添加空品种类别列表
             }
@@ -1333,11 +1305,28 @@ class DataCenterService(BaseService, LoggerMixin):
             ctx = None
             self.logger.debug("logging_context模块不可用，跳过阶段切换")
 
+        # ✅ 开始AI日志流程
+        ai_log_started = False
+        try:
+            ai_log_file = start_ai_process(
+                "bulk_download",
+                metadata={
+                    "start_date": start_date,
+                    "download_type": "incremental"
+                }
+            )
+            ai_log_started = True
+            self.logger.info(f"AI日志文件: {ai_log_file}")
+        except Exception as e:
+            self.logger.warning(f"启动AI日志流程失败: {e}")
+
         try:
             self.log_operation_start("增量数据下载", start_date=start_date)
 
             if self.china_stock_engine is None:
                 self.logger.error("中国股票引擎不可用")
+                if ai_log_started:
+                    end_ai_process(success=False, summary="中国股票引擎不可用")
                 return {
                     "success": False,
                     "task_id": None,
@@ -1352,6 +1341,8 @@ class DataCenterService(BaseService, LoggerMixin):
                 self.logger.debug("解析开始日期: %s", start_dt)
             except ValueError as e:
                 self.logger.error("日期格式错误: %s", e, exc_info=True)
+                if ai_log_started:
+                    end_ai_process(success=False, summary=f"日期格式错误: {str(e)}")
                 return {
                     "success": False,
                     "task_id": None,
@@ -1361,12 +1352,16 @@ class DataCenterService(BaseService, LoggerMixin):
             today = date.today()
             days_diff = (today - start_dt).days
             if days_diff > 100:
+                if ai_log_started:
+                    end_ai_process(success=False, summary=f"日期超出范围: {days_diff}天前")
                 return {
                     "success": False,
                     "task_id": None,
                     "message": f"增量下载最多支持最近100天数据，请调整开始日期（当前选择了{days_diff}天前的数据）",
                 }
             if days_diff < 0:
+                if ai_log_started:
+                    end_ai_process(success=False, summary="开始日期不能晚于今天")
                 return {
                     "success": False,
                     "task_id": None,
@@ -1393,6 +1388,8 @@ class DataCenterService(BaseService, LoggerMixin):
             started = self.china_stock_engine.download_incremental(start_date=start_dt)
             if not started:
                 self.logger.error("下载启动失败：已有任务在运行或启动失败")
+                if ai_log_started:
+                    end_ai_process(success=False, summary="下载启动失败：已有任务在运行或启动失败")
                 return {
                     "success": False,
                     "task_id": None,
@@ -1547,6 +1544,8 @@ class DataCenterService(BaseService, LoggerMixin):
             if status == "error":
                 error_msg = task.get("error_message", "下载失败")
                 self.log_operation_failure("增量数据下载", Exception(error_msg), task_id=task_id)
+                if ai_log_started:
+                    end_ai_process(success=False, summary=f"下载失败: {error_msg}")
                 return {
                     "success": False,
                     "task_id": task_id,
@@ -1562,6 +1561,10 @@ class DataCenterService(BaseService, LoggerMixin):
             )
             self.log_operation_success("增量数据下载", task_id=task_id, days=days_diff)
 
+            # ✅ 结束AI日志流程（成功）
+            if ai_log_started:
+                end_ai_process(success=True, summary=f"增量下载已完成，耗时 {download_duration/1000:.1f}秒")
+
             return {
                 "success": True,
                 "task_id": task_id,
@@ -1572,6 +1575,9 @@ class DataCenterService(BaseService, LoggerMixin):
             download_duration = (time.time() - download_start_time) * 1000
             self.log_performance("增量数据下载", download_duration, False, {"error": str(e)})
             self.log_operation_failure("增量数据下载", e, start_date=start_date)
+            # ✅ 结束AI日志流程（异常）
+            if ai_log_started:
+                end_ai_process(success=False, summary=f"启动失败: {str(e)}")
             return {
                 "success": False,
                 "task_id": None,
@@ -2331,15 +2337,35 @@ class DataCenterService(BaseService, LoggerMixin):
         Returns:
             Dict: 修复结果
         """
+        # ✅ 开始AI日志流程
+        ai_log_started = False
+        try:
+            ai_log_file = start_ai_process(
+                "quality_repair",
+                metadata={
+                    "symbol": symbol,
+                    "issues_count": len(issues),
+                    "issues": issues
+                }
+            )
+            ai_log_started = True
+            self.logger.info(f"AI日志文件: {ai_log_file}")
+        except Exception as e:
+            self.logger.warning(f"启动AI日志流程失败: {e}")
+
         try:
             self._log_operation("自动修复数据", symbol=symbol, issues_count=len(issues))
 
             if not self.china_stock_engine:
-                return {
+                result = {
                     "success": False,
                     "message": "ChinaStockEngine不可用",
                     "repaired_count": 0,
                 }
+                # ✅ 结束AI日志流程（引擎不可用）
+                if ai_log_started:
+                    end_ai_process(success=False, summary="ChinaStockEngine不可用")
+                return result
 
             # 使用增量下载修复数据
             try:
@@ -2349,27 +2375,42 @@ class DataCenterService(BaseService, LoggerMixin):
                 start_date = date.today() - timedelta(days=30)
                 self.china_stock_engine.download_incremental(start_date=start_date)
 
-                return {
+                result = {
                     "success": True,
                     "message": f"数据修复完成，已重新下载{symbol}最近30天的数据",
                     "repaired_count": len(issues),
                 }
+                # ✅ 结束AI日志流程（成功）
+                if ai_log_started:
+                    end_ai_process(
+                        success=True,
+                        summary=f"数据修复完成，品种: {symbol}, 修复问题数: {len(issues)}"
+                    )
+                return result
 
             except Exception as e:
                 self.logger.error("数据修复失败: %s", e, exc_info=True)
-                return {
+                result = {
                     "success": False,
                     "message": f"修复失败: {str(e)}",
                     "repaired_count": 0,
                 }
+                # ✅ 结束AI日志流程（修复失败）
+                if ai_log_started:
+                    end_ai_process(success=False, summary=f"数据修复失败: {str(e)}")
+                return result
 
         except Exception as e:
             self._log_error("自动修复数据", e, symbol=symbol)
-            return {
+            result = {
                 "success": False,
                 "message": f"修复失败: {str(e)}",
                 "repaired_count": 0,
             }
+            # ✅ 结束AI日志流程（异常）
+            if ai_log_started:
+                end_ai_process(success=False, summary=f"自动修复数据异常: {str(e)}")
+            return result
 
     # ==================== 数据感知管理 ====================
 
@@ -2494,6 +2535,20 @@ class DataCenterService(BaseService, LoggerMixin):
         except ImportError:
             ctx = None
 
+        # ✅ 开始AI日志流程
+        ai_log_started = False
+        try:
+            ai_log_file = start_ai_process(
+                "quality_scan",
+                metadata={
+                    "force_refresh": force_refresh
+                }
+            )
+            ai_log_started = True
+            self.logger.info(f"AI日志文件: {ai_log_file}")
+        except Exception as e:
+            self.logger.warning(f"启动AI日志流程失败: {e}")
+
         try:
             # 确保 china_stock_engine 可用
             if not self.china_stock_engine:
@@ -2520,13 +2575,26 @@ class DataCenterService(BaseService, LoggerMixin):
                         "数据质量告警: 评分过低=%.2f, 建议检查数据完整性",
                         overview.quality_score,
                     )
+
+                # ✅ 结束AI日志流程（成功）
+                if ai_log_started:
+                    end_ai_process(
+                        success=True,
+                        summary=f"数据质量扫描完成，评分: {overview.quality_score:.2f}"
+                    )
             else:
                 self.logger.warning("数据质量扫描未返回结果")
+                # ✅ 结束AI日志流程（无结果）
+                if ai_log_started:
+                    end_ai_process(success=False, summary="数据质量扫描未返回结果")
 
             # 恢复阶段 - 日志埋点v4.0 (已移除scenario)
             # Scenario context已移除
         except Exception as e:
             logger_alert.error("数据质量扫描失败: %s", e, exc_info=True)
+            # ✅ 结束AI日志流程（异常）
+            if ai_log_started:
+                end_ai_process(success=False, summary=f"数据质量扫描失败: {str(e)}")
             # 恢复阶段 - 日志埋点v4.0 (已移除scenario)
             # Scenario context已移除
 
@@ -3946,6 +4014,9 @@ class DataCenterService(BaseService, LoggerMixin):
     def scan_errors_missing_only(self) -> Dict[str, Any]:
         """扫描错误数据和缺失数据（UI按钮触发）
 
+        🔧 修复：改为调用完整的3阶段自适应扫描，而非轻量级扫描
+        用户期望点击"数据扫描"按钮后能完整执行3个阶段
+
         Returns:
             Dict: 扫描结果
         """
@@ -3959,16 +4030,24 @@ class DataCenterService(BaseService, LoggerMixin):
             # 获取参考品种列表
             reference_symbols = self.china_stock_engine.symbol_loader.extract_all_codes()
 
-            # 调用DataSensor的轻量扫描方法
+            # 🔧 修复：调用完整的3阶段自适应扫描，而非轻量级扫描
             data_sensor = self.china_stock_engine.data_sensor
-            overview = data_sensor.scan_errors_and_missing_only(reference_symbols)
+            overview = data_sensor.scan_all_data_adaptive(
+                reference_symbols=reference_symbols,
+                intervals=["1d", "5m", "1m"],
+                force_refresh=False,
+                progress_callback=None,
+                max_phase=None  # 执行全部3个阶段
+            )
 
             return {
                 "success": True,
                 "total_symbols": overview.total_symbols,
                 "missing_symbols": overview.missing_symbols,
                 "error_symbols": overview.error_symbols,
-                "message": f"扫描完成: 缺失={overview.missing_symbols}, 错误={overview.error_symbols}",
+                "warning_symbols": overview.warning_symbols,
+                "data_missing_symbols": overview.data_missing_symbols,
+                "message": f"扫描完成: 缺失={overview.missing_symbols}, 错误={overview.error_symbols}, 警告={overview.warning_symbols}",
             }
 
         except Exception as e:

@@ -1,0 +1,469 @@
+{
+  "date": "2025-10-31",
+  "servers": [
+    {
+      "name": "百度",
+      "category": "portal",
+      "ping_url": "https://www.baidu.com",
+      "timeout": 5,
+      "description": "百度首页",
+      "enabled": true
+    },
+    {
+      "name": "网易",
+      "category": "portal",
+      "ping_url": "https://www.163.com",
+      "timeout": 5,
+      "description": "网易门户",
+      "enabled": true
+    },
+    {
+      "name": "搜狐",
+      "category": "portal",
+      "ping_url": "https://www.sohu.com",
+      "timeout": 5,
+      "description": "搜狐门户",
+      "enabled": true
+    },
+    {
+      "name": "新浪",
+      "category": "portal",
+      "ping_url": "https://www.sina.com.cn",
+      "timeout": 5,
+      "description": "新浪门户",
+      "enabled": true
+    },
+    {
+      "name": "腾讯网",
+      "category": "portal",
+      "ping_url": "https://www.qq.com",
+      "timeout": 5,
+      "description": "腾讯门户",
+      "enabled": true
+    },
+    {
+      "name": "凤凰网",
+      "category": "portal",
+      "ping_url": "https://www.ifeng.com",
+      "timeout": 5,
+      "description": "凤凰网门户",
+      "enabled": true
+    },
+    {
+      "name": "人民网",
+      "category": "portal",
+      "ping_url": "https://www.people.com.cn",
+      "timeout": 5,
+      "description": "人民网门户",
+      "enabled": true
+    },
+    {
+      "name": "新华网",
+      "category": "portal",
+      "ping_url": "https://www.xinhuanet.com",
+      "timeout": 5,
+      "description": "新华网门户",
+      "enabled": true
+    },
+    {
+      "name": "光明网",
+      "category": "portal",
+      "ping_url": "https://www.gmw.cn",
+      "timeout": 5,
+      "description": "光明网门户",
+      "enabled": true
+    },
+    {
+      "name": "中国网",
+      "category": "portal",
+      "ping_url": "https://www.china.com.cn",
+      "timeout": 5,
+      "description": "中国网门户",
+      "enabled": true
+    },
+    {
+      "name": "搜狗",
+      "category": "search",
+      "ping_url": "https://www.sogou.com",
+      "timeout": 5,
+      "description": "搜狗搜索",
+      "enabled": true
+    },
+    {
+      "name": "360搜索",
+      "category": "search",
+      "ping_url": "https://www.so.com",
+      "timeout": 5,
+      "description": "360搜索",
+      "enabled": true
+    },
+    {
+      "name": "必应中国",
+      "category": "search",
+      "ping_url": "https://cn.bing.com",
+      "timeout": 5,
+      "description": "必应搜索中国版",
+      "enabled": true
+    },
+    {
+      "name": "优酷",
+      "category": "video",
+      "ping_url": "https://www.youku.com",
+      "timeout": 5,
+      "description": "优酷视频",
+      "enabled": true
+    },
+    {
+      "name": "腾讯视频",
+      "category": "video",
+      "ping_url": "https://v.qq.com",
+      "timeout": 5,
+      "description": "腾讯视频",
+      "enabled": true
+    },
+    {
+      "name": "爱奇艺",
+      "category": "video",
+      "ping_url": "https://www.iqiyi.com",
+      "timeout": 5,
+      "description": "爱奇艺视频",
+      "enabled": true
+    },
+    {
+      "name": "哔哩哔哩",
+      "category": "video",
+      "ping_url": "https://www.bilibili.com",
+      "timeout": 5,
+      "description": "B站",
+      "enabled": true
+    },
+    {
+      "name": "芒果TV",
+      "category": "video",
+      "ping_url": "https://www.mgtv.com",
+      "timeout": 5,
+      "description": "芒果TV",
+      "enabled": true
+    },
+    {
+      "name": "虎扑",
+      "category": "sports",
+      "ping_url": "https://www.hupu.com",
+      "timeout": 5,
+      "description": "虎扑体育",
+      "enabled": true
+    },
+    {
+      "name": "新浪体育",
+      "category": "sports",
+      "ping_url": "https://sports.sina.com.cn",
+      "timeout": 5,
+      "description": "新浪体育",
+      "enabled": true
+    },
+    {
+      "name": "腾讯体育",
+      "category": "sports",
+      "ping_url": "https://sports.qq.com",
+      "timeout": 5,
+      "description": "腾讯体育",
+      "enabled": true
+    },
+    {
+      "name": "网易体育",
+      "category": "sports",
+      "ping_url": "https://sports.163.com",
+      "timeout": 5,
+      "description": "网易体育",
+      "enabled": true
+    },
+    {
+      "name": "中国政府网",
+      "category": "government",
+      "ping_url": "https://www.gov.cn",
+      "timeout": 5,
+      "description": "中华人民共和国中央人民政府",
+      "enabled": true
+    },
+    {
+      "name": "国家发改委",
+      "category": "government",
+      "ping_url": "https://www.ndrc.gov.cn",
+      "timeout": 5,
+      "description": "国家发展和改革委员会",
+      "enabled": true
+    },
+    {
+      "name": "教育部",
+      "category": "government",
+      "ping_url": "https://www.moe.gov.cn",
+      "timeout": 5,
+      "description": "中华人民共和国教育部",
+      "enabled": true
+    },
+    {
+      "name": "科技部",
+      "category": "government",
+      "ping_url": "https://www.most.gov.cn",
+      "timeout": 5,
+      "description": "中华人民共和国科学技术部",
+      "enabled": true
+    },
+    {
+      "name": "工信部",
+      "category": "government",
+      "ping_url": "https://www.miit.gov.cn",
+      "timeout": 5,
+      "description": "中华人民共和国工业和信息化部",
+      "enabled": true
+    },
+    {
+      "name": "财政部",
+      "category": "government",
+      "ping_url": "https://www.mof.gov.cn",
+      "timeout": 5,
+      "description": "中华人民共和国财政部",
+      "enabled": true
+    },
+    {
+      "name": "人社部",
+      "category": "government",
+      "ping_url": "https://www.mohrss.gov.cn",
+      "timeout": 5,
+      "description": "中华人民共和国人力资源和社会保障部",
+      "enabled": true
+    },
+    {
+      "name": "自然资源部",
+      "category": "government",
+      "ping_url": "https://www.mnr.gov.cn",
+      "timeout": 5,
+      "description": "中华人民共和国自然资源部",
+      "enabled": true
+    },
+    {
+      "name": "生态环境部",
+      "category": "government",
+      "ping_url": "https://www.mee.gov.cn",
+      "timeout": 5,
+      "description": "中华人民共和国生态环境部",
+      "enabled": true
+    },
+    {
+      "name": "住建部",
+      "category": "government",
+      "ping_url": "https://www.mohurd.gov.cn",
+      "timeout": 5,
+      "description": "中华人民共和国住房和城乡建设部",
+      "enabled": true
+    },
+    {
+      "name": "交通运输部",
+      "category": "government",
+      "ping_url": "https://www.mot.gov.cn",
+      "timeout": 5,
+      "description": "中华人民共和国交通运输部",
+      "enabled": true
+    },
+    {
+      "name": "农业农村部",
+      "category": "government",
+      "ping_url": "https://www.moa.gov.cn",
+      "timeout": 5,
+      "description": "中华人民共和国农业农村部",
+      "enabled": true
+    },
+    {
+      "name": "商务部",
+      "category": "government",
+      "ping_url": "https://www.mofcom.gov.cn",
+      "timeout": 5,
+      "description": "中华人民共和国商务部",
+      "enabled": true
+    },
+    {
+      "name": "文化和旅游部",
+      "category": "government",
+      "ping_url": "https://www.mct.gov.cn",
+      "timeout": 5,
+      "description": "中华人民共和国文化和旅游部",
+      "enabled": true
+    },
+    {
+      "name": "卫健委",
+      "category": "government",
+      "ping_url": "https://www.nhc.gov.cn",
+      "timeout": 5,
+      "description": "中华人民共和国国家卫生健康委员会",
+      "enabled": true
+    },
+    {
+      "name": "应急管理部",
+      "category": "government",
+      "ping_url": "https://www.mem.gov.cn",
+      "timeout": 5,
+      "description": "中华人民共和国应急管理部",
+      "enabled": true
+    },
+    {
+      "name": "审计署",
+      "category": "government",
+      "ping_url": "https://www.audit.gov.cn",
+      "timeout": 5,
+      "description": "中华人民共和国审计署",
+      "enabled": true
+    },
+    {
+      "name": "12306",
+      "category": "public_service",
+      "ping_url": "https://www.12306.cn",
+      "timeout": 5,
+      "description": "中国铁路客户服务中心",
+      "enabled": true
+    },
+    {
+      "name": "中国移动",
+      "category": "public_service",
+      "ping_url": "https://www.10086.cn",
+      "timeout": 5,
+      "description": "中国移动",
+      "enabled": true
+    },
+    {
+      "name": "中国联通",
+      "category": "public_service",
+      "ping_url": "https://www.10010.com",
+      "timeout": 5,
+      "description": "中国联通",
+      "enabled": true
+    },
+    {
+      "name": "国家医保局",
+      "category": "public_service",
+      "ping_url": "https://www.nhsa.gov.cn",
+      "timeout": 5,
+      "description": "国家医疗保障局",
+      "enabled": true
+    },
+    {
+      "name": "中国银行",
+      "category": "public_service",
+      "ping_url": "https://www.boc.cn",
+      "timeout": 5,
+      "description": "中国银行",
+      "enabled": true
+    },
+    {
+      "name": "工商银行",
+      "category": "public_service",
+      "ping_url": "https://www.icbc.com.cn",
+      "timeout": 5,
+      "description": "中国工商银行",
+      "enabled": true
+    },
+    {
+      "name": "建设银行",
+      "category": "public_service",
+      "ping_url": "https://www.ccb.com",
+      "timeout": 5,
+      "description": "中国建设银行",
+      "enabled": true
+    },
+    {
+      "name": "农业银行",
+      "category": "public_service",
+      "ping_url": "https://www.abchina.com",
+      "timeout": 5,
+      "description": "中国农业银行",
+      "enabled": true
+    },
+    {
+      "name": "招商银行",
+      "category": "public_service",
+      "ping_url": "https://www.cmbchina.com",
+      "timeout": 5,
+      "description": "招商银行",
+      "enabled": true
+    },
+    {
+      "name": "支付宝",
+      "category": "public_service",
+      "ping_url": "https://www.alipay.com",
+      "timeout": 5,
+      "description": "支付宝",
+      "enabled": true
+    },
+    {
+      "name": "微信",
+      "category": "public_service",
+      "ping_url": "https://weixin.qq.com",
+      "timeout": 5,
+      "description": "微信",
+      "enabled": true
+    },
+    {
+      "name": "京东",
+      "category": "public_service",
+      "ping_url": "https://www.jd.com",
+      "timeout": 5,
+      "description": "京东商城",
+      "enabled": true
+    },
+    {
+      "name": "淘宝",
+      "category": "public_service",
+      "ping_url": "https://www.taobao.com",
+      "timeout": 5,
+      "description": "淘宝网",
+      "enabled": true
+    },
+    {
+      "name": "天猫",
+      "category": "public_service",
+      "ping_url": "https://www.tmall.com",
+      "timeout": 5,
+      "description": "天猫",
+      "enabled": true
+    },
+    {
+      "name": "拼多多",
+      "category": "public_service",
+      "ping_url": "https://www.pinduoduo.com",
+      "timeout": 5,
+      "description": "拼多多",
+      "enabled": true
+    },
+    {
+      "name": "美团",
+      "category": "public_service",
+      "ping_url": "https://www.meituan.com",
+      "timeout": 5,
+      "description": "美团",
+      "enabled": true
+    },
+    {
+      "name": "滴滴",
+      "category": "public_service",
+      "ping_url": "https://www.didiglobal.com",
+      "timeout": 5,
+      "description": "滴滴出行",
+      "enabled": true
+    },
+    {
+      "name": "高德地图",
+      "category": "public_service",
+      "ping_url": "https://www.amap.com",
+      "timeout": 5,
+      "description": "高德地图",
+      "enabled": true
+    },
+    {
+      "name": "百度地图",
+      "category": "public_service",
+      "ping_url": "https://map.baidu.com",
+      "timeout": 5,
+      "description": "百度地图",
+      "enabled": true
+    }
+  ]
+}

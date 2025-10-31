@@ -819,10 +819,18 @@ class DatabaseManager:
 
             updated_at = datetime.now().isoformat()
 
-            query = "INSERT OR REPLACE INTO local_data_index (symbol, updated_at) VALUES (?, ?)"
-            params_list = [(symbol, updated_at) for symbol in symbols]
+            # 🔧 修复：先清空旧数据，再写入新数据（避免历史遗留）
+            # 参考 upsert_invalid_symbols 的实现方式
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM local_data_index")
+                conn.commit()
 
-            self.execute_many(query, params_list)
+            if symbols:
+                query = "INSERT INTO local_data_index (symbol, updated_at) VALUES (?, ?)"
+                params_list = [(symbol, updated_at) for symbol in symbols]
+                self.execute_many(query, params_list)
+
             logger.info("本地数据索引已更新：%d 个品种", len(symbols))
             return True
         except Exception as e:

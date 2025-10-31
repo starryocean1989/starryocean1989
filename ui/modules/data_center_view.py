@@ -50,6 +50,8 @@ from backend.services.vnpy_imports import EVENT_TICK
 EVENT_CHINASTOCK_DOWNLOAD = "eChinaStockDownload"
 EVENT_DATA_QUALITY_UPDATE = "eDataQualityUpdate"  # 数据质量更新事件
 EVENT_DATA_SCAN_COMPLETE = "eDataScanComplete"  # 扫描完成事件
+EVENT_SYMBOL_CACHE_LOADED = "eSymbolCacheLoaded"  # 品种列表缓存加载完成
+EVENT_VALIDATION_COMPLETED = "eValidationCompleted"  # 启动流程验证完成
 
 # UI层专用logger
 logger_user = logging.getLogger("ui.user_feedback")
@@ -225,6 +227,19 @@ class DownloadThread(QThread):
 class DataCenter(BaseWidget, LoggerMixin):
     """数据中心主界面（重构版）."""
 
+    # 🔧 关键修复：定义Qt Signal用于跨线程UI更新
+    # 原因：vnpy事件引擎在独立线程中运行，使用Signal确保槽函数在主线程执行
+    quality_update_signal = Signal(dict)  # 数据质量更新信号
+    quality_scan_status_signal = Signal(bool)  # 扫描状态信号（True=扫描中, False=完成）
+
+    # 🆕 专用信号：为每个UI更新场景创建专门的信号
+    symbol_cache_loaded_signal = Signal(int)  # 品种缓存加载信号：symbol_count
+    data_metrics_update_signal = Signal(int, int, int, int, list)  # 数据指标更新：total, downloaded, missing, invalid_count, details
+    invalid_symbols_update_signal = Signal(int)  # 失效品种更新：count
+    validation_completed_signal = Signal(bool)  # 启动流程验证完成：success
+    quality_scan_phase_signal = Signal(int, dict, str)  # 质量扫描阶段：phase, metrics, status
+    append_details_signal = Signal(list)  # 🔧 新增：追加问题详情信号（避免QTimer.singleShot不可靠）
+
     def __init__(self, parent=None):
         """初始化数据中心界面."""
         # 初始化服务管理器
@@ -292,15 +307,31 @@ class DataCenter(BaseWidget, LoggerMixin):
         # pypinyin状态追踪（避免重复ImportError日志）
         self._pypinyin_import_error_logged = False
 
+        # 🆕 流程状态追踪变量
+        self._lightweight_running = True  # 启动流程运行中（初始为True）
+        self._heavy_scan_running = False  # 数据质量扫描运行中
+
+        # 🆕 问题数据计数（用于按钮启用逻辑）
+        self._symbol_cache_count = 0  # 总品种数（启动流程步骤4）
+        self._symbol_cache_event_received = False  # 🔧 新增：事件是否已到达标志位（时序控制）
+        self._downloaded_count = 0  # 已下载品种数
+        self._missing_count = 0  # 品种缺失数
+        self._invalid_symbols_count = 0  # 失效品种数
+        self._outdated_count = 0  # 过时品种数
+        self._error_count = 0  # 错误品种数
+        self._data_missing_count = 0  # 数据缺失品种数
+        self._warning_count = 0  # 警告品种数
+
         # 🆕 质量概览控件
         self.quality_overview_widget: Optional[QWidget] = None
         self.total_symbols_label: Optional[QLabel] = None
         self.downloaded_symbols_label: Optional[QLabel] = None  # 🚀 新增
         self.missing_symbols_label: Optional[QLabel] = None  # 品种缺失
-        self.data_missing_symbols_label: Optional[QLabel] = None  # 数据缺失（新增）
+        self.invalid_symbols_label: Optional[QLabel] = None  # 失效品种（新增）
+        self.outdated_symbols_label: Optional[QLabel] = None  # 过时
         self.error_symbols_label: Optional[QLabel] = None
+        self.data_missing_symbols_label: Optional[QLabel] = None  # 数据缺失
         self.warning_symbols_label: Optional[QLabel] = None
-        self.quality_score_label: Optional[QLabel] = None
         self.toggle_quality_detail_btn: Optional[QPushButton] = None
         self.quality_detail_table: Optional[QTableWidget] = None
 
@@ -349,8 +380,16 @@ class DataCenter(BaseWidget, LoggerMixin):
 
             logging.getLogger(__name__).error("获取数据中心服务失败: %s", e)
 
+        # 🔍 诊断：使用临时logger（super().__init__()之前）
+        import logging
+        temp_logger = logging.getLogger("ui.components.datacenter.init")
+        temp_logger.info("[DataCenter.__init__] 📍 步骤1: 准备调用super().__init__()")
+
         # 调用父类初始化
         super().__init__(parent, "数据中心")
+
+        # 🔍 诊断：super().__init__()之后（现在self.logger可用）
+        self.logger.info("[DataCenter.__init__] 📍 步骤2: super().__init__()已返回")
         self.logger.info("数据中心界面初始化完成")
 
         # 检查服务状态并记录
@@ -359,8 +398,30 @@ class DataCenter(BaseWidget, LoggerMixin):
         else:
             self.logger.warning("⚠ 数据中心服务未注册")
 
+        # 🔧 关键修复：连接Signal到Slot（在主线程中自动执行）
+        # 原因：Qt的Signal/Slot机制自动处理跨线程调度，无需手动使用QTimer
+        self.logger.info("[DataCenter.__init__] 📍 步骤3: 准备连接Signal到Slot")
+        self.quality_update_signal.connect(self._update_quality_overview_ui)
+        self.quality_scan_status_signal.connect(self._set_quality_scan_status)
+
+        # 🆕 连接专用信号到对应的UI更新槽函数
+        self.symbol_cache_loaded_signal.connect(self._update_symbol_cache_ui)
+        self.data_metrics_update_signal.connect(self._update_data_metrics_ui)
+        self.invalid_symbols_update_signal.connect(self._update_invalid_symbols_ui)
+        self.validation_completed_signal.connect(self._update_validation_completed_ui)
+        self.quality_scan_phase_signal.connect(self._update_quality_scan_phase_ui)
+        self.append_details_signal.connect(self._append_quality_details)  # 🔧 新增：连接详情追加信号
+        self.logger.info("[DataCenter.__init__] 📍 步骤4: Signal已连接到Slot（包括append_details_signal）")
+
         # 🔧 注册vnpy事件监听器
+        self.logger.info("[DataCenter.__init__] 📍 步骤5: 准备调用_register_event_handlers()")
         self._register_event_handlers()
+        self.logger.info("[DataCenter.__init__] 📍 步骤6: _register_event_handlers()已返回")
+
+        # 🆕 关键修复：主动拉取启动流程数据（补偿机制）
+        # 原因：后端可能在前端初始化完成前就推送了事件，导致事件丢失
+        # 延迟1秒执行，确保事件处理器已注册且数据库已更新
+        QTimer.singleShot(1000, self._pull_startup_data)
 
         # 🆕 延迟加载质量概览（给服务和后台扫描留出初始化时间）
         # 使用5秒延迟，确保：
@@ -639,68 +700,65 @@ class DataCenter(BaseWidget, LoggerMixin):
 
         # 🚀 添加说明提示
         hint_label = QLabel(
-            "💡 说明：「总品种」=品种缓存总数（5724个已过滤品种），「已下载」=本地有数据的品种数，"
-            "「品种缺失」=完全无数据的品种，「数据缺失」=有数据但部分日期缺失的品种（排除滞后），"
-            "「数据错误」=数据文件损坏或格式错误，「警告」=数据不完整，「过时」=未更新到最新交易日"
+            "💡 说明：「总品种」=品种缓存总数（启动时加载），「已下载」=本地有数据的品种数，"
+            "「品种缺失」=完全无数据的品种，「失效品种」=已退市或失效的品种。"
+            "「过时」「错误」「数据缺失」「警告」需要点击[数据扫描]按钮进行质量扫描。"
         )
         hint_label.setStyleSheet("color: #666; font-size: 11px; padding: 5px;")
         hint_label.setWordWrap(True)
         quality_overview_layout.addWidget(hint_label)
 
-        # 质量概览卡片（4列3行网格布局）
+        # 质量概览卡片（4列2行网格布局）
         self.quality_overview_widget = QWidget()
         overview_container = QHBoxLayout(self.quality_overview_widget)
         overview_container.setContentsMargins(5, 5, 5, 5)
 
-        # 使用网格布局（4列3行）
+        # 使用网格布局（4列2行）
         overview_grid = QGridLayout()
         overview_grid.setSpacing(10)
         overview_grid.setContentsMargins(0, 0, 0, 0)
 
-        # 第一行：总品种、已下载、品种缺失
-        self.total_symbols_label = QLabel("总品种: 正在扫描...")
-        self.total_symbols_label.setToolTip("品种缓存中的品种总数（5724个已过滤品种）")
+        # 第一行：总品种、已下载、品种缺失、失效品种
+        self.total_symbols_label = QLabel("总品种: 正在加载...")
+        self.total_symbols_label.setToolTip("品种缓存中的品种总数（启动流程步骤4）")
         self.total_symbols_label.setStyleSheet("color: #999;")
         overview_grid.addWidget(self.total_symbols_label, 0, 0)
 
         self.downloaded_symbols_label = QLabel("已下载: 正在扫描...")
         self.downloaded_symbols_label.setStyleSheet("color: #999;")
-        self.downloaded_symbols_label.setToolTip("本地已下载数据的品种数")
+        self.downloaded_symbols_label.setToolTip("本地已下载数据的品种数（启动流程步骤7）")
         overview_grid.addWidget(self.downloaded_symbols_label, 0, 1)
 
         self.missing_symbols_label = QLabel("品种缺失: 正在扫描...")
         self.missing_symbols_label.setStyleSheet("color: #999;")
-        self.missing_symbols_label.setToolTip("品种列表中有但本地完全无数据的品种数")
+        self.missing_symbols_label.setToolTip("品种列表中有但本地完全无数据的品种数（启动流程步骤7）")
         overview_grid.addWidget(self.missing_symbols_label, 0, 2)
 
-        # 第二行：过时、平均滞后、错误
-        self.outdated_symbols_label = QLabel("过时: 正在扫描...")
+        self.invalid_symbols_label = QLabel("失效品种: 正在扫描...")
+        self.invalid_symbols_label.setStyleSheet("color: #999;")
+        self.invalid_symbols_label.setToolTip("已退市或失效的品种数（启动流程步骤7）")
+        overview_grid.addWidget(self.invalid_symbols_label, 0, 3)
+
+        # 第二行：过时、错误、数据缺失、警告
+        self.outdated_symbols_label = QLabel("过时: 等待扫描...")
         self.outdated_symbols_label.setStyleSheet("color: #999;")
-        self.outdated_symbols_label.setToolTip("数据未更新到最新交易日的品种数")
+        self.outdated_symbols_label.setToolTip("数据未更新到最新交易日的品种数（数据质量扫描）")
         overview_grid.addWidget(self.outdated_symbols_label, 1, 0)
 
-        self.avg_gap_label = QLabel("平均滞后: 正在扫描...")
-        self.avg_gap_label.setStyleSheet("color: #999;")
-        self.avg_gap_label.setToolTip("所有已下载品种的平均滞后天数（交易日）")
-        overview_grid.addWidget(self.avg_gap_label, 1, 1)
-
-        self.error_symbols_label = QLabel("错误: 正在扫描...")
+        self.error_symbols_label = QLabel("错误: 等待扫描...")
         self.error_symbols_label.setStyleSheet("color: #999;")
-        overview_grid.addWidget(self.error_symbols_label, 1, 2)
+        self.error_symbols_label.setToolTip("数据文件损坏或格式错误的品种数（数据质量扫描）")
+        overview_grid.addWidget(self.error_symbols_label, 1, 1)
 
-        # 第三行：数据缺失、警告、评分
-        self.data_missing_symbols_label = QLabel("数据缺失: 正在扫描...")
+        self.data_missing_symbols_label = QLabel("数据缺失: 等待扫描...")
         self.data_missing_symbols_label.setStyleSheet("color: #999;")
-        self.data_missing_symbols_label.setToolTip("有数据但部分交易日缺失的品种数（排除数据滞后）")
-        overview_grid.addWidget(self.data_missing_symbols_label, 2, 0)
+        self.data_missing_symbols_label.setToolTip("有数据但部分交易日缺失的品种数（数据质量扫描）")
+        overview_grid.addWidget(self.data_missing_symbols_label, 1, 2)
 
-        self.warning_symbols_label = QLabel("警告: 正在扫描...")
+        self.warning_symbols_label = QLabel("警告: 等待扫描...")
         self.warning_symbols_label.setStyleSheet("color: #999;")
-        overview_grid.addWidget(self.warning_symbols_label, 2, 1)
-
-        self.quality_score_label = QLabel("评分: 正在扫描...")
-        self.quality_score_label.setStyleSheet("color: #999;")
-        overview_grid.addWidget(self.quality_score_label, 2, 2)
+        self.warning_symbols_label.setToolTip("数据不完整的品种数（数据质量扫描）")
+        overview_grid.addWidget(self.warning_symbols_label, 1, 3)
 
         overview_container.addLayout(overview_grid)
         overview_container.addStretch()
@@ -724,8 +782,11 @@ class DataCenter(BaseWidget, LoggerMixin):
 
         # 🆕 下载修复数据按钮
         self.repair_download_btn = QPushButton("🔧 下载修复数据")
+        self.repair_download_btn.setObjectName("repair_download_btn")  # 🔧 设置对象名称，用于样式表选择器
         self.repair_download_btn.setToolTip("智能下载修复有问题的品种数据")
         self.repair_download_btn.clicked.connect(self._trigger_repair_download)
+        # 🔧 初始状态：禁用（等待数据加载后更新）
+        self.repair_download_btn.setEnabled(False)
         buttons_layout.addWidget(self.repair_download_btn)
 
         # 🆕 删除失效数据按钮
@@ -740,7 +801,7 @@ class DataCenter(BaseWidget, LoggerMixin):
         # 详细质量表格（默认隐藏）
         self.quality_detail_table = QTableWidget(0, 4)
         self.quality_detail_table.setHorizontalHeaderLabels(
-            ["品种代码", "状态", "质量评分", "问题描述"]
+            ["品种代码", "品种名称", "状态", "问题描述"]
         )
         quality_detail_header = self.quality_detail_table.horizontalHeader()
         quality_detail_header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
@@ -2018,78 +2079,67 @@ class DataCenter(BaseWidget, LoggerMixin):
             self.logger.error(f"更新品种缓存失败: {e}", exc_info=True)
 
     def _load_local_data_index_for_autocomplete(self):
-        """异步加载本地数据索引用于本地数据搜索框联想
+        """加载本地数据索引用于本地数据搜索框联想
 
-        使用后台线程扫描本地数据目录，避免阻塞UI。
+        优化方案：简化加载逻辑，直接从数据库读取（已有索引，无需扫描文件）
+        学习品种列表的简洁方式，但保持QCompleter机制（不破坏现有架构）
         """
-        import threading
+        try:
+            self.logger.info("🔄 [联想] 开始加载本地数据索引...")
 
-        def load_in_background():
-            """后台线程执行数据加载"""
-            try:
-                if not self.data_center_service:
-                    self.logger.debug("[本地数据搜索框] 数据中心服务不可用")
-                    # 🆕 更新状态提示为错误
-                    QTimer.singleShot(0, lambda: self._update_loading_status_error("服务不可用"))
-                    return
+            # 直接从数据库读取（快速，无需后台线程）
+            if not self.db_manager:
+                self.logger.warning("🔴 [联想] 数据库管理器不可用")
+                return
 
-                self.logger.info("[后台] 开始扫描本地数据索引...")
+            # 从数据库获取本地数据索引（步骤7已更新到数据库）
+            local_symbol_codes = self.db_manager.get_local_data_index()
 
-                # 从本地数据索引获取已下载的品种列表
-                local_symbols = self.data_center_service.get_local_data_index()
-                if not local_symbols:
-                    self.logger.debug("[本地数据搜索框] 本地数据索引为空（尚未下载数据）")
-                    # 🆕 更新状态提示为无数据
-                    QTimer.singleShot(0, lambda: self._update_local_data_cache([], 0, 0))
-                    return
+            if not local_symbol_codes:
+                self.logger.warning("⚠️ [联想] 本地数据索引为空")
+                self._update_local_data_cache([], 0, 0)
+                return
 
-                # 预处理：添加拼音首字母
-                temp_cache = []
-                success_count = 0
-                error_count = 0
+            self.logger.info(f"🔄 [联想] 从数据库获取到 {len(local_symbol_codes)} 个品种代码")
 
-                for symbol in local_symbols:
-                    try:
-                        if isinstance(symbol, dict):
-                            code = symbol.get("code", "")
-                            name = symbol.get("name", "")
+            # 需要品种名称来提供更好的联想体验
+            # 从品种缓存获取名称映射
+            code_to_name = {}
+            if self.data_center_service:
+                try:
+                    symbols_list = self.data_center_service.get_symbols_from_cache()
+                    if symbols_list:
+                        for s in symbols_list:
+                            code_to_name[s.get('symbol', '')] = s.get('name', '')
+                except Exception as e:
+                    self.logger.debug(f"[联想] 获取品种名称映射失败: {e}")
 
-                            if code:
-                                pinyin = self._get_pinyin_initials(name) if name else ""
-                                temp_cache.append({"code": code, "name": name, "pinyin": pinyin})
-                                success_count += 1
-                            else:
-                                error_count += 1
-                        else:
-                            error_count += 1
-                    except Exception as e:
-                        error_count += 1
-                        self.logger.debug(f"[后台] 处理品种失败: {e}")
+            # 构建联想缓存
+            temp_cache = []
+            for code in local_symbol_codes:
+                name = code_to_name.get(code, "")
+                pinyin = self._get_pinyin_initials(name) if name else ""
+                temp_cache.append({"code": code, "name": name, "pinyin": pinyin})
 
-                # 使用QTimer在主线程中更新缓存
-                QTimer.singleShot(
-                    0, lambda: self._update_local_data_cache(temp_cache, success_count, error_count)
-                )
+            # 直接更新缓存（无需异步）
+            self._update_local_data_cache(temp_cache, len(temp_cache), 0)
 
-            except Exception as e:
-                self.logger.error(f"[后台] 加载本地数据索引失败: {e}", exc_info=True)
-                # 🆕 更新状态提示为错误
-                QTimer.singleShot(0, lambda: self._update_loading_status_error("加载失败"))
-
-        # 启动后台线程
-        thread = threading.Thread(target=load_in_background, daemon=True, name="LoadLocalDataIndex")
-        thread.start()
+        except Exception as e:
+            self.logger.error(f"❌ [联想] 加载失败: {e}", exc_info=True)
+            self._update_loading_status_error("加载失败")
 
     def _update_local_data_cache(self, cache, success_count, error_count):
         """在主线程中更新本地数据缓存"""
-        # print(...)  # 🔧 已移除：DEBUG调试输出
+        self.logger.info(f"✅ [联想] 主线程更新缓存: 收到{len(cache)}个品种, 成功={success_count}, 失败={error_count}")
+
         self.local_data_cache = cache
         self._local_data_index_loaded = True  # 🔧 标记已加载，避免重复加载
-        # print(...)  # 🔧 已移除：DEBUG调试输出
+
         # 所有无效品种应在后端早期阶段已过滤，前端只记录最终加载结果
         if error_count > 0:
-            self.logger.debug(f"本地数据索引加载时跳过了{error_count}个无效数据")
-        self.logger.info(f"本地数据索引加载完成: {success_count} 个品种")
+            self.logger.debug(f"[联想] 加载时跳过了{error_count}个无效数据")
+
+        self.logger.info(f"✅ [联想] 本地数据索引加载完成: {success_count} 个品种，联想功能已启用")
 
         # 🆕 更新状态提示标签
         if self.symbol_input_status_label:
@@ -2122,7 +2172,7 @@ class DataCenter(BaseWidget, LoggerMixin):
 
     def _on_local_data_index_ready(self, event):
         """处理本地数据索引就绪事件（来自后台数据质量扫描）
-        
+
         ⚠️ 关键：vnpy事件引擎可能在非Qt主线程中调用此方法
         所有Qt UI操作必须通过QTimer.singleShot转发到主线程
         """
@@ -2149,7 +2199,8 @@ class DataCenter(BaseWidget, LoggerMixin):
                     self.logger.debug(f"处理品种失败: {e}")
 
             # 转发到主线程执行UI更新
-            QTimer.singleShot(0, lambda: self._update_local_data_index_ui(temp_cache))
+            from functools import partial
+            QTimer.singleShot(0, partial(self._update_local_data_index_ui, temp_cache))
 
         except Exception as e:
             self.logger.error(f"处理本地数据索引事件失败: {e}", exc_info=True)
@@ -2174,14 +2225,14 @@ class DataCenter(BaseWidget, LoggerMixin):
 
     def _on_file_watcher_started(self, event):
         """处理文件监控启动事件
-        
+
         ⚠️ 关键：vnpy事件引擎可能在非Qt主线程中调用此方法
         所有Qt UI操作必须通过QTimer.singleShot转发到主线程
         """
         try:
             self.logger.info("文件监控已启动，解锁数据扫描按钮")
             # 转发到主线程执行UI更新
-            QTimer.singleShot(0, lambda: self._handle_file_watcher_started_ui())
+            QTimer.singleShot(0, self._handle_file_watcher_started_ui)
         except Exception as e:
             self.logger.error(f"处理文件监控启动事件失败: {e}", exc_info=True)
 
@@ -2195,44 +2246,131 @@ class DataCenter(BaseWidget, LoggerMixin):
 
     def _on_data_metrics_updated(self, event):
         """处理数据指标更新事件
-        
+
         ⚠️ 关键：vnpy事件引擎可能在非Qt主线程中调用此方法
         所有Qt UI操作必须通过QTimer.singleShot转发到主线程
         """
         try:
+            # 🔧 关键修复：添加详细日志，确保事件被接收到（使用print强制输出）
+            event_type = event.type if hasattr(event, 'type') else 'unknown'
+            print(f"[事件处理] 🔔 _on_data_metrics_updated 被调用: event.type={event_type}")
+            self.logger.info(
+                f"[事件处理] 🔔 _on_data_metrics_updated 被调用: event.type={event_type}"
+            )
+
             data = event.data
             total_symbols = data.get("total_symbols", 0)
             downloaded = data.get("downloaded", 0)
             missing = data.get("missing", 0)
             invalid_count = data.get("invalid_count", 0)
+            details = data.get("details", [])  # 🆕 获取详细品种列表
 
+            print(
+                f"[事件处理] 📊 收到数据指标更新事件: 总品种={total_symbols}, "
+                f"已下载={downloaded}, 缺失={missing}, 失效={invalid_count}, "
+                f"详情={len(details)}个品种"
+            )
             self.logger.info(
-                f"📊 收到数据指标更新: 总品种={total_symbols}, "
-                f"已下载={downloaded}, 缺失={missing}, 失效={invalid_count}"
+                f"[事件处理] 📊 收到数据指标更新事件: 总品种={total_symbols}, "
+                f"已下载={downloaded}, 缺失={missing}, 失效={invalid_count}, "
+                f"详情={len(details)}个品种"
             )
 
-            # 转发到主线程执行UI更新
-            QTimer.singleShot(0, lambda: self._update_data_metrics_ui(total_symbols, downloaded, missing, invalid_count))
-        except Exception as e:
-            self.logger.error(f"处理数据指标更新事件失败: {e}", exc_info=True)
+            # 🔧 关键修复：立即在事件处理器中设置_missing_count，确保后续流程能获取到正确的值
+            # 使用QTimer确保在主线程中执行
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(0, lambda: setattr(self, '_missing_count', missing))
+            print(f"[事件处理] 🔧 已通过QTimer设置_missing_count={missing}")
 
-    def _update_data_metrics_ui(self, total_symbols, downloaded, missing, invalid_count):
-        """更新数据指标UI（在主线程中执行）"""
+            # 🔧 使用Qt Signal机制，确保UI更新在主线程执行
+            print(f"[事件处理] 准备发射 data_metrics_update_signal: missing={missing}")
+            self.data_metrics_update_signal.emit(total_symbols, downloaded, missing, invalid_count, details)
+            print(f"[事件处理] ✅ 已发射 data_metrics_update_signal: missing={missing}")
+            self.logger.info(f"[事件处理] ✅ 已发射data_metrics_update_signal: missing={missing}")
+
+        except Exception as e:
+            print(f"[事件处理] ❌ 处理数据指标更新事件失败: {e}")
+            import traceback
+            print(f"[事件处理] 异常堆栈:\n{traceback.format_exc()}")
+            self.logger.error(f"[事件处理] ❌ 处理数据指标更新事件失败: {e}", exc_info=True)
+
+    def _update_data_metrics_ui(self, total_symbols, downloaded, missing, invalid_count, details=None):
+        """更新数据指标UI（在主线程中执行）
+
+        Args:
+            total_symbols: 总品种数（参考品种+失效品种）
+            downloaded: 已下载品种数
+            missing: 品种缺失数
+            invalid_count: 失效品种数
+            details: 详细品种列表（可选），包含缺失和失效品种的详细信息
+        """
+        self.logger.info(
+            f"🔧 [进入] _update_data_metrics_ui: total={total_symbols}, "
+            f"downloaded={downloaded}, missing={missing}, invalid={invalid_count}, "
+            f"details={len(details) if details else 0}个品种"
+        )
         try:
-            # 更新UI统计
-            if self.total_symbols_label:
-                self.total_symbols_label.setText(f"总品种: {total_symbols}")
+            # 🆕 更新总品种（如果有值）
+            if total_symbols > 0:
+                self._symbol_cache_count = total_symbols
+                if self.total_symbols_label:
+                    self.total_symbols_label.setText(f"总品种: {total_symbols}")
+                    self.total_symbols_label.setStyleSheet("color: #2196F3; font-weight: bold;")
+                    self.logger.info(f"✅ 总品种UI已更新: {total_symbols}")
+
+            # 更新状态变量
+            self._downloaded_count = downloaded
+            self._missing_count = missing
+
+            # 🔧 关键修复：确保缺失数量被正确设置
+            self.logger.info(
+                f"🔧 [状态更新] _missing_count={missing}, _downloaded_count={downloaded}"
+            )
+
+            # 更新已下载标签
             if self.downloaded_symbols_label:
                 self.downloaded_symbols_label.setText(f"已下载: {downloaded}")
+                self.downloaded_symbols_label.setStyleSheet("color: #2196F3; font-weight: bold;")
+
+            # 更新品种缺失标签
             if self.missing_symbols_label:
                 self.missing_symbols_label.setText(f"品种缺失: {missing}")
+                if missing > 0:
+                    self.missing_symbols_label.setStyleSheet("color: #FF9800;")  # 橙色
+                else:
+                    self.missing_symbols_label.setStyleSheet("color: #4CAF50;")  # 绿色
+
+            # 🆕 如果有详细品种列表，添加到详情表格
+            if details and len(details) > 0:
+                self._append_quality_details(details)
+                self.logger.info(f"📋 步骤7增量推送 {len(details)} 个问题品种到详情表格")
+
+            # 🔧 关键修复：更新按钮状态（确保响应缺失数据）
+            # 在更新状态后立即调用，确保按钮状态正确
+            self.logger.info(
+                f"🔧 [按钮更新前] _missing_count={self._missing_count}, "
+                f"即将调用 _update_repair_button_state()"
+            )
+            self._update_repair_button_state()
+
+            # 🔧 验证：再次检查按钮状态
+            if self.repair_download_btn:
+                final_enabled = self.repair_download_btn.isEnabled()
+                self.logger.info(
+                    f"🔧 [按钮更新后] missing={missing}, "
+                    f"按钮最终状态={final_enabled}"
+                )
+
+            self.logger.info(
+                f"✅ 数据指标UI已更新: 总品种={total_symbols}, 已下载={downloaded}, 缺失={missing}"
+            )
 
         except Exception as e:
             self.logger.error(f"处理数据指标更新事件失败: {e}", exc_info=True)
 
     def _on_invalid_symbols_updated(self, event):
         """处理失效品种更新事件
-        
+
         ⚠️ 关键：vnpy事件引擎可能在非Qt主线程中调用此方法
         所有Qt UI操作必须通过QTimer.singleShot转发到主线程
         """
@@ -2244,23 +2382,119 @@ class DataCenter(BaseWidget, LoggerMixin):
             self.logger.info(f"📋 收到失效品种更新: {count} 个品种")
 
             # 转发到主线程执行UI更新
-            QTimer.singleShot(0, lambda: self._update_invalid_symbols_ui(count))
+            from functools import partial
+            QTimer.singleShot(0, partial(self._update_invalid_symbols_ui, count))
 
         except Exception as e:
             self.logger.error(f"处理失效品种更新事件失败: {e}", exc_info=True)
 
     def _update_invalid_symbols_ui(self, count):
         """更新失效品种UI（在主线程中执行）"""
+        self.logger.info(f"🔧 [进入] _update_invalid_symbols_ui: count={count}")
         try:
-            # 更新UI显示（如果有失效品种标签）
-            # TODO: 根据实际UI结构调整
-            pass
+            # 更新状态变量
+            self._invalid_symbols_count = count
+
+            # 更新失效品种标签
+            if self.invalid_symbols_label:
+                self.invalid_symbols_label.setText(f"失效品种: {count}")
+                if count > 0:
+                    self.invalid_symbols_label.setStyleSheet("color: #FF9800;")  # 橙色
+                else:
+                    self.invalid_symbols_label.setStyleSheet("color: #4CAF50;")  # 绿色
+
+            # 更新按钮状态
+            self._update_delete_invalid_button_state()
+            self._update_repair_button_state()
+
         except Exception as e:
             self.logger.error(f"更新失效品种UI失败: {e}", exc_info=True)
 
+    def _on_symbol_cache_loaded(self, event):
+        """处理品种列表缓存加载完成事件
+
+        ⚠️ 关键：vnpy事件引擎可能在非Qt主线程中调用此方法
+        使用Qt Signal确保UI更新在主线程执行
+        """
+        try:
+            data = event.data
+            symbol_count = data.get("symbol_count", 0)
+            is_new = data.get("is_new", False)
+
+            self.logger.info(
+                f"[事件处理] 📋 收到品种列表加载完成事件: symbol_count={symbol_count}, is_new={is_new}"
+            )
+
+            # 🔧 修复：使用Qt Signal机制，确保UI更新在主线程执行
+            self.symbol_cache_loaded_signal.emit(symbol_count)
+            self.logger.info(f"[事件处理] ✅ 已发射symbol_cache_loaded_signal: symbol_count={symbol_count}")
+
+        except Exception as e:
+            self.logger.error(f"[事件处理] ❌ 处理品种列表加载完成事件失败: {e}", exc_info=True)
+
+    def _update_symbol_cache_ui(self, symbol_count):
+        """更新品种列表缓存UI（在主线程中执行）"""
+        self.logger.info(f"[UI更新] 🎯 _update_symbol_cache_ui被调用: symbol_count={symbol_count}")
+        try:
+            # 更新状态变量
+            self._symbol_cache_count = symbol_count
+            self._symbol_cache_event_received = True  # 🔧 新增：标记事件已到达
+            self.logger.info(f"[UI更新] _symbol_cache_count已更新为: {self._symbol_cache_count}")
+
+            # 🔧 新增：事件到达后，触发主动拉取补充其他数据（本地品种、失效品种）
+            # 这些数据可能还没有通过事件推送，需要主动拉取补充
+            QTimer.singleShot(500, self._pull_startup_data_supplement)
+
+            # 更新总品种标签
+            if self.total_symbols_label:
+                self.total_symbols_label.setText(f"总品种: {symbol_count}")
+                self.total_symbols_label.setStyleSheet("color: #2196F3; font-weight: bold;")
+                self.logger.info(f"[UI更新] ✅ total_symbols_label已更新")
+            else:
+                self.logger.warning(f"[UI更新] ⚠️ total_symbols_label为None！")
+
+            self.logger.info(f"[UI更新] ✅ 总品种UI更新完成: {symbol_count}")
+
+        except Exception as e:
+            self.logger.error(f"[UI更新] ❌ 更新品种列表缓存UI失败: {e}", exc_info=True)
+
+    def _on_validation_completed(self, event):
+        """处理启动流程验证完成事件
+
+        ⚠️ 关键：vnpy事件引擎可能在非Qt主线程中调用此方法
+        所有Qt UI操作必须通过QTimer.singleShot转发到主线程
+        """
+        try:
+            data = event.data
+            success = data.get("success", False)
+
+            self.logger.info(f"🎉 收到启动流程验证完成事件: success={success}")
+
+            # 转发到主线程执行UI更新
+            from functools import partial
+            QTimer.singleShot(0, partial(self._update_validation_completed_ui, success))
+
+        except Exception as e:
+            self.logger.error(f"处理启动流程验证完成事件失败: {e}", exc_info=True)
+
+    def _update_validation_completed_ui(self, success):
+        """更新启动流程验证完成UI（在主线程中执行）"""
+        self.logger.info(f"🔧 [进入] _update_validation_completed_ui: success={success}")
+        try:
+            # 更新状态变量
+            self._lightweight_running = False
+
+            # 更新按钮状态
+            self._update_scan_button_state()
+
+            self.logger.info(f"✅ 启动流程已完成，扫描按钮状态已更新")
+
+        except Exception as e:
+            self.logger.error(f"更新启动流程验证完成UI失败: {e}", exc_info=True)
+
     def _on_data_scan_finished(self, event):
         """处理数据扫描完成事件
-        
+
         ⚠️ 关键：vnpy事件引擎可能在非Qt主线程中调用此方法
         所有Qt UI操作必须通过QTimer.singleShot转发到主线程
         """
@@ -2276,7 +2510,8 @@ class DataCenter(BaseWidget, LoggerMixin):
             )
 
             # 转发到主线程执行UI更新
-            QTimer.singleShot(0, lambda: self._handle_data_scan_finished_ui(overview))
+            from functools import partial
+            QTimer.singleShot(0, partial(self._handle_data_scan_finished_ui, overview))
 
         except Exception as e:
             self.logger.error(f"处理数据扫描完成事件失败: {e}", exc_info=True)
@@ -2298,16 +2533,18 @@ class DataCenter(BaseWidget, LoggerMixin):
 
     def _on_quality_scan_phase(self, event):
         """处理数据质量扫描阶段性推送事件
-        
+
         ⚠️ 关键：vnpy事件引擎可能在非Qt主线程中调用此方法
-        所有Qt UI操作必须通过QTimer.singleShot转发到主线程
-        
+        所有Qt UI操作必须通过Qt Signal机制转发到主线程
+
         增量更新UI，用户可以立即看到各个阶段的数据，无需等待全部扫描完成。
-        
+
         # 优化原因：修复复杂UI更新的线程安全问题（涉及大量QLabel和QTableWidget）
         # 问题：此事件处理器需要更新10+个标签、设置样式、更新表格，跨线程操作会导致严重的Qt警告
-        # 解决：将所有UI操作（setText, setStyleSheet, setRowCount等）统一转发到主线程
+        # 解决：使用Qt Signal-Slot机制，确保UI更新在主线程执行（最佳实践）
         # 效果：消除Qt警告，确保UI更新流畅且不卡顿
+
+        # 🔧 关键修复：大量details数据不通过Signal传递，直接在此处理后转发到主线程
         """
         try:
             data = event.data
@@ -2315,26 +2552,74 @@ class DataCenter(BaseWidget, LoggerMixin):
             metrics = data.get("metrics", {})
             status = data.get("status", "")
 
-            # 🔧 修复：只输出摘要信息，不输出完整的details列表（防止刷屏）
-            metrics_summary = {k: v for k, v in metrics.items() if k != "details"}
-            if "details" in metrics:
-                metrics_summary["details_count"] = len(metrics["details"])
-            self.logger.info(f"📊 收到阶段{phase}推送: {metrics_summary}")
-            
-            # 转发到主线程执行UI更新
-            # 优化原因：避免跨线程访问多个QLabel、QTableWidget等UI组件
-            QTimer.singleShot(0, lambda: self._update_quality_scan_phase_ui(phase, metrics, status))
+            # 🔧 关键：提取details，避免通过Signal传递大量数据
+            # 🔧 修复：兼容性处理 - 优先从metrics中读取，如果不存在则从顶层读取（向后兼容）
+            details = metrics.get("details", [])
+            if not details:
+                # 向后兼容：如果metrics中没有details，尝试从顶层读取
+                details = data.get("details", [])
+            details_count = len(details)
+
+            # 构建不含details的metrics（用于Signal传递）
+            metrics_for_signal = {k: v for k, v in metrics.items() if k != "details"}
+
+            # 🔧 修复：只输出摘要信息
+            metrics_summary = dict(metrics_for_signal)
+            metrics_summary["details_count"] = details_count
+            self.logger.info(f"[事件处理] 📊 收到阶段{phase}推送: {metrics_summary}")
+
+            # 🔧 如果有details，通过Signal转发到主线程处理（✅ 更可靠的方式）
+            if details and details_count > 0:
+                # 🔥 强制输出到terminal
+                import sys
+                print(f"\n✅ [CRITICAL-DEBUG-UI] 前端收到details: {details_count}个", file=sys.stderr)
+                sys.stderr.flush()
+
+                self.logger.info(f"[事件处理] 📋 准备通过Signal推送 {details_count} 个问题品种详情到UI")
+                # 🔧 修复：使用Signal替代QTimer.singleShot（更可靠）
+                self.append_details_signal.emit(details)
+            else:
+                # 🔥 强制输出：没有details的情况
+                import sys
+                print(f"\n⚠️ [CRITICAL-DEBUG-UI] 前端收到metrics但details为空！", file=sys.stderr)
+                print(f"  details={details}", file=sys.stderr)
+                print(f"  details_count={details_count}", file=sys.stderr)
+                sys.stderr.flush()
+
+            # 🔧 使用Qt Signal传递控制信号和统计数据（不含details）
+            self.quality_scan_phase_signal.emit(phase, metrics_for_signal, status)
+            self.logger.info(f"[事件处理] ✅ 已发射quality_scan_phase_signal (phase={phase})")
 
         except Exception as e:
-            self.logger.error(f"处理质量扫描阶段事件失败: {e}", exc_info=True)
+            self.logger.error(f"[事件处理] ❌ 处理质量扫描阶段事件失败: {e}", exc_info=True)
 
     def _update_quality_scan_phase_ui(self, phase, metrics, status):
         """更新数据质量扫描阶段UI（在主线程中执行）"""
         try:
-            # 🆕 阶段0开始时清空详情表格，为增量更新做准备（phase 0是扫描开始的第一个信号）
-            if phase == 0 and self.quality_detail_table:
-                self.quality_detail_table.setRowCount(0)
-                self.quality_detail_table.viewport().update()  # 🆕 刷新显示
+            # 🔍 诊断：检查metrics和details的完整性
+            details_info = "无" if "details" not in metrics else f"{len(metrics.get('details', []))}个"
+            self.logger.info(
+                f"[UI更新] 🎯 _update_quality_scan_phase_ui被调用: "
+                f"phase={phase}, status={status}, "
+                f"metrics_keys={list(metrics.keys())}, "
+                f"details={details_info}"
+            )
+
+            # 🆕 阶段0开始时：标记扫描开始，清空详情表格
+            if phase == 0:
+                self._heavy_scan_running = True
+                self._update_scan_button_state()
+
+                if self.quality_detail_table:
+                    self.quality_detail_table.setRowCount(0)
+                    self.quality_detail_table.viewport().update()
+                    # 🔧 自动展开详情表格，让用户看到扫描结果
+                    if not self.quality_detail_table.isVisible():
+                        self.quality_detail_table.setVisible(True)
+                        # 同步按钮状态
+                        if self.toggle_quality_detail_btn:
+                            self.toggle_quality_detail_btn.setChecked(True)
+                        self.logger.info("✨ 自动展开详情表格（扫描开始）")
                 self.logger.info("✨ 扫描开始（阶段0），已清空详情表格")
 
             # 更新对应的UI组件
@@ -2357,44 +2642,46 @@ class DataCenter(BaseWidget, LoggerMixin):
 
             # 🆕 更新数据缺失
             if "data_missing_symbols" in metrics:
+                self._data_missing_count = metrics['data_missing_symbols']
                 if self.data_missing_symbols_label:
                     self.data_missing_symbols_label.setText(
-                        f"数据缺失: {metrics['data_missing_symbols']}"
+                        f"数据缺失: {self._data_missing_count}"
                     )
-                    self.data_missing_symbols_label.setStyleSheet("color: #FF9800;")
+                    if self._data_missing_count > 0:
+                        self.data_missing_symbols_label.setStyleSheet("color: #FF9800;")
+                    else:
+                        self.data_missing_symbols_label.setStyleSheet("color: #4CAF50;")
 
             if "outdated_symbols" in metrics:
+                self._outdated_count = metrics['outdated_symbols']
                 if self.outdated_symbols_label:
-                    self.outdated_symbols_label.setText(f"过时: {metrics['outdated_symbols']}")
-                    self.outdated_symbols_label.setStyleSheet("color: #FF9800;")
+                    self.outdated_symbols_label.setText(f"过时: {self._outdated_count}")
+                    if self._outdated_count > 0:
+                        self.outdated_symbols_label.setStyleSheet("color: #FF9800;")
+                    else:
+                        self.outdated_symbols_label.setStyleSheet("color: #4CAF50;")
+                    self.logger.info(f"[UI更新] ✅ 过时数据UI已更新: {self._outdated_count}")
 
-            if "avg_gap_days" in metrics:
-                if self.avg_gap_label:
-                    self.avg_gap_label.setText(f"平均滞后: {metrics['avg_gap_days']}天")
-                    self.avg_gap_label.setStyleSheet("")  # 清除灰色
+                # 🔧 关键修复：过时数据更新后立即更新按钮状态
+                self._update_repair_button_state()
 
             if "error_symbols" in metrics:
+                self._error_count = metrics['error_symbols']
                 if self.error_symbols_label:
-                    self.error_symbols_label.setText(f"错误: {metrics['error_symbols']}")
-                    self.error_symbols_label.setStyleSheet("color: #F44336;")
+                    self.error_symbols_label.setText(f"错误: {self._error_count}")
+                    if self._error_count > 0:
+                        self.error_symbols_label.setStyleSheet("color: #F44336;")
+                    else:
+                        self.error_symbols_label.setStyleSheet("color: #4CAF50;")
 
             if "warning_symbols" in metrics:
+                self._warning_count = metrics['warning_symbols']
                 if self.warning_symbols_label:
-                    self.warning_symbols_label.setText(f"警告: {metrics['warning_symbols']}")
-                    self.warning_symbols_label.setStyleSheet("color: #FFC107;")
-
-            if "quality_score" in metrics:
-                if self.quality_score_label:
-                    score = metrics["quality_score"]
-                    self.quality_score_label.setText(f"评分: {score}")
-                    # 根据评分设置颜色
-                    if score >= 90:
-                        color = "#4CAF50"  # 绿色
-                    elif score >= 70:
-                        color = "#FFC107"  # 黄色
+                    self.warning_symbols_label.setText(f"警告: {self._warning_count}")
+                    if self._warning_count > 0:
+                        self.warning_symbols_label.setStyleSheet("color: #FFC107;")
                     else:
-                        color = "#F44336"  # 红色
-                    self.quality_score_label.setStyleSheet(f"color: {color};")
+                        self.warning_symbols_label.setStyleSheet("color: #4CAF50;")
 
             # 更新扫描状态指示器（小图标）
             if self.quality_scan_status_label:
@@ -2455,16 +2742,17 @@ class DataCenter(BaseWidget, LoggerMixin):
                     + " padding: 12px; font-size: 14px; font-weight: bold; border-radius: 6px; margin-bottom: 10px;"
                 )
 
-            # 🆕 增量更新详情表格（如果有问题品种）
-            if "details" in metrics and metrics["details"]:
-                self._append_quality_details(metrics["details"])
-                self.logger.info(f"📋 阶段{phase}增量推送 {len(metrics['details'])} 个问题品种")
+            # 🔧 注意：details已在_on_quality_scan_phase中通过QTimer单独处理
+            # 此处不再处理details，避免重复（Signal不适合传递大量数据）
 
-            # 🔒 扫描完成时重置标志，允许下次手动刷新
+            # 🔒 扫描完成时：重置标志，更新按钮状态
             if status == "complete":
                 self.is_quality_scanning = False
-                self.logger.info("✅ 扫描完成，已重置扫描标志")
-                
+                self._heavy_scan_running = False
+                self._update_scan_button_state()
+                self._update_repair_button_state()
+                self.logger.info("✅ 扫描完成，已重置扫描标志并更新按钮状态")
+
         except Exception as e:
             self.logger.error(f"更新质量扫描阶段UI失败: {e}", exc_info=True)
 
@@ -3008,12 +3296,320 @@ class DataCenter(BaseWidget, LoggerMixin):
             self._reset_download_state()
             self.show_error(f"停止操作出错，但状态已清理: {e}")
 
+    def _pull_startup_data(self):
+        """主动拉取启动流程数据（补偿机制）
+
+        时序策略：
+        1. 如果事件已到达，只拉取本地和失效品种数据
+        2. 如果事件未到达，延迟后再次尝试（超时机制）
+        """
+        try:
+            self.logger.debug("🔄 [主动拉取] 开始拉取启动流程数据...")
+
+            # 检查事件是否已到达
+            if self._symbol_cache_event_received:
+                # 事件已到达，只拉取补充数据（本地品种、失效品种）
+                self.logger.debug(
+                    "🔄 [主动拉取] 事件已到达，只拉取补充数据（本地品种、失效品种）"
+                )
+                self._pull_supplement_data_only()
+                return
+
+            # 事件未到达，延迟后重试（超时机制）
+            # 如果3秒后事件仍未到达，则使用备用方案
+            self.logger.debug(
+                "🔄 [主动拉取] 事件未到达，延迟3秒后重试（超时机制）"
+            )
+            QTimer.singleShot(3000, self._pull_startup_data_with_timeout)
+
+        except Exception as e:
+            self.logger.error(f"❌ [主动拉取] 拉取启动流程数据失败: {e}", exc_info=True)
+
+    def _pull_startup_data_with_timeout(self):
+        """带超时的主动拉取（事件未到达时的备用方案）"""
+        try:
+            # 再次检查事件是否已到达
+            if self._symbol_cache_event_received:
+                self.logger.debug(
+                    "🔄 [主动拉取] 超时前事件已到达，切换到补充数据模式"
+                )
+                self._pull_supplement_data_only()
+                # 🔧 关键修复：即使事件已到达，也要确保按钮状态正确
+                if self._missing_count > 0:
+                    self.logger.info(
+                        f"🔧 [主动拉取] 事件已到达，手动触发按钮状态更新: _missing_count={self._missing_count}"
+                    )
+                    self._update_repair_button_state()
+                return
+
+            # 事件仍未到达，使用备用方案
+            self.logger.info(
+                "ℹ️ [主动拉取] 事件超时未到达，使用备用方案拉取数据"
+            )
+            self._pull_startup_data_fallback()
+
+            # 🔧 关键修复：备用方案执行后，再次检查是否有缺失数据需要更新按钮
+            if self._missing_count > 0:
+                self.logger.info(
+                    f"🔧 [主动拉取] 备用方案执行后，手动触发按钮状态更新: _missing_count={self._missing_count}"
+                )
+                self._update_repair_button_state()
+
+        except Exception as e:
+            self.logger.error(f"❌ [主动拉取] 超时拉取失败: {e}", exc_info=True)
+
+    def _pull_supplement_data_only(self):
+        """只拉取补充数据（本地品种、失效品种），不拉取总品种数"""
+        try:
+            if not self.db_manager:
+                return
+
+            local_symbols = self.db_manager.get_local_data_index()
+            invalid_symbols = self.db_manager.get_invalid_symbols()
+
+            self.logger.info(
+                f"🔄 [主动拉取] 补充数据: 本地={len(local_symbols)}, 失效={len(invalid_symbols)}"
+            )
+
+            # 只更新已下载和失效品种，不更新总品种
+            self._update_pulled_data_ui(
+                symbol_count=0,  # 不更新总品种
+                local_count=len(local_symbols),
+                invalid_count=len(invalid_symbols),
+                skip_total=True
+            )
+
+        except Exception as e:
+            self.logger.error(f"❌ [主动拉取] 补充数据拉取失败: {e}", exc_info=True)
+
+    def _pull_startup_data_fallback(self):
+        """备用方案：从缓存文件或服务拉取数据"""
+        try:
+            # 1. 从数据库获取本地数据索引
+            if not self.db_manager:
+                self.logger.warning("⚠️ [主动拉取] 数据库管理器不可用")
+                return
+
+            local_symbols = self.db_manager.get_local_data_index()
+            invalid_symbols = self.db_manager.get_invalid_symbols()
+
+            self.logger.info(
+                f"🔄 [主动拉取] 从数据库获取数据: "
+                f"本地品种={len(local_symbols)}, 失效品种={len(invalid_symbols)}"
+            )
+
+            # 2. 尝试从缓存文件获取总品种数
+            reference_count = 0
+            if self.data_center_service:
+                try:
+                    china_stock_engine = getattr(
+                        self.data_center_service, 'china_stock_engine', None
+                    )
+
+                    if china_stock_engine:
+                        cache_manager = getattr(china_stock_engine, 'cache_manager', None)
+                        if cache_manager:
+                            today = cache_manager.get_today()
+                            symbols_cache_file = cache_manager.root / f"symbols_{today}.json"
+
+                            if symbols_cache_file.exists():
+                                import json
+                                with open(symbols_cache_file, 'r', encoding='utf-8') as f:
+                                    symbols_data = json.load(f)
+                                    all_symbols = symbols_data.get('all_symbols', [])
+                                    reference_count = len(all_symbols)
+
+                                    self.logger.info(
+                                        f"🔄 [主动拉取] 从缓存获取参考品种数: {reference_count}"
+                                    )
+                except Exception as e:
+                    self.logger.debug(f"从缓存文件获取数据失败: {e}")
+
+            # 3. 计算总品种数
+            total_count = 0
+            use_pulled_data = False
+
+            if self._symbol_cache_count > 0:
+                # 优先使用事件推送的值（如果已到达）
+                total_count = self._symbol_cache_count
+                use_pulled_data = True
+                self.logger.info(
+                    f"🔄 [主动拉取] 使用事件推送值: 总品种={total_count}"
+                )
+            elif reference_count > 0:
+                # 使用缓存文件的值
+                total_count = reference_count + len(invalid_symbols)
+                use_pulled_data = True
+                self.logger.info(
+                    f"🔄 [主动拉取] 使用缓存文件: 总品种={total_count}"
+                )
+
+            # 4. 更新UI
+            if use_pulled_data:
+                # 🔧 关键修复：如果事件已到达，优先使用事件推送的缺失数
+                # 否则通过总品种数计算缺失数
+                if self._symbol_cache_event_received and self._missing_count > 0:
+                    # 事件已到达，使用事件推送的缺失数（更准确）
+                    self.logger.info(
+                        f"🔄 [主动拉取] 使用事件推送的缺失数: {self._missing_count}"
+                    )
+                    # 更新UI，但保持事件推送的缺失数
+                    self._update_pulled_data_ui(
+                        symbol_count=total_count,
+                        local_count=len(local_symbols),
+                        invalid_count=len(invalid_symbols),
+                        skip_total=False
+                    )
+                    # 🔧 关键修复：手动设置缺失数，确保按钮状态正确
+                    if self._missing_count > 0:
+                        self.logger.info(
+                            f"🔧 [主动拉取] 手动触发按钮状态更新: _missing_count={self._missing_count}"
+                        )
+                        self._update_repair_button_state()
+                else:
+                    # 事件未到达，通过计算得到缺失数
+                    self._update_pulled_data_ui(
+                        symbol_count=total_count,
+                        local_count=len(local_symbols),
+                        invalid_count=len(invalid_symbols),
+                        skip_total=False
+                    )
+            else:
+                # 无法获取总品种数，只更新已下载和失效品种
+                self.logger.debug(
+                    f"🔄 [主动拉取] 无法获取总品种数，只更新已下载和失效品种"
+                )
+                self._update_pulled_data_ui(
+                    symbol_count=0,
+                    local_count=len(local_symbols),
+                    invalid_count=len(invalid_symbols),
+                    skip_total=True
+                )
+                # 🔧 关键修复：即使skip_total=True，如果事件已到达且有缺失数，也要更新按钮
+                if self._symbol_cache_event_received and self._missing_count > 0:
+                    self.logger.info(
+                        f"🔧 [主动拉取] 事件已到达，手动触发按钮状态更新: _missing_count={self._missing_count}"
+                    )
+                    self._update_repair_button_state()
+
+        except Exception as e:
+            self.logger.error(f"❌ [主动拉取] 备用方案拉取失败: {e}", exc_info=True)
+
+    def _pull_startup_data_supplement(self):
+        """事件到达后的补充拉取（只拉取本地和失效品种）"""
+        self._pull_supplement_data_only()
+
+    def _update_pulled_data_ui(self, symbol_count: int, local_count: int, invalid_count: int, skip_total: bool = False):
+        """更新主动拉取的数据到UI
+
+        Args:
+            symbol_count: 总品种数（参考品种+失效品种）
+            local_count: 已下载品种数
+            invalid_count: 失效品种数
+            skip_total: 是否跳过总品种的更新（当无可用数据源时）
+        """
+        try:
+            if skip_total:
+                self.logger.info(
+                    f"📋 [主动拉取] 更新UI（跳过总品种）: "
+                    f"已下载={local_count}, 失效={invalid_count}"
+                )
+            else:
+                self.logger.info(
+                    f"📋 [主动拉取] 更新UI: 总品种={symbol_count}, "
+                    f"已下载={local_count}, 失效={invalid_count}"
+                )
+
+            # 更新状态变量
+            self._downloaded_count = local_count
+            self._invalid_symbols_count = invalid_count
+
+            # 🔧 关键修复：保存当前的 _missing_count，避免被错误覆盖
+            previous_missing_count = self._missing_count
+
+            if not skip_total:
+                # 只有在不跳过时才更新总品种和缺失数
+                self._symbol_cache_count = symbol_count
+                # 计算品种缺失数：总品种 - 失效 - 已下载
+                reference_count = symbol_count - invalid_count
+                missing_count = max(0, reference_count - local_count)
+                self._missing_count = missing_count
+                self.logger.info(
+                    f"🔧 [主动拉取] 更新缺失数: {missing_count} (之前={previous_missing_count})"
+                )
+            else:
+                # 🔧 关键修复：skip_total=True 时，不更新 _missing_count
+                # 保持事件推送的值，避免覆盖正确的缺失数
+                self.logger.info(
+                    f"🔧 [主动拉取] 跳过总品种更新，保持 _missing_count={previous_missing_count} "
+                    f"(不覆盖事件推送的值)"
+                )
+                # 使用当前的 _missing_count 更新标签（不重新计算）
+                missing_count = previous_missing_count
+
+            # 更新总品种标签（如果 skip_total=False 且有值）
+            if not skip_total and symbol_count > 0:
+                if self.total_symbols_label:
+                    self.total_symbols_label.setText(f"总品种: {symbol_count}")
+                    self.total_symbols_label.setStyleSheet("color: #2196F3; font-weight: bold;")
+
+            # 更新品种缺失标签（使用当前的 _missing_count）
+            if self.missing_symbols_label:
+                current_missing = self._missing_count
+                self.missing_symbols_label.setText(f"品种缺失: {current_missing}")
+                if current_missing > 0:
+                    self.missing_symbols_label.setStyleSheet("color: #FF9800;")
+                else:
+                    self.missing_symbols_label.setStyleSheet("color: #4CAF50;")
+
+            # 总是更新已下载和失效品种
+            if self.downloaded_symbols_label:
+                self.downloaded_symbols_label.setText(f"已下载: {local_count}")
+                self.downloaded_symbols_label.setStyleSheet("color: #2196F3; font-weight: bold;")
+
+            if self.invalid_symbols_label:
+                self.invalid_symbols_label.setText(f"失效品种: {invalid_count}")
+                if invalid_count > 0:
+                    self.invalid_symbols_label.setStyleSheet("color: #FF5722;")
+                else:
+                    self.invalid_symbols_label.setStyleSheet("color: #4CAF50;")
+
+            # 🔧 关键修复：更新所有按钮状态
+            self._update_delete_invalid_button_state()
+            self._update_repair_button_state()  # 🔧 关键修复：确保修复按钮状态也被更新
+            # 🔧 关键修复：更新按钮状态前记录当前缺失数
+            self.logger.info(
+                f"🔧 [主动拉取] 更新按钮状态前: _missing_count={self._missing_count}, "
+                f"_outdated_count={self._outdated_count}, _error_count={self._error_count}, "
+                f"_data_missing_count={self._data_missing_count}, _warning_count={self._warning_count}"
+            )
+            self._update_repair_button_state()
+
+            # 🆕 标记启动流程已完成，并更新扫描按钮
+            self._lightweight_running = False
+            self._update_scan_button_state()
+            self.logger.info("🔵 [主动拉取] 启动流程标记为完成，扫描按钮已更新")
+
+            # 🆕 主动触发本地数据联想加载
+            self.logger.info("🔄 [主动拉取] 触发本地数据联想加载...")
+            self._load_local_data_index_for_autocomplete()
+
+            self.logger.info("✅ [主动拉取] UI更新完成")
+
+        except Exception as e:
+            self.logger.error(f"❌ [主动拉取] 更新UI失败: {e}", exc_info=True)
+
     def _register_event_handlers(self):
         """注册vnpy事件监听器"""
         try:
             self.event_engine = get_event_engine()
 
+            # 🔍 诊断日志
+            self.logger.info(f"[事件注册] 步骤1: 获取event_engine实例: {self.event_engine}")
+
             if self.event_engine:
+                self.logger.info("[事件注册] 步骤2: event_engine可用，开始注册事件...")
+
                 # 注册下载事件监听器
                 self.event_engine.register(EVENT_CHINASTOCK_DOWNLOAD, self._on_download_event)
                 # 注册数据质量事件监听器
@@ -3023,32 +3619,87 @@ class DataCenter(BaseWidget, LoggerMixin):
                 self.event_engine.register("eLocalDataIndexReady", self._on_local_data_index_ready)
                 # 🆕 注册数据质量阶段性推送事件监听器
                 self.event_engine.register("eQualityScanPhase", self._on_quality_scan_phase)
+                # 🔧 强制输出日志，使用print和logger双重输出
+                print("[事件注册] 步骤3: 已注册 eQualityScanPhase")
+                self.logger.info("[事件注册] 步骤3: 已注册 eQualityScanPhase")
+
+                # 🔧 关键修复：在步骤4之前添加明确的日志分隔符
+                print("[事件注册] ===== 开始注册步骤4: eDataMetricsUpdated =====")
+                self.logger.info("[事件注册] ===== 开始注册步骤4: eDataMetricsUpdated =====")
+
                 # 🆕 注册新增事件监听器
-                self.event_engine.register("eDataMetricsUpdated", self._on_data_metrics_updated)
+                # 🔧 关键修复：直接使用硬编码字符串，最简化注册流程
+                event_name = "eDataMetricsUpdated"
+
+                print(f"[事件注册] 步骤4-开始: event_name='{event_name}'")
+                self.logger.info(f"[事件注册] 步骤4-开始: event_name='{event_name}'")
+
+                # 🔧 关键修复：直接注册，添加详细错误捕获
+                # 直接注册事件处理器
+                print(f"[事件注册] 步骤4-准备注册: event_name={event_name}, handler={self._on_data_metrics_updated}")
+                try:
+                    self.event_engine.register(event_name, self._on_data_metrics_updated)
+                    print(f"[事件注册] 步骤4: ✅ register()调用成功")
+                    self.logger.info(f"[事件注册] 步骤4: ✅ 已注册 {event_name} -> _on_data_metrics_updated")
+                except Exception as reg_exc:
+                    print(f"[事件注册] ❌ register()调用失败: {reg_exc}")
+                    import traceback
+                    print(f"[事件注册] 注册异常堆栈:\n{traceback.format_exc()}")
+                    self.logger.error(f"[事件注册] ❌ register()调用失败: {reg_exc}", exc_info=True)
+                    raise  # 重新抛出，让外层捕获
+
+                # 立即验证事件注册是否成功
+                print(f"[事件注册] 步骤4-准备验证: 检查_handlers属性")
+                try:
+                    if hasattr(self.event_engine, '_handlers'):
+                        handlers = self.event_engine._handlers.get(event_name, [])
+                        print(f"[事件注册] 步骤4-验证结果: 处理器数量={len(handlers)}")
+                        if len(handlers) == 0:
+                            print(f"[事件注册] ❌ 警告: {event_name} 注册后处理器数量为0！")
+                            self.logger.error(f"[事件注册] ❌ 警告: {event_name} 注册后处理器数量为0！")
+                        else:
+                            print(f"[事件注册] ✅ 验证通过: {event_name} 已注册 {len(handlers)} 个处理器")
+                            self.logger.info(f"[事件注册] ✅ 验证通过: {event_name} 已注册 {len(handlers)} 个处理器")
+                    else:
+                        print(f"[事件注册] ⚠️ event_engine 没有 _handlers 属性")
+                        self.logger.warning(f"[事件注册] ⚠️ event_engine 没有 _handlers 属性，无法验证注册状态")
+                except Exception as verify_exc:
+                    print(f"[事件注册] ❌ 验证过程失败: {verify_exc}")
+                    import traceback
+                    print(f"[事件注册] 验证异常堆栈:\n{traceback.format_exc()}")
+                    self.logger.error(f"[事件注册] ❌ 验证过程失败: {verify_exc}", exc_info=True)
+                    raise  # 重新抛出，让外层捕获
                 self.event_engine.register(
                     "eInvalidSymbolsUpdated", self._on_invalid_symbols_updated
                 )
+                self.logger.info(f"[事件注册] 步骤5: 已注册 eInvalidSymbolsUpdated -> {self._on_invalid_symbols_updated}")
                 self.event_engine.register("eFileWatcherStarted", self._on_file_watcher_started)
                 self.event_engine.register("eDataScanFinished", self._on_data_scan_finished)
+                # 🆕 注册启动流程相关事件监听器
+                self.event_engine.register(EVENT_SYMBOL_CACHE_LOADED, self._on_symbol_cache_loaded)
+                self.logger.info(f"[事件注册] 步骤6: 已注册 {EVENT_SYMBOL_CACHE_LOADED} -> {self._on_symbol_cache_loaded}")
+                self.event_engine.register(EVENT_VALIDATION_COMPLETED, self._on_validation_completed)
+                self.logger.info(f"[事件注册] 步骤7: 已注册 {EVENT_VALIDATION_COMPLETED}")
                 # 注册服务器池状态事件监听器
                 self.event_engine.register(
                     "EVENT_SERVER_POOL_STATUS", self._on_server_status_update
                 )
                 # 注册tick事件监听器（用于实时监控显示）
                 self.event_engine.register(EVENT_TICK, self._on_tick_event)
-                self.logger.info(
-                    "✅ vnpy事件监听器已注册（下载+数据质量+本地索引+阶段推送+服务器状态+TICK）"
-                )
+
+                self.logger.info("[事件注册] 步骤8: ✅ 完成注册所有事件监听器（下载+数据质量+本地索引+阶段推送+服务器状态+TICK）")
 
                 # 🆕 主动查询一次服务器状态（Pull模式）
                 # 解决启动时已完成测速但前端还未创建的问题
                 self._fetch_initial_server_status()
             else:
-                self.logger.warning("⚠️ event_engine不可用，事件推送功能不可用")
-                self.logger.info("将使用备用的轮询机制")
+                self.logger.warning("[事件注册] ⚠️ event_engine为None，事件推送功能不可用")
+                self.logger.info("[事件注册] 将使用备用的轮询机制")
 
         except Exception as e:
-            self.logger.error("注册事件监听器失败: %s", e)
+            self.logger.error(f"[事件注册] ❌ 注册事件监听器失败: {e}", exc_info=True)
+            import traceback
+            self.logger.error(f"[事件注册] 完整异常堆栈:\n{traceback.format_exc()}")
 
     def _unregister_event_handlers(self):
         """注销vnpy事件监听器"""
@@ -3073,10 +3724,10 @@ class DataCenter(BaseWidget, LoggerMixin):
 
     def _on_server_status_update(self, event):
         """处理服务器状态更新事件
-        
+
         ⚠️ 关键：vnpy事件引擎可能在非Qt主线程中调用此方法
         所有Qt UI操作必须通过QTimer.singleShot转发到主线程
-        
+
         # 优化原因：修复setText()和setStyleSheet()的线程安全问题
         # 问题：后台服务器测速完成后，通过vnpy事件通知UI更新状态标签
         # 解决：将所有QLabel的setText/setStyleSheet操作转发到主线程
@@ -3088,10 +3739,11 @@ class DataCenter(BaseWidget, LoggerMixin):
             status = data.get("status", "unknown")
 
             self.logger.debug(f"服务器状态已更新: 可用服务器: {available}/{total}")
-            
+
             # 转发到主线程执行UI更新
             # 优化原因：避免跨线程调用QLabel.setText()和setStyleSheet()
-            QTimer.singleShot(0, lambda: self._update_server_status_ui(available, total, status))
+            from functools import partial
+            QTimer.singleShot(0, partial(self._update_server_status_ui, available, total, status))
 
         except Exception as e:
             self.logger.error("处理服务器状态事件失败: %s", e, exc_info=True)
@@ -3174,7 +3826,7 @@ class DataCenter(BaseWidget, LoggerMixin):
 
         ⚠️ 关键：vnpy事件引擎可能在非Qt主线程中调用此方法
         所有Qt UI操作必须通过QTimer.singleShot转发到主线程
-        
+
         # 优化原因：修复Qt线程安全问题
         # 问题：vnpy事件引擎在后台线程中调用此方法，如果直接执行UI操作（如setText, setValue等），
         #       会导致"QObject: Cannot create children for a parent that is in a different thread"警告
@@ -3191,34 +3843,39 @@ class DataCenter(BaseWidget, LoggerMixin):
                 completed = event_data.get("completed", 0)
                 total = event_data.get("total", 0)
                 current_item = event_data.get("current_item", "")
-                
+
                 # 转发到主线程执行UI更新
                 # 优化原因：避免在vnpy后台线程中直接调用self.download_progress.setValue()等UI操作
-                QTimer.singleShot(0, lambda: self._update_progress_ui(progress_pct, completed, total, current_item))
+                QTimer.singleShot(
+                    0,
+                    lambda: self._update_progress_ui(progress_pct, completed, total, current_item),
+                )
 
             elif status == "success":
                 # 下载成功完成
                 count = event_data.get("count", 0)
                 self.logger.info("✅ 下载完成事件：%d 个数据集", count)
-                
+
                 # 转发到主线程执行UI更新
                 # 优化原因：show_info()内部会发射Qt信号，必须在主线程执行
-                QTimer.singleShot(0, lambda: self._handle_download_complete(count))
+                from functools import partial
+                QTimer.singleShot(0, partial(self._handle_download_complete, count))
 
             elif status == "error":
                 # 下载失败
                 error_msg = event_data.get("error", "未知错误")
                 self.logger.error("❌ 下载失败事件：%s", error_msg)
-                
+
                 # 转发到主线程执行UI更新
                 # 优化原因：show_error()会创建QMessageBox等UI对象，必须在主线程执行
-                QTimer.singleShot(0, lambda: self._handle_download_error(error_msg))
+                from functools import partial
+                QTimer.singleShot(0, partial(self._handle_download_error, error_msg))
 
             elif status == "stopped":
                 # 下载被停止
                 count = event_data.get("count", 0)
                 self.logger.info("⛔ 下载停止事件：已完成 %d 个", count)
-                
+
                 # 转发到主线程执行UI更新
                 # 优化原因：避免跨线程访问QWidget（标签、进度条等）
                 QTimer.singleShot(0, lambda: self._handle_download_stopped(count))
@@ -3228,7 +3885,7 @@ class DataCenter(BaseWidget, LoggerMixin):
 
     def _update_progress_ui(self, progress_pct, completed, total, current_item):
         """更新进度UI（在主线程中执行）
-        
+
         # 优化原因：UI更新方法独立出来，确保在主线程执行
         # 将事件处理逻辑（数据提取）与UI操作（Widget更新）分离
         # 优点：1) 线程安全 2) 代码结构清晰 3) 方便测试和维护
@@ -3241,9 +3898,7 @@ class DataCenter(BaseWidget, LoggerMixin):
 
             # 2. 更新状态标签
             if self.progress_label:
-                self.progress_label.setText(
-                    f"📥 下载中: {completed}/{total} ({progress_pct:.1f}%)"
-                )
+                self.progress_label.setText(f"📥 下载中: {completed}/{total} ({progress_pct:.1f}%)")
 
             # 3. 文本日志（降低频率，仅关键节点）
             should_log = (
@@ -3255,7 +3910,7 @@ class DataCenter(BaseWidget, LoggerMixin):
             if should_log and self.progress_text:
                 log_text = f"[{completed}/{total}] {progress_pct:.1f}% - {current_item}"
                 self._append_progress_text(log_text)
-                
+
         except Exception as e:
             self.logger.error("更新进度UI失败: %s", e, exc_info=True)
 
@@ -3277,7 +3932,7 @@ class DataCenter(BaseWidget, LoggerMixin):
             # 重置状态
             self._reset_download_state()
             self.show_info(f"✅ 下载任务已全部完成！共 {count} 个数据集")
-            
+
         except Exception as e:
             self.logger.error("处理下载完成失败: %s", e, exc_info=True)
 
@@ -3295,7 +3950,7 @@ class DataCenter(BaseWidget, LoggerMixin):
 
             self._reset_download_state()
             self.show_error(f"下载失败: {error_msg}")
-            
+
         except Exception as e:
             self.logger.error("处理下载错误失败: %s", e, exc_info=True)
 
@@ -3313,7 +3968,7 @@ class DataCenter(BaseWidget, LoggerMixin):
 
             self._reset_download_state()
             self.show_info(f"下载已停止，已完成 {count} 个数据集")
-            
+
         except Exception as e:
             self.logger.error("处理下载停止失败: %s", e, exc_info=True)
 
@@ -4104,7 +4759,7 @@ class DataCenter(BaseWidget, LoggerMixin):
 
     def _on_tick_event(self, event):
         """处理tick事件
-        
+
         ⚠️ 关键：vnpy事件引擎可能在非Qt主线程中调用此方法
         所有Qt UI操作必须通过QTimer.singleShot转发到主线程
         """
@@ -4285,17 +4940,23 @@ class DataCenter(BaseWidget, LoggerMixin):
         load_thread.start()
 
     def _set_quality_scan_status(self, scanning: bool) -> None:
-        """设置质量扫描状态指示器
+        """设置质量扫描状态指示器（Qt Slot，自动在主线程执行）
 
         Args:
             scanning: True=正在扫描，False=扫描完成
         """
+        self.logger.info(
+            "🔧 [Slot] _set_quality_scan_status 被调用: scanning=%s（主线程）", scanning
+        )
+
         if not hasattr(self, "quality_scan_status_label"):
-            self.logger.warning("quality_scan_status_label 未初始化，无法设置状态")
+            self.logger.warning(
+                "❌ [Slot] quality_scan_status_label 未初始化（hasattr=False），无法设置状态"
+            )
             return
 
         if self.quality_scan_status_label is None:
-            self.logger.warning("quality_scan_status_label 为 None，无法设置状态")
+            self.logger.warning("❌ [Slot] quality_scan_status_label 为 None，无法设置状态")
             return
 
         try:
@@ -4304,44 +4965,249 @@ class DataCenter(BaseWidget, LoggerMixin):
                 self.quality_scan_status_label.setText("🔄")
                 self.quality_scan_status_label.setStyleSheet("color: #2196F3; font-size: 14px;")
                 self.quality_scan_status_label.setToolTip("正在进行数据质量感知...")
-                self.logger.info("✓ 状态指示器：正在扫描")
+                self.logger.info("✅ [Slot] 状态指示器：正在扫描")
             else:
                 # 扫描完成：显示绿色对勾
                 self.quality_scan_status_label.setText("✅")
                 self.quality_scan_status_label.setStyleSheet("color: #4CAF50; font-size: 14px;")
                 self.quality_scan_status_label.setToolTip("数据质量感知已完成")
-                self.logger.info("✓ 状态指示器：扫描完成")
+                self.logger.info("✅ [Slot] 状态指示器：扫描完成")
         except Exception as e:
-            self.logger.error("设置状态指示器失败: %s", e, exc_info=True)
+            self.logger.error("❌ [Slot] 设置状态指示器失败: %s", e, exc_info=True)
+
+    def _update_scan_button_state(self):
+        """更新数据扫描按钮状态
+
+        启用条件：启动流程未运行 AND 扫描流程未运行
+        """
+        try:
+            if not self.scan_data_btn:
+                return
+
+            # 只有两个流程都不在运行时才启用
+            should_enable = not self._lightweight_running and not self._heavy_scan_running
+
+            self.scan_data_btn.setEnabled(should_enable)
+
+            if should_enable:
+                self.scan_data_btn.setStyleSheet("background-color: #2196F3; color: white;")
+                self.logger.debug("🔵 数据扫描按钮已启用")
+            else:
+                self.scan_data_btn.setStyleSheet("")
+                self.logger.debug("⚪ 数据扫描按钮已禁用")
+
+        except Exception as e:
+            self.logger.error(f"更新数据扫描按钮状态失败: {e}", exc_info=True)
+
+    def _update_delete_invalid_button_state(self):
+        """更新删除失效数据按钮状态
+
+        启用条件：失效品种数 > 0
+        """
+        try:
+            if not self.delete_invalid_btn:
+                return
+
+            should_enable = self._invalid_symbols_count > 0
+
+            self.delete_invalid_btn.setEnabled(should_enable)
+
+            if should_enable:
+                self.delete_invalid_btn.setStyleSheet("background-color: #FF5722; color: white;")
+                self.logger.debug(f"🔴 删除失效数据按钮已启用 (失效品种: {self._invalid_symbols_count})")
+            else:
+                self.delete_invalid_btn.setStyleSheet("")
+                self.logger.debug("⚪ 删除失效数据按钮已禁用 (无失效品种)")
+
+        except Exception as e:
+            self.logger.error(f"更新删除失效数据按钮状态失败: {e}", exc_info=True)
+
+    def _update_repair_button_state(self):
+        """更新下载修复数据按钮状态
+
+        启用条件：任何问题数据 > 0
+        问题数据包括：品种缺失、过时、错误、数据缺失、警告
+        """
+        try:
+            if not self.repair_download_btn:
+                self.logger.warning("⚠️ repair_download_btn 未初始化，无法更新按钮状态")
+                return
+
+            # 🔧 确保所有计数变量已初始化（防御性编程）
+            missing = getattr(self, "_missing_count", 0)
+            outdated = getattr(self, "_outdated_count", 0)
+            error = getattr(self, "_error_count", 0)
+            data_missing = getattr(self, "_data_missing_count", 0)
+            warning = getattr(self, "_warning_count", 0)
+
+            # 计算总问题数
+            total_problems = missing + outdated + error + data_missing + warning
+
+            should_enable = total_problems > 0
+
+            # 🔧 详细日志记录，便于调试
+            self.logger.info(
+                f"🔧 [按钮状态] 计算问题数据: 缺失={missing}, 过时={outdated}, "
+                f"错误={error}, 数据缺失={data_missing}, 警告={warning}, "
+                f"总计={total_problems}, 应启用={should_enable}"
+            )
+
+            # 🔧 关键修复：先获取当前状态，用于对比
+            current_enabled = self.repair_download_btn.isEnabled()
+
+            if should_enable:
+                # 🔧 关键修复：使用对象名称选择器确保样式优先级最高
+                # Qt样式表优先级：对象名称 > 类名，这样可以覆盖全局样式
+                object_name = self.repair_download_btn.objectName() or "repair_download_btn"
+                self.repair_download_btn.setStyleSheet(
+                    f"QPushButton#{object_name}:enabled {{"
+                    "background-color: #4CAF50; "
+                    "color: white; "
+                    "border: none; "
+                    "padding: 8px 16px; "
+                    "border-radius: 4px;"
+                    "}"
+                    f"QPushButton#{object_name}:disabled {{"
+                    "background-color: #666; "
+                    "color: #999; "
+                    "border: none; "
+                    "padding: 8px 16px; "
+                    "border-radius: 4px;"
+                    "}"
+                )
+                # 🔧 关键修复：先设置状态，再设置样式，确保样式生效
+                self.repair_download_btn.setEnabled(True)  # 🔧 先设置为启用
+
+                # 🔧 验证状态是否真的被设置
+                actual_enabled = self.repair_download_btn.isEnabled()
+
+                # 🔧 验证父组件是否被禁用
+                parent_enabled = True
+                from PySide6.QtWidgets import QWidget
+                parent_widget = self.repair_download_btn.parent()
+                if parent_widget and isinstance(parent_widget, QWidget):
+                    parent_enabled = parent_widget.isEnabled()
+
+                self.logger.info(
+                    f"🟢 下载修复数据按钮已启用 (问题数据: {total_problems}, "
+                    f"缺失={missing}, 过时={outdated}), "
+                    f"之前状态={current_enabled}, 当前状态={actual_enabled}, "
+                    f"父组件启用={parent_enabled}"
+                )
+
+                # 🔧 如果状态设置失败，记录警告
+                if not actual_enabled:
+                    self.logger.error(
+                        f"❌ 按钮状态设置失败！期望启用=True, 实际={actual_enabled}"
+                    )
+                    # 🔧 尝试强制启用
+                    self.repair_download_btn.setEnabled(True)
+
+                # 🔧 如果父组件被禁用，记录警告
+                if not parent_enabled:
+                    self.logger.warning(
+                        f"⚠️ 按钮的父组件被禁用，这会导致按钮不可点击！"
+                    )
+                    # 🔧 尝试启用父组件
+                    if parent_widget and isinstance(parent_widget, QWidget):
+                        parent_widget.setEnabled(True)
+                        self.logger.info("✅ 已尝试启用父组件")
+            else:
+                object_name = self.repair_download_btn.objectName() or "repair_download_btn"
+                self.repair_download_btn.setStyleSheet(
+                    f"QPushButton#{object_name}:enabled {{"
+                    "background-color: #666; "
+                    "color: #999; "
+                    "border: none; "
+                    "padding: 8px 16px; "
+                    "border-radius: 4px;"
+                    "}"
+                )
+                self.repair_download_btn.setEnabled(False)  # 🔧 显式设置为禁用
+
+                # 🔧 验证状态是否真的被设置
+                actual_enabled = self.repair_download_btn.isEnabled()
+                self.logger.info(
+                    f"⚪ 下载修复数据按钮已禁用 (无问题数据), "
+                    f"之前状态={current_enabled}, 当前状态={actual_enabled}"
+                )
+
+        except Exception as e:
+            self.logger.error(f"更新下载修复数据按钮状态失败: {e}", exc_info=True)
 
     def _trigger_data_scan(self) -> None:
-        """触发数据扫描（仅错误/缺失数据）"""
+        """触发数据扫描（完整3阶段扫描）
+
+        🔧 关键修复：在后台线程执行，避免阻塞UI主线程导致崩溃
+        """
         try:
             if not self.data_center_service:
                 self.show_error("数据中心服务未初始化")
                 return
 
-            self.logger.info("触发数据扫描...")
+            self.logger.info("🔍 触发数据扫描（后台线程）...")
 
-            # 调用服务方法
-            result = self.data_center_service.scan_errors_missing_only()
+            # 禁用扫描按钮，防止重复触发
+            if self.scan_data_btn:
+                self.scan_data_btn.setEnabled(False)
+                self.scan_data_btn.setText("扫描中...")
 
-            if result.get("success"):
-                self.show_info(
-                    f"扫描完成: 缺失={result.get('missing_symbols', 0)}, "
-                    f"错误={result.get('error_symbols', 0)}"
-                )
-            else:
-                self.show_error(f"扫描失败: {result.get('message', '未知错误')}")
+            # 🔧 在后台线程执行扫描，避免阻塞UI
+            from threading import Thread
+
+            def run_scan():
+                """后台线程执行扫描"""
+                try:
+                    self.logger.info("📊 开始执行数据扫描...")
+                    result = self.data_center_service.scan_errors_missing_only()
+
+                    # 使用QTimer转发结果到主线程更新UI
+                    if result.get("success"):
+                        QTimer.singleShot(0, lambda: self.show_info(
+                            f"扫描完成: 缺失={result.get('missing_symbols', 0)}, "
+                            f"错误={result.get('error_symbols', 0)}, "
+                            f"警告={result.get('warning_symbols', 0)}"
+                        ))
+                    else:
+                        QTimer.singleShot(0, lambda: self.show_error(
+                            f"扫描失败: {result.get('message', '未知错误')}"
+                        ))
+
+                    self.logger.info("✅ 数据扫描完成")
+
+                except Exception as e:
+                    self.logger.exception("❌ 数据扫描异常: %s", e)
+                    QTimer.singleShot(0, lambda: self.show_error(f"扫描失败: {str(e)}"))
+
+                finally:
+                    # 恢复扫描按钮状态
+                    QTimer.singleShot(0, lambda: self._restore_scan_button())
+
+            # 启动后台线程
+            scan_thread = Thread(target=run_scan, daemon=True, name="DataScanThread")
+            scan_thread.start()
 
         except Exception as e:
-            self.logger.exception("数据扫描失败: %s", e)
-            self.show_error(f"数据扫描失败: {str(e)}")
+            self.logger.exception("启动数据扫描失败: %s", e)
+            self.show_error(f"启动扫描失败: {str(e)}")
+            self._restore_scan_button()
+
+    def _restore_scan_button(self):
+        """恢复扫描按钮状态"""
+        try:
+            if self.scan_data_btn:
+                self.scan_data_btn.setEnabled(True)
+                self.scan_data_btn.setText("🔍 数据扫描")
+                self.scan_data_btn.setStyleSheet("background-color: #2196F3; color: white;")
+        except Exception as e:
+            self.logger.error(f"恢复扫描按钮状态失败: {e}")
 
     def _trigger_delete_invalid(self) -> None:
         """触发删除失效数据（带确认对话框）"""
         try:
             from PySide6.QtWidgets import QInputDialog
+
+            self.logger.info("🗑️ [删除失效数据] 用户点击删除按钮")
 
             # 弹出确认对话框
             text, ok = QInputDialog.getText(
@@ -4350,28 +5216,41 @@ class DataCenter(BaseWidget, LoggerMixin):
                 "请输入'删除'以确认删除失效数据:",
             )
 
+            self.logger.info(f"🗑️ [删除失效数据] 对话框结果: ok={ok}, text='{text}'")
+
             if not ok or text != "删除":
-                self.logger.info("用户取消删除操作")
+                self.logger.info("🗑️ [删除失效数据] 用户取消删除操作")
                 return
 
             if not self.data_center_service:
+                self.logger.error("🗑️ [删除失效数据] 数据中心服务未初始化")
                 self.show_error("数据中心服务未初始化")
                 return
 
-            self.logger.info("开始删除失效数据...")
+            self.logger.info("🗑️ [删除失效数据] 开始删除失效数据...")
 
             # 调用服务方法
             result = self.data_center_service.delete_invalid_symbols()
 
+            self.logger.info(f"🗑️ [删除失效数据] 服务返回结果: {result}")
+
             if result.get("success"):
-                self.show_info(
-                    f"删除完成: 成功={result.get('deleted', 0)}, " f"失败={result.get('failed', 0)}"
-                )
+                deleted_count = result.get('deleted', 0)
+                failed_count = result.get('failed', 0)
+                msg = f"删除完成: 成功={deleted_count}, 失败={failed_count}"
+                self.logger.info(f"✅ {msg}")
+                self.show_info(msg)
+
+                # 🆕 刷新UI显示
+                self.logger.info("🔄 [删除失效数据] 刷新UI...")
+                QTimer.singleShot(1000, self._pull_startup_data)
             else:
-                self.show_error(f"删除失败: {result.get('message', '未知错误')}")
+                error_msg = result.get('message', '未知错误')
+                self.logger.error(f"❌ [删除失效数据] 删除失败: {error_msg}")
+                self.show_error(f"删除失败: {error_msg}")
 
         except Exception as e:
-            self.logger.exception("删除失效数据失败: %s", e)
+            self.logger.exception("❌ [删除失效数据] 删除失效数据失败: %s", e)
             self.show_error(f"删除失效数据失败: {str(e)}")
 
     def _refresh_quality_overview(self) -> None:
@@ -4380,11 +5259,12 @@ class DataCenter(BaseWidget, LoggerMixin):
         self._trigger_data_scan()
 
     def _update_quality_overview_ui(self, overview_data: dict) -> None:
-        """更新质量概览UI显示
+        """更新质量概览UI显示（Qt Slot，自动在主线程执行）
 
         Args:
             overview_data: 质量概览数据
         """
+        self.logger.info("🔧 [Slot] _update_quality_overview_ui 被调用（主线程）")
         try:
             # 更新各标签
             total = overview_data.get("total_symbols", 0)
@@ -4393,117 +5273,114 @@ class DataCenter(BaseWidget, LoggerMixin):
             data_missing = overview_data.get("data_missing_symbols", 0)  # 🆕 数据缺失
             errors = overview_data.get("error_symbols", 0)
             warnings = overview_data.get("warning_symbols", 0)
-            score = overview_data.get("quality_score", 0)
 
             # 🆕 数据更新状态
             outdated = overview_data.get("outdated_symbols", 0)
-            avg_gap = overview_data.get("avg_gap_days", 0)
-            data_lagging = overview_data.get("data_lagging_days", 0)  # 🆕 数据滞后天数
 
-            # 🔍 DEBUG: 输出接收到的数据
-            # print(...)  # 🔧 已移除：DEBUG调试输出
-            # print(...)  # 🔧 已移除：DEBUG调试输出
-            # print(...)  # 🔧 已移除：DEBUG调试输出
-            # print(...)  # 🔧 已移除：DEBUG调试输出
-            # print(...)  # 🔧 已移除：DEBUG调试输出
+            # 🔧 日志输出：接收到的质量数据（用于调试）
+            self.logger.info(
+                "📊 质量数据: 总品种=%d, 已下载=%d, 缺失=%d, 错误=%d, 警告=%d, 过时=%d",
+                total,
+                local,
+                missing,
+                errors,
+                warnings,
+                outdated,
+            )
 
-            # 🚀 更新显示
+            # 🔧 三态颜色反馈：总品种数（信息型指标）
+            # 状态机：灰色（初始）→ 蓝色（扫描完成）
             if self.total_symbols_label:
                 self.total_symbols_label.setText(f"总品种: {total}")
+                # 扫描完成后显示蓝色（信息型，非问题指标）
+                self.total_symbols_label.setStyleSheet("color: #2196F3;")  # 蓝色 - 信息
 
-            # 🚀 更新已下载品种数（本地有数据的品种数）
+            # 🔧 三态颜色反馈：已下载品种数（信息型指标）
+            # 状态机：灰色（初始）→ 绿色（扫描完成）
             if self.downloaded_symbols_label:
                 self.downloaded_symbols_label.setText(f"已下载: {local}")
+                # 扫描完成后显示绿色（表示有数据可用）
+                self.downloaded_symbols_label.setStyleSheet("color: #4CAF50;")  # 绿色 - 有数据
 
+            # 🔧 关键修复：品种缺失数（三态颜色反馈）
+            # 状态机：灰色（初始）→ 绿色（0问题）或 橙色（有问题）
             if self.missing_symbols_label:
                 self.missing_symbols_label.setText(f"品种缺失: {missing}")
+                if missing > 0:
+                    self.missing_symbols_label.setStyleSheet(
+                        "color: #FF9800; font-weight: bold;"
+                    )  # 橙色 - 有问题
+                else:
+                    self.missing_symbols_label.setStyleSheet("color: #4CAF50;")  # 绿色 - 无问题
 
-            # 🆕 更新数据缺失品种数
+            # 🔧 三态颜色反馈：数据缺失品种数
+            # 状态机：灰色（初始）→ 绿色（0问题）或 橙色（有问题）
             if self.data_missing_symbols_label:
                 self.data_missing_symbols_label.setText(f"数据缺失: {data_missing}")
                 if data_missing > 0:
-                    self.data_missing_symbols_label.setStyleSheet("color: #FF9800;")
+                    self.data_missing_symbols_label.setStyleSheet(
+                        "color: #FF9800;"
+                    )  # 橙色 - 有问题
                 else:
-                    self.data_missing_symbols_label.setStyleSheet("color: #4CAF50;")
+                    self.data_missing_symbols_label.setStyleSheet(
+                        "color: #4CAF50;"
+                    )  # 绿色 - 无问题
 
+            # 🔧 三态颜色反馈：错误品种数
+            # 状态机：灰色（初始）→ 绿色（0问题）或 红色（有错误）
             if self.error_symbols_label:
                 self.error_symbols_label.setText(f"错误: {errors}")
+                if errors > 0:
+                    self.error_symbols_label.setStyleSheet(
+                        "color: #F44336; font-weight: bold;"
+                    )  # 红色 - 有错误
+                else:
+                    self.error_symbols_label.setStyleSheet("color: #4CAF50;")  # 绿色 - 无问题
 
+            # 🔧 三态颜色反馈：警告品种数
+            # 状态机：灰色（初始）→ 绿色（0问题）或 橙色（有警告）
             if self.warning_symbols_label:
                 self.warning_symbols_label.setText(f"警告: {warnings}")
+                if warnings > 0:
+                    self.warning_symbols_label.setStyleSheet(
+                        "color: #FF9800; font-weight: bold;"
+                    )  # 橙色 - 有警告
+                else:
+                    self.warning_symbols_label.setStyleSheet("color: #4CAF50;")  # 绿色 - 无问题
 
-            # 🆕 更新过时品种数
+            # 🔧 三态颜色反馈：过时品种数
+            # 状态机：灰色（初始）→ 绿色（0问题）或 橙色（数据过时）
             if self.outdated_symbols_label:
                 self.outdated_symbols_label.setText(f"过时: {outdated}")
-
-            # 🆕 更新平均滞后天数
-            if self.avg_gap_label:
-                if avg_gap > 0:
-                    self.avg_gap_label.setText(f"平均滞后: {avg_gap}天")
-                    # 根据滞后天数设置颜色
-                    if avg_gap <= 1:
-                        self.avg_gap_label.setStyleSheet("color: #4CAF50;")  # 绿色
-                    elif avg_gap <= 5:
-                        self.avg_gap_label.setStyleSheet("color: #FFC107;")  # 黄色
-                    else:
-                        self.avg_gap_label.setStyleSheet("color: #F44336;")  # 红色
+                if outdated > 0:
+                    self.outdated_symbols_label.setStyleSheet(
+                        "color: #FF9800; font-weight: bold;"
+                    )  # 橙色 - 数据过时
                 else:
-                    self.avg_gap_label.setText("平均滞后: --")
-                    self.avg_gap_label.setStyleSheet("")
+                    self.outdated_symbols_label.setStyleSheet("color: #4CAF50;")  # 绿色 - 无问题
 
-            if self.quality_score_label:
-                # 根据评分设置颜色
-                if score >= 90:
-                    color = "#4CAF50"  # 绿色
-                    icon = "✅"
-                elif score >= 70:
-                    color = "#FFC107"  # 黄色
-                    icon = "⚠️"
-                else:
-                    color = "#F44336"  # 红色
-                    icon = "❌"
+            # 🔧 关键修复：_update_quality_overview_ui不应该管理详情表格！
+            # 原因1：详情表格由_append_quality_details独家管理（实时增量追加）
+            # 原因2：这里的overview_data来自数据库历史数据，不包含实时扫描结果
+            # 问题：如果这里清空表格，会覆盖_append_quality_details追加的6000+条实时数据
+            # 解决：完全移除details_data的处理逻辑，只管理概览标签（数字指标）
 
-                self.quality_score_label.setText(f"{icon} 评分: {score}")
-                self.quality_score_label.setStyleSheet(f"color: {color}; font-weight: bold;")
+            # ❌ 已移除：details_data = overview_data.get("details", [])
+            # ❌ 已移除：_update_quality_detail_table(details_data) 的调用
+            # ❌ 已移除：清空表格并显示"无需修复"的逻辑
 
-            # 🔧 修复：扫描完成时更新详情表格（作为后备方案，确保数据完整）
-            # 虽然阶段性推送已增量更新，但最终更新可以确保数据一致性
-            details_data = overview_data.get("details", [])
-            self.logger.debug(
-                "toggle_quality_detail_btn.isChecked=%s",
-                (
-                    self.toggle_quality_detail_btn.isChecked()
-                    if self.toggle_quality_detail_btn
-                    else "N/A"
-                ),
-            )
-            # print(...)  # 🔧 已移除：DEBUG调试输出
+            self.logger.debug("_update_quality_overview_ui只更新概览标签，详情表格由_append_quality_details独家管理")
 
-            # 🔧 修复：如果有details数据，更新详情表格（无论表格是否展开）
-            # 这样可以确保用户点击"显示详细信息"时能看到完整数据
-            if details_data:
-                self._update_quality_detail_table(details_data)
-                self.logger.info("详情表格已更新: %d个问题品种", len(details_data))
-            else:
-                # 如果没有问题品种，清空表格并显示友好提示
-                if self.quality_detail_table:
-                    self.quality_detail_table.setRowCount(0)
-                    # 可选：添加"无问题"提示
-                    from PySide6.QtWidgets import QTableWidgetItem
+            # 🔧 关键修复：启用扫描按钮（表示启动流程已完成）
+            # 原因：用户需要明确的反馈知道系统已就绪，可以进行手动扫描
+            if self.scan_data_btn:
+                self.scan_data_btn.setEnabled(True)
+                self.logger.info("✅ 数据扫描按钮已启用")
 
-                    self.quality_detail_table.insertRow(0)
-                    no_issue_item = QTableWidgetItem("✅ 所有品种数据质量良好，无需修复")
-                    from PySide6.QtCore import Qt
-
-                    no_issue_item.setForeground(Qt.GlobalColor.darkGreen)
-                    self.quality_detail_table.setItem(0, 0, no_issue_item)
-                    self.quality_detail_table.setSpan(0, 0, 1, 4)  # 合并单元格
-                self.logger.info("无问题品种，详情表格已清空")
-
-            self.logger.info("质量概览UI已更新")
+            self.logger.info("✅ [Slot] 质量概览UI更新成功")
 
         except Exception as e:
-            self.logger.error("更新质量概览UI失败: %s", e, exc_info=True)
+            self.logger.error("❌ [Slot] 更新质量概览UI失败: %s", e, exc_info=True)
 
     def _toggle_quality_detail(self, checked: bool) -> None:
         """展开/折叠质量详情表格
@@ -4667,20 +5544,22 @@ class DataCenter(BaseWidget, LoggerMixin):
             new_details: 新增的问题品种详情列表
         """
         try:
-            # 🔍 调试日志
+            # 🔥 强制输出诊断信息
             import sys
+            print(f"\n🔍 [CRITICAL-DEBUG] _append_quality_details被调用", file=sys.stderr)
+            print(f"  new_details count={len(new_details) if new_details else 0}", file=sys.stderr)
+            print(f"  quality_detail_table={self.quality_detail_table is not None}", file=sys.stderr)
+            sys.stderr.flush()
 
-            # print(...)  # 🔧 已移除：DEBUG调试输出
-            # print(...)  # 🔧 已移除：DEBUG调试输出
             self.logger.debug(
                 "table rowCount before=%s",
                 self.quality_detail_table.rowCount() if self.quality_detail_table else "None",
             )
-            sys.stdout.flush()
 
             if not self.quality_detail_table:
+                print(f"⚠️ [CRITICAL-DEBUG] quality_detail_table is None!", file=sys.stderr)
+                sys.stderr.flush()
                 self.logger.warning("quality_detail_table is None")
-                sys.stdout.flush()
                 return
 
             # 🆕 移除isVisible()检查，始终在后台更新数据
@@ -4701,7 +5580,11 @@ class DataCenter(BaseWidget, LoggerMixin):
                 symbol = detail.get("symbol", "")
                 self.quality_detail_table.setItem(row, 0, QTableWidgetItem(symbol))
 
-                # 第2列：状态（带图标和颜色）
+                # 第2列：品种名称
+                name = detail.get("name", "")
+                self.quality_detail_table.setItem(row, 1, QTableWidgetItem(name))
+
+                # 第3列：状态（带图标和颜色）
                 status_text, status_icon, _ = self._get_status_info(detail)
                 status_item = QTableWidgetItem(f"{status_icon} {status_text}")
 
@@ -4713,24 +5596,14 @@ class DataCenter(BaseWidget, LoggerMixin):
                     status_item.setForeground(Qt.GlobalColor.red)
                 elif status == "warning":
                     status_item.setForeground(Qt.GlobalColor.darkYellow)
+                elif status == "outdated":
+                    status_item.setForeground(Qt.GlobalColor.darkYellow)
+                elif status == "invalid":
+                    status_item.setForeground(Qt.GlobalColor.darkRed)
                 else:
                     status_item.setForeground(Qt.GlobalColor.darkGreen)
 
-                self.quality_detail_table.setItem(row, 1, status_item)
-
-                # 第3列：质量评分
-                score = detail.get("score", 0)
-                score_item = QTableWidgetItem(str(score))
-
-                # 根据评分设置背景颜色
-                if score >= 80:
-                    score_item.setBackground(Qt.GlobalColor.green)
-                elif score >= 60:
-                    score_item.setBackground(Qt.GlobalColor.yellow)
-                else:
-                    score_item.setBackground(Qt.GlobalColor.red)
-
-                self.quality_detail_table.setItem(row, 2, score_item)
+                self.quality_detail_table.setItem(row, 2, status_item)
 
                 # 第4列：问题描述
                 issues_text = detail.get("issues", "无问题")
@@ -4754,11 +5627,14 @@ class DataCenter(BaseWidget, LoggerMixin):
                         last_item, QAbstractItemView.ScrollHint.PositionAtBottom
                     )
 
-            # 🔍 调试日志
+            # 🔥 强制输出成功信息
             import sys
-
-            # print(...)  # 🔧 已移除：DEBUG调试输出
-            sys.stdout.flush()
+            final_count = self.quality_detail_table.rowCount()
+            print(f"\n✅ [CRITICAL-DEBUG] _append_quality_details完成", file=sys.stderr)
+            print(f"  追加了 {len(new_details)} 条记录", file=sys.stderr)
+            print(f"  表格当前总行数: {final_count}", file=sys.stderr)
+            print(f"  表格是否可见: {self.quality_detail_table.isVisible()}", file=sys.stderr)
+            sys.stderr.flush()
 
             self.logger.info(
                 "增量追加 %d 个问题品种，当前表格行数: %d（已刷新UI）",
@@ -4767,9 +5643,13 @@ class DataCenter(BaseWidget, LoggerMixin):
             )
 
         except Exception as e:
+            # 🔥 强制输出异常信息
             import sys
-
-            sys.stdout.flush()
+            print(f"\n❌ [CRITICAL-DEBUG] _append_quality_details异常！", file=sys.stderr)
+            print(f"  Exception: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            sys.stderr.flush()
             self.logger.exception("增量追加质量详情失败: %s", e)
 
     def _trigger_repair_download(self) -> None:
@@ -4879,7 +5759,7 @@ class DataCenter(BaseWidget, LoggerMixin):
 
     def _on_data_quality_update(self, event: Event) -> None:
         """处理数据质量更新事件（vnpy事件回调）
-        
+
         ⚠️ 关键：vnpy事件引擎可能在非Qt主线程中调用此方法
         所有Qt UI操作必须通过QTimer.singleShot转发到主线程
 
@@ -4902,16 +5782,23 @@ class DataCenter(BaseWidget, LoggerMixin):
                     "data_missing_symbols": data.get("data_missing_symbols", 0),  # 新增
                     "error_symbols": data.get("error_symbols", 0),
                     "warning_symbols": data.get("warning_symbols", 0),
-                    "quality_score": data.get("quality_score", 0),
                     "data_lagging_days": data.get("data_lagging_days", 0),  # 新增
                     "outdated_symbols": data.get("outdated_symbols", 0),
-                    "avg_gap_days": data.get("avg_gap_days", 0),  # 新增
                     "details": data.get("details", []),  # 🔧 修复：添加问题品种详情
                 }
-                
-                # 转发到主线程执行UI更新
-                QTimer.singleShot(0, lambda: self._update_quality_overview_ui(quality_data))
-                QTimer.singleShot(0, lambda: self._set_quality_scan_status(False))
+
+                # 🔧 关键修复：使用Qt Signal/Slot机制代替QTimer.singleShot
+                # 原因：Signal自动跨线程调度，Qt保证槽函数在接收者所在线程（主线程）执行
+                # 优势：
+                # 1. 线程安全：Qt自动处理跨线程调用
+                # 2. 可靠性：不依赖事件循环的实现细节
+                # 3. 符合Qt最佳实践
+                try:
+                    self.quality_update_signal.emit(quality_data)
+                    self.quality_scan_status_signal.emit(False)  # False = 扫描完成
+                    self.logger.info("✅ 已发射质量更新和状态重置信号")
+                except Exception as signal_err:
+                    self.logger.error("发射Signal失败: %s", signal_err, exc_info=True)
             else:
                 # 单个品种更新（旧格式兼容）
                 symbol = data.get("symbol")
@@ -4925,7 +5812,7 @@ class DataCenter(BaseWidget, LoggerMixin):
 
     def _on_data_scan_complete(self, event: Event) -> None:
         """处理数据质量扫描完成事件（vnpy事件回调）
-        
+
         ⚠️ 关键：vnpy事件引擎可能在非Qt主线程中调用此方法
         所有Qt UI操作必须通过QTimer.singleShot转发到主线程
 
@@ -4935,9 +5822,8 @@ class DataCenter(BaseWidget, LoggerMixin):
         try:
             event_data = event.data
             total = event_data.get("total_symbols", 0)
-            score = event_data.get("quality_score", 0)
 
-            self.logger.info("收到扫描完成事件: 总品种=%s, 评分=%s", total, score)
+            self.logger.info("收到扫描完成事件: 总品种=%s", total)
 
             # 转发到主线程执行UI更新
             QTimer.singleShot(0, lambda: self._handle_scan_complete_ui())

@@ -867,6 +867,40 @@ class UnifiedMonitorCard(QWidget):
             value_layout.addWidget(value_label)
 
             self.value_labels[metric["key"]] = value_label
+
+            # 延迟列特殊处理：添加无网络连接显示和重试按钮
+            if metric["key"] == "latency":
+                # 创建无网络连接显示容器
+                network_status_container = QWidget()
+                network_status_layout = QVBoxLayout(network_status_container)
+                network_status_layout.setContentsMargins(0, 0, 0, 0)
+                network_status_layout.setSpacing(3)
+
+                # 无网络连接标签（默认隐藏）
+                network_disconnected_label = QLabel("无网络连接")
+                network_disconnected_label.setStyleSheet(
+                    "font-size: 10px; color: #d32f2f; font-weight: bold; border: none;"
+                )
+                network_disconnected_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                network_disconnected_label.hide()
+
+                # 重试按钮（默认隐藏）
+                retry_latency_btn = QPushButton("重试")
+                retry_latency_btn.setStyleSheet(
+                    "font-size: 9px; padding: 2px 6px; background-color: #d32f2f; color: white; border: none; border-radius: 2px;"
+                )
+                retry_latency_btn.setMaximumHeight(20)
+                retry_latency_btn.hide()
+
+                network_status_layout.addWidget(network_disconnected_label)
+                network_status_layout.addWidget(retry_latency_btn)
+
+                value_layout.addWidget(network_status_container)
+
+                # 保存引用以便后续更新
+                self.latency_network_disconnected_label = network_disconnected_label
+                self.latency_retry_btn = retry_latency_btn
+
             values_layout.addWidget(value_container)
 
         main_layout.addLayout(values_layout)
@@ -878,6 +912,10 @@ class UnifiedMonitorCard(QWidget):
         )
         self.bandwidth_detail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main_layout.addWidget(self.bandwidth_detail_label)
+
+        # 延迟列的无网络连接标签和重试按钮引用（延迟初始化）
+        self.latency_network_disconnected_label: Optional[QLabel] = None
+        self.latency_retry_btn: Optional[QPushButton] = None
 
     def update_metrics(self, values: Dict[str, float]):
         """批量更新指标."""
@@ -899,6 +937,32 @@ class UnifiedMonitorCard(QWidget):
             )
         else:
             self.bandwidth_detail_label.setText("带宽未测试")
+
+    def update_network_status(self, disconnected: bool, retry_callback=None):
+        """更新无网络连接状态显示.
+
+        Args:
+            disconnected: 是否无网络连接
+            retry_callback: 重试按钮点击回调函数
+        """
+        if hasattr(self, "latency_network_disconnected_label") and self.latency_network_disconnected_label:
+            if disconnected:
+                self.latency_network_disconnected_label.show()
+            else:
+                self.latency_network_disconnected_label.hide()
+
+        if hasattr(self, "latency_retry_btn") and self.latency_retry_btn:
+            if disconnected:
+                self.latency_retry_btn.show()
+                if retry_callback:
+                    # 断开之前的连接（避免重复连接）
+                    try:
+                        self.latency_retry_btn.clicked.disconnect()
+                    except:
+                        pass
+                    self.latency_retry_btn.clicked.connect(retry_callback)
+            else:
+                self.latency_retry_btn.hide()
 
 
 class NetworkMonitorCard(VerticalThresholdHeatmap):
@@ -954,6 +1018,39 @@ class NetworkMonitorCard(VerticalThresholdHeatmap):
                 self.bandwidth_detail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.bandwidth_detail_label.setWordWrap(True)
                 container_layout.addWidget(self.bandwidth_detail_label)
+
+        # 在延迟列下方添加无网络连接显示和重试按钮
+        # 获取延迟对应的value_container（第2个）
+        latency_container = self.values_layout.itemAt(1).widget()
+        if latency_container:
+            container_layout = latency_container.layout()
+            if container_layout:
+                # 创建无网络连接显示容器
+                self.network_status_container = QWidget()
+                network_status_layout = QVBoxLayout(self.network_status_container)
+                network_status_layout.setContentsMargins(0, 0, 0, 0)
+                network_status_layout.setSpacing(5)
+
+                # 无网络连接标签（默认隐藏）
+                self.network_disconnected_label = QLabel("无网络连接")
+                self.network_disconnected_label.setStyleSheet(
+                    "font-size: 11px; color: #d32f2f; font-weight: bold; border: none;"
+                )
+                self.network_disconnected_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.network_disconnected_label.hide()
+
+                # 重试按钮（默认隐藏）
+                self.retry_latency_btn = QPushButton("重试")
+                self.retry_latency_btn.setStyleSheet(
+                    "font-size: 10px; padding: 3px 8px; background-color: #d32f2f; color: white; border: none; border-radius: 3px;"
+                )
+                self.retry_latency_btn.setMaximumHeight(25)
+                self.retry_latency_btn.hide()
+
+                network_status_layout.addWidget(self.network_disconnected_label)
+                network_status_layout.addWidget(self.retry_latency_btn)
+
+                container_layout.addWidget(self.network_status_container)
 
     def update_bandwidth_detail(self, download_mbps: float, total_mbps: float, percent: float):
         """更新带宽详情显示.
@@ -2515,6 +2612,10 @@ class SystemManager(BaseWidget, LoggerMixin):
     # 🔥 新增：用于线程安全的UI更新信号
     ui_update_signal = Signal(dict)  # metrics_data
 
+    # 网络测速结果信号（线程安全）
+    bandwidth_test_success_signal = Signal(dict)  # 带宽测试成功信号
+    bandwidth_test_error_signal = Signal(str)    # 带宽测试失败信号
+
     def __init__(self, parent=None):
         """初始化系统管理界面."""
         # 初始化服务管理器
@@ -2753,6 +2854,11 @@ class SystemManager(BaseWidget, LoggerMixin):
         # 🔥 连接线程安全的UI更新信号
         self.ui_update_signal.connect(self._do_throttled_ui_update)
         print("[SystemManager] ✅ UI更新信号已连接")
+
+        # 🔥 连接网络测速结果信号（线程安全）
+        self.bandwidth_test_success_signal.connect(self._update_bandwidth_result_success)
+        self.bandwidth_test_error_signal.connect(self._update_bandwidth_result_error)
+        print("[SystemManager] ✅ 网络测速信号已连接")
 
         # 启动数据源连通性定时更新（每10秒刷新一次）
         self.datasource_connectivity_timer = QTimer(self)
@@ -3539,17 +3645,35 @@ class SystemManager(BaseWidget, LoggerMixin):
                 context_switches_per_sec = cpu_detailed.get("context_switches_per_sec", 0)
                 context_switches_k = context_switches_per_sec / 1000  # 转换为K/s
 
-                # CPU频率比率
-                clock_data = hardware_data.get("clock", {})
+                # CPU频率比率（使用psutil采集的数据）
                 freq_ratio = 0.0
-                if clock_data:
-                    for device, clocks in clock_data.items():
-                        if "CPU" in device and clocks and isinstance(clocks, list):
-                            current_freq = clocks[0].get("current", 0)
-                            max_freq = clocks[0].get("max", 0)
-                            if max_freq > 0:
-                                freq_ratio = (current_freq / max_freq) * 100
-                                break
+                cpu_frequency = cpu_detailed.get("cpu_frequency", {})
+
+                # 诊断日志：检查是否收到 cpu_frequency 数据
+                if not hasattr(self, "_cpu_freq_check_logged"):
+                    if cpu_frequency:
+                        self.logger.info(
+                            f"✅ 收到CPU频率数据: {cpu_frequency}"
+                        )
+                    else:
+                        self.logger.warning(
+                            f"⚠️ cpu_detailed中没有cpu_frequency字段, cpu_detailed keys={list(cpu_detailed.keys())}"
+                        )
+                    self._cpu_freq_check_logged = True
+
+                if cpu_frequency:
+                    current_freq = cpu_frequency.get("current", 0)
+                    max_freq = cpu_frequency.get("max", 0)
+
+                    if max_freq > 0 and current_freq > 0:
+                        freq_ratio = (current_freq / max_freq) * 100
+
+                        # 首次检测到频率数据时记录日志
+                        if not hasattr(self, "_cpu_freq_detected"):
+                            self.logger.info(
+                                f"✅ CPU频率监控已启用: {current_freq:.0f}/{max_freq:.0f} MHz (psutil)"
+                            )
+                            self._cpu_freq_detected = True
 
                 # 2. 网络指标
                 packet_loss_percent = 0.0
@@ -3567,16 +3691,30 @@ class SystemManager(BaseWidget, LoggerMixin):
                 total_bandwidth_mbps = 0.0
                 bandwidth_percent = 0.0
 
+                network_disconnected = False
                 if service:
                     try:
                         bandwidth_info = service.get_bandwidth_info()
                         ping_result = bandwidth_info.get("ping_test", {})
                         full_result = bandwidth_info.get("full_test", {})
+                        network_disconnected = bandwidth_info.get("network_disconnected", False)
 
                         if ping_result and ping_result.get("ping_ms") is not None:
-                            latency_ms = ping_result.get("ping_ms", 0)
+                            # 🔧 修复：检查status字段，排除错误状态
+                            status = ping_result.get("status", "")
+                            if status and isinstance(status, str) and ("错误" in status or "超时" in status or "ZMQ" in status):
+                                # 错误状态，不显示延迟
+                                latency_ms = 0.0
+                            else:
+                                latency_ms = ping_result.get("ping_ms", 0)
                         elif full_result and full_result.get("ping_ms") is not None:
-                            latency_ms = full_result.get("ping_ms", 0)
+                            # 🔧 修复：检查status字段，排除错误状态
+                            status = full_result.get("status", "")
+                            if status and isinstance(status, str) and ("错误" in status or "超时" in status or "ZMQ" in status):
+                                # 错误状态，不显示延迟
+                                latency_ms = 0.0
+                            else:
+                                latency_ms = full_result.get("ping_ms", 0)
 
                         if full_result and full_result.get("download_mbps") is not None:
                             total_bandwidth_mbps = full_result.get("download_mbps", 0)
@@ -3614,6 +3752,12 @@ class SystemManager(BaseWidget, LoggerMixin):
                 # 更新带宽详情
                 self.unified_monitor_card.update_bandwidth_detail(
                     network_download_mbps, total_bandwidth_mbps, bandwidth_percent
+                )
+
+                # 更新无网络连接状态显示
+                self.unified_monitor_card.update_network_status(
+                    network_disconnected,
+                    retry_callback=self._retry_latency_test
                 )
 
             # 4. 硬盘监控卡片
@@ -5945,36 +6089,72 @@ class SystemManager(BaseWidget, LoggerMixin):
         hint_label.setWordWrap(True)
         network_test_layout.addWidget(hint_label)
 
-        # 测试结果显示区域
+        # 测试结果显示区域（横向排列，紧凑布局）
         result_group = QGroupBox("测试结果")
-        result_layout = QFormLayout(result_group)
-        result_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        result_layout.setVerticalSpacing(12)  # 增加垂直间距，防止字体重叠
-        result_layout.setHorizontalSpacing(15)
+        result_group.setStyleSheet("QGroupBox { padding: 3px; }")  # 减小GroupBox内边距
+        result_layout = QHBoxLayout(result_group)
+        result_layout.setSpacing(10)  # 减小各项之间的间距（20→10）
+        result_layout.setContentsMargins(5, 5, 5, 5)  # 减小布局边距
 
-        # 设置统一样式
-        label_style = "font-size: 13px; color: #CCC; padding: 5px;"
+        # 设置统一样式（更小更紧凑）
+        title_style = "font-size: 10px; color: #888; padding: 0px; margin: 0px;"  # 字体缩小，去除padding
+        value_style = "font-size: 12px; color: #0F0; font-weight: bold; padding: 0px; margin: 0px;"  # 字体缩小，去除padding
 
+        # 下载速度
+        download_container = QVBoxLayout()
+        download_container.setSpacing(2)  # 减小标题和值之间的间距
+        download_container.setContentsMargins(0, 0, 0, 0)  # 去除边距
+        download_title = QLabel("下载")  # 简化标题
+        download_title.setStyleSheet(title_style)
+        download_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.bandwidth_download_label = QLabel("--")
-        self.bandwidth_download_label.setStyleSheet(label_style)
-        self.bandwidth_download_label.setMinimumWidth(150)
+        self.bandwidth_download_label.setStyleSheet(value_style)
+        self.bandwidth_download_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        download_container.addWidget(download_title)
+        download_container.addWidget(self.bandwidth_download_label)
+        result_layout.addLayout(download_container)
 
+        # 上传速度
+        upload_container = QVBoxLayout()
+        upload_container.setSpacing(2)
+        upload_container.setContentsMargins(0, 0, 0, 0)
+        upload_title = QLabel("上传")  # 简化标题
+        upload_title.setStyleSheet(title_style)
+        upload_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.bandwidth_upload_label = QLabel("--")
-        self.bandwidth_upload_label.setStyleSheet(label_style)
-        self.bandwidth_upload_label.setMinimumWidth(150)
+        self.bandwidth_upload_label.setStyleSheet(value_style)
+        self.bandwidth_upload_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        upload_container.addWidget(upload_title)
+        upload_container.addWidget(self.bandwidth_upload_label)
+        result_layout.addLayout(upload_container)
 
+        # 网络延迟
+        ping_container = QVBoxLayout()
+        ping_container.setSpacing(2)
+        ping_container.setContentsMargins(0, 0, 0, 0)
+        ping_title = QLabel("延迟")  # 简化标题
+        ping_title.setStyleSheet(title_style)
+        ping_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.bandwidth_ping_label = QLabel("--")
-        self.bandwidth_ping_label.setStyleSheet(label_style)
-        self.bandwidth_ping_label.setMinimumWidth(150)
+        self.bandwidth_ping_label.setStyleSheet(value_style)
+        self.bandwidth_ping_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ping_container.addWidget(ping_title)
+        ping_container.addWidget(self.bandwidth_ping_label)
+        result_layout.addLayout(ping_container)
 
+        # 测试时间
+        time_container = QVBoxLayout()
+        time_container.setSpacing(2)
+        time_container.setContentsMargins(0, 0, 0, 0)
+        time_title = QLabel("时间")  # 简化标题
+        time_title.setStyleSheet(title_style)
+        time_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.bandwidth_test_time_label = QLabel("--")
-        self.bandwidth_test_time_label.setStyleSheet(label_style)
-        self.bandwidth_test_time_label.setMinimumWidth(150)
-
-        result_layout.addRow("下载速度:", self.bandwidth_download_label)
-        result_layout.addRow("上传速度:", self.bandwidth_upload_label)
-        result_layout.addRow("网络延迟:", self.bandwidth_ping_label)
-        result_layout.addRow("测试时间:", self.bandwidth_test_time_label)
+        self.bandwidth_test_time_label.setStyleSheet(value_style)
+        self.bandwidth_test_time_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        time_container.addWidget(time_title)
+        time_container.addWidget(self.bandwidth_test_time_label)
+        result_layout.addLayout(time_container)
 
         network_test_layout.addWidget(result_group)
 
@@ -5986,12 +6166,6 @@ class SystemManager(BaseWidget, LoggerMixin):
         self.test_bandwidth_btn.setMinimumHeight(40)
         self.test_bandwidth_btn.clicked.connect(self._test_bandwidth_full)
         button_layout.addWidget(self.test_bandwidth_btn)
-
-        self.test_latency_btn = QPushButton("⚡ 测实时延迟")
-        self.test_latency_btn.setStyleSheet("font-size: 14px; padding: 10px;")
-        self.test_latency_btn.setMinimumHeight(40)
-        self.test_latency_btn.clicked.connect(self._test_latency_only)
-        button_layout.addWidget(self.test_latency_btn)
 
         network_test_layout.addLayout(button_layout)
 
@@ -6475,7 +6649,6 @@ class SystemManager(BaseWidget, LoggerMixin):
         """测试服务商带宽（完整测试）."""
         try:
             self.test_bandwidth_btn.setEnabled(False)
-            self.test_latency_btn.setEnabled(False)
             self.test_bandwidth_btn.setText("测试中...")
 
             # 清空之前的结果
@@ -6492,12 +6665,13 @@ class SystemManager(BaseWidget, LoggerMixin):
                         "system_manager_service", silent=True
                     )
                     if not service:
-                        self._update_bandwidth_result_error("无法获取系统服务")
+                        self.bandwidth_test_error_signal.emit("无法获取系统服务")
                         return
 
                     # 通过ZMQ向监控进程发送测试请求
                     import zmq
                     import json
+                    import time
                     from pathlib import Path
 
                     # 读取监控进程端口配置
@@ -6508,76 +6682,124 @@ class SystemManager(BaseWidget, LoggerMixin):
                         if ports_file.exists():
                             with open(ports_file, "r", encoding="utf-8") as f:
                                 ports_data = json.load(f)
-                            addr = str(ports_data.get("bind_addr", addr))
-                            port = int(ports_data.get("query_rep", port))
+                        addr = str(ports_data.get("bind_addr", addr))
+                        port = int(ports_data.get("query_rep", port))
                     except Exception:
                         pass  # 使用默认值
 
+                    # 发送测试启动请求（立即返回）
                     context = zmq.Context()
                     socket = context.socket(zmq.REQ)
                     socket.connect(f"tcp://{addr}:{port}")
-                    socket.setsockopt(zmq.RCVTIMEO, 45000)  # 45秒超时
+                    socket.setsockopt(zmq.RCVTIMEO, 5000)  # 5秒超时（启动请求应该立即返回）
 
                     socket.send_json({"action": "test_bandwidth_full"})
                     response = socket.recv_json()
 
                     socket.close()
-                    context.term()
 
-                    if isinstance(response, dict) and response.get("status") == "success":
-                        result = response.get("data", {})
-                        if isinstance(result, dict):
-                            self._update_bandwidth_result_success(result)
+                    # 检查是否成功启动测试
+                    if not isinstance(response, dict):
+                        context.term()
+                        self.bandwidth_test_error_signal.emit("返回数据格式错误")
+                        return
+
+                    status = response.get("status")
+                    if status not in ["started", "testing"]:
+                        context.term()
+                        error_msg = response.get("message", "测试启动失败")
+                        self.bandwidth_test_error_signal.emit(str(error_msg))
+                        return
+
+                    # 🔧 修复：轮询获取结果（完整带宽测试：最多等待90秒）
+                    # 策略：前5次每1秒查询（检测快速完成），后续每2秒查询
+                    # 考虑：5个服务器，每个最多15秒超时 + 下载10秒 = 最多75秒，加上缓冲到90秒
+                    max_attempts = 43  # 5x1秒 + 38x2秒 = 81秒
+                    for attempt in range(max_attempts):
+                        if attempt < 5:
+                            time.sleep(1)   # 前5秒：每1秒查询
                         else:
-                            self._update_bandwidth_result_error("返回数据格式错误")
-                    else:
-                        error_msg = (
-                            response.get("message", "测试失败")
-                            if isinstance(response, dict)
-                            else "测试失败"
-                        )
-                        self._update_bandwidth_result_error(str(error_msg))
+                            time.sleep(2)   # 后续：每2秒查询
+
+                        try:
+                            socket = context.socket(zmq.REQ)
+                            socket.connect(f"tcp://{addr}:{port}")
+                            socket.setsockopt(zmq.RCVTIMEO, 3000)  # 3秒超时
+
+                            socket.send_json({"action": "get_bandwidth"})
+                            result_response = socket.recv_json()
+
+                            socket.close()
+
+                            if isinstance(result_response, dict) and result_response.get("status") == "success":
+                                data = result_response.get("data", {})
+                                if isinstance(data, dict):
+                                    full_test = data.get("full_test", {})
+
+                                    # 🔧 修复：检查是否有有效结果（download_mbps不为None表示测试完成）
+                                    if isinstance(full_test, dict):
+                                        # 检查status字段，区分"未测试"和"错误"状态
+                                        status = full_test.get("status", "")
+                                        download_mbps = full_test.get("download_mbps")
+
+                                        # 如果是错误状态，立即停止轮询
+                                        if status and status != "未测试" and ("错误" in str(status) or "超时" in str(status) or "ZMQ" in str(status)):
+                                            context.term()
+                                            error_msg = full_test.get("error", status)
+                                            self.logger.error(f"❌ 带宽测速返回错误状态：{error_msg}")
+                                            self.bandwidth_test_error_signal.emit(error_msg)
+                                            return
+
+                                        # download_mbps不为None表示测试完成（包括失败的情况，-1表示失败）
+                                        if download_mbps is not None:
+                                            context.term()
+
+                                            # 检查是否是异常值（-1表示测试失败）
+                                            if download_mbps == -1:
+                                                error_msg = full_test.get("error", "测试失败，请稍后重试")
+                                                self.logger.error(f"❌ 带宽测速返回异常：{error_msg}")
+                                                self.bandwidth_test_error_signal.emit(error_msg)
+                                            else:
+                                                self.logger.info(f"✅ 获取到带宽测试结果：{full_test}")
+                                                # 使用信号发送结果（线程安全）
+                                                self.bandwidth_test_success_signal.emit(full_test)
+                                            return
+                                        # 否则继续轮询（status="未测试"或download_mbps=None）
+
+                        except Exception as poll_error:
+                            self.logger.debug("轮询第%d次失败: %s", attempt + 1, poll_error)
+                            continue
+
+                    # 超时
+                    context.term()
+                    self.bandwidth_test_error_signal.emit("测试超时（69秒）或网络不稳定")
 
                 except zmq.Again:
-                    self._update_bandwidth_result_error("测试超时（45秒）")
+                    self.bandwidth_test_error_signal.emit("连接超时")
                 except Exception as e:
                     self.logger.error("带宽测试异常: %s", e, exc_info=True)
-                    self._update_bandwidth_result_error(f"连接失败: {str(e)[:50]}")
+                    self.bandwidth_test_error_signal.emit(f"连接失败: {str(e)[:50]}")
 
             test_thread = Thread(target=run_test, daemon=True)
             test_thread.start()
 
         except Exception as e:
             self.logger.error("启动带宽测试失败: %s", e)
-            self._update_bandwidth_result_error(str(e))
+            self.bandwidth_test_error_signal.emit(str(e))
 
-    def _test_latency_only(self):
-        """测试实时延迟（轻量级）."""
+    def _retry_latency_test(self):
+        """重试延迟监控（重新初始化服务器池）"""
         try:
-            self.test_bandwidth_btn.setEnabled(False)
-            self.test_latency_btn.setEnabled(False)
-            self.test_latency_btn.setText("测试中...")
-
-            self.bandwidth_ping_label.setText("测试中...")
-
             from threading import Thread
+            import zmq
+            import json
+            from pathlib import Path
 
-            def run_test():
+            def run_retry():
                 try:
-                    service = self.service_manager.get_service(
-                        "system_manager_service", silent=True
-                    )
-                    if not service:
-                        self._update_latency_result_error("无法获取系统服务")
-                        return
-
-                    import zmq
-                    import json
-                    from pathlib import Path
-
                     # 读取监控进程端口配置
                     addr = "127.0.0.1"
-                    port = 5557  # 默认端口
+                    port = 5557
                     try:
                         ports_file = Path("logs") / "monitor_ports.json"
                         if ports_file.exists():
@@ -6586,45 +6808,30 @@ class SystemManager(BaseWidget, LoggerMixin):
                             addr = str(ports_data.get("bind_addr", addr))
                             port = int(ports_data.get("query_rep", port))
                     except Exception:
-                        pass  # 使用默认值
+                        pass
 
+                    # 发送重试请求
                     context = zmq.Context()
                     socket = context.socket(zmq.REQ)
                     socket.connect(f"tcp://{addr}:{port}")
-                    socket.setsockopt(zmq.RCVTIMEO, 5000)  # 5秒超时
+                    socket.setsockopt(zmq.RCVTIMEO, 10000)  # 10秒超时
 
-                    socket.send_json({"action": "test_ping"})
+                    socket.send_json({"action": "retry_latency"})
                     response = socket.recv_json()
-
                     socket.close()
                     context.term()
 
                     if isinstance(response, dict) and response.get("status") == "success":
-                        result = response.get("data", {})
-                        if isinstance(result, dict):
-                            self._update_latency_result_success(result)
-                        else:
-                            self._update_latency_result_error("返回数据格式错误")
+                        self.logger.info("延迟监控重试成功")
                     else:
-                        error_msg = (
-                            response.get("message", "测试失败")
-                            if isinstance(response, dict)
-                            else "测试失败"
-                        )
-                        self._update_latency_result_error(str(error_msg))
-
-                except zmq.Again:
-                    self._update_latency_result_error("测试超时（5秒）")
+                        self.logger.warning(f"延迟监控重试失败: {response}")
                 except Exception as e:
-                    self.logger.error("延迟测试异常: %s", e, exc_info=True)
-                    self._update_latency_result_error(f"连接失败: {str(e)[:50]}")
+                    self.logger.error(f"延迟监控重试异常: {e}", exc_info=True)
 
-            test_thread = Thread(target=run_test, daemon=True)
-            test_thread.start()
-
+            retry_thread = Thread(target=run_retry, daemon=True)
+            retry_thread.start()
         except Exception as e:
-            self.logger.error("启动延迟测试失败: %s", e)
-            self._update_latency_result_error(str(e))
+            self.logger.error(f"启动延迟监控重试失败: {e}")
 
     def _update_bandwidth_result_success(self, result: Dict[str, Any]):
         """更新完整带宽测试结果（成功）."""
@@ -6647,7 +6854,6 @@ class SystemManager(BaseWidget, LoggerMixin):
 
         self.test_bandwidth_btn.setText("📊 测服务商带宽")
         self.test_bandwidth_btn.setEnabled(True)
-        self.test_latency_btn.setEnabled(True)
 
     def _update_bandwidth_result_error(self, error_msg: str):
         """更新完整带宽测试结果（失败）."""
@@ -6658,31 +6864,7 @@ class SystemManager(BaseWidget, LoggerMixin):
 
         self.test_bandwidth_btn.setText("📊 测服务商带宽")
         self.test_bandwidth_btn.setEnabled(True)
-        self.test_latency_btn.setEnabled(True)
 
-    def _update_latency_result_success(self, result: Dict[str, Any]):
-        """更新延迟测试结果（成功）."""
-        from datetime import datetime
-
-        ping_ms = result.get("ping_ms", 0)
-
-        self.bandwidth_ping_label.setText(f"{ping_ms:.2f} ms")
-        self.bandwidth_ping_label.setStyleSheet("color: #0F0; font-weight: bold;")
-
-        self.bandwidth_test_time_label.setText(datetime.now().strftime("%H:%M:%S"))
-
-        self.test_latency_btn.setText("⚡ 测实时延迟")
-        self.test_bandwidth_btn.setEnabled(True)
-        self.test_latency_btn.setEnabled(True)
-
-    def _update_latency_result_error(self, error_msg: str):
-        """更新延迟测试结果（失败）."""
-        self.bandwidth_ping_label.setText(error_msg)
-        self.bandwidth_ping_label.setStyleSheet("color: #F00;")
-
-        self.test_latency_btn.setText("⚡ 测实时延迟")
-        self.test_bandwidth_btn.setEnabled(True)
-        self.test_latency_btn.setEnabled(True)
 
     # ==================== 损坏文件清理工具方法 ====================
 

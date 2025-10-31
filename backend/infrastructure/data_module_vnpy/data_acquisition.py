@@ -1509,10 +1509,21 @@ class SymbolLoader:
                 for raw_code in codes:
                     code = str(raw_code).zfill(6)
 
-                    # 从完整缓存中匹配
+                    # 🔧 修复：增加市场代码容错逻辑
+                    # 尝试原始市场代码匹配
                     matched: pd.DataFrame = complete_df[  # type: ignore[assignment]
                         (complete_df["market"] == mkt) & (complete_df["code"] == code)
                     ]
+
+                    # 如果原始市场匹配不到，尝试交换市场代码（0↔1）
+                    if len(matched) == 0:
+                        alt_mkt = 1 if mkt == 0 else 0
+                        matched_alt: pd.DataFrame = complete_df[  # type: ignore[assignment]
+                            (complete_df["market"] == alt_mkt) & (complete_df["code"] == code)
+                        ]
+                        if len(matched_alt) > 0:
+                            matched = matched_alt
+                            mkt = alt_mkt  # 使用交换后的市场代码
 
                     if len(matched) > 0:
                         # 如果有多个匹配，过滤掉指数
@@ -1529,7 +1540,7 @@ class SymbolLoader:
                         # API中无匹配的品种视为不存在（已退市/到期），直接跳过
                         unmatched_count += 1
                         if len(unmatched_samples) < 3:
-                            unmatched_samples.append({"market": mkt, "code": code})
+                            unmatched_samples.append({"market": market, "code": code})
                         # 不再添加空名称品种到结果列表
 
             matched_count = total - unmatched_count
@@ -1637,32 +1648,63 @@ class SymbolLoader:
             self._save_cache(classified)
 
             # 4. 同步清理 IPO 缓存文件中的未上市品种
+            # 🔧 修复：不删除，而是保留为null，避免下次启动重复下载
             if unlisted_symbols:
                 try:
                     from .data_quality import get_ipo_cache
 
                     ipo_cache = get_ipo_cache()
 
-                    # 从内存缓存中删除
+                    # 🔧 不删除！而是确保这些品种在缓存中标记为None
+                    # 这样下次启动时会直接识别为unlisted，不重复下载
                     for symbol in unlisted_symbols:
-                        if symbol in ipo_cache._memory_cache:
-                            del ipo_cache._memory_cache[symbol]
+                        if symbol not in ipo_cache._memory_cache:
+                            # 如果不在缓存中，添加为None
+                            ipo_cache._memory_cache[symbol] = None
 
-                    # 保存到文件
+                    # 保存到文件（会将None保存为null）
                     ipo_cache.batch_save()
-                    self.logger.info(f"✓ 从IPO缓存删除 {len(unlisted_symbols)} 个未上市品种")
+                    self.logger.info(
+                        f"✓ 在IPO缓存中标记 {len(unlisted_symbols)} 个未上市品种为null"
+                    )
 
                 except Exception as e:
-                    self.logger.error(f"清理IPO缓存失败: {e}", exc_info=True)
+                    self.logger.error(f"标记IPO缓存失败: {e}", exc_info=True)
 
             # 🆕 保存未上市品种到专用缓存文件
             if unlisted_symbols:
                 try:
                     from .data_module import DailyCacheManager
 
-                    # 保存未上市品种列表
+                    # 🔧 构建详细信息（包含每个品种的ipo_date原始值）
+                    symbols_details = []
+                    for symbol in unlisted_symbols:
+                        if isinstance(ipo_data, dict) and symbol in ipo_data:
+                            # ipo_data包含详细信息
+                            detail = ipo_data[symbol]
+                            symbols_details.append(
+                                {
+                                    "code": symbol,
+                                    "status": detail.get("status", "未知"),
+                                    "ipo_date_raw": detail.get("ipo_date_raw"),
+                                    "ipo_date_parsed": detail.get("ipo_date_parsed"),
+                                }
+                            )
+                        else:
+                            # 兼容旧格式：只有代码列表
+                            symbols_details.append(
+                                {
+                                    "code": symbol,
+                                    "status": "未知",
+                                    "ipo_date_raw": None,
+                                    "ipo_date_parsed": None,
+                                }
+                            )
+
+                    # 保存未上市品种列表（带详细信息）
                     unlisted_data = {
-                        "symbols": unlisted_symbols,
+                        "symbols": unlisted_symbols,  # 保留简单列表用于兼容
+                        "symbols_details": symbols_details,  # 详细信息
                         "count": len(unlisted_symbols),
                         "category_stats": category_removed,
                     }
@@ -1671,7 +1713,9 @@ class SymbolLoader:
                         unlisted_data, "unlisted_symbols.json"
                     )
                     if success_save:
-                        self.logger.info("✓ 未上市品种缓存已保存: %d个品种", len(unlisted_symbols))
+                        self.logger.info(
+                            "✓ 未上市品种缓存已保存: %d个品种（含详细信息）", len(unlisted_symbols)
+                        )
                     else:
                         self.logger.warning("未上市品种缓存保存失败")
                 except Exception as e:
@@ -2077,7 +2121,7 @@ class IPODownloadTask(NetworkTask):
     用于批量下载股票IPO日期信息。
 
     特点：
-    - 轻量级请求（每个请求只获取finance_info）
+    - 轻量级请求（每个请求只获取IPO信息）
     - 单次请求，不需要多周期
     - 适合中等并发（避免过度并发）
     """
@@ -3073,14 +3117,14 @@ def _run_finance_two_phase_worker(
 ):
     """财务信息2段式下载worker进程包装函数
 
-    子进程只负责下载，不直接写SQLite（避免数据库锁冲突）
+    子进程只负责下载，主进程负责汇总数据
     """
     import warnings
 
     warnings.filterwarnings("ignore", category=ResourceWarning, message=".*socket.*")
 
     # 子进程不创建IPODateCache，只下载数据
-    # 数据由主进程统一写入SQLite
+    # 数据由主进程统一写入缓存
     asyncio.run(
         download_worker_finance_two_phase_async(
             worker_id,
@@ -3162,8 +3206,13 @@ async def _ipo_worker_async(
             worker_logger.error(f"Worker {worker_id} 无可用连接")
             return
 
+        # 🔧 关键修复：跟踪"正在处理中"的任务数
+        # 使用本地计数器（每个worker自己的事件循环内）
+        processing_count = 0
+
         # 为每个连接创建下载协程
         async def download_loop(conn_id, client):
+            nonlocal processing_count
             processed = 0
 
             while not stop_event.is_set():
@@ -3179,12 +3228,29 @@ async def _ipo_worker_async(
                 # 获取任务
                 try:
                     task = await asyncio.to_thread(task_queue.get, timeout=0.5)
+                    processing_count += 1  # ← 取走任务，计数+1
                 except queue.Empty:
-                    break
+                    # 🔧 关键：队列空了，但要等待其他协程完成正在处理的任务
+                    # 检查是否还有其他协程在处理任务
+                    if processing_count == 0:
+                        # 真正空闲，退出
+                        break
+                    else:
+                        # 还有其他协程在处理，等待一下
+                        await asyncio.sleep(0.1)
+                        continue
 
-                task_type, symbol, market = task
+                # 🔧 支持新旧两种task格式
+                # 旧格式: ("ipo", symbol, market)
+                # 新格式: ("ipo", symbol, market, retry_count)
+                if len(task) == 4:
+                    task_type, symbol, market, retry_count = task
+                else:
+                    task_type, symbol, market = task
+                    retry_count = 0
 
                 if task_type != "ipo":
+                    processing_count -= 1  # ← 不是IPO任务，释放计数
                     continue
 
                 try:
@@ -3194,25 +3260,48 @@ async def _ipo_worker_async(
                     )
 
                     if ipo_date is not None:
-                        # 已上市
-                        result_data = {"status": "listed", "ipo_date": ipo_date}
-                        await asyncio.to_thread(result_queue.put, (symbol, result_data))
+                        # 已上市：返回完整finance_info
+                        if finance_info:
+                            finance_info["market"] = market
+                        await asyncio.to_thread(result_queue.put, (symbol, finance_info))
                         await asyncio.to_thread(progress_queue.put, (symbol, "success"))
                     elif industry > 0:
-                        # 未上市但有行业数据
-                        result_data = {
-                            "status": "unlisted",
-                            "industry": industry,
-                            "finance_info": finance_info,
-                        }
-                        await asyncio.to_thread(result_queue.put, (symbol, result_data))
-                        await asyncio.to_thread(progress_queue.put, (symbol, "unlisted"))
+                        # 🔧 修复：有industry数据就认为是已上市的有效品种
+                        # 对于可转债等品种，TDX的ipo_date可能为0，使用updated_date作为备选
+                        if finance_info:
+                            finance_info["market"] = market
+                            # 如果没有ipo_date，尝试使用updated_date
+                            if finance_info.get("ipo_date", 0) == 0:
+                                updated_date = finance_info.get("updated_date", 0)
+                                if updated_date > 0:
+                                    finance_info["ipo_date"] = updated_date
+                        await asyncio.to_thread(result_queue.put, (symbol, finance_info))
+                        await asyncio.to_thread(
+                            progress_queue.put, (symbol, "success")
+                        )  # ✅ 标记为已上市
                     else:
-                        # 数据异常，重试
-                        await asyncio.to_thread(task_queue.put, task)
-                        await asyncio.to_thread(progress_queue.put, (symbol, "retry"))
+                        # 🔧 修复无限重试Bug：添加最大重试次数限制
+                        MAX_RETRY = 10  # 最多重试10次（总共请求11次）
+
+                        if retry_count < MAX_RETRY:
+                            # 数据异常，重试（不同服务器）
+                            new_task = ("ipo", symbol, market, retry_count + 1)
+                            await asyncio.to_thread(task_queue.put, new_task)
+                            await asyncio.to_thread(progress_queue.put, (symbol, "retry"))
+                            worker_logger.debug(
+                                f"品种 {symbol} 数据异常，重试 {retry_count + 1}/{MAX_RETRY}"
+                            )
+                        else:
+                            # 达到最大重试次数，标记为failed（不保存数据）
+                            # 这样 incremental_update 会识别为unlisted
+                            await asyncio.to_thread(progress_queue.put, (symbol, "failed"))
+                            worker_logger.warning(
+                                f"⚠️ 品种 {symbol} 达到最大重试次数({MAX_RETRY})，"
+                                f"所有服务器均返回无效数据，标记为下载失败"
+                            )
 
                     processed += 1
+                    processing_count -= 1  # ← 任务完成（无论成功/重试），释放计数
 
                     # 动态延时（IPO下载可以更快）
                     try:
@@ -3227,8 +3316,20 @@ async def _ipo_worker_async(
 
                 except Exception as e:
                     worker_logger.debug(f"Worker {worker_id} 下载 {symbol} 失败: {e}")
-                    await asyncio.to_thread(task_queue.put, task)
-                    await asyncio.to_thread(progress_queue.put, (symbol, "retry"))
+
+                    # 🔧 修复：异常处理也要遵循重试次数限制
+                    MAX_RETRY = 10
+                    if retry_count < MAX_RETRY:
+                        new_task = ("ipo", symbol, market, retry_count + 1)
+                        await asyncio.to_thread(task_queue.put, new_task)
+                        await asyncio.to_thread(progress_queue.put, (symbol, "retry"))
+                    else:
+                        await asyncio.to_thread(progress_queue.put, (symbol, "failed"))
+                        worker_logger.warning(
+                            f"⚠️ 品种 {symbol} 异常重试达到上限({MAX_RETRY})，标记为失败"
+                        )
+
+                    processing_count -= 1  # ← 异常也要释放计数
 
             worker_logger.debug(f"Worker {worker_id} 连接 {conn_id} 完成，处理 {processed} 个任务")
 
@@ -3395,6 +3496,60 @@ async def _download_single_ipo_async(
         # 类型断言：此时finance_info一定是dict类型
         assert isinstance(finance_info, dict)
 
+        # 🔧 新增：检测全零数据（服务器返回无效数据）
+        # 检查所有数值字段是否都为0（排除 market 和 code 字段）
+        numeric_fields = [
+            "ipo_date",
+            "industry",
+            "province",
+            "updated_date",
+            "liutongguben",
+            "zongguben",
+            "guojiagu",
+            "faqirenfarengu",
+            "farengu",
+            "bgu",
+            "hgu",
+            "zhigonggu",
+            "zongzichan",
+            "liudongzichan",
+            "gudingzichan",
+            "wuxingzichan",
+            "gudongrenshu",
+            "liudongfuzhai",
+            "changqifuzhai",
+            "zibengongjijin",
+            "jingzichan",
+            "zhuyingshouru",
+            "zhuyinglirun",
+            "yingshouzhangkuan",
+            "yingyelirun",
+            "touzishouyu",
+            "jingyingxianjinliu",
+            "zongxianjinliu",
+            "cunhuo",
+            "lirunzonghe",
+            "shuihoulirun",
+            "jinglirun",
+            "weifenlirun",
+        ]
+
+        all_zero = True
+        for field in numeric_fields:
+            value = finance_info.get(field, 0)
+            if value != 0 and value != 0.0:
+                all_zero = False
+                break
+
+        if all_zero:
+            # 所有字段都为0，认为是服务器返回了无效数据，需要重试
+            if symbol in ["000001", "600000", "688001"]:
+                local_logger.debug(f"🔍 {symbol}: 检测到全零数据，标记为需要重试")
+            local_logger.warning(
+                f"⚠️ 品种 {symbol} 返回全零数据（市场={market}），标记为服务器故障，将重新请求"
+            )
+            return None, 0, {}
+
         ipo_timestamp = finance_info.get("ipo_date", 0)
         industry = finance_info.get("industry", 0)
 
@@ -3416,7 +3571,7 @@ async def _download_single_ipo_async(
         return None, 0, {}
 
 
-# ==================== 财务信息2段式下载Worker（SQLite版） ====================
+# ==================== 财务信息2段式下载Worker（JSON缓存版） ====================
 
 
 async def download_worker_finance_two_phase_async(
@@ -3433,7 +3588,7 @@ async def download_worker_finance_two_phase_async(
     connections_per_worker=60,
     ipo_cache=None,
 ):
-    """财务信息2段式下载Worker（SQLite后端）
+    """财务信息2段式下载Worker（JSON缓存后端）
 
     第一阶段：使用IPv4服务器池，无重试
     切换条件：剩余任务<50 且 失败次数>=1
@@ -3451,7 +3606,7 @@ async def download_worker_finance_two_phase_async(
         stop_event: 停止事件
         pause_event: 暂停事件
         connections_per_worker: 每个worker的异步连接数
-        ipo_cache: IPODateCache实例（用于保存到SQLite）
+        ipo_cache: IPODateCache实例（用于保存到JSON缓存）
     """
     # ✅ 配置子进程日志，接入LogHub统一路由
     logger_local = _configure_subprocess_logging(worker_id, task_type="finance")
@@ -3770,12 +3925,6 @@ async def download_worker_finance_two_phase_async(
     )
 
 
-# ==================== (旧download_ipo_dates_simple、download_worker_ipo_async已删除，使用统一多进程架构) ====================
-
-
-# ==================== (旧StockSymbolManager已删除，使用symbol_management.SymbolLoader替代) ====================
-
-
 # ==================== 多进程数据获取器 ====================
 
 
@@ -3891,17 +4040,15 @@ class MultiProcessStockFetcher:
         start_date,
         intervals: Optional[List[str]] = None,
         progress_callback=None,
-        use_adaptive: bool = True,
         use_two_phase: bool = True,
     ) -> Union[Dict[str, pd.DataFrame], Dict[str, str]]:
-        """主下载方法 - 使用进程池+动态任务分配
+        """主下载方法 - 使用进程池+动态任务分配（统一使用LoadBalancer自适应配置）
 
         Args:
             symbols: 品种代码列表
             start_date: 起始日期
             intervals: 周期列表（默认["1d", "5m", "1m"]）
             progress_callback: 进度回调函数
-            use_adaptive: 是否使用自适应配置（默认True，企业级推荐）
             use_two_phase: 是否使用两段式下载（默认True，热备服务器优化）
         """
         if not symbols:
@@ -3962,75 +4109,40 @@ class MultiProcessStockFetcher:
                 # 返回失败结果（供UI处理）
                 return {"error": error_msg, "action_required": "test_servers"}
 
-            if use_adaptive:
-                # ===== 自适应模式（企业级） =====
-                self.logger.info("=" * 60)
-                self.logger.info("【企业级自适应下载】启动")
+            # 使用LoadBalancer计算自适应配置（统一模式）
+            self.logger.info("=" * 60)
+            self.logger.info("【LoadBalancer自适应下载】启动")
 
-                # 使用LoadBalancer计算自适应配置
-                from backend.infrastructure.data_module_vnpy.load_balancer import (
-                    get_load_balancer,
-                )
+            from backend.infrastructure.data_module_vnpy.load_balancer import (
+                get_load_balancer,
+            )
 
-                task = KlineDownloadTask("kline_download", total_tasks)
-                load_balancer = get_load_balancer()
-                lb_config = load_balancer.get_optimal_config(task)
+            task = KlineDownloadTask("kline_download", total_tasks)
+            load_balancer = get_load_balancer()
+            lb_config = load_balancer.get_optimal_config(task)
 
-                # 从缓存服务器中选取需要的数量
-                available_servers = available_servers[: lb_config.get("total_connections", 160)]
+            # 从缓存服务器中选取需要的数量
+            available_servers = available_servers[: lb_config.get("total_connections", 160)]
 
-                # 使用自适应配置
-                self.num_processes = lb_config.get("processes", 4)
-                self.async_connections_per_process = lb_config.get("coroutines_per_process", 40)
+            # 使用自适应配置
+            self.num_processes = lb_config.get("processes", 4)
+            self.async_connections_per_process = lb_config.get("coroutines_per_process", 40)
 
-                self.logger.info("【配置信息】")
-                self.logger.info("  进程数: %d", self.num_processes)
-                self.logger.info("  每进程协程: %d", self.async_connections_per_process)
-                self.logger.info("  总连接数: %d", lb_config.get("total_connections", 160))
-                self.logger.info("  预计内存: %.2f MB", lb_config.get("estimated_memory_mb", 80.0))
-                self.logger.info("  服务器来源: 服务器池缓存 (打乱顺序)")
-                self.logger.info("  压力评分: %.1f/100", lb_config.get("pressure_score", 0))
-                self.logger.info("  瓶颈维度: %s", lb_config.get("bottleneck", "unknown"))
-                self.logger.info(
-                    "  配置原因: %s", lb_config.get("reason", "基于LoadBalancer动态配置")
-                )
-                self.logger.info("=" * 60)
+            self.logger.info("【配置信息】")
+            self.logger.info("  进程数: %d", self.num_processes)
+            self.logger.info("  每进程协程: %d", self.async_connections_per_process)
+            self.logger.info("  总连接数: %d", lb_config.get("total_connections", 160))
+            self.logger.info("  预计内存: %.2f MB", lb_config.get("estimated_memory_mb", 80.0))
+            self.logger.info("  服务器数量: %d", lb_config.get("server_count", 0))
+            self.logger.info("  服务器复用率: %.2fx", lb_config.get("server_reuse_rate", 0.0))
+            self.logger.info("  压力评分: %.1f/100", lb_config.get("pressure_score", 0))
+            self.logger.info("  瓶颈维度: %s", lb_config.get("bottleneck", "unknown"))
+            self.logger.info("  配置原因: %s", lb_config.get("reason", "基于LoadBalancer动态配置"))
+            self.logger.info("=" * 60)
 
-                # 🚀 上报当前下载并发数到监控系统（TODO #9）
-                total_concurrency = self.num_processes * self.async_connections_per_process
-                self._report_download_concurrency(total_concurrency)
-            else:
-                # ===== 传统模式 =====
-                self.logger.info(
-                    "使用服务器池缓存（打乱顺序）: %s 个服务器", len(available_servers)
-                )
-                # 打印前5个服务器（已打乱）
-                top5 = available_servers[:5]
-                self.logger.info("前5个服务器（打乱后）: %s", top5)
-
-                # 动态计算进程数：使用更大的并发数
-                import math
-
-                # 🔧 移除硬编码限制，使用更大的每进程连接数
-                connections_per_process = 200  # 从30提升到200
-                optimal_processes = max(
-                    1, math.ceil(len(available_servers) / connections_per_process)
-                )
-                self.num_processes = optimal_processes
-                self.async_connections_per_process = min(
-                    connections_per_process, len(available_servers) // self.num_processes + 1
-                )
-                self.logger.info(
-                    f"动态计算进程数: {len(available_servers)}个服务器 / {connections_per_process} = {optimal_processes}个进程"
-                )
-                self.logger.info(
-                    f"预计总并发: 每进程约{self.async_connections_per_process}连接 "
-                    f"(总计{len(available_servers)}连接)"
-                )
-
-                # 🚀 上报当前下载并发数到监控系统（TODO #9 - 传统模式）
-                total_concurrency = len(available_servers)
-                self._report_download_concurrency(total_concurrency)
+            # 上报当前下载并发数到监控系统
+            total_concurrency = self.num_processes * self.async_connections_per_process
+            self._report_download_concurrency(total_concurrency)
 
             # 2. 初始化Manager和队列
             self._init_multiprocess_objects()
@@ -4180,10 +4292,8 @@ class MultiProcessStockFetcher:
 
         self.logger.info(f"启动{len(self.processes)}个两段式工作进程")
 
-        # 📊 【并发度监控】检查服务器分配和并发度
+        # 📊 两阶段下载配置（服务器复用率由LoadBalancer统一管理）
         total_concurrency = self.num_processes * self.async_connections_per_process
-        phase1_reuse_rate = total_concurrency / len(regular_servers) if regular_servers else 0
-
         self.logger.info(
             f"📊 两阶段下载配置: {self.num_processes}进程 × {self.async_connections_per_process}连接/进程 = "
             f"{total_concurrency}总并发"
@@ -4195,26 +4305,6 @@ class MultiProcessStockFetcher:
             f"📦 Phase2(IPv6): {len(standby_servers)}个服务器, 超时1.0s, socket异常自动切换"
         )
         self.logger.info(f"🔄 切换阈值: 剩余{threshold}任务时从Phase1切换到Phase2")
-
-        # 检查Phase1服务器复用率
-        if phase1_reuse_rate > 2.0:
-            self.logger.error(
-                f"❌ Phase1服务器复用率过高: {phase1_reuse_rate:.2f}x (每个服务器平均{phase1_reuse_rate:.1f}个连接)，"
-                f"可能导致大量连接拒绝！建议降低并发度或增加服务器"
-            )
-        elif phase1_reuse_rate > 1.5:
-            self.logger.warning(
-                f"⚠️ Phase1服务器复用率较高: {phase1_reuse_rate:.2f}x (每个服务器平均{phase1_reuse_rate:.1f}个连接)，"
-                f"可能影响稳定性"
-            )
-        elif phase1_reuse_rate > 1.0:
-            self.logger.warning(
-                f"⚠️ Phase1服务器存在复用: {phase1_reuse_rate:.2f}x，建议增加服务器或降低connections_per_worker"
-            )
-        else:
-            self.logger.info(
-                f"✅ Phase1服务器充足，复用率: {phase1_reuse_rate:.2f}x，每个服务器独立连接"
-            )
 
         # 等待所有进程启动完成
         time.sleep(0.5)
@@ -4439,16 +4529,14 @@ class MultiProcessStockFetcher:
         self,
         symbols_with_markets: List[Tuple[str, int]],
         progress_callback=None,
-        use_adaptive: bool = True,
         ipo_cache=None,
     ) -> Dict[str, Any]:
-        """多进程财务信息下载（2段式架构，SQLite后端）
+        """多进程财务信息下载（2段式架构，统一使用LoadBalancer配置）
 
         Args:
             symbols_with_markets: [(symbol, market), ...] 品种和市场代码列表
             progress_callback: 进度回调函数 callback(symbol, status)
-            use_adaptive: 是否使用自适应配置（默认True）
-            ipo_cache: IPODateCache实例（用于保存到SQLite）
+            ipo_cache: IPODateCache实例（用于保存到JSON）
 
         Returns:
             {
@@ -4457,7 +4545,7 @@ class MultiProcessStockFetcher:
                 "downloaded": int,
                 "succeeded": int,
                 "failed": int,
-                "unlisted": [symbol, ...],    # 未上市品种（从SQLite查询）
+                "data": {symbol: ipo_date},
                 "error": str (if failed)
             }
         """
@@ -4470,7 +4558,6 @@ class MultiProcessStockFetcher:
                 "succeeded": 0,
                 "failed": 0,
                 "data": {},
-                "unlisted": [],
                 "error": "品种列表为空",
             }
 
@@ -4479,55 +4566,25 @@ class MultiProcessStockFetcher:
 
         try:
             # 1. 获取服务器列表（复用K线下载的服务器池）
-            # 🔥 关键修复：增加服务器池就绪检查和等待逻辑
+            # 简化：步骤1已保证LoadBalancer就绪，直接使用
             try:
-                # ✅ 修复：使用绝对导入，避免多进程中的导入失败
                 from backend.infrastructure.data_module_vnpy.load_balancer import (
                     server_pool_manager,
                 )
-                import time
 
-                # 检查服务器池是否就绪
-                max_wait_seconds = 10  # 最多等待10秒
-                wait_interval = 0.5  # 每次检查间隔0.5秒
-                waited_seconds = 0
-
-                while (
-                    not server_pool_manager._running or not server_pool_manager._sorted_servers_ipv4
-                ):
-                    if waited_seconds >= max_wait_seconds:
-                        raise RuntimeError(
-                            f"服务器池等待超时（{max_wait_seconds}秒）！"
-                            f"_running={server_pool_manager._running}, "
-                            f"IPv4池={'有数据' if server_pool_manager._sorted_servers_ipv4 else '空'}"
-                        )
-
-                    if waited_seconds == 0:
-                        self.logger.warning(
-                            "⚠️ 服务器池未就绪，等待初始化... "
-                            f"(_running={server_pool_manager._running})"
-                        )
-
-                    time.sleep(wait_interval)
-                    waited_seconds += wait_interval
-
-                    # 尝试触发初始化
-                    if waited_seconds == 1.0 and not server_pool_manager._running:
-                        self.logger.info("尝试手动启动服务器池...")
-                        try:
-                            server_pool_manager.start()
-                        except Exception as start_error:
-                            self.logger.error(f"手动启动服务器池失败: {start_error}")
-
-                if waited_seconds > 0:
-                    self.logger.info(f"✅ 服务器池已就绪（等待了{waited_seconds:.1f}秒）")
+                # 验证LoadBalancer就绪（步骤1已保证）
+                if not server_pool_manager._running:
+                    raise RuntimeError(
+                        "服务器池未初始化！这不应该发生。\n"
+                        "请检查步骤1（验证服务器池缓存）是否执行成功。"
+                    )
 
                 available_servers = server_pool_manager.get_servers_shuffled(pool_type="ipv4")
-                available_servers_ipv6 = server_pool_manager.get_servers_shuffled(pool_type="ipv6")
-                self.logger.info(f"✅ 使用缓存的IPv4服务器池: {len(available_servers)}个可用服务器")
-                self.logger.info(
-                    f"✅ 使用缓存的IPv6服务器池: {len(available_servers_ipv6)}个可用服务器"
+                available_servers_ipv6 = server_pool_manager.get_servers_shuffled(
+                    pool_type="ipv6", allow_fallback=True
                 )
+                self.logger.info(f"使用IPv4服务器池: {len(available_servers)}个")
+                self.logger.info(f"使用IPv6服务器池: {len(available_servers_ipv6)}个")
 
             except RuntimeError as e:
                 error_msg = f"服务器池缓存不可用，无法下载IPO数据！原因：{e}"
@@ -4551,90 +4608,84 @@ class MultiProcessStockFetcher:
                     "succeeded": 0,
                     "failed": total_symbols,
                     "data": {},
-                    "unlisted": [],
                     "error": error_msg,
                     "action_required": "test_servers",
                 }
 
-            # 2. 使用LoadBalancer计算自适应配置
-            if use_adaptive:
-                # ✅ 修复：使用绝对导入，避免多进程中的导入失败
-                from backend.infrastructure.data_module_vnpy.load_balancer import (
-                    get_load_balancer,
-                    IPODownloadTask,
-                )
+            # 2. 使用LoadBalancer计算自适应配置（统一模式）
+            from backend.infrastructure.data_module_vnpy.load_balancer import (
+                get_load_balancer,
+                IPODownloadTask,
+            )
 
-                task = IPODownloadTask("ipo_download", total_symbols)
-                load_balancer = get_load_balancer()
-                lb_config = load_balancer.get_optimal_config(task)
+            task = IPODownloadTask("ipo_download", total_symbols)
+            load_balancer = get_load_balancer()
+            lb_config = load_balancer.get_optimal_config(task)
 
-                self.num_processes = lb_config.get("processes", 4)
-                self.async_connections_per_process = lb_config.get("coroutines_per_process", 30)
+            self.num_processes = lb_config.get("processes", 4)
+            self.async_connections_per_process = lb_config.get("coroutines_per_process", 30)
 
-                total_concurrency = self.num_processes * self.async_connections_per_process
+            total_concurrency = self.num_processes * self.async_connections_per_process
 
-                self.logger.info("=" * 60)
-                self.logger.info("【智能IPO下载】LoadBalancer自适应配置")
-                self.logger.info(f"  进程数: {self.num_processes}")
-                self.logger.info(f"  每进程协程数: {self.async_connections_per_process}")
-                self.logger.info(f"  总并发度: {total_concurrency}")
-                self.logger.info("=" * 60)
-            else:
-                # 手动模式：保守配置
-                self.num_processes = min(4, len(available_servers) // 10)
-                self.async_connections_per_process = 15
-                self.logger.info(
-                    f"手动模式：{self.num_processes}进程 × {self.async_connections_per_process}协程"
-                )
+            self.logger.info("=" * 60)
+            self.logger.info("【LoadBalancer自适应IPO下载】")
+            self.logger.info(f"  进程数: {self.num_processes}")
+            self.logger.info(f"  每进程协程数: {self.async_connections_per_process}")
+            self.logger.info(f"  总并发度: {total_concurrency}")
+            self.logger.info(f"  服务器数量: {lb_config.get('server_count', 0)}")
+            self.logger.info(f"  服务器复用率: {lb_config.get('server_reuse_rate', 0.0):.2f}x")
+            self.logger.info("=" * 60)
 
             # 3. 初始化多进程对象
             self._init_multiprocess_objects()
 
             # 4. 准备任务队列
+            assert self.task_queue is not None, "task_queue未初始化"
             for symbol, market in symbols_with_markets:
                 self.task_queue.put(("ipo", symbol, market))  # 任务格式: (type, symbol, market)
 
-            # 5. 启动2段式worker进程池（传入IPv4和IPv6服务器）
-            # 不传递ipo_cache对象（无法序列化），而是传递db_path
-            db_path = None
-            if ipo_cache:
-                try:
-                    db_path = (
-                        str(ipo_cache.db.db_path) if hasattr(ipo_cache.db, "db_path") else None
-                    )
-                except Exception:
-                    pass
+            # 5. 启动IPO专用worker进程池（更简单高效）
+            # 🔧 修复：使用IPO专用worker，避免2段式worker的复杂逻辑导致卡顿
+            # 🔧 优化：重试任务优先使用IPv6服务器乱序池
+            # 创建共享服务器列表：IPv6乱序 + IPv4（确保重试时优先用IPv6）
+            assert self.manager is not None, "manager未初始化"
 
-            self._start_finance_two_phase_worker_pool(
-                available_servers, available_servers_ipv6, db_path
+            import random
+
+            # IPv6服务器打乱顺序（增加服务器多样性）
+            ipv6_shuffled = list(available_servers_ipv6)
+            random.shuffle(ipv6_shuffled)
+
+            # 构建服务器列表：IPv6乱序在前，IPv4在后
+            all_servers = ipv6_shuffled + list(available_servers)
+            server_list = self.manager.list(all_servers)
+
+            self.logger.info(
+                f"✓ 服务器池配置: IPv6乱序={len(ipv6_shuffled)}个，IPv4={len(available_servers)}个，"
+                f"重试将优先使用IPv6服务器"
             )
 
-            # 7. 监控进度并收集结果（主进程统一保存到SQLite）
+            self._start_ipo_worker_pool(server_list)
+
+            # 7. 监控进度并收集结果（主进程统一保存到JSON缓存）
             results = self._monitor_ipo_progress(total_symbols, progress_callback, ipo_cache)
 
             # 8. 清理资源
             self._cleanup_processes()
 
-            # 9. 统计结果（简化，因为SQLite已自动保存）
-            # 从SQLite查询未上市品种
-            if ipo_cache:
-                unlisted_symbols = ipo_cache.get_unlisted_symbols()
-            else:
-                unlisted_symbols = []
-
-            # 统计成功和失败
+            # 9. 统计结果
             succeeded_count = len(results)
             failed_count = total_symbols - succeeded_count
 
-            self.logger.info(
-                f"财务信息下载完成: 总计={total_symbols}, 成功={succeeded_count}, "
-                f"未上市={len(unlisted_symbols)}, 失败={failed_count}"
-            )
+            # 构建data字典（从results中提取已上市品种的IPO日期）
+            data_dict = {}
+            for symbol, result_data in results.items():
+                if isinstance(result_data, dict) and result_data.get("ipo_date"):
+                    data_dict[symbol] = result_data["ipo_date"]
 
-            # 🔍 DEBUG: 显示未上市品种示例（只进入log文件）
-            if unlisted_symbols:
-                sample_unlisted = unlisted_symbols[:10]
-                self.logger.debug(f"🔍 未上市品种示例（前10个）: {sample_unlisted}")
+            self.logger.info(
+                f"财务信息下载完成: 总计={total_symbols}, 成功={succeeded_count}, 失败={failed_count}"
+            )
 
             return {
                 "success": True,
@@ -4642,7 +4693,7 @@ class MultiProcessStockFetcher:
                 "downloaded": succeeded_count,
                 "succeeded": succeeded_count,
                 "failed": failed_count,
-                "unlisted": unlisted_symbols,
+                "data": data_dict,
             }
 
         except Exception as e:
@@ -4655,7 +4706,6 @@ class MultiProcessStockFetcher:
                 "succeeded": 0,
                 "failed": total_symbols,
                 "data": {},
-                "unlisted": [],
                 "error": str(e),
             }
 
@@ -4732,22 +4782,31 @@ class MultiProcessStockFetcher:
         self.logger.info(f"启动{len(self.processes)}个财务信息2段式下载工作进程")
 
     def _monitor_ipo_progress(self, total_symbols: int, progress_callback, ipo_cache=None) -> Dict:
-        """监控IPO下载进度并收集结果，主进程统一保存到SQLite
+        """监控IPO下载进度并收集结果，主进程统一保存
 
-        增强版：添加管道通信异常处理，防止启动卡死
+        最佳实践：
+        1. 确保所有队列数据都被收集
+        2. 子进程退出后继续清空队列
+        3. 统一保存到缓存，避免数据丢失
         """
         results = {}
         completed = 0
         consecutive_errors = 0  # 连续错误计数器
         max_consecutive_errors = 5  # 最大容忍连续错误数
 
+        # ✅ 最佳实践：记录超时次数，避免误判
+        timeout_count = 0
+        max_timeout_before_check = 3  # 连续3次超时才检查进程状态
+
         while completed < total_symbols:
             try:
+                assert self.result_queue is not None, "result_queue未初始化"
                 symbol, result_data = self.result_queue.get(timeout=1)
                 results[symbol] = result_data
                 consecutive_errors = 0  # 成功后重置计数器
+                timeout_count = 0  # ✅ 成功后重置超时计数
 
-                # 主进程统一保存到SQLite（避免子进程数据库锁冲突）
+                # 主进程统一保存到缓存
                 if ipo_cache and result_data:
                     try:
                         ipo_cache.set(symbol, result_data)
@@ -4757,18 +4816,59 @@ class MultiProcessStockFetcher:
                 completed += 1
 
                 if progress_callback:
-                    # 🔧 修复：传递 (completed, total_symbols) 而不是 (symbol, status)
-                    # 与 ipo_progress_callback(current, total) 签名匹配
                     progress_callback(completed, total_symbols)
 
                 if completed % 100 == 0:
                     self.logger.info(f"IPO下载进度: {completed}/{total_symbols}")
 
             except queue.Empty:
-                # 检查进程是否还在运行
-                if not any(p.is_alive() for p in self.processes):
-                    self.logger.warning("所有进程已退出但任务未完成")
-                    break
+                # ✅ 最佳实践：超时不立即退出，连续多次超时才检查进程状态
+                timeout_count += 1
+
+                # 连续超时达到阈值，才检查进程是否退出
+                if timeout_count >= max_timeout_before_check:
+                    if not any(p.is_alive() for p in self.processes):
+                        # ✅ 关键修复：所有进程退出后，继续清空队列剩余数据
+                        self.logger.warning(
+                            f"所有进程已退出，已完成{completed}/{total_symbols}，清空队列剩余数据..."
+                        )
+
+                        # 非阻塞读取队列中的所有剩余数据
+                        remaining_count = 0
+                        while True:
+                            try:
+                                symbol, result_data = self.result_queue.get_nowait()
+                                results[symbol] = result_data
+
+                                # 保存到缓存
+                                if ipo_cache and result_data:
+                                    try:
+                                        ipo_cache.set(symbol, result_data)
+                                    except Exception as e:
+                                        self.logger.error(f"保存财务信息失败 ({symbol}): {e}")
+
+                                completed += 1
+                                remaining_count += 1
+
+                            except queue.Empty:
+                                break
+
+                        if remaining_count > 0:
+                            self.logger.info(
+                                f"✅ 从队列清空了{remaining_count}个剩余结果，"
+                                f"当前完成{completed}/{total_symbols}"
+                            )
+
+                        # 如果还有未完成的，记录警告
+                        if completed < total_symbols:
+                            self.logger.warning(
+                                f"⚠️ 进程全部退出，仍有{total_symbols - completed}个任务未完成"
+                            )
+                        break
+                    else:
+                        # 进程还在运行，重置超时计数，继续等待
+                        timeout_count = 0
+
                 continue
 
             except (EOFError, BrokenPipeError, ConnectionError, ConnectionResetError) as e:
@@ -4817,6 +4917,42 @@ class MultiProcessStockFetcher:
                 time.sleep(0.5)
                 continue
 
+        # 🔧 最终保障：无论如何退出，都再次清空队列
+        # 确保绝对不会有品种被留在队列中
+        final_remaining = 0
+        try:
+            self.logger.info(
+                f"✅ 循环结束，最终检查队列剩余数据（当前完成{completed}/{total_symbols}）..."
+            )
+            while True:
+                try:
+                    symbol, result_data = self.result_queue.get_nowait()
+                    results[symbol] = result_data
+
+                    # 保存到缓存
+                    if ipo_cache and result_data:
+                        try:
+                            ipo_cache.set(symbol, result_data)
+                        except Exception as e:
+                            self.logger.error(f"最终保存失败 ({symbol}): {e}")
+
+                    completed += 1
+                    final_remaining += 1
+
+                except queue.Empty:
+                    break
+
+            if final_remaining > 0:
+                self.logger.info(
+                    f"✅ 最终清空：从队列中额外读取{final_remaining}个结果，"
+                    f"最终完成{completed}/{total_symbols}"
+                )
+            else:
+                self.logger.info(f"✅ 最终检查：队列已空，确认完成{completed}/{total_symbols}")
+
+        except Exception as e:
+            self.logger.error(f"最终队列清空异常: {e}", exc_info=True)
+
         return results
 
     # ==================== 异步下载管理（从download_manager.py合并） ====================
@@ -4827,17 +4963,17 @@ class MultiProcessStockFetcher:
         symbol_loader,
         storage_manager,
         market_types=None,
-        use_adaptive: bool = True,
+        use_adaptive=True,
     ) -> bool:
         """
-        启动增量下载（异步执行，立即返回，从download_manager.py合并）
+        启动增量下载（异步执行，立即返回，统一使用LoadBalancer配置）
 
         Args:
             start_date: 开始日期
             symbol_loader: SymbolLoader实例
             storage_manager: StorageManager实例
             market_types: 市场类型列表
-            use_adaptive: 是否使用自适应配置（默认True，企业级推荐）
+            use_adaptive: 是否使用自适应配置（默认True）
 
         Returns:
             是否成功启动下载任务
@@ -4882,10 +5018,10 @@ class MultiProcessStockFetcher:
         symbol_loader,
         storage_manager,
         market_types=None,
-        use_adaptive: bool = True,
+        use_adaptive=True,
     ):
         """
-        实际执行增量下载的后台方法（从download_manager.py合并）
+        实际执行增量下载的后台方法（统一使用LoadBalancer配置）
 
         Args:
             start_date: 开始日期
@@ -4949,7 +5085,6 @@ class MultiProcessStockFetcher:
                     start_date=start_date,
                     intervals=["1d", "5m", "1m"],
                     progress_callback=progress_callback,
-                    use_adaptive=use_adaptive,
                 )
 
                 # 🔍 诊断日志：检查下载结果
@@ -5055,7 +5190,6 @@ def download_incremental_unified(
     symbols: List[str],
     start_date: Union[str, date],
     intervals: Optional[List[str]] = None,
-    use_adaptive: bool = True,
     symbol_loader=None,
     market_types: Optional[List[str]] = None,
     storage_callback: Optional[Callable[[str, str, pd.DataFrame], Optional[Any]]] = None,
@@ -5078,7 +5212,6 @@ def download_incremental_unified(
         symbols: 品种代码列表（如为空且提供symbol_loader，则自动提取）
         start_date: 开始日期（字符串或date对象）
         intervals: 周期列表（默认["1d", "5m", "1m"]）
-        use_adaptive: 是否使用自适应配置（默认True，企业级推荐）
         symbol_loader: SymbolLoader实例（可选，用于自动提取品种）
         market_types: 市场类型列表（配合symbol_loader使用）
         storage_callback: 存储回调函数 callback(symbol, interval, data) -> Optional[Path]
@@ -5152,7 +5285,7 @@ def download_incremental_unified(
     logger.info("  开始时间: %s", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     logger.info("  品种数量: %d", len(symbols))
     logger.info("  起始日期: %s", start_date)
-    logger.info("  配置模式: %s", "自适应配置（企业级）" if use_adaptive else "固定配置")
+    logger.info("  配置模式: LoadBalancer自适应配置")
     logger.info("=" * 60)
 
     # 验证参数
@@ -5236,7 +5369,7 @@ def download_incremental_unified(
     logger.info("  • 起始日期: %s", start_date)
     logger.info("  • 周期列表: %s", intervals)
     logger.info("  • 预计任务数: %d", total_tasks)
-    logger.info("  • 配置模式: %s", "自适应（企业级）" if use_adaptive else "固定")
+    logger.info("  • 配置模式: LoadBalancer自适应")
 
     # 定义内部进度回调（限制事件推送频率）
     def internal_progress_callback(completed: int, total: int, symbol: str, interval: str):
@@ -5270,7 +5403,6 @@ def download_incremental_unified(
             start_date,
             intervals=intervals,
             progress_callback=internal_progress_callback,
-            use_adaptive=use_adaptive,
         )
 
         download_elapsed = time.time() - download_start
@@ -5455,7 +5587,6 @@ def download_ipo_dates(
             "succeeded": int,
             "failed": int,
             "data": {symbol: ipo_date},
-            "unlisted": [symbol, ...],
             "error": str (可选)
         }
     """
@@ -5470,7 +5601,6 @@ def download_ipo_dates(
             "succeeded": 0,
             "failed": 0,
             "data": {},
-            "unlisted": [],
             "error": "品种列表为空",
         }
 
@@ -5503,7 +5633,6 @@ def download_ipo_dates(
             "succeeded": cached_count,
             "failed": 0,
             "data": cached_data,
-            "unlisted": [],
         }
 
     # 2. 加载市场代码映射
@@ -5540,7 +5669,6 @@ def download_ipo_dates(
         result = fetcher.download_ipo_dates_multiprocess(
             symbols_with_markets=symbols_with_markets,
             progress_callback=progress_callback,
-            use_adaptive=True,
             ipo_cache=ipo_cache,
         )
     else:
@@ -5556,37 +5684,11 @@ def download_ipo_dates(
     all_data = {**cached_data, **result["data"]}
 
     # 5. 更新内存缓存
-    for symbol, ipo_date in result["data"].items():
-        ipo_cache.set(symbol, ipo_date)
+    # 注意：ipo_cache.set期望的是(symbol, IPO信息字典)
+    # 这里result["data"]已经由主进程处理过，不需要再次set
+    # （在 _monitor_ipo_progress 中已经调用过 ipo_cache.set）
 
-    # 6. 处理未上市品种（从品种列表中移除）
-    unlisted_symbols = result.get("unlisted", [])
-    if unlisted_symbols:
-        local_logger.info(f"发现 {len(unlisted_symbols)} 个未上市品种")
-        try:
-            success, category_removed = symbol_loader.update_ipo_dates_and_remove_unlisted(
-                result["data"], unlisted_symbols
-            )
-            if success:
-                # 🆕 统计分类
-                if category_removed:
-                    stock_count = (
-                        category_removed.get("上证A股", 0)
-                        + category_removed.get("深证A股", 0)
-                        + category_removed.get("北证A股", 0)
-                    )
-                    bond_count = category_removed.get("可转债", 0)
-                    fund_count = category_removed.get("T+0基金", 0)
-                    local_logger.info("✓ 品种列表缓存已更新（已删除未上市品种）")
-                    local_logger.info(
-                        f"  删除统计: 股票{stock_count}个, 可转债{bond_count}个, 基金{fund_count}个"
-                    )
-                else:
-                    local_logger.info("✓ 品种列表缓存已更新（已删除未上市品种）")
-        except Exception as e:
-            local_logger.error(f"更新品种列表缓存时出错: {e}", exc_info=True)
-
-    # 7. 批量保存 IPO 缓存到独立文件
+    # 6. 批量保存 IPO 缓存到独立文件
     try:
         ipo_cache.batch_save()
         local_logger.info(f"✓ IPO 缓存已保存到文件: {len(all_data)} 个品种")
@@ -5598,10 +5700,9 @@ def download_ipo_dates(
         "total": len(symbols),
         "cached": cached_count,
         "downloaded": result["downloaded"],
-        "succeeded": len(all_data) + len(unlisted_symbols),
+        "succeeded": len(all_data),
         "failed": result["failed"],
         "data": all_data,
-        "unlisted": unlisted_symbols,
     }
 
 
@@ -5627,15 +5728,6 @@ def load_market_mapping() -> Dict[str, int]:
                     mapping[code] = market
 
     return mapping
-
-
-# ==================== 已删除的函数 ====================
-# download_ipo_dates_simple() - 已删除（使用download_ipo_dates_multiprocess替代）
-# download_worker_ipo_async() - 已删除（使用_ipo_worker_async替代）
-# _run_async_worker_ipo() - 已删除（使用_run_ipo_worker替代）
-
-
-# ==================== 文件结尾 ====================
 
 
 # ==============================================================================

@@ -2922,7 +2922,8 @@ class SystemManagerService(BaseService):
             )
 
             # 🎯 架构修复：测试ZMQ连接，仅在成功时启动定时器
-            zmq_connection_ok = self._test_zmq_connection()
+            # 🔧 修复：使用带重试的连接测试，避免监控进程初始化未完成时立即测试失败
+            zmq_connection_ok = self._test_zmq_connection_with_retry(max_retries=3, retry_interval=2.0)
 
             if zmq_connection_ok:
                 # 使用QTimer在主线程定时推送服务状态
@@ -3005,6 +3006,42 @@ class SystemManagerService(BaseService):
             self.logger.warning("⚠️ ZMQ连接测试失败: %s", e)
             self._reset_req_socket()
             return False
+
+    def _test_zmq_connection_with_retry(self, max_retries: int = 3, retry_interval: float = 2.0) -> bool:
+        """测试ZMQ连接是否可用（带重试机制）.
+
+        由于监控进程启动是异步的，socket可能还未完全初始化，因此需要重试机制。
+        使用同步阻塞方式重试，因为这是在初始化阶段，需要确保连接成功后再继续。
+
+        Args:
+            max_retries: 最大重试次数
+            retry_interval: 重试间隔（秒）
+
+        Returns:
+            bool: 连接是否成功
+        """
+        import time
+
+        for attempt in range(1, max_retries + 1):
+            self.logger.info(f"🔄 ZMQ连接测试（尝试 {attempt}/{max_retries}）...")
+
+            if self._test_zmq_connection():
+                if attempt > 1:
+                    self.logger.info(f"✅ ZMQ连接测试成功（第{attempt}次尝试）")
+                return True
+
+            # 如果不是最后一次尝试，等待后重试
+            if attempt < max_retries:
+                self.logger.debug(f"等待 {retry_interval} 秒后重试...")
+                time.sleep(retry_interval)
+                # 重置socket以便下次重试
+                self._reset_req_socket()
+
+        # 所有重试都失败
+        self.logger.warning(
+            f"⚠️ ZMQ连接测试失败（已重试{max_retries}次），将使用降级模式运行"
+        )
+        return False
 
     def _reset_req_socket(self):
         """重置REQ socket（避免卡住）."""
@@ -3479,43 +3516,113 @@ class SystemManagerService(BaseService):
             }
         """
         try:
-            # 尝试从监控进程获取
+            # 🔧 修复：优先从监控进程获取，失败时返回明确的错误状态
             import zmq
 
             with self._cache_lock:
                 if not self._zmq_req_socket or not self._zmq_context:
-                    # 降级到本地SystemMonitor
-                    return self.system_monitor.get_bandwidth_info()
+                    # 🔧 修复：ZMQ未初始化，返回明确状态，不降级到空实例
+                    self.logger.debug("ZMQ未初始化，无法获取带宽信息")
+                    return {
+                        "full_test": {
+                            "download_mbps": None,
+                            "upload_mbps": None,
+                            "ping_ms": None,
+                            "status": "ZMQ未初始化",
+                        },
+                        "ping_test": {"ping_ms": None, "status": "ZMQ未初始化"},
+                    }
 
-                self._zmq_req_socket.send_json({"action": "get_bandwidth"})
-                result = self._zmq_req_socket.recv_json()
+                # 🔧 修复：使用带超时的发送和接收
+                try:
+                    self._zmq_req_socket.send_json({"action": "get_bandwidth"}, zmq.NOBLOCK)
+                except zmq.Again:
+                    # 发送失败，重置socket
+                    self.logger.warning("ZMQ发送失败，重置socket")
+                    self._reset_req_socket()
+                    return {
+                        "full_test": {
+                            "download_mbps": None,
+                            "upload_mbps": None,
+                            "ping_ms": None,
+                            "status": "ZMQ发送失败",
+                        },
+                        "ping_test": {"ping_ms": None, "status": "ZMQ发送失败"},
+                    }
+
+                # 接收响应（使用已设置的超时）
+                try:
+                    result = self._zmq_req_socket.recv_json()
+                except zmq.Again:
+                    # 接收超时，重置socket
+                    self.logger.warning("ZMQ接收超时（3秒），重置socket")
+                    self._reset_req_socket()
+                    return {
+                        "full_test": {
+                            "download_mbps": None,
+                            "upload_mbps": None,
+                            "ping_ms": None,
+                            "status": "ZMQ接收超时",
+                        },
+                        "ping_test": {"ping_ms": None, "status": "ZMQ接收超时"},
+                    }
 
                 if isinstance(result, dict) and result.get("status") == "success":
                     data = result.get("data", {})
-                    return data if isinstance(data, dict) else {}
+                    if isinstance(data, dict):
+                        # 🔧 修复：记录成功获取的数据
+                        self.logger.debug(f"成功从监控进程获取带宽信息: {data}")
+                        return data
+                    else:
+                        self.logger.warning("监控进程返回的数据格式错误: %s", type(data))
+                        return {
+                            "full_test": {
+                                "download_mbps": None,
+                                "upload_mbps": None,
+                                "ping_ms": None,
+                                "status": "数据格式错误",
+                            },
+                            "ping_test": {"ping_ms": None, "status": "数据格式错误"},
+                        }
                 else:
-                    # 降级到本地SystemMonitor
-                    return self.system_monitor.get_bandwidth_info()
+                    # 监控进程返回错误状态
+                    error_msg = result.get("message", "未知错误") if isinstance(result, dict) else "响应格式错误"
+                    self.logger.warning("监控进程返回错误: %s", error_msg)
+                    return {
+                        "full_test": {
+                            "download_mbps": None,
+                            "upload_mbps": None,
+                            "ping_ms": None,
+                            "status": f"监控进程错误: {error_msg}",
+                        },
+                        "ping_test": {"ping_ms": None, "status": f"监控进程错误: {error_msg}"},
+                    }
 
-        except zmq.Again:
-            self.logger.warning("获取带宽信息超时，使用本地SystemMonitor")
-            return self.system_monitor.get_bandwidth_info()
+        except zmq.Again as e:
+            # 🔧 修复：ZMQ超时异常，返回明确状态
+            self.logger.warning("获取带宽信息ZMQ超时: %s", e)
+            self._reset_req_socket()
+            return {
+                "full_test": {
+                    "download_mbps": None,
+                    "upload_mbps": None,
+                    "ping_ms": None,
+                    "status": "ZMQ超时",
+                },
+                "ping_test": {"ping_ms": None, "status": "ZMQ超时"},
+            }
         except Exception as e:
-            self.logger.error("获取带宽信息失败：%s", e)
-            # 降级到本地SystemMonitor
-            try:
-                return self.system_monitor.get_bandwidth_info()
-            except Exception as e2:
-                self.logger.error("本地SystemMonitor获取带宽信息失败：%s", e2)
-                return {
-                    "full_test": {
-                        "download_mbps": None,
-                        "upload_mbps": None,
-                        "ping_ms": None,
-                        "status": "错误",
-                    },
-                    "ping_test": {"ping_ms": None, "status": "错误"},
-                }
+            # 🔧 修复：其他异常，返回明确状态
+            self.logger.error("获取带宽信息失败：%s", e, exc_info=True)
+            return {
+                "full_test": {
+                    "download_mbps": None,
+                    "upload_mbps": None,
+                    "ping_ms": None,
+                    "status": f"异常: {str(e)}",
+                },
+                "ping_test": {"ping_ms": None, "status": f"异常: {str(e)}"},
+            }
 
     def _dispatch_monitoring_events(self, data: Dict[str, Any]):
         """分发监控事件到EventEngine（解耦核心）."""
