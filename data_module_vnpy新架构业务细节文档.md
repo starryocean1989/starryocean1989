@@ -2982,6 +2982,3770 @@ class DateRangeExceptionHandler:
 
 ---
 
+## 四、缓存管理业务规则
+
+> **架构设计参考**：缓存管理器架构请参考 [最佳实践文档 - 2.1 data_module.py - DailyCacheManager](./data_module_vnpy新架构最佳实践cursor版.md#21-data_modulepy---核心模块)
+
+### 4.1 微观架构设计
+
+#### 4.1.1 缓存策略架构
+
+**设计目标**：
+- 支持多种缓存失效策略（日期失效、LRU、TTL）
+- 策略可组合、可替换
+- 统一的缓存接口，隔离底层实现
+- 支持性能监控和统计
+
+**核心类设计**：
+
+```python
+from abc import ABC, abstractmethod
+from datetime import date, datetime
+from typing import Any, Optional, Dict
+from pathlib import Path
+import time
+import logging
+
+logger = logging.getLogger(__name__)
+
+# ==================== 缓存策略抽象 ====================
+
+class CacheStrategy(ABC):
+    """缓存失效策略基类"""
+    
+    @abstractmethod
+    def is_valid(self, cache_metadata: Dict[str, Any]) -> bool:
+        """判断缓存是否有效
+        
+        Args:
+            cache_metadata: 缓存元数据（包含创建时间、访问时间等）
+            
+        Returns:
+            True表示缓存有效，False表示已失效
+        """
+        pass
+    
+    @abstractmethod
+    def get_strategy_name(self) -> str:
+        """获取策略名称"""
+        pass
+
+
+class DateBasedStrategy(CacheStrategy):
+    """日期失效策略：次日0时失效"""
+    
+    def is_valid(self, cache_metadata: Dict[str, Any]) -> bool:
+        """检查缓存日期是否为今天
+        
+        规则：
+        - 缓存日期 = 今天 → 有效
+        - 缓存日期 < 今天 → 失效
+        - 缓存日期 > 今天 → 失效（异常情况）
+        """
+        cache_date_str = cache_metadata.get("cache_date")
+        if not cache_date_str:
+            return False
+        
+        try:
+            cache_date = datetime.strptime(cache_date_str, "%Y-%m-%d").date()
+            today = date.today()
+            
+            if cache_date == today:
+                return True
+            elif cache_date < today:
+                logger.debug(f"缓存已过期: cache_date={cache_date}, today={today}")
+                return False
+            else:
+                logger.warning(f"缓存日期异常（未来日期）: cache_date={cache_date}, today={today}")
+                return False
+                
+        except ValueError as e:
+            logger.error(f"缓存日期格式错误: {cache_date_str}, error={e}")
+            return False
+    
+    def get_strategy_name(self) -> str:
+        return "DateBasedStrategy"
+
+
+class TTLStrategy(CacheStrategy):
+    """TTL失效策略：超过指定时间失效"""
+    
+    def __init__(self, ttl_seconds: float):
+        """初始化TTL策略
+        
+        Args:
+            ttl_seconds: 缓存生存时间（秒）
+        """
+        self.ttl_seconds = ttl_seconds
+    
+    def is_valid(self, cache_metadata: Dict[str, Any]) -> bool:
+        """检查缓存是否在TTL时间内
+        
+        规则：
+        - (当前时间 - 创建时间) <= TTL → 有效
+        - (当前时间 - 创建时间) > TTL → 失效
+        """
+        created_at = cache_metadata.get("created_at")
+        if not created_at:
+            return False
+        
+        elapsed = time.time() - created_at
+        is_valid = elapsed <= self.ttl_seconds
+        
+        if not is_valid:
+            logger.debug(
+                f"TTL缓存已过期: elapsed={elapsed:.2f}s, ttl={self.ttl_seconds}s"
+            )
+        
+        return is_valid
+    
+    def get_strategy_name(self) -> str:
+        return f"TTLStrategy({self.ttl_seconds}s)"
+
+
+class LRUStrategy(CacheStrategy):
+    """LRU失效策略：最近最少使用"""
+    
+    def __init__(self, max_capacity: int):
+        """初始化LRU策略
+        
+        Args:
+            max_capacity: 最大缓存容量
+        """
+        self.max_capacity = max_capacity
+        self.access_order = []  # 访问顺序列表
+    
+    def is_valid(self, cache_metadata: Dict[str, Any]) -> bool:
+        """LRU策略不直接判定有效性，由CacheManager调用should_evict"""
+        return True  # 默认有效，由容量控制淘汰
+    
+    def should_evict(self, current_size: int, cache_key: str) -> bool:
+        """判断是否应该淘汰
+        
+        Args:
+            current_size: 当前缓存大小
+            cache_key: 缓存键
+            
+        Returns:
+            True表示应该淘汰，False表示保留
+        """
+        if current_size <= self.max_capacity:
+            return False
+        
+        # 检查是否是最少使用的
+        if cache_key in self.access_order:
+            # 如果是队列前部（最少使用），应该淘汰
+            lru_key = self.access_order[0]
+            return cache_key == lru_key
+        
+        return False
+    
+    def mark_accessed(self, cache_key: str):
+        """标记缓存被访问
+        
+        规则：
+        - 如果key已存在，移动到队尾（最近使用）
+        - 如果key不存在，添加到队尾
+        """
+        if cache_key in self.access_order:
+            self.access_order.remove(cache_key)
+        self.access_order.append(cache_key)
+    
+    def get_lru_key(self) -> Optional[str]:
+        """获取最少使用的key"""
+        return self.access_order[0] if self.access_order else None
+    
+    def remove_key(self, cache_key: str):
+        """从访问列表中移除key"""
+        if cache_key in self.access_order:
+            self.access_order.remove(cache_key)
+    
+    def get_strategy_name(self) -> str:
+        return f"LRUStrategy(max={self.max_capacity})"
+
+
+class CompositeStrategy(CacheStrategy):
+    """组合策略：同时满足多个策略才有效"""
+    
+    def __init__(self, strategies: list[CacheStrategy]):
+        """初始化组合策略
+        
+        Args:
+            strategies: 策略列表
+        """
+        self.strategies = strategies
+    
+    def is_valid(self, cache_metadata: Dict[str, Any]) -> bool:
+        """所有策略都有效才返回True"""
+        for strategy in self.strategies:
+            if not strategy.is_valid(cache_metadata):
+                logger.debug(
+                    f"组合策略失败于: {strategy.get_strategy_name()}"
+                )
+                return False
+        return True
+    
+    def get_strategy_name(self) -> str:
+        names = [s.get_strategy_name() for s in self.strategies]
+        return f"CompositeStrategy({', '.join(names)})"
+
+
+# ==================== 缓存存储抽象 ====================
+
+class CacheStorage(ABC):
+    """缓存存储抽象接口"""
+    
+    @abstractmethod
+    def load(self, cache_key: str) -> Optional[Dict[str, Any]]:
+        """加载缓存数据
+        
+        Args:
+            cache_key: 缓存键
+            
+        Returns:
+            缓存对象（包含data和metadata），不存在返回None
+        """
+        pass
+    
+    @abstractmethod
+    def save(self, cache_key: str, data: Any, metadata: Dict[str, Any]) -> bool:
+        """保存缓存数据
+        
+        Args:
+            cache_key: 缓存键
+            data: 缓存数据
+            metadata: 缓存元数据
+            
+        Returns:
+            True表示保存成功
+        """
+        pass
+    
+    @abstractmethod
+    def exists(self, cache_key: str) -> bool:
+        """检查缓存是否存在"""
+        pass
+    
+    @abstractmethod
+    def delete(self, cache_key: str) -> bool:
+        """删除缓存"""
+        pass
+    
+    @abstractmethod
+    def clear(self) -> int:
+        """清空所有缓存
+        
+        Returns:
+            清理的缓存数量
+        """
+        pass
+
+
+class FileBasedStorage(CacheStorage):
+    """文件存储实现"""
+    
+    def __init__(self, cache_dir: Path):
+        """初始化文件存储
+        
+        Args:
+            cache_dir: 缓存目录
+        """
+        self.cache_dir = Path(cache_dir)
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+    
+    def _get_cache_path(self, cache_key: str) -> Path:
+        """获取缓存文件路径"""
+        # 使用cache_key的hash作为文件名（避免特殊字符）
+        import hashlib
+        key_hash = hashlib.md5(cache_key.encode()).hexdigest()
+        return self.cache_dir / f"{key_hash}.json"
+    
+    def load(self, cache_key: str) -> Optional[Dict[str, Any]]:
+        """从文件加载缓存"""
+        cache_path = self._get_cache_path(cache_key)
+        
+        if not cache_path.exists():
+            return None
+        
+        try:
+            import json
+            with open(cache_path, 'r', encoding='utf-8') as f:
+                cache_obj = json.load(f)
+            return cache_obj
+        except Exception as e:
+            logger.error(f"加载缓存文件失败 ({cache_path}): {e}")
+            return None
+    
+    def save(self, cache_key: str, data: Any, metadata: Dict[str, Any]) -> bool:
+        """保存缓存到文件"""
+        cache_path = self._get_cache_path(cache_key)
+        
+        try:
+            import json
+            cache_obj = {
+                "data": data,
+                "metadata": metadata
+            }
+            
+            with open(cache_path, 'w', encoding='utf-8') as f:
+                json.dump(cache_obj, f, ensure_ascii=False, indent=2, default=str)
+            
+            return True
+        except Exception as e:
+            logger.error(f"保存缓存文件失败 ({cache_path}): {e}")
+            return False
+    
+    def exists(self, cache_key: str) -> bool:
+        """检查缓存文件是否存在"""
+        cache_path = self._get_cache_path(cache_key)
+        return cache_path.exists()
+    
+    def delete(self, cache_key: str) -> bool:
+        """删除缓存文件"""
+        cache_path = self._get_cache_path(cache_key)
+        
+        try:
+            if cache_path.exists():
+                cache_path.unlink()
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"删除缓存文件失败 ({cache_path}): {e}")
+            return False
+    
+    def clear(self) -> int:
+        """清空缓存目录"""
+        count = 0
+        try:
+            for cache_file in self.cache_dir.glob("*.json"):
+                cache_file.unlink()
+                count += 1
+            logger.info(f"已清空缓存目录，删除 {count} 个文件")
+            return count
+        except Exception as e:
+            logger.error(f"清空缓存目录失败: {e}")
+            return count
+
+
+class MemoryBasedStorage(CacheStorage):
+    """内存存储实现"""
+    
+    def __init__(self):
+        """初始化内存存储"""
+        self._cache: Dict[str, Dict[str, Any]] = {}
+        from threading import Lock
+        self._lock = Lock()
+    
+    def load(self, cache_key: str) -> Optional[Dict[str, Any]]:
+        """从内存加载缓存"""
+        with self._lock:
+            return self._cache.get(cache_key)
+    
+    def save(self, cache_key: str, data: Any, metadata: Dict[str, Any]) -> bool:
+        """保存缓存到内存"""
+        with self._lock:
+            self._cache[cache_key] = {
+                "data": data,
+                "metadata": metadata
+            }
+            return True
+    
+    def exists(self, cache_key: str) -> bool:
+        """检查缓存是否存在"""
+        with self._lock:
+            return cache_key in self._cache
+    
+    def delete(self, cache_key: str) -> bool:
+        """删除缓存"""
+        with self._lock:
+            if cache_key in self._cache:
+                del self._cache[cache_key]
+                return True
+            return False
+    
+    def clear(self) -> int:
+        """清空缓存"""
+        with self._lock:
+            count = len(self._cache)
+            self._cache.clear()
+            logger.info(f"已清空内存缓存，删除 {count} 条记录")
+            return count
+
+
+# ==================== 统一缓存管理器 ====================
+
+class UnifiedCacheManager:
+    """统一缓存管理器
+    
+    组合策略模式和存储适配器模式，提供灵活的缓存管理。
+    
+    使用示例：
+        # 创建日期失效缓存
+        manager = UnifiedCacheManager(
+            storage=FileBasedStorage(cache_dir),
+            strategy=DateBasedStrategy()
+        )
+        
+        # 保存缓存
+        manager.set("stock_list", stock_data)
+        
+        # 加载缓存（自动验证有效性）
+        data = manager.get("stock_list")
+        
+        # 创建LRU+TTL组合缓存
+        lru_ttl_manager = UnifiedCacheManager(
+            storage=MemoryBasedStorage(),
+            strategy=CompositeStrategy([
+                LRUStrategy(max_capacity=100),
+                TTLStrategy(ttl_seconds=3600)
+            ])
+        )
+    """
+    
+    def __init__(self, storage: CacheStorage, strategy: CacheStrategy):
+        """初始化缓存管理器
+        
+        Args:
+            storage: 缓存存储实现
+            strategy: 缓存失效策略
+        """
+        self.storage = storage
+        self.strategy = strategy
+        
+        # 统计信息
+        self._stats = {
+            "hits": 0,
+            "misses": 0,
+            "evictions": 0,
+            "saves": 0
+        }
+    
+    def get(self, cache_key: str, default: Any = None) -> Optional[Any]:
+        """获取缓存数据（带有效性验证）
+        
+        Args:
+            cache_key: 缓存键
+            default: 默认值
+            
+        Returns:
+            缓存数据，失效或不存在返回default
+        """
+        # 加载缓存对象
+        cache_obj = self.storage.load(cache_key)
+        
+        if cache_obj is None:
+            self._stats["misses"] += 1
+            logger.debug(f"缓存未命中: {cache_key}")
+            return default
+        
+        # 验证缓存有效性
+        metadata = cache_obj.get("metadata", {})
+        if not self.strategy.is_valid(metadata):
+            self._stats["misses"] += 1
+            logger.debug(f"缓存已失效: {cache_key}")
+            # 删除失效缓存
+            self.storage.delete(cache_key)
+            return default
+        
+        # 缓存命中
+        self._stats["hits"] += 1
+        
+        # LRU策略：标记访问
+        if isinstance(self.strategy, LRUStrategy):
+            self.strategy.mark_accessed(cache_key)
+        elif isinstance(self.strategy, CompositeStrategy):
+            for s in self.strategy.strategies:
+                if isinstance(s, LRUStrategy):
+                    s.mark_accessed(cache_key)
+        
+        return cache_obj.get("data")
+    
+    def set(self, cache_key: str, data: Any, extra_metadata: Optional[Dict] = None) -> bool:
+        """设置缓存数据
+        
+        Args:
+            cache_key: 缓存键
+            data: 缓存数据
+            extra_metadata: 额外的元数据
+            
+        Returns:
+            True表示保存成功
+        """
+        # 构建元数据
+        metadata = {
+            "cache_date": date.today().strftime("%Y-%m-%d"),
+            "created_at": time.time(),
+            "accessed_at": time.time()
+        }
+        
+        if extra_metadata:
+            metadata.update(extra_metadata)
+        
+        # 保存缓存
+        success = self.storage.save(cache_key, data, metadata)
+        
+        if success:
+            self._stats["saves"] += 1
+            
+            # LRU策略：标记访问
+            if isinstance(self.strategy, LRUStrategy):
+                self.strategy.mark_accessed(cache_key)
+            elif isinstance(self.strategy, CompositeStrategy):
+                for s in self.strategy.strategies:
+                    if isinstance(s, LRUStrategy):
+                        s.mark_accessed(cache_key)
+        
+        return success
+    
+    def delete(self, cache_key: str) -> bool:
+        """删除缓存"""
+        success = self.storage.delete(cache_key)
+        if success:
+            self._stats["evictions"] += 1
+            
+            # LRU策略：从访问列表移除
+            if isinstance(self.strategy, LRUStrategy):
+                self.strategy.remove_key(cache_key)
+            elif isinstance(self.strategy, CompositeStrategy):
+                for s in self.strategy.strategies:
+                    if isinstance(s, LRUStrategy):
+                        s.remove_key(cache_key)
+        
+        return success
+    
+    def clear(self) -> int:
+        """清空所有缓存"""
+        count = self.storage.clear()
+        self._stats["evictions"] += count
+        return count
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """获取缓存统计"""
+        total_requests = self._stats["hits"] + self._stats["misses"]
+        hit_rate = (self._stats["hits"] / total_requests * 100) if total_requests > 0 else 0.0
+        
+        return {
+            "hits": self._stats["hits"],
+            "misses": self._stats["misses"],
+            "evictions": self._stats["evictions"],
+            "saves": self._stats["saves"],
+            "hit_rate": round(hit_rate, 2)
+        }
+```
+
+**架构优势**：
+
+1. **策略可替换**：
+   - 轻松切换日期失效、LRU、TTL等策略
+   - 支持策略组合（例如：LRU + TTL）
+   - 新增策略只需实现`CacheStrategy`接口
+
+2. **存储可适配**：
+   - 支持文件存储、内存存储
+   - 未来可扩展：Redis存储、数据库存储
+   - 新增存储只需实现`CacheStorage`接口
+
+3. **统一管理**：
+   - 统一的get/set/delete接口
+   - 自动处理缓存验证和淘汰
+   - 内置统计功能，便于监控
+
+4. **易于测试**：
+   - 策略和存储可独立单元测试
+   - 可注入Mock对象进行测试
+   - 统计数据便于验证行为
+
+#### 4.1.2 使用示例
+
+**场景1：品种列表缓存（日期失效）**：
+```python
+from pathlib import Path
+
+# 创建日期失效缓存管理器
+cache_dir = Path("./cache")
+stock_cache = UnifiedCacheManager(
+    storage=FileBasedStorage(cache_dir),
+    strategy=DateBasedStrategy()
+)
+
+# 保存品种列表
+stock_list = fetch_stock_list_from_tdx()
+stock_cache.set("stock_list_classified", stock_list)
+
+# 加载品种列表（次日自动失效）
+cached_list = stock_cache.get("stock_list_classified")
+if cached_list is None:
+    # 缓存失效，重新获取
+    cached_list = fetch_stock_list_from_tdx()
+    stock_cache.set("stock_list_classified", cached_list)
+```
+
+**场景2：DataFrame缓存（LRU + TTL组合）**：
+```python
+# 创建组合策略缓存
+df_cache = UnifiedCacheManager(
+    storage=MemoryBasedStorage(),
+    strategy=CompositeStrategy([
+        LRUStrategy(max_capacity=64),  # 最多缓存64个DataFrame
+        TTLStrategy(ttl_seconds=3600)  # 1小时TTL
+    ])
+)
+
+# 缓存DataFrame
+df_cache.set("000001.SZ_1d", dataframe)
+
+# 获取DataFrame（自动验证LRU和TTL）
+df = df_cache.get("000001.SZ_1d")
+```
+
+**场景3：服务器池缓存（仅日期失效）**：
+```python
+server_cache = UnifiedCacheManager(
+    storage=FileBasedStorage(cache_dir / "server_pool"),
+    strategy=DateBasedStrategy()
+)
+
+# 缓存测速结果
+server_cache.set("tdx_servers_sorted", sorted_servers)
+
+# 获取缓存的服务器池
+servers = server_cache.get("tdx_servers_sorted")
+```
+
+### 4.2 缓存业务规则
+
+#### 4.2.1 日期失效缓存规则
+
+**失效判断规则**：
+- **缓存日期 = 今天** → 有效
+- **缓存日期 < 今天** → 失效，自动删除
+- **缓存日期 > 今天** → 异常，记录警告并删除
+- **缺少cache_date字段** → 失效，自动删除
+
+**应用场景**：
+- 品种列表缓存（每日更新）
+- 服务器池缓存（每日测速）
+- 交易日历缓存（每日更新）
+- IPO日期缓存（每日同步）
+
+#### 4.2.2 LRU缓存规则
+
+**淘汰规则**：
+- 缓存满时，淘汰最久未访问的条目
+- 每次访问自动更新访问顺序
+- 支持手动删除指定条目
+
+**访问顺序维护**：
+```python
+# 访问时自动更新顺序
+data = cache.get("key")  # key移动到队尾（最近使用）
+
+# 新增时添加到队尾
+cache.set("new_key", data)  # new_key添加到队尾
+
+# 淘汰时从队首删除
+evicted_key = lru_strategy.get_lru_key()  # 获取队首（最少使用）
+cache.delete(evicted_key)
+```
+
+**应用场景**：
+- DataFrame内存缓存（限制内存占用）
+- 查询结果缓存（限制缓存条目数）
+
+#### 4.2.3 TTL缓存规则
+
+**过期判断规则**：
+- **(当前时间 - 创建时间) <= TTL** → 有效
+- **(当前时间 - 创建时间) > TTL** → 过期，自动删除
+
+**时间计算**：
+```python
+# 使用time.time()获取时间戳（秒）
+created_at = time.time()
+
+# 检查时计算elapsed时间
+elapsed = time.time() - created_at
+
+# 判断是否过期
+is_expired = elapsed > ttl_seconds
+```
+
+**应用场景**：
+- 短期缓存（如1小时内的查询结果）
+- 临时数据缓存（如下载进度信息）
+
+#### 4.2.4 组合策略规则
+
+**组合逻辑**：
+- **AND逻辑**：所有策略都有效才返回True
+- 任一策略失败立即返回False
+- 按策略列表顺序检查
+
+**常用组合**：
+- **LRU + TTL**：限制容量 + 限制时间
+- **Date + LRU**：日期失效 + 容量限制
+
+**应用示例**：
+```python
+# LRU + TTL组合：最多缓存100条，每条最多1小时
+strategy = CompositeStrategy([
+    LRUStrategy(max_capacity=100),
+    TTLStrategy(ttl_seconds=3600)
+])
+
+# Date + LRU组合：每日失效 + 容量限制
+strategy = CompositeStrategy([
+    DateBasedStrategy(),
+    LRUStrategy(max_capacity=50)
+])
+```
+
+---
+
+## 五、负载均衡业务规则
+
+> **架构设计参考**：负载均衡器架构请参考 [最佳实践文档 - 2.1 data_module.py - IntelligentAdaptiveTuner](./data_module_vnpy新架构最佳实践cursor版.md#21-data_modulepy---核心模块)
+
+### 5.1 微观架构设计
+
+#### 5.1.1 压力评估器架构
+
+**设计目标**:
+- 实现木桶理论的多维压力评分
+- 动态监控CPU、内存、磁盘、网络4个维度
+- 自动识别系统瓶颈
+- 支持权重配置和EMA平滑
+
+**核心类设计**:
+
+```python
+from dataclasses import dataclass, field
+from typing import Dict, Any, Tuple
+import time
+import logging
+
+logger = logging.getLogger(__name__)
+
+# ==================== 压力维度数据模型 ====================
+
+@dataclass
+class PressureDimension:
+    """压力维度数据模型"""
+    
+    name: str  # 维度名称
+    value: float  # 当前值(0-100)
+    weight: float  # 权重(0-1)
+    threshold_warning: float = 70.0  # 警告阈值
+    threshold_critical: float = 90.0  # 严重阈值
+    sub_metrics: Dict[str, float] = field(default_factory=dict)  # 子指标
+    
+    def get_weighted_score(self) -> float:
+        """获取加权评分"""
+        return self.value * self.weight
+    
+    def get_status(self) -> str:
+        """获取状态"""
+        if self.value >= self.threshold_critical:
+            return "critical"
+        elif self.value >= self.threshold_warning:
+            return "warning"
+        else:
+            return "normal"
+
+
+@dataclass
+class PressureReport:
+    """压力评估报告"""
+    
+    overall_score: float  # 综合压力评分(0-100)
+    bottleneck: str  # 瓶颈维度
+    dimensions: Dict[str, PressureDimension]  # 各维度详情
+    timestamp: float = field(default_factory=time.time)
+    recommendation: str = ""  # 优化建议
+    
+    def get_adjustment_hint(self) -> str:
+        """获取调整建议"""
+        if self.overall_score < 30:
+            return "系统空闲,建议增加并发"
+        elif self.overall_score < 70:
+            return "系统正常,维持当前配置"
+        elif self.overall_score < 90:
+            return "系统压力较高,建议减少并发"
+        else:
+            return "系统压力严重,立即降低并发"
+
+
+# ==================== 压力评估器 ====================
+
+class PressureEvaluator:
+    """压力评估器(木桶理论实现)
+    
+    实现木桶理论:
+    - 综合压力由最高的维度决定(木桶短板)
+    - 各维度按权重计算加权平均
+    - 支持子指标聚合(如CPU的多个子指标)
+    - 使用EMA平滑波动
+    
+    使用示例:
+        evaluator = PressureEvaluator(
+            weights={"cpu": 0.4, "memory": 0.25, "disk": 0.25, "network": 0.15}
+        )
+        
+        # 收集系统指标
+        metrics = {
+            "cpu": {"cpu_percent": 45, "context_switches": 1500, "interrupts": 800},
+            "memory": {"mem_percent": 60, "swap_percent": 10},
+            "disk": {"disk_usage": 70, "io_wait": 5},
+            "network": {"bandwidth_usage": 30, "packet_loss": 0.1}
+        }
+        
+        # 评估压力
+        report = evaluator.evaluate(metrics)
+        print(f"综合压力: {report.overall_score}, 瓶颈: {report.bottleneck}")
+    """
+    
+    def __init__(
+        self,
+        weights: Dict[str, float],
+        ema_alpha: float = 0.3,
+        sub_metric_weights: Optional[Dict[str, Dict[str, float]]] = None
+    ):
+        """初始化压力评估器
+        
+        Args:
+            weights: 各维度权重 {"cpu": 0.4, "memory": 0.25, ...}
+            ema_alpha: EMA平滑系数(0-1), 越大越敏感
+            sub_metric_weights: 子指标权重(可选)
+        """
+        self.weights = weights
+        self.ema_alpha = ema_alpha
+        self.sub_metric_weights = sub_metric_weights or {}
+        
+        # EMA历史值
+        self._ema_values: Dict[str, float] = {dim: 0.0 for dim in weights.keys()}
+        
+        # 归一化权重(确保总和为1)
+        total_weight = sum(weights.values())
+        self.weights = {k: v / total_weight for k, v in weights.items()}
+        
+        logger.info(f"压力评估器已初始化: 权重={self.weights}, EMA_alpha={ema_alpha}")
+    
+    def _aggregate_sub_metrics(
+        self,
+        dimension: str,
+        sub_metrics: Dict[str, float]
+    ) -> float:
+        """聚合子指标为单一评分
+        
+        Args:
+            dimension: 维度名称
+            sub_metrics: 子指标字典
+            
+        Returns:
+            聚合后的评分(0-100)
+        """
+        # 获取该维度的子指标权重
+        sub_weights = self.sub_metric_weights.get(dimension, {})
+        
+        if not sub_weights:
+            # 未配置权重,使用平均值
+            values = list(sub_metrics.values())
+            return sum(values) / len(values) if values else 0.0
+        
+        # 加权聚合
+        weighted_sum = 0.0
+        total_weight = 0.0
+        
+        for metric_name, value in sub_metrics.items():
+            weight = sub_weights.get(metric_name, 1.0)
+            weighted_sum += value * weight
+            total_weight += weight
+        
+        return weighted_sum / total_weight if total_weight > 0 else 0.0
+    
+    def _apply_ema(self, dimension: str, current_value: float) -> float:
+        """应用EMA平滑
+        
+        公式: EMA_new = alpha * current + (1 - alpha) * EMA_old
+        
+        Args:
+            dimension: 维度名称
+            current_value: 当前值
+            
+        Returns:
+            平滑后的值
+        """
+        ema_old = self._ema_values.get(dimension, current_value)
+        ema_new = self.ema_alpha * current_value + (1 - self.ema_alpha) * ema_old
+        self._ema_values[dimension] = ema_new
+        return ema_new
+    
+    def evaluate(self, metrics: Dict[str, Dict[str, float]]) -> PressureReport:
+        """评估系统压力
+        
+        Args:
+            metrics: 系统指标字典
+                {
+                    "cpu": {"cpu_percent": 45, "context_switches": 1500, ...},
+                    "memory": {"mem_percent": 60, "swap_percent": 10},
+                    "disk": {"disk_usage": 70, "io_wait": 5},
+                    "network": {"bandwidth_usage": 30, "packet_loss": 0.1}
+                }
+            
+        Returns:
+            压力评估报告
+        """
+        dimensions = {}
+        max_pressure = 0.0
+        bottleneck = "none"
+        
+        # 1. 计算各维度压力
+        for dim_name, weight in self.weights.items():
+            sub_metrics = metrics.get(dim_name, {})
+            
+            if not sub_metrics:
+                logger.warning(f"维度 {dim_name} 缺少指标数据,跳过")
+                continue
+            
+            # 聚合子指标
+            raw_score = self._aggregate_sub_metrics(dim_name, sub_metrics)
+            
+            # 应用EMA平滑
+            smoothed_score = self._apply_ema(dim_name, raw_score)
+            
+            # 创建维度对象
+            dimension = PressureDimension(
+                name=dim_name,
+                value=smoothed_score,
+                weight=weight,
+                sub_metrics=sub_metrics
+            )
+            dimensions[dim_name] = dimension
+            
+            # 2. 记录最大压力(木桶短板)
+            if smoothed_score > max_pressure:
+                max_pressure = smoothed_score
+                bottleneck = dim_name
+        
+        # 3. 计算综合压力(木桶理论)
+        # 使用加权平均和最大值的组合
+        weighted_avg = sum(dim.get_weighted_score() for dim in dimensions.values())
+        overall_score = max(weighted_avg, max_pressure * 0.8)  # 木桶短板占80%权重
+        
+        # 4. 生成报告
+        report = PressureReport(
+            overall_score=round(overall_score, 2),
+            bottleneck=bottleneck,
+            dimensions=dimensions
+        )
+        report.recommendation = report.get_adjustment_hint()
+        
+        logger.debug(
+            f"压力评估完成: 综合={overall_score:.2f}, 瓶颈={bottleneck}, "
+            f"建议={report.recommendation}"
+        )
+        
+        return report
+
+
+# ==================== 并发配置计算器 ====================
+
+class ConcurrencyCalculator:
+    """并发配置计算器
+    
+    基于压力评估结果动态调整并发配置。
+    
+    调整策略:
+    - 压力<30: 增加并发(scale up)
+    - 压力30-70: 维持当前配置
+    - 压力70-90: 减少并发(scale down)
+    - 压力>90: 大幅减少并发(emergency scale down)
+    
+    使用示例:
+        calculator = ConcurrencyCalculator(
+            base_workers=10,
+            min_workers=2,
+            max_workers=20,
+            step_size=2
+        )
+        
+        # 根据压力调整
+        new_config = calculator.calculate(pressure_score=75.0)
+        print(f"建议workers数: {new_config['workers']}")
+    """
+    
+    def __init__(
+        self,
+        base_workers: int,
+        min_workers: int,
+        max_workers: int,
+        step_size: int = 2,
+        cooldown_seconds: float = 10.0
+    ):
+        """初始化并发配置计算器
+        
+        Args:
+            base_workers: 基准worker数量
+            min_workers: 最小worker数量
+            max_workers: 最大worker数量
+            step_size: 每次调整的步长
+            cooldown_seconds: 冷却时间(秒),避免频繁调整
+        """
+        self.base_workers = base_workers
+        self.min_workers = min_workers
+        self.max_workers = max_workers
+        self.step_size = step_size
+        self.cooldown_seconds = cooldown_seconds
+        
+        # 当前配置
+        self.current_workers = base_workers
+        self.last_adjust_time = 0.0
+        
+        logger.info(
+            f"并发计算器已初始化: base={base_workers}, "
+            f"range=[{min_workers}, {max_workers}], step={step_size}"
+        )
+    
+    def calculate(self, pressure_score: float) -> Dict[str, Any]:
+        """计算并发配置
+        
+        Args:
+            pressure_score: 压力评分(0-100)
+            
+        Returns:
+            配置字典 {"workers": int, "adjustment": str, "reason": str}
+        """
+        now = time.time()
+        
+        # 检查冷却时间
+        if now - self.last_adjust_time < self.cooldown_seconds:
+            return {
+                "workers": self.current_workers,
+                "adjustment": "no_change",
+                "reason": "cooldown"
+            }
+        
+        # 决定调整方向
+        if pressure_score < 30:
+            # 压力低,增加并发
+            new_workers = min(
+                self.current_workers + self.step_size,
+                self.max_workers
+            )
+            adjustment = "scale_up"
+            reason = "low_pressure"
+            
+        elif pressure_score < 70:
+            # 压力正常,维持不变
+            new_workers = self.current_workers
+            adjustment = "no_change"
+            reason = "normal_pressure"
+            
+        elif pressure_score < 90:
+            # 压力较高,减少并发
+            new_workers = max(
+                self.current_workers - self.step_size,
+                self.min_workers
+            )
+            adjustment = "scale_down"
+            reason = "high_pressure"
+            
+        else:
+            # 压力严重,大幅减少并发
+            new_workers = max(
+                self.current_workers - self.step_size * 2,
+                self.min_workers
+            )
+            adjustment = "emergency_scale_down"
+            reason = "critical_pressure"
+        
+        # 更新状态
+        if new_workers != self.current_workers:
+            logger.info(
+                f"并发调整: {self.current_workers} -> {new_workers} "
+                f"(压力={pressure_score:.2f}, 原因={reason})"
+            )
+            self.current_workers = new_workers
+            self.last_adjust_time = now
+        
+        return {
+            "workers": new_workers,
+            "adjustment": adjustment,
+            "reason": reason,
+            "pressure_score": pressure_score
+        }
+
+
+# ==================== 智能防抖管理器 ====================
+
+class IntelligentDebounceManager:
+    """智能防抖管理器
+    
+    动态调整防抖间隔,避免频繁操作。
+    
+    规则:
+    - 记录历史操作频率
+    - 频率高时增大防抖间隔
+    - 频率低时减小防抖间隔
+    - 支持最小/最大间隔限制
+    
+    使用示例:
+        debounce = IntelligentDebounceManager(
+            min_interval=0.5,
+            max_interval=5.0,
+            window_size=10
+        )
+        
+        # 检查是否应该执行操作
+        if debounce.should_execute("download_task"):
+            # 执行下载
+            download()
+            debounce.record_execution("download_task")
+    """
+    
+    def __init__(
+        self,
+        min_interval: float = 0.5,
+        max_interval: float = 5.0,
+        window_size: int = 10
+    ):
+        """初始化防抖管理器
+        
+        Args:
+            min_interval: 最小防抖间隔(秒)
+            max_interval: 最大防抖间隔(秒)
+            window_size: 评估窗口大小(记录最近N次操作)
+        """
+        self.min_interval = min_interval
+        self.max_interval = max_interval
+        self.window_size = window_size
+        
+        # 操作历史: {key: [timestamp1, timestamp2, ...]}
+        self._history: Dict[str, list] = {}
+        
+        # 最后执行时间: {key: timestamp}
+        self._last_execution: Dict[str, float] = {}
+        
+        logger.info(
+            f"防抖管理器已初始化: interval=[{min_interval}, {max_interval}], "
+            f"window={window_size}"
+        )
+    
+    def _calculate_dynamic_interval(self, operation_key: str) -> float:
+        """计算动态防抖间隔
+        
+        规则:
+        - 统计窗口内的操作频率
+        - 频率越高,间隔越大
+        - 频率越低,间隔越小
+        
+        Args:
+            operation_key: 操作标识
+            
+        Returns:
+            动态间隔(秒)
+        """
+        history = self._history.get(operation_key, [])
+        
+        if len(history) < 2:
+            # 历史数据不足,使用最小间隔
+            return self.min_interval
+        
+        # 计算平均间隔
+        recent = history[-self.window_size:]
+        intervals = [recent[i] - recent[i-1] for i in range(1, len(recent))]
+        avg_interval = sum(intervals) / len(intervals) if intervals else self.min_interval
+        
+        # 根据平均间隔动态调整
+        if avg_interval < 1.0:
+            # 操作频繁,增大防抖间隔
+            dynamic_interval = min(avg_interval * 2, self.max_interval)
+        else:
+            # 操作不频繁,使用中等间隔
+            dynamic_interval = min(avg_interval, self.max_interval)
+        
+        # 限制在最小/最大范围内
+        return max(self.min_interval, min(dynamic_interval, self.max_interval))
+    
+    def should_execute(self, operation_key: str) -> bool:
+        """判断是否应该执行操作
+        
+        Args:
+            operation_key: 操作标识
+            
+        Returns:
+            True表示可以执行,False表示应该防抖
+        """
+        now = time.time()
+        last_time = self._last_execution.get(operation_key, 0.0)
+        
+        # 计算动态间隔
+        interval = self._calculate_dynamic_interval(operation_key)
+        
+        # 判断是否超过防抖间隔
+        elapsed = now - last_time
+        should_exec = elapsed >= interval
+        
+        if not should_exec:
+            logger.debug(
+                f"防抖拦截: {operation_key}, elapsed={elapsed:.2f}s, "
+                f"required={interval:.2f}s"
+            )
+        
+        return should_exec
+    
+    def record_execution(self, operation_key: str):
+        """记录操作执行
+        
+        Args:
+            operation_key: 操作标识
+        """
+        now = time.time()
+        
+        # 更新最后执行时间
+        self._last_execution[operation_key] = now
+        
+        # 添加到历史记录
+        if operation_key not in self._history:
+            self._history[operation_key] = []
+        
+        self._history[operation_key].append(now)
+        
+        # 限制历史记录长度
+        if len(self._history[operation_key]) > self.window_size:
+            self._history[operation_key].pop(0)
+```
+
+**架构优势**:
+
+1. **木桶理论压力评估**:
+   - 准确识别系统瓶颈
+   - 综合压力由最高维度决定
+   - 支持多维度加权计算
+   - EMA平滑避免波动
+
+2. **动态并发调整**:
+   - 基于压力自动调整worker数量
+   - 支持冷却时间避免频繁调整
+   - 分级调整策略(normal/emergency)
+   - 严格限制最小/最大并发数
+
+3. **智能防抖**:
+   - 根据操作频率动态调整间隔
+   - 避免频繁操作影响性能
+   - 支持多个操作独立防抖
+   - 自动记录和分析历史
+
+#### 5.1.2 使用示例
+
+**场景1:下载任务并发调整**:
+```python
+# 初始化压力评估器
+evaluator = PressureEvaluator(
+    weights={"cpu": 0.4, "memory": 0.25, "disk": 0.25, "network": 0.15},
+    ema_alpha=0.3,
+    sub_metric_weights={
+        "cpu": {"cpu_percent": 1.0, "context_switches": 0.5, "interrupts": 0.3},
+        "memory": {"mem_percent": 1.0, "swap_percent": 0.8}
+    }
+)
+
+# 初始化并发计算器
+calculator = ConcurrencyCalculator(
+    base_workers=10,
+    min_workers=2,
+    max_workers=20,
+    step_size=2,
+    cooldown_seconds=10.0
+)
+
+# 定期评估和调整
+while True:
+    # 收集系统指标
+    metrics = collect_system_metrics()
+    
+    # 评估压力
+    report = evaluator.evaluate(metrics)
+    
+    # 计算新配置
+    config = calculator.calculate(report.overall_score)
+    
+    # 应用配置
+    if config["adjustment"] != "no_change":
+        adjust_worker_pool(config["workers"])
+    
+    time.sleep(5)
+```
+
+**场景2:智能防抖控制**:
+```python
+# 初始化防抖管理器
+debounce = IntelligentDebounceManager(
+    min_interval=0.5,
+    max_interval=5.0,
+    window_size=10
+)
+
+# 在下载循环中使用
+while True:
+    if debounce.should_execute("batch_download"):
+        # 执行批量下载
+        download_batch(tasks)
+        debounce.record_execution("batch_download")
+    
+    await asyncio.sleep(0.1)
+```
+
+### 5.2 负载均衡业务规则
+
+#### 5.2.1 木桶理论压力评分规则
+
+**评分维度定义**:
+- **CPU维度**(权重40%):
+  - cpu_percent: CPU使用率(0-100)
+  - context_switches: 上下文切换次数
+  - interrupts: 中断次数
+
+- **内存维度**(权重25%):
+  - mem_percent: 内存使用率(0-100)
+  - swap_percent: 交换空间使用率(0-100)
+
+- **磁盘维度**(权重25%):
+  - disk_usage: 磁盘使用率(0-100)
+  - io_wait: I/O等待时间百分比(0-100)
+
+- **网络维度**(权重15%):
+  - bandwidth_usage: 带宽使用率(0-100)
+  - packet_loss: 丢包率(0-1转换为0-100)
+
+**综合评分计算规则**:
+```python
+# 1. 各维度加权平均
+weighted_avg = sum(dim.value * dim.weight for dim in dimensions.values())
+
+# 2. 木桶短板(最大压力)
+max_pressure = max(dim.value for dim in dimensions.values())
+
+# 3. 综合评分(短板占80%权重)
+overall_score = max(weighted_avg, max_pressure * 0.8)
+```
+
+**瓶颈识别规则**:
+- 压力最高的维度即为瓶颈
+- 记录瓶颈维度名称
+- 在报告中提供针对性建议
+
+#### 5.2.2 并发动态调整规则
+
+**调整阈值**:
+- **压力 < 30**: 系统空闲,增加并发
+- **压力 30-70**: 系统正常,维持配置
+- **压力 70-90**: 压力较高,减少并发
+- **压力 > 90**: 压力严重,紧急降低并发
+
+**调整步长**:
+- 常规调整: ±step_size (默认±2)
+- 紧急调整: ±step_size*2 (压力>90时)
+
+**冷却机制**:
+- 两次调整之间必须间隔cooldown_seconds
+- 避免频繁调整导致震荡
+- 冷却期间维持当前配置
+
+#### 5.2.3 智能防抖决策规则
+
+**动态间隔计算规则**:
+```python
+# 1. 计算窗口内平均操作间隔
+avg_interval = sum(intervals) / len(intervals)
+
+# 2. 根据频率动态调整
+if avg_interval < 1.0:  # 操作频繁
+    dynamic_interval = min(avg_interval * 2, max_interval)
+else:  # 操作不频繁
+    dynamic_interval = min(avg_interval, max_interval)
+
+# 3. 限制在范围内
+final_interval = max(min_interval, min(dynamic_interval, max_interval))
+```
+
+**防抖判定规则**:
+- **elapsed >= interval**: 允许执行
+- **elapsed < interval**: 防抖拦截,跳过本次操作
+
+---
+
+## 六、IPO日期管理业务规则
+
+> **架构设计参考**:IPO缓存器架构请参考 [最佳实践文档 - 2.1 data_module.py](./data_module_vnpy新架构最佳实践cursor版.md#21-data_modulepy---核心模块)
+
+### 6.1 微观架构设计
+
+#### 6.1.1 双层缓存架构
+
+**设计目标**:
+- L1内存缓存:高速访问,避免重复请求
+- L2文件缓存:持久化存储,实现日期失效
+- 缓存一致性:两层缓存同步更新
+- 高命中率:优先从内存查询,减少文件I/O
+
+**核心类设计**:
+
+```python
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
+from typing import Dict, Optional, Tuple
+from pathlib import Path
+import logging
+import json
+
+logger = logging.getLogger(__name__)
+
+# ==================== IPO数据模型 ====================
+
+@dataclass
+class IPORecord:
+    """IPO日期记录"""
+    
+    symbol: str
+    ipo_date: date
+    market: int  # 0=深圳, 1=上海, 2=北京
+    source: str  # "tushare"/"tdx"/"manual"
+    confidence: float = 1.0  # 置信度(0-1)
+    updated_at: datetime = None
+    
+    def __post_init__(self):
+        if self.updated_at is None:
+            self.updated_at = datetime.now()
+    
+    def is_valid(self, base_date: date = None) -> bool:
+        """验证IPO日期合法性
+        
+        规则:
+        1. IPO日期不能超过今天+30天
+        2. IPO日期不能早于1990年
+        3. 如果指定base_date,不能早于base_date
+        """
+        if base_date is None:
+            base_date = date.today()
+        
+        # 规则1: 不能超过今天+30天
+        if self.ipo_date > base_date + timedelta(days=30):
+            return False
+        
+        # 规则2: 不能早于1990年
+        if self.ipo_date.year < 1990:
+            return False
+        
+        return True
+    
+    def to_dict(self) -> Dict:
+        """转换为字典"""
+        return {
+            "symbol": self.symbol,
+            "ipo_date": self.ipo_date.strftime("%Y-%m-%d"),
+            "market": self.market,
+            "source": self.source,
+            "confidence": self.confidence,
+            "updated_at": self.updated_at.isoformat()
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict) -> "IPORecord":
+        """从字典创建"""
+        return cls(
+            symbol=data["symbol"],
+            ipo_date=datetime.strptime(data["ipo_date"], "%Y-%m-%d").date(),
+            market=data["market"],
+            source=data["source"],
+            confidence=data.get("confidence", 1.0),
+            updated_at=datetime.fromisoformat(data["updated_at"])
+        )
+
+
+# ==================== 双层缓存管理器 ====================
+
+class TwoLevelCacheManager:
+    """IPO日期双层缓存管理器
+    
+    架构设计:
+    - L1 Cache (内存):
+      - 存储类型: Dict[str, IPORecord]
+      - 失效策略: 进程生命周期(不失效)
+      - 查询性能: O(1)
+      - 使用场景: 高频查询
+    
+    - L2 Cache (文件):
+      - 存储类型: JSON文件
+      - 失效策略: 日期失效(次日0时)
+      - 查询性能: 文件I/O
+      - 使用场景: 跨进程/重启后恢复
+    
+    查询流程:
+    1. 尝试从 L1 内存缓存查询
+    2. 如果 L1 miss,从 L2 文件缓存加载
+    3. 如果 L2 miss 或已过期,从数据源获取
+    4. 获取后同时更新 L1 和 L2
+    
+    使用示例:
+        cache = TwoLevelCacheManager(cache_dir=Path("./cache"))
+        
+        # 查询IPO日期
+        ipo_date, source = cache.get("000001.SZ")
+        
+        # 批量设置
+        cache.set_batch(ipo_records)
+        
+        # 清空缓存
+        cache.clear()
+    """
+    
+    def __init__(self, cache_dir: Path):
+        """初始化双层缓存
+        
+        Args:
+            cache_dir: 缓存目录
+        """
+        self.cache_dir = Path(cache_dir)
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        
+        # L1 内存缓存
+        self._memory_cache: Dict[str, IPORecord] = {}
+        
+        # L2 文件缓存路径
+        self._file_cache_path = self.cache_dir / "ipo_dates.json"
+        
+        # 统计信息
+        self._stats = {
+            "l1_hits": 0,
+            "l2_hits": 0,
+            "misses": 0,
+            "updates": 0
+        }
+        
+        # 启动时加载 L2 缓存
+        self._load_from_l2()
+        
+        logger.info(
+            f"IPO双层缓存已初始化: 加载{len(self._memory_cache)}条记录"
+        )
+    
+    def _load_from_l2(self) -> bool:
+        """从 L2 文件缓存加载到 L1 内存
+        
+        Returns:
+            True表示加载成功
+        """
+        if not self._file_cache_path.exists():
+            logger.debug("L2 缓存文件不存在")
+            return False
+        
+        try:
+            with open(self._file_cache_path, 'r', encoding='utf-8') as f:
+                cache_obj = json.load(f)
+            
+            # 验证缓存日期
+            cache_date_str = cache_obj.get("cache_date")
+            if cache_date_str != date.today().strftime("%Y-%m-%d"):
+                logger.info(f"L2 缓存已过期: {cache_date_str}")
+                return False
+            
+            # 加载数据
+            data = cache_obj.get("data", {})
+            for symbol, record_dict in data.items():
+                record = IPORecord.from_dict(record_dict)
+                if record.is_valid():
+                    self._memory_cache[symbol] = record
+                else:
+                    logger.warning(f"IPO记录无效: {symbol}, 跳过")
+            
+            logger.info(f"L2 缓存加载成功: {len(self._memory_cache)}条记录")
+            return True
+            
+        except Exception as e:
+            logger.error(f"L2 缓存加载失败: {e}", exc_info=True)
+            return False
+    
+    def _save_to_l2(self) -> bool:
+        """保存 L1 内存缓存到 L2 文件
+        
+        Returns:
+            True表示保存成功
+        """
+        try:
+            # 构建缓存对象
+            cache_obj = {
+                "cache_date": date.today().strftime("%Y-%m-%d"),
+                "data": {
+                    symbol: record.to_dict()
+                    for symbol, record in self._memory_cache.items()
+                }
+            }
+            
+            # 写入文件
+            with open(self._file_cache_path, 'w', encoding='utf-8') as f:
+                json.dump(cache_obj, f, ensure_ascii=False, indent=2)
+            
+            logger.debug(f"L2 缓存保存成功: {len(self._memory_cache)}条记录")
+            return True
+            
+        except Exception as e:
+            logger.error(f"L2 缓存保存失败: {e}", exc_info=True)
+            return False
+    
+    def get(self, symbol: str) -> Tuple[Optional[date], Optional[str]]:
+        """获取IPO日期
+        
+        Args:
+            symbol: 品种代码
+            
+        Returns:
+            (ipo_date, source)元组,不存在返回(None, None)
+        """
+        # 尝试从 L1 内存缓存查询
+        record = self._memory_cache.get(symbol)
+        
+        if record:
+            self._stats["l1_hits"] += 1
+            return record.ipo_date, record.source
+        
+        # L1 miss
+        self._stats["misses"] += 1
+        return None, None
+    
+    def get_all(self) -> Dict[str, Tuple[date, str]]:
+        """获取所有IPO日期
+        
+        Returns:
+            {symbol: (ipo_date, source)} 字典
+        """
+        return {
+            symbol: (record.ipo_date, record.source)
+            for symbol, record in self._memory_cache.items()
+        }
+    
+    def set(self, symbol: str, ipo_date: date, source: str, market: int = 0) -> bool:
+        """设置IPO日期
+        
+        Args:
+            symbol: 品种代码
+            ipo_date: IPO日期
+            source: 数据源
+            market: 市场代码
+            
+        Returns:
+            True表示设置成功
+        """
+        # 创建记录
+        record = IPORecord(
+            symbol=symbol,
+            ipo_date=ipo_date,
+            market=market,
+            source=source
+        )
+        
+        # 验证合法性
+        if not record.is_valid():
+            logger.warning(f"IPO日期无效: {symbol}={ipo_date}, 跳过")
+            return False
+        
+        # 更新 L1 内存缓存
+        self._memory_cache[symbol] = record
+        self._stats["updates"] += 1
+        
+        return True
+    
+    def set_batch(self, records: Dict[str, Tuple[date, str, int]]) -> int:
+        """批量设置IPO日期
+        
+        Args:
+            records: {symbol: (ipo_date, source, market)} 字典
+            
+        Returns:
+            成功设置的数量
+        """
+        count = 0
+        for symbol, (ipo_date, source, market) in records.items():
+            if self.set(symbol, ipo_date, source, market):
+                count += 1
+        
+        # 批量更新后保存到 L2
+        self._save_to_l2()
+        
+        logger.info(f"批量设置IPO日期: {count}/{len(records)} 条成功")
+        return count
+    
+    def exists(self, symbol: str) -> bool:
+        """检查IPO日期是否存在"""
+        return symbol in self._memory_cache
+    
+    def clear(self) -> int:
+        """清空所有缓存
+        
+        Returns:
+            清理的记录数量
+        """
+        count = len(self._memory_cache)
+        
+        # 清空 L1
+        self._memory_cache.clear()
+        
+        # 删除 L2
+        if self._file_cache_path.exists():
+            self._file_cache_path.unlink()
+        
+        logger.info(f"已清空 IPO缓存: {count}条记录")
+        return count
+    
+    def get_stats(self) -> Dict:
+        """获取缓存统计"""
+        total_requests = sum([
+            self._stats["l1_hits"],
+            self._stats["l2_hits"],
+            self._stats["misses"]
+        ])
+        
+        l1_hit_rate = (
+            self._stats["l1_hits"] / total_requests * 100
+            if total_requests > 0 else 0.0
+        )
+        
+        return {
+            "size": len(self._memory_cache),
+            "l1_hits": self._stats["l1_hits"],
+            "l2_hits": self._stats["l2_hits"],
+            "misses": self._stats["misses"],
+            "updates": self._stats["updates"],
+            "l1_hit_rate": round(l1_hit_rate, 2)
+        }
+
+
+# ==================== IPO获取器 ====================
+
+class IPOFetcher:
+    """IPO日期获取器
+    
+    支持多数据源:
+    1. Tushare API (优先)
+    2. TDX 本地文件 (降级)
+    3. 手动配置 (最后降级)
+    
+    使用示例:
+        fetcher = IPOFetcher(tushare_token="xxx")
+        
+        # 单个获取
+        ipo_date = fetcher.fetch_single("000001.SZ")
+        
+        # 批量获取
+        ipo_dict = fetcher.fetch_batch(["000001.SZ", "600000.SH"])
+    """
+    
+    def __init__(self, tushare_token: Optional[str] = None):
+        """初始化IPO获取器
+        
+        Args:
+            tushare_token: Tushare API token(可选)
+        """
+        self.tushare_token = tushare_token
+        self._tushare_available = False
+        
+        # 尝试初始化Tushare
+        if tushare_token:
+            try:
+                import tushare as ts
+                ts.set_token(tushare_token)
+                self.pro = ts.pro_api()
+                self._tushare_available = True
+                logger.info("✅ Tushare API已初始化")
+            except Exception as e:
+                logger.warning(f"⚠️ Tushare API初始化失败: {e}")
+        
+        logger.info(
+            f"IPO获取器已初始化: Tushare={'available' if self._tushare_available else 'unavailable'}"
+        )
+    
+    def fetch_single(self, symbol: str) -> Optional[date]:
+        """获取单个IPO日期
+        
+        Args:
+            symbol: 品种代码
+            
+        Returns:
+            IPO日期,获取失败返回None
+        """
+        # 1. 尝试从 Tushare 获取
+        if self._tushare_available:
+            ipo_date = self._fetch_from_tushare(symbol)
+            if ipo_date:
+                return ipo_date
+        
+        # 2. 尝试从 TDX 本地文件获取
+        ipo_date = self._fetch_from_tdx(symbol)
+        if ipo_date:
+            return ipo_date
+        
+        # 3. 所有数据源都失败
+        logger.warning(f"无法获取IPO日期: {symbol}")
+        return None
+    
+    def fetch_batch(self, symbols: list) -> Dict[str, date]:
+        """批量获取IPO日期
+        
+        Args:
+            symbols: 品种代码列表
+            
+        Returns:
+            {symbol: ipo_date} 字典
+        """
+        result = {}
+        
+        for symbol in symbols:
+            ipo_date = self.fetch_single(symbol)
+            if ipo_date:
+                result[symbol] = ipo_date
+        
+        logger.info(f"批量获取IPO日期: {len(result)}/{len(symbols)} 条成功")
+        return result
+    
+    def _fetch_from_tushare(self, symbol: str) -> Optional[date]:
+        """从 Tushare API 获取"""
+        try:
+            # Tushare码转换: 000001.SZ -> 000001.SZ
+            ts_code = symbol
+            
+            # 查询股票基本信息
+            df = self.pro.stock_basic(
+                ts_code=ts_code,
+                fields='ts_code,list_date'
+            )
+            
+            if df.empty:
+                return None
+            
+            list_date_str = df.iloc[0]['list_date']
+            if not list_date_str or list_date_str == '':
+                return None
+            
+            # 转换为日期
+            ipo_date = datetime.strptime(list_date_str, "%Y%m%d").date()
+            logger.debug(f"Tushare获取: {symbol} = {ipo_date}")
+            return ipo_date
+            
+        except Exception as e:
+            logger.debug(f"Tushare获取失败: {symbol}, {e}")
+            return None
+    
+    def _fetch_from_tdx(self, symbol: str) -> Optional[date]:
+        """从 TDX 本地文件获取"""
+        # TODO: 实现从 TDX 本地文件读取逻辑
+        # 需要解析 TDX 的 gpcw*.dat 文件
+        return None
+```
+
+**架构优势**:
+
+1. **双层缓存**:
+   - L1内存缓存:O(1)查询,高速访问
+   - L2文件缓存:持久化存储,跨进程共享
+   - 自动同步:更新时同时写入两层缓存
+   - 日期失效:每日自动失效,保证数据新鲜
+
+2. **数据验证**:
+   - IPO日期合法性验证
+   - 过滤无效数据(未来日期/过早1990年)
+   - 数据源置信度跟踪
+
+3. **多数据源**:
+   - 支持Tushare API(优先)
+   - 支持TDX本地文件(降级)
+   - 支持手动配置(最后降级)
+
+4. **性能监控**:
+   - L1/L2命中率统计
+   - 缓存更新频率统计
+   - 支持性能分析
+
+#### 6.1.2 使用示例
+
+**场景1:初始化和加载**:
+```python
+# 创建缓存管理器
+ipo_cache = TwoLevelCacheManager(cache_dir=Path("./cache"))
+
+# 初始化时会自动从 L2 加载到 L1
+# 如果 L2 过期或不存在,L1 为空
+
+# 查询IPO日期
+ipo_date, source = ipo_cache.get("000001.SZ")
+if ipo_date:
+    print(f"IPO日期: {ipo_date}, 数据源: {source}")
+```
+
+**场景2:批量获取和缓存**:
+```python
+# 创建获取器
+fetcher = IPOFetcher(tushare_token="xxx")
+
+# 获取所有品种列表
+symbols = get_all_symbols()
+
+# 批量获取IPO日期
+ipo_dict = fetcher.fetch_batch(symbols)
+
+# 批量设置到缓存
+records = {
+    symbol: (ipo_date, "tushare", 0)
+    for symbol, ipo_date in ipo_dict.items()
+}
+
+ipo_cache.set_batch(records)
+```
+
+**场景3:缓存命中率监控**:
+```python
+# 获取统计信息
+stats = ipo_cache.get_stats()
+print(f"L1命中率: {stats['l1_hit_rate']}%")
+print(f"缓存大小: {stats['size']} 条记录")
+```
+
+### 6.2 IPO管理业务规则
+
+#### 6.2.1 IPO日期验证规则
+
+**验证规则**:
+- **规则1**: IPO日期不能超过今天+30天
+- **规则2**: IPO日期不能早于1990年
+- **规则3**: 如果指定base_date,不能早于base_date
+
+**处理策略**:
+- 无效记录跳过,记录warning日志
+- 不缓存无效数据
+
+#### 6.2.2 数据源优先级规则
+
+**优先级顺序**:
+1. Tushare API (高置信度,实时更新)
+2. TDX 本地文件 (中置信度,离线可用)
+3. 手动配置 (低置信度,兼容性)
+
+**降级策略**:
+- Tushare失败后自动降级到TDX
+- 所有数据源失败返回None
+
+#### 6.2.3 缓存更新规则
+
+**更新时机**:
+- 每日首次启动时检查缓存有效性
+- 发现新品种时自动获取IPO日期
+
+**更新策略**:
+- 批量更新:一次性获取所有品种
+- 增量更新:只获取缺失的品种
+
+---
+
+## 七、数据质量管理业务规则
+
+> **架构设计参考**:质量扫描器架构请参考 [最佳实践文档 - 2.4 data_quality.py](./data_module_vnpy新架构最佳实践cursor版.md#24-data_qualitypy---数据质量管理)
+
+### 7.1 微观架构设计
+
+#### 7.1.1 质量扫描器架构
+
+**设计目标**:
+- 高效扫描海量数据文件(5000+品种 × 4周期)
+- 多进程并发扫描,充分利用CPU
+- 增量扫描,避免重复扫描
+- 质量指标可扩展,支持新增检测维度
+
+**核心类设计**:
+
+```python
+from dataclasses import dataclass, field
+from typing import Dict, List, Set, Optional
+from pathlib import Path
+from datetime import datetime
+import hashlib
+import logging
+
+logger = logging.getLogger(__name__)
+
+# ==================== 质量指标数据模型 ====================
+
+@dataclass
+class QualityMetrics:
+    """数据质量指标"""
+    
+    symbol: str
+    interval: str
+    
+    # 基础指标
+    total_records: int = 0
+    missing_records: int = 0
+    duplicate_records: int = 0
+    
+    # 格式质量(0-100)
+    format_score: float = 0.0
+    format_errors: List[str] = field(default_factory=list)
+    
+    # 逻辑质量(0-100)
+    logic_score: float = 0.0
+    logic_errors: List[str] = field(default_factory=list)
+    
+    # 完整性质量(0-100)
+    completeness_score: float = 0.0
+    missing_dates: List[str] = field(default_factory=list)
+    
+    # 新鲜度质量(0-100)
+    freshness_score: float = 0.0
+    lag_days: int = 0
+    
+    # 综合评分(0-100)
+    overall_score: float = 0.0
+    quality_level: str = "unknown"  # excellent/good/fair/poor
+    
+    # 扫描元信息
+    scanned_at: datetime = field(default_factory=datetime.now)
+    file_size_mb: float = 0.0
+    
+    def calculate_overall_score(self, weights: Dict[str, float] = None):
+        """计算综合评分
+        
+        默认权重: 格式30% + 逻辑20% + 完整性30% + 新鲜度20%
+        """
+        if weights is None:
+            weights = {
+                "format": 0.3,
+                "logic": 0.2,
+                "completeness": 0.3,
+                "freshness": 0.2
+            }
+        
+        self.overall_score = (
+            self.format_score * weights["format"] +
+            self.logic_score * weights["logic"] +
+            self.completeness_score * weights["completeness"] +
+            self.freshness_score * weights["freshness"]
+        )
+        
+        # 确定质量等级
+        if self.overall_score >= 90:
+            self.quality_level = "excellent"
+        elif self.overall_score >= 75:
+            self.quality_level = "good"
+        elif self.overall_score >= 60:
+            self.quality_level = "fair"
+        else:
+            self.quality_level = "poor"
+    
+    def needs_repair(self, threshold: float = 60.0) -> bool:
+        """判断是否需要修复"""
+        return self.overall_score < threshold
+
+
+@dataclass
+class ScanTask:
+    """扫描任务"""
+    
+    symbol: str
+    interval: str
+    file_path: Path
+    priority: int = 0  # 优先级(数值越大越优先)
+    
+    def get_task_id(self) -> str:
+        """获取任务唯一标识"""
+        return f"{self.symbol}_{self.interval}"
+
+
+# ==================== 增量扫描记录管理 ====================
+
+class ScanRecordManager:
+    """扫描记录管理器
+    
+    记录已扫描文件的校验和,实现增量扫描。
+    
+    使用示例:
+        manager = ScanRecordManager(record_file=Path("./scan_records.json"))
+        
+        # 检查是否需要扫描
+        if manager.should_scan(file_path):
+            # 执行扫描
+            scan_file(file_path)
+            # 标记已扫描
+            manager.mark_scanned(file_path, checksum)
+    """
+    
+    def __init__(self, record_file: Path):
+        """
+        Args:
+            record_file: 扫描记录文件路径
+        """
+        self.record_file = record_file
+        self._records: Dict[str, Dict] = {}  # {file_path: {checksum, scanned_at}}
+        
+        # 加载历史记录
+        self._load_records()
+    
+    def _load_records(self):
+        """加载扫描记录"""
+        if not self.record_file.exists():
+            return
+        
+        try:
+            import json
+            with open(self.record_file, 'r', encoding='utf-8') as f:
+                self._records = json.load(f)
+            logger.info(f"已加载 {len(self._records)} 条扫描记录")
+        except Exception as e:
+            logger.error(f"加载扫描记录失败: {e}")
+    
+    def _save_records(self):
+        """保存扫描记录"""
+        try:
+            import json
+            self.record_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.record_file, 'w', encoding='utf-8') as f:
+                json.dump(self._records, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"保存扫描记录失败: {e}")
+    
+    def _calculate_checksum(self, file_path: Path) -> str:
+        """计算文件校验和(使用文件大小+修改时间)"""
+        try:
+            stat = file_path.stat()
+            content = f"{stat.st_size}_{stat.st_mtime}"
+            return hashlib.md5(content.encode()).hexdigest()
+        except Exception as e:
+            logger.error(f"计算校验和失败 ({file_path}): {e}")
+            return ""
+    
+    def should_scan(self, file_path: Path) -> bool:
+        """判断文件是否需要扫描
+        
+        规则:
+        - 文件不存在于记录中 → 需要扫描
+        - 文件校验和变化 → 需要扫描
+        - 文件校验和未变化 → 跳过扫描
+        """
+        file_key = str(file_path)
+        current_checksum = self._calculate_checksum(file_path)
+        
+        if not current_checksum:
+            return True
+        
+        if file_key not in self._records:
+            return True
+        
+        old_checksum = self._records[file_key].get("checksum", "")
+        return current_checksum != old_checksum
+    
+    def mark_scanned(self, file_path: Path, quality_score: float = None):
+        """标记文件已扫描
+        
+        Args:
+            file_path: 文件路径
+            quality_score: 质量评分(可选)
+        """
+        file_key = str(file_path)
+        checksum = self._calculate_checksum(file_path)
+        
+        self._records[file_key] = {
+            "checksum": checksum,
+            "scanned_at": datetime.now().isoformat(),
+            "quality_score": quality_score
+        }
+        
+        self._save_records()
+    
+    def clear_records(self):
+        """清空所有记录"""
+        self._records.clear()
+        self._save_records()
+        logger.info("已清空扫描记录")
+
+
+# ==================== 质量扫描器 ====================
+
+class QualityScanner:
+    """数据质量扫描器
+    
+    职责:
+    1. 扫描数据文件,生成质量指标
+    2. 支持增量扫描,避免重复扫描
+    3. 多进程并发扫描,提升效率
+    4. 生成质量报告
+    
+    使用示例:
+        scanner = QualityScanner(
+            data_dir=Path("./data"),
+            record_file=Path("./scan_records.json")
+        )
+        
+        # 扫描所有数据
+        results = scanner.scan_all(intervals=["1d", "1h"])
+        
+        # 生成报告
+        report = scanner.generate_report(results)
+    """
+    
+    def __init__(
+        self,
+        data_dir: Path,
+        record_file: Path,
+        validators: List = None
+    ):
+        """
+        Args:
+            data_dir: 数据目录
+            record_file: 扫描记录文件
+            validators: 验证器列表(可选)
+        """
+        self.data_dir = Path(data_dir)
+        self.record_manager = ScanRecordManager(record_file)
+        self.validators = validators or self._get_default_validators()
+        
+        logger.info(f"质量扫描器已初始化: data_dir={data_dir}")
+    
+    def _get_default_validators(self) -> List:
+        """获取默认验证器列表"""
+        # 引用第三章定义的验证器
+        from .validation import (
+            FormatValidator,
+            LogicValidator,
+            CompletenessValidator,
+            FreshnessValidator
+        )
+        
+        return [
+            FormatValidator(),
+            LogicValidator(),
+            CompletenessValidator(),
+            FreshnessValidator()
+        ]
+    
+    def scan_file(self, task: ScanTask) -> Optional[QualityMetrics]:
+        """扫描单个文件
+        
+        Args:
+            task: 扫描任务
+            
+        Returns:
+            质量指标,扫描失败返回None
+        """
+        # 检查是否需要扫描
+        if not self.record_manager.should_scan(task.file_path):
+            logger.debug(f"跳过已扫描文件: {task.file_path}")
+            return None
+        
+        try:
+            # 读取数据文件
+            import pandas as pd
+            df = pd.read_parquet(task.file_path)
+            
+            # 创建质量指标对象
+            metrics = QualityMetrics(
+                symbol=task.symbol,
+                interval=task.interval,
+                total_records=len(df),
+                file_size_mb=task.file_path.stat().st_size / (1024 * 1024)
+            )
+            
+            # 执行所有验证器
+            for validator in self.validators:
+                result = validator.validate(df, context=None)
+                
+                # 根据验证器类型更新指标
+                if "Format" in validator.__class__.__name__:
+                    metrics.format_score = result.score
+                    metrics.format_errors = [e.message for e in result.errors]
+                elif "Logic" in validator.__class__.__name__:
+                    metrics.logic_score = result.score
+                    metrics.logic_errors = [e.message for e in result.errors]
+                elif "Completeness" in validator.__class__.__name__:
+                    metrics.completeness_score = result.score
+                    metrics.missing_dates = [e.date for e in result.errors if e.date]
+                elif "Freshness" in validator.__class__.__name__:
+                    metrics.freshness_score = result.score
+                    if result.statistics:
+                        metrics.lag_days = result.statistics.get("gap_days", 0)
+            
+            # 计算综合评分
+            metrics.calculate_overall_score()
+            
+            # 标记已扫描
+            self.record_manager.mark_scanned(
+                task.file_path,
+                quality_score=metrics.overall_score
+            )
+            
+            logger.debug(
+                f"扫描完成: {task.symbol} {task.interval}, "
+                f"评分={metrics.overall_score:.2f}"
+            )
+            
+            return metrics
+            
+        except Exception as e:
+            logger.error(f"扫描文件失败 ({task.file_path}): {e}", exc_info=True)
+            return None
+    
+    def scan_all(
+        self,
+        intervals: List[str],
+        symbols: List[str] = None,
+        num_processes: int = 4
+    ) -> Dict[str, QualityMetrics]:
+        """扫描所有数据文件
+        
+        Args:
+            intervals: 周期列表
+            symbols: 品种列表(None表示扫描所有)
+            num_processes: 进程数
+            
+        Returns:
+            {task_id: metrics} 字典
+        """
+        # 生成扫描任务
+        tasks = self._generate_tasks(intervals, symbols)
+        
+        logger.info(f"开始质量扫描: {len(tasks)} 个任务, {num_processes} 进程")
+        
+        # 多进程扫描
+        from multiprocessing import Pool
+        
+        results = {}
+        with Pool(processes=num_processes) as pool:
+            metrics_list = pool.map(self.scan_file, tasks)
+            
+            for task, metrics in zip(tasks, metrics_list):
+                if metrics:
+                    results[task.get_task_id()] = metrics
+        
+        logger.info(
+            f"扫描完成: {len(results)}/{len(tasks)} 个任务成功"
+        )
+        
+        return results
+    
+    def _generate_tasks(self, intervals: List[str], symbols: List[str] = None) -> List[ScanTask]:
+        """生成扫描任务列表"""
+        tasks = []
+        
+        for interval in intervals:
+            interval_dir = self.data_dir / interval
+            if not interval_dir.exists():
+                continue
+            
+            for file_path in interval_dir.glob("*.parquet"):
+                symbol = file_path.stem
+                
+                # 过滤品种
+                if symbols and symbol not in symbols:
+                    continue
+                
+                task = ScanTask(
+                    symbol=symbol,
+                    interval=interval,
+                    file_path=file_path
+                )
+                tasks.append(task)
+        
+        return tasks
+    
+    def generate_report(self, results: Dict[str, QualityMetrics]) -> Dict:
+        """生成质量报告
+        
+        Args:
+            results: 扫描结果
+            
+        Returns:
+            质量报告字典
+        """
+        if not results:
+            return {}
+        
+        # 统计各质量等级数量
+        level_counts = {"excellent": 0, "good": 0, "fair": 0, "poor": 0}
+        total_score = 0.0
+        
+        poor_quality_items = []
+        
+        for task_id, metrics in results.items():
+            level_counts[metrics.quality_level] += 1
+            total_score += metrics.overall_score
+            
+            # 收集低质量数据
+            if metrics.quality_level == "poor":
+                poor_quality_items.append({
+                    "symbol": metrics.symbol,
+                    "interval": metrics.interval,
+                    "score": metrics.overall_score,
+                    "errors": metrics.format_errors + metrics.logic_errors
+                })
+        
+        # 生成报告
+        report = {
+            "total_files": len(results),
+            "average_score": total_score / len(results) if results else 0,
+            "level_distribution": level_counts,
+            "poor_quality_items": poor_quality_items,
+            "generated_at": datetime.now().isoformat()
+        }
+        
+        logger.info(
+            f"质量报告生成: 平均分={report['average_score']:.2f}, "
+            f"优秀={level_counts['excellent']}, "
+            f"良好={level_counts['good']}, "
+            f"一般={level_counts['fair']}, "
+            f"较差={level_counts['poor']}"
+        )
+        
+        return report
+```
+
+**架构优势**:
+
+1. **增量扫描**:
+   - 基于文件校验和(大小+修改时间)
+   - 避免重复扫描未变化文件
+   - 大幅提升扫描效率
+
+2. **多进程并发**:
+   - 充分利用多核CPU
+   - 大幅缩短扫描时间
+   - 适合海量文件扫描
+
+3. **质量指标**:
+   - 多维度评分(格式/逻辑/完整性/新鲜度)
+   - 加权综合评分
+   - 质量等级分类
+
+4. **可扩展性**:
+   - 验证器可插拔
+   - 易于新增质量维度
+   - 支持自定义评分权重
+
+### 7.2 数据质量业务规则
+
+#### 7.2.1 质量评分规则
+
+**综合评分计算**:
+```python
+综合评分 = 格式评分 × 30% + 逻辑评分 × 20% + 完整性评分 × 30% + 新鲜度评分 × 20%
+```
+
+**质量等级划分**:
+- **优秀**(excellent): 综合评分 ≥ 90分
+- **良好**(good): 综合评分 ≥ 75分
+- **一般**(fair): 综合评分 ≥ 60分
+- **较差**(poor): 综合评分 < 60分
+
+#### 7.2.2 增量扫描规则
+
+**校验和计算规则**:
+```python
+checksum = MD5(f"{文件大小}_{修改时间}")
+```
+
+**扫描判定规则**:
+- 文件不在扫描记录中 → 需要扫描
+- 文件校验和发生变化 → 需要扫描
+- 文件校验和未变化 → 跳过扫描
+
+#### 7.2.3 修复建议规则
+
+**自动修复阈值**:
+- 综合评分 < 60分 → 建议修复
+- 格式错误 > 0 → 必须修复
+- 逻辑错误 > 10条 → 建议重新下载
+
+---
+
+## 八、统一数据查询业务规则
+
+> **架构设计参考**:统一管理器架构请参考 [最佳实践文档 - 2.5 unified_data_manager.py](./data_module_vnpy新架构最佳实践cursor版.md#25-unified_data_managerpy---统一数据查询)
+
+### 8.1 微观架构设计
+
+#### 8.1.1 四层融合查询引擎
+
+**设计目标**:
+- L1内存缓存:毫秒级响应,LRU淘汰
+- L2本地文件:秒级响应,Parquet格式
+- L3实时下载:按需下载,自动补全
+- L4数据源回放:历史数据回放
+- 自动降级:上层失败自动降级到下层
+
+**核心类设计**:
+
+```python
+from abc import ABC, abstractmethod
+from typing import Optional, Tuple
+from datetime import date, datetime
+import pandas as pd
+import logging
+
+logger = logging.getLogger(__name__)
+
+# ==================== 查询层抽象 ====================
+
+class QueryLayer(ABC):
+    """查询层抽象接口"""
+    
+    @abstractmethod
+    def query(
+        self,
+        symbol: str,
+        interval: str,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None
+    ) -> Optional[pd.DataFrame]:
+        """查询数据
+        
+        Args:
+            symbol: 品种代码
+            interval: 周期
+            start_date: 起始日期(可选)
+            end_date: 结束日期(可选)
+            
+        Returns:
+            DataFrame,查询失败返回None
+        """
+        pass
+    
+    @abstractmethod
+    def get_layer_name(self) -> str:
+        """获取层名称"""
+        pass
+
+
+class L1MemoryCacheLayer(QueryLayer):
+    """L1 内存缓存层"""
+    
+    def __init__(self, cache_manager):
+        """Args: cache_manager: LRU缓存管理器"""
+        self.cache = cache_manager
+    
+    def query(
+        self,
+        symbol: str,
+        interval: str,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None
+    ) -> Optional[pd.DataFrame]:
+        """从内存缓存查询"""
+        cache_key = f"{symbol}_{interval}"
+        df = self.cache.get(cache_key)
+        
+        if df is None:
+            logger.debug(f"L1 Cache Miss: {cache_key}")
+            return None
+        
+        # 日期过滤
+        if start_date or end_date:
+            df = self._filter_by_date(df, start_date, end_date)
+        
+        logger.debug(f"L1 Cache Hit: {cache_key}, {len(df)} 条记录")
+        return df.copy()
+    
+    def _filter_by_date(self, df: pd.DataFrame, start: date, end: date) -> pd.DataFrame:
+        """日期过滤"""
+        mask = pd.Series([True] * len(df), index=df.index)
+        
+        if start:
+            mask &= df['datetime'].dt.date >= start
+        if end:
+            mask &= df['datetime'].dt.date <= end
+        
+        return df[mask]
+    
+    def get_layer_name(self) -> str:
+        return "L1_Memory_Cache"
+
+
+class L2LocalFileLayer(QueryLayer):
+    """L2 本地文件层"""
+    
+    def __init__(self, storage_manager):
+        """Args: storage_manager: 存储管理器"""
+        self.storage = storage_manager
+    
+    def query(
+        self,
+        symbol: str,
+        interval: str,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None
+    ) -> Optional[pd.DataFrame]:
+        """从本地文件查询"""
+        try:
+            df = self.storage.load_data(symbol, interval, start_date, end_date)
+            
+            if df is None or df.empty:
+                logger.debug(f"L2 File Miss: {symbol} {interval}")
+                return None
+            
+            logger.debug(f"L2 File Hit: {symbol} {interval}, {len(df)} 条记录")
+            return df
+            
+        except Exception as e:
+            logger.error(f"L2查询失败: {e}")
+            return None
+    
+    def get_layer_name(self) -> str:
+        return "L2_Local_File"
+
+
+class L3RealtimeDownloadLayer(QueryLayer):
+    """L3 实时下载层"""
+    
+    def __init__(self, downloader):
+        """Args: downloader: 数据下载器"""
+        self.downloader = downloader
+    
+    def query(
+        self,
+        symbol: str,
+        interval: str,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None
+    ) -> Optional[pd.DataFrame]:
+        """实时下载数据"""
+        try:
+            logger.info(f"L3 实时下载: {symbol} {interval}")
+            
+            # 触发下载
+            df = self.downloader.download_single(
+                symbol=symbol,
+                interval=interval,
+                start_date=start_date,
+                end_date=end_date
+            )
+            
+            if df is None or df.empty:
+                logger.warning(f"L3下载失败: {symbol} {interval}")
+                return None
+            
+            logger.info(f"L3下载成功: {symbol} {interval}, {len(df)} 条记录")
+            return df
+            
+        except Exception as e:
+            logger.error(f"L3下载异常: {e}")
+            return None
+    
+    def get_layer_name(self) -> str:
+        return "L3_Realtime_Download"
+
+
+class L4DataSourceReplayLayer(QueryLayer):
+    """L4 数据源回放层"""
+    
+    def __init__(self, replay_source):
+        """Args: replay_source: 回放数据源"""
+        self.replay = replay_source
+    
+    def query(
+        self,
+        symbol: str,
+        interval: str,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None
+    ) -> Optional[pd.DataFrame]:
+        """从数据源回放"""
+        try:
+            logger.info(f"L4 数据源回放: {symbol} {interval}")
+            
+            df = self.replay.replay_data(
+                symbol=symbol,
+                interval=interval,
+                start_date=start_date,
+                end_date=end_date
+            )
+            
+            if df is None or df.empty:
+                logger.warning(f"L4回放失败: {symbol} {interval}")
+                return None
+            
+            logger.info(f"L4回放成功: {symbol} {interval}, {len(df)} 条记录")
+            return df
+            
+        except Exception as e:
+            logger.error(f"L4回放异常: {e}")
+            return None
+    
+    def get_layer_name(self) -> str:
+        return "L4_DataSource_Replay"
+
+
+# ==================== 统一查询管理器 ====================
+
+class UnifiedDataManager:
+    """统一数据查询管理器
+    
+    实现四层融合查询:
+    1. L1 内存缓存(毫秒级)
+    2. L2 本地文件(秒级)
+    3. L3 实时下载(分钟级)
+    4. L4 数据源回放(分钟级)
+    
+    查询流程:
+    - 优先从L1查询
+    - L1 miss → L2查询
+    - L2 miss → L3下载
+    - L3失败 → L4回放
+    - 查询成功后回写上层缓存
+    
+    使用示例:
+        manager = UnifiedDataManager(
+            l1_cache=memory_cache,
+            l2_storage=storage_manager,
+            l3_downloader=downloader,
+            l4_replay=replay_source
+        )
+        
+        # 统一查询接口
+        df = manager.query_unified(
+            symbol="000001.SZ",
+            interval="1d",
+            start_date=date(2024, 1, 1)
+        )
+    """
+    
+    def __init__(
+        self,
+        l1_cache=None,
+        l2_storage=None,
+        l3_downloader=None,
+        l4_replay=None
+    ):
+        """初始化统一查询管理器"""
+        # 构建查询层列表
+        self.layers: List[QueryLayer] = []
+        
+        if l1_cache:
+            self.layers.append(L1MemoryCacheLayer(l1_cache))
+        if l2_storage:
+            self.layers.append(L2LocalFileLayer(l2_storage))
+        if l3_downloader:
+            self.layers.append(L3RealtimeDownloadLayer(l3_downloader))
+        if l4_replay:
+            self.layers.append(L4DataSourceReplayLayer(l4_replay))
+        
+        # 统计信息
+        self._stats = {
+            "total_queries": 0,
+            "layer_hits": {layer.get_layer_name(): 0 for layer in self.layers},
+            "failures": 0
+        }
+        
+        logger.info(
+            f"统一查询管理器已初始化: {len(self.layers)} 个查询层"
+        )
+    
+    def query_unified(
+        self,
+        symbol: str,
+        interval: str,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None
+    ) -> Optional[pd.DataFrame]:
+        """统一查询接口
+        
+        按优先级依次查询各层,第一个成功的结果即返回。
+        
+        Args:
+            symbol: 品种代码
+            interval: 周期
+            start_date: 起始日期
+            end_date: 结束日期
+            
+        Returns:
+            DataFrame,所有层都失败返回None
+        """
+        self._stats["total_queries"] += 1
+        
+        # 按优先级查询各层
+        for layer in self.layers:
+            try:
+                df = layer.query(symbol, interval, start_date, end_date)
+                
+                if df is not None and not df.empty:
+                    # 查询成功
+                    layer_name = layer.get_layer_name()
+                    self._stats["layer_hits"][layer_name] += 1
+                    
+                    logger.info(
+                        f"查询成功: {symbol} {interval}, "
+                        f"来源={layer_name}, {len(df)} 条记录"
+                    )
+                    
+                    # 回写上层缓存
+                    self._writeback_cache(symbol, interval, df, layer)
+                    
+                    return df
+                    
+            except Exception as e:
+                logger.error(
+                    f"查询层异常 ({layer.get_layer_name()}): {e}"
+                )
+                continue
+        
+        # 所有层都失败
+        self._stats["failures"] += 1
+        logger.warning(f"查询失败: {symbol} {interval}, 所有层都无数据")
+        return None
+    
+    def _writeback_cache(
+        self,
+        symbol: str,
+        interval: str,
+        df: pd.DataFrame,
+        source_layer: QueryLayer
+    ):
+        """回写上层缓存
+        
+        规则:
+        - L2成功 → 回写L1
+        - L3成功 → 回写L2和L1
+        - L4成功 → 回写L3、L2和L1
+        """
+        source_index = self.layers.index(source_layer)
+        
+        # 回写所有上层
+        for i in range(source_index):
+            upper_layer = self.layers[i]
+            try:
+                if isinstance(upper_layer, L1MemoryCacheLayer):
+                    # 回写L1内存缓存
+                    cache_key = f"{symbol}_{interval}"
+                    upper_layer.cache.set(cache_key, df)
+                    logger.debug(f"回写L1缓存: {cache_key}")
+                    
+                elif isinstance(upper_layer, L2LocalFileLayer):
+                    # 回写L2本地文件
+                    upper_layer.storage.save_data(symbol, interval, df)
+                    logger.debug(f"回写L2文件: {symbol} {interval}")
+                    
+            except Exception as e:
+                logger.error(f"回写缓存失败 ({upper_layer.get_layer_name()}): {e}")
+    
+    def get_stats(self) -> Dict:
+        """获取查询统计"""
+        total = self._stats["total_queries"]
+        
+        # 计算各层命中率
+        layer_hit_rates = {}
+        for layer_name, hits in self._stats["layer_hits"].items():
+            rate = (hits / total * 100) if total > 0 else 0.0
+            layer_hit_rates[layer_name] = round(rate, 2)
+        
+        return {
+            "total_queries": total,
+            "layer_hits": self._stats["layer_hits"],
+            "layer_hit_rates": layer_hit_rates,
+            "failures": self._stats["failures"],
+            "success_rate": round(
+                (total - self._stats["failures"]) / total * 100
+                if total > 0 else 0.0,
+                2
+            )
+        }
+```
+
+**架构优势**:
+
+1. **四层融合**:
+   - 自动降级查询
+   - 最大化数据可用性
+   - 最小化响应延迟
+
+2. **缓存回写**:
+   - 自动回写上层缓存
+   - 提升后续查询性能
+   - 减少下层压力
+
+3. **统一接口**:
+   - 屏蔽多层复杂性
+   - 简化调用方使用
+   - 易于扩展新层
+
+4. **性能监控**:
+   - 各层命中率统计
+   - 查询成功率统计
+   - 便于性能优化
+
+### 8.2 统一查询业务规则
+
+#### 8.2.1 查询优先级规则
+
+**优先级顺序**:
+1. L1 内存缓存(最高优先级)
+2. L2 本地文件
+3. L3 实时下载
+4. L4 数据源回放(最低优先级)
+
+**降级规则**:
+- 上层返回None或empty → 自动查询下层
+- 上层异常 → 自动查询下层
+- 所有层失败 → 返回None
+
+#### 8.2.2 缓存回写规则
+
+**回写触发条件**:
+- L2成功 → 回写L1
+- L3成功 → 回写L2+L1
+- L4成功 → 回写L3+L2+L1
+
+**回写异常处理**:
+- 回写失败不影响查询结果
+- 记录warning日志
+- 继续查询流程
+
+---
+
+## 九、实时推送业务规则
+
+> **架构设计参考**:数据源架构请参考 [最佳实践文档 - 2.6 realtime_data_source.py](./data_module_vnpy新架构最佳实践cursor版.md#26-realtime_data_sourcepy---实时数据推送)
+
+### 9.1 微观架构设计
+
+#### 9.1.1 数据源适配器架构
+
+**设计目标**:
+- 统一多种实时数据源接口(TDX/Tushare/WebSocket)
+- 适配器模式隔离数据源差异
+- 自动重连和异常恢复
+- 支持订阅管理和频率控制
+
+**核心类设计**:
+
+```python
+from abc import ABC, abstractmethod
+from typing import Dict, List, Callable, Optional
+from dataclasses import dataclass
+import asyncio
+import logging
+
+logger = logging.getLogger(__name__)
+
+# ==================== 实时数据模型 ====================
+
+@dataclass
+class RealtimeTick:
+    """实时tick数据"""
+    
+    symbol: str
+    datetime: str
+    last_price: float
+    volume: int
+    amount: float
+    bid1: float = 0.0
+    ask1: float = 0.0
+    
+    def to_dict(self) -> Dict:
+        """转换为字典"""
+        return {
+            "symbol": self.symbol,
+            "datetime": self.datetime,
+            "last_price": self.last_price,
+            "volume": self.volume,
+            "amount": self.amount,
+            "bid1": self.bid1,
+            "ask1": self.ask1
+        }
+
+
+# ==================== 数据源适配器 ====================
+
+class RealtimeDataSource(ABC):
+    """实时数据源抽象接口"""
+    
+    @abstractmethod
+    async def connect(self) -> bool:
+        """连接数据源
+        
+        Returns:
+            True表示连接成功
+        """
+        pass
+    
+    @abstractmethod
+    async def disconnect(self):
+        """断开连接"""
+        pass
+    
+    @abstractmethod
+    async def subscribe(self, symbols: List[str]) -> bool:
+        """订阅品种
+        
+        Args:
+            symbols: 品种列表
+            
+        Returns:
+            True表示订阅成功
+        """
+        pass
+    
+    @abstractmethod
+    async def unsubscribe(self, symbols: List[str]) -> bool:
+        """取消订阅"""
+        pass
+    
+    @abstractmethod
+    def get_source_name(self) -> str:
+        """获取数据源名称"""
+        pass
+
+
+class TDXRealtimeSource(RealtimeDataSource):
+    """TDX实时数据源适配器"""
+    
+    def __init__(self, host: str, port: int, callback: Callable):
+        """
+        Args:
+            host: 服务器地址
+            port: 服务器端口
+            callback: 数据回调函数 callback(tick: RealtimeTick)
+        """
+        self.host = host
+        self.port = port
+        self.callback = callback
+        self._client = None
+        self._subscribed_symbols: List[str] = []
+        self._running = False
+    
+    async def connect(self) -> bool:
+        """连接TDX服务器"""
+        try:
+            from pytdx.hq import TdxHq_API
+            
+            self._client = TdxHq_API()
+            await asyncio.get_event_loop().run_in_executor(
+                None,
+                self._client.connect,
+                self.host,
+                self.port
+            )
+            
+            logger.info(f"TDX连接成功: {self.host}:{self.port}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"TDX连接失败: {e}")
+            return False
+    
+    async def disconnect(self):
+        """断开TDX连接"""
+        self._running = False
+        if self._client:
+            await asyncio.get_event_loop().run_in_executor(
+                None,
+                self._client.disconnect
+            )
+            logger.info("TDX连接已断开")
+    
+    async def subscribe(self, symbols: List[str]) -> bool:
+        """订阅品种(启动轮询)
+        
+        TDX没有推送机制,使用轮询模拟
+        """
+        self._subscribed_symbols.extend(symbols)
+        self._subscribed_symbols = list(set(self._subscribed_symbols))
+        
+        if not self._running:
+            self._running = True
+            asyncio.create_task(self._polling_loop())
+        
+        logger.info(f"TDX订阅成功: {len(self._subscribed_symbols)}个品种")
+        return True
+    
+    async def unsubscribe(self, symbols: List[str]) -> bool:
+        """取消订阅"""
+        for symbol in symbols:
+            if symbol in self._subscribed_symbols:
+                self._subscribed_symbols.remove(symbol)
+        
+        logger.info(f"TDX取消订阅: 剩余{len(self._subscribed_symbols)}个品种")
+        return True
+    
+    async def _polling_loop(self):
+        """轮询循环(模拟推送)"""
+        while self._running:
+            try:
+                # 批量获取实时行情
+                for symbol in self._subscribed_symbols:
+                    market, code = self._parse_symbol(symbol)
+                    
+                    # 获取实时行情
+                    quote = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        self._client.get_security_quotes,
+                        [(market, code)]
+                    )
+                    
+                    if quote:
+                        tick = self._convert_to_tick(quote[0], symbol)
+                        # 触发回调
+                        await self.callback(tick)
+                
+                # 轮询间隔(1秒)
+                await asyncio.sleep(1.0)
+                
+            except Exception as e:
+                logger.error(f"TDX轮询异常: {e}")
+                await asyncio.sleep(5.0)  # 异常后等待5秒重试
+    
+    def _parse_symbol(self, symbol: str) -> tuple:
+        """解析品种代码"""
+        if symbol.endswith(".SZ"):
+            return 0, symbol[:6]
+        elif symbol.endswith(".SH"):
+            return 1, symbol[:6]
+        else:
+            return 0, symbol
+    
+    def _convert_to_tick(self, quote: Dict, symbol: str) -> RealtimeTick:
+        """转换TDX行情为Tick"""
+        return RealtimeTick(
+            symbol=symbol,
+            datetime=quote.get("datetime", ""),
+            last_price=quote.get("price", 0.0),
+            volume=quote.get("vol", 0),
+            amount=quote.get("amount", 0.0),
+            bid1=quote.get("bid1", 0.0),
+            ask1=quote.get("ask1", 0.0)
+        )
+    
+    def get_source_name(self) -> str:
+        return "TDX_Realtime"
+
+
+# ==================== 订阅管理器 ====================
+
+class SubscriptionManager:
+    """订阅管理器
+    
+    职责:
+    1. 管理多个数据源的订阅
+    2. 自动重连和异常恢复
+    3. 订阅频率控制
+    4. 数据分发
+    
+    使用示例:
+        manager = SubscriptionManager()
+        
+        # 添加数据源
+        tdx_source = TDXRealtimeSource(host, port, callback)
+        manager.add_source(tdx_source)
+        
+        # 订阅品种
+        await manager.subscribe(["000001.SZ", "600000.SH"])
+        
+        # 启动
+        await manager.start()
+    """
+    
+    def __init__(self):
+        """初始化订阅管理器"""
+        self._sources: List[RealtimeDataSource] = []
+        self._callbacks: List[Callable] = []
+        self._subscribed_symbols: set = set()
+        self._running = False
+        
+        logger.info("订阅管理器已初始化")
+    
+    def add_source(self, source: RealtimeDataSource):
+        """添加数据源
+        
+        Args:
+            source: 实时数据源
+        """
+        self._sources.append(source)
+        logger.info(f"已添加数据源: {source.get_source_name()}")
+    
+    def add_callback(self, callback: Callable):
+        """添加数据回调
+        
+        Args:
+            callback: 回调函数 callback(tick: RealtimeTick)
+        """
+        self._callbacks.append(callback)
+        logger.info("已添加数据回调")
+    
+    async def subscribe(self, symbols: List[str]) -> bool:
+        """订阅品种
+        
+        Args:
+            symbols: 品种列表
+            
+        Returns:
+            True表示订阅成功
+        """
+        # 记录订阅
+        self._subscribed_symbols.update(symbols)
+        
+        # 订阅所有数据源
+        success = True
+        for source in self._sources:
+            result = await source.subscribe(symbols)
+            success = success and result
+        
+        logger.info(
+            f"订阅完成: {len(symbols)}个品种, "
+            f"总订阅{len(self._subscribed_symbols)}个"
+        )
+        
+        return success
+    
+    async def unsubscribe(self, symbols: List[str]) -> bool:
+        """取消订阅
+        
+        Args:
+            symbols: 品种列表
+            
+        Returns:
+            True表示取消成功
+        """
+        # 移除订阅
+        self._subscribed_symbols.difference_update(symbols)
+        
+        # 取消所有数据源订阅
+        success = True
+        for source in self._sources:
+            result = await source.unsubscribe(symbols)
+            success = success and result
+        
+        logger.info(
+            f"取消订阅: {len(symbols)}个品种, "
+            f"剩余{len(self._subscribed_symbols)}个"
+        )
+        
+        return success
+    
+    async def start(self):
+        """启动订阅管理器"""
+        self._running = True
+        
+        # 连接所有数据源
+        for source in self._sources:
+            await source.connect()
+        
+        # 自动重连任务
+        asyncio.create_task(self._auto_reconnect_loop())
+        
+        logger.info("订阅管理器已启动")
+    
+    async def stop(self):
+        """停止订阅管理器"""
+        self._running = False
+        
+        # 断开所有数据源
+        for source in self._sources:
+            await source.disconnect()
+        
+        logger.info("订阅管理器已停止")
+    
+    async def _auto_reconnect_loop(self):
+        """自动重连循环"""
+        while self._running:
+            try:
+                # 检查数据源连接状态
+                for source in self._sources:
+                    # 如果断线,尝试重连
+                    # TODO: 实现连接状态检查
+                    pass
+                
+                # 每30秒检查一次
+                await asyncio.sleep(30)
+                
+            except Exception as e:
+                logger.error(f"自动重连异常: {e}")
+                await asyncio.sleep(60)
+    
+    async def _dispatch_tick(self, tick: RealtimeTick):
+        """分发tick数据到所有回调
+        
+        Args:
+            tick: tick数据
+        """
+        for callback in self._callbacks:
+            try:
+                if asyncio.iscoroutinefunction(callback):
+                    await callback(tick)
+                else:
+                    callback(tick)
+            except Exception as e:
+                logger.error(f"回调执行异常: {e}")
+```
+
+**架构优势**:
+
+1. **适配器模式**:
+   - 统一多种数据源接口
+   - 隔离数据源实现差异
+   - 易于扩展新数据源
+
+2. **订阅管理**:
+   - 集中管理订阅状态
+   - 支持动态订阅/取消
+   - 自动重连机制
+
+3. **数据分发**:
+   - 支持多个回调函数
+   - 异步数据推送
+   - 异常隔离
+
+4. **轮询优化**:
+   - TDX轮询间隔可配置
+   - 批量获取行情提升效率
+   - 异常重试机制
+
+### 9.2 实时推送业务规则
+
+#### 9.2.1 轮询频率控制规则
+
+**轮询间隔设定**:
+- **交易时段**: 1秒轮询间隔
+- **非交易时段**: 暂停轮询,节省资源
+- **异常情况**: 5秒重试间隔
+
+**频率控制实现**:
+```python
+# 根据交易时段调整轮询间隔
+if is_trading_time():
+    interval = 1.0  # 交易时段1秒
+else:
+    interval = 60.0  # 非交易时段1分钟(或暂停)
+
+await asyncio.sleep(interval)
+```
+
+#### 9.2.2 订阅限制规则
+
+**订阅数量限制**:
+- 单次订阅最大品种数: 100个
+- 总订阅品种数上限: 500个
+- 超过限制时分批订阅
+
+**订阅优先级**:
+- 自选股优先订阅
+- 活跃品种优先订阅
+- 冷门品种低优先级
+
+---
+
+## 十、文件监控业务规则
+
+> **架构设计参考**:文件监控器架构请参考 [最佳实践文档 - 2.7 file_monitor.py](./data_module_vnpy新架构最佳实践cursor版.md#27-file_monitorpy---文件监控)
+
+### 10.1 微观架构设计
+
+#### 10.1.1 文件监控器架构
+
+**设计目标**:
+- 监控数据目录文件变化(创建/修改/删除)
+- 防抖机制避免频繁触发
+- 异步事件分发
+- 支持多种监控策略
+
+**核心类设计**:
+
+```python
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler, FileSystemEvent
+from pathlib import Path
+from typing import Callable, Dict, List
+import asyncio
+import time
+import logging
+
+logger = logging.getLogger(__name__)
+
+# ==================== 文件事件模型 ====================
+
+class FileChangeEvent:
+    """文件变化事件"""
+    
+    def __init__(
+        self,
+        event_type: str,  # created/modified/deleted
+        file_path: Path,
+        timestamp: float
+    ):
+        self.event_type = event_type
+        self.file_path = file_path
+        self.timestamp = timestamp
+    
+    def __repr__(self) -> str:
+        return f"FileChangeEvent({self.event_type}, {self.file_path})"
+
+
+# ==================== 防抖管理器 ====================
+
+class DebounceManager:
+    """防抖管理器
+    
+    避免同一文件短时间内多次触发事件
+    
+    使用示例:
+        debounce = DebounceManager(interval=1.0)
+        
+        if debounce.should_trigger(file_path, event_type):
+            # 执行事件处理
+            handle_event()
+            debounce.mark_triggered(file_path, event_type)
+    """
+    
+    def __init__(self, interval: float = 1.0):
+        """
+        Args:
+            interval: 防抖间隔(秒)
+        """
+        self.interval = interval
+        # {file_path: {event_type: last_trigger_time}}
+        self._trigger_history: Dict[str, Dict[str, float]] = {}
+    
+    def should_trigger(self, file_path: Path, event_type: str) -> bool:
+        """判断是否应该触发事件
+        
+        Args:
+            file_path: 文件路径
+            event_type: 事件类型
+            
+        Returns:
+            True表示应该触发
+        """
+        file_key = str(file_path)
+        now = time.time()
+        
+        if file_key not in self._trigger_history:
+            return True
+        
+        event_history = self._trigger_history[file_key]
+        if event_type not in event_history:
+            return True
+        
+        last_time = event_history[event_type]
+        elapsed = now - last_time
+        
+        return elapsed >= self.interval
+    
+    def mark_triggered(self, file_path: Path, event_type: str):
+        """标记事件已触发
+        
+        Args:
+            file_path: 文件路径
+            event_type: 事件类型
+        """
+        file_key = str(file_path)
+        now = time.time()
+        
+        if file_key not in self._trigger_history:
+            self._trigger_history[file_key] = {}
+        
+        self._trigger_history[file_key][event_type] = now
+    
+    def cleanup_old_records(self, max_age: float = 3600):
+        """清理过期记录
+        
+        Args:
+            max_age: 最大保留时间(秒)
+        """
+        now = time.time()
+        expired_files = []
+        
+        for file_key, event_history in self._trigger_history.items():
+            # 检查所有事件是否都过期
+            all_expired = all(
+                now - last_time > max_age
+                for last_time in event_history.values()
+            )
+            if all_expired:
+                expired_files.append(file_key)
+        
+        for file_key in expired_files:
+            del self._trigger_history[file_key]
+        
+        if expired_files:
+            logger.debug(f"清理{len(expired_files)}条过期防抖记录")
+
+
+# ==================== 文件监控器 ====================
+
+class DataFileMonitor:
+    """数据文件监控器
+    
+    使用watchdog监控数据目录变化,支持防抖和异步事件分发。
+    
+    使用示例:
+        monitor = DataFileMonitor(
+            watch_dir=Path("./data"),
+            debounce_interval=1.0
+        )
+        
+        # 注册事件回调
+        monitor.on_file_created(callback_created)
+        monitor.on_file_modified(callback_modified)
+        monitor.on_file_deleted(callback_deleted)
+        
+        # 启动监控
+        monitor.start()
+    """
+    
+    def __init__(
+        self,
+        watch_dir: Path,
+        debounce_interval: float = 1.0,
+        file_pattern: str = "*.parquet"
+    ):
+        """
+        Args:
+            watch_dir: 监控目录
+            debounce_interval: 防抖间隔(秒)
+            file_pattern: 文件匹配模式
+        """
+        self.watch_dir = Path(watch_dir)
+        self.file_pattern = file_pattern
+        self.debounce = DebounceManager(interval=debounce_interval)
+        
+        # 事件回调
+        self._on_created_callbacks: List[Callable] = []
+        self._on_modified_callbacks: List[Callable] = []
+        self._on_deleted_callbacks: List[Callable] = []
+        
+        # watchdog组件
+        self._observer = None
+        self._event_handler = None
+        
+        logger.info(
+            f"文件监控器已初始化: watch_dir={watch_dir}, "
+            f"debounce={debounce_interval}s"
+        )
+    
+    def on_file_created(self, callback: Callable):
+        """注册文件创建回调
+        
+        Args:
+            callback: 回调函数 callback(event: FileChangeEvent)
+        """
+        self._on_created_callbacks.append(callback)
+    
+    def on_file_modified(self, callback: Callable):
+        """注册文件修改回调"""
+        self._on_modified_callbacks.append(callback)
+    
+    def on_file_deleted(self, callback: Callable):
+        """注册文件删除回调"""
+        self._on_deleted_callbacks.append(callback)
+    
+    def start(self):
+        """启动文件监控"""
+        # 创建事件处理器
+        self._event_handler = _FileEventHandler(
+            monitor=self,
+            file_pattern=self.file_pattern
+        )
+        
+        # 创建观察者
+        self._observer = Observer()
+        self._observer.schedule(
+            self._event_handler,
+            str(self.watch_dir),
+            recursive=True
+        )
+        self._observer.start()
+        
+        logger.info(f"文件监控已启动: {self.watch_dir}")
+    
+    def stop(self):
+        """停止文件监控"""
+        if self._observer:
+            self._observer.stop()
+            self._observer.join()
+            logger.info("文件监控已停止")
+    
+    async def _dispatch_event(self, event: FileChangeEvent):
+        """分发事件到回调
+        
+        Args:
+            event: 文件变化事件
+        """
+        # 选择对应的回调列表
+        if event.event_type == "created":
+            callbacks = self._on_created_callbacks
+        elif event.event_type == "modified":
+            callbacks = self._on_modified_callbacks
+        elif event.event_type == "deleted":
+            callbacks = self._on_deleted_callbacks
+        else:
+            return
+        
+        # 执行所有回调
+        for callback in callbacks:
+            try:
+                if asyncio.iscoroutinefunction(callback):
+                    await callback(event)
+                else:
+                    callback(event)
+            except Exception as e:
+                logger.error(f"事件回调异常: {e}", exc_info=True)
+
+
+class _FileEventHandler(FileSystemEventHandler):
+    """watchdog事件处理器(内部类)"""
+    
+    def __init__(self, monitor: DataFileMonitor, file_pattern: str):
+        self.monitor = monitor
+        self.file_pattern = file_pattern
+        super().__init__()
+    
+    def on_created(self, event: FileSystemEvent):
+        """文件创建事件"""
+        if event.is_directory:
+            return
+        
+        file_path = Path(event.src_path)
+        if not file_path.match(self.file_pattern):
+            return
+        
+        # 防抖检查
+        if not self.monitor.debounce.should_trigger(file_path, "created"):
+            return
+        
+        # 创建事件对象
+        change_event = FileChangeEvent(
+            event_type="created",
+            file_path=file_path,
+            timestamp=time.time()
+        )
+        
+        # 标记已触发
+        self.monitor.debounce.mark_triggered(file_path, "created")
+        
+        # 异步分发事件
+        asyncio.create_task(self.monitor._dispatch_event(change_event))
+        
+        logger.debug(f"文件创建: {file_path}")
+    
+    def on_modified(self, event: FileSystemEvent):
+        """文件修改事件"""
+        if event.is_directory:
+            return
+        
+        file_path = Path(event.src_path)
+        if not file_path.match(self.file_pattern):
+            return
+        
+        # 防抖检查
+        if not self.monitor.debounce.should_trigger(file_path, "modified"):
+            return
+        
+        change_event = FileChangeEvent(
+            event_type="modified",
+            file_path=file_path,
+            timestamp=time.time()
+        )
+        
+        self.monitor.debounce.mark_triggered(file_path, "modified")
+        asyncio.create_task(self.monitor._dispatch_event(change_event))
+        
+        logger.debug(f"文件修改: {file_path}")
+    
+    def on_deleted(self, event: FileSystemEvent):
+        """文件删除事件"""
+        if event.is_directory:
+            return
+        
+        file_path = Path(event.src_path)
+        if not file_path.match(self.file_pattern):
+            return
+        
+        # 防抖检查
+        if not self.monitor.debounce.should_trigger(file_path, "deleted"):
+            return
+        
+        change_event = FileChangeEvent(
+            event_type="deleted",
+            file_path=file_path,
+            timestamp=time.time()
+        )
+        
+        self.monitor.debounce.mark_triggered(file_path, "deleted")
+        asyncio.create_task(self.monitor._dispatch_event(change_event))
+        
+        logger.debug(f"文件删除: {file_path}")
+```
+
+**架构优势**:
+
+1. **防抖机制**:
+   - 避免频繁触发
+   - 可配置防抖间隔
+   - 自动清理过期记录
+
+2. **异步分发**:
+   - 事件异步处理
+   - 不阻塞监控线程
+   - 支持多个回调
+
+3. **灵活配置**:
+   - 可配置监控目录
+   - 可配置文件模式
+   - 支持递归监控
+
+4. **异常隔离**:
+   - 回调异常不影响监控
+   - 详细的错误日志
+   - 自动恢复
+
+### 10.2 文件监控业务规则
+
+#### 10.2.1 防抖间隔设定规则
+
+**防抖间隔配置**:
+- **创建事件**: 1秒防抖间隔
+- **修改事件**: 1秒防抖间隔
+- **删除事件**: 0.5秒防抖间隔(更敏感)
+
+**防抖触发判断**:
+```python
+# 同一文件同一事件类型,间隔小于防抖时间则跳过
+if (now - last_trigger_time) < debounce_interval:
+    return False  # 跳过此次触发
+```
+
+#### 10.2.2 监控范围规则
+
+**监控目录**:
+- 监控所有数据周期目录(1d/1h/30m/5m)
+- 递归监控子目录
+- 只监控.parquet文件
+
+**排除规则**:
+- 临时文件(.tmp)
+- 隐藏文件(.开头)
+- 非parquet文件
+
+#### 10.2.3 事件响应规则
+
+**文件创建响应**:
+- 触发数据质量扫描
+- 更新缓存索引
+- 发送UI更新事件
+
+**文件修改响应**:
+- 清除L1内存缓存
+- 触发重新验证
+- 更新最后修改时间
+
+**文件删除响应**:
+- 清除所有缓存
+- 更新数据索引
+- 记录删除日志
+
+---
+
 ## 十一、native_iocp集成业务规则
 
 > **架构设计参考**：native_iocp技术架构请参考 [最佳实践文档 - 3. native_iocp深度集成方案](./data_module_vnpy新架构最佳实践cursor版.md#三native_iocp深度集成方案)
