@@ -6750,7 +6750,380 @@ if (now - last_trigger_time) < debounce_interval:
 
 > **架构设计参考**：native_iocp技术架构请参考 [最佳实践文档 - 3. native_iocp深度集成方案](./data_module_vnpy新架构最佳实践cursor版.md#三native_iocp深度集成方案)
 
-### 11.1 三级降级策略
+### 11.1 微观架构设计
+
+#### 11.1.1 I/O策略工厂架构
+
+**设计目标**：
+- 封装三种I/O模式的选择和降级逻辑
+- 提供统一的文件读写接口
+- 支持运行时动态切换I/O策略
+- 记录性能监控指标
+
+**核心类设计**：
+
+```python
+from abc import ABC, abstractmethod
+from typing import Optional, Union, Any
+from pathlib import Path
+import asyncio
+import time
+import pandas as pd
+from dataclasses import dataclass
+
+@dataclass
+class IOPerformanceMetrics:
+    """I/O性能指标"""
+    io_mode: str  # "native_iocp" / "aiofiles" / "sync"
+    file_size_mb: float
+    elapsed_time: float
+    throughput_mbps: float
+    latency_ms: float
+    success: bool
+    error_msg: Optional[str] = None
+
+
+class IOStrategy(ABC):
+    """文件I/O策略抽象基类"""
+    
+    @abstractmethod
+    async def read_file(self, file_path: Path) -> bytes:
+        """异步读取文件
+        
+        Args:
+            file_path: 文件路径
+            
+        Returns:
+            文件内容字节
+        """
+        pass
+    
+    @abstractmethod
+    async def write_file(self, file_path: Path, data: bytes) -> None:
+        """异步写入文件
+        
+        Args:
+            file_path: 文件路径
+            data: 要写入的数据
+        """
+        pass
+    
+    @abstractmethod
+    def get_strategy_name(self) -> str:
+        """获取策略名称"""
+        pass
+
+
+class NativeIOCPStrategy(IOStrategy):
+    """native_iocp真异步I/O策略（Level 1）"""
+    
+    def __init__(self):
+        # 尝试导入native_iocp
+        try:
+            from backend.infrastructure.native_iocp import compat_aopen
+            self.compat_aopen = compat_aopen
+            self.available = True
+            logger.info("✅ native_iocp策略初始化成功")
+        except ImportError as e:
+            self.compat_aopen = None
+            self.available = False
+            logger.warning(f"⚠️ native_iocp不可用: {e}")
+    
+    async def read_file(self, file_path: Path) -> bytes:
+        """IOCP异步读取"""
+        if not self.available:
+            raise RuntimeError("native_iocp不可用")
+        
+        async with await self.compat_aopen(file_path, 'rb') as f:
+            data = await f.read()
+        return data
+    
+    async def write_file(self, file_path: Path, data: bytes) -> None:
+        """IOCP异步写入"""
+        if not self.available:
+            raise RuntimeError("native_iocp不可用")
+        
+        async with await self.compat_aopen(file_path, 'wb') as f:
+            await f.write(data)
+    
+    def get_strategy_name(self) -> str:
+        return "native_iocp"
+
+
+class SyncIOStrategy(IOStrategy):
+    """同步I/O策略（Level 3，最终降级）"""
+    
+    async def read_file(self, file_path: Path) -> bytes:
+        """在executor中执行同步读取"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None, 
+            lambda: file_path.read_bytes()
+        )
+    
+    async def write_file(self, file_path: Path, data: bytes) -> None:
+        """在executor中执行同步写入"""
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            None, 
+            lambda: file_path.write_bytes(data)
+        )
+    
+    def get_strategy_name(self) -> str:
+        return "sync"
+
+
+class IOStrategyFactory:
+    """I/O策略工厂
+    
+    负责创建、管理、切换I/O策略
+    """
+    
+    def __init__(self):
+        # 初始化所有策略
+        self._strategies = {
+            "native_iocp": NativeIOCPStrategy(),
+            "sync": SyncIOStrategy()
+        }
+        
+        # 选择默认策略
+        self._current_strategy = self._select_default_strategy()
+        
+        # 性能监控
+        self._metrics_history = []
+        self._strategy_usage_count = {
+            "native_iocp": 0,
+            "sync": 0
+        }
+        
+        logger.info(
+            f"🚀 I/O策略工厂初始化完成，默认策略: {self._current_strategy.get_strategy_name()}"
+        )
+    
+    def _select_default_strategy(self) -> IOStrategy:
+        """选择默认策略"""
+        # 优先选择native_iocp
+        if self._strategies["native_iocp"].available:
+            return self._strategies["native_iocp"]
+        # 降级到同步I/O
+        return self._strategies["sync"]
+    
+    async def read_parquet_async(self, file_path: Union[str, Path]) -> pd.DataFrame:
+        """异步读取Parquet文件（带性能监控）
+        
+        Returns:
+            DataFrame
+        """
+        file_path = Path(file_path)
+        start_time = time.time()
+        file_size_mb = file_path.stat().st_size / (1024 * 1024)
+        
+        try:
+            # 尝试当前策略
+            data = await self._current_strategy.read_file(file_path)
+            
+            # 解析Parquet
+            import pyarrow.parquet as pq
+            from io import BytesIO
+            table = pq.read_table(BytesIO(data))
+            df = table.to_pandas()
+            
+            # 记录成功指标
+            metrics = self._record_metrics(
+                io_mode=self._current_strategy.get_strategy_name(),
+                file_size_mb=file_size_mb,
+                start_time=start_time,
+                success=True
+            )
+            
+            logger.debug(
+                f"📁 读取Parquet: {file_path.name}, "
+                f"{file_size_mb:.2f} MB, {metrics.elapsed_time:.3f}s, "
+                f"{metrics.throughput_mbps:.2f} MB/s, 模式={metrics.io_mode}"
+            )
+            
+            return df
+            
+        except Exception as e:
+            # 记录失败指标
+            self._record_metrics(
+                io_mode=self._current_strategy.get_strategy_name(),
+                file_size_mb=file_size_mb,
+                start_time=start_time,
+                success=False,
+                error_msg=str(e)
+            )
+            
+            # 尝试降级
+            fallback_strategy = self._strategies["sync"]
+            if fallback_strategy != self._current_strategy:
+                logger.warning(
+                    f"⚠️ {self._current_strategy.get_strategy_name()}读取失败，"
+                    f"降级到{fallback_strategy.get_strategy_name()}: {e}"
+                )
+                
+                # 使用降级策略重试
+                data = await fallback_strategy.read_file(file_path)
+                import pyarrow.parquet as pq
+                from io import BytesIO
+                table = pq.read_table(BytesIO(data))
+                return table.to_pandas()
+            else:
+                raise
+    
+    async def write_parquet_async(
+        self, 
+        file_path: Union[str, Path], 
+        df: pd.DataFrame
+    ) -> bool:
+        """异步写入Parquet文件（带性能监控）
+        
+        Returns:
+            bool: 成功/失败
+        """
+        file_path = Path(file_path)
+        start_time = time.time()
+        
+        try:
+            # 先序列化到内存
+            from io import BytesIO
+            buffer = BytesIO()
+            df.to_parquet(buffer, engine='pyarrow', compression='snappy')
+            data = buffer.getvalue()
+            
+            file_size_mb = len(data) / (1024 * 1024)
+            
+            # 异步写入
+            await self._current_strategy.write_file(file_path, data)
+            
+            # 记录成功指标
+            metrics = self._record_metrics(
+                io_mode=self._current_strategy.get_strategy_name(),
+                file_size_mb=file_size_mb,
+                start_time=start_time,
+                success=True
+            )
+            
+            logger.debug(
+                f"💾 写入Parquet: {file_path.name}, "
+                f"{file_size_mb:.2f} MB, {metrics.elapsed_time:.3f}s, "
+                f"{metrics.throughput_mbps:.2f} MB/s, 模式={metrics.io_mode}"
+            )
+            
+            return True
+            
+        except Exception as e:
+            # 记录失败指标
+            self._record_metrics(
+                io_mode=self._current_strategy.get_strategy_name(),
+                file_size_mb=0,
+                start_time=start_time,
+                success=False,
+                error_msg=str(e)
+            )
+            
+            # 尝试降级
+            fallback_strategy = self._strategies["sync"]
+            if fallback_strategy != self._current_strategy:
+                logger.warning(
+                    f"⚠️ {self._current_strategy.get_strategy_name()}写入失败，"
+                    f"降级到{fallback_strategy.get_strategy_name()}: {e}"
+                )
+                
+                # 使用降级策略重试
+                await fallback_strategy.write_file(file_path, data)
+                return True
+            else:
+                logger.error(f"❌ 写入Parquet失败: {e}", exc_info=True)
+                return False
+    
+    def _record_metrics(
+        self,
+        io_mode: str,
+        file_size_mb: float,
+        start_time: float,
+        success: bool,
+        error_msg: Optional[str] = None
+    ) -> IOPerformanceMetrics:
+        """记录性能指标"""
+        elapsed_time = time.time() - start_time
+        throughput = file_size_mb / elapsed_time if elapsed_time > 0 else 0
+        latency_ms = elapsed_time * 1000
+        
+        metrics = IOPerformanceMetrics(
+            io_mode=io_mode,
+            file_size_mb=file_size_mb,
+            elapsed_time=elapsed_time,
+            throughput_mbps=throughput,
+            latency_ms=latency_ms,
+            success=success,
+            error_msg=error_msg
+        )
+        
+        # 记录历史指标
+        self._metrics_history.append(metrics)
+        
+        # 统计使用次数
+        if success:
+            self._strategy_usage_count[io_mode] += 1
+        
+        return metrics
+    
+    def get_performance_report(self) -> Dict[str, Any]:
+        """生成性能报告"""
+        if not self._metrics_history:
+            return {"total_operations": 0}
+        
+        total = len(self._metrics_history)
+        success_count = sum(1 for m in self._metrics_history if m.success)
+        
+        # 按模式统计
+        by_mode = {}
+        for mode in ["native_iocp", "sync"]:
+            mode_metrics = [m for m in self._metrics_history if m.io_mode == mode]
+            if mode_metrics:
+                avg_throughput = sum(m.throughput_mbps for m in mode_metrics) / len(mode_metrics)
+                avg_latency = sum(m.latency_ms for m in mode_metrics) / len(mode_metrics)
+                by_mode[mode] = {
+                    "count": len(mode_metrics),
+                    "avg_throughput_mbps": avg_throughput,
+                    "avg_latency_ms": avg_latency
+                }
+        
+        return {
+            "total_operations": total,
+            "success_count": success_count,
+            "success_rate": (success_count / total) * 100 if total > 0 else 0,
+            "by_mode": by_mode,
+            "current_strategy": self._current_strategy.get_strategy_name()
+        }
+```
+
+**架构优势**：
+
+1. **策略模式**：
+   - 封装多种I/O策略
+   - 运行时动态切换
+   - 扩展性强
+
+2. **自动降级**：
+   - native_iocp失败→同步I/O
+   - 透明切换，不影响上层
+   - 详细的降级日志
+
+3. **性能监控**：
+   - 自动记录各项指标
+   - 支持按模式统计
+   - 生成性能报告
+
+4. **统一接口**：
+   - 屏蔽底层策略差异
+   - 简化上层调用
+   - 便于维护
+
+---
+
+### 11.2 三级降级策略
 
 **降级层次设计**：
 
@@ -7134,7 +7507,253 @@ async def _scan_symbol_quality_async(
 
 > **架构设计参考**：日志系统架构请参考 [统一日志系统文档](../system_vnpy/系统监控完整集成指南.md)
 
-### 12.1 LogHub统一路由接入流程
+### 12.1 微观架构设计
+
+#### 12.1.1 子进程日志配置管理器架构
+
+**设计目标**：
+- 统一管理所有子进程的日志配置
+- 确保子进程日志正确接入LogHub
+- 支持降级机制，保障日志输出
+- 自动清理继承的handler
+
+**核心类设计**：
+
+```python
+import logging
+import threading
+from typing import Optional, Dict, List
+from dataclasses import dataclass
+from enum import Enum
+
+class SubprocessLogLevel(Enum):
+    """子进程日志级别"""
+    DEBUG = "DEBUG"
+    INFO = "INFO"
+    WARNING = "WARNING"
+    ERROR = "ERROR"
+    CRITICAL = "CRITICAL"
+
+
+@dataclass
+class SubprocessLogConfig:
+    """子进程日志配置"""
+    worker_id: int
+    task_type: str  # "worker"/"quality_scan"/"ipo"/"finance"
+    logger_name: str
+    level: SubprocessLogLevel = SubprocessLogLevel.DEBUG
+    
+
+class SubprocessLogConfigManager:
+    """子进程日志配置管理器
+    
+    统一管理所有子进程的日志配置，提供标准化的配置接口
+    """
+    
+    _instance = None
+    _lock = threading.Lock()
+    
+    def __new__(cls):
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+        return cls._instance
+    
+    def __init__(self):
+        if not hasattr(self, '_initialized'):
+            self._configs: Dict[str, SubprocessLogConfig] = {}
+            self._loghub_available = True
+            self._initialized = True
+    
+    def configure_subprocess_logging(
+        self,
+        worker_id: int,
+        task_type: str = "worker"
+    ) -> logging.Logger:
+        """配置子进程日志系统，接入LogHub统一路由
+        
+        四步配置流程：
+        1. 获取LogHub实例
+        2. 清理继承的handler
+        3. 添加LogHub到root logger
+        4. 创建子进程专用logger
+        
+        Args:
+            worker_id: 子进程ID
+            task_type: 任务类型
+            
+        Returns:
+            配置好的logger实例
+        """
+        import sys
+        
+        try:
+            # Step 1: 获取LogHub实例
+            from backend.infrastructure.system_vnpy.unified_log_system import get_logging_hub
+            hub = get_logging_hub()
+            
+            # Step 2: 清理子进程继承的所有handler（避免重复输出）
+            root_logger = logging.getLogger()
+            cleared_count = self._clear_inherited_handlers(root_logger)
+            
+            # Step 3: 将LogHub添加到root logger
+            root_logger.addHandler(hub)
+            root_logger.setLevel(logging.DEBUG)
+            
+            # Step 4: 创建子进程专用logger（带worker_id标识）
+            logger_name = f"subprocess.{task_type}.{worker_id}"
+            subprocess_logger = logging.getLogger(logger_name)
+            subprocess_logger.propagate = True  # 让日志传播到root logger
+            
+            # 记录配置
+            config = SubprocessLogConfig(
+                worker_id=worker_id,
+                task_type=task_type,
+                logger_name=logger_name,
+                level=SubprocessLogLevel.DEBUG
+            )
+            self._configs[logger_name] = config
+            
+            subprocess_logger.info(
+                f"✅ 子进程 {worker_id} ({task_type}) 日志系统已接入LogHub "
+                f"(清理{cleared_count}个handler)"
+            )
+            
+            return subprocess_logger
+            
+        except Exception as e:
+            # 降级：如果LogHub配置失败，使用标准logger
+            self._loghub_available = False
+            fallback_logger = self._create_fallback_logger(worker_id, task_type)
+            fallback_logger.warning(
+                f"⚠️ 子进程 {worker_id} ({task_type}) LogHub配置失败，使用降级日志: {e}"
+            )
+            return fallback_logger
+    
+    def _clear_inherited_handlers(self, root_logger: logging.Logger) -> int:
+        """清理继承的handler
+        
+        Args:
+            root_logger: root logger实例
+            
+        Returns:
+            清理的handler数量
+        """
+        cleared_count = 0
+        
+        # 遍历所有handler（使用切片复制，避免遍历时修改）
+        for handler in root_logger.handlers[:]:
+            try:
+                # 介root logger移除handler
+                root_logger.removeHandler(handler)
+                
+                # 关闭handler，释放资源
+                # - FileHandler: 关闭文件句柄
+                # - StreamHandler: 刷新缓冲区
+                # - SocketHandler: 关闭网络连接
+                handler.close()
+                
+                cleared_count += 1
+            except Exception as e:
+                # 忽略清理异常，继续清理其他handler
+                pass
+        
+        return cleared_count
+    
+    def _create_fallback_logger(
+        self,
+        worker_id: int,
+        task_type: str
+    ) -> logging.Logger:
+        """创建降级logger（LogHub不可用时）
+        
+        Args:
+            worker_id: 子进程ID
+            task_type: 任务类型
+            
+        Returns:
+            降级logger
+        """
+        logger_name = f"subprocess.{task_type}.{worker_id}.fallback"
+        fallback_logger = logging.getLogger(logger_name)
+        
+        # 配置基本的StreamHandler
+        if not fallback_logger.handlers:
+            handler = logging.StreamHandler()
+            formatter = logging.Formatter(
+                '%(asctime)s [%(levelname)s] [Worker-%(name)s] %(message)s'
+            )
+            handler.setFormatter(formatter)
+            fallback_logger.addHandler(handler)
+            fallback_logger.setLevel(logging.DEBUG)
+        
+        return fallback_logger
+    
+    def get_config(self, logger_name: str) -> Optional[SubprocessLogConfig]:
+        """获取指定logger的配置"""
+        return self._configs.get(logger_name)
+    
+    def get_all_configs(self) -> Dict[str, SubprocessLogConfig]:
+        """获取所有配置"""
+        return dict(self._configs)
+    
+    def is_loghub_available(self) -> bool:
+        """检查LogHub是否可用"""
+        return self._loghub_available
+
+
+# 全局实例
+def get_subprocess_log_config_manager() -> SubprocessLogConfigManager:
+    """获取全局子进程日志配置管理器"""
+    return SubprocessLogConfigManager()
+
+
+# 便捷函数
+def configure_subprocess_logging(
+    worker_id: int,
+    task_type: str = "worker"
+) -> logging.Logger:
+    """配置子进程日志（便捷函数）
+    
+    封装细节，提供简单的接口
+    
+    Args:
+        worker_id: 子进程ID
+        task_type: 任务类型 (worker/quality_scan/ipo/finance等)
+        
+    Returns:
+        配置好的logger
+    """
+    manager = get_subprocess_log_config_manager()
+    return manager.configure_subprocess_logging(worker_id, task_type)
+```
+
+**架构优势**：
+
+1. **统一管理**：
+   - 单例模式，全局统一配置
+   - 集中管理所有子进程配置
+   - 便于监控和调试
+
+2. **自动清理**：
+   - 自动清理继承的handler
+   - 避免日志重复输出
+   - 正确释放资源
+
+3. **降级机制**：
+   - LogHub不可用时自动降级
+   - 保障日志输出
+   - 详细的降级日志
+
+4. **标准化命名**：
+   - 统一的logger命名格式
+   - 支持多种任务类型
+   - 便于LogHub路由
+
+---
+
+### 12.2 LogHub统一路由接入流程
 
 #### 12.1.1 四步接入流程
 
@@ -7481,7 +8100,273 @@ except Exception as e:
 
 > **架构设计参考**：背压控制架构请参考 [最佳实践文档 - 2.2 data_acquisition.py](./data_module_vnpy新架构最佳实践cursor版.md#22-data_acquisitionpy---数据获取模块)
 
-### 13.1 队列跳过统计机制
+### 13.1 微观架构设计
+
+#### 13.1.1 队列监控器架构
+
+**设计目标**：
+- 统一管理所有队列的积压监控
+- 分级告警，及时发现系统瓶颈
+- 支持统计数据查询和复位
+- 线程安全，支持并发访问
+
+**核心类设计**：
+
+```python
+import threading
+from typing import Dict, Optional, Tuple
+from dataclasses import dataclass, field
+import time
+import logging
+
+@dataclass
+class QueueSkipStats:
+    """队列跳过统计"""
+    queue_name: str
+    worker_id: Optional[int]
+    skip_count: int = 0
+    last_warning: int = 0  # 上次告警时的skip_count值
+    first_skip_time: Optional[float] = None
+    last_skip_time: Optional[float] = None
+    
+    @property
+    def stats_key(self) -> str:
+        """生成统计key"""
+        if self.worker_id is not None:
+            return f"{self.queue_name}_{self.worker_id}"
+        return self.queue_name
+    
+    @property
+    def skip_duration(self) -> float:
+        """跳过持续时间（秒）"""
+        if self.first_skip_time is None or self.last_skip_time is None:
+            return 0.0
+        return self.last_skip_time - self.first_skip_time
+
+
+class QueuePressureMonitor:
+    """队列压力监控器
+    
+    统一管理所有队列的积压监控，分级告警，统计数据收集
+    """
+    
+    # 告警阈值
+    WARNING_THRESHOLD_1 = 3      # 前3次每次告警
+    WARNING_THRESHOLD_10 = 10    # 第10次起每10次告警
+    ERROR_THRESHOLD_100 = 100    # 第100次严重告警
+    ERROR_THRESHOLD_500 = 500    # 第500次起每500次告警
+    
+    def __init__(self):
+        self._stats: Dict[str, QueueSkipStats] = {}
+        self._lock = threading.Lock()
+        self._logger = logging.getLogger("backend.data_module.queue")
+        self._alert_logger = logging.getLogger("backend.data_module.alert")
+    
+    def record_skip(
+        self,
+        queue_name: str,
+        worker_id: Optional[int] = None,
+        timeout: float = 1.0,
+        error_type: str = "Full"
+    ) -> int:
+        """记录队列跳过事件
+        
+        Args:
+            queue_name: 队列名称
+            worker_id: Worker ID
+            timeout: 超时时间
+            error_type: 异常类型
+            
+        Returns:
+            当前累计跳过次数
+        """
+        with self._lock:
+            # 生成stats_key
+            stats_key = self._make_stats_key(queue_name, worker_id)
+            
+            # 初始化或更新统计
+            if stats_key not in self._stats:
+                self._stats[stats_key] = QueueSkipStats(
+                    queue_name=queue_name,
+                    worker_id=worker_id,
+                    skip_count=0,
+                    last_warning=0,
+                    first_skip_time=time.time()
+                )
+            
+            stats = self._stats[stats_key]
+            stats.skip_count += 1
+            stats.last_skip_time = time.time()
+            skip_count = stats.skip_count
+            
+            # 分级告警
+            self._trigger_alert(stats, timeout, error_type)
+            
+            return skip_count
+    
+    def _trigger_alert(
+        self,
+        stats: QueueSkipStats,
+        timeout: float,
+        error_type: str
+    ):
+        """触发分级告警
+        
+        Args:
+            stats: 统计数据
+            timeout: 超时时间
+            error_type: 异常类型
+        """
+        skip_count = stats.skip_count
+        
+        # 前3次：每次都记录WARNING
+        if skip_count <= self.WARNING_THRESHOLD_1:
+            self._logger.warning(
+                f"⚠️ 队列入队失败（{error_type}）: "
+                f"队列={stats.queue_name}, Worker={stats.worker_id}, "
+                f"累计跳过={skip_count}次, 超时={timeout}s"
+            )
+            stats.last_warning = skip_count
+        
+        # 第10次起：每10次记录一次WARNING
+        elif skip_count >= self.WARNING_THRESHOLD_10 and skip_count % 10 == 1:
+            self._logger.warning(
+                f"⚠️ 队列入队失败（{error_type}）: "
+                f"队列={stats.queue_name}, Worker={stats.worker_id}, "
+                f"累计跳过={skip_count}次, 超时={timeout}s"
+            )
+            stats.last_warning = skip_count
+        
+        # 第100次：记录ERROR级别严重告警
+        if skip_count == self.ERROR_THRESHOLD_100:
+            self._alert_logger.error(
+                f"🔥 队列严重积压告警: "
+                f"队列={stats.queue_name}, Worker={stats.worker_id}, "
+                f"累计跳过={skip_count}次，消费者可能过慢！"
+            )
+        
+        # 第500次起：每500次记录一次ERROR
+        elif skip_count >= self.ERROR_THRESHOLD_500 and skip_count % 500 == 0:
+            self._alert_logger.error(
+                f"🔥 队列严重积压告警: "
+                f"队列={stats.queue_name}, Worker={stats.worker_id}, "
+                f"累计跳过={skip_count}次，消费者可能过慢！"
+            )
+    
+    def _make_stats_key(self, queue_name: str, worker_id: Optional[int]) -> str:
+        """生成统计key"""
+        if worker_id is not None:
+            return f"{queue_name}_{worker_id}"
+        return queue_name
+    
+    def get_stats(self, queue_name: str, worker_id: Optional[int] = None) -> Optional[QueueSkipStats]:
+        """获取指定队列的统计数据"""
+        stats_key = self._make_stats_key(queue_name, worker_id)
+        with self._lock:
+            return self._stats.get(stats_key)
+    
+    def get_all_stats(self) -> Dict[str, QueueSkipStats]:
+        """获取所有统计数据（用于监控）"""
+        with self._lock:
+            return dict(self._stats)
+    
+    def reset(self):
+        """重置队列跳过统计"""
+        with self._lock:
+            self._stats.clear()
+        self._logger.info("队列跳过统计已重置")
+    
+    def log_summary(self):
+        """输出统计摘要（用于诊断）"""
+        with self._lock:
+            if not self._stats:
+                self._logger.info("无队列跳过统计")
+                return
+            
+            self._logger.info("===== 队列跳过统计 =====")
+            for stats_key, stats in self._stats.items():
+                self._logger.info(
+                    f"  {stats_key}: {stats.skip_count}次跳过 "
+                    f"(持续{stats.skip_duration:.1f}秒)"
+                )
+            self._logger.info("==========================")
+
+
+# 全局实例
+_queue_pressure_monitor = QueuePressureMonitor()
+
+
+def get_queue_pressure_monitor() -> QueuePressureMonitor:
+    """获取全局队列压力监控器"""
+    return _queue_pressure_monitor
+
+
+def safe_put_queue(
+    q,
+    item,
+    timeout: float = 1.0,
+    queue_name: str = "queue",
+    worker_id: Optional[int] = None,
+) -> bool:
+    """安全入队，支持超时阻塞和跳过策略（背压控制）
+    
+    Args:
+        q: 队列对象
+        item: 要入队的数据
+        timeout: 超时时间（秒）
+        queue_name: 队列名称（用于日志）
+        worker_id: Worker ID（用于统计）
+    
+    Returns:
+        bool: True=入队成功, False=入队失败（队列满）
+    """
+    monitor = get_queue_pressure_monitor()
+    
+    try:
+        # 尝试入队（阻塞等待，最多timeout秒）
+        q.put(item, timeout=timeout)
+        return True
+        
+    except Exception as e:
+        # 队列满或其他异常
+        error_type = type(e).__name__
+        
+        # 记录跳过事件（自动触发分级告警）
+        skip_count = monitor.record_skip(
+            queue_name=queue_name,
+            worker_id=worker_id,
+            timeout=timeout,
+            error_type=error_type
+        )
+        
+        return False
+```
+
+**架构优势**：
+
+1. **统一监控**：
+   - 全局统一管理所有队列统计
+   - 支持多队列、多进程监控
+   - 线程安全，支持并发访问
+
+2. **分级告警**：
+   - 前3次每次告警，及时发现问题
+   - 第10次起每10次，减少日志噪音
+   - 第100次严重告警，提示系统瓶颈
+
+3. **数据收集**：
+   - 记录跳过次数、时间、持续时间
+   - 支持按队列、进程查询
+   - 生成统计报告
+
+4. **简化调用**：
+   - `safe_put_queue`封装所有逻辑
+   - 自动监控、自动告警
+   - 上层调用简单
+
+---
+
+### 13.2 队列跳过统计机制
 
 #### 13.1.1 数据结构定义
 
