@@ -1554,7 +1554,7 @@ class ServiceHealthChecker:
             dep_total = len(external_deps)
             dep_score = (dep_health_count / dep_total * 100) if dep_total > 0 else 100
 
-            # 综合健康评分（服务权重70%，依赖权重30%）
+            # 木桶理论健康评分（取最短板）
             service_health_count = sum(1 for r in all_results.values() if r["status"] == "healthy")
             service_total = len(all_results)
             service_score = (service_health_count / service_total * 100) if service_total > 0 else 100

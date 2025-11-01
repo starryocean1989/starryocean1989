@@ -96,8 +96,8 @@ class IntelligentAdaptiveTuner:
         ctx_load = self._norm(ctx, 50000.0)
         intr_load = self._norm(intr, 20000.0)
 
-        # 加权求和
-        return min(1.0, 0.6 * cpu_load + 0.25 * ctx_load + 0.15 * intr_load)
+        # 木桶理论：只看最短的板
+        return min(cpu_load, ctx_load, intr_load)
 
     def _score_memory(self, sys_data: Dict[str, Any]) -> float:
         mem_percent = float(sys_data.get("memory_percent", 0.0))
@@ -106,7 +106,7 @@ class IntelligentAdaptiveTuner:
         swap_in = mem_sub.get("swap_in_kbps")
         swap_out = mem_sub.get("swap_out_kbps")
         swap_load = max(self._norm(swap_in, 256000.0), self._norm(swap_out, 256000.0))  # 250MB/s
-        return min(1.0, 0.8 * mem_load + 0.2 * swap_load)
+        return min(mem_load, swap_load)
 
     def _score_storage(self, sys_data: Dict[str, Any]) -> float:
         st = sys_data.get("storage_subsystem", {}) or {}

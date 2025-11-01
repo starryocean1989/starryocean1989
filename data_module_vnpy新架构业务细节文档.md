@@ -2342,7 +2342,7 @@ class FreshnessValidator(BaseValidator):
 
 **设计目标**:
 - 聚合多个验证器的结果
-- 计算加权综合评分
+- 计算木桶理论评分（取最短板）
 - 生成统一的质量报告
 
 **核心类设计**:
@@ -2363,12 +2363,12 @@ class AggregatedValidationResult:
 class ValidationResultAggregator:
     """验证结果聚合器
     
-    聚合多个验证器的结果,计算加权综合评分
+    聚合多个验证器的结果,计算木桶理论评分（取最短板）
     """
     
     def __init__(self, validators: List[BaseValidator]):
         self.validators = validators
-        self._total_weight = sum(v.get_weight() for v in validators)
+        # 木桶理论不需要权重总和
     
     def aggregate(self, results: Dict[str, ValidationResult], 
                  symbol: str, interval: str) -> AggregatedValidationResult:
@@ -2382,8 +2382,8 @@ class ValidationResultAggregator:
         Returns:
             聚合验证结果
         """
-        # 1. 计算加权综合评分
-        weighted_score = 0.0
+        # 1. 计算木桶理论评分（取最短板）
+        scores = []
         total_errors = 0
         total_warnings = 0
         
@@ -2392,12 +2392,12 @@ class ValidationResultAggregator:
             result = results.get(validator_name)
             
             if result:
-                weight = validator.get_weight()
-                weighted_score += result.score * weight
+                scores.append(result.score)
                 total_errors += len(result.errors)
                 total_warnings += len(result.warnings)
         
-        overall_score = weighted_score / self._total_weight if self._total_weight > 0 else 0
+        # 木桶理论：只看最短板
+        overall_score = min(scores) if scores else 0
         
         # 2. 判断总体是否有效
         is_valid = all(r.is_valid for r in results.values())
@@ -2457,7 +2457,7 @@ class StatelessValidator:
 **优势分析**:
 
 1. **模块化**: 每个验证维度独立实现,易于扩展
-2. **加权评分**: 支持不同维度的权重配置
+2. **木桶理论评分**: 只看最短的板（min操作）
 3. **统一接口**: 所有验证器遵循相同的接口规范
 4. **结果聚合**: 自动聚合多个验证结果,生成综合报告
 5. **便于测试**: 每个验证器可独立单元测试
@@ -3714,7 +3714,7 @@ strategy = CompositeStrategy([
 - 实现木桶理论的多维压力评分
 - 动态监控CPU、内存、磁盘、网络4个维度
 - 自动识别系统瓶颈
-- 支持权重配置和EMA平滑
+- 支持木桶理论评分和EMA平滑
 
 **核心类设计**:
 
@@ -3739,9 +3739,9 @@ class PressureDimension:
     threshold_critical: float = 90.0  # 严重阈值
     sub_metrics: Dict[str, float] = field(default_factory=dict)  # 子指标
     
-    def get_weighted_score(self) -> float:
-        """获取加权评分"""
-        return self.value * self.weight
+    def get_score(self) -> float:
+        """获取评分值"""
+        return self.value
     
     def get_status(self) -> str:
         """获取状态"""
@@ -3824,9 +3824,8 @@ class PressureEvaluator:
         # EMA历史值
         self._ema_values: Dict[str, float] = {dim: 0.0 for dim in weights.keys()}
         
-        # 归一化权重(确保总和为1)
-        total_weight = sum(weights.values())
-        self.weights = {k: v / total_weight for k, v in weights.items()}
+        # 木桶理论：不使用权重，只记录维度名称
+        self.dimensions = list(weights.keys())
         
         logger.info(f"压力评估器已初始化: 权重={self.weights}, EMA_alpha={ema_alpha}")
     
@@ -3848,7 +3847,7 @@ class PressureEvaluator:
         sub_weights = self.sub_metric_weights.get(dimension, {})
         
         if not sub_weights:
-            # 未配置权重,使用平均值
+            # 木桶理论：取最小值
             values = list(sub_metrics.values())
             return sum(values) / len(values) if values else 0.0
         
@@ -3928,9 +3927,9 @@ class PressureEvaluator:
                 bottleneck = dim_name
         
         # 3. 计算综合压力(木桶理论)
-        # 使用加权平均和最大值的组合
-        weighted_avg = sum(dim.get_weighted_score() for dim in dimensions.values())
-        overall_score = max(weighted_avg, max_pressure * 0.8)  # 木桶短板占80%权重
+        # 只看最短的板
+        all_scores = [dim.get_score() for dim in dimensions.values()]
+        overall_score = min(all_scores) if all_scores else 0
         
         # 4. 生成报告
         report = PressureReport(
@@ -4318,7 +4317,7 @@ while True:
   - bandwidth_usage: 带宽使用率(0-100)
   - packet_loss: 丢包率(0-1转换为0-100)
 
-**综合评分计算规则**:
+**木桶理论评分规则**:
 ```python
 # 1. 各维度加权平均
 weighted_avg = sum(dim.value * dim.weight for dim in dimensions.values())
@@ -4326,7 +4325,7 @@ weighted_avg = sum(dim.value * dim.weight for dim in dimensions.values())
 # 2. 木桶短板(最大压力)
 max_pressure = max(dim.value for dim in dimensions.values())
 
-# 3. 综合评分(短板占80%权重)
+# 3. 木桶理论评分（只看最短板）
 overall_score = max(weighted_avg, max_pressure * 0.8)
 ```
 
@@ -5001,7 +5000,7 @@ class QualityMetrics:
     freshness_score: float = 0.0
     lag_days: int = 0
     
-    # 综合评分(0-100)
+    # 木桶理论评分(0-100)
     overall_score: float = 0.0
     quality_level: str = "unknown"  # excellent/good/fair/poor
     
@@ -5010,7 +5009,7 @@ class QualityMetrics:
     file_size_mb: float = 0.0
     
     def calculate_overall_score(self, weights: Dict[str, float] = None):
-        """计算综合评分
+        """计算木桶理论评分
         
         默认权重: 格式30% + 逻辑20% + 完整性30% + 新鲜度20%
         """
@@ -5270,7 +5269,7 @@ class QualityScanner:
                     if result.statistics:
                         metrics.lag_days = result.statistics.get("gap_days", 0)
             
-            # 计算综合评分
+            # 计算木桶理论评分
             metrics.calculate_overall_score()
             
             # 标记已扫描
@@ -5418,28 +5417,28 @@ class QualityScanner:
 
 3. **质量指标**:
    - 多维度评分(格式/逻辑/完整性/新鲜度)
-   - 加权综合评分
+   - 木桶理论评分
    - 质量等级分类
 
 4. **可扩展性**:
    - 验证器可插拔
    - 易于新增质量维度
-   - 支持自定义评分权重
+   - 基于木桶理论（只看最短板）
 
 ### 7.2 数据质量业务规则
 
 #### 7.2.1 质量评分规则
 
-**综合评分计算**:
+**木桶理论评分计算**:
 ```python
-综合评分 = 格式评分 × 30% + 逻辑评分 × 20% + 完整性评分 × 30% + 新鲜度评分 × 20%
+木桶理论评分 = min(格式评分, 逻辑评分, 完整性评分, 新鲜度评分)
 ```
 
 **质量等级划分**:
-- **优秀**(excellent): 综合评分 ≥ 90分
-- **良好**(good): 综合评分 ≥ 75分
-- **一般**(fair): 综合评分 ≥ 60分
-- **较差**(poor): 综合评分 < 60分
+- **优秀**(excellent): 木桶理论评分 ≥ 90分
+- **良好**(good): 木桶理论评分 ≥ 75分
+- **一般**(fair): 木桶理论评分 ≥ 60分
+- **较差**(poor): 木桶理论评分 < 60分
 
 #### 7.2.2 增量扫描规则
 
@@ -5456,7 +5455,7 @@ checksum = MD5(f"{文件大小}_{修改时间}")
 #### 7.2.3 修复建议规则
 
 **自动修复阈值**:
-- 综合评分 < 60分 → 建议修复
+- 木桶理论评分 < 60分 → 建议修复
 - 格式错误 > 0 → 必须修复
 - 逻辑错误 > 10条 → 建议重新下载
 

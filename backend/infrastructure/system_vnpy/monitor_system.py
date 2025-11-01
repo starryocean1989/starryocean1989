@@ -433,13 +433,8 @@ class SystemBottleneckAnalyzer:
         """初始化瓶颈分析器."""
         self.logger = logging.getLogger(__name__)
 
-        # 评分权重配置
-        self.weights = {
-            "cpu": 40,
-            "memory": 30,
-            "disk": 15,
-            "network": 15,
-        }
+        # 木桶理论配置（不使用权重，只看最短板）
+        self.resource_types = ["cpu", "memory", "disk", "network"]
 
         # 严重程度阈值
         self.severity_thresholds = {
@@ -457,7 +452,7 @@ class SystemBottleneckAnalyzer:
 
         Returns:
             {
-                "total_score": 75,  # 综合评分 0-100
+                "total_score": 75,  # 木桶理论评分 0-100
                 "bottleneck_dimension": "disk_io",  # 瓶颈维度
                 "scores": {
                     "cpu": 35,
@@ -797,7 +792,7 @@ class ScenarioAnalyzer:
                 for scenario, keywords in self.scenario_keywords.items():
                     for keyword in keywords:
                         if keyword in proc_name or keyword in proc_type:
-                            # 评分 = 1 + CPU占用权重
+                            # 木桶理论：基于CPU占用
                             scenario_scores[scenario] += 1 + (cpu_percent / 100)
                             break
 

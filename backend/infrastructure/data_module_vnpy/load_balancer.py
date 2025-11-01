@@ -397,14 +397,8 @@ class ResourcePressureEvaluator:
             queue_fill_rate = queue_stats.fill_rate
             queue_score = queue_fill_rate * 100
 
-        # 综合评分（加权求和）
-        pressure_score = (
-            cpu_score * self.cpu_weight
-            + memory_score * self.memory_weight
-            + disk_score * self.disk_weight
-            + network_score * self.network_weight
-            + queue_score * self.queue_weight
-        )
+        # 木桶理论：只看最短的板
+        pressure_score = min(cpu_score, memory_score, disk_score, network_score, queue_score)
 
         # 计算调整系数（0.3-1.6）
         if pressure_score >= 90:
@@ -1568,8 +1562,8 @@ class IntelligentAdaptiveTuner:
         ctx_load = self._norm(ctx, 50000.0)
         intr_load = self._norm(intr, 20000.0)
 
-        # 加权求和
-        return min(1.0, 0.6 * cpu_load + 0.25 * ctx_load + 0.15 * intr_load)
+        # 木桶理论：只看最短的板
+        return min(cpu_load, ctx_load, intr_load)
 
     def _score_memory(self, sys_data: Dict[str, Any]) -> float:
         mem_percent = float(sys_data.get("memory_percent", 0.0))
