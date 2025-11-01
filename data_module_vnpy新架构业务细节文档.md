@@ -25,6 +25,9 @@
 - [八、统一数据查询业务规则](#八统一数据查询业务规则)
 - [九、实时推送业务规则](#九实时推送业务规则)
 - [十、文件监控业务规则](#十文件监控业务规则)
+- [十一、native_iocp集成业务规则](#十一native_iocp集成业务规则)
+- [十二、子进程日志配置业务规则](#十二子进程日志配置业务规则)
+- [十三、背压控制与队列管理业务规则](#十三背压控制与队列管理业务规则)
 
 ---
 
@@ -1290,6 +1293,1066 @@ class DateRangeExceptionHandler:
 **验证状态流转**：空闲 → 扫描 → 验证 → 完成
 **暂停/恢复**：支持验证过程中的暂停和恢复操作
 **进度跟踪**：实时跟踪验证进度和错误统计
+
+---
+
+## 十一、native_iocp集成业务规则
+
+> **架构设计参考**：native_iocp技术架构请参考 [最佳实践文档 - 3. native_iocp深度集成方案](./data_module_vnpy新架构最佳实践cursor版.md#三native_iocp深度集成方案)
+
+### 11.1 三级降级策略
+
+**降级层次设计**：
+
+**Level 1: native_iocp真异步I/O（优先）**
+- **技术实现**：Windows IOCP（I/O Completion Ports）
+- **性能特征**：0延迟，真正的异步I/O，无线程池开销
+- **适用场景**：Windows平台，native_iocp模块可用
+- **触发条件**：`_USE_IOCP == True` 且 `compat_aopen is not None`
+
+**Level 2: aiofiles异步I/O（降级）**
+- **技术实现**：基于线程池的异步I/O模拟
+- **性能特征**：~5ms延迟，线程池模拟异步
+- **适用场景**：Windows平台，但native_iocp不可用
+- **触发条件**：native_iocp导入失败或运行时异常
+
+**Level 3: 同步I/O（最终降级）**
+- **技术实现**：在asyncio executor中执行同步读写
+- **性能特征**：~20ms延迟，阻塞I/O
+- **适用场景**：aiofiles也不可用或发生异常
+- **触发条件**：所有异步方案失败
+
+#### 11.1.1 降级触发条件详细规则
+
+**ImportError降级（模块级别）**：
+```python
+# 在模块加载阶段检测
+try:
+    from backend.infrastructure.native_iocp import compat_aopen
+    _USE_IOCP = True
+except ImportError:
+    compat_aopen = None
+    _USE_IOCP = False
+    # 降级到Level 2或Level 3
+```
+
+**运行时异常降级（函数级别）**：
+```python
+async def _read_parquet_async(file_path: Union[str, Path]) -> pd.DataFrame:
+    try:
+        if _USE_IOCP and compat_aopen is not None:
+            # Level 1: 尝试native_iocp
+            file_obj = await compat_aopen(file_path, 'rb')
+            # ... IOCP读取逻辑
+    except Exception as e:
+        logger.warning(f"native_iocp读取失败，降级到同步读取: {e}")
+        # Level 3: 降级到同步读取（跳过Level 2以简化逻辑）
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, pd.read_parquet, file_path)
+```
+
+**降级判定标准**：
+1. **模块不可用**：`ImportError` → 自动降级到Level 2/3
+2. **文件打开失败**：`compat_aopen()` 异常 → 降级到Level 3
+3. **读取异常**：`file_obj.read()` 异常 → 降级到Level 3
+4. **解析异常**：`pyarrow.parquet.read_table()` 异常 → 降级到Level 3
+
+### 11.2 日志记录规范
+
+#### 11.2.1 降级日志规范
+
+**WARNING级别：记录降级原因**
+```python
+logger.warning(
+    "⚠️ native_iocp读取失败，降级到同步读取: %s",
+    error_message
+)
+```
+
+**记录内容要求**：
+- 原因描述：具体的异常类型和消息
+- 降级目标：明确降级到哪个Level
+- 文件路径：失败的文件路径（DEBUG级别）
+
+**INFO级别：记录实际使用的I/O模式**
+```python
+# 在StorageManager初始化时记录
+if _USE_IOCP:
+    logger.info("✓ 使用native_iocp真异步I/O（Level 1）")
+else:
+    logger.info("⚠️ native_iocp不可用，使用降级方案（Level 2/3）")
+```
+
+**DEBUG级别：记录性能监控数据**
+```python
+logger.debug(
+    "文件读取性能: 文件=%s, 大小=%d MB, 耗时=%.3f秒, 模式=%s",
+    file_path,
+    file_size_mb,
+    elapsed_time,
+    io_mode  # "native_iocp" / "aiofiles" / "sync"
+)
+```
+
+#### 11.2.2 日志输出位置
+
+**AI日志文件**：
+- 所有降级事件必须写入AI日志文件
+- 文件路径：`C:\Users\USER\Desktop\terminal_v0.50\logs\data_storage_{timestamp}.log`
+- 日志格式：包含时间戳、级别图标、模块名、详细消息
+
+**终端日志**：
+- WARNING级别降级日志输出到终端（根据terminal_mode配置）
+- INFO级别初始化日志输出到终端
+- DEBUG级别性能日志仅写入文件，不输出到终端
+
+### 11.3 性能监控指标定义
+
+#### 11.3.1 I/O模式性能基准
+
+| I/O模式 | 延迟 | 吞吐量 | CPU占用 | 适用场景 |
+|---------|------|--------|---------|----------|
+| native_iocp | 0ms | 最高 | 最低 | Windows平台，生产环境 |
+| aiofiles | ~5ms | 中等 | 中等 | 降级场景，兼容性优先 |
+| 同步读取 | ~20ms | 最低 | 最高 | 最终降级，确保功能 |
+
+#### 11.3.2 性能监控指标
+
+**吞吐量指标**：
+- **指标名称**：`io_throughput_mbps`
+- **计算公式**：`file_size_mb / elapsed_time`
+- **单位**：MB/s
+- **记录频率**：每次文件读写操作
+
+**延迟指标**：
+- **指标名称**：`io_latency_ms`
+- **计算公式**：`elapsed_time * 1000`
+- **单位**：毫秒
+- **记录频率**：每次文件读写操作
+
+**模式使用统计**：
+- **指标名称**：`io_mode_usage_count`
+- **记录内容**：`{"native_iocp": count1, "aiofiles": count2, "sync": count3}`
+- **统计周期**：每小时汇总一次
+
+#### 11.3.3 性能监控实现示例
+
+```python
+import time
+from pathlib import Path
+
+async def _read_parquet_async_with_metrics(
+    file_path: Union[str, Path]
+) -> pd.DataFrame:
+    """异步读取Parquet文件（带性能监控）"""
+    start_time = time.time()
+    file_size_mb = Path(file_path).stat().st_size / (1024 * 1024)
+    io_mode = "unknown"
+    
+    try:
+        if _USE_IOCP and compat_aopen is not None:
+            # Level 1: native_iocp
+            io_mode = "native_iocp"
+            file_obj = await compat_aopen(file_path, 'rb')
+            async with file_obj:
+                data = await file_obj.read()
+            
+            import pyarrow.parquet as pq
+            import io
+            table = pq.read_table(io.BytesIO(data))
+            df = table.to_pandas()
+        else:
+            # Level 3: 同步读取
+            io_mode = "sync"
+            loop = asyncio.get_event_loop()
+            df = await loop.run_in_executor(None, pd.read_parquet, file_path)
+        
+        # 计算性能指标
+        elapsed_time = time.time() - start_time
+        throughput = file_size_mb / elapsed_time if elapsed_time > 0 else 0
+        latency_ms = elapsed_time * 1000
+        
+        # 记录性能日志
+        logger.debug(
+            "文件读取性能: 文件=%s, 大小=%.2f MB, "
+            "耗时=%.3f秒, 吞吐量=%.2f MB/s, 延迟=%.2f ms, 模式=%s",
+            file_path, file_size_mb, elapsed_time, 
+            throughput, latency_ms, io_mode
+        )
+        
+        return df
+        
+    except Exception as e:
+        elapsed_time = time.time() - start_time
+        logger.warning(
+            "异步读取Parquet失败，降级到同步读取: %s （耗时: %.3f秒）",
+            e, elapsed_time
+        )
+        # 最终降级
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, pd.read_parquet, file_path)
+```
+
+### 11.4 应用场景详细说明
+
+#### 11.4.1 Parquet文件异步读写
+
+**应用位置**：`data_storage.py` - `StorageManager`
+
+**读取场景**：
+```python
+class StorageManager:
+    async def load_data_async(
+        self,
+        symbol: str,
+        interval: str,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None
+    ) -> Optional[pd.DataFrame]:
+        """异步加载数据（使用native_iocp）"""
+        file_path = self.get_data_path(symbol, interval)
+        
+        if not file_path.exists():
+            return None
+        
+        try:
+            # 🚀 使用native_iocp异步读取
+            from backend.infrastructure.native_iocp import compat_aopen
+            from io import BytesIO
+            
+            async with await compat_aopen(file_path, 'rb') as f:
+                data = await f.read()
+            
+            # 解析Parquet
+            df = pd.read_parquet(BytesIO(data))
+            
+            # 日期过滤
+            if start_date or end_date:
+                df = self._filter_by_date(df, start_date, end_date)
+            
+            return df
+        except Exception as e:
+            logger.error(f"加载数据失败: {e}", exc_info=True)
+            return None
+```
+
+**写入场景**：
+```python
+    async def save_data_async(
+        self,
+        symbol: str,
+        interval: str,
+        df: pd.DataFrame
+    ) -> bool:
+        """异步保存数据（使用native_iocp）"""
+        file_path = self.get_data_path(symbol, interval)
+        
+        try:
+            # 🚀 使用native_iocp异步写入
+            from backend.infrastructure.native_iocp import compat_aopen
+            from io import BytesIO
+            
+            # 先同步到内存
+            buffer = BytesIO()
+            df.to_parquet(buffer, engine='pyarrow', compression='snappy')
+            data = buffer.getvalue()
+            
+            # 异步写入文件
+            async with await compat_aopen(file_path, 'wb') as f:
+                await f.write(data)
+            
+            return True
+        except Exception as e:
+            logger.error(f"保存数据失败: {e}", exc_info=True)
+            return False
+```
+
+#### 11.4.2 缓存文件异步读写
+
+**应用位置**：`data_module.py` - `DailyCacheManager`
+
+**异步保存缓存**：
+```python
+class DailyCacheManager:
+    @staticmethod
+    async def save_with_date_async(data: Any, cache_file: Path) -> bool:
+        """异步保存数据并记录日期（使用native_iocp）"""
+        try:
+            from backend.infrastructure.native_iocp import compat_aopen
+            import json
+            
+            # 构建缓存对象
+            cache_obj = {
+                "cache_date": DailyCacheManager.get_today(),
+                "data": data
+            }
+            
+            # 序列化为JSON
+            json_data = json.dumps(
+                cache_obj, 
+                ensure_ascii=False, 
+                indent=2, 
+                default=str
+            )
+            
+            # 🚀 使用native_iocp异步写入
+            async with await compat_aopen(cache_file, 'w', encoding='utf-8') as f:
+                await f.write(json_data)
+            
+            logger.debug("缓存已保存: %s (日期: %s)", cache_file, cache_obj["cache_date"])
+            return True
+            
+        except Exception as e:
+            logger.error("保存缓存失败 (%s): %s", cache_file, e, exc_info=True)
+            return False
+```
+
+**异步加载缓存**：
+```python
+    @staticmethod
+    async def load_with_validation_async(
+        cache_file: Path
+    ) -> Tuple[Optional[Any], Optional[str], bool]:
+        """异步加载数据并验证日期（使用native_iocp）"""
+        try:
+            if not cache_file.exists():
+                return None, None, False
+            
+            from backend.infrastructure.native_iocp import compat_aopen
+            import json
+            
+            # 🚀 使用native_iocp异步读取
+            async with await compat_aopen(cache_file, 'r', encoding='utf-8') as f:
+                content = await f.read()
+            
+            if not content.strip():
+                logger.warning("缓存文件为空: %s", cache_file)
+                return None, None, False
+            
+            cache_obj = json.loads(content)
+            data = cache_obj.get("data")
+            cache_date = cache_obj.get("cache_date")
+            
+            # 验证日期
+            is_valid = DailyCacheManager.is_cache_valid(cache_date)
+            
+            return data, cache_date, is_valid
+            
+        except Exception as e:
+            logger.error("加载缓存失败: %s", e, exc_info=True)
+            return None, None, False
+```
+
+#### 11.4.3 质量扫描文件异步读取
+
+**应用位置**：`data_quality.py` - `DataSensor`
+
+```python
+async def _scan_symbol_quality_async(
+    symbol: str, 
+    intervals: List[str], 
+    data_dir: str
+) -> Optional[dict]:
+    """异步扫描单个品种的质量（使用native_iocp）"""
+    try:
+        quality_dict = {"symbol": symbol, "intervals": {}}
+        
+        for interval in intervals:
+            file_path = Path(data_dir) / interval / f"{symbol}.parquet"
+            
+            if not file_path.exists():
+                quality_dict["intervals"][interval] = {"missing": True}
+                continue
+            
+            # 🚀 使用native_iocp异步读取
+            df = await _read_parquet_async(file_path)
+            
+            # 执行质量检查
+            quality_result = validate_data_quality(df)
+            quality_dict["intervals"][interval] = quality_result
+        
+        return quality_dict
+        
+    except Exception as e:
+        logger.error(f"异步扫描品种 {symbol} 失败: {e}")
+        return None
+```
+
+---
+
+## 十二、子进程日志配置业务规则
+
+> **架构设计参考**：日志系统架构请参考 [统一日志系统文档](../system_vnpy/系统监控完整集成指南.md)
+
+### 12.1 LogHub统一路由接入流程
+
+#### 12.1.1 四步接入流程
+
+**Step 1: 获取LogHub实例**
+```python
+from backend.infrastructure.system_vnpy.unified_log_system import get_logging_hub
+
+hub = get_logging_hub()
+```
+
+**功能说明**：
+- 获取全局单例LogHub实例
+- LogHub负责统一路由所有日志消息
+- 支持3层路由架构（模块→阶段→全局）
+
+**Step 2: 清理继承的handler**
+```python
+root_logger = logging.getLogger()
+for handler in root_logger.handlers[:]:
+    root_logger.removeHandler(handler)
+    handler.close()
+```
+
+**功能说明**：
+- 子进程会继承父进程的所有handler
+- 必须清理旧handler，否则日志重复输出
+- `handler.close()`确保资源释放
+
+**Step 3: 添加LogHub到root logger**
+```python
+root_logger.addHandler(hub)
+root_logger.setLevel(logging.DEBUG)
+```
+
+**功能说明**：
+- 将LogHub作为唯一的handler添加到root logger
+- 设置DEBUG级别确保捕获所有日志
+- 通过LogHub的路由规则控制实际输出
+
+**Step 4: 创建子进程专用logger**
+```python
+logger_name = f"subprocess.{task_type}.{worker_id}"
+subprocess_logger = logging.getLogger(logger_name)
+subprocess_logger.propagate = True
+```
+
+**功能说明**：
+- 使用标准化命名格式标识子进程
+- `propagate=True`让日志传播到root logger
+- root logger的LogHub会处理所有传播的日志
+
+#### 12.1.2 完整配置函数实现
+
+```python
+def _configure_subprocess_logging(
+    worker_id: int, 
+    task_type: str = "worker"
+):
+    """配置子进程日志系统，接入LogHub统一路由
+    
+    Args:
+        worker_id: 子进程ID
+        task_type: 任务类型（worker/quality_scan/ipo/finance等）
+    
+    Returns:
+        配置好的logger实例
+    """
+    import logging
+    import sys
+    
+    try:
+        # Step 1: 获取LogHub实例
+        from backend.infrastructure.system_vnpy.unified_log_system import get_logging_hub
+        hub = get_logging_hub()
+        
+        # Step 2: 清理子进程继承的所有handler（避免重复输出）
+        root_logger = logging.getLogger()
+        for handler in root_logger.handlers[:]:
+            root_logger.removeHandler(handler)
+            handler.close()
+        
+        # Step 3: 将LogHub添加到root logger
+        root_logger.addHandler(hub)
+        root_logger.setLevel(logging.DEBUG)
+        
+        # Step 4: 创建子进程专用logger（带worker_id标识）
+        logger_name = f"subprocess.{task_type}.{worker_id}"
+        subprocess_logger = logging.getLogger(logger_name)
+        subprocess_logger.propagate = True  # 让日志传播到root logger
+        
+        subprocess_logger.info(f"✅ 子进程 {worker_id} 日志系统已接入LogHub")
+        return subprocess_logger
+        
+    except Exception as e:
+        # 降级：如果LogHub配置失败，使用标准logger
+        fallback_logger = logging.getLogger(__name__)
+        fallback_logger.warning(
+            f"⚠️ 子进程 {worker_id} LogHub配置失败，使用降级日志: {e}"
+        )
+        return fallback_logger
+```
+
+### 12.2 子进程日志命名规范
+
+#### 12.2.1 命名格式标准
+
+**格式定义**：`subprocess.{task_type}.{worker_id}`
+
+**命名组成部分**：
+1. **前缀**：`subprocess` - 标识这是子进程日志
+2. **任务类型**：`{task_type}` - 标识任务的业务类型
+3. **进程ID**：`{worker_id}` - 唯一标识具体的worker进程
+
+#### 12.2.2 任务类型枚举
+
+| task_type | 说明 | 应用场景 |
+|-----------|------|----------|
+| `worker` | K线下载进程 | 多进程+协程K线下载 |
+| `quality_scan` | 质量扫描进程 | 多进程并发数据质量扫描 |
+| `ipo` | IPO下载进程 | 批量IPO日期下载 |
+| `finance` | 财务数据下载进程 | 批量财务数据下载 |
+| `server_test` | 服务器测速进程 | 服务器池并发测速 |
+| `tdx_read` | TDX本地读取进程 | 批量读取通达信本地文件 |
+
+#### 12.2.3 命名示例
+
+```python
+# K线下载进程 Worker 0
+logger_name = "subprocess.worker.0"
+
+# K线下载进程 Worker 15
+logger_name = "subprocess.worker.15"
+
+# 质量扫描进程 Worker 2
+logger_name = "subprocess.quality_scan.2"
+
+# IPO下载进程 Worker 5
+logger_name = "subprocess.ipo.5"
+
+# 服务器测速进程 Worker 1
+logger_name = "subprocess.server_test.1"
+```
+
+### 12.3 Handler清理机制
+
+#### 12.3.1 清理原因详解
+
+**问题背景**：
+- Python的`multiprocessing`模块在创建子进程时会复制父进程的完整状态
+- 父进程的所有logger和handler都会被继承到子进程
+- 如果不清理，日志会同时被父进程和子进程的handler处理
+- 导致日志重复输出、文件冲突、性能下降
+
+**清理目标**：
+1. 移除所有继承的FileHandler（避免文件写入冲突）
+2. 移除所有继承的StreamHandler（避免终端重复输出）
+3. 移除所有继承的LogHub handler（避免双重路由）
+
+#### 12.3.2 清理实现详解
+
+```python
+# 获取root logger
+root_logger = logging.getLogger()
+
+# 遍历所有handler（使用切片复制，避免遍历时修改）
+for handler in root_logger.handlers[:]:
+    # 从root logger移除handler
+    root_logger.removeHandler(handler)
+    
+    # 关闭handler，释放资源
+    # - FileHandler: 关闭文件句柄
+    # - StreamHandler: 刷新缓冲区
+    # - SocketHandler: 关闭网络连接
+    handler.close()
+```
+
+**关键点说明**：
+1. **使用切片复制**：`handlers[:]` 创建列表副本，避免迭代时修改
+2. **先移除后关闭**：确保handler不再处理新日志后再关闭
+3. **必须close()**：释放文件句柄、网络连接等资源
+
+#### 12.3.3 清理影响范围
+
+**影响范围**：
+- 仅影响当前子进程的logger配置
+- 不影响父进程的logger配置
+- 不影响其他子进程的logger配置
+
+**清理后的状态**：
+- root logger的handlers列表为空
+- 所有旧handler资源已释放
+- 准备添加新的LogHub handler
+
+### 12.4 日志传播机制
+
+#### 12.4.1 传播链路设计
+
+```
+子进程专用logger (subprocess.worker.0)
+    ↓ propagate=True
+root logger
+    ↓ handlers=[LogHub]
+LogHub (统一路由)
+    ↓ 3层路由规则
+    ├─ Layer 3: 模块规则 (subprocess.worker.*)
+    ├─ Layer 2: 阶段规则 (downloading)
+    └─ Layer 1: 全局规则 (兜底)
+    ↓
+    ├─ AI日志文件 (完整日志)
+    ├─ 终端输出 (过滤后)
+    └─ 系统日志文件
+```
+
+#### 12.4.2 propagate属性详解
+
+**propagate=True（默认值，必须显式设置）**：
+- 子进程logger产生的日志会传播到父logger
+- 最终传播到root logger
+- root logger的LogHub会处理所有传播的日志
+
+**propagate=False（禁止传播，谨慎使用）**：
+- 日志不会传播到父logger
+- 必须为该logger添加独立的handler
+- 通常不建议在子进程中使用
+
+#### 12.4.3 日志级别设置规范
+
+**root logger级别**：
+```python
+root_logger.setLevel(logging.DEBUG)
+```
+- 必须设置为DEBUG级别
+- 确保所有级别的日志都能传递到LogHub
+- LogHub通过路由规则控制实际输出
+
+**子进程logger级别**：
+```python
+subprocess_logger = logging.getLogger(f"subprocess.{task_type}.{worker_id}")
+# 不设置level，继承root logger的DEBUG级别
+```
+- 通常不单独设置level
+- 继承root logger的DEBUG级别
+- 通过LogHub路由规则控制输出
+
+### 12.5 应用场景示例
+
+#### 12.5.1 K线下载进程日志配置
+
+```python
+def _run_kline_download_worker(*args):
+    """K线下载worker进程入口函数"""
+    import warnings
+    
+    # 抑制ResourceWarning
+    warnings.filterwarnings(
+        "ignore", 
+        category=ResourceWarning, 
+        message=".*socket.*"
+    )
+    
+    # 配置子进程日志
+    logger = _configure_subprocess_logging(
+        worker_id=args[0],  # 第一个参数是worker_id
+        task_type="worker"
+    )
+    
+    # 运行异步事件循环
+    asyncio.run(_kline_download_worker_async(*args))
+```
+
+#### 12.5.2 质量扫描进程日志配置
+
+```python
+def _run_quality_scan_worker(*args):
+    """质量扫描worker进程入口函数"""
+    import warnings
+    
+    # 抑制ResourceWarning
+    warnings.filterwarnings(
+        "ignore", 
+        category=ResourceWarning, 
+        message=".*socket.*"
+    )
+    
+    # 配置子进程日志
+    logger = _configure_subprocess_logging(
+        worker_id=args[0],
+        task_type="quality_scan"
+    )
+    
+    # 运行异步事件循环
+    asyncio.run(_quality_scan_worker_async(*args))
+```
+
+#### 12.5.3 IPO下载进程日志配置
+
+```python
+def _run_ipo_download_worker(*args):
+    """IPO下载worker进程入口函数"""
+    # 配置子进程日志
+    logger = _configure_subprocess_logging(
+        worker_id=args[0],
+        task_type="ipo"
+    )
+    
+    # 运行异步事件循环
+    asyncio.run(_ipo_download_worker_async(*args))
+```
+
+### 12.6 降级机制
+
+#### 12.6.1 LogHub不可用时的降级
+
+```python
+try:
+    from backend.infrastructure.system_vnpy.unified_log_system import get_logging_hub
+    hub = get_logging_hub()
+    # ... 正常配置流程
+except Exception as e:
+    # 降级：使用标准logger
+    fallback_logger = logging.getLogger(__name__)
+    fallback_logger.warning(
+        f"⚠️ 子进程 {worker_id} LogHub配置失败，使用降级日志: {e}"
+    )
+    return fallback_logger
+```
+
+**降级行为**：
+- 使用Python标准logging配置
+- 日志输出到stderr
+- 不支持AI日志文件
+- 不支持3层路由规则
+
+#### 12.6.2 降级日志记录要求
+
+- 必须记录降级原因
+- 使用WARNING级别
+- 包含worker_id信息
+- 包含异常详细信息
+
+---
+
+## 十三、背压控制与队列管理业务规则
+
+> **架构设计参考**：背压控制架构请参考 [最佳实践文档 - 2.2 data_acquisition.py](./data_module_vnpy新架构最佳实践cursor版.md#22-data_acquisitionpy---数据获取模块)
+
+### 13.1 队列跳过统计机制
+
+#### 13.1.1 数据结构定义
+
+**全局统计字典**：
+```python
+_queue_skip_stats = {
+    "{queue_name}_{worker_id}": {
+        "skip_count": int,      # 累计跳过次数
+        "last_warning": int,    # 上次告警的skip_count值
+    }
+}
+```
+
+**线程安全锁**：
+```python
+_queue_skip_lock = threading.Lock()
+```
+
+**示例数据**：
+```python
+{
+    "result_queue_0": {
+        "skip_count": 156,
+        "last_warning": 150
+    },
+    "progress_queue_3": {
+        "skip_count": 23,
+        "last_warning": 20
+    }
+}
+```
+
+#### 13.1.2 分级告警规则
+
+**前3次：每次都记录WARNING**
+```python
+if skip_count <= 3:
+    logger.warning(
+        f"⚠️ 队列入队失败（{error_type}）: "
+        f"队列={queue_name}, Worker={worker_id}, "
+        f"累计跳过={skip_count}次, 超时={timeout}s"
+    )
+```
+
+**第10次起：每10次记录一次WARNING**
+```python
+if skip_count % 10 == 1:
+    logger.warning(
+        f"⚠️ 队列入队失败（{error_type}）: "
+        f"队列={queue_name}, Worker={worker_id}, "
+        f"累计跳过={skip_count}次, 超时={timeout}s"
+    )
+```
+
+**第100次：记录ERROR级别严重告警**
+```python
+if skip_count == 100:
+    logger_alert.error(
+        f"🔥 队列严重积压告警: "
+        f"队列={queue_name}, Worker={worker_id}, "
+        f"累计跳过={skip_count}次，消费者可能过慢！"
+    )
+```
+
+**第500次起：每500次记录一次ERROR**
+```python
+if skip_count % 500 == 0:
+    logger_alert.error(
+        f"🔥 队列严重积压告警: "
+        f"队列={queue_name}, Worker={worker_id}, "
+        f"累计跳过={skip_count}次，消费者可能过慢！"
+    )
+```
+
+#### 13.1.3 统计复位机制
+
+**复位时机**：
+1. 下载任务完成时调用`_reset_queue_skip_stats()`
+2. 质量扫描完成时复位统计
+3. IPO下载完成时复位统计
+
+**复位实现**：
+```python
+def _reset_queue_skip_stats():
+    """重置队列跳过统计"""
+    with _queue_skip_lock:
+        _queue_skip_stats.clear()
+```
+
+**复位日志**：
+```python
+logger.info("队列跳过统计已重置")
+```
+
+#### 13.1.4 统计查询接口
+
+```python
+def _get_queue_skip_stats() -> Dict[str, Dict[str, int]]:
+    """获取队列跳过统计（用于监控）
+    
+    Returns:
+        统计字典的副本
+    """
+    with _queue_skip_lock:
+        return dict(_queue_skip_stats)
+```
+
+**使用示例**：
+```python
+# 在下载完成后查询统计
+stats = _get_queue_skip_stats()
+for queue_key, queue_stats in stats.items():
+    logger.info(
+        f"队列 {queue_key} 跳过统计: {queue_stats['skip_count']}次"
+    )
+```
+
+### 13.2 安全入队函数实现
+
+#### 13.2.1 函数签名
+
+```python
+def _safe_put_queue(
+    q,
+    item,
+    timeout: float = 1.0,
+    queue_name: str = "queue",
+    worker_id: Optional[int] = None,
+) -> bool:
+    """安全入队，支持超时阻塞和跳过策略（背压控制）
+    
+    Args:
+        q: 队列对象
+        item: 要入队的数据
+        timeout: 超时时间（秒）
+        queue_name: 队列名称（用于日志）
+        worker_id: Worker ID（用于统计）
+    
+    Returns:
+        bool: True=入队成功, False=入队失败（队列满）
+    """
+```
+
+#### 13.2.2 设计原理
+
+**1. 阻塞等待（有超时）**：
+- 队列满时等待timeout秒
+- 而非立即失败或无限等待
+- 给消费者一定的处理时间
+
+**2. 超时跳过**：
+- 超时后记录警告并丢弃任务
+- 避免生产者阻塞影响其他任务
+- 通过统计监控队列积压情况
+
+**3. 统计监控**：
+- 记录跳过次数，触发告警
+- 帮助发现系统瓶颈
+- 支持动态调整策略
+
+#### 13.2.3 完整实现
+
+```python
+def _safe_put_queue(
+    q,
+    item,
+    timeout: float = 1.0,
+    queue_name: str = "queue",
+    worker_id: Optional[int] = None,
+) -> bool:
+    """安全入队，支持超时阻塞和跳过策略（背压控制）"""
+    import logging
+    
+    logger = logging.getLogger("backend.data_module.download")
+    logger_alert = logging.getLogger("backend.data_module.alert")
+    
+    try:
+        # 尝试入队（阻塞等待，最多timeout秒）
+        q.put(item, timeout=timeout)
+        return True
+        
+    except Exception as e:
+        # 队列满或其他异常
+        error_type = type(e).__name__
+        
+        # 统计跳过次数（线程安全）
+        stats_key = (
+            f"{queue_name}_{worker_id}" 
+            if worker_id is not None 
+            else queue_name
+        )
+        
+        with _queue_skip_lock:
+            if stats_key not in _queue_skip_stats:
+                _queue_skip_stats[stats_key] = {
+                    "skip_count": 0, 
+                    "last_warning": 0
+                }
+            
+            _queue_skip_stats[stats_key]["skip_count"] += 1
+            skip_count = _queue_skip_stats[stats_key]["skip_count"]
+            
+            # 分级告警
+            if skip_count % 10 == 1 or skip_count <= 3:
+                logger.warning(
+                    f"⚠️ 队列入队失败（{error_type}）: "
+                    f"队列={queue_name}, Worker={worker_id}, "
+                    f"累计跳过={skip_count}次, 超时={timeout}s"
+                )
+                _queue_skip_stats[stats_key]["last_warning"] = skip_count
+            
+            # 严重告警
+            if skip_count == 100 or skip_count % 500 == 0:
+                logger_alert.error(
+                    f"🔥 队列严重积压告警: "
+                    f"队列={queue_name}, Worker={worker_id}, "
+                    f"累计跳过={skip_count}次，消费者可能过慢！"
+                )
+        
+        return False
+```
+
+### 13.3 应用场景
+
+#### 13.3.1 下载结果队列背压控制
+
+```python
+# 在K线下载worker中应用
+async def kline_download_worker(worker_id, task_queue, result_queue, ...):
+    while True:
+        # 获取任务
+        symbol, interval = await get_task_from_queue(task_queue)
+        
+        # 下载数据
+        data = await download_kline(symbol, interval)
+        
+        # 🆕 背压控制：使用_safe_put_queue代替原来的无限等待
+        success = await asyncio.to_thread(
+            _safe_put_queue,
+            result_queue,
+            (symbol, interval, data),
+            timeout=1.0,
+            queue_name="result_queue",
+            worker_id=worker_id,
+        )
+        
+        if success:
+            await asyncio.to_thread(progress_queue.put, (symbol, interval, "success"))
+        else:
+            # 队列满，跳过该任务
+            await asyncio.to_thread(progress_queue.put, (symbol, interval, "skipped"))
+```
+
+#### 13.3.2 进度队列背压控制
+
+```python
+# 在质量扫描worker中应用
+async def quality_scan_worker(worker_id, task_queue, result_queue, progress_queue, ...):
+    while True:
+        # 获取任务
+        symbol = await get_task_from_queue(task_queue)
+        
+        # 扫描质量
+        quality_dict = await scan_symbol_quality(symbol)
+        
+        # 上报进度（带背压控制）
+        success = await asyncio.to_thread(
+            _safe_put_queue,
+            progress_queue,
+            (symbol, "success"),
+            timeout=0.5,  # 进度队列超时更短
+            queue_name="progress_queue",
+            worker_id=worker_id,
+        )
+        
+        if not success:
+            logger.debug(f"进度上报失败，跳过: {symbol}")
+```
+
+### 13.4 监控与诊断
+
+#### 13.4.1 实时监控
+
+```python
+# 在主进程中定期查询统计
+def monitor_queue_pressure():
+    """监控队列压力"""
+    stats = _get_queue_skip_stats()
+    
+    for queue_key, queue_stats in stats.items():
+        skip_count = queue_stats["skip_count"]
+        
+        if skip_count > 100:
+            logger_alert.warning(
+                f"⚠️ 队列 {queue_key} 积压严重: {skip_count}次跳过"
+            )
+        elif skip_count > 10:
+            logger.info(
+                f"ℹ️ 队列 {queue_key} 有轻微积压: {skip_count}次跳过"
+            )
+```
+
+#### 13.4.2 任务完成后诊断
+
+```python
+# 在下载任务完成后输出诊断信息
+def log_queue_statistics():
+    """输出队列统计信息（用于诊断）"""
+    stats = _get_queue_skip_stats()
+    
+    if stats:
+        logger.info("===== 队列跳过统计 =====")
+        for queue_key, queue_stats in stats.items():
+            logger.info(
+                f"  {queue_key}: {queue_stats['skip_count']}次跳过"
+            )
+        logger.info("==========================")
+    
+    # 重置统计
+    _reset_queue_skip_stats()
+```
 
 ---
 
