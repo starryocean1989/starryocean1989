@@ -24,6 +24,7 @@ import logging
 import psutil
 import threading
 import time
+from collections import deque
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -39,6 +40,184 @@ from .core_engine import ConfigManager, DailyCacheManager
 
 # ==================== 日志配置 ====================
 logger = logging.getLogger("backend.data_module.loadbalancer")
+
+
+# ==============================================================================
+# Part 0: 任务类型系统（v3.1新增）
+# ==============================================================================
+
+
+class TaskCategory(str, Enum):
+    """任务类别（轻量级枚举）"""
+    NETWORK_DOWNLOAD = "network_download"    # K线下载（网络I/O密集）
+    LOCAL_SCAN = "local_scan"                # 本地数据扫描（磁盘I/O密集）
+    LOCAL_READ = "local_read"                # TDX数据读取（磁盘I/O密集）
+
+
+@dataclass
+class TaskConfig:
+    """任务配置（简化版TaskMetrics）"""
+    name: str                    # 任务名称
+    category: TaskCategory       # 任务类别
+    total_count: int             # 任务总数
+    
+    # 资源特征
+    is_io_intensive: bool = True
+    is_cpu_intensive: bool = False
+    is_memory_intensive: bool = False
+    
+    # 预估资源
+    estimated_memory_mb: float = 100.0
+    estimated_duration_sec: float = 60.0
+
+
+@dataclass
+class QueueMetrics:
+    """队列指标（观察磁盘I/O的关键指标）"""
+    queue_name: str
+    current_size: int          # 当前队列大小
+    max_size: int              # 最大队列容量
+    fill_rate: float           # 填充率（0-1）
+    
+    # 背压相关指标
+    enqueue_lag_ms: float = 0.0      # 入队延迟（毫秒）
+    dequeue_lag_ms: float = 0.0      # 出队延迟（毫秒）
+    avg_task_time_ms: float = 0.0    # 平均任务耗时（毫秒）
+    
+    # 告警阈值
+    HIGH_FILL_RATE = 0.8       # 80%填充率告警
+    CRITICAL_FILL_RATE = 0.95  # 95%填充率严重告警
+
+
+class QueuePressureMonitor:
+    """队列压力监控器（轻量级）
+    
+    专注于磁盘I/O观察，作为木桶理论第四板：
+    - 通过队列积压反映磁盘I/O瓶颈
+    - 提供调整系数用于动态并发控制
+    """
+    
+    def __init__(self):
+        """初始化队列压力监控器"""
+        self._metrics_history = deque(maxlen=60)  # 保留60秒历史
+    
+    def record_metrics(self, metrics: QueueMetrics) -> None:
+        """记录队列指标
+        
+        Args:
+            metrics: 队列指标
+        """
+        self._metrics_history.append(metrics)
+    
+    def get_pressure_level(self) -> str:
+        """获取压力等级
+        
+        Returns:
+            压力等级：normal/medium/high/critical
+        """
+        if not self._metrics_history:
+            return "normal"
+        
+        latest = self._metrics_history[-1]
+        
+        if latest.fill_rate >= QueueMetrics.CRITICAL_FILL_RATE:
+            return "critical"
+        elif latest.fill_rate >= QueueMetrics.HIGH_FILL_RATE:
+            return "high"
+        elif latest.fill_rate >= 0.6:
+            return "medium"
+        else:
+            return "normal"
+    
+    def get_adjustment_factor(self) -> float:
+        """获取调整系数（用于动态调整并发）
+        
+        Returns:
+            调整系数（0.5-1.0）
+        """
+        pressure = self.get_pressure_level()
+        
+        # 根据压力等级返回调整系数
+        if pressure == "critical":
+            return 0.5  # 严重积压，减半
+        elif pressure == "high":
+            return 0.7  # 高压，减少30%
+        elif pressure == "medium":
+            return 0.9  # 中压，减少10%
+        else:
+            return 1.0  # 正常，不调整
+
+
+class TaskStrategyRegistry:
+    """任务策略注册表
+    
+    为不同任务类型提供基准配置和资源权重：
+    - 网络下载：网络I/O密集
+    - 本地扫描：磁盘I/O密集，大量小文件
+    - 本地读取：磁盘I/O密集，需要CPU解码
+    """
+    
+    _strategies: Dict[TaskCategory, Dict[str, Any]] = {
+        # K线下载：网络I/O密集
+        TaskCategory.NETWORK_DOWNLOAD: {
+            "base_processes": 4,
+            "base_coroutines_per_process": 40,
+            "max_processes": 8,
+            "max_coroutines_per_process": 50,
+            "resource_weights": {
+                "cpu": 0.2,
+                "memory": 0.3,
+                "disk_io": 0.1,
+                "network_io": 0.4,  # 网络I/O权重最高
+            },
+            "description": "网络下载任务（K线、IPO日期）",
+        },
+        
+        # 本地数据扫描：磁盘I/O密集
+        TaskCategory.LOCAL_SCAN: {
+            "base_processes": 8,
+            "base_coroutines_per_process": 2000,  # 协程数高（大量小文件）
+            "max_processes": 16,
+            "max_coroutines_per_process": 3000,
+            "resource_weights": {
+                "cpu": 0.2,
+                "memory": 0.2,
+                "disk_io": 0.5,  # 磁盘I/O权重最高
+                "network_io": 0.1,
+            },
+            "description": "本地数据扫描（质量检查）",
+        },
+        
+        # TDX数据读取：磁盘I/O密集
+        TaskCategory.LOCAL_READ: {
+            "base_processes": 4,
+            "base_coroutines_per_process": 1000,
+            "max_processes": 8,
+            "max_coroutines_per_process": 1500,
+            "resource_weights": {
+                "cpu": 0.3,  # TDX解码需要CPU
+                "memory": 0.2,
+                "disk_io": 0.4,  # 磁盘I/O权重高
+                "network_io": 0.1,
+            },
+            "description": "TDX本地文件读取",
+        },
+    }
+    
+    @classmethod
+    def get_strategy(cls, category: TaskCategory) -> Dict[str, Any]:
+        """获取任务策略
+        
+        Args:
+            category: 任务类别
+            
+        Returns:
+            策略配置字典
+        """
+        return cls._strategies.get(
+            category, 
+            cls._strategies[TaskCategory.NETWORK_DOWNLOAD]
+        )
 
 
 # ==============================================================================
@@ -414,12 +593,14 @@ def _test_single_server(ip: str, port: int) -> Tuple[float, bool]:
 
 
 class LoadBalancer:
-    """负载均衡器
+    """负载均衡器 v3.1
     
     智能负载均衡，核心特性：
     - 木桶理论：只看最短的那块板
     - 动态并发调整（0.3x-1.6x缩放）
     - 智能防抖机制（1秒/3秒）
+    - 任务类型区分（v3.1新增）
+    - 队列压力监控（v3.1新增）
     """
     
     def __init__(self, config_manager: Optional[ConfigManager] = None):
@@ -433,19 +614,35 @@ class LoadBalancer:
         self.config_calculator = DynamicConfigCalculator(self.resource_monitor)
         self.server_pool = ServerPoolManager(config_manager)
         
+        # v3.1新增：队列压力监控器
+        self.queue_monitor = QueuePressureMonitor()
+        
+        # v3.1新增：任务策略注册表
+        self.task_strategies = TaskStrategyRegistry()
+        
         # 防抖控制
         self._last_adjustment_time = 0
         self._adjustment_history = []  # 记录最近的调整模式
         self._base_interval = 1.0  # 基础调整间隔（秒）
         self._pattern_interval = 3.0  # 特定模式调整间隔（秒）
         
-        logger.info("✅ 负载均衡器已初始化")
+        # 缓存配置
+        self._last_config = {}
+        
+        logger.info("✅ 负载均衡器已初始化 (v3.1 - 支持任务类型和队列压力)")
     
-    def get_optimal_config(self, task_type: str = "download") -> Dict[str, Any]:
+    def get_optimal_config(
+        self, 
+        task: Optional[TaskConfig] = None,
+        task_type: str = "download",
+        queue_metrics: Optional[QueueMetrics] = None
+    ) -> Dict[str, Any]:
         """获取最优配置（带防抖）
         
         Args:
-            task_type: 任务类型
+            task: 任务配置（v3.1新增，为空时兼容旧API）
+            task_type: 任务类型字符串（向后兼容）
+            queue_metrics: 队列指标（v3.1新增）
             
         Returns:
             最优配置
@@ -458,12 +655,114 @@ class LoadBalancer:
             # 未达到调整间隔，使用缓存配置
             return self._get_cached_config()
         
-        # 计算新配置
-        config = self.config_calculator.calculate(task_type)
+        # v3.1: 支持任务类型和队列压力
+        if task is not None:
+            # 新API：使用TaskConfig
+            config = self._calculate_with_task_config(task, queue_metrics)
+        else:
+            # 旧API：兼容性支持
+            config = self.config_calculator.calculate(task_type)
         
         # 更新调整历史
         self._update_adjustment_history(config)
         self._last_adjustment_time = current_time
+        
+        return config
+    
+    def _calculate_with_task_config(
+        self,
+        task: TaskConfig,
+        queue_metrics: Optional[QueueMetrics] = None
+    ) -> Dict[str, Any]:
+        """基于任务配置计算最优配置（v3.1新增）
+        
+        Args:
+            task: 任务配置
+            queue_metrics: 队列指标
+            
+        Returns:
+            最优配置
+        """
+        # 1. 资源监控（木桶理论）
+        resource_metrics = self.resource_monitor.get_metrics()
+        
+        # 2. 队列压力监控
+        if queue_metrics:
+            self.queue_monitor.record_metrics(queue_metrics)
+            queue_pressure_factor = self.queue_monitor.get_adjustment_factor()
+            pressure_level = self.queue_monitor.get_pressure_level()
+        else:
+            queue_pressure_factor = 1.0
+            pressure_level = "normal"
+        
+        # 3. 获取任务策略
+        strategy = self.task_strategies.get_strategy(task.category)
+        
+        # 4. 计算基准配置（基于资源指标调整）
+        bottleneck_value = getattr(
+            resource_metrics, 
+            f"{resource_metrics.bottleneck.lower()}_percent", 
+            50.0
+        )
+        
+        # 瓶颈资源使用率越高，缩放因子越小
+        if bottleneck_value > 80:
+            resource_scale = 0.3
+        elif bottleneck_value > 60:
+            resource_scale = 0.6
+        elif bottleneck_value > 40:
+            resource_scale = 1.0
+        else:
+            resource_scale = 1.6
+        
+        # 5. 应用资源缩放
+        processes = max(
+            1, 
+            int(strategy["base_processes"] * resource_scale)
+        )
+        coroutines_per_process = max(
+            10, 
+            int(strategy["base_coroutines_per_process"] * resource_scale)
+        )
+        
+        # 6. 应用队列压力调整
+        processes = max(1, int(processes * queue_pressure_factor))
+        coroutines_per_process = max(
+            10, 
+            int(coroutines_per_process * queue_pressure_factor)
+        )
+        
+        # 7. 构建配置
+        config = {
+            "processes": min(processes, strategy["max_processes"]),
+            "coroutines_per_process": min(
+                coroutines_per_process, 
+                strategy["max_coroutines_per_process"]
+            ),
+            "max_workers": min(processes, strategy["max_processes"]),  # 兼容旧API
+            "coroutines_per_worker": min(
+                coroutines_per_process, 
+                strategy["max_coroutines_per_process"]
+            ),  # 兼容旧API
+            
+            # 诊断信息
+            "task_category": task.category.value,
+            "resource_bottleneck": resource_metrics.bottleneck,
+            "resource_scale": resource_scale,
+            "queue_pressure_level": pressure_level,
+            "queue_pressure_factor": queue_pressure_factor,
+            "pressure_score": int(
+                (1 - queue_pressure_factor) * 100
+            ),  # 0-100压力评分
+        }
+        
+        logger.debug(
+            f"动态配置 [{task.name}]: 进程={config['processes']}, "
+            f"协程={config['coroutines_per_process']}, "
+            f"瓶颈={resource_metrics.bottleneck}({bottleneck_value:.1f}%), "
+            f"队列压力={pressure_level}, "
+            f"压力评分={config['pressure_score']}/100"
+        )
         
         return config
     
@@ -509,11 +808,15 @@ class LoadBalancer:
         Args:
             config: 新配置
         """
-        # 简化：只记录workers的变化趋势
-        if hasattr(self, '_last_config'):
-            if config['max_workers'] > self._last_config.get('max_workers', 0):
+        # 简化：只记录workers/processes的变化趋势
+        if hasattr(self, '_last_config') and self._last_config:
+            # 兼容新旧API
+            current_workers = config.get('processes', config.get('max_workers', 0))
+            last_workers = self._last_config.get('processes', self._last_config.get('max_workers', 0))
+            
+            if current_workers > last_workers:
                 self._adjustment_history.append("increase")
-            elif config['max_workers'] < self._last_config.get('max_workers', 999):
+            elif current_workers < last_workers:
                 self._adjustment_history.append("decrease")
             else:
                 self._adjustment_history.append("stable")
@@ -560,6 +863,12 @@ class LoadBalancer:
 # ==============================================================================
 
 __all__ = [
+    # 任务类型系统 (v3.1)
+    "TaskCategory",
+    "TaskConfig",
+    "QueueMetrics",
+    "QueuePressureMonitor",
+    "TaskStrategyRegistry",
     # 资源监控
     "ResourceMetrics",
     "ResourceMonitor",

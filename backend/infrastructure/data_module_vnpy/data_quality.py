@@ -199,8 +199,8 @@ class DataSensor:
         symbols: List[str],
         intervals: List[str] = None,
         use_async: bool = True,
-        max_workers: int = 4,
-        max_concurrent: int = 100,
+        max_workers: int = None,  # v3.1：改为可选，由LoadBalancer决定
+        max_concurrent: int = None,  # v3.1：改为可选，由LoadBalancer决定
     ) -> Dict[Tuple[str, str], QualityScanResult]:
         """扫描数据质量（主入口）
         
@@ -208,8 +208,8 @@ class DataSensor:
             symbols: 品种代码列表
             intervals: 周期列表，默认 ["1d", "5m", "1m"]
             use_async: 是否使用异步扫描
-            max_workers: 最大进程数
-            max_concurrent: 最大并发数
+            max_workers: 最大进程数（v3.1：由LoadBalancer决定）
+            max_concurrent: 最大并发数（v3.1：由LoadBalancer决定）
             
         Returns:
             扫描结果字典 {(symbol, interval): QualityScanResult}
@@ -224,10 +224,18 @@ class DataSensor:
         try:
             intervals = intervals or ["1d", "5m", "1m"]
             
+            # v3.1：使用LoadBalancer获取最优配置
+            if max_workers is None or max_concurrent is None:
+                optimal_config = self._get_optimal_config_from_lb(
+                    total_tasks=len(symbols) * len(intervals)
+                )
+                max_workers = max_workers or optimal_config.get("processes", 4)
+                max_concurrent = max_concurrent or optimal_config.get("coroutines_per_process", 100)
+            
             logger.info(
                 f"🔍 开始数据质量扫描: "
                 f"品种数={len(symbols)}, 周期={intervals}, "
-                f"异步模式={use_async}, 最大并发={max_concurrent}"
+                f"异步模式={use_async}, 进程数={max_workers}, 最大并发={max_concurrent}"
             )
             
             if use_async:
@@ -253,6 +261,45 @@ class DataSensor:
         finally:
             with self._scan_lock:
                 self._scanning = False
+    
+    def _get_optimal_config_from_lb(self, total_tasks: int) -> Dict[str, Any]:
+        """从 LoadBalancer 获取最优配置（v3.1新增）
+        
+        Args:
+            total_tasks: 总任务数
+            
+        Returns:
+            最优配置
+        """
+        try:
+            from .load_balancer import LoadBalancer, TaskConfig, TaskCategory
+            
+            # 创建任务配置
+            task = TaskConfig(
+                name="quality_scan",
+                category=TaskCategory.LOCAL_SCAN,
+                total_count=total_tasks,
+                is_io_intensive=True,
+                is_cpu_intensive=False,
+                estimated_memory_mb=500.0,
+                estimated_duration_sec=total_tasks * 0.1,
+            )
+            
+            # 获取LoadBalancer最优配置
+            lb = LoadBalancer()
+            config = lb.get_optimal_config(task=task, queue_metrics=None)
+            
+            logger.debug(
+                f"📊 LoadBalancer配置: 进程={config.get('processes')}, "
+                f"协程={config.get('coroutines_per_process')}, "
+                f"瓶颈={config.get('resource_bottleneck')}, "
+                f"压力评分={config.get('pressure_score', 0)}/100"
+            )
+            
+            return config
+        except Exception as e:
+            logger.warning(f"⚠️ 获取LoadBalancer配置失败，使用默认值: {e}")
+            return {"processes": 4, "coroutines_per_process": 100}
     
     def _scan_async(
         self,
