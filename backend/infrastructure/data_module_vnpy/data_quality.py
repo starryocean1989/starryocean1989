@@ -40,6 +40,14 @@ from .data_module import config_manager
 # 导入网络时间同步模块
 from .data_module import get_real_date
 
+# 🚀 原生IOCP异步文件I/O：优先使用Windows IOCP，自动降级到aiofiles
+try:
+    from backend.infrastructure.native_iocp import compat_aopen
+    _USE_IOCP = True
+except ImportError:
+    compat_aopen = None
+    _USE_IOCP = False
+
 # ==================== 日志配置 ====================
 # 创建专用logger（模块级别）
 logger = logging.getLogger("backend.data_module.quality")
@@ -65,6 +73,40 @@ from .load_balancer import (
 # 🆕 背压控制：队列跳过统计（进程级别）
 _queue_skip_stats = {}
 _queue_skip_lock = threading.Lock()
+
+
+# 🚀 异步Parquet读取器（使用native_iocp真异步）
+async def _read_parquet_async(file_path: Union[str, Path]) -> pd.DataFrame:
+    """
+    异步读取Parquet文件，优先使用native_iocp（Windows IOCP），自动降级到同步读取
+
+    Args:
+        file_path: Parquet文件路径
+
+    Returns:
+        pd.DataFrame: 读取的DataFrame
+    """
+    try:
+        if _USE_IOCP and compat_aopen is not None:
+            # 使用native_iocp异步读取（真异步，无线程池）
+            file_obj = await compat_aopen(file_path, 'rb')
+            async with file_obj:
+                data = await file_obj.read()
+
+            # 使用pyarrow解析Parquet数据
+            import pyarrow.parquet as pq
+            import io
+            table = pq.read_table(io.BytesIO(data))
+            return table.to_pandas()
+        else:
+            # 降级到同步读取（在executor中执行）
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, pd.read_parquet, file_path)
+    except Exception as e:
+        logger.warning(f"异步读取Parquet失败，降级到同步读取: {e}")
+        # 最终降级到同步
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, pd.read_parquet, file_path)
 
 
 def _safe_put_queue(
@@ -1220,6 +1262,70 @@ class StorageManager:
 
         except Exception as e:
             self.logger.error("查询数据失败: %s %s, %s", symbol, interval, e)
+            return None
+
+    async def query_kline_async(
+        self,
+        symbol: str,
+        interval: str,
+        start_date: Optional[Union[str, date]] = None,
+        end_date: Optional[Union[str, date]] = None,
+    ) -> Optional[pd.DataFrame]:
+        """
+        异步查询K线数据（使用native_iocp真异步）
+
+        Args:
+            symbol: 品种代码
+            interval: K线周期
+            start_date: 开始日期
+            end_date: 结束日期
+
+        Returns:
+            Optional[pd.DataFrame]: 查询结果；当文件不存在或读取失败时返回 None
+        """
+        try:
+            file_path = self.data_dir / symbol / interval / "data.parquet"
+
+            if not file_path.exists():
+                self.logger.debug("数据文件不存在: %s", file_path)
+                return None
+
+            # 🚀 使用异步读取（native_iocp真异步）
+            df = await _read_parquet_async(file_path)
+
+            if df.empty:
+                return df
+
+            # 确保 datetime 列存在且无重复（优化：直接处理，减少检查）
+            if "datetime" in df.columns and len(df) > 0:
+                # 快速去重：直接排序和去重，不检查
+                df = df.sort_values("datetime")
+                df = df.drop_duplicates(subset=["datetime"], keep="last")
+                df = df.reset_index(drop=True)
+
+            # 过滤日期
+            if start_date is not None:
+                if isinstance(start_date, str):
+                    start_date = pd.to_datetime(start_date).date()  # type: ignore
+                if "datetime" in df.columns:
+                    df = df[df["datetime"] >= pd.Timestamp(start_date)]  # type: ignore
+                else:
+                    df = df[df.index >= pd.Timestamp(start_date)]  # type: ignore
+
+            if end_date is not None:
+                if isinstance(end_date, str):
+                    end_date = pd.to_datetime(end_date).date()  # type: ignore
+                if "datetime" in df.columns:
+                    df = df[df["datetime"] <= pd.Timestamp(end_date)]  # type: ignore
+                else:
+                    df = df[df.index <= pd.Timestamp(end_date)]  # type: ignore
+
+            # 优化：减少日志输出
+            # 确保返回类型为 DataFrame
+            return df if isinstance(df, pd.DataFrame) else None
+
+        except Exception as e:
+            self.logger.error("异步查询数据失败: %s %s, %s", symbol, interval, e)
             return None
 
     def query_kline_batch(
@@ -4835,7 +4941,7 @@ class DataSensor:
                     if quality_dict:
                         results_dict[symbol] = quality_dict
                         self.logger.debug(f"收到结果: {symbol}")
-                        
+
                         # 📈 背压监控: 检查队列填充率
                         queue_size = result_queue.qsize()
                         if queue_size > 8000:  # 80%填充率告警

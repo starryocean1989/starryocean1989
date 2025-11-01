@@ -296,7 +296,7 @@ class AsyncSmartIPPool:
   - `AsyncTdxMinuteReader` - 分钟线(.lc1)
   - `AsyncTdxLc5Reader` - 5分钟线(.lc5)
   - `AsyncTdxBlockReader` - 板块文件(.dat)
-- **完全异步**: 使用 `aiofiles` 异步文件读取
+- **完全异步**: 使用 `native_iocp` 真异步文件I/O（Windows IOCP，自动降级到aiofiles）
 - **自动解析**: 二进制格式自动转换为DataFrame
 - **零依赖**: 不需要运行通达信客户端
 

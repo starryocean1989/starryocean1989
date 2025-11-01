@@ -24,12 +24,52 @@
 import asyncio
 import struct
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Any
 
-import aiofiles
 import pandas as pd
 
+# 🚀 原生IOCP异步文件I/O：优先使用Windows IOCP，自动降级到aiofiles
+try:
+    from backend.infrastructure.native_iocp import compat_aopen, is_iocp_available, get_backend
+    _USE_IOCP = True
+except ImportError:
+    # 兼容：如果没有native_iocp，使用aiofiles
+    import aiofiles
+    compat_aopen = None
+    is_iocp_available = lambda: False
+    get_backend = lambda: 'aiofiles'
+    _USE_IOCP = False
+
 from .logger import logger
+
+
+# 🚀 统一的异步文件打开函数（自动选择最佳后端）
+async def _open_file_async(filepath: Union[str, Path], mode: str = 'rb') -> Any:
+    """
+    异步打开文件，优先使用native_iocp（Windows真异步），失败时降级到aiofiles
+
+    Args:
+        filepath: 文件路径
+        mode: 打开模式（'rb', 'r', 'wb', etc.）
+
+    Returns:
+        文件对象（支持async with上下文管理器）
+    """
+    if _USE_IOCP and compat_aopen is not None:
+        try:
+            # 🚀 使用native_iocp（Windows IOCP或aiofiles fallback）
+            # compat_aopen返回已打开的文件对象，支持async with
+            file_obj = await compat_aopen(filepath, mode)
+            return file_obj
+        except Exception as e:
+            logger.warning(f"native_iocp打开文件失败，降级到aiofiles: {e}")
+            # Fallback到aiofiles
+            import aiofiles
+            return await aiofiles.open(filepath, mode)
+    else:
+        # 直接使用aiofiles
+        import aiofiles
+        return await aiofiles.open(filepath, mode)
 
 
 class AsyncTdxDayReader:
@@ -62,8 +102,9 @@ class AsyncTdxDayReader:
                 logger.error(f"文件不存在: {self.filepath}")
                 return pd.DataFrame()
 
-            # 异步读取二进制文件
-            async with aiofiles.open(self.filepath, 'rb') as f:
+            # 🚀 使用native_iocp异步读取二进制文件（真异步，无线程池开销）
+            f = await _open_file_async(self.filepath, 'rb')
+            async with f:
                 data = await f.read()
 
             # 🔧 优化：直接在协程中解析，避免线程池排队
@@ -174,8 +215,9 @@ class AsyncTdxMinuteReader:
                 logger.error(f"文件不存在: {self.filepath}")
                 return pd.DataFrame()
 
-            # 异步读取二进制文件
-            async with aiofiles.open(self.filepath, 'rb') as f:
+            # 🚀 使用native_iocp异步读取二进制文件（真异步，无线程池开销）
+            f = await _open_file_async(self.filepath, 'rb')
+            async with f:
                 data = await f.read()
 
             # 🔧 优化：直接在协程中解析，避免线程池排队
@@ -282,8 +324,9 @@ class AsyncTdxLc5Reader:
                 logger.error(f"文件不存在: {self.filepath}")
                 return pd.DataFrame()
 
-            # 异步读取二进制文件
-            async with aiofiles.open(self.filepath, 'rb') as f:
+            # 🚀 使用native_iocp异步读取二进制文件（真异步，无线程池开销）
+            f = await _open_file_async(self.filepath, 'rb')
+            async with f:
                 data = await f.read()
 
             # 🔧 优化：直接在协程中解析，避免线程池排队
@@ -375,7 +418,8 @@ class AsyncTdxBlockReader:
                 logger.error(f"文件不存在: {self.filepath}")
                 return pd.DataFrame()
 
-            # 异步读取文本文件（板块文件是文本格式）
+            # 📝 板块文件是文本格式（GBK编码），使用aiofiles
+            import aiofiles
             async with aiofiles.open(self.filepath, 'r', encoding='gbk') as f:
                 content = await f.read()
 
@@ -544,8 +588,9 @@ class AsyncHistoryFinancialReader:
                     with zip_ref.open(dat_files[0]) as f:
                         data = f.read()
             else:
-                # 直接读取.dat文件
-                async with aiofiles.open(self.filepath, 'rb') as f:
+                # 🚀 直接读取.dat文件（使用native_iocp）
+                f = await _open_file_async(self.filepath, 'rb')
+                async with f:
                     data = await f.read()
 
             # 解析财务数据（简化版）
@@ -618,8 +663,9 @@ class AsyncTdxExHqDayReader:
                 logger.error(f"文件不存在: {self.filepath}")
                 return pd.DataFrame()
 
-            # 异步读取二进制文件
-            async with aiofiles.open(self.filepath, 'rb') as f:
+            # 🚀 使用native_iocp异步读取二进制文件（真异步，无线程池开销）
+            f = await _open_file_async(self.filepath, 'rb')
+            async with f:
                 data = await f.read()
 
             # 解析数据（与股票日线格式相同）
@@ -716,7 +762,8 @@ class AsyncCustomerBlockReader:
                 logger.error(f"文件不存在: {self.filepath}")
                 return pd.DataFrame()
 
-            # 异步读取文本文件
+            # 📝 自定义板块文件是文本格式（GBK编码），使用aiofiles
+            import aiofiles
             async with aiofiles.open(self.filepath, 'r', encoding='gbk') as f:
                 content = await f.read()
 

@@ -21,6 +21,14 @@ from functools import wraps
 
 import pandas as pd
 
+# 🚀 原生IOCP异步文件I/O：优先使用Windows IOCP，自动降级到aiofiles
+try:
+    from backend.infrastructure.native_iocp import compat_aopen
+    _USE_IOCP = True
+except ImportError:
+    compat_aopen = None
+    _USE_IOCP = False
+
 from .logger import logger
 
 
@@ -191,10 +199,30 @@ class AsyncFileCache:
         await asyncio.get_event_loop().run_in_executor(None, _save)
 
     async def _async_load_parquet(self, filepath: Path) -> pd.DataFrame:
-        """异步加载Parquet文件"""
-        def _load():
-            return pd.read_parquet(filepath)
-        return await asyncio.get_event_loop().run_in_executor(None, _load)
+        """异步加载Parquet文件（使用native_iocp真异步）"""
+        try:
+            if _USE_IOCP and compat_aopen is not None:
+                # 🚀 使用native_iocp异步读取（真异步，无线程池）
+                file_obj = await compat_aopen(filepath, 'rb')
+                async with file_obj:
+                    data = await file_obj.read()
+
+                # 使用pyarrow解析Parquet数据
+                import pyarrow.parquet as pq
+                import io
+                table = pq.read_table(io.BytesIO(data))
+                return table.to_pandas()
+            else:
+                # 降级到executor
+                def _load():
+                    return pd.read_parquet(filepath)
+                return await asyncio.get_event_loop().run_in_executor(None, _load)
+        except Exception as e:
+            logger.warning(f"异步读取Parquet失败，降级到executor: {e}")
+            # 最终降级到executor
+            def _load():
+                return pd.read_parquet(filepath)
+            return await asyncio.get_event_loop().run_in_executor(None, _load)
 
     async def _async_save_parquet(self, filepath: Path, data: pd.DataFrame) -> None:
         """异步保存Parquet文件"""

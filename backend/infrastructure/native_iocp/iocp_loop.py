@@ -27,7 +27,7 @@ WAIT_FAILED = 0xFFFFFFFF
 INFINITE = 0xFFFFFFFF
 
 try:
-    import iocp_file
+    from . import iocp_file  # type: ignore
     IOCP_AVAILABLE = True
 except ImportError:
     iocp_file = None  # type: ignore

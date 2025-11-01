@@ -588,7 +588,7 @@ psutil, PSUTIL_AVAILABLE
 
 ## 🔧 Infrastructure 底层基础设施
 
-`backend/infrastructure/` 目录包含底层基础设施模块，为上层服务提供数据获取、系统监控、异步通信等能力，包括 `data_module_vnpy`（数据模块）、`system_vnpy`（系统工具包）、`tdx_asyncio`（通达信异步客户端）等。
+`backend/infrastructure/` 目录包含底层基础设施模块，为上层服务提供数据获取、系统监控、异步通信等能力，包括 `data_module_vnpy`（数据模块）、`system_vnpy`（系统工具包）、`tdx_asyncio`（通达信异步客户端）、`native_iocp`（真异步文件I/O）、`native_ipc`（真异步跨进程通信）等。
 
 ---
 
