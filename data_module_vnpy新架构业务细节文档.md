@@ -1,33 +1,52 @@
 # -*- coding: utf-8 -*-
 # data_module_vnpy 新架构业务细节文档
 
-**版本**: v3.0 (基于新架构最佳实践)
+**版本**: v3.1 (微观架构优化版)
 **创建日期**: 2025-01-02
-**文档目标**: 定义新架构下的业务流程规则细节和实现逻辑
+**最后更新**: 2025-01-02
+**文档目标**: 定义新架构下的业务流程规则细节、实现逻辑和微观架构设计
 
-> **📖 文档分工**：
-> - **本文档**：专注于业务流程、规则细节、实现逻辑、算法描述
-> - **最佳实践文档**：专注于架构设计、技术选型、性能目标、组件设计
+> **📖 文档分工**:
+> - **本文档**:专注于业务流程、规则细节、实现逻辑、算法描述、**微观架构设计**
+> - **最佳实践文档**:专注于架构设计、技术选型、性能目标、组件设计
 > 
-> 两文档遵循单一事实原则，互相引用但不重复内容。
+> 两文档遵循单一事实原则,互相引用但不重复内容。
+>
+> **📌 v3.1更新**:
+> - 新增微观架构设计章节,填补架构与细节规则之间的鸿沟
+> - 为每个业务规则设计最佳实践的微观架构承载方案
+> - 明确数据结构设计、状态管理、异常处理等微观实现细节
 
 ---
 
 ## 📋 目录
 
 - [一、品种管理业务规则](#一品种管理业务规则)
+  - [微观架构设计](#11-微观架构设计)
 - [二、数据下载业务规则](#二数据下载业务规则)
+  - [微观架构设计](#21-微观架构设计)
 - [三、数据验证业务规则](#三数据验证业务规则)
+  - [微观架构设计](#31-微观架构设计)
 - [四、缓存管理业务规则](#四缓存管理业务规则)
+  - [微观架构设计](#41-微观架构设计)
 - [五、负载均衡业务规则](#五负载均衡业务规则)
+  - [微观架构设计](#51-微观架构设计)
 - [六、IPO日期管理业务规则](#六IPO日期管理业务规则)
+  - [微观架构设计](#61-微观架构设计)
 - [七、数据质量管理业务规则](#七数据质量管理业务规则)
+  - [微观架构设计](#71-微观架构设计)
 - [八、统一数据查询业务规则](#八统一数据查询业务规则)
+  - [微观架构设计](#81-微观架构设计)
 - [九、实时推送业务规则](#九实时推送业务规则)
+  - [微观架构设计](#91-微观架构设计)
 - [十、文件监控业务规则](#十文件监控业务规则)
+  - [微观架构设计](#101-微观架构设计)
 - [十一、native_iocp集成业务规则](#十一native_iocp集成业务规则)
+  - [微观架构设计](#111-微观架构设计)
 - [十二、子进程日志配置业务规则](#十二子进程日志配置业务规则)
+  - [微观架构设计](#121-微观架构设计)
 - [十三、背压控制与队列管理业务规则](#十三背压控制与队列管理业务规则)
+  - [微观架构设计](#131-微观架构设计)
 
 ---
 
@@ -35,7 +54,595 @@
 
 > **架构设计参考**：组件设计和技术架构请参考 [最佳实践文档 - 2.2 data_acquisition.py](./data_module_vnpy新架构最佳实践cursor版.md#22-data_acquisitionpy---数据获取模块)
 
-### 1.1 品种分类规则
+### 1.1 微观架构设计
+
+#### 1.1.1 品种分类器架构
+
+**设计目标**：
+- 将品种分类逻辑模块化为独立的分类器类
+- 每个分类器专注于一种品种类型的识别
+- 支持灵活的分类规则扩展和修改
+- 实现分类逻辑的可测试性和可维护性
+
+**核心类设计**：
+
+```python
+from abc import ABC, abstractmethod
+from typing import List, Dict, Any
+import pandas as pd
+
+class BaseClassifier(ABC):
+    """品种分类器基类"""
+    
+    @abstractmethod
+    def classify(self, complete_df: pd.DataFrame, **kwargs) -> List[Dict[str, Any]]:
+        """分类方法
+        
+        Args:
+            complete_df: 完整的品种数据DataFrame（来自TDX API）
+            **kwargs: 额外的分类参数（如配置解析器）
+            
+        Returns:
+            分类结果列表，每个元素包含 code, name, market 字段
+        """
+        pass
+    
+    @abstractmethod
+    def get_classifier_name(self) -> str:
+        """获取分类器名称"""
+        pass
+
+
+class ShanghaiStockClassifier(BaseClassifier):
+    """上证A股分类器"""
+    
+    def classify(self, complete_df: pd.DataFrame, **kwargs) -> List[Dict[str, Any]]:
+        """识别上证A股
+        
+        规则：
+        - market == 1
+        - code以688（科创板）或60开头
+        - code长度为6位数字
+        """
+        filtered = complete_df[
+            (complete_df['market'] == 1) & 
+            (complete_df['code'].str.len() == 6) &
+            (complete_df['code'].str.isdigit()) &
+            (complete_df['code'].str.startswith('688') | 
+             complete_df['code'].str.startswith('60'))
+        ]
+        
+        return filtered[['code', 'name', 'market']].to_dict('records')
+    
+    def get_classifier_name(self) -> str:
+        return "上证A股"
+
+
+class ShenzhenStockClassifier(BaseClassifier):
+    """深证A股分类器"""
+    
+    def classify(self, complete_df: pd.DataFrame, **kwargs) -> List[Dict[str, Any]]:
+        """识别深证A股
+        
+        规则：
+        - market == 0
+        - code以000/001/002（主板/中小板）或300/301（创业板）开头
+        - code长度为6位数字
+        """
+        filtered = complete_df[
+            (complete_df['market'] == 0) & 
+            (complete_df['code'].str.len() == 6) &
+            (complete_df['code'].str.isdigit()) &
+            (complete_df['code'].str.startswith(('000', '001', '002', '300', '301')))
+        ]
+        
+        return filtered[['code', 'name', 'market']].to_dict('records')
+    
+    def get_classifier_name(self) -> str:
+        return "深证A股"
+
+
+class BeijingStockClassifier(BaseClassifier):
+    """北证A股分类器"""
+    
+    def classify(self, complete_df: pd.DataFrame, **kwargs) -> List[Dict[str, Any]]:
+        """识别北证A股
+        
+        数据来源：从addedcode_bj.cfg配置文件解析
+        市场代码：2（硬编码值）
+        
+        注意：北证A股不从TDX API获取，从配置文件解析
+        """
+        config_parser = kwargs.get('config_parser')
+        if not config_parser:
+            logger.warning("北证A股分类器缺少config_parser参数，返回空列表")
+            return []
+        
+        # 从配置文件解析北证品种
+        beijing_stocks = config_parser.parse_addedcode_bj()
+        
+        # 添加固定市场代码2
+        result = []
+        for stock in beijing_stocks:
+            result.append({
+                "code": stock["code"],
+                "name": stock["name"],
+                "market": 2  # 硬编码值
+            })
+        
+        return result
+    
+    def get_classifier_name(self) -> str:
+        return "北证A股"
+
+
+class T0FundClassifier(BaseClassifier):
+    """T+0基金分类器"""
+    
+    def classify(self, complete_df: pd.DataFrame, **kwargs) -> List[Dict[str, Any]]:
+        """识别T+0基金
+        
+        数据来源：从spblock.dat配置文件获取市场+代码列表
+        匹配逻辑：从complete_df中匹配名称
+        过滤规则：API中不存在的品种会被过滤
+        """
+        block_parser = kwargs.get('block_parser')
+        if not block_parser:
+            logger.warning("T+0基金分类器缺少block_parser参数，返回空列表")
+            return []
+        
+        # 从spblock.dat获取T+0基金代码列表
+        t0_fund_codes = block_parser.get_t0_fund_codes()
+        
+        result = []
+        for fund in t0_fund_codes:
+            market = int(fund["market"])
+            code = str(fund["code"]).zfill(6)
+            
+            # 从complete_df中匹配名称
+            matched = complete_df[
+                (complete_df["market"] == market) & 
+                (complete_df["code"] == code)
+            ]
+            
+            if len(matched) > 0:
+                name = str(matched.iloc[0].get("name", ""))
+                result.append({"code": code, "name": name, "market": market})
+            # API中无匹配的品种视为不存在，直接跳过
+        
+        return result
+    
+    def get_classifier_name(self) -> str:
+        return "T+0基金"
+
+
+class ConvertibleBondClassifier(BaseClassifier):
+    """可转债分类器"""
+    
+    def classify(self, complete_df: pd.DataFrame, **kwargs) -> List[Dict[str, Any]]:
+        """识别可转债
+        
+        数据来源：从tdxstat2.cfg配置文件获取市场+代码列表
+        匹配逻辑：从complete_df中匹配名称，支持市场代码容错（0↔1）
+        过滤规则：如果有多个匹配，过滤掉指数和ETF
+        """
+        config_parser = kwargs.get('config_parser')
+        if not config_parser:
+            logger.warning("可转债分类器缺少config_parser参数，返回空列表")
+            return []
+        
+        # 从tdxstat2.cfg获取可转债代码列表
+        convertible_codes_by_market = config_parser.parse_tdxstat2()
+        
+        result = []
+        for market, codes in convertible_codes_by_market.items():
+            mkt = int(market)
+            for raw_code in codes:
+                code = str(raw_code).zfill(6)
+                
+                # 尝试原始市场代码匹配
+                matched = complete_df[
+                    (complete_df["market"] == mkt) & 
+                    (complete_df["code"] == code)
+                ]
+                
+                # 如果原始市场匹配不到，尝试交换市场代码（0↔1）
+                if len(matched) == 0:
+                    alt_mkt = 1 if mkt == 0 else 0
+                    matched_alt = complete_df[
+                        (complete_df["market"] == alt_mkt) & 
+                        (complete_df["code"] == code)
+                    ]
+                    if len(matched_alt) > 0:
+                        matched = matched_alt
+                        mkt = alt_mkt  # 使用交换后的市场代码
+                
+                if len(matched) > 0:
+                    # 如果有多个匹配，过滤掉指数和ETF
+                    if len(matched) > 1:
+                        non_index = matched[
+                            ~matched["name"].str.contains("指数|ETF", na=False, regex=True)
+                        ]
+                        if len(non_index) > 0:
+                            matched = non_index
+                    
+                    name = str(matched.iloc[0].get("name", ""))
+                    result.append({"code": code, "name": name, "market": mkt})
+                # API中无匹配的品种视为不存在，直接跳过
+        
+        return result
+    
+    def get_classifier_name(self) -> str:
+        return "可转债"
+```
+
+**分类器注册表架构**：
+
+```python
+class ClassifierRegistry:
+    """分类器注册表
+    
+    管理所有品种分类器的注册、查询和执行
+    """
+    
+    def __init__(self):
+        self._classifiers: Dict[str, BaseClassifier] = {}
+        self._execution_order: List[str] = []
+    
+    def register(self, classifier: BaseClassifier, order: int = 999):
+        """注册分类器
+        
+        Args:
+            classifier: 分类器实例
+            order: 执行顺序（数字越小越先执行）
+        """
+        name = classifier.get_classifier_name()
+        self._classifiers[name] = classifier
+        self._execution_order.append((order, name))
+        self._execution_order.sort(key=lambda x: x[0])
+    
+    def classify_all(self, complete_df: pd.DataFrame, **kwargs) -> Dict[str, List[Dict]]:
+        """执行所有分类器
+        
+        Returns:
+            分类结果字典，key为分类器名称，value为分类结果列表
+        """
+        results = {}
+        for order, name in self._execution_order:
+            classifier = self._classifiers[name]
+            try:
+                classified = classifier.classify(complete_df, **kwargs)
+                results[name] = classified
+                logger.debug(f"分类器 {name} 完成，识别到 {len(classified)} 个品种")
+            except Exception as e:
+                logger.error(f"分类器 {name} 执行失败: {e}", exc_info=True)
+                results[name] = []
+        
+        return results
+    
+    def get_classifier(self, name: str) -> BaseClassifier:
+        """获取指定分类器"""
+        return self._classifiers.get(name)
+```
+
+**使用示例**：
+
+```python
+# 在SymbolLoader中使用分类器注册表
+class SymbolLoader:
+    def __init__(self, event_engine: Optional[EventEngine] = None):
+        self.event_engine = event_engine
+        
+        # 初始化分类器注册表
+        self.classifier_registry = ClassifierRegistry()
+        self._register_classifiers()
+    
+    def _register_classifiers(self):
+        """注册所有分类器"""
+        # 注册顺序决定执行顺序
+        self.classifier_registry.register(ShanghaiStockClassifier(), order=1)
+        self.classifier_registry.register(ShenzhenStockClassifier(), order=2)
+        self.classifier_registry.register(BeijingStockClassifier(), order=3)
+        self.classifier_registry.register(T0FundClassifier(), order=4)
+        self.classifier_registry.register(ConvertibleBondClassifier(), order=5)
+    
+    async def reload_and_classify_async(self) -> Dict:
+        """重新加载并分类"""
+        # 1. 从API加载完整品种列表
+        complete_df = await self.load_from_api_async()
+        
+        # 2. 准备分类参数
+        config_parser = TdxConfigFileParser()
+        block_parser = BlockParser()
+        
+        # 3. 执行所有分类器
+        classified_results = self.classifier_registry.classify_all(
+            complete_df,
+            config_parser=config_parser,
+            block_parser=block_parser
+        )
+        
+        # 4. 后续处理（去重、验证、IPO日期集成等）
+        # ...
+```
+
+**优势分析**：
+
+1. **单一职责**：每个分类器只负责一种品种类型的识别
+2. **易于扩展**：添加新品种类型只需实现新的分类器类
+3. **便于测试**：每个分类器可独立测试
+4. **解耦合**：分类逻辑与数据加载逻辑解耦
+5. **灵活配置**：通过注册表控制执行顺序和启用状态
+
+#### 1.1.2 品种过滤器架构
+
+**设计目标**：
+- 将品种过滤逻辑模块化为独立的过滤器类
+- 支持链式过滤（Filter Chain Pattern）
+- 便于添加、修改、禁用过滤规则
+
+**核心类设计**：
+
+```python
+from abc import ABC, abstractmethod
+from typing import List, Dict, Any, Tuple
+
+class BaseFilter(ABC):
+    """品种过滤器基类"""
+    
+    @abstractmethod
+    def filter(self, symbols: List[Dict[str, Any]], **kwargs) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """过滤方法
+        
+        Args:
+            symbols: 待过滤的品种列表
+            **kwargs: 额外的过滤参数（如IPO日期字典）
+            
+        Returns:
+            (保留的品种列表, 过滤掉的品种列表)
+        """
+        pass
+    
+    @abstractmethod
+    def get_filter_name(self) -> str:
+        """获取过滤器名称"""
+        pass
+
+
+class UnlistedSymbolFilter(BaseFilter):
+    """未上市品种过滤器"""
+    
+    def filter(self, symbols: List[Dict[str, Any]], **kwargs) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """过滤未上市品种
+        
+        规则：
+        - IPO日期为None或无效日期的品种将被标记为未上市
+        - IPO日期原始值 < 19900000（如70这种无效值）
+        - IPO日期解析失败
+        - IPO日期为0或None
+        """
+        ipo_dates = kwargs.get('ipo_dates', {})
+        
+        kept = []
+        filtered = []
+        
+        for symbol in symbols:
+            code = symbol['code']
+            ipo_date = ipo_dates.get(code)
+            
+            # 判断是否未上市
+            if ipo_date is None or not self._is_valid_ipo_date(ipo_date):
+                filtered.append({
+                    **symbol,
+                    'filter_reason': f'未上市（IPO日期: {ipo_date})'
+                })
+            else:
+                kept.append(symbol)
+        
+        logger.debug(f"{self.get_filter_name()}：保留{len(kept)}个，过滤{len(filtered)}个")
+        return kept, filtered
+    
+    def _is_valid_ipo_date(self, ipo_date: Any) -> bool:
+        """验证IPO日期有效性"""
+        if ipo_date is None:
+            return False
+        
+        # 检查日期范围
+        try:
+            if isinstance(ipo_date, (int, float)):
+                # 原始整数值检查
+                if ipo_date < 19900000:
+                    return False
+            elif isinstance(ipo_date, date):
+                # date对象检查
+                if ipo_date.year < 1990:
+                    return False
+            else:
+                return False
+            
+            return True
+        except Exception:
+            return False
+    
+    def get_filter_name(self) -> str:
+        return "未上市品种过滤器"
+
+
+class DuplicateSymbolFilter(BaseFilter):
+    """重复品种过滤器"""
+    
+    def filter(self, symbols: List[Dict[str, Any]], **kwargs) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """过滤重复品种
+        
+        规则：
+        - 同一品种代码只保留一条记录
+        - 按出现顺序，保留第一条
+        """
+        seen_codes = set()
+        kept = []
+        filtered = []
+        
+        for symbol in symbols:
+            code = symbol['code']
+            if code in seen_codes:
+                filtered.append({
+                    **symbol,
+                    'filter_reason': f'重复品种（代码: {code})'
+                })
+            else:
+                seen_codes.add(code)
+                kept.append(symbol)
+        
+        logger.debug(f"{self.get_filter_name()}：保留{len(kept)}个，过滤{len(filtered)}个")
+        return kept, filtered
+    
+    def get_filter_name(self) -> str:
+        return "重复品种过滤器"
+
+
+class InvalidDataFilter(BaseFilter):
+    """无效数据过滤器"""
+    
+    def filter(self, symbols: List[Dict[str, Any]], **kwargs) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """过滤无效数据
+        
+        规则：
+        - code和name都必须有效（非空且去除空格后不为空）
+        """
+        kept = []
+        filtered = []
+        
+        for symbol in symbols:
+            code = str(symbol.get('code', '')).strip()
+            name = str(symbol.get('name', '')).strip()
+            
+            if not code or not name:
+                filtered.append({
+                    **symbol,
+                    'filter_reason': f'无效数据（code={code}, name={name})'
+                })
+            else:
+                kept.append(symbol)
+        
+        logger.debug(f"{self.get_filter_name()}：保留{len(kept)}个，过滤{len(filtered)}个")
+        return kept, filtered
+    
+    def get_filter_name(self) -> str:
+        return "无效数据过滤器"
+```
+
+**过滤器链架构**：
+
+```python
+class FilterChain:
+    """过滤器链
+    
+    按顺序执行多个过滤器，支持中间结果统计
+    """
+    
+    def __init__(self):
+        self._filters: List[BaseFilter] = []
+        self._filter_stats: Dict[str, Dict[str, int]] = {}
+    
+    def add_filter(self, filter_instance: BaseFilter):
+        """添加过滤器到链中"""
+        self._filters.append(filter_instance)
+    
+    def execute(self, symbols: List[Dict[str, Any]], **kwargs) -> Tuple[List[Dict[str, Any]], Dict]:
+        """执行过滤器链
+        
+        Returns:
+            (最终保留的品种列表, 过滤统计信息)
+        """
+        current_symbols = symbols
+        total_filtered = []
+        
+        for filter_instance in self._filters:
+            kept, filtered = filter_instance.filter(current_symbols, **kwargs)
+            
+            # 记录统计
+            filter_name = filter_instance.get_filter_name()
+            self._filter_stats[filter_name] = {
+                'input': len(current_symbols),
+                'kept': len(kept),
+                'filtered': len(filtered)
+            }
+            
+            # 更新当前品种列表
+            current_symbols = kept
+            total_filtered.extend(filtered)
+        
+        # 生成统计报告
+        stats = self._generate_stats_report(len(symbols), len(current_symbols), total_filtered)
+        
+        return current_symbols, stats
+    
+    def _generate_stats_report(self, initial_count: int, final_count: int, 
+                               filtered_symbols: List[Dict]) -> Dict:
+        """生成统计报告"""
+        return {
+            'initial_count': initial_count,
+            'final_count': final_count,
+            'total_filtered': len(filtered_symbols),
+            'filter_details': self._filter_stats,
+            'filtered_symbols': filtered_symbols
+        }
+```
+
+**使用示例**：
+
+```python
+class SymbolLoader:
+    def __init__(self, event_engine: Optional[EventEngine] = None):
+        self.event_engine = event_engine
+        
+        # 初始化过滤器链
+        self.filter_chain = FilterChain()
+        self._register_filters()
+    
+    def _register_filters(self):
+        """注册所有过滤器"""
+        # 顺序很重要：先去重，再过滤无效数据，最后过滤未上市品种
+        self.filter_chain.add_filter(DuplicateSymbolFilter())
+        self.filter_chain.add_filter(InvalidDataFilter())
+        self.filter_chain.add_filter(UnlistedSymbolFilter())
+    
+    async def reload_and_classify_async(self) -> Dict:
+        """重新加载并分类"""
+        # 1. 分类
+        classified_results = self.classifier_registry.classify_all(...)
+        
+        # 2. 合并所有分类结果
+        all_symbols = []
+        for category, symbols in classified_results.items():
+            all_symbols.extend(symbols)
+        
+        # 3. 执行过滤器链
+        ipo_dates = await self._load_ipo_dates()
+        final_symbols, filter_stats = self.filter_chain.execute(
+            all_symbols,
+            ipo_dates=ipo_dates
+        )
+        
+        # 4. 输出统计信息
+        logger.info(f"品种过滤完成：初始{filter_stats['initial_count']}个，"
+                   f"最终{filter_stats['final_count']}个，"
+                   f"过滤{filter_stats['total_filtered']}个")
+        
+        return final_symbols
+```
+
+**优势分析**：
+
+1. **链式处理**：多个过滤器顺序执行，便于管理复杂过滤逻辑
+2. **可配置**：可动态添加、移除、调整过滤器顺序
+3. **统计友好**：自动记录每个过滤器的执行结果
+4. **可追溯**：记录每个被过滤品种的原因
+5. **易于测试**：每个过滤器可独立测试
+
+---
+
+### 1.2 品种分类规则
 
 #### 1.1.1 市场分类标准
 
@@ -308,9 +915,574 @@ field_mapping = {
 
 ## 二、数据下载业务规则
 
-> **架构设计参考**：多进程架构、负载均衡等技术设计请参考 [最佳实践文档 - 2.2 data_acquisition.py](./data_module_vnpy新架构最佳实践cursor版.md#22-data_acquisitionpy---数据获取模块)
+> **架构设计参考**:多进程架构、负载均衡等技术设计请参考 [最佳实践文档 - 2.2 data_acquisition.py](./data_module_vnpy新架构最佳实践cursor版.md#22-data_acquisitionpy---数据获取模块)
 
-### 2.1 下载策略规则
+### 2.1 微观架构设计
+
+#### 2.1.1 下载状态机架构
+
+**设计目标**:
+- 明确定义下载任务的所有可能状态
+- 规范状态之间的流转规则和触发条件
+- 支持暂停/恢复/取消等操作的状态管理
+- 便于监控和调试下载流程
+
+**核心类设计**:
+
+```python
+from enum import Enum, auto
+from typing import Optional, Dict, Any
+import threading
+import time
+from dataclasses import dataclass, field
+
+class DownloadState(Enum):
+    """下载状态枚举"""
+    IDLE = auto()          # 空闲:未开始下载
+    PREPARING = auto()     # 准备中:加载配置、初始化资源
+    RUNNING = auto()       # 运行中:正在下载
+    PAUSED = auto()        # 已暂停:用户暂停下载
+    STOPPING = auto()      # 停止中:正在清理资源
+    COMPLETED = auto()     # 已完成:所有任务成功
+    FAILED = auto()        # 已失败:发生致命错误
+    CANCELLED = auto()     # 已取消:用户取消下载
+
+@dataclass
+class DownloadStatistics:
+    """下载统计信息"""
+    total_tasks: int = 0
+    completed_tasks: int = 0
+    failed_tasks: int = 0
+    skipped_tasks: int = 0
+    start_time: Optional[float] = None
+    end_time: Optional[float] = None
+    
+    @property
+    def success_rate(self) -> float:
+        """成功率"""
+        if self.total_tasks == 0:
+            return 0.0
+        return (self.completed_tasks / self.total_tasks) * 100
+    
+    @property
+    def elapsed_time(self) -> float:
+        """已用时间(秒)"""
+        if self.start_time is None:
+            return 0.0
+        end = self.end_time or time.time()
+        return end - self.start_time
+
+class DownloadStateMachine:
+    """下载状态机
+    
+    管理下载任务的状态流转,确保状态变更的合法性和一致性
+    """
+    
+    # 定义合法的状态转换规则
+    VALID_TRANSITIONS = {
+        DownloadState.IDLE: [DownloadState.PREPARING],
+        DownloadState.PREPARING: [DownloadState.RUNNING, DownloadState.FAILED],
+        DownloadState.RUNNING: [DownloadState.PAUSED, DownloadState.STOPPING, 
+                                DownloadState.COMPLETED, DownloadState.FAILED],
+        DownloadState.PAUSED: [DownloadState.RUNNING, DownloadState.STOPPING, DownloadState.CANCELLED],
+        DownloadState.STOPPING: [DownloadState.CANCELLED],
+        DownloadState.COMPLETED: [DownloadState.IDLE],  # 可重新开始
+        DownloadState.FAILED: [DownloadState.IDLE],     # 可重新开始
+        DownloadState.CANCELLED: [DownloadState.IDLE],  # 可重新开始
+    }
+    
+    def __init__(self):
+        self._current_state = DownloadState.IDLE
+        self._state_lock = threading.Lock()
+        self._state_history: List[Tuple[DownloadState, float]] = []
+        self._statistics = DownloadStatistics()
+        self._event_callbacks: Dict[DownloadState, List[callable]] = {}
+    
+    @property
+    def current_state(self) -> DownloadState:
+        """获取当前状态(线程安全)"""
+        with self._state_lock:
+            return self._current_state
+    
+    def transition_to(self, new_state: DownloadState, force: bool = False) -> bool:
+        """状态转换
+        
+        Args:
+            new_state: 目标状态
+            force: 是否强制转换(跳过合法性检查)
+            
+        Returns:
+            转换是否成功
+        """
+        with self._state_lock:
+            # 检查转换合法性
+            if not force and new_state not in self.VALID_TRANSITIONS.get(self._current_state, []):
+                logger.warning(
+                    f"非法状态转换: {self._current_state.name} -> {new_state.name}"
+                )
+                return False
+            
+            old_state = self._current_state
+            self._current_state = new_state
+            
+            # 记录状态历史
+            self._state_history.append((new_state, time.time()))
+            
+            # 更新统计信息
+            self._update_statistics(new_state)
+            
+            logger.info(f"状态转换: {old_state.name} -> {new_state.name}")
+            
+            # 触发状态变更回调
+            self._trigger_callbacks(new_state)
+            
+            return True
+    
+    def _update_statistics(self, new_state: DownloadState):
+        """更新统计信息"""
+        if new_state == DownloadState.RUNNING and self._statistics.start_time is None:
+            self._statistics.start_time = time.time()
+        
+        if new_state in [DownloadState.COMPLETED, DownloadState.FAILED, DownloadState.CANCELLED]:
+            self._statistics.end_time = time.time()
+    
+    def register_callback(self, state: DownloadState, callback: callable):
+        """注册状态变更回调"""
+        if state not in self._event_callbacks:
+            self._event_callbacks[state] = []
+        self._event_callbacks[state].append(callback)
+    
+    def _trigger_callbacks(self, state: DownloadState):
+        """触发状态变更回调"""
+        callbacks = self._event_callbacks.get(state, [])
+        for callback in callbacks:
+            try:
+                callback(state)
+            except Exception as e:
+                logger.error(f"状态回调执行失败: {e}", exc_info=True)
+    
+    def update_statistics(self, **kwargs):
+        """更新统计信息"""
+        with self._state_lock:
+            for key, value in kwargs.items():
+                if hasattr(self._statistics, key):
+                    setattr(self._statistics, key, value)
+    
+    def get_statistics(self) -> DownloadStatistics:
+        """获取统计信息副本"""
+        with self._state_lock:
+            return dataclass.replace(self._statistics)
+    
+    def reset(self):
+        """重置状态机"""
+        with self._state_lock:
+            self._current_state = DownloadState.IDLE
+            self._state_history.clear()
+            self._statistics = DownloadStatistics()
+```
+
+**使用示例**:
+
+```python
+class MultiProcessStockFetcher:
+    def __init__(self, event_engine: Optional[EventEngine] = None):
+        self.event_engine = event_engine
+        
+        # 初始化状态机
+        self.state_machine = DownloadStateMachine()
+        
+        # 注册状态变更回调
+        self.state_machine.register_callback(
+            DownloadState.RUNNING, 
+            self._on_download_started
+        )
+        self.state_machine.register_callback(
+            DownloadState.COMPLETED, 
+            self._on_download_completed
+        )
+    
+    async def download_incremental_kline_async(self, symbols, start_date, intervals):
+        """异步增量下载"""
+        try:
+            # 状态转换: IDLE -> PREPARING
+            if not self.state_machine.transition_to(DownloadState.PREPARING):
+                raise RuntimeError("状态转换失败:无法开始准备")
+            
+            # 准备资源
+            await self._prepare_download(symbols, intervals)
+            
+            # 状态转换: PREPARING -> RUNNING
+            if not self.state_machine.transition_to(DownloadState.RUNNING):
+                raise RuntimeError("状态转换失败:无法开始下载")
+            
+            # 执行下载
+            result = await self._execute_download()
+            
+            # 状态转换: RUNNING -> COMPLETED
+            self.state_machine.transition_to(DownloadState.COMPLETED)
+            
+            return result
+            
+        except Exception as e:
+            # 状态转换: * -> FAILED
+            self.state_machine.transition_to(DownloadState.FAILED, force=True)
+            logger.error(f"下载失败: {e}", exc_info=True)
+            raise
+    
+    def pause_download(self):
+        """暂停下载"""
+        if self.state_machine.current_state == DownloadState.RUNNING:
+            self.state_machine.transition_to(DownloadState.PAUSED)
+            # 设置暂停事件
+            if self.pause_event:
+                self.pause_event.clear()
+    
+    def resume_download(self):
+        """恢复下载"""
+        if self.state_machine.current_state == DownloadState.PAUSED:
+            self.state_machine.transition_to(DownloadState.RUNNING)
+            # 清除暂停事件
+            if self.pause_event:
+                self.pause_event.set()
+    
+    def stop_download(self):
+        """停止下载"""
+        if self.state_machine.current_state in [DownloadState.RUNNING, DownloadState.PAUSED]:
+            self.state_machine.transition_to(DownloadState.STOPPING)
+            # 设置停止事件
+            if self.stop_event:
+                self.stop_event.set()
+```
+
+**优势分析**:
+
+1. **状态清晰**:明确定义所有可能状态,避免状态混乱
+2. **转换规范**:通过VALID_TRANSITIONS限制非法转换
+3. **线程安全**:使用锁保护状态变更
+4. **可监控**:记录状态历史,便于调试
+5. **可扩展**:支持注册回调,解耦状态变更逻辑
+
+#### 2.1.2 任务队列管理器架构
+
+**设计目标**:
+- 统一管理下载任务的分发和调度
+- 支持任务优先级和批次控制
+- 实现背压控制,防止队列积压
+- 提供任务统计和监控能力
+
+**核心类设计**:
+
+```python
+from queue import Queue, Empty, Full
+from dataclasses import dataclass
+from typing import Optional, List, Tuple
+import threading
+
+@dataclass
+class DownloadTask:
+    """下载任务数据模型"""
+    symbol: str
+    interval: str
+    priority: int = 0  # 优先级,数字越大越优先
+    retry_count: int = 0
+    max_retries: int = 3
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    def __lt__(self, other):
+        """支持优先级队列排序"""
+        return self.priority > other.priority  # 优先级高的排在前面
+
+class TaskQueueManager:
+    """任务队列管理器
+    
+    管理多进程共享的任务队列,支持优先级、背压控制和统计监控
+    """
+    
+    def __init__(self, max_queue_size: int = 10000, enable_priority: bool = False):
+        from multiprocessing import Manager
+        
+        self.manager = Manager()
+        self.enable_priority = enable_priority
+        
+        # 任务队列(使用Manager.Queue支持多进程)
+        if enable_priority:
+            # 优先级队列需要自己实现
+            self.task_queue = self.manager.Queue(maxsize=max_queue_size)
+            self._priority_lock = threading.Lock()
+        else:
+            self.task_queue = self.manager.Queue(maxsize=max_queue_size)
+        
+        # 统计信息
+        self._stats_lock = threading.Lock()
+        self._total_submitted = 0
+        self._total_completed = 0
+        self._total_failed = 0
+        self._total_skipped = 0
+    
+    def submit_task(self, task: DownloadTask, timeout: float = 1.0) -> bool:
+        """提交任务到队列
+        
+        Args:
+            task: 下载任务
+            timeout: 入队超时时间
+            
+        Returns:
+            是否成功入队
+        """
+        try:
+            self.task_queue.put(task, timeout=timeout)
+            
+            with self._stats_lock:
+                self._total_submitted += 1
+            
+            return True
+            
+        except Full:
+            logger.warning(f"任务队列已满,跳过任务: {task.symbol}_{task.interval}")
+            
+            with self._stats_lock:
+                self._total_skipped += 1
+            
+            return False
+    
+    def submit_batch(self, tasks: List[DownloadTask], timeout: float = 1.0) -> int:
+        """批量提交任务
+        
+        Returns:
+            成功入队的任务数量
+        """
+        success_count = 0
+        for task in tasks:
+            if self.submit_task(task, timeout):
+                success_count += 1
+        return success_count
+    
+    def get_task(self, timeout: float = 0.1) -> Optional[DownloadTask]:
+        """获取任务(阻塞)
+        
+        Args:
+            timeout: 等待超时时间
+            
+        Returns:
+            下载任务,如果队列为空则返回None
+        """
+        try:
+            return self.task_queue.get(timeout=timeout)
+        except Empty:
+            return None
+    
+    def mark_completed(self, task: DownloadTask):
+        """标记任务完成"""
+        with self._stats_lock:
+            self._total_completed += 1
+    
+    def mark_failed(self, task: DownloadTask, retry: bool = True) -> bool:
+        """标记任务失败
+        
+        Returns:
+            是否需要重试
+        """
+        with self._stats_lock:
+            self._total_failed += 1
+        
+        # 检查是否需要重试
+        if retry and task.retry_count < task.max_retries:
+            task.retry_count += 1
+            # 重新入队(降低优先级)
+            task.priority -= 1
+            self.submit_task(task)
+            return True
+        
+        return False
+    
+    def get_queue_size(self) -> int:
+        """获取队列大小"""
+        try:
+            return self.task_queue.qsize()
+        except NotImplementedError:
+            # 某些平台不支持qsize()
+            return -1
+    
+    def get_statistics(self) -> Dict[str, int]:
+        """获取统计信息"""
+        with self._stats_lock:
+            return {
+                'total_submitted': self._total_submitted,
+                'total_completed': self._total_completed,
+                'total_failed': self._total_failed,
+                'total_skipped': self._total_skipped,
+                'queue_size': self.get_queue_size(),
+                'pending': self._total_submitted - self._total_completed - self._total_failed
+            }
+    
+    def clear(self):
+        """清空队列"""
+        while not self.task_queue.empty():
+            try:
+                self.task_queue.get_nowait()
+            except Empty:
+                break
+```
+
+#### 2.1.3 连接生命周期管理器架构
+
+**设计目标**:
+- 统一管理TDX连接的创建、复用和销毁
+- 支持连接池和健康检查
+- 自动处理连接失败和重连
+- 确保资源正确释放
+
+**核心类设计**:
+
+```python
+from typing import List, Optional, Tuple
+import asyncio
+
+class ConnectionLifecycleManager:
+    """连接生命周期管理器
+    
+    管理TDX连接的完整生命周期,包括创建、健康检查、复用和销毁
+    """
+    
+    def __init__(self, worker_id: int, logger):
+        self.worker_id = worker_id
+        self.logger = logger
+        self._active_connections: List[Tuple[str, Any]] = []  # (server, client)
+    
+    async def create_connections(
+        self,
+        servers: List[Tuple[str, int]],
+        timeout: float = 3.0,
+        health_check: bool = True,
+        max_retries: int = 2
+    ) -> List[Any]:
+        """批量创建连接
+        
+        Args:
+            servers: 服务器列表 [(host, port), ...]
+            timeout: 连接超时时间
+            health_check: 是否进行健康检查
+            max_retries: 最大重试次数
+            
+        Returns:
+            连接对象列表
+        """
+        from backend.infrastructure.tdx_asyncio import AsyncTdxHq_API
+        
+        connections = []
+        
+        for server in servers:
+            host, port = server
+            client = None
+            
+            # 重试机制
+            for attempt in range(max_retries + 1):
+                try:
+                    # 创建连接
+                    client = AsyncTdxHq_API()
+                    await asyncio.wait_for(
+                        client.connect(host, port),
+                        timeout=timeout
+                    )
+                    
+                    # 健康检查
+                    if health_check:
+                        if not await self._health_check(client):
+                            await client.close()
+                            client = None
+                            continue
+                    
+                    # 记录活跃连接
+                    self._active_connections.append((f"{host}:{port}", client))
+                    connections.append(client)
+                    
+                    self.logger.debug(
+                        f"Worker {self.worker_id} 成功连接服务器 {host}:{port}"
+                    )
+                    break
+                    
+                except asyncio.TimeoutError:
+                    self.logger.debug(
+                        f"Worker {self.worker_id} 连接服务器 {host}:{port} 超时 "
+                        f"(尝试 {attempt + 1}/{max_retries + 1})"
+                    )
+                    if client:
+                        await client.close()
+                    client = None
+                    
+                except Exception as e:
+                    self.logger.debug(
+                        f"Worker {self.worker_id} 连接服务器 {host}:{port} 失败: {e} "
+                        f"(尝试 {attempt + 1}/{max_retries + 1})"
+                    )
+                    if client:
+                        await client.close()
+                    client = None
+            
+            # 如果所有重试都失败,添加None占位
+            if client is None:
+                connections.append(None)
+        
+        successful_count = sum(1 for c in connections if c is not None)
+        self.logger.info(
+            f"Worker {self.worker_id} 连接创建完成: "
+            f"{successful_count}/{len(servers)} 成功"
+        )
+        
+        return connections
+    
+    async def _health_check(self, client) -> bool:
+        """健康检查"""
+        try:
+            # 尝试获取市场数据验证连接
+            result = await asyncio.wait_for(
+                client.get_security_list(0, 0),
+                timeout=2.0
+            )
+            return result is not None
+        except Exception as e:
+            self.logger.debug(f"健康检查失败: {e}")
+            return False
+    
+    async def close_all(self):
+        """关闭所有连接"""
+        close_tasks = []
+        
+        for server, client in self._active_connections:
+            if client:
+                close_tasks.append(self._safe_close(client, server))
+        
+        if close_tasks:
+            await asyncio.gather(*close_tasks, return_exceptions=True)
+        
+        self._active_connections.clear()
+        
+        self.logger.info(f"Worker {self.worker_id} 所有连接已关闭")
+    
+    async def _safe_close(self, client, server: str):
+        """安全关闭连接"""
+        try:
+            await client.close()
+            self.logger.debug(f"Worker {self.worker_id} 关闭连接 {server}")
+        except Exception as e:
+            self.logger.debug(f"Worker {self.worker_id} 关闭连接 {server} 失败: {e}")
+    
+    def get_active_count(self) -> int:
+        """获取活跃连接数"""
+        return len(self._active_connections)
+```
+
+**优势分析**:
+
+1. **统一管理**:集中管理连接生命周期,避免资源泄漏
+2. **自动重试**:连接失败自动重试,提高成功率
+3. **健康检查**:可选的健康检查,确保连接可用
+4. **批量操作**:支持批量创建和关闭,提高效率
+5. **异常安全**:确保即使异常也能正确释放资源
+
+---
+
+### 2.2 下载策略规则
 
 #### 2.1.1 两段式下载策略
 
@@ -778,7 +1950,521 @@ task_logger.log_download_result(
 
 > **架构设计参考**：验证器架构、多进程设计请参考 [最佳实践文档 - 2.4 data_quality.py](./data_module_vnpy新架构最佳实践cursor版.md#24-data_qualitypy---数据质量管理模块)
 
-### 3.1 数据完整性验证
+### 3.1 微观架构设计
+
+#### 3.1.1 验证器组合架构
+
+**设计目标**:
+- 将数据验证逻辑模块化为多个独立验证器
+- 每个验证器专注于一个验证维度
+- 支持验证结果的聚合和评分计算
+- 便于扩展和测试
+
+**核心类设计**:
+
+```python
+from abc import ABC, abstractmethod
+from typing import List, Dict, Any, Optional, Tuple
+from dataclasses import dataclass, field
+from datetime import date
+import pandas as pd
+
+@dataclass
+class ValidationError:
+    """验证错误数据模型"""
+    type: str  # 错误类型
+    severity: str  # 严重程度: error/warning
+    message: str  # 错误消息
+    date: Optional[date] = None  # 相关日期
+    column: Optional[str] = None  # 相关列
+    value: Optional[Any] = None  # 错误值
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class ValidationResult:
+    """验证结果数据模型"""
+    validator_name: str
+    is_valid: bool
+    score: float  # 0-100分
+    errors: List[ValidationError] = field(default_factory=list)
+    warnings: List[ValidationError] = field(default_factory=list)
+    statistics: Dict[str, Any] = field(default_factory=dict)
+
+class BaseValidator(ABC):
+    """验证器基类"""
+    
+    @abstractmethod
+    def validate(self, df: pd.DataFrame, context: 'ValidationContext') -> ValidationResult:
+        """执行验证
+        
+        Args:
+            df: 待验证的DataFrame
+            context: 验证上下文(共享数据)
+            
+        Returns:
+            验证结果
+        """
+        pass
+    
+    @abstractmethod
+    def get_validator_name(self) -> str:
+        """获取验证器名称"""
+        pass
+    
+    @abstractmethod
+    def get_weight(self) -> float:
+        """获取验证器权重(0-1)"""
+        pass
+
+class FormatValidator(BaseValidator):
+    """格式验证器"""
+    
+    def validate(self, df: pd.DataFrame, context: 'ValidationContext') -> ValidationResult:
+        """验证DataFrame格式
+        
+        验证项:
+        - 必需列是否存在
+        - 数据类型是否正确
+        - 是否存在空值
+        """
+        errors = []
+        warnings = []
+        
+        # 1. 必需列检查
+        required_columns = ['datetime', 'open', 'high', 'low', 'close', 'volume']
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        
+        if missing_columns:
+            errors.append(ValidationError(
+                type="missing_columns",
+                severity="error",
+                message=f"缺少必需列: {missing_columns}"
+            ))
+        
+        # 2. 数据类型检查
+        if 'datetime' in df.columns:
+            if not pd.api.types.is_datetime64_any_dtype(df['datetime']):
+                errors.append(ValidationError(
+                    type="invalid_datetime",
+                    severity="error",
+                    message="datetime列不是日期时间类型"
+                ))
+        
+        # 3. 数值列检查
+        numeric_columns = ['open', 'high', 'low', 'close', 'volume']
+        for col in numeric_columns:
+            if col in df.columns:
+                if not pd.api.types.is_numeric_dtype(df[col]):
+                    errors.append(ValidationError(
+                        type="invalid_numeric",
+                        severity="error",
+                        column=col,
+                        message=f"{col}列不是数值类型"
+                    ))
+                
+                # 4. 空值检查
+                elif df[col].isna().any():
+                    na_count = df[col].isna().sum()
+                    errors.append(ValidationError(
+                        type="null_values",
+                        severity="error",
+                        column=col,
+                        message=f"{col}列包含{na_count}个空值"
+                    ))
+        
+        # 计算评分
+        score = 100.0 if not errors else max(0, 100 - len(errors) * 20)
+        
+        return ValidationResult(
+            validator_name=self.get_validator_name(),
+            is_valid=len(errors) == 0,
+            score=score,
+            errors=errors,
+            warnings=warnings,
+            statistics={'total_columns': len(df.columns)}
+        )
+    
+    def get_validator_name(self) -> str:
+        return "格式验证器"
+    
+    def get_weight(self) -> float:
+        return 0.3  # 30%权重
+
+class LogicValidator(BaseValidator):
+    """逻辑验证器"""
+    
+    def validate(self, df: pd.DataFrame, context: 'ValidationContext') -> ValidationResult:
+        """验证OHLC逻辑关系
+        
+        验证项:
+        - 最高价 >= 最低价
+        - 最高价 >= 开盘价/收盘价
+        - 最低价 <= 开盘价/收盘价
+        - 价格合理性
+        """
+        errors = []
+        warnings = []
+        
+        if all(col in df.columns for col in ['open', 'high', 'low', 'close']):
+            # 1. 最高价 >= 最低价
+            invalid_high_low = df[df['high'] < df['low']]
+            for idx, row in invalid_high_low.iterrows():
+                try:
+                    idx_date = pd.Timestamp(idx).date() if pd.notna(idx) else None
+                except (ValueError, TypeError):
+                    idx_date = None
+                
+                errors.append(ValidationError(
+                    type="high_low_error",
+                    severity="error",
+                    date=idx_date,
+                    message=f"最高价小于最低价: high={row['high']}, low={row['low']}"
+                ))
+            
+            # 2. 最高价 >= 开盘价/收盘价
+            invalid_high_open = df[df['high'] < df['open']]
+            invalid_high_close = df[df['high'] < df['close']]
+            
+            if not invalid_high_open.empty:
+                errors.append(ValidationError(
+                    type="high_less_than_open",
+                    severity="error",
+                    message=f"最高价小于开盘价,共{len(invalid_high_open)}条"
+                ))
+            
+            # 3. 价格合理性检查(警告级别)
+            invalid_open = df[df['open'] <= 0]
+            invalid_close = df[df['close'] <= 0]
+            
+            if not invalid_open.empty:
+                warnings.append(ValidationError(
+                    type="invalid_price",
+                    severity="warning",
+                    message=f"存在开盘价<=0的情况,共{len(invalid_open)}条"
+                ))
+        
+        # 计算评分
+        total_errors = len(errors)
+        score = 100.0 if total_errors == 0 else max(0, 100 - total_errors * 10)
+        
+        return ValidationResult(
+            validator_name=self.get_validator_name(),
+            is_valid=len(errors) == 0,
+            score=score,
+            errors=errors,
+            warnings=warnings,
+            statistics={'total_rows': len(df)}
+        )
+    
+    def get_validator_name(self) -> str:
+        return "逻辑验证器"
+    
+    def get_weight(self) -> float:
+        return 0.2  # 20%权重
+
+class CompletenessValidator(BaseValidator):
+    """完整性验证器"""
+    
+    def validate(self, df: pd.DataFrame, context: 'ValidationContext') -> ValidationResult:
+        """验证数据完整性
+        
+        验证项:
+        - 交易日数据缺失
+        - 数据记录数量
+        """
+        errors = []
+        warnings = []
+        
+        # 1. 计算有效起始日期
+        symbol = context.current_symbol
+        effective_start = self._compute_effective_start_date(
+            symbol=symbol,
+            data_start=df['datetime'].min().date() if not df.empty else None,
+            base_date=context.base_date,
+            ipo_dates=context.ipo_dates
+        )
+        
+        # 2. 获取期间内所有交易日
+        check_end_date = min(df['datetime'].max().date() if not df.empty else date.today(),
+                            context.latest_trading_day)
+        
+        if effective_start > check_end_date:
+            # 日期范围异常
+            return ValidationResult(
+                validator_name=self.get_validator_name(),
+                is_valid=False,
+                score=0,
+                errors=[ValidationError(
+                    type="date_range_error",
+                    severity="error",
+                    message=f"日期范围异常: 有效起点({effective_start}) > 检测终点({check_end_date})"
+                )]
+            )
+        
+        expected_trading_days = context.get_trading_days_in_range(effective_start, check_end_date)
+        actual_dates = set(df['datetime'].dt.date)
+        
+        # 3. 找出缺失的交易日
+        missing_dates = [d for d in expected_trading_days if d not in actual_dates]
+        
+        if missing_dates:
+            errors.append(ValidationError(
+                type="missing_trading_days",
+                severity="error",
+                message=f"缺失{len(missing_dates)}个交易日"
+            ))
+        
+        # 4. 计算完整性评分
+        if expected_trading_days:
+            completeness = ((len(expected_trading_days) - len(missing_dates)) / 
+                          len(expected_trading_days)) * 100
+        else:
+            completeness = 0
+        
+        return ValidationResult(
+            validator_name=self.get_validator_name(),
+            is_valid=len(missing_dates) == 0,
+            score=completeness,
+            errors=errors,
+            warnings=warnings,
+            statistics={
+                'expected_days': len(expected_trading_days),
+                'actual_days': len(actual_dates),
+                'missing_days': len(missing_dates)
+            }
+        )
+    
+    def _compute_effective_start_date(self, symbol, data_start, base_date, ipo_dates) -> date:
+        """计算有效起始日期"""
+        ipo_date = ipo_dates.get(symbol) if symbol else None
+        
+        candidates = []
+        if ipo_date:
+            candidates.append(ipo_date)
+        if data_start:
+            candidates.append(data_start)
+        if base_date:
+            candidates.append(base_date)
+        
+        return max(candidates) if candidates else date(2020, 1, 1)
+    
+    def get_validator_name(self) -> str:
+        return "完整性验证器"
+    
+    def get_weight(self) -> float:
+        return 0.3  # 30%权重
+
+class FreshnessValidator(BaseValidator):
+    """新鲜度验证器"""
+    
+    def validate(self, df: pd.DataFrame, context: 'ValidationContext') -> ValidationResult:
+        """验证数据新鲜度
+        
+        验证项:
+        - 数据最新日期与最新交易日的滞后天数
+        """
+        errors = []
+        warnings = []
+        
+        if df.empty:
+            return ValidationResult(
+                validator_name=self.get_validator_name(),
+                is_valid=False,
+                score=0,
+                errors=[ValidationError(
+                    type="empty_data",
+                    severity="error",
+                    message="数据为空"
+                )]
+            )
+        
+        # 1. 获取数据最新日期
+        latest_data_date = df['datetime'].dt.date.max()
+        latest_trading_day = context.latest_trading_day
+        
+        # 2. 计算滞后天数(使用粗略估算)
+        if latest_data_date >= latest_trading_day:
+            gap_days = 0
+        else:
+            calendar_gap = (latest_trading_day - latest_data_date).days
+            gap_days = max(0, int(calendar_gap / 1.4))  # 粗略估算
+        
+        # 3. 判断新鲜度
+        is_fresh = gap_days <= 1  # 允许1个交易日延迟
+        
+        # 4. 计算评分
+        if gap_days == 0:
+            score = 100.0
+        elif gap_days <= 1:
+            score = 95.0
+        elif gap_days <= context.freshness_days_warning:
+            score = max(70.0, 95.0 - (gap_days - 1) * 5)
+        elif gap_days <= context.freshness_days_error:
+            score = max(30.0, 70.0 - (gap_days - context.freshness_days_warning) * 10)
+        else:
+            score = 0.0
+        
+        # 5. 生成错误/警告
+        if gap_days > context.freshness_days_error:
+            errors.append(ValidationError(
+                type="stale_data",
+                severity="error",
+                message=f"数据过旧,滞后{gap_days}个交易日"
+            ))
+        elif gap_days > context.freshness_days_warning:
+            warnings.append(ValidationError(
+                type="outdated_data",
+                severity="warning",
+                message=f"数据较旧,滞后{gap_days}个交易日"
+            ))
+        
+        return ValidationResult(
+            validator_name=self.get_validator_name(),
+            is_valid=is_fresh,
+            score=score,
+            errors=errors,
+            warnings=warnings,
+            statistics={
+                'latest_data_date': str(latest_data_date),
+                'latest_trading_day': str(latest_trading_day),
+                'gap_days': gap_days
+            }
+        )
+    
+    def get_validator_name(self) -> str:
+        return "新鲜度验证器"
+    
+    def get_weight(self) -> float:
+        return 0.2  # 20%权重
+```
+
+#### 3.1.2 验证结果聚合器架构
+
+**设计目标**:
+- 聚合多个验证器的结果
+- 计算加权综合评分
+- 生成统一的质量报告
+
+**核心类设计**:
+
+```python
+@dataclass
+class AggregatedValidationResult:
+    """聚合验证结果"""
+    symbol: str
+    interval: str
+    overall_score: float  # 0-100
+    is_valid: bool
+    validator_results: Dict[str, ValidationResult] = field(default_factory=dict)
+    total_errors: int = 0
+    total_warnings: int = 0
+    statistics: Dict[str, Any] = field(default_factory=dict)
+
+class ValidationResultAggregator:
+    """验证结果聚合器
+    
+    聚合多个验证器的结果,计算加权综合评分
+    """
+    
+    def __init__(self, validators: List[BaseValidator]):
+        self.validators = validators
+        self._total_weight = sum(v.get_weight() for v in validators)
+    
+    def aggregate(self, results: Dict[str, ValidationResult], 
+                 symbol: str, interval: str) -> AggregatedValidationResult:
+        """聚合验证结果
+        
+        Args:
+            results: 验证器名称 -> 验证结果
+            symbol: 品种代码
+            interval: 周期
+            
+        Returns:
+            聚合验证结果
+        """
+        # 1. 计算加权综合评分
+        weighted_score = 0.0
+        total_errors = 0
+        total_warnings = 0
+        
+        for validator in self.validators:
+            validator_name = validator.get_validator_name()
+            result = results.get(validator_name)
+            
+            if result:
+                weight = validator.get_weight()
+                weighted_score += result.score * weight
+                total_errors += len(result.errors)
+                total_warnings += len(result.warnings)
+        
+        overall_score = weighted_score / self._total_weight if self._total_weight > 0 else 0
+        
+        # 2. 判断总体是否有效
+        is_valid = all(r.is_valid for r in results.values())
+        
+        # 3. 生成统计信息
+        statistics = {
+            'validator_count': len(results),
+            'passed_validators': sum(1 for r in results.values() if r.is_valid),
+            'failed_validators': sum(1 for r in results.values() if not r.is_valid)
+        }
+        
+        return AggregatedValidationResult(
+            symbol=symbol,
+            interval=interval,
+            overall_score=overall_score,
+            is_valid=is_valid,
+            validator_results=results,
+            total_errors=total_errors,
+            total_warnings=total_warnings,
+            statistics=statistics
+        )
+```
+
+**使用示例**:
+
+```python
+class StatelessValidator:
+    def __init__(self):
+        # 初始化验证器列表
+        self.validators = [
+            FormatValidator(),
+            LogicValidator(),
+            CompletenessValidator(),
+            FreshnessValidator()
+        ]
+        
+        # 初始化聚合器
+        self.aggregator = ValidationResultAggregator(self.validators)
+    
+    @staticmethod
+    def validate_symbol(symbol: str, interval: str, df: pd.DataFrame, 
+                       context: ValidationContext) -> AggregatedValidationResult:
+        """验证单个品种"""
+        # 设置当前品种
+        context.current_symbol = symbol
+        
+        # 执行所有验证器
+        results = {}
+        for validator in self.validators:
+            result = validator.validate(df, context)
+            results[validator.get_validator_name()] = result
+        
+        # 聚合结果
+        return self.aggregator.aggregate(results, symbol, interval)
+```
+
+**优势分析**:
+
+1. **模块化**: 每个验证维度独立实现,易于扩展
+2. **加权评分**: 支持不同维度的权重配置
+3. **统一接口**: 所有验证器遵循相同的接口规范
+4. **结果聚合**: 自动聚合多个验证结果,生成综合报告
+5. **便于测试**: 每个验证器可独立单元测试
+
+---
+
+### 3.2 数据完整性验证
 
 #### 3.1.1 格式验证规则
 
