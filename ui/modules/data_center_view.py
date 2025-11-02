@@ -10,11 +10,11 @@
     # 使用QThread + Signal/Slot
     class ReloadSymbolsThread(QThread):
         finished_signal = Signal(dict)
-        
+
         def run(self):
             result = self.data_center_service.reload_symbol_list()
             self.finished_signal.emit(result)
-    
+
     def on_reload_button_clicked(self):
         self.thread = ReloadSymbolsThread(self.service)
         self.thread.finished_signal.connect(self._on_reload_finished)
@@ -23,20 +23,20 @@
 可选异步实现(需要qasync):
     # 直接使用 await
     from ui.core.async_utils import async_slot
-    
+
     @async_slot
     async def on_reload_button_clicked_async(self):
         '''qasync版本:直接await,无需QThread'''
         try:
             self.reload_button.setEnabled(False)
             self.status_label.setText("正在加载...")
-            
+
             # 直接await异步操作(需要后端提供async版本)
             result = await self.service.reload_symbol_list_async()
-            
+
             # 更新UI
             self._on_reload_finished(result)
-            
+
         except Exception as e:
             logger_user.error(f"加载失败: {e}")
             self.status_label.setText(f"加载失败: {e}")
@@ -3802,8 +3802,8 @@ class DataCenter(BaseWidget, LoggerMixin):
                         self.data_center_service, "china_stock_engine", None
                     )
                     if china_stock_engine:
-                        # 直接调用验证方法获取最新的缺失品种列表
-                        from backend.infrastructure.data_module_vnpy.data_module import (
+                        # 🔧 修复：架构v3.0重构后，从core_engine导入
+                        from backend.infrastructure.data_module_vnpy import (
                             ValidationEventPublisher,
                         )
 

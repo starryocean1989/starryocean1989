@@ -8,6 +8,7 @@ import logging
 import time
 from collections import deque
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from PySide6.QtCore import (
@@ -2600,6 +2601,20 @@ class LogManagerWidget(QWidget):
 
 
 # ==================== 系统管理主界面 ====================
+
+
+def get_root() -> Path:
+    """获取项目根目录路径
+
+    Returns:
+        项目根目录的Path对象
+    """
+    # 通过当前文件的路径向上查找项目根目录
+    # system_manager_view.py 位于 ui/modules/
+    # 需要向上2级到达项目根目录
+    current_file = Path(__file__)
+    root_path = current_file.parent.parent.parent
+    return root_path
 
 
 class SystemManager(BaseWidget, LoggerMixin):
@@ -7312,27 +7327,50 @@ class SystemManager(BaseWidget, LoggerMixin):
                 data_dir = data_config.get("data_dir", "./data/kline")
                 self.data_dir_edit.setText(data_dir)
             if self.base_date_edit:
-                base_date_str = data_config.get("base_date", "2020-01-01")
+                base_date_str = data_config.get("base_date") or "2020-01-01"  # 🔧 修复：处理 None 值
                 try:
-                    parts = base_date_str.split("-")
-                    if len(parts) == 3:
-                        self.base_date_edit.setDate(
-                            QDate(int(parts[0]), int(parts[1]), int(parts[2]))
-                        )
+                    if base_date_str and isinstance(base_date_str, str):
+                        parts = base_date_str.split("-")
+                        if len(parts) == 3:
+                            self.base_date_edit.setDate(
+                                QDate(int(parts[0]), int(parts[1]), int(parts[2]))
+                            )
+                        else:
+                            self.base_date_edit.setDate(QDate(2020, 1, 1))
                     else:
                         self.base_date_edit.setDate(QDate(2020, 1, 1))
-                except (ValueError, IndexError):
+                except (ValueError, IndexError, AttributeError, TypeError):
                     self.base_date_edit.setDate(QDate(2020, 1, 1))
             if self.max_workers_spin:
-                self.max_workers_spin.setValue(data_config.get("max_workers", 10))
+                # 🔧 修复：处理 None 值，确保传递给 setValue 的是 int 类型
+                max_workers = data_config.get("max_workers") or 10
+                if isinstance(max_workers, int):
+                    self.max_workers_spin.setValue(max_workers)
+                else:
+                    self.max_workers_spin.setValue(10)
             if self.timeout_spin:
-                self.timeout_spin.setValue(data_config.get("timeout", 30))
+                # 🔧 修复：处理 None 值，确保传递给 setValue 的是 int 类型
+                timeout = data_config.get("timeout") or 30
+                if isinstance(timeout, int):
+                    self.timeout_spin.setValue(timeout)
+                else:
+                    self.timeout_spin.setValue(30)
             if self.retry_spin:
-                self.retry_spin.setValue(data_config.get("retry_times", 3))
+                # 🔧 修复：处理 None 值，确保传递给 setValue 的是 int 类型
+                retry_times = data_config.get("retry_times") or 3
+                if isinstance(retry_times, int):
+                    self.retry_spin.setValue(retry_times)
+                else:
+                    self.retry_spin.setValue(3)
             if self.watcher_check:
-                self.watcher_check.setChecked(data_config.get("enable_watcher", True))
+                self.watcher_check.setChecked(data_config.get("enable_watcher") if data_config.get("enable_watcher") is not None else True)
             if self.watcher_interval_spin:
-                self.watcher_interval_spin.setValue(data_config.get("watcher_interval", 5))
+                # 🔧 修复：处理 None 值，确保传递给 setValue 的是 int 类型
+                watcher_interval = data_config.get("watcher_interval") or 5
+                if isinstance(watcher_interval, int):
+                    self.watcher_interval_spin.setValue(watcher_interval)
+                else:
+                    self.watcher_interval_spin.setValue(5)
 
             # 加载AI配置
             ai_config = configs.get("ai", {})
@@ -7346,17 +7384,33 @@ class SystemManager(BaseWidget, LoggerMixin):
                 model = ai_config.get("model", "deepseek-chat")
                 self.ai_model_combo.setCurrentText(model)
             if hasattr(self, "ai_max_tokens_spin") and self.ai_max_tokens_spin:
-                max_tokens = ai_config.get("max_tokens", 2000)
-                self.ai_max_tokens_spin.setValue(max_tokens)
+                # 🔧 修复：处理 None 值，确保传递给 setValue 的是 int 类型
+                max_tokens = ai_config.get("max_tokens") or 2000
+                if isinstance(max_tokens, int):
+                    self.ai_max_tokens_spin.setValue(max_tokens)
+                else:
+                    self.ai_max_tokens_spin.setValue(2000)
             if hasattr(self, "ai_temperature_slider") and self.ai_temperature_slider:
-                temperature = ai_config.get("temperature", 0.7)
-                self.ai_temperature_slider.setValue(int(temperature * 100))
+                # 🔧 修复：处理 None 值，确保传递给 setValue 的是 int 类型
+                temperature = ai_config.get("temperature") or 0.7
+                if isinstance(temperature, (int, float)):
+                    self.ai_temperature_slider.setValue(int(temperature * 100))
+                else:
+                    self.ai_temperature_slider.setValue(70)
             if hasattr(self, "ai_max_history_spin") and self.ai_max_history_spin:
-                max_history = ai_config.get("max_history", 10)
-                self.ai_max_history_spin.setValue(max_history)
+                # 🔧 修复：处理 None 值，确保传递给 setValue 的是 int 类型
+                max_history = ai_config.get("max_history") or 10
+                if isinstance(max_history, int):
+                    self.ai_max_history_spin.setValue(max_history)
+                else:
+                    self.ai_max_history_spin.setValue(10)
             if hasattr(self, "ai_timeout_spin") and self.ai_timeout_spin:
-                timeout = ai_config.get("timeout", 30)
-                self.ai_timeout_spin.setValue(timeout)
+                # 🔧 修复：处理 None 值，确保传递给 setValue 的是 int 类型
+                timeout = ai_config.get("timeout") or 30
+                if isinstance(timeout, int):
+                    self.ai_timeout_spin.setValue(timeout)
+                else:
+                    self.ai_timeout_spin.setValue(30)
 
             if hasattr(self, "ai_enable_tools_check") and self.ai_enable_tools_check:
                 enable_tools = ai_config.get("enable_tools", False)
@@ -7372,12 +7426,15 @@ class SystemManager(BaseWidget, LoggerMixin):
         """加载默认配置."""
         try:
             # 数据中心默认配置
+            root_dir = get_root()
             if self.tdx_path_edit:
                 self.tdx_path_edit.setText("")
             if self.cache_dir_edit:
-                self.cache_dir_edit.setText("./data/cache")
+                # 🔧 非用户配置项：使用相对路径（基于项目根目录）
+                self.cache_dir_edit.setText("data/cache")
             if self.data_dir_edit:
-                self.data_dir_edit.setText("./data/kline")
+                # 🔧 非用户配置项：使用相对路径（基于项目根目录）
+                self.data_dir_edit.setText("data/kline")
             if self.base_date_edit:
                 self.base_date_edit.setDate(QDate(2020, 1, 1))
             if self.max_workers_spin:
@@ -7536,13 +7593,52 @@ class SystemManager(BaseWidget, LoggerMixin):
                 return
 
             # 收集数据中心配置
+            root_dir = get_root()
             data_center_config = {}
+
+            # 🔧 用户配置项：通达信路径（保存绝对路径）
             if self.tdx_path_edit and self.tdx_path_edit.text():
-                data_center_config["tdx_dir"] = self.tdx_path_edit.text()
+                tdx_dir = self.tdx_path_edit.text().strip()
+                if tdx_dir:
+                    # 用户配置项保存绝对路径
+                    tdx_path = Path(tdx_dir)
+                    if not tdx_path.is_absolute():
+                        # 如果是相对路径，转换为绝对路径（基于当前工作目录）
+                        tdx_path = Path.cwd() / tdx_path
+                    data_center_config["tdx_dir"] = str(tdx_path.resolve())
+
+            # 🔧 非用户配置项：缓存目录和数据目录（保存相对路径，基于项目根目录）
             if self.cache_dir_edit and self.cache_dir_edit.text():
-                data_center_config["cache_dir"] = self.cache_dir_edit.text()
+                cache_dir = self.cache_dir_edit.text().strip()
+                if cache_dir:
+                    cache_path = Path(cache_dir)
+                    # 如果是绝对路径，尝试转换为相对路径（相对于项目根目录）
+                    if cache_path.is_absolute():
+                        try:
+                            rel_path = cache_path.relative_to(root_dir)
+                            data_center_config["cache_dir"] = str(rel_path).replace("\\", "/")
+                        except ValueError:
+                            # 无法转换为相对路径，保存绝对路径（向后兼容）
+                            data_center_config["cache_dir"] = str(cache_path.resolve())
+                    else:
+                        # 已经是相对路径，直接保存（确保使用正斜杠）
+                        data_center_config["cache_dir"] = cache_dir.replace("\\", "/")
+
             if self.data_dir_edit and self.data_dir_edit.text():
-                data_center_config["data_dir"] = self.data_dir_edit.text()
+                data_dir = self.data_dir_edit.text().strip()
+                if data_dir:
+                    data_path = Path(data_dir)
+                    # 如果是绝对路径，尝试转换为相对路径（相对于项目根目录）
+                    if data_path.is_absolute():
+                        try:
+                            rel_path = data_path.relative_to(root_dir)
+                            data_center_config["data_dir"] = str(rel_path).replace("\\", "/")
+                        except ValueError:
+                            # 无法转换为相对路径，保存绝对路径（向后兼容）
+                            data_center_config["data_dir"] = str(data_path.resolve())
+                    else:
+                        # 已经是相对路径，直接保存（确保使用正斜杠）
+                        data_center_config["data_dir"] = data_dir.replace("\\", "/")
             if self.base_date_edit:
                 data_center_config["base_date"] = self.base_date_edit.date().toString("yyyy-MM-dd")
             if self.max_workers_spin:
@@ -7686,15 +7782,39 @@ class SystemManager(BaseWidget, LoggerMixin):
 
     def _browse_cache_dir(self):
         """浏览缓存目录."""
-        dir_path = QFileDialog.getExistingDirectory(self, "选择品种缓存目录")
+        root_dir = get_root()
+        # 🔧 默认从项目根目录的 data/cache 开始
+        default_dir = str(root_dir / "data" / "cache")
+        dir_path = QFileDialog.getExistingDirectory(
+            self, "选择品种缓存目录", default_dir
+        )
         if dir_path and self.cache_dir_edit:
-            self.cache_dir_edit.setText(dir_path)
+            dir_path_obj = Path(dir_path)
+            # 🔧 尝试转换为相对路径显示（相对于项目根目录）
+            try:
+                rel_path = dir_path_obj.relative_to(root_dir)
+                self.cache_dir_edit.setText(str(rel_path).replace("\\", "/"))
+            except ValueError:
+                # 无法转换为相对路径，显示绝对路径
+                self.cache_dir_edit.setText(dir_path)
 
     def _browse_data_dir(self):
         """浏览数据目录."""
-        dir_path = QFileDialog.getExistingDirectory(self, "选择K线数据目录")
+        root_dir = get_root()
+        # 🔧 默认从项目根目录的 data/kline 开始
+        default_dir = str(root_dir / "data" / "kline")
+        dir_path = QFileDialog.getExistingDirectory(
+            self, "选择K线数据目录", default_dir
+        )
         if dir_path and self.data_dir_edit:
-            self.data_dir_edit.setText(dir_path)
+            dir_path_obj = Path(dir_path)
+            # 🔧 尝试转换为相对路径显示（相对于项目根目录）
+            try:
+                rel_path = dir_path_obj.relative_to(root_dir)
+                self.data_dir_edit.setText(str(rel_path).replace("\\", "/"))
+            except ValueError:
+                # 无法转换为相对路径，显示绝对路径
+                self.data_dir_edit.setText(dir_path)
 
     # ==================== 日志管理方法 ====================
 

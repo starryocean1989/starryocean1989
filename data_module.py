@@ -358,20 +358,17 @@ class DailyCacheManager:
         """动态获取缓存目录（绝对路径）
 
         优先从 config_manager 获取，确保使用用户配置的绝对路径
-
-        注意：不能在此方法内导入config_manager，因为config_manager在模块级别
-        尚未初始化。因此使用降级方案直接计算路径。
         """
         try:
-            # 使用 get_project_root() 计算缓存目录
-            project_root = get_project_root()
-            cache_dir = project_root / "data" / "cache"
-            cache_dir.mkdir(parents=True, exist_ok=True)
-            return cache_dir
-        except Exception as e:
-            # 最终降级：使用当前工作目录
-            logger_cache.warning("获取缓存目录失败: %s，使用当前工作目录", e)
-            cache_dir = Path.cwd() / "data" / "cache"
+            # 延迟导入避免循环依赖
+            from backend.infrastructure.data_module_vnpy.data_module import config_manager
+
+            return config_manager.get_cache_dir()
+        except Exception:
+            # 降级方案：使用 get_project_root()
+            from backend.infrastructure.data_module_vnpy.data_module import get_project_root
+
+            cache_dir = get_project_root() / "data" / "cache"
             cache_dir.mkdir(parents=True, exist_ok=True)
             return cache_dir
 
@@ -646,7 +643,6 @@ EVENT_DATA_SCAN_FINISHED = "eDataScanFinished"
 EVENT_SYMBOL_CACHE_LOADED = "eSymbolCacheLoaded"
 EVENT_IPO_CACHE_UPDATED = "eIPOCacheUpdated"
 EVENT_VALIDATION_COMPLETED = "eValidationCompleted"
-EVENT_UNIFIED_DATA_MANAGER_READY = "eUnifiedDataManagerReady"
 
 # 应用名称
 APP_NAME = "ChinaStock"
@@ -835,6 +831,7 @@ class QualityEventPublisher(EventPublisher):
                 "engine": self.app_name,
                 # 添加所有必要字段
                 "outdated_symbols": getattr(overview, "outdated_symbols", 0),
+                "avg_gap_days": getattr(overview, "avg_gap_days", 0),
                 "data_missing_symbols": getattr(overview, "data_missing_symbols", 0),
                 "data_lagging_days": getattr(overview, "data_lagging_days", 0),
                 "details": getattr(overview, "details", []),
@@ -2119,75 +2116,58 @@ class ChinaStockEngine(BaseEngine):
 
             # 步骤1：验证服务器池缓存 (10%) - 前置网络依赖
             self.logger.info("-" * 70, extra={"log_type": "stage_node"})
-            self.logger.info("【步骤1/9】验证服务器池缓存", extra={"log_type": "stage_node"})
+            self.logger.info("【步骤1/8】验证服务器池缓存", extra={"log_type": "stage_node"})
             self.logger.info("-" * 70, extra={"log_type": "stage_node"})
-            self.logger.info("[1/9] 验证服务器池缓存...", extra={"log_type": "stage_node"})
+            self.logger.info("[1/8] 验证服务器池缓存...", extra={"log_type": "stage_node"})
             self._validate_server_pool_cache()
             self.progress_emitter.progress_updated.emit("验证服务器池缓存", 10)
 
             # 步骤2：获取当前日期 (15%)
             self.logger.info("-" * 70, extra={"log_type": "stage_node"})
-            self.logger.info("【步骤2/9】获取当前日期", extra={"log_type": "stage_node"})
+            self.logger.info("【步骤2/8】获取当前日期", extra={"log_type": "stage_node"})
             self.logger.info("-" * 70, extra={"log_type": "stage_node"})
             today = date.today()
             self.logger.info(
-                "[2/9] 当前日期: %s", today.strftime("%Y-%m-%d"), extra={"log_type": "stage_node"}
+                "[2/8] 当前日期: %s", today.strftime("%Y-%m-%d"), extra={"log_type": "stage_node"}
             )
             self.progress_emitter.progress_updated.emit("获取当前日期", 15)
 
             # 步骤3：验证交易日历缓存 (25%)
             self.logger.info("-" * 70, extra={"log_type": "stage_node"})
-            self.logger.info("【步骤3/9】验证交易日历缓存", extra={"log_type": "stage_node"})
+            self.logger.info("【步骤3/8】验证交易日历缓存", extra={"log_type": "stage_node"})
             self.logger.info("-" * 70, extra={"log_type": "stage_node"})
-            self.logger.info("[3/9] 验证交易日历缓存...", extra={"log_type": "stage_node"})
+            self.logger.info("[3/8] 验证交易日历缓存...", extra={"log_type": "stage_node"})
             self._validate_trading_calendar_cache()
             self.progress_emitter.progress_updated.emit("验证交易日历缓存", 25)
 
             # 步骤4：验证品种列表缓存（只读） (35%)
             self.logger.info("-" * 70, extra={"log_type": "stage_node"})
-            self.logger.info("【步骤4/9】验证品种列表缓存", extra={"log_type": "stage_node"})
+            self.logger.info("【步骤4/8】验证品种列表缓存", extra={"log_type": "stage_node"})
             self.logger.info("-" * 70, extra={"log_type": "stage_node"})
-            self.logger.info("[4/9] 验证品种列表缓存...", extra={"log_type": "stage_node"})
+            self.logger.info("[4/8] 验证品种列表缓存...", extra={"log_type": "stage_node"})
             symbols_result = self._validate_symbol_cache_readonly()
             self.progress_emitter.progress_updated.emit("验证品种列表缓存", 35)
 
             # 推送品种列表加载完成事件
             if symbols_result:
-                symbol_count = len(symbols_result.get("all_symbols", []))
                 event_data = {
-                    "symbol_count": symbol_count,
+                    "symbol_count": len(symbols_result.get("all_symbols", [])),
                     "is_new": symbols_result.get("is_new", False),
                     "timestamp": datetime.now().isoformat(),
                 }
                 event = Event(EVENT_SYMBOL_CACHE_LOADED, event_data)
                 self.event_engine.put(event)
-                self.logger.info(
-                    f"📋 推送品种列表加载完成事件: symbol_count={symbol_count}",
-                    extra={"log_type": "stage_node"},
-                )
 
-            # 步骤5：验证UnifiedDataManager就绪 (40%)
+            # 步骤5：验证IPO日期缓存并增量更新 (45%)
             self.logger.info("-" * 70, extra={"log_type": "stage_node"})
-            self.logger.info(
-                "【步骤5/9】验证UnifiedDataManager就绪", extra={"log_type": "stage_node"}
-            )
+            self.logger.info("【步骤5/8】验证IPO日期缓存", extra={"log_type": "stage_node"})
             self.logger.info("-" * 70, extra={"log_type": "stage_node"})
-            self.logger.info(
-                "[5/9] 验证UnifiedDataManager数据接口...", extra={"log_type": "stage_node"}
-            )
-            self._validate_unified_data_manager()
-            self.progress_emitter.progress_updated.emit("验证UnifiedDataManager就绪", 40)
-
-            # 步骤6：验证IPO日期缓存并增量更新 (50%)
-            self.logger.info("-" * 70, extra={"log_type": "stage_node"})
-            self.logger.info("【步骤6/9】验证IPO日期缓存", extra={"log_type": "stage_node"})
-            self.logger.info("-" * 70, extra={"log_type": "stage_node"})
-            self.logger.info("[6/9] 验证IPO日期缓存...", extra={"log_type": "stage_node"})
+            self.logger.info("[5/8] 验证IPO日期缓存...", extra={"log_type": "stage_node"})
             all_symbols = []
             if symbols_result and symbols_result.get("all_symbols"):
                 all_symbols = symbols_result["all_symbols"]
                 self._validate_and_update_ipo_cache(all_symbols)
-            self.progress_emitter.progress_updated.emit("验证IPO日期缓存", 50)
+            self.progress_emitter.progress_updated.emit("验证IPO日期缓存", 45)
 
             # 推送IPO缓存更新完成事件
             event_data = {
@@ -2197,27 +2177,27 @@ class ChinaStockEngine(BaseEngine):
             event = Event(EVENT_IPO_CACHE_UPDATED, event_data)
             self.event_engine.put(event)
 
-            # 步骤7：更新本地数据索引（含失效品种池维护）(60%)
+            # 步骤6：更新本地数据索引（含失效品种池维护）(55%)
             self.logger.info("-" * 70, extra={"log_type": "stage_node"})
-            self.logger.info("【步骤7/9】更新本地数据索引", extra={"log_type": "stage_node"})
+            self.logger.info("【步骤6/8】更新本地数据索引", extra={"log_type": "stage_node"})
             self.logger.info("-" * 70, extra={"log_type": "stage_node"})
-            self.logger.info("[7/9] 更新本地数据索引...", extra={"log_type": "stage_node"})
+            self.logger.info("[6/8] 更新本地数据索引...", extra={"log_type": "stage_node"})
             self._update_local_data_index(all_symbols)
-            self.progress_emitter.progress_updated.emit("更新本地数据索引", 60)
+            self.progress_emitter.progress_updated.emit("更新本地数据索引", 55)
 
-            # 步骤8：检查数据更新状态 (80%)
+            # 步骤7：检查数据更新状态 (60%-75%)
             self.logger.info("-" * 70, extra={"log_type": "stage_node"})
-            self.logger.info("【步骤8/9】检查数据更新状态", extra={"log_type": "stage_node"})
+            self.logger.info("【步骤7/8】检查数据更新状态", extra={"log_type": "stage_node"})
             self.logger.info("-" * 70, extra={"log_type": "stage_node"})
-            self.logger.info("[8/9] 检查数据更新状态...", extra={"log_type": "stage_node"})
+            self.logger.info("[7/8] 检查数据更新状态...", extra={"log_type": "stage_node"})
             self._check_data_update_status(all_symbols)
-            self.progress_emitter.progress_updated.emit("检查数据更新状态", 80)
+            self.progress_emitter.progress_updated.emit("检查数据更新状态", 75)
 
-            # 步骤9：启动文件监控 (100%)
+            # 步骤8：启动文件监控 (100%)
             self.logger.info("-" * 70, extra={"log_type": "stage_node"})
-            self.logger.info("【步骤9/9】启动文件监控", extra={"log_type": "stage_node"})
+            self.logger.info("【步骤8/8】启动文件监控", extra={"log_type": "stage_node"})
             self.logger.info("-" * 70, extra={"log_type": "stage_node"})
-            self.logger.info("[9/9] 启动文件监控...", extra={"log_type": "stage_node"})
+            self.logger.info("[8/8] 启动文件监控...", extra={"log_type": "stage_node"})
             self.data_sensor.start_file_watcher()
 
             # 推送文件监控启动事件
@@ -2453,73 +2433,6 @@ class ChinaStockEngine(BaseEngine):
             self.logger.error("验证服务器池缓存失败: %s", e, exc_info=True)
             raise RuntimeError(f"服务器池缓存验证异常: {e}")
 
-    def _validate_unified_data_manager(self):
-        """验证UnifiedDataManager数据接口就绪
-
-        检查机制：
-        1. 优先检查stock_list_classified.json（在线模式）
-        2. 如果不存在，降级到本地数据索引（离线模式）
-        3. 推送UDM就绪事件
-        """
-        try:
-            udm = self.get_unified_data_manager()
-            if not udm:
-                self.logger.warning("UnifiedDataManager未创建")
-                return False
-
-            cache_file = config_manager.get_cache_dir() / "stock_list_classified.json"
-
-            # 在线模式：检查品种列表缓存
-            if cache_file.exists():
-                contracts = udm.get_all_contracts()
-                if contracts:
-                    self.logger.info(
-                        "✅ UnifiedDataManager就绪（在线模式）：%d个合约可用", len(contracts)
-                    )
-                    self._push_udm_ready_event(len(contracts), mode="online")
-                    return True
-                else:
-                    self.logger.warning("品种列表缓存存在但get_all_contracts()返回空")
-
-            # 离线模式：降级到本地数据索引
-            self.logger.info("⚠️ 品种列表缓存不存在，启用离线模式")
-            local_index = self.storage_manager.get_local_data_index(use_cache=False)
-
-            if local_index:
-                self.logger.info(
-                    "✅ UnifiedDataManager就绪（离线模式）：%d个本地品种可用", len(local_index)
-                )
-                self._push_udm_ready_event(len(local_index), mode="offline")
-                return True
-            else:
-                self.logger.warning("⚠️ 本地数据索引为空，UnifiedDataManager功能受限")
-                self._push_udm_ready_event(0, mode="offline")
-                return False
-
-        except Exception as e:
-            self.logger.error("验证UnifiedDataManager失败: %s", e, exc_info=True)
-            return False
-
-    def _push_udm_ready_event(self, contract_count: int, mode: str):
-        """推送UnifiedDataManager就绪事件"""
-        from vnpy.event import Event
-        from datetime import datetime
-
-        event_data = {
-            "contract_count": contract_count,
-            "mode": mode,  # "online" or "offline"
-            "timestamp": datetime.now().isoformat(),
-        }
-        event = Event(EVENT_UNIFIED_DATA_MANAGER_READY, event_data)
-        self.event_engine.put(event)
-
-        self.logger.info(
-            "📢 UnifiedDataManager就绪事件已推送（%s模式，%d个品种）",
-            mode,
-            contract_count,
-            extra={"log_type": "stage_node"},
-        )
-
     def _validate_symbol_cache_readonly(self):
         """验证品种列表缓存并在失效时自动更新（步骤4专用：缓存为空或失效时立即重载）"""
         try:
@@ -2542,7 +2455,7 @@ class ChinaStockEngine(BaseEngine):
             cache_data, cache_date, is_valid = DailyCacheManager.load_with_validation(
                 "stock_list_classified.json"
             )
-
+            
             # 从SymbolLoader读取缓存数据
             classified = self.symbol_loader.get_all_classified()
             all_codes = self.symbol_loader.extract_all_codes()
@@ -2550,26 +2463,20 @@ class ChinaStockEngine(BaseEngine):
             # 🔧 检查缓存是否需要更新：缓存不存在/为空 或 已失效
             cache_missing_or_empty = not classified or len(classified) == 0 or len(all_codes) == 0
             cache_outdated = not is_valid and not cache_missing_or_empty
-
+            
             if cache_missing_or_empty or cache_outdated:
                 # 🔧 区分首次加载和失效更新两种场景
                 if cache_missing_or_empty:
                     self.logger.warning("品种列表缓存不存在或为空，开始首次加载...")
                     self.logger.info("   缓存状态: 不存在或数据为空")
                     self.logger.info("   操作: 首次加载（耗时约30秒）...")
-                    self.progress_emitter.progress_updated.emit(
-                        "加载品种列表（首次，耗时约30秒）", 36
-                    )
+                    self.progress_emitter.progress_updated.emit("加载品种列表（首次，耗时约30秒）", 36)
                 else:  # cache_outdated
-                    self.logger.warning(
-                        "品种列表缓存已失效（日期: %s），开始自动更新...", cache_date
-                    )
+                    self.logger.warning("品种列表缓存已失效（日期: %s），开始自动更新...", cache_date)
                     self.logger.info("   缓存状态: 已过时（日期: %s）", cache_date)
                     self.logger.info("   已缓存品种数: %d", len(all_codes))
                     self.logger.info("   操作: 自动更新（耗时约30秒）...")
-                    self.progress_emitter.progress_updated.emit(
-                        "更新品种列表（缓存已失效，耗时约30秒）", 36
-                    )
+                    self.progress_emitter.progress_updated.emit("更新品种列表（缓存已失效，耗时约30秒）", 36)
 
                 # 创建锁文件
                 try:
@@ -2590,7 +2497,7 @@ class ChinaStockEngine(BaseEngine):
                         raise RuntimeError("品种列表加载失败：品种数量为0")
 
                     self.logger.info("   ✓ 加载结果: 共%d个品种", len(all_codes))
-
+                    
                     # 🔧 区分成功日志消息
                     if cache_missing_or_empty:
                         self.logger.info(
@@ -2641,9 +2548,7 @@ class ChinaStockEngine(BaseEngine):
             cached_count = 0
             try:
                 # IPODateCache使用_memory_cache存储数据
-                cached_count = (
-                    len(ipo_cache._memory_cache) if hasattr(ipo_cache, "_memory_cache") else 0
-                )
+                cached_count = len(ipo_cache._memory_cache) if hasattr(ipo_cache, '_memory_cache') else 0
             except Exception as e:
                 self.logger.warning("查询JSON缓存记录数失败: %s", e)
 
@@ -2866,7 +2771,7 @@ class ChinaStockEngine(BaseEngine):
 
         1. 快速获取本地数据索引
         2. 计算差异：新增=参考集-本地，失效=本地-参考集
-        3. 仅在索引有变化时更新数据库中的本地数据索引和失效品种池
+        3. 更新数据库中的本地数据索引和失效品种池
         4. 推送指标更新事件
 
         Args:
@@ -2884,98 +2789,26 @@ class ChinaStockEngine(BaseEngine):
             new_symbols = list(reference_set - local_set)  # 新增
             invalid_symbols = list(local_set - reference_set)  # 失效
 
-            # 🔧 优化：检查索引是否有变化（对比数据库中的索引）
+            # 日志输出（符合v5.0规范：简洁的terminal输出）
+            self.logger.info(
+                "✓ 索引更新完成：参考=%d, 本地=%d, 新增=%d, 失效=%d",
+                len(reference_symbols),
+                len(local_symbols),
+                len(new_symbols),
+                len(invalid_symbols),
+                extra={"log_type": "stage_node"},
+            )
+
+            # 3. 更新数据库
             db_manager = get_db_manager()
-            db_index_symbols = set(db_manager.get_local_data_index())
-            db_invalid_symbols = set(db_manager.get_invalid_symbols())
+            db_manager.upsert_local_data_index(local_symbols)
+            db_manager.upsert_invalid_symbols(invalid_symbols, reason="not_in_reference")
 
-            # 检查本地数据索引是否有变化
-            local_index_changed = set(local_symbols) != db_index_symbols
-            # 检查失效品种是否有变化
-            invalid_changed = set(invalid_symbols) != db_invalid_symbols
-
-            has_changes = local_index_changed or invalid_changed
-
-            # 日志输出（区分检查完成和更新完成）
-            if has_changes:
-                self.logger.info(
-                    "✓ 索引更新完成：参考=%d, 本地=%d, 新增=%d, 失效=%d",
-                    len(reference_symbols),
-                    len(local_symbols),
-                    len(new_symbols),
-                    len(invalid_symbols),
-                    extra={"log_type": "stage_node"},
-                )
-            else:
-                self.logger.info(
-                    "✓ 索引检查完成：参考=%d, 本地=%d, 新增=%d, 失效=%d（无变化，跳过数据库更新）",
-                    len(reference_symbols),
-                    len(local_symbols),
-                    len(new_symbols),
-                    len(invalid_symbols),
-                    extra={"log_type": "stage_node"},
-                )
-
-            # 3. 仅在索引有变化时更新数据库
-            if has_changes:
-                db_manager.upsert_local_data_index(local_symbols)
-                db_manager.upsert_invalid_symbols(invalid_symbols, reason="not_in_reference")
-                self.logger.debug("数据库索引已更新（检测到变化）")
-            else:
-                self.logger.debug("数据库索引无需更新（与当前状态一致）")
-
-            # 4. 推送指标更新事件（包含详细品种列表）
+            # 4. 推送指标更新事件
             # 计算统计指标
             total_with_invalid = len(reference_symbols) + len(invalid_symbols)
             downloaded = len(reference_set & local_set)
             missing = len(reference_set - local_set)
-
-            # 🔧 关键修复：无论是否有缺失/失效，都要记录和推送（便于调试）
-            self.logger.info(
-                f"📊 [步骤7统计] 参考品种={len(reference_symbols)}, 本地品种={len(local_symbols)}, "
-                f"已下载={downloaded}, 品种缺失={missing}, 失效品种={len(invalid_symbols)}",
-                extra={"log_type": "stage_node"},
-            )
-
-            # 🆕 构建详细品种列表（供前端显示详细信息使用）
-            details_list = []
-
-            # 获取品种名称映射（从符号缓存）
-            symbol_name_map = {}
-            try:
-                symbols_result = self._validate_symbol_cache_readonly()
-                if symbols_result:
-                    all_symbols = symbols_result.get("all_symbols", [])
-                    for s in all_symbols:
-                        if isinstance(s, dict):
-                            symbol_name_map[s.get("symbol", "")] = s.get("name", "")
-            except Exception as e:
-                self.logger.debug(f"获取品种名称映射失败: {e}")
-
-            # 添加缺失品种的详细信息
-            missing_symbols = list(reference_set - local_set)
-            for symbol in missing_symbols:
-                details_list.append(
-                    {
-                        "symbol": symbol,
-                        "name": symbol_name_map.get(symbol, ""),
-                        "status": "missing",
-                        "issues": "本地无数据",
-                        "score": 0,  # 缺失数据评分为0
-                    }
-                )
-
-            # 添加失效品种的详细信息
-            for symbol in invalid_symbols:
-                details_list.append(
-                    {
-                        "symbol": symbol,
-                        "name": symbol_name_map.get(symbol, ""),
-                        "status": "invalid",
-                        "issues": "品种已失效（不在参考列表中）",
-                        "score": 0,  # 失效品种评分为0
-                    }
-                )
 
             metrics_data = {
                 "total_symbols": total_with_invalid,
@@ -2983,17 +2816,10 @@ class ChinaStockEngine(BaseEngine):
                 "downloaded": downloaded,
                 "missing": missing,
                 "invalid_count": len(invalid_symbols),
-                "details": details_list,  # 🆕 包含详细品种列表
                 "timestamp": datetime.now().isoformat(),
             }
             event = Event(EVENT_DATA_METRICS_UPDATED, metrics_data)
             self.event_engine.put(event)
-            self.logger.info(
-                f"📊 推送数据指标更新事件: 总品种={total_with_invalid}, "
-                f"已下载={downloaded}, 缺失={missing}, 失效={len(invalid_symbols)}, "
-                f"详情={len(details_list)}个品种",
-                extra={"log_type": "stage_node"},
-            )
 
             if invalid_symbols:
                 invalid_data = {
@@ -3003,10 +2829,6 @@ class ChinaStockEngine(BaseEngine):
                 }
                 event = Event(EVENT_INVALID_SYMBOLS_UPDATED, invalid_data)
                 self.event_engine.put(event)
-                self.logger.info(
-                    f"🗑️ 推送失效品种更新事件: 失效品种数={len(invalid_symbols)}",
-                    extra={"log_type": "stage_node"},
-                )
 
         except Exception as e:
             self.logger.exception("更新本地数据索引失败: %s", e)
@@ -3045,70 +2867,30 @@ class ChinaStockEngine(BaseEngine):
                 error_accumulator=None,  # 启动阶段不记录详细错误
             )
 
-            # 统计结果并收集详细信息
+            # 统计结果
             outdated_count = 0
             gap_days_list = []
-            outdated_details = []  # 🆕 收集过时品种的详细信息
-
-            # 获取品种名称映射（从符号缓存）
-            symbol_name_map = {}
-            try:
-                symbols_result = self._validate_symbol_cache_readonly()
-                if symbols_result:
-                    all_symbols = symbols_result.get("all_symbols", [])
-                    for s in all_symbols:
-                        if isinstance(s, dict):
-                            symbol_name_map[s.get("symbol", "")] = s.get("name", "")
-            except Exception as e:
-                self.logger.debug(f"获取品种名称映射失败: {e}")
 
             for symbol, freshness in freshness_results.items():
                 if freshness["has_data"]:
                     gap_days = freshness["gap_days"]
                     if gap_days > 1:  # 滞后超过1天算过时
                         outdated_count += 1
-                        # 🆕 添加到详细列表（供前端显示详细信息使用）
-                        outdated_details.append(
-                            {
-                                "symbol": symbol,
-                                "name": symbol_name_map.get(symbol, ""),
-                                "status": "outdated",
-                                "issues": f"数据滞后{gap_days}天",
-                                "score": max(0, 100 - gap_days * 10),  # 简单评分
-                            }
-                        )
                     if gap_days >= 0:
                         gap_days_list.append(gap_days)
 
+            avg_gap = int(sum(gap_days_list) / len(gap_days_list)) if gap_days_list else 0
             elapsed = time.time() - start_time
 
             # 简洁输出（符合v5.0规范）
             self.logger.info(
-                "✓ 数据新鲜度检查完成：已检查%d个品种，过时%d个（耗时%.1fs）",
+                "✓ 数据新鲜度检查完成：已检查%d个品种，过时%d个，平均滞后%d天（耗时%.1fs）",
                 len(symbols_to_check),
                 outdated_count,
+                avg_gap,
                 elapsed,
                 extra={"log_type": "stage_node"},
             )
-
-            # 🆕 推送过时数据指标到前端（包含详细品种列表）
-            if self.event_engine:
-                outdated_metrics = {
-                    "phase": 8,  # 步骤8：数据新鲜度检查
-                    "status": "complete",
-                    "metrics": {
-                        "checked": len(symbols_to_check),
-                        "outdated_symbols": outdated_count,
-                        "details": outdated_details,  # 🔧 修复：将details放入metrics中，与其他阶段保持一致
-                    },
-                    "timestamp": datetime.now().isoformat(),
-                }
-                event = Event(EVENT_QUALITY_SCAN_PHASE, outdated_metrics)
-                self.event_engine.put(event)
-                self.logger.info(
-                    f"📊 推送过时数据指标: 检查={len(symbols_to_check)}, 过时={outdated_count}, 详情={len(outdated_details)}个品种",
-                    extra={"log_type": "stage_node"},
-                )
 
         except Exception as e:
             self.logger.exception("检查数据更新状态失败: %s", e)
@@ -3196,7 +2978,6 @@ class ChinaStockEngine(BaseEngine):
         start_date: Union[str, date],
         market_types: Optional[List[str]] = None,
         use_adaptive: bool = True,
-        symbols: Optional[List[str]] = None,
     ) -> bool:
         """
         增量下载K线数据（代理调用）
@@ -3205,7 +2986,6 @@ class ChinaStockEngine(BaseEngine):
             start_date: 起始日期
             market_types: 市场类型列表
             use_adaptive: 是否使用自适应配置（默认True，企业级推荐）
-            symbols: 可选，指定品种列表（用于修复下载）。如果提供，将只下载这些品种。
 
         Returns:
             是否成功启动下载任务
@@ -3222,23 +3002,15 @@ class ChinaStockEngine(BaseEngine):
             ctx.set_stage("downloading")
 
             # 开始增量下载
-            if symbols:
-                self.logger_download.info(
-                    "开始增量下载: 起始日期=%s, 指定品种=%d个, 自适应=%s",
-                    start_date,
-                    len(symbols),
-                    use_adaptive,
-                )
-            else:
-                self.logger_download.info(
-                    "开始增量下载: 起始日期=%s, 市场=%s, 自适应=%s",
-                    start_date,
-                    market_types or "全部",
-                    use_adaptive,
-                )
+            self.logger_download.info(
+                "开始增量下载: 起始日期=%s, 市场=%s, 自适应=%s",
+                start_date,
+                market_types or "全部",
+                use_adaptive,
+            )
 
             result = self.stock_fetcher.start_incremental_download_async(
-                start_date, self.symbol_loader, self.storage_manager, market_types, use_adaptive, symbols
+                start_date, self.symbol_loader, self.storage_manager, market_types, use_adaptive
             )
 
             if result:
@@ -3531,7 +3303,6 @@ __all__ = [
     "EVENT_SYMBOL_CACHE_LOADED",
     "EVENT_IPO_CACHE_UPDATED",
     "EVENT_VALIDATION_COMPLETED",
-    "EVENT_UNIFIED_DATA_MANAGER_READY",
     "APP_NAME",
     # 配置管理
     "ConfigManager",

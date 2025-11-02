@@ -163,8 +163,9 @@ class TradingGatewayService(BaseService, LoggerMixin):
         # - on_trade(): 记录成交延迟
 
         # 配置文件路径（使用绝对路径）
-        from backend.infrastructure.data_module_vnpy.data_module import config_manager
+        from backend.infrastructure.data_module_vnpy import ConfigManager
 
+        config_manager = ConfigManager.get_instance()
         self.config_file = config_manager.get_config_file()
 
         # 数据库管理器（使用统一database）

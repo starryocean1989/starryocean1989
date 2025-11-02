@@ -3832,9 +3832,15 @@ class SystemManagerService(BaseService):
             # 从LoadBalancer获取真实自适应状态
             status = "auto_applied"  # 默认值
             try:
-                from backend.infrastructure.data_module_vnpy.load_balancer import get_load_balancer
+                from backend.infrastructure.data_module_vnpy.load_balancer import LoadBalancer
+                from backend.infrastructure.data_module_vnpy import ConfigManager
+                from backend.core.base import get_event_engine
 
-                lb = get_load_balancer()
+                event_engine = get_event_engine()
+                if event_engine:
+                    lb = LoadBalancer.get_instance(event_engine) if hasattr(LoadBalancer, 'get_instance') else LoadBalancer(ConfigManager.get_instance())
+                else:
+                    lb = LoadBalancer(ConfigManager.get_instance())
                 if hasattr(lb, "get_current_status"):
                     current_status = lb.get_current_status()
 
@@ -4938,8 +4944,9 @@ class SystemManagerService(BaseService):
     def _diagnose_database(self) -> Dict[str, Any]:
         """数据库诊断."""
         try:
-            from backend.infrastructure.data_module_vnpy.data_module import config_manager
+            from backend.infrastructure.data_module_vnpy import ConfigManager
 
+            config_manager = ConfigManager.get_instance()
             db_file = config_manager.get_db_file()
 
             if not db_file.exists():
@@ -5513,16 +5520,54 @@ class SystemManagerService(BaseService):
 
             # 1. 数据中心配置（来自data_module_vnpy）
             try:
-                from backend.infrastructure.data_module_vnpy.data_module import config_manager
+                from backend.infrastructure.data_module_vnpy import ConfigManager
+                from pathlib import Path
 
-                # 🔧 使用get_cache_dir()和get_data_dir()方法，自动转换相对路径为绝对路径并持久化
-                cache_dir = str(config_manager.get_cache_dir())
-                data_dir = str(config_manager.get_data_dir())
+                config_manager = ConfigManager.get_instance()
+
+                # 🔧 获取项目根目录
+                def get_root() -> Path:
+                    """获取项目根目录"""
+                    current_file = Path(__file__)
+                    # system_manager_service.py 位于 backend/services/
+                    # 需要向上2级到达项目根目录
+                    return current_file.parent.parent.parent
+
+                root_dir = get_root()
+
+                # 🔧 获取配置值（可能包含相对或绝对路径）
+                cache_dir_config = config_manager.get("paths.cache_dir", "data/cache")
+                data_dir_config = config_manager.get("paths.data_dir", "data/kline")
+                tdx_dir_config = config_manager.get("paths.tdx_dir", "")
+
+                # 🔧 非用户配置项：转换为相对路径显示（相对于项目根目录）
+                cache_dir_path = Path(cache_dir_config)
+                if cache_dir_path.is_absolute():
+                    try:
+                        cache_dir = str(cache_dir_path.relative_to(root_dir)).replace("\\", "/")
+                    except ValueError:
+                        # 无法转换为相对路径，保持绝对路径（向后兼容）
+                        cache_dir = cache_dir_config
+                else:
+                    cache_dir = cache_dir_config.replace("\\", "/")
+
+                data_dir_path = Path(data_dir_config)
+                if data_dir_path.is_absolute():
+                    try:
+                        data_dir = str(data_dir_path.relative_to(root_dir)).replace("\\", "/")
+                    except ValueError:
+                        # 无法转换为相对路径，保持绝对路径（向后兼容）
+                        data_dir = data_dir_config
+                else:
+                    data_dir = data_dir_config.replace("\\", "/")
+
+                # 🔧 用户配置项：tdx_dir 保持绝对路径
+                tdx_dir = tdx_dir_config if tdx_dir_config else ""
 
                 configs["data_center"] = {
-                    "cache_dir": cache_dir,  # 已转换为绝对路径
-                    "data_dir": data_dir,  # 已转换为绝对路径
-                    "tdx_dir": config_manager.get("chinastock.tdx_dir"),
+                    "cache_dir": cache_dir,  # 相对路径（基于项目根目录）
+                    "data_dir": data_dir,  # 相对路径（基于项目根目录）
+                    "tdx_dir": tdx_dir,  # 绝对路径（用户配置项）
                     "base_date": config_manager.get("chinastock.base_date"),
                     "max_workers": config_manager.get("chinastock.max_workers"),
                     "timeout": config_manager.get("chinastock.timeout"),
@@ -5622,14 +5667,63 @@ class SystemManagerService(BaseService):
 
             if module == "data_center":
                 # 更新data_module_vnpy配置
-                from backend.infrastructure.data_module_vnpy.data_module import config_manager
+                from backend.infrastructure.data_module_vnpy import ConfigManager
+                from pathlib import Path
 
-                # 转换为chinastock.前缀
-                chinastock_config = {}
+                config_manager = ConfigManager.get_instance()
+
+                # 🔧 获取项目根目录
+                def get_root() -> Path:
+                    """获取项目根目录"""
+                    current_file = Path(__file__)
+                    # system_manager_service.py 位于 backend/services/
+                    # 需要向上2级到达项目根目录
+                    return current_file.parent.parent.parent
+
+                root_dir = get_root()
+
+                # 🔧 处理路径配置：区分用户配置项和非用户配置项
+                processed_config = {}
+
                 for key, value in config_data.items():
-                    chinastock_config[f"chinastock.{key}"] = value
+                    if key == "tdx_dir":
+                        # 🔧 用户配置项：通达信路径保存绝对路径
+                        if value:
+                            tdx_path = Path(str(value))
+                            if not tdx_path.is_absolute():
+                                # 如果是相对路径，转换为绝对路径（基于当前工作目录）
+                                tdx_path = Path.cwd() / tdx_path
+                            processed_config["paths.tdx_dir"] = str(tdx_path.resolve())
+                        else:
+                            processed_config["paths.tdx_dir"] = ""
 
-                config_manager.update_config(chinastock_config)
+                    elif key in ["cache_dir", "data_dir"]:
+                        # 🔧 非用户配置项：缓存目录和数据目录保存相对路径（基于项目根目录）
+                        if value:
+                            config_path = Path(str(value))
+                            if config_path.is_absolute():
+                                # 如果是绝对路径，尝试转换为相对路径
+                                try:
+                                    rel_path = config_path.relative_to(root_dir)
+                                    processed_config[f"paths.{key}"] = str(rel_path).replace("\\", "/")
+                                except ValueError:
+                                    # 无法转换为相对路径，保存绝对路径（向后兼容）
+                                    processed_config[f"paths.{key}"] = str(config_path.resolve())
+                            else:
+                                # 已经是相对路径，直接保存（确保使用正斜杠）
+                                processed_config[f"paths.{key}"] = str(value).replace("\\", "/")
+                        else:
+                            # 空值使用默认值
+                            default_value = "data/cache" if key == "cache_dir" else "data/kline"
+                            processed_config[f"paths.{key}"] = default_value
+
+                    else:
+                        # 其他配置项（非路径）使用 chinastock. 前缀
+                        processed_config[f"chinastock.{key}"] = value
+
+                # 批量更新配置
+                for key, value in processed_config.items():
+                    config_manager.set(key, value)
 
             elif module in ["vnpy", "ai", "database", "network"]:
                 # 更新backend配置
@@ -5733,13 +5827,14 @@ class SystemManagerService(BaseService):
         """
         try:
             import json
-            from backend.infrastructure.data_module_vnpy.data_module import config_manager
+            from backend.infrastructure.data_module_vnpy import ConfigManager
 
+            config_manager = ConfigManager.get_instance()
             # 配置文件路径（使用绝对路径）
             config_file = config_manager.get_config_file()
 
             # 加载现有配置（如果存在）
-            if config_file.exists():
+            if config_file and config_file.exists():
                 with open(config_file, "r", encoding="utf-8") as f:
                     existing_config = json.load(f)
             else:
@@ -5775,11 +5870,12 @@ class SystemManagerService(BaseService):
         """
         try:
             import json
-            from backend.infrastructure.data_module_vnpy.data_module import config_manager
+            from backend.infrastructure.data_module_vnpy import ConfigManager
 
+            config_manager = ConfigManager.get_instance()
             config_file = config_manager.get_config_file()
 
-            if not config_file.exists():
+            if not config_file or not config_file.exists():
                 return {
                     "success": True,
                     "config": {},
@@ -6329,9 +6425,10 @@ class SystemManagerService(BaseService):
         try:
             # 从配置管理器获取通达信根目录
             try:
-                from backend.infrastructure.data_module_vnpy.data_module import config_manager
+                from backend.infrastructure.data_module_vnpy import ConfigManager
 
-                tdx_dir = config_manager.get_tdx_reader_root_dir()
+                config_manager = ConfigManager.get_instance()
+                tdx_dir = config_manager.get_tdx_dir()
             except Exception:
                 tdx_dir = None
 

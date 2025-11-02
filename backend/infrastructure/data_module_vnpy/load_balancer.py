@@ -60,12 +60,12 @@ class TaskConfig:
     name: str                    # 任务名称
     category: TaskCategory       # 任务类别
     total_count: int             # 任务总数
-    
+
     # 资源特征
     is_io_intensive: bool = True
     is_cpu_intensive: bool = False
     is_memory_intensive: bool = False
-    
+
     # 预估资源
     estimated_memory_mb: float = 100.0
     estimated_duration_sec: float = 60.0
@@ -78,12 +78,12 @@ class QueueMetrics:
     current_size: int          # 当前队列大小
     max_size: int              # 最大队列容量
     fill_rate: float           # 填充率（0-1）
-    
+
     # 背压相关指标
     enqueue_lag_ms: float = 0.0      # 入队延迟（毫秒）
     dequeue_lag_ms: float = 0.0      # 出队延迟（毫秒）
     avg_task_time_ms: float = 0.0    # 平均任务耗时（毫秒）
-    
+
     # 告警阈值
     HIGH_FILL_RATE = 0.8       # 80%填充率告警
     CRITICAL_FILL_RATE = 0.95  # 95%填充率严重告警
@@ -91,35 +91,35 @@ class QueueMetrics:
 
 class QueuePressureMonitor:
     """队列压力监控器（轻量级）
-    
+
     专注于磁盘I/O观察，作为木桶理论第四板：
     - 通过队列积压反映磁盘I/O瓶颈
     - 提供调整系数用于动态并发控制
     """
-    
+
     def __init__(self):
         """初始化队列压力监控器"""
         self._metrics_history = deque(maxlen=60)  # 保留60秒历史
-    
+
     def record_metrics(self, metrics: QueueMetrics) -> None:
         """记录队列指标
-        
+
         Args:
             metrics: 队列指标
         """
         self._metrics_history.append(metrics)
-    
+
     def get_pressure_level(self) -> str:
         """获取压力等级
-        
+
         Returns:
             压力等级：normal/medium/high/critical
         """
         if not self._metrics_history:
             return "normal"
-        
+
         latest = self._metrics_history[-1]
-        
+
         if latest.fill_rate >= QueueMetrics.CRITICAL_FILL_RATE:
             return "critical"
         elif latest.fill_rate >= QueueMetrics.HIGH_FILL_RATE:
@@ -128,15 +128,15 @@ class QueuePressureMonitor:
             return "medium"
         else:
             return "normal"
-    
+
     def get_adjustment_factor(self) -> float:
         """获取调整系数（用于动态调整并发）
-        
+
         Returns:
             调整系数（0.5-1.0）
         """
         pressure = self.get_pressure_level()
-        
+
         # 根据压力等级返回调整系数
         if pressure == "critical":
             return 0.5  # 严重积压，减半
@@ -150,13 +150,13 @@ class QueuePressureMonitor:
 
 class TaskStrategyRegistry:
     """任务策略注册表
-    
+
     为不同任务类型提供基准配置和资源权重：
     - 网络下载：网络I/O密集
     - 本地扫描：磁盘I/O密集，大量小文件
     - 本地读取：磁盘I/O密集，需要CPU解码
     """
-    
+
     _strategies: Dict[TaskCategory, Dict[str, Any]] = {
         # K线下载：网络I/O密集
         TaskCategory.NETWORK_DOWNLOAD: {
@@ -172,7 +172,7 @@ class TaskStrategyRegistry:
             },
             "description": "网络下载任务（K线、IPO日期）",
         },
-        
+
         # 本地数据扫描：磁盘I/O密集
         TaskCategory.LOCAL_SCAN: {
             "base_processes": 8,
@@ -187,7 +187,7 @@ class TaskStrategyRegistry:
             },
             "description": "本地数据扫描（质量检查）",
         },
-        
+
         # TDX数据读取：磁盘I/O密集
         TaskCategory.LOCAL_READ: {
             "base_processes": 4,
@@ -203,19 +203,19 @@ class TaskStrategyRegistry:
             "description": "TDX本地文件读取",
         },
     }
-    
+
     @classmethod
     def get_strategy(cls, category: TaskCategory) -> Dict[str, Any]:
         """获取任务策略
-        
+
         Args:
             category: 任务类别
-            
+
         Returns:
             策略配置字典
         """
         return cls._strategies.get(
-            category, 
+            category,
             cls._strategies[TaskCategory.NETWORK_DOWNLOAD]
         )
 
@@ -238,28 +238,28 @@ class ResourceMetrics:
 
 class ResourceMonitor:
     """系统资源监控器
-    
+
     实时监控系统资源，计算木桶理论指标：
     - CPU使用率
     - 内存使用率
     - 磁盘I/O使用率
     - 网络I/O使用率
     """
-    
+
     def __init__(self):
         """初始化资源监控器"""
         self._last_disk_io = None
         self._last_network_io = None
         self._last_check_time = None
-        
+
     def get_metrics(self) -> ResourceMetrics:
         """获取当前资源指标
-        
+
         Returns:
             资源指标
         """
         metrics = ResourceMetrics()
-        
+
         # CPU使用率
         try:
             cpu_usage = psutil.cpu_percent(interval=0.1)
@@ -268,7 +268,7 @@ class ResourceMonitor:
         except Exception as e:
             logger.debug(f"获取CPU使用率失败: {e}")
             metrics.cpu_percent = 0.0
-        
+
         # 内存使用率
         try:
             memory = psutil.virtual_memory()
@@ -276,28 +276,28 @@ class ResourceMonitor:
         except Exception as e:
             logger.debug(f"获取内存使用率失败: {e}")
             metrics.memory_percent = 0.0
-        
+
         # 磁盘I/O使用率（简化估算）
         try:
             disk_io = psutil.disk_io_counters()
             current_time = time.time()
-            
+
             if disk_io and self._last_disk_io and self._last_check_time:
                 time_delta = current_time - self._last_check_time
                 read_bytes_delta = disk_io.read_bytes - self._last_disk_io.read_bytes  # type: ignore
                 write_bytes_delta = disk_io.write_bytes - self._last_disk_io.write_bytes  # type: ignore
-                
+
                 # 计算I/O速率（MB/s）
                 io_rate = (read_bytes_delta + write_bytes_delta) / time_delta / (1024 * 1024)
                 # 假设最大I/O速率为100 MB/s（HDD），计算百分比
                 metrics.disk_io_percent = min(100.0, io_rate / 100.0 * 100.0)
-            
+
             self._last_disk_io = disk_io
             self._last_check_time = current_time
         except Exception as e:
             logger.debug(f"获取磁盘I/O使用率失败: {e}")
             metrics.disk_io_percent = 0.0
-        
+
         # 确定瓶颈（木桶理论）
         resources = {
             "CPU": metrics.cpu_percent,
@@ -305,7 +305,7 @@ class ResourceMonitor:
             "DiskIO": metrics.disk_io_percent,
         }
         metrics.bottleneck = max(resources, key=lambda k: resources[k])  # type: ignore
-        
+
         return metrics
 
 
@@ -316,46 +316,46 @@ class ResourceMonitor:
 
 class DynamicConfigCalculator:
     """动态配置计算器
-    
+
     根据资源指标计算最优并发配置：
     - 基于木桶理论
     - 考虑任务类型
     - 动态缩放（0.3x-1.6x）
     """
-    
+
     # 基准配置
     BASE_CONFIG = {
         "max_workers": 4,
         "coroutines_per_worker": 50,
     }
-    
+
     # 缩放范围
     SCALE_MIN = 0.3
     SCALE_MAX = 1.6
-    
+
     def __init__(self, resource_monitor: Optional[ResourceMonitor] = None):
         """初始化配置计算器
-        
+
         Args:
             resource_monitor: 资源监控器
         """
         self.resource_monitor = resource_monitor or ResourceMonitor()
-    
+
     def calculate(self, task_type: str = "download") -> Dict[str, int]:
         """计算最优配置
-        
+
         Args:
             task_type: 任务类型（download/scan/validate）
-            
+
         Returns:
             配置字典
         """
         # 获取资源指标
         metrics = self.resource_monitor.get_metrics()
-        
+
         # 计算缩放因子（基于瓶颈资源的反向缩放）
         bottleneck_value = getattr(metrics, f"{metrics.bottleneck.lower()}_percent", 50.0)
-        
+
         # 瓶颈资源使用率越高，缩放因子越小
         if bottleneck_value > 80:
             scale = self.SCALE_MIN
@@ -365,19 +365,19 @@ class DynamicConfigCalculator:
             scale = 1.0
         else:
             scale = self.SCALE_MAX
-        
+
         # 应用缩放
         config = {
             "max_workers": max(1, int(self.BASE_CONFIG["max_workers"] * scale)),
             "coroutines_per_worker": max(10, int(self.BASE_CONFIG["coroutines_per_worker"] * scale)),
         }
-        
+
         logger.debug(
             f"动态配置: workers={config['max_workers']}, "
             f"coroutines={config['coroutines_per_worker']}, "
             f"瓶颈={metrics.bottleneck}({bottleneck_value:.1f}%), 缩放={scale:.1f}x"
         )
-        
+
         return config
 
 
@@ -399,14 +399,14 @@ class ServerInfo:
 
 class ServerPoolManager:
     """服务器池管理器
-    
+
     TDX服务器测速、排序、热备管理：
     - 多进程测速
     - IPv4/IPv6分离
     - 两段式下载支持
     - 缓存机制（native_iocp集成）
     """
-    
+
     # 默认服务器列表
     DEFAULT_IPV4_SERVERS = [
         {"ip": "119.147.212.81", "port": 7709, "name": "广东电信1"},
@@ -415,44 +415,119 @@ class ServerPoolManager:
         {"ip": "120.79.60.82", "port": 7709, "name": "广东移动"},
         {"ip": "113.105.142.136", "port": 443, "name": "广东联通"},
     ]
-    
+
     DEFAULT_IPV6_SERVERS = [
         {"ip": "2408:8256:3be:3880::1", "port": 7709, "name": "广东电信IPv6"},
     ]
-    
+
     def __init__(self, config_manager: Optional[ConfigManager] = None):
         """初始化服务器池管理器
-        
+
         Args:
             config_manager: 配置管理器
         """
         self.config_manager = config_manager or ConfigManager()
-        
+
         # 服务器池
         self._ipv4_servers: List[ServerInfo] = []
         self._ipv6_servers: List[ServerInfo] = []
-        
-        # 缓存文件
-        self._cache_file = Path("cache/server_pool.json")
-        
+
+        # 🔧 修复：使用 ConfigManager 获取缓存目录，确保使用 data/cache 目录
+        cache_dir = self.config_manager.get_cache_dir()
+        self._cache_file = cache_dir / "server_pool.json"
+
         # 加载服务器
         self._load_servers()
-        
+
+        # 🔧 修复：检查缓存状态，但不阻塞初始化（延迟测速）
+        self._cache_needs_update = False
+        self._check_cache_status()
+
         logger.info(
             f"✅ 服务器池管理器已初始化: "
             f"IPv4={len(self._ipv4_servers)}, IPv6={len(self._ipv6_servers)}"
         )
-    
-    def _load_servers(self):
-        """加载服务器列表"""
-        # 从配置加载
+
+    def _check_cache_status(self):
+        """检查缓存状态（不阻塞）"""
         try:
-            ipv4_config = self.config_manager.get_config("tdx.servers.ipv4", [])
-            ipv6_config = self.config_manager.get_config("tdx.servers.ipv6", [])
+            from .core_engine import DailyCacheManager
+
+            # 检查缓存是否存在且有效
+            cached_data, cache_date, is_valid = DailyCacheManager.load_with_validation(self._cache_file)
+
+            if cached_data is not None and is_valid:
+                # 缓存有效，无需更新
+                self._cache_needs_update = False
+                return
+
+            # 缓存不存在或已过时，标记需要更新（在实际使用时再触发测速）
+            self._cache_needs_update = True
+            if cached_data is None:
+                logger.info("🔧 服务器池缓存不存在，将在首次使用时自动测速生成...")
+            else:
+                logger.info(f"🔧 服务器池缓存已过时（日期: {cache_date}），将在首次使用时自动更新...")
+        except Exception as e:
+            logger.debug(f"检查服务器池缓存状态失败: {e}")
+            self._cache_needs_update = True
+
+    def _load_servers(self):
+        """加载服务器列表
+
+        优先级：
+        1. 从缓存文件加载（如果有效）
+        2. 从配置加载
+        3. 使用默认服务器列表
+        """
+        # 🔧 修复：首先尝试从缓存加载
+        try:
+            from .core_engine import DailyCacheManager
+            cached_data, cache_date, is_valid = DailyCacheManager.load_with_validation(self._cache_file)
+
+            if cached_data is not None and is_valid and isinstance(cached_data, dict):
+                # 从缓存恢复服务器列表
+                ipv4_servers_data = cached_data.get("ipv4_servers", [])
+                ipv6_servers_data = cached_data.get("ipv6_servers", [])
+
+                # 转换为ServerInfo
+                self._ipv4_servers = [
+                    ServerInfo(
+                        ip=s.get("ip", ""),
+                        port=s.get("port", 7709),
+                        name=s.get("name", ""),
+                        ping_time=s.get("ping_time", 9999.0),
+                        available=s.get("available", False),
+                        last_test=datetime.fromisoformat(s["last_test"]) if s.get("last_test") else None
+                    )
+                    for s in ipv4_servers_data
+                ]
+
+                self._ipv6_servers = [
+                    ServerInfo(
+                        ip=s.get("ip", ""),
+                        port=s.get("port", 7709),
+                        name=s.get("name", ""),
+                        ping_time=s.get("ping_time", 9999.0),
+                        available=s.get("available", False),
+                        last_test=datetime.fromisoformat(s["last_test"]) if s.get("last_test") else None
+                    )
+                    for s in ipv6_servers_data
+                ]
+
+                if self._ipv4_servers or self._ipv6_servers:
+                    logger.info(f"✅ 从缓存加载服务器池: IPv4={len(self._ipv4_servers)}, IPv6={len(self._ipv6_servers)}")
+                    return
+        except Exception as e:
+            logger.debug(f"从缓存加载服务器失败: {e}")
+
+        # 🔧 降级：从配置加载
+        try:
+            ipv4_config = self.config_manager.get("tdx.servers.ipv4", [])
+            ipv6_config = self.config_manager.get("tdx.servers.ipv6", [])
         except Exception:
             ipv4_config = []
             ipv6_config = []
-        
+
         # 转换为ServerInfo
         if ipv4_config:
             self._ipv4_servers = [
@@ -462,7 +537,7 @@ class ServerPoolManager:
             self._ipv4_servers = [
                 ServerInfo(**server) for server in self.DEFAULT_IPV4_SERVERS
             ]
-        
+
         if ipv6_config:
             self._ipv6_servers = [
                 ServerInfo(**server) for server in ipv6_config
@@ -471,66 +546,97 @@ class ServerPoolManager:
             self._ipv6_servers = [
                 ServerInfo(**server) for server in self.DEFAULT_IPV6_SERVERS
             ]
-    
+
     def get_ipv4_servers(self, limit: int = 5) -> List[Dict[str, Any]]:
         """获取IPv4服务器列表
-        
+
         Args:
             limit: 返回数量限制
-            
+
         Returns:
             服务器列表
         """
+        # 🔧 修复：如果缓存需要更新，在首次使用时触发测速（非阻塞，使用后台线程）
+        if getattr(self, '_cache_needs_update', False):
+            self._ensure_server_cache_async()
+
         # 按延迟排序
         sorted_servers = sorted(
             [s for s in self._ipv4_servers if s.available],
             key=lambda s: s.ping_time
         )
-        
+
         # 转换为字典
         return [
             {"ip": s.ip, "port": s.port, "name": s.name}
             for s in sorted_servers[:limit]
         ]
-    
+
     def get_ipv6_servers(self, limit: int = 5) -> List[Dict[str, Any]]:
         """获取IPv6服务器列表
-        
+
         Args:
             limit: 返回数量限制
-            
+
         Returns:
             服务器列表
         """
+        # 🔧 修复：如果缓存需要更新，在首次使用时触发测速（非阻塞，使用后台线程）
+        if getattr(self, '_cache_needs_update', False):
+            self._ensure_server_cache_async()
+
         # 按延迟排序
         sorted_servers = sorted(
             [s for s in self._ipv6_servers if s.available],
             key=lambda s: s.ping_time
         )
-        
+
         # 转换为字典
         return [
             {"ip": s.ip, "port": s.port, "name": s.name}
             for s in sorted_servers[:limit]
         ]
-    
+
+    def _ensure_server_cache_async(self):
+        """异步确保服务器池缓存存在且有效（使用后台线程，不阻塞）"""
+        if not getattr(self, '_cache_needs_update', False):
+            return
+
+        # 标记正在更新，避免重复触发
+        self._cache_needs_update = False
+
+        def update_cache():
+            """在后台线程中更新缓存"""
+            try:
+                logger.info("🔧 服务器池缓存不存在或已过时，开始后台自动测速生成...")
+                self.test_servers()  # 这会在test_servers()方法结束时自动保存缓存
+                logger.info("✅ 服务器池缓存已自动生成")
+            except Exception as e:
+                logger.warning(f"⚠️ 自动生成服务器池缓存失败: {e}")
+                # 失败后重新标记需要更新
+                self._cache_needs_update = True
+
+        # 使用后台线程执行，不阻塞调用
+        thread = threading.Thread(target=update_cache, daemon=True, name="ServerCacheUpdate")
+        thread.start()
+
     def test_servers(self, max_workers: int = 4):
         """测试所有服务器（多进程）
-        
+
         Args:
             max_workers: 最大进程数
         """
         logger.info("🔍 开始测试服务器...")
-        
+
         all_servers = self._ipv4_servers + self._ipv6_servers
-        
+
         # 使用进程池测试
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
             futures = {
                 executor.submit(_test_single_server, server.ip, server.port): server
                 for server in all_servers
             }
-            
+
             for future in as_completed(futures):
                 server = futures[future]
                 try:
@@ -538,7 +644,7 @@ class ServerPoolManager:
                     server.ping_time = ping_time
                     server.available = available
                     server.last_test = datetime.now()
-                    
+
                     if available:
                         logger.info(f"✅ {server.name} ({server.ip}): {ping_time:.0f}ms")
                     else:
@@ -546,17 +652,162 @@ class ServerPoolManager:
                 except Exception as e:
                     logger.warning(f"⚠️ 测试失败 {server.name}: {e}")
                     server.available = False
-        
+
         logger.info("✅ 服务器测试完成")
+
+        # 🔧 修复：测试完成后自动保存缓存
+        try:
+            ipv4_data = [
+                {
+                    "ip": s.ip,
+                    "port": s.port,
+                    "name": s.name,
+                    "ping_time": s.ping_time,
+                    "available": s.available,
+                    "last_test": s.last_test.isoformat() if s.last_test else None
+                }
+                for s in self._ipv4_servers
+            ]
+            ipv6_data = [
+                {
+                    "ip": s.ip,
+                    "port": s.port,
+                    "name": s.name,
+                    "ping_time": s.ping_time,
+                    "available": s.available,
+                    "last_test": s.last_test.isoformat() if s.last_test else None
+                }
+                for s in self._ipv6_servers
+            ]
+
+            cache_data = {
+                "ipv4_servers": ipv4_data,
+                "ipv6_servers": ipv6_data
+            }
+
+            from .core_engine import DailyCacheManager
+            success = DailyCacheManager.save_with_date(cache_data, self._cache_file)
+            if success:
+                logger.info(f"✅ 服务器池缓存已保存: {self._cache_file}")
+            else:
+                logger.warning(f"⚠️ 保存服务器池缓存失败")
+        except Exception as e:
+            logger.warning(f"⚠️ 保存服务器池缓存异常: {e}")
+
+    def get_stats(self) -> Dict[str, Any]:
+        """获取服务器池统计信息
+
+        Returns:
+            统计信息字典
+        """
+        available_ipv4 = sum(1 for s in self._ipv4_servers if s.available)
+        available_ipv6 = sum(1 for s in self._ipv6_servers if s.available)
+        total_ipv4 = len(self._ipv4_servers)
+        total_ipv6 = len(self._ipv6_servers)
+
+        return {
+            "available": available_ipv4 + available_ipv6,
+            "total": total_ipv4 + total_ipv6,
+            "ipv4_available": available_ipv4,
+            "ipv4_total": total_ipv4,
+            "ipv6_available": available_ipv6,
+            "ipv6_total": total_ipv6,
+            "running": True,  # 服务器池管理器始终运行
+        }
+
+    def is_running(self) -> bool:
+        """检查服务器池管理器是否运行中
+
+        Returns:
+            始终返回True（服务器池管理器始终运行）
+        """
+        return True
+
+    def stop(self) -> None:
+        """停止服务器池管理器（向后兼容方法，实际无操作）"""
+        logger.debug("服务器池管理器stop()被调用（无实际操作）")
+
+    def _start_multiprocess(self) -> bool:
+        """启动多进程测速（向后兼容方法）
+
+        Returns:
+            是否启动成功
+        """
+        try:
+            self.test_servers()
+            return True
+        except Exception as e:
+            logger.error(f"多进程测速失败: {e}")
+            return False
+
+    def save_server_cache(self, ipv4_servers: List, ipv6_servers: List) -> None:
+        """保存服务器缓存（向后兼容方法）
+
+        Args:
+            ipv4_servers: IPv4服务器列表（可以是ServerInfo对象或字典）
+            ipv6_servers: IPv6服务器列表（可以是ServerInfo对象或字典）
+        """
+        try:
+            from .core_engine import DailyCacheManager
+
+            # 🔧 修复：将服务器列表转换为可序列化格式
+            def server_to_dict(server) -> dict:
+                """将ServerInfo对象或字典转换为可序列化格式"""
+                if isinstance(server, ServerInfo):
+                    return {
+                        "ip": server.ip,
+                        "port": server.port,
+                        "name": server.name,
+                        "ping_time": server.ping_time,
+                        "available": server.available,
+                        "last_test": server.last_test.isoformat() if server.last_test else None
+                    }
+                elif isinstance(server, dict):
+                    # 已经是字典，确保last_test是字符串格式
+                    result = dict(server)
+                    if "last_test" in result and result["last_test"] and not isinstance(result["last_test"], str):
+                        result["last_test"] = result["last_test"].isoformat() if hasattr(result["last_test"], "isoformat") else None
+                    return result
+                else:
+                    # 未知格式，尝试转换
+                    return {
+                        "ip": getattr(server, "ip", ""),
+                        "port": getattr(server, "port", 7709),
+                        "name": getattr(server, "name", ""),
+                        "ping_time": getattr(server, "ping_time", 9999.0),
+                        "available": getattr(server, "available", False),
+                        "last_test": getattr(server, "last_test", None)
+                    }
+
+            ipv4_data = [server_to_dict(s) for s in ipv4_servers]
+            ipv6_data = [server_to_dict(s) for s in ipv6_servers]
+
+            cache_data = {
+                "ipv4_servers": ipv4_data,
+                "ipv6_servers": ipv6_data
+            }
+
+            # 🔧 使用 DailyCacheManager 保存缓存（带日期验证）
+            success = DailyCacheManager.save_with_date(cache_data, self._cache_file)
+            if success:
+                logger.info(f"✅ 服务器池缓存已保存: IPv4={len(ipv4_data)}, IPv6={len(ipv6_data)}")
+            else:
+                logger.warning(f"⚠️ 保存服务器池缓存失败")
+        except Exception as e:
+            logger.error(f"❌ 保存服务器池缓存异常: {e}", exc_info=True)
+
+    def _push_server_status_event(self) -> None:
+        """推送服务器状态事件（向后兼容方法）"""
+        logger.debug("_push_server_status_event()被调用（当前实现暂无事件推送）")
 
 
 def _test_single_server(ip: str, port: int) -> Tuple[float, bool]:
     """测试单个服务器（Worker函数）
-    
+
     Args:
         ip: 服务器IP
         port: 服务器端口
-        
+
     Returns:
         (延迟, 是否可用)
     """
@@ -564,16 +815,16 @@ def _test_single_server(ip: str, port: int) -> Tuple[float, bool]:
         # 创建事件循环
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        
+
         try:
             # 测试连接
             api = AsyncTdxHq_API()
             start_time = time.time()
-            
+
             connected = loop.run_until_complete(
                 asyncio.wait_for(api.connect(ip, port), timeout=5.0)
             )
-            
+
             if connected:
                 ping_time = (time.time() - start_time) * 1000  # 转换为毫秒
                 loop.run_until_complete(api.disconnect())
@@ -594,7 +845,7 @@ def _test_single_server(ip: str, port: int) -> Tuple[float, bool]:
 
 class LoadBalancer:
     """负载均衡器 v3.1
-    
+
     智能负载均衡，核心特性：
     - 木桶理论：只看最短的那块板
     - 动态并发调整（0.3x-1.6x缩放）
@@ -602,10 +853,10 @@ class LoadBalancer:
     - 任务类型区分（v3.1新增）
     - 队列压力监控（v3.1新增）
     """
-    
+
     def __init__(self, config_manager: Optional[ConfigManager] = None):
         """初始化负载均衡器
-        
+
         Args:
             config_manager: 配置管理器
         """
@@ -613,48 +864,48 @@ class LoadBalancer:
         self.resource_monitor = ResourceMonitor()
         self.config_calculator = DynamicConfigCalculator(self.resource_monitor)
         self.server_pool = ServerPoolManager(config_manager)
-        
+
         # v3.1新增：队列压力监控器
         self.queue_monitor = QueuePressureMonitor()
-        
+
         # v3.1新增：任务策略注册表
         self.task_strategies = TaskStrategyRegistry()
-        
+
         # 防抖控制
         self._last_adjustment_time = 0
         self._adjustment_history = []  # 记录最近的调整模式
         self._base_interval = 1.0  # 基础调整间隔（秒）
         self._pattern_interval = 3.0  # 特定模式调整间隔（秒）
-        
+
         # 缓存配置
         self._last_config = {}
-        
+
         logger.info("✅ 负载均衡器已初始化 (v3.1 - 支持任务类型和队列压力)")
-    
+
     def get_optimal_config(
-        self, 
+        self,
         task: Optional[TaskConfig] = None,
         task_type: str = "download",
         queue_metrics: Optional[QueueMetrics] = None
     ) -> Dict[str, Any]:
         """获取最优配置（带防抖）
-        
+
         Args:
             task: 任务配置（v3.1新增，为空时兼容旧API）
             task_type: 任务类型字符串（向后兼容）
             queue_metrics: 队列指标（v3.1新增）
-            
+
         Returns:
             最优配置
         """
         current_time = time.time()
-        
+
         # 检查防抖间隔
         interval = self._get_debounce_interval()
         if current_time - self._last_adjustment_time < interval:
             # 未达到调整间隔，使用缓存配置
             return self._get_cached_config()
-        
+
         # v3.1: 支持任务类型和队列压力
         if task is not None:
             # 新API：使用TaskConfig
@@ -662,30 +913,30 @@ class LoadBalancer:
         else:
             # 旧API：兼容性支持
             config = self.config_calculator.calculate(task_type)
-        
+
         # 更新调整历史
         self._update_adjustment_history(config)
         self._last_adjustment_time = current_time
-        
+
         return config
-    
+
     def _calculate_with_task_config(
         self,
         task: TaskConfig,
         queue_metrics: Optional[QueueMetrics] = None
     ) -> Dict[str, Any]:
         """基于任务配置计算最优配置（v3.1新增）
-        
+
         Args:
             task: 任务配置
             queue_metrics: 队列指标
-            
+
         Returns:
             最优配置
         """
         # 1. 资源监控（木桶理论）
         resource_metrics = self.resource_monitor.get_metrics()
-        
+
         # 2. 队列压力监控
         if queue_metrics:
             self.queue_monitor.record_metrics(queue_metrics)
@@ -694,17 +945,17 @@ class LoadBalancer:
         else:
             queue_pressure_factor = 1.0
             pressure_level = "normal"
-        
+
         # 3. 获取任务策略
         strategy = self.task_strategies.get_strategy(task.category)
-        
+
         # 4. 计算基准配置（基于资源指标调整）
         bottleneck_value = getattr(
-            resource_metrics, 
-            f"{resource_metrics.bottleneck.lower()}_percent", 
+            resource_metrics,
+            f"{resource_metrics.bottleneck.lower()}_percent",
             50.0
         )
-        
+
         # 瓶颈资源使用率越高，缩放因子越小
         if bottleneck_value > 80:
             resource_scale = 0.3
@@ -714,37 +965,37 @@ class LoadBalancer:
             resource_scale = 1.0
         else:
             resource_scale = 1.6
-        
+
         # 5. 应用资源缩放
         processes = max(
-            1, 
+            1,
             int(strategy["base_processes"] * resource_scale)
         )
         coroutines_per_process = max(
-            10, 
+            10,
             int(strategy["base_coroutines_per_process"] * resource_scale)
         )
-        
+
         # 6. 应用队列压力调整
         processes = max(1, int(processes * queue_pressure_factor))
         coroutines_per_process = max(
-            10, 
+            10,
             int(coroutines_per_process * queue_pressure_factor)
         )
-        
+
         # 7. 构建配置
         config = {
             "processes": min(processes, strategy["max_processes"]),
             "coroutines_per_process": min(
-                coroutines_per_process, 
+                coroutines_per_process,
                 strategy["max_coroutines_per_process"]
             ),
             "max_workers": min(processes, strategy["max_processes"]),  # 兼容旧API
             "coroutines_per_worker": min(
-                coroutines_per_process, 
+                coroutines_per_process,
                 strategy["max_coroutines_per_process"]
             ),  # 兼容旧API
-            
+
             # 诊断信息
             "task_category": task.category.value,
             "resource_bottleneck": resource_metrics.bottleneck,
@@ -755,7 +1006,7 @@ class LoadBalancer:
                 (1 - queue_pressure_factor) * 100
             ),  # 0-100压力评分
         }
-        
+
         logger.debug(
             f"动态配置 [{task.name}]: 进程={config['processes']}, "
             f"协程={config['coroutines_per_process']}, "
@@ -763,12 +1014,12 @@ class LoadBalancer:
             f"队列压力={pressure_level}, "
             f"压力评分={config['pressure_score']}/100"
         )
-        
+
         return config
-    
+
     def _get_debounce_interval(self) -> float:
         """获取防抖间隔
-        
+
         Returns:
             防抖间隔（秒）
         """
@@ -777,34 +1028,34 @@ class LoadBalancer:
             last_three = self._adjustment_history[-3:]
             if self._is_oscillating_pattern(last_three):
                 return self._pattern_interval
-        
+
         return self._base_interval
-    
+
     def _is_oscillating_pattern(self, history: List[str]) -> bool:
         """检查是否为振荡模式
-        
+
         Args:
             history: 调整历史（最近3次）
-            
+
         Returns:
             是否为振荡模式
         """
         if len(history) != 3:
             return False
-        
+
         # 检查 increase→decrease→increase
         if history[0] == "increase" and history[1] == "decrease" and history[2] == "increase":
             return True
-        
+
         # 检查 decrease→increase→decrease
         if history[0] == "decrease" and history[1] == "increase" and history[2] == "decrease":
             return True
-        
+
         return False
-    
+
     def _update_adjustment_history(self, config: Dict[str, Any]):
         """更新调整历史
-        
+
         Args:
             config: 新配置
         """
@@ -813,23 +1064,23 @@ class LoadBalancer:
             # 兼容新旧API
             current_workers = config.get('processes', config.get('max_workers', 0))
             last_workers = self._last_config.get('processes', self._last_config.get('max_workers', 0))
-            
+
             if current_workers > last_workers:
                 self._adjustment_history.append("increase")
             elif current_workers < last_workers:
                 self._adjustment_history.append("decrease")
             else:
                 self._adjustment_history.append("stable")
-            
+
             # 只保留最近10次记录
             if len(self._adjustment_history) > 10:
                 self._adjustment_history.pop(0)
-        
+
         self._last_config = config
-    
+
     def _get_cached_config(self) -> Dict[str, Any]:
         """获取缓存配置
-        
+
         Returns:
             缓存配置
         """
@@ -837,13 +1088,13 @@ class LoadBalancer:
             return self._last_config
         else:
             return DynamicConfigCalculator.BASE_CONFIG.copy()
-    
+
     def get_servers(self, use_two_phase: bool = True) -> Dict[str, List[Dict]]:
         """获取服务器列表
-        
+
         Args:
             use_two_phase: 是否启用两段式下载
-            
+
         Returns:
             服务器字典 {"ipv4": [...], "ipv6": [...]}
         """
@@ -851,10 +1102,10 @@ class LoadBalancer:
             "ipv4": self.server_pool.get_ipv4_servers(),
             "ipv6": []
         }
-        
+
         if use_two_phase:
             servers["ipv6"] = self.server_pool.get_ipv6_servers()
-        
+
         return servers
 
 
@@ -880,3 +1131,24 @@ __all__ = [
     # 负载均衡
     "LoadBalancer",
 ]
+
+# ==============================================================================
+# 全局实例（向后兼容）
+# ==============================================================================
+
+# 创建全局服务器池管理器实例（向后兼容旧代码）
+_server_pool_manager_instance: Optional[ServerPoolManager] = None
+
+def get_server_pool_manager() -> ServerPoolManager:
+    """获取全局服务器池管理器实例（单例模式）
+
+    Returns:
+        ServerPoolManager实例
+    """
+    global _server_pool_manager_instance
+    if _server_pool_manager_instance is None:
+        _server_pool_manager_instance = ServerPoolManager()
+    return _server_pool_manager_instance
+
+# 导出全局实例（向后兼容）
+server_pool_manager = get_server_pool_manager()

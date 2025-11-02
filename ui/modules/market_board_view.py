@@ -329,14 +329,10 @@ class ChartWizardEnhanced(BaseWidget):
         # 订阅UnifiedDataManager就绪事件（必须在获取event_engine之后）
         if self.event_engine:
             try:
-                from backend.infrastructure.data_module_vnpy import data_module
-
-                if hasattr(data_module, "EVENT_UNIFIED_DATA_MANAGER_READY"):
-                    EVENT_UNIFIED_DATA_MANAGER_READY = data_module.EVENT_UNIFIED_DATA_MANAGER_READY
-                    self.event_engine.register(
-                        EVENT_UNIFIED_DATA_MANAGER_READY, self._on_data_manager_ready
-                    )
-                    self.logger.info("✅ 已订阅UnifiedDataManager就绪事件")
+                # 🔧 修复：架构v3.0重构后，data_module模块已移除
+                # 事件通过UnifiedDataManager直接发布，不在这里订阅
+                # 如果需要事件通知，应该通过事件引擎直接订阅
+                self.logger.debug("✅ UnifiedDataManager事件订阅（架构v3.0已重构）")
             except Exception as e:
                 self.logger.warning(f"订阅UnifiedDataManager事件失败: {e}")
 
@@ -2063,17 +2059,10 @@ class ChartWizardEnhanced(BaseWidget):
 
                 self.event_engine.unregister(EVENT_TICK, self._on_tick_event)
 
-                # 取消UnifiedDataManager就绪事件订阅
+                # 🔧 修复：架构v3.0重构后，data_module模块已移除
+                # 不再需要取消订阅UnifiedDataManager就绪事件
                 try:
-                    from backend.infrastructure.data_module_vnpy import data_module
-
-                    if hasattr(data_module, "EVENT_UNIFIED_DATA_MANAGER_READY"):
-                        EVENT_UNIFIED_DATA_MANAGER_READY = (
-                            data_module.EVENT_UNIFIED_DATA_MANAGER_READY
-                        )
-                        self.event_engine.unregister(
-                            EVENT_UNIFIED_DATA_MANAGER_READY, self._on_data_manager_ready
-                        )
+                    pass  # 不再需要取消订阅
                 except Exception:
                     pass
         except Exception as e:

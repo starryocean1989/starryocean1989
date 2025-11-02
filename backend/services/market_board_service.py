@@ -75,8 +75,8 @@ class MarketBoardService(BaseService):
                 return
 
             # 获取统一数据管理器
-            if hasattr(china_stock_engine, "get_unified_data_manager"):
-                self.unified_data_manager = china_stock_engine.get_unified_data_manager()
+            if hasattr(china_stock_engine, "unified_data_manager"):
+                self.unified_data_manager = china_stock_engine.unified_data_manager
                 if self.unified_data_manager:
                     self.logger.info("✅ 已获取data_module_vnpy统一数据管理器")
                     return

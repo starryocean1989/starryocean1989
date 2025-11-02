@@ -31,15 +31,21 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Protocol, Tuple
 
 import numpy as np
-import zmq
-import zmq.asyncio
+
+# 尝试导入native_ipc
+try:
+    from backend.infrastructure.native_ipc import AsyncIPCPipe, IPC_AVAILABLE
+    NATIVE_IPC_AVAILABLE = IPC_AVAILABLE
+except ImportError:
+    NATIVE_IPC_AVAILABLE = False
+    AsyncIPCPipe = None  # type: ignore
 
 # ==================== 日志配置 ====================
 # 创建专用logger（模块级别，监控进程独立）
 logger = logging.getLogger("monitor_process")
 logger_alert = logging.getLogger("monitor_process.alert")
 logger_sensor = logging.getLogger("monitor_process.sensor")
-logger_zmq = logging.getLogger("monitor_process.zmq")
+logger_ipc = logging.getLogger("monitor_process.ipc")
 
 # 尝试导入psutil,如果没有则使用基础实现
 try:
@@ -359,7 +365,7 @@ class AdaptiveThresholdManager:
 
 class HardwareMonitorFactory:
     """硬件监控器工厂 - 强制使用LibreHardwareMonitor."""
-    
+
     _instance = None  # 单例实例
 
     @staticmethod
@@ -390,11 +396,11 @@ class HardwareMonitorFactory:
             logger.exception("❌ LibreHardwareMonitor 初始化失败: %s", e)
             logger.error("   硬件监控功能将不可用")
             return None
-    
+
     @staticmethod
     def get_instance():
         """获取硬件监控器单例实例.
-        
+
         Returns:
             ExtendedLHMWrapper实例或None
         """
@@ -403,7 +409,7 @@ class HardwareMonitorFactory:
 
 def get_hardware_monitor_instance():
     """获取硬件监控器实例（全局访问函数）.
-    
+
     Returns:
         ExtendedLHMWrapper实例或None
     """
@@ -1192,11 +1198,10 @@ class MonitoringProcessV2:
             os.getpid(),
         )
 
-        # ZMQ通信
-        self.zmq_context: Optional[zmq.asyncio.Context] = None
-        self.push_socket: Optional[zmq.asyncio.Socket] = None
-        self.rep_socket: Optional[zmq.asyncio.Socket] = None
-        self.pull_socket: Optional[zmq.asyncio.Socket] = None
+        # native_ipc通信管道
+        self.query_pipe: Optional[AsyncIPCPipe] = None  # 服务端：响应查询
+        self.status_pipe: Optional[AsyncIPCPipe] = None  # 服务端：接收状态
+        self.alerts_pipe: Optional[AsyncIPCPipe] = None  # 客户端：推送告警
 
         # 数据缓存
         self.monitoring_data = {
@@ -1340,13 +1345,13 @@ class MonitoringProcessV2:
         logger.debug("启动监控进程")
 
         try:
-            logger.debug("开始初始化组件（ZMQ、数据库等）")
+            logger.debug("开始初始化组件（native_ipc、数据库等）")
             await self._initialize_components()
             logger.debug("组件初始化完成，开始启动协程")
 
             # 创建启动事件
             self.coroutine_ready_events = {
-                "zmq_handler": asyncio.Event(),
+                "ipc_handler": asyncio.Event(),
                 "fast_metrics": asyncio.Event(),
                 "db_writer": asyncio.Event(),
                 "alert_eval": asyncio.Event(),
@@ -1357,7 +1362,7 @@ class MonitoringProcessV2:
 
             # 创建所有协程任务
             tasks = [
-                asyncio.create_task(self.zmq_handler(), name="zmq_handler"),
+                asyncio.create_task(self.ipc_handler(), name="ipc_handler"),
                 asyncio.create_task(self.fast_metrics_collector(), name="fast_metrics"),
                 asyncio.create_task(self.db_writer_loop(), name="db_writer"),
                 asyncio.create_task(self.alert_evaluator_loop(), name="alert_eval"),
@@ -1452,135 +1457,26 @@ class MonitoringProcessV2:
         """初始化组件 - DEBUG检查点."""
         logger.info("[INIT] 初始化组件...")
 
-        # 初始化ZMQ
-        self.zmq_context = zmq.asyncio.Context()
-        ctx: zmq.asyncio.Context = self.zmq_context  # 为类型检查器提供非None保证
+        # 检查native_ipc是否可用
+        if not NATIVE_IPC_AVAILABLE or AsyncIPCPipe is None:
+            raise RuntimeError("native_ipc不可用，请确保C扩展已编译")
 
-        # 读取配置（端口退避）
+        # 初始化native_ipc管道
         try:
-            from backend.core.config import get_settings
+            # 创建查询服务端管道（响应主进程查询）
+            self.query_pipe = await AsyncIPCPipe.server("monitor_query")
+            logger.info("[IPC] ✅ 查询服务端管道已创建: monitor_query")
 
-            _settings = get_settings()
-            fallback_enabled = bool(getattr(_settings.monitor, "port_fallback_enabled", True))
-            fallback_base = int(getattr(_settings.monitor, "port_fallback_base", 5565))
-            fallback_span = int(getattr(_settings.monitor, "port_fallback_span", 3))
-            bind_addr = str(getattr(_settings.monitor, "bind_addr", "127.0.0.1"))
-        except Exception:
-            # 配置不可用时使用默认值
-            fallback_enabled = True
-            fallback_base = 5565
-            fallback_span = 3
-            bind_addr = "127.0.0.1"
+            # 创建状态服务端管道（接收主进程状态推送）
+            self.status_pipe = await AsyncIPCPipe.server("monitor_status")
+            logger.info("[IPC] ✅ 状态服务端管道已创建: monitor_status")
 
-        # 🔧 新增：检查并清理占用端口旧进程
-        await self._check_and_cleanup_old_process()
-
-        # 候选端口组：优先默认，其次退避组（base, base+1, base+2）
-        default_group: Tuple[int, int, int] = (5555, 5556, 5557)
-        candidate_groups: List[Tuple[int, int, int]] = [default_group]
-        if fallback_enabled:
-            # 根据 fallback_span 生成偏移列表（至少3）
-            span = max(3, int(fallback_span))
-            offsets = list(range(span))
-            candidate_groups.append(
-                (
-                    fallback_base + offsets[0],
-                    fallback_base + offsets[1],
-                    fallback_base + offsets[2],
-                )
-            )
-
-        # 工具函数：创建同一个socket（局部变量，成功后再赋值给 self）
-        def _create_socket_group() -> (
-            Tuple[zmq.asyncio.Socket, zmq.asyncio.Socket, zmq.asyncio.Socket]
-        ):
-            push_sock = ctx.socket(zmq.PUSH)
-            push_sock.setsockopt(zmq.LINGER, 0)
-            pull_sock = ctx.socket(zmq.PULL)
-            pull_sock.setsockopt(zmq.LINGER, 0)
-            rep_sock = ctx.socket(zmq.REP)
-            rep_sock.setsockopt(zmq.LINGER, 0)
-            return push_sock, pull_sock, rep_sock
-
-        # 初始化变量
-        chosen_group: Optional[Tuple[int, int, int]] = None
-        last_error = None
-
-        for group in candidate_groups:
-            p_push, p_pull, p_rep = group
-            push_sock, pull_sock, rep_sock = _create_socket_group()
-            try:
-                # 严格顺序：PUSH -> PULL -> REP
-                push_sock.bind(f"tcp://{bind_addr}:{p_push}")
-                pull_sock.bind(f"tcp://{bind_addr}:{p_pull}")
-                rep_sock.bind(f"tcp://{bind_addr}:{p_rep}")
-                chosen_group = group
-                # 绑定成功后再赋给实例属性
-                self.push_socket = push_sock
-                self.pull_socket = pull_sock
-                self.rep_socket = rep_sock
-                break
-            except zmq.error.ZMQError as e:
-                last_error = e
-                logger.error(
-                    "[ZMQ] 端口组绑定失败 push=%d pull=%d rep=%d: %s",
-                    p_push,
-                    p_pull,
-                    p_rep,
-                    e,
-                )
-                # 下一组前先清理
-                try:
-                    push_sock.close(linger=0)
-                    pull_sock.close(linger=0)
-                    rep_sock.close(linger=0)
-                except Exception:
-                    pass
-                await asyncio.sleep(0.1)
-                continue
-            except Exception as e:
-                last_error = e
-                logger.error("[ZMQ] 端口组异常: %s", e)
-                try:
-                    push_sock.close(linger=0)
-                    pull_sock.close(linger=0)
-                    rep_sock.close(linger=0)
-                except Exception:
-                    pass
-                await asyncio.sleep(0.1)
-                continue
-
-        if not chosen_group:
-            # 未能绑定任何端口组
-            if last_error:
-                raise last_error
-            raise RuntimeError("ZMQ端口绑定失败（未知原因）")
-
-        # 写入生效端口文件
-        try:
-            import os
-            from datetime import datetime as _dt
-
-            os.makedirs("logs", exist_ok=True)
-            ports_info = {
-                "pid": __import__("os").getpid(),
-                "timestamp": _dt.now().isoformat(),
-                "alert_push": chosen_group[0],
-                "status_pull": chosen_group[1],
-                "query_rep": chosen_group[2],
-                "bind_addr": bind_addr,
-            }
-            with open("logs/monitor_ports.json", "w", encoding="utf-8") as f:
-                json.dump(ports_info, f, ensure_ascii=False, indent=2)
-            logger.info(
-                "[ZMQ] ✅ 生效端口: push=%d pull=%d rep=%d (退避启用=%s)",
-                chosen_group[0],
-                chosen_group[1],
-                chosen_group[2],
-                str(fallback_enabled),
-            )
+            # 创建告警客户端管道（推送告警到主进程）
+            self.alerts_pipe = await AsyncIPCPipe.client("monitor_alerts")
+            logger.info("[IPC] ✅ 告警客户端管道已创建: monitor_alerts")
         except Exception as e:
-            logger.warning("[ZMQ] 写入生效端口文件失败: %s", e)
+            logger.error("[IPC] ❌ 创建native_ipc管道失败: %s", e, exc_info=True)
+            raise RuntimeError(f"native_ipc管道创建失败: {e}") from e
 
         # 创建就绪信号文件（主进程等待此文件）
         try:
@@ -1589,14 +1485,13 @@ class MonitoringProcessV2:
             ready_signal = {
                 "pid": os.getpid(),
                 "timestamp": time.time(),
-                "status": "ports_ready",  # Level 1: 端口就绪
+                "status": "pipes_ready",  # Level 1: 管道就绪
                 "level": 1,  # 就绪级别
-                "ports": {
-                    "alert_push": chosen_group[0],
-                    "status_pull": chosen_group[1],
-                    "query_rep": chosen_group[2],
+                "pipes": {
+                    "query": "monitor_query",
+                    "status": "monitor_status",
+                    "alerts": "monitor_alerts",
                 },
-                "bind_addr": bind_addr,
             }
 
             signal_file = Path("logs/monitor_ready.signal")
@@ -1605,16 +1500,11 @@ class MonitoringProcessV2:
                 f.flush()
                 os.fsync(f.fileno())  # 强制写入磁盘
 
-            logger.info("[ZMQ] ✓ 就绪信号文件已创建（Level 1: 端口就绪）")
+            logger.info("[IPC] ✓ 就绪信号文件已创建（Level 1: 管道就绪）")
         except Exception as e:
-            logger.warning("[ZMQ] 创建就绪信号文件失败: %s", e)
+            logger.warning("[IPC] 创建就绪信号文件失败: %s", e)
 
-        logger.info(
-            "[ZMQ] 所有socket已配置（push=%d, pull=%d, rep=%d）",
-            chosen_group[0],
-            chosen_group[1],
-            chosen_group[2],
-        )
+        logger.info("[IPC] ✅ 所有管道已配置（query, status, alerts）")
 
         # ✅ 优化：在后台异步创建硬件监控器（避免阻塞主循环）
         if self.hardware_monitor is None:
@@ -1663,7 +1553,7 @@ class MonitoringProcessV2:
         self._register_metrics()
         self.adaptive_threshold.load_from_database()
 
-        # 注意：监控进程日志已通过 ZMQ 告警端口 (5555) 推送到主进程
+        # 注意：监控进程日志已通过 native_ipc 告警管道推送到主进程
         # 不需要单独的日志代理
 
         logger.info("[INIT] ✅ 组件初始化完成")
@@ -1779,171 +1669,181 @@ class MonitoringProcessV2:
         except Exception as e:
             logger.exception("[SMART] 采集失败: %s", e)
 
-    async def zmq_handler(self):
-        """ZMQ通信处理."""
-        logger.info("[ZMQ] 通信处理协程启动")
+    async def ipc_handler(self):
+        """native_ipc通信处理."""
+        logger.info("[IPC] 通信处理协程启动")
 
         # 先标记协程已就绪（在任何可能阻塞的操作之前）
-        if "zmq_handler" in self.coroutine_ready_events:
-            self.coroutine_ready_events["zmq_handler"].set()
-            logger.info("[ZMQ] ✅ 协程就绪")
+        if "ipc_handler" in self.coroutine_ready_events:
+            self.coroutine_ready_events["ipc_handler"].set()
+            logger.info("[IPC] ✅ 协程就绪")
 
         try:
-            # 在协程外部创建Poller（只创建一次）
-            logger.debug("[ZMQ] 创建Poller...")
-            poller = zmq.asyncio.Poller()
-            logger.debug("[ZMQ] 注册rep_socket...")
-            poller.register(self.rep_socket, zmq.POLLIN)
-            logger.debug("[ZMQ] 注册pull_socket...")
-            poller.register(self.pull_socket, zmq.POLLIN)
-            logger.debug("[ZMQ] Poller初始化完成")
+            logger.info("[IPC] 开始主循环（self.running=%s）", self.running)
 
-            logger.info("[ZMQ] 开始主循环（self.running=%s）", self.running)
+            # 创建并运行查询和状态处理任务
+            query_task = asyncio.create_task(self._handle_query_pipe(), name="ipc_query_handler")
+            status_task = asyncio.create_task(self._handle_status_pipe(), name="ipc_status_handler")
+
+            # 等待任务完成或running变为False
             while self.running:
-                try:
-                    logger.debug("[ZMQ] 等待poll...")
-                    socks = dict(await poller.poll(timeout=100))
-                    logger.debug("[ZMQ] poll返回: %d个socket", len(socks))
+                await asyncio.sleep(0.1)
 
-                    if self.rep_socket in socks:
-                        await self._handle_query_request()
-                    if self.pull_socket in socks:
-                        await self._handle_service_status()
+            # 取消任务
+            query_task.cancel()
+            status_task.cancel()
 
-                except Exception as e:
-                    logger.error("[ZMQ] 处理错误: %s", e, exc_info=True)
-                    await asyncio.sleep(0.1)
-
-            logger.warning("[ZMQ] ⚠️  while循环退出（self.running=%s）", self.running)
-
-        except Exception as e:
-            logger.error("[ZMQ] ❌ 协程异常退出: %s", e, exc_info=True)
-        finally:
-            logger.info("[ZMQ] 通信处理协程停止")
-
-    async def _handle_query_request(self):
-        """处理查询请求."""
-        if not self.rep_socket:
-            return
-
-        try:
-            request = await self.rep_socket.recv_json()
-            action = request.get("action", "get_data")
-
-            if action == "get_data":
-                # 构建响应，包含动态阈值数据和并发任务数
-                response = {"timestamp": datetime.now().isoformat(), **self.monitoring_data}
-                if self.adaptive_threshold:
-                    response["thresholds"] = self.adaptive_threshold.get_all_thresholds()
-                # 添加并发任务数
-                try:
-                    concurrent_tasks = self.business_metrics_collector.get_concurrent_tasks()
-                    response["concurrent_tasks"] = concurrent_tasks
-                except Exception:
-                    response["concurrent_tasks"] = {
-                        "download": 0,
-                        "backtest": 0,
-                        "trading": 0,
-                        "total": 0,
-                    }
-                await self.rep_socket.send_json(response)
-            elif action == "trigger_smart":
-                if self.smart_trigger_event:
-                    self.smart_trigger_event.set()
-                await self.rep_socket.send_json({"status": "success"})
-            elif action == "test_bandwidth_full":
-                # 手动触发完整带宽测试（后台任务模式，避免阻塞REP socket）
-                try:
-                    # 检查是否已有测试在运行
-                    if self._background_bandwidth_task and not self._background_bandwidth_task.done():
-                        logger.warning("[BANDWIDTH] 测试已在运行中，拒绝新请求")
-                        await self.rep_socket.send_json({
-                            "status": "testing",
-                            "message": "带宽测试正在进行中，请稍后查询结果"
-                        })
-                    else:
-                        # 创建后台任务（不await）
-                        self._background_bandwidth_task = asyncio.create_task(
-                            self.system_monitor.bandwidth_monitor.test_bandwidth_full_async()
-                        )
-                        logger.info("[ZMQ] ✅ 带宽测试后台任务已启动（不阻塞REP socket）")
-                        await self.rep_socket.send_json({
-                            "status": "started",
-                            "message": "带宽测试已启动，预计30-60秒完成，请通过get_bandwidth查询结果"
-                        })
-
-                        # 添加任务完成回调（用于日志）
-                        def on_bandwidth_done(task):
-                            try:
-                                result = task.result()
-                                if result:
-                                    logger.info(f"[ZMQ] ✅ 带宽测试后台任务完成：{result}")
-                                else:
-                                    logger.warning(f"[ZMQ] ⚠️ 带宽测试后台任务返回None")
-                            except Exception as e:
-                                logger.error(f"[ZMQ] ❌ 带宽测试后台任务异常：{e}", exc_info=True)
-
-                        self._background_bandwidth_task.add_done_callback(on_bandwidth_done)
-
-                except Exception as e:
-                    logger.error(f"[ZMQ] 启动带宽测试失败：{e}", exc_info=True)
-                    await self.rep_socket.send_json({"status": "error", "message": str(e)})
-            elif action == "retry_latency":
-                # 重新初始化延迟监控器（用于重试按钮）
-                try:
-                    logger.info("[ZMQ] 收到延迟监控重试请求")
-                    await self.system_monitor.latency_monitor.retry_initialize()
-                    await self.rep_socket.send_json({
-                        "status": "success",
-                        "message": "延迟监控器已重新初始化"
-                    })
-                except Exception as e:
-                    logger.error(f"[ZMQ] 重试延迟监控失败：{e}", exc_info=True)
-                    await self.rep_socket.send_json({"status": "error", "message": str(e)})
-            elif action == "get_bandwidth":
-                # 获取最新带宽结果（包含完整测试和延迟测试）
-                try:
-                    result = self.system_monitor.get_bandwidth_info()
-                    logger.debug(f"[ZMQ] get_bandwidth返回：{result}")
-                    await self.rep_socket.send_json({"status": "success", "data": result})
-                except Exception as e:
-                    logger.error(f"[ZMQ] get_bandwidth失败：{e}", exc_info=True)
-                    await self.rep_socket.send_json({"status": "error", "message": str(e)})
-            elif action == "get_all":
-                # 获取所有监控数据（包含带宽信息）
-                try:
-                    response = {
-                        "status": "success",
-                        "data": {
-                            "system": self.monitoring_data.get("system", {}),
-                            "hardware": self.monitoring_data.get("hardware", {}),
-                            "process": self.monitoring_data.get("process", {}),
-                            "bandwidth": self.system_monitor.get_bandwidth_info(),
-                        },
-                    }
-                    await self.rep_socket.send_json(response)
-                except Exception as e:
-                    await self.rep_socket.send_json({"status": "error", "message": str(e)})
-            else:
-                await self.rep_socket.send_json({"error": f"Unknown action: {action}"})
-        except Exception as e:
-            logger.error("[ZMQ] 处理查询失败: %s", e)
             try:
-                await self.rep_socket.send_json({"error": str(e)})
+                await asyncio.gather(query_task, status_task, return_exceptions=True)
             except Exception:
                 pass
 
-    async def _handle_service_status(self):
-        """处理服务状态推送."""
-        if not self.pull_socket:
+            logger.warning("[IPC] ⚠️  while循环退出（self.running=%s）", self.running)
+
+        except Exception as e:
+            logger.error("[IPC] ❌ 协程异常退出: %s", e, exc_info=True)
+        finally:
+            logger.info("[IPC] 通信处理协程停止")
+
+    async def _handle_query_pipe(self):
+        """处理查询管道（native_ipc服务端）."""
+        if not self.query_pipe:
             return
 
         try:
-            status = await self.pull_socket.recv_json()
-            self.monitoring_data["service"] = status
-            logger.debug("[ZMQ] 收到服务状态更新")
+            while self.running:
+                try:
+                    # 读取请求
+                    request_data = await self.query_pipe.read()
+                    request = json.loads(request_data.decode())
+                    action = request.get("action", "get_data")
+
+                    # 处理请求
+                    if action == "get_data":
+                        # 构建响应，包含动态阈值数据和并发任务数
+                        response = {"timestamp": datetime.now().isoformat(), **self.monitoring_data}
+                        if self.adaptive_threshold:
+                            response["thresholds"] = self.adaptive_threshold.get_all_thresholds()
+                        # 添加并发任务数
+                        try:
+                            concurrent_tasks = self.business_metrics_collector.get_concurrent_tasks()
+                            response["concurrent_tasks"] = concurrent_tasks
+                        except Exception:
+                            response["concurrent_tasks"] = {
+                                "download": 0,
+                                "backtest": 0,
+                                "trading": 0,
+                                "total": 0,
+                            }
+                        await self.query_pipe.write(json.dumps(response).encode())
+                    elif action == "trigger_smart":
+                        if self.smart_trigger_event:
+                            self.smart_trigger_event.set()
+                        await self.query_pipe.write(json.dumps({"status": "success"}).encode())
+                    elif action == "test_bandwidth_full":
+                        # 手动触发完整带宽测试（后台任务模式）
+                        try:
+                            if self._background_bandwidth_task and not self._background_bandwidth_task.done():
+                                logger.warning("[BANDWIDTH] 测试已在运行中，拒绝新请求")
+                                await self.query_pipe.write(json.dumps({
+                                    "status": "testing",
+                                    "message": "带宽测试正在进行中，请稍后查询结果"
+                                }).encode())
+                            else:
+                                self._background_bandwidth_task = asyncio.create_task(
+                                    self.system_monitor.bandwidth_monitor.test_bandwidth_full_async()
+                                )
+                                logger.info("[IPC] ✅ 带宽测试后台任务已启动")
+                                await self.query_pipe.write(json.dumps({
+                                    "status": "started",
+                                    "message": "带宽测试已启动，预计30-60秒完成，请通过get_bandwidth查询结果"
+                                }).encode())
+
+                                def on_bandwidth_done(task):
+                                    try:
+                                        result = task.result()
+                                        if result:
+                                            logger.info(f"[IPC] ✅ 带宽测试后台任务完成：{result}")
+                                        else:
+                                            logger.warning(f"[IPC] ⚠️ 带宽测试后台任务返回None")
+                                    except Exception as e:
+                                        logger.error(f"[IPC] ❌ 带宽测试后台任务异常：{e}", exc_info=True)
+
+                                self._background_bandwidth_task.add_done_callback(on_bandwidth_done)
+                        except Exception as e:
+                            logger.error(f"[IPC] 启动带宽测试失败：{e}", exc_info=True)
+                            await self.query_pipe.write(json.dumps({"status": "error", "message": str(e)}).encode())
+                    elif action == "retry_latency":
+                        try:
+                            logger.info("[IPC] 收到延迟监控重试请求")
+                            await self.system_monitor.latency_monitor.retry_initialize()
+                            await self.query_pipe.write(json.dumps({
+                                "status": "success",
+                                "message": "延迟监控器已重新初始化"
+                            }).encode())
+                        except Exception as e:
+                            logger.error(f"[IPC] 重试延迟监控失败：{e}", exc_info=True)
+                            await self.query_pipe.write(json.dumps({"status": "error", "message": str(e)}).encode())
+                    elif action == "get_bandwidth":
+                        try:
+                            result = self.system_monitor.get_bandwidth_info()
+                            logger.debug(f"[IPC] get_bandwidth返回：{result}")
+                            await self.query_pipe.write(json.dumps({"status": "success", "data": result}).encode())
+                        except Exception as e:
+                            logger.error(f"[IPC] get_bandwidth失败：{e}", exc_info=True)
+                            await self.query_pipe.write(json.dumps({"status": "error", "message": str(e)}).encode())
+                    elif action == "get_all":
+                        try:
+                            response = {
+                                "status": "success",
+                                "data": {
+                                    "system": self.monitoring_data.get("system", {}),
+                                    "hardware": self.monitoring_data.get("hardware", {}),
+                                    "process": self.monitoring_data.get("process", {}),
+                                    "bandwidth": self.system_monitor.get_bandwidth_info(),
+                                },
+                            }
+                            await self.query_pipe.write(json.dumps(response).encode())
+                        except Exception as e:
+                            await self.query_pipe.write(json.dumps({"status": "error", "message": str(e)}).encode())
+                    else:
+                        await self.query_pipe.write(json.dumps({"error": f"Unknown action: {action}"}).encode())
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    logger.error("[IPC] 处理查询失败: %s", e, exc_info=True)
+                    try:
+                        await self.query_pipe.write(json.dumps({"error": str(e)}).encode())
+                    except Exception:
+                        pass
+                    await asyncio.sleep(0.1)
+        except asyncio.CancelledError:
+            pass
         except Exception as e:
-            logger.exception("[ZMQ] 接收服务状态失败: %s", e)
+            logger.error("[IPC] 查询管道处理异常: %s", e, exc_info=True)
+
+    async def _handle_status_pipe(self):
+        """处理状态管道（native_ipc服务端，接收主进程状态推送）."""
+        if not self.status_pipe:
+            return
+
+        try:
+            while self.running:
+                try:
+                    # 读取状态
+                    status_data = await self.status_pipe.read()
+                    status = json.loads(status_data.decode())
+                    self.monitoring_data["service"] = status
+                    logger.debug("[IPC] 收到服务状态更新")
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    logger.exception("[IPC] 接收服务状态失败: %s", e)
+                    await asyncio.sleep(0.1)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error("[IPC] 状态管道处理异常: %s", e, exc_info=True)
 
     async def fast_metrics_collector(self):
         """快速指标采集 - DEBUG断点位置."""
@@ -2635,12 +2535,13 @@ class MonitoringProcessV2:
         }
 
     async def _push_alert(self, alert: Dict[str, Any]):
-        """推送告警将主进程."""
-        if not self.push_socket:
+        """推送告警到主进程（native_ipc客户端）."""
+        if not self.alerts_pipe:
             return
 
         try:
-            await self.push_socket.send_json(alert)
+            alert_data = json.dumps(alert).encode()
+            await self.alerts_pipe.write(alert_data)
             logger.info("[ALERT] 推送告警: %s", alert["message"])
         except Exception as e:
             logger.exception("[ALERT] 推送失败: %s", e)
@@ -2650,30 +2551,24 @@ class MonitoringProcessV2:
         logger.info("正在停止监控进程...")
         self.running = False
 
-        # 先关闭socket，再关闭context
-        if self.push_socket:
+        # 关闭native_ipc管道
+        if self.query_pipe:
             try:
-                self.push_socket.close(linger=0)
+                await self.query_pipe.close()
             except Exception as e:
-                logger.debug("关闭push_socket异常: %s", e)
+                logger.debug("关闭query_pipe异常: %s", e)
 
-        if self.rep_socket:
+        if self.status_pipe:
             try:
-                self.rep_socket.close(linger=0)
+                await self.status_pipe.close()
             except Exception as e:
-                logger.debug("关闭rep_socket异常: %s", e)
+                logger.debug("关闭status_pipe异常: %s", e)
 
-        if self.pull_socket:
+        if self.alerts_pipe:
             try:
-                self.pull_socket.close(linger=0)
+                await self.alerts_pipe.close()
             except Exception as e:
-                logger.debug("关闭pull_socket异常: %s", e)
-
-        if self.zmq_context:
-            try:
-                self.zmq_context.term()
-            except Exception as e:
-                logger.debug("关闭zmq_context异常: %s", e)
+                logger.debug("关闭alerts_pipe异常: %s", e)
 
         # 等待线程池关闭
         try:
@@ -3309,6 +3204,9 @@ class LatencyMonitor:
         if self._load_cache():
             logger.info(f"[LATENCY-INIT] 使用缓存，可用服务器: {len(self._available_servers)} 个")
             return
+
+        # 🔧 修复：缓存不存在或已过时，自动测试生成
+        logger.info(f"[LATENCY-INIT] 缓存不存在或已过时，开始自动测试所有服务器...")
 
         # 2. 并发测试所有服务器（无限制并发）
         logger.info(f"[LATENCY-INIT] 开始并发测试所有服务器连通性...")
@@ -3950,7 +3848,7 @@ class SystemMonitor:
 
     def get_cpu_info(self) -> Dict[str, Any]:
         """获取CPU详细信息.
-        
+
         频率获取策略（优先级从高到低）:
         1. LibreHardwareMonitor: 从硬件监控器获取CPU最大频率（可能包含Turbo Boost上限）
         2. psutil: 获取基础频率（Windows上通常是基础频率，不是Turbo Boost上限）
@@ -3965,11 +3863,11 @@ class SystemMonitor:
                 # 尝试通过全局方式获取硬件监控器（如果MonitoringProcessV2已初始化）
                 # 这里使用HardwareMonitorFactory的单例模式
                 hardware_monitor = HardwareMonitorFactory.get_instance()
-                
+
                 if hardware_monitor and hardware_monitor.is_available():
                     sensor_data = hardware_monitor.get_all_sensor_data()
                     clock_sensors = sensor_data.get("clock", {})
-                    
+
                     # 查找CPU相关的时钟传感器
                     cpu_max_freqs = []
                     import math
@@ -3980,13 +3878,13 @@ class SystemMonitor:
                                 max_val = sensor.get("max")
                                 if max_val is not None and not math.isnan(max_val) and max_val > 0:
                                     cpu_max_freqs.append(max_val)
-                    
+
                     if cpu_max_freqs:
                         max_freq_from_lhm = max(cpu_max_freqs)
                         logger.debug(f"[CPU-FREQ] 从LibreHardwareMonitor获取最大频率: {max_freq_from_lhm:.2f} MHz")
             except Exception as e:
                 logger.debug(f"[CPU-FREQ] 从LibreHardwareMonitor获取频率失败: {e}")
-            
+
             if HAS_PSUTIL:
                 # 获取CPU频率（返回单个对象，而非列表）
                 cpu_freq: Any = psutil.cpu_freq()  # scpufreq 对象或 None
@@ -4018,7 +3916,7 @@ class SystemMonitor:
             else:
                 # 如果没有psutil，使用LibreHardwareMonitor的值或默认值
                 max_freq = max_freq_from_lhm if max_freq_from_lhm else 3000
-                
+
                 return {
                     "cpu_count_physical": os.cpu_count() or 1,
                     "cpu_count_logical": os.cpu_count() or 1,
@@ -5481,7 +5379,7 @@ class ProcessBottleneckAnalyzer:
 
 
 class MonitoringProcess:
-    """监控进程主类 - 独立进程，通过ZeroMQ与主进程通信."""
+    """监控进程主类 - 独立进程，通过native_ipc与主进程通信（已废弃，使用MonitoringProcessV2）."""
 
     def __init__(self):
         """初始化监控进程."""

@@ -1194,29 +1194,14 @@ class MainWindow(QMainWindow, LoggerMixin):
             print("[DEBUG-IPO] ChinaStockEngine已就绪，准备创建验证工作对象")
             self.logger.info("创建Qt原生验证工作对象...")
 
-            # 导入Qt原生的验证工作对象
-            from PySide6.QtCore import QThread
-            from backend.infrastructure.data_module_vnpy import (
-                CacheValidationWorker,
-            )
+            # 🔧 修复：CacheValidationWorker在架构v3.0重构后被移除
+            # 暂时禁用后台验证功能，等待重构后的验证方案
+            self.logger.warning("⚠️ CacheValidationWorker在架构v3.0重构后已移除，跳过后台验证")
+            self.logger.warning("⚠️ 数据验证功能将在后续版本中重新实现")
+            print("[DEBUG-IPO] ⚠️ CacheValidationWorker已移除，跳过后台验证")
 
-            # 创建工作对象和线程
-            self._validation_worker = CacheValidationWorker(engine)
-            self._validation_thread = QThread()
-
-            # 将工作对象移到线程中（Qt的moveToThread模式）
-            self._validation_worker.moveToThread(self._validation_thread)
-
-            # 连接信号
-            self._validation_thread.started.connect(self._validation_worker.run)
-            self._validation_worker.finished.connect(self._validation_thread.quit)
-            self._validation_worker.finished.connect(self._on_validation_finished)
-            self._validation_worker.progress.connect(self._on_validation_progress)
-            self._validation_worker.error.connect(self._on_validation_error)
-
-            # 启动线程（Qt原生，EventEngine安全）
-            self._validation_thread.start()
-            self.logger.info("✅ 后台验证线程已启动（Qt QThread）")
+            # TODO: 重构后使用DataSensor或新的验证机制
+            # 暂时不创建验证工作对象，等待新方案
 
         except Exception as e:
             self.logger.error("启动后台验证失败: %s", e, exc_info=True)

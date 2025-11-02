@@ -976,18 +976,14 @@ class ServiceInitializer:
             self.logger.info("阶段0: 网络时间同步")
             self.logger.info("=" * 60)
 
-            from backend.infrastructure.data_module_vnpy.data_module import (
-                sync_network_time,
-                get_time_stats,
-            )
+            from backend.infrastructure.data_module_vnpy import NetworkTimeSync
 
             self.logger.info("开始网络时间同步...")
-            success = sync_network_time()
+            time_sync = NetworkTimeSync.get_instance()
+            success, offset = time_sync.sync_time()
 
-            if success:
-                stats = get_time_stats()
-                offset = stats.get("cached_offset", 0)
-                abs_offset = abs(offset) if offset is not None else 0
+            if success and offset is not None:
+                abs_offset = abs(offset)
 
                 if abs_offset > 1.0:
                     direction = "慢" if offset > 0 else "快"
@@ -1170,7 +1166,7 @@ class ServiceInitializer:
         # 初始化ChinaStockEngine（作为数据引擎）
         try:
             self._report_progress("创建ChinaStockEngine...", 45)
-            from backend.infrastructure.data_module_vnpy.data_module import ChinaStockEngine
+            from backend.infrastructure.data_module_vnpy import ChinaStockEngine
 
             # 确保引擎已初始化
             assert self.main_engine is not None, "MainEngine 必须在初始化 ChinaStockEngine 之前创建"
@@ -1181,6 +1177,21 @@ class ServiceInitializer:
             self.china_stock_engine = ChinaStockEngine(self.main_engine, self.event_engine)
             self.logger.info("✅ ChinaStockEngine 创建成功")
             print("[DATA-INIT] ✅ ChinaStockEngine 创建成功")
+
+            # 🔧 修复：调用initialize()方法初始化引擎（架构v3.0要求）
+            try:
+                self._report_progress("初始化ChinaStockEngine子组件...", 48)
+                init_success = self.china_stock_engine.initialize()
+                if init_success:
+                    self.logger.info("✅ ChinaStockEngine 初始化完成")
+                    print("[DATA-INIT] ✅ ChinaStockEngine 初始化完成")
+                else:
+                    self.logger.warning("⚠️ ChinaStockEngine 初始化失败，但继续启动")
+                    print("[DATA-INIT] ⚠️ ChinaStockEngine 初始化失败，但继续启动")
+            except Exception as e:
+                self.logger.exception("❌ ChinaStockEngine 初始化异常: %s", e)
+                print(f"[DATA-INIT] ❌ ChinaStockEngine 初始化异常: {e}")
+                # 不中断启动流程，允许降级运行
 
             # 注册到全局
             set_china_stock_engine(self.china_stock_engine)
@@ -1241,7 +1252,7 @@ class ServiceInitializer:
 
                     # 获取 UnifiedDataManager
                     self.logger.info("正在获取 UnifiedDataManager...")
-                    unified_data_manager = self.china_stock_engine.get_unified_data_manager()
+                    unified_data_manager = self.china_stock_engine.unified_data_manager
 
                     if unified_data_manager:
                         self.logger.info("✅ UnifiedDataManager 获取成功")
@@ -1259,11 +1270,14 @@ class ServiceInitializer:
                         )
 
                         if has_udm_get_contracts and has_udm_load_bar:
-                            # 注入品种列表查询方法
-                            self.logger.info("正在注入 get_all_contracts 方法...")
-                            self.main_engine.get_all_contracts = (  # pyright: ignore[reportAttributeAccessIssue]
-                                unified_data_manager.get_all_contracts
-                            )
+                            # 注入品种列表查询方法（如果存在）
+                            if hasattr(unified_data_manager, "get_all_contracts"):
+                                self.logger.info("正在注入 get_all_contracts 方法...")
+                                self.main_engine.get_all_contracts = (  # pyright: ignore[reportAttributeAccessIssue]
+                                    unified_data_manager.get_all_contracts
+                                )
+                            else:
+                                self.logger.debug("UnifiedDataManager没有get_all_contracts方法，跳过注入")
 
                             # 注入历史K线查询方法
                             self.logger.info("正在注入 load_bar_data 方法...")

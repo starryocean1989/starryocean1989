@@ -130,17 +130,25 @@ async def test_cache():
         return False
 
 
-def test_ipc_queue():
-    """测试IPC队列"""
+async def test_ipc_pipe():
+    """测试原生IPC管道"""
     print("\n" + "="*60)
-    print("测试: IPC队列适配器")
+    print("测试: Native IPC Pipe")
     print("="*60)
 
     try:
-        from backend.infrastructure.data_module_vnpy.ipc_queue_adapter import IPCQueue
+        from backend.infrastructure.native_ipc import AsyncIPCPipe, IPC_AVAILABLE
 
-        queue = IPCQueue("test", role="server")
-        print(f"✅ IPCQueue创建成功")
+        if not IPC_AVAILABLE:
+            print("⚠️ IPC不可用，跳过测试")
+            return True
+
+        # 测试创建server管道
+        server_pipe = await AsyncIPCPipe.server("test_ipc_pipe")
+        print(f"✅ IPC Server管道创建成功")
+
+        # 关闭管道
+        await server_pipe.close()
         return True
 
     except Exception as e:
@@ -158,7 +166,7 @@ async def run_tests():
     results.append(("TDX Reader", await test_tdx_reader()))
     results.append(("Parquet异步读取", await test_parquet_async()))
     results.append(("缓存模块", await test_cache()))
-    results.append(("IPC队列", test_ipc_queue()))
+    results.append(("IPC管道", await test_ipc_pipe()))
 
     print("\n" + "="*80)
     print("测试结果")

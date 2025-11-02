@@ -33,14 +33,33 @@ class TradingCalendar:
     使用 pandas_market_calendars 作为底层实现，提供中国A股交易日历（1990年至今）
     """
 
-    def __init__(self, cache_dir: str = "cache"):
+    def __init__(self, cache_dir: Optional[str] = None):
         """
         初始化交易日历
 
-        :param cache_dir: 缓存目录
+        :param cache_dir: 缓存目录（如果为None，使用ConfigManager获取缓存目录）
         """
-        self.cache_dir = Path(cache_dir)
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        # 🔧 修复：使用 ConfigManager 获取缓存目录，确保使用 data/cache 目录
+        if cache_dir is None:
+            try:
+                import sys
+                from pathlib import Path
+
+                # 添加项目根目录到sys.path
+                project_root = Path(__file__).parent.parent.parent.parent
+                if str(project_root) not in sys.path:
+                    sys.path.insert(0, str(project_root))
+
+                from backend.infrastructure.data_module_vnpy.core_engine import ConfigManager
+                config_manager = ConfigManager.get_instance()
+                self.cache_dir = config_manager.get_cache_dir()
+            except Exception:
+                # 降级：使用默认相对路径
+                self.cache_dir = Path("cache")  # Path已在文件顶部导入
+                self.cache_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            self.cache_dir = Path(cache_dir)  # Path已在文件顶部导入
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
 
         # pandas_market_calendars无需初始化，直接调用API即可
         logger.debug("✓ 交易日历管理器初始化完成 (pandas_market_calendars数据源)")
@@ -50,8 +69,8 @@ class TradingCalendar:
         self._cache_timestamp: Optional[datetime] = None
         self._cache_ttl = 86400  # 24小时缓存
 
-        # 文件缓存配置
-        self._cache_file = "trading_calendar.json"
+        # 🔧 修复：文件缓存路径使用缓存目录下的绝对路径
+        self._cache_file = self.cache_dir / "trading_calendar.json"
 
     def _load_from_file_cache(self) -> Optional[pd.DataFrame]:
         """从文件缓存加载交易日历（使用DailyCacheManager）
@@ -69,10 +88,13 @@ class TradingCalendar:
             if str(project_root) not in sys.path:
                 sys.path.insert(0, str(project_root))
 
-            from backend.infrastructure.data_module_vnpy import DailyCacheManager
+            from backend.infrastructure.data_module_vnpy.core_engine import DailyCacheManager
+
+            # 🔧 确保使用Path对象
+            cache_file_path = Path(self._cache_file) if not isinstance(self._cache_file, Path) else self._cache_file
 
             cache_data, cache_date, is_valid = DailyCacheManager.load_with_validation(
-                self._cache_file
+                cache_file_path
             )
 
             if not cache_data or not is_valid:
@@ -121,8 +143,11 @@ class TradingCalendar:
                 if "date" in record and hasattr(record["date"], "strftime"):
                     record["date"] = record["date"].strftime("%Y-%m-%d")
 
+            # 🔧 确保使用Path对象
+            cache_file_path = Path(self._cache_file) if not isinstance(self._cache_file, Path) else self._cache_file
+
             # 使用DailyCacheManager保存（带日期）
-            success = DailyCacheManager.save_with_date(cache_data, self._cache_file)
+            success = DailyCacheManager.save_with_date(cache_data, cache_file_path)
 
             if success:
                 logger.debug(f"交易日历已保存到文件缓存: {self._cache_file}")
@@ -157,6 +182,9 @@ class TradingCalendar:
                     )
 
                 return cached_df
+
+            # 🔧 修复：缓存不存在或无效时，自动从API请求数据生成
+            # 继续执行下面的逻辑，从API获取数据
 
             # 检查内存缓存
             if self._calendar_cache is not None and self._cache_timestamp is not None:

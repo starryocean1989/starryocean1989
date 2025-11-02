@@ -935,8 +935,9 @@ class SQLiteManager:
         """
         if db_path is None:
             # 默认数据库路径（使用绝对路径）
-            from backend.infrastructure.data_module_vnpy.data_module import config_manager
+            from backend.infrastructure.data_module_vnpy import ConfigManager
 
+            config_manager = ConfigManager.get_instance()
             db_path = config_manager.get_db_file()
 
         self.db_path = db_path
