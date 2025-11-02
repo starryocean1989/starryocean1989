@@ -414,30 +414,57 @@ class BackendInitializerWorker(QObject):
                     if status == "initializing":
                         time.sleep(0.1)
                         continue
-                    elif status in ["ports_ready", "fully_ready"] and level >= 1:
+                    elif status in ["ports_ready", "fully_ready", "pipes_ready", "partial_pipes_ready"] and level >= 1:
+                        # 兼容新旧两种就绪信号格式
+                        # 旧格式：使用ZMQ端口（ports）
+                        # 新格式：使用native_ipc管道（pipes）
                         ports = signal_data.get("ports", {})
+                        pipes = signal_data.get("pipes", {})
                         elapsed = time.time() - wait_start
 
-                        if not all(
-                            ports.get(k) for k in ["alert_push", "status_pull", "query_rep"]
-                        ):
+                        # 检查是否有端口信息（旧格式）或管道信息（新格式）
+                        if ports:
+                            # 旧格式：检查ZMQ端口
+                            if not all(
+                                ports.get(k) for k in ["alert_push", "status_pull", "query_rep"]
+                            ):
+                                time.sleep(0.1)
+                                continue
+
+                            self.logger.info(
+                                "[MONITOR-PROCESS] 监控进程端口就绪（PID: %d, 端口: %d/%d/%d，耗时: %.1fs）",
+                                signal_pid,
+                                ports.get("alert_push", 0),
+                                ports.get("status_pull", 0),
+                                ports.get("query_rep", 0),
+                                elapsed,
+                            )
+
+                            # 设置环境变量供SystemManagerService使用
+                            os.environ["MONITOR_ALERT_PUSH"] = str(ports.get("alert_push", 5555))
+                            os.environ["MONITOR_STATUS_PULL"] = str(ports.get("status_pull", 5556))
+                            os.environ["MONITOR_QUERY_REP"] = str(ports.get("query_rep", 5557))
+                        elif pipes:
+                            # 新格式：检查native_ipc管道
+                            if not all(
+                                pipes.get(k) for k in ["query", "status"]
+                            ):
+                                time.sleep(0.1)
+                                continue
+
+                            self.logger.info(
+                                "[MONITOR-PROCESS] 监控进程管道就绪（PID: %d, 管道: %s/%s，耗时: %.1fs）",
+                                signal_pid,
+                                pipes.get("query", ""),
+                                pipes.get("status", ""),
+                                elapsed,
+                            )
+                        else:
                             time.sleep(0.1)
                             continue
 
-                        self.logger.info(
-                            "[MONITOR-PROCESS] 监控进程端口就绪（PID: %d, 端口: %d/%d/%d，耗时: %.1fs）",
-                            signal_pid,
-                            ports.get("alert_push", 0),
-                            ports.get("status_pull", 0),
-                            ports.get("query_rep", 0),
-                            elapsed,
-                        )
-
-                        # 设置环境变量供SystemManagerService使用
+                        # 设置通用环境变量
                         os.environ["MONITOR_READY"] = "1"
-                        os.environ["MONITOR_ALERT_PUSH"] = str(ports.get("alert_push", 5555))
-                        os.environ["MONITOR_STATUS_PULL"] = str(ports.get("status_pull", 5556))
-                        os.environ["MONITOR_QUERY_REP"] = str(ports.get("query_rep", 5557))
                         os.environ["MONITOR_PROCESS_PID"] = str(signal_pid)
 
                         ports_ready = True

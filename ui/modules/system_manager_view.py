@@ -3267,7 +3267,7 @@ class SystemManager(BaseWidget, LoggerMixin):
         # 如果失败，启动定时器每秒重试
         self._event_subscription_timer = QTimer(self)
         self._event_subscription_timer.timeout.connect(self._try_subscribe_events)
-        self._event_subscription_timer.start(1000)  # 每秒重试
+        self._event_subscription_timer.start(5000)  # 每5秒重试 (降低频率)
         self.logger.info("EventEngine暂时不可用，启动定时器等待（每秒重试）")
 
     def _try_subscribe_events(self) -> bool:

@@ -3019,8 +3019,8 @@ class SystemManagerService(BaseService):
         try:
             while True:
                 try:
-                    # 读取告警数据
-                    alert_data = await self._alerts_pipe.read()
+                    # 读取告警数据（使用更大的缓冲区）
+                    alert_data = await self._alerts_pipe.read(size=65536)
                     alert = json.loads(alert_data.decode())
 
                     # 验证告警格式
@@ -3053,19 +3053,19 @@ class SystemManagerService(BaseService):
 
                     # 发送事件到EventEngine（UI可以监听）
                     if self.event_engine:
+                        from vnpy.event import Event
                         from backend.infrastructure.system_vnpy.system_toolkit import (
                             EVENT_ALERT_CREATED,
                         )
 
-                        self.event_engine.put(
-                            EVENT_ALERT_CREATED,
-                            {
-                                "alert": alert,
-                                "timestamp": alert.get("timestamp"),
-                                "severity": severity,
-                                "message": message,
-                            },
-                        )
+                        event_data = {
+                            "alert": alert,
+                            "timestamp": alert.get("timestamp"),
+                            "severity": severity,
+                            "message": message,
+                        }
+                        event = Event(EVENT_ALERT_CREATED, event_data)
+                        self.event_engine.put(event)
 
                 except asyncio.CancelledError:
                     break
@@ -3109,8 +3109,8 @@ class SystemManagerService(BaseService):
             request = json.dumps({"action": "get_data"}).encode()
             await self._query_pipe.write(request)
 
-            # 读取响应（最多等待2秒）
-            response_data = await asyncio.wait_for(self._query_pipe.read(), timeout=2.0)
+            # 读取响应（最多等待2秒，使用更大的缓冲区）
+            response_data = await asyncio.wait_for(self._query_pipe.read(size=65536), timeout=2.0)
             response = json.loads(response_data.decode())
 
             # 检查响应
@@ -3202,8 +3202,8 @@ class SystemManagerService(BaseService):
             request = json.dumps({"action": "trigger_smart"}).encode()
             await self._query_pipe.write(request)
 
-            # 等待响应（最多2秒）
-            response_data = await asyncio.wait_for(self._query_pipe.read(), timeout=2.0)
+            # 等待响应（最多2秒，使用更大的缓冲区）
+            response_data = await asyncio.wait_for(self._query_pipe.read(size=65536), timeout=2.0)
             response = json.loads(response_data.decode())
 
             if isinstance(response, dict) and response.get("status") == "success":
@@ -3310,9 +3310,9 @@ class SystemManagerService(BaseService):
                     # 降级模式下延长等待时间
                     elapsed = time.time() - start_time
                     if elapsed < startup_phase_duration:
-                        wait_time = 3  # 启动阶段降低频率
+                        wait_time = 5  # 启动阶段进一步降低频率
                     else:
-                        wait_time = 3 if degraded_mode else 1
+                        wait_time = 5 if degraded_mode else 3  # 正常模式也降低频率
                     time.sleep(wait_time)
                     continue
 
@@ -3329,9 +3329,9 @@ class SystemManagerService(BaseService):
                 # 4. 间隔时间优化：启动阶段3秒，正常1秒，降级3秒
                 elapsed = time.time() - start_time
                 if elapsed < startup_phase_duration:
-                    wait_time = 3  # 启动阶段降低频率，减少CPU负载和上下文切换
+                    wait_time = 5  # 启动阶段进一步降低频率，减少CPU负载和上下文切换
                 else:
-                    wait_time = 3 if degraded_mode else 1
+                    wait_time = 5 if degraded_mode else 3  # 正常模式也降低频率
                 time.sleep(wait_time)
 
             except Exception as e:
@@ -3400,13 +3400,18 @@ class SystemManagerService(BaseService):
             request_json = json.dumps(request).encode()
             await self._query_pipe.write(request_json)
 
-            # 读取响应（最多等待2秒）
-            response_data = await asyncio.wait_for(self._query_pipe.read(), timeout=2.0)
+            # 读取响应（最多等待2秒，使用更大的缓冲区）
+            response_data = await asyncio.wait_for(self._query_pipe.read(size=65536), timeout=2.0)
             response = json.loads(response_data.decode())
 
             return response if isinstance(response, dict) else {}
         except asyncio.TimeoutError:
             self.logger.debug("异步查询超时（2秒无响应）")
+            return {}
+        except json.JSONDecodeError as e:
+            self.logger.error("异步查询JSON解析失败：%s，数据长度：%d", e, len(response_data) if 'response_data' in locals() else 0)
+            if 'response_data' in locals():
+                self.logger.debug("原始数据前100字符：%s", response_data[:100])
             return {}
         except Exception as e:
             self.logger.error("异步查询失败：%s", e)
@@ -3475,6 +3480,7 @@ class SystemManagerService(BaseService):
                     else "响应格式错误"
                 )
                 self.logger.warning("监控进程返回错误: %s", error_msg)
+                self.logger.warning("完整响应内容: %s", result)
                 return {
                     "full_test": {
                         "download_mbps": None,

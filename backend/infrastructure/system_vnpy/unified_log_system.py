@@ -977,11 +977,12 @@ class LoggingHub(logging.Handler):
         if "[LATENCY-INIT]" in record.message or "[LATENCY-CACHE]" in record.message or "[LATENCY-FALLBACK]" in record.message:
             return
 
-        # 4. 排除自动测试中调用speedtest_native产生的日志
+        # 4. 排除自动测试中调用网络测速产生的日志
         # 手动测试会使用ai_log_process上下文管理器，会创建独立的AI日志文件
-        # 自动测试不会使用ai_log_process，所以speedtest_native的日志如果是自动测试产生的，
+        # 自动测试不会使用ai_log_process，所以网络测速的日志如果是自动测试产生的，
         # 应该被排除。我们通过检查AILogFileHandler是否有活动的process来判断
-        if "speedtest_native" in record.logger_name:
+        # 注意：NetworkSpeedTester已集成到monitor_system.py，日志名称可能包含SPEEDTEST标记
+        if "speedtest_native" in record.logger_name or "SPEEDTEST" in record.message:
             # 检查当前是否有活动的AI日志进程（手动测试会在ai_log_process中）
             if self._ai_log_handler:
                 current_process = self._ai_log_handler.get_current_process()

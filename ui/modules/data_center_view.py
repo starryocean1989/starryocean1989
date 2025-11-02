@@ -4484,9 +4484,9 @@ class DataCenter(BaseWidget, LoggerMixin):
                 self._progress_update_timer = QTimer(self)
                 self._progress_update_timer.setSingleShot(True)
                 self._progress_update_timer.timeout.connect(self._flush_progress_text_buffer)
-                self._progress_update_timer.start(200)
+                self._progress_update_timer.start(1000)  # 从200ms改为1秒
             elif not self._progress_update_timer.isActive():
-                self._progress_update_timer.start(200)
+                self._progress_update_timer.start(1000)  # 从200ms改为1秒
 
         except Exception as e:
             self.logger.debug("追加进度文本失败: %s", e)
@@ -5289,7 +5289,7 @@ class DataCenter(BaseWidget, LoggerMixin):
             if not hasattr(self, "_monitor_update_timer"):
                 self._monitor_update_timer = QTimer()
                 self._monitor_update_timer.timeout.connect(self._update_monitor_display)
-                self._monitor_update_timer.start(500)  # 每500ms更新一次
+                self._monitor_update_timer.start(2000)  # 每2秒更新一次 (降低频率)
         except Exception as e:
             self.logger.error("处理tick UI失败: %s", e)
 
