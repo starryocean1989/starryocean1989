@@ -179,18 +179,14 @@ class MonitorConfig(BaseSettings):
 
     model_config = ConfigDict(env_prefix="MONITOR_") if ConfigDict else None  # type: ignore
 
-    # ZMQ端口
-    port_alert_push: int = Field(default=5555)
-    port_status_pull: int = Field(default=5556)
-    port_query_rep: int = Field(default=5557)
+    # native_ipc管道名称
+    pipe_query: str = Field(default="monitor_query")  # 查询管道
+    pipe_status: str = Field(default="monitor_status")  # 状态管道
+    pipe_alerts: str = Field(default="monitor_alerts")  # 告警管道
 
-    # 地址
-    bind_addr: str = Field(default="127.0.0.1")
-
-    # 端口退避（当默认端口被占用时）
-    port_fallback_enabled: bool = Field(default=True)
-    port_fallback_base: int = Field(default=5565)
-    port_fallback_span: int = Field(default=3)
+    # IPC连接超时（秒）
+    connection_timeout: float = Field(default=10.0)
+    query_timeout: float = Field(default=3.0)
 
 
 class Settings:

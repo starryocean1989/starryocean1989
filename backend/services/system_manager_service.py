@@ -2761,12 +2761,24 @@ class SystemManagerService(BaseService):
         self.process_monitor = ProcessMonitor()
         self.bottleneck_analyzer = ProcessBottleneckAnalyzer()
 
-        # ZeroMQ通信（连接到独立监控进程）
-        self._zmq_context = None
-        self._zmq_push_socket = None  # 推送服务状态到监控进程
-        self._zmq_req_socket = None  # 查询监控数据
-        self._zmq_pull_socket = None  # 接收监控进程推送的告警（新增）
+        # native_ipc通信管道（连接到独立监控进程）
+        try:
+            from backend.infrastructure.native_ipc import AsyncIPCPipe
+
+            self._query_pipe = None  # 客户端：查询监控数据
+            self._status_pipe = None  # 客户端：推送服务状态到监控进程
+            self._alerts_pipe = None  # 服务端：接收监控进程推送的告警
+            self._ipc_available = True
+        except ImportError:
+            self._query_pipe = None
+            self._status_pipe = None
+            self._alerts_pipe = None
+            self._ipc_available = False
+            self.logger.warning("native_ipc不可用，监控功能将受限")
+
         self._monitoring_interval = 2  # 默认2秒
+        self._ipc_loop = None  # asyncio事件循环（用于native_ipc）
+        self._ipc_tasks = []  # 后台IPC任务
 
         # 监控数据缓存（避免频繁跨进程查询）
         self._monitor_data_cache: Dict[str, Any] = {}
@@ -2824,128 +2836,68 @@ class SystemManagerService(BaseService):
                 self.logger.error("❌ 日志管理系统初始化失败：%s", e, exc_info=True)
                 # 不中断启动流程
 
-            # 初始化ZeroMQ（客户端模式，无线程）
-            import zmq
+            # 初始化native_ipc通信管道
+            if not self._ipc_available:
+                self.logger.error("❌ native_ipc不可用，监控功能将受限")
+                return False
+
             from PySide6.QtCore import QTimer
 
-            self._zmq_context = zmq.Context()
+            # 等待监控进程就绪（读取就绪信号文件）
+            max_wait = 15.0
+            wait_start = time.time()
+            signal_file = Path("logs/monitor_ready.signal")
 
-            # 三级fallback端口读取（优化版）
-            # 优先级1：环境变量（最可靠，主进程直接设置）
-            # 优先级2：就绪信号文件
-            # 优先级3：配置文件默认值
+            while not signal_file.exists() and (time.time() - wait_start) < max_wait:
+                time.sleep(0.5)
 
-            addr = "127.0.0.1"
-            port_alert_push = 5555
-            port_status_pull = 5556
-            port_query_rep = 5557
-            ports_source = "default"
+            if not signal_file.exists():
+                self.logger.warning("⚠️ 监控进程未就绪（未找到就绪信号文件），将继续尝试初始化")
 
-            # 优先级1：从环境变量读取
-            if os.environ.get("MONITOR_READY") == "1":
-                try:
-                    port_alert_push = int(os.environ["MONITOR_ALERT_PUSH"])
-                    port_status_pull = int(os.environ["MONITOR_STATUS_PULL"])
-                    port_query_rep = int(os.environ["MONITOR_QUERY_REP"])
-                    ports_source = "environment"
-                    self.logger.info(
-                        "✅ 从环境变量读取监控端口: %d/%d/%d",
-                        port_alert_push,
-                        port_status_pull,
-                        port_query_rep,
-                    )
-                except (KeyError, ValueError) as e:
-                    self.logger.warning("环境变量端口格式错误: %s", e)
+            # 启动asyncio事件循环（在后台线程中）
+            self._start_ipc_event_loop()
 
-            # 优先级2：从就绪信号文件读取
-            elif Path("logs/monitor_ready.signal").exists():
-                try:
-                    with open("logs/monitor_ready.signal", "r", encoding="utf-8") as f:
-                        signal_data = json.load(f)
-                    if signal_data.get("status") == "ready":
-                        ports = signal_data.get("ports", {})
-                        addr = str(signal_data.get("bind_addr", addr))
-                        port_alert_push = int(ports.get("alert_push", port_alert_push))
-                        port_status_pull = int(ports.get("status_pull", port_status_pull))
-                        port_query_rep = int(ports.get("query_rep", port_query_rep))
-                        ports_source = "signal_file"
-                        self.logger.info(
-                            "✅ 从就绪信号文件读取监控端口: %d/%d/%d",
-                            port_alert_push,
-                            port_status_pull,
-                            port_query_rep,
-                        )
-                except Exception as e:
-                    self.logger.warning("读取就绪信号文件失败: %s", e)
-
-            # 优先级3：使用配置文件默认值
-            else:
-                try:
-                    addr = str(getattr(get_settings().monitor, "bind_addr", addr))
-                    port_alert_push = int(
-                        getattr(get_settings().monitor, "port_alert_push", port_alert_push)
-                    )
-                    port_status_pull = int(
-                        getattr(get_settings().monitor, "port_status_pull", port_status_pull)
-                    )
-                    port_query_rep = int(
-                        getattr(get_settings().monitor, "port_query_rep", port_query_rep)
-                    )
-                    ports_source = "config"
-                except Exception:
-                    pass
-
-                self.logger.info(
-                    "使用配置文件默认端口: %d/%d/%d",
-                    port_alert_push,
-                    port_status_pull,
-                    port_query_rep,
+            # 初始化native_ipc管道（异步）
+            # 使用run_coroutine_threadsafe在线程中运行
+            loop = self._ipc_loop
+            if loop:
+                # 创建monitor_alerts服务端（等待监控进程连接）
+                alerts_task = asyncio.run_coroutine_threadsafe(
+                    self._initialize_alerts_server(), loop
                 )
 
-            self.logger.info("端口来源: %s", ports_source)
+                # 创建monitor_query客户端（连接到监控进程）
+                query_task = asyncio.run_coroutine_threadsafe(self._initialize_query_client(), loop)
 
-            # PUSH socket：推送服务状态（连接到监控进程的 PULL）
-            self._zmq_push_socket = self._zmq_context.socket(zmq.PUSH)
-            self._zmq_push_socket.connect(f"tcp://{addr}:{port_status_pull}")
-            self.logger.info(
-                "✅ ZeroMQ PUSH连接到监控进程（addr=%s, port=%d）", addr, port_status_pull
-            )
+                # 创建monitor_status客户端（连接到监控进程）
+                status_task = asyncio.run_coroutine_threadsafe(
+                    self._initialize_status_client(), loop
+                )
 
-            # REQ socket：查询监控数据（连接到监控进程的 REP）
-            self._zmq_req_socket = self._zmq_context.socket(zmq.REQ)
-            self._zmq_req_socket.connect(f"tcp://{addr}:{port_query_rep}")
-            # 🔧 修复：增加超时时间到3秒，避免频繁超时
-            self._zmq_req_socket.setsockopt(zmq.RCVTIMEO, 3000)  # 3秒超时（避免频繁重连）
-            self._zmq_req_socket.setsockopt(zmq.SNDTIMEO, 3000)  # 3秒发送超时
-            self.logger.info(
-                "✅ ZeroMQ REQ连接到监控进程（addr=%s, port=%d，超时3秒）", addr, port_query_rep
-            )
-
-            # 🎯 架构修复：测试ZMQ连接，仅在成功时启动定时器
-            # 🔧 修复：使用带重试的连接测试，避免监控进程初始化未完成时立即测试失败
-            zmq_connection_ok = self._test_zmq_connection_with_retry(max_retries=3, retry_interval=2.0)
-
-            if zmq_connection_ok:
-                # 使用QTimer在主线程定时推送服务状态
-                self._status_push_timer = QTimer()
-                self._status_push_timer.timeout.connect(self._push_service_status)
-                self._status_push_timer.start(self._monitoring_interval * 1000)
-                self.logger.info("✅ 服务状态推送定时器已启动（Qt主线程）")
+                # 等待管道初始化（最多等待5秒）
+                try:
+                    alerts_task.result(timeout=5.0)
+                    query_task.result(timeout=5.0)
+                    status_task.result(timeout=5.0)
+                    self.logger.info("✅ native_ipc管道初始化完成")
+                except Exception as e:
+                    self.logger.error("❌ native_ipc管道初始化失败: %s", e)
+                    return False
             else:
-                self.logger.warning("⚠️ ZMQ连接失败，状态推送定时器未启动（降级模式）")
+                self.logger.error("❌ asyncio事件循环未启动")
+                return False
 
-            # 启动告警接收线程（监听监控进程推送的告警）
-            self._start_alert_receiver(addr, port_alert_push)
-            self.logger.info("✅ 告警接收线程已启动")
+            # 使用QTimer在主线程定时推送服务状态
+            self._status_push_timer = QTimer()
+            self._status_push_timer.timeout.connect(self._push_service_status)
+            self._status_push_timer.start(self._monitoring_interval * 1000)
+            self.logger.info("✅ 服务状态推送定时器已启动（Qt主线程）")
 
             # 启动监控数据推送线程（事件驱动架构）
             self._start_monitoring_push_thread()
 
-            # 🆕 启动监控日志接收线程（ZMQ PULL，接收监控进程的日志）
-            self._start_monitor_log_receiver(addr, 5558)
-
             self.logger.info("=" * 60)
-            self.logger.info("✅ 系统管理服务初始化完成（含告警接收线程和监控日志接收）")
+            self.logger.info("✅ 系统管理服务初始化完成（native_ipc通信已就绪）")
             self.logger.info("=" * 60)
 
             # 🔄 启动完成，切换日志阶段到数据感知阶段
@@ -2958,184 +2910,264 @@ class SystemManagerService(BaseService):
             self._log_error("初始化", e)
             return False
 
-    def _test_zmq_connection(self) -> bool:
-        """测试ZMQ连接是否可用.
+    def _start_ipc_event_loop(self):
+        """启动asyncio事件循环（在后台线程中）."""
+        if self._ipc_loop is not None:
+            return
+
+        def run_loop():
+            """在后台线程中运行事件循环."""
+            import platform
+
+            if platform.system() == "Windows":
+                asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            self._ipc_loop = loop
+            self.logger.info("✅ IPC事件循环已启动（后台线程）")
+            loop.run_forever()
+
+        loop_thread = threading.Thread(target=run_loop, name="IPCEventLoopThread", daemon=True)
+        loop_thread.start()
+
+        # 等待事件循环创建
+        max_wait = 3.0
+        wait_start = time.time()
+        while self._ipc_loop is None and (time.time() - wait_start) < max_wait:
+            time.sleep(0.1)
+
+    async def _initialize_alerts_server(self):
+        """初始化monitor_alerts服务端（接收监控进程推送的告警）."""
+        try:
+            from backend.infrastructure.native_ipc import AsyncIPCPipe
+
+            self._alerts_pipe = await AsyncIPCPipe.server("monitor_alerts")
+            self.logger.info("[IPC] ✅ 告警服务端管道已创建: monitor_alerts")
+
+            # 启动告警接收协程
+            task = asyncio.create_task(self._alerts_server_loop())
+            self._ipc_tasks.append(task)
+
+        except Exception as e:
+            self.logger.error("[IPC] ❌ 创建告警服务端管道失败: %s", e, exc_info=True)
+            raise
+
+    async def _initialize_query_client(self):
+        """初始化monitor_query客户端（查询监控数据）."""
+        try:
+            from backend.infrastructure.native_ipc import AsyncIPCPipe
+
+            # 等待监控进程创建服务端（最多等待10秒）
+            max_wait = 10.0
+            wait_start = time.time()
+
+            while (time.time() - wait_start) < max_wait:
+                try:
+                    self._query_pipe = await AsyncIPCPipe.client("monitor_query")
+                    self.logger.info("[IPC] ✅ 查询客户端管道已创建: monitor_query")
+                    return
+                except FileNotFoundError:
+                    # 服务端未创建，等待后重试
+                    await asyncio.sleep(0.5)
+                    continue
+                except Exception as e:
+                    self.logger.error("[IPC] ❌ 创建查询客户端管道失败: %s", e)
+                    raise
+
+            raise RuntimeError("监控进程服务端未就绪（超时10秒）")
+
+        except Exception as e:
+            self.logger.error("[IPC] ❌ 初始化查询客户端失败: %s", e, exc_info=True)
+            raise
+
+    async def _initialize_status_client(self):
+        """初始化monitor_status客户端（推送服务状态）."""
+        try:
+            from backend.infrastructure.native_ipc import AsyncIPCPipe
+
+            # 等待监控进程创建服务端（最多等待10秒）
+            max_wait = 10.0
+            wait_start = time.time()
+
+            while (time.time() - wait_start) < max_wait:
+                try:
+                    self._status_pipe = await AsyncIPCPipe.client("monitor_status")
+                    self.logger.info("[IPC] ✅ 状态客户端管道已创建: monitor_status")
+                    return
+                except FileNotFoundError:
+                    # 服务端未创建，等待后重试
+                    await asyncio.sleep(0.5)
+                    continue
+                except Exception as e:
+                    self.logger.error("[IPC] ❌ 创建状态客户端管道失败: %s", e)
+                    raise
+
+            raise RuntimeError("监控进程服务端未就绪（超时10秒）")
+
+        except Exception as e:
+            self.logger.error("[IPC] ❌ 初始化状态客户端失败: %s", e, exc_info=True)
+            raise
+
+    async def _alerts_server_loop(self):
+        """告警服务端循环（接收监控进程推送的告警）."""
+        if not self._alerts_pipe:
+            return
+
+        self.logger.info("[IPC] 告警服务端循环启动...")
+
+        try:
+            while True:
+                try:
+                    # 读取告警数据
+                    alert_data = await self._alerts_pipe.read()
+                    alert = json.loads(alert_data.decode())
+
+                    # 验证告警格式
+                    if not isinstance(alert, dict):
+                        self.logger.warning("[IPC] 收到无效告警格式：%s", type(alert))
+                        continue
+
+                    if alert.get("type") != "alert":
+                        self.logger.debug("[IPC] 收到非告警消息：%s", alert.get("type"))
+                        continue
+
+                    # 添加到缓存（线程安全）
+                    with self._alert_cache_lock:
+                        self._alert_cache.append(alert)
+
+                        # 限制缓存大小（FIFO）
+                        if len(self._alert_cache) > self._max_alert_cache_size:
+                            self._alert_cache.pop(0)
+
+                    # 记录告警
+                    severity = alert.get("severity", "unknown")
+                    message = alert.get("message", "")
+
+                    if severity == "critical":
+                        self.logger.error("[ALERT-CRITICAL] %s", message)
+                    elif severity == "warning":
+                        self.logger.warning("[ALERT-WARNING] %s", message)
+                    else:
+                        self.logger.info("[ALERT-INFO] %s", message)
+
+                    # 发送事件到EventEngine（UI可以监听）
+                    if self.event_engine:
+                        from backend.infrastructure.system_vnpy.system_toolkit import (
+                            EVENT_ALERT_CREATED,
+                        )
+
+                        self.event_engine.put(
+                            EVENT_ALERT_CREATED,
+                            {
+                                "alert": alert,
+                                "timestamp": alert.get("timestamp"),
+                                "severity": severity,
+                                "message": message,
+                            },
+                        )
+
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    self.logger.error("[IPC] 接收告警失败：%s", e)
+                    await asyncio.sleep(1.0)
+
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            self.logger.error("[IPC] 告警服务端循环异常: %s", e, exc_info=True)
+
+    def _test_ipc_connection(self) -> bool:
+        """测试native_ipc连接是否可用.
 
         Returns:
             bool: 连接是否成功
         """
-        import zmq
+        if not self._query_pipe or not self._ipc_loop:
+            return False
 
         try:
-            if not self._zmq_req_socket:
+            # 使用run_coroutine_threadsafe在线程中运行异步查询
+            future = asyncio.run_coroutine_threadsafe(self._test_query_pipe(), self._ipc_loop)
+
+            # 等待响应（最多3秒）
+            result = future.result(timeout=3.0)
+            return result
+
+        except Exception as e:
+            self.logger.debug("IPC连接测试失败: %s", e)
+            return False
+
+    async def _test_query_pipe(self) -> bool:
+        """测试查询管道（异步）."""
+        try:
+            if not self._query_pipe:
                 return False
 
-            # 使用监控进程支持的get_data action
-            # (health_check action在当前监控进程版本中不被支持)
-            self._zmq_req_socket.send_json({"action": "get_data"})
-            response = self._zmq_req_socket.recv_json()
+            # 发送测试请求
+            request = json.dumps({"action": "get_data"}).encode()
+            await self._query_pipe.write(request)
 
-            # 检查响应（get_data返回包含timestamp或其他监控数据的字典）
+            # 读取响应（最多等待2秒）
+            response_data = await asyncio.wait_for(self._query_pipe.read(), timeout=2.0)
+            response = json.loads(response_data.decode())
+
+            # 检查响应
             if isinstance(response, dict):
-                # 成功接收到监控数据
                 if (
                     "timestamp" in response
                     or "cpu_percent" in response
                     or response.get("status") == "ok"
                 ):
-                    self.logger.info("✅ ZMQ连接测试成功")
+                    self.logger.debug("✅ IPC连接测试成功")
                     return True
-                # 如果返回错误，但至少有响应
                 elif "error" in response:
-                    self.logger.warning("⚠️ ZMQ响应包含错误: %s", response.get("error"))
+                    self.logger.warning("⚠️ IPC响应包含错误: %s", response.get("error"))
                     return False
-                else:
-                    self.logger.warning("⚠️ ZMQ响应格式异常: %s", response)
-                    return False
-            else:
-                self.logger.warning("⚠️ ZMQ响应类型异常: %s", type(response))
-                return False
 
-        except zmq.Again:
-            # 超时
-            self.logger.warning("⚠️ ZMQ连接测试超时（监控进程未响应）")
-            # 重置socket以避免后续请求卡住
-            self._reset_req_socket()
+            return False
+        except asyncio.TimeoutError:
+            self.logger.warning("⚠️ IPC连接测试超时（监控进程未响应）")
             return False
         except Exception as e:
-            self.logger.warning("⚠️ ZMQ连接测试失败: %s", e)
-            self._reset_req_socket()
-            return False
-
-    def _test_zmq_connection_with_retry(self, max_retries: int = 3, retry_interval: float = 2.0) -> bool:
-        """测试ZMQ连接是否可用（带重试机制）.
-
-        由于监控进程启动是异步的，socket可能还未完全初始化，因此需要重试机制。
-        使用同步阻塞方式重试，因为这是在初始化阶段，需要确保连接成功后再继续。
-
-        Args:
-            max_retries: 最大重试次数
-            retry_interval: 重试间隔（秒）
-
-        Returns:
-            bool: 连接是否成功
-        """
-        import time
-
-        for attempt in range(1, max_retries + 1):
-            self.logger.info(f"🔄 ZMQ连接测试（尝试 {attempt}/{max_retries}）...")
-
-            if self._test_zmq_connection():
-                if attempt > 1:
-                    self.logger.info(f"✅ ZMQ连接测试成功（第{attempt}次尝试）")
-                return True
-
-            # 如果不是最后一次尝试，等待后重试
-            if attempt < max_retries:
-                self.logger.debug(f"等待 {retry_interval} 秒后重试...")
-                time.sleep(retry_interval)
-                # 重置socket以便下次重试
-                self._reset_req_socket()
-
-        # 所有重试都失败
-        self.logger.warning(
-            f"⚠️ ZMQ连接测试失败（已重试{max_retries}次），将使用降级模式运行"
-        )
-        return False
-
-    def _reset_req_socket(self):
-        """重置REQ socket（避免卡住）."""
-        import zmq
-
-        try:
-            if self._zmq_req_socket:
-                self._zmq_req_socket.close()
-
-            # 检查context是否存在
-            if not self._zmq_context:
-                self.logger.error("ZMQ context未初始化，无法重置socket")
-                return
-
-            # 重新创建socket
-            from backend.core.config import get_settings
-            from pathlib import Path
-            import json
-
-            addr = str(getattr(get_settings().monitor, "bind_addr", "127.0.0.1"))
-            port_query_rep = int(getattr(get_settings().monitor, "port_query_rep", 5557))
-
-            try:
-                ports_file = Path("logs") / "monitor_ports.json"
-                if ports_file.exists():
-                    with open(ports_file, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    addr = str(data.get("bind_addr", addr))
-                    port_query_rep = int(data.get("query_rep", port_query_rep))
-            except Exception:
-                pass
-
-            self._zmq_req_socket = self._zmq_context.socket(zmq.REQ)
-            self._zmq_req_socket.connect(f"tcp://{addr}:{port_query_rep}")
-            # 🔧 修复：增加超时时间到3秒，避免频繁超时
-            self._zmq_req_socket.setsockopt(zmq.RCVTIMEO, 3000)
-            self._zmq_req_socket.setsockopt(zmq.SNDTIMEO, 3000)
-            self.logger.debug("REQ socket已重置（超时3秒）")
-
-        except Exception as e:
-            self.logger.error("重置REQ socket失败: %s", e)
-
-    def _try_reconnect_zmq(self) -> bool:
-        """尝试重新连接ZMQ监控进程.
-
-        Returns:
-            bool: 连接是否成功
-        """
-        import zmq
-
-        try:
-            # 1. 重置socket
-            self._reset_req_socket()
-
-            # 2. 测试连接
-            if not self._zmq_req_socket:
-                return False
-
-            # 3. 发送测试请求（使用 get_data 而非 ping，因为监控进程支持 get_data）
-            self._zmq_req_socket.send_json({"action": "get_data"})
-            response = self._zmq_req_socket.recv_json()
-
-            # 检查响应是否包含 timestamp 字段（表示监控进程正常响应）
-            if isinstance(response, dict) and "timestamp" in response:
-                return True
-            else:
-                return False
-
-        except zmq.Again:
-            # 超时
-            return False
-        except Exception as e:
-            self.logger.debug("ZMQ重连测试失败: %s", e)
+            self.logger.warning("⚠️ IPC连接测试失败: %s", e)
             return False
 
     def _push_service_status(self):
         """推送服务状态（在主线程通过QTimer调用）."""
         try:
-            import zmq
             from backend.core.base import get_service_manager
 
-            if not self._zmq_push_socket:
+            if not self._status_pipe or not self._ipc_loop:
                 return
 
             # 采集服务状态
             service_manager = get_service_manager()
             result = self.service_health_checker.check_all_services(service_manager)
 
-            # 推送到监控进程（非阻塞）
-            self._zmq_push_socket.send_json(result, zmq.NOBLOCK)
-            # 移除DEBUG日志，避免刷屏（每2秒执行一次的周期性操作无需记录）
+            # 推送到监控进程（异步，非阻塞）
+            if self._ipc_loop and self._status_pipe:
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        self._push_status_async(result), self._ipc_loop
+                    )
+                except Exception as e:
+                    self.logger.debug("推送服务状态失败：%s", e)
 
         except Exception as e:
             self.logger.error("推送服务状态失败：%s", e)
+
+    async def _push_status_async(self, status_data: Dict[str, Any]):
+        """异步推送服务状态."""
+        try:
+            if not self._status_pipe:
+                return
+
+            status_json = json.dumps(status_data).encode()
+            await self._status_pipe.write(status_json)
+        except Exception as e:
+            self.logger.debug("异步推送服务状态失败：%s", e)
 
     def trigger_smart_collection(self) -> bool:
         """触发监控进程执行SMART数据采集.
@@ -3146,120 +3178,46 @@ class SystemManagerService(BaseService):
             bool: 是否成功发送触发命令
         """
         try:
-            import zmq
-
-            if not self._zmq_req_socket:
-                logger_monitor.warning("ZMQ连接不可用，无法触发SMART采集")
+            if not self._query_pipe or not self._ipc_loop:
+                logger_monitor.warning("IPC连接不可用，无法触发SMART采集")
                 return False
 
-            request = {"action": "trigger_smart"}
-            self._zmq_req_socket.send_json(request)
+            # 使用run_coroutine_threadsafe在线程中运行异步请求
+            future = asyncio.run_coroutine_threadsafe(self._trigger_smart_async(), self._ipc_loop)
 
-            # 等待响应
-            if self._zmq_req_socket.poll(timeout=1000):
-                response = self._zmq_req_socket.recv_json()
-                if isinstance(response, dict) and response.get("status") == "success":
-                    logger_monitor.info("✅ SMART采集触发成功")
-                    return True
+            # 等待响应（最多3秒）
+            result = future.result(timeout=3.0)
+            return result
 
-            logger_monitor.warning("SMART采集触发超时或失败")
-            return False
-        except zmq.Again:
-            logger_monitor.warning("SMART采集触发超时")
-            return False
         except Exception as e:
             logger_monitor.error("触发SMART采集失败: %s", e)
             return False
 
-    def _start_alert_receiver(self, addr: str = "127.0.0.1", port_alert_push: int = 5555):
-        """启动告警接收线程.
+    async def _trigger_smart_async(self) -> bool:
+        """异步触发SMART采集."""
+        try:
+            if not self._query_pipe:
+                return False
 
-        Args:
-            addr: 监控进程绑定地址
-            port_alert_push: 监控进程 PUSH（我们PULL）对应端口
-        """
-        import zmq
+            request = json.dumps({"action": "trigger_smart"}).encode()
+            await self._query_pipe.write(request)
 
-        # 创建独立的ZMQ context和socket（线程专用）
-        # PULL socket: 接收监控进程推送的告警
-        assert self._zmq_context is not None, "ZMQ context not initialized"
-        self._zmq_pull_socket = self._zmq_context.socket(zmq.PULL)
-        self._zmq_pull_socket.connect(f"tcp://{addr}:{port_alert_push}")
-        self._zmq_pull_socket.setsockopt(zmq.RCVTIMEO, 1000)  # 1秒超时
+            # 等待响应（最多2秒）
+            response_data = await asyncio.wait_for(self._query_pipe.read(), timeout=2.0)
+            response = json.loads(response_data.decode())
 
-        self._alert_receiver_running = True
-        self._alert_receiver_thread = threading.Thread(
-            target=self._alert_receiver_loop, name="AlertReceiverThread", daemon=True
-        )
-        self._alert_receiver_thread.start()
-        self.logger.info("✅ 告警接收线程已启动（addr=%s, port=%d）", addr, port_alert_push)
+            if isinstance(response, dict) and response.get("status") == "success":
+                logger_monitor.info("✅ SMART采集触发成功")
+                return True
 
-    def _alert_receiver_loop(self):
-        """告警接收循环（在独立线程中运行）."""
-        import zmq
-
-        self.logger.info("[AlertReceiver] 正在监听监控进程推送的告警...")
-
-        while self._alert_receiver_running:
-            try:
-                # 接收告警（阻塞，带超时）
-                assert self._zmq_pull_socket is not None, "PULL socket not initialized"
-                alert = self._zmq_pull_socket.recv_json()
-
-                # 验证告警格式
-                if not isinstance(alert, dict):
-                    self.logger.warning("[AlertReceiver] 收到无效告警格式：%s", type(alert))
-                    continue
-
-                if alert.get("type") != "alert":
-                    self.logger.debug("[AlertReceiver] 收到非告警消息：%s", alert.get("type"))
-                    continue
-
-                # 添加到缓存（线程安全）
-                with self._alert_cache_lock:
-                    self._alert_cache.append(alert)
-
-                    # 限制缓存大小（FIFO）
-                    if len(self._alert_cache) > self._max_alert_cache_size:
-                        self._alert_cache.pop(0)
-
-                # 记录告警
-                severity = alert.get("severity", "unknown")
-                message = alert.get("message", "")
-
-                if severity == "critical":
-                    self.logger.error("[ALERT-CRITICAL] %s", message)
-                elif severity == "warning":
-                    self.logger.warning("[ALERT-WARNING] %s", message)
-                else:
-                    self.logger.info("[ALERT-INFO] %s", message)
-
-                # 发送事件到EventEngine（UI可以监听）
-                if self.event_engine:
-                    from backend.infrastructure.system_vnpy.system_toolkit import (
-                        EVENT_ALERT_CREATED,
-                    )
-
-                    self.event_engine.put(
-                        EVENT_ALERT_CREATED,
-                        {
-                            "alert": alert,
-                            "timestamp": alert.get("timestamp"),
-                            "severity": severity,
-                            "message": message,
-                        },
-                    )
-
-            except zmq.Again:
-                # 超时，继续循环
-                continue
-            except Exception as e:
-                self.logger.error("[AlertReceiver] 接收告警失败：%s", e)
-                import time
-
-                time.sleep(1)
-
-        self.logger.info("[AlertReceiver] 告警接收线程已停止")
+            logger_monitor.warning("SMART采集触发失败")
+            return False
+        except asyncio.TimeoutError:
+            logger_monitor.warning("SMART采集触发超时")
+            return False
+        except Exception as e:
+            logger_monitor.error("触发SMART采集异常: %s", e)
+            return False
 
     def get_alert_cache(self, limit: int = 100) -> List[Dict[str, Any]]:
         """获取缓存的告警（供UI查询）.
@@ -3291,91 +3249,6 @@ class SystemManagerService(BaseService):
         self._monitoring_push_thread.start()
         self.logger.info("✅ 监控数据推送线程已启动（事件驱动模式，1秒间隔）")
 
-    def _start_monitor_log_receiver(self, addr: str, port: int):
-        """启动监控日志接收线程（ZMQ PULL）.
-
-        接收监控进程通过ZMQ发送的日志，转发到LoggingHub。
-
-        Args:
-            addr: 监听地址
-            port: 监听端口（默认5558）
-        """
-        from PySide6.QtCore import QThread
-
-        class MonitorLogReceiverThread(QThread):
-            """监控日志接收线程."""
-
-            def __init__(self, parent, addr: str, port: int):
-                super().__init__()
-                self.parent = parent
-                self.addr = addr
-                self.port = port
-                self.running = True
-
-            def run(self):
-                """线程主循环."""
-                import zmq
-
-                try:
-                    context = zmq.Context()
-                    socket = context.socket(zmq.PULL)
-                    socket.bind(f"tcp://{self.addr}:{self.port}")
-                    socket.setsockopt(zmq.RCVTIMEO, 5000)  # 5秒超时
-
-                    parent_logger = logging.getLogger("system_manager")
-                    parent_logger.info(
-                        "✅ 监控日志接收线程已绑定: tcp://%s:%d", self.addr, self.port
-                    )
-
-                    while self.running:
-                        try:
-                            data = socket.recv_json()
-
-                            if isinstance(data, dict) and data.get("type") == "monitor_log":
-                                # 转发到LoggingHub（通过标准logger）
-                                log_data = data.get("data", {})
-                                if isinstance(log_data, dict):
-                                    level_str = log_data.get("level", "INFO")
-                                    message = log_data.get("message", "")
-                                    module = log_data.get("module", "monitor_process")
-
-                                    # 使用标准logger，LoggingHub会拦截
-                                    monitor_logger = logging.getLogger(f"monitor_process.{module}")
-                                    if isinstance(level_str, str):
-                                        log_level = getattr(logging, level_str, logging.INFO)
-                                        monitor_logger.log(log_level, message)
-
-                        except zmq.Again:
-                            # 超时，继续等待
-                            continue
-                        except Exception as e:
-                            parent_logger = logging.getLogger("system_manager")
-                            parent_logger.error("接收监控日志失败: %s", e)
-
-                except Exception as e:
-                    parent_logger = logging.getLogger("system_manager")
-                    parent_logger.error("监控日志接收线程启动失败: %s", e)
-                finally:
-                    try:
-                        if socket:
-                            socket.close()
-                        if context:
-                            context.term()
-                    except Exception:
-                        pass
-
-                    parent_logger = logging.getLogger("system_manager")
-                    parent_logger.info("监控日志接收线程已停止")
-
-            def stop(self):
-                """停止线程."""
-                self.running = False
-
-        # 创建并启动接收线程
-        self._monitor_log_receiver = MonitorLogReceiverThread(self, addr, port)
-        self._monitor_log_receiver.start()
-        self.logger.info("✅ 监控日志接收线程已启动（tcp://%s:%d）", addr, port)
-
     def _monitoring_push_loop(self):
         """监控数据推送循环（替代UI轮询）
 
@@ -3399,9 +3272,9 @@ class SystemManagerService(BaseService):
         max_consecutive_failures = 5
         degraded_mode = False
 
-        # 🔧 新增：ZMQ重连计数器
-        zmq_retry_interval = 5  # 每5次失败尝试重连一次
-        zmq_retry_counter = 0
+        # 🔧 新增：IPC重连计数器
+        ipc_retry_interval = 5  # 每5次失败尝试重连一次
+        ipc_retry_counter = 0
 
         while self._monitoring_push_running:
             try:
@@ -3412,7 +3285,7 @@ class SystemManagerService(BaseService):
 
                 if not data:
                     consecutive_failures += 1
-                    zmq_retry_counter += 1
+                    ipc_retry_counter += 1
 
                     if consecutive_failures >= max_consecutive_failures and not degraded_mode:
                         self.logger.warning(
@@ -3421,16 +3294,18 @@ class SystemManagerService(BaseService):
                         )
                         degraded_mode = True
 
-                    # 🔧 关键修复：每5次失败后尝试重连ZMQ
-                    if zmq_retry_counter >= zmq_retry_interval:
+                    # 🔧 关键修复：每5次失败后尝试重连IPC
+                    if ipc_retry_counter >= ipc_retry_interval:
                         self.logger.info("[MonitoringPush] 尝试重新连接监控进程...")
-                        zmq_retry_counter = 0
-                        if self._try_reconnect_zmq():
-                            self.logger.info("[MonitoringPush] ✅ ZMQ重连成功")
+                        ipc_retry_counter = 0
+                        if self._test_ipc_connection():
+                            self.logger.info("[MonitoringPush] ✅ IPC重连成功")
                             consecutive_failures = 0
                             degraded_mode = False
                         else:
-                            self.logger.warning("[MonitoringPush] ❌ ZMQ重连失败")
+                            self.logger.warning("[MonitoringPush] ❌ IPC重连失败")
+                    else:
+                        ipc_retry_counter += 1
 
                     # 降级模式下延长等待时间
                     elapsed = time.time() - start_time
@@ -3479,23 +3354,62 @@ class SystemManagerService(BaseService):
     def _query_monitoring_data_safe(self) -> Dict[str, Any]:
         """安全查询监控数据（内部使用）."""
         try:
-            import zmq
-
+            # 检查缓存
             with self._cache_lock:
-                if not self._zmq_req_socket or not self._zmq_context:
-                    return {}
+                current_time = time.time()
+                if (
+                    self._monitor_data_cache
+                    and (current_time - self._last_query_time) < self._cache_ttl
+                ):
+                    return self._monitor_data_cache
 
-                self._zmq_req_socket.send_json({"action": "get_data"})
-                data = self._zmq_req_socket.recv_json()
-                return data if isinstance(data, dict) else {}
+            # 检查IPC连接
+            if not self._query_pipe or not self._ipc_loop:
+                return {}
 
-        except zmq.Again:
-            # 🔧 修复：超时日志降级为 DEBUG，避免日志刷屏
+            # 使用run_coroutine_threadsafe在线程中运行异步查询
+            future = asyncio.run_coroutine_threadsafe(
+                self._query_data_async({"action": "get_data"}), self._ipc_loop
+            )
+
+            # 等待响应（最多3秒）
+            data = future.result(timeout=3.0)
+
+            # 更新缓存
+            if isinstance(data, dict):
+                with self._cache_lock:
+                    self._monitor_data_cache = data
+                    self._last_query_time = time.time()
+
+            return data if isinstance(data, dict) else {}
+
+        except asyncio.TimeoutError:
             self.logger.debug("查询监控数据超时（3秒无响应）")
-            self._reset_req_socket()
             return {}
         except Exception as e:
             self.logger.error("查询监控数据失败：%s", e)
+            return {}
+
+    async def _query_data_async(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        """异步查询数据."""
+        try:
+            if not self._query_pipe:
+                return {}
+
+            # 发送请求
+            request_json = json.dumps(request).encode()
+            await self._query_pipe.write(request_json)
+
+            # 读取响应（最多等待2秒）
+            response_data = await asyncio.wait_for(self._query_pipe.read(), timeout=2.0)
+            response = json.loads(response_data.decode())
+
+            return response if isinstance(response, dict) else {}
+        except asyncio.TimeoutError:
+            self.logger.debug("异步查询超时（2秒无响应）")
+            return {}
+        except Exception as e:
+            self.logger.error("异步查询失败：%s", e)
             return {}
 
     def get_current_monitoring_data(self) -> Dict[str, Any]:
@@ -3516,103 +3430,73 @@ class SystemManagerService(BaseService):
             }
         """
         try:
-            # 🔧 修复：优先从监控进程获取，失败时返回明确的错误状态
-            import zmq
+            # 检查IPC连接
+            if not self._query_pipe or not self._ipc_loop:
+                self.logger.debug("IPC未初始化，无法获取带宽信息")
+                return {
+                    "full_test": {
+                        "download_mbps": None,
+                        "upload_mbps": None,
+                        "ping_ms": None,
+                        "status": "IPC未初始化",
+                    },
+                    "ping_test": {"ping_ms": None, "status": "IPC未初始化"},
+                }
 
-            with self._cache_lock:
-                if not self._zmq_req_socket or not self._zmq_context:
-                    # 🔧 修复：ZMQ未初始化，返回明确状态，不降级到空实例
-                    self.logger.debug("ZMQ未初始化，无法获取带宽信息")
-                    return {
-                        "full_test": {
-                            "download_mbps": None,
-                            "upload_mbps": None,
-                            "ping_ms": None,
-                            "status": "ZMQ未初始化",
-                        },
-                        "ping_test": {"ping_ms": None, "status": "ZMQ未初始化"},
-                    }
+            # 使用run_coroutine_threadsafe在线程中运行异步查询
+            future = asyncio.run_coroutine_threadsafe(
+                self._query_data_async({"action": "get_bandwidth"}), self._ipc_loop
+            )
 
-                # 🔧 修复：使用带超时的发送和接收
-                try:
-                    self._zmq_req_socket.send_json({"action": "get_bandwidth"}, zmq.NOBLOCK)
-                except zmq.Again:
-                    # 发送失败，重置socket
-                    self.logger.warning("ZMQ发送失败，重置socket")
-                    self._reset_req_socket()
-                    return {
-                        "full_test": {
-                            "download_mbps": None,
-                            "upload_mbps": None,
-                            "ping_ms": None,
-                            "status": "ZMQ发送失败",
-                        },
-                        "ping_test": {"ping_ms": None, "status": "ZMQ发送失败"},
-                    }
+            # 等待响应（最多3秒）
+            result = future.result(timeout=3.0)
 
-                # 接收响应（使用已设置的超时）
-                try:
-                    result = self._zmq_req_socket.recv_json()
-                except zmq.Again:
-                    # 接收超时，重置socket
-                    self.logger.warning("ZMQ接收超时（3秒），重置socket")
-                    self._reset_req_socket()
-                    return {
-                        "full_test": {
-                            "download_mbps": None,
-                            "upload_mbps": None,
-                            "ping_ms": None,
-                            "status": "ZMQ接收超时",
-                        },
-                        "ping_test": {"ping_ms": None, "status": "ZMQ接收超时"},
-                    }
-
-                if isinstance(result, dict) and result.get("status") == "success":
-                    data = result.get("data", {})
-                    if isinstance(data, dict):
-                        # 🔧 修复：记录成功获取的数据
-                        self.logger.debug(f"成功从监控进程获取带宽信息: {data}")
-                        return data
-                    else:
-                        self.logger.warning("监控进程返回的数据格式错误: %s", type(data))
-                        return {
-                            "full_test": {
-                                "download_mbps": None,
-                                "upload_mbps": None,
-                                "ping_ms": None,
-                                "status": "数据格式错误",
-                            },
-                            "ping_test": {"ping_ms": None, "status": "数据格式错误"},
-                        }
+            if isinstance(result, dict) and result.get("status") == "success":
+                data = result.get("data", {})
+                if isinstance(data, dict):
+                    self.logger.debug(f"成功从监控进程获取带宽信息: {data}")
+                    return data
                 else:
-                    # 监控进程返回错误状态
-                    error_msg = result.get("message", "未知错误") if isinstance(result, dict) else "响应格式错误"
-                    self.logger.warning("监控进程返回错误: %s", error_msg)
+                    self.logger.warning("监控进程返回的数据格式错误: %s", type(data))
                     return {
                         "full_test": {
                             "download_mbps": None,
                             "upload_mbps": None,
                             "ping_ms": None,
-                            "status": f"监控进程错误: {error_msg}",
+                            "status": "数据格式错误",
                         },
-                        "ping_test": {"ping_ms": None, "status": f"监控进程错误: {error_msg}"},
+                        "ping_test": {"ping_ms": None, "status": "数据格式错误"},
                     }
+            else:
+                # 监控进程返回错误状态
+                error_msg = (
+                    result.get("message", "未知错误")
+                    if isinstance(result, dict)
+                    else "响应格式错误"
+                )
+                self.logger.warning("监控进程返回错误: %s", error_msg)
+                return {
+                    "full_test": {
+                        "download_mbps": None,
+                        "upload_mbps": None,
+                        "ping_ms": None,
+                        "status": f"监控进程错误: {error_msg}",
+                    },
+                    "ping_test": {"ping_ms": None, "status": f"监控进程错误: {error_msg}"},
+                }
 
-        except zmq.Again as e:
-            # 🔧 修复：ZMQ超时异常，返回明确状态
-            self.logger.warning("获取带宽信息ZMQ超时: %s", e)
-            self._reset_req_socket()
+        except asyncio.TimeoutError:
+            self.logger.warning("获取带宽信息IPC超时")
             return {
                 "full_test": {
                     "download_mbps": None,
                     "upload_mbps": None,
                     "ping_ms": None,
-                    "status": "ZMQ超时",
+                    "status": "IPC超时",
                 },
-                "ping_test": {"ping_ms": None, "status": "ZMQ超时"},
+                "ping_test": {"ping_ms": None, "status": "IPC超时"},
             }
         except Exception as e:
-            # 🔧 修复：其他异常，返回明确状态
             self.logger.error("获取带宽信息失败：%s", e, exc_info=True)
             return {
                 "full_test": {
@@ -3838,7 +3722,11 @@ class SystemManagerService(BaseService):
 
                 event_engine = get_event_engine()
                 if event_engine:
-                    lb = LoadBalancer.get_instance(event_engine) if hasattr(LoadBalancer, 'get_instance') else LoadBalancer(ConfigManager.get_instance())
+                    lb = (
+                        LoadBalancer.get_instance(event_engine)
+                        if hasattr(LoadBalancer, "get_instance")
+                        else LoadBalancer(ConfigManager.get_instance())
+                    )
                 else:
                     lb = LoadBalancer(ConfigManager.get_instance())
                 if hasattr(lb, "get_current_status"):
@@ -3888,20 +3776,40 @@ class SystemManagerService(BaseService):
                 self._monitoring_push_thread.join(timeout=2)
                 self.logger.info("监控推送线程已停止")
 
-            # 停止告警接收线程
-            if hasattr(self, "_alert_receiver_running"):
-                self._alert_receiver_running = False
-            if hasattr(self, "_alert_receiver_thread") and self._alert_receiver_thread:
-                self._alert_receiver_thread.join(timeout=2)
-                self.logger.info("告警接收线程已停止")
+            # 关闭native_ipc管道
+            if self._ipc_loop:
+                # 取消所有IPC任务
+                for task in self._ipc_tasks:
+                    task.cancel()
 
-            # 关闭ZeroMQ socket
-            if self._zmq_push_socket:
-                self._zmq_push_socket.close()
-            if self._zmq_req_socket:
-                self._zmq_req_socket.close()
-            if self._zmq_context:
-                self._zmq_context.term()
+                # 关闭管道
+                if self._query_pipe:
+                    try:
+                        asyncio.run_coroutine_threadsafe(
+                            self._close_pipe(self._query_pipe), self._ipc_loop
+                        )
+                    except Exception:
+                        pass
+                if self._status_pipe:
+                    try:
+                        asyncio.run_coroutine_threadsafe(
+                            self._close_pipe(self._status_pipe), self._ipc_loop
+                        )
+                    except Exception:
+                        pass
+                if self._alerts_pipe:
+                    try:
+                        asyncio.run_coroutine_threadsafe(
+                            self._close_pipe(self._alerts_pipe), self._ipc_loop
+                        )
+                    except Exception:
+                        pass
+
+                # 停止事件循环
+                try:
+                    self._ipc_loop.call_soon_threadsafe(self._ipc_loop.stop)
+                except Exception:
+                    pass
 
             # 清空监控数据
             self.monitoring_data.clear()
@@ -3913,13 +3821,25 @@ class SystemManagerService(BaseService):
             self._log_error("关闭", e)
             return False
 
+    async def _close_pipe(self, pipe):
+        """异步关闭管道."""
+        try:
+            if pipe:
+                await pipe.close()
+        except Exception:
+            pass
+
     def _do_health_check(self) -> Dict[str, Any]:
         """健康检查."""
         return {
             "monitoring_active": (
                 self._status_push_timer.isActive() if self._status_push_timer else False
             ),
-            "zmq_connected": self._zmq_push_socket is not None and self._zmq_req_socket is not None,
+            "ipc_connected": (
+                self._query_pipe is not None
+                and self._status_pipe is not None
+                and self._alerts_pipe is not None
+            ),
             "monitoring_interval": self._monitoring_interval,
             "cache_size": len(self._monitor_data_cache),
             "alert_rule_count": len(self.alert_rules),
@@ -5705,7 +5625,9 @@ class SystemManagerService(BaseService):
                                 # 如果是绝对路径，尝试转换为相对路径
                                 try:
                                     rel_path = config_path.relative_to(root_dir)
-                                    processed_config[f"paths.{key}"] = str(rel_path).replace("\\", "/")
+                                    processed_config[f"paths.{key}"] = str(rel_path).replace(
+                                        "\\", "/"
+                                    )
                                 except ValueError:
                                     # 无法转换为相对路径，保存绝对路径（向后兼容）
                                     processed_config[f"paths.{key}"] = str(config_path.resolve())

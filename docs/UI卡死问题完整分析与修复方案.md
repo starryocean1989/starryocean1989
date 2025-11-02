@@ -17,7 +17,7 @@
 - **操作系统**：Windows 10
 - **UI框架**：PySide6（Qt6）
 - **后端框架**：VNPy事件驱动架构
-- **通信机制**：ZMQ跨进程通信
+- **通信机制**：native_ipc跨进程通信（ZMQ已完全移除）
 - **并发模型**：多进程 + 多线程 + 异步IO（asyncio）
 
 ### 核心问题：模态对话框（QMessageBox）阻塞UI主线程
@@ -61,7 +61,7 @@ def _retest_servers(self):
     self._retest_thread = ServerRetestThread(self.data_center_service, self)
     self._retest_thread.finished_signal.connect(self._on_retest_finished)
     self._retest_thread.start()
-    
+
     # ❌ 如果在后台线程执行期间，其他地方调用了模态对话框...
     # 例如：品种列表缓存过时时弹出的确认对话框
     # → UI主线程被阻塞，无法处理 finished_signal 信号
@@ -216,17 +216,17 @@ def show_warning(self, message: str, title: str = "警告"):
 ```python
 def show_warning(self, message: str, title: str = "警告"):
     """显示警告信息（非阻塞版本）.
-    
+
     🚀 修复UI卡死问题：使用非阻塞方式显示警告
     - 记录到日志（立即生效）
     - 通过QTimer.singleShot延迟弹窗（不阻塞调用线程）
     - 或者可以选择不弹窗，只记录日志
     """
     self._logger.warning("%s: %s", title, message)
-    
+
     # 🚀 方案1：使用QTimer延迟显示（非阻塞）
     # QTimer.singleShot(0, lambda: QMessageBox.warning(self, title, message))
-    
+
     # 🚀 方案2：只记录日志，不弹窗（推荐，避免打断用户操作）
     pass
 ```
@@ -235,17 +235,17 @@ def show_warning(self, message: str, title: str = "警告"):
 ```python
 def show_info(self, message: str, title: str = "信息"):
     """显示信息（非阻塞版本）.
-    
+
     🚀 修复UI卡死问题：使用非阻塞方式显示信息
     - 记录到日志（立即生效）
     - 发射Signal供其他组件处理
     - 不使用模态对话框阻塞UI
     """
     self._logger.info("%s: %s", title, message)
-    
+
     # 🚀 方案1：使用QTimer延迟显示（非阻塞）
     # QTimer.singleShot(0, lambda: QMessageBox.information(self, title, message))
-    
+
     # 🚀 方案2：只记录日志+发射信号，不弹窗（推荐）
     self.info_message.emit(message)
 ```
@@ -492,29 +492,29 @@ from PySide6.QtCore import QThread, Signal, Qt
 
 class WorkerThread(QThread):
     """后台工作线程（Qt原生，线程安全）."""
-    
+
     # ✅ 定义信号（用于与UI主线程通信）
     progress_signal = Signal(int, str)  # 进度更新
     finished_signal = Signal(dict)      # 完成信号
     error_signal = Signal(str)          # 错误信号
-    
+
     def __init__(self, service, param, parent=None):
         super().__init__(parent)
         self.service = service
         self.param = param
-    
+
     def run(self):
         """在后台线程中执行（不阻塞UI主线程）."""
         try:
             # ✅ 执行耗时操作
             result = self.service.do_heavy_work(self.param)
-            
+
             # ✅ 发射进度信号（Qt自动调度到UI主线程）
             self.progress_signal.emit(50, "处理中...")
-            
+
             # ✅ 发射完成信号
             self.finished_signal.emit(result)
-            
+
         except Exception as e:
             # ✅ 发射错误信号
             self.error_signal.emit(str(e))
@@ -524,7 +524,7 @@ class MyWidget(QWidget):
     def start_work(self):
         # ✅ 创建并启动后台线程
         self.worker = WorkerThread(self.service, "param", self)
-        
+
         # ✅ 连接信号槽（使用QueuedConnection确保线程安全）
         self.worker.progress_signal.connect(
             self._on_progress, Qt.ConnectionType.QueuedConnection
@@ -535,32 +535,32 @@ class MyWidget(QWidget):
         self.worker.error_signal.connect(
             self._on_error, Qt.ConnectionType.QueuedConnection
         )
-        
+
         # ✅ 启动线程
         self.worker.start()
-        
+
         # ❌ 不要在这里弹出模态对话框等待完成！
         # QMessageBox.information(self, "提示", "正在处理中...")  # ← 会阻塞UI
-    
+
     def _on_progress(self, percent: int, message: str):
         """进度回调（在UI主线程中执行，线程安全）."""
         # ✅ 更新进度条（非阻塞）
         self.progress_bar.setValue(percent)
         self.status_label.setText(message)
-    
+
     def _on_finished(self, result: dict):
         """完成回调（在UI主线程中执行，线程安全）."""
         # ✅ 更新UI（非阻塞）
         self.result_label.setText(f"完成！结果：{result}")
-        
+
         # ✅ 如果确实需要弹窗，使用非阻塞方式
         self.logger.info(f"操作完成：{result}")
-    
+
     def _on_error(self, error_msg: str):
         """错误回调（在UI主线程中执行，线程安全）."""
         # ✅ 记录日志（非阻塞）
         self.logger.error(f"操作失败：{error_msg}")
-        
+
         # ❌ 不要使用模态对话框
         # QMessageBox.critical(self, "错误", error_msg)  # ← 会阻塞UI
 ```
@@ -659,8 +659,8 @@ class MyWidget(QWidget):
 
 ---
 
-**文档版本**：V1.0  
-**创建时间**：2025-10-27  
-**作者**：AI Assistant (Claude Sonnet 4.5)  
+**文档版本**：V1.0
+**创建时间**：2025-10-27
+**作者**：AI Assistant (Claude Sonnet 4.5)
 **适用项目**：terminal_v0.50
 

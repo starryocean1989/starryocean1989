@@ -161,11 +161,11 @@ def create_iocp(num_threads=0):
 
 项目中使用的是 `WindowsSelectorEventLoopPolicy`，这是因为：
 
-1. **ZMQ 兼容性**: pyzmq (ZeroMQ) 需要 SelectorEventLoop
-2. **跨平台一致性**: SelectorEventLoop 在 Windows/Linux 上都可用
+1. **跨平台一致性**: SelectorEventLoop 在 Windows/Linux 上都可用
+2. **native_ipc兼容性**: native_ipc（Windows Named Pipe + IOCP）可与SelectorEventLoop配合使用
 
 ```python:backend/infrastructure/system_vnpy/monitor_system.py
-# Windows需要使用SelectorEventLoop以支持ZMQ asyncio
+# Windows使用SelectorEventLoop策略（native_ipc已完全替换ZMQ）
 if platform.system() == "Windows":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     logger.info("✅ 已设置Windows SelectorEventLoop策略")
@@ -177,10 +177,10 @@ if platform.system() == "Windows":
 - ✅ 纯异步网络 I/O（如 `tdx_asyncio`）
 - ✅ 异步文件 I/O（使用 `aiofiles`）
 - ✅ 高性能文件处理
-- ✅ 不需要 ZMQ 的场景
+- ✅ 不需要 ZMQ 的场景（ZMQ已完全移除，项目已使用native_ipc）
 
 **使用 SelectorEventLoop 的场景**：
-- ✅ 使用 pyzmq (ZeroMQ)
+- ✅ 需要跨平台一致性
 - ✅ 需要跨平台一致性
 - ✅ 使用某些旧版异步库
 
@@ -193,16 +193,13 @@ if platform.system() == "Windows":
 import asyncio
 import platform
 
-# 在不需要 ZMQ 的场景中，可以使用 ProactorEventLoop
+# ZMQ已完全移除，项目使用native_ipc（Windows Named Pipe + IOCP）
+# 可以根据需要选择事件循环策略
 if platform.system() == "Windows":
-    # 检查是否在使用 ZMQ
-    try:
-        import zmq
-        # 如果使用 ZMQ，保持 SelectorEventLoop
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    except ImportError:
-        # 不使用 ZMQ，可以使用 IOCP（更高性能）
-        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    # 项目目前使用SelectorEventLoop（跨平台一致性）
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    # 如果需要更高性能，可以使用ProactorEventLoop（仅Windows）
+    # asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 ```
 
 ### 2. 使用 aiofiles 进行文件 I/O（使用线程池）
@@ -303,10 +300,10 @@ async def file_io_with_threadpool():
 3. **推荐做法**：
    - 网络 I/O：使用 `asyncio.open_connection()`（自动使用 IOCP/epoll）
    - 文件 I/O：使用 `aiofiles` 或 `run_in_executor()`（使用线程池）
-   - 需要 ZMQ：使用 SelectorEventLoop
+   - 需要跨平台一致性：使用 SelectorEventLoop
 
 4. **项目现状**：
-   - 使用 SelectorEventLoop（因 ZMQ 兼容性）
+   - 使用 SelectorEventLoop（跨平台一致性，native_ipc已完全替换ZMQ）
    - 文件 I/O 通过 `aiofiles` 使用线程池
    - 网络 I/O 使用 asyncio（不依赖事件循环类型）
 
@@ -315,7 +312,7 @@ async def file_io_with_threadpool():
 - **asyncio**: Python 标准库，支持 IOCP（通过 ProactorEventLoop，仅网络 I/O）
 - **aiofiles**: 异步文件 I/O，使用线程池（不是 IOCP）
 - **aiohttp**: 异步 HTTP 客户端/服务器，自动使用最佳事件循环（网络 I/O）
-- **pyzmq**: ZeroMQ Python 绑定，需要 SelectorEventLoop
+- **native_ipc**: Windows Named Pipe + IOCP，已完全替换ZMQ，可与SelectorEventLoop配合使用
 
 ## 关键结论
 

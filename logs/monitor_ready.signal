@@ -1,13 +1,12 @@
 {
-  "pid": 18400,
-  "timestamp": 1762049959.844519,
+  "pid": 9984,
+  "timestamp": 1762062544.8733897,
   "status": "fully_ready",
   "level": 2,
-  "ports": {
-    "alert_push": 5555,
-    "status_pull": 5556,
-    "query_rep": 5557
+  "pipes": {
+    "query": "monitor_query",
+    "status": "monitor_status",
+    "alerts": "monitor_alerts"
   },
-  "bind_addr": "127.0.0.1",
-  "coroutines_ready_at": 1762049961.680559
+  "coroutines_ready_at": 1762062546.310913
 }

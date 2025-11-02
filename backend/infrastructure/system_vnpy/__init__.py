@@ -96,7 +96,6 @@ from .monitor_system import (
     BottleneckResult,
     BusinessMetricsCollector,
     HardwareMonitor,
-    MonitoringProcess,
     ProcessBottleneckAnalyzer,
     ProcessMetrics,
     ProcessMonitor,
@@ -149,6 +148,7 @@ __all__ = [
     "DiskSmartData",
     "WMISmartMonitor",
     "get_wmi_smart_monitor",
+    "SmartMonitor",
     # Part 7-10: 实际使用的工具类（system_toolkit）
     "ServiceHealthChecker",
     "ServiceRestarter",
@@ -163,7 +163,6 @@ __all__ = [
     # 监控系统（monitor_system）
     "MonitoringProcessV2",
     "AdaptiveThresholdManager",
-    "SmartMonitor",
     "HardwareMonitorFactory",
     "ThresholdConfig",
     "ThresholdResult",
@@ -178,7 +177,6 @@ __all__ = [
     "ProcessBottleneckAnalyzer",
     "ProcessMetrics",
     "BottleneckResult",
-    "MonitoringProcess",
     "get_system_info",
     "get_resource_usage",
     "BusinessMetricsCollector",

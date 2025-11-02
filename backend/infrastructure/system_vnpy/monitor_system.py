@@ -35,9 +35,13 @@ import numpy as np
 # 尝试导入native_ipc
 try:
     from backend.infrastructure.native_ipc import AsyncIPCPipe, IPC_AVAILABLE
+    from typing import TYPE_CHECKING
+    if TYPE_CHECKING:
+        from backend.infrastructure.native_ipc import AsyncIPCPipe as _AsyncIPCPipe
     NATIVE_IPC_AVAILABLE = IPC_AVAILABLE
 except ImportError:
     NATIVE_IPC_AVAILABLE = False
+    _AsyncIPCPipe = None  # type: ignore
     AsyncIPCPipe = None  # type: ignore
 
 # ==================== 日志配置 ====================
@@ -1159,7 +1163,7 @@ class MonitoringProcessV2:
     """监控进程V2 - 混合并发架构.
 
     架构:
-    - 主事件循环 (asyncio): ZMQ通信、快速指标采集
+    - 主事件循环 (asyncio): native_ipc通信、快速指标采集
     - 阻塞任务线程池: 硬件传感器采集、SMART查询
     - 数据库写入协程: 批量持久化
 
@@ -1199,9 +1203,9 @@ class MonitoringProcessV2:
         )
 
         # native_ipc通信管道
-        self.query_pipe: Optional[AsyncIPCPipe] = None  # 服务端：响应查询
-        self.status_pipe: Optional[AsyncIPCPipe] = None  # 服务端：接收状态
-        self.alerts_pipe: Optional[AsyncIPCPipe] = None  # 客户端：推送告警
+        self.query_pipe = None  # 服务端：响应查询
+        self.status_pipe = None  # 服务端：接收状态
+        self.alerts_pipe = None  # 客户端：推送告警
 
         # 数据缓存
         self.monitoring_data = {
@@ -1262,73 +1266,51 @@ class MonitoringProcessV2:
         )
 
     async def _check_and_cleanup_old_process(self):
-        """检查并清理占用端口旧监控进程（基于端口检测，不依赖文件）."""
+        """检查并清理旧的监控进程实例."""
         try:
             import psutil
 
-            # 🔧 关键修复：直接检查端口占用，不依赖文件记录
-            # 检查默认端口5557是否被占用
-            target_ports = [5555, 5556, 5557]  # 监控进程使用三个端口
-
+            # 查找旧的监控进程实例
             killed_any = False
-            for port in target_ports:
-                # 查找占用该端口进程
-                for conn in psutil.net_connections(kind="inet"):
-                    if conn.laddr.port == port and conn.status == "LISTEN":
-                        pid = conn.pid
-                        if not pid:
-                            continue
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                try:
+                    # 获取进程信息
+                    pinfo = getattr(proc, 'info', None)
+                    if not pinfo or not pinfo.get('cmdline'):
+                        continue
+                    cmdline = " ".join(pinfo['cmdline'])
+
+                    # 检查是否是监控进程
+                    if "monitor_process_entry" in cmdline:
+                        pid = pinfo['pid']
 
                         # 检查是否是当前进程
-                        current_pid = __import__("os").getpid()
-                        if pid == current_pid:
+                        if pid == os.getpid():
                             continue
 
+                        logger.warning("[清理] 发现旧监控进程 (PID=%d)，正在终止...", pid)
+                        proc.terminate()
+
+                        # 等待进程退出
                         try:
-                            proc = psutil.Process(pid)
-                            cmdline = " ".join(proc.cmdline())
+                            proc.wait(timeout=3)
+                            logger.info("[清理] ✅ 旧监控进程 (PID=%d) 已正常终止", pid)
+                            killed_any = True
+                        except psutil.TimeoutExpired:
+                            logger.warning("[清理] 旧进程未响应，强制杀死...")
+                            proc.kill()
+                            logger.info("[清理] ✅ 旧监控进程 (PID=%d) 已强制终止", pid)
+                            killed_any = True
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    pass
 
-                            # 检查是否是监控进程
-                            if "monitor_process_entry" in cmdline or "monitor_core" in cmdline:
-                                logger.warning(
-                                    "[清理] 发现旧监控进程占用端口%d (PID=%d)，正在终止...",
-                                    port,
-                                    pid,
-                                )
-                                proc.terminate()
-
-                                # 等待进程退出
-                                try:
-                                    proc.wait(timeout=3)
-                                    logger.info("[清理] ✅ 旧监控进程 (PID=%d) 已正常终止", pid)
-                                    killed_any = True
-                                except psutil.TimeoutExpired:
-                                    logger.warning("[清理] 旧进程未响应，强制杀死...")
-                                    proc.kill()
-                                    logger.info("[清理] ✅ 旧监控进程 (PID=%d) 已强制终止", pid)
-                                    killed_any = True
-                            else:
-                                logger.warning(
-                                    "[清理] 端口%d被PID=%d占用，但不是监控进程: %s",
-                                    port,
-                                    pid,
-                                    cmdline[:100],
-                                )
-                        except psutil.NoSuchProcess:
-                            logger.debug("[清理] 进程 PID=%d 已不存在", pid)
-                        except psutil.AccessDenied:
-                            logger.warning("[清理] 无权限访问进程 PID=%d", pid)
-
-                        # 只处理第一个占用进程
-                        break
-
-            # 如果杀死了进程，等待端口释放
+            # 如果杀死了进程，等待释放资源
             if killed_any:
-                logger.info("[清理] 等待端口释放...")
-                await asyncio.sleep(1.0)  # 等待1秒确保端口完全释放
-                logger.info("[清理] ✅ 端口清理完成")
+                logger.info("[清理] 等待资源释放...")
+                await asyncio.sleep(1.0)  # 等待1秒确保资源完全释放
+                logger.info("[清理] ✅ 资源清理完成")
             else:
-                logger.info("[清理] 未发现需要清理旧监控进程")
+                logger.info("[清理] 未发现需要清理的旧监控进程")
 
         except Exception as e:
             logger.error("[清理] 清理旧进程时出错: %s", e, exc_info=True)
@@ -3866,22 +3848,27 @@ class SystemMonitor:
 
                 if hardware_monitor and hardware_monitor.is_available():
                     sensor_data = hardware_monitor.get_all_sensor_data()
-                    clock_sensors = sensor_data.get("clock", {})
+                    if sensor_data and isinstance(sensor_data, dict):
+                        clock_sensors_raw = sensor_data.get("clock", {})
+                        if clock_sensors_raw and isinstance(clock_sensors_raw, dict):
+                            # 查找CPU相关的时钟传感器
+                            cpu_max_freqs = []
+                            import math
+                            try:
+                                for device_name, sensors in clock_sensors_raw.items():
+                                    # 检查是否是CPU设备（名称包含CPU或处理器相关关键词）
+                                    if any(keyword in device_name.lower() for keyword in ["cpu", "processor", "ryzen", "intel", "core"]):
+                                        if isinstance(sensors, list):
+                                            for sensor in sensors:
+                                                max_val = sensor.get("max") if isinstance(sensor, dict) else None
+                                                if max_val is not None and not math.isnan(max_val) and max_val > 0:
+                                                    cpu_max_freqs.append(max_val)
 
-                    # 查找CPU相关的时钟传感器
-                    cpu_max_freqs = []
-                    import math
-                    for device_name, sensors in clock_sensors.items():
-                        # 检查是否是CPU设备（名称包含CPU或处理器相关关键词）
-                        if any(keyword in device_name.lower() for keyword in ["cpu", "processor", "ryzen", "intel", "core"]):
-                            for sensor in sensors:
-                                max_val = sensor.get("max")
-                                if max_val is not None and not math.isnan(max_val) and max_val > 0:
-                                    cpu_max_freqs.append(max_val)
-
-                    if cpu_max_freqs:
-                        max_freq_from_lhm = max(cpu_max_freqs)
-                        logger.debug(f"[CPU-FREQ] 从LibreHardwareMonitor获取最大频率: {max_freq_from_lhm:.2f} MHz")
+                                if cpu_max_freqs:
+                                    max_freq_from_lhm = max(cpu_max_freqs)
+                                    logger.debug(f"[CPU-FREQ] 从LibreHardwareMonitor获取最大频率: {max_freq_from_lhm:.2f} MHz")
+                            except Exception:
+                                pass
             except Exception as e:
                 logger.debug(f"[CPU-FREQ] 从LibreHardwareMonitor获取频率失败: {e}")
 
@@ -5374,195 +5361,6 @@ class ProcessBottleneckAnalyzer:
 
 
 # =============================================================================
-# 独立监控进程
-# =============================================================================
-
-
-class MonitoringProcess:
-    """监控进程主类 - 独立进程，通过native_ipc与主进程通信（已废弃，使用MonitoringProcessV2）."""
-
-    def __init__(self):
-        """初始化监控进程."""
-        self.running = False
-        self.interval = 2  # 推送间隔（秒）
-        self.latest_service_status = {}
-
-        # ZeroMQ上下文
-        self.context = zmq.asyncio.Context()
-
-        # PULL socket：接收服务状态
-        self.pull_socket = self.context.socket(zmq.PULL)
-        self.pull_socket.bind("tcp://127.0.0.1:5555")
-        self.pull_socket.setsockopt(zmq.RCVTIMEO, 100)  # 100ms超时
-
-        # REP socket：响应监控数据查询
-        self.rep_socket = self.context.socket(zmq.REP)
-        self.rep_socket.bind("tcp://127.0.0.1:5557")
-        self.rep_socket.setsockopt(zmq.RCVTIMEO, 100)  # 100ms超时
-
-        # 缓存最新监控数据
-        self.cached_data = {"system": {}, "process": {}, "service": {}}
-
-        # 创建监控工具
-        self.system_monitor = SystemMonitor()
-        self.process_monitor = ProcessMonitor()
-        self.bottleneck_analyzer = ProcessBottleneckAnalyzer()
-
-        logger.info("监控进程初始化完成")
-        logger.info("  - PULL端口: tcp://127.0.0.1:5555（接收服务状态）")
-        logger.info("  - REP端口: tcp://127.0.0.1:5557（响应数据查询）")
-
-    def start(self):
-        """启动监控循环（使用Poller持续监听）."""
-        self.running = True
-        logger.info("监控进程启动，推送间隔: %d秒", self.interval)
-
-        # 创建Poller同时监听多个socket
-        poller = zmq.Poller()
-        poller.register(self.rep_socket, zmq.POLLIN)  # 监听查询请求
-        poller.register(self.pull_socket, zmq.POLLIN)  # 监听服务状态
-
-        last_collect_time = 0
-
-        try:
-            while self.running:
-                current_time = time.time()
-
-                # 1. 检查是否需要采集数据（定时）
-                if current_time - last_collect_time >= self.interval:
-                    logger.debug("开始采集监控数据...")
-
-                    # 采集系统指标
-                    system_metrics = self._collect_system_metrics()
-
-                    # 采集进程指标
-                    process_metrics = self._collect_process_metrics()
-
-                    # 更新缓存
-                    self.cached_data = {
-                        "system": system_metrics,
-                        "process": process_metrics,
-                        "service": self.latest_service_status,
-                    }
-
-                    last_collect_time = current_time
-                    logger.debug("监控数据已更新")
-
-                # 2. 非阻塞检查socket事件（100ms超时）
-                # 这样可以持续处理查询请求，而不会错过
-                socks = dict(poller.poll(100))
-
-                # 3. 处理服务状态更新
-                if self.pull_socket in socks:
-                    try:
-                        message = self.pull_socket.recv_json(zmq.NOBLOCK)
-                        self.latest_service_status = message
-                        logger.debug("收到服务状态更新")
-                    except zmq.Again:
-                        pass
-                    except Exception as e:
-                        logger.exception("接收服务状态失败: %s", e)
-
-                # 4. 处理查询请求（持续监听，不会错过）
-                if self.rep_socket in socks:
-                    try:
-                        _ = self.rep_socket.recv_json(zmq.NOBLOCK)
-                        self.rep_socket.send_json(self.cached_data, zmq.NOBLOCK)
-                        logger.debug("已响应监控数据查询")
-                    except zmq.Again:
-                        pass
-                    except Exception as e:
-                        logger.exception("处理查询失败: %s", e)
-
-        except KeyboardInterrupt:
-            logger.info("收到中断信号，正在关闭...")
-        except Exception as e:
-            logger.error("监控进程异常: %s", e, exc_info=True)
-        finally:
-            self.stop()
-
-    def _collect_system_metrics(self) -> Dict[str, Any]:
-        """采集系统指标（包含温度）."""
-        try:
-            resource_usage = self.system_monitor.get_resource_usage()
-            disk_io_speed = self.system_monitor.get_disk_io_speed()
-            network_speed = self.system_monitor.get_network_speed()
-
-            # 获取硬件温度信息
-            hardware_monitor = HardwareMonitor()
-            temperature_info = hardware_monitor.get_temperature_info()
-
-            return {
-                "timestamp": datetime.now().isoformat(),
-                "cpu_percent": resource_usage.cpu_percent,
-                "memory_percent": resource_usage.memory_percent,
-                "disk_percent": resource_usage.disk_percent,
-                "network_sent": resource_usage.network_sent,
-                "network_recv": resource_usage.network_recv,
-                "process_count": resource_usage.process_count,
-                "load_average": resource_usage.load_average,
-                "disk_io_speed": disk_io_speed,
-                "network_speed": network_speed,
-                "temperature": temperature_info,  # 🌡️ 新增：温度信息
-            }
-        except Exception as e:
-            logger.error("采集系统指标失败: %s", e)
-            return {}
-
-    def _collect_process_metrics(self) -> Dict[str, Any]:
-        """采集进程指标."""
-        try:
-            # 识别所有进程
-            all_processes = self.process_monitor.identify_processes()
-
-            # 只保留Python相关进程
-            python_processes = [
-                p
-                for p in all_processes
-                if p.get("type") in ["python", "trading", "download", "backtest"]
-            ]
-
-            # 瓶颈分析（简化版）
-            bottlenecks = []
-            for proc in python_processes[:5]:  # 只分析前5个进程
-                try:
-                    metrics = self.process_monitor.get_process_metrics(
-                        proc.get("id", ""), proc.get("name", ""), proc.get("type", "")
-                    )
-                    if metrics:
-                        result = self.bottleneck_analyzer.find_bottleneck(metrics)
-                        if result.has_bottleneck:
-                            bottlenecks.append(
-                                {
-                                    "pid": proc.get("id"),
-                                    "name": proc.get("name"),
-                                    "type": result.bottleneck,
-                                    "info": result.details,
-                                }
-                            )
-                except Exception:
-                    pass
-
-            return {
-                "timestamp": datetime.now().isoformat(),
-                "python_processes": python_processes[:10],  # 只取前10个
-                "bottlenecks": bottlenecks,
-                "process_count": len(python_processes),
-            }
-        except Exception as e:
-            logger.exception("采集进程指标失败: %s", e)
-            return {}
-
-    def stop(self):
-        """停止监控进程."""
-        self.running = False
-        self.pull_socket.close()
-        self.rep_socket.close()
-        self.context.term()
-        logger.info("监控进程已停止")
-
-
-# =============================================================================
 # 便捷函数
 # =============================================================================
 
@@ -5596,8 +5394,8 @@ __all__ = [
     # 进程监控
     "ProcessMonitor",
     "ProcessBottleneckAnalyzer",  # 重命名
-    # 独立监控进程
-    "MonitoringProcess",
+    # 监控进程
+    "MonitoringProcessV2",
     # 业务指标采集
     "BusinessMetricsCollector",
     "get_business_metrics_collector",
@@ -5857,7 +5655,6 @@ __all__ = [
     "HardwareMonitor",
     "ProcessMonitor",
     "ProcessBottleneckAnalyzer",
-    "MonitoringProcess",
     "BusinessMetricsCollector",
     "get_system_info",
     "get_resource_usage",
@@ -5897,7 +5694,7 @@ def main():
         import os
         import platform
 
-        # Windows需要使用SelectorEventLoop以支持ZMQ asyncio
+        # Windows需要使用SelectorEventLoop
         if platform.system() == "Windows":
             asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
             logger.info("✅ 已设置Windows SelectorEventLoop策略")

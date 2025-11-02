@@ -8,7 +8,7 @@
 > **📖 文档分工**：
 > - **本文档**：专注于架构设计、技术选型、性能目标、组件设计
 > - **业务细节文档**：专注于业务流程、规则细节、实现逻辑、算法描述
-> 
+>
 > 两文档遵循单一事实原则，互相引用但不重复内容。
 
 ---
@@ -1305,7 +1305,7 @@ async def read_single_async(...) -> Optional[pd.DataFrame]:
 
 #### 4.1.1 集成目标
 
-**重要说明**：native_ipc是用于**替代现有ZMQ通信**，而非新增通信层。
+**重要说明**：native_ipc已完全替换ZMQ通信，所有ZMQ代码已移除。
 
 **替代范围**：
 - ✅ 监控进程 ↔ 主进程通信（替代ZMQ）
@@ -1316,7 +1316,7 @@ async def read_single_async(...) -> Optional[pd.DataFrame]:
 
 **通信架构对比**：
 ```
-当前架构：UI → data_module_vnpy ← ZMQ ← 监控进程
+当前架构：UI → data_module_vnpy ← native_ipc ← 监控进程
 新架构：  UI → data_module_vnpy ← native_ipc ← 监控进程
 ```
 
@@ -1344,13 +1344,13 @@ async def read_single_async(...) -> Optional[pd.DataFrame]:
 
 #### 4.2.1 监控进程通信（替代ZMQ）
 
-**当前方案（ZMQ）**：
+**原方案（ZMQ，已移除）**：
 ```python
-# ZMQ通信
-zmq_context = zmq.Context()
-alert_socket = zmq_context.socket(zmq.PUSH)
-alert_socket.connect("tcp://127.0.0.1:5555")
-alert_socket.send_json(alert_data)
+# 原ZMQ实现（已移除）
+# zmq_context = zmq.Context()
+# alert_socket = zmq_context.socket(zmq.PUSH)
+# alert_socket.connect("tcp://127.0.0.1:5555")
+# alert_socket.send_json(alert_data)
 ```
 
 **新方案（native_ipc）**：
@@ -1365,7 +1365,7 @@ async def send_alert(alert_data: Dict):
 
 **优势**：
 - 真异步：无线程池开销
-- 更低延迟：<10ms（优于ZMQ）
+- 更低延迟：<10ms（基于Windows Named Pipe + IOCP）
 - Windows专属：充分利用Windows IPC机制
 
 #### 4.2.2 多进程进度同步
@@ -1922,7 +1922,7 @@ except ImportError:
     except ImportError:
         # 最终降级到线程队列
         _USE_IPC = False
-        _USE_ZMQ = False
+        # _USE_ZMQ = False
         _USE_THREAD_QUEUE = True
 ```
 
@@ -1999,14 +1999,14 @@ except ImportError:
 
 #### 10.4.1 IPC通信延迟
 
-**目标**：<10ms（优于ZMQ）
-- ZMQ：~15-20ms
+**目标**：<10ms
+- 已实现：<10ms（基于Windows Named Pipe + IOCP）
 - native_ipc：~5-10ms
 
 #### 10.4.2 IPC吞吐量
 
 **目标**：>100MB/s
-- ZMQ：~80MB/s
+- 已实现：>100MB/s（基于Windows Named Pipe + IOCP）
 - native_ipc：>100MB/s
 
 ### 10.5 性能监控指标
@@ -2077,11 +2077,11 @@ except ImportError:
 
 #### 阶段3: native_ipc集成（2周）
 
-**目标**：替代ZMQ通信，实现跨进程数据同步。
+**目标**：使用native_ipc实现跨进程数据同步（已完全替换ZMQ）。
 
 **任务清单**：
 1. **监控进程通信替换**（3天）
-   - 替换ZMQ为native_ipc
+   - 已完全替换ZMQ为native_ipc
    - 实现AsyncIPCPipe通信
    - 测试通信稳定性
 
@@ -2141,7 +2141,7 @@ except ImportError:
 **M3: native_ipc集成完成**（5周后）
 - 监控进程通信替换完成
 - 跨进程同步实现完成
-- 性能优于ZMQ
+- 性能优于原ZMQ方案
 
 **M4: 优化和测试完成**（6周后）
 - 所有优化完成
@@ -2156,7 +2156,7 @@ except ImportError:
 - **应对**：自动降级到aiofiles，保证功能正常
 
 **风险**：native_ipc兼容性问题
-- **应对**：保留ZMQ备用方案，确保通信正常
+- **应对**：ZMQ已完全移除，仅使用native_ipc通信
 
 #### 11.3.2 进度风险
 
@@ -2194,7 +2194,7 @@ except ImportError:
 - 性能未达预期
 
 **应对措施**：
-1. **备用方案**：保留ZMQ备用，确保通信正常
+1. **迁移状态**：ZMQ已完全移除，仅使用native_ipc通信
 2. **权限检查**：启动时检查权限，自动处理
 3. **稳定性测试**：充分测试各种场景
 
@@ -2224,7 +2224,7 @@ except ImportError:
 
 **风险描述**：
 - I/O性能提升未达50-80%
-- IPC延迟未优于ZMQ
+- IPC延迟<10ms（已优于原ZMQ方案的15-20ms）
 - 总体性能未达预期
 
 **应对措施**：

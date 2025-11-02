@@ -85,13 +85,11 @@
         "ui_target_ms": 2000
     },
     "monitor": {
-        "port_alert_push": 5555,
-        "port_status_pull": 5556,
-        "port_query_rep": 5557,
-        "bind_addr": "127.0.0.1",
-        "port_fallback_enabled": true,
-        "port_fallback_base": 5565,
-        "port_fallback_span": 3
+        "pipe_query": "monitor_query",
+        "pipe_status": "monitor_status",
+        "pipe_alerts": "monitor_alerts",
+        "connection_timeout": 10.0,
+        "query_timeout": 3.0
     },
     "system_monitor_thresholds": {
         "description": "系统监控性能阈值配置（超过阈值表示性能瓶颈）",
