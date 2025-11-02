@@ -146,12 +146,13 @@ class NetworkTimeSync:
                     cls._instance = cls()
         return cls._instance
 
-    def sync_time(self, timeout: float = 3.0) -> Tuple[bool, Optional[float]]:
+    def sync_time(self, timeout: float = 2.0, max_attempts: int = 3) -> Tuple[bool, Optional[float]]:
         """
         从NTP服务器同步时间
 
         Args:
-            timeout: 请求超时时间（秒）- 默认3秒,快速超时以便降级到HTTP
+            timeout: 请求超时时间（秒）- 默认2秒,确保NTP请求有足够时间完成
+            max_attempts: 最大尝试服务器数量 - 默认3个,总超时控制在6秒内
 
         Returns:
             (成功标志, 时间偏移量)
@@ -166,7 +167,10 @@ class NetworkTimeSync:
         with self._sync_lock:
             error_details = []  # 收集详细错误信息用于调试
             
-            for ntp_server in self.NTP_SERVERS:
+            # 🔧 修复: 限制尝试次数,避免启动超时
+            servers_to_try = self.NTP_SERVERS[:max_attempts]
+            
+            for ntp_server in servers_to_try:
                 try:
                     logger.debug(f"尝试从 {ntp_server} 同步时间（超时: {timeout}秒）...")
                     
@@ -211,7 +215,7 @@ class NetworkTimeSync:
             # 所有服务器都失败 - 打印详细错误
             self._sync_failures += 1
             logger.warning(
-                f"⚠️ 时间同步失败，已尝试 {len(self.NTP_SERVERS)} 个NTP服务器"
+                f"⚠️ 时间同步失败，已尝试 {len(servers_to_try)} 个NTP服务器"
             )
             logger.warning("⚠️ 详细错误信息:")
             for detail in error_details:
@@ -219,7 +223,8 @@ class NetworkTimeSync:
             
             # 尝试HTTP时间服务作为备用方案
             logger.info("⚠️ NTP同步失败，尝试HTTP时间服务...")
-            http_success, http_offset = self._sync_time_http(timeout=10.0)
+            # 🔧 修复: HTTP超时从10秒降到3秒,避免启动超时
+            http_success, http_offset = self._sync_time_http(timeout=3.0)
             
             if http_success:
                 return True, http_offset
@@ -228,12 +233,12 @@ class NetworkTimeSync:
             logger.warning("⚠️ 将降级使用系统时间（可能不准确）")
             return False, None
     
-    def _sync_time_http(self, timeout: float = 10.0) -> Tuple[bool, Optional[float]]:
+    def _sync_time_http(self, timeout: float = 3.0) -> Tuple[bool, Optional[float]]:
         """
         使用HTTP时间服务同步时间（备用方案）
         
         Args:
-            timeout: HTTP请求超时时间（秒）
+            timeout: HTTP请求超时时间（秒）- 默认3秒,避免启动超时
             
         Returns:
             (成功标志, 时间偏移量)

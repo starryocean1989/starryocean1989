@@ -672,7 +672,7 @@ class StartupCoordinator(QObject):
 
         # 超时监视
         self.timeout_timer: Optional[QTimer] = None
-        self.initialization_timeout = 30  # 30秒超时
+        self.initialization_timeout = 60  # 🔧 修复: 从30秒增加到60秒,为时间同步降级提供足够时间
 
         self.logger.info("[COORDINATOR] 启动协调器已创建")
 
