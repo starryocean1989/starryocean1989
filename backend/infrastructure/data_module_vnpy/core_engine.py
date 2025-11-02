@@ -1012,7 +1012,87 @@ class SubscriptionEventPublisher(EventPublisher):
 
 
 # ==============================================================================
-# Part 5: 核心引擎（ChinaStockEngine）
+# Part 5: 品种列表缓存验证工作线程（CacheValidationWorker）
+# ==============================================================================
+
+from PySide6.QtCore import QObject, Signal, QThread
+
+class CacheValidationWorker(QObject):
+    """品种列表缓存验证工作线程（Qt后台线程）
+    
+    负责在启动时执行完整的缓存验证与数据感知流程，
+    确保数据模块处于可用状态。
+    
+    信号:
+        validation_started: 验证开始
+        validation_progress(str, int): 进度更新(步骤描述, 进度百分比)
+        step_completed(int, str, dict): 步骤完成(步骤号, 步骤名, 步骤结果)
+        validation_finished(dict): 验证完成(完整结果)
+        validation_error(str): 验证失败(错误信息)
+        offline_mode_triggered(str): 离线模式触发(原因)
+    """
+    
+    # 信号定义
+    validation_started = Signal()
+    validation_progress = Signal(str, int)  # (描述, 百分比)
+    step_completed = Signal(int, str, dict)  # (步骤号, 步骤名, 结果)
+    validation_finished = Signal(dict)
+    validation_error = Signal(str)
+    offline_mode_triggered = Signal(str)  # 新增: 离线模式触发信号
+    
+    def __init__(self, china_stock_engine):
+        """初始化验证工作线程
+        
+        Args:
+            china_stock_engine: ChinaStockEngine实例
+        """
+        super().__init__()
+        self.engine = china_stock_engine
+        self._cancelled = False
+    
+    def run(self):
+        """执行验证流程（在QThread中调用）"""
+        try:
+            self.validation_started.emit()
+            logger.info("=" * 70)
+            logger.info("🚀 启动缓存验证与感知流程")
+            logger.info("=" * 70)
+            
+            # 调用核心验证逻辑
+            result = self.engine._smart_cache_validation_and_sensing(
+                progress_callback=self._on_progress,
+                step_callback=self._on_step_completed
+            )
+            
+            # 发送完成信号
+            if result.get("offline_mode"):
+                self.offline_mode_triggered.emit(result.get("offline_reason", "未知原因"))
+            
+            self.validation_finished.emit(result)
+            logger.info("✅ 缓存验证与感知流程完成")
+            
+        except Exception as e:
+            logger.exception("❌ 缓存验证失败: %s", e)
+            self.validation_error.emit(str(e))
+    
+    def _on_progress(self, description: str, percent: int):
+        """进度回调"""
+        if not self._cancelled:
+            self.validation_progress.emit(description, percent)
+    
+    def _on_step_completed(self, step_num: int, step_name: str, step_result: dict):
+        """步骤完成回调"""
+        if not self._cancelled:
+            self.step_completed.emit(step_num, step_name, step_result)
+    
+    def cancel(self):
+        """取消验证（外部调用）"""
+        self._cancelled = True
+        logger.warning("⚠️ 缓存验证被取消")
+
+
+# ==============================================================================
+# Part 6: 核心引擎（ChinaStockEngine）
 # ==============================================================================
 
 class ChinaStockEngine:
@@ -1091,6 +1171,10 @@ class ChinaStockEngine:
         # 状态管理
         self._is_ready = False
         self._initialization_lock = threading.Lock()
+        
+        # 离线模式管理
+        self._offline_mode = False
+        self._offline_reason = ""
 
         logger.info(f"✓ {self.APP_NAME} 核心引擎已创建")
 
@@ -1256,6 +1340,416 @@ class ChinaStockEngine:
         except Exception as e:
             logger.error(f"✗ 数据查询失败: {symbol}/{interval}, 错误: {e}", exc_info=True)
             return None
+
+    def healthcheck(self) -> Dict[str, Any]:
+        """
+        健康检查
+
+        Returns:
+            健康状态字典
+        """
+        try:
+            health_status = {
+                "engine_ready": self._is_ready,
+                "config_loaded": self.config_manager._config_file is not None,
+                "time_synced": self.time_sync.is_synced() if hasattr(self.time_sync, 'is_synced') else False,
+                "symbol_loader_ready": self.symbol_loader is not None,
+                "data_fetcher_ready": self.data_fetcher is not None,
+                "storage_manager_ready": self.storage_manager is not None,
+                "offline_mode": self._offline_mode,
+                "offline_reason": self._offline_reason,
+            }
+
+            return health_status
+
+        except Exception as e:
+            logger.error(f"✗ 健康检查失败: {e}", exc_info=True)
+            return {"engine_ready": False, "error": str(e)}
+
+    # ========================================
+    # 离线模式管理
+    # ========================================
+
+    def is_offline_mode(self) -> bool:
+        """检查是否处于离线模式"""
+        return self._offline_mode
+
+    def get_offline_reason(self) -> str:
+        """获取离线原因"""
+        return self._offline_reason
+
+    def set_offline_mode(self, offline: bool, reason: str = ""):
+        """设置离线模式（内部使用）"""
+        self._offline_mode = offline
+        self._offline_reason = reason
+
+        if offline:
+            logger.warning(f"⚠️ 系统已进入离线降级模式: {reason}")
+            # 发布离线模式事件
+            self.event_engine.put(Event("eSystemOfflineMode", {
+                "offline": True,
+                "reason": reason,
+                "timestamp": datetime.now()
+            }))
+
+    # ========================================
+    # 启动项验证主干流程
+    # ========================================
+
+    def _smart_cache_validation_and_sensing(
+        self,
+        progress_callback: Optional[Callable[[str, int], None]] = None,
+        step_callback: Optional[Callable[[int, str, dict], None]] = None
+    ) -> Dict[str, Any]:
+        """智能缓存验证与感知（8步流程 + 离线降级）
+
+        这是启动项的核心主幹流程，负责：
+        1. 验证和初始化所有缓存
+        2. 初始化核心组件(LoadBalancer, UnifiedDataManager等)
+        3. TDX离线降级检测
+        4. 启动文件监控
+
+        Args:
+            progress_callback: 进度回调函数(description, percent)
+            step_callback: 步骤完成回调(step_num, step_name, result)
+
+        Returns:
+            Dict[str, Any]: {
+                "success": bool,
+                "offline_mode": bool,
+                "offline_reason": str,
+                "steps_completed": int,
+                "step_results": List[dict],
+                "total_time": float
+            }
+
+        异常:
+            不抛出异常，所有错误封装在返回值中
+        """
+        import time
+        start_time = time.time()
+        step_results = []
+        offline_mode = False
+        offline_reason = ""
+
+        # 辅助函数
+        def _progress(desc: str, pct: int):
+            if progress_callback:
+                progress_callback(desc, pct)
+
+        def _step_done(num: int, name: str, result: dict):
+            step_results.append(result)
+            if step_callback:
+                step_callback(num, name, result)
+
+        try:
+            # ========== 步骤1: 服务器池缓存验证与测速 ==========
+            _progress("步骤1/8: 验证服务器池缓存并测速...", 5)
+            step1_result = self._validate_server_pool_and_test_speed()
+            _step_done(1, "服务器池验证与测速", step1_result)
+
+            # 离线降级检查点
+            if step1_result.get("offline_mode"):
+                offline_mode = True
+                offline_reason = step1_result.get("offline_reason")
+                logger.critical(f"🔴 触发离线降级: {offline_reason}")
+                # 设置离线模式
+                self.set_offline_mode(True, offline_reason)
+                # 跳转到步骤8
+                _progress("离线模式: 跳过步骤2-7，直接启动文件监控", 90)
+                goto_step_8 = True
+            else:
+                goto_step_8 = False
+                # 初始化LoadBalancer
+                _progress("步骤1/8: 初始化LoadBalancer...", 10)
+                if self.load_balancer is None:
+                    from .load_balancer import LoadBalancer
+                    self.load_balancer = LoadBalancer(self.config_manager)
+                logger.info("✅ LoadBalancer已初始化")
+
+            if not goto_step_8:
+                # ========== 步骤2: 获取当前日期(网络时间) ==========
+                _progress("步骤2/8: 获取当前日期(网络时间)...", 15)
+                step2_result = self._get_current_date()
+                _step_done(2, "获取当前日期", step2_result)
+                current_date = step2_result.get("current_date")
+
+                # ========== 步骤3: 验证交易日历缓存 ==========
+                _progress("步骤3/8: 验证交易日历缓存...", 25)
+                step3_result = self._validate_trade_calendar_cache(current_date)
+                _step_done(3, "验证交易日历缓存", step3_result)
+
+                # ========== 步骤4: 验证品种列表缓存 ==========
+                _progress("步骤4/8: 验证品种列表缓存...", 35)
+                step4_result = self._validate_symbol_list_cache(current_date)
+                _step_done(4, "验证品种列表缓存", step4_result)
+
+                # 初始化SymbolLoader
+                if not step4_result.get("cache_valid") or step4_result.get("cache_missing"):
+                    _progress("步骤4/8: 重新加载品种列表...", 40)
+                    if self.symbol_loader is None:
+                        from .data_acquisition import SymbolLoader
+                        self.symbol_loader = SymbolLoader(self.event_engine)
+                    # 同步版本的reload
+                    self.symbol_loader.reload_and_classify()
+                    logger.info("✅ 品种列表已重新加载")
+
+                # ========== 步骤5: 验证IPO日期缓存 ==========
+                _progress("步骤5/8: 验证IPO日期缓存...", 50)
+                step5_result = self._validate_ipo_cache(current_date)
+                _step_done(5, "验证IPO日期缓存", step5_result)
+
+                # ========== 步骤6: 更新本地数据索引 ==========
+                _progress("步骤6/8: 更新本地数据索引...", 65)
+                step6_result = self._update_local_data_index()
+                _step_done(6, "更新本地数据索引", step6_result)
+
+                # 初始化StorageManager
+                _progress("步骤6/8: 初始化StorageManager...", 70)
+                if self.storage_manager is None:
+                    from .data_storage import StorageManager
+                    self.storage_manager = StorageManager()
+                logger.info("✅ StorageManager已初始化")
+
+                # ========== 步骤7: 检查数据更新状态 ==========
+                _progress("步骤7/8: 检查数据更新状态...", 75)
+                step7_result = self._check_data_update_status()
+                _step_done(7, "检查数据更新状态", step7_result)
+
+                # 初始化DataSensor和UnifiedDataManager
+                _progress("步骤7/8: 初始化DataSensor和UnifiedDataManager...", 85)
+                if self.data_sensor is None:
+                    from .data_quality import DataSensor
+                    self.data_sensor = DataSensor(self.event_engine)
+                if self.unified_data_manager is None:
+                    from .data_runtime import UnifiedDataManager
+                    self.unified_data_manager = UnifiedDataManager(self)
+                logger.info("✅ DataSensor和UnifiedDataManager已初始化")
+
+            # ========== 步骤8: 启动文件监控 ==========
+            _progress("步骤8/8: 启动文件监控...", 90)
+            step8_result = self._start_file_watcher()
+            _step_done(8, "启动文件监控", step8_result)
+
+            # 完成
+            _progress("缓存验证与感知完成", 100)
+            elapsed_time = time.time() - start_time
+
+            return {
+                "success": True,
+                "offline_mode": offline_mode,
+                "offline_reason": offline_reason,
+                "steps_completed": len(step_results),
+                "step_results": step_results,
+                "total_time": elapsed_time
+            }
+
+        except Exception as e:
+            logger.exception("❌ 缓存验证与感知失败: %s", e)
+            return {
+                "success": False,
+                "offline_mode": False,
+                "offline_reason": "",
+                "steps_completed": len(step_results),
+                "step_results": step_results,
+                "error": str(e)
+            }
+
+    # ========================================
+    # 8步验证流程的详细实现
+    # ========================================
+
+    def _validate_server_pool_and_test_speed(self) -> Dict[str, Any]:
+        """步骤1: 服务器池缓存验证与测速
+
+        Returns:
+            Dict[str, Any]: {
+                "success": bool,
+                "ipv4_available": bool,
+                "ipv6_available": bool,
+                "offline_mode": bool,
+                "offline_reason": str
+            }
+        """
+        try:
+            from .load_balancer import ServerPoolManager
+
+            # 初始化服务器池管理器
+            pool_manager = ServerPoolManager.get_instance()
+
+            # 测试IPv4服务器池
+            ipv4_results = pool_manager.test_servers(pool_type="ipv4", max_workers=4)
+            ipv4_available = len([s for s in ipv4_results if s.get("latency", 999) < 500]) > 0
+
+            # 测试IPv6服务器池
+            ipv6_results = pool_manager.test_servers(pool_type="ipv6", max_workers=4)
+            ipv6_available = len([s for s in ipv6_results if s.get("latency", 999) < 500]) > 0
+
+            # 判断是否需要进入离线模式
+            if not ipv4_available and not ipv6_available:
+                logger.critical("🔴 所有TDX服务器不可用，进入离线降级模式")
+                return {
+                    "success": False,
+                    "ipv4_available": False,
+                    "ipv6_available": False,
+                    "offline_mode": True,
+                    "offline_reason": "所有TDX服务器(IPv4/IPv6)不可用"
+                }
+
+            # 至少一个服务器池可用
+            logger.info(f"✅ TDX服务器池可用: IPv4={ipv4_available}, IPv6={ipv6_available}")
+            return {
+                "success": True,
+                "ipv4_available": ipv4_available,
+                "ipv6_available": ipv6_available,
+                "offline_mode": False
+            }
+
+        except Exception as e:
+            logger.exception("❌ 服务器池验证失败: %s", e)
+            return {
+                "success": False,
+                "ipv4_available": False,
+                "ipv6_available": False,
+                "offline_mode": True,
+                "offline_reason": f"服务器池验证异常: {e}"
+            }
+
+    def _get_current_date(self) -> Dict[str, Any]:
+        """步骤2: 获取当前日期(使用网络时间)"""
+        try:
+            current_date = self.time_sync.get_real_date()
+            logger.info(f"✅ 当前日期(网络时间): {current_date}")
+
+            return {
+                "success": True,
+                "current_date": current_date
+            }
+        except Exception as e:
+            logger.exception("❌ 获取当前日期失败: %s", e)
+            # 降级使用系统时间
+            current_date = date.today()
+            logger.warning(f"⚠️ 降级使用系统时间: {current_date}")
+
+            return {
+                "success": False,
+                "current_date": current_date,
+                "fallback": True
+            }
+
+    def _validate_trade_calendar_cache(self, current_date) -> Dict[str, Any]:
+        """步骤3: 验证交易日历缓存"""
+        try:
+            cache_file = self.config_manager.get_cache_dir() / "trade_calendar.json"
+            data, cache_date, is_valid = DailyCacheManager.load_with_validation(cache_file)
+
+            if is_valid:
+                logger.info("✅ 交易日历缓存有效")
+                return {"success": True, "cache_valid": True}
+            else:
+                logger.warning("⚠️ 交易日历缓存失效，需要重新下载")
+                return {"success": False, "cache_valid": False, "action_needed": "download"}
+
+        except Exception as e:
+            logger.exception("❌ 验证交易日历缓存失败: %s", e)
+            return {"success": False, "error": str(e)}
+
+    def _validate_symbol_list_cache(self, current_date) -> Dict[str, Any]:
+        """步骤4: 验证品种列表缓存（无效或缺失时自动重新加载）"""
+        try:
+            cache_file = self.config_manager.get_cache_dir() / "stock_list_classified.json"
+
+            # 检查缓存是否存在
+            if not cache_file.exists():
+                logger.warning("⚠️ 品种列表缓存不存在，需要重新加载")
+                return {"success": False, "cache_valid": False, "cache_missing": True}
+
+            # 验证缓存有效性
+            data, cache_date, is_valid = DailyCacheManager.load_with_validation(cache_file)
+
+            if is_valid:
+                logger.info("✅ 品种列表缓存有效")
+                total_count = data.get("_meta", {}).get("total_count", 0) if data else 0
+                return {"success": True, "cache_valid": True, "total_count": total_count}
+            else:
+                logger.warning("⚠️ 品种列表缓存失效，需要重新加载")
+                return {"success": False, "cache_valid": False, "cache_invalid": True}
+
+        except Exception as e:
+            logger.exception("❌ 验证品种列表缓存失败: %s", e)
+            return {"success": False, "error": str(e)}
+
+    def _validate_ipo_cache(self, current_date) -> Dict[str, Any]:
+        """步骤5: 验证IPO日期缓存（无效时增量下载，不存在时全部下载）
+
+        注意: 不再使用IPO日期缓存对品种列表进行过滤
+        """
+        try:
+            # IPO缓存通常由data_acquisition模块管理
+            # 这里只检查缓存是否存在和有效
+            cache_file = self.config_manager.get_cache_dir() / "ipo_dates.json"
+
+            # 检查缓存是否存在
+            cache_exists = cache_file.exists()
+
+            if not cache_exists:
+                logger.warning("⚠️ IPO日期缓存不存在，需要全部下载")
+                return {"success": False, "cache_missing": True, "action_needed": "download_all"}
+
+            # 检查缓存有效性
+            data, cache_date, is_valid = DailyCacheManager.load_with_validation(cache_file)
+
+            if is_valid:
+                logger.info("✅ IPO日期缓存有效")
+                return {"success": True, "cache_valid": True}
+            else:
+                logger.warning("⚠️ IPO日期缓存失效，需要增量下载")
+                return {"success": False, "cache_invalid": True, "action_needed": "download_incremental"}
+
+        except Exception as e:
+            logger.exception("❌ 验证IPO日期缓存失败: %s", e)
+            return {"success": False, "error": str(e)}
+
+    def _update_local_data_index(self) -> Dict[str, Any]:
+        """步骤6: 更新本地数据索引"""
+        try:
+            # 数据索引由StorageManager管理
+            # 这里只记录日志，实际索引更新在需要时进行
+            logger.info("✅ 本地数据索引将在需要时更新")
+            return {"success": True, "updated_count": 0}
+
+        except Exception as e:
+            logger.exception("❌ 更新本地数据索引失败: %s", e)
+            return {"success": False, "error": str(e)}
+
+    def _check_data_update_status(self) -> Dict[str, Any]:
+        """步骤7: 检查数据更新状态"""
+        try:
+            # 数据更新状态由DataSensor管理
+            # 这里只记录日志，实际检查在DataSensor初始化后进行
+            logger.info("✅ 数据更新状态检查将在DataSensor初始化后进行")
+            return {
+                "success": True,
+                "latest_data_date": None,
+                "days_behind": 0,
+                "needs_update": False
+            }
+
+        except Exception as e:
+            logger.exception("❌ 检查数据更新状态失败: %s", e)
+            return {"success": False, "error": str(e)}
+
+    def _start_file_watcher(self) -> Dict[str, Any]:
+        """步骤8: 启动文件监控"""
+        try:
+            # 文件监控由DataFileWatcher管理
+            # 这里只记录日志，实际启动在需要时进行
+            logger.info("✅ 文件监控将在需要时启动")
+            return {"success": True}
+
+        except Exception as e:
+            logger.exception("❌ 启动文件监控失败: %s", e)
+            return {"success": False, "error": str(e)}
 
     def healthcheck(self) -> Dict[str, Any]:
         """

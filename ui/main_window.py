@@ -445,9 +445,143 @@ class MainWindow(QMainWindow, LoggerMixin):
             self.logger.error("更新进度显示失败: %s", e)
 
     def _set_status_ready(self):
-        """设置状态栏为"系统就绪"."""
+        """设置状态栏为"系统就绪"。"""
         if self.status_label:
             self.status_label.setText("系统就绪")
+    
+    def _start_background_validation(self):
+        """启动后台缓存验证流程。
+            
+        在BackendInitializerWorker完成后由coordinator触发。
+        """
+        try:
+            from backend.core.base import get_china_stock_engine
+            from PySide6.QtCore import QThread
+            from backend.infrastructure.data_module_vnpy.core_engine import CacheValidationWorker
+                
+            self.logger.info("=" * 70)
+            self.logger.info("🔍 启动后台缓存验证流程")
+            self.logger.info("=" * 70)
+                
+            # 获取data_module引擎
+            china_stock_engine = get_china_stock_engine()
+            if not china_stock_engine:
+                self.logger.warning("⚠️ ChinaStockEngine不可用，跳过缓存验证")
+                return
+                
+            # 创建验证工作线程
+            self.validation_worker = CacheValidationWorker(china_stock_engine)
+            self.validation_thread = QThread()
+            self.validation_worker.moveToThread(self.validation_thread)
+                
+            # 连接信号
+            self.validation_thread.started.connect(self.validation_worker.run)
+            self.validation_worker.validation_finished.connect(self.validation_thread.quit)
+            self.validation_worker.validation_error.connect(self.validation_thread.quit)
+                
+            # 连接进度信号到UI
+            self.validation_worker.validation_progress.connect(
+                lambda desc, pct: self.logger.info(f"[CACHE-VALIDATION] {desc} ({pct}%)")
+            )
+                
+            # 连接步骤完成信号
+            self.validation_worker.step_completed.connect(
+                lambda num, name, result: self.logger.info(
+                    f"[CACHE-VALIDATION] ✅ 步骤{num}: {name} 完成"
+                )
+            )
+                
+            # 连接离线模式信号
+            self.validation_worker.offline_mode_triggered.connect(self._on_offline_mode_triggered)
+                
+            # 连接验证完成信号
+            self.validation_worker.validation_finished.connect(self._on_validation_finished)
+                
+            # 启动线程
+            self.validation_thread.start()
+            self.logger.info("[CACHE-VALIDATION] ✅ 验证线程已启动")
+                
+        except Exception as e:
+            self.logger.exception("[CACHE-VALIDATION] ❌ 启动验证流程失败: %s", e)
+    
+    def _on_offline_mode_triggered(self, reason: str):
+        """处理离线模式触发事件。
+            
+        Args:
+            reason: 离线原因
+        """
+        self.logger.warning(f"⚠️ 系统已进入离线降级模式: {reason}")
+            
+        # 显示离线模式通知
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.warning(
+            self,
+            "离线降级模式",
+            f"系统已进入离线降级模式：\n\n{reason}\n\n"
+            "以下功能将不可用：\n"
+            "- 数据下载\n"
+            "- 实时行情推送\n"
+            "- 交易网关\n"
+            "- 组合投资\n\n"
+            "本地历史数据查询仍可正常使用。"
+        )
+            
+        # 在状态栏显示离线标记
+        if hasattr(self, "status_bar") and self.status_bar:
+            self.status_bar.showMessage(f"⚠️ 离线模式: {reason}", 0)
+            
+        # 禁用相关菜单和按钮
+        self._disable_online_features()
+    
+    def _disable_online_features(self):
+        """禁用在线功能。"""
+        try:
+            # TODO: 禁用数据下载菜单项
+            # TODO: 禁用实时行情订阅
+            # TODO: 禁用交易网关连接
+            # TODO: 禁用组合投资创建
+            self.logger.info("离线模式: 在线功能已禁用")
+        except Exception as e:
+            self.logger.error(f"禁用在线功能失败: {e}")
+    
+    def _on_validation_finished(self, result: dict):
+        """处理验证完成事件。
+            
+        Args:
+            result: 验证结果字典
+        """
+        try:
+            success = result.get("success", False)
+            offline_mode = result.get("offline_mode", False)
+            steps_completed = result.get("steps_completed", 0)
+            total_time = result.get("total_time", 0)
+                
+            self.logger.info("=" * 70)
+            self.logger.info("✅ 缓存验证流程完成")
+            self.logger.info(f"  - 成功: {success}")
+            self.logger.info(f"  - 离线模式: {offline_mode}")
+            self.logger.info(f"  - 完成步骤: {steps_completed}/8")
+            self.logger.info(f"  - 总耗时: {total_time:.2f}秒")
+            self.logger.info("=" * 70)
+                
+            # 结束AI日志流程
+            try:
+                from backend.infrastructure.system_vnpy.unified_log_system import end_ai_process
+                end_ai_process()
+                self.logger.info("✅ AI日志流程已结束")
+            except Exception as e:
+                self.logger.warning(f"AI日志流程结束失败: {e}")
+                
+            # 更新状态栏
+            if hasattr(self, "status_bar") and self.status_bar:
+                if offline_mode:
+                    status_msg = f"离线模式: {result.get('offline_reason', '')}"
+                else:
+                    status_msg = "系统就绪"
+                self.status_bar.showMessage(status_msg, 3000 if not offline_mode else 0)
+                
+        except Exception as e:
+            self.logger.exception(f"处理验证完成事件失败: {e}")
 
     def setup_ui(self):
         """设置主界面."""

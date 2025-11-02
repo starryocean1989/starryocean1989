@@ -95,6 +95,15 @@ class UnifiedDataManager:
         self.event_engine = event_engine
         self.config_manager = config_manager or ConfigManager()
         self.storage_manager = StorageManager()
+        
+        # 检查离线模式（如果通过ChinaStockEngine初始化）
+        self.offline_mode = False
+        if hasattr(event_engine, 'is_offline_mode'):
+            self.offline_mode = event_engine.is_offline_mode()
+        
+        if self.offline_mode:
+            logger.warning("⚠️ UnifiedDataManager以离线模式初始化")
+            logger.info("离线模式: 仅本地存储层可用")
 
         # 查询统计
         self._stats = {
