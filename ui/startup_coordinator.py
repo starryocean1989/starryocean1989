@@ -200,7 +200,7 @@ class BackendInitializerWorker(QObject):
             / "backend"
             / "infrastructure"
             / "system_vnpy"
-            / "monitor_process_entry.py"
+            / "monitor_system.py"
         )
 
         # 准备日志文件
@@ -224,7 +224,7 @@ class BackendInitializerWorker(QObject):
                     self.logger.info("[MONITOR-PROCESS] 检测到管理员权限，将传递给监控进程")
             except:
                 pass
-        
+
         self.monitor_process_handle = subprocess.Popen(
             [sys.executable, str(monitor_script)],
             stdout=monitor_stdout_file,
@@ -329,7 +329,7 @@ class BackendInitializerWorker(QObject):
                                 / "backend"
                                 / "infrastructure"
                                 / "system_vnpy"
-                                / "monitor_process_entry.py"
+                                / "monitor_system.py"
                             )
 
                             self.monitor_process_handle = subprocess.Popen(

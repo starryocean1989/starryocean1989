@@ -26,6 +26,52 @@ import time
 from pathlib import Path
 
 
+def print_stage(
+    stage_name: str,
+    message: str,
+    success: bool = True,
+    error_detail: str = "",
+) -> None:
+    """打印启动阶段状态信息.
+
+    Args:
+        stage_name: 阶段名称（如 "ENV-SETUP", "QT-INIT" 等）
+        message: 状态消息
+        success: 是否成功
+        error_detail: 错误详情（失败时使用）
+
+    Note:
+        此函数用于启动阶段的简单状态输出，不依赖日志系统。
+        在新架构中，print_stage 已从 system_toolkit 移除，此处提供简单替代。
+    """
+    # 状态图标
+    icon = "✅" if success else "❌"
+
+    # 格式化输出
+    status_line = f"[{stage_name}] {icon} {message}"
+
+    # 打印到终端
+    print(status_line)
+
+    # 如果有错误详情，打印额外信息
+    if not success and error_detail:
+        print(f"    └─ {error_detail}")
+
+    # 尝试记录到日志系统（如果已初始化）
+    try:
+        logger = logging.getLogger("startup")
+        if success:
+            logger.info("[%s] %s", stage_name, message)
+        else:
+            error_msg = f"{message}"
+            if error_detail:
+                error_msg += f" - {error_detail}"
+            logger.error("[%s] %s", stage_name, error_msg)
+    except Exception:
+        # 日志系统未初始化时忽略
+        pass
+
+
 def setup_environment():
     """阶段0：环境准备（< 100ms）.
 
@@ -264,10 +310,9 @@ def main():
     if str(project_root_path) not in sys.path:
         sys.path.insert(0, str(project_root_path))
 
-    from backend.infrastructure.system_vnpy.system_toolkit import (
+    from backend.infrastructure.system_vnpy import (
         is_admin,
         run_as_admin,
-        print_stage,
     )
     from backend.core.config import get_settings, update_capabilities
 
@@ -328,14 +373,8 @@ def main():
         logger.debug("[ENV-SETUP] 环境准备完成，耗时 %.0fms", env_time)
 
         # 配置Debug输出
-        from backend.infrastructure.system_vnpy.system_toolkit import configure_debug
-
-        # 启用Debug模块（监控、数据、行情看板）
-        configure_debug(
-            enabled_modules=["monitor", "data", "market_board", "data_center", "system_manager"],
-            debug_level="normal",  # brief | normal | detailed
-            terminal_output=True,
-        )
+        # configure_debug 在新架构中已移除，使用标准日志配置
+        # 日志配置通过标准logging模块进行
         logger.debug("[DEBUG-CONFIG] Debug输出已配置（normal级别）")
 
         # ==================== 阶段1：Qt框架初始化 ====================
@@ -584,7 +623,7 @@ def main():
                             if not info:
                                 continue
                             pid, name, cmd = info
-                            if pid and cmd and "monitor_process_entry.py" in cmd:
+                            if pid and cmd and "monitor_system.py" in cmd:
                                 try:
                                     p = _ps.Process(pid)
                                     to_kill.append(p)

@@ -1,0 +1,32 @@
+{
+  "timestamp": "2025-11-02T18:30:51.748340",
+  "cpu_info": {
+    "physical_cores": 8,
+    "logical_cores": 16,
+    "frequency_mhz": 3801.0,
+    "max_frequency_mhz": 3801.0
+  },
+  "cpu_usage": {
+    "average": 36.120000000000005,
+    "maximum": 41.3,
+    "minimum": 31.5,
+    "samples": [
+      40.1,
+      31.5,
+      33.5,
+      34.2,
+      41.3
+    ]
+  },
+  "top_processes": [],
+  "analysis": {
+    "low_usage_high_temp": false,
+    "possible_thermal_issue": true,
+    "recommendations": [
+      "检查散热系统",
+      "监测CPU温度",
+      "检查电源管理设置",
+      "扫描恶意软件"
+    ]
+  }
+}

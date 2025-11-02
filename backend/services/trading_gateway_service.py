@@ -2046,7 +2046,7 @@ class TradingGatewayService(BaseService, LoggerMixin):
         """
         try:
             from backend.core.base import get_event_engine
-            from backend.infrastructure.system_vnpy.system_toolkit import (
+            from backend.infrastructure.system_vnpy import (
                 EVENT_STRATEGY_STATUS_CHANGED,
             )
             from vnpy.event import Event
@@ -2089,7 +2089,7 @@ class TradingGatewayService(BaseService, LoggerMixin):
         """
         try:
             from backend.core.base import get_event_engine
-            from backend.infrastructure.system_vnpy.system_toolkit import (
+            from backend.infrastructure.system_vnpy import (
                 EVENT_GATEWAY_STATUS_CHANGED,
             )
             from vnpy.event import Event

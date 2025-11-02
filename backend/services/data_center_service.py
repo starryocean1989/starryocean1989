@@ -3503,7 +3503,7 @@ class DataCenterService(BaseService, LoggerMixin):
         """
         try:
             from backend.core.base import get_event_engine
-            from backend.infrastructure.system_vnpy.system_toolkit import (
+            from backend.infrastructure.system_vnpy import (
                 EVENT_DATA_DOWNLOAD_COMPLETE,
             )
             from vnpy.event import Event

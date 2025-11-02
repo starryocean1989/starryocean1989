@@ -82,8 +82,8 @@ except ImportError:
 # 网络测速功能使用自研模块（基于公共测速站点，无第三方依赖）
 # NetworkSpeedTester 类已集成到本文件中
 
-# 从 system_toolkit 导入 SMART 相关类
-from backend.infrastructure.system_vnpy.system_toolkit import (
+# 从 monitor_toolkit 导入 SMART 相关类（新架构）
+from backend.infrastructure.system_vnpy import (
     DiskSmartData,
     SmartMonitor,
 )
@@ -832,7 +832,7 @@ class ThresholdResult:
     last_updated: datetime
 
 
-# SmartAttribute 和 DiskSmartData 已从 system_toolkit 导入
+# SmartAttribute 和 DiskSmartData 已从 monitor_toolkit 导入（v1.0新架构）
 
 # =============================================================================
 # Part 2: 自适应阈值管理器
@@ -1074,9 +1074,9 @@ class AdaptiveThresholdManager:
 
 
 # =============================================================================
-# Part 3: 硬盘SMART监控（已迁移到 system_toolkit.py）
+# Part 3: 硬盘SMART监控（已迁移到 monitor_toolkit.py，v1.0新架构）
 # =============================================================================
-# SmartMonitor 类已迁移到 system_toolkit.py，在文件顶部导入
+# SmartMonitor 类已迁移到 monitor_toolkit.py（v1.0新架构），在文件顶部导入
 
 
 # =============================================================================
@@ -2003,8 +2003,8 @@ class MonitoringProcessV2:
                         continue
                     cmdline = " ".join(pinfo['cmdline'])
 
-                    # 检查是否是监控进程
-                    if "monitor_process_entry" in cmdline:
+                    # 检查是否是监控进程（检查 monitor_system.py）
+                    if "monitor_system.py" in cmdline:
                         pid = pinfo['pid']
 
                         # 检查是否是当前进程
@@ -2461,11 +2461,11 @@ class MonitoringProcessV2:
                 try:
                     # 读取请求（使用更大的缓冲区）
                     request_data = await self.query_pipe.read(size=65536)
-                    
+
                     # 🔧 修复JSON解析问题：处理数据截断和多JSON对象
                     try:
                         decoded_data = request_data.decode('utf-8')
-                        
+
                         # 检查是否有多个JSON对象（用换行符分隔）
                         if '\n' in decoded_data:
                             # 取第一个完整的JSON对象
@@ -2483,7 +2483,7 @@ class MonitoringProcessV2:
                         else:
                             # 单个JSON对象，直接解析
                             request = json.loads(decoded_data)
-                            
+
                     except json.JSONDecodeError as e:
                         logger.warning(f"[IPC] JSON解析失败: {e}, 数据长度: {len(request_data)}")
                         logger.debug(f"[IPC] 原始数据: {request_data[:100]}...")
@@ -6537,7 +6537,7 @@ def main():
     import logging
     import sys
     from pathlib import Path
-    
+
     # 添加项目根目录到Python路径
     project_root = Path(__file__).parent.parent.parent.parent
     if str(project_root) not in sys.path:

@@ -50,7 +50,7 @@ def test_monitor_lifecycle():
     project_root = Path(__file__).resolve().parents[2]
     python = Path(project_root / "venv310" / "Scripts" / "python.exe")
     monitor_entry = (
-        project_root / "backend" / "infrastructure" / "system_vnpy" / "monitor_process_entry.py"
+        project_root / "backend" / "infrastructure" / "system_vnpy" / "monitor_system.py"
     )
 
     # 1) 启动监控进程（stdout/stderr → 文件，避免PIPE阻塞）

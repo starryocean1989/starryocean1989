@@ -19,6 +19,12 @@
 作者：系统重构团队
 日期：2025-10-28
 版本：v5.0 (整合版)
+
+⚠️ 过渡方案说明（v1.0新架构）：
+- 新架构设计文档要求移除此文件，改用项目统一日志系统（backend.infrastructure.logging_system）
+- 但项目统一日志系统尚未实现，因此暂时保留此文件作为过渡方案
+- 待项目统一日志系统实现后，所有引用应迁移到新系统
+- 所有导入应保持现有方式，无需修改
 """
 
 import json
@@ -974,7 +980,11 @@ class LoggingHub(logging.Handler):
                 return
 
         # 3. 排除初始化服务器时的日志（启动时一次性测试，不需要AI日志）
-        if "[LATENCY-INIT]" in record.message or "[LATENCY-CACHE]" in record.message or "[LATENCY-FALLBACK]" in record.message:
+        if (
+            "[LATENCY-INIT]" in record.message
+            or "[LATENCY-CACHE]" in record.message
+            or "[LATENCY-FALLBACK]" in record.message
+        ):
             return
 
         # 4. 排除自动测试中调用网络测速产生的日志

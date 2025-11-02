@@ -70,7 +70,7 @@ from ui.components.widgets import (
 )
 from ui.components.theme_system import DashboardTheme
 from backend.core.service_base import LoggerMixin
-from backend.infrastructure.system_vnpy.system_toolkit import (
+from backend.infrastructure.system_vnpy import (
     EVENT_ALERT_CREATED,
     EVENT_ALERT_UPDATED,
     EVENT_LOG_RECORD,
@@ -3303,7 +3303,7 @@ class SystemManager(BaseWidget, LoggerMixin):
         if not self.event_engine:
             return False
 
-        from backend.infrastructure.system_vnpy.system_toolkit import (
+        from backend.infrastructure.system_vnpy import (
             EVENT_SYSTEM_METRICS,
             EVENT_HARDWARE_SENSORS,
             EVENT_BOTTLENECK_ANALYSIS,

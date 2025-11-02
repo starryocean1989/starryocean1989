@@ -852,7 +852,8 @@ class SystemManagerEngine:
             logger.info("✅ 告警管道创建成功")
 
             # 4. 启动监控进程
-            monitor_script = Path(__file__).parent / "monitor_process_entry.py"
+            # 使用 monitor_system.py 作为入口（已包含 main() 函数）
+            monitor_script = Path(__file__).parent / "monitor_system.py"
 
             if not monitor_script.exists():
                 logger.error(f"❌ 监控进程入口文件不存在: {monitor_script}")

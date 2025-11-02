@@ -87,7 +87,7 @@ from backend.services.vnpy_imports import (
 )
 
 # 导入监控版EventEngine（用于队列深度和延迟监控）
-from backend.infrastructure.system_vnpy.system_toolkit import MonitoredEventEngine
+from backend.infrastructure.system_vnpy import MonitoredEventEngine
 
 
 # =============================================================================

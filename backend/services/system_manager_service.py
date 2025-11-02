@@ -35,7 +35,7 @@ from typing import Any, Dict, List, Optional, Callable, Union
 from backend.core.service_base import BaseService
 from backend.core.models import UnifiedMarketData, get_data_model_manager
 from backend.infrastructure.system_vnpy.monitor_system import SystemMonitor
-from backend.infrastructure.system_vnpy.system_toolkit import NetworkTester, PortScanner
+from backend.infrastructure.system_vnpy import NetworkTester, PortScanner
 from backend.services.database_adapter import get_db_manager
 from backend.core.config import get_settings
 
@@ -365,7 +365,7 @@ class LogRecordHandler(logging.Handler):
             # 🔥 周期性错误计数处理（对DEBUG、WARNING、ERROR和CRITICAL级别）
             if record.levelno >= logging.DEBUG:
                 try:
-                    from backend.infrastructure.system_vnpy.system_toolkit import get_error_counter
+                    from backend.infrastructure.system_vnpy import get_error_counter
 
                     error_counter = get_error_counter()
                     exc_type_name = (
@@ -2733,18 +2733,18 @@ class SystemManagerService(BaseService):
         self.test_runner = TestRunner()
 
         # 新增：诊断工具
-        from backend.infrastructure.system_vnpy.system_toolkit import (
+        from backend.infrastructure.system_vnpy import (
             LogAnalyzer,
             PerformanceAnalyzer,
-            AutoFixer,
         )
 
         self.log_analyzer = LogAnalyzer()
         self.performance_analyzer = PerformanceAnalyzer()
-        self.auto_fixer = AutoFixer()
+        # AutoFixer 在新架构中未实现，移除引用
+        # self.auto_fixer = AutoFixer()
 
         # 新增：服务管理工具
-        from backend.infrastructure.system_vnpy.system_toolkit import (
+        from backend.infrastructure.system_vnpy import (
             ServiceHealthChecker,
             ServiceRestarter,
         )
@@ -2761,20 +2761,35 @@ class SystemManagerService(BaseService):
         self.process_monitor = ProcessMonitor()
         self.bottleneck_analyzer = ProcessBottleneckAnalyzer()
 
+        # IPC模式和权限检查
+        self._ipc_mode = "disabled"  # disabled, native, fallback
+        self._admin_privileges = self._check_admin_privileges()
+
         # native_ipc通信管道（连接到独立监控进程）
         try:
-            from backend.infrastructure.native_ipc import AsyncIPCPipe
+            from backend.infrastructure.native_ipc import AsyncIPCPipe, IPC_AVAILABLE
 
-            self._query_pipe = None  # 客户端：查询监控数据
-            self._status_pipe = None  # 客户端：推送服务状态到监控进程
-            self._alerts_pipe = None  # 服务端：接收监控进程推送的告警
-            self._ipc_available = True
+            if IPC_AVAILABLE and self._admin_privileges:
+                self._query_pipe = None  # 客户端：查询监控数据
+                self._status_pipe = None  # 客户端：推送服务状态到监控进程
+                self._alerts_pipe = None  # 服务端：接收监控进程推送的告警
+                self._ipc_available = True
+                self.logger.info("✅ Native IPC可用，管理员权限已获得")
+            else:
+                self._query_pipe = None
+                self._status_pipe = None
+                self._alerts_pipe = None
+                self._ipc_available = False
+                if not IPC_AVAILABLE:
+                    self.logger.warning("⚠️ Native IPC扩展不可用，将使用降级模式")
+                elif not self._admin_privileges:
+                    self.logger.warning("⚠️ 未获得管理员权限，Native IPC不可用，将使用降级模式")
         except ImportError:
             self._query_pipe = None
             self._status_pipe = None
             self._alerts_pipe = None
             self._ipc_available = False
-            self.logger.warning("native_ipc不可用，监控功能将受限")
+            self.logger.warning("⚠️ native_ipc模块不可用，将使用降级模式")
 
         self._monitoring_interval = 2  # 默认2秒
         self._ipc_loop = None  # asyncio事件循环（用于native_ipc）
@@ -2807,6 +2822,14 @@ class SystemManagerService(BaseService):
         self.logger.info("📍 日志阶段切换: startup（启动阶段）")
 
         self.logger.info("系统管理服务已创建")
+
+    def _check_admin_privileges(self) -> bool:
+        """检查是否有管理员权限."""
+        try:
+            import ctypes
+            return ctypes.windll.shell32.IsUserAnAdmin()
+        except Exception:
+            return False
 
     def _do_initialize(self) -> bool:
         """初始化系统管理服务（无后台线程，Qt线程安全）."""
@@ -2880,12 +2903,15 @@ class SystemManagerService(BaseService):
                     query_task.result(timeout=5.0)
                     status_task.result(timeout=5.0)
                     self.logger.info("✅ native_ipc管道初始化完成")
+                    self._ipc_mode = "native"
                 except Exception as e:
-                    self.logger.error("❌ native_ipc管道初始化失败: %s", e)
-                    return False
+                    self.logger.warning("⚠️ native_ipc管道初始化失败，降级到基础模式: %s", e)
+                    self._ipc_mode = "fallback"
+                    self._ipc_available = False
             else:
-                self.logger.error("❌ asyncio事件循环未启动")
-                return False
+                self.logger.warning("⚠️ asyncio事件循环未启动，降级到基础模式")
+                self._ipc_mode = "fallback"
+                self._ipc_available = False
 
             # 使用QTimer在主线程定时推送服务状态
             self._status_push_timer = QTimer()
@@ -2972,8 +2998,10 @@ class SystemManagerService(BaseService):
                     await asyncio.sleep(0.5)
                     continue
                 except Exception as e:
-                    self.logger.error("[IPC] ❌ 创建查询客户端管道失败: %s", e)
-                    raise
+                    # 其他异常，记录但继续重试（可能是临时网络问题）
+                    self.logger.warning("[IPC] 创建查询客户端管道失败，继续重试: %s", e)
+                    await asyncio.sleep(0.5)
+                    continue
 
             raise RuntimeError("监控进程服务端未就绪（超时10秒）")
 
@@ -3000,8 +3028,10 @@ class SystemManagerService(BaseService):
                     await asyncio.sleep(0.5)
                     continue
                 except Exception as e:
-                    self.logger.error("[IPC] ❌ 创建状态客户端管道失败: %s", e)
-                    raise
+                    # 其他异常，记录但继续重试（可能是临时网络问题）
+                    self.logger.warning("[IPC] 创建状态客户端管道失败，继续重试: %s", e)
+                    await asyncio.sleep(0.5)
+                    continue
 
             raise RuntimeError("监控进程服务端未就绪（超时10秒）")
 
@@ -3054,7 +3084,7 @@ class SystemManagerService(BaseService):
                     # 发送事件到EventEngine（UI可以监听）
                     if self.event_engine:
                         from vnpy.event import Event
-                        from backend.infrastructure.system_vnpy.system_toolkit import (
+                        from backend.infrastructure.system_vnpy import (
                             EVENT_ALERT_CREATED,
                         )
 
@@ -3079,24 +3109,87 @@ class SystemManagerService(BaseService):
             self.logger.error("[IPC] 告警服务端循环异常: %s", e, exc_info=True)
 
     def _test_ipc_connection(self) -> bool:
-        """测试native_ipc连接是否可用.
+        """测试native_ipc连接是否可用，如果失败则尝试重新连接.
 
         Returns:
             bool: 连接是否成功
         """
-        if not self._query_pipe or not self._ipc_loop:
+        if not self._ipc_loop:
             return False
 
         try:
-            # 使用run_coroutine_threadsafe在线程中运行异步查询
-            future = asyncio.run_coroutine_threadsafe(self._test_query_pipe(), self._ipc_loop)
+            # 首先测试现有连接
+            if self._query_pipe:
+                future = asyncio.run_coroutine_threadsafe(self._test_query_pipe(), self._ipc_loop)
+                try:
+                    result = future.result(timeout=3.0)
+                    if result:
+                        return True
+                except Exception:
+                    pass  # 测试失败，继续尝试重连
 
-            # 等待响应（最多3秒）
-            result = future.result(timeout=3.0)
-            return result
+            # 现有连接失败，尝试重新创建连接
+            self.logger.info("[IPC] 现有连接失败，尝试重新创建IPC连接...")
+
+            # 关闭旧连接
+            if self._query_pipe:
+                try:
+                    asyncio.run_coroutine_threadsafe(self._close_pipe(self._query_pipe), self._ipc_loop)
+                except Exception:
+                    pass
+                self._query_pipe = None
+
+            if self._status_pipe:
+                try:
+                    asyncio.run_coroutine_threadsafe(self._close_pipe(self._status_pipe), self._ipc_loop)
+                except Exception:
+                    pass
+                self._status_pipe = None
+
+            # 重新创建连接
+            future = asyncio.run_coroutine_threadsafe(self._reconnect_ipc_pipes(), self._ipc_loop)
+            result = future.result(timeout=10.0)  # 给重连更多时间
+
+            if result:
+                self.logger.info("[IPC] ✅ IPC连接重新创建成功")
+                return True
+            else:
+                self.logger.warning("[IPC] ❌ IPC连接重新创建失败")
+                return False
 
         except Exception as e:
-            self.logger.debug("IPC连接测试失败: %s", e)
+            self.logger.error("[IPC] IPC重连过程异常: %s", e, exc_info=True)
+            return False
+
+    async def _reconnect_ipc_pipes(self) -> bool:
+        """重新创建IPC管道连接（异步）."""
+        try:
+            self.logger.info("[IPC] 开始重新创建IPC管道连接...")
+
+            # 重新创建查询客户端
+            try:
+                await self._initialize_query_client()
+            except Exception as e:
+                self.logger.error("[IPC] 重新创建查询客户端失败: %s", e)
+                return False
+
+            # 重新创建状态客户端
+            try:
+                await self._initialize_status_client()
+            except Exception as e:
+                self.logger.error("[IPC] 重新创建状态客户端失败: %s", e)
+                # 状态客户端失败不影响查询功能，继续
+
+            # 测试新连接
+            if await self._test_query_pipe():
+                self.logger.info("[IPC] ✅ IPC管道重连成功")
+                return True
+            else:
+                self.logger.warning("[IPC] ❌ IPC管道重连后测试失败")
+                return False
+
+        except Exception as e:
+            self.logger.error("[IPC] IPC管道重连异常: %s", e, exc_info=True)
             return False
 
     async def _test_query_pipe(self) -> bool:
@@ -3247,7 +3340,7 @@ class SystemManagerService(BaseService):
             target=self._monitoring_push_loop, name="MonitoringPushThread", daemon=True
         )
         self._monitoring_push_thread.start()
-        self.logger.info("✅ 监控数据推送线程已启动（事件驱动模式，1秒间隔）")
+        self.logger.info("✅ 监控数据推送线程已启动（事件驱动模式，10秒间隔，CPU优化）")
 
     def _monitoring_push_loop(self):
         """监控数据推送循环（替代UI轮询）
@@ -3260,7 +3353,7 @@ class SystemManagerService(BaseService):
         import time
 
         self.logger.info(
-            "[MonitoringPush] 监控数据推送循环已启动（启动阶段3秒间隔，30秒后切换为1秒）"
+            "[MonitoringPush] 监控数据推送循环已启动（启动阶段10秒间隔，30秒后切换为10秒）- CPU优化版"
         )
 
         # 🔧 新增：启动阶段检测（降低启动时CPU负载）
@@ -3278,8 +3371,13 @@ class SystemManagerService(BaseService):
 
         while self._monitoring_push_running:
             try:
-                # 1. 查询监控数据
-                data = self._query_monitoring_data_safe()
+                # 1. 查询监控数据（支持降级模式）
+                if self._ipc_mode == "native":
+                    data = self._query_monitoring_data_safe()
+                elif self._ipc_mode == "fallback":
+                    data = self._get_basic_system_data()
+                else:
+                    data = self._get_minimal_system_data()
 
                 # 日志已删除：循环输出过于频繁
 
@@ -3294,25 +3392,30 @@ class SystemManagerService(BaseService):
                         )
                         degraded_mode = True
 
-                    # 🔧 关键修复：每5次失败后尝试重连IPC
-                    if ipc_retry_counter >= ipc_retry_interval:
+                    # 🔧 关键修复：仅在native模式下尝试重连IPC
+                    if self._ipc_mode == "native" and ipc_retry_counter >= ipc_retry_interval:
                         self.logger.info("[MonitoringPush] 尝试重新连接监控进程...")
                         ipc_retry_counter = 0
+
+                        # 使用改进的重连逻辑
                         if self._test_ipc_connection():
                             self.logger.info("[MonitoringPush] ✅ IPC重连成功")
                             consecutive_failures = 0
                             degraded_mode = False
+                            # 重连成功后，立即尝试查询数据
+                            continue
                         else:
-                            self.logger.warning("[MonitoringPush] ❌ IPC重连失败")
-                    else:
+                            self.logger.warning("[MonitoringPush] ❌ IPC重连失败，将在下次循环继续重试")
+                    elif self._ipc_mode == "native":
                         ipc_retry_counter += 1
+                    # 非native模式下不进行IPC重连
 
                     # 降级模式下延长等待时间
                     elapsed = time.time() - start_time
                     if elapsed < startup_phase_duration:
-                        wait_time = 5  # 启动阶段进一步降低频率
+                        wait_time = 10  # 启动阶段：10秒间隔
                     else:
-                        wait_time = 5 if degraded_mode else 3  # 正常模式也降低频率
+                        wait_time = 15 if degraded_mode else 10  # 正常模式：10秒，降级模式：15秒
                     time.sleep(wait_time)
                     continue
 
@@ -3326,12 +3429,12 @@ class SystemManagerService(BaseService):
                 # 3. 分发事件（解耦关键）
                 self._dispatch_monitoring_events(data)
 
-                # 4. 间隔时间优化：启动阶段3秒，正常1秒，降级3秒
+                # 4. 间隔时间优化：大幅降低频率以减少CPU负载
                 elapsed = time.time() - start_time
                 if elapsed < startup_phase_duration:
-                    wait_time = 5  # 启动阶段进一步降低频率，减少CPU负载和上下文切换
+                    wait_time = 10  # 启动阶段：10秒间隔
                 else:
-                    wait_time = 5 if degraded_mode else 3  # 正常模式也降低频率
+                    wait_time = 15 if degraded_mode else 10  # 正常模式：10秒，降级模式：15秒
                 time.sleep(wait_time)
 
             except Exception as e:
@@ -3344,9 +3447,9 @@ class SystemManagerService(BaseService):
                 )
                 elapsed = time.time() - start_time
                 if elapsed < startup_phase_duration:
-                    wait_time = 3  # 启动阶段降低频率
+                    wait_time = 10  # 启动阶段：10秒间隔
                 else:
-                    wait_time = 3 if degraded_mode else 1
+                    wait_time = 15 if degraded_mode else 10  # 正常模式：10秒，降级模式：15秒
                 time.sleep(wait_time)
 
         self.logger.info("[MonitoringPush] 推送线程已停止")
@@ -3387,7 +3490,12 @@ class SystemManagerService(BaseService):
             self.logger.debug("查询监控数据超时（3秒无响应）")
             return {}
         except Exception as e:
-            self.logger.error("查询监控数据失败：%s", e)
+            # 检查是否是管道关闭错误
+            error_str = str(e)
+            if "WinError 109" in error_str or "管道已结束" in error_str or "pipe" in error_str.lower():
+                self.logger.warning("IPC管道连接已断开: %s", e)
+            else:
+                self.logger.error("查询监控数据失败：%s", e)
             return {}
 
     async def _query_data_async(self, request: Dict[str, Any]) -> Dict[str, Any]:
@@ -3414,7 +3522,12 @@ class SystemManagerService(BaseService):
                 self.logger.debug("原始数据前100字符：%s", response_data[:100])
             return {}
         except Exception as e:
-            self.logger.error("异步查询失败：%s", e)
+            # 检查是否是管道关闭错误
+            error_str = str(e)
+            if "WinError 109" in error_str or "管道已结束" in error_str or "pipe" in error_str.lower():
+                self.logger.debug("IPC管道连接已断开: %s", e)
+            else:
+                self.logger.error("异步查询失败：%s", e)
             return {}
 
     def get_current_monitoring_data(self) -> Dict[str, Any]:
@@ -3423,7 +3536,12 @@ class SystemManagerService(BaseService):
         Returns:
             Dict: 完整的监控数据，包含system, process, service等字段
         """
-        return self._query_monitoring_data_safe()
+        if self._ipc_mode == "native":
+            return self._query_monitoring_data_safe()
+        elif self._ipc_mode == "fallback":
+            return self._get_basic_system_data()
+        else:
+            return self._get_minimal_system_data()
 
     def get_bandwidth_info(self) -> Dict[str, Any]:
         """获取带宽信息（包含完整测试和延迟测试结果）.
@@ -3521,7 +3639,7 @@ class SystemManagerService(BaseService):
             return
 
         from vnpy.event import Event
-        from backend.infrastructure.system_vnpy.system_toolkit import (
+        from backend.infrastructure.system_vnpy import (
             EVENT_SYSTEM_METRICS,
             EVENT_HARDWARE_SENSORS,
             EVENT_BOTTLENECK_ANALYSIS,
@@ -3826,6 +3944,76 @@ class SystemManagerService(BaseService):
         except Exception as e:
             self._log_error("关闭", e)
             return False
+
+    def _get_basic_system_data(self) -> Dict[str, Any]:
+        """获取基础系统数据（降级模式，优化CPU使用率）."""
+        try:
+            import psutil
+
+            # 🔧 优化：减少psutil调用频率和开销
+            # 使用更短的CPU采样间隔，减少阻塞时间
+            system_data = {
+                "cpu_percent": psutil.cpu_percent(interval=0.01),  # 减少采样时间从0.1秒到0.01秒
+                "memory_percent": psutil.virtual_memory().percent,
+                # 移除磁盘使用率查询（较耗时）
+                "boot_time": psutil.boot_time(),
+            }
+
+            # 🔧 优化：简化进程信息，减少系统调用
+            try:
+                current_proc = psutil.Process()
+                process_data = {
+                    "process_count": len(psutil.pids()),
+                    "current_process": {
+                        "pid": os.getpid(),
+                        "memory_percent": current_proc.memory_percent(),
+                        # 移除进程CPU查询（较耗时）
+                    }
+                }
+            except Exception:
+                # 如果进程查询失败，使用最小信息
+                process_data = {
+                    "process_count": 0,
+                    "current_process": {"pid": os.getpid()}
+                }
+
+            return {
+                "system": system_data,
+                "process": process_data,
+                "timestamp": time.time(),
+                "mode": "fallback_optimized",
+                "source": "psutil_lightweight"
+            }
+
+        except Exception as e:
+            self.logger.error("获取基础系统数据失败: %s", e)
+            return self._get_minimal_system_data()
+
+    def _get_minimal_system_data(self) -> Dict[str, Any]:
+        """获取最小系统数据（完全降级模式）."""
+        try:
+            import platform
+
+            return {
+                "system": {
+                    "platform": platform.system(),
+                    "platform_version": platform.version(),
+                    "python_version": platform.python_version(),
+                    "cpu_count": os.cpu_count() or 1,
+                },
+                "timestamp": time.time(),
+                "mode": "minimal",
+                "source": "platform_basic",
+                "message": "监控功能受限：需要管理员权限以启用完整功能"
+            }
+
+        except Exception as e:
+            self.logger.error("获取最小系统数据失败: %s", e)
+            return {
+                "timestamp": time.time(),
+                "mode": "error",
+                "error": str(e)
+            }
 
     async def _close_pipe(self, pipe):
         """异步关闭管道."""
