@@ -1136,9 +1136,29 @@ async def send_with_retry(pipe_name: str, data: Dict, max_retries: int = 3) -> b
 
 ## 七、日志管理业务规则
 
+### 7.0 统一日志系统模块
+
+**模块位置**：`backend.infrastructure.system_vnpy.unified_log_system`
+
+**说明**：
+- 统一日志系统作为 `system_vnpy` 模块的核心组件
+- 所有日志功能通过 `unified_log_system.py` 提供
+- 通过 `get_logging_hub()` 函数获取 LoggingHub 实例
+- 支持四层路由、AI日志、进度节流等完整功能
+
+**导入方式**：
+```python
+from backend.infrastructure.system_vnpy.unified_log_system import (
+    get_logging_hub,
+    ai_log_process,
+    LogType,
+    UnifiedLogRecord,
+)
+```
+
 ### 7.1 日志分类规则
 
-**日志类型**（根据统一日志系统）：
+**日志类型**（根据 `backend.infrastructure.system_vnpy.unified_log_system` 模块）：
 ```python
 class LogType(Enum):
     SYSTEM = "SYSTEM"              # 系统日志
@@ -1157,7 +1177,7 @@ class LogType(Enum):
 
 ### 7.2 日志路由规则
 
-**三层路由**（基于统一日志系统）：
+**三层路由**（基于 `backend.infrastructure.system_vnpy.unified_log_system` 模块）：
 ```
 Layer 3: 模块规则 (module_system_manager)
     ↓ 未匹配

@@ -1328,14 +1328,29 @@ class MainWindow(QMainWindow, LoggerMixin):
             print("[DEBUG-IPO] ChinaStockEngine已就绪，准备创建验证工作对象")
             self.logger.info("创建Qt原生验证工作对象...")
 
-            # 🔧 修复：CacheValidationWorker在架构v3.0重构后被移除
-            # 暂时禁用后台验证功能，等待重构后的验证方案
-            self.logger.warning("⚠️ CacheValidationWorker在架构v3.0重构后已移除，跳过后台验证")
-            self.logger.warning("⚠️ 数据验证功能将在后续版本中重新实现")
-            print("[DEBUG-IPO] ⚠️ CacheValidationWorker已移除，跳过后台验证")
-
-            # TODO: 重构后使用DataSensor或新的验证机制
-            # 暂时不创建验证工作对象，等待新方案
+            # ✅ 修复：使用core_engine.py中的CacheValidationWorker
+            from backend.infrastructure.data_module_vnpy.core_engine import CacheValidationWorker
+            
+            self.validation_worker = CacheValidationWorker(engine)
+            self.validation_thread = QThread()
+            self.validation_worker.moveToThread(self.validation_thread)
+            
+            # 连接信号
+            self.validation_thread.started.connect(self.validation_worker.run)
+            self.validation_worker.validation_finished.connect(self.validation_thread.quit)
+            self.validation_worker.validation_error.connect(self.validation_thread.quit)
+            
+            # 连接进度信号
+            self.validation_worker.validation_progress.connect(self._on_validation_progress)
+            self.validation_worker.step_completed.connect(self._on_validation_step_completed)
+            
+            # 连接完成信号
+            self.validation_worker.validation_finished.connect(self._on_validation_finished)
+            
+            # 启动线程
+            self.validation_thread.start()
+            self.logger.info("✅ 验证工作线程已启动")
+            print("[DEBUG-IPO] ✅ 验证工作线程已启动")
 
         except Exception as e:
             self.logger.error("启动后台验证失败: %s", e, exc_info=True)
@@ -1352,32 +1367,15 @@ class MainWindow(QMainWindow, LoggerMixin):
         if self.status_label:
             self.status_label.setText(f"后台验证: {message} ({progress}%)")
 
-    def _on_validation_finished(self, success: bool):
-        """验证完成回调.
+    def _on_validation_step_completed(self, step_num: int, step_name: str, step_result: dict):
+        """验证步骤完成回调.
 
         Args:
-            success: 是否成功
+            step_num: 步骤编号
+            step_name: 步骤名称
+            step_result: 步骤结果
         """
-        if success:
-            self.logger.info("✅ 后台验证完成")
-            if self.status_label:
-                self.status_label.setText("系统就绪")
-        else:
-            self.logger.warning("⚠️ 后台验证失败")
-            if self.status_label:
-                self.status_label.setText("验证失败")
-
-        # ✅ 在后台验证完成后结束AI日志流程
-        try:
-            from backend.infrastructure.system_vnpy.unified_log_system import end_ai_process
-
-            end_ai_process(
-                success=success,
-                summary=f"系统完整启动完成（包括后台验证：{'成功' if success else '失败'}）",
-            )
-            self.logger.info("✅ AI日志流程已结束（startup流程完整记录）")
-        except Exception as e:
-            self.logger.warning(f"❌ 结束AI日志流程失败: {e}")
+        self.logger.info(f"[CACHE-VALIDATION] ✅ 步骤{step_num}: {step_name} 完成")
 
     def _on_validation_error(self, error_msg: str):
         """验证错误回调.

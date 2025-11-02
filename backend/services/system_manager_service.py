@@ -3100,7 +3100,13 @@ class SystemManagerService(BaseService):
                 except asyncio.CancelledError:
                     break
                 except Exception as e:
-                    self.logger.error("[IPC] 接收告警失败：%s", e)
+                    # 🔧 修复：客户端未连接时，降低日志级别到DEBUG，避免频繁输出错误
+                    # WinError 536表示管道另一端尚未打开，这是正常情况（监控进程可能还在初始化）
+                    error_str = str(e)
+                    if "WinError 536" in error_str:
+                        self.logger.debug("[IPC] 告警客户端未连接: %s", error_str)
+                    else:
+                        self.logger.warning("[IPC] 接收告警失败：%s", e)
                     await asyncio.sleep(1.0)
 
         except asyncio.CancelledError:
@@ -3235,6 +3241,10 @@ class SystemManagerService(BaseService):
             if not self._status_pipe or not self._ipc_loop:
                 return
 
+            # 调试信息：检查ServiceHealthChecker实例
+            self.logger.debug("ServiceHealthChecker类型: %s", type(self.service_health_checker))
+            self.logger.debug("ServiceHealthChecker方法: %s", [m for m in dir(self.service_health_checker) if not m.startswith('_')])
+            
             # 采集服务状态
             service_manager = get_service_manager()
             result = self.service_health_checker.check_all_services(service_manager)

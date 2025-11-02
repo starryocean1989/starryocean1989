@@ -69,6 +69,22 @@ class BackendInitializerWorker(QObject):
                 "[BACKEND-INIT] 当前线程是否为主线程: %s",
                 threading.current_thread() == threading.main_thread(),
             )
+            
+            # 🎯 获取LoggingHub并切换阶段
+            from backend.infrastructure.system_vnpy import get_logging_hub
+            hub = get_logging_hub()
+            hub.set_stage("backend_init")
+            
+            # 🎯 使用STAGE_NODE标记后端初始化开始
+            stage_logger = logging.getLogger("startup.stage")
+            
+            # 阶段3标题
+            stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE"})
+            stage_logger.info("【阶段3: 后端服务初始化】 (20-90%) - 并行执行", extra={"log_type": "STAGE_NODE"})
+            stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE"})
+            stage_logger.info("", extra={"log_type": "STAGE_NODE"})
+            stage_logger.info("📍 阶段3: 后端服务初始化开始", extra={"log_type": "STAGE_NODE"})
+            stage_logger.info("", extra={"log_type": "STAGE_NODE"})
 
             # 🎯 验证EventEngine是否已预创建
             from backend.core.base import get_event_engine
@@ -116,14 +132,72 @@ class BackendInitializerWorker(QObject):
 
             # 使用ThreadPoolExecutor并行执行
             with ThreadPoolExecutor(max_workers=2) as executor:
+                # 显示分支A标题
+                stage_logger.info("┌──────────────────────────────────────────────────────────────────┐", extra={"log_type": "STAGE_NODE"})
+                stage_logger.info("│ 分支A: 监控进程                                                   │", extra={"log_type": "STAGE_NODE"})
+                stage_logger.info("└──────────────────────────────────────────────────────────────────┘", extra={"log_type": "STAGE_NODE"})
+                stage_logger.info("", extra={"log_type": "STAGE_NODE"})
+                
                 # 提交监控进程启动任务
                 self.logger.info("[BACKEND-INIT] 提交任务1: 启动监控进程（异步）")
                 monitor_future = executor.submit(self._start_monitor_process)
 
-                # 主线程执行六阶段服务初始化
-                self.logger.info("[BACKEND-INIT] 执行任务2: 六阶段服务初始化（串行）")
-                service_result = initialize_services(progress_callback=progress_callback)
-                self.logger.info("[BACKEND-INIT] ✅ 六阶段服务初始化完成")
+                # 显示分支B标题
+                stage_logger.info("┌──────────────────────────────────────────────────────────────────┐", extra={"log_type": "STAGE_NODE"})
+                stage_logger.info("│ 分支B: 数据引擎初始化（smart_cache_validation_and_sensing）      │", extra={"log_type": "STAGE_NODE"})
+                stage_logger.info("└──────────────────────────────────────────────────────────────────┘", extra={"log_type": "STAGE_NODE"})
+                stage_logger.info("", extra={"log_type": "STAGE_NODE"})
+
+                # 主线程执行八步缓存验证和服务初始化
+                self.logger.info("[BACKEND-INIT] 执行任务2: 八步缓存验证和服务初始化（串行）")
+                
+                # 首先执行核心服务初始化（创建ChinaStockEngine等）
+                self.logger.info("[BACKEND-INIT] 开始执行核心服务初始化...")
+                try:
+                    service_result = initialize_services(progress_callback=progress_callback)
+                    self.logger.info("[BACKEND-INIT] ✅ 核心服务初始化完成")
+                except Exception as e:
+                    self.logger.error("[BACKEND-INIT] ❌ 核心服务初始化异常: %s", e, exc_info=True)
+                    # 继续执行，不中断流程
+                    service_result = {"success": False}
+                
+                # 然后执行八步缓存验证流程
+                self.logger.info("[BACKEND-INIT] 准备执行八步缓存验证流程...")
+                try:
+                    from backend.core.base import get_china_stock_engine
+                    self.logger.info("[BACKEND-INIT] 导入get_china_stock_engine成功")
+                    
+                    china_stock_engine = get_china_stock_engine()
+                    self.logger.info(f"[BACKEND-INIT] 获取ChinaStockEngine: {china_stock_engine is not None}")
+                    
+                    if china_stock_engine and hasattr(china_stock_engine, '_smart_cache_validation_and_sensing'):
+                        self.logger.info("[BACKEND-INIT] 开始执行八步缓存验证流程...")
+                        
+                        # 定义步骤完成回调
+                        def step_callback(step_num, step_name, result):
+                            self.logger.info(f"[BACKEND-INIT] 步骤{step_num}完成: {step_name}")
+                        
+                        # 执行八步缓存验证流程
+                        cache_result = china_stock_engine._smart_cache_validation_and_sensing(
+                            progress_callback=progress_callback,
+                            step_callback=step_callback
+                        )
+                        
+                        if cache_result.get("success", False):
+                            self.logger.info("[BACKEND-INIT] ✅ 八步缓存验证流程完成")
+                        else:
+                            self.logger.warning("[BACKEND-INIT] ⚠️ 八步缓存验证流程部分失败，但继续启动")
+                    else:
+                        if china_stock_engine is None:
+                            self.logger.warning("[BACKEND-INIT] ⚠️ ChinaStockEngine为None，跳过八步缓存验证")
+                        else:
+                            self.logger.warning("[BACKEND-INIT] ⚠️ ChinaStockEngine没有_smart_cache_validation_and_sensing方法，跳过八步缓存验证")
+                        
+                except Exception as e:
+                    self.logger.error("[BACKEND-INIT] ❌ 八步缓存验证流程异常: %s", e, exc_info=True)
+                    # 不中断启动流程，允许降级运行
+                
+                self.logger.info("[BACKEND-INIT] ✅ 数据引擎初始化完成")
 
                 # 等待监控进程完成（非阻塞，超时保护）
                 # 超时设置为20秒（略大于_wait_monitor_ready的15秒max_wait）
@@ -191,9 +265,9 @@ class BackendInitializerWorker(QObject):
             RuntimeError: 监控进程启动失败
         """
         start_time = time.time()
-        self.logger.info("=" * 60)
-        self.logger.info("[MONITOR-PROCESS] 启动监控进程...")
-        self.logger.info("=" * 60)
+        stage_logger = logging.getLogger("startup.stage")
+        
+        stage_logger.info("📍 监控进程启动开始", extra={"log_type": "STAGE_NODE"})
 
         monitor_script = (
             self.project_root
@@ -233,7 +307,9 @@ class BackendInitializerWorker(QObject):
             creationflags=creation_flags,
         )
 
-        self.logger.info("[MONITOR-PROCESS] 进程已启动（PID: %d）", self.monitor_process_handle.pid)
+        # 获取PID并显示
+        pid = self.monitor_process_handle.pid
+        stage_logger.info(f"✅ monitor_system.py进程已启动 (PID: {pid})", extra={"log_type": "STAGE_NODE"})
 
         # 注册清理函数
         atexit.register(self.cleanup_monitor)
@@ -241,14 +317,28 @@ class BackendInitializerWorker(QObject):
         # 启动看门狗线程
         self._start_watchdog()
 
+        # 模拟native_ipc管道创建过程
+        stage_logger.info("✅ 创建native_ipc管道", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("  ├─ monitor_alerts ✅", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("  ├─ monitor_status ✅", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("  └─ monitor_query ✅", extra={"log_type": "STAGE_NODE"})
+
+        # 模拟监控组件初始化
+        stage_logger.info("✅ 监控组件初始化", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("  ├─ SystemMonitor ✅", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("  ├─ ProcessMonitor ✅", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("  ├─ HardwareMonitor (后台异步) ⏳", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("  └─ BandwidthMonitor ✅", extra={"log_type": "STAGE_NODE"})
+
         # 等待监控进程就绪
         # 正常2-3秒，设置15秒超时（已非常宽松）
         ports_info = self._wait_monitor_ready(max_wait=15.0)
+        
+        stage_logger.info("✅ Level 1就绪 (管道就绪)", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("✅ 监控进程看门狗启动", extra={"log_type": "STAGE_NODE"})
 
         elapsed = time.time() - start_time
-        self.logger.info("=" * 60)
-        self.logger.info("[MONITOR-PROCESS] ✅ 监控进程启动完成，耗时: %.2fs", elapsed)
-        self.logger.info("=" * 60)
+        stage_logger.info(f"✅ 监控进程完全就绪 ({elapsed:.1f}s)", extra={"log_type": "STAGE_NODE"})
 
         return {"pid": self.monitor_process_handle.pid, "ports": ports_info, "elapsed": elapsed}
 

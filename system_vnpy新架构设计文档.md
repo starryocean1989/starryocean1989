@@ -59,7 +59,8 @@
    - 事件驱动架构
    - 服务模型兼容
 
-5. **日志系统**: 统一日志系统（LoggingHub）
+5. **日志系统**: 统一日志系统（`unified_log_system.py`）
+   - 使用 `backend.infrastructure.system_vnpy.unified_log_system` 模块
    - 四层路由（场景→模块→阶段→全局）
    - AI日志支持
    - 进度节流
@@ -275,6 +276,7 @@ system_vnpy/
 ├── core_engine.py                     # 核心引擎+配置+事件（~3000行）
 ├── monitor_system.py                  # 监控系统+分析器（~6000行）
 ├── monitor_toolkit.py                 # 监控工具集+SMART（~2500行）
+├── unified_log_system.py             # 统一日志系统（~1500行）
 ├── config/
 │   ├── system_config.yaml             # 系统监控配置
 │   ├── threshold_config.yaml          # 阈值配置
@@ -287,11 +289,11 @@ system_vnpy/
 ```
 
 **变化说明**：
-- 文件数：3个核心 → 3个核心（保持不变）
+- 文件数：3个核心 → 4个核心（增加统一日志系统）
 - 重构策略：
   - `system_toolkit.py` → 拆分为 `core_engine.py` 和 `monitor_toolkit.py`（按职责拆分）
   - `monitor_system.py` → 保留并优化（监控核心）
-  - `unified_log_system.py` → 移除（使用项目统一日志系统）
+  - `unified_log_system.py` → 保留（作为统一日志系统核心模块）
 - 文件规模：每个文件2500-6000行，便于AI Debug
 - 新增配置文件：system_config.yaml、threshold_config.yaml（增强可配置性）
 
@@ -302,6 +304,7 @@ system_vnpy/
 | `core_engine.py` | 核心引擎与基础设施 | SystemManagerEngine, ConfigManager, EventPublisher系列, CacheManager, EngineRegistry | ~3000行 |
 | `monitor_system.py` | 监控系统与分析 | MonitoringProcessV2, SystemMonitor, HardwareMonitor, BottleneckAnalyzer, ScenarioAnalyzer, AlertEngine | ~6000行 |
 | `monitor_toolkit.py` | 监控工具集 | SmartMonitor, BandwidthMonitor, ServiceHealthChecker, LogAnalyzer, PerformanceAnalyzer, 管理员权限工具 | ~2500行 |
+| `unified_log_system.py` | 统一日志系统 | LoggingHub, RoutingRuleEngine, AILogFileHandler, ProgressThrottler | ~1500行 |
 
 ---
 
@@ -1022,7 +1025,27 @@ monitoring:
 
 ## 六、统一日志系统集成
 
-### 6.1 集成目标
+### 6.1 统一日志系统模块
+
+**模块位置**：`backend.infrastructure.system_vnpy.unified_log_system`
+
+**说明**：
+- 统一日志系统作为 `system_vnpy` 模块的核心组件保留
+- 所有日志功能通过 `unified_log_system.py` 提供
+- 通过 `get_logging_hub()` 函数获取 LoggingHub 实例
+- 支持四层路由、AI日志、进度节流等完整功能
+
+**导入方式**：
+```python
+from backend.infrastructure.system_vnpy.unified_log_system import (
+    get_logging_hub,
+    ai_log_process,
+    LogType,
+    UnifiedLogRecord,
+)
+```
+
+### 6.2 集成目标
 
 **核心目标**：
 - 所有日志通过LoggingHub路由
@@ -1030,7 +1053,7 @@ monitoring:
 - AI日志支持
 - 进度节流
 
-### 6.2 日志分类
+### 6.3 日志分类
 
 **日志类型**：
 - `SYSTEM`：系统日志
@@ -1046,7 +1069,7 @@ monitoring:
 - `monitoring`：监控场景
 - `bandwidth_test`：带宽测试场景
 
-### 6.3 路由规则
+### 6.4 路由规则
 
 **四层路由**：
 1. **场景规则**：`scenario_monitoring`

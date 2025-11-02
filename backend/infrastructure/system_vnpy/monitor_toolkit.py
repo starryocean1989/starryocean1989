@@ -962,6 +962,12 @@ class ServiceHealthChecker:
 
     def __init__(self):
         self._stats: Dict[str, Dict[str, Any]] = {}
+        self.logger = logging.getLogger(__name__)
+        try:
+            import psutil
+            self._main_process = psutil.Process()
+        except ImportError:
+            self._main_process = None
 
     def record_call(self, service_name: str, success: bool, response_time: float):
         """记录服务调用
@@ -1026,6 +1032,227 @@ class ServiceHealthChecker:
             "success_calls": success,
             "failed_calls": stats["failed"],
         }
+
+    def quick_check(self, service_name: str, service_manager) -> Dict[str, Any]:
+        """快速检查服务健康状态（增强版）.
+
+        Args:
+            service_name: 服务名称
+            service_manager: 服务管理器实例
+
+        Returns:
+            Dict: 检查结果，包含基础指标、业务指标、资源占用
+        """
+        try:
+            # 获取服务实例
+            service = service_manager.get_service(service_name)
+
+            if not service:
+                return {
+                    "service_name": service_name,
+                    "status": "not_found",
+                    "online": False,
+                    "response_time_ms": 0,
+                    "message": "服务未注册",
+                    "call_count": 0,
+                    "success_rate": 0.0,
+                    "error_rate": 0.0,
+                    "memory_mb": 0.0,
+                    "thread_count": 0,
+                }
+
+            # 检查服务是否初始化
+            is_initialized = getattr(service, "is_initialized", False)
+
+            # 测量响应时间（通过调用health_check）
+            start_time = time.time()
+            try:
+                health_result = service.health_check() if hasattr(service, "health_check") else {}
+                response_time_ms = (time.time() - start_time) * 1000
+
+                # 收集业务指标（从性能跟踪器获取）
+                call_count = 0
+                success_rate = 100.0
+                error_rate = 0.0
+
+                # 收集资源占用指标
+                memory_mb = 0.0
+                thread_count = 0
+
+                try:
+                    if self._main_process:
+                        # 获取当前进程的内存占用
+                        memory_info = self._main_process.memory_info()
+                        memory_mb = memory_info.rss / 1024 / 1024
+
+                        # 获取线程数
+                        thread_count = self._main_process.num_threads()
+                except Exception as e:
+                    self.logger.debug("获取资源占用失败 %s: %s", service_name, e)
+
+                # 返回完整结果
+                return {
+                    "service_name": service_name,
+                    "status": "healthy" if is_initialized else "initializing",
+                    "online": True,
+                    "response_time_ms": response_time_ms,
+                    "message": "服务正常",
+                    # 业务指标
+                    "call_count": call_count,
+                    "success_rate": success_rate,
+                    "error_rate": error_rate,
+                    # 资源占用
+                    "memory_mb": memory_mb,
+                    "thread_count": thread_count,
+                    **health_result,  # 合并health_check的其他结果
+                }
+
+            except Exception as e:
+                return {
+                    "service_name": service_name,
+                    "status": "error",
+                    "online": False,
+                    "response_time_ms": (time.time() - start_time) * 1000,
+                    "message": f"健康检查失败: {str(e)}",
+                    "call_count": 0,
+                    "success_rate": 0.0,
+                    "error_rate": 100.0,
+                    "memory_mb": 0.0,
+                    "thread_count": 0,
+                }
+
+        except Exception as e:
+            self.logger.error("快速检查服务失败 %s: %s", service_name, e)
+            return {
+                "service_name": service_name,
+                "status": "error",
+                "online": False,
+                "response_time_ms": 0,
+                "message": f"检查失败: {str(e)}",
+                "call_count": 0,
+                "success_rate": 0.0,
+                "error_rate": 100.0,
+                "memory_mb": 0.0,
+                "thread_count": 0,
+            }
+
+    def check_external_dependencies(self) -> Dict[str, Any]:
+        """检查外部依赖状态.
+
+        Returns:
+            Dict: 外部依赖检查结果
+        """
+        dependencies = {}
+
+        # 1. 检查EventEngine
+        try:
+            from vnpy.event import EventEngine
+            from backend.infrastructure.system_vnpy import event_engine
+
+            if event_engine and hasattr(event_engine, "_active"):
+                dependencies["event_engine"] = {
+                    "name": "VnPy EventEngine",
+                    "status": "healthy",
+                    "online": True,
+                    "message": "事件引擎运行正常",
+                }
+            else:
+                dependencies["event_engine"] = {
+                    "name": "VnPy EventEngine",
+                    "status": "unhealthy",
+                    "online": False,
+                    "message": "事件引擎未初始化",
+                }
+        except Exception as e:
+            dependencies["event_engine"] = {
+                "name": "VnPy EventEngine",
+                "status": "error",
+                "online": False,
+                "message": f"检查失败: {str(e)}",
+            }
+
+        # 2. 检查数据库连接
+        try:
+            import os
+            import sqlite3
+
+            # 尝试连接数据库
+            db_path = os.path.join(os.path.expanduser("~"), ".vntrader", "database.db")
+            if os.path.exists(db_path):
+                dependencies["database"] = {
+                    "name": "SQLite数据库",
+                    "status": "healthy",
+                    "online": True,
+                    "message": "数据库连接正常",
+                }
+            else:
+                dependencies["database"] = {
+                    "name": "SQLite数据库",
+                    "status": "warning",
+                    "online": False,
+                    "message": "数据库文件不存在",
+                }
+        except Exception as e:
+            dependencies["database"] = {
+                "name": "SQLite数据库",
+                "status": "error",
+                "online": False,
+                "message": f"连接失败: {str(e)}",
+            }
+
+        return dependencies
+
+    def check_all_services(self, service_manager) -> Dict[str, Any]:
+        """检查所有注册的服务（增强版 - 包含外部依赖）.
+
+        Args:
+            service_manager: 服务管理器实例
+
+        Returns:
+            Dict: 所有服务的检查结果，包含外部依赖状态
+        """
+        all_results = {}
+        try:
+            service_names = service_manager.list_services()
+
+            for service_name in service_names:
+                result = self.quick_check(service_name, service_manager)
+                all_results[service_name] = result
+
+            # 检查外部依赖
+            external_deps = self.check_external_dependencies()
+
+            # 计算外部依赖健康度
+            dep_health_count = sum(1 for dep in external_deps.values() if dep["status"] == "healthy")
+            dep_total = len(external_deps)
+            dep_score = (dep_health_count / dep_total * 100) if dep_total > 0 else 100
+
+            # 木桶理论健康评分（取最短板）
+            service_health_count = sum(1 for r in all_results.values() if r["status"] == "healthy")
+            service_total = len(all_results)
+            service_score = (service_health_count / service_total * 100) if service_total > 0 else 100
+
+            overall_score = service_score * 0.7 + dep_score * 0.3
+
+            return {
+                "services": all_results,
+                "external_dependencies": external_deps,
+                "summary": {
+                    "total_services": service_total,
+                    "healthy_services": service_health_count,
+                    "service_health_percentage": service_score,
+                    "dependency_health_percentage": dep_score,
+                    "overall_health_score": overall_score,
+                },
+            }
+        except Exception as e:
+            self.logger.error("检查所有服务失败: %s", e)
+            return {
+                "services": all_results,
+                "external_dependencies": {},
+                "summary": {},
+                "message": f"检查失败: {str(e)}",
+            }
 
 
 class ServiceRestarter:

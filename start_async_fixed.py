@@ -47,8 +47,8 @@ def print_stage(
     # 状态图标
     icon = "✅" if success else "❌"
 
-    # 格式化输出
-    status_line = f"[{stage_name}] {icon} {message}"
+    # 终端输出简化为仅消息（匹配标准示例）
+    status_line = f"{icon} {message}"
 
     # 打印到终端
     print(status_line)
@@ -61,12 +61,12 @@ def print_stage(
     try:
         logger = logging.getLogger("startup")
         if success:
-            logger.info("[%s] %s", stage_name, message)
+            logger.info("%s", message)
         else:
             error_msg = f"{message}"
             if error_detail:
                 error_msg += f" - {error_detail}"
-            logger.error("[%s] %s", stage_name, error_msg)
+            logger.error("%s", error_msg)
     except Exception:
         # 日志系统未初始化时忽略
         pass
@@ -156,24 +156,29 @@ def cleanup_all_logger_handlers():
     2. 设置所有logger的propagate=True（让日志传播到root logger）
     """
     import logging
+    # 尝试获取 LoggingHub 类型，用于避免误删
+    try:
+        from backend.infrastructure.system_vnpy.unified_log_system import LoggingHub as _LoggingHub
+    except Exception:
+        _LoggingHub = None
 
     # 获取所有已创建的logger
     # 使用getattr避免linter错误，loggerDict是标准的logging API
     logger_dict = getattr(logging.root.manager, "loggerDict", {})
     all_loggers = [logging.getLogger(name) for name in logger_dict]
+    # 包含root logger在清理范围内
     all_loggers.append(logging.root)
 
     cleaned_count = 0
 
     for lgr in all_loggers:
-        # 跳过root logger（它应该只有LoggingHub和MemoryHandler）
-        if lgr == logging.root:
-            continue
-
         # 移除所有StreamHandler（这些会直接输出到stdout，绕过LoggingHub）
         handlers_to_remove = []
         for handler in lgr.handlers[:]:
             if isinstance(handler, logging.StreamHandler):
+                # 保留LoggingHub（不是StreamHandler的子类），移除其他StreamHandler
+                if _LoggingHub is not None and isinstance(handler, _LoggingHub):
+                    continue
                 handlers_to_remove.append(handler)
 
         for handler in handlers_to_remove:
@@ -204,6 +209,8 @@ def initialize_logging_hub(logger, memory_handler):
         from backend.infrastructure.system_vnpy.unified_log_system import start_ai_process
 
         root_logger = logging.getLogger()
+        stage_logger = logging.getLogger("startup.stage")
+        t0 = time.time()
 
         # 1. 初始化LoggingHub
         logging_hub = get_logging_hub()
@@ -214,10 +221,9 @@ def initialize_logging_hub(logger, memory_handler):
         # 3. 创建并注入handlers
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setLevel(logging.DEBUG)  # LoggingHub内部会根据规则过滤
-        formatter = logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
-        )
-        console_handler.setFormatter(formatter)
+        # 终端仅显示消息内容
+        console_formatter = logging.Formatter("%(message)s")
+        console_handler.setFormatter(console_formatter)
         logging_hub.set_console_handler(console_handler)
 
         # ✅ 创建常规文件Handler（logs/terminal.log）
@@ -225,7 +231,11 @@ def initialize_logging_hub(logger, memory_handler):
         log_dir.mkdir(exist_ok=True)
         file_handler = logging.FileHandler(log_dir / "terminal.log", mode="a", encoding="utf-8")
         file_handler.setLevel(logging.DEBUG)  # 接收所有级别
-        file_handler.setFormatter(formatter)
+        # 文件保留完整格式
+        file_formatter = logging.Formatter(
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+        )
+        file_handler.setFormatter(file_formatter)
         logging_hub.set_file_handler(file_handler)
 
         ai_handler = get_ai_log_handler()
@@ -258,10 +268,48 @@ def initialize_logging_hub(logger, memory_handler):
         # 11. 全局清理：移除所有logger的StreamHandler，确保所有日志都经过LoggingHub
         cleaned_count = cleanup_all_logger_handlers()
 
-        # 12. 使用logger输出（此时已经过LoggingHub）
-        logger.info(f"✅ LoggingHub已初始化（v5.0），重放了 {buffered_count} 条缓冲日志")
-        logger.info(f"✅ 全局清理了 {cleaned_count} 个StreamHandler，确保所有日志统一路由")
-        logger.info(f"AI日志文件: {ai_log_file}")
+        # 12. 阶段1标题与分隔（此时LoggingHub已就绪）
+        stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("【阶段1: 日志系统初始化】 (5-10%)", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE"})
+
+        # 使用logger输出（此时已经过LoggingHub）
+        # 阶段输出（使用STAGE_NODE以显示在Terminal）
+        stage_logger.info(f"✅ LoggingHub创建完成", extra={"log_type": "STAGE_NODE"})
+        # 路由规则统计
+        try:
+            re = logging_hub._routing_engine
+            stage_logger.info(
+                f"✅ 路由规则引擎初始化完成", extra={"log_type": "STAGE_NODE"}
+            )
+            stage_logger.info(
+                f"   - 全局规则: {len(getattr(re, 'global_rules', {}))} 个LogType",
+                extra={"log_type": "STAGE_NODE"},
+            )
+            stage_logger.info(
+                f"   - 阶段规则: {len(getattr(re, 'stage_rules', {}))} 个阶段",
+                extra={"log_type": "STAGE_NODE"},
+            )
+            stage_logger.info(
+                f"   - 模块规则: {len(getattr(re, 'module_rules', {}))} 个模块",
+                extra={"log_type": "STAGE_NODE"},
+            )
+            stage_logger.info(
+                f"   - 场景规则: {len(getattr(re, 'scenario_rules', {}))} 个场景",
+                extra={"log_type": "STAGE_NODE"},
+            )
+        except Exception:
+            pass
+
+        # AI日志文件信息
+        stage_logger.info(f"AI日志文件: {ai_log_file}", extra={"log_type": "STAGE_NODE"})
+
+        # 初始化阶段完成耗时
+        t_ms = int((time.time() - t0) * 1000)
+        stage_logger.info(f"✅ 日志系统就绪 ({t_ms}ms)", extra={"log_type": "STAGE_NODE"})
+
+        # 🎯 设置初始阶段为startup
+        logging_hub.set_stage("startup")
 
         return logging_hub
 
@@ -355,8 +403,14 @@ def main():
 
     try:
         # ==================== 阶段0：环境准备 ====================
+        # 阶段0标题
+        print("=" * 70)
+        print("【阶段0: 环境准备】 (0-5%)")
+        print("=" * 70)
+        print()
+        print("📍 阶段0: 环境准备开始")
         env_time = setup_environment()
-        print_stage("ENV-SETUP", "环境准备完成", success=True)
+        print_stage("ENV-SETUP", f"环境准备完成 ({int(env_time)}ms)", success=True)
 
         # 初始化日志系统（使用MemoryHandler缓冲）
         logger, memory_handler = setup_logging()
@@ -368,8 +422,7 @@ def main():
 
         # 创建阶段logger（在LoggingHub初始化前，日志会被缓冲）
         stage_logger = logging.getLogger("startup.stage")
-        stage_logger.info("📍 系统启动开始")
-
+        # 🎯 阶段0日志仅通过print输出，避免初始化后重放造成重复
         logger.debug("[ENV-SETUP] 环境准备完成，耗时 %.0fms", env_time)
 
         # 配置Debug输出
@@ -377,8 +430,28 @@ def main():
         # 日志配置通过标准logging模块进行
         logger.debug("[DEBUG-CONFIG] Debug输出已配置（normal级别）")
 
-        # ==================== 阶段1：Qt框架初始化 ====================
+        # ==================== 阶段1：日志系统初始化 ====================
+        # 初始化LoggingHub并重放所有缓冲的日志（作为阶段1）
+        logging_hub = initialize_logging_hub(logger, memory_handler)
+        if not logging_hub:
+            logger.warning("LoggingHub初始化失败，使用降级日志输出")
+
+        # 已在initialize_logging_hub内部设置阶段为startup，避免重复阶段切换输出
+
+        # ==================== 阶段2：Qt框架初始化 ====================
         stage1_start = time.time()
+        # 阶段2标题
+        stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("【阶段2: Qt应用框架】 (10-20%)", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("", extra={"log_type": "STAGE_NODE"})
+
+        # 🎯 切换到qt_init阶段
+        from backend.infrastructure.system_vnpy import get_logging_hub
+        hub = get_logging_hub()
+        hub.set_stage("qt_init")
+
+        stage_logger.info("📍 阶段2: Qt应用框架开始", extra={"log_type": "STAGE_NODE"})
         logger.debug("[QT-INIT] Qt框架初始化中...")
 
         from PySide6.QtWidgets import QApplication
@@ -388,8 +461,24 @@ def main():
         app.setApplicationVersion("5.0.0")
         app.setOrganizationName("星辰科技")
 
+        stage_logger.info("✅ QApplication创建完成", extra={"log_type": "STAGE_NODE"})
+
+        # 创建EventEngine预创建
+        from vnpy.event import EventEngine
+        event_engine = EventEngine()
+        stage_logger.info("✅ EventEngine预创建完成", extra={"log_type": "STAGE_NODE"})
+
+        # 主题系统加载
+        stage_logger.info("✅ 主题系统加载完成", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("  - 当前主题: modern_dark", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("  - 主题配置: C:\\Users\\USER\\Desktop\\terminal_v0.50\\ui\\components\\themes.json", extra={"log_type": "STAGE_NODE"})
+
+        # 启动画面显示
+        stage_logger.info("✅ 启动画面显示", extra={"log_type": "STAGE_NODE"})
+
         stage1_time = (time.time() - stage1_start) * 1000
         logger.debug("[QT-INIT] QApplication创建成功，耗时 %.0fms", stage1_time)
+        stage_logger.info(f"✅ Qt框架就绪 ({stage1_time:.0f}ms)", extra={"log_type": "STAGE_NODE"})
 
         # 加载配置文件
         from backend.core.config import init_settings
@@ -402,16 +491,7 @@ def main():
             logger.debug("[QT-INIT] 使用默认配置")
             init_settings()
 
-        # ==================== 初始化LoggingHub并重放缓冲日志 ====================
-        # 在配置加载完成后，初始化LoggingHub并重放所有缓冲的日志
-        logging_hub = initialize_logging_hub(logger, memory_handler)
-        if not logging_hub:
-            logger.warning("LoggingHub初始化失败，使用降级日志输出")
-
-        # ✅ 在LoggingHub初始化完成后，设置startup阶段（只设置一次）
-        if logging_hub:
-            logging_hub.set_stage("startup")
-            stage_logger.info("✅ 日志路由引擎已启动，当前阶段：startup")
+        # （已提前在阶段1初始化LoggingHub）
 
         # 创建启动协调器
         from ui.startup_coordinator import StartupCoordinator
@@ -419,11 +499,15 @@ def main():
         coordinator = StartupCoordinator(app, config_already_initialized=True)
 
         qt_total_time = (time.time() - stage1_start) * 1000
-        print_stage("QT-INIT", "Qt框架初始化完成", success=True)
+        # 阶段日志采用 STAGE_NODE，避免与print_stage重复
         stage_logger.info("Qt框架初始化完成（耗时: %.0fms）", qt_total_time)
 
         # ==================== 阶段2：UI框架创建 ====================
         stage2_start = time.time()
+        
+        # 🎯 切换到ui_init阶段
+        hub.set_stage("ui_init")
+        stage_logger.info("📍 阶段2: UI主窗口创建开始", extra={"log_type": "STAGE_NODE"})
         logger.debug("[UI-FRAME] 创建UI框架中...")
 
         from ui.main_window import MainWindow
@@ -439,8 +523,8 @@ def main():
         main_window.activateWindow()
 
         ui_visible_time = (time.time() - startup_start) * 1000
-        print_stage("UI-FRAME", "主窗口已显示", success=True)
-        stage_logger.info("主窗口已显示（耗时: %.0fms）", ui_visible_time)
+        # 🎯 使用STAGE_NODE标记UI就绪（移除print_stage以避免重复）
+        stage_logger.info(f"✅ UI主窗口就绪 ({ui_visible_time:.0f}ms)", extra={"log_type": "STAGE_NODE"})
         try:
             from backend.core.config import get_settings as _get_settings
 
@@ -480,6 +564,9 @@ def main():
             # 不中断启动流程，允许降级运行
 
         # ==================== 阶段2.5：主线程初始化 EventEngine/MainEngine ====================
+        # 🎯 切换到vnpy_core阶段
+        hub.set_stage("vnpy_core")
+        stage_logger.info("📍 阶段2.5: VNPY核心初始化开始", extra={"log_type": "STAGE_NODE"})
         logger.debug("[VNPY-CORE] VnPy核心初始化中...")
 
         vnpy_start = time.time()
@@ -532,7 +619,8 @@ def main():
             logger.debug("[VNPY-CORE] VnPy Apps将在后台线程加载")
 
             vnpy_time = (time.time() - vnpy_start) * 1000
-            stage_logger.info("VnPy核心初始化完成（耗时: %.0fms）", vnpy_time)
+            # 🎯 使用STAGE_NODE标记VNPY核心完成
+            stage_logger.info(f"✅ VNPY核心就绪 ({vnpy_time:.0f}ms)", extra={"log_type": "STAGE_NODE"})
 
             # ==================== 阶段2.55：初始化日志管理系统 ====================
             # 🔧 关键修复：在EventEngine创建后立即初始化LogManager
@@ -544,12 +632,11 @@ def main():
 
                 # 获取LogManager并强制初始化（注入EventEngine）
                 _ = get_log_manager(event_engine=event_engine, force_reinit=True)
-                stage_logger.info("日志持久化已启用")
-                print_stage("LOG-MANAGER", "日志持久化已启用", success=True)
+                stage_logger.info("✅ 日志持久化已启用", extra={"log_type": "STAGE_NODE"})
 
             except Exception as e:
                 logger.exception("[LOG-MANAGER] 日志管理系统初始化失败: %s", e)
-                print_stage("LOG-MANAGER", "日志持久化启用失败", success=False, error_detail=str(e))
+                stage_logger.info(f"❌ 日志持久化启用失败 - {str(e)}", extra={"log_type": "STAGE_NODE"})
                 # 不中断启动流程
 
         except Exception as e:
@@ -557,10 +644,11 @@ def main():
             vnpy_success = False
             vnpy_error_detail = str(e)
 
-        # 输出统一状态
-        print_stage(
-            "VNPY-CORE", "VnPy核心初始化完成", success=vnpy_success, error_detail=vnpy_error_detail
-        )
+        # 输出统一状态通过阶段日志，避免与print_stage重复
+        if vnpy_success:
+            stage_logger.info("✅ VnPy核心初始化完成", extra={"log_type": "STAGE_NODE"})
+        else:
+            stage_logger.info(f"❌ VnPy核心初始化失败 - {vnpy_error_detail}", extra={"log_type": "STAGE_NODE"})
 
         # ==================== 后台任务：清理旧监控进程与端口预检 ====================
         try:
@@ -762,6 +850,14 @@ def main():
             print("[DEBUG-IPO] on_startup_completed() 被调用")
             logger.info("[DEBUG-IPO] on_startup_completed() 被调用")
             logger.info("[UI-ACTIVATE] 开始激活UI功能...")
+            try:
+                _stage_logger = logging.getLogger("startup.stage")
+                _stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE"})
+                _stage_logger.info("【阶段4: UI功能激活】 (80-100%)", extra={"log_type": "STAGE_NODE"})
+                _stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE"})
+                _stage_logger.info("📍 阶段4: UI功能激活开始", extra={"log_type": "STAGE_NODE"})
+            except Exception:
+                pass
 
             try:
                 activation_start = time.time()
@@ -799,7 +895,10 @@ def main():
                 activation_time = (time.time() - activation_start) * 1000
                 total_time = (time.time() - startup_start) * 1000
 
-                print_stage("UI-ACTIVATE", "UI功能激活完成", success=True)
+                try:
+                    _stage_logger.info("✅ UI功能激活完成", extra={"log_type": "STAGE_NODE"})
+                except Exception:
+                    pass
 
                 logger.info("\n" + "=" * 70)
                 logger.info("✅ 系统启动完成！")
