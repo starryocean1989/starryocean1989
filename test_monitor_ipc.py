@@ -1,130 +1,132 @@
-# -*- coding: utf-8 -*-
+#!/usr/bin/env python3
 """
-测试监控系统IPC通信
-
-直接测试现有的监控进程IPC通信
+监控进程IPC通信详细测试工具
 """
 
 import asyncio
 import json
-import logging
 import sys
+import os
+import time
+import traceback
 from pathlib import Path
 
 # 添加项目路径
-project_root = Path(__file__).parent
-sys.path.insert(0, str(project_root))
+sys.path.insert(0, str(Path(__file__).parent))
 
-from backend.infrastructure.native_ipc import AsyncIPCPipe, IPC_AVAILABLE
+from backend.infrastructure.native_ipc import AsyncIPCPipe, aopen_client, IPC_AVAILABLE
 
-# 配置日志
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-async def test_monitor_query():
-    """测试监控进程查询"""
+async def test_monitor_communication():
+    """测试监控进程通信"""
+    print("🔍 开始详细IPC通信测试")
+    print("=" * 80)
+    
+    # 检查IPC是否可用
     if not IPC_AVAILABLE:
-        logger.error("IPC扩展不可用")
-        return False
+        print("❌ IPC扩展不可用")
+        return
+    
+    # 1. 检查监控进程状态
+    print("\n📊 步骤1: 检查监控进程状态")
+    signal_file = "logs/monitor_ready.signal"
+    if os.path.exists(signal_file):
+        with open(signal_file, 'r') as f:
+            signal_content = f.read().strip()
+            print(f"✅ 监控信号文件存在")
+            print(f"   内容: {signal_content}")
+            
+            try:
+                signal_data = json.loads(signal_content)
+                print(f"   PID: {signal_data.get('pid')}")
+                print(f"   状态: {signal_data.get('status')}")
+                print(f"   管道: {signal_data.get('pipes', {})}")
+            except json.JSONDecodeError:
+                print(f"   ⚠️ 信号文件格式错误")
+    else:
+        print("❌ 监控信号文件不存在")
+        return
+    
+    # 2. 测试管道连接
+    print("\n📊 步骤2: 测试管道连接")
+    pipe_name = "monitor_query"
     
     try:
-        logger.info("连接到监控进程查询管道...")
-        async with await AsyncIPCPipe.client("monitor_query") as pipe:
-            logger.info("✅ 连接成功")
+        # 3. 测试连接
+        print("\n📊 步骤3: 尝试连接管道")
+        async with await aopen_client(pipe_name) as pipe:
+            print("✅ 管道连接成功")
             
-            # 发送查询请求
-            request = {"action": "get_data"}
-            request_bytes = json.dumps(request).encode()
-            logger.info(f"发送查询请求: {request}")
-            await pipe.write(request_bytes)
+            # 4. 发送测试请求
+            print("\n📊 步骤4: 发送测试请求")
+            test_requests = [
+                {"action": "get_data"},
+                {"action": "get_summary"},
+                {"action": "ping"}
+            ]
             
-            # 接收响应（使用大缓冲区）
-            logger.info("等待响应...")
-            response_data = await asyncio.wait_for(pipe.read(size=65536), timeout=5.0)
-            logger.info(f"收到响应，数据大小: {len(response_data)} bytes")
-            
-            # 尝试解析JSON
-            try:
-                response = json.loads(response_data.decode())
-                logger.info("✅ JSON解析成功")
-                logger.info(f"响应包含字段: {list(response.keys())}")
+            for i, request in enumerate(test_requests, 1):
+                print(f"\n🔄 测试请求 {i}: {request}")
+                try:
+                    # 发送请求
+                    request_json = json.dumps(request)
+                    request_bytes = request_json.encode('utf-8')
+                    print(f"   发送数据: {len(request_bytes)} bytes")
+                    
+                    await pipe.write(request_bytes)
+                    print("   ✅ 请求发送成功")
+                    
+                    # 等待响应
+                    print("   ⏳ 等待响应...")
+                    response_bytes = await asyncio.wait_for(
+                        pipe.read(size=65536), 
+                        timeout=5.0
+                    )
+                    
+                    if response_bytes:
+                        print(f"   ✅ 收到响应: {len(response_bytes)} bytes")
+                        
+                        try:
+                            response_text = response_bytes.decode('utf-8')
+                            print(f"   响应文本长度: {len(response_text)}")
+                            
+                            # 尝试解析JSON
+                            response_data = json.loads(response_text)
+                            print(f"   ✅ JSON解析成功")
+                            print(f"   响应键: {list(response_data.keys())}")
+                            
+                            # 显示部分响应内容
+                            if "timestamp" in response_data:
+                                print(f"   时间戳: {response_data['timestamp']}")
+                            if "system" in response_data:
+                                system_keys = list(response_data["system"].keys()) if response_data["system"] else []
+                                print(f"   系统数据键: {system_keys}")
+                                
+                        except json.JSONDecodeError as e:
+                            print(f"   ❌ JSON解析失败: {e}")
+                            print(f"   原始响应: {response_text[:200]}...")
+                        except UnicodeDecodeError as e:
+                            print(f"   ❌ 响应解码失败: {e}")
+                            print(f"   原始字节: {response_bytes[:100]}...")
+                    else:
+                        print("   ❌ 收到空响应")
+                        
+                except asyncio.TimeoutError:
+                    print("   ❌ 响应超时")
+                except Exception as e:
+                    print(f"   ❌ 请求失败: {e}")
+                    traceback.print_exc()
                 
-                # 检查关键字段
-                if "timestamp" in response:
-                    logger.info(f"时间戳: {response['timestamp']}")
-                if "system" in response:
-                    logger.info("✅ 包含系统监控数据")
-                if "process" in response:
-                    logger.info("✅ 包含进程监控数据")
-                if "hardware" in response:
-                    logger.info("✅ 包含硬件监控数据")
-                
-                return True
-                
-            except json.JSONDecodeError as e:
-                logger.error(f"❌ JSON解析失败: {e}")
-                logger.error(f"数据前200字符: {response_data[:200]}")
-                logger.error(f"数据后200字符: {response_data[-200:]}")
-                
-                # 检查是否是截断问题
-                if len(response_data) >= 4096:
-                    logger.error("⚠️ 数据可能被截断（大小>=4096）")
-                
-                return False
-                
-    except asyncio.TimeoutError:
-        logger.error("❌ 查询超时，监控进程可能未响应")
-        return False
+                # 短暂等待
+                await asyncio.sleep(0.5)
+        
+        print("\n✅ 连接已关闭")
+        
     except Exception as e:
-        logger.error(f"❌ 查询失败: {e}")
-        return False
-
-async def test_monitor_status():
-    """测试监控进程状态"""
-    # 检查监控进程是否运行
-    signal_file = Path("logs/monitor_ready.signal")
-    if signal_file.exists():
-        try:
-            with open(signal_file, 'r') as f:
-                signal_data = json.load(f)
-            logger.info(f"✅ 监控进程运行中，PID: {signal_data.get('pid')}")
-            logger.info(f"状态: {signal_data.get('status')}")
-            logger.info(f"就绪级别: {signal_data.get('level')}")
-            return True
-        except Exception as e:
-            logger.error(f"❌ 读取监控信号文件失败: {e}")
-            return False
-    else:
-        logger.error("❌ 监控进程未运行（信号文件不存在）")
-        return False
-
-async def main():
-    """主函数"""
-    logger.info("开始监控系统IPC通信测试...")
+        print(f"❌ 测试失败: {e}")
+        traceback.print_exc()
     
-    if not IPC_AVAILABLE:
-        logger.error("❌ IPC扩展不可用")
-        return
-    
-    # 检查监控进程状态
-    logger.info("\n=== 检查监控进程状态 ===")
-    status_ok = await test_monitor_status()
-    
-    if not status_ok:
-        logger.error("监控进程未运行，请先启动终端")
-        return
-    
-    # 测试IPC查询
-    logger.info("\n=== 测试IPC查询 ===")
-    query_ok = await test_monitor_query()
-    
-    if query_ok:
-        logger.info("🎉 IPC通信测试成功！")
-    else:
-        logger.error("❌ IPC通信测试失败")
+    print("\n" + "=" * 80)
+    print("🎉 IPC通信测试完成")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(test_monitor_communication())

@@ -16,6 +16,15 @@
 - SmartMonitor.get_smart_data() - SMART采集
 """
 
+import sys
+from pathlib import Path
+
+# 添加项目根目录到Python路径（用于独立运行）
+if __name__ == "__main__":
+    project_root = Path(__file__).parent.parent.parent.parent
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+
 import asyncio
 import json
 import logging
@@ -2452,7 +2461,38 @@ class MonitoringProcessV2:
                 try:
                     # 读取请求（使用更大的缓冲区）
                     request_data = await self.query_pipe.read(size=65536)
-                    request = json.loads(request_data.decode())
+                    
+                    # 🔧 修复JSON解析问题：处理数据截断和多JSON对象
+                    try:
+                        decoded_data = request_data.decode('utf-8')
+                        
+                        # 检查是否有多个JSON对象（用换行符分隔）
+                        if '\n' in decoded_data:
+                            # 取第一个完整的JSON对象
+                            json_lines = decoded_data.strip().split('\n')
+                            for line in json_lines:
+                                if line.strip():
+                                    try:
+                                        request = json.loads(line.strip())
+                                        break
+                                    except json.JSONDecodeError:
+                                        continue
+                            else:
+                                # 如果没有找到有效的JSON，使用默认请求
+                                request = {"action": "get_data"}
+                        else:
+                            # 单个JSON对象，直接解析
+                            request = json.loads(decoded_data)
+                            
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"[IPC] JSON解析失败: {e}, 数据长度: {len(request_data)}")
+                        logger.debug(f"[IPC] 原始数据: {request_data[:100]}...")
+                        # 使用默认请求
+                        request = {"action": "get_data"}
+                    except UnicodeDecodeError as e:
+                        logger.warning(f"[IPC] 数据解码失败: {e}, 数据长度: {len(request_data)}")
+                        # 使用默认请求
+                        request = {"action": "get_data"}
                     action = request.get("action", "get_data")
 
                     # 处理请求
@@ -2506,7 +2546,19 @@ class MonitoringProcessV2:
                                 response_bytes = response_json.encode()
                                 logger.info("[IPC] 精简后数据大小: %d bytes", len(response_bytes))
 
-                        await self.query_pipe.write(response_bytes)
+                        # 🔧 验证响应数据完整性
+                        try:
+                            # 验证JSON格式
+                            json.loads(response_bytes.decode('utf-8'))
+                            await self.query_pipe.write(response_bytes)
+                            logger.debug(f"[IPC] 响应已发送: {len(response_bytes)} bytes")
+                        except json.JSONDecodeError as e:
+                            logger.error(f"[IPC] 响应JSON格式错误: {e}")
+                            # 发送错误响应
+                            error_response = json.dumps({"status": "error", "message": "响应数据格式错误"})
+                            await self.query_pipe.write(error_response.encode('utf-8'))
+                        except Exception as e:
+                            logger.error(f"[IPC] 发送响应失败: {e}")
                     elif action == "trigger_smart":
                         if self.smart_trigger_event:
                             self.smart_trigger_event.set()
@@ -6484,6 +6536,12 @@ def main():
     """监控进程入口函数（可作为独立进程运行）."""
     import logging
     import sys
+    from pathlib import Path
+    
+    # 添加项目根目录到Python路径
+    project_root = Path(__file__).parent.parent.parent.parent
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
 
     # 配置日志（仅Terminal输出）
     # 确保stdout使用UTF-8编码（Python 3.7+）

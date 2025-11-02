@@ -212,12 +212,25 @@ class BackendInitializerWorker(QObject):
         self.monitor_file_handles = [monitor_stdout_file, monitor_stderr_file]
 
         # 启动监控进程（指定工作目录为项目根目录）
+        # 在Windows上确保权限传递
+        creation_flags = 0
+        if sys.platform == "win32":
+            creation_flags = subprocess.CREATE_NO_WINDOW
+            # 检查当前是否有管理员权限
+            try:
+                import ctypes
+                if ctypes.windll.shell32.IsUserAnAdmin():
+                    # 如果有管理员权限，确保子进程也有
+                    self.logger.info("[MONITOR-PROCESS] 检测到管理员权限，将传递给监控进程")
+            except:
+                pass
+        
         self.monitor_process_handle = subprocess.Popen(
             [sys.executable, str(monitor_script)],
             stdout=monitor_stdout_file,
             stderr=monitor_stderr_file,
             cwd=str(self.project_root),  # 确保监控进程在项目根目录工作
-            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            creationflags=creation_flags,
         )
 
         self.logger.info("[MONITOR-PROCESS] 进程已启动（PID: %d）", self.monitor_process_handle.pid)
