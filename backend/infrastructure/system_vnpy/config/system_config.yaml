@@ -1,0 +1,103 @@
+# system_config.yaml - 系统监控配置文件
+# Version: v1.0
+# Date: 2025-01-09
+
+# 监控配置
+monitoring:
+  # 监控频率配置（单位：秒）
+  intervals:
+    system: 1.0          # 系统监控间隔
+    hardware: 5.0        # 硬件监控间隔
+    smart: 300.0         # SMART监控间隔（5分钟）
+    bandwidth: 3600.0    # 带宽测试间隔（1小时，默认禁用）
+    latency: 10.0        # 延迟测试间隔（10秒）
+
+  # 监控开关
+  enabled:
+    system: true         # 系统监控
+    hardware: true       # 硬件监控
+    smart: true          # SMART监控
+    bandwidth: false     # 带宽测试（手动触发）
+    latency: true        # 延迟测试
+
+  # 进程配置
+  process:
+    parent_check_interval: 10.0   # 父进程检查间隔（秒）
+    auto_restart: true            # 监控进程自动重启
+    max_restart_count: 3          # 最大重启次数
+
+# IPC配置（native_ipc）
+ipc:
+  # 管道名称
+  pipe_names:
+    alert: "monitor_alerts"      # 告警推送管道（监控进程→主进程）
+    status: "monitor_status"     # 状态同步管道（主进程→监控进程）
+    query: "monitor_query"       # 查询响应管道（主进程↔监控进程）
+
+  # 超时配置
+  timeout: 5.0                   # IPC操作超时（秒）
+  retry_count: 3                 # 重试次数
+
+# 缓存配置
+cache:
+  enabled: true                  # 启用缓存
+
+  # 缓存有效期（单位：秒）
+  ttl:
+    system_metrics: 60           # 系统指标缓存有效期
+    bandwidth_result: 3600       # 带宽测试结果缓存有效期（1小时）
+    smart_data: 1800             # SMART数据缓存有效期（30分钟）
+    latency_result: 60           # 延迟测试结果缓存有效期
+
+# 智能负载机制配置
+load_balancer:
+  enabled: true                  # 启用智能负载均衡
+
+  # 压力阈值
+  pressure_thresholds:
+    low: 50                      # 低压力阈值（%）
+    medium: 80                   # 中压力阈值（%）
+
+  # 频率调整倍数
+  frequency_multipliers:
+    low_pressure: 1.0            # 低压力：正常频率
+    medium_pressure: 2.0         # 中压力：降低50%（间隔×2）
+    high_pressure: 4.0           # 高压力：降低75%（间隔×4）
+
+  # 防抖配置
+  debounce:
+    interval: 1.0                # 基础调整间隔（秒）
+    specific_mode_interval: 3.0  # 特定模式调整间隔（秒）
+
+# 告警配置
+alerts:
+  # 防抖配置
+  debounce:
+    time_window: 60              # 时间窗口（秒）
+    count_threshold: 3           # 计数阈值（连续N次才触发）
+
+  # 告警聚合
+  aggregation:
+    window: 300                  # 聚合窗口（5分钟）
+    max_count: 100               # 最大聚合数量
+
+# 日志配置
+logging:
+  # 日志级别
+  level: "INFO"                  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+
+  # AI日志配置
+  ai_logging:
+    enabled: true                # 启用AI日志
+    progress_throttle: 0.1       # 进度节流间隔（秒）
+
+# 性能配置
+performance:
+  # 线程池配置
+  thread_pool:
+    max_workers: 4               # 最大工作线程数
+
+  # 采样配置
+  sampling:
+    rolling_window_size: 100     # 滚动窗口大小（样本数）
+    min_samples: 10              # 最小样本数

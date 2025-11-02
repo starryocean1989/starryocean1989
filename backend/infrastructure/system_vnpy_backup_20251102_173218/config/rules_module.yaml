@@ -1,0 +1,128 @@
+# 模块规则（按模块精细化控制）
+
+# 数据中心模块（高频日志）
+module_data_center:
+  source_modules:
+    - DataCenterService
+    - MultiProcessStockFetcher
+    - ChinaStockEngine
+  priority: normal
+  PROGRESS:
+    INFO: [file, event_throttled]
+  NOTIFICATION:
+    INFO: [file, statusbar]
+  ALERT:
+    WARNING: [file, statusbar]
+    ERROR: [file, database, statusbar, ui_dialog]
+
+# 交易网关模块（关键模块）
+module_trading_gateway:
+  source_modules:
+    - TradingGatewayService
+    - CtpGateway
+    - IbGateway
+  priority: critical
+  SYSTEM:
+    INFO: [file, database]  # 所有交易日志入库
+    WARNING: [file, database, event]
+    ERROR: [file, database, ui_dialog, event]
+  ALERT:
+    WARNING: [file, database, statusbar, event]
+    ERROR: [file, database, statusbar, ui_dialog, event, email]
+    CRITICAL: [file, database, statusbar, ui_dialog, event, email, sms]
+
+# 策略中心模块（中频日志）
+module_strategy_center:
+  source_modules:
+    - StrategyCenterService
+    - CtaEngine
+    - PortfolioEngine
+  priority: normal
+  SYSTEM:
+    INFO: [file]
+    WARNING: [file, console, event]
+    ERROR: [file, console, database, event]
+  PROGRESS:
+    INFO: [file, event_throttled, statusbar]
+  ALERT:
+    WARNING: [file, statusbar]
+    ERROR: [file, database, statusbar, ui_dialog]
+
+# 监控进程模块（独立进程）
+module_monitor_process:
+  source_modules:
+    - MonitorSystem
+  priority: normal
+  transport: zmq
+  SYSTEM:
+    INFO: [file]
+  ALERT:
+    WARNING: [file, zmq_push]
+    ERROR: [file, zmq_push, statusbar, ui_dialog]
+    CRITICAL: [file, zmq_push, statusbar, ui_dialog, email]
+
+# 系统管理模块（低频日志）
+module_system_manager:
+  source_modules:
+    - SystemManagerService
+  priority: normal
+  SYSTEM:
+    INFO: [file, console]
+    WARNING: [file, console, database, event]
+    ERROR: [file, console, database, event]
+  ALERT:
+    WARNING: [file, console, database, statusbar]
+    ERROR: [file, console, database, statusbar, ui_dialog]
+
+# 组合投资模块（中频日志）
+module_portfolio:
+  source_modules:
+    - PortfolioService
+  priority: normal
+  SYSTEM:
+    INFO: [file]
+    WARNING: [file, console, event]
+  NOTIFICATION:
+    INFO: [file, statusbar]
+  ALERT:
+    WARNING: [file, statusbar]
+
+# 行情看板模块（中频日志）
+module_market_board:
+  source_modules:
+    - MarketBoardService
+  priority: normal
+  SYSTEM:
+    INFO: [file]
+  PROGRESS:
+    INFO: [file]  # 行情更新不节流，仅文件
+  ALERT:
+    WARNING: [file, statusbar]
+
+# AI助手模块（低频日志）
+module_ai_assistant:
+  source_modules:
+    - AIAssistantService
+  priority: normal
+  SYSTEM:
+    INFO: [file]
+    WARNING: [file, console]
+  NOTIFICATION:
+    INFO: [file, statusbar]
+
+# 网络测速模块（调试专用，输出到独立AI日志）
+module_network_speedtest:
+  source_modules:
+    - BandwidthMonitor
+    - NetworkSpeedTest
+    - SystemManager.speedtest
+  priority: debug
+  DEBUG:
+    INFO: [file, ai_file]  # 输出到ai/network_speedtest.log
+    WARNING: [file, ai_file]
+    ERROR: [file, ai_file, console]
+  SYSTEM:
+    INFO: [file, ai_file]
+    WARNING: [file, ai_file, console]
+    ERROR: [file, ai_file, console]
+

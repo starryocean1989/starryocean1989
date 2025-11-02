@@ -1,0 +1,183 @@
+# threshold_config.yaml - 阈值配置文件
+# Version: v1.0
+# Date: 2025-01-09
+
+# 系统资源阈值
+system_resources:
+  # CPU阈值（百分比）
+  cpu:
+    warning: 60      # 警告阈值
+    error: 80        # 错误阈值
+    critical: 95     # 严重阈值
+
+  # 内存阈值（百分比）
+  memory:
+    warning: 60
+    error: 80
+    critical: 95
+
+  # 磁盘阈值（百分比）
+  disk:
+    warning: 70
+    error: 85
+    critical: 95
+
+  # 网络阈值（Mbps）
+  network:
+    slow_download: 10      # 下载速度慢阈值
+    slow_upload: 5         # 上传速度慢阈值
+
+# 硬件传感器阈值
+hardware_sensors:
+  # CPU温度阈值（摄氏度）
+  cpu_temp:
+    warning: 70
+    error: 80
+    critical: 90
+
+  # GPU温度阈值（摄氏度）
+  gpu_temp:
+    warning: 75
+    error: 85
+    critical: 95
+
+  # 主板温度阈值（摄氏度）
+  motherboard_temp:
+    warning: 60
+    error: 70
+    critical: 80
+
+  # 风扇速度阈值（RPM）
+  fan_speed:
+    min_rpm: 500          # 最低转速（低于此值告警）
+    max_rpm: 5000         # 最高转速（高于此值告警）
+
+  # 电压阈值（伏特）
+  voltage:
+    v12:
+      min: 11.4           # 12V最小值
+      max: 12.6           # 12V最大值
+    v5:
+      min: 4.75           # 5V最小值
+      max: 5.25           # 5V最大值
+    v3_3:
+      min: 3.14           # 3.3V最小值
+      max: 3.47           # 3.3V最大值
+
+# SMART属性阈值
+smart_attributes:
+  # 重分配扇区数（ID: 05）
+  reallocated_sectors:
+    warning: 1            # 大于0即告警
+    error: 5
+    critical: 10
+
+  # 当前待映射扇区数（ID: C5）
+  pending_sectors:
+    warning: 1
+    error: 5
+    critical: 10
+
+  # 无法校正的扇区数（ID: C6）
+  uncorrectable_errors:
+    warning: 1            # 任何无法校正的扇区都是严重问题
+    error: 5
+    critical: 10
+
+  # 通电时间（小时）
+  power_on_hours:
+    warning: 30000        # 3.4年
+    error: 50000          # 5.7年
+    critical: 70000       # 8年
+
+  # 温度（摄氏度）
+  temperature:
+    warning: 50
+    error: 55
+    critical: 60
+
+# 进程监控阈值
+process:
+  # CPU使用率阈值（百分比）
+  cpu_percent:
+    warning: 80
+    error: 90
+    critical: 95
+
+  # 内存使用率阈值（百分比）
+  memory_percent:
+    warning: 80
+    error: 90
+    critical: 95
+
+  # 僵尸进程检测
+  zombie_detection:
+    enabled: true
+
+# 服务监控阈值
+service:
+  # 成功率阈值（百分比）
+  success_rate:
+    healthy: 90           # 健康阈值
+    degraded: 70          # 降级阈值
+
+  # 响应时间阈值（秒）
+  response_time:
+    warning: 1.0
+    error: 2.0
+    critical: 5.0
+
+  # 重启配置
+  restart:
+    consecutive_failures: 5       # 连续失败次数
+    min_success_rate: 50          # 最小成功率（%）
+
+# 业务指标阈值
+business_metrics:
+  # 下载并发数阈值
+  download_concurrency:
+    batch_download: 100           # 批量下载场景阈值
+
+  # 事件队列深度阈值
+  event_queue_depth:
+    warning: 100
+    error: 500
+    critical: 1000
+
+  # K线计算耗时阈值（毫秒）
+  kline_calculation_time:
+    warning: 100
+    error: 500
+    critical: 1000
+
+# 自适应阈值配置
+adaptive_threshold:
+  # 启用自适应阈值
+  enabled: true
+
+  # 滚动窗口大小
+  rolling_window_size: 100
+
+  # 最小样本数
+  min_samples: 10
+
+  # 标准差乘数
+  std_multiplier: 2.0
+
+  # 混合模式（静态+自适应）
+  hybrid_mode: true
+
+# 网络延迟阈值（毫秒）
+network_latency:
+  warning: 100           # 延迟警告阈值
+  error: 300             # 延迟错误阈值
+  critical: 1000         # 延迟严重阈值
+
+# 带宽测试阈值（Mbps）
+bandwidth:
+  download:
+    warning: 50          # 下载速度警告阈值
+    error: 20            # 下载速度错误阈值
+  upload:
+    warning: 20          # 上传速度警告阈值
+    error: 5             # 上传速度错误阈值

@@ -14,7 +14,7 @@
 ## 📋 核心内容索引
 
 ### 一、告警管理业务规则
-### 二、阈值管理业务规则  
+### 二、阈值管理业务规则
 ### 三、进程监控业务规则
 ### 四、服务监控业务规则
 ### 五、业务指标采集业务规则
@@ -64,10 +64,10 @@ def check_threshold_alert(metric_name: str, current_value: float) -> Optional[Al
         "disk_percent": {"warning": 70, "error": 85, "critical": 95},
         "cpu_temp": {"warning": 60, "error": 80, "critical": 90}
     }
-    
+
     if metric_name not in thresholds:
         return None
-    
+
     config = thresholds[metric_name]
     if current_value >= config["critical"]:
         return Alert(level="CRITICAL", ...)
@@ -75,7 +75,7 @@ def check_threshold_alert(metric_name: str, current_value: float) -> Optional[Al
         return Alert(level="ERROR", ...)
     elif current_value >= config["warning"]:
         return Alert(level="WARNING", ...)
-    
+
     return None
 ```
 
@@ -85,11 +85,11 @@ def check_rate_change_alert(metric_name: str, current: float, previous: float) -
     """检查变化率告警（5分钟内变化>30%触发）"""
     if previous == 0:
         return None
-    
+
     change_rate = abs(current - previous) / previous
     if change_rate > 0.3:  # 30%
         return Alert(level="WARNING", message=f"{metric_name}变化率异常: {change_rate:.1%}")
-    
+
     return None
 ```
 
@@ -102,10 +102,10 @@ def check_state_alert(component: str, state: str) -> Optional[Alert]:
         "service": ["offline", "error"],
         "process": ["crashed", "zombie"]
     }
-    
+
     if component in critical_states and state in critical_states[component]:
         return Alert(level="CRITICAL", component=component, state=state)
-    
+
     return None
 ```
 
@@ -115,20 +115,20 @@ def check_state_alert(component: str, state: str) -> Optional[Alert]:
 ```python
 class AlertDebouncer:
     """告警防抖器"""
-    
+
     def __init__(self, debounce_seconds: int = 60):
         self.debounce_seconds = debounce_seconds
         self._last_alert_time: Dict[str, float] = {}
-    
+
     def should_alert(self, alert_key: str) -> bool:
         """判断是否应该发送告警"""
         now = time.time()
         last_time = self._last_alert_time.get(alert_key, 0)
-        
+
         if now - last_time >= self.debounce_seconds:
             self._last_alert_time[alert_key] = now
             return True
-        
+
         return False
 ```
 
@@ -136,19 +136,19 @@ class AlertDebouncer:
 ```python
 class CountDebouncer:
     """计数防抖器"""
-    
+
     def __init__(self, threshold: int = 3):
         self.threshold = threshold
         self._counts: Dict[str, int] = {}
-    
+
     def increment(self, alert_key: str) -> bool:
         """增加计数，返回是否达到阈值"""
         self._counts[alert_key] = self._counts.get(alert_key, 0) + 1
-        
+
         if self._counts[alert_key] >= self.threshold:
             self._counts[alert_key] = 0  # 重置
             return True
-        
+
         return False
 ```
 
@@ -161,7 +161,7 @@ class CountDebouncer:
 async def send_alert_via_ipc(alert: Alert):
     """通过native_ipc推送告警到主进程"""
     pipe_name = "monitor_alerts"
-    
+
     alert_data = {
         "type": "alert",
         "level": alert.level,
@@ -170,7 +170,7 @@ async def send_alert_via_ipc(alert: Alert):
         "details": alert.details,
         "timestamp": alert.timestamp
     }
-    
+
     try:
         async with await AsyncIPCPipe.connect_as_client(pipe_name, timeout=3.0) as pipe:
             await pipe.write_json(alert_data)
@@ -192,14 +192,14 @@ def send_alert_via_event(alert: Alert, event_engine: EventEngine):
 def log_alert(alert: Alert):
     """记录告警到日志系统"""
     logger_alert = logging.getLogger("monitor_process.alert")
-    
+
     log_level = {
         "INFO": logging.INFO,
         "WARNING": logging.WARNING,
         "ERROR": logging.ERROR,
         "CRITICAL": logging.CRITICAL
     }[alert.level]
-    
+
     logger_alert.log(log_level, f"[{alert.category}] {alert.message}", extra=alert.details)
 ```
 
@@ -215,18 +215,18 @@ def route_alert(alert: Alert):
         send_alert_via_event(alert, event_engine)
         log_alert(alert)
         # UI对话框由主进程处理
-    
+
     elif alert.level == "ERROR":
         # 错误告警：IPC + 事件 + 日志
         send_alert_via_ipc(alert)
         send_alert_via_event(alert, event_engine)
         log_alert(alert)
-    
+
     elif alert.level == "WARNING":
         # 警告告警：IPC + 日志
         send_alert_via_ipc(alert)
         log_alert(alert)
-    
+
     else:
         # 信息告警：仅日志
         log_alert(alert)
@@ -236,31 +236,31 @@ def route_alert(alert: Alert):
 ```python
 class AlertBatcher:
     """告警批处理器"""
-    
+
     def __init__(self, batch_size: int = 10, flush_interval: float = 5.0):
         self.batch_size = batch_size
         self.flush_interval = flush_interval
         self._batch: List[Alert] = []
         self._last_flush_time = time.time()
-    
+
     def add(self, alert: Alert):
         """添加告警到批次"""
         self._batch.append(alert)
-        
+
         # 达到批次大小或超时，立即推送
         if len(self._batch) >= self.batch_size or \
            time.time() - self._last_flush_time >= self.flush_interval:
             self.flush()
-    
+
     def flush(self):
         """推送批次"""
         if not self._batch:
             return
-        
+
         # 批量推送
         for alert in self._batch:
             send_alert_via_ipc(alert)
-        
+
         self._batch.clear()
         self._last_flush_time = time.time()
 ```
@@ -272,17 +272,17 @@ class AlertBatcher:
 def aggregate_alerts(alerts: List[Alert], time_window: int = 300) -> List[Alert]:
     """聚合相同告警（5分钟窗口）"""
     aggregated = {}
-    
+
     for alert in alerts:
         key = f"{alert.category}:{alert.message}"
-        
+
         if key not in aggregated:
             aggregated[key] = alert
             aggregated[key].count = 1
         else:
             aggregated[key].count += 1
             aggregated[key].last_time = alert.timestamp
-    
+
     return list(aggregated.values())
 ```
 
@@ -304,12 +304,12 @@ system_resources:
     warning: 60      # 警告阈值（%）
     error: 80        # 错误阈值（%）
     critical: 95     # 严重阈值（%）
-  
+
   memory:
     warning: 60
     error: 80
     critical: 95
-  
+
   disk:
     warning: 70
     error: 85
@@ -321,7 +321,7 @@ hardware_sensors:
     warning: 60      # °C
     error: 80
     critical: 90
-  
+
   gpu_temperature:
     warning: 65
     error: 85
@@ -333,7 +333,7 @@ network:
     warning: 1       # %
     error: 5
     critical: 10
-  
+
   latency:
     warning: 100     # ms
     error: 300
@@ -352,25 +352,25 @@ adaptive:
 ```python
 class ThresholdConfigLoader:
     """阈值配置加载器"""
-    
+
     @staticmethod
     async def load_config_async(config_file: Path) -> Dict[str, Any]:
         """异步加载配置（使用native_iocp）"""
         from backend.infrastructure.native_iocp import compat_aopen
-        
+
         try:
             async with await compat_aopen(config_file, 'r', encoding='utf-8') as f:
                 content = await f.read()
                 config = yaml.safe_load(content)
-                
+
                 # 验证配置
                 ThresholdConfigLoader.validate_config(config)
                 return config
-        
+
         except Exception as e:
             logger.error(f"加载阈值配置失败: {e}")
             return ThresholdConfigLoader.get_default_config()
-    
+
     @staticmethod
     def validate_config(config: Dict[str, Any]):
         """验证配置有效性"""
@@ -379,7 +379,7 @@ class ThresholdConfigLoader:
         for section in required_sections:
             if section not in config:
                 raise ValueError(f"缺少必需配置节: {section}")
-        
+
         # 检查阈值大小关系（warning < error < critical）
         for section in config.values():
             if isinstance(section, dict):
@@ -387,7 +387,7 @@ class ThresholdConfigLoader:
                     if "warning" in thresholds and "error" in thresholds:
                         if thresholds["warning"] >= thresholds["error"]:
                             raise ValueError(f"{metric}: warning阈值必须小于error阈值")
-                    
+
                     if "error" in thresholds and "critical" in thresholds:
                         if thresholds["error"] >= thresholds["critical"]:
                             raise ValueError(f"{metric}: error阈值必须小于critical阈值")
@@ -401,47 +401,47 @@ class ThresholdConfigLoader:
 ```python
 class AdaptiveThresholdManager:
     """自适应阈值管理器（基于统计学习）"""
-    
+
     def __init__(self, config: Dict[str, Any]):
         self.enabled = config.get("enabled", True)
         self.learning_window = config.get("learning_window", 100)
         self.std_multiplier = config.get("std_multiplier", 2.0)
         self.min_samples = config.get("min_samples", 10)
-        
+
         # 历史数据（滚动窗口）
         self._history: Dict[str, deque] = {}
-    
+
     def update_metric(self, metric_name: str, value: float):
         """更新指标数据"""
         if metric_name not in self._history:
             self._history[metric_name] = deque(maxlen=self.learning_window)
-        
+
         self._history[metric_name].append(value)
-    
+
     def get_threshold(self, metric_name: str) -> Tuple[float, float]:
         """获取动态阈值（均值，标准差）"""
         if metric_name not in self._history:
             return 0, 0
-        
+
         samples = list(self._history[metric_name])
         if len(samples) < self.min_samples:
             return 0, 0
-        
+
         mean = np.mean(samples)
         std = np.std(samples)
-        
+
         return mean, std
-    
+
     def check_threshold(self, metric_name: str, value: float) -> ThresholdResult:
         """检查阈值（基于动态学习）"""
         mean, std = self.get_threshold(metric_name)
-        
+
         if std == 0:
             return ThresholdResult(status="unknown", deviation=0)
-        
+
         # 计算偏离标准差的倍数
         deviation = (value - mean) / std
-        
+
         # 判断告警级别
         if deviation > self.std_multiplier * 2:
             status = "critical"
@@ -451,7 +451,7 @@ class AdaptiveThresholdManager:
             status = "warning"
         else:
             status = "normal"
-        
+
         return ThresholdResult(
             status=status,
             deviation=deviation,
@@ -466,22 +466,22 @@ class AdaptiveThresholdManager:
 ```python
 class HybridThresholdManager:
     """混合阈值管理器（静态阈值 + 自适应学习）"""
-    
+
     def __init__(self, static_config: Dict, adaptive_config: Dict):
         self.static_thresholds = static_config
         self.adaptive_manager = AdaptiveThresholdManager(adaptive_config)
         self.use_adaptive = adaptive_config.get("enabled", True)
-    
+
     def check_threshold(self, metric_name: str, value: float) -> Alert:
         """检查阈值（优先使用静态，辅助自适应）"""
         # 1. 检查静态阈值
         static_result = self._check_static(metric_name, value)
-        
+
         # 2. 如果启用自适应，进行学习
         if self.use_adaptive:
             self.adaptive_manager.update_metric(metric_name, value)
             adaptive_result = self.adaptive_manager.check_threshold(metric_name, value)
-            
+
             # 3. 混合判断：静态阈值为主，自适应辅助
             if static_result and adaptive_result.status in ["warning", "error", "critical"]:
                 # 两者都告警，取较高级别
@@ -495,7 +495,7 @@ class HybridThresholdManager:
                     message=f"{metric_name}异常波动（自适应检测）",
                     details={"deviation": adaptive_result.deviation}
                 )
-        
+
         return static_result
 ```
 
@@ -542,13 +542,13 @@ class ExtendedProcessMetrics(ProcessMetrics):
 ```python
 class ProcessMonitor:
     """进程监控器"""
-    
+
     def get_process_metrics(self) -> List[ProcessMetrics]:
         """获取所有进程指标"""
         import psutil
-        
+
         metrics_list = []
-        for proc in psutil.process_iter(['pid', 'name', 'status', 'cpu_percent', 
+        for proc in psutil.process_iter(['pid', 'name', 'status', 'cpu_percent',
                                           'memory_info', 'num_threads', 'create_time']):
             try:
                 info = proc.info
@@ -565,10 +565,10 @@ class ProcessMonitor:
                     cmdline=proc.cmdline()
                 )
                 metrics_list.append(metrics)
-            
+
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
-        
+
         return metrics_list
 ```
 
@@ -611,20 +611,20 @@ def detect_zombie_processes(metrics: List[ProcessMetrics]) -> List[ProcessMetric
 def detect_high_resource_processes(metrics: List[ProcessMetrics]) -> List[Alert]:
     """检测高资源占用进程"""
     alerts = []
-    
+
     for m in metrics:
         if m.cpu_percent > 90:
             alerts.append(Alert(
                 level="WARNING",
                 message=f"进程CPU占用过高: {m.name} ({m.cpu_percent:.1f}%)"
             ))
-        
+
         if m.memory_percent > 80:
             alerts.append(Alert(
                 level="WARNING",
                 message=f"进程内存占用过高: {m.name} ({m.memory_percent:.1f}%)"
             ))
-    
+
     return alerts
 ```
 
@@ -640,27 +640,27 @@ def detect_high_resource_processes(metrics: List[ProcessMetrics]) -> List[Alert]
 ```python
 class ServiceCallTracker:
     """服务调用追踪器"""
-    
+
     def __init__(self):
         self._call_counts: Dict[str, int] = {}
         self._success_counts: Dict[str, int] = {}
         self._error_counts: Dict[str, int] = {}
-    
+
     def record_call(self, service_name: str, success: bool):
         """记录服务调用"""
         self._call_counts[service_name] = self._call_counts.get(service_name, 0) + 1
-        
+
         if success:
             self._success_counts[service_name] = self._success_counts.get(service_name, 0) + 1
         else:
             self._error_counts[service_name] = self._error_counts.get(service_name, 0) + 1
-    
+
     def get_success_rate(self, service_name: str) -> float:
         """获取成功率"""
         total = self._call_counts.get(service_name, 0)
         if total == 0:
             return 0.0
-        
+
         success = self._success_counts.get(service_name, 0)
         return success / total
 ```
@@ -669,35 +669,35 @@ class ServiceCallTracker:
 ```python
 class ResponseTimeMonitor:
     """响应时间监控器"""
-    
+
     def __init__(self, window_size: int = 100):
         self._response_times: Dict[str, deque] = {}
         self.window_size = window_size
-    
+
     def record_response_time(self, service_name: str, response_time_ms: float):
         """记录响应时间"""
         if service_name not in self._response_times:
             self._response_times[service_name] = deque(maxlen=self.window_size)
-        
+
         self._response_times[service_name].append(response_time_ms)
-    
+
     def get_avg_response_time(self, service_name: str) -> float:
         """获取平均响应时间"""
         if service_name not in self._response_times:
             return 0.0
-        
+
         times = list(self._response_times[service_name])
         return sum(times) / len(times) if times else 0.0
-    
+
     def get_p95_response_time(self, service_name: str) -> float:
         """获取P95响应时间"""
         if service_name not in self._response_times:
             return 0.0
-        
+
         times = sorted(self._response_times[service_name])
         if not times:
             return 0.0
-        
+
         index = int(len(times) * 0.95)
         return times[index]
 ```
@@ -707,14 +707,14 @@ class ResponseTimeMonitor:
 ```python
 class ServiceHealthChecker:
     """服务健康检查器"""
-    
+
     def check_service_health(self, service_name: str) -> Dict[str, Any]:
         """检查服务健康状态"""
         # 1. 获取统计数据
         success_rate = self.call_tracker.get_success_rate(service_name)
         avg_response_time = self.response_monitor.get_avg_response_time(service_name)
         p95_response_time = self.response_monitor.get_p95_response_time(service_name)
-        
+
         # 2. 评估健康状态
         if success_rate < 0.9:
             status = "unhealthy"
@@ -728,7 +728,7 @@ class ServiceHealthChecker:
         else:
             status = "healthy"
             reason = "正常"
-        
+
         return {
             "service_name": service_name,
             "status": status,
@@ -752,15 +752,15 @@ def should_restart_service(health_status: Dict) -> bool:
     # 1. 连续5次检查失败
     if health_status.get("consecutive_failures", 0) >= 5:
         return True
-    
+
     # 2. 成功率低于50%
     if health_status["metrics"]["success_rate"] < 0.5:
         return True
-    
+
     # 3. 服务状态为offline或crashed
     if health_status["status"] in ["offline", "crashed"]:
         return True
-    
+
     return False
 ```
 
@@ -774,25 +774,25 @@ async def graceful_restart_service(service_name: str, timeout: int = 30) -> bool
         # 1. 停止服务
         logger.info(f"正在停止服务: {service_name}")
         await stop_service(service_name, timeout=timeout // 2)
-        
+
         # 2. 等待资源释放
         await asyncio.sleep(2)
-        
+
         # 3. 启动服务
         logger.info(f"正在启动服务: {service_name}")
         await start_service(service_name, timeout=timeout // 2)
-        
+
         # 4. 验证服务状态
         await asyncio.sleep(1)
         health = await check_service_health(service_name)
-        
+
         if health["status"] == "healthy":
             logger.info(f"服务重启成功: {service_name}")
             return True
         else:
             logger.error(f"服务重启后状态异常: {service_name}")
             return False
-    
+
     except Exception as e:
         logger.error(f"服务重启失败: {service_name} - {e}")
         return False
@@ -802,30 +802,30 @@ async def graceful_restart_service(service_name: str, timeout: int = 30) -> bool
 ```python
 class ExponentialBackoffRestarter:
     """指数退避重启器"""
-    
+
     def __init__(self, initial_delay: float = 1.0, max_delay: float = 60.0, max_retries: int = 5):
         self.initial_delay = initial_delay
         self.max_delay = max_delay
         self.max_retries = max_retries
         self._retry_counts: Dict[str, int] = {}
-    
+
     async def restart_with_backoff(self, service_name: str) -> bool:
         """带指数退避的重启"""
         retry_count = self._retry_counts.get(service_name, 0)
-        
+
         if retry_count >= self.max_retries:
             logger.error(f"服务重启失败次数过多，放弃重启: {service_name}")
             return False
-        
+
         # 计算等待时间（指数退避）
         delay = min(self.initial_delay * (2 ** retry_count), self.max_delay)
         logger.info(f"等待{delay:.1f}秒后重启服务: {service_name} (第{retry_count + 1}次尝试)")
-        
+
         await asyncio.sleep(delay)
-        
+
         # 尝试重启
         success = await graceful_restart_service(service_name)
-        
+
         if success:
             # 重启成功，重置计数
             self._retry_counts[service_name] = 0
@@ -903,21 +903,21 @@ collector.record_metric("cache_hit_rate", 85.5)
 ```python
 class BusinessMetricsCollector:
     """业务指标采集器"""
-    
+
     def collect_from_services(self, service_manager) -> Dict[str, Any]:
         """从各服务采集业务指标"""
         metrics = {}
-        
+
         # 从数据中心服务采集
         if data_center := service_manager.get_service("data_center"):
             metrics["download_concurrency"] = data_center.get_concurrency()
             metrics["download_progress"] = data_center.get_progress()
-        
+
         # 从交易网关服务采集
         if gateway := service_manager.get_service("trading_gateway"):
             metrics["order_queue_depth"] = gateway.get_order_queue_depth()
             metrics["connection_status"] = gateway.get_connection_status()
-        
+
         return metrics
 ```
 
@@ -944,20 +944,20 @@ class BusinessMetricsCollector:
 ```python
 class MetricsAggregator:
     """指标聚合器"""
-    
+
     def aggregate_by_window(self, metrics: List[Dict], window_seconds: int = 60) -> Dict:
         """按时间窗口聚合指标"""
         now = time.time()
         cutoff = now - window_seconds
-        
+
         # 过滤时间窗口内的指标
         windowed = [m for m in metrics if m["timestamp"] >= cutoff]
-        
+
         # 聚合计算
         aggregated = {}
         for metric_name in set(m["name"] for m in windowed):
             values = [m["value"] for m in windowed if m["name"] == metric_name]
-            
+
             aggregated[metric_name] = {
                 "avg": np.mean(values),
                 "min": np.min(values),
@@ -966,7 +966,7 @@ class MetricsAggregator:
                 "p95": np.percentile(values, 95),
                 "p99": np.percentile(values, 99)
             }
-        
+
         return aggregated
 ```
 
@@ -1040,22 +1040,22 @@ async def initialize_ipc_pipes(self):
     # 批次1：创建告警管道（客户端模式，监控进程无需等待）
     # 批次2：创建状态管道（服务端模式，需要触发连接）
     # 批次3：创建查询管道（服务端模式，需要触发连接）
-    
+
     # 创建状态管道（服务端）
     self.status_pipe = await AsyncIPCPipe.create_as_server("monitor_status")
-    
+
     # 触发连接（关键步骤）
     asyncio.create_task(self._handle_status_pipe())
-    
+
     # 等待一小段时间，确保服务端就绪
     await asyncio.sleep(0.1)
-    
+
     # 创建查询管道（服务端）
     self.query_pipe = await AsyncIPCPipe.create_as_server("monitor_query")
     asyncio.create_task(self._handle_query_pipe())
-    
+
     await asyncio.sleep(0.1)
-    
+
     logger.info("IPC管道初始化完成")
 ```
 
@@ -1083,26 +1083,26 @@ async def initialize_ipc_pipes(self):
 async def query_monitor_data(self, action: str, params: Dict = None) -> Optional[Dict]:
     """查询监控数据"""
     pipe_name = "monitor_query"
-    
+
     query = {
         "action": action,
         "params": params or {}
     }
-    
+
     try:
         async with await AsyncIPCPipe.connect_as_client(pipe_name, timeout=5.0) as pipe:
             # 发送查询
             await pipe.write_json(query)
-            
+
             # 接收响应（超时5秒）
             response = await asyncio.wait_for(pipe.read_json(), timeout=5.0)
-            
+
             if response["status"] == "success":
                 return response["data"]
             else:
                 logger.error(f"查询失败: {response.get('error')}")
                 return None
-    
+
     except asyncio.TimeoutError:
         logger.error(f"查询超时: {action}")
         return None
@@ -1122,7 +1122,7 @@ async def send_with_retry(pipe_name: str, data: Dict, max_retries: int = 3) -> b
             async with await AsyncIPCPipe.connect_as_client(pipe_name, timeout=3.0) as pipe:
                 await pipe.write_json(data)
                 return True
-        
+
         except Exception as e:
             if attempt < max_retries - 1:
                 await asyncio.sleep(0.5 * (2 ** attempt))  # 指数退避
@@ -1184,10 +1184,10 @@ while not server_pool.is_ready():
         logger.info(f"等待服务器池就绪（当前状态：{server_pool.get_status()}）")
     elif elapsed % 5 == 0:
         logger.info(f"仍在等待服务器池就绪... 已等待{elapsed}秒（当前状态：{server_pool.get_status()}）")
-    
+
     await asyncio.sleep(1)
     elapsed += 1
-    
+
     if elapsed >= timeout:
         logger.error(f"等待服务器池就绪超时（{timeout}秒）")
         break
@@ -1204,19 +1204,19 @@ while not server_pool.is_ready():
 def calculate_monitoring_overhead() -> Dict[str, float]:
     """计算监控开销"""
     import psutil
-    
+
     # 获取当前进程
     current_process = psutil.Process()
-    
+
     # 计算CPU开销
     cpu_percent = current_process.cpu_percent(interval=0.1)
-    
+
     # 计算内存开销
     memory_mb = current_process.memory_info().rss / 1024 / 1024
-    
+
     # 计算I/O开销
     io_counters = current_process.io_counters()
-    
+
     return {
         "cpu_percent": cpu_percent,
         "memory_mb": memory_mb,
@@ -1231,16 +1231,16 @@ async def test_ipc_latency() -> float:
     """测试IPC通信延迟"""
     iterations = 100
     total_time = 0
-    
+
     for _ in range(iterations):
         start = time.perf_counter()
-        
+
         # 发送查询
         result = await query_monitor_data("get_system")
-        
+
         elapsed = time.perf_counter() - start
         total_time += elapsed
-    
+
     avg_latency_ms = (total_time / iterations) * 1000
     return avg_latency_ms
 ```
@@ -1301,17 +1301,17 @@ def collect_cpu_metrics() -> Dict[str, Any]:
     """采集CPU指标"""
     # CPU使用率（0.1秒采样，避免阻塞）
     cpu_percent = psutil.cpu_percent(interval=0.1)
-    
+
     # 每核心使用率
     cpu_per_core = psutil.cpu_percent(interval=0.1, percpu=True)
-    
+
     # CPU频率
     freq = psutil.cpu_freq()
     cpu_freq = freq.current if freq else 0
-    
+
     # CPU统计
     stats = psutil.cpu_stats()
-    
+
     return {
         "cpu_percent": cpu_percent,
         "cpu_per_core": cpu_per_core,
@@ -1351,7 +1351,7 @@ def collect_memory_metrics() -> Dict[str, Any]:
     """采集内存指标"""
     mem = psutil.virtual_memory()
     swap = psutil.swap_memory()
-    
+
     return {
         "memory_percent": mem.percent,
         "memory_total_mb": mem.total / 1024 / 1024,
@@ -1366,30 +1366,30 @@ def collect_memory_metrics() -> Dict[str, Any]:
 ```python
 class MemoryLeakDetector:
     """内存泄漏检测器"""
-    
+
     def __init__(self, window_size: int = 60):
         self.window_size = window_size
         self._history = deque(maxlen=window_size)
-    
+
     def check_leak(self, current_mb: float) -> Optional[Alert]:
         """检测内存泄漏（线性增长）"""
         self._history.append(current_mb)
-        
+
         if len(self._history) < self.window_size:
             return None
-        
+
         # 线性回归检测趋势
         x = np.arange(len(self._history))
         y = np.array(self._history)
         slope, _ = np.polyfit(x, y, 1)
-        
+
         # 如果斜率>0.5（每分钟增长0.5MB），可能存在内存泄漏
         if slope > 0.5:
             return Alert(
                 level="WARNING",
                 message=f"检测到可能的内存泄漏（增长速率：{slope:.2f}MB/分钟）"
             )
-        
+
         return None
 ```
 
@@ -1407,11 +1407,11 @@ class MemoryLeakDetector:
 ```python
 class DiskMonitor:
     """磁盘监控器"""
-    
+
     def __init__(self):
         self._last_io_counters = None
         self._last_collect_time = None
-    
+
     def collect_disk_metrics(self) -> Dict[str, Any]:
         """采集磁盘指标"""
         # 1. 磁盘使用率
@@ -1427,11 +1427,11 @@ class DiskMonitor:
                 }
             except PermissionError:
                 pass
-        
+
         # 2. 磁盘I/O
         current_io = psutil.disk_io_counters()
         current_time = time.time()
-        
+
         if self._last_io_counters:
             elapsed = current_time - self._last_collect_time
             read_bytes_s = (current_io.read_bytes - self._last_io_counters.read_bytes) / elapsed
@@ -1439,10 +1439,10 @@ class DiskMonitor:
         else:
             read_bytes_s = 0
             write_bytes_s = 0
-        
+
         self._last_io_counters = current_io
         self._last_collect_time = current_time
-        
+
         return {
             "disk_usage": disk_usage,
             "disk_io_read_mb_s": read_bytes_s / 1024 / 1024,
@@ -1457,10 +1457,10 @@ class DiskMonitor:
 def check_disk_space_alerts(disk_usage: Dict) -> List[Alert]:
     """检查磁盘空间告警"""
     alerts = []
-    
+
     for device, info in disk_usage.items():
         percent = info["percent"]
-        
+
         if percent >= 95:
             alerts.append(Alert(
                 level="CRITICAL",
@@ -1476,7 +1476,7 @@ def check_disk_space_alerts(disk_usage: Dict) -> List[Alert]:
                 level="WARNING",
                 message=f"磁盘空间偏低: {device} ({percent:.1f}%)"
             ))
-    
+
     return alerts
 ```
 
@@ -1496,16 +1496,16 @@ def check_disk_space_alerts(disk_usage: Dict) -> List[Alert]:
 ```python
 class NetworkMonitor:
     """网络监控器"""
-    
+
     def __init__(self):
         self._last_net_counters = None
         self._last_collect_time = None
-    
+
     def collect_network_metrics(self) -> Dict[str, Any]:
         """采集网络指标"""
         current_net = psutil.net_io_counters()
         current_time = time.time()
-        
+
         if self._last_net_counters:
             elapsed = current_time - self._last_collect_time
             sent_bytes_s = (current_net.bytes_sent - self._last_net_counters.bytes_sent) / elapsed
@@ -1513,10 +1513,10 @@ class NetworkMonitor:
         else:
             sent_bytes_s = 0
             recv_bytes_s = 0
-        
+
         self._last_net_counters = current_net
         self._last_collect_time = current_time
-        
+
         return {
             "network_sent_mb_s": sent_bytes_s / 1024 / 1024,
             "network_recv_mb_s": recv_bytes_s / 1024 / 1024,
@@ -1536,188 +1536,54 @@ def calculate_packet_loss_rate(metrics: Dict) -> float:
     total_packets = metrics["network_sent_packets"] + metrics["network_recv_packets"]
     if total_packets == 0:
         return 0
-    
+
     total_drops = metrics["network_drop_in"] + metrics["network_drop_out"]
     loss_rate = (total_drops / total_packets) * 100
-    
+
     return loss_rate
 ```
 
-### 9.2 网络带宽监控规则
+### 9.2 网络测试池规则
 
-#### 9.2.1 测速服务器配置规则
+#### 9.2.1 延迟测试池（LatencyMonitor）
 
-**配置文件位置**：`config/speedtest_servers.yaml`
+**配置文件**：`backend/infrastructure/system_vnpy/config/ping_servers.yaml`
 
-**配置示例**：
-```yaml
-servers:
-  - name: "Tele2 瑞典"
-    enabled: true
-    ping_url: "http://speedtest.tele2.net/"
-    download_url: "http://speedtest.tele2.net/100MB.zip"
-    timeout: 15
-    priority: 1
-  
-  - name: "Cloudflare"
-    enabled: true
-    ping_url: "https://speed.cloudflare.com/"
-    download_url: "https://speed.cloudflare.com/__down?bytes=10000000"
-    timeout: 10
-    priority: 2
-  
-  - name: "Bouygues 法国"
-    enabled: true
-    ping_url: "http://speedtest.bouygues.fr/"
-    download_url: "http://speedtest.bouygues.fr/100MB.bin"
-    timeout: 15
-    priority: 3
-```
+**服务器来源**：门户网站、视频网站、体育网站等（约70+个）
 
-**字段说明**：
-- `name`：服务器名称（用于日志显示）
-- `enabled`：是否启用（false时跳过）
-- `ping_url`：延迟测试URL（HEAD请求）
-- `download_url`：下载测试URL（GET请求）
-- `timeout`：超时时间（秒）
-- `priority`：优先级（数字越小越优先，随机选择时使用）
+**示例服务器**：百度、网易、腾讯、优酷、B站、政府网站等
 
-#### 9.2.2 延迟测试规则
+**用途**：日常网络延迟监控
 
-**测试方法**：HEAD请求
-```python
-def test_latency(url: str, timeout: int = 5) -> Dict[str, Any]:
-    """测试网络延迟"""
-    try:
-        start = time.perf_counter()
-        response = requests.head(url, timeout=timeout, allow_redirects=True)
-        elapsed_ms = (time.perf_counter() - start) * 1000
-        
-        if response.status_code < 400:
-            return {
-                "ping_ms": round(elapsed_ms, 2),
-                "url": url,
-                "status": "success"
-            }
-        else:
-            return {
-                "ping_ms": -1,
-                "error": f"HTTP {response.status_code}",
-                "status": "failed"
-            }
-    
-    except requests.exceptions.Timeout:
-        return {
-            "ping_ms": -1,
-            "error": f"超时（{timeout}秒）",
-            "status": "timeout"
-        }
-    except Exception as e:
-        return {
-            "ping_ms": -1,
-            "error": str(e),
-            "status": "failed"
-        }
-```
+**测试频率**：每10秒自动测试一次
 
-**随机重试策略**：
-```python
-def test_ping_with_random_retry(
-    server_configs: List[Dict],
-    max_retries: int = 3,
-    timeout: int = 5
-) -> Dict[str, Any]:
-    """延迟测试（随机选择+重试）"""
-    enabled_servers = [s for s in server_configs if s.get("enabled", True)]
-    tested_servers = set()
-    
-    for attempt in range(max_retries):
-        # 随机选择未测试的服务器
-        available = [s for s in enabled_servers if s["name"] not in tested_servers]
-        if not available:
-            break
-        
-        server = random.choice(available)
-        tested_servers.add(server["name"])
-        
-        result = test_latency(server["ping_url"], timeout)
-        
-        if result["status"] == "success":
-            result["server_name"] = server["name"]
-            return result
-    
-    return {
-        "error": "所有测速服务器均不可用",
-        "status": "all_failed"
-    }
-```
+**测试方式**：GET请求 + 完整浏览器头部模拟真实用户访问
 
-#### 9.2.3 下载速度测试规则
+**实现逻辑**：
+- 启动时并发测试所有服务器连通性，生成可用服务器表缓存
+- 之后每10秒自动测试一次延迟，随机选择服务器
+- 使用GET请求模拟真实浏览器访问，添加完整的User-Agent等头部信息
 
-**测试参数**：
-- 最大时长：10秒
-- 块大小：64KB
-- 无进度超时：3秒
+#### 9.2.2 带宽测试池（BandwidthMonitor）
 
-**测试实现**：
-```python
-def test_download_speed(
-    url: str,
-    max_duration: int = 10,
-    timeout: int = 15
-) -> Dict[str, Any]:
-    """测试下载速度"""
-    try:
-        start = time.perf_counter()
-        response = requests.get(url, timeout=timeout, stream=True)
-        
-        if response.status_code not in (200, 206):
-            return {
-                "download_mbps": -1,
-                "error": f"HTTP {response.status_code}",
-                "status": "failed"
-            }
-        
-        total_bytes = 0
-        chunk_size = 65536  # 64KB
-        last_progress_time = start
-        
-        for chunk in response.iter_content(chunk_size=chunk_size):
-            if chunk:
-                total_bytes += len(chunk)
-                last_progress_time = time.perf_counter()
-            
-            # 检查超时
-            current_time = time.perf_counter()
-            if current_time - start > max_duration:
-                break
-            if current_time - last_progress_time > 3:  # 无进度超时
-                break
-        
-        elapsed = time.perf_counter() - start
-        
-        if elapsed > 0 and total_bytes > 0:
-            speed_mbps = (total_bytes * 8) / elapsed / 1_000_000
-            return {
-                "download_mbps": round(speed_mbps, 2),
-                "total_MB": round(total_bytes / 1024 / 1024, 2),
-                "elapsed_seconds": round(elapsed, 2),
-                "status": "success"
-            }
-        else:
-            return {
-                "download_mbps": -1,
-                "error": "未下载到任何数据",
-                "status": "failed"
-            }
-    
-    except Exception as e:
-        return {
-            "download_mbps": -1,
-            "error": str(e),
-            "status": "failed"
-        }
-```
+**配置文件**：`backend/infrastructure/system_vnpy/config/speedtest_servers.yaml`
+
+**服务器来源**：仅国内镜像站（约15个）
+
+**示例服务器**：阿里云、腾讯云、华为云、清华、中科大等镜像站
+
+**用途**：完整带宽测试（延迟 + 下载速度）
+
+**测试频率**：仅在手动触发时执行（预计30-60秒）
+
+**测试方式**：HEAD请求测延迟 + 流式下载测带宽
+
+**实现逻辑**：
+- 从服务器池中随机选择一个服务器
+- 先执行延迟测试（HEAD请求）
+- 延迟测试通过后，执行下载速度测试（流式下载，Range请求前10MB）
+- 支持重试机制（最多3次）
+- 仅使用国内镜像站，避免国际带宽测试受限于网络环境
 
 ### 9.3 系统信息采集规则
 
@@ -1730,27 +1596,27 @@ def test_download_speed(
 def get_system_info() -> Dict[str, Any]:
     """获取系统信息"""
     import platform
-    
+
     return {
         # 操作系统
         "os_name": platform.system(),
         "os_version": platform.version(),
         "os_release": platform.release(),
         "os_arch": platform.machine(),
-        
+
         # 启动时间
         "boot_time": datetime.fromtimestamp(psutil.boot_time()).isoformat(),
         "uptime_seconds": int(time.time() - psutil.boot_time()),
-        
+
         # CPU信息
         "cpu_model": platform.processor(),
         "cpu_cores": psutil.cpu_count(logical=False),
         "cpu_threads": psutil.cpu_count(logical=True),
         "cpu_freq_max": psutil.cpu_freq().max if psutil.cpu_freq() else 0,
-        
+
         # 内存信息
         "memory_total_mb": psutil.virtual_memory().total / 1024 / 1024,
-        
+
         # 磁盘信息
         "disk_partitions": [
             {
@@ -1760,7 +1626,7 @@ def get_system_info() -> Dict[str, Any]:
             }
             for p in psutil.disk_partitions()
         ],
-        
+
         # 网络信息
         "hostname": platform.node(),
         "python_version": platform.python_version()
@@ -1805,7 +1671,7 @@ def collect_libre_sensors() -> Dict[str, List[SensorData]]:
     import clr
     # 加载LibreHardwareMonitor
     # ...
-    
+
     sensors_by_type = {
         "temperature": [],
         "power": [],
@@ -1814,11 +1680,11 @@ def collect_libre_sensors() -> Dict[str, List[SensorData]]:
         "clock": [],
         "load": []
     }
-    
+
     # 遍历所有硬件
     for hardware in computer.Hardware:
         hardware.Update()
-        
+
         # 遍历所有传感器
         for sensor in hardware.Sensors:
             sensor_data = SensorData(
@@ -1828,11 +1694,11 @@ def collect_libre_sensors() -> Dict[str, List[SensorData]]:
                 sensor_type=sensor.SensorType.ToString(),
                 hardware_name=hardware.Name
             )
-            
+
             type_key = sensor.SensorType.ToString().lower()
             if type_key in sensors_by_type:
                 sensors_by_type[type_key].append(sensor_data)
-    
+
     return sensors_by_type
 ```
 
@@ -1849,14 +1715,14 @@ def collect_libre_sensors() -> Dict[str, List[SensorData]]:
 def collect_wmi_sensors() -> Dict[str, List[SensorData]]:
     """从WMI采集传感器数据（降级方案）"""
     import wmi
-    
+
     sensors_by_type = {
         "temperature": [],
         "fan": []
     }
-    
+
     wmi_client = wmi.WMI(namespace="root\\OpenHardwareMonitor")
-    
+
     # 尝试获取温度
     try:
         for sensor in wmi_client.Sensor():
@@ -1882,7 +1748,7 @@ def collect_wmi_sensors() -> Dict[str, List[SensorData]]:
                 )
     except Exception as e:
         logger.warning(f"WMI传感器采集失败: {e}")
-    
+
     return sensors_by_type
 ```
 
@@ -1899,38 +1765,38 @@ def collect_wmi_sensors() -> Dict[str, List[SensorData]]:
 ```python
 class WMISmartMonitor:
     """WMI SMART监控器"""
-    
+
     def get_smart_data(self) -> Dict[str, DiskSmartData]:
         """获取所有硬盘的SMART数据"""
         import wmi
-        
+
         # COM线程安全：每个线程独立的WMI实例
         wmi_client = wmi.WMI(namespace="root\\wmi")
-        
+
         # 1. 获取硬盘基本信息
         disks_info = self._get_disks_basic_info()
-        
+
         # 2. 获取故障预测状态
         predict_status = self._get_failure_predict_status(wmi_client)
-        
+
         # 3. 获取SMART属性
         smart_attributes = self._get_failure_predict_data(wmi_client)
-        
+
         # 4. 组合数据
         result = {}
         for disk_name, info in disks_info.items():
             # 获取SMART属性
             attributes = smart_attributes.get(disk_name, [])
-            
+
             # 提取关键属性
             temperature = self._get_attribute_value(attributes, 194)  # ID 194: 温度
             power_on_hours = self._get_attribute_value(attributes, 9)  # ID 9: 通电时间
             reallocated = self._get_attribute_value(attributes, 5)  # ID 5: 重分配扇区
             pending = self._get_attribute_value(attributes, 197)  # ID 197: 待处理扇区
-            
+
             # 评估健康状态
             assessment = self._assess_health(attributes, predict_status.get(disk_name, {}))
-            
+
             result[disk_name] = DiskSmartData(
                 disk_name=disk_name,
                 model=info.get("model", "Unknown"),
@@ -1943,7 +1809,7 @@ class WMISmartMonitor:
                 reallocated_sectors=reallocated,
                 pending_sectors=pending
             )
-        
+
         return result
 ```
 
@@ -1960,12 +1826,12 @@ def _assess_health(
     # 1. 检查WMI故障预测
     if predict_status.get("PredictFailure", False):
         return "故障"
-    
+
     # 2. 检查关键SMART属性
     reallocated = self._get_attribute_raw_value(attributes, 5)
     pending = self._get_attribute_raw_value(attributes, 197)
     uncorrectable = self._get_attribute_raw_value(attributes, 187)
-    
+
     # 3. 故障判定
     if reallocated and reallocated > 100:
         return "故障"
@@ -1973,13 +1839,13 @@ def _assess_health(
         return "故障"
     if uncorrectable and uncorrectable > 0:
         return "故障"
-    
+
     # 4. 警告判定
     if reallocated and reallocated > 0:
         return "警告"
     if pending and pending > 0:
         return "警告"
-    
+
     # 5. 正常
     return "正常"
 ```
@@ -2017,7 +1883,7 @@ def process_smart_alerts(smart_data: Dict[str, DiskSmartData]):
                     "pending_sectors": data.pending_sectors
                 }
             )
-        
+
         # 2. 温度告警
         if data.temperature:
             if data.temperature > 70:
@@ -2081,18 +1947,18 @@ intervals:
 ```python
 class MonitoringProcessV2:
     """监控进程V2（固定频率模式）"""
-    
+
     def __init__(self, config: Dict[str, Any]):
         # 从配置文件加载固定频率
         self.intervals = config["monitoring"]["intervals"]
-        
+
         # 固定间隔，不动态调整
         self.system_interval = self.intervals["system_metrics"]      # 1秒
         self.process_interval = self.intervals["process_metrics"]    # 2秒
         self.hardware_interval = self.intervals["hardware_sensors"]  # 5秒
         self.smart_interval = self.intervals["smart_data"]          # 60秒
         self.alert_interval = self.intervals["alert_evaluation"]    # 3秒
-    
+
     async def start(self):
         """启动监控进程（固定频率）"""
         # 启动4个并发任务，各自独立的固定间隔
@@ -2102,22 +1968,22 @@ class MonitoringProcessV2:
             asyncio.create_task(self._monitor_hardware_task()),    # 5秒一次
             asyncio.create_task(self._evaluate_alerts_task())      # 3秒一次
         ]
-        
+
         await asyncio.gather(*tasks)
-    
+
     async def _monitor_system_task(self):
         """系统监控任务（固定1秒间隔）"""
         while True:
             try:
                 # 采集系统指标
                 metrics = self.system_monitor.get_system_metrics()
-                
+
                 # 发布事件（供智能负载均衡模块消费）
                 self.event_engine.put(Event(EVENT_SYSTEM_METRICS, metrics))
-                
+
                 # 固定间隔等待
                 await asyncio.sleep(self.system_interval)
-            
+
             except Exception as e:
                 logger.error(f"系统监控任务异常: {e}")
                 await asyncio.sleep(self.system_interval)
@@ -2139,18 +2005,18 @@ class MonitoringProcessV2:
 ```python
 class MonitoringProcessV2:
     """监控进程V2（支持配置热更新）"""
-    
+
     async def reload_config(self):
         """重新加载配置（通过IPC接收主进程通知）"""
         new_config = await self.config_manager.load_config_async()
-        
+
         # 更新采集间隔
         old_intervals = self.intervals.copy()
         self.intervals = new_config["monitoring"]["intervals"]
-        
+
         # 记录配置变更
         logger.info(f"监控配置已更新: {old_intervals} -> {self.intervals}")
-        
+
         # 注意：任务会在下一个周期使用新间隔，无需重启
 ```
 
@@ -2190,7 +2056,7 @@ if cpu_percent > 80:
 class LoadBalancer:
     def get_optimal_config(self, task: Task) -> Dict:
         pressure_score = self._calculate_pressure_score(self._latest_system_metrics)
-        
+
         if pressure_score < 40:
             return {"max_workers": 4, "max_coroutines": 500}  # 降低业务并发
         else:

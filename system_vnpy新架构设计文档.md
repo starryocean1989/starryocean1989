@@ -563,6 +563,16 @@ class SystemManagerEngine:
 **Part 0: 网络测速模块（NetworkSpeedTester）**
 - 功能：基于公共测速站点的纯Python网络测速
 - 特性：无第三方依赖、随机重试、超时保护
+- **延迟测试池（LatencyMonitor）**：
+  - 配置文件：`config/ping_servers.yaml`
+  - 服务器来源：门户网站、视频网站、体育网站等（约70+个）
+  - 测试频率：每10秒自动测试一次
+  - 测试方式：GET请求 + 完整浏览器头部模拟真实用户访问
+- **带宽测试池（BandwidthMonitor）**：
+  - 配置文件：`config/speedtest_servers.yaml`
+  - 服务器来源：仅国内镜像站（约15个）
+  - 测试频率：仅在手动触发时执行（预计30-60秒）
+  - 测试方式：HEAD请求测延迟 + 流式下载测带宽
 
 **Part 1: 阈值管理与硬件监控工厂**
 - AdaptiveThresholdManager：自适应阈值管理
@@ -932,26 +942,26 @@ except IPCError as e:
 ```python
 class LoadBalancer:
     """智能负载均衡器（消费监控数据）"""
-    
+
     def __init__(self, event_engine: EventEngine):
         self.event_engine = event_engine
         self._latest_system_metrics: Optional[Dict] = None
-        
+
         # 订阅系统监控事件
         self.event_engine.register(EVENT_SYSTEM_METRICS, self._on_system_metrics)
-    
+
     def _on_system_metrics(self, event: Event):
         """接收系统监控数据"""
         self._latest_system_metrics = event.data
-    
+
     def get_optimal_config(self, task: Task) -> Dict[str, int]:
         """根据系统状态计算最优配置（调整业务并发，不是监控频率）"""
         if not self._latest_system_metrics:
             return self._get_default_config(task)
-        
+
         # 使用木桶理论评估系统压力
         pressure_score = self._calculate_pressure_score(self._latest_system_metrics)
-        
+
         # 根据压力动态调整业务并发数
         if pressure_score < 40:
             # 系统压力大，降低业务并发
@@ -961,14 +971,14 @@ class LoadBalancer:
         else:
             # 系统压力小，提高业务并发
             return {"max_workers": 16, "max_coroutines": 2000}
-    
+
     def _calculate_pressure_score(self, metrics: Dict) -> float:
         """计算系统压力评分（木桶理论：取最小值）"""
         cpu_score = 100 - metrics.get("cpu_percent", 0)
         memory_score = 100 - metrics.get("memory_percent", 0)
         disk_io = metrics.get("disk_io_read_mb_s", 0) + metrics.get("disk_io_write_mb_s", 0)
         disk_score = max(0, 100 - (disk_io / 500 * 100))
-        
+
         # 木桶理论：取最短板
         return min(cpu_score, memory_score, disk_score)
 ```
@@ -986,7 +996,7 @@ monitoring:
     hardware_sensors: 5      # 硬件传感器采集间隔（秒）
     smart_data: 60          # SMART数据采集间隔（秒）
     alert_evaluation: 3      # 告警评估间隔（秒）
-  
+
   # 性能限制（保证监控开销可控）
   performance:
     max_cpu_percent: 2.0     # 最大CPU占用（%）
