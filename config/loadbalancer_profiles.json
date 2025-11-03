@@ -6,7 +6,7 @@
   "profiles": {
     "small_task_optimized": {
       "name": "小任务优化配置",
-      "description": "适用于小于100品种的快速扫描，注重启动速度和资源节省",
+      "description": "适用于小于100品种的快速扫描,注重启动速度和资源节省",
       "use_case": "日常快速查询、单一品种分析、测试验证",
       "worker_count": 4,
       "batch_size": 30,
@@ -28,7 +28,7 @@
 
     "medium_task_balanced": {
       "name": "中等任务均衡配置",
-      "description": "适用于100-1000品种的日常扫描，平衡性能和资源使用",
+      "description": "适用于100-1000品种的日常扫描,平衡性能和资源使用",
       "use_case": "日常数据质量扫描、板块分析、策略筛选",
       "worker_count": 8,
       "batch_size": 50,
@@ -51,7 +51,7 @@
 
     "large_task_performance": {
       "name": "大任务性能配置",
-      "description": "适用于大于1000品种的全量扫描，最大化吞吐量",
+      "description": "适用于大于1000品种的全量扫描,最大化吞吐量",
       "use_case": "全市场扫描、大批量数据处理、离线分析",
       "worker_count": 16,
       "batch_size": 100,
@@ -74,7 +74,7 @@
 
     "network_intensive": {
       "name": "网络密集型配置",
-      "description": "适用于网络请求密集的任务，注重连接管理和网络优化",
+      "description": "适用于网络请求密集的任务,注重连接管理和网络优化",
       "use_case": "服务器K线请求、实时数据更新、多源数据同步",
       "worker_count": 12,
       "batch_size": 40,
@@ -97,7 +97,7 @@
 
     "disk_intensive": {
       "name": "磁盘密集型配置",
-      "description": "适用于本地数据读写密集的任务，注重IO优化",
+      "description": "适用于本地数据读写密集的任务,注重IO优化",
       "use_case": "TDX数据读取、Parquet数据扫描、文件批量处理",
       "worker_count": 6,
       "batch_size": 60,
@@ -120,7 +120,7 @@
 
     "memory_conservative": {
       "name": "内存保守配置",
-      "description": "适用于内存受限环境，严格控制内存使用",
+      "description": "适用于内存受限环境,严格控制内存使用",
       "use_case": "低内存服务器、并行运行多任务、内存敏感场景",
       "worker_count": 4,
       "batch_size": 20,
@@ -143,7 +143,7 @@
 
     "high_availability": {
       "name": "高可用配置",
-      "description": "适用于7x24生产环境，注重稳定性和容错",
+      "description": "适用于7x24生产环境,注重稳定性和容错",
       "use_case": "生产环境监控、关键数据处理、容错要求高的场景",
       "worker_count": 8,
       "batch_size": 40,
@@ -166,8 +166,8 @@
   },
 
   "parameter_descriptions": {
-    "worker_count": "并发工作进程数量，影响并行处理能力",
-    "batch_size": "批次大小，每批处理的任务数量",
+    "worker_count": "并发工作进程数量,影响并行处理能力",
+    "batch_size": "批次大小,每批处理的任务数量",
     "queue_size": "任务队列最大长度",
     "cpu_limit": "CPU使用率限制（百分比）",
     "memory_limit": "内存使用限制（MB）",
@@ -203,7 +203,7 @@
     ],
 
     "performance_tuning": [
-      "监控CPU/内存/磁盘/网络瓶颈，选择对应的优化配置",
+      "监控CPU/内存/磁盘/网络瓶颈,选择对应的优化配置",
       "使用benchmark_2000tasks.py测试不同配置的实际性能",
       "根据A/B测试结果微调参数",
       "定期使用performance_monitoring.py建立和更新基线"

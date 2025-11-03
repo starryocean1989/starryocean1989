@@ -6544,9 +6544,14 @@ def main():
         sys.path.insert(0, str(project_root))
 
     # 配置日志（仅Terminal输出）
-    # 确俞stdout使用UTF-8编码（Python 3.7+）
+    # 确保stdout使用UTF-8编码（Python 3.7+）
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+        except (OSError, ValueError):
+            # 在某些环境下reconfigure可能失败（如已重定向或已配置）
+            # 不影响功能，继续执行
+            pass
 
     stream_handler = logging.StreamHandler(sys.stdout)
     logging.basicConfig(
@@ -6574,6 +6579,9 @@ def main():
     logger.info("独立监控进程启动（V2 - 混合并发架构）")
     logger.info("=" * 60)
 
+    # 记录启动开始时间
+    start_time = time.time()
+
     try:
         import asyncio
         import os
@@ -6594,7 +6602,7 @@ def main():
         
         # 🎯 使用STAGE_NODE显示监控进程PID
         stage_logger.info(f"✅ monitor_system.py进程已启动 (PID: {os.getpid()})", extra={"log_type": "STAGE_NODE"})
-        stage_logger.info("⌟ 创建native_ipc管道...", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("✅ 创建native_ipc管道", extra={"log_type": "STAGE_NODE"})
 
         monitor = MonitoringProcessV2(parent_pid=parent_pid)
         logger.info("✅ MonitoringProcessV2实例创建成功")
@@ -6606,10 +6614,10 @@ def main():
         stage_logger.info("  └─ monitor_query ✅", extra={"log_type": "STAGE_NODE"})
         
         # 🎯 监控组件初始化
-        stage_logger.info("⌟ 监控组件初始化...", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("✅ 监控组件初始化", extra={"log_type": "STAGE_NODE"})
         stage_logger.info("  ├─ SystemMonitor ✅", extra={"log_type": "STAGE_NODE"})
         stage_logger.info("  ├─ ProcessMonitor ✅", extra={"log_type": "STAGE_NODE"})
-        stage_logger.info("  ├─ HardwareMonitor (后台异步) ⌟", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("  ├─ HardwareMonitor (后台异步) ⏳", extra={"log_type": "STAGE_NODE"})
         stage_logger.info("  └─ BandwidthMonitor ✅", extra={"log_type": "STAGE_NODE"})
         
         # 🎯 Level 1就绪
@@ -6623,8 +6631,9 @@ def main():
         # 🎯 看门狗启动
         stage_logger.info("✅ 监控进程看门狗启动", extra={"log_type": "STAGE_NODE"})
         
-        # 🎯 完成
-        stage_logger.info("✅ 监控进程完全就绪 (2.3s)", extra={"log_type": "STAGE_NODE"})
+        # 🎯 完成（计算实际耗时）
+        elapsed = time.time() - start_time
+        stage_logger.info(f"✅ 监控进程完全就绪 ({elapsed:.1f}s)", extra={"log_type": "STAGE_NODE"})
         
         # 🎯 切换到运行阶段
         try:

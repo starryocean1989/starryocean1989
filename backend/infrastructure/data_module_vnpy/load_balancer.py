@@ -408,17 +408,49 @@ class ServerPoolManager:
     """
 
     # 默认服务器列表
-    DEFAULT_IPV4_SERVERS = [
-        {"ip": "119.147.212.81", "port": 7709, "name": "广东电信1"},
-        {"ip": "113.105.73.88", "port": 7709, "name": "广东电信2"},
-        {"ip": "113.105.73.86", "port": 7709, "name": "广东电信3"},
-        {"ip": "120.79.60.82", "port": 7709, "name": "广东移动"},
-        {"ip": "113.105.142.136", "port": 443, "name": "广东联通"},
-    ]
-
-    DEFAULT_IPV6_SERVERS = [
-        {"ip": "2408:8256:3be:3880::1", "port": 7709, "name": "广东电信IPv6"},
-    ]
+    # 🎯 使用constants.py中所有的7709端口IPv4服务器
+    DEFAULT_IPV4_SERVERS = []
+    DEFAULT_IPV6_SERVERS = []
+    
+    @classmethod
+    def _init_default_servers(cls):
+        """初始化默认服务器列表（从constants.py加载）"""
+        if cls.DEFAULT_IPV4_SERVERS:  # 已初始化
+            return
+        
+        try:
+            from backend.infrastructure.tdx_asyncio.constants import HQ_HOSTS_ALL
+            
+            # 提取所有7709端口的IPv4和IPv6服务器
+            for name, ip, port in HQ_HOSTS_ALL:
+                if port == 7709:
+                    # 判断IPv4还是IPv6（简单判断：包含':'为IPv6）
+                    if ':' in ip:
+                        # IPv6（需要去掉中括号）
+                        clean_ip = ip.strip('[]')
+                        cls.DEFAULT_IPV6_SERVERS.append(
+                            {"ip": clean_ip, "port": port, "name": name}
+                        )
+                    else:
+                        # IPv4
+                        cls.DEFAULT_IPV4_SERVERS.append(
+                            {"ip": ip, "port": port, "name": name}
+                        )
+            
+            logger.info(f"✅ 从constants.py加载默认服务器: IPv4={len(cls.DEFAULT_IPV4_SERVERS)}, IPv6={len(cls.DEFAULT_IPV6_SERVERS)}")
+        except Exception as e:
+            logger.warning(f"⚠️ 从constants.py加载服务器失败: {e}, 使用备用服务器")
+            # 备用服务器列表
+            cls.DEFAULT_IPV4_SERVERS = [
+                {"ip": "119.147.212.81", "port": 7709, "name": "广东电信1"},
+                {"ip": "113.105.73.88", "port": 7709, "name": "广东电信2"},
+                {"ip": "113.105.73.86", "port": 7709, "name": "广东电信3"},
+                {"ip": "120.79.60.82", "port": 7709, "name": "广东移动"},
+                {"ip": "113.105.142.136", "port": 443, "name": "广东联通"},
+            ]
+            cls.DEFAULT_IPV6_SERVERS = [
+                {"ip": "2408:8256:3be:3880::1", "port": 7709, "name": "广东电信IPv6"},
+            ]
 
     def __init__(self, config_manager: Optional[ConfigManager] = None):
         """初始化服务器池管理器
@@ -426,6 +458,9 @@ class ServerPoolManager:
         Args:
             config_manager: 配置管理器
         """
+        # 🎯 首先初始化默认服务器列表
+        self._init_default_servers()
+        
         self.config_manager = config_manager or ConfigManager()
 
         # 服务器池
@@ -443,7 +478,7 @@ class ServerPoolManager:
         self._cache_needs_update = False
         self._check_cache_status()
 
-        logger.info(
+        logger.debug(
             f"✅ 服务器池管理器已初始化: "
             f"IPv4={len(self._ipv4_servers)}, IPv6={len(self._ipv6_servers)}"
         )
@@ -464,7 +499,7 @@ class ServerPoolManager:
             # 缓存不存在或已过时，标记需要更新（在实际使用时再触发测速）
             self._cache_needs_update = True
             if cached_data is None:
-                logger.info("🔧 服务器池缓存不存在，将在首次使用时自动测速生成...")
+                logger.debug("🔧 服务器池缓存不存在，将在首次使用时自动测速生成...")
             else:
                 logger.info(f"🔧 服务器池缓存已过时（日期: {cache_date}），将在首次使用时自动更新...")
         except Exception as e:
@@ -608,7 +643,7 @@ class ServerPoolManager:
         def update_cache():
             """在后台线程中更新缓存"""
             try:
-                logger.info("🔧 服务器池缓存不存在或已过时，开始后台自动测速生成...")
+                logger.debug("🔧 服务器池缓存不存在或已过时，开始后台自动测速生成...")
                 self.test_servers()  # 这会在test_servers()方法结束时自动保存缓存
                 logger.info("✅ 服务器池缓存已自动生成")
             except Exception as e:
@@ -620,15 +655,20 @@ class ServerPoolManager:
         thread = threading.Thread(target=update_cache, daemon=True, name="ServerCacheUpdate")
         thread.start()
 
-    def test_servers(self, max_workers: int = 4):
+    def test_servers(self, max_workers: Optional[int] = None):
         """测试所有服务器（多进程）
 
         Args:
-            max_workers: 最大进程数
+            max_workers: 最大进程数，如果为None则根据服务器数量自动设置
         """
-        logger.info("🔍 开始测试服务器...")
+        logger.debug("🔍 开始测试服务器...")
 
         all_servers = self._ipv4_servers + self._ipv6_servers
+        
+        # 🎯 根据服务器数量动态设置max_workers，确保一次测完
+        if max_workers is None:
+            max_workers = min(len(all_servers), 32)  # 最外4个进程，最多32个
+            logger.debug(f"🎯 动态设置 max_workers={max_workers} (服务器总数: {len(all_servers)})")
 
         # 使用进程池测试
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
@@ -646,14 +686,14 @@ class ServerPoolManager:
                     server.last_test = datetime.now()
 
                     if available:
-                        logger.info(f"✅ {server.name} ({server.ip}): {ping_time:.0f}ms")
+                        logger.debug(f"✅ {server.name} ({server.ip}): {ping_time:.0f}ms")
                     else:
-                        logger.warning(f"❌ {server.name} ({server.ip}): 不可用")
+                        logger.debug(f"❌ {server.name} ({server.ip}): 不可用")
                 except Exception as e:
-                    logger.warning(f"⚠️ 测试失败 {server.name}: {e}")
+                    logger.debug(f"⚠️ 测试失败 {server.name}: {e}")
                     server.available = False
 
-        logger.info("✅ 服务器测试完成")
+        logger.debug("✅ 服务器测试完成")
 
         # 🔧 修复：测试完成后自动保存缓存
         try:

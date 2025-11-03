@@ -8,9 +8,14 @@ from typing import Dict, Optional
 
 import sys
 
-# 确保stdout使用UTF-8编码
+# 确保stdout使用UTF-8编码（如果可能）
 if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except (OSError, ValueError) as e:
+        # 在某些环境下reconfigure可能失败（如已重定向或已配置）
+        # 不影响功能，仅记录调试信息
+        pass
 
 # ✅ 不手动创建handler，依赖LoggingHub统一管理
 logger = logging.getLogger("tdx_asyncio")

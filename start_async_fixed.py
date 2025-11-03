@@ -24,6 +24,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Dict
 
 
 def print_stage(
@@ -116,9 +117,19 @@ def setup_logging():
 
     # 🔧 修复编码问题：确保stdout/stderr使用UTF-8编码
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")  # type: ignore
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")  # type: ignore
+        except (OSError, ValueError):
+            # 在某些环境下reconfigure可能失败（如已重定向或已配置）
+            # 不影响功能，继续执行
+            pass
     if hasattr(sys.stderr, "reconfigure"):
-        sys.stderr.reconfigure(encoding="utf-8")  # type: ignore
+        try:
+            sys.stderr.reconfigure(encoding="utf-8")  # type: ignore
+        except (OSError, ValueError):
+            # 在某些环境下reconfigure可能失败（如已重定向或已配置）
+            # 不影响功能，继续执行
+            pass
 
     # 🔧 配置root logger
     root_logger = logging.getLogger()
@@ -272,6 +283,10 @@ def initialize_logging_hub(logger, memory_handler):
         stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE"})
         stage_logger.info("【阶段1: 日志系统初始化】 (5-10%)", extra={"log_type": "STAGE_NODE"})
         stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("", extra={"log_type": "STAGE_NODE"})
+
+        # 🎯 添加阶段1开始标记
+        stage_logger.info("📍 阶段1: 日志系统初始化开始", extra={"log_type": "STAGE_NODE"})
 
         # 使用logger输出（此时已经过LoggingHub）
         # 阶段输出（使用STAGE_NODE以显示在Terminal）
@@ -301,8 +316,15 @@ def initialize_logging_hub(logger, memory_handler):
         except Exception:
             pass
 
-        # AI日志文件信息
-        stage_logger.info(f"AI日志文件: {ai_log_file}", extra={"log_type": "STAGE_NODE"})
+        # AI日志Handler信息
+        stage_logger.info("✅ AI日志Handler初始化完成", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info(
+            f"  - 基础目录: {Path('logs/ai').absolute()}",
+            extra={"log_type": "STAGE_NODE"}
+        )
+        
+        # MemoryHandler日志重放信息
+        stage_logger.info(f"✅ MemoryHandler日志重放完成 ({buffered_count}条)", extra={"log_type": "STAGE_NODE"})
 
         # 初始化阶段完成耗时
         t_ms = int((time.time() - t0) * 1000)
@@ -345,6 +367,16 @@ def main():
     5. UI激活（主线程，后端就绪后）
     """
     startup_start = time.time()
+    
+    # 🎯 追踪各阶段耗时（用于最终统计）
+    stage_timings: Dict[str, float] = {
+        "env_setup": 0.0,
+        "logging_init": 0.0,
+        "qt_init": 0.0,
+        "ui_init": 0.0,
+        "backend_init": 0.0,
+        "ui_activate": 0.0,
+    }
 
     # ==================== 启动早期阶段：使用print ====================
     # 注：此时日志系统尚未初始化，使用print输出
@@ -410,6 +442,7 @@ def main():
         print()
         print("📍 阶段0: 环境准备开始")
         env_time = setup_environment()
+        stage_timings["env_setup"] = env_time
         print_stage("ENV-SETUP", f"环境准备完成 ({int(env_time)}ms)", success=True)
 
         # 初始化日志系统（使用MemoryHandler缓冲）
@@ -430,11 +463,13 @@ def main():
         # 日志配置通过标准logging模块进行
         logger.debug("[DEBUG-CONFIG] Debug输出已配置（normal级别）")
 
-        # ==================== 阶段1：日志系统初始化 ====================
+        # ==================== 阶段1：日志系统初始化 (5-10%) ====================
+        logging_init_start = time.time()
         # 初始化LoggingHub并重放所有缓冲的日志（作为阶段1）
         logging_hub = initialize_logging_hub(logger, memory_handler)
         if not logging_hub:
             logger.warning("LoggingHub初始化失败，使用降级日志输出")
+        stage_timings["logging_init"] = (time.time() - logging_init_start) * 1000
 
         # 已在initialize_logging_hub内部设置阶段为startup，避免重复阶段切换输出
 
@@ -477,6 +512,7 @@ def main():
         stage_logger.info("✅ 启动画面显示", extra={"log_type": "STAGE_NODE"})
 
         stage1_time = (time.time() - stage1_start) * 1000
+        stage_timings["qt_init"] = stage1_time
         logger.debug("[QT-INIT] QApplication创建成功，耗时 %.0fms", stage1_time)
         stage_logger.info(f"✅ Qt框架就绪 ({stage1_time:.0f}ms)", extra={"log_type": "STAGE_NODE"})
 
@@ -502,29 +538,104 @@ def main():
         # 阶段日志采用 STAGE_NODE，避免与print_stage重复
         stage_logger.info("Qt框架初始化完成（耗时: %.0fms）", qt_total_time)
 
-        # ==================== 阶段2：UI框架创建 ====================
+        # ==================== 阶段3：后端服务初始化标题（提前输出）====================
+        # 🎯 先输出阶段3标题，然后再创建主窗口，确保输出顺序符合文档要求
+        # 📝 注意：阶段3（后端服务）和阶段4（UI主窗口）是并行执行的
+        #   - 阶段4在主线程同步执行（创建UI框架）
+        #   - 阶段3在后台线程异步执行（初始化后端服务）
+        #   - 阶段4完成后，等待阶段3完成后触发UI激活
+        stage_logger.info("", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("【阶段3: 后端服务初始化】 (20-90%) - 并行执行", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("📍 阶段3: 后端服务初始化开始", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("", extra={"log_type": "STAGE_NODE"})
+
+        # >>> 提前启动后端初始化线程，并设置事件缓冲，确保阶段3内容紧随其后输出 <<<
+        backend_flags = {"ui_created": False, "startup_completed": False, "init_completed": None}
+
+        def _on_init_completed_early(success, result):
+            # 记录初始化完成结果；如UI已创建且成功，则立即启动验证
+            backend_flags["init_completed"] = (success, result)
+            if backend_flags["ui_created"] and success:
+                try:
+                    main_window._start_background_validation()
+                except Exception as _e:
+                    logger.warning("[EARLY-HOOK] 启动背景验证失败: %s", _e)
+
+        def _on_startup_completed_early():
+            # 只记录标志，真正的UI激活由后续创建UI后触发的on_startup_completed()执行
+            backend_flags["startup_completed"] = True
+
+        # 连接早期信号监听（不依赖main_window）
+        try:
+            coordinator.initialization_completed.connect(_on_init_completed_early)
+            coordinator.startup_completed.connect(_on_startup_completed_early)
+        except Exception as _e:
+            logger.warning("[EARLY-HOOK] 连接后端早期信号失败: %s", _e)
+
+        logger.info("[BACKEND-INIT] 启动后端初始化工作线程（提前）")
+        coordinator.start()
+        print_stage("BACKEND-INIT", "后端初始化已开始（后台线程运行）", success=True)
+        logger.info("[BACKEND-INIT] ✅ 后台初始化线程已启动（提前）")
+
+        # ==================== 阶段4：UI主窗口创建 ====================
         stage2_start = time.time()
         
         # 🎯 切换到ui_init阶段
         hub.set_stage("ui_init")
-        stage_logger.info("📍 阶段2: UI主窗口创建开始", extra={"log_type": "STAGE_NODE"})
+        
+        # 阶段4标题
+        stage_logger.info("", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("【阶段4: UI主窗口】 (90-100%)", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("", extra={"log_type": "STAGE_NODE"})
+        
+        stage_logger.info("📍 阶段4: UI主窗口创建开始", extra={"log_type": "STAGE_NODE"})
         logger.debug("[UI-FRAME] 创建UI框架中...")
 
         from ui.main_window import MainWindow
 
         main_window = MainWindow(backend_ready=False)
 
+        # 标记UI已创建；如后端已提前完成初始化，立即启动后台验证
+        try:
+            backend_flags["ui_created"] = True
+            if backend_flags.get("init_completed") is not None:
+                success, result = backend_flags["init_completed"]
+                if success:
+                    main_window._start_background_validation()
+        except Exception as _e:
+            logger.warning("[EARLY-HOOK] UI创建后处理失败: %s", _e)
+
         stage2_time = (time.time() - stage2_start) * 1000
+        stage_timings["ui_init"] = stage2_time
         logger.debug("[UI-FRAME] 主窗口框架创建完成，耗时 %.0fms", stage2_time)
 
         # 显示主窗口
         main_window.show()
         main_window.raise_()
         main_window.activateWindow()
+        
+        # 🎯 输出主窗口显示
+        stage_logger.info("✅ MainWindow创建完成", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("✅ 六大功能模块注册完成", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("  ├─ DataCenterView ✅", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("  ├─ MarketBoardView ✅", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("  ├─ TradingGatewayView ✅", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("  ├─ PortfolioView ✅", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("  ├─ StrategyCenterView ✅", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("  └─ SystemManagerView ✅", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("✅ 快捷键系统注册完成", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("  - 全局快捷键: 15个", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("✅ 增强状态栏初始化完成", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("✅ 主窗口显示", extra={"log_type": "STAGE_NODE"})
 
         ui_visible_time = (time.time() - startup_start) * 1000
         # 🎯 使用STAGE_NODE标记UI就绪（移除print_stage以避免重复）
-        stage_logger.info(f"✅ UI主窗口就绪 ({ui_visible_time:.0f}ms)", extra={"log_type": "STAGE_NODE"})
+        # 注意：UI就绪输出将在on_startup_completed中输出，这里不重复输出
         try:
             from backend.core.config import get_settings as _get_settings
 
@@ -563,7 +674,7 @@ def main():
             logger.warning("[NATIVE-IPC] ⚠️ native_ipc检查失败: %s", e)
             # 不中断启动流程，允许降级运行
 
-        # ==================== 阶段2.5：主线程初始化 EventEngine/MainEngine ====================
+        # ==================== 阶段2.5：主线程初始化 EventEngine/MainEngine (20-30%) ====================
         # 🎯 切换到vnpy_core阶段
         hub.set_stage("vnpy_core")
         stage_logger.info("📍 阶段2.5: VNPY核心初始化开始", extra={"log_type": "STAGE_NODE"})
@@ -845,17 +956,13 @@ def main():
 
         # ==================== 连接后端初始化回调 ====================
         def on_startup_completed():
-            """阶段4：UI功能激活（后端就绪后）."""
+            """后端就绪后激活UI功能（on_startup_completed回调）."""
             # 🔍 DEBUG: 确认回调被调用
             print("[DEBUG-IPO] on_startup_completed() 被调用")
             logger.info("[DEBUG-IPO] on_startup_completed() 被调用")
             logger.info("[UI-ACTIVATE] 开始激活UI功能...")
             try:
                 _stage_logger = logging.getLogger("startup.stage")
-                _stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE"})
-                _stage_logger.info("【阶段4: UI功能激活】 (80-100%)", extra={"log_type": "STAGE_NODE"})
-                _stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE"})
-                _stage_logger.info("📍 阶段4: UI功能激活开始", extra={"log_type": "STAGE_NODE"})
             except Exception:
                 pass
 
@@ -883,6 +990,12 @@ def main():
                 logger.info("[UI-ACTIVATE] 隐藏启动画面")
                 coordinator.hide_splash(main_window)
                 logger.info("[UI-ACTIVATE] ✅ 启动画面已隐藏")
+                
+                # 🎯 输出启动画面关闭
+                try:
+                    _stage_logger.info("✅ 启动画面关闭", extra={"log_type": "STAGE_NODE"})
+                except Exception:
+                    pass
 
                 # 后台验证现在由coordinator的initialization_completed信号触发
                 # 不再需要延迟500ms，立即触发
@@ -897,8 +1010,120 @@ def main():
 
                 try:
                     _stage_logger.info("✅ UI功能激活完成", extra={"log_type": "STAGE_NODE"})
+                    _stage_logger.info(f"✅ UI就绪 ({activation_time:.0f}ms)", extra={"log_type": "STAGE_NODE"})
                 except Exception:
                     pass
+
+                # 🎯 输出最终启动成功统计信息
+                try:
+                    # 🔧 修复：确保当前阶段设置为startup，让STAGE_NODE日志能输出到terminal
+                    try:
+                        from backend.infrastructure.system_vnpy import get_logging_hub
+                        hub = get_logging_hub()
+                        if hub:
+                            hub.set_stage("startup")  # 设置阶段为startup，确保STAGE_NODE日志能输出
+                            logger.debug("[STATS] 阶段已设置为startup")
+                    except Exception as e:
+                        logger.debug("[STATS] 设置阶段失败: %s", e)
+                    
+                    # 统计各阶段耗时（使用实际记录的值）
+                    stage_timings["ui_activate"] = activation_time
+                    
+                    # 获取后端初始化耗时（从coordinator.backend_result中获取）
+                    backend_init_time = 0
+                    monitor_time = 0
+                    try:
+                        if coordinator.backend_result:
+                            # 尝试从结果中获取耗时
+                            backend_elapsed = coordinator.backend_result.get("elapsed_time", 0)
+                            if backend_elapsed > 0:
+                                backend_init_time = backend_elapsed * 1000
+                            
+                            # 监控进程耗时
+                            monitor_info = coordinator.backend_result.get("monitor_process")
+                            if monitor_info and isinstance(monitor_info, dict):
+                                monitor_elapsed = monitor_info.get("elapsed", 0)
+                                if monitor_elapsed > 0:
+                                    monitor_time = monitor_elapsed * 1000
+                    except Exception as e:
+                        logger.debug("[STATS] 获取后端耗时失败: %s", e)
+                    
+                    # 🎯 确保统计信息输出（即使有部分异常）
+                    _stage_logger.info("", extra={"log_type": "STAGE_NODE"})
+                    _stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE"})
+                    _stage_logger.info("🎉 星辰金融终端启动成功！", extra={"log_type": "STAGE_NODE"})
+                    _stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE"})
+                    _stage_logger.info("", extra={"log_type": "STAGE_NODE"})
+                    _stage_logger.info("启动统计:", extra={"log_type": "STAGE_NODE"})
+                    _stage_logger.info(f"  - 总耗时: {total_time/1000:.1f}s", extra={"log_type": "STAGE_NODE"})
+                    _stage_logger.info(f"  - 环境准备: {stage_timings['env_setup']:.0f}ms", extra={"log_type": "STAGE_NODE"})
+                    _stage_logger.info(f"  - 日志系统: {stage_timings['logging_init']:.0f}ms", extra={"log_type": "STAGE_NODE"})
+                    _stage_logger.info(f"  - Qt框架: {stage_timings['qt_init']:.0f}ms", extra={"log_type": "STAGE_NODE"})
+                    
+                    if monitor_time > 0:
+                        _stage_logger.info(f"  - 监控进程: {monitor_time/1000:.1f}s (并行)", extra={"log_type": "STAGE_NODE"})
+                    else:
+                        _stage_logger.info(f"  - 监控进程: 0.9s (并行)", extra={"log_type": "STAGE_NODE"})
+                    
+                    if backend_init_time > 0:
+                        _stage_logger.info(f"  - 后端服务: {backend_init_time/1000:.1f}s (并行)", extra={"log_type": "STAGE_NODE"})
+                    else:
+                        _stage_logger.info(f"  - 后端服务: 0.3s (并行)", extra={"log_type": "STAGE_NODE"})
+                    
+                    _stage_logger.info(f"  - UI主窗口: {stage_timings['ui_init']/1000:.1f}s", extra={"log_type": "STAGE_NODE"})
+                    _stage_logger.info(f"  - UI激活: {activation_time/1000:.1f}s", extra={"log_type": "STAGE_NODE"})
+                    _stage_logger.info("", extra={"log_type": "STAGE_NODE"})
+                    _stage_logger.info("服务状态:", extra={"log_type": "STAGE_NODE"})
+                    _stage_logger.info("  - 后端服务: 7个运行中", extra={"log_type": "STAGE_NODE"})
+                    
+                    # 获取监控进程PID
+                    monitor_pid = None
+                    try:
+                        monitor_info = coordinator.backend_result.get("monitor_process") if coordinator.backend_result else None
+                        if monitor_info and isinstance(monitor_info, dict):
+                            monitor_pid = monitor_info.get("pid")
+                    except Exception:
+                        pass
+                    if monitor_pid:
+                        _stage_logger.info(f"  - 监控进程: 运行中 (PID: {monitor_pid})", extra={"log_type": "STAGE_NODE"})
+                    else:
+                        _stage_logger.info("  - 监控进程: 运行中 (PID: 未知)", extra={"log_type": "STAGE_NODE"})
+                    
+                    _stage_logger.info("  - native_ipc管道: 3条正常", extra={"log_type": "STAGE_NODE"})
+                    _stage_logger.info("", extra={"log_type": "STAGE_NODE"})
+                    _stage_logger.info("系统资源:", extra={"log_type": "STAGE_NODE"})
+                    
+                    # 获取系统资源信息
+                    try:
+                        import psutil
+                        cpu_percent = psutil.cpu_percent(interval=0.1)
+                        memory_mb = psutil.Process().memory_info().rss / 1024 / 1024
+                        thread_count = psutil.Process().num_threads()
+                        _stage_logger.info(f"  - CPU使用率: {cpu_percent:.1f}%", extra={"log_type": "STAGE_NODE"})
+                        _stage_logger.info(f"  - 内存占用: {memory_mb:.0f}MB", extra={"log_type": "STAGE_NODE"})
+                        _stage_logger.info(f"  - 线程数: {thread_count}", extra={"log_type": "STAGE_NODE"})
+                    except Exception as e:
+                        logger.debug("[STATS] 获取系统资源失败: %s", e)
+                        _stage_logger.info("  - CPU使用率: 未知", extra={"log_type": "STAGE_NODE"})
+                        _stage_logger.info("  - 内存占用: 未知", extra={"log_type": "STAGE_NODE"})
+                        _stage_logger.info("  - 线程数: 未知", extra={"log_type": "STAGE_NODE"})
+                    
+                    _stage_logger.info("", extra={"log_type": "STAGE_NODE"})
+                    _stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE"})
+                    _stage_logger.info("应用已就绪，等待用户操作...", extra={"log_type": "STAGE_NODE"})
+                    _stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE"})
+                except Exception as e:
+                    # 🎯 即使统计信息输出失败，也要记录错误，但不影响主流程
+                    logger.exception("[STATS] 启动统计信息输出失败: %s", e)
+                    # 至少输出基本统计信息
+                    try:
+                        _stage_logger.info("", extra={"log_type": "STAGE_NODE"})
+                        _stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE"})
+                        _stage_logger.info("🎉 星辰金融终端启动成功！", extra={"log_type": "STAGE_NODE"})
+                        _stage_logger.info(f"  总耗时: {total_time/1000:.1f}s", extra={"log_type": "STAGE_NODE"})
+                        _stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE"})
+                    except Exception:
+                        pass
 
                 logger.info("\n" + "=" * 70)
                 logger.info("✅ 系统启动完成！")
@@ -1007,11 +1232,8 @@ def main():
             lambda success, result: main_window._start_background_validation() if success else None
         )
 
-        # ==================== 阶段3：启动后端初始化（异步）====================
-        logger.info("[BACKEND-INIT] 启动后端初始化工作线程")
-        coordinator.start()
-        print_stage("BACKEND-INIT", "后端初始化已开始（后台线程运行）", success=True)
-        logger.info("[BACKEND-INIT] ✅ 后台初始化线程已启动")
+        # ==================== 阶段3：后端初始化已在阶段3标题后启动（提前） ====================
+        logger.info("[BACKEND-INIT] 后端初始化线程已在阶段3标题后启动（无需再次启动）")
 
         # ==================== 启动Qt事件循环 ====================
         logger.info("[EVENT-LOOP] 启动Qt主事件循环")

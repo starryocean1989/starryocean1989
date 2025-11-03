@@ -1,0 +1,19 @@
+======================================================================
+🚀 星辰金融终端 - 启动中（单进程多线程模式）
+======================================================================
+Traceback (most recent call last):
+  File "C:\Users\Administrator\Desktop\terminal_v0.50\start_async_fixed.py", line 1057, in <module>
+    sys.exit(main())
+  File "C:\Users\Administrator\Desktop\terminal_v0.50\start_async_fixed.py", line 372, in main
+    from backend.infrastructure.system_vnpy import (
+  File "C:\Users\Administrator\Desktop\terminal_v0.50\backend\__init__.py", line 12, in <module>
+    from .core import (
+  File "C:\Users\Administrator\Desktop\terminal_v0.50\backend\core\__init__.py", line 40, in <module>
+    from .base import (
+  File "C:\Users\Administrator\Desktop\terminal_v0.50\backend\core\base.py", line 28, in <module>
+    from backend.services.vnpy_imports import (
+  File "C:\Users\Administrator\Desktop\terminal_v0.50\backend\services\__init__.py", line 9, in <module>
+    from .system_manager_service import SystemManagerService
+  File "C:\Users\Administrator\Desktop\terminal_v0.50\backend\services\system_manager_service.py", line 22, in <module>
+    import psutil
+ModuleNotFoundError: No module named 'psutil'

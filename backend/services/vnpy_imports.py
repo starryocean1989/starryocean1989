@@ -210,7 +210,7 @@ except ImportError:
 
 def setup_logging(name: str = "terminal", level: str = "INFO") -> logging.Logger:
     """
-    配置日志系统（仅控制台输出，数据库日志由LogRecordHandler自动处理）.
+    配置日志系统（统一通过LoggingHub处理）.
 
     Args:
         name: 日志名称
@@ -220,27 +220,29 @@ def setup_logging(name: str = "terminal", level: str = "INFO") -> logging.Logger
         配置好的Logger对象
 
     Note:
-        日志自动写入数据库，由 LogRecordHandler 处理。
-        文件日志功能已于 v0.50 移除。
+        v0.50版本：所有日志统一通过LoggingHub处理，不再直接添加StreamHandler。
+        LoggingHub会根据规则决定是否输出到Terminal、文件和数据库。
     """
     logger = logging.getLogger(name)
     logger.setLevel(getattr(logging, level.upper(), logging.INFO))
-    logger.propagate = False  # 阻止传播到root logger，避免重复输出
+    
+    # ✅ 关键修复：设置propagate=True，让日志传播到root logger，经过LoggingHub处理
+    logger.propagate = True
+    
+    # ✅ 移除所有现有handlers，避免绕过LoggingHub直接输出
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+        handler.close()
 
-    if logger.handlers:
-        return logger
-
-    # 控制台处理器（Terminal输出）
+    # 确保stdout使用UTF-8编码（保留编码设置）
     import sys
-
-    # 确保stdout使用UTF-8编码
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(logging.INFO)
-    console_formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-    console_handler.setFormatter(console_formatter)
-    logger.addHandler(console_handler)
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+        except (OSError, ValueError):
+            # 在某些环境下reconfigure可能失败（如已重定向或已配置）
+            # 不影响功能，继续执行
+            pass
 
     return logger
 

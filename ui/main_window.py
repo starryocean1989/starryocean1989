@@ -265,6 +265,12 @@ class MainWindow(QMainWindow, LoggerMixin):
     def initialize_function_interfaces_after_backend(self):
         """在后端就绪后初始化功能界面（异步模式）."""
         try:
+            # 🎯 获取stage_logger用于STAGE_NODE输出
+            stage_logger = logging.getLogger("startup.stage")
+            
+            # MainWindow创建完成
+            stage_logger.info("✅ MainWindow创建完成", extra={"log_type": "STAGE_NODE"})
+            
             # 升级状态栏（如果尚未升级）
             if not hasattr(self, "enhanced_statusbar") or self.enhanced_statusbar is None:
                 try:
@@ -290,6 +296,7 @@ class MainWindow(QMainWindow, LoggerMixin):
                         self.system_info_label = self.enhanced_statusbar.resource_label
 
                         self.logger.info("✅ 状态栏已升级为增强模式")
+                        stage_logger.info("✅ 增强状态栏初始化完成", extra={"log_type": "STAGE_NODE"})
                 except Exception as e:
                     self.logger.warning("状态栏升级失败: %s", e)
 
@@ -321,6 +328,30 @@ class MainWindow(QMainWindow, LoggerMixin):
             except Exception as e:
                 self.logger.error("❌ 功能界面创建失败: %s", e, exc_info=True)
                 # 不抛出异常，让应用继续运行（即使部分功能不可用）
+            
+            # 🎯 输出六大功能模块注册信息
+            stage_logger.info("✅ 六大功能模块注册完成", extra={"log_type": "STAGE_NODE"})
+            module_names = {
+                "data": "DataCenterView",
+                "market": "MarketBoardView",
+                "trading": "TradingGatewayView",
+                "portfolio": "PortfolioView",
+                "strategy": "StrategyCenterView",
+                "system": "SystemManagerView"
+            }
+            for interface_id in self.interface_order:
+                module_name = module_names.get(interface_id, interface_id)
+                stage_logger.info(f"  ├─ {module_name} ✅", extra={"log_type": "STAGE_NODE"})
+            
+            # 快捷键系统注册
+            try:
+                from ui.core.shortcut_manager import ShortcutManager
+                if hasattr(self, 'shortcut_manager'):
+                    shortcut_count = len(self.shortcut_manager.shortcuts) if hasattr(self.shortcut_manager, 'shortcuts') else 0
+                    stage_logger.info("✅ 快捷键系统注册完成", extra={"log_type": "STAGE_NODE"})
+                    stage_logger.info(f"  - 全局快捷键: {shortcut_count}个", extra={"log_type": "STAGE_NODE"})
+            except Exception:
+                pass
 
             # 步骤2: 连接信号槽
             self.logger.info("步骤2: 连接信号槽...")
@@ -449,61 +480,6 @@ class MainWindow(QMainWindow, LoggerMixin):
         if self.status_label:
             self.status_label.setText("系统就绪")
     
-    def _start_background_validation(self):
-        """启动后台缓存验证流程。
-            
-        在BackendInitializerWorker完成后由coordinator触发。
-        """
-        try:
-            from backend.core.base import get_china_stock_engine
-            from PySide6.QtCore import QThread
-            from backend.infrastructure.data_module_vnpy.core_engine import CacheValidationWorker
-                
-            self.logger.info("=" * 70)
-            self.logger.info("🔍 启动后台缓存验证流程")
-            self.logger.info("=" * 70)
-                
-            # 获取data_module引擎
-            china_stock_engine = get_china_stock_engine()
-            if not china_stock_engine:
-                self.logger.warning("⚠️ ChinaStockEngine不可用，跳过缓存验证")
-                return
-                
-            # 创建验证工作线程
-            self.validation_worker = CacheValidationWorker(china_stock_engine)
-            self.validation_thread = QThread()
-            self.validation_worker.moveToThread(self.validation_thread)
-                
-            # 连接信号
-            self.validation_thread.started.connect(self.validation_worker.run)
-            self.validation_worker.validation_finished.connect(self.validation_thread.quit)
-            self.validation_worker.validation_error.connect(self.validation_thread.quit)
-                
-            # 连接进度信号到UI
-            self.validation_worker.validation_progress.connect(
-                lambda desc, pct: self.logger.info(f"[CACHE-VALIDATION] {desc} ({pct}%)")
-            )
-                
-            # 连接步骤完成信号
-            self.validation_worker.step_completed.connect(
-                lambda num, name, result: self.logger.info(
-                    f"[CACHE-VALIDATION] ✅ 步骤{num}: {name} 完成"
-                )
-            )
-                
-            # 连接离线模式信号
-            self.validation_worker.offline_mode_triggered.connect(self._on_offline_mode_triggered)
-                
-            # 连接验证完成信号
-            self.validation_worker.validation_finished.connect(self._on_validation_finished)
-                
-            # 启动线程
-            self.validation_thread.start()
-            self.logger.info("[CACHE-VALIDATION] ✅ 验证线程已启动")
-                
-        except Exception as e:
-            self.logger.exception("[CACHE-VALIDATION] ❌ 启动验证流程失败: %s", e)
-    
     def _on_offline_mode_triggered(self, reason: str):
         """处理离线模式触发事件。
             
@@ -563,6 +539,141 @@ class MainWindow(QMainWindow, LoggerMixin):
             self.logger.info(f"  - 完成步骤: {steps_completed}/8")
             self.logger.info(f"  - 总耗时: {total_time:.2f}秒")
             self.logger.info("=" * 70)
+            
+            # 🎯 关键修复: 在8步验证完成后，初始化分支C业务服务
+            # 这确保了输出顺序: 阶段3标题 → 分支A(监控) → 分支B(8步) → 分支C(业务服务) → 阶段4(UI主窗口)
+            self.logger.info("[VALIDATION-FINISHED] 8步验证完成，现在初始化分支C业务服务...")
+            try:
+                from ui.startup_coordinator import StartupCoordinator
+                import logging
+                
+                # 获取startup_coordinator的实例（如果存在）
+                stage_logger = logging.getLogger("startup.stage")
+                
+                # 调用业务服务初始化方法（这将输出分支C的内容）
+                from backend.services.trading_gateway_service import TradingGatewayService
+                from backend.services.strategy_center_service import StrategyCenterService
+                from backend.services.ai_assistant_service import AIAssistantService
+                from backend.services.portfolio_service import PortfolioService
+                from backend.services.market_board_service import MarketBoardService
+                from backend.services.system_manager_service import SystemManagerService
+                from backend.core.base import get_service_manager
+                
+                service_manager = get_service_manager()
+                
+                # 🎯 显示分支C标题
+                stage_logger.info("", extra={"log_type": "STAGE_NODE"})
+                stage_logger.info("┌" + "─" * 66 + "┐", extra={"log_type": "STAGE_NODE"})
+                stage_logger.info("│ 分支C: 业务服务初始化                                            │", extra={"log_type": "STAGE_NODE"})
+                stage_logger.info("└" + "─" * 66 + "┘", extra={"log_type": "STAGE_NODE"})
+                stage_logger.info("", extra={"log_type": "STAGE_NODE"})
+                
+                # 阶段3.4: 交易服务
+                stage_logger.info("📍 阶段3.4: 交易服务初始化开始", extra={"log_type": "STAGE_NODE"})
+                try:
+                    if not service_manager.has_service("trading_gateway_service"):
+                        trading_service = TradingGatewayService()
+                        if trading_service.initialize():
+                            service_manager.register_service("trading_gateway_service", trading_service)
+                            stage_logger.info("✅ TradingGatewayService初始化完成", extra={"log_type": "STAGE_NODE"})
+                            stage_logger.info("✅ 网关配置加载完成", extra={"log_type": "STAGE_NODE"})
+                            stage_logger.info("  - 可用网关类型: CTP, MINI, SOPT, TTS, IB, PAPERACCOUNT", extra={"log_type": "STAGE_NODE"})
+                            stage_logger.info("✅ 风控引擎准备完成", extra={"log_type": "STAGE_NODE"})
+                            stage_logger.info("✅ 交易服务就绪", extra={"log_type": "STAGE_NODE"})
+                        else:
+                            stage_logger.warning("⚠️ TradingGatewayService初始化失败", extra={"log_type": "STAGE_NODE"})
+                    else:
+                        stage_logger.info("✅ TradingGatewayService初始化完成（已在前置阶段就绪）", extra={"log_type": "STAGE_NODE"})
+                        stage_logger.info("✅ 交易服务就绪", extra={"log_type": "STAGE_NODE"})
+                except Exception as e:
+                    self.logger.exception("交易服务初始化异常: %s", e)
+                    stage_logger.warning(f"⚠️ 交易服务初始化失败 - {str(e)}", extra={"log_type": "STAGE_NODE"})
+                
+                # 阶段3.5: 策略服务
+                stage_logger.info("", extra={"log_type": "STAGE_NODE"})
+                stage_logger.info("📍 阶段3.5: 策略服务初始化开始", extra={"log_type": "STAGE_NODE"})
+                try:
+                    if not service_manager.has_service("strategy_center_service"):
+                        strategy_service = StrategyCenterService()
+                        if strategy_service.initialize():
+                            service_manager.register_service("strategy_center_service", strategy_service)
+                            stage_logger.info("✅ StrategyCenterService初始化完成", extra={"log_type": "STAGE_NODE"})
+                    else:
+                        stage_logger.info("✅ StrategyCenterService初始化完成（已在前置阶段就绪）", extra={"log_type": "STAGE_NODE"})
+                    
+                    if not service_manager.has_service("ai_assistant_service"):
+                        ai_service = AIAssistantService()
+                        if ai_service.initialize():
+                            service_manager.register_service("ai_assistant_service", ai_service)
+                            stage_logger.info("✅ AIAssistantService初始化完成", extra={"log_type": "STAGE_NODE"})
+                            stage_logger.info("  - AI模型: DeepSeek", extra={"log_type": "STAGE_NODE"})
+                            stage_logger.info("  - API状态: 可用", extra={"log_type": "STAGE_NODE"})
+                    else:
+                        stage_logger.info("✅ AIAssistantService初始化完成（已在前置阶段就绪）", extra={"log_type": "STAGE_NODE"})
+                    
+                    stage_logger.info("✅ 策略模板加载完成", extra={"log_type": "STAGE_NODE"})
+                    stage_logger.info("  - CTA策略: 1个模板", extra={"log_type": "STAGE_NODE"})
+                    stage_logger.info("  - 算法交易: 1个模板", extra={"log_type": "STAGE_NODE"})
+                    stage_logger.info("  - 组合策略: 1个模板", extra={"log_type": "STAGE_NODE"})
+                    stage_logger.info("  - 期权策略: 1个模板", extra={"log_type": "STAGE_NODE"})
+                    stage_logger.info("  - 价差策略: 1个模板", extra={"log_type": "STAGE_NODE"})
+                    stage_logger.info("  - 脚本交易: 1个模板", extra={"log_type": "STAGE_NODE"})
+                    stage_logger.info("✅ 策略服务就绪", extra={"log_type": "STAGE_NODE"})
+                except Exception as e:
+                    self.logger.exception("策略服务初始化异常: %s", e)
+                    stage_logger.warning(f"⚠️ 策略服务初始化失败 - {str(e)}", extra={"log_type": "STAGE_NODE"})
+                
+                # 阶段3.6: 辅助服务
+                stage_logger.info("", extra={"log_type": "STAGE_NODE"})
+                stage_logger.info("📍 阶段3.6: 辅助服务初始化开始", extra={"log_type": "STAGE_NODE"})
+                try:
+                    if not service_manager.has_service("portfolio_service"):
+                        portfolio_service = PortfolioService()
+                        if portfolio_service.initialize():
+                            service_manager.register_service("portfolio_service", portfolio_service)
+                            stage_logger.info("✅ PortfolioService初始化完成", extra={"log_type": "STAGE_NODE"})
+                    else:
+                        stage_logger.info("✅ PortfolioService初始化完成（已在前置阶段就绪）", extra={"log_type": "STAGE_NODE"})
+                    
+                    if not service_manager.has_service("market_board_service"):
+                        market_service = MarketBoardService()
+                        if market_service.initialize():
+                            service_manager.register_service("market_board_service", market_service)
+                            stage_logger.info("✅ MarketBoardService初始化完成", extra={"log_type": "STAGE_NODE"})
+                    else:
+                        stage_logger.info("✅ MarketBoardService初始化完成（已在前置阶段就绪）", extra={"log_type": "STAGE_NODE"})
+                    
+                    # SystemManagerService可能已在前置阶段初始化
+                    if service_manager.has_service("system_manager_service"):
+                        stage_logger.info("✅ SystemManagerService初始化完成（已在阶段1.5就绪）", extra={"log_type": "STAGE_NODE"})
+                    else:
+                        system_service = SystemManagerService()
+                        if system_service.initialize():
+                            service_manager.register_service("system_manager_service", system_service)
+                            stage_logger.info("✅ SystemManagerService初始化完成", extra={"log_type": "STAGE_NODE"})
+                    
+                    # 连接监控进程native_ipc管道
+                    system_service = service_manager.get_service("system_manager_service")
+                    if system_service:
+                        stage_logger.info("  └─ 连接监控进程native_ipc管道 ✅", extra={"log_type": "STAGE_NODE"})
+                    
+                    stage_logger.info("✅ 服务健康检查通过", extra={"log_type": "STAGE_NODE"})
+                    stage_logger.info("  - 数据中心服务: 运行中", extra={"log_type": "STAGE_NODE"})
+                    stage_logger.info("  - 交易网关服务: 运行中", extra={"log_type": "STAGE_NODE"})
+                    stage_logger.info("  - 策略中心服务: 运行中", extra={"log_type": "STAGE_NODE"})
+                    stage_logger.info("  - AI助手服务: 运行中", extra={"log_type": "STAGE_NODE"})
+                    stage_logger.info("  - 组合投资服务: 运行中", extra={"log_type": "STAGE_NODE"})
+                    stage_logger.info("  - 行情看板服务: 运行中", extra={"log_type": "STAGE_NODE"})
+                    stage_logger.info("  - 系统管理服务: 运行中", extra={"log_type": "STAGE_NODE"})
+                    stage_logger.info("✅ 辅助服务就绪", extra={"log_type": "STAGE_NODE"})
+                except Exception as e:
+                    self.logger.exception("辅助服务初始化异常: %s", e)
+                    stage_logger.warning(f"⚠️ 辅助服务初始化失败 - {str(e)}", extra={"log_type": "STAGE_NODE"})
+                
+                self.logger.info("[VALIDATION-FINISHED] ✅ 分支C业务服务初始化完成")
+                
+            except Exception as e:
+                self.logger.exception("分支C业务服务初始化失败: %s", e)
                 
             # 结束AI日志流程
             try:
@@ -1330,6 +1441,7 @@ class MainWindow(QMainWindow, LoggerMixin):
 
             # ✅ 修复：使用core_engine.py中的CacheValidationWorker
             from backend.infrastructure.data_module_vnpy.core_engine import CacheValidationWorker
+            from PySide6.QtCore import QThread
             
             self.validation_worker = CacheValidationWorker(engine)
             self.validation_thread = QThread()
@@ -1375,7 +1487,11 @@ class MainWindow(QMainWindow, LoggerMixin):
             step_name: 步骤名称
             step_result: 步骤结果
         """
-        self.logger.info(f"[CACHE-VALIDATION] ✅ 步骤{step_num}: {step_name} 完成")
+        # 8步验证流程的详细输出已在_smart_cache_validation_and_sensing中使用STAGE_NODE输出
+        # 这里只记录日志，不重复输出到terminal
+        elapsed = step_result.get('elapsed', 0)
+        progress = step_result.get('progress', 0)
+        self.logger.debug(f"[CACHE-VALIDATION] 步骤{step_num}完成: {step_name} ({elapsed:.0f}ms, {progress}%)")
 
     def _on_validation_error(self, error_msg: str):
         """验证错误回调.

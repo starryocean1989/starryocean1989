@@ -3863,18 +3863,18 @@ class SystemManagerService(BaseService):
                     )
                 else:
                     lb = LoadBalancer(ConfigManager.get_instance())
-                if hasattr(lb, "get_current_status"):
-                    current_status = lb.get_current_status()
-
-                    # 状态映射
-                    status_mapping = {
-                        "idle": "not_applied",
-                        "adjusting": "applying",
-                        "applied": "auto_applied",
-                        "rejected": "rejected_by_limiter",
-                    }
-
-                    status = status_mapping.get(current_status, "auto_applied")
+                if hasattr(lb, "get_stats"):
+                    lb_stats = lb.get_stats()
+                    # 根据LoadBalancer的运行状态确定状态
+                    is_running = lb_stats.get("running", False)
+                    available_servers = lb_stats.get("available", 0)
+                    
+                    if is_running and available_servers > 0:
+                        status = "auto_applied"
+                    elif is_running:
+                        status = "applying"
+                    else:
+                        status = "not_applied"
             except Exception as e:
                 self.logger.warning("获取LoadBalancer状态失败，使用默认值: %s", e)
 

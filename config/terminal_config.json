@@ -10,7 +10,7 @@
     },
     "data_quality": {
         "base_date": "2024-01-01",
-        "description": "数据质量感知的基准日期，用于计算数据缺失统计"
+        "description": "数据质量感知的基准日期,用于计算数据缺失统计"
     },
     "vnpy": {
         "event_engine_timer_interval": 1.0,
@@ -70,7 +70,7 @@
         "temperature": 0.7,
         "timeout": 90,
         "max_history": 10,
-        "system_prompt": "你是一个专业的量化交易策略编写助手，擅长Python和VnPy框架。",
+        "system_prompt": "你是一个专业的量化交易策略编写助手,擅长Python和VnPy框架。",
         "enable_tools": false
     },
     "adaptive": {
@@ -120,12 +120,12 @@
             "small_task": {
                 "cpu_percent": 30.0,
                 "memory_percent": 50.0,
-                "description": "小任务(<1000单元)资源限制，保证UI响应性"
+                "description": "小任务(<1000单元)资源限制,保证UI响应性"
             },
             "large_task": {
                 "cpu_percent": 80.0,
                 "memory_percent": 70.0,
-                "description": "大任务(>=1000单元)资源限制，效率优先"
+                "description": "大任务(>=1000单元)资源限制,效率优先"
             },
             "enable_windows_job_object": false,
             "job_cpu_rate": 80,

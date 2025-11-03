@@ -265,7 +265,9 @@ class RoutingRuleEngine:
         old_stage = self.current_stage
         self.current_stage = stage
         self.cache.clear()
-        self.logger.info(f"阶段切换: {old_stage} -> {stage}")
+        # 🎯 阶段切换消息只输出到AI日志，不输出到Terminal
+        # 使用DEBUG级别，确保不会出现在Terminal输出中
+        self.logger.debug(f"阶段切换: {old_stage} -> {stage}")
 
     def set_run_mode(self, mode: str):
         """切换运行模式."""
@@ -273,7 +275,8 @@ class RoutingRuleEngine:
             return
         old_mode = self.run_mode
         self.run_mode = mode
-        self.logger.info(f"运行模式切换: {old_mode} -> {mode}")
+        # 🎯 运行模式切换消息只输出到AI日志，不输出到Terminal
+        self.logger.debug(f"运行模式切换: {old_mode} -> {mode}")
 
     def reload_rules(self):
         """热更新规则."""

@@ -1443,7 +1443,7 @@ class TradingGateway(BaseWidget, LoggerMixin):
                 # 分割文本（支持空格、逗号、换行）
                 import re
 
-                symbols_input = re.split(r"[\s,，\n\r]+", text)
+                symbols_input = re.split(r"[\s,\n\r]+", text)
                 symbols_input = [s.strip() for s in symbols_input if s.strip()]
 
                 # 添加品种（只添加在样本空间中的品种）
