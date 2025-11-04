@@ -59,12 +59,15 @@ class QtFrameworkStage(StartupStage):
             stage_logger = logging.getLogger("startup.stage")
 
             # 阶段2标题
-            stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE"})
-            stage_logger.info("【阶段2: Qt应用框架】 (10-20%)", extra={"log_type": "STAGE_NODE"})
-            stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE"})
-            stage_logger.info("", extra={"log_type": "STAGE_NODE"})
+            stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
+            stage_logger.info("【阶段2: Qt应用框架】 (10-20%)", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
+            stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
+            stage_logger.info("", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
 
-            stage_logger.info("📍 阶段2: Qt应用框架开始", extra={"log_type": "STAGE_NODE"})
+            stage_logger.info(
+                "📍 阶段2: Qt应用框架开始", 
+                extra={"log_type": "STAGE_NODE", "scenario": "backend_init"}
+            )
 
             # 创建QApplication
             from PySide6.QtWidgets import QApplication
@@ -76,7 +79,10 @@ class QtFrameworkStage(StartupStage):
 
             context.app = app
 
-            stage_logger.info("✅ QApplication创建完成", extra={"log_type": "STAGE_NODE"})
+            stage_logger.info(
+                "✅ QApplication创建完成", 
+                extra={"log_type": "STAGE_NODE", "scenario": "backend_init"}
+            )
 
             # 预创建EventEngine和MainEngine（根据启动完整设计文档1081-1082行）
             from vnpy.event import EventEngine
@@ -87,14 +93,20 @@ class QtFrameworkStage(StartupStage):
             context.event_engine = event_engine
             set_event_engine(event_engine)  # 注册到全局，供后续阶段使用
             
-            stage_logger.info("✅ EventEngine预创建完成", extra={"log_type": "STAGE_NODE"})
+            stage_logger.info(
+                "✅ EventEngine预创建完成", 
+                extra={"log_type": "STAGE_NODE", "scenario": "backend_init"}
+            )
 
             # 预创建MainEngine（根据启动完整设计文档1082行）
             main_engine = MainEngine(event_engine)
             context.main_engine = main_engine
             set_main_engine(main_engine)  # 注册到全局，供后续阶段使用
 
-            stage_logger.info("✅ MainEngine预创建完成", extra={"log_type": "STAGE_NODE"})
+            stage_logger.info(
+                "✅ MainEngine预创建完成", 
+                extra={"log_type": "STAGE_NODE", "scenario": "backend_init"}
+            )
 
             # 主题系统加载
             try:
@@ -117,8 +129,14 @@ class QtFrameworkStage(StartupStage):
                     except Exception:
                         pass
 
-                stage_logger.info("✅ 主题系统加载完成", extra={"log_type": "STAGE_NODE"})
-                stage_logger.info(f"  - 当前主题: {current_theme}", extra={"log_type": "STAGE_NODE"})
+                stage_logger.info(
+                    "✅ 主题系统加载完成", 
+                    extra={"log_type": "STAGE_NODE", "scenario": "backend_init"}
+                )
+                stage_logger.info(
+                    f"  - 当前主题: {current_theme}", 
+                    extra={"log_type": "STAGE_NODE", "scenario": "backend_init"}
+                )
                 # 将主题配置路径转换为绝对路径
                 if theme_config:
                     if not os.path.isabs(theme_config):
@@ -128,12 +146,18 @@ class QtFrameworkStage(StartupStage):
                 else:
                     # 使用默认路径
                     theme_config_abs = os.path.abspath("ui/components/themes.json")
-                stage_logger.info(f"  - 主题配置: {theme_config_abs}", extra={"log_type": "STAGE_NODE"})
+                stage_logger.info(
+                    f"  - 主题配置: {theme_config_abs}", 
+                    extra={"log_type": "STAGE_NODE", "scenario": "backend_init"}
+                )
             except Exception as e:
                 self.logger.warning(f"主题系统加载失败: {e}")
 
             # 启动画面显示
-            stage_logger.info("✅ 启动画面显示", extra={"log_type": "STAGE_NODE"})
+            stage_logger.info(
+                "✅ 启动画面显示", 
+                extra={"log_type": "STAGE_NODE", "scenario": "backend_init"}
+            )
 
             # 加载配置文件
             from backend.core.config import init_settings
@@ -148,7 +172,10 @@ class QtFrameworkStage(StartupStage):
 
             elapsed_ms = (time.time() - start_time) * 1000
 
-            stage_logger.info(f"✅ Qt框架就绪 ({elapsed_ms:.0f}ms)", extra={"log_type": "STAGE_NODE"})
+            stage_logger.info(
+                f"✅ Qt框架就绪 ({elapsed_ms:.0f}ms)", 
+                extra={"log_type": "STAGE_NODE", "scenario": "backend_init"}
+            )
 
             return StageResult(
                 success=True,

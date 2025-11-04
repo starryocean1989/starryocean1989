@@ -198,7 +198,8 @@ class LoggingInitStage(StartupStage):
             logging_hub.set_ordered_log_queue(ordered_queue)
 
             stage_logger.info(
-                "✅ 有序日志队列初始化完成", extra={"log_type": "STAGE_NODE"}
+                "✅ 有序日志队列初始化完成", 
+                extra={"log_type": "STAGE_NODE", "scenario": "backend_init"}
             )
 
             # 5. 将LoggingHub添加到root logger
@@ -221,62 +222,76 @@ class LoggingInitStage(StartupStage):
 
             # 10. 阶段1标题与分隔（此时LoggingHub已就绪）
             # 注意：阶段0的输出已经在env_setup阶段通过print直接输出，无需在这里补输出
-            stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE"})
-            stage_logger.info("【阶段1: 日志系统初始化】 (5-10%)", extra={"log_type": "STAGE_NODE"})
-            stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE"})
-            stage_logger.info("", extra={"log_type": "STAGE_NODE"})
+            stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
+            stage_logger.info("【阶段1: 日志系统初始化】 (5-10%)", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
+            stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
+            stage_logger.info("", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
 
             # 添加阶段1开始标记
-            stage_logger.info("📍 阶段1: 日志系统初始化开始", extra={"log_type": "STAGE_NODE"})
+            stage_logger.info("📍 阶段1: 日志系统初始化开始", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
 
             # 使用logger输出（此时已经过LoggingHub）
             # 阶段输出（使用STAGE_NODE以显示在Terminal）
-            stage_logger.info(f"✅ LoggingHub创建完成", extra={"log_type": "STAGE_NODE"})
+            stage_logger.info(
+                "✅ LoggingHub创建完成", 
+                extra={"log_type": "STAGE_NODE", "scenario": "backend_init"}
+            )
 
             # 路由规则统计
             try:
                 re = logging_hub._routing_engine
-                stage_logger.info(f"✅ 路由规则引擎初始化完成", extra={"log_type": "STAGE_NODE"})
+                stage_logger.info(
+                    "✅ 路由规则引擎初始化完成", 
+                    extra={"log_type": "STAGE_NODE", "scenario": "backend_init"}
+                )
                 stage_logger.info(
                     f"   - 全局规则: {len(getattr(re, 'global_rules', {}))} 个LogType",
-                    extra={"log_type": "STAGE_NODE"},
+                    extra={"log_type": "STAGE_NODE", "scenario": "backend_init"},
                 )
                 stage_logger.info(
                     f"   - 阶段规则: {len(getattr(re, 'stage_rules', {}))} 个阶段",
-                    extra={"log_type": "STAGE_NODE"},
+                    extra={"log_type": "STAGE_NODE", "scenario": "backend_init"},
                 )
                 stage_logger.info(
                     f"   - 模块规则: {len(getattr(re, 'module_rules', {}))} 个模块",
-                    extra={"log_type": "STAGE_NODE"},
+                    extra={"log_type": "STAGE_NODE", "scenario": "backend_init"},
                 )
                 stage_logger.info(
                     f"   - 场景规则: {len(getattr(re, 'scenario_rules', {}))} 个场景",
-                    extra={"log_type": "STAGE_NODE"},
+                    extra={"log_type": "STAGE_NODE", "scenario": "backend_init"},
                 )
             except Exception:
                 pass
 
             # AI日志Handler信息
-            stage_logger.info("✅ AI日志Handler初始化完成", extra={"log_type": "STAGE_NODE"})
             stage_logger.info(
-                f"  - 基础目录: {Path('logs/ai').absolute()}", extra={"log_type": "STAGE_NODE"}
+                "✅ AI日志Handler初始化完成", 
+                extra={"log_type": "STAGE_NODE", "scenario": "backend_init"}
+            )
+            stage_logger.info(
+                f"  - 基础目录: {Path('logs/ai').absolute()}", 
+                extra={"log_type": "STAGE_NODE", "scenario": "backend_init"}
             )
 
             # MemoryHandler日志重放信息
             stage_logger.info(
-                f"✅ MemoryHandler日志重放完成 ({buffered_count}条)", extra={"log_type": "STAGE_NODE"}
+                f"✅ MemoryHandler日志重放完成 ({buffered_count}条)", 
+                extra={"log_type": "STAGE_NODE", "scenario": "backend_init"}
             )
 
             # 有序日志队列信息（如果已启用）
             if ordered_queue:
                 stage_logger.info(
                     "✅ 有序日志队列已启用（启动阶段日志将按顺序输出）",
-                    extra={"log_type": "STAGE_NODE"},
+                    extra={"log_type": "STAGE_NODE", "scenario": "backend_init"},
                 )
 
             # 初始化阶段完成耗时
             t_ms = int((time.time() - t0) * 1000)
-            stage_logger.info(f"✅ 日志系统就绪 ({t_ms}ms)", extra={"log_type": "STAGE_NODE"})
+            stage_logger.info(
+                f"✅ 日志系统就绪 ({t_ms}ms)", 
+                extra={"log_type": "STAGE_NODE", "scenario": "backend_init"}
+            )
 
             # 设置初始阶段为startup
             logging_hub.set_stage("startup")

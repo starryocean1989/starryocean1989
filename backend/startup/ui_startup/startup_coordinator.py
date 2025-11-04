@@ -68,6 +68,7 @@ class BackendInitializerWorker(QObject):
             hub = get_logging_hub()
             if hub:
                 hub.set_stage("startup")
+                # 注意：场景通过日志记录的extra参数传递，不需要hub.set_scenario()
         except ImportError:
             hub = None
 
@@ -81,11 +82,20 @@ class BackendInitializerWorker(QObject):
                 self.logger.debug("=" * 70)
                 self.logger.debug("[BACKEND-INIT] 🔧 后端初始化工作线程启动（并行优化版）")
                 self.logger.debug("=" * 70)
-                self.logger.debug("[BACKEND-INIT] 线程ID: %s", threading.current_thread().ident)
-                self.logger.debug("[BACKEND-INIT] 线程名: %s", threading.current_thread().name)
+                self.logger.debug(
+                    "[BACKEND-INIT] 线程ID: %s", 
+                    threading.current_thread().ident,
+                    extra={"scenario": "backend_init"}
+                )
+                self.logger.debug(
+                    "[BACKEND-INIT] 线程名: %s", 
+                    threading.current_thread().name,
+                    extra={"scenario": "backend_init"}
+                )
                 self.logger.debug(
                     "[BACKEND-INIT] 当前线程是否为主线程: %s",
                     threading.current_thread() == threading.main_thread(),
+                    extra={"scenario": "backend_init"}
                 )
 
                 # 阶段节点日志（输出到Terminal）
@@ -96,189 +106,282 @@ class BackendInitializerWorker(QObject):
 
                 existing_ee = get_event_engine()
                 if existing_ee:
-                    self.logger.debug("[BACKEND-INIT] ✅ 检测到主线程预创建的EventEngine")
+                    self.logger.debug(
+                        "[BACKEND-INIT] ✅ 检测到主线程预创建的EventEngine",
+                        extra={"scenario": "backend_init"}
+                    )
                 else:
-                    self.logger.warning("[BACKEND-INIT] ⚠️ 未检测到预创建的EventEngine", extra={"log_type": "SYSTEM"})
-                    self.logger.warning("[BACKEND-INIT] ⚠️ 这可能导致SystemManagerService初始化失败", extra={"log_type": "SYSTEM"})
+                    self.logger.warning(
+                        "[BACKEND-INIT] ⚠️ 未检测到预创建的EventEngine", 
+                        extra={"log_type": "SYSTEM", "scenario": "backend_init"}
+                    )
+                    self.logger.warning(
+                        "[BACKEND-INIT] ⚠️ 这可能导致SystemManagerService初始化失败", 
+                        extra={"log_type": "SYSTEM", "scenario": "backend_init"}
+                    )
 
                 # 🔧 检查中断请求
                 if self.thread() and self.thread().isInterruptionRequested():
-                    self.logger.debug("[BACKEND-INIT] 收到中断请求，停止初始化")
+                    self.logger.debug(
+                        "[BACKEND-INIT] 收到中断请求，停止初始化",
+                        extra={"scenario": "backend_init"}
+                    )
                     return
 
                 self.progress_updated.emit("正在准备后端环境...", 5)
 
                 # 导入后端模块
-                self.logger.debug("[BACKEND-INIT] 阶段0: 导入后端服务模块...")
+                self.logger.debug(
+                    "[BACKEND-INIT] 阶段0: 导入后端服务模块...",
+                    extra={"scenario": "backend_init"}
+                )
                 from backend.startup.initializers.service_initializer import initialize_services
 
-                self.logger.debug("[BACKEND-INIT] ✅ 后端模块导入成功")
+                self.logger.debug(
+                    "[BACKEND-INIT] ✅ 后端模块导入成功",
+                    extra={"scenario": "backend_init"}
+                )
 
                 # 再次检查中断请求
                 if self.thread() and self.thread().isInterruptionRequested():
-                    self.logger.debug("[BACKEND-INIT] 收到中断请求，停止初始化")
+                    self.logger.debug(
+                        "[BACKEND-INIT] 收到中断请求，停止初始化",
+                        extra={"scenario": "backend_init"}
+                    )
                     return
 
                 self.progress_updated.emit("正在启动后端服务（并行优化）...", 10)
 
                 # ==================== 并行执行优化 ====================
-                self.logger.debug("=" * 70)
-                self.logger.debug("[BACKEND-INIT] 开始并行启动：监控进程 + 六阶段服务初始化")
-                self.logger.debug("=" * 70)
+                self.logger.debug(
+                    "=" * 70,
+                    extra={"scenario": "backend_init"}
+                )
+                self.logger.debug(
+                    "[BACKEND-INIT] 开始并行启动：监控进程 + 六阶段服务初始化",
+                    extra={"scenario": "backend_init"}
+                )
+                self.logger.debug(
+                    "=" * 70,
+                    extra={"scenario": "backend_init"}
+                )
 
             monitor_result = None
             service_result = None
 
-                # 创建进度回调函数
-                def progress_callback(message: str, progress: int):
-                    """进度回调：将后端初始化进度转发到UI"""
-                    self.logger.debug("[BACKEND-INIT] [进度 %d%%] %s", progress, message)
-                    self.progress_updated.emit(message, progress)
+            # 创建进度回调函数
+            def progress_callback(message: str, progress: int):
+                """进度回调：将后端初始化进度转发到UI"""
+                self.logger.debug(
+                    "[BACKEND-INIT] [进度 %d%%] %s", 
+                    progress, 
+                    message,
+                    extra={"scenario": "backend_init"}
+                )
+                self.progress_updated.emit(message, progress)
 
-                # 使用ThreadPoolExecutor并行执行
-                with ThreadPoolExecutor(max_workers=2) as executor:
-                    # 显示分支A标题
-                    stage_logger.info("┌──────────────────────────────────────────────────────────────────┐", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
-                    stage_logger.info("│ 分支A: 监控进程                                                   │", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
-                    stage_logger.info("└──────────────────────────────────────────────────────────────────┘", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
-                    stage_logger.info("", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
+            # 使用ThreadPoolExecutor并行执行
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                # 显示分支A标题
+                stage_logger.info("┌──────────────────────────────────────────────────────────────────┐", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
+                stage_logger.info("│ 分支A: 监控进程                                                   │", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
+                stage_logger.info("└──────────────────────────────────────────────────────────────────┘", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
+                stage_logger.info("", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
 
-                    # 提交监控进程启动任务
-                    self.logger.debug("[BACKEND-INIT] 提交任务1: 启动监控进程（异步）")
-                    from backend.startup.workers.monitor_launcher import MonitorLauncherWorker
-                    monitor_worker = MonitorLauncherWorker()
-                    monitor_future = executor.submit(self._run_monitor_worker, monitor_worker)
+                # 提交监控进程启动任务
+                self.logger.debug(
+                    "[BACKEND-INIT] 提交任务1: 启动监控进程（异步）",
+                    extra={"scenario": "backend_init"}
+                )
+                from backend.startup.workers.monitor_launcher import MonitorLauncherWorker
+                monitor_worker = MonitorLauncherWorker()
+                monitor_future = executor.submit(self._run_monitor_worker, monitor_worker)
 
-                    # 显示分支B标题
-                    stage_logger.info("┌──────────────────────────────────────────────────────────────────┐", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
-                    stage_logger.info("│ 分支B: 数据引擎初始化（smart_cache_validation_and_sensing）      │", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
-                    stage_logger.info("└──────────────────────────────────────────────────────────────────┘", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
-                    stage_logger.info("", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
+                # 显示分支B标题
+                stage_logger.info("┌──────────────────────────────────────────────────────────────────┐", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
+                stage_logger.info("│ 分支B: 数据引擎初始化（smart_cache_validation_and_sensing）      │", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
+                stage_logger.info("└──────────────────────────────────────────────────────────────────┘", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
+                stage_logger.info("", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
 
-                    # 主线程执行八步缓存验证和服务初始化
-                    self.logger.debug("[BACKEND-INIT] 执行任务2: 八步缓存验证和服务初始化（串行）")
+                # 主线程执行八步缓存验证和服务初始化
+                self.logger.debug(
+                    "[BACKEND-INIT] 执行任务2: 八步缓存验证和服务初始化（串行）",
+                    extra={"scenario": "backend_init"}
+                )
 
-                    # 🎯 显示分支B标题（在ChinaStockEngine初始化前）
-                    stage_logger.info("[DATA-INIT] 📍 阶段3.1: ChinaStockEngine初始化开始", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
+                # 🎯 显示分支B标题（在ChinaStockEngine初始化前）
+                stage_logger.info("[DATA-INIT] 📍 阶段3.1: ChinaStockEngine初始化开始", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
 
-                    # 直接初始化数据服务（符合单一事实原则，不重复初始化VNPY核心）
-                    self.logger.debug("[BACKEND-INIT] 开始初始化数据服务...")
-                    try:
-                        # 🎯 标记ChinaStockEngine实例化完成
-                        from backend.core.base import get_china_stock_engine
-                        china_stock_engine = get_china_stock_engine()
-                        if china_stock_engine:
-                            stage_logger.info("[DATA-INIT] ✅ ChinaStockEngine实例化完成", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
-                            stage_logger.info("", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
-                            # 🎯 提示：8步验证流程将在后端初始化完成后由main_window触发
-                            # 输出将显示在分支B下（通过CacheValidationWorker在Qt后台线程执行）
-                            stage_logger.info("[DATA-INIT] 📍 开始缓存验证与感知流程（8步）", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
+                # 直接初始化数据服务（符合单一事实原则，不重复初始化VNPY核心）
+                self.logger.debug(
+                    "[BACKEND-INIT] 开始初始化数据服务...",
+                    extra={"scenario": "backend_init"}
+                )
+                
+                # 🎯 直接初始化数据服务（不调用initialize_services，避免重复初始化VNPY核心）
+                # 从context获取已初始化的引擎（阶段3已经初始化）
+                from backend.core.base import get_event_engine, get_main_engine
+                event_engine = get_event_engine()
+                main_engine = get_main_engine()
 
-                    # 🎯 直接初始化数据服务（不调用initialize_services，避免重复初始化VNPY核心）
-                    # 从context获取已初始化的引擎（阶段3已经初始化）
-                    from backend.core.base import get_event_engine, get_main_engine
-                    event_engine = get_event_engine()
-                    main_engine = get_main_engine()
+                if not event_engine or not main_engine:
+                    raise RuntimeError("EventEngine或MainEngine未初始化")
 
-                    if not event_engine or not main_engine:
-                        raise RuntimeError("EventEngine或MainEngine未初始化")
+                # 初始化ChinaStockEngine
+                china_stock_engine = None
+                data_service = None
+                init_success = False
+                data_init_success = False
 
-                    # 初始化ChinaStockEngine
-                    china_stock_engine = None
-                    data_service = None
+                try:
+                    self.logger.debug(
+                        "[BACKEND-INIT] 初始化ChinaStockEngine...", 
+                        extra={"scenario": "backend_init"}
+                    )
+                    from backend.infrastructure.data_module_vnpy import ChinaStockEngine
+                    from backend.core.base import set_china_stock_engine
+
+                    china_stock_engine = ChinaStockEngine(main_engine, event_engine)
+                    init_success = china_stock_engine.initialize()
+
+                    if init_success:
+                        self.logger.debug(
+                            "[BACKEND-INIT] ✅ ChinaStockEngine 初始化成功", 
+                            extra={"scenario": "backend_init"}
+                        )
+                        stage_logger.info(
+                            "[DATA-INIT] ✅ ChinaStockEngine初始化完成", 
+                            extra={"log_type": "STAGE_NODE", "scenario": "backend_init"}
+                        )
+                        set_china_stock_engine(china_stock_engine)
+                    else:
+                        self.logger.warning(
+                            "[BACKEND-INIT] ⚠️ ChinaStockEngine 初始化失败", 
+                            extra={"log_type": "SYSTEM", "scenario": "backend_init"}
+                        )
+                        stage_logger.warning(
+                            "[DATA-INIT] ⚠️ ChinaStockEngine初始化失败", 
+                            extra={"log_type": "STAGE_NODE", "scenario": "backend_init"}
+                        )
+                except Exception as e:
+                    self.logger.error(
+                        f"[BACKEND-INIT] ❌ ChinaStockEngine 初始化异常: {e}", 
+                        exc_info=True, 
+                        extra={"log_type": "SYSTEM", "scenario": "backend_init"}
+                    )
+                    stage_logger.error(
+                        f"[DATA-INIT] ❌ ChinaStockEngine初始化异常: {e}", 
+                        extra={"log_type": "STAGE_NODE", "scenario": "backend_init"}
+                    )
                     init_success = False
+
+                # 初始化DataCenterService
+                try:
+                    self.logger.debug(
+                        "[BACKEND-INIT] 初始化DataCenterService...", 
+                        extra={"scenario": "backend_init"}
+                    )
+                    from backend.services.data_center_service import DataCenterService
+
+                    data_service = DataCenterService()
+                    data_init_success = data_service.initialize()
+
+                    if data_init_success:
+                        self.logger.debug(
+                            "[BACKEND-INIT] ✅ DataCenterService 初始化成功", 
+                            extra={"scenario": "backend_init"}
+                        )
+                        stage_logger.info(
+                            "[DATA-INIT] ✅ DataCenterService初始化完成", 
+                            extra={"log_type": "STAGE_NODE", "scenario": "backend_init"}
+                        )
+                        # 注册到服务管理器
+                        from backend.core.base import get_service_manager
+                        service_manager = get_service_manager()
+                        service_manager.register_service("data_center_service", data_service)
+                    else:
+                        self.logger.warning(
+                            "[BACKEND-INIT] ⚠️ DataCenterService 初始化失败", 
+                            extra={"log_type": "SYSTEM", "scenario": "backend_init"}
+                        )
+                        stage_logger.warning(
+                            "[DATA-INIT] ⚠️ DataCenterService初始化失败", 
+                            extra={"log_type": "STAGE_NODE", "scenario": "backend_init"}
+                        )
+                except Exception as e:
+                    self.logger.error(
+                        f"[BACKEND-INIT] ❌ DataCenterService 初始化异常: {e}", 
+                        exc_info=True, 
+                        extra={"log_type": "SYSTEM", "scenario": "backend_init"}
+                    )
+                    stage_logger.error(
+                        f"[DATA-INIT] ❌ DataCenterService初始化异常: {e}", 
+                        extra={"log_type": "STAGE_NODE", "scenario": "backend_init"}
+                    )
                     data_init_success = False
 
-                        try:
-                            self.logger.debug("[BACKEND-INIT] 初始化ChinaStockEngine...", extra={"scenario": "backend_init"})
-                            from backend.infrastructure.data_module_vnpy import ChinaStockEngine
-                            from backend.core.base import set_china_stock_engine
+                # 返回结果
+                service_success = init_success and data_init_success
+                service_result = {
+                    "success": service_success,
+                    "china_stock_engine": china_stock_engine,
+                    "data_service": data_service,
+                    "china_stock_success": init_success,
+                    "data_service_success": data_init_success,
+                }
 
-                            china_stock_engine = ChinaStockEngine(main_engine, event_engine)
-                            init_success = china_stock_engine.initialize()
+                if service_success:
+                    self.logger.info(
+                        "[BACKEND-INIT] ✅ 数据服务初始化完成",
+                        extra={"scenario": "backend_init"}
+                    )
+                    stage_logger.info(
+                        "[DATA-INIT] ✅ 数据服务初始化完成", 
+                        extra={"log_type": "STAGE_NODE", "scenario": "backend_init"}
+                    )
+                else:
+                    self.logger.warning(
+                        "[BACKEND-INIT] ⚠️ 数据服务初始化部分失败", 
+                        extra={"log_type": "SYSTEM", "scenario": "backend_init"}
+                    )
+                    stage_logger.warning(
+                        "[DATA-INIT] ⚠️ 数据服务初始化部分失败", 
+                        extra={"log_type": "STAGE_NODE", "scenario": "backend_init"}
+                    )
 
-                            if init_success:
-                                self.logger.debug("[BACKEND-INIT] ✅ ChinaStockEngine 初始化成功", extra={"scenario": "backend_init"})
-                                stage_logger.info("[DATA-INIT] ✅ ChinaStockEngine初始化完成", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
-                                set_china_stock_engine(china_stock_engine)
-                            else:
-                                self.logger.warning("[BACKEND-INIT] ⚠️ ChinaStockEngine 初始化失败", extra={"log_type": "SYSTEM"})
-                                stage_logger.warning("[DATA-INIT] ⚠️ ChinaStockEngine初始化失败", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
-                        except Exception as e:
-                            self.logger.error(f"[BACKEND-INIT] ❌ ChinaStockEngine 初始化异常: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
-                            stage_logger.error(f"[DATA-INIT] ❌ ChinaStockEngine初始化异常: {e}", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
-                            init_success = False
+                # 🎯 业务服务将在等待监控进程完成后，由_initialize_business_services()统一初始化
+                # 这确保输出顺序: 分支A(监控) → 分支B(8步) → 分支C(业务服务)
 
-                        # 初始化DataCenterService
-                        try:
-                            self.logger.debug("[BACKEND-INIT] 初始化DataCenterService...", extra={"scenario": "backend_init"})
-                            from backend.services.data_center_service import DataCenterService
+            # 等待监控进程完成后，继续后续处理
+            self.logger.debug(
+                "=" * 70,
+                extra={"scenario": "backend_init"}
+            )
+            self.logger.debug(
+                "[BACKEND-INIT] 并行任务全部完成",
+                extra={"scenario": "backend_init"}
+            )
+            self.logger.debug(
+                "=" * 70,
+                extra={"scenario": "backend_init"}
+            )
 
-                            data_service = DataCenterService()
-                            data_init_success = data_service.initialize()
+            # 🎯 修复：将分支C业务服务初始化延后到main_window的后台验证完成后
+            # 避免输出顺序混乱（阶段3标题 → 分支A → 分支B → 阶段4 → 分支C这种错误顺序）
+            # 正确顺序应该是：阶段3标题 → 分支A → 分支B(8步) → 分支C → 阶段4
+            # 因此，分支C初始化将移至validation完成后的回调中执行
+            self.logger.debug(
+                "[BACKEND-INIT] 分支C业务服务将在8步验证完成后初始化",
+                extra={"scenario": "backend_init"}
+            )
 
-                            if data_init_success:
-                                self.logger.debug("[BACKEND-INIT] ✅ DataCenterService 初始化成功", extra={"scenario": "backend_init"})
-                                stage_logger.info("[DATA-INIT] ✅ DataCenterService初始化完成", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
-                                # 注册到服务管理器
-                                from backend.core.base import get_service_manager
-                                service_manager = get_service_manager()
-                                service_manager.register_service("data_center_service", data_service)
-                            else:
-                                self.logger.warning("[BACKEND-INIT] ⚠️ DataCenterService 初始化失败", extra={"log_type": "SYSTEM"})
-                                stage_logger.warning("[DATA-INIT] ⚠️ DataCenterService初始化失败", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
-                        except Exception as e:
-                            self.logger.error(f"[BACKEND-INIT] ❌ DataCenterService 初始化异常: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
-                            stage_logger.error(f"[DATA-INIT] ❌ DataCenterService初始化异常: {e}", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
-                            data_init_success = False
-
-                        # 返回结果
-                        service_success = init_success and data_init_success
-                        service_result = {
-                            "success": service_success,
-                            "china_stock_engine": china_stock_engine,
-                            "data_service": data_service,
-                            "china_stock_success": init_success,
-                            "data_service_success": data_init_success,
-                        }
-
-                        if service_success:
-                            self.logger.info("[BACKEND-INIT] ✅ 数据服务初始化完成")
-                            stage_logger.info("[DATA-INIT] ✅ 数据服务初始化完成", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
-                        else:
-                            self.logger.warning("[BACKEND-INIT] ⚠️ 数据服务初始化部分失败", extra={"log_type": "SYSTEM"})
-                            stage_logger.warning("[DATA-INIT] ⚠️ 数据服务初始化部分失败", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
-
-                    # 🎯 业务服务将在等待监控进程完成后，由_initialize_business_services()统一初始化
-                    # 这确保输出顺序: 分支A(监控) → 分支B(8步) → 分支C(业务服务)
-
-                    except Exception as e:
-                        self.logger.error("[BACKEND-INIT] ❌ 核心服务初始化异常: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
-                        stage_logger.error(f"[BACKEND-INIT] ❌ 核心服务初始化异常: {e}", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
-                        # 继续执行，不中断流程
-                        service_result = {"success": False}
-
-                # 等待监控进程完成后，继续后续处理
-                self.logger.debug("=" * 70)
-                self.logger.debug("[BACKEND-INIT] 并行任务全部完成")
-                self.logger.debug("=" * 70)
-
-                    except Exception as e:
-                        self.logger.error("[BACKEND-INIT] ❌ 核心服务初始化异常: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
-                        stage_logger.error(f"[BACKEND-INIT] ❌ 核心服务初始化异常: {e}", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
-                        # 继续执行，不中断流程
-                        service_result = {"success": False}
-
-                # 🎯 修复：将分支C业务服务初始化延后到main_window的后台验证完成后
-                # 避免输出顺序混乱（阶段3标题 → 分支A → 分支B → 阶段4 → 分支C这种错误顺序）
-                # 正确顺序应该是：阶段3标题 → 分支A → 分支B(8步) → 分支C → 阶段4
-                # 因此，分支C初始化将移至validation完成后的回调中执行
-                self.logger.debug("[BACKEND-INIT] 分支C业务服务将在8步验证完成后初始化")
-
-                # 最后检查中断请求
-                if self.thread() and self.thread().isInterruptionRequested():
-                    self.logger.debug("[BACKEND-INIT] 收到中断请求，停止初始化")
-                    return
+            # 最后检查中断请求
+            if self.thread() and self.thread().isInterruptionRequested():
+                self.logger.debug(
+                    "[BACKEND-INIT] 收到中断请求，停止初始化",
+                    extra={"scenario": "backend_init"}
+                )
+                return
 
                 success = service_result.get("success", False)
 
@@ -286,10 +389,22 @@ class BackendInitializerWorker(QObject):
                     # 🎯 记录后端初始化总耗时
                     backend_init_elapsed = time.time() - backend_init_start
                     self.progress_updated.emit("后端服务初始化完成", 100)
-                    self.logger.info("=" * 70)
-                    self.logger.info("[BACKEND-INIT] ✅ 后端服务初始化成功")
-                    self.logger.info("=" * 70)
-                    stage_logger.info(f"✅ 后端服务初始化完成 ({backend_init_elapsed:.2f}s)", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
+                    self.logger.info(
+                        "=" * 70,
+                        extra={"scenario": "backend_init"}
+                    )
+                    self.logger.info(
+                        "[BACKEND-INIT] ✅ 后端服务初始化成功",
+                        extra={"scenario": "backend_init"}
+                    )
+                    self.logger.info(
+                        "=" * 70,
+                        extra={"scenario": "backend_init"}
+                    )
+                    stage_logger.info(
+                        f"✅ 后端服务初始化完成 ({backend_init_elapsed:.2f}s)", 
+                        extra={"log_type": "STAGE_NODE", "scenario": "backend_init"}
+                    )
                     # 将监控进程信息添加到结果中（确保service_result是dict类型）
                     if not isinstance(service_result, dict):
                         service_result = {"success": True}
@@ -300,39 +415,76 @@ class BackendInitializerWorker(QObject):
                 else:
                     error_msg = service_result.get("message", "未知错误")
                     self.progress_updated.emit(f"初始化失败: {error_msg}", 100)
-                    self.logger.error("=" * 70)
-                    self.logger.error("[BACKEND-INIT] ❌ 后端服务初始化失败: %s", error_msg)
-                    self.logger.error("=" * 70)
-                    stage_logger.error(f"❌ 后端服务初始化失败: {error_msg}", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
+                    self.logger.error(
+                        "=" * 70,
+                        extra={"scenario": "backend_init"}
+                    )
+                    self.logger.error(
+                        "[BACKEND-INIT] ❌ 后端服务初始化失败: %s", 
+                        error_msg,
+                        extra={"scenario": "backend_init"}
+                    )
+                    self.logger.error(
+                        "=" * 70,
+                        extra={"scenario": "backend_init"}
+                    )
+                    stage_logger.error(
+                        f"❌ 后端服务初始化失败: {error_msg}", 
+                        extra={"log_type": "STAGE_NODE", "scenario": "backend_init"}
+                    )
                     self.initialization_completed.emit(False, service_result)
 
                     # ✅ 修复：8步验证流程由main_window._start_background_validation()触发
                     # 不在startup_coordinator中直接执行，避免重复执行
                     # 验证流程将在后端初始化完成后，由coordinator.initialization_completed信号触发
-                    self.logger.debug("[BACKEND-INIT] ✅ 数据引擎初始化完成（8步验证流程将由main_window触发）")
+                    self.logger.debug(
+                        "[BACKEND-INIT] ✅ 数据引擎初始化完成（8步验证流程将由main_window触发）",
+                        extra={"scenario": "backend_init"}
+                    )
 
                     # 等待监控进程完成（非阻塞，超时保护）
                     # 超时设置为20秒（略大于_wait_monitor_ready的15秒max_wait）
                     # 正常情况下2-3秒完成，20秒已非常宽松
-                    self.logger.debug("[BACKEND-INIT] 等待监控进程启动完成...")
+                    self.logger.debug(
+                        "[BACKEND-INIT] 等待监控进程启动完成...",
+                        extra={"scenario": "backend_init"}
+                    )
                     try:
                         monitor_result = monitor_future.result(timeout=20)
                         self.logger.info(
                             "[BACKEND-INIT] ✅ 监控进程启动成功（PID: %d, 耗时: %.2fs）",
                             monitor_result["pid"],
                             monitor_result["elapsed"],
+                            extra={"scenario": "backend_init"}
                         )
-                        stage_logger.info(f"✅ 监控进程启动成功（PID: {monitor_result['pid']}, 耗时: {monitor_result['elapsed']:.2f}s）", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
+                        stage_logger.info(
+                            f"✅ 监控进程启动成功（PID: {monitor_result['pid']}, 耗时: {monitor_result['elapsed']:.2f}s）", 
+                            extra={"log_type": "STAGE_NODE", "scenario": "backend_init"}
+                        )
                     except Exception as e:
                         # 监控进程失败，抛出异常（不降级）
                         error_msg = f"监控进程启动失败: {str(e)}"
-                        self.logger.error("[BACKEND-INIT] ❌ %s", error_msg, extra={"log_type": "SYSTEM"})
-                        stage_logger.error(f"❌ 监控进程启动失败: {e}", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
+                        self.logger.error(
+                            "[BACKEND-INIT] ❌ %s", 
+                            error_msg, 
+                            extra={"log_type": "SYSTEM", "scenario": "backend_init"}
+                        )
+                        stage_logger.error(
+                            f"❌ 监控进程启动失败: {e}", 
+                            extra={"log_type": "STAGE_NODE", "scenario": "backend_init"}
+                        )
                         raise RuntimeError(error_msg)
         except Exception as e:
             # 后端初始化工作线程异常处理
-            self.logger.exception("[BACKEND-INIT] ❌ 后端初始化工作线程异常: %s", e)
-            stage_logger.error(f"❌ 后端初始化工作线程异常: {e}", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
+            self.logger.exception(
+                "[BACKEND-INIT] ❌ 后端初始化工作线程异常: %s", 
+                e,
+                extra={"scenario": "backend_init"}
+            )
+            stage_logger.error(
+                f"❌ 后端初始化工作线程异常: {e}", 
+                extra={"log_type": "STAGE_NODE", "scenario": "backend_init"}
+            )
             self.progress_updated.emit(f"后端初始化失败: {str(e)}", 100)
             self.initialization_completed.emit(False, {"success": False, "message": str(e)})
 

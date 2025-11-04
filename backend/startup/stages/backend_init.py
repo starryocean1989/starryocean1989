@@ -64,19 +64,20 @@ class BackendInitStage(StartupStage):
             stage_logger = logging.getLogger("startup.stage")
 
             # 阶段3标题
-            stage_logger.info("", extra={"log_type": "STAGE_NODE"})
-            stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE"})
+            stage_logger.info("", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
+            stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
             stage_logger.info(
                 "【阶段3: 后端服务初始化】 (20-90%) - 并行执行",
-                extra={"log_type": "STAGE_NODE"},
+                extra={"log_type": "STAGE_NODE", "scenario": "backend_init"},
             )
-            stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE"})
-            stage_logger.info("", extra={"log_type": "STAGE_NODE"})
+            stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
+            stage_logger.info("", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
 
             stage_logger.info(
-                "📍 阶段3: 后端服务初始化开始", extra={"log_type": "STAGE_NODE"}
+                "📍 阶段3: 后端服务初始化开始", 
+                extra={"log_type": "STAGE_NODE", "scenario": "backend_init"}
             )
-            stage_logger.info("", extra={"log_type": "STAGE_NODE"})
+            stage_logger.info("", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
 
             # 1. 初始化VNPY核心框架（如果尚未初始化）
             await self._initialize_vnpy_core(context)
@@ -108,28 +109,31 @@ class BackendInitStage(StartupStage):
             # 3. 执行8步缓存验证流程（作为分支B的一部分，需要等待ChinaStockEngine初始化完成）
             if context.china_stock_engine:
                 # 显示分支B标题（数据引擎初始化包括8步验证）
-                stage_logger.info("", extra={"log_type": "STAGE_NODE"})
+                stage_logger.info("", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
                 stage_logger.info(
-                    "┌" + "─" * 66 + "┐", extra={"log_type": "STAGE_NODE"}
+                    "┌" + "─" * 66 + "┐", 
+                    extra={"log_type": "STAGE_NODE", "scenario": "backend_init"}
                 )
                 stage_logger.info(
                     "│ 分支B: 数据引擎初始化（smart_cache_validation_and_sensing）      │",
-                    extra={"log_type": "STAGE_NODE"},
+                    extra={"log_type": "STAGE_NODE", "scenario": "backend_init"},
                 )
                 stage_logger.info(
-                    "└" + "─" * 66 + "┘", extra={"log_type": "STAGE_NODE"}
+                    "└" + "─" * 66 + "┘", 
+                    extra={"log_type": "STAGE_NODE", "scenario": "backend_init"}
                 )
-                stage_logger.info("", extra={"log_type": "STAGE_NODE"})
+                stage_logger.info("", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
 
                 # 输出ChinaStockEngine初始化完成信息（BackendInitializerWorker已完成）
                 stage_logger.info(
                     "📍 阶段3.1: ChinaStockEngine初始化开始",
-                    extra={"log_type": "STAGE_NODE"},
+                    extra={"log_type": "STAGE_NODE", "scenario": "backend_init"},
                 )
                 stage_logger.info(
-                    "✅ ChinaStockEngine实例化完成", extra={"log_type": "STAGE_NODE"}
+                    "✅ ChinaStockEngine实例化完成", 
+                    extra={"log_type": "STAGE_NODE", "scenario": "backend_init"}
                 )
-                stage_logger.info("", extra={"log_type": "STAGE_NODE"})
+                stage_logger.info("", extra={"log_type": "STAGE_NODE", "scenario": "backend_init"})
 
                 # 🚀 优化4：在此处启动UI预加载任务（与缓存验证并行）
                 # 当核心服务（ChinaStockEngine）就绪后，开始UI预加载
@@ -161,7 +165,10 @@ class BackendInitStage(StartupStage):
 
             elapsed_ms = (time.time() - start_time) * 1000
 
-            stage_logger.info("✅ 后端服务完全就绪", extra={"log_type": "STAGE_NODE"})
+            stage_logger.info(
+                "✅ 后端服务完全就绪", 
+                extra={"log_type": "STAGE_NODE", "scenario": "backend_init"}
+            )
 
             return StageResult(
                 success=True,
