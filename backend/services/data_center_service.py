@@ -495,39 +495,106 @@ class DataCenterService(BaseService, LoggerMixin):
             Dict: { success, stats, message }
         """
         try:
+            # DEBUG日志（只写入AI日志文件，通过extra传递scenario）
+            self.logger.debug(
+                "[SPEEDTEST-SERVICE] 开始重新测速服务器池",
+                extra={"scenario": "manual_speedtest"},
+            )
+            
             from backend.infrastructure.data_module_vnpy.load_balancer import (
                 get_server_pool_manager,
             )
 
             server_pool_manager = get_server_pool_manager()
+            
+            # DEBUG日志
+            self.logger.debug(
+                f"[SPEEDTEST-SERVICE] 服务器池管理器: {server_pool_manager}",
+                extra={"scenario": "manual_speedtest"},
+            )
 
             # 停止当前管理器
+            self.logger.debug(
+                "[SPEEDTEST-SERVICE] 停止当前管理器...",
+                extra={"scenario": "manual_speedtest"},
+            )
             with suppress(Exception):
                 server_pool_manager.stop()
+            self.logger.debug(
+                "[SPEEDTEST-SERVICE] 管理器已停止",
+                extra={"scenario": "manual_speedtest"},
+            )
 
             # 强制测速（调用内部多进程测速）
+            self.logger.info(
+                "[SPEEDTEST-SERVICE] 开始多进程测速...",
+                extra={"scenario": "manual_speedtest"},
+            )
             success = False
             try:
                 success = server_pool_manager._start_multiprocess()  # noqa: SLF001 (允许内部调用)
-            except Exception:
+                if success:
+                    self.logger.info(
+                        "[SPEEDTEST-SERVICE] 多进程测速成功",
+                        extra={"scenario": "manual_speedtest"},
+                    )
+                else:
+                    self.logger.warning(
+                        "[SPEEDTEST-SERVICE] 多进程测速失败",
+                        extra={"scenario": "manual_speedtest"},
+                    )
+            except Exception as e:
+                self.logger.error(
+                    f"[SPEEDTEST-SERVICE] 多进程测速异常: {e}",
+                    exc_info=True,
+                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                )
                 success = False
 
             # 成功则保存缓存并推送事件
             if success:
+                self.logger.debug(
+                    "[SPEEDTEST-SERVICE] 保存测速结果到缓存...",
+                    extra={"scenario": "manual_speedtest"},
+                )
                 try:
                     ipv4_servers = getattr(server_pool_manager, "_sorted_servers_ipv4", [])
                     ipv6_servers = getattr(server_pool_manager, "_sorted_servers_ipv6", [])
+                    self.logger.debug(
+                        f"[SPEEDTEST-SERVICE] IPv4服务器数: {len(ipv4_servers)}, IPv6服务器数: {len(ipv6_servers)}",
+                        extra={"scenario": "manual_speedtest"},
+                    )
                     server_pool_manager.save_server_cache(ipv4_servers, ipv6_servers)
-                except Exception:
-                    pass
+                    self.logger.debug(
+                        "[SPEEDTEST-SERVICE] 缓存已保存",
+                        extra={"scenario": "manual_speedtest"},
+                    )
+                except Exception as e:
+                    self.logger.warning(
+                        f"[SPEEDTEST-SERVICE] 保存缓存失败: {e}",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                    )
                 with suppress(Exception):
                     server_pool_manager._push_server_status_event()  # noqa: SLF001
+                    self.logger.debug(
+                        "[SPEEDTEST-SERVICE] 状态事件已推送",
+                        extra={"scenario": "manual_speedtest"},
+                    )
 
             stats = server_pool_manager.get_stats()
+            self.logger.info(
+                f"[SPEEDTEST-SERVICE] 测速统计: {stats}",
+                extra={"scenario": "manual_speedtest"},
+            )
             return {"success": success, "stats": stats}
 
         except Exception as e:
-            self.logger.error("重新测速服务器池失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                "重新测速服务器池失败：%s",
+                e,
+                exc_info=True,
+                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+            )
             return {"success": False, "message": str(e)}
 
     def _map_market_to_exchange(self, market_type: str) -> str:

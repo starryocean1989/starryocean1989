@@ -18,6 +18,8 @@ from pathlib import Path
 from backend.startup.stages.base import StartupStage, StageResult
 from backend.startup.context import StartupContext
 
+logger = logging.getLogger("backend.startup.stages.env_setup")
+
 
 class EnvSetupStage(StartupStage):
     """环境准备阶段
@@ -60,12 +62,21 @@ class EnvSetupStage(StartupStage):
             os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
             sys.dont_write_bytecode = True
             print("✅ Python字节码缓存已禁用")
+            
+            # DEBUG日志（只写入AI日志文件）
+            logger.debug(f"[ENV-SETUP] Python解释器: {sys.executable}")
+            logger.debug(f"[ENV-SETUP] Python版本: {sys.version}")
+            logger.debug(f"[ENV-SETUP] 平台: {sys.platform}")
 
             # 设置项目路径
             project_root = context.project_root
             if str(project_root) not in sys.path:
                 sys.path.insert(0, str(project_root))
             print("✅ 项目路径已添加到sys.path")
+            
+            # DEBUG日志（只写入AI日志文件）
+            logger.debug(f"[ENV-SETUP] 项目根目录: {project_root}")
+            logger.debug(f"[ENV-SETUP] sys.path长度: {len(sys.path)}")
 
             # 设置Python解释器路径（WebEngine子进程需要）
             if not os.environ.get("PYTHONEXECUTABLE"):
@@ -85,6 +96,10 @@ class EnvSetupStage(StartupStage):
             context.config_file = str(config_file)
             os.environ["CONFIG_FILE"] = str(config_file)
             print("✅ 配置文件路径已设置")
+            
+            # DEBUG日志（只写入AI日志文件）
+            logger.debug(f"[ENV-SETUP] 配置文件路径: {config_file}")
+            logger.debug(f"[ENV-SETUP] 配置文件存在: {config_file.exists()}")
 
             # 注意：网络时间同步已移至阶段3的8步验证流程（步骤2）中执行
             # 这里不再执行网络时间同步，确保单一事实原则

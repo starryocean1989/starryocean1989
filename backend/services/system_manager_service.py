@@ -6269,6 +6269,12 @@ class SystemManagerService(BaseService):
             - 任务总数（小任务<50，中任务<500，大任务>=500）
         """
         try:
+            # DEBUG日志（只写入AI日志文件，通过extra传递scenario）
+            self.logger.debug(
+                "[TDX-READ-SERVICE] 开始读取TDX数据",
+                extra={"scenario": "tdx_data_read"},
+            )
+            
             self._log_operation("读取通达信数据")
 
             # 验证配置
@@ -6277,7 +6283,17 @@ class SystemManagerService(BaseService):
             tdx_root = config.get("tdx_root")
             use_symbol_cache = config.get("use_symbol_cache", True)
 
+            # DEBUG日志
+            self.logger.debug(
+                f"[TDX-READ-SERVICE] 配置验证: data_types={data_types}, markets={markets}, tdx_root={tdx_root}",
+                extra={"scenario": "tdx_data_read"},
+            )
+
             if not data_types or not markets or not tdx_root:
+                self.logger.error(
+                    "[TDX-READ-SERVICE] 缺少必要参数",
+                    extra={"scenario": "tdx_data_read"},
+                )
                 return {
                     "success": False,
                     "message": "缺少必要参数：数据类型、市场代码或通达信根目录",
@@ -6286,10 +6302,20 @@ class SystemManagerService(BaseService):
             # 验证通达信目录
             tdx_path = Path(tdx_root)
             if not tdx_path.exists():
+                self.logger.error(
+                    f"[TDX-READ-SERVICE] 通达信目录不存在: {tdx_root}",
+                    extra={"scenario": "tdx_data_read"},
+                )
                 return {
                     "success": False,
                     "message": f"通达信目录不存在: {tdx_root}",
                 }
+            
+            # DEBUG日志
+            self.logger.debug(
+                f"[TDX-READ-SERVICE] 通达信目录验证通过: {tdx_path}",
+                extra={"scenario": "tdx_data_read"},
+            )
 
             # 获取品种列表
             if use_symbol_cache:
@@ -6312,7 +6338,10 @@ class SystemManagerService(BaseService):
                 self.logger.info("=" * 60)
 
                 if not any(symbols_by_market.values()):
-                    self.logger.error("❌ 品种缓存为空！请先在数据中心重新加载品种列表", extra={"log_type": "SYSTEM"})
+                    self.logger.error(
+                        "❌ 品种缓存为空！请先在数据中心重新加载品种列表",
+                        extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                    )
                     return {
                         "success": False,
                         "message": "品种缓存为空，请先在数据中心重新加载品种列表",
@@ -6328,8 +6357,16 @@ class SystemManagerService(BaseService):
                 from backend.infrastructure.data_module_vnpy.data_acquisition import (
                     TdxDynamicExecutor,
                 )
+                self.logger.debug(
+                    "[TDX-READ-SERVICE] TdxDynamicExecutor导入成功",
+                    extra={"scenario": "tdx_data_read"},
+                )
             except ImportError as e:
-                self.logger.error("导入TdxDynamicExecutor失败: %s", e)
+                self.logger.error(
+                    "导入TdxDynamicExecutor失败: %s",
+                    e,
+                    extra={"scenario": "tdx_data_read"},
+                )
                 return {
                     "success": False,
                     "message": f"导入执行器失败: {str(e)}",
@@ -6344,7 +6381,10 @@ class SystemManagerService(BaseService):
             )
 
             if total_tasks == 0:
-                self.logger.error("❌ 没有找到符合条件的品种，无法开始处理", extra={"log_type": "SYSTEM"})
+                self.logger.error(
+                    "❌ 没有找到符合条件的品种，无法开始处理",
+                    extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                )
                 return {
                     "success": False,
                     "message": "没有找到符合条件的品种",

@@ -1478,6 +1478,14 @@ class DataCenter(BaseWidget, LoggerMixin):
     def _retest_servers(self) -> None:
         """手动触发服务器池重新测速并刷新状态（使用QThread+Signal）。"""
         try:
+            # 设置场景（通过extra参数传递scenario）
+            try:
+                from backend.infrastructure.system_vnpy.unified_log_system import (
+                    ai_log_process,
+                )
+            except ImportError:
+                ai_log_process = None
+
             if not self.refresh_servers_btn or not self.server_status_label:
                 return
 
@@ -1507,17 +1515,95 @@ class DataCenter(BaseWidget, LoggerMixin):
                 def __init__(self, service, parent=None):
                     super().__init__(parent)
                     self.service = service
+                    self.logger = logging.getLogger("ui.data_center.speedtest")
 
                 def run(self):
                     """后台执行测速。"""
-                    result = None
+                    # 使用ai_log_process上下文管理器
                     try:
-                        if self.service and hasattr(self.service, "retest_server_pool"):
-                            result = self.service.retest_server_pool()
-                        else:
-                            result = {"success": False, "message": "后端未实现刷新API"}
-                    except Exception as e:  # pylint: disable=broad-except
-                        result = {"success": False, "message": str(e)}
+                        from backend.infrastructure.system_vnpy.unified_log_system import (
+                            ai_log_process,
+                        )
+                        stage_logger = logging.getLogger("task.manual_speedtest")
+                        
+                        with ai_log_process("manual_speedtest", {"trigger": "user_manual"}):
+                            # 阶段节点日志（输出到Terminal，通过extra传递scenario）
+                            stage_logger.info(
+                                "📍 手动测速开始: 正在连接到服务器...",
+                                extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
+                            )
+                            
+                            # DEBUG日志（只写入AI日志文件，通过extra传递scenario）
+                            self.logger.debug(
+                                "[SPEEDTEST] 开始执行服务器池测速",
+                                extra={"scenario": "manual_speedtest"},
+                            )
+                            self.logger.debug(
+                                f"[SPEEDTEST] 服务实例: {self.service}",
+                                extra={"scenario": "manual_speedtest"},
+                            )
+                            
+                            result = None
+                            try:
+                                if self.service and hasattr(self.service, "retest_server_pool"):
+                                    # 调用服务层测速方法
+                                    result = self.service.retest_server_pool()
+                                    
+                                    # 记录测速结果
+                                    if result and result.get("success"):
+                                        stats = result.get("stats", {})
+                                        available = stats.get("available", 0)
+                                        total = stats.get("total", 0)
+                                        self.logger.info(
+                                            f"[SPEEDTEST] 测速完成: 可用服务器={available}/{total}",
+                                            extra={"scenario": "manual_speedtest"},
+                                        )
+                                        stage_logger.info(
+                                            f"✅ 测速完成: 可用服务器={available}/{total}",
+                                            extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
+                                        )
+                                    else:
+                                        msg = result.get("message", "测速失败") if result else "测速失败"
+                                        self.logger.warning(
+                                            f"[SPEEDTEST] 测速失败: {msg}",
+                                            extra={"scenario": "manual_speedtest"},
+                                        )
+                                        stage_logger.warning(
+                                            f"⚠️ 测速失败: {msg}",
+                                            extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
+                                        )
+                                else:
+                                    result = {"success": False, "message": "后端未实现刷新API"}
+                                    self.logger.error(
+                                        "[SPEEDTEST] 后端未实现刷新API",
+                                        extra={"scenario": "manual_speedtest"},
+                                    )
+                                    stage_logger.error(
+                                        "❌ 后端未实现刷新API",
+                                        extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
+                                    )
+                            except Exception as e:  # pylint: disable=broad-except
+                                result = {"success": False, "message": str(e)}
+                                self.logger.error(
+                                    f"[SPEEDTEST] 测速异常: {e}",
+                                    exc_info=True,
+                                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                                )
+                                stage_logger.error(
+                                    f"❌ 测速异常: {e}",
+                                    extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
+                                )
+                    except ImportError:
+                        # 降级处理：日志系统不可用时使用简单日志
+                        result = None
+                        try:
+                            if self.service and hasattr(self.service, "retest_server_pool"):
+                                result = self.service.retest_server_pool()
+                            else:
+                                result = {"success": False, "message": "后端未实现刷新API"}
+                        except Exception as e:  # pylint: disable=broad-except
+                            result = {"success": False, "message": str(e)}
+                        self.logger.info("手动测速完成（降级模式）")
 
                     # 发射信号（线程安全，Qt会自动调度到主线程）
                     self.finished_signal.emit(result)

@@ -148,3 +148,93 @@ scenario_network_speedtest:
     WARNING: [file, statusbar]
     ERROR: [file, statusbar, ui_dialog]
 
+# 场景: 手动测速（用户手动触发）
+scenario_manual_speedtest:
+  description: "用户手动触发的网络测速任务"
+  SYSTEM:
+    DEBUG: [file, ai_file]  # ✅ 只输出到文件和AI日志
+    INFO: [file, ai_file]    # ✅ 只输出到文件和AI日志
+    WARNING: [file, console, database, event, ai_file]  # ✅ 输出到Terminal
+    ERROR: [file, console, database, event, ai_file]    # ✅ 输出到Terminal
+    CRITICAL: [file, console, database, event, ui_dialog, ai_file]  # ✅ 输出到Terminal并弹窗
+  STAGE_NODE:  # 🆕 流程节点
+    DEBUG: [file, ai_file]  # ✅ 只输出到文件和AI日志
+    INFO: [file, console, ai_file]  # ✅ 阶段节点输出到Terminal
+    WARNING: [file, console, database, event, ai_file]
+    ERROR: [file, console, database, event, ai_file]
+
+# 场景: TDX数据读取（从通达信数据源读取数据）
+scenario_tdx_data_read:
+  description: "从通达信数据源读取数据"
+  SYSTEM:
+    DEBUG: [file, ai_file]
+    INFO: [file, ai_file]
+    WARNING: [file, console, database, event, ai_file]
+    ERROR: [file, console, database, event, ai_file]
+    CRITICAL: [file, console, database, event, ui_dialog, ai_file]
+  STAGE_NODE:
+    DEBUG: [file, ai_file]
+    INFO: [file, console, ai_file]
+    WARNING: [file, console, database, event, ai_file]
+    ERROR: [file, console, database, event, ai_file]
+
+# 场景: 重新请求品种列表（重新从数据源获取品种列表）
+scenario_refresh_symbol_list:
+  description: "重新从数据源获取品种列表"
+  SYSTEM:
+    DEBUG: [file, ai_file]
+    INFO: [file, ai_file]
+    WARNING: [file, console, database, event, ai_file]
+    ERROR: [file, console, database, event, ai_file]
+    CRITICAL: [file, console, database, event, ui_dialog, ai_file]
+  STAGE_NODE:
+    DEBUG: [file, ai_file]
+    INFO: [file, console, ai_file]
+    WARNING: [file, console, database, event, ai_file]
+    ERROR: [file, console, database, event, ai_file]
+
+# 场景: 数据下载（批量下载市场数据）
+scenario_data_download:
+  description: "批量下载市场数据"
+  SYSTEM:
+    DEBUG: [file, ai_file]
+    INFO: [file, ai_file]
+    WARNING: [file, console, database, event, ai_file]
+    ERROR: [file, console, database, event, ai_file]
+    CRITICAL: [file, console, database, event, ui_dialog, ai_file]
+  STAGE_NODE:
+    DEBUG: [file, ai_file]
+    INFO: [file, console, ai_file]
+    WARNING: [file, console, database, event, ai_file]
+    ERROR: [file, console, database, event, ai_file]
+
+# 场景: 手动数据扫描（用户手动触发的数据质量扫描）
+scenario_manual_data_scan:
+  description: "用户手动触发的数据质量扫描"
+  SYSTEM:
+    DEBUG: [file, ai_file]
+    INFO: [file, ai_file]
+    WARNING: [file, console, database, event, ai_file]
+    ERROR: [file, console, database, event, ai_file]
+    CRITICAL: [file, console, database, event, ui_dialog, ai_file]
+  STAGE_NODE:
+    DEBUG: [file, ai_file]
+    INFO: [file, console, ai_file]
+    WARNING: [file, console, database, event, ai_file]
+    ERROR: [file, console, database, event, ai_file]
+
+# 场景: 应用启动（系统启动流程）
+scenario_application_startup:
+  description: "系统启动和初始化流程"
+  SYSTEM:
+    DEBUG: [file, ai_file]  # ✅ 只输出到文件和AI日志
+    INFO: [file, ai_file]    # ✅ 只输出到文件和AI日志
+    WARNING: [file, console, database, event, ai_file]  # ✅ 输出到Terminal
+    ERROR: [file, console, database, event, ai_file]    # ✅ 输出到Terminal
+    CRITICAL: [file, console, database, event, ui_dialog, ai_file]  # ✅ 输出到Terminal并弹窗
+  STAGE_NODE:  # 🆕 流程节点
+    DEBUG: [file, ai_file]  # ✅ 只输出到文件和AI日志
+    INFO: [file, console, ai_file]  # ✅ 阶段节点输出到Terminal
+    WARNING: [file, console, database, event, ai_file]
+    ERROR: [file, console, database, event, ai_file]
+

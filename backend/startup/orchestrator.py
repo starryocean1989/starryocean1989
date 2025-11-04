@@ -130,6 +130,10 @@ class StartupOrchestrator:
                     if not self._logging_initialized and stage.name == "env_setup" and result.success:
                         self.startup_logger.initialize(enable_ordered_queue=True, enable_ai_log=True)
                         self._logging_initialized = True
+                        
+                        # 启动场景通过extra参数传递（无需set_scenario方法）
+                        # 场景信息会在日志记录时通过extra={"scenario": "application_startup"}传递
+                        self.logger.debug("✅ 启动流程已开始，场景将通过extra参数传递")
 
                     # 如果阶段失败，决定是否继续
                     if not result.success:

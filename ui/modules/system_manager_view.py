@@ -6677,22 +6677,109 @@ class SystemManager(BaseWidget, LoggerMixin):
             import threading
 
             def do_read():
+                # 使用ai_log_process上下文管理器
                 try:
-                    if not self.system_service:
-                        return
-                    result = self.system_service.read_tdx_data(config, progress_callback)
-                    # 通过Signal发送完成状态
-                    self.reader_finished_signal.emit(result)
-
-                except Exception as e:
-                    self.logger.error("读取通达信数据失败: %s", e)
-                    # 发送错误结果
-                    self.reader_finished_signal.emit(
-                        {
-                            "success": False,
-                            "message": f"读取失败: {str(e)}",
-                        }
+                    from backend.infrastructure.system_vnpy.unified_log_system import (
+                        ai_log_process,
                     )
+                    stage_logger = logging.getLogger("task.tdx_data_read")
+                    
+                    with ai_log_process("tdx_data_read", {
+                        "data_types": data_types,
+                        "markets": markets,
+                        "tdx_root": tdx_root,
+                    }):
+                        # 阶段节点日志（输出到Terminal）
+                        stage_logger.info(
+                            "📍 TDX数据读取开始",
+                            extra={"log_type": "STAGE_NODE", "scenario": "tdx_data_read"},
+                        )
+                        
+                        # DEBUG日志（只写入AI日志文件）
+                        self.logger.debug(
+                            "[TDX-READ] 开始读取TDX数据",
+                            extra={"scenario": "tdx_data_read"},
+                        )
+                        self.logger.debug(
+                            f"[TDX-READ] 配置: data_types={data_types}, markets={markets}, tdx_root={tdx_root}",
+                            extra={"scenario": "tdx_data_read"},
+                        )
+                        
+                        try:
+                            if not self.system_service:
+                                self.logger.error(
+                                    "[TDX-READ] 系统管理服务不可用",
+                                    extra={"scenario": "tdx_data_read"},
+                                )
+                                stage_logger.error(
+                                    "❌ 系统管理服务不可用",
+                                    extra={"log_type": "STAGE_NODE", "scenario": "tdx_data_read"},
+                                )
+                                return
+                            
+                            result = self.system_service.read_tdx_data(config, progress_callback)
+                            
+                            # 记录结果
+                            if result and result.get("success"):
+                                stats = result.get("stats", {})
+                                completed = stats.get("completed", 0)
+                                total = stats.get("total", 0)
+                                self.logger.info(
+                                    f"[TDX-READ] 读取完成: 完成={completed}/{total}",
+                                    extra={"scenario": "tdx_data_read"},
+                                )
+                                stage_logger.info(
+                                    f"✅ TDX数据读取完成: 完成={completed}/{total}",
+                                    extra={"log_type": "STAGE_NODE", "scenario": "tdx_data_read"},
+                                )
+                            else:
+                                msg = result.get("message", "读取失败") if result else "读取失败"
+                                self.logger.warning(
+                                    f"[TDX-READ] 读取失败: {msg}",
+                                    extra={"scenario": "tdx_data_read"},
+                                )
+                                stage_logger.warning(
+                                    f"⚠️ TDX数据读取失败: {msg}",
+                                    extra={"log_type": "STAGE_NODE", "scenario": "tdx_data_read"},
+                                )
+                            
+                            # 通过Signal发送完成状态
+                            self.reader_finished_signal.emit(result)
+                            
+                        except Exception as e:
+                            self.logger.error(
+                                f"[TDX-READ] 读取TDX数据失败: {e}",
+                                exc_info=True,
+                                extra={"scenario": "tdx_data_read"},
+                            )
+                            stage_logger.error(
+                                f"❌ TDX数据读取异常: {e}",
+                                extra={"log_type": "STAGE_NODE", "scenario": "tdx_data_read"},
+                            )
+                            # 发送错误结果
+                            self.reader_finished_signal.emit(
+                                {
+                                    "success": False,
+                                    "message": f"读取失败: {str(e)}",
+                                }
+                            )
+                except ImportError:
+                    # 降级处理：日志系统不可用时使用简单日志
+                    try:
+                        if not self.system_service:
+                            return
+                        result = self.system_service.read_tdx_data(config, progress_callback)
+                        # 通过Signal发送完成状态
+                        self.reader_finished_signal.emit(result)
+                    except Exception as e:
+                        self.logger.error("读取通达信数据失败: %s", e)
+                        # 发送错误结果
+                        self.reader_finished_signal.emit(
+                            {
+                                "success": False,
+                                "message": f"读取失败: {str(e)}",
+                            }
+                        )
 
             # 启动工作线程
             thread = threading.Thread(target=do_read, daemon=True, name="TdxReader")
