@@ -147,100 +147,109 @@ class ReloadSymbolsThread(QThread):
             # 使用ai_log_process包裹重新请求品种列表流程
             try:
                 from backend.infrastructure.system_vnpy.unified_log_system import (
+                    get_logging_hub,
                     ai_log_process,
                 )
             except ImportError:
                 ai_log_process = None
+                get_logging_hub = None
 
             if ai_log_process:
-                stage_logger = logging.getLogger("task.refresh_symbol_list")
-                with ai_log_process("refresh_symbol_list", {
-                    "force": True,
-                    "trigger": "user_manual",
-                }):
-                    # 阶段节点日志（输出到Terminal）
-                    stage_logger.info(
-                        "📍 重新请求品种列表开始",
-                        extra={"log_type": "STAGE_NODE", "scenario": "refresh_symbol_list"},
-                    )
-                    
-                    # 详细日志（只写入AI日志文件）
-                    self.logger.debug(
-                        "[SYMBOL-RELOAD] 品种重载工作线程开始",
-                        extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
-                    )
-                    self.logger.debug(
-                        f"[SYMBOL-RELOAD] 服务实例类型: {type(self.data_center_service).__name__}",
-                        extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
-                    )
-                    self.logger.debug(
-                        f"[SYMBOL-RELOAD] 服务实例: {self.data_center_service}",
-                        extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
-                    )
-                    self.logger.debug(
-                        "[SYMBOL-RELOAD] 强制重新加载: force=True",
-                        extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
-                    )
-                    self.progress_signal.emit("正在连接服务器...")
-
-                    # 在后台线程中执行耗时操作
-                    reload_start_time = time.time()
-                    self.logger.debug(
-                        "[SYMBOL-RELOAD] 调用服务层reload_symbol_list方法...",
-                        extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
-                    )
-                    result = self.data_center_service.reload_symbol_list(force=True)
-                    reload_elapsed = time.time() - reload_start_time
-                    elapsed = time.time() - start_time
-
-                    # 记录结果详情
-                    if result and result.get("success"):
-                        symbol_count = result.get("symbol_count", 0)
-                        message = result.get("message", "")
-                        warning = result.get("warning")
-                        empty_categories = result.get("empty_categories", [])
+                stage_logger = logging.getLogger("task.refresh_symbol_list.stage")
+                try:
+                    hub = get_logging_hub() if get_logging_hub else None
+                except ImportError:
+                    hub = None
+                try:
+                    context_manager = ai_log_process("refresh_symbol_list") if hub else None
+                except Exception:
+                    context_manager = None
+                
+                if context_manager:
+                    with context_manager:
+                        # 阶段节点日志（输出到Terminal）
+                        stage_logger.info(
+                            "📍 重新请求品种列表开始",
+                            extra={"log_type": "STAGE_NODE", "scenario": "refresh_symbol_list"},
+                        )
+                        
+                        # 详细日志（只写入AI日志文件）
                         self.logger.debug(
-                            f"[SYMBOL-RELOAD] 重载结果详情: symbol_count={symbol_count}, "
-                            f"message={message}, warning={'存在' if warning else '无'}, "
-                            f"empty_categories={empty_categories}",
+                            "[SYMBOL-RELOAD] 品种重载工作线程开始",
                             extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
                         )
-                        self.logger.info(
-                            f"[SYMBOL-RELOAD] 品种重载完成: 耗时={elapsed:.2f}s, 数量={symbol_count}, "
-                            f"服务层耗时={reload_elapsed:.2f}s",
+                        self.logger.debug(
+                            f"[SYMBOL-RELOAD] 服务实例类型: {type(self.data_center_service).__name__}",
                             extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
                         )
-                        if warning:
+                        self.logger.debug(
+                            f"[SYMBOL-RELOAD] 服务实例: {self.data_center_service}",
+                            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
+                        )
+                        self.logger.debug(
+                            "[SYMBOL-RELOAD] 强制重新加载: force=True",
+                            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
+                        )
+                        self.progress_signal.emit("正在连接服务器...")
+
+                        # 在后台线程中执行耗时操作
+                        reload_start_time = time.time()
+                        self.logger.debug(
+                            "[SYMBOL-RELOAD] 调用服务层reload_symbol_list方法...",
+                            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
+                        )
+                        result = self.data_center_service.reload_symbol_list(force=True)
+                        reload_elapsed = time.time() - reload_start_time
+                        elapsed = time.time() - start_time
+
+                        # 记录结果详情
+                        if result and result.get("success"):
+                            symbol_count = result.get("symbol_count", 0)
+                            message = result.get("message", "")
+                            warning = result.get("warning")
+                            empty_categories = result.get("empty_categories", [])
+                            self.logger.debug(
+                                f"[SYMBOL-RELOAD] 重载结果详情: symbol_count={symbol_count}, "
+                                f"message={message}, warning={'存在' if warning else '无'}, "
+                                f"empty_categories={empty_categories}",
+                                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
+                            )
+                            self.logger.info(
+                                f"[SYMBOL-RELOAD] 品种重载完成: 耗时={elapsed:.2f}s, 数量={symbol_count}, "
+                                f"服务层耗时={reload_elapsed:.2f}s",
+                                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
+                            )
+                            if warning:
+                                self.logger.warning(
+                                    f"[SYMBOL-RELOAD] ⚠️ 品种重载警告: {warning}",
+                                    extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"},
+                                )
+                        else:
+                            msg = result.get("message", "重载失败") if result else "重载失败"
                             self.logger.warning(
-                                f"[SYMBOL-RELOAD] ⚠️ 品种重载警告: {warning}",
+                                f"[SYMBOL-RELOAD] ⚠️ 品种重载失败: {msg}, 耗时={elapsed:.2f}s",
                                 extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"},
                             )
-                    else:
-                        msg = result.get("message", "重载失败") if result else "重载失败"
-                        self.logger.warning(
-                            f"[SYMBOL-RELOAD] ⚠️ 品种重载失败: {msg}, 耗时={elapsed:.2f}s",
-                            extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"},
-                        )
-                        self.logger.debug(
-                            f"[SYMBOL-RELOAD] 失败结果详情: {result}",
-                            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
-                        )
-                    
-                    # 阶段节点日志（输出到Terminal）
-                    if result and result.get("success"):
-                        symbol_count = result.get("symbol_count", 0)
-                        stage_logger.info(
-                            f"✅ 重新请求品种列表完成: 耗时={elapsed:.2f}s, 数量={symbol_count}",
-                            extra={"log_type": "STAGE_NODE", "scenario": "refresh_symbol_list"},
-                        )
-                    else:
-                        msg = result.get("message", "重载失败") if result else "重载失败"
-                        stage_logger.warning(
-                            f"⚠️ 重新请求品种列表失败: {msg}",
-                            extra={"log_type": "STAGE_NODE", "scenario": "refresh_symbol_list"},
-                        )
+                            self.logger.debug(
+                                f"[SYMBOL-RELOAD] 失败结果详情: {result}",
+                                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
+                            )
+                        
+                        # 阶段节点日志（输出到Terminal）
+                        if result and result.get("success"):
+                            symbol_count = result.get("symbol_count", 0)
+                            stage_logger.info(
+                                f"✅ 重新请求品种列表完成: 耗时={elapsed:.2f}s, 数量={symbol_count}",
+                                extra={"log_type": "STAGE_NODE", "scenario": "refresh_symbol_list"},
+                            )
+                        else:
+                            msg = result.get("message", "重载失败") if result else "重载失败"
+                            stage_logger.warning(
+                                f"⚠️ 重新请求品种列表失败: {msg}",
+                                extra={"log_type": "STAGE_NODE", "scenario": "refresh_symbol_list"},
+                            )
 
-                    self.finished_signal.emit(result)
+                        self.finished_signal.emit(result)
             else:
                 # 降级处理：如果ai_log_process不可用，直接执行
                 self.logger.warning(
@@ -1840,117 +1849,131 @@ class DataCenter(BaseWidget, LoggerMixin):
                     # 使用ai_log_process上下文管理器
                     try:
                         from backend.infrastructure.system_vnpy.unified_log_system import (
+                            get_logging_hub,
                             ai_log_process,
                         )
-                        stage_logger = logging.getLogger("task.manual_speedtest")
+                        stage_logger = logging.getLogger("task.manual_speedtest.stage")
                         
-                        with ai_log_process("manual_speedtest", {"trigger": "user_manual"}):
-                            # 阶段节点日志（输出到Terminal，通过extra传递scenario）
-                            stage_logger.info(
-                                "📍 手动测速开始: 正在连接到服务器...",
-                                extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
-                            )
-                            
-                            # DEBUG日志（只写入AI日志文件，通过extra传递scenario）
-                            self.logger.debug(
-                                "[SPEEDTEST] 开始执行服务器池测速",
-                                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-                            )
-                            self.logger.debug(
-                                f"[SPEEDTEST] 服务实例类型: {type(self.service).__name__ if self.service else 'None'}",
-                                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-                            )
-                            self.logger.debug(
-                                f"[SPEEDTEST] 服务实例: {self.service}",
-                                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-                            )
-                            self.logger.debug(
-                                f"[SPEEDTEST] 服务是否有retest_server_pool方法: {hasattr(self.service, 'retest_server_pool') if self.service else False}",
-                                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-                            )
-                            
-                            result = None
-                            try:
-                                if self.service and hasattr(self.service, "retest_server_pool"):
-                                    self.logger.debug(
-                                        "[SPEEDTEST] 调用服务层测速方法...",
-                                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-                                    )
-                                    # 调用服务层测速方法
-                                    result = self.service.retest_server_pool()
-                                    elapsed = time.time() - start_time
-                                    self.logger.debug(
-                                        f"[SPEEDTEST] 服务层测速方法调用完成: 耗时={elapsed:.2f}s",
-                                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-                                    )
-                                    
-                                    # 记录测速结果
-                                    if result and result.get("success"):
-                                        stats = result.get("stats", {})
-                                        available = stats.get("available", 0)
-                                        total = stats.get("total", 0)
-                                        ipv4_count = stats.get("ipv4_count", 0)
-                                        ipv6_count = stats.get("ipv6_count", 0)
+                        try:
+                            hub = get_logging_hub()
+                        except ImportError:
+                            hub = None
+                        
+                        try:
+                            context_manager = ai_log_process("manual_speedtest") if hub else None
+                        except Exception:
+                            context_manager = None
+                        
+                        if context_manager:
+                            with context_manager:
+                                # 阶段节点日志（输出到Terminal，通过extra传递scenario）
+                                stage_logger.info(
+                                    "📍 手动测速开始: 正在连接到服务器...",
+                                    extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
+                                )
+                                
+                                # DEBUG日志（只写入AI日志文件，通过extra传递scenario）
+                                self.logger.debug(
+                                    "[SPEEDTEST] 开始执行服务器池测速",
+                                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                                )
+                                self.logger.debug(
+                                    f"[SPEEDTEST] 服务实例类型: {type(self.service).__name__ if self.service else 'None'}",
+                                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                                )
+                                self.logger.debug(
+                                    f"[SPEEDTEST] 服务实例: {self.service}",
+                                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                                )
+                                self.logger.debug(
+                                    f"[SPEEDTEST] 服务是否有retest_server_pool方法: {hasattr(self.service, 'retest_server_pool') if self.service else False}",
+                                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                                )
+                                
+                                result = None
+                                try:
+                                    if self.service and hasattr(self.service, "retest_server_pool"):
                                         self.logger.debug(
-                                            f"[SPEEDTEST] 测速结果详情: available={available}, total={total}, "
-                                            f"ipv4_count={ipv4_count}, ipv6_count={ipv6_count}",
+                                            "[SPEEDTEST] 调用服务层测速方法...",
                                             extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
                                         )
-                                        self.logger.info(
-                                            f"[SPEEDTEST] 测速完成: 可用服务器={available}/{total}, 耗时={elapsed:.2f}s",
-                                            extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-                                        )
-                                        stage_logger.info(
-                                            f"✅ 测速完成: 可用服务器={available}/{total}, 耗时={elapsed:.2f}s",
-                                            extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
-                                        )
-                                    else:
-                                        msg = result.get("message", "测速失败") if result else "测速失败"
+                                        # 调用服务层测速方法
+                                        result = self.service.retest_server_pool()
                                         elapsed = time.time() - start_time
-                                        self.logger.warning(
-                                            f"[SPEEDTEST] ⚠️ 测速失败: {msg}, 耗时={elapsed:.2f}s",
+                                        self.logger.debug(
+                                            f"[SPEEDTEST] 服务层测速方法调用完成: 耗时={elapsed:.2f}s",
+                                            extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                                        )
+                                        
+                                        # 记录测速结果
+                                        if result and result.get("success"):
+                                            stats = result.get("stats", {})
+                                            available = stats.get("available", 0)
+                                            total = stats.get("total", 0)
+                                            ipv4_count = stats.get("ipv4_count", 0)
+                                            ipv6_count = stats.get("ipv6_count", 0)
+                                            self.logger.debug(
+                                                f"[SPEEDTEST] 测速结果详情: available={available}, total={total}, "
+                                                f"ipv4_count={ipv4_count}, ipv6_count={ipv6_count}",
+                                                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                                            )
+                                            self.logger.info(
+                                                f"[SPEEDTEST] 测速完成: 可用服务器={available}/{total}, 耗时={elapsed:.2f}s",
+                                                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                                            )
+                                            stage_logger.info(
+                                                f"✅ 测速完成: 可用服务器={available}/{total}, 耗时={elapsed:.2f}s",
+                                                extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
+                                            )
+                                        else:
+                                            msg = result.get("message", "测速失败") if result else "测速失败"
+                                            elapsed = time.time() - start_time
+                                            self.logger.warning(
+                                                f"[SPEEDTEST] ⚠️ 测速失败: {msg}, 耗时={elapsed:.2f}s",
+                                                extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
+                                            )
+                                            self.logger.debug(
+                                                f"[SPEEDTEST] 失败结果详情: {result}",
+                                                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                                            )
+                                            stage_logger.warning(
+                                                f"⚠️ 测速失败: {msg}",
+                                                extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
+                                            )
+                                    else:
+                                        result = {"success": False, "message": "后端未实现刷新API"}
+                                        elapsed = time.time() - start_time
+                                        self.logger.error(
+                                            f"[SPEEDTEST] ❌ 后端未实现刷新API, 耗时={elapsed:.2f}s",
                                             extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
                                         )
                                         self.logger.debug(
-                                            f"[SPEEDTEST] 失败结果详情: {result}",
+                                            f"[SPEEDTEST] 服务状态: service={'存在' if self.service else '不存在'}, "
+                                            f"has_method={'是' if hasattr(self.service, 'retest_server_pool') if self.service else '否'}",
                                             extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
                                         )
-                                        stage_logger.warning(
-                                            f"⚠️ 测速失败: {msg}",
+                                        stage_logger.error(
+                                            "❌ 后端未实现刷新API",
                                             extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
                                         )
-                                else:
-                                    result = {"success": False, "message": "后端未实现刷新API"}
+                                except Exception as e:  # pylint: disable=broad-except
+                                    result = {"success": False, "message": str(e)}
                                     elapsed = time.time() - start_time
                                     self.logger.error(
-                                        f"[SPEEDTEST] ❌ 后端未实现刷新API, 耗时={elapsed:.2f}s",
+                                        f"[SPEEDTEST] ❌ 测速异常: {e}, 耗时={elapsed:.2f}s",
+                                        exc_info=True,
                                         extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
                                     )
                                     self.logger.debug(
-                                        f"[SPEEDTEST] 服务状态: service={'存在' if self.service else '不存在'}, "
-                                        f"has_method={'是' if hasattr(self.service, 'retest_server_pool') if self.service else '否'}",
+                                        f"[SPEEDTEST] 异常类型: {type(e).__name__}, 异常详情: {str(e)}",
                                         extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
                                     )
                                     stage_logger.error(
-                                        "❌ 后端未实现刷新API",
+                                        f"❌ 测速异常: {e}",
                                         extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
                                     )
-                            except Exception as e:  # pylint: disable=broad-except
-                                result = {"success": False, "message": str(e)}
-                                elapsed = time.time() - start_time
-                                self.logger.error(
-                                    f"[SPEEDTEST] ❌ 测速异常: {e}, 耗时={elapsed:.2f}s",
-                                    exc_info=True,
-                                    extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
-                                )
-                                self.logger.debug(
-                                    f"[SPEEDTEST] 异常类型: {type(e).__name__}, 异常详情: {str(e)}",
-                                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-                                )
-                                stage_logger.error(
-                                    f"❌ 测速异常: {e}",
-                                    extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
-                                )
+                                
+                                self.finished_signal.emit(result)
                     except ImportError:
                         # 降级处理：日志系统不可用时使用简单日志
                         self.logger.warning(

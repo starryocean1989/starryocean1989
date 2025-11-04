@@ -495,98 +495,214 @@ class DataCenterService(BaseService, LoggerMixin):
             Dict: { success, stats, message }
         """
         import time
+        import logging
+        from contextlib import suppress
+        
         start_time = time.time()
         
+        # 设置日志上下文
         try:
-            # DEBUG日志（只写入AI日志文件，通过extra传递scenario）
-            self.logger.debug(
-                "[SPEEDTEST-SERVICE] 开始重新测速服务器池",
-                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+            from backend.infrastructure.system_vnpy.unified_log_system import (
+                get_logging_hub,
+                ai_log_process,
             )
-            self.logger.info(
-                "[SPEEDTEST-SERVICE] 手动测速任务开始",
-                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-            )
-            
-            from backend.infrastructure.data_module_vnpy.load_balancer import (
-                get_server_pool_manager,
-            )
-
-            server_pool_manager = get_server_pool_manager()
-            
-            # DEBUG日志
-            self.logger.debug(
-                f"[SPEEDTEST-SERVICE] 服务器池管理器类型: {type(server_pool_manager).__name__}",
-                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-            )
-            self.logger.debug(
-                f"[SPEEDTEST-SERVICE] 服务器池管理器: {server_pool_manager}",
-                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-            )
-            
-            # 获取当前统计信息（测速前）
+            hub = get_logging_hub()
+        except ImportError:
+            hub = None
+        
+        stage_logger = logging.getLogger("task.manual_speedtest.stage")
+        
+        # 使用ai_log_process创建独立日志文件
+        # 注意：场景信息通过日志记录的extra参数传递，无需全局设置
+        try:
+            context_manager = ai_log_process("manual_speedtest") if hub else suppress()
+        except Exception:
+            context_manager = suppress()
+        
+        with context_manager:
             try:
-                stats_before = server_pool_manager.get_stats()
+                # 阶段节点（输出到Terminal）
+                stage_logger.info(
+                    "📍 手动测速开始: 正在连接到服务器池...",
+                    extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
+                )
+                
+                # DEBUG日志（只写入AI日志文件）
                 self.logger.debug(
-                    f"[SPEEDTEST-SERVICE] 测速前统计: {stats_before}",
+                    "[SPEEDTEST-SERVICE] 开始重新测速服务器池",
                     extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
                 )
-            except Exception as e:
-                self.logger.debug(
-                    f"[SPEEDTEST-SERVICE] 获取测速前统计失败: {e}",
+                self.logger.info(
+                    "[SPEEDTEST-SERVICE] 手动测速任务开始",
                     extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
                 )
+                
+                from backend.infrastructure.data_module_vnpy.load_balancer import (
+                    get_server_pool_manager,
+                )
 
-            # 停止当前管理器
-            self.logger.debug(
-                "[SPEEDTEST-SERVICE] 停止当前管理器...",
-                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-            )
-            stop_start_time = time.time()
-            with suppress(Exception):
-                server_pool_manager.stop()
-            stop_elapsed = time.time() - stop_start_time
-            self.logger.debug(
-                f"[SPEEDTEST-SERVICE] 管理器已停止: 耗时={stop_elapsed:.2f}s",
-                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-            )
-
-            # 强制测速（调用内部多进程测速）
-            self.logger.info(
-                "[SPEEDTEST-SERVICE] 开始多进程测速...",
-                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-            )
-            self.logger.debug(
-                "[SPEEDTEST-SERVICE] 调用_start_multiprocess方法",
-                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-            )
-            speedtest_start_time = time.time()
-            success = False
-            try:
-                success = server_pool_manager._start_multiprocess()  # noqa: SLF001 (允许内部调用)
-                speedtest_elapsed = time.time() - speedtest_start_time
-                if success:
-                    self.logger.info(
-                        f"[SPEEDTEST-SERVICE] 多进程测速成功: 耗时={speedtest_elapsed:.2f}s",
-                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-                    )
+                server_pool_manager = get_server_pool_manager()
+                
+                # DEBUG日志
+                self.logger.debug(
+                    f"[SPEEDTEST-SERVICE] 服务器池管理器类型: {type(server_pool_manager).__name__}",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                )
+                self.logger.debug(
+                    f"[SPEEDTEST-SERVICE] 服务器池管理器: {server_pool_manager}",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                )
+                
+                # 获取当前统计信息（测速前）
+                try:
+                    stats_before = server_pool_manager.get_stats()
                     self.logger.debug(
-                        f"[SPEEDTEST-SERVICE] 测速过程详情: 耗时={speedtest_elapsed:.2f}s",
+                        f"[SPEEDTEST-SERVICE] 测速前统计: {stats_before}",
                         extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
                     )
-                else:
-                    self.logger.warning(
-                        f"[SPEEDTEST-SERVICE] ⚠️ 多进程测速失败: 耗时={speedtest_elapsed:.2f}s",
+                except Exception as e:
+                    self.logger.debug(
+                        f"[SPEEDTEST-SERVICE] 获取测速前统计失败: {e}",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                    )
+
+                # 停止当前管理器
+                self.logger.debug(
+                    "[SPEEDTEST-SERVICE] 停止当前管理器...",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                )
+                stop_start_time = time.time()
+                with suppress(Exception):
+                    server_pool_manager.stop()
+                stop_elapsed = time.time() - stop_start_time
+                self.logger.debug(
+                    f"[SPEEDTEST-SERVICE] 管理器已停止: 耗时={stop_elapsed:.2f}s",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                )
+
+                # 强制测速（调用内部多进程测速）
+                self.logger.info(
+                    "[SPEEDTEST-SERVICE] 开始多进程测速...",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                )
+                self.logger.debug(
+                    "[SPEEDTEST-SERVICE] 调用_start_multiprocess方法",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                )
+                speedtest_start_time = time.time()
+                success = False
+                try:
+                    success = server_pool_manager._start_multiprocess()  # noqa: SLF001 (允许内部调用)
+                    speedtest_elapsed = time.time() - speedtest_start_time
+                    if success:
+                        self.logger.info(
+                            f"[SPEEDTEST-SERVICE] 多进程测速成功: 耗时={speedtest_elapsed:.2f}s",
+                            extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                        )
+                        self.logger.debug(
+                            f"[SPEEDTEST-SERVICE] 测速过程详情: 耗时={speedtest_elapsed:.2f}s",
+                            extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                        )
+                    else:
+                        self.logger.warning(
+                            f"[SPEEDTEST-SERVICE] ⚠️ 多进程测速失败: 耗时={speedtest_elapsed:.2f}s",
+                            extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
+                        )
+                        self.logger.debug(
+                            f"[SPEEDTEST-SERVICE] 测速失败详情: 耗时={speedtest_elapsed:.2f}s",
+                            extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                        )
+                except Exception as e:
+                    speedtest_elapsed = time.time() - speedtest_start_time
+                    self.logger.error(
+                        f"[SPEEDTEST-SERVICE] ❌ 多进程测速异常: {e}, 耗时={speedtest_elapsed:.2f}s",
+                        exc_info=True,
                         extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
                     )
                     self.logger.debug(
-                        f"[SPEEDTEST-SERVICE] 测速失败详情: 耗时={speedtest_elapsed:.2f}s",
+                        f"[SPEEDTEST-SERVICE] 异常类型: {type(e).__name__}, 异常详情: {str(e)}",
                         extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
                     )
+                    success = False
+
+                # 成功则保存缓存并推送事件
+                if success:
+                    self.logger.debug(
+                        "[SPEEDTEST-SERVICE] 保存测速结果到缓存...",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                    )
+                    cache_start_time = time.time()
+                    try:
+                        ipv4_servers = getattr(server_pool_manager, "_sorted_servers_ipv4", [])
+                        ipv6_servers = getattr(server_pool_manager, "_sorted_servers_ipv6", [])
+                        self.logger.debug(
+                            f"[SPEEDTEST-SERVICE] IPv4服务器数: {len(ipv4_servers)}, IPv6服务器数: {len(ipv6_servers)}",
+                            extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                        )
+                        if ipv4_servers:
+                            self.logger.debug(
+                                f"[SPEEDTEST-SERVICE] IPv4前5个服务器: {[s.get('host', 'N/A') for s in ipv4_servers[:5]]}",
+                                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                            )
+                        if ipv6_servers:
+                            self.logger.debug(
+                                f"[SPEEDTEST-SERVICE] IPv6前5个服务器: {[s.get('host', 'N/A') for s in ipv6_servers[:5]]}",
+                                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                            )
+                        server_pool_manager.save_server_cache(ipv4_servers, ipv6_servers)
+                        cache_elapsed = time.time() - cache_start_time
+                        self.logger.debug(
+                            f"[SPEEDTEST-SERVICE] 缓存已保存: 耗时={cache_elapsed:.2f}s",
+                            extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                        )
+                    except Exception as e:
+                        cache_elapsed = time.time() - cache_start_time
+                        self.logger.warning(
+                            f"[SPEEDTEST-SERVICE] ⚠️ 保存缓存失败: {e}, 耗时={cache_elapsed:.2f}s",
+                            exc_info=True,
+                            extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
+                        )
+                    with suppress(Exception):
+                        event_start_time = time.time()
+                        server_pool_manager._push_server_status_event()  # noqa: SLF001
+                        event_elapsed = time.time() - event_start_time
+                        self.logger.debug(
+                            f"[SPEEDTEST-SERVICE] 状态事件已推送: 耗时={event_elapsed:.2f}s",
+                            extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                        )
+
+                # 获取最终统计信息（无论成功与否）
+                stats = server_pool_manager.get_stats()
+                total_elapsed = time.time() - start_time
+                self.logger.info(
+                    f"[SPEEDTEST-SERVICE] 测速统计: {stats}, 总耗时={total_elapsed:.2f}s",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                )
+                self.logger.debug(
+                    f"[SPEEDTEST-SERVICE] 测速完成详情: success={success}, stats={stats}, 总耗时={total_elapsed:.2f}s",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                )
+                
+                # 阶段节点（输出到Terminal）
+                if success:
+                    ipv4_count = stats.get("ipv4_available", 0)
+                    ipv6_count = stats.get("ipv6_available", 0)
+                    stage_logger.info(
+                        f"✅ 手动测速完成: IPv4可用={ipv4_count}, IPv6可用={ipv6_count}, 耗时={total_elapsed:.2f}s",
+                        extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
+                    )
+                else:
+                    stage_logger.warning(
+                        f"⚠️ 手动测速失败: 耗时={total_elapsed:.2f}s",
+                        extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
+                    )
+                
+                return {"success": success, "stats": stats}
+
             except Exception as e:
-                speedtest_elapsed = time.time() - speedtest_start_time
+                total_elapsed = time.time() - start_time
                 self.logger.error(
-                    f"[SPEEDTEST-SERVICE] ❌ 多进程测速异常: {e}, 耗时={speedtest_elapsed:.2f}s",
+                    f"[SPEEDTEST-SERVICE] ❌ 重新测速服务器池失败: {e}, 耗时={total_elapsed:.2f}s",
                     exc_info=True,
                     extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
                 )
@@ -594,79 +710,14 @@ class DataCenterService(BaseService, LoggerMixin):
                     f"[SPEEDTEST-SERVICE] 异常类型: {type(e).__name__}, 异常详情: {str(e)}",
                     extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
                 )
-                success = False
-
-            # 成功则保存缓存并推送事件
-            if success:
-                self.logger.debug(
-                    "[SPEEDTEST-SERVICE] 保存测速结果到缓存...",
-                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                
+                # 阶段节点（输出到Terminal）
+                stage_logger.error(
+                    f"❌ 手动测速异常: {e}, 耗时={total_elapsed:.2f}s",
+                    extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
                 )
-                cache_start_time = time.time()
-                try:
-                    ipv4_servers = getattr(server_pool_manager, "_sorted_servers_ipv4", [])
-                    ipv6_servers = getattr(server_pool_manager, "_sorted_servers_ipv6", [])
-                    self.logger.debug(
-                        f"[SPEEDTEST-SERVICE] IPv4服务器数: {len(ipv4_servers)}, IPv6服务器数: {len(ipv6_servers)}",
-                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-                    )
-                    if ipv4_servers:
-                        self.logger.debug(
-                            f"[SPEEDTEST-SERVICE] IPv4前5个服务器: {[s.get('host', 'N/A') for s in ipv4_servers[:5]]}",
-                            extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-                        )
-                    if ipv6_servers:
-                        self.logger.debug(
-                            f"[SPEEDTEST-SERVICE] IPv6前5个服务器: {[s.get('host', 'N/A') for s in ipv6_servers[:5]]}",
-                            extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-                        )
-                    server_pool_manager.save_server_cache(ipv4_servers, ipv6_servers)
-                    cache_elapsed = time.time() - cache_start_time
-                    self.logger.debug(
-                        f"[SPEEDTEST-SERVICE] 缓存已保存: 耗时={cache_elapsed:.2f}s",
-                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-                    )
-                except Exception as e:
-                    cache_elapsed = time.time() - cache_start_time
-                    self.logger.warning(
-                        f"[SPEEDTEST-SERVICE] ⚠️ 保存缓存失败: {e}, 耗时={cache_elapsed:.2f}s",
-                        exc_info=True,
-                        extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
-                    )
-                with suppress(Exception):
-                    event_start_time = time.time()
-                    server_pool_manager._push_server_status_event()  # noqa: SLF001
-                    event_elapsed = time.time() - event_start_time
-                    self.logger.debug(
-                        f"[SPEEDTEST-SERVICE] 状态事件已推送: 耗时={event_elapsed:.2f}s",
-                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-                    )
-
-            # 获取最终统计信息
-            stats = server_pool_manager.get_stats()
-            total_elapsed = time.time() - start_time
-            self.logger.info(
-                f"[SPEEDTEST-SERVICE] 测速统计: {stats}, 总耗时={total_elapsed:.2f}s",
-                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-            )
-            self.logger.debug(
-                f"[SPEEDTEST-SERVICE] 测速完成详情: success={success}, stats={stats}, 总耗时={total_elapsed:.2f}s",
-                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-            )
-            return {"success": success, "stats": stats}
-
-        except Exception as e:
-            total_elapsed = time.time() - start_time
-            self.logger.error(
-                f"[SPEEDTEST-SERVICE] ❌ 重新测速服务器池失败: {e}, 耗时={total_elapsed:.2f}s",
-                exc_info=True,
-                extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
-            )
-            self.logger.debug(
-                f"[SPEEDTEST-SERVICE] 异常类型: {type(e).__name__}, 异常详情: {str(e)}",
-                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-            )
-            return {"success": False, "message": str(e)}
+                
+                return {"success": False, "message": str(e)}
 
     def _map_market_to_exchange(self, market_type: str) -> str:
         """将市场类型映射到交易所."""
@@ -871,277 +922,320 @@ class DataCenterService(BaseService, LoggerMixin):
             }
         """
         import time
+        import logging
+        from contextlib import suppress
+        from datetime import datetime
+        
         start_time = time.time()
         
+        # 设置日志上下文
         try:
-            self._log_operation("重新加载品种列表", force=force)
-            self.logger.debug(
-                "[RELOAD-SYMBOL] 开始重新加载品种列表",
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+            from backend.infrastructure.system_vnpy.unified_log_system import (
+                get_logging_hub,
+                ai_log_process,
             )
-            self.logger.debug(
-                f"[RELOAD-SYMBOL] 参数: force={force}",
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
-            )
-            self.logger.info(
-                "[RELOAD-SYMBOL] 品种列表重新加载开始",
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
-            )
-            self.logger.info(
-                "=" * 60,
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
-            )
-            self.logger.info(
-                "【用户触发】品种列表重新加载开始",
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
-            )
-            self.logger.info(
-                "=" * 60,
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
-            )
+            hub = get_logging_hub()
+        except ImportError:
+            hub = None
+        
+        stage_logger = logging.getLogger("task.refresh_symbol_list.stage")
+        
+        # 使用ai_log_process创建独立日志文件
+        # 注意：场景信息通过日志记录的extra参数传递，无需全局设置
+        try:
+            context_manager = ai_log_process("refresh_symbol_list") if hub else suppress()
+        except Exception:
+            context_manager = suppress()
+        
+        with context_manager:
+            try:
+                # 阶段节点（输出到Terminal）
+                stage_logger.info(
+                    "📍 重新请求品种列表开始",
+                    extra={"log_type": "STAGE_NODE", "scenario": "refresh_symbol_list"},
+                )
+                
+                self._log_operation("重新加载品种列表", force=force)
+                self.logger.debug(
+                    "[RELOAD-SYMBOL] 开始重新加载品种列表",
+                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                )
+                self.logger.debug(
+                    f"[RELOAD-SYMBOL] 参数: force={force}",
+                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                )
+                self.logger.info(
+                    "[RELOAD-SYMBOL] 品种列表重新加载开始",
+                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                )
+                self.logger.info(
+                    "=" * 60,
+                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                )
+                self.logger.info(
+                    "【用户触发】品种列表重新加载开始",
+                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                )
+                self.logger.info(
+                    "=" * 60,
+                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                )
 
-            # 流程1：删除缓存文件
-            self.logger.info(
-                "[RELOAD-SYMBOL] 【流程1】删除现有缓存文件...",
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
-            )
-            self.logger.debug(
-                "[RELOAD-SYMBOL] 开始删除缓存文件...",
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
-            )
-            cache_delete_start_time = time.time()
-            self._delete_symbol_cache_file()
-            cache_delete_elapsed = time.time() - cache_delete_start_time
-            self.logger.debug(
-                f"[RELOAD-SYMBOL] 缓存文件删除完成: 耗时={cache_delete_elapsed:.2f}s",
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
-            )
+                # 流程1：删除缓存文件
+                self.logger.info(
+                    "[RELOAD-SYMBOL] 【流程1】删除现有缓存文件...",
+                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                )
+                self.logger.debug(
+                    "[RELOAD-SYMBOL] 开始删除缓存文件...",
+                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                )
+                cache_delete_start_time = time.time()
+                self._delete_symbol_cache_file()
+                cache_delete_elapsed = time.time() - cache_delete_start_time
+                self.logger.debug(
+                    f"[RELOAD-SYMBOL] 缓存文件删除完成: 耗时={cache_delete_elapsed:.2f}s",
+                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                )
 
-            # 流程2：从API获取品种
-            if self.china_stock_engine is None:
+                # 流程2：从API获取品种
+                if self.china_stock_engine is None:
+                    self.logger.error(
+                        "[RELOAD-SYMBOL] ❌ ChinaStockEngine不可用",
+                        extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
+                    )
+                    self.logger.debug(
+                        "[RELOAD-SYMBOL] ChinaStockEngine状态: None",
+                        extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                    )
+                    return {
+                        "success": False,
+                        "symbol_count": 0,
+                        "message": "ChinaStockEngine不可用",
+                        "data": [],
+                    }
+
+                self.logger.info(
+                    "[RELOAD-SYMBOL] 【流程2】从ChinaStockEngine获取品种列表...",
+                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                )
+                self.logger.debug(
+                    "[RELOAD-SYMBOL] 开始调用_fetch_symbols_from_china_stock方法...",
+                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                )
+                fetch_start_time = time.time()
+                symbols, empty_categories = self._fetch_symbols_from_china_stock()
+                fetch_elapsed = time.time() - fetch_start_time
+                self.logger.debug(
+                    f"[RELOAD-SYMBOL] 品种获取完成: 数量={len(symbols)}, 空类别={empty_categories}, 耗时={fetch_elapsed:.2f}s",
+                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                )
+                self.logger.info(
+                    f"[RELOAD-SYMBOL] 【流程2完成】获取到 {len(symbols)} 个品种",
+                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                )
+
+                # 转换为前端格式
+                self.logger.debug(
+                    "[RELOAD-SYMBOL] 开始转换为前端格式...",
+                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                )
+                format_start_time = time.time()
+                formatted_symbols = []
+                skipped_count = 0
+                for s in symbols:
+                    if isinstance(s, dict):
+                        code = s.get("code", "")
+                        name = s.get("name", code)
+                        exchange = s.get("exchange", "")
+                        product_type = s.get("product_type", "")
+                    elif isinstance(s, str):
+                        code = s
+                        name = s
+                        exchange = ""
+                        product_type = ""
+                    else:
+                        skipped_count += 1
+                        continue
+
+                    if not code:
+                        skipped_count += 1
+                        continue
+
+                    formatted_symbols.append(
+                        {
+                            "symbol": code,
+                            "code": code,
+                            "name": name,
+                            "exchange": exchange,
+                            "product_type": product_type,
+                        }
+                    )
+                format_elapsed = time.time() - format_start_time
+                self.logger.debug(
+                    f"[RELOAD-SYMBOL] 格式转换完成: 成功={len(formatted_symbols)}, 跳过={skipped_count}, 耗时={format_elapsed:.2f}s",
+                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                )
+
+                # 流程3：更新内存缓存
+                self.logger.info(
+                    "[RELOAD-SYMBOL] 【流程3】更新内存缓存...",
+                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                )
+                self.logger.debug(
+                    "[RELOAD-SYMBOL] 开始更新内存缓存...",
+                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                )
+                cache_update_start_time = time.time()
+                self._symbol_cache = {
+                    "symbols": formatted_symbols,
+                    "timestamp": datetime.now(),
+                }
+                self._symbol_cache_time = datetime.now()
+                cache_update_elapsed = time.time() - cache_update_start_time
+                self.logger.debug(
+                    f"[RELOAD-SYMBOL] 内存缓存更新完成: 耗时={cache_update_elapsed:.2f}s",
+                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                )
+                self.logger.info(
+                    f"[RELOAD-SYMBOL] 【流程3完成】缓存已更新，品种数: {len(formatted_symbols)}",
+                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                )
+
+                total_elapsed = time.time() - start_time
+                self.logger.info(
+                    "=" * 60,
+                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                )
+                self.logger.info(
+                    f"[RELOAD-SYMBOL] 【用户触发】品种列表重新加载完成: 总耗时={total_elapsed:.2f}s, 品种数={len(formatted_symbols)}",
+                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                )
+                self.logger.debug(
+                    f"[RELOAD-SYMBOL] 各步骤耗时: 删除缓存={cache_delete_elapsed:.2f}s, "
+                    f"获取品种={fetch_elapsed:.2f}s, 格式转换={format_elapsed:.2f}s, "
+                    f"更新缓存={cache_update_elapsed:.2f}s, 总耗时={total_elapsed:.2f}s",
+                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                )
+                self.logger.info(
+                    "=" * 60,
+                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                )
+
+                # 检查通达信根目录配置和空品种类别
+                self.logger.debug(
+                    "[RELOAD-SYMBOL] 开始检查通达信根目录配置和空品种类别...",
+                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                )
+                warning_messages = []
+
+                if self.china_stock_engine:
+                    # 检查BlockParser是否可用
+                    block_parser = getattr(self.china_stock_engine, "block_parser", None)
+                    if block_parser:
+                        is_available = block_parser.is_available()
+                        self.logger.debug(
+                            f"[RELOAD-SYMBOL] BlockParser可用性检查: is_available={is_available}",
+                            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                        )
+                        if not is_available:
+                            warning_msg = (
+                                "⚠️ 未配置通达信根目录，品种列表可能不完整。"
+                                "缺少：T+0基金、可转债等特殊品种。"
+                                "请在系统配置中设置通达信软件根目录。"
+                            )
+                            warning_messages.append(warning_msg)
+                            self.logger.warning(
+                                f"[RELOAD-SYMBOL] ⚠️ {warning_msg}",
+                                extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
+                            )
+                    else:
+                        self.logger.debug(
+                            "[RELOAD-SYMBOL] BlockParser不可用",
+                            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                        )
+
+                # 检查空品种类别（集合E,F,G,H,I）
+                if empty_categories:
+                    empty_warning = f"⚠️ 以下品种列表为空，请排查相关问题：{', '.join(empty_categories)}"
+                    warning_messages.append(empty_warning)
+                    self.logger.warning(
+                        f"[RELOAD-SYMBOL] ⚠️ {empty_warning}",
+                        extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
+                    )
+                    self.logger.debug(
+                        f"[RELOAD-SYMBOL] 空品种类别详情: {empty_categories}",
+                        extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                    )
+
+                # 合并所有警告消息
+                warning_message = "\n".join(warning_messages) if warning_messages else None
+                if warning_message:
+                    self.logger.debug(
+                        f"[RELOAD-SYMBOL] 警告消息: {warning_message}",
+                        extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                    )
+
+                total_elapsed = time.time() - start_time
+                self.logger.info(
+                    f"[RELOAD-SYMBOL] 品种列表重新加载成功: 总耗时={total_elapsed:.2f}s, 品种数={len(formatted_symbols)}, "
+                    f"警告={'存在' if warning_message else '无'}",
+                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                )
+
+                # 阶段节点（输出到Terminal）
+                stage_logger.info(
+                    f"✅ 重新请求品种列表完成: 耗时={total_elapsed:.2f}s, 数量={len(formatted_symbols)}",
+                    extra={"log_type": "STAGE_NODE", "scenario": "refresh_symbol_list"},
+                )
+
+                return {
+                    "success": True,
+                    "symbol_count": len(formatted_symbols),
+                    "message": f"成功加载{len(formatted_symbols)}个品种",
+                    "data": formatted_symbols,
+                    "warning": warning_message,  # 添加警告信息
+                    "empty_categories": empty_categories,  # 添加空品种类别列表
+                }
+
+            except Exception as e:
+                total_elapsed = time.time() - start_time
+                self._log_error("重新加载品种列表", e)
                 self.logger.error(
-                    "[RELOAD-SYMBOL] ❌ ChinaStockEngine不可用",
+                    "[RELOAD-SYMBOL] ❌ 品种列表重新加载失败",
+                    exc_info=True,
+                    extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
+                )
+                self.logger.error(
+                    "=" * 60,
+                    extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
+                )
+                self.logger.error(
+                    f"[RELOAD-SYMBOL] 【失败】品种列表加载失败: {e}, 耗时={total_elapsed:.2f}s",
+                    exc_info=True,
                     extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
                 )
                 self.logger.debug(
-                    "[RELOAD-SYMBOL] ChinaStockEngine状态: None",
+                    f"[RELOAD-SYMBOL] 异常类型: {type(e).__name__}, 异常详情: {str(e)}",
                     extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
                 )
+                self.logger.error(
+                    "=" * 60,
+                    extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
+                )
+                
+                # 阶段节点（输出到Terminal）
+                stage_logger.error(
+                    f"❌ 重新请求品种列表失败: {e}, 耗时={total_elapsed:.2f}s",
+                    extra={"log_type": "STAGE_NODE", "scenario": "refresh_symbol_list"},
+                )
+                
                 return {
                     "success": False,
                     "symbol_count": 0,
-                    "message": "ChinaStockEngine不可用",
+                    "message": f"加载失败: {str(e)}",
                     "data": [],
                 }
-
-            self.logger.info(
-                "[RELOAD-SYMBOL] 【流程2】从ChinaStockEngine获取品种列表...",
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
-            )
-            self.logger.debug(
-                "[RELOAD-SYMBOL] 开始调用_fetch_symbols_from_china_stock方法...",
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
-            )
-            fetch_start_time = time.time()
-            symbols, empty_categories = self._fetch_symbols_from_china_stock()
-            fetch_elapsed = time.time() - fetch_start_time
-            self.logger.debug(
-                f"[RELOAD-SYMBOL] 品种获取完成: 数量={len(symbols)}, 空类别={empty_categories}, 耗时={fetch_elapsed:.2f}s",
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
-            )
-            self.logger.info(
-                f"[RELOAD-SYMBOL] 【流程2完成】获取到 {len(symbols)} 个品种",
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
-            )
-
-            # 转换为前端格式
-            self.logger.debug(
-                "[RELOAD-SYMBOL] 开始转换为前端格式...",
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
-            )
-            format_start_time = time.time()
-            formatted_symbols = []
-            skipped_count = 0
-            for s in symbols:
-                if isinstance(s, dict):
-                    code = s.get("code", "")
-                    name = s.get("name", code)
-                    exchange = s.get("exchange", "")
-                    product_type = s.get("product_type", "")
-                elif isinstance(s, str):
-                    code = s
-                    name = s
-                    exchange = ""
-                    product_type = ""
-                else:
-                    skipped_count += 1
-                    continue
-
-                if not code:
-                    skipped_count += 1
-                    continue
-
-                formatted_symbols.append(
-                    {
-                        "symbol": code,
-                        "code": code,
-                        "name": name,
-                        "exchange": exchange,
-                        "product_type": product_type,
-                    }
-                )
-            format_elapsed = time.time() - format_start_time
-            self.logger.debug(
-                f"[RELOAD-SYMBOL] 格式转换完成: 成功={len(formatted_symbols)}, 跳过={skipped_count}, 耗时={format_elapsed:.2f}s",
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
-            )
-
-            # 流程3：更新内存缓存
-            self.logger.info(
-                "[RELOAD-SYMBOL] 【流程3】更新内存缓存...",
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
-            )
-            self.logger.debug(
-                "[RELOAD-SYMBOL] 开始更新内存缓存...",
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
-            )
-            cache_update_start_time = time.time()
-            self._symbol_cache = {
-                "symbols": formatted_symbols,
-                "timestamp": datetime.now(),
-            }
-            self._symbol_cache_time = datetime.now()
-            cache_update_elapsed = time.time() - cache_update_start_time
-            self.logger.debug(
-                f"[RELOAD-SYMBOL] 内存缓存更新完成: 耗时={cache_update_elapsed:.2f}s",
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
-            )
-            self.logger.info(
-                f"[RELOAD-SYMBOL] 【流程3完成】缓存已更新，品种数: {len(formatted_symbols)}",
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
-            )
-
-            total_elapsed = time.time() - start_time
-            self.logger.info(
-                "=" * 60,
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
-            )
-            self.logger.info(
-                f"[RELOAD-SYMBOL] 【用户触发】品种列表重新加载完成: 总耗时={total_elapsed:.2f}s, 品种数={len(formatted_symbols)}",
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
-            )
-            self.logger.debug(
-                f"[RELOAD-SYMBOL] 各步骤耗时: 删除缓存={cache_delete_elapsed:.2f}s, "
-                f"获取品种={fetch_elapsed:.2f}s, 格式转换={format_elapsed:.2f}s, "
-                f"更新缓存={cache_update_elapsed:.2f}s, 总耗时={total_elapsed:.2f}s",
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
-            )
-            self.logger.info(
-                "=" * 60,
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
-            )
-
-            # 检查通达信根目录配置和空品种类别
-            self.logger.debug(
-                "[RELOAD-SYMBOL] 开始检查通达信根目录配置和空品种类别...",
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
-            )
-            warning_messages = []
-
-            if self.china_stock_engine:
-                # 检查BlockParser是否可用
-                block_parser = getattr(self.china_stock_engine, "block_parser", None)
-                if block_parser:
-                    is_available = block_parser.is_available()
-                    self.logger.debug(
-                        f"[RELOAD-SYMBOL] BlockParser可用性检查: is_available={is_available}",
-                        extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
-                    )
-                    if not is_available:
-                        warning_msg = (
-                            "⚠️ 未配置通达信根目录，品种列表可能不完整。"
-                            "缺少：T+0基金、可转债等特殊品种。"
-                            "请在系统配置中设置通达信软件根目录。"
-                        )
-                        warning_messages.append(warning_msg)
-                        self.logger.warning(
-                            f"[RELOAD-SYMBOL] ⚠️ {warning_msg}",
-                            extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
-                        )
-                else:
-                    self.logger.debug(
-                        "[RELOAD-SYMBOL] BlockParser不可用",
-                        extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
-                    )
-
-            # 检查空品种类别（集合E,F,G,H,I）
-            if empty_categories:
-                empty_warning = f"⚠️ 以下品种列表为空，请排查相关问题：{', '.join(empty_categories)}"
-                warning_messages.append(empty_warning)
-                self.logger.warning(
-                    f"[RELOAD-SYMBOL] ⚠️ {empty_warning}",
-                    extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
-                )
-                self.logger.debug(
-                    f"[RELOAD-SYMBOL] 空品种类别详情: {empty_categories}",
-                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
-                )
-
-            # 合并所有警告消息
-            warning_message = "\n".join(warning_messages) if warning_messages else None
-            if warning_message:
-                self.logger.debug(
-                    f"[RELOAD-SYMBOL] 警告消息: {warning_message}",
-                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
-                )
-
-            total_elapsed = time.time() - start_time
-            self.logger.info(
-                f"[RELOAD-SYMBOL] 品种列表重新加载成功: 总耗时={total_elapsed:.2f}s, 品种数={len(formatted_symbols)}, "
-                f"警告={'存在' if warning_message else '无'}",
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
-            )
-
-            return {
-                "success": True,
-                "symbol_count": len(formatted_symbols),
-                "message": f"成功加载{len(formatted_symbols)}个品种",
-                "data": formatted_symbols,
-                "warning": warning_message,  # 添加警告信息
-                "empty_categories": empty_categories,  # 添加空品种类别列表
-            }
-
-        except Exception as e:
-            total_elapsed = time.time() - start_time
-            self._log_error("重新加载品种列表", e)
-            self.logger.error(
-                "[RELOAD-SYMBOL] ❌ 品种列表重新加载失败",
-                exc_info=True,
-                extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
-            )
-            self.logger.error(
-                "=" * 60,
-                extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
-            )
-            self.logger.error(
-                f"[RELOAD-SYMBOL] 【失败】品种列表加载失败: {e}, 耗时={total_elapsed:.2f}s",
-                exc_info=True,
-                extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
-            )
-            self.logger.debug(
-                f"[RELOAD-SYMBOL] 异常类型: {type(e).__name__}, 异常详情: {str(e)}",
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
-            )
-            self.logger.error(
-                "=" * 60,
-                extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
-            )
-            return {
-                "success": False,
-                "symbol_count": 0,
-                "message": f"加载失败: {str(e)}",
-                "data": [],
-            }
 
     def refresh_symbol_list(self) -> Dict[str, Any]:
         """刷新品种列表（从缓存文件，已过滤未上市品种）.
@@ -1637,93 +1731,475 @@ class DataCenterService(BaseService, LoggerMixin):
 
         download_start_time = time.time()
 
-        # 切换到下载阶段，使用场景上下文 - 日志埋点v4.0
+        # 设置日志上下文
+        import logging
+        from contextlib import suppress
+        
         try:
-            from backend.infrastructure.system_vnpy.unified_log_system import get_logging_hub
-
-            ctx = get_logging_hub()
-            ctx.set_stage("downloading")
+            from backend.infrastructure.system_vnpy.unified_log_system import (
+                get_logging_hub,
+                ai_log_process,
+            )
+            hub = get_logging_hub()
+            if hub:
+                hub.set_stage("downloading")
         except ImportError:
-            ctx = None
-            self.logger.debug("logging_context模块不可用，跳过阶段切换")
-
-        # ✅ 开始AI日志流程
-        ai_log_started = False
+            hub = None
+        
+        stage_logger = logging.getLogger("task.data_download.stage")
+        
+        # 使用ai_log_process创建独立日志文件
+        download_type = "修复下载" if symbols else "增量下载"
         try:
-            download_type = "修复下载" if symbols else "增量下载"
-            self.logger.debug(
-                f"[DOWNLOAD-SERVICE] 开始启动AI日志流程: download_type={download_type}",
-                extra={"log_type": "SYSTEM", "scenario": "data_download"}
-            )
-            ai_log_file = start_ai_process(
-                "data_download",
-                metadata={
-                    "start_date": start_date,
-                    "download_type": download_type,
-                    "symbol_count": len(symbols) if symbols else None,
-                }
-            )
-            ai_log_started = True
-            self.logger.info(
-                f"[DOWNLOAD-SERVICE] AI日志文件: {ai_log_file}",
-                extra={"log_type": "SYSTEM", "scenario": "data_download"}
-            )
-            self.logger.debug(
-                f"[DOWNLOAD-SERVICE] AI日志流程已启动: {ai_log_file}",
-                extra={"log_type": "SYSTEM", "scenario": "data_download"}
-            )
-        except Exception as e:
-            self.logger.warning(
-                f"[DOWNLOAD-SERVICE] ⚠️ 启动AI日志流程失败: {e}",
-                exc_info=True,
-                extra={"log_type": "ALERT", "scenario": "data_download"}
-            )
-
-        try:
-            self.logger.debug(
-                "[DOWNLOAD-SERVICE] 开始增量数据下载",
-                extra={"log_type": "SYSTEM", "scenario": "data_download"}
-            )
-            self.logger.info(
-                f"[DOWNLOAD-SERVICE] 增量数据下载任务开始: start_date={start_date}, "
-                f"symbols={'有' if symbols else '无'}, symbol_count={len(symbols) if symbols else 0}",
-                extra={"log_type": "SYSTEM", "scenario": "data_download"}
-            )
-            self.log_operation_start("增量数据下载", start_date=start_date)
-
-            if self.china_stock_engine is None:
-                self.logger.error(
-                    "[DOWNLOAD-SERVICE] ❌ 中国股票引擎不可用",
-                    extra={"log_type": "ALERT", "scenario": "data_download"}
-                )
-                self.logger.debug(
-                    "[DOWNLOAD-SERVICE] ChinaStockEngine状态: None",
-                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
-                )
-                if ai_log_started:
-                    end_ai_process(success=False, summary="中国股票引擎不可用")
-                return {
-                    "success": False,
-                    "task_id": None,
-                    "message": "data_module_vnpy不可用",
-                }
-
-            # 解析并验证日期
-            from datetime import datetime as dt, date
-
+            context_manager = ai_log_process("data_download") if hub else suppress()
+        except Exception:
+            context_manager = suppress()
+        
+        with context_manager:
             try:
+                # 阶段节点（输出到Terminal）
+                stage_logger.info(
+                    f"📍 数据下载开始: {download_type}, 开始日期={start_date}",
+                    extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                )
+                
                 self.logger.debug(
-                    f"[DOWNLOAD-SERVICE] 开始解析日期: start_date={start_date}",
+                    "[DOWNLOAD-SERVICE] 开始增量数据下载",
                     extra={"log_type": "SYSTEM", "scenario": "data_download"}
                 )
-                start_dt = dt.strptime(start_date, "%Y-%m-%d").date()
-                self.logger.debug(
-                    f"[DOWNLOAD-SERVICE] 日期解析成功: {start_dt}",
+                self.logger.info(
+                    f"[DOWNLOAD-SERVICE] 增量数据下载任务开始: start_date={start_date}, "
+                    f"symbols={'有' if symbols else '无'}, symbol_count={len(symbols) if symbols else 0}",
                     extra={"log_type": "SYSTEM", "scenario": "data_download"}
                 )
-            except ValueError as e:
+                self.log_operation_start("增量数据下载", start_date=start_date)
+
+                if self.china_stock_engine is None:
+                    self.logger.error(
+                        "[DOWNLOAD-SERVICE] ❌ 中国股票引擎不可用",
+                        extra={"log_type": "ALERT", "scenario": "data_download"}
+                    )
+                    self.logger.debug(
+                        "[DOWNLOAD-SERVICE] ChinaStockEngine状态: None",
+                        extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                    )
+                    # 阶段节点（输出到Terminal）
+                    stage_logger.error(
+                        "❌ 数据下载失败: 中国股票引擎不可用",
+                        extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                    )
+                    return {
+                        "success": False,
+                        "task_id": None,
+                        "message": "data_module_vnpy不可用",
+                    }
+
+                # 解析并验证日期
+                from datetime import datetime as dt, date
+
+                try:
+                    self.logger.debug(
+                        f"[DOWNLOAD-SERVICE] 开始解析日期: start_date={start_date}",
+                        extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                    )
+                    start_dt = dt.strptime(start_date, "%Y-%m-%d").date()
+                    self.logger.debug(
+                        f"[DOWNLOAD-SERVICE] 日期解析成功: {start_dt}",
+                        extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                    )
+                except ValueError as e:
+                    self.logger.error(
+                        f"[DOWNLOAD-SERVICE] ❌ 日期格式错误: {e}",
+                        exc_info=True,
+                        extra={"log_type": "ALERT", "scenario": "data_download"}
+                    )
+                    self.logger.debug(
+                        f"[DOWNLOAD-SERVICE] 异常类型: {type(e).__name__}, 异常详情: {str(e)}",
+                        extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                    )
+                    # 阶段节点（输出到Terminal）
+                    stage_logger.error(
+                        f"❌ 数据下载失败: 日期格式错误 - {str(e)}",
+                        extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                    )
+                    return {
+                        "success": False,
+                        "task_id": None,
+                        "message": f"日期格式错误: {str(e)}",
+                    }
+
+                today = date.today()
+                days_diff = (today - start_dt).days
+                self.logger.debug(
+                    f"[DOWNLOAD-SERVICE] 日期验证: start_date={start_dt}, today={today}, days_diff={days_diff}",
+                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                )
+                if days_diff > 100:
+                    self.logger.warning(
+                        f"[DOWNLOAD-SERVICE] ⚠️ 日期超出范围: {days_diff}天前（最多支持100天）",
+                        extra={"log_type": "ALERT", "scenario": "data_download"}
+                    )
+                    # 阶段节点（输出到Terminal）
+                    stage_logger.warning(
+                        f"⚠️ 数据下载失败: 日期超出范围 - {days_diff}天前（最多支持100天）",
+                        extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                    )
+                    return {
+                        "success": False,
+                        "task_id": None,
+                        "message": f"增量下载最多支持最近100天数据，请调整开始日期（当前选择了{days_diff}天前的数据）",
+                    }
+                if days_diff < 0:
+                    self.logger.warning(
+                        f"[DOWNLOAD-SERVICE] ⚠️ 开始日期不能晚于今天: {start_dt} > {today}",
+                        extra={"log_type": "ALERT", "scenario": "data_download"}
+                    )
+                    # 阶段节点（输出到Terminal）
+                    stage_logger.warning(
+                        "⚠️ 数据下载失败: 开始日期不能晚于今天",
+                        extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                    )
+                    return {
+                        "success": False,
+                        "task_id": None,
+                        "message": "开始日期不能晚于今天",
+                    }
+
+                # 生成任务ID并登记
+                task_id = f"incremental_download_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                self._download_tasks[task_id] = {
+                    "type": "incremental",
+                    "status": "running",
+                    "start_time": datetime.now(),
+                    "start_date": start_date,
+                    "progress": 0,
+                }
+
+                # 注意: 不再使用IPO日期过滤品种列表，直接使用所有symbols
+                filtered_symbols = symbols
+                self.logger.debug(
+                    f"[DOWNLOAD-SERVICE] 品种列表过滤: 原始数量={len(symbols) if symbols else 0}, "
+                    f"过滤后数量={len(filtered_symbols) if filtered_symbols else 0}",
+                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                )
+                if not filtered_symbols:
+                    error_msg = "品种列表为空，无法下载"
+                    self.logger.warning(
+                        f"[DOWNLOAD-SERVICE] ⚠️ {error_msg}",
+                        extra={"log_type": "ALERT", "scenario": "data_download"}
+                    )
+                    self.logger.debug(
+                        "[DOWNLOAD-SERVICE] 品种列表详情: symbols为空或None",
+                        extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                    )
+                    # 阶段节点（输出到Terminal）
+                    stage_logger.warning(
+                        f"⚠️ 数据下载失败: {error_msg}",
+                        extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                    )
+                    return {
+                        "success": False,
+                        "task_id": None,
+                        "message": error_msg,
+                    }
+
+                if symbols:
+                    self.logger.info(
+                        f"[DOWNLOAD-SERVICE] 下载任务已创建: task_id={task_id}, 开始日期={start_date}, "
+                        f"指定品种={len(filtered_symbols)}个, 预计天数={days_diff}天",
+                        extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                    )
+                    self.logger.debug(
+                        f"[DOWNLOAD-SERVICE] 任务详情: task_id={task_id}, symbols={len(filtered_symbols)}个, "
+                        f"start_date={start_dt}, days_diff={days_diff}",
+                        extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                    )
+                else:
+                    self.logger.info(
+                        f"[DOWNLOAD-SERVICE] 下载任务已创建: task_id={task_id}, 开始日期={start_date}, 预计下载{days_diff}天数据",
+                        extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                    )
+                    self.logger.debug(
+                        f"[DOWNLOAD-SERVICE] 任务详情: task_id={task_id}, start_date={start_dt}, days_diff={days_diff}",
+                        extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                    )
+
+                # 启动底层后台下载任务（引擎内部自建线程）
+                self.logger.debug(
+                    "[DOWNLOAD-SERVICE] 开始启动底层下载任务...",
+                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                )
+                engine_start_time = time.time()
+                started = self.china_stock_engine.download_incremental(
+                    start_date=start_dt,
+                    symbols=filtered_symbols  # 🔧 传递过滤后的品种列表
+                )
+                engine_start_elapsed = time.time() - engine_start_time
+                self.logger.debug(
+                    f"[DOWNLOAD-SERVICE] 底层下载任务启动完成: started={started}, 耗时={engine_start_elapsed:.2f}s",
+                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                )
+                if not started:
+                    self.logger.error(
+                        "[DOWNLOAD-SERVICE] ❌ 下载启动失败：已有任务在运行或启动失败",
+                        extra={"log_type": "ALERT", "scenario": "data_download"}
+                    )
+                    self.logger.debug(
+                        "[DOWNLOAD-SERVICE] 启动失败详情: started=False",
+                        extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                    )
+                    # 阶段节点（输出到Terminal）
+                    stage_logger.error(
+                        "❌ 数据下载失败: 下载启动失败，已有任务在运行或启动失败",
+                        extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                    )
+                    return {
+                        "success": False,
+                        "task_id": None,
+                        "message": "已有下载任务在运行，或启动失败",
+                    }
+
+                # 批量下载场景上下文 - 日志埋点v4.0 (已移除scenario)
+                # 直接执行,不使用scenario上下文
+                ctx_scenario = None
+
+                self.logger.debug(
+                    f"[DOWNLOAD-SERVICE] 开始轮询下载进度: task_id={task_id}",
+                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                )
+                logger_download.info(
+                    f"[下载-{task_id}] 引擎已启动，开始轮询进度...",
+                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                )
+                print(">>> [SERVICE] 引擎已启动，正在初始化下载任务...", flush=True)
+                print(
+                    ">>> [SERVICE] 提示：初始化可能需要15-30秒（发现服务器、构建任务列表）", flush=True
+                )
+
+                last_pct = -1
+                last_log_time = time.time()
+                last_progress_time = time.time()  # 记录最后一次有进度的时间
+                last_completed = 0  # 记录上次的完成数
+                timeout_seconds = 300  # 5分钟超时
+                no_progress_timeout = 60  # 60秒无进度超时
+                initialization_notified = False  # 是否已通知初始化完成
+
+                # 直接轮询引擎进度，直到下载结束
+                while True:
+                    try:
+                        prog = self.china_stock_engine.get_download_progress()
+                        current_time = time.time()
+
+                        if isinstance(prog, dict):
+                            is_downloading = prog.get("is_downloading", False)
+                            completed = int(prog.get("completed", 0))
+                            total = int(prog.get("total", 0))
+                            pct = int((completed / total) * 100) if total > 0 else 0
+                            cur_sym = prog.get("current_symbol", "") or ""
+                            cur_itv = prog.get("current_interval", "") or ""
+
+                            # 检测进度是否有更新
+                            if completed > last_completed:
+                                last_progress_time = current_time
+                                last_completed = completed
+
+                            # 通知初始化完成（只通知一次）
+                            if not initialization_notified and is_downloading and total > 0:
+                                initialization_notified = True
+                                elapsed_init = current_time - download_start_time
+                                print(
+                                    f">>> [SERVICE] ✓ 初始化完成！耗时 {elapsed_init:.1f}秒，开始下载 {total} 个任务...",
+                                    flush=True,
+                                )
+
+                            # 进度更新：回调通知
+                            if progress_callback and (pct != last_pct or completed != last_completed):
+                                detail = f"{cur_sym} {cur_itv}".strip()
+                                suffix = f" - {detail}" if detail else ""
+                                msg = f"📥 进度 {pct:.0f}%（{completed}/{total}）{suffix}"
+                                with suppress(Exception):
+                                    progress_callback(pct, msg)
+                                last_pct = pct
+
+                            # 定期记录详细进度日志（每10秒）并强制输出到terminal
+                            if current_time - last_log_time >= 10:
+                                self.logger.info(
+                                    f"[下载-{task_id}] 进度: {pct}% ({completed}/{total}) - {cur_sym} {cur_itv}",
+                                    extra={"log_type": "PROGRESS", "scenario": "data_download"}
+                                )
+                                # print(...)  # 🔧 已移除：防止刷屏，logger.info已足够
+                                last_log_time = current_time
+
+                            # 检查超时
+                            elapsed = current_time - download_start_time
+                            no_progress_elapsed = current_time - last_progress_time
+
+                            if elapsed > timeout_seconds:
+                                self.logger.error(
+                                    f"[下载-{task_id}] 下载超时（{timeout_seconds}秒），停止轮询",
+                                    extra={"log_type": "ALERT", "scenario": "data_download"}
+                                )
+                                break
+
+                            if no_progress_elapsed > no_progress_timeout and completed > 0:
+                                self.logger.warning(
+                                    f"[下载-{task_id}] {no_progress_timeout}秒无进度更新，可能卡住了",
+                                    extra={"log_type": "ALERT", "scenario": "data_download"}
+                                )
+
+                            # 检查是否完成
+                            if not is_downloading:
+                                # 确认是否真的完成
+                                if total > 0 and completed >= total:
+                                    download_elapsed = time.time() - download_start_time
+                                    self.logger.info(
+                                        f"[下载-{task_id}] 引擎下载已完成: ({completed}/{total}), 耗时={download_elapsed:.2f}s",
+                                        extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                                    )
+                                    self.logger.debug(
+                                        f"[DOWNLOAD-SERVICE] 下载完成详情: task_id={task_id}, completed={completed}, "
+                                        f"total={total}, 耗时={download_elapsed:.2f}s",
+                                        extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                                    )
+                                    print(
+                                        f">>> [SERVICE] ✓ 下载已完成 ({completed}/{total})", flush=True
+                                    )
+                                    break
+                                elif total > 0 and completed < total:
+                                    logger_download.warning(
+                                        "[下载-%s] is_downloading=False 但未完成 (%d/%d)，继续等待...",
+                                        task_id,
+                                        completed,
+                                        total,
+                                        extra={"log_type": "ALERT", "scenario": "data_download"}
+                                    )
+                                    # 继续等待，可能是进度更新延迟
+                                    time.sleep(1.0)
+                                else:
+                                    # total=0的情况，可能是初始化未完成（服务器发现、任务构建阶段）
+                                    # 只在超过30秒后才警告，给初始化留足时间
+                                    elapsed = current_time - download_start_time
+                                    if elapsed > 30:
+                                        logger_download.warning(
+                                            "[下载-%s] is_downloading=False 且 total=0 已持续 %.0f秒，可能失败",
+                                            task_id,
+                                            elapsed,
+                                            extra={"log_type": "ALERT", "scenario": "data_download"}
+                                        )
+                                        print(
+                                            ">>> [SERVICE] ⚠️ 下载初始化超过30秒，可能存在问题",
+                                            flush=True,
+                                        )
+                                    time.sleep(1.0)
+                            else:
+                                # 正常下载中，每20秒输出一次状态确认
+                                if current_time - last_log_time >= 20:
+                                    print(
+                                        f">>> [SERVICE] 下载进行中: {pct}% ({completed}/{total})",
+                                        flush=True,
+                                    )
+                                time.sleep(0.5)
+                        else:
+                            logger_download.warning(
+                                "[下载-%s] 获取进度失败，prog=%s",
+                                task_id,
+                                prog,
+                                extra={"log_type": "ALERT", "scenario": "data_download"}
+                            )
+                            time.sleep(0.5)
+
+                    except Exception as poll_error:
+                        logger_alert.error(
+                            "[下载-%s] 轮询异常: %s",
+                            task_id,
+                            poll_error,
+                            exc_info=True,
+                            extra={"log_type": "ALERT", "scenario": "data_download"}
+                        )
+                        time.sleep(0.5)
+
+                # 线程已结束，做一次最终上报与事件广播
+                if progress_callback:
+                    with suppress(Exception):
+                        progress_callback(100.0, "✅ 下载完成，正在整理结果...")
+
+                download_duration = (time.time() - download_start_time) * 1000
+                self.logger.debug(
+                    f"[DOWNLOAD-SERVICE] 开始整理下载结果: task_id={task_id}, 总耗时={download_duration/1000:.2f}s",
+                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                )
+                logger_download.info(
+                    f"[下载-{task_id}] 整理结果...",
+                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                )
+
+                # 退出场景上下文 - 日志埋点v4.0
+                # Scenario context已移除
+
+                self._emit_download_complete_event(task_id, "incremental", start_date)
+
+                # 汇总返回
+                task = self._download_tasks.get(task_id, {})
+                status = task.get("status", "finished")
+                self.logger.debug(
+                    f"[DOWNLOAD-SERVICE] 任务状态: task_id={task_id}, status={status}",
+                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                )
+                if status == "error":
+                    error_msg = task.get("error_message", "下载失败")
+                    self.logger.error(
+                        f"[DOWNLOAD-SERVICE] ❌ 下载任务失败: task_id={task_id}, error_msg={error_msg}",
+                        extra={"log_type": "ALERT", "scenario": "data_download"}
+                    )
+                    self.log_operation_failure("增量数据下载", Exception(error_msg), task_id=task_id)
+                    # 阶段节点（输出到Terminal）
+                    stage_logger.error(
+                        f"❌ 数据下载失败: {error_msg}",
+                        extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                    )
+                    return {
+                        "success": False,
+                        "task_id": task_id,
+                        "message": error_msg,
+                    }
+
+                # 记录性能日志
+                self.log_performance(
+                    "增量数据下载",
+                    download_duration,
+                    True,
+                    {"task_id": task_id, "start_date": start_date, "days": days_diff},
+                )
+                self.log_operation_success("增量数据下载", task_id=task_id, days=days_diff)
+
+                # 阶段节点（输出到Terminal）
+                stage_logger.info(
+                    f"✅ 数据下载完成: 耗时={download_duration/1000:.2f}s, 成功={task.get('success_count', 0)}, 失败={task.get('failed_count', 0)}",
+                    extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                )
+
+                self.logger.info(
+                    f"[DOWNLOAD-SERVICE] 增量数据下载成功: task_id={task_id}, 耗时={download_duration/1000:.2f}s",
+                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                )
+                self.logger.debug(
+                    f"[DOWNLOAD-SERVICE] 下载成功详情: task_id={task_id}, start_date={start_date}, "
+                    f"days_diff={days_diff}, 耗时={download_duration/1000:.2f}s",
+                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                )
+
+                return {
+                    "success": True,
+                    "task_id": task_id,
+                    "message": "增量下载已完成",
+                    "success_count": task.get("success_count", 0),
+                    "failed_count": task.get("failed_count", 0),
+                }
+
+            except Exception as e:
+                download_duration = (time.time() - download_start_time) * 1000
                 self.logger.error(
-                    f"[DOWNLOAD-SERVICE] ❌ 日期格式错误: {e}",
+                    f"[DOWNLOAD-SERVICE] ❌ 增量数据下载异常: {e}, 耗时={download_duration/1000:.2f}s",
                     exc_info=True,
                     extra={"log_type": "ALERT", "scenario": "data_download"}
                 )
@@ -1731,386 +2207,20 @@ class DataCenterService(BaseService, LoggerMixin):
                     f"[DOWNLOAD-SERVICE] 异常类型: {type(e).__name__}, 异常详情: {str(e)}",
                     extra={"log_type": "SYSTEM", "scenario": "data_download"}
                 )
-                if ai_log_started:
-                    end_ai_process(success=False, summary=f"日期格式错误: {str(e)}")
+                self.log_performance("增量数据下载", download_duration, False, {"error": str(e)})
+                self.log_operation_failure("增量数据下载", e, start_date=start_date)
+                
+                # 阶段节点（输出到Terminal）
+                stage_logger.error(
+                    f"❌ 数据下载异常: {e}, 耗时={download_duration/1000:.2f}s",
+                    extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                )
+                
                 return {
                     "success": False,
                     "task_id": None,
-                    "message": f"日期格式错误: {str(e)}",
+                    "message": f"启动失败: {str(e)}",
                 }
-
-            today = date.today()
-            days_diff = (today - start_dt).days
-            self.logger.debug(
-                f"[DOWNLOAD-SERVICE] 日期验证: start_date={start_dt}, today={today}, days_diff={days_diff}",
-                extra={"log_type": "SYSTEM", "scenario": "data_download"}
-            )
-            if days_diff > 100:
-                self.logger.warning(
-                    f"[DOWNLOAD-SERVICE] ⚠️ 日期超出范围: {days_diff}天前（最多支持100天）",
-                    extra={"log_type": "ALERT", "scenario": "data_download"}
-                )
-                if ai_log_started:
-                    end_ai_process(success=False, summary=f"日期超出范围: {days_diff}天前")
-                return {
-                    "success": False,
-                    "task_id": None,
-                    "message": f"增量下载最多支持最近100天数据，请调整开始日期（当前选择了{days_diff}天前的数据）",
-                }
-            if days_diff < 0:
-                self.logger.warning(
-                    f"[DOWNLOAD-SERVICE] ⚠️ 开始日期不能晚于今天: {start_dt} > {today}",
-                    extra={"log_type": "ALERT", "scenario": "data_download"}
-                )
-                if ai_log_started:
-                    end_ai_process(success=False, summary="开始日期不能晚于今天")
-                return {
-                    "success": False,
-                    "task_id": None,
-                    "message": "开始日期不能晚于今天",
-                }
-
-            # 生成任务ID并登记
-            task_id = f"incremental_download_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            self._download_tasks[task_id] = {
-                "type": "incremental",
-                "status": "running",
-                "start_time": datetime.now(),
-                "start_date": start_date,
-                "progress": 0,
-            }
-
-            # 注意: 不再使用IPO日期过滤品种列表，直接使用所有symbols
-            filtered_symbols = symbols
-            self.logger.debug(
-                f"[DOWNLOAD-SERVICE] 品种列表过滤: 原始数量={len(symbols) if symbols else 0}, "
-                f"过滤后数量={len(filtered_symbols) if filtered_symbols else 0}",
-                extra={"log_type": "SYSTEM", "scenario": "data_download"}
-            )
-            if not filtered_symbols:
-                error_msg = "品种列表为空，无法下载"
-                self.logger.warning(
-                    f"[DOWNLOAD-SERVICE] ⚠️ {error_msg}",
-                    extra={"log_type": "ALERT", "scenario": "data_download"}
-                )
-                self.logger.debug(
-                    "[DOWNLOAD-SERVICE] 品种列表详情: symbols为空或None",
-                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
-                )
-                if ai_log_started:
-                    end_ai_process(success=False, summary=error_msg)
-                return {
-                    "success": False,
-                    "task_id": None,
-                    "message": error_msg,
-                }
-
-            if symbols:
-                self.logger.info(
-                    f"[DOWNLOAD-SERVICE] 下载任务已创建: task_id={task_id}, 开始日期={start_date}, "
-                    f"指定品种={len(filtered_symbols)}个, 预计天数={days_diff}天",
-                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
-                )
-                self.logger.debug(
-                    f"[DOWNLOAD-SERVICE] 任务详情: task_id={task_id}, symbols={len(filtered_symbols)}个, "
-                    f"start_date={start_dt}, days_diff={days_diff}",
-                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
-                )
-            else:
-                self.logger.info(
-                    f"[DOWNLOAD-SERVICE] 下载任务已创建: task_id={task_id}, 开始日期={start_date}, 预计下载{days_diff}天数据",
-                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
-                )
-                self.logger.debug(
-                    f"[DOWNLOAD-SERVICE] 任务详情: task_id={task_id}, start_date={start_dt}, days_diff={days_diff}",
-                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
-                )
-
-            # 启动底层后台下载任务（引擎内部自建线程）
-            self.logger.debug(
-                "[DOWNLOAD-SERVICE] 开始启动底层下载任务...",
-                extra={"log_type": "SYSTEM", "scenario": "data_download"}
-            )
-            engine_start_time = time.time()
-            started = self.china_stock_engine.download_incremental(
-                start_date=start_dt,
-                symbols=filtered_symbols  # 🔧 传递过滤后的品种列表
-            )
-            engine_start_elapsed = time.time() - engine_start_time
-            self.logger.debug(
-                f"[DOWNLOAD-SERVICE] 底层下载任务启动完成: started={started}, 耗时={engine_start_elapsed:.2f}s",
-                extra={"log_type": "SYSTEM", "scenario": "data_download"}
-            )
-            if not started:
-                self.logger.error(
-                    "[DOWNLOAD-SERVICE] ❌ 下载启动失败：已有任务在运行或启动失败",
-                    extra={"log_type": "ALERT", "scenario": "data_download"}
-                )
-                self.logger.debug(
-                    "[DOWNLOAD-SERVICE] 启动失败详情: started=False",
-                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
-                )
-                if ai_log_started:
-                    end_ai_process(success=False, summary="下载启动失败：已有任务在运行或启动失败")
-                return {
-                    "success": False,
-                    "task_id": None,
-                    "message": "已有下载任务在运行，或启动失败",
-                }
-
-            # 批量下载场景上下文 - 日志埋点v4.0 (已移除scenario)
-            # 直接执行,不使用scenario上下文
-            ctx_scenario = None
-
-            self.logger.debug(
-                f"[DOWNLOAD-SERVICE] 开始轮询下载进度: task_id={task_id}",
-                extra={"log_type": "SYSTEM", "scenario": "data_download"}
-            )
-            logger_download.info(
-                f"[下载-{task_id}] 引擎已启动，开始轮询进度...",
-                extra={"log_type": "SYSTEM", "scenario": "data_download"}
-            )
-            print(">>> [SERVICE] 引擎已启动，正在初始化下载任务...", flush=True)
-            print(
-                ">>> [SERVICE] 提示：初始化可能需要15-30秒（发现服务器、构建任务列表）", flush=True
-            )
-
-            last_pct = -1
-            last_log_time = time.time()
-            last_progress_time = time.time()  # 记录最后一次有进度的时间
-            last_completed = 0  # 记录上次的完成数
-            timeout_seconds = 300  # 5分钟超时
-            no_progress_timeout = 60  # 60秒无进度超时
-            initialization_notified = False  # 是否已通知初始化完成
-
-            # 直接轮询引擎进度，直到下载结束
-            while True:
-                try:
-                    prog = self.china_stock_engine.get_download_progress()
-                    current_time = time.time()
-
-                    if isinstance(prog, dict):
-                        is_downloading = prog.get("is_downloading", False)
-                        completed = int(prog.get("completed", 0))
-                        total = int(prog.get("total", 0))
-                        pct = int((completed / total) * 100) if total > 0 else 0
-                        cur_sym = prog.get("current_symbol", "") or ""
-                        cur_itv = prog.get("current_interval", "") or ""
-
-                        # 检测进度是否有更新
-                        if completed > last_completed:
-                            last_progress_time = current_time
-                            last_completed = completed
-
-                        # 通知初始化完成（只通知一次）
-                        if not initialization_notified and is_downloading and total > 0:
-                            initialization_notified = True
-                            elapsed_init = current_time - download_start_time
-                            print(
-                                f">>> [SERVICE] ✓ 初始化完成！耗时 {elapsed_init:.1f}秒，开始下载 {total} 个任务...",
-                                flush=True,
-                            )
-
-                        # 进度更新：回调通知
-                        if progress_callback and (pct != last_pct or completed != last_completed):
-                            detail = f"{cur_sym} {cur_itv}".strip()
-                            suffix = f" - {detail}" if detail else ""
-                            msg = f"📥 进度 {pct:.0f}%（{completed}/{total}）{suffix}"
-                            with suppress(Exception):
-                                progress_callback(pct, msg)
-                            last_pct = pct
-
-                        # 定期记录详细进度日志（每10秒）并强制输出到terminal
-                        if current_time - last_log_time >= 10:
-                            self.logger.info(
-                                f"[下载-{task_id}] 进度: {pct}% ({completed}/{total}) - {cur_sym} {cur_itv}",
-                                extra={"log_type": "PROGRESS", "scenario": "data_download"}
-                            )
-                            # print(...)  # 🔧 已移除：防止刷屏，logger.info已足够
-                            last_log_time = current_time
-
-                        # 检查超时
-                        elapsed = current_time - download_start_time
-                        no_progress_elapsed = current_time - last_progress_time
-
-                        if elapsed > timeout_seconds:
-                            self.logger.error(
-                                f"[下载-{task_id}] 下载超时（{timeout_seconds}秒），停止轮询",
-                                extra={"log_type": "ALERT", "scenario": "data_download"}
-                            )
-                            break
-
-                        if no_progress_elapsed > no_progress_timeout and completed > 0:
-                            self.logger.warning(
-                                f"[下载-{task_id}] {no_progress_timeout}秒无进度更新，可能卡住了",
-                                extra={"log_type": "ALERT", "scenario": "data_download"}
-                            )
-
-                        # 检查是否完成
-                        if not is_downloading:
-                            # 确认是否真的完成
-                            if total > 0 and completed >= total:
-                                download_elapsed = time.time() - download_start_time
-                                self.logger.info(
-                                    f"[下载-{task_id}] 引擎下载已完成: ({completed}/{total}), 耗时={download_elapsed:.2f}s",
-                                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
-                                )
-                                self.logger.debug(
-                                    f"[DOWNLOAD-SERVICE] 下载完成详情: task_id={task_id}, completed={completed}, "
-                                    f"total={total}, 耗时={download_elapsed:.2f}s",
-                                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
-                                )
-                                print(
-                                    f">>> [SERVICE] ✓ 下载已完成 ({completed}/{total})", flush=True
-                                )
-                                break
-                            elif total > 0 and completed < total:
-                                logger_download.warning(
-                                    "[下载-%s] is_downloading=False 但未完成 (%d/%d)，继续等待...",
-                                    task_id,
-                                    completed,
-                                    total,
-                                    extra={"log_type": "ALERT", "scenario": "data_download"}
-                                )
-                                # 继续等待，可能是进度更新延迟
-                                time.sleep(1.0)
-                            else:
-                                # total=0的情况，可能是初始化未完成（服务器发现、任务构建阶段）
-                                # 只在超过30秒后才警告，给初始化留足时间
-                                elapsed = current_time - download_start_time
-                                if elapsed > 30:
-                                    logger_download.warning(
-                                        "[下载-%s] is_downloading=False 且 total=0 已持续 %.0f秒，可能失败",
-                                        task_id,
-                                        elapsed,
-                                        extra={"log_type": "ALERT", "scenario": "data_download"}
-                                    )
-                                    print(
-                                        ">>> [SERVICE] ⚠️ 下载初始化超过30秒，可能存在问题",
-                                        flush=True,
-                                    )
-                                time.sleep(1.0)
-                        else:
-                            # 正常下载中，每20秒输出一次状态确认
-                            if current_time - last_log_time >= 20:
-                                print(
-                                    f">>> [SERVICE] 下载进行中: {pct}% ({completed}/{total})",
-                                    flush=True,
-                                )
-                            time.sleep(0.5)
-                    else:
-                        logger_download.warning(
-                            "[下载-%s] 获取进度失败，prog=%s",
-                            task_id,
-                            prog,
-                            extra={"log_type": "ALERT", "scenario": "data_download"}
-                        )
-                        time.sleep(0.5)
-
-                except Exception as poll_error:
-                    logger_alert.error(
-                        "[下载-%s] 轮询异常: %s",
-                        task_id,
-                        poll_error,
-                        exc_info=True,
-                        extra={"log_type": "ALERT", "scenario": "data_download"}
-                    )
-                    time.sleep(0.5)
-
-            # 线程已结束，做一次最终上报与事件广播
-            if progress_callback:
-                with suppress(Exception):
-                    progress_callback(100.0, "✅ 下载完成，正在整理结果...")
-
-            download_duration = (time.time() - download_start_time) * 1000
-            self.logger.debug(
-                f"[DOWNLOAD-SERVICE] 开始整理下载结果: task_id={task_id}, 总耗时={download_duration/1000:.2f}s",
-                extra={"log_type": "SYSTEM", "scenario": "data_download"}
-            )
-            logger_download.info(
-                f"[下载-{task_id}] 整理结果...",
-                extra={"log_type": "SYSTEM", "scenario": "data_download"}
-            )
-
-            # 退出场景上下文 - 日志埋点v4.0
-            # Scenario context已移除
-
-            self._emit_download_complete_event(task_id, "incremental", start_date)
-
-            # 汇总返回
-            task = self._download_tasks.get(task_id, {})
-            status = task.get("status", "finished")
-            self.logger.debug(
-                f"[DOWNLOAD-SERVICE] 任务状态: task_id={task_id}, status={status}",
-                extra={"log_type": "SYSTEM", "scenario": "data_download"}
-            )
-            if status == "error":
-                error_msg = task.get("error_message", "下载失败")
-                self.logger.error(
-                    f"[DOWNLOAD-SERVICE] ❌ 下载任务失败: task_id={task_id}, error_msg={error_msg}",
-                    extra={"log_type": "ALERT", "scenario": "data_download"}
-                )
-                self.log_operation_failure("增量数据下载", Exception(error_msg), task_id=task_id)
-                if ai_log_started:
-                    end_ai_process(success=False, summary=f"下载失败: {error_msg}")
-                return {
-                    "success": False,
-                    "task_id": task_id,
-                    "message": error_msg,
-                }
-
-            # 记录性能日志
-            self.log_performance(
-                "增量数据下载",
-                download_duration,
-                True,
-                {"task_id": task_id, "start_date": start_date, "days": days_diff},
-            )
-            self.log_operation_success("增量数据下载", task_id=task_id, days=days_diff)
-
-            # ✅ 结束AI日志流程（成功）
-            if ai_log_started:
-                end_ai_process(success=True, summary=f"增量下载已完成，耗时 {download_duration/1000:.1f}秒")
-
-            self.logger.info(
-                f"[DOWNLOAD-SERVICE] 增量数据下载成功: task_id={task_id}, 耗时={download_duration/1000:.2f}s",
-                extra={"log_type": "SYSTEM", "scenario": "data_download"}
-            )
-            self.logger.debug(
-                f"[DOWNLOAD-SERVICE] 下载成功详情: task_id={task_id}, start_date={start_date}, "
-                f"days_diff={days_diff}, 耗时={download_duration/1000:.2f}s",
-                extra={"log_type": "SYSTEM", "scenario": "data_download"}
-            )
-
-            return {
-                "success": True,
-                "task_id": task_id,
-                "message": "增量下载已完成",
-                "success_count": task.get("success_count", 0),
-                "failed_count": task.get("failed_count", 0),
-            }
-
-        except Exception as e:
-            download_duration = (time.time() - download_start_time) * 1000
-            self.logger.error(
-                f"[DOWNLOAD-SERVICE] ❌ 增量数据下载异常: {e}, 耗时={download_duration/1000:.2f}s",
-                exc_info=True,
-                extra={"log_type": "ALERT", "scenario": "data_download"}
-            )
-            self.logger.debug(
-                f"[DOWNLOAD-SERVICE] 异常类型: {type(e).__name__}, 异常详情: {str(e)}",
-                extra={"log_type": "SYSTEM", "scenario": "data_download"}
-            )
-            self.log_performance("增量数据下载", download_duration, False, {"error": str(e)})
-            self.log_operation_failure("增量数据下载", e, start_date=start_date)
-            # ✅ 结束AI日志流程（异常）
-            if ai_log_started:
-                end_ai_process(success=False, summary=f"启动失败: {str(e)}")
-            return {
-                "success": False,
-                "task_id": None,
-                "message": f"启动失败: {str(e)}",
-            }
 
     def start_incremental_download(self, start_date: str) -> Dict[str, Any]:
         """启动增量数据下载.

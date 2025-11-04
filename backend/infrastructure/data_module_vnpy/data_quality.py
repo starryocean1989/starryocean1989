@@ -218,139 +218,183 @@ class DataSensor:
             扫描结果字典 {(symbol, interval): QualityScanResult}
         """
         import time
+        from contextlib import suppress
+        
         start_time = time.time()
         
-        with self._scan_lock:
-            if self._scanning:
-                logger.warning(
-                    "[DATA-SENSOR] ⚠️ 质量扫描正在进行中",
+        # 设置日志上下文
+        try:
+            from backend.infrastructure.system_vnpy.unified_log_system import (
+                get_logging_hub,
+                ai_log_process,
+            )
+            hub = get_logging_hub()
+        except ImportError:
+            hub = None
+        
+        stage_logger = logging.getLogger("task.manual_data_scan.stage")
+        
+        # 使用ai_log_process创建独立日志文件
+        # 注意：场景信息通过日志记录的extra参数传递，无需全局设置
+        try:
+            context_manager = ai_log_process("manual_data_scan") if hub else suppress()
+        except Exception:
+            context_manager = suppress()
+        
+        with context_manager:
+            with self._scan_lock:
+                if self._scanning:
+                    logger.warning(
+                        "[DATA-SENSOR] ⚠️ 质量扫描正在进行中",
+                        extra={"log_type": "ALERT", "scenario": "manual_data_scan"}
+                    )
+                    logger.debug(
+                        "[DATA-SENSOR] 扫描状态: _scanning=True",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    )
+                    return self._scan_results.copy()
+                
+                self._scanning = True
+            
+            try:
+                # 阶段节点（输出到Terminal）
+                stage_logger.info(
+                    f"📍 手动数据扫描开始: 品种数={len(symbols)}, 周期={intervals or ['1d', '5m', '1m']}",
+                    extra={"log_type": "STAGE_NODE", "scenario": "manual_data_scan"},
+                )
+                
+                intervals = intervals or ["1d", "5m", "1m"]
+                total_tasks = len(symbols) * len(intervals)
+                
+                logger.debug(
+                    f"[DATA-SENSOR] 开始数据质量扫描: symbols={len(symbols)}, intervals={intervals}, "
+                    f"total_tasks={total_tasks}, use_async={use_async}",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                )
+                
+                # v3.1：使用LoadBalancer获取最优配置
+                if max_workers is None or max_concurrent is None:
+                    logger.debug(
+                        "[DATA-SENSOR] 开始获取LoadBalancer最优配置...",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    )
+                    lb_config_start_time = time.time()
+                    optimal_config = self._get_optimal_config_from_lb(
+                        total_tasks=total_tasks
+                    )
+                    lb_config_elapsed = time.time() - lb_config_start_time
+                    max_workers = max_workers or optimal_config.get("processes", 4)
+                    max_concurrent = max_concurrent or optimal_config.get("coroutines_per_process", 100)
+                    logger.debug(
+                        f"[DATA-SENSOR] LoadBalancer配置获取完成: processes={max_workers}, "
+                        f"coroutines_per_process={max_concurrent}, 耗时={lb_config_elapsed:.2f}s",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    )
+                else:
+                    logger.debug(
+                        f"[DATA-SENSOR] 使用手动配置: processes={max_workers}, coroutines_per_process={max_concurrent}",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    )
+                
+                logger.info(
+                    f"[DATA-SENSOR] 🔍 开始数据质量扫描: 品种数={len(symbols)}, 周期={intervals}, "
+                    f"异步模式={use_async}, 进程数={max_workers}, 最大并发={max_concurrent}",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                )
+                
+                scan_start_time = time.time()
+                if use_async:
+                    # 异步扫描
+                    logger.debug(
+                        "[DATA-SENSOR] 使用异步扫描模式",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    )
+                    results = self._scan_async(symbols, intervals, max_concurrent)
+                else:
+                    # 多进程扫描
+                    logger.debug(
+                        "[DATA-SENSOR] 使用多进程扫描模式",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    )
+                    results = self._scan_multiprocess(symbols, intervals, max_workers)
+                scan_elapsed = time.time() - scan_start_time
+                
+                # 更新缓存
+                logger.debug(
+                    "[DATA-SENSOR] 开始更新扫描结果缓存...",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                )
+                cache_update_start_time = time.time()
+                with self._results_lock:
+                    self._scan_results.update(results)
+                cache_update_elapsed = time.time() - cache_update_start_time
+                logger.debug(
+                    f"[DATA-SENSOR] 扫描结果缓存更新完成: 耗时={cache_update_elapsed:.2f}s",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                )
+                
+                # 更新统计
+                logger.debug(
+                    "[DATA-SENSOR] 开始更新统计信息...",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                )
+                stats_update_start_time = time.time()
+                self._update_stats(results)
+                stats_update_elapsed = time.time() - stats_update_start_time
+                logger.debug(
+                    f"[DATA-SENSOR] 统计信息更新完成: 耗时={stats_update_elapsed:.2f}s",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                )
+                
+                total_elapsed = time.time() - start_time
+                logger.info(
+                    f"[DATA-SENSOR] ✅ 数据质量扫描完成: 扫描{len(results)}个任务, "
+                    f"扫描耗时={scan_elapsed:.2f}s, 总耗时={total_elapsed:.2f}s",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                )
+                logger.debug(
+                    f"[DATA-SENSOR] 扫描完成详情: results_count={len(results)}, scan_elapsed={scan_elapsed:.2f}s, "
+                    f"cache_update_elapsed={cache_update_elapsed:.2f}s, stats_update_elapsed={stats_update_elapsed:.2f}s, "
+                    f"total_elapsed={total_elapsed:.2f}s",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                )
+                
+                # 阶段节点（输出到Terminal）
+                passed_count = sum(1 for r in results.values() if r.quality_level in [DataQualityLevel.EXCELLENT, DataQualityLevel.GOOD])
+                failed_count = sum(1 for r in results.values() if r.quality_level == DataQualityLevel.POOR)
+                stage_logger.info(
+                    f"✅ 手动数据扫描完成: 耗时={total_elapsed:.2f}s, 任务数={len(results)}, 通过={passed_count}, 失败={failed_count}",
+                    extra={"log_type": "STAGE_NODE", "scenario": "manual_data_scan"},
+                )
+                
+                return results
+                
+            except Exception as e:
+                total_elapsed = time.time() - start_time
+                logger.error(
+                    f"[DATA-SENSOR] ❌ 数据质量扫描失败: {e}, 耗时={total_elapsed:.2f}s",
+                    exc_info=True,
                     extra={"log_type": "ALERT", "scenario": "manual_data_scan"}
                 )
                 logger.debug(
-                    "[DATA-SENSOR] 扫描状态: _scanning=True",
+                    f"[DATA-SENSOR] 异常类型: {type(e).__name__}, 异常详情: {str(e)}",
                     extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
                 )
-                return self._scan_results.copy()
-            
-            self._scanning = True
-        
-        try:
-            intervals = intervals or ["1d", "5m", "1m"]
-            total_tasks = len(symbols) * len(intervals)
-            
-            logger.debug(
-                f"[DATA-SENSOR] 开始数据质量扫描: symbols={len(symbols)}, intervals={intervals}, "
-                f"total_tasks={total_tasks}, use_async={use_async}",
-                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
-            )
-            
-            # v3.1：使用LoadBalancer获取最优配置
-            if max_workers is None or max_concurrent is None:
-                logger.debug(
-                    "[DATA-SENSOR] 开始获取LoadBalancer最优配置...",
-                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                
+                # 阶段节点（输出到Terminal）
+                stage_logger.error(
+                    f"❌ 手动数据扫描失败: {e}, 耗时={total_elapsed:.2f}s",
+                    extra={"log_type": "STAGE_NODE", "scenario": "manual_data_scan"},
                 )
-                lb_config_start_time = time.time()
-                optimal_config = self._get_optimal_config_from_lb(
-                    total_tasks=total_tasks
-                )
-                lb_config_elapsed = time.time() - lb_config_start_time
-                max_workers = max_workers or optimal_config.get("processes", 4)
-                max_concurrent = max_concurrent or optimal_config.get("coroutines_per_process", 100)
-                logger.debug(
-                    f"[DATA-SENSOR] LoadBalancer配置获取完成: processes={max_workers}, "
-                    f"coroutines_per_process={max_concurrent}, 耗时={lb_config_elapsed:.2f}s",
-                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
-                )
-            else:
-                logger.debug(
-                    f"[DATA-SENSOR] 使用手动配置: processes={max_workers}, coroutines_per_process={max_concurrent}",
-                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
-                )
-            
-            logger.info(
-                f"[DATA-SENSOR] 🔍 开始数据质量扫描: 品种数={len(symbols)}, 周期={intervals}, "
-                f"异步模式={use_async}, 进程数={max_workers}, 最大并发={max_concurrent}",
-                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
-            )
-            
-            scan_start_time = time.time()
-            if use_async:
-                # 异步扫描
-                logger.debug(
-                    "[DATA-SENSOR] 使用异步扫描模式",
-                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
-                )
-                results = self._scan_async(symbols, intervals, max_concurrent)
-            else:
-                # 多进程扫描
-                logger.debug(
-                    "[DATA-SENSOR] 使用多进程扫描模式",
-                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
-                )
-                results = self._scan_multiprocess(symbols, intervals, max_workers)
-            scan_elapsed = time.time() - scan_start_time
-            
-            # 更新缓存
-            logger.debug(
-                "[DATA-SENSOR] 开始更新扫描结果缓存...",
-                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
-            )
-            cache_update_start_time = time.time()
-            with self._results_lock:
-                self._scan_results.update(results)
-            cache_update_elapsed = time.time() - cache_update_start_time
-            logger.debug(
-                f"[DATA-SENSOR] 扫描结果缓存更新完成: 耗时={cache_update_elapsed:.2f}s",
-                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
-            )
-            
-            # 更新统计
-            logger.debug(
-                "[DATA-SENSOR] 开始更新统计信息...",
-                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
-            )
-            stats_update_start_time = time.time()
-            self._update_stats(results)
-            stats_update_elapsed = time.time() - stats_update_start_time
-            logger.debug(
-                f"[DATA-SENSOR] 统计信息更新完成: 耗时={stats_update_elapsed:.2f}s",
-                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
-            )
-            
-            total_elapsed = time.time() - start_time
-            logger.info(
-                f"[DATA-SENSOR] ✅ 数据质量扫描完成: 扫描{len(results)}个任务, "
-                f"扫描耗时={scan_elapsed:.2f}s, 总耗时={total_elapsed:.2f}s",
-                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
-            )
-            logger.debug(
-                f"[DATA-SENSOR] 扫描完成详情: results_count={len(results)}, scan_elapsed={scan_elapsed:.2f}s, "
-                f"cache_update_elapsed={cache_update_elapsed:.2f}s, stats_update_elapsed={stats_update_elapsed:.2f}s, "
-                f"total_elapsed={total_elapsed:.2f}s",
-                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
-            )
-            return results
-            
-        except Exception as e:
-            total_elapsed = time.time() - start_time
-            logger.error(
-                f"[DATA-SENSOR] ❌ 数据质量扫描失败: {e}, 耗时={total_elapsed:.2f}s",
-                exc_info=True,
-                extra={"log_type": "ALERT", "scenario": "manual_data_scan"}
-            )
-            logger.debug(
-                f"[DATA-SENSOR] 异常类型: {type(e).__name__}, 异常详情: {str(e)}",
-                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
-            )
-            raise
-        finally:
-            with self._scan_lock:
-                self._scanning = False
-                logger.debug(
-                    "[DATA-SENSOR] 扫描状态已重置: _scanning=False",
-                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
-                )
+                
+                raise
+            finally:
+                with self._scan_lock:
+                    self._scanning = False
+                    logger.debug(
+                        "[DATA-SENSOR] 扫描状态已重置: _scanning=False",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    )
     
     def _get_optimal_config_from_lb(self, total_tasks: int) -> Dict[str, Any]:
         """从 LoadBalancer 获取最优配置（v3.1新增）
