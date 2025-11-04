@@ -1338,40 +1338,47 @@ class TaskQueueManager:
 from typing import List, Optional, Tuple
 import asyncio
 
-class ConnectionLifecycleManager:
-    """连接生命周期管理器
+**RetryConnectionPool 类（v4.0新增）**：
+```python
+# 位于 backend/infrastructure/tdx_asyncio/retry_connection_pool.py
+class RetryConnectionPool:
+    """两阶段重试连接池
     
-    管理TDX连接的完整生命周期,包括创建、健康检查、复用和销毁
+    提供带智能重试机制的连接池包装器，支持：
+    - 阶段1：IPv4+IPv6混合池，最多10次尝试
+    - 阶段2：IPv4最快30%服务器，最多5次尝试
+    - 自动排除已尝试的服务器
+    - 详细日志记录
     """
     
-    def __init__(self, worker_id: int, logger):
-        self.worker_id = worker_id
-        self.logger = logger
-        self._active_connections: List[Tuple[str, Any]] = []  # (server, client)
-    
-    async def create_connections(
+    async def execute_with_retry(
         self,
-        servers: List[Tuple[str, int]],
-        timeout: float = 3.0,
-        health_check: bool = True,
-        max_retries: int = 2
-    ) -> List[Any]:
-        """批量创建连接
+        task_func: Callable[[AsyncTdxHq_API], Any],
+        attempted_servers: List[str],
+        scenario: str = "download",
+    ) -> Tuple[Optional[Any], bool]:
+        """执行带重试的任务
         
         Args:
-            servers: 服务器列表 [(host, port), ...]
-            timeout: 连接超时时间
-            health_check: 是否进行健康检查
-            max_retries: 最大重试次数
-            
+            task_func: 任务函数，接受 AsyncTdxHq_API 作为参数
+            attempted_servers: 已尝试服务器列表（格式：["ip:port", ...]）
+            scenario: 场景标识（用于日志）
+        
         Returns:
-            连接对象列表
+            (result, success): 结果和是否成功
         """
-        from backend.infrastructure.tdx_asyncio import AsyncTdxHq_API
+        # 阶段1: 混合池重试
+        result = await self._phase1_retry(task_func, attempted_servers, scenario)
+        if result is not None:
+            return result, True
+            
+        # 阶段2: 最快30%服务器重试
+        result = await self._phase2_retry(task_func, attempted_servers, scenario)
+        if result is not None:
+            return result, True
         
-        connections = []
-        
-        for server in servers:
+        return None, False
+```
             host, port = server
             client = None
             
@@ -1484,19 +1491,19 @@ class ConnectionLifecycleManager:
 
 ### 2.2 下载策略规则
 
-#### 2.1.1 两段式下载策略
+#### 2.1.1 两阶段重试策略（v4.0重构）
 
-**第一阶段：IPv4池下载**：
-- **适用场景**：绝大部分K线数据下载
-- **服务器选择**：优先使用IPv4服务器池
-- **并发控制**：根据负载均衡器动态调整
-- **切换条件**：剩余任务数 ≤ 50时进入第二阶段
+**阶段1：IPv4+IPv6混合池重试**：
+- **适用场景**：所有下载任务的首次重试阶段
+- **服务器选择**：IPv4+IPv6混合池（随机打乱）
+- **最大尝试次数**：10次
+- **切换条件**：阶段1尝试10次仍失败后进入阶段2
 
-**第二阶段：IPv6池下载**：
-- **适用场景**：剩余少量任务或IPv4池性能不佳时
-- **服务器选择**：使用IPv6服务器池
-- **降级策略**：IPv6不可用时自动回退到IPv4池
-- **性能监控**：实时监控IPv6连接质量
+**阶段2：IPv4最快30%服务器重试**：
+- **适用场景**：阶段1失败后的最后尝试
+- **服务器选择**：IPv4最快30%服务器（按延迟排序）
+- **最大尝试次数**：5次
+- **失败处理**：阶段2失败后返回null，不再重试
 
 **IPv6池降级机制详细说明**：
 
@@ -1689,28 +1696,38 @@ def split_tasks_for_processes(symbols: List[str], intervals: List[str], num_proc
     return process_tasks
 ```
 
-**连接生命周期管理规则**：
+**连接重试管理规则**：
 ```python
-# 🆕 v3.7: 创建连接生命周期管理器
-conn_manager = ConnectionLifecycleManager(worker_id, logger)
+# 🆕 v4.0: 使用 RetryConnectionPool 两阶段重试机制
+from backend.infrastructure.tdx_asyncio import RetryConnectionPool
+from backend.infrastructure.data_module_vnpy.load_balancer import get_server_pool_manager
 
-# 🆕 v3.7：使用ConnectionLifecycleManager批量创建连接
-connection_list = await conn_manager.create_connections(
-    servers=server_list_local,
-    timeout=timeout,
-    health_check=False,  # K线下载优先速度，不做健康检查
+# 创建重试连接池
+server_pool_manager = get_server_pool_manager()
+retry_pool = RetryConnectionPool(
+    server_pool_manager=server_pool_manager,
+    phase1_max_attempts=10,  # 阶段1最多10次尝试
+    phase2_max_attempts=5,   # 阶段2最多5次尝试
+    connection_timeout=5.0
 )
 
-# 转换为字典（兼容现有代码）
-connections = {server_list_local[i]: client for i, client in enumerate(connection_list)}
+# 每个任务维护自己的已尝试服务器列表
+attempted_servers = []
+
+# 执行带重试的任务
+result, success = await retry_pool.execute_with_retry(
+    task_func=lambda api: api.get_security_bars(...),
+    attempted_servers=attempted_servers,
+    scenario="data_download"
+)
 ```
 
 **连接管理规则说明**：
-- **统一管理**：使用`ConnectionLifecycleManager`统一管理连接的创建和关闭
-- **批量创建**：一次性批量创建所有连接（提高效率，减少连接建立时间）
-- **健康检查**：K线下载不做健康检查（优先速度，健康检查会增加延迟）
-- **错误处理**：连接创建失败时自动重试或跳过（记录DEBUG日志，不影响其他连接）
-- **资源清理**：连接关闭时确保资源被正确释放（在finally块中处理）
+- **两阶段重试**：阶段1使用IPv4+IPv6混合池，阶段2使用IPv4最快30%服务器
+- **任务级重试**：每个任务独立维护已尝试服务器列表，避免重复尝试
+- **自动排除**：自动排除已尝试的服务器，确保最多尝试15个不同服务器
+- **详细日志**：记录每个阶段的尝试情况，便于问题排查
+- **资源管理**：每次尝试自动创建和关闭连接，确保资源正确释放
 
 **跨进程通信规则**：
 ```python

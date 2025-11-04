@@ -24,6 +24,7 @@ import asyncio
 import csv
 import logging
 import os
+import queue
 import struct
 import threading
 import time
@@ -2451,7 +2452,10 @@ class DownloadTask:
     max_retries: int = 3           # 最大重试次数
     task_id: str = field(default_factory=lambda: f"{int(time.time() * 1000000)}")
     created_at: datetime = field(default_factory=datetime.now)
-    phase: str = "ipv4"           # 下载阶段（ipv4/ipv6）
+    phase: int = 1                 # 下载阶段（1=阶段1混合池，2=阶段2最快30%）
+    attempted_servers: List[str] = field(default_factory=list)  # 已尝试服务器列表（格式："ip:port"）
+    phase1_attempts: int = 0       # 阶段1尝试次数
+    phase2_attempts: int = 0       # 阶段2尝试次数
 
     def __hash__(self):
         """支持集合操作"""
@@ -2468,7 +2472,7 @@ class TaskQueueManager:
     """任务队列管理器
 
     负责管理下载任务队列，支持：
-    - 优先级队列
+    - FIFO队列
     - 背压控制（队列满时拒绝新任务）
     - 任务去重
     - 任务统计
@@ -2481,7 +2485,8 @@ class TaskQueueManager:
             max_queue_size: 最大队列长度
         """
         self.max_queue_size = max_queue_size
-        self._task_queue = Queue()  # 主任务队列
+        # 使用FIFO队列
+        self._task_queue = Queue(maxsize=max_queue_size)
         self._pending_tasks = set()  # 待处理任务集合（用于去重）
         self._completed_tasks = set()  # 已完成任务集合
         self._failed_tasks = {}  # 失败任务字典 {task: error_msg}
@@ -2702,196 +2707,14 @@ class TaskQueueManager:
 
 
 # ==============================================================================
-# Part 10: 连接生命周期管理
+# Part 10: 连接生命周期管理（已废弃，使用 RetryConnectionPool）
 # ==============================================================================
-
-
-class ConnectionLifecycleManager:
-    """连接生命周期管理器
-
-    负责管理TDX连接的创建、复用和销毁，支持：
-    - 连接池管理
-    - 连接健康检查
-    - 连接自动重连
-    - 连接超时检测
-    """
-
-    def __init__(self, max_connections: int = 50, connection_timeout: float = 10.0):
-        """初始化连接管理器
-
-        Args:
-            max_connections: 最大连接数
-            connection_timeout: 连接超时时间（秒）
-        """
-        self.max_connections = max_connections
-        self.connection_timeout = connection_timeout
-        self._connection_pool = {}  # {conn_id: {"api": api_obj, "last_used": time, "server": server_info}}
-        self._lock = threading.Lock()
-        self._next_conn_id = 0
-
-        # 统计信息
-        self._stats = {
-            "total_created": 0,
-            "total_reused": 0,
-            "total_closed": 0,
-            "total_timeout": 0,
-            "total_errors": 0,
-        }
-
-    async def create_connection(self, server_ip: str, server_port: int) -> Tuple[int, AsyncTdxHq_API]:
-        """创建新连接
-
-        Args:
-            server_ip: 服务器IP
-            server_port: 服务器端口
-
-        Returns:
-            (conn_id, api_obj): 连接ID和API对象
-        """
-        with self._lock:
-            # 检查连接数是否达到上限
-            if len(self._connection_pool) >= self.max_connections:
-                # 清理超时连接
-                self._cleanup_timeout_connections()
-
-                # 如果仍然满，关闭最久未使用的连接
-                if len(self._connection_pool) >= self.max_connections:
-                    self._close_oldest_connection()
-
-            # 生成连接ID
-            conn_id = self._next_conn_id
-            self._next_conn_id += 1
-
-        # 创建连接
-        try:
-            api = AsyncTdxHq_API()
-            success = await asyncio.wait_for(
-                api.connect(server_ip, server_port),
-                timeout=self.connection_timeout
-            )
-
-            if not success:
-                raise ConnectionError(f"连接失败: {server_ip}:{server_port}")
-
-            # 添加到连接池
-            with self._lock:
-                self._connection_pool[conn_id] = {
-                    "api": api,
-                    "last_used": time.time(),
-                    "server": {"ip": server_ip, "port": server_port},
-                    "created_at": time.time(),
-                }
-                self._stats["total_created"] += 1
-
-            logger.debug(f"✅ 创建连接: ID={conn_id}, 服务器={server_ip}:{server_port}")
-            return conn_id, api
-
-        except asyncio.TimeoutError:
-            with self._lock:
-                self._stats["total_timeout"] += 1
-            logger.error(f"❌ [ConnectionManager] 连接超时: {server_ip}:{server_port}", extra={"log_type": "SYSTEM"})
-            raise ConnectionError(f"连接超时: {server_ip}:{server_port}")
-        except Exception as e:
-            with self._lock:
-                self._stats["total_errors"] += 1
-            logger.error(f"❌ [ConnectionManager] 创建连接失败: {server_ip}:{server_port}, 错误: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
-            raise ConnectionError(f"创建连接失败: {server_ip}:{server_port}, 错误: {e}")
-
-    def get_connection(self, conn_id: int) -> Optional[AsyncTdxHq_API]:
-        """获取连接
-
-        Args:
-            conn_id: 连接ID
-
-        Returns:
-            API对象，如果不存在则返回None
-        """
-        with self._lock:
-            conn_info = self._connection_pool.get(conn_id)
-            if conn_info:
-                conn_info["last_used"] = time.time()
-                self._stats["total_reused"] += 1
-                return conn_info["api"]
-            return None
-
-    async def close_connection(self, conn_id: int):
-        """关闭连接
-
-        Args:
-            conn_id: 连接ID
-        """
-        with self._lock:
-            conn_info = self._connection_pool.pop(conn_id, None)
-
-        if conn_info:
-            try:
-                api = conn_info["api"]
-                await api.disconnect()
-                self._stats["total_closed"] += 1
-                logger.debug(f"✅ 关闭连接: ID={conn_id}")
-            except Exception as e:
-                logger.warning(f"⚠️ 关闭连接失败: ID={conn_id}, 错误: {e}", extra={"log_type": "SYSTEM"})
-
-    async def close_all_connections(self):
-        """关闭所有连接"""
-        with self._lock:
-            conn_ids = list(self._connection_pool.keys())
-
-        for conn_id in conn_ids:
-            await self.close_connection(conn_id)
-
-        logger.info(f"✅ 已关闭所有连接: 数量={len(conn_ids)}")
-
-    def _cleanup_timeout_connections(self, timeout: float = 300.0):
-        """清理超时连接
-
-        Args:
-            timeout: 超时时间（秒）
-        """
-        current_time = time.time()
-        timeout_conn_ids = []
-
-        with self._lock:
-            for conn_id, conn_info in self._connection_pool.items():
-                if current_time - conn_info["last_used"] > timeout:
-                    timeout_conn_ids.append(conn_id)
-
-        # 异步关闭超时连接（需要在事件循环中执行）
-        for conn_id in timeout_conn_ids:
-            with self._lock:
-                conn_info = self._connection_pool.pop(conn_id, None)
-            if conn_info:
-                logger.debug(f"✅ 清理超时连接: ID={conn_id}")
-                self._stats["total_timeout"] += 1
-
-    def _close_oldest_connection(self):
-        """关闭最久未使用的连接"""
-        with self._lock:
-            if not self._connection_pool:
-                return
-
-            # 找到最久未使用的连接
-            oldest_conn_id = min(
-                self._connection_pool.keys(),
-                key=lambda conn_id: self._connection_pool[conn_id]["last_used"]
-            )
-
-            conn_info = self._connection_pool.pop(oldest_conn_id, None)
-
-        if conn_info:
-            logger.debug(f"✅ 关闭最久未使用的连接: ID={oldest_conn_id}")
-
-    def get_stats(self) -> Dict[str, int]:
-        """获取统计信息"""
-        with self._lock:
-            stats = self._stats.copy()
-            stats["active_connections"] = len(self._connection_pool)
-            return stats
-
-    def get_active_connections(self) -> int:
-        """获取活跃连接数"""
-        with self._lock:
-            return len(self._connection_pool)
+# ConnectionLifecycleManager 类已移除，现在使用 RetryConnectionPool
+# RetryConnectionPool 位于 backend/infrastructure/tdx_asyncio/retry_connection_pool.py
+# 重构说明：K线下载和IPO日期下载现在都使用 RetryConnectionPool 的两阶段重试机制
+# - 阶段1: IPv4+IPv6混合池，最多10次尝试
+# - 阶段2: IPv4最快30%服务器，最多5次尝试
+# - 每个任务独立维护已尝试服务器列表，避免重复尝试
 
 
 # ==============================================================================
@@ -3250,7 +3073,7 @@ class MultiProcessStockFetcher:
                     interval=interval,
                     start_date=start_date,
                     end_date=end_date,
-                    phase="ipv4",
+                    phase=1,  # 默认从阶段1开始
                 )
                 tasks.append(task)
 
@@ -3642,122 +3465,37 @@ Worker进程主函数
         # 创建任务详细日志记录器
         task_logger = TaskDetailLogger(worker_id=worker_id)
 
-        # 创建连接管理器
-        connection_manager = ConnectionLifecycleManager(
-            max_connections=coroutines_per_worker
-        )
-
         scenario = "data_download"
-        # Phase 1: IPv4池下载
+        
+        # 创建ServerPoolManager并初始化RetryConnectionPool
+        from .load_balancer import get_server_pool_manager
+        from backend.infrastructure.tdx_asyncio.retry_connection_pool import RetryConnectionPool
+        
         subprocess_logger.debug(
-            f"[DOWNLOAD-WORKER] Worker {worker_id} 进入Phase 1: IPv4池下载",
+            f"[DOWNLOAD-WORKER] Worker {worker_id} 创建ServerPoolManager和RetryConnectionPool",
             extra={"log_type": "SYSTEM", "scenario": scenario}
         )
+        
+        server_pool_manager = get_server_pool_manager()
+        retry_pool = RetryConnectionPool(
+            server_pool_manager=server_pool_manager,
+            phase1_max_attempts=10,
+            phase2_max_attempts=5,
+            connection_timeout=5.0,
+        )
+        
         subprocess_logger.info(
-            f"[DOWNLOAD-WORKER] ℹ️ Worker {worker_id} 进入Phase 1: IPv4池下载",
-            extra={"log_type": "SYSTEM", "scenario": scenario}
-        )
-        ipv4_servers = servers.get("ipv4", [])
-
-        if not ipv4_servers:
-            subprocess_logger.debug(
-                f"[DOWNLOAD-WORKER] Worker {worker_id} IPv4服务器列表为空",
-                extra={"log_type": "SYSTEM", "scenario": scenario}
-            )
-            subprocess_logger.warning(
-                f"[DOWNLOAD-WORKER] ⚠️ Worker {worker_id} IPv4服务器列表为空",
-                extra={"log_type": "ALERT", "scenario": scenario}
-            )
-            subprocess_logger.error(
-                f"[DOWNLOAD-WORKER] ❌ Worker {worker_id} IPv4服务器列表为空，无法启动下载",
-                extra={"log_type": "ALERT", "scenario": scenario}
-            )
-            return
-
-        subprocess_logger.debug(
-            f"[DOWNLOAD-WORKER] Worker {worker_id} 开始创建连接池: "
-            f"目标连接数={coroutines_per_worker}, 服务器数={len(ipv4_servers)}",
-            extra={"log_type": "SYSTEM", "scenario": scenario}
-        )
-        subprocess_logger.info(
-            f"[DOWNLOAD-WORKER] ℹ️ Worker {worker_id} 开始创建连接池: "
-            f"目标连接数={coroutines_per_worker}, 服务器数={len(ipv4_servers)}",
+            f"[DOWNLOAD-WORKER] ✅ Worker {worker_id} RetryConnectionPool已创建，使用两阶段重试机制",
             extra={"log_type": "SYSTEM", "scenario": scenario}
         )
 
-        # 创建连接池
-        connections = []
-        for i in range(coroutines_per_worker):
-            server = ipv4_servers[i % len(ipv4_servers)]
-            try:
-                conn_start_time = time.time()
-                conn_id, api = await connection_manager.create_connection(
-                    server["ip"], server["port"]
-                )
-                conn_elapsed = time.time() - conn_start_time
-                connections.append({
-                    "conn_id": conn_id,
-                    "api": api,
-                    "server": server,
-                })
-                subprocess_logger.debug(
-                    f"[DOWNLOAD-WORKER] Worker {worker_id} 创建连接成功: "
-                    f"conn_id={conn_id}, server={server['ip']}:{server['port']}, 耗时={conn_elapsed:.3f}s",
-                    extra={"log_type": "SYSTEM", "scenario": scenario}
-                )
-                if i == 0 or (i + 1) % 5 == 0:  # 每5个连接或第一个连接记录INFO日志
-                    subprocess_logger.info(
-                        f"[DOWNLOAD-WORKER] ✅ Worker {worker_id} 已创建{i+1}/{coroutines_per_worker}个连接",
-                        extra={"log_type": "SYSTEM", "scenario": scenario}
-                    )
-            except Exception as e:
-                subprocess_logger.debug(
-                    f"[DOWNLOAD-WORKER] Worker {worker_id} 连接失败详情: "
-                    f"server={server['ip']}:{server['port']}, 异常类型={type(e).__name__}, 异常消息={str(e)}",
-                    extra={"log_type": "SYSTEM", "scenario": scenario}
-                )
-                subprocess_logger.warning(
-                    f"[DOWNLOAD-WORKER] ⚠️ Worker {worker_id} 创建连接失败: {server['ip']}:{server['port']}, {e}",
-                    extra={"log_type": "ALERT", "scenario": scenario}
-                )
-                subprocess_logger.error(
-                    f"[DOWNLOAD-WORKER] ❌ Worker {worker_id} 创建连接失败: {server['ip']}:{server['port']}, {e}",
-                    exc_info=True,
-                    extra={"log_type": "ALERT", "scenario": scenario}
-                )
-
-        if not connections:
-            subprocess_logger.debug(
-                f"[DOWNLOAD-WORKER] Worker {worker_id} 没有可用连接",
-                extra={"log_type": "SYSTEM", "scenario": scenario}
-            )
-            subprocess_logger.error(
-                f"[DOWNLOAD-WORKER] ❌ Worker {worker_id} 没有可用连接，退出",
-                extra={"log_type": "ALERT", "scenario": scenario}
-            )
-            subprocess_logger.critical(
-                f"[DOWNLOAD-WORKER] 🔥 Worker {worker_id} 没有可用连接，无法启动下载",
-                extra={"log_type": "ALERT", "scenario": scenario}
-            )
-            return
-
-        subprocess_logger.debug(
-            f"[DOWNLOAD-WORKER] Worker {worker_id} 连接池创建完成: "
-            f"成功={len(connections)}, 目标={coroutines_per_worker}, 成功率={len(connections)/coroutines_per_worker*100:.1f}%",
-            extra={"log_type": "SYSTEM", "scenario": scenario}
-        )
-        subprocess_logger.info(
-            f"[DOWNLOAD-WORKER] ✅ Worker {worker_id} 已创建{len(connections)}个连接，成功率={len(connections)/coroutines_per_worker*100:.1f}%",
-            extra={"log_type": "SYSTEM", "scenario": scenario}
-        )
-
-        # 创建下载协程
+        # 创建下载协程（每个worker创建多个协程并发处理任务）
         download_tasks = []
-        for conn_info in connections:
+        for i in range(coroutines_per_worker):
             task = asyncio.create_task(
                 MultiProcessStockFetcher._download_coroutine(
                     worker_id=worker_id,
-                    conn_info=conn_info,
+                    retry_pool=retry_pool,
                     task_queue=task_queue,
                     result_queue=result_queue,
                     storage_manager=storage_manager,
@@ -3774,28 +3512,25 @@ Worker进程主函数
             f"[DOWNLOAD-WORKER] Worker {worker_id} 启动下载协程: 协程数={len(download_tasks)}",
             extra={"log_type": "SYSTEM", "scenario": scenario}
         )
-        await asyncio.gather(*download_tasks, return_exceptions=True)
-
-        # 关闭所有连接
-        subprocess_logger.debug(
-            f"[DOWNLOAD-WORKER] Worker {worker_id} 开始关闭连接池",
+        subprocess_logger.info(
+            f"[DOWNLOAD-WORKER] ℹ️ Worker {worker_id} 启动{len(download_tasks)}个下载协程",
             extra={"log_type": "SYSTEM", "scenario": scenario}
         )
-        await connection_manager.close_all_connections()
+        await asyncio.gather(*download_tasks, return_exceptions=True)
 
         subprocess_logger.info(
             f"✅ Worker {worker_id} 下载完成",
             extra={"log_type": "SYSTEM", "scenario": scenario}
         )
         subprocess_logger.debug(
-            f"[DOWNLOAD-WORKER] Worker {worker_id} 所有协程已结束，连接已关闭",
+            f"[DOWNLOAD-WORKER] Worker {worker_id} 所有协程已结束",
             extra={"log_type": "SYSTEM", "scenario": scenario}
         )
 
     @staticmethod
     async def _download_coroutine(
         worker_id: int,
-        conn_info: Dict,
+        retry_pool,
         task_queue: Queue,
         result_queue: Queue,
         storage_manager: StorageManager,
@@ -3804,11 +3539,11 @@ Worker进程主函数
         pause_event: Event,
         subprocess_logger,
     ):
-        """下载协程
+        """下载协程（使用RetryConnectionPool）
 
         Args:
             worker_id: Worker ID
-            conn_info: 连接信息 {"conn_id": ..., "api": ..., "server": ...}
+            retry_pool: RetryConnectionPool 实例
             task_queue: 任务队列
             result_queue: 结果队列
             storage_manager: 存储管理器
@@ -3817,10 +3552,6 @@ Worker进程主函数
             pause_event: 暂停事件
             subprocess_logger: 子进程日志记录器
         """
-        api = conn_info["api"]
-        server = conn_info["server"]
-        conn_id = conn_info["conn_id"]
-
         scenario = "data_download"
         while not stop_event.is_set():
             # 检查暂停
@@ -3832,8 +3563,7 @@ Worker进程主函数
                 task = task_queue.get_nowait()
                 subprocess_logger.debug(
                     f"[DOWNLOAD-WORKER] Worker {worker_id} 获取任务: symbol={task.symbol}, "
-                    f"interval={task.interval}, server={server['ip']}:{server['port']}, "
-                    f"conn_id={conn_id}",
+                    f"interval={task.interval}",
                     extra={"log_type": "SYSTEM", "scenario": scenario}
                 )
             except Exception:
@@ -3844,32 +3574,48 @@ Worker进程主函数
                 )
                 break
 
-            # 下载数据
+            # 下载数据（使用RetryConnectionPool）
             start_time = time.time()
+            
+            # 确保任务有 attempted_servers 列表
+            if not hasattr(task, 'attempted_servers') or task.attempted_servers is None:
+                task.attempted_servers = []
+            
             try:
-                market = MultiProcessStockFetcher._get_market_from_symbol(task.symbol)
                 subprocess_logger.debug(
                     f"[DOWNLOAD-WORKER] Worker {worker_id} 开始下载: symbol={task.symbol}, "
-                    f"interval={task.interval}, market={market}, "
-                    f"server={server['ip']}:{server['port']}, conn_id={conn_id}",
+                    f"interval={task.interval}, 已尝试服务器={len(task.attempted_servers)}",
                     extra={"log_type": "SYSTEM", "scenario": scenario}
                 )
                 subprocess_logger.info(
                     f"[DOWNLOAD-WORKER] ℹ️ Worker {worker_id} 开始下载: symbol={task.symbol}, interval={task.interval}",
                     extra={"log_type": "SYSTEM", "scenario": scenario}
                 )
-                # 调用TDX API下载
-                bars = await MultiProcessStockFetcher._download_single_task(
-                    api=api,
-                    symbol=task.symbol,
-                    interval=task.interval,
-                    start_date=task.start_date,
-                    end_date=task.end_date,
-                    subprocess_logger=subprocess_logger,
+                
+                # 定义任务函数
+                async def download_task(api):
+                    """使用RetryConnectionPool执行下载任务"""
+                    return await MultiProcessStockFetcher._download_single_task(
+                        api=api,
+                        symbol=task.symbol,
+                        interval=task.interval,
+                        start_date=task.start_date,
+                        end_date=task.end_date,
+                        subprocess_logger=subprocess_logger,
+                    )
+                
+                # 使用RetryConnectionPool执行带重试的下载
+                bars, success = await retry_pool.execute_with_retry(
+                    download_task,
+                    task.attempted_servers,
+                    scenario=scenario
                 )
 
-                # 保存数据
-                if bars is not None and not bars.empty:
+                                # 处理下载结果
+                elapsed = time.time() - start_time
+                
+                if success and bars is not None and not bars.empty:
+                    # 下载成功，保存数据
                     save_start_time = time.time()
                     await storage_manager.save_kline_async(
                         symbol=task.symbol,
@@ -3877,29 +3623,30 @@ Worker进程主函数
                         data=bars,
                     )
                     save_elapsed = time.time() - save_start_time
-                    
-                    elapsed = time.time() - start_time
-                    
+                    total_elapsed = time.time() - start_time
+
                     subprocess_logger.debug(
                         f"[DOWNLOAD-WORKER] Worker {worker_id} 下载成功: symbol={task.symbol}, "
                         f"interval={task.interval}, bars={len(bars)}, "
-                        f"下载耗时={elapsed - save_elapsed:.3f}s, 保存耗时={save_elapsed:.3f}s, 总耗时={elapsed:.3f}s",
+                        f"尝试服务器={len(task.attempted_servers)}, "
+                        f"下载耗时={total_elapsed - save_elapsed:.3f}s, 保存耗时={save_elapsed:.3f}s, 总耗时={total_elapsed:.3f}s",
                         extra={"log_type": "SYSTEM", "scenario": scenario}
                     )
                     subprocess_logger.info(
                         f"[DOWNLOAD-WORKER] ✅ Worker {worker_id} 下载成功: symbol={task.symbol}, "
-                        f"interval={task.interval}, bars={len(bars)}, 总耗时={elapsed:.3f}s",
+                        f"interval={task.interval}, bars={len(bars)}, 总耗时={total_elapsed:.3f}s",
                         extra={"log_type": "SYSTEM", "scenario": scenario}
                     )
 
                     # 记录成功
+                    server_info = f"{len(task.attempted_servers)}个服务器" if task.attempted_servers else "未知服务器"
                     task_logger.log_task(
                         symbol=task.symbol,
                         interval=task.interval,
-                        server=f"{server['ip']}:{server['port']}",
+                        server=server_info,
                         status="success",
                         bars=len(bars),
-                        elapsed=elapsed,
+                        elapsed=total_elapsed,
                     )
 
                     # 发送结果
@@ -3911,34 +3658,34 @@ Worker进程主函数
                             "interval": task.interval,
                             "bars": len(bars),
                             "worker_id": worker_id,
-                            "conn_id": conn_id,
+                            "attempted_servers": len(task.attempted_servers),
                         },
                         timeout=1.0,
                         queue_name="result_queue",
                         worker_id=worker_id,
                     )
-                else:
-                    # 数据为空
-                    elapsed = time.time() - start_time
+                elif success and (bars is None or bars.empty):
+                    # 下载成功但数据为空
                     subprocess_logger.debug(
                         f"[DOWNLOAD-WORKER] Worker {worker_id} 下载数据为空: symbol={task.symbol}, "
-                        f"interval={task.interval}, server={server['ip']}:{server['port']}, "
+                        f"interval={task.interval}, 尝试服务器={len(task.attempted_servers)}, "
                         f"耗时={elapsed:.3f}s",
                         extra={"log_type": "SYSTEM", "scenario": scenario}
                     )
                     subprocess_logger.warning(
                         f"[DOWNLOAD-WORKER] ⚠️ Worker {worker_id} 下载数据为空: symbol={task.symbol}, "
-                        f"interval={task.interval}, server={server['ip']}:{server['port']}",
+                        f"interval={task.interval}",
                         extra={"log_type": "ALERT", "scenario": scenario}
                     )
 
+                    server_info = f"{len(task.attempted_servers)}个服务器" if task.attempted_servers else "未知服务器"
                     task_logger.log_task(
                         symbol=task.symbol,
                         interval=task.interval,
-                        server=f"{server['ip']}:{server['port']}",
+                        server=server_info,
                         status="empty",
                         bars=0,
-                        elapsed=time.time() - start_time,
+                        elapsed=elapsed,
                     )
 
                     _safe_put_queue(
@@ -3949,7 +3696,46 @@ Worker进程主函数
                             "interval": task.interval,
                             "bars": 0,
                             "worker_id": worker_id,
-                            "conn_id": conn_id,
+                            "attempted_servers": len(task.attempted_servers),
+                        },
+                        timeout=1.0,
+                        queue_name="result_queue",
+                        worker_id=worker_id,
+                    )
+                else:
+                    # 两阶段重试均失败
+                    subprocess_logger.debug(
+                        f"[DOWNLOAD-WORKER] Worker {worker_id} 两阶段重试均失败: symbol={task.symbol}, "
+                        f"interval={task.interval}, 总计尝试服务器={len(task.attempted_servers)}, "
+                        f"耗时={elapsed:.3f}s",
+                        extra={"log_type": "SYSTEM", "scenario": scenario}
+                    )
+                    subprocess_logger.warning(
+                        f"[DOWNLOAD-WORKER] ⚠️ Worker {worker_id} 两阶段重试均失败: symbol={task.symbol}, "
+                        f"interval={task.interval}, 尝试了{len(task.attempted_servers)}个服务器",
+                        extra={"log_type": "ALERT", "scenario": scenario}
+                    )
+
+                    server_info = f"{len(task.attempted_servers)}个服务器" if task.attempted_servers else "未知服务器"
+                    task_logger.log_task(
+                        symbol=task.symbol,
+                        interval=task.interval,
+                        server=server_info,
+                        status="failed_all_servers",
+                        bars=0,
+                        elapsed=elapsed,
+                        error=f"两阶段重试失败，尝试了{len(task.attempted_servers)}个服务器",
+                    )
+
+                    _safe_put_queue(
+                        result_queue,
+                        {
+                            "status": "failed_all_servers",
+                            "symbol": task.symbol,
+                            "interval": task.interval,
+                            "error": f"两阶段重试失败，尝试了{len(task.attempted_servers)}个服务器",
+                            "worker_id": worker_id,
+                            "attempted_servers": len(task.attempted_servers),
                         },
                         timeout=1.0,
                         queue_name="result_queue",
@@ -3957,40 +3743,29 @@ Worker进程主函数
                     )
 
             except Exception as e:
-                # 下载失败
+                # 异常情况
                 elapsed = time.time() - start_time
-                
-                # 错误分类
                 error_type = type(e).__name__
                 error_msg = str(e)
-                error_category = "unknown"
-                if "timeout" in error_msg.lower() or "timed out" in error_msg.lower():
-                    error_category = "timeout"
-                elif "connection" in error_msg.lower() or "connect" in error_msg.lower():
-                    error_category = "connection"
-                elif "network" in error_msg.lower():
-                    error_category = "network"
-                elif "permission" in error_msg.lower():
-                    error_category = "permission"
 
                 subprocess_logger.debug(
-                    f"[DOWNLOAD-WORKER] Worker {worker_id} 下载失败详情: symbol={task.symbol}, "
-                    f"interval={task.interval}, server={server['ip']}:{server['port']}, "
-                    f"error_type={error_type}, error_category={error_category}, "
-                    f"error_msg={error_msg}, elapsed={elapsed:.2f}s, retry_count={task.retry_count}",
-                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                    f"[DOWNLOAD-WORKER] Worker {worker_id} 下载异常: symbol={task.symbol}, "
+                    f"interval={task.interval}, error_type={error_type}, "
+                    f"error_msg={error_msg}, elapsed={elapsed:.2f}s",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
                 )
                 subprocess_logger.error(
-                    f"❌ [Worker {worker_id}] 下载失败: {task.symbol}/{task.interval}, "
-                    f"错误类型={error_category}, 错误: {e}",
+                    f"❌ [Worker {worker_id}] 下载异常: {task.symbol}/{task.interval}, "
+                    f"错误: {e}",
                     exc_info=True,
-                    extra={"log_type": "ALERT", "scenario": "data_download"}
+                    extra={"log_type": "ALERT", "scenario": scenario}
                 )
 
+                server_info = f"{len(task.attempted_servers)}个服务器" if task.attempted_servers else "未知服务器"
                 task_logger.log_task(
                     symbol=task.symbol,
                     interval=task.interval,
-                    server=f"{server['ip']}:{server['port']}",
+                    server=server_info,
                     status="failed",
                     bars=0,
                     elapsed=elapsed,
@@ -4005,7 +3780,7 @@ Worker进程主函数
                         "interval": task.interval,
                         "error": str(e),
                         "worker_id": worker_id,
-                        "conn_id": conn_id,
+                        "attempted_servers": len(task.attempted_servers) if hasattr(task, 'attempted_servers') else 0,
                     },
                     timeout=1.0,
                     queue_name="result_queue",
@@ -5475,7 +5250,7 @@ def download_ipo_dates(
     # 保存缓存（将日期对象转换为字符串格式）
     # 🎯 关键修复：保存所有品种，包括None值，确保ipo_dates.json与stock_list_classified.json数量一致
     try:
-        # 转换日期对象为ISO格式字符串，保留None值
+        # 转换日期对象为ISO格式字符串，None值保存为字符串"null"
         serializable_dates = {}
         for symbol, ipo_date in all_dates.items():
             if ipo_date is not None:
@@ -5484,12 +5259,12 @@ def download_ipo_dates(
                 else:
                     serializable_dates[symbol] = ipo_date
             else:
-                # ✅ 保留None值，确保所有品种都被保存
-                serializable_dates[symbol] = None
+                # ✅ None值保存为字符串"null"，确保所有品种都被保存
+                serializable_dates[symbol] = "null"
         
         # 统计有效日期和null值数量
-        valid_count = sum(1 for v in serializable_dates.values() if v is not None)
-        null_count = sum(1 for v in serializable_dates.values() if v is None)
+        valid_count = sum(1 for v in serializable_dates.values() if v is not None and v != "null")
+        null_count = sum(1 for v in serializable_dates.values() if v is None or v == "null")
         
         cache_manager.save_with_date(serializable_dates, cache_file)
         logger.info(
@@ -5561,14 +5336,8 @@ def _download_ipo_dates_single(
         available_servers=available_servers
     )
     
-    # 使用LoadBalancer配置的最大连接数
-    max_connections = config.get("coroutines_per_process", 38)
-    # 严格约束：不超过可用服务器数
-    max_connections = min(max_connections, available_servers) if available_servers > 0 else max_connections
-    
     logger.info(
-        f"[IPO-DOWNLOAD] LoadBalancer配置: 最大并发={max_connections}, "
-        f"可用服务器={available_servers}, 服务器约束={config.get('server_constrained', False)}",
+        f"[IPO-DOWNLOAD] 准备使用RetryConnectionPool进行两阶段重试下载",
         extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
     )
 
@@ -5577,123 +5346,117 @@ def _download_ipo_dates_single(
     asyncio.set_event_loop(loop)
 
     try:
-        # 使用连接池管理连接
-        from backend.infrastructure.tdx_asyncio.async_connection_pool import AsyncConnectionPool
-        from backend.infrastructure.tdx_asyncio.constants import HQ_HOSTS_ALL
-        
+        # 使用RetryConnectionPool进行两阶段重试
+        from backend.infrastructure.tdx_asyncio.retry_connection_pool import RetryConnectionPool
+
         logger.debug(
-            f"[IPO-DOWNLOAD] 开始创建连接池: max_connections={max_connections}, timeout=5.0s",
+            f"[IPO-DOWNLOAD] 开始创建RetryConnectionPool: phase1_max=10, phase2_max=5",
             extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
         )
-        
-        async def download_with_pool():
-            """使用连接池并发下载"""
-            # 创建连接池（使用LoadBalancer配置的最大连接数）
-            pool = AsyncConnectionPool(
-                servers=None,  # 使用默认服务器列表
-                max_connections=max_connections,  # 🎯 使用LoadBalancer配置
-                timeout=5.0
+
+        async def download_with_retry_pool():
+            """使用RetryConnectionPool并发下载"""
+            # 创建重试连接池
+            retry_pool = RetryConnectionPool(
+                server_pool_manager=pool_mgr,
+                phase1_max_attempts=10,
+                phase2_max_attempts=5,
+                connection_timeout=5.0
             )
-            
+
             logger.debug(
-                f"[IPO-DOWNLOAD] 连接池已创建: max_connections={max_connections}",
+                f"[IPO-DOWNLOAD] RetryConnectionPool已创建",
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+            )
+
+            # 创建所有协程任务（每个品种一个协程）
+            tasks = []
+            for symbol in symbols:
+                # 为每个品种创建协程任务（使用默认参数避免闭包问题）
+                async def fetch_symbol(sym: str = symbol):
+                    """使用RetryConnectionPool获取单个品种的IPO日期"""
+                    # 每个品种独立维护已尝试服务器列表
+                    attempted_servers = []
+                    
+                    async def fetch_task(api):
+                        """任务函数：获取IPO日期"""
+                        return await _fetch_single_ipo_date_with_pool(sym, api)
+                    
+                    # 使用RetryConnectionPool执行带重试的下载
+                    result, success = await retry_pool.execute_with_retry(
+                        fetch_task,
+                        attempted_servers,
+                        scenario="refresh_symbol_list"
+                    )
+                    
+                    # 无论成功失败都返回结果（失败为None）
+                    return sym, result
+
+                tasks.append(fetch_symbol())
+                
+            # 并发执行所有任务，使用asyncio.gather收集结果
+            # 使用return_exceptions=True确保单个协程异常不影响其他协程
+            logger.info(
+                f"[IPO-DOWNLOAD] 开始并发下载: 品种数={len(tasks)}, 使用两阶段重试机制",
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+            )
+            task_results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # 处理结果
+            completed = 0
+            success_count = 0
+            null_count = 0
+            error_count = 0
+
+            for result in task_results:
+                if isinstance(result, Exception):
+                    logger.debug(
+                        f"[IPO-DOWNLOAD] 协程执行异常: {result}",
+                        extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                    )
+                    error_count += 1
+                    completed += 1
+                    continue
+
+                if isinstance(result, tuple) and len(result) == 2:
+                    sym, ipo_date = result
+                    results[sym] = ipo_date
+                    completed += 1
+                    
+                    if ipo_date is not None:
+                        success_count += 1
+                    else:
+                        null_count += 1
+                    
+                    # 进度回调（每10%输出一次日志）
+                    if progress_callback:
+                        try:
+                            progress_callback(completed, total, f"已处理: {sym}")
+                        except Exception as e:
+                            logger.warning(
+                                f"⚠️ [IPO-DOWNLOAD] 进度回调执行失败: {e}",
+                                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                            )
+                    
+                    # 每10%输出进度日志
+                    if completed % max(1, total // 10) == 0 or completed == total:
+                        percent = (completed / total * 100) if total > 0 else 0
+                        logger.debug(
+                            f"[IPO-DOWNLOAD] 下载进度: {completed}/{total} ({percent:.1f}%), "
+                            f"成功={success_count}, null={null_count}, 失败={error_count}",
+                            extra={"log_type": "PROGRESS", "scenario": "refresh_symbol_list"}
+                        )
+                
+            logger.info(
+                f"[IPO-DOWNLOAD] 下载完成: 总数={total}, 成功={success_count}, null={null_count}, 失败={error_count}",
                 extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
             )
             
-            async with pool:
-                # 创建所有协程任务（每个品种一个协程）
-                tasks = []
-                for symbol in symbols:
-                    # 为每个品种创建协程任务（使用默认参数避免闭包问题）
-                    async def fetch_symbol(sym: str = symbol):
-                        """获取单个品种的IPO日期"""
-                        conn = await pool.acquire()
-                        if conn is None:
-                            logger.debug(f"无法获取连接: {sym}")
-                            return sym, None
-                        
-                        try:
-                            # 添加超时保护，防止单个协程卡住（15秒超时）
-                            ipo_date = await asyncio.wait_for(
-                                _fetch_single_ipo_date_with_pool(sym, conn),
-                                timeout=15.0
-                            )
-                            return sym, ipo_date
-                        except asyncio.TimeoutError:
-                            logger.debug(f"获取IPO日期超时: {sym}")
-                            return sym, None
-                        except Exception as e:
-                            logger.debug(f"获取IPO日期失败: {sym}, {e}")
-                            return sym, None
-                        finally:
-                            pool.release(conn)
-                    
-                    tasks.append(fetch_symbol())
-                
-                # 并发执行所有任务，使用asyncio.gather收集结果
-                # 使用return_exceptions=True确保单个协程异常不影响其他协程
-                logger.info(
-                    f"[IPO-DOWNLOAD] 开始并发下载: 品种数={len(tasks)}, 最大并发={max_connections}",
-                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
-                )
-                task_results = await asyncio.gather(*tasks, return_exceptions=True)
-                
-                # 处理结果
-                completed = 0
-                success_count = 0
-                null_count = 0
-                error_count = 0
-                
-                for result in task_results:
-                    if isinstance(result, Exception):
-                        logger.debug(
-                            f"[IPO-DOWNLOAD] 协程执行异常: {result}",
-                            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
-                        )
-                        error_count += 1
-                        completed += 1
-                        continue
-                    
-                    if isinstance(result, tuple) and len(result) == 2:
-                        sym, ipo_date = result
-                        results[sym] = ipo_date
-                        completed += 1
-                        
-                        if ipo_date is not None:
-                            success_count += 1
-                        else:
-                            null_count += 1
-                        
-                        # 进度回调（每10%输出一次日志）
-                        if progress_callback:
-                            try:
-                                progress_callback(completed, total, f"已处理: {sym}")
-                            except Exception as e:
-                                logger.warning(
-                                    f"⚠️ [IPO-DOWNLOAD] 进度回调执行失败: {e}", 
-                                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
-                                )
-                                pass
-                        
-                        # 每10%输出进度日志
-                        if completed % max(1, total // 10) == 0 or completed == total:
-                            percent = (completed / total * 100) if total > 0 else 0
-                            logger.debug(
-                                f"[IPO-DOWNLOAD] 下载进度: {completed}/{total} ({percent:.1f}%), "
-                                f"成功={success_count}, null={null_count}, 失败={error_count}",
-                                extra={"log_type": "PROGRESS", "scenario": "refresh_symbol_list"}
-                            )
-                
-                logger.info(
-                    f"[IPO-DOWNLOAD] 下载完成: 总数={total}, 成功={success_count}, null={null_count}, 失败={error_count}",
-                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
-                )
-                
-                return results
-        
+            return results
+
         # 运行异步函数
-        results = loop.run_until_complete(download_with_pool())
-        
+        results = loop.run_until_complete(download_with_retry_pool())
+
     except Exception as e:
         logger.error(
             f"[IPO-DOWNLOAD] ❌ IPO日期下载失败: {e}", 
@@ -5802,126 +5565,92 @@ def _download_ipo_batch(symbols: List[str]) -> Dict[str, Optional[date]]:
     )
 
     try:
-        # 使用连接池管理连接
-        from backend.infrastructure.tdx_asyncio.async_connection_pool import AsyncConnectionPool
+        # 使用RetryConnectionPool进行两阶段重试
+        from backend.infrastructure.tdx_asyncio.retry_connection_pool import RetryConnectionPool
+        from backend.infrastructure.data_module_vnpy.load_balancer import get_server_pool_manager
         
-        async def download_with_pool():
-            """使用连接池并发下载"""
-            # 创建连接池（最大38个连接，支持并发）
-            pool_start_time = time.time()
-            pool = AsyncConnectionPool(
-                servers=None,  # 使用默认服务器列表
-                max_connections=38,
-                timeout=5.0
+        # 创建ServerPoolManager实例
+        pool_mgr = get_server_pool_manager()
+        
+        async def download_with_retry_pool():
+            """使用RetryConnectionPool并发下载"""
+            # 创建重试连接池
+            retry_pool = RetryConnectionPool(
+                server_pool_manager=pool_mgr,
+                phase1_max_attempts=10,
+                phase2_max_attempts=5,
+                connection_timeout=5.0
             )
-            pool_elapsed = time.time() - pool_start_time
+            
             subprocess_logger.debug(
-                f"[IPO-DOWNLOAD-WORKER] 连接池创建完成: 耗时={pool_elapsed:.3f}s",
+                f"[IPO-DOWNLOAD-WORKER] RetryConnectionPool已创建",
                 extra={"log_type": "SYSTEM", "scenario": scenario}
             )
             
-            async with pool:
-                # 创建所有协程任务（每个品种一个协程）
-                tasks = []
-                for symbol in symbols:
-                    # 为每个品种创建协程任务（使用默认参数避免闭包问题）
-                    async def fetch_symbol(sym: str = symbol):
-                        """获取单个品种的IPO日期"""
-                        conn = await pool.acquire()
-                        if conn is None:
-                            subprocess_logger.debug(
-                                f"[IPO-DOWNLOAD-WORKER] 无法获取连接: symbol={sym}",
-                                extra={"log_type": "SYSTEM", "scenario": scenario}
-                            )
-                            return sym, None
-                        
-                        try:
-                            # 添加超时保护，防止单个协程卡住（15秒超时）
-                            fetch_start_time = time.time()
-                            ipo_date = await asyncio.wait_for(
-                                _fetch_single_ipo_date_with_pool(sym, conn),
-                                timeout=15.0
-                            )
-                            fetch_elapsed = time.time() - fetch_start_time
-                            
-                            if ipo_date:
-                                subprocess_logger.debug(
-                                    f"[IPO-DOWNLOAD-WORKER] IPO日期获取成功: symbol={sym}, ipo_date={ipo_date}, 耗时={fetch_elapsed:.3f}s",
-                                    extra={"log_type": "SYSTEM", "scenario": scenario}
-                                )
-                            else:
-                                subprocess_logger.debug(
-                                    f"[IPO-DOWNLOAD-WORKER] IPO日期为空: symbol={sym}, 耗时={fetch_elapsed:.3f}s",
-                                    extra={"log_type": "SYSTEM", "scenario": scenario}
-                                )
-                            
-                            return sym, ipo_date
-                        except asyncio.TimeoutError:
-                            fetch_elapsed = time.time() - fetch_start_time if 'fetch_start_time' in locals() else 0
-                            subprocess_logger.debug(
-                                f"[IPO-DOWNLOAD-WORKER] 获取IPO日期超时: symbol={sym}, 耗时={fetch_elapsed:.3f}s",
-                                extra={"log_type": "SYSTEM", "scenario": scenario}
-                            )
-                            subprocess_logger.warning(
-                                f"[IPO-DOWNLOAD-WORKER] ⚠️ 获取IPO日期超时: symbol={sym}",
-                                extra={"log_type": "ALERT", "scenario": scenario}
-                            )
-                            return sym, None
-                        except Exception as e:
-                            fetch_elapsed = time.time() - fetch_start_time if 'fetch_start_time' in locals() else 0
-                            subprocess_logger.debug(
-                                f"[IPO-DOWNLOAD-WORKER] 获取IPO日期失败详情: symbol={sym}, 异常类型={type(e).__name__}, 异常消息={str(e)}, 耗时={fetch_elapsed:.3f}s",
-                                extra={"log_type": "SYSTEM", "scenario": scenario}
-                            )
-                            subprocess_logger.warning(
-                                f"[IPO-DOWNLOAD-WORKER] ⚠️ 获取IPO日期失败: symbol={sym}, 错误: {e}",
-                                extra={"log_type": "ALERT", "scenario": scenario}
-                            )
-                            return sym, None
-                        finally:
-                            pool.release(conn)
+            # 创建所有协程任务（每个品种一个协程）
+            tasks = []
+            for symbol in symbols:
+                # 为每个品种创建协程任务（使用默认参数避免闭包问题）
+                async def fetch_symbol(sym: str = symbol):
+                    """使用RetryConnectionPool获取单个品种的IPO日期"""
+                    # 每个品种独立维护已尝试服务器列表
+                    attempted_servers = []
                     
-                    tasks.append(fetch_symbol())
-                
-                # 并发执行所有任务，使用asyncio.gather收集结果
-                # 使用return_exceptions=True确保单个协程异常不影响其他协程
-                gather_start_time = time.time()
-                task_results = await asyncio.gather(*tasks, return_exceptions=True)
-                gather_elapsed = time.time() - gather_start_time
-                subprocess_logger.debug(
-                    f"[IPO-DOWNLOAD-WORKER] 所有协程任务执行完成: 任务数={len(tasks)}, 耗时={gather_elapsed:.2f}s",
-                    extra={"log_type": "SYSTEM", "scenario": scenario}
-                )
-                
-                # 处理结果
-                for result in task_results:
-                    if isinstance(result, Exception):
-                        subprocess_logger.debug(
-                            f"[IPO-DOWNLOAD-WORKER] 协程执行异常: 异常类型={type(result).__name__}, 异常消息={str(result)}",
-                            extra={"log_type": "SYSTEM", "scenario": scenario}
-                        )
-                        subprocess_logger.warning(
-                            f"[IPO-DOWNLOAD-WORKER] ⚠️ 协程执行异常: {result}",
-                            extra={"log_type": "ALERT", "scenario": scenario}
-                        )
-                        continue
+                    async def fetch_task(api):
+                        """任务函数：获取IPO日期"""
+                        return await _fetch_single_ipo_date_with_pool(sym, api)
                     
-                    if isinstance(result, tuple) and len(result) == 2:
-                        sym, ipo_date = result
-                        results[sym] = ipo_date
+                    # 使用RetryConnectionPool执行带重试的下载
+                    result, success = await retry_pool.execute_with_retry(
+                        fetch_task,
+                        attempted_servers,
+                        scenario=scenario
+                    )
+                    
+                    # 无论成功失败都返回结果（失败为None）
+                    return sym, result
                 
-                batch_success_count = sum(1 for v in results.values() if v is not None)
-                batch_failed_count = len(symbols) - batch_success_count
-                subprocess_logger.debug(
-                    f"[IPO-DOWNLOAD-WORKER] 批次处理完成: 品种数={len(symbols)}, 成功={batch_success_count}, 失败={batch_failed_count}",
-                    extra={"log_type": "SYSTEM", "scenario": scenario}
-                )
+                tasks.append(fetch_symbol())
+            
+            # 并发执行所有任务，使用asyncio.gather收集结果
+            # 使用return_exceptions=True确保单个协程异常不影响其他协程
+            gather_start_time = time.time()
+            task_results = await asyncio.gather(*tasks, return_exceptions=True)
+            gather_elapsed = time.time() - gather_start_time
+            subprocess_logger.debug(
+                f"[IPO-DOWNLOAD-WORKER] 所有协程任务执行完成: 任务数={len(tasks)}, 耗时={gather_elapsed:.2f}s",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            
+            # 处理结果
+            for result in task_results:
+                if isinstance(result, Exception):
+                    subprocess_logger.debug(
+                        f"[IPO-DOWNLOAD-WORKER] 协程执行异常: 异常类型={type(result).__name__}, 异常消息={str(result)}",
+                        extra={"log_type": "SYSTEM", "scenario": scenario}
+                    )
+                    subprocess_logger.warning(
+                        f"[IPO-DOWNLOAD-WORKER] ⚠️ 协程执行异常: {result}",
+                        extra={"log_type": "ALERT", "scenario": scenario}
+                    )
+                    continue
                 
-                return results
-        
+                if isinstance(result, tuple) and len(result) == 2:
+                    sym, ipo_date = result
+                    results[sym] = ipo_date
+            
+            batch_success_count = sum(1 for v in results.values() if v is not None)
+            batch_failed_count = len(symbols) - batch_success_count
+            subprocess_logger.debug(
+                f"[IPO-DOWNLOAD-WORKER] 批次处理完成: 品种数={len(symbols)}, 成功={batch_success_count}, 失败={batch_failed_count}",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            
+            return results
+
         # 运行异步函数
         download_start_time = time.time()
-        results = loop.run_until_complete(download_with_pool())
+        results = loop.run_until_complete(download_with_retry_pool())
         download_elapsed = time.time() - download_start_time
         
         success_count = sum(1 for v in results.values() if v is not None)

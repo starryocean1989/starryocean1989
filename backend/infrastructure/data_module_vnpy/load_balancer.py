@@ -1041,6 +1041,110 @@ class ServerPoolManager:
         """推送服务器状态事件（向后兼容方法）"""
         logger.debug("_push_server_status_event()被调用（当前实现暂无事件推送）")
 
+    def get_top_30_percent_ipv4_servers(self, shuffle: bool = True, exclude: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        """获取IPv4最快前30%服务器（按ping_time排序）
+        
+        Args:
+            shuffle: 是否打乱顺序
+            exclude: 排除的服务器列表（格式：["ip:port", ...]）
+        
+        Returns:
+            服务器列表，格式：[{"ip": ..., "port": ..., "name": ..., "ping_time": ...}]
+        """
+        import random
+        
+        # 过滤可用服务器
+        available_servers = [
+            s for s in self._ipv4_servers
+            if s.available and (exclude is None or f"{s.ip}:{s.port}" not in exclude)
+        ]
+        
+        if not available_servers:
+            logger.warning("⚠️ 无可用IPv4服务器", extra={"log_type": "SYSTEM"})
+            return []
+        
+        # 按ping_time排序
+        sorted_servers = sorted(available_servers, key=lambda s: s.ping_time)
+        
+        # 取前30%
+        top_count = max(1, int(len(sorted_servers) * 0.3))
+        top_servers = sorted_servers[:top_count]
+        
+        # 转换为字典格式
+        result = [
+            {
+                "ip": s.ip,
+                "port": s.port,
+                "name": s.name,
+                "ping_time": s.ping_time,
+            }
+            for s in top_servers
+        ]
+        
+        # 打乱顺序（如果启用）
+        if shuffle:
+            random.shuffle(result)
+        
+        logger.debug(
+            f"[SERVER-POOL] 获取IPv4最快30%服务器: 总数={len(available_servers)}, "
+            f"前30%={top_count}, 返回={len(result)}",
+            extra={"log_type": "SYSTEM"}
+        )
+        
+        return result
+
+    def get_mixed_servers(self, shuffle: bool = True, exclude: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        """获取IPv4+IPv6混合服务器池（乱序）
+        
+        Args:
+            shuffle: 是否打乱顺序
+            exclude: 排除的服务器列表（格式：["ip:port", ...]）
+        
+        Returns:
+            服务器列表，格式：[{"ip": ..., "port": ..., "name": ..., "ping_time": ...}]
+        """
+        import random
+        
+        # 合并IPv4和IPv6服务器
+        all_servers = []
+        
+        # 添加IPv4服务器
+        for s in self._ipv4_servers:
+            if s.available and (exclude is None or f"{s.ip}:{s.port}" not in exclude):
+                all_servers.append({
+                    "ip": s.ip,
+                    "port": s.port,
+                    "name": s.name,
+                    "ping_time": s.ping_time,
+                })
+        
+        # 添加IPv6服务器
+        for s in self._ipv6_servers:
+            if s.available and (exclude is None or f"{s.ip}:{s.port}" not in exclude):
+                all_servers.append({
+                    "ip": s.ip,
+                    "port": s.port,
+                    "name": s.name,
+                    "ping_time": s.ping_time,
+                })
+        
+        if not all_servers:
+            logger.warning("⚠️ 无可用混合服务器（IPv4+IPv6）", extra={"log_type": "SYSTEM"})
+            return []
+        
+        # 打乱顺序（如果启用）
+        if shuffle:
+            random.shuffle(all_servers)
+        
+        logger.debug(
+            f"[SERVER-POOL] 获取混合服务器池: IPv4={len([s for s in self._ipv4_servers if s.available])}, "
+            f"IPv6={len([s for s in self._ipv6_servers if s.available])}, "
+            f"返回={len(all_servers)}",
+            extra={"log_type": "SYSTEM"}
+        )
+        
+        return all_servers
+
 
 async def _test_single_server_async(ip: str, port: int, name: str = "", scenario: str = "manual_speedtest") -> Tuple[float, bool]:
     """异步测试单个服务器（协程函数）
@@ -1395,7 +1499,31 @@ class LoadBalancer:
                     f"约束后并发={processes}×{coroutines_per_process}={processes*coroutines_per_process}"
                 )
 
-        # 8. 构建配置
+        # 8. 🎯 应用任务数量约束（总协程数 ≤ 任务数）
+        task_constrained = False
+        original_total_coroutines = processes * coroutines_per_process
+        if task.total_count > 0:
+            total_coroutines = processes * coroutines_per_process
+            
+            # 如果总协程数超过任务数，进行约束
+            if total_coroutines > task.total_count:
+                task_constrained = True
+                # 优先调整协程数，保持进程数不变（避免进程创建开销）
+                coroutines_per_process = max(1, task.total_count // processes)
+                
+                # 如果调整后的协程数太小（<3），则减少进程数
+                if coroutines_per_process < 3 and processes > 1:
+                    processes = max(1, task.total_count // 3)
+                    coroutines_per_process = max(1, task.total_count // processes)
+                
+                logger.debug(
+                    f"[LOADBALANCER] 任务数量约束生效: 任务数={task.total_count}, "
+                    f"原始总协程数={original_total_coroutines}, "
+                    f"约束后总协程数={processes * coroutines_per_process}, "
+                    f"进程={processes}, 每进程协程={coroutines_per_process}"
+                )
+
+        # 9. 构建配置
         config = {
             "processes": min(processes, strategy["max_processes"]),
             "coroutines_per_process": min(
@@ -1419,13 +1547,17 @@ class LoadBalancer:
             ),  # 0-100压力评分
             "available_servers": available_servers if available_servers is not None else "N/A",
             "server_constrained": server_constrained,
+            "task_constrained": task_constrained,
+            "task_count": task.total_count,
         }
 
         logger.debug(
             f"[LOADBALANCER] 动态配置 [{task.name}]: 进程={config['processes']}, "
             f"协程={config['coroutines_per_process']}, 总并发={config['processes']*config['coroutines_per_process']}, "
+            f"任务数={task.total_count}, "
             f"可用服务器={available_servers if available_servers else 'N/A'}, "
             f"服务器约束={'生效' if server_constrained else '未生效'}, "
+            f"任务约束={'生效' if task_constrained else '未生效'}, "
             f"瓶颈={resource_metrics.bottleneck}({bottleneck_value:.1f}%), "
             f"队列压力={pressure_level}",
             extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}

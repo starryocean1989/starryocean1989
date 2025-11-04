@@ -67,8 +67,6 @@ from .data_acquisition import (
     DownloadStateMachine,
     DownloadTask,
     TaskQueueManager,
-    # 连接管理
-    ConnectionLifecycleManager,
     # TDX读取器
     TdxBinaryReader,
     BjStockDecoder,
@@ -191,7 +189,6 @@ __all__ = [
     "DownloadStateMachine",
     "DownloadTask",
     "TaskQueueManager",
-    "ConnectionLifecycleManager",
     # TDX读取
     "TdxBinaryReader",
     "BjStockDecoder",

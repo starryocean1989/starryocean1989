@@ -95,7 +95,6 @@ def test_ipo_download_performance(
         测试结果列表，每个元素包含 {count, total_time, avg_time_per_symbol, success_count, failed_count}
     """
     results = []
-    print(f"DEBUG: results list initialized: {results}")
     
     print("=" * 80)
     print("IPO日期下载性能测试")
@@ -182,7 +181,6 @@ def test_ipo_download_performance(
                 "min_time": min(total_times),
                 "max_time": max(total_times),
             }
-            print(f"DEBUG: Appending result: {result}")
             results.append(result)
             
             print(f"  📈 平均耗时: {avg_time:.2f}s，每品种平均: {avg_time_per_symbol*1000:.2f}ms")
@@ -272,9 +270,8 @@ def main():
     print_results_table(results)
     
     # 保存结果（如果指定了输出文件）
-    print(f"DEBUG: Results before CSV write: {results}")
     if not args.output:
-        output_path = Path("ipo_performance_results.csv")
+        output_path = Path("temp_ipo_performance_results.csv")
     else:
         output_path = Path(args.output)
 

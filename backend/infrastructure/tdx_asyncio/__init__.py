@@ -18,6 +18,9 @@ from .async_exhq import AsyncTdxExHq_API, get_future_markets, get_future_bars
 # 连接池管理（v2.0新增）
 from .async_connection_pool import AsyncConnectionPool, AsyncConnectionPoolContext, ConnectionPoolConfig
 
+# 重试连接池（v2.1新增）
+from .retry_connection_pool import RetryConnectionPool
+
 # IP池管理（v2.0新增）
 from .async_ip_pool import AsyncIPPool, AsyncRandomIPPool, AsyncSmartIPPool
 
@@ -85,6 +88,9 @@ __all__ = [
     "AsyncConnectionPool",
     "AsyncConnectionPoolContext",
     "ConnectionPoolConfig",
+
+    # 重试连接池 v2.1
+    "RetryConnectionPool",
 
     # IP池管理 v2.0
     "AsyncIPPool",

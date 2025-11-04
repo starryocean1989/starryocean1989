@@ -89,19 +89,10 @@ def test_marginal_time(start=1, end_count=20, repeat=1, clear_cache=True):
         success_counts = []
         
         for r in range(repeat):
-            # 清除缓存（如果启用）
-            if clear_cache and r == 0:  # 只在第一次测试前清除
-                try:
-                    cache_file = Path("data/cache/ipo_dates.json")
-                    if cache_file.exists():
-                        cache_file.unlink()
-                        print(f"[已清除缓存] ", end="", flush=True)
-                except Exception as e:
-                    pass
-            
             start_time = time.time()
             try:
-                # 下载IPO日期
+                # 下载IPO日期（使用增量下载，已有缓存的不重复下载）
+                # 注意：由于有缓存机制，边际耗时可能为负（说明新增品种已缓存）
                 ipo_dates = download_ipo_dates(
                     symbols, 
                     use_multiprocess=False, 
@@ -111,7 +102,14 @@ def test_marginal_time(start=1, end_count=20, repeat=1, clear_cache=True):
                 times.append(elapsed)
                 success = sum(1 for v in ipo_dates.values() if v is not None)
                 success_counts.append(success)
-                print(f"✅ {elapsed:.2f}s (成功={success})", end=" " if r < repeat-1 else "\n")
+                
+                # 显示新增品种数量（帮助理解边际耗时）
+                if len(results) > 0:
+                    prev_count = results[-1]['count']
+                    new_symbols = count - prev_count
+                    print(f"✅ {elapsed:.2f}s (新增{new_symbols}个)", end=" " if r < repeat-1 else "")
+                else:
+                    print(f"✅ {elapsed:.2f}s", end=" " if r < repeat-1 else "")
             except Exception as e:
                 print(f"❌ 失败: {e}")
                 import traceback
@@ -120,91 +118,84 @@ def test_marginal_time(start=1, end_count=20, repeat=1, clear_cache=True):
         if times:
             avg_time = sum(times) / len(times)
             avg_success = sum(success_counts) / len(success_counts)
-            per_symbol = avg_time / count * 1000 if count > 0 else 0
             results.append({
                 "count": count,
                 "total_time": avg_time,
-                "per_symbol_ms": per_symbol,
                 "success": int(avg_success)
             })
-            print(f"  📈 平均耗时: {avg_time:.2f}s, 每品种: {per_symbol:.2f}ms")
+            
+            # 计算边际耗时
+            marginal_time = None
+            if len(results) > 1:
+                prev_time = results[-2]['total_time']
+                marginal_time = (avg_time - prev_time) * 1000  # 转换为毫秒
+                print(f" → 边际耗时: {marginal_time:.2f}ms")
+            else:
+                print(f" → 总耗时: {avg_time:.2f}s")
     
-    # 打印结果汇总
-    print("\n" + "=" * 60)
-    print("结果汇总:")
-    print(f"{'品种数':<10} {'总耗时(s)':<12} {'每品种(ms)':<12} {'成功数':<10}")
-    print("-" * 60)
-    for r in results:
+    # 打印结果汇总和边际耗时分析
+    print("\n" + "=" * 80)
+    print("边际耗时结果汇总")
+    print("=" * 80)
+    print(f"{'品种数':<10} {'累计耗时(s)':<15} {'边际耗时(ms)':<18} {'成功数':<10}")
+    print("-" * 80)
+    
+    marginal_times = []
+    for i, r in enumerate(results):
+        if i == 0:
+            marginal_ms = "N/A"
+        else:
+            prev_time = results[i-1]['total_time']
+            marginal_ms = (r['total_time'] - prev_time) * 1000
+            marginal_times.append(marginal_ms)
+            marginal_ms = f"{marginal_ms:.2f}"
+        
         print(
             f"{r['count']:<10} "
-            f"{r['total_time']:<12.2f} "
-            f"{r['per_symbol_ms']:<12.2f} "
+            f"{r['total_time']:<15.2f} "
+            f"{marginal_ms:<18} "
             f"{r['success']:<10}"
         )
     
-    # 计算增量
-    if len(results) > 1:
-        print("\n" + "=" * 60)
-        print("每增加一个品种的耗时分析:")
-        print("-" * 60)
+    # 边际耗时统计
+    if marginal_times:
+        print("=" * 80)
+        print("📊 边际耗时统计:")
+        print("-" * 80)
+        avg_marginal = sum(marginal_times) / len(marginal_times)
+        min_marginal = min(marginal_times)
+        max_marginal = max(marginal_times)
         
-        increments = []
-        positive_increments = []  # 只计算正的增量（排除并发效率提升）
+        # 只统计正的边际耗时（排除缓存命中等情况）
+        positive_marginal = [t for t in marginal_times if t > 0]
         
-        for i in range(1, len(results)):
-            prev = results[i-1]
-            curr = results[i]
-            count_diff = curr['count'] - prev['count']
-            time_diff = curr['total_time'] - prev['total_time']
-            per_symbol = time_diff / count_diff * 1000 if count_diff > 0 else 0
-            increments.append(per_symbol)
-            
-            if per_symbol > 0:
-                positive_increments.append(per_symbol)
-            
-            status = "✅" if per_symbol > 0 else "⚠️ (并发效率提升)"
-            print(
-                f"{prev['count']} → {curr['count']} (+{count_diff}): "
-                f"增加耗时 {time_diff:.2f}s, 每品种 {per_symbol:.2f}ms {status}"
-            )
+        print(f"  平均边际耗时: {avg_marginal:.2f}ms")
+        print(f"  范围: {min_marginal:.2f}ms - {max_marginal:.2f}ms")
         
-        if increments:
-            avg_inc = sum(increments) / len(increments)
-            min_inc = min(increments)
-            max_inc = max(increments)
-            print("-" * 60)
-            print(f"📊 统计信息:")
-            print(f"  所有增量平均: {avg_inc:.2f}ms")
-            print(f"  范围: {min_inc:.2f}ms - {max_inc:.2f}ms")
-            
-            if positive_increments:
-                avg_positive = sum(positive_increments) / len(positive_increments)
-                print(f"  ⚠️ 仅正增量平均（排除并发效率）: {avg_positive:.2f}ms")
-            
-            # 计算总趋势：最后N个点的平均增量
-            if len(results) >= 3:
-                last_three = results[-3:]
-                total_count_diff = last_three[-1]['count'] - last_three[0]['count']
-                total_time_diff = last_three[-1]['total_time'] - last_three[0]['total_time']
-                trend_per_symbol = total_time_diff / total_count_diff * 1000 if total_count_diff > 0 else 0
-                print(f"  📈 趋势分析（最后3个点）: 每品种 {trend_per_symbol:.2f}ms")
+        if positive_marginal:
+            avg_positive = sum(positive_marginal) / len(positive_marginal)
+            print(f"  ✅ 仅正边际耗时平均: {avg_positive:.2f}ms ({len(positive_marginal)}/{len(marginal_times)}个)")
+        
+        # 趋势分析：最近N个点的边际耗时
+        if len(marginal_times) >= 5:
+            recent_marginal = marginal_times[-5:]
+            recent_avg = sum(recent_marginal) / len(recent_marginal)
+            print(f"  📈 最近5个品种边际耗时平均: {recent_avg:.2f}ms")
 
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="IPO日期下载性能测试")
-    parser.add_argument("--start", type=int, default=1, help="起始品种数量")
-    parser.add_argument("--end", type=int, default=20, help="结束品种数量")
-    parser.add_argument("--step", type=int, default=5, help="步长")
-    parser.add_argument("--repeat", type=int, default=1, help="重复次数")
+    parser = argparse.ArgumentParser(description="IPO日期下载边际耗时测试")
+    parser.add_argument("--start", type=int, default=1, help="起始品种数量（默认: 1）")
+    parser.add_argument("--end", type=int, default=20, help="结束品种数量（默认: 20）")
+    parser.add_argument("--repeat", type=int, default=1, help="每个数量重复测试次数（默认: 1）")
     parser.add_argument("--no-clear-cache", action="store_true", help="不清除缓存（测试增量性能）")
     
     args = parser.parse_args()
     
-    test_performance(
+    test_marginal_time(
         start=args.start,
         end_count=args.end,
-        step=args.step,
         repeat=args.repeat,
         clear_cache=not args.no_clear_cache
     )
