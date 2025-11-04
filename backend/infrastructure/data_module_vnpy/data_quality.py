@@ -718,61 +718,112 @@ class DataSensor:
         total = len(tasks)
         
         scenario = "manual_data_scan"
+        import time
+        scan_start_time = time.time()
+        
         logger.debug(
             f"[SCAN-MULTIPROCESS] 开始多进程扫描: 任务数={total}, 进程数={max_workers}",
             extra={"log_type": "SYSTEM", "scenario": scenario}
         )
+        logger.info(
+            f"[SCAN-MULTIPROCESS] ℹ️ 开始多进程扫描: 任务数={total}, 进程数={max_workers}",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
         
         # 使用进程池
-        with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(_scan_single_worker, symbol, interval): (symbol, interval)
-                for symbol, interval in tasks
-            }
-            
+        try:
+            with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(_scan_single_worker, symbol, interval): (symbol, interval)
+                    for symbol, interval in tasks
+                }
+                
+                logger.debug(
+                    f"[SCAN-MULTIPROCESS] 所有任务已提交: 任务数={len(futures)}, 进程数={max_workers}",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                logger.info(
+                    f"[SCAN-MULTIPROCESS] ✅ 所有任务已提交到进程池: 任务数={len(futures)}, 进程数={max_workers}",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                
+                completed = 0
+                for future in as_completed(futures):
+                    symbol, interval = futures[future]
+                    try:
+                        result = future.result()
+                        results[(symbol, interval)] = result
+                        logger.debug(
+                            f"[SCAN-MULTIPROCESS] 任务完成: symbol={symbol}, interval={interval}, "
+                            f"quality_level={result.quality_level.name}, completeness={result.completeness:.2f}%",
+                            extra={"log_type": "SYSTEM", "scenario": scenario}
+                        )
+                    except Exception as e:
+                        logger.debug(
+                            f"[SCAN-MULTIPROCESS] 扫描异常详情: symbol={symbol}, interval={interval}, "
+                            f"异常类型={type(e).__name__}, 异常消息={str(e)}",
+                            extra={"log_type": "SYSTEM", "scenario": scenario}
+                        )
+                        logger.warning(
+                            f"[SCAN-MULTIPROCESS] ⚠️ 扫描失败: {symbol}/{interval}, 错误: {e}",
+                            extra={"log_type": "ALERT", "scenario": scenario}
+                        )
+                        logger.error(
+                            f"[SCAN-MULTIPROCESS] ❌ 扫描任务失败: {symbol}/{interval}, 错误: {e}",
+                            exc_info=True,
+                            extra={"log_type": "ALERT", "scenario": scenario}
+                        )
+                        results[(symbol, interval)] = QualityScanResult(
+                            symbol=symbol,
+                            interval=interval,
+                            errors=[str(e)],
+                        )
+                    
+                    completed += 1
+                    self._notify_progress(completed, total, f"已扫描: {symbol}/{interval}")
+                    
+                    # 每100个任务记录一次进度
+                    if completed % 100 == 0:
+                        elapsed = time.time() - scan_start_time
+                        speed = completed / elapsed if elapsed > 0 else 0
+                        remaining = total - completed
+                        estimated_remaining = remaining / speed if speed > 0 else 0
+                        logger.debug(
+                            f"[SCAN-MULTIPROCESS] 扫描进度详情: {completed}/{total} ({completed/total*100:.1f}%), "
+                            f"速度={speed:.2f}任务/秒, 预计剩余={estimated_remaining:.0f}秒",
+                            extra={"log_type": "SYSTEM", "scenario": scenario}
+                        )
+                        logger.info(
+                            f"[SCAN-MULTIPROCESS] 扫描进度: {completed}/{total} ({completed/total*100:.1f}%), "
+                            f"速度={speed:.2f}任务/秒, 预计剩余={estimated_remaining:.0f}秒",
+                            extra={"log_type": "PROGRESS", "scenario": scenario}
+                        )
+        
+        except Exception as e:
+            scan_elapsed = time.time() - scan_start_time
             logger.debug(
-                f"[SCAN-MULTIPROCESS] 所有任务已提交: 任务数={len(futures)}",
+                f"[SCAN-MULTIPROCESS] 多进程扫描异常详情: 异常类型={type(e).__name__}, 异常消息={str(e)}, 耗时={scan_elapsed:.2f}s",
                 extra={"log_type": "SYSTEM", "scenario": scenario}
             )
-            
-            completed = 0
-            for future in as_completed(futures):
-                symbol, interval = futures[future]
-                try:
-                    result = future.result()
-                    results[(symbol, interval)] = result
-                    logger.debug(
-                        f"[SCAN-MULTIPROCESS] 任务完成: symbol={symbol}, interval={interval}, "
-                        f"quality_level={result.quality_level.name}, completeness={result.completeness:.2f}%",
-                        extra={"log_type": "SYSTEM", "scenario": scenario}
-                    )
-                except Exception as e:
-                    logger.warning(
-                        f"⚠️ 扫描失败: {symbol}/{interval}, 错误: {e}",
-                        extra={"log_type": "ALERT", "scenario": scenario}
-                    )
-                    logger.debug(
-                        f"[SCAN-MULTIPROCESS] 扫描异常详情: symbol={symbol}, interval={interval}, "
-                        f"异常类型={type(e).__name__}, 异常消息={str(e)}",
-                        extra={"log_type": "SYSTEM", "scenario": scenario}
-                    )
-                    results[(symbol, interval)] = QualityScanResult(
-                        symbol=symbol,
-                        interval=interval,
-                        errors=[str(e)],
-                    )
-                
-                completed += 1
-                self._notify_progress(completed, total, f"已扫描: {symbol}/{interval}")
-                
-                if completed % 100 == 0:
-                    logger.debug(
-                        f"[SCAN-MULTIPROCESS] 扫描进度: {completed}/{total} ({completed/total*100:.1f}%)",
-                        extra={"log_type": "SYSTEM", "scenario": scenario}
-                    )
+            logger.error(
+                f"[SCAN-MULTIPROCESS] ❌ 多进程扫描失败: {e}, 耗时={scan_elapsed:.2f}s",
+                exc_info=True,
+                extra={"log_type": "ALERT", "scenario": scenario}
+            )
+            logger.critical(
+                f"[SCAN-MULTIPROCESS] 🔥 多进程扫描严重失败，可能影响数据质量评估: {e}, 耗时={scan_elapsed:.2f}s",
+                exc_info=True,
+                extra={"log_type": "ALERT", "scenario": scenario}
+            )
+            raise
         
+        scan_elapsed = time.time() - scan_start_time
         logger.debug(
-            f"[SCAN-MULTIPROCESS] 多进程扫描完成: 总任务数={total}, 完成数={len(results)}",
+            f"[SCAN-MULTIPROCESS] 多进程扫描完成: 总任务数={total}, 完成数={len(results)}, 耗时={scan_elapsed:.2f}s",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+        logger.info(
+            f"[SCAN-MULTIPROCESS] ✅ 多进程扫描完成: 总任务数={total}, 完成数={len(results)}, 耗时={scan_elapsed:.2f}s",
             extra={"log_type": "SYSTEM", "scenario": scenario}
         )
         
@@ -1067,12 +1118,33 @@ def _scan_single_worker(symbol: str, interval: str) -> QualityScanResult:
         result = sensor._validate_dataframe(symbol, interval, df)
         validate_elapsed = time.time() - validate_start_time
         
+        total_elapsed = time.time() - load_start_time
         worker_logger.debug(
             f"[SCAN-WORKER] 扫描完成: symbol={symbol}, interval={interval}, "
             f"quality_level={result.quality_level.name}, completeness={result.completeness:.2f}%, "
             f"total_bars={result.total_bars}, missing_bars={result.missing_bars}, "
             f"duplicate_bars={result.duplicate_bars}, invalid_bars={result.invalid_bars}, "
-            f"errors={len(result.errors)}, 验证耗时={validate_elapsed:.3f}s",
+            f"errors={len(result.errors)}, 加载耗时={load_elapsed:.3f}s, 验证耗时={validate_elapsed:.3f}s, 总耗时={total_elapsed:.3f}s",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+        
+        # 检查数据质量级别，记录警告
+        if result.quality_level == DataQualityLevel.CRITICAL:
+            worker_logger.warning(
+                f"[SCAN-WORKER] ⚠️ 扫描发现严重质量问题: symbol={symbol}, interval={interval}, "
+                f"quality_level={result.quality_level.name}, errors={len(result.errors)}",
+                extra={"log_type": "ALERT", "scenario": scenario}
+            )
+        elif result.quality_level == DataQualityLevel.POOR:
+            worker_logger.debug(
+                f"[SCAN-WORKER] 扫描发现质量问题: symbol={symbol}, interval={interval}, "
+                f"quality_level={result.quality_level.name}",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+        
+        worker_logger.info(
+            f"[SCAN-WORKER] ✅ 扫描完成: symbol={symbol}, interval={interval}, "
+            f"quality_level={result.quality_level.name}, completeness={result.completeness:.2f}%, 总耗时={total_elapsed:.3f}s",
             extra={"log_type": "SYSTEM", "scenario": scenario}
         )
         

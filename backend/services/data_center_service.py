@@ -677,12 +677,21 @@ class DataCenterService(BaseService, LoggerMixin):
                 # 成功则保存缓存并推送事件
                 if success:
                     self.logger.debug(
-                        "[SPEEDTEST-SERVICE] 保存测速结果到缓存...",
+                        "[SPEEDTEST-SERVICE] 测速成功，开始保存测速结果到缓存...",
                         extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
                     )
                     self.logger.info(
-                        "[SPEEDTEST-SERVICE] ℹ️ 测速成功，开始保存测速结果到缓存...",
+                        "[SPEEDTEST-SERVICE] ✅ 测速成功，开始保存测速结果到缓存...",
                         extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                    )
+                else:
+                    self.logger.debug(
+                        "[SPEEDTEST-SERVICE] 测速失败，跳过缓存保存",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                    )
+                    self.logger.warning(
+                        "[SPEEDTEST-SERVICE] ⚠️ 测速失败，跳过缓存保存",
+                        extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
                     )
                     cache_start_time = time.time()
                     try:
@@ -1049,7 +1058,7 @@ class DataCenterService(BaseService, LoggerMixin):
         # 使用ai_log_process创建独立日志文件
         # 注意：场景信息通过日志记录的extra参数传递，无需全局设置
         try:
-            context_manager = ai_log_process("refresh_symbol_list") if hub else suppress()
+            context_manager = ai_log_process("symbol_list_reload") if hub else suppress()
         except Exception:
             context_manager = suppress()
         
@@ -1058,61 +1067,61 @@ class DataCenterService(BaseService, LoggerMixin):
                 # 阶段节点（输出到Terminal）
                 stage_logger.info(
                     "📍 重新请求品种列表开始",
-                    extra={"log_type": "STAGE_NODE", "scenario": "refresh_symbol_list"},
+                    extra={"log_type": "STAGE_NODE", "scenario": "symbol_list_reload"},
                 )
                 
                 self._log_operation("重新加载品种列表", force=force)
                 self.logger.debug(
                     "[RELOAD-SYMBOL] 开始重新加载品种列表",
-                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                 )
                 self.logger.debug(
                     f"[RELOAD-SYMBOL] 参数: force={force}",
-                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                 )
                 self.logger.info(
                     "[RELOAD-SYMBOL] 品种列表重新加载开始",
-                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                 )
                 self.logger.info(
                     "=" * 60,
-                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                 )
                 self.logger.info(
                     "【用户触发】品种列表重新加载开始",
-                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                 )
                 self.logger.info(
                     "=" * 60,
-                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                 )
 
                 # 流程1：删除缓存文件
                 self.logger.info(
                     "[RELOAD-SYMBOL] 【流程1】删除现有缓存文件...",
-                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                 )
                 self.logger.debug(
                     "[RELOAD-SYMBOL] 开始删除缓存文件...",
-                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                 )
                 cache_delete_start_time = time.time()
                 self._delete_symbol_cache_file()
                 cache_delete_elapsed = time.time() - cache_delete_start_time
                 self.logger.debug(
                     f"[RELOAD-SYMBOL] 缓存文件删除完成: 耗时={cache_delete_elapsed:.2f}s",
-                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                 )
 
                 # 流程2：从API获取品种
                 if self.china_stock_engine is None:
                     self.logger.error(
                         "[RELOAD-SYMBOL] ❌ ChinaStockEngine不可用",
-                        extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
+                        extra={"log_type": "ALERT", "scenario": "symbol_list_reload"}
                     )
                     self.logger.debug(
                         "[RELOAD-SYMBOL] ChinaStockEngine状态: None",
-                        extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                        extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                     )
                     return {
                         "success": False,
@@ -1123,34 +1132,34 @@ class DataCenterService(BaseService, LoggerMixin):
 
                 self.logger.info(
                     "[RELOAD-SYMBOL] 【流程2】从ChinaStockEngine获取品种列表...",
-                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                 )
                 self.logger.debug(
                     "[RELOAD-SYMBOL] 开始调用_fetch_symbols_from_china_stock方法...",
-                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                 )
                 fetch_start_time = time.time()
                 symbols, empty_categories = self._fetch_symbols_from_china_stock()
                 fetch_elapsed = time.time() - fetch_start_time
                 self.logger.debug(
                     f"[RELOAD-SYMBOL] 品种获取完成: 数量={len(symbols)}, 空类别={empty_categories}, 耗时={fetch_elapsed:.2f}s",
-                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                 )
                 self.logger.info(
                     f"[RELOAD-SYMBOL] 【流程2完成】获取到 {len(symbols)} 个品种",
-                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                 )
                 
                 # 阶段节点：从TDX读取品种完成
                 stage_logger.info(
                     f"✅ 从TDX读取品种：{len(symbols)}个（耗时{fetch_elapsed:.2f}s）",
-                    extra={"log_type": "STAGE_NODE", "scenario": "refresh_symbol_list"},
+                    extra={"log_type": "STAGE_NODE", "scenario": "symbol_list_reload"},
                 )
 
                 # 转换为前端格式
                 self.logger.debug(
                     "[RELOAD-SYMBOL] 开始转换为前端格式...",
-                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                 )
                 format_start_time = time.time()
                 formatted_symbols = []
@@ -1186,29 +1195,29 @@ class DataCenterService(BaseService, LoggerMixin):
                 format_elapsed = time.time() - format_start_time
                 self.logger.debug(
                     f"[RELOAD-SYMBOL] 格式转换完成: 成功={len(formatted_symbols)}, 跳过={skipped_count}, 耗时={format_elapsed:.2f}s",
-                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                 )
                 
                 # 阶段节点：过滤未上市品种完成（格式转换时已过滤）
                 if skipped_count > 0:
                     stage_logger.info(
                         f"✅ 过滤未上市品种：保留{len(formatted_symbols)}个，跳过{skipped_count}个",
-                        extra={"log_type": "STAGE_NODE", "scenario": "refresh_symbol_list"},
+                        extra={"log_type": "STAGE_NODE", "scenario": "symbol_list_reload"},
                     )
                 else:
                     stage_logger.info(
                         f"✅ 品种格式转换完成：{len(formatted_symbols)}个",
-                        extra={"log_type": "STAGE_NODE", "scenario": "refresh_symbol_list"},
+                        extra={"log_type": "STAGE_NODE", "scenario": "symbol_list_reload"},
                     )
 
                 # 流程3：更新内存缓存
                 self.logger.info(
                     "[RELOAD-SYMBOL] 【流程3】更新内存缓存...",
-                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                 )
                 self.logger.debug(
                     "[RELOAD-SYMBOL] 开始更新内存缓存...",
-                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                 )
                 cache_update_start_time = time.time()
                 self._symbol_cache = {
@@ -1219,37 +1228,37 @@ class DataCenterService(BaseService, LoggerMixin):
                 cache_update_elapsed = time.time() - cache_update_start_time
                 self.logger.debug(
                     f"[RELOAD-SYMBOL] 内存缓存更新完成: 耗时={cache_update_elapsed:.2f}s",
-                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                 )
                 self.logger.info(
                     f"[RELOAD-SYMBOL] 【流程3完成】缓存已更新，品种数: {len(formatted_symbols)}",
-                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                 )
 
                 total_elapsed = time.time() - start_time
                 self.logger.info(
                     "=" * 60,
-                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                 )
                 self.logger.info(
                     f"[RELOAD-SYMBOL] 【用户触发】品种列表重新加载完成: 总耗时={total_elapsed:.2f}s, 品种数={len(formatted_symbols)}",
-                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                 )
                 self.logger.debug(
                     f"[RELOAD-SYMBOL] 各步骤耗时: 删除缓存={cache_delete_elapsed:.2f}s, "
                     f"获取品种={fetch_elapsed:.2f}s, 格式转换={format_elapsed:.2f}s, "
                     f"更新缓存={cache_update_elapsed:.2f}s, 总耗时={total_elapsed:.2f}s",
-                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                 )
                 self.logger.info(
                     "=" * 60,
-                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                 )
 
                 # 检查通达信根目录配置和空品种类别
                 self.logger.debug(
                     "[RELOAD-SYMBOL] 开始检查通达信根目录配置和空品种类别...",
-                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                 )
                 warning_messages = []
 
@@ -1260,7 +1269,7 @@ class DataCenterService(BaseService, LoggerMixin):
                         is_available = block_parser.is_available()
                         self.logger.debug(
                             f"[RELOAD-SYMBOL] BlockParser可用性检查: is_available={is_available}",
-                            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                            extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                         )
                         if not is_available:
                             warning_msg = (
@@ -1271,12 +1280,12 @@ class DataCenterService(BaseService, LoggerMixin):
                             warning_messages.append(warning_msg)
                             self.logger.warning(
                                 f"[RELOAD-SYMBOL] ⚠️ {warning_msg}",
-                                extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
+                                extra={"log_type": "ALERT", "scenario": "symbol_list_reload"}
                             )
                     else:
                         self.logger.debug(
                             "[RELOAD-SYMBOL] BlockParser不可用",
-                            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                            extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                         )
 
                 # 检查空品种类别（集合E,F,G,H,I）
@@ -1285,11 +1294,11 @@ class DataCenterService(BaseService, LoggerMixin):
                     warning_messages.append(empty_warning)
                     self.logger.warning(
                         f"[RELOAD-SYMBOL] ⚠️ {empty_warning}",
-                        extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
+                        extra={"log_type": "ALERT", "scenario": "symbol_list_reload"}
                     )
                     self.logger.debug(
                         f"[RELOAD-SYMBOL] 空品种类别详情: {empty_categories}",
-                        extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                        extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                     )
 
                 # 合并所有警告消息
@@ -1297,20 +1306,20 @@ class DataCenterService(BaseService, LoggerMixin):
                 if warning_message:
                     self.logger.debug(
                         f"[RELOAD-SYMBOL] 警告消息: {warning_message}",
-                        extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                        extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                     )
 
                 total_elapsed = time.time() - start_time
                 self.logger.info(
                     f"[RELOAD-SYMBOL] 品种列表重新加载成功: 总耗时={total_elapsed:.2f}s, 品种数={len(formatted_symbols)}, "
                     f"警告={'存在' if warning_message else '无'}",
-                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                 )
 
                 # 阶段节点（输出到Terminal）
                 stage_logger.info(
                     f"✅ 重新请求品种列表完成: 耗时={total_elapsed:.2f}s, 数量={len(formatted_symbols)}",
-                    extra={"log_type": "STAGE_NODE", "scenario": "refresh_symbol_list"},
+                    extra={"log_type": "STAGE_NODE", "scenario": "symbol_list_reload"},
                 )
 
                 return {
@@ -1327,31 +1336,31 @@ class DataCenterService(BaseService, LoggerMixin):
                 self.logger.error(
                     "[RELOAD-SYMBOL] ❌ 品种列表重新加载失败",
                     exc_info=True,
-                    extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
+                    extra={"log_type": "ALERT", "scenario": "symbol_list_reload"}
                 )
                 self._log_error("重新加载品种列表", e, exc_info=True)
                 self.logger.error(
                     "=" * 60,
-                    extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
+                    extra={"log_type": "ALERT", "scenario": "symbol_list_reload"}
                 )
                 self.logger.error(
                     f"[RELOAD-SYMBOL] 【失败】品种列表加载失败: {e}, 耗时={total_elapsed:.2f}s",
                     exc_info=True,
-                    extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
+                    extra={"log_type": "ALERT", "scenario": "symbol_list_reload"}
                 )
                 self.logger.debug(
                     f"[RELOAD-SYMBOL] 异常类型: {type(e).__name__}, 异常详情: {str(e)}",
-                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                 )
                 self.logger.error(
                     "=" * 60,
-                    extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
+                    extra={"log_type": "ALERT", "scenario": "symbol_list_reload"}
                 )
                 
                 # 阶段节点（输出到Terminal）
                 stage_logger.error(
                     f"❌ 重新请求品种列表失败: {e}, 耗时={total_elapsed:.2f}s",
-                    extra={"log_type": "STAGE_NODE", "scenario": "refresh_symbol_list"},
+                    extra={"log_type": "STAGE_NODE", "scenario": "symbol_list_reload"},
                 )
                 
                 return {
@@ -1390,7 +1399,18 @@ class DataCenterService(BaseService, LoggerMixin):
                         "source": "memory_cache",
                     }
 
+            import time
+            start_time = time.time()
+            
             self._log_operation("刷新品种列表")
+            self.logger.debug(
+                "[REFRESH-SYMBOL] 开始刷新品种列表（从缓存）",
+                extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+            )
+            self.logger.info(
+                "[REFRESH-SYMBOL] 刷新品种列表开始（从缓存）",
+                extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+            )
 
             # 🔧 修复：优先使用 china_stock_engine 的 symbol_loader，而不是创建新实例
             # 原因：
@@ -1399,6 +1419,14 @@ class DataCenterService(BaseService, LoggerMixin):
             # 3. 保持配置和状态的一致性
 
             if not self.china_stock_engine:
+                self.logger.error(
+                    "[REFRESH-SYMBOL] ❌ ChinaStockEngine不可用",
+                    extra={"log_type": "ALERT", "scenario": "symbol_list_reload"}
+                )
+                self.logger.debug(
+                    "[REFRESH-SYMBOL] ChinaStockEngine状态: None",
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                )
                 return {
                     "success": False,
                     "symbol_count": 0,
@@ -1408,6 +1436,10 @@ class DataCenterService(BaseService, LoggerMixin):
 
             # 确保 symbol_loader 已初始化
             if self.china_stock_engine.symbol_loader is None:
+                self.logger.debug(
+                    "[REFRESH-SYMBOL] SymbolLoader未初始化，开始延迟初始化...",
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                )
                 # 延迟初始化 symbol_loader（如果需要）
                 from backend.infrastructure.data_module_vnpy.data_acquisition import SymbolLoader
                 from backend.core.base import get_event_engine
@@ -1415,22 +1447,50 @@ class DataCenterService(BaseService, LoggerMixin):
                 event_engine = get_event_engine()
                 if event_engine:
                     self.china_stock_engine.symbol_loader = SymbolLoader(event_engine)
+                    self.logger.debug(
+                        "[REFRESH-SYMBOL] SymbolLoader已初始化（带EventEngine）",
+                        extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                    )
                 else:
-                    self.logger.warning("EventEngine不可用，使用无事件引擎的SymbolLoader", extra={"log_type": "SYSTEM"})
+                    self.logger.warning(
+                        "[REFRESH-SYMBOL] ⚠️ EventEngine不可用，使用无事件引擎的SymbolLoader",
+                        extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                    )
                     self.china_stock_engine.symbol_loader = SymbolLoader()
 
             # 使用 engine 的 symbol_loader
             symbol_loader = self.china_stock_engine.symbol_loader
+            self.logger.debug(
+                "[REFRESH-SYMBOL] 开始调用symbol_loader.reload_and_classify()...",
+                extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+            )
+            classify_start_time = time.time()
             try:
                 classified = symbol_loader.reload_and_classify()
+                classify_elapsed = time.time() - classify_start_time
+                self.logger.debug(
+                    f"[REFRESH-SYMBOL] reload_and_classify()完成: 耗时={classify_elapsed:.2f}s, "
+                    f"分类数={len(classified) if classified else 0}",
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                )
             except Exception as e:
+                classify_elapsed = time.time() - classify_start_time
+                self.logger.debug(
+                    f"[REFRESH-SYMBOL] reload_and_classify()异常详情: {type(e).__name__}: {str(e)}, 耗时={classify_elapsed:.2f}s",
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                )
                 self.logger.error(
-                    "symbol_loader.reload_and_classify() 失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+                    f"[REFRESH-SYMBOL] ❌ symbol_loader.reload_and_classify() 失败: {e}, 耗时={classify_elapsed:.2f}s",
+                    exc_info=True,
+                    extra={"log_type": "ALERT", "scenario": "symbol_list_reload"}
                 )
                 raise
 
             if not classified:
-                self.logger.warning("品种列表缓存不存在", extra={"log_type": "SYSTEM"})
+                self.logger.warning(
+                    "[REFRESH-SYMBOL] ⚠️ 品种列表缓存不存在",
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                )
                 return {
                     "success": False,
                     "symbol_count": 0,
@@ -1439,7 +1499,13 @@ class DataCenterService(BaseService, LoggerMixin):
                 }
 
             # 将分类数据转换为前端需要的格式（添加 exchange 和 product_type 字段）
+            self.logger.debug(
+                "[REFRESH-SYMBOL] 开始转换分类数据为前端格式...",
+                extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+            )
+            format_start_time = time.time()
             symbols = []
+            skipped_count = 0
             for market_type, codes in classified.items():
                 for code_item in codes:
                     # 兼容两种格式：字符串或字典
@@ -1450,9 +1516,11 @@ class DataCenterService(BaseService, LoggerMixin):
                         code = code_item.get("code", "")
                         name = code_item.get("name", code)
                     else:
+                        skipped_count += 1
                         continue  # 跳过无效数据
 
                     if not code:
+                        skipped_count += 1
                         continue  # 跳过空代码
 
                     symbols.append(
@@ -1464,12 +1532,28 @@ class DataCenterService(BaseService, LoggerMixin):
                             "product_type": self._map_market_to_product_type(market_type),
                         }
                     )
+            format_elapsed = time.time() - format_start_time
+            self.logger.debug(
+                f"[REFRESH-SYMBOL] 格式转换完成: 成功={len(symbols)}, 跳过={skipped_count}, 耗时={format_elapsed:.2f}s",
+                extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+            )
 
             # 更新内存缓存
+            cache_start_time = time.time()
             self._symbol_cache = {"symbols": symbols, "timestamp": datetime.now()}
             self._symbol_cache_time = datetime.now()
+            cache_elapsed = time.time() - cache_start_time
+            self.logger.debug(
+                f"[REFRESH-SYMBOL] 内存缓存更新完成: 耗时={cache_elapsed:.2f}s",
+                extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+            )
 
-            self.logger.info("从文件缓存刷新成功: %d 个品种（已过滤未上市）", len(symbols))
+            total_elapsed = time.time() - start_time
+            self.logger.info(
+                f"[REFRESH-SYMBOL] ✅ 从文件缓存刷新成功: {len(symbols)} 个品种（已过滤未上市）, "
+                f"总耗时={total_elapsed:.2f}s（分类={classify_elapsed:.2f}s, 转换={format_elapsed:.2f}s, 缓存={cache_elapsed:.2f}s）",
+                extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+            )
 
             # 🔧 修复：is_outdated 未定义，从缓存刷新应该是有效的
             is_outdated = False
@@ -1483,10 +1567,20 @@ class DataCenterService(BaseService, LoggerMixin):
             }
 
         except Exception as e:
+            total_elapsed = time.time() - start_time if 'start_time' in locals() else 0
+            self.logger.debug(
+                f"[REFRESH-SYMBOL] 异常类型: {type(e).__name__}, 异常详情: {str(e)}, 耗时={total_elapsed:.2f}s",
+                extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+            )
             self.logger.error(
-                "刷新品种列表失败",
+                f"[REFRESH-SYMBOL] ❌ 刷新品种列表失败: {e}, 耗时={total_elapsed:.2f}s",
                 exc_info=True,
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                extra={"log_type": "ALERT", "scenario": "symbol_list_reload"}
+            )
+            self.logger.critical(
+                f"[REFRESH-SYMBOL] 🔥 刷新品种列表严重失败，可能影响数据下载: {e}, 耗时={total_elapsed:.2f}s",
+                exc_info=True,
+                extra={"log_type": "ALERT", "scenario": "symbol_list_reload"}
             )
             self._log_error("刷新品种列表", e, exc_info=True)
             return {
@@ -1759,11 +1853,11 @@ class DataCenterService(BaseService, LoggerMixin):
             if not reload_result.get("success"):
                 self.logger.warning(
                     "更新品种缓存失败",
-                    extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
+                    extra={"log_type": "ALERT", "scenario": "symbol_list_reload"}
                 )
                 self.logger.debug(
                     f"[FETCH-SYMBOL] 失败详情: {reload_result}",
-                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                 )
                 return [], []
 
@@ -1795,11 +1889,11 @@ class DataCenterService(BaseService, LoggerMixin):
             if not market_stocks:
                 self.logger.warning(
                     "获取品种分类失败",
-                    extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
+                    extra={"log_type": "ALERT", "scenario": "symbol_list_reload"}
                 )
                 self.logger.debug(
                     "[FETCH-SYMBOL] 市场品种字典为空",
-                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                 )
                 return [], []
 
@@ -1810,11 +1904,11 @@ class DataCenterService(BaseService, LoggerMixin):
                 total_classified_count += market_symbol_count
                 self.logger.info(
                     f"     - {market_name}: {market_symbol_count} 个",
-                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                 )
                 self.logger.debug(
                     f"[FETCH-SYMBOL] 分类器结果: {market_name}={market_symbol_count}个品种",
-                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                 )
             self.logger.debug(
                 f"[FETCH-SYMBOL] 分类器执行完成: 总计={total_classified_count}个品种, 市场数={market_count}",
@@ -1903,7 +1997,7 @@ class DataCenterService(BaseService, LoggerMixin):
                 # 直接是品种列表（备用处理）
                 self.logger.warning(
                     "market_stocks格式异常，使用备用处理",
-                    extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
+                    extra={"log_type": "ALERT", "scenario": "symbol_list_reload"}
                 )
                 symbols = market_stocks if isinstance(market_stocks, list) else []
                 if not before_filter_count:
@@ -1931,16 +2025,16 @@ class DataCenterService(BaseService, LoggerMixin):
             if len(symbols) > 0:
                 self.logger.info(
                     "  前3个品种样例:",
-                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                 )
                 for i, sym in enumerate(symbols[:3]):
                     self.logger.info(
                         f"    [{i + 1}] {sym}",
-                        extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                        extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                     )
                     self.logger.debug(
                         f"[FETCH-SYMBOL] 样例品种: {sym}",
-                        extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                        extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                     )
 
             return symbols, empty_categories
@@ -3662,23 +3756,62 @@ class DataCenterService(BaseService, LoggerMixin):
             bool: 是否成功触发
         """
         try:
+            self.logger.debug(
+                f"[SCAN-SERVICE] 开始触发数据质量扫描: force_refresh={force_refresh}",
+                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+            )
+            self.logger.info(
+                f"[SCAN-SERVICE] 手动触发数据质量扫描（后台执行）: force_refresh={force_refresh}",
+                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+            )
+            
             if not self.china_stock_engine:
-                self.logger.warning("ChinaStockEngine不可用，无法触发扫描", extra={"log_type": "SYSTEM"})
+                self.logger.debug(
+                    "[SCAN-SERVICE] ChinaStockEngine不可用",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                )
+                self.logger.warning(
+                    "[SCAN-SERVICE] ⚠️ ChinaStockEngine不可用，无法触发扫描",
+                    extra={"log_type": "ALERT", "scenario": "manual_data_scan"}
+                )
                 return False
-
-            self.logger.info("手动触发数据质量扫描（后台执行）...")
 
             # 🆕 后台线程执行扫描
             import threading
 
+            self.logger.debug(
+                "[SCAN-SERVICE] 创建后台线程执行扫描...",
+                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+            )
             thread = threading.Thread(
                 target=self._do_quality_scan, args=(force_refresh,), daemon=True
             )
             thread.start()
+            self.logger.debug(
+                f"[SCAN-SERVICE] 后台线程已启动: thread_id={thread.ident}",
+                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+            )
+            self.logger.info(
+                "[SCAN-SERVICE] ✅ 数据质量扫描已触发（后台执行）",
+                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+            )
             return True
 
         except Exception as e:
-            logger_alert.error("触发数据质量扫描失败: %s", e, exc_info=True, extra={"log_type": "ALERT"})
+            self.logger.debug(
+                f"[SCAN-SERVICE] 触发数据质量扫描异常详情: {type(e).__name__}: {str(e)}",
+                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+            )
+            logger_alert.error(
+                f"[SCAN-SERVICE] ❌ 触发数据质量扫描失败: {e}",
+                exc_info=True,
+                extra={"log_type": "ALERT", "scenario": "manual_data_scan"}
+            )
+            self.logger.critical(
+                f"[SCAN-SERVICE] 🔥 触发数据质量扫描严重失败，可能影响数据质量监控: {e}",
+                exc_info=True,
+                extra={"log_type": "ALERT", "scenario": "manual_data_scan"}
+            )
             return False
 
     def _do_quality_scan(self, force_refresh: bool):

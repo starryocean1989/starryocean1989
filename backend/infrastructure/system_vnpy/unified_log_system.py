@@ -495,11 +495,12 @@ AI助手专用日志文件 - {process_name}
             footer += f"\n{'=' * 80}\n"
 
             if getattr(self, "_use_async_io", False) and self._async_write_queue:
-                # 异步写入，等待队列清空
+                # 🔧 修复：异步写入时，不等待队列清空，直接关闭
+                # 原因：end_process可能在非asyncio线程中调用，无法使用run_until_complete
                 try:
                     self._async_write_queue.put_nowait(footer)
-                    # 等待队列处理完成
-                    asyncio.get_event_loop().run_until_complete(self._wait_queue_empty())
+                    # 不等待队列清空，让异步写入任务自然完成
+                    # 关闭文件时会自动处理剩余的队列内容
                 except Exception:
                     # 降级到同步写入
                     self._async_write_sync(footer)

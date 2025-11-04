@@ -161,7 +161,7 @@ class ReloadSymbolsThread(QThread):
                 except ImportError:
                     hub = None
                 try:
-                    context_manager = ai_log_process("refresh_symbol_list") if hub else None
+                    context_manager = ai_log_process("symbol_list_reload") if hub else None
                 except Exception:
                     context_manager = None
                 
@@ -170,25 +170,25 @@ class ReloadSymbolsThread(QThread):
                         # 阶段节点日志（输出到Terminal）
                         stage_logger.info(
                             "📍 重新请求品种列表开始",
-                            extra={"log_type": "STAGE_NODE", "scenario": "refresh_symbol_list"},
+                            extra={"log_type": "STAGE_NODE", "scenario": "symbol_list_reload"},
                         )
                         
                         # 详细日志（只写入AI日志文件）
                         self.logger.debug(
                             "[SYMBOL-RELOAD] 品种重载工作线程开始",
-                            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
+                            extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                         )
                         self.logger.debug(
                             f"[SYMBOL-RELOAD] 服务实例类型: {type(self.data_center_service).__name__}",
-                            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
+                            extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                         )
                         self.logger.debug(
                             f"[SYMBOL-RELOAD] 服务实例: {self.data_center_service}",
-                            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
+                            extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                         )
                         self.logger.debug(
                             "[SYMBOL-RELOAD] 强制重新加载: force=True",
-                            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
+                            extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                         )
                         self.progress_signal.emit("正在连接服务器...")
 
@@ -196,7 +196,7 @@ class ReloadSymbolsThread(QThread):
                         reload_start_time = time.time()
                         self.logger.debug(
                             "[SYMBOL-RELOAD] 调用服务层reload_symbol_list方法...",
-                            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
+                            extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                         )
                         result = self.data_center_service.reload_symbol_list(force=True)
                         reload_elapsed = time.time() - reload_start_time
@@ -212,27 +212,27 @@ class ReloadSymbolsThread(QThread):
                                 f"[SYMBOL-RELOAD] 重载结果详情: symbol_count={symbol_count}, "
                                 f"message={message}, warning={'存在' if warning else '无'}, "
                                 f"empty_categories={empty_categories}",
-                                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
+                                extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                             )
                             self.logger.info(
                                 f"[SYMBOL-RELOAD] ✅ 品种重载完成: 耗时={elapsed:.2f}s, 数量={symbol_count}, "
                                 f"服务层耗时={reload_elapsed:.2f}s",
-                                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
+                                extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                             )
                             if warning:
                                 self.logger.warning(
                                     f"[SYMBOL-RELOAD] ⚠️ 品种重载警告: {warning}",
-                                    extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"},
+                                    extra={"log_type": "ALERT", "scenario": "symbol_list_reload"},
                                 )
                         else:
                             msg = result.get("message", "重载失败") if result else "重载失败"
                             self.logger.warning(
                                 f"[SYMBOL-RELOAD] ⚠️ 品种重载失败: {msg}, 耗时={elapsed:.2f}s",
-                                extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"},
+                                extra={"log_type": "ALERT", "scenario": "symbol_list_reload"},
                             )
                             self.logger.debug(
                                 f"[SYMBOL-RELOAD] 失败结果详情: {result}",
-                                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
+                                extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                             )
                         
                         # 阶段节点日志（输出到Terminal）
@@ -240,13 +240,13 @@ class ReloadSymbolsThread(QThread):
                             symbol_count = result.get("symbol_count", 0)
                             stage_logger.info(
                                 f"✅ 重新请求品种列表完成: 耗时={elapsed:.2f}s, 数量={symbol_count}",
-                                extra={"log_type": "STAGE_NODE", "scenario": "refresh_symbol_list"},
+                                extra={"log_type": "STAGE_NODE", "scenario": "symbol_list_reload"},
                             )
                         else:
                             msg = result.get("message", "重载失败") if result else "重载失败"
                             stage_logger.warning(
                                 f"⚠️ 重新请求品种列表失败: {msg}",
-                                extra={"log_type": "STAGE_NODE", "scenario": "refresh_symbol_list"},
+                                extra={"log_type": "STAGE_NODE", "scenario": "symbol_list_reload"},
                             )
 
                         self.finished_signal.emit(result)
@@ -4357,7 +4357,46 @@ class DataCenter(BaseWidget, LoggerMixin):
                                     f"⚠️ [主动拉取] 缓存文件不存在: {symbols_cache_file}"
                                 )
                         else:
-                            self.logger.warning("⚠️ [诊断] cache_manager为None，无法读取缓存")
+                            # 🔧 修复：延迟初始化cache_manager，确保china_stock_engine已完全就绪
+                            if self.data_center_service:
+                                try:
+                                    engine = getattr(self.data_center_service, 'china_stock_engine', None)
+                                    if engine and hasattr(engine, 'cache_manager'):
+                                        cache_manager = engine.cache_manager
+                                        if cache_manager:
+                                            # 重新获取缓存
+                                            symbols_cache_file = cache_manager.get_cache_file("symbols")
+                                            if symbols_cache_file and symbols_cache_file.exists():
+                                                # 从缓存文件读取
+                                                cache_data, cache_date, is_valid = cache_manager.load_with_validation(symbols_cache_file)
+                                                if is_valid and cache_data:
+                                                    # 提取参考品种集合
+                                                    reference_symbols_set = set()
+                                                    for category, symbols in cache_data.items():
+                                                        for symbol in symbols:
+                                                            code = symbol.get("code", "")
+                                                            if code:
+                                                                reference_symbols_set.add(code)
+                                                    reference_count = len(reference_symbols_set)
+                                                    self.logger.info(
+                                                        f"🔧 [主动拉取] 从缓存获取参考品种数: {reference_count}"
+                                                    )
+                                                else:
+                                                    self.logger.warning(
+                                                        f"⚠️ [主动拉取] 缓存文件无效或过期: {symbols_cache_file}"
+                                                    )
+                                            else:
+                                                self.logger.warning(
+                                                    f"⚠️ [主动拉取] 缓存文件不存在: {symbols_cache_file}"
+                                                )
+                                        else:
+                                            self.logger.warning("⚠️ [诊断] cache_manager为None，无法读取缓存（engine存在但cache_manager未初始化）")
+                                    else:
+                                        self.logger.warning("⚠️ [诊断] china_stock_engine为None，无法获取cache_manager")
+                                except Exception as e:
+                                    self.logger.error(f"❌ [主动拉取] 获取cache_manager失败: {e}", exc_info=True)
+                            else:
+                                self.logger.warning("⚠️ [诊断] data_center_service为None，无法读取缓存")
                     else:
                         self.logger.warning(
                             "⚠️ [诊断] china_stock_engine为None，无法获取cache_manager"

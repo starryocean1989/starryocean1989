@@ -95,6 +95,10 @@ class UnifiedDataManager:
         self.event_engine = event_engine
         self.config_manager = config_manager or ConfigManager()
         self.storage_manager = StorageManager()
+        self.preload_service = getattr(self.storage_manager, "preload_service", None)
+        self._ready = True
+        self._latest_contract_snapshot: List[Dict[str, Any]] = []
+        self._last_query_diagnostics: Dict[str, Any] = {}
         
         # 检查离线模式（如果通过ChinaStockEngine初始化）
         self.offline_mode = False
@@ -117,99 +121,99 @@ class UnifiedDataManager:
 
         logger.info("✅ 统一数据管理器已初始化")
 
+    def is_ready(self) -> bool:
+        """返回统一数据管理器是否可用."""
+        return self._ready
+
+    def get_mode(self) -> str:
+        """返回当前运行模式（online/offline）."""
+        return "offline" if self.offline_mode else "online"
+
     def get_all_contracts(self) -> List[Dict[str, Any]]:
-        """获取所有合约信息（兼容 VnPy 接口）
-
-        Returns:
-            合约列表，每个合约包含 symbol, exchange, name 等信息
-        """
+        """获取所有合约信息（兼容 VnPy 接口）"""
         try:
-            # 🔧 修复：正确获取 ChinaStockEngine
-            # 方式1：如果 event_engine 有 china_stock_engine 属性（正常情况）
-            china_stock_engine = None
-            if self.event_engine and hasattr(self.event_engine, 'china_stock_engine'):
-                china_stock_engine = self.event_engine.china_stock_engine
-            # 方式2：如果 event_engine 本身就是 ChinaStockEngine（兼容情况）
-            elif self.event_engine and hasattr(self.event_engine, 'get_all_symbols'):
-                china_stock_engine = self.event_engine
-            # 方式3：从全局获取
-            else:
-                try:
-                    from backend.core.base import get_china_stock_engine
-                    china_stock_engine = get_china_stock_engine()
-                except:
-                    pass
-
-            if china_stock_engine and hasattr(china_stock_engine, 'symbol_loader') and china_stock_engine.symbol_loader:
+            china_stock_engine = self._resolve_china_stock_engine()
+            if china_stock_engine and getattr(china_stock_engine, "symbol_loader", None):
                 symbols = china_stock_engine.symbol_loader.extract_all_codes()
                 if symbols:
-                    # 转换为 VnPy 合约格式
-                    contracts = []
+                    contracts: List[Dict[str, Any]] = []
                     for symbol in symbols:
-                        contract = {
-                            "symbol": symbol,
-                            "exchange": "SSE",  # 默认交易所
-                            "name": f"股票{symbol}",
-                            "product": "EQUITY",
-                            "size": 1,
-                            "pricetick": 0.01,
-                            "min_volume": 1,
-                            "max_volume": None,
-                            "margin_rate": 0.1,
-                            "gateway_name": "china_stock"
-                        }
-                        contracts.append(contract)
+                        contracts.append(
+                            {
+                                "symbol": symbol,
+                                "exchange": "SSE",
+                                "name": f"股票{symbol}",
+                                "product": "EQUITY",
+                                "size": 1,
+                                "pricetick": 0.01,
+                                "min_volume": 1,
+                                "max_volume": None,
+                                "margin_rate": 0.1,
+                                "gateway_name": "china_stock",
+                            }
+                        )
+                    self._latest_contract_snapshot = contracts
                     return contracts
 
-            # 如果无法获取，返回空列表
             logger.warning("⚠️ 无法获取合约列表，返回空列表")
             return []
 
-        except Exception as e:
-            logger.error(f"获取合约列表失败: {e}", exc_info=True)
+        except Exception as exc:
+            logger.error("获取合约列表失败: %s", exc, exc_info=True, extra={"log_type": "SYSTEM"})
             return []
 
-    def load_bar_data(self, symbol: str, interval: str = "1d", start_date: str = None, end_date: str = None, **kwargs) -> List[Dict]:
-        """加载K线数据（兼容 VnPy 接口）
-
-        Args:
-            symbol: 品种代码
-            interval: 周期
-            start_date: 开始日期
-            end_date: 结束日期
-
-        Returns:
-            K线数据列表
-        """
+    def load_bar_data(
+        self,
+        symbol: str,
+        interval: str = "1d",
+        start_date: str = None,
+        end_date: str = None,
+        **kwargs,
+    ) -> List[Dict]:
+        """加载K线数据（兼容 VnPy 接口）"""
         try:
-            # 调用内部查询方法
-            df = self.query_kline(symbol, interval, start_date, end_date)
+            df = self.get_kline_dataframe(
+                symbol=symbol,
+                interval=interval,
+                start_date=start_date,
+                end_date=end_date,
+                use_preload=kwargs.get("use_preload", True),
+                realtime_fallback=kwargs.get("realtime_fallback", True),
+            )
+
             if df is None or df.empty:
                 return []
 
-            # 转换为 VnPy BarData 格式
-            bars = []
+            bars: List[Dict[str, Any]] = []
             for idx, row in df.iterrows():
-                bar = {
-                    "symbol": symbol,
-                    "exchange": "SSE",  # 默认交易所
-                    "interval": interval,
-                    "datetime": idx,
-                    "volume": row.get("volume", 0),
-                    "turnover": row.get("amount", 0),
-                    "open_price": row.get("open", 0),
-                    "high_price": row.get("high", 0),
-                    "low_price": row.get("low", 0),
-                    "close_price": row.get("close", 0),
-                    "open_interest": 0,
-                    "gateway_name": "china_stock"
-                }
-                bars.append(bar)
+                bars.append(
+                    {
+                        "symbol": symbol,
+                        "exchange": "SSE",
+                        "interval": interval,
+                        "datetime": idx,
+                        "volume": float(row.get("volume", 0)),
+                        "turnover": float(row.get("amount", 0)),
+                        "open_price": float(row.get("open", 0)),
+                        "high_price": float(row.get("high", 0)),
+                        "low_price": float(row.get("low", 0)),
+                        "close_price": float(row.get("close", 0)),
+                        "open_interest": float(row.get("open_interest", 0)),
+                        "gateway_name": "china_stock",
+                    }
+                )
 
             return bars
 
-        except Exception as e:
-            logger.error(f"加载K线数据失败: {symbol}/{interval}, {e}", exc_info=True)
+        except Exception as exc:
+            logger.error(
+                "加载K线数据失败: symbol=%s interval=%s error=%s",
+                symbol,
+                interval,
+                exc,
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
+            )
             return []
 
     async def query_kline_async(
@@ -218,40 +222,18 @@ class UnifiedDataManager:
         interval: str,
         start_date: Optional[date] = None,
         end_date: Optional[date] = None,
+        use_preload: bool = True,
+        realtime_fallback: bool = True,
     ) -> Optional[pd.DataFrame]:
-        """异步查询K线数据（四层融合）
-
-        Args:
-            symbol: 品种代码
-            interval: 周期
-            start_date: 开始日期
-            end_date: 结束日期
-
-        Returns:
-            K线数据DataFrame
-        """
-        self._stats["total_queries"] += 1
-
-        # Layer 1: 尝试从预加载缓存获取（TODO: 集成PreloadService）
-        # Layer 2: 从历史Parquet获取
-        try:
-            df = await self.storage_manager.load_kline_async(symbol, interval)
-            if df is not None and not df.empty:
-                self._stats["storage_hits"] += 1
-
-                # 过滤日期范围
-                if start_date or end_date:
-                    df = self._filter_date_range(df, start_date, end_date)
-
-                return df
-        except Exception as e:
-            logger.debug(f"从存储加载失败: {symbol}/{interval}, {e}")
-
-        # Layer 3: 录制数据（TODO: 集成录制数据源）
-        # Layer 4: 实时推送（TODO: 集成实时数据源）
-
-        self._stats["misses"] += 1
-        return None
+        """异步查询K线数据（四层融合）"""
+        return self.query_kline_from_layers(
+            symbol=symbol,
+            interval=interval,
+            start_date=start_date,
+            end_date=end_date,
+            use_preload=use_preload,
+            realtime_fallback=realtime_fallback,
+        )
 
     def query_kline(
         self,
@@ -260,26 +242,111 @@ class UnifiedDataManager:
         start_date: Optional[date] = None,
         end_date: Optional[date] = None,
     ) -> Optional[pd.DataFrame]:
-        """同步查询K线数据（向后兼容）
+        """同步查询K线数据（向后兼容）"""
+        return self.get_kline_dataframe(symbol, interval, start_date, end_date)
 
+    def get_kline_dataframe(
+        self,
+        symbol: str,
+        interval: str,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+        use_preload: bool = True,
+        realtime_fallback: bool = True,
+    ) -> Optional[pd.DataFrame]:
+        """核心方法：返回DataFrame形式的K线数据."""
+        try:
+            df = self.query_kline_from_layers(
+                symbol=symbol,
+                interval=interval,
+                start_date=start_date,
+                end_date=end_date,
+                use_preload=use_preload,
+                realtime_fallback=realtime_fallback,
+            )
+            if df is None or df.empty:
+                return None
+            return df
+        except Exception as exc:
+            logger.error(
+                "❌ get_kline_dataframe失败: symbol=%s interval=%s error=%s",
+                symbol,
+                interval,
+                exc,
+                exc_info=True,
+            )
+            return None
+
+    def get_kline_data(
+        self,
+        symbol: str,
+        interval: str,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+        check_gaps: bool = False,
+        use_preload: bool = True,
+    ) -> Optional[pd.DataFrame]:
+        """获取K线数据（兼容方法，等同于 get_kline_dataframe）.
+        
         Args:
             symbol: 品种代码
-            interval: 周期
+            interval: 周期（如"1d", "5m"等）
             start_date: 开始日期
             end_date: 结束日期
-
+            check_gaps: 是否检查断点（暂未实现，保留兼容性）
+            use_preload: 是否使用预加载缓存
+            
         Returns:
-            K线数据DataFrame
+            DataFrame或None
         """
-        # 创建事件循环执行异步查询
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        # 转换为统一的查询方法
+        return self.get_kline_dataframe(
+            symbol=symbol,
+            interval=interval,
+            start_date=start_date,
+            end_date=end_date,
+            use_preload=use_preload,
+            realtime_fallback=True,
+        )
+
+    def query_kline_from_layers(
+        self,
+        symbol: str,
+        interval: str,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+        use_preload: bool = True,
+        realtime_fallback: bool = True,
+    ) -> Optional[pd.DataFrame]:
+        """按照四层策略依次尝试获取K线数据."""
+        self._stats["total_queries"] += 1
+
+        # Layer 1: 预加载缓存
+        if use_preload and self.preload_service:
+            try:
+                df = self.preload_service.get_cached_dataframe(symbol, interval)
+                if df is not None and not df.empty:
+                    self._stats["cache_hits"] += 1
+                    return self._filter_date_range(df, start_date, end_date)
+            except Exception as exc:
+                logger.debug("预加载缓存读取失败: %s/%s, %s", symbol, interval, exc)
+
         try:
-            return loop.run_until_complete(
-                self.query_kline_async(symbol, interval, start_date, end_date)
+            df = self.storage_manager.load_kline(symbol, interval)
+            if df is not None and not df.empty:
+                self._stats["storage_hits"] += 1
+                return self._filter_date_range(df, start_date, end_date)
+        except Exception as exc:
+            logger.debug("从存储加载失败: %s/%s, %s", symbol, interval, exc)
+
+        if realtime_fallback:
+            logger.info(
+                "⚠️ K线数据缺失，准备触发实时回补: symbol=%s interval=%s",
+                symbol,
+                interval,
             )
-        finally:
-            loop.close()
+        self._stats["misses"] += 1
+        return None
 
     def _filter_date_range(
         self,
@@ -287,26 +354,16 @@ class UnifiedDataManager:
         start_date: Optional[date],
         end_date: Optional[date],
     ) -> pd.DataFrame:
-        """过滤日期范围
-
-        Args:
-            df: 数据DataFrame
-            start_date: 开始日期
-            end_date: 结束日期
-
-        Returns:
-            过滤后的DataFrame
-        """
-        if df.empty:
+        """过滤日期范围"""
+        if df is None or df.empty:
             return df
 
+        filtered = df
         if start_date:
-            df = df[df.index >= pd.Timestamp(start_date)]
-
+            filtered = filtered[filtered.index >= pd.Timestamp(start_date)]
         if end_date:
-            df = df[df.index <= pd.Timestamp(end_date)]
-
-        return df
+            filtered = filtered[filtered.index <= pd.Timestamp(end_date)]
+        return filtered
 
     def get_stats(self) -> Dict[str, int]:
         """获取查询统计
@@ -315,12 +372,14 @@ class UnifiedDataManager:
             统计信息字典
         """
         stats = self._stats.copy()
+        total_hits = (
+            stats["cache_hits"]
+            + stats["storage_hits"]
+            + stats["recorded_hits"]
+            + stats["realtime_hits"]
+        )
         if stats["total_queries"] > 0:
-            stats["hit_rate"] = (
-                (stats["cache_hits"] + stats["storage_hits"] +
-                 stats["recorded_hits"] + stats["realtime_hits"]) /
-                stats["total_queries"] * 100
-            )
+            stats["hit_rate"] = total_hits / stats["total_queries"] * 100
         else:
             stats["hit_rate"] = 0.0
         return stats

@@ -406,26 +406,6 @@ class TaskDetailLogger:
         self.close()
 
 
-# 全局实例（单例模式）
-_global_task_logger: Optional[TaskDetailLogger] = None
-
-
-def get_task_logger(log_dir: str = "logs") -> TaskDetailLogger:
-    """获取全局任务日志记录器（单例模式）"""
-    global _global_task_logger
-    if _global_task_logger is None:
-        _global_task_logger = TaskDetailLogger(worker_id=0, log_dir=log_dir)
-    return _global_task_logger
-
-
-def close_task_logger():
-    """关闭全局任务日志记录器"""
-    global _global_task_logger
-    if _global_task_logger is not None:
-        _global_task_logger.close()
-        _global_task_logger = None
-
-
 # ==============================================================================
 # Part 2: TDX配置文件解析器
 # ==============================================================================
@@ -469,47 +449,64 @@ class TdxConfigFileParser:
     def parse_addedcode_bj(self) -> List[Dict[str, Any]]:
         """解析北证A股配置文件 addedcode_bj.cfg
 
-        文件格式示例：
-        [证券列表]
-        sz#000001#平安银行#11.50#stock#0
+        文件格式：
+        第1行：000000,0,278,20251010, （标题行，跳过）
+        后续行：44|832000|920000|安徽凤凰(已切换)|20251009
+        格式：字段0|旧代码|新代码|名称|日期
 
         Returns:
             北证品种列表，每个元素为字典：
             {
-                'code': '430047',
-                'name': '诺思兰德',
+                'code': '920000',
+                'name': '安徽凤凰',
                 'market': 2,  # 北证固定为2
                 'exchange': 'BSE'
             }
         """
         config_file = self._find_config_file("addedcode_bj.cfg")
         if config_file is None:
-            logger.warning("未找到 addedcode_bj.cfg 文件", extra={"log_type": "SYSTEM"})
+            logger.warning("⚠️ 未找到 addedcode_bj.cfg 文件", 
+                         extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"})
             return []
 
         try:
             results = []
             with open(config_file, "r", encoding="gbk", errors="ignore") as f:
+                first_line = True
                 for line in f:
                     line = line.strip()
-                    if not line or line.startswith("["):
+                    if not line:
+                        continue
+                    
+                    # 跳过第1行（标题行）
+                    if first_line:
+                        first_line = False
                         continue
 
-                    # 解析行：格式 sz#430047#诺思兰德#12.50#stock#0
-                    parts = line.split("#")
-                    if len(parts) < 3:
+                    # 解析行：格式 44|832000|920000|安徽凤凰(已切换)|20251009
+                    parts = line.split("|")
+                    if len(parts) < 4:
                         continue
 
-                    # 提取代码和名称
-                    code = parts[1].strip()
-                    name = parts[2].strip()
+                    # 提取新代码（北证代码，通常是92开头）和名称
+                    old_code = parts[1].strip()  # 旧代码（可能是43/83/87开头）
+                    new_code = parts[2].strip()  # 新代码（92开头）
+                    name = parts[3].strip()
+                    
+                    # 清理名称（移除括号内容）
+                    if "(" in name:
+                        name = name.split("(")[0].strip()
 
-                    # 北证品种代码通常以43/83/87开头
-                    if not (code.startswith("43") or code.startswith("83") or code.startswith("87")):
+                    # 使用新代码（92开头），如果没有新代码则使用旧代码
+                    code = new_code if new_code else old_code
+                    if not code:
                         continue
+                    
+                    # 补齐到6位
+                    code = code.zfill(6)
 
                     results.append({
-                        "code": code.zfill(6),
+                        "code": code,
                         "name": name,
                         "market": 2,  # 北证固定为2
                         "exchange": "BSE",
@@ -532,48 +529,64 @@ class TdxConfigFileParser:
     def parse_tdxstat2(self) -> Dict[int, List[str]]:
         """解析可转债配置文件 tdxstat2.cfg
 
-        文件格式：二进制格式，包含可转债代码列表
+        文件格式：文本格式（GBK编码），用|分隔
+        格式：市场代码|代码|日期|...其他字段
+        示例：0|000001|20251009|118706.16||94222.41||...
 
         Returns:
             可转债代码字典，key为市场代码（0=深证，1=上证），value为代码列表
         """
         config_file = self._find_config_file("tdxstat2.cfg")
         if config_file is None:
-            logger.warning("未找到 tdxstat2.cfg 文件", extra={"log_type": "SYSTEM"})
+            logger.warning("⚠️ 未找到 tdxstat2.cfg 文件", 
+                         extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"})
             return {0: [], 1: []}
 
         try:
             results = {0: [], 1: []}
 
-            with open(config_file, "rb") as f:
-                # 读取文件头（跳过前16字节）
-                f.seek(16)
+            with open(config_file, "r", encoding="gbk", errors="ignore") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
 
-                while True:
-                    # 读取一条记录（12字节）
-                    record = f.read(12)
-                    if len(record) < 12:
-                        break
+                    # 解析行：格式 市场代码|代码|日期|...
+                    parts = line.split("|")
+                    if len(parts) < 2:
+                        continue
 
-                    # 解析记录
-                    market = struct.unpack("<H", record[0:2])[0]  # 市场代码（2字节）
-                    code = struct.unpack("<6s", record[2:8])[0].decode("ascii", errors="ignore").strip()
+                    # 提取市场代码和代码
+                    try:
+                        market = int(parts[0].strip())
+                        code = parts[1].strip()
+                    except (ValueError, IndexError):
+                        continue
+
+                    if not code or not code.isdigit():
+                        continue
+
+                    # 补齐到6位
+                    code = code.zfill(6)
 
                     # 可转债代码通常以12/11开头（深证）或以11开头（上证）
                     if market == 0 and code.startswith("12"):
-                        results[0].append(code.zfill(6))
+                        results[0].append(code)
                     elif market == 1 and code.startswith("11"):
-                        results[1].append(code.zfill(6))
+                        results[1].append(code)
 
             total_count = len(results[0]) + len(results[1])
-            logger.info(f"✅ 解析可转债配置文件成功，深证 {len(results[0])} 个，上证 {len(results[1])} 个，共 {total_count} 个")
+            logger.info(
+                f"✅ 解析可转债配置文件成功，深证 {len(results[0])} 个，上证 {len(results[1])} 个，共 {total_count} 个",
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+            )
             return results
 
         except Exception as e:
             logger.error(
                 f"❌ 解析可转债配置文件失败: {e}。文件路径: {config_file if 'config_file' in locals() else '未知'}",
                 exc_info=True,
-                extra={"log_type": "SYSTEM"}
+                extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
             )
             return {0: [], 1: []}
 
@@ -586,21 +599,56 @@ class TdxConfigFileParser:
         Returns:
             文件路径，如果未找到则返回None
         """
+        # 🔧 修复：如果TDX目录未配置或不存在，尝试常见根目录（与BlockParser一致）
+        search_dirs = []
+        
+        # 首先尝试配置的TDX目录
+        if self.tdx_dir and self.tdx_dir.exists():
+            search_dirs.append(self.tdx_dir)
+        else:
+            logger.debug(f"TDX目录未配置或不存在: {self.tdx_dir}，尝试常见根目录",
+                        extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"})
+        
+        # 常见根目录（与BlockParser一致）
+        common_root_dirs = [
+            Path("C:/new_tdx"),
+            Path("C:/通达信金融终端V7"),
+            Path("C:/Program Files/通达信金融终端V7"),
+            Path("D:/通达信金融终端V7"),
+            Path("C:/tdx"),
+            Path("D:/tdx"),
+        ]
+        
+        for root_dir in common_root_dirs:
+            if root_dir.exists() and root_dir not in search_dirs:
+                search_dirs.append(root_dir)
+        
+        if not search_dirs:
+            logger.warning(f"未找到配置文件: {filename}（未找到有效的TDX目录）", 
+                         extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"})
+            return None
+        
         # 常见子目录
         common_subdirs = ["T0002", "T0001", "config", ""]
+        
+        logger.debug(f"🔍 搜索配置文件: {filename}（搜索 {len(search_dirs)} 个TDX目录）", 
+                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"})
 
-        for subdir in common_subdirs:
-            search_dir = self.tdx_dir / subdir if subdir else self.tdx_dir
-            if not search_dir.exists():
-                continue
+        for tdx_dir in search_dirs:
+            for subdir in common_subdirs:
+                search_dir = tdx_dir / subdir if subdir else tdx_dir
+                if not search_dir.exists():
+                    continue
 
-            # 递归搜索
-            for config_file in search_dir.rglob(filename):
-                if config_file.is_file():
-                    logger.debug(f"✓ 找到配置文件: {config_file}")
-                    return config_file
-
-        logger.warning(f"未找到配置文件: {filename}", extra={"log_type": "SYSTEM"})
+                # 递归搜索
+                for config_file in search_dir.rglob(filename):
+                    if config_file.is_file():
+                        logger.info(f"✅ 找到配置文件: {config_file}", 
+                                   extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"})
+                        return config_file
+        
+        logger.warning(f"⚠️ 未找到配置文件: {filename}（已搜索 {len(search_dirs)} 个TDX目录）", 
+                      extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"})
         return None
 
 
@@ -685,6 +733,13 @@ class BlockParser:
         """获取T+0基金代码列表
 
         从spblock.dat文件中提取标记为"T+0基金"的品种。
+        
+        支持文本格式的spblock.dat文件（GBK编码）：
+        格式：
+        #板块名称
+        股票代码1
+        股票代码2
+        ...
 
         Returns:
             T+0基金列表，每个元素为字典：
@@ -696,112 +751,134 @@ class BlockParser:
             }
         """
         if not self.block_file_path or not self.block_file_path.exists():
-            logger.warning("未找到spblock.dat文件，无法获取T+0基金列表", extra={"log_type": "SYSTEM"})
+            logger.warning("⚠️ 未找到spblock.dat文件，无法获取T+0基金列表", 
+                         extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"})
             return []
 
         try:
+            # 🔧 修复：直接解析文本格式的spblock.dat文件（GBK编码）
+            # 参考 AsyncTdxBlockReader 的解析逻辑，支持文本格式
             results = []
-            with open(self.block_file_path, "rb") as f:
-                # 读取文件头（前4字节）
-                header = f.read(4)
-                if len(header) < 4:
-                    logger.error("spblock.dat文件格式错误：文件头不完整", extra={"log_type": "SYSTEM"})
-                    return []
-
-                # 读取板块数量（小端序）
-                block_count = struct.unpack("<I", header)[0]
+            
+            with open(self.block_file_path, 'r', encoding='gbk', errors='ignore') as f:
+                content = f.read()
+            
+            lines = content.strip().split('\n')
+            current_block = None
+            current_codes = []
+            
+            for line in lines:
+                line = line.strip()
                 
-                # 🔧 添加板块数量合理性检查（防止文件格式解析错误）
-                # 正常情况下，板块数量应该在合理范围内（通常不超过1000个）
-                # 如果超过10000，可能是文件格式错误或字节序错误
-                if block_count > 10000:
-                    logger.warning(f"⚠️ spblock.dat板块数量异常: {block_count}，可能是文件格式错误或字节序错误，尝试大端序解析...", extra={"log_type": "SYSTEM"})
-                    # 尝试大端序解析
-                    block_count_big = struct.unpack(">I", header)[0]
-                    if 0 < block_count_big <= 10000:
-                        logger.info(f"✅ 使用大端序解析成功，板块数量: {block_count_big}")
-                        block_count = block_count_big
-                    else:
-                        logger.error(f"❌ 大端序解析也失败: {block_count_big}，文件格式可能不正确", extra={"log_type": "SYSTEM"})
-                        logger.error(f"   文件头前4字节(hex): {header.hex()}", extra={"log_type": "SYSTEM"})
-                        logger.error(f"   文件头前4字节(ascii): {header}", extra={"log_type": "SYSTEM"})
-                        return []
+                if not line:
+                    continue
                 
-                if block_count == 0:
-                    logger.warning("⚠️ spblock.dat板块数量为0，文件可能为空或格式错误", extra={"log_type": "SYSTEM"})
-                    return []
-                
-                logger.debug(f"spblock.dat 包含 {block_count} 个板块")
-
-                # 遍历所有板块
-                for block_idx in range(block_count):
-                    # 读取板块名称（64字节，GBK编码）
-                    block_name_bytes = f.read(64)
-                    if len(block_name_bytes) < 64:
-                        logger.debug(f"板块 {block_idx + 1}/{block_count} 名称读取不完整，文件可能已结束")
-                        break
-
-                    block_name = block_name_bytes.decode("gbk", errors="ignore").strip("\x00").strip()
-
-                    # 读取品种数量（2字节，小端序）
-                    count_bytes = f.read(2)
-                    if len(count_bytes) < 2:
-                        logger.debug(f"板块 {block_idx + 1}/{block_count} ({block_name}) 品种数量读取不完整，文件可能已结束")
-                        break
-
-                    symbol_count = struct.unpack("<H", count_bytes)[0]
-                    
-                    # 🔧 添加品种数量合理性检查
-                    if symbol_count > 10000:
-                        logger.warning(f"⚠️ 板块 {block_idx + 1}/{block_count} ({block_name}) 品种数量异常: {symbol_count}，跳过该板块", extra={"log_type": "SYSTEM"})
-                        # 跳过该板块的品种列表（但需要正确计算跳过字节数）
-                        # 注意：这里不能直接跳过，因为文件格式可能有问题，需要更谨慎处理
-                        logger.warning(f"   文件格式可能有问题，停止解析", extra={"log_type": "SYSTEM"})
-                        break
-
-                    # 如果是T+0基金板块
-                    if "T+0" in block_name or "T0" in block_name:
-                        logger.debug(f"找到T+0基金板块: {block_name}，包含 {symbol_count} 个品种")
-
-                        # 读取品种列表
-                        for _ in range(symbol_count):
-                            # 市场代码（1字节） + 代码（6字节）
-                            record = f.read(7)
-                            if len(record) < 7:
-                                break
-
-                            market = record[0]
-                            code = record[1:7].decode("ascii", errors="ignore").strip()
-
-                            if code:
+                # 板块名称以#开头
+                if line.startswith('#'):
+                    # 处理上一个板块（如果是T+0基金板块）
+                    if current_block and current_codes:
+                        block_name = current_block
+                        if "T+0" in block_name or "T0" in block_name or "t+0" in block_name.lower() or "t0" in block_name.lower():
+                            logger.debug(f"找到T+0基金板块: {block_name}，包含 {len(current_codes)} 个品种",
+                                       extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"})
+                            
+                            # 处理每个代码
+                            for code_str in current_codes:
+                                code_str = str(code_str).strip()
+                                if not code_str or not code_str.isdigit():
+                                    continue
+                                
+                                # 移除前导0（如果有），然后补齐到6位
+                                # 例如：0159001 -> 159001，0000001 -> 000001
+                                code_str = str(int(code_str)).zfill(6)
+                                
+                                # 从代码中推断市场代码
+                                # 01开头和15开头通常为深证（ETF/LOF），其他为上证
+                                if code_str.startswith('01') or code_str.startswith('15'):
+                                    market = 0  # 深证
+                                    exchange = "SZSE"
+                                else:
+                                    market = 1  # 上证
+                                    exchange = "SSE"
+                                
                                 results.append({
-                                    "code": code.zfill(6),
-                                    "name": "",  # 板块文件不包含品种名称
+                                    "code": code_str,
+                                    "name": "",  # 板块文件不包含品种名称，需要从API匹配
                                     "market": market,
-                                    "exchange": "SZSE" if market == 0 else "SSE",
+                                    "exchange": exchange,
                                 })
-                    else:
-                        # 跳过非T+0基金板块的品种列表
-                        f.seek(symbol_count * 7, 1)
-
-            logger.info(f"✅ 解析T+0基金成功，共 {len(results)} 个品种")
+                    
+                    # 开始新板块
+                    current_block = line[1:]  # 去掉#
+                    current_codes = []
+                else:
+                    # 股票代码
+                    if current_block:
+                        current_codes.append(line)
+            
+            # 处理最后一个板块
+            if current_block and current_codes:
+                block_name = current_block
+                if "T+0" in block_name or "T0" in block_name or "t+0" in block_name.lower() or "t0" in block_name.lower():
+                    logger.debug(f"找到T+0基金板块: {block_name}，包含 {len(current_codes)} 个品种",
+                               extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"})
+                    
+                    for code_str in current_codes:
+                        code_str = str(code_str).strip()
+                        if not code_str or not code_str.isdigit():
+                            continue
+                        
+                        # 移除前导0（如果有），然后补齐到6位
+                        # 例如：0159001 -> 159001，0000001 -> 000001
+                        code_str = str(int(code_str)).zfill(6)
+                        
+                        # 从代码中推断市场代码
+                        if code_str.startswith('01') or code_str.startswith('15'):
+                            market = 0  # 深证
+                            exchange = "SZSE"
+                        else:
+                            market = 1  # 上证
+                            exchange = "SSE"
+                        
+                        results.append({
+                            "code": code_str,
+                            "name": "",
+                            "market": market,
+                            "exchange": exchange,
+                        })
+            
+            if results:
+                logger.info(f"✅ 解析T+0基金成功，共 {len(results)} 个品种", 
+                           extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"})
+            else:
+                logger.warning("⚠️ T+0基金板块文件为空或不存在，无法分类T+0基金",
+                             extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"})
+            
             return results
-
+            
         except Exception as e:
-            logger.error(f"❌ 解析spblock.dat文件失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            logger.error(f"❌ 解析spblock.dat文件失败: {e}", exc_info=True, 
+                        extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"})
             # 添加详细的诊断信息
             if self.block_file_path and self.block_file_path.exists():
                 file_size = self.block_file_path.stat().st_size
-                logger.error(f"   文件路径: {self.block_file_path}", extra={"log_type": "SYSTEM"})
-                logger.error(f"   文件大小: {file_size} 字节", extra={"log_type": "SYSTEM"})
+                logger.error(f"   文件路径: {self.block_file_path}", 
+                           extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"})
+                logger.error(f"   文件大小: {file_size} 字节", 
+                           extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"})
                 try:
                     with open(self.block_file_path, "rb") as f:
                         first_bytes = f.read(16)
-                        logger.error(f"   文件前16字节(hex): {first_bytes.hex()}", extra={"log_type": "SYSTEM"})
-                        logger.error(f"   文件前16字节(ascii): {first_bytes}", extra={"log_type": "SYSTEM"})
+                        logger.error(f"   文件前16字节(hex): {first_bytes.hex()}", 
+                                   extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"})
+                        logger.error(f"   文件前16字节(ascii): {first_bytes}", 
+                                   extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"})
                 except Exception as read_e:
-                    logger.error(f"   读取文件头失败: {read_e}", extra={"log_type": "SYSTEM"})
+                    logger.error(f"   读取文件头失败: {read_e}", 
+                               extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"})
             return []
+
+
 
 
 # ==============================================================================
@@ -1864,7 +1941,8 @@ class SymbolLoader:
             return {}
 
         # 3. 执行分类
-        scenario = "refresh_symbol_list"
+        scenario = "symbol_list_reload"
+        classify_start_time = time.time()
         logger.debug(
             f"[SYMBOL-LOADER] 开始执行品种分类: 总品种数={len(self.all_symbols)}",
             extra={"log_type": "SYSTEM", "scenario": scenario}
@@ -1909,21 +1987,40 @@ class SymbolLoader:
             f"[SYMBOL-LOADER] ℹ️ 开始执行所有分类器: 分类器数量={len(self.classifier_registry._classifiers)}",
             extra={"log_type": "SYSTEM", "scenario": scenario}
         )
-        classified = self.classifier_registry.classify_all(
-            self.all_symbols,
-            tdx_parser=self.tdx_parser,
-            block_parser=self.block_parser,
-            t0_fund_codes=t0_fund_codes,
-        )
+        try:
+            classified = self.classifier_registry.classify_all(
+                self.all_symbols,
+                tdx_parser=self.tdx_parser,
+                block_parser=self.block_parser,
+                t0_fund_codes=t0_fund_codes,
+            )
+            classify_elapsed = time.time() - classify_start_time
+        except Exception as e:
+            classify_elapsed = time.time() - classify_start_time
+            logger.debug(
+                f"[SYMBOL-LOADER] 分类执行异常详情: {type(e).__name__}: {str(e)}, 耗时={classify_elapsed:.2f}s",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            logger.error(
+                f"[SYMBOL-LOADER] ❌ 分类执行失败: {e}, 耗时={classify_elapsed:.2f}s",
+                exc_info=True,
+                extra={"log_type": "ALERT", "scenario": scenario}
+            )
+            logger.critical(
+                f"[SYMBOL-LOADER] 🔥 分类执行严重失败，可能影响品种列表加载: {e}, 耗时={classify_elapsed:.2f}s",
+                exc_info=True,
+                extra={"log_type": "ALERT", "scenario": scenario}
+            )
+            raise
         
         # 统计分类结果
         total_classified = sum(len(v) for v in classified.values())
         logger.debug(
-            f"[SYMBOL-LOADER] 分类完成: 分类数={len(classified)}, 总品种数={total_classified}",
+            f"[SYMBOL-LOADER] 分类完成: 分类数={len(classified)}, 总品种数={total_classified}, 耗时={classify_elapsed:.2f}s",
             extra={"log_type": "SYSTEM", "scenario": scenario}
         )
         logger.info(
-            f"[SYMBOL-LOADER] ✅ 分类完成: 分类数={len(classified)}, 总品种数={total_classified}",
+            f"[SYMBOL-LOADER] ✅ 分类完成: 分类数={len(classified)}, 总品种数={total_classified}, 耗时={classify_elapsed:.2f}s",
             extra={"log_type": "SYSTEM", "scenario": scenario}
         )
         for category, symbols in classified.items():
@@ -1938,6 +2035,7 @@ class SymbolLoader:
                 )
 
         # 4. 执行过滤
+        filter_start_time = time.time()
         logger.debug(
             f"[SYMBOL-LOADER] 开始执行过滤器链: 过滤器数量={len(self.filter_chain._filters)}",
             extra={"log_type": "SYSTEM", "scenario": scenario}
@@ -1948,47 +2046,88 @@ class SymbolLoader:
         )
         # 对每个分类结果应用过滤器链
         filtered_classified = {}
-        for category, symbols in classified.items():
-            before_count = len(symbols)
-            logger.debug(
-                f"[SYMBOL-LOADER] 开始过滤分类: {category}, 过滤前={before_count}个品种",
-                extra={"log_type": "SYSTEM", "scenario": scenario}
-            )
-            filtered = self.filter_chain.apply(symbols)
-            after_count = len(filtered)
-            filtered_count = before_count - after_count
-            logger.debug(
-                f"[SYMBOL-LOADER] 过滤完成: {category}, 过滤前={before_count}, 过滤后={after_count}, 过滤掉={filtered_count}",
-                extra={"log_type": "SYSTEM", "scenario": scenario}
-            )
-            if filtered_count > 0:
-                logger.info(
-                    f"[SYMBOL-LOADER] ✅ {category}过滤完成: 过滤前={before_count}, 过滤后={after_count}, 过滤掉={filtered_count}",
+        try:
+            for category, symbols in classified.items():
+                before_count = len(symbols)
+                logger.debug(
+                    f"[SYMBOL-LOADER] 开始过滤分类: {category}, 过滤前={before_count}个品种",
                     extra={"log_type": "SYSTEM", "scenario": scenario}
                 )
-            filtered_classified[category] = filtered
+                filtered = self.filter_chain.apply(symbols)
+                after_count = len(filtered)
+                filtered_count = before_count - after_count
+                logger.debug(
+                    f"[SYMBOL-LOADER] 过滤完成: {category}, 过滤前={before_count}, 过滤后={after_count}, 过滤掉={filtered_count}",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                if filtered_count > 0:
+                    logger.info(
+                        f"[SYMBOL-LOADER] ✅ {category}过滤完成: 过滤前={before_count}, 过滤后={after_count}, 过滤掉={filtered_count}",
+                        extra={"log_type": "SYSTEM", "scenario": scenario}
+                    )
+                filtered_classified[category] = filtered
+            filter_elapsed = time.time() - filter_start_time
+        except Exception as e:
+            filter_elapsed = time.time() - filter_start_time
+            logger.debug(
+                f"[SYMBOL-LOADER] 过滤执行异常详情: {type(e).__name__}: {str(e)}, 耗时={filter_elapsed:.2f}s",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            logger.error(
+                f"[SYMBOL-LOADER] ❌ 过滤执行失败: {e}, 耗时={filter_elapsed:.2f}s",
+                exc_info=True,
+                extra={"log_type": "ALERT", "scenario": scenario}
+            )
+            logger.critical(
+                f"[SYMBOL-LOADER] 🔥 过滤执行严重失败，可能影响品种列表质量: {e}, 耗时={filter_elapsed:.2f}s",
+                exc_info=True,
+                extra={"log_type": "ALERT", "scenario": scenario}
+            )
+            raise
         
         # 统计过滤结果
         total_filtered = sum(len(v) for v in filtered_classified.values())
         logger.debug(
-            f"[SYMBOL-LOADER] 过滤完成: 分类数={len(filtered_classified)}, 总品种数={total_filtered}",
+            f"[SYMBOL-LOADER] 过滤完成: 分类数={len(filtered_classified)}, 总品种数={total_filtered}, 耗时={filter_elapsed:.2f}s",
             extra={"log_type": "SYSTEM", "scenario": scenario}
         )
         logger.info(
-            f"[SYMBOL-LOADER] ✅ 过滤完成: 分类数={len(filtered_classified)}, 总品种数={total_filtered}",
+            f"[SYMBOL-LOADER] ✅ 过滤完成: 分类数={len(filtered_classified)}, 总品种数={total_filtered}, 耗时={filter_elapsed:.2f}s",
             extra={"log_type": "SYSTEM", "scenario": scenario}
         )
 
         # 5. 保存缓存
+        cache_save_start_time = time.time()
         logger.debug(
             f"[SYMBOL-LOADER] 开始保存品种分类缓存: {self.cache_file}",
             extra={"log_type": "SYSTEM", "scenario": scenario}
         )
-        DailyCacheManager.save_with_date(filtered_classified, self.cache_file)
-        logger.info(
-            f"[SYMBOL-LOADER] ✅ 品种分类缓存已保存: {self.cache_file}",
-            extra={"log_type": "SYSTEM", "scenario": scenario}
-        )
+        try:
+            DailyCacheManager.save_with_date(filtered_classified, self.cache_file)
+            cache_save_elapsed = time.time() - cache_save_start_time
+            logger.debug(
+                f"[SYMBOL-LOADER] 缓存保存完成: 耗时={cache_save_elapsed:.2f}s",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            logger.info(
+                f"[SYMBOL-LOADER] ✅ 品种分类缓存已保存: {self.cache_file}, 耗时={cache_save_elapsed:.2f}s",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+        except Exception as e:
+            cache_save_elapsed = time.time() - cache_save_start_time
+            logger.debug(
+                f"[SYMBOL-LOADER] 缓存保存异常详情: {type(e).__name__}: {str(e)}, 耗时={cache_save_elapsed:.2f}s",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            logger.error(
+                f"[SYMBOL-LOADER] ❌ 缓存保存失败: {e}, 耗时={cache_save_elapsed:.2f}s",
+                exc_info=True,
+                extra={"log_type": "ALERT", "scenario": scenario}
+            )
+            logger.warning(
+                f"[SYMBOL-LOADER] ⚠️ 缓存保存失败，但品种分类结果已生成: {e}, 耗时={cache_save_elapsed:.2f}s",
+                extra={"log_type": "ALERT", "scenario": scenario}
+            )
 
         self.classified_symbols = filtered_classified
         return filtered_classified
@@ -4962,31 +5101,69 @@ async def _tdx_reader_worker_async(
                 break
 
             async with semaphore:
+                scenario = "tdx_data_read"
+                task_start_time = time.time()
                 try:
+                    logger.debug(
+                        f"[TDX-READER-WORKER] 开始读取: symbol={symbol}, data_type={data_type}, market={market}",
+                        extra={"log_type": "SYSTEM", "scenario": scenario}
+                    )
                     # 读取TDX文件（使用native_iocp）
                     df = await reader.read_single_async(symbol, data_type, market)
+                    task_elapsed = time.time() - task_start_time
+                    
+                    # 记录读取成功
+                    record_count = len(df) if df is not None and hasattr(df, '__len__') else 0
+                    logger.debug(
+                        f"[TDX-READER-WORKER] 读取成功: symbol={symbol}, data_type={data_type}, market={market}, "
+                        f"记录数={record_count}, 耗时={task_elapsed:.3f}s",
+                        extra={"log_type": "SYSTEM", "scenario": scenario}
+                    )
+                    if record_count == 0:
+                        logger.warning(
+                            f"[TDX-READER-WORKER] ⚠️ 读取结果为空: symbol={symbol}, data_type={data_type}, market={market}",
+                            extra={"log_type": "ALERT", "scenario": scenario}
+                        )
 
                     # 返回结果
                     result_queue.put((symbol, df))
 
                 except Exception as e:
-                    scenario = "tdx_data_read"
+                    task_elapsed = time.time() - task_start_time
+                    logger.debug(
+                        f"[TDX-READER-WORKER] 读取异常详情: symbol={symbol}, data_type={data_type}, market={market}, "
+                        f"异常类型={type(e).__name__}, 异常消息={str(e)}, 耗时={task_elapsed:.3f}s",
+                        extra={"log_type": "SYSTEM", "scenario": scenario}
+                    )
                     logger.error(
-                        f"[TDX-READER-WORKER] ❌ 读取失败: symbol={symbol}, data_type={data_type}, market={market}, 错误={e}",
+                        f"[TDX-READER-WORKER] ❌ 读取失败: symbol={symbol}, data_type={data_type}, market={market}, "
+                        f"错误={e}, 耗时={task_elapsed:.3f}s",
                         exc_info=True,
                         extra={"log_type": "ALERT", "scenario": scenario}
-                    )
-                    logger.debug(
-                        f"[TDX-READER-WORKER] 读取异常详情: symbol={symbol}, 异常类型={type(e).__name__}, 异常消息={str(e)}",
-                        extra={"log_type": "SYSTEM", "scenario": scenario}
                     )
                     result_queue.put((symbol, pd.DataFrame()))
 
     # 启动多个协程任务
+    scenario = "tdx_data_read"
+    logger.debug(
+        f"[TDX-READER-WORKER] Worker {worker_id} 启动协程池: 协程数={min(max_coroutines, 100)}",
+        extra={"log_type": "SYSTEM", "scenario": scenario}
+    )
+    logger.info(
+        f"[TDX-READER-WORKER] ℹ️ Worker {worker_id} 开始处理任务，协程数={min(max_coroutines, 100)}",
+        extra={"log_type": "SYSTEM", "scenario": scenario}
+    )
     tasks = [process_task() for _ in range(min(max_coroutines, 100))]  # 限制初始协程数
     await asyncio.gather(*tasks, return_exceptions=True)
 
-    logger.info(f"Worker {worker_id} 完成")
+    logger.debug(
+        f"[TDX-READER-WORKER] Worker {worker_id} 所有协程任务已完成",
+        extra={"log_type": "SYSTEM", "scenario": scenario}
+    )
+    logger.info(
+        f"[TDX-READER-WORKER] ✅ Worker {worker_id} 完成",
+        extra={"log_type": "SYSTEM", "scenario": scenario}
+    )
 
 
 # ==============================================================================
@@ -5159,8 +5336,25 @@ Worker进程主函数
                     result_queue.put(None)
 
         # 启动协程池
+        scenario = "tdx_data_read"
+        subprocess_logger.debug(
+            f"[TDX-EXECUTOR-WORKER] Worker {worker_id} 启动协程池: 协程数={coroutines_per_worker}",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+        subprocess_logger.info(
+            f"[TDX-EXECUTOR-WORKER] ℹ️ Worker {worker_id} 开始处理任务，协程数={coroutines_per_worker}",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
         coroutines = [execute_task() for _ in range(coroutines_per_worker)]
         await asyncio.gather(*coroutines, return_exceptions=True)
+        subprocess_logger.debug(
+            f"[TDX-EXECUTOR-WORKER] Worker {worker_id} 所有协程任务已完成",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+        subprocess_logger.info(
+            f"[TDX-EXECUTOR-WORKER] ✅ Worker {worker_id} 完成",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
 
 
 # ==============================================================================
@@ -5185,8 +5379,11 @@ def download_ipo_dates(
     Returns:
         {symbol: ipo_date}
     """
-    # 只输出到日志文件，不输出到terminal
-    logger.debug(f"🚀 开始IPO日期下载: 品种数={len(symbols)}")
+    logger.debug(
+        f"[IPO-DOWNLOAD] 🚀 开始IPO日期下载: 品种数={len(symbols)}, "
+        f"多进程={'是' if use_multiprocess else '否'}, max_workers={max_workers}",
+        extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+    )
 
     # 检查缓存
     cache_manager = DailyCacheManager
@@ -5209,19 +5406,29 @@ def download_ipo_dates(
     if is_valid and cached_dates:
         uncached_symbols = [s for s in symbols if s not in cached_dates]
         if not uncached_symbols:
-            # 只输出到日志文件，不输出到terminal
-            logger.debug("✅ 所有IPO日期已缓存")
+            logger.debug(
+                "[IPO-DOWNLOAD] ✅ 所有IPO日期已缓存",
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+            )
             return cached_dates
-        # 只输出到日志文件，不输出到terminal
-        logger.debug(f"📋 缓存命中: {len(symbols) - len(uncached_symbols)}/{len(symbols)}，增量下载: {len(uncached_symbols)} 个")
+        logger.debug(
+            f"[IPO-DOWNLOAD] 📋 缓存命中: {len(symbols) - len(uncached_symbols)}/{len(symbols)}, "
+            f"增量下载: {len(uncached_symbols)} 个",
+            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+        )
         symbols_to_download = uncached_symbols
     else:
         # 缓存无效或不存在，但即使过期也尝试加载已有数据作为基础（增量更新）
         if cached_data is None:
-            # 只输出到日志文件，不输出到terminal
-            logger.debug(f"🔧 IPO日期缓存不存在，开始自动下载全部品种（共{len(symbols)}个）...")
+            logger.debug(
+                f"[IPO-DOWNLOAD] 🔧 IPO日期缓存不存在，开始自动下载全部品种（共{len(symbols)}个）...",
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+            )
         else:
-            logger.debug(f"🔧 IPO日期缓存已过时（日期: {cache_date}），使用增量更新策略...")
+            logger.debug(
+                f"[IPO-DOWNLOAD] 🔧 IPO日期缓存已过时（日期: {cache_date}），使用增量更新策略...",
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+            )
         # 即使过期也尝试加载已有数据作为基础（增量更新）
         # cached_dates已经在上面提取了，这里只需要确定下载列表
         symbols_to_download = symbols
@@ -5235,15 +5442,20 @@ def download_ipo_dates(
     # 当品种数>50时，使用多进程（每个进程内多协程并发）
     # 当品种数<=50时，使用单进程多协程并发
     if use_multiprocess and len(symbols_to_download) > 50:
-        logger.info(f"开始下载 {len(symbols_to_download)} 个品种的IPO日期（多进程多协程模式，{max_workers}个进程）...")
-    else:
-        logger.info(f"开始下载 {len(symbols_to_download)} 个品种的IPO日期（单进程多协程并发模式）...")
-    
-    if use_multiprocess and len(symbols_to_download) > 50:
+        logger.info(
+            f"[IPO-DOWNLOAD] 开始下载 {len(symbols_to_download)} 个品种的IPO日期: "
+            f"模式=多进程多协程, 进程数={max_workers}, 使用LoadBalancer=是",
+            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+        )
         new_dates = _download_ipo_dates_multiprocess(
             symbols_to_download, progress_callback, max_workers
         )
     else:
+        logger.info(
+            f"[IPO-DOWNLOAD] 开始下载 {len(symbols_to_download)} 个品种的IPO日期: "
+            f"模式=单进程多协程, 使用LoadBalancer=是",
+            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+        )
         new_dates = _download_ipo_dates_single(
             symbols_to_download, progress_callback
         )
@@ -5253,11 +5465,17 @@ def download_ipo_dates(
     
     # 统计下载结果
     success_count = sum(1 for v in new_dates.values() if v is not None)
-    logger.info(f"IPO日期下载完成: 成功 {success_count}/{len(symbols_to_download)} 个品种（总缓存: {len(all_dates)}/{len(symbols)}）")
+    null_count = sum(1 for v in new_dates.values() if v is None)
+    logger.info(
+        f"[IPO-DOWNLOAD] IPO日期下载完成: 新下载={len(symbols_to_download)}, "
+        f"成功={success_count}, null={null_count}, 总缓存={len(all_dates)}/{len(symbols)}",
+        extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+    )
 
     # 保存缓存（将日期对象转换为字符串格式）
+    # 🎯 关键修复：保存所有品种，包括None值，确保ipo_dates.json与stock_list_classified.json数量一致
     try:
-        # 转换日期对象为ISO格式字符串
+        # 转换日期对象为ISO格式字符串，保留None值
         serializable_dates = {}
         for symbol, ipo_date in all_dates.items():
             if ipo_date is not None:
@@ -5265,12 +5483,26 @@ def download_ipo_dates(
                     serializable_dates[symbol] = ipo_date.isoformat()
                 else:
                     serializable_dates[symbol] = ipo_date
-            # None值不保存到缓存中
+            else:
+                # ✅ 保留None值，确保所有品种都被保存
+                serializable_dates[symbol] = None
+        
+        # 统计有效日期和null值数量
+        valid_count = sum(1 for v in serializable_dates.values() if v is not None)
+        null_count = sum(1 for v in serializable_dates.values() if v is None)
         
         cache_manager.save_with_date(serializable_dates, cache_file)
-        logger.info(f"✅ IPO日期缓存已保存: {cache_file} ({len(serializable_dates)} 个品种)")
+        logger.info(
+            f"[IPO-DOWNLOAD] ✅ IPO日期缓存已保存: {cache_file}, "
+            f"总品种={len(serializable_dates)}, 有效日期={valid_count}, null={null_count}",
+            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+        )
     except Exception as e:
-        logger.error(f"❌ 保存IPO日期缓存失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+        logger.error(
+            f"[IPO-DOWNLOAD] ❌ 保存IPO日期缓存失败: {e}", 
+            exc_info=True, 
+            extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
+        )
         # 即使保存失败，也返回已下载的数据
 
     return all_dates
@@ -5297,6 +5529,49 @@ def _download_ipo_dates_single(
     if not symbols:
         return results
 
+    # 🎯 集成LoadBalancer获取最优配置
+    from .load_balancer import LoadBalancer, TaskConfig, TaskCategory, get_server_pool_manager
+    
+    # 获取可用服务器数量
+    pool_mgr = get_server_pool_manager()
+    ipv4_servers = pool_mgr.get_ipv4_servers(limit=1000)
+    ipv6_servers = pool_mgr.get_ipv6_servers(limit=1000)
+    available_servers = len(ipv4_servers) + len(ipv6_servers)
+    
+    logger.debug(
+        f"[IPO-DOWNLOAD] 服务器池状态: IPv4={len(ipv4_servers)}, IPv6={len(ipv6_servers)}, 总可用={available_servers}",
+        extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+    )
+    
+    # 创建任务配置
+    task_config = TaskConfig(
+        name="IPO日期下载",
+        category=TaskCategory.NETWORK_DOWNLOAD,
+        total_count=total,
+        is_io_intensive=True,
+        is_cpu_intensive=False,
+        estimated_memory_mb=50.0,
+        estimated_duration_sec=30.0
+    )
+    
+    # 获取LoadBalancer配置
+    load_balancer = LoadBalancer()
+    config = load_balancer.get_optimal_config(
+        task=task_config,
+        available_servers=available_servers
+    )
+    
+    # 使用LoadBalancer配置的最大连接数
+    max_connections = config.get("coroutines_per_process", 38)
+    # 严格约束：不超过可用服务器数
+    max_connections = min(max_connections, available_servers) if available_servers > 0 else max_connections
+    
+    logger.info(
+        f"[IPO-DOWNLOAD] LoadBalancer配置: 最大并发={max_connections}, "
+        f"可用服务器={available_servers}, 服务器约束={config.get('server_constrained', False)}",
+        extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+    )
+
     # 创建事件循环
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -5306,13 +5581,23 @@ def _download_ipo_dates_single(
         from backend.infrastructure.tdx_asyncio.async_connection_pool import AsyncConnectionPool
         from backend.infrastructure.tdx_asyncio.constants import HQ_HOSTS_ALL
         
+        logger.debug(
+            f"[IPO-DOWNLOAD] 开始创建连接池: max_connections={max_connections}, timeout=5.0s",
+            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+        )
+        
         async def download_with_pool():
             """使用连接池并发下载"""
-            # 创建连接池（最大38个连接，支持并发）
+            # 创建连接池（使用LoadBalancer配置的最大连接数）
             pool = AsyncConnectionPool(
                 servers=None,  # 使用默认服务器列表
-                max_connections=38,
+                max_connections=max_connections,  # 🎯 使用LoadBalancer配置
                 timeout=5.0
+            )
+            
+            logger.debug(
+                f"[IPO-DOWNLOAD] 连接池已创建: max_connections={max_connections}",
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
             )
             
             async with pool:
@@ -5347,13 +5632,25 @@ def _download_ipo_dates_single(
                 
                 # 并发执行所有任务，使用asyncio.gather收集结果
                 # 使用return_exceptions=True确保单个协程异常不影响其他协程
+                logger.info(
+                    f"[IPO-DOWNLOAD] 开始并发下载: 品种数={len(tasks)}, 最大并发={max_connections}",
+                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                )
                 task_results = await asyncio.gather(*tasks, return_exceptions=True)
                 
                 # 处理结果
                 completed = 0
+                success_count = 0
+                null_count = 0
+                error_count = 0
+                
                 for result in task_results:
                     if isinstance(result, Exception):
-                        logger.debug(f"协程执行异常: {result}")
+                        logger.debug(
+                            f"[IPO-DOWNLOAD] 协程执行异常: {result}",
+                            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                        )
+                        error_count += 1
                         completed += 1
                         continue
                     
@@ -5362,13 +5659,35 @@ def _download_ipo_dates_single(
                         results[sym] = ipo_date
                         completed += 1
                         
-                        # 进度回调
+                        if ipo_date is not None:
+                            success_count += 1
+                        else:
+                            null_count += 1
+                        
+                        # 进度回调（每10%输出一次日志）
                         if progress_callback:
                             try:
                                 progress_callback(completed, total, f"已处理: {sym}")
                             except Exception as e:
-                                logger.warning(f"⚠️ [IPO下载] 进度回调执行失败: {e}", extra={"log_type": "SYSTEM"})
+                                logger.warning(
+                                    f"⚠️ [IPO-DOWNLOAD] 进度回调执行失败: {e}", 
+                                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                                )
                                 pass
+                        
+                        # 每10%输出进度日志
+                        if completed % max(1, total // 10) == 0 or completed == total:
+                            percent = (completed / total * 100) if total > 0 else 0
+                            logger.debug(
+                                f"[IPO-DOWNLOAD] 下载进度: {completed}/{total} ({percent:.1f}%), "
+                                f"成功={success_count}, null={null_count}, 失败={error_count}",
+                                extra={"log_type": "PROGRESS", "scenario": "refresh_symbol_list"}
+                            )
+                
+                logger.info(
+                    f"[IPO-DOWNLOAD] 下载完成: 总数={total}, 成功={success_count}, null={null_count}, 失败={error_count}",
+                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                )
                 
                 return results
         
@@ -5376,7 +5695,11 @@ def _download_ipo_dates_single(
         results = loop.run_until_complete(download_with_pool())
         
     except Exception as e:
-        logger.error(f"❌ IPO日期下载失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+        logger.error(
+            f"[IPO-DOWNLOAD] ❌ IPO日期下载失败: {e}", 
+            exc_info=True, 
+            extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
+        )
         # 失败时返回空结果
         for symbol in symbols:
             if symbol not in results:
@@ -5442,14 +5765,41 @@ def _download_ipo_batch(symbols: List[str]) -> Dict[str, Optional[date]]:
     Returns:
         {symbol: ipo_date}
     """
+    # 🎯 子进程日志接入：配置子进程日志系统
+    try:
+        worker_id = hash(str(symbols)) % 1000  # 使用symbols列表的hash作为worker_id
+        subprocess_logger = _configure_subprocess_logging(worker_id, "ipo_download", scenario="refresh_symbol_list")
+    except Exception:
+        subprocess_logger = logger
+    
+    scenario = "refresh_symbol_list"
+    subprocess_logger.debug(
+        f"[IPO-SUBPROCESS-{worker_id}] 子进程开始: 品种数={len(symbols)}, pid={os.getpid()}",
+        extra={"log_type": "SYSTEM", "scenario": scenario}
+    )
+    subprocess_logger.info(
+        f"[IPO-DOWNLOAD-WORKER] ℹ️ 开始下载IPO日期批次: 品种数={len(symbols)}",
+        extra={"log_type": "SYSTEM", "scenario": scenario}
+    )
+    
     results = {}
 
     if not symbols:
+        subprocess_logger.debug(
+            "[IPO-DOWNLOAD-WORKER] 品种列表为空，跳过下载",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
         return results
 
     # 创建事件循环
+    loop_start_time = time.time()
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+    loop_elapsed = time.time() - loop_start_time
+    subprocess_logger.debug(
+        f"[IPO-DOWNLOAD-WORKER] 事件循环创建完成: 耗时={loop_elapsed:.3f}s",
+        extra={"log_type": "SYSTEM", "scenario": scenario}
+    )
 
     try:
         # 使用连接池管理连接
@@ -5458,10 +5808,16 @@ def _download_ipo_batch(symbols: List[str]) -> Dict[str, Optional[date]]:
         async def download_with_pool():
             """使用连接池并发下载"""
             # 创建连接池（最大38个连接，支持并发）
+            pool_start_time = time.time()
             pool = AsyncConnectionPool(
                 servers=None,  # 使用默认服务器列表
                 max_connections=38,
                 timeout=5.0
+            )
+            pool_elapsed = time.time() - pool_start_time
+            subprocess_logger.debug(
+                f"[IPO-DOWNLOAD-WORKER] 连接池创建完成: 耗时={pool_elapsed:.3f}s",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
             )
             
             async with pool:
@@ -5473,21 +5829,54 @@ def _download_ipo_batch(symbols: List[str]) -> Dict[str, Optional[date]]:
                         """获取单个品种的IPO日期"""
                         conn = await pool.acquire()
                         if conn is None:
-                            logger.debug(f"无法获取连接: {sym}")
+                            subprocess_logger.debug(
+                                f"[IPO-DOWNLOAD-WORKER] 无法获取连接: symbol={sym}",
+                                extra={"log_type": "SYSTEM", "scenario": scenario}
+                            )
                             return sym, None
                         
                         try:
                             # 添加超时保护，防止单个协程卡住（15秒超时）
+                            fetch_start_time = time.time()
                             ipo_date = await asyncio.wait_for(
                                 _fetch_single_ipo_date_with_pool(sym, conn),
                                 timeout=15.0
                             )
+                            fetch_elapsed = time.time() - fetch_start_time
+                            
+                            if ipo_date:
+                                subprocess_logger.debug(
+                                    f"[IPO-DOWNLOAD-WORKER] IPO日期获取成功: symbol={sym}, ipo_date={ipo_date}, 耗时={fetch_elapsed:.3f}s",
+                                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                                )
+                            else:
+                                subprocess_logger.debug(
+                                    f"[IPO-DOWNLOAD-WORKER] IPO日期为空: symbol={sym}, 耗时={fetch_elapsed:.3f}s",
+                                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                                )
+                            
                             return sym, ipo_date
                         except asyncio.TimeoutError:
-                            logger.debug(f"获取IPO日期超时: {sym}")
+                            fetch_elapsed = time.time() - fetch_start_time if 'fetch_start_time' in locals() else 0
+                            subprocess_logger.debug(
+                                f"[IPO-DOWNLOAD-WORKER] 获取IPO日期超时: symbol={sym}, 耗时={fetch_elapsed:.3f}s",
+                                extra={"log_type": "SYSTEM", "scenario": scenario}
+                            )
+                            subprocess_logger.warning(
+                                f"[IPO-DOWNLOAD-WORKER] ⚠️ 获取IPO日期超时: symbol={sym}",
+                                extra={"log_type": "ALERT", "scenario": scenario}
+                            )
                             return sym, None
                         except Exception as e:
-                            logger.debug(f"获取IPO日期失败: {sym}, {e}")
+                            fetch_elapsed = time.time() - fetch_start_time if 'fetch_start_time' in locals() else 0
+                            subprocess_logger.debug(
+                                f"[IPO-DOWNLOAD-WORKER] 获取IPO日期失败详情: symbol={sym}, 异常类型={type(e).__name__}, 异常消息={str(e)}, 耗时={fetch_elapsed:.3f}s",
+                                extra={"log_type": "SYSTEM", "scenario": scenario}
+                            )
+                            subprocess_logger.warning(
+                                f"[IPO-DOWNLOAD-WORKER] ⚠️ 获取IPO日期失败: symbol={sym}, 错误: {e}",
+                                extra={"log_type": "ALERT", "scenario": scenario}
+                            )
                             return sym, None
                         finally:
                             pool.release(conn)
@@ -5496,31 +5885,98 @@ def _download_ipo_batch(symbols: List[str]) -> Dict[str, Optional[date]]:
                 
                 # 并发执行所有任务，使用asyncio.gather收集结果
                 # 使用return_exceptions=True确保单个协程异常不影响其他协程
+                gather_start_time = time.time()
                 task_results = await asyncio.gather(*tasks, return_exceptions=True)
+                gather_elapsed = time.time() - gather_start_time
+                subprocess_logger.debug(
+                    f"[IPO-DOWNLOAD-WORKER] 所有协程任务执行完成: 任务数={len(tasks)}, 耗时={gather_elapsed:.2f}s",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
                 
                 # 处理结果
                 for result in task_results:
                     if isinstance(result, Exception):
-                        logger.debug(f"协程执行异常: {result}")
+                        subprocess_logger.debug(
+                            f"[IPO-DOWNLOAD-WORKER] 协程执行异常: 异常类型={type(result).__name__}, 异常消息={str(result)}",
+                            extra={"log_type": "SYSTEM", "scenario": scenario}
+                        )
+                        subprocess_logger.warning(
+                            f"[IPO-DOWNLOAD-WORKER] ⚠️ 协程执行异常: {result}",
+                            extra={"log_type": "ALERT", "scenario": scenario}
+                        )
                         continue
                     
                     if isinstance(result, tuple) and len(result) == 2:
                         sym, ipo_date = result
                         results[sym] = ipo_date
                 
+                batch_success_count = sum(1 for v in results.values() if v is not None)
+                batch_failed_count = len(symbols) - batch_success_count
+                subprocess_logger.debug(
+                    f"[IPO-DOWNLOAD-WORKER] 批次处理完成: 品种数={len(symbols)}, 成功={batch_success_count}, 失败={batch_failed_count}",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                
                 return results
         
         # 运行异步函数
+        download_start_time = time.time()
         results = loop.run_until_complete(download_with_pool())
+        download_elapsed = time.time() - download_start_time
+        
+        success_count = sum(1 for v in results.values() if v is not None)
+        failed_count = len(symbols) - success_count
+        
+        subprocess_logger.debug(
+            f"[IPO-DOWNLOAD-WORKER] IPO日期下载完成: 品种数={len(symbols)}, 成功={success_count}, "
+            f"失败={failed_count}, 耗时={download_elapsed:.2f}s",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+        subprocess_logger.info(
+            f"[IPO-DOWNLOAD-WORKER] ✅ IPO日期下载完成: 品种数={len(symbols)}, 成功={success_count}, "
+            f"失败={failed_count}, 耗时={download_elapsed:.2f}s",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+        
+        if failed_count > 0:
+            subprocess_logger.warning(
+                f"[IPO-DOWNLOAD-WORKER] ⚠️ IPO日期下载部分失败: 失败数={failed_count}/{len(symbols)}",
+                extra={"log_type": "ALERT", "scenario": scenario}
+            )
         
     except Exception as e:
-        logger.error(f"❌ IPO日期批量下载失败: {e}", exc_info=True)
+        download_elapsed = time.time() - download_start_time if 'download_start_time' in locals() else 0
+        subprocess_logger.debug(
+            f"[IPO-DOWNLOAD-WORKER] IPO日期下载异常详情: 异常类型={type(e).__name__}, 异常消息={str(e)}, 耗时={download_elapsed:.2f}s",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+        subprocess_logger.error(
+            f"[IPO-DOWNLOAD-WORKER] ❌ IPO日期批量下载失败: {e}, 耗时={download_elapsed:.2f}s",
+            exc_info=True,
+            extra={"log_type": "ALERT", "scenario": scenario}
+        )
         # 失败时返回空结果
         for symbol in symbols:
             if symbol not in results:
                 results[symbol] = None
     finally:
-        loop.close()
+        try:
+            loop.close()
+            subprocess_logger.debug(
+                "[IPO-DOWNLOAD-WORKER] 事件循环已关闭",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+        except Exception as e:
+            subprocess_logger.debug(
+                f"[IPO-DOWNLOAD-WORKER] 关闭事件循环失败: {e}",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+
+    total_elapsed = time.time() - loop_start_time if 'loop_start_time' in locals() else 0
+    subprocess_logger.debug(
+        f"[IPO-DOWNLOAD-WORKER] IPO日期批次下载完成: 总耗时={total_elapsed:.2f}s",
+        extra={"log_type": "SYSTEM", "scenario": scenario}
+    )
 
     return results
 

@@ -733,18 +733,37 @@ class ServerPoolManager:
 
         # 使用进程池测试（每个进程运行协程池）
         test_start_time = time.time()
+        logger.debug(
+            f"[SPEEDTEST-LOADBALANCER] 开始多进程测速: 进程数={max_workers}, 服务器组数={len(server_groups)}",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+        logger.info(
+            f"[SPEEDTEST-LOADBALANCER] ℹ️ 开始多进程测速: 进程数={max_workers}, 服务器组数={len(server_groups)}",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+        
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
             futures = {
                 executor.submit(_test_server_group_async, [(s.ip, s.port, s.name) for s in group], scenario): group
                 for group in server_groups
             }
+            logger.debug(
+                f"[SPEEDTEST-LOADBALANCER] 已提交{len(futures)}个测速任务到进程池",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
 
             completed_groups = 0
             for future in as_completed(futures):
                 server_group = futures[future]
                 try:
+                    group_start_time = time.time()
                     group_results = future.result()
+                    group_elapsed = time.time() - group_start_time
                     completed_groups += 1
+                    logger.debug(
+                        f"[SPEEDTEST-LOADBALANCER] 服务器组 {completed_groups}/{len(server_groups)} 测速完成: 耗时={group_elapsed:.2f}s",
+                        extra={"log_type": "SYSTEM", "scenario": scenario}
+                    )
 
                     # 将结果应用到服务器对象
                     available_count = 0
@@ -788,17 +807,47 @@ class ServerPoolManager:
 
         test_elapsed = time.time() - test_start_time
         available_count = sum(1 for s in all_servers if s.available)
+        unavailable_count = len(all_servers) - available_count
+        
+        # 统计IPv4和IPv6的可用数量
+        ipv4_available = sum(1 for s in self._ipv4_servers if s.available)
+        ipv6_available = sum(1 for s in self._ipv6_servers if s.available)
+        
         logger.debug(
-            f"✅ 服务器测试完成（多进程+多协程架构）: 可用={available_count}/{len(all_servers)}, 耗时={test_elapsed:.2f}s",
+            f"✅ 服务器测试完成（多进程+多协程架构）: 可用={available_count}/{len(all_servers)}, "
+            f"不可用={unavailable_count}, IPv4可用={ipv4_available}/{ipv4_count}, "
+            f"IPv6可用={ipv6_available}/{ipv6_count}, 耗时={test_elapsed:.2f}s",
             extra={"log_type": "SYSTEM", "scenario": scenario}
         )
         logger.info(
-            f"✅ 服务器测速完成: 可用={available_count}/{len(all_servers)}, 耗时={test_elapsed:.2f}s",
+            f"✅ 服务器测速完成: 可用={available_count}/{len(all_servers)}, "
+            f"IPv4可用={ipv4_available}/{ipv4_count}, IPv6可用={ipv6_available}/{ipv6_count}, "
+            f"耗时={test_elapsed:.2f}s",
             extra={"log_type": "SYSTEM", "scenario": scenario}
         )
+        
+        # 如果所有服务器都不可用，记录警告
+        if available_count == 0:
+            logger.warning(
+                f"⚠️ 所有服务器测速失败，没有可用服务器！",
+                extra={"log_type": "ALERT", "scenario": scenario}
+            )
+            logger.error(
+                f"[SPEEDTEST-LOADBALANCER] ❌ 所有服务器测速失败，系统可能无法正常工作",
+                extra={"log_type": "ALERT", "scenario": scenario}
+            )
 
         # 🔧 修复：测试完成后自动保存缓存
+        logger.debug(
+            "[SPEEDTEST-LOADBALANCER] 开始保存测速结果到缓存",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+        cache_save_start = time.time()
         try:
+            logger.debug(
+                "[SPEEDTEST-LOADBALANCER] 准备IPv4服务器数据...",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             ipv4_data = [
                 {
                     "ip": s.ip,
@@ -810,6 +859,15 @@ class ServerPoolManager:
                 }
                 for s in self._ipv4_servers
             ]
+            logger.debug(
+                f"[SPEEDTEST-LOADBALANCER] IPv4服务器数据准备完成: {len(ipv4_data)}个",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            
+            logger.debug(
+                "[SPEEDTEST-LOADBALANCER] 准备IPv6服务器数据...",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             ipv6_data = [
                 {
                     "ip": s.ip,
@@ -821,27 +879,58 @@ class ServerPoolManager:
                 }
                 for s in self._ipv6_servers
             ]
+            logger.debug(
+                f"[SPEEDTEST-LOADBALANCER] IPv6服务器数据准备完成: {len(ipv6_data)}个",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
 
             cache_data = {
                 "ipv4_servers": ipv4_data,
                 "ipv6_servers": ipv6_data
             }
+            logger.debug(
+                f"[SPEEDTEST-LOADBALANCER] 缓存数据准备完成: IPv4={len(ipv4_data)}, IPv6={len(ipv6_data)}",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
 
             from .core_engine import DailyCacheManager
+            logger.debug(
+                f"[SPEEDTEST-LOADBALANCER] 保存缓存到文件: {self._cache_file}",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             success = DailyCacheManager.save_with_date(cache_data, self._cache_file)
+            cache_save_elapsed = time.time() - cache_save_start
             if success:
+                logger.debug(
+                    f"[SPEEDTEST-LOADBALANCER] 缓存保存成功: 耗时={cache_save_elapsed:.2f}s",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
                 logger.info(
-                    f"✅ 服务器池缓存已保存: {self._cache_file}",
+                    f"✅ 服务器池缓存已保存: {self._cache_file}, 耗时={cache_save_elapsed:.2f}s",
                     extra={"log_type": "SYSTEM", "scenario": scenario}
                 )
             else:
+                logger.debug(
+                    f"[SPEEDTEST-LOADBALANCER] 缓存保存失败: 耗时={cache_save_elapsed:.2f}s",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
                 logger.warning(
-                    f"⚠️ 保存服务器池缓存失败",
+                    f"⚠️ 保存服务器池缓存失败, 耗时={cache_save_elapsed:.2f}s",
                     extra={"log_type": "ALERT", "scenario": scenario}
                 )
         except Exception as e:
+            cache_save_elapsed = time.time() - cache_save_start
+            logger.debug(
+                f"[SPEEDTEST-LOADBALANCER] 保存缓存异常详情: {type(e).__name__}: {str(e)}, 耗时={cache_save_elapsed:.2f}s",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             logger.warning(
-                f"⚠️ 保存服务器池缓存异常: {e}",
+                f"⚠️ 保存服务器池缓存异常: {e}, 耗时={cache_save_elapsed:.2f}s",
+                exc_info=True,
+                extra={"log_type": "ALERT", "scenario": scenario}
+            )
+            logger.error(
+                f"[SPEEDTEST-LOADBALANCER] ❌ 保存服务器池缓存失败: {e}, 耗时={cache_save_elapsed:.2f}s",
                 exc_info=True,
                 extra={"log_type": "ALERT", "scenario": scenario}
             )
@@ -1181,7 +1270,8 @@ class LoadBalancer:
         self,
         task: Optional[TaskConfig] = None,
         task_type: str = "download",
-        queue_metrics: Optional[QueueMetrics] = None
+        queue_metrics: Optional[QueueMetrics] = None,
+        available_servers: Optional[int] = None
     ) -> Dict[str, Any]:
         """获取最优配置（带防抖）
 
@@ -1189,6 +1279,7 @@ class LoadBalancer:
             task: 任务配置（v3.1新增，为空时兼容旧API）
             task_type: 任务类型字符串（向后兼容）
             queue_metrics: 队列指标（v3.1新增）
+            available_servers: 可用服务器数量（用于单服务器单连接约束）
 
         Returns:
             最优配置
@@ -1204,7 +1295,7 @@ class LoadBalancer:
         # v3.1: 支持任务类型和队列压力
         if task is not None:
             # 新API：使用TaskConfig
-            config = self._calculate_with_task_config(task, queue_metrics)
+            config = self._calculate_with_task_config(task, queue_metrics, available_servers)
         else:
             # 旧API：兼容性支持
             config = self.config_calculator.calculate(task_type)
@@ -1218,13 +1309,15 @@ class LoadBalancer:
     def _calculate_with_task_config(
         self,
         task: TaskConfig,
-        queue_metrics: Optional[QueueMetrics] = None
+        queue_metrics: Optional[QueueMetrics] = None,
+        available_servers: Optional[int] = None
     ) -> Dict[str, Any]:
         """基于任务配置计算最优配置（v3.1新增）
 
         Args:
             task: 任务配置
             queue_metrics: 队列指标
+            available_servers: 可用服务器数量（用于单服务器单连接约束）
 
         Returns:
             最优配置
@@ -1278,7 +1371,31 @@ class LoadBalancer:
             int(coroutines_per_process * queue_pressure_factor)
         )
 
-        # 7. 构建配置
+        # 7. 🎯 应用服务器数量约束（单服务器单连接原则）
+        server_constrained = False
+        original_coroutines = coroutines_per_process
+        if available_servers is not None and available_servers > 0:
+            # 总并发数 = 进程数 × 每进程协程数
+            total_concurrency = processes * coroutines_per_process
+            
+            # 如果总并发数超过可用服务器数，进行约束
+            if total_concurrency > available_servers:
+                server_constrained = True
+                # 优先调整协程数，保持进程数不变（避免进程创建开销）
+                coroutines_per_process = max(1, available_servers // processes)
+                
+                # 如果调整后的协程数太小（<3），则减少进程数
+                if coroutines_per_process < 3 and processes > 1:
+                    processes = max(1, available_servers // 3)
+                    coroutines_per_process = max(1, available_servers // processes)
+                
+                logger.debug(
+                    f"[LOADBALANCER] 服务器数量约束生效: 可用服务器={available_servers}, "
+                    f"原始并发={processes}×{original_coroutines}={processes*original_coroutines}, "
+                    f"约束后并发={processes}×{coroutines_per_process}={processes*coroutines_per_process}"
+                )
+
+        # 8. 构建配置
         config = {
             "processes": min(processes, strategy["max_processes"]),
             "coroutines_per_process": min(
@@ -1300,14 +1417,18 @@ class LoadBalancer:
             "pressure_score": int(
                 (1 - queue_pressure_factor) * 100
             ),  # 0-100压力评分
+            "available_servers": available_servers if available_servers is not None else "N/A",
+            "server_constrained": server_constrained,
         }
 
         logger.debug(
-            f"动态配置 [{task.name}]: 进程={config['processes']}, "
-            f"协程={config['coroutines_per_process']}, "
+            f"[LOADBALANCER] 动态配置 [{task.name}]: 进程={config['processes']}, "
+            f"协程={config['coroutines_per_process']}, 总并发={config['processes']*config['coroutines_per_process']}, "
+            f"可用服务器={available_servers if available_servers else 'N/A'}, "
+            f"服务器约束={'生效' if server_constrained else '未生效'}, "
             f"瓶颈={resource_metrics.bottleneck}({bottleneck_value:.1f}%), "
-            f"队列压力={pressure_level}, "
-            f"压力评分={config['pressure_score']}/100"
+            f"队列压力={pressure_level}",
+            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
         )
 
         return config

@@ -6612,16 +6612,29 @@ class SystemManagerService(BaseService):
                                 )
 
                                 # 处理结果和进度
+                                batch_success_count = 0
+                                batch_failed_count = 0
                                 for symbol, success, error_msg, duration in results:
                                     completed += 1
                                     key = f"{market}_{data_type}_{symbol}"
                                     all_results[key] = success
                                     
                                     # DEBUG日志（记录每个文件的处理结果）
-                                    if not success:
+                                    if success:
+                                        batch_success_count += 1
                                         self.logger.debug(
-                                            f"[TDX-READ-SERVICE] 文件读取失败: {symbol}/{data_type}/{market}, 错误: {error_msg}",
+                                            f"[TDX-READ-SERVICE] 文件读取成功: {symbol}/{data_type}/{market}, 耗时={duration:.3f}s",
                                             extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                                        )
+                                    else:
+                                        batch_failed_count += 1
+                                        self.logger.debug(
+                                            f"[TDX-READ-SERVICE] 文件读取失败: {symbol}/{data_type}/{market}, 错误: {error_msg}, 耗时={duration:.3f}s",
+                                            extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                                        )
+                                        self.logger.warning(
+                                            f"[TDX-READ-SERVICE] ⚠️ 文件读取失败: {symbol}/{data_type}/{market}, 错误: {error_msg}",
+                                            extra={"log_type": "ALERT", "scenario": "tdx_data_read"},
                                         )
 
                                     # 进度回调
@@ -6632,26 +6645,59 @@ class SystemManagerService(BaseService):
                                     # 每100个文件记录一次进度
                                     if completed % 100 == 0:
                                         self.logger.debug(
-                                            f"[TDX-READ-SERVICE] 进度更新: 已完成 {completed}/{total_tasks} ({completed*100//total_tasks}%)",
+                                            f"[TDX-READ-SERVICE] 进度更新: 已完成 {completed}/{total_tasks} ({completed*100//total_tasks}%), "
+                                            f"成功={batch_success_count}, 失败={batch_failed_count}",
+                                            extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                                        )
+                                        self.logger.info(
+                                            f"[TDX-READ-SERVICE] ℹ️ 进度: {completed}/{total_tasks} ({completed*100//total_tasks}%), "
+                                            f"成功={batch_success_count}, 失败={batch_failed_count}",
                                             extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
                                         )
 
                                     # 检查停止标志
                                     if self._tdx_reader_stop_flag:
+                                        self.logger.debug(
+                                            "[TDX-READ-SERVICE] 检测到停止标志，中断批量读取",
+                                            extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                                        )
                                         self.logger.info(
-                                            "检测到停止标志，中断批量读取",
+                                            "[TDX-READ-SERVICE] 检测到停止标志，中断批量读取",
                                             extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
                                         )
                                         return
+                                
+                                # 记录批量处理结果
+                                self.logger.debug(
+                                    f"[TDX-READ-SERVICE] 批量处理完成: 市场={market.upper()}, 数据类型={data_type}, "
+                                    f"成功={batch_success_count}, 失败={batch_failed_count}, 耗时={batch_elapsed:.2f}s",
+                                    extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                                )
+                                self.logger.info(
+                                    f"[TDX-READ-SERVICE] ✅ 批量处理完成: 市场={market.upper()}, 数据类型={data_type}, "
+                                    f"成功={batch_success_count}, 失败={batch_failed_count}, 耗时={batch_elapsed:.2f}s",
+                                    extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                                )
+                                if batch_failed_count > 0:
+                                    self.logger.warning(
+                                        f"[TDX-READ-SERVICE] ⚠️ 批量处理中有{batch_failed_count}个文件失败: 市场={market.upper()}, 数据类型={data_type}",
+                                        extra={"log_type": "ALERT", "scenario": "tdx_data_read"},
+                                    )
 
                             except Exception as e:
+                                batch_elapsed = time.time() - batch_start_time if 'batch_start_time' in locals() else 0
                                 self.logger.debug(
                                     f"[TDX-READ-SERVICE] 批量处理异常: 市场={market.upper()}, 数据类型={data_type}, "
-                                    f"异常类型={type(e).__name__}, 异常详情={str(e)}",
+                                    f"异常类型={type(e).__name__}, 异常详情={str(e)}, 耗时={batch_elapsed:.2f}s",
                                     extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
                                 )
                                 self.logger.error(
-                                    f"处理 {market.upper()} {data_type} 失败: {e}",
+                                    f"[TDX-READ-SERVICE] ❌ 处理 {market.upper()} {data_type} 失败: {e}, 耗时={batch_elapsed:.2f}s",
+                                    exc_info=True,
+                                    extra={"log_type": "ALERT", "scenario": "tdx_data_read"},
+                                )
+                                self.logger.critical(
+                                    f"[TDX-READ-SERVICE] 🔥 批量处理严重失败，该批次所有品种将标记为失败: 市场={market.upper()}, 数据类型={data_type}",
                                     exc_info=True,
                                     extra={"log_type": "ALERT", "scenario": "tdx_data_read"},
                                 )
@@ -6662,11 +6708,28 @@ class SystemManagerService(BaseService):
                                     completed += 1
 
                 # 在同步方法中运行异步函数
+                self.logger.debug(
+                    "[TDX-READ-SERVICE] 开始执行异步批量处理...",
+                    extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                )
                 try:
                     asyncio.run(run_batch_processing())
+                    self.logger.debug(
+                        "[TDX-READ-SERVICE] 异步批量处理执行完成",
+                        extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                    )
                 except Exception as e:
+                    self.logger.debug(
+                        f"[TDX-READ-SERVICE] 异步批量处理异常详情: {type(e).__name__}: {str(e)}",
+                        extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                    )
                     self.logger.error(
                         f"[TDX-READ-SERVICE] ❌ 批量处理执行失败: {e}",
+                        exc_info=True,
+                        extra={"log_type": "ALERT", "scenario": "tdx_data_read"},
+                    )
+                    self.logger.critical(
+                        f"[TDX-READ-SERVICE] 🔥 批量处理执行严重失败，TDX数据读取任务将终止: {e}",
                         exc_info=True,
                         extra={"log_type": "ALERT", "scenario": "tdx_data_read"},
                     )
@@ -6730,14 +6793,19 @@ class SystemManagerService(BaseService):
 
             except Exception as e:
                 total_elapsed = time.time() - start_time
+                self.logger.debug(
+                    f"[TDX-READ-SERVICE] TDX数据读取异常详情: {type(e).__name__}: {str(e)}, 耗时={total_elapsed:.2f}s",
+                    extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                )
                 self.logger.error(
                     f"[TDX-READ-SERVICE] ❌ 读取通达信数据失败: {e}, 耗时={total_elapsed:.2f}s",
                     exc_info=True,
                     extra={"log_type": "ALERT", "scenario": "tdx_data_read"},
                 )
-                self.logger.debug(
-                    f"[TDX-READ-SERVICE] 异常类型: {type(e).__name__}, 异常详情: {str(e)}",
-                    extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                self.logger.critical(
+                    f"[TDX-READ-SERVICE] 🔥 读取通达信数据严重失败，可能影响数据质量: {e}, 耗时={total_elapsed:.2f}s",
+                    exc_info=True,
+                    extra={"log_type": "ALERT", "scenario": "tdx_data_read"},
                 )
                 stage_logger.error(
                     f"❌ TDX数据读取失败: {e}, 耗时={total_elapsed:.2f}s",

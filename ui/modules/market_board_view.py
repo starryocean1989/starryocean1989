@@ -2054,13 +2054,23 @@ class ChartWizardEnhanced(BaseWidget):
     def _on_data_manager_ready(self, event):
         """UnifiedDataManager就绪回调（事件驱动）- 诊断增强版."""
         try:
-            self.logger.info("🔔 ===== 收到 UnifiedDataManager 就绪事件 =====")
-            self.logger.info(f"📊 事件数据: {event.data}")
+            # 🎯 关键日志埋点：记录就绪事件收到情况
+            self.logger.info(
+                "🔔 ===== 收到 UnifiedDataManager 就绪事件 =====",
+                extra={"log_type": "ALERT", "scenario": "market_board_ready"}
+            )
+            self.logger.info(
+                f"📊 事件数据: {event.data}",
+                extra={"log_type": "PROGRESS", "scenario": "market_board_ready"}
+            )
             
             contract_count = event.data.get("contract_count", 0)
             mode = event.data.get("mode", "unknown")
 
-            self.logger.info(f"✅ UnifiedDataManager已就绪：{contract_count}个品种（{mode}模式）")
+            self.logger.info(
+                f"✅ UnifiedDataManager已就绪：{contract_count}个品种（{mode}模式）",
+                extra={"log_type": "ALERT", "scenario": "market_board_ready"}
+            )
 
             # 🔧 修复：确保引擎可用（可能还未初始化）
             if not self.main_engine or not self.event_engine:

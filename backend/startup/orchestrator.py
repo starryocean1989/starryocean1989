@@ -169,8 +169,16 @@ class StartupOrchestrator:
                     
                     # 执行阶段
                     stage_start_time = time.time()
+                    self.logger.debug(
+                        f"[STARTUP] 执行阶段 {stage.name} 开始",
+                        extra={"log_type": "SYSTEM", "scenario": scenario}
+                    )
                     result = await stage.execute(self.context)
                     stage_elapsed = (time.time() - stage_start_time) * 1000
+                    self.logger.debug(
+                        f"[STARTUP] 执行阶段 {stage.name} 完成，耗时={stage_elapsed:.0f}ms",
+                        extra={"log_type": "SYSTEM", "scenario": scenario}
+                    )
 
                     # 记录阶段结果
                     stage_results[stage.name] = result
@@ -208,15 +216,32 @@ class StartupOrchestrator:
                             extra={"log_type": "SYSTEM", "scenario": scenario}
                         )
                         try:
+                            self.logger.debug(
+                                "[STARTUP] 开始初始化日志系统（ordered_queue=True, ai_log=True）",
+                                extra={"log_type": "SYSTEM", "scenario": scenario}
+                            )
                             self.startup_logger.initialize(enable_ordered_queue=True, enable_ai_log=True)
                             self._logging_initialized = True
+                            self.logger.debug(
+                                "[STARTUP] 日志系统初始化完成",
+                                extra={"log_type": "SYSTEM", "scenario": scenario}
+                            )
                             self.logger.info(
                                 "[STARTUP] ✅ 日志系统初始化成功",
                                 extra={"log_type": "SYSTEM", "scenario": scenario}
                             )
                         except Exception as e:
+                            self.logger.debug(
+                                f"[STARTUP] 日志系统初始化异常详情: {type(e).__name__}: {str(e)}",
+                                extra={"log_type": "SYSTEM", "scenario": scenario}
+                            )
                             self.logger.error(
                                 f"[STARTUP] ❌ 日志系统初始化失败: {e}",
+                                exc_info=True,
+                                extra={"log_type": "ALERT", "scenario": scenario}
+                            )
+                            self.logger.critical(
+                                f"[STARTUP] 🔥 日志系统初始化严重失败，可能影响后续日志记录: {e}",
                                 exc_info=True,
                                 extra={"log_type": "ALERT", "scenario": scenario}
                             )
@@ -253,6 +278,10 @@ class StartupOrchestrator:
                             )
                             # 尝试回滚
                             try:
+                                self.logger.debug(
+                                    f"[STARTUP] 开始回滚阶段 {stage.name} 的资源",
+                                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                                )
                                 await stage.rollback(self.context)
                                 self.logger.debug(
                                     f"[STARTUP] 阶段 {stage.name} 回滚成功",
@@ -263,9 +292,17 @@ class StartupOrchestrator:
                                     extra={"log_type": "SYSTEM", "scenario": scenario}
                                 )
                             except Exception as rollback_error:
+                                self.logger.debug(
+                                    f"[STARTUP] 阶段 {stage.name} 回滚异常详情: {type(rollback_error).__name__}: {str(rollback_error)}",
+                                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                                )
                                 self.logger.error(
                                     f"❌ [StartupOrchestrator] 阶段 {stage.name} 回滚失败: {rollback_error}",
                                     exc_info=True,
+                                    extra={"log_type": "ALERT", "scenario": scenario}
+                                )
+                                self.logger.warning(
+                                    f"[STARTUP] ⚠️ 阶段 {stage.name} 回滚失败，可能残留资源",
                                     extra={"log_type": "ALERT", "scenario": scenario}
                                 )
 
@@ -387,14 +424,30 @@ class StartupOrchestrator:
                 "[STARTUP] 开始验证启动上下文",
                 extra={"log_type": "SYSTEM", "scenario": scenario}
             )
-            if not self.context.validate():
+            validation_result = self.context.validate()
+            self.logger.debug(
+                f"[STARTUP] 启动上下文验证结果: {validation_result}",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            if not validation_result:
                 error_msg = "启动上下文验证失败"
                 self.logger.debug(
-                    "[STARTUP] 启动上下文验证失败",
+                    "[STARTUP] 启动上下文验证失败，检查上下文状态",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                # 记录上下文详细信息
+                self.logger.debug(
+                    f"[STARTUP] 上下文状态: event_engine={self.context.event_engine is not None}, "
+                    f"main_engine={self.context.main_engine is not None}, "
+                    f"service_manager={self.context.service_manager is not None}",
                     extra={"log_type": "SYSTEM", "scenario": scenario}
                 )
                 self.logger.error(
                     f"❌ [StartupOrchestrator] {error_msg}",
+                    extra={"log_type": "ALERT", "scenario": scenario}
+                )
+                self.logger.critical(
+                    f"[STARTUP] 🔥 启动上下文验证失败，系统可能无法正常运行",
                     extra={"log_type": "ALERT", "scenario": scenario}
                 )
 
@@ -479,7 +532,15 @@ class StartupOrchestrator:
             
             # 关闭日志系统
             success_msg = "启动流程完成"
+            self.logger.debug(
+                "[STARTUP] 开始关闭启动日志系统",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             self.startup_logger.close(success=True, summary=success_msg)
+            self.logger.debug(
+                "[STARTUP] 启动日志系统已关闭",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
 
             return StartupResult(
                 success=True,

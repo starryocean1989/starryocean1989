@@ -835,6 +835,7 @@ class ServiceInitializer:
                         # 检查 UnifiedDataManager 是否有所需方法
                         has_udm_get_contracts = hasattr(unified_data_manager, "get_all_contracts")
                         has_udm_load_bar = hasattr(unified_data_manager, "load_bar_data")
+                        has_udm_get_kline = hasattr(unified_data_manager, "get_kline_data")
                         self.logger.info(
                             "  - UnifiedDataManager.get_all_contracts: %s",
                             "✅" if has_udm_get_contracts else "❌",
@@ -843,7 +844,12 @@ class ServiceInitializer:
                             "  - UnifiedDataManager.load_bar_data: %s",
                             "✅" if has_udm_load_bar else "❌",
                         )
+                        self.logger.info(
+                            "  - UnifiedDataManager.get_kline_data: %s",
+                            "✅" if has_udm_get_kline else "⚠️ 可选",
+                        )
 
+                        # 🔧 修复：只要核心方法存在即可注入，get_kline_data是可选的
                         if has_udm_get_contracts and has_udm_load_bar:
                             # 注入品种列表查询方法（如果存在）
                             if hasattr(unified_data_manager, "get_all_contracts"):
@@ -855,10 +861,16 @@ class ServiceInitializer:
                             # 注入历史K线查询方法
                             self.logger.info("正在注入 load_bar_data 方法...")
                             self.main_engine.load_bar_data = unified_data_manager.load_bar_data  # type: ignore[reportAttributeAccessIssue,reportAssignmentType]
+                            
+                            # 可选：注入 get_kline_data 方法（如果存在）
+                            if has_udm_get_kline:
+                                self.logger.info("正在注入 get_kline_data 方法...")
+                                self.main_engine.get_kline_data = unified_data_manager.get_kline_data  # type: ignore[reportAttributeAccessIssue,reportAssignmentType]
 
                             # 验证注入成功
                             verify_get_contracts = hasattr(self.main_engine, "get_all_contracts")
                             verify_load_bar = hasattr(self.main_engine, "load_bar_data")
+                            verify_get_kline = hasattr(self.main_engine, "get_kline_data")
 
                             self.logger.info("=" * 60)
                             self.logger.info("✅ MainEngine 已集成 UnifiedDataManager 数据接口")
@@ -871,17 +883,22 @@ class ServiceInitializer:
                                 "  - load_bar_data: %s",
                                 "✅ 已注入" if verify_load_bar else "❌ 注入失败",
                             )
+                            self.logger.info(
+                                "  - get_kline_data: %s",
+                                "✅ 已注入" if verify_get_kline else "⚠️ 未注入（可选）",
+                            )
                             self.logger.info("=" * 60)
 
-                            # 🔧 新增：发布 UnifiedDataManager 就绪事件
-                            # 注意：如果 UnifiedDataManager 在步骤7中已经初始化并发布了事件，这里可以跳过
-                            # 但为了确保时序正确，我们仍然在这里发布一次事件（事件系统会自动去重）
+                            # 🎯 关键修复：在依赖注入完成后发布唯一的就绪事件
+                            # 这是唯一的就绪事件发布点，确保：
+                            # 1. UnifiedDataManager 已完全初始化
+                            # 2. 数据接口已注入到 MainEngine
+                            # 3. UI 可以立即使用 MainEngine 的数据接口
                             from backend.infrastructure.data_module_vnpy.core_engine import ChinaStockEngine
 
                             # 获取品种数量（通过 MainEngine 的注入方法）
                             contract_count = 0
                             try:
-                                # 🔧 修复：使用 MainEngine 的注入方法，而不是 UnifiedDataManager
                                 if hasattr(self.main_engine, "get_all_contracts"):
                                     contracts = self.main_engine.get_all_contracts()
                                     if contracts and isinstance(contracts, (list, dict)):
@@ -889,7 +906,7 @@ class ServiceInitializer:
                             except Exception as e:
                                 self.logger.debug(f"获取品种数量失败: {e}")
 
-                            # 发布就绪事件（即使已经在步骤7中发布过，也再次发布以确保UI收到）
+                            # 发布就绪事件（这是唯一的发布点）
                             event_data = {
                                 "contract_count": contract_count,
                                 "mode": "online" if not unified_data_manager.offline_mode else "offline",
@@ -898,11 +915,19 @@ class ServiceInitializer:
 
                             if self.event_engine:
                                 from vnpy.event import Event
-                                # 使用新的事件名称常量
                                 self.event_engine.put(Event(ChinaStockEngine.EVENT_UNIFIED_DATA_MANAGER_READY, event_data))
-                                self.logger.info("✅ 已发布 UnifiedDataManager 就绪事件（从注入逻辑）")
+                                # 🎯 日志埋点：记录到 logs/ai
+                                self.logger.info(
+                                    "✅ 已发布 UnifiedDataManager 就绪事件: 品种数=%d, 模式=%s",
+                                    contract_count,
+                                    event_data["mode"],
+                                    extra={"log_type": "ALERT", "scenario": "data_ready_event"}
+                                )
                             else:
-                                self.logger.warning("⚠️ EventEngine不可用，无法发布就绪事件", extra={"log_type": "SYSTEM"})
+                                self.logger.warning(
+                                    "⚠️ EventEngine不可用，无法发布就绪事件",
+                                    extra={"log_type": "ALERT", "scenario": "data_ready_event"}
+                                )
 
                             # 移除print语句，统一使用logger输出，避免在阶段3之前提前输出
                         else:

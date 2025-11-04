@@ -105,15 +105,35 @@ class BackendInitStage(StartupStage):
                 "[BACKEND-INIT] ℹ️ 开始初始化VNPY核心框架",
                 extra={"log_type": "SYSTEM", "scenario": scenario}
             )
-            await self._initialize_vnpy_core(context)
-            logger.debug(
-                "[BACKEND-INIT] VNPY核心框架初始化完成",
-                extra={"log_type": "SYSTEM", "scenario": scenario}
-            )
-            logger.info(
-                "[BACKEND-INIT] ✅ VNPY核心框架初始化完成",
-                extra={"log_type": "SYSTEM", "scenario": scenario}
-            )
+            try:
+                vnpy_init_start = time.time()
+                await self._initialize_vnpy_core(context)
+                vnpy_init_elapsed = (time.time() - vnpy_init_start) * 1000
+                logger.debug(
+                    f"[BACKEND-INIT] VNPY核心框架初始化完成，耗时={vnpy_init_elapsed:.0f}ms",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                logger.info(
+                    f"[BACKEND-INIT] ✅ VNPY核心框架初始化完成，耗时={vnpy_init_elapsed:.0f}ms",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+            except Exception as e:
+                vnpy_init_elapsed = (time.time() - time.time()) * 1000
+                logger.debug(
+                    f"[BACKEND-INIT] VNPY核心框架初始化异常详情: {type(e).__name__}: {str(e)}",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                logger.error(
+                    f"[BACKEND-INIT] ❌ VNPY核心框架初始化失败: {e}",
+                    exc_info=True,
+                    extra={"log_type": "ALERT", "scenario": scenario}
+                )
+                logger.critical(
+                    f"[BACKEND-INIT] 🔥 VNPY核心框架初始化严重失败，系统可能无法正常运行: {e}",
+                    exc_info=True,
+                    extra={"log_type": "ALERT", "scenario": scenario}
+                )
+                raise
 
             # 2. 并行启动两个任务：
             #    - 任务A：启动监控进程（MonitorLauncherWorker）
@@ -131,41 +151,72 @@ class BackendInitStage(StartupStage):
             cache_result = None
 
             # 并行执行监控进程启动和后端服务初始化
-            monitor_worker = MonitorLauncherWorker()
-            backend_worker = BackendInitializerWorker()
-            logger.debug(
-                "[BACKEND-INIT] Worker已创建: MonitorLauncherWorker, BackendInitializerWorker",
-                extra={"log_type": "SYSTEM", "scenario": scenario}
-            )
+            try:
+                logger.debug(
+                    "[BACKEND-INIT] 创建MonitorLauncherWorker和BackendInitializerWorker",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                monitor_worker = MonitorLauncherWorker()
+                backend_worker = BackendInitializerWorker()
+                logger.debug(
+                    "[BACKEND-INIT] Worker已创建: MonitorLauncherWorker, BackendInitializerWorker",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
 
-            # 并行执行
-            monitor_task = monitor_worker.run(context)
-            backend_task = backend_worker.run(context)
-            logger.debug(
-                "[BACKEND-INIT] 并行任务已启动",
-                extra={"log_type": "SYSTEM", "scenario": scenario}
-            )
-            logger.info(
-                "[BACKEND-INIT] ℹ️ 并行任务已启动，等待完成...",
-                extra={"log_type": "SYSTEM", "scenario": scenario}
-            )
+                # 并行执行
+                logger.debug(
+                    "[BACKEND-INIT] 启动并行任务：monitor_task和backend_task",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                monitor_task = monitor_worker.run(context)
+                backend_task = backend_worker.run(context)
+                logger.debug(
+                    "[BACKEND-INIT] 并行任务已启动",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                logger.info(
+                    "[BACKEND-INIT] ℹ️ 并行任务已启动，等待完成...",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
 
-            # 等待两个任务完成
-            logger.debug(
-                "[BACKEND-INIT] 等待监控进程和后端服务初始化完成...",
-                extra={"log_type": "SYSTEM", "scenario": scenario}
-            )
-            monitor_result, backend_result = await asyncio.gather(monitor_task, backend_task)
-            logger.debug(
-                "[BACKEND-INIT] 监控进程和后端服务初始化完成",
-                extra={"log_type": "SYSTEM", "scenario": scenario}
-            )
-            logger.info(
-                "[BACKEND-INIT] ✅ 监控进程和后端服务初始化完成",
-                extra={"log_type": "SYSTEM", "scenario": scenario}
-            )
+                # 等待两个任务完成
+                logger.debug(
+                    "[BACKEND-INIT] 等待监控进程和后端服务初始化完成...",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                parallel_start = time.time()
+                monitor_result, backend_result = await asyncio.gather(monitor_task, backend_task)
+                parallel_elapsed = (time.time() - parallel_start) * 1000
+                logger.debug(
+                    f"[BACKEND-INIT] 监控进程和后端服务初始化完成，并行耗时={parallel_elapsed:.0f}ms",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                logger.info(
+                    f"[BACKEND-INIT] ✅ 监控进程和后端服务初始化完成，并行耗时={parallel_elapsed:.0f}ms",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+            except Exception as e:
+                logger.debug(
+                    f"[BACKEND-INIT] 并行任务执行异常详情: {type(e).__name__}: {str(e)}",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                logger.error(
+                    f"[BACKEND-INIT] ❌ 并行任务执行失败: {e}",
+                    exc_info=True,
+                    extra={"log_type": "ALERT", "scenario": scenario}
+                )
+                logger.critical(
+                    f"[BACKEND-INIT] 🔥 并行任务执行严重失败，系统可能无法正常运行: {e}",
+                    exc_info=True,
+                    extra={"log_type": "ALERT", "scenario": scenario}
+                )
+                raise
 
             if not monitor_result.success:
+                logger.debug(
+                    f"[BACKEND-INIT] 监控进程启动失败详情: {monitor_result.message}",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
                 logger.error(
                     f"[BACKEND-INIT] ❌ 监控进程启动失败: {monitor_result.message}",
                     extra={"log_type": "ALERT", "scenario": scenario}
@@ -177,6 +228,10 @@ class BackendInitStage(StartupStage):
                 raise RuntimeError(f"监控进程启动失败: {monitor_result.message}")
 
             if not backend_result.success:
+                logger.debug(
+                    f"[BACKEND-INIT] 后端服务初始化失败详情: {backend_result.message}",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
                 logger.error(
                     f"[BACKEND-INIT] ❌ 后端服务初始化失败: {backend_result.message}",
                     extra={"log_type": "ALERT", "scenario": scenario}
@@ -259,26 +314,47 @@ class BackendInitStage(StartupStage):
                     "[BACKEND-INIT] ℹ️ 开始执行8步缓存验证流程",
                     extra={"log_type": "SYSTEM", "scenario": scenario}
                 )
-                cache_worker = CacheValidatorWorker()
-                cache_result = await cache_worker.run(context)
+                try:
+                    cache_worker = CacheValidatorWorker()
+                    logger.debug(
+                        "[BACKEND-INIT] CacheValidatorWorker已创建",
+                        extra={"log_type": "SYSTEM", "scenario": scenario}
+                    )
+                    cache_start = time.time()
+                    cache_result = await cache_worker.run(context)
+                    cache_elapsed = (time.time() - cache_start) * 1000
 
-                if not cache_result.success:
-                    logger.warning(
-                        f"[BACKEND-INIT] ⚠️ 缓存验证失败: {cache_result.message}，但继续执行",
+                    if not cache_result.success:
+                        logger.debug(
+                            f"[BACKEND-INIT] 缓存验证失败详情: {cache_result.message}，耗时={cache_elapsed:.0f}ms",
+                            extra={"log_type": "SYSTEM", "scenario": scenario}
+                        )
+                        logger.warning(
+                            f"[BACKEND-INIT] ⚠️ 缓存验证失败: {cache_result.message}，但继续执行，耗时={cache_elapsed:.0f}ms",
+                            extra={"log_type": "ALERT", "scenario": scenario}
+                        )
+                    else:
+                        logger.debug(
+                            f"[BACKEND-INIT] 8步缓存验证流程完成: {cache_result.message}，耗时={cache_elapsed:.0f}ms",
+                            extra={"log_type": "SYSTEM", "scenario": scenario}
+                        )
+                        logger.info(
+                            f"[BACKEND-INIT] ✅ 8步缓存验证流程完成: {cache_result.message}，耗时={cache_elapsed:.0f}ms",
+                            extra={"log_type": "SYSTEM", "scenario": scenario}
+                        )
+                except Exception as e:
+                    logger.debug(
+                        f"[BACKEND-INIT] 8步缓存验证流程异常详情: {type(e).__name__}: {str(e)}",
+                        extra={"log_type": "SYSTEM", "scenario": scenario}
+                    )
+                    logger.error(
+                        f"[BACKEND-INIT] ❌ 8步缓存验证流程异常: {e}",
+                        exc_info=True,
                         extra={"log_type": "ALERT", "scenario": scenario}
                     )
-                    logger.debug(
-                        f"[BACKEND-INIT] 缓存验证失败详情: {cache_result.message}",
-                        extra={"log_type": "SYSTEM", "scenario": scenario}
-                    )
-                else:
-                    logger.debug(
-                        f"[BACKEND-INIT] 8步缓存验证流程完成: {cache_result.message}",
-                        extra={"log_type": "SYSTEM", "scenario": scenario}
-                    )
-                    logger.info(
-                        f"[BACKEND-INIT] ✅ 8步缓存验证流程完成: {cache_result.message}",
-                        extra={"log_type": "SYSTEM", "scenario": scenario}
+                    logger.warning(
+                        f"[BACKEND-INIT] ⚠️ 缓存验证流程异常，但继续执行: {e}",
+                        extra={"log_type": "ALERT", "scenario": scenario}
                     )
             else:
                 logger.warning(
@@ -299,45 +375,97 @@ class BackendInitStage(StartupStage):
                 "[BACKEND-INIT] ℹ️ 开始初始化业务服务（阶段3.4-3.6）",
                 extra={"log_type": "SYSTEM", "scenario": scenario}
             )
-            await self._initialize_business_services(context)
-            logger.debug(
-                "[BACKEND-INIT] 业务服务初始化完成",
-                extra={"log_type": "SYSTEM", "scenario": scenario}
-            )
-            logger.info(
-                "[BACKEND-INIT] ✅ 业务服务初始化完成",
-                extra={"log_type": "SYSTEM", "scenario": scenario}
-            )
+            try:
+                business_start = time.time()
+                await self._initialize_business_services(context)
+                business_elapsed = (time.time() - business_start) * 1000
+                logger.debug(
+                    f"[BACKEND-INIT] 业务服务初始化完成，耗时={business_elapsed:.0f}ms",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                logger.info(
+                    f"[BACKEND-INIT] ✅ 业务服务初始化完成，耗时={business_elapsed:.0f}ms",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+            except Exception as e:
+                business_elapsed = (time.time() - time.time()) * 1000
+                logger.debug(
+                    f"[BACKEND-INIT] 业务服务初始化异常详情: {type(e).__name__}: {str(e)}",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                logger.error(
+                    f"[BACKEND-INIT] ❌ 业务服务初始化失败: {e}",
+                    exc_info=True,
+                    extra={"log_type": "ALERT", "scenario": scenario}
+                )
+                logger.warning(
+                    f"[BACKEND-INIT] ⚠️ 业务服务初始化失败，但继续执行: {e}",
+                    extra={"log_type": "ALERT", "scenario": scenario}
+                )
 
             # 5. 将服务注册到ServiceManager（暴露给前端）
             logger.debug(
                 "[BACKEND-INIT] 开始将服务注册到ServiceManager",
                 extra={"log_type": "SYSTEM", "scenario": scenario}
             )
-            self._register_services(context)
-            logger.debug(
-                "[BACKEND-INIT] 服务注册完成",
-                extra={"log_type": "SYSTEM", "scenario": scenario}
-            )
-            logger.info(
-                "[BACKEND-INIT] ✅ 服务注册完成",
-                extra={"log_type": "SYSTEM", "scenario": scenario}
-            )
+            try:
+                register_start = time.time()
+                self._register_services(context)
+                register_elapsed = (time.time() - register_start) * 1000
+                logger.debug(
+                    f"[BACKEND-INIT] 服务注册完成，耗时={register_elapsed:.0f}ms",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                logger.info(
+                    f"[BACKEND-INIT] ✅ 服务注册完成，耗时={register_elapsed:.0f}ms",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+            except Exception as e:
+                logger.debug(
+                    f"[BACKEND-INIT] 服务注册异常详情: {type(e).__name__}: {str(e)}",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                logger.error(
+                    f"[BACKEND-INIT] ❌ 服务注册失败: {e}",
+                    exc_info=True,
+                    extra={"log_type": "ALERT", "scenario": scenario}
+                )
+                logger.warning(
+                    f"[BACKEND-INIT] ⚠️ 服务注册失败，但继续执行: {e}",
+                    extra={"log_type": "ALERT", "scenario": scenario}
+                )
 
             # 6. 将服务注入到MainEngine（供前端使用）
             logger.debug(
                 "[BACKEND-INIT] 开始将服务注入到MainEngine",
                 extra={"log_type": "SYSTEM", "scenario": scenario}
             )
-            self._inject_services_to_main_engine(context)
-            logger.debug(
-                "[BACKEND-INIT] 服务注入完成",
-                extra={"log_type": "SYSTEM", "scenario": scenario}
-            )
-            logger.info(
-                "[BACKEND-INIT] ✅ 服务注入到MainEngine完成",
-                extra={"log_type": "SYSTEM", "scenario": scenario}
-            )
+            try:
+                inject_start = time.time()
+                self._inject_services_to_main_engine(context)
+                inject_elapsed = (time.time() - inject_start) * 1000
+                logger.debug(
+                    f"[BACKEND-INIT] 服务注入完成，耗时={inject_elapsed:.0f}ms",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                logger.info(
+                    f"[BACKEND-INIT] ✅ 服务注入到MainEngine完成，耗时={inject_elapsed:.0f}ms",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+            except Exception as e:
+                logger.debug(
+                    f"[BACKEND-INIT] 服务注入异常详情: {type(e).__name__}: {str(e)}",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                logger.error(
+                    f"[BACKEND-INIT] ❌ 服务注入失败: {e}",
+                    exc_info=True,
+                    extra={"log_type": "ALERT", "scenario": scenario}
+                )
+                logger.warning(
+                    f"[BACKEND-INIT] ⚠️ 服务注入失败，但继续执行: {e}",
+                    extra={"log_type": "ALERT", "scenario": scenario}
+                )
 
             # 标记后端已初始化
             context.backend_initialized = True
@@ -357,7 +485,7 @@ class BackendInitStage(StartupStage):
                 extra={"log_type": "SYSTEM", "scenario": scenario}
             )
             stage_logger.info(
-                "✅ 后端服务完全就绪", 
+                f"✅ 后端服务完全就绪 (耗时: {elapsed_ms:.0f}ms)", 
                 extra={"log_type": "STAGE_NODE", "scenario": scenario}
             )
 

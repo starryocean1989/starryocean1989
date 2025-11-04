@@ -2571,33 +2571,25 @@ class ChinaStockEngine:
                 self.unified_data_manager = UnifiedDataManager(self.event_engine)
             stage_logger.info("│ ✅ UnifiedDataManager初始化完成", extra={"log_type": "STAGE_NODE"})
             stage_logger.info("│   - 四层数据融合已启用", extra={"log_type": "STAGE_NODE"})
+            
+            # 记录详细的启动信息到 logs/ai（使用PROGRESS级别）
+            logger.info(
+                "✅ UnifiedDataManager初始化完成：模式=%s, 离线=%s",
+                self.unified_data_manager.get_mode(),
+                self.unified_data_manager.offline_mode,
+                extra={"log_type": "PROGRESS", "scenario": "data_initialization"}
+            )
 
-            # 🔧 新增：在 UnifiedDataManager 初始化完成后立即发布就绪事件
-            # 这样即使 service_initializer 中的注入逻辑没有执行，UI也能收到事件
-            try:
-                # 获取品种数量（如果有的话）
-                contract_count = 0
-                try:
-                    if hasattr(self.unified_data_manager, "get_all_contracts"):
-                        contracts = self.unified_data_manager.get_all_contracts()
-                        if contracts and isinstance(contracts, (list, dict)):
-                            contract_count = len(contracts) if isinstance(contracts, list) else len(contracts.keys())
-                except Exception as e:
-                    logger.debug(f"获取品种数量失败: {e}")
-
-                # 发布就绪事件
-                event_data = {
-                    "contract_count": contract_count,
-                    "mode": "online" if not self.unified_data_manager.offline_mode else "offline",
-                    "unified_data_manager": self.unified_data_manager
-                }
-
-                if self.event_engine:
-                    from vnpy.event import Event
-                    self.event_engine.put(Event(self.EVENT_UNIFIED_DATA_MANAGER_READY, event_data))
-                    logger.info("✅ 已发布 UnifiedDataManager 就绪事件（从步骤7）")
-            except Exception as e:
-                logger.error(f"发布 UnifiedDataManager 就绪事件失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            # 🔧 修复：移除此处的就绪事件发布
+            # 原因：UnifiedDataManager 初始化后数据接口尚未注入到 MainEngine
+            # 应该等待 ServiceInitializer 完成依赖注入后再发布就绪事件
+            # 这样确保 UI 收到事件时，MainEngine 的数据接口已经可用
+            logger.info(
+                "✅ UnifiedDataManager初始化完成：模式=%s, 离线=%s（等待依赖注入后发布就绪事件）",
+                self.unified_data_manager.get_mode(),
+                self.unified_data_manager.offline_mode,
+                extra={"log_type": "PROGRESS", "scenario": "data_initialization"}
+            )
 
             # 获取预加载缓存数量（如果可用）
             preload_count = 64  # 默认值
