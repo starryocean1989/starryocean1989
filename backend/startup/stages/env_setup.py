@@ -64,32 +64,107 @@ class EnvSetupStage(StartupStage):
             print("✅ Python字节码缓存已禁用")
             
             # DEBUG日志（只写入AI日志文件）
-            logger.debug(f"[ENV-SETUP] Python解释器: {sys.executable}")
-            logger.debug(f"[ENV-SETUP] Python版本: {sys.version}")
-            logger.debug(f"[ENV-SETUP] 平台: {sys.platform}")
+            logger.debug(
+                f"[ENV-SETUP] Python解释器: {sys.executable}",
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+            )
+            logger.debug(
+                f"[ENV-SETUP] Python版本: {sys.version}",
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+            )
+            logger.debug(
+                f"[ENV-SETUP] 平台: {sys.platform}",
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+            )
+            logger.debug(
+                f"[ENV-SETUP] Python路径条目数: {len(sys.path)}",
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+            )
+            logger.debug(
+                f"[ENV-SETUP] 已禁用字节码缓存: PYTHONDONTWRITEBYTECODE={os.environ.get('PYTHONDONTWRITEBYTECODE')}",
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+            )
+            
+            # INFO日志（记录关键配置）
+            logger.info(
+                f"[ENV-SETUP] 环境准备: Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro} on {sys.platform}",
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+            )
 
             # 设置项目路径
             project_root = context.project_root
-            if str(project_root) not in sys.path:
+            path_already_in_sys_path = str(project_root) in sys.path
+            if not path_already_in_sys_path:
                 sys.path.insert(0, str(project_root))
+                logger.debug(
+                    f"[ENV-SETUP] 项目路径已添加到sys.path首位: {project_root}",
+                    extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+                )
+            else:
+                logger.debug(
+                    f"[ENV-SETUP] 项目路径已存在于sys.path: {project_root}",
+                    extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+                )
             print("✅ 项目路径已添加到sys.path")
             
             # DEBUG日志（只写入AI日志文件）
-            logger.debug(f"[ENV-SETUP] 项目根目录: {project_root}")
-            logger.debug(f"[ENV-SETUP] sys.path长度: {len(sys.path)}")
+            logger.debug(
+                f"[ENV-SETUP] 项目根目录: {project_root}",
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+            )
+            logger.debug(
+                f"[ENV-SETUP] sys.path条目数: {len(sys.path)}",
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+            )
+            logger.debug(
+                f"[ENV-SETUP] sys.path前5项: {sys.path[:5]}",
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+            )
 
             # 设置Python解释器路径（WebEngine子进程需要）
+            python_executable_set = False
             if not os.environ.get("PYTHONEXECUTABLE"):
                 os.environ["PYTHONEXECUTABLE"] = sys.executable
+                python_executable_set = True
+                logger.debug(
+                    f"[ENV-SETUP] 设置PYTHONEXECUTABLE: {sys.executable}",
+                    extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+                )
+            else:
+                logger.debug(
+                    f"[ENV-SETUP] PYTHONEXECUTABLE已存在: {os.environ.get('PYTHONEXECUTABLE')}",
+                    extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+                )
+            
+            qt_webengine_set = False
             if not os.environ.get("QT_WEBENGINE_PYTHON_EXECUTABLE"):
                 os.environ["QT_WEBENGINE_PYTHON_EXECUTABLE"] = sys.executable
-            print("✅ Python解释器路径已设置")
-            print("✅ Qt WebEngine解释器路径已设置")
+                qt_webengine_set = True
+                logger.debug(
+                    f"[ENV-SETUP] 设置QT_WEBENGINE_PYTHON_EXECUTABLE: {sys.executable}",
+                    extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+                )
+            else:
+                logger.debug(
+                    f"[ENV-SETUP] QT_WEBENGINE_PYTHON_EXECUTABLE已存在: {os.environ.get('QT_WEBENGINE_PYTHON_EXECUTABLE')}",
+                    extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+                )
+            
+            if python_executable_set or qt_webengine_set:
+                print("✅ Python解释器路径已设置")
+                print("✅ Qt WebEngine解释器路径已设置")
 
             # 设置Qt环境变量（避免缩放问题）
             os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
             os.environ["QT_ENABLE_HIGHDPI_SCALING"] = "0"
             print("✅ Qt高DPI缩放已配置")
+            
+            # DEBUG日志（记录Qt环境变量配置）
+            logger.debug(
+                f"[ENV-SETUP] Qt环境变量: QT_AUTO_SCREEN_SCALE_FACTOR={os.environ.get('QT_AUTO_SCREEN_SCALE_FACTOR')}, "
+                f"QT_ENABLE_HIGHDPI_SCALING={os.environ.get('QT_ENABLE_HIGHDPI_SCALING')}",
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+            )
 
             # 设置配置文件路径
             config_file = project_root / "config" / "terminal_config.json"
@@ -98,8 +173,26 @@ class EnvSetupStage(StartupStage):
             print("✅ 配置文件路径已设置")
             
             # DEBUG日志（只写入AI日志文件）
-            logger.debug(f"[ENV-SETUP] 配置文件路径: {config_file}")
-            logger.debug(f"[ENV-SETUP] 配置文件存在: {config_file.exists()}")
+            logger.debug(
+                f"[ENV-SETUP] 配置文件路径: {config_file}",
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+            )
+            config_exists = config_file.exists()
+            logger.debug(
+                f"[ENV-SETUP] 配置文件存在: {config_exists}",
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+            )
+            if config_exists:
+                config_size = config_file.stat().st_size
+                logger.debug(
+                    f"[ENV-SETUP] 配置文件大小: {config_size} bytes",
+                    extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+                )
+            else:
+                logger.warning(
+                    f"[ENV-SETUP] ⚠️ 配置文件不存在: {config_file}，将使用默认配置",
+                    extra={"log_type": "ALERT", "scenario": "application_startup"}
+                )
 
             # 注意：网络时间同步已移至阶段3的8步验证流程（步骤2）中执行
             # 这里不再执行网络时间同步，确保单一事实原则
@@ -107,11 +200,20 @@ class EnvSetupStage(StartupStage):
             # 关键：在环境准备阶段完成后，立即设置MemoryHandler缓冲所有日志
             # 防止在日志系统初始化之前有任何日志输出
             root_logger = logging.getLogger()
+            existing_handlers_count = len(root_logger.handlers)
+            logger.debug(
+                f"[ENV-SETUP] 清理现有handlers: {existing_handlers_count}个",
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+            )
+            
             # 移除已有的handlers（如果有）
             for handler in root_logger.handlers[:]:
                 root_logger.removeHandler(handler)
                 if hasattr(handler, 'close'):
-                    handler.close()
+                    try:
+                        handler.close()
+                    except Exception:
+                        pass
             
             # 创建MemoryHandler作为临时缓冲（容量10000条）
             # target先设为None，日志系统初始化后再设置
@@ -120,6 +222,11 @@ class EnvSetupStage(StartupStage):
             root_logger.setLevel(logging.DEBUG)
             root_logger.addHandler(memory_handler)
             
+            logger.debug(
+                f"[ENV-SETUP] MemoryHandler已创建: 容量={memory_handler.capacity}条, 级别={logging.getLevelName(memory_handler.level)}",
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+            )
+            
             # 存储到context中，供日志系统初始化阶段使用
             context._memory_handler = memory_handler
 
@@ -127,6 +234,13 @@ class EnvSetupStage(StartupStage):
 
             # 输出完成信息
             print(f"✅ 环境准备完成 ({elapsed_ms:.0f}ms)")
+            
+            # INFO日志（记录环境准备完成信息）
+            logger.info(
+                f"[ENV-SETUP] 环境准备完成: 耗时={elapsed_ms:.0f}ms, 项目路径={project_root}, "
+                f"配置文件={'存在' if config_file.exists() else '不存在'}",
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+            )
 
             return StageResult(
                 success=True,
@@ -138,6 +252,20 @@ class EnvSetupStage(StartupStage):
             elapsed_ms = (time.time() - start_time) * 1000
 
             print(f"❌ 环境准备失败: {str(e)}")
+            
+            # 错误日志（输出到Terminal和AI日志文件）
+            logger.error(
+                f"❌ 环境准备失败: {str(e)}",
+                extra={"log_type": "ALERT", "scenario": "application_startup"},
+                exc_info=True
+            )
+            
+            # 记录关键环境信息用于调试
+            logger.debug(
+                f"[ENV-SETUP] 错误发生时环境信息: Python={sys.executable}, 平台={sys.platform}, "
+                f"项目路径={getattr(context, 'project_root', 'N/A')}",
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+            )
 
             return StageResult(
                 success=False,

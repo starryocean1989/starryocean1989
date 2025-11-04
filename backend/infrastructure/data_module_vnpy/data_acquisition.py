@@ -1419,7 +1419,10 @@ class SymbolLoader:
         self.all_symbols: Optional[pd.DataFrame] = None
         self.classified_symbols: Dict[str, List[Dict[str, Any]]] = {}
 
-        logger.info("✅ SymbolLoader 初始化完成")
+        logger.info(
+            "✅ SymbolLoader 初始化完成",
+            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+        )
 
     def _register_classifiers(self):
         """注册所有分类器"""
@@ -1428,13 +1431,19 @@ class SymbolLoader:
         self.classifier_registry.register(BeijingStockClassifier())
         self.classifier_registry.register(T0FundClassifier())
         self.classifier_registry.register(ConvertibleBondClassifier())
-        logger.info("✅ 已注册 5 个品种分类器")
+        logger.info(
+            "✅ 已注册 5 个品种分类器",
+            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+        )
 
     def _register_filters(self):
         """注册所有过滤器"""
         self.filter_chain.add_filter(InvalidDataFilter(check_name=False))
         self.filter_chain.add_filter(DuplicateSymbolFilter())
-        logger.info("✅ 已注册 2 个品种过滤器")
+        logger.info(
+            "✅ 已注册 2 个品种过滤器",
+            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+        )
 
     async def load_from_api_async(self) -> pd.DataFrame:
         """异步从TDX API加载所有品种
@@ -1442,7 +1451,10 @@ class SymbolLoader:
         Returns:
             包含所有品种的DataFrame（code, name, market列）
         """
-        logger.info("开始从TDX API加载品种列表...")
+        logger.info(
+            "开始从TDX API加载品种列表...",
+            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+        )
 
         # 获取服务器配置
         from backend.infrastructure.tdx_asyncio.constants import HQ_HOSTS_ALL
@@ -1466,10 +1478,16 @@ class SymbolLoader:
             # 🔧 修复：AsyncBaseSocketClient.connect() 的参数名是 time_out（下划线），不是 timeout
             connected = await api.connect(ip, port, time_out=5.0)
             if not connected:
-                logger.error(f"❌ 连接服务器失败: {ip}:{port}", extra={"log_type": "SYSTEM"})
+                logger.error(
+                f"❌ 连接服务器失败: {ip}:{port}",
+                extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
+            )
                 return pd.DataFrame()
 
-            logger.info(f"✅ 已连接到服务器: {ip}:{port}")
+            logger.info(
+                f"✅ 已连接到服务器: {ip}:{port}",
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+            )
 
             # 并发获取深证和上证品种（分页获取所有数据）
             async def fetch_all_market_symbols(market: int) -> pd.DataFrame:
@@ -1495,7 +1513,10 @@ class SymbolLoader:
                             break
                         
                         all_results.extend(page_result)
-                        logger.debug(f"市场 {market} 第 {start//page_size + 1} 页: 获取 {len(page_result)} 个品种")
+                        logger.debug(
+                            f"市场 {market} 第 {start//page_size + 1} 页: 获取 {len(page_result)} 个品种",
+                            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                        )
                         
                         # 如果返回的数据少于1000条，说明已经是最后一页
                         if len(page_result) < page_size:
@@ -1505,7 +1526,11 @@ class SymbolLoader:
                         start += page_size
                         
                     except Exception as e:
-                        logger.error(f"❌ [SymbolLoader] 获取市场 {market} 第 {start//page_size + 1} 页失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+                        logger.error(
+                            f"❌ [SymbolLoader] 获取市场 {market} 第 {start//page_size + 1} 页失败: {e}",
+                            exc_info=True,
+                            extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
+                        )
                         break
                 
                 if not all_results:
@@ -1514,7 +1539,10 @@ class SymbolLoader:
                 # 转换为DataFrame
                 df = pd.DataFrame(all_results)
                 df["market"] = market
-                logger.info(f"✅ 市场 {market} 总共获取 {len(df)} 个品种")
+                logger.info(
+                    f"✅ 市场 {market} 总共获取 {len(df)} 个品种",
+                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                )
                 return df
             
             # 并发获取两个市场的所有品种
@@ -1530,11 +1558,17 @@ class SymbolLoader:
             
             for market, result in enumerate(results):
                 if isinstance(result, Exception):
-                    logger.error(f"❌ 获取市场 {market} 品种失败: {result}", extra={"log_type": "SYSTEM"})
+                    logger.error(
+                        f"❌ 获取市场 {market} 品种失败: {result}",
+                        extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
+                    )
                     continue
                 
                 if result is None or (isinstance(result, pd.DataFrame) and result.empty):
-                    logger.warning(f"⚠️ 市场 {market} 品种列表为空", extra={"log_type": "SYSTEM"})
+                    logger.warning(
+                        f"⚠️ 市场 {market} 品种列表为空",
+                        extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
+                    )
                     continue
                 
                 # result已经是DataFrame，直接添加
@@ -1550,11 +1584,18 @@ class SymbolLoader:
             # 代码标准化（补齐6位）
             merged_df["code"] = merged_df["code"].astype(str).str.zfill(6)
 
-            logger.info(f"✅ 从TDX API加载品种完成，共 {len(merged_df)} 个品种")
+            logger.info(
+                f"✅ 从TDX API加载品种完成，共 {len(merged_df)} 个品种",
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+            )
             return merged_df
 
         except Exception as e:
-            logger.error(f"❌ [SymbolLoader] 从TDX API加载品种失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            logger.error(
+                f"❌ [SymbolLoader] 从TDX API加载品种失败: {e}",
+                exc_info=True,
+                extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
+            )
             return pd.DataFrame()
 
         finally:
@@ -3447,29 +3488,71 @@ class TdxBinaryReader(BaseReader):
         Returns:
             DataFrame
         """
+        import time
+        start_time = time.time()
+        
         file_path = self._get_file_path(symbol, data_type, market)
 
+        self.logger.debug(
+            f"[TdxDataReader] 开始读取: symbol={symbol}, data_type={data_type}, market={market}, file_path={file_path}",
+            extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"}
+        )
+
         if not file_path.exists():
-            self.logger.debug(f"文件不存在: {file_path}")
+            self.logger.debug(
+                f"[TdxDataReader] 文件不存在: {file_path}",
+                extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"}
+            )
             return pd.DataFrame()
 
         try:
             # 读取二进制数据
+            read_start_time = time.time()
             with open(file_path, "rb") as f:
                 raw_data = f.read()
+            read_elapsed = time.time() - read_start_time
+            
+            file_size = len(raw_data)
+            self.logger.debug(
+                f"[TdxDataReader] 文件读取完成: 文件大小={file_size} bytes, 耗时={read_elapsed:.3f}s",
+                extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"}
+            )
 
             # 解码数据
+            decode_start_time = time.time()
             df = self._decode_binary(raw_data, data_type)
+            decode_elapsed = time.time() - decode_start_time
 
             # 如果是北证股票，应用解码器
             if market == "bj" and BjStockDecoder.is_bj_stock(symbol):
+                bj_decode_start_time = time.time()
                 df = BjStockDecoder.decode_bj_stock(df)
+                bj_decode_elapsed = time.time() - bj_decode_start_time
+                self.logger.debug(
+                    f"[TdxDataReader] 北证股票解码完成: 耗时={bj_decode_elapsed:.3f}s",
+                    extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"}
+                )
 
-            self.logger.debug(f"读取成功: {symbol}/{data_type}, 记录数={len(df)}")
+            total_elapsed = time.time() - start_time
+            record_count = len(df)
+            self.logger.debug(
+                f"[TdxDataReader] 读取成功: {symbol}/{data_type}, 记录数={record_count}, "
+                f"解码耗时={decode_elapsed:.3f}s, 总耗时={total_elapsed:.3f}s",
+                extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"}
+            )
             return df
 
         except Exception as e:
-            self.logger.error(f"❌ [TdxDataReader] 读取文件失败: {file_path}, 错误: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            total_elapsed = time.time() - start_time
+            self.logger.error(
+                f"[TdxDataReader] ❌ 读取文件失败: {file_path}, 错误: {e}, 耗时={total_elapsed:.3f}s",
+                exc_info=True,
+                extra={"log_type": "ALERT", "scenario": "tdx_data_read"}
+            )
+            self.logger.debug(
+                f"[TdxDataReader] 异常类型: {type(e).__name__}, 异常详情: {str(e)}",
+                extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"}
+            )
             return pd.DataFrame()
 
     async def read_single_async(self, symbol: str, data_type: str, market: str) -> pd.DataFrame:
@@ -3483,34 +3566,84 @@ class TdxBinaryReader(BaseReader):
         Returns:
             DataFrame
         """
+        import time
+        start_time = time.time()
+        
         file_path = self._get_file_path(symbol, data_type, market)
 
+        self.logger.debug(
+            f"[TdxDataReader] 开始异步读取: symbol={symbol}, data_type={data_type}, market={market}, file_path={file_path}",
+            extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"}
+        )
+
         if not file_path.exists():
-            self.logger.debug(f"文件不存在: {file_path}")
+            self.logger.debug(
+                f"[TdxDataReader] 文件不存在: {file_path}",
+                extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"}
+            )
             return pd.DataFrame()
 
         try:
             # 使用native_iocp异步读取（如可用）
+            read_start_time = time.time()
             if compat_aopen:
+                self.logger.debug(
+                    "[TdxDataReader] 使用native_iocp异步读取",
+                    extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"}
+                )
                 async with compat_aopen(file_path, "rb") as f:
                     raw_data = await f.read()
             else:
                 # 降级到同步读取
+                self.logger.debug(
+                    "[TdxDataReader] 降级到同步读取（compat_aopen不可用）",
+                    extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"}
+                )
                 with open(file_path, "rb") as f:
                     raw_data = f.read()
+            read_elapsed = time.time() - read_start_time
+            
+            file_size = len(raw_data)
+            self.logger.debug(
+                f"[TdxDataReader] 文件异步读取完成: 文件大小={file_size} bytes, 耗时={read_elapsed:.3f}s",
+                extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"}
+            )
 
             # 解码数据
+            decode_start_time = time.time()
             df = self._decode_binary(raw_data, data_type)
+            decode_elapsed = time.time() - decode_start_time
 
             # 如果是北证股票，应用解码器
             if market == "bj" and BjStockDecoder.is_bj_stock(symbol):
+                bj_decode_start_time = time.time()
                 df = BjStockDecoder.decode_bj_stock(df)
+                bj_decode_elapsed = time.time() - bj_decode_start_time
+                self.logger.debug(
+                    f"[TdxDataReader] 北证股票解码完成: 耗时={bj_decode_elapsed:.3f}s",
+                    extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"}
+                )
 
-            self.logger.debug(f"异步读取成功: {symbol}/{data_type}, 记录数={len(df)}")
+            total_elapsed = time.time() - start_time
+            record_count = len(df)
+            self.logger.debug(
+                f"[TdxDataReader] 异步读取成功: {symbol}/{data_type}, 记录数={record_count}, "
+                f"解码耗时={decode_elapsed:.3f}s, 总耗时={total_elapsed:.3f}s",
+                extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"}
+            )
             return df
 
         except Exception as e:
-            self.logger.error(f"❌ [TdxDataReader] 异步读取文件失败: {file_path}, 错误: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            total_elapsed = time.time() - start_time
+            self.logger.error(
+                f"[TdxDataReader] ❌ 异步读取文件失败: {file_path}, 错误: {e}, 耗时={total_elapsed:.3f}s",
+                exc_info=True,
+                extra={"log_type": "ALERT", "scenario": "tdx_data_read"}
+            )
+            self.logger.debug(
+                f"[TdxDataReader] 异常类型: {type(e).__name__}, 异常详情: {str(e)}",
+                extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"}
+            )
             return pd.DataFrame()
 
     def _decode_binary(self, raw_data: bytes, data_type: str) -> pd.DataFrame:
@@ -3523,13 +3656,33 @@ class TdxBinaryReader(BaseReader):
         Returns:
             DataFrame
         """
+        import time
+        start_time = time.time()
+        data_size = len(raw_data)
+        
+        self.logger.debug(
+            f"[TdxDataReader] 开始解码二进制数据: data_type={data_type}, 数据大小={data_size} bytes",
+            extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"}
+        )
+        
         if data_type == "day":
-            return self._decode_day_data(raw_data)
+            df = self._decode_day_data(raw_data)
         elif data_type in ["5min", "1min"]:
-            return self._decode_min_data(raw_data)
+            df = self._decode_min_data(raw_data)
         else:
-            self.logger.warning(f"不支持的数据类型: {data_type}", extra={"log_type": "SYSTEM"})
+            self.logger.warning(
+                f"[TdxDataReader] ⚠️ 不支持的数据类型: {data_type}",
+                extra={"log_type": "ALERT", "scenario": "tdx_data_read"}
+            )
             return pd.DataFrame()
+        
+        elapsed = time.time() - start_time
+        record_count = len(df)
+        self.logger.debug(
+            f"[TdxDataReader] 解码完成: data_type={data_type}, 记录数={record_count}, 耗时={elapsed:.3f}s",
+            extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"}
+        )
+        return df
 
     def _decode_day_data(self, raw_data: bytes) -> pd.DataFrame:
         """解码日线数据
@@ -3732,7 +3885,10 @@ class TdxDataReader:
         self.binary_reader = TdxBinaryReader(tdx_root_path)
         self.tdx_root = self.binary_reader.tdx_root
 
-        self.logger.info(f"✅ TdxDataReader初始化完成，TDX根目录: {self.tdx_root}")
+        self.logger.info(
+            f"✅ TdxDataReader初始化完成，TDX根目录: {self.tdx_root}",
+            extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"}
+        )
 
     async def fetch_async(self, symbol: str, data_type: str, market: str) -> pd.DataFrame:
         """异步读取单个TDX文件（使用native_iocp）
@@ -3771,7 +3927,10 @@ class TdxDataReader:
             return {}
 
         total_tasks = len(symbols)
-        self.logger.info(f"🚀 开始TDX批量读取: 品种数={total_tasks}, 类型={data_type}")
+        self.logger.info(
+            f"🚀 开始TDX批量读取: 品种数={total_tasks}, 类型={data_type}",
+            extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"}
+        )
 
         # 1. 创建任务配置
         from .load_balancer import LoadBalancer, TaskConfig, TaskCategory
@@ -3795,7 +3954,8 @@ class TdxDataReader:
 
         self.logger.info(
             f"📊 TDX读取配置: 进程={num_processes}, "
-            f"协程={max_coroutines}, 压力={lb_config.get('pressure_score', 0):.1f}/100"
+            f"协程={max_coroutines}, 压力={lb_config.get('pressure_score', 0):.1f}/100",
+            extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"}
         )
 
         # 3. 初始化多进程对象
@@ -3843,14 +4003,23 @@ class TdxDataReader:
                     try:
                         progress_callback(completed, total_tasks, f"已读取: {symbol}")
                     except Exception as e:
-                        self.logger.warning(f"⚠️ [TdxDataReader] 进度回调执行失败: {e}", extra={"log_type": "SYSTEM"})
+                        self.logger.warning(
+                            f"⚠️ [TdxDataReader] 进度回调执行失败: {e}",
+                            extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"}
+                        )
                         pass
 
             except Exception as e:
                 # 检查进程状态
-                self.logger.warning(f"⚠️ [TdxDataReader] 批量读取过程异常: {e}", extra={"log_type": "SYSTEM"})
+                self.logger.warning(
+                    f"⚠️ [TdxDataReader] 批量读取过程异常: {e}",
+                    extra={"log_type": "ALERT", "scenario": "tdx_data_read"}
+                )
                 if not any(p.is_alive() for p in processes):
-                    self.logger.warning("⚠️ [TdxDataReader] 所有进程已退出", extra={"log_type": "SYSTEM"})
+                    self.logger.warning(
+                        "⚠️ [TdxDataReader] 所有进程已退出",
+                        extra={"log_type": "ALERT", "scenario": "tdx_data_read"}
+                    )
                     break
 
         # 7. 清理进程
@@ -3859,7 +4028,10 @@ class TdxDataReader:
                 p.terminate()
                 p.join(timeout=1)
 
-        self.logger.info(f"✅ TDX批量读取完成: {len(results)}/{total_tasks}")
+        self.logger.info(
+            f"✅ TDX批量读取完成: {len(results)}/{total_tasks}",
+            extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"}
+        )
         return results
 
     @staticmethod
@@ -4035,10 +4207,16 @@ class TdxDynamicExecutor:
                     try:
                         progress_callback(completed, total, "")
                     except Exception as e:
-                        logger.warning(f"⚠️ [TdxDataReader] 进度回调执行失败: {e}", extra={"log_type": "SYSTEM"})
+                        logger.warning(
+                            f"⚠️ [TdxDataReader] 进度回调执行失败: {e}",
+                            extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"}
+                        )
                         pass
             except Exception as e:
-                logger.warning(f"⚠️ [TdxDataReader] 批量读取异常: {e}", extra={"log_type": "SYSTEM"})
+                logger.warning(
+                    f"⚠️ [TdxDataReader] 批量读取异常: {e}",
+                    extra={"log_type": "ALERT", "scenario": "tdx_data_read"}
+                )
                 pass
 
         # 等待所有进程结束

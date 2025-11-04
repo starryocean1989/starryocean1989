@@ -9,6 +9,12 @@ import logging
 import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any
+try:
+    from typing import TYPE_CHECKING
+    if TYPE_CHECKING:
+        from asyncio import Task
+except ImportError:
+    Task = Any
 
 logger = logging.getLogger("backend.startup.context")
 
@@ -61,7 +67,7 @@ class StartupContext:
         self.ui_initialized: bool = False
 
         # UI预加载
-        self.ui_preload_task = None  # asyncio.Task
+        self.ui_preload_task: Optional[Task] = None  # asyncio.Task
         self.ui_preloaded: bool = False
         
         # 阶段结果存储（用于日志输出）

@@ -6677,6 +6677,9 @@ class SystemManager(BaseWidget, LoggerMixin):
             import threading
 
             def do_read():
+                import time
+                start_time = time.time()
+                
                 # 使用ai_log_process上下文管理器
                 try:
                     from backend.infrastructure.system_vnpy.unified_log_system import (
@@ -6698,18 +6701,30 @@ class SystemManager(BaseWidget, LoggerMixin):
                         # DEBUG日志（只写入AI日志文件）
                         self.logger.debug(
                             "[TDX-READ] 开始读取TDX数据",
-                            extra={"scenario": "tdx_data_read"},
+                            extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
                         )
                         self.logger.debug(
-                            f"[TDX-READ] 配置: data_types={data_types}, markets={markets}, tdx_root={tdx_root}",
-                            extra={"scenario": "tdx_data_read"},
+                            f"[TDX-READ] 配置详情: data_types={data_types}, markets={markets}, tdx_root={tdx_root}",
+                            extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                        )
+                        self.logger.debug(
+                            f"[TDX-READ] 数据类型数量: {len(data_types)}, 市场数量: {len(markets)}",
+                            extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                        )
+                        self.logger.debug(
+                            f"[TDX-READ] 系统服务实例: {self.system_service}",
+                            extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                        )
+                        self.logger.info(
+                            f"[TDX-READ] TDX数据读取任务开始: 数据类型={data_types}, 市场={markets}",
+                            extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
                         )
                         
                         try:
                             if not self.system_service:
                                 self.logger.error(
-                                    "[TDX-READ] 系统管理服务不可用",
-                                    extra={"scenario": "tdx_data_read"},
+                                    "[TDX-READ] ❌ 系统管理服务不可用",
+                                    extra={"log_type": "ALERT", "scenario": "tdx_data_read"},
                                 )
                                 stage_logger.error(
                                     "❌ 系统管理服务不可用",
@@ -6717,26 +6732,47 @@ class SystemManager(BaseWidget, LoggerMixin):
                                 )
                                 return
                             
+                            self.logger.debug(
+                                "[TDX-READ] 调用系统服务read_tdx_data方法...",
+                                extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                            )
                             result = self.system_service.read_tdx_data(config, progress_callback)
+                            elapsed = time.time() - start_time
+                            self.logger.debug(
+                                f"[TDX-READ] 系统服务read_tdx_data方法调用完成: 耗时={elapsed:.2f}s",
+                                extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                            )
                             
                             # 记录结果
                             if result and result.get("success"):
                                 stats = result.get("stats", {})
                                 completed = stats.get("completed", 0)
                                 total = stats.get("total", 0)
+                                success_count = stats.get("success_count", 0)
+                                failed_count = stats.get("failed_count", 0)
+                                self.logger.debug(
+                                    f"[TDX-READ] 读取结果详情: completed={completed}, total={total}, "
+                                    f"success_count={success_count}, failed_count={failed_count}",
+                                    extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                                )
                                 self.logger.info(
-                                    f"[TDX-READ] 读取完成: 完成={completed}/{total}",
-                                    extra={"scenario": "tdx_data_read"},
+                                    f"[TDX-READ] 读取完成: 完成={completed}/{total}, 成功={success_count}, 失败={failed_count}, 耗时={elapsed:.2f}s",
+                                    extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
                                 )
                                 stage_logger.info(
-                                    f"✅ TDX数据读取完成: 完成={completed}/{total}",
+                                    f"✅ TDX数据读取完成: 完成={completed}/{total}, 成功={success_count}, 失败={failed_count}, 耗时={elapsed:.2f}s",
                                     extra={"log_type": "STAGE_NODE", "scenario": "tdx_data_read"},
                                 )
                             else:
                                 msg = result.get("message", "读取失败") if result else "读取失败"
+                                elapsed = time.time() - start_time
                                 self.logger.warning(
-                                    f"[TDX-READ] 读取失败: {msg}",
-                                    extra={"scenario": "tdx_data_read"},
+                                    f"[TDX-READ] ⚠️ 读取失败: {msg}, 耗时={elapsed:.2f}s",
+                                    extra={"log_type": "ALERT", "scenario": "tdx_data_read"},
+                                )
+                                self.logger.debug(
+                                    f"[TDX-READ] 失败结果详情: {result}",
+                                    extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
                                 )
                                 stage_logger.warning(
                                     f"⚠️ TDX数据读取失败: {msg}",
@@ -6747,10 +6783,15 @@ class SystemManager(BaseWidget, LoggerMixin):
                             self.reader_finished_signal.emit(result)
                             
                         except Exception as e:
+                            elapsed = time.time() - start_time
                             self.logger.error(
-                                f"[TDX-READ] 读取TDX数据失败: {e}",
+                                f"[TDX-READ] ❌ 读取TDX数据失败: {e}, 耗时={elapsed:.2f}s",
                                 exc_info=True,
-                                extra={"scenario": "tdx_data_read"},
+                                extra={"log_type": "ALERT", "scenario": "tdx_data_read"},
+                            )
+                            self.logger.debug(
+                                f"[TDX-READ] 异常类型: {type(e).__name__}, 异常详情: {str(e)}",
+                                extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
                             )
                             stage_logger.error(
                                 f"❌ TDX数据读取异常: {e}",
@@ -6765,14 +6806,36 @@ class SystemManager(BaseWidget, LoggerMixin):
                             )
                 except ImportError:
                     # 降级处理：日志系统不可用时使用简单日志
+                    self.logger.warning(
+                        "[TDX-READ] ⚠️ 日志系统不可用，使用降级模式",
+                        extra={"log_type": "ALERT", "scenario": "tdx_data_read"},
+                    )
                     try:
                         if not self.system_service:
+                            self.logger.error(
+                                "[TDX-READ] ❌ 系统管理服务不可用（降级模式）",
+                                extra={"log_type": "ALERT", "scenario": "tdx_data_read"},
+                            )
                             return
+                        self.logger.debug(
+                            "[TDX-READ] 降级模式：调用系统服务read_tdx_data方法",
+                            extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                        )
                         result = self.system_service.read_tdx_data(config, progress_callback)
+                        elapsed = time.time() - start_time
+                        self.logger.info(
+                            f"[TDX-READ] TDX数据读取完成（降级模式）: 耗时={elapsed:.2f}s",
+                            extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                        )
                         # 通过Signal发送完成状态
                         self.reader_finished_signal.emit(result)
                     except Exception as e:
-                        self.logger.error("读取通达信数据失败: %s", e)
+                        elapsed = time.time() - start_time
+                        self.logger.error(
+                            f"[TDX-READ] ❌ 读取通达信数据失败（降级模式）: {e}, 耗时={elapsed:.2f}s",
+                            exc_info=True,
+                            extra={"log_type": "ALERT", "scenario": "tdx_data_read"},
+                        )
                         # 发送错误结果
                         self.reader_finished_signal.emit(
                             {
@@ -6786,7 +6849,11 @@ class SystemManager(BaseWidget, LoggerMixin):
             thread.start()
 
         except Exception as e:
-            self.logger.error("启动读取任务失败: %s", e)
+            self.logger.error(
+                "启动读取任务失败: %s", e,
+                extra={"log_type": "ALERT", "scenario": "tdx_data_read"},
+                exc_info=True
+            )
 
             if self.reader_status_label:
                 self.reader_status_label.setText("状态: 启动失败")
@@ -6798,6 +6865,14 @@ class SystemManager(BaseWidget, LoggerMixin):
     def _test_bandwidth_full(self):
         """测试服务商带宽（完整测试）."""
         try:
+            # 导入AI日志流程管理器
+            try:
+                from backend.infrastructure.system_vnpy.unified_log_system import (
+                    ai_log_process,
+                )
+            except ImportError:
+                ai_log_process = None
+
             self.test_bandwidth_btn.setEnabled(False)
             self.test_bandwidth_btn.setText("测试中...")
 
@@ -6811,10 +6886,54 @@ class SystemManager(BaseWidget, LoggerMixin):
 
             def run_test():
                 try:
+                    # 使用ai_log_process包裹手动测速流程
+                    if ai_log_process:
+                        stage_logger = logging.getLogger("task.manual_speedtest")
+                        with ai_log_process("manual_speedtest", {
+                            "test_type": "full_bandwidth",
+                            "trigger": "manual",
+                        }):
+                            # 阶段节点日志（输出到Terminal）
+                            stage_logger.info(
+                                "📍 手动测速开始: 正在连接到服务器...",
+                                extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
+                            )
+                            
+                            # 详细日志（只写入AI日志文件）
+                            self.logger.debug(
+                                "[MANUAL-SPEEDTEST] 开始手动测速流程",
+                                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                            )
+                            
+                            # 执行测速逻辑
+                            _run_test_inner()
+                            
+                            # 阶段节点日志（输出到Terminal）
+                            stage_logger.info(
+                                "✅ 手动测速完成",
+                                extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
+                            )
+                    else:
+                        # 如果ai_log_process不可用，直接执行
+                        _run_test_inner()
+                except Exception as e:
+                    self.logger.error(
+                        "手动测速流程异常: %s", e,
+                        extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
+                        exc_info=True
+                    )
+                    self.bandwidth_test_error_signal.emit(f"测速流程异常: {str(e)}")
+                    
+            def _run_test_inner():
+                try:
                     service = self.service_manager.get_service(
                         "system_manager_service", silent=True
                     )
                     if not service:
+                        self.logger.error(
+                            "无法获取系统服务",
+                            extra={"log_type": "ALERT", "scenario": "manual_speedtest"}
+                        )
                         self.bandwidth_test_error_signal.emit("无法获取系统服务")
                         return
 
@@ -6896,7 +7015,10 @@ class SystemManager(BaseWidget, LoggerMixin):
                                         if status and status != "未测试" and ("错误" in str(status) or "超时" in str(status) or "ZMQ" in str(status)):
                                             context.term()
                                             error_msg = full_test.get("error", status)
-                                            self.logger.error(f"❌ 带宽测速返回错误状态：{error_msg}")
+                                            self.logger.error(
+                                                f"❌ 带宽测速返回错误状态：{error_msg}",
+                                                extra={"log_type": "ALERT", "scenario": "manual_speedtest"}
+                                            )
                                             self.bandwidth_test_error_signal.emit(error_msg)
                                             return
 
@@ -6907,34 +7029,67 @@ class SystemManager(BaseWidget, LoggerMixin):
                                             # 检查是否是异常值（-1表示测试失败）
                                             if download_mbps == -1:
                                                 error_msg = full_test.get("error", "测试失败，请稍后重试")
-                                                self.logger.error(f"❌ 带宽测速返回异常：{error_msg}")
+                                                self.logger.error(
+                                                    f"❌ 带宽测速返回异常：{error_msg}",
+                                                    extra={"log_type": "ALERT", "scenario": "manual_speedtest"}
+                                                )
                                                 self.bandwidth_test_error_signal.emit(error_msg)
                                             else:
-                                                self.logger.info(f"✅ 获取到带宽测试结果：{full_test}")
+                                                self.logger.info(
+                                                    f"✅ 获取到带宽测试结果：{full_test}",
+                                                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"}
+                                                )
                                                 # 使用信号发送结果（线程安全）
                                                 self.bandwidth_test_success_signal.emit(full_test)
                                             return
                                         # 否则继续轮询（status="未测试"或download_mbps=None）
 
                         except Exception as poll_error:
-                            self.logger.debug("轮询第%d次失败: %s", attempt + 1, poll_error)
+                            self.logger.debug(
+                                "轮询第%d次失败: %s", attempt + 1, poll_error,
+                                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"}
+                            )
                             continue
 
                     # 超时
                     context.term()
+                    self.logger.warning(
+                        "测试超时（69秒）或网络不稳定",
+                        extra={"log_type": "ALERT", "scenario": "manual_speedtest"}
+                    )
                     self.bandwidth_test_error_signal.emit("测试超时（69秒）或网络不稳定")
 
                 except zmq.Again:
+                    self.logger.error(
+                        "连接超时",
+                        extra={"log_type": "ALERT", "scenario": "manual_speedtest"}
+                    )
                     self.bandwidth_test_error_signal.emit("连接超时")
                 except Exception as e:
-                    self.logger.error("带宽测试异常: %s", e, exc_info=True)
+                    self.logger.error(
+                        "带宽测试异常: %s", e,
+                        extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
+                        exc_info=True
+                    )
                     self.bandwidth_test_error_signal.emit(f"连接失败: {str(e)[:50]}")
+                    
+                    # 如果使用了ai_log_process，记录完成
+                    if ai_log_process:
+                        stage_logger = logging.getLogger("task.manual_speedtest")
+                        stage_logger.info(
+                            "❌ 手动测速失败",
+                            extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
+                        )
 
             test_thread = Thread(target=run_test, daemon=True)
             test_thread.start()
 
         except Exception as e:
-            self.logger.error("启动带宽测试失败: %s", e)
+            self.logger.error(
+                "启动带宽测试失败: %s", e,
+                extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
+                exc_info=True
+            )
             self.bandwidth_test_error_signal.emit(str(e))
 
     def _retry_latency_test(self):
