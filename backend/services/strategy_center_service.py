@@ -1543,6 +1543,11 @@ class MyPortfolioStrategy(StrategyTemplate):
                                         task_id,
                                         data_count,
                                     )
+                                    # 阶段节点：历史数据加载完成
+                                    stage_logger.info(
+                                        f"✅ 历史数据加载完成: {data_count}条K线",
+                                        extra={"log_type": "STAGE_NODE", "scenario": "backtest_execution"},
+                                    )
 
                                     # 检查数据质量
                                     if hasattr(data_service, "check_data_quality"):
@@ -1565,6 +1570,12 @@ class MyPortfolioStrategy(StrategyTemplate):
                             else:
                                 self.logger.warning("数据中心服务不可用，回测将使用vnpy内置数据源", extra={"log_type": "SYSTEM"})
 
+                            # 阶段节点：策略初始化完成
+                            stage_logger.info(
+                                "✅ 策略初始化完成",
+                                extra={"log_type": "STAGE_NODE", "scenario": "backtest_execution"},
+                            )
+                            
                             # 更新进度：执行回测
                             task["progress"] = 50
                             self.logger.info(

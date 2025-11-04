@@ -891,7 +891,19 @@ class TradingGatewayService(BaseService, LoggerMixin):
         Returns:
             Dict: 部署结果
         """
+        import time
+        import logging
+        
+        start_time = time.time()
+        stage_logger = logging.getLogger("task.strategy_loading.stage")
+        
         try:
+            # 阶段节点：策略加载开始
+            stage_logger.info(
+                f"📍 策略加载开始: file={file_path}, strategy={strategy_name}",
+                extra={"log_type": "STAGE_NODE", "scenario": "strategy_loading"},
+            )
+            
             self._log_operation(
                 "从文件加载策略", gateway=gateway_name, strategy=strategy_name, file=file_path
             )
@@ -926,16 +938,41 @@ class TradingGatewayService(BaseService, LoggerMixin):
             strategy_params["engine_type"] = engine_type
             strategy_params["file_path"] = file_path  # 记录原文件路径
 
+            # 阶段节点：策略文件解析成功
+            stage_logger.info(
+                f"✅ 策略文件解析成功: class={strategy_class}, engine={engine_type}",
+                extra={"log_type": "STAGE_NODE", "scenario": "strategy_loading"},
+            )
+            
             # 调用原有的部署方法
-            return self.deploy_strategy(
+            deploy_result = self.deploy_strategy(
                 gateway_name=gateway_name,
                 strategy_name=strategy_name,
                 strategy_class=strategy_class,
                 strategy_params=strategy_params,
             )
+            
+            elapsed_ms = (time.time() - start_time) * 1000
+            if deploy_result.get("success"):
+                stage_logger.info(
+                    f"✅ 策略加载完成: strategy={strategy_name}, 耗时={elapsed_ms:.0f}ms",
+                    extra={"log_type": "STAGE_NODE", "scenario": "strategy_loading"},
+                )
+            else:
+                stage_logger.error(
+                    f"❌ 策略加载失败: {deploy_result.get('message', '未知错误')}, 耗时={elapsed_ms:.0f}ms",
+                    extra={"log_type": "STAGE_NODE", "scenario": "strategy_loading"},
+                )
+            
+            return deploy_result
 
         except Exception as e:
+            elapsed_ms = (time.time() - start_time) * 1000
             self._log_error("从文件加载策略", e)
+            stage_logger.error(
+                f"❌ 策略加载异常: {str(e)}, 耗时={elapsed_ms:.0f}ms",
+                extra={"log_type": "STAGE_NODE", "scenario": "strategy_loading"},
+            )
             return {
                 "success": False,
                 "message": f"加载失败: {str(e)}",
@@ -959,7 +996,19 @@ class TradingGatewayService(BaseService, LoggerMixin):
         Returns:
             Dict: 部署结果
         """
+        import time
+        import logging
+        
+        start_time = time.time()
+        stage_logger = logging.getLogger("task.strategy_deployment.stage")
+        
         try:
+            # 阶段节点：策略部署开始
+            stage_logger.info(
+                f"📍 策略部署开始: strategy={strategy_name}, class={strategy_class}, gateway={gateway_name}",
+                extra={"log_type": "STAGE_NODE", "scenario": "strategy_deployment"},
+            )
+            
             self._log_operation(
                 "部署策略", gateway=gateway_name, strategy=strategy_name, class_name=strategy_class
             )
@@ -1070,8 +1119,15 @@ class TradingGatewayService(BaseService, LoggerMixin):
                 "engine_name": engine_name,
                 "deployed_info": deployed_info,  # 引擎特定的部署信息
                 "status": "stopped",
-                "deploy_time": datetime.now(),
-            }
+                                  "deploy_time": datetime.now(),
+              }
+
+            elapsed_ms = (time.time() - start_time) * 1000
+            # 阶段节点：策略部署成功
+            stage_logger.info(
+                f"✅ 策略部署成功: strategy={strategy_name}, 耗时={elapsed_ms:.0f}ms",
+                extra={"log_type": "STAGE_NODE", "scenario": "strategy_deployment"},
+            )
 
             return {
                 "success": True,
@@ -1081,7 +1137,12 @@ class TradingGatewayService(BaseService, LoggerMixin):
             }
 
         except Exception as e:
+            elapsed_ms = (time.time() - start_time) * 1000
             self._log_error("部署策略", e, gateway=gateway_name, strategy=strategy_name)
+            stage_logger.error(
+                f"❌ 策略部署失败: {str(e)}, 耗时={elapsed_ms:.0f}ms",
+                extra={"log_type": "STAGE_NODE", "scenario": "strategy_deployment"},
+            )
             return {
                 "success": False,
                 "message": f"部署失败: {str(e)}",

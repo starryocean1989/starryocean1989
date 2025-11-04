@@ -522,6 +522,10 @@ class PortfolioService(BaseService):
                 - positions: 持仓明细
                 - accounts: 账户明细
         """
+        import time
+        start_time = time.time()
+        stage_logger = logging.getLogger("task.portfolio_pnl_calculation.stage")
+        
         try:
             # 查找组合
             portfolio = None
@@ -536,6 +540,11 @@ class PortfolioService(BaseService):
                 portfolio = self.auto_portfolios[portfolio_name]
                 gateway_names = [portfolio["gateway_name"]]
             else:
+                # 阶段节点日志（输出到Terminal）
+                stage_logger.warning(
+                    f"⚠️ 组合不存在: {portfolio_name}",
+                    extra={"log_type": "STAGE_NODE", "scenario": "portfolio_pnl_calculation"},
+                )
                 return {
                     "success": False,
                     "message": f"组合 '{portfolio_name}' 不存在",
@@ -618,6 +627,7 @@ class PortfolioService(BaseService):
 
             # 总盈亏 = 持仓盈亏 + 交易盈亏
             total_pnl = total_holding_pnl + total_trading_pnl
+            elapsed_ms = (time.time() - start_time) * 1000
 
             # 业绩计算完成通知 - 日志埋点v4.0
             self.logger.info(
@@ -628,6 +638,16 @@ class PortfolioService(BaseService):
                 total_trading_pnl,
                 len(positions_detail),
             )
+            
+            # 阶段节点日志（输出到Terminal，仅记录关键计算结果，避免频繁输出）
+            # 注意：由于可能被频繁调用，只在有持仓或盈亏不为0时记录
+            if len(positions_detail) > 0 or abs(total_pnl) > 0.01:
+                cache_hit_rate = self._calculate_cache_hit_rate(gateway_names)
+                stage_logger.info(
+                    f"✅ 盈亏计算完成: 组合={portfolio_name}, 总盈亏={total_pnl:.2f}, "
+                    f"持仓={len(positions_detail)}个, 缓存命中={cache_hit_rate:.0%}, 耗时={elapsed_ms:.0f}ms",
+                    extra={"log_type": "STAGE_NODE", "scenario": "portfolio_pnl_calculation"},
+                )
 
             return {
                 "success": True,
@@ -644,7 +664,16 @@ class PortfolioService(BaseService):
             }
 
         except Exception as e:
+            elapsed_ms = (time.time() - start_time) * 1000
             self._log_error("计算实时盈亏", e)
+            # 阶段节点日志（输出到Terminal）
+            try:
+                stage_logger.error(
+                    f"❌ 盈亏计算异常: 组合={portfolio_name}, 错误={str(e)}, 耗时={elapsed_ms:.0f}ms",
+                    extra={"log_type": "STAGE_NODE", "scenario": "portfolio_pnl_calculation"},
+                )
+            except Exception:
+                pass
             return {"success": False, "message": str(e)}
 
     def _calculate_cache_hit_rate(self, gateway_names: List[str]) -> float:

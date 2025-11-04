@@ -1140,6 +1140,12 @@ class DataCenterService(BaseService, LoggerMixin):
                     f"[RELOAD-SYMBOL] 【流程2完成】获取到 {len(symbols)} 个品种",
                     extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
                 )
+                
+                # 阶段节点：从TDX读取品种完成
+                stage_logger.info(
+                    f"✅ 从TDX读取品种：{len(symbols)}个（耗时{fetch_elapsed:.2f}s）",
+                    extra={"log_type": "STAGE_NODE", "scenario": "refresh_symbol_list"},
+                )
 
                 # 转换为前端格式
                 self.logger.debug(
@@ -1182,6 +1188,18 @@ class DataCenterService(BaseService, LoggerMixin):
                     f"[RELOAD-SYMBOL] 格式转换完成: 成功={len(formatted_symbols)}, 跳过={skipped_count}, 耗时={format_elapsed:.2f}s",
                     extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
                 )
+                
+                # 阶段节点：过滤未上市品种完成（格式转换时已过滤）
+                if skipped_count > 0:
+                    stage_logger.info(
+                        f"✅ 过滤未上市品种：保留{len(formatted_symbols)}个，跳过{skipped_count}个",
+                        extra={"log_type": "STAGE_NODE", "scenario": "refresh_symbol_list"},
+                    )
+                else:
+                    stage_logger.info(
+                        f"✅ 品种格式转换完成：{len(formatted_symbols)}个",
+                        extra={"log_type": "STAGE_NODE", "scenario": "refresh_symbol_list"},
+                    )
 
                 # 流程3：更新内存缓存
                 self.logger.info(

@@ -150,6 +150,11 @@ class AIAssistantService(BaseService):
         Returns:
             Dict: 包含AI回复、消息类型等信息
         """
+        import time
+        import logging
+        start_time = time.time()
+        stage_logger = logging.getLogger("task.ai_chat.stage")
+        
         try:
             if not HAS_REQUESTS:
                 return {
@@ -169,6 +174,10 @@ class AIAssistantService(BaseService):
                     "message": "未配置DeepSeek API密钥",
                 }
 
+            # 阶段节点日志（输出到Terminal，仅对关键操作记录）
+            # 注意：chat方法可能被频繁调用，只记录首次或重要调用
+            message_preview = user_message[:50] + "..." if len(user_message) > 50 else user_message
+            
             # 构建完整的用户消息（包含上下文）
             full_message = user_message
             if context:
@@ -184,6 +193,8 @@ class AIAssistantService(BaseService):
             # 调用DeepSeek API
             response = self._call_deepseek_api()
 
+            elapsed_ms = (time.time() - start_time) * 1000
+
             if response["success"]:
                 ai_message = response["content"]
 
@@ -196,6 +207,13 @@ class AIAssistantService(BaseService):
                 # 检查是否有文件操作（从最近的对话历史中查找）
                 files_modified = self._extract_modified_files()
 
+                # 阶段节点日志（输出到Terminal，仅对生成代码的操作记录）
+                if classified_response["type"] in ["code", "mixed"] and files_modified:
+                    stage_logger.info(
+                        f"✅ AI对话完成: 生成代码并修改文件={len(files_modified)}个, 耗时={elapsed_ms:.0f}ms",
+                        extra={"log_type": "STAGE_NODE", "scenario": "ai_chat"},
+                    )
+
                 return {
                     "success": True,
                     "message": ai_message,
@@ -206,10 +224,25 @@ class AIAssistantService(BaseService):
                     "timestamp": datetime.now().isoformat(),
                 }
             else:
+                error_msg = response.get("message", "未知错误")
+                # 阶段节点日志（输出到Terminal）
+                stage_logger.error(
+                    f"❌ AI对话失败: {error_msg}, 耗时={elapsed_ms:.0f}ms",
+                    extra={"log_type": "STAGE_NODE", "scenario": "ai_chat"},
+                )
                 return response
 
         except Exception as e:
+            elapsed_ms = (time.time() - start_time) * 1000
             self._log_error("AI对话", e)
+            # 阶段节点日志（输出到Terminal）
+            try:
+                stage_logger.error(
+                    f"❌ AI对话异常: {str(e)}, 耗时={elapsed_ms:.0f}ms",
+                    extra={"log_type": "STAGE_NODE", "scenario": "ai_chat"},
+                )
+            except Exception:
+                pass
             return {
                 "success": False,
                 "message": f"对话失败: {str(e)}",
@@ -596,7 +629,18 @@ class AIAssistantService(BaseService):
         Returns:
             Dict: 包含生成的策略代码
         """
+        import time
+        import logging
+        start_time = time.time()
+        stage_logger = logging.getLogger("task.strategy_generation.stage")
+        
         try:
+            # 阶段节点日志（输出到Terminal）
+            stage_logger.info(
+                f"📍 策略生成开始: type={strategy_type}, description={strategy_description[:50]}...",
+                extra={"log_type": "STAGE_NODE", "scenario": "strategy_generation"},
+            )
+            
             # 构建提示词
             prompt = f"""请根据以下描述生成一个{strategy_type}类型的VnPy策略代码：
 
@@ -614,17 +658,37 @@ class AIAssistantService(BaseService):
             # 调用chat方法
             response = self.chat(prompt)
 
+            elapsed_ms = (time.time() - start_time) * 1000
+            
             if response["success"] and response["message_type"] in ["code", "mixed"]:
+                code_length = len(response.get("code", ""))
+                # 阶段节点日志（输出到Terminal）
+                stage_logger.info(
+                    f"✅ 策略生成完成: type={strategy_type}, code_length={code_length}字节, 耗时={elapsed_ms:.0f}ms",
+                    extra={"log_type": "STAGE_NODE", "scenario": "strategy_generation"},
+                )
                 return {
                     "success": True,
                     "code": response.get("code", ""),
                     "explanation": response.get("text", ""),
                 }
             else:
+                error_msg = response.get("message", "未知错误")
+                # 阶段节点日志（输出到Terminal）
+                stage_logger.error(
+                    f"❌ 策略生成失败: {error_msg}, 耗时={elapsed_ms:.0f}ms",
+                    extra={"log_type": "STAGE_NODE", "scenario": "strategy_generation"},
+                )
                 return response
 
         except Exception as e:
+            elapsed_ms = (time.time() - start_time) * 1000
             self._log_error("生成策略代码", e)
+            # 阶段节点日志（输出到Terminal）
+            stage_logger.error(
+                f"❌ 策略生成异常: {str(e)}, 耗时={elapsed_ms:.0f}ms",
+                extra={"log_type": "STAGE_NODE", "scenario": "strategy_generation"},
+            )
             return {
                 "success": False,
                 "message": f"生成失败: {str(e)}",

@@ -4098,6 +4098,12 @@ class BandwidthMonitor:
                     extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
                 )
 
+                # 阶段节点日志（输出到Terminal，降级模式）
+                stage_logger.info(
+                    "📍 带宽测试开始: 正在连接到测速服务器...（降级模式）",
+                    extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
+                )
+
                 logger.info(
                     "开始完整带宽测试（预计耗时10-15秒）...",
                     extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
@@ -4164,6 +4170,13 @@ class BandwidthMonitor:
                         f"[SPEEDTEST-SAVE] 保存完整测速结果: {result}",
                         extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
                     )
+                    
+                    # 阶段节点日志（输出到Terminal，降级模式）
+                    stage_logger.info(
+                        f"✅ 带宽测试完成: 下载 {result['download_mbps']}Mbps, "
+                        f"延迟 {result['ping_ms']}ms, 耗时={test_elapsed:.2f}s（降级模式）",
+                        extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
+                    )
 
                     return result
                 else:
@@ -4186,6 +4199,12 @@ class BandwidthMonitor:
                     self._last_full_result = result
                     self._full_test_time = datetime.now()
 
+                    # 阶段节点日志（输出到Terminal，降级模式）
+                    stage_logger.warning(
+                        f"⚠️ 带宽测试失败: {error_msg}, 耗时={test_elapsed:.2f}s（降级模式）",
+                        extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
+                    )
+
                     return result
 
         except Exception as e:
@@ -4199,6 +4218,15 @@ class BandwidthMonitor:
                 exc_info=True,
                 extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
             )
+            # 阶段节点日志（输出到Terminal）
+            try:
+                stage_logger = logging.getLogger("task.manual_speedtest.stage")
+                stage_logger.error(
+                    f"❌ 带宽测试异常: {str(e)}",
+                    extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
+                )
+            except Exception:
+                pass  # 如果stage_logger获取失败，忽略
             self._last_error = str(e)
             return None
 
