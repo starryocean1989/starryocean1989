@@ -693,38 +693,61 @@ class ServerPoolManager:
         Args:
             max_workers: 最大进程数，如果为None则根据服务器数量自动设置
         """
-        logger.debug("🔍 开始测试服务器（多进程+多协程架构）...")
+        scenario = "manual_speedtest"
+        logger.debug("🔍 开始测试服务器（多进程+多协程架构）...", extra={"log_type": "SYSTEM", "scenario": scenario})
 
         all_servers = self._ipv4_servers + self._ipv6_servers
+        ipv4_count = len(self._ipv4_servers)
+        ipv6_count = len(self._ipv6_servers)
+        logger.debug(
+            f"🔍 服务器统计: IPv4={ipv4_count}, IPv6={ipv6_count}, 总计={len(all_servers)}",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
 
         # 🎯 根据服务器数量动态设置max_workers，确保一次测完
         if max_workers is None:
             # 每个进程处理一批服务器，每个服务器一个协程
             servers_per_process = 50  # 每个进程处理50个服务器
             max_workers = min((len(all_servers) + servers_per_process - 1) // servers_per_process, 32)  # 最外4个进程，最多32个
-            logger.debug(f"🎯 动态设置 max_workers={max_workers} (服务器总数: {len(all_servers)}, 每个进程处理约{servers_per_process}个服务器)")
+            logger.debug(
+                f"🎯 动态设置 max_workers={max_workers} (服务器总数: {len(all_servers)}, 每个进程处理约{servers_per_process}个服务器)",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
 
         # 将服务器分组给不同的进程
         server_groups = []
         group_size = (len(all_servers) + max_workers - 1) // max_workers  # 平均分配
+        logger.debug(
+            f"🔍 服务器分组: 进程数={max_workers}, 每组大小={group_size}",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
 
         for i in range(0, len(all_servers), group_size):
             group = all_servers[i:i + group_size]
             server_groups.append(group)
 
+        logger.debug(
+            f"🔍 共创建 {len(server_groups)} 个服务器组",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+
         # 使用进程池测试（每个进程运行协程池）
+        test_start_time = time.time()
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
             futures = {
-                executor.submit(_test_server_group_async, [(s.ip, s.port, s.name) for s in group]): group
+                executor.submit(_test_server_group_async, [(s.ip, s.port, s.name) for s in group], scenario): group
                 for group in server_groups
             }
 
+            completed_groups = 0
             for future in as_completed(futures):
                 server_group = futures[future]
                 try:
                     group_results = future.result()
+                    completed_groups += 1
 
                     # 将结果应用到服务器对象
+                    available_count = 0
                     for i, (ping_time, available) in enumerate(group_results):
                         if i < len(server_group):
                             server = server_group[i]
@@ -733,16 +756,46 @@ class ServerPoolManager:
                             server.last_test = datetime.now()
 
                             if available:
-                                logger.debug(f"✅ {server.name} ({server.ip}): {ping_time:.0f}ms")
+                                available_count += 1
+                                logger.debug(
+                                    f"✅ {server.name} ({server.ip}): {ping_time:.0f}ms",
+                                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                                )
                             else:
-                                logger.debug(f"❌ {server.name} ({server.ip}): 不可用")
+                                logger.debug(
+                                    f"❌ {server.name} ({server.ip}): 不可用",
+                                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                                )
+
+                    logger.debug(
+                        f"🔍 服务器组 {completed_groups}/{len(server_groups)} 完成: 可用={available_count}/{len(server_group)}",
+                        extra={"log_type": "SYSTEM", "scenario": scenario}
+                    )
 
                 except Exception as e:
-                    logger.debug(f"⚠️ 进程测试失败: {e}")
+                    completed_groups += 1
+                    logger.warning(
+                        f"⚠️ 进程测试失败 (组 {completed_groups}/{len(server_groups)}): {e}",
+                        exc_info=True,
+                        extra={"log_type": "ALERT", "scenario": scenario}
+                    )
+                    logger.debug(
+                        f"🔍 进程测试异常详情: 异常类型={type(e).__name__}, 异常消息={str(e)}",
+                        extra={"log_type": "SYSTEM", "scenario": scenario}
+                    )
                     for server in server_group:
                         server.available = False
 
-        logger.debug("✅ 服务器测试完成（多进程+多协程架构）")
+        test_elapsed = time.time() - test_start_time
+        available_count = sum(1 for s in all_servers if s.available)
+        logger.debug(
+            f"✅ 服务器测试完成（多进程+多协程架构）: 可用={available_count}/{len(all_servers)}, 耗时={test_elapsed:.2f}s",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+        logger.info(
+            f"✅ 服务器测速完成: 可用={available_count}/{len(all_servers)}, 耗时={test_elapsed:.2f}s",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
 
         # 🔧 修复：测试完成后自动保存缓存
         try:
@@ -890,13 +943,14 @@ class ServerPoolManager:
         logger.debug("_push_server_status_event()被调用（当前实现暂无事件推送）")
 
 
-async def _test_single_server_async(ip: str, port: int, name: str = "") -> Tuple[float, bool]:
+async def _test_single_server_async(ip: str, port: int, name: str = "", scenario: str = "manual_speedtest") -> Tuple[float, bool]:
     """异步测试单个服务器（协程函数）
 
     Args:
         ip: 服务器IP
         port: 服务器端口
         name: 服务器名称
+        scenario: 场景标识（用于日志路由）
 
     Returns:
         (延迟, 是否可用)
@@ -906,26 +960,49 @@ async def _test_single_server_async(ip: str, port: int, name: str = "") -> Tuple
         api = AsyncTdxHq_API()
         start_time = time.time()
 
+        logger.debug(
+            f"🔍 开始测试服务器: {name} ({ip}:{port})",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+
         # 改为3秒等待
         connected = await asyncio.wait_for(api.connect(ip, port), timeout=3.0)
 
         if connected:
             ping_time = (time.time() - start_time) * 1000  # 转换为毫秒
             await api.disconnect()
+            logger.debug(
+                f"✅ 服务器测试成功: {name} ({ip}:{port}), 延迟={ping_time:.0f}ms",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             return ping_time, True
         else:
+            logger.debug(
+                f"❌ 服务器连接失败: {name} ({ip}:{port}), 连接返回False",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             return 9999.0, False
+    except asyncio.TimeoutError:
+        logger.debug(
+            f"❌ 服务器测试超时: {name} ({ip}:{port}), 超时3秒",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+        return 9999.0, False
     except Exception as e:
-        logger.debug(f"测试服务器失败 {ip}:{port} ({name}), {e}")
+        logger.debug(
+            f"❌ 测试服务器失败: {name} ({ip}:{port}), 错误: {e}",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
         return 9999.0, False
 
 
-def _test_single_server(ip: str, port: int) -> Tuple[float, bool]:
+def _test_single_server(ip: str, port: int, scenario: str = "manual_speedtest") -> Tuple[float, bool]:
     """测试单个服务器（Worker函数，向后兼容）
 
     Args:
         ip: 服务器IP
         port: 服务器端口
+        scenario: 场景标识（用于日志路由）
 
     Returns:
         (延迟, 是否可用)
@@ -940,6 +1017,11 @@ def _test_single_server(ip: str, port: int) -> Tuple[float, bool]:
             api = AsyncTdxHq_API()
             start_time = time.time()
 
+            logger.debug(
+                f"🔍 开始测试服务器: {ip}:{port}",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+
             # 改为3秒等待
             connected = loop.run_until_complete(
                 asyncio.wait_for(api.connect(ip, port), timeout=3.0)
@@ -948,45 +1030,87 @@ def _test_single_server(ip: str, port: int) -> Tuple[float, bool]:
             if connected:
                 ping_time = (time.time() - start_time) * 1000  # 转换为毫秒
                 loop.run_until_complete(api.disconnect())
+                logger.debug(
+                    f"✅ 服务器测试成功: {ip}:{port}, 延迟={ping_time:.0f}ms",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
                 return ping_time, True
             else:
+                logger.debug(
+                    f"❌ 服务器连接失败: {ip}:{port}, 连接返回False",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
                 return 9999.0, False
         finally:
             loop.close()
+    except asyncio.TimeoutError:
+        logger.debug(
+            f"❌ 服务器测试超时: {ip}:{port}, 超时3秒",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+        return 9999.0, False
     except Exception as e:
-        logger.debug(f"测试服务器失败 {ip}:{port}, {e}")
+        logger.debug(
+            f"❌ 测试服务器失败: {ip}:{port}, 错误: {e}",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
         return 9999.0, False
 
 
-def _test_server_group_async(server_group: List[Tuple[str, int, str]]) -> List[Tuple[float, bool]]:
+def _test_server_group_async(server_group: List[Tuple[str, int, str]], scenario: str = "manual_speedtest") -> List[Tuple[float, bool]]:
     """异步测试一组服务器（多协程架构）
 
     Args:
         server_group: 服务器组 [(ip, port, name), ...]
+        scenario: 场景标识（用于日志路由）
 
     Returns:
         [(延迟, 是否可用), ...] 按输入顺序返回结果
     """
+    # 🎯 子进程日志接入：配置子进程日志系统
+    try:
+        from backend.infrastructure.data_module_vnpy.data_acquisition import _configure_subprocess_logging
+        worker_id = id(server_group) % 1000  # 使用服务器组的id作为worker_id
+        subprocess_logger = _configure_subprocess_logging(worker_id, "server_test", scenario)
+    except Exception:
+        subprocess_logger = logger
+
     async def test_group():
         # 创建所有测试任务（1个服务器1个协程）
         tasks = []
         for ip, port, name in server_group:
-            task = _test_single_server_async(ip, port, name)
+            task = _test_single_server_async(ip, port, name, scenario)
             tasks.append(task)
 
         # 并发执行所有测试（协程无上限）
-        logger.debug(f"🔄 进程内并发测试 {len(tasks)} 个服务器...")
+        subprocess_logger.debug(
+            f"🔄 进程内并发测试 {len(tasks)} 个服务器...",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+        group_start_time = time.time()
         results = await asyncio.gather(*tasks, return_exceptions=True)
+        group_elapsed = time.time() - group_start_time
 
         # 处理结果
         final_results = []
+        available_count = 0
         for i, result in enumerate(results):
             if isinstance(result, Exception):
-                logger.debug(f"⚠️ 协程测试异常 {server_group[i]}: {result}")
+                subprocess_logger.debug(
+                    f"⚠️ 协程测试异常 {server_group[i]}: {result}",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
                 final_results.append((9999.0, False))
             else:
+                ping_time, available = result
                 final_results.append(result)
+                if available:
+                    available_count += 1
 
+        subprocess_logger.debug(
+            f"✅ 服务器组测试完成: 可用={available_count}/{len(server_group)}, 耗时={group_elapsed:.2f}s",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
         return final_results
 
     # 在新的事件循环中运行

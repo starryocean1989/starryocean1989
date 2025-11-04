@@ -136,61 +136,75 @@ class ServiceInitializer:
                 ai_log_process,
                 get_logging_hub,
             )
+            from contextlib import nullcontext
             hub = get_logging_hub()
             if hub:
                 hub.set_stage("startup")
+            context_manager = ai_log_process("application_startup", {"mode": "fast_startup"}) if hub else nullcontext()
         except ImportError:
+            from contextlib import nullcontext
             hub = None
+            context_manager = nullcontext()
 
         stage_logger = logging.getLogger("startup.stage")
+        scenario = "application_startup"
 
         # 使用ai_log_process创建独立日志文件
         try:
-            context_manager = ai_log_process("core_services_init", {"mode": "fast_startup"}) if hub else __import__("contextlib").nullcontext()
             with context_manager:
                 # 阶段节点日志（输出到Terminal）
-                stage_logger.info("📍 核心服务初始化开始（快速启动模式）", extra={"log_type": "STAGE_NODE", "scenario": "core_services_init"})
+                stage_logger.info("📍 核心服务初始化开始（快速启动模式）", extra={"log_type": "STAGE_NODE", "scenario": scenario})
                 
-                self.logger.info("=" * 60)
-                self.logger.info("🚀 快速启动模式：初始化核心服务...")
-                self.logger.info("=" * 60)
+                self.logger.info("=" * 60, extra={"log_type": "SYSTEM", "scenario": scenario})
+                self.logger.info("🚀 快速启动模式：初始化核心服务...", extra={"log_type": "SYSTEM", "scenario": scenario})
+                self.logger.info("=" * 60, extra={"log_type": "SYSTEM", "scenario": scenario})
 
                 # 配置已在主线程初始化，无需重复初始化
                 from backend.core.config import get_settings
 
                 settings = get_settings()
-                self.logger.debug("使用已加载的配置：%s", settings.config_file, extra={"scenario": "core_services_init"})
-                self.logger.info("使用已加载的配置：%s", settings.config_file)
+                self.logger.debug("🔍 使用已加载的配置：%s", settings.config_file, extra={"log_type": "SYSTEM", "scenario": scenario})
+                self.logger.info("使用已加载的配置：%s", settings.config_file, extra={"log_type": "SYSTEM", "scenario": scenario})
 
                 # 阶段1: 初始化VNPY核心框架
                 self._report_progress("初始化VNPY核心框架...", 20)
+                self.logger.debug("🔍 开始初始化VNPY核心框架...", extra={"log_type": "SYSTEM", "scenario": scenario})
                 phase1_success = self._initialize_vnpy_core()
                 if not phase1_success:
-                    self.logger.critical("🔥 [ServiceInitializer] VNPY核心框架初始化失败", extra={"log_type": "ALERT"})
+                    self.logger.critical("🔥 [ServiceInitializer] VNPY核心框架初始化失败", exc_info=True, extra={"log_type": "ALERT", "scenario": scenario})
+                    stage_logger.error("❌ VNPY核心框架初始化失败", extra={"log_type": "STAGE_NODE", "scenario": scenario})
                     return False
+                self.logger.debug("✅ VNPY核心框架初始化成功", extra={"log_type": "SYSTEM", "scenario": scenario})
 
                 # 阶段2: 初始化数据服务
                 self._report_progress("初始化数据服务...", 70)
+                self.logger.debug("🔍 开始初始化数据服务...", extra={"log_type": "SYSTEM", "scenario": scenario})
                 phase2_success = self._initialize_data_services()
                 if not phase2_success:
-                    self.logger.error("❌ [ServiceInitializer] 数据服务初始化失败", extra={"log_type": "SYSTEM"})
+                    self.logger.error("❌ [ServiceInitializer] 数据服务初始化失败", exc_info=True, extra={"log_type": "ALERT", "scenario": scenario})
+                    stage_logger.error("❌ 数据服务初始化失败", extra={"log_type": "STAGE_NODE", "scenario": scenario})
                     return False
+                self.logger.debug("✅ 数据服务初始化成功", extra={"log_type": "SYSTEM", "scenario": scenario})
 
                 # 🔧 修复：提前初始化SystemManagerService到核心阶段
                 # 原因：LogManagerWidget等UI组件依赖SystemManagerService
                 self._report_progress("初始化系统管理服务...", 85)
+                self.logger.debug("🔍 开始初始化系统管理服务（提前初始化）...", extra={"log_type": "SYSTEM", "scenario": scenario})
                 phase2_5_success = self._initialize_system_manager_early()
                 if not phase2_5_success:
-                    self.logger.warning("⚠️ 系统管理服务初始化失败（不影响核心功能）", extra={"log_type": "SYSTEM"})
+                    self.logger.warning("⚠️ 系统管理服务初始化失败（不影响核心功能）", extra={"log_type": "SYSTEM", "scenario": scenario})
+                    stage_logger.warning("⚠️ 系统管理服务初始化失败（不影响核心功能）", extra={"log_type": "STAGE_NODE", "scenario": scenario})
                     # 不返回False，允许系统继续启动
+                else:
+                    self.logger.debug("✅ 系统管理服务初始化成功", extra={"log_type": "SYSTEM", "scenario": scenario})
 
-                self.logger.info("✅ 核心服务初始化完成，系统可以启动")
-                stage_logger.info("✅ 核心服务初始化完成", extra={"log_type": "STAGE_NODE", "scenario": "core_services_init"})
+                self.logger.info("✅ 核心服务初始化完成，系统可以启动", extra={"log_type": "SYSTEM", "scenario": scenario})
+                stage_logger.info("✅ 核心服务初始化完成", extra={"log_type": "STAGE_NODE", "scenario": scenario})
                 self._report_progress("核心服务就绪", 100)
                 return True
         except Exception as e:
-            self.logger.error("❌ [ServiceInitializer] 核心服务初始化异常：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
-            stage_logger.error(f"❌ 核心服务初始化异常: {e}", extra={"log_type": "STAGE_NODE", "scenario": "core_services_init"})
+            self.logger.error("❌ [ServiceInitializer] 核心服务初始化异常：%s", e, exc_info=True, extra={"log_type": "ALERT", "scenario": scenario})
+            stage_logger.error(f"❌ 核心服务初始化异常: {e}", extra={"log_type": "STAGE_NODE", "scenario": scenario})
             self.service_manager.record_error(
                 "ServiceInitializer",
                 "CORE_INITIALIZATION_ERROR",
@@ -215,72 +229,101 @@ class ServiceInitializer:
         Returns:
             Dict[str, bool]: 服务名称到初始化结果的映射
         """
+        # 🎯 启动流程日志埋点：使用ai_log_process上下文管理器
+        try:
+            from backend.infrastructure.system_vnpy.unified_log_system import (
+                ai_log_process,
+                get_logging_hub,
+            )
+            from contextlib import nullcontext
+            hub = get_logging_hub()
+            context_manager = ai_log_process("optional_services_init") if hub else nullcontext()
+        except ImportError:
+            from contextlib import nullcontext
+            context_manager = nullcontext()
+
+        stage_logger = logging.getLogger("task.optional_services_init.stage")
+        scenario = "optional_services_init"
         results = {}
 
         try:
-            self.logger.info("=" * 60)
-            self.logger.info("📦 后台加载可选服务...")
-            self.logger.info("=" * 60)
+            with context_manager:
+                # 阶段节点日志（输出到Terminal）
+                stage_logger.info("📍 可选服务初始化开始（后台加载模式）", extra={"log_type": "STAGE_NODE", "scenario": scenario})
+                
+                self.logger.info("=" * 60, extra={"log_type": "SYSTEM", "scenario": scenario})
+                self.logger.info("📦 后台加载可选服务...", extra={"log_type": "SYSTEM", "scenario": scenario})
+                self.logger.info("=" * 60, extra={"log_type": "SYSTEM", "scenario": scenario})
 
-            # 服务列表：(服务名称, 初始化方法)
-            optional_services = [
-                ("system_manager_service", self._initialize_system_manager_early),
-                ("trading_gateway_service", self._initialize_trading_services),
-                ("strategy_center_service", self._initialize_strategy_services),
-                ("auxiliary_services", self._initialize_auxiliary_services),
-            ]
+                # 服务列表：(服务名称, 初始化方法)
+                optional_services = [
+                    ("system_manager_service", self._initialize_system_manager_early),
+                    ("trading_gateway_service", self._initialize_trading_services),
+                    ("strategy_center_service", self._initialize_strategy_services),
+                    ("auxiliary_services", self._initialize_auxiliary_services),
+                ]
 
-            for service_name, init_method in optional_services:
-                # 🎯 架构修复：检查服务是否已存在，避免重复初始化
-                if self.service_manager.has_service(service_name):
-                    self.logger.info("ℹ️ %s 已存在，跳过重复初始化", service_name)
-                    results[service_name] = True
-                    if service_ready_callback:
-                        try:
-                            service_ready_callback(service_name, True)
-                        except Exception as e:
-                            self.logger.warning("服务就绪回调失败 (%s): %s", service_name, e, extra={"log_type": "SYSTEM"})
-                    continue
+                for service_name, init_method in optional_services:
+                    # 🎯 架构修复：检查服务是否已存在，避免重复初始化
+                    if self.service_manager.has_service(service_name):
+                        self.logger.debug("🔍 %s 已存在，跳过重复初始化", service_name, extra={"log_type": "SYSTEM", "scenario": scenario})
+                        self.logger.info("ℹ️ %s 已存在，跳过重复初始化", service_name, extra={"log_type": "SYSTEM", "scenario": scenario})
+                        results[service_name] = True
+                        if service_ready_callback:
+                            try:
+                                service_ready_callback(service_name, True)
+                            except Exception as e:
+                                self.logger.warning("服务就绪回调失败 (%s): %s", service_name, e, extra={"log_type": "SYSTEM", "scenario": scenario})
+                        continue
 
-                # 服务不存在，执行初始化
-                try:
-                    self.logger.info("初始化可选服务: %s...", service_name)
-                    success = init_method()
-                    results[service_name] = success
+                    # 服务不存在，执行初始化
+                    try:
+                        self.logger.debug("🔍 开始初始化可选服务: %s...", service_name, extra={"log_type": "SYSTEM", "scenario": scenario})
+                        self.logger.info("初始化可选服务: %s...", service_name, extra={"log_type": "SYSTEM", "scenario": scenario})
+                        success = init_method()
+                        results[service_name] = success
 
-                    status_icon = "✅" if success else "⚠️"
-                    self.logger.info(
-                        "%s %s 初始化%s", status_icon, service_name, "成功" if success else "失败"
-                    )
+                        status_icon = "✅" if success else "⚠️"
+                        self.logger.info(
+                            "%s %s 初始化%s", status_icon, service_name, "成功" if success else "失败",
+                            extra={"log_type": "SYSTEM" if success else "ALERT", "scenario": scenario}
+                        )
+                        if success:
+                            stage_logger.info("✅ %s初始化完成", service_name, extra={"log_type": "STAGE_NODE", "scenario": scenario})
+                        else:
+                            stage_logger.warning("⚠️ %s初始化失败", service_name, extra={"log_type": "STAGE_NODE", "scenario": scenario})
 
-                    # 通知UI服务就绪
-                    if service_ready_callback:
-                        try:
-                            service_ready_callback(service_name, success)
-                        except Exception as e:
-                            self.logger.warning("服务就绪回调失败 (%s): %s", service_name, e, extra={"log_type": "SYSTEM"})
+                        # 通知UI服务就绪
+                        if service_ready_callback:
+                            try:
+                                service_ready_callback(service_name, success)
+                            except Exception as e:
+                                self.logger.warning("服务就绪回调失败 (%s): %s", service_name, e, extra={"log_type": "SYSTEM", "scenario": scenario})
 
-                except Exception as e:
-                    self.logger.error("❌ [ServiceInitializer] %s 初始化异常: %s", service_name, e, exc_info=True, extra={"log_type": "SYSTEM"})
-                    results[service_name] = False
-                    if service_ready_callback:
-                        try:
-                            service_ready_callback(service_name, False)
-                        except Exception:  # pylint: disable=broad-except
-                            pass
+                    except Exception as e:
+                        self.logger.error("❌ [ServiceInitializer] %s 初始化异常: %s", service_name, e, exc_info=True, extra={"log_type": "ALERT", "scenario": scenario})
+                        stage_logger.error("❌ %s初始化异常: %s", service_name, e, extra={"log_type": "STAGE_NODE", "scenario": scenario})
+                        results[service_name] = False
+                        if service_ready_callback:
+                            try:
+                                service_ready_callback(service_name, False)
+                            except Exception:  # pylint: disable=broad-except
+                                pass
 
-            # 生成初始化报告
-            self.logger.info("生成初始化报告...")
-            self._generate_initialization_report()
+                # 生成初始化报告
+                self.logger.debug("🔍 生成可选服务初始化报告...", extra={"log_type": "SYSTEM", "scenario": scenario})
+                self._generate_initialization_report()
 
-            success_count = sum(1 for v in results.values() if v)
-            total_count = len(results)
-            self.logger.info("✅ 可选服务加载完成: %s/%s 成功", success_count, total_count)
+                success_count = sum(1 for v in results.values() if v)
+                total_count = len(results)
+                self.logger.info("✅ 可选服务加载完成: %s/%s 成功", success_count, total_count, extra={"log_type": "SYSTEM", "scenario": scenario})
+                stage_logger.info("✅ 可选服务加载完成: %s/%s 成功", success_count, total_count, extra={"log_type": "STAGE_NODE", "scenario": scenario})
 
-            return results
+                return results
 
         except Exception as e:
-            self.logger.error("❌ [ServiceInitializer] 可选服务初始化过程异常：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error("❌ [ServiceInitializer] 可选服务初始化过程异常：%s", e, exc_info=True, extra={"log_type": "ALERT", "scenario": scenario})
+            stage_logger.error(f"❌ 可选服务初始化过程异常: {e}", extra={"log_type": "STAGE_NODE", "scenario": scenario})
             return results
 
     def initialize_all_services(self) -> bool:
@@ -289,55 +332,103 @@ class ServiceInitializer:
         Returns:
             bool: 是否成功初始化（允许部分失败）
         """
+        # 🎯 启动流程日志埋点：使用ai_log_process上下文管理器
         try:
-            self.logger.info("=" * 60)
-            self.logger.info("正在初始化服务...")
-            self.logger.info("=" * 60)
-
-            # 配置已在主线程初始化，无需重复初始化
-            from backend.core.config import get_settings
-
-            settings = get_settings()
-            self.logger.info("使用已加载的配置：%s", settings.config_file)
-
-            # 阶段1: 初始化VNPY核心框架（如果尚未初始化）
-            phase1_success = self._initialize_vnpy_core()
-
-            # 阶段1.5: 提前初始化SystemManagerService（监控集成优先就绪）
-            phase1_5_success = self._initialize_system_manager_early()
-
-            # 阶段2: 初始化数据服务
-            phase2_success = self._initialize_data_services()
-
-            # 阶段3: 初始化交易服务
-            phase3_success = self._initialize_trading_services()
-
-            # 阶段4: 初始化策略服务
-            self._initialize_strategy_services()
-
-            # 阶段5: 初始化辅助服务
-            self._initialize_auxiliary_services()
-
-            # 生成初始化报告
-            self._report_progress("生成初始化报告...", 98)
-            self._generate_initialization_report()
-
-            # 如果核心服务初始化成功，即使部分服务失败也返回True
-            core_services_ok = (
-                phase1_success or phase1_5_success or phase2_success or phase3_success
+            from backend.infrastructure.system_vnpy.unified_log_system import (
+                ai_log_process,
+                get_logging_hub,
             )
+            from contextlib import nullcontext
+            hub = get_logging_hub()
+            if hub:
+                hub.set_stage("startup")
+            context_manager = ai_log_process("application_startup", {"mode": "full_startup"}) if hub else nullcontext()
+        except ImportError:
+            from contextlib import nullcontext
+            hub = None
+            context_manager = nullcontext()
 
-            if core_services_ok:
-                self.logger.info("✅ 核心服务初始化成功，系统可以启动")
-                self._report_progress("后端服务初始化完成", 100)
-                return True
-            else:
-                self.logger.critical("🔥 [ServiceInitializer] 核心服务初始化失败，系统无法正常启动", extra={"log_type": "ALERT"})
-                self._report_progress("核心服务初始化失败", 100)
-                return False
+        stage_logger = logging.getLogger("startup.stage")
+        scenario = "application_startup"
+
+        try:
+            with context_manager:
+                # 阶段节点日志（输出到Terminal）
+                stage_logger.info("📍 完整服务初始化开始（传统模式）", extra={"log_type": "STAGE_NODE", "scenario": scenario})
+                
+                self.logger.info("=" * 60, extra={"log_type": "SYSTEM", "scenario": scenario})
+                self.logger.info("正在初始化服务...", extra={"log_type": "SYSTEM", "scenario": scenario})
+                self.logger.info("=" * 60, extra={"log_type": "SYSTEM", "scenario": scenario})
+
+                # 配置已在主线程初始化，无需重复初始化
+                from backend.core.config import get_settings
+
+                settings = get_settings()
+                self.logger.debug("🔍 使用已加载的配置：%s", settings.config_file, extra={"log_type": "SYSTEM", "scenario": scenario})
+                self.logger.info("使用已加载的配置：%s", settings.config_file, extra={"log_type": "SYSTEM", "scenario": scenario})
+
+                # 阶段1: 初始化VNPY核心框架（如果尚未初始化）
+                self.logger.debug("🔍 开始初始化VNPY核心框架（完整模式）...", extra={"log_type": "SYSTEM", "scenario": scenario})
+                phase1_success = self._initialize_vnpy_core()
+                if not phase1_success:
+                    self.logger.critical("🔥 [ServiceInitializer] VNPY核心框架初始化失败", exc_info=True, extra={"log_type": "ALERT", "scenario": scenario})
+                    stage_logger.error("❌ VNPY核心框架初始化失败", extra={"log_type": "STAGE_NODE", "scenario": scenario})
+
+                # 阶段1.5: 提前初始化SystemManagerService（监控集成优先就绪）
+                self.logger.debug("🔍 开始提前初始化SystemManagerService...", extra={"log_type": "SYSTEM", "scenario": scenario})
+                phase1_5_success = self._initialize_system_manager_early()
+                if not phase1_5_success:
+                    self.logger.warning("⚠️ SystemManagerService提前初始化失败，将在阶段5重试", extra={"log_type": "SYSTEM", "scenario": scenario})
+
+                # 阶段2: 初始化数据服务
+                self.logger.debug("🔍 开始初始化数据服务（完整模式）...", extra={"log_type": "SYSTEM", "scenario": scenario})
+                phase2_success = self._initialize_data_services()
+                if not phase2_success:
+                    self.logger.error("❌ [ServiceInitializer] 数据服务初始化失败", exc_info=True, extra={"log_type": "ALERT", "scenario": scenario})
+                    stage_logger.error("❌ 数据服务初始化失败", extra={"log_type": "STAGE_NODE", "scenario": scenario})
+
+                # 阶段3: 初始化交易服务
+                self.logger.debug("🔍 开始初始化交易服务...", extra={"log_type": "SYSTEM", "scenario": scenario})
+                phase3_success = self._initialize_trading_services()
+                if not phase3_success:
+                    self.logger.warning("⚠️ [ServiceInitializer] 交易服务初始化失败", extra={"log_type": "SYSTEM", "scenario": scenario})
+
+                # 阶段4: 初始化策略服务
+                self.logger.debug("🔍 开始初始化策略服务...", extra={"log_type": "SYSTEM", "scenario": scenario})
+                strategy_success = self._initialize_strategy_services()
+                if not strategy_success:
+                    self.logger.warning("⚠️ [ServiceInitializer] 策略服务初始化失败", extra={"log_type": "SYSTEM", "scenario": scenario})
+
+                # 阶段5: 初始化辅助服务
+                self.logger.debug("🔍 开始初始化辅助服务...", extra={"log_type": "SYSTEM", "scenario": scenario})
+                auxiliary_success = self._initialize_auxiliary_services()
+                if not auxiliary_success:
+                    self.logger.warning("⚠️ [ServiceInitializer] 辅助服务初始化失败", extra={"log_type": "SYSTEM", "scenario": scenario})
+
+                # 生成初始化报告
+                self._report_progress("生成初始化报告...", 98)
+                self.logger.debug("🔍 生成初始化报告...", extra={"log_type": "SYSTEM", "scenario": scenario})
+                self._generate_initialization_report()
+
+                # 如果核心服务初始化成功，即使部分服务失败也返回True
+                core_services_ok = (
+                    phase1_success or phase1_5_success or phase2_success or phase3_success
+                )
+
+                if core_services_ok:
+                    self.logger.info("✅ 核心服务初始化成功，系统可以启动", extra={"log_type": "SYSTEM", "scenario": scenario})
+                    stage_logger.info("✅ 完整服务初始化完成", extra={"log_type": "STAGE_NODE", "scenario": scenario})
+                    self._report_progress("后端服务初始化完成", 100)
+                    return True
+                else:
+                    self.logger.critical("🔥 [ServiceInitializer] 核心服务初始化失败，系统无法正常启动", exc_info=True, extra={"log_type": "ALERT", "scenario": scenario})
+                    stage_logger.error("❌ 核心服务初始化失败，系统无法正常启动", extra={"log_type": "STAGE_NODE", "scenario": scenario})
+                    self._report_progress("核心服务初始化失败", 100)
+                    return False
 
         except Exception as e:
-            self.logger.critical("🔥 [ServiceInitializer] 服务初始化过程发生严重异常：%s", e, exc_info=True, extra={"log_type": "ALERT"})
+            self.logger.critical("🔥 [ServiceInitializer] 服务初始化过程发生严重异常：%s", e, exc_info=True, extra={"log_type": "ALERT", "scenario": scenario})
+            stage_logger.error(f"❌ 服务初始化过程发生严重异常: {e}", extra={"log_type": "STAGE_NODE", "scenario": scenario})
             self.service_manager.record_error(
                 "ServiceInitializer",
                 "CRITICAL_INITIALIZATION_ERROR",

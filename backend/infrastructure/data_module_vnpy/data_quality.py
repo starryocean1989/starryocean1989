@@ -663,6 +663,12 @@ class DataSensor:
         tasks = [(symbol, interval) for symbol in symbols for interval in intervals]
         total = len(tasks)
         
+        scenario = "manual_data_scan"
+        logger.debug(
+            f"[SCAN-MULTIPROCESS] 开始多进程扫描: 任务数={total}, 进程数={max_workers}",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+        
         # 使用进程池
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
             futures = {
@@ -670,16 +676,31 @@ class DataSensor:
                 for symbol, interval in tasks
             }
             
+            logger.debug(
+                f"[SCAN-MULTIPROCESS] 所有任务已提交: 任务数={len(futures)}",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            
             completed = 0
             for future in as_completed(futures):
                 symbol, interval = futures[future]
                 try:
                     result = future.result()
                     results[(symbol, interval)] = result
+                    logger.debug(
+                        f"[SCAN-MULTIPROCESS] 任务完成: symbol={symbol}, interval={interval}, "
+                        f"quality_level={result.quality_level.name}, completeness={result.completeness:.2f}%",
+                        extra={"log_type": "SYSTEM", "scenario": scenario}
+                    )
                 except Exception as e:
                     logger.warning(
                         f"⚠️ 扫描失败: {symbol}/{interval}, 错误: {e}",
-                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                        extra={"log_type": "ALERT", "scenario": scenario}
+                    )
+                    logger.debug(
+                        f"[SCAN-MULTIPROCESS] 扫描异常详情: symbol={symbol}, interval={interval}, "
+                        f"异常类型={type(e).__name__}, 异常消息={str(e)}",
+                        extra={"log_type": "SYSTEM", "scenario": scenario}
                     )
                     results[(symbol, interval)] = QualityScanResult(
                         symbol=symbol,
@@ -689,6 +710,17 @@ class DataSensor:
                 
                 completed += 1
                 self._notify_progress(completed, total, f"已扫描: {symbol}/{interval}")
+                
+                if completed % 100 == 0:
+                    logger.debug(
+                        f"[SCAN-MULTIPROCESS] 扫描进度: {completed}/{total} ({completed/total*100:.1f}%)",
+                        extra={"log_type": "SYSTEM", "scenario": scenario}
+                    )
+        
+        logger.debug(
+            f"[SCAN-MULTIPROCESS] 多进程扫描完成: 总任务数={total}, 完成数={len(results)}",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
         
         return results
     
@@ -942,13 +974,15 @@ def _scan_single_worker(symbol: str, interval: str) -> QualityScanResult:
     Returns:
         扫描结果
     """
+    scenario = "manual_data_scan"
     # 设置子进程日志接入loghub
     try:
-        from backend.infrastructure.data_module_vnpy.data_acquisition import setup_subprocess_logger
-        worker_logger = setup_subprocess_logger(
-            worker_id=0,  # 子进程ID，这里使用0作为默认值
+        from backend.infrastructure.data_module_vnpy.data_acquisition import _configure_subprocess_logging
+        worker_id = hash(f"{symbol}_{interval}") % 1000  # 使用symbol和interval的hash作为worker_id
+        worker_logger = _configure_subprocess_logging(
+            worker_id=worker_id,
             task_type="data_scan",
-            scenario="manual_data_scan"
+            scenario=scenario
         )
     except Exception:
         worker_logger = logger
@@ -956,35 +990,49 @@ def _scan_single_worker(symbol: str, interval: str) -> QualityScanResult:
     try:
         worker_logger.debug(
             f"[SCAN-WORKER] 开始扫描: symbol={symbol}, interval={interval}",
-            extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+            extra={"log_type": "SYSTEM", "scenario": scenario}
         )
         
         # 创建存储管理器
         storage_manager = StorageManager()
         
         # 同步读取数据
+        load_start_time = time.time()
         df = storage_manager.load_kline(symbol, interval)
+        load_elapsed = time.time() - load_start_time
+        
+        worker_logger.debug(
+            f"[SCAN-WORKER] 数据加载完成: symbol={symbol}, interval={interval}, "
+            f"rows={len(df) if df is not None and not df.empty else 0}, 耗时={load_elapsed:.3f}s",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
         
         # 创建临时DataSensor进行验证
         sensor = DataSensor()
+        validate_start_time = time.time()
         result = sensor._validate_dataframe(symbol, interval, df)
+        validate_elapsed = time.time() - validate_start_time
         
         worker_logger.debug(
             f"[SCAN-WORKER] 扫描完成: symbol={symbol}, interval={interval}, "
-            f"quality_level={result.quality_level.name}, completeness={result.completeness:.2f}%",
-            extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+            f"quality_level={result.quality_level.name}, completeness={result.completeness:.2f}%, "
+            f"total_bars={result.total_bars}, missing_bars={result.missing_bars}, "
+            f"duplicate_bars={result.duplicate_bars}, invalid_bars={result.invalid_bars}, "
+            f"errors={len(result.errors)}, 验证耗时={validate_elapsed:.3f}s",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
         )
         
         return result
     except Exception as e:
         worker_logger.debug(
-            f"[SCAN-WORKER] Worker扫描失败: {symbol}/{interval}, {e}",
-            extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+            f"[SCAN-WORKER] Worker扫描失败详情: symbol={symbol}, interval={interval}, "
+            f"异常类型={type(e).__name__}, 异常消息={str(e)}",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
         )
         worker_logger.error(
             f"❌ [SCAN-WORKER] 扫描失败: {symbol}/{interval}, 错误: {e}",
             exc_info=True,
-            extra={"log_type": "ALERT", "scenario": "manual_data_scan"}
+            extra={"log_type": "ALERT", "scenario": scenario}
         )
         return QualityScanResult(
             symbol=symbol,

@@ -23,6 +23,7 @@
 
 import asyncio
 import struct
+import time
 from pathlib import Path
 from typing import List, Optional, Union, Any
 
@@ -97,32 +98,75 @@ class AsyncTdxDayReader:
 
         :return: DataFrame，列：date, open, high, low, close, amount, volume, ...
         """
+        scenario = "tdx_data_read"
         try:
             if not self.filepath.exists():
-                logger.error("文件不存在: %s", self.filepath, extra={"log_type": "SYSTEM"})
+                logger.error(
+                    "文件不存在: %s", self.filepath,
+                    extra={"log_type": "ALERT", "scenario": scenario}
+                )
+                logger.debug(
+                    "[TDX-READER] 文件不存在检查: filepath=%s", self.filepath,
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
                 return pd.DataFrame()
 
+            logger.debug(
+                "[TDX-READER] 开始读取日线文件: %s", self.filepath.name,
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+
             # 🚀 使用native_iocp异步读取二进制文件（真异步，无线程池开销）
+            read_start_time = time.time()
             f = await _open_file_async(self.filepath, 'rb')
             async with f:
                 data = await f.read()
+            read_elapsed = time.time() - read_start_time
+            
+            file_size = len(data)
+            logger.debug(
+                "[TDX-READER] 文件读取完成: 文件=%s, 大小=%d bytes, 耗时=%.3f s",
+                self.filepath.name, file_size, read_elapsed,
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
 
             # 🔧 优化：直接在协程中解析，避免线程池排队
             # 数据解析很快（通常<1ms），不需要放到线程池
             # 如果数据量很大可以分块处理并定期 await asyncio.sleep(0)
+            parse_start_time = time.time()
             records = self._parse_day_data(data)
+            parse_elapsed = time.time() - parse_start_time
 
             if not records:
+                logger.debug(
+                    "[TDX-READER] 解析后无记录: 文件=%s", self.filepath.name,
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
                 return pd.DataFrame()
 
             # 转换为DataFrame
             df = pd.DataFrame(records)
+            total_elapsed = time.time() - read_start_time
 
-            logger.debug("成功读取日线数据: %d条, 文件=%s", len(df), self.filepath.name)
+            logger.debug(
+                "[TDX-READER] 成功读取日线数据: 文件=%s, 记录数=%d, 解析耗时=%.3f s, 总耗时=%.3f s",
+                self.filepath.name, len(df), parse_elapsed, total_elapsed,
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             return df
 
         except Exception as e:
-            logger.error("读取日线数据失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            logger.error(
+                "[TDX-READER] ❌ 读取日线数据失败: 文件=%s, 错误=%s",
+                self.filepath.name, e,
+                exc_info=True,
+                extra={"log_type": "ALERT", "scenario": scenario}
+            )
+            logger.debug(
+                "[TDX-READER] 异常详情: 文件=%s, 异常类型=%s, 异常消息=%s",
+                self.filepath.name, type(e).__name__, str(e),
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             return pd.DataFrame()
 
     def _parse_day_data(self, data: bytes) -> List[dict]:
@@ -180,7 +224,18 @@ class AsyncTdxDayReader:
                     })
 
         except Exception as e:
-            logger.error("解析日线数据失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            scenario = "tdx_data_read"
+            logger.error(
+                "[TDX-READER] ❌ 解析日线数据失败: 文件=%s, 错误=%s",
+                self.filepath.name if hasattr(self, 'filepath') else 'unknown', e,
+                exc_info=True,
+                extra={"log_type": "ALERT", "scenario": scenario}
+            )
+            logger.debug(
+                "[TDX-READER] 解析异常详情: 异常类型=%s, 异常消息=%s, 已解析记录数=%d",
+                type(e).__name__, str(e), len(records),
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
 
         return records
 
@@ -210,30 +265,74 @@ class AsyncTdxMinuteReader:
 
         :return: DataFrame，列：datetime, open, high, low, close, amount, volume, ...
         """
+        scenario = "tdx_data_read"
         try:
             if not self.filepath.exists():
-                logger.error(f"文件不存在: {self.filepath}", extra={"log_type": "SYSTEM"})
+                logger.error(
+                    "文件不存在: %s", self.filepath,
+                    extra={"log_type": "ALERT", "scenario": scenario}
+                )
+                logger.debug(
+                    "[TDX-READER] 文件不存在检查: filepath=%s", self.filepath,
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
                 return pd.DataFrame()
 
+            logger.debug(
+                "[TDX-READER] 开始读取分钟线文件: %s", self.filepath.name,
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+
             # 🚀 使用native_iocp异步读取二进制文件（真异步，无线程池开销）
+            read_start_time = time.time()
             f = await _open_file_async(self.filepath, 'rb')
             async with f:
                 data = await f.read()
+            read_elapsed = time.time() - read_start_time
+            
+            file_size = len(data)
+            logger.debug(
+                "[TDX-READER] 文件读取完成: 文件=%s, 大小=%d bytes, 耗时=%.3f s",
+                self.filepath.name, file_size, read_elapsed,
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
 
             # 🔧 优化：直接在协程中解析，避免线程池排队
+            parse_start_time = time.time()
             records = self._parse_minute_data(data)
+            parse_elapsed = time.time() - parse_start_time
 
             if not records:
+                logger.debug(
+                    "[TDX-READER] 解析后无记录: 文件=%s", self.filepath.name,
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
                 return pd.DataFrame()
 
             # 转换为DataFrame
             df = pd.DataFrame(records)
+            total_elapsed = time.time() - read_start_time
 
-            logger.debug("成功读取分钟线数据: %d条, 文件=%s", len(df), self.filepath.name)
+            logger.debug(
+                "[TDX-READER] 成功读取分钟线数据: 文件=%s, 记录数=%d, 解析耗时=%.3f s, 总耗时=%.3f s",
+                self.filepath.name, len(df), parse_elapsed, total_elapsed,
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             return df
 
         except Exception as e:
-            logger.error("读取分钟线数据失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            scenario = "tdx_data_read"
+            logger.error(
+                "[TDX-READER] ❌ 读取分钟线数据失败: 文件=%s, 错误=%s",
+                self.filepath.name, e,
+                exc_info=True,
+                extra={"log_type": "ALERT", "scenario": scenario}
+            )
+            logger.debug(
+                "[TDX-READER] 异常详情: 文件=%s, 异常类型=%s, 异常消息=%s",
+                self.filepath.name, type(e).__name__, str(e),
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             return pd.DataFrame()
 
     def _parse_minute_data(self, data: bytes) -> List[dict]:
@@ -291,7 +390,18 @@ class AsyncTdxMinuteReader:
                 })
 
         except Exception as e:
-            logger.error(f"解析分钟线数据失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            scenario = "tdx_data_read"
+            logger.error(
+                "[TDX-READER] ❌ 解析分钟线数据失败: 文件=%s, 错误=%s",
+                self.filepath.name if hasattr(self, 'filepath') else 'unknown', e,
+                exc_info=True,
+                extra={"log_type": "ALERT", "scenario": scenario}
+            )
+            logger.debug(
+                "[TDX-READER] 解析异常详情: 异常类型=%s, 异常消息=%s, 已解析记录数=%d",
+                type(e).__name__, str(e), len(records),
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
 
         return records
 
@@ -319,30 +429,73 @@ class AsyncTdxLc5Reader:
 
         :return: DataFrame，列：datetime, open, high, low, close, amount, volume, ...
         """
+        scenario = "tdx_data_read"
         try:
             if not self.filepath.exists():
-                logger.error(f"文件不存在: {self.filepath}", extra={"log_type": "SYSTEM"})
+                logger.error(
+                    "文件不存在: %s", self.filepath,
+                    extra={"log_type": "ALERT", "scenario": scenario}
+                )
+                logger.debug(
+                    "[TDX-READER] 文件不存在检查: filepath=%s", self.filepath,
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
                 return pd.DataFrame()
 
+            logger.debug(
+                "[TDX-READER] 开始读取5分钟线文件: %s", self.filepath.name,
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+
             # 🚀 使用native_iocp异步读取二进制文件（真异步，无线程池开销）
+            read_start_time = time.time()
             f = await _open_file_async(self.filepath, 'rb')
             async with f:
                 data = await f.read()
+            read_elapsed = time.time() - read_start_time
+            
+            file_size = len(data)
+            logger.debug(
+                "[TDX-READER] 文件读取完成: 文件=%s, 大小=%d bytes, 耗时=%.3f s",
+                self.filepath.name, file_size, read_elapsed,
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
 
             # 🔧 优化：直接在协程中解析，避免线程池排队
+            parse_start_time = time.time()
             records = self._parse_lc5_data(data)
+            parse_elapsed = time.time() - parse_start_time
 
             if not records:
+                logger.debug(
+                    "[TDX-READER] 解析后无记录: 文件=%s", self.filepath.name,
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
                 return pd.DataFrame()
 
             # 转换为DataFrame
             df = pd.DataFrame(records)
+            total_elapsed = time.time() - read_start_time
 
-            logger.debug("成功读取5分钟线数据: %d条, 文件=%s", len(df), self.filepath.name)
+            logger.debug(
+                "[TDX-READER] 成功读取5分钟线数据: 文件=%s, 记录数=%d, 解析耗时=%.3f s, 总耗时=%.3f s",
+                self.filepath.name, len(df), parse_elapsed, total_elapsed,
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             return df
 
         except Exception as e:
-            logger.error("读取5分钟线数据失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            logger.error(
+                "[TDX-READER] ❌ 读取5分钟线数据失败: 文件=%s, 错误=%s",
+                self.filepath.name, e,
+                exc_info=True,
+                extra={"log_type": "ALERT", "scenario": scenario}
+            )
+            logger.debug(
+                "[TDX-READER] 异常详情: 文件=%s, 异常类型=%s, 异常消息=%s",
+                self.filepath.name, type(e).__name__, str(e),
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             return pd.DataFrame()
 
     def _parse_lc5_data(self, data: bytes) -> List[dict]:
@@ -384,7 +537,18 @@ class AsyncTdxLc5Reader:
                 })
 
         except Exception as e:
-            logger.error("解析5分钟线数据失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            scenario = "tdx_data_read"
+            logger.error(
+                "[TDX-READER] ❌ 解析5分钟线数据失败: 文件=%s, 错误=%s",
+                self.filepath.name if hasattr(self, 'filepath') else 'unknown', e,
+                exc_info=True,
+                extra={"log_type": "ALERT", "scenario": scenario}
+            )
+            logger.debug(
+                "[TDX-READER] 解析异常详情: 异常类型=%s, 异常消息=%s, 已解析记录数=%d",
+                type(e).__name__, str(e), len(records),
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
 
         return records
 

@@ -1710,30 +1710,82 @@ class SymbolLoader:
             return {}
 
         # 3. 执行分类
+        scenario = "refresh_symbol_list"
+        logger.debug(
+            f"[SYMBOL-LOADER] 开始执行品种分类: 总品种数={len(self.all_symbols)}",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+        
         # 先获取T+0基金代码（用于深证A股过滤）
         t0_fund_classifier = self.classifier_registry.get("T+0基金")
         t0_fund_codes = set()
         if t0_fund_classifier:
+            logger.debug(
+                "[SYMBOL-LOADER] 开始分类T+0基金",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             t0_funds = t0_fund_classifier.classify(
                 self.all_symbols,
                 block_parser=self.block_parser,
             )
             t0_fund_codes = {fund["code"] for fund in t0_funds}
+            logger.debug(
+                f"[SYMBOL-LOADER] T+0基金分类完成: 数量={len(t0_fund_codes)}",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
 
         # 执行所有分类器
+        logger.debug(
+            f"[SYMBOL-LOADER] 开始执行所有分类器: 分类器数量={len(self.classifier_registry._classifiers)}",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
         classified = self.classifier_registry.classify_all(
             self.all_symbols,
             tdx_parser=self.tdx_parser,
             block_parser=self.block_parser,
             t0_fund_codes=t0_fund_codes,
         )
+        
+        # 统计分类结果
+        total_classified = sum(len(v) for v in classified.values())
+        logger.debug(
+            f"[SYMBOL-LOADER] 分类完成: 分类数={len(classified)}, 总品种数={total_classified}",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+        for category, symbols in classified.items():
+            logger.debug(
+                f"[SYMBOL-LOADER] 分类详情: {category}={len(symbols)}个品种",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
 
         # 4. 执行过滤
+        logger.debug(
+            f"[SYMBOL-LOADER] 开始执行过滤器链: 过滤器数量={len(self.filter_chain._filters)}",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
         # 对每个分类结果应用过滤器链
         filtered_classified = {}
         for category, symbols in classified.items():
+            before_count = len(symbols)
+            logger.debug(
+                f"[SYMBOL-LOADER] 开始过滤分类: {category}, 过滤前={before_count}个品种",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             filtered = self.filter_chain.apply(symbols)
+            after_count = len(filtered)
+            filtered_count = before_count - after_count
+            logger.debug(
+                f"[SYMBOL-LOADER] 过滤完成: {category}, 过滤前={before_count}, 过滤后={after_count}, 过滤掉={filtered_count}",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             filtered_classified[category] = filtered
+        
+        # 统计过滤结果
+        total_filtered = sum(len(v) for v in filtered_classified.values())
+        logger.debug(
+            f"[SYMBOL-LOADER] 过滤完成: 分类数={len(filtered_classified)}, 总品种数={total_filtered}",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
 
         # 5. 保存缓存
         DailyCacheManager.save_with_date(filtered_classified, self.cache_file)
@@ -3035,40 +3087,74 @@ Worker进程主函数
             max_connections=coroutines_per_worker
         )
 
+        scenario = "data_download"
         # Phase 1: IPv4池下载
-        subprocess_logger.info(f"🌐 Worker {worker_id} 进入Phase 1: IPv4池下载")
+        subprocess_logger.info(
+            f"🌐 Worker {worker_id} 进入Phase 1: IPv4池下载",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
         ipv4_servers = servers.get("ipv4", [])
 
         if not ipv4_servers:
-            subprocess_logger.warning(f"⚠️ Worker {worker_id} IPv4服务器列表为空", extra={"log_type": "SYSTEM"})
+            subprocess_logger.warning(
+                f"⚠️ Worker {worker_id} IPv4服务器列表为空",
+                extra={"log_type": "ALERT", "scenario": scenario}
+            )
             return
+
+        subprocess_logger.debug(
+            f"[DOWNLOAD-WORKER] Worker {worker_id} 开始创建连接池: "
+            f"目标连接数={coroutines_per_worker}, 服务器数={len(ipv4_servers)}",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
 
         # 创建连接池
         connections = []
         for i in range(coroutines_per_worker):
             server = ipv4_servers[i % len(ipv4_servers)]
             try:
+                conn_start_time = time.time()
                 conn_id, api = await connection_manager.create_connection(
                     server["ip"], server["port"]
                 )
+                conn_elapsed = time.time() - conn_start_time
                 connections.append({
                     "conn_id": conn_id,
                     "api": api,
                     "server": server,
                 })
+                subprocess_logger.debug(
+                    f"[DOWNLOAD-WORKER] Worker {worker_id} 创建连接成功: "
+                    f"conn_id={conn_id}, server={server['ip']}:{server['port']}, 耗时={conn_elapsed:.3f}s",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
             except Exception as e:
                 subprocess_logger.error(
                     f"❌ [Worker {worker_id}] 创建连接失败: {server['ip']}:{server['port']}, {e}",
                     exc_info=True,
-                    extra={"log_type": "SYSTEM"}
+                    extra={"log_type": "ALERT", "scenario": scenario}
+                )
+                subprocess_logger.debug(
+                    f"[DOWNLOAD-WORKER] Worker {worker_id} 连接失败详情: "
+                    f"server={server['ip']}:{server['port']}, 异常类型={type(e).__name__}, 异常消息={str(e)}",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
                 )
 
         if not connections:
-            subprocess_logger.error(f"❌ Worker {worker_id} 没有可用连接，退出", extra={"log_type": "ALERT"})
+            subprocess_logger.error(
+                f"❌ Worker {worker_id} 没有可用连接，退出",
+                extra={"log_type": "ALERT", "scenario": scenario}
+            )
             return
 
         subprocess_logger.info(
-            f"✅ Worker {worker_id} 已创建 {len(connections)} 个连接"
+            f"✅ Worker {worker_id} 已创建 {len(connections)} 个连接",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+        subprocess_logger.debug(
+            f"[DOWNLOAD-WORKER] Worker {worker_id} 连接池创建完成: "
+            f"成功={len(connections)}, 目标={coroutines_per_worker}, 成功率={len(connections)/coroutines_per_worker*100:.1f}%",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
         )
 
         # 创建下载协程
@@ -3090,12 +3176,27 @@ Worker进程主函数
             download_tasks.append(task)
 
         # 等待所有下载协程完成
+        subprocess_logger.debug(
+            f"[DOWNLOAD-WORKER] Worker {worker_id} 启动下载协程: 协程数={len(download_tasks)}",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
         await asyncio.gather(*download_tasks, return_exceptions=True)
 
         # 关闭所有连接
+        subprocess_logger.debug(
+            f"[DOWNLOAD-WORKER] Worker {worker_id} 开始关闭连接池",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
         await connection_manager.close_all_connections()
 
-        subprocess_logger.info(f"✅ Worker {worker_id} 下载完成")
+        subprocess_logger.info(
+            f"✅ Worker {worker_id} 下载完成",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+        subprocess_logger.debug(
+            f"[DOWNLOAD-WORKER] Worker {worker_id} 所有协程已结束，连接已关闭",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
 
     @staticmethod
     async def _download_coroutine(
@@ -3126,6 +3227,7 @@ Worker进程主函数
         server = conn_info["server"]
         conn_id = conn_info["conn_id"]
 
+        scenario = "data_download"
         while not stop_event.is_set():
             # 检查暂停
             while pause_event.is_set() and not stop_event.is_set():
@@ -3134,13 +3236,29 @@ Worker进程主函数
             # 获取任务
             try:
                 task = task_queue.get_nowait()
+                subprocess_logger.debug(
+                    f"[DOWNLOAD-WORKER] Worker {worker_id} 获取任务: symbol={task.symbol}, "
+                    f"interval={task.interval}, server={server['ip']}:{server['port']}, "
+                    f"conn_id={conn_id}",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
             except Exception:
                 # 队列为空，退出
+                subprocess_logger.debug(
+                    f"[DOWNLOAD-WORKER] Worker {worker_id} 任务队列为空，退出协程",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
                 break
 
             # 下载数据
             start_time = time.time()
             try:
+                subprocess_logger.debug(
+                    f"[DOWNLOAD-WORKER] Worker {worker_id} 开始下载: symbol={task.symbol}, "
+                    f"interval={task.interval}, market={MultiProcessStockFetcher._get_market_from_symbol(task.symbol)}, "
+                    f"server={server['ip']}:{server['port']}",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
                 # 调用TDX API下载
                 bars = await MultiProcessStockFetcher._download_single_task(
                     api=api,
@@ -3153,13 +3271,22 @@ Worker进程主函数
 
                 # 保存数据
                 if bars is not None and not bars.empty:
+                    save_start_time = time.time()
                     await storage_manager.save_kline_async(
                         symbol=task.symbol,
                         interval=task.interval,
                         data=bars,
                     )
-
+                    save_elapsed = time.time() - save_start_time
+                    
                     elapsed = time.time() - start_time
+                    
+                    subprocess_logger.debug(
+                        f"[DOWNLOAD-WORKER] Worker {worker_id} 下载成功: symbol={task.symbol}, "
+                        f"interval={task.interval}, bars={len(bars)}, "
+                        f"下载耗时={elapsed - save_elapsed:.3f}s, 保存耗时={save_elapsed:.3f}s, 总耗时={elapsed:.3f}s",
+                        extra={"log_type": "SYSTEM", "scenario": scenario}
+                    )
 
                     # 记录成功
                     task_logger.log_task(
@@ -3188,8 +3315,12 @@ Worker进程主函数
                     )
                 else:
                     # 数据为空
+                    elapsed = time.time() - start_time
                     subprocess_logger.debug(
-                        f"⚠️ Worker {worker_id} 下载数据为空: {task.symbol}/{task.interval}"
+                        f"[DOWNLOAD-WORKER] Worker {worker_id} 下载数据为空: symbol={task.symbol}, "
+                        f"interval={task.interval}, server={server['ip']}:{server['port']}, "
+                        f"耗时={elapsed:.3f}s",
+                        extra={"log_type": "SYSTEM", "scenario": scenario}
                     )
 
                     task_logger.log_task(
@@ -3294,48 +3425,79 @@ Worker进程主函数
         Returns:
             K线数据 DataFrame
         """
+        scenario = "data_download"
         try:
             # 确定市场
             market = MultiProcessStockFetcher._get_market_from_symbol(symbol)
+            subprocess_logger.debug(
+                f"[DOWNLOAD-TASK] 开始下载: symbol={symbol}, interval={interval}, market={market}",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
 
             # 调用TDX API
+            api_start_time = time.time()
             if interval == "1d":
+                category = 9  # 日线
                 bars = await api.get_security_bars(
-                    category=9,  # 日线
+                    category=category,
                     market=market,
                     code=symbol,
                     start=0,
                     count=10000,
                 )
             elif interval == "5m":
+                category = 0  # 5分钟
                 bars = await api.get_security_bars(
-                    category=0,  # 5分钟
+                    category=category,
                     market=market,
                     code=symbol,
                     start=0,
                     count=10000,
                 )
             elif interval == "1m":
+                category = 8  # 1分钟
                 bars = await api.get_security_bars(
-                    category=8,  # 1分钟
+                    category=category,
                     market=market,
                     code=symbol,
                     start=0,
                     count=10000,
                 )
             else:
-                subprocess_logger.warning(f"⚠️ 不支持的周期: {interval}", extra={"log_type": "SYSTEM"})
+                subprocess_logger.warning(
+                    f"⚠️ 不支持的周期: {interval}",
+                    extra={"log_type": "ALERT", "scenario": scenario}
+                )
                 return None
+            api_elapsed = time.time() - api_start_time
+            
+            subprocess_logger.debug(
+                f"[DOWNLOAD-TASK] API调用完成: symbol={symbol}, interval={interval}, "
+                f"bars_count={len(bars) if bars else 0}, 耗时={api_elapsed:.3f}s",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
 
             # 转换为DataFrame
             if bars:
+                convert_start_time = time.time()
                 df = pd.DataFrame(bars)
                 # 标准化列名
                 if "datetime" in df.columns:
                     df["datetime"] = pd.to_datetime(df["datetime"])
                     df = df.set_index("datetime")
+                convert_elapsed = time.time() - convert_start_time
+                
+                subprocess_logger.debug(
+                    f"[DOWNLOAD-TASK] 数据转换完成: symbol={symbol}, interval={interval}, "
+                    f"rows={len(df)}, 耗时={convert_elapsed:.3f}s",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
                 return df
             else:
+                subprocess_logger.debug(
+                    f"[DOWNLOAD-TASK] API返回空数据: symbol={symbol}, interval={interval}",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
                 return None
 
         except Exception as e:
@@ -4338,7 +4500,16 @@ async def _tdx_reader_worker_async(
                     result_queue.put((symbol, df))
 
                 except Exception as e:
-                    logger.error(f"读取失败: {symbol}, {e}", extra={"log_type": "SYSTEM"})
+                    scenario = "tdx_data_read"
+                    logger.error(
+                        f"[TDX-READER-WORKER] ❌ 读取失败: symbol={symbol}, data_type={data_type}, market={market}, 错误={e}",
+                        exc_info=True,
+                        extra={"log_type": "ALERT", "scenario": scenario}
+                    )
+                    logger.debug(
+                        f"[TDX-READER-WORKER] 读取异常详情: symbol={symbol}, 异常类型={type(e).__name__}, 异常消息={str(e)}",
+                        extra={"log_type": "SYSTEM", "scenario": scenario}
+                    )
                     result_queue.put((symbol, pd.DataFrame()))
 
     # 启动多个协程任务
