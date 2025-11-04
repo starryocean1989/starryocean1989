@@ -5033,70 +5033,213 @@ class DataCenterService(BaseService, LoggerMixin):
         Returns:
             Dict: 扫描结果
         """
+        import time
+        import logging
+        from contextlib import suppress
+        
+        start_time = time.time()
+        
+        # 设置日志上下文
         try:
-            if not self.china_stock_engine:
-                self.logger.error(
-                    "ChinaStockEngine不可用",
-                    extra={"log_type": "ALERT", "scenario": "manual_data_scan"}
+            from backend.infrastructure.system_vnpy.unified_log_system import (
+                get_logging_hub,
+                ai_log_process,
+            )
+            hub = get_logging_hub()
+        except ImportError:
+            hub = None
+        
+        stage_logger = logging.getLogger("task.manual_data_scan.stage")
+        
+        # 使用ai_log_process创建独立日志文件
+        # 注意：场景信息通过日志记录的extra参数传递，无需全局设置
+        try:
+            context_manager = ai_log_process("manual_data_scan") if hub else suppress()
+        except Exception:
+            context_manager = suppress()
+        
+        with context_manager:
+            try:
+                # 阶段节点（输出到Terminal）
+                stage_logger.info(
+                    "📍 手动数据扫描开始",
+                    extra={"log_type": "STAGE_NODE", "scenario": "manual_data_scan"},
                 )
+                
+                # DEBUG日志（只写入AI日志文件）
+                self.logger.debug(
+                    "[DATA-SCAN] 开始手动数据扫描",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                )
+                
+                if not self.china_stock_engine:
+                    self.logger.error(
+                        "[DATA-SCAN] ❌ ChinaStockEngine不可用",
+                        extra={"log_type": "ALERT", "scenario": "manual_data_scan"}
+                    )
+                    self.logger.debug(
+                        "[DATA-SCAN] ChinaStockEngine状态检查: None",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    )
+                    stage_logger.error(
+                        "❌ 手动数据扫描失败: ChinaStockEngine不可用",
+                        extra={"log_type": "STAGE_NODE", "scenario": "manual_data_scan"},
+                    )
+                    return {
+                        "success": False,
+                        "message": "ChinaStockEngine不可用",
+                    }
+
+                # 获取参考品种列表
+                self.logger.debug(
+                    "[DATA-SCAN] 开始获取参考品种列表",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                )
+                symbol_list_start_time = time.time()
+                reference_symbols = self.china_stock_engine.symbol_loader.extract_all_codes()
+                symbol_list_elapsed = time.time() - symbol_list_start_time
+                
+                self.logger.debug(
+                    f"[DATA-SCAN] 品种列表获取完成: 品种数={len(reference_symbols)}, 耗时={symbol_list_elapsed:.2f}s",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                )
+                self.logger.info(
+                    f"[DATA-SCAN] 开始扫描: 品种数={len(reference_symbols)}, 周期=[1d, 5m, 1m]",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                )
+
+                # 🔧 修复：调用质量扫描
+                self.logger.debug(
+                    "[DATA-SCAN] 开始获取DataSensor实例",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                )
+                data_sensor = self.china_stock_engine.data_sensor
+                if not data_sensor:
+                    self.logger.debug(
+                        "[DATA-SCAN] DataSensor不可用，创建新实例",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    )
+                    from backend.infrastructure.data_module_vnpy.data_quality import DataSensor
+                    data_sensor = DataSensor()
+                    self.logger.debug(
+                        "[DATA-SCAN] DataSensor实例创建完成",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    )
+                else:
+                    self.logger.debug(
+                        "[DATA-SCAN] DataSensor实例已存在",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    )
+
+                # 注册进度回调
+                scan_progress_reports = []
+                def progress_callback(completed: int, total: int, message: str = ""):
+                    """进度回调函数"""
+                    try:
+                        scan_progress_reports.append({
+                            "completed": completed,
+                            "total": total,
+                            "message": message,
+                            "timestamp": time.time()
+                        })
+                        self.logger.debug(
+                            f"[DATA-SCAN] 扫描进度: {completed}/{total} ({completed/total*100:.1f}%) - {message}",
+                            extra={"log_type": "PROGRESS", "scenario": "manual_data_scan"}
+                        )
+                    except Exception as e:
+                        self.logger.warning(
+                            f"[DATA-SCAN] ⚠️ 进度回调执行失败: {e}",
+                            extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                        )
+                
+                data_sensor.register_progress_callback(progress_callback)
+                self.logger.debug(
+                    "[DATA-SCAN] 进度回调已注册",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                )
+
+                # 执行质量扫描
+                self.logger.debug(
+                    f"[DATA-SCAN] 开始执行质量扫描: 品种数={len(reference_symbols)}, 周期=[1d, 5m, 1m], 异步=True",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                )
+                scan_start_time = time.time()
+                overview = data_sensor.scan_quality(
+                    symbols=reference_symbols,
+                    intervals=["1d", "5m", "1m"],
+                    use_async=True,
+                )
+                scan_elapsed = time.time() - scan_start_time
+                self.logger.debug(
+                    f"[DATA-SCAN] 质量扫描完成: 耗时={scan_elapsed:.2f}s, 结果数={len(overview)}",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                )
+
+                # overview是字典，需要统计
+                self.logger.debug(
+                    "[DATA-SCAN] 开始统计扫描结果",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                )
+                stat_start_time = time.time()
+                total_symbols = len(reference_symbols)
+                missing_symbols = sum(1 for r in overview.values() if r.total_bars == 0)
+                error_symbols = sum(1 for r in overview.values() if r.quality_level.value >= 4)
+                warning_symbols = sum(1 for r in overview.values() if r.quality_level.value == 3)
+                stat_elapsed = time.time() - stat_start_time
+                
+                self.logger.debug(
+                    f"[DATA-SCAN] 结果统计完成: 总品种={total_symbols}, 缺失={missing_symbols}, "
+                    f"错误={error_symbols}, 警告={warning_symbols}, 耗时={stat_elapsed:.3f}s",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                )
+                
+                total_elapsed = time.time() - start_time
+                self.logger.info(
+                    f"[DATA-SCAN] 扫描完成: 总品种={total_symbols}, 缺失={missing_symbols}, "
+                    f"错误={error_symbols}, 警告={warning_symbols}, 总耗时={total_elapsed:.2f}s",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                )
+                
+                # 阶段节点（输出到Terminal）
+                stage_logger.info(
+                    f"✅ 手动数据扫描完成: 缺失={missing_symbols}, 错误={error_symbols}, "
+                    f"警告={warning_symbols}, 耗时={total_elapsed:.2f}s",
+                    extra={"log_type": "STAGE_NODE", "scenario": "manual_data_scan"},
+                )
+
                 return {
-                    "success": False,
-                    "message": "ChinaStockEngine不可用",
+                    "success": True,
+                    "total_symbols": total_symbols,
+                    "missing_symbols": missing_symbols,
+                    "error_symbols": error_symbols,
+                    "warning_symbols": warning_symbols,
+                    "data_missing_symbols": missing_symbols,
+                    "message": f"扫描完成: 缺失={missing_symbols}, 错误={error_symbols}, 警告={warning_symbols}",
                 }
 
-            # 获取参考品种列表
-            reference_symbols = self.china_stock_engine.symbol_loader.extract_all_codes()
-            
-            self.logger.debug(
-                f"[DATA-SCAN] 开始扫描: 品种数={len(reference_symbols)}",
-                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
-            )
-
-            # 🔧 修复：调用质量扫描
-            data_sensor = self.china_stock_engine.data_sensor
-            if not data_sensor:
-                from backend.infrastructure.data_module_vnpy.data_quality import DataSensor
-                data_sensor = DataSensor()
-
-            overview = data_sensor.scan_quality(
-                symbols=reference_symbols,
-                intervals=["1d", "5m", "1m"],
-                use_async=True,
-            )
-
-            # overview是字典，需要统计
-            total_symbols = len(reference_symbols)
-            missing_symbols = sum(1 for r in overview.values() if r.total_bars == 0)
-            error_symbols = sum(1 for r in overview.values() if r.quality_level.value >= 4)
-            warning_symbols = sum(1 for r in overview.values() if r.quality_level.value == 3)
-            
-            self.logger.info(
-                f"[DATA-SCAN] 扫描完成: 总品种={total_symbols}, 缺失={missing_symbols}, "
-                f"错误={error_symbols}, 警告={warning_symbols}",
-                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
-            )
-
-            return {
-                "success": True,
-                "total_symbols": total_symbols,
-                "missing_symbols": missing_symbols,
-                "error_symbols": error_symbols,
-                "warning_symbols": warning_symbols,
-                "data_missing_symbols": missing_symbols,
-                "message": f"扫描完成: 缺失={missing_symbols}, 错误={error_symbols}, 警告={warning_symbols}",
-            }
-
-        except Exception as e:
-            self._log_error("扫描错误缺失数据", e)
-            self.logger.error(
-                f"扫描错误缺失数据失败: {e}",
-                exc_info=True,
-                extra={"log_type": "ALERT", "scenario": "manual_data_scan"}
-            )
-            return {
-                "success": False,
-                "message": f"扫描失败: {str(e)}",
-            }
+            except Exception as e:
+                total_elapsed = time.time() - start_time
+                self._log_error("扫描错误缺失数据", e)
+                self.logger.error(
+                    f"[DATA-SCAN] ❌ 扫描错误缺失数据失败: {e}, 耗时={total_elapsed:.2f}s",
+                    exc_info=True,
+                    extra={"log_type": "ALERT", "scenario": "manual_data_scan"}
+                )
+                self.logger.debug(
+                    f"[DATA-SCAN] 异常详情: 异常类型={type(e).__name__}, 异常消息={str(e)}",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                )
+                
+                # 阶段节点（输出到Terminal）
+                stage_logger.error(
+                    f"❌ 手动数据扫描异常: {e}, 耗时={total_elapsed:.2f}s",
+                    extra={"log_type": "STAGE_NODE", "scenario": "manual_data_scan"},
+                )
+                
+                return {
+                    "success": False,
+                    "message": f"扫描失败: {str(e)}",
+                }
 
     def delete_invalid_symbols(self) -> Dict[str, Any]:
         """删除失效品种数据

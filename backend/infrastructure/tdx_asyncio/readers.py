@@ -111,8 +111,12 @@ class AsyncTdxDayReader:
                 )
                 return pd.DataFrame()
 
-            logger.debug(
+            logger.info(
                 "[TDX-READER] 开始读取日线文件: %s", self.filepath.name,
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            logger.debug(
+                "[TDX-READER] 文件路径: %s", self.filepath,
                 extra={"log_type": "SYSTEM", "scenario": scenario}
             )
 
@@ -148,9 +152,14 @@ class AsyncTdxDayReader:
             df = pd.DataFrame(records)
             total_elapsed = time.time() - read_start_time
 
+            logger.info(
+                "[TDX-READER] 文件读取完成: 文件=%s, 记录数=%d, 总耗时=%.3f s",
+                self.filepath.name, len(df), total_elapsed,
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             logger.debug(
-                "[TDX-READER] 成功读取日线数据: 文件=%s, 记录数=%d, 解析耗时=%.3f s, 总耗时=%.3f s",
-                self.filepath.name, len(df), parse_elapsed, total_elapsed,
+                "[TDX-READER] 读取详情: 文件=%s, 记录数=%d, 读取耗时=%.3f s, 解析耗时=%.3f s, 总耗时=%.3f s",
+                self.filepath.name, len(df), read_elapsed, parse_elapsed, total_elapsed,
                 extra={"log_type": "SYSTEM", "scenario": scenario}
             )
             return df
@@ -278,8 +287,12 @@ class AsyncTdxMinuteReader:
                 )
                 return pd.DataFrame()
 
-            logger.debug(
+            logger.info(
                 "[TDX-READER] 开始读取分钟线文件: %s", self.filepath.name,
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            logger.debug(
+                "[TDX-READER] 文件路径: %s", self.filepath,
                 extra={"log_type": "SYSTEM", "scenario": scenario}
             )
 
@@ -313,9 +326,14 @@ class AsyncTdxMinuteReader:
             df = pd.DataFrame(records)
             total_elapsed = time.time() - read_start_time
 
+            logger.info(
+                "[TDX-READER] 文件读取完成: 文件=%s, 记录数=%d, 总耗时=%.3f s",
+                self.filepath.name, len(df), total_elapsed,
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             logger.debug(
-                "[TDX-READER] 成功读取分钟线数据: 文件=%s, 记录数=%d, 解析耗时=%.3f s, 总耗时=%.3f s",
-                self.filepath.name, len(df), parse_elapsed, total_elapsed,
+                "[TDX-READER] 读取详情: 文件=%s, 记录数=%d, 读取耗时=%.3f s, 解析耗时=%.3f s, 总耗时=%.3f s",
+                self.filepath.name, len(df), read_elapsed, parse_elapsed, total_elapsed,
                 extra={"log_type": "SYSTEM", "scenario": scenario}
             )
             return df
@@ -442,8 +460,12 @@ class AsyncTdxLc5Reader:
                 )
                 return pd.DataFrame()
 
-            logger.debug(
+            logger.info(
                 "[TDX-READER] 开始读取5分钟线文件: %s", self.filepath.name,
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            logger.debug(
+                "[TDX-READER] 文件路径: %s", self.filepath,
                 extra={"log_type": "SYSTEM", "scenario": scenario}
             )
 
@@ -477,9 +499,14 @@ class AsyncTdxLc5Reader:
             df = pd.DataFrame(records)
             total_elapsed = time.time() - read_start_time
 
+            logger.info(
+                "[TDX-READER] 文件读取完成: 文件=%s, 记录数=%d, 总耗时=%.3f s",
+                self.filepath.name, len(df), total_elapsed,
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             logger.debug(
-                "[TDX-READER] 成功读取5分钟线数据: 文件=%s, 记录数=%d, 解析耗时=%.3f s, 总耗时=%.3f s",
-                self.filepath.name, len(df), parse_elapsed, total_elapsed,
+                "[TDX-READER] 读取详情: 文件=%s, 记录数=%d, 读取耗时=%.3f s, 解析耗时=%.3f s, 总耗时=%.3f s",
+                self.filepath.name, len(df), read_elapsed, parse_elapsed, total_elapsed,
                 extra={"log_type": "SYSTEM", "scenario": scenario}
             )
             return df
@@ -577,30 +604,83 @@ class AsyncTdxBlockReader:
 
         :return: DataFrame，列：block_name, code_list
         """
+        scenario = "tdx_data_read"
         try:
             if not self.filepath.exists():
-                logger.error(f"文件不存在: {self.filepath}", extra={"log_type": "SYSTEM"})
+                logger.error(
+                    "[TDX-READER] ❌ 文件不存在: %s", self.filepath,
+                    extra={"log_type": "ALERT", "scenario": scenario}
+                )
+                logger.debug(
+                    "[TDX-READER] 文件不存在检查: filepath=%s", self.filepath,
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
                 return pd.DataFrame()
+
+            logger.info(
+                "[TDX-READER] 开始读取板块文件: %s", self.filepath.name,
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            logger.debug(
+                "[TDX-READER] 文件路径: %s", self.filepath,
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
 
             # 📝 板块文件是文本格式（GBK编码），使用aiofiles
             import aiofiles
+            read_start_time = time.time()
             async with aiofiles.open(self.filepath, 'r', encoding='gbk') as f:
                 content = await f.read()
+            read_elapsed = time.time() - read_start_time
+            
+            file_size = len(content.encode('gbk'))
+            logger.debug(
+                "[TDX-READER] 文件读取完成: 文件=%s, 大小=%d bytes, 耗时=%.3f s",
+                self.filepath.name, file_size, read_elapsed,
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
 
             # 解析数据
+            parse_start_time = time.time()
             records = self._parse_block_data(content)
+            parse_elapsed = time.time() - parse_start_time
 
             if not records:
+                logger.debug(
+                    "[TDX-READER] 解析后无记录: 文件=%s", self.filepath.name,
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
                 return pd.DataFrame()
 
             # 转换为DataFrame
             df = pd.DataFrame(records)
+            total_elapsed = time.time() - read_start_time
 
-            logger.debug(f"成功读取板块数据: {len(df)}个板块, 文件={self.filepath.name}")
+            logger.info(
+                "[TDX-READER] 文件读取完成: 文件=%s, 板块数=%d, 总耗时=%.3f s",
+                self.filepath.name, len(df), total_elapsed,
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            logger.debug(
+                "[TDX-READER] 读取详情: 文件=%s, 板块数=%d, 读取耗时=%.3f s, 解析耗时=%.3f s, 总耗时=%.3f s",
+                self.filepath.name, len(df), read_elapsed, parse_elapsed, total_elapsed,
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             return df
 
         except Exception as e:
-            logger.error(f"读取板块数据失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            scenario = "tdx_data_read"
+            logger.error(
+                "[TDX-READER] ❌ 读取板块数据失败: 文件=%s, 错误=%s",
+                self.filepath.name, e,
+                exc_info=True,
+                extra={"log_type": "ALERT", "scenario": scenario}
+            )
+            logger.debug(
+                "[TDX-READER] 异常详情: 文件=%s, 异常类型=%s, 异常消息=%s",
+                self.filepath.name, type(e).__name__, str(e),
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             return pd.DataFrame()
 
     def _parse_block_data(self, content: str) -> List[dict]:
@@ -655,7 +735,18 @@ class AsyncTdxBlockReader:
                 })
 
         except Exception as e:
-            logger.error(f"解析板块数据失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            scenario = "tdx_data_read"
+            logger.error(
+                "[TDX-READER] ❌ 解析板块数据失败: 文件=%s, 错误=%s",
+                self.filepath.name if hasattr(self, 'filepath') else 'unknown', e,
+                exc_info=True,
+                extra={"log_type": "ALERT", "scenario": scenario}
+            )
+            logger.debug(
+                "[TDX-READER] 解析异常详情: 异常类型=%s, 异常消息=%s, 已解析板块数=%d",
+                type(e).__name__, str(e), len(records),
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
 
         return records
 
@@ -822,30 +913,83 @@ class AsyncTdxExHqDayReader:
 
         :return: DataFrame，列：date, open, high, low, close, amount, volume, ...
         """
+        scenario = "tdx_data_read"
         try:
             if not self.filepath.exists():
-                logger.error(f"文件不存在: {self.filepath}", extra={"log_type": "SYSTEM"})
+                logger.error(
+                    "[TDX-READER] ❌ 文件不存在: %s", self.filepath,
+                    extra={"log_type": "ALERT", "scenario": scenario}
+                )
+                logger.debug(
+                    "[TDX-READER] 文件不存在检查: filepath=%s", self.filepath,
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
                 return pd.DataFrame()
 
+            logger.info(
+                "[TDX-READER] 开始读取扩展行情日线文件: %s", self.filepath.name,
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            logger.debug(
+                "[TDX-READER] 文件路径: %s", self.filepath,
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+
             # 🚀 使用native_iocp异步读取二进制文件（真异步，无线程池开销）
+            read_start_time = time.time()
             f = await _open_file_async(self.filepath, 'rb')
             async with f:
                 data = await f.read()
+            read_elapsed = time.time() - read_start_time
+            
+            file_size = len(data)
+            logger.debug(
+                "[TDX-READER] 文件读取完成: 文件=%s, 大小=%d bytes, 耗时=%.3f s",
+                self.filepath.name, file_size, read_elapsed,
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
 
             # 解析数据（与股票日线格式相同）
+            parse_start_time = time.time()
             records = self._parse_exhq_day_data(data)
+            parse_elapsed = time.time() - parse_start_time
 
             if not records:
+                logger.debug(
+                    "[TDX-READER] 解析后无记录: 文件=%s", self.filepath.name,
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
                 return pd.DataFrame()
 
             # 转换为DataFrame
             df = pd.DataFrame(records)
+            total_elapsed = time.time() - read_start_time
 
-            logger.debug(f"成功读取扩展行情日线数据: {len(df)}条, 文件={self.filepath.name}")
+            logger.info(
+                "[TDX-READER] 文件读取完成: 文件=%s, 记录数=%d, 总耗时=%.3f s",
+                self.filepath.name, len(df), total_elapsed,
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            logger.debug(
+                "[TDX-READER] 读取详情: 文件=%s, 记录数=%d, 读取耗时=%.3f s, 解析耗时=%.3f s, 总耗时=%.3f s",
+                self.filepath.name, len(df), read_elapsed, parse_elapsed, total_elapsed,
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             return df
 
         except Exception as e:
-            logger.error(f"读取扩展行情日线数据失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            scenario = "tdx_data_read"
+            logger.error(
+                "[TDX-READER] ❌ 读取扩展行情日线数据失败: 文件=%s, 错误=%s",
+                self.filepath.name, e,
+                exc_info=True,
+                extra={"log_type": "ALERT", "scenario": scenario}
+            )
+            logger.debug(
+                "[TDX-READER] 异常详情: 文件=%s, 异常类型=%s, 异常消息=%s",
+                self.filepath.name, type(e).__name__, str(e),
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             return pd.DataFrame()
 
     def _parse_exhq_day_data(self, data: bytes) -> List[dict]:
@@ -894,7 +1038,18 @@ class AsyncTdxExHqDayReader:
                     })
 
         except Exception as e:
-            logger.error("解析扩展行情日线数据失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            scenario = "tdx_data_read"
+            logger.error(
+                "[TDX-READER] ❌ 解析扩展行情日线数据失败: 文件=%s, 错误=%s",
+                self.filepath.name if hasattr(self, 'filepath') else 'unknown', e,
+                exc_info=True,
+                extra={"log_type": "ALERT", "scenario": scenario}
+            )
+            logger.debug(
+                "[TDX-READER] 解析异常详情: 异常类型=%s, 异常消息=%s, 已解析记录数=%d",
+                type(e).__name__, str(e), len(records),
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
 
         return records
 
@@ -921,30 +1076,83 @@ class AsyncCustomerBlockReader:
 
         :return: DataFrame，列：block_name, code_list, count
         """
+        scenario = "tdx_data_read"
         try:
             if not self.filepath.exists():
-                logger.error(f"文件不存在: {self.filepath}", extra={"log_type": "SYSTEM"})
+                logger.error(
+                    "[TDX-READER] ❌ 文件不存在: %s", self.filepath,
+                    extra={"log_type": "ALERT", "scenario": scenario}
+                )
+                logger.debug(
+                    "[TDX-READER] 文件不存在检查: filepath=%s", self.filepath,
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
                 return pd.DataFrame()
+
+            logger.info(
+                "[TDX-READER] 开始读取自定义板块文件: %s", self.filepath.name,
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            logger.debug(
+                "[TDX-READER] 文件路径: %s", self.filepath,
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
 
             # 📝 自定义板块文件是文本格式（GBK编码），使用aiofiles
             import aiofiles
+            read_start_time = time.time()
             async with aiofiles.open(self.filepath, 'r', encoding='gbk') as f:
                 content = await f.read()
+            read_elapsed = time.time() - read_start_time
+            
+            file_size = len(content.encode('gbk'))
+            logger.debug(
+                "[TDX-READER] 文件读取完成: 文件=%s, 大小=%d bytes, 耗时=%.3f s",
+                self.filepath.name, file_size, read_elapsed,
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
 
             # 解析数据（与标准板块文件相同）
+            parse_start_time = time.time()
             records = self._parse_customer_block_data(content)
+            parse_elapsed = time.time() - parse_start_time
 
             if not records:
+                logger.debug(
+                    "[TDX-READER] 解析后无记录: 文件=%s", self.filepath.name,
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
                 return pd.DataFrame()
 
             # 转换为DataFrame
             df = pd.DataFrame(records)
+            total_elapsed = time.time() - read_start_time
 
-            logger.debug(f"成功读取自定义板块数据: {len(df)}个板块, 文件={self.filepath.name}")
+            logger.info(
+                "[TDX-READER] 文件读取完成: 文件=%s, 板块数=%d, 总耗时=%.3f s",
+                self.filepath.name, len(df), total_elapsed,
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            logger.debug(
+                "[TDX-READER] 读取详情: 文件=%s, 板块数=%d, 读取耗时=%.3f s, 解析耗时=%.3f s, 总耗时=%.3f s",
+                self.filepath.name, len(df), read_elapsed, parse_elapsed, total_elapsed,
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             return df
 
         except Exception as e:
-            logger.error(f"读取自定义板块数据失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            scenario = "tdx_data_read"
+            logger.error(
+                "[TDX-READER] ❌ 读取自定义板块数据失败: 文件=%s, 错误=%s",
+                self.filepath.name, e,
+                exc_info=True,
+                extra={"log_type": "ALERT", "scenario": scenario}
+            )
+            logger.debug(
+                "[TDX-READER] 异常详情: 文件=%s, 异常类型=%s, 异常消息=%s",
+                self.filepath.name, type(e).__name__, str(e),
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             return pd.DataFrame()
 
     def _parse_customer_block_data(self, content: str) -> List[dict]:

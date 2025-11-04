@@ -37,7 +37,7 @@ class OrderedLogQueue:
         """
         self.queue: List[Tuple[float, Any]] = []  # [(timestamp, record), ...]
         self.lock = threading.Lock()
-        self.max_wait = max_wait_seconds
+        self.max_wait_seconds = max_wait_seconds
         self.logger = logging.getLogger("backend.startup.logging.ordered_queue")
 
         # 记录日志的时间戳（用于超时检测）
@@ -108,7 +108,7 @@ class OrderedLogQueue:
                 timeout_timestamps = [
                     timestamp
                     for timestamp, added_time in self._record_timestamps.items()
-                    if current_time - added_time > self.max_wait
+                    if current_time - added_time > self.max_wait_seconds
                 ]
 
                 # 输出超时的日志（按时间顺序）

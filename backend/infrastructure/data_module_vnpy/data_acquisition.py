@@ -2664,10 +2664,23 @@ class MultiProcessStockFetcher:
         stage_logger = logging.getLogger("task.data_download.stage")
         
         # 1. 状态检查
+        logger.debug(
+            "[DOWNLOAD] 检查下载状态",
+            extra={"log_type": "SYSTEM", "scenario": "data_download"}
+        )
         if not self.state_machine.can_start():
-            raise RuntimeError(f"无法开始下载，当前状态: {self.state_machine.state.name}")
+            current_state = self.state_machine.state.name
+            logger.error(
+                f"[DOWNLOAD] ❌ 无法开始下载，当前状态: {current_state}",
+                extra={"log_type": "ALERT", "scenario": "data_download"}
+            )
+            raise RuntimeError(f"无法开始下载，当前状态: {current_state}")
 
         # 2. 转换到PREPARING状态
+        logger.debug(
+            "[DOWNLOAD] 转换到PREPARING状态",
+            extra={"log_type": "SYSTEM", "scenario": "data_download"}
+        )
         self.state_machine.transition_to(DownloadState.PREPARING, "开始准备下载")
 
         try:
@@ -2675,6 +2688,14 @@ class MultiProcessStockFetcher:
             intervals = intervals or ["1d", "5m", "1m"]
             start_date = start_date or date(2010, 1, 1)
             end_date = end_date or date.today()
+            
+            logger.debug(
+                f"[DOWNLOAD] 参数准备: 品种数={len(symbols)}, 周期={intervals}, "
+                f"日期范围={start_date} ~ {end_date}, "
+                f"进程数={max_workers}, 协程数={coroutines_per_worker}, "
+                f"自适应={use_adaptive}, 两段式={use_two_phase}",
+                extra={"log_type": "SYSTEM", "scenario": "data_download"}
+            )
 
             # 阶段节点日志（输出到Terminal）
             stage_logger.info(
@@ -2684,7 +2705,7 @@ class MultiProcessStockFetcher:
             )
             
             logger.info(
-                f"🚀 开始增量K线下载: "
+                f"[DOWNLOAD] 🚀 开始增量K线下载: "
                 f"品种数={len(symbols)}, 周期={intervals}, "
                 f"日期范围={start_date} ~ {end_date}, "
                 f"进程数={max_workers}, 协程数={coroutines_per_worker}",
@@ -2693,50 +2714,131 @@ class MultiProcessStockFetcher:
 
             # 4. 获取负载均衡配置
             if use_adaptive:
+                logger.debug(
+                    "[DOWNLOAD] 开始获取负载均衡配置",
+                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                )
                 lb_config = self._get_load_balancer_config()
                 if lb_config:
+                    old_max_workers = max_workers
+                    old_coroutines = coroutines_per_worker
                     max_workers = lb_config.get("max_workers", max_workers)
                     coroutines_per_worker = lb_config.get("coroutines_per_worker", coroutines_per_worker)
                     logger.info(
-                        f"🧠 负载均衡调整: 进程数={max_workers}, "
-                        f"协程数={coroutines_per_worker}"
+                        f"[DOWNLOAD] 🧠 负载均衡调整: 进程数={old_max_workers}→{max_workers}, "
+                        f"协程数={old_coroutines}→{coroutines_per_worker}",
+                        extra={"log_type": "SYSTEM", "scenario": "data_download"}
                     )
+                    logger.debug(
+                        f"[DOWNLOAD] 负载均衡配置详情: {lb_config}",
+                        extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                    )
+                else:
+                    logger.debug(
+                        "[DOWNLOAD] 负载均衡配置不可用，使用默认配置",
+                        extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                    )
+            else:
+                logger.debug(
+                    "[DOWNLOAD] 自适应负载均衡已禁用",
+                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                )
 
             # 5. 准备任务队列
+            logger.debug(
+                "[DOWNLOAD] 开始准备任务队列",
+                extra={"log_type": "SYSTEM", "scenario": "data_download"}
+            )
+            task_prep_start_time = time.time()
             tasks = self._prepare_tasks(symbols, intervals, start_date, end_date)
-            logger.info(f"✅ 任务准备完成: 总数={len(tasks)}")
+            task_prep_elapsed = time.time() - task_prep_start_time
+            logger.info(
+                f"[DOWNLOAD] ✅ 任务准备完成: 总数={len(tasks)}, 耗时={task_prep_elapsed:.2f}s",
+                extra={"log_type": "SYSTEM", "scenario": "data_download"}
+            )
+            logger.debug(
+                f"[DOWNLOAD] 任务准备详情: 品种数={len(symbols)}, 周期数={len(intervals)}, "
+                f"每品种任务数={len(intervals)}, 总任务数={len(tasks)}",
+                extra={"log_type": "SYSTEM", "scenario": "data_download"}
+            )
 
             # 6. 加载任务到队列
+            logger.debug(
+                "[DOWNLOAD] 开始加载任务到队列",
+                extra={"log_type": "SYSTEM", "scenario": "data_download"}
+            )
             self.task_queue_manager.reset()
+            queue_load_start_time = time.time()
             added_count = self.task_queue_manager.add_tasks_batch(tasks)
-            logger.info(f"✅ 任务已加载到队列: {added_count}/{len(tasks)}")
+            queue_load_elapsed = time.time() - queue_load_start_time
+            logger.info(
+                f"[DOWNLOAD] ✅ 任务已加载到队列: {added_count}/{len(tasks)}, 耗时={queue_load_elapsed:.2f}s",
+                extra={"log_type": "SYSTEM", "scenario": "data_download"}
+            )
+            if added_count < len(tasks):
+                skipped_count = len(tasks) - added_count
+                logger.warning(
+                    f"[DOWNLOAD] ⚠️ 部分任务被跳过: {skipped_count}个任务",
+                    extra={"log_type": "ALERT", "scenario": "data_download"}
+                )
 
             # 7. 获取服务器列表
+            logger.debug(
+                "[DOWNLOAD] 开始获取服务器列表",
+                extra={"log_type": "SYSTEM", "scenario": "data_download"}
+            )
+            server_load_start_time = time.time()
             servers = self._get_servers(use_two_phase)
+            server_load_elapsed = time.time() - server_load_start_time
+            ipv4_count = len(servers.get('ipv4', []))
+            ipv6_count = len(servers.get('ipv6', []))
             logger.info(
-                f"🌐 服务器列表已加载: "
-                f"IPv4={len(servers.get('ipv4', []))}, "
-                f"IPv6={len(servers.get('ipv6', []))}"
+                f"[DOWNLOAD] 🌐 服务器列表已加载: IPv4={ipv4_count}, IPv6={ipv6_count}, 耗时={server_load_elapsed:.3f}s",
+                extra={"log_type": "SYSTEM", "scenario": "data_download"}
+            )
+            logger.debug(
+                f"[DOWNLOAD] 服务器详情: IPv4服务器={ipv4_count}个, IPv6服务器={ipv6_count}个, "
+                f"两段式下载={use_two_phase}",
+                extra={"log_type": "SYSTEM", "scenario": "data_download"}
             )
 
             # 8. 转换到RUNNING状态
+            logger.debug(
+                "[DOWNLOAD] 转换到RUNNING状态",
+                extra={"log_type": "SYSTEM", "scenario": "data_download"}
+            )
             self.state_machine.transition_to(DownloadState.RUNNING, "开始下载")
 
             # 9. 启动多进程下载
+            logger.debug(
+                f"[DOWNLOAD] 开始启动多进程下载: 进程数={max_workers}, 协程数={coroutines_per_worker}",
+                extra={"log_type": "SYSTEM", "scenario": "data_download"}
+            )
+            download_start_time = time.time()
             results = self._run_multiprocess_download(
                 max_workers=max_workers,
                 coroutines_per_worker=coroutines_per_worker,
                 servers=servers,
                 use_two_phase=use_two_phase,
             )
+            download_elapsed = time.time() - download_start_time
+            logger.debug(
+                f"[DOWNLOAD] 多进程下载完成: 耗时={download_elapsed:.2f}s, 结果={results}",
+                extra={"log_type": "SYSTEM", "scenario": "data_download"}
+            )
 
             # 10. 转换到COMPLETED状态
+            logger.debug(
+                "[DOWNLOAD] 转换到COMPLETED状态",
+                extra={"log_type": "SYSTEM", "scenario": "data_download"}
+            )
             self.state_machine.transition_to(DownloadState.COMPLETED, "下载完成")
 
             elapsed_ms = (time.time() - start_time) * 1000
             completed = results.get("completed", 0)
             failed = results.get("failed", 0)
             total_bars = results.get("total_bars", 0)
+            total_tasks = results.get("total_tasks", 0)
             
             # 阶段节点日志（输出到Terminal）
             stage_logger.info(
@@ -2745,13 +2847,27 @@ class MultiProcessStockFetcher:
             )
             
             logger.info(
-                f"✅ 增量K线下载完成: {results}",
+                f"[DOWNLOAD] ✅ 增量K线下载完成: 总任务={total_tasks}, 成功={completed}, "
+                f"失败={failed}, 总K线数={total_bars}, 总耗时={elapsed_ms:.0f}ms",
+                extra={"log_type": "SYSTEM", "scenario": "data_download"}
+            )
+            logger.debug(
+                f"[DOWNLOAD] 下载结果详情: {results}",
                 extra={"log_type": "SYSTEM", "scenario": "data_download"}
             )
             return results
 
         except Exception as e:
             # 转换到FAILED状态
+            logger.error(
+                f"[DOWNLOAD] ❌ 下载过程发生异常: {e}",
+                exc_info=True,
+                extra={"log_type": "ALERT", "scenario": "data_download"}
+            )
+            logger.debug(
+                f"[DOWNLOAD] 异常详情: 异常类型={type(e).__name__}, 异常消息={str(e)}",
+                extra={"log_type": "SYSTEM", "scenario": "data_download"}
+            )
             self.state_machine.transition_to(DownloadState.FAILED, f"下载失败: {e}")
             
             elapsed_ms = (time.time() - start_time) * 1000
@@ -2763,7 +2879,7 @@ class MultiProcessStockFetcher:
             )
             
             logger.error(
-                f"❌ 增量K线下载失败: {e}",
+                f"[DOWNLOAD] ❌ 增量K线下载失败: {e}, 总耗时={elapsed_ms:.0f}ms",
                 exc_info=True,
                 extra={"log_type": "ALERT", "scenario": "data_download"}
             )
@@ -2879,45 +2995,108 @@ class MultiProcessStockFetcher:
         self._pause_event = manager.Event()
 
         # 加载任务到进程队列
+        logger.debug(
+            "[DOWNLOAD] 开始加载任务到进程队列",
+            extra={"log_type": "SYSTEM", "scenario": "data_download"}
+        )
         total_tasks = 0
+        queue_load_start_time = time.time()
         while True:
             task = self.task_queue_manager.get_task(timeout=0.1)
             if task is None:
                 break
             task_queue.put(task)
             total_tasks += 1
+        queue_load_elapsed = time.time() - queue_load_start_time
 
-        logger.info(f"🚀 启动多进程下载: 进程数={max_workers}, 任务数={total_tasks}")
+        logger.info(
+            f"[DOWNLOAD] 🚀 启动多进程下载: 进程数={max_workers}, 任务数={total_tasks}, "
+            f"队列加载耗时={queue_load_elapsed:.2f}s",
+            extra={"log_type": "SYSTEM", "scenario": "data_download"}
+        )
+        logger.debug(
+            f"[DOWNLOAD] 进程队列详情: 进程数={max_workers}, 每进程协程数={coroutines_per_worker}, "
+            f"总并发数={max_workers * coroutines_per_worker}, 任务数={total_tasks}",
+            extra={"log_type": "SYSTEM", "scenario": "data_download"}
+        )
 
         # 启动Worker进程
+        logger.debug(
+            "[DOWNLOAD] 开始启动Worker进程",
+            extra={"log_type": "SYSTEM", "scenario": "data_download"}
+        )
         self._worker_processes = []
+        process_start_time = time.time()
         for worker_id in range(max_workers):
-            process = Process(
-                target=self._worker_process,
-                args=(
-                    worker_id,
-                    task_queue,
-                    result_queue,
-                    self.config_manager.get_all_configs(),
-                    servers,
-                    self._stop_event,
-                    self._pause_event,
-                    coroutines_per_worker,
-                    use_two_phase,
-                ),
-            )
-            process.start()
-            self._worker_processes.append(process)
+            try:
+                process = Process(
+                    target=self._worker_process,
+                    args=(
+                        worker_id,
+                        task_queue,
+                        result_queue,
+                        self.config_manager.get_all_configs(),
+                        servers,
+                        self._stop_event,
+                        self._pause_event,
+                        coroutines_per_worker,
+                        use_two_phase,
+                    ),
+                )
+                process.start()
+                self._worker_processes.append(process)
+                logger.debug(
+                    f"[DOWNLOAD] Worker {worker_id} 进程已启动: PID={process.pid}",
+                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                )
+            except Exception as e:
+                logger.error(
+                    f"[DOWNLOAD] ❌ Worker {worker_id} 进程启动失败: {e}",
+                    exc_info=True,
+                    extra={"log_type": "ALERT", "scenario": "data_download"}
+                )
+        process_start_elapsed = time.time() - process_start_time
+        logger.info(
+            f"[DOWNLOAD] ✅ Worker进程启动完成: 进程数={len(self._worker_processes)}/{max_workers}, "
+            f"耗时={process_start_elapsed:.2f}s",
+            extra={"log_type": "SYSTEM", "scenario": "data_download"}
+        )
 
         # 收集结果
+        logger.debug(
+            "[DOWNLOAD] 开始收集下载结果",
+            extra={"log_type": "SYSTEM", "scenario": "data_download"}
+        )
         results = self._collect_results(result_queue, total_tasks)
+        logger.debug(
+            f"[DOWNLOAD] 结果收集完成: {results}",
+            extra={"log_type": "SYSTEM", "scenario": "data_download"}
+        )
 
         # 等待所有进程结束
+        logger.debug(
+            "[DOWNLOAD] 开始等待Worker进程结束",
+            extra={"log_type": "SYSTEM", "scenario": "data_download"}
+        )
+        process_join_start_time = time.time()
         for process in self._worker_processes:
             process.join(timeout=5)
             if process.is_alive():
-                logger.warning(f"⚠️ Worker进程未正常退出，强制终止: PID={process.pid}", extra={"log_type": "SYSTEM"})
+                logger.warning(
+                    f"[DOWNLOAD] ⚠️ Worker进程未正常退出，强制终止: PID={process.pid}",
+                    extra={"log_type": "ALERT", "scenario": "data_download"}
+                )
                 process.terminate()
+            else:
+                logger.debug(
+                    f"[DOWNLOAD] Worker进程已正常退出: PID={process.pid}",
+                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                )
+        process_join_elapsed = time.time() - process_join_start_time
+        logger.debug(
+            f"[DOWNLOAD] Worker进程等待完成: 耗时={process_join_elapsed:.2f}s",
+            extra={"log_type": "SYSTEM", "scenario": "data_download"}
+        )
 
         return results
 
@@ -2931,9 +3110,17 @@ class MultiProcessStockFetcher:
         Returns:
             结果统计
         """
+        scenario = "data_download"
         completed = 0
         failed = 0
         total_bars = 0
+        last_progress_time = time.time()
+        progress_report_interval = 5.0  # 每5秒报告一次进度
+
+        logger.debug(
+            f"[DOWNLOAD] 开始收集结果: 总任务数={total_tasks}",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
 
         while completed + failed < total_tasks:
             try:
@@ -2942,8 +3129,30 @@ class MultiProcessStockFetcher:
                 if result.get("status") == "success":
                     completed += 1
                     total_bars += result.get("bars", 0)
+                    logger.debug(
+                        f"[DOWNLOAD] 任务完成: symbol={result.get('symbol')}, "
+                        f"interval={result.get('interval')}, bars={result.get('bars', 0)}",
+                        extra={"log_type": "SYSTEM", "scenario": scenario}
+                    )
                 else:
                     failed += 1
+                    logger.debug(
+                        f"[DOWNLOAD] 任务失败: symbol={result.get('symbol')}, "
+                        f"interval={result.get('interval')}, 错误={result.get('error', '未知')}",
+                        extra={"log_type": "SYSTEM", "scenario": scenario}
+                    )
+
+                # 定期报告进度（每5秒或每100个任务）
+                current_time = time.time()
+                if (current_time - last_progress_time >= progress_report_interval) or \
+                   ((completed + failed) % 100 == 0):
+                    progress_pct = ((completed + failed) / total_tasks * 100) if total_tasks > 0 else 0
+                    logger.info(
+                        f"[DOWNLOAD] 下载进度: {completed + failed}/{total_tasks} ({progress_pct:.1f}%), "
+                        f"成功={completed}, 失败={failed}, K线数={total_bars}",
+                        extra={"log_type": "PROGRESS", "scenario": scenario}
+                    )
+                    last_progress_time = current_time
 
                 # 通知进度
                 self._notify_progress(
@@ -2954,8 +3163,21 @@ class MultiProcessStockFetcher:
 
             except Exception as e:
                 # 超时，继续等待
-                logger.debug(f"⚠️ [MultiProcessStockFetcher] 等待进度超时: {e}", extra={"log_type": "SYSTEM"})
+                current_progress = completed + failed
+                if current_progress < total_tasks:
+                    remaining = total_tasks - current_progress
+                    logger.debug(
+                        f"[DOWNLOAD] 等待结果超时: 已完成={current_progress}/{total_tasks}, "
+                        f"剩余={remaining}",
+                        extra={"log_type": "SYSTEM", "scenario": scenario}
+                    )
                 pass
+
+        logger.debug(
+            f"[DOWNLOAD] 结果收集完成: 总任务={total_tasks}, 成功={completed}, "
+            f"失败={failed}, 总K线数={total_bars}",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
 
         return {
             "total_tasks": total_tasks,
