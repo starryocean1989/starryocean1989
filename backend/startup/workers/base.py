@@ -99,7 +99,7 @@ class StartupWorker(ABC):
             # 捕获未处理的异常
             elapsed_ms = (time.time() - start_time) * 1000
 
-            self.logger.exception(f"Worker {self.name} 发生异常")
+            self.logger.exception(f"Worker {self.name} 发生异常", extra={"log_type": "SYSTEM"})
 
             return WorkerResult(
                 success=False,

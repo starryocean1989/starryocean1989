@@ -279,7 +279,7 @@ class MonitorLauncherWorker(StartupWorker):
                     # 检查进程是否还在运行
                     if self.monitor_process_handle.poll() is not None:
                         # 进程已退出
-                        self.logger.error("❌ [MonitorLauncherWorker] 监控进程意外退出", extra={"log_type": "SYSTEM"})
+                        self.logger.error("❌ [MonitorLauncherWorker] 监控进程意外退出", exc_info=True, extra={"log_type": "SYSTEM"})
                         self.watchdog_running = False
                         break
                 time.sleep(5)  # 每5秒检查一次

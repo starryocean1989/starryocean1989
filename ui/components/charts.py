@@ -545,7 +545,7 @@ class SubplotIndicatorManager:
             return True
 
         except Exception as e:
-            logger.error(f"❌ 添加MACD副图失败: {e}", exc_info=True)
+            logger.error(f"❌ 添加MACD副图失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
             return False
 
     def add_rsi(
@@ -608,7 +608,7 @@ class SubplotIndicatorManager:
             return True
 
         except Exception as e:
-            logger.error(f"❌ 添加RSI副图失败: {e}", exc_info=True)
+            logger.error(f"❌ 添加RSI副图失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
             return False
 
     def add_kdj(self, plot_name: str = "kdj", kdj_data: Optional[Dict[str, Any]] = None):
@@ -671,7 +671,7 @@ class SubplotIndicatorManager:
             return True
 
         except Exception as e:
-            logger.error(f"❌ 添加KDJ副图失败: {e}", exc_info=True)
+            logger.error(f"❌ 添加KDJ副图失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
             return False
 
     def remove_indicator(self, indicator_type: str):
@@ -681,7 +681,7 @@ class SubplotIndicatorManager:
             indicator_type: 指标类型（MACD、RSI、KDJ等）
         """
         if indicator_type not in self.indicators:
-            logger.warning(f"指标不存在: {indicator_type}")
+            logger.warning(f"指标不存在: {indicator_type}", extra={"log_type": "SYSTEM"})
             return False
 
         try:
@@ -699,7 +699,7 @@ class SubplotIndicatorManager:
             return True
 
         except Exception as e:
-            logger.error(f"❌ 移除指标失败: {e}", exc_info=True)
+            logger.error(f"❌ 移除指标失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
             return False
 
     def get_indicator_list(self) -> List[str]:
@@ -806,7 +806,7 @@ class IndicatorPlotWidget(QWidget):
         """创建图表组件."""
         # 使用pyqtgraph创建图表
         if not PYQTGRAPH_AVAILABLE or pg is None:
-            logger.warning("pyqtgraph不可用，无法创建图表组件")
+            logger.warning("pyqtgraph不可用，无法创建图表组件", extra={"log_type": "SYSTEM"})
             return
 
         self.plot_widget = pg.GraphicsLayoutWidget()
@@ -869,7 +869,7 @@ class IndicatorPlotWidget(QWidget):
         try:
             # ✅ 数据验证
             if data is None or not isinstance(data, dict):
-                logger.warning("图表数据无效: 数据为空或类型错误")
+                logger.warning("图表数据无效: 数据为空或类型错误", extra={"log_type": "SYSTEM"})
                 return
 
             if not self.plot_item or not self.is_visible:
@@ -890,7 +890,7 @@ class IndicatorPlotWidget(QWidget):
             elif self.indicator_type == "VOLUME":
                 self._plot_volume(data)
             else:
-                logger.warning("未实现的指标类型: %s", self.indicator_type)
+                logger.warning("未实现的指标类型: %s", self.indicator_type, extra={"log_type": "SYSTEM"})
 
             logger.debug("图表更新完成: 指标=%s", self.indicator_type)
 
@@ -1350,7 +1350,7 @@ class ChartWidget(BaseWidget):
                     chart.setXRange(min(timestamps), max(timestamps))
 
         except (ValueError, TypeError, AttributeError) as e:
-            self._logger.error("图表显示更新失败: %s", e)
+            self._logger.error("图表显示更新失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
 
     def _update_indicators(self):
         """更新技术指标显示."""
@@ -1394,7 +1394,7 @@ class ChartWidget(BaseWidget):
                             ),
                         )
                 except (ValueError, TypeError, AttributeError) as macd_error:
-                    self._logger.warning("MACD指标更新失败: %s", macd_error)
+                    self._logger.warning("MACD指标更新失败: %s", macd_error, extra={"log_type": "SYSTEM"})
                     # 使用简单的plot方法作为备用
                     if macd_data is not None:
                         self.indicator_charts["macd"].clear()
@@ -1447,7 +1447,7 @@ class ChartWidget(BaseWidget):
                             ),
                         )
                 except (ValueError, TypeError, AttributeError) as rsi_error:
-                    self._logger.warning("RSI指标更新失败: %s", rsi_error)
+                    self._logger.warning("RSI指标更新失败: %s", rsi_error, extra={"log_type": "SYSTEM"})
                     # 使用简单的plot方法作为备用
                     if rsi_data is not None:
                         self.indicator_charts["rsi"].clear()
@@ -1463,7 +1463,7 @@ class ChartWidget(BaseWidget):
                             )
 
         except (ValueError, TypeError, AttributeError) as e:
-            self._logger.error("指标更新失败: %s", e)
+            self._logger.error("指标更新失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
 
     def refresh_data(self):
         """刷新数据."""

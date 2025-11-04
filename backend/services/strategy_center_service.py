@@ -1100,7 +1100,7 @@ class MyPortfolioStrategy(StrategyTemplate):
             target_file = self.strategy_root / file_path
 
             if not target_file.exists() or not target_file.is_file():
-                self.logger.error("策略文件不存在：%s", file_path, extra={"log_type": "SYSTEM"})
+                self.logger.error("策略文件不存在：%s", file_path, exc_info=True, extra={"log_type": "SYSTEM"})
                 return None
 
             # 解析策略文件获取信息

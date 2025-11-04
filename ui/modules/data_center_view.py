@@ -1287,7 +1287,7 @@ class DataCenter(BaseWidget, LoggerMixin):
             self.logger.debug(f"追加了 {len(filtered_details)} 条数据问题详情")
 
         except Exception as e:
-            self.logger.error(f"追加数据问题详情失败: {e}", exc_info=True)
+            self.logger.error(f"追加数据问题详情失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
 
     def _update_data_issues_ui(self, error_count=None, data_missing_count=None, warning_count=None):
         """更新数据问题UI显示"""
@@ -1535,7 +1535,7 @@ class DataCenter(BaseWidget, LoggerMixin):
             self.logger.info("后台测速线程已启动（QThread）")
 
         except Exception as e:  # pylint: disable=broad-except
-            self.logger.error("刷新服务器池失败: %s", e, exc_info=True)
+            self.logger.error("刷新服务器池失败: %s", e, exc_info=True, extra={"log_type": "USER_FEEDBACK"})
             self.show_error(f"刷新服务器池失败: {e}")
             # 恢复按钮状态
             if hasattr(self, "refresh_servers_btn") and self.refresh_servers_btn:
@@ -1787,13 +1787,13 @@ class DataCenter(BaseWidget, LoggerMixin):
             self.logger.info("=" * 60)
 
             if not self.data_center_service:
-                self.logger.error(">>> 数据中心服务未初始化")
+                self.logger.error(">>> 数据中心服务未初始化", exc_info=True, extra={"log_type": "SYSTEM"})
                 self.show_error("数据中心服务未初始化")
                 return
 
             # 检查是否已有线程在运行
             if self.reload_thread and self.reload_thread.isRunning():
-                self.logger.warning(">>> 已有线程在运行，品种列表正在加载中")
+                self.logger.warning(">>> 已有线程在运行，品种列表正在加载中", extra={"log_type": "SYSTEM"})
                 # 🚀 修复UI卡死：不弹出模态对话框，只记录日志
                 # self.show_warning("品种列表正在加载中，请稍候...")
                 return
@@ -1893,21 +1893,21 @@ class DataCenter(BaseWidget, LoggerMixin):
                 # 检查空品种类别 - 记录到日志而不是弹窗
                 empty_categories = result.get("empty_categories", [])
                 if empty_categories:
-                    self.logger.warning("以下品种类别为空: %s", ", ".join(empty_categories))
+                    self.logger.warning("以下品种类别为空: %s", ", ".join(empty_categories), extra={"log_type": "SYSTEM"})
                     # 不再弹窗，避免阻塞UI
                     # self._show_empty_categories_warning(empty_categories)
 
                 # 如果有其他警告信息 - 记录到日志而不是弹窗
                 if result.get("warning"):
-                    self.logger.warning("品种加载警告: %s", result["warning"])
+                    self.logger.warning("品种加载警告: %s", result["warning"], extra={"log_type": "SYSTEM"})
                     # 不再弹窗，避免阻塞UI
                     # self.show_warning(result["warning"])
             else:
-                self.logger.error(">>> 加载失败: %s", result.get("message"))
+                self.logger.error(">>> 加载失败: %s", result.get("message"), exc_info=True, extra={"log_type": "USER_FEEDBACK"})
                 self.show_error(f"加载失败: {result.get('message', '未知错误')}")
 
         except Exception as e:
-            self.logger.error(">>> 处理加载结果失败: %s", e, exc_info=True)
+            self.logger.error(">>> 处理加载结果失败: %s", e, exc_info=True, extra={"log_type": "USER_FEEDBACK"})
             self.show_error(f"处理结果失败: {e}")
 
         finally:
@@ -1925,7 +1925,7 @@ class DataCenter(BaseWidget, LoggerMixin):
         Args:
             error_message: 错误消息
         """
-        self.logger.error("重新加载品种失败: %s", error_message)
+        self.logger.error("重新加载品种失败: %s", error_message, exc_info=True, extra={"log_type": "USER_FEEDBACK"})
 
         # 隐藏加载进度条
         if self.symbol_loading_progress:
@@ -2238,7 +2238,7 @@ class DataCenter(BaseWidget, LoggerMixin):
                     self.symbols_table.setItem(i, 4, QTableWidgetItem("正常"))
                 except Exception as e:
                     self.logger.error(
-                        f"更新第{i}行品种数据失败: {e}, symbol={symbol}", exc_info=True
+                        f"更新第{i}行品种数据失败: {e}, symbol={symbol}", exc_info=True, extra={"log_type": "SYSTEM"}
                     )
                     # 继续处理下一行，不中断整个表格更新
                     continue
@@ -2454,7 +2454,7 @@ class DataCenter(BaseWidget, LoggerMixin):
                 self.logger.debug("⚠️  symbol_completer 未初始化")
 
         except Exception as e:
-            self.logger.error(f"❌ 更新本地数据搜索联想失败: {e}", exc_info=True)
+            self.logger.error(f"❌ 更新本地数据搜索联想失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
 
     def _load_symbol_cache_for_autocomplete(self):
         """加载品种缓存用于品种列表搜索框的拼音匹配（异步后台加载）
@@ -2574,7 +2574,7 @@ class DataCenter(BaseWidget, LoggerMixin):
             )
 
         except Exception as e:
-            self.logger.error(f"更新品种缓存失败: {e}", exc_info=True)
+            self.logger.error(f"更新品种缓存失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
 
     def _load_local_data_index_for_autocomplete(self):
         """加载本地数据索引用于本地数据搜索框联想
@@ -2623,7 +2623,7 @@ class DataCenter(BaseWidget, LoggerMixin):
             self._update_local_data_cache(temp_cache, len(temp_cache), 0)
 
         except Exception as e:
-            self.logger.error(f"❌ [联想] 加载失败: {e}", exc_info=True)
+            self.logger.error(f"❌ [联想] 加载失败: {e}", exc_info=True, extra={"log_type": "USER_FEEDBACK"})
             self._update_loading_status_error("加载失败")
 
     def _update_local_data_cache(self, cache, success_count, error_count):
@@ -2704,7 +2704,7 @@ class DataCenter(BaseWidget, LoggerMixin):
             QTimer.singleShot(0, partial(self._update_local_data_index_ui, temp_cache))
 
         except Exception as e:
-            self.logger.error(f"处理本地数据索引事件失败: {e}", exc_info=True)
+            self.logger.error(f"处理本地数据索引事件失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
 
     def _update_local_data_index_ui(self, temp_cache):
         """更新本地数据索引UI（在主线程中执行）"""
@@ -2735,7 +2735,7 @@ class DataCenter(BaseWidget, LoggerMixin):
             # 转发到主线程执行UI更新
             QTimer.singleShot(0, self._handle_file_watcher_started_ui)
         except Exception as e:
-            self.logger.error(f"处理文件监控启动事件失败: {e}", exc_info=True)
+            self.logger.error(f"处理文件监控启动事件失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
 
     def _handle_file_watcher_started_ui(self):
         """处理文件监控启动UI（在主线程中执行）"""
@@ -2829,7 +2829,7 @@ class DataCenter(BaseWidget, LoggerMixin):
             )
 
         except Exception as e:
-            self.logger.error(f"处理数据指标更新事件失败: {e}", exc_info=True)
+            self.logger.error(f"处理数据指标更新事件失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
 
     def _on_invalid_symbols_updated(self, event):
         """处理失效品种更新事件
@@ -3153,7 +3153,7 @@ class DataCenter(BaseWidget, LoggerMixin):
 
             # 检查服务
             if not self.data_center_service:
-                self.logger.error("❌ 数据中心服务未初始化")
+                self.logger.error("❌ 数据中心服务未初始化", exc_info=True, extra={"log_type": "SYSTEM"})
                 self.show_error("数据中心服务未初始化")
                 return
 
@@ -3383,7 +3383,7 @@ class DataCenter(BaseWidget, LoggerMixin):
             self.logger.info("=" * 60)
 
             if not self.data_center_service:
-                self.logger.error(">>> 数据中心服务未初始化")
+                self.logger.error(">>> 数据中心服务未初始化", exc_info=True, extra={"log_type": "SYSTEM"})
                 self.show_error("数据中心服务未初始化")
                 return
 
@@ -4231,7 +4231,7 @@ class DataCenter(BaseWidget, LoggerMixin):
         """
         try:
             if not self.data_center_service:
-                self.logger.warning("数据中心服务未初始化，跳过初始服务器状态查询")
+                self.logger.warning("数据中心服务未初始化，跳过初始服务器状态查询", extra={"log_type": "SYSTEM"})
                 return
 
             # 从后端查询当前服务器状态
@@ -5513,7 +5513,7 @@ class DataCenter(BaseWidget, LoggerMixin):
                 try:
                     self.logger.info("📊 开始执行数据扫描...")
                     if not self.data_center_service:
-                        self.logger.error("数据中心服务未初始化")
+                        self.logger.error("数据中心服务未初始化", exc_info=True, extra={"log_type": "SYSTEM"})
                         return
                     result = self.data_center_service.scan_errors_missing_only()
 
@@ -5585,7 +5585,7 @@ class DataCenter(BaseWidget, LoggerMixin):
                 return
 
             if not self.data_center_service:
-                self.logger.error("🗑️ [删除失效数据] 数据中心服务未初始化")
+                self.logger.error("🗑️ [删除失效数据] 数据中心服务未初始化", exc_info=True, extra={"log_type": "SYSTEM"})
                 self.show_error("数据中心服务未初始化")
                 return
 

@@ -121,5 +121,5 @@ class CacheValidatorWorker(StartupWorker):
     def cancel(self):
         """取消验证"""
         self._cancelled = True
-        self.logger.warning("缓存验证被取消")
+        self.logger.warning("缓存验证被取消", extra={"log_type": "SYSTEM"})
 

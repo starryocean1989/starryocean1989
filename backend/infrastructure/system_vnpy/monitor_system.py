@@ -2781,13 +2781,13 @@ class MonitoringProcessV2:
                     await asyncio.sleep(sleep_time)
 
                 except Exception as e:
-                    logger.error("[FAST-METRICS] 采集失败: %s", e, exc_info=True)
+                    logger.error("[FAST-METRICS] 采集失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
                     await asyncio.sleep(self.fast_interval)
 
-            logger.warning("[FAST-METRICS] ⚠️  while循环退出（self.running=%s）", self.running)
+            logger.warning("[FAST-METRICS] ⚠️  while循环退出（self.running=%s）", self.running, extra={"log_type": "SYSTEM"})
 
         except Exception as e:
-            logger.error("[FAST-METRICS] ❌ 协程异常退出: %s", e, exc_info=True)
+            logger.error("[FAST-METRICS] ❌ 协程异常退出: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
         finally:
             logger.info("[FAST-METRICS] 快速指标采集协程停止")
 

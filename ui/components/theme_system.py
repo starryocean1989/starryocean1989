@@ -416,7 +416,7 @@ class ThemeManager:
             self.themes = self.all_themes.get(self.current_theme, self.all_themes.get("dark", {}))
             self._logger.info("成功加载主题: %s (当前: %s)", self.theme_path, self.current_theme)
         except (json.JSONDecodeError, OSError) as e:
-            self._logger.error("加载主题失败: %s", e)
+            self._logger.error("加载主题失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             self._create_default_theme()
 
     def _create_default_theme(self):
@@ -440,7 +440,7 @@ class ThemeManager:
         try:
             theme = self.themes
             if not theme:
-                self._logger.warning("主题配置为空，使用默认主题")
+                self._logger.warning("主题配置为空，使用默认主题", extra={"log_type": "SYSTEM"})
                 self._create_default_theme()
                 theme = self.themes
 
@@ -448,12 +448,12 @@ class ThemeManager:
             try:
                 self._set_dark_palette(app, theme)
             except Exception as e:
-                self._logger.warning("设置调色板失败，跳过: %s", e)
+                self._logger.warning("设置调色板失败，跳过: %s", e, extra={"log_type": "SYSTEM"})
 
             try:
                 self._set_global_font(app, theme)
             except Exception as e:
-                self._logger.warning("设置字体失败，跳过: %s", e)
+                self._logger.warning("设置字体失败，跳过: %s", e, extra={"log_type": "SYSTEM"})
 
             # 尝试加载QSS样式表文件
             qss_path = Path(__file__).parent / "modern_dark_style.qss"
@@ -464,18 +464,18 @@ class ThemeManager:
                     app.setStyleSheet(qss_content)
                     self._logger.info("成功加载QSS样式表: %s", qss_path)
                 except (OSError, UnicodeDecodeError) as e:
-                    self._logger.warning("加载QSS失败，使用默认样式: %s", e)
+                    self._logger.warning("加载QSS失败，使用默认样式: %s", e, extra={"log_type": "SYSTEM"})
             else:
                 # 如果QSS文件不存在，应用基本样式
                 self._logger.info("QSS文件不存在，应用基本样式")
                 try:
                     self._apply_basic_style(app)
                 except Exception as e:
-                    self._logger.warning("应用基本样式失败: %s", e)
+                    self._logger.warning("应用基本样式失败: %s", e, extra={"log_type": "SYSTEM"})
 
             self._logger.info("主题应用成功")
         except (ValueError, TypeError, AttributeError) as e:
-            self._logger.error("应用主题失败: %s", e)
+            self._logger.error("应用主题失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
 
     def _set_dark_palette(self, app: "QApplication", theme: Dict[str, Any]):
         """设置暗黑主题调色板."""
@@ -794,7 +794,7 @@ class ThemeManager:
             }
 
             if not themes_file.exists():
-                self._logger.error("主题配置文件不存在: %s", themes_file)
+                self._logger.error("主题配置文件不存在: %s", themes_file, exc_info=True, extra={"log_type": "SYSTEM"})
                 return False
 
             # 加载所有主题配置
@@ -803,7 +803,7 @@ class ThemeManager:
 
             # 检查主题是否存在
             if theme_name not in self.all_themes:
-                self._logger.error("主题不存在: %s", theme_name)
+                self._logger.error("主题不存在: %s", theme_name, exc_info=True, extra={"log_type": "SYSTEM"})
                 return False
 
             # 设置当前主题
@@ -822,7 +822,7 @@ class ThemeManager:
             else:
                 # 回退到调色板方式
                 self._set_dark_palette(app, self.themes)
-                self._logger.warning("QSS文件不存在，使用调色板方式应用%s主题", theme_name)
+                self._logger.warning("QSS文件不存在，使用调色板方式应用%s主题", theme_name, extra={"log_type": "SYSTEM"})
 
             # 保存主题选择
             self._save_theme_preference(theme_name)
@@ -830,7 +830,7 @@ class ThemeManager:
             return True
 
         except (OSError, json.JSONDecodeError) as e:
-            self._logger.error("切换主题失败: %s", e)
+            self._logger.error("切换主题失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return False
 
     def _save_theme_preference(self, theme_name: str) -> None:
@@ -841,7 +841,7 @@ class ThemeManager:
                 json.dump({"theme": theme_name}, f)
             self._logger.info("保存主题偏好: %s", theme_name)
         except (OSError, TypeError) as e:
-            self._logger.error("保存主题偏好失败: %s", e)
+            self._logger.error("保存主题偏好失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
 
     def load_theme_preference(self) -> str:
         """加载主题偏好设置"""
@@ -854,7 +854,7 @@ class ThemeManager:
                     self._logger.info("加载主题偏好: %s", theme)
                     return theme
         except (OSError, json.JSONDecodeError) as e:
-            self._logger.error("加载主题偏好失败: %s", e)
+            self._logger.error("加载主题偏好失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
         return "dark"
 
     def get_available_themes(self) -> list:
@@ -871,6 +871,6 @@ class ThemeManager:
                     all_themes = json.load(f)
                     return list(all_themes.keys())
         except (OSError, json.JSONDecodeError) as e:
-            self._logger.error("获取可用主题列表失败: %s", e)
+            self._logger.error("获取可用主题列表失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
 
         return ["dark", "light"]  # 默认返回

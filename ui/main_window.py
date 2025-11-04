@@ -682,7 +682,7 @@ class MainWindow(QMainWindow, LoggerMixin):
                         self.logger.info("✅ 状态栏已升级为增强模式")
                         stage_logger.info("✅ 增强状态栏初始化完成", extra={"log_type": "STAGE_NODE"})
                 except Exception as e:
-                    self.logger.warning("状态栏升级失败: %s", e)
+                    self.logger.warning("状态栏升级失败: %s", e, extra={"log_type": "SYSTEM"})
 
             self.logger.info("=" * 70)
             self.logger.info("🎨 开始创建UI功能界面（主线程）")
@@ -702,7 +702,7 @@ class MainWindow(QMainWindow, LoggerMixin):
                 self._connect_backend_progress_signals()
                 self.logger.info("✅ 后台进度信号连接完成")
             except Exception as e:
-                self.logger.error("❌ 后台进度信号连接失败: %s", e, exc_info=True)
+                self.logger.error("❌ 后台进度信号连接失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
 
             # 创建功能界面
             self.logger.info("步骤1: 创建6个功能界面...")
@@ -710,7 +710,7 @@ class MainWindow(QMainWindow, LoggerMixin):
                 self.create_function_interfaces()
                 self.logger.info("✅ 功能界面创建完成")
             except Exception as e:
-                self.logger.error("❌ 功能界面创建失败: %s", e, exc_info=True)
+                self.logger.error("❌ 功能界面创建失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
                 # 不抛出异常，让应用继续运行（即使部分功能不可用）
             
             # 🎯 输出六大功能模块注册信息
@@ -742,7 +742,7 @@ class MainWindow(QMainWindow, LoggerMixin):
                 self.connect_signals()
                 self.logger.info("✅ 信号槽连接完成")
             except Exception as e:
-                self.logger.error("❌ 信号槽连接失败: %s", e, exc_info=True)
+                self.logger.error("❌ 信号槽连接失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
                 # 信号连接失败不致命，继续执行
 
             # 步骤3: 启动更新定时器
@@ -751,7 +751,7 @@ class MainWindow(QMainWindow, LoggerMixin):
                 self.start_update_timer()
                 self.logger.info("✅ 更新定时器启动完成")
             except Exception as e:
-                self.logger.error("❌ 更新定时器启动失败: %s", e, exc_info=True)
+                self.logger.error("❌ 更新定时器启动失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
                 # 定时器失败不致命，继续执行
 
             # 步骤4: 逐个触发按需加载
@@ -760,7 +760,7 @@ class MainWindow(QMainWindow, LoggerMixin):
                 self._trigger_lazy_loads_sequentially()
                 self.logger.info("✅ 按需加载完成")
             except Exception as e:
-                self.logger.error("❌ 按需加载失败: %s", e, exc_info=True)
+                self.logger.error("❌ 按需加载失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
 
             # 步骤5: 设置默认选中界面
             self.logger.info("步骤5: 设置默认选中界面...")
@@ -769,7 +769,7 @@ class MainWindow(QMainWindow, LoggerMixin):
                     self.nav_list.setCurrentRow(0)
                     self.logger.info("✅ 默认界面设置完成")
             except Exception as e:
-                self.logger.error("❌ 设置默认界面失败: %s", e, exc_info=True)
+                self.logger.error("❌ 设置默认界面失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
 
             self.logger.info("=" * 70)
             self.logger.info("✅ UI功能界面初始化完成")
@@ -785,9 +785,9 @@ class MainWindow(QMainWindow, LoggerMixin):
 
         except Exception as e:
             self.logger.error("=" * 70)
-            self.logger.error("💥 UI功能界面初始化发生严重异常")
+            self.logger.error("💥 UI功能界面初始化发生严重异常", extra={"log_type": "SYSTEM"})
             self.logger.error("=" * 70)
-            self.logger.error("异常信息: %s", e, exc_info=True)
+            self.logger.error("异常信息: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             # 不再重新抛出异常，避免应用崩溃
 
             # 显示错误信息给用户
@@ -873,7 +873,7 @@ class MainWindow(QMainWindow, LoggerMixin):
                 QTimer.singleShot(2000, self._set_status_ready)
 
         except Exception as e:
-            self.logger.error("更新进度显示失败: %s", e)
+            self.logger.error("更新进度显示失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
 
     def _set_status_ready(self):
         """设置状态栏为"系统就绪"。"""
@@ -886,7 +886,7 @@ class MainWindow(QMainWindow, LoggerMixin):
         Args:
             reason: 离线原因
         """
-        self.logger.warning(f"⚠️ 系统已进入离线降级模式: {reason}")
+        self.logger.warning(f"⚠️ 系统已进入离线降级模式: {reason}", extra={"log_type": "ALERT"})
             
         # 显示离线模式通知
         from PySide6.QtWidgets import QMessageBox
@@ -918,7 +918,7 @@ class MainWindow(QMainWindow, LoggerMixin):
             # TODO: 禁用组合投资创建
             self.logger.info("离线模式: 在线功能已禁用")
         except Exception as e:
-            self.logger.error(f"禁用在线功能失败: {e}")
+            self.logger.error(f"禁用在线功能失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
     
     def _on_validation_finished(self, result: dict):
         """处理验证完成事件。
@@ -1081,7 +1081,7 @@ class MainWindow(QMainWindow, LoggerMixin):
                 end_ai_process()
                 self.logger.info("✅ AI日志流程已结束")
             except Exception as e:
-                self.logger.warning(f"AI日志流程结束失败: {e}")
+                self.logger.warning(f"AI日志流程结束失败: {e}", extra={"log_type": "SYSTEM"})
                 
             # 更新状态栏
             if hasattr(self, "status_bar") and self.status_bar:
@@ -1268,10 +1268,10 @@ class MainWindow(QMainWindow, LoggerMixin):
             else:
                 # 降级：使用传统状态栏
                 self._setup_fallback_status_bar()
-                self.logger.warning("⚠️ EventEngine不可用，使用传统状态栏")
+                self.logger.warning("⚠️ EventEngine不可用，使用传统状态栏", extra={"log_type": "SYSTEM"})
         except Exception as e:
             # 降级：使用传统状态栏
-            self.logger.error("增强状态栏加载失败: %s，使用传统状态栏", e)
+            self.logger.error("增强状态栏加载失败: %s，使用传统状态栏", e, exc_info=True, extra={"log_type": "SYSTEM"})
             self._setup_fallback_status_bar()
 
     def _setup_fallback_status_bar(self):
@@ -1350,7 +1350,7 @@ class MainWindow(QMainWindow, LoggerMixin):
                 self.logger.info("✅ 界面 %s 创建完成", interface_id)
                 print(f"[UI-CREATE] ✅ 界面 {interface_id} 创建成功")
             except Exception as e:
-                self.logger.error("❌ 界面 %s 创建失败: %s", interface_id, e, exc_info=True)
+                self.logger.error("❌ 界面 %s 创建失败: %s", interface_id, e, exc_info=True, extra={"log_type": "SYSTEM"})
                 print(f"[UI-CREATE] ❌ 界面 {interface_id} 创建失败: {e}")
                 # 继续创建下一个界面，不中断整个流程
 
@@ -1407,7 +1407,7 @@ class MainWindow(QMainWindow, LoggerMixin):
             except Exception as inst_error:
                 # 捕获实例化过程中的任何异常（包括访问违例）
                 self.logger.error(
-                    "  ❌ %s 实例化失败: %s", interface_name, inst_error, exc_info=True
+                    "  ❌ %s 实例化失败: %s", interface_name, inst_error, exc_info=True, extra={"log_type": "SYSTEM"}
                 )
                 raise  # 重新抛出，让外层捕获
 
