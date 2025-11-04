@@ -2233,93 +2233,224 @@ class DataCenterService(BaseService, LoggerMixin):
         Returns:
             Dict: 下载任务信息
         """
+        import time
+        from contextlib import suppress
+        
+        start_time = time.time()
+        
+        # 设置日志上下文
         try:
-            self._log_operation("启动增量数据下载", start_date=start_date)
-
-            if self.china_stock_engine is None:
-                return {
-                    "success": False,
-                    "task_id": None,
-                    "message": "data_module_vnpy不可用",
-                }
-
-            # 解析并验证日期
-            from datetime import datetime as dt, date
-
+            from backend.infrastructure.system_vnpy.unified_log_system import (
+                get_logging_hub,
+                ai_log_process,
+            )
+            hub = get_logging_hub()
+        except ImportError:
+            hub = None
+        
+        stage_logger = logging.getLogger("task.data_download.stage")
+        
+        # 使用ai_log_process创建独立日志文件
+        try:
+            context_manager = ai_log_process("data_download", {"start_date": start_date}) if hub else suppress()
+        except Exception:
+            context_manager = suppress()
+        
+        with context_manager:
             try:
-                start_dt = dt.strptime(start_date, "%Y-%m-%d").date()
-            except ValueError as e:
-                return {
-                    "success": False,
-                    "task_id": None,
-                    "message": f"日期格式错误: {str(e)}",
-                }
+                # 阶段节点（输出到Terminal）
+                stage_logger.info(
+                    f"📍 数据下载开始: 开始日期={start_date}",
+                    extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                )
+                
+                # DEBUG日志（只写入AI日志文件）
+                self.logger.debug(
+                    f"[DATA-DOWNLOAD-SERVICE] 开始启动增量数据下载: start_date={start_date}",
+                    extra={"log_type": "SYSTEM", "scenario": "data_download"},
+                )
+                
+                self._log_operation("启动增量数据下载", start_date=start_date)
 
-            # 验证100天限制
-            today = date.today()
-            days_diff = (today - start_dt).days
-
-            if days_diff > 100:
-                return {
-                    "success": False,
-                    "task_id": None,
-                    "message": f"增量下载最多支持最近100天数据，请调整开始日期（当前选择了{days_diff}天前的数据）",
-                }
-
-            if days_diff < 0:
-                return {
-                    "success": False,
-                    "task_id": None,
-                    "message": "开始日期不能晚于今天",
-                }
-
-            # 创建下载任务
-            task_id = f"incremental_download_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-
-            # 调用ChinaStockEngine的增量下载方法
-            try:
-                success = self.china_stock_engine.download_incremental(start_date=start_dt)
-
-                if not success:
-                    # 下载失败（例如：本地缓存不存在）
+                if self.china_stock_engine is None:
+                    self.logger.error(
+                        "[DATA-DOWNLOAD-SERVICE] ❌ data_module_vnpy不可用",
+                        extra={"log_type": "ALERT", "scenario": "data_download"},
+                    )
+                    stage_logger.error(
+                        "❌ data_module_vnpy不可用",
+                        extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                    )
                     return {
                         "success": False,
                         "task_id": None,
-                        "message": "本地品种缓存不存在或为空，请先在【品种列表】界面点击【重新加载品种】按钮获取品种列表",
+                        "message": "data_module_vnpy不可用",
                     }
 
-                # 注册任务
-                self._download_tasks[task_id] = {
-                    "type": "incremental",
-                    "status": "running",
-                    "start_time": datetime.now(),
-                    "start_date": start_date,
-                    "progress": 50,  # 假设进度
-                }
+                # 解析并验证日期
+                from datetime import datetime as dt, date
 
-                # ✨ 发送数据下载完成事件（支持跨模块通知）
-                self._emit_download_complete_event(task_id, "incremental", start_date)
+                try:
+                    start_dt = dt.strptime(start_date, "%Y-%m-%d").date()
+                    self.logger.debug(
+                        f"[DATA-DOWNLOAD-SERVICE] 日期解析成功: {start_dt}",
+                        extra={"log_type": "SYSTEM", "scenario": "data_download"},
+                    )
+                except ValueError as e:
+                    self.logger.error(
+                        f"[DATA-DOWNLOAD-SERVICE] ❌ 日期格式错误: {e}",
+                        extra={"log_type": "ALERT", "scenario": "data_download"},
+                    )
+                    stage_logger.error(
+                        f"❌ 日期格式错误: {e}",
+                        extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                    )
+                    return {
+                        "success": False,
+                        "task_id": None,
+                        "message": f"日期格式错误: {str(e)}",
+                    }
 
-                return {
-                    "success": True,
-                    "task_id": task_id,
-                    "message": "增量下载已启动",
-                }
+                # 验证100天限制
+                today = date.today()
+                days_diff = (today - start_dt).days
+                
+                self.logger.debug(
+                    f"[DATA-DOWNLOAD-SERVICE] 日期验证: today={today}, start_dt={start_dt}, days_diff={days_diff}",
+                    extra={"log_type": "SYSTEM", "scenario": "data_download"},
+                )
+
+                if days_diff > 100:
+                    self.logger.warning(
+                        f"[DATA-DOWNLOAD-SERVICE] ⚠️ 日期范围超过100天限制: {days_diff}天",
+                        extra={"log_type": "ALERT", "scenario": "data_download"},
+                    )
+                    stage_logger.warning(
+                        f"⚠️ 日期范围超过100天限制: {days_diff}天",
+                        extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                    )
+                    return {
+                        "success": False,
+                        "task_id": None,
+                        "message": f"增量下载最多支持最近100天数据，请调整开始日期（当前选择了{days_diff}天前的数据）",
+                    }
+
+                if days_diff < 0:
+                    self.logger.warning(
+                        f"[DATA-DOWNLOAD-SERVICE] ⚠️ 开始日期不能晚于今天: {start_dt} > {today}",
+                        extra={"log_type": "ALERT", "scenario": "data_download"},
+                    )
+                    stage_logger.warning(
+                        "⚠️ 开始日期不能晚于今天",
+                        extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                    )
+                    return {
+                        "success": False,
+                        "task_id": None,
+                        "message": "开始日期不能晚于今天",
+                    }
+
+                # 创建下载任务
+                task_id = f"incremental_download_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                self.logger.debug(
+                    f"[DATA-DOWNLOAD-SERVICE] 创建下载任务: task_id={task_id}",
+                    extra={"log_type": "SYSTEM", "scenario": "data_download"},
+                )
+
+                # 调用ChinaStockEngine的增量下载方法
+                try:
+                    self.logger.info(
+                        f"[DATA-DOWNLOAD-SERVICE] 开始调用ChinaStockEngine.download_incremental: start_date={start_dt}",
+                        extra={"log_type": "SYSTEM", "scenario": "data_download"},
+                    )
+                    success = self.china_stock_engine.download_incremental(start_date=start_dt)
+
+                    if not success:
+                        # 下载失败（例如：本地缓存不存在）
+                        self.logger.warning(
+                            "[DATA-DOWNLOAD-SERVICE] ⚠️ 下载失败: 本地品种缓存不存在或为空",
+                            extra={"log_type": "ALERT", "scenario": "data_download"},
+                        )
+                        stage_logger.warning(
+                            "⚠️ 下载失败: 本地品种缓存不存在或为空",
+                            extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                        )
+                        return {
+                            "success": False,
+                            "task_id": None,
+                            "message": "本地品种缓存不存在或为空，请先在【品种列表】界面点击【重新加载品种】按钮获取品种列表",
+                        }
+
+                    # 注册任务
+                    self._download_tasks[task_id] = {
+                        "type": "incremental",
+                        "status": "running",
+                        "start_time": datetime.now(),
+                        "start_date": start_date,
+                        "progress": 50,  # 假设进度
+                    }
+                    
+                    self.logger.debug(
+                        f"[DATA-DOWNLOAD-SERVICE] 下载任务已注册: task_id={task_id}",
+                        extra={"log_type": "SYSTEM", "scenario": "data_download"},
+                    )
+
+                    # ✨ 发送数据下载完成事件（支持跨模块通知）
+                    self._emit_download_complete_event(task_id, "incremental", start_date)
+                    
+                    total_elapsed = time.time() - start_time
+                    self.logger.info(
+                        f"[DATA-DOWNLOAD-SERVICE] ✅ 增量下载已启动: task_id={task_id}, 耗时={total_elapsed:.2f}s",
+                        extra={"log_type": "SYSTEM", "scenario": "data_download"},
+                    )
+                    stage_logger.info(
+                        f"✅ 数据下载已启动: task_id={task_id}, 耗时={total_elapsed:.2f}s",
+                        extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                    )
+
+                    return {
+                        "success": True,
+                        "task_id": task_id,
+                        "message": "增量下载已启动",
+                    }
+                except Exception as e:
+                    total_elapsed = time.time() - start_time
+                    self.logger.error(
+                        f"[DATA-DOWNLOAD-SERVICE] ❌ 增量下载启动失败: {e}, 耗时={total_elapsed:.2f}s",
+                        exc_info=True,
+                        extra={"log_type": "ALERT", "scenario": "data_download"},
+                    )
+                    self.logger.debug(
+                        f"[DATA-DOWNLOAD-SERVICE] 异常类型: {type(e).__name__}, 异常详情: {str(e)}",
+                        extra={"log_type": "SYSTEM", "scenario": "data_download"},
+                    )
+                    stage_logger.error(
+                        f"❌ 数据下载启动失败: {e}, 耗时={total_elapsed:.2f}s",
+                        extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                    )
+                    return {
+                        "success": False,
+                        "task_id": None,
+                        "message": f"下载失败: {str(e)}",
+                    }
+
             except Exception as e:
-                self.logger.error("增量下载启动失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+                total_elapsed = time.time() - start_time
+                self.logger.error(
+                    f"[DATA-DOWNLOAD-SERVICE] ❌ 数据下载流程异常: {e}, 耗时={total_elapsed:.2f}s",
+                    exc_info=True,
+                    extra={"log_type": "ALERT", "scenario": "data_download"},
+                )
+                stage_logger.error(
+                    f"❌ 数据下载流程异常: {e}, 耗时={total_elapsed:.2f}s",
+                    extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                )
+                self._log_error("启动增量下载", e, start_date=start_date)
                 return {
                     "success": False,
                     "task_id": None,
-                    "message": f"下载失败: {str(e)}",
+                    "message": f"启动失败: {str(e)}",
                 }
-
-        except Exception as e:
-            self._log_error("启动增量下载", e, start_date=start_date)
-            return {
-                "success": False,
-                "task_id": None,
-                "message": f"启动失败: {str(e)}",
-            }
 
     def get_download_history(
         self, limit: int = 50, task_type: Optional[str] = None
@@ -3173,168 +3304,162 @@ class DataCenterService(BaseService, LoggerMixin):
         Args:
             force_refresh: 是否强制刷新
         """
-        # 质量扫描场景上下文 - 日志埋点v4.0
-        try:
-            from backend.infrastructure.system_vnpy.unified_log_system import get_logging_hub
-
-            ctx = get_logging_hub()
-            ctx.set_stage("quality_scan")
-        except ImportError:
-            ctx = None
-
         import time
+        from contextlib import suppress
+        
         start_time = time.time()
         
-        # ✅ 开始AI日志流程
-        ai_log_started = False
+        # 设置日志上下文
         try:
-            self.logger.debug(
-                "[SCAN-SERVICE] 开始启动AI日志流程",
-                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+            from backend.infrastructure.system_vnpy.unified_log_system import (
+                get_logging_hub,
+                ai_log_process,
             )
-            ai_log_file = start_ai_process(
+            hub = get_logging_hub()
+        except ImportError:
+            hub = None
+        
+        stage_logger = logging.getLogger("task.manual_data_scan.stage")
+        
+        # 使用ai_log_process创建独立日志文件
+        try:
+            context_manager = ai_log_process(
                 "manual_data_scan",
-                metadata={
-                    "force_refresh": force_refresh,
-                    "scan_type": "quality_scan",
-                }
-            )
-            ai_log_started = True
-            self.logger.info(
-                f"[SCAN-SERVICE] AI日志文件: {ai_log_file}",
-                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
-            )
-            self.logger.debug(
-                f"[SCAN-SERVICE] AI日志流程已启动: {ai_log_file}",
-                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
-            )
-        except Exception as e:
-            self.logger.warning(
-                f"[SCAN-SERVICE] ⚠️ 启动AI日志流程失败: {e}",
-                exc_info=True,
-                extra={"log_type": "ALERT", "scenario": "manual_data_scan"}
-            )
-
-        try:
-            self.logger.debug(
-                "[SCAN-SERVICE] 开始手动数据扫描",
-                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
-            )
-            self.logger.info(
-                f"[SCAN-SERVICE] 手动数据扫描任务开始: force_refresh={force_refresh}",
-                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
-            )
-            
-            # 确保 china_stock_engine 可用
-            if not self.china_stock_engine:
-                self.logger.error(
-                    "[SCAN-SERVICE] ❌ ChinaStockEngine 不可用，无法执行数据质量扫描",
-                    extra={"log_type": "ALERT", "scenario": "manual_data_scan"}
-                )
-                self.logger.debug(
-                    "[SCAN-SERVICE] ChinaStockEngine状态: None",
-                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
-                )
-                if ai_log_started:
-                    end_ai_process(success=False, summary="ChinaStockEngine不可用")
-                return
-
-            # 🔧 修复：移除LoadBalancer预热逻辑，避免在后台线程中创建Qt相关对象
-            # LoadBalancer的事件订阅和缓存机制已经足够高效，不需要额外预热
-            # 在后台线程中创建LoadBalancer可能导致Qt Timer错误和内存损坏
-
-            # 数据质量扫描 - 日志埋点v4.0 (已移除scenario)
-            # 直接执行,不使用scenario上下文
-            self.logger.debug(
-                "[SCAN-SERVICE] 调用china_stock_engine.trigger_data_quality_scan方法...",
-                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
-            )
-            scan_start_time = time.time()
-            overview = self.china_stock_engine.trigger_data_quality_scan(
-                force_refresh=force_refresh
-            )
-            scan_elapsed = time.time() - scan_start_time
-            total_elapsed = time.time() - start_time
-            self.logger.debug(
-                f"[SCAN-SERVICE] trigger_data_quality_scan方法调用完成: 耗时={scan_elapsed:.2f}s",
-                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
-            )
-            
-            if overview:
-                # 推送事件
-                self.logger.debug(
-                    "[SCAN-SERVICE] 开始推送质量概览事件...",
-                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
-                )
-                event_start_time = time.time()
-                self.china_stock_engine._push_quality_overview_event(overview)
-                event_elapsed = time.time() - event_start_time
-                self.logger.debug(
-                    f"[SCAN-SERVICE] 质量概览事件推送完成: 耗时={event_elapsed:.2f}s",
-                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                {"force_refresh": force_refresh, "scan_type": "quality_scan"}
+            ) if hub else suppress()
+        except Exception:
+            context_manager = suppress()
+        
+        with context_manager:
+            try:
+                # 阶段节点（输出到Terminal）
+                stage_logger.info(
+                    f"📍 手动数据扫描开始: force_refresh={force_refresh}",
+                    extra={"log_type": "STAGE_NODE", "scenario": "manual_data_scan"},
                 )
                 
-                quality_score = overview.quality_score
-                self.logger.info(
-                    f"[SCAN-SERVICE] ✓ 数据质量扫描完成: 评分={quality_score:.2f}, "
-                    f"扫描耗时={scan_elapsed:.2f}s, 总耗时={total_elapsed:.2f}s",
-                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
-                )
+                # DEBUG日志（只写入AI日志文件）
                 self.logger.debug(
-                    f"[SCAN-SERVICE] 扫描结果详情: quality_score={quality_score}, "
-                    f"scan_elapsed={scan_elapsed:.2f}s, event_elapsed={event_elapsed:.2f}s, "
-                    f"total_elapsed={total_elapsed:.2f}s",
+                    "[SCAN-SERVICE] 开始手动数据扫描",
                     extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
                 )
-
-                # 数据质量告警 - 日志埋点v4.0
-                if quality_score < 60:
-                    logger_alert.warning(
-                        f"[SCAN-SERVICE] ⚠️ 数据质量告警: 评分过低={quality_score:.2f}, 建议检查数据完整性",
+                self.logger.info(
+                    f"[SCAN-SERVICE] 手动数据扫描任务开始: force_refresh={force_refresh}",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                )
+            
+                # 确保 china_stock_engine 可用
+                if not self.china_stock_engine:
+                    self.logger.error(
+                        "[SCAN-SERVICE] ❌ ChinaStockEngine 不可用，无法执行数据质量扫描",
                         extra={"log_type": "ALERT", "scenario": "manual_data_scan"}
                     )
                     self.logger.debug(
-                        f"[SCAN-SERVICE] 质量评分过低: quality_score={quality_score:.2f} < 60",
+                        "[SCAN-SERVICE] ChinaStockEngine状态: None",
                         extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
                     )
-
-                # ✅ 结束AI日志流程（成功）
-                if ai_log_started:
-                    end_ai_process(
-                        success=True,
-                        summary=f"数据质量扫描完成，评分: {quality_score:.2f}"
+                    stage_logger.error(
+                        "❌ ChinaStockEngine不可用，无法执行数据质量扫描",
+                        extra={"log_type": "STAGE_NODE", "scenario": "manual_data_scan"},
                     )
-            else:
-                self.logger.warning(
-                    f"[SCAN-SERVICE] ⚠️ 数据质量扫描未返回结果, 耗时={total_elapsed:.2f}s",
+                    return
+
+                # 🔧 修复：移除LoadBalancer预热逻辑，避免在后台线程中创建Qt相关对象
+                # LoadBalancer的事件订阅和缓存机制已经足够高效，不需要额外预热
+                # 在后台线程中创建LoadBalancer可能导致Qt Timer错误和内存损坏
+
+                # 数据质量扫描 - 日志埋点v4.0
+                self.logger.debug(
+                    "[SCAN-SERVICE] 调用china_stock_engine.trigger_data_quality_scan方法...",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                )
+                scan_start_time = time.time()
+                overview = self.china_stock_engine.trigger_data_quality_scan(
+                    force_refresh=force_refresh
+                )
+                scan_elapsed = time.time() - scan_start_time
+                total_elapsed = time.time() - start_time
+                self.logger.debug(
+                    f"[SCAN-SERVICE] trigger_data_quality_scan方法调用完成: 耗时={scan_elapsed:.2f}s",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                )
+            
+                if overview:
+                    # 推送事件
+                    self.logger.debug(
+                        "[SCAN-SERVICE] 开始推送质量概览事件...",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    )
+                    event_start_time = time.time()
+                    self.china_stock_engine._push_quality_overview_event(overview)
+                    event_elapsed = time.time() - event_start_time
+                    self.logger.debug(
+                        f"[SCAN-SERVICE] 质量概览事件推送完成: 耗时={event_elapsed:.2f}s",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    )
+                    
+                    quality_score = overview.quality_score
+                    self.logger.info(
+                        f"[SCAN-SERVICE] ✓ 数据质量扫描完成: 评分={quality_score:.2f}, "
+                        f"扫描耗时={scan_elapsed:.2f}s, 总耗时={total_elapsed:.2f}s",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    )
+                    self.logger.debug(
+                        f"[SCAN-SERVICE] 扫描结果详情: quality_score={quality_score}, "
+                        f"scan_elapsed={scan_elapsed:.2f}s, event_elapsed={event_elapsed:.2f}s, "
+                        f"total_elapsed={total_elapsed:.2f}s",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    )
+                    
+                    # 阶段节点（输出到Terminal）
+                    stage_logger.info(
+                        f"✅ 手动数据扫描完成: 评分={quality_score:.2f}, 耗时={total_elapsed:.2f}s",
+                        extra={"log_type": "STAGE_NODE", "scenario": "manual_data_scan"},
+                    )
+
+                    # 数据质量告警 - 日志埋点v4.0
+                    if quality_score < 60:
+                        logger_alert.warning(
+                            f"[SCAN-SERVICE] ⚠️ 数据质量告警: 评分过低={quality_score:.2f}, 建议检查数据完整性",
+                            extra={"log_type": "ALERT", "scenario": "manual_data_scan"}
+                        )
+                        self.logger.debug(
+                            f"[SCAN-SERVICE] 质量评分过低: quality_score={quality_score:.2f} < 60",
+                            extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                        )
+                        stage_logger.warning(
+                            f"⚠️ 数据质量评分过低: {quality_score:.2f} < 60",
+                            extra={"log_type": "STAGE_NODE", "scenario": "manual_data_scan"},
+                        )
+                else:
+                    self.logger.warning(
+                        f"[SCAN-SERVICE] ⚠️ 数据质量扫描未返回结果, 耗时={total_elapsed:.2f}s",
+                        extra={"log_type": "ALERT", "scenario": "manual_data_scan"}
+                    )
+                    self.logger.debug(
+                        "[SCAN-SERVICE] 扫描结果: overview=None",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    )
+                    stage_logger.warning(
+                        f"⚠️ 数据质量扫描未返回结果, 耗时={total_elapsed:.2f}s",
+                        extra={"log_type": "STAGE_NODE", "scenario": "manual_data_scan"},
+                    )
+
+            except Exception as e:
+                total_elapsed = time.time() - start_time
+                self.logger.error(
+                    f"[SCAN-SERVICE] ❌ 数据质量扫描失败: {e}, 耗时={total_elapsed:.2f}s",
+                    exc_info=True,
                     extra={"log_type": "ALERT", "scenario": "manual_data_scan"}
                 )
                 self.logger.debug(
-                    "[SCAN-SERVICE] 扫描结果: overview=None",
+                    f"[SCAN-SERVICE] 异常类型: {type(e).__name__}, 异常详情: {str(e)}",
                     extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
                 )
-                # ✅ 结束AI日志流程（无结果）
-                if ai_log_started:
-                    end_ai_process(success=False, summary="数据质量扫描未返回结果")
-
-            # 恢复阶段 - 日志埋点v4.0 (已移除scenario)
-            # Scenario context已移除
-        except Exception as e:
-            total_elapsed = time.time() - start_time
-            logger_alert.error(
-                f"[SCAN-SERVICE] ❌ 数据质量扫描失败: {e}, 耗时={total_elapsed:.2f}s",
-                exc_info=True,
-                extra={"log_type": "ALERT", "scenario": "manual_data_scan"}
-            )
-            self.logger.debug(
-                f"[SCAN-SERVICE] 异常类型: {type(e).__name__}, 异常详情: {str(e)}",
-                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
-            )
-            # ✅ 结束AI日志流程（异常）
-            if ai_log_started:
-                end_ai_process(success=False, summary=f"数据质量扫描失败: {str(e)}")
-            # 恢复阶段 - 日志埋点v4.0 (已移除scenario)
-            # Scenario context已移除
+                stage_logger.error(
+                    f"❌ 数据质量扫描失败: {e}, 耗时={total_elapsed:.2f}s",
+                    extra={"log_type": "STAGE_NODE", "scenario": "manual_data_scan"},
+                )
 
     # ==================== 数据源管理 ====================
 

@@ -144,12 +144,13 @@ def _reset_queue_skip_stats():
         _queue_skip_stats.clear()
 
 
-def _configure_subprocess_logging(worker_id: int, task_type: str = "worker"):
+def _configure_subprocess_logging(worker_id: int, task_type: str = "worker", scenario: str = None):
     """配置子进程日志系统，接入LogHub统一路由
 
     Args:
         worker_id: 子进程ID
         task_type: 任务类型（kline/ipo/finance/server_test等）
+        scenario: 场景标记（用于日志路由，如data_download、manual_data_scan等）
 
     Returns:
         配置好的logger实例
@@ -158,19 +159,50 @@ def _configure_subprocess_logging(worker_id: int, task_type: str = "worker"):
         from backend.infrastructure.system_vnpy.unified_log_system import get_logging_hub
         hub = get_logging_hub()
         root_logger = logging.getLogger()
+        
+        # 清理旧的handler
         for handler in root_logger.handlers[:]:
             root_logger.removeHandler(handler)
             handler.close()
+        
+        # 添加LogHub
         root_logger.addHandler(hub)
         root_logger.setLevel(logging.DEBUG)
+        
+        # 创建子进程专用的logger
         logger_name = f"subprocess.{task_type}.{worker_id}"
         subprocess_logger = logging.getLogger(logger_name)
         subprocess_logger.propagate = True
-        subprocess_logger.info(f"✅ 子进程 {worker_id} 日志系统已接入LogHub")
+        
+        # 记录子进程日志接入信息（使用场景标记）
+        log_extra = {"log_type": "SYSTEM"}
+        if scenario:
+            log_extra["scenario"] = scenario
+        
+        subprocess_logger.info(
+            f"✅ 子进程 {worker_id} (类型: {task_type}) 日志系统已接入LogHub",
+            extra=log_extra
+        )
+        subprocess_logger.debug(
+            f"[SUBPROCESS-{worker_id}] 子进程日志配置完成: task_type={task_type}, scenario={scenario}",
+            extra=log_extra
+        )
+        
         return subprocess_logger
+    except ImportError as e:
+        fallback_logger = logging.getLogger(__name__)
+        fallback_logger.warning(
+            f"⚠️ 子进程 {worker_id} LogHub导入失败，使用降级日志: {e}",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+        return fallback_logger
     except Exception as e:
         fallback_logger = logging.getLogger(__name__)
-        fallback_logger.warning(f"⚠️ 子进程 {worker_id} LogHub配置失败，使用降级日志: {e}", extra={"log_type": "SYSTEM"})
+        fallback_logger.error(
+            f"❌ 子进程 {worker_id} LogHub配置失败，使用降级日志: {e}",
+            exc_info=True,
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
         return fallback_logger
 
 
@@ -2842,15 +2874,23 @@ Worker进程主函数
             coroutines_per_worker: 协程数
             use_two_phase: 是否使用两段式下载
         """
-        # 配置子进程日志
-        subprocess_logger = _configure_subprocess_logging(worker_id, "kline_download")
+        # 配置子进程日志（传入场景标记data_download）
+        subprocess_logger = _configure_subprocess_logging(worker_id, "kline_download", scenario="data_download")
 
         try:
-            subprocess_logger.info(f"🚀 Worker {worker_id} 启动")
+            subprocess_logger.info(
+                f"🚀 Worker {worker_id} 启动 (数据下载)",
+                extra={"log_type": "SYSTEM", "scenario": "data_download"}
+            )
 
             # 创建新的事件循环
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
+            
+            subprocess_logger.debug(
+                f"[SUBPROCESS-{worker_id}] 事件循环已创建",
+                extra={"log_type": "SYSTEM", "scenario": "data_download"}
+            )
 
             # 运行异步下载
             loop.run_until_complete(
@@ -2868,15 +2908,29 @@ Worker进程主函数
                 )
             )
 
-            subprocess_logger.info(f"✅ Worker {worker_id} 正常退出")
+            subprocess_logger.info(
+                f"✅ Worker {worker_id} 正常退出 (数据下载完成)",
+                extra={"log_type": "SYSTEM", "scenario": "data_download"}
+            )
 
         except Exception as e:
-            subprocess_logger.error(f"❌ Worker {worker_id} 异常退出: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            subprocess_logger.error(
+                f"❌ Worker {worker_id} 异常退出: {e}",
+                exc_info=True,
+                extra={"log_type": "ALERT", "scenario": "data_download"}
+            )
         finally:
             try:
                 loop.close()
+                subprocess_logger.debug(
+                    f"[SUBPROCESS-{worker_id}] 事件循环已关闭",
+                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                )
             except Exception as e:
-                subprocess_logger.debug(f"⚠️ [Worker {worker_id}] 关闭事件循环失败: {e}", extra={"log_type": "SYSTEM"})
+                subprocess_logger.debug(
+                    f"⚠️ [Worker {worker_id}] 关闭事件循环失败: {e}",
+                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                )
                 pass
 
     @staticmethod
@@ -4111,8 +4165,8 @@ def _tdx_reader_worker(
         tdx_root_path: TDX根目录
         max_coroutines: 最大协程数
     """
-    # 配置子进程日志
-    logger = _configure_subprocess_logging(worker_id, "tdx_read")
+    # 配置子进程日志（传入场景标记tdx_data_read）
+    logger = _configure_subprocess_logging(worker_id, "tdx_read", scenario="tdx_data_read")
 
     # 运行异步事件循环
     asyncio.run(_tdx_reader_worker_async(
@@ -4284,8 +4338,8 @@ Worker进程主函数
             task_func: 任务函数
             coroutines_per_worker: 协程数
         """
-        # 配置子进程日志
-        subprocess_logger = _configure_subprocess_logging(worker_id, "tdx_executor")
+        # 配置子进程日志（传入场景标记tdx_data_read）
+        subprocess_logger = _configure_subprocess_logging(worker_id, "tdx_executor", scenario="tdx_data_read")
 
         try:
             # 创建事件循环

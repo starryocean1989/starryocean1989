@@ -6269,368 +6269,447 @@ class SystemManagerService(BaseService):
             - 任务总数（小任务<50，中任务<500，大任务>=500）
         """
         import time
+        import logging
+        from contextlib import suppress
+        
         start_time = time.time()
         
+        # 设置日志上下文
         try:
-            # DEBUG日志（只写入AI日志文件，通过extra传递scenario）
-            self.logger.debug(
-                "[TDX-READ-SERVICE] 开始读取TDX数据",
-                extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+            from backend.infrastructure.system_vnpy.unified_log_system import (
+                get_logging_hub,
+                ai_log_process,
             )
-            self.logger.info(
-                "[TDX-READ-SERVICE] TDX数据读取任务开始",
-                extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
-            )
-            
-            self._log_operation("读取通达信数据")
-
-            # 验证配置
-            data_types = config.get("data_types", [])
-            markets = config.get("markets", [])
-            tdx_root = config.get("tdx_root")
-            use_symbol_cache = config.get("use_symbol_cache", True)
-
-            # DEBUG日志
-            self.logger.debug(
-                f"[TDX-READ-SERVICE] 配置验证: data_types={data_types}, markets={markets}, tdx_root={tdx_root}, use_symbol_cache={use_symbol_cache}",
-                extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
-            )
-            self.logger.debug(
-                f"[TDX-READ-SERVICE] 数据类型数量: {len(data_types)}, 市场数量: {len(markets)}",
-                extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
-            )
-
-            if not data_types or not markets or not tdx_root:
-                self.logger.error(
-                    "[TDX-READ-SERVICE] ❌ 缺少必要参数",
-                    extra={"log_type": "ALERT", "scenario": "tdx_data_read"},
-                )
-                self.logger.debug(
-                    f"[TDX-READ-SERVICE] 参数详情: data_types={'存在' if data_types else '缺失'}, "
-                    f"markets={'存在' if markets else '缺失'}, tdx_root={'存在' if tdx_root else '缺失'}",
-                    extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
-                )
-                return {
-                    "success": False,
-                    "message": "缺少必要参数：数据类型、市场代码或通达信根目录",
+            hub = get_logging_hub()
+        except ImportError:
+            hub = None
+        
+        stage_logger = logging.getLogger("task.tdx_data_read.stage")
+        
+        # 使用ai_log_process创建独立日志文件
+        try:
+            context_manager = ai_log_process(
+                "tdx_data_read",
+                {
+                    "data_types": config.get("data_types", []),
+                    "markets": config.get("markets", []),
+                    "tdx_root": config.get("tdx_root"),
                 }
-
-            # 验证通达信目录
-            tdx_path = Path(tdx_root)
-            tdx_path_exists = tdx_path.exists()
-            self.logger.debug(
-                f"[TDX-READ-SERVICE] 通达信目录检查: {tdx_path}, 存在={tdx_path_exists}",
-                extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
-            )
-            if not tdx_path_exists:
-                self.logger.error(
-                    f"[TDX-READ-SERVICE] ❌ 通达信目录不存在: {tdx_root}",
-                    extra={"log_type": "ALERT", "scenario": "tdx_data_read"},
+            ) if hub else suppress()
+        except Exception:
+            context_manager = suppress()
+        
+        with context_manager:
+            try:
+                # 阶段节点（输出到Terminal）
+                stage_logger.info(
+                    f"📍 TDX数据读取开始: 数据类型={config.get('data_types', [])}, 市场={config.get('markets', [])}",
+                    extra={"log_type": "STAGE_NODE", "scenario": "tdx_data_read"},
                 )
-                return {
-                    "success": False,
-                    "message": f"通达信目录不存在: {tdx_root}",
-                }
+                
+                # DEBUG日志（只写入AI日志文件）
+                self.logger.debug(
+                    "[TDX-READ-SERVICE] 开始读取TDX数据",
+                    extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                )
+                self.logger.info(
+                    "[TDX-READ-SERVICE] TDX数据读取任务开始",
+                    extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                )
             
-            # DEBUG日志
-            self.logger.debug(
-                f"[TDX-READ-SERVICE] 通达信目录验证通过: {tdx_path}",
-                extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
-            )
+                self._log_operation("读取通达信数据")
 
-            # 获取品种列表
-            if use_symbol_cache:
+                # 验证配置
+                data_types = config.get("data_types", [])
+                markets = config.get("markets", [])
+                tdx_root = config.get("tdx_root")
+                use_symbol_cache = config.get("use_symbol_cache", True)
+
+                # DEBUG日志
                 self.logger.debug(
-                    "[TDX-READ-SERVICE] 开始从缓存获取品种列表...",
+                    f"[TDX-READ-SERVICE] 配置验证: data_types={data_types}, markets={markets}, tdx_root={tdx_root}, use_symbol_cache={use_symbol_cache}",
                     extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
                 )
-                cache_start_time = time.time()
-                symbols_by_market = self._get_symbols_from_cache(markets)
-                cache_elapsed = time.time() - cache_start_time
-
-                # 🔍 DEBUG: 强制打印品种获取统计到控制台
-                total_symbols = sum(len(symbols) for symbols in symbols_by_market.values())
-                print("\n" + "=" * 60)
-                print("📊 品种缓存获取结果:")
-                for market_code, symbols in symbols_by_market.items():
-                    print(f"  - 市场 {market_code.upper()}: {len(symbols)} 个品种")
-                print(f"  - 总计: {total_symbols} 个品种")
-                print("=" * 60 + "\n")
-
-                self.logger.info("=" * 60)
-                self.logger.info("📊 品种缓存获取结果:")
-                for market_code, symbols in symbols_by_market.items():
-                    self.logger.info("  - 市场 %s: %d 个品种", market_code.upper(), len(symbols))
-                self.logger.info("  - 总计: %d 个品种", total_symbols)
-                self.logger.info("=" * 60)
                 self.logger.debug(
-                    f"[TDX-READ-SERVICE] 品种缓存获取完成: 耗时={cache_elapsed:.2f}s, 总计={total_symbols}个品种",
+                    f"[TDX-READ-SERVICE] 数据类型数量: {len(data_types)}, 市场数量: {len(markets)}",
                     extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
                 )
 
-                if not any(symbols_by_market.values()):
+                if not data_types or not markets or not tdx_root:
                     self.logger.error(
-                        "[TDX-READ-SERVICE] ❌ 品种缓存为空！请先在数据中心重新加载品种列表",
+                        "[TDX-READ-SERVICE] ❌ 缺少必要参数",
                         extra={"log_type": "ALERT", "scenario": "tdx_data_read"},
                     )
                     self.logger.debug(
-                        "[TDX-READ-SERVICE] 品种缓存详情: 所有市场均为空",
+                        f"[TDX-READ-SERVICE] 参数详情: data_types={'存在' if data_types else '缺失'}, "
+                        f"markets={'存在' if markets else '缺失'}, tdx_root={'存在' if tdx_root else '缺失'}",
                         extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                    )
+                    stage_logger.error(
+                        "❌ 缺少必要参数：数据类型、市场代码或通达信根目录",
+                        extra={"log_type": "STAGE_NODE", "scenario": "tdx_data_read"},
                     )
                     return {
                         "success": False,
-                        "message": "品种缓存为空，请先在数据中心重新加载品种列表",
+                        "message": "缺少必要参数：数据类型、市场代码或通达信根目录",
                     }
-            else:
-                self.logger.warning(
-                    "[TDX-READ-SERVICE] ⚠️ use_symbol_cache=False，手动指定品种功能已移除",
-                    extra={"log_type": "ALERT", "scenario": "tdx_data_read"},
-                )
-                return {
-                    "success": False,
-                    "message": "手动指定品种功能已移除，请使用品种缓存",
-                }
 
-            # 导入TdxDynamicExecutor（替代TdxBinaryReader.process_batch）
-            try:
+                # 验证通达信目录
+                tdx_path = Path(tdx_root)
+                tdx_path_exists = tdx_path.exists()
                 self.logger.debug(
-                    "[TDX-READ-SERVICE] 开始导入TdxDynamicExecutor...",
+                    f"[TDX-READ-SERVICE] 通达信目录检查: {tdx_path}, 存在={tdx_path_exists}",
                     extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
                 )
-                from backend.infrastructure.data_module_vnpy.data_acquisition import (
-                    TdxDynamicExecutor,
-                )
-                self.logger.debug(
-                    "[TDX-READ-SERVICE] TdxDynamicExecutor导入成功",
-                    extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
-                )
-            except ImportError as e:
-                self.logger.error(
-                    f"[TDX-READ-SERVICE] ❌ 导入TdxDynamicExecutor失败: {e}",
-                    exc_info=True,
-                    extra={"log_type": "ALERT", "scenario": "tdx_data_read"},
-                )
-                self.logger.debug(
-                    f"[TDX-READ-SERVICE] 导入异常类型: {type(e).__name__}, 异常详情: {str(e)}",
-                    extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
-                )
-                return {
-                    "success": False,
-                    "message": f"导入执行器失败: {str(e)}",
-                }
-
-            # 创建动态执行器实例
-            self.logger.debug(
-                "[TDX-READ-SERVICE] 创建TdxDynamicExecutor实例...",
-                extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
-            )
-            executor = TdxDynamicExecutor(tdx_dir=tdx_path, logger=self.logger)
-            self.logger.debug(
-                "[TDX-READ-SERVICE] TdxDynamicExecutor实例创建成功",
-                extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
-            )
-
-            # 计算总任务数
-            total_tasks = sum(
-                len(symbols_by_market.get(market, [])) * len(data_types) for market in markets
-            )
-
-            if total_tasks == 0:
-                self.logger.error(
-                    "❌ 没有找到符合条件的品种，无法开始处理",
-                    extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
-                )
-                return {
-                    "success": False,
-                    "message": "没有找到符合条件的品种",
-                }
-
-            # ==================== 动态执行器配置 ====================
-            # TdxDynamicExecutor内部已集成LoadBalancer，会根据实时资源压力动态调整
-            # 这里只需设置初始配置
-            import os
-
-            cpu_cores = os.cpu_count() or 4
-
-            # 根据任务规模设置初始进程数和协程数
-            if total_tasks < 50:
-                initial_processes = min(2, cpu_cores // 2)
-                initial_coroutines = 20
-                strategy = "小任务模式"
-            elif total_tasks < 500:
-                initial_processes = min(4, cpu_cores)
-                initial_coroutines = 40
-                strategy = "中等任务模式"
-            else:
-                initial_processes = min(8, cpu_cores)
-                initial_coroutines = 60
-                strategy = "大任务模式"
-
-            # 🔍 DEBUG: 打印详细的任务分组信息
-            self.logger.info("=" * 60)
-            self.logger.info("📋 批量读取任务详情（TdxDynamicExecutor）:")
-            self.logger.info("  - 总任务数: %d", total_tasks)
-            self.logger.info("  - 数据类型: %s", ", ".join(data_types))
-            self.logger.info(f"  - 市场: {', '.join([m.upper() for m in markets])}")
-            self.logger.info("  - 系统资源:")
-            self.logger.info(f"    • CPU核心数: {cpu_cores}")
-            self.logger.info("  - 动态执行器配置:")
-            self.logger.info(f"    • 初始进程数: {initial_processes}")
-            self.logger.info(f"    • 初始协程数/进程: {initial_coroutines}")
-            self.logger.info(f"    • 策略: {strategy}")
-            self.logger.info("    • 动态调整: 每0.3秒根据资源压力自动调整并发")
-            self.logger.info("  - 任务分组:")
-            for market in markets:
-                symbols = symbols_by_market.get(market, [])
-                if symbols:
-                    tasks_per_market = len(symbols) * len(data_types)
-                    self.logger.info(
-                        f"    • {market.upper()}: {len(symbols)} 个品种 × {len(data_types)} 种数据类型 = {tasks_per_market} 个任务"
+                if not tdx_path_exists:
+                    self.logger.error(
+                        f"[TDX-READ-SERVICE] ❌ 通达信目录不存在: {tdx_root}",
+                        extra={"log_type": "ALERT", "scenario": "tdx_data_read"},
                     )
-            self.logger.info("=" * 60)
-            self.logger.info("🚀 开始批量读取（使用动态负载均衡）...")
+                    stage_logger.error(
+                        f"❌ 通达信目录不存在: {tdx_root}",
+                        extra={"log_type": "STAGE_NODE", "scenario": "tdx_data_read"},
+                    )
+                    return {
+                        "success": False,
+                        "message": f"通达信目录不存在: {tdx_root}",
+                    }
+                
+                # DEBUG日志
+                self.logger.debug(
+                    f"[TDX-READ-SERVICE] 通达信目录验证通过: {tdx_path}",
+                    extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                )
 
-            # 重置停止标志
-            self._tdx_reader_stop_flag = False
+                # 获取品种列表
+                if use_symbol_cache:
+                    self.logger.debug(
+                        "[TDX-READ-SERVICE] 开始从缓存获取品种列表...",
+                        extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                    )
+                    cache_start_time = time.time()
+                    symbols_by_market = self._get_symbols_from_cache(markets)
+                    cache_elapsed = time.time() - cache_start_time
 
-            # 批量处理（多市场、多周期）- 使用TdxDynamicExecutor
-            all_results = {}
-            completed = 0
+                    # 🔍 DEBUG: 强制打印品种获取统计到控制台
+                    total_symbols = sum(len(symbols) for symbols in symbols_by_market.values())
+                    print("\n" + "=" * 60)
+                    print("📊 品种缓存获取结果:")
+                    for market_code, symbols in symbols_by_market.items():
+                        print(f"  - 市场 {market_code.upper()}: {len(symbols)} 个品种")
+                    print(f"  - 总计: {total_symbols} 个品种")
+                    print("=" * 60 + "\n")
 
-            import asyncio
+                    self.logger.info("=" * 60)
+                    self.logger.info("📊 品种缓存获取结果:")
+                    for market_code, symbols in symbols_by_market.items():
+                        self.logger.info("  - 市场 %s: %d 个品种", market_code.upper(), len(symbols))
+                    self.logger.info("  - 总计: %d 个品种", total_symbols)
+                    self.logger.info("=" * 60)
+                    self.logger.debug(
+                        f"[TDX-READ-SERVICE] 品种缓存获取完成: 耗时={cache_elapsed:.2f}s, 总计={total_symbols}个品种",
+                        extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                    )
 
-            async def run_batch_processing():
-                """异步批量处理函数"""
-                nonlocal completed
+                    if not any(symbols_by_market.values()):
+                        self.logger.error(
+                            "[TDX-READ-SERVICE] ❌ 品种缓存为空！请先在数据中心重新加载品种列表",
+                            extra={"log_type": "ALERT", "scenario": "tdx_data_read"},
+                        )
+                        self.logger.debug(
+                            "[TDX-READ-SERVICE] 品种缓存详情: 所有市场均为空",
+                            extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                        )
+                        stage_logger.error(
+                            "❌ 品种缓存为空！请先在数据中心重新加载品种列表",
+                            extra={"log_type": "STAGE_NODE", "scenario": "tdx_data_read"},
+                        )
+                        return {
+                            "success": False,
+                            "message": "品种缓存为空，请先在数据中心重新加载品种列表",
+                        }
+                else:
+                    self.logger.warning(
+                        "[TDX-READ-SERVICE] ⚠️ use_symbol_cache=False，手动指定品种功能已移除",
+                        extra={"log_type": "ALERT", "scenario": "tdx_data_read"},
+                    )
+                    stage_logger.warning(
+                        "⚠️ use_symbol_cache=False，手动指定品种功能已移除",
+                        extra={"log_type": "STAGE_NODE", "scenario": "tdx_data_read"},
+                    )
+                    return {
+                        "success": False,
+                        "message": "手动指定品种功能已移除，请使用品种缓存",
+                    }
 
+                # 导入TdxDynamicExecutor（替代TdxBinaryReader.process_batch）
+                try:
+                    self.logger.debug(
+                        "[TDX-READ-SERVICE] 开始导入TdxDynamicExecutor...",
+                        extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                    )
+                    from backend.infrastructure.data_module_vnpy.data_acquisition import (
+                        TdxDynamicExecutor,
+                    )
+                    self.logger.debug(
+                        "[TDX-READ-SERVICE] TdxDynamicExecutor导入成功",
+                        extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                    )
+                except ImportError as e:
+                    self.logger.error(
+                        f"[TDX-READ-SERVICE] ❌ 导入TdxDynamicExecutor失败: {e}",
+                        exc_info=True,
+                        extra={"log_type": "ALERT", "scenario": "tdx_data_read"},
+                    )
+                    self.logger.debug(
+                        f"[TDX-READ-SERVICE] 导入异常类型: {type(e).__name__}, 异常详情: {str(e)}",
+                        extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                    )
+                    stage_logger.error(
+                        f"❌ 导入TdxDynamicExecutor失败: {e}",
+                        extra={"log_type": "STAGE_NODE", "scenario": "tdx_data_read"},
+                    )
+                    return {
+                        "success": False,
+                        "message": f"导入执行器失败: {str(e)}",
+                    }
+
+                # 创建动态执行器实例
+                self.logger.debug(
+                    "[TDX-READ-SERVICE] 创建TdxDynamicExecutor实例...",
+                    extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                )
+                executor = TdxDynamicExecutor(tdx_dir=tdx_path, logger=self.logger)
+                self.logger.debug(
+                    "[TDX-READ-SERVICE] TdxDynamicExecutor实例创建成功",
+                    extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                )
+
+                # 计算总任务数
+                total_tasks = sum(
+                    len(symbols_by_market.get(market, [])) * len(data_types) for market in markets
+                )
+
+                if total_tasks == 0:
+                    self.logger.error(
+                        "❌ 没有找到符合条件的品种，无法开始处理",
+                        extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                    )
+                    stage_logger.error(
+                        "❌ 没有找到符合条件的品种，无法开始处理",
+                        extra={"log_type": "STAGE_NODE", "scenario": "tdx_data_read"},
+                    )
+                    return {
+                        "success": False,
+                        "message": "没有找到符合条件的品种",
+                    }
+
+                # ==================== 动态执行器配置 ====================
+                # TdxDynamicExecutor内部已集成LoadBalancer，会根据实时资源压力动态调整
+                # 这里只需设置初始配置
+                import os
+
+                cpu_cores = os.cpu_count() or 4
+
+                # 根据任务规模设置初始进程数和协程数
+                if total_tasks < 50:
+                    initial_processes = min(2, cpu_cores // 2)
+                    initial_coroutines = 20
+                    strategy = "小任务模式"
+                elif total_tasks < 500:
+                    initial_processes = min(4, cpu_cores)
+                    initial_coroutines = 40
+                    strategy = "中等任务模式"
+                else:
+                    initial_processes = min(8, cpu_cores)
+                    initial_coroutines = 60
+                    strategy = "大任务模式"
+
+                # 🔍 DEBUG: 打印详细的任务分组信息
+                self.logger.info("=" * 60)
+                self.logger.info("📋 批量读取任务详情（TdxDynamicExecutor）:")
+                self.logger.info("  - 总任务数: %d", total_tasks)
+                self.logger.info("  - 数据类型: %s", ", ".join(data_types))
+                self.logger.info(f"  - 市场: {', '.join([m.upper() for m in markets])}")
+                self.logger.info("  - 系统资源:")
+                self.logger.info(f"    • CPU核心数: {cpu_cores}")
+                self.logger.info("  - 动态执行器配置:")
+                self.logger.info(f"    • 初始进程数: {initial_processes}")
+                self.logger.info(f"    • 初始协程数/进程: {initial_coroutines}")
+                self.logger.info(f"    • 策略: {strategy}")
+                self.logger.info("    • 动态调整: 每0.3秒根据资源压力自动调整并发")
+                self.logger.info("  - 任务分组:")
                 for market in markets:
-                    # 检查停止标志
-                    if self._tdx_reader_stop_flag:
-                        self.logger.info("检测到停止标志，中断批量读取")
-                        break
-
                     symbols = symbols_by_market.get(market, [])
-                    if not symbols:
-                        self.logger.warning(f"⚠️  市场 {market.upper()} 没有品种，跳过", extra={"log_type": "SYSTEM"})
-                        continue
+                    if symbols:
+                        tasks_per_market = len(symbols) * len(data_types)
+                        self.logger.info(
+                            f"    • {market.upper()}: {len(symbols)} 个品种 × {len(data_types)} 种数据类型 = {tasks_per_market} 个任务"
+                        )
+                self.logger.info("=" * 60)
+                self.logger.info("🚀 开始批量读取（使用动态负载均衡）...")
 
-                    for data_type in data_types:
+                # 重置停止标志
+                self._tdx_reader_stop_flag = False
+
+                # 批量处理（多市场、多周期）- 使用TdxDynamicExecutor
+                all_results = {}
+                completed = 0
+
+                import asyncio
+
+                async def run_batch_processing():
+                    """异步批量处理函数"""
+                    nonlocal completed
+
+                    for market in markets:
                         # 检查停止标志
                         if self._tdx_reader_stop_flag:
                             self.logger.info("检测到停止标志，中断批量读取")
                             break
 
-                        # 🔍 DEBUG: 打印开始处理的信息
-                        self.logger.info("")
-                        self.logger.info("─" * 60)
-                        self.logger.info(
-                            f"📂 开始处理: 市场={market.upper()}, 数据类型={data_type}, 品种数={len(symbols)}"
-                        )
-                        self.logger.info("─" * 60)
+                        symbols = symbols_by_market.get(market, [])
+                        if not symbols:
+                            self.logger.warning(f"⚠️  市场 {market.upper()} 没有品种，跳过", extra={"log_type": "SYSTEM"})
+                            continue
 
-                        # 使用TdxDynamicExecutor批量处理
-                        try:
-                            results = await executor.execute_batch(
-                                symbols=symbols,
-                                data_type=data_type,
-                                market=market,
-                                initial_processes=initial_processes,
-                                initial_coroutines=initial_coroutines,
+                        for data_type in data_types:
+                            # 检查停止标志
+                            if self._tdx_reader_stop_flag:
+                                self.logger.info("检测到停止标志，中断批量读取")
+                                break
+
+                            # 🔍 DEBUG: 打印开始处理的信息
+                            self.logger.info("")
+                            self.logger.info("─" * 60)
+                            self.logger.info(
+                                f"📂 开始处理: 市场={market.upper()}, 数据类型={data_type}, 品种数={len(symbols)}"
                             )
+                            self.logger.info("─" * 60)
 
-                            # 处理结果和进度
-                            for symbol, success, error_msg, duration in results:
-                                completed += 1
-                                key = f"{market}_{data_type}_{symbol}"
-                                all_results[key] = success
+                            # 使用TdxDynamicExecutor批量处理
+                            try:
+                                results = await executor.execute_batch(
+                                    symbols=symbols,
+                                    data_type=data_type,
+                                    market=market,
+                                    initial_processes=initial_processes,
+                                    initial_coroutines=initial_coroutines,
+                                )
 
-                                # 进度回调
-                                if progress_callback:
-                                    info = f"{market.upper()} {data_type} {symbol}"
-                                    progress_callback(completed, total_tasks, info, success)
+                                # 处理结果和进度
+                                for symbol, success, error_msg, duration in results:
+                                    completed += 1
+                                    key = f"{market}_{data_type}_{symbol}"
+                                    all_results[key] = success
 
-                                # 检查停止标志
-                                if self._tdx_reader_stop_flag:
-                                    self.logger.info("检测到停止标志，中断批量读取")
-                                    return
+                                    # 进度回调
+                                    if progress_callback:
+                                        info = f"{market.upper()} {data_type} {symbol}"
+                                        progress_callback(completed, total_tasks, info, success)
 
-                        except Exception as e:
-                            self.logger.error(
-                                f"处理 {market.upper()} {data_type} 失败: {e}", exc_info=True
-                            )
-                            # 标记所有品种为失败
-                            for symbol in symbols:
-                                key = f"{market}_{data_type}_{symbol}"
-                                all_results[key] = False
-                                completed += 1
+                                    # 检查停止标志
+                                    if self._tdx_reader_stop_flag:
+                                        self.logger.info("检测到停止标志，中断批量读取")
+                                        return
 
-            # 在同步方法中运行异步函数
-            try:
-                asyncio.run(run_batch_processing())
-            except Exception as e:
-                self.logger.error(f"批量处理执行失败: {e}", exc_info=True)
+                            except Exception as e:
+                                self.logger.error(
+                                    f"处理 {market.upper()} {data_type} 失败: {e}", exc_info=True
+                                )
+                                # 标记所有品种为失败
+                                for symbol in symbols:
+                                    key = f"{market}_{data_type}_{symbol}"
+                                    all_results[key] = False
+                                    completed += 1
+
+                # 在同步方法中运行异步函数
+                try:
+                    asyncio.run(run_batch_processing())
+                except Exception as e:
+                    self.logger.error(
+                        f"[TDX-READ-SERVICE] ❌ 批量处理执行失败: {e}",
+                        exc_info=True,
+                        extra={"log_type": "ALERT", "scenario": "tdx_data_read"},
+                    )
+                    stage_logger.error(
+                        f"❌ 批量处理执行失败: {e}",
+                        extra={"log_type": "STAGE_NODE", "scenario": "tdx_data_read"},
+                    )
+                    return {
+                        "success": False,
+                        "message": f"批量处理执行失败: {str(e)}",
+                    }
+
+                # 统计结果
+                total_elapsed = time.time() - start_time
+                success_count = sum(1 for v in all_results.values() if v)
+                fail_count = len(all_results) - success_count
+                was_stopped = self._tdx_reader_stop_flag
+
+                self.logger.debug(
+                    f"[TDX-READ-SERVICE] 统计结果: success_count={success_count}, fail_count={fail_count}, "
+                    f"total_tasks={total_tasks}, was_stopped={was_stopped}, 总耗时={total_elapsed:.2f}s",
+                    extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                )
+
+                if was_stopped:
+                    self.logger.info(
+                        f"[TDX-READ-SERVICE] 批量读取已停止: 已完成 {len(all_results)}/{total_tasks}, 成功 {success_count}, 失败 {fail_count}, 总耗时={total_elapsed:.2f}s",
+                        extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                    )
+                    stage_logger.warning(
+                        f"⚠️ 批量读取已停止: 已完成 {len(all_results)}/{total_tasks}, 成功 {success_count}, 失败 {fail_count}, 耗时={total_elapsed:.2f}s",
+                        extra={"log_type": "STAGE_NODE", "scenario": "tdx_data_read"},
+                    )
+                    message = f"已停止：已完成 {len(all_results)}/{total_tasks}，成功 {success_count}，失败 {fail_count}"
+                else:
+                    self.logger.info(
+                        f"[TDX-READ-SERVICE] 批量读取完成: 成功 {success_count}, 失败 {fail_count}, 总耗时={total_elapsed:.2f}s",
+                        extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                    )
+                    stage_logger.info(
+                        f"✅ TDX数据读取完成: 成功 {success_count}, 失败 {fail_count}, 耗时={total_elapsed:.2f}s",
+                        extra={"log_type": "STAGE_NODE", "scenario": "tdx_data_read"},
+                    )
+                    message = f"批量读取完成：成功 {success_count} 个，失败 {fail_count} 个"
+
                 return {
-                    "success": False,
-                    "message": f"批量处理执行失败: {str(e)}",
+                    "success": True,
+                    "message": message,
+                    "results": all_results,
+                    "stats": {
+                        "completed": len(all_results),
+                        "total": total_tasks,
+                        "success_count": success_count,
+                        "failed_count": fail_count,
+                    },
+                    "success_count": success_count,
+                    "fail_count": fail_count,
+                    "total_tasks": total_tasks,
+                    "was_stopped": was_stopped,
                 }
 
-            # 统计结果
-            total_elapsed = time.time() - start_time
-            success_count = sum(1 for v in all_results.values() if v)
-            fail_count = len(all_results) - success_count
-            was_stopped = self._tdx_reader_stop_flag
-
-            self.logger.debug(
-                f"[TDX-READ-SERVICE] 统计结果: success_count={success_count}, fail_count={fail_count}, "
-                f"total_tasks={total_tasks}, was_stopped={was_stopped}, 总耗时={total_elapsed:.2f}s",
-                extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
-            )
-
-            if was_stopped:
-                self.logger.info(
-                    f"[TDX-READ-SERVICE] 批量读取已停止: 已完成 {len(all_results)}/{total_tasks}, 成功 {success_count}, 失败 {fail_count}, 总耗时={total_elapsed:.2f}s",
+            except Exception as e:
+                total_elapsed = time.time() - start_time
+                self.logger.error(
+                    f"[TDX-READ-SERVICE] ❌ 读取通达信数据失败: {e}, 耗时={total_elapsed:.2f}s",
+                    exc_info=True,
+                    extra={"log_type": "ALERT", "scenario": "tdx_data_read"},
+                )
+                self.logger.debug(
+                    f"[TDX-READ-SERVICE] 异常类型: {type(e).__name__}, 异常详情: {str(e)}",
                     extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
                 )
-                message = f"已停止：已完成 {len(all_results)}/{total_tasks}，成功 {success_count}，失败 {fail_count}"
-            else:
-                self.logger.info(
-                    f"[TDX-READ-SERVICE] 批量读取完成: 成功 {success_count}, 失败 {fail_count}, 总耗时={total_elapsed:.2f}s",
-                    extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                stage_logger.error(
+                    f"❌ TDX数据读取失败: {e}, 耗时={total_elapsed:.2f}s",
+                    extra={"log_type": "STAGE_NODE", "scenario": "tdx_data_read"},
                 )
-                message = f"批量读取完成：成功 {success_count} 个，失败 {fail_count} 个"
-
-            return {
-                "success": True,
-                "message": message,
-                "results": all_results,
-                "stats": {
-                    "completed": len(all_results),
-                    "total": total_tasks,
-                    "success_count": success_count,
-                    "failed_count": fail_count,
-                },
-                "success_count": success_count,
-                "fail_count": fail_count,
-                "total_tasks": total_tasks,
-                "was_stopped": was_stopped,
-            }
-
-        except Exception as e:
-            total_elapsed = time.time() - start_time
-            self.logger.error(
-                f"[TDX-READ-SERVICE] ❌ 读取通达信数据失败: {e}, 耗时={total_elapsed:.2f}s",
-                exc_info=True,
-                extra={"log_type": "ALERT", "scenario": "tdx_data_read"},
-            )
-            self.logger.debug(
-                f"[TDX-READ-SERVICE] 异常类型: {type(e).__name__}, 异常详情: {str(e)}",
-                extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
-            )
-            self._log_error("读取通达信数据", e)
-            return {
-                "success": False,
-                "message": f"读取失败: {str(e)}",
-            }
+                self._log_error("读取通达信数据", e)
+                return {
+                    "success": False,
+                    "message": f"读取失败: {str(e)}",
+                }
 
     def stop_tdx_reader(self) -> Dict[str, Any]:
         """停止通达信数据读取任务.
