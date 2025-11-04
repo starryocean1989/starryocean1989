@@ -9,7 +9,7 @@ import time
 from collections import deque
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from PySide6.QtCore import (
     QAbstractTableModel,
@@ -75,7 +75,7 @@ from backend.infrastructure.system_vnpy import (
     EVENT_ALERT_UPDATED,
     EVENT_LOG_RECORD,
 )
-from ui.core.boot_orchestrator import get_boot_orchestrator
+from backend.startup.ui_startup.boot_orchestrator import get_boot_orchestrator
 
 # UI层专用logger
 logger_user = logging.getLogger("ui.user_feedback")
@@ -3822,15 +3822,53 @@ class SystemManager(BaseWidget, LoggerMixin):
         except Exception as e:
             self.logger.error("更新进程状态显示失败: %s", e)
 
-    def _update_service_status_from_data(self, metrics: Dict[str, Any]):
+    def _update_service_status_from_data(self, metrics: Union[Dict[str, Any], List[Any]]):
         """从监控数据更新服务状态显示."""
         try:
             if not self.services_table:
                 return
 
-            services = metrics.get("services", [])
+            # 🔧 新增：类型检查，防止传入字符串或其他类型
+            if isinstance(metrics, str):
+                self.logger.warning("接收到字符串类型的服务数据，跳过更新: %s", metrics)
+                return
+
+            # 处理多种数据格式：
+            # 1. metrics 是字典，包含 "services" 键（值为列表）
+            # 2. metrics 是字典，包含 "services" 键（值为字典，需要转换）
+            # 3. metrics 直接就是服务列表
+            # 4. metrics 是字典，但直接就是服务数据（没有 "services" 键）
+            if isinstance(metrics, dict):
+                # 检查是否有 "services" 键
+                if "services" in metrics:
+                    services = metrics["services"]
+                    # 🔧 修复：处理 services 是字典的情况
+                    if isinstance(services, dict):
+                        # 将字典转换为列表格式
+                        services = [services]
+                        self.logger.debug("将字典格式的 services 转换为列表格式")
+                    elif not isinstance(services, list):
+                        self.logger.warning("metrics['services'] 不是列表或字典类型: %s", type(services))
+                        services = []
+                else:
+                    # 🔧 新增：如果字典没有 "services" 键，可能字典本身就是一个服务数据
+                    # 尝试将字典转换为列表格式
+                    if all(key in metrics for key in ["name", "status", "health"]):
+                        # 这是一个单独的服务数据，转换为列表
+                        services = [metrics]
+                    else:
+                        # 否则认为是无效格式
+                        self.logger.warning("字典格式的服务数据缺少 'services' 键，且不是有效的服务数据: %s", list(metrics.keys()))
+                        services = []
+            elif isinstance(metrics, list):
+                services = metrics
+            else:
+                self.logger.warning("无效的服务数据格式: %s", type(metrics))
+                return
+
             healthy_count = sum(
-                1 for s in services if s.get("status") == "运行中" and s.get("health") == "健康"
+                1 for s in services
+                if isinstance(s, dict) and s.get("status") == "运行中" and s.get("health") == "健康"
             )
             total_count = len(services)
 
@@ -3842,6 +3880,11 @@ class SystemManager(BaseWidget, LoggerMixin):
             # 更新服务表格
             self.services_table.setRowCount(0)
             for service_info in services:
+                # 🔧 新增：确保 service_info 是字典
+                if not isinstance(service_info, dict):
+                    self.logger.warning("跳过非字典类型的服务信息: %s", type(service_info))
+                    continue
+
                 row = self.services_table.rowCount()
                 self.services_table.insertRow(row)
 
@@ -6522,7 +6565,12 @@ class SystemManager(BaseWidget, LoggerMixin):
                     self.reader_tdx_path_edit.setText(tdx_root)
 
         except Exception as e:
-            self.logger.error("加载通达信读取器配置失败: %s", e)
+            self.logger.error(
+                "UI加载通达信读取器配置失败: 错误=%s",
+                str(e),
+                extra={"log_type": "SYSTEM"},
+                exc_info=True
+            )
 
     def _read_and_save_tdx_data(self):
         """读取并保存通达信数据（多市场、多周期、带进度）."""

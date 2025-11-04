@@ -67,7 +67,9 @@ try:
     else:
         print("✗ Monaco Editor 不可用 (缺少 PySide6-WebEngine)")
 except ImportError as e:
-    print(f"✗ Monaco Editor 导入失败: {e}")
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.warning(f"Monaco Editor导入失败: {e}", extra={"log_type": "SYSTEM"})
 
 
 # ==================== 编辑器标签组件 ====================
@@ -1469,8 +1471,9 @@ class SearchPanel(QWidget, LoggerMixin):
                         return pattern in line
                     else:
                         return pattern.lower() in line.lower()
-        except re.error:
+        except re.error as e:
             # 正则表达式错误
+            self.logger.warning(f"正则表达式错误: {e}", extra={"log_type": "SYSTEM"})
             return False
 
     def _add_file_to_tree(self, file_path: Path, matches: List[Dict]):
@@ -1646,13 +1649,40 @@ class TerminalWidget(QWidget, LoggerMixin):
         # 输出区域
         self.output_text = QTextEdit()
         self.output_text.setReadOnly(True)
-        self.output_text.setFont(QFont("Consolas, Monaco, Courier New", 10))
+        font = QFont("Consolas, Monaco, Courier New", 14)
+        self.output_text.setFont(font)
+        
+        # 设置文档使用HTML格式，通过HTML样式设置行高
+        self.output_text.setAcceptRichText(True)
+        
+        # 设置文档的默认样式，使用HTML格式增加行间距
+        document = self.output_text.document()
+        default_style = """
+        <style>
+            body {
+                font-family: 'Consolas, Monaco, Courier New';
+                font-size: 14pt;
+                line-height: 1.5;
+                background-color: #1E1E1E;
+                color: #D4D4D4;
+                margin: 0;
+                padding: 8px;
+            }
+            p {
+                margin: 3px 0;
+                line-height: 1.5;
+            }
+        </style>
+        """
+        self.output_text.setHtml(default_style)
+        
         self.output_text.setStyleSheet(
             """
             QTextEdit {
                 background-color: #1E1E1E;
                 color: #D4D4D4;
                 border: none;
+                padding: 8px;
             }
         """
         )
@@ -1672,7 +1702,7 @@ class TerminalWidget(QWidget, LoggerMixin):
                 color: #4EC9B0;
                 border: none;
                 font-family: 'Consolas, Monaco, Courier New';
-                font-size: 10pt;
+                font-size: 14pt;
                 text-align: right;
                 padding-right: 5px;
             }
@@ -1682,7 +1712,7 @@ class TerminalWidget(QWidget, LoggerMixin):
 
         # 输入框
         self.input_line = QLineEdit()
-        self.input_line.setFont(QFont("Consolas, Monaco, Courier New", 10))
+        self.input_line.setFont(QFont("Consolas, Monaco, Courier New", 14))
         self.input_line.setStyleSheet(
             """
             QLineEdit {
@@ -1813,8 +1843,9 @@ class TerminalWidget(QWidget, LoggerMixin):
                 if result is not None:
                     self._append_output(f"<span style='color: #DCDCAA;'>{repr(result)}</span>")
 
-            except SyntaxError:
+            except SyntaxError as e:
                 # 作为语句执行（无返回值）
+                self.logger.debug(f"Python代码语法错误（作为语句执行）: {e}", extra={"log_type": "SYSTEM"})
                 sys.stdout = StringIO()
                 sys.stderr = StringIO()
 
@@ -1840,14 +1871,18 @@ class TerminalWidget(QWidget, LoggerMixin):
             # 显示错误
             error_msg = f"{type(e).__name__}: {str(e)}"
             self._append_output(f"<span style='color: #F48771;'>❌ {error_msg}</span>")
-            self.logger.error(f"Python代码执行失败: {e}", exc_info=True)
+            self.logger.error(f"Python代码执行失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
 
     def _append_output(self, text: str):
-        """添加输出文本.
+        """添加输出文本（带行间距）.
 
         Args:
             text: 输出文本
         """
+        # 将文本包装在HTML段落中，保持行间距
+        if not text.startswith("<"):
+            # 如果不是HTML，包装在段落中
+            text = f"<p style='margin: 3px 0; line-height: 1.5;'>{text}</p>"
         self.output_text.append(text)
 
         # 滚动到底部

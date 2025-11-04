@@ -419,13 +419,37 @@ class ServerPoolManager:
             return
         
         try:
-            from backend.infrastructure.tdx_asyncio.constants import HQ_HOSTS_ALL
+            from backend.infrastructure.tdx_asyncio.constants import HQ_HOSTS_ALL, BROKER_SERVERS_7709
+            
+            # 合并所有7709端口的服务器列表
+            all_7709_servers = list(HQ_HOSTS_ALL)
+            
+            # 添加BROKER_SERVERS_7709中的服务器
+            all_7709_servers.extend(BROKER_SERVERS_7709)
+            
+            # 使用集合去重（基于(ip, port)）
+            seen = set()
+            unique_servers = []
+            for name, ip, port in all_7709_servers:
+                if port == 7709:
+                    key = (ip, port)
+                    if key not in seen:
+                        seen.add(key)
+                        unique_servers.append((name, ip, port))
             
             # 提取所有7709端口的IPv4和IPv6服务器
-            for name, ip, port in HQ_HOSTS_ALL:
-                if port == 7709:
-                    # 判断IPv4还是IPv6（简单判断：包含':'为IPv6）
-                    if ':' in ip:
+            for name, ip, port in unique_servers:
+                # 判断IPv4还是IPv6（简单判断：包含':'为IPv6）
+                if ':' in ip and not ip.strip('[]').count(':') <= 1:
+                    # IPv6（需要去掉中括号）
+                    clean_ip = ip.strip('[]')
+                    cls.DEFAULT_IPV6_SERVERS.append(
+                        {"ip": clean_ip, "port": port, "name": name}
+                    )
+                else:
+                    # IPv4（不包含冒号或只包含一个冒号的是IPv4地址格式，如192.168.1.1）
+                    # IPv6地址通常包含多个冒号
+                    if ip.strip('[]').count(':') > 1:
                         # IPv6（需要去掉中括号）
                         clean_ip = ip.strip('[]')
                         cls.DEFAULT_IPV6_SERVERS.append(
@@ -439,7 +463,7 @@ class ServerPoolManager:
             
             logger.info(f"✅ 从constants.py加载默认服务器: IPv4={len(cls.DEFAULT_IPV4_SERVERS)}, IPv6={len(cls.DEFAULT_IPV6_SERVERS)}")
         except Exception as e:
-            logger.warning(f"⚠️ 从constants.py加载服务器失败: {e}, 使用备用服务器")
+            logger.warning(f"⚠️ 从constants.py加载服务器失败: {e}, 使用备用服务器", extra={"log_type": "SYSTEM"})
             # 备用服务器列表
             cls.DEFAULT_IPV4_SERVERS = [
                 {"ip": "119.147.212.81", "port": 7709, "name": "广东电信1"},
@@ -510,7 +534,7 @@ class ServerPoolManager:
         """加载服务器列表
 
         优先级：
-        1. 从缓存文件加载（如果有效）
+        1. 从缓存文件加载（如果有效且不为空）
         2. 从配置加载
         3. 使用默认服务器列表
         """
@@ -524,34 +548,37 @@ class ServerPoolManager:
                 ipv4_servers_data = cached_data.get("ipv4_servers", [])
                 ipv6_servers_data = cached_data.get("ipv6_servers", [])
 
-                # 转换为ServerInfo
-                self._ipv4_servers = [
-                    ServerInfo(
-                        ip=s.get("ip", ""),
-                        port=s.get("port", 7709),
-                        name=s.get("name", ""),
-                        ping_time=s.get("ping_time", 9999.0),
-                        available=s.get("available", False),
-                        last_test=datetime.fromisoformat(s["last_test"]) if s.get("last_test") else None
-                    )
-                    for s in ipv4_servers_data
-                ]
+                # 只有当缓存中有实际数据时才使用缓存
+                if ipv4_servers_data or ipv6_servers_data:
+                    # 转换为ServerInfo
+                    self._ipv4_servers = [
+                        ServerInfo(
+                            ip=s.get("ip", ""),
+                            port=s.get("port", 7709),
+                            name=s.get("name", ""),
+                            ping_time=s.get("ping_time", 9999.0),
+                            available=s.get("available", False),
+                            last_test=datetime.fromisoformat(s["last_test"]) if s.get("last_test") else None
+                        )
+                        for s in ipv4_servers_data
+                    ]
 
-                self._ipv6_servers = [
-                    ServerInfo(
-                        ip=s.get("ip", ""),
-                        port=s.get("port", 7709),
-                        name=s.get("name", ""),
-                        ping_time=s.get("ping_time", 9999.0),
-                        available=s.get("available", False),
-                        last_test=datetime.fromisoformat(s["last_test"]) if s.get("last_test") else None
-                    )
-                    for s in ipv6_servers_data
-                ]
+                    self._ipv6_servers = [
+                        ServerInfo(
+                            ip=s.get("ip", ""),
+                            port=s.get("port", 7709),
+                            name=s.get("name", ""),
+                            ping_time=s.get("ping_time", 9999.0),
+                            available=s.get("available", False),
+                            last_test=datetime.fromisoformat(s["last_test"]) if s.get("last_test") else None
+                        )
+                        for s in ipv6_servers_data
+                    ]
 
-                if self._ipv4_servers or self._ipv6_servers:
                     logger.info(f"✅ 从缓存加载服务器池: IPv4={len(self._ipv4_servers)}, IPv6={len(self._ipv6_servers)}")
                     return
+                else:
+                    logger.debug("缓存文件存在但为空，将使用默认服务器列表")
         except Exception as e:
             logger.debug(f"从缓存加载服务器失败: {e}")
 
@@ -559,7 +586,8 @@ class ServerPoolManager:
         try:
             ipv4_config = self.config_manager.get("tdx.servers.ipv4", [])
             ipv6_config = self.config_manager.get("tdx.servers.ipv6", [])
-        except Exception:
+        except Exception as e:
+            logger.warning(f"⚠️ [LoadBalancer] 从配置加载服务器列表失败: {e}, 使用空列表", extra={"log_type": "SYSTEM"})
             ipv4_config = []
             ipv6_config = []
 
@@ -568,19 +596,23 @@ class ServerPoolManager:
             self._ipv4_servers = [
                 ServerInfo(**server) for server in ipv4_config
             ]
+            logger.info(f"✅ 从配置加载IPv4服务器: {len(self._ipv4_servers)} 个")
         else:
             self._ipv4_servers = [
                 ServerInfo(**server) for server in self.DEFAULT_IPV4_SERVERS
             ]
+            logger.info(f"✅ 使用默认IPv4服务器列表: {len(self._ipv4_servers)} 个")
 
         if ipv6_config:
             self._ipv6_servers = [
                 ServerInfo(**server) for server in ipv6_config
             ]
+            logger.info(f"✅ 从配置加载IPv6服务器: {len(self._ipv6_servers)} 个")
         else:
             self._ipv6_servers = [
                 ServerInfo(**server) for server in self.DEFAULT_IPV6_SERVERS
             ]
+            logger.info(f"✅ 使用默认IPv6服务器列表: {len(self._ipv6_servers)} 个")
 
     def get_ipv4_servers(self, limit: int = 5) -> List[Dict[str, Any]]:
         """获取IPv4服务器列表
@@ -647,7 +679,7 @@ class ServerPoolManager:
                 self.test_servers()  # 这会在test_servers()方法结束时自动保存缓存
                 logger.info("✅ 服务器池缓存已自动生成")
             except Exception as e:
-                logger.warning(f"⚠️ 自动生成服务器池缓存失败: {e}")
+                logger.warning(f"⚠️ 自动生成服务器池缓存失败: {e}", extra={"log_type": "SYSTEM"})
                 # 失败后重新标记需要更新
                 self._cache_needs_update = True
 
@@ -656,44 +688,61 @@ class ServerPoolManager:
         thread.start()
 
     def test_servers(self, max_workers: Optional[int] = None):
-        """测试所有服务器（多进程）
+        """测试所有服务器（多进程+多协程架构）
 
         Args:
             max_workers: 最大进程数，如果为None则根据服务器数量自动设置
         """
-        logger.debug("🔍 开始测试服务器...")
+        logger.debug("🔍 开始测试服务器（多进程+多协程架构）...")
 
         all_servers = self._ipv4_servers + self._ipv6_servers
-        
+
         # 🎯 根据服务器数量动态设置max_workers，确保一次测完
         if max_workers is None:
-            max_workers = min(len(all_servers), 32)  # 最外4个进程，最多32个
-            logger.debug(f"🎯 动态设置 max_workers={max_workers} (服务器总数: {len(all_servers)})")
+            # 每个进程处理一批服务器，每个服务器一个协程
+            servers_per_process = 50  # 每个进程处理50个服务器
+            max_workers = min((len(all_servers) + servers_per_process - 1) // servers_per_process, 32)  # 最外4个进程，最多32个
+            logger.debug(f"🎯 动态设置 max_workers={max_workers} (服务器总数: {len(all_servers)}, 每个进程处理约{servers_per_process}个服务器)")
 
-        # 使用进程池测试
+        # 将服务器分组给不同的进程
+        server_groups = []
+        group_size = (len(all_servers) + max_workers - 1) // max_workers  # 平均分配
+
+        for i in range(0, len(all_servers), group_size):
+            group = all_servers[i:i + group_size]
+            server_groups.append(group)
+
+        # 使用进程池测试（每个进程运行协程池）
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
             futures = {
-                executor.submit(_test_single_server, server.ip, server.port): server
-                for server in all_servers
+                executor.submit(_test_server_group_async, [(s.ip, s.port, s.name) for s in group]): group
+                for group in server_groups
             }
 
             for future in as_completed(futures):
-                server = futures[future]
+                server_group = futures[future]
                 try:
-                    ping_time, available = future.result()
-                    server.ping_time = ping_time
-                    server.available = available
-                    server.last_test = datetime.now()
+                    group_results = future.result()
 
-                    if available:
-                        logger.debug(f"✅ {server.name} ({server.ip}): {ping_time:.0f}ms")
-                    else:
-                        logger.debug(f"❌ {server.name} ({server.ip}): 不可用")
+                    # 将结果应用到服务器对象
+                    for i, (ping_time, available) in enumerate(group_results):
+                        if i < len(server_group):
+                            server = server_group[i]
+                            server.ping_time = ping_time
+                            server.available = available
+                            server.last_test = datetime.now()
+
+                            if available:
+                                logger.debug(f"✅ {server.name} ({server.ip}): {ping_time:.0f}ms")
+                            else:
+                                logger.debug(f"❌ {server.name} ({server.ip}): 不可用")
+
                 except Exception as e:
-                    logger.debug(f"⚠️ 测试失败 {server.name}: {e}")
-                    server.available = False
+                    logger.debug(f"⚠️ 进程测试失败: {e}")
+                    for server in server_group:
+                        server.available = False
 
-        logger.debug("✅ 服务器测试完成")
+        logger.debug("✅ 服务器测试完成（多进程+多协程架构）")
 
         # 🔧 修复：测试完成后自动保存缓存
         try:
@@ -730,9 +779,9 @@ class ServerPoolManager:
             if success:
                 logger.info(f"✅ 服务器池缓存已保存: {self._cache_file}")
             else:
-                logger.warning(f"⚠️ 保存服务器池缓存失败")
+                logger.warning(f"⚠️ 保存服务器池缓存失败", extra={"log_type": "SYSTEM"})
         except Exception as e:
-            logger.warning(f"⚠️ 保存服务器池缓存异常: {e}")
+            logger.warning(f"⚠️ 保存服务器池缓存异常: {e}", extra={"log_type": "SYSTEM"})
 
     def get_stats(self) -> Dict[str, Any]:
         """获取服务器池统计信息
@@ -777,7 +826,7 @@ class ServerPoolManager:
             self.test_servers()
             return True
         except Exception as e:
-            logger.error(f"多进程测速失败: {e}")
+            logger.error(f"多进程测速失败: {e}", extra={"log_type": "SYSTEM"}, exc_info=True)
             return False
 
     def save_server_cache(self, ipv4_servers: List, ipv6_servers: List) -> None:
@@ -832,17 +881,47 @@ class ServerPoolManager:
             if success:
                 logger.info(f"✅ 服务器池缓存已保存: IPv4={len(ipv4_data)}, IPv6={len(ipv6_data)}")
             else:
-                logger.warning(f"⚠️ 保存服务器池缓存失败")
+                logger.warning(f"⚠️ 保存服务器池缓存失败", extra={"log_type": "SYSTEM"})
         except Exception as e:
-            logger.error(f"❌ 保存服务器池缓存异常: {e}", exc_info=True)
+            logger.error(f"❌ 保存服务器池缓存异常: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
 
     def _push_server_status_event(self) -> None:
         """推送服务器状态事件（向后兼容方法）"""
         logger.debug("_push_server_status_event()被调用（当前实现暂无事件推送）")
 
 
+async def _test_single_server_async(ip: str, port: int, name: str = "") -> Tuple[float, bool]:
+    """异步测试单个服务器（协程函数）
+
+    Args:
+        ip: 服务器IP
+        port: 服务器端口
+        name: 服务器名称
+
+    Returns:
+        (延迟, 是否可用)
+    """
+    try:
+        # 测试连接
+        api = AsyncTdxHq_API()
+        start_time = time.time()
+
+        # 改为3秒等待
+        connected = await asyncio.wait_for(api.connect(ip, port), timeout=3.0)
+
+        if connected:
+            ping_time = (time.time() - start_time) * 1000  # 转换为毫秒
+            await api.disconnect()
+            return ping_time, True
+        else:
+            return 9999.0, False
+    except Exception as e:
+        logger.debug(f"测试服务器失败 {ip}:{port} ({name}), {e}")
+        return 9999.0, False
+
+
 def _test_single_server(ip: str, port: int) -> Tuple[float, bool]:
-    """测试单个服务器（Worker函数）
+    """测试单个服务器（Worker函数，向后兼容）
 
     Args:
         ip: 服务器IP
@@ -861,8 +940,9 @@ def _test_single_server(ip: str, port: int) -> Tuple[float, bool]:
             api = AsyncTdxHq_API()
             start_time = time.time()
 
+            # 改为3秒等待
             connected = loop.run_until_complete(
-                asyncio.wait_for(api.connect(ip, port), timeout=5.0)
+                asyncio.wait_for(api.connect(ip, port), timeout=3.0)
             )
 
             if connected:
@@ -876,6 +956,47 @@ def _test_single_server(ip: str, port: int) -> Tuple[float, bool]:
     except Exception as e:
         logger.debug(f"测试服务器失败 {ip}:{port}, {e}")
         return 9999.0, False
+
+
+def _test_server_group_async(server_group: List[Tuple[str, int, str]]) -> List[Tuple[float, bool]]:
+    """异步测试一组服务器（多协程架构）
+
+    Args:
+        server_group: 服务器组 [(ip, port, name), ...]
+
+    Returns:
+        [(延迟, 是否可用), ...] 按输入顺序返回结果
+    """
+    async def test_group():
+        # 创建所有测试任务（1个服务器1个协程）
+        tasks = []
+        for ip, port, name in server_group:
+            task = _test_single_server_async(ip, port, name)
+            tasks.append(task)
+
+        # 并发执行所有测试（协程无上限）
+        logger.debug(f"🔄 进程内并发测试 {len(tasks)} 个服务器...")
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # 处理结果
+        final_results = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                logger.debug(f"⚠️ 协程测试异常 {server_group[i]}: {result}")
+                final_results.append((9999.0, False))
+            else:
+                final_results.append(result)
+
+        return final_results
+
+    # 在新的事件循环中运行
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    try:
+        return loop.run_until_complete(test_group())
+    finally:
+        loop.close()
 
 
 # ==============================================================================
@@ -1190,5 +1311,6 @@ def get_server_pool_manager() -> ServerPoolManager:
         _server_pool_manager_instance = ServerPoolManager()
     return _server_pool_manager_instance
 
-# 导出全局实例（向后兼容）
-server_pool_manager = get_server_pool_manager()
+# 🔧 修复：删除模块级别的自动初始化，避免在阶段0触发测速
+# 改为延迟初始化，只在需要时创建实例
+# server_pool_manager = get_server_pool_manager()  # ❌ 已删除：违反单一事实原则

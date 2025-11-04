@@ -117,6 +117,101 @@ class UnifiedDataManager:
 
         logger.info("✅ 统一数据管理器已初始化")
 
+    def get_all_contracts(self) -> List[Dict[str, Any]]:
+        """获取所有合约信息（兼容 VnPy 接口）
+
+        Returns:
+            合约列表，每个合约包含 symbol, exchange, name 等信息
+        """
+        try:
+            # 🔧 修复：正确获取 ChinaStockEngine
+            # 方式1：如果 event_engine 有 china_stock_engine 属性（正常情况）
+            china_stock_engine = None
+            if self.event_engine and hasattr(self.event_engine, 'china_stock_engine'):
+                china_stock_engine = self.event_engine.china_stock_engine
+            # 方式2：如果 event_engine 本身就是 ChinaStockEngine（兼容情况）
+            elif self.event_engine and hasattr(self.event_engine, 'get_all_symbols'):
+                china_stock_engine = self.event_engine
+            # 方式3：从全局获取
+            else:
+                try:
+                    from backend.core.base import get_china_stock_engine
+                    china_stock_engine = get_china_stock_engine()
+                except:
+                    pass
+
+            if china_stock_engine and hasattr(china_stock_engine, 'symbol_loader') and china_stock_engine.symbol_loader:
+                symbols = china_stock_engine.symbol_loader.extract_all_codes()
+                if symbols:
+                    # 转换为 VnPy 合约格式
+                    contracts = []
+                    for symbol in symbols:
+                        contract = {
+                            "symbol": symbol,
+                            "exchange": "SSE",  # 默认交易所
+                            "name": f"股票{symbol}",
+                            "product": "EQUITY",
+                            "size": 1,
+                            "pricetick": 0.01,
+                            "min_volume": 1,
+                            "max_volume": None,
+                            "margin_rate": 0.1,
+                            "gateway_name": "china_stock"
+                        }
+                        contracts.append(contract)
+                    return contracts
+
+            # 如果无法获取，返回空列表
+            logger.warning("⚠️ 无法获取合约列表，返回空列表")
+            return []
+
+        except Exception as e:
+            logger.error(f"获取合约列表失败: {e}", exc_info=True)
+            return []
+
+    def load_bar_data(self, symbol: str, interval: str = "1d", start_date: str = None, end_date: str = None, **kwargs) -> List[Dict]:
+        """加载K线数据（兼容 VnPy 接口）
+
+        Args:
+            symbol: 品种代码
+            interval: 周期
+            start_date: 开始日期
+            end_date: 结束日期
+
+        Returns:
+            K线数据列表
+        """
+        try:
+            # 调用内部查询方法
+            df = self.query_kline(symbol, interval, start_date, end_date)
+            if df is None or df.empty:
+                return []
+
+            # 转换为 VnPy BarData 格式
+            bars = []
+            for idx, row in df.iterrows():
+                bar = {
+                    "symbol": symbol,
+                    "exchange": "SSE",  # 默认交易所
+                    "interval": interval,
+                    "datetime": idx,
+                    "volume": row.get("volume", 0),
+                    "turnover": row.get("amount", 0),
+                    "open_price": row.get("open", 0),
+                    "high_price": row.get("high", 0),
+                    "low_price": row.get("low", 0),
+                    "close_price": row.get("close", 0),
+                    "open_interest": 0,
+                    "gateway_name": "china_stock"
+                }
+                bars.append(bar)
+
+            return bars
+
+        except Exception as e:
+            logger.error(f"加载K线数据失败: {symbol}/{interval}, {e}", exc_info=True)
+            return []
+
     async def query_kline_async(
         self,
         symbol: str,

@@ -21,8 +21,7 @@
         self.thread.start()
 
 可选异步实现(需要qasync):
-    # 直接使用 await
-    from ui.core.async_utils import async_slot
+    # 直接使用合并的 async_slot
 
     @async_slot
     async def on_reload_button_clicked_async(self):
@@ -159,7 +158,7 @@ class ReloadSymbolsThread(QThread):
 
         except Exception as e:
             # 记录异常并发送错误信号
-            self.logger.exception("品种重载失败: %s", e)
+            self.logger.error("❌ 品种重载失败: %s", e, exc_info=True, extra={"log_type": "USER_FEEDBACK"})
             self.error_signal.emit(f"加载失败: {str(e)}")
 
 
@@ -232,7 +231,7 @@ class DownloadThread(QThread):
                     result = self.data_center_service.start_incremental_download(self.start_date)
 
             except Exception as download_error:
-                self.logger.exception("下载过程异常: %s", download_error)
+                self.logger.error("❌ 下载过程异常: %s", download_error, exc_info=True, extra={"log_type": "USER_FEEDBACK"})
                 self.error_signal.emit(f"下载失败: {str(download_error)}")
                 return
 
@@ -250,23 +249,23 @@ class DownloadThread(QThread):
 
             # 检查是否过快完成（可能有问题）
             if elapsed < 5.0:
-                self.logger.warning("下载过快完成: 耗时=%.2fs, 请检查是否正常", elapsed)
+                self.logger.warning("下载过快完成: 耗时=%.2fs, 请检查是否正常", elapsed, extra={"log_type": "SYSTEM"})
 
             # 发送完成信号
             try:
                 self.finished_signal.emit(result)
             except Exception as signal_err:
-                self.logger.exception("发送完成信号失败: %s", signal_err)
+                self.logger.error("❌ 发送完成信号失败: %s", signal_err, exc_info=True, extra={"log_type": "SYSTEM"})
 
         except Exception as e:
             # 记录异常并发送错误信号
-            self.logger.exception("下载线程发生异常: %s", e)
+            self.logger.error("❌ 下载线程发生异常: %s", e, exc_info=True, extra={"log_type": "USER_FEEDBACK"})
 
             # 确保信号发送成功
             try:
                 self.error_signal.emit(f"下载失败: {str(e)}")
             except Exception as signal_err:
-                self.logger.exception("发送错误信号失败: %s", signal_err)
+                self.logger.error("❌ 发送错误信号失败: %s", signal_err, exc_info=True, extra={"log_type": "SYSTEM"})
 
 
 class DataCenter(BaseWidget, LoggerMixin):
@@ -468,7 +467,7 @@ class DataCenter(BaseWidget, LoggerMixin):
         if self.data_center_service:
             self.logger.info("✓ 数据中心服务已就绪")
         else:
-            self.logger.warning("⚠ 数据中心服务未注册")
+            self.logger.warning("⚠ 数据中心服务未注册", extra={"log_type": "SYSTEM"})
 
         # 🔧 关键修复：连接Signal到Slot（在主线程中自动执行）
         # 原因：Qt的Signal/Slot机制自动处理跨线程调度，无需手动使用QTimer
@@ -1023,7 +1022,7 @@ class DataCenter(BaseWidget, LoggerMixin):
             self.logger.info(f"已触发 {len(problem_symbols)} 个品种的修复下载")
 
         except Exception as e:
-            self.logger.error(f"修复品种问题失败: {e}", exc_info=True)
+            self.logger.error(f"修复品种问题失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
             self.show_error(f"修复品种问题失败: {e}")
 
     def _delete_invalid_symbols(self) -> None:
@@ -1038,7 +1037,7 @@ class DataCenter(BaseWidget, LoggerMixin):
                 if checked:
                     self.symbol_issues_detail_table.viewport().update()
         except Exception as e:
-            self.logger.error(f"切换品种问题详情表格失败: {e}")
+            self.logger.error(f"切换品种问题详情表格失败: {e}", extra={"log_type": "SYSTEM"}, exc_info=True)
 
     def _append_symbol_issues_details(self, new_details: list) -> None:
         """追加品种问题详情到表格
@@ -1094,7 +1093,7 @@ class DataCenter(BaseWidget, LoggerMixin):
             self.logger.debug(f"追加了 {len(filtered_details)} 条品种问题详情")
 
         except Exception as e:
-            self.logger.error(f"追加品种问题详情失败: {e}", exc_info=True)
+            self.logger.error(f"追加品种问题详情失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
 
     def _update_symbol_issues_ui(
         self, total_symbols=None, downloaded=None, missing=None, invalid_count=None, outdated=None
@@ -1140,7 +1139,7 @@ class DataCenter(BaseWidget, LoggerMixin):
                 self.repair_symbol_issues_btn.setEnabled(should_enable)
 
         except Exception as e:
-            self.logger.error(f"更新品种问题UI失败: {e}", exc_info=True)
+            self.logger.error(f"更新品种问题UI失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
 
     # ==================== 数据问题处理方法 ====================
 
@@ -1222,7 +1221,7 @@ class DataCenter(BaseWidget, LoggerMixin):
             self.logger.info(f"已触发 {len(problem_symbols)} 个品种的修复下载")
 
         except Exception as e:
-            self.logger.error(f"修复数据问题失败: {e}", exc_info=True)
+            self.logger.error(f"修复数据问题失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
             self.show_error(f"修复数据问题失败: {e}")
 
     def _toggle_data_issues_detail(self, checked: bool) -> None:
@@ -1233,7 +1232,7 @@ class DataCenter(BaseWidget, LoggerMixin):
                 if checked:
                     self.data_issues_detail_table.viewport().update()
         except Exception as e:
-            self.logger.error(f"切换数据问题详情表格失败: {e}")
+            self.logger.error(f"切换数据问题详情表格失败: {e}", extra={"log_type": "SYSTEM"}, exc_info=True)
 
     def _append_data_issues_details(self, new_details: list) -> None:
         """追加数据问题详情到表格
@@ -1331,7 +1330,12 @@ class DataCenter(BaseWidget, LoggerMixin):
                 self.scan_data_btn.setEnabled(True)
 
         except Exception as e:
-            self.logger.error(f"更新数据问题UI失败: {e}", exc_info=True)
+            self.logger.error(
+                "UI更新数据问题UI失败: 错误=%s",
+                str(e),
+                extra={"log_type": "SYSTEM"},
+                exc_info=True
+            )
 
     # ==================== 数据下载子界面 ====================
 
@@ -2748,9 +2752,8 @@ class DataCenter(BaseWidget, LoggerMixin):
         所有Qt UI操作必须通过QTimer.singleShot转发到主线程
         """
         try:
-            # 🔧 关键修复：添加详细日志，确保事件被接收到（使用print强制输出）
+            # 🔧 关键修复：添加详细日志，确保事件被接收到
             event_type = event.type if hasattr(event, "type") else "unknown"
-            print(f"[事件处理] 🔔 _on_data_metrics_updated 被调用: event.type={event_type}")
             self.logger.info(
                 f"[事件处理] 🔔 _on_data_metrics_updated 被调用: event.type={event_type}"
             )
@@ -2762,11 +2765,6 @@ class DataCenter(BaseWidget, LoggerMixin):
             invalid_count = data.get("invalid_count", 0)
             details = data.get("details", [])  # 🆕 获取详细品种列表
 
-            print(
-                f"[事件处理] 📊 收到数据指标更新事件: 总品种={total_symbols}, "
-                f"已下载={downloaded}, 缺失={missing}, 失效={invalid_count}, "
-                f"详情={len(details)}个品种"
-            )
             self.logger.info(
                 f"[事件处理] 📊 收到数据指标更新事件: 总品种={total_symbols}, "
                 f"已下载={downloaded}, 缺失={missing}, 失效={invalid_count}, "
@@ -2774,19 +2772,14 @@ class DataCenter(BaseWidget, LoggerMixin):
             )
 
             # 🔧 使用Qt Signal机制，确保UI更新在主线程执行
-            print(f"[事件处理] 准备发射 data_metrics_update_signal: missing={missing}")
+            self.logger.debug(f"[事件处理] 准备发射 data_metrics_update_signal: missing={missing}")
             self.data_metrics_update_signal.emit(
                 total_symbols, downloaded, missing, invalid_count, details
             )
-            print(f"[事件处理] ✅ 已发射 data_metrics_update_signal: missing={missing}")
             self.logger.info(f"[事件处理] ✅ 已发射data_metrics_update_signal: missing={missing}")
 
         except Exception as e:
-            print(f"[事件处理] ❌ 处理数据指标更新事件失败: {e}")
-            import traceback
-
-            print(f"[事件处理] 异常堆栈:\n{traceback.format_exc()}")
-            self.logger.error(f"[事件处理] ❌ 处理数据指标更新事件失败: {e}", exc_info=True)
+            self.logger.error(f"[事件处理] ❌ 处理数据指标更新事件失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
 
     def _update_data_metrics_ui(
         self, total_symbols, downloaded, missing, invalid_count, details=None
@@ -3038,11 +3031,7 @@ class DataCenter(BaseWidget, LoggerMixin):
             # 🔧 如果有details，通过Signal转发到主线程处理（✅ 更可靠的方式）
             if details and details_count > 0:
                 # 🔥 强制输出到terminal
-                import sys
-
-                print(
-                    f"\n✅ [CRITICAL-DEBUG-UI] 前端收到details: {details_count}个", file=sys.stderr
-                )
+                self.logger.debug(f"[CRITICAL-DEBUG-UI] 前端收到details: {details_count}个")
                 sys.stderr.flush()
 
                 self.logger.info(
@@ -3052,12 +3041,10 @@ class DataCenter(BaseWidget, LoggerMixin):
                 self.append_details_signal.emit(details)
             else:
                 # 🔥 强制输出：没有details的情况
-                import sys
-
-                print(f"\n⚠️ [CRITICAL-DEBUG-UI] 前端收到metrics但details为空！", file=sys.stderr)
-                print(f"  details={details}", file=sys.stderr)
-                print(f"  details_count={details_count}", file=sys.stderr)
-                sys.stderr.flush()
+                self.logger.warning(
+                    f"[CRITICAL-DEBUG-UI] 前端收到metrics但details为空！details={details}, details_count={details_count}",
+                    extra={"log_type": "SYSTEM"}
+                )
 
             # 🔧 使用Qt Signal传递控制信号和统计数据（不含details）
             self.quality_scan_phase_signal.emit(phase, metrics_for_signal, status)
@@ -3553,7 +3540,7 @@ class DataCenter(BaseWidget, LoggerMixin):
                 self._reset_download_state()
 
         except Exception as e:
-            self.logger.exception("处理下载结果失败: %s", e)
+            self.logger.error("❌ 处理下载结果失败: %s", e, exc_info=True, extra={"log_type": "USER_FEEDBACK"})
             self._reset_download_state()
 
     def _on_download_error(self, error_message: str):
@@ -4077,69 +4064,54 @@ class DataCenter(BaseWidget, LoggerMixin):
                 self.event_engine.register("eLocalDataIndexReady", self._on_local_data_index_ready)
                 # 🆕 注册数据质量阶段性推送事件监听器
                 self.event_engine.register("eQualityScanPhase", self._on_quality_scan_phase)
-                # 🔧 强制输出日志，使用print和logger双重输出
-                print("[事件注册] 步骤3: 已注册 eQualityScanPhase")
+                # 🔧 输出日志
                 self.logger.info("[事件注册] 步骤3: 已注册 eQualityScanPhase")
 
                 # 🔧 关键修复：在步骤4之前添加明确的日志分隔符
-                print("[事件注册] ===== 开始注册步骤4: eDataMetricsUpdated =====")
                 self.logger.info("[事件注册] ===== 开始注册步骤4: eDataMetricsUpdated =====")
 
                 # 🆕 注册新增事件监听器
                 # 🔧 关键修复：直接使用硬编码字符串，最简化注册流程
                 event_name = "eDataMetricsUpdated"
 
-                print(f"[事件注册] 步骤4-开始: event_name='{event_name}'")
                 self.logger.info(f"[事件注册] 步骤4-开始: event_name='{event_name}'")
 
                 # 🔧 关键修复：直接注册，添加详细错误捕获
                 # 直接注册事件处理器
-                print(
+                self.logger.debug(
                     f"[事件注册] 步骤4-准备注册: event_name={event_name}, handler={self._on_data_metrics_updated}"
                 )
                 try:
                     self.event_engine.register(event_name, self._on_data_metrics_updated)
-                    print(f"[事件注册] 步骤4: ✅ register()调用成功")
                     self.logger.info(
                         f"[事件注册] 步骤4: ✅ 已注册 {event_name} -> _on_data_metrics_updated"
                     )
                 except Exception as reg_exc:
-                    print(f"[事件注册] ❌ register()调用失败: {reg_exc}")
-                    import traceback
-
-                    print(f"[事件注册] 注册异常堆栈:\n{traceback.format_exc()}")
-                    self.logger.error(f"[事件注册] ❌ register()调用失败: {reg_exc}", exc_info=True)
+                    self.logger.error(f"[事件注册] ❌ register()调用失败: {reg_exc}", exc_info=True, extra={"log_type": "SYSTEM"})
                     raise  # 重新抛出，让外层捕获
 
                 # 立即验证事件注册是否成功
-                print(f"[事件注册] 步骤4-准备验证: 检查_handlers属性")
+                self.logger.debug(f"[事件注册] 步骤4-准备验证: 检查_handlers属性")
                 try:
                     if hasattr(self.event_engine, "_handlers"):
                         handlers = self.event_engine._handlers.get(event_name, [])
-                        print(f"[事件注册] 步骤4-验证结果: 处理器数量={len(handlers)}")
+                        self.logger.debug(f"[事件注册] 步骤4-验证结果: 处理器数量={len(handlers)}")
                         if len(handlers) == 0:
-                            print(f"[事件注册] ❌ 警告: {event_name} 注册后处理器数量为0！")
                             self.logger.error(
-                                f"[事件注册] ❌ 警告: {event_name} 注册后处理器数量为0！"
+                                f"[事件注册] ❌ 警告: {event_name} 注册后处理器数量为0！",
+                                extra={"log_type": "SYSTEM"}
                             )
                         else:
-                            print(
-                                f"[事件注册] ✅ 验证通过: {event_name} 已注册 {len(handlers)} 个处理器"
-                            )
                             self.logger.info(
                                 f"[事件注册] ✅ 验证通过: {event_name} 已注册 {len(handlers)} 个处理器"
                             )
                     else:
-                        print(f"[事件注册] ⚠️ event_engine 没有 _handlers 属性")
                         self.logger.warning(
-                            f"[事件注册] ⚠️ event_engine 没有 _handlers 属性，无法验证注册状态"
+                            f"[事件注册] ⚠️ event_engine 没有 _handlers 属性，无法验证注册状态",
+                            extra={"log_type": "SYSTEM"}
                         )
                 except Exception as verify_exc:
-                    print(f"[事件注册] ❌ 验证过程失败: {verify_exc}")
-                    import traceback
-
-                    print(f"[事件注册] 验证异常堆栈:\n{traceback.format_exc()}")
-                    self.logger.error(f"[事件注册] ❌ 验证过程失败: {verify_exc}", exc_info=True)
+                    self.logger.error(f"[事件注册] ❌ 验证过程失败: {verify_exc}", exc_info=True, extra={"log_type": "SYSTEM"})
                     raise  # 重新抛出，让外层捕获
                 self.event_engine.register(
                     "eInvalidSymbolsUpdated", self._on_invalid_symbols_updated
@@ -5566,7 +5538,7 @@ class DataCenter(BaseWidget, LoggerMixin):
                     self.logger.info("✅ 数据扫描完成")
 
                 except Exception as e:
-                    self.logger.exception("❌ 数据扫描异常: %s", e)
+                    self.logger.error("❌ 数据扫描异常: %s", e, exc_info=True, extra={"log_type": "USER_FEEDBACK"})
                     QTimer.singleShot(0, lambda: self.show_error(f"扫描失败: {str(e)}"))
 
                 finally:
@@ -5578,7 +5550,7 @@ class DataCenter(BaseWidget, LoggerMixin):
             scan_thread.start()
 
         except Exception as e:
-            self.logger.exception("启动数据扫描失败: %s", e)
+            self.logger.error("❌ 启动数据扫描失败: %s", e, exc_info=True, extra={"log_type": "USER_FEEDBACK"})
             self.show_error(f"启动扫描失败: {str(e)}")
             self._restore_scan_button()
 
@@ -5640,7 +5612,7 @@ class DataCenter(BaseWidget, LoggerMixin):
                 self.show_error(f"删除失败: {error_msg}")
 
         except Exception as e:
-            self.logger.exception("❌ [删除失效数据] 删除失效数据失败: %s", e)
+            self.logger.error("❌ [删除失效数据] 删除失效数据失败: %s", e, exc_info=True, extra={"log_type": "USER_FEEDBACK"})
             self.show_error(f"删除失效数据失败: {str(e)}")
 
     def _refresh_quality_overview(self) -> None:
@@ -5962,11 +5934,10 @@ class DataCenter(BaseWidget, LoggerMixin):
                 import sys
 
                 final_count = self.quality_detail_table.rowCount()
-                print(f"\n✅ [CRITICAL-DEBUG] _append_quality_details完成", file=sys.stderr)
-                print(f"  追加了 {len(new_details)} 条记录", file=sys.stderr)
-                print(f"  表格当前总行数: {final_count}", file=sys.stderr)
-                print(f"  表格是否可见: {self.quality_detail_table.isVisible()}", file=sys.stderr)
-                sys.stderr.flush()
+                self.logger.debug(
+                    f"[CRITICAL-DEBUG] _append_quality_details完成: 追加了 {len(new_details)} 条记录, "
+                    f"表格当前总行数: {final_count}, 表格是否可见: {self.quality_detail_table.isVisible()}"
+                )
 
                 self.logger.info(
                     "增量追加 %d 个问题品种，当前表格行数: %d（已刷新UI）",
@@ -5976,15 +5947,16 @@ class DataCenter(BaseWidget, LoggerMixin):
 
         except Exception as e:
             # 🔥 强制输出异常信息
-            import sys
-
-            print(f"\n❌ [CRITICAL-DEBUG] _append_quality_details异常！", file=sys.stderr)
-            print(f"  Exception: {e}", file=sys.stderr)
+            self.logger.error(
+                f"[CRITICAL-DEBUG] _append_quality_details异常: {e}",
+                exc_info=True,
+                extra={"log_type": "SYSTEM"}
+            )
             import traceback
 
             traceback.print_exc(file=sys.stderr)
             sys.stderr.flush()
-            self.logger.exception("增量追加质量详情失败: %s", e)
+            self.logger.error("❌ 增量追加质量详情失败: %s", e, exc_info=True, extra={"log_type": "USER_FEEDBACK"})
 
     def _trigger_repair_download(self) -> None:
         """触发修复下载（智能下载有问题的品种）

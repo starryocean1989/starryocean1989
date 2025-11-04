@@ -99,7 +99,7 @@ class ConfigManager:
                     self._config = yaml.safe_load(f) or {}
                 logger.info(f"系统配置加载成功: {self._config_file}")
             else:
-                logger.warning(f"系统配置文件不存在: {self._config_file}")
+                logger.warning(f"系统配置文件不存在: {self._config_file}", extra={"log_type": "SYSTEM"})
                 self._config = self._get_default_config()
 
             # 加载阈值配置
@@ -108,11 +108,11 @@ class ConfigManager:
                     self._threshold_config = yaml.safe_load(f) or {}
                 logger.info(f"阈值配置加载成功: {self._threshold_file}")
             else:
-                logger.warning(f"阈值配置文件不存在: {self._threshold_file}")
+                logger.warning(f"阈值配置文件不存在: {self._threshold_file}", extra={"log_type": "SYSTEM"})
                 self._threshold_config = self._get_default_threshold_config()
 
         except Exception as e:
-            logger.error(f"加载配置文件失败: {e}", exc_info=True)
+            logger.error(f"加载配置文件失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
             self._config = self._get_default_config()
             self._threshold_config = self._get_default_threshold_config()
 
@@ -165,7 +165,7 @@ class ConfigManager:
             return True
 
         except Exception as e:
-            logger.error(f"配置文件重新加载失败: {e}", exc_info=True)
+            logger.error(f"配置文件重新加载失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
             return False
 
     def get(self, key: str, default: Any = None) -> Any:
@@ -361,8 +361,7 @@ class CacheManager:
             return True
 
         except Exception as e:
-            logger.error(f"保存缓存失败: {e}", exc_info=True)
-            return False
+            logger.error(f"保存缓存失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
 
     @staticmethod
     async def save_monitor_data_async(
@@ -413,8 +412,7 @@ class CacheManager:
             return True
 
         except Exception as e:
-            logger.error(f"保存缓存失败: {e}", exc_info=True)
-            return False
+            logger.error(f"保存缓存失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
 
     @staticmethod
     def load_monitor_data(cache_key: str) -> Tuple[Any, bool]:
@@ -537,7 +535,7 @@ class EventPublisher:
             data: 事件数据
         """
         if self.event_engine is None:
-            logger.warning("EventEngine未初始化，无法发布事件")
+            logger.warning("EventEngine未初始化，无法发布事件", extra={"log_type": "SYSTEM"})
             return
 
         try:
@@ -545,7 +543,7 @@ class EventPublisher:
             self.event_engine.put(event)
             logger.debug(f"事件已发布: {event_type}")
         except Exception as e:
-            logger.error(f"发布事件失败: {e}", exc_info=True)
+            logger.error(f"发布事件失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
 
 
 class SystemEventPublisher(EventPublisher):
@@ -797,7 +795,7 @@ class SystemManagerEngine:
                 return True
 
             except Exception as e:
-                logger.error(f"❌ SystemManagerEngine初始化失败: {e}", exc_info=True)
+                logger.critical(f"🔥 SystemManagerEngine初始化失败: {e}", exc_info=True, extra={"log_type": "ALERT"})
                 return False
 
     def _initialize_components(self) -> None:
@@ -830,13 +828,13 @@ class SystemManagerEngine:
                 from backend.infrastructure.native_ipc import AsyncIPCPipe, IPC_AVAILABLE
 
                 if not IPC_AVAILABLE:
-                    logger.warning("⚠️ native_ipc不可用，监控功能将在主进程运行（降级模式）")
+                    logger.warning("⚠️ native_ipc不可用，监控功能将在主进程运行（降级模式）", extra={"log_type": "SYSTEM"})
                     return True
 
                 logger.info("✅ native_ipc可用")
 
             except ImportError:
-                logger.warning("⚠️ native_ipc模块未安装，监控功能将在主进程运行（降级模式）")
+                logger.warning("⚠️ native_ipc模块未安装，监控功能将在主进程运行（降级模式）", extra={"log_type": "SYSTEM"})
                 return True
 
             # 2. 获取IPC配置
@@ -856,7 +854,11 @@ class SystemManagerEngine:
             monitor_script = Path(__file__).parent / "monitor_system.py"
 
             if not monitor_script.exists():
-                logger.error(f"❌ 监控进程入口文件不存在: {monitor_script}")
+                logger.error(
+                    f"❌ 监控进程入口文件不存在: {monitor_script}。"
+                    f" 解决方案: 1) 确保monitor_system.py文件存在于正确位置；2) 检查文件路径配置", 
+                    extra={"log_type": "ALERT"}
+                )
                 return False
 
             logger.info(f"启动监控进程: {monitor_script}")
@@ -881,7 +883,7 @@ class SystemManagerEngine:
             return True
 
         except Exception as e:
-            logger.error(f"❌ 启动监控进程失败: {e}", exc_info=True)
+            logger.critical(f"🔥 启动监控进程失败: {e}", exc_info=True, extra={"log_type": "ALERT"})
             return False
 
     async def stop_monitoring_process(self) -> bool:
@@ -900,7 +902,7 @@ class SystemManagerEngine:
                         await pipe.close()
                         logger.info(f"IPC管道已关闭: {pipe_name}")
                 except Exception as e:
-                    logger.error(f"关闭IPC管道失败: {pipe_name}, {e}")
+                    logger.error(f"关闭IPC管道失败: {pipe_name}, {e}", extra={"log_type": "SYSTEM"})
 
             self._ipc_pipes.clear()
 
@@ -911,10 +913,10 @@ class SystemManagerEngine:
                     self.monitor_process.wait(timeout=10)
                     logger.info(f"监控进程已终止，PID={self.monitor_process.pid}")
                 except Exception as e:
-                    logger.error(f"终止监控进程失败: {e}")
+                    logger.error(f"终止监控进程失败: {e}", extra={"log_type": "SYSTEM"})
                     # 强制杀死
                     self.monitor_process.kill()
-                    logger.warning("监控进程已被强制终止")
+                    logger.warning("监控进程已被强制终止", extra={"log_type": "SYSTEM"})
 
                 self.monitor_process = None
 
@@ -922,14 +924,14 @@ class SystemManagerEngine:
             return True
 
         except Exception as e:
-            logger.error(f"停止监控进程失败: {e}", exc_info=True)
+            logger.error(f"停止监控进程失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
             return False
 
     async def _receive_alerts(self):
         """接收监控进程的告警推送"""
         alert_pipe = self._ipc_pipes.get("alert")
         if not alert_pipe:
-            logger.warning("告警管道未初始化")
+            logger.warning("告警管道未初始化", extra={"log_type": "SYSTEM"})
             return
 
         logger.info("开始接收监控进程告警...")
@@ -945,7 +947,7 @@ class SystemManagerEngine:
                 self.alert_publisher.publish_alert_created(alert_data)
 
             except Exception as e:
-                logger.error(f"接收告警失败: {e}", exc_info=True)
+                logger.error(f"接收告警失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
                 await asyncio.sleep(1)
 
     async def query_monitor_data(self, query_type: str) -> Optional[Dict]:
@@ -978,11 +980,11 @@ class SystemManagerEngine:
                 if response.get("success"):
                     return response.get("data")
                 else:
-                    logger.error(f"查询失败: {response.get('error')}")
+                    logger.error(f"查询失败: {response.get('error')}", extra={"log_type": "SYSTEM"})
                     return None
 
         except Exception as e:
-            logger.error(f"查询监控数据失败: {e}", exc_info=True)
+            logger.error(f"查询监控数据失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
             return None
 
     # ==========================================================================
@@ -1002,12 +1004,11 @@ class SystemManagerEngine:
                 return data
 
             # 缓存失效，查询监控进程（需要异步，这里返回空）
-            logger.warning("get_system_info需要异步查询，请使用get_system_info_async")
+            logger.warning("get_system_info需要异步查询，请使用get_system_info_async", extra={"log_type": "SYSTEM"})
             return {}
 
         except Exception as e:
-            logger.error(f"获取系统信息失败: {e}", exc_info=True)
-            return {}
+            logger.error(f"获取系统信息失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
 
     async def get_system_info_async(self) -> Dict[str, Any]:
         """获取系统信息（异步接口）
@@ -1033,8 +1034,7 @@ class SystemManagerEngine:
             return {}
 
         except Exception as e:
-            logger.error(f"获取系统信息失败: {e}", exc_info=True)
-            return {}
+            logger.error(f"获取系统信息失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
 
     def test_bandwidth(self) -> Dict[str, Any]:
         """测试网络带宽（同步接口，保持兼容）
@@ -1043,12 +1043,11 @@ class SystemManagerEngine:
             带宽测试结果
         """
         try:
-            logger.warning("test_bandwidth需要异步查询，请使用test_bandwidth_async")
+            logger.warning("test_bandwidth需要异步查询，请使用test_bandwidth_async", extra={"log_type": "SYSTEM"})
             return {}
 
         except Exception as e:
-            logger.error(f"测试网络带宽失败: {e}", exc_info=True)
-            return {}
+            logger.error(f"测试网络带宽失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
 
     async def test_bandwidth_async(self) -> Dict[str, Any]:
         """测试网络带宽（异步接口）
@@ -1069,8 +1068,7 @@ class SystemManagerEngine:
             return {}
 
         except Exception as e:
-            logger.error(f"测试网络带宽失败: {e}", exc_info=True)
-            return {}
+            logger.error(f"测试网络带宽失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
 
     def healthcheck(self) -> Dict[str, Any]:
         """健康检查
@@ -1090,7 +1088,7 @@ class SystemManagerEngine:
             return status
 
         except Exception as e:
-            logger.error(f"健康检查失败: {e}", exc_info=True)
+            logger.error(f"健康检查失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
             return {"status": "error", "error": str(e)}
 
 

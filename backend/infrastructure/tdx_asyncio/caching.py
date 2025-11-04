@@ -145,11 +145,11 @@ class AsyncFileCache:
             elif self.format_type == 'parquet':
                 return await self._async_load_parquet(filepath)
             else:
-                logger.warning(f"不支持的缓存格式: {self.format_type}")
+                logger.warning(f"不支持的缓存格式: {self.format_type}", extra={"log_type": "SYSTEM"})
                 return None
 
         except Exception as e:
-            logger.warning(f"加载缓存失败: {e}")
+            logger.warning(f"加载缓存失败: {e}", extra={"log_type": "SYSTEM"})
             return None
 
     async def _save_to_file(self, cache_key: str, data: Any) -> None:
@@ -165,10 +165,10 @@ class AsyncFileCache:
             elif self.format_type == 'parquet':
                 await self._async_save_parquet(filepath, data)
             else:
-                logger.warning(f"不支持的缓存格式: {self.format_type}")
+                logger.warning(f"不支持的缓存格式: {self.format_type}", extra={"log_type": "SYSTEM"})
 
         except Exception as e:
-            logger.error(f"保存缓存失败: {e}")
+            logger.error(f"保存缓存失败: {e}", extra={"log_type": "SYSTEM"})
 
     async def _async_load_pickle(self, filepath: Path) -> Any:
         """异步加载pickle文件"""
@@ -218,7 +218,7 @@ class AsyncFileCache:
                     return pd.read_parquet(filepath)
                 return await asyncio.get_event_loop().run_in_executor(None, _load)
         except Exception as e:
-            logger.warning(f"异步读取Parquet失败，降级到executor: {e}")
+            logger.warning(f"异步读取Parquet失败，降级到executor: {e}", extra={"log_type": "SYSTEM"})
             # 最终降级到executor
             def _load():
                 return pd.read_parquet(filepath)

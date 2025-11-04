@@ -136,11 +136,11 @@ class AsyncSmartIPPool(AsyncIPPool):
                     )
                     logger.info("💡 现在可以安全使用下载功能了")
                 else:
-                    logger.error("❌ 智能IP池：服务器分析完成，但没有可用服务器！")
-                    logger.error("⚠️  下载功能将不可用，请检查网络连接")
+                    logger.error("❌ 智能IP池：服务器分析完成，但没有可用服务器！", extra={"log_type": "SYSTEM"})
+                    logger.error("⚠️  下载功能将不可用，请检查网络连接", extra={"log_type": "SYSTEM"})
             except Exception as e:
-                logger.error("❌ 智能IP池：首次测速失败: %s", e)
-                logger.error("⚠️  服务器测速异常，下载功能将不可用")
+                logger.error("❌ 智能IP池：首次测速失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+                logger.error("⚠️  服务器测速异常，下载功能将不可用", extra={"log_type": "SYSTEM"})
                 # 🔥 关键：失败时保持 sorted_servers 为空，强制阻止下载
 
             # 启动后台监控任务
@@ -178,7 +178,7 @@ class AsyncSmartIPPool(AsyncIPPool):
                     pass
 
             except Exception as e:
-                logger.error("IP池监控循环异常: %s", e)
+                logger.error("IP池监控循环异常: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
                 # 异常时等待1分钟后重试
                 try:
                     await asyncio.wait_for(self._stop_event.wait(), timeout=60.0)
@@ -294,7 +294,7 @@ class AsyncSmartIPPool(AsyncIPPool):
         ]
 
         if not available_servers:
-            logger.warning("无可用服务器，保持原有列表")
+            logger.warning("无可用服务器，保持原有列表", extra={"log_type": "SYSTEM"})
             return
 
         # 按响应时间排序（从小到大）

@@ -39,7 +39,7 @@ class ExtendedLHMWrapper:
         try:
             self._initialize()
         except Exception as e:
-            logger.warning("ExtendedLHMWrapper初始化失败: %s", e)
+            logger.warning("ExtendedLHMWrapper初始化失败: %s", e, extra={"log_type": "SYSTEM"})
             logger.info("将回退到基础监控方式")
 
     def _initialize(self):
@@ -93,7 +93,7 @@ class ExtendedLHMWrapper:
         try:
             self._update_visitor = self._create_update_visitor()
         except Exception as e:
-            logger.warning("无法创建UpdateVisitor（将使用回退方法）: %s", e)
+            logger.warning("无法创建UpdateVisitor（将使用回退方法）: %s", e, extra={"log_type": "SYSTEM"})
             self._update_visitor = None
 
         # 8. 打开硬件监控
@@ -175,7 +175,7 @@ class ExtendedLHMWrapper:
             return result
 
         except Exception as e:
-            logger.error("获取传感器数据失败: %s", e)
+            logger.error("获取传感器数据失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
             return {}
 
     def _update_hardware_recursive(
@@ -206,7 +206,7 @@ class ExtendedLHMWrapper:
                 self._update_hardware_recursive(subhardware, result)
 
         except Exception as e:
-            logger.warning("更新硬件 %s 失败: %s", hardware.Name if hardware else "Unknown", e)
+            logger.warning("更新硬件 %s 失败: %s", hardware.Name if hardware else "Unknown", e, extra={"log_type": "SYSTEM"})
 
     def _collect_all_sensors(
         self, hardware, device_name: str, result: Dict[str, Dict[str, List[Dict[str, Any]]]]
@@ -327,7 +327,7 @@ class ExtendedLHMWrapper:
                 self._computer.Close()
                 logger.info("ExtendedLHMWrapper已关闭")
             except Exception as e:
-                logger.error("关闭ExtendedLHMWrapper失败: %s", e)
+                logger.error("关闭ExtendedLHMWrapper失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
             finally:
                 self._computer = None
                 self._initialized = False

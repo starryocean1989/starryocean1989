@@ -8,6 +8,10 @@ Windows平台：使用IOCP（完成端口）
 """
 
 import platform
+import logging
+
+# 创建logger
+logger = logging.getLogger(__name__)
 
 # 平台检测
 IS_WINDOWS = platform.system() == "Windows"
@@ -38,6 +42,7 @@ if IS_WINDOWS:
         __all__ = []
 
         def _raise_import_error():
+            logger.warning("IOCP C扩展未编译，请运行: python setup.py build_ext --inplace in backend/infrastructure/native_iocp/", extra={"log_type": "SYSTEM"})
             raise ImportError(
                 "IOCP C extension not compiled. "
                 "Please run: python setup.py build_ext --inplace in backend/infrastructure/native_iocp/"
@@ -55,6 +60,7 @@ else:
     __all__ = []
 
     def _raise_platform_error():
+        logger.critical("IOCP异步文件I/O仅支持Windows平台", extra={"log_type": "SYSTEM"})
         raise RuntimeError("IOCP async file I/O only supports Windows platform")
 
     AsyncIOCPFile = _raise_platform_error

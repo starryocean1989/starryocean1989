@@ -71,7 +71,7 @@ class MarketBoardService(BaseService):
 
             china_stock_engine = get_china_stock_engine()
             if not china_stock_engine:
-                self.logger.warning("⚠️ ChinaStockEngine不可用，将使用DataCenterService")
+                self.logger.warning("⚠️ ChinaStockEngine不可用，将使用DataCenterService", extra={"log_type": "SYSTEM"})
                 return
 
             # 获取统一数据管理器
@@ -81,10 +81,10 @@ class MarketBoardService(BaseService):
                     self.logger.info("✅ 已获取data_module_vnpy统一数据管理器")
                     return
 
-            self.logger.warning("⚠️ 无法获取统一数据管理器，将使用DataCenterService")
+            self.logger.warning("⚠️ 无法获取统一数据管理器，将使用DataCenterService", extra={"log_type": "SYSTEM"})
 
         except Exception as e:
-            self.logger.error("获取统一数据管理器失败：%s", e, exc_info=True)
+            self.logger.error("获取统一数据管理器失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
 
     def _do_shutdown(self) -> bool:
         """关闭行情看板服务."""
@@ -110,7 +110,7 @@ class MarketBoardService(BaseService):
             self.logger.info("✅ talib技术指标库可用")
         except ImportError:
             self.talib = None
-            self.logger.warning("⚠️ talib技术指标库不可用")
+            self.logger.warning("⚠️ talib技术指标库不可用", extra={"log_type": "SYSTEM"})
 
     # ==================== 行情数据查询 ====================
 
@@ -186,7 +186,7 @@ class MarketBoardService(BaseService):
 
                 except Exception as e:
                     self.logger.warning(
-                        "从data_module_vnpy查询失败：%s，尝试使用DataCenterService", e
+                        "从data_module_vnpy查询失败：%s，尝试使用DataCenterService", e, extra={"log_type": "SYSTEM"}
                     )
 
             # 备用方案：使用DataCenterService

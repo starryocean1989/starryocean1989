@@ -19,15 +19,18 @@ backend/
 ### 1. `base.py` - 核心基础模块
 
 **功能定位：**
-- 提供全局服务管理器（`ServiceManager`）和服务初始化器（`ServiceInitializer`）
+- 提供全局服务管理器（`ServiceManager`）
 - 管理 VnPy 核心引擎（`MainEngine`、`EventEngine`、`ChinaStockEngine`）的全局访问
-- 支持快速启动（仅核心服务）和完整启动（所有服务）
-- 集成业务指标收集器（`BusinessMetricsCollector`）用于事件队列监控
+- 提供全局引擎访问器（`get_main_engine`、`get_event_engine` 等）
+- 向后兼容导入桥接（服务初始化器已迁移至 `backend.startup.initializers`）
 
 **核心接口：**
 ```python
 # 服务管理
 get_service_manager() -> ServiceManager
+
+# 服务初始化（已迁移到 backend.startup.initializers）
+from backend.startup.initializers.service_initializer import initialize_services, shutdown_services
 initialize_services(progress_callback=None, fast_startup=True) -> bool
 shutdown_services() -> None
 
@@ -662,7 +665,7 @@ VnPy框架
 ### 初始化服务
 
 ```python
-from backend.core.base import initialize_services, shutdown_services
+from backend.startup.initializers.service_initializer import initialize_services, shutdown_services
 
 # 快速启动（仅核心服务）
 success = initialize_services(fast_startup=True)

@@ -108,7 +108,7 @@ class UnifiedMarketData:  # pylint: disable=too-many-instance-attributes
         try:
             # ✅ 数据验证
             if not hasattr(tick, "symbol") or not tick.symbol:
-                logger.warning("Tick数据缺少symbol字段")
+                logger.warning("Tick数据缺少symbol字段", extra={"log_type": "SYSTEM"})
                 raise ValueError("Invalid tick: missing symbol")
 
             # ✅ 数据转换
@@ -149,12 +149,13 @@ class UnifiedMarketData:  # pylint: disable=too-many-instance-attributes
             return data
 
         except AttributeError as e:
-            logger.exception(
-                "Tick数据字段缺失: 品种=%s, 错误=%s", getattr(tick, "symbol", "UNKNOWN"), e
+            logger.error(
+                "❌ Tick数据字段缺失: 品种=%s, 错误=%s", getattr(tick, "symbol", "UNKNOWN"), e,
+                exc_info=True, extra={"log_type": "SYSTEM"}
             )
             raise
         except Exception as e:
-            logger.exception("Tick数据转换失败: %s", e)
+            logger.error("❌ Tick数据转换失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             raise
 
     @classmethod
@@ -163,7 +164,7 @@ class UnifiedMarketData:  # pylint: disable=too-many-instance-attributes
         try:
             # ✅ 数据验证
             if not hasattr(bar_data, "symbol") or not bar_data.symbol:
-                logger.warning("Bar数据缺少symbol字段")
+                logger.warning("Bar数据缺少symbol字段", extra={"log_type": "SYSTEM"})
                 raise ValueError("Invalid bar: missing symbol")
 
             # ✅ 数据转换
@@ -205,12 +206,13 @@ class UnifiedMarketData:  # pylint: disable=too-many-instance-attributes
             return data
 
         except AttributeError as e:
-            logger.exception(
-                "Bar数据字段缺失: 品种=%s, 错误=%s", getattr(bar_data, "symbol", "UNKNOWN"), e
+            logger.error(
+                "❌ Bar数据字段缺失: 品种=%s, 错误=%s", getattr(bar_data, "symbol", "UNKNOWN"), e,
+                exc_info=True, extra={"log_type": "SYSTEM"}
             )
             raise
         except Exception as e:
-            logger.exception("Bar数据转换失败: %s", e)
+            logger.error("❌ Bar数据转换失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             raise
 
     def to_pandas_row(self) -> Dict[str, Any]:
@@ -1121,7 +1123,7 @@ class DataModelManager:
                 df.set_index("datetime", inplace=True)
             return df
         except (ValueError, TypeError, AttributeError) as e:
-            self.logger.error("转换为pandas DataFrame失败: %s", e)
+            self.logger.error("转换为pandas DataFrame失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
             return None
 
     def get_statistics(self) -> Dict[str, Any]:

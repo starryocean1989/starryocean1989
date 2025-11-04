@@ -62,7 +62,7 @@ async def _open_file_async(filepath: Union[str, Path], mode: str = 'rb') -> Any:
             file_obj = await compat_aopen(filepath, mode)
             return file_obj
         except Exception as e:
-            logger.warning(f"native_iocp打开文件失败，降级到aiofiles: {e}")
+            logger.warning(f"native_iocp打开文件失败，降级到aiofiles: {e}", extra={"log_type": "SYSTEM"})
             # Fallback到aiofiles
             import aiofiles
             return await aiofiles.open(filepath, mode)
@@ -99,7 +99,7 @@ class AsyncTdxDayReader:
         """
         try:
             if not self.filepath.exists():
-                logger.error(f"文件不存在: {self.filepath}")
+                logger.error("文件不存在: %s", self.filepath, extra={"log_type": "SYSTEM"})
                 return pd.DataFrame()
 
             # 🚀 使用native_iocp异步读取二进制文件（真异步，无线程池开销）
@@ -118,11 +118,11 @@ class AsyncTdxDayReader:
             # 转换为DataFrame
             df = pd.DataFrame(records)
 
-            logger.debug(f"成功读取日线数据: {len(df)}条, 文件={self.filepath.name}")
+            logger.debug("成功读取日线数据: %d条, 文件=%s", len(df), self.filepath.name)
             return df
 
         except Exception as e:
-            logger.error(f"读取日线数据失败: {e}")
+            logger.error("读取日线数据失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return pd.DataFrame()
 
     def _parse_day_data(self, data: bytes) -> List[dict]:
@@ -180,7 +180,7 @@ class AsyncTdxDayReader:
                     })
 
         except Exception as e:
-            logger.error(f"解析日线数据失败: {e}")
+            logger.error("解析日线数据失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
 
         return records
 
@@ -212,7 +212,7 @@ class AsyncTdxMinuteReader:
         """
         try:
             if not self.filepath.exists():
-                logger.error(f"文件不存在: {self.filepath}")
+                logger.error(f"文件不存在: {self.filepath}", extra={"log_type": "SYSTEM"})
                 return pd.DataFrame()
 
             # 🚀 使用native_iocp异步读取二进制文件（真异步，无线程池开销）
@@ -229,11 +229,11 @@ class AsyncTdxMinuteReader:
             # 转换为DataFrame
             df = pd.DataFrame(records)
 
-            logger.debug(f"成功读取分钟线数据: {len(df)}条, 文件={self.filepath.name}")
+            logger.debug("成功读取分钟线数据: %d条, 文件=%s", len(df), self.filepath.name)
             return df
 
         except Exception as e:
-            logger.error(f"读取分钟线数据失败: {e}")
+            logger.error("读取分钟线数据失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return pd.DataFrame()
 
     def _parse_minute_data(self, data: bytes) -> List[dict]:
@@ -291,7 +291,7 @@ class AsyncTdxMinuteReader:
                 })
 
         except Exception as e:
-            logger.error(f"解析分钟线数据失败: {e}")
+            logger.error(f"解析分钟线数据失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
 
         return records
 
@@ -321,7 +321,7 @@ class AsyncTdxLc5Reader:
         """
         try:
             if not self.filepath.exists():
-                logger.error(f"文件不存在: {self.filepath}")
+                logger.error(f"文件不存在: {self.filepath}", extra={"log_type": "SYSTEM"})
                 return pd.DataFrame()
 
             # 🚀 使用native_iocp异步读取二进制文件（真异步，无线程池开销）
@@ -338,11 +338,11 @@ class AsyncTdxLc5Reader:
             # 转换为DataFrame
             df = pd.DataFrame(records)
 
-            logger.debug(f"成功读取5分钟线数据: {len(df)}条, 文件={self.filepath.name}")
+            logger.debug("成功读取5分钟线数据: %d条, 文件=%s", len(df), self.filepath.name)
             return df
 
         except Exception as e:
-            logger.error(f"读取5分钟线数据失败: {e}")
+            logger.error("读取5分钟线数据失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return pd.DataFrame()
 
     def _parse_lc5_data(self, data: bytes) -> List[dict]:
@@ -384,7 +384,7 @@ class AsyncTdxLc5Reader:
                 })
 
         except Exception as e:
-            logger.error(f"解析5分钟线数据失败: {e}")
+            logger.error("解析5分钟线数据失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
 
         return records
 
@@ -415,7 +415,7 @@ class AsyncTdxBlockReader:
         """
         try:
             if not self.filepath.exists():
-                logger.error(f"文件不存在: {self.filepath}")
+                logger.error(f"文件不存在: {self.filepath}", extra={"log_type": "SYSTEM"})
                 return pd.DataFrame()
 
             # 📝 板块文件是文本格式（GBK编码），使用aiofiles
@@ -436,7 +436,7 @@ class AsyncTdxBlockReader:
             return df
 
         except Exception as e:
-            logger.error(f"读取板块数据失败: {e}")
+            logger.error(f"读取板块数据失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
             return pd.DataFrame()
 
     def _parse_block_data(self, content: str) -> List[dict]:
@@ -491,7 +491,7 @@ class AsyncTdxBlockReader:
                 })
 
         except Exception as e:
-            logger.error(f"解析板块数据失败: {e}")
+            logger.error(f"解析板块数据失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
 
         return records
 
@@ -570,7 +570,7 @@ class AsyncHistoryFinancialReader:
         """
         try:
             if not self.filepath.exists():
-                logger.error(f"文件不存在: {self.filepath}")
+                logger.error(f"文件不存在: {self.filepath}", extra={"log_type": "SYSTEM"})
                 return pd.DataFrame()
 
             # 检查文件类型
@@ -581,7 +581,7 @@ class AsyncHistoryFinancialReader:
                     # 获取第一个.dat文件
                     dat_files = [f for f in zip_ref.namelist() if f.endswith('.dat')]
                     if not dat_files:
-                        logger.error(f"ZIP文件中没有.dat文件: {self.filepath}")
+                        logger.error("ZIP文件中没有.dat文件: %s", self.filepath, extra={"log_type": "SYSTEM"})
                         return pd.DataFrame()
 
                     # 读取第一个dat文件
@@ -602,11 +602,11 @@ class AsyncHistoryFinancialReader:
             # 转换为DataFrame
             df = pd.DataFrame(records)
 
-            logger.debug(f"成功读取财务数据: {len(df)}条, 文件={self.filepath.name}")
+            logger.debug("成功读取财务数据: %d条, 文件=%s", len(df), self.filepath.name)
             return df
 
         except Exception as e:
-            logger.error(f"读取财务数据失败: {e}")
+            logger.error("读取财务数据失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return pd.DataFrame()
 
     def _parse_financial_data(self, data: bytes) -> List[dict]:
@@ -622,7 +622,7 @@ class AsyncHistoryFinancialReader:
             # 财务数据格式非常复杂，包含多种报表类型
             # 这里提供一个基础框架，实际需要完整的解析逻辑
 
-            logger.warning("财务数据解析功能需要完整实现，当前为框架版本")
+            logger.warning("财务数据解析功能需要完整实现，当前为框架版本", extra={"log_type": "SYSTEM"})
 
             # 示例：假设数据是固定长度记录
             # 实际格式需要参考通达信财务数据格式文档
@@ -630,7 +630,7 @@ class AsyncHistoryFinancialReader:
             return records
 
         except Exception as e:
-            logger.error(f"解析财务数据失败: {e}")
+            logger.error("解析财务数据失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
 
         return records
 
@@ -660,7 +660,7 @@ class AsyncTdxExHqDayReader:
         """
         try:
             if not self.filepath.exists():
-                logger.error(f"文件不存在: {self.filepath}")
+                logger.error(f"文件不存在: {self.filepath}", extra={"log_type": "SYSTEM"})
                 return pd.DataFrame()
 
             # 🚀 使用native_iocp异步读取二进制文件（真异步，无线程池开销）
@@ -681,7 +681,7 @@ class AsyncTdxExHqDayReader:
             return df
 
         except Exception as e:
-            logger.error(f"读取扩展行情日线数据失败: {e}")
+            logger.error(f"读取扩展行情日线数据失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
             return pd.DataFrame()
 
     def _parse_exhq_day_data(self, data: bytes) -> List[dict]:
@@ -730,7 +730,7 @@ class AsyncTdxExHqDayReader:
                     })
 
         except Exception as e:
-            logger.error(f"解析扩展行情日线数据失败: {e}")
+            logger.error("解析扩展行情日线数据失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
 
         return records
 
@@ -759,7 +759,7 @@ class AsyncCustomerBlockReader:
         """
         try:
             if not self.filepath.exists():
-                logger.error(f"文件不存在: {self.filepath}")
+                logger.error(f"文件不存在: {self.filepath}", extra={"log_type": "SYSTEM"})
                 return pd.DataFrame()
 
             # 📝 自定义板块文件是文本格式（GBK编码），使用aiofiles
@@ -780,7 +780,7 @@ class AsyncCustomerBlockReader:
             return df
 
         except Exception as e:
-            logger.error(f"读取自定义板块数据失败: {e}")
+            logger.error(f"读取自定义板块数据失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
             return pd.DataFrame()
 
     def _parse_customer_block_data(self, content: str) -> List[dict]:
@@ -837,7 +837,7 @@ class AsyncCustomerBlockReader:
                 })
 
         except Exception as e:
-            logger.error(f"解析自定义板块数据失败: {e}")
+            logger.error(f"解析自定义板块数据失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
 
         return records
 

@@ -149,7 +149,7 @@ class OrderMonitor(QWidget):
 
         except Exception as e:
             # ✅ 使用logger，线程安全
-            logger.exception("订单事件处理失败: %s", e)
+            logger.error("❌ 订单事件处理失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
 
     def _update_order_ui(self, order_data: dict):
         """更新订单 UI（Qt 主线程，线程安全）.
@@ -177,7 +177,7 @@ class OrderMonitor(QWidget):
             self._update_table()
 
         except Exception as e:
-            logger.exception("订单UI更新失败: %s", e)
+            logger.error("❌ 订单UI更新失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
 
     def _format_direction(self, direction) -> str:
         """格式化方向.
@@ -331,7 +331,7 @@ class OrderMonitor(QWidget):
 
             return True
         except Exception as e:
-            logger.exception("导出CSV失败: %s", e)
+            logger.error("❌ 导出CSV失败: %s", e, exc_info=True, extra={"log_type": "USER_FEEDBACK"})
             return False
 
     def closeEvent(self, event):
@@ -475,7 +475,7 @@ class TradeMonitor(QWidget):
             self.trade_event_signal.emit(trade_data)
 
         except Exception as e:
-            logger.exception("成交事件处理失败: %s", e)
+            logger.error("❌ 成交事件处理失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
 
     def _update_trade_ui(self, trade_data: dict):
         """更新成交 UI（Qt 主线程，线程安全）.
@@ -495,7 +495,7 @@ class TradeMonitor(QWidget):
             self._update_statistics()
 
         except Exception as e:
-            logger.exception("成交UI更新失败: %s", e)
+            logger.error("❌ 成交UI更新失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
 
     def _format_direction(self, direction) -> str:
         """格式化方向.
@@ -615,7 +615,7 @@ class TradeMonitor(QWidget):
 
             return True
         except Exception as e:
-            logger.exception("导出CSV失败: %s", e)
+            logger.error("❌ 导出CSV失败: %s", e, exc_info=True, extra={"log_type": "USER_FEEDBACK"})
             return False
 
     def closeEvent(self, event):
@@ -774,7 +774,7 @@ class PositionMonitor(QWidget):
             self.position_event_signal.emit(position_data)
 
         except Exception as e:
-            logger.exception("持仓事件处理失败: %s", e)
+            logger.error("❌ 持仓事件处理失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
 
     def _update_position_ui(self, position_data: dict):
         """更新持仓 UI（Qt 主线程，线程安全）.
@@ -794,7 +794,7 @@ class PositionMonitor(QWidget):
             self._update_statistics()
 
         except Exception as e:
-            logger.exception("持仓UI更新失败: %s", e)
+            logger.error("❌ 持仓UI更新失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
 
     def _format_direction(self, direction) -> str:
         """格式化方向.
@@ -952,7 +952,7 @@ class PositionMonitor(QWidget):
 
             return True
         except Exception as e:
-            logger.exception("导出CSV失败: %s", e)
+            logger.error("❌ 导出CSV失败: %s", e, exc_info=True, extra={"log_type": "USER_FEEDBACK"})
             return False
 
     def closeEvent(self, event):
@@ -1162,7 +1162,7 @@ class AccountMonitor(QWidget):
             self.account_event_signal.emit(account_data)
 
         except Exception as e:
-            logger.exception("资金事件处理失败: %s", e)
+            logger.error("❌ 资金事件处理失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
 
     def _update_account_ui(self, account_data: dict):
         """更新资金 UI（Qt 主线程，线程安全）.
@@ -1186,7 +1186,7 @@ class AccountMonitor(QWidget):
             self._update_accounts_table()
 
         except Exception as e:
-            logger.exception("资金UI更新失败: %s", e)
+            logger.error("❌ 资金UI更新失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
 
     def _update_main_display(self, account_data: Dict[str, Any]):
         """更新主显示区域.
@@ -1326,7 +1326,7 @@ class AccountMonitor(QWidget):
 
             return True
         except Exception as e:
-            logger.exception("导出CSV失败: %s", e)
+            logger.error("❌ 导出CSV失败: %s", e, exc_info=True, extra={"log_type": "USER_FEEDBACK"})
             return False
 
     def closeEvent(self, event):

@@ -49,7 +49,12 @@ def async_timeit(func):
 
         # ✅ 慢查询告警（>5s）
         if elapsed > 5:
-            logger.warning("TDX慢查询: 函数=%s, 耗时=%.2fs", func.__name__, elapsed)
+            logger.warning(
+                "TDX慢查询警告: 函数=%s, 耗时=%.2fs",
+                func.__name__,
+                elapsed,
+                extra={"log_type": "SYSTEM"}
+            )
 
         return result
 
@@ -84,7 +89,12 @@ def sync_timeit(func):
 
         # ✅ 慢查询告警（>5s）
         if elapsed > 5:
-            logger.warning("TDX慢查询: 函数=%s, 耗时=%.2fs", func.__name__, elapsed)
+            logger.warning(
+                "TDX慢查询警告: 函数=%s, 耗时=%.2fs",
+                func.__name__,
+                elapsed,
+                extra={"log_type": "SYSTEM"}
+            )
 
         return result
 
@@ -176,7 +186,12 @@ def async_timeit_with_stats(func):
 
         # ✅ 慢查询告警（>5s）
         if elapsed > 5:
-            logger.warning("TDX慢查询: 函数=%s, 耗时=%.2fs", func.__name__, elapsed)
+            logger.warning(
+                "TDX慢查询警告: 函数=%s, 耗时=%.2fs",
+                func.__name__,
+                elapsed,
+                extra={"log_type": "SYSTEM"}
+            )
 
         return result
 

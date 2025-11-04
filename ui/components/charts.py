@@ -895,7 +895,7 @@ class IndicatorPlotWidget(QWidget):
             logger.debug("图表更新完成: 指标=%s", self.indicator_type)
 
         except Exception as e:
-            logger.exception("更新指标数据失败: 指标=%s, 错误=%s", self.indicator_type, e)
+            logger.error("❌ 更新指标数据失败: 指标=%s, 错误=%s", self.indicator_type, e, exc_info=True, extra={"log_type": "SYSTEM"})
 
     def _plot_macd(self, data: Dict[str, Any]):
         """绘制MACD指标.

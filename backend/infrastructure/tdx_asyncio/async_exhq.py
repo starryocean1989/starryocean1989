@@ -63,7 +63,7 @@ class AsyncTdxExHq_API(AsyncBaseSocketClient):
             return markets
 
         except Exception as e:
-            logger.error("获取扩展市场列表失败: %s", e)
+            logger.error("获取扩展市场列表失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return None
 
     async def get_instrument_count(self, market: int = 0) -> Optional[int]:
@@ -77,7 +77,7 @@ class AsyncTdxExHq_API(AsyncBaseSocketClient):
             # 注意：实际实现需要发送TDX协议请求
             # 这里提供接口框架，具体协议解析需要补充
 
-            logger.warning("get_instrument_count接口暂未完整实现，需补充TDX协议")
+            logger.warning("get_instrument_count接口暂未完整实现，需补充TDX协议", extra={"log_type": "SYSTEM"})
 
             # 模拟返回（实际需要发送0x2D协议请求）
             market_counts = {
@@ -94,7 +94,7 @@ class AsyncTdxExHq_API(AsyncBaseSocketClient):
                 return market_counts.get(market, 0)
 
         except Exception as e:
-            logger.error("获取品种数量失败: %s", e)
+            logger.error("获取品种数量失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return None
 
     async def get_instrument_bars(
@@ -111,7 +111,7 @@ class AsyncTdxExHq_API(AsyncBaseSocketClient):
         :return: K线数据列表
         """
         try:
-            logger.warning("get_instrument_bars接口暂未完整实现，需补充TDX协议")
+            logger.warning("get_instrument_bars接口暂未完整实现，需补充TDX协议", extra={"log_type": "SYSTEM"})
 
             # 实际实现需要：
             # 1. 构造0x2E协议请求包
@@ -128,7 +128,7 @@ class AsyncTdxExHq_API(AsyncBaseSocketClient):
             return []
 
         except Exception as e:
-            logger.error("获取K线数据失败: %s", e)
+            logger.error("获取K线数据失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return None
 
     async def get_instrument_quote(self, market: int, code: str) -> Optional[dict]:
@@ -140,7 +140,7 @@ class AsyncTdxExHq_API(AsyncBaseSocketClient):
         :return: 行情数据字典
         """
         try:
-            logger.warning("get_instrument_quote接口暂未完整实现，需补充TDX协议")
+            logger.warning("get_instrument_quote接口暂未完整实现，需补充TDX协议", extra={"log_type": "SYSTEM"})
 
             # 实际实现需要：
             # 1. 构造0x2F协议请求包
@@ -153,7 +153,7 @@ class AsyncTdxExHq_API(AsyncBaseSocketClient):
             return {}
 
         except Exception as e:
-            logger.error("获取实时行情失败: %s", e)
+            logger.error("获取实时行情失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return None
 
     async def get_instrument_info(self, market: int, code: str) -> Optional[dict]:
@@ -165,7 +165,7 @@ class AsyncTdxExHq_API(AsyncBaseSocketClient):
         :return: 品种信息字典
         """
         try:
-            logger.warning("get_instrument_info接口暂未完整实现，需补充TDX协议")
+            logger.warning("get_instrument_info接口暂未完整实现，需补充TDX协议", extra={"log_type": "SYSTEM"})
 
             logger.debug("获取品种信息: 市场=%d, 代码=%s", market, code)
 
@@ -178,7 +178,7 @@ class AsyncTdxExHq_API(AsyncBaseSocketClient):
             }
 
         except Exception as e:
-            logger.error("获取品种信息失败: %s", e)
+            logger.error("获取品种信息失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return None
 
     async def get_instrument_list(self, market: int, start: int = 0) -> Optional[List[dict]]:
@@ -190,7 +190,7 @@ class AsyncTdxExHq_API(AsyncBaseSocketClient):
         :return: 品种列表
         """
         try:
-            logger.warning("get_instrument_list接口暂未完整实现，需补充TDX协议")
+            logger.warning("get_instrument_list接口暂未完整实现，需补充TDX协议", extra={"log_type": "SYSTEM"})
 
             # 实际实现需要：
             # 1. 构造0x2C协议请求包
@@ -203,7 +203,7 @@ class AsyncTdxExHq_API(AsyncBaseSocketClient):
             return []
 
         except Exception as e:
-            logger.error("获取品种列表失败: %s", e)
+            logger.error("获取品种列表失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return None
 
     @staticmethod
@@ -227,7 +227,7 @@ class AsyncTdxExHq_API(AsyncBaseSocketClient):
         # 如果没有指定服务器，使用FUTURE_HOSTS第一个
         if server is None:
             if not FUTURE_HOSTS:
-                logger.error("未配置期货服务器")
+                logger.error("未配置期货服务器", extra={"log_type": "SYSTEM"})
                 return None
             # 使用第一个服务器（去掉描述字段）
             _, ip, port = FUTURE_HOSTS[0]

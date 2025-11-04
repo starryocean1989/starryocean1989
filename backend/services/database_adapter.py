@@ -566,7 +566,7 @@ class DatabaseManager:
                     self._connection.close()
                     logger.info("✅ 数据库连接已关闭")
                 except Exception as e:
-                    logger.warning("关闭数据库连接时出错：%s", e)
+                    logger.warning("关闭数据库连接时出错：%s", e, extra={"log_type": "SYSTEM"})
                 finally:
                     self._connection = None
 
@@ -632,7 +632,7 @@ class DatabaseManager:
         elapsed = time.time() - start_time
         if elapsed > 1.0:  # 超过1秒的慢查询
             logger_alert.warning(
-                "慢查询检测: 耗时=%.2fs, 结果数=%d, SQL=%s", elapsed, len(result), query[:200]
+                "慢查询检测: 耗时=%.2fs, 结果数=%d, SQL=%s", elapsed, len(result), query[:200], extra={"log_type": "ALERT"}
             )
 
         return result
@@ -666,7 +666,7 @@ class DatabaseManager:
         elapsed = time.time() - start_time
         if elapsed > 1.0:  # 超过1秒的慢查询
             logger_alert.warning(
-                "慢更新检测: 耗时=%.2fs, 影响行数=%d, SQL=%s", elapsed, rowcount, query[:200]
+                "慢更新检测: 耗时=%.2fs, 影响行数=%d, SQL=%s", elapsed, rowcount, query[:200], extra={"log_type": "ALERT"}
             )
 
         return rowcount
@@ -727,7 +727,7 @@ class DatabaseManager:
             logger.info("下载历史记录已保存：%s", history_data.get("task_id"))
             return True
         except Exception as e:
-            logger.error("保存下载历史失败：%s", e, exc_info=True)
+            logger.error("保存下载历史失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return False
 
     def get_download_history(self, limit: int = 20) -> List[Dict[str, Any]]:
@@ -752,7 +752,7 @@ class DatabaseManager:
             results = self.execute_query(query, (limit,))
             return results
         except Exception as e:
-            logger.error("获取下载历史失败：%s", e, exc_info=True)
+            logger.error("获取下载历史失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return []
 
     def delete_download_history(self, record_id: int) -> bool:
@@ -771,7 +771,7 @@ class DatabaseManager:
             logger.info("下载历史记录已删除：ID=%d", record_id)
             return True
         except Exception as e:
-            logger.error("删除下载历史失败：%s", e, exc_info=True)
+            logger.error("删除下载历史失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return False
 
     def cleanup_old_download_history(self, keep_count: int = 20) -> int:
@@ -799,7 +799,7 @@ class DatabaseManager:
                 logger.info("清理旧下载历史：删除了 %d 条记录", count)
             return count
         except Exception as e:
-            logger.error("清理旧下载历史失败：%s", e, exc_info=True)
+            logger.error("清理旧下载历史失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return 0
 
     # ========== 本地数据索引管理 ==========
@@ -834,7 +834,7 @@ class DatabaseManager:
             logger.info("本地数据索引已更新：%d 个品种", len(symbols))
             return True
         except Exception as e:
-            logger.error("更新本地数据索引失败：%s", e, exc_info=True)
+            logger.error("更新本地数据索引失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return False
 
     def get_local_data_index(self) -> List[str]:
@@ -849,7 +849,7 @@ class DatabaseManager:
             results = self.execute_query(query)
             return [row["symbol"] for row in results]
         except Exception as e:
-            logger.error("获取本地数据索引失败：%s", e, exc_info=True)
+            logger.error("获取本地数据索引失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return []
 
     # ========== 失效品种管理 ==========
@@ -884,7 +884,7 @@ class DatabaseManager:
             logger.info("失效品种池已更新：%d 个品种", len(symbols))
             return True
         except Exception as e:
-            logger.error("更新失效品种池失败：%s", e, exc_info=True)
+            logger.error("更新失效品种池失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return False
 
     def get_invalid_symbols(self) -> List[str]:
@@ -899,7 +899,7 @@ class DatabaseManager:
             results = self.execute_query(query)
             return [row["symbol"] for row in results]
         except Exception as e:
-            logger.error("获取失效品种列表失败：%s", e, exc_info=True)
+            logger.error("获取失效品种列表失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return []
 
     def clear_invalid_symbols(self) -> bool:
@@ -915,7 +915,7 @@ class DatabaseManager:
             logger.info("失效品种池已清空")
             return True
         except Exception as e:
-            logger.error("清空失效品种池失败：%s", e, exc_info=True)
+            logger.error("清空失效品种池失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return False
 
 
@@ -979,11 +979,11 @@ class SQLiteManager:
             return True
 
         except ImportError:
-            logger.warning("⚠️ vnpy_sqlite未安装，SQLite功能不可用")
-            logger.warning("   请安装: pip install git+https://github.com/vnpy/vnpy_sqlite.git")
+            logger.warning("⚠️ vnpy_sqlite未安装，SQLite功能不可用", extra={"log_type": "SYSTEM"})
+            logger.warning("   请安装: pip install git+https://github.com/vnpy/vnpy_sqlite.git", extra={"log_type": "SYSTEM"})
             return False
         except Exception as e:
-            logger.error("❌ SQLite数据库初始化失败：%s", e, exc_info=True)
+            logger.error("❌ SQLite数据库初始化失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return False
 
     def _create_tables(self):
@@ -1113,7 +1113,7 @@ class SQLiteManager:
             logger.info("✅ 数据表结构创建完成")
 
         except Exception as e:
-            logger.error("创建数据表失败：%s", e, exc_info=True)
+            logger.error("创建数据表失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
 
     # ========== 配置管理 ==========
 
@@ -1143,7 +1143,7 @@ class SQLiteManager:
 
             return True
         except Exception as e:
-            logger.error("保存配置失败：%s", e)
+            logger.error("保存配置失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return False
 
     def get_config(self, module: str, key: str, default: str = "") -> str:
@@ -1170,7 +1170,7 @@ class SQLiteManager:
 
             return result[0] if result else default
         except Exception as e:
-            logger.error("获取配置失败：%s", e)
+            logger.error("获取配置失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return default
 
     def get_module_configs(self, module: str) -> Dict[str, str]:
@@ -1195,7 +1195,7 @@ class SQLiteManager:
 
             return {row[0]: row[1] for row in results}
         except Exception as e:
-            logger.error("获取模块配置失败：%s", e)
+            logger.error("获取模块配置失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return {}
 
     # ========== 交易记录管理 ==========
@@ -1237,7 +1237,7 @@ class SQLiteManager:
 
             return True
         except Exception as e:
-            logger.error("保存交易记录失败：%s", e)
+            logger.error("保存交易记录失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return False
 
     def get_trades(
@@ -1302,7 +1302,7 @@ class SQLiteManager:
 
             return trades
         except Exception as e:
-            logger.error("查询交易记录失败：%s", e)
+            logger.error("查询交易记录失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return []
 
     # ========== 回测结果管理 ==========
@@ -1344,7 +1344,7 @@ class SQLiteManager:
 
             return True
         except Exception as e:
-            logger.error("保存回测结果失败：%s", e)
+            logger.error("保存回测结果失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return False
 
     def get_backtest_results(
@@ -1397,7 +1397,7 @@ class SQLiteManager:
 
             return backtests
         except Exception as e:
-            logger.error("查询回测结果失败：%s", e)
+            logger.error("查询回测结果失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return []
 
     # ========== 系统日志管理 ==========
@@ -1428,7 +1428,7 @@ class SQLiteManager:
 
             return True
         except Exception as e:
-            logger.error("保存日志失败：%s", e)
+            logger.error("保存日志失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return False
 
     # ========== 通用方法 ==========
@@ -1440,7 +1440,7 @@ class SQLiteManager:
                 self.database.close()
                 logger.info("SQLite数据库连接已关闭")
             except Exception as e:
-                logger.error("关闭数据库连接失败：%s", e)
+                logger.error("关闭数据库连接失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
 
         self._initialized = False
 

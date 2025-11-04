@@ -157,7 +157,11 @@ except ImportError as e:
     HAS_CHART_WIZARD = False
     VnpyChartWizard = None
     ChartWizardEngine = None
-    logger.warning(f"⚠️ vnpy_chartwizard 不可用: {e}")
+    logger.warning(
+        "UI vnpy_chartwizard不可用: 错误=%s",
+        str(e),
+        extra={"log_type": "SYSTEM"}
+    )
 
 
 class SymbolCompleterLineEdit(QLineEdit):
@@ -199,12 +203,18 @@ class SymbolCompleterLineEdit(QLineEdit):
 
             service_mgr = get_service_manager()
             if not service_mgr:
-                logger.warning("服务管理器不可用")
+                logger.warning(
+                    "UI服务管理器不可用: 模块=get_service_manager",
+                    extra={"log_type": "SYSTEM"}
+                )
                 return
 
             data_center = service_mgr.get_service("data_center_service")
             if not data_center:
-                logger.warning("数据中心服务不可用")
+                logger.warning(
+                    "UI数据中心服务不可用: 模块=data_center_service",
+                    extra={"log_type": "SYSTEM"}
+                )
                 return
 
             # 从缓存获取品种列表
@@ -231,7 +241,12 @@ class SymbolCompleterLineEdit(QLineEdit):
                 logger.debug("品种缓存不存在（后端可能正在初始化）")
 
         except Exception as e:
-            logger.error(f"加载品种列表失败: {e}", exc_info=True)
+            logger.error(
+                "UI加载品种列表失败: 错误=%s",
+                str(e),
+                extra={"log_type": "SYSTEM"},
+                exc_info=True
+            )
 
     def get_symbol_code(self) -> str:
         """获取输入的品种代码（去除名称和交易所）.
@@ -319,25 +334,168 @@ class ChartWizardEnhanced(BaseWidget):
         self.waiting_label: Optional[QLabel] = None
         self.waiting_progress: Optional[Any] = None
 
-        # 调用父类初始化
+        # 调用父类初始化（这会调用 setup_ui()）
+        # 必须在最开始调用，以初始化 _logger 等基础属性
         super().__init__(parent, "K线图表")
 
-        # 🔧 优化启动时序：先只获取引擎引用，不检查数据接口
-        # 数据接口检查将在 UnifiedDataManager 就绪后执行
+        # 🔧 关键修复：在 setup_ui() 调用后立即初始化引擎
+        # 这样 setup_ui() 虽然可能显示等待UI，但引擎初始化后可以立即重建
         self._initialize_engines()
+
+        # 🔧 关键修复：检查数据状态
+        # 如果数据已经就绪（事件可能已经发布了），设置标志
+        if not self._data_ready and self.main_engine:
+            self._check_data_ready_fallback()
 
         # 订阅UnifiedDataManager就绪事件（必须在获取event_engine之后）
         if self.event_engine:
             try:
-                # 🔧 修复：架构v3.0重构后，data_module模块已移除
-                # 事件通过UnifiedDataManager直接发布，不在这里订阅
-                # 如果需要事件通知，应该通过事件引擎直接订阅
-                self.logger.debug("✅ UnifiedDataManager事件订阅（架构v3.0已重构）")
+                # 🔧 修复：注册 UnifiedDataManager 就绪事件监听器
+                from vnpy.event import Event
+
+                # 事件名称：与后端发布的事件名称一致
+                from backend.infrastructure.data_module_vnpy.core_engine import ChinaStockEngine
+                EVENT_UNIFIED_DATA_MANAGER_READY = ChinaStockEngine.EVENT_UNIFIED_DATA_MANAGER_READY
+
+                # 🔧 关键修复：先检查事件是否已经被触发过（后备机制）
+                # 如果MainEngine已经有数据接口，说明UnifiedDataManager已经就绪
+                if self.main_engine and hasattr(self.main_engine, "get_all_contracts"):
+                    try:
+                        contracts = self.main_engine.get_all_contracts()
+                        if contracts and len(contracts) > 0:
+                            self.logger.info(
+                                f"⚡ 检测到MainEngine已有数据接口（{len(contracts)}个品种），"
+                                "说明UnifiedDataManager已就绪，手动触发初始化"
+                            )
+                            # 手动设置数据就绪标志
+                            self._data_ready = True
+                            self._data_mode = "online"
+                            # 立即触发数据组件初始化（不等待事件）
+                            QTimer.singleShot(100, self._initialize_data_components)
+                    except Exception as e:
+                        self.logger.debug(f"检查MainEngine接口失败: {e}")
+
+                # 注册事件监听器（即使手动触发了，也要注册，以防万一）
+                self.event_engine.register(EVENT_UNIFIED_DATA_MANAGER_READY, self._on_data_manager_ready)
+                self.logger.info("✅ 已注册 UnifiedDataManager 就绪事件监听器")
             except Exception as e:
-                self.logger.warning(f"订阅UnifiedDataManager事件失败: {e}")
+                self.logger.warning(
+                    "UI订阅UnifiedDataManager事件失败: 错误=%s",
+                    str(e),
+                    extra={"log_type": "SYSTEM"}
+                )
+        else:
+            self.logger.warning(
+                "UI EventEngine不可用，无法订阅事件，将依赖延迟检查机制",
+                extra={"log_type": "SYSTEM"}
+            )
 
         # 等待UnifiedDataManager就绪事件（通过_on_data_manager_ready回调处理）
         self.logger.info("等待UnifiedDataManager就绪事件...")
+
+        # 🔧 新增：引擎初始化完成后立即尝试重建UI（如果数据已就绪）
+        # 如果 setup_ui() 中因为时序问题没有创建图表UI，这里会重建
+        if self._data_ready and self.main_engine and self.event_engine:
+            self.logger.info("✅ 引擎初始化后数据已就绪，检查是否需要重建UI")
+            QTimer.singleShot(100, self._check_and_rebuild_ui)
+
+    def _check_data_ready_fallback(self):
+        """检查数据就绪状态的后备机制（当事件监听失败时使用）."""
+        try:
+            if not self.main_engine:
+                return
+
+            # 检查 MainEngine 是否有数据接口
+            if hasattr(self.main_engine, "get_all_contracts"):
+                try:
+                    contracts = self.main_engine.get_all_contracts()
+                    if contracts and len(contracts) > 0:
+                        self.logger.info(f"✅ 数据接口验证成功，发现 {len(contracts)} 个品种")
+                        self._data_ready = True
+                        self._data_mode = "online"  # 假设有数据就是在线模式
+                        self.initialization_state = "ready"
+                        
+                        # 🔧 关键修复：检测到数据就绪后，立即触发UI重建
+                        # 使用 QTimer.singleShot 确保在主线程中执行UI操作
+                        QTimer.singleShot(100, self._check_and_rebuild_ui)
+                        return
+                    else:
+                        self.logger.debug("MainEngine.get_all_contracts() 返回空列表")
+                except Exception as e:
+                    self.logger.debug(f"验证 MainEngine.get_all_contracts() 失败: {e}")
+
+            # 如果无法验证，等待更长时间
+            self.logger.debug("数据状态检查失败，继续等待事件")
+
+        except Exception as e:
+            self.logger.debug(f"数据就绪检查失败: {e}")
+
+    def _check_and_rebuild_ui(self):
+        """检查数据状态并重建UI（延迟检查）- 修复版."""
+        try:
+            self.logger.info("🔍 延迟检查UI状态...")
+            
+            # 🔧 修复1：检查数据就绪状态
+            if not self._data_ready:
+                self.logger.debug("数据未就绪，跳过UI重建检查")
+                return
+            
+            # 🔧 修复2：检查引擎就绪状态
+            if not self.main_engine or not self.event_engine:
+                self.logger.warning("⚠️ 引擎未就绪，延迟500ms重试")
+                QTimer.singleShot(500, self._check_and_rebuild_ui)
+                return
+            
+            # 🔧 修复3：检查布局状态
+            layout = self.layout()
+            if not layout or not isinstance(layout, QVBoxLayout):
+                self.logger.warning("⚠️ 布局不可用，延迟500ms重试")
+                QTimer.singleShot(500, self._check_and_rebuild_ui)
+                return
+            
+            # 🔧 修复4：严格检查图表UI状态
+            has_chart_wizard = False
+            try:
+                if self.chart_wizard is not None:
+                    # 检查chart_wizard是否有效（不仅存在，还要有父组件且可见）
+                    has_valid_parent = self.chart_wizard.parent() is not None
+                    is_in_layout = any(
+                        layout.itemAt(i).widget() == self.chart_wizard
+                        for i in range(layout.count())
+                    )
+                    has_chart_wizard = has_valid_parent and is_in_layout
+            except Exception as e:
+                self.logger.debug(f"检查chart_wizard失败: {e}")
+                has_chart_wizard = False
+            
+            # 🔧 修复5：检查等待UI状态（waiting_label可能已被删除）
+            has_waiting_ui = False
+            try:
+                if self.waiting_label is not None:
+                    # 检查waiting_label是否仍在布局中
+                    is_in_layout = any(
+                        layout.itemAt(i).widget() == self.waiting_label
+                        for i in range(layout.count())
+                    )
+                    has_waiting_ui = is_in_layout and self.waiting_label.isVisible()
+            except Exception as e:
+                self.logger.debug(f"检查waiting_label失败: {e}")
+                has_waiting_ui = False
+            
+            self.logger.info(
+                f"📊 UI状态检查: 数据就绪={self._data_ready}, "
+                f"图表UI存在={has_chart_wizard}, 等待UI可见={has_waiting_ui}"
+            )
+            
+            # 🔧 修复6：决策逻辑 - 只有在需要时才重建
+            if not has_chart_wizard or has_waiting_ui:
+                self.logger.info("✅ 检测到需要重建UI（图表UI不存在或等待UI可见）")
+                self._rebuild_ui_with_chart()
+            else:
+                self.logger.info("✅ UI已就绪，无需重建")
+                
+        except Exception as e:
+            self.logger.error(f"❌ 延迟检查UI失败: {e}", exc_info=True)
 
     def _initialize_engines(self):
         """初始化VnPy引擎引用（不检查数据接口，等待UnifiedDataManager就绪后再检查）."""
@@ -364,7 +522,7 @@ class ChartWizardEnhanced(BaseWidget):
             self.logger.error(f"❌ 初始化VnPy引擎失败: {e}", exc_info=True)
 
     def setup_ui(self):
-        """设置用户界面."""
+        """设置用户界面 - 修复版（解决初始化时序问题）."""
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(5)
@@ -374,19 +532,33 @@ class ChartWizardEnhanced(BaseWidget):
             self._setup_error_ui(main_layout)
             return
 
-        # 检查引擎是否可用
+        # 🔧 关键修复1：确保引擎已初始化
         if not self.main_engine or not self.event_engine:
-            # 显示等待UI（等待UnifiedDataManager就绪事件）
-            self._setup_waiting_ui(main_layout)
-            return
+            self._initialize_engines()
 
-        # 引擎已就绪，但需要等待UnifiedDataManager就绪事件
+        # 🔧 关键修复2：检查数据状态（可能事件已经收到了）
         if not self._data_ready:
-            self._setup_waiting_ui(main_layout)
-            return
+            # 尝试直接检查数据状态（作为事件监听的后备机制）
+            self._check_data_ready_fallback()
 
-        # 引擎和数据都已就绪，直接创建图表UI
-        self._setup_chart_ui(main_layout)
+        # 🔧 关键修复3：根据数据和引擎状态决定初始UI
+        self.logger.info(
+            f"📊 setup_ui状态检查: 数据就绪={self._data_ready}, "
+            f"引擎就绪={self.main_engine is not None and self.event_engine is not None}"
+        )
+        
+        if self._data_ready and self.main_engine and self.event_engine:
+            # 数据和引擎都就绪，直接创建图表UI
+            self.logger.info("✅ 数据和引擎已就绪，直接创建图表UI")
+            self._setup_chart_ui(main_layout)
+        else:
+            # 显示等待UI（等待UnifiedDataManager就绪事件）
+            self.logger.info("⚠️ 数据或引擎未就绪，显示等待UI")
+            self._setup_waiting_ui(main_layout)
+            
+            # 🔧 修复4：延迟检查（以防事件在setup_ui之前到达）
+            # 注意：这个检查会在 _check_and_rebuild_ui 中防止重复执行
+            QTimer.singleShot(1000, self._check_and_rebuild_ui)
 
     def _setup_waiting_ui(self, layout: QVBoxLayout):
         """设置等待UI界面.
@@ -1880,12 +2052,20 @@ class ChartWizardEnhanced(BaseWidget):
             self.show_error(f"添加KDJ副图失败: {e}")
 
     def _on_data_manager_ready(self, event):
-        """UnifiedDataManager就绪回调（事件驱动）."""
+        """UnifiedDataManager就绪回调（事件驱动）- 诊断增强版."""
         try:
+            self.logger.info("🔔 ===== 收到 UnifiedDataManager 就绪事件 =====")
+            self.logger.info(f"📊 事件数据: {event.data}")
+            
             contract_count = event.data.get("contract_count", 0)
             mode = event.data.get("mode", "unknown")
 
             self.logger.info(f"✅ UnifiedDataManager已就绪：{contract_count}个品种（{mode}模式）")
+
+            # 🔧 修复：确保引擎可用（可能还未初始化）
+            if not self.main_engine or not self.event_engine:
+                self.logger.warning("⚠️ 引擎未就绪，尝试初始化...")
+                self._initialize_engines()
 
             # 🔧 优化：验证数据接口是否已注入
             if self.main_engine and hasattr(self.main_engine, "get_all_contracts"):
@@ -1901,41 +2081,84 @@ class ChartWizardEnhanced(BaseWidget):
                         )
                 except Exception as e:
                     self.logger.warning(f"⚠️ 验证 MainEngine.get_all_contracts() 失败: {e}")
+            else:
+                self.logger.warning("⚠️ MainEngine 没有 get_all_contracts 方法")
 
             self._data_ready = True
             self._data_mode = mode
             self.initialization_state = "ready"
+            
+            self.logger.info(f"🛠️ 设置数据就绪标志: _data_ready=True, _data_mode={mode}")
 
             # 根据模式初始化UI
             if mode == "offline" and contract_count == 0:
-                self.logger.warning("离线模式且无本地数据，功能受限")
+                self.logger.warning("⚠️ 离线模式且无本地数据，功能受限")
                 # 可以在这里显示友好的空状态提示
             else:
                 # 初始化数据相关组件
+                self.logger.info("🚀 调用 _initialize_data_components...")
                 self._initialize_data_components()
+            
+            self.logger.info("🔔 ===== UnifiedDataManager 就绪事件处理完成 =====")
 
         except Exception as e:
-            self.logger.error(f"处理UnifiedDataManager就绪事件失败: {e}", exc_info=True)
+            self.logger.error(f"❌ 处理UnifiedDataManager就绪事件失败: {e}", exc_info=True)
 
     def _initialize_data_components(self):
-        """初始化需要数据的UI组件（事件驱动调用）."""
+        """初始化需要数据的UI组件（事件驱动调用）- 修复版."""
         if not self._data_ready:
+            self.logger.debug("数据未就绪，跳过数据组件初始化")
             return
 
         try:
+            self.logger.info("📍 开始初始化数据组件...")
+            
             # 加载品种列表到叠加选择器
             self._load_symbols_to_overlay_combo()
+            
             # 注册vnpy事件监听器（监听实时数据）
             self._register_vnpy_events()
 
-            # 如果当前是等待UI，重建为完整图表UI
-            if self.waiting_label and self.waiting_label.isVisible():
+            # 🔧 关键修复：简化UI重建逻辑，只在明确需要时重建
+            layout = self.layout()
+            if not layout:
+                self.logger.warning("⚠️ 布局未就绪，延迟500ms重试")
+                QTimer.singleShot(500, self._initialize_data_components)
+                return
+            
+            if not isinstance(layout, QVBoxLayout):
+                self.logger.error("❌ 布局类型错误，无法继续")
+                return
+            
+            # 🔧 修复：检查图表UI是否存在且有效
+            has_valid_chart_ui = False
+            try:
+                if self.chart_wizard is not None:
+                    has_parent = self.chart_wizard.parent() is not None
+                    is_in_layout = any(
+                        layout.itemAt(i).widget() == self.chart_wizard
+                        for i in range(layout.count())
+                    )
+                    has_valid_chart_ui = has_parent and is_in_layout
+            except Exception as e:
+                self.logger.debug(f"检查chart_wizard失败: {e}")
+            
+            self.logger.info(
+                f"📊 检查UI状态: 数据就绪={self._data_ready}, "
+                f"模式={self._data_mode}, 图表UI有效={has_valid_chart_ui}"
+            )
+            
+            # 🔧 关键修复：只在图表UI无效时才重建
+            if not has_valid_chart_ui:
+                self.logger.info("✅ 检测到需要重建图表UI")
                 self._rebuild_ui_with_chart()
+            else:
+                self.logger.info("✅ 图表UI已就绪，无需重建")
 
             self.logger.info(f"✅ 数据组件初始化完成（{self._data_mode}模式）")
 
         except Exception as e:
-            self.logger.error(f"初始化数据组件失败: {e}", exc_info=True)
+            self.logger.error(f"❌ 初始化数据组件失败: {e}", exc_info=True)
 
     def _register_vnpy_events(self):
         """注册vnpy事件监听器."""
@@ -2025,29 +2248,60 @@ class ChartWizardEnhanced(BaseWidget):
             pass
 
     def _rebuild_ui_with_chart(self):
-        """重建UI为完整图表界面."""
+        """重建UI为完整图表界面（修复版）."""
         try:
+            self.logger.info("🔧 开始重建UI：移除等待界面，创建图表界面")
+            
             # 清空当前UI
             layout = self.layout()
-            if layout:
-                while layout.count():
-                    child = layout.takeAt(0)
-                    widget = child.widget()
-                    if widget is not None:
-                        widget.deleteLater()
-
-            # 重新创建图表UI
-            if isinstance(layout, QVBoxLayout):
-                self._setup_chart_ui(layout)
-            else:
-                self.logger.error("布局类型不匹配，无法重建UI")
+            if not layout:
+                self.logger.error("❌ 布局为空，无法重建UI")
                 return
-
+            
+            # 🔧 关键修复1：立即清除等待UI引用，避免后续检查失效
+            self.waiting_label = None
+            self.waiting_progress = None
+            
+            # 🔧 关键修复2：同步删除所有子组件（使用setParent(None)立即删除）
+            widgets_to_delete = []
+            while layout.count():
+                child = layout.takeAt(0)
+                widget = child.widget()
+                if widget is not None:
+                    widgets_to_delete.append(widget)
+                    widget.setParent(None)  # 立即从父组件移除
+                    widget.hide()  # 立即隐藏
+            
+            # 延迟删除（避免Qt崩溃）
+            for widget in widgets_to_delete:
+                widget.deleteLater()
+            
+            # 🔧 关键修复3：确保布局正确类型
+            if not isinstance(layout, QVBoxLayout):
+                self.logger.error("❌ 布局类型不是QVBoxLayout，无法重建UI")
+                return
+            
+            # 🔧 关键修复4：验证引擎就绪后再创建图表UI
+            if not self.main_engine or not self.event_engine:
+                self.logger.warning("⚠️ 引擎未就绪，延迟500ms重试重建UI")
+                QTimer.singleShot(500, self._rebuild_ui_with_chart)
+                return
+            
+            # 重新创建图表UI
+            self.logger.info("📍 创建图表UI组件...")
+            self._setup_chart_ui(layout)
+            
+            # 🔧 关键修复5：验证图表UI是否成功创建
+            if self.chart_wizard is None:
+                self.logger.error("❌ 图表UI创建失败，chart_wizard为None")
+                self.show_error("图表组件创建失败，请重试")
+                return
+            
             self.logger.info("✅ 图表界面重建完成")
             self.show_info("后端初始化完成，图表功能已就绪")
 
         except Exception as e:
-            self.logger.error(f"重建UI失败: {e}", exc_info=True)
+            self.logger.error(f"❌ 重建UI失败: {e}", exc_info=True)
             self.show_error(f"重建UI失败: {e}")
 
     def on_close(self):

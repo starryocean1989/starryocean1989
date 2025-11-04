@@ -9,6 +9,10 @@
 """
 
 import platform
+import logging
+
+# 创建logger
+logger = logging.getLogger(__name__)
 
 # 平台检测
 IS_WINDOWS = platform.system() == "Windows"
@@ -40,6 +44,7 @@ if IS_WINDOWS:
         __all__ = ["IPC_AVAILABLE"]
 
         def _raise_import_error():
+            logger.warning("IPC C扩展未编译，请运行: python setup.py build_ext --inplace in backend/infrastructure/native_ipc/", extra={"log_type": "SYSTEM"})
             raise ImportError(
                 "IPC C extension not compiled. "
                 "Please run: python setup.py build_ext --inplace in backend/infrastructure/native_ipc/"
@@ -57,6 +62,7 @@ else:
     __all__ = ["IPC_AVAILABLE"]
 
     def _raise_platform_error():
+        logger.critical("IPC异步通信仅支持Windows平台", extra={"log_type": "SYSTEM"})
         raise RuntimeError("IPC async only supports Windows platform")
 
     AsyncIPCPipe = _raise_platform_error

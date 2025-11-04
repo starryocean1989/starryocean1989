@@ -167,8 +167,8 @@ class NetworkTimeSync:
         """
         # ntplib不可用时直接返回失败
         if not NTPLIB_AVAILABLE or self.ntp_client is None:
-            logger.warning("⚠️ ntplib不可用，无法进行网络时间同步")
-            logger.warning("⚠️ 将降级使用系统时间（可能不准确）")
+            logger.warning("⚠️ ntplib不可用，无法进行网络时间同步", extra={"log_type": "SYSTEM"})
+            logger.warning("⚠️ 将降级使用系统时间（可能不准确）", extra={"log_type": "SYSTEM"})
             return False, None
 
         with self._sync_lock:
@@ -222,7 +222,8 @@ class NetworkTimeSync:
             # 所有服务器都失败 - 简化错误信息
             self._sync_failures += 1
             logger.warning(
-                f"⚠️ 时间同步失败，已尝试 {len(servers_to_try)} 个NTP服务器"
+                f"⚠️ 时间同步失败，已尝试 {len(servers_to_try)} 个NTP服务器",
+                extra={"log_type": "SYSTEM"}
             )
             # 只在调试模式下显示详细错误信息
             if logger.isEnabledFor(logging.DEBUG):
@@ -319,7 +320,7 @@ class NetworkTimeSync:
             return False, None
             
         except ImportError:
-            logger.warning("⚠️ requests或dateutil不可用，HTTP时间服务无法使用")
+            logger.warning("⚠️ requests或dateutil不可用，HTTP时间服务无法使用", extra={"log_type": "SYSTEM"})
             return False, None
 
     def get_real_datetime(self) -> datetime:
@@ -356,7 +357,7 @@ class NetworkTimeSync:
             return datetime.now() + timedelta(seconds=offset)
         else:
             # 同步失败，降级使用系统时间
-            logger.warning("⚠️ 时间同步失败，降级使用系统时间（可能不准确）")
+            logger.warning("⚠️ 时间同步失败，降级使用系统时间（可能不准确）", extra={"log_type": "SYSTEM"})
             return datetime.now()
 
     def get_real_date(self) -> date:
@@ -448,15 +449,32 @@ class DailyCacheManager:
             # 确保目录存在
             cache_file.parent.mkdir(parents=True, exist_ok=True)
 
-            # 写入文件
-            with open(cache_file, 'w', encoding='utf-8') as f:
-                json.dump(cache_obj, f, ensure_ascii=False, indent=2)
+            # 写入文件（使用原子写入，确保文件完整性）
+            import tempfile
+            import os
+            temp_file = cache_file.with_suffix('.tmp')
+            try:
+                with open(temp_file, 'w', encoding='utf-8') as f:
+                    json.dump(cache_obj, f, ensure_ascii=False, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())  # 强制刷新到磁盘
+                
+                # 原子性替换
+                temp_file.replace(cache_file)
+            except Exception as e:
+                # 如果写入失败，删除临时文件
+                if temp_file.exists():
+                    try:
+                        temp_file.unlink()
+                    except:
+                        pass
+                raise
 
             logger.debug(f"✓ 缓存已保存: {cache_file.name} (日期: {real_date})")
             return True
 
         except Exception as e:
-            logger.error(f"✗ 缓存保存失败: {cache_file.name}, 错误: {e}", exc_info=True)
+            logger.error(f"✗ 缓存保存失败: {cache_file.name}, 错误: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
             return False
 
     @staticmethod
@@ -486,7 +504,7 @@ class DailyCacheManager:
 
             # 验证日期
             if not cache_date_str:
-                logger.warning(f"⚠️ 缓存缺少日期字段: {cache_file.name}")
+                logger.warning(f"⚠️ 缓存缺少日期字段: {cache_file.name}", extra={"log_type": "SYSTEM"})
                 return data, "", False
 
             # 获取真实日期
@@ -507,7 +525,7 @@ class DailyCacheManager:
             return data, cache_date_str, is_valid
 
         except Exception as e:
-            logger.error(f"✗ 缓存加载失败: {cache_file.name}, 错误: {e}", exc_info=True)
+            logger.error(f"✗ 缓存加载失败: {cache_file.name}, 错误: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
             return None, "", False
 
     @staticmethod
@@ -551,7 +569,7 @@ class DailyCacheManager:
             return True
 
         except Exception as e:
-            logger.error(f"✗ 缓存保存失败（异步）: {cache_file.name}, 错误: {e}", exc_info=True)
+            logger.error(f"✗ 缓存保存失败（异步）: {cache_file.name}, 错误: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
             return False
 
     @staticmethod
@@ -587,7 +605,7 @@ class DailyCacheManager:
 
             # 验证日期
             if not cache_date_str:
-                logger.warning(f"⚠️ 缓存缺少日期字段: {cache_file.name}")
+                logger.warning(f"⚠️ 缓存缺少日期字段: {cache_file.name}", extra={"log_type": "SYSTEM"})
                 return data, "", False
 
             # 获取真实日期
@@ -608,7 +626,7 @@ class DailyCacheManager:
             return data, cache_date_str, is_valid
 
         except Exception as e:
-            logger.error(f"✗ 缓存加载失败（异步）: {cache_file.name}, 错误: {e}", exc_info=True)
+            logger.error(f"✗ 缓存加载失败（异步）: {cache_file.name}, 错误: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
             return None, "", False
 
     @staticmethod
@@ -629,7 +647,7 @@ class DailyCacheManager:
                 return True
             return False
         except Exception as e:
-            logger.error(f"✗ 缓存清理失败: {cache_file.name}, 错误: {e}", exc_info=True)
+            logger.error(f"✗ 缓存清理失败: {cache_file.name}, 错误: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
             return False
 
     @staticmethod
@@ -654,7 +672,7 @@ class DailyCacheManager:
             return meta.get("cache_date")
 
         except Exception as e:
-            logger.error(f"✗ 获取缓存日期失败: {cache_file.name}, 错误: {e}")
+            logger.error(f"✗ 获取缓存日期失败: {cache_file.name}, 错误: {e}", extra={"log_type": "SYSTEM"})
             return None
 
 
@@ -717,7 +735,7 @@ class ConfigManager:
                     break
 
             if self._config_file is None:
-                logger.warning("⚠️ 未找到配置文件，使用默认配置")
+                logger.warning("⚠️ 未找到配置文件，使用默认配置", extra={"log_type": "SYSTEM"})
                 self._config = self._get_default_config()
                 return
 
@@ -728,7 +746,7 @@ class ConfigManager:
             logger.info(f"✓ 配置文件已加载: {self._config_file}")
 
         except Exception as e:
-            logger.error(f"✗ 配置加载失败: {e}, 使用默认配置", exc_info=True)
+            logger.error(f"✗ 配置加载失败: {e}, 使用默认配置", exc_info=True, extra={"log_type": "SYSTEM"})
             self._config = self._get_default_config()
 
     def _get_default_config(self) -> Dict[str, Any]:
@@ -775,7 +793,8 @@ class ConfigManager:
 
             return value if value is not None else default
 
-        except Exception:
+        except Exception as e:
+            logger.warning(f"⚠️ [ConfigManager] 获取配置失败: {key}, 错误: {e}, 使用默认值", extra={"log_type": "SYSTEM"})
             return default
 
     def set(self, key: str, value: Any) -> bool:
@@ -807,7 +826,7 @@ class ConfigManager:
             return True
 
         except Exception as e:
-            logger.error(f"✗ 配置更新失败: {key}, 错误: {e}", exc_info=True)
+            logger.error(f"✗ 配置更新失败: {key}, 错误: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
             return False
 
     def get_cache_dir(self) -> Path:
@@ -917,7 +936,7 @@ class ConfigManager:
             logger.debug(f"✓ 批量配置已更新: {len(config_data)} 项")
             return True
         except Exception as e:
-            logger.error(f"✗ 批量配置更新失败: {e}", exc_info=True)
+            logger.error(f"✗ 批量配置更新失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
             return False
 
     def reload_config(self) -> bool:
@@ -939,7 +958,7 @@ class ConfigManager:
             return True
 
         except Exception as e:
-            logger.error(f"✗ 配置重新加载失败: {e}", exc_info=True)
+            logger.error(f"✗ 配置重新加载失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
             return False
 
     async def _notify_config_update(self) -> None:
@@ -950,7 +969,7 @@ class ConfigManager:
 
             # 发送配置更新通知
             if self._ipc_pipe is None:
-                logger.warning("⚠️ IPC管道未初始化，跳过配置更新通知")
+                logger.warning("⚠️ IPC管道未初始化，跳过配置更新通知", extra={"log_type": "SYSTEM"})
                 return
 
             update_data = {
@@ -962,7 +981,7 @@ class ConfigManager:
             logger.debug("✓ 配置更新已通知到其他进程")
 
         except Exception as e:
-            logger.error(f"✗ 配置更新通知失败: {e}", exc_info=True)
+            logger.error(f"✗ 配置更新通知失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
 
 
 # ==============================================================================
@@ -999,7 +1018,7 @@ class EventPublisher:
             self.event_engine.put(event)
             logger.debug(f"✓ 事件已发布: {event_type}")
         except Exception as e:
-            logger.error(f"✗ 事件发布失败: {event_type}, 错误: {e}", exc_info=True)
+            logger.error(f"✗ 事件发布失败: {event_type}, 错误: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
 
 
 class ValidationEventPublisher(EventPublisher):
@@ -1201,7 +1220,7 @@ class CacheValidationWorker(QObject):
             logger.debug("✅ 缓存验证与感知流程完成")
             
         except Exception as e:
-            logger.exception("❌ 缓存验证失败: %s", e)
+            logger.error("❌ 缓存验证失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             self.validation_error.emit(str(e))
     
     def _on_progress(self, description: str, percent: int):
@@ -1217,7 +1236,7 @@ class CacheValidationWorker(QObject):
     def cancel(self):
         """取消验证（外部调用）"""
         self._cancelled = True
-        logger.warning("⚠️ 缓存验证被取消")
+        logger.warning("⚠️ 缓存验证被取消", extra={"log_type": "SYSTEM"})
 
 
 # ==============================================================================
@@ -1264,6 +1283,7 @@ class ChinaStockEngine:
     EVENT_IPO_CACHE_UPDATED = "eIPOCacheUpdated"
     EVENT_VALIDATION_COMPLETED = "eValidationCompleted"
     EVENT_DATA_METRICS_UPDATED = "eDataMetricsUpdated"
+    EVENT_UNIFIED_DATA_MANAGER_READY = "eUnifiedDataManagerReady"  # 🔧 新增：UnifiedDataManager就绪事件
 
     def __init__(self, main_engine, event_engine: EventEngine):
         """
@@ -1322,12 +1342,11 @@ class ChinaStockEngine:
             try:
                 logger.info("开始初始化数据引擎...")
 
-                # 1. 同步网络时间
-                logger.info("1/7 同步网络时间...")
-                self.time_sync.sync_time()
-
-                # 2. 初始化子组件
-                logger.info("2/7 初始化子组件...")
+                # 注意：网络时间同步已移至阶段3的8步验证流程（步骤2）中执行
+                # 这里不再执行网络时间同步，确保单一事实原则
+                
+                # 1. 初始化子组件
+                logger.info("1/6 初始化子组件...")
                 self._initialize_components()
 
                 # 3. 标记就绪
@@ -1336,7 +1355,7 @@ class ChinaStockEngine:
                 return True
 
             except Exception as e:
-                logger.error(f"✗ 引擎初始化失败: {e}", exc_info=True)
+                logger.critical(f"🔥 引擎初始化失败: {e}", exc_info=True, extra={"log_type": "ALERT"})
                 return False
 
     def _initialize_components(self) -> None:
@@ -1383,7 +1402,7 @@ class ChinaStockEngine:
             return result
 
         except Exception as e:
-            logger.error(f"✗ 重新加载品种列表失败: {e}", exc_info=True)
+            logger.error(f"✗ 重新加载品种列表失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
             return {"success": False, "error": str(e)}
 
     def download_incremental(
@@ -1427,7 +1446,7 @@ class ChinaStockEngine:
             return result
 
         except Exception as e:
-            logger.error(f"✗ 增量下载失败: {e}", exc_info=True)
+            logger.error(f"✗ 增量下载失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
             return {"success": False, "error": str(e)}
 
     def query_data(
@@ -1467,7 +1486,7 @@ class ChinaStockEngine:
             return df
 
         except Exception as e:
-            logger.error(f"✗ 数据查询失败: {symbol}/{interval}, 错误: {e}", exc_info=True)
+            logger.error(f"✗ 数据查询失败: symbol={symbol}, interval={interval}, 错误: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
             return None
 
     def healthcheck(self) -> Dict[str, Any]:
@@ -1492,7 +1511,7 @@ class ChinaStockEngine:
             return health_status
 
         except Exception as e:
-            logger.error(f"✗ 健康检查失败: {e}", exc_info=True)
+            logger.error(f"✗ 健康检查失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
             return {"engine_ready": False, "error": str(e)}
 
     # ========================================
@@ -1513,7 +1532,7 @@ class ChinaStockEngine:
         self._offline_reason = reason
 
         if offline:
-            logger.warning(f"⚠️ 系统已进入离线降级模式: {reason}")
+            logger.warning(f"⚠️ 系统已进入离线降级模式: {reason}", extra={"log_type": "ALERT"})
             # 发布离线模式事件
             self.event_engine.put(Event("eSystemOfflineMode", {
                 "offline": True,
@@ -1579,10 +1598,11 @@ class ChinaStockEngine:
                 step_callback(num, name, result)
 
         try:
-            # 🎯 使用STAGE_NODE标记流程开始
-            stage_logger.info("📍 开始缓存验证与感知流程（8步）", extra={"log_type": "STAGE_NODE"})
+            # 注意：流程开始标题已在CacheValidatorWorker中输出，这里不再重复输出
+            # 🎯 直接开始步骤1
             
             # ========== 步骤1: 服务器池缓存验证与测速 ==========
+            step1_start_time = time.time()
             stage_logger.info("┌─ 步骤1: 服务器池验证与测速 ─┐", extra={"log_type": "STAGE_NODE"})
             _progress("步骤1/8: 验证服务器池缓存并测速...", 5)
             step1_result = self._validate_server_pool_and_test_speed(stage_logger)
@@ -1592,7 +1612,8 @@ class ChinaStockEngine:
             if step1_result.get("offline_mode"):
                 offline_mode = True
                 offline_reason = step1_result.get("offline_reason", "未知原因")
-                stage_logger.error("│ ❌ 所有TDX服务器不可用", extra={"log_type": "STAGE_NODE"})
+                stage_logger.critical("│ 🔥 所有TDX服务器不可用，系统无法获取数据", extra={"log_type": "STAGE_NODE"})
+                logger.critical(f"🔥 所有TDX服务器不可用，系统无法获取数据: {offline_reason}", extra={"log_type": "ALERT"})
                 stage_logger.warning("│ ⚠️ 进入离线降级模式", extra={"log_type": "STAGE_NODE"})
                 stage_logger.info("└─────────────────────────────┘", extra={"log_type": "STAGE_NODE"})
                 stage_logger.info("⏭️ 跳过步骤2-7，直接执行步骤8", extra={"log_type": "STAGE_NODE"})
@@ -1613,30 +1634,33 @@ class ChinaStockEngine:
                 stage_logger.info("│   - 队列压力监控: 正常/高/临界三级", extra={"log_type": "STAGE_NODE"})
                 stage_logger.info("└─────────────────────────────┘", extra={"log_type": "STAGE_NODE"})
             
-            step1_time = (time.time() - start_time) * 1000
+            step1_time = (time.time() - step1_start_time) * 1000
             stage_logger.info(f"✅ 步骤1完成 ({step1_time:.0f}ms) [进度: 12%]", extra={"log_type": "STAGE_NODE"})
 
             if not goto_step_8:
                 # ========== 步骤2: 获取当前日期(网络时间) ==========
+                step2_start_time = time.time()
                 stage_logger.info("┌─ 步骤2: 获取当前日期（网络时间）─┐", extra={"log_type": "STAGE_NODE"})
                 _progress("步骤2/8: 获取当前日期(网络时间)...", 15)
                 step2_result = self._get_current_date(stage_logger)
                 _step_done(2, "获取当前日期", step2_result)
                 current_date = step2_result.get("current_date")
                 
-                step2_time = (time.time() - start_time) * 1000
+                step2_time = (time.time() - step2_start_time) * 1000
                 stage_logger.info(f"✅ 步骤2完成 ({step2_time:.0f}ms) [进度: 25%]", extra={"log_type": "STAGE_NODE"})
 
                 # ========== 步骤3: 验证交易日历缓存 ==========
+                step3_start_time = time.time()
                 stage_logger.info("┌─ 步骤3: 验证交易日历缓存 ─┐", extra={"log_type": "STAGE_NODE"})
                 _progress("步骤3/8: 验证交易日历缓存...", 25)
                 step3_result = self._validate_trade_calendar_cache(current_date, stage_logger)
                 _step_done(3, "验证交易日历缓存", step3_result)
                 
-                step3_time = (time.time() - start_time) * 1000
+                step3_time = (time.time() - step3_start_time) * 1000
                 stage_logger.info(f"✅ 步骤3完成 ({step3_time:.0f}ms) [进度: 37%]", extra={"log_type": "STAGE_NODE"})
 
                 # ========== 步骤4: 验证品种列表缓存 ==========
+                step4_start_time = time.time()
                 stage_logger.info("┌─ 步骤4: 验证品种列表缓存 ─┐", extra={"log_type": "STAGE_NODE"})
                 _progress("步骤4/8: 验证品种列表缓存...", 35)
                 step4_result = self._validate_symbol_list_cache(current_date, stage_logger)
@@ -1664,7 +1688,7 @@ class ChinaStockEngine:
                                 stage_logger.info(f"│   - {category}: {count}", extra={"log_type": "STAGE_NODE"})
                             stage_logger.info(f"│   - 总计: {total_count}品种", extra={"log_type": "STAGE_NODE"})
                     except Exception as e:
-                        logger.warning(f"获取品种统计失败: {e}")
+                        logger.warning(f"获取品种统计失败: {e}", extra={"log_type": "SYSTEM"})
                 
                 # 确保SymbolLoader已初始化并显示统计
                 if self.symbol_loader is None:
@@ -1686,37 +1710,41 @@ class ChinaStockEngine:
                                 total_count += count
                             stage_logger.info(f"│   - 总计: {total_count}品种", extra={"log_type": "STAGE_NODE"})
                             self._symbol_stats_displayed = True
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"⚠️ [ChinaStockEngine] 显示品种统计失败: {e}", extra={"log_type": "SYSTEM"})
                         pass
                 
-                step4_time = (time.time() - start_time) * 1000
+                step4_time = (time.time() - step4_start_time) * 1000
                 stage_logger.info(f"✅ 步骤4完成 ({step4_time:.0f}ms) [进度: 50%]", extra={"log_type": "STAGE_NODE"})
 
                 # ========== 步骤5: 验证IPO日期缓存 ==========
+                step5_start_time = time.time()
                 stage_logger.info("┌─ 步骤5: 验证IPO日期缓存 ─┐", extra={"log_type": "STAGE_NODE"})
                 _progress("步骤5/8: 验证IPO日期缓存...", 50)
                 step5_result = self._validate_ipo_cache(current_date, stage_logger)
                 _step_done(5, "验证IPO日期缓存", step5_result)
                 
-                step5_time = (time.time() - start_time) * 1000
+                step5_time = (time.time() - step5_start_time) * 1000
                 stage_logger.info(f"✅ 步骤5完成 ({step5_time:.0f}ms) [进度: 62%]", extra={"log_type": "STAGE_NODE"})
 
                 # ========== 步骤6: 更新本地数据索引 ==========
+                step6_start_time = time.time()
                 stage_logger.info("┌─ 步骤6: 更新本地数据索引 ─┐", extra={"log_type": "STAGE_NODE"})
                 _progress("步骤6/8: 更新本地数据索引...", 65)
                 step6_result = self._update_local_data_index(stage_logger)
                 _step_done(6, "更新本地数据索引", step6_result)
                 
-                step6_time = (time.time() - start_time) * 1000
+                step6_time = (time.time() - step6_start_time) * 1000
                 stage_logger.info(f"✅ 步骤6完成 ({step6_time:.0f}ms) [进度: 75%]", extra={"log_type": "STAGE_NODE"})
 
                 # ========== 步骤7: 检查数据更新状态 ==========
+                step7_start_time = time.time()
                 stage_logger.info("┌─ 步骤7: 检查数据更新状态 ─┐", extra={"log_type": "STAGE_NODE"})
                 _progress("步骤7/8: 检查数据更新状态...", 75)
                 step7_result = self._check_data_update_status(stage_logger)
                 _step_done(7, "检查数据更新状态", step7_result)
                 
-                step7_time = (time.time() - start_time) * 1000
+                step7_time = (time.time() - step7_start_time) * 1000
                 stage_logger.info(f"✅ 步骤7完成 ({step7_time:.0f}ms) [进度: 87%]", extra={"log_type": "STAGE_NODE"})
 
             # ========== 步骤8: 启动文件监控 ==========
@@ -1746,7 +1774,7 @@ class ChinaStockEngine:
             }
 
         except Exception as e:
-            logger.exception("❌ 缓存验证与感知失败: %s", e)
+            logger.error("❌ 缓存验证与感知失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return {
                 "success": False,
                 "offline_mode": False,
@@ -1782,17 +1810,39 @@ class ChinaStockEngine:
             ipv4_total = stats_before.get("ipv4_total", 0)
             ipv6_total = stats_before.get("ipv6_total", 0)
             
-            # 🔧 修复：启动时总是执行测速（确保输出与标准示例一致）
-            # 执行IPv4服务器测速
-            if ipv4_total > 0:
-                stage_logger.info(f"│ ⏳ 正在测速IPv4服务器池...（{ipv4_total}个服务器）", extra={"log_type": "STAGE_NODE"})
+            # 🚀 优化1：检查缓存是否为当天，如果是则跳过测速
+            cache_file = pool_manager._cache_file
+            cache_valid_today = False
+            if cache_file and cache_file.exists():
+                try:
+                    cached_data, cache_date, is_valid = DailyCacheManager.load_with_validation(cache_file)
+                    if is_valid and cached_data is not None:
+                        cache_valid_today = True
+                        stage_logger.info(
+                            f"│ ✅ 服务器池缓存有效（日期: {cache_date}），跳过测速",
+                            extra={"log_type": "STAGE_NODE"}
+                        )
+                        # 如果缓存中有服务器数据，恢复服务器状态
+                        if isinstance(cached_data, dict):
+                            ipv4_servers_data = cached_data.get("ipv4_servers", [])
+                            ipv6_servers_data = cached_data.get("ipv6_servers", [])
+                            # 确保服务器状态已恢复（_load_servers已在初始化时完成）
+                except Exception as e:
+                    logger.debug(f"检查缓存失败，将执行测速: {e}")
+                    cache_valid_today = False
             
-            # 执行IPv6服务器测速
-            if ipv6_total > 0:
-                stage_logger.info(f"│ ⏳ 正在测速IPv6服务器池...（{ipv6_total}个服务器）", extra={"log_type": "STAGE_NODE"})
-            
-            # 执行服务器测速（多进程）
-            pool_manager.test_servers(max_workers=4)
+            # 如果缓存不是当天的，执行测速
+            if not cache_valid_today:
+                # 执行IPv4服务器测速
+                if ipv4_total > 0:
+                    stage_logger.info(f"│ ⏳ 正在测速IPv4服务器池...（{ipv4_total}个服务器）", extra={"log_type": "STAGE_NODE"})
+                
+                # 执行IPv6服务器测速
+                if ipv6_total > 0:
+                    stage_logger.info(f"│ ⏳ 正在测速IPv6服务器池...（{ipv6_total}个服务器）", extra={"log_type": "STAGE_NODE"})
+                
+                # 执行服务器测速（多进程）
+                pool_manager.test_servers(max_workers=4)
             
             # 获取测速结果统计
             stats = pool_manager.get_stats()
@@ -1848,7 +1898,8 @@ class ChinaStockEngine:
             
             # 判断是否需要进入离线模式
             if not ipv4_available and not ipv6_available:
-                stage_logger.error("❌ 所有TDX服务器不可用", extra={"log_type": "STAGE_NODE"})
+                stage_logger.critical("🔥 所有TDX服务器不可用，系统无法获取数据", extra={"log_type": "STAGE_NODE"})
+                logger.critical("🔥 所有TDX服务器不可用，系统无法获取数据", extra={"log_type": "ALERT"})
                 return {
                     "success": False,
                     "ipv4_available": False,
@@ -1867,7 +1918,7 @@ class ChinaStockEngine:
             }
 
         except Exception as e:
-            logger.exception("❌ 服务器池验证失败: %s", e)
+            logger.error("❌ 服务器池验证失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return {
                 "success": False,
                 "ipv4_available": False,
@@ -1877,13 +1928,34 @@ class ChinaStockEngine:
             }
 
     def _get_current_date(self, stage_logger) -> Dict[str, Any]:
-        """步骤2: 获取当前日期(使用网络时间)"""
+        """步骤2: 获取当前日期(使用网络时间)
+        
+        职责：执行网络时间同步（单一事实原则：网络时间同步的唯一执行点）
+        """
         try:
             stage_logger.info("│ ⏳ 正在同步网络时间...", extra={"log_type": "STAGE_NODE"})
+            # 执行网络时间同步（单一事实原则：这是网络时间同步的唯一执行点）
+            success, offset = self.time_sync.sync_time()
+            
+            if success and offset is not None:
+                abs_offset = abs(offset)
+                # 统一格式：始终显示为毫秒，符合设计文档要求
+                abs_offset_ms = abs_offset * 1000
+                stage_logger.info(
+                    f"│ ✅ 网络时间同步成功，偏差 {abs_offset_ms:.1f}毫秒",
+                    extra={"log_type": "STAGE_NODE"}
+                )
+            else:
+                stage_logger.info(
+                    "│ ⚠️ 网络时间同步失败，将使用系统时间",
+                    extra={"log_type": "STAGE_NODE"}
+                )
+            
+            # 获取网络时间日期
             current_date = self.time_sync.get_real_date()
             # 确保日期格式为字符串
             current_date_str = current_date.isoformat() if hasattr(current_date, 'isoformat') else str(current_date)
-            stage_logger.info(f"│ ✅ 网络时间同步成功: {current_date_str}", extra={"log_type": "STAGE_NODE"})
+            stage_logger.info(f"│ ✅ 当前日期（网络时间）: {current_date_str}", extra={"log_type": "STAGE_NODE"})
             stage_logger.info("└─────────────────────────────┘", extra={"log_type": "STAGE_NODE"})
 
             return {
@@ -1891,10 +1963,10 @@ class ChinaStockEngine:
                 "current_date": current_date
             }
         except Exception as e:
-            logger.exception("❌ 获取当前日期失败: %s", e)
+            logger.error("❌ 获取当前日期失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             # 降级使用系统时间
             current_date = date.today()
-            logger.warning(f"⚠️ 降级使用系统时间: {current_date}")
+            logger.warning(f"⚠️ 降级使用系统时间: {current_date}", extra={"log_type": "SYSTEM"})
 
             return {
                 "success": False,
@@ -1903,7 +1975,7 @@ class ChinaStockEngine:
             }
 
     def _validate_trade_calendar_cache(self, current_date, stage_logger) -> Dict[str, Any]:
-        """步骤3: 验证交易日历缓存"""
+        """步骤3: 验证交易日历缓存（无效或不存在时自动生成并保存）"""
         try:
             stage_logger.info("│ ⏳ 检查交易日历缓存...", extra={"log_type": "STAGE_NODE"})
             cache_file = self.config_manager.get_cache_dir() / "trade_calendar.json"
@@ -1918,11 +1990,39 @@ class ChinaStockEngine:
                 stage_logger.info("└─────────────────────────────┘", extra={"log_type": "STAGE_NODE"})
                 return {"success": True, "cache_valid": True}
             else:
-                logger.warning("⚠️ 交易日历缓存失效，需要重新下载")
-                return {"success": False, "cache_valid": False, "action_needed": "download"}
+                # 缓存失效或不存在，需要重新生成并保存
+                logger.warning("⚠️ 交易日历缓存失效或不存在，开始生成并保存...", extra={"log_type": "SYSTEM"})
+                stage_logger.info("│ ⏳ 正在生成交易日历缓存...", extra={"log_type": "STAGE_NODE"})
+                
+                # 使用TradingCalendar获取交易日历数据
+                from backend.infrastructure.tdx_asyncio.calendar import TradingCalendar
+                import asyncio
+                
+                calendar = TradingCalendar()
+                
+                # 异步获取交易日历（从当前年份开始）
+                # 注意：TradingCalendar.get_trading_calendar() 内部会自动保存到缓存文件
+                # 这里只需要调用它，不需要再次保存
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    calendar_df = loop.run_until_complete(calendar.get_trading_calendar(start_year=current_date.year))
+                    
+                    # TradingCalendar.get_trading_calendar() 内部已经保存到缓存文件
+                    # 不需要再次保存，避免重复保存
+                    cache_count = len(calendar_df) if calendar_df is not None and not calendar_df.empty else 0
+                    logger.info(f"✅ 交易日历缓存已生成并保存: {cache_file} ({cache_count}条)")
+                    stage_logger.info(f"│ ✅ 交易日历缓存已生成并保存（{cache_count}条）", extra={"log_type": "STAGE_NODE"})
+                    stage_logger.info("└─────────────────────────────┘", extra={"log_type": "STAGE_NODE"})
+                    
+                    return {"success": True, "cache_valid": True, "cache_generated": True}
+                finally:
+                    loop.close()
 
         except Exception as e:
-            logger.exception("❌ 验证交易日历缓存失败: %s", e)
+            logger.error("❌ 验证交易日历缓存失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            stage_logger.info(f"│ ❌ 生成交易日历缓存失败: {e}", extra={"log_type": "STAGE_NODE"})
+            stage_logger.info("└─────────────────────────────┘", extra={"log_type": "STAGE_NODE"})
             return {"success": False, "error": str(e)}
 
     def _validate_symbol_list_cache(self, current_date, stage_logger) -> Dict[str, Any]:
@@ -1933,7 +2033,7 @@ class ChinaStockEngine:
 
             # 检查缓存是否存在
             if not cache_file.exists():
-                logger.warning("⚠️ 品种列表缓存不存在，需要重新加载")
+                logger.warning("⚠️ 品种列表缓存不存在，需要重新加载", extra={"log_type": "SYSTEM"})
                 return {"success": False, "cache_valid": False, "cache_missing": True}
 
             # 验证缓存有效性
@@ -1959,81 +2059,284 @@ class ChinaStockEngine:
                     self.symbol_loader = SymbolLoader(self.event_engine)
                     # 从缓存数据加载到SymbolLoader
                     if data and isinstance(data, dict):
-                        self.symbol_loader._classified = data
+                        # 处理不同的缓存格式
+                        if "data" in data and isinstance(data["data"], dict):
+                            self.symbol_loader.classified_symbols = data["data"]
+                        elif "classified" in data and isinstance(data["classified"], dict):
+                            self.symbol_loader.classified_symbols = data["classified"]
+                        else:
+                            # 直接是分类字典
+                            self.symbol_loader.classified_symbols = data
                 
                 stage_logger.info("│ ✅ SymbolLoader初始化完成", extra={"log_type": "STAGE_NODE"})
                 
                 # 从实际数据获取分类数量
                 if data and isinstance(data, dict):
-                    # data是分类字典: {"上证A股": [...], "深证A股": [...], ...}
+                    # data可能是分类字典: {"上证A股": [...], "深证A股": [...], ...}
+                    # 或者包含data字段: {"data": {"上证A股": [...], ...}}
+                    # 或者包含classified字段: {"classified": {"上证A股": [...], ...}}
+                    if "data" in data and isinstance(data["data"], dict):
+                        classified = data["data"]
+                    elif "classified" in data and isinstance(data["classified"], dict):
+                        classified = data["classified"]
+                    else:
+                        # 直接是分类字典
+                        classified = data
+                    
+                    if not isinstance(classified, dict):
+                        logger.warning("⚠️ 缓存数据格式错误，需要重新加载", extra={"log_type": "SYSTEM"})
+                        is_valid = False
+                    else:
+                        categories = ["上证A股", "深证A股", "北证A股", "T+0基金", "可转债"]
+                        total_count = 0
+                        for category in categories:
+                            count = len(classified.get(category, []))
+                            total_count += count
+                            stage_logger.info(f"│   - {category}: {count}", extra={"log_type": "STAGE_NODE"})
+                        stage_logger.info(f"│   - 总计: {total_count}品种", extra={"log_type": "STAGE_NODE"})
+                        
+                        # 检查关键分类是否为空，如果为空则重新加载
+                        key_categories = ["北证A股", "T+0基金", "可转债"]
+                        missing_categories = [cat for cat in key_categories if len(classified.get(cat, [])) == 0]
+                        if missing_categories:
+                            logger.warning(f"⚠️ 缓存中关键分类为空: {missing_categories}，需要重新加载", extra={"log_type": "SYSTEM"})
+                            stage_logger.info(f"│ ⚠️ 缓存中关键分类为空: {', '.join(missing_categories)}，需要重新加载", extra={"log_type": "STAGE_NODE"})
+                            is_valid = False
+                else:
+                    # 降级：使用默认值
+                    total_count = data.get("_meta", {}).get("total_count", 0) if isinstance(data, dict) else 0
+                    stage_logger.info(f"│   - 总计: {total_count}品种", extra={"log_type": "STAGE_NODE"})
+                    is_valid = False
+                
+                if is_valid:
+                    stage_logger.info("└─────────────────────────────┘", extra={"log_type": "STAGE_NODE"})
+                    return {"success": True, "cache_valid": True, "total_count": total_count}
+            # 缓存失效或数据不完整，需要重新加载
+            if not is_valid:
+                logger.warning("⚠️ 品种列表缓存失效，需要重新加载", extra={"log_type": "SYSTEM"})
+                stage_logger.info("│ ⚠️ 品种列表缓存失效，需要重新加载", extra={"log_type": "STAGE_NODE"})
+                
+                # 重新加载品种列表
+                if self.symbol_loader is None:
+                    from .data_acquisition import SymbolLoader
+                    self.symbol_loader = SymbolLoader(self.event_engine)
+                
+                # 强制重新加载并分类
+                classified = self.symbol_loader.reload_and_classify(force_reload=True)
+                
+                if classified:
                     categories = ["上证A股", "深证A股", "北证A股", "T+0基金", "可转债"]
                     total_count = 0
                     for category in categories:
-                        count = len(data.get(category, []))
+                        count = len(classified.get(category, []))
                         total_count += count
                         stage_logger.info(f"│   - {category}: {count}", extra={"log_type": "STAGE_NODE"})
+                    
+                    # 检查关键分类是否为空，如果为空则输出明确的警告
+                    key_categories = ["北证A股", "T+0基金", "可转债"]
+                    missing_categories = [cat for cat in key_categories if len(classified.get(cat, [])) == 0]
+                    if missing_categories:
+                        # 检查TDX目录配置
+                        tdx_dir = self.config_manager.get_tdx_dir()
+                        if not tdx_dir or not tdx_dir.exists():
+                            logger.warning(f"⚠️ 关键分类为空: {missing_categories}，TDX目录未配置或不存在: {tdx_dir}", extra={"log_type": "SYSTEM"})
+                            stage_logger.info(f"│ ⚠️ 关键分类为空: {', '.join(missing_categories)}（TDX目录未配置或不存在，请在配置文件中设置 paths.tdx_dir）", extra={"log_type": "STAGE_NODE"})
+                        else:
+                            # TDX目录存在，但配置文件可能不存在或无法解析
+                            tdx_config_files = {
+                                "北证A股": "addedcode_bj.cfg",
+                                "T+0基金": "spblock.dat",
+                                "可转债": "tdxstat2.cfg"
+                            }
+                            # 检查常见位置的配置文件（递归搜索无法精确预测位置）
+                            common_paths_exist = False
+                            for cat in missing_categories:
+                                config_file = tdx_config_files.get(cat)
+                                if config_file:
+                                    # 检查常见位置（T0002目录）
+                                    if cat == "T+0基金":
+                                        # spblock.dat可能在T0002/blocknew或T0002/block目录
+                                        block_new_path = tdx_dir / "T0002" / "blocknew" / config_file
+                                        block_path = tdx_dir / "T0002" / "block" / config_file
+                                        if block_new_path.exists() or block_path.exists():
+                                            common_paths_exist = True
+                                            break
+                                    else:
+                                        # addedcode_bj.cfg和tdxstat2.cfg可能在T0002目录
+                                        config_path = tdx_dir / "T0002" / config_file
+                                        if config_path.exists():
+                                            common_paths_exist = True
+                                            break
+                            
+                            if not common_paths_exist:
+                                # 配置文件不在常见位置，可能是路径配置不正确或文件不存在
+                                logger.warning(f"⚠️ 关键分类为空: {missing_categories}，TDX配置文件可能不存在或不在常见位置（请检查TDX目录配置：{tdx_dir}）", extra={"log_type": "SYSTEM"})
+                                stage_logger.info(f"│ ⚠️ 关键分类为空: {', '.join(missing_categories)}（TDX配置文件可能不存在或不在常见位置，请检查TDX目录配置）", extra={"log_type": "STAGE_NODE"})
+                            else:
+                                # 配置文件存在但解析失败或数据为空
+                                logger.warning(f"⚠️ 关键分类为空: {missing_categories}，TDX配置文件存在但解析失败或数据为空", extra={"log_type": "SYSTEM"})
+                                stage_logger.info(f"│ ⚠️ 关键分类为空: {', '.join(missing_categories)}（TDX配置文件存在但解析失败或数据为空）", extra={"log_type": "STAGE_NODE"})
+                    
                     stage_logger.info(f"│   - 总计: {total_count}品种", extra={"log_type": "STAGE_NODE"})
+                    stage_logger.info("└─────────────────────────────┘", extra={"log_type": "STAGE_NODE"})
+                    return {"success": True, "cache_valid": True, "total_count": total_count, "reloaded": True}
                 else:
-                    # 降级：使用默认值
-                    total_count = data.get("_meta", {}).get("total_count", 0) if data else 0
-                    stage_logger.info(f"│   - 总计: {total_count}品种", extra={"log_type": "STAGE_NODE"})
-                
-                stage_logger.info("└─────────────────────────────┘", extra={"log_type": "STAGE_NODE"})
-                return {"success": True, "cache_valid": True, "total_count": total_count}
-            else:
-                logger.warning("⚠️ 品种列表缓存失效，需要重新加载")
-                return {"success": False, "cache_valid": False, "cache_invalid": True}
+                    stage_logger.info("│ ❌ 重新加载失败", extra={"log_type": "STAGE_NODE"})
+                    stage_logger.info("└─────────────────────────────┘", extra={"log_type": "STAGE_NODE"})
+                    return {"success": False, "cache_valid": False, "cache_invalid": True, "reload_failed": True}
+            
+            return {"success": False, "cache_valid": False, "cache_invalid": True}
 
         except Exception as e:
-            logger.exception("❌ 验证品种列表缓存失败: %s", e)
+            logger.error("❌ 验证品种列表缓存失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return {"success": False, "error": str(e)}
 
-    def _validate_ipo_cache(self, current_date, stage_logger) -> Dict[str, Any]:
-        """步骤5: 验证IPO日期缓存（无效时增量下载，不存在时全部下载）
+    @staticmethod
+    def _extract_ipo_data_from_cache(cache_data: Dict[str, Any]) -> Dict[str, Optional[date]]:
+        """统一提取IPO日期数据（处理新旧两种缓存格式）
+        
+        Args:
+            cache_data: 缓存数据，可能是{"_meta": {...}, "data": {...}}或直接是{...}
+        
+        Returns:
+            标准化的IPO日期字典 {symbol: ipo_date}
+        """
+        from datetime import date as date_type
+        
+        if not cache_data or not isinstance(cache_data, dict):
+            return {}
+        
+        # 处理不同的缓存格式：可能是{"_meta": {...}, "data": {...}}或者直接是{...}
+        if "data" in cache_data and isinstance(cache_data["data"], dict):
+            raw_dates = cache_data["data"]
+        else:
+            # 直接是IPO日期字典格式（旧格式）
+            raw_dates = {k: v for k, v in cache_data.items() if k != "_meta"}
+        
+        # 将字符串格式的日期转换回date对象
+        ipo_dates = {}
+        for symbol, ipo_date_value in raw_dates.items():
+            if symbol == "_meta":
+                continue
+            if ipo_date_value is None:
+                ipo_dates[symbol] = None
+            elif isinstance(ipo_date_value, str):
+                try:
+                    ipo_dates[symbol] = date.fromisoformat(ipo_date_value)
+                except (ValueError, TypeError):
+                    logger.debug(f"IPO日期格式转换失败: {symbol} = {ipo_date_value}")
+                    ipo_dates[symbol] = None
+            elif isinstance(ipo_date_value, date_type):
+                ipo_dates[symbol] = ipo_date_value
+            else:
+                ipo_dates[symbol] = None
+        
+        return ipo_dates
 
-        注意: 不再使用IPO日期缓存对品种列表进行过滤
+    def _validate_ipo_cache(self, current_date, stage_logger) -> Dict[str, Any]:
+        """步骤5: 验证IPO日期缓存（无效或不存在时自动下载并保存）
+
+        注意: IPO日期缓存只用于保存，不再用于过滤品种列表
         """
         try:
             stage_logger.info("│ ⏳ 检查IPO日期缓存...", extra={"log_type": "STAGE_NODE"})
-            # IPO缓存通常由data_acquisition模块管理
-            # 这里只检查缓存是否存在和有效
             cache_file = self.config_manager.get_cache_dir() / "ipo_dates.json"
 
-            # 检查缓存是否存在
-            cache_exists = cache_file.exists()
+            # 检查缓存是否存在和有效
+            try:
+                data, cache_date, is_valid = DailyCacheManager.load_with_validation(cache_file)
+            except Exception as e:
+                # JSON解析失败，删除损坏的缓存文件
+                logger.warning(f"⚠️ IPO日期缓存文件损坏: {e}，将删除并重新下载", extra={"log_type": "SYSTEM"})
+                if cache_file.exists():
+                    try:
+                        cache_file.unlink()
+                        logger.info(f"✅ 已删除损坏的缓存文件: {cache_file}")
+                    except Exception as del_e:
+                        logger.error(f"❌ 删除损坏的缓存文件失败: {del_e}", extra={"log_type": "SYSTEM"})
+                data = None
+                is_valid = False
 
-            if not cache_exists:
-                logger.warning("⚠️ IPO日期缓存不存在，需要全部下载")
-                return {"success": False, "cache_missing": True, "action_needed": "download_all"}
-
-            # 检查缓存有效性
-            data, cache_date, is_valid = DailyCacheManager.load_with_validation(cache_file)
-
-            if is_valid:
-                # 使用实际的IPO缓存数据数量
-                ipo_count = 0
-                unlisted_count = 0
-                if data and isinstance(data, dict):
-                    ipo_count = len(data) if isinstance(data, dict) else 0
-                    # 统计待上市品种（简化处理，实际需要根据当前日期判断）
-                    # 这里假设有15个待上市品种（简化处理）
-                    unlisted_count = 0  # 实际需要根据日期判断
+            if is_valid and data and isinstance(data, dict):
+                # 使用统一的提取函数处理缓存格式
+                ipo_dates = self._extract_ipo_data_from_cache(data)
+                
+                # 统计IPO日期数量（包含所有品种，包括None值）
+                # 忠实保留：统计所有品种，包括未取到的空值（None）
+                ipo_count = len(ipo_dates)  # 总品种数（包括None值，忠实保留所有品种）
+                
+                # 输出统计信息（与设计文档格式一致）
+                # 显示总品种数（包含未取到的空值，忠实保留）
                 stage_logger.info(f"│ ✅ IPO日期缓存有效（{ipo_count}品种）", extra={"log_type": "STAGE_NODE"})
-                if unlisted_count > 0:
-                    stage_logger.info(f"│ ℹ️  待上市品种: {unlisted_count}个（已过滤）", extra={"log_type": "STAGE_NODE"})
                 stage_logger.info("└─────────────────────────────┘", extra={"log_type": "STAGE_NODE"})
-                return {"success": True, "cache_valid": True}
+                return {"success": True, "cache_valid": True, "ipo_count": ipo_count}
             else:
-                logger.warning("⚠️ IPO日期缓存失效，需要增量下载")
-                return {"success": False, "cache_invalid": True, "action_needed": "download_incremental"}
+                # 缓存失效或不存在，需要下载并保存
+                logger.warning("⚠️ IPO日期缓存失效或不存在，开始下载并保存...", extra={"log_type": "SYSTEM"})
+                stage_logger.info("│ ⏳ 正在下载IPO日期数据...", extra={"log_type": "STAGE_NODE"})
+                
+                # 获取所有品种代码（用于下载IPO日期）
+                if self.symbol_loader is None:
+                    from .data_acquisition import SymbolLoader
+                    self.symbol_loader = SymbolLoader(self.event_engine)
+                
+                # 确保品种列表已加载
+                if not self.symbol_loader.classified_symbols:
+                    self.symbol_loader.reload_and_classify()
+                
+                # 提取所有品种代码
+                all_symbols = self.symbol_loader.extract_all_codes()
+                
+                if not all_symbols:
+                    logger.warning("⚠️ 品种列表为空，无法下载IPO日期", extra={"log_type": "SYSTEM"})
+                    stage_logger.info("│ ⚠️ 品种列表为空，跳过IPO日期下载", extra={"log_type": "STAGE_NODE"})
+                    stage_logger.info("└─────────────────────────────┘", extra={"log_type": "STAGE_NODE"})
+                    return {"success": False, "error": "品种列表为空"}
+                
+                # 调用download_ipo_dates函数下载并保存IPO日期
+                from .data_acquisition import download_ipo_dates
+                
+                # 添加进度回调，显示下载进度（只输出到日志文件，不输出到terminal）
+                def progress_callback(current, total, message=""):
+                    """IPO下载进度回调（输出到日志文件）"""
+                    if current % 50 == 0 or current == total:  # 每50个品种或完成时报告一次
+                        percent = int((current / total) * 100) if total > 0 else 0
+                        # 使用logger而不是stage_logger，确保只输出到日志文件，不输出到terminal
+                        logger.info(f"IPO下载进度: {current}/{total} ({percent}%)")
+                
+                # 只输出到日志文件，不输出到terminal
+                logger.info(f"开始下载 {len(all_symbols)} 个品种的IPO日期...")
+                ipo_dates = download_ipo_dates(
+                    symbols=all_symbols,
+                    progress_callback=progress_callback,
+                    use_multiprocess=True,
+                    max_workers=4
+                )
+                
+                # download_ipo_dates函数内部已经保存到缓存文件，这里只需要验证
+                if ipo_dates:
+                    ipo_count = len(ipo_dates)
+                    logger.info(f"✅ IPO日期缓存已生成并保存: {cache_file} ({ipo_count}品种)")
+                    stage_logger.info(f"│ ✅ IPO日期缓存已生成并保存（{ipo_count}品种）", extra={"log_type": "STAGE_NODE"})
+                    stage_logger.info("└─────────────────────────────┘", extra={"log_type": "STAGE_NODE"})
+                    return {"success": True, "cache_valid": True, "cache_generated": True, "ipo_count": ipo_count}
+                else:
+                    logger.warning("⚠️ IPO日期下载失败，返回空结果", extra={"log_type": "SYSTEM"})
+                    stage_logger.info("│ ⚠️ IPO日期下载失败", extra={"log_type": "STAGE_NODE"})
+                    stage_logger.info("└─────────────────────────────┘", extra={"log_type": "STAGE_NODE"})
+                    return {"success": False, "error": "IPO日期下载失败"}
 
         except Exception as e:
-            logger.exception("❌ 验证IPO日期缓存失败: %s", e)
+            logger.error("❌ 验证IPO日期缓存失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            stage_logger.info(f"│ ❌ 验证IPO日期缓存失败: {e}", extra={"log_type": "STAGE_NODE"})
+            stage_logger.info("└─────────────────────────────┘", extra={"log_type": "STAGE_NODE"})
             return {"success": False, "error": str(e)}
 
     def _update_local_data_index(self, stage_logger) -> Dict[str, Any]:
-        """步骤6: 更新本地数据索引"""
+        """步骤6: 更新本地数据索引（异步优化版）"""
         try:
+            import threading
+            
             # 扫描本地数据文件（按照文档顺序，先扫描）
             stage_logger.info("│ ⏳ 扫描本地数据文件...", extra={"log_type": "STAGE_NODE"})
             
@@ -2043,62 +2346,101 @@ class ChinaStockEngine:
                 self.storage_manager = StorageManager()
             stage_logger.info("│ ✅ StorageManager初始化完成", extra={"log_type": "STAGE_NODE"})
             
-            # 获取实际统计数据（如果StorageManager已初始化）
-            valid_symbols = 0
-            invalid_symbols = 0
-            total_files = 0
-            total_size_gb = 0.0
-            symbol_count = 0
-            
-            # 获取品种总数（用于显示扫描进度）
-            if self.symbol_loader and hasattr(self.symbol_loader, 'get_all_classified'):
-                try:
-                    classified = self.symbol_loader.get_all_classified()
-                    if classified and isinstance(classified, dict):
-                        symbol_count = sum(len(symbols) for symbols in classified.values())
-                except:
-                    symbol_count = 0
-            
-            if symbol_count > 0:
-                stage_logger.info(f"│ ⏳ 本地数据索引扫描中...（{symbol_count}品种 × 2周期）", extra={"log_type": "STAGE_NODE"})
-            else:
-                stage_logger.info("│ ⏳ 本地数据索引扫描中...", extra={"log_type": "STAGE_NODE"})
-            
-            # 尝试从StorageManager获取统计数据
-            if self.storage_manager and hasattr(self.storage_manager, 'get_stats'):
-                try:
-                    stats = self.storage_manager.get_stats()
-                    if stats:
-                        valid_symbols = stats.get("valid_symbols", 0)
-                        invalid_symbols = stats.get("invalid_symbols", 0)
-                        total_files = stats.get("total_files", 0)
-                        total_size_bytes = stats.get("total_size_bytes", 0)
-                        total_size_gb = total_size_bytes / (1024 ** 3) if total_size_bytes else 0.0
-                except:
-                    pass
-            
-            stage_logger.info("│ ✅ 本地数据索引更新完成", extra={"log_type": "STAGE_NODE"})
-            if valid_symbols > 0:
-                stage_logger.info(f"│   - 有效品种: {valid_symbols}", extra={"log_type": "STAGE_NODE"})
-            if invalid_symbols > 0:
-                stage_logger.info(f"│   - 无效品种: {invalid_symbols}（已标记）", extra={"log_type": "STAGE_NODE"})
-            if total_files > 0:
-                stage_logger.info(f"│   - 总数据文件: {total_files}个", extra={"log_type": "STAGE_NODE"})
-            if total_size_gb > 0:
-                stage_logger.info(f"│   - 数据总量: {total_size_gb:.1f}GB", extra={"log_type": "STAGE_NODE"})
+            # 🚀 优化2：本地数据索引扫描改为后台异步执行
+            stage_logger.info(
+                "│ ⏳ 本地数据索引扫描中...（后台异步执行）",
+                extra={"log_type": "STAGE_NODE"}
+            )
+            stage_logger.info("│ ✅ 本地数据索引将在后台更新", extra={"log_type": "STAGE_NODE"})
             stage_logger.info("└─────────────────────────────┘", extra={"log_type": "STAGE_NODE"})
-            # 数据索引由StorageManager管理
-            # 这里只记录日志，实际索引更新在需要时进行
-            logger.info("✅ 本地数据索引将在需要时更新")
-            return {"success": True, "updated_count": 0}
+            
+            # 启动后台线程扫描本地数据
+            def scan_in_background():
+                """在后台线程扫描本地数据"""
+                try:
+                    logger.info("📍 后台线程开始扫描本地数据索引...")
+                    
+                    # 获取品种总数（用于显示扫描进度）
+                    symbol_count = 0
+                    if self.symbol_loader and hasattr(self.symbol_loader, 'get_all_classified'):
+                        try:
+                            classified = self.symbol_loader.get_all_classified()
+                            if classified and isinstance(classified, dict):
+                                symbol_count = sum(len(symbols) for symbols in classified.values())
+                        except:
+                            symbol_count = 0
+                    
+                    if symbol_count > 0:
+                        logger.info(f"📋 扫描本地数据索引: {symbol_count}品种 × 2周期")
+                    
+                    # 扫描本地数据文件（通过StorageManager的get_stats方法）
+                    # 注意：实际的文件扫描可能已在StorageManager初始化时完成，这里主要是触发统计
+                    valid_symbols = 0
+                    invalid_symbols = 0
+                    total_files = 0
+                    total_size_bytes = 0
+                    
+                    if self.storage_manager and hasattr(self.storage_manager, 'get_stats'):
+                        try:
+                            stats = self.storage_manager.get_stats()
+                            if stats:
+                                valid_symbols = stats.get("valid_symbols", 0)
+                                invalid_symbols = stats.get("invalid_symbols", 0)
+                                total_files = stats.get("total_files", 0)
+                                total_size_bytes = stats.get("total_size_bytes", 0)
+                        except Exception as e:
+                            logger.debug(f"获取StorageManager统计失败: {e}")
+                    
+                    # 发布事件通知UI
+                    if self.event_engine:
+                        # 构建事件数据（兼容现有UI代码）
+                        event_data = {
+                            "symbols": [],  # 简化处理，不传递完整列表
+                            "count": valid_symbols,
+                            "valid_symbols": valid_symbols,
+                            "invalid_symbols": invalid_symbols,
+                            "total_files": total_files,
+                            "total_size_gb": total_size_bytes / (1024 ** 3) if total_size_bytes else 0.0
+                        }
+                        self.event_engine.put(Event("eLocalDataIndexReady", event_data))
+                        logger.info(
+                            f"✅ 本地数据索引扫描完成（后台）: "
+                            f"有效品种={valid_symbols}, 无效品种={invalid_symbols}, "
+                            f"总文件={total_files}"
+                        )
+                    else:
+                        logger.warning("⚠️ EventEngine不可用，无法发布eLocalDataIndexReady事件", extra={"log_type": "SYSTEM"})
+                        
+                except Exception as e:
+                    logger.error("❌ 后台扫描本地数据索引失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            
+            # 启动后台线程
+            scan_thread = threading.Thread(
+                target=scan_in_background,
+                daemon=True,
+                name="LocalDataIndexScan"
+            )
+            scan_thread.start()
+            logger.info("✅ 本地数据索引扫描已在后台启动")
+            
+            # 立即返回，不等待扫描完成
+            return {
+                "success": True,
+                "async": True,  # 标记为异步执行
+                "updated_count": 0,
+                "message": "本地数据索引扫描已在后台启动"
+            }
 
         except Exception as e:
-            logger.exception("❌ 更新本地数据索引失败: %s", e)
+            logger.error("❌ 启动本地数据索引扫描失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return {"success": False, "error": str(e)}
 
     def _check_data_update_status(self, stage_logger) -> Dict[str, Any]:
-        """步骤7: 检查数据更新状态"""
+        """步骤7: 检查数据更新状态（延迟优化版）"""
         try:
+            import threading
+            import time
+            
             # 检查数据新鲜度（按照文档顺序，先检查）
             stage_logger.info("│ ⏳ 检查数据新鲜度...", extra={"log_type": "STAGE_NODE"})
             
@@ -2108,52 +2450,42 @@ class ChinaStockEngine:
                 self.data_sensor = DataSensor(self.event_engine)
             stage_logger.info("│ ✅ DataSensor初始化完成", extra={"log_type": "STAGE_NODE"})
             
-            stage_logger.info("│ ℹ️  数据新鲜度分析:", extra={"log_type": "STAGE_NODE"})
-            
-            # 尝试从DataSensor获取实际统计数据（如果已初始化）
-            today_count = 0
-            one_day_ago_count = 0
-            days_2_7_count = 0
-            needs_update_count = 0
-            
-            if self.data_sensor and hasattr(self.data_sensor, 'get_stats'):
-                try:
-                    stats = self.data_sensor.get_stats()
-                    if stats:
-                        today_count = stats.get("today_count", 0)
-                        one_day_ago_count = stats.get("one_day_ago_count", 0)
-                        days_2_7_count = stats.get("days_2_7_count", 0)
-                        needs_update_count = stats.get("needs_update_count", 0)
-                except:
-                    pass
-            
-            # 如果无法获取实际数据，显示默认值（与文档标准输出一致）
-            if today_count == 0 and one_day_ago_count == 0 and days_2_7_count == 0:
-                # 降级：显示默认值（与文档标准输出一致）
-                stage_logger.info("│   - 最新数据: 1250品种（今日）", extra={"log_type": "STAGE_NODE"})
-                stage_logger.info("│   - 1天前: 2800品种", extra={"log_type": "STAGE_NODE"})
-                stage_logger.info("│   - 2-7天前: 1148品种", extra={"log_type": "STAGE_NODE"})
-                stage_logger.info("│   - 需要更新: 0品种", extra={"log_type": "STAGE_NODE"})
-            else:
-                if today_count > 0:
-                    stage_logger.info(f"│   - 最新数据: {today_count}品种（今日）", extra={"log_type": "STAGE_NODE"})
-                if one_day_ago_count > 0:
-                    stage_logger.info(f"│   - 1天前: {one_day_ago_count}品种", extra={"log_type": "STAGE_NODE"})
-                if days_2_7_count > 0:
-                    stage_logger.info(f"│   - 2-7天前: {days_2_7_count}品种", extra={"log_type": "STAGE_NODE"})
-                if needs_update_count > 0:
-                    stage_logger.info(f"│   - 需要更新: {needs_update_count}品种", extra={"log_type": "STAGE_NODE"})
-                elif needs_update_count == 0:
-                    stage_logger.info("│   - 需要更新: 0品种", extra={"log_type": "STAGE_NODE"})
-            
             # 初始化UnifiedDataManager（在步骤框内）
             stage_logger.info("│ ⏳ 初始化UnifiedDataManager...", extra={"log_type": "STAGE_NODE"})
             if self.unified_data_manager is None:
                 from .data_runtime import UnifiedDataManager
-                self.unified_data_manager = UnifiedDataManager(self)
+                # 🔧 关键修复：传递 self.event_engine，而不是 self
+                self.unified_data_manager = UnifiedDataManager(self.event_engine)
             stage_logger.info("│ ✅ UnifiedDataManager初始化完成", extra={"log_type": "STAGE_NODE"})
             stage_logger.info("│   - 四层数据融合已启用", extra={"log_type": "STAGE_NODE"})
-            
+
+            # 🔧 新增：在 UnifiedDataManager 初始化完成后立即发布就绪事件
+            # 这样即使 service_initializer 中的注入逻辑没有执行，UI也能收到事件
+            try:
+                # 获取品种数量（如果有的话）
+                contract_count = 0
+                try:
+                    if hasattr(self.unified_data_manager, "get_all_contracts"):
+                        contracts = self.unified_data_manager.get_all_contracts()
+                        if contracts and isinstance(contracts, (list, dict)):
+                            contract_count = len(contracts) if isinstance(contracts, list) else len(contracts.keys())
+                except Exception as e:
+                    logger.debug(f"获取品种数量失败: {e}")
+
+                # 发布就绪事件
+                event_data = {
+                    "contract_count": contract_count,
+                    "mode": "online" if not self.unified_data_manager.offline_mode else "offline",
+                    "unified_data_manager": self.unified_data_manager
+                }
+
+                if self.event_engine:
+                    from vnpy.event import Event
+                    self.event_engine.put(Event(self.EVENT_UNIFIED_DATA_MANAGER_READY, event_data))
+                    logger.info("✅ 已发布 UnifiedDataManager 就绪事件（从步骤7）")
+            except Exception as e:
+                logger.error(f"发布 UnifiedDataManager 就绪事件失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+
             # 获取预加载缓存数量（如果可用）
             preload_count = 64  # 默认值
             if self.unified_data_manager and hasattr(self.unified_data_manager, 'preload_service'):
@@ -2163,19 +2495,73 @@ class ChinaStockEngine:
                 except:
                     pass
             stage_logger.info(f"│   - 预加载缓存: {preload_count}品种", extra={"log_type": "STAGE_NODE"})
+            
+            # 🚀 优化3：数据更新状态检查改为后台延迟执行（延迟2秒）
+            stage_logger.info(
+                "│ ⏳ 数据新鲜度分析将在后台延迟执行（2秒后）",
+                extra={"log_type": "STAGE_NODE"}
+            )
             stage_logger.info("└─────────────────────────────┘", extra={"log_type": "STAGE_NODE"})
-            # 数据更新状态由DataSensor管理
-            # 这里只记录日志，实际检查在DataSensor初始化后进行
-            logger.info("✅ 数据更新状态检查将在DataSensor初始化后进行")
+            
+            # 启动后台线程延迟执行数据更新状态检查
+            def check_in_background():
+                """在后台线程延迟执行数据更新状态检查"""
+                try:
+                    # 延迟2秒后执行（等待用户界面就绪）
+                    time.sleep(2)
+                    logger.info("📍 后台线程开始检查数据更新状态...")
+                    
+                    # 执行完整的数据新鲜度分析
+                    today_count = 0
+                    one_day_ago_count = 0
+                    days_2_7_count = 0
+                    needs_update_count = 0
+                    
+                    if self.data_sensor and hasattr(self.data_sensor, 'get_stats'):
+                        try:
+                            stats = self.data_sensor.get_stats()
+                            if stats:
+                                today_count = stats.get("today_count", 0)
+                                one_day_ago_count = stats.get("one_day_ago_count", 0)
+                                days_2_7_count = stats.get("days_2_7_count", 0)
+                                needs_update_count = stats.get("needs_update_count", 0)
+                        except Exception as e:
+                            logger.debug(f"获取DataSensor统计失败: {e}")
+                    
+                    # 记录数据新鲜度分析结果
+                    if today_count > 0 or one_day_ago_count > 0 or days_2_7_count > 0:
+                        logger.info(
+                            f"✅ 数据新鲜度分析完成（后台）: "
+                            f"今日={today_count}, 1天前={one_day_ago_count}, "
+                            f"2-7天前={days_2_7_count}, 需要更新={needs_update_count}"
+                        )
+                    else:
+                        logger.info("✅ 数据新鲜度分析完成（后台），使用默认统计值")
+                        
+                except Exception as e:
+                    logger.error("❌ 后台检查数据更新状态失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            
+            # 启动后台线程
+            check_thread = threading.Thread(
+                target=check_in_background,
+                daemon=True,
+                name="DataUpdateStatusCheck"
+            )
+            check_thread.start()
+            logger.info("✅ 数据更新状态检查已在后台启动（延迟2秒）")
+            
+            # 立即返回简化结果
             return {
                 "success": True,
+                "async": True,  # 标记为异步执行
                 "latest_data_date": None,
                 "days_behind": 0,
-                "needs_update": False
+                "needs_update": False,
+                "message": "数据更新状态检查已在后台启动（延迟2秒）"
             }
 
         except Exception as e:
-            logger.exception("❌ 检查数据更新状态失败: %s", e)
+            logger.error("❌ 启动数据更新状态检查失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return {"success": False, "error": str(e)}
 
     def _start_file_watcher(self, stage_logger) -> Dict[str, Any]:
@@ -2194,7 +2580,7 @@ class ChinaStockEngine:
             return {"success": True}
 
         except Exception as e:
-            logger.exception("❌ 启动文件监控失败: %s", e)
+            logger.error("❌ 启动文件监控失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return {"success": False, "error": str(e)}
 
     def healthcheck(self) -> Dict[str, Any]:
@@ -2221,7 +2607,7 @@ class ChinaStockEngine:
             return health_status
 
         except Exception as e:
-            logger.error(f"✗ 健康检查失败: {e}", exc_info=True)
+            logger.error(f"✗ 健康检查失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
             return {"error": str(e)}
 
     def is_ready(self) -> bool:
@@ -2259,7 +2645,7 @@ class ChinaStockEngine:
             return overview
 
         except Exception as e:
-            logger.error(f"✗ 获取数据质量概览失败: {e}", exc_info=True)
+            logger.error(f"✗ 获取数据质量概览失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
             return {
                 "success": False,
                 "message": f"获取失败: {str(e)}",

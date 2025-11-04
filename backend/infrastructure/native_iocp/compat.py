@@ -9,8 +9,12 @@ IOCP异步文件I/O - 兼容层
 
 import sys
 import platform
+import logging
 from typing import Optional, Union
 from pathlib import Path
+
+# 创建logger
+logger = logging.getLogger(__name__)
 
 # 尝试导入IOCP实现
 try:
@@ -116,13 +120,16 @@ class AsyncFileWrapper:
 
         if backend == 'iocp':
             if iocp_aopen is None:
+                logger.warning("IOCP不可用", extra={"log_type": "SYSTEM"})
                 raise RuntimeError("IOCP not available")
             return await iocp_aopen(filepath, mode)
         elif backend == 'aiofiles':
             if not AIOFILES_AVAILABLE or aiofiles is None:
+                logger.warning("aiofiles不可用", extra={"log_type": "SYSTEM"})
                 raise RuntimeError("aiofiles not available")
             return await aiofiles.open(filepath, mode)  # type: ignore
         else:
+            logger.error("没有可用的异步文件I/O后端，请安装aiofiles或编译IOCP扩展", extra={"log_type": "SYSTEM"})
             raise RuntimeError(
                 "No async file I/O backend available. "
                 "Please install aiofiles or compile IOCP extension."

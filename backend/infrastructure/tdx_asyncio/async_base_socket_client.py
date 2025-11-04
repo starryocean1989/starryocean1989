@@ -146,7 +146,7 @@ class AsyncBaseSocketClient:
                 raise TdxConnectionError("connection timeout error")
             return False
         except Exception as e:
-            logger.warning("TDX连接失败: IP=%s, 端口=%d, 错误=%s", ip, port, e)
+            logger.warning("TDX连接失败: IP=%s, 端口=%d, 错误=%s", ip, port, e, extra={"log_type": "SYSTEM"})
             if self.raise_exception:
                 raise TdxConnectionError(f"connection error: {e}")
             return False
@@ -297,11 +297,11 @@ class AsyncBaseSocketClient:
                 raise TdxConnectionError(f"连接已断开 ({type(e).__name__}): {e}")
             except asyncio.TimeoutError as e:
                 # 超时错误
-                logger.error("操作超时: 错误=%s, 服务器=%s:%d", e, self.ip, self.port)
+                logger.error("操作超时: 错误=%s, 服务器=%s:%d", e, self.ip, self.port, extra={"log_type": "SYSTEM"})
                 raise TdxConnectionError(f"操作超时: {e}")
             except asyncio.IncompleteReadError as e:
                 # 读取不完整
-                logger.error("数据读取不完整: 错误=%s, 服务器=%s:%d", e, self.ip, self.port)
+                logger.error("数据读取不完整: 错误=%s, 服务器=%s:%d", e, self.ip, self.port, extra={"log_type": "SYSTEM"})
                 self.closed = True
                 raise TdxConnectionError(f"数据读取不完整: {e}")
             except Exception as e:
@@ -312,6 +312,7 @@ class AsyncBaseSocketClient:
                     e,
                     self.ip,
                     self.port,
+                    extra={"log_type": "SYSTEM"}
                 )
                 self.closed = True
                 raise TdxConnectionError(f"通信异常 ({type(e).__name__}): {e}")

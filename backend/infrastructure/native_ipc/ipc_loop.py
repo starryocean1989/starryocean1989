@@ -10,11 +10,16 @@ import asyncio
 import sys
 import platform
 import ctypes
+import logging
 from ctypes import wintypes, cast, c_void_p
 from typing import Optional, Dict, Any
 
+# 创建logger
+logger = logging.getLogger(__name__)
+
 # 仅Windows平台支持
 if platform.system() != "Windows":
+    logger.critical("IPC事件循环仅支持Windows平台", extra={"log_type": "SYSTEM"})
     raise RuntimeError("IPC loop only supports Windows platform")
 
 # Windows API定义
@@ -165,11 +170,13 @@ class IPCEventLoopExtension:
             ipc_pipe_obj: IPCAsyncPipe对象
         """
         if not IPC_AVAILABLE or ipc_async is None:
+            logger.warning("ipc_async扩展不可用", extra={"log_type": "SYSTEM"})
             raise RuntimeError("ipc_async extension not available")
 
         # 获取事件句柄
         event_handle = ipc_pipe_obj.get_event_handle()
         if event_handle is None:
+            logger.warning("IPC管道对象没有事件句柄", extra={"log_type": "SYSTEM"})
             return
 
         handle_value = int(event_handle)
@@ -207,11 +214,13 @@ class IPCEventLoopExtension:
             操作结果（读取返回bytes，写入返回int）
         """
         if not IPC_AVAILABLE or ipc_async is None:
+            logger.error("ipc_async扩展不可用", extra={"log_type": "SYSTEM"})
             raise RuntimeError("ipc_async extension not available")
 
         # 获取事件句柄
         event_handle = ipc_pipe_obj.get_event_handle()
         if event_handle is None:
+            logger.error("事件句柄不可用", extra={"log_type": "SYSTEM"})
             raise ValueError("Event handle not available")
 
         handle_value = int(event_handle)
@@ -239,6 +248,7 @@ class IPCEventLoopExtension:
                 else:
                     # 错误处理
                     if isinstance(data, int) and data != 0:
+                        logger.error(f"IPC操作失败，错误代码: {data}, 操作类型: {operation_type}", extra={"log_type": "SYSTEM"})
                         raise OSError(f"I/O operation failed with error code: {data}")
                     return None
             else:
@@ -246,9 +256,11 @@ class IPCEventLoopExtension:
 
         except asyncio.TimeoutError:
             self.completion_handler.unregister_operation(handle_value)
+            logger.warning(f"IPC操作超时，操作类型: {operation_type}, 超时时间: {timeout}", extra={"log_type": "SYSTEM"})
             raise
         except Exception as e:
             self.completion_handler.unregister_operation(handle_value)
+            logger.error(f"等待IPC操作完成时发生异常，操作类型: {operation_type}, 错误: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
             raise
         finally:
             self.completion_handler.unregister_operation(handle_value)
@@ -285,6 +297,7 @@ class IPCEventLoopExtension:
             else:
                 # 等待失败
                 error_code = kernel32.GetLastError()
+                logger.error(f"WaitForSingleObject失败，代码: {result}, 错误: {error_code}", extra={"log_type": "SYSTEM"})
                 raise OSError(f"WaitForSingleObject failed with code: {result}, error: {error_code}")
 
 

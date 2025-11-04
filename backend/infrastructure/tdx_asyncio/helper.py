@@ -169,7 +169,7 @@ def get_security_coefficient(market=None, code=None):
         coefficient = SECURITY_COEFFICIENT[security_type]
         return coefficient[0]
     except NotImplementedError:
-        logger.error('NotImplementedError')
+        logger.error('NotImplementedError', extra={"log_type": "SYSTEM"})
         return 0.01
 
 

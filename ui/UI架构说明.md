@@ -9,13 +9,13 @@
 ui/
 ├── __init__.py                    # UI层统一导出（MainWindow, ThemeManager）
 │
-├── main_window.py                 # 主窗口：应用程序的主界面框架
-├── startup_coordinator.py         # 启动协调器：管理应用启动顺序和后端初始化
+├── main_window.py                 # 主窗口：应用程序的主界面框架（包含 ShortcutManager）
+│                                    # 注意：startup_coordinator 已迁移到 backend/startup/ui_startup/
 │
-├── core/                          # 核心功能模块
+├── core/                          # 核心功能模块（已精简）
 │   ├── __init__.py
-│   ├── boot_orchestrator.py       # 启动编排器：管理分层启动就绪状态
-│   └── shortcut_manager.py        # 快捷键管理器：全局快捷键系统
+│   └── boot_orchestrator.py       # 启动编排器：管理分层启动就绪状态
+│                                    # 注意：shortcut_manager 和 async_utils 已合并到各自使用者文件
 │
 ├── components/                    # 可复用UI组件库
 │   ├── __init__.py
@@ -85,9 +85,12 @@ __all__ = ["MainWindow", "ThemeManager"]
 
 ---
 
-#### 1.3 `startup_coordinator.py`
-**作用**：启动协调器 - 管理应用启动顺序和异步初始化
-**功能**：
+#### 1.3 `startup_coordinator.py` ⚠️ 已迁移
+**状态**：已迁移到 `backend/startup/ui_startup/startup_coordinator.py`  
+**原因**：启动协调器属于后端启动流程的一部分，已整合到后端启动模块  
+**位置**：`backend/startup/ui_startup/startup_coordinator.py`
+
+**原始功能**：
 - 后台线程异步初始化后端服务（六阶段初始化策略）
 - 管理启动进度显示和用户反馈
 - 启动监控系统（wmi_smart_monitor）
@@ -134,9 +137,12 @@ __all__ = ["MainWindow", "ThemeManager"]
 
 ---
 
-#### 2.2 `shortcut_manager.py`
-**作用**：全局快捷键管理系统
-**功能**：
+#### 2.2 `shortcut_manager.py` ⚠️ 已迁移
+**状态**：已合并到 `ui/main_window.py`
+**原因**：该模块仅被 `MainWindow` 使用，为减少模块间依赖，已合并到主窗口文件
+**位置**：`ui/main_window.py` 中的 `ShortcutManager` 类
+
+**原始功能**：
 - 快捷键注册和管理
 - 快捷键冲突检测
 - 快捷键配置持久化（保存到JSON）
@@ -773,7 +779,7 @@ def _lazy_init_module(self, module_name: str):
    ↓
 8. 应用主题（ThemeManager）
    ↓
-9. 注册快捷键（ShortcutManager）
+9. 注册快捷键（ShortcutManager，已合并到 main_window.py）
    ↓
 10. 显示主窗口
    ↓
@@ -1006,11 +1012,9 @@ class DataCenterView(QWidget):
 **qasync解决方案**:
 ```python
 # ✅ qasync方式:直接使用async/await
-from ui.core.async_utils import async_slot
-
-class DataCenterView(QWidget):
-    @async_slot
-    async def on_reload_button_clicked(self):
+# 注意：async_slot 已合并到 data_center_view.py，直接使用即可
+@async_slot
+async def on_reload_button_clicked(self):
         try:
             self.reload_button.setEnabled(False)
             # 直接await异步服务
@@ -1120,9 +1124,13 @@ else:
 
 ---
 
-## 6.3 async_utils工具包
+## 6.3 async_utils工具包 ⚠️ 已迁移
 
-> 位置:`ui/core/async_utils.py` (415行)
+> **状态**：已合并到 `ui/modules/data_center_view.py`  
+> **原因**：该工具包仅被 `DataCenterView` 使用，为减少模块间依赖，已合并到使用者文件  
+> **位置**：`ui/modules/data_center_view.py` 文件开头部分的合并代码
+
+> **原始位置**：`ui/core/async_utils.py` (已删除)
 
 ### 6.3.1 @async_slot装饰器
 
@@ -1131,7 +1139,9 @@ else:
 **基础用法**:
 ```python
 from PySide6.QtWidgets import QWidget, QPushButton
-from ui.core.async_utils import async_slot
+# 注意：如果需要在其他模块使用，需要从 data_center_view 导入
+# 或复制相关函数到目标模块
+from ui.modules.data_center_view import async_slot
 
 class MyWidget(QWidget):
     def __init__(self):
@@ -1200,7 +1210,8 @@ def async_slot(*args, **kwargs):
 **完整示例**:
 ```python
 from PySide6.QtWidgets import QWidget, QPushButton, QLabel
-from ui.core.async_utils import AsyncTaskRunner
+# 注意：AsyncTaskRunner 已合并到 data_center_view.py
+from ui.modules.data_center_view import AsyncTaskRunner
 
 class DataProcessingWidget(QWidget):
     def __init__(self):
@@ -1268,7 +1279,8 @@ class DataProcessingWidget(QWidget):
 **示例**:
 ```python
 from PySide6.QtCore import Slot
-from ui.core.async_utils import await_in_qt
+# 注意：await_in_qt 已合并到 data_center_view.py
+from ui.modules.data_center_view import await_in_qt
 
 class MyWidget(QWidget):
     @Slot()  # 普通Slot(非async)
@@ -1295,7 +1307,8 @@ class MyWidget(QWidget):
 
 **示例**:
 ```python
-from ui.core.async_utils import async_slot, error_handler
+# 注意：已合并到 data_center_view.py
+from ui.modules.data_center_view import async_slot, error_handler
 
 class MyWidget(QWidget):
     @async_slot
@@ -1470,9 +1483,9 @@ class DataCenterView(QWidget):
 
 **迁移后** (qasync方式):
 ```python
-from ui.core.async_utils import async_slot
-
-class DataCenterView(QWidget):
+# 注意：async_slot 已合并到 data_center_view.py，直接使用即可
+@async_slot
+async def on_reload_button_clicked_async(self):
     @async_slot
     async def on_reload_button_clicked(self):
         self.reload_button.setEnabled(False)
@@ -1495,7 +1508,7 @@ class DataCenterView(QWidget):
 ### 6.5.2 迁移检查清单
 
 - [ ] 后端服务提供async版本方法(如`reload_symbol_list_async()`)
-- [ ] 导入`from ui.core.async_utils import async_slot`
+- [ ] 使用合并到 `data_center_view.py` 的 `async_slot`（或从该文件导入）
 - [ ] 将槽函数改为async函数
 - [ ] 添加`@async_slot`装饰器
 - [ ] 使用`await`调用异步服务
@@ -1575,8 +1588,9 @@ async def on_action(self):
 
 2. **检查事件循环**:在UI代码中验证
    ```python
-   from ui.core.async_utils import get_app_event_loop
-   loop = get_app_event_loop()
+   # 注意：get_event_loop 已合并到 data_center_view.py
+   from ui.modules.data_center_view import get_event_loop
+   loop = get_event_loop()
    print(f"Event loop: {loop}")  # 应该是QEventLoop实例
    ```
 
@@ -1621,8 +1635,8 @@ async def on_action(self):
 
 - **qasync官方文档**: https://github.com/CabbageDevelopment/qasync
 - **asyncio官方文档**: https://docs.python.org/zh-cn/3/library/asyncio.html
-- **项目内工具模块**: `ui/core/async_utils.py`
-- **示例代码**: `ui/modules/data_center_view.py`(注释中的异步版本)
+- **项目内工具模块**: 已合并到 `ui/modules/data_center_view.py`
+- **示例代码**: `ui/modules/data_center_view.py`(异步工具函数位于文件开头)
 
 ---
 

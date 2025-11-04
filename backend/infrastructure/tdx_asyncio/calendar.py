@@ -69,8 +69,8 @@ class TradingCalendar:
         self._cache_timestamp: Optional[datetime] = None
         self._cache_ttl = 86400  # 24小时缓存
 
-        # 🔧 修复：文件缓存路径使用缓存目录下的绝对路径
-        self._cache_file = self.cache_dir / "trading_calendar.json"
+        # 🔧 修复：文件缓存路径使用缓存目录下的绝对路径，统一使用trade_calendar.json
+        self._cache_file = self.cache_dir / "trade_calendar.json"
 
     def _load_from_file_cache(self) -> Optional[pd.DataFrame]:
         """从文件缓存加载交易日历（使用DailyCacheManager）
@@ -152,12 +152,12 @@ class TradingCalendar:
             if success:
                 logger.debug(f"交易日历已保存到文件缓存: {self._cache_file}")
             else:
-                logger.warning(f"保存交易日历文件缓存失败")
+                logger.warning(f"保存交易日历文件缓存失败", extra={"log_type": "SYSTEM"})
 
             return success
 
         except Exception as e:
-            logger.error(f"保存交易日历文件缓存异常: {e}", exc_info=True)
+            logger.error(f"保存交易日历文件缓存异常: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
             return False
 
     async def get_trading_calendar(self, start_year: Optional[int] = None) -> pd.DataFrame:
@@ -240,7 +240,7 @@ class TradingCalendar:
             return calendar_df
 
         except Exception as e:
-            logger.error(f"获取交易日历失败: {e}", exc_info=True)
+            logger.error(f"获取交易日历失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
             # 返回空DataFrame保持兼容性
             empty_df = pd.DataFrame({"date": [], "year": []})
             return cast(pd.DataFrame, empty_df)
@@ -258,14 +258,14 @@ class TradingCalendar:
             try:
                 target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
             except ValueError:
-                logger.error(f"日期格式错误: {date_str}")
+                logger.error(f"日期格式错误: {date_str}", extra={"log_type": "SYSTEM"})
                 return False
 
         # 获取交易日历
         calendar_df = await self.get_trading_calendar()
 
         if calendar_df.empty:
-            logger.warning("无法获取交易日历，返回False")
+            logger.warning("无法获取交易日历，返回False", extra={"log_type": "SYSTEM"})
             return False
 
         # 检查目标日期是否在交易日历中
@@ -287,7 +287,7 @@ class TradingCalendar:
             try:
                 start_date = datetime.strptime(date_str, "%Y-%m-%d").date()
             except ValueError:
-                logger.error(f"日期格式错误: {date_str}")
+                logger.error(f"日期格式错误: {date_str}", extra={"log_type": "SYSTEM"})
                 return None
 
         # 获取交易日历
@@ -318,7 +318,7 @@ class TradingCalendar:
             try:
                 start_date = datetime.strptime(date_str, "%Y-%m-%d").date()
             except ValueError:
-                logger.error(f"日期格式错误: {date_str}")
+                logger.error(f"日期格式错误: {date_str}", extra={"log_type": "SYSTEM"})
                 return None
 
         # 获取交易日历
@@ -348,7 +348,7 @@ class TradingCalendar:
             start = datetime.strptime(start_date, "%Y-%m-%d").date()
             end = datetime.strptime(end_date, "%Y-%m-%d").date()
         except ValueError as e:
-            logger.error(f"日期格式错误: {e}")
+            logger.error(f"日期格式错误: {e}", extra={"log_type": "SYSTEM"})
             return []
 
         # 获取交易日历
@@ -375,7 +375,7 @@ class TradingCalendar:
             start = datetime.strptime(start_date, "%Y-%m-%d").date()
             end = datetime.strptime(end_date, "%Y-%m-%d").date()
         except ValueError as e:
-            logger.error(f"日期格式错误: {e}")
+            logger.error(f"日期格式错误: {e}", extra={"log_type": "SYSTEM"})
             return []
 
         # 生成所有日期

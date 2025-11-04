@@ -653,8 +653,8 @@ class ChinaStockEngine:
                 return True
 
             try:
-                # 初始化网络时间同步
-                NetworkTimeSync.get_instance().sync_time()
+                # 注意：网络时间同步已移至阶段3的8步验证流程（步骤2）中执行
+                # 这里不再执行网络时间同步，确保单一事实原则
 
                 # 初始化子组件
                 self._initialize_components()

@@ -91,9 +91,17 @@ class TradingGateway(BaseWidget, LoggerMixin):
             if self.trading_service is not None:
                 self.logger.info("交易网关服务获取成功")
             else:
-                self.logger.warning("交易网关服务未注册")
+                self.logger.warning(
+                    "UI交易网关服务未注册: 模块=trading_gateway_service",
+                    extra={"log_type": "SYSTEM"}
+                )
         except Exception as e:
-            self.logger.error("获取交易网关服务失败: %s", e)
+            self.logger.error(
+                "UI获取交易网关服务失败: 错误=%s",
+                str(e),
+                extra={"log_type": "SYSTEM"},
+                exc_info=True
+            )
             self.show_error(f"服务获取失败: {e}")
             self.trading_service = None
 
@@ -1544,8 +1552,8 @@ class TradingGateway(BaseWidget, LoggerMixin):
                                 if s["name"].startswith(class_name)
                             ]
                             count = len(existing_names) + 1
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"加载已有策略名称失败: {e}", extra={"log_type": "SYSTEM"})
                     strategy_name_combo.setCurrentText(f"{class_name}_{count}")
 
         strategy_file_combo.currentTextChanged.connect(on_file_selected)
@@ -1675,7 +1683,11 @@ class TradingGateway(BaseWidget, LoggerMixin):
             from pathlib import Path
             import json
 
-            cache_file = Path("data/cache/stock_list_classified.json")
+            # 🔧 修复：使用ConfigManager获取缓存目录，确保统一使用data/cache目录
+            from backend.infrastructure.data_module_vnpy.core_engine import ConfigManager
+            config_manager = ConfigManager.get_instance()
+            cache_dir = config_manager.get_cache_dir()
+            cache_file = cache_dir / "stock_list_classified.json"
 
             if cache_file.exists():
                 with open(cache_file, "r", encoding="utf-8") as f:
@@ -2423,7 +2435,7 @@ class PortfolioMonitorWidget(QWidget):
                         item.setText(value)
 
         except Exception as e:
-            print(f"更新组合策略监控数据失败: {e}")
+            logger.error(f"更新组合策略监控数据失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
 
 
 class AlgoMonitorWidget(QWidget):
@@ -2569,7 +2581,7 @@ class AlgoMonitorWidget(QWidget):
                         item.setText(value)
 
         except Exception as e:
-            print(f"更新算法交易监控数据失败: {e}")
+            logger.error(f"更新算法交易监控数据失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
 
 
 class OptionMonitorWidget(QWidget):
@@ -2744,4 +2756,4 @@ class OptionMonitorWidget(QWidget):
                         item.setText(value)
 
         except Exception as e:
-            print(f"更新期权监控数据失败: {e}")
+            logger.error(f"更新期权监控数据失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})

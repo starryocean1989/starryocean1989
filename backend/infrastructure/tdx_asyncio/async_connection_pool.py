@@ -193,11 +193,11 @@ class AsyncConnectionPool:
                 logger.debug("连接已建立: IP=%s, 端口=%d", server[0], server[1])
                 return client
             else:
-                logger.warning("连接失败: IP=%s, 端口=%d", server[0], server[1])
+                logger.warning("连接失败: IP=%s, 端口=%d", server[0], server[1], extra={"log_type": "SYSTEM"})
                 return None
 
         except Exception as e:
-            logger.warning("连接异常: 服务器=%s, 错误=%s", server, e)
+            logger.warning("连接异常: 服务器=%s, 错误=%s", server, e, extra={"log_type": "SYSTEM"})
             return None
 
     async def acquire(self) -> Optional[AsyncTdxHq_API]:
@@ -224,7 +224,7 @@ class AsyncConnectionPool:
                     return conn
 
         # 主连接都不可用，使用备用连接
-        logger.warning("主连接池无可用连接，切换到备用连接")
+        logger.warning("主连接池无可用连接，切换到备用连接", extra={"log_type": "SYSTEM"})
         return await self._failover_to_standby()
 
     async def _test_connection(self, conn: AsyncTdxHq_API) -> bool:
@@ -247,7 +247,7 @@ class AsyncConnectionPool:
         :return: 备用连接或None
         """
         if not self.standby_connections:
-            logger.error("备用连接池为空，无法故障转移")
+            logger.error("备用连接池为空，无法故障转移", extra={"log_type": "SYSTEM"})
             return None
 
         # 获取第一个可用的备用连接
@@ -293,7 +293,7 @@ class AsyncConnectionPool:
                         break
 
         except Exception as e:
-            logger.error(f"补充备用连接失败: {e}")
+            logger.error(f"补充备用连接失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
 
     def release(self, conn: Optional[AsyncTdxHq_API] = None):
         """

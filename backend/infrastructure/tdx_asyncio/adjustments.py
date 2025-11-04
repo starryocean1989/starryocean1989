@@ -77,7 +77,7 @@ async def apply_adjustment(
         xdxr_data = await _get_xdxr_info_async(symbol, market, client)
 
         if xdxr_data is None or xdxr_data.empty:
-            logger.warning(f"股票{symbol}无除权除息信息，返回原始数据")
+            logger.warning(f"股票{symbol}无除权除息信息，返回原始数据", extra={"log_type": "SYSTEM"})
             return df
 
         # 应用完整复权算法（基于mootdx实现）
@@ -87,7 +87,7 @@ async def apply_adjustment(
         return adjusted_df
 
     except Exception as e:
-        logger.error(f"复权调整失败: {e}")
+        logger.error(f"复权调整失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
         import traceback
         traceback.print_exc()
         return df  # 失败时返回原数据
@@ -125,7 +125,7 @@ async def _get_xdxr_info_async(
                     break
 
         if not client:
-            logger.warning("无法连接TDX服务器获取除权信息")
+            logger.warning("无法连接TDX服务器获取除权信息", extra={"log_type": "SYSTEM"})
             return pd.DataFrame()
 
         # 获取除权除息数据
@@ -265,7 +265,7 @@ async def get_sina_fq_factor(symbol: str, method: str = 'qfq'):
         # 需要httpx异步HTTP客户端
         import httpx
     except ImportError:
-        logger.warning("未安装httpx，无法使用新浪财经复权因子")
+        logger.warning("未安装httpx，无法使用新浪财经复权因子", extra={"log_type": "SYSTEM"})
         return pd.DataFrame()
 
     # 移除前缀
@@ -290,7 +290,7 @@ async def get_sina_fq_factor(symbol: str, method: str = 'qfq'):
             response = await client.get(url)
 
             if response.status_code != 200:
-                logger.warning(f"获取新浪复权因子失败: HTTP {response.status_code}")
+                logger.warning(f"获取新浪复权因子失败: HTTP {response.status_code}", extra={"log_type": "SYSTEM"})
                 return pd.DataFrame()
 
             # 解析新浪返回的JS数据
@@ -312,7 +312,7 @@ async def get_sina_fq_factor(symbol: str, method: str = 'qfq'):
             return fq_df
 
     except Exception as e:
-        logger.warning(f"获取新浪复权因子异常: {e}")
+        logger.warning(f"获取新浪复权因子异常: {e}", extra={"log_type": "SYSTEM"})
         return pd.DataFrame()
 
 

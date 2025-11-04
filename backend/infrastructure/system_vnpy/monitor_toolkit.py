@@ -58,7 +58,7 @@ def is_admin() -> bool:
     try:
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
     except Exception as e:
-        logger.error(f"检查管理员权限失败: {e}")
+        logger.error(f"检查管理员权限失败: {e}", extra={"log_type": "SYSTEM"})
         return False
 
 
@@ -97,7 +97,7 @@ def run_as_admin(_wait: bool = True) -> Optional[int]:
 
         # ShellExecuteW返回值: > 32: 成功, <= 32: 错误码
         if ret <= 32:
-            logger.error(f"以管理员身份启动失败,错误码: {ret}")
+            logger.error(f"以管理员身份启动失败,错误码: {ret}", extra={"log_type": "SYSTEM"})
             return None
 
         logger.info("✅ 已请求管理员权限,新进程已启动")
@@ -106,7 +106,7 @@ def run_as_admin(_wait: bool = True) -> Optional[int]:
         sys.exit(0)
 
     except Exception as e:
-        logger.error(f"请求管理员权限失败: {e}", exc_info=True)
+        logger.error(f"请求管理员权限失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
         return None
 
 
@@ -127,18 +127,18 @@ def ensure_admin(auto_elevate: bool = True, message: Optional[str] = None) -> bo
         return True
 
     if message:
-        logger.warning(message)
+        logger.warning(message, extra={"log_type": "SYSTEM"})
     else:
-        logger.warning("=" * 80)
-        logger.warning("⚠️  此应用需要管理员权限才能访问硬件传感器")
-        logger.warning("=" * 80)
+        logger.warning("=" * 80, extra={"log_type": "SYSTEM"})
+        logger.warning("⚠️  此应用需要管理员权限才能访问硬件传感器", extra={"log_type": "SYSTEM"})
+        logger.warning("=" * 80, extra={"log_type": "SYSTEM"})
 
     if not auto_elevate:
-        logger.warning("\n请以管理员身份运行此程序。")
+        logger.warning("\n请以管理员身份运行此程序。", extra={"log_type": "SYSTEM"})
         return False
 
-    logger.warning("\n正在请求管理员权限...")
-    logger.warning("(如果出现UAC提示,请点击'是')")
+    logger.warning("\n正在请求管理员权限...", extra={"log_type": "SYSTEM"})
+    logger.warning("(如果出现UAC提示,请点击'是')", extra={"log_type": "SYSTEM"})
 
     run_as_admin()
 
@@ -158,8 +158,8 @@ def check_admin_for_hardware_monitoring() -> bool:
         logger.info("✅ 已具有管理员权限(硬件监控)")
         return True
 
-    logger.warning("❌ 缺少管理员权限(硬件监控功能可能受限)")
-    logger.warning("提示: 某些硬件传感器(如AMD Ryzen温度)需要管理员权限")
+    logger.warning("❌ 缺少管理员权限(硬件监控功能可能受限)", extra={"log_type": "SYSTEM"})
+    logger.warning("提示: 某些硬件传感器(如AMD Ryzen温度)需要管理员权限", extra={"log_type": "SYSTEM"})
     return False
 
 
@@ -375,9 +375,9 @@ class WMISmartMonitor:
             self._available = True
             logger.info("✅ WMI SMART监控器初始化成功")
         except ImportError:
-            logger.warning("WMI模块未安装,SMART监控不可用 (pip install wmi)")
+            logger.warning("WMI模块未安装,SMART监控不可用 (pip install wmi)", extra={"log_type": "SYSTEM"})
         except Exception as e:
-            logger.warning(f"WMI初始化失败: {e}")
+            logger.warning(f"WMI初始化失败: {e}", extra={"log_type": "SYSTEM"})
 
     def _get_thread_wmi(self):
         """获取线程本地的WMI实例(COM线程安全)"""
@@ -403,7 +403,7 @@ class WMISmartMonitor:
                 }
                 logger.debug(f"为线程{thread_id}创建WMI实例")
             except Exception as e:
-                logger.error(f"线程{thread_id}创建WMI实例失败: {e}")
+                logger.error(f"线程{thread_id}创建WMI实例失败: {e}", extra={"log_type": "SYSTEM"})
                 return None
 
         return self._thread_local_wmi[thread_id]
@@ -504,7 +504,7 @@ class WMISmartMonitor:
             logger.info(f"成功读取 {len(result)} 个硬盘的WMI-SMART数据")
 
         except Exception as e:
-            logger.error(f"获取WMI-SMART数据失败: {e}", exc_info=True)
+            logger.error(f"获取WMI-SMART数据失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
 
         return result
 
@@ -515,7 +515,7 @@ class WMISmartMonitor:
         try:
             thread_wmi = self._get_thread_wmi()
             if not thread_wmi:
-                logger.warning("无法获取线程本地WMI实例")
+                logger.warning("无法获取线程本地WMI实例", extra={"log_type": "SYSTEM"})
                 return {}
 
             for disk in thread_wmi["wmi_cimv2"].Win32_DiskDrive():
@@ -1122,7 +1122,7 @@ class ServiceHealthChecker:
                 }
 
         except Exception as e:
-            self.logger.error("快速检查服务失败 %s: %s", service_name, e)
+            self.logger.error("快速检查服务失败 %s: %s", service_name, e, extra={"log_type": "SYSTEM"})
             return {
                 "service_name": service_name,
                 "status": "error",
@@ -1246,7 +1246,7 @@ class ServiceHealthChecker:
                 },
             }
         except Exception as e:
-            self.logger.error("检查所有服务失败: %s", e)
+            self.logger.error("检查所有服务失败: %s", e, extra={"log_type": "SYSTEM"})
             return {
                 "services": all_results,
                 "external_dependencies": {},

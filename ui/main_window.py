@@ -52,8 +52,392 @@ from backend.core.service_base import LoggerMixin
 from backend.core.base import setup_logging
 
 from ui.components.theme_system import ThemeManager
-from ui.core.boot_orchestrator import get_boot_orchestrator
+from backend.startup.ui_startup.boot_orchestrator import get_boot_orchestrator
 
+# 合并自 ui.core.shortcut_manager 的 ShortcutManager 类
+from typing import Dict, Callable, Optional
+from pathlib import Path
+import json
+
+from PySide6.QtCore import QObject, Signal
+from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtWidgets import QWidget
+
+
+# =============================================================================
+# 合并自 ui.core.shortcut_manager 的 ShortcutManager 类
+# =============================================================================
+
+class ShortcutManager(QObject, LoggerMixin):
+    """快捷键管理器."""
+
+    # 信号
+    shortcut_triggered = Signal(str)  # 快捷键触发信号
+
+    # 默认快捷键配置
+    DEFAULT_SHORTCUTS = {
+        # 文件操作
+        "file.new": "Ctrl+N",
+        "file.open": "Ctrl+O",
+        "file.save": "Ctrl+S",
+        "file.save_all": "Ctrl+Shift+S",
+        "file.close": "Ctrl+W",
+        "file.close_all": "Ctrl+Shift+W",
+        "file.reopen": "Ctrl+Shift+T",
+        # 编辑操作
+        "edit.undo": "Ctrl+Z",
+        "edit.redo": "Ctrl+Y",
+        "edit.cut": "Ctrl+X",
+        "edit.copy": "Ctrl+C",
+        "edit.paste": "Ctrl+V",
+        "edit.select_all": "Ctrl+A",
+        "edit.find": "Ctrl+F",
+        "edit.replace": "Ctrl+H",
+        "edit.format": "Ctrl+Shift+F",
+        "edit.comment": "Ctrl+/",
+        # 导航
+        "nav.goto_line": "Ctrl+G",
+        "nav.goto_file": "Ctrl+P",
+        "nav.next_tab": "Ctrl+Tab",
+        "nav.prev_tab": "Ctrl+Shift+Tab",
+        "nav.command_palette": "Ctrl+Shift+P",
+        # 搜索
+        "search.find_in_files": "Ctrl+Shift+F",
+        "search.replace_in_files": "Ctrl+Shift+H",
+        # 视图
+        "view.toggle_sidebar": "Ctrl+B",
+        "view.toggle_terminal": "Ctrl+`",
+        "view.toggle_ai_assistant": "Ctrl+I",
+        "view.zoom_in": "Ctrl++",
+        "view.zoom_out": "Ctrl+-",
+        "view.zoom_reset": "Ctrl+0",
+        # 运行和调试
+        "run.backtest": "F5",
+        "run.stop": "Shift+F5",
+        "debug.toggle_breakpoint": "F9",
+        "debug.clear_breakpoints": "Ctrl+Shift+F9",
+        "debug.step_over": "F10",
+        "debug.step_into": "F11",
+        "debug.step_out": "Shift+F11",
+        # 终端
+        "terminal.clear": "Ctrl+L",
+        "terminal.new": "Ctrl+Shift+`",
+        # 其他
+        "other.save_layout": "Ctrl+Shift+L",
+        "other.settings": "Ctrl+,",
+        "other.help": "F1",
+    }
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        """初始化快捷键管理器.
+
+        Args:
+            parent: 父组件
+        """
+        super().__init__(parent)
+
+        self.parent_widget = parent
+
+        # 快捷键映射：{action_id: {key_sequence, callback, shortcut_object}}
+        self.shortcuts: Dict[str, Dict] = {}
+
+        # 配置文件路径
+        self.config_file = Path("config/shortcuts.json")
+
+        # 加载配置
+        self._load_config()
+
+        self.logger.info("快捷键管理器初始化完成")
+
+    def register_shortcut(
+        self,
+        action_id: str,
+        callback: Callable,
+        key_sequence: Optional[str] = None,
+        description: str = "",
+    ) -> bool:
+        """注册快捷键.
+
+        Args:
+            action_id: 操作ID
+            callback: 回调函数
+            key_sequence: 快捷键序列（如果为None，使用默认配置）
+            description: 描述
+
+        Returns:
+            bool: 是否注册成功
+        """
+        try:
+            # 如果未指定快捷键，使用默认值
+            if key_sequence is None:
+                key_sequence = self.DEFAULT_SHORTCUTS.get(action_id, "")
+
+            if not key_sequence:
+                self.logger.warning("⚠️ 操作 %s 没有快捷键", action_id, extra={"log_type": "SYSTEM"})
+                return False
+
+            # 检查冲突
+            if self._check_conflict(action_id, key_sequence):
+                self.logger.warning("⚠️ 快捷键冲突: %s", key_sequence, extra={"log_type": "SYSTEM"})
+                return False
+
+            # 创建QShortcut
+            if self.parent_widget:
+                shortcut = QShortcut(QKeySequence(key_sequence), self.parent_widget)
+                shortcut.activated.connect(lambda: self._on_shortcut_activated(action_id, callback))
+            else:
+                shortcut = None
+                self.logger.warning("⚠️ 未设置父组件，无法创建快捷键: %s", action_id, extra={"log_type": "SYSTEM"})
+
+            # 保存到映射
+            self.shortcuts[action_id] = {
+                "key_sequence": key_sequence,
+                "callback": callback,
+                "shortcut": shortcut,
+                "description": description,
+            }
+
+            self.logger.info(f"注册快捷键: {action_id} = {key_sequence}")
+            return True
+
+        except Exception as e:
+            self.logger.error("❌ 注册快捷键失败: %s, 错误: %s", action_id, e, exc_info=True, extra={"log_type": "SYSTEM"})
+            return False
+
+    def unregister_shortcut(self, action_id: str):
+        """注销快捷键.
+
+        Args:
+            action_id: 操作ID
+        """
+        if action_id in self.shortcuts:
+            shortcut_obj = self.shortcuts[action_id]["shortcut"]
+            if shortcut_obj:
+                shortcut_obj.setEnabled(False)
+                shortcut_obj.deleteLater()
+
+            del self.shortcuts[action_id]
+            self.logger.info(f"注销快捷键: {action_id}")
+
+    def update_shortcut(self, action_id: str, new_key_sequence: str) -> bool:
+        """更新快捷键.
+
+        Args:
+            action_id: 操作ID
+            new_key_sequence: 新的快捷键序列
+
+        Returns:
+            bool: 是否更新成功
+        """
+        if action_id not in self.shortcuts:
+            self.logger.warning(
+                "UI快捷键操作未注册: 操作=%s",
+                action_id,
+                extra={"log_type": "SYSTEM"}
+            )
+            return False
+
+        # 检查冲突
+        if self._check_conflict(action_id, new_key_sequence):
+            self.logger.warning(
+                "UI快捷键冲突: 操作=%s, 快捷键=%s",
+                action_id,
+                new_key_sequence,
+                extra={"log_type": "SYSTEM"}
+            )
+            return False
+
+        # 更新快捷键
+        shortcut_info = self.shortcuts[action_id]
+        shortcut_obj = shortcut_info["shortcut"]
+
+        if shortcut_obj:
+            shortcut_obj.setKey(QKeySequence(new_key_sequence))
+
+        shortcut_info["key_sequence"] = new_key_sequence
+
+        self.logger.info(f"更新快捷键: {action_id} = {new_key_sequence}")
+
+        # 保存配置
+        self._save_config()
+
+        return True
+
+    def get_shortcut_key(self, action_id: str) -> str:
+        """获取操作的快捷键.
+
+        Args:
+            action_id: 操作ID
+
+        Returns:
+            str: 快捷键序列
+        """
+        if action_id in self.shortcuts:
+            return self.shortcuts[action_id]["key_sequence"]
+        return ""
+
+    def get_all_shortcuts(self) -> Dict[str, str]:
+        """获取所有快捷键.
+
+        Returns:
+            Dict: {action_id: key_sequence}
+        """
+        return {action_id: info["key_sequence"] for action_id, info in self.shortcuts.items()}
+
+    def reset_to_defaults(self):
+        """重置为默认快捷键."""
+        # 注销所有现有快捷键
+        for action_id in list(self.shortcuts.keys()):
+            self.unregister_shortcut(action_id)
+
+        # 删除配置文件
+        if self.config_file.exists():
+            self.config_file.unlink()
+
+        self.logger.info("快捷键已重置为默认值")
+
+    def _check_conflict(self, action_id: str, key_sequence: str) -> bool:
+        """检查快捷键冲突.
+
+        Args:
+            action_id: 操作ID
+            key_sequence: 快捷键序列
+
+        Returns:
+            bool: 是否存在冲突
+        """
+        for existing_id, info in self.shortcuts.items():
+            if existing_id != action_id and info["key_sequence"] == key_sequence:
+                return True
+        return False
+
+    def _on_shortcut_activated(self, action_id: str, callback: Callable):
+        """快捷键激活回调.
+
+        Args:
+            action_id: 操作ID
+            callback: 回调函数
+        """
+        try:
+            self.logger.debug(f"快捷键触发: {action_id}")
+            callback()
+            self.shortcut_triggered.emit(action_id)
+        except Exception as e:
+            self.logger.error(
+                "UI快捷键回调执行失败: 操作=%s, 错误=%s",
+                action_id,
+                str(e),
+                extra={"log_type": "SYSTEM"},
+                exc_info=True
+            )
+
+    def _load_config(self):
+        """加载配置."""
+        if not self.config_file.exists():
+            return
+
+        try:
+            with open(self.config_file, "r", encoding="utf-8") as f:
+                config = json.load(f)
+
+            # 合并配置（覆盖默认值）
+            for action_id, key_sequence in config.items():
+                if action_id in self.DEFAULT_SHORTCUTS:
+                    self.DEFAULT_SHORTCUTS[action_id] = key_sequence
+
+            self.logger.info(f"快捷键配置已加载: {self.config_file}")
+
+        except Exception as e:
+            self.logger.error(
+                "UI加载快捷键配置失败: 文件=%s, 错误=%s",
+                str(self.config_file),
+                str(e),
+                extra={"log_type": "SYSTEM"},
+                exc_info=True
+            )
+
+    def _save_config(self):
+        """保存配置."""
+        try:
+            # 确保配置目录存在
+            self.config_file.parent.mkdir(parents=True, exist_ok=True)
+
+            # 收集当前配置
+            config = {action_id: info["key_sequence"] for action_id, info in self.shortcuts.items()}
+
+            # 保存到文件
+            with open(self.config_file, "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=2, ensure_ascii=False)
+
+            self.logger.info(f"快捷键配置已保存: {self.config_file}")
+
+        except Exception as e:
+            self.logger.error(
+                "UI保存快捷键配置失败: 文件=%s, 错误=%s",
+                str(self.config_file),
+                str(e),
+                extra={"log_type": "SYSTEM"},
+                exc_info=True
+            )
+
+
+# 全局快捷键描述（用于UI显示）
+SHORTCUT_DESCRIPTIONS = {
+    # 文件操作
+    "file.new": "新建文件",
+    "file.open": "打开文件",
+    "file.save": "保存文件",
+    "file.save_all": "保存所有文件",
+    "file.close": "关闭文件",
+    "file.close_all": "关闭所有文件",
+    "file.reopen": "重新打开关闭的文件",
+    # 编辑操作
+    "edit.undo": "撤销",
+    "edit.redo": "重做",
+    "edit.cut": "剪切",
+    "edit.copy": "复制",
+    "edit.paste": "粘贴",
+    "edit.select_all": "全选",
+    "edit.find": "查找",
+    "edit.replace": "替换",
+    "edit.format": "格式化代码",
+    "edit.comment": "注释/取消注释",
+    # 导航
+    "nav.goto_line": "跳转到行",
+    "nav.goto_file": "快速打开文件",
+    "nav.next_tab": "下一个标签",
+    "nav.prev_tab": "上一个标签",
+    "nav.command_palette": "命令面板",
+    # 搜索
+    "search.find_in_files": "全局搜索",
+    "search.replace_in_files": "全局替换",
+    # 视图
+    "view.toggle_sidebar": "切换侧边栏",
+    "view.toggle_terminal": "切换终端",
+    "view.toggle_ai_assistant": "切换AI助手",
+    "view.zoom_in": "放大",
+    "view.zoom_out": "缩小",
+    "view.zoom_reset": "重置缩放",
+    # 运行和调试
+    "run.backtest": "运行回测",
+    "run.stop": "停止回测",
+    "debug.toggle_breakpoint": "切换断点",
+    "debug.clear_breakpoints": "清除所有断点",
+    "debug.step_over": "单步跳过",
+    "debug.step_into": "单步进入",
+    "debug.step_out": "单步跳出",
+    # 终端
+    "terminal.clear": "清空终端",
+    "terminal.new": "新建终端",
+    # 其他
+    "other.save_layout": "保存布局",
+    "other.settings": "设置",
+    "other.help": "帮助",
+}
+
+# =============================================================================
+# 合并结束
+# =============================================================================
 
 class MainWindow(QMainWindow, LoggerMixin):
     """主窗口类（重构版）.
@@ -98,7 +482,7 @@ class MainWindow(QMainWindow, LoggerMixin):
             self.theme_manager = ThemeManager()
             self.logger.debug("主题管理器初始化成功")
         except Exception as e:
-            self.logger.exception("初始化主题管理器失败: %s", e)
+            self.logger.error("❌ 初始化主题管理器失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             self.theme_manager = None
             # 向用户显示友好错误
             QMessageBox.warning(self, "初始化警告", "主题管理器初始化失败，将使用默认主题")
@@ -107,7 +491,7 @@ class MainWindow(QMainWindow, LoggerMixin):
             self.config_manager = ConfigManager()
             self.logger.debug("配置管理器初始化成功")
         except Exception as e:
-            self.logger.exception("初始化配置管理器失败: %s", e)
+            self.logger.error("❌ 初始化配置管理器失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             # 先设置为 None，后面会处理
             self.config_manager = None
 
@@ -260,7 +644,7 @@ class MainWindow(QMainWindow, LoggerMixin):
                 logger.warning("配置加载完成，但API Key未设置")
 
         except Exception as e:
-            logger.exception("配置初始化失败: %s", e)
+            logger.error("❌ 配置初始化失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
 
     def initialize_function_interfaces_after_backend(self):
         """在后端就绪后初始化功能界面（异步模式）."""
@@ -345,7 +729,6 @@ class MainWindow(QMainWindow, LoggerMixin):
             
             # 快捷键系统注册
             try:
-                from ui.core.shortcut_manager import ShortcutManager
                 if hasattr(self, 'shortcut_manager'):
                     shortcut_count = len(self.shortcut_manager.shortcuts) if hasattr(self.shortcut_manager, 'shortcuts') else 0
                     stage_logger.info("✅ 快捷键系统注册完成", extra={"log_type": "STAGE_NODE"})
@@ -422,7 +805,7 @@ class MainWindow(QMainWindow, LoggerMixin):
     def _initialize_backend_services(self):
         """初始化后端服务."""
         try:
-            from backend.core.base import initialize_services
+            from backend.startup.initializers.service_initializer import initialize_services
 
             logger.info("开始初始化后端服务")
             init_result = initialize_services()
@@ -433,10 +816,19 @@ class MainWindow(QMainWindow, LoggerMixin):
                 logger.warning("后端服务初始化失败")
                 error_report = init_result.get("user_friendly_report", "")
                 if error_report:
-                    logger.warning("错误详情: %s", error_report)
+                    logger.warning(
+                        "UI后端服务初始化错误详情: 详情=%s",
+                        error_report,
+                        extra={"log_type": "SYSTEM"}
+                    )
 
         except Exception as e:
-            logger.exception("后端服务初始化异常: %s", e)
+            logger.error(
+                "❌ UI后端服务初始化异常: 错误=%s",
+                str(e),
+                exc_info=True,
+                extra={"log_type": "SYSTEM"}
+            )
 
     def _connect_backend_progress_signals(self):
         """连接后台初始化进度信号."""
@@ -452,10 +844,18 @@ class MainWindow(QMainWindow, LoggerMixin):
                 )
                 self.logger.info("✓ 已连接后台进度信号")
             else:
-                self.logger.warning("⚠️ 后端引擎或进度发射器不可用")
+                self.logger.warning(
+                    "UI后端引擎或进度发射器不可用: 模块=backend.core.base",
+                    extra={"log_type": "SYSTEM"}
+                )
 
         except Exception as e:
-            self.logger.error("连接后台进度信号失败: %s", e, exc_info=True)
+            self.logger.error(
+                "UI连接后台进度信号失败: 错误=%s",
+                str(e),
+                extra={"log_type": "SYSTEM"},
+                exc_info=True
+            )
 
     def _update_cache_validation_progress(self, stage: str, percent: int):
         """更新缓存验证进度（在状态栏显示）.
@@ -544,7 +944,7 @@ class MainWindow(QMainWindow, LoggerMixin):
             # 这确保了输出顺序: 阶段3标题 → 分支A(监控) → 分支B(8步) → 分支C(业务服务) → 阶段4(UI主窗口)
             self.logger.info("[VALIDATION-FINISHED] 8步验证完成，现在初始化分支C业务服务...")
             try:
-                from ui.startup_coordinator import StartupCoordinator
+                from backend.startup.ui_startup.startup_coordinator import StartupCoordinator
                 import logging
                 
                 # 获取startup_coordinator的实例（如果存在）
@@ -586,7 +986,7 @@ class MainWindow(QMainWindow, LoggerMixin):
                         stage_logger.info("✅ TradingGatewayService初始化完成（已在前置阶段就绪）", extra={"log_type": "STAGE_NODE"})
                         stage_logger.info("✅ 交易服务就绪", extra={"log_type": "STAGE_NODE"})
                 except Exception as e:
-                    self.logger.exception("交易服务初始化异常: %s", e)
+                    self.logger.error("❌ 交易服务初始化异常: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
                     stage_logger.warning(f"⚠️ 交易服务初始化失败 - {str(e)}", extra={"log_type": "STAGE_NODE"})
                 
                 # 阶段3.5: 策略服务
@@ -620,7 +1020,7 @@ class MainWindow(QMainWindow, LoggerMixin):
                     stage_logger.info("  - 脚本交易: 1个模板", extra={"log_type": "STAGE_NODE"})
                     stage_logger.info("✅ 策略服务就绪", extra={"log_type": "STAGE_NODE"})
                 except Exception as e:
-                    self.logger.exception("策略服务初始化异常: %s", e)
+                    self.logger.error("❌ 策略服务初始化异常: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
                     stage_logger.warning(f"⚠️ 策略服务初始化失败 - {str(e)}", extra={"log_type": "STAGE_NODE"})
                 
                 # 阶段3.6: 辅助服务
@@ -667,13 +1067,13 @@ class MainWindow(QMainWindow, LoggerMixin):
                     stage_logger.info("  - 系统管理服务: 运行中", extra={"log_type": "STAGE_NODE"})
                     stage_logger.info("✅ 辅助服务就绪", extra={"log_type": "STAGE_NODE"})
                 except Exception as e:
-                    self.logger.exception("辅助服务初始化异常: %s", e)
+                    self.logger.error("❌ 辅助服务初始化异常: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
                     stage_logger.warning(f"⚠️ 辅助服务初始化失败 - {str(e)}", extra={"log_type": "STAGE_NODE"})
                 
                 self.logger.info("[VALIDATION-FINISHED] ✅ 分支C业务服务初始化完成")
                 
             except Exception as e:
-                self.logger.exception("分支C业务服务初始化失败: %s", e)
+                self.logger.error("❌ 分支C业务服务初始化失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
                 
             # 结束AI日志流程
             try:
@@ -692,7 +1092,7 @@ class MainWindow(QMainWindow, LoggerMixin):
                 self.status_bar.showMessage(status_msg, 3000 if not offline_mode else 0)
                 
         except Exception as e:
-            self.logger.exception(f"处理验证完成事件失败: {e}")
+            self.logger.error("❌ 处理验证完成事件失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
 
     def setup_ui(self):
         """设置主界面."""
@@ -1037,7 +1437,14 @@ class MainWindow(QMainWindow, LoggerMixin):
             # ✅ 完全移除boot_orchestrator回调机制，改为手动控制
 
         except Exception as e:
-            self.logger.error("❌ %s 界面创建失败: %s", interface_id, e, exc_info=True)
+            self.logger.error(
+                "UI界面创建失败: 界面ID=%s, 界面类=%s, 错误=%s",
+                interface_id,
+                interface_class.__name__ if interface_class else "Lazy",
+                str(e),
+                extra={"log_type": "SYSTEM"},
+                exc_info=True
+            )
             print(f"\n⚠️  界面 '{interface_id}' 创建失败: {e}")
             print(f"   类名: {interface_class.__name__ if interface_class else 'Lazy'}")
 
@@ -1066,7 +1473,13 @@ class MainWindow(QMainWindow, LoggerMixin):
                 # 成功后移除加载器，避免重复加载
                 self.lazy_loaders.pop(interface_id, None)
         except Exception as e:
-            self.logger.error("按需加载 '%s' 失败: %s", interface_id, e, exc_info=True)
+            self.logger.error(
+                "UI按需加载失败: 界面ID=%s, 错误=%s",
+                interface_id,
+                str(e),
+                extra={"log_type": "SYSTEM"},
+                exc_info=True
+            )
 
     def _trigger_lazy_loads_sequentially(self):
         """异步串行触发所有按需加载（避免阻塞UI）.
@@ -1074,7 +1487,10 @@ class MainWindow(QMainWindow, LoggerMixin):
         使用QTimer异步加载，避免长时间阻塞主线程。
         """
         if self._is_loading_interface:
-            self.logger.warning("⚠️ 已有界面正在加载，跳过重复触发")
+            self.logger.warning(
+                "UI已有界面正在加载，跳过重复触发: 当前加载中=是",
+                extra={"log_type": "SYSTEM"}
+            )
             return
 
         if self._interfaces_loaded:
@@ -1163,7 +1579,13 @@ class MainWindow(QMainWindow, LoggerMixin):
                 if not module_path or not class_name:
                     raise RuntimeError(f"未找到界面映射: {interface_id}")
                 klass = getattr(import_module(module_path), class_name)
-                real = klass()
+
+                # 特殊处理：为需要服务的界面传递正确的服务实例
+                if interface_id == "data":
+                    # DataCenter 不需要服务参数，会在内部自己获取服务
+                    real = klass()
+                else:
+                    real = klass()
             else:
                 real = interface_class()
             # 在内容栈中替换：找到占位索引并替换为真实界面
@@ -1415,57 +1837,20 @@ class MainWindow(QMainWindow, LoggerMixin):
             # validation由coordinator.initialization_completed信号触发
 
     def _start_background_validation(self):
-        """启动后台验证（使用Qt原生QThread）.
+        """启动后台验证（已禁用，避免重复执行）.
 
-        使用Qt的QThread替代Python的threading.Thread，确保：
-        1. 完全兼容EventEngine（基于Qt实现）
-        2. 信号槽通信线程安全
-        3. 不产生Qt Timer跨线程警告
+        ⚠️ 重要说明：
+        8步缓存验证流程已在后端初始化阶段（backend_init.py）中执行，
+        UI主窗口不应该再次启动验证，以避免重复执行和日志混乱。
+        
+        如果需要重新验证，应该通过后端服务的API接口来触发，
+        而不是在UI层直接启动验证工作线程。
         """
-        try:
-            # 🔍 DEBUG: 确认方法被调用
-            print("[DEBUG-IPO] _start_background_validation() 被调用")
-            self.logger.info("[DEBUG-IPO] _start_background_validation() 被调用")
-
-            # 获取ChinaStockEngine实例
-            from backend.core.base import get_china_stock_engine
-
-            engine = get_china_stock_engine()
-            if not engine:
-                self.logger.warning("ChinaStockEngine未就绪，跳过后台验证")
-                print("[DEBUG-IPO] ChinaStockEngine未就绪，跳过后台验证")
-                return
-
-            print("[DEBUG-IPO] ChinaStockEngine已就绪，准备创建验证工作对象")
-            self.logger.info("创建Qt原生验证工作对象...")
-
-            # ✅ 修复：使用core_engine.py中的CacheValidationWorker
-            from backend.infrastructure.data_module_vnpy.core_engine import CacheValidationWorker
-            from PySide6.QtCore import QThread
-            
-            self.validation_worker = CacheValidationWorker(engine)
-            self.validation_thread = QThread()
-            self.validation_worker.moveToThread(self.validation_thread)
-            
-            # 连接信号
-            self.validation_thread.started.connect(self.validation_worker.run)
-            self.validation_worker.validation_finished.connect(self.validation_thread.quit)
-            self.validation_worker.validation_error.connect(self.validation_thread.quit)
-            
-            # 连接进度信号
-            self.validation_worker.validation_progress.connect(self._on_validation_progress)
-            self.validation_worker.step_completed.connect(self._on_validation_step_completed)
-            
-            # 连接完成信号
-            self.validation_worker.validation_finished.connect(self._on_validation_finished)
-            
-            # 启动线程
-            self.validation_thread.start()
-            self.logger.info("✅ 验证工作线程已启动")
-            print("[DEBUG-IPO] ✅ 验证工作线程已启动")
-
-        except Exception as e:
-            self.logger.error("启动后台验证失败: %s", e, exc_info=True)
+        import traceback
+        self.logger.info("⚠️ UI层缓存验证已禁用（避免与后端重复执行）")
+        self.logger.info("💡 8步验证已在后端初始化阶段完成，无需重复执行")
+        self.logger.info("🔍 调用栈追踪：\n%s", ''.join(traceback.format_stack()))
+        return
 
     def _on_validation_progress(self, message: str, progress: int):
         """验证进度回调.
@@ -1544,6 +1929,14 @@ class MainWindow(QMainWindow, LoggerMixin):
 
         if reply == QMessageBox.StandardButton.Yes:
             try:
+                # 🔧 新增：清理所有子进程（包括监控进程）
+                try:
+                    from backend.startup.workers.monitor_launcher import cleanup_all_processes
+                    cleanup_all_processes()
+                    self.logger.info("子进程清理完成")
+                except Exception as e:
+                    self.logger.warning(f"清理子进程时出现警告: {e}")
+
                 from backend.core.base import shutdown_services
 
                 shutdown_services()
@@ -1658,7 +2051,7 @@ def main():
             init_settings()
 
         # 创建启动协调器（告知配置已初始化）
-        from ui.startup_coordinator import StartupCoordinator
+        from backend.startup.ui_startup.startup_coordinator import StartupCoordinator
 
         coordinator = StartupCoordinator(app, config_already_initialized=True)
 

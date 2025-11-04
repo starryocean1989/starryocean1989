@@ -87,7 +87,8 @@ def data_center_service():
     Returns:
         DataCenterService实例
     """
-    from backend.core.base import get_service_manager, initialize_services
+    from backend.core.base import get_service_manager
+    from backend.startup.initializers.service_initializer import initialize_services
 
     service_manager = get_service_manager()
 
@@ -141,7 +142,8 @@ def china_stock_engine():
     Returns:
         ChinaStockEngine实例
     """
-    from backend.core.base import get_china_stock_engine, initialize_services
+    from backend.core.base import get_china_stock_engine
+    from backend.startup.initializers.service_initializer import initialize_services
 
     engine = get_china_stock_engine()
 

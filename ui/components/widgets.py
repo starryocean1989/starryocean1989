@@ -132,15 +132,25 @@ class ErrorHandler:
         }
         log_level = severity_mapping.get(error.severity, logging.WARNING)
 
+        # 根据严重性选择log_type
+        if error.severity == ErrorSeverity.CRITICAL:
+            log_type = "SYSTEM"
+        elif error.severity == ErrorSeverity.HIGH:
+            log_type = "ALERT"
+        else:
+            log_type = "SYSTEM"
+        
         self.logger.log(
             log_level,
-            "错误处理: 类别=%s, 严重性=%s, ID=%s, 消息=%s, 重试=%d/%d",
+            "UI错误处理: 类别=%s, 严重性=%s, ID=%s, 消息=%s, 重试=%d/%d",
             error.category.value,
             error.severity.value,
             error.error_id,
             error.message,
             error.retry_count,
             error.max_retries,
+            extra={"log_type": log_type},
+            exc_info=(log_level >= logging.ERROR)
         )
 
         # 发射错误信号
@@ -155,7 +165,13 @@ class ErrorHandler:
             try:
                 return handler(error)
             except Exception as e:
-                self.logger.error("错误处理器异常: %s", e)
+                self.logger.error(
+                    "UI错误处理器异常: 类别=%s, 处理器错误=%s",
+                    error.category.value,
+                    str(e),
+                    extra={"log_type": "SYSTEM"},
+                    exc_info=True
+                )
                 return False
 
         # 默认自动重试逻辑
@@ -198,7 +214,7 @@ class ErrorHandler:
                 f"类别: {error.category.value}\n\n{error.message}",
             )
         except (RuntimeError, AttributeError) as e:
-            self.logger.error("显示错误对话框失败: %s", e)
+            self.logger.error("显示错误对话框失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
 
     @property
     def total_errors(self) -> int:
@@ -337,7 +353,7 @@ class BaseWidget(QWidget):
         handled = error_handler.handle_error(error_info, auto_retry=(max_retries > 0))
 
         # 记录到本地日志
-        self._logger.error("%s: %s", title, message)
+        self._logger.error("%s: %s", title, message, extra={"log_type": "SYSTEM"})
         self.error_occurred.emit(message)
 
         return handled
@@ -350,7 +366,7 @@ class BaseWidget(QWidget):
         - 通过QTimer.singleShot延迟弹窗（不阻塞调用线程）
         - 或者可以选择不弹窗，只记录日志
         """
-        self._logger.warning("%s: %s", title, message)
+        self._logger.warning("%s: %s", title, message, extra={"log_type": "SYSTEM"})
 
         # 🚀 方案1：使用QTimer延迟显示（非阻塞）
         # QTimer.singleShot(0, lambda: QMessageBox.warning(self, title, message, QMessageBox.StandardButton.Ok))

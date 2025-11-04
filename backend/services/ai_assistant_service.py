@@ -293,9 +293,9 @@ class AIAssistantService(BaseService):
                     error_msg = "API调用失败: 状态码=%d, 响应=%s"
                     # 分类异常处理 - 日志埋点v4.0
                     if response.status_code == 429:
-                        logger_alert.warning(error_msg, response.status_code, response.text[:200])
+                        logger_alert.warning(error_msg, response.status_code, response.text[:200], extra={"log_type": "ALERT"})
                     else:
-                        logger_alert.error(error_msg, response.status_code, response.text[:200])
+                        logger_alert.error(error_msg, response.status_code, response.text[:200], extra={"log_type": "ALERT"})
                     return {
                         "success": False,
                         "message": f"API调用失败：{response.status_code} - {response.text}",
@@ -400,25 +400,25 @@ class AIAssistantService(BaseService):
             }
 
         except requests.exceptions.Timeout:
-            self.logger.warning("API请求超时，可能是因为工具调用处理时间较长")
+            self.logger.warning("API请求超时，可能是因为工具调用处理时间较长", extra={"log_type": "SYSTEM"})
             return {
                 "success": False,
                 "message": "API请求超时。如果AI正在调用文件操作工具，请增加超时时间（在系统管理→系统配置中设置）。建议超时时间：60-90秒。",
             }
         except requests.exceptions.ConnectionError as e:
-            self.logger.error("连接错误：%s", e, exc_info=True)
+            self.logger.error("连接错误：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return {
                 "success": False,
                 "message": "连接错误: 服务器关闭了连接。可能原因：1) 请求过大 2) 服务器繁忙 3) 网络不稳定。建议：分步骤操作，避免一次性复杂请求。",
             }
         except requests.exceptions.RequestException as e:
-            self.logger.error("网络请求失败：%s", e, exc_info=True)
+            self.logger.error("网络请求失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return {
                 "success": False,
                 "message": f"网络请求失败: {str(e)}",
             }
         except Exception as e:
-            self.logger.error("API调用异常：%s", e, exc_info=True)
+            self.logger.error("API调用异常：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return {
                 "success": False,
                 "message": f"API调用异常: {str(e)}",
@@ -835,12 +835,12 @@ class AIAssistantService(BaseService):
             is_safe = target.is_relative_to(self.strategy_dir)
 
             if not is_safe:
-                self.logger.warning("路径安全检查失败：%s 不在策略目录内", file_path)
+                self.logger.warning("路径安全检查失败：%s 不在策略目录内", file_path, extra={"log_type": "SYSTEM"})
 
             return is_safe
 
         except Exception as e:
-            self.logger.error("路径安全检查异常：%s", e)
+            self.logger.error("路径安全检查异常：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
             return False
 
     def _execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> str:
@@ -870,7 +870,7 @@ class AIAssistantService(BaseService):
                 return f"错误：未知工具 '{tool_name}'"
 
         except Exception as e:
-            self.logger.error("工具执行失败：%s", e, exc_info=True)
+            self.logger.error("工具执行失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return f"错误：工具执行失败 - {str(e)}"
 
     def _tool_read_file(self, file_path: str) -> str:
@@ -920,7 +920,7 @@ class AIAssistantService(BaseService):
         except PermissionError:
             return f"错误：没有读取权限 - {file_path}"
         except Exception as e:
-            self.logger.error("读取文件失败：%s", e, exc_info=True)
+            self.logger.error("读取文件失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return f"错误：读取文件失败 - {str(e)}"
 
     def _tool_write_file(self, file_path: str, content: str) -> str:
@@ -970,7 +970,7 @@ class AIAssistantService(BaseService):
         except PermissionError:
             return f"错误：没有写入权限 - {file_path}"
         except Exception as e:
-            self.logger.error("写入文件失败：%s", e, exc_info=True)
+            self.logger.error("写入文件失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return f"错误：写入文件失败 - {str(e)}"
 
     def _tool_delete_file(self, file_path: str) -> str:
@@ -1015,7 +1015,7 @@ class AIAssistantService(BaseService):
         except PermissionError:
             return f"错误：没有删除权限 - {file_path}"
         except Exception as e:
-            self.logger.error("删除文件失败：%s", e, exc_info=True)
+            self.logger.error("删除文件失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return f"错误：删除文件失败 - {str(e)}"
 
     def _tool_list_strategy_files(self) -> str:
@@ -1046,5 +1046,5 @@ class AIAssistantService(BaseService):
             return result
 
         except Exception as e:
-            self.logger.error("列出策略文件失败：%s", e, exc_info=True)
+            self.logger.error("列出策略文件失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return f"错误：列出文件失败 - {str(e)}"

@@ -162,8 +162,9 @@ class StorageManager:
         
         except Exception as e:
             logger.error(
-                f"✗ 数据保存失败（异步）: {symbol}/{interval}, 错误: {e}",
-                exc_info=True
+                f"❌ [StorageManager] 数据保存失败（异步）: {symbol}/{interval}, 错误: {e}",
+                exc_info=True,
+                extra={"log_type": "SYSTEM"}
             )
             return False
     
@@ -213,8 +214,9 @@ class StorageManager:
         
         except Exception as e:
             logger.error(
-                f"✗ 数据加载失败（异步）: {symbol}/{interval}, 错误: {e}",
-                exc_info=True
+                f"❌ [StorageManager] 数据加载失败（异步）: {symbol}/{interval}, 错误: {e}",
+                exc_info=True,
+                extra={"log_type": "SYSTEM"}
             )
             return None
     
@@ -244,8 +246,9 @@ class StorageManager:
         
         except Exception as e:
             logger.error(
-                f"✗ 数据保存失败（同步）: {symbol}/{interval}, 错误: {e}",
-                exc_info=True
+                f"❌ [StorageManager] 数据保存失败（同步）: {symbol}/{interval}, 错误: {e}",
+                exc_info=True,
+                extra={"log_type": "SYSTEM"}
             )
             return False
     
@@ -286,8 +289,9 @@ class StorageManager:
         
         except Exception as e:
             logger.error(
-                f"✗ 数据加载失败（同步）: {symbol}/{interval}, 错误: {e}",
-                exc_info=True
+                f"❌ [StorageManager] 数据加载失败（同步）: {symbol}/{interval}, 错误: {e}",
+                exc_info=True,
+                extra={"log_type": "SYSTEM"}
             )
             return None
     
@@ -349,8 +353,9 @@ class StorageManager:
         
         except Exception as e:
             logger.error(
-                f"✗ 数据删除失败: {symbol}/{interval}, 错误: {e}",
-                exc_info=True
+                f"❌ [StorageManager] 数据删除失败: {symbol}/{interval}, 错误: {e}",
+                exc_info=True,
+                extra={"log_type": "SYSTEM"}
             )
             return False
     
@@ -463,7 +468,7 @@ class PreloadService:
                         results["failed"] += 1
                 
                 except Exception as e:
-                    logger.error(f"预加载失败: {symbol}/{interval}, 错误: {e}")
+                    logger.error(f"❌ [PreloadService] 预加载失败: {symbol}/{interval}, 错误: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
                     results["failed"] += 1
         
         logger.info(
@@ -773,7 +778,7 @@ class LRUCacheManager(Generic[K, V]):
             try:
                 self.on_evict(key, entry.value)
             except Exception as e:
-                logger.error(f"淘汰回调执行失败: {e}")
+                logger.warning(f"⚠️ [LRUCacheManager] 淘汰回调执行失败: {e}", extra={"log_type": "SYSTEM"})
 
 
 # ==============================================================================

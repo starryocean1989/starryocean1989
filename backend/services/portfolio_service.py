@@ -82,7 +82,7 @@ class PortfolioService(BaseService):
 
             event_engine = get_event_engine()
             if not event_engine:
-                self.logger.warning("EventEngine不可用，无法注册事件处理器")
+                self.logger.warning("EventEngine不可用，无法注册事件处理器", extra={"log_type": "SYSTEM"})
                 return
 
             # 尝试导入vnpy事件类型
@@ -105,10 +105,10 @@ class PortfolioService(BaseService):
                 self.logger.info("✅ 已注册vnpy交易事件处理器（包含策略状态监听）")
 
             except ImportError:
-                self.logger.warning("无法导入vnpy事件类型，实时数据获取功能不可用")
+                self.logger.warning("无法导入vnpy事件类型，实时数据获取功能不可用", extra={"log_type": "SYSTEM"})
 
         except Exception as e:
-            self.logger.error("注册事件处理器失败：%s", e, exc_info=True)
+            self.logger.error("注册事件处理器失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
 
     def _on_position_update(self, event):
         """处理持仓更新事件（增强版：实时缓存）.
@@ -149,7 +149,7 @@ class PortfolioService(BaseService):
             )
 
         except Exception as e:
-            self.logger.error("处理持仓更新失败：%s", e)
+            self.logger.error("处理持仓更新失败：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
 
     def _on_account_update(self, event):
         """处理资金更新事件（增强版：实时缓存）.
@@ -188,7 +188,7 @@ class PortfolioService(BaseService):
             )
 
         except Exception as e:
-            self.logger.error("处理资金更新失败：%s", e)
+            self.logger.error("处理资金更新失败：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
 
     def _on_trade_update(self, event):
         """处理成交更新事件（增强版：实时缓存和成本追踪）.
@@ -224,7 +224,7 @@ class PortfolioService(BaseService):
             )
 
         except Exception as e:
-            self.logger.error("处理成交更新失败: %s", e)
+            self.logger.error("处理成交更新失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
 
     def _update_position_cost(self, gateway_name: str, trade):
         """更新开仓成本.
@@ -262,7 +262,7 @@ class PortfolioService(BaseService):
             )
 
         except Exception as e:
-            self.logger.warning(f"更新开仓成本失败: {e}")
+            self.logger.warning(f"更新开仓成本失败: {e}", extra={"log_type": "SYSTEM"})
 
     def _on_strategy_status_changed(self, event):
         """处理策略状态变化事件（自动更新组合识别）.
@@ -307,7 +307,7 @@ class PortfolioService(BaseService):
                     self.logger.info(f"➖ 移除自动组合: {portfolio_id} (策略数: {active_count})")
 
         except Exception as e:
-            self.logger.error(f"处理策略状态变化失败: {e}", exc_info=True)
+            self.logger.error(f"处理策略状态变化失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
 
     def _do_shutdown(self) -> bool:
         """关闭组合投资服务."""
@@ -342,7 +342,7 @@ class PortfolioService(BaseService):
             gateway_service = service_manager.get_service("trading_gateway_service")
 
             if not gateway_service:
-                self.logger.warning("TradingGatewayService不可用，无法扫描自动组合")
+                self.logger.warning("TradingGatewayService不可用，无法扫描自动组合", extra={"log_type": "SYSTEM"})
                 return
 
             # 识别激活超过1个策略的网关
@@ -364,7 +364,7 @@ class PortfolioService(BaseService):
                         )
 
         except Exception as e:
-            self.logger.error(f"扫描自动组合失败: {e}")
+            self.logger.error(f"扫描自动组合失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
 
     def _start_auto_scan(self):
         """启动自动扫描定时器."""
@@ -372,7 +372,7 @@ class PortfolioService(BaseService):
             self.logger.info(f"启动组合自动扫描（间隔{self.scan_interval}秒）")
             self._schedule_next_scan()
         except Exception as e:
-            self.logger.error(f"启动自动扫描失败: {e}")
+            self.logger.error(f"启动自动扫描失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
 
     def _stop_auto_scan(self):
         """停止自动扫描定时器."""
@@ -391,7 +391,7 @@ class PortfolioService(BaseService):
                 self._scan_and_create_auto_portfolios()
                 self._schedule_next_scan()  # 递归调度
             except Exception as e:
-                self.logger.error(f"定时扫描任务失败: {e}")
+                self.logger.error(f"定时扫描任务失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
 
         self.scan_timer = Timer(self.scan_interval, scan_task)
         self.scan_timer.daemon = True
@@ -614,7 +614,7 @@ class PortfolioService(BaseService):
                         )
 
                 except Exception as e:
-                    self.logger.warning("获取网关 %s 数据失败: %s", gw_name, e)
+                    self.logger.warning("获取网关 %s 数据失败: %s", gw_name, e, extra={"log_type": "SYSTEM"})
 
             # 总盈亏 = 持仓盈亏 + 交易盈亏
             total_pnl = total_holding_pnl + total_trading_pnl
@@ -708,7 +708,7 @@ class PortfolioService(BaseService):
             return trading_pnl
 
         except Exception as e:
-            self.logger.warning(f"计算Trading P&L失败: {e}")
+            self.logger.warning(f"计算Trading P&L失败: {e}", extra={"log_type": "SYSTEM"})
             return 0.0
 
     def _calculate_holding_pnl(
@@ -741,7 +741,7 @@ class PortfolioService(BaseService):
             return holding_pnl
 
         except Exception as e:
-            self.logger.warning(f"计算Holding P&L失败: {e}")
+            self.logger.warning(f"计算Holding P&L失败: {e}", extra={"log_type": "SYSTEM"})
             return 0.0
 
     def get_portfolio_monitoring(self, portfolio_name: str) -> Dict[str, Any]:
@@ -809,7 +809,7 @@ class PortfolioService(BaseService):
                             aggregated_data["total_pnl"] += position.get("pnl", 0)
 
                 except Exception as e:
-                    self.logger.warning(f"获取网关 {gw_name} 数据失败: {e}")
+                    self.logger.warning(f"获取网关 {gw_name} 数据失败: {e}", extra={"log_type": "SYSTEM"})
 
             return {
                 "success": True,
@@ -1054,7 +1054,7 @@ class PortfolioService(BaseService):
             }
 
         except ImportError as e:
-            self.logger.error("pandas未安装，无法计算周期统计: %s", e)
+            self.logger.error("pandas未安装，无法计算周期统计: %s", e, extra={"log_type": "SYSTEM"})
             return {"success": False, "message": "pandas库未安装"}
         except Exception as e:
             self._log_error("计算周期统计", e)
@@ -1129,6 +1129,7 @@ class PortfolioService(BaseService):
                     "风险告警: 最大回撤过大, 组合=%s, 最大回撤=%.2f%%",
                     portfolio_name,
                     max_drawdown * 100,
+                    extra={"log_type": "ALERT"}
                 )
 
             if volatility > 0.40:  # 年化波动率超过40%
@@ -1136,11 +1137,12 @@ class PortfolioService(BaseService):
                     "风险告警: 波动率过高, 组合=%s, 年化波动率=%.2f%%",
                     portfolio_name,
                     volatility * 100,
+                    extra={"log_type": "ALERT"}
                 )
 
             if sharpe_ratio < 0:  # 夏普比率为负
                 logger_alert.error(
-                    "风险告警: 夏普比率为负, 组合=%s, 夏普比率=%.2f", portfolio_name, sharpe_ratio
+                    "风险告警: 夏普比率为负, 组合=%s, 夏普比率=%.2f", portfolio_name, sharpe_ratio, extra={"log_type": "ALERT"}
                 )
 
             return {
@@ -1157,7 +1159,7 @@ class PortfolioService(BaseService):
             }
 
         except ImportError as e:
-            self.logger.warning(f"scipy或numpy未安装: {e}")
+            self.logger.warning(f"scipy或numpy未安装: {e}", extra={"log_type": "SYSTEM"})
             return {
                 "success": False,
                 "message": "scipy或numpy未安装，无法计算高级风险指标",
@@ -1271,14 +1273,14 @@ class PortfolioService(BaseService):
 
             # 如果数据库中没有数据，生成模拟数据用于演示
             if not trades:
-                self.logger.warning("数据库中无历史交易记录，使用模拟数据")
+                self.logger.warning("数据库中无历史交易记录，使用模拟数据", extra={"log_type": "SYSTEM"})
                 trades = self._generate_mock_trades(start_date, end_date)
 
             self.logger.info("加载了 %d 条历史交易记录", len(trades))
             return trades
 
         except Exception as e:
-            self.logger.error("加载历史交易记录失败: %s", e)
+            self.logger.error("加载历史交易记录失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
             # 发生错误时返回模拟数据
             return self._generate_mock_trades(start_date, end_date)
 
@@ -1320,7 +1322,7 @@ class PortfolioService(BaseService):
             return trades
 
         except Exception as e:
-            self.logger.error("生成模拟交易数据失败: %s", e)
+            self.logger.error("生成模拟交易数据失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
             return []
 
     def _calculate_performance_curve(self, trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -1371,7 +1373,7 @@ class PortfolioService(BaseService):
             return performance_curve
 
         except Exception as e:
-            self.logger.error("计算业绩曲线失败: %s", e)
+            self.logger.error("计算业绩曲线失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
             return []
 
     def _calculate_period_statistics_data(
@@ -1443,7 +1445,7 @@ class PortfolioService(BaseService):
             return statistics
 
         except Exception as e:
-            self.logger.error("计算周期统计失败: %s", e)
+            self.logger.error("计算周期统计失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
             return []
 
     def _analyze_drawdowns(self, performance_curve: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -1509,7 +1511,7 @@ class PortfolioService(BaseService):
             return [analysis]
 
         except Exception as e:
-            self.logger.error("分析回撤失败: %s", e)
+            self.logger.error("分析回撤失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
             return []
 
     def save_trade_to_history(
@@ -1570,7 +1572,7 @@ class PortfolioService(BaseService):
             return {"success": True, "message": "交易记录已保存"}
 
         except Exception as e:
-            self.logger.error("保存交易记录失败: %s", e)
+            self.logger.error("保存交易记录失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
             return {"success": False, "message": str(e)}
 
     def save_account_snapshot(
@@ -1618,7 +1620,7 @@ class PortfolioService(BaseService):
             return {"success": True, "message": "账户快照已保存"}
 
         except Exception as e:
-            self.logger.error("保存账户快照失败: %s", e)
+            self.logger.error("保存账户快照失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
             return {"success": False, "message": str(e)}
 
     def calculate_portfolio_volatility(
@@ -1918,7 +1920,7 @@ class PortfolioService(BaseService):
             }
 
         except Exception as e:
-            self.logger.error(f"获取组合收益率失败: {e}")
+            self.logger.error(f"获取组合收益率失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
             return {"success": False, "message": str(e)}
 
     def _get_benchmark_returns(
@@ -1946,7 +1948,7 @@ class PortfolioService(BaseService):
             data_center = service_manager.get_service("data_center_service")
 
             if not data_center:
-                self.logger.warning("数据中心服务不可用，使用模拟数据")
+                self.logger.warning("数据中心服务不可用，使用模拟数据", extra={"log_type": "SYSTEM"})
                 return self._get_mock_benchmark_returns(lookback_days)
 
             # 调用数据中心的指数收益率查询API
@@ -1968,11 +1970,11 @@ class PortfolioService(BaseService):
                 }
             else:
                 # 如果查询失败，降级到模拟数据
-                self.logger.warning(f"查询指数数据失败: {result.get('message')}, 使用模拟数据")
+                self.logger.warning(f"查询指数数据失败: {result.get('message')}, 使用模拟数据", extra={"log_type": "SYSTEM"})
                 return self._get_mock_benchmark_returns(lookback_days)
 
         except Exception as e:
-            self.logger.warning(f"获取基准收益率失败: {e}, 使用模拟数据")
+            self.logger.warning(f"获取基准收益率失败: {e}, 使用模拟数据", extra={"log_type": "SYSTEM"})
             return self._get_mock_benchmark_returns(lookback_days)
 
     def _get_mock_benchmark_returns(self, lookback_days: int) -> Dict[str, Any]:
@@ -2028,5 +2030,5 @@ class PortfolioService(BaseService):
             return max(int(duration), 0)
 
         except Exception as e:
-            self.logger.warning(f"计算回撤持续时间失败: {e}")
+            self.logger.warning(f"计算回撤持续时间失败: {e}", extra={"log_type": "SYSTEM"})
             return 0

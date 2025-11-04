@@ -54,7 +54,7 @@ def to_dataframe(data: Any, set_index: bool = True) -> pd.DataFrame:
     elif isinstance(data, dict):
         result = pd.DataFrame(data=[data])
     else:
-        logger.warning(f"不支持的数据类型: {type(data)}")
+        logger.warning(f"不支持的数据类型: {type(data)}", extra={"log_type": "SYSTEM"})
         return pd.DataFrame()
 
     # 自动索引设置（模仿mootdx行为）
@@ -82,7 +82,7 @@ def to_dataframe(data: Any, set_index: bool = True) -> pd.DataFrame:
                 # 删除原时间列（模仿mootdx行为）
                 result = result.drop(columns=[index_col])
             except Exception as e:
-                logger.warning(f"设置时间索引失败: {e}")
+                logger.warning(f"设置时间索引失败: {e}", extra={"log_type": "SYSTEM"})
 
         # vol字段别名处理（模仿mootdx行为）
         if 'vol' in result.columns and 'volume' not in result.columns:
@@ -117,7 +117,7 @@ async def to_file_async(
     :return: 是否保存成功
     """
     if df is None or df.empty:
-        logger.warning("数据为空，跳过保存")
+        logger.warning("数据为空，跳过保存", extra={"log_type": "SYSTEM"})
         return False
 
     filepath_obj = Path(filepath)
@@ -127,7 +127,7 @@ async def to_file_async(
     try:
         filepath_obj.parent.mkdir(parents=True, exist_ok=True)
     except Exception as e:
-        logger.error(f"创建目录失败: {e}")
+        logger.error(f"创建目录失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
         return False
 
     try:
@@ -142,7 +142,7 @@ async def to_file_async(
             try:
                 await _async_write_excel(df, filepath_obj)
             except ImportError:
-                logger.warning("未安装openpyxl，使用CSV格式保存")
+                logger.warning("未安装openpyxl，使用CSV格式保存", extra={"log_type": "SYSTEM"})
                 csv_path = filepath_obj.with_suffix('.csv')
                 csv_content = df.to_csv(index=False, encoding='utf-8')
                 await _async_write_text(csv_path, csv_content)
@@ -160,7 +160,7 @@ async def to_file_async(
             try:
                 await _async_write_hdf5(df, filepath_obj)
             except ImportError:
-                logger.warning("未安装tables，使用JSON格式保存")
+                logger.warning("未安装tables，使用JSON格式保存", extra={"log_type": "SYSTEM"})
                 json_path = filepath_obj.with_suffix('.json')
                 json_content = df.to_json(orient='records', indent=2)
                 if json_content is None:
@@ -173,21 +173,21 @@ async def to_file_async(
             try:
                 await _async_write_parquet(df, filepath_obj)
             except ImportError:
-                logger.warning("未安装pyarrow，使用CSV格式保存")
+                logger.warning("未安装pyarrow，使用CSV格式保存", extra={"log_type": "SYSTEM"})
                 csv_path = filepath_obj.with_suffix('.csv')
                 csv_content = df.to_csv(index=False, encoding='utf-8')
                 await _async_write_text(csv_path, csv_content)
                 return True
 
         else:
-            logger.error(f"不支持的文件格式: {format_hint}")
+            logger.error(f"不支持的文件格式: {format_hint}", extra={"log_type": "SYSTEM"})
             return False
 
         logger.info(f"数据已保存到: {filepath_obj}")
         return True
 
     except Exception as e:
-        logger.error(f"保存文件失败: {e}")
+        logger.error(f"保存文件失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
         return False
 
 
@@ -240,7 +240,7 @@ def to_csv(df: pd.DataFrame, filepath: str) -> bool:
         df.to_csv(filepath, index=False, encoding='utf-8')
         return True
     except Exception as e:
-        logger.error(f"CSV保存失败: {e}")
+        logger.error(f"CSV保存失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
         return False
 
 
@@ -256,7 +256,7 @@ def to_json(df: pd.DataFrame, filepath: str) -> bool:
         df.to_json(filepath, orient='records', indent=2)
         return True
     except Exception as e:
-        logger.error(f"JSON保存失败: {e}")
+        logger.error(f"JSON保存失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
         return False
 
 

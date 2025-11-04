@@ -633,7 +633,7 @@ class StrategyCenterService(BaseService, LoggerMixin):
                 self.logger.info("没有历史回测任务")
 
         except Exception as e:
-            self.logger.warning("加载历史回测任务失败：%s", e)
+            self.logger.warning("加载历史回测任务失败：%s", e, extra={"log_type": "SYSTEM"})
 
     def _init_backtest_engine(self):
         """初始化回测引擎."""
@@ -864,7 +864,7 @@ class StrategyCenterService(BaseService, LoggerMixin):
                 return self._get_default_template(template_type)
 
         except Exception as e:
-            self.logger.warning("读取模板文件失败：%s", e)
+            self.logger.warning("读取模板文件失败：%s", e, extra={"log_type": "SYSTEM"})
             return self._get_default_template(template_type)
 
     def _get_default_template(self, template_type: str) -> str:
@@ -1100,14 +1100,14 @@ class MyPortfolioStrategy(StrategyTemplate):
             target_file = self.strategy_root / file_path
 
             if not target_file.exists() or not target_file.is_file():
-                self.logger.error("策略文件不存在：%s", file_path)
+                self.logger.error("策略文件不存在：%s", file_path, extra={"log_type": "SYSTEM"})
                 return None
 
             # 解析策略文件获取信息
             strategy_info = self._parse_strategy_file(target_file)
 
             if not strategy_info:
-                self.logger.error("无法解析策略文件：%s", file_path)
+                self.logger.error("无法解析策略文件：%s", file_path, extra={"log_type": "SYSTEM"}, exc_info=True)
                 return None
 
             # 构建模块导入路径
@@ -1196,10 +1196,10 @@ class MyPortfolioStrategy(StrategyTemplate):
             return None  # 没有找到策略类
 
         except SyntaxError as e:
-            self.logger.warning("策略文件语法错误 %s：%s", file_path.name, e)
+            self.logger.warning("策略文件语法错误 %s：%s", file_path.name, e, extra={"log_type": "SYSTEM"})
             return None
         except Exception as e:
-            self.logger.warning("解析策略文件失败 %s：%s", file_path.name, e)
+            self.logger.warning("解析策略文件失败 %s：%s", file_path.name, e, extra={"log_type": "SYSTEM"})
             return None
 
     def _identify_strategy_type_from_bases(self, base_names: List[str]) -> tuple:
@@ -1318,14 +1318,14 @@ class MyPortfolioStrategy(StrategyTemplate):
                 ai_log_started = True
                 self.logger.info(f"AI日志文件: {ai_log_file}")
             except Exception as e:
-                self.logger.warning(f"启动AI日志流程失败: {e}")
+                self.logger.warning(f"启动AI日志流程失败: {e}", extra={"log_type": "SYSTEM"})
 
             try:
                 self.log_operation_start("启动回测任务", task_id=task_id, strategy=strategy_file)
 
                 # 检查回测引擎是否可用
                 if not self.backtest_engine:
-                    self.logger.error("回测引擎不可用（vnpy_ctabacktester未安装）")
+                    self.logger.error("回测引擎不可用（vnpy_ctabacktester未安装）", extra={"log_type": "SYSTEM"})
                     if ai_log_started:
                         end_ai_process(success=False, summary="回测引擎不可用（vnpy_ctabacktester未安装）")
                     return {
@@ -1338,7 +1338,7 @@ class MyPortfolioStrategy(StrategyTemplate):
                 # 验证策略文件存在
                 strategy_path = self.strategy_root / strategy_file
                 if not strategy_path.exists():
-                    self.logger.error("策略文件不存在：%s", strategy_file)
+                    self.logger.error("策略文件不存在：%s", strategy_file, extra={"log_type": "SYSTEM"})
                     if ai_log_started:
                         end_ai_process(success=False, summary=f"策略文件不存在: {strategy_file}")
                     return {
@@ -1412,7 +1412,7 @@ class MyPortfolioStrategy(StrategyTemplate):
                         ai_log_started_backtest = True
                         self.logger.info(f"AI日志文件（回测执行）: {ai_log_file}")
                     except Exception as e:
-                        self.logger.warning(f"启动AI日志流程失败: {e}")
+                        self.logger.warning(f"启动AI日志流程失败: {e}", extra={"log_type": "SYSTEM"})
 
                     # 切换到回测阶段 - 日志埋点v4.0
                     try:
@@ -1545,10 +1545,11 @@ class MyPortfolioStrategy(StrategyTemplate):
                                                 )
                                 else:
                                     self.logger.warning(
-                                        "未能从数据中心获取历史数据，回测将使用vnpy内置数据源"
+                                        "未能从数据中心获取历史数据，回测将使用vnpy内置数据源",
+                                        extra={"log_type": "SYSTEM"}
                                     )
                             else:
-                                self.logger.warning("数据中心服务不可用，回测将使用vnpy内置数据源")
+                                self.logger.warning("数据中心服务不可用，回测将使用vnpy内置数据源", extra={"log_type": "SYSTEM"})
 
                             # 更新进度：执行回测
                             task["progress"] = 50
@@ -1731,7 +1732,7 @@ class MyPortfolioStrategy(StrategyTemplate):
                         self.log_performance(
                             "回测执行", total_duration, False, {"task_id": task_id, "error": str(e)}
                         )
-                        logger_alert.error("[回测-%s] 失败：%s", task_id, e, exc_info=True)
+                        logger_alert.error("[回测-%s] 失败：%s", task_id, e, exc_info=True, extra={"log_type": "ALERT"})
                         task["status"] = "failed"
                         task["progress"] = 0
                         task["result"] = {

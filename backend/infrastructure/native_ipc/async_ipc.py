@@ -9,11 +9,16 @@
 import asyncio
 import sys
 import platform
+import logging
 from typing import Optional, Union
 from pathlib import Path
 
+# 创建logger
+logger = logging.getLogger(__name__)
+
 # 仅Windows平台支持
 if platform.system() != "Windows":
+    logger.critical("IPC异步通信仅支持Windows平台", extra={"log_type": "SYSTEM"})
     raise RuntimeError("IPC async only supports Windows platform")
 
 try:
@@ -59,6 +64,7 @@ class AsyncIPCPipe:
         self._last_operation_type: Optional[str] = None
 
         if not IPC_AVAILABLE:
+            logger.warning("IPC扩展不可用，请编译C扩展", extra={"log_type": "SYSTEM"})
             raise RuntimeError(
                 "IPC extension not available. "
                 "Please compile the C extension."
@@ -114,48 +120,78 @@ class AsyncIPCPipe:
     async def _create_server(self):
         """创建服务端管道（内部方法）"""
         if self._closed:
+            logger.error("管道已关闭，无法创建服务端", extra={"log_type": "SYSTEM"})
             raise ValueError("Pipe is closed")
 
         if not IPC_AVAILABLE:
+            logger.warning("IPC扩展不可用", extra={"log_type": "SYSTEM"})
             raise RuntimeError("IPC extension not available")
 
         if ipc_async is None:
+            logger.warning("ipc_async扩展不可用", extra={"log_type": "SYSTEM"})
             raise RuntimeError("ipc_async extension not available")
 
         self._loop = asyncio.get_running_loop()
 
         # 创建IPC管道对象
-        self._pipe = ipc_async.IPCAsyncPipe()  # type: ignore
+        try:
+            self._pipe = ipc_async.IPCAsyncPipe()  # type: ignore
+        except Exception as e:
+            logger.error(f"创建IPC管道对象失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            raise
 
         # 创建服务端管道
-        self._pipe.create_server_pipe(self.pipe_name)
+        try:
+            self._pipe.create_server_pipe(self.pipe_name)
+        except Exception as e:
+            logger.error(f"创建服务端管道失败: {self.pipe_name}, 错误: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            raise
 
         # 注册到事件循环扩展
-        self._extension = get_loop_extension(self._loop)
-        self._extension.register_iocp_pipe(self._pipe)
+        try:
+            self._extension = get_loop_extension(self._loop)
+            self._extension.register_iocp_pipe(self._pipe)
+        except Exception as e:
+            logger.error(f"注册IPC管道到事件循环扩展失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            raise
 
     async def _create_client(self):
         """连接到服务端管道（内部方法）"""
         if self._closed:
+            logger.error("管道已关闭，无法连接", extra={"log_type": "SYSTEM"})
             raise ValueError("Pipe is closed")
 
         if not IPC_AVAILABLE:
+            logger.warning("IPC扩展不可用", extra={"log_type": "SYSTEM"})
             raise RuntimeError("IPC extension not available")
 
         if ipc_async is None:
+            logger.warning("ipc_async扩展不可用", extra={"log_type": "SYSTEM"})
             raise RuntimeError("ipc_async extension not available")
 
         self._loop = asyncio.get_running_loop()
 
         # 创建IPC管道对象
-        self._pipe = ipc_async.IPCAsyncPipe()  # type: ignore
+        try:
+            self._pipe = ipc_async.IPCAsyncPipe()  # type: ignore
+        except Exception as e:
+            logger.error(f"创建IPC管道对象失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            raise
 
         # 连接到服务端管道
-        self._pipe.create_client_pipe(self.pipe_name)
+        try:
+            self._pipe.create_client_pipe(self.pipe_name)
+        except Exception as e:
+            logger.error(f"连接服务端管道失败: {self.pipe_name}, 错误: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            raise
 
         # 注册到事件循环扩展
-        self._extension = get_loop_extension(self._loop)
-        self._extension.register_iocp_pipe(self._pipe)
+        try:
+            self._extension = get_loop_extension(self._loop)
+            self._extension.register_iocp_pipe(self._pipe)
+        except Exception as e:
+            logger.error(f"注册IPC管道到事件循环扩展失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            raise
 
     async def read(self, size: int = 4096) -> bytes:
         """
@@ -168,11 +204,14 @@ class AsyncIPCPipe:
             读取的数据（bytes）
         """
         if self._pipe is None:
+            logger.error("管道未打开，无法读取", extra={"log_type": "SYSTEM"})
             raise ValueError("Pipe not opened")
         if self._closed:
+            logger.error("管道已关闭，无法读取", extra={"log_type": "SYSTEM"})
             raise ValueError("Pipe is closed")
 
         if self._extension is None:
+            logger.error("事件循环扩展未初始化", extra={"log_type": "SYSTEM"})
             raise RuntimeError("Event loop extension not initialized")
 
         # 启动异步读取
@@ -222,10 +261,12 @@ class AsyncIPCPipe:
                         if is_complete and isinstance(data, bytes):
                             return data
 
+                    logger.error(f"从管道读取时遇到意外的结果格式: {result_data}, 类型: {type(result_data)}", extra={"log_type": "SYSTEM"})
                     raise RuntimeError(
                         f"Unexpected result format: {result_data}, type: {type(result_data)}"
                     )
         else:
+            logger.error(f"从管道读取时遇到意外的结果类型: {type(result)}", extra={"log_type": "SYSTEM"})
             raise RuntimeError(f"Unexpected result type: {type(result)}")
 
         # 最后的fallback
@@ -236,9 +277,10 @@ class AsyncIPCPipe:
                     is_complete, data = result
                     if is_complete and isinstance(data, bytes):
                         return data
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"检查完成状态时发生异常: {e}", extra={"log_type": "SYSTEM"})
 
+        logger.error(f"从管道读取失败: 意外的结果格式, 管道: {self.pipe_name}", extra={"log_type": "SYSTEM"})
         raise RuntimeError("Failed to read from pipe: unexpected result format")
 
     async def write(self, data: bytes) -> int:
@@ -252,11 +294,14 @@ class AsyncIPCPipe:
             写入的字节数
         """
         if self._pipe is None:
+            logger.error("管道未打开，无法写入", extra={"log_type": "SYSTEM"})
             raise ValueError("Pipe not opened")
         if self._closed:
+            logger.error("管道已关闭，无法写入", extra={"log_type": "SYSTEM"})
             raise ValueError("Pipe is closed")
 
         if self._extension is None:
+            logger.error("事件循环扩展未初始化", extra={"log_type": "SYSTEM"})
             raise RuntimeError("Event loop extension not initialized")
 
         # 启动异步写入
@@ -289,8 +334,10 @@ class AsyncIPCPipe:
                 elif isinstance(result_data, int):
                     return result_data
                 else:
+                    logger.error(f"向管道写入时遇到意外的结果格式: {result_data}", extra={"log_type": "SYSTEM"})
                     raise RuntimeError(f"Unexpected result format: {result_data}")
         else:
+            logger.error(f"向管道写入时遇到意外的结果类型: {type(result)}", extra={"log_type": "SYSTEM"})
             raise RuntimeError(f"Unexpected result type: {type(result)}")
 
         return 0  # fallback

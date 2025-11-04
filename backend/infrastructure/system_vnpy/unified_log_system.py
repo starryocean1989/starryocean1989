@@ -31,17 +31,23 @@ import json
 import logging
 import time
 import yaml
+import gzip
+import os
+import asyncio
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 from functools import wraps
 from pathlib import Path
-from threading import Lock
+from threading import Lock, RLock
 from typing import Any, Dict, List, Optional, Callable
+from functools import lru_cache
 
 from vnpy.event import Event, EventEngine
 
+# 日志配置
+logger = logging.getLogger("backend.infrastructure.system_vnpy.unified_log_system")
 
 # =============================================================================
 # Part 1: 数据结构定义
@@ -58,6 +64,15 @@ class LogType(Enum):
     USER_FEEDBACK = "user_feedback"
     DEBUG = "debug"
     STAGE_NODE = "stage_node"
+
+
+# 排除字段集合（类级别常量，避免每次重新创建）
+_EXCLUDED_FIELDS = frozenset([
+    "name", "msg", "args", "created", "filename", "funcName", "levelname",
+    "levelno", "lineno", "module", "msecs", "message", "pathname", "process",
+    "processName", "relativeCreated", "thread", "threadName", "exc_info",
+    "exc_text", "stack_info",
+])
 
 
 @dataclass
@@ -99,12 +114,12 @@ EVENT_UI_DIALOG = "eUIDialog"
 class RuleCache:
     """规则缓存（LRU+TTL）."""
 
-    def __init__(self, ttl_seconds: int = 5, max_size: int = 1000):
+    def __init__(self, ttl_seconds: int = 60, max_size: int = 5000):
         """初始化缓存.
 
         Args:
-            ttl_seconds: 缓存生存时间（秒）
-            max_size: 最大缓存条目数
+            ttl_seconds: 缓存生存时间（秒），默认60秒（从5秒优化）
+            max_size: 最大缓存条目数，默认5000（从1000优化）
         """
         self.ttl = ttl_seconds
         self.max_size = max_size
@@ -191,7 +206,7 @@ class RoutingRuleEngine:
 
         self.current_stage = "startup"
         self.run_mode = "prod"
-        self.cache = RuleCache(ttl_seconds=5)
+        self.cache = RuleCache(ttl_seconds=60, max_size=5000)
         self._route_count = 0
 
         self.logger.info("路由规则引擎初始化完成")
@@ -204,14 +219,14 @@ class RoutingRuleEngine:
         """加载YAML配置."""
         file_path = self.config_dir / filename
         if not file_path.exists():
-            self.logger.warning("配置文件不存在: %s", file_path)
+            self.logger.warning("配置文件不存在: %s", file_path, extra={"log_type": "SYSTEM"})
             return {}
 
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 return yaml.safe_load(f) or {}
         except Exception as e:
-            self.logger.error("加载配置文件失败: %s, 错误: %s", filename, e)
+            self.logger.error("加载配置文件失败: %s, 错误: %s", filename, e, extra={"log_type": "SYSTEM"})
             return {}
 
     def route(self, record: UnifiedLogRecord) -> List[str]:
@@ -301,7 +316,7 @@ class RoutingRuleEngine:
         missing_types = [lt for lt in required_log_types if lt not in self.global_rules]
 
         if missing_types:
-            self.logger.error(f"全局规则缺少LogType: {missing_types}")
+            self.logger.error(f"全局规则缺少LogType: {missing_types}", extra={"log_type": "ALERT"})
             return False
 
         self.logger.info("配置验证通过")
@@ -358,6 +373,28 @@ class AILogFileHandler(logging.Handler):
         # ✅ 统计各级别日志数量
         self._level_counts = {"DEBUG": 0, "INFO": 0, "WARNING": 0, "ERROR": 0, "CRITICAL": 0}
 
+        # 日志压缩配置
+        self._compression_enabled = True
+        self._compression_size_threshold_mb = 10  # 10MB
+        self._compression_age_days = 7  # 7天
+
+        # 异步I/O支持
+        try:
+            from backend.infrastructure.native_iocp.compat import (
+                aopen as _compat_aopen,
+                is_iocp_available,
+            )
+            self._use_async_io = is_iocp_available()
+            self._compat_aopen = _compat_aopen
+        except (ImportError, AttributeError):
+            self._use_async_io = False
+            self._compat_aopen = None
+
+        # 异步写入队列和协程
+        self._async_write_queue: Optional[asyncio.Queue] = None
+        self._async_writer_task: Optional[asyncio.Task] = None
+        self._async_io_lock = Lock()
+
         # ✅ 增强格式化器，更清晰地区分日志级别
         self.setFormatter(
             logging.Formatter(
@@ -375,7 +412,14 @@ class AILogFileHandler(logging.Handler):
             filename = f"{process_name}_{timestamp}.log"
             file_path = self.base_dir / filename
 
-            self._current_file = open(file_path, "w", encoding=self.encoding, buffering=1)
+            # 如果支持异步I/O，使用异步队列；否则使用同步文件
+            if getattr(self, "_use_async_io", False):
+                self._async_write_queue = asyncio.Queue(maxsize=10000)
+                self._async_writer_task = asyncio.create_task(self._async_writer_loop(file_path))
+                self._current_file = None  # 异步模式下不使用同步文件
+            else:
+                self._current_file = open(file_path, "w", encoding=self.encoding, buffering=1)
+
             self._current_file_path = file_path
             self._current_process = process_name
             self._process_count += 1
@@ -388,9 +432,6 @@ class AILogFileHandler(logging.Handler):
 
     def _write_file_header(self, process_name: str, metadata: Optional[Dict[str, Any]] = None):
         """写入文件头."""
-        if not self._current_file:
-            return
-
         header = f"""{'=' * 80}
 AI助手专用日志文件 - {process_name}
 {'=' * 80}
@@ -413,13 +454,23 @@ AI助手专用日志文件 - {process_name}
                 header += f"  - {key}: {value}\n"
 
         header += f"\n{'=' * 80}\n\n"
-        self._current_file.write(header)
-        self._current_file.flush()
+
+        if getattr(self, "_use_async_io", False) and self._async_write_queue:
+            # 异步写入
+            try:
+                self._async_write_queue.put_nowait(header)
+            except asyncio.QueueFull:
+                # 队列满时降级到同步写入
+                self._async_write_sync(header)
+        elif self._current_file:
+            # 同步写入
+            self._current_file.write(header)
+            self._current_file.flush()
 
     def end_process(self, success: bool = True, summary: Optional[str] = None):
         """结束流程."""
         with self._lock:
-            if not self._current_file:
+            if not self._current_file_path:
                 return
 
             footer = f"""
@@ -442,12 +493,49 @@ AI助手专用日志文件 - {process_name}
             footer += f"  - CRITICAL: {self._level_counts['CRITICAL']} 条\n"
 
             footer += f"\n{'=' * 80}\n"
-            self._current_file.write(footer)
-            self._current_file.flush()
+
+            if getattr(self, "_use_async_io", False) and self._async_write_queue:
+                # 异步写入，等待队列清空
+                try:
+                    self._async_write_queue.put_nowait(footer)
+                    # 等待队列处理完成
+                    asyncio.get_event_loop().run_until_complete(self._wait_queue_empty())
+                except Exception:
+                    # 降级到同步写入
+                    self._async_write_sync(footer)
+            elif self._current_file:
+                self._current_file.write(footer)
+                self._current_file.flush()
+
             self._close_current_file()
+
+            # 异步压缩旧日志（不阻塞）
+            if self._compression_enabled:
+                try:
+                    asyncio.create_task(self._compress_old_logs_async())
+                except Exception:
+                    # 如果无法创建任务（可能不在asyncio环境中），使用同步方式
+                    import threading
+                    threading.Thread(target=self._compress_old_logs, daemon=True).start()
 
     def _close_current_file(self):
         """关闭当前文件."""
+        # 停止异步写入协程
+        if self._async_writer_task:
+            try:
+                self._async_writer_task.cancel()
+                # 等待任务完成
+                try:
+                    asyncio.get_event_loop().run_until_complete(self._async_writer_task)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            finally:
+                self._async_writer_task = None
+                self._async_write_queue = None
+
+        # 关闭同步文件
         if self._current_file:
             try:
                 self._current_file.flush()
@@ -459,10 +547,58 @@ AI助手专用日志文件 - {process_name}
                 self._current_file_path = None
                 self._current_process = None
 
+    async def _async_writer_loop(self, file_path: Path):
+        """异步写入循环."""
+        if not getattr(self, "_compat_aopen", None) or not self._async_write_queue:
+            return
+        try:
+            compat_aopen = getattr(self, "_compat_aopen", None)
+            if not compat_aopen:
+                return
+            # aopen默认使用二进制模式，需要手动编码
+            async with await compat_aopen(file_path, "ab") as f:
+                while True:
+                    try:
+                        # 等待日志消息，超时1秒
+                        message = await asyncio.wait_for(self._async_write_queue.get(), timeout=1.0)
+                        # 将字符串编码为字节
+                        message_bytes = message.encode(self.encoding)
+                        await f.write(message_bytes)
+                        await f.flush()
+                        if self._async_write_queue:
+                            self._async_write_queue.task_done()
+                    except asyncio.TimeoutError:
+                        # 超时继续循环，检查是否需要退出
+                        continue
+                    except asyncio.CancelledError:
+                        # 任务被取消，退出循环
+                        break
+                    except Exception as e:
+                        # 写入失败，记录错误但不中断
+                        logger.error(f"❌ [AILogFileHandler] 异步写入失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+        except Exception as e:
+            logger.critical(f"🔥 [AILogFileHandler] 异步写入循环失败: {e}", exc_info=True, extra={"log_type": "ALERT"})
+
+    def _async_write_sync(self, message: str):
+        """异步写入降级到同步写入."""
+        if not self._current_file_path:
+            return
+        try:
+            with open(self._current_file_path, "a", encoding=self.encoding) as f:
+                f.write(message)
+                f.flush()
+        except Exception:
+            pass
+
+    async def _wait_queue_empty(self):
+        """等待队列清空."""
+        if self._async_write_queue:
+            await self._async_write_queue.join()
+
     def emit(self, record: logging.LogRecord):
         """处理日志记录."""
         with self._lock:
-            if not self._current_file:
+            if not self._current_file_path:
                 return
 
             try:
@@ -499,13 +635,24 @@ AI助手专用日志文件 - {process_name}
                     # 如果有exc_text字段（介 UnifiedLogRecord 传递）
                     msg += f"\n\n异常堆栈跟踪:\n{record.exc_text}\n{'═' * 80}"
 
-                self._current_file.write(msg + "\n")
-                self._current_file.flush()
+                message_with_newline = msg + "\n"
+
+                # 根据模式选择写入方式
+                if getattr(self, "_use_async_io", False) and self._async_write_queue:
+                    # 异步写入
+                    try:
+                        self._async_write_queue.put_nowait(message_with_newline)
+                    except asyncio.QueueFull:
+                        # 队列满时降级到同步写入
+                        self._async_write_sync(message_with_newline)
+                elif self._current_file:
+                    # 同步写入
+                    self._current_file.write(message_with_newline)
+                    self._current_file.flush()
+
                 self._total_logs += 1
             except Exception as e:
-                import sys
-
-                print(f"[AILogFileHandler] 日志写入失败: {e}", file=sys.stderr)
+                logger.error(f"❌ [AILogFileHandler] 日志写入失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
 
     def get_current_file_path(self) -> Optional[Path]:
         """获取当前日志文件路径."""
@@ -527,6 +674,82 @@ AI助手专用日志文件 - {process_name}
                 "current_process": self._current_process,
                 "current_file": str(self._current_file_path) if self._current_file_path else None,
             }
+
+    def _should_compress(self, file_path: Path) -> bool:
+        """判断文件是否需要压缩."""
+        if not file_path.exists():
+            return False
+
+        # 检查文件大小
+        file_size_mb = file_path.stat().st_size / (1024 * 1024)
+        if file_size_mb >= self._compression_size_threshold_mb:
+            return True
+
+        # 检查文件年龄
+        file_age = datetime.now() - datetime.fromtimestamp(file_path.stat().st_mtime)
+        if file_age.days >= self._compression_age_days:
+            return True
+
+        return False
+
+    def _get_old_log_files(self) -> List[Path]:
+        """获取需要压缩的日志文件列表."""
+        if not self.base_dir.exists():
+            return []
+
+        log_files = []
+        for file_path in self.base_dir.iterdir():
+            # 只处理.log文件，跳过已压缩的.gz文件
+            if file_path.suffix == ".log" and self._should_compress(file_path):
+                log_files.append(file_path)
+
+        return log_files
+
+    def _compress_old_logs(self):
+        """压缩旧的日志文件（同步版本）."""
+        try:
+            old_files = self._get_old_log_files()
+            for file_path in old_files:
+                try:
+                    # 压缩文件
+                    gz_path = file_path.with_suffix(".log.gz")
+                    with open(file_path, "rb") as f_in:
+                        with gzip.open(gz_path, "wb") as f_out:
+                            f_out.writelines(f_in)
+
+                    # 删除原文件
+                    file_path.unlink()
+                except Exception as e:
+                    # 压缩失败不影响主流程，只记录错误
+                    logger.warning(f"⚠️ [AILogFileHandler] 压缩日志文件失败 {file_path}: {e}", extra={"log_type": "SYSTEM"})
+        except Exception as e:
+            logger.warning(f"⚠️ [AILogFileHandler] 压缩旧日志失败: {e}", extra={"log_type": "SYSTEM"})
+
+    async def _compress_old_logs_async(self):
+        """压缩旧的日志文件（异步版本）."""
+        try:
+            old_files = self._get_old_log_files()
+            for file_path in old_files:
+                try:
+                    # 异步压缩文件
+                    gz_path = file_path.with_suffix(".log.gz")
+                    with open(file_path, "rb") as f_in:
+                        with gzip.open(gz_path, "wb") as f_out:
+                            f_out.writelines(f_in)
+
+                    # 删除原文件
+                    file_path.unlink()
+                except Exception as e:
+                    # 压缩失败不影响主流程，只记录错误
+                    logger.warning(f"⚠️ [AILogFileHandler] 压缩日志文件失败 {file_path}: {e}", extra={"log_type": "SYSTEM"})
+        except Exception as e:
+            logger.warning(f"⚠️ [AILogFileHandler] 压缩旧日志失败: {e}", extra={"log_type": "SYSTEM"})
+
+    def set_compression_config(self, enabled: bool = True, size_threshold_mb: int = 10, age_days: int = 7):
+        """设置日志压缩配置."""
+        self._compression_enabled = enabled
+        self._compression_size_threshold_mb = size_threshold_mb
+        self._compression_age_days = age_days
 
     def close(self):
         """关闭Handler."""
@@ -608,17 +831,19 @@ class LoggingHub(logging.Handler):
         # 节流器
         self._throttler = ProgressThrottler(interval_ms=500)
 
+        # 有序日志队列（启动阶段使用）
+        self._ordered_log_queue: Optional[Any] = None
+        self._sequence_counter = 0
+        self._sequence_lock = RLock()
+        self._emit_lock = RLock()
+
         # 路由引擎
         try:
             self._routing_engine = RoutingRuleEngine()
             if not self._routing_engine.validate_config():
-                import sys
-
-                print("[LoggingHub] 路由规则配置验证失败", file=sys.stderr)
+                logger.critical("🔥 [LoggingHub] 路由规则配置验证失败", extra={"log_type": "ALERT"})
         except Exception as e:
-            import sys
-
-            print(f"[LoggingHub] 路由引擎初始化失败: {e}", file=sys.stderr)
+            logger.critical(f"🔥 [LoggingHub] 路由引擎初始化失败: {e}", exc_info=True, extra={"log_type": "ALERT"})
             self._routing_engine = None
 
         # 统计
@@ -629,14 +854,75 @@ class LoggingHub(logging.Handler):
         self._file_writes = 0
         self._ai_log_writes = 0
 
+        # 性能监控指标
+        self._emit_count = 0
+        self._emit_duration_sum = 0.0
+        self._max_emit_duration = 0.0
+        self._dropped_logs = 0
+
         # 递归检测
         self._in_emit = False
+
+        # 异步日志支持
+        self._async_mode = False
+        self._async_log_queue: Optional[asyncio.Queue] = None
+        self._async_worker_task: Optional[asyncio.Task] = None
 
         # 数据库批量写入
         self._db_batch_cache: List[Dict] = []
         self._db_batch_size = 10
         self._db_last_flush = time.time()
         self._db_flush_interval = 5.0
+
+        # 错误日志文件
+        self._error_log_file: Optional[logging.FileHandler] = None
+        self._error_count = 0
+        self._last_error_time: Optional[datetime] = None
+        self._init_error_log_file()
+
+    def _init_error_log_file(self):
+        """初始化错误日志文件."""
+        try:
+            error_log_dir = Path("logs/ai")
+            error_log_dir.mkdir(parents=True, exist_ok=True)
+            error_log_path = error_log_dir / "logging_errors.log"
+            self._error_log_file = logging.FileHandler(error_log_path, mode="a", encoding="utf-8")
+            self._error_log_file.setLevel(logging.ERROR)
+            self._error_log_file.setFormatter(
+                logging.Formatter(
+                    "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+                    datefmt="%Y-%m-%d %H:%M:%S",
+                )
+            )
+        except Exception:
+            # 错误日志文件初始化失败不影响主功能
+            self._error_log_file = None
+
+    def _log_error_to_file(self, error_type: str, error_message: str, exc_info=None):
+        """记录错误到错误日志文件."""
+        if not self._error_log_file:
+            return
+
+        try:
+            self._error_count += 1
+            self._last_error_time = datetime.now()
+
+            # 创建错误日志记录（避免无限递归，不通过LoggingHub）
+            error_record = logging.LogRecord(
+                name="LoggingHub.Error",
+                level=logging.ERROR,
+                pathname="",
+                lineno=0,
+                msg=f"[{error_type}] {error_message}",
+                args=(),
+                exc_info=exc_info,
+            )
+            error_record.created = time.time()
+            self._error_log_file.emit(error_record)
+            self._error_log_file.flush()
+        except Exception:
+            # 错误日志记录失败不影响主功能
+            pass
 
     def set_event_engine(self, event_engine: EventEngine):
         """注入EventEngine."""
@@ -662,8 +948,158 @@ class LoggingHub(logging.Handler):
         """配置控制台输出的日志类型."""
         self._console_enabled_types = enabled_types
 
+    def set_ordered_log_queue(self, ordered_queue: Any):
+        """设置有序日志队列（启动阶段使用）
+
+        Args:
+            ordered_queue: OrderedLogQueue实例
+        """
+        self._ordered_log_queue = ordered_queue
+
+        # 设置输出回调
+        if ordered_queue:
+            ordered_queue.set_output_callback(self._output_ordered_log)
+
+    def start_async_worker(self, queue_size: int = 10000):
+        """启动异步日志worker."""
+        if self._async_worker_task:
+            return  # 已经启动
+
+        try:
+            self._async_log_queue = asyncio.Queue(maxsize=queue_size)
+            self._async_worker_task = asyncio.create_task(self._async_worker_loop())
+            self._async_mode = True
+        except Exception as e:
+            logger.error(f"❌ [LoggingHub] 启动异步worker失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            self._async_mode = False
+
+    def stop_async_worker(self):
+        """停止异步日志worker."""
+        if self._async_worker_task:
+            try:
+                self._async_worker_task.cancel()
+                try:
+                    asyncio.get_event_loop().run_until_complete(self._async_worker_task)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            finally:
+                self._async_worker_task = None
+                self._async_log_queue = None
+                self._async_mode = False
+
+    async def async_emit(self, record: logging.LogRecord) -> None:
+        """异步日志入口."""
+        if not self._async_mode or not self._async_log_queue:
+            # 降级到同步emit
+            self.emit(record)
+            return
+
+        try:
+            await self._async_log_queue.put(record)
+        except asyncio.QueueFull:
+            # 队列满时丢弃日志并记录
+            self._dropped_logs += 1
+
+    async def _async_worker_loop(self):
+        """异步日志处理循环."""
+        if not self._async_log_queue:
+            return
+        while True:
+            try:
+                # 等待日志记录，超时1秒
+                record = await asyncio.wait_for(self._async_log_queue.get(), timeout=1.0)
+                # 同步处理日志（避免重复emit逻辑）
+                self._process_log_record_sync(record)
+                if self._async_log_queue:
+                    self._async_log_queue.task_done()
+            except asyncio.TimeoutError:
+                # 超时继续循环
+                continue
+            except asyncio.CancelledError:
+                # 任务被取消，退出循环
+                break
+            except Exception as e:
+                # 处理失败，记录错误
+                self._log_error_to_file(
+                    "AsyncWorkerError",
+                    f"异步日志处理失败: {str(e)}",
+                    exc_info=(type(e), e, e.__traceback__),
+                )
+
+    def _process_log_record_sync(self, record: logging.LogRecord):
+        """同步处理日志记录（内部方法，避免递归）."""
+        try:
+            if hasattr(record, "_unified_hub_processed"):
+                return
+
+            setattr(record, "_unified_hub_processed", True)
+
+            if self._should_skip(record):
+                return
+
+            self._total_logs += 1
+            unified_record = self._convert_to_unified(record)
+            targets = self._get_targets(unified_record)
+            self._dispatch(targets, unified_record)
+            self._check_throttler()
+            self._maybe_flush_db_batch()
+        except Exception:
+            pass
+
+    def _output_ordered_log(self, record: UnifiedLogRecord):
+        """输出有序日志（回调函数）
+
+        Args:
+            record: UnifiedLogRecord实例
+        """
+        # 输出到Terminal
+        self._to_console_direct(record)
+
+        # 输出到AI日志文件
+        if self._ai_log_handler:
+            self._to_ai_log_file(record)
+
+    def _to_console_direct(self, record: UnifiedLogRecord):
+        """直接输出到控制台（不经过有序队列）
+
+        Args:
+            record: UnifiedLogRecord实例
+        """
+        if not self._console_handler:
+            return
+
+        log_record = logging.LogRecord(
+            name=record.logger_name,
+            level=record.level,
+            pathname=record.filename,
+            lineno=record.line,
+            msg=record.message,
+            args=(),
+            exc_info=None,
+        )
+        log_record.created = record.timestamp.timestamp()
+        self._console_handler.emit(log_record)
+        self._console_writes += 1
+
     def emit(self, record: logging.LogRecord) -> None:
         """拦截日志输出."""
+        # 如果启用了异步模式，尝试异步处理
+        if self._async_mode and self._async_log_queue:
+            try:
+                # 尝试非阻塞放入队列
+                self._async_log_queue.put_nowait(record)
+                return  # 成功放入队列，异步处理
+            except asyncio.QueueFull:
+                # 队列满时降级到同步处理
+                self._dropped_logs += 1
+            except Exception:
+                # 其他异常也降级到同步处理
+                pass
+
+        # 同步处理模式
+        emit_start = time.perf_counter()
         try:
             if self._in_emit:
                 return
@@ -678,16 +1114,31 @@ class LoggingHub(logging.Handler):
                 return
 
             self._total_logs += 1
+            self._emit_count += 1
             unified_record = self._convert_to_unified(record)
             targets = self._get_targets(unified_record)
             self._dispatch(targets, unified_record)
             self._check_throttler()
             self._maybe_flush_db_batch()
 
-        except RecursionError:
-            pass
-        except Exception:
-            pass
+            # 记录emit耗时
+            emit_duration = time.perf_counter() - emit_start
+            self._emit_duration_sum += emit_duration
+            if emit_duration > self._max_emit_duration:
+                self._max_emit_duration = emit_duration
+
+        except RecursionError as e:
+            self._log_error_to_file(
+                "RecursionError",
+                f"日志处理递归错误: {str(e)}",
+                exc_info=(type(e), e, e.__traceback__),
+            )
+        except Exception as e:
+            self._log_error_to_file(
+                "EmitError",
+                f"日志处理异常: {str(e)}, logger={record.name}, level={record.levelno}",
+                exc_info=(type(e), e, e.__traceback__),
+            )
         finally:
             self._in_emit = False
 
@@ -721,29 +1172,7 @@ class LoggingHub(logging.Handler):
         details = {}
         if hasattr(record, "__dict__"):
             for key, value in record.__dict__.items():
-                if key not in [
-                    "name",
-                    "msg",
-                    "args",
-                    "created",
-                    "filename",
-                    "funcName",
-                    "levelname",
-                    "levelno",
-                    "lineno",
-                    "module",
-                    "msecs",
-                    "message",
-                    "pathname",
-                    "process",
-                    "processName",
-                    "relativeCreated",
-                    "thread",
-                    "threadName",
-                    "exc_info",
-                    "exc_text",
-                    "stack_info",
-                ]:
+                if key not in _EXCLUDED_FIELDS:
                     details[key] = value
 
         return UnifiedLogRecord(
@@ -764,103 +1193,102 @@ class LoggingHub(logging.Handler):
             exception=exception_text,
         )
 
-    def _classify_log_type(self, record: logging.LogRecord) -> LogType:
-        """根据logger名称和消息判断日志类型."""
+    @lru_cache(maxsize=1000)
+    def _classify_log_type_cached(self, logger_name_lower: str, message_lower: str, levelno: int, log_type_attr_str: Optional[str]) -> LogType:
+        """缓存的日志类型分类（辅助方法）."""
         # 优先检查extra参数中的log_type（显式指定）
-        if hasattr(record, "log_type"):
+        if log_type_attr_str:
             try:
-                # 尝试从字符串转换为LogType枚举
-                if isinstance(record.log_type, str):
-                    log_type_str = record.log_type.upper()
-                    if log_type_str == "STAGE_NODE":
-                        return LogType.STAGE_NODE
-                    elif log_type_str == "PROGRESS":
-                        return LogType.PROGRESS
-                    elif log_type_str == "NOTIFICATION":
-                        return LogType.NOTIFICATION
-                    elif log_type_str == "ALERT":
-                        return LogType.ALERT
-                    elif log_type_str == "USER_FEEDBACK":
-                        return LogType.USER_FEEDBACK
-                    elif log_type_str == "DEBUG":
-                        return LogType.DEBUG
-                    elif log_type_str == "SYSTEM":
-                        return LogType.SYSTEM
-                elif isinstance(record.log_type, LogType):
-                    return record.log_type
+                log_type_str = log_type_attr_str.upper()
+                if log_type_str == "STAGE_NODE":
+                    return LogType.STAGE_NODE
+                elif log_type_str == "PROGRESS":
+                    return LogType.PROGRESS
+                elif log_type_str == "NOTIFICATION":
+                    return LogType.NOTIFICATION
+                elif log_type_str == "ALERT":
+                    return LogType.ALERT
+                elif log_type_str == "USER_FEEDBACK":
+                    return LogType.USER_FEEDBACK
+                elif log_type_str == "DEBUG":
+                    return LogType.DEBUG
+                elif log_type_str == "SYSTEM":
+                    return LogType.SYSTEM
             except Exception:
-                pass  # 如果转换失败，继续使用自动识别
-
-        logger_name = record.name.lower()
-        message = record.getMessage().lower()
+                pass
 
         # 流程节点（严格模式）
-        if ".stage" in logger_name:
+        if ".stage" in logger_name_lower:
             return LogType.STAGE_NODE
 
-        if record.levelno == logging.INFO:
+        if levelno == logging.INFO:
             stage_identifiers = ["📍", "阶段", "流程", "步骤", "stage", "phase", "step"]
             status_words = [
-                "开始",
-                "完成",
-                "结束",
-                "启动",
-                "进入",
-                "start",
-                "complete",
-                "finish",
-                "end",
+                "开始", "完成", "结束", "启动", "进入",
+                "start", "complete", "finish", "end",
             ]
-            has_stage_id = any(word in message for word in stage_identifiers)
-            has_status = any(word in message for word in status_words)
-            if has_stage_id and has_status and "%" not in message and "进度" not in message:
+            has_stage_id = any(word in message_lower for word in stage_identifiers)
+            has_status = any(word in message_lower for word in status_words)
+            if has_stage_id and has_status and "%" not in message_lower and "进度" not in message_lower:
                 return LogType.STAGE_NODE
 
         # 告警
-        if "alert" in logger_name or "monitor" in logger_name:
-            if record.levelno >= logging.WARNING:
+        if "alert" in logger_name_lower or "monitor" in logger_name_lower:
+            if levelno >= logging.WARNING:
                 return LogType.ALERT
 
         # 进度
-        if "download" in logger_name or "progress" in logger_name:
-            if "进度" in message or "%" in message or "progress" in message:
+        if "download" in logger_name_lower or "progress" in logger_name_lower:
+            if "进度" in message_lower or "%" in message_lower or "progress" in message_lower:
                 return LogType.PROGRESS
 
-        if "quality" in logger_name or "scan" in logger_name:
-            if "扫描" in message or "%" in message:
+        if "quality" in logger_name_lower or "scan" in logger_name_lower:
+            if "扫描" in message_lower or "%" in message_lower:
                 return LogType.PROGRESS
 
         # 通知（严格）
-        if record.levelno == logging.INFO:
+        if levelno == logging.INFO:
             notification_markers = [
-                "✅ 任务完成",
-                "✅ 下载完成",
-                "✅ 扫描完成",
-                "✅ 验证完成",
-                "download completed",
-                "scan completed",
-                "task completed",
+                "✅ 任务完成", "✅ 下载完成", "✅ 扫描完成", "✅ 验证完成",
+                "download completed", "scan completed", "task completed",
             ]
-            is_notification_logger = "notification" in logger_name or "notifier" in logger_name
+            is_notification_logger = "notification" in logger_name_lower or "notifier" in logger_name_lower
             import re
-
             task_completion_pattern = re.compile(
                 r"(完成|已完成|finished|completed)\s*\d+\s*(个|项|条|次)", re.IGNORECASE
             )
-            has_completion_report = task_completion_pattern.search(message) is not None
+            has_completion_report = task_completion_pattern.search(message_lower) is not None
 
             if (
                 is_notification_logger
                 or has_completion_report
-                or any(marker in message for marker in notification_markers)
+                or any(marker in message_lower for marker in notification_markers)
             ):
                 return LogType.NOTIFICATION
 
         # DEBUG
-        if record.levelno == logging.DEBUG:
+        if levelno == logging.DEBUG:
             return LogType.DEBUG
 
         return LogType.SYSTEM
+
+    def _classify_log_type(self, record: logging.LogRecord) -> LogType:
+        """根据logger名称和消息判断日志类型."""
+        # 优先检查extra参数中的log_type（显式指定）
+        log_type_attr = getattr(record, "log_type", None)
+        log_type_attr_str = None
+        if log_type_attr is not None:
+            # 先尝试直接转换（LogType枚举）
+            if isinstance(log_type_attr, LogType):
+                return log_type_attr
+            elif isinstance(log_type_attr, str):
+                log_type_attr_str = log_type_attr
+
+        logger_name = record.name.lower()
+        message = record.getMessage().lower()
+
+        # 使用缓存的分类方法
+        return self._classify_log_type_cached(logger_name, message, record.levelno, log_type_attr_str)
 
     def _get_targets(self, record: UnifiedLogRecord) -> List[str]:
         """获取路由目标."""
@@ -913,6 +1341,8 @@ class LoggingHub(logging.Handler):
         #   - Terminal保持简洁：只显示流程关键节点 + 警告错误
         #   - AI日志文件保持详细：包含所有INFO及以上日志
         #   - 用户体验改善：重要问题能立即在Terminal看到
+
+        # 🆕 启动阶段增强：如果启用了有序日志队列，则通过队列输出（确保顺序）
         """
         if not self._console_handler:
             return
@@ -927,18 +1357,31 @@ class LoggingHub(logging.Handler):
         if not should_output:
             return
 
-        log_record = logging.LogRecord(
-            name=record.logger_name,
-            level=record.level,
-            pathname=record.filename,
-            lineno=record.line,
-            msg=record.message,
-            args=(),
-            exc_info=None,
-        )
-        log_record.created = record.timestamp.timestamp()
-        self._console_handler.emit(log_record)
-        self._console_writes += 1
+        # 🆕 如果启用了有序日志队列（启动阶段），则通过队列输出
+        if self._ordered_log_queue and self._is_startup_phase():
+            # 获取序列号
+            with self._sequence_lock:
+                sequence = self._sequence_counter
+                self._sequence_counter += 1
+
+            # 添加到有序队列
+            self._ordered_log_queue.add_log(record, sequence)
+        else:
+            # 直接输出（非启动阶段或不使用有序队列）
+            self._to_console_direct(record)
+
+    def _is_startup_phase(self) -> bool:
+        """判断是否处于启动阶段
+
+        Returns:
+            bool: 是否处于启动阶段
+        """
+        if not self._routing_engine:
+            return False
+
+        current_stage = getattr(self._routing_engine, "current_stage", None)
+        startup_stages = ["startup", "logging_init", "qt_init", "backend_init", "ui_init", "vnpy_core", "cache_validation_step1", "cache_validation_step2", "cache_validation_step3", "cache_validation_step4", "cache_validation_step5", "cache_validation_step6", "cache_validation_step7", "cache_validation_step8"]
+        return current_stage in startup_stages
 
     def _to_logger_file(self, record: UnifiedLogRecord):
         """输出到文件."""
@@ -1153,6 +1596,19 @@ class LoggingHub(logging.Handler):
 
     def get_statistics(self) -> Dict[str, Any]:
         """获取统计信息."""
+        # 计算平均emit耗时
+        avg_emit_duration = (
+            self._emit_duration_sum / self._emit_count if self._emit_count > 0 else 0.0
+        )
+
+        # 获取队列大小（如果启用了异步日志）
+        queue_size = 0
+        if hasattr(self, "_async_log_queue") and self._async_log_queue:
+            try:
+                queue_size = self._async_log_queue.qsize()
+            except Exception:
+                pass
+
         stats: Dict[str, Any] = {
             "total_logs": self._total_logs,
             "throttled_logs": self._throttled_logs,
@@ -1161,6 +1617,20 @@ class LoggingHub(logging.Handler):
             "ai_log_writes": self._ai_log_writes,
             "db_writes": self._db_writes,
             "db_batch_pending": len(self._db_batch_cache),
+            # 性能监控指标
+            "performance": {
+                "emit_count": self._emit_count,
+                "emit_duration_sum_ms": round(self._emit_duration_sum * 1000, 2),
+                "max_emit_duration_ms": round(self._max_emit_duration * 1000, 2),
+                "avg_emit_duration_ms": round(avg_emit_duration * 1000, 2),
+                "queue_size": queue_size,
+                "dropped_logs": self._dropped_logs,
+            },
+            # 错误统计
+            "errors": {
+                "error_count": self._error_count,
+                "last_error_time": self._last_error_time.isoformat() if self._last_error_time else None,
+            },
         }
 
         if self._routing_engine:
@@ -1191,7 +1661,12 @@ class LoggingHub(logging.Handler):
 
     def close(self):
         """关闭LoggingHub."""
+        # 停止异步worker
+        self.stop_async_worker()
+
         self._flush_db_batch()
+        if self._error_log_file:
+            self._error_log_file.close()
         super().close()
 
 

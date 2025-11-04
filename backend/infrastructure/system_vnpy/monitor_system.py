@@ -68,7 +68,7 @@ try:
     HAS_PSUTIL = True
 except ImportError:
     HAS_PSUTIL = False
-    logger.warning("psutil模块未安装,将使用基础系统监控功能")
+    logger.warning("psutil模块未安装,将使用基础系统监控功能", extra={"log_type": "SYSTEM"})
 
 # 尝试导入WMI（Windows Management Instrumentation）
 try:
@@ -158,7 +158,7 @@ class NetworkSpeedTester:
                 logger.info(f"[SPEEDTEST-PING] ✅ 成功: {elapsed_ms:.2f}ms - {url}")
                 return result
             else:
-                logger.warning(f"[SPEEDTEST-PING] ❌ HTTP {response.status_code}: {url}")
+                logger.warning(f"[SPEEDTEST-PING] ❌ HTTP {response.status_code}: {url}", extra={"log_type": "SYSTEM"})
                 return {
                     'ping_ms': -1,
                     'url': url,
@@ -168,7 +168,7 @@ class NetworkSpeedTester:
 
         except requests.exceptions.Timeout:
             elapsed_ms = (time.perf_counter() - start) * 1000 if 'start' in locals() else 0
-            logger.warning(f"[SPEEDTEST-PING] ❌ 超时({elapsed_ms:.0f}ms, 超时设置={self.timeout}秒): {url}")
+            logger.warning(f"[SPEEDTEST-PING] ❌ 超时({elapsed_ms:.0f}ms, 超时设置={self.timeout}秒): {url}", extra={"log_type": "SYSTEM"})
             return {
                 'ping_ms': -1,
                 'url': url,
@@ -177,7 +177,7 @@ class NetworkSpeedTester:
             }
         except Exception as e:
             elapsed_ms = (time.perf_counter() - start) * 1000 if 'start' in locals() else 0
-            logger.error(f"[SPEEDTEST-PING] ❌ 失败({elapsed_ms:.0f}ms): {url} - {e}")
+            logger.error(f"[SPEEDTEST-PING] ❌ 失败({elapsed_ms:.0f}ms): {url} - {e}", extra={"log_type": "SYSTEM"})
             return {
                 'ping_ms': -1,
                 'url': url,
@@ -224,7 +224,7 @@ class NetworkSpeedTester:
                 logger.info(f"[SPEEDTEST-PING-BROWSER] ✅ 成功: {elapsed_ms:.2f}ms - {url}")
                 return result
             else:
-                logger.warning(f"[SPEEDTEST-PING-BROWSER] ❌ HTTP {response.status_code}: {url}")
+                logger.warning(f"[SPEEDTEST-PING-BROWSER] ❌ HTTP {response.status_code}: {url}", extra={"log_type": "SYSTEM"})
                 return {
                     'ping_ms': -1,
                     'url': url,
@@ -234,7 +234,7 @@ class NetworkSpeedTester:
 
         except requests.exceptions.Timeout:
             elapsed_ms = (time.perf_counter() - start) * 1000 if 'start' in locals() else 0
-            logger.warning(f"[SPEEDTEST-PING-BROWSER] ❌ 超时({elapsed_ms:.0f}ms, 超时设置={self.timeout}秒): {url}")
+            logger.warning(f"[SPEEDTEST-PING-BROWSER] ❌ 超时({elapsed_ms:.0f}ms, 超时设置={self.timeout}秒): {url}", extra={"log_type": "SYSTEM"})
             return {
                 'ping_ms': -1,
                 'url': url,
@@ -243,7 +243,7 @@ class NetworkSpeedTester:
             }
         except Exception as e:
             elapsed_ms = (time.perf_counter() - start) * 1000 if 'start' in locals() else 0
-            logger.error(f"[SPEEDTEST-PING-BROWSER] ❌ 失败({elapsed_ms:.0f}ms): {url} - {e}")
+            logger.error(f"[SPEEDTEST-PING-BROWSER] ❌ 失败({elapsed_ms:.0f}ms): {url} - {e}", extra={"log_type": "SYSTEM"})
             return {
                 'ping_ms': -1,
                 'url': url,
@@ -286,7 +286,7 @@ class NetworkSpeedTester:
                 error_msg = f'HTTP {response.status_code}'
                 if response.status_code == 404:
                     error_msg = f'HTTP 404 (文件不存在，URL可能已失效): {url}'
-                logger.error(f"[SPEEDTEST-DOWNLOAD] {error_msg}")
+                logger.error(f"[SPEEDTEST-DOWNLOAD] {error_msg}", extra={"log_type": "SYSTEM"})
                 return {
                     'download_mbps': -1,
                     'download_MB_s': -1,
@@ -326,7 +326,7 @@ class NetworkSpeedTester:
 
                     # 检查无进度超时（关键修复：防止iter_content无限阻塞）
                     if no_progress_elapsed > no_progress_timeout and elapsed > 2.0:  # 至少等待2秒才开始检查无进度
-                        logger.warning(f"[SPEEDTEST-DOWNLOAD] 无进度超时（{no_progress_timeout}秒无数据），停止下载")
+                        logger.warning(f"[SPEEDTEST-DOWNLOAD] 无进度超时（{no_progress_timeout}秒无数据），停止下载", extra={"log_type": "SYSTEM"})
                         stop_flag.set()
                         try:
                             response.close()
@@ -360,14 +360,14 @@ class NetworkSpeedTester:
                         break
 
             except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
-                logger.warning(f"[SPEEDTEST-DOWNLOAD] 连接异常: {e}（已下载{total_bytes}字节）")
+                logger.warning(f"[SPEEDTEST-DOWNLOAD] 连接异常: {e}（已下载{total_bytes}字节）", extra={"log_type": "SYSTEM"})
                 stop_flag.set()
                 try:
                     response.close()
                 except:
                     pass
             except Exception as e:
-                logger.warning(f"[SPEEDTEST-DOWNLOAD] 读取异常: {e}（已下载{total_bytes}字节）")
+                logger.warning(f"[SPEEDTEST-DOWNLOAD] 读取异常: {e}（已下载{total_bytes}字节）", extra={"log_type": "SYSTEM"})
                 stop_flag.set()
                 try:
                     response.close()
@@ -389,7 +389,7 @@ class NetworkSpeedTester:
 
             # 如果没有下载到任何数据，返回失败
             if total_bytes == 0:
-                logger.error(f"[SPEEDTEST-DOWNLOAD] 未下载到任何数据（耗时{elapsed:.2f}秒）")
+                logger.error(f"[SPEEDTEST-DOWNLOAD] 未下载到任何数据（耗时{elapsed:.2f}秒）", extra={"log_type": "SYSTEM"})
                 return {
                     'download_mbps': -1,
                     'download_MB_s': -1,
@@ -415,7 +415,7 @@ class NetworkSpeedTester:
             return result
 
         except requests.exceptions.Timeout:
-            logger.error(f"[SPEEDTEST-DOWNLOAD] 超时({self.timeout}秒): {url}")
+            logger.error(f"[SPEEDTEST-DOWNLOAD] 超时({self.timeout}秒): {url}", extra={"log_type": "SYSTEM"})
             return {
                 'download_mbps': -1,
                 'download_MB_s': -1,
@@ -424,7 +424,7 @@ class NetworkSpeedTester:
                 'status': 'timeout'
             }
         except Exception as e:
-            logger.error(f"[SPEEDTEST-DOWNLOAD] 失败: {url} - {e}")
+            logger.error(f"[SPEEDTEST-DOWNLOAD] 失败: {url} - {e}", extra={"log_type": "SYSTEM"})
             return {
                 'download_mbps': -1,
                 'download_MB_s': -1,
@@ -462,7 +462,7 @@ class NetworkSpeedTester:
             # 检查总体超时
             elapsed = time.perf_counter() - start_time
             if elapsed >= max_total_time:
-                logger.warning(f"[SPEEDTEST-FALLBACK] 总体超时（{elapsed:.1f}秒 >= {max_total_time}秒），停止测试")
+                logger.warning(f"[SPEEDTEST-FALLBACK] 总体超时（{elapsed:.1f}秒 >= {max_total_time}秒），停止测试", extra={"log_type": "SYSTEM"})
                 break
 
             server_name = config.get('name', f'服务器{i}')
@@ -492,7 +492,8 @@ class NetworkSpeedTester:
                     else:
                         logger.warning(
                             f"[SPEEDTEST-FALLBACK] ❌ 延迟测试失败: {server_name} - "
-                            f"{ping_result.get('error')} (耗时{ping_elapsed:.2f}秒)"
+                            f"{ping_result.get('error')} (耗时{ping_elapsed:.2f}秒)",
+                            extra={"log_type": "SYSTEM"}
                         )
                         last_error = ping_result.get('error')
                         continue
@@ -527,7 +528,8 @@ class NetworkSpeedTester:
                     else:
                         logger.warning(
                             f"[SPEEDTEST-FALLBACK] ❌ 下载测速失败: {server_name} - "
-                            f"{download_result.get('error')} (耗时{download_elapsed:.2f}秒)"
+                            f"{download_result.get('error')} (耗时{download_elapsed:.2f}秒)",
+                            extra={"log_type": "SYSTEM"}
                         )
                         last_error = download_result.get('error')
                         continue
@@ -546,7 +548,8 @@ class NetworkSpeedTester:
         total_elapsed = time.perf_counter() - start_time
         logger.error(
             f"[SPEEDTEST-FALLBACK] ❌ 所有测速服务器均不可用 "
-            f"(尝试了{len(server_configs)}个服务器，总耗时{total_elapsed:.2f}秒)"
+            f"(尝试了{len(server_configs)}个服务器，总耗时{total_elapsed:.2f}秒)",
+            extra={"log_type": "ALERT"}
         )
         return {
             'error': last_error or '所有测速服务器均不可用',
@@ -604,7 +607,7 @@ class NetworkSpeedTester:
             total_elapsed = time.perf_counter() - test_start_time
             max_total_time = timeout * max_retries + 2  # 允许稍微超过一点
             if total_elapsed > max_total_time:
-                logger.warning(f"[PING-RANDOM] 总体超时（{total_elapsed:.1f}秒 > {max_total_time}秒），停止重试")
+                logger.warning(f"[PING-RANDOM] 总体超时（{total_elapsed:.1f}秒 > {max_total_time}秒），停止重试", extra={"log_type": "SYSTEM"})
                 break
 
             # 随机选择一个未测试的服务器
@@ -622,7 +625,7 @@ class NetworkSpeedTester:
 
             if not ping_url:
                 last_error = f'{server_name} 缺少ping_url配置'
-                logger.warning(f"[PING-RANDOM] 第{attempt}次尝试失败: {last_error}")
+                logger.warning(f"[PING-RANDOM] 第{attempt}次尝试失败: {last_error}", extra={"log_type": "SYSTEM"})
                 continue
 
             logger.info(f"[PING-RANDOM] 第{attempt}次尝试，随机选择: {server_name}")
@@ -651,10 +654,10 @@ class NetworkSpeedTester:
             else:
                 last_error = ping_result.get('error', '未知错误')
                 elapsed = time.perf_counter() - test_start_time
-                logger.warning(f"[PING-RANDOM] ❌ 第{attempt}次尝试失败（耗时{elapsed:.2f}秒）: {server_name} - {last_error}")
+                logger.warning(f"[PING-RANDOM] ❌ 第{attempt}次尝试失败（耗时{elapsed:.2f}秒）: {server_name} - {last_error}", extra={"log_type": "SYSTEM"})
 
         # 所有重试都失败
-        logger.error(f"[PING-RANDOM] ❌ 所有{max_retries}次尝试均失败")
+        logger.error(f"[PING-RANDOM] ❌ 所有{max_retries}次尝试均失败", extra={"log_type": "SYSTEM"})
         return {
             'error': last_error or '所有服务器测试失败',
             'status': 'all_failed',
@@ -712,7 +715,7 @@ class NetworkSpeedTester:
             total_elapsed = time.perf_counter() - test_start_time
             max_total_time = (timeout + 10) * max_retries + 5  # 带宽测试更耗时，允许更长时间
             if total_elapsed > max_total_time:
-                logger.warning(f"[BANDWIDTH-RANDOM] 总体超时（{total_elapsed:.1f}秒 > {max_total_time}秒），停止重试")
+                logger.warning(f"[BANDWIDTH-RANDOM] 总体超时（{total_elapsed:.1f}秒 > {max_total_time}秒），停止重试", extra={"log_type": "SYSTEM"})
                 break
 
             # 随机选择一个未测试的服务器
@@ -731,7 +734,7 @@ class NetworkSpeedTester:
 
             if not ping_url or not download_url:
                 last_error = f'{server_name} 缺少ping_url或download_url配置'
-                logger.warning(f"[BANDWIDTH-RANDOM] 第{attempt}次尝试失败: {last_error}")
+                logger.warning(f"[BANDWIDTH-RANDOM] 第{attempt}次尝试失败: {last_error}", extra={"log_type": "SYSTEM"})
                 continue
 
             logger.info(f"[BANDWIDTH-RANDOM] 第{attempt}次尝试，随机选择: {server_name}")
@@ -747,7 +750,7 @@ class NetworkSpeedTester:
                 if ping_result.get('status') != 'success':
                     last_error = f'延迟测试失败: {ping_result.get("error")}'
                     elapsed = time.perf_counter() - test_start_time
-                    logger.warning(f"[BANDWIDTH-RANDOM] ❌ 第{attempt}次延迟测试失败（耗时{elapsed:.2f}秒）: {server_name} - {last_error}")
+                    logger.warning(f"[BANDWIDTH-RANDOM] ❌ 第{attempt}次延迟测试失败（耗时{elapsed:.2f}秒）: {server_name} - {last_error}", extra={"log_type": "SYSTEM"})
                     continue
 
                 logger.info(f"[BANDWIDTH-RANDOM] ✅ 延迟测试通过: {server_name} ({ping_result['ping_ms']}ms)")
@@ -776,13 +779,13 @@ class NetworkSpeedTester:
                 else:
                     last_error = f'下载测试失败: {download_result.get("error")}'
                     elapsed = time.perf_counter() - test_start_time
-                    logger.warning(f"[BANDWIDTH-RANDOM] ❌ 第{attempt}次下载测试失败（耗时{elapsed:.2f}秒）: {server_name} - {last_error}")
+                    logger.warning(f"[BANDWIDTH-RANDOM] ❌ 第{attempt}次下载测试失败（耗时{elapsed:.2f}秒）: {server_name} - {last_error}", extra={"log_type": "SYSTEM"})
 
             finally:
                 self.timeout = original_timeout
 
         # 所有重试都失败
-        logger.error(f"[BANDWIDTH-RANDOM] ❌ 所有{max_retries}次尝试均失败")
+        logger.error(f"[BANDWIDTH-RANDOM] ❌ 所有{max_retries}次尝试均失败", extra={"log_type": "SYSTEM"})
         return {
             'error': last_error or '所有服务器测试失败',
             'status': 'all_failed',
@@ -1108,14 +1111,14 @@ class HardwareMonitorFactory:
                 HardwareMonitorFactory._instance = monitor
                 return monitor
             else:
-                logger.error("❌ LibreHardwareMonitor 不可用，请确保：")
-                logger.error("   1. 已安装 pythonnet: pip install pythonnet")
-                logger.error("   2. LibreHardwareMonitor.dll 在正确路径")
-                logger.error("   3. 以管理员权限运行程序")
+                logger.error("❌ LibreHardwareMonitor 不可用，请确保：", extra={"log_type": "SYSTEM"})
+                logger.error("   1. 已安装 pythonnet: pip install pythonnet", extra={"log_type": "SYSTEM"})
+                logger.error("   2. LibreHardwareMonitor.dll 在正确路径", extra={"log_type": "SYSTEM"})
+                logger.error("   3. 以管理员权限运行程序", extra={"log_type": "SYSTEM"})
                 return None
         except Exception as e:
-            logger.exception("❌ LibreHardwareMonitor 初始化失败: %s", e)
-            logger.error("   硬件监控功能将不可用")
+            logger.error("❌ [HardwareMonitorFactory] LibreHardwareMonitor 初始化失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            logger.error("   硬件监控功能将不可用", extra={"log_type": "SYSTEM"})
             return None
 
     @staticmethod
@@ -1250,7 +1253,7 @@ class SystemBottleneckAnalyzer:
             }
 
         except Exception as e:
-            self.logger.error("瓶颈分析失败: %s", e, exc_info=True)
+            self.logger.error("瓶颈分析失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             # 返回默认安全值
             return {
                 "total_score": 100,
@@ -1530,7 +1533,7 @@ class ScenarioAnalyzer:
                 return "idle"
 
         except Exception as e:
-            self.logger.error("场景检测失败: %s", e)
+            self.logger.error("场景检测失败: %s", e, extra={"log_type": "SYSTEM"})
             return "idle"
 
     def analyze_scenario(self, scenario: str, metrics: Dict[str, Any]) -> Dict[str, Any]:
@@ -1569,7 +1572,7 @@ class ScenarioAnalyzer:
                 return self._analyze_idle_scenario(system_metrics)
 
         except Exception as e:
-            self.logger.error("场景分析失败: %s", e, exc_info=True)
+            self.logger.error("场景分析失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return {
                 "scenario": scenario,
                 "scenario_name": self.scenario_names.get(scenario, "未知"),
@@ -2011,7 +2014,7 @@ class MonitoringProcessV2:
                         if pid == os.getpid():
                             continue
 
-                        logger.warning("[清理] 发现旧监控进程 (PID=%d)，正在终止...", pid)
+                        logger.warning("[清理] 发现旧监控进程 (PID=%d)，正在终止...", pid, extra={"log_type": "SYSTEM"})
                         proc.terminate()
 
                         # 等待进程退出
@@ -2020,7 +2023,7 @@ class MonitoringProcessV2:
                             logger.info("[清理] ✅ 旧监控进程 (PID=%d) 已正常终止", pid)
                             killed_any = True
                         except psutil.TimeoutExpired:
-                            logger.warning("[清理] 旧进程未响应，强制杀死...")
+                            logger.warning("[清理] 旧进程未响应，强制杀死...", extra={"log_type": "SYSTEM"})
                             proc.kill()
                             logger.info("[清理] ✅ 旧监控进程 (PID=%d) 已强制终止", pid)
                             killed_any = True
@@ -2036,7 +2039,7 @@ class MonitoringProcessV2:
                 logger.info("[清理] 未发现需要清理的旧监控进程")
 
         except Exception as e:
-            logger.error("[清理] 清理旧进程时出错: %s", e, exc_info=True)
+            logger.error("[清理] 清理旧进程时出错: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             # 不抛出异常，继续启动流程
 
     async def start(self):
@@ -2105,7 +2108,7 @@ class MonitoringProcessV2:
 
                         logger.info("[INIT] ✓ 就绪信号已更新（Level 2: 功能完整）")
                 except Exception as e:
-                    logger.warning("[INIT] 更新就绪信号失败: %s", e)
+                    logger.warning("[INIT] 更新就绪信号失败: %s", e, extra={"log_type": "SYSTEM"})
 
                 logger.debug(
                     "所有协程已就绪: 协程数量=%d, 协程列表=%s",
@@ -2114,7 +2117,7 @@ class MonitoringProcessV2:
                 )
 
             except asyncio.TimeoutError:
-                logger.error("[INIT] ❌ 协程启动超时！")
+                logger.error("[INIT] ❌ 协程启动超时！", extra={"log_type": "ALERT"})
                 ready = [
                     name for name, event in self.coroutine_ready_events.items() if event.is_set()
                 ]
@@ -2123,8 +2126,8 @@ class MonitoringProcessV2:
                     for name, event in self.coroutine_ready_events.items()
                     if not event.is_set()
                 ]
-                logger.error(f"[INIT] 已就绪: {ready}")
-                logger.error(f"[INIT] 未就绪: {not_ready}")
+                logger.error(f"[INIT] 已就绪: {ready}", extra={"log_type": "SYSTEM"})
+                logger.error(f"[INIT] 未就绪: {not_ready}", extra={"log_type": "SYSTEM"})
                 raise
 
             # ⚠️ 禁用启动时自动带宽测试（避免Ookla限流）
@@ -2146,15 +2149,15 @@ class MonitoringProcessV2:
                 task_name = tasks[i].get_name()
                 if isinstance(result, Exception):
                     logger.error(
-                        f"[TASK-EXIT] ❌ 任务 {task_name} 异常退出: {result}", exc_info=result
+                        f"[TASK-EXIT] ❌ 任务 {task_name} 异常退出: {result}", exc_info=result, extra={"log_type": "ALERT"}
                     )
                 elif result is not None:
-                    logger.warning(f"[TASK-EXIT] ⚠️  任务 {task_name} 意外返回: {result}")
+                    logger.warning(f"[TASK-EXIT] ⚠️  任务 {task_name} 意外返回: {result}", extra={"log_type": "SYSTEM"})
 
         except KeyboardInterrupt:
             logger.info("收到中断信号，正在关闭...")
         except Exception as e:
-            logger.error("监控进程异常: %s", e, exc_info=True)
+            logger.critical("🔥 监控进程异常: %s", e, exc_info=True, extra={"log_type": "ALERT"})
         finally:
             await self.stop()
 
@@ -2200,32 +2203,42 @@ class MonitoringProcessV2:
 
                 logger.info("[IPC] ✓ 初步就绪信号文件已创建（Level 1: query+status就绪）")
             except Exception as e:
-                logger.warning("[IPC] 创建就绪信号文件失败: %s", e)
+                logger.warning("[IPC] 创建就绪信号文件失败: %s", e, extra={"log_type": "SYSTEM"})
 
             # 🔄 延迟创建告警客户端管道（等待主进程告警服务端就绪）
-            # 使用重试机制，最多重试10次，每次等待1秒
             self.alerts_pipe = None
-            max_retries = 10
+            max_retries = 60
             retry_delay = 1.0
 
             for attempt in range(max_retries):
                 try:
-                    logger.info(f"[IPC] 尝试创建告警客户端管道 (尝试 {attempt + 1}/{max_retries})...")
+                    logger.info(
+                        f"[IPC] 尝试创建告警客户端管道 (尝试 {attempt + 1}/{max_retries})..."
+                    )
                     self.alerts_pipe = await AsyncIPCPipe.client("monitor_alerts")
                     logger.info("[IPC] ✅ 告警客户端管道已创建: monitor_alerts")
                     break
+                except FileNotFoundError:
+                    # 服务端尚未创建，等待后重试
+                    await asyncio.sleep(retry_delay)
+                    continue
                 except Exception as e:
-                    if attempt < max_retries - 1:
-                        logger.warning(
-                            f"[IPC] ⚠️ 创建告警客户端管道失败（尝试 {attempt + 1}/{max_retries}）: {e}，将在{retry_delay}秒后重试"
-                        )
-                        await asyncio.sleep(retry_delay)
-                    else:
-                        # 最后一次尝试也失败，记录警告但继续运行
-                        logger.error(
-                            f"[IPC] ❌ 创建告警客户端管道最终失败（已重试{max_retries}次）: {e}，告警推送功能将不可用"
-                        )
-                        self.alerts_pipe = None
+                    logger.warning(
+                        "[IPC] ⚠️ 创建告警客户端管道失败（尝试 %d/%d）: %s，等待 %.1f 秒后重试",
+                        attempt + 1,
+                        max_retries,
+                        e,
+                        retry_delay,
+                        extra={"log_type": "SYSTEM"}
+                    )
+                    await asyncio.sleep(retry_delay)
+
+            if self.alerts_pipe is None:
+                logger.error(
+                    "[IPC] ❌ 创建告警客户端管道最终失败（已重试%d次），告警推送功能将不可用",
+                    max_retries,
+                    extra={"log_type": "ALERT"}
+                )
 
             # 更新就绪信号文件（添加告警管道状态）
             try:
@@ -2234,20 +2247,24 @@ class MonitoringProcessV2:
                     with open(signal_file, "r", encoding="utf-8") as f:
                         ready_signal = json.load(f)
 
-                    ready_signal["status"] = "pipes_ready"  # 更新为完全就绪
-                    ready_signal["pipes"]["alerts"] = "monitor_alerts" if self.alerts_pipe else None
+                    ready_signal["status"] = (
+                        "pipes_ready" if self.alerts_pipe else "partial_pipes_ready"
+                    )
+                    ready_signal["pipes"]["alerts"] = (
+                        "monitor_alerts" if self.alerts_pipe else None
+                    )
 
                     with open(signal_file, "w", encoding="utf-8") as f:
                         json.dump(ready_signal, f, ensure_ascii=False, indent=2)
                         f.flush()
                         os.fsync(f.fileno())
 
-                    logger.info("[IPC] ✓ 就绪信号文件已更新（Level 1: 管道完全就绪）")
+                    logger.info("[IPC] ✓ 就绪信号文件已更新（Level 1状态: %s）", ready_signal["status"])
             except Exception as e:
-                logger.warning("[IPC] 更新就绪信号文件失败: %s", e)
+                logger.warning("[IPC] 更新就绪信号文件失败: %s", e, extra={"log_type": "SYSTEM"})
 
         except Exception as e:
-            logger.error("[IPC] ❌ 创建native_ipc管道失败: %s", e, exc_info=True)
+            logger.critical("🔥 [IPC] 创建native_ipc管道失败: %s", e, exc_info=True, extra={"log_type": "ALERT"})
             raise RuntimeError(f"native_ipc管道创建失败: {e}") from e
 
         logger.info("[IPC] ✅ 所有管道已配置完成")
@@ -2267,7 +2284,7 @@ class MonitoringProcessV2:
                     logger.info("[INIT] ✅ 硬件监控器初始化完成（耗时: %.1fs）", elapsed)
                     return monitor
                 except Exception as e:
-                    logger.error("[INIT] ❌ 硬件监控器初始化失败: %s", e)
+                    logger.warning("[INIT] ⚠️ 硬件监控器初始化失败: %s (硬件监控为可选功能，不影响核心功能)", e, exc_info=True, extra={"log_type": "SYSTEM"})
                     return None
 
             # 在后台线程池中创建（不阻塞主循环）
@@ -2280,7 +2297,8 @@ class MonitoringProcessV2:
                 logger.info("[INIT] ✅ 硬件监控器已就绪，功能完整")
             else:
                 logger.warning(
-                    "[INIT] ⚠️ 硬件监控器初始化失败，系统将以降级模式运行（无硬件温度监控）"
+                    "[INIT] ⚠️ 硬件监控器初始化失败，系统将以降级模式运行（无硬件温度监控）",
+                    extra={"log_type": "SYSTEM"}
                 )
 
         # 初始化队列
@@ -2347,7 +2365,7 @@ class MonitoringProcessV2:
                     else:
                         # ExtendedLHMWrapper doesn't have get_temperature_info, use get_all_sensor_data
                         sensor_data = {}
-                        logger.warning("Hardware monitor doesn't have get_all_sensor_data method")
+                        logger.warning("Hardware monitor doesn't have get_all_sensor_data method", extra={"log_type": "SYSTEM"})
 
                     if self.loop and sensor_data and self.hardware_queue:
                         asyncio.run_coroutine_threadsafe(
@@ -2359,7 +2377,7 @@ class MonitoringProcessV2:
                 time.sleep(sleep_time)
 
             except Exception as e:
-                logger.exception("[HARDWARE-THREAD] 采集失败: %s", e)
+                logger.error("[HARDWARE-THREAD] 采集失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
                 time.sleep(self.slow_interval)
 
         logger.info("[HARDWARE-THREAD] 硬件传感器采集线程停止")
@@ -2400,20 +2418,36 @@ class MonitoringProcessV2:
     def _collect_smart_once(self):
         """采集一次SMART数据."""
         try:
-            if not self.smart_monitor.is_available():
-                logger.warning("[SMART] pySMART不可用")
-                return
-
+            availability = getattr(self.smart_monitor, "is_available", None)
+            if callable(availability):
+                if not availability():
+                    logger.warning("[SMART] SMART监控不可用，将跳过采集", extra={"log_type": "SYSTEM"})
+                    return
             logger.info("[SMART] 开始采集SMART数据...")
             start_time = time.time()
-            smart_data = self.smart_monitor.get_smart_data()
+            smart_data = self.smart_monitor.get_smart_data_with_alerts()
+            smart_payload = smart_data.get("smart_data", {}) if isinstance(smart_data, dict) else smart_data
             elapsed = time.time() - start_time
-            logger.info("[SMART] ✅ 采集完成，耗时%.2fs，%d个硬盘", elapsed, len(smart_data))
+            logger.info(
+                "[SMART] ✅ 采集完成，耗时%.2fs，%d个硬盘",
+                elapsed,
+                len(smart_payload),
+            )
 
             if self.loop and smart_data and self.smart_queue:
                 asyncio.run_coroutine_threadsafe(self.smart_queue.put(smart_data), self.loop)
+
+            # 推送告警事件（如果有）
+            if isinstance(smart_data, dict) and smart_data.get("alerts"):
+                alerts = smart_data.get("alerts", [])
+                for alert in alerts:
+                    logger_alert.warning(
+                        "[SMART-ALERT] %s - %s",
+                        alert.get("disk", "unknown"),
+                        alert.get("message", ""),
+                    )
         except Exception as e:
-            logger.exception("[SMART] 采集失败: %s", e)
+            logger.error("[SMART] 采集失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
 
     async def ipc_handler(self):
         """native_ipc通信处理."""
@@ -2444,10 +2478,10 @@ class MonitoringProcessV2:
             except Exception:
                 pass
 
-            logger.warning("[IPC] ⚠️  while循环退出（self.running=%s）", self.running)
+            logger.warning("[IPC] ⚠️  while循环退出（self.running=%s）", self.running, extra={"log_type": "SYSTEM"})
 
         except Exception as e:
-            logger.error("[IPC] ❌ 协程异常退出: %s", e, exc_info=True)
+            logger.error("[IPC] ❌ 协程异常退出: %s", e, exc_info=True, extra={"log_type": "ALERT"})
         finally:
             logger.info("[IPC] 通信处理协程停止")
 
@@ -2485,12 +2519,12 @@ class MonitoringProcessV2:
                             request = json.loads(decoded_data)
 
                     except json.JSONDecodeError as e:
-                        logger.warning(f"[IPC] JSON解析失败: {e}, 数据长度: {len(request_data)}")
+                        logger.warning(f"[IPC] JSON解析失败: {e}, 数据长度: {len(request_data)}", extra={"log_type": "SYSTEM"})
                         logger.debug(f"[IPC] 原始数据: {request_data[:100]}...")
                         # 使用默认请求
                         request = {"action": "get_data"}
                     except UnicodeDecodeError as e:
-                        logger.warning(f"[IPC] 数据解码失败: {e}, 数据长度: {len(request_data)}")
+                        logger.warning(f"[IPC] 数据解码失败: {e}, 数据长度: {len(request_data)}", extra={"log_type": "SYSTEM"})
                         # 使用默认请求
                         request = {"action": "get_data"}
                     action = request.get("action", "get_data")
@@ -2533,10 +2567,10 @@ class MonitoringProcessV2:
 
                         # 检查数据大小，如果超过32KB则警告
                         if len(response_bytes) > 32768:
-                            logger.warning("[IPC] 响应数据过大: %d bytes，可能导致传输问题", len(response_bytes))
+                            logger.warning("[IPC] 响应数据过大: %d bytes，可能导致传输问题", len(response_bytes), extra={"log_type": "SYSTEM"})
                             # 如果数据过大，尝试进一步精简
                             if len(response_bytes) > 60000:  # 接近64KB限制
-                                logger.warning("[IPC] 数据接近缓冲区限制，进行精简")
+                                logger.warning("[IPC] 数据接近缓冲区限制，进行精简", extra={"log_type": "SYSTEM"})
                                 # 移除详细的进程信息
                                 if "process" in response and isinstance(response["process"], dict):
                                     if "processes" in response["process"]:
@@ -2553,12 +2587,12 @@ class MonitoringProcessV2:
                             await self.query_pipe.write(response_bytes)
                             logger.debug(f"[IPC] 响应已发送: {len(response_bytes)} bytes")
                         except json.JSONDecodeError as e:
-                            logger.error(f"[IPC] 响应JSON格式错误: {e}")
+                            logger.error(f"[IPC] 响应JSON格式错误: {e}", extra={"log_type": "SYSTEM"})
                             # 发送错误响应
                             error_response = json.dumps({"status": "error", "message": "响应数据格式错误"})
                             await self.query_pipe.write(error_response.encode('utf-8'))
                         except Exception as e:
-                            logger.error(f"[IPC] 发送响应失败: {e}")
+                            logger.error(f"[IPC] 发送响应失败: {e}", extra={"log_type": "SYSTEM"})
                     elif action == "trigger_smart":
                         if self.smart_trigger_event:
                             self.smart_trigger_event.set()
@@ -2567,7 +2601,7 @@ class MonitoringProcessV2:
                         # 手动触发完整带宽测试（后台任务模式）
                         try:
                             if self._background_bandwidth_task and not self._background_bandwidth_task.done():
-                                logger.warning("[BANDWIDTH] 测试已在运行中，拒绝新请求")
+                                logger.warning("[BANDWIDTH] 测试已在运行中，拒绝新请求", extra={"log_type": "SYSTEM"})
                                 await self.query_pipe.write(json.dumps({
                                     "status": "testing",
                                     "message": "带宽测试正在进行中，请稍后查询结果"
@@ -2588,13 +2622,13 @@ class MonitoringProcessV2:
                                         if result:
                                             logger.info(f"[IPC] ✅ 带宽测试后台任务完成：{result}")
                                         else:
-                                            logger.warning(f"[IPC] ⚠️ 带宽测试后台任务返回None")
+                                            logger.warning(f"[IPC] ⚠️ 带宽测试后台任务返回None", extra={"log_type": "SYSTEM"})
                                     except Exception as e:
-                                        logger.error(f"[IPC] ❌ 带宽测试后台任务异常：{e}", exc_info=True)
+                                        logger.error(f"[IPC] ❌ 带宽测试后台任务异常：{e}", exc_info=True, extra={"log_type": "SYSTEM"})
 
                                 self._background_bandwidth_task.add_done_callback(on_bandwidth_done)
                         except Exception as e:
-                            logger.error(f"[IPC] 启动带宽测试失败：{e}", exc_info=True)
+                            logger.error(f"[IPC] 启动带宽测试失败：{e}", exc_info=True, extra={"log_type": "SYSTEM"})
                             await self.query_pipe.write(json.dumps({"status": "error", "message": str(e)}).encode())
                     elif action == "retry_latency":
                         try:
@@ -2605,7 +2639,7 @@ class MonitoringProcessV2:
                                 "message": "延迟监控器已重新初始化"
                             }).encode())
                         except Exception as e:
-                            logger.error(f"[IPC] 重试延迟监控失败：{e}", exc_info=True)
+                            logger.error(f"[IPC] 重试延迟监控失败：{e}", exc_info=True, extra={"log_type": "SYSTEM"})
                             await self.query_pipe.write(json.dumps({"status": "error", "message": str(e)}).encode())
                     elif action == "get_bandwidth":
                         try:
@@ -2981,24 +3015,41 @@ class MonitoringProcessV2:
     def _serialize_smart_data(self, smart_data: Dict) -> Dict[str, Any]:
         """序列化SMART数据."""
         result = {}
-        for disk_name, data in smart_data.items():
-            result[disk_name] = {
-                "model": data.model,
-                "serial": data.serial,
-                "capacity": data.capacity,
-                "assessment": data.assessment,
-                "temperature": data.temperature,
-                "power_on_hours": data.power_on_hours,
-                # 🔧 修复：二次防御，确保None值转换为0
-                "reallocated_sectors": (
-                    data.reallocated_sectors if data.reallocated_sectors is not None else 0
-                ),
-                "pending_sectors": data.pending_sectors if data.pending_sectors is not None else 0,
-                "uncorrectable_errors": (
-                    data.uncorrectable_errors if data.uncorrectable_errors is not None else 0
-                ),
-                "timestamp": data.timestamp.isoformat(),
-            }
+
+        # 支持新的字典格式 {smart_data: {...}, alerts: [...]}
+        smart_payload = smart_data.get("smart_data", smart_data) if isinstance(smart_data, dict) else smart_data
+
+        for disk_name, data in smart_payload.items():
+            if isinstance(data, dict):
+                result[disk_name] = {
+                    "model": data.get("model"),
+                    "serial": data.get("serial"),
+                    "capacity": data.get("capacity"),
+                    "assessment": data.get("assessment"),
+                    "temperature": data.get("temperature"),
+                    "power_on_hours": data.get("power_on_hours"),
+                    "reallocated_sectors": data.get("reallocated_sectors", 0) or 0,
+                    "pending_sectors": data.get("pending_sectors", 0) or 0,
+                    "uncorrectable_errors": data.get("uncorrectable_errors", 0) or 0,
+                    "timestamp": data.get("timestamp"),
+                }
+            else:
+                result[disk_name] = {
+                    "model": getattr(data, "model", None),
+                    "serial": getattr(data, "serial", None),
+                    "capacity": getattr(data, "capacity", None),
+                    "assessment": getattr(data, "assessment", None),
+                    "temperature": getattr(data, "temperature", None),
+                    "power_on_hours": getattr(data, "power_on_hours", None),
+                    "reallocated_sectors": getattr(data, "reallocated_sectors", 0) or 0,
+                    "pending_sectors": getattr(data, "pending_sectors", 0) or 0,
+                    "uncorrectable_errors": getattr(data, "uncorrectable_errors", 0) or 0,
+                    "timestamp": (
+                        getattr(data, "timestamp", None).isoformat()
+                        if getattr(data, "timestamp", None)
+                        else None
+                    ),
+                }
         return result
 
     async def _queue_for_database(self):

@@ -248,11 +248,11 @@ class Settings:
             )
 
         except FileNotFoundError:
-            logger.error("配置文件不存在: %s", config_file)
+            logger.error("❌ 配置文件不存在: %s", config_file, extra={"log_type": "SYSTEM"})
         except json.JSONDecodeError:
-            logger.exception("配置文件JSON格式错误: 文件=%s", config_file)
+            logger.error("❌ 配置文件JSON格式错误: 文件=%s", config_file, exc_info=True, extra={"log_type": "SYSTEM"})
         except Exception:
-            logger.exception("配置文件加载失败: 文件=%s", config_file)
+            logger.error("❌ 配置文件加载失败: 文件=%s", config_file, exc_info=True, extra={"log_type": "SYSTEM"})
 
     def save_to_file(self, config_file: str) -> None:
         """保存配置到文件."""
@@ -310,7 +310,7 @@ class Settings:
             logger.info("配置保存完成: 文件=%s, 大小=%d字节", config_file, file_size)
 
         except Exception:
-            logger.exception("配置文件保存失败: 文件=%s", config_file)
+            logger.error("❌ 配置文件保存失败: 文件=%s", config_file, exc_info=True, extra={"log_type": "SYSTEM"})
 
     def _create_directories(self) -> None:
         """创建必要的目录."""
@@ -488,7 +488,7 @@ class ConfigManager:
                         setattr(self.ui_config, k, v)
                 logger.info("UI配置文件加载完成: %s", self._config_file)
             except Exception as e:
-                logger.error("UI配置文件加载失败: %s", e)
+                logger.error("UI配置文件加载失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
 
     def save_config(self) -> None:
         """保存当前配置到文件（如提供路径）。"""
@@ -519,7 +519,7 @@ class ConfigManager:
                 )
             logger.info("UI配置保存完成: %s", self._config_file)
         except Exception as e:
-            logger.error("UI配置保存失败: %s", e)
+            logger.error("UI配置保存失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
 
 
 # 导出公共接口
@@ -559,7 +559,7 @@ def update_capabilities(values: Dict[str, Any]) -> None:
         _capabilities.update(values)
         logger.info("运行期能力位已更新: %s", values)
     except Exception as e:
-        logger.error("更新能力位失败: %s", e)
+        logger.error("更新能力位失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
 
 
 def get_capabilities() -> Dict[str, Any]:

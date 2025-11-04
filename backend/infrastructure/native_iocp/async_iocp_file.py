@@ -8,11 +8,16 @@
 import asyncio
 import sys
 import platform
+import logging
 from typing import Optional, Union, Tuple, Any
 from pathlib import Path
 
+# 创建logger
+logger = logging.getLogger(__name__)
+
 # 仅Windows平台支持
 if platform.system() != "Windows":
+    logger.critical("IOCP异步文件I/O仅支持Windows平台", extra={"log_type": "SYSTEM"})
     raise RuntimeError("IOCP async file I/O only supports Windows platform")
 
 try:
@@ -51,6 +56,7 @@ class AsyncIOCPFile:
         self._last_operation_type: Optional[str] = None
 
         if not IOCP_AVAILABLE:
+            logger.warning("IOCP扩展不可用，请编译C扩展或使用兼容层", extra={"log_type": "SYSTEM"})
             raise RuntimeError(
                 "IOCP extension not available. "
                 "Please compile the C extension or use compat layer."
@@ -69,12 +75,15 @@ class AsyncIOCPFile:
     async def open(self):
         """异步打开文件"""
         if self._closed:
+            logger.error("文件已关闭，无法打开", extra={"log_type": "SYSTEM"})
             raise ValueError("File is closed")
 
         if not IOCP_AVAILABLE:
+            logger.warning("IOCP扩展不可用", extra={"log_type": "SYSTEM"})
             raise RuntimeError("IOCP extension not available")
 
         if iocp_file is None:
+            logger.warning("iocp_file扩展不可用", extra={"log_type": "SYSTEM"})
             raise RuntimeError("iocp_file extension not available")
 
         self._loop = asyncio.get_running_loop()
@@ -83,11 +92,19 @@ class AsyncIOCPFile:
         self._file = iocp_file.IOCPFile()  # type: ignore
 
         # 打开文件（同步操作，很快）
-        self._file.open(str(self.filepath), self.mode)
+        try:
+            self._file.open(str(self.filepath), self.mode)
+        except Exception as e:
+            logger.error(f"打开文件失败: {self.filepath}, 错误: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            raise
 
         # 注册到事件循环扩展
-        self._extension = get_loop_extension(self._loop)
-        self._extension.register_iocp_file(self._file)
+        try:
+            self._extension = get_loop_extension(self._loop)
+            self._extension.register_iocp_file(self._file)
+        except Exception as e:
+            logger.error(f"注册IOCP文件到事件循环扩展失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            raise
 
     async def read(self, size: int = -1) -> bytes:
         """
@@ -100,14 +117,17 @@ class AsyncIOCPFile:
             读取的数据（bytes）
         """
         if self._file is None:
+            logger.error("文件未打开，无法读取", extra={"log_type": "SYSTEM"})
             raise ValueError("File not opened")
         if self._closed:
+            logger.error("文件已关闭，无法读取", extra={"log_type": "SYSTEM"})
             raise ValueError("File is closed")
 
         if size == -1:
             size = 4096  # 默认4KB
 
         if self._extension is None:
+            logger.error("事件循环扩展未初始化", extra={"log_type": "SYSTEM"})
             raise RuntimeError("Event loop extension not initialized")
 
         # 启动异步读取
@@ -164,10 +184,12 @@ class AsyncIOCPFile:
                         if is_complete and isinstance(data, bytes):
                             return data
 
+                    logger.error(f"读取文件时遇到意外的结果格式: {result_data}, 类型: {type(result_data)}", extra={"log_type": "SYSTEM"})
                     raise RuntimeError(
                         f"Unexpected result format: {result_data}, type: {type(result_data)}"
                     )
         else:
+            logger.error(f"读取文件时遇到意外的结果类型: {type(result)}", extra={"log_type": "SYSTEM"})
             raise RuntimeError(f"Unexpected result type: {type(result)}")
 
         # 最后的fallback：尝试再次检查完成状态
@@ -178,9 +200,10 @@ class AsyncIOCPFile:
                     is_complete, data = result
                     if is_complete and isinstance(data, bytes):
                         return data
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"检查完成状态时发生异常: {e}", extra={"log_type": "SYSTEM"})
 
+        logger.error(f"读取文件失败: 意外的结果格式, 文件: {self.filepath}", extra={"log_type": "SYSTEM"})
         raise RuntimeError("Failed to read file: unexpected result format")
 
     async def write(self, data: bytes) -> int:
@@ -194,11 +217,14 @@ class AsyncIOCPFile:
             写入的字节数
         """
         if self._file is None:
+            logger.error("文件未打开，无法写入", extra={"log_type": "SYSTEM"})
             raise ValueError("File not opened")
         if self._closed:
+            logger.error("文件已关闭，无法写入", extra={"log_type": "SYSTEM"})
             raise ValueError("File is closed")
 
         if self._extension is None:
+            logger.error("事件循环扩展未初始化", extra={"log_type": "SYSTEM"})
             raise RuntimeError("Event loop extension not initialized")
 
         # 启动异步写入
@@ -231,8 +257,10 @@ class AsyncIOCPFile:
                 elif isinstance(result_data, int):
                     return result_data
                 else:
+                    logger.error(f"写入文件时遇到意外的结果格式: {result_data}", extra={"log_type": "SYSTEM"})
                     raise RuntimeError(f"Unexpected result format: {result_data}")
         else:
+            logger.error(f"写入文件时遇到意外的结果类型: {type(result)}", extra={"log_type": "SYSTEM"})
             raise RuntimeError(f"Unexpected result type: {type(result)}")
 
         return 0  # fallback

@@ -192,7 +192,7 @@ class DataSensor:
             try:
                 callback(completed, total, message)
             except Exception as e:
-                logger.warning(f"⚠️ 进度回调执行失败: {e}")
+                logger.warning(f"⚠️ 进度回调执行失败: {e}", extra={"log_type": "SYSTEM"})
     
     def scan_quality(
         self,
@@ -216,7 +216,7 @@ class DataSensor:
         """
         with self._scan_lock:
             if self._scanning:
-                logger.warning("⚠️ 质量扫描正在进行中")
+                logger.warning("⚠️ 质量扫描正在进行中", extra={"log_type": "SYSTEM"})
                 return self._scan_results.copy()
             
             self._scanning = True
@@ -256,7 +256,7 @@ class DataSensor:
             return results
             
         except Exception as e:
-            logger.error(f"❌ 数据质量扫描失败: {e}", exc_info=True)
+            logger.error(f"❌ 数据质量扫描失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
             raise
         finally:
             with self._scan_lock:
@@ -298,7 +298,7 @@ class DataSensor:
             
             return config
         except Exception as e:
-            logger.warning(f"⚠️ 获取LoadBalancer配置失败，使用默认值: {e}")
+            logger.warning(f"⚠️ 获取LoadBalancer配置失败，使用默认值: {e}", extra={"log_type": "SYSTEM"})
             return {"processes": 4, "coroutines_per_process": 100}
     
     def _scan_async(
@@ -364,7 +364,7 @@ class DataSensor:
                 result = await task
                 results[(symbol, interval)] = result
             except Exception as e:
-                logger.warning(f"⚠️ 扫描失败: {symbol}/{interval}, 错误: {e}")
+                logger.warning(f"⚠️ 扫描失败: {symbol}/{interval}, 错误: {e}", extra={"log_type": "SYSTEM"})
                 results[(symbol, interval)] = QualityScanResult(
                     symbol=symbol,
                     interval=interval,
@@ -445,7 +445,7 @@ class DataSensor:
                     result = future.result()
                     results[(symbol, interval)] = result
                 except Exception as e:
-                    logger.warning(f"⚠️ 扫描失败: {symbol}/{interval}, 错误: {e}")
+                    logger.warning(f"⚠️ 扫描失败: {symbol}/{interval}, 错误: {e}", extra={"log_type": "SYSTEM"})
                     results[(symbol, interval)] = QualityScanResult(
                         symbol=symbol,
                         interval=interval,
@@ -842,7 +842,8 @@ class StatelessValidator:
         # 获取当前时间（使用网络时间）
         try:
             current_time = NetworkTimeSync.get_time()
-        except Exception:
+        except Exception as e:
+            logger.debug(f"⚠️ [DataQuality] 获取网络时间失败，使用系统时间: {e}", extra={"log_type": "SYSTEM"})
             current_time = datetime.now()
         
         # 计算时间差
@@ -938,7 +939,7 @@ class DataFileWatcher:
     def start(self):
         """启动监控"""
         if self._watching:
-            logger.warning("⚠️ 文件监控已经启动")
+            logger.warning("⚠️ 文件监控已经启动", extra={"log_type": "SYSTEM"})
             return
         
         self._watching = True
@@ -968,7 +969,7 @@ class DataFileWatcher:
                 self._process_pending_events()
                 time.sleep(1.0)  # 每秒扫描一次
             except Exception as e:
-                logger.error(f"❌ 文件监控循环异常: {e}", exc_info=True)
+                logger.error(f"❌ 文件监控循环异常: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
     
     def _scan_directory(self):
         """扫描目录"""
@@ -1038,7 +1039,7 @@ class DataFileWatcher:
                 )
                 self.event_engine.put(event)
             except Exception as e:
-                logger.warning(f"⚠️ 发送文件变化事件失败: {e}")
+                logger.warning(f"⚠️ 发送文件变化事件失败: {e}", extra={"log_type": "SYSTEM"})
 
 
 # ==============================================================================
@@ -1143,7 +1144,7 @@ class HealthChecker:
                     result['warnings'].append(f"磁盘空间需要关注: {free_percent:.1f}%")
                     result['penalty'] = 5
         except Exception as e:
-            logger.warning(f"⚠️ 检查存储空间失败: {e}")
+            logger.warning(f"⚠️ 检查存储空间失败: {e}", extra={"log_type": "SYSTEM"})
             result['warnings'].append("无法检查存储空间")
         
         return result
@@ -1172,7 +1173,7 @@ class HealthChecker:
                     result['warnings'].append("没有找到Parquet数据文件")
                     result['penalty'] = 10
         except Exception as e:
-            logger.warning(f"⚠️ 检查数据目录失败: {e}")
+            logger.warning(f"⚠️ 检查数据目录失败: {e}", extra={"log_type": "SYSTEM"})
         
         return result
 
@@ -1197,7 +1198,13 @@ class IPODateCache:
             cache_file: 缓存文件路径
             max_memory_size: 最大内存缓存数量
         """
-        self.cache_file = cache_file or Path("cache/ipo_dates.json")
+        # 🔧 修复：使用ConfigManager获取缓存目录，确保统一使用data/cache目录
+        if cache_file is None:
+            from backend.infrastructure.data_module_vnpy.core_engine import ConfigManager
+            config_manager = ConfigManager.get_instance()
+            cache_dir = config_manager.get_cache_dir()
+            cache_file = cache_dir / "ipo_dates.json"
+        self.cache_file = cache_file
         self.max_memory_size = max_memory_size
         
         # 内存缓存
@@ -1288,7 +1295,7 @@ class IPODateCache:
             
             logger.info(f"✅ IPO缓存已保存: {len(data)}条")
         except Exception as e:
-            logger.error(f"❌ 保存IPO缓存失败: {e}")
+            logger.error(f"❌ 保存IPO缓存失败: {e}", extra={"log_type": "SYSTEM"}, exc_info=True)
     
     def _load_from_file(self):
         """从文件加载缓存（同步版本）"""
@@ -1299,17 +1306,16 @@ class IPODateCache:
             with open(self.cache_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
-            # 转换为date对象
-            for symbol, date_str in data.items():
-                if date_str:
-                    ipo_date = date.fromisoformat(date_str)
-                    self._memory_cache[symbol] = ipo_date
-                else:
-                    self._memory_cache[symbol] = None
+            # 使用统一的提取函数处理缓存格式（兼容新旧两种格式）
+            from backend.infrastructure.data_module_vnpy.core_engine import ChinaStockEngine
+            ipo_dates = ChinaStockEngine._extract_ipo_data_from_cache(data)
+            
+            # 更新内存缓存
+            self._memory_cache.update(ipo_dates)
             
             logger.info(f"✅ IPO缓存已加载: {len(self._memory_cache)}条")
         except Exception as e:
-            logger.error(f"❌ 加载IPO缓存失败: {e}")
+            logger.error(f"❌ 加载IPO缓存失败: {e}", extra={"log_type": "SYSTEM"}, exc_info=True)
     
     def get_stats(self) -> Dict[str, int]:
         """获取缓存统计
