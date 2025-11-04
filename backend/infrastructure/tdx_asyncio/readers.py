@@ -112,11 +112,15 @@ class AsyncTdxDayReader:
                 return pd.DataFrame()
 
             logger.info(
-                "[TDX-READER] 开始读取日线文件: %s", self.filepath.name,
+                "[TDX-READER] ℹ️ 开始读取日线文件: %s", self.filepath.name,
                 extra={"log_type": "SYSTEM", "scenario": scenario}
             )
             logger.debug(
                 "[TDX-READER] 文件路径: %s", self.filepath,
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            logger.debug(
+                "[TDX-READER] 文件大小检查: exists=%s", self.filepath.exists(),
                 extra={"log_type": "SYSTEM", "scenario": scenario}
             )
 
@@ -137,14 +141,35 @@ class AsyncTdxDayReader:
             # 🔧 优化：直接在协程中解析，避免线程池排队
             # 数据解析很快（通常<1ms），不需要放到线程池
             # 如果数据量很大可以分块处理并定期 await asyncio.sleep(0)
+            logger.debug(
+                "[TDX-READER] 开始解析日线数据: 文件=%s, 数据大小=%d bytes",
+                self.filepath.name, len(data),
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            logger.info(
+                "[TDX-READER] ℹ️ 开始解析日线数据: 文件=%s",
+                self.filepath.name,
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             parse_start_time = time.time()
             records = self._parse_day_data(data)
             parse_elapsed = time.time() - parse_start_time
+
+            logger.debug(
+                "[TDX-READER] 解析完成: 文件=%s, 记录数=%d, 耗时=%.3f s",
+                self.filepath.name, len(records), parse_elapsed,
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
 
             if not records:
                 logger.debug(
                     "[TDX-READER] 解析后无记录: 文件=%s", self.filepath.name,
                     extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                logger.warning(
+                    "[TDX-READER] ⚠️ 解析后无记录: 文件=%s, 可能文件为空或格式错误",
+                    self.filepath.name,
+                    extra={"log_type": "ALERT", "scenario": scenario}
                 )
                 return pd.DataFrame()
 
@@ -192,6 +217,7 @@ class AsyncTdxDayReader:
         - 成交量: 4字节 int (手)
         - 保留: 4字节
         """
+        scenario = "tdx_data_read"
         records = []
 
         try:
@@ -233,17 +259,21 @@ class AsyncTdxDayReader:
                     })
 
         except Exception as e:
-            scenario = "tdx_data_read"
+            logger.debug(
+                "[TDX-READER] 解析异常详情: 异常类型=%s, 异常消息=%s, 已解析记录数=%d",
+                type(e).__name__, str(e), len(records),
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             logger.error(
                 "[TDX-READER] ❌ 解析日线数据失败: 文件=%s, 错误=%s",
                 self.filepath.name if hasattr(self, 'filepath') else 'unknown', e,
                 exc_info=True,
                 extra={"log_type": "ALERT", "scenario": scenario}
             )
-            logger.debug(
-                "[TDX-READER] 解析异常详情: 异常类型=%s, 异常消息=%s, 已解析记录数=%d",
-                type(e).__name__, str(e), len(records),
-                extra={"log_type": "SYSTEM", "scenario": scenario}
+            logger.warning(
+                "[TDX-READER] ⚠️ 解析日线数据失败，已解析记录数=%d: %s",
+                len(records), str(e),
+                extra={"log_type": "ALERT", "scenario": scenario}
             )
 
         return records
@@ -288,11 +318,15 @@ class AsyncTdxMinuteReader:
                 return pd.DataFrame()
 
             logger.info(
-                "[TDX-READER] 开始读取分钟线文件: %s", self.filepath.name,
+                "[TDX-READER] ℹ️ 开始读取分钟线文件: %s", self.filepath.name,
                 extra={"log_type": "SYSTEM", "scenario": scenario}
             )
             logger.debug(
                 "[TDX-READER] 文件路径: %s", self.filepath,
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            logger.debug(
+                "[TDX-READER] 文件大小检查: exists=%s", self.filepath.exists(),
                 extra={"log_type": "SYSTEM", "scenario": scenario}
             )
 
@@ -461,11 +495,15 @@ class AsyncTdxLc5Reader:
                 return pd.DataFrame()
 
             logger.info(
-                "[TDX-READER] 开始读取5分钟线文件: %s", self.filepath.name,
+                "[TDX-READER] ℹ️ 开始读取5分钟线文件: %s", self.filepath.name,
                 extra={"log_type": "SYSTEM", "scenario": scenario}
             )
             logger.debug(
                 "[TDX-READER] 文件路径: %s", self.filepath,
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            logger.debug(
+                "[TDX-READER] 文件大小检查: exists=%s", self.filepath.exists(),
                 extra={"log_type": "SYSTEM", "scenario": scenario}
             )
 

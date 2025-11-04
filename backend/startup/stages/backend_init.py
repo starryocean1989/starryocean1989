@@ -53,16 +53,32 @@ class BackendInitStage(StartupStage):
             StageResult: 阶段执行结果
         """
         start_time = time.time()
+        scenario = "application_startup"
+
+        # 🎯 启动流程日志埋点：使用ai_log_process上下文管理器
+        try:
+            from backend.infrastructure.system_vnpy.unified_log_system import (
+                ai_log_process,
+                get_logging_hub,
+            )
+            from contextlib import nullcontext
+            hub = get_logging_hub()
+            if hub:
+                hub.set_stage("backend_init")
+            context_manager = ai_log_process("backend_init", {"mode": "stage"}) if hub else nullcontext()
+        except ImportError:
+            from contextlib import nullcontext
+            hub = None
+            context_manager = nullcontext()
 
         try:
-            # 切换到backend_init阶段
-            from backend.infrastructure.system_vnpy import get_logging_hub
+            with context_manager:
+                # 切换到backend_init阶段
+                if hub:
+                    hub.set_stage("backend_init")
+                # 注意：场景信息通过日志记录的extra参数传递，无需全局设置
 
-            hub = get_logging_hub()
-            hub.set_stage("backend_init")
-            # 注意：场景信息通过日志记录的extra参数传递，无需全局设置
-
-            stage_logger = logging.getLogger("startup.stage")
+                stage_logger = logging.getLogger("startup.stage")
 
             # 阶段3标题
             stage_logger.info("", extra={"log_type": "STAGE_NODE", "scenario": "application_startup"})
@@ -83,12 +99,20 @@ class BackendInitStage(StartupStage):
             # 1. 初始化VNPY核心框架（如果尚未初始化）
             logger.debug(
                 "[BACKEND-INIT] 开始初始化VNPY核心框架",
-                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            logger.info(
+                "[BACKEND-INIT] ℹ️ 开始初始化VNPY核心框架",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
             )
             await self._initialize_vnpy_core(context)
             logger.debug(
                 "[BACKEND-INIT] VNPY核心框架初始化完成",
-                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            logger.info(
+                "[BACKEND-INIT] ✅ VNPY核心框架初始化完成",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
             )
 
             # 2. 并行启动两个任务：
@@ -96,7 +120,11 @@ class BackendInitStage(StartupStage):
             #    - 任务B：初始化后端服务（BackendInitializerWorker）
             logger.debug(
                 "[BACKEND-INIT] 开始并行启动监控进程和后端服务",
-                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            logger.info(
+                "[BACKEND-INIT] ℹ️ 开始并行启动监控进程和后端服务",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
             )
             monitor_result = None
             backend_result = None
@@ -107,7 +135,7 @@ class BackendInitStage(StartupStage):
             backend_worker = BackendInitializerWorker()
             logger.debug(
                 "[BACKEND-INIT] Worker已创建: MonitorLauncherWorker, BackendInitializerWorker",
-                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+                extra={"log_type": "SYSTEM", "scenario": scenario}
             )
 
             # 并行执行
@@ -115,48 +143,68 @@ class BackendInitStage(StartupStage):
             backend_task = backend_worker.run(context)
             logger.debug(
                 "[BACKEND-INIT] 并行任务已启动",
-                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            logger.info(
+                "[BACKEND-INIT] ℹ️ 并行任务已启动，等待完成...",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
             )
 
             # 等待两个任务完成
-            logger.info(
+            logger.debug(
                 "[BACKEND-INIT] 等待监控进程和后端服务初始化完成...",
-                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+                extra={"log_type": "SYSTEM", "scenario": scenario}
             )
             monitor_result, backend_result = await asyncio.gather(monitor_task, backend_task)
-            logger.info(
+            logger.debug(
                 "[BACKEND-INIT] 监控进程和后端服务初始化完成",
-                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            logger.info(
+                "[BACKEND-INIT] ✅ 监控进程和后端服务初始化完成",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
             )
 
             if not monitor_result.success:
                 logger.error(
                     f"[BACKEND-INIT] ❌ 监控进程启动失败: {monitor_result.message}",
-                    extra={"log_type": "ALERT", "scenario": "application_startup"}
+                    extra={"log_type": "ALERT", "scenario": scenario}
+                )
+                logger.critical(
+                    f"[BACKEND-INIT] 🔥 监控进程启动失败，启动流程将终止: {monitor_result.message}",
+                    extra={"log_type": "ALERT", "scenario": scenario}
                 )
                 raise RuntimeError(f"监控进程启动失败: {monitor_result.message}")
 
             if not backend_result.success:
                 logger.error(
                     f"[BACKEND-INIT] ❌ 后端服务初始化失败: {backend_result.message}",
-                    extra={"log_type": "ALERT", "scenario": "application_startup"}
+                    extra={"log_type": "ALERT", "scenario": scenario}
+                )
+                logger.critical(
+                    f"[BACKEND-INIT] 🔥 后端服务初始化失败，启动流程将终止: {backend_result.message}",
+                    extra={"log_type": "ALERT", "scenario": scenario}
                 )
                 raise RuntimeError(f"后端服务初始化失败: {backend_result.message}")
             
             logger.debug(
                 f"[BACKEND-INIT] 监控进程启动成功: {monitor_result.message}",
-                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+                extra={"log_type": "SYSTEM", "scenario": scenario}
             )
             logger.debug(
                 f"[BACKEND-INIT] 后端服务初始化成功: {backend_result.message}",
-                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+                extra={"log_type": "SYSTEM", "scenario": scenario}
             )
 
             # 3. 执行8步缓存验证流程（作为分支B的一部分，需要等待ChinaStockEngine初始化完成）
             if context.china_stock_engine:
                 logger.debug(
                     "[BACKEND-INIT] ChinaStockEngine已初始化，开始执行8步缓存验证流程",
-                    extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                logger.info(
+                    "[BACKEND-INIT] ℹ️ ChinaStockEngine已初始化，开始执行8步缓存验证流程",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
                 )
                 
                 # 显示分支B标题（数据引擎初始化包括8步验证）
@@ -205,7 +253,11 @@ class BackendInitStage(StartupStage):
                 # 执行8步缓存验证流程（作为分支B的一部分）
                 logger.debug(
                     "[BACKEND-INIT] 开始执行8步缓存验证流程",
-                    extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                logger.info(
+                    "[BACKEND-INIT] ℹ️ 开始执行8步缓存验证流程",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
                 )
                 cache_worker = CacheValidatorWorker()
                 cache_result = await cache_worker.run(context)
@@ -213,68 +265,100 @@ class BackendInitStage(StartupStage):
                 if not cache_result.success:
                     logger.warning(
                         f"[BACKEND-INIT] ⚠️ 缓存验证失败: {cache_result.message}，但继续执行",
-                        extra={"log_type": "ALERT", "scenario": "application_startup"}
+                        extra={"log_type": "ALERT", "scenario": scenario}
+                    )
+                    logger.debug(
+                        f"[BACKEND-INIT] 缓存验证失败详情: {cache_result.message}",
+                        extra={"log_type": "SYSTEM", "scenario": scenario}
                     )
                 else:
                     logger.debug(
                         f"[BACKEND-INIT] 8步缓存验证流程完成: {cache_result.message}",
-                        extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+                        extra={"log_type": "SYSTEM", "scenario": scenario}
+                    )
+                    logger.info(
+                        f"[BACKEND-INIT] ✅ 8步缓存验证流程完成: {cache_result.message}",
+                        extra={"log_type": "SYSTEM", "scenario": scenario}
                     )
             else:
                 logger.warning(
                     "[BACKEND-INIT] ⚠️ ChinaStockEngine未初始化，跳过缓存验证",
-                    extra={"log_type": "ALERT", "scenario": "application_startup"}
+                    extra={"log_type": "ALERT", "scenario": scenario}
+                )
+                logger.debug(
+                    "[BACKEND-INIT] ChinaStockEngine未初始化，跳过缓存验证",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
                 )
 
             # 4. 初始化业务服务（阶段3.4-3.6）
             logger.debug(
                 "[BACKEND-INIT] 开始初始化业务服务（阶段3.4-3.6）",
-                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            logger.info(
+                "[BACKEND-INIT] ℹ️ 开始初始化业务服务（阶段3.4-3.6）",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
             )
             await self._initialize_business_services(context)
             logger.debug(
                 "[BACKEND-INIT] 业务服务初始化完成",
-                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            logger.info(
+                "[BACKEND-INIT] ✅ 业务服务初始化完成",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
             )
 
             # 5. 将服务注册到ServiceManager（暴露给前端）
             logger.debug(
                 "[BACKEND-INIT] 开始将服务注册到ServiceManager",
-                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+                extra={"log_type": "SYSTEM", "scenario": scenario}
             )
             self._register_services(context)
             logger.debug(
                 "[BACKEND-INIT] 服务注册完成",
-                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            logger.info(
+                "[BACKEND-INIT] ✅ 服务注册完成",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
             )
 
             # 6. 将服务注入到MainEngine（供前端使用）
             logger.debug(
                 "[BACKEND-INIT] 开始将服务注入到MainEngine",
-                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+                extra={"log_type": "SYSTEM", "scenario": scenario}
             )
             self._inject_services_to_main_engine(context)
             logger.debug(
                 "[BACKEND-INIT] 服务注入完成",
-                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            logger.info(
+                "[BACKEND-INIT] ✅ 服务注入到MainEngine完成",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
             )
 
             # 标记后端已初始化
             context.backend_initialized = True
             logger.debug(
                 "[BACKEND-INIT] 后端已标记为已初始化",
-                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+                extra={"log_type": "SYSTEM", "scenario": scenario}
             )
 
             elapsed_ms = (time.time() - start_time) * 1000
 
-            logger.info(
+            logger.debug(
                 f"[BACKEND-INIT] 后端服务初始化完成: 耗时={elapsed_ms:.0f}ms",
-                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            logger.info(
+                f"[BACKEND-INIT] ✅ 后端服务初始化完成: 耗时={elapsed_ms:.0f}ms",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
             )
             stage_logger.info(
                 "✅ 后端服务完全就绪", 
-                extra={"log_type": "STAGE_NODE", "scenario": "application_startup"}
+                extra={"log_type": "STAGE_NODE", "scenario": scenario}
             )
 
             return StageResult(
@@ -292,9 +376,18 @@ class BackendInitStage(StartupStage):
             elapsed_ms = (time.time() - start_time) * 1000
 
             # 错误日志（输出到Terminal和AI日志文件）
+            logger.debug(
+                f"[BACKEND-INIT] 后端服务初始化失败: {type(e).__name__}: {str(e)}",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             logger.error(
-                f"❌ 后端服务初始化失败: {str(e)}",
-                extra={"log_type": "ALERT", "scenario": "application_startup"},
+                f"[BACKEND-INIT] ❌ 后端服务初始化失败: {str(e)}",
+                extra={"log_type": "ALERT", "scenario": scenario},
+                exc_info=True
+            )
+            logger.critical(
+                f"[BACKEND-INIT] 🔥 后端服务初始化严重失败，启动流程将终止: {str(e)}",
+                extra={"log_type": "ALERT", "scenario": scenario},
                 exc_info=True
             )
 

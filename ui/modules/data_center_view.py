@@ -215,7 +215,7 @@ class ReloadSymbolsThread(QThread):
                                 extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
                             )
                             self.logger.info(
-                                f"[SYMBOL-RELOAD] 品种重载完成: 耗时={elapsed:.2f}s, 数量={symbol_count}, "
+                                f"[SYMBOL-RELOAD] ✅ 品种重载完成: 耗时={elapsed:.2f}s, 数量={symbol_count}, "
                                 f"服务层耗时={reload_elapsed:.2f}s",
                                 extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
                             )
@@ -278,14 +278,19 @@ class ReloadSymbolsThread(QThread):
         except Exception as e:
             elapsed = time.time() - start_time
             # 记录异常并发送错误信号
+            self.logger.debug(
+                f"[SYMBOL-RELOAD] 异常类型: {type(e).__name__}, 异常详情: {str(e)}, 耗时={elapsed:.2f}s",
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
+            )
             self.logger.error(
                 f"[SYMBOL-RELOAD] ❌ 品种重载失败: {e}, 耗时={elapsed:.2f}s",
                 exc_info=True,
                 extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"},
             )
-            self.logger.debug(
-                f"[SYMBOL-RELOAD] 异常类型: {type(e).__name__}, 异常详情: {str(e)}",
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
+            self.logger.critical(
+                f"[SYMBOL-RELOAD] 🔥 品种重载严重失败，可能影响数据下载: {e}, 耗时={elapsed:.2f}s",
+                exc_info=True,
+                extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"},
             )
             self.error_signal.emit(f"加载失败: {str(e)}")
 
@@ -1947,9 +1952,10 @@ class DataCenter(BaseWidget, LoggerMixin):
                                             f"[SPEEDTEST] ❌ 后端未实现刷新API, 耗时={elapsed:.2f}s",
                                             extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
                                         )
+                                        has_method = '是' if (self.service and hasattr(self.service, 'retest_server_pool')) else '否'
                                         self.logger.debug(
                                             f"[SPEEDTEST] 服务状态: service={'存在' if self.service else '不存在'}, "
-                                            f"has_method={'是' if hasattr(self.service, 'retest_server_pool') if self.service else '否'}",
+                                            f"has_method={has_method}",
                                             extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
                                         )
                                         stage_logger.error(

@@ -271,11 +271,20 @@ class DataSensor:
                     f"total_tasks={total_tasks}, use_async={use_async}",
                     extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
                 )
+                logger.info(
+                    f"[DATA-SENSOR] ℹ️ 开始数据质量扫描: 品种数={len(symbols)}, 周期={intervals}, "
+                    f"总任务数={total_tasks}, 异步模式={use_async}",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                )
                 
                 # v3.1：使用LoadBalancer获取最优配置
                 if max_workers is None or max_concurrent is None:
                     logger.debug(
                         "[DATA-SENSOR] 开始获取LoadBalancer最优配置...",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    )
+                    logger.info(
+                        "[DATA-SENSOR] ℹ️ 开始获取LoadBalancer最优配置...",
                         extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
                     )
                     lb_config_start_time = time.time()
@@ -290,9 +299,18 @@ class DataSensor:
                         f"coroutines_per_process={max_concurrent}, 耗时={lb_config_elapsed:.2f}s",
                         extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
                     )
+                    logger.info(
+                        f"[DATA-SENSOR] ✅ LoadBalancer配置获取完成: processes={max_workers}, "
+                        f"coroutines_per_process={max_concurrent}, 耗时={lb_config_elapsed:.2f}s",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    )
                 else:
                     logger.debug(
                         f"[DATA-SENSOR] 使用手动配置: processes={max_workers}, coroutines_per_process={max_concurrent}",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    )
+                    logger.info(
+                        f"[DATA-SENSOR] ℹ️ 使用手动配置: processes={max_workers}, coroutines_per_process={max_concurrent}",
                         extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
                     )
                 
@@ -309,6 +327,10 @@ class DataSensor:
                         "[DATA-SENSOR] 使用异步扫描模式",
                         extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
                     )
+                    logger.info(
+                        "[DATA-SENSOR] ℹ️ 使用异步扫描模式",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    )
                     results = self._scan_async(symbols, intervals, max_concurrent)
                 else:
                     # 多进程扫描
@@ -316,8 +338,20 @@ class DataSensor:
                         "[DATA-SENSOR] 使用多进程扫描模式",
                         extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
                     )
+                    logger.info(
+                        "[DATA-SENSOR] ℹ️ 使用多进程扫描模式",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    )
                     results = self._scan_multiprocess(symbols, intervals, max_workers)
                 scan_elapsed = time.time() - scan_start_time
+                logger.debug(
+                    f"[DATA-SENSOR] 扫描完成: 结果数={len(results)}, 耗时={scan_elapsed:.2f}s",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                )
+                logger.info(
+                    f"[DATA-SENSOR] ✅ 扫描完成: 结果数={len(results)}, 耗时={scan_elapsed:.2f}s",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                )
                 
                 # 更新缓存
                 logger.debug(
@@ -370,6 +404,16 @@ class DataSensor:
                     f"失败={failed_count}, 严重={critical_count}, 平均完整性={avg_completeness:.2f}%",
                     extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
                 )
+                logger.info(
+                    f"[DATA-SENSOR] ✅ 扫描结果统计: 总计={len(results)}, 通过={passed_count}, "
+                    f"失败={failed_count}, 严重={critical_count}, 平均完整性={avg_completeness:.2f}%",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                )
+                if failed_count > 0 or critical_count > 0:
+                    logger.warning(
+                        f"[DATA-SENSOR] ⚠️ 扫描发现质量问题: 失败={failed_count}, 严重={critical_count}",
+                        extra={"log_type": "ALERT", "scenario": "manual_data_scan"}
+                    )
                 
                 stage_logger.info(
                     f"✅ 手动数据扫描完成: 耗时={total_elapsed:.2f}s, 任务数={len(results)}, "
@@ -382,14 +426,19 @@ class DataSensor:
                 
             except Exception as e:
                 total_elapsed = time.time() - start_time
+                logger.debug(
+                    f"[DATA-SENSOR] 数据质量扫描异常详情: {type(e).__name__}: {str(e)}, 耗时={total_elapsed:.2f}s",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                )
                 logger.error(
                     f"[DATA-SENSOR] ❌ 数据质量扫描失败: {e}, 耗时={total_elapsed:.2f}s",
                     exc_info=True,
                     extra={"log_type": "ALERT", "scenario": "manual_data_scan"}
                 )
-                logger.debug(
-                    f"[DATA-SENSOR] 异常类型: {type(e).__name__}, 异常详情: {str(e)}",
-                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                logger.critical(
+                    f"[DATA-SENSOR] 🔥 数据质量扫描严重失败，可能影响数据质量评估: {e}, 耗时={total_elapsed:.2f}s",
+                    exc_info=True,
+                    extra={"log_type": "ALERT", "scenario": "manual_data_scan"}
                 )
                 
                 # 阶段节点（输出到Terminal）

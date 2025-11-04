@@ -6716,7 +6716,7 @@ class SystemManager(BaseWidget, LoggerMixin):
                             extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
                         )
                         self.logger.info(
-                            f"[TDX-READ] TDX数据读取任务开始: 数据类型={data_types}, 市场={markets}",
+                            f"[TDX-READ] ℹ️ TDX数据读取任务开始: 数据类型={data_types}, 市场={markets}, TDX根目录={tdx_root}",
                             extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
                         )
                         
@@ -6756,9 +6756,14 @@ class SystemManager(BaseWidget, LoggerMixin):
                                     extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
                                 )
                                 self.logger.info(
-                                    f"[TDX-READ] 读取完成: 完成={completed}/{total}, 成功={success_count}, 失败={failed_count}, 耗时={elapsed:.2f}s",
+                                    f"[TDX-READ] ✅ 读取完成: 完成={completed}/{total}, 成功={success_count}, 失败={failed_count}, 耗时={elapsed:.2f}s",
                                     extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
                                 )
+                                if failed_count > 0:
+                                    self.logger.warning(
+                                        f"[TDX-READ] ⚠️ 读取过程中有{failed_count}个文件失败",
+                                        extra={"log_type": "ALERT", "scenario": "tdx_data_read"},
+                                    )
                                 stage_logger.info(
                                     f"✅ TDX数据读取完成: 完成={completed}/{total}, 成功={success_count}, 失败={failed_count}, 耗时={elapsed:.2f}s",
                                     extra={"log_type": "STAGE_NODE", "scenario": "tdx_data_read"},
@@ -6784,14 +6789,19 @@ class SystemManager(BaseWidget, LoggerMixin):
                             
                         except Exception as e:
                             elapsed = time.time() - start_time
+                            self.logger.debug(
+                                f"[TDX-READ] 异常类型: {type(e).__name__}, 异常详情: {str(e)}, 耗时={elapsed:.2f}s",
+                                extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                            )
                             self.logger.error(
                                 f"[TDX-READ] ❌ 读取TDX数据失败: {e}, 耗时={elapsed:.2f}s",
                                 exc_info=True,
                                 extra={"log_type": "ALERT", "scenario": "tdx_data_read"},
                             )
-                            self.logger.debug(
-                                f"[TDX-READ] 异常类型: {type(e).__name__}, 异常详情: {str(e)}",
-                                extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                            self.logger.critical(
+                                f"[TDX-READ] 🔥 读取TDX数据严重失败，可能影响数据质量: {e}, 耗时={elapsed:.2f}s",
+                                exc_info=True,
+                                extra={"log_type": "ALERT", "scenario": "tdx_data_read"},
                             )
                             stage_logger.error(
                                 f"❌ TDX数据读取异常: {e}",

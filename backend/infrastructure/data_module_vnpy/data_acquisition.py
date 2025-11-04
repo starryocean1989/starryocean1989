@@ -1518,16 +1518,28 @@ class SymbolLoader:
         Returns:
             包含所有品种的DataFrame（code, name, market列）
         """
+        scenario = "refresh_symbol_list"
+        logger.debug(
+            "[SYMBOL-LOADER] 开始从TDX API加载品种列表",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
         logger.info(
-            "开始从TDX API加载品种列表...",
-            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+            "[SYMBOL-LOADER] ℹ️ 开始从TDX API加载品种列表...",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
         )
 
         # 获取服务器配置
         from backend.infrastructure.tdx_asyncio.constants import HQ_HOSTS_ALL
 
         if not HQ_HOSTS_ALL:
-            logger.critical("🔥 服务器列表为空，无法加载品种，核心功能不可用", extra={"log_type": "ALERT"})
+            logger.debug(
+                "[SYMBOL-LOADER] 服务器列表为空",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            logger.critical(
+                "[SYMBOL-LOADER] 🔥 服务器列表为空，无法加载品种，核心功能不可用",
+                extra={"log_type": "ALERT", "scenario": scenario}
+            )
             return pd.DataFrame()
 
         # 选择第一个可用服务器
@@ -1537,23 +1549,44 @@ class SymbolLoader:
         else:
             ip, port = server[0], server[1]
 
+        logger.debug(
+            f"[SYMBOL-LOADER] 选择服务器: {ip}:{port}, 服务器总数={len(HQ_HOSTS_ALL)}",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+
         # 创建API连接
         api = AsyncTdxHq_API()
 
         try:
             # 连接服务器
             # 🔧 修复：AsyncBaseSocketClient.connect() 的参数名是 time_out（下划线），不是 timeout
+            logger.debug(
+                f"[SYMBOL-LOADER] 开始连接服务器: {ip}:{port}",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            logger.info(
+                f"[SYMBOL-LOADER] ℹ️ 正在连接服务器: {ip}:{port}",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             connected = await api.connect(ip, port, time_out=5.0)
             if not connected:
+                logger.debug(
+                    f"[SYMBOL-LOADER] 连接服务器失败: {ip}:{port}",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
                 logger.error(
-                f"❌ 连接服务器失败: {ip}:{port}",
-                extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
-            )
+                    f"[SYMBOL-LOADER] ❌ 连接服务器失败: {ip}:{port}",
+                    extra={"log_type": "ALERT", "scenario": scenario}
+                )
                 return pd.DataFrame()
 
+            logger.debug(
+                f"[SYMBOL-LOADER] 已连接到服务器: {ip}:{port}",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             logger.info(
-                f"✅ 已连接到服务器: {ip}:{port}",
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                f"[SYMBOL-LOADER] ✅ 已连接到服务器: {ip}:{port}",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
             )
 
             # 并发获取深证和上证品种（分页获取所有数据）
@@ -1569,50 +1602,102 @@ class SymbolLoader:
                 all_results = []
                 start = 0
                 page_size = 1000  # 每页最多1000条
+                market_name = "深证" if market == 0 else "上证"
+                
+                logger.debug(
+                    f"[SYMBOL-LOADER] 开始获取{market_name}品种列表",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                logger.info(
+                    f"[SYMBOL-LOADER] ℹ️ 开始获取{market_name}品种列表",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
                 
                 while True:
                     try:
                         # 获取当前页数据
+                        page_num = start // page_size + 1
+                        logger.debug(
+                            f"[SYMBOL-LOADER] 获取{market_name}第{page_num}页数据: start={start}",
+                            extra={"log_type": "SYSTEM", "scenario": scenario}
+                        )
                         page_result = await api.get_security_list(market=market, start=start)
                         
                         if page_result is None or (isinstance(page_result, list) and len(page_result) == 0):
                             # 没有更多数据，退出循环
+                            logger.debug(
+                                f"[SYMBOL-LOADER] {market_name}第{page_num}页无数据，结束分页获取",
+                                extra={"log_type": "SYSTEM", "scenario": scenario}
+                            )
                             break
                         
                         all_results.extend(page_result)
                         logger.debug(
-                            f"市场 {market} 第 {start//page_size + 1} 页: 获取 {len(page_result)} 个品种",
-                            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                            f"[SYMBOL-LOADER] {market_name}第{page_num}页: 获取{len(page_result)}个品种，累计{len(all_results)}个",
+                            extra={"log_type": "SYSTEM", "scenario": scenario}
                         )
                         
                         # 如果返回的数据少于1000条，说明已经是最后一页
                         if len(page_result) < page_size:
+                            logger.debug(
+                                f"[SYMBOL-LOADER] {market_name}第{page_num}页为最后一页（返回{len(page_result)}<{page_size}）",
+                                extra={"log_type": "SYSTEM", "scenario": scenario}
+                            )
                             break
                         
                         # 继续获取下一页
                         start += page_size
                         
                     except Exception as e:
+                        page_num = start // page_size + 1
+                        logger.debug(
+                            f"[SYMBOL-LOADER] 获取{market_name}第{page_num}页异常详情: {type(e).__name__}: {str(e)}",
+                            extra={"log_type": "SYSTEM", "scenario": scenario}
+                        )
                         logger.error(
-                            f"❌ [SymbolLoader] 获取市场 {market} 第 {start//page_size + 1} 页失败: {e}",
+                            f"[SYMBOL-LOADER] ❌ 获取{market_name}第{page_num}页失败: {e}",
                             exc_info=True,
-                            extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
+                            extra={"log_type": "ALERT", "scenario": scenario}
+                        )
+                        logger.warning(
+                            f"[SYMBOL-LOADER] ⚠️ 获取{market_name}第{page_num}页失败，已获取{len(all_results)}个品种",
+                            extra={"log_type": "ALERT", "scenario": scenario}
                         )
                         break
                 
                 if not all_results:
+                    logger.debug(
+                        f"[SYMBOL-LOADER] {market_name}未获取到任何品种",
+                        extra={"log_type": "SYSTEM", "scenario": scenario}
+                    )
+                    logger.warning(
+                        f"[SYMBOL-LOADER] ⚠️ {market_name}未获取到任何品种",
+                        extra={"log_type": "ALERT", "scenario": scenario}
+                    )
                     return pd.DataFrame()
                 
                 # 转换为DataFrame
                 df = pd.DataFrame(all_results)
                 df["market"] = market
+                logger.debug(
+                    f"[SYMBOL-LOADER] {market_name}品种转换为DataFrame完成: 记录数={len(df)}",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
                 logger.info(
-                    f"✅ 市场 {market} 总共获取 {len(df)} 个品种",
-                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                    f"[SYMBOL-LOADER] ✅ {market_name}总共获取{len(df)}个品种",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
                 )
                 return df
             
             # 并发获取两个市场的所有品种
+            logger.debug(
+                "[SYMBOL-LOADER] 开始并发获取深证和上证品种列表",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            logger.info(
+                "[SYMBOL-LOADER] ℹ️ 开始并发获取深证和上证品种列表",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             tasks = [
                 fetch_all_market_symbols(market=0),  # 深证
                 fetch_all_market_symbols(market=1),  # 上证
@@ -1624,44 +1709,85 @@ class SymbolLoader:
             all_symbols = []
             
             for market, result in enumerate(results):
+                market_name = "深证" if market == 0 else "上证"
                 if isinstance(result, Exception):
+                    logger.debug(
+                        f"[SYMBOL-LOADER] 获取{market_name}品种异常详情: {type(result).__name__}: {str(result)}",
+                        extra={"log_type": "SYSTEM", "scenario": scenario}
+                    )
                     logger.error(
-                        f"❌ 获取市场 {market} 品种失败: {result}",
-                        extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
+                        f"[SYMBOL-LOADER] ❌ 获取{market_name}品种失败: {result}",
+                        extra={"log_type": "ALERT", "scenario": scenario}
                     )
                     continue
                 
                 if result is None or (isinstance(result, pd.DataFrame) and result.empty):
+                    logger.debug(
+                        f"[SYMBOL-LOADER] {market_name}品种列表为空",
+                        extra={"log_type": "SYSTEM", "scenario": scenario}
+                    )
                     logger.warning(
-                        f"⚠️ 市场 {market} 品种列表为空",
-                        extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
+                        f"[SYMBOL-LOADER] ⚠️ {market_name}品种列表为空",
+                        extra={"log_type": "ALERT", "scenario": scenario}
                     )
                     continue
                 
                 # result已经是DataFrame，直接添加
                 all_symbols.append(result)
+                logger.debug(
+                    f"[SYMBOL-LOADER] {market_name}品种添加成功: 记录数={len(result)}",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
 
             # 合并结果
             if not all_symbols:
-                logger.error("❌ 未获取到任何品种数据", extra={"log_type": "ALERT"})
+                logger.debug(
+                    "[SYMBOL-LOADER] 未获取到任何品种数据",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                logger.error(
+                    "[SYMBOL-LOADER] ❌ 未获取到任何品种数据",
+                    extra={"log_type": "ALERT", "scenario": scenario}
+                )
                 return pd.DataFrame()
 
+            logger.debug(
+                f"[SYMBOL-LOADER] 开始合并品种数据: 市场数={len(all_symbols)}",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             merged_df = pd.concat(all_symbols, ignore_index=True)
 
             # 代码标准化（补齐6位）
             merged_df["code"] = merged_df["code"].astype(str).str.zfill(6)
+            logger.debug(
+                f"[SYMBOL-LOADER] 品种代码标准化完成: 总记录数={len(merged_df)}",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
 
+            logger.debug(
+                f"[SYMBOL-LOADER] 从TDX API加载品种完成: 总记录数={len(merged_df)}",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             logger.info(
-                f"✅ 从TDX API加载品种完成，共 {len(merged_df)} 个品种",
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                f"[SYMBOL-LOADER] ✅ 从TDX API加载品种完成，共{len(merged_df)}个品种",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
             )
             return merged_df
 
         except Exception as e:
+            logger.debug(
+                f"[SYMBOL-LOADER] 从TDX API加载品种异常详情: {type(e).__name__}: {str(e)}",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             logger.error(
-                f"❌ [SymbolLoader] 从TDX API加载品种失败: {e}",
+                f"[SYMBOL-LOADER] ❌ 从TDX API加载品种失败: {e}",
                 exc_info=True,
-                extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
+                extra={"log_type": "ALERT", "scenario": scenario}
+            )
+            logger.critical(
+                f"[SYMBOL-LOADER] 🔥 从TDX API加载品种严重失败，可能影响品种分类: {e}",
+                exc_info=True,
+                extra={"log_type": "ALERT", "scenario": scenario}
             )
             return pd.DataFrame()
 
@@ -1715,6 +1841,10 @@ class SymbolLoader:
             f"[SYMBOL-LOADER] 开始执行品种分类: 总品种数={len(self.all_symbols)}",
             extra={"log_type": "SYSTEM", "scenario": scenario}
         )
+        logger.info(
+            f"[SYMBOL-LOADER] ℹ️ 开始执行品种分类: 总品种数={len(self.all_symbols)}",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
         
         # 先获取T+0基金代码（用于深证A股过滤）
         t0_fund_classifier = self.classifier_registry.get("T+0基金")
@@ -1722,6 +1852,10 @@ class SymbolLoader:
         if t0_fund_classifier:
             logger.debug(
                 "[SYMBOL-LOADER] 开始分类T+0基金",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            logger.info(
+                "[SYMBOL-LOADER] ℹ️ 开始分类T+0基金（用于深证A股过滤）",
                 extra={"log_type": "SYSTEM", "scenario": scenario}
             )
             t0_funds = t0_fund_classifier.classify(
@@ -1733,10 +1867,18 @@ class SymbolLoader:
                 f"[SYMBOL-LOADER] T+0基金分类完成: 数量={len(t0_fund_codes)}",
                 extra={"log_type": "SYSTEM", "scenario": scenario}
             )
+            logger.info(
+                f"[SYMBOL-LOADER] ✅ T+0基金分类完成: 数量={len(t0_fund_codes)}",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
 
         # 执行所有分类器
         logger.debug(
             f"[SYMBOL-LOADER] 开始执行所有分类器: 分类器数量={len(self.classifier_registry._classifiers)}",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+        logger.info(
+            f"[SYMBOL-LOADER] ℹ️ 开始执行所有分类器: 分类器数量={len(self.classifier_registry._classifiers)}",
             extra={"log_type": "SYSTEM", "scenario": scenario}
         )
         classified = self.classifier_registry.classify_all(
@@ -1752,15 +1894,28 @@ class SymbolLoader:
             f"[SYMBOL-LOADER] 分类完成: 分类数={len(classified)}, 总品种数={total_classified}",
             extra={"log_type": "SYSTEM", "scenario": scenario}
         )
+        logger.info(
+            f"[SYMBOL-LOADER] ✅ 分类完成: 分类数={len(classified)}, 总品种数={total_classified}",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
         for category, symbols in classified.items():
             logger.debug(
                 f"[SYMBOL-LOADER] 分类详情: {category}={len(symbols)}个品种",
                 extra={"log_type": "SYSTEM", "scenario": scenario}
             )
+            if len(symbols) > 0:
+                logger.info(
+                    f"[SYMBOL-LOADER] ✅ {category}: {len(symbols)}个品种",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
 
         # 4. 执行过滤
         logger.debug(
             f"[SYMBOL-LOADER] 开始执行过滤器链: 过滤器数量={len(self.filter_chain._filters)}",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+        logger.info(
+            f"[SYMBOL-LOADER] ℹ️ 开始执行过滤器链: 过滤器数量={len(self.filter_chain._filters)}",
             extra={"log_type": "SYSTEM", "scenario": scenario}
         )
         # 对每个分类结果应用过滤器链
@@ -1778,6 +1933,11 @@ class SymbolLoader:
                 f"[SYMBOL-LOADER] 过滤完成: {category}, 过滤前={before_count}, 过滤后={after_count}, 过滤掉={filtered_count}",
                 extra={"log_type": "SYSTEM", "scenario": scenario}
             )
+            if filtered_count > 0:
+                logger.info(
+                    f"[SYMBOL-LOADER] ✅ {category}过滤完成: 过滤前={before_count}, 过滤后={after_count}, 过滤掉={filtered_count}",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
             filtered_classified[category] = filtered
         
         # 统计过滤结果
@@ -1786,10 +1946,21 @@ class SymbolLoader:
             f"[SYMBOL-LOADER] 过滤完成: 分类数={len(filtered_classified)}, 总品种数={total_filtered}",
             extra={"log_type": "SYSTEM", "scenario": scenario}
         )
+        logger.info(
+            f"[SYMBOL-LOADER] ✅ 过滤完成: 分类数={len(filtered_classified)}, 总品种数={total_filtered}",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
 
         # 5. 保存缓存
+        logger.debug(
+            f"[SYMBOL-LOADER] 开始保存品种分类缓存: {self.cache_file}",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
         DailyCacheManager.save_with_date(filtered_classified, self.cache_file)
-        logger.info(f"✅ 品种分类缓存已保存: {self.cache_file}")
+        logger.info(
+            f"[SYMBOL-LOADER] ✅ 品种分类缓存已保存: {self.cache_file}",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
 
         self.classified_symbols = filtered_classified
         return filtered_classified
@@ -3311,21 +3482,38 @@ Worker进程主函数
 
         scenario = "data_download"
         # Phase 1: IPv4池下载
+        subprocess_logger.debug(
+            f"[DOWNLOAD-WORKER] Worker {worker_id} 进入Phase 1: IPv4池下载",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
         subprocess_logger.info(
-            f"🌐 Worker {worker_id} 进入Phase 1: IPv4池下载",
+            f"[DOWNLOAD-WORKER] ℹ️ Worker {worker_id} 进入Phase 1: IPv4池下载",
             extra={"log_type": "SYSTEM", "scenario": scenario}
         )
         ipv4_servers = servers.get("ipv4", [])
 
         if not ipv4_servers:
+            subprocess_logger.debug(
+                f"[DOWNLOAD-WORKER] Worker {worker_id} IPv4服务器列表为空",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             subprocess_logger.warning(
-                f"⚠️ Worker {worker_id} IPv4服务器列表为空",
+                f"[DOWNLOAD-WORKER] ⚠️ Worker {worker_id} IPv4服务器列表为空",
+                extra={"log_type": "ALERT", "scenario": scenario}
+            )
+            subprocess_logger.error(
+                f"[DOWNLOAD-WORKER] ❌ Worker {worker_id} IPv4服务器列表为空，无法启动下载",
                 extra={"log_type": "ALERT", "scenario": scenario}
             )
             return
 
         subprocess_logger.debug(
             f"[DOWNLOAD-WORKER] Worker {worker_id} 开始创建连接池: "
+            f"目标连接数={coroutines_per_worker}, 服务器数={len(ipv4_servers)}",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+        subprocess_logger.info(
+            f"[DOWNLOAD-WORKER] ℹ️ Worker {worker_id} 开始创建连接池: "
             f"目标连接数={coroutines_per_worker}, 服务器数={len(ipv4_servers)}",
             extra={"log_type": "SYSTEM", "scenario": scenario}
         )
@@ -3350,32 +3538,49 @@ Worker进程主函数
                     f"conn_id={conn_id}, server={server['ip']}:{server['port']}, 耗时={conn_elapsed:.3f}s",
                     extra={"log_type": "SYSTEM", "scenario": scenario}
                 )
+                if i == 0 or (i + 1) % 5 == 0:  # 每5个连接或第一个连接记录INFO日志
+                    subprocess_logger.info(
+                        f"[DOWNLOAD-WORKER] ✅ Worker {worker_id} 已创建{i+1}/{coroutines_per_worker}个连接",
+                        extra={"log_type": "SYSTEM", "scenario": scenario}
+                    )
             except Exception as e:
-                subprocess_logger.error(
-                    f"❌ [Worker {worker_id}] 创建连接失败: {server['ip']}:{server['port']}, {e}",
-                    exc_info=True,
-                    extra={"log_type": "ALERT", "scenario": scenario}
-                )
                 subprocess_logger.debug(
                     f"[DOWNLOAD-WORKER] Worker {worker_id} 连接失败详情: "
                     f"server={server['ip']}:{server['port']}, 异常类型={type(e).__name__}, 异常消息={str(e)}",
                     extra={"log_type": "SYSTEM", "scenario": scenario}
                 )
+                subprocess_logger.warning(
+                    f"[DOWNLOAD-WORKER] ⚠️ Worker {worker_id} 创建连接失败: {server['ip']}:{server['port']}, {e}",
+                    extra={"log_type": "ALERT", "scenario": scenario}
+                )
+                subprocess_logger.error(
+                    f"[DOWNLOAD-WORKER] ❌ Worker {worker_id} 创建连接失败: {server['ip']}:{server['port']}, {e}",
+                    exc_info=True,
+                    extra={"log_type": "ALERT", "scenario": scenario}
+                )
 
         if not connections:
+            subprocess_logger.debug(
+                f"[DOWNLOAD-WORKER] Worker {worker_id} 没有可用连接",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             subprocess_logger.error(
-                f"❌ Worker {worker_id} 没有可用连接，退出",
+                f"[DOWNLOAD-WORKER] ❌ Worker {worker_id} 没有可用连接，退出",
+                extra={"log_type": "ALERT", "scenario": scenario}
+            )
+            subprocess_logger.critical(
+                f"[DOWNLOAD-WORKER] 🔥 Worker {worker_id} 没有可用连接，无法启动下载",
                 extra={"log_type": "ALERT", "scenario": scenario}
             )
             return
 
-        subprocess_logger.info(
-            f"✅ Worker {worker_id} 已创建 {len(connections)} 个连接",
-            extra={"log_type": "SYSTEM", "scenario": scenario}
-        )
         subprocess_logger.debug(
             f"[DOWNLOAD-WORKER] Worker {worker_id} 连接池创建完成: "
             f"成功={len(connections)}, 目标={coroutines_per_worker}, 成功率={len(connections)/coroutines_per_worker*100:.1f}%",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+        subprocess_logger.info(
+            f"[DOWNLOAD-WORKER] ✅ Worker {worker_id} 已创建{len(connections)}个连接，成功率={len(connections)/coroutines_per_worker*100:.1f}%",
             extra={"log_type": "SYSTEM", "scenario": scenario}
         )
 
@@ -3475,10 +3680,15 @@ Worker进程主函数
             # 下载数据
             start_time = time.time()
             try:
+                market = MultiProcessStockFetcher._get_market_from_symbol(task.symbol)
                 subprocess_logger.debug(
                     f"[DOWNLOAD-WORKER] Worker {worker_id} 开始下载: symbol={task.symbol}, "
-                    f"interval={task.interval}, market={MultiProcessStockFetcher._get_market_from_symbol(task.symbol)}, "
-                    f"server={server['ip']}:{server['port']}",
+                    f"interval={task.interval}, market={market}, "
+                    f"server={server['ip']}:{server['port']}, conn_id={conn_id}",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                subprocess_logger.info(
+                    f"[DOWNLOAD-WORKER] ℹ️ Worker {worker_id} 开始下载: symbol={task.symbol}, interval={task.interval}",
                     extra={"log_type": "SYSTEM", "scenario": scenario}
                 )
                 # 调用TDX API下载
@@ -3507,6 +3717,11 @@ Worker进程主函数
                         f"[DOWNLOAD-WORKER] Worker {worker_id} 下载成功: symbol={task.symbol}, "
                         f"interval={task.interval}, bars={len(bars)}, "
                         f"下载耗时={elapsed - save_elapsed:.3f}s, 保存耗时={save_elapsed:.3f}s, 总耗时={elapsed:.3f}s",
+                        extra={"log_type": "SYSTEM", "scenario": scenario}
+                    )
+                    subprocess_logger.info(
+                        f"[DOWNLOAD-WORKER] ✅ Worker {worker_id} 下载成功: symbol={task.symbol}, "
+                        f"interval={task.interval}, bars={len(bars)}, 总耗时={elapsed:.3f}s",
                         extra={"log_type": "SYSTEM", "scenario": scenario}
                     )
 
@@ -3543,6 +3758,11 @@ Worker进程主函数
                         f"interval={task.interval}, server={server['ip']}:{server['port']}, "
                         f"耗时={elapsed:.3f}s",
                         extra={"log_type": "SYSTEM", "scenario": scenario}
+                    )
+                    subprocess_logger.warning(
+                        f"[DOWNLOAD-WORKER] ⚠️ Worker {worker_id} 下载数据为空: symbol={task.symbol}, "
+                        f"interval={task.interval}, server={server['ip']}:{server['port']}",
+                        extra={"log_type": "ALERT", "scenario": scenario}
                     )
 
                     task_logger.log_task(

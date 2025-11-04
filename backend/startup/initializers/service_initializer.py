@@ -279,13 +279,20 @@ class ServiceInitializer:
                     # 服务不存在，执行初始化
                     try:
                         self.logger.debug("🔍 开始初始化可选服务: %s...", service_name, extra={"log_type": "SYSTEM", "scenario": scenario})
-                        self.logger.info("初始化可选服务: %s...", service_name, extra={"log_type": "SYSTEM", "scenario": scenario})
+                        self.logger.info("[SERVICE-INIT] ℹ️ 开始初始化可选服务: %s...", service_name, extra={"log_type": "SYSTEM", "scenario": scenario})
+                        init_start_time = time.time()
                         success = init_method()
+                        init_elapsed = (time.time() - init_start_time) * 1000
                         results[service_name] = success
 
                         status_icon = "✅" if success else "⚠️"
+                        self.logger.debug(
+                            "[SERVICE-INIT] %s %s 初始化%s，耗时=%.0fms", 
+                            status_icon, service_name, "成功" if success else "失败", init_elapsed,
+                            extra={"log_type": "SYSTEM" if success else "ALERT", "scenario": scenario}
+                        )
                         self.logger.info(
-                            "%s %s 初始化%s", status_icon, service_name, "成功" if success else "失败",
+                            "[SERVICE-INIT] %s %s 初始化%s", status_icon, service_name, "成功" if success else "失败",
                             extra={"log_type": "SYSTEM" if success else "ALERT", "scenario": scenario}
                         )
                         if success:
@@ -301,7 +308,17 @@ class ServiceInitializer:
                                 self.logger.warning("服务就绪回调失败 (%s): %s", service_name, e, extra={"log_type": "SYSTEM", "scenario": scenario})
 
                     except Exception as e:
-                        self.logger.error("❌ [ServiceInitializer] %s 初始化异常: %s", service_name, e, exc_info=True, extra={"log_type": "ALERT", "scenario": scenario})
+                        self.logger.debug(
+                            "[SERVICE-INIT] %s 初始化异常详情: %s, 异常类型=%s", 
+                            service_name, str(e), type(e).__name__,
+                            extra={"log_type": "SYSTEM", "scenario": scenario}
+                        )
+                        self.logger.error(
+                            "[SERVICE-INIT] ❌ %s 初始化异常: %s", 
+                            service_name, e, 
+                            exc_info=True, 
+                            extra={"log_type": "ALERT", "scenario": scenario}
+                        )
                         stage_logger.error("❌ %s初始化异常: %s", service_name, e, extra={"log_type": "STAGE_NODE", "scenario": scenario})
                         results[service_name] = False
                         if service_ready_callback:
