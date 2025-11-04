@@ -96,6 +96,7 @@ async def main():
     orchestrator.add_stage(UIActivationStage())
 
     # 执行启动流程
+    # 注意：ai_log_process已在LoggingInitStage中启动，这里不需要再次包裹
     result = await orchestrator.startup()
 
     # 检查启动结果
