@@ -1389,23 +1389,60 @@ class ChinaStockEngine:
         """
         import time
         start_time = time.time()
+        scenario = "reload_symbol_list"
         stage_logger = logging.getLogger("startup.stage")
         
         try:
+            # DEBUG日志（记录开始）
+            logger.debug(
+                "[RELOAD-STOCK-LIST] 开始重新加载品种列表",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             stage_logger.info(
                 "📍 开始重新加载品种列表",
-                extra={"log_type": "STAGE_NODE", "scenario": "reload_symbol_list"}
+                extra={"log_type": "STAGE_NODE", "scenario": scenario}
             )
             
             # 延迟导入
             if self.symbol_loader is None:
+                logger.debug(
+                    "[RELOAD-STOCK-LIST] SymbolLoader不存在，开始导入...",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
                 from .data_acquisition import SymbolLoader
                 self.symbol_loader = SymbolLoader(self.event_engine)
+                logger.debug(
+                    "[RELOAD-STOCK-LIST] SymbolLoader已创建",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+            else:
+                logger.debug(
+                    "[RELOAD-STOCK-LIST] SymbolLoader已存在，跳过创建",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
 
             # 执行重新加载
+            logger.debug(
+                "[RELOAD-STOCK-LIST] 开始调用symbol_loader.reload_and_classify()...",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            logger.info(
+                "[RELOAD-STOCK-LIST] ℹ️ 开始执行品种列表重新加载和分类...",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            reload_start_time = time.time()
             result = self.symbol_loader.reload_and_classify()
+            reload_elapsed = (time.time() - reload_start_time) * 1000
+            logger.debug(
+                f"[RELOAD-STOCK-LIST] 品种列表重新加载完成: 耗时={reload_elapsed:.0f}ms",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
 
             # 统计品种数量
+            logger.debug(
+                "[RELOAD-STOCK-LIST] 开始统计品种数量...",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             classified = result if isinstance(result, dict) else {}
             sh_count = len(classified.get("上证A股", []))
             sz_count = len(classified.get("深证A股", []))
@@ -1416,39 +1453,68 @@ class ChinaStockEngine:
             
             elapsed_ms = (time.time() - start_time) * 1000
             
+            logger.debug(
+                f"[RELOAD-STOCK-LIST] 品种统计完成: 总品种数={total_count}, "
+                f"上证={sh_count}, 深证={sz_count}, 北证={bj_count}, "
+                f"T+0基金={t0_count}, 可转债={bond_count}, 总耗时={elapsed_ms:.0f}ms",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            logger.info(
+                f"[RELOAD-STOCK-LIST] ✅ 品种列表加载完成: 总品种数={total_count}, 耗时={elapsed_ms:.0f}ms",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            
             # 输出阶段成果日志
             stage_logger.info(
                 f"✅ 品种列表加载完成 ({elapsed_ms:.0f}ms)",
-                extra={"log_type": "STAGE_NODE", "scenario": "reload_symbol_list"}
+                extra={"log_type": "STAGE_NODE", "scenario": scenario}
             )
             stage_logger.info(
                 f"  ├─ 总品种数: {total_count}",
-                extra={"log_type": "STAGE_NODE", "scenario": "reload_symbol_list"}
+                extra={"log_type": "STAGE_NODE", "scenario": scenario}
             )
             stage_logger.info(
                 f"  ├─ 上证: {sh_count} | 深证: {sz_count} | 北证: {bj_count}",
-                extra={"log_type": "STAGE_NODE", "scenario": "reload_symbol_list"}
+                extra={"log_type": "STAGE_NODE", "scenario": scenario}
             )
             stage_logger.info(
                 f"  └─ T+0基金: {t0_count} | 可转债: {bond_count}",
-                extra={"log_type": "STAGE_NODE", "scenario": "reload_symbol_list"}
+                extra={"log_type": "STAGE_NODE", "scenario": scenario}
             )
 
             # 发布事件
+            logger.debug(
+                "[RELOAD-STOCK-LIST] 开始发布EVENT_SYMBOL_CACHE_LOADED事件...",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             self.event_engine.put(Event(self.EVENT_SYMBOL_CACHE_LOADED, result))
+            logger.debug(
+                "[RELOAD-STOCK-LIST] 事件已发布",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
 
             return result
 
         except Exception as e:
             elapsed_ms = (time.time() - start_time) * 1000
+            # DEBUG日志（记录异常详情）
+            logger.debug(
+                f"[RELOAD-STOCK-LIST] 重新加载品种列表发生异常: {type(e).__name__}: {str(e)}, 耗时={elapsed_ms:.0f}ms",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             logger.error(
                 f"✗ 重新加载品种列表失败: {e} ({elapsed_ms:.0f}ms)",
                 exc_info=True,
-                extra={"log_type": "ALERT", "scenario": "reload_symbol_list"}
+                extra={"log_type": "ALERT", "scenario": scenario}
+            )
+            logger.critical(
+                f"🔥 重新加载品种列表严重失败，可能影响数据获取: {e} ({elapsed_ms:.0f}ms)",
+                exc_info=True,
+                extra={"log_type": "ALERT", "scenario": scenario}
             )
             stage_logger.error(
                 f"❌ 品种列表加载失败: {e}",
-                extra={"log_type": "STAGE_NODE", "scenario": "reload_symbol_list"}
+                extra={"log_type": "STAGE_NODE", "scenario": scenario}
             )
             return {"success": False, "error": str(e)}
 

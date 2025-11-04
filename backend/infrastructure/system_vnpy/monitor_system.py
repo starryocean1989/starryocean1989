@@ -3899,7 +3899,10 @@ class BandwidthMonitor:
             测试结果字典，包含下载速度、延迟
         """
         if self._testing:
-            logger.warning("带宽测试正在进行中，请稍后再试")
+            logger.warning(
+                "带宽测试正在进行中，请稍后再试",
+                extra={"log_type": "ALERT", "scenario": "manual_speedtest"}
+            )
             self._last_error = "测试正在进行中，请稍后再试"
             return None
 
@@ -3921,7 +3924,10 @@ class BandwidthMonitor:
                 self._last_error = "服务器配置为空"
                 return None
 
-            logger.info(f"[BANDWIDTH] 准备开始测试，服务器池大小: {len(self._server_configs)}")
+            logger.info(
+                f"[BANDWIDTH] 准备开始测试，服务器池大小: {len(self._server_configs)}",
+                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"}
+            )
 
             # 使用AI日志流程上下文管理器，生成独立AI日志文件
             # 添加异常处理，确保即使AI日志初始化失败也不影响测试

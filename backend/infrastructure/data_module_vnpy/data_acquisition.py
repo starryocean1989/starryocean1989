@@ -273,10 +273,16 @@ class TaskDetailLogger:
                         key = f"{ip}:{port}"
                         if key not in server_broker_map:
                             server_broker_map[key] = "未知"
-            logger.debug(f"📊 [Worker {self.worker_id}] 已加载 {len(server_broker_map)} 个服务器-券商映射")
+            logger.debug(
+                f"📊 [Worker {self.worker_id}] 已加载 {len(server_broker_map)} 个服务器-券商映射",
+                extra={"log_type": "SYSTEM", "scenario": "data_download"}
+            )
             return server_broker_map
         except ImportError:
-            logger.warning("⚠️ 无法导入服务器常量，使用空映射", extra={"log_type": "SYSTEM"})
+            logger.warning(
+                "⚠️ 无法导入服务器常量，使用空映射",
+                extra={"log_type": "SYSTEM", "scenario": "data_download"}
+            )
             return {}
 
     def _init_file_handles(self):
@@ -285,9 +291,16 @@ class TaskDetailLogger:
             self.file_handle = open(self.log_file, "w", encoding="utf-8", newline="")
             self.csv_writer = csv.writer(self.file_handle)
             self._init_csv_file()
-            logger.info(f"✅ [Worker {self.worker_id}] 任务日志文件已创建: {self.log_file}")
+            logger.info(
+                f"✅ [Worker {self.worker_id}] 任务日志文件已创建: {self.log_file}",
+                extra={"log_type": "SYSTEM", "scenario": "data_download"}
+            )
         except Exception as e:
-            logger.error(f"❌ [Worker {self.worker_id}] 创建日志文件失败: {e}", extra={"log_type": "SYSTEM"})
+            logger.error(
+                f"❌ [Worker {self.worker_id}] 创建日志文件失败: {e}",
+                exc_info=True,
+                extra={"log_type": "ALERT", "scenario": "data_download"}
+            )
             self.file_handle = None
             self.csv_writer = None
 
@@ -368,16 +381,25 @@ class TaskDetailLogger:
             os.fsync(self.file_handle.fileno())
 
         except Exception as e:
-            logger.warning(f"⚠️ [Worker {self.worker_id}] 任务日志记录失败: {e}", extra={"log_type": "SYSTEM"})
+            logger.warning(
+                f"⚠️ [Worker {self.worker_id}] 任务日志记录失败: {e}",
+                extra={"log_type": "ALERT", "scenario": "data_download"}
+            )
 
     def close(self):
         """关闭日志文件"""
         try:
-            if hasattr(self, "file_handle") and self.file_handle:
-                self.file_handle.close()
-                logger.info(f"✅ 任务详细日志已保存: {self.log_file}")
+                if hasattr(self, "file_handle") and self.file_handle:
+                    self.file_handle.close()
+                    logger.info(
+                        f"✅ 任务详细日志已保存: {self.log_file}",
+                        extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                    )
         except Exception as e:
-            logger.warning(f"⚠️ 关闭任务日志文件失败: {e}", extra={"log_type": "SYSTEM"})
+            logger.warning(
+                f"⚠️ 关闭任务日志文件失败: {e}",
+                extra={"log_type": "ALERT", "scenario": "data_download"}
+            )
 
     def __del__(self):
         """析构函数，确保文件被关闭"""
@@ -439,7 +461,10 @@ class TdxConfigFileParser:
         else:
             self.tdx_dir = tdx_dir
 
-        logger.debug(f"TdxConfigFileParser 初始化，TDX目录: {self.tdx_dir} (存在: {self.tdx_dir.exists()})")
+        logger.debug(
+            f"TdxConfigFileParser 初始化，TDX目录: {self.tdx_dir} (存在: {self.tdx_dir.exists()})",
+            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+        )
 
     def parse_addedcode_bj(self) -> List[Dict[str, Any]]:
         """解析北证A股配置文件 addedcode_bj.cfg
@@ -490,14 +515,17 @@ class TdxConfigFileParser:
                         "exchange": "BSE",
                     })
 
-            logger.info(f"✅ 解析北证A股配置文件成功，共 {len(results)} 个品种")
+            logger.info(
+                f"✅ 解析北证A股配置文件成功，共 {len(results)} 个品种",
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+            )
             return results
 
         except Exception as e:
             logger.error(
                 f"❌ 解析北证A股配置文件失败: {e}。文件路径: {config_file if 'config_file' in locals() else '未知'}",
                 exc_info=True,
-                extra={"log_type": "SYSTEM"}
+                extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
             )
             return []
 

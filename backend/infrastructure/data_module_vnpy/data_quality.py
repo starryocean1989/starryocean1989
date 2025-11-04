@@ -680,9 +680,14 @@ class DataSensor:
                     f"异常类型={type(e).__name__}, 异常详情={str(e)}",
                     extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
                 )
-                logger.debug(
-                    f"扫描单个品种失败: {symbol}/{interval}, {e}",
-                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                logger.warning(
+                    f"[SCAN-SINGLE] ⚠️ 扫描单个品种失败: symbol={symbol}, interval={interval}, 错误={e}",
+                    extra={"log_type": "ALERT", "scenario": "manual_data_scan"}
+                )
+                logger.error(
+                    f"[SCAN-SINGLE] ❌ 扫描单个品种失败: {symbol}/{interval}, {e}",
+                    exc_info=True,
+                    extra={"log_type": "ALERT", "scenario": "manual_data_scan"}
                 )
                 return QualityScanResult(
                     symbol=symbol,

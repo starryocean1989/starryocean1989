@@ -830,11 +830,21 @@ class ServerPoolManager:
             from .core_engine import DailyCacheManager
             success = DailyCacheManager.save_with_date(cache_data, self._cache_file)
             if success:
-                logger.info(f"✅ 服务器池缓存已保存: {self._cache_file}")
+                logger.info(
+                    f"✅ 服务器池缓存已保存: {self._cache_file}",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
             else:
-                logger.warning(f"⚠️ 保存服务器池缓存失败", extra={"log_type": "SYSTEM"})
+                logger.warning(
+                    f"⚠️ 保存服务器池缓存失败",
+                    extra={"log_type": "ALERT", "scenario": scenario}
+                )
         except Exception as e:
-            logger.warning(f"⚠️ 保存服务器池缓存异常: {e}", extra={"log_type": "SYSTEM"})
+            logger.warning(
+                f"⚠️ 保存服务器池缓存异常: {e}",
+                exc_info=True,
+                extra={"log_type": "ALERT", "scenario": scenario}
+            )
 
     def get_stats(self) -> Dict[str, Any]:
         """获取服务器池统计信息

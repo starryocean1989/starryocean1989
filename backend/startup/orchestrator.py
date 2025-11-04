@@ -89,7 +89,10 @@ class StartupOrchestrator:
         stage.set_startup_logger(self.startup_logger)
 
         self.stages.append(stage)
-        self.logger.debug(f"添加启动阶段: {stage.name}")
+        self.logger.debug(
+            f"添加启动阶段: {stage.name}",
+            extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+        )
 
     def add_stages(self, stages: List[StartupStage]):
         """批量添加启动阶段
