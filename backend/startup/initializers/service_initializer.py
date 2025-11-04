@@ -130,45 +130,67 @@ class ServiceInitializer:
         Returns:
             bool: 是否成功初始化核心服务
         """
+        # 🎯 启动流程日志埋点：使用ai_log_process上下文管理器
         try:
-            self.logger.info("=" * 60)
-            self.logger.info("🚀 快速启动模式：初始化核心服务...")
-            self.logger.info("=" * 60)
+            from backend.infrastructure.system_vnpy.unified_log_system import (
+                ai_log_process,
+                get_logging_hub,
+            )
+            hub = get_logging_hub()
+            if hub:
+                hub.set_stage("startup")
+        except ImportError:
+            hub = None
 
-            # 配置已在主线程初始化，无需重复初始化
-            from backend.core.config import get_settings
+        stage_logger = logging.getLogger("startup.stage")
 
-            settings = get_settings()
-            self.logger.info("使用已加载的配置：%s", settings.config_file)
+        # 使用ai_log_process创建独立日志文件
+        try:
+            context_manager = ai_log_process("core_services_init", {"mode": "fast_startup"}) if hub else __import__("contextlib").nullcontext()
+            with context_manager:
+                # 阶段节点日志（输出到Terminal）
+                stage_logger.info("📍 核心服务初始化开始（快速启动模式）", extra={"log_type": "STAGE_NODE", "scenario": "core_services_init"})
+                
+                self.logger.info("=" * 60)
+                self.logger.info("🚀 快速启动模式：初始化核心服务...")
+                self.logger.info("=" * 60)
 
-            # 阶段1: 初始化VNPY核心框架
-            self._report_progress("初始化VNPY核心框架...", 20)
-            phase1_success = self._initialize_vnpy_core()
-            if not phase1_success:
-                self.logger.critical("🔥 [ServiceInitializer] VNPY核心框架初始化失败", extra={"log_type": "ALERT"})
-                return False
+                # 配置已在主线程初始化，无需重复初始化
+                from backend.core.config import get_settings
 
-            # 阶段2: 初始化数据服务
-            self._report_progress("初始化数据服务...", 70)
-            phase2_success = self._initialize_data_services()
-            if not phase2_success:
-                self.logger.error("❌ [ServiceInitializer] 数据服务初始化失败", extra={"log_type": "SYSTEM"})
-                return False
+                settings = get_settings()
+                self.logger.debug("使用已加载的配置：%s", settings.config_file, extra={"scenario": "core_services_init"})
+                self.logger.info("使用已加载的配置：%s", settings.config_file)
 
-            # 🔧 修复：提前初始化SystemManagerService到核心阶段
-            # 原因：LogManagerWidget等UI组件依赖SystemManagerService
-            self._report_progress("初始化系统管理服务...", 85)
-            phase2_5_success = self._initialize_system_manager_early()
-            if not phase2_5_success:
-                self.logger.warning("⚠️ 系统管理服务初始化失败（不影响核心功能）", extra={"log_type": "SYSTEM"})
-                # 不返回False，允许系统继续启动
+                # 阶段1: 初始化VNPY核心框架
+                self._report_progress("初始化VNPY核心框架...", 20)
+                phase1_success = self._initialize_vnpy_core()
+                if not phase1_success:
+                    self.logger.critical("🔥 [ServiceInitializer] VNPY核心框架初始化失败", extra={"log_type": "ALERT"})
+                    return False
 
-            self.logger.info("✅ 核心服务初始化完成，系统可以启动")
-            self._report_progress("核心服务就绪", 100)
-            return True
+                # 阶段2: 初始化数据服务
+                self._report_progress("初始化数据服务...", 70)
+                phase2_success = self._initialize_data_services()
+                if not phase2_success:
+                    self.logger.error("❌ [ServiceInitializer] 数据服务初始化失败", extra={"log_type": "SYSTEM"})
+                    return False
 
+                # 🔧 修复：提前初始化SystemManagerService到核心阶段
+                # 原因：LogManagerWidget等UI组件依赖SystemManagerService
+                self._report_progress("初始化系统管理服务...", 85)
+                phase2_5_success = self._initialize_system_manager_early()
+                if not phase2_5_success:
+                    self.logger.warning("⚠️ 系统管理服务初始化失败（不影响核心功能）", extra={"log_type": "SYSTEM"})
+                    # 不返回False，允许系统继续启动
+
+                self.logger.info("✅ 核心服务初始化完成，系统可以启动")
+                stage_logger.info("✅ 核心服务初始化完成", extra={"log_type": "STAGE_NODE", "scenario": "core_services_init"})
+                self._report_progress("核心服务就绪", 100)
+                return True
         except Exception as e:
             self.logger.error("❌ [ServiceInitializer] 核心服务初始化异常：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            stage_logger.error(f"❌ 核心服务初始化异常: {e}", extra={"log_type": "STAGE_NODE", "scenario": "core_services_init"})
             self.service_manager.record_error(
                 "ServiceInitializer",
                 "CORE_INITIALIZATION_ERROR",
@@ -435,11 +457,14 @@ class ServiceInitializer:
         Returns:
             bool: 是否成功
         """
+        stage_logger = logging.getLogger("startup.stage")
+        stage_logger.info("📍 阶段1: 初始化VNPY核心框架开始", extra={"log_type": "STAGE_NODE"})
+        
         self._report_progress("阶段1: 检查VNPY核心引擎...", 20)
 
-        self.logger.info("\n" + "=" * 60)
-        self.logger.info("阶段1: 初始化VNPY核心框架")
-        self.logger.info("=" * 60)
+        self.logger.debug("\n" + "=" * 60)
+        self.logger.debug("阶段1: 初始化VNPY核心框架")
+        self.logger.debug("=" * 60)
 
         start_time = time.time()
 
@@ -450,12 +475,17 @@ class ServiceInitializer:
             # ✅ 单一事实原则：优先使用全局引擎（阶段2已创建）
             existing_event_engine = get_event_engine()
             existing_main_engine = get_main_engine()
+            
+            self.logger.debug("检查全局引擎状态: EventEngine=%s, MainEngine=%s", 
+                            "✅" if existing_event_engine else "❌",
+                            "✅" if existing_main_engine else "❌")
 
             if existing_event_engine and existing_main_engine:
-                self.logger.info("✅ 检测到已存在的 EventEngine 和 MainEngine（主线程初始化）")
+                self.logger.debug("✅ 检测到已存在的 EventEngine 和 MainEngine（主线程初始化）")
                 self.event_engine = existing_event_engine
                 self.main_engine = existing_main_engine
                 self.logger.info("✅ 使用主线程初始化的 VnPy 核心引擎")
+                stage_logger.info("✅ VNPY核心引擎已就绪（使用主线程初始化）", extra={"log_type": "STAGE_NODE"})
 
                 # 后台加载VnPy Apps
                 self.logger.info("[VNPY-APPS] 开始后台加载VnPy应用...")
@@ -463,19 +493,22 @@ class ServiceInitializer:
 
                 elapsed = time.time() - start_time
                 self.logger.info("✅ VNPY核心框架初始化完成，耗时 %.2f秒", elapsed)
+                stage_logger.info(f"✅ VNPY核心框架初始化完成 ({elapsed:.2f}s)", extra={"log_type": "STAGE_NODE"})
                 self._report_progress("VNPY核心引擎初始化完成", 40)
                 return True
 
             # 只有在没有全局引擎时才创建（兼容模式）
             elif existing_event_engine:
                 # 🎯 新增：有EventEngine但没有MainEngine，创建MainEngine
-                self.logger.info("✅ 检测到主线程预创建的EventEngine")
+                self.logger.debug("✅ 检测到主线程预创建的EventEngine")
                 self.event_engine = existing_event_engine
+                stage_logger.info("✅ EventEngine已就绪（主线程预创建）", extra={"log_type": "STAGE_NODE"})
 
                 self._report_progress("创建MainEngine...", 30)
-                self.logger.info("基于预创建的EventEngine创建MainEngine...")
+                self.logger.debug("基于预创建的EventEngine创建MainEngine...")
                 self.main_engine = MainEngine(self.event_engine)
                 self.logger.info("✅ MainEngine创建成功")
+                stage_logger.info("✅ MainEngine创建完成", extra={"log_type": "STAGE_NODE"})
 
                 # 注册到全局
                 set_main_engine(self.main_engine)
@@ -487,15 +520,17 @@ class ServiceInitializer:
             else:
                 # 如果没有，则在当前线程创建（兼容模式）
                 self._report_progress("创建MonitoredEventEngine...", 25)
-                self.logger.info("创建MonitoredEventEngine（带监控）...")
+                self.logger.debug("创建MonitoredEventEngine（带监控）...")
                 self.event_engine = MonitoredEventEngine()
                 self.logger.info("✅ MonitoredEventEngine创建成功（支持队列深度和延迟监控）")
+                stage_logger.info("✅ MonitoredEventEngine创建完成（支持队列深度和延迟监控）", extra={"log_type": "STAGE_NODE"})
 
                 # 创建主引擎
                 self._report_progress("创建MainEngine...", 30)
-                self.logger.info("创建MainEngine...")
+                self.logger.debug("创建MainEngine...")
                 self.main_engine = MainEngine(self.event_engine)
                 self.logger.info("✅ MainEngine创建成功")
+                stage_logger.info("✅ MainEngine创建完成", extra={"log_type": "STAGE_NODE"})
 
                 # 注册到全局
                 set_main_engine(self.main_engine)
@@ -510,13 +545,16 @@ class ServiceInitializer:
 
             elapsed = time.time() - start_time
             self.logger.info("✅ VNPY核心框架初始化完成，耗时 %.2f秒", elapsed)
+            stage_logger.info(f"✅ VNPY核心框架初始化完成 ({elapsed:.2f}s)", extra={"log_type": "STAGE_NODE"})
             self._report_progress("VNPY核心引擎初始化完成", 40)
             return True
 
         except Exception as e:
             # 如果VNPY初始化失败，检查是否有预创建的EventEngine
+            stage_logger = logging.getLogger("startup.stage")
             elapsed = time.time() - start_time
             self.logger.critical("🔥 [ServiceInitializer] VNPY初始化失败: %s（耗时 %.2f秒）", e, elapsed, exc_info=True, extra={"log_type": "ALERT"})
+            stage_logger.error(f"❌ VNPY核心框架初始化失败: {e} ({elapsed:.2f}s)", extra={"log_type": "STAGE_NODE"})
 
             # 🎯 架构修复：检查是否有预创建的EventEngine
             existing_event_engine = get_event_engine()
@@ -580,11 +618,14 @@ class ServiceInitializer:
         Returns:
             bool: 是否成功
         """
+        stage_logger = logging.getLogger("startup.stage")
+        stage_logger.info("📍 阶段2: 初始化数据服务开始", extra={"log_type": "STAGE_NODE"})
+        
         self._report_progress("阶段2: 初始化数据引擎和服务...", 40)
 
-        self.logger.info("\n" + "=" * 60)
-        self.logger.info("阶段2: 初始化数据服务")
-        self.logger.info("=" * 60)
+        self.logger.debug("\n" + "=" * 60)
+        self.logger.debug("阶段2: 初始化数据服务")
+        self.logger.debug("=" * 60)
 
         start_time = time.time()
         success_count = 0
@@ -601,26 +642,23 @@ class ServiceInitializer:
             ), "EventEngine 必须在初始化 ChinaStockEngine 之前创建"
 
             self.china_stock_engine = ChinaStockEngine(self.main_engine, self.event_engine)
-            self.logger.info("✅ ChinaStockEngine 实例化完成")
-            # 移除print语句，使用logger统一输出
-            # print("[DATA-INIT] ✅ ChinaStockEngine 实例化完成")
+            self.logger.debug("✅ ChinaStockEngine 实例化完成")
+            stage_logger.info("✅ ChinaStockEngine实例化完成", extra={"log_type": "STAGE_NODE"})
 
             # 🔧 修复：调用initialize()方法初始化引擎（架构v3.0要求）
             try:
                 self._report_progress("初始化ChinaStockEngine子组件...", 48)
+                self.logger.debug("开始初始化ChinaStockEngine子组件...")
                 init_success = self.china_stock_engine.initialize()
                 if init_success:
                     self.logger.info("✅ ChinaStockEngine 初始化完成")
-                    # 移除print语句，使用logger统一输出
-                    # print("[DATA-INIT] ✅ ChinaStockEngine 初始化完成")
+                    stage_logger.info("✅ ChinaStockEngine初始化完成", extra={"log_type": "STAGE_NODE"})
                 else:
                     self.logger.warning("⚠️ ChinaStockEngine 初始化失败，但继续启动", extra={"log_type": "SYSTEM"})
-                    # 移除print语句，使用logger统一输出
-                    # print("[DATA-INIT] ⚠️ ChinaStockEngine 初始化失败，但继续启动")
+                    stage_logger.warning("⚠️ ChinaStockEngine初始化失败，但继续启动", extra={"log_type": "STAGE_NODE"})
             except Exception as e:
                 self.logger.exception("❌ ChinaStockEngine 初始化异常: %s", e)
-                # 移除print语句，使用logger统一输出
-                # print(f"[DATA-INIT] ❌ ChinaStockEngine 初始化异常: {e}")
+                stage_logger.error(f"❌ ChinaStockEngine初始化异常: {e}", extra={"log_type": "STAGE_NODE"})
                 # 不中断启动流程，允许降级运行
 
             # 注册到全局
@@ -645,8 +683,9 @@ class ServiceInitializer:
             #     self.logger.warning("⚠️ 配置 ChinaStockEngine 为数据源时出现异常: %s", e)
 
             # 直接配置数据源，健康检查延迟到首次使用
-            self.logger.info("✅ ChinaStockEngine 创建成功，健康检查延迟到首次使用")
+            self.logger.debug("✅ ChinaStockEngine 创建成功，健康检查延迟到首次使用")
             self._configure_datafeed()
+            self.logger.debug("✅ 数据源配置完成")
 
             # 🔧 注入 UnifiedDataManager 的 vnpy 兼容接口到 MainEngine
             try:
@@ -701,15 +740,13 @@ class ServiceInitializer:
                             # 注入品种列表查询方法（如果存在）
                             if hasattr(unified_data_manager, "get_all_contracts"):
                                 self.logger.info("正在注入 get_all_contracts 方法...")
-                                self.main_engine.get_all_contracts = (  # pyright: ignore[reportAttributeAccessIssue]
-                                    unified_data_manager.get_all_contracts
-                                )
+                                self.main_engine.get_all_contracts = unified_data_manager.get_all_contracts  # type: ignore[reportAttributeAccessIssue,reportAssignmentType]
                             else:
                                 self.logger.debug("UnifiedDataManager没有get_all_contracts方法，跳过注入")
 
                             # 注入历史K线查询方法
                             self.logger.info("正在注入 load_bar_data 方法...")
-                            self.main_engine.load_bar_data = unified_data_manager.load_bar_data  # type: ignore[reportAttributeAccessIssue]
+                            self.main_engine.load_bar_data = unified_data_manager.load_bar_data  # type: ignore[reportAttributeAccessIssue,reportAssignmentType]
 
                             # 验证注入成功
                             verify_get_contracts = hasattr(self.main_engine, "get_all_contracts")
@@ -797,9 +834,11 @@ class ServiceInitializer:
                 self.service_manager.register_service("data_center_service", data_center_service)
                 self.initialized_services["data_center_service"] = data_center_service
                 self.logger.info("✅ DataCenterService 初始化成功")
+                stage_logger.info("✅ DataCenterService初始化完成", extra={"log_type": "STAGE_NODE"})
                 success_count += 1
             else:
                 self.logger.warning("⚠️ DataCenterService 初始化失败")
+                stage_logger.warning("⚠️ DataCenterService初始化失败", extra={"log_type": "STAGE_NODE"})
                 self.failed_services.append("data_center_service")
 
         except Exception as e:
@@ -808,6 +847,7 @@ class ServiceInitializer:
 
         elapsed = time.time() - start_time
         self.logger.info("阶段2完成，耗时 %.2f秒", elapsed)
+        stage_logger.info(f"✅ 阶段2: 初始化数据服务完成 ({elapsed:.2f}s)", extra={"log_type": "STAGE_NODE"})
         self._report_progress("数据服务初始化完成", 60)
         return success_count > 0
 
@@ -961,16 +1001,12 @@ class ServiceInitializer:
                 stage_logger.info("✅ AIAssistantService初始化完成", extra={"log_type": "STAGE_NODE"})
 
                 # 获取AI模型信息
-                if hasattr(ai_assistant_service, "model_name"):
-                    stage_logger.info(f"  - AI模型: {ai_assistant_service.model_name}", extra={"log_type": "STAGE_NODE"})
-                else:
-                    stage_logger.info("  - AI模型: DeepSeek", extra={"log_type": "STAGE_NODE"})
+                model_name = getattr(ai_assistant_service, "model_name", "DeepSeek")
+                stage_logger.info(f"  - AI模型: {model_name}", extra={"log_type": "STAGE_NODE"})
 
                 # 检查API状态
-                if hasattr(ai_assistant_service, "api_available") and ai_assistant_service.api_available:
-                    stage_logger.info("  - API状态: 可用", extra={"log_type": "STAGE_NODE"})
-                else:
-                    stage_logger.info("  - API状态: 不可用", extra={"log_type": "STAGE_NODE"})
+                api_available = getattr(ai_assistant_service, "api_available", False)
+                stage_logger.info(f"  - API状态: {'可用' if api_available else '不可用'}", extra={"log_type": "STAGE_NODE"})
 
                 success_count += 1
             else:
@@ -1370,12 +1406,10 @@ def initialize_real_services(
 
 def shutdown_services() -> None:
     """关闭所有服务."""
-    global _service_manager
-
-    # 检查全局变量是否存在（防止NameError）
+    # 🔧 修复：使用get_service_manager而不是直接访问_service_manager
     try:
-        service_manager = _service_manager
-    except NameError:
+        service_manager = get_service_manager()
+    except Exception:
         logging.getLogger(__name__).info("服务管理器未初始化，跳过关闭流程")
         return
 
