@@ -6589,6 +6589,13 @@ class SystemManagerService(BaseService):
 
                             # 使用TdxDynamicExecutor批量处理
                             try:
+                                self.logger.debug(
+                                    f"[TDX-READ-SERVICE] 开始批量处理: 市场={market.upper()}, 数据类型={data_type}, "
+                                    f"品种数={len(symbols)}, 初始进程数={initial_processes}, 初始协程数={initial_coroutines}",
+                                    extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                                )
+                                batch_start_time = time.time()
+                                
                                 results = await executor.execute_batch(
                                     symbols=symbols,
                                     data_type=data_type,
@@ -6596,26 +6603,57 @@ class SystemManagerService(BaseService):
                                     initial_processes=initial_processes,
                                     initial_coroutines=initial_coroutines,
                                 )
+                                
+                                batch_elapsed = time.time() - batch_start_time
+                                self.logger.debug(
+                                    f"[TDX-READ-SERVICE] 批量处理完成: 市场={market.upper()}, 数据类型={data_type}, "
+                                    f"结果数={len(results)}, 耗时={batch_elapsed:.2f}s",
+                                    extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                                )
 
                                 # 处理结果和进度
                                 for symbol, success, error_msg, duration in results:
                                     completed += 1
                                     key = f"{market}_{data_type}_{symbol}"
                                     all_results[key] = success
+                                    
+                                    # DEBUG日志（记录每个文件的处理结果）
+                                    if not success:
+                                        self.logger.debug(
+                                            f"[TDX-READ-SERVICE] 文件读取失败: {symbol}/{data_type}/{market}, 错误: {error_msg}",
+                                            extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                                        )
 
                                     # 进度回调
                                     if progress_callback:
                                         info = f"{market.upper()} {data_type} {symbol}"
                                         progress_callback(completed, total_tasks, info, success)
+                                    
+                                    # 每100个文件记录一次进度
+                                    if completed % 100 == 0:
+                                        self.logger.debug(
+                                            f"[TDX-READ-SERVICE] 进度更新: 已完成 {completed}/{total_tasks} ({completed*100//total_tasks}%)",
+                                            extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                                        )
 
                                     # 检查停止标志
                                     if self._tdx_reader_stop_flag:
-                                        self.logger.info("检测到停止标志，中断批量读取")
+                                        self.logger.info(
+                                            "检测到停止标志，中断批量读取",
+                                            extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                                        )
                                         return
 
                             except Exception as e:
+                                self.logger.debug(
+                                    f"[TDX-READ-SERVICE] 批量处理异常: 市场={market.upper()}, 数据类型={data_type}, "
+                                    f"异常类型={type(e).__name__}, 异常详情={str(e)}",
+                                    extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                                )
                                 self.logger.error(
-                                    f"处理 {market.upper()} {data_type} 失败: {e}", exc_info=True
+                                    f"处理 {market.upper()} {data_type} 失败: {e}",
+                                    exc_info=True,
+                                    extra={"log_type": "ALERT", "scenario": "tdx_data_read"},
                                 )
                                 # 标记所有品种为失败
                                 for symbol in symbols:

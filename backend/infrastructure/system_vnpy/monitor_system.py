@@ -715,7 +715,10 @@ class NetworkSpeedTester:
             total_elapsed = time.perf_counter() - test_start_time
             max_total_time = (timeout + 10) * max_retries + 5  # 带宽测试更耗时，允许更长时间
             if total_elapsed > max_total_time:
-                logger.warning(f"[BANDWIDTH-RANDOM] 总体超时（{total_elapsed:.1f}秒 > {max_total_time}秒），停止重试", extra={"log_type": "SYSTEM"})
+                logger.warning(
+                    f"[BANDWIDTH-RANDOM] 总体超时（{total_elapsed:.1f}秒 > {max_total_time}秒），停止重试",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                )
                 break
 
             # 随机选择一个未测试的服务器
@@ -724,6 +727,10 @@ class NetworkSpeedTester:
                 # 所有服务器都测试过了，重置列表重新开始
                 tested_servers = []
                 available_servers = enabled_servers
+                logger.debug(
+                    f"[BANDWIDTH-RANDOM] 所有服务器已测试，重置测试列表，开始第{attempt}次重试",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                )
 
             selected_server = random.choice(available_servers)
             tested_servers.append(selected_server)
@@ -732,12 +739,24 @@ class NetworkSpeedTester:
             ping_url = selected_server.get('ping_url')
             download_url = selected_server.get('download_url')
 
+            logger.debug(
+                f"[BANDWIDTH-RANDOM] 第{attempt}次尝试，随机选择服务器: {server_name}, "
+                f"ping_url={ping_url}, download_url={download_url}",
+                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+            )
+
             if not ping_url or not download_url:
                 last_error = f'{server_name} 缺少ping_url或download_url配置'
-                logger.warning(f"[BANDWIDTH-RANDOM] 第{attempt}次尝试失败: {last_error}", extra={"log_type": "SYSTEM"})
+                logger.warning(
+                    f"[BANDWIDTH-RANDOM] 第{attempt}次尝试失败: {last_error}",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                )
                 continue
 
-            logger.info(f"[BANDWIDTH-RANDOM] 第{attempt}次尝试，随机选择: {server_name}")
+            logger.info(
+                f"[BANDWIDTH-RANDOM] 第{attempt}次尝试，随机选择: {server_name}",
+                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+            )
 
             # 临时修改超时时间
             original_timeout = self.timeout
@@ -745,24 +764,44 @@ class NetworkSpeedTester:
 
             try:
                 # 步骤1：先测试延迟（确保连通性）
+                logger.debug(
+                    f"[BANDWIDTH-RANDOM] 开始延迟测试: {server_name}, ping_url={ping_url}",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                )
                 ping_result = self.test_latency(ping_url)
 
                 if ping_result.get('status') != 'success':
                     last_error = f'延迟测试失败: {ping_result.get("error")}'
                     elapsed = time.perf_counter() - test_start_time
-                    logger.warning(f"[BANDWIDTH-RANDOM] ❌ 第{attempt}次延迟测试失败（耗时{elapsed:.2f}秒）: {server_name} - {last_error}", extra={"log_type": "SYSTEM"})
+                    logger.warning(
+                        f"[BANDWIDTH-RANDOM] ❌ 第{attempt}次延迟测试失败（耗时{elapsed:.2f}秒）: {server_name} - {last_error}",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                    )
                     continue
 
-                logger.info(f"[BANDWIDTH-RANDOM] ✅ 延迟测试通过: {server_name} ({ping_result['ping_ms']}ms)")
+                logger.info(
+                    f"[BANDWIDTH-RANDOM] ✅ 延迟测试通过: {server_name} ({ping_result['ping_ms']}ms)",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                )
 
                 # 步骤2：测试下载速度（使用Range请求仅下载前10MB，使用20秒最大时长）
+                logger.debug(
+                    f"[BANDWIDTH-RANDOM] 开始下载速度测试: {server_name}, download_url={download_url}",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                )
                 download_result = self.test_download_speed(download_url, max_duration=20, max_bytes=10 * 1024 * 1024)
 
                 if download_result.get('status') == 'success':
                     elapsed = time.perf_counter() - test_start_time
+                    logger.debug(
+                        f"[BANDWIDTH-RANDOM] 下载速度测试成功: {server_name}, "
+                        f"download_mbps={download_result['download_mbps']}, elapsed={elapsed:.2f}s",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                    )
                     logger.info(
                         f"[BANDWIDTH-RANDOM] ✅ 成功（第{attempt}次，总耗时{elapsed:.2f}秒）: {server_name} "
-                        f"(延迟{ping_result['ping_ms']}ms, 下载{download_result['download_mbps']}Mbps)"
+                        f"(延迟{ping_result['ping_ms']}ms, 下载{download_result['download_mbps']}Mbps)",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
                     )
                     return {
                         'ping_ms': ping_result['ping_ms'],
@@ -779,13 +818,45 @@ class NetworkSpeedTester:
                 else:
                     last_error = f'下载测试失败: {download_result.get("error")}'
                     elapsed = time.perf_counter() - test_start_time
-                    logger.warning(f"[BANDWIDTH-RANDOM] ❌ 第{attempt}次下载测试失败（耗时{elapsed:.2f}秒）: {server_name} - {last_error}", extra={"log_type": "SYSTEM"})
+                    logger.debug(
+                        f"[BANDWIDTH-RANDOM] 第{attempt}次下载测试失败: {server_name}, error={last_error}",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                    )
+                    logger.warning(
+                        f"[BANDWIDTH-RANDOM] ❌ 第{attempt}次下载测试失败（耗时{elapsed:.2f}秒）: {server_name} - {last_error}",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                    )
+
+            except Exception as e:
+                # 恢复超时时间
+                self.timeout = original_timeout
+
+                last_error = f'测试异常: {str(e)}'
+                elapsed = time.perf_counter() - test_start_time
+                logger.debug(
+                    f"[BANDWIDTH-RANDOM] 第{attempt}次尝试发生异常: {type(e).__name__}: {str(e)}",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                )
+                logger.warning(
+                    f"[BANDWIDTH-RANDOM] ❌ 第{attempt}次尝试异常（耗时{elapsed:.2f}秒）: {server_name} - {last_error}",
+                    exc_info=True,
+                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                )
+                continue
 
             finally:
                 self.timeout = original_timeout
 
         # 所有重试都失败
-        logger.error(f"[BANDWIDTH-RANDOM] ❌ 所有{max_retries}次尝试均失败", extra={"log_type": "SYSTEM"})
+        elapsed = time.perf_counter() - test_start_time
+        logger.debug(
+            f"[BANDWIDTH-RANDOM] 所有重试均失败: 总耗时={elapsed:.2f}s, 最后错误={last_error}",
+            extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+        )
+        logger.error(
+            f"[BANDWIDTH-RANDOM] ❌ 所有{max_retries}次尝试均失败",
+            extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
+        )
         return {
             'error': last_error or '所有服务器测试失败',
             'status': 'all_failed',
@@ -3741,7 +3812,10 @@ class BandwidthMonitor:
 
             # 检查服务器配置
             if not self._server_configs:
-                logger.error("[BANDWIDTH] 服务器配置为空，无法进行测试")
+                logger.error(
+                    "[BANDWIDTH] 服务器配置为空，无法进行测试",
+                    extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
+                )
                 self._last_error = "服务器配置为空"
                 return None
 
@@ -3749,6 +3823,8 @@ class BandwidthMonitor:
 
             # 使用AI日志流程上下文管理器，生成独立AI日志文件
             # 添加异常处理，确保即使AI日志初始化失败也不影响测试
+            stage_logger = logging.getLogger("task.manual_speedtest.stage")
+            
             try:
                 with ai_log_process(
                     ProcessNames.NETWORK_SPEEDTEST_BANDWIDTH,
@@ -3759,28 +3835,77 @@ class BandwidthMonitor:
                         "server_count": len(self._server_configs)
                     }
                 ):
-                    logger.info("开始完整带宽测试（预计耗时10-15秒）...")
+                    # 阶段节点日志（输出到Terminal）
+                    stage_logger.info(
+                        "📍 带宽测试开始: 正在连接到测速服务器...",
+                        extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
+                    )
+                    
+                    # DEBUG日志（记录测试开始）
+                    logger.debug(
+                        "[BANDWIDTH] 开始完整带宽测试",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                    )
+                    logger.debug(
+                        f"[BANDWIDTH] 测试配置: max_retries={self._bandwidth_max_retries}, "
+                        f"timeout={self._bandwidth_timeout}, server_count={len(self._server_configs)}",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                    )
+                    logger.info(
+                        "开始完整带宽测试（预计耗时10-15秒）...",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                    )
 
                     # 使用本地集成的自研测速模块
 
                     # 创建测速器
+                    logger.debug(
+                        f"[BANDWIDTH] 创建NetworkSpeedTester实例: timeout={self._bandwidth_timeout}",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                    )
                     tester = NetworkSpeedTester(timeout=self._bandwidth_timeout)
 
                     # 添加时间追踪
                     test_start_time = datetime.now()
-                    logger.info(f"[BANDWIDTH] 开始完整带宽测试（随机选择+重试策略），开始时间: {test_start_time.strftime('%H:%M:%S')}")
+                    logger.info(
+                        f"[BANDWIDTH] 开始完整带宽测试（随机选择+重试策略），开始时间: {test_start_time.strftime('%H:%M:%S')}",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                    )
+                    logger.debug(
+                        f"[BANDWIDTH] 测试开始时间戳: {test_start_time.isoformat()}",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                    )
 
                     # 使用随机选择+重试策略的带宽测试
+                    logger.debug(
+                        "[BANDWIDTH] 调用test_bandwidth_with_random_retry方法",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                    )
                     result_data = tester.test_bandwidth_with_random_retry(
                         server_configs=self._server_configs,
                         max_retries=self._bandwidth_max_retries,
                         timeout=self._bandwidth_timeout
                     )
+                    logger.debug(
+                        f"[BANDWIDTH] test_bandwidth_with_random_retry返回: status={result_data.get('status')}",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                    )
 
                     test_elapsed = (datetime.now() - test_start_time).total_seconds()
-                    logger.info(f"[BANDWIDTH] 完整带宽测试耗时: {test_elapsed:.2f}秒")
+                    logger.info(
+                        f"[BANDWIDTH] 完整带宽测试耗时: {test_elapsed:.2f}秒",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                    )
+                    logger.debug(
+                        f"[BANDWIDTH] 测试耗时详情: {test_elapsed:.3f}秒",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                    )
 
                     # 关闭测速器
+                    logger.debug(
+                        "[BANDWIDTH] 关闭NetworkSpeedTester实例",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                    )
                     tester.close()
 
                     # 处理测试结果
@@ -3799,17 +3924,41 @@ class BandwidthMonitor:
                         self._full_test_time = datetime.now()
 
                         attempt = result_data.get('attempt', 1)
+                        logger.debug(
+                            f"[BANDWIDTH] 测试结果详情: download_mbps={result['download_mbps']}, "
+                            f"ping_ms={result['ping_ms']}, server_name={result['server_name']}, "
+                            f"attempt={attempt}",
+                            extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                        )
                         logger.info(
                             f"✅ 完整带宽测试完成: 下载 {result['download_mbps']}Mbps, "
-                            f"延迟 {result['ping_ms']}ms, 服务器 {result['server_name']} (第{attempt}次尝试)"
+                            f"延迟 {result['ping_ms']}ms, 服务器 {result['server_name']} (第{attempt}次尝试)",
+                            extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
                         )
-                        logger.info(f"[SPEEDTEST-SAVE] 保存完整测速结果: {result}")
+                        logger.info(
+                            f"[SPEEDTEST-SAVE] 保存完整测速结果: {result}",
+                            extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                        )
+                        
+                        # 阶段节点日志（输出到Terminal）
+                        stage_logger.info(
+                            f"✅ 带宽测试完成: 下载 {result['download_mbps']}Mbps, "
+                            f"延迟 {result['ping_ms']}ms, 耗时={test_elapsed:.2f}s",
+                            extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
+                        )
 
                         return result
                     else:
                         # 测试失败
                         error_msg = result_data.get('error', '所有测速服务器均不可用')
-                        logger.error(f"❌ 完整带宽测试失败: {error_msg}")
+                        logger.debug(
+                            f"[BANDWIDTH] 测试失败详情: error={error_msg}, result_data={result_data}",
+                            extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                        )
+                        logger.error(
+                            f"❌ 完整带宽测试失败: {error_msg}",
+                            extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
+                        )
                         self._last_error = error_msg
 
                         result = {
@@ -3822,24 +3971,51 @@ class BandwidthMonitor:
                         }
                         self._last_full_result = result
                         self._full_test_time = datetime.now()
+                        
+                        # 阶段节点日志（输出到Terminal）
+                        stage_logger.warning(
+                            f"⚠️ 带宽测试失败: {error_msg}, 耗时={test_elapsed:.2f}s",
+                            extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
+                        )
 
                         return result
             except Exception as ai_log_error:
                 # AI日志初始化失败，继续执行测试（降级模式）
-                logger.warning(f"[BANDWIDTH] AI日志初始化失败，继续测试（降级模式）: {ai_log_error}")
+                logger.warning(
+                    f"[BANDWIDTH] AI日志初始化失败，继续测试（降级模式）: {ai_log_error}",
+                    extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
+                )
+                logger.debug(
+                    f"[BANDWIDTH] AI日志异常详情: {type(ai_log_error).__name__}: {str(ai_log_error)}",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                )
 
-                logger.info("开始完整带宽测试（预计耗时10-15秒）...")
+                logger.info(
+                    "开始完整带宽测试（预计耗时10-15秒）...",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                )
 
                 # 使用本地集成的自研测速模块
 
                 # 创建测速器
+                logger.debug(
+                    f"[BANDWIDTH] 创建NetworkSpeedTester实例（降级模式）: timeout={self._bandwidth_timeout}",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                )
                 tester = NetworkSpeedTester(timeout=self._bandwidth_timeout)
 
                 # 添加时间追踪
                 test_start_time = datetime.now()
-                logger.info(f"[BANDWIDTH] 开始完整带宽测试（随机选择+重试策略），开始时间: {test_start_time.strftime('%H:%M:%S')}")
+                logger.info(
+                    f"[BANDWIDTH] 开始完整带宽测试（随机选择+重试策略），开始时间: {test_start_time.strftime('%H:%M:%S')}",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                )
 
                 # 使用随机选择+重试策略的带宽测试
+                logger.debug(
+                    "[BANDWIDTH] 调用test_bandwidth_with_random_retry方法（降级模式）",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                )
                 result_data = tester.test_bandwidth_with_random_retry(
                     server_configs=self._server_configs,
                     max_retries=self._bandwidth_max_retries,
@@ -3847,7 +4023,10 @@ class BandwidthMonitor:
                 )
 
                 test_elapsed = (datetime.now() - test_start_time).total_seconds()
-                logger.info(f"[BANDWIDTH] 完整带宽测试耗时: {test_elapsed:.2f}秒")
+                logger.info(
+                    f"[BANDWIDTH] 完整带宽测试耗时: {test_elapsed:.2f}秒",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                )
 
                 # 关闭测速器
                 tester.close()
@@ -3870,15 +4049,22 @@ class BandwidthMonitor:
                     attempt = result_data.get('attempt', 1)
                     logger.info(
                         f"✅ 完整带宽测试完成: 下载 {result['download_mbps']}Mbps, "
-                        f"延迟 {result['ping_ms']}ms, 服务器 {result['server_name']} (第{attempt}次尝试)"
+                        f"延迟 {result['ping_ms']}ms, 服务器 {result['server_name']} (第{attempt}次尝试)",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
                     )
-                    logger.info(f"[SPEEDTEST-SAVE] 保存完整测速结果: {result}")
+                    logger.info(
+                        f"[SPEEDTEST-SAVE] 保存完整测速结果: {result}",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                    )
 
                     return result
                 else:
                     # 测试失败
                     error_msg = result_data.get('error', '所有测速服务器均不可用')
-                    logger.error(f"❌ 完整带宽测试失败: {error_msg}")
+                    logger.error(
+                        f"❌ 完整带宽测试失败: {error_msg}",
+                        extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
+                    )
                     self._last_error = error_msg
 
                     result = {
@@ -3895,7 +4081,16 @@ class BandwidthMonitor:
                     return result
 
         except Exception as e:
-            logger.error(f"❌ 完整带宽测试失败: {e}", exc_info=True)
+            # DEBUG日志（记录异常发生）
+            logger.debug(
+                f"[BANDWIDTH] 带宽测试发生异常: {type(e).__name__}: {str(e)}",
+                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+            )
+            logger.error(
+                f"❌ 完整带宽测试失败: {e}",
+                exc_info=True,
+                extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
+            )
             self._last_error = str(e)
             return None
 

@@ -1601,36 +1601,109 @@ class DataCenterService(BaseService, LoggerMixin):
                 return [], []
 
             # 第1步：调用reload_stock_list更新缓存（返回Dict）
-            self.logger.info("  → 调用 china_stock_engine.reload_stock_list()...")
+            self.logger.info(
+                "  → 调用 china_stock_engine.reload_stock_list()...",
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+            )
+            self.logger.debug(
+                "[FETCH-SYMBOL] 开始调用china_stock_engine.reload_stock_list方法",
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+            )
+            reload_start_time = time.time()
             reload_result = self.china_stock_engine.reload_stock_list()
-            self.logger.info("  ← reload_stock_list 返回: %s", reload_result)
+            reload_elapsed = time.time() - reload_start_time
+            self.logger.debug(
+                f"[FETCH-SYMBOL] reload_stock_list调用完成: 耗时={reload_elapsed:.2f}s, success={reload_result.get('success')}",
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+            )
+            self.logger.info(
+                f"  ← reload_stock_list 返回: success={reload_result.get('success')}, "
+                f"empty_categories={reload_result.get('empty_categories', [])}, 耗时={reload_elapsed:.2f}s",
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+            )
 
             if not reload_result.get("success"):
-                self.logger.warning("更新品种缓存失败", extra={"log_type": "SYSTEM"})
+                self.logger.warning(
+                    "更新品种缓存失败",
+                    extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
+                )
+                self.logger.debug(
+                    f"[FETCH-SYMBOL] 失败详情: {reload_result}",
+                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                )
                 return [], []
 
             # 获取空品种类别信息
             empty_categories = reload_result.get("empty_categories", [])
 
             # 第2步：调用get_all_market_stocks获取分类后的品种字典
-            self.logger.info("  → 调用 china_stock_engine.get_all_market_stocks()...")
-            market_stocks = self.china_stock_engine.get_all_market_stocks()
             self.logger.info(
-                "  ← get_all_market_stocks 返回: %d 个市场",
-                len(market_stocks) if market_stocks else 0,
+                "  → 调用 china_stock_engine.get_all_market_stocks()...",
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+            )
+            self.logger.debug(
+                "[FETCH-SYMBOL] 开始调用get_all_market_stocks方法（获取分类后的品种字典）",
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+            )
+            market_stocks_start_time = time.time()
+            market_stocks = self.china_stock_engine.get_all_market_stocks()
+            market_stocks_elapsed = time.time() - market_stocks_start_time
+            market_count = len(market_stocks) if market_stocks else 0
+            self.logger.debug(
+                f"[FETCH-SYMBOL] get_all_market_stocks调用完成: 市场数={market_count}, 耗时={market_stocks_elapsed:.2f}s",
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+            )
+            self.logger.info(
+                f"  ← get_all_market_stocks 返回: {market_count} 个市场",
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
             )
 
             if not market_stocks:
-                self.logger.warning("获取品种分类失败", extra={"log_type": "SYSTEM"})
+                self.logger.warning(
+                    "获取品种分类失败",
+                    extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
+                )
+                self.logger.debug(
+                    "[FETCH-SYMBOL] 市场品种字典为空",
+                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                )
                 return [], []
 
-            # 打印各市场品种数量
+            # 打印各市场品种数量（分类器执行结果）
+            total_classified_count = 0
             for market_name, stock_list in market_stocks.items():
-                self.logger.info("     - %s: %d 个", market_name, len(stock_list))
+                market_symbol_count = len(stock_list)
+                total_classified_count += market_symbol_count
+                self.logger.info(
+                    f"     - {market_name}: {market_symbol_count} 个",
+                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                )
+                self.logger.debug(
+                    f"[FETCH-SYMBOL] 分类器结果: {market_name}={market_symbol_count}个品种",
+                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                )
+            self.logger.debug(
+                f"[FETCH-SYMBOL] 分类器执行完成: 总计={total_classified_count}个品种, 市场数={market_count}",
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+            )
 
-            # 转换为前端需要的格式
-            self.logger.info("  → 转换为前端数据格式...")
+            # 转换为前端需要的格式（包含过滤器执行）
+            self.logger.info(
+                "  → 转换为前端数据格式（应用过滤器）...",
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+            )
+            self.logger.debug(
+                "[FETCH-SYMBOL] 开始转换为前端格式（扁平化处理）",
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+            )
+            format_start_time = time.time()
             symbols = []
+            
+            # 统计扁平化前的数量（用于过滤器统计）
+            before_filter_count = 0
+            if isinstance(market_stocks, dict) and len(market_stocks) > 0:
+                for market_name, stock_list in market_stocks.items():
+                    before_filter_count += len(stock_list)
 
             # 如果market_stocks是市场分类的字典，需要扁平化处理
             if isinstance(market_stocks, dict) and len(market_stocks) > 0:
@@ -1694,22 +1767,60 @@ class DataCenterService(BaseService, LoggerMixin):
                             )
             else:
                 # 直接是品种列表（备用处理）
-                self.logger.warning("market_stocks格式异常，使用备用处理", extra={"log_type": "SYSTEM"})
+                self.logger.warning(
+                    "market_stocks格式异常，使用备用处理",
+                    extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
+                )
                 symbols = market_stocks if isinstance(market_stocks, list) else []
-
-            self.logger.info("  ← 转换完成: %d 个品种", len(symbols))
-            self.logger.info("✅ 成功获取 %d 个分类品种（来自5个市场）", len(symbols))
+                if not before_filter_count:
+                    before_filter_count = len(symbols)
+            
+            format_elapsed = time.time() - format_start_time
+            after_filter_count = len(symbols)
+            filtered_count = before_filter_count - after_filter_count
+            
+            self.logger.debug(
+                f"[FETCH-SYMBOL] 格式转换完成: 转换前={before_filter_count}, 转换后={after_filter_count}, "
+                f"过滤掉={filtered_count}, 耗时={format_elapsed:.2f}s",
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+            )
+            self.logger.info(
+                f"  ← 转换完成: {after_filter_count} 个品种（过滤前: {before_filter_count}, 过滤掉: {filtered_count}）",
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+            )
+            self.logger.info(
+                f"✅ 成功获取 {after_filter_count} 个分类品种（来自{market_count}个市场，过滤器已应用）",
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+            )
 
             # 打印前3个样例
             if len(symbols) > 0:
-                self.logger.info("  前3个品种样例:")
+                self.logger.info(
+                    "  前3个品种样例:",
+                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                )
                 for i, sym in enumerate(symbols[:3]):
-                    self.logger.info("    [%d] %s", i + 1, sym)
+                    self.logger.info(
+                        f"    [{i + 1}] {sym}",
+                        extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                    )
+                    self.logger.debug(
+                        f"[FETCH-SYMBOL] 样例品种: {sym}",
+                        extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                    )
 
             return symbols, empty_categories
 
         except Exception as e:
-            self.logger.error("获取品种列表失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.debug(
+                f"[FETCH-SYMBOL] 获取品种列表发生异常: {type(e).__name__}: {str(e)}",
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+            )
+            self.logger.error(
+                f"获取品种列表失败: {e}",
+                exc_info=True,
+                extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
+            )
             return [], []
 
     # ==================== 数据下载管理 ====================
@@ -2023,8 +2134,21 @@ class DataCenterService(BaseService, LoggerMixin):
 
                             # 定期记录详细进度日志（每10秒）并强制输出到terminal
                             if current_time - last_log_time >= 10:
+                                elapsed = current_time - download_start_time
+                                remaining = total - completed
+                                speed = completed / elapsed if elapsed > 0 else 0  # 任务/秒
+                                estimated_remaining = remaining / speed if speed > 0 else 0
+                                
+                                self.logger.debug(
+                                    f"[DOWNLOAD-SERVICE] 进度详情: task_id={task_id}, completed={completed}, "
+                                    f"total={total}, pct={pct}%, current_symbol={cur_sym}, "
+                                    f"current_interval={cur_itv}, speed={speed:.2f} tasks/s, "
+                                    f"elapsed={elapsed:.1f}s, estimated_remaining={estimated_remaining:.1f}s",
+                                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                                )
                                 self.logger.info(
-                                    f"[下载-{task_id}] 进度: {pct}% ({completed}/{total}) - {cur_sym} {cur_itv}",
+                                    f"[下载-{task_id}] 进度: {pct}% ({completed}/{total}) - {cur_sym} {cur_itv}, "
+                                    f"速度={speed:.2f}任务/秒, 预计剩余={estimated_remaining:.0f}秒",
                                     extra={"log_type": "PROGRESS", "scenario": "data_download"}
                                 )
                                 # print(...)  # 🔧 已移除：防止刷屏，logger.info已足够
@@ -2042,8 +2166,15 @@ class DataCenterService(BaseService, LoggerMixin):
                                 break
 
                             if no_progress_elapsed > no_progress_timeout and completed > 0:
+                                self.logger.debug(
+                                    f"[DOWNLOAD-SERVICE] 无进度检测: task_id={task_id}, "
+                                    f"no_progress_elapsed={no_progress_elapsed:.1f}s, "
+                                    f"completed={completed}, total={total}, current_symbol={cur_sym}",
+                                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                                )
                                 self.logger.warning(
-                                    f"[下载-{task_id}] {no_progress_timeout}秒无进度更新，可能卡住了",
+                                    f"[下载-{task_id}] {no_progress_timeout}秒无进度更新，可能卡住了: "
+                                    f"当前品种={cur_sym}, 已完成={completed}/{total}",
                                     extra={"log_type": "ALERT", "scenario": "data_download"}
                                 )
 
@@ -2100,6 +2231,11 @@ class DataCenterService(BaseService, LoggerMixin):
                                     )
                                 time.sleep(0.5)
                         else:
+                            logger_download.debug(
+                                f"[DOWNLOAD-SERVICE] 获取进度返回非字典类型: task_id={task_id}, "
+                                f"prog_type={type(prog).__name__}, prog={prog}",
+                                extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                            )
                             logger_download.warning(
                                 "[下载-%s] 获取进度失败，prog=%s",
                                 task_id,
@@ -2109,6 +2245,11 @@ class DataCenterService(BaseService, LoggerMixin):
                             time.sleep(0.5)
 
                     except Exception as poll_error:
+                        logger_alert.debug(
+                            f"[DOWNLOAD-SERVICE] 轮询异常详情: task_id={task_id}, "
+                            f"异常类型={type(poll_error).__name__}, 异常详情={str(poll_error)}",
+                            extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                        )
                         logger_alert.error(
                             "[下载-%s] 轮询异常: %s",
                             task_id,

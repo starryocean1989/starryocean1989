@@ -362,8 +362,19 @@ class DataSensor:
                 # 阶段节点（输出到Terminal）
                 passed_count = sum(1 for r in results.values() if r.quality_level in [DataQualityLevel.EXCELLENT, DataQualityLevel.GOOD])
                 failed_count = sum(1 for r in results.values() if r.quality_level == DataQualityLevel.POOR)
+                critical_count = sum(1 for r in results.values() if r.quality_level == DataQualityLevel.CRITICAL)
+                avg_completeness = sum(r.completeness for r in results.values()) / len(results) if results else 0.0
+                
+                logger.debug(
+                    f"[DATA-SENSOR] 扫描结果统计: 总计={len(results)}, 通过={passed_count}, "
+                    f"失败={failed_count}, 严重={critical_count}, 平均完整性={avg_completeness:.2f}%",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                )
+                
                 stage_logger.info(
-                    f"✅ 手动数据扫描完成: 耗时={total_elapsed:.2f}s, 任务数={len(results)}, 通过={passed_count}, 失败={failed_count}",
+                    f"✅ 手动数据扫描完成: 耗时={total_elapsed:.2f}s, 任务数={len(results)}, "
+                    f"通过={passed_count}, 失败={failed_count}, 严重={critical_count}, "
+                    f"平均完整性={avg_completeness:.2f}%",
                     extra={"log_type": "STAGE_NODE", "scenario": "manual_data_scan"},
                 )
                 
@@ -493,12 +504,47 @@ class DataSensor:
         completed = 0
         
         # 并发执行
+        scan_start_time = time.time()
+        last_progress_log_time = time.time()
+        
         for symbol, interval, task in tasks:
             try:
+                task_start_time = time.time()
                 result = await task
+                task_elapsed = time.time() - task_start_time
+                
                 results[(symbol, interval)] = result
+                
+                # DEBUG日志（记录每个任务的扫描结果）
+                logger.debug(
+                    f"[SCAN-ASYNC] 扫描完成: symbol={symbol}, interval={interval}, "
+                    f"total_bars={result.total_bars}, completeness={result.completeness:.2f}%, "
+                    f"quality_level={result.quality_level.name}, elapsed={task_elapsed:.3f}s",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                )
+                
+                # 每100个任务记录一次进度
+                if completed % 100 == 0:
+                    elapsed = time.time() - scan_start_time
+                    speed = completed / elapsed if elapsed > 0 else 0
+                    remaining = total - completed
+                    estimated_remaining = remaining / speed if speed > 0 else 0
+                    logger.debug(
+                        f"[SCAN-ASYNC] 进度更新: 已完成 {completed}/{total} ({completed*100//total}%), "
+                        f"速度={speed:.2f}任务/秒, 预计剩余={estimated_remaining:.0f}秒",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    )
+                    
             except Exception as e:
-                logger.warning(f"⚠️ 扫描失败: {symbol}/{interval}, 错误: {e}", extra={"log_type": "SYSTEM"})
+                logger.debug(
+                    f"[SCAN-ASYNC] 扫描异常: symbol={symbol}, interval={interval}, "
+                    f"异常类型={type(e).__name__}, 异常详情={str(e)}",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                )
+                logger.warning(
+                    f"⚠️ 扫描失败: {symbol}/{interval}, 错误: {e}",
+                    extra={"log_type": "ALERT", "scenario": "manual_data_scan"}
+                )
                 results[(symbol, interval)] = QualityScanResult(
                     symbol=symbol,
                     interval=interval,
@@ -507,6 +553,26 @@ class DataSensor:
             
             completed += 1
             self._notify_progress(completed, total, f"已扫描: {symbol}/{interval}")
+            
+            # 每10秒记录一次汇总进度
+            current_time = time.time()
+            if current_time - last_progress_log_time >= 10:
+                elapsed = time.time() - scan_start_time
+                speed = completed / elapsed if elapsed > 0 else 0
+                remaining = total - completed
+                estimated_remaining = remaining / speed if speed > 0 else 0
+                logger.info(
+                    f"[SCAN-ASYNC] 扫描进度: {completed}/{total} ({completed*100//total}%), "
+                    f"速度={speed:.2f}任务/秒, 预计剩余={estimated_remaining:.0f}秒",
+                    extra={"log_type": "PROGRESS", "scenario": "manual_data_scan"}
+                )
+                last_progress_log_time = current_time
+        
+        scan_elapsed = time.time() - scan_start_time
+        logger.debug(
+            f"[SCAN-ASYNC] 异步扫描完成: 总任务数={total}, 完成={len(results)}, 耗时={scan_elapsed:.2f}s",
+            extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+        )
         
         return results
     
@@ -528,15 +594,46 @@ class DataSensor:
         """
         async with semaphore:
             try:
+                logger.debug(
+                    f"[SCAN-SINGLE] 开始扫描单个品种: symbol={symbol}, interval={interval}",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                )
+                load_start_time = time.time()
+                
                 # 异步读取数据
                 df = await self.storage_manager.load_kline_async(symbol, interval)
+                load_elapsed = time.time() - load_start_time
+                
+                logger.debug(
+                    f"[SCAN-SINGLE] 数据加载完成: symbol={symbol}, interval={interval}, "
+                    f"rows={len(df) if df is not None and not df.empty else 0}, 耗时={load_elapsed:.3f}s",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                )
                 
                 # 验证数据质量
+                validate_start_time = time.time()
                 result = self._validate_dataframe(symbol, interval, df)
+                validate_elapsed = time.time() - validate_start_time
+                
+                logger.debug(
+                    f"[SCAN-SINGLE] 质量验证完成: symbol={symbol}, interval={interval}, "
+                    f"completeness={result.completeness:.2f}%, quality_level={result.quality_level.name}, "
+                    f"耗时={validate_elapsed:.3f}s",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                )
+                
                 return result
                 
             except Exception as e:
-                logger.debug(f"扫描单个品种失败: {symbol}/{interval}, {e}")
+                logger.debug(
+                    f"[SCAN-SINGLE] 扫描单个品种异常: symbol={symbol}, interval={interval}, "
+                    f"异常类型={type(e).__name__}, 异常详情={str(e)}",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                )
+                logger.debug(
+                    f"扫描单个品种失败: {symbol}/{interval}, {e}",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                )
                 return QualityScanResult(
                     symbol=symbol,
                     interval=interval,
@@ -609,18 +706,36 @@ class DataSensor:
         """
         result = QualityScanResult(symbol=symbol, interval=interval)
         
+        logger.debug(
+            f"[VALIDATE] 开始验证数据质量: symbol={symbol}, interval={interval}, "
+            f"df_empty={df is None or df.empty}",
+            extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+        )
+        
         if df is None or df.empty:
             result.errors.append("数据为空")
             result.quality_level = DataQualityLevel.CRITICAL
+            logger.debug(
+                f"[VALIDATE] 数据为空: symbol={symbol}, interval={interval}",
+                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+            )
             return result
         
         # 统计信息
         result.total_bars = len(df)
+        logger.debug(
+            f"[VALIDATE] 数据统计: symbol={symbol}, interval={interval}, total_bars={result.total_bars}",
+            extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+        )
         
         # 检查重复数据
         if df.index.duplicated().any():
             result.duplicate_bars = df.index.duplicated().sum()
             result.errors.append(f"发现重复数据: {result.duplicate_bars}条")
+            logger.debug(
+                f"[VALIDATE] 发现重复数据: symbol={symbol}, interval={interval}, duplicate_bars={result.duplicate_bars}",
+                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+            )
         
         # 检查无效数据
         invalid_mask = (
@@ -630,9 +745,17 @@ class DataSensor:
         result.invalid_bars = invalid_mask.sum()
         if result.invalid_bars > 0:
             result.errors.append(f"发现无效数据: {result.invalid_bars}条")
+            logger.debug(
+                f"[VALIDATE] 发现无效数据: symbol={symbol}, interval={interval}, invalid_bars={result.invalid_bars}",
+                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+            )
         
         # 计算完整性
         expected_bars = self._calculate_expected_bars(symbol, interval, df)
+        logger.debug(
+            f"[VALIDATE] 预期数据条数: symbol={symbol}, interval={interval}, expected_bars={expected_bars}",
+            extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+        )
         if expected_bars > 0:
             result.completeness = (result.total_bars / expected_bars) * 100.0
         else:
@@ -640,13 +763,28 @@ class DataSensor:
         
         # 计算缺失数据
         result.missing_bars = max(0, expected_bars - result.total_bars)
+        if result.missing_bars > 0:
+            logger.debug(
+                f"[VALIDATE] 发现缺失数据: symbol={symbol}, interval={interval}, missing_bars={result.missing_bars}",
+                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+            )
         
         # 最后更新时间
         if not df.empty:
             result.last_update = df.index[-1].to_pydatetime()
+            logger.debug(
+                f"[VALIDATE] 最后更新时间: symbol={symbol}, interval={interval}, last_update={result.last_update}",
+                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+            )
         
         # 确定质量级别
         result.quality_level = self._determine_quality_level(result.completeness)
+        logger.debug(
+            f"[VALIDATE] 质量评估完成: symbol={symbol}, interval={interval}, "
+            f"completeness={result.completeness:.2f}%, quality_level={result.quality_level.name}, "
+            f"errors={len(result.errors)}",
+            extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+        )
         
         return result
     
@@ -714,6 +852,11 @@ class DataSensor:
         Args:
             results: 扫描结果字典
         """
+        logger.debug(
+            "[STATS] 开始更新统计信息",
+            extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+        )
+        
         passed = sum(
             1 for r in results.values() 
             if r.quality_level in [DataQualityLevel.EXCELLENT, DataQualityLevel.GOOD]
@@ -726,6 +869,27 @@ class DataSensor:
             1 for r in results.values() 
             if r.quality_level in [DataQualityLevel.FAIR, DataQualityLevel.POOR]
         )
+        critical = sum(
+            1 for r in results.values() 
+            if r.quality_level == DataQualityLevel.CRITICAL
+        )
+        
+        # 计算平均完整性
+        avg_completeness = sum(r.completeness for r in results.values()) / len(results) if results else 0.0
+        
+        # 统计总K线数
+        total_bars = sum(r.total_bars for r in results.values())
+        total_missing = sum(r.missing_bars for r in results.values())
+        total_duplicate = sum(r.duplicate_bars for r in results.values())
+        total_invalid = sum(r.invalid_bars for r in results.values())
+        
+        logger.debug(
+            f"[STATS] 统计详情: total_scanned={len(results)}, passed={passed}, failed={failed}, "
+            f"warnings={warnings}, critical={critical}, avg_completeness={avg_completeness:.2f}%, "
+            f"total_bars={total_bars}, total_missing={total_missing}, "
+            f"total_duplicate={total_duplicate}, total_invalid={total_invalid}",
+            extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+        )
         
         self._stats.update({
             "total_scanned": len(results),
@@ -734,6 +898,12 @@ class DataSensor:
             "total_warnings": warnings,
             "last_scan_time": datetime.now(),
         })
+        
+        logger.info(
+            f"[STATS] ✅ 统计信息更新完成: 总计={len(results)}, 通过={passed}, 失败={failed}, "
+            f"警告={warnings}, 严重={critical}, 平均完整性={avg_completeness:.2f}%",
+            extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+        )
     
     def get_scan_results(self) -> Dict[Tuple[str, str], QualityScanResult]:
         """获取扫描结果

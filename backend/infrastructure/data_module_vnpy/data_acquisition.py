@@ -1098,7 +1098,15 @@ class T0FundClassifier(BaseClassifier):
         for fund in t0_fund_codes:
             fund["category"] = "T+0基金"
 
-        logger.info(f"✅ T+0基金分类完成，共 {len(t0_fund_codes)} 个品种（匹配到名称: {sum(1 for f in t0_fund_codes if f.get('name'))} 个）")
+        matched_name_count = sum(1 for f in t0_fund_codes if f.get('name'))
+        logger.debug(
+            f"[CLASSIFIER] T+0基金分类器执行完成: 总品种数={len(t0_fund_codes)}, 匹配到名称={matched_name_count}",
+            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+        )
+        logger.info(
+            f"✅ T+0基金分类完成，共 {len(t0_fund_codes)} 个品种（匹配到名称: {matched_name_count} 个）",
+            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+        )
         return t0_fund_codes
 
 
@@ -1261,15 +1269,42 @@ class FilterChain:
         for filter_ in self._filters:
             try:
                 before_count = len(result)
+                logger.debug(
+                    f"[FILTER-CHAIN] 开始执行过滤器: {filter_.name}, 当前品种数={before_count}",
+                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                )
                 result = filter_.filter(result, **kwargs)
                 after_count = len(result)
                 filtered_count = before_count - after_count
-                logger.debug(f"✅ 过滤器 {filter_.name} 执行完成，过滤掉 {filtered_count} 个品种")
+                logger.debug(
+                    f"✅ 过滤器 {filter_.name} 执行完成，过滤掉 {filtered_count} 个品种",
+                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                )
+                logger.debug(
+                    f"[FILTER-CHAIN] 过滤器 {filter_.name} 执行结果: 过滤前={before_count}, "
+                    f"过滤后={after_count}, 过滤掉={filtered_count}",
+                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                )
             except Exception as e:
-                logger.error(f"❌ 过滤器 {filter_.name} 执行失败: {e}", extra={"log_type": "SYSTEM"})
+                logger.debug(
+                    f"[FILTER-CHAIN] 过滤器 {filter_.name} 执行异常: {type(e).__name__}: {str(e)}",
+                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                )
+                logger.error(
+                    f"❌ 过滤器 {filter_.name} 执行失败: {e}",
+                    exc_info=True,
+                    extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
+                )
 
         total_filtered = original_count - len(result)
-        logger.info(f"✅ 过滤器链执行完成，原始 {original_count} 个，过滤掉 {total_filtered} 个，剩余 {len(result)} 个")
+        logger.debug(
+            f"[FILTER-CHAIN] 过滤器链执行完成: 原始={original_count}, 过滤掉={total_filtered}, 剩余={len(result)}",
+            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+        )
+        logger.info(
+            f"✅ 过滤器链执行完成，原始 {original_count} 个，过滤掉 {total_filtered} 个，剩余 {len(result)} 个",
+            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+        )
         return result
 
 
@@ -2176,15 +2211,44 @@ class TaskQueueManager:
             bool: 是否成功添加到重试队列
         """
         if task.retry_count >= task.max_retries:
+            logger.debug(
+                f"[RETRY] 任务重试次数已达上限: symbol={task.symbol}, interval={task.interval}, "
+                f"retry_count={task.retry_count}, max_retries={task.max_retries}",
+                extra={"log_type": "SYSTEM", "scenario": "data_download"}
+            )
             logger.warning(
                 f"⚠️ 任务重试次数已达上限: {task.symbol}/{task.interval}, "
-                f"重试次数: {task.retry_count}/{task.max_retries}"
+                f"重试次数: {task.retry_count}/{task.max_retries}",
+                extra={"log_type": "ALERT", "scenario": "data_download"}
             )
             return False
 
         task.retry_count += 1
         task.priority += 10  # 提高重试任务的优先级
-        return self.add_task(task, force=True)
+        
+        logger.debug(
+            f"[RETRY] 任务加入重试队列: symbol={task.symbol}, interval={task.interval}, "
+            f"retry_count={task.retry_count}, priority={task.priority}",
+            extra={"log_type": "SYSTEM", "scenario": "data_download"}
+        )
+        logger.info(
+            f"🔄 任务重试: {task.symbol}/{task.interval}, 第{task.retry_count}次重试",
+            extra={"log_type": "SYSTEM", "scenario": "data_download"}
+        )
+        
+        success = self.add_task(task, force=True)
+        if success:
+            logger.debug(
+                f"[RETRY] 任务已成功加入重试队列: symbol={task.symbol}, interval={task.interval}",
+                extra={"log_type": "SYSTEM", "scenario": "data_download"}
+            )
+        else:
+            logger.warning(
+                f"[RETRY] ⚠️ 任务加入重试队列失败: symbol={task.symbol}, interval={task.interval}",
+                extra={"log_type": "ALERT", "scenario": "data_download"}
+            )
+        
+        return success
 
     def get_pending_count(self) -> int:
         """获取待处理任务数量"""
@@ -3155,11 +3219,32 @@ Worker进程主函数
             except Exception as e:
                 # 下载失败
                 elapsed = time.time() - start_time
+                
+                # 错误分类
+                error_type = type(e).__name__
+                error_msg = str(e)
+                error_category = "unknown"
+                if "timeout" in error_msg.lower() or "timed out" in error_msg.lower():
+                    error_category = "timeout"
+                elif "connection" in error_msg.lower() or "connect" in error_msg.lower():
+                    error_category = "connection"
+                elif "network" in error_msg.lower():
+                    error_category = "network"
+                elif "permission" in error_msg.lower():
+                    error_category = "permission"
 
+                subprocess_logger.debug(
+                    f"[DOWNLOAD-WORKER] Worker {worker_id} 下载失败详情: symbol={task.symbol}, "
+                    f"interval={task.interval}, server={server['ip']}:{server['port']}, "
+                    f"error_type={error_type}, error_category={error_category}, "
+                    f"error_msg={error_msg}, elapsed={elapsed:.2f}s, retry_count={task.retry_count}",
+                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                )
                 subprocess_logger.error(
-                    f"❌ [Worker {worker_id}] 下载失败: {task.symbol}/{task.interval}, 错误: {e}",
+                    f"❌ [Worker {worker_id}] 下载失败: {task.symbol}/{task.interval}, "
+                    f"错误类型={error_category}, 错误: {e}",
                     exc_info=True,
-                    extra={"log_type": "SYSTEM"}
+                    extra={"log_type": "ALERT", "scenario": "data_download"}
                 )
 
                 task_logger.log_task(
@@ -3254,10 +3339,31 @@ Worker进程主函数
                 return None
 
         except Exception as e:
+            # 错误分类
+            error_type = type(e).__name__
+            error_msg = str(e)
+            
+            # 判断错误类型
+            if "timeout" in error_msg.lower() or "timed out" in error_msg.lower():
+                error_category = "timeout"
+            elif "connection" in error_msg.lower() or "connect" in error_msg.lower():
+                error_category = "connection"
+            elif "network" in error_msg.lower() or "network" in error_type.lower():
+                error_category = "network"
+            elif "permission" in error_msg.lower() or "permission denied" in error_msg.lower():
+                error_category = "permission"
+            else:
+                error_category = "unknown"
+            
+            subprocess_logger.debug(
+                f"[DOWNLOAD-TASK] 下载失败详情: symbol={symbol}, interval={interval}, "
+                f"error_type={error_type}, error_category={error_category}, error_msg={error_msg}",
+                extra={"log_type": "SYSTEM", "scenario": "data_download"}
+            )
             subprocess_logger.error(
-                f"❌ [TdxDataReader] 下载数据失败: {symbol}/{interval}, 错误: {e}",
+                f"❌ [TdxDataReader] 下载数据失败: {symbol}/{interval}, 错误类型={error_category}, 错误: {e}",
                 exc_info=True,
-                extra={"log_type": "SYSTEM"}
+                extra={"log_type": "ALERT", "scenario": "data_download"}
             )
             raise
 
