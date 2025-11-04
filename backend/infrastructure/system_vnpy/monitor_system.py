@@ -100,15 +100,17 @@ import random
 class NetworkSpeedTester:
     """网络测速器 - 基于公共测速站点的纯Python实现"""
 
-    def __init__(self, timeout: int = 15, use_browser_headers: bool = False):
+    def __init__(self, timeout: int = 15, use_browser_headers: bool = False, scenario: Optional[str] = None):
         """初始化测速器
 
         Args:
             timeout: 单次请求超时时间（秒）
             use_browser_headers: 是否使用完整浏览器头部（用于延迟测试模拟真实浏览器）
+            scenario: 日志场景（如"manual_speedtest"、"network_speedtest"），用于日志路由
         """
         self.timeout = timeout
         self.session = requests.Session()
+        self.scenario = scenario or "network_speedtest"  # 默认场景
 
         if use_browser_headers:
             # 完整模拟真实浏览器头部，降低被识别为爬虫的风险
@@ -125,13 +127,19 @@ class NetworkSpeedTester:
                 'Sec-Fetch-User': '?1',
                 'Cache-Control': 'max-age=0',
             })
-            logger.info(f"[SPEEDTEST-INIT] 初始化网络测速器（浏览器模式），超时={timeout}秒")
+            logger.info(
+                f"[SPEEDTEST-INIT] 初始化网络测速器（浏览器模式），超时={timeout}秒",
+                extra={"log_type": "SYSTEM", "scenario": self.scenario}
+            )
         else:
             # 简化头部（用于带宽测试，镜像站使用）
             self.session.headers.update({
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Terminal/0.50 NetworkSpeedTester'
             })
-            logger.info(f"[SPEEDTEST-INIT] 初始化网络测速器，超时={timeout}秒")
+            logger.info(
+                f"[SPEEDTEST-INIT] 初始化网络测速器，超时={timeout}秒",
+                extra={"log_type": "SYSTEM", "scenario": self.scenario}
+            )
 
     def test_latency(self, url: str) -> Dict[str, Any]:
         """测试网络延迟（ms）
@@ -143,7 +151,10 @@ class NetworkSpeedTester:
             测试结果字典，包含 ping_ms、url、status
         """
         try:
-            logger.debug(f"[SPEEDTEST-PING] 开始测试延迟: {url} (超时={self.timeout}秒)")
+            logger.debug(
+                f"[SPEEDTEST-PING] 开始测试延迟: {url} (超时={self.timeout}秒)",
+                extra={"log_type": "SYSTEM", "scenario": self.scenario}
+            )
             start = time.perf_counter()
             # 使用实例的超时时间（支持动态配置），设置连接和读取超时
             response = self.session.head(url, timeout=(self.timeout, self.timeout), allow_redirects=True)
@@ -155,10 +166,16 @@ class NetworkSpeedTester:
                     'url': url,
                     'status': 'success'
                 }
-                logger.info(f"[SPEEDTEST-PING] ✅ 成功: {elapsed_ms:.2f}ms - {url}")
+                logger.info(
+                    f"[SPEEDTEST-PING] ✅ 成功: {elapsed_ms:.2f}ms - {url}",
+                    extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                )
                 return result
             else:
-                logger.warning(f"[SPEEDTEST-PING] ❌ HTTP {response.status_code}: {url}", extra={"log_type": "SYSTEM"})
+                logger.warning(
+                    f"[SPEEDTEST-PING] ❌ HTTP {response.status_code}: {url}",
+                    extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                )
                 return {
                     'ping_ms': -1,
                     'url': url,
@@ -168,7 +185,10 @@ class NetworkSpeedTester:
 
         except requests.exceptions.Timeout:
             elapsed_ms = (time.perf_counter() - start) * 1000 if 'start' in locals() else 0
-            logger.warning(f"[SPEEDTEST-PING] ❌ 超时({elapsed_ms:.0f}ms, 超时设置={self.timeout}秒): {url}", extra={"log_type": "SYSTEM"})
+            logger.warning(
+                f"[SPEEDTEST-PING] ❌ 超时({elapsed_ms:.0f}ms, 超时设置={self.timeout}秒): {url}",
+                extra={"log_type": "SYSTEM", "scenario": self.scenario}
+            )
             return {
                 'ping_ms': -1,
                 'url': url,
@@ -177,7 +197,10 @@ class NetworkSpeedTester:
             }
         except Exception as e:
             elapsed_ms = (time.perf_counter() - start) * 1000 if 'start' in locals() else 0
-            logger.error(f"[SPEEDTEST-PING] ❌ 失败({elapsed_ms:.0f}ms): {url} - {e}", extra={"log_type": "SYSTEM"})
+            logger.error(
+                f"[SPEEDTEST-PING] ❌ 失败({elapsed_ms:.0f}ms): {url} - {e}",
+                extra={"log_type": "SYSTEM", "scenario": self.scenario}
+            )
             return {
                 'ping_ms': -1,
                 'url': url,
@@ -198,7 +221,10 @@ class NetworkSpeedTester:
             测试结果字典，包含 ping_ms、url、status
         """
         try:
-            logger.debug(f"[SPEEDTEST-PING-BROWSER] 开始测试延迟（浏览器模式）: {url} (超时={self.timeout}秒)")
+            logger.debug(
+                f"[SPEEDTEST-PING-BROWSER] 开始测试延迟（浏览器模式）: {url} (超时={self.timeout}秒)",
+                extra={"log_type": "SYSTEM", "scenario": self.scenario}
+            )
             start = time.perf_counter()
 
             # 使用GET请求模拟浏览器，但stream=True可以在读取响应头后立即关闭
@@ -221,10 +247,16 @@ class NetworkSpeedTester:
                     'url': url,
                     'status': 'success'
                 }
-                logger.info(f"[SPEEDTEST-PING-BROWSER] ✅ 成功: {elapsed_ms:.2f}ms - {url}")
+                logger.info(
+                    f"[SPEEDTEST-PING-BROWSER] ✅ 成功: {elapsed_ms:.2f}ms - {url}",
+                    extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                )
                 return result
             else:
-                logger.warning(f"[SPEEDTEST-PING-BROWSER] ❌ HTTP {response.status_code}: {url}", extra={"log_type": "SYSTEM"})
+                logger.warning(
+                    f"[SPEEDTEST-PING-BROWSER] ❌ HTTP {response.status_code}: {url}",
+                    extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                )
                 return {
                     'ping_ms': -1,
                     'url': url,
@@ -234,7 +266,10 @@ class NetworkSpeedTester:
 
         except requests.exceptions.Timeout:
             elapsed_ms = (time.perf_counter() - start) * 1000 if 'start' in locals() else 0
-            logger.warning(f"[SPEEDTEST-PING-BROWSER] ❌ 超时({elapsed_ms:.0f}ms, 超时设置={self.timeout}秒): {url}", extra={"log_type": "SYSTEM"})
+            logger.warning(
+                f"[SPEEDTEST-PING-BROWSER] ❌ 超时({elapsed_ms:.0f}ms, 超时设置={self.timeout}秒): {url}",
+                extra={"log_type": "SYSTEM", "scenario": self.scenario}
+            )
             return {
                 'ping_ms': -1,
                 'url': url,
@@ -243,7 +278,10 @@ class NetworkSpeedTester:
             }
         except Exception as e:
             elapsed_ms = (time.perf_counter() - start) * 1000 if 'start' in locals() else 0
-            logger.error(f"[SPEEDTEST-PING-BROWSER] ❌ 失败({elapsed_ms:.0f}ms): {url} - {e}", extra={"log_type": "SYSTEM"})
+            logger.error(
+                f"[SPEEDTEST-PING-BROWSER] ❌ 失败({elapsed_ms:.0f}ms): {url} - {e}",
+                extra={"log_type": "SYSTEM", "scenario": self.scenario}
+            )
             return {
                 'ping_ms': -1,
                 'url': url,
@@ -263,14 +301,20 @@ class NetworkSpeedTester:
             测试结果字典，包含 download_mbps、download_MB_s、total_bytes、elapsed_seconds
         """
         try:
-            logger.info(f"[SPEEDTEST-DOWNLOAD] 开始测速: {url} (超时={self.timeout}秒, 最大时长={max_duration}秒, 最大字节数={max_bytes or '无限制'})")
+            logger.info(
+                f"[SPEEDTEST-DOWNLOAD] 开始测速: {url} (超时={self.timeout}秒, 最大时长={max_duration}秒, 最大字节数={max_bytes or '无限制'})",
+                extra={"log_type": "SYSTEM", "scenario": self.scenario}
+            )
             start = time.perf_counter()
 
             # 设置请求头（如果需要Range请求）
             headers = {}
             if max_bytes:
                 headers['Range'] = f'bytes=0-{max_bytes - 1}'
-                logger.debug(f"[SPEEDTEST-DOWNLOAD] 使用Range请求: bytes=0-{max_bytes - 1}")
+                logger.debug(
+                    f"[SPEEDTEST-DOWNLOAD] 使用Range请求: bytes=0-{max_bytes - 1}",
+                    extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                )
 
             # 设置连接和读取超时
             response = self.session.get(
@@ -286,7 +330,10 @@ class NetworkSpeedTester:
                 error_msg = f'HTTP {response.status_code}'
                 if response.status_code == 404:
                     error_msg = f'HTTP 404 (文件不存在，URL可能已失效): {url}'
-                logger.error(f"[SPEEDTEST-DOWNLOAD] {error_msg}", extra={"log_type": "SYSTEM"})
+                logger.error(
+                    f"[SPEEDTEST-DOWNLOAD] {error_msg}",
+                    extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                )
                 return {
                     'download_mbps': -1,
                     'download_MB_s': -1,
@@ -298,7 +345,10 @@ class NetworkSpeedTester:
 
             # Range请求返回206是正常的
             if response.status_code == 206:
-                logger.debug(f"[SPEEDTEST-DOWNLOAD] Range请求成功（206 Partial Content）")
+                logger.debug(
+                    f"[SPEEDTEST-DOWNLOAD] Range请求成功（206 Partial Content）",
+                    extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                )
 
             total_bytes = 0
             chunk_size = 65536  # 64KB 每块
@@ -316,7 +366,10 @@ class NetworkSpeedTester:
 
                     # 检查总超时时间
                     if elapsed > max_duration:
-                        logger.debug(f"[SPEEDTEST-DOWNLOAD] 达到最大时长 {max_duration}秒，停止下载")
+                        logger.debug(
+                            f"[SPEEDTEST-DOWNLOAD] 达到最大时长 {max_duration}秒，停止下载",
+                            extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                        )
                         stop_flag.set()
                         try:
                             response.close()
@@ -326,7 +379,10 @@ class NetworkSpeedTester:
 
                     # 检查无进度超时（关键修复：防止iter_content无限阻塞）
                     if no_progress_elapsed > no_progress_timeout and elapsed > 2.0:  # 至少等待2秒才开始检查无进度
-                        logger.warning(f"[SPEEDTEST-DOWNLOAD] 无进度超时（{no_progress_timeout}秒无数据），停止下载", extra={"log_type": "SYSTEM"})
+                        logger.warning(
+                            f"[SPEEDTEST-DOWNLOAD] 无进度超时（{no_progress_timeout}秒无数据），停止下载",
+                            extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                        )
                         stop_flag.set()
                         try:
                             response.close()
@@ -351,7 +407,10 @@ class NetworkSpeedTester:
 
                         # 如果设置了最大字节数，且已达到，停止下载
                         if max_bytes and total_bytes >= max_bytes:
-                            logger.debug(f"[SPEEDTEST-DOWNLOAD] 已下载{max_bytes}字节，达到上限，停止下载")
+                            logger.debug(
+                                f"[SPEEDTEST-DOWNLOAD] 已下载{max_bytes}字节，达到上限，停止下载",
+                                extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                            )
                             break
 
                     # 双重检查（虽然monitor线程会处理，但这里也检查一次）
@@ -360,14 +419,20 @@ class NetworkSpeedTester:
                         break
 
             except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
-                logger.warning(f"[SPEEDTEST-DOWNLOAD] 连接异常: {e}（已下载{total_bytes}字节）", extra={"log_type": "SYSTEM"})
+                logger.warning(
+                    f"[SPEEDTEST-DOWNLOAD] 连接异常: {e}（已下载{total_bytes}字节）",
+                    extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                )
                 stop_flag.set()
                 try:
                     response.close()
                 except:
                     pass
             except Exception as e:
-                logger.warning(f"[SPEEDTEST-DOWNLOAD] 读取异常: {e}（已下载{total_bytes}字节）", extra={"log_type": "SYSTEM"})
+                logger.warning(
+                    f"[SPEEDTEST-DOWNLOAD] 读取异常: {e}（已下载{total_bytes}字节）",
+                    extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                )
                 stop_flag.set()
                 try:
                     response.close()
@@ -389,7 +454,10 @@ class NetworkSpeedTester:
 
             # 如果没有下载到任何数据，返回失败
             if total_bytes == 0:
-                logger.error(f"[SPEEDTEST-DOWNLOAD] 未下载到任何数据（耗时{elapsed:.2f}秒）", extra={"log_type": "SYSTEM"})
+                logger.error(
+                    f"[SPEEDTEST-DOWNLOAD] 未下载到任何数据（耗时{elapsed:.2f}秒）",
+                    extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                )
                 return {
                     'download_mbps': -1,
                     'download_MB_s': -1,
@@ -410,12 +478,16 @@ class NetworkSpeedTester:
 
             logger.info(
                 f"[SPEEDTEST-DOWNLOAD] 成功: {result['download_mbps']} Mbps "
-                f"({result['download_MB_s']} MB/s) - 下载 {result['total_MB']} MB"
+                f"({result['download_MB_s']} MB/s) - 下载 {result['total_MB']} MB",
+                extra={"log_type": "SYSTEM", "scenario": self.scenario}
             )
             return result
 
         except requests.exceptions.Timeout:
-            logger.error(f"[SPEEDTEST-DOWNLOAD] 超时({self.timeout}秒): {url}", extra={"log_type": "SYSTEM"})
+            logger.error(
+                f"[SPEEDTEST-DOWNLOAD] 超时({self.timeout}秒): {url}",
+                extra={"log_type": "SYSTEM", "scenario": self.scenario}
+            )
             return {
                 'download_mbps': -1,
                 'download_MB_s': -1,
@@ -424,7 +496,10 @@ class NetworkSpeedTester:
                 'status': 'timeout'
             }
         except Exception as e:
-            logger.error(f"[SPEEDTEST-DOWNLOAD] 失败: {url} - {e}", extra={"log_type": "SYSTEM"})
+            logger.error(
+                f"[SPEEDTEST-DOWNLOAD] 失败: {url} - {e}",
+                extra={"log_type": "SYSTEM", "scenario": self.scenario}
+            )
             return {
                 'download_mbps': -1,
                 'download_MB_s': -1,
@@ -456,18 +531,27 @@ class NetworkSpeedTester:
         # 添加总体超时保护（避免所有服务器都超时导致总时间过长）
         max_total_time = 30 if test_type == 'ping' else 60  # 延迟测试30秒，完整测试60秒
 
-        logger.info(f"[SPEEDTEST-FALLBACK] 开始测速（类型={test_type}，最多{len(server_configs)}个服务器，总体超时={max_total_time}秒）")
+        logger.info(
+            f"[SPEEDTEST-FALLBACK] 开始测速（类型={test_type}，最多{len(server_configs)}个服务器，总体超时={max_total_time}秒）",
+            extra={"log_type": "SYSTEM", "scenario": self.scenario}
+        )
 
         for i, config in enumerate(server_configs, 1):
             # 检查总体超时
             elapsed = time.perf_counter() - start_time
             if elapsed >= max_total_time:
-                logger.warning(f"[SPEEDTEST-FALLBACK] 总体超时（{elapsed:.1f}秒 >= {max_total_time}秒），停止测试", extra={"log_type": "SYSTEM"})
+                logger.warning(
+                    f"[SPEEDTEST-FALLBACK] 总体超时（{elapsed:.1f}秒 >= {max_total_time}秒），停止测试",
+                    extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                )
                 break
 
             server_name = config.get('name', f'服务器{i}')
             server_timeout = config.get('timeout', self.timeout)
-            logger.info(f"[SPEEDTEST-FALLBACK] 尝试服务器 {i}/{len(server_configs)}: {server_name} (超时={server_timeout}秒)")
+            logger.info(
+                f"[SPEEDTEST-FALLBACK] 尝试服务器 {i}/{len(server_configs)}: {server_name} (超时={server_timeout}秒)",
+                extra={"log_type": "SYSTEM", "scenario": self.scenario}
+            )
 
             result = {
                 'server_name': server_name,
@@ -607,7 +691,10 @@ class NetworkSpeedTester:
             total_elapsed = time.perf_counter() - test_start_time
             max_total_time = timeout * max_retries + 2  # 允许稍微超过一点
             if total_elapsed > max_total_time:
-                logger.warning(f"[PING-RANDOM] 总体超时（{total_elapsed:.1f}秒 > {max_total_time}秒），停止重试", extra={"log_type": "SYSTEM"})
+                logger.warning(
+                    f"[PING-RANDOM] 总体超时（{total_elapsed:.1f}秒 > {max_total_time}秒），停止重试",
+                    extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                )
                 break
 
             # 随机选择一个未测试的服务器
@@ -625,10 +712,16 @@ class NetworkSpeedTester:
 
             if not ping_url:
                 last_error = f'{server_name} 缺少ping_url配置'
-                logger.warning(f"[PING-RANDOM] 第{attempt}次尝试失败: {last_error}", extra={"log_type": "SYSTEM"})
+                logger.warning(
+                    f"[PING-RANDOM] 第{attempt}次尝试失败: {last_error}",
+                    extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                )
                 continue
 
-            logger.info(f"[PING-RANDOM] 第{attempt}次尝试，随机选择: {server_name}")
+            logger.info(
+                f"[PING-RANDOM] 第{attempt}次尝试，随机选择: {server_name}",
+                extra={"log_type": "SYSTEM", "scenario": self.scenario}
+            )
 
             # 临时修改超时时间
             original_timeout = self.timeout
@@ -641,7 +734,10 @@ class NetworkSpeedTester:
 
             if ping_result.get('status') == 'success':
                 elapsed = time.perf_counter() - test_start_time
-                logger.info(f"[PING-RANDOM] ✅ 成功（第{attempt}次，总耗时{elapsed:.2f}秒）: {server_name} ({ping_result['ping_ms']}ms)")
+                logger.info(
+                    f"[PING-RANDOM] ✅ 成功（第{attempt}次，总耗时{elapsed:.2f}秒）: {server_name} ({ping_result['ping_ms']}ms)",
+                    extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                )
                 return {
                     'ping_ms': ping_result['ping_ms'],
                     'server_name': server_name,
@@ -654,10 +750,16 @@ class NetworkSpeedTester:
             else:
                 last_error = ping_result.get('error', '未知错误')
                 elapsed = time.perf_counter() - test_start_time
-                logger.warning(f"[PING-RANDOM] ❌ 第{attempt}次尝试失败（耗时{elapsed:.2f}秒）: {server_name} - {last_error}", extra={"log_type": "SYSTEM"})
+                logger.warning(
+                    f"[PING-RANDOM] ❌ 第{attempt}次尝试失败（耗时{elapsed:.2f}秒）: {server_name} - {last_error}",
+                    extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                )
 
         # 所有重试都失败
-        logger.error(f"[PING-RANDOM] ❌ 所有{max_retries}次尝试均失败", extra={"log_type": "SYSTEM"})
+        logger.error(
+            f"[PING-RANDOM] ❌ 所有{max_retries}次尝试均失败",
+            extra={"log_type": "SYSTEM", "scenario": self.scenario}
+        )
         return {
             'error': last_error or '所有服务器测试失败',
             'status': 'all_failed',
@@ -3863,7 +3965,7 @@ class BandwidthMonitor:
                         f"[BANDWIDTH] 创建NetworkSpeedTester实例: timeout={self._bandwidth_timeout}",
                         extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
                     )
-                    tester = NetworkSpeedTester(timeout=self._bandwidth_timeout)
+                    tester = NetworkSpeedTester(timeout=self._bandwidth_timeout, scenario="manual_speedtest")
 
                     # 添加时间追踪
                     test_start_time = datetime.now()
@@ -4002,7 +4104,7 @@ class BandwidthMonitor:
                     f"[BANDWIDTH] 创建NetworkSpeedTester实例（降级模式）: timeout={self._bandwidth_timeout}",
                     extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
                 )
-                tester = NetworkSpeedTester(timeout=self._bandwidth_timeout)
+                tester = NetworkSpeedTester(timeout=self._bandwidth_timeout, scenario="manual_speedtest")
 
                 # 添加时间追踪
                 test_start_time = datetime.now()

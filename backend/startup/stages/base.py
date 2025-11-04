@@ -87,7 +87,10 @@ class StartupStage(ABC):
             if self.startup_logger:
                 self.startup_logger.stage_start(self.name)
             else:
-                self.logger.info(f"📍 阶段 {self.name} 开始")
+                self.logger.info(
+                    f"📍 阶段 {self.name} 开始",
+                    extra={"log_type": "STAGE_NODE", "scenario": "application_startup"}
+                )
 
             # 执行阶段逻辑
             result = await self._execute(context)
@@ -101,7 +104,10 @@ class StartupStage(ABC):
                 if self.startup_logger:
                     self.startup_logger.stage_success(self.name, elapsed_ms)
                 else:
-                    self.logger.info(f"✅ 阶段 {self.name} 完成 ({elapsed_ms:.0f}ms)")
+                    self.logger.info(
+                        f"✅ 阶段 {self.name} 完成 ({elapsed_ms:.0f}ms)",
+                        extra={"log_type": "STAGE_NODE", "scenario": "application_startup"}
+                    )
 
             # 记录阶段失败
             else:
@@ -111,7 +117,7 @@ class StartupStage(ABC):
                     self.logger.error(
                         f"❌ [StartupStage] 阶段 {self.name} 失败: {result.message}",
                         exc_info=result.error,
-                        extra={"log_type": "SYSTEM"}
+                        extra={"log_type": "SYSTEM", "scenario": "application_startup"}
                     )
 
             return result
@@ -121,12 +127,21 @@ class StartupStage(ABC):
             elapsed_ms = (time.time() - start_time) * 1000
 
             # 记录严重错误（启动阶段失败）
-            self.logger.critical("🔥 启动阶段 %s 执行失败: %s", self.name, e, exc_info=True, extra={"log_type": "ALERT"})
+            self.logger.critical(
+                "🔥 启动阶段 %s 执行失败: %s", 
+                self.name, e, 
+                exc_info=True, 
+                extra={"log_type": "ALERT", "scenario": "application_startup"}
+            )
             
             if self.startup_logger:
                 self.startup_logger.stage_error(self.name, e)
             else:
-                self.logger.error(f"❌ [StartupStage] 阶段 {self.name} 发生异常", exc_info=True, extra={"log_type": "SYSTEM"})
+                self.logger.error(
+                    f"❌ [StartupStage] 阶段 {self.name} 发生异常", 
+                    exc_info=True, 
+                    extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+                )
 
             return StageResult(
                 success=False,
@@ -155,7 +170,10 @@ class StartupStage(ABC):
         Args:
             context: 启动上下文
         """
-        self.logger.warning(f"阶段 {self.name} 未实现回滚逻辑", extra={"log_type": "SYSTEM"})
+        self.logger.warning(
+            f"阶段 {self.name} 未实现回滚逻辑", 
+            extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+        )
         # 子类可以重写此方法实现回滚逻辑
 
     def _report_progress(self, message: str, progress: int):

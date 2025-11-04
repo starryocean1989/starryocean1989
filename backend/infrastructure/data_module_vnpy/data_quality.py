@@ -438,7 +438,8 @@ class DataSensor:
                 f"📊 LoadBalancer配置: 进程={config.get('processes')}, "
                 f"协程={config.get('coroutines_per_process')}, "
                 f"瓶颈={config.get('resource_bottleneck')}, "
-                f"压力评分={config.get('pressure_score', 0)}/100"
+                f"压力评分={config.get('pressure_score', 0)}/100",
+                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
             )
             
             return config
@@ -676,7 +677,10 @@ class DataSensor:
                     result = future.result()
                     results[(symbol, interval)] = result
                 except Exception as e:
-                    logger.warning(f"⚠️ 扫描失败: {symbol}/{interval}, 错误: {e}", extra={"log_type": "SYSTEM"})
+                    logger.warning(
+                        f"⚠️ 扫描失败: {symbol}/{interval}, 错误: {e}",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    )
                     results[(symbol, interval)] = QualityScanResult(
                         symbol=symbol,
                         interval=interval,
@@ -938,7 +942,23 @@ def _scan_single_worker(symbol: str, interval: str) -> QualityScanResult:
     Returns:
         扫描结果
     """
+    # 设置子进程日志接入loghub
     try:
+        from backend.infrastructure.data_module_vnpy.data_acquisition import setup_subprocess_logger
+        worker_logger = setup_subprocess_logger(
+            worker_id=0,  # 子进程ID，这里使用0作为默认值
+            task_type="data_scan",
+            scenario="manual_data_scan"
+        )
+    except Exception:
+        worker_logger = logger
+    
+    try:
+        worker_logger.debug(
+            f"[SCAN-WORKER] 开始扫描: symbol={symbol}, interval={interval}",
+            extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+        )
+        
         # 创建存储管理器
         storage_manager = StorageManager()
         
@@ -949,9 +969,23 @@ def _scan_single_worker(symbol: str, interval: str) -> QualityScanResult:
         sensor = DataSensor()
         result = sensor._validate_dataframe(symbol, interval, df)
         
+        worker_logger.debug(
+            f"[SCAN-WORKER] 扫描完成: symbol={symbol}, interval={interval}, "
+            f"quality_level={result.quality_level.name}, completeness={result.completeness:.2f}%",
+            extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+        )
+        
         return result
     except Exception as e:
-        logger.debug(f"Worker扫描失败: {symbol}/{interval}, {e}")
+        worker_logger.debug(
+            f"[SCAN-WORKER] Worker扫描失败: {symbol}/{interval}, {e}",
+            extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+        )
+        worker_logger.error(
+            f"❌ [SCAN-WORKER] 扫描失败: {symbol}/{interval}, 错误: {e}",
+            exc_info=True,
+            extra={"log_type": "ALERT", "scenario": "manual_data_scan"}
+        )
         return QualityScanResult(
             symbol=symbol,
             interval=interval,

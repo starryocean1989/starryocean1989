@@ -324,14 +324,14 @@ class StartupOrchestrator:
 
             # 启动成功 - 输出详细的统计信息和最终状态
             stage_logger = logging.getLogger("startup.stage")
-            stage_logger.info("", extra={"log_type": "STAGE_NODE"})
-            stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE"})
-            stage_logger.info("🎉 星辰金融终端启动成功！", extra={"log_type": "STAGE_NODE"})
-            stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE"})
-            stage_logger.info("", extra={"log_type": "STAGE_NODE"})
+            stage_logger.info("", extra={"log_type": "STAGE_NODE", "scenario": "application_startup"})
+            stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE", "scenario": "application_startup"})
+            stage_logger.info("🎉 星辰金融终端启动成功！", extra={"log_type": "STAGE_NODE", "scenario": "application_startup"})
+            stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE", "scenario": "application_startup"})
+            stage_logger.info("", extra={"log_type": "STAGE_NODE", "scenario": "application_startup"})
             
             # 启动统计
-            stage_logger.info("启动统计:", extra={"log_type": "STAGE_NODE"})
+            stage_logger.info("启动统计:", extra={"log_type": "STAGE_NODE", "scenario": "application_startup"})
             total_time_ms = elapsed_ms
             total_time_s = total_time_ms / 1000
             
@@ -342,16 +342,16 @@ class StartupOrchestrator:
             backend_time = stage_results.get("backend_init", StageResult(success=True, elapsed_ms=0)).elapsed_ms
             ui_time = stage_results.get("ui_activation", StageResult(success=True, elapsed_ms=0)).elapsed_ms
             
-            stage_logger.info(f"  - 总耗时: {total_time_s:.1f}s", extra={"log_type": "STAGE_NODE"})
-            stage_logger.info(f"  - 环境准备: {env_time:.0f}ms", extra={"log_type": "STAGE_NODE"})
-            stage_logger.info(f"  - 日志系统: {logging_time:.0f}ms", extra={"log_type": "STAGE_NODE"})
-            stage_logger.info(f"  - Qt框架: {qt_time:.0f}ms", extra={"log_type": "STAGE_NODE"})
-            stage_logger.info(f"  - 后端服务: {backend_time:.0f}ms (并行)", extra={"log_type": "STAGE_NODE"})
-            stage_logger.info(f"  - UI主窗口: {ui_time:.0f}ms", extra={"log_type": "STAGE_NODE"})
-            stage_logger.info("", extra={"log_type": "STAGE_NODE"})
+            stage_logger.info(f"  - 总耗时: {total_time_s:.1f}s", extra={"log_type": "STAGE_NODE", "scenario": "application_startup"})
+            stage_logger.info(f"  - 环境准备: {env_time:.0f}ms", extra={"log_type": "STAGE_NODE", "scenario": "application_startup"})
+            stage_logger.info(f"  - 日志系统: {logging_time:.0f}ms", extra={"log_type": "STAGE_NODE", "scenario": "application_startup"})
+            stage_logger.info(f"  - Qt框架: {qt_time:.0f}ms", extra={"log_type": "STAGE_NODE", "scenario": "application_startup"})
+            stage_logger.info(f"  - 后端服务: {backend_time:.0f}ms (并行)", extra={"log_type": "STAGE_NODE", "scenario": "application_startup"})
+            stage_logger.info(f"  - UI主窗口: {ui_time:.0f}ms", extra={"log_type": "STAGE_NODE", "scenario": "application_startup"})
+            stage_logger.info("", extra={"log_type": "STAGE_NODE", "scenario": "application_startup"})
             
             # 服务状态（从ServiceManager获取）
-            stage_logger.info("服务状态:", extra={"log_type": "STAGE_NODE"})
+            stage_logger.info("服务状态:", extra={"log_type": "STAGE_NODE", "scenario": "application_startup"})
             
             # 统计已注册的服务
             service_count = 0
@@ -371,9 +371,9 @@ class StartupOrchestrator:
                 for service_key, service_name in service_names_map.items():
                     if service_manager.has_service(service_key):
                         service_count += 1
-                        stage_logger.info(f"  - {service_name}: 运行中", extra={"log_type": "STAGE_NODE"})
+                        stage_logger.info(f"  - {service_name}: 运行中", extra={"log_type": "STAGE_NODE", "scenario": "application_startup"})
                 
-                stage_logger.info(f"  - 后端服务: {service_count}个运行中", extra={"log_type": "STAGE_NODE"})
+                stage_logger.info(f"  - 后端服务: {service_count}个运行中", extra={"log_type": "STAGE_NODE", "scenario": "application_startup"})
             
             # 监控进程信息
             monitor_pid = getattr(self.context, 'monitor_process_pid', None)
@@ -381,14 +381,14 @@ class StartupOrchestrator:
                 monitor_pid = self.context.monitor_process.pid
             
             if monitor_pid:
-                stage_logger.info(f"  - 监控进程: 运行中 (PID: {monitor_pid})", extra={"log_type": "STAGE_NODE"})
-                stage_logger.info("  - native_ipc管道: 3条正常", extra={"log_type": "STAGE_NODE"})
+                stage_logger.info(f"  - 监控进程: 运行中 (PID: {monitor_pid})", extra={"log_type": "STAGE_NODE", "scenario": "application_startup"})
+                stage_logger.info("  - native_ipc管道: 3条正常", extra={"log_type": "STAGE_NODE", "scenario": "application_startup"})
             
-            stage_logger.info("", extra={"log_type": "STAGE_NODE"})
+            stage_logger.info("", extra={"log_type": "STAGE_NODE", "scenario": "application_startup"})
             
-            stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE"})
-            stage_logger.info("应用已就绪，等待用户操作...", extra={"log_type": "STAGE_NODE"})
-            stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE"})
+            stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE", "scenario": "application_startup"})
+            stage_logger.info("应用已就绪，等待用户操作...", extra={"log_type": "STAGE_NODE", "scenario": "application_startup"})
+            stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE", "scenario": "application_startup"})
             
             # 关闭日志系统
             success_msg = "启动流程完成"

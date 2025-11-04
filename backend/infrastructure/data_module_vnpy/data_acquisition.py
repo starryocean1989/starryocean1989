@@ -3658,7 +3658,10 @@ class TdxBinaryReader(BaseReader):
                 # 默认路径
                 self.tdx_root = Path("C:/new_tdx")
 
-        self.logger.info(f"TDX根目录: {self.tdx_root}")
+        self.logger.info(
+            f"TDX根目录: {self.tdx_root}",
+            extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"}
+        )
 
     def _get_file_path(self, symbol: str, data_type: str, market: str) -> Path:
         """获取数据文件路径
@@ -3924,7 +3927,10 @@ class TdxBinaryReader(BaseReader):
                         "volume": volume,
                     })
             except Exception as e:
-                self.logger.debug(f"解析日线记录失败: {e}")
+                self.logger.debug(
+                    f"解析日线记录失败: {e}",
+                    extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"}
+                )
                 continue
 
         if records:
@@ -3974,7 +3980,10 @@ class TdxBinaryReader(BaseReader):
                     "volume": volume,
                 })
             except Exception as e:
-                self.logger.debug(f"解析分钟线记录失败: {e}")
+                self.logger.debug(
+                    f"解析分钟线记录失败: {e}",
+                    extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"}
+                )
                 continue
 
         if records:
@@ -4009,10 +4018,16 @@ class TdxBinaryReader(BaseReader):
                 try:
                     progress_callback(i + 1, total, f"已处理: {symbol}")
                 except Exception as e:
-                    self.logger.warning(f"⚠️ [TdxDataReader] 进度回调执行失败: {e}", extra={"log_type": "SYSTEM"})
+                    self.logger.warning(
+                        f"⚠️ [TdxDataReader] 进度回调执行失败: {e}",
+                        extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"}
+                    )
                     pass
 
-        self.logger.info(f"批量读取完成: {len(results)}/{total}")
+        self.logger.info(
+            f"批量读取完成: {len(results)}/{total}",
+            extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"}
+        )
         return results
 
     async def process_batch_async(self, symbols: List[str], data_type: str, market: str,
