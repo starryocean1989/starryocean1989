@@ -1387,7 +1387,16 @@ class ChinaStockEngine:
         Returns:
             包含品种分类的字典
         """
+        import time
+        start_time = time.time()
+        stage_logger = logging.getLogger("startup.stage")
+        
         try:
+            stage_logger.info(
+                "📍 开始重新加载品种列表",
+                extra={"log_type": "STAGE_NODE", "scenario": "reload_symbol_list"}
+            )
+            
             # 延迟导入
             if self.symbol_loader is None:
                 from .data_acquisition import SymbolLoader
@@ -1396,13 +1405,51 @@ class ChinaStockEngine:
             # 执行重新加载
             result = self.symbol_loader.reload_and_classify()
 
+            # 统计品种数量
+            classified = result if isinstance(result, dict) else {}
+            sh_count = len(classified.get("上证A股", []))
+            sz_count = len(classified.get("深证A股", []))
+            bj_count = len(classified.get("北证A股", []))
+            t0_count = len(classified.get("T+0基金", []))
+            bond_count = len(classified.get("可转债", []))
+            total_count = sum(len(v) for v in classified.values())
+            
+            elapsed_ms = (time.time() - start_time) * 1000
+            
+            # 输出阶段成果日志
+            stage_logger.info(
+                f"✅ 品种列表加载完成 ({elapsed_ms:.0f}ms)",
+                extra={"log_type": "STAGE_NODE", "scenario": "reload_symbol_list"}
+            )
+            stage_logger.info(
+                f"  ├─ 总品种数: {total_count}",
+                extra={"log_type": "STAGE_NODE", "scenario": "reload_symbol_list"}
+            )
+            stage_logger.info(
+                f"  ├─ 上证: {sh_count} | 深证: {sz_count} | 北证: {bj_count}",
+                extra={"log_type": "STAGE_NODE", "scenario": "reload_symbol_list"}
+            )
+            stage_logger.info(
+                f"  └─ T+0基金: {t0_count} | 可转债: {bond_count}",
+                extra={"log_type": "STAGE_NODE", "scenario": "reload_symbol_list"}
+            )
+
             # 发布事件
             self.event_engine.put(Event(self.EVENT_SYMBOL_CACHE_LOADED, result))
 
             return result
 
         except Exception as e:
-            logger.error(f"✗ 重新加载品种列表失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            elapsed_ms = (time.time() - start_time) * 1000
+            logger.error(
+                f"✗ 重新加载品种列表失败: {e} ({elapsed_ms:.0f}ms)",
+                exc_info=True,
+                extra={"log_type": "ALERT", "scenario": "reload_symbol_list"}
+            )
+            stage_logger.error(
+                f"❌ 品种列表加载失败: {e}",
+                extra={"log_type": "STAGE_NODE", "scenario": "reload_symbol_list"}
+            )
             return {"success": False, "error": str(e)}
 
     def download_incremental(

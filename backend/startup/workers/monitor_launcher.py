@@ -214,15 +214,26 @@ class MonitorLauncherWorker(StartupWorker):
         )
         stage_logger.info("  └─ BandwidthMonitor ✅", extra={"log_type": "STAGE_NODE"})
 
-        # 等待监控进程就绪
+        # 等待监控进程Level 1就绪（管道就绪）
         # 正常2-3秒，设置15秒超时（已非常宽松）
-        ports_info = await self._wait_monitor_ready(max_wait=15.0)
+        ports_info = await self._wait_monitor_ready(max_wait=15.0, wait_for_level=1)
 
         stage_logger.info(
-            "✅ Level 1就绪 (管道就绪)", extra={"log_type": "STAGE_NODE"}
+            "✅ Level 1就绪 (管道就绪)", 
+            extra={"log_type": "STAGE_NODE", "scenario": "monitor_launch"}
         )
         stage_logger.info(
-            "✅ 监控进程看门狗启动", extra={"log_type": "STAGE_NODE"}
+            "✅ 监控进程看门狗启动", 
+            extra={"log_type": "STAGE_NODE", "scenario": "monitor_launch"}
+        )
+
+        # 等待监控进程Level 2就绪（功能完整）
+        # 硬件监控初始化可能需要30-60秒，设置90秒超时
+        await self._wait_monitor_ready(max_wait=90.0, wait_for_level=2)
+
+        stage_logger.info(
+            "✅ Level 2就绪 (功能完整)", 
+            extra={"log_type": "STAGE_NODE", "scenario": "monitor_launch"}
         )
 
         elapsed = time.time() - start_time
@@ -233,36 +244,59 @@ class MonitorLauncherWorker(StartupWorker):
             "elapsed": elapsed,
         }
 
-    async def _wait_monitor_ready(self, max_wait: float = 15.0) -> dict:
+    async def _wait_monitor_ready(self, max_wait: float = 15.0, wait_for_level: int = 1) -> dict:
         """等待监控进程就绪
 
         Args:
             max_wait: 最大等待时间（秒）
+            wait_for_level: 等待的就绪级别（1=管道就绪, 2=功能完整）
 
         Returns:
-            dict: 端口信息
+            dict: 端口信息（仅Level 1时返回）
         """
         signal_file = Path("logs/monitor_ready.signal")
         wait_start = time.time()
 
+        # 等待信号文件出现
         while not signal_file.exists() and (time.time() - wait_start) < max_wait:
             await asyncio.sleep(0.5)
 
         if not signal_file.exists():
             raise RuntimeError(f"监控进程就绪超时（等待 {max_wait} 秒）")
 
-        # 读取信号文件
+        # 读取信号文件并检查级别
         try:
             import json
 
-            with open(signal_file, "r", encoding="utf-8") as f:
-                signal_data = json.load(f)
-            ports_info = signal_data.get("ports", {})
+            current_level = 0
+            while (time.time() - wait_start) < max_wait:
+                with open(signal_file, "r", encoding="utf-8") as f:
+                    signal_data = json.load(f)
+                
+                current_level = signal_data.get("level", 0)
+                ports_info = signal_data.get("ports", {})
+                
+                # 如果已达到目标级别，返回
+                if current_level >= wait_for_level:
+                    return ports_info
+                
+                # 否则继续等待
+                await asyncio.sleep(0.5)
+            
+            # 超时仍未达到目标级别
+            raise RuntimeError(
+                f"监控进程Level {wait_for_level}就绪超时（等待 {max_wait} 秒，当前级别: {current_level}）"
+            )
+        except json.JSONDecodeError as e:
+            self.logger.warning(f"解析监控进程信号文件失败: {e}", extra={"log_type": "SYSTEM"})
+            if wait_for_level == 1:
+                return {}
+            raise RuntimeError(f"解析监控进程信号文件失败: {e}")
         except Exception as e:
             self.logger.warning(f"读取监控进程信号文件失败: {e}", extra={"log_type": "SYSTEM"})
-            ports_info = {}
-
-        return ports_info
+            if wait_for_level == 1:
+                return {}
+            raise
 
     def _start_watchdog(self, context: StartupContext):
         """启动看门狗线程（监控监控进程健康状态）
@@ -341,4 +375,5 @@ def cleanup_all_processes():
         pass
     except Exception:
         pass
+
 

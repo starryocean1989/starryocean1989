@@ -617,6 +617,12 @@ class TradingGatewayService(BaseService, LoggerMixin):
         Returns:
             Dict: 连接结果
         """
+        import time
+        import logging
+        
+        start_time = time.time()
+        stage_logger = logging.getLogger("task.trading_gateway_connection.stage")
+        
         try:
             self._log_operation("连接网关", name=gateway_name)
 
@@ -629,6 +635,12 @@ class TradingGatewayService(BaseService, LoggerMixin):
             gateway_info = self.gateway_instances[gateway_name]
             gateway_type = gateway_info["type"]
 
+            # 阶段节点日志（输出到Terminal）
+            stage_logger.info(
+                f"📍 交易网关连接开始: 网关={gateway_name}, 类型={gateway_type}",
+                extra={"log_type": "STAGE_NODE", "scenario": "trading_gateway_connection"},
+            )
+
             # 准备连接配置
             connect_setting = gateway_info["config"].copy()
             if password:
@@ -636,6 +648,11 @@ class TradingGatewayService(BaseService, LoggerMixin):
 
             # 检查main_engine是否可用
             if self.main_engine is None:
+                elapsed_ms = (time.time() - start_time) * 1000
+                stage_logger.error(
+                    f"❌ 交易网关连接失败: MainEngine不可用, 耗时={elapsed_ms:.0f}ms",
+                    extra={"log_type": "STAGE_NODE", "scenario": "trading_gateway_connection"},
+                )
                 return {
                     "success": False,
                     "message": "MainEngine不可用",
@@ -648,7 +665,19 @@ class TradingGatewayService(BaseService, LoggerMixin):
             # 更新状态
             gateway_info["connected"] = True
 
-            self.logger.info("网关 '%s' 连接请求已发送", gateway_name)
+            elapsed_ms = (time.time() - start_time) * 1000
+            
+            # 阶段节点日志（输出到Terminal）
+            stage_logger.info(
+                f"✅ 交易网关连接完成: 网关={gateway_name}, 类型={gateway_type}, 耗时={elapsed_ms:.0f}ms",
+                extra={"log_type": "STAGE_NODE", "scenario": "trading_gateway_connection"},
+            )
+            
+            self.logger.info(
+                "网关 '%s' 连接请求已发送",
+                gateway_name,
+                extra={"log_type": "SYSTEM", "scenario": "trading_gateway_connection"}
+            )
 
             # ✨ 发送网关状态变化事件
             self._emit_gateway_status_event(gateway_name, "connected", gateway_type)
@@ -660,6 +689,14 @@ class TradingGatewayService(BaseService, LoggerMixin):
             }
 
         except Exception as e:
+            elapsed_ms = (time.time() - start_time) * 1000
+            
+            # 阶段节点日志（输出到Terminal）
+            stage_logger.error(
+                f"❌ 交易网关连接失败: 网关={gateway_name}, 错误={str(e)}, 耗时={elapsed_ms:.0f}ms",
+                extra={"log_type": "STAGE_NODE", "scenario": "trading_gateway_connection"},
+            )
+            
             self._log_error("连接网关", e, name=gateway_name)
             return {
                 "success": False,
@@ -1114,7 +1151,19 @@ class TradingGatewayService(BaseService, LoggerMixin):
                 return precondition_check
 
             # 初始化并启动策略
+            import time
+            import logging
+            
+            strategy_start_time = time.time()
+            stage_logger = logging.getLogger("task.strategy_execution.stage")
+            
             try:
+                # 阶段节点日志（输出到Terminal）
+                stage_logger.info(
+                    f"📍 策略执行开始: 策略={strategy_name}, 网关={gateway_name}, 引擎={engine_name}",
+                    extra={"log_type": "STAGE_NODE", "scenario": "strategy_execution"},
+                )
+                
                 # 切换到交易阶段 - 日志埋点v4.0
                 try:
                     from backend.infrastructure.system_vnpy.logging_context import (
@@ -1123,33 +1172,76 @@ class TradingGatewayService(BaseService, LoggerMixin):
 
                     ctx = get_logging_hub()
                     ctx.set_stage("trading")
-                    self.logger.info("📍 切换到交易阶段，启动策略实盘交易")
+                    self.logger.info(
+                        "📍 切换到交易阶段，启动策略实盘交易",
+                        extra={"log_type": "SYSTEM", "scenario": "strategy_execution"}
+                    )
                 except ImportError:
-                    self.logger.debug("logging_context模块不可用，跳过阶段切换")
+                    self.logger.debug(
+                        "logging_context模块不可用，跳过阶段切换",
+                        extra={"log_type": "SYSTEM", "scenario": "strategy_execution"}
+                    )
 
                 # 先初始化策略
-                self.logger.info("正在初始化策略 '%s'... ", strategy_name)
+                self.logger.info(
+                    "正在初始化策略 '%s'... ",
+                    strategy_name,
+                    extra={"log_type": "SYSTEM", "scenario": "strategy_execution"}
+                )
                 strategy_engine.init_strategy(strategy_name)
-                self.logger.info("✅ 策略 '%s' 初始化完成", strategy_name)
+                self.logger.info(
+                    "✅ 策略 '%s' 初始化完成",
+                    strategy_name,
+                    extra={"log_type": "SYSTEM", "scenario": "strategy_execution"}
+                )
 
                 # 等待初始化完成（init_strategy可能是异步的）
-                import time
-
                 time.sleep(0.5)
 
                 # 启动策略
-                self.logger.info("正在启动策略 '%s'... ", strategy_name)
+                self.logger.info(
+                    "正在启动策略 '%s'... ",
+                    strategy_name,
+                    extra={"log_type": "SYSTEM", "scenario": "strategy_execution"}
+                )
                 strategy_engine.start_strategy(strategy_name)
                 logger_order.info(
                     "策略启动: 策略名=%s, 网关=%s, 引擎=%s",
                     strategy_name,
                     gateway_name,
                     engine_name,
+                    extra={"log_type": "SYSTEM", "scenario": "strategy_execution"}
                 )
-                self.logger.info("✅ 策略 '%s' 已启动", strategy_name)
+                
+                elapsed_ms = (time.time() - strategy_start_time) * 1000
+                
+                # 阶段节点日志（输出到Terminal）
+                stage_logger.info(
+                    f"✅ 策略执行完成: 策略={strategy_name}, 网关={gateway_name}, 耗时={elapsed_ms:.0f}ms",
+                    extra={"log_type": "STAGE_NODE", "scenario": "strategy_execution"},
+                )
+                
+                self.logger.info(
+                    "✅ 策略 '%s' 已启动",
+                    strategy_name,
+                    extra={"log_type": "SYSTEM", "scenario": "strategy_execution"}
+                )
 
             except Exception as e:
-                self.logger.error("启动策略失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+                elapsed_ms = (time.time() - strategy_start_time) * 1000
+                
+                # 阶段节点日志（输出到Terminal）
+                stage_logger.error(
+                    f"❌ 策略执行失败: 策略={strategy_name}, 网关={gateway_name}, 错误={str(e)}, 耗时={elapsed_ms:.0f}ms",
+                    extra={"log_type": "STAGE_NODE", "scenario": "strategy_execution"},
+                )
+                
+                self.logger.error(
+                    "启动策略失败：%s",
+                    e,
+                    exc_info=True,
+                    extra={"log_type": "ALERT", "scenario": "strategy_execution"}
+                )
                 return {
                     "success": False,
                     "message": f"启动策略失败: {str(e)}",

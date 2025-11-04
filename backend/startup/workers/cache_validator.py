@@ -63,16 +63,15 @@ class CacheValidatorWorker(StartupWorker):
                 self.logger.debug(f"[进度 {percent}%] {description}")
                 self._report_progress(description, percent)
 
-            # 注意：步骤完成日志已在_smart_cache_validation_and_sensing中输出
-            # 不需要在这里创建step_callback，避免重复输出
-            # def step_callback(step_num: int, step_name: str, step_result: dict):
-            #     """步骤完成回调函数"""
-            #     elapsed = step_result.get("elapsed", 0)
-            #     progress = step_result.get("progress", 0)
-            #     stage_logger.info(
-            #         f"✅ 步骤{step_num}完成 ({elapsed:.0f}ms) [进度: {progress}%]",
-            #         extra={"log_type": "STAGE_NODE"},
-            #     )
+            # 创建步骤完成回调函数（输出简洁的阶段成果日志）
+            def step_callback(step_num: int, step_name: str, step_result: dict):
+                """步骤完成回调函数 - 输出阶段成果到Terminal"""
+                elapsed = step_result.get("elapsed", 0)
+                progress = step_result.get("progress", 0)
+                stage_logger.info(
+                    f"✅ 步骤{step_num}完成: {step_name} ({elapsed:.0f}ms) [进度: {progress}%]",
+                    extra={"log_type": "STAGE_NODE", "scenario": "cache_validation"},
+                )
 
             # 执行8步验证流程
             # 注意：_smart_cache_validation_and_sensing是同步方法，需要在后台线程执行
@@ -83,7 +82,7 @@ class CacheValidatorWorker(StartupWorker):
                 None,
                 engine._smart_cache_validation_and_sensing,
                 progress_callback,
-                None,  # 不传递step_callback，避免重复输出
+                step_callback,  # 传递step_callback，输出阶段成果日志
             )
 
             elapsed_ms = (time.time() - start_time) * 1000

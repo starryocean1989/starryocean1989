@@ -2107,6 +2107,16 @@ class MonitoringProcessV2:
                             os.fsync(f.fileno())
 
                         logger.info("[INIT] ✓ 就绪信号已更新（Level 2: 功能完整）")
+                        
+                        # 阶段节点日志（输出到Terminal）- Level 2就绪
+                        try:
+                            stage_logger = logging.getLogger("startup.stage")
+                            stage_logger.info(
+                                "✅ Level 2就绪 (功能完整)",
+                                extra={"log_type": "STAGE_NODE", "scenario": "monitor_launch"},
+                            )
+                        except Exception:
+                            pass  # 如果无法获取stage_logger，忽略（降级处理）
                 except Exception as e:
                     logger.warning("[INIT] 更新就绪信号失败: %s", e, extra={"log_type": "SYSTEM"})
 

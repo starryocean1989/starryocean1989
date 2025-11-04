@@ -1395,8 +1395,10 @@ class MyPortfolioStrategy(StrategyTemplate):
                 def run_backtest():
                     """后台线程执行回测."""
                     import time
+                    import logging
 
                     start_time = time.time()
+                    stage_logger = logging.getLogger("task.backtest_execution.stage")
 
                     # ✅ 开始AI日志流程（实际回测执行）
                     ai_log_started_backtest = False
@@ -1410,18 +1412,30 @@ class MyPortfolioStrategy(StrategyTemplate):
                             }
                         )
                         ai_log_started_backtest = True
-                        self.logger.info(f"AI日志文件（回测执行）: {ai_log_file}")
+                        self.logger.info(
+                            f"AI日志文件（回测执行）: {ai_log_file}",
+                            extra={"log_type": "SYSTEM", "scenario": "backtest_execution"}
+                        )
                     except Exception as e:
-                        self.logger.warning(f"启动AI日志流程失败: {e}", extra={"log_type": "SYSTEM"})
+                        self.logger.warning(
+                            f"启动AI日志流程失败: {e}",
+                            extra={"log_type": "SYSTEM", "scenario": "backtest_execution"}
+                        )
 
                     # 切换到回测阶段 - 日志埋点v4.0
                     try:
                         ctx = get_logging_hub()
                         ctx.set_stage("backtest")
-                        self.logger.info("📍 切换到回测阶段")
+                        self.logger.info(
+                            "📍 切换到回测阶段",
+                            extra={"log_type": "SYSTEM", "scenario": "backtest_execution"}
+                        )
                     except Exception:
                         ctx = None
-                        self.logger.debug("logging_context模块不可用，跳过阶段切换")
+                        self.logger.debug(
+                            "logging_context模块不可用，跳过阶段切换",
+                            extra={"log_type": "SYSTEM", "scenario": "backtest_execution"}
+                        )
 
                     try:
                         task = self._backtest_tasks[task_id]
@@ -1553,12 +1567,27 @@ class MyPortfolioStrategy(StrategyTemplate):
 
                             # 更新进度：执行回测
                             task["progress"] = 50
-                            self.logger.info("[回测-%s] 执行回测...", task_id)
+                            self.logger.info(
+                                "[回测-%s] 执行回测...",
+                                task_id,
+                                extra={"log_type": "SYSTEM", "scenario": "backtest_execution"}
+                            )
 
                             # 3. 配置并执行回测
                             # 运行回测（直接调用run_backtesting方法）
                             backtest_start = time.time()
-                            self.logger.info("[回测-%s] 开始执行回测引擎...", task_id)
+                            
+                            # 阶段节点日志（输出到Terminal）
+                            stage_logger.info(
+                                f"📍 策略回测开始: 策略={strategy_file}, 品种={symbol}, 日期={start_date}~{end_date}",
+                                extra={"log_type": "STAGE_NODE", "scenario": "backtest_execution"},
+                            )
+                            
+                            self.logger.info(
+                                "[回测-%s] 开始执行回测引擎...",
+                                task_id,
+                                extra={"log_type": "SYSTEM", "scenario": "backtest_execution"}
+                            )
                             backtest_engine.run_backtesting(  # type: ignore
                                 class_name=strategy_class.__name__,
                                 vt_symbol=f"{symbol}.{exchange}",
@@ -1630,6 +1659,16 @@ class MyPortfolioStrategy(StrategyTemplate):
                             }
 
                             # 回测完成通知 - 日志埋点v4.0
+                            total_elapsed_ms = (time.time() - start_time) * 1000
+                            
+                            # 阶段节点日志（输出到Terminal）
+                            stage_logger.info(
+                                f"✅ 策略回测完成: 策略={strategy_file}, 收益率={total_return*100:.2f}%, "
+                                f"夏普比率={sharpe_ratio:.2f}, 最大回撤={max_drawdown*100:.2f}%, "
+                                f"总交易次数={total_trades}, 耗时={total_elapsed_ms:.0f}ms",
+                                extra={"log_type": "STAGE_NODE", "scenario": "backtest_execution"},
+                            )
+                            
                             self.logger.info(
                                 "回测完成: 策略=%s, 收益率=%.2f%%, 夏普比率=%.2f, 最大回撤=%.2f%%, 总交易次数=%d",
                                 strategy_file,
@@ -1637,6 +1676,7 @@ class MyPortfolioStrategy(StrategyTemplate):
                                 sharpe_ratio,
                                 max_drawdown * 100,
                                 total_trades,
+                                extra={"log_type": "SYSTEM", "scenario": "backtest_execution"}
                             )
 
                             # 更新数据库（使用统一database）
@@ -1704,8 +1744,19 @@ class MyPortfolioStrategy(StrategyTemplate):
                                 )
 
                         except ImportError as e:
+                            total_elapsed_ms = (time.time() - start_time) * 1000
+                            
+                            # 阶段节点日志（输出到Terminal）
+                            stage_logger.error(
+                                f"❌ 策略回测失败: 策略={strategy_file}, 错误=vnpy_ctabacktester包未安装, 耗时={total_elapsed_ms:.0f}ms",
+                                extra={"log_type": "STAGE_NODE", "scenario": "backtest_execution"},
+                            )
+                            
                             self.logger.warning(
-                                "[回测-%s] vnpy_ctabacktester未安装：%s", task_id, e
+                                "[回测-%s] vnpy_ctabacktester未安装：%s",
+                                task_id,
+                                e,
+                                extra={"log_type": "ALERT", "scenario": "backtest_execution"}
                             )
                             task["status"] = "failed"
                             task["progress"] = 0
@@ -1729,10 +1780,23 @@ class MyPortfolioStrategy(StrategyTemplate):
 
                     except Exception as e:
                         total_duration = (time.time() - start_time) * 1000
+                        
+                        # 阶段节点日志（输出到Terminal）
+                        stage_logger.error(
+                            f"❌ 策略回测失败: 策略={strategy_file}, 错误={str(e)}, 耗时={total_duration:.0f}ms",
+                            extra={"log_type": "STAGE_NODE", "scenario": "backtest_execution"},
+                        )
+                        
                         self.log_performance(
                             "回测执行", total_duration, False, {"task_id": task_id, "error": str(e)}
                         )
-                        logger_alert.error("[回测-%s] 失败：%s", task_id, e, exc_info=True, extra={"log_type": "ALERT"})
+                        logger_alert.error(
+                            "[回测-%s] 失败：%s",
+                            task_id,
+                            e,
+                            exc_info=True,
+                            extra={"log_type": "ALERT", "scenario": "backtest_execution"}
+                        )
                         task["status"] = "failed"
                         task["progress"] = 0
                         task["result"] = {

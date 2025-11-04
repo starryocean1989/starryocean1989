@@ -6906,13 +6906,8 @@ class SystemManager(BaseWidget, LoggerMixin):
                             )
                             
                             # 执行测速逻辑
+                            # 注意：实际完成日志（含结果）在_update_bandwidth_result_success/error中记录
                             _run_test_inner()
-                            
-                            # 阶段节点日志（输出到Terminal）
-                            stage_logger.info(
-                                "✅ 手动测速完成",
-                                extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
-                            )
                     else:
                         # 如果ai_log_process不可用，直接执行
                         _run_test_inner()
@@ -7141,10 +7136,18 @@ class SystemManager(BaseWidget, LoggerMixin):
     def _update_bandwidth_result_success(self, result: Dict[str, Any]):
         """更新完整带宽测试结果（成功）."""
         from datetime import datetime
+        import logging
 
         download_mbps = result.get("download_mbps", 0)
         upload_mbps = result.get("upload_mbps", 0)
         ping_ms = result.get("ping_ms", 0)
+
+        # 阶段节点日志（输出到Terminal）- 包含测试结果
+        stage_logger = logging.getLogger("task.manual_speedtest.stage")
+        stage_logger.info(
+            f"✅ 手动测速完成: 下载={download_mbps:.2f}Mbps, 上传={upload_mbps:.2f}Mbps, 延迟={ping_ms:.2f}ms",
+            extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
+        )
 
         self.bandwidth_download_label.setText(f"{download_mbps:.2f} Mbps")
         self.bandwidth_download_label.setStyleSheet("color: #0F0; font-weight: bold;")
@@ -7162,6 +7165,15 @@ class SystemManager(BaseWidget, LoggerMixin):
 
     def _update_bandwidth_result_error(self, error_msg: str):
         """更新完整带宽测试结果（失败）."""
+        import logging
+
+        # 阶段节点日志（输出到Terminal）- 错误信息
+        stage_logger = logging.getLogger("task.manual_speedtest.stage")
+        stage_logger.error(
+            f"❌ 手动测速失败: {error_msg}",
+            extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
+        )
+
         self.bandwidth_download_label.setText(error_msg)
         self.bandwidth_download_label.setStyleSheet("color: #F00;")
         self.bandwidth_upload_label.setText("--")

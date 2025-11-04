@@ -2509,6 +2509,12 @@ class MultiProcessStockFetcher:
         Returns:
             下载结果统计
         """
+        import time
+        import logging
+        
+        start_time = time.time()
+        stage_logger = logging.getLogger("task.data_download.stage")
+        
         # 1. 状态检查
         if not self.state_machine.can_start():
             raise RuntimeError(f"无法开始下载，当前状态: {self.state_machine.state.name}")
@@ -2522,11 +2528,19 @@ class MultiProcessStockFetcher:
             start_date = start_date or date(2010, 1, 1)
             end_date = end_date or date.today()
 
+            # 阶段节点日志（输出到Terminal）
+            stage_logger.info(
+                f"📍 数据下载开始: 品种数={len(symbols)}, 周期={intervals}, "
+                f"日期范围={start_date} ~ {end_date}",
+                extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+            )
+            
             logger.info(
                 f"🚀 开始增量K线下载: "
                 f"品种数={len(symbols)}, 周期={intervals}, "
                 f"日期范围={start_date} ~ {end_date}, "
-                f"进程数={max_workers}, 协程数={coroutines_per_worker}"
+                f"进程数={max_workers}, 协程数={coroutines_per_worker}",
+                extra={"log_type": "SYSTEM", "scenario": "data_download"}
             )
 
             # 4. 获取负载均衡配置
@@ -2571,13 +2585,40 @@ class MultiProcessStockFetcher:
             # 10. 转换到COMPLETED状态
             self.state_machine.transition_to(DownloadState.COMPLETED, "下载完成")
 
-            logger.info(f"✅ 增量K线下载完成: {results}")
+            elapsed_ms = (time.time() - start_time) * 1000
+            completed = results.get("completed", 0)
+            failed = results.get("failed", 0)
+            total_bars = results.get("total_bars", 0)
+            
+            # 阶段节点日志（输出到Terminal）
+            stage_logger.info(
+                f"✅ 数据下载完成: 耗时={elapsed_ms:.0f}ms, 成功={completed}, 失败={failed}, 总K线数={total_bars}",
+                extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+            )
+            
+            logger.info(
+                f"✅ 增量K线下载完成: {results}",
+                extra={"log_type": "SYSTEM", "scenario": "data_download"}
+            )
             return results
 
         except Exception as e:
             # 转换到FAILED状态
             self.state_machine.transition_to(DownloadState.FAILED, f"下载失败: {e}")
-            logger.error(f"❌ 增量K线下载失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            
+            elapsed_ms = (time.time() - start_time) * 1000
+            
+            # 阶段节点日志（输出到Terminal）
+            stage_logger.error(
+                f"❌ 数据下载失败: {e}, 耗时={elapsed_ms:.0f}ms",
+                extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+            )
+            
+            logger.error(
+                f"❌ 增量K线下载失败: {e}",
+                exc_info=True,
+                extra={"log_type": "ALERT", "scenario": "data_download"}
+            )
             raise
 
     def _prepare_tasks(
