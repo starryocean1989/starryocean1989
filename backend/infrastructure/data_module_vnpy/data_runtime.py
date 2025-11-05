@@ -25,7 +25,7 @@ import time
 from datetime import datetime, date, timedelta
 from enum import Enum, auto
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, cast
 
 import pandas as pd
 
@@ -99,12 +99,12 @@ class UnifiedDataManager:
         self._ready = True
         self._latest_contract_snapshot: List[Dict[str, Any]] = []
         self._last_query_diagnostics: Dict[str, Any] = {}
-        
+
         # 检查离线模式（如果通过ChinaStockEngine初始化）
         self.offline_mode = False
-        if hasattr(event_engine, 'is_offline_mode'):
+        if event_engine and hasattr(event_engine, 'is_offline_mode'):
             self.offline_mode = event_engine.is_offline_mode()
-        
+
         if self.offline_mode:
             logger.warning("⚠️ UnifiedDataManager以离线模式初始化")
             logger.info("离线模式: 仅本地存储层可用")
@@ -132,28 +132,28 @@ class UnifiedDataManager:
     def get_all_contracts(self) -> List[Dict[str, Any]]:
         """获取所有合约信息（兼容 VnPy 接口）"""
         try:
-            china_stock_engine = self._resolve_china_stock_engine()
-            if china_stock_engine and getattr(china_stock_engine, "symbol_loader", None):
-                symbols = china_stock_engine.symbol_loader.extract_all_codes()
-                if symbols:
-                    contracts: List[Dict[str, Any]] = []
-                    for symbol in symbols:
-                        contracts.append(
-                            {
-                                "symbol": symbol,
-                                "exchange": "SSE",
-                                "name": f"股票{symbol}",
-                                "product": "EQUITY",
-                                "size": 1,
-                                "pricetick": 0.01,
-                                "min_volume": 1,
-                                "max_volume": None,
-                                "margin_rate": 0.1,
-                                "gateway_name": "china_stock",
-                            }
-                        )
-                    self._latest_contract_snapshot = contracts
-                    return contracts
+            # 直接使用 SymbolLoader 获取品种代码
+            symbol_loader = SymbolLoader(self.event_engine)
+            symbols = symbol_loader.extract_all_codes()
+            if symbols:
+                contracts: List[Dict[str, Any]] = []
+                for symbol in symbols:
+                    contracts.append(
+                        {
+                            "symbol": symbol,
+                            "exchange": "SSE",
+                            "name": f"股票{symbol}",
+                            "product": "EQUITY",
+                            "size": 1,
+                            "pricetick": 0.01,
+                            "min_volume": 1,
+                            "max_volume": None,
+                            "margin_rate": 0.1,
+                            "gateway_name": "china_stock",
+                        }
+                    )
+                self._latest_contract_snapshot = contracts
+                return contracts
 
             logger.warning("⚠️ 无法获取合约列表，返回空列表")
             return []
@@ -166,17 +166,31 @@ class UnifiedDataManager:
         self,
         symbol: str,
         interval: str = "1d",
-        start_date: str = None,
-        end_date: str = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
         **kwargs,
     ) -> List[Dict]:
         """加载K线数据（兼容 VnPy 接口）"""
         try:
+            # 转换日期字符串为date对象
+            start_date_obj = None
+            end_date_obj = None
+            if start_date:
+                try:
+                    start_date_obj = date.fromisoformat(start_date)
+                except ValueError:
+                    logger.warning(f"无效的开始日期格式: {start_date}")
+            if end_date:
+                try:
+                    end_date_obj = date.fromisoformat(end_date)
+                except ValueError:
+                    logger.warning(f"无效的结束日期格式: {end_date}")
+
             df = self.get_kline_dataframe(
                 symbol=symbol,
                 interval=interval,
-                start_date=start_date,
-                end_date=end_date,
+                start_date=start_date_obj,
+                end_date=end_date_obj,
                 use_preload=kwargs.get("use_preload", True),
                 realtime_fallback=kwargs.get("realtime_fallback", True),
             )
@@ -192,13 +206,13 @@ class UnifiedDataManager:
                         "exchange": "SSE",
                         "interval": interval,
                         "datetime": idx,
-                        "volume": float(row.get("volume", 0)),
-                        "turnover": float(row.get("amount", 0)),
-                        "open_price": float(row.get("open", 0)),
-                        "high_price": float(row.get("high", 0)),
-                        "low_price": float(row.get("low", 0)),
-                        "close_price": float(row.get("close", 0)),
-                        "open_interest": float(row.get("open_interest", 0)),
+                        "volume": float(row.get("volume") or 0),
+                        "turnover": float(row.get("amount") or 0),
+                        "open_price": float(row.get("open") or 0),
+                        "high_price": float(row.get("high") or 0),
+                        "low_price": float(row.get("low") or 0),
+                        "close_price": float(row.get("close") or 0),
+                        "open_interest": float(row.get("open_interest") or 0),
                         "gateway_name": "china_stock",
                     }
                 )
@@ -287,7 +301,7 @@ class UnifiedDataManager:
         use_preload: bool = True,
     ) -> Optional[pd.DataFrame]:
         """获取K线数据（兼容方法，等同于 get_kline_dataframe）.
-        
+
         Args:
             symbol: 品种代码
             interval: 周期（如"1d", "5m"等）
@@ -295,7 +309,7 @@ class UnifiedDataManager:
             end_date: 结束日期
             check_gaps: 是否检查断点（暂未实现，保留兼容性）
             use_preload: 是否使用预加载缓存
-            
+
         Returns:
             DataFrame或None
         """
@@ -332,7 +346,7 @@ class UnifiedDataManager:
                 logger.debug("预加载缓存读取失败: %s/%s, %s", symbol, interval, exc)
 
         try:
-            df = self.storage_manager.load_kline(symbol, interval)
+            df = self.storage_manager.load_data(symbol, interval)
             if df is not None and not df.empty:
                 self._stats["storage_hits"] += 1
                 return self._filter_date_range(df, start_date, end_date)
@@ -358,20 +372,20 @@ class UnifiedDataManager:
         if df is None or df.empty:
             return df
 
-        filtered = df
+        filtered = df.copy()  # 确保返回DataFrame类型
         if start_date:
             filtered = filtered[filtered.index >= pd.Timestamp(start_date)]
         if end_date:
             filtered = filtered[filtered.index <= pd.Timestamp(end_date)]
-        return filtered
+        return filtered if isinstance(filtered, pd.DataFrame) else df
 
-    def get_stats(self) -> Dict[str, int]:
+    def get_stats(self) -> Dict[str, Any]:
         """获取查询统计
 
         Returns:
             统计信息字典
         """
-        stats = self._stats.copy()
+        stats = cast(Dict[str, Any], dict(self._stats))  # 转换为普通dict以允许Any类型
         total_hits = (
             stats["cache_hits"]
             + stats["storage_hits"]
@@ -379,9 +393,9 @@ class UnifiedDataManager:
             + stats["realtime_hits"]
         )
         if stats["total_queries"] > 0:
-            stats["hit_rate"] = total_hits / stats["total_queries"] * 100
+            stats["hit_rate"] = float(total_hits / stats["total_queries"] * 100)  # type: ignore
         else:
-            stats["hit_rate"] = 0.0
+            stats["hit_rate"] = 0.0  # type: ignore
         return stats
 
 
@@ -390,7 +404,7 @@ class UnifiedDataManager:
 # ==============================================================================
 
 
-class TdxDataSource(BaseGateway if VNPY_AVAILABLE else object):
+class TdxDataSource(BaseGateway if VNPY_AVAILABLE else object):  # type: ignore
     """TDX数据源
 
     轮询转推送，符合VNPy Gateway标准：
@@ -421,11 +435,11 @@ class TdxDataSource(BaseGateway if VNPY_AVAILABLE else object):
         # 轮询控制
         self._polling = False
         self._poll_thread = None
-        self._poll_interval = self.config_manager.get_config("tdx.poll_interval", 1.0)
+        self._poll_interval = self.config_manager.get("tdx.poll_interval", 1.0)
 
         logger.info(f"✅ TDX数据源已初始化，轮询间隔: {self._poll_interval}秒")
 
-    def connect(self, setting: dict = None):
+    def connect(self, setting: Optional[Dict[str, Any]] = None):
         """连接TDX数据源
 
         Args:
@@ -439,7 +453,7 @@ class TdxDataSource(BaseGateway if VNPY_AVAILABLE else object):
         logger.info("🔌 关闭TDX数据源...")
         self.stop_polling()
 
-    def subscribe(self, req: 'SubscribeRequest'):
+    def subscribe(self, req: 'SubscribeRequest'):  # type: ignore
         """订阅行情
 
         Args:
@@ -531,7 +545,7 @@ class VirtualDataSource:
 
         logger.info("✅ 虚拟数据源已初始化")
 
-    def connect(self, setting: dict = None):
+    def connect(self, setting: Optional[Dict[str, Any]] = None):
         """连接虚拟数据源（向后兼容方法）
 
         Args:
@@ -587,7 +601,7 @@ class VirtualDataSource:
         logger.info(f"📥 加载回放数据: {symbol}/{interval}")
 
         # 从存储加载
-        df = self.storage_manager.load_kline(symbol, interval)
+        df = self.storage_manager.load_data(symbol, interval)
 
         if df is None or df.empty:
             logger.warning(f"⚠️ 无可用数据: {symbol}/{interval}")
@@ -599,7 +613,12 @@ class VirtualDataSource:
         if end_date:
             df = df[df.index <= pd.Timestamp(end_date)]
 
-        self._replay_data = df
+        # 确保是DataFrame类型
+        if isinstance(df, pd.DataFrame):
+            self._replay_data = cast(pd.DataFrame, df)
+        else:
+            self._replay_data = None
+            logger.warning("⚠️ 过滤后的数据不是DataFrame类型，已重置为None")
         self._current_index = 0
 
         logger.info(f"✅ 加载完成: {len(df)}条数据")
@@ -647,7 +666,7 @@ class VirtualDataSource:
         """回放循环"""
         logger.info("🔄 回放循环启动")
 
-        while self._playing and self._current_index < len(self._replay_data):
+        while self._playing and self._replay_data is not None and self._current_index < len(self._replay_data):
             if self._paused:
                 time.sleep(0.1)
                 continue

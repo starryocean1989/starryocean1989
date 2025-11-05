@@ -1,0 +1,1476 @@
+{
+  "total_servers": 10,
+  "tested_servers": 10,
+  "total_elapsed_seconds": 263.1594657897949,
+  "avg_max_connections": 14.5,
+  "max_connections_distribution": {
+    "19": 1,
+    "3": 1,
+    "2": 1,
+    "20": 6,
+    "1": 1
+  },
+  "test_time": "2025-11-05T19:02:10.664714",
+  "results": [
+    {
+      "name": "广州双线主站3",
+      "ip": "139.159.239.163",
+      "port": 7709,
+      "max_connections": 19,
+      "test_details": [
+        {
+          "connection_count": 1,
+          "success_count": 1,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 294.8477268218994,
+          "total_elapsed_ms": 294.8477268218994,
+          "errors": []
+        },
+        {
+          "connection_count": 2,
+          "success_count": 2,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 277.0235538482666,
+          "total_elapsed_ms": 306.14495277404785,
+          "errors": []
+        },
+        {
+          "connection_count": 3,
+          "success_count": 3,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 274.7827370961507,
+          "total_elapsed_ms": 317.66510009765625,
+          "errors": []
+        },
+        {
+          "connection_count": 4,
+          "success_count": 4,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 278.30564975738525,
+          "total_elapsed_ms": 290.90332984924316,
+          "errors": []
+        },
+        {
+          "connection_count": 5,
+          "success_count": 5,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 284.9419593811035,
+          "total_elapsed_ms": 303.24697494506836,
+          "errors": []
+        },
+        {
+          "connection_count": 6,
+          "success_count": 6,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 327.61526107788086,
+          "total_elapsed_ms": 523.8795280456543,
+          "errors": []
+        },
+        {
+          "connection_count": 7,
+          "success_count": 7,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 282.23071779523576,
+          "total_elapsed_ms": 319.44942474365234,
+          "errors": []
+        },
+        {
+          "connection_count": 8,
+          "success_count": 8,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 279.7697186470032,
+          "total_elapsed_ms": 293.05434226989746,
+          "errors": []
+        },
+        {
+          "connection_count": 9,
+          "success_count": 8,
+          "fail_count": 1,
+          "success_rate": 88.88888888888889,
+          "avg_elapsed_ms": 287.05894947052,
+          "total_elapsed_ms": 10243.754386901855,
+          "errors": [
+            "连接4: 连接或请求超时"
+          ]
+        },
+        {
+          "connection_count": 10,
+          "success_count": 10,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 269.4810152053833,
+          "total_elapsed_ms": 314.58568572998047,
+          "errors": []
+        },
+        {
+          "connection_count": 11,
+          "success_count": 11,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 288.9665040102872,
+          "total_elapsed_ms": 325.7417678833008,
+          "errors": []
+        },
+        {
+          "connection_count": 12,
+          "success_count": 12,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 286.88542048136395,
+          "total_elapsed_ms": 321.4085102081299,
+          "errors": []
+        },
+        {
+          "connection_count": 13,
+          "success_count": 13,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 289.0205566699688,
+          "total_elapsed_ms": 327.24976539611816,
+          "errors": []
+        },
+        {
+          "connection_count": 14,
+          "success_count": 14,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 297.3543746130807,
+          "total_elapsed_ms": 326.63750648498535,
+          "errors": []
+        },
+        {
+          "connection_count": 15,
+          "success_count": 15,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 298.19021224975586,
+          "total_elapsed_ms": 320.6937313079834,
+          "errors": []
+        },
+        {
+          "connection_count": 16,
+          "success_count": 16,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 274.071604013443,
+          "total_elapsed_ms": 305.2828311920166,
+          "errors": []
+        },
+        {
+          "connection_count": 17,
+          "success_count": 15,
+          "fail_count": 2,
+          "success_rate": 88.23529411764706,
+          "avg_elapsed_ms": 290.58159192403156,
+          "total_elapsed_ms": 10233.908653259277,
+          "errors": [
+            "连接4: 连接或请求超时",
+            "连接6: 连接或请求超时"
+          ]
+        },
+        {
+          "connection_count": 18,
+          "success_count": 16,
+          "fail_count": 2,
+          "success_rate": 88.88888888888889,
+          "avg_elapsed_ms": 287.6252681016922,
+          "total_elapsed_ms": 10261.483669281006,
+          "errors": [
+            "连接3: 连接或请求超时",
+            "连接13: 连接或请求超时"
+          ]
+        },
+        {
+          "connection_count": 19,
+          "success_count": 19,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 297.3561161442807,
+          "total_elapsed_ms": 330.7909965515137,
+          "errors": []
+        },
+        {
+          "connection_count": 20,
+          "success_count": 19,
+          "fail_count": 1,
+          "success_rate": 95.0,
+          "avg_elapsed_ms": 284.45600208483245,
+          "total_elapsed_ms": 10258.39900970459,
+          "errors": [
+            "连接16: 连接或请求超时"
+          ]
+        }
+      ],
+      "test_time": "2025-11-05T18:57:47.505248"
+    },
+    {
+      "name": "中原",
+      "ip": "175.6.5.144",
+      "port": 7709,
+      "max_connections": 3,
+      "test_details": [
+        {
+          "connection_count": 1,
+          "success_count": 1,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 1415.259838104248,
+          "total_elapsed_ms": 1415.259838104248,
+          "errors": []
+        },
+        {
+          "connection_count": 2,
+          "success_count": 2,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 1076.384425163269,
+          "total_elapsed_ms": 1272.9616165161133,
+          "errors": []
+        },
+        {
+          "connection_count": 3,
+          "success_count": 3,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 2383.5548559824624,
+          "total_elapsed_ms": 3454.9427032470703,
+          "errors": []
+        },
+        {
+          "connection_count": 4,
+          "success_count": 2,
+          "fail_count": 2,
+          "success_rate": 50.0,
+          "avg_elapsed_ms": 2086.06219291687,
+          "total_elapsed_ms": 5009.5534324646,
+          "errors": [
+            "连接0: 连接或请求超时",
+            "连接3: 连接或请求超时"
+          ]
+        }
+      ],
+      "test_time": "2025-11-05T18:58:45.883909"
+    },
+    {
+      "name": "中原",
+      "ip": "1.192.125.2",
+      "port": 7709,
+      "max_connections": 2,
+      "test_details": [
+        {
+          "connection_count": 1,
+          "success_count": 1,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 186.66458129882812,
+          "total_elapsed_ms": 186.66458129882812,
+          "errors": []
+        },
+        {
+          "connection_count": 2,
+          "success_count": 2,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 179.15189266204834,
+          "total_elapsed_ms": 179.65269088745117,
+          "errors": []
+        },
+        {
+          "connection_count": 3,
+          "success_count": 2,
+          "fail_count": 1,
+          "success_rate": 66.66666666666666,
+          "avg_elapsed_ms": 211.2255096435547,
+          "total_elapsed_ms": 10159.82174873352,
+          "errors": [
+            "连接0: 连接或请求超时"
+          ]
+        }
+      ],
+      "test_time": "2025-11-05T18:59:00.573233"
+    },
+    {
+      "name": "北京双线主站5",
+      "ip": "120.46.186.223",
+      "port": 7709,
+      "max_connections": 20,
+      "test_details": [
+        {
+          "connection_count": 1,
+          "success_count": 1,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 166.6862964630127,
+          "total_elapsed_ms": 166.6862964630127,
+          "errors": []
+        },
+        {
+          "connection_count": 2,
+          "success_count": 2,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 147.94647693634033,
+          "total_elapsed_ms": 160.95757484436035,
+          "errors": []
+        },
+        {
+          "connection_count": 3,
+          "success_count": 3,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 141.42465591430664,
+          "total_elapsed_ms": 144.61040496826172,
+          "errors": []
+        },
+        {
+          "connection_count": 4,
+          "success_count": 4,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 149.69402551651,
+          "total_elapsed_ms": 160.1121425628662,
+          "errors": []
+        },
+        {
+          "connection_count": 5,
+          "success_count": 5,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 163.30342292785645,
+          "total_elapsed_ms": 175.3060817718506,
+          "errors": []
+        },
+        {
+          "connection_count": 6,
+          "success_count": 6,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 158.42910607655844,
+          "total_elapsed_ms": 168.11108589172363,
+          "errors": []
+        },
+        {
+          "connection_count": 7,
+          "success_count": 7,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 148.97983414786202,
+          "total_elapsed_ms": 166.17560386657715,
+          "errors": []
+        },
+        {
+          "connection_count": 8,
+          "success_count": 8,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 153.56338024139404,
+          "total_elapsed_ms": 163.15984725952148,
+          "errors": []
+        },
+        {
+          "connection_count": 9,
+          "success_count": 9,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 149.02708265516492,
+          "total_elapsed_ms": 158.53500366210938,
+          "errors": []
+        },
+        {
+          "connection_count": 10,
+          "success_count": 10,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 155.48715591430664,
+          "total_elapsed_ms": 174.06582832336426,
+          "errors": []
+        },
+        {
+          "connection_count": 11,
+          "success_count": 11,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 151.1278585954146,
+          "total_elapsed_ms": 167.80805587768555,
+          "errors": []
+        },
+        {
+          "connection_count": 12,
+          "success_count": 12,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 150.38031339645386,
+          "total_elapsed_ms": 173.9652156829834,
+          "errors": []
+        },
+        {
+          "connection_count": 13,
+          "success_count": 13,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 157.99856185913086,
+          "total_elapsed_ms": 170.76373100280762,
+          "errors": []
+        },
+        {
+          "connection_count": 14,
+          "success_count": 14,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 149.39590862819128,
+          "total_elapsed_ms": 167.13643074035645,
+          "errors": []
+        },
+        {
+          "connection_count": 15,
+          "success_count": 15,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 155.0900936126709,
+          "total_elapsed_ms": 167.85359382629395,
+          "errors": []
+        },
+        {
+          "connection_count": 16,
+          "success_count": 16,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 154.50608730316162,
+          "total_elapsed_ms": 175.96769332885742,
+          "errors": []
+        },
+        {
+          "connection_count": 17,
+          "success_count": 17,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 158.82200353285845,
+          "total_elapsed_ms": 175.68635940551758,
+          "errors": []
+        },
+        {
+          "connection_count": 18,
+          "success_count": 18,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 155.47255674997965,
+          "total_elapsed_ms": 200.20413398742676,
+          "errors": []
+        },
+        {
+          "connection_count": 19,
+          "success_count": 19,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 154.87649566248842,
+          "total_elapsed_ms": 170.9127426147461,
+          "errors": []
+        },
+        {
+          "connection_count": 20,
+          "success_count": 20,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 183.40452909469604,
+          "total_elapsed_ms": 408.67137908935547,
+          "errors": []
+        }
+      ],
+      "test_time": "2025-11-05T18:59:14.128584"
+    },
+    {
+      "name": "上海电信主站Z1",
+      "ip": "180.153.18.170",
+      "port": 7709,
+      "max_connections": 20,
+      "test_details": [
+        {
+          "connection_count": 1,
+          "success_count": 1,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 197.91316986083984,
+          "total_elapsed_ms": 197.91316986083984,
+          "errors": []
+        },
+        {
+          "connection_count": 2,
+          "success_count": 2,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 391.24035835266113,
+          "total_elapsed_ms": 584.7470760345459,
+          "errors": []
+        },
+        {
+          "connection_count": 3,
+          "success_count": 3,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 215.13024965922037,
+          "total_elapsed_ms": 228.8367748260498,
+          "errors": []
+        },
+        {
+          "connection_count": 4,
+          "success_count": 4,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 379.40603494644165,
+          "total_elapsed_ms": 800.7049560546875,
+          "errors": []
+        },
+        {
+          "connection_count": 5,
+          "success_count": 5,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 440.9159183502197,
+          "total_elapsed_ms": 567.375659942627,
+          "errors": []
+        },
+        {
+          "connection_count": 6,
+          "success_count": 6,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 405.04956245422363,
+          "total_elapsed_ms": 1210.052251815796,
+          "errors": []
+        },
+        {
+          "connection_count": 7,
+          "success_count": 7,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 309.53689983912875,
+          "total_elapsed_ms": 509.30142402648926,
+          "errors": []
+        },
+        {
+          "connection_count": 8,
+          "success_count": 8,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 411.32521629333496,
+          "total_elapsed_ms": 1196.4576244354248,
+          "errors": []
+        },
+        {
+          "connection_count": 9,
+          "success_count": 9,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 382.2123739454481,
+          "total_elapsed_ms": 1272.3686695098877,
+          "errors": []
+        },
+        {
+          "connection_count": 10,
+          "success_count": 10,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 395.89431285858154,
+          "total_elapsed_ms": 629.7578811645508,
+          "errors": []
+        },
+        {
+          "connection_count": 11,
+          "success_count": 11,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 385.2980353615501,
+          "total_elapsed_ms": 1213.0966186523438,
+          "errors": []
+        },
+        {
+          "connection_count": 12,
+          "success_count": 12,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 668.392022450765,
+          "total_elapsed_ms": 3750.141143798828,
+          "errors": []
+        },
+        {
+          "connection_count": 13,
+          "success_count": 13,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 492.40998121408313,
+          "total_elapsed_ms": 1241.844892501831,
+          "errors": []
+        },
+        {
+          "connection_count": 14,
+          "success_count": 14,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 313.79726954868863,
+          "total_elapsed_ms": 489.0749454498291,
+          "errors": []
+        },
+        {
+          "connection_count": 15,
+          "success_count": 15,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 387.6405080159505,
+          "total_elapsed_ms": 1244.7149753570557,
+          "errors": []
+        },
+        {
+          "connection_count": 16,
+          "success_count": 16,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 478.9407551288605,
+          "total_elapsed_ms": 1244.476556777954,
+          "errors": []
+        },
+        {
+          "connection_count": 17,
+          "success_count": 17,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 303.41463930466597,
+          "total_elapsed_ms": 760.9179019927979,
+          "errors": []
+        },
+        {
+          "connection_count": 18,
+          "success_count": 18,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 436.746425098843,
+          "total_elapsed_ms": 1231.1933040618896,
+          "errors": []
+        },
+        {
+          "connection_count": 19,
+          "success_count": 19,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 547.2509986475894,
+          "total_elapsed_ms": 1517.9052352905273,
+          "errors": []
+        },
+        {
+          "connection_count": 20,
+          "success_count": 20,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 346.3018298149109,
+          "total_elapsed_ms": 1242.6979541778564,
+          "errors": []
+        }
+      ],
+      "test_time": "2025-11-05T18:59:29.900506"
+    },
+    {
+      "name": "山西",
+      "ip": "221.204.19.194",
+      "port": 7709,
+      "max_connections": 1,
+      "test_details": [
+        {
+          "connection_count": 1,
+          "success_count": 1,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 658.6198806762695,
+          "total_elapsed_ms": 658.6198806762695,
+          "errors": []
+        },
+        {
+          "connection_count": 2,
+          "success_count": 1,
+          "fail_count": 1,
+          "success_rate": 50.0,
+          "avg_elapsed_ms": 199.5241641998291,
+          "total_elapsed_ms": 5009.865760803223,
+          "errors": [
+            "连接0: 连接或请求超时"
+          ]
+        }
+      ],
+      "test_time": "2025-11-05T19:00:03.139353"
+    },
+    {
+      "name": "中信建投",
+      "ip": "183.201.253.75",
+      "port": 7709,
+      "max_connections": 20,
+      "test_details": [
+        {
+          "connection_count": 1,
+          "success_count": 1,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 175.16613006591797,
+          "total_elapsed_ms": 175.16613006591797,
+          "errors": []
+        },
+        {
+          "connection_count": 2,
+          "success_count": 2,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 143.69630813598633,
+          "total_elapsed_ms": 174.80039596557617,
+          "errors": []
+        },
+        {
+          "connection_count": 3,
+          "success_count": 3,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 168.5756047566732,
+          "total_elapsed_ms": 184.60631370544434,
+          "errors": []
+        },
+        {
+          "connection_count": 4,
+          "success_count": 4,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 157.70041942596436,
+          "total_elapsed_ms": 187.30878829956055,
+          "errors": []
+        },
+        {
+          "connection_count": 5,
+          "success_count": 5,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 150.960111618042,
+          "total_elapsed_ms": 167.21510887145996,
+          "errors": []
+        },
+        {
+          "connection_count": 6,
+          "success_count": 6,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 144.75631713867188,
+          "total_elapsed_ms": 168.99347305297852,
+          "errors": []
+        },
+        {
+          "connection_count": 7,
+          "success_count": 7,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 142.49845913478308,
+          "total_elapsed_ms": 169.1126823425293,
+          "errors": []
+        },
+        {
+          "connection_count": 8,
+          "success_count": 8,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 180.10231852531433,
+          "total_elapsed_ms": 189.2070770263672,
+          "errors": []
+        },
+        {
+          "connection_count": 9,
+          "success_count": 8,
+          "fail_count": 1,
+          "success_rate": 88.88888888888889,
+          "avg_elapsed_ms": 145.74310183525085,
+          "total_elapsed_ms": 10122.336149215698,
+          "errors": [
+            "连接0: 连接或请求超时"
+          ]
+        },
+        {
+          "connection_count": 10,
+          "success_count": 10,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 157.88676738739014,
+          "total_elapsed_ms": 172.59955406188965,
+          "errors": []
+        },
+        {
+          "connection_count": 11,
+          "success_count": 11,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 167.51009767705744,
+          "total_elapsed_ms": 188.7991428375244,
+          "errors": []
+        },
+        {
+          "connection_count": 12,
+          "success_count": 12,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 141.72414938608804,
+          "total_elapsed_ms": 166.25356674194336,
+          "errors": []
+        },
+        {
+          "connection_count": 13,
+          "success_count": 13,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 152.80839113088754,
+          "total_elapsed_ms": 185.4104995727539,
+          "errors": []
+        },
+        {
+          "connection_count": 14,
+          "success_count": 13,
+          "fail_count": 1,
+          "success_rate": 92.85714285714286,
+          "avg_elapsed_ms": 156.34468885568472,
+          "total_elapsed_ms": 5008.46791267395,
+          "errors": [
+            "连接9: 连接或请求超时"
+          ]
+        },
+        {
+          "connection_count": 15,
+          "success_count": 15,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 155.39771715799967,
+          "total_elapsed_ms": 191.25914573669434,
+          "errors": []
+        },
+        {
+          "connection_count": 16,
+          "success_count": 16,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 154.22537922859192,
+          "total_elapsed_ms": 191.6828155517578,
+          "errors": []
+        },
+        {
+          "connection_count": 17,
+          "success_count": 17,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 158.6574666640338,
+          "total_elapsed_ms": 193.2370662689209,
+          "errors": []
+        },
+        {
+          "connection_count": 18,
+          "success_count": 18,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 163.73418437110053,
+          "total_elapsed_ms": 192.31653213500977,
+          "errors": []
+        },
+        {
+          "connection_count": 19,
+          "success_count": 19,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 159.23551509254858,
+          "total_elapsed_ms": 191.18309020996094,
+          "errors": []
+        },
+        {
+          "connection_count": 20,
+          "success_count": 20,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 158.41147899627686,
+          "total_elapsed_ms": 188.25650215148926,
+          "errors": []
+        }
+      ],
+      "test_time": "2025-11-05T19:00:11.328643"
+    },
+    {
+      "name": "深圳双线主站1",
+      "ip": "110.41.147.114",
+      "port": 7709,
+      "max_connections": 20,
+      "test_details": [
+        {
+          "connection_count": 1,
+          "success_count": 1,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 310.0090026855469,
+          "total_elapsed_ms": 310.0090026855469,
+          "errors": []
+        },
+        {
+          "connection_count": 2,
+          "success_count": 2,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 299.7673749923706,
+          "total_elapsed_ms": 311.54489517211914,
+          "errors": []
+        },
+        {
+          "connection_count": 3,
+          "success_count": 3,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 281.8006674448649,
+          "total_elapsed_ms": 305.2182197570801,
+          "errors": []
+        },
+        {
+          "connection_count": 4,
+          "success_count": 4,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 287.2024178504944,
+          "total_elapsed_ms": 313.42387199401855,
+          "errors": []
+        },
+        {
+          "connection_count": 5,
+          "success_count": 5,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 296.2715148925781,
+          "total_elapsed_ms": 310.3318214416504,
+          "errors": []
+        },
+        {
+          "connection_count": 6,
+          "success_count": 6,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 279.77784474690753,
+          "total_elapsed_ms": 300.9347915649414,
+          "errors": []
+        },
+        {
+          "connection_count": 7,
+          "success_count": 7,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 267.75438444955006,
+          "total_elapsed_ms": 299.5336055755615,
+          "errors": []
+        },
+        {
+          "connection_count": 8,
+          "success_count": 8,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 287.61374950408936,
+          "total_elapsed_ms": 312.3817443847656,
+          "errors": []
+        },
+        {
+          "connection_count": 9,
+          "success_count": 9,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 287.24344571431476,
+          "total_elapsed_ms": 314.1498565673828,
+          "errors": []
+        },
+        {
+          "connection_count": 10,
+          "success_count": 10,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 291.12889766693115,
+          "total_elapsed_ms": 310.4867935180664,
+          "errors": []
+        },
+        {
+          "connection_count": 11,
+          "success_count": 11,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 280.8873003179377,
+          "total_elapsed_ms": 313.10129165649414,
+          "errors": []
+        },
+        {
+          "connection_count": 12,
+          "success_count": 12,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 292.5352652867635,
+          "total_elapsed_ms": 308.01868438720703,
+          "errors": []
+        },
+        {
+          "connection_count": 13,
+          "success_count": 13,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 277.69140096811145,
+          "total_elapsed_ms": 320.65749168395996,
+          "errors": []
+        },
+        {
+          "connection_count": 14,
+          "success_count": 14,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 284.0756688799177,
+          "total_elapsed_ms": 321.69651985168457,
+          "errors": []
+        },
+        {
+          "connection_count": 15,
+          "success_count": 15,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 284.02719497680664,
+          "total_elapsed_ms": 325.00481605529785,
+          "errors": []
+        },
+        {
+          "connection_count": 16,
+          "success_count": 15,
+          "fail_count": 1,
+          "success_rate": 93.75,
+          "avg_elapsed_ms": 278.46646308898926,
+          "total_elapsed_ms": 10221.769332885742,
+          "errors": [
+            "连接12: 连接或请求超时"
+          ]
+        },
+        {
+          "connection_count": 17,
+          "success_count": 17,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 283.8951419381534,
+          "total_elapsed_ms": 312.15453147888184,
+          "errors": []
+        },
+        {
+          "connection_count": 18,
+          "success_count": 18,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 294.145147005717,
+          "total_elapsed_ms": 332.7183723449707,
+          "errors": []
+        },
+        {
+          "connection_count": 19,
+          "success_count": 18,
+          "fail_count": 1,
+          "success_rate": 94.73684210526315,
+          "avg_elapsed_ms": 289.43767812516955,
+          "total_elapsed_ms": 10240.841627120972,
+          "errors": [
+            "连接3: 连接或请求超时"
+          ]
+        },
+        {
+          "connection_count": 20,
+          "success_count": 20,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 280.26360273361206,
+          "total_elapsed_ms": 311.63525581359863,
+          "errors": []
+        }
+      ],
+      "test_time": "2025-11-05T19:00:41.940008"
+    },
+    {
+      "name": "国泰",
+      "ip": "109.244.73.85",
+      "port": 7709,
+      "max_connections": 20,
+      "test_details": [
+        {
+          "connection_count": 1,
+          "success_count": 1,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 295.5303192138672,
+          "total_elapsed_ms": 296.0999011993408,
+          "errors": []
+        },
+        {
+          "connection_count": 2,
+          "success_count": 2,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 312.78908252716064,
+          "total_elapsed_ms": 325.56676864624023,
+          "errors": []
+        },
+        {
+          "connection_count": 3,
+          "success_count": 3,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 330.8298587799072,
+          "total_elapsed_ms": 361.60755157470703,
+          "errors": []
+        },
+        {
+          "connection_count": 4,
+          "success_count": 4,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 313.60095739364624,
+          "total_elapsed_ms": 340.09289741516113,
+          "errors": []
+        },
+        {
+          "connection_count": 5,
+          "success_count": 5,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 317.0820713043213,
+          "total_elapsed_ms": 361.22846603393555,
+          "errors": []
+        },
+        {
+          "connection_count": 6,
+          "success_count": 6,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 326.1769612630208,
+          "total_elapsed_ms": 336.69543266296387,
+          "errors": []
+        },
+        {
+          "connection_count": 7,
+          "success_count": 7,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 315.1904514857701,
+          "total_elapsed_ms": 347.87917137145996,
+          "errors": []
+        },
+        {
+          "connection_count": 8,
+          "success_count": 8,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 324.57828521728516,
+          "total_elapsed_ms": 347.8548526763916,
+          "errors": []
+        },
+        {
+          "connection_count": 9,
+          "success_count": 9,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 330.13810051812067,
+          "total_elapsed_ms": 365.8332824707031,
+          "errors": []
+        },
+        {
+          "connection_count": 10,
+          "success_count": 10,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 324.1011381149292,
+          "total_elapsed_ms": 355.8485507965088,
+          "errors": []
+        },
+        {
+          "connection_count": 11,
+          "success_count": 11,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 321.59005511890757,
+          "total_elapsed_ms": 401.348352432251,
+          "errors": []
+        },
+        {
+          "connection_count": 12,
+          "success_count": 12,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 322.1049706141154,
+          "total_elapsed_ms": 368.516206741333,
+          "errors": []
+        },
+        {
+          "connection_count": 13,
+          "success_count": 13,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 317.14399044330304,
+          "total_elapsed_ms": 371.20795249938965,
+          "errors": []
+        },
+        {
+          "connection_count": 14,
+          "success_count": 14,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 316.49112701416016,
+          "total_elapsed_ms": 358.5519790649414,
+          "errors": []
+        },
+        {
+          "connection_count": 15,
+          "success_count": 15,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 323.28057289123535,
+          "total_elapsed_ms": 372.8809356689453,
+          "errors": []
+        },
+        {
+          "connection_count": 16,
+          "success_count": 16,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 333.1052213907242,
+          "total_elapsed_ms": 383.4197521209717,
+          "errors": []
+        },
+        {
+          "connection_count": 17,
+          "success_count": 17,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 326.21055490830366,
+          "total_elapsed_ms": 383.59999656677246,
+          "errors": []
+        },
+        {
+          "connection_count": 18,
+          "success_count": 18,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 327.0779980553521,
+          "total_elapsed_ms": 375.4096031188965,
+          "errors": []
+        },
+        {
+          "connection_count": 19,
+          "success_count": 19,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 322.95927248503034,
+          "total_elapsed_ms": 361.82165145874023,
+          "errors": []
+        },
+        {
+          "connection_count": 20,
+          "success_count": 20,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 333.7440013885498,
+          "total_elapsed_ms": 380.83553314208984,
+          "errors": []
+        }
+      ],
+      "test_time": "2025-11-05T19:01:20.216989"
+    },
+    {
+      "name": "广州双线主站6",
+      "ip": "116.205.171.132",
+      "port": 7709,
+      "max_connections": 20,
+      "test_details": [
+        {
+          "connection_count": 1,
+          "success_count": 1,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 304.5320510864258,
+          "total_elapsed_ms": 304.5320510864258,
+          "errors": []
+        },
+        {
+          "connection_count": 2,
+          "success_count": 2,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 265.44368267059326,
+          "total_elapsed_ms": 295.26805877685547,
+          "errors": []
+        },
+        {
+          "connection_count": 3,
+          "success_count": 3,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 280.1538308461507,
+          "total_elapsed_ms": 299.328088760376,
+          "errors": []
+        },
+        {
+          "connection_count": 4,
+          "success_count": 4,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 289.59405422210693,
+          "total_elapsed_ms": 311.80620193481445,
+          "errors": []
+        },
+        {
+          "connection_count": 5,
+          "success_count": 5,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 288.8827323913574,
+          "total_elapsed_ms": 308.8114261627197,
+          "errors": []
+        },
+        {
+          "connection_count": 6,
+          "success_count": 6,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 289.7767623265584,
+          "total_elapsed_ms": 308.70604515075684,
+          "errors": []
+        },
+        {
+          "connection_count": 7,
+          "success_count": 6,
+          "fail_count": 1,
+          "success_rate": 85.71428571428571,
+          "avg_elapsed_ms": 278.92669041951496,
+          "total_elapsed_ms": 10234.835147857666,
+          "errors": [
+            "连接3: 连接或请求超时"
+          ]
+        },
+        {
+          "connection_count": 8,
+          "success_count": 8,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 284.07806158065796,
+          "total_elapsed_ms": 314.27812576293945,
+          "errors": []
+        },
+        {
+          "connection_count": 9,
+          "success_count": 9,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 284.8123444451226,
+          "total_elapsed_ms": 314.6665096282959,
+          "errors": []
+        },
+        {
+          "connection_count": 10,
+          "success_count": 10,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 278.741979598999,
+          "total_elapsed_ms": 325.3459930419922,
+          "errors": []
+        },
+        {
+          "connection_count": 11,
+          "success_count": 11,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 286.2725041129372,
+          "total_elapsed_ms": 318.1803226470947,
+          "errors": []
+        },
+        {
+          "connection_count": 12,
+          "success_count": 12,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 291.8917139371236,
+          "total_elapsed_ms": 326.2169361114502,
+          "errors": []
+        },
+        {
+          "connection_count": 13,
+          "success_count": 13,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 292.55050879258374,
+          "total_elapsed_ms": 324.5408535003662,
+          "errors": []
+        },
+        {
+          "connection_count": 14,
+          "success_count": 14,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 288.90836238861084,
+          "total_elapsed_ms": 324.2354393005371,
+          "errors": []
+        },
+        {
+          "connection_count": 15,
+          "success_count": 15,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 288.72192700703937,
+          "total_elapsed_ms": 316.85614585876465,
+          "errors": []
+        },
+        {
+          "connection_count": 16,
+          "success_count": 16,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 279.3036848306656,
+          "total_elapsed_ms": 306.29968643188477,
+          "errors": []
+        },
+        {
+          "connection_count": 17,
+          "success_count": 17,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 285.91046613805435,
+          "total_elapsed_ms": 311.7496967315674,
+          "errors": []
+        },
+        {
+          "connection_count": 18,
+          "success_count": 18,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 291.53802659776477,
+          "total_elapsed_ms": 318.84765625,
+          "errors": []
+        },
+        {
+          "connection_count": 19,
+          "success_count": 18,
+          "fail_count": 1,
+          "success_rate": 94.73684210526315,
+          "avg_elapsed_ms": 288.52770063612195,
+          "total_elapsed_ms": 5015.969038009644,
+          "errors": [
+            "连接4: 连接或请求超时"
+          ]
+        },
+        {
+          "connection_count": 20,
+          "success_count": 20,
+          "fail_count": 0,
+          "success_rate": 100.0,
+          "avg_elapsed_ms": 282.3708176612854,
+          "total_elapsed_ms": 320.0654983520508,
+          "errors": []
+        }
+      ],
+      "test_time": "2025-11-05T19:01:39.577677"
+    }
+  ]
+}

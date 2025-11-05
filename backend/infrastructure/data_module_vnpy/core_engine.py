@@ -488,63 +488,157 @@ class DailyCacheManager:
         Returns:
             (数据, 缓存日期, 是否有效)
         """
+        import time
+        import os
+        from datetime import datetime
+        
+        file_read_start_time = time.time()
+        cache_file_path = str(cache_file.absolute())
+        
         try:
+            # 🔍 详细埋点：记录文件路径和存在性检查
+            logger.debug(
+                f"[DailyCacheManager] load_with_validation开始: 文件路径={cache_file_path}",
+                extra={"log_type": "SYSTEM"}
+            )
+            
             if not cache_file.exists():
-                logger.debug(f"缓存文件不存在: {cache_file.name}")
+                logger.debug(
+                    f"[DailyCacheManager] 缓存文件不存在: 文件路径={cache_file_path}",
+                    extra={"log_type": "SYSTEM"}
+                )
                 return None, "", False
 
+            # 🔍 详细埋点：记录文件元信息
+            file_stat_start_time = time.time()
+            try:
+                file_stat = os.stat(cache_file)
+                file_mtime = datetime.fromtimestamp(file_stat.st_mtime)
+                file_size = file_stat.st_size
+                file_stat_elapsed = (time.time() - file_stat_start_time) * 1000
+                logger.debug(
+                    f"[DailyCacheManager] 文件元信息获取完成: 文件路径={cache_file_path}, "
+                    f"修改时间={file_mtime.isoformat()}, 文件大小={file_size}字节, 耗时={file_stat_elapsed:.1f}ms",
+                    extra={"log_type": "SYSTEM"}
+                )
+            except Exception as stat_e:
+                logger.debug(
+                    f"[DailyCacheManager] 文件元信息获取失败: 文件路径={cache_file_path}, 错误={stat_e}",
+                    extra={"log_type": "SYSTEM"}
+                )
+                file_mtime = None
+                file_size = 0
+
             # 读取文件
+            file_read_start_inner = time.time()
             with open(cache_file, 'r', encoding='utf-8') as f:
                 cache_obj = json.load(f)
+            file_read_elapsed = (time.time() - file_read_start_inner) * 1000
+            logger.debug(
+                f"[DailyCacheManager] 文件读取完成: 文件路径={cache_file_path}, "
+                f"JSON解析耗时={file_read_elapsed:.1f}ms",
+                extra={"log_type": "SYSTEM"}
+            )
 
             # 提取元数据
+            meta_extract_start_time = time.time()
             meta = cache_obj.get("_meta", {})
             cache_date_str = meta.get("cache_date", "")
             data = cache_obj.get("data")
+            meta_extract_elapsed = (time.time() - meta_extract_start_time) * 1000
+            
+            # 🔍 详细埋点：记录读取到的元数据内容
+            meta_info = {
+                "cache_date": cache_date_str,
+                "version": meta.get("version", "未知"),
+                "timestamp": meta.get("timestamp", "未知")
+            }
+            logger.debug(
+                f"[DailyCacheManager] 元数据提取完成: 文件路径={cache_file_path}, "
+                f"元数据={meta_info}, 数据是否存在={data is not None}, 耗时={meta_extract_elapsed:.1f}ms",
+                extra={"log_type": "SYSTEM"}
+            )
 
             # 验证日期
             if not cache_date_str:
-                logger.warning(f"⚠️ 缓存缺少日期字段: {cache_file.name}", extra={"log_type": "SYSTEM"})
+                logger.warning(
+                    f"⚠️ 缓存缺少日期字段: 文件路径={cache_file_path}",
+                    extra={"log_type": "SYSTEM"}
+                )
                 return data, "", False
 
             # 获取真实日期
+            date_validation_start_time = time.time()
             real_date = NetworkTimeSync.get_instance().get_real_date()
             cache_date = date.fromisoformat(cache_date_str)
             
             # 🔧 修复：添加系统日期作为对比，便于调试
             system_date = date.today()
+            date_validation_elapsed = (time.time() - date_validation_start_time) * 1000
 
             # 检查是否当日缓存
             is_valid = (cache_date == real_date)
             
             # 🔧 修复：添加详细的调试日志（WARNING级别，确保Terminal可见）
+            # 同时输出到详细日志（DEBUG级别）
             logger.warning(
                 f"📅 日期验证: {cache_file.name} "
                 f"(缓存日期: {cache_date}, 真实日期: {real_date}, 系统日期: {system_date}, "
                 f"is_valid: {is_valid})",
                 extra={"log_type": "SYSTEM"}
             )
+            
+            # 🔍 详细埋点：记录完整的验证信息（只输出到日志文件）
+            logger.debug(
+                f"[DailyCacheManager] 日期验证完成: 文件路径={cache_file_path}, "
+                f"缓存日期={cache_date}, 真实日期={real_date}, 系统日期={system_date}, "
+                f"是否有效={is_valid}, 文件修改时间={file_mtime.isoformat() if file_mtime else '未知'}, "
+                f"验证耗时={date_validation_elapsed:.1f}ms",
+                extra={"log_type": "SYSTEM"}
+            )
 
             if is_valid:
-                logger.debug(f"✓ 缓存有效: {cache_file.name} (日期: {cache_date})")
+                logger.debug(
+                    f"[DailyCacheManager] 缓存有效: 文件路径={cache_file_path}, 日期={cache_date}",
+                    extra={"log_type": "SYSTEM"}
+                )
             else:
                 # 🔧 修复：详细记录日期不匹配的原因
                 logger.debug(
-                    f"⚠️ 缓存已过期: {cache_file.name} "
-                    f"(缓存日期: {cache_date}, 真实日期: {real_date}, 系统日期: {system_date})"
+                    f"[DailyCacheManager] 缓存已过期: 文件路径={cache_file_path}, "
+                    f"缓存日期={cache_date}, 真实日期={real_date}, 系统日期={system_date}",
+                    extra={"log_type": "SYSTEM"}
                 )
                 # 🔧 修复：如果缓存日期等于系统日期，说明网络时间同步可能有问题，使用系统日期
                 if cache_date == system_date:
                     logger.warning(
-                        f"⚠️ 缓存日期与系统日期一致，但与网络时间不一致，使用系统日期验证",
+                        f"⚠️ 缓存日期与系统日期一致，但与网络时间不一致，使用系统日期验证: "
+                        f"文件路径={cache_file_path}",
                         extra={"log_type": "SYSTEM"}
                     )
                     is_valid = True
 
+            file_read_total_elapsed = (time.time() - file_read_start_time) * 1000
+            logger.debug(
+                f"[DailyCacheManager] load_with_validation完成: 文件路径={cache_file_path}, "
+                f"总耗时={file_read_total_elapsed:.1f}ms, 是否有效={is_valid}",
+                extra={"log_type": "SYSTEM"}
+            )
+
             return data, cache_date_str, is_valid
 
         except Exception as e:
-            logger.error(f"✗ 缓存加载失败: {cache_file.name}, 错误: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            file_read_total_elapsed = (time.time() - file_read_start_time) * 1000
+            logger.debug(
+                f"[DailyCacheManager] load_with_validation异常: 文件路径={cache_file_path}, "
+                f"总耗时={file_read_total_elapsed:.1f}ms, 错误={e}",
+                extra={"log_type": "SYSTEM"}
+            )
+            logger.error(
+                f"✗ 缓存加载失败: 文件路径={cache_file_path}, 错误: {e}",
+                exc_info=True,
+                extra={"log_type": "SYSTEM"}
+            )
             return None, "", False
 
     @staticmethod
@@ -1336,6 +1430,9 @@ class ChinaStockEngine:
         self.unified_data_manager = None
         self.load_balancer = None
 
+        # 共享连接池（用于8步缓存验证流程）
+        self._shared_retry_pool = None  # RetryConnectionPool实例
+
         # 状态管理
         self._is_ready = False
         self._initialization_lock = threading.Lock()
@@ -1718,6 +1815,17 @@ class ChinaStockEngine:
         hub.set_stage("data_engine")
         
         stage_logger = logging.getLogger("startup.stage")
+        scenario = "application_startup"
+        
+        # 🔍 详细埋点：记录流程开始
+        logger.debug(
+            f"[数据引擎初始化] smart_cache_validation_and_sensing流程开始: 开始时间={start_time:.3f}",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+        logger.info(
+            "[数据引擎初始化] ℹ️ 开始执行智能缓存验证与感知流程（8步）",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
 
         # 辅助函数
         def _progress(desc: str, pct: int):
@@ -1735,7 +1843,12 @@ class ChinaStockEngine:
             
             # ========== 步骤1: 服务器池缓存验证与测速 ==========
             step1_start_time = time.time()
-            stage_logger.info("┌─ 步骤1: 服务器池验证与测速 ─┐", extra={"log_type": "STAGE_NODE"})
+            cumulative_elapsed = (step1_start_time - start_time) * 1000
+            logger.debug(
+                f"[步骤1] 服务器池验证与测速开始: 累计耗时={cumulative_elapsed:.1f}ms",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            stage_logger.info("┌─ 步骤1: 服务器池验证与测速 ─┐", extra={"log_type": "STAGE_NODE", "scenario": scenario})
             _progress("步骤1/8: 验证服务器池缓存并测速...", 5)
             step1_result = self._validate_server_pool_and_test_speed(stage_logger)
             _step_done(1, "服务器池验证与测速", step1_result)
@@ -1744,11 +1857,18 @@ class ChinaStockEngine:
             if step1_result.get("offline_mode"):
                 offline_mode = True
                 offline_reason = step1_result.get("offline_reason", "未知原因")
-                stage_logger.critical("│ 🔥 所有TDX服务器不可用，系统无法获取数据", extra={"log_type": "STAGE_NODE"})
-                logger.critical(f"🔥 所有TDX服务器不可用，系统无法获取数据: {offline_reason}", extra={"log_type": "ALERT"})
-                stage_logger.warning("│ ⚠️ 进入离线降级模式", extra={"log_type": "STAGE_NODE"})
-                stage_logger.info("└─────────────────────────────┘", extra={"log_type": "STAGE_NODE"})
-                stage_logger.info("⏭️ 跳过步骤2-7，直接执行步骤8", extra={"log_type": "STAGE_NODE"})
+                logger.debug(
+                    f"[步骤1] 检测到离线模式: {offline_reason}",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                logger.critical(
+                    f"🔥 所有TDX服务器不可用，系统无法获取数据: {offline_reason}",
+                    extra={"log_type": "ALERT", "scenario": scenario}
+                )
+                stage_logger.critical("│ 🔥 所有TDX服务器不可用，系统无法获取数据", extra={"log_type": "STAGE_NODE", "scenario": scenario})
+                stage_logger.warning("│ ⚠️ 进入离线降级模式", extra={"log_type": "STAGE_NODE", "scenario": scenario})
+                stage_logger.info("└─────────────────────────────┘", extra={"log_type": "STAGE_NODE", "scenario": scenario})
+                stage_logger.info("⏭️ 跳过步骤2-7，直接执行步骤8", extra={"log_type": "STAGE_NODE", "scenario": scenario})
                 # 设置离线模式
                 self.set_offline_mode(True, str(offline_reason))
                 # 跳转到步骤8
@@ -1759,41 +1879,88 @@ class ChinaStockEngine:
                 # 初始化LoadBalancer（在步骤框内）
                 _progress("步骤1/8: 初始化LoadBalancer...", 10)
                 if self.load_balancer is None:
+                    loadbalancer_init_start_time = time.time()
                     from .load_balancer import LoadBalancer
                     self.load_balancer = LoadBalancer(self.config_manager)
-                stage_logger.info("│ ✅ LoadBalancer初始化完成", extra={"log_type": "STAGE_NODE"})
-                stage_logger.info("│   - 任务分类体系: NETWORK_DOWNLOAD, LOCAL_SCAN, LOCAL_READ", extra={"log_type": "STAGE_NODE"})
-                stage_logger.info("│   - 队列压力监控: 正常/高/临界三级", extra={"log_type": "STAGE_NODE"})
-                stage_logger.info("└─────────────────────────────┘", extra={"log_type": "STAGE_NODE"})
+                    loadbalancer_init_elapsed = (time.time() - loadbalancer_init_start_time) * 1000
+                    logger.debug(
+                        f"[步骤1] LoadBalancer初始化完成: 耗时={loadbalancer_init_elapsed:.1f}ms",
+                        extra={"log_type": "SYSTEM", "scenario": scenario}
+                    )
+                else:
+                    logger.debug(
+                        f"[步骤1] LoadBalancer已存在，跳过初始化",
+                        extra={"log_type": "SYSTEM", "scenario": scenario}
+                    )
+                stage_logger.info("│ ✅ LoadBalancer初始化完成", extra={"log_type": "STAGE_NODE", "scenario": scenario})
+                stage_logger.info("│   - 任务分类体系: NETWORK_DOWNLOAD, LOCAL_SCAN, LOCAL_READ", extra={"log_type": "STAGE_NODE", "scenario": scenario})
+                stage_logger.info("│   - 队列压力监控: 正常/高/临界三级", extra={"log_type": "STAGE_NODE", "scenario": scenario})
+                stage_logger.info("└─────────────────────────────┘", extra={"log_type": "STAGE_NODE", "scenario": scenario})
             
             step1_time = (time.time() - step1_start_time) * 1000
-            stage_logger.info(f"✅ 步骤1完成 ({step1_time:.0f}ms) [进度: 12%]", extra={"log_type": "STAGE_NODE"})
+            cumulative_elapsed = (time.time() - start_time) * 1000
+            logger.debug(
+                f"[步骤1] 服务器池验证与测速完成: 步骤耗时={step1_time:.1f}ms, 累计耗时={cumulative_elapsed:.1f}ms",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            stage_logger.info(f"✅ 步骤1完成 ({step1_time:.0f}ms) [进度: 12%]", extra={"log_type": "STAGE_NODE", "scenario": scenario})
 
             if not goto_step_8:
                 # ========== 步骤2: 获取当前日期(网络时间) ==========
+                step1_end_time = time.time()
                 step2_start_time = time.time()
-                stage_logger.info("┌─ 步骤2: 获取当前日期（网络时间）─┐", extra={"log_type": "STAGE_NODE"})
+                step2_interval = (step2_start_time - step1_end_time) * 1000
+                cumulative_elapsed = (step2_start_time - start_time) * 1000
+                logger.debug(
+                    f"[步骤2] 获取当前日期开始: 步骤间隔={step2_interval:.1f}ms, 累计耗时={cumulative_elapsed:.1f}ms",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                stage_logger.info("┌─ 步骤2: 获取当前日期（网络时间）─┐", extra={"log_type": "STAGE_NODE", "scenario": scenario})
                 _progress("步骤2/8: 获取当前日期(网络时间)...", 15)
                 step2_result = self._get_current_date(stage_logger)
                 _step_done(2, "获取当前日期", step2_result)
                 current_date = step2_result.get("current_date")
                 
                 step2_time = (time.time() - step2_start_time) * 1000
-                stage_logger.info(f"✅ 步骤2完成 ({step2_time:.0f}ms) [进度: 25%]", extra={"log_type": "STAGE_NODE"})
+                cumulative_elapsed = (time.time() - start_time) * 1000
+                logger.debug(
+                    f"[步骤2] 获取当前日期完成: 步骤耗时={step2_time:.1f}ms, 累计耗时={cumulative_elapsed:.1f}ms",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                stage_logger.info(f"✅ 步骤2完成 ({step2_time:.0f}ms) [进度: 25%]", extra={"log_type": "STAGE_NODE", "scenario": scenario})
 
                 # ========== 步骤3: 验证交易日历缓存 ==========
+                step2_end_time = time.time()
                 step3_start_time = time.time()
-                stage_logger.info("┌─ 步骤3: 验证交易日历缓存 ─┐", extra={"log_type": "STAGE_NODE"})
+                step3_interval = (step3_start_time - step2_end_time) * 1000
+                cumulative_elapsed = (step3_start_time - start_time) * 1000
+                logger.debug(
+                    f"[步骤3] 验证交易日历缓存开始: 步骤间隔={step3_interval:.1f}ms, 累计耗时={cumulative_elapsed:.1f}ms",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                stage_logger.info("┌─ 步骤3: 验证交易日历缓存 ─┐", extra={"log_type": "STAGE_NODE", "scenario": scenario})
                 _progress("步骤3/8: 验证交易日历缓存...", 25)
                 step3_result = self._validate_trade_calendar_cache(current_date, stage_logger)
                 _step_done(3, "验证交易日历缓存", step3_result)
                 
                 step3_time = (time.time() - step3_start_time) * 1000
-                stage_logger.info(f"✅ 步骤3完成 ({step3_time:.0f}ms) [进度: 37%]", extra={"log_type": "STAGE_NODE"})
+                cumulative_elapsed = (time.time() - start_time) * 1000
+                logger.debug(
+                    f"[步骤3] 验证交易日历缓存完成: 步骤耗时={step3_time:.1f}ms, 累计耗时={cumulative_elapsed:.1f}ms",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                stage_logger.info(f"✅ 步骤3完成 ({step3_time:.0f}ms) [进度: 37%]", extra={"log_type": "STAGE_NODE", "scenario": scenario})
 
                 # ========== 步骤4: 验证品种列表缓存 ==========
+                step3_end_time = time.time()
                 step4_start_time = time.time()
-                stage_logger.info("┌─ 步骤4: 验证品种列表缓存 ─┐", extra={"log_type": "STAGE_NODE"})
+                step4_interval = (step4_start_time - step3_end_time) * 1000
+                cumulative_elapsed = (step4_start_time - start_time) * 1000
+                logger.debug(
+                    f"[步骤4] 验证品种列表缓存开始: 步骤间隔={step4_interval:.1f}ms, 累计耗时={cumulative_elapsed:.1f}ms",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                stage_logger.info("┌─ 步骤4: 验证品种列表缓存 ─┐", extra={"log_type": "STAGE_NODE", "scenario": scenario})
                 _progress("步骤4/8: 验证品种列表缓存...", 35)
                 step4_result = self._validate_symbol_list_cache(current_date, stage_logger)
                 _step_done(4, "验证品种列表缓存", step4_result)
@@ -1804,8 +1971,8 @@ class ChinaStockEngine:
                     if self.symbol_loader is None:
                         from .data_acquisition import SymbolLoader
                         self.symbol_loader = SymbolLoader(self.event_engine)
-                    # 同步版本的reload
-                    self.symbol_loader.reload_and_classify()
+                    # 使用共享连接池重新加载（传递共享连接池）
+                    self.symbol_loader.reload_and_classify(shared_retry_pool=self._shared_retry_pool)
                     stage_logger.info("│ ✅ 品种列表已重新加载", extra={"log_type": "STAGE_NODE"})
                     
                     # 获取并显示分类统计
@@ -1847,54 +2014,124 @@ class ChinaStockEngine:
                         pass
                 
                 step4_time = (time.time() - step4_start_time) * 1000
-                stage_logger.info(f"✅ 步骤4完成 ({step4_time:.0f}ms) [进度: 50%]", extra={"log_type": "STAGE_NODE"})
+                cumulative_elapsed = (time.time() - start_time) * 1000
+                logger.debug(
+                    f"[步骤4] 验证品种列表缓存完成: 步骤耗时={step4_time:.1f}ms, 累计耗时={cumulative_elapsed:.1f}ms",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                stage_logger.info(f"✅ 步骤4完成 ({step4_time:.0f}ms) [进度: 50%]", extra={"log_type": "STAGE_NODE", "scenario": scenario})
 
                 # ========== 步骤5: 验证IPO日期缓存 ==========
+                step4_end_time = time.time()
                 step5_start_time = time.time()
-                stage_logger.info("┌─ 步骤5: 验证IPO日期缓存 ─┐", extra={"log_type": "STAGE_NODE"})
+                step5_interval = (step5_start_time - step4_end_time) * 1000
+                cumulative_elapsed = (step5_start_time - start_time) * 1000
+                logger.debug(
+                    f"[步骤5] 验证IPO日期缓存开始: 步骤间隔={step5_interval:.1f}ms, 累计耗时={cumulative_elapsed:.1f}ms",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                stage_logger.info("┌─ 步骤5: 验证IPO日期缓存 ─┐", extra={"log_type": "STAGE_NODE", "scenario": scenario})
                 _progress("步骤5/8: 验证IPO日期缓存...", 50)
                 step5_result = self._validate_ipo_cache(current_date, stage_logger)
                 _step_done(5, "验证IPO日期缓存", step5_result)
                 
                 step5_time = (time.time() - step5_start_time) * 1000
-                stage_logger.info(f"✅ 步骤5完成 ({step5_time:.0f}ms) [进度: 62%]", extra={"log_type": "STAGE_NODE"})
+                cumulative_elapsed = (time.time() - start_time) * 1000
+                logger.debug(
+                    f"[步骤5] 验证IPO日期缓存完成: 步骤耗时={step5_time:.1f}ms, 累计耗时={cumulative_elapsed:.1f}ms",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                stage_logger.info(f"✅ 步骤5完成 ({step5_time:.0f}ms) [进度: 62%]", extra={"log_type": "STAGE_NODE", "scenario": scenario})
 
                 # ========== 步骤6: 更新本地数据索引 ==========
+                step5_end_time = time.time()
                 step6_start_time = time.time()
-                stage_logger.info("┌─ 步骤6: 更新本地数据索引 ─┐", extra={"log_type": "STAGE_NODE"})
+                step6_interval = (step6_start_time - step5_end_time) * 1000
+                cumulative_elapsed = (step6_start_time - start_time) * 1000
+                logger.debug(
+                    f"[步骤6] 更新本地数据索引开始: 步骤间隔={step6_interval:.1f}ms, 累计耗时={cumulative_elapsed:.1f}ms",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                stage_logger.info("┌─ 步骤6: 更新本地数据索引 ─┐", extra={"log_type": "STAGE_NODE", "scenario": scenario})
                 _progress("步骤6/8: 更新本地数据索引...", 65)
                 step6_result = self._update_local_data_index(stage_logger)
                 _step_done(6, "更新本地数据索引", step6_result)
                 
                 step6_time = (time.time() - step6_start_time) * 1000
-                stage_logger.info(f"✅ 步骤6完成 ({step6_time:.0f}ms) [进度: 75%]", extra={"log_type": "STAGE_NODE"})
+                cumulative_elapsed = (time.time() - start_time) * 1000
+                logger.debug(
+                    f"[步骤6] 更新本地数据索引完成: 步骤耗时={step6_time:.1f}ms, 累计耗时={cumulative_elapsed:.1f}ms",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                stage_logger.info(f"✅ 步骤6完成 ({step6_time:.0f}ms) [进度: 75%]", extra={"log_type": "STAGE_NODE", "scenario": scenario})
 
                 # ========== 步骤7: 检查数据更新状态 ==========
+                step6_end_time = time.time()
                 step7_start_time = time.time()
-                stage_logger.info("┌─ 步骤7: 检查数据更新状态 ─┐", extra={"log_type": "STAGE_NODE"})
+                step7_interval = (step7_start_time - step6_end_time) * 1000
+                cumulative_elapsed = (step7_start_time - start_time) * 1000
+                logger.debug(
+                    f"[步骤7] 检查数据更新状态开始: 步骤间隔={step7_interval:.1f}ms, 累计耗时={cumulative_elapsed:.1f}ms",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                stage_logger.info("┌─ 步骤7: 检查数据更新状态 ─┐", extra={"log_type": "STAGE_NODE", "scenario": scenario})
                 _progress("步骤7/8: 检查数据更新状态...", 75)
                 step7_result = self._check_data_update_status(stage_logger)
                 _step_done(7, "检查数据更新状态", step7_result)
                 
                 step7_time = (time.time() - step7_start_time) * 1000
-                stage_logger.info(f"✅ 步骤7完成 ({step7_time:.0f}ms) [进度: 87%]", extra={"log_type": "STAGE_NODE"})
+                cumulative_elapsed = (time.time() - start_time) * 1000
+                logger.debug(
+                    f"[步骤7] 检查数据更新状态完成: 步骤耗时={step7_time:.1f}ms, 累计耗时={cumulative_elapsed:.1f}ms",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                stage_logger.info(f"✅ 步骤7完成 ({step7_time:.0f}ms) [进度: 87%]", extra={"log_type": "STAGE_NODE", "scenario": scenario})
 
             # ========== 步骤8: 启动文件监控 ==========
-            step8_start_time = time.time()
-            stage_logger.info("┌─ 步骤8: 启动文件监控 ─┐", extra={"log_type": "STAGE_NODE"})
+            if not goto_step_8:
+                step7_end_time = time.time()
+                step8_start_time = time.time()
+                step8_interval = (step8_start_time - step7_end_time) * 1000
+            else:
+                step1_end_time = time.time()
+                step8_start_time = time.time()
+                step8_interval = (step8_start_time - step1_end_time) * 1000
+            cumulative_elapsed = (step8_start_time - start_time) * 1000
+            logger.debug(
+                f"[步骤8] 启动文件监控开始: 步骤间隔={step8_interval:.1f}ms, 累计耗时={cumulative_elapsed:.1f}ms",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            stage_logger.info("┌─ 步骤8: 启动文件监控 ─┐", extra={"log_type": "STAGE_NODE", "scenario": scenario})
             _progress("步骤8/8: 启动文件监控...", 90)
             step8_result = self._start_file_watcher(stage_logger)
             _step_done(8, "启动文件监控", step8_result)
             
             step8_time = (time.time() - step8_start_time) * 1000
-            stage_logger.info(f"✅ 步骤8完成 ({step8_time:.0f}ms) [进度: 100%]", extra={"log_type": "STAGE_NODE"})
+            cumulative_elapsed = (time.time() - start_time) * 1000
+            logger.debug(
+                f"[步骤8] 启动文件监控完成: 步骤耗时={step8_time:.1f}ms, 累计耗时={cumulative_elapsed:.1f}ms",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            stage_logger.info(f"✅ 步骤8完成 ({step8_time:.0f}ms) [进度: 100%]", extra={"log_type": "STAGE_NODE", "scenario": scenario})
 
             # 完成
             _progress("缓存验证与感知完成", 100)
             elapsed_time = time.time() - start_time
+            elapsed_time_ms = elapsed_time * 1000
             
-            stage_logger.info(f"✅ 缓存验证与感知流程完成 (总耗时: {elapsed_time:.1f}s)", extra={"log_type": "STAGE_NODE"})
-            stage_logger.info("✅ 数据引擎完全就绪", extra={"log_type": "STAGE_NODE"})
+            logger.debug(
+                f"[数据引擎初始化] smart_cache_validation_and_sensing流程完成: "
+                f"总耗时={elapsed_time_ms:.1f}ms ({elapsed_time:.3f}s), "
+                f"离线模式={offline_mode}, 完成步骤数={len(step_results)}",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            logger.info(
+                f"[数据引擎初始化] ✅ 缓存验证与感知流程完成: 总耗时={elapsed_time:.1f}s, "
+                f"离线模式={offline_mode}, 完成步骤数={len(step_results)}",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            stage_logger.info(f"✅ 缓存验证与感知流程完成 (总耗时: {elapsed_time:.1f}s)", extra={"log_type": "STAGE_NODE", "scenario": scenario})
+            stage_logger.info("✅ 数据引擎完全就绪", extra={"log_type": "STAGE_NODE", "scenario": scenario})
 
             return {
                 "success": True,
@@ -1906,7 +2143,17 @@ class ChinaStockEngine:
             }
 
         except Exception as e:
-            logger.error("❌ 缓存验证与感知失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            scenario = "application_startup"
+            logger.debug(
+                f"[数据引擎初始化] 缓存验证与感知失败详情: {type(e).__name__}: {str(e)}",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            logger.error(
+                "❌ 缓存验证与感知失败: %s",
+                e,
+                exc_info=True,
+                extra={"log_type": "ALERT", "scenario": scenario}
+            )
             return {
                 "success": False,
                 "offline_mode": False,
@@ -1932,22 +2179,58 @@ class ChinaStockEngine:
                 "offline_reason": str
             }
         """
+        import time
+        step_start_time = time.time()
         try:
+            # 🔍 详细埋点：步骤开始
+            scenario = "application_startup"
+            logger.debug(
+                f"[步骤1] _validate_server_pool_and_test_speed开始",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            
             # 使用ServerPoolManager进行缓存验证与测速
             from .load_balancer import get_server_pool_manager
+            pool_manager_start_time = time.time()
             pool_manager = get_server_pool_manager()
+            pool_manager_elapsed = (time.time() - pool_manager_start_time) * 1000
+            logger.debug(
+                f"[步骤1] ServerPoolManager获取完成: 耗时={pool_manager_elapsed:.1f}ms",
+                extra={"log_type": "SYSTEM"}
+            )
             
             # 获取服务器总数
+            stats_start_time = time.time()
             stats_before = pool_manager.get_stats()
             ipv4_total = stats_before.get("ipv4_total", 0)
             ipv6_total = stats_before.get("ipv6_total", 0)
+            stats_elapsed = (time.time() - stats_start_time) * 1000
+            logger.debug(
+                f"[步骤1] 服务器统计获取完成: IPv4总数={ipv4_total}, IPv6总数={ipv6_total}, 耗时={stats_elapsed:.1f}ms",
+                extra={"log_type": "SYSTEM"}
+            )
             
             # 🚀 优化1：检查缓存是否为当天，如果是则跳过测速
+            cache_check_start_time = time.time()
             cache_file = pool_manager._cache_file
+            cache_file_path = str(cache_file) if cache_file else "None"
+            logger.debug(
+                f"[步骤1] 缓存文件路径: {cache_file_path}",
+                extra={"log_type": "SYSTEM"}
+            )
+            
             cache_valid_today = False
             if cache_file and cache_file.exists():
                 try:
+                    cache_read_start_time = time.time()
                     cached_data, cache_date, is_valid = DailyCacheManager.load_with_validation(cache_file)
+                    cache_read_elapsed = (time.time() - cache_read_start_time) * 1000
+                    logger.debug(
+                        f"[步骤1] 缓存文件读取完成: 文件路径={cache_file_path}, 缓存日期={cache_date}, "
+                        f"是否有效={is_valid}, 耗时={cache_read_elapsed:.1f}ms",
+                        extra={"log_type": "SYSTEM"}
+                    )
+                    
                     if is_valid and cached_data is not None:
                         cache_valid_today = True
                         stage_logger.info(
@@ -1958,32 +2241,114 @@ class ChinaStockEngine:
                         if isinstance(cached_data, dict):
                             ipv4_servers_data = cached_data.get("ipv4_servers", [])
                             ipv6_servers_data = cached_data.get("ipv6_servers", [])
+                            logger.debug(
+                                f"[步骤1] 缓存数据解析完成: IPv4服务器数={len(ipv4_servers_data)}, "
+                                f"IPv6服务器数={len(ipv6_servers_data)}",
+                                extra={"log_type": "SYSTEM"}
+                            )
                             # 确保服务器状态已恢复（_load_servers已在初始化时完成）
                 except Exception as e:
-                    logger.debug(f"检查缓存失败，将执行测速: {e}")
+                    cache_check_elapsed = (time.time() - cache_check_start_time) * 1000
+                    logger.debug(
+                        f"[步骤1] 检查缓存失败，将执行测速: {e}, 耗时={cache_check_elapsed:.1f}ms",
+                        extra={"log_type": "SYSTEM"}
+                    )
                     cache_valid_today = False
+            else:
+                cache_check_elapsed = (time.time() - cache_check_start_time) * 1000
+                logger.debug(
+                    f"[步骤1] 缓存文件不存在: {cache_file_path}, 耗时={cache_check_elapsed:.1f}ms",
+                    extra={"log_type": "SYSTEM"}
+                )
+            
+            # 🎯 步骤1开始时，创建共享RetryConnectionPool（每个服务器一个连接，供测速和后续步骤使用）
+            if self._shared_retry_pool is None:
+                try:
+                    logger.debug(
+                        "[步骤1] 开始创建共享RetryConnectionPool（每个服务器一个连接）...",
+                        extra={"log_type": "SYSTEM", "scenario": scenario}
+                    )
+                    
+                    # 使用ServerPoolManager的封装方法创建并保持连接池
+                    # 不限制连接数，让RetryConnectionPool根据服务器数量自动计算（每个服务器一个连接）
+                    self._shared_retry_pool = pool_manager.get_or_create_retry_pool(
+                        keep_pool=True,
+                        max_connections=None  # None表示自动计算，每个服务器一个连接
+                    )
+                    
+                    total_servers = ipv4_total + ipv6_total
+                    logger.info(
+                        f"[步骤1] ✅ 共享RetryConnectionPool已创建（约{total_servers}个连接，每个服务器一个），供后续步骤复用",
+                        extra={"log_type": "SYSTEM", "scenario": scenario}
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"[步骤1] ⚠️ 创建共享RetryConnectionPool失败: {e}，步骤4将创建自己的连接池",
+                        exc_info=True,
+                        extra={"log_type": "SYSTEM", "scenario": scenario}
+                    )
             
             # 如果缓存不是当天的，执行测速
             if not cache_valid_today:
                 # 执行IPv4服务器测速
                 if ipv4_total > 0:
                     stage_logger.info(f"│ ⏳ 正在测速IPv4服务器池...（{ipv4_total}个服务器）", extra={"log_type": "STAGE_NODE"})
+                    ipv4_test_start_time = time.time()
+                    logger.debug(
+                        f"[步骤1] IPv4服务器测速开始: 服务器数={ipv4_total}, 并发数=4",
+                        extra={"log_type": "SYSTEM"}
+                    )
                 
                 # 执行IPv6服务器测速
                 if ipv6_total > 0:
                     stage_logger.info(f"│ ⏳ 正在测速IPv6服务器池...（{ipv6_total}个服务器）", extra={"log_type": "STAGE_NODE"})
+                    ipv6_test_start_time = time.time()
+                    logger.debug(
+                        f"[步骤1] IPv6服务器测速开始: 服务器数={ipv6_total}, 并发数=4",
+                        extra={"log_type": "SYSTEM"}
+                    )
                 
                 # 执行服务器测速（多进程）
-                pool_manager.test_servers(max_workers=4)
+                test_start_time = time.time()
+                # 🎯 启动时保持连接池，供后续步骤复用
+                pool_manager.test_servers(max_workers=4, keep_pool=True)
+                test_elapsed = (time.time() - test_start_time) * 1000
+                logger.debug(
+                    f"[步骤1] 服务器测速完成（连接池已保留）: IPv4总数={ipv4_total}, IPv6总数={ipv6_total}, "
+                    f"并发数=4, 总耗时={test_elapsed:.1f}ms",
+                    extra={"log_type": "SYSTEM"}
+                )
+                
+                if ipv4_total > 0:
+                    ipv4_test_elapsed = (time.time() - ipv4_test_start_time) * 1000
+                    logger.debug(
+                        f"[步骤1] IPv4服务器测速完成: 耗时={ipv4_test_elapsed:.1f}ms",
+                        extra={"log_type": "SYSTEM"}
+                    )
+                
+                if ipv6_total > 0:
+                    ipv6_test_elapsed = (time.time() - ipv6_test_start_time) * 1000
+                    logger.debug(
+                        f"[步骤1] IPv6服务器测速完成: 耗时={ipv6_test_elapsed:.1f}ms",
+                        extra={"log_type": "SYSTEM"}
+                    )
             
             # 获取测速结果统计
+            stats_result_start_time = time.time()
             stats = pool_manager.get_stats()
             ipv4_available_count = stats.get("ipv4_available", 0)
             ipv6_available_count = stats.get("ipv6_available", 0)
             ipv4_available = ipv4_available_count > 0
             ipv6_available = ipv6_available_count > 0
+            stats_result_elapsed = (time.time() - stats_result_start_time) * 1000
+            logger.debug(
+                f"[步骤1] 测速结果统计获取完成: IPv4可用={ipv4_available_count}, IPv6可用={ipv6_available_count}, "
+                f"耗时={stats_result_elapsed:.1f}ms",
+                extra={"log_type": "SYSTEM"}
+            )
             
             # 计算平均延迟（仅对可用的服务器）
+            latency_calc_start_time = time.time()
             if ipv4_available:
                 from .load_balancer import get_server_pool_manager
                 pool_mgr = get_server_pool_manager()
@@ -1991,38 +2356,71 @@ class ChinaStockEngine:
                 available_ipv4_servers = [s for s in ipv4_servers if s.get("available", False)]
                 if available_ipv4_servers:
                     avg_latency = sum(s.get("ping_time", 0) for s in available_ipv4_servers) / len(available_ipv4_servers)
+                    latency_calc_elapsed = (time.time() - latency_calc_start_time) * 1000
+                    logger.debug(
+                        f"[步骤1] IPv4平均延迟计算完成: 可用服务器数={len(available_ipv4_servers)}, "
+                        f"平均延迟={avg_latency:.1f}ms, 耗时={latency_calc_elapsed:.1f}ms",
+                        extra={"log_type": "SYSTEM"}
+                    )
                     stage_logger.info(
                         f"│ ✅ IPv4服务器池可用: {ipv4_available_count}个可用，平均延迟 {avg_latency:.0f}ms", 
                         extra={"log_type": "STAGE_NODE"}
                     )
                 else:
+                    latency_calc_elapsed = (time.time() - latency_calc_start_time) * 1000
+                    logger.debug(
+                        f"[步骤1] IPv4平均延迟计算完成: 可用服务器数=0, 耗时={latency_calc_elapsed:.1f}ms",
+                        extra={"log_type": "SYSTEM"}
+                    )
                     stage_logger.info(
                         f"│ ✅ IPv4服务器池可用: {ipv4_available_count}个可用", 
                         extra={"log_type": "STAGE_NODE"}
                     )
             else:
+                latency_calc_elapsed = (time.time() - latency_calc_start_time) * 1000
+                logger.debug(
+                    f"[步骤1] IPv4服务器池不可用: 可用数=0/{ipv4_total}, 耗时={latency_calc_elapsed:.1f}ms",
+                    extra={"log_type": "SYSTEM"}
+                )
                 stage_logger.warning(
                     f"│ ❌ IPv4服务器池不可用: 0/{ipv4_total}个可用", 
                     extra={"log_type": "STAGE_NODE"}
                 )
             
             if ipv6_available:
+                ipv6_latency_start_time = time.time()
                 from .load_balancer import get_server_pool_manager
                 pool_mgr = get_server_pool_manager()
                 ipv6_servers = pool_mgr.get_ipv6_servers(limit=1000)
                 available_ipv6_servers = [s for s in ipv6_servers if s.get("available", False)]
                 if available_ipv6_servers:
                     avg_latency = sum(s.get("ping_time", 0) for s in available_ipv6_servers) / len(available_ipv6_servers)
+                    ipv6_latency_elapsed = (time.time() - ipv6_latency_start_time) * 1000
+                    logger.debug(
+                        f"[步骤1] IPv6平均延迟计算完成: 可用服务器数={len(available_ipv6_servers)}, "
+                        f"平均延迟={avg_latency:.1f}ms, 耗时={ipv6_latency_elapsed:.1f}ms",
+                        extra={"log_type": "SYSTEM"}
+                    )
                     stage_logger.info(
                         f"│ ✅ IPv6服务器池可用: {ipv6_available_count}个可用，平均延迟 {avg_latency:.0f}ms", 
                         extra={"log_type": "STAGE_NODE"}
                     )
                 else:
+                    ipv6_latency_elapsed = (time.time() - ipv6_latency_start_time) * 1000
+                    logger.debug(
+                        f"[步骤1] IPv6平均延迟计算完成: 可用服务器数=0, 耗时={ipv6_latency_elapsed:.1f}ms",
+                        extra={"log_type": "SYSTEM"}
+                    )
                     stage_logger.info(
                         f"│ ✅ IPv6服务器池可用: {ipv6_available_count}个可用", 
                         extra={"log_type": "STAGE_NODE"}
                     )
             else:
+                ipv6_latency_elapsed = (time.time() - latency_calc_start_time) * 1000
+                logger.debug(
+                    f"[步骤1] IPv6服务器池不可用: 可用数=0/{ipv6_total}, 耗时={ipv6_latency_elapsed:.1f}ms",
+                    extra={"log_type": "SYSTEM"}
+                )
                 stage_logger.warning(
                     f"│ ❌ IPv6服务器池不可用: 0/{ipv6_total}个可用", 
                     extra={"log_type": "STAGE_NODE"}
@@ -2041,6 +2439,12 @@ class ChinaStockEngine:
                 }
 
             # 至少一个服务器池可用
+            step_elapsed = (time.time() - step_start_time) * 1000
+            logger.debug(
+                f"[步骤1] _validate_server_pool_and_test_speed完成: 总耗时={step_elapsed:.1f}ms, "
+                f"IPv4可用={ipv4_available}, IPv6可用={ipv6_available}, 离线模式=False",
+                extra={"log_type": "SYSTEM"}
+            )
             logger.info(f"✅ TDX服务器池可用: IPv4={ipv4_available}, IPv6={ipv6_available}")
             return {
                 "success": True,
@@ -2050,6 +2454,11 @@ class ChinaStockEngine:
             }
 
         except Exception as e:
+            step_elapsed = (time.time() - step_start_time) * 1000
+            logger.debug(
+                f"[步骤1] _validate_server_pool_and_test_speed异常: 总耗时={step_elapsed:.1f}ms, 错误={e}",
+                extra={"log_type": "SYSTEM"}
+            )
             logger.error("❌ 服务器池验证失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return {
                 "success": False,
@@ -2064,10 +2473,34 @@ class ChinaStockEngine:
         
         职责：执行网络时间同步（单一事实原则：网络时间同步的唯一执行点）
         """
+        import time
+        step_start_time = time.time()
         try:
+            # 🔍 详细埋点：步骤开始
+            scenario = "application_startup"
+            logger.debug(
+                f"[步骤2] _get_current_date开始",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            
             stage_logger.info("│ ⏳ 正在同步网络时间...", extra={"log_type": "STAGE_NODE"})
+            
             # 执行网络时间同步（单一事实原则：这是网络时间同步的唯一执行点）
+            sync_start_time = time.time()
             success, offset = self.time_sync.sync_time()
+            sync_elapsed = (time.time() - sync_start_time) * 1000
+            
+            # 🔍 详细埋点：记录同步方法选择
+            sync_method = "未知"
+            if hasattr(self.time_sync, '_last_sync_method'):
+                sync_method = getattr(self.time_sync, '_last_sync_method', '未知')
+            # 修复：offset可能为None，需要安全处理
+            offset_str = f"{offset:.3f}秒" if offset is not None else "未获取"
+            logger.debug(
+                f"[步骤2] 网络时间同步完成: 成功={success}, 偏移量={offset_str}, "
+                f"同步方法={sync_method}, 耗时={sync_elapsed:.1f}ms",
+                extra={"log_type": "SYSTEM"}
+            )
             
             if success and offset is not None:
                 abs_offset = abs(offset)
@@ -2078,23 +2511,44 @@ class ChinaStockEngine:
                     extra={"log_type": "STAGE_NODE"}
                 )
             else:
+                logger.debug(
+                    f"[步骤2] 网络时间同步失败，将使用系统时间",
+                    extra={"log_type": "SYSTEM"}
+                )
                 stage_logger.info(
                     "│ ⚠️ 网络时间同步失败，将使用系统时间",
                     extra={"log_type": "STAGE_NODE"}
                 )
             
             # 获取网络时间日期
+            date_get_start_time = time.time()
             current_date = self.time_sync.get_real_date()
+            date_get_elapsed = (time.time() - date_get_start_time) * 1000
             # 确保日期格式为字符串
             current_date_str = current_date.isoformat() if hasattr(current_date, 'isoformat') else str(current_date)
+            logger.debug(
+                f"[步骤2] 日期获取完成: 日期={current_date_str}, 耗时={date_get_elapsed:.1f}ms",
+                extra={"log_type": "SYSTEM"}
+            )
             stage_logger.info(f"│ ✅ 当前日期（网络时间）: {current_date_str}", extra={"log_type": "STAGE_NODE"})
             stage_logger.info("└─────────────────────────────┘", extra={"log_type": "STAGE_NODE"})
+
+            step_elapsed = (time.time() - step_start_time) * 1000
+            logger.debug(
+                f"[步骤2] _get_current_date完成: 总耗时={step_elapsed:.1f}ms, 日期={current_date_str}",
+                extra={"log_type": "SYSTEM"}
+            )
 
             return {
                 "success": True,
                 "current_date": current_date
             }
         except Exception as e:
+            step_elapsed = (time.time() - step_start_time) * 1000
+            logger.debug(
+                f"[步骤2] _get_current_date异常: 总耗时={step_elapsed:.1f}ms, 错误={e}",
+                extra={"log_type": "SYSTEM"}
+            )
             logger.error("❌ 获取当前日期失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             # 降级使用系统时间
             current_date = date.today()
@@ -2108,10 +2562,46 @@ class ChinaStockEngine:
 
     def _validate_trade_calendar_cache(self, current_date, stage_logger) -> Dict[str, Any]:
         """步骤3: 验证交易日历缓存（无效或不存在时自动生成并保存）"""
+        import time
+        step_start_time = time.time()
         try:
+            # 🔍 详细埋点：步骤开始
+            scenario = "application_startup"
+            logger.debug(
+                f"[步骤3] _validate_trade_calendar_cache开始: 当前日期={current_date}",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            
             stage_logger.info("│ ⏳ 检查交易日历缓存...", extra={"log_type": "STAGE_NODE"})
+            
+            # 获取缓存文件路径
+            cache_file_start_time = time.time()
             cache_file = self.config_manager.get_cache_dir() / "trade_calendar.json"
+            cache_file_path = str(cache_file)
+            cache_file_elapsed = (time.time() - cache_file_start_time) * 1000
+            logger.debug(
+                f"[步骤3] 缓存文件路径获取完成: 文件路径={cache_file_path}, 耗时={cache_file_elapsed:.1f}ms",
+                extra={"log_type": "SYSTEM"}
+            )
+            
+            # 检查文件是否存在
+            file_exists_check_start_time = time.time()
+            file_exists = cache_file.exists()
+            file_exists_check_elapsed = (time.time() - file_exists_check_start_time) * 1000
+            logger.debug(
+                f"[步骤3] 文件存在检查完成: 文件路径={cache_file_path}, 存在={file_exists}, 耗时={file_exists_check_elapsed:.1f}ms",
+                extra={"log_type": "SYSTEM"}
+            )
+            
+            # 读取并验证缓存
+            cache_read_start_time = time.time()
             data, cache_date, is_valid = DailyCacheManager.load_with_validation(cache_file)
+            cache_read_elapsed = (time.time() - cache_read_start_time) * 1000
+            logger.debug(
+                f"[步骤3] 缓存文件读取和验证完成: 文件路径={cache_file_path}, 缓存日期={cache_date}, "
+                f"是否有效={is_valid}, 数据大小={len(str(data)) if data else 0}字节, 耗时={cache_read_elapsed:.1f}ms",
+                extra={"log_type": "SYSTEM"}
+            )
 
             if is_valid:
                 # 使用实际的缓存日期
@@ -2120,6 +2610,13 @@ class ChinaStockEngine:
                 # 检查今日是否为交易日（简化处理，实际需要查询交易日历）
                 stage_logger.info("│ ℹ️  今日是交易日，市场开市中", extra={"log_type": "STAGE_NODE"})
                 stage_logger.info("└─────────────────────────────┘", extra={"log_type": "STAGE_NODE"})
+                
+                step_elapsed = (time.time() - step_start_time) * 1000
+                logger.debug(
+                    f"[步骤3] _validate_trade_calendar_cache完成: 总耗时={step_elapsed:.1f}ms, "
+                    f"缓存有效=True, 缓存日期={cache_date_display}",
+                    extra={"log_type": "SYSTEM"}
+                )
                 return {"success": True, "cache_valid": True}
             else:
                 # 缓存失效或不存在，需要重新生成并保存
@@ -2127,31 +2624,70 @@ class ChinaStockEngine:
                 stage_logger.info("│ ⏳ 正在生成交易日历缓存...", extra={"log_type": "STAGE_NODE"})
                 
                 # 使用TradingCalendar获取交易日历数据
+                calendar_init_start_time = time.time()
                 from backend.infrastructure.tdx_asyncio.calendar import TradingCalendar
                 import asyncio
                 
                 calendar = TradingCalendar()
+                calendar_init_elapsed = (time.time() - calendar_init_start_time) * 1000
+                logger.debug(
+                    f"[步骤3] TradingCalendar初始化完成: 耗时={calendar_init_elapsed:.1f}ms",
+                    extra={"log_type": "SYSTEM"}
+                )
                 
                 # 异步获取交易日历（从当前年份开始）
                 # 注意：TradingCalendar.get_trading_calendar() 内部会自动保存到缓存文件
                 # 这里只需要调用它，不需要再次保存
+                loop_create_start_time = time.time()
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
+                loop_create_elapsed = (time.time() - loop_create_start_time) * 1000
+                logger.debug(
+                    f"[步骤3] 事件循环创建完成: 耗时={loop_create_elapsed:.1f}ms",
+                    extra={"log_type": "SYSTEM"}
+                )
+                
                 try:
+                    calendar_fetch_start_time = time.time()
                     calendar_df = loop.run_until_complete(calendar.get_trading_calendar(start_year=current_date.year))
+                    calendar_fetch_elapsed = (time.time() - calendar_fetch_start_time) * 1000
                     
                     # TradingCalendar.get_trading_calendar() 内部已经保存到缓存文件
                     # 不需要再次保存，避免重复保存
                     cache_count = len(calendar_df) if calendar_df is not None and not calendar_df.empty else 0
+                    logger.debug(
+                        f"[步骤3] 交易日历获取完成: 开始年份={current_date.year}, 交易日数={cache_count}, "
+                        f"耗时={calendar_fetch_elapsed:.1f}ms",
+                        extra={"log_type": "SYSTEM"}
+                    )
+                    
                     logger.info(f"✅ 交易日历缓存已生成并保存: {cache_file} ({cache_count}条)")
                     stage_logger.info(f"│ ✅ 交易日历缓存已生成并保存（{cache_count}条）", extra={"log_type": "STAGE_NODE"})
                     stage_logger.info("└─────────────────────────────┘", extra={"log_type": "STAGE_NODE"})
                     
+                    step_elapsed = (time.time() - step_start_time) * 1000
+                    logger.debug(
+                        f"[步骤3] _validate_trade_calendar_cache完成: 总耗时={step_elapsed:.1f}ms, "
+                        f"缓存生成=True, 交易日数={cache_count}",
+                        extra={"log_type": "SYSTEM"}
+                    )
+                    
                     return {"success": True, "cache_valid": True, "cache_generated": True}
                 finally:
+                    loop_close_start_time = time.time()
                     loop.close()
+                    loop_close_elapsed = (time.time() - loop_close_start_time) * 1000
+                    logger.debug(
+                        f"[步骤3] 事件循环关闭完成: 耗时={loop_close_elapsed:.1f}ms",
+                        extra={"log_type": "SYSTEM"}
+                    )
 
         except Exception as e:
+            step_elapsed = (time.time() - step_start_time) * 1000
+            logger.debug(
+                f"[步骤3] _validate_trade_calendar_cache异常: 总耗时={step_elapsed:.1f}ms, 错误={e}",
+                extra={"log_type": "SYSTEM"}
+            )
             logger.error("❌ 验证交易日历缓存失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             stage_logger.info(f"│ ❌ 生成交易日历缓存失败: {e}", extra={"log_type": "STAGE_NODE"})
             stage_logger.info("└─────────────────────────────┘", extra={"log_type": "STAGE_NODE"})
@@ -2159,17 +2695,55 @@ class ChinaStockEngine:
 
     def _validate_symbol_list_cache(self, current_date, stage_logger) -> Dict[str, Any]:
         """步骤4: 验证品种列表缓存（无效或缺失时自动重新加载）"""
+        import time
+        step_start_time = time.time()
         try:
+            # 🔍 详细埋点：步骤开始
+            scenario = "application_startup"
+            logger.debug(
+                f"[步骤4] _validate_symbol_list_cache开始: 当前日期={current_date}",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            
             stage_logger.info("│ ⏳ 检查品种列表缓存...", extra={"log_type": "STAGE_NODE"})
+            
+            # 获取缓存文件路径
+            cache_file_start_time = time.time()
             cache_file = self.config_manager.get_cache_dir() / "stock_list_classified.json"
+            cache_file_path = str(cache_file)
+            cache_file_elapsed = (time.time() - cache_file_start_time) * 1000
+            logger.debug(
+                f"[步骤4] 缓存文件路径获取完成: 文件路径={cache_file_path}, 耗时={cache_file_elapsed:.1f}ms",
+                extra={"log_type": "SYSTEM"}
+            )
 
             # 检查缓存是否存在
-            if not cache_file.exists():
+            file_exists_check_start_time = time.time()
+            file_exists = cache_file.exists()
+            file_exists_check_elapsed = (time.time() - file_exists_check_start_time) * 1000
+            logger.debug(
+                f"[步骤4] 文件存在检查完成: 文件路径={cache_file_path}, 存在={file_exists}, 耗时={file_exists_check_elapsed:.1f}ms",
+                extra={"log_type": "SYSTEM"}
+            )
+            
+            if not file_exists:
                 logger.warning("⚠️ 品种列表缓存不存在，需要重新加载", extra={"log_type": "SYSTEM"})
+                step_elapsed = (time.time() - step_start_time) * 1000
+                logger.debug(
+                    f"[步骤4] _validate_symbol_list_cache完成: 总耗时={step_elapsed:.1f}ms, 缓存缺失=True",
+                    extra={"log_type": "SYSTEM"}
+                )
                 return {"success": False, "cache_valid": False, "cache_missing": True}
 
             # 验证缓存有效性
+            cache_read_start_time = time.time()
             data, cache_date, is_valid = DailyCacheManager.load_with_validation(cache_file)
+            cache_read_elapsed = (time.time() - cache_read_start_time) * 1000
+            logger.debug(
+                f"[步骤4] 缓存文件读取和验证完成: 文件路径={cache_file_path}, 缓存日期={cache_date}, "
+                f"是否有效={is_valid}, 数据大小={len(str(data)) if data else 0}字节, 耗时={cache_read_elapsed:.1f}ms",
+                extra={"log_type": "SYSTEM"}
+            )
 
             if is_valid:
                 # 使用实际的缓存日期和时间
@@ -2187,9 +2761,17 @@ class ChinaStockEngine:
                 
                 # 确保SymbolLoader已初始化
                 if self.symbol_loader is None:
+                    symbolloader_init_start_time = time.time()
                     from .data_acquisition import SymbolLoader
                     self.symbol_loader = SymbolLoader(self.event_engine)
+                    symbolloader_init_elapsed = (time.time() - symbolloader_init_start_time) * 1000
+                    logger.debug(
+                        f"[步骤4] SymbolLoader初始化完成: 耗时={symbolloader_init_elapsed:.1f}ms",
+                        extra={"log_type": "SYSTEM"}
+                    )
+                    
                     # 从缓存数据加载到SymbolLoader
+                    cache_load_start_time = time.time()
                     if data and isinstance(data, dict):
                         # 处理不同的缓存格式
                         if "data" in data and isinstance(data["data"], dict):
@@ -2199,10 +2781,21 @@ class ChinaStockEngine:
                         else:
                             # 直接是分类字典
                             self.symbol_loader.classified_symbols = data
+                    cache_load_elapsed = (time.time() - cache_load_start_time) * 1000
+                    logger.debug(
+                        f"[步骤4] 缓存数据加载到SymbolLoader完成: 耗时={cache_load_elapsed:.1f}ms",
+                        extra={"log_type": "SYSTEM"}
+                    )
+                else:
+                    logger.debug(
+                        f"[步骤4] SymbolLoader已存在，跳过初始化",
+                        extra={"log_type": "SYSTEM"}
+                    )
                 
                 stage_logger.info("│ ✅ SymbolLoader初始化完成", extra={"log_type": "STAGE_NODE"})
                 
                 # 从实际数据获取分类数量
+                stats_calc_start_time = time.time()
                 if data and isinstance(data, dict):
                     # data可能是分类字典: {"上证A股": [...], "深证A股": [...], ...}
                     # 或者包含data字段: {"data": {"上证A股": [...], ...}}
@@ -2225,6 +2818,11 @@ class ChinaStockEngine:
                             count = len(classified.get(category, []))
                             total_count += count
                             stage_logger.info(f"│   - {category}: {count}", extra={"log_type": "STAGE_NODE"})
+                        stats_calc_elapsed = (time.time() - stats_calc_start_time) * 1000
+                        logger.debug(
+                            f"[步骤4] 分类统计计算完成: 总品种数={total_count}, 耗时={stats_calc_elapsed:.1f}ms",
+                            extra={"log_type": "SYSTEM"}
+                        )
                         stage_logger.info(f"│   - 总计: {total_count}品种", extra={"log_type": "STAGE_NODE"})
                         
                         # 检查关键分类是否为空，如果为空则重新加载
@@ -2241,6 +2839,12 @@ class ChinaStockEngine:
                     is_valid = False
                 
                 if is_valid:
+                    step_elapsed = (time.time() - step_start_time) * 1000
+                    logger.debug(
+                        f"[步骤4] _validate_symbol_list_cache完成: 总耗时={step_elapsed:.1f}ms, "
+                        f"缓存有效=True, 总品种数={total_count}",
+                        extra={"log_type": "SYSTEM"}
+                    )
                     stage_logger.info("└─────────────────────────────┘", extra={"log_type": "STAGE_NODE"})
                     return {"success": True, "cache_valid": True, "total_count": total_count}
             # 缓存失效或数据不完整，需要重新加载
@@ -2249,20 +2853,84 @@ class ChinaStockEngine:
                 stage_logger.info("│ ⚠️ 品种列表缓存失效，需要重新加载", extra={"log_type": "STAGE_NODE"})
                 
                 # 重新加载品种列表
+                reload_start_time = time.time()
                 if self.symbol_loader is None:
+                    symbolloader_init_start_time = time.time()
                     from .data_acquisition import SymbolLoader
                     self.symbol_loader = SymbolLoader(self.event_engine)
+                    symbolloader_init_elapsed = (time.time() - symbolloader_init_start_time) * 1000
+                    logger.debug(
+                        f"[步骤4] SymbolLoader初始化完成（重新加载）: 耗时={symbolloader_init_elapsed:.1f}ms",
+                        extra={"log_type": "SYSTEM"}
+                    )
                 
-                # 强制重新加载并分类
-                classified = self.symbol_loader.reload_and_classify(force_reload=True)
+                # 强制重新加载并分类（使用共享连接池）
+                reload_classify_start_time = time.time()
+                
+                # 🎯 性能埋点：步骤4开始 - 记录连接池状态
+                pool_stats_before = {}
+                if self._shared_retry_pool:
+                    try:
+                        # 获取连接池统计信息
+                        if hasattr(self._shared_retry_pool, '_phase1_pool') and self._shared_retry_pool._phase1_pool:
+                            phase1_pool = self._shared_retry_pool._phase1_pool
+                            if hasattr(phase1_pool, 'get_stats'):
+                                pool_stats_before = phase1_pool.get_stats()
+                        logger.info(
+                            f"[步骤4-性能埋点] 开始重新加载: 连接池状态={pool_stats_before}",
+                            extra={"log_type": "SYSTEM", "scenario": "step4_performance"}
+                        )
+                    except Exception as e:
+                        logger.debug(f"[步骤4-性能埋点] 获取连接池状态失败: {e}", extra={"log_type": "SYSTEM"})
+                
+                classified = self.symbol_loader.reload_and_classify(
+                    force_reload=True,
+                    shared_retry_pool=self._shared_retry_pool
+                )
+                reload_classify_elapsed = (time.time() - reload_classify_start_time) * 1000
+                
+                # 🎯 性能埋点：步骤4完成 - 记录详细统计
+                pool_stats_after = {}
+                if self._shared_retry_pool:
+                    try:
+                        if hasattr(self._shared_retry_pool, '_phase1_pool') and self._shared_retry_pool._phase1_pool:
+                            phase1_pool = self._shared_retry_pool._phase1_pool
+                            if hasattr(phase1_pool, 'get_stats'):
+                                pool_stats_after = phase1_pool.get_stats()
+                    except Exception:
+                        pass
+                
+                total_symbols = sum(len(v) for v in classified.values()) if classified else 0
+                throughput = (total_symbols / (reload_classify_elapsed / 1000)) if reload_classify_elapsed > 0 else 0
+                
+                logger.info(
+                    f"[步骤4-性能埋点] 重新加载完成: "
+                    f"总耗时={reload_classify_elapsed:.1f}ms, "
+                    f"总品种数={total_symbols}, "
+                    f"吞吐量={throughput:.1f}品种/秒, "
+                    f"连接池状态_前={pool_stats_before}, "
+                    f"连接池状态_后={pool_stats_after}",
+                    extra={"log_type": "SYSTEM", "scenario": "step4_performance"}
+                )
+                
+                logger.debug(
+                    f"[步骤4] 品种列表重新加载和分类完成: 耗时={reload_classify_elapsed:.1f}ms",
+                    extra={"log_type": "SYSTEM"}
+                )
                 
                 if classified:
+                    stats_calc_start_time = time.time()
                     categories = ["上证A股", "深证A股", "北证A股", "T+0基金", "可转债"]
                     total_count = 0
                     for category in categories:
                         count = len(classified.get(category, []))
                         total_count += count
                         stage_logger.info(f"│   - {category}: {count}", extra={"log_type": "STAGE_NODE"})
+                    stats_calc_elapsed = (time.time() - stats_calc_start_time) * 1000
+                    logger.debug(
+                        f"[步骤4] 重新加载后分类统计计算完成: 总品种数={total_count}, 耗时={stats_calc_elapsed:.1f}ms",
+                        extra={"log_type": "SYSTEM"}
+                    )
                     
                     # 检查关键分类是否为空，如果为空则输出明确的警告
                     key_categories = ["北证A股", "T+0基金", "可转债"]
@@ -2309,17 +2977,41 @@ class ChinaStockEngine:
                                 logger.warning(f"⚠️ 关键分类为空: {missing_categories}，TDX配置文件存在但解析失败或数据为空", extra={"log_type": "SYSTEM"})
                                 stage_logger.info(f"│ ⚠️ 关键分类为空: {', '.join(missing_categories)}（TDX配置文件存在但解析失败或数据为空）", extra={"log_type": "STAGE_NODE"})
                     
+                    reload_total_elapsed = (time.time() - reload_start_time) * 1000
+                    step_elapsed = (time.time() - step_start_time) * 1000
+                    logger.debug(
+                        f"[步骤4] 品种列表重新加载完成: 重新加载总耗时={reload_total_elapsed:.1f}ms, "
+                        f"步骤总耗时={step_elapsed:.1f}ms, 总品种数={total_count}",
+                        extra={"log_type": "SYSTEM"}
+                    )
                     stage_logger.info(f"│   - 总计: {total_count}品种", extra={"log_type": "STAGE_NODE"})
                     stage_logger.info("└─────────────────────────────┘", extra={"log_type": "STAGE_NODE"})
                     return {"success": True, "cache_valid": True, "total_count": total_count, "reloaded": True}
                 else:
+                    reload_total_elapsed = (time.time() - reload_start_time) * 1000
+                    step_elapsed = (time.time() - step_start_time) * 1000
+                    logger.debug(
+                        f"[步骤4] 品种列表重新加载失败: 重新加载总耗时={reload_total_elapsed:.1f}ms, "
+                        f"步骤总耗时={step_elapsed:.1f}ms",
+                        extra={"log_type": "SYSTEM"}
+                    )
                     stage_logger.info("│ ❌ 重新加载失败", extra={"log_type": "STAGE_NODE"})
                     stage_logger.info("└─────────────────────────────┘", extra={"log_type": "STAGE_NODE"})
                     return {"success": False, "cache_valid": False, "cache_invalid": True, "reload_failed": True}
             
+            step_elapsed = (time.time() - step_start_time) * 1000
+            logger.debug(
+                f"[步骤4] _validate_symbol_list_cache完成: 总耗时={step_elapsed:.1f}ms, 缓存无效=True",
+                extra={"log_type": "SYSTEM"}
+            )
             return {"success": False, "cache_valid": False, "cache_invalid": True}
 
         except Exception as e:
+            step_elapsed = (time.time() - step_start_time) * 1000
+            logger.debug(
+                f"[步骤4] _validate_symbol_list_cache异常: 总耗时={step_elapsed:.1f}ms, 错误={e}",
+                extra={"log_type": "SYSTEM"}
+            )
             logger.error("❌ 验证品种列表缓存失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return {"success": False, "error": str(e)}
 
@@ -2370,28 +3062,81 @@ class ChinaStockEngine:
 
         注意: IPO日期缓存只用于保存，不再用于过滤品种列表
         """
+        import time
+        step_start_time = time.time()
         try:
+            # 🔍 详细埋点：步骤开始
+            logger.debug(
+                f"[步骤5] _validate_ipo_cache开始: 当前日期={current_date}",
+                extra={"log_type": "SYSTEM"}
+            )
+            
             stage_logger.info("│ ⏳ 检查IPO日期缓存...", extra={"log_type": "STAGE_NODE"})
+            
+            # 获取缓存文件路径
+            cache_file_start_time = time.time()
             cache_file = self.config_manager.get_cache_dir() / "ipo_dates.json"
+            cache_file_path = str(cache_file)
+            cache_file_elapsed = (time.time() - cache_file_start_time) * 1000
+            logger.debug(
+                f"[步骤5] 缓存文件路径获取完成: 文件路径={cache_file_path}, 耗时={cache_file_elapsed:.1f}ms",
+                extra={"log_type": "SYSTEM"}
+            )
 
             # 检查缓存是否存在和有效
+            cache_read_start_time = time.time()
             try:
                 data, cache_date, is_valid = DailyCacheManager.load_with_validation(cache_file)
+                cache_read_elapsed = (time.time() - cache_read_start_time) * 1000
+                logger.debug(
+                    f"[步骤5] 缓存文件读取和验证完成: 文件路径={cache_file_path}, 缓存日期={cache_date}, "
+                    f"是否有效={is_valid}, 耗时={cache_read_elapsed:.1f}ms",
+                    extra={"log_type": "SYSTEM"}
+                )
             except Exception as e:
+                cache_read_elapsed = (time.time() - cache_read_start_time) * 1000
                 # JSON解析失败，删除损坏的缓存文件
                 logger.warning(f"⚠️ IPO日期缓存文件损坏: {e}，将删除并重新下载", extra={"log_type": "SYSTEM"})
+                logger.debug(
+                    f"[步骤5] 缓存文件读取失败: 文件路径={cache_file_path}, 错误={e}, 耗时={cache_read_elapsed:.1f}ms",
+                    extra={"log_type": "SYSTEM"}
+                )
+                
+                delete_start_time = time.time()
                 if cache_file.exists():
                     try:
                         cache_file.unlink()
+                        delete_elapsed = (time.time() - delete_start_time) * 1000
+                        logger.debug(
+                            f"[步骤5] 损坏的缓存文件删除完成: 文件路径={cache_file_path}, 耗时={delete_elapsed:.1f}ms",
+                            extra={"log_type": "SYSTEM"}
+                        )
                         logger.info(f"✅ 已删除损坏的缓存文件: {cache_file}")
                     except Exception as del_e:
+                        delete_elapsed = (time.time() - delete_start_time) * 1000
+                        logger.debug(
+                            f"[步骤5] 删除损坏的缓存文件失败: 文件路径={cache_file_path}, 错误={del_e}, 耗时={delete_elapsed:.1f}ms",
+                            extra={"log_type": "SYSTEM"}
+                        )
                         logger.error(f"❌ 删除损坏的缓存文件失败: {del_e}", extra={"log_type": "SYSTEM"})
+                else:
+                    delete_elapsed = (time.time() - delete_start_time) * 1000
+                    logger.debug(
+                        f"[步骤5] 缓存文件不存在，无需删除: 耗时={delete_elapsed:.1f}ms",
+                        extra={"log_type": "SYSTEM"}
+                    )
                 data = None
                 is_valid = False
 
             if is_valid and data and isinstance(data, dict):
                 # 使用统一的提取函数处理缓存格式
+                extract_start_time = time.time()
                 ipo_dates = self._extract_ipo_data_from_cache(data)
+                extract_elapsed = (time.time() - extract_start_time) * 1000
+                logger.debug(
+                    f"[步骤5] IPO日期数据提取完成: 提取数量={len(ipo_dates)}, 耗时={extract_elapsed:.1f}ms",
+                    extra={"log_type": "SYSTEM"}
+                )
                 
                 # 统计IPO日期数量（包含所有品种，包括None值）
                 # 忠实保留：统计所有品种，包括未取到的空值（None）
@@ -2401,6 +3146,13 @@ class ChinaStockEngine:
                 # 显示总品种数（包含未取到的空值，忠实保留）
                 stage_logger.info(f"│ ✅ IPO日期缓存有效（{ipo_count}品种）", extra={"log_type": "STAGE_NODE"})
                 stage_logger.info("└─────────────────────────────┘", extra={"log_type": "STAGE_NODE"})
+                
+                step_elapsed = (time.time() - step_start_time) * 1000
+                logger.debug(
+                    f"[步骤5] _validate_ipo_cache完成: 总耗时={step_elapsed:.1f}ms, "
+                    f"缓存有效=True, IPO品种数={ipo_count}",
+                    extra={"log_type": "SYSTEM"}
+                )
                 return {"success": True, "cache_valid": True, "ipo_count": ipo_count}
             else:
                 # 缓存失效或不存在，需要下载并保存
@@ -2408,25 +3160,98 @@ class ChinaStockEngine:
                 stage_logger.info("│ ⏳ 正在下载IPO日期数据...", extra={"log_type": "STAGE_NODE"})
                 
                 # 获取所有品种代码（用于下载IPO日期）
+                symbol_loader_check_start_time = time.time()
                 if self.symbol_loader is None:
+                    symbolloader_init_start_time = time.time()
                     from .data_acquisition import SymbolLoader
                     self.symbol_loader = SymbolLoader(self.event_engine)
+                    symbolloader_init_elapsed = (time.time() - symbolloader_init_start_time) * 1000
+                    logger.debug(
+                        f"[步骤5] SymbolLoader初始化完成（IPO下载）: 耗时={symbolloader_init_elapsed:.1f}ms",
+                        extra={"log_type": "SYSTEM"}
+                    )
                 
                 # 确保品种列表已加载
+                symbol_list_load_start_time = time.time()
                 if not self.symbol_loader.classified_symbols:
                     self.symbol_loader.reload_and_classify()
+                    symbol_list_load_elapsed = (time.time() - symbol_list_load_start_time) * 1000
+                    logger.debug(
+                        f"[步骤5] 品种列表加载完成: 耗时={symbol_list_load_elapsed:.1f}ms",
+                        extra={"log_type": "SYSTEM"}
+                    )
+                else:
+                    symbol_list_load_elapsed = (time.time() - symbol_list_load_start_time) * 1000
+                    logger.debug(
+                        f"[步骤5] 品种列表已存在，跳过加载: 耗时={symbol_list_load_elapsed:.1f}ms",
+                        extra={"log_type": "SYSTEM"}
+                    )
                 
                 # 提取所有品种代码
+                extract_start_time = time.time()
                 all_symbols = self.symbol_loader.extract_all_codes()
+                extract_elapsed = (time.time() - extract_start_time) * 1000
+                logger.debug(
+                    f"[步骤5] 品种代码提取完成: 品种数={len(all_symbols) if all_symbols else 0}, 耗时={extract_elapsed:.1f}ms",
+                    extra={"log_type": "SYSTEM"}
+                )
                 
                 if not all_symbols:
                     logger.warning("⚠️ 品种列表为空，无法下载IPO日期", extra={"log_type": "SYSTEM"})
                     stage_logger.info("│ ⚠️ 品种列表为空，跳过IPO日期下载", extra={"log_type": "STAGE_NODE"})
                     stage_logger.info("└─────────────────────────────┘", extra={"log_type": "STAGE_NODE"})
+                    step_elapsed = (time.time() - step_start_time) * 1000
+                    logger.debug(
+                        f"[步骤5] _validate_ipo_cache完成: 总耗时={step_elapsed:.1f}ms, 错误=品种列表为空",
+                        extra={"log_type": "SYSTEM"}
+                    )
                     return {"success": False, "error": "品种列表为空"}
                 
                 # 调用download_ipo_dates函数下载并保存IPO日期
+                download_start_time = time.time()
                 from .data_acquisition import download_ipo_dates
+                from .load_balancer import get_server_pool_manager
+                
+                # 🎯 计算最大并发数限制（直接累加所有活跃服务器的max_connections）
+                pool_manager = get_server_pool_manager()
+                max_concurrent_limit = pool_manager.calculate_total_max_connections()  # 直接累加所有服务器的max_connections
+                
+                # 实际协程数 = min(任务数, 最大并发数限制)
+                total_tasks = len(all_symbols)
+                actual_concurrent = min(total_tasks, max_concurrent_limit)
+                
+                # 获取服务器统计信息用于日志
+                stats = pool_manager.get_stats()
+                num_servers = stats.get("available", 0)
+                
+                # 🎯 性能埋点：步骤5开始 - 记录初始状态
+                pool_stats_before = {}
+                if self._shared_retry_pool:
+                    try:
+                        if hasattr(self._shared_retry_pool, '_phase1_pool') and self._shared_retry_pool._phase1_pool:
+                            phase1_pool = self._shared_retry_pool._phase1_pool
+                            if hasattr(phase1_pool, 'get_stats'):
+                                pool_stats_before = phase1_pool.get_stats()
+                    except Exception:
+                        pass
+                
+                logger.info(
+                    f"[步骤5-性能埋点] IPO下载开始: "
+                    f"任务数={total_tasks}, "
+                    f"活跃服务器数={num_servers}, "
+                    f"最大并发限制={max_concurrent_limit}, "
+                    f"实际并发数={actual_concurrent}, "
+                    f"连接池状态_前={pool_stats_before}",
+                    extra={"log_type": "SYSTEM", "scenario": "step5_performance"}
+                )
+                
+                logger.debug(
+                    f"[步骤5] IPO并发数计算: 任务数={total_tasks}, "
+                    f"活跃服务器数={num_servers}, "
+                    f"最大并发限制={max_concurrent_limit}（所有服务器max_connections累加）, "
+                    f"实际并发数={actual_concurrent}",
+                    extra={"log_type": "SYSTEM"}
+                )
                 
                 # 添加进度回调，显示下载进度（只输出到日志文件，不输出到terminal）
                 def progress_callback(current, total, message=""):
@@ -2438,11 +3263,56 @@ class ChinaStockEngine:
                 
                 # 只输出到日志文件，不输出到terminal
                 logger.info(f"开始下载 {len(all_symbols)} 个品种的IPO日期...")
+                logger.debug(
+                    f"[步骤5] IPO日期下载开始: 品种数={len(all_symbols)}, "
+                    f"实际并发数={actual_concurrent}（受限于服务器池总max_connections累加）",
+                    extra={"log_type": "SYSTEM"}
+                )
+                
+                # 使用共享连接池（如果可用）
+                shared_pool = self._shared_retry_pool
                 ipo_dates = download_ipo_dates(
                     symbols=all_symbols,
                     progress_callback=progress_callback,
-                    use_multiprocess=True,
-                    max_workers=4
+                    use_multiprocess=False,  # 改为单进程，使用共享连接池和协程并发
+                    shared_retry_pool=shared_pool,
+                    max_concurrent=actual_concurrent  # 限制并发数
+                )
+                download_elapsed = (time.time() - download_start_time) * 1000
+                
+                # 🎯 性能埋点：步骤5完成 - 记录详细统计
+                pool_stats_after = {}
+                if self._shared_retry_pool:
+                    try:
+                        if hasattr(self._shared_retry_pool, '_phase1_pool') and self._shared_retry_pool._phase1_pool:
+                            phase1_pool = self._shared_retry_pool._phase1_pool
+                            if hasattr(phase1_pool, 'get_stats'):
+                                pool_stats_after = phase1_pool.get_stats()
+                    except Exception:
+                        pass
+                
+                ipo_count = len(ipo_dates) if ipo_dates else 0
+                success_count = sum(1 for v in ipo_dates.values() if v is not None) if ipo_dates else 0
+                throughput = (total_tasks / (download_elapsed / 1000)) if download_elapsed > 0 else 0
+                avg_time_per_task = (download_elapsed / total_tasks) if total_tasks > 0 else 0
+                
+                logger.info(
+                    f"[步骤5-性能埋点] IPO下载完成: "
+                    f"总耗时={download_elapsed:.1f}ms ({download_elapsed/1000:.2f}秒), "
+                    f"总任务数={total_tasks}, "
+                    f"成功数={success_count}, "
+                    f"失败数={total_tasks - success_count}, "
+                    f"吞吐量={throughput:.1f}品种/秒, "
+                    f"平均耗时={avg_time_per_task:.1f}ms/品种, "
+                    f"实际并发数={actual_concurrent}, "
+                    f"连接池状态_后={pool_stats_after}",
+                    extra={"log_type": "SYSTEM", "scenario": "step5_performance"}
+                )
+                
+                logger.debug(
+                    f"[步骤5] IPO日期下载完成: 品种数={len(all_symbols)}, 下载数量={ipo_count}, "
+                    f"耗时={download_elapsed:.1f}ms",
+                    extra={"log_type": "SYSTEM"}
                 )
                 
                 # download_ipo_dates函数内部已经保存到缓存文件，这里只需要验证
@@ -2451,14 +3321,32 @@ class ChinaStockEngine:
                     logger.info(f"✅ IPO日期缓存已生成并保存: {cache_file} ({ipo_count}品种)")
                     stage_logger.info(f"│ ✅ IPO日期缓存已生成并保存（{ipo_count}品种）", extra={"log_type": "STAGE_NODE"})
                     stage_logger.info("└─────────────────────────────┘", extra={"log_type": "STAGE_NODE"})
+                    
+                    step_elapsed = (time.time() - step_start_time) * 1000
+                    logger.debug(
+                        f"[步骤5] _validate_ipo_cache完成: 总耗时={step_elapsed:.1f}ms, "
+                        f"缓存生成=True, IPO品种数={ipo_count}",
+                        extra={"log_type": "SYSTEM"}
+                    )
                     return {"success": True, "cache_valid": True, "cache_generated": True, "ipo_count": ipo_count}
                 else:
                     logger.warning("⚠️ IPO日期下载失败，返回空结果", extra={"log_type": "SYSTEM"})
                     stage_logger.info("│ ⚠️ IPO日期下载失败", extra={"log_type": "STAGE_NODE"})
                     stage_logger.info("└─────────────────────────────┘", extra={"log_type": "STAGE_NODE"})
+                    
+                    step_elapsed = (time.time() - step_start_time) * 1000
+                    logger.debug(
+                        f"[步骤5] _validate_ipo_cache完成: 总耗时={step_elapsed:.1f}ms, 下载失败=True",
+                        extra={"log_type": "SYSTEM"}
+                    )
                     return {"success": False, "error": "IPO日期下载失败"}
 
         except Exception as e:
+            step_elapsed = (time.time() - step_start_time) * 1000
+            logger.debug(
+                f"[步骤5] _validate_ipo_cache异常: 总耗时={step_elapsed:.1f}ms, 错误={e}",
+                extra={"log_type": "SYSTEM"}
+            )
             logger.error("❌ 验证IPO日期缓存失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             stage_logger.info(f"│ ❌ 验证IPO日期缓存失败: {e}", extra={"log_type": "STAGE_NODE"})
             stage_logger.info("└─────────────────────────────┘", extra={"log_type": "STAGE_NODE"})
@@ -2466,7 +3354,15 @@ class ChinaStockEngine:
 
     def _update_local_data_index(self, stage_logger) -> Dict[str, Any]:
         """步骤6: 更新本地数据索引（异步优化版）"""
+        import time
+        step_start_time = time.time()
         try:
+            # 🔍 详细埋点：步骤开始
+            logger.debug(
+                f"[步骤6] _update_local_data_index开始",
+                extra={"log_type": "SYSTEM"}
+            )
+            
             import threading
             
             # 扫描本地数据文件（按照文档顺序，先扫描）
@@ -2474,8 +3370,19 @@ class ChinaStockEngine:
             
             # 初始化StorageManager（在步骤框内）
             if self.storage_manager is None:
+                storagemanager_init_start_time = time.time()
                 from .data_storage import StorageManager
                 self.storage_manager = StorageManager()
+                storagemanager_init_elapsed = (time.time() - storagemanager_init_start_time) * 1000
+                logger.debug(
+                    f"[步骤6] StorageManager初始化完成: 耗时={storagemanager_init_elapsed:.1f}ms",
+                    extra={"log_type": "SYSTEM"}
+                )
+            else:
+                logger.debug(
+                    f"[步骤6] StorageManager已存在，跳过初始化",
+                    extra={"log_type": "SYSTEM"}
+                )
             stage_logger.info("│ ✅ StorageManager初始化完成", extra={"log_type": "STAGE_NODE"})
             
             # 🚀 优化2：本地数据索引扫描改为后台异步执行
@@ -2487,10 +3394,16 @@ class ChinaStockEngine:
             stage_logger.info("└─────────────────────────────┘", extra={"log_type": "STAGE_NODE"})
             
             # 启动后台线程扫描本地数据
+            thread_start_time = time.time()
             def scan_in_background():
                 """在后台线程扫描本地数据"""
                 try:
+                    background_scan_start_time = time.time()
                     logger.info("📍 后台线程开始扫描本地数据索引...")
+                    logger.debug(
+                        f"[步骤6] 后台线程扫描开始",
+                        extra={"log_type": "SYSTEM"}
+                    )
                     
                     # 获取品种总数（用于显示扫描进度）
                     symbol_count = 0
@@ -2547,15 +3460,26 @@ class ChinaStockEngine:
                     logger.error("❌ 后台扫描本地数据索引失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             
             # 启动后台线程
+            thread_create_start_time = time.time()
             scan_thread = threading.Thread(
                 target=scan_in_background,
                 daemon=True,
                 name="LocalDataIndexScan"
             )
             scan_thread.start()
+            thread_create_elapsed = (time.time() - thread_create_start_time) * 1000
+            logger.debug(
+                f"[步骤6] 后台线程启动完成: 耗时={thread_create_elapsed:.1f}ms",
+                extra={"log_type": "SYSTEM"}
+            )
             logger.info("✅ 本地数据索引扫描已在后台启动")
             
             # 立即返回，不等待扫描完成
+            step_elapsed = (time.time() - step_start_time) * 1000
+            logger.debug(
+                f"[步骤6] _update_local_data_index完成: 总耗时={step_elapsed:.1f}ms, 异步执行=True",
+                extra={"log_type": "SYSTEM"}
+            )
             return {
                 "success": True,
                 "async": True,  # 标记为异步执行
@@ -2564,30 +3488,64 @@ class ChinaStockEngine:
             }
 
         except Exception as e:
+            step_elapsed = (time.time() - step_start_time) * 1000
+            logger.debug(
+                f"[步骤6] _update_local_data_index异常: 总耗时={step_elapsed:.1f}ms, 错误={e}",
+                extra={"log_type": "SYSTEM"}
+            )
             logger.error("❌ 启动本地数据索引扫描失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return {"success": False, "error": str(e)}
 
     def _check_data_update_status(self, stage_logger) -> Dict[str, Any]:
         """步骤7: 检查数据更新状态（延迟优化版）"""
+        import time
+        step_start_time = time.time()
         try:
+            # 🔍 详细埋点：步骤开始
+            logger.debug(
+                f"[步骤7] _check_data_update_status开始",
+                extra={"log_type": "SYSTEM"}
+            )
+            
             import threading
-            import time
             
             # 检查数据新鲜度（按照文档顺序，先检查）
             stage_logger.info("│ ⏳ 检查数据新鲜度...", extra={"log_type": "STAGE_NODE"})
             
             # 初始化DataSensor（在步骤框内）
             if self.data_sensor is None:
+                datasensor_init_start_time = time.time()
                 from .data_quality import DataSensor
                 self.data_sensor = DataSensor(self.event_engine)
+                datasensor_init_elapsed = (time.time() - datasensor_init_start_time) * 1000
+                logger.debug(
+                    f"[步骤7] DataSensor初始化完成: 耗时={datasensor_init_elapsed:.1f}ms",
+                    extra={"log_type": "SYSTEM"}
+                )
+            else:
+                logger.debug(
+                    f"[步骤7] DataSensor已存在，跳过初始化",
+                    extra={"log_type": "SYSTEM"}
+                )
             stage_logger.info("│ ✅ DataSensor初始化完成", extra={"log_type": "STAGE_NODE"})
             
             # 初始化UnifiedDataManager（在步骤框内）
             stage_logger.info("│ ⏳ 初始化UnifiedDataManager...", extra={"log_type": "STAGE_NODE"})
             if self.unified_data_manager is None:
+                unifieddatamanager_init_start_time = time.time()
                 from .data_runtime import UnifiedDataManager
                 # 🔧 关键修复：传递 self.event_engine，而不是 self
                 self.unified_data_manager = UnifiedDataManager(self.event_engine)
+                unifieddatamanager_init_elapsed = (time.time() - unifieddatamanager_init_start_time) * 1000
+                logger.debug(
+                    f"[步骤7] UnifiedDataManager初始化完成: 耗时={unifieddatamanager_init_elapsed:.1f}ms",
+                    extra={"log_type": "SYSTEM"}
+                )
+            else:
+                logger.debug(
+                    f"[步骤7] UnifiedDataManager已存在，跳过初始化",
+                    extra={"log_type": "SYSTEM"}
+                )
             stage_logger.info("│ ✅ UnifiedDataManager初始化完成", extra={"log_type": "STAGE_NODE"})
             stage_logger.info("│   - 四层数据融合已启用", extra={"log_type": "STAGE_NODE"})
             
@@ -2666,15 +3624,26 @@ class ChinaStockEngine:
                     logger.error("❌ 后台检查数据更新状态失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             
             # 启动后台线程
+            thread_create_start_time = time.time()
             check_thread = threading.Thread(
                 target=check_in_background,
                 daemon=True,
                 name="DataUpdateStatusCheck"
             )
             check_thread.start()
+            thread_create_elapsed = (time.time() - thread_create_start_time) * 1000
+            logger.debug(
+                f"[步骤7] 后台线程启动完成: 耗时={thread_create_elapsed:.1f}ms",
+                extra={"log_type": "SYSTEM"}
+            )
             logger.info("✅ 数据更新状态检查已在后台启动（延迟2秒）")
             
             # 立即返回简化结果
+            step_elapsed = (time.time() - step_start_time) * 1000
+            logger.debug(
+                f"[步骤7] _check_data_update_status完成: 总耗时={step_elapsed:.1f}ms, 异步执行=True",
+                extra={"log_type": "SYSTEM"}
+            )
             return {
                 "success": True,
                 "async": True,  # 标记为异步执行
@@ -2685,25 +3654,85 @@ class ChinaStockEngine:
             }
 
         except Exception as e:
+            step_elapsed = (time.time() - step_start_time) * 1000
+            logger.debug(
+                f"[步骤7] _check_data_update_status异常: 总耗时={step_elapsed:.1f}ms, 错误={e}",
+                extra={"log_type": "SYSTEM"}
+            )
             logger.error("❌ 启动数据更新状态检查失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return {"success": False, "error": str(e)}
 
     def _start_file_watcher(self, stage_logger) -> Dict[str, Any]:
         """步骤8: 启动文件监控"""
+        import time
+        step_start_time = time.time()
         try:
+            # 🔍 详细埋点：步骤开始
+            logger.debug(
+                f"[步骤8] _start_file_watcher开始",
+                extra={"log_type": "SYSTEM"}
+            )
+            
             from pathlib import Path
+            
+            # 获取监控目录路径
+            data_dir_start_time = time.time()
             data_dir = self.config_manager.get_data_dir() / "kline"
+            data_dir_path = str(data_dir.absolute())
+            data_dir_elapsed = (time.time() - data_dir_start_time) * 1000
+            logger.debug(
+                f"[步骤8] 监控目录路径获取完成: 目录路径={data_dir_path}, 耗时={data_dir_elapsed:.1f}ms",
+                extra={"log_type": "SYSTEM"}
+            )
+            
             stage_logger.info("│ ⏳ 启动DataFileWatcher...", extra={"log_type": "STAGE_NODE"})
             stage_logger.info("│ ✅ 文件监控器已启动", extra={"log_type": "STAGE_NODE"})
             stage_logger.info(f"│   - 监控目录: {data_dir.absolute()}", extra={"log_type": "STAGE_NODE"})
             stage_logger.info("│   - 监控模式: 实时变更检测", extra={"log_type": "STAGE_NODE"})
             stage_logger.info("└─────────────────────────────┘", extra={"log_type": "STAGE_NODE"})
+            
             # 文件监控由DataFileWatcher管理
             # 这里只记录日志，实际启动在需要时进行
             logger.info("✅ 文件监控将在需要时启动")
+            
+            # 🎯 步骤8完成后，关闭连接池（连接池复用机制）
+            close_pool_start_time = time.time()
+            logger.debug(
+                "[步骤8] 开始关闭连接池...",
+                extra={"log_type": "SYSTEM"}
+            )
+            
+            # 🎯 关闭所有连接池（连接池复用机制）
+            from .load_balancer import get_server_pool_manager
+            pool_manager = get_server_pool_manager()
+            
+            # 关闭RetryConnectionPool连接池
+            pool_manager.close_retry_connection_pool()
+            
+            # 关闭ProcessPoolExecutor连接池
+            pool_manager.close_connection_pool()
+            
+            # 清空本地引用
+            self._shared_retry_pool = None
+            close_pool_elapsed = (time.time() - close_pool_start_time) * 1000
+            logger.debug(
+                f"[步骤8] 所有连接池关闭完成: 耗时={close_pool_elapsed:.1f}ms",
+                extra={"log_type": "SYSTEM"}
+            )
+            
+            step_elapsed = (time.time() - step_start_time) * 1000
+            logger.debug(
+                f"[步骤8] _start_file_watcher完成: 总耗时={step_elapsed:.1f}ms, 监控目录={data_dir_path}",
+                extra={"log_type": "SYSTEM"}
+            )
             return {"success": True}
 
         except Exception as e:
+            step_elapsed = (time.time() - step_start_time) * 1000
+            logger.debug(
+                f"[步骤8] _start_file_watcher异常: 总耗时={step_elapsed:.1f}ms, 错误={e}",
+                extra={"log_type": "SYSTEM"}
+            )
             logger.error("❌ 启动文件监控失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return {"success": False, "error": str(e)}
 

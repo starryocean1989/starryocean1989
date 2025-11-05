@@ -155,10 +155,10 @@ from .monitor_toolkit import (
 )
 
 # ==============================================================================
-# 从unified_log_system导入 - 统一日志系统
+# 从logging_system导入 - 统一日志系统（v6.0简化重构版）
 # ==============================================================================
 
-from .unified_log_system import (
+from .logging_system import (
     # 全局单例
     get_logging_hub,
 )

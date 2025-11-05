@@ -1,0 +1,272 @@
+{
+  "total_companies": 33,
+  "tested_companies": 33,
+  "concurrent_limit": 3,
+  "test_time": "2025-11-05T20:03:12.653169",
+  "results": [
+    {
+      "name": "东方",
+      "ip": "123.125.108.54",
+      "port": 7709,
+      "max_connections": 20,
+      "test_time": "2025-11-05T19:55:35.916803",
+      "company": "东方"
+    },
+    {
+      "name": "东方财富",
+      "ip": "61.142.1.47",
+      "port": 7709,
+      "max_connections": 20,
+      "test_time": "2025-11-05T19:55:35.916803",
+      "company": "东方财富"
+    },
+    {
+      "name": "中银",
+      "ip": "114.28.171.4",
+      "port": 7709,
+      "max_connections": 19,
+      "test_time": "2025-11-05T19:55:35.916803",
+      "company": "中银"
+    },
+    {
+      "name": "信达",
+      "ip": "121.12.106.161",
+      "port": 7709,
+      "max_connections": 20,
+      "test_time": "2025-11-05T19:56:09.918943",
+      "company": "信达"
+    },
+    {
+      "name": "光大",
+      "ip": "58.210.106.69",
+      "port": 7709,
+      "max_connections": 4,
+      "test_time": "2025-11-05T19:56:27.494873",
+      "company": "光大"
+    },
+    {
+      "name": "兴业",
+      "ip": "103.251.85.176",
+      "port": 7709,
+      "max_connections": 20,
+      "test_time": "2025-11-05T19:56:33.468163",
+      "company": "兴业"
+    },
+    {
+      "name": "华创",
+      "ip": "103.141.11.1",
+      "port": 7709,
+      "max_connections": 20,
+      "test_time": "2025-11-05T19:56:48.236808",
+      "company": "华创"
+    },
+    {
+      "name": "华安",
+      "ip": "117.71.98.214",
+      "port": 7709,
+      "max_connections": 20,
+      "test_time": "2025-11-05T19:57:03.978644",
+      "company": "华安"
+    },
+    {
+      "name": "华西",
+      "ip": "117.139.166.93",
+      "port": 7709,
+      "max_connections": 20,
+      "test_time": "2025-11-05T19:57:07.497934",
+      "company": "华西"
+    },
+    {
+      "name": "南京",
+      "ip": "111.50.79.180",
+      "port": 7709,
+      "max_connections": 20,
+      "test_time": "2025-11-05T19:57:32.873153",
+      "company": "南京"
+    },
+    {
+      "name": "国信",
+      "ip": "175.6.43.87",
+      "port": 7709,
+      "max_connections": 4,
+      "test_time": "2025-11-05T19:57:43.622796",
+      "company": "国信"
+    },
+    {
+      "name": "国元",
+      "ip": "220.248.233.5",
+      "port": 7709,
+      "max_connections": 20,
+      "test_time": "2025-11-05T19:57:58.248540",
+      "company": "国元"
+    },
+    {
+      "name": "国投",
+      "ip": "182.131.3.226",
+      "port": 7709,
+      "max_connections": 2,
+      "test_time": "2025-11-05T19:58:07.382595",
+      "company": "国投"
+    },
+    {
+      "name": "国海",
+      "ip": "101.37.103.255",
+      "port": 7709,
+      "max_connections": 20,
+      "test_time": "2025-11-05T19:58:11.960522",
+      "company": "国海"
+    },
+    {
+      "name": "国盛",
+      "ip": "59.63.158.246",
+      "port": 7709,
+      "max_connections": 20,
+      "test_time": "2025-11-05T19:58:12.440937",
+      "company": "国盛"
+    },
+    {
+      "name": "国联",
+      "ip": "112.81.159.214",
+      "port": 7709,
+      "max_connections": 20,
+      "test_time": "2025-11-05T19:58:15.509685",
+      "company": "国联"
+    },
+    {
+      "name": "国金",
+      "ip": "42.177.92.38",
+      "port": 7709,
+      "max_connections": 20,
+      "test_time": "2025-11-05T19:58:27.392845",
+      "company": "国金"
+    },
+    {
+      "name": "天风",
+      "ip": "182.131.3.232",
+      "port": 7709,
+      "max_connections": 2,
+      "test_time": "2025-11-05T19:58:29.278923",
+      "company": "天风"
+    },
+    {
+      "name": "太平洋",
+      "ip": "114.247.168.187",
+      "port": 7709,
+      "max_connections": 20,
+      "test_time": "2025-11-05T19:58:38.993541",
+      "company": "太平洋"
+    },
+    {
+      "name": "广发",
+      "ip": "183.60.224.184",
+      "port": 7709,
+      "max_connections": 20,
+      "test_time": "2025-11-05T19:58:53.095404",
+      "company": "广发"
+    },
+    {
+      "name": "招商",
+      "ip": "120.53.204.206",
+      "port": 7709,
+      "max_connections": 19,
+      "test_time": "2025-11-05T19:59:08.007624",
+      "company": "招商"
+    },
+    {
+      "name": "方正",
+      "ip": "124.232.133.136",
+      "port": 7709,
+      "max_connections": 20,
+      "test_time": "2025-11-05T19:59:30.193988",
+      "company": "方正"
+    },
+    {
+      "name": "湘财",
+      "ip": "114.141.177.42",
+      "port": 7709,
+      "max_connections": 20,
+      "test_time": "2025-11-05T19:59:41.382925",
+      "company": "湘财"
+    },
+    {
+      "name": "申万宏源",
+      "ip": "123.125.108.72",
+      "port": 7709,
+      "max_connections": 20,
+      "test_time": "2025-11-05T19:59:51.887409",
+      "company": "申万宏源"
+    },
+    {
+      "name": "第一创业",
+      "ip": "123.206.1.187",
+      "port": 7709,
+      "max_connections": 20,
+      "test_time": "2025-11-05T19:59:55.470388",
+      "company": "第一创业"
+    },
+    {
+      "name": "红塔",
+      "ip": "115.159.68.13",
+      "port": 7709,
+      "max_connections": 20,
+      "test_time": "2025-11-05T20:00:01.461014",
+      "company": "红塔"
+    },
+    {
+      "name": "西南",
+      "ip": "113.207.37.105",
+      "port": 7709,
+      "max_connections": 1,
+      "test_time": "2025-11-05T20:00:09.055103",
+      "company": "西南"
+    },
+    {
+      "name": "西部",
+      "ip": "221.11.55.179",
+      "port": 7709,
+      "max_connections": 20,
+      "test_time": "2025-11-05T20:00:14.939415",
+      "company": "西部"
+    },
+    {
+      "name": "财通",
+      "ip": "218.108.42.89",
+      "port": 7709,
+      "max_connections": 20,
+      "test_time": "2025-11-05T20:00:15.500882",
+      "company": "财通"
+    },
+    {
+      "name": "银河",
+      "ip": "1.202.143.37",
+      "port": 7709,
+      "max_connections": 20,
+      "test_time": "2025-11-05T20:00:47.186823",
+      "company": "银河"
+    },
+    {
+      "name": "长城",
+      "ip": "121.13.222.157",
+      "port": 7709,
+      "max_connections": 20,
+      "test_time": "2025-11-05T20:00:52.365318",
+      "company": "长城"
+    },
+    {
+      "name": "长江",
+      "ip": "119.97.142.136",
+      "port": 7709,
+      "max_connections": 12,
+      "test_time": "2025-11-05T20:00:59.247021",
+      "company": "长江"
+    },
+    {
+      "name": "首创",
+      "ip": "218.6.170.50",
+      "port": 7709,
+      "max_connections": 19,
+      "test_time": "2025-11-05T20:01:35.619738",
+      "company": "首创"
+    }
+  ]
+}

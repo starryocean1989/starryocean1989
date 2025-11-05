@@ -59,15 +59,7 @@ class StartupStage(ABC):
         self.name = name
         self.description = description
         self.logger = logging.getLogger(f"backend.startup.stages.{name}")
-        self.startup_logger: Optional[Any] = None  # StartupLogger实例，在初始化时设置
-
-    def set_startup_logger(self, startup_logger: Any):
-        """设置启动日志记录器
-
-        Args:
-            startup_logger: StartupLogger实例
-        """
-        self.startup_logger = startup_logger
+        # 注意：新架构不再需要startup_logger，日志系统已统一管理
 
     async def execute(self, context: StartupContext) -> StageResult:
         """执行阶段逻辑（模板方法）
@@ -83,14 +75,11 @@ class StartupStage(ABC):
         start_time = time.time()
 
         try:
-            # 记录阶段开始
-            if self.startup_logger:
-                self.startup_logger.stage_start(self.name)
-            else:
-                self.logger.info(
-                    f"📍 阶段 {self.name} 开始",
-                    extra={"log_type": "STAGE_NODE", "scenario": "application_startup"}
-                )
+            # 记录阶段开始（新架构直接使用logger）
+            self.logger.info(
+                f"📍 阶段 {self.name} 开始",
+                extra={"log_type": "STAGE_NODE", "scenario": "application_startup"}
+            )
 
             # 执行阶段逻辑
             result = await self._execute(context)
@@ -99,26 +88,20 @@ class StartupStage(ABC):
             elapsed_ms = (time.time() - start_time) * 1000
             result.elapsed_ms = elapsed_ms
 
-            # 记录阶段成功
+            # 记录阶段成功（新架构直接使用logger）
             if result.success:
-                if self.startup_logger:
-                    self.startup_logger.stage_success(self.name, elapsed_ms)
-                else:
-                    self.logger.info(
-                        f"✅ 阶段 {self.name} 完成 ({elapsed_ms:.0f}ms)",
-                        extra={"log_type": "STAGE_NODE", "scenario": "application_startup"}
-                    )
+                self.logger.info(
+                    f"✅ 阶段 {self.name} 完成 ({elapsed_ms:.0f}ms)",
+                    extra={"log_type": "STAGE_NODE", "scenario": "application_startup"}
+                )
 
-            # 记录阶段失败
+            # 记录阶段失败（新架构直接使用logger）
             else:
-                if self.startup_logger:
-                    self.startup_logger.stage_error(self.name, result.error)
-                else:
-                    self.logger.error(
-                        f"❌ [StartupStage] 阶段 {self.name} 失败: {result.message}",
-                        exc_info=result.error,
-                        extra={"log_type": "SYSTEM", "scenario": "application_startup"}
-                    )
+                self.logger.error(
+                    f"❌ [StartupStage] 阶段 {self.name} 失败: {result.message}",
+                    exc_info=result.error,
+                    extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+                )
 
             return result
 
@@ -128,20 +111,18 @@ class StartupStage(ABC):
 
             # 记录严重错误（启动阶段失败）
             self.logger.critical(
-                "🔥 启动阶段 %s 执行失败: %s", 
-                self.name, e, 
-                exc_info=True, 
+                "🔥 启动阶段 %s 执行失败: %s",
+                self.name, e,
+                exc_info=True,
                 extra={"log_type": "ALERT", "scenario": "application_startup"}
             )
-            
-            if self.startup_logger:
-                self.startup_logger.stage_error(self.name, e)
-            else:
-                self.logger.error(
-                    f"❌ [StartupStage] 阶段 {self.name} 发生异常", 
-                    exc_info=True, 
-                    extra={"log_type": "SYSTEM", "scenario": "application_startup"}
-                )
+
+            # 新架构直接使用logger
+            self.logger.error(
+                f"❌ [StartupStage] 阶段 {self.name} 发生异常",
+                exc_info=True,
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+            )
 
             return StageResult(
                 success=False,
@@ -171,7 +152,7 @@ class StartupStage(ABC):
             context: 启动上下文
         """
         self.logger.warning(
-            f"阶段 {self.name} 未实现回滚逻辑", 
+            f"阶段 {self.name} 未实现回滚逻辑",
             extra={"log_type": "SYSTEM", "scenario": "application_startup"}
         )
         # 子类可以重写此方法实现回滚逻辑

@@ -30,7 +30,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum, auto
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from backend.infrastructure.tdx_asyncio.retry_connection_pool import RetryConnectionPool
 
 # 导入TDX异步API
 from backend.infrastructure.tdx_asyncio import AsyncTdxHq_API
@@ -395,6 +398,7 @@ class ServerInfo:
     ping_time: float = 0.0  # 延迟（毫秒）
     available: bool = True
     last_test: Optional[datetime] = None
+    max_connections: int = 20  # 最大并发连接数（默认20）
 
 
 class ServerPoolManager:
@@ -419,47 +423,35 @@ class ServerPoolManager:
             return
         
         try:
-            from backend.infrastructure.tdx_asyncio.constants import HQ_HOSTS_ALL, BROKER_SERVERS_7709
-            
-            # 合并所有7709端口的服务器列表
-            all_7709_servers = list(HQ_HOSTS_ALL)
-            
-            # 添加BROKER_SERVERS_7709中的服务器
-            all_7709_servers.extend(BROKER_SERVERS_7709)
-            
+            from backend.infrastructure.tdx_asyncio.constants import BROKER_SERVERS_7709
+
+            # ✅ 直接使用BROKER_SERVERS_7709（已包含所有服务器，格式：(名称, IP, 端口, 最大连接数)）
+            all_7709_servers = list(BROKER_SERVERS_7709)
+
             # 使用集合去重（基于(ip, port)）
             seen = set()
             unique_servers = []
-            for name, ip, port in all_7709_servers:
+            for name, ip, port, max_conn in all_7709_servers:
                 if port == 7709:
                     key = (ip, port)
                     if key not in seen:
                         seen.add(key)
-                        unique_servers.append((name, ip, port))
+                        # 保存完整的4字段信息，用于后续处理
+                        unique_servers.append((name, ip, port, max_conn))
             
-            # 提取所有7709端口的IPv4和IPv6服务器
-            for name, ip, port in unique_servers:
-                # 判断IPv4还是IPv6（简单判断：包含':'为IPv6）
-                if ':' in ip and not ip.strip('[]').count(':') <= 1:
+            # 提取所有7709端口的IPv4和IPv6服务器（包含最大连接数信息）
+            for name, ip, port, max_conn in unique_servers:
+                server_info = {"ip": ip, "port": port, "name": name, "max_connections": max_conn}
+
+                # 判断IPv4还是IPv6
+                if ':' in ip and ip.strip('[]').count(':') > 1:
                     # IPv6（需要去掉中括号）
                     clean_ip = ip.strip('[]')
-                    cls.DEFAULT_IPV6_SERVERS.append(
-                        {"ip": clean_ip, "port": port, "name": name}
-                    )
+                    server_info["ip"] = clean_ip
+                    cls.DEFAULT_IPV6_SERVERS.append(server_info)
                 else:
-                    # IPv4（不包含冒号或只包含一个冒号的是IPv4地址格式，如192.168.1.1）
-                    # IPv6地址通常包含多个冒号
-                    if ip.strip('[]').count(':') > 1:
-                        # IPv6（需要去掉中括号）
-                        clean_ip = ip.strip('[]')
-                        cls.DEFAULT_IPV6_SERVERS.append(
-                            {"ip": clean_ip, "port": port, "name": name}
-                        )
-                    else:
-                        # IPv4
-                        cls.DEFAULT_IPV4_SERVERS.append(
-                            {"ip": ip, "port": port, "name": name}
-                        )
+                    # IPv4
+                    cls.DEFAULT_IPV4_SERVERS.append(server_info)
             
             logger.info(f"✅ 从constants.py加载默认服务器: IPv4={len(cls.DEFAULT_IPV4_SERVERS)}, IPv6={len(cls.DEFAULT_IPV6_SERVERS)}")
         except Exception as e:
@@ -494,6 +486,11 @@ class ServerPoolManager:
         # 🔧 修复：使用 ConfigManager 获取缓存目录，确保使用 data/cache 目录
         cache_dir = self.config_manager.get_cache_dir()
         self._cache_file = cache_dir / "server_pool.json"
+
+        # 🎯 连接池复用机制
+        self._connection_pool: Optional[ProcessPoolExecutor] = None  # ProcessPoolExecutor连接池（用于启动时复用）
+        self._retry_connection_pool: Optional['RetryConnectionPool'] = None  # RetryConnectionPool连接池（用于启动时复用）
+        self._pool_mode = "auto"  # auto: 自动管理, manual: 手动管理
 
         # 加载服务器
         self._load_servers()
@@ -557,6 +554,7 @@ class ServerPoolManager:
                             ip=s.get("ip", ""),
                             port=s.get("port", 7709),
                             name=s.get("name", ""),
+                            max_connections=s.get("max_connections", 20),
                             ping_time=s.get("ping_time", 9999.0),
                             available=s.get("available", True),  # 🔧 从缓存加载，保留缓存中的状态
                             last_test=datetime.fromisoformat(s["last_test"]) if s.get("last_test") else None
@@ -569,6 +567,7 @@ class ServerPoolManager:
                             ip=s.get("ip", ""),
                             port=s.get("port", 7709),
                             name=s.get("name", ""),
+                            max_connections=s.get("max_connections", 20),
                             ping_time=s.get("ping_time", 9999.0),
                             available=s.get("available", True),  # 🔧 从缓存加载，保留缓存中的状态
                             last_test=datetime.fromisoformat(s["last_test"]) if s.get("last_test") else None
@@ -642,9 +641,9 @@ class ServerPoolManager:
             key=lambda s: s.ping_time
         )
 
-        # 转换为字典
+        # 转换为字典（包含max_connections信息）
         return [
-            {"ip": s.ip, "port": s.port, "name": s.name}
+            {"ip": s.ip, "port": s.port, "name": s.name, "max_connections": s.max_connections}
             for s in sorted_servers[:limit]
         ]
 
@@ -667,9 +666,9 @@ class ServerPoolManager:
             key=lambda s: s.ping_time
         )
 
-        # 转换为字典
+        # 转换为字典（包含max_connections信息）
         return [
-            {"ip": s.ip, "port": s.port, "name": s.name}
+            {"ip": s.ip, "port": s.port, "name": s.name, "max_connections": s.max_connections}
             for s in sorted_servers[:limit]
         ]
 
@@ -696,14 +695,18 @@ class ServerPoolManager:
         thread = threading.Thread(target=update_cache, daemon=True, name="ServerCacheUpdate")
         thread.start()
 
-    def test_servers(self, max_workers: Optional[int] = None):
+    def test_servers(self, max_workers: Optional[int] = None, keep_pool: bool = False):
         """测试所有服务器（多进程+多协程架构）
 
         Args:
             max_workers: 最大进程数，如果为None则根据服务器数量自动设置
+            keep_pool: 是否保持连接池（True=不关闭，False=立即关闭）
         """
-        scenario = "manual_speedtest"
-        logger.debug("🔍 开始测试服务器（多进程+多协程架构）...", extra={"log_type": "SYSTEM", "scenario": scenario})
+        scenario = "manual_speedtest" if not keep_pool else "startup_speedtest"
+        logger.debug(
+            f"🔍 开始测试服务器（多进程+多协程架构）... keep_pool={keep_pool}", 
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
 
         all_servers = self._ipv4_servers + self._ipv6_servers
         ipv4_count = len(self._ipv4_servers)
@@ -751,7 +754,21 @@ class ServerPoolManager:
             extra={"log_type": "SYSTEM", "scenario": scenario}
         )
         
-        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        # 🎯 连接池复用机制：根据keep_pool参数决定是否保持连接池
+        if keep_pool:
+            # 启动时模式：创建连接池并保持
+            executor = ProcessPoolExecutor(max_workers=max_workers)
+            self._connection_pool = executor
+            self._pool_mode = "manual"
+            logger.info(
+                f"✅ 连接池已创建并保留（启动模式），供后续步骤复用",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+        else:
+            # 手动测速模式：使用with语句自动关闭
+            executor = ProcessPoolExecutor(max_workers=max_workers)
+        
+        try:
             futures = {
                 executor.submit(_test_server_group_async, [(s.ip, s.port, s.name) for s in group], scenario): group
                 for group in server_groups
@@ -813,6 +830,14 @@ class ServerPoolManager:
                     )
                     for server in server_group:
                         server.available = False
+        finally:
+            # 🎯 连接池复用机制：只有在手动测速模式下才立即关闭
+            if not keep_pool:
+                executor.shutdown(wait=True)
+                logger.info(
+                    f"✅ 连接池已关闭（手动测速模式）",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
 
         test_elapsed = time.time() - test_start_time
         available_count = sum(1 for s in all_servers if s.available)
@@ -862,6 +887,7 @@ class ServerPoolManager:
                     "ip": s.ip,
                     "port": s.port,
                     "name": s.name,
+                    "max_connections": s.max_connections,
                     "ping_time": s.ping_time,
                     "available": s.available,
                     "last_test": s.last_test.isoformat() if s.last_test else None
@@ -882,6 +908,7 @@ class ServerPoolManager:
                     "ip": s.ip,
                     "port": s.port,
                     "name": s.name,
+                    "max_connections": s.max_connections,
                     "ping_time": s.ping_time,
                     "available": s.available,
                     "last_test": s.last_test.isoformat() if s.last_test else None
@@ -977,6 +1004,113 @@ class ServerPoolManager:
         """停止服务器池管理器（向后兼容方法，实际无操作）"""
         logger.debug("服务器池管理器stop()被调用（无实际操作）")
 
+    def close_connection_pool(self) -> None:
+        """关闭连接池（在步骤8完成后调用）
+        
+        用于启动时的连接池复用机制：
+        - 步骤1测速时保持连接池（keep_pool=True）
+        - 步骤2-7复用连接池
+        - 步骤8完成后关闭连接池
+        """
+        if self._connection_pool:
+            try:
+                logger.info("🔧 正在关闭服务器池连接池...", extra={"log_type": "SYSTEM"})
+                self._connection_pool.shutdown(wait=True)
+                self._connection_pool = None
+                self._pool_mode = "auto"
+                logger.info("✅ 服务器池连接池已关闭", extra={"log_type": "SYSTEM"})
+            except Exception as e:
+                logger.warning(f"⚠️ 关闭连接池时发生异常: {e}", exc_info=True, extra={"log_type": "ALERT"})
+                self._connection_pool = None
+                self._pool_mode = "auto"
+        else:
+            logger.debug("连接池已经关闭或未创建，无需操作", extra={"log_type": "SYSTEM"})
+
+    def get_or_create_retry_pool(self, keep_pool: bool = False, max_connections: Optional[int] = None) -> 'RetryConnectionPool':
+        """获取或创建RetryConnectionPool（封装连接池复用机制）
+        
+        参考ProcessPoolExecutor的keep_pool机制：
+        - keep_pool=True: 创建并保持连接池，供后续步骤复用
+        - keep_pool=False: 创建临时连接池，使用后自动关闭
+        
+        Args:
+            keep_pool: 是否保持连接池（True=不关闭，False=立即关闭）
+            max_connections: 最大连接数（None=自动计算，每个服务器一个连接；指定值=限制总连接数）
+        
+        Returns:
+            RetryConnectionPool实例
+        """
+        scenario = "manual_task" if not keep_pool else "startup_task"
+        
+        # 如果已存在且需要保持，直接返回
+        if keep_pool and self._retry_connection_pool is not None:
+            logger.debug(
+                f"[RETRY-POOL] 复用已存在的RetryConnectionPool（启动模式）",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            return self._retry_connection_pool
+        
+        # 创建新的连接池
+        from backend.infrastructure.tdx_asyncio.retry_connection_pool import RetryConnectionPool
+        
+        logger.debug(
+            f"[RETRY-POOL] 开始创建RetryConnectionPool: keep_pool={keep_pool}, max_connections={max_connections}",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+        
+        retry_pool = RetryConnectionPool(
+            server_pool_manager=self,
+            phase1_max_attempts=10,
+            phase2_max_attempts=5,
+            connection_timeout=5.0,
+            enable_connection_pool=True,
+            max_connections=max_connections,
+        )
+        
+        if keep_pool:
+            # 保持连接池供后续步骤复用
+            self._retry_connection_pool = retry_pool
+            max_conn_str = str(max_connections) if max_connections else "自动（每个服务器一个连接）"
+            logger.info(
+                f"✅ RetryConnectionPool已创建并保留（启动模式，max_connections={max_conn_str}），供后续步骤复用",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+        else:
+            logger.debug(
+                f"[RETRY-POOL] RetryConnectionPool已创建（临时模式）",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+        
+        return retry_pool
+
+    def close_retry_connection_pool(self) -> None:
+        """关闭RetryConnectionPool连接池（在步骤8完成后调用）
+        
+        用于启动时的连接池复用机制：
+        - 步骤1测速时保持连接池（keep_pool=True）
+        - 步骤2-7复用连接池
+        - 步骤8完成后关闭连接池
+        """
+        if self._retry_connection_pool:
+            try:
+                import asyncio
+                logger.info("🔧 正在关闭RetryConnectionPool连接池...", extra={"log_type": "SYSTEM"})
+                
+                # RetryConnectionPool的关闭需要异步执行
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    loop.run_until_complete(self._retry_connection_pool.close_all())
+                    self._retry_connection_pool = None
+                    logger.info("✅ RetryConnectionPool连接池已关闭", extra={"log_type": "SYSTEM"})
+                finally:
+                    loop.close()
+            except Exception as e:
+                logger.warning(f"⚠️ 关闭RetryConnectionPool时发生异常: {e}", exc_info=True, extra={"log_type": "ALERT"})
+                self._retry_connection_pool = None
+        else:
+            logger.debug("RetryConnectionPool已经关闭或未创建，无需操作", extra={"log_type": "SYSTEM"})
+
     def _start_multiprocess(self) -> bool:
         """启动多进程测速（向后兼容方法）
 
@@ -1008,15 +1142,19 @@ class ServerPoolManager:
                         "ip": server.ip,
                         "port": server.port,
                         "name": server.name,
+                        "max_connections": server.max_connections,
                         "ping_time": server.ping_time,
                         "available": server.available,
                         "last_test": server.last_test.isoformat() if server.last_test else None
                     }
                 elif isinstance(server, dict):
-                    # 已经是字典，确保last_test是字符串格式
+                    # 已经是字典，确保last_test是字符串格式，包含max_connections
                     result = dict(server)
                     if "last_test" in result and result["last_test"] and not isinstance(result["last_test"], str):
                         result["last_test"] = result["last_test"].isoformat() if hasattr(result["last_test"], "isoformat") else None
+                    # 确保包含max_connections字段
+                    if "max_connections" not in result:
+                        result["max_connections"] = 20  # 默认值
                     return result
                 else:
                     # 未知格式，尝试转换
@@ -1024,6 +1162,7 @@ class ServerPoolManager:
                         "ip": getattr(server, "ip", ""),
                         "port": getattr(server, "port", 7709),
                         "name": getattr(server, "name", ""),
+                        "max_connections": getattr(server, "max_connections", 20),
                         "ping_time": getattr(server, "ping_time", 9999.0),
                         "available": getattr(server, "available", False),
                         "last_test": getattr(server, "last_test", None)
@@ -1079,13 +1218,14 @@ class ServerPoolManager:
         top_count = max(1, int(len(sorted_servers) * 0.3))
         top_servers = sorted_servers[:top_count]
         
-        # 转换为字典格式
+        # 转换为字典格式（包含max_connections信息）
         result = [
             {
                 "ip": s.ip,
                 "port": s.port,
                 "name": s.name,
                 "ping_time": s.ping_time,
+                "max_connections": s.max_connections,
             }
             for s in top_servers
         ]
@@ -1117,7 +1257,7 @@ class ServerPoolManager:
         # 合并IPv4和IPv6服务器
         all_servers = []
         
-        # 添加IPv4服务器
+        # 添加IPv4服务器（包含max_connections信息）
         for s in self._ipv4_servers:
             if s.available and (exclude is None or f"{s.ip}:{s.port}" not in exclude):
                 all_servers.append({
@@ -1125,9 +1265,10 @@ class ServerPoolManager:
                     "port": s.port,
                     "name": s.name,
                     "ping_time": s.ping_time,
+                    "max_connections": s.max_connections,
                 })
         
-        # 添加IPv6服务器
+        # 添加IPv6服务器（包含max_connections信息）
         for s in self._ipv6_servers:
             if s.available and (exclude is None or f"{s.ip}:{s.port}" not in exclude):
                 all_servers.append({
@@ -1135,6 +1276,7 @@ class ServerPoolManager:
                     "port": s.port,
                     "name": s.name,
                     "ping_time": s.ping_time,
+                    "max_connections": s.max_connections,
                 })
         
         if not all_servers:
@@ -1153,6 +1295,234 @@ class ServerPoolManager:
         )
         
         return all_servers
+
+    def calculate_weighted_avg_max_connections(self, exclude: Optional[List[str]] = None) -> Tuple[float, int]:
+        """计算可用服务器的max_connections加权平均
+        
+        Args:
+            exclude: 排除的服务器列表（格式：["ip:port", ...]）
+        
+        Returns:
+            (加权平均值, 可用服务器数量)
+        """
+        # 获取所有可用服务器
+        available_servers = []
+        
+        # 添加IPv4服务器
+        for s in self._ipv4_servers:
+            if s.available and (exclude is None or f"{s.ip}:{s.port}" not in exclude):
+                available_servers.append(s)
+        
+        # 添加IPv6服务器
+        for s in self._ipv6_servers:
+            if s.available and (exclude is None or f"{s.ip}:{s.port}" not in exclude):
+                available_servers.append(s)
+        
+        if not available_servers:
+            logger.warning(
+                "⚠️ 无可用服务器，使用默认max_connections=20",
+                extra={"log_type": "SYSTEM"}
+            )
+            return 20.0, 0
+        
+        # 计算加权平均（所有服务器等权重，即简单平均）
+        total_max_conn = sum(s.max_connections for s in available_servers)
+        avg_max_conn = total_max_conn / len(available_servers)
+        
+        logger.debug(
+            f"[SERVER-POOL] 计算加权平均max_connections: "
+            f"可用服务器={len(available_servers)}, 平均={avg_max_conn:.2f}",
+            extra={"log_type": "SYSTEM"}
+        )
+        
+        return avg_max_conn, len(available_servers)
+
+    def calculate_total_max_connections(self, exclude: Optional[List[str]] = None) -> int:
+        """计算所有活跃服务器的max_connections总和（准确的最大并发数限制）
+        
+        Args:
+            exclude: 排除的服务器列表（格式：["ip:port", ...]）
+        
+        Returns:
+            所有活跃服务器的max_connections累加值
+        """
+        # 获取所有可用服务器
+        available_servers = []
+        
+        # 添加IPv4服务器
+        for s in self._ipv4_servers:
+            if s.available and (exclude is None or f"{s.ip}:{s.port}" not in exclude):
+                available_servers.append(s)
+        
+        # 添加IPv6服务器
+        for s in self._ipv6_servers:
+            if s.available and (exclude is None or f"{s.ip}:{s.port}" not in exclude):
+                available_servers.append(s)
+        
+        if not available_servers:
+            logger.warning(
+                "⚠️ 无可用服务器，使用默认max_connections=20",
+                extra={"log_type": "SYSTEM"}
+            )
+            return 20
+        
+        # 直接累加所有服务器的max_connections
+        total_max_connections = sum(s.max_connections for s in available_servers)
+        
+        logger.debug(
+            f"[SERVER-POOL] 计算总最大连接数: "
+            f"可用服务器={len(available_servers)}, 总max_connections={total_max_connections}",
+            extra={"log_type": "SYSTEM"}
+        )
+        
+        return total_max_connections
+
+    def allocate_connections_intelligently(
+        self, 
+        total_connections: int, 
+        exclude: Optional[List[str]] = None
+    ) -> List[Tuple[str, int, int]]:
+        """
+        智能连接分配策略
+        
+        分配优先级：
+        1. 第一阶段：每个服务器至少1个连接（负载均衡）
+        2. 第二阶段：优先使用max_connections为19和20的服务器，平均分配负载
+        3. 第三阶段：当19和20的服务器达到上限后，再给其他服务器加负载
+        
+        Args:
+            total_connections: 总连接数需求
+            exclude: 排除的服务器列表（格式：["ip:port", ...]）
+        
+        Returns:
+            连接分配列表，格式：[(ip, port, connections_count), ...]
+        """
+        # 获取所有可用服务器
+        available_servers = []
+        
+        # 添加IPv4服务器
+        for s in self._ipv4_servers:
+            if s.available and (exclude is None or f"{s.ip}:{s.port}" not in exclude):
+                available_servers.append(s)
+        
+        # 添加IPv6服务器
+        for s in self._ipv6_servers:
+            if s.available and (exclude is None or f"{s.ip}:{s.port}" not in exclude):
+                available_servers.append(s)
+        
+        if not available_servers:
+            logger.warning(
+                "⚠️ 无可用服务器，无法分配连接",
+                extra={"log_type": "SYSTEM"}
+            )
+            return []
+        
+        # 按max_connections分组
+        servers_high_capacity = []  # max_connections为19或20的服务器
+        servers_other = []  # 其他服务器
+        
+        for s in available_servers:
+            if s.max_connections in [19, 20]:
+                servers_high_capacity.append(s)
+            else:
+                servers_other.append(s)
+        
+        # 初始化每个服务器的连接数为0
+        connection_map: Dict[str, Tuple[str, int, int]] = {}
+        for s in available_servers:
+            key = f"{s.ip}:{s.port}"
+            connection_map[key] = (s.ip, s.port, 0)
+        
+        remaining_connections = total_connections
+        
+        # 第一阶段：每个服务器至少1个连接（负载均衡）
+        for s in available_servers:
+            if remaining_connections <= 0:
+                break
+            key = f"{s.ip}:{s.port}"
+            ip, port, current = connection_map[key]
+            connection_map[key] = (ip, port, current + 1)
+            remaining_connections -= 1
+        
+        if remaining_connections <= 0:
+            # 只够第一阶段，返回结果
+            return [conn for conn in connection_map.values() if conn[2] > 0]
+        
+        # 第二阶段：优先分配给max_connections为19和20的服务器
+        # 使用轮询方式平均分配
+        high_capacity_servers = servers_high_capacity.copy()
+        
+        while remaining_connections > 0 and high_capacity_servers:
+            # 找出还没有达到max_connections的服务器
+            available_high = [
+                s for s in high_capacity_servers
+                if connection_map[f"{s.ip}:{s.port}"][2] < s.max_connections
+            ]
+            
+            if not available_high:
+                # 所有19和20的服务器都达到上限了
+                break
+            
+            # 轮询分配：每次给每个可用服务器分配1个连接
+            for s in available_high:
+                if remaining_connections <= 0:
+                    break
+                key = f"{s.ip}:{s.port}"
+                ip, port, current = connection_map[key]
+                connection_map[key] = (ip, port, current + 1)
+                remaining_connections -= 1
+        
+        if remaining_connections <= 0:
+            # 只够前两个阶段，返回结果
+            return [conn for conn in connection_map.values() if conn[2] > 0]
+        
+        # 第三阶段：分配给其他服务器
+        other_servers = servers_other.copy()
+        
+        while remaining_connections > 0 and other_servers:
+            # 找出还没有达到max_connections的服务器
+            available_other = [
+                s for s in other_servers
+                if connection_map[f"{s.ip}:{s.port}"][2] < s.max_connections
+            ]
+            
+            if not available_other:
+                # 所有服务器都达到上限了
+                break
+            
+            # 轮询分配：每次给每个可用服务器分配1个连接
+            for s in available_other:
+                if remaining_connections <= 0:
+                    break
+                key = f"{s.ip}:{s.port}"
+                ip, port, current = connection_map[key]
+                connection_map[key] = (ip, port, current + 1)
+                remaining_connections -= 1
+        
+        # 统计分配结果
+        result = [conn for conn in connection_map.values() if conn[2] > 0]
+        total_allocated = sum(conn[2] for conn in result)
+        high_cap_allocated = sum(
+            conn[2] for conn in result
+            if any(s.ip == conn[0] and s.port == conn[1] and s.max_connections in [19, 20]
+                   for s in servers_high_capacity)
+        )
+        
+        logger.debug(
+            f"[SERVER-POOL] 智能连接分配完成: "
+            f"总需求={total_connections}, 已分配={total_allocated}, "
+            f"高容量服务器(19/20)分配={high_cap_allocated}, "
+            f"剩余需求={remaining_connections}, 涉及服务器={len(result)}",
+            extra={"log_type": "SYSTEM"}
+        )
+        
+        if remaining_connections > 0:
+            logger.warning(
+                f"⚠️ 连接分配未完全满足: 剩余需求={remaining_connections}个连接",
+                extra={"log_type": "SYSTEM"}
+            )
+        
+        return result
 
 
 async def _test_single_server_async(ip: str, port: int, name: str = "", scenario: str = "manual_speedtest") -> Tuple[float, bool]:
@@ -1313,11 +1683,18 @@ def _test_server_group_async(server_group: List[Tuple[str, int, str]], scenario:
                     extra={"log_type": "SYSTEM", "scenario": scenario}
                 )
                 final_results.append((9999.0, False))
-            else:
+            elif isinstance(result, tuple) and len(result) == 2:
                 ping_time, available = result
                 final_results.append(result)
                 if available:
                     available_count += 1
+            else:
+                # 未知格式，默认为失败
+                subprocess_logger.debug(
+                    f"⚠️ 协程测试返回未知格式 {server_group[i]}: {result}",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                final_results.append((9999.0, False))
 
         subprocess_logger.debug(
             f"✅ 服务器组测试完成: 可用={available_count}/{len(server_group)}, 耗时={group_elapsed:.2f}s",
@@ -1341,7 +1718,7 @@ def _test_server_group_async(server_group: List[Tuple[str, int, str]], scenario:
 
 
 class LoadBalancer:
-    """负载均衡器 v3.1
+    """负载均衡器 v3.2
 
     智能负载均衡，核心特性：
     - 木桶理论：只看最短的那块板
@@ -1349,6 +1726,10 @@ class LoadBalancer:
     - 智能防抖机制（1秒/3秒）
     - 任务类型区分（v3.1新增）
     - 队列压力监控（v3.1新增）
+    - 智能连接分配策略（v3.2新增）：
+      * 每个服务器可创建多个连接（受限于max_connections字段）
+      * 基于加权平均max_connections计算总协程限制
+      * 突破单服务器单连接限制，性能提升约20倍
     """
 
     def __init__(self, config_manager: Optional[ConfigManager] = None):
@@ -1377,7 +1758,7 @@ class LoadBalancer:
         # 缓存配置
         self._last_config = {}
 
-        logger.info("✅ 负载均衡器已初始化 (v3.1 - 支持任务类型和队列压力)")
+        logger.info("✅ 负载均衡器已初始化 (v3.2 - 支持智能连接分配策略)")
 
     def get_optimal_config(
         self,
@@ -1392,7 +1773,7 @@ class LoadBalancer:
             task: 任务配置（v3.1新增，为空时兼容旧API）
             task_type: 任务类型字符串（向后兼容）
             queue_metrics: 队列指标（v3.1新增）
-            available_servers: 可用服务器数量（用于单服务器单连接约束）
+            available_servers: 可用服务器数量（已废弃，不再使用，改为直接累加所有服务器max_connections）
 
         Returns:
             最优配置
@@ -1430,7 +1811,7 @@ class LoadBalancer:
         Args:
             task: 任务配置
             queue_metrics: 队列指标
-            available_servers: 可用服务器数量（用于单服务器单连接约束）
+            available_servers: 可用服务器数量（已废弃，不再使用，改为直接累加所有服务器max_connections）
 
         Returns:
             最优配置
@@ -1484,28 +1865,45 @@ class LoadBalancer:
             int(coroutines_per_process * queue_pressure_factor)
         )
 
-        # 7. 🎯 应用服务器数量约束（单服务器单连接原则）
+        # 7. 🎯 应用服务器连接数约束（直接累加所有活跃服务器的max_connections）
         server_constrained = False
         original_coroutines = coroutines_per_process
-        if available_servers is not None and available_servers > 0:
+        
+        # 直接累加所有活跃服务器的max_connections
+        max_total_coroutines = self.server_pool.calculate_total_max_connections()
+        
+        # 获取服务器数量用于日志
+        stats = self.server_pool.get_stats()
+        num_available_servers = stats.get("available", 0)
+        
+        if num_available_servers > 0 and max_total_coroutines > 0:
             # 总并发数 = 进程数 × 每进程协程数
             total_concurrency = processes * coroutines_per_process
             
-            # 如果总并发数超过可用服务器数，进行约束
-            if total_concurrency > available_servers:
+            # 如果总并发数超过最大协程限制，进行约束
+            if total_concurrency > max_total_coroutines:
                 server_constrained = True
                 # 优先调整协程数，保持进程数不变（避免进程创建开销）
-                coroutines_per_process = max(1, available_servers // processes)
+                coroutines_per_process = max(1, max_total_coroutines // processes)
                 
                 # 如果调整后的协程数太小（<3），则减少进程数
                 if coroutines_per_process < 3 and processes > 1:
-                    processes = max(1, available_servers // 3)
-                    coroutines_per_process = max(1, available_servers // processes)
+                    processes = max(1, max_total_coroutines // 3)
+                    coroutines_per_process = max(1, max_total_coroutines // processes)
                 
                 logger.debug(
-                    f"[LOADBALANCER] 服务器数量约束生效: 可用服务器={available_servers}, "
+                    f"[LOADBALANCER] 服务器连接数约束生效: "
+                    f"可用服务器={num_available_servers}, "
+                    f"最大总协程数={max_total_coroutines}（所有服务器max_connections累加）, "
                     f"原始并发={processes}×{original_coroutines}={processes*original_coroutines}, "
                     f"约束后并发={processes}×{coroutines_per_process}={processes*coroutines_per_process}"
+                )
+            else:
+                logger.debug(
+                    f"[LOADBALANCER] 服务器连接数约束未生效: "
+                    f"可用服务器={num_available_servers}, "
+                    f"最大总协程数={max_total_coroutines}（所有服务器max_connections累加）, "
+                    f"当前总并发={total_concurrency}（未超过限制）"
                 )
 
         # 8. 🎯 应用任务数量约束（总协程数 ≤ 任务数）
@@ -1554,7 +1952,8 @@ class LoadBalancer:
             "pressure_score": int(
                 (1 - queue_pressure_factor) * 100
             ),  # 0-100压力评分
-            "available_servers": available_servers if available_servers is not None else "N/A",
+            "available_servers": num_available_servers,
+            "max_total_coroutines": max_total_coroutines,
             "server_constrained": server_constrained,
             "task_constrained": task_constrained,
             "task_count": task.total_count,
@@ -1564,7 +1963,8 @@ class LoadBalancer:
             f"[LOADBALANCER] 动态配置 [{task.name}]: 进程={config['processes']}, "
             f"协程={config['coroutines_per_process']}, 总并发={config['processes']*config['coroutines_per_process']}, "
             f"任务数={task.total_count}, "
-            f"可用服务器={available_servers if available_servers else 'N/A'}, "
+            f"可用服务器={num_available_servers}, "
+            f"最大总协程数={max_total_coroutines}, "
             f"服务器约束={'生效' if server_constrained else '未生效'}, "
             f"任务约束={'生效' if task_constrained else '未生效'}, "
             f"瓶颈={resource_metrics.bottleneck}({bottleneck_value:.1f}%), "

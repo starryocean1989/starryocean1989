@@ -946,7 +946,10 @@ class UnifiedMonitorCard(QWidget):
             disconnected: 是否无网络连接
             retry_callback: 重试按钮点击回调函数
         """
-        if hasattr(self, "latency_network_disconnected_label") and self.latency_network_disconnected_label:
+        if (
+            hasattr(self, "latency_network_disconnected_label")
+            and self.latency_network_disconnected_label
+        ):
             if disconnected:
                 self.latency_network_disconnected_label.show()
             else:
@@ -2629,7 +2632,7 @@ class SystemManager(BaseWidget, LoggerMixin):
 
     # 网络测速结果信号（线程安全）
     bandwidth_test_success_signal = Signal(dict)  # 带宽测试成功信号
-    bandwidth_test_error_signal = Signal(str)    # 带宽测试失败信号
+    bandwidth_test_error_signal = Signal(str)  # 带宽测试失败信号
 
     def __init__(self, parent=None):
         """初始化系统管理界面."""
@@ -3667,9 +3670,7 @@ class SystemManager(BaseWidget, LoggerMixin):
                 # 诊断日志：检查是否收到 cpu_frequency 数据
                 if not hasattr(self, "_cpu_freq_check_logged"):
                     if cpu_frequency:
-                        self.logger.info(
-                            f"✅ 收到CPU频率数据: {cpu_frequency}"
-                        )
+                        self.logger.info(f"✅ 收到CPU频率数据: {cpu_frequency}")
                     else:
                         self.logger.warning(
                             f"⚠️ cpu_detailed中没有cpu_frequency字段, cpu_detailed keys={list(cpu_detailed.keys())}"
@@ -3717,7 +3718,11 @@ class SystemManager(BaseWidget, LoggerMixin):
                         if ping_result and ping_result.get("ping_ms") is not None:
                             # 🔧 修复：检查status字段，排除错误状态
                             status = ping_result.get("status", "")
-                            if status and isinstance(status, str) and ("错误" in status or "超时" in status or "ZMQ" in status):
+                            if (
+                                status
+                                and isinstance(status, str)
+                                and ("错误" in status or "超时" in status or "ZMQ" in status)
+                            ):
                                 # 错误状态，不显示延迟
                                 latency_ms = 0.0
                             else:
@@ -3725,7 +3730,11 @@ class SystemManager(BaseWidget, LoggerMixin):
                         elif full_result and full_result.get("ping_ms") is not None:
                             # 🔧 修复：检查status字段，排除错误状态
                             status = full_result.get("status", "")
-                            if status and isinstance(status, str) and ("错误" in status or "超时" in status or "ZMQ" in status):
+                            if (
+                                status
+                                and isinstance(status, str)
+                                and ("错误" in status or "超时" in status or "ZMQ" in status)
+                            ):
                                 # 错误状态，不显示延迟
                                 latency_ms = 0.0
                             else:
@@ -3771,8 +3780,7 @@ class SystemManager(BaseWidget, LoggerMixin):
 
                 # 更新无网络连接状态显示
                 self.unified_monitor_card.update_network_status(
-                    network_disconnected,
-                    retry_callback=self._retry_latency_test
+                    network_disconnected, retry_callback=self._retry_latency_test
                 )
 
             # 4. 硬盘监控卡片
@@ -3848,7 +3856,9 @@ class SystemManager(BaseWidget, LoggerMixin):
                         services = [services]
                         self.logger.debug("将字典格式的 services 转换为列表格式")
                     elif not isinstance(services, list):
-                        self.logger.warning("metrics['services'] 不是列表或字典类型: %s", type(services))
+                        self.logger.warning(
+                            "metrics['services'] 不是列表或字典类型: %s", type(services)
+                        )
                         services = []
                 else:
                     # 🔧 新增：如果字典没有 "services" 键，可能字典本身就是一个服务数据
@@ -3858,7 +3868,10 @@ class SystemManager(BaseWidget, LoggerMixin):
                         services = [metrics]
                     else:
                         # 否则认为是无效格式
-                        self.logger.warning("字典格式的服务数据缺少 'services' 键，且不是有效的服务数据: %s", list(metrics.keys()))
+                        self.logger.warning(
+                            "字典格式的服务数据缺少 'services' 键，且不是有效的服务数据: %s",
+                            list(metrics.keys()),
+                        )
                         services = []
             elif isinstance(metrics, list):
                 services = metrics
@@ -3867,7 +3880,8 @@ class SystemManager(BaseWidget, LoggerMixin):
                 return
 
             healthy_count = sum(
-                1 for s in services
+                1
+                for s in services
                 if isinstance(s, dict) and s.get("status") == "运行中" and s.get("health") == "健康"
             )
             total_count = len(services)
@@ -6155,7 +6169,9 @@ class SystemManager(BaseWidget, LoggerMixin):
         result_layout.setContentsMargins(5, 5, 5, 5)  # 减小布局边距
 
         # 设置统一样式（更小更紧凑）
-        title_style = "font-size: 10px; color: #888; padding: 0px; margin: 0px;"  # 字体缩小，去除padding
+        title_style = (
+            "font-size: 10px; color: #888; padding: 0px; margin: 0px;"  # 字体缩小，去除padding
+        )
         value_style = "font-size: 12px; color: #0F0; font-weight: bold; padding: 0px; margin: 0px;"  # 字体缩小，去除padding
 
         # 下载速度
@@ -6569,7 +6585,7 @@ class SystemManager(BaseWidget, LoggerMixin):
                 "UI加载通达信读取器配置失败: 错误=%s",
                 str(e),
                 extra={"log_type": "SYSTEM"},
-                exc_info=True
+                exc_info=True,
             )
 
     def _read_and_save_tdx_data(self):
@@ -6678,26 +6694,31 @@ class SystemManager(BaseWidget, LoggerMixin):
 
             def do_read():
                 import time
+
                 start_time = time.time()
-                
+
                 # 使用ai_log_process上下文管理器
                 try:
-                    from backend.infrastructure.system_vnpy.unified_log_system import (
+                    from backend.infrastructure.system_vnpy.logging_system import (
                         ai_log_process,
                     )
+
                     stage_logger = logging.getLogger("task.tdx_data_read")
-                    
-                    with ai_log_process("tdx_data_read", {
-                        "data_types": data_types,
-                        "markets": markets,
-                        "tdx_root": tdx_root,
-                    }):
+
+                    with ai_log_process(
+                        "tdx_data_read",
+                        {
+                            "data_types": data_types,
+                            "markets": markets,
+                            "tdx_root": tdx_root,
+                        },
+                    ):
                         # 阶段节点日志（输出到Terminal）
                         stage_logger.info(
                             "📍 TDX数据读取开始",
                             extra={"log_type": "STAGE_NODE", "scenario": "tdx_data_read"},
                         )
-                        
+
                         # DEBUG日志（只写入AI日志文件）
                         self.logger.debug(
                             "[TDX-READ] 开始读取TDX数据",
@@ -6719,7 +6740,7 @@ class SystemManager(BaseWidget, LoggerMixin):
                             f"[TDX-READ] ℹ️ TDX数据读取任务开始: 数据类型={data_types}, 市场={markets}, TDX根目录={tdx_root}",
                             extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
                         )
-                        
+
                         try:
                             if not self.system_service:
                                 self.logger.error(
@@ -6731,7 +6752,7 @@ class SystemManager(BaseWidget, LoggerMixin):
                                     extra={"log_type": "STAGE_NODE", "scenario": "tdx_data_read"},
                                 )
                                 return
-                            
+
                             self.logger.debug(
                                 "[TDX-READ] 调用系统服务read_tdx_data方法...",
                                 extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
@@ -6742,7 +6763,7 @@ class SystemManager(BaseWidget, LoggerMixin):
                                 f"[TDX-READ] 系统服务read_tdx_data方法调用完成: 耗时={elapsed:.2f}s",
                                 extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
                             )
-                            
+
                             # 记录结果
                             if result and result.get("success"):
                                 stats = result.get("stats", {})
@@ -6783,10 +6804,10 @@ class SystemManager(BaseWidget, LoggerMixin):
                                     f"⚠️ TDX数据读取失败: {msg}",
                                     extra={"log_type": "STAGE_NODE", "scenario": "tdx_data_read"},
                                 )
-                            
+
                             # 通过Signal发送完成状态
                             self.reader_finished_signal.emit(result)
-                            
+
                         except Exception as e:
                             elapsed = time.time() - start_time
                             self.logger.debug(
@@ -6860,9 +6881,10 @@ class SystemManager(BaseWidget, LoggerMixin):
 
         except Exception as e:
             self.logger.error(
-                "启动读取任务失败: %s", e,
+                "启动读取任务失败: %s",
+                e,
                 extra={"log_type": "ALERT", "scenario": "tdx_data_read"},
-                exc_info=True
+                exc_info=True,
             )
 
             if self.reader_status_label:
@@ -6877,7 +6899,7 @@ class SystemManager(BaseWidget, LoggerMixin):
         try:
             # 导入AI日志流程管理器
             try:
-                from backend.infrastructure.system_vnpy.unified_log_system import (
+                from backend.infrastructure.system_vnpy.logging_system import (
                     ai_log_process,
                 )
             except ImportError:
@@ -6899,22 +6921,29 @@ class SystemManager(BaseWidget, LoggerMixin):
                     # 使用ai_log_process包裹手动测速流程
                     if ai_log_process:
                         stage_logger = logging.getLogger("task.manual_speedtest")
-                        with ai_log_process("manual_speedtest", {
-                            "test_type": "full_bandwidth",
-                            "trigger": "manual",
-                        }):
+                        with ai_log_process(
+                            "manual_speedtest",
+                            {
+                                "test_type": "full_bandwidth",
+                                "trigger": "manual",
+                            },
+                        ):
                             # 阶段节点日志（输出到Terminal）
                             stage_logger.info(
                                 "📍 手动测速开始: 正在连接到服务器...",
                                 extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
                             )
-                            
+
                             # 详细日志（只写入AI日志文件）
                             self.logger.debug(
-                                "[MANUAL-SPEEDTEST] 开始手动测速流程",
+                                "[MANUAL-SPEEDTEST] 开始手动测速流程: 测试类型=full_bandwidth",
                                 extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
                             )
-                            
+                            self.logger.info(
+                                "[MANUAL-SPEEDTEST] ℹ️ 开始手动测速流程: 测试类型=full_bandwidth",
+                                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                            )
+
                             # 执行测速逻辑
                             # 注意：实际完成日志（含结果）在_update_bandwidth_result_success/error中记录
                             _run_test_inner()
@@ -6923,24 +6952,37 @@ class SystemManager(BaseWidget, LoggerMixin):
                         _run_test_inner()
                 except Exception as e:
                     self.logger.error(
-                        "手动测速流程异常: %s", e,
+                        "手动测速流程异常: %s",
+                        e,
                         extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
-                        exc_info=True
+                        exc_info=True,
                     )
                     self.bandwidth_test_error_signal.emit(f"测速流程异常: {str(e)}")
-                    
+
             def _run_test_inner():
                 try:
+                    self.logger.debug(
+                        "[MANUAL-SPEEDTEST] 开始获取系统服务...",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                    )
                     service = self.service_manager.get_service(
                         "system_manager_service", silent=True
                     )
                     if not service:
+                        self.logger.debug(
+                            "[MANUAL-SPEEDTEST] 系统服务获取失败: 服务不存在",
+                            extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                        )
                         self.logger.error(
-                            "无法获取系统服务",
-                            extra={"log_type": "ALERT", "scenario": "manual_speedtest"}
+                            "[MANUAL-SPEEDTEST] ❌ 无法获取系统服务",
+                            extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
                         )
                         self.bandwidth_test_error_signal.emit("无法获取系统服务")
                         return
+                    self.logger.debug(
+                        "[MANUAL-SPEEDTEST] 系统服务获取成功",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                    )
 
                     # 通过ZMQ向监控进程发送测试请求
                     import zmq
@@ -6954,36 +6996,89 @@ class SystemManager(BaseWidget, LoggerMixin):
                     try:
                         ports_file = Path("logs") / "monitor_ports.json"
                         if ports_file.exists():
+                            self.logger.debug(
+                                f"[MANUAL-SPEEDTEST] 读取端口配置文件: {ports_file}",
+                                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                            )
                             with open(ports_file, "r", encoding="utf-8") as f:
                                 ports_data = json.load(f)
-                        addr = str(ports_data.get("bind_addr", addr))
-                        port = int(ports_data.get("query_rep", port))
-                    except Exception:
+                            addr = str(ports_data.get("bind_addr", addr))
+                            port = int(ports_data.get("query_rep", port))
+                            self.logger.debug(
+                                f"[MANUAL-SPEEDTEST] 端口配置读取成功: addr={addr}, port={port}",
+                                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                            )
+                        else:
+                            self.logger.debug(
+                                f"[MANUAL-SPEEDTEST] 端口配置文件不存在，使用默认值: addr={addr}, port={port}",
+                                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                            )
+                    except Exception as e:
+                        self.logger.debug(
+                            f"[MANUAL-SPEEDTEST] 读取端口配置失败: {e}，使用默认值: addr={addr}, port={port}",
+                            extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                        )
                         pass  # 使用默认值
 
                     # 发送测试启动请求（立即返回）
+                    self.logger.debug(
+                        f"[MANUAL-SPEEDTEST] 创建ZMQ连接: addr={addr}, port={port}",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                    )
                     context = zmq.Context()
                     socket = context.socket(zmq.REQ)
                     socket.connect(f"tcp://{addr}:{port}")
                     socket.setsockopt(zmq.RCVTIMEO, 5000)  # 5秒超时（启动请求应该立即返回）
 
+                    self.logger.debug(
+                        "[MANUAL-SPEEDTEST] 发送测试启动请求...",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                    )
                     socket.send_json({"action": "test_bandwidth_full"})
                     response = socket.recv_json()
+                    self.logger.debug(
+                        f"[MANUAL-SPEEDTEST] 收到启动响应: {response}",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                    )
 
                     socket.close()
 
                     # 检查是否成功启动测试
                     if not isinstance(response, dict):
+                        self.logger.debug(
+                            "[MANUAL-SPEEDTEST] 启动响应格式错误: 不是字典类型",
+                            extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                        )
+                        self.logger.error(
+                            "[MANUAL-SPEEDTEST] ❌ 返回数据格式错误",
+                            extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
+                        )
                         context.term()
                         self.bandwidth_test_error_signal.emit("返回数据格式错误")
                         return
 
                     status = response.get("status")
                     if status not in ["started", "testing"]:
-                        context.term()
                         error_msg = response.get("message", "测试启动失败")
+                        self.logger.debug(
+                            f"[MANUAL-SPEEDTEST] 测试启动失败: status={status}, message={error_msg}",
+                            extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                        )
+                        self.logger.error(
+                            f"[MANUAL-SPEEDTEST] ❌ 测试启动失败: {error_msg}",
+                            extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
+                        )
+                        context.term()
                         self.bandwidth_test_error_signal.emit(str(error_msg))
                         return
+                    self.logger.debug(
+                        f"[MANUAL-SPEEDTEST] 测试启动成功: status={status}",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                    )
+                    self.logger.info(
+                        "[MANUAL-SPEEDTEST] ✅ 测试启动成功，开始轮询结果...",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                    )
 
                     # 🔧 修复：轮询获取结果（完整带宽测试：最多等待90秒）
                     # 策略：前5次每1秒查询（检测快速完成），后续每2秒查询
@@ -6991,21 +7086,32 @@ class SystemManager(BaseWidget, LoggerMixin):
                     max_attempts = 43  # 5x1秒 + 38x2秒 = 81秒
                     for attempt in range(max_attempts):
                         if attempt < 5:
-                            time.sleep(1)   # 前5秒：每1秒查询
+                            time.sleep(1)  # 前5秒：每1秒查询
                         else:
-                            time.sleep(2)   # 后续：每2秒查询
+                            time.sleep(2)  # 后续：每2秒查询
 
                         try:
+                            self.logger.debug(
+                                f"[MANUAL-SPEEDTEST] 轮询第{attempt + 1}次: 查询测试结果...",
+                                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                            )
                             socket = context.socket(zmq.REQ)
                             socket.connect(f"tcp://{addr}:{port}")
                             socket.setsockopt(zmq.RCVTIMEO, 3000)  # 3秒超时
 
                             socket.send_json({"action": "get_bandwidth"})
                             result_response = socket.recv_json()
+                            self.logger.debug(
+                                f"[MANUAL-SPEEDTEST] 轮询第{attempt + 1}次响应: status={result_response.get('status', 'unknown')}",
+                                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                            )
 
                             socket.close()
 
-                            if isinstance(result_response, dict) and result_response.get("status") == "success":
+                            if (
+                                isinstance(result_response, dict)
+                                and result_response.get("status") == "success"
+                            ):
                                 data = result_response.get("data", {})
                                 if isinstance(data, dict):
                                     full_test = data.get("full_test", {})
@@ -7017,12 +7123,23 @@ class SystemManager(BaseWidget, LoggerMixin):
                                         download_mbps = full_test.get("download_mbps")
 
                                         # 如果是错误状态，立即停止轮询
-                                        if status and status != "未测试" and ("错误" in str(status) or "超时" in str(status) or "ZMQ" in str(status)):
+                                        if (
+                                            status
+                                            and status != "未测试"
+                                            and (
+                                                "错误" in str(status)
+                                                or "超时" in str(status)
+                                                or "ZMQ" in str(status)
+                                            )
+                                        ):
                                             context.term()
                                             error_msg = full_test.get("error", status)
                                             self.logger.error(
                                                 f"❌ 带宽测速返回错误状态：{error_msg}",
-                                                extra={"log_type": "ALERT", "scenario": "manual_speedtest"}
+                                                extra={
+                                                    "log_type": "ALERT",
+                                                    "scenario": "manual_speedtest",
+                                                },
                                             )
                                             self.bandwidth_test_error_signal.emit(error_msg)
                                             return
@@ -7033,16 +7150,24 @@ class SystemManager(BaseWidget, LoggerMixin):
 
                                             # 检查是否是异常值（-1表示测试失败）
                                             if download_mbps == -1:
-                                                error_msg = full_test.get("error", "测试失败，请稍后重试")
+                                                error_msg = full_test.get(
+                                                    "error", "测试失败，请稍后重试"
+                                                )
                                                 self.logger.error(
                                                     f"❌ 带宽测速返回异常：{error_msg}",
-                                                    extra={"log_type": "ALERT", "scenario": "manual_speedtest"}
+                                                    extra={
+                                                        "log_type": "ALERT",
+                                                        "scenario": "manual_speedtest",
+                                                    },
                                                 )
                                                 self.bandwidth_test_error_signal.emit(error_msg)
                                             else:
                                                 self.logger.info(
                                                     f"✅ 获取到带宽测试结果：{full_test}",
-                                                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"}
+                                                    extra={
+                                                        "log_type": "SYSTEM",
+                                                        "scenario": "manual_speedtest",
+                                                    },
                                                 )
                                                 # 使用信号发送结果（线程安全）
                                                 self.bandwidth_test_success_signal.emit(full_test)
@@ -7051,33 +7176,41 @@ class SystemManager(BaseWidget, LoggerMixin):
 
                         except Exception as poll_error:
                             self.logger.debug(
-                                "轮询第%d次失败: %s", attempt + 1, poll_error,
-                                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"}
+                                f"[MANUAL-SPEEDTEST] 轮询第{attempt + 1}次失败: {type(poll_error).__name__}: {str(poll_error)}",
+                                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                            )
+                            self.logger.warning(
+                                f"[MANUAL-SPEEDTEST] ⚠️ 轮询第{attempt + 1}次失败: {str(poll_error)}",
+                                extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
                             )
                             continue
 
                     # 超时
-                    context.term()
-                    self.logger.warning(
-                        "测试超时（69秒）或网络不稳定",
-                        extra={"log_type": "ALERT", "scenario": "manual_speedtest"}
+                    self.logger.debug(
+                        "[MANUAL-SPEEDTEST] 测试超时: 已达到最大轮询次数",
+                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
                     )
+                    self.logger.warning(
+                        "[MANUAL-SPEEDTEST] ⚠️ 测试超时（69秒）或网络不稳定",
+                        extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
+                    )
+                    context.term()
                     self.bandwidth_test_error_signal.emit("测试超时（69秒）或网络不稳定")
 
                 except zmq.Again:
                     self.logger.error(
-                        "连接超时",
-                        extra={"log_type": "ALERT", "scenario": "manual_speedtest"}
+                        "连接超时", extra={"log_type": "ALERT", "scenario": "manual_speedtest"}
                     )
                     self.bandwidth_test_error_signal.emit("连接超时")
                 except Exception as e:
                     self.logger.error(
-                        "带宽测试异常: %s", e,
+                        "带宽测试异常: %s",
+                        e,
                         extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
-                        exc_info=True
+                        exc_info=True,
                     )
                     self.bandwidth_test_error_signal.emit(f"连接失败: {str(e)[:50]}")
-                    
+
                     # 如果使用了ai_log_process，记录完成
                     if ai_log_process:
                         stage_logger = logging.getLogger("task.manual_speedtest")
@@ -7091,9 +7224,10 @@ class SystemManager(BaseWidget, LoggerMixin):
 
         except Exception as e:
             self.logger.error(
-                "启动带宽测试失败: %s", e,
+                "启动带宽测试失败: %s",
+                e,
                 extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
-                exc_info=True
+                exc_info=True,
             )
             self.bandwidth_test_error_signal.emit(str(e))
 
@@ -7191,7 +7325,6 @@ class SystemManager(BaseWidget, LoggerMixin):
 
         self.test_bandwidth_btn.setText("📊 测服务商带宽")
         self.test_bandwidth_btn.setEnabled(True)
-
 
     # ==================== 损坏文件清理工具方法 ====================
 
@@ -7639,7 +7772,9 @@ class SystemManager(BaseWidget, LoggerMixin):
                 data_dir = data_config.get("data_dir", "./data/kline")
                 self.data_dir_edit.setText(data_dir)
             if self.base_date_edit:
-                base_date_str = data_config.get("base_date") or "2020-01-01"  # 🔧 修复：处理 None 值
+                base_date_str = (
+                    data_config.get("base_date") or "2020-01-01"
+                )  # 🔧 修复：处理 None 值
                 try:
                     if base_date_str and isinstance(base_date_str, str):
                         parts = base_date_str.split("-")
@@ -7675,7 +7810,11 @@ class SystemManager(BaseWidget, LoggerMixin):
                 else:
                     self.retry_spin.setValue(3)
             if self.watcher_check:
-                self.watcher_check.setChecked(data_config.get("enable_watcher") if data_config.get("enable_watcher") is not None else True)
+                self.watcher_check.setChecked(
+                    data_config.get("enable_watcher")
+                    if data_config.get("enable_watcher") is not None
+                    else True
+                )
             if self.watcher_interval_spin:
                 # 🔧 修复：处理 None 值，确保传递给 setValue 的是 int 类型
                 watcher_interval = data_config.get("watcher_interval") or 5
@@ -8097,9 +8236,7 @@ class SystemManager(BaseWidget, LoggerMixin):
         root_dir = get_root()
         # 🔧 默认从项目根目录的 data/cache 开始
         default_dir = str(root_dir / "data" / "cache")
-        dir_path = QFileDialog.getExistingDirectory(
-            self, "选择品种缓存目录", default_dir
-        )
+        dir_path = QFileDialog.getExistingDirectory(self, "选择品种缓存目录", default_dir)
         if dir_path and self.cache_dir_edit:
             dir_path_obj = Path(dir_path)
             # 🔧 尝试转换为相对路径显示（相对于项目根目录）
@@ -8115,9 +8252,7 @@ class SystemManager(BaseWidget, LoggerMixin):
         root_dir = get_root()
         # 🔧 默认从项目根目录的 data/kline 开始
         default_dir = str(root_dir / "data" / "kline")
-        dir_path = QFileDialog.getExistingDirectory(
-            self, "选择K线数据目录", default_dir
-        )
+        dir_path = QFileDialog.getExistingDirectory(self, "选择K线数据目录", default_dir)
         if dir_path and self.data_dir_edit:
             dir_path_obj = Path(dir_path)
             # 🔧 尝试转换为相对路径显示（相对于项目根目录）

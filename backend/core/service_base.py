@@ -92,15 +92,20 @@ class BaseService(ABC):
 
             # 阶段感知：启动阶段详细日志
             try:
-                from backend.infrastructure.system_vnpy.unified_log_system import get_logging_hub
+                from backend.infrastructure.system_vnpy.logging_system import get_logging_hub
 
                 ctx = get_logging_hub()
-                if ctx and ctx._routing_engine and ctx._routing_engine.current_stage == "startup":
-                    self.logger.info("正在初始化服务: %s", self.service_name)
+                # 🔧 修复：LoggingHub没有_routing_engine属性，使用get_current_stage()方法
+                if ctx and hasattr(ctx, 'get_current_stage'):
+                    current_stage = ctx.get_current_stage()
+                    if current_stage in ctx._startup_stages:
+                        self.logger.info("正在初始化服务: %s", self.service_name)
+                    else:
+                        self.logger.debug("重新初始化服务: %s", self.service_name)
                 else:
-                    self.logger.debug("重新初始化服务: %s", self.service_name)
-            except ImportError:
-                # 如果logging_context未初始化，使用默认INFO级别
+                    self.logger.info("正在初始化服务: %s", self.service_name)
+            except (ImportError, AttributeError):
+                # 如果logging_context未初始化或属性不存在，使用默认INFO级别
                 self.logger.info("正在初始化服务: %s", self.service_name)
 
             # 获取全局VNPY引擎
@@ -119,14 +124,24 @@ class BaseService(ABC):
                 self.logger.info("服务 %s 初始化成功", self.service_name)
             else:
                 self.status = ServiceStatus.ERROR
-                self.logger.error("服务 %s 初始化失败", self.service_name, extra={"log_type": "SYSTEM"}, exc_info=True)
+                self.logger.error(
+                    "服务 %s 初始化失败",
+                    self.service_name,
+                    extra={"log_type": "SYSTEM"},
+                    exc_info=True,
+                )
 
             return result
 
         except Exception as e:
             self.status = ServiceStatus.ERROR
             self._errors.append("初始化异常: %s" % str(e))
-            self.logger.error("❌ 服务 %s 初始化异常", self.service_name, exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                "❌ 服务 %s 初始化异常",
+                self.service_name,
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
+            )
             return False
 
     def shutdown(self) -> bool:
@@ -151,7 +166,12 @@ class BaseService(ABC):
         except Exception as e:
             self.status = ServiceStatus.ERROR
             self._errors.append("关闭异常: %s" % str(e))
-            self.logger.error("❌ 服务 %s 关闭异常", self.service_name, exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                "❌ 服务 %s 关闭异常",
+                self.service_name,
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
+            )
             return False
 
     def health_check(self) -> Dict[str, Any]:
@@ -182,7 +202,7 @@ class BaseService(ABC):
                     self.status.value,
                     self.is_initialized,
                     error_count,
-                    extra={"log_type": "SYSTEM"}
+                    extra={"log_type": "SYSTEM"},
                 )
             else:
                 self.logger.debug(
@@ -203,7 +223,12 @@ class BaseService(ABC):
             }
 
         except Exception as e:
-            self.logger.error("❌ 服务 %s 健康检查失败", self.service_name, exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                "❌ 服务 %s 健康检查失败",
+                self.service_name,
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
+            )
             return {
                 "service_name": self.service_name,
                 "status": "error",
@@ -275,11 +300,22 @@ class BaseService(ABC):
 
         details = ", ".join("%s=%s" % (k, v) for k, v in kwargs.items())
         if details:
-            self.logger.error("❌ [%s] %s 失败 - %s", self.service_name, operation, details, 
-                            exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                "❌ [%s] %s 失败 - %s",
+                self.service_name,
+                operation,
+                details,
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
+            )
         else:
-            self.logger.error("❌ [%s] %s 失败", self.service_name, operation, 
-                            exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                "❌ [%s] %s 失败",
+                self.service_name,
+                operation,
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
+            )
 
     def clear_errors(self):
         """清空错误记录."""
@@ -341,7 +377,9 @@ class DataConverter:
             )
 
         except Exception as e:
-            logger.error("转换VnPy TickData失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
+            logger.error(
+                "转换VnPy TickData失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True
+            )
             return None
 
     @staticmethod
@@ -409,7 +447,9 @@ class DataConverter:
             )
 
         except Exception as e:
-            logger.error("转换VnPy OrderData失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
+            logger.error(
+                "转换VnPy OrderData失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True
+            )
             return None
 
     @staticmethod
@@ -439,7 +479,9 @@ class DataConverter:
             )
 
         except Exception as e:
-            logger.error("转换VnPy TradeData失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
+            logger.error(
+                "转换VnPy TradeData失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True
+            )
             return None
 
     @staticmethod
@@ -475,7 +517,9 @@ class DataConverter:
             )
 
         except Exception as e:
-            logger.error("转换VnPy PositionData失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
+            logger.error(
+                "转换VnPy PositionData失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True
+            )
             return None
 
     @staticmethod
@@ -512,7 +556,9 @@ class DataConverter:
             )
 
         except Exception as e:
-            logger.error("转换VnPy AccountData失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
+            logger.error(
+                "转换VnPy AccountData失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True
+            )
             return None
 
     @staticmethod
@@ -537,7 +583,9 @@ class DataConverter:
                 return {}
 
         except Exception as e:
-            logger.error("转换统一数据模型为字典失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
+            logger.error(
+                "转换统一数据模型为字典失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True
+            )
             return {}
 
     @staticmethod
@@ -596,7 +644,13 @@ class DataConverter:
             return datetime.now()
 
         except Exception as e:
-            logger.error("解析时间字符串失败: %s - %s", time_str, e, extra={"log_type": "SYSTEM"}, exc_info=True)
+            logger.error(
+                "解析时间字符串失败: %s - %s",
+                time_str,
+                e,
+                extra={"log_type": "SYSTEM"},
+                exc_info=True,
+            )
             return datetime.now()
 
     @staticmethod
@@ -775,11 +829,22 @@ class LoggerMixin:
         """
         context_str = ", ".join(["%s=%s" % (k, v) for k, v in kwargs.items()])
         if context_str:
-            self._logger.error("❌ [失败] %s: %s (%s)", operation, str(error), context_str, 
-                             exc_info=True, extra={"log_type": "SYSTEM"})
+            self._logger.error(
+                "❌ [失败] %s: %s (%s)",
+                operation,
+                str(error),
+                context_str,
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
+            )
         else:
-            self._logger.error("❌ [失败] %s: %s", operation, str(error), 
-                             exc_info=True, extra={"log_type": "SYSTEM"})
+            self._logger.error(
+                "❌ [失败] %s: %s",
+                operation,
+                str(error),
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
+            )
 
 
 # =============================================================================

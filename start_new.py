@@ -48,6 +48,8 @@ def setup_process_cleanup():
     支持以下场景的进程清理：
     - Terminal关闭（SIGINT/SIGTERM）
     - 正常退出（atexit）
+    - 窗口关闭（Qt事件）
+    - 异常退出（finally块）
     """
     def signal_handler(signum, frame):
         """信号处理器"""
@@ -57,6 +59,12 @@ def setup_process_cleanup():
             cleanup_all_processes()
         except Exception as e:
             print(f"❌ 清理进程失败: {e}")
+        # 确保清理信号文件（即使cleanup_all_processes失败）
+        try:
+            from backend.startup.workers.monitor_launcher import _cleanup_signal_file
+            _cleanup_signal_file()
+        except Exception:
+            pass
         sys.exit(1)
 
     # 注册信号处理器（Windows上只支持SIGINT和SIGTERM）
@@ -76,6 +84,12 @@ def setup_process_cleanup():
             cleanup_all_processes()
         except Exception:
             pass  # atexit中不要抛出异常
+        # 确保清理信号文件（即使cleanup_all_processes失败）
+        try:
+            from backend.startup.workers.monitor_launcher import _cleanup_signal_file
+            _cleanup_signal_file()
+        except Exception:
+            pass
 
     atexit.register(cleanup_on_exit)
 

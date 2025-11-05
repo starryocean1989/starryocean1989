@@ -221,7 +221,16 @@ class AsyncTdxDayReader:
         records = []
 
         try:
+            logger.debug(
+                "[TDX-READER] 开始解析日线数据: 数据大小=%d bytes, 记录大小=%d bytes",
+                len(data), self.RECORD_SIZE,
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             record_count = len(data) // self.RECORD_SIZE
+            logger.debug(
+                "[TDX-READER] 预计记录数: %d", record_count,
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
 
             for i in range(record_count):
                 offset = i * self.RECORD_SIZE
@@ -274,6 +283,11 @@ class AsyncTdxDayReader:
                 "[TDX-READER] ⚠️ 解析日线数据失败，已解析记录数=%d: %s",
                 len(records), str(e),
                 extra={"log_type": "ALERT", "scenario": scenario}
+            )
+        else:
+            logger.debug(
+                "[TDX-READER] 日线数据解析完成: 记录数=%d", len(records),
+                extra={"log_type": "SYSTEM", "scenario": scenario}
             )
 
         return records
@@ -566,9 +580,19 @@ class AsyncTdxLc5Reader:
     def _parse_lc5_data(self, data: bytes) -> List[dict]:
         """解析5分钟线数据（格式与分钟线相同）"""
         records = []
+        scenario = "tdx_data_read"
 
         try:
+            logger.debug(
+                "[TDX-READER] 开始解析5分钟线数据: 数据大小=%d bytes, 记录大小=%d bytes",
+                len(data), self.RECORD_SIZE,
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
             record_count = len(data) // self.RECORD_SIZE
+            logger.debug(
+                "[TDX-READER] 预计记录数: %d", record_count,
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
 
             for i in range(record_count):
                 offset = i * self.RECORD_SIZE
@@ -612,6 +636,11 @@ class AsyncTdxLc5Reader:
             logger.debug(
                 "[TDX-READER] 解析异常详情: 异常类型=%s, 异常消息=%s, 已解析记录数=%d",
                 type(e).__name__, str(e), len(records),
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+        else:
+            logger.debug(
+                "[TDX-READER] 5分钟线数据解析完成: 记录数=%d", len(records),
                 extra={"log_type": "SYSTEM", "scenario": scenario}
             )
 
@@ -771,6 +800,11 @@ class AsyncTdxBlockReader:
                     'code_list': current_codes.copy(),
                     'count': len(current_codes)
                 })
+            
+            logger.debug(
+                "[TDX-READER] 板块解析完成: 板块数=%d", len(records),
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
 
         except Exception as e:
             scenario = "tdx_data_read"

@@ -233,7 +233,9 @@ class LogDatabase:
             }
 
         except Exception as e:
-            self.logger.error("获取日志统计失败：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
+            self.logger.error(
+                "获取日志统计失败：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True
+            )
             return {}
 
     def cleanup_old_logs(self, retention_days: int = 30) -> int:
@@ -280,7 +282,9 @@ class LogDatabase:
                 return count
 
             except Exception as e:
-                self.logger.error("删除所有日志失败：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
+                self.logger.error(
+                    "删除所有日志失败：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True
+                )
                 raise
 
     def delete_logs_by_ids(self, log_ids: List[int]) -> int:
@@ -304,7 +308,9 @@ class LogDatabase:
                 return deleted_count
 
             except Exception as e:
-                self.logger.error("批量删除日志失败：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
+                self.logger.error(
+                    "批量删除日志失败：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True
+                )
                 raise
 
 
@@ -508,8 +514,14 @@ class LogManager:
 
         except Exception as e:
             # 使用logger统一输出（日志会被MemoryHandler缓冲）
-            self.logger.error(f"[启动] ❌ 日志管理系统初始化异常: {e}", extra={"log_type": "SYSTEM"}, exc_info=True)
-            self.logger.error("日志管理系统初始化失败：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
+            self.logger.error(
+                f"[启动] ❌ 日志管理系统初始化异常: {e}",
+                extra={"log_type": "SYSTEM"},
+                exc_info=True,
+            )
+            self.logger.error(
+                "日志管理系统初始化失败：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True
+            )
             return False
 
     def _start_batch_flush_timer(self) -> None:
@@ -556,7 +568,9 @@ class LogManager:
             self.logger.info("日志管理系统已关闭")
 
         except Exception as e:
-            self.logger.error("关闭日志管理系统失败：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
+            self.logger.error(
+                "关闭日志管理系统失败：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True
+            )
 
     def add_log_record(self, log_data: Dict[str, Any]) -> None:
         """添加日志记录到缓冲区.
@@ -1282,7 +1296,9 @@ class AlertDatabase:
             )
 
         except Exception as e:
-            self.logger.error("告警数据库保存失败：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
+            self.logger.error(
+                "告警数据库保存失败：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True
+            )
 
     def get_alerts(
         self,
@@ -1371,7 +1387,9 @@ class AlertDatabase:
             return True
 
         except Exception as e:
-            self.logger.error("更新告警状态失败：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
+            self.logger.error(
+                "更新告警状态失败：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True
+            )
             return False
 
     def get_alert(self, alert_id: str) -> Optional[Dict[str, Any]]:
@@ -1886,7 +1904,9 @@ class PerformanceMonitor:
                 self._cleanup_old_metrics()
                 self._state["stop_event"].wait(interval)
             except Exception as e:
-                self.logger.error("监控循环异常：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
+                self.logger.error(
+                    "监控循环异常：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True
+                )
                 time.sleep(interval)
 
     def _collect_metrics(self):
@@ -1927,7 +1947,9 @@ class PerformanceMonitor:
                 self._metrics["core"].append(core_metrics)
 
         except Exception as e:
-            self.logger.error("收集性能指标失败：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
+            self.logger.error(
+                "收集性能指标失败：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True
+            )
 
     def _measure_response_time(self) -> float:
         """测量响应时间."""
@@ -1953,7 +1975,9 @@ class PerformanceMonitor:
             return metrics if metrics else None
 
         except Exception as e:
-            self.logger.error("收集核心模块指标失败：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
+            self.logger.error(
+                "收集核心模块指标失败：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True
+            )
             return None
 
     def _check_thresholds(self):
@@ -2150,7 +2174,13 @@ class TestRunner:
                 loader = unittest.TestLoader()
                 suite = loader.loadTestsFromModule(module)
             except Exception as e:
-                self.logger.error("加载测试模块失败 %s：%s", test_module, e, extra={"log_type": "SYSTEM"}, exc_info=True)
+                self.logger.error(
+                    "加载测试模块失败 %s：%s",
+                    test_module,
+                    e,
+                    extra={"log_type": "SYSTEM"},
+                    exc_info=True,
+                )
                 return {"success": False, "error": str(e)}
         else:
             suite = unittest.TestSuite()
@@ -2475,14 +2505,18 @@ class AsyncTaskManager:
                     if self.loop is not None:
                         self.loop.run_forever()
                 except Exception as e:
-                    self.logger.error("事件循环异常：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
+                    self.logger.error(
+                        "事件循环异常：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True
+                    )
 
             loop_thread = threading.Thread(target=run_loop, daemon=True)
             loop_thread.start()
             self.logger.info("异步任务管理器启动完成")
 
         except Exception as e:
-            self.logger.error("启动事件循环失败：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
+            self.logger.error(
+                "启动事件循环失败：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True
+            )
 
     def stop_event_loop(self):
         """停止事件循环."""
@@ -2492,7 +2526,9 @@ class AsyncTaskManager:
                 self.executor.shutdown(wait=True)
                 self.logger.info("异步任务管理器停止完成")
             except Exception as e:
-                self.logger.error("停止事件循环失败：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
+                self.logger.error(
+                    "停止事件循环失败：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True
+                )
 
     def get_task_stats(self) -> Dict[str, int]:
         """获取任务统计信息."""
@@ -2510,7 +2546,9 @@ class AsyncTaskManager:
                 result = func(*args, **kwargs)
                 self._results[task_id] = {"success": True, "result": result}
             except Exception as e:
-                self.logger.error("任务执行失败 %s：%s", task_id, e, extra={"log_type": "SYSTEM"}, exc_info=True)
+                self.logger.error(
+                    "任务执行失败 %s：%s", task_id, e, extra={"log_type": "SYSTEM"}, exc_info=True
+                )
                 self._results[task_id] = {"success": False, "error": str(e)}
 
         future = self.executor.submit(task_wrapper)
@@ -2532,7 +2570,13 @@ class AsyncTaskManager:
                     result = coroutine_func(*args, **kwargs)
                 self._results[task_id] = {"success": True, "result": result}
             except Exception as e:
-                self.logger.error("异步任务执行失败 %s：%s", task_id, e, extra={"log_type": "SYSTEM"}, exc_info=True)
+                self.logger.error(
+                    "异步任务执行失败 %s：%s",
+                    task_id,
+                    e,
+                    extra={"log_type": "SYSTEM"},
+                    exc_info=True,
+                )
                 self._results[task_id] = {"success": False, "error": str(e)}
 
         if self.loop is None:
@@ -2627,7 +2671,9 @@ class AsyncDataProcessor:
             future = self.task_manager.executor.submit(self._sync_process_data, data_list)
             return future.result(timeout=30)
         except Exception as e:
-            self.logger.error("同步数据处理失败：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
+            self.logger.error(
+                "同步数据处理失败：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True
+            )
             return {}
 
     def _sync_process_data(self, data_list: List["UnifiedMarketData"]) -> Dict[str, Any]:
@@ -2702,7 +2748,7 @@ class SystemManagerService(BaseService):
         # ========== 🆕 托管模式统一日志系统 ==========
 
         # 获取LoggingHub实例（已在启动时配置好handlers）
-        from backend.infrastructure.system_vnpy.unified_log_system import get_logging_hub
+        from backend.infrastructure.system_vnpy.logging_system import get_logging_hub
         from backend.services.database_adapter import get_db_manager
 
         self.logging_hub = get_logging_hub()
@@ -2782,15 +2828,22 @@ class SystemManagerService(BaseService):
                 self._alerts_pipe = None
                 self._ipc_available = False
                 if not IPC_AVAILABLE:
-                    self.logger.warning("⚠️ Native IPC扩展不可用，将使用降级模式", extra={"log_type": "SYSTEM"})
+                    self.logger.warning(
+                        "⚠️ Native IPC扩展不可用，将使用降级模式", extra={"log_type": "SYSTEM"}
+                    )
                 elif not self._admin_privileges:
-                    self.logger.warning("⚠️ 未获得管理员权限，Native IPC不可用，将使用降级模式", extra={"log_type": "SYSTEM"})
+                    self.logger.warning(
+                        "⚠️ 未获得管理员权限，Native IPC不可用，将使用降级模式",
+                        extra={"log_type": "SYSTEM"},
+                    )
         except ImportError:
             self._query_pipe = None
             self._status_pipe = None
             self._alerts_pipe = None
             self._ipc_available = False
-            self.logger.warning("⚠️ native_ipc模块不可用，将使用降级模式", extra={"log_type": "SYSTEM"})
+            self.logger.warning(
+                "⚠️ native_ipc模块不可用，将使用降级模式", extra={"log_type": "SYSTEM"}
+            )
 
         self._monitoring_interval = 2  # 默认2秒
         self._ipc_loop = None  # asyncio事件循环（用于native_ipc）
@@ -2828,6 +2881,7 @@ class SystemManagerService(BaseService):
         """检查是否有管理员权限."""
         try:
             import ctypes
+
             return ctypes.windll.shell32.IsUserAnAdmin()
         except Exception:
             return False
@@ -2843,7 +2897,9 @@ class SystemManagerService(BaseService):
             if not self.event_engine:
                 self.logger.error("❌ EventEngine不可用", extra={"log_type": "SYSTEM"})
                 self.logger.error("这通常意味着VNPy核心初始化失败", extra={"log_type": "SYSTEM"})
-                self.logger.error("SystemManagerService需要EventEngine用于事件通信", extra={"log_type": "SYSTEM"})
+                self.logger.error(
+                    "SystemManagerService需要EventEngine用于事件通信", extra={"log_type": "SYSTEM"}
+                )
                 # 🎯 不再尝试创建，因为EventEngine应该已在主线程创建
                 return False
 
@@ -2857,12 +2913,16 @@ class SystemManagerService(BaseService):
                 )
                 self.logger.info("✅ 日志管理系统初始化完成（已注入EventEngine）")
             except Exception as e:
-                self.logger.error("❌ 日志管理系统初始化失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+                self.logger.error(
+                    "❌ 日志管理系统初始化失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+                )
                 # 不中断启动流程
 
             # 初始化native_ipc通信管道
             if not self._ipc_available:
-                self.logger.error("❌ native_ipc不可用，监控功能将受限", extra={"log_type": "SYSTEM"})
+                self.logger.error(
+                    "❌ native_ipc不可用，监控功能将受限", extra={"log_type": "SYSTEM"}
+                )
                 return False
 
             from PySide6.QtCore import QTimer
@@ -2876,7 +2936,10 @@ class SystemManagerService(BaseService):
                 time.sleep(0.5)
 
             if not signal_file.exists():
-                self.logger.warning("⚠️ 监控进程未就绪（未找到就绪信号文件），将继续尝试初始化", extra={"log_type": "SYSTEM"})
+                self.logger.warning(
+                    "⚠️ 监控进程未就绪（未找到就绪信号文件），将继续尝试初始化",
+                    extra={"log_type": "SYSTEM"},
+                )
 
             # 启动asyncio事件循环（在后台线程中）
             self._start_ipc_event_loop()
@@ -2891,9 +2954,7 @@ class SystemManagerService(BaseService):
                 )
 
                 # 创建monitor_query客户端（连接到监控进程）
-                query_task = asyncio.run_coroutine_threadsafe(
-                    self._initialize_query_client(), loop
-                )
+                query_task = asyncio.run_coroutine_threadsafe(self._initialize_query_client(), loop)
 
                 # 创建monitor_status客户端（连接到监控进程）
                 status_task = asyncio.run_coroutine_threadsafe(
@@ -2908,19 +2969,23 @@ class SystemManagerService(BaseService):
                     self.logger.info("✅ native_ipc管道初始化完成")
                     self._ipc_mode = "native"
                 except TimeoutError:
-                    self.logger.warning(
-                        "⚠️ native_ipc管道初始化超时，继续等待后台线程异步重试"
-                    )
+                    self.logger.warning("⚠️ native_ipc管道初始化超时，继续等待后台线程异步重试")
                     self._ipc_mode = "native_pending"
                     self._ipc_available = False
                     # 后台线程会继续重试，不立即降级
                 except Exception as e:
-                    self.logger.warning("⚠️ native_ipc管道初始化失败，降级到基础模式: %s", e, extra={"log_type": "SYSTEM"})
+                    self.logger.warning(
+                        "⚠️ native_ipc管道初始化失败，降级到基础模式: %s",
+                        e,
+                        extra={"log_type": "SYSTEM"},
+                    )
                     self._ipc_mode = "fallback"
                     self._ipc_available = False
                     self._schedule_ipc_reconnect()
             else:
-                self.logger.warning("⚠️ asyncio事件循环未启动，降级到基础模式", extra={"log_type": "SYSTEM"})
+                self.logger.warning(
+                    "⚠️ asyncio事件循环未启动，降级到基础模式", extra={"log_type": "SYSTEM"}
+                )
                 self._ipc_mode = "fallback"
                 self._ipc_available = False
 
@@ -2971,7 +3036,9 @@ class SystemManagerService(BaseService):
                 self._ipc_mode = "native"
                 self._ipc_available = True
             except Exception as reconnect_error:
-                self.logger.warning("[IPC] 重新初始化管道失败: %s", reconnect_error, extra={"log_type": "SYSTEM"})
+                self.logger.warning(
+                    "[IPC] 重新初始化管道失败: %s", reconnect_error, extra={"log_type": "SYSTEM"}
+                )
                 self._schedule_ipc_reconnect(min(delay_seconds * 1.5, 30.0))
 
         threading.Thread(target=_reconnect, name="IPCReconnectThread", daemon=True).start()
@@ -3016,7 +3083,12 @@ class SystemManagerService(BaseService):
             self._ipc_tasks.append(task)
 
         except Exception as e:
-            self.logger.error("[IPC] ❌ 创建告警服务端管道失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                "[IPC] ❌ 创建告警服务端管道失败: %s",
+                e,
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
+            )
             raise
 
     async def _initialize_query_client(self):
@@ -3031,19 +3103,25 @@ class SystemManagerService(BaseService):
             signal_file = Path("logs/monitor_ready.signal")
             signal_wait_start = time.time()
             signal_max_wait = 20.0  # 最多等待20秒
-            
+
             while not signal_file.exists() and (time.time() - signal_wait_start) < signal_max_wait:
                 await asyncio.sleep(0.5)
-            
+
             if not signal_file.exists():
-                self.logger.warning("[IPC] 监控进程就绪信号文件未创建，继续尝试连接", extra={"log_type": "SYSTEM"})
+                self.logger.warning(
+                    "[IPC] 监控进程就绪信号文件未创建，继续尝试连接", extra={"log_type": "SYSTEM"}
+                )
             else:
                 try:
                     with open(signal_file, "r", encoding="utf-8") as f:
                         signal_data = json.load(f)
-                    self.logger.info(f"[IPC] 监控进程就绪信号已确认: {signal_data.get('status', 'unknown')}")
+                    self.logger.info(
+                        f"[IPC] 监控进程就绪信号已确认: {signal_data.get('status', 'unknown')}"
+                    )
                 except Exception as e:
-                    self.logger.warning(f"[IPC] 读取监控进程就绪信号失败: {e}", extra={"log_type": "SYSTEM"})
+                    self.logger.warning(
+                        f"[IPC] 读取监控进程就绪信号失败: {e}", extra={"log_type": "SYSTEM"}
+                    )
 
             # 等待监控进程创建服务端（最多等待20秒，已等待信号文件）
             max_wait = 20.0
@@ -3060,7 +3138,11 @@ class SystemManagerService(BaseService):
                     continue
                 except Exception as e:
                     # 其他异常，记录但继续重试（可能是临时网络问题）
-                    self.logger.warning("[IPC] 创建查询客户端管道失败，继续重试: %s", e, extra={"log_type": "SYSTEM"})
+                    self.logger.warning(
+                        "[IPC] 创建查询客户端管道失败，继续重试: %s",
+                        e,
+                        extra={"log_type": "SYSTEM"},
+                    )
                     await asyncio.sleep(0.5)
 
                     if time.time() - wait_start >= max_wait:
@@ -3070,7 +3152,9 @@ class SystemManagerService(BaseService):
             raise TimeoutError("监控进程服务端未就绪（超时20秒）")
 
         except Exception as e:
-            self.logger.error("[IPC] ❌ 初始化查询客户端失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                "[IPC] ❌ 初始化查询客户端失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+            )
             raise
 
     async def _initialize_status_client(self):
@@ -3085,19 +3169,25 @@ class SystemManagerService(BaseService):
             signal_file = Path("logs/monitor_ready.signal")
             signal_wait_start = time.time()
             signal_max_wait = 20.0  # 最多等待20秒
-            
+
             while not signal_file.exists() and (time.time() - signal_wait_start) < signal_max_wait:
                 await asyncio.sleep(0.5)
-            
+
             if not signal_file.exists():
-                self.logger.warning("[IPC] 监控进程就绪信号文件未创建，继续尝试连接", extra={"log_type": "SYSTEM"})
+                self.logger.warning(
+                    "[IPC] 监控进程就绪信号文件未创建，继续尝试连接", extra={"log_type": "SYSTEM"}
+                )
             else:
                 try:
                     with open(signal_file, "r", encoding="utf-8") as f:
                         signal_data = json.load(f)
-                    self.logger.info(f"[IPC] 监控进程就绪信号已确认: {signal_data.get('status', 'unknown')}")
+                    self.logger.info(
+                        f"[IPC] 监控进程就绪信号已确认: {signal_data.get('status', 'unknown')}"
+                    )
                 except Exception as e:
-                    self.logger.warning(f"[IPC] 读取监控进程就绪信号失败: {e}", extra={"log_type": "SYSTEM"})
+                    self.logger.warning(
+                        f"[IPC] 读取监控进程就绪信号失败: {e}", extra={"log_type": "SYSTEM"}
+                    )
 
             # 等待监控进程创建服务端（最多等待20秒，已等待信号文件）
             max_wait = 20.0
@@ -3114,7 +3204,11 @@ class SystemManagerService(BaseService):
                     continue
                 except Exception as e:
                     # 其他异常，记录但继续重试（可能是临时网络问题）
-                    self.logger.warning("[IPC] 创建状态客户端管道失败，继续重试: %s", e, extra={"log_type": "SYSTEM"})
+                    self.logger.warning(
+                        "[IPC] 创建状态客户端管道失败，继续重试: %s",
+                        e,
+                        extra={"log_type": "SYSTEM"},
+                    )
                     await asyncio.sleep(0.5)
 
                     if time.time() - wait_start >= max_wait:
@@ -3124,7 +3218,9 @@ class SystemManagerService(BaseService):
             raise TimeoutError("监控进程服务端未就绪（超时20秒）")
 
         except Exception as e:
-            self.logger.error("[IPC] ❌ 初始化状态客户端失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                "[IPC] ❌ 初始化状态客户端失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+            )
             raise
 
     async def _alerts_server_loop(self):
@@ -3143,7 +3239,9 @@ class SystemManagerService(BaseService):
 
                     # 验证告警格式
                     if not isinstance(alert, dict):
-                        self.logger.warning("[IPC] 收到无效告警格式：%s", type(alert), extra={"log_type": "SYSTEM"})
+                        self.logger.warning(
+                            "[IPC] 收到无效告警格式：%s", type(alert), extra={"log_type": "SYSTEM"}
+                        )
                         continue
 
                     if alert.get("type") != "alert":
@@ -3163,9 +3261,13 @@ class SystemManagerService(BaseService):
                     message = alert.get("message", "")
 
                     if severity == "critical":
-                        self.logger.error("[ALERT-CRITICAL] %s", message, extra={"log_type": "ALERT"})
+                        self.logger.error(
+                            "[ALERT-CRITICAL] %s", message, extra={"log_type": "ALERT"}
+                        )
                     elif severity == "warning":
-                        self.logger.warning("[ALERT-WARNING] %s", message, extra={"log_type": "ALERT"})
+                        self.logger.warning(
+                            "[ALERT-WARNING] %s", message, extra={"log_type": "ALERT"}
+                        )
                     else:
                         self.logger.info("[ALERT-INFO] %s", message, extra={"log_type": "ALERT"})
 
@@ -3194,13 +3296,17 @@ class SystemManagerService(BaseService):
                     if "WinError 536" in error_str:
                         self.logger.debug("[IPC] 告警客户端未连接: %s", error_str)
                     else:
-                        self.logger.warning("[IPC] 接收告警失败：%s", e, extra={"log_type": "SYSTEM"})
+                        self.logger.warning(
+                            "[IPC] 接收告警失败：%s", e, extra={"log_type": "SYSTEM"}
+                        )
                     await asyncio.sleep(1.0)
 
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            self.logger.error("[IPC] 告警服务端循环异常: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                "[IPC] 告警服务端循环异常: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+            )
 
     def _test_ipc_connection(self) -> bool:
         """测试native_ipc连接是否可用，如果失败则尝试重新连接.
@@ -3228,14 +3334,18 @@ class SystemManagerService(BaseService):
             # 关闭旧连接
             if self._query_pipe:
                 try:
-                    asyncio.run_coroutine_threadsafe(self._close_pipe(self._query_pipe), self._ipc_loop)
+                    asyncio.run_coroutine_threadsafe(
+                        self._close_pipe(self._query_pipe), self._ipc_loop
+                    )
                 except Exception:
                     pass
                 self._query_pipe = None
 
             if self._status_pipe:
                 try:
-                    asyncio.run_coroutine_threadsafe(self._close_pipe(self._status_pipe), self._ipc_loop)
+                    asyncio.run_coroutine_threadsafe(
+                        self._close_pipe(self._status_pipe), self._ipc_loop
+                    )
                 except Exception:
                     pass
                 self._status_pipe = None
@@ -3252,7 +3362,9 @@ class SystemManagerService(BaseService):
                 return False
 
         except Exception as e:
-            self.logger.error("[IPC] IPC重连过程异常: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                "[IPC] IPC重连过程异常: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+            )
             return False
 
     async def _reconnect_ipc_pipes(self) -> bool:
@@ -3264,14 +3376,24 @@ class SystemManagerService(BaseService):
             try:
                 await self._initialize_query_client()
             except Exception as e:
-                self.logger.error("[IPC] 重新创建查询客户端失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
+                self.logger.error(
+                    "[IPC] 重新创建查询客户端失败: %s",
+                    e,
+                    extra={"log_type": "SYSTEM"},
+                    exc_info=True,
+                )
                 return False
 
             # 重新创建状态客户端
             try:
                 await self._initialize_status_client()
             except Exception as e:
-                self.logger.error("[IPC] 重新创建状态客户端失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
+                self.logger.error(
+                    "[IPC] 重新创建状态客户端失败: %s",
+                    e,
+                    extra={"log_type": "SYSTEM"},
+                    exc_info=True,
+                )
                 # 状态客户端失败不影响查询功能，继续
 
             # 测试新连接
@@ -3283,7 +3405,9 @@ class SystemManagerService(BaseService):
                 return False
 
         except Exception as e:
-            self.logger.error("[IPC] IPC管道重连异常: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                "[IPC] IPC管道重连异常: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+            )
             return False
 
     async def _test_query_pipe(self) -> bool:
@@ -3310,7 +3434,9 @@ class SystemManagerService(BaseService):
                     self.logger.debug("✅ IPC连接测试成功")
                     return True
                 elif "error" in response:
-                    self.logger.warning("⚠️ IPC响应包含错误: %s", response.get("error"), extra={"log_type": "SYSTEM"})
+                    self.logger.warning(
+                        "⚠️ IPC响应包含错误: %s", response.get("error"), extra={"log_type": "SYSTEM"}
+                    )
                     return False
 
             return False
@@ -3331,8 +3457,11 @@ class SystemManagerService(BaseService):
 
             # 调试信息：检查ServiceHealthChecker实例
             self.logger.debug("ServiceHealthChecker类型: %s", type(self.service_health_checker))
-            self.logger.debug("ServiceHealthChecker方法: %s", [m for m in dir(self.service_health_checker) if not m.startswith('_')])
-            
+            self.logger.debug(
+                "ServiceHealthChecker方法: %s",
+                [m for m in dir(self.service_health_checker) if not m.startswith("_")],
+            )
+
             # 采集服务状态
             service_manager = get_service_manager()
             result = self.service_health_checker.check_all_services(service_manager)
@@ -3347,7 +3476,9 @@ class SystemManagerService(BaseService):
                     self.logger.debug("推送服务状态失败：%s", e)
 
         except Exception as e:
-            self.logger.error("推送服务状态失败：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
+            self.logger.error(
+                "推送服务状态失败：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True
+            )
 
     async def _push_status_async(self, status_data: Dict[str, Any]):
         """异步推送服务状态."""
@@ -3370,7 +3501,9 @@ class SystemManagerService(BaseService):
         """
         try:
             if not self._query_pipe or not self._ipc_loop:
-                logger_monitor.warning("IPC连接不可用，无法触发SMART采集", extra={"log_type": "SYSTEM"})
+                logger_monitor.warning(
+                    "IPC连接不可用，无法触发SMART采集", extra={"log_type": "SYSTEM"}
+                )
                 return False
 
             # 使用run_coroutine_threadsafe在线程中运行异步请求
@@ -3381,7 +3514,9 @@ class SystemManagerService(BaseService):
             return result
 
         except Exception as e:
-            logger_monitor.error("触发SMART采集失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            logger_monitor.error(
+                "触发SMART采集失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+            )
             return False
 
     async def _trigger_smart_async(self) -> bool:
@@ -3407,7 +3542,9 @@ class SystemManagerService(BaseService):
             logger_monitor.warning("SMART采集触发超时", extra={"log_type": "SYSTEM"})
             return False
         except Exception as e:
-            logger_monitor.error("触发SMART采集异常: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            logger_monitor.error(
+                "触发SMART采集异常: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+            )
             return False
 
     def get_alert_cache(self, limit: int = 100) -> List[Dict[str, Any]]:
@@ -3503,7 +3640,10 @@ class SystemManagerService(BaseService):
                             # 重连成功后，立即尝试查询数据
                             continue
                         else:
-                            self.logger.warning("[MonitoringPush] ❌ IPC重连失败，将在下次循环继续重试", extra={"log_type": "SYSTEM"})
+                            self.logger.warning(
+                                "[MonitoringPush] ❌ IPC重连失败，将在下次循环继续重试",
+                                extra={"log_type": "SYSTEM"},
+                            )
                     elif self._ipc_mode == "native":
                         ipc_retry_counter += 1
                     # 非native模式下不进行IPC重连
@@ -3590,10 +3730,16 @@ class SystemManagerService(BaseService):
         except Exception as e:
             # 检查是否是管道关闭错误
             error_str = str(e)
-            if "WinError 109" in error_str or "管道已结束" in error_str or "pipe" in error_str.lower():
+            if (
+                "WinError 109" in error_str
+                or "管道已结束" in error_str
+                or "pipe" in error_str.lower()
+            ):
                 self.logger.warning("IPC管道连接已断开: %s", e, extra={"log_type": "SYSTEM"})
             else:
-                self.logger.error("查询监控数据失败：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
+                self.logger.error(
+                    "查询监控数据失败：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True
+                )
             return {}
 
     async def _query_data_async(self, request: Dict[str, Any]) -> Dict[str, Any]:
@@ -3615,17 +3761,29 @@ class SystemManagerService(BaseService):
             self.logger.debug("异步查询超时（2秒无响应）")
             return {}
         except json.JSONDecodeError as e:
-            self.logger.error("异步查询JSON解析失败：%s，数据长度：%d", e, len(response_data) if 'response_data' in locals() else 0, extra={"log_type": "SYSTEM"}, exc_info=True)
-            if 'response_data' in locals():
+            self.logger.error(
+                "异步查询JSON解析失败：%s，数据长度：%d",
+                e,
+                len(response_data) if "response_data" in locals() else 0,
+                extra={"log_type": "SYSTEM"},
+                exc_info=True,
+            )
+            if "response_data" in locals():
                 self.logger.debug("原始数据前100字符：%s", response_data[:100])
             return {}
         except Exception as e:
             # 检查是否是管道关闭错误
             error_str = str(e)
-            if "WinError 109" in error_str or "管道已结束" in error_str or "pipe" in error_str.lower():
+            if (
+                "WinError 109" in error_str
+                or "管道已结束" in error_str
+                or "pipe" in error_str.lower()
+            ):
                 self.logger.debug("IPC管道连接已断开: %s", e)
             else:
-                self.logger.error("异步查询失败：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
+                self.logger.error(
+                    "异步查询失败：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True
+                )
             return {}
 
     def get_current_monitoring_data(self) -> Dict[str, Any]:
@@ -3678,7 +3836,9 @@ class SystemManagerService(BaseService):
                     self.logger.debug(f"成功从监控进程获取带宽信息: {data}")
                     return data
                 else:
-                    self.logger.warning("监控进程返回的数据格式错误: %s", type(data), extra={"log_type": "SYSTEM"})
+                    self.logger.warning(
+                        "监控进程返回的数据格式错误: %s", type(data), extra={"log_type": "SYSTEM"}
+                    )
                     return {
                         "full_test": {
                             "download_mbps": None,
@@ -3719,7 +3879,9 @@ class SystemManagerService(BaseService):
                 "ping_test": {"ping_ms": None, "status": "IPC超时"},
             }
         except Exception as e:
-            self.logger.error("获取带宽信息失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                "获取带宽信息失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+            )
             return {
                 "full_test": {
                     "download_mbps": None,
@@ -3733,7 +3895,9 @@ class SystemManagerService(BaseService):
     def _dispatch_monitoring_events(self, data: Dict[str, Any]):
         """分发监控事件到EventEngine（解耦核心）."""
         if not self.event_engine:
-            self.logger.warning("[DispatchEvents] EventEngine不可用，跳过事件分发", extra={"log_type": "SYSTEM"})
+            self.logger.warning(
+                "[DispatchEvents] EventEngine不可用，跳过事件分发", extra={"log_type": "SYSTEM"}
+            )
             return
 
         from vnpy.event import Event
@@ -3879,7 +4043,9 @@ class SystemManagerService(BaseService):
                 "scenario_details": scenario_details,
             }
         except Exception as e:
-            self.logger.error("获取性能摘要失败：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
+            self.logger.error(
+                "获取性能摘要失败：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True
+            )
             return {}
 
     def get_adaptive_concurrency_suggestion(self) -> Dict[str, Any]:
@@ -3956,7 +4122,7 @@ class SystemManagerService(BaseService):
                     # 根据LoadBalancer的运行状态确定状态
                     is_running = lb_stats.get("running", False)
                     available_servers = lb_stats.get("available", 0)
-                    
+
                     if is_running and available_servers > 0:
                         status = "auto_applied"
                     elif is_running:
@@ -3964,7 +4130,9 @@ class SystemManagerService(BaseService):
                     else:
                         status = "not_applied"
             except Exception as e:
-                self.logger.warning("获取LoadBalancer状态失败，使用默认值: %s", e, extra={"log_type": "SYSTEM"})
+                self.logger.warning(
+                    "获取LoadBalancer状态失败，使用默认值: %s", e, extra={"log_type": "SYSTEM"}
+                )
 
             return {
                 "scale_factor": round(scale_factor, 2),
@@ -3973,7 +4141,9 @@ class SystemManagerService(BaseService):
                 "status": status,
             }
         except Exception as e:
-            self.logger.error("获取自适应建议失败：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
+            self.logger.error(
+                "获取自适应建议失败：%s", e, extra={"log_type": "SYSTEM"}, exc_info=True
+            )
             return {
                 "scale_factor": 1.0,
                 "reason": "获取建议失败",
@@ -4066,25 +4236,24 @@ class SystemManagerService(BaseService):
                         "pid": os.getpid(),
                         "memory_percent": current_proc.memory_percent(),
                         # 移除进程CPU查询（较耗时）
-                    }
+                    },
                 }
             except Exception:
                 # 如果进程查询失败，使用最小信息
-                process_data = {
-                    "process_count": 0,
-                    "current_process": {"pid": os.getpid()}
-                }
+                process_data = {"process_count": 0, "current_process": {"pid": os.getpid()}}
 
             return {
                 "system": system_data,
                 "process": process_data,
                 "timestamp": time.time(),
                 "mode": "fallback_optimized",
-                "source": "psutil_lightweight"
+                "source": "psutil_lightweight",
             }
 
         except Exception as e:
-            self.logger.error("获取基础系统数据失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
+            self.logger.error(
+                "获取基础系统数据失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True
+            )
             return self._get_minimal_system_data()
 
     def _get_minimal_system_data(self) -> Dict[str, Any]:
@@ -4102,16 +4271,14 @@ class SystemManagerService(BaseService):
                 "timestamp": time.time(),
                 "mode": "minimal",
                 "source": "platform_basic",
-                "message": "监控功能受限：需要管理员权限以启用完整功能"
+                "message": "监控功能受限：需要管理员权限以启用完整功能",
             }
 
         except Exception as e:
-            self.logger.error("获取最小系统数据失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
-            return {
-                "timestamp": time.time(),
-                "mode": "error",
-                "error": str(e)
-            }
+            self.logger.error(
+                "获取最小系统数据失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True
+            )
+            return {"timestamp": time.time(), "mode": "error", "error": str(e)}
 
     async def _close_pipe(self, pipe):
         """异步关闭管道."""
@@ -4207,7 +4374,9 @@ class SystemManagerService(BaseService):
                 "默认告警规则已加载（CPU、内存、磁盘、服务离线监控规则，支持特殊条件评估）"
             )
         except Exception as e:
-            self.logger.error("加载默认告警规则失败：%s", str(e), extra={"log_type": "SYSTEM"}, exc_info=True)
+            self.logger.error(
+                "加载默认告警规则失败：%s", str(e), extra={"log_type": "SYSTEM"}, exc_info=True
+            )
 
     # ==================== 性能指标展示（三维度：数据处理、策略执行、交易执行） ====================
 
@@ -4967,7 +5136,9 @@ class SystemManagerService(BaseService):
             count = self.log_manager.delete_all_logs()
             return {"success": True, "deleted_count": count}
         except Exception as e:
-            self.logger.error("删除所有日志失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
+            self.logger.error(
+                "删除所有日志失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True
+            )
             return {"success": False, "message": str(e)}
 
     def delete_logs_by_ids(self, log_ids: List[int]) -> Dict[str, Any]:
@@ -4983,7 +5154,9 @@ class SystemManagerService(BaseService):
             count = self.log_manager.delete_logs_by_ids(log_ids)
             return {"success": True, "deleted_count": count}
         except Exception as e:
-            self.logger.error("批量删除日志失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
+            self.logger.error(
+                "批量删除日志失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True
+            )
             return {"success": False, "message": str(e)}
 
     # ==================== 系统诊断 ====================
@@ -5544,7 +5717,9 @@ class SystemManagerService(BaseService):
                 masked_key = f"{settings.ai.api_key[:4]}...{settings.ai.api_key[-4:]}"
                 self.logger.info("重新加载后的API Key: %s", masked_key)
             else:
-                self.logger.warning("API Key未设置，AI服务重载可能失败", extra={"log_type": "SYSTEM"})
+                self.logger.warning(
+                    "API Key未设置，AI服务重载可能失败", extra={"log_type": "SYSTEM"}
+                )
 
             service_manager = get_service_manager()
 
@@ -5579,7 +5754,9 @@ class SystemManagerService(BaseService):
                 }
 
         except Exception as e:
-            self.logger.error("重新加载AI服务失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                "重新加载AI服务失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+            )
             return {
                 "success": False,
                 "message": f"重新加载失败: {str(e)}",
@@ -6271,34 +6448,39 @@ class SystemManagerService(BaseService):
         import time
         import logging
         from contextlib import suppress
-        
+
         start_time = time.time()
-        
+
         # 设置日志上下文
         try:
-            from backend.infrastructure.system_vnpy.unified_log_system import (
+            from backend.infrastructure.system_vnpy.logging_system import (
                 get_logging_hub,
                 ai_log_process,
             )
+
             hub = get_logging_hub()
         except ImportError:
             hub = None
-        
+
         stage_logger = logging.getLogger("task.tdx_data_read.stage")
-        
+
         # 使用ai_log_process创建独立日志文件
         try:
-            context_manager = ai_log_process(
-                "tdx_data_read",
-                {
-                    "data_types": config.get("data_types", []),
-                    "markets": config.get("markets", []),
-                    "tdx_root": config.get("tdx_root"),
-                }
-            ) if hub else suppress()
+            context_manager = (
+                ai_log_process(
+                    "tdx_data_read",
+                    {
+                        "data_types": config.get("data_types", []),
+                        "markets": config.get("markets", []),
+                        "tdx_root": config.get("tdx_root"),
+                    },
+                )
+                if hub
+                else suppress()
+            )
         except Exception:
             context_manager = suppress()
-        
+
         with context_manager:
             try:
                 # 阶段节点（输出到Terminal）
@@ -6306,7 +6488,7 @@ class SystemManagerService(BaseService):
                     f"📍 TDX数据读取开始: 数据类型={config.get('data_types', [])}, 市场={config.get('markets', [])}",
                     extra={"log_type": "STAGE_NODE", "scenario": "tdx_data_read"},
                 )
-                
+
                 # DEBUG日志（只写入AI日志文件）
                 self.logger.debug(
                     "[TDX-READ-SERVICE] 开始读取TDX数据",
@@ -6316,7 +6498,7 @@ class SystemManagerService(BaseService):
                     "[TDX-READ-SERVICE] TDX数据读取任务开始",
                     extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
                 )
-            
+
                 self._log_operation("读取通达信数据")
 
                 # 验证配置
@@ -6374,7 +6556,7 @@ class SystemManagerService(BaseService):
                         "success": False,
                         "message": f"通达信目录不存在: {tdx_root}",
                     }
-                
+
                 # DEBUG日志
                 self.logger.debug(
                     f"[TDX-READ-SERVICE] 通达信目录验证通过: {tdx_path}",
@@ -6403,7 +6585,9 @@ class SystemManagerService(BaseService):
                     self.logger.info("=" * 60)
                     self.logger.info("📊 品种缓存获取结果:")
                     for market_code, symbols in symbols_by_market.items():
-                        self.logger.info("  - 市场 %s: %d 个品种", market_code.upper(), len(symbols))
+                        self.logger.info(
+                            "  - 市场 %s: %d 个品种", market_code.upper(), len(symbols)
+                        )
                     self.logger.info("  - 总计: %d 个品种", total_symbols)
                     self.logger.info("=" * 60)
                     self.logger.debug(
@@ -6451,6 +6635,7 @@ class SystemManagerService(BaseService):
                     from backend.infrastructure.data_module_vnpy.data_acquisition import (
                         TdxDynamicExecutor,
                     )
+
                     self.logger.debug(
                         "[TDX-READ-SERVICE] TdxDynamicExecutor导入成功",
                         extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
@@ -6570,7 +6755,10 @@ class SystemManagerService(BaseService):
 
                         symbols = symbols_by_market.get(market, [])
                         if not symbols:
-                            self.logger.warning(f"⚠️  市场 {market.upper()} 没有品种，跳过", extra={"log_type": "SYSTEM"})
+                            self.logger.warning(
+                                f"⚠️  市场 {market.upper()} 没有品种，跳过",
+                                extra={"log_type": "SYSTEM"},
+                            )
                             continue
 
                         for data_type in data_types:
@@ -6595,7 +6783,7 @@ class SystemManagerService(BaseService):
                                     extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
                                 )
                                 batch_start_time = time.time()
-                                
+
                                 results = await executor.execute_batch(
                                     symbols=symbols,
                                     data_type=data_type,
@@ -6603,7 +6791,7 @@ class SystemManagerService(BaseService):
                                     initial_processes=initial_processes,
                                     initial_coroutines=initial_coroutines,
                                 )
-                                
+
                                 batch_elapsed = time.time() - batch_start_time
                                 self.logger.debug(
                                     f"[TDX-READ-SERVICE] 批量处理完成: 市场={market.upper()}, 数据类型={data_type}, "
@@ -6618,55 +6806,76 @@ class SystemManagerService(BaseService):
                                     completed += 1
                                     key = f"{market}_{data_type}_{symbol}"
                                     all_results[key] = success
-                                    
+
                                     # DEBUG日志（记录每个文件的处理结果）
                                     if success:
                                         batch_success_count += 1
                                         self.logger.debug(
                                             f"[TDX-READ-SERVICE] 文件读取成功: {symbol}/{data_type}/{market}, 耗时={duration:.3f}s",
-                                            extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                                            extra={
+                                                "log_type": "SYSTEM",
+                                                "scenario": "tdx_data_read",
+                                            },
                                         )
                                     else:
                                         batch_failed_count += 1
                                         self.logger.debug(
                                             f"[TDX-READ-SERVICE] 文件读取失败: {symbol}/{data_type}/{market}, 错误: {error_msg}, 耗时={duration:.3f}s",
-                                            extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                                            extra={
+                                                "log_type": "SYSTEM",
+                                                "scenario": "tdx_data_read",
+                                            },
                                         )
                                         self.logger.warning(
                                             f"[TDX-READ-SERVICE] ⚠️ 文件读取失败: {symbol}/{data_type}/{market}, 错误: {error_msg}",
-                                            extra={"log_type": "ALERT", "scenario": "tdx_data_read"},
+                                            extra={
+                                                "log_type": "ALERT",
+                                                "scenario": "tdx_data_read",
+                                            },
                                         )
 
                                     # 进度回调
                                     if progress_callback:
                                         info = f"{market.upper()} {data_type} {symbol}"
                                         progress_callback(completed, total_tasks, info, success)
-                                    
+
                                     # 每100个文件记录一次进度
                                     if completed % 100 == 0:
                                         self.logger.debug(
                                             f"[TDX-READ-SERVICE] 进度更新: 已完成 {completed}/{total_tasks} ({completed*100//total_tasks}%), "
                                             f"成功={batch_success_count}, 失败={batch_failed_count}",
-                                            extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                                            extra={
+                                                "log_type": "SYSTEM",
+                                                "scenario": "tdx_data_read",
+                                            },
                                         )
                                         self.logger.info(
                                             f"[TDX-READ-SERVICE] ℹ️ 进度: {completed}/{total_tasks} ({completed*100//total_tasks}%), "
                                             f"成功={batch_success_count}, 失败={batch_failed_count}",
-                                            extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                                            extra={
+                                                "log_type": "SYSTEM",
+                                                "scenario": "tdx_data_read",
+                                            },
                                         )
 
                                     # 检查停止标志
                                     if self._tdx_reader_stop_flag:
                                         self.logger.debug(
                                             "[TDX-READ-SERVICE] 检测到停止标志，中断批量读取",
-                                            extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                                            extra={
+                                                "log_type": "SYSTEM",
+                                                "scenario": "tdx_data_read",
+                                            },
                                         )
                                         self.logger.info(
                                             "[TDX-READ-SERVICE] 检测到停止标志，中断批量读取",
-                                            extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
+                                            extra={
+                                                "log_type": "SYSTEM",
+                                                "scenario": "tdx_data_read",
+                                            },
                                         )
                                         return
-                                
+
                                 # 记录批量处理结果
                                 self.logger.debug(
                                     f"[TDX-READ-SERVICE] 批量处理完成: 市场={market.upper()}, 数据类型={data_type}, "
@@ -6685,7 +6894,11 @@ class SystemManagerService(BaseService):
                                     )
 
                             except Exception as e:
-                                batch_elapsed = time.time() - batch_start_time if 'batch_start_time' in locals() else 0
+                                batch_elapsed = (
+                                    time.time() - batch_start_time
+                                    if "batch_start_time" in locals()
+                                    else 0
+                                )
                                 self.logger.debug(
                                     f"[TDX-READ-SERVICE] 批量处理异常: 市场={market.upper()}, 数据类型={data_type}, "
                                     f"异常类型={type(e).__name__}, 异常详情={str(e)}, 耗时={batch_elapsed:.2f}s",
@@ -6891,7 +7104,9 @@ class SystemManagerService(BaseService):
 
                 # 跳过空的 symbol_code
                 if not symbol_code:
-                    self.logger.warning(f"跳过无效品种: {symbol_info}", extra={"log_type": "SYSTEM"})
+                    self.logger.warning(
+                        f"跳过无效品种: {symbol_info}", extra={"log_type": "SYSTEM"}
+                    )
                     continue
 
                 # 确保 symbol_code 是字符串

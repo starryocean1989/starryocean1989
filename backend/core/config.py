@@ -250,9 +250,19 @@ class Settings:
         except FileNotFoundError:
             logger.error("❌ 配置文件不存在: %s", config_file, extra={"log_type": "SYSTEM"})
         except json.JSONDecodeError:
-            logger.error("❌ 配置文件JSON格式错误: 文件=%s", config_file, exc_info=True, extra={"log_type": "SYSTEM"})
+            logger.error(
+                "❌ 配置文件JSON格式错误: 文件=%s",
+                config_file,
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
+            )
         except Exception:
-            logger.error("❌ 配置文件加载失败: 文件=%s", config_file, exc_info=True, extra={"log_type": "SYSTEM"})
+            logger.error(
+                "❌ 配置文件加载失败: 文件=%s",
+                config_file,
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
+            )
 
     def save_to_file(self, config_file: str) -> None:
         """保存配置到文件."""
@@ -310,7 +320,12 @@ class Settings:
             logger.info("配置保存完成: 文件=%s, 大小=%d字节", config_file, file_size)
 
         except Exception:
-            logger.error("❌ 配置文件保存失败: 文件=%s", config_file, exc_info=True, extra={"log_type": "SYSTEM"})
+            logger.error(
+                "❌ 配置文件保存失败: 文件=%s",
+                config_file,
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
+            )
 
     def _create_directories(self) -> None:
         """创建必要的目录."""
@@ -397,7 +412,7 @@ def init_settings(config_file: Optional[str] = None) -> Settings:
 
     # 阶段感知：启动阶段详细日志（P2优化）
     try:
-        from backend.infrastructure.system_vnpy.unified_log_system import get_logging_hub
+        from backend.infrastructure.system_vnpy.logging_system import get_logging_hub
 
         hub = get_logging_hub()
         if hub._routing_engine and hub._routing_engine.current_stage == "startup":
@@ -417,7 +432,7 @@ def init_settings(config_file: Optional[str] = None) -> Settings:
     total_items = sum(len(v) if isinstance(v, dict) else 1 for v in config_dict.values())
 
     try:
-        from backend.infrastructure.system_vnpy.unified_log_system import get_logging_hub
+        from backend.infrastructure.system_vnpy.logging_system import get_logging_hub
 
         hub = get_logging_hub()
         if hub._routing_engine and hub._routing_engine.current_stage == "startup":
@@ -488,7 +503,9 @@ class ConfigManager:
                         setattr(self.ui_config, k, v)
                 logger.info("UI配置文件加载完成: %s", self._config_file)
             except Exception as e:
-                logger.error("UI配置文件加载失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
+                logger.error(
+                    "UI配置文件加载失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True
+                )
 
     def save_config(self) -> None:
         """保存当前配置到文件（如提供路径）。"""

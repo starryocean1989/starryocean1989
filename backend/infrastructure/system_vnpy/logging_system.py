@@ -1,0 +1,2261 @@
+# -*- coding: utf-8 -*-
+"""
+简化日志系统 - 重构版本 v6.0
+
+设计目标：
+1. 大幅简化路由规则（硬编码，不使用配置文件）
+2. 合并文件输出（统一到logs/目录，不再区分logs/和logs/ai/）
+3. 压缩文件数量（所有代码合并到一个文件）
+4. 确保多进程多线程日志都能被拦截和有序输出
+
+作者：系统重构团队
+日期：2025-01-XX
+版本：v6.0 (简化重构版)
+"""
+
+import json
+import logging
+import time
+import asyncio
+import multiprocessing
+import threading
+import heapq
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from datetime import datetime
+from enum import Enum
+from functools import wraps, lru_cache
+from pathlib import Path
+from threading import Lock, RLock
+from typing import Any, Dict, List, Optional, Callable, Tuple
+from logging.handlers import QueueHandler, QueueListener, MemoryHandler
+
+from vnpy.event import Event, EventEngine
+
+# 日志配置
+logger = logging.getLogger("backend.infrastructure.system_vnpy.logging_system")
+
+# =============================================================================
+# Part 1: 数据结构定义
+# =============================================================================
+
+
+class LogType(Enum):
+    """日志类型枚举."""
+
+    SYSTEM = "system"
+    PROGRESS = "progress"
+    NOTIFICATION = "notification"
+    ALERT = "alert"
+    USER_FEEDBACK = "user_feedback"
+    DEBUG = "debug"
+    STAGE_NODE = "stage_node"
+
+
+# 排除字段集合（类级别常量，避免每次重新创建）
+_EXCLUDED_FIELDS = frozenset(
+    [
+        "name",
+        "msg",
+        "args",
+        "created",
+        "filename",
+        "funcName",
+        "levelname",
+        "levelno",
+        "lineno",
+        "module",
+        "msecs",
+        "message",
+        "pathname",
+        "process",
+        "processName",
+        "relativeCreated",
+        "thread",
+        "threadName",
+        "exc_info",
+        "exc_text",
+        "stack_info",
+    ]
+)
+
+
+@dataclass
+class UnifiedLogRecord:
+    """统一日志记录."""
+
+    type: LogType
+    level: int
+    module: str
+    message: str
+    details: Optional[Dict[str, Any]] = None
+    timestamp: datetime = field(default_factory=datetime.now)
+    logger_name: str = ""
+    function: str = ""
+    line: int = 0
+    filename: str = ""
+    thread: int = 0
+    thread_name: str = ""
+    exception: str = ""
+
+
+# =============================================================================
+# Part 2: 事件类型定义
+# =============================================================================
+
+EVENT_LOG_SYSTEM = "eLogSystem"
+EVENT_LOG_PROGRESS = "eLogProgress"
+EVENT_LOG_NOTIFICATION = "eLogNotification"
+EVENT_LOG_ALERT = "eLogAlert"
+EVENT_UI_STATUSBAR = "eUIStatusBar"
+EVENT_UI_DIALOG = "eUIDialog"
+
+# 支持的事件名称（硬编码）
+SUPPORTED_EVENTS = {
+    "application_startup",
+    "manual_speedtest",
+    "tdx_data_read",
+    "refresh_symbol_list",
+    "data_download",
+    "manual_data_scan",
+}
+
+
+# =============================================================================
+# Part 3: 有序日志队列（确保terminal和数据库输出有序）
+# =============================================================================
+
+
+class OrderedLogQueue:
+    """有序日志队列 - 确保并发场景时日志按执行时间顺序展示
+
+    支持：
+    - 按执行时间排序（而非序列号）
+    - 并发场景时日志按时间顺序展示
+    - 日志滞后处理（可以滞后但不能丢失）
+    """
+
+    def __init__(self, max_wait_seconds: int = 30):
+        """初始化有序日志队列
+
+        Args:
+            max_wait_seconds: 最大等待时间（秒），超过此时间即使前面的日志未到也输出
+        """
+        self.queue: List[Tuple[float, Any]] = []  # [(timestamp, record), ...]
+        self.lock = threading.Lock()
+        self.max_wait_seconds = max_wait_seconds
+        self.logger = logging.getLogger(
+            "backend.infrastructure.system_vnpy.logging_system.ordered_queue"
+        )
+
+        # 记录日志的时间戳（用于超时检测）
+        self._record_timestamps: Dict[float, float] = {}
+        self._output_callback: Optional[Callable[[Any], None]] = None
+
+        # 后台线程：定期检查并输出超时的日志
+        self._running = True
+        self._check_thread = threading.Thread(target=self._check_timeout_logs, daemon=True)
+        self._check_thread.start()
+
+    def set_output_callback(self, callback: Callable[[Any], None]):
+        """设置输出回调函数
+
+        Args:
+            callback: 回调函数，接收 UnifiedLogRecord 作为参数
+        """
+        self._output_callback = callback
+
+    def add_log(self, record: Any, sequence: int):
+        """添加日志到队列（按执行时间排序）
+
+        Args:
+            record: 日志记录（UnifiedLogRecord）
+            sequence: 日志序列号（用于兼容性，实际按时间排序）
+        """
+        with self.lock:
+            # 使用记录的时间戳作为排序键（更准确的时间顺序）
+            timestamp = (
+                record.timestamp.timestamp()
+                if hasattr(record.timestamp, "timestamp")
+                else record.timestamp
+            )
+            if not isinstance(timestamp, (int, float)):
+                timestamp = time.time()
+            record.sequence = sequence
+            heapq.heappush(self.queue, (timestamp, record))
+            self._record_timestamps[timestamp] = time.time()
+            self._try_flush()
+
+    def _try_flush(self):
+        """尝试输出队列中已准备好的日志（按时间顺序）"""
+        # 按时间顺序输出所有日志
+        while self.queue:
+            timestamp, record = heapq.heappop(self.queue)
+            # 输出日志
+            self._output_log(record)
+            # 清理时间戳
+            self._record_timestamps.pop(timestamp, None)
+
+    def _output_log(self, record: Any):
+        """输出日志到回调函数
+
+        Args:
+            record: 日志记录（UnifiedLogRecord）
+        """
+        if self._output_callback:
+            try:
+                self._output_callback(record)
+            except Exception as e:
+                self.logger.exception(f"输出日志回调失败: {e}")
+
+    def _check_timeout_logs(self):
+        """后台线程：定期检查并输出超时的日志"""
+        while self._running:
+            time.sleep(0.5)  # 每0.5秒检查一次
+
+            with self.lock:
+                if not self.queue:
+                    continue
+
+                # 检查是否有超时的日志
+                current_time = time.time()
+                timeout_timestamps = [
+                    timestamp
+                    for timestamp, added_time in self._record_timestamps.items()
+                    if current_time - added_time > self.max_wait_seconds
+                ]
+
+                # 输出超时的日志（按时间顺序）
+                if timeout_timestamps:
+                    # 对超时的日志按时间排序
+                    timeout_timestamps.sort()
+
+                    for timeout_ts in timeout_timestamps:
+                        # 找到对应的日志记录
+                        for i, (q_ts, q_record) in enumerate(self.queue):
+                            if q_ts == timeout_ts:
+                                # 输出日志
+                                self._output_log(q_record)
+                                # 从队列中移除
+                                self.queue.pop(i)
+                                heapq.heapify(self.queue)
+                                # 清理时间戳
+                                self._record_timestamps.pop(timeout_ts, None)
+                                break
+
+                # 继续尝试正常输出
+                self._try_flush()
+
+    def close(self):
+        """关闭队列"""
+        self._running = False
+        if self._check_thread.is_alive():
+            self._check_thread.join(timeout=1.0)
+
+
+# =============================================================================
+# Part 4: 持久化缓冲Handler（日志系统初始化前的日志拦截）
+# =============================================================================
+
+
+class PersistentBufferHandler(logging.Handler):
+    """持久化缓冲Handler - 防止进程崩溃导致日志丢失
+
+    在日志系统初始化前，将日志写入临时文件。
+    日志系统就绪后，重放临时文件中的日志。
+    """
+
+    def __init__(self, buffer_dir: str = "logs/buffer", capacity: int = 10000):
+        """初始化持久化缓冲Handler.
+
+        Args:
+            buffer_dir: 缓冲文件目录
+            capacity: 内存缓冲容量（超过此容量后写入文件）
+        """
+        super().__init__()
+        self.setLevel(logging.DEBUG)
+
+        self.buffer_dir = Path(buffer_dir)
+        self.buffer_dir.mkdir(parents=True, exist_ok=True)
+        self.capacity = capacity
+
+        # 内存缓冲（快速）
+        self._memory_buffer: List[logging.LogRecord] = []
+        self._lock = Lock()
+
+        # 持久化文件
+        self._buffer_file: Optional[Path] = None
+        self._file_handle: Optional[Any] = None
+        self._init_buffer_file()
+
+        self.logger = logging.getLogger(
+            "backend.infrastructure.system_vnpy.logging_system.persistent_buffer"
+        )
+
+    def _init_buffer_file(self):
+        """初始化缓冲文件."""
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"init_buffer_{timestamp}.log"
+            self._buffer_file = self.buffer_dir / filename
+            self._file_handle = open(self._buffer_file, "w", encoding="utf-8")
+            self.logger.debug(f"持久化缓冲文件已创建: {self._buffer_file}")
+        except Exception as e:
+            self.logger.error(f"创建持久化缓冲文件失败: {e}", exc_info=True)
+            self._buffer_file = None
+            self._file_handle = None
+
+    def emit(self, record: logging.LogRecord):
+        """处理日志记录."""
+        try:
+            with self._lock:
+                # 添加到内存缓冲
+                self._memory_buffer.append(record)
+
+                # 如果内存缓冲超过容量，写入文件
+                if len(self._memory_buffer) >= self.capacity:
+                    self._flush_to_file()
+        except Exception:
+            pass
+
+    def _flush_to_file(self):
+        """将内存缓冲刷新到文件."""
+        if not self._file_handle or not self._memory_buffer:
+            return
+
+        try:
+            for record in self._memory_buffer:
+                # 序列化日志记录
+                record_dict = {
+                    "name": record.name,
+                    "levelno": record.levelno,
+                    "levelname": record.levelname,
+                    "pathname": record.pathname,
+                    "lineno": record.lineno,
+                    "msg": record.getMessage(),
+                    "created": record.created,
+                    "funcName": record.funcName,
+                    "exc_info": str(record.exc_info) if record.exc_info else None,
+                    "exc_text": record.exc_text if hasattr(record, "exc_text") else None,
+                }
+                line = json.dumps(record_dict, ensure_ascii=False, default=str) + "\n"
+                self._file_handle.write(line)
+
+            self._file_handle.flush()
+            self._memory_buffer.clear()
+            self.logger.debug(f"已刷新 {self.capacity} 条日志到缓冲文件")
+        except Exception as e:
+            self.logger.error(f"刷新日志到文件失败: {e}", exc_info=True)
+
+    def replay_to_logging_hub(self, logging_hub: "LoggingHub"):
+        """重放缓冲日志到LoggingHub.
+
+        Args:
+            logging_hub: LoggingHub实例
+        """
+        try:
+            with self._lock:
+                # 重放内存缓冲
+                for record in self._memory_buffer:
+                    # 恢复日志记录的时间戳
+                    record.created = record.created if hasattr(record, "created") else time.time()
+                    logging_hub.emit(record)
+
+                self._memory_buffer.clear()
+
+                # 重放文件缓冲
+                if self._buffer_file and self._buffer_file.exists():
+                    self.logger.info(f"开始重放持久化缓冲文件: {self._buffer_file}")
+                    with open(self._buffer_file, "r", encoding="utf-8") as f:
+                        for line in f:
+                            try:
+                                record_dict = json.loads(line.strip())
+                                # 重建LogRecord
+                                record = logging.LogRecord(
+                                    name=record_dict["name"],
+                                    level=record_dict["levelno"],
+                                    pathname=record_dict["pathname"],
+                                    lineno=record_dict["lineno"],
+                                    msg=record_dict["msg"],
+                                    args=(),
+                                    exc_info=None,
+                                )
+                                record.created = record_dict["created"]
+                                record.funcName = record_dict.get("funcName", "")
+                                logging_hub.emit(record)
+                            except Exception as e:
+                                self.logger.warning(f"重放日志记录失败: {e}")
+
+                    # 删除缓冲文件
+                    try:
+                        self._buffer_file.unlink()
+                        self.logger.info(f"缓冲文件已删除: {self._buffer_file}")
+                    except Exception:
+                        pass
+
+                self.logger.info("持久化缓冲日志重放完成")
+        except Exception as e:
+            self.logger.error(f"重放缓冲日志失败: {e}", exc_info=True)
+
+    def close(self):
+        """关闭Handler."""
+        try:
+            with self._lock:
+                # 刷新剩余内存缓冲
+                self._flush_to_file()
+
+                # 关闭文件
+                if self._file_handle:
+                    self._file_handle.close()
+                    self._file_handle = None
+        except Exception:
+            pass
+        super().close()
+
+
+# =============================================================================
+# Part 5: 多进程日志收集器
+# =============================================================================
+
+
+class MultiProcessLogCollector:
+    """多进程日志收集器
+
+    主进程监听器，从multiprocessing.Queue读取子进程日志，
+    并转发到主进程的LoggingHub。
+    """
+
+    def __init__(self, logging_hub: "LoggingHub", queue: Optional[multiprocessing.Queue] = None):
+        """初始化多进程日志收集器.
+
+        Args:
+            logging_hub: 主进程的LoggingHub实例
+            queue: 共享队列（如果为None，自动创建）
+        """
+        self.logging_hub = logging_hub
+        self.queue = queue or multiprocessing.Queue(-1)
+        self.queue_listener: Optional[QueueListener] = None
+        self._running = False
+        self._lock = Lock()
+        self.logger = logging.getLogger(
+            "backend.infrastructure.system_vnpy.logging_system.multiprocess_collector"
+        )
+
+    def start(self):
+        """启动日志收集."""
+        if self._running:
+            return
+
+        try:
+            with self._lock:
+                # 创建QueueListener，将所有日志转发到LoggingHub
+                self.queue_listener = QueueListener(
+                    self.queue,
+                    self.logging_hub,
+                    respect_handler_level=True,
+                )
+                self.queue_listener.start()
+                self._running = True
+                self.logger.info("多进程日志收集器已启动")
+        except Exception as e:
+            self.logger.error(f"启动多进程日志收集器失败: {e}", exc_info=True)
+
+    def stop(self):
+        """停止日志收集."""
+        if not self._running:
+            return
+
+        try:
+            with self._lock:
+                if self.queue_listener:
+                    self.queue_listener.stop()
+                    self.queue_listener = None
+                self._running = False
+                self.logger.info("多进程日志收集器已停止")
+        except Exception as e:
+            self.logger.error(f"停止多进程日志收集器失败: {e}", exc_info=True)
+
+    def get_queue(self) -> multiprocessing.Queue:
+        """获取共享队列（供子进程使用）.
+
+        Returns:
+            multiprocessing.Queue实例
+        """
+        return self.queue
+
+
+def setup_subprocess_logging(queue: multiprocessing.Queue, level: int = logging.DEBUG):
+    """配置子进程日志（子进程调用）.
+
+    Args:
+        queue: 共享的multiprocessing.Queue
+        level: 日志级别
+    """
+    # 获取根logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(level)
+
+    # 移除所有现有handlers
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+
+    # 添加QueueHandler
+    queue_handler = QueueHandler(queue)
+    queue_handler.setLevel(level)
+    root_logger.addHandler(queue_handler)
+
+
+# =============================================================================
+# Part 6: 进度节流器
+# =============================================================================
+
+
+class ProgressThrottler:
+    """进度日志节流器（500ms聚合窗口）."""
+
+    def __init__(self, interval_ms: int = 500):
+        """初始化节流器."""
+        self.interval_ms = interval_ms
+        self._last_emit_time = 0
+        self._pending_record: Optional[UnifiedLogRecord] = None
+        self._pending_count = 0
+
+    def add(self, record: UnifiedLogRecord):
+        """添加进度记录."""
+        self._pending_record = record
+        self._pending_count += 1
+
+    def get_if_ready(self) -> Optional[UnifiedLogRecord]:
+        """检查是否可以发送."""
+        current_time = time.time() * 1000
+        if current_time - self._last_emit_time >= self.interval_ms:
+            if self._pending_record:
+                result = self._pending_record
+                if result.details is None:
+                    result.details = {}
+                result.details["_throttled_count"] = self._pending_count
+
+                self._pending_record = None
+                self._pending_count = 0
+                self._last_emit_time = current_time
+                return result
+        return None
+
+    def has_pending(self) -> bool:
+        """是否有待发送记录."""
+        return self._pending_record is not None
+
+
+# =============================================================================
+# Part 7: 事件日志文件Handler（替代AILogFileHandler）
+# =============================================================================
+
+
+class EventLogFileHandler(logging.Handler):
+    """事件日志文件Handler - 为每个事件创建独立的日志文件
+
+    新架构：统一输出到logs/目录，不再区分logs/和logs/ai/
+    事件日志文件：logs/{event_name}_YYYYMMDD_HHMMSS.log
+    """
+
+    def __init__(self, base_dir: str = "logs", encoding: str = "utf-8"):
+        """初始化事件日志Handler."""
+        super().__init__()
+        self.setLevel(logging.DEBUG)
+
+        self.base_dir = Path(base_dir)
+        self.base_dir.mkdir(parents=True, exist_ok=True)
+        self.encoding = encoding
+
+        # 当前事件日志文件
+        self._current_event: Optional[str] = None
+        self._current_event_file: Optional[Any] = None
+        self._current_event_file_path: Optional[Path] = None
+        self._event_ref_count: Dict[str, int] = {}  # 事件引用计数（用于嵌套调用）
+        self._event_metadata: Dict[str, List[Dict[str, Any]]] = {}  # 事件元数据列表（用于合并）
+        self._lock = Lock()
+
+        # 统计
+        self._event_count = 0
+        self._total_logs = 0
+        self._level_counts = {"DEBUG": 0, "INFO": 0, "WARNING": 0, "ERROR": 0, "CRITICAL": 0}
+
+        # 格式化器
+        self.setFormatter(
+            logging.Formatter(
+                fmt="[%(asctime)s] [%(levelname)-8s] [%(name)-40s] [%(funcName)s:%(lineno)d]\n    %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+            )
+        )
+
+    def start_event(self, event_name: str, metadata: Optional[Dict[str, Any]] = None) -> Path:
+        """开始新事件日志（支持同一事件的复用和元数据合并）
+
+        Args:
+            event_name: 事件名称（必须为SUPPORTED_EVENTS中的一个）
+            metadata: 事件元数据（可选）
+
+        Returns:
+            事件日志文件路径
+        """
+        if event_name not in SUPPORTED_EVENTS:
+            raise ValueError(f"不支持的事件名称: {event_name}，支持的事件: {SUPPORTED_EVENTS}")
+
+        try:
+            with self._lock:
+                # 检查是否已有同名事件正在进行
+                if self._current_event == event_name and self._current_event_file and self._current_event_file_path:
+                    # 复用现有文件，增加引用计数并合并元数据
+                    self._event_ref_count[event_name] = self._event_ref_count.get(event_name, 0) + 1
+                    if metadata:
+                        if event_name not in self._event_metadata:
+                            self._event_metadata[event_name] = []
+                        self._event_metadata[event_name].append(metadata)
+                        # 追加元数据到文件
+                        metadata_section = self._build_metadata_section(metadata, is_additional=True)
+                        self._current_event_file.write(metadata_section)
+                        self._current_event_file.flush()
+
+                    logger.debug(
+                        f"[EventLogFileHandler] 复用事件日志文件: {event_name}, "
+                        f"引用计数: {self._event_ref_count[event_name]}"
+                    )
+                    return self._current_event_file_path  # type: ignore
+
+                # 关闭当前事件文件（如果存在且事件名称不同）
+                if self._current_event and self._current_event != event_name:
+                    self._close_current_event_file()
+
+                # 创建新事件日志文件
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"{event_name}_{timestamp}.log"
+                file_path = self.base_dir / filename
+
+                self._current_event_file = open(file_path, "w", encoding=self.encoding, buffering=1)
+                self._current_event_file_path = file_path
+                self._current_event = event_name
+                self._event_count += 1
+
+                # 初始化引用计数和元数据
+                self._event_ref_count[event_name] = 1
+                if metadata:
+                    self._event_metadata[event_name] = [metadata]
+                else:
+                    self._event_metadata[event_name] = []
+
+                # 写入文件头（包含所有元数据）
+                all_metadata = self._event_metadata.get(event_name, [])
+                header = self._build_file_header(event_name, file_path, all_metadata)
+                self._current_event_file.write(header)
+                self._current_event_file.flush()
+
+                # 重置级别统计
+                self._level_counts = {"DEBUG": 0, "INFO": 0, "WARNING": 0, "ERROR": 0, "CRITICAL": 0}
+
+                logger.info(f"[EventLogFileHandler] 事件日志文件已创建: {file_path.absolute()}")
+                return file_path
+        except Exception as e:
+            logger.error(f"[EventLogFileHandler] 启动事件日志失败: {event_name}, 错误: {e}", exc_info=True)
+            raise
+
+    def _build_file_header(
+        self, event_name: str, file_path: Path, metadata_list: Optional[List[Dict[str, Any]]] = None
+    ) -> str:
+        """构建文件头字符串（支持多个元数据）."""
+        header = f"""{'=' * 80}
+事件日志文件 - {event_name}
+{'=' * 80}
+事件名称: {event_name}
+开始时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+文件路径: {file_path}
+日志级别: DEBUG及以上所有级别
+"""
+        if metadata_list:
+            header += "\n事件元数据:\n"
+            for idx, metadata in enumerate(metadata_list, 1):
+                if len(metadata_list) > 1:
+                    header += f"\n  [元数据 {idx}]\n"
+                for key, value in metadata.items():
+                    header += f"  - {key}: {value}\n"
+
+        header += f"\n{'=' * 80}\n\n"
+        return header
+
+    def _build_metadata_section(self, metadata: Dict[str, Any], is_additional: bool = False) -> str:
+        """构建元数据部分字符串（用于追加到现有文件）."""
+        section = f"\n{'=' * 80}\n"
+        if is_additional:
+            section += f"追加元数据 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            section += f"{'=' * 80}\n"
+        section += "\n事件元数据:\n"
+        for key, value in metadata.items():
+            section += f"  - {key}: {value}\n"
+        section += f"\n{'=' * 80}\n\n"
+        return section
+
+    def end_event(self, success: bool = True, summary: Optional[str] = None):
+        """结束事件日志（使用引用计数，只有引用计数为0时才真正结束）."""
+        with self._lock:
+            if not self._current_event_file_path or not self._current_event:
+                return
+
+            event_name = self._current_event
+
+            # 减少引用计数
+            if event_name in self._event_ref_count:
+                self._event_ref_count[event_name] -= 1
+                if self._event_ref_count[event_name] <= 0:
+                    # 引用计数为0，真正结束事件
+                    del self._event_ref_count[event_name]
+                    if event_name in self._event_metadata:
+                        del self._event_metadata[event_name]
+
+                    footer = f"""
+{'=' * 80}
+事件结束 - {event_name}
+{'=' * 80}
+结束时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+执行结果: {'成功' if success else '失败'}
+"""
+                    if summary:
+                        footer += f"\n执行摘要:\n{summary}\n"
+
+                    # 显示各级别日志统计
+                    footer += f"\n日志统计:\n"
+                    footer += f"  - 总日志条数: {self._total_logs}\n"
+                    footer += f"  - DEBUG: {self._level_counts['DEBUG']} 条\n"
+                    footer += f"  - INFO: {self._level_counts['INFO']} 条\n"
+                    footer += f"  - WARNING: {self._level_counts['WARNING']} 条\n"
+                    footer += f"  - ERROR: {self._level_counts['ERROR']} 条\n"
+                    footer += f"  - CRITICAL: {self._level_counts['CRITICAL']} 条\n"
+                    footer += f"\n{'=' * 80}\n"
+
+                    if self._current_event_file:
+                        self._current_event_file.write(footer)
+                        self._current_event_file.flush()
+
+                    self._close_current_event_file()
+                else:
+                    # 引用计数 > 0，只记录嵌套结束，不关闭文件
+                    logger.debug(
+                        f"[EventLogFileHandler] 嵌套事件结束: {event_name}, "
+                        f"剩余引用计数: {self._event_ref_count[event_name]}"
+                    )
+
+    def _close_current_event_file(self):
+        """关闭当前事件文件."""
+        if self._current_event_file:
+            try:
+                self._current_event_file.flush()
+                self._current_event_file.close()
+            except Exception:
+                pass
+            finally:
+                self._current_event_file = None
+                self._current_event_file_path = None
+                self._current_event = None
+
+    def emit(self, record: logging.LogRecord):
+        """处理日志记录."""
+        with self._lock:
+            try:
+                # 统计日志级别
+                level_name = logging.getLevelName(record.levelno)
+                if level_name in self._level_counts:
+                    self._level_counts[level_name] += 1
+
+                # 格式化日志消息
+                level_markers = {
+                    logging.DEBUG: "🔍",
+                    logging.INFO: "ℹ️",
+                    logging.WARNING: "⚠️",
+                    logging.ERROR: "❌",
+                    logging.CRITICAL: "🔥",
+                }
+                marker = level_markers.get(record.levelno, "")
+                msg = self.format(record)
+
+                # 为WARNING及以上级别添加分隔线
+                if record.levelno >= logging.WARNING:
+                    msg = f"\n{'─' * 80}\n{marker} {msg}\n{'─' * 80}"
+                else:
+                    msg = f"{marker} {msg}"
+
+                # 异常信息特殊处理
+                if record.exc_info:
+                    import traceback
+
+                    exc_text = "".join(traceback.format_exception(*record.exc_info))
+                    msg += f"\n\n异常堆栈跟踪:\n{exc_text}\n{'═' * 80}"
+                elif hasattr(record, "exc_text") and record.exc_text:
+                    msg += f"\n\n异常堆栈跟踪:\n{record.exc_text}\n{'═' * 80}"
+
+                message_with_newline = msg + "\n"
+
+                # 写入当前事件日志文件（如果存在）
+                if self._current_event_file:
+                    self._current_event_file.write(message_with_newline)
+                    self._current_event_file.flush()
+
+                self._total_logs += 1
+            except Exception as e:
+                logger.error(f"[EventLogFileHandler] 日志写入失败: {e}", exc_info=True)
+
+    def get_current_event_file_path(self) -> Optional[Path]:
+        """获取当前事件日志文件路径."""
+        with self._lock:
+            return self._current_event_file_path
+
+    def get_current_event(self) -> Optional[str]:
+        """获取当前活动的事件名称."""
+        with self._lock:
+            return self._current_event
+
+    def get_statistics(self) -> Dict[str, Any]:
+        """获取统计信息."""
+        with self._lock:
+            return {
+                "event_count": self._event_count,
+                "total_logs": self._total_logs,
+                "level_counts": self._level_counts.copy(),
+                "current_event": self._current_event,
+                "current_event_file": str(self._current_event_file_path) if self._current_event_file_path else None,
+            }
+
+    def close(self):
+        """关闭Handler."""
+        with self._lock:
+            self._close_current_event_file()
+        super().close()
+
+
+# =============================================================================
+# Part 8: LoggingHub核心类（简化路由规则）
+# =============================================================================
+
+
+class LoggingHub(logging.Handler):
+    """统一日志中心（拦截所有日志并按简化的硬编码规则分发）."""
+
+    def __init__(self):
+        """初始化LoggingHub."""
+        super().__init__()
+        self.setLevel(logging.DEBUG)
+
+        # 外部依赖
+        self.event_engine: Optional[EventEngine] = None
+        self.db_manager: Optional[Any] = None
+
+        # 托管Handler
+        self._console_handler: Optional[logging.StreamHandler] = None
+        self._event_log_handler: Optional["EventLogFileHandler"] = None
+
+        # 节流器
+        self._throttler = ProgressThrottler(interval_ms=500)
+
+        # 有序日志队列（terminal和数据库输出使用）
+        self._ordered_log_queue: Optional["OrderedLogQueue"] = None
+        self._ordered_queue_enabled = False
+        self._sequence_counter = 0
+        self._sequence_lock = Lock()
+        self._emit_lock = RLock()
+
+        # 统计
+        self._total_logs = 0
+        self._throttled_logs = 0
+        self._db_writes = 0
+        self._console_writes = 0
+        self._file_writes = 0
+
+        # 递归检测
+        self._in_emit = False
+
+        # 数据库批量写入
+        self._db_batch_cache: List[Dict] = []
+        self._db_batch_size = 10
+        self._db_last_flush = time.time()
+        self._db_flush_interval = 5.0
+
+        # 当前阶段（用于判断是否在启动阶段）
+        self._current_stage = "startup"
+        self._startup_stages = {
+            "startup",
+            "logging_init",
+            "qt_init",
+            "backend_init",
+            "ui_init",
+            "vnpy_core",
+            "cache_validation_step1",
+            "cache_validation_step2",
+            "cache_validation_step3",
+            "cache_validation_step4",
+            "cache_validation_step5",
+            "cache_validation_step6",
+            "cache_validation_step7",
+            "cache_validation_step8",
+        }
+
+    def set_event_engine(self, event_engine: EventEngine):
+        """注入EventEngine."""
+        self.event_engine = event_engine
+
+    def set_db_manager(self, db_manager: Any):
+        """注入数据库管理器."""
+        self.db_manager = db_manager
+
+    def set_console_handler(self, handler: logging.StreamHandler):
+        """注入控制台Handler."""
+        self._console_handler = handler
+
+    def set_event_log_handler(self, handler: "EventLogFileHandler"):
+        """注入事件日志Handler."""
+        self._event_log_handler = handler
+
+    def set_ordered_log_queue(self, ordered_queue: "OrderedLogQueue"):
+        """设置有序日志队列（terminal和数据库输出使用）
+
+        Args:
+            ordered_queue: OrderedLogQueue实例
+        """
+        self._ordered_log_queue = ordered_queue
+        if ordered_queue:
+            ordered_queue.set_output_callback(self._output_ordered_log)
+
+    def enable_ordered_queue(self):
+        """启用有序队列（启动阶段使用）"""
+        with self._sequence_lock:
+            self._ordered_queue_enabled = True
+            logger.debug("有序队列已启用")
+
+    def disable_ordered_queue(self):
+        """禁用有序队列（正常运行阶段）"""
+        with self._sequence_lock:
+            self._ordered_queue_enabled = False
+            logger.debug("有序队列已禁用")
+
+    def set_stage(self, stage: str):
+        """切换日志阶段."""
+        self._current_stage = stage
+
+    def get_current_stage(self) -> str:
+        """获取当前阶段."""
+        return self._current_stage
+
+    def _is_startup_phase(self) -> bool:
+        """判断是否处于启动阶段
+
+        Returns:
+            bool: 是否处于启动阶段
+        """
+        return self._current_stage in self._startup_stages
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """拦截日志输出."""
+        emit_start = time.perf_counter()
+        try:
+            if self._in_emit:
+                return
+
+            if hasattr(record, "_unified_hub_processed"):
+                return
+
+            self._in_emit = True
+            setattr(record, "_unified_hub_processed", True)
+
+            if self._should_skip(record):
+                return
+
+            self._total_logs += 1
+            unified_record = self._convert_to_unified(record)
+            targets = self._get_targets(unified_record)
+            self._dispatch(targets, unified_record)
+            self._check_throttler()
+            self._maybe_flush_db_batch()
+
+        except RecursionError as e:
+            logger.error(f"日志处理递归错误: {e}", exc_info=True)
+        except Exception as e:
+            logger.error(
+                f"日志处理异常: {e}, logger={record.name}, level={record.levelno}", exc_info=True
+            )
+        finally:
+            self._in_emit = False
+
+    def _should_skip(self, record: logging.LogRecord) -> bool:
+        """判断是否应跳过.
+
+        注意：此方法仅用于防止无限递归和过滤系统内部日志，
+        不应该在这里过滤业务日志！业务日志的过滤应该由路由规则控制。
+        """
+        # 防止日志系统自身的日志造成无限递归
+        if record.name.startswith("backend.infrastructure.system_vnpy.logging_system"):
+            return True
+        if "log_manager" in record.name.lower():
+            return True
+
+        return False
+
+    def _convert_to_unified(self, record: logging.LogRecord) -> UnifiedLogRecord:
+        """转换为UnifiedLogRecord."""
+        exception_text = ""
+        if record.exc_info:
+            import traceback
+
+            exception_text = "".join(traceback.format_exception(*record.exc_info))
+
+        log_type = self._classify_log_type(record)
+        details = {}
+        if hasattr(record, "__dict__"):
+            for key, value in record.__dict__.items():
+                if key not in _EXCLUDED_FIELDS:
+                    details[key] = value
+
+        return UnifiedLogRecord(
+            type=log_type,
+            level=record.levelno,
+            module=record.module,
+            message=record.getMessage(),
+            details=details if details else None,
+            timestamp=datetime.fromtimestamp(record.created),
+            logger_name=record.name,
+            function=record.funcName,
+            line=record.lineno,
+            filename=record.filename,
+            thread=record.thread if record.thread is not None else 0,
+            thread_name=(
+                record.threadName if hasattr(record, "threadName") and record.threadName else ""
+            ),
+            exception=exception_text,
+        )
+
+    @lru_cache(maxsize=1000)
+    def _classify_log_type_cached(
+        self,
+        logger_name_lower: str,
+        message_lower: str,
+        levelno: int,
+        log_type_attr_str: Optional[str],
+    ) -> LogType:
+        """缓存的日志类型分类（辅助方法）."""
+        # 优先检查extra参数中的log_type（显式指定）
+        if log_type_attr_str:
+            try:
+                log_type_str = log_type_attr_str.upper()
+                if log_type_str == "STAGE_NODE":
+                    return LogType.STAGE_NODE
+                elif log_type_str == "PROGRESS":
+                    return LogType.PROGRESS
+                elif log_type_str == "NOTIFICATION":
+                    return LogType.NOTIFICATION
+                elif log_type_str == "ALERT":
+                    return LogType.ALERT
+                elif log_type_str == "USER_FEEDBACK":
+                    return LogType.USER_FEEDBACK
+                elif log_type_str == "DEBUG":
+                    return LogType.DEBUG
+                elif log_type_str == "SYSTEM":
+                    return LogType.SYSTEM
+            except Exception:
+                pass
+
+        # 流程节点（严格模式）
+        if ".stage" in logger_name_lower:
+            return LogType.STAGE_NODE
+
+        if levelno == logging.INFO:
+            stage_identifiers = ["📍", "阶段", "流程", "步骤", "stage", "phase", "step"]
+            status_words = [
+                "开始",
+                "完成",
+                "结束",
+                "启动",
+                "进入",
+                "start",
+                "complete",
+                "finish",
+                "end",
+            ]
+            has_stage_id = any(word in message_lower for word in stage_identifiers)
+            has_status = any(word in message_lower for word in status_words)
+            if (
+                has_stage_id
+                and has_status
+                and "%" not in message_lower
+                and "进度" not in message_lower
+            ):
+                return LogType.STAGE_NODE
+
+        # 告警
+        if "alert" in logger_name_lower or "monitor" in logger_name_lower:
+            if levelno >= logging.WARNING:
+                return LogType.ALERT
+
+        # 进度
+        if "download" in logger_name_lower or "progress" in logger_name_lower:
+            if "进度" in message_lower or "%" in message_lower or "progress" in message_lower:
+                return LogType.PROGRESS
+
+        if "quality" in logger_name_lower or "scan" in logger_name_lower:
+            if "扫描" in message_lower or "%" in message_lower:
+                return LogType.PROGRESS
+
+        # 通知（严格）
+        if levelno == logging.INFO:
+            notification_markers = [
+                "✅ 任务完成",
+                "✅ 下载完成",
+                "✅ 扫描完成",
+                "✅ 验证完成",
+                "download completed",
+                "scan completed",
+                "task completed",
+            ]
+            is_notification_logger = (
+                "notification" in logger_name_lower or "notifier" in logger_name_lower
+            )
+            import re
+
+            task_completion_pattern = re.compile(
+                r"(完成|已完成|finished|completed)\s*\d+\s*(个|项|条|次)", re.IGNORECASE
+            )
+            has_completion_report = task_completion_pattern.search(message_lower) is not None
+
+            if (
+                is_notification_logger
+                or has_completion_report
+                or any(marker in message_lower for marker in notification_markers)
+            ):
+                return LogType.NOTIFICATION
+
+        # DEBUG
+        if levelno == logging.DEBUG:
+            return LogType.DEBUG
+
+        return LogType.SYSTEM
+
+    def _classify_log_type(self, record: logging.LogRecord) -> LogType:
+        """根据logger名称和消息判断日志类型."""
+        # 优先检查extra参数中的log_type（显式指定）
+        log_type_attr = getattr(record, "log_type", None)
+        log_type_attr_str = None
+        if log_type_attr is not None:
+            if isinstance(log_type_attr, LogType):
+                return log_type_attr
+            elif isinstance(log_type_attr, str):
+                log_type_attr_str = log_type_attr
+
+        logger_name = record.name.lower()
+        message = record.getMessage().lower()
+
+        # 使用缓存的分类方法
+        return self._classify_log_type_cached(
+            logger_name, message, record.levelno, log_type_attr_str
+        )
+
+    def _get_targets(self, record: UnifiedLogRecord) -> List[str]:
+        """获取路由目标（简化的硬编码规则）.
+
+        路由规则（硬编码）：
+        - Terminal输出：WARNING/ERROR/CRITICAL + STAGE_NODE.INFO
+        - 数据库输出：与terminal一致（WARNING/ERROR/CRITICAL + STAGE_NODE.INFO）
+        - 文件输出：所有日志都写入文件（全量）
+        - 事件引擎：NOTIFICATION和ALERT类型（用于内部通知）
+        - 节流事件：PROGRESS类型（500ms聚合）
+        """
+        targets = []
+
+        # 文件输出：所有日志都写入文件（全量）
+        targets.append("file")
+
+        # Terminal输出：WARNING/ERROR/CRITICAL + STAGE_NODE.INFO
+        if record.level >= logging.WARNING or (
+            record.type == LogType.STAGE_NODE and record.level == logging.INFO
+        ):
+            targets.append("console")
+
+        # 数据库输出：与terminal一致
+        if record.level >= logging.WARNING or (
+            record.type == LogType.STAGE_NODE and record.level == logging.INFO
+        ):
+            targets.append("database")
+
+        # 事件引擎：NOTIFICATION和ALERT类型
+        if record.type in (LogType.NOTIFICATION, LogType.ALERT):
+            targets.append("event")
+
+        # 节流事件：PROGRESS类型
+        if record.type == LogType.PROGRESS:
+            targets.append("event_throttled")
+
+        return targets
+
+    def _dispatch(self, targets: List[str], record: UnifiedLogRecord):
+        """分发日志."""
+        # 如果启用了有序队列，且目标是console或database，添加到有序队列
+        if self._ordered_queue_enabled and self._ordered_log_queue is not None:
+            needs_ordered_output = any(target in ("console", "database") for target in targets)
+            if needs_ordered_output:
+                with self._sequence_lock:
+                    sequence = self._sequence_counter
+                    self._sequence_counter += 1
+                self._ordered_log_queue.add_log(record, sequence)
+                # 对于其他目标（file, event等），直接处理
+                for target in targets:
+                    if target not in ("console", "database"):
+                        try:
+                            if target == "file":
+                                self._to_file(record)
+                            elif target == "event":
+                                self._to_event(record)
+                            elif target == "event_throttled":
+                                self._to_event_throttled(record)
+                        except Exception:
+                            pass
+                return  # 已处理，直接返回
+
+        # 未启用有序队列，直接分发
+        for target in targets:
+            try:
+                if target == "console":
+                    self._to_console(record)
+                elif target == "file":
+                    self._to_file(record)
+                elif target == "database":
+                    self._to_database_batched(record)
+                elif target == "event":
+                    self._to_event(record)
+                elif target == "event_throttled":
+                    self._to_event_throttled(record)
+            except Exception:
+                pass
+
+    def _output_ordered_log(self, record: UnifiedLogRecord):
+        """输出有序日志（回调函数）
+
+        Args:
+            record: UnifiedLogRecord实例
+        """
+        # 根据路由目标输出（console和database）
+        if record.level >= logging.WARNING or (
+            record.type == LogType.STAGE_NODE and record.level == logging.INFO
+        ):
+            # Terminal输出
+            self._to_console_direct(record)
+            # 数据库输出
+            self._to_database_batched(record)
+
+    def _to_console(self, record: UnifiedLogRecord):
+        """输出到控制台（Terminal）- 简洁输出
+
+        核心原则：Terminal只显示关键信息，不影响日志文件。
+        输出规则：
+          1. WARNING及以上级别的日志（WARNING, ERROR, CRITICAL）
+          2. STAGE_NODE.INFO（阶段节点）
+        """
+        if not self._console_handler:
+            return
+
+        # 启动阶段：使用有序队列确保日志按顺序输出
+        if self._ordered_queue_enabled and self._is_startup_phase():
+            ordered_queue = self._ordered_log_queue
+            if ordered_queue is not None:
+                with self._sequence_lock:
+                    sequence = self._sequence_counter
+                    self._sequence_counter += 1
+                ordered_queue.add_log(record, sequence)
+                return
+        else:
+            # 非启动阶段：直接输出
+            self._to_console_direct(record)
+
+    def _to_console_direct(self, record: UnifiedLogRecord):
+        """直接输出到控制台（不经过有序队列）
+
+        Args:
+            record: UnifiedLogRecord实例
+        """
+        if not self._console_handler:
+            return
+
+        log_record = logging.LogRecord(
+            name=record.logger_name,
+            level=record.level,
+            pathname=record.filename,
+            lineno=record.line,
+            msg=record.message,
+            args=(),
+            exc_info=None,
+        )
+        log_record.created = record.timestamp.timestamp()
+        self._console_handler.emit(log_record)
+        self._console_writes += 1
+
+    def _to_file(self, record: UnifiedLogRecord):
+        """输出到文件（通过EventLogFileHandler）"""
+        if not self._event_log_handler:
+            return
+
+        # 创建LogRecord并通过EventLogFileHandler写入
+        exc_info = None
+        if record.exception:
+            exc_info = None  # 保持None，但设置exc_text
+
+        log_record = logging.LogRecord(
+            name=record.logger_name,
+            level=record.level,
+            pathname=record.filename,
+            lineno=record.line,
+            msg=record.message,
+            args=(),
+            exc_info=exc_info,
+        )
+        log_record.created = record.timestamp.timestamp()
+        log_record.funcName = record.function
+
+        if record.exception:
+            log_record.exc_text = record.exception
+
+        self._event_log_handler.emit(log_record)
+        self._file_writes += 1
+
+    def _to_database_batched(self, record: UnifiedLogRecord):
+        """批量输出到数据库"""
+        if not self.db_manager:
+            return
+
+        # 构造数据库记录
+        db_record = {
+            "timestamp": record.timestamp.isoformat(),
+            "level": logging.getLevelName(record.level),
+            "type": record.type.value,
+            "module": record.module,
+            "logger_name": record.logger_name,
+            "message": record.message,
+            "function": record.function,
+            "line": record.line,
+            "filename": record.filename,
+            "thread": record.thread,
+            "thread_name": record.thread_name,
+            "exception": record.exception,
+            "details": record.details,
+        }
+
+        self._db_batch_cache.append(db_record)
+        self._db_writes += 1
+
+    def _to_event(self, record: UnifiedLogRecord):
+        """发送到EventEngine（NOTIFICATION和ALERT）"""
+        if not self.event_engine:
+            return
+
+        if record.type == LogType.NOTIFICATION:
+            event_type = EVENT_LOG_NOTIFICATION
+        elif record.type == LogType.ALERT:
+            event_type = EVENT_LOG_ALERT
+        else:
+            return
+
+        event_data = {
+            "timestamp": record.timestamp.isoformat(),
+            "level": logging.getLevelName(record.level),
+            "type": record.type.value,
+            "module": record.module,
+            "message": record.message,
+            "details": record.details,
+            "exception": record.exception,
+        }
+        event = Event(event_type, event_data)
+        self.event_engine.put(event)
+
+    def _to_event_throttled(self, record: UnifiedLogRecord):
+        """发送节流事件（PROGRESS类型）"""
+        if not self.event_engine or record.type != LogType.PROGRESS:
+            return
+
+        self._throttler.add(record)
+
+    def _check_throttler(self):
+        """检查节流器是否有可发送的记录"""
+        if not self.event_engine:
+            return
+
+        throttled_record = self._throttler.get_if_ready()
+        if throttled_record:
+            event_data = {
+                "timestamp": throttled_record.timestamp.isoformat(),
+                "level": logging.getLevelName(throttled_record.level),
+                "type": throttled_record.type.value,
+                "module": throttled_record.module,
+                "message": throttled_record.message,
+                "details": throttled_record.details,
+                "throttled_count": (
+                    throttled_record.details.get("_throttled_count", 1)
+                    if throttled_record.details
+                    else 1
+                ),
+            }
+            event = Event(EVENT_LOG_PROGRESS, event_data)
+            self.event_engine.put(event)
+            self._throttled_logs += 1
+
+    def _maybe_flush_db_batch(self):
+        """检查是否需要刷新数据库批量写入"""
+        current_time = time.time()
+        if (
+            len(self._db_batch_cache) >= self._db_batch_size
+            or current_time - self._db_last_flush >= self._db_flush_interval
+        ):
+            self._flush_db_batch()
+
+    def _flush_db_batch(self):
+        """刷新数据库批量写入"""
+        if not self.db_manager or not self._db_batch_cache:
+            return
+
+        try:
+            # 这里假设db_manager有批量写入方法
+            if hasattr(self.db_manager, "batch_insert_logs"):
+                self.db_manager.batch_insert_logs(self._db_batch_cache)
+            else:
+                # 降级为逐条插入
+                for record in self._db_batch_cache:
+                    if hasattr(self.db_manager, "insert_log"):
+                        self.db_manager.insert_log(record)
+
+            self._db_batch_cache.clear()
+            self._db_last_flush = time.time()
+        except Exception as e:
+            logger.error(f"数据库批量写入失败: {e}", exc_info=True)
+
+    def get_statistics(self) -> Dict[str, Any]:
+        """获取统计信息."""
+        return {
+            "total_logs": self._total_logs,
+            "throttled_logs": self._throttled_logs,
+            "console_writes": self._console_writes,
+            "file_writes": self._file_writes,
+            "db_writes": self._db_writes,
+            "db_batch_pending": len(self._db_batch_cache),
+            "current_stage": self._current_stage,
+            "ordered_queue_enabled": self._ordered_queue_enabled,
+        }
+
+    def close(self):
+        """关闭LoggingHub."""
+        self._flush_db_batch()
+        super().close()
+
+
+# =============================================================================
+# Part 9: 全局单例和便捷API
+# =============================================================================
+
+
+_hub_instance: Optional[LoggingHub] = None
+_event_log_handler_instance: Optional[EventLogFileHandler] = None
+_ordered_log_queue_instance: Optional[OrderedLogQueue] = None
+_multi_process_collector_instance: Optional[MultiProcessLogCollector] = None
+
+
+def get_logging_hub() -> LoggingHub:
+    """获取LoggingHub全局单例."""
+    global _hub_instance
+    if _hub_instance is None:
+        _hub_instance = LoggingHub()
+    return _hub_instance
+
+
+def get_event_log_handler() -> "EventLogFileHandler":
+    """获取EventLogFileHandler全局单例."""
+    global _event_log_handler_instance
+    if _event_log_handler_instance is None:
+        _event_log_handler_instance = EventLogFileHandler()
+    return _event_log_handler_instance
+
+
+def get_ordered_log_queue() -> "OrderedLogQueue":
+    """获取OrderedLogQueue全局单例."""
+    global _ordered_log_queue_instance
+    if _ordered_log_queue_instance is None:
+        _ordered_log_queue_instance = OrderedLogQueue()
+    return _ordered_log_queue_instance
+
+
+def get_multi_process_collector() -> Optional["MultiProcessLogCollector"]:
+    """获取MultiProcessLogCollector实例."""
+    return _multi_process_collector_instance
+
+
+# =============================================================================
+# Part 10: 事件日志上下文管理器和便捷API
+# =============================================================================
+
+
+@contextmanager
+def event_log_process(event_name: str, metadata: Optional[Dict[str, Any]] = None):
+    """事件日志流程上下文管理器
+
+    Args:
+        event_name: 事件名称（必须为SUPPORTED_EVENTS中的一个）
+        metadata: 事件元数据（可选）
+    """
+    handler = get_event_log_handler()
+    file_path = handler.start_event(event_name, metadata)
+
+    success = False
+    exception_info = None
+
+    try:
+        yield file_path
+        success = True
+    except Exception as e:
+        exception_info = e
+        raise
+    finally:
+        summary = None
+        if not success and exception_info:
+            summary = f"流程异常终止: {exception_info}"
+
+        handler.end_event(success, summary)
+
+
+def event_log_process_decorator(
+    event_name: str, metadata_func: Optional[Callable[..., Dict[str, Any]]] = None
+):
+    """事件日志流程装饰器
+
+    Args:
+        event_name: 事件名称
+        metadata_func: 元数据函数（可选）
+    """
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            metadata = None
+            if metadata_func:
+                try:
+                    metadata = metadata_func(*args, **kwargs)
+                except Exception:
+                    pass
+
+            with event_log_process(event_name, metadata):
+                return func(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
+# =============================================================================
+# Part 11: 便捷API函数
+# =============================================================================
+
+
+def log_progress(module: str, message: str, progress: float, **details):
+    """记录进度日志（自动节流）."""
+    details["progress"] = progress
+    logger = logging.getLogger(f"backend.{module}")
+    logger.info(message, extra={"log_type": "PROGRESS", **details})
+
+
+def notify_complete(module: str, message: str, **details):
+    """任务完成通知."""
+    logger = logging.getLogger(f"backend.{module}")
+    logger.info(message, extra={"log_type": "NOTIFICATION", **details})
+
+
+def alert(severity: str, module: str, message: str, **details):
+    """发送告警."""
+    logger = logging.getLogger(f"backend.{module}")
+    level = getattr(logging, severity.upper(), logging.WARNING)
+    logger.log(level, message, extra={"log_type": "ALERT", **details})
+
+
+def log_system(level: str, module: str, message: str, **details):
+    """记录系统日志."""
+    logger = logging.getLogger(f"backend.{module}")
+    log_level = getattr(logging, level.upper(), logging.INFO)
+    logger.log(log_level, message, extra={"log_type": "SYSTEM", **details})
+
+
+def stage_node(module: str, message: str, **details):
+    """记录阶段节点日志."""
+    logger = logging.getLogger(f"backend.{module}")
+    logger.info(message, extra={"log_type": "STAGE_NODE", **details})
+
+
+def debug_log(module: str, message: str, **details):
+    """记录调试日志."""
+    logger = logging.getLogger(f"backend.{module}")
+    logger.debug(message, extra={"log_type": "DEBUG", **details})
+
+
+# =============================================================================
+# Part 12: 初始化和配置函数
+# =============================================================================
+
+
+def setup_logging_system(
+    event_engine: Optional[EventEngine] = None,
+    db_manager: Optional[Any] = None,
+    enable_ordered_queue: bool = True,
+    enable_multi_process: bool = True,
+) -> LoggingHub:
+    """设置日志系统
+
+    Args:
+        event_engine: EventEngine实例
+        db_manager: 数据库管理器
+        enable_ordered_queue: 是否启用有序队列
+        enable_multi_process: 是否启用多进程支持
+
+    Returns:
+        LoggingHub实例
+    """
+    hub = get_logging_hub()
+    handler = get_event_log_handler()
+
+    # 设置依赖
+    if event_engine:
+        hub.set_event_engine(event_engine)
+    if db_manager:
+        hub.set_db_manager(db_manager)
+
+    # 设置Handler
+    hub.set_event_log_handler(handler)
+
+    # 设置有序队列
+    if enable_ordered_queue:
+        ordered_queue = get_ordered_log_queue()
+        hub.set_ordered_log_queue(ordered_queue)
+        hub.enable_ordered_queue()
+
+    # 设置多进程收集器
+    if enable_multi_process:
+        global _multi_process_collector_instance
+        collector = MultiProcessLogCollector(hub)
+        collector.start()
+        _multi_process_collector_instance = collector
+
+    # 将LoggingHub添加到root logger
+    root_logger = logging.getLogger()
+    root_logger.addHandler(hub)
+    root_logger.setLevel(logging.DEBUG)
+
+    logger.info("日志系统初始化完成")
+    return hub
+
+
+def start_event_process(event_name: str, metadata: Optional[Dict[str, Any]] = None) -> Path:
+    """开始事件日志流程
+
+    Args:
+        event_name: 事件名称
+        metadata: 元数据
+
+    Returns:
+        事件日志文件路径
+    """
+    handler = get_event_log_handler()
+    return handler.start_event(event_name, metadata)
+
+
+def end_event_process(success: bool = True, summary: Optional[str] = None):
+    """结束事件日志流程
+
+    Args:
+        success: 是否成功
+        summary: 摘要信息
+    """
+    handler = get_event_log_handler()
+    handler.end_event(success, summary)
+
+
+# =============================================================================
+# Part 14: 完整初始化函数（从logging_init.py迁移）
+# =============================================================================
+
+
+def setup_memory_logging() -> tuple[MemoryHandler, PersistentBufferHandler]:
+    """设置MemoryHandler和PersistentBufferHandler缓冲日志系统初始化前的日志
+
+    Returns:
+        tuple[MemoryHandler, PersistentBufferHandler]: MemoryHandler和PersistentBufferHandler实例
+    """
+    import sys
+    logger = logging.getLogger("backend.infrastructure.system_vnpy.logging_system")
+
+    # DEBUG日志
+    logger.debug(
+        "[LOG-SETUP] 开始设置MemoryHandler",
+        extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+    )
+
+    # 修复编码问题：确保stdout/stderr使用UTF-8编码
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")  # type: ignore
+            logger.debug(
+                "[LOG-SETUP] stdout已重新配置为UTF-8编码",
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+            )
+        except (OSError, ValueError) as e:
+            logger.debug(
+                f"[LOG-SETUP] stdout重新配置失败: {e}",
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+            )
+    if hasattr(sys.stderr, "reconfigure"):
+        try:
+            sys.stderr.reconfigure(encoding="utf-8")  # type: ignore
+            logger.debug(
+                "[LOG-SETUP] stderr已重新配置为UTF-8编码",
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+            )
+        except (OSError, ValueError) as e:
+            logger.debug(
+                f"[LOG-SETUP] stderr重新配置失败: {e}",
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+            )
+
+    # 配置root logger
+    root_logger = logging.getLogger()
+    old_level = root_logger.level
+    root_logger.setLevel(logging.DEBUG)  # 接收所有级别的日志
+    logger.debug(
+        f"[LOG-SETUP] root logger级别已设置: {logging.getLevelName(old_level)} -> DEBUG",
+        extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+    )
+
+    # 创建MemoryHandler作为临时缓冲（容量10000条）
+    # target先设为None，LoggingHub初始化后再设置
+    memory_handler = MemoryHandler(capacity=10000, target=None)
+    memory_handler.setLevel(logging.DEBUG)
+    root_logger.addHandler(memory_handler)
+    logger.debug(
+        f"[LOG-SETUP] MemoryHandler已创建: 容量={memory_handler.capacity}条",
+        extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+    )
+
+    # 创建持久化缓冲Handler（防止进程崩溃导致日志丢失）
+    persistent_buffer = PersistentBufferHandler(buffer_dir="logs/buffer", capacity=10000)
+    persistent_buffer.setLevel(logging.DEBUG)
+    root_logger.addHandler(persistent_buffer)
+    logger.debug(
+        "[LOG-SETUP] PersistentBufferHandler已创建",
+        extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+    )
+
+    # 创建启动logger
+    from backend.core.base import setup_logging as base_setup_logging
+
+    startup_logger = base_setup_logging(name="StartupOptimized", level="INFO")
+    logger.debug(
+        "[LOG-SETUP] 启动logger已创建",
+        extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+    )
+
+    # 关键修复：移除logger自己的handlers，避免绕过LoggingHub
+    removed_handlers_count = 0
+    for handler in startup_logger.handlers[:]:
+        startup_logger.removeHandler(handler)
+        handler.close()
+        removed_handlers_count += 1
+    logger.debug(
+        f"[LOG-SETUP] 已移除启动logger的{removed_handlers_count}个handlers",
+        extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+    )
+
+    # 设置propagate=True，让日志传播到root logger，经过LoggingHub处理
+    startup_logger.propagate = True
+    logger.debug(
+        "[LOG-SETUP] 启动logger已设置为传播到root logger",
+        extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+    )
+
+    return memory_handler, persistent_buffer
+
+
+async def initialize_logging_hub_complete(
+    memory_handler: MemoryHandler,
+    scenario: str = "application_startup",
+) -> Optional[LoggingHub]:
+    """完整初始化LoggingHub并重放缓冲日志
+
+    Args:
+        memory_handler: MemoryHandler实例
+        scenario: 场景名称（默认：application_startup）
+
+    Returns:
+        LoggingHub实例或None
+    """
+    import sys
+    logger = logging.getLogger("backend.infrastructure.system_vnpy.logging_system")
+
+    try:
+        root_logger = logging.getLogger()
+        stage_logger = logging.getLogger("startup.stage")
+        t0 = time.time()
+
+        # 1. 初始化LoggingHub
+        logger.debug(
+            "[LOG-SETUP] 开始获取LoggingHub实例",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+        logging_hub = get_logging_hub()
+        logger.debug(
+            "[LOG-SETUP] LoggingHub实例已获取",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+
+        # 2. 创建并注入handlers
+        logger.debug(
+            "[LOG-SETUP] 开始创建并注入handlers",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(logging.DEBUG)  # LoggingHub内部会根据规则过滤
+        # 终端仅显示消息内容
+        console_formatter = logging.Formatter("%(message)s")
+        console_handler.setFormatter(console_formatter)
+        logging_hub.set_console_handler(console_handler)
+        logger.debug(
+            "[LOG-SETUP] ConsoleHandler已创建并注入",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+
+        # 注意：文件输出已通过EventLogFileHandler处理，无需单独设置file_handler
+        logger.debug(
+            "[LOG-SETUP] 文件输出已通过EventLogFileHandler处理",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+
+        # 3. 获取事件日志Handler并注入到LoggingHub
+        logger.debug(
+            "[LOG-SETUP] 开始获取事件日志Handler",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+        event_handler = get_event_log_handler()
+        logging_hub.set_event_log_handler(event_handler)
+        logger.debug(
+            "[LOG-SETUP] EventLogFileHandler已获取并注入",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+
+        # 4. 启动事件日志流程（application_startup）
+        logger.debug(
+            "[LOG-SETUP] 开始启动事件日志流程",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+        event_log_file = start_event_process(
+            "application_startup",
+            metadata={
+                "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+                "platform": sys.platform,
+            },
+        )
+        logger.debug(
+            f"[LOG-SETUP] 事件日志流程已启动: {event_log_file}",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+
+        # 验证事件日志文件是否创建成功
+        if not event_log_file or not event_log_file.exists():
+            logger.warning(
+                f"[LOG-SETUP] ⚠️ 事件日志文件创建失败: {event_log_file}",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+        else:
+            logger.debug(
+                f"[LOG-SETUP] 事件日志文件已创建: {event_log_file.absolute()}",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+
+        # 5. 集成多进程日志收集器
+        logger.debug(
+            "[LOG-SETUP] 开始创建多进程日志收集器",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+        global _multi_process_collector_instance
+        multiprocess_collector = MultiProcessLogCollector(logging_hub)
+        multiprocess_collector.start()
+        _multi_process_collector_instance = multiprocess_collector
+        logger.debug(
+            "[LOG-SETUP] 多进程日志收集器已启动",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+
+        # 6. 集成有序日志队列（启动阶段）
+        logger.debug(
+            "[LOG-SETUP] 开始创建有序日志队列",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+        ordered_queue = get_ordered_log_queue()
+        logging_hub.set_ordered_log_queue(ordered_queue)
+        logging_hub.enable_ordered_queue()
+        logger.debug(
+            f"[LOG-SETUP] 有序日志队列已创建并启用: 最大等待时间={ordered_queue.max_wait_seconds}秒",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+
+        stage_logger.info(
+            "✅ 有序日志队列初始化完成",
+            extra={"log_type": "STAGE_NODE", "scenario": scenario}
+        )
+
+        # 7. 将LoggingHub添加到root logger
+        root_logger.addHandler(logging_hub)
+        logger.debug(
+            "[LOG-SETUP] LoggingHub已添加到root logger",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+
+        # 8. 设置MemoryHandler的target为LoggingHub
+        memory_handler.setTarget(logging_hub)
+        logger.debug(
+            "[LOG-SETUP] MemoryHandler的target已设置为LoggingHub",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+
+        # 9. 直接刷新MemoryHandler（重放启动前的日志）
+        buffered_count = len(memory_handler.buffer)
+        logger.debug(
+            f"[LOG-SETUP] 开始刷新MemoryHandler: 已缓冲{buffered_count}条日志",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+        memory_handler.flush()
+        logger.debug(
+            f"[LOG-SETUP] MemoryHandler已刷新: {buffered_count}条日志已重放",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+
+        # 9. 移除MemoryHandler（已完成使命）
+        root_logger.removeHandler(memory_handler)
+        memory_handler.close()
+        logger.debug(
+            "[LOG-SETUP] MemoryHandler已移除并关闭",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+
+        # 10. 全局清理：移除所有logger的StreamHandler，确保所有日志都经过LoggingHub
+        logger.debug(
+            "[LOG-SETUP] 开始全局清理logger handlers",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+        cleaned_count = cleanup_all_logger_handlers()
+        logger.debug(
+            f"[LOG-SETUP] 全局清理完成: 已清理{cleaned_count}个handlers",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+
+        # 11. 阶段1标题与分隔（此时LoggingHub已就绪）
+        stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE", "scenario": scenario})
+        stage_logger.info("【阶段1: 日志系统初始化】 (5-10%)", extra={"log_type": "STAGE_NODE", "scenario": scenario})
+        stage_logger.info("=" * 70, extra={"log_type": "STAGE_NODE", "scenario": scenario})
+        stage_logger.info("", extra={"log_type": "STAGE_NODE", "scenario": scenario})
+
+        # 添加阶段1开始标记
+        stage_logger.info("📍 阶段1: 日志系统初始化开始", extra={"log_type": "STAGE_NODE", "scenario": scenario})
+
+        # 使用logger输出（此时已经过LoggingHub）
+        stage_logger.info(
+            "✅ LoggingHub创建完成",
+            extra={"log_type": "STAGE_NODE", "scenario": scenario}
+        )
+
+        # 注意：新架构使用硬编码路由规则，不再有路由引擎和配置文件
+        stage_logger.info(
+            "✅ 路由规则系统初始化完成（硬编码规则）",
+            extra={"log_type": "STAGE_NODE", "scenario": scenario}
+        )
+        stage_logger.info(
+            "   - 路由规则: 硬编码（简化架构）",
+            extra={"log_type": "STAGE_NODE", "scenario": scenario},
+        )
+
+        # 事件日志Handler信息
+        stage_logger.info(
+            "✅ 事件日志Handler初始化完成",
+            extra={"log_type": "STAGE_NODE", "scenario": scenario}
+        )
+        stage_logger.info(
+            f"  - 基础目录: {Path('logs').absolute()}",
+            extra={"log_type": "STAGE_NODE", "scenario": scenario}
+        )
+
+        # MemoryHandler日志重放信息
+        stage_logger.info(
+            f"✅ MemoryHandler日志重放完成 ({buffered_count}条)",
+            extra={"log_type": "STAGE_NODE", "scenario": scenario}
+        )
+
+        # 有序日志队列信息（如果已启用）
+        if ordered_queue:
+            stage_logger.info(
+                "✅ 有序日志队列已启用（启动阶段日志将按顺序输出）",
+                extra={"log_type": "STAGE_NODE", "scenario": scenario},
+            )
+
+        # 初始化阶段完成耗时
+        t_ms = int((time.time() - t0) * 1000)
+        logger.info(
+            f"[LOG-SETUP] 日志系统初始化完成: 总耗时={t_ms}ms",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+        stage_logger.info(
+            f"✅ 日志系统就绪 ({t_ms}ms)",
+            extra={"log_type": "STAGE_NODE", "scenario": scenario}
+        )
+
+        # 设置初始阶段为startup
+        logging_hub.set_stage("startup")
+        logger.debug(
+            "[LOG-SETUP] 日志系统阶段已设置为startup",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+
+        return logging_hub
+
+    except Exception as e:
+        logger.critical(
+            f"[LOG-SETUP] 🔥 LoggingHub初始化失败，使用降级日志输出: {e}",
+            extra={"log_type": "ALERT", "scenario": scenario},
+            exc_info=True
+        )
+        print(f"[日志系统] ❌ LoggingHub初始化失败: {e}")
+        import traceback
+        traceback.print_exc()
+
+        # 添加简单的StreamHandler作为降级
+        root_logger = logging.getLogger()
+        if not any(isinstance(h, logging.StreamHandler) for h in root_logger.handlers):
+            fallback = logging.StreamHandler(sys.stdout)
+            fallback.setLevel(logging.INFO)
+            root_logger.addHandler(fallback)
+            logger.warning(
+                "[LOG-SETUP] ⚠️ 已添加降级StreamHandler",
+                extra={"log_type": "ALERT", "scenario": scenario}
+            )
+
+        # 刷新MemoryHandler到降级handler
+        memory_handler.setTarget(fallback)
+        memory_handler.flush()
+        logger.debug(
+            "[LOG-SETUP] MemoryHandler已刷新到降级handler",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+
+        return None
+
+
+def cleanup_all_logger_handlers() -> int:
+    """清理所有logger的handlers，确保所有日志都经过LoggingHub
+
+    这个函数会：
+    1. 移除所有logger的StreamHandler（避免绕过LoggingHub直接输出）
+    2. 设置所有logger的propagate=True（让日志传播到root logger）
+
+    Returns:
+        int: 清理的handler数量
+    """
+    logger = logging.getLogger("backend.infrastructure.system_vnpy.logging_system")
+
+    # 尝试获取 LoggingHub 类型，用于避免误删
+    try:
+        _LoggingHub = LoggingHub
+        logger.debug(
+            "[LOG-SETUP] LoggingHub类型已获取，用于避免误删",
+            extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+        )
+    except Exception as e:
+        _LoggingHub = None
+        logger.debug(
+            f"[LOG-SETUP] 无法获取LoggingHub类型: {e}",
+            extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+        )
+
+    # 获取所有已创建的logger
+    logger_dict = getattr(logging.root.manager, "loggerDict", {})
+    all_loggers = [logging.getLogger(name) for name in logger_dict]
+    # 包含root logger在清理范围内
+    all_loggers.append(logging.root)
+
+    logger.debug(
+        f"[LOG-SETUP] 找到{len(all_loggers)}个logger需要清理",
+        extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+    )
+
+    cleaned_count = 0
+    propagate_set_count = 0
+
+    for lgr in all_loggers:
+        # 移除所有StreamHandler（这些会直接输出到stdout，绕过LoggingHub）
+        handlers_to_remove = []
+        for handler in lgr.handlers[:]:
+            if isinstance(handler, logging.StreamHandler):
+                # 保留LoggingHub（不是StreamHandler的子类），移除其他StreamHandler
+                if _LoggingHub is not None and isinstance(handler, _LoggingHub):
+                    continue
+                handlers_to_remove.append(handler)
+
+        for handler in handlers_to_remove:
+            lgr.removeHandler(handler)
+            try:
+                handler.close()
+            except Exception:
+                pass
+            cleaned_count += 1
+
+        # 设置propagate=True，让日志传播到root logger
+        if not lgr.propagate:
+            lgr.propagate = True
+            propagate_set_count += 1
+
+    logger.debug(
+        f"[LOG-SETUP] 清理完成: 移除{cleaned_count}个handlers, 设置{propagate_set_count}个logger的propagate=True",
+        extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+    )
+
+    return cleaned_count
+
+
+# =============================================================================
+# Part 13: 向后兼容API（保持旧代码兼容）
+# =============================================================================
+
+
+def start_ai_process(process_name: str, metadata: Optional[Dict[str, Any]] = None) -> Path:
+    """开始AI日志流程（向后兼容别名）
+
+    注意：此函数已弃用，请使用 start_event_process
+    为了保持向后兼容，保留此函数作为别名
+
+    Args:
+        process_name: 进程名称（事件名称）
+        metadata: 元数据
+
+    Returns:
+        事件日志文件路径
+    """
+    return start_event_process(process_name, metadata)
+
+
+def end_ai_process(success: bool = True, summary: Optional[str] = None):
+    """结束AI日志流程（向后兼容别名）
+
+    注意：此函数已弃用，请使用 end_event_process
+    为了保持向后兼容，保留此函数作为别名
+
+    Args:
+        success: 是否成功
+        summary: 摘要信息
+    """
+    end_event_process(success, summary)
+
+
+def get_ai_log_handler() -> "EventLogFileHandler":
+    """获取AI日志Handler（向后兼容别名）
+
+    注意：此函数已弃用，请使用 get_event_log_handler
+    为了保持向后兼容，保留此函数作为别名
+
+    Returns:
+        EventLogFileHandler实例
+    """
+    return get_event_log_handler()
+
+
+def ai_log_process(event_name: str, metadata: Optional[Dict[str, Any]] = None):
+    """AI日志流程上下文管理器（向后兼容别名）
+
+    注意：此函数已弃用，请使用 event_log_process
+    为了保持向后兼容，保留此函数作为别名
+
+    Args:
+        event_name: 事件名称
+        metadata: 事件元数据（可选）
+    """
+    return event_log_process(event_name, metadata)
+
+
+# 进程名称常量（向后兼容）
+class ProcessNames:
+    """预定义的流程名称常量（向后兼容）"""
+    STARTUP = "application_startup"
+    SHUTDOWN = "shutdown"
+    SYMBOL_REFRESH = "refresh_symbol_list"
+    SYMBOL_LOAD = "symbol_load"
+    DOWNLOAD_KLINE = "data_download"
+    DOWNLOAD_TICK = "data_download"
+    QUALITY_SCAN = "manual_data_scan"
+    QUALITY_REPAIR = "quality_repair"
+    STRATEGY_BACKTEST = "strategy_backtest"
+    STRATEGY_OPTIMIZE = "strategy_optimize"
+    STRATEGY_DEPLOY = "strategy_deploy"
+    TRADING_START = "trading_start"
+    TRADING_STOP = "trading_stop"
+    ORDER_EXECUTION = "order_execution"
+    CONFIG_UPDATE = "config_update"
+    DATABASE_BACKUP = "database_backup"
+    LOG_CLEANUP = "log_cleanup"
+    NETWORK_SPEEDTEST_PING = "manual_speedtest"
+    NETWORK_SPEEDTEST_BANDWIDTH = "manual_speedtest"
+
+
+# =============================================================================
+# 导出
+# =============================================================================
+
+
+__all__ = [
+    # 数据结构
+    "LogType",
+    "UnifiedLogRecord",
+    # 核心类
+    "LoggingHub",
+    "OrderedLogQueue",
+    "PersistentBufferHandler",
+    "MultiProcessLogCollector",
+    "ProgressThrottler",
+    "EventLogFileHandler",
+    # 事件名称常量
+    "SUPPORTED_EVENTS",
+    # 事件类型
+    "EVENT_LOG_SYSTEM",
+    "EVENT_LOG_PROGRESS",
+    "EVENT_LOG_NOTIFICATION",
+    "EVENT_LOG_ALERT",
+    "EVENT_UI_STATUSBAR",
+    "EVENT_UI_DIALOG",
+    # 上下文管理器
+    "event_log_process",
+    "event_log_process_decorator",
+    # 全局单例
+    "get_logging_hub",
+    "get_event_log_handler",
+    "get_ordered_log_queue",
+    "get_multi_process_collector",
+    # 便捷API
+    "log_progress",
+    "notify_complete",
+    "alert",
+    "log_system",
+    "stage_node",
+    "debug_log",
+    # 初始化函数
+    "setup_logging_system",
+    "start_event_process",
+    "end_event_process",
+    # 完整初始化函数（从logging_init.py迁移）
+    "setup_memory_logging",
+    "initialize_logging_hub_complete",
+    "cleanup_all_logger_handlers",
+    # 子进程日志设置
+    "setup_subprocess_logging",
+    # 向后兼容API
+    "start_ai_process",
+    "end_ai_process",
+    "get_ai_log_handler",
+    "ai_log_process",
+    "ProcessNames",
+]

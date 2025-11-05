@@ -58,7 +58,7 @@ from .exceptions import TdxConnectionError, TdxFunctionCallError, ValidationExce
 
 # 常量和类型
 from .constants import (
-    TDXParams, HQ_HOSTS, HQ_HOSTS_ALL, FUTURE_HOSTS, GP_HOSTS,
+    TDXParams, HQ_HOSTS, BROKER_SERVERS_7709, FUTURE_HOSTS, GP_HOSTS,
     FREQUENCY_MAP, MARKET_CODE_MAP, MARKET_NAME_MAP,
     SECURITY_EXCHANGE, SECURITY_TYPE, SECURITY_COEFFICIENT,
     # 扩展市场常量
@@ -150,7 +150,7 @@ __all__ = [
     # 常量和类型
     "TDXParams",
     "HQ_HOSTS",
-    "HQ_HOSTS_ALL",
+    "BROKER_SERVERS_7709",
     "FUTURE_HOSTS",
     "GP_HOSTS",
     "FREQUENCY_MAP",

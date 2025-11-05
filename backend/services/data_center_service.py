@@ -18,7 +18,7 @@ import logging
 import time
 
 from backend.core.service_base import BaseService, LoggerMixin
-from backend.infrastructure.system_vnpy.unified_log_system import (
+from backend.infrastructure.system_vnpy.logging_system import (
     ai_log_process,
     get_logging_hub,
 )
@@ -114,8 +114,14 @@ class DataCenterService(BaseService, LoggerMixin):
             self.log_operation_start("数据中心服务初始化")
 
             # 初始化任务调度器
-            self._init_scheduler()
-            self.logger.debug("任务调度器初始化完成")
+            scheduler_init_success = self._init_scheduler()
+            if not scheduler_init_success:
+                self.logger.warning(
+                    "⚠️ 任务调度器初始化失败，定时清理功能不可用",
+                    extra={"log_type": "SYSTEM", "scenario": "service_init"}
+                )
+            else:
+                self.logger.debug("任务调度器初始化完成")
 
             # 延迟获取 ChinaStockEngine（确保在服务初始化完成后）
             # 这样可以确保全局变量已经被正确设置
@@ -141,7 +147,7 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.critical(
                 "数据中心服务初始化失败，服务无法正常工作",
                 exc_info=True,
-                extra={"log_type": "SYSTEM", "scenario": "service_init"}
+                extra={"log_type": "SYSTEM", "scenario": "service_init"},
             )
             self._log_error("初始化", e, exc_info=True)
             return False
@@ -157,7 +163,9 @@ class DataCenterService(BaseService, LoggerMixin):
             if self._china_stock_engine:
                 self.logger.info("✅ ChinaStockEngine可用")
             else:
-                self.logger.warning("⚠️ ChinaStockEngine不可用，部分功能受限", extra={"log_type": "SYSTEM"})
+                self.logger.warning(
+                    "⚠️ ChinaStockEngine不可用，部分功能受限", extra={"log_type": "SYSTEM"}
+                )
 
     @property
     def china_stock_engine(self):
@@ -186,7 +194,7 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.error(
                 "关闭数据中心服务时发生错误",
                 exc_info=True,
-                extra={"log_type": "SYSTEM", "scenario": "service_shutdown"}
+                extra={"log_type": "SYSTEM", "scenario": "service_shutdown"},
             )
             self._log_error("关闭", e, exc_info=True)
             return False
@@ -293,7 +301,7 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.error(
                 "查询指数数据失败",
                 exc_info=True,
-                extra={"log_type": "SYSTEM", "scenario": "data_query"}
+                extra={"log_type": "SYSTEM", "scenario": "data_query"},
             )
             self._log_error("查询指数数据", e, exc_info=True)
             return {
@@ -376,7 +384,7 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.error(
                 "获取指数收益率失败",
                 exc_info=True,
-                extra={"log_type": "SYSTEM", "scenario": "data_query"}
+                extra={"log_type": "SYSTEM", "scenario": "data_query"},
             )
             self._log_error("获取指数收益率", e, exc_info=True)
             return {
@@ -420,7 +428,9 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.debug("⚠️ APScheduler未安装，定时清理功能不可用")
             return False
         except Exception as e:
-            self.logger.error("任务调度器初始化失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                "任务调度器初始化失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+            )
             return False
 
     def _cleanup_recorded_data_daily(self, days_to_keep: int = 1):
@@ -437,28 +447,40 @@ class DataCenterService(BaseService, LoggerMixin):
                 deleted_count = result.get("deleted_count", 0)
                 self.logger.info("✅ 定时清理完成：已删除 %d 条录制数据", deleted_count)
             else:
-                self.logger.warning("⚠️ 定时清理失败：%s", result.get("message", "未知错误"), extra={"log_type": "SYSTEM"})
+                self.logger.warning(
+                    "⚠️ 定时清理失败：%s",
+                    result.get("message", "未知错误"),
+                    extra={"log_type": "SYSTEM"},
+                )
 
         except Exception as e:
-            self.logger.error("定时清理录制数据异常：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                "定时清理录制数据异常：%s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+            )
 
     def _start_server_verification(self):
         """启动服务器验证（后台线程）"""
         if not self.china_stock_engine:
-            self.logger.warning("ChinaStockEngine不可用，跳过服务器验证", extra={"log_type": "SYSTEM"})
+            self.logger.warning(
+                "ChinaStockEngine不可用，跳过服务器验证", extra={"log_type": "SYSTEM"}
+            )
             return
 
         try:
             # 获取stock_fetcher（ChinaStockEngine中的属性名是stock_fetcher）
             stock_fetcher = getattr(self.china_stock_engine, "stock_fetcher", None)
             if not stock_fetcher:
-                self.logger.warning("无法获取stock_fetcher，跳过服务器验证", extra={"log_type": "SYSTEM"})
+                self.logger.warning(
+                    "无法获取stock_fetcher，跳过服务器验证", extra={"log_type": "SYSTEM"}
+                )
                 return
 
             # 检查是否有server_manager
             server_manager = getattr(stock_fetcher, "server_manager", None)
             if not server_manager:
-                self.logger.warning("stock_fetcher没有server_manager，跳过服务器验证", extra={"log_type": "SYSTEM"})
+                self.logger.warning(
+                    "stock_fetcher没有server_manager，跳过服务器验证", extra={"log_type": "SYSTEM"}
+                )
                 return
 
             # 在后台线程中验证服务器
@@ -468,7 +490,9 @@ class DataCenterService(BaseService, LoggerMixin):
                     server_manager.verify_all_servers_sync(timeout=5, max_workers=20)
                     self.logger.info("服务器验证完成")
                 except Exception as e:
-                    self.logger.error("服务器验证失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+                    self.logger.error(
+                        "服务器验证失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+                    )
 
             import threading
 
@@ -477,7 +501,9 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.info("服务器验证已在后台启动")
 
         except Exception as e:
-            self.logger.error("启动服务器验证失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                "启动服务器验证失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+            )
 
     def get_server_status(self) -> Dict[str, Any]:
         """获取服务器状态（从server_pool_manager获取）
@@ -501,7 +527,9 @@ class DataCenterService(BaseService, LoggerMixin):
             }
 
         except Exception as e:
-            self.logger.error("获取服务器状态失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                "获取服务器状态失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+            )
             return {
                 "available_count": 0,
                 "total_count": 0,
@@ -519,28 +547,29 @@ class DataCenterService(BaseService, LoggerMixin):
         import time
         import logging
         from contextlib import suppress
-        
+
         start_time = time.time()
-        
+
         # 设置日志上下文
         try:
-            from backend.infrastructure.system_vnpy.unified_log_system import (
+            from backend.infrastructure.system_vnpy.logging_system import (
                 get_logging_hub,
                 ai_log_process,
             )
+
             hub = get_logging_hub()
         except ImportError:
             hub = None
-        
+
         stage_logger = logging.getLogger("task.manual_speedtest.stage")
-        
+
         # 使用ai_log_process创建独立日志文件
         # 注意：场景信息通过日志记录的extra参数传递，无需全局设置
         try:
             context_manager = ai_log_process("manual_speedtest") if hub else suppress()
         except Exception:
             context_manager = suppress()
-        
+
         with context_manager:
             try:
                 # 阶段节点（输出到Terminal）
@@ -548,7 +577,7 @@ class DataCenterService(BaseService, LoggerMixin):
                     "📍 手动测速开始: 正在连接到服务器池...",
                     extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
                 )
-                
+
                 # DEBUG/INFO日志（只写入AI日志文件）
                 self.logger.debug(
                     "[SPEEDTEST-SERVICE] 开始重新测速服务器池",
@@ -558,13 +587,13 @@ class DataCenterService(BaseService, LoggerMixin):
                     "[SPEEDTEST-SERVICE] ℹ️ 手动测速任务开始，开始重新测速服务器池",
                     extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
                 )
-                
+
                 from backend.infrastructure.data_module_vnpy.load_balancer import (
                     get_server_pool_manager,
                 )
 
                 server_pool_manager = get_server_pool_manager()
-                
+
                 # DEBUG日志
                 self.logger.debug(
                     f"[SPEEDTEST-SERVICE] 服务器池管理器类型: {type(server_pool_manager).__name__}",
@@ -574,7 +603,7 @@ class DataCenterService(BaseService, LoggerMixin):
                     f"[SPEEDTEST-SERVICE] 服务器池管理器: {server_pool_manager}",
                     extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
                 )
-                
+
                 # 获取当前统计信息（测速前）
                 try:
                     stats_before = server_pool_manager.get_stats()
@@ -641,7 +670,9 @@ class DataCenterService(BaseService, LoggerMixin):
                 speedtest_start_time = time.time()
                 success = False
                 try:
-                    success = server_pool_manager._start_multiprocess()  # noqa: SLF001 (允许内部调用)
+                    success = (
+                        server_pool_manager._start_multiprocess()
+                    )  # noqa: SLF001 (允许内部调用)
                     speedtest_elapsed = time.time() - speedtest_start_time
                     if success:
                         self.logger.info(
@@ -749,7 +780,9 @@ class DataCenterService(BaseService, LoggerMixin):
                             extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
                         )
                     except Exception as e:
-                        event_elapsed = time.time() - event_start_time if 'event_start_time' in locals() else 0
+                        event_elapsed = (
+                            time.time() - event_start_time if "event_start_time" in locals() else 0
+                        )
                         self.logger.debug(
                             f"[SPEEDTEST-SERVICE] 推送状态事件异常: {e}, 耗时={event_elapsed:.2f}s",
                             extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
@@ -780,7 +813,7 @@ class DataCenterService(BaseService, LoggerMixin):
                         f"总耗时={total_elapsed:.2f}s",
                         extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
                     )
-                
+
                 # 阶段节点（输出到Terminal）
                 if success:
                     ipv4_count = stats.get("ipv4_available", 0)
@@ -794,7 +827,7 @@ class DataCenterService(BaseService, LoggerMixin):
                         f"⚠️ 手动测速失败: 耗时={total_elapsed:.2f}s",
                         extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
                     )
-                
+
                 return {"success": success, "stats": stats}
 
             except Exception as e:
@@ -813,13 +846,13 @@ class DataCenterService(BaseService, LoggerMixin):
                     exc_info=True,
                     extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
                 )
-                
+
                 # 阶段节点（输出到Terminal）
                 stage_logger.error(
                     f"❌ 手动测速异常: {e}, 耗时={total_elapsed:.2f}s",
                     extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
                 )
-                
+
                 return {"success": False, "message": str(e)}
 
     def _map_market_to_exchange(self, market_type: str) -> str:
@@ -908,13 +941,16 @@ class DataCenterService(BaseService, LoggerMixin):
             from backend.infrastructure.data_module_vnpy import (
                 ChinaStockEngine,
             )
+
             EVENT_SYMBOL_CACHE_LOADED = ChinaStockEngine.EVENT_SYMBOL_CACHE_LOADED
             EVENT_IPO_CACHE_UPDATED = ChinaStockEngine.EVENT_IPO_CACHE_UPDATED
             EVENT_VALIDATION_COMPLETED = ChinaStockEngine.EVENT_VALIDATION_COMPLETED
 
             event_engine = get_event_engine()
             if not event_engine:
-                self.logger.warning("EventEngine不可用，无法注册事件监听器", extra={"log_type": "SYSTEM"})
+                self.logger.warning(
+                    "EventEngine不可用，无法注册事件监听器", extra={"log_type": "SYSTEM"}
+                )
                 return
 
             event_engine.register(EVENT_SYMBOL_CACHE_LOADED, self._on_symbol_cache_loaded)
@@ -924,7 +960,14 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.info("✅ 已注册validation_worker事件监听器")
 
         except Exception as e:
-            self.logger.warning("⚠️ 注册validation事件失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            # 注册事件失败不应该导致服务初始化失败，只记录warning
+            self.logger.warning(
+                "⚠️ 注册validation事件失败: %s，服务将继续运行但无法接收验证事件",
+                e,
+                exc_info=True,
+                extra={"log_type": "SYSTEM", "scenario": "service_init"}
+            )
+            # 不抛出异常，允许服务继续初始化
 
     def _on_symbol_cache_loaded(self, event):
         """响应品种列表加载完成事件.
@@ -950,7 +993,7 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.error(
                 "处理品种列表加载事件失败",
                 exc_info=True,
-                extra={"log_type": "SYSTEM", "scenario": "symbol_loading"}
+                extra={"log_type": "SYSTEM", "scenario": "symbol_loading"},
             )
 
     def _on_ipo_cache_updated(self, event):
@@ -974,7 +1017,7 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.error(
                 "处理IPO更新事件失败",
                 exc_info=True,
-                extra={"log_type": "SYSTEM", "scenario": "ipo_loading"}
+                extra={"log_type": "SYSTEM", "scenario": "ipo_loading"},
             )
 
     def _on_validation_completed(self, event):
@@ -991,13 +1034,15 @@ class DataCenterService(BaseService, LoggerMixin):
                 self.logger.info("✅ [事件] validation_worker 9步流程全部完成")
             else:
                 error = data.get("error", "未知错误")
-                self.logger.warning("⚠️ [事件] validation_worker流程失败: %s", error, extra={"log_type": "SYSTEM"})
+                self.logger.warning(
+                    "⚠️ [事件] validation_worker流程失败: %s", error, extra={"log_type": "SYSTEM"}
+                )
 
         except Exception as e:
             self.logger.error(
                 "处理validation完成事件失败",
                 exc_info=True,
-                extra={"log_type": "SYSTEM", "scenario": "validation"}
+                extra={"log_type": "SYSTEM", "scenario": "validation"},
             )
 
     # ==================== 品种列表管理 ====================
@@ -1014,7 +1059,9 @@ class DataCenterService(BaseService, LoggerMixin):
                 cache_file.unlink()
                 self.logger.info("已删除品种列表缓存文件: %s", cache_file)
         except Exception as e:
-            self.logger.error("删除缓存文件失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                "删除缓存文件失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+            )
 
     def reload_symbol_list(self, force: bool = False) -> Dict[str, Any]:
         """重新加载品种列表（用户主动触发）.
@@ -1040,28 +1087,29 @@ class DataCenterService(BaseService, LoggerMixin):
         import logging
         from contextlib import suppress
         from datetime import datetime
-        
+
         start_time = time.time()
-        
+
         # 设置日志上下文
         try:
-            from backend.infrastructure.system_vnpy.unified_log_system import (
+            from backend.infrastructure.system_vnpy.logging_system import (
                 get_logging_hub,
                 ai_log_process,
             )
+
             hub = get_logging_hub()
         except ImportError:
             hub = None
-        
+
         stage_logger = logging.getLogger("task.refresh_symbol_list.stage")
-        
+
         # 使用ai_log_process创建独立日志文件
         # 注意：场景信息通过日志记录的extra参数传递，无需全局设置
         try:
             context_manager = ai_log_process("symbol_list_reload") if hub else suppress()
         except Exception:
             context_manager = suppress()
-        
+
         with context_manager:
             try:
                 # 阶段节点（输出到Terminal）
@@ -1069,59 +1117,57 @@ class DataCenterService(BaseService, LoggerMixin):
                     "📍 重新请求品种列表开始",
                     extra={"log_type": "STAGE_NODE", "scenario": "symbol_list_reload"},
                 )
-                
+
                 self._log_operation("重新加载品种列表", force=force)
                 self.logger.debug(
                     "[RELOAD-SYMBOL] 开始重新加载品种列表",
-                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                 )
                 self.logger.debug(
                     f"[RELOAD-SYMBOL] 参数: force={force}",
-                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                 )
                 self.logger.info(
                     "[RELOAD-SYMBOL] 品种列表重新加载开始",
-                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                 )
                 self.logger.info(
-                    "=" * 60,
-                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                    "=" * 60, extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                 )
                 self.logger.info(
                     "【用户触发】品种列表重新加载开始",
-                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                 )
                 self.logger.info(
-                    "=" * 60,
-                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                    "=" * 60, extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                 )
 
                 # 流程1：删除缓存文件
                 self.logger.info(
                     "[RELOAD-SYMBOL] 【流程1】删除现有缓存文件...",
-                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                 )
                 self.logger.debug(
                     "[RELOAD-SYMBOL] 开始删除缓存文件...",
-                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                 )
                 cache_delete_start_time = time.time()
                 self._delete_symbol_cache_file()
                 cache_delete_elapsed = time.time() - cache_delete_start_time
                 self.logger.debug(
                     f"[RELOAD-SYMBOL] 缓存文件删除完成: 耗时={cache_delete_elapsed:.2f}s",
-                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                 )
 
                 # 流程2：从API获取品种
                 if self.china_stock_engine is None:
                     self.logger.error(
                         "[RELOAD-SYMBOL] ❌ ChinaStockEngine不可用",
-                        extra={"log_type": "ALERT", "scenario": "symbol_list_reload"}
+                        extra={"log_type": "ALERT", "scenario": "symbol_list_reload"},
                     )
                     self.logger.debug(
                         "[RELOAD-SYMBOL] ChinaStockEngine状态: None",
-                        extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                        extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                     )
                     return {
                         "success": False,
@@ -1132,24 +1178,24 @@ class DataCenterService(BaseService, LoggerMixin):
 
                 self.logger.info(
                     "[RELOAD-SYMBOL] 【流程2】从ChinaStockEngine获取品种列表...",
-                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                 )
                 self.logger.debug(
                     "[RELOAD-SYMBOL] 开始调用_fetch_symbols_from_china_stock方法...",
-                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                 )
                 fetch_start_time = time.time()
                 symbols, empty_categories = self._fetch_symbols_from_china_stock()
                 fetch_elapsed = time.time() - fetch_start_time
                 self.logger.debug(
                     f"[RELOAD-SYMBOL] 品种获取完成: 数量={len(symbols)}, 空类别={empty_categories}, 耗时={fetch_elapsed:.2f}s",
-                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                 )
                 self.logger.info(
                     f"[RELOAD-SYMBOL] 【流程2完成】获取到 {len(symbols)} 个品种",
-                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                 )
-                
+
                 # 阶段节点：从TDX读取品种完成
                 stage_logger.info(
                     f"✅ 从TDX读取品种：{len(symbols)}个（耗时{fetch_elapsed:.2f}s）",
@@ -1159,7 +1205,7 @@ class DataCenterService(BaseService, LoggerMixin):
                 # 转换为前端格式
                 self.logger.debug(
                     "[RELOAD-SYMBOL] 开始转换为前端格式...",
-                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                 )
                 format_start_time = time.time()
                 formatted_symbols = []
@@ -1195,9 +1241,9 @@ class DataCenterService(BaseService, LoggerMixin):
                 format_elapsed = time.time() - format_start_time
                 self.logger.debug(
                     f"[RELOAD-SYMBOL] 格式转换完成: 成功={len(formatted_symbols)}, 跳过={skipped_count}, 耗时={format_elapsed:.2f}s",
-                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                 )
-                
+
                 # 阶段节点：过滤未上市品种完成（格式转换时已过滤）
                 if skipped_count > 0:
                     stage_logger.info(
@@ -1213,11 +1259,11 @@ class DataCenterService(BaseService, LoggerMixin):
                 # 流程3：更新内存缓存
                 self.logger.info(
                     "[RELOAD-SYMBOL] 【流程3】更新内存缓存...",
-                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                 )
                 self.logger.debug(
                     "[RELOAD-SYMBOL] 开始更新内存缓存...",
-                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                 )
                 cache_update_start_time = time.time()
                 self._symbol_cache = {
@@ -1228,37 +1274,35 @@ class DataCenterService(BaseService, LoggerMixin):
                 cache_update_elapsed = time.time() - cache_update_start_time
                 self.logger.debug(
                     f"[RELOAD-SYMBOL] 内存缓存更新完成: 耗时={cache_update_elapsed:.2f}s",
-                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                 )
                 self.logger.info(
                     f"[RELOAD-SYMBOL] 【流程3完成】缓存已更新，品种数: {len(formatted_symbols)}",
-                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                 )
 
                 total_elapsed = time.time() - start_time
                 self.logger.info(
-                    "=" * 60,
-                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                    "=" * 60, extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                 )
                 self.logger.info(
                     f"[RELOAD-SYMBOL] 【用户触发】品种列表重新加载完成: 总耗时={total_elapsed:.2f}s, 品种数={len(formatted_symbols)}",
-                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                 )
                 self.logger.debug(
                     f"[RELOAD-SYMBOL] 各步骤耗时: 删除缓存={cache_delete_elapsed:.2f}s, "
                     f"获取品种={fetch_elapsed:.2f}s, 格式转换={format_elapsed:.2f}s, "
                     f"更新缓存={cache_update_elapsed:.2f}s, 总耗时={total_elapsed:.2f}s",
-                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                 )
                 self.logger.info(
-                    "=" * 60,
-                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                    "=" * 60, extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
                 )
 
                 # 检查通达信根目录配置和空品种类别
                 self.logger.debug(
                     "[RELOAD-SYMBOL] 开始检查通达信根目录配置和空品种类别...",
-                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                 )
                 warning_messages = []
 
@@ -1269,7 +1313,7 @@ class DataCenterService(BaseService, LoggerMixin):
                         is_available = block_parser.is_available()
                         self.logger.debug(
                             f"[RELOAD-SYMBOL] BlockParser可用性检查: is_available={is_available}",
-                            extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                            extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                         )
                         if not is_available:
                             warning_msg = (
@@ -1280,25 +1324,27 @@ class DataCenterService(BaseService, LoggerMixin):
                             warning_messages.append(warning_msg)
                             self.logger.warning(
                                 f"[RELOAD-SYMBOL] ⚠️ {warning_msg}",
-                                extra={"log_type": "ALERT", "scenario": "symbol_list_reload"}
+                                extra={"log_type": "ALERT", "scenario": "symbol_list_reload"},
                             )
                     else:
                         self.logger.debug(
                             "[RELOAD-SYMBOL] BlockParser不可用",
-                            extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                            extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                         )
 
                 # 检查空品种类别（集合E,F,G,H,I）
                 if empty_categories:
-                    empty_warning = f"⚠️ 以下品种列表为空，请排查相关问题：{', '.join(empty_categories)}"
+                    empty_warning = (
+                        f"⚠️ 以下品种列表为空，请排查相关问题：{', '.join(empty_categories)}"
+                    )
                     warning_messages.append(empty_warning)
                     self.logger.warning(
                         f"[RELOAD-SYMBOL] ⚠️ {empty_warning}",
-                        extra={"log_type": "ALERT", "scenario": "symbol_list_reload"}
+                        extra={"log_type": "ALERT", "scenario": "symbol_list_reload"},
                     )
                     self.logger.debug(
                         f"[RELOAD-SYMBOL] 空品种类别详情: {empty_categories}",
-                        extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                        extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                     )
 
                 # 合并所有警告消息
@@ -1306,14 +1352,14 @@ class DataCenterService(BaseService, LoggerMixin):
                 if warning_message:
                     self.logger.debug(
                         f"[RELOAD-SYMBOL] 警告消息: {warning_message}",
-                        extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                        extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                     )
 
                 total_elapsed = time.time() - start_time
                 self.logger.info(
                     f"[RELOAD-SYMBOL] 品种列表重新加载成功: 总耗时={total_elapsed:.2f}s, 品种数={len(formatted_symbols)}, "
                     f"警告={'存在' if warning_message else '无'}",
-                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                 )
 
                 # 阶段节点（输出到Terminal）
@@ -1336,33 +1382,31 @@ class DataCenterService(BaseService, LoggerMixin):
                 self.logger.error(
                     "[RELOAD-SYMBOL] ❌ 品种列表重新加载失败",
                     exc_info=True,
-                    extra={"log_type": "ALERT", "scenario": "symbol_list_reload"}
+                    extra={"log_type": "ALERT", "scenario": "symbol_list_reload"},
                 )
                 self._log_error("重新加载品种列表", e, exc_info=True)
                 self.logger.error(
-                    "=" * 60,
-                    extra={"log_type": "ALERT", "scenario": "symbol_list_reload"}
+                    "=" * 60, extra={"log_type": "ALERT", "scenario": "symbol_list_reload"}
                 )
                 self.logger.error(
                     f"[RELOAD-SYMBOL] 【失败】品种列表加载失败: {e}, 耗时={total_elapsed:.2f}s",
                     exc_info=True,
-                    extra={"log_type": "ALERT", "scenario": "symbol_list_reload"}
+                    extra={"log_type": "ALERT", "scenario": "symbol_list_reload"},
                 )
                 self.logger.debug(
                     f"[RELOAD-SYMBOL] 异常类型: {type(e).__name__}, 异常详情: {str(e)}",
-                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                 )
                 self.logger.error(
-                    "=" * 60,
-                    extra={"log_type": "ALERT", "scenario": "symbol_list_reload"}
+                    "=" * 60, extra={"log_type": "ALERT", "scenario": "symbol_list_reload"}
                 )
-                
+
                 # 阶段节点（输出到Terminal）
                 stage_logger.error(
                     f"❌ 重新请求品种列表失败: {e}, 耗时={total_elapsed:.2f}s",
                     extra={"log_type": "STAGE_NODE", "scenario": "symbol_list_reload"},
                 )
-                
+
                 return {
                     "success": False,
                     "symbol_count": 0,
@@ -1400,16 +1444,17 @@ class DataCenterService(BaseService, LoggerMixin):
                     }
 
             import time
+
             start_time = time.time()
-            
+
             self._log_operation("刷新品种列表")
             self.logger.debug(
                 "[REFRESH-SYMBOL] 开始刷新品种列表（从缓存）",
-                extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
             )
             self.logger.info(
                 "[REFRESH-SYMBOL] 刷新品种列表开始（从缓存）",
-                extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
             )
 
             # 🔧 修复：优先使用 china_stock_engine 的 symbol_loader，而不是创建新实例
@@ -1421,11 +1466,11 @@ class DataCenterService(BaseService, LoggerMixin):
             if not self.china_stock_engine:
                 self.logger.error(
                     "[REFRESH-SYMBOL] ❌ ChinaStockEngine不可用",
-                    extra={"log_type": "ALERT", "scenario": "symbol_list_reload"}
+                    extra={"log_type": "ALERT", "scenario": "symbol_list_reload"},
                 )
                 self.logger.debug(
                     "[REFRESH-SYMBOL] ChinaStockEngine状态: None",
-                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                 )
                 return {
                     "success": False,
@@ -1438,7 +1483,7 @@ class DataCenterService(BaseService, LoggerMixin):
             if self.china_stock_engine.symbol_loader is None:
                 self.logger.debug(
                     "[REFRESH-SYMBOL] SymbolLoader未初始化，开始延迟初始化...",
-                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                 )
                 # 延迟初始化 symbol_loader（如果需要）
                 from backend.infrastructure.data_module_vnpy.data_acquisition import SymbolLoader
@@ -1449,12 +1494,12 @@ class DataCenterService(BaseService, LoggerMixin):
                     self.china_stock_engine.symbol_loader = SymbolLoader(event_engine)
                     self.logger.debug(
                         "[REFRESH-SYMBOL] SymbolLoader已初始化（带EventEngine）",
-                        extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                        extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                     )
                 else:
                     self.logger.warning(
                         "[REFRESH-SYMBOL] ⚠️ EventEngine不可用，使用无事件引擎的SymbolLoader",
-                        extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                        extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                     )
                     self.china_stock_engine.symbol_loader = SymbolLoader()
 
@@ -1462,7 +1507,7 @@ class DataCenterService(BaseService, LoggerMixin):
             symbol_loader = self.china_stock_engine.symbol_loader
             self.logger.debug(
                 "[REFRESH-SYMBOL] 开始调用symbol_loader.reload_and_classify()...",
-                extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
             )
             classify_start_time = time.time()
             try:
@@ -1471,25 +1516,25 @@ class DataCenterService(BaseService, LoggerMixin):
                 self.logger.debug(
                     f"[REFRESH-SYMBOL] reload_and_classify()完成: 耗时={classify_elapsed:.2f}s, "
                     f"分类数={len(classified) if classified else 0}",
-                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                 )
             except Exception as e:
                 classify_elapsed = time.time() - classify_start_time
                 self.logger.debug(
                     f"[REFRESH-SYMBOL] reload_and_classify()异常详情: {type(e).__name__}: {str(e)}, 耗时={classify_elapsed:.2f}s",
-                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                 )
                 self.logger.error(
                     f"[REFRESH-SYMBOL] ❌ symbol_loader.reload_and_classify() 失败: {e}, 耗时={classify_elapsed:.2f}s",
                     exc_info=True,
-                    extra={"log_type": "ALERT", "scenario": "symbol_list_reload"}
+                    extra={"log_type": "ALERT", "scenario": "symbol_list_reload"},
                 )
                 raise
 
             if not classified:
                 self.logger.warning(
                     "[REFRESH-SYMBOL] ⚠️ 品种列表缓存不存在",
-                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                 )
                 return {
                     "success": False,
@@ -1501,7 +1546,7 @@ class DataCenterService(BaseService, LoggerMixin):
             # 将分类数据转换为前端需要的格式（添加 exchange 和 product_type 字段）
             self.logger.debug(
                 "[REFRESH-SYMBOL] 开始转换分类数据为前端格式...",
-                extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
             )
             format_start_time = time.time()
             symbols = []
@@ -1535,7 +1580,7 @@ class DataCenterService(BaseService, LoggerMixin):
             format_elapsed = time.time() - format_start_time
             self.logger.debug(
                 f"[REFRESH-SYMBOL] 格式转换完成: 成功={len(symbols)}, 跳过={skipped_count}, 耗时={format_elapsed:.2f}s",
-                extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
             )
 
             # 更新内存缓存
@@ -1545,14 +1590,14 @@ class DataCenterService(BaseService, LoggerMixin):
             cache_elapsed = time.time() - cache_start_time
             self.logger.debug(
                 f"[REFRESH-SYMBOL] 内存缓存更新完成: 耗时={cache_elapsed:.2f}s",
-                extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
             )
 
             total_elapsed = time.time() - start_time
             self.logger.info(
                 f"[REFRESH-SYMBOL] ✅ 从文件缓存刷新成功: {len(symbols)} 个品种（已过滤未上市）, "
                 f"总耗时={total_elapsed:.2f}s（分类={classify_elapsed:.2f}s, 转换={format_elapsed:.2f}s, 缓存={cache_elapsed:.2f}s）",
-                extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
             )
 
             # 🔧 修复：is_outdated 未定义，从缓存刷新应该是有效的
@@ -1567,20 +1612,20 @@ class DataCenterService(BaseService, LoggerMixin):
             }
 
         except Exception as e:
-            total_elapsed = time.time() - start_time if 'start_time' in locals() else 0
+            total_elapsed = time.time() - start_time if "start_time" in locals() else 0
             self.logger.debug(
                 f"[REFRESH-SYMBOL] 异常类型: {type(e).__name__}, 异常详情: {str(e)}, 耗时={total_elapsed:.2f}s",
-                extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
             )
             self.logger.error(
                 f"[REFRESH-SYMBOL] ❌ 刷新品种列表失败: {e}, 耗时={total_elapsed:.2f}s",
                 exc_info=True,
-                extra={"log_type": "ALERT", "scenario": "symbol_list_reload"}
+                extra={"log_type": "ALERT", "scenario": "symbol_list_reload"},
             )
             self.logger.critical(
                 f"[REFRESH-SYMBOL] 🔥 刷新品种列表严重失败，可能影响数据下载: {e}, 耗时={total_elapsed:.2f}s",
                 exc_info=True,
-                extra={"log_type": "ALERT", "scenario": "symbol_list_reload"}
+                extra={"log_type": "ALERT", "scenario": "symbol_list_reload"},
             )
             self._log_error("刷新品种列表", e, exc_info=True)
             return {
@@ -1602,7 +1647,9 @@ class DataCenterService(BaseService, LoggerMixin):
                 return result.get("data", [])
             return []
         except Exception as e:
-            self.logger.warning("⚠️ 从缓存获取品种列表失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.warning(
+                "⚠️ 从缓存获取品种列表失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+            )
             return []
 
     def get_local_data_index(self) -> List[Dict[str, Any]]:
@@ -1653,7 +1700,9 @@ class DataCenterService(BaseService, LoggerMixin):
             return result
 
         except Exception as e:
-            logger_alert.error("获取本地数据索引失败: %s", e, exc_info=True, extra={"log_type": "ALERT"})
+            logger_alert.error(
+                "获取本地数据索引失败: %s", e, exc_info=True, extra={"log_type": "ALERT"}
+            )
             return []
 
     def clear_symbol_cache(self) -> Dict[str, Any]:
@@ -1700,7 +1749,9 @@ class DataCenterService(BaseService, LoggerMixin):
         except Exception as e:
             self._log_error("删除品种列表缓存", e)
             self.logger.error("=" * 60, extra={"log_type": "SYSTEM"})
-            self.logger.error("【失败】删除品种列表缓存异常: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                "【失败】删除品种列表缓存异常: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+            )
             self.logger.error("=" * 60, extra={"log_type": "SYSTEM"})
             return {
                 "success": False,
@@ -1764,7 +1815,12 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.error(
                 "筛选品种失败",
                 exc_info=True,
-                extra={"log_type": "SYSTEM", "scenario": "symbol_filter", "exchange": exchange, "type": symbol_type}
+                extra={
+                    "log_type": "SYSTEM",
+                    "scenario": "symbol_filter",
+                    "exchange": exchange,
+                    "type": symbol_type,
+                },
             )
             self._log_error("筛选品种", e, exc_info=True, exchange=exchange, type=symbol_type)
             return {
@@ -1831,33 +1887,33 @@ class DataCenterService(BaseService, LoggerMixin):
             # 第1步：调用reload_stock_list更新缓存（返回Dict）
             self.logger.info(
                 "  → 调用 china_stock_engine.reload_stock_list()...",
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
             )
             self.logger.debug(
                 "[FETCH-SYMBOL] 开始调用china_stock_engine.reload_stock_list方法",
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
             )
             reload_start_time = time.time()
             reload_result = self.china_stock_engine.reload_stock_list()
             reload_elapsed = time.time() - reload_start_time
             self.logger.debug(
                 f"[FETCH-SYMBOL] reload_stock_list调用完成: 耗时={reload_elapsed:.2f}s, success={reload_result.get('success')}",
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
             )
             self.logger.info(
                 f"  ← reload_stock_list 返回: success={reload_result.get('success')}, "
                 f"empty_categories={reload_result.get('empty_categories', [])}, 耗时={reload_elapsed:.2f}s",
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
             )
 
             if not reload_result.get("success"):
                 self.logger.warning(
                     "更新品种缓存失败",
-                    extra={"log_type": "ALERT", "scenario": "symbol_list_reload"}
+                    extra={"log_type": "ALERT", "scenario": "symbol_list_reload"},
                 )
                 self.logger.debug(
                     f"[FETCH-SYMBOL] 失败详情: {reload_result}",
-                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                 )
                 return [], []
 
@@ -1867,11 +1923,11 @@ class DataCenterService(BaseService, LoggerMixin):
             # 第2步：调用get_all_market_stocks获取分类后的品种字典
             self.logger.info(
                 "  → 调用 china_stock_engine.get_all_market_stocks()...",
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
             )
             self.logger.debug(
                 "[FETCH-SYMBOL] 开始调用get_all_market_stocks方法（获取分类后的品种字典）",
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
             )
             market_stocks_start_time = time.time()
             market_stocks = self.china_stock_engine.get_all_market_stocks()
@@ -1879,21 +1935,21 @@ class DataCenterService(BaseService, LoggerMixin):
             market_count = len(market_stocks) if market_stocks else 0
             self.logger.debug(
                 f"[FETCH-SYMBOL] get_all_market_stocks调用完成: 市场数={market_count}, 耗时={market_stocks_elapsed:.2f}s",
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
             )
             self.logger.info(
                 f"  ← get_all_market_stocks 返回: {market_count} 个市场",
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
             )
 
             if not market_stocks:
                 self.logger.warning(
                     "获取品种分类失败",
-                    extra={"log_type": "ALERT", "scenario": "symbol_list_reload"}
+                    extra={"log_type": "ALERT", "scenario": "symbol_list_reload"},
                 )
                 self.logger.debug(
                     "[FETCH-SYMBOL] 市场品种字典为空",
-                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                 )
                 return [], []
 
@@ -1904,29 +1960,29 @@ class DataCenterService(BaseService, LoggerMixin):
                 total_classified_count += market_symbol_count
                 self.logger.info(
                     f"     - {market_name}: {market_symbol_count} 个",
-                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                 )
                 self.logger.debug(
                     f"[FETCH-SYMBOL] 分类器结果: {market_name}={market_symbol_count}个品种",
-                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                 )
             self.logger.debug(
                 f"[FETCH-SYMBOL] 分类器执行完成: 总计={total_classified_count}个品种, 市场数={market_count}",
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
             )
 
             # 转换为前端需要的格式（包含过滤器执行）
             self.logger.info(
                 "  → 转换为前端数据格式（应用过滤器）...",
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
             )
             self.logger.debug(
                 "[FETCH-SYMBOL] 开始转换为前端格式（扁平化处理）",
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
             )
             format_start_time = time.time()
             symbols = []
-            
+
             # 统计扁平化前的数量（用于过滤器统计）
             before_filter_count = 0
             if isinstance(market_stocks, dict) and len(market_stocks) > 0:
@@ -1997,44 +2053,44 @@ class DataCenterService(BaseService, LoggerMixin):
                 # 直接是品种列表（备用处理）
                 self.logger.warning(
                     "market_stocks格式异常，使用备用处理",
-                    extra={"log_type": "ALERT", "scenario": "symbol_list_reload"}
+                    extra={"log_type": "ALERT", "scenario": "symbol_list_reload"},
                 )
                 symbols = market_stocks if isinstance(market_stocks, list) else []
                 if not before_filter_count:
                     before_filter_count = len(symbols)
-            
+
             format_elapsed = time.time() - format_start_time
             after_filter_count = len(symbols)
             filtered_count = before_filter_count - after_filter_count
-            
+
             self.logger.debug(
                 f"[FETCH-SYMBOL] 格式转换完成: 转换前={before_filter_count}, 转换后={after_filter_count}, "
                 f"过滤掉={filtered_count}, 耗时={format_elapsed:.2f}s",
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
             )
             self.logger.info(
                 f"  ← 转换完成: {after_filter_count} 个品种（过滤前: {before_filter_count}, 过滤掉: {filtered_count}）",
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
             )
             self.logger.info(
                 f"✅ 成功获取 {after_filter_count} 个分类品种（来自{market_count}个市场，过滤器已应用）",
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
             )
 
             # 打印前3个样例
             if len(symbols) > 0:
                 self.logger.info(
                     "  前3个品种样例:",
-                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                    extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                 )
                 for i, sym in enumerate(symbols[:3]):
                     self.logger.info(
                         f"    [{i + 1}] {sym}",
-                        extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                        extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                     )
                     self.logger.debug(
                         f"[FETCH-SYMBOL] 样例品种: {sym}",
-                        extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"}
+                        extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
                     )
 
             return symbols, empty_categories
@@ -2042,19 +2098,22 @@ class DataCenterService(BaseService, LoggerMixin):
         except Exception as e:
             self.logger.debug(
                 f"[FETCH-SYMBOL] 获取品种列表发生异常: {type(e).__name__}: {str(e)}",
-                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"}
+                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
             )
             self.logger.error(
                 f"获取品种列表失败: {e}",
                 exc_info=True,
-                extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"}
+                extra={"log_type": "ALERT", "scenario": "refresh_symbol_list"},
             )
             return [], []
 
     # ==================== 数据下载管理 ====================
 
     def start_incremental_download_with_progress(
-        self, start_date: str, progress_callback: Optional[Any] = None, symbols: Optional[List[str]] = None
+        self,
+        start_date: str,
+        progress_callback: Optional[Any] = None,
+        symbols: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """启动增量数据下载（带进度回调，线程内轮询引擎进度）.
 
@@ -2073,27 +2132,28 @@ class DataCenterService(BaseService, LoggerMixin):
         # 设置日志上下文
         import logging
         from contextlib import suppress
-        
+
         try:
-            from backend.infrastructure.system_vnpy.unified_log_system import (
+            from backend.infrastructure.system_vnpy.logging_system import (
                 get_logging_hub,
                 ai_log_process,
             )
+
             hub = get_logging_hub()
             if hub:
                 hub.set_stage("downloading")
         except ImportError:
             hub = None
-        
+
         stage_logger = logging.getLogger("task.data_download.stage")
-        
+
         # 使用ai_log_process创建独立日志文件
         download_type = "修复下载" if symbols else "增量下载"
         try:
             context_manager = ai_log_process("data_download") if hub else suppress()
         except Exception:
             context_manager = suppress()
-        
+
         with context_manager:
             try:
                 # 阶段节点（输出到Terminal）
@@ -2101,26 +2161,26 @@ class DataCenterService(BaseService, LoggerMixin):
                     f"📍 数据下载开始: {download_type}, 开始日期={start_date}",
                     extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
                 )
-                
+
                 self.logger.debug(
                     "[DOWNLOAD-SERVICE] 开始增量数据下载",
-                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                    extra={"log_type": "SYSTEM", "scenario": "data_download"},
                 )
                 self.logger.info(
                     f"[DOWNLOAD-SERVICE] 增量数据下载任务开始: start_date={start_date}, "
                     f"symbols={'有' if symbols else '无'}, symbol_count={len(symbols) if symbols else 0}",
-                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                    extra={"log_type": "SYSTEM", "scenario": "data_download"},
                 )
                 self.log_operation_start("增量数据下载", start_date=start_date)
 
                 if self.china_stock_engine is None:
                     self.logger.error(
                         "[DOWNLOAD-SERVICE] ❌ 中国股票引擎不可用",
-                        extra={"log_type": "ALERT", "scenario": "data_download"}
+                        extra={"log_type": "ALERT", "scenario": "data_download"},
                     )
                     self.logger.debug(
                         "[DOWNLOAD-SERVICE] ChinaStockEngine状态: None",
-                        extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                        extra={"log_type": "SYSTEM", "scenario": "data_download"},
                     )
                     # 阶段节点（输出到Terminal）
                     stage_logger.error(
@@ -2139,22 +2199,22 @@ class DataCenterService(BaseService, LoggerMixin):
                 try:
                     self.logger.debug(
                         f"[DOWNLOAD-SERVICE] 开始解析日期: start_date={start_date}",
-                        extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                        extra={"log_type": "SYSTEM", "scenario": "data_download"},
                     )
                     start_dt = dt.strptime(start_date, "%Y-%m-%d").date()
                     self.logger.debug(
                         f"[DOWNLOAD-SERVICE] 日期解析成功: {start_dt}",
-                        extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                        extra={"log_type": "SYSTEM", "scenario": "data_download"},
                     )
                 except ValueError as e:
                     self.logger.error(
                         f"[DOWNLOAD-SERVICE] ❌ 日期格式错误: {e}",
                         exc_info=True,
-                        extra={"log_type": "ALERT", "scenario": "data_download"}
+                        extra={"log_type": "ALERT", "scenario": "data_download"},
                     )
                     self.logger.debug(
                         f"[DOWNLOAD-SERVICE] 异常类型: {type(e).__name__}, 异常详情: {str(e)}",
-                        extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                        extra={"log_type": "SYSTEM", "scenario": "data_download"},
                     )
                     # 阶段节点（输出到Terminal）
                     stage_logger.error(
@@ -2171,12 +2231,12 @@ class DataCenterService(BaseService, LoggerMixin):
                 days_diff = (today - start_dt).days
                 self.logger.debug(
                     f"[DOWNLOAD-SERVICE] 日期验证: start_date={start_dt}, today={today}, days_diff={days_diff}",
-                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                    extra={"log_type": "SYSTEM", "scenario": "data_download"},
                 )
                 if days_diff > 100:
                     self.logger.warning(
                         f"[DOWNLOAD-SERVICE] ⚠️ 日期超出范围: {days_diff}天前（最多支持100天）",
-                        extra={"log_type": "ALERT", "scenario": "data_download"}
+                        extra={"log_type": "ALERT", "scenario": "data_download"},
                     )
                     # 阶段节点（输出到Terminal）
                     stage_logger.warning(
@@ -2191,7 +2251,7 @@ class DataCenterService(BaseService, LoggerMixin):
                 if days_diff < 0:
                     self.logger.warning(
                         f"[DOWNLOAD-SERVICE] ⚠️ 开始日期不能晚于今天: {start_dt} > {today}",
-                        extra={"log_type": "ALERT", "scenario": "data_download"}
+                        extra={"log_type": "ALERT", "scenario": "data_download"},
                     )
                     # 阶段节点（输出到Terminal）
                     stage_logger.warning(
@@ -2219,17 +2279,17 @@ class DataCenterService(BaseService, LoggerMixin):
                 self.logger.debug(
                     f"[DOWNLOAD-SERVICE] 品种列表过滤: 原始数量={len(symbols) if symbols else 0}, "
                     f"过滤后数量={len(filtered_symbols) if filtered_symbols else 0}",
-                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                    extra={"log_type": "SYSTEM", "scenario": "data_download"},
                 )
                 if not filtered_symbols:
                     error_msg = "品种列表为空，无法下载"
                     self.logger.warning(
                         f"[DOWNLOAD-SERVICE] ⚠️ {error_msg}",
-                        extra={"log_type": "ALERT", "scenario": "data_download"}
+                        extra={"log_type": "ALERT", "scenario": "data_download"},
                     )
                     self.logger.debug(
                         "[DOWNLOAD-SERVICE] 品种列表详情: symbols为空或None",
-                        extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                        extra={"log_type": "SYSTEM", "scenario": "data_download"},
                     )
                     # 阶段节点（输出到Terminal）
                     stage_logger.warning(
@@ -2246,46 +2306,45 @@ class DataCenterService(BaseService, LoggerMixin):
                     self.logger.info(
                         f"[DOWNLOAD-SERVICE] 下载任务已创建: task_id={task_id}, 开始日期={start_date}, "
                         f"指定品种={len(filtered_symbols)}个, 预计天数={days_diff}天",
-                        extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                        extra={"log_type": "SYSTEM", "scenario": "data_download"},
                     )
                     self.logger.debug(
                         f"[DOWNLOAD-SERVICE] 任务详情: task_id={task_id}, symbols={len(filtered_symbols)}个, "
                         f"start_date={start_dt}, days_diff={days_diff}",
-                        extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                        extra={"log_type": "SYSTEM", "scenario": "data_download"},
                     )
                 else:
                     self.logger.info(
                         f"[DOWNLOAD-SERVICE] 下载任务已创建: task_id={task_id}, 开始日期={start_date}, 预计下载{days_diff}天数据",
-                        extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                        extra={"log_type": "SYSTEM", "scenario": "data_download"},
                     )
                     self.logger.debug(
                         f"[DOWNLOAD-SERVICE] 任务详情: task_id={task_id}, start_date={start_dt}, days_diff={days_diff}",
-                        extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                        extra={"log_type": "SYSTEM", "scenario": "data_download"},
                     )
 
                 # 启动底层后台下载任务（引擎内部自建线程）
                 self.logger.debug(
                     "[DOWNLOAD-SERVICE] 开始启动底层下载任务...",
-                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                    extra={"log_type": "SYSTEM", "scenario": "data_download"},
                 )
                 engine_start_time = time.time()
                 started = self.china_stock_engine.download_incremental(
-                    start_date=start_dt,
-                    symbols=filtered_symbols  # 🔧 传递过滤后的品种列表
+                    start_date=start_dt, symbols=filtered_symbols  # 🔧 传递过滤后的品种列表
                 )
                 engine_start_elapsed = time.time() - engine_start_time
                 self.logger.debug(
                     f"[DOWNLOAD-SERVICE] 底层下载任务启动完成: started={started}, 耗时={engine_start_elapsed:.2f}s",
-                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                    extra={"log_type": "SYSTEM", "scenario": "data_download"},
                 )
                 if not started:
                     self.logger.error(
                         "[DOWNLOAD-SERVICE] ❌ 下载启动失败：已有任务在运行或启动失败",
-                        extra={"log_type": "ALERT", "scenario": "data_download"}
+                        extra={"log_type": "ALERT", "scenario": "data_download"},
                     )
                     self.logger.debug(
                         "[DOWNLOAD-SERVICE] 启动失败详情: started=False",
-                        extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                        extra={"log_type": "SYSTEM", "scenario": "data_download"},
                     )
                     # 阶段节点（输出到Terminal）
                     stage_logger.error(
@@ -2304,15 +2363,16 @@ class DataCenterService(BaseService, LoggerMixin):
 
                 self.logger.debug(
                     f"[DOWNLOAD-SERVICE] 开始轮询下载进度: task_id={task_id}",
-                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                    extra={"log_type": "SYSTEM", "scenario": "data_download"},
                 )
                 logger_download.info(
                     f"[下载-{task_id}] 引擎已启动，开始轮询进度...",
-                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                    extra={"log_type": "SYSTEM", "scenario": "data_download"},
                 )
                 print(">>> [SERVICE] 引擎已启动，正在初始化下载任务...", flush=True)
                 print(
-                    ">>> [SERVICE] 提示：初始化可能需要15-30秒（发现服务器、构建任务列表）", flush=True
+                    ">>> [SERVICE] 提示：初始化可能需要15-30秒（发现服务器、构建任务列表）",
+                    flush=True,
                 )
 
                 last_pct = -1
@@ -2352,7 +2412,9 @@ class DataCenterService(BaseService, LoggerMixin):
                                 )
 
                             # 进度更新：回调通知
-                            if progress_callback and (pct != last_pct or completed != last_completed):
+                            if progress_callback and (
+                                pct != last_pct or completed != last_completed
+                            ):
                                 detail = f"{cur_sym} {cur_itv}".strip()
                                 suffix = f" - {detail}" if detail else ""
                                 msg = f"📥 进度 {pct:.0f}%（{completed}/{total}）{suffix}"
@@ -2366,18 +2428,18 @@ class DataCenterService(BaseService, LoggerMixin):
                                 remaining = total - completed
                                 speed = completed / elapsed if elapsed > 0 else 0  # 任务/秒
                                 estimated_remaining = remaining / speed if speed > 0 else 0
-                                
+
                                 self.logger.debug(
                                     f"[DOWNLOAD-SERVICE] 进度详情: task_id={task_id}, completed={completed}, "
                                     f"total={total}, pct={pct}%, current_symbol={cur_sym}, "
                                     f"current_interval={cur_itv}, speed={speed:.2f} tasks/s, "
                                     f"elapsed={elapsed:.1f}s, estimated_remaining={estimated_remaining:.1f}s",
-                                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                                    extra={"log_type": "SYSTEM", "scenario": "data_download"},
                                 )
                                 self.logger.info(
                                     f"[下载-{task_id}] 进度: {pct}% ({completed}/{total}) - {cur_sym} {cur_itv}, "
                                     f"速度={speed:.2f}任务/秒, 预计剩余={estimated_remaining:.0f}秒",
-                                    extra={"log_type": "PROGRESS", "scenario": "data_download"}
+                                    extra={"log_type": "PROGRESS", "scenario": "data_download"},
                                 )
                                 # print(...)  # 🔧 已移除：防止刷屏，logger.info已足够
                                 last_log_time = current_time
@@ -2389,7 +2451,7 @@ class DataCenterService(BaseService, LoggerMixin):
                             if elapsed > timeout_seconds:
                                 self.logger.error(
                                     f"[下载-{task_id}] 下载超时（{timeout_seconds}秒），停止轮询",
-                                    extra={"log_type": "ALERT", "scenario": "data_download"}
+                                    extra={"log_type": "ALERT", "scenario": "data_download"},
                                 )
                                 break
 
@@ -2398,12 +2460,12 @@ class DataCenterService(BaseService, LoggerMixin):
                                     f"[DOWNLOAD-SERVICE] 无进度检测: task_id={task_id}, "
                                     f"no_progress_elapsed={no_progress_elapsed:.1f}s, "
                                     f"completed={completed}, total={total}, current_symbol={cur_sym}",
-                                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                                    extra={"log_type": "SYSTEM", "scenario": "data_download"},
                                 )
                                 self.logger.warning(
                                     f"[下载-{task_id}] {no_progress_timeout}秒无进度更新，可能卡住了: "
                                     f"当前品种={cur_sym}, 已完成={completed}/{total}",
-                                    extra={"log_type": "ALERT", "scenario": "data_download"}
+                                    extra={"log_type": "ALERT", "scenario": "data_download"},
                                 )
 
                             # 检查是否完成
@@ -2413,15 +2475,16 @@ class DataCenterService(BaseService, LoggerMixin):
                                     download_elapsed = time.time() - download_start_time
                                     self.logger.info(
                                         f"[下载-{task_id}] 引擎下载已完成: ({completed}/{total}), 耗时={download_elapsed:.2f}s",
-                                        extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                                        extra={"log_type": "SYSTEM", "scenario": "data_download"},
                                     )
                                     self.logger.debug(
                                         f"[DOWNLOAD-SERVICE] 下载完成详情: task_id={task_id}, completed={completed}, "
                                         f"total={total}, 耗时={download_elapsed:.2f}s",
-                                        extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                                        extra={"log_type": "SYSTEM", "scenario": "data_download"},
                                     )
                                     print(
-                                        f">>> [SERVICE] ✓ 下载已完成 ({completed}/{total})", flush=True
+                                        f">>> [SERVICE] ✓ 下载已完成 ({completed}/{total})",
+                                        flush=True,
                                     )
                                     break
                                 elif total > 0 and completed < total:
@@ -2430,7 +2493,7 @@ class DataCenterService(BaseService, LoggerMixin):
                                         task_id,
                                         completed,
                                         total,
-                                        extra={"log_type": "ALERT", "scenario": "data_download"}
+                                        extra={"log_type": "ALERT", "scenario": "data_download"},
                                     )
                                     # 继续等待，可能是进度更新延迟
                                     time.sleep(1.0)
@@ -2443,7 +2506,10 @@ class DataCenterService(BaseService, LoggerMixin):
                                             "[下载-%s] is_downloading=False 且 total=0 已持续 %.0f秒，可能失败",
                                             task_id,
                                             elapsed,
-                                            extra={"log_type": "ALERT", "scenario": "data_download"}
+                                            extra={
+                                                "log_type": "ALERT",
+                                                "scenario": "data_download",
+                                            },
                                         )
                                         print(
                                             ">>> [SERVICE] ⚠️ 下载初始化超过30秒，可能存在问题",
@@ -2462,13 +2528,13 @@ class DataCenterService(BaseService, LoggerMixin):
                             logger_download.debug(
                                 f"[DOWNLOAD-SERVICE] 获取进度返回非字典类型: task_id={task_id}, "
                                 f"prog_type={type(prog).__name__}, prog={prog}",
-                                extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                                extra={"log_type": "SYSTEM", "scenario": "data_download"},
                             )
                             logger_download.warning(
                                 "[下载-%s] 获取进度失败，prog=%s",
                                 task_id,
                                 prog,
-                                extra={"log_type": "ALERT", "scenario": "data_download"}
+                                extra={"log_type": "ALERT", "scenario": "data_download"},
                             )
                             time.sleep(0.5)
 
@@ -2477,14 +2543,18 @@ class DataCenterService(BaseService, LoggerMixin):
                             f"[DOWNLOAD-SERVICE] 轮询异常详情: task_id={task_id}, "
                             f"异常类型={type(poll_error).__name__}, 异常详情={str(poll_error)}",
                             exc_info=True,
-                            extra={"log_type": "SYSTEM", "scenario": "data_download", "task_id": task_id}
+                            extra={
+                                "log_type": "SYSTEM",
+                                "scenario": "data_download",
+                                "task_id": task_id,
+                            },
                         )
                         logger_alert.error(
                             "[下载-%s] 轮询异常: %s",
                             task_id,
                             poll_error,
                             exc_info=True,
-                            extra={"log_type": "ALERT", "scenario": "data_download"}
+                            extra={"log_type": "ALERT", "scenario": "data_download"},
                         )
                         time.sleep(0.5)
 
@@ -2496,11 +2566,11 @@ class DataCenterService(BaseService, LoggerMixin):
                 download_duration = (time.time() - download_start_time) * 1000
                 self.logger.debug(
                     f"[DOWNLOAD-SERVICE] 开始整理下载结果: task_id={task_id}, 总耗时={download_duration/1000:.2f}s",
-                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                    extra={"log_type": "SYSTEM", "scenario": "data_download"},
                 )
                 logger_download.info(
                     f"[下载-{task_id}] 整理结果...",
-                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                    extra={"log_type": "SYSTEM", "scenario": "data_download"},
                 )
 
                 # 退出场景上下文 - 日志埋点v4.0
@@ -2513,15 +2583,17 @@ class DataCenterService(BaseService, LoggerMixin):
                 status = task.get("status", "finished")
                 self.logger.debug(
                     f"[DOWNLOAD-SERVICE] 任务状态: task_id={task_id}, status={status}",
-                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                    extra={"log_type": "SYSTEM", "scenario": "data_download"},
                 )
                 if status == "error":
                     error_msg = task.get("error_message", "下载失败")
                     self.logger.error(
                         f"[DOWNLOAD-SERVICE] ❌ 下载任务失败: task_id={task_id}, error_msg={error_msg}",
-                        extra={"log_type": "ALERT", "scenario": "data_download"}
+                        extra={"log_type": "ALERT", "scenario": "data_download"},
                     )
-                    self.log_operation_failure("增量数据下载", Exception(error_msg), task_id=task_id)
+                    self.log_operation_failure(
+                        "增量数据下载", Exception(error_msg), task_id=task_id
+                    )
                     # 阶段节点（输出到Terminal）
                     stage_logger.error(
                         f"❌ 数据下载失败: {error_msg}",
@@ -2550,12 +2622,12 @@ class DataCenterService(BaseService, LoggerMixin):
 
                 self.logger.info(
                     f"[DOWNLOAD-SERVICE] 增量数据下载成功: task_id={task_id}, 耗时={download_duration/1000:.2f}s",
-                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                    extra={"log_type": "SYSTEM", "scenario": "data_download"},
                 )
                 self.logger.debug(
                     f"[DOWNLOAD-SERVICE] 下载成功详情: task_id={task_id}, start_date={start_date}, "
                     f"days_diff={days_diff}, 耗时={download_duration/1000:.2f}s",
-                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                    extra={"log_type": "SYSTEM", "scenario": "data_download"},
                 )
 
                 return {
@@ -2571,21 +2643,21 @@ class DataCenterService(BaseService, LoggerMixin):
                 self.logger.error(
                     f"[DOWNLOAD-SERVICE] ❌ 增量数据下载异常: {e}, 耗时={download_duration/1000:.2f}s",
                     exc_info=True,
-                    extra={"log_type": "ALERT", "scenario": "data_download"}
+                    extra={"log_type": "ALERT", "scenario": "data_download"},
                 )
                 self.logger.debug(
                     f"[DOWNLOAD-SERVICE] 异常类型: {type(e).__name__}, 异常详情: {str(e)}",
-                    extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                    extra={"log_type": "SYSTEM", "scenario": "data_download"},
                 )
                 self.log_performance("增量数据下载", download_duration, False, {"error": str(e)})
                 self.log_operation_failure("增量数据下载", e, start_date=start_date)
-                
+
                 # 阶段节点（输出到Terminal）
                 stage_logger.error(
                     f"❌ 数据下载异常: {e}, 耗时={download_duration/1000:.2f}s",
                     extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
                 )
-                
+
                 return {
                     "success": False,
                     "task_id": None,
@@ -2605,27 +2677,30 @@ class DataCenterService(BaseService, LoggerMixin):
         """
         import time
         from contextlib import suppress
-        
+
         start_time = time.time()
-        
+
         # 设置日志上下文
         try:
-            from backend.infrastructure.system_vnpy.unified_log_system import (
+            from backend.infrastructure.system_vnpy.logging_system import (
                 get_logging_hub,
                 ai_log_process,
             )
+
             hub = get_logging_hub()
         except ImportError:
             hub = None
-        
+
         stage_logger = logging.getLogger("task.data_download.stage")
-        
+
         # 使用ai_log_process创建独立日志文件
         try:
-            context_manager = ai_log_process("data_download", {"start_date": start_date}) if hub else suppress()
+            context_manager = (
+                ai_log_process("data_download", {"start_date": start_date}) if hub else suppress()
+            )
         except Exception:
             context_manager = suppress()
-        
+
         with context_manager:
             try:
                 # 阶段节点（输出到Terminal）
@@ -2633,7 +2708,7 @@ class DataCenterService(BaseService, LoggerMixin):
                     f"📍 数据下载开始: 开始日期={start_date}",
                     extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
                 )
-                
+
                 # DEBUG/INFO日志（只写入AI日志文件）
                 self.logger.debug(
                     f"[DATA-DOWNLOAD-SERVICE] 开始启动增量数据下载: start_date={start_date}",
@@ -2643,7 +2718,7 @@ class DataCenterService(BaseService, LoggerMixin):
                     f"[DATA-DOWNLOAD-SERVICE] ℹ️ 开始启动增量数据下载: start_date={start_date}",
                     extra={"log_type": "SYSTEM", "scenario": "data_download"},
                 )
-                
+
                 self._log_operation("启动增量数据下载", start_date=start_date)
 
                 if self.china_stock_engine is None:
@@ -2705,7 +2780,7 @@ class DataCenterService(BaseService, LoggerMixin):
                 # 验证100天限制
                 today = date.today()
                 days_diff = (today - start_dt).days
-                
+
                 self.logger.debug(
                     f"[DATA-DOWNLOAD-SERVICE] 日期验证: today={today}, start_dt={start_dt}, days_diff={days_diff}",
                     extra={"log_type": "SYSTEM", "scenario": "data_download"},
@@ -2810,7 +2885,7 @@ class DataCenterService(BaseService, LoggerMixin):
                         "start_date": start_date,
                         "progress": 50,  # 假设进度
                     }
-                    
+
                     self.logger.debug(
                         f"[DATA-DOWNLOAD-SERVICE] 下载任务已注册: task_id={task_id}",
                         extra={"log_type": "SYSTEM", "scenario": "data_download"},
@@ -2818,7 +2893,7 @@ class DataCenterService(BaseService, LoggerMixin):
 
                     # ✨ 发送数据下载完成事件（支持跨模块通知）
                     self._emit_download_complete_event(task_id, "incremental", start_date)
-                    
+
                     total_elapsed = time.time() - start_time
                     self.logger.debug(
                         f"[DATA-DOWNLOAD-SERVICE] 增量下载已启动: task_id={task_id}, 下载耗时={download_elapsed:.2f}s, 总耗时={total_elapsed:.2f}s",
@@ -2919,7 +2994,7 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.error(
                 "获取下载历史失败",
                 exc_info=True,
-                extra={"log_type": "SYSTEM", "scenario": "data_download"}
+                extra={"log_type": "SYSTEM", "scenario": "data_download"},
             )
             self._log_error("获取下载历史", e, exc_info=True)
             return {"success": False, "history": [], "message": str(e)}
@@ -2956,7 +3031,11 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.error(
                 "添加下载历史失败",
                 exc_info=True,
-                extra={"log_type": "SYSTEM", "scenario": "data_download", "task_id": task.get("task_id")}
+                extra={
+                    "log_type": "SYSTEM",
+                    "scenario": "data_download",
+                    "task_id": task.get("task_id"),
+                },
             )
 
     def get_download_progress(self, task_id: Optional[str] = None) -> Dict[str, Any]:
@@ -3000,7 +3079,7 @@ class DataCenterService(BaseService, LoggerMixin):
                 self.logger.error(
                     "获取实时进度失败",
                     exc_info=True,
-                    extra={"log_type": "SYSTEM", "scenario": "data_download", "task_id": task_id}
+                    extra={"log_type": "SYSTEM", "scenario": "data_download", "task_id": task_id},
                 )
 
         # 旧逻辑：从任务字典获取
@@ -3056,7 +3135,9 @@ class DataCenterService(BaseService, LoggerMixin):
                         "message": "任务已停止",
                     }
                 except Exception as e:
-                    self.logger.warning("⚠️ 调用停止下载失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+                    self.logger.warning(
+                        "⚠️ 调用停止下载失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+                    )
                     return {
                         "success": False,
                         "message": f"停止失败: {str(e)}",
@@ -3071,7 +3152,7 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.error(
                 "停止下载失败",
                 exc_info=True,
-                extra={"log_type": "SYSTEM", "scenario": "data_download", "task_id": task_id}
+                extra={"log_type": "SYSTEM", "scenario": "data_download", "task_id": task_id},
             )
             self._log_error("停止下载", e, exc_info=True, task_id=task_id)
             return {
@@ -3108,7 +3189,9 @@ class DataCenterService(BaseService, LoggerMixin):
                         "message": "任务已暂停",
                     }
                 except Exception as e:
-                    self.logger.warning("⚠️ 调用暂停下载失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+                    self.logger.warning(
+                        "⚠️ 调用暂停下载失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+                    )
                     return {
                         "success": False,
                         "message": f"暂停失败: {str(e)}",
@@ -3123,7 +3206,7 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.error(
                 "暂停下载失败",
                 exc_info=True,
-                extra={"log_type": "SYSTEM", "scenario": "data_download", "task_id": task_id}
+                extra={"log_type": "SYSTEM", "scenario": "data_download", "task_id": task_id},
             )
             self._log_error("暂停下载", e, exc_info=True, task_id=task_id)
             return {
@@ -3159,7 +3242,9 @@ class DataCenterService(BaseService, LoggerMixin):
                         "message": "任务已恢复",
                     }
                 except Exception as e:
-                    self.logger.warning("⚠️ 调用恢复下载失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+                    self.logger.warning(
+                        "⚠️ 调用恢复下载失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+                    )
                     return {
                         "success": False,
                         "message": f"恢复失败: {str(e)}",
@@ -3174,7 +3259,7 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.error(
                 "恢复下载失败",
                 exc_info=True,
-                extra={"log_type": "SYSTEM", "scenario": "data_download", "task_id": task_id}
+                extra={"log_type": "SYSTEM", "scenario": "data_download", "task_id": task_id},
             )
             self._log_error("恢复下载", e, exc_info=True, task_id=task_id)
             return {
@@ -3213,11 +3298,15 @@ class DataCenterService(BaseService, LoggerMixin):
                 return False
 
             # 如果缓存不存在，返回True（容错：假设品种存在）
-            self.logger.warning("品种缓存不存在，无法验证品种 %s", symbol, extra={"log_type": "SYSTEM"})
+            self.logger.warning(
+                "品种缓存不存在，无法验证品种 %s", symbol, extra={"log_type": "SYSTEM"}
+            )
             return True
 
         except Exception as e:
-            self.logger.error("检查品种是否存在失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                "检查品种是否存在失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+            )
             return True  # 容错：出错时假设品种存在
 
     def query_local_data(
@@ -3278,7 +3367,9 @@ class DataCenterService(BaseService, LoggerMixin):
                     }
 
             except Exception as e:
-                self.logger.error("数据查询失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+                self.logger.error(
+                    "数据查询失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+                )
                 return {
                     "success": False,
                     "message": f"查询失败: {str(e)}",
@@ -3289,7 +3380,7 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.error(
                 "查询本地数据失败",
                 exc_info=True,
-                extra={"log_type": "SYSTEM", "scenario": "data_query", "symbol": symbol}
+                extra={"log_type": "SYSTEM", "scenario": "data_query", "symbol": symbol},
             )
             self._log_error("查询本地数据", e, exc_info=True, symbol=symbol)
             return {
@@ -3348,6 +3439,7 @@ class DataCenterService(BaseService, LoggerMixin):
                 if symbol:
                     # 单品种校验 - 使用StatelessValidator的validate方法
                     from backend.infrastructure.data_module_vnpy.data_storage import StorageManager
+
                     storage = StorageManager()
                     df = storage.load_data(symbol, interval)
                     if df is not None and not df.empty:
@@ -3378,19 +3470,20 @@ class DataCenterService(BaseService, LoggerMixin):
                     if not df.empty and len(df) > 0:
                         try:
                             import pandas as pd
+
                             first_idx = df.index[0]
                             last_idx = df.index[-1]
                             # 转换为 date 对象
                             if isinstance(first_idx, pd.Timestamp):
                                 first_date = first_idx.date()
-                            elif hasattr(first_idx, 'date'):
+                            elif hasattr(first_idx, "date"):
                                 first_date = first_idx.date()  # type: ignore
                             else:
                                 first_date = None
 
                             if isinstance(last_idx, pd.Timestamp):
                                 last_date = last_idx.date()
-                            elif hasattr(last_idx, 'date'):
+                            elif hasattr(last_idx, "date"):
                                 last_date = last_idx.date()  # type: ignore
                             else:
                                 last_date = None
@@ -3408,10 +3501,10 @@ class DataCenterService(BaseService, LoggerMixin):
                             all_errors.extend(result.errors)
                             all_warnings.extend(result.warnings)
                             # 从 metrics 中获取缺失日期信息（如果有）
-                            if 'missing_dates' in result.metrics:
-                                missing_dates = result.metrics.get('missing_dates', [])
-                            elif 'missing_count' in result.metrics:
-                                missing_dates = [None] * result.metrics.get('missing_count', 0)
+                            if "missing_dates" in result.metrics:
+                                missing_dates = result.metrics.get("missing_dates", [])
+                            elif "missing_count" in result.metrics:
+                                missing_dates = [None] * result.metrics.get("missing_count", 0)
 
                     errors = all_errors
                     warnings = all_warnings
@@ -3444,23 +3537,25 @@ class DataCenterService(BaseService, LoggerMixin):
                     latest_trading_day = None
                     local_latest_date = None
 
-                    if 'freshness' in validation_result:
-                        freshness_result = validation_result['freshness']
+                    if "freshness" in validation_result:
+                        freshness_result = validation_result["freshness"]
                         if isinstance(freshness_result, ValidationResult):
                             # 从 metrics 中获取新鲜度信息
                             metrics = freshness_result.metrics
-                            gap_days = metrics.get('age_days', -1)
+                            gap_days = metrics.get("age_days", -1)
                             is_up_to_date = gap_days <= 7  # max_age_days = 7
                             if df is not None and not df.empty and len(df) > 0:
                                 try:
                                     import pandas as pd
+
                                     last_idx = df.index[-1]
                                     if isinstance(last_idx, pd.Timestamp):
                                         local_latest_date = last_idx.to_pydatetime()
-                                    elif hasattr(last_idx, 'to_pydatetime'):
+                                    elif hasattr(last_idx, "to_pydatetime"):
                                         local_latest_date = last_idx.to_pydatetime()  # type: ignore
-                                    elif hasattr(last_idx, 'date'):
+                                    elif hasattr(last_idx, "date"):
                                         from datetime import datetime
+
                                         local_latest_date = datetime.combine(last_idx.date(), datetime.min.time())  # type: ignore
                                     else:
                                         local_latest_date = None
@@ -3487,7 +3582,8 @@ class DataCenterService(BaseService, LoggerMixin):
                         ),
                         "local_latest_date": (
                             local_latest_date.strftime("%Y-%m-%d")
-                            if local_latest_date is not None and hasattr(local_latest_date, 'strftime')
+                            if local_latest_date is not None
+                            and hasattr(local_latest_date, "strftime")
                             else None
                         ),
                     }
@@ -3496,7 +3592,13 @@ class DataCenterService(BaseService, LoggerMixin):
                     # 🔧 修复：StatelessValidator 没有 validate_all_data 方法
                     # 使用数据感知器获取质量概览
                     from backend.infrastructure.data_module_vnpy.data_quality import DataSensor
-                    data_sensor = self.china_stock_engine.data_sensor if hasattr(self.china_stock_engine, 'data_sensor') and self.china_stock_engine.data_sensor else None
+
+                    data_sensor = (
+                        self.china_stock_engine.data_sensor
+                        if hasattr(self.china_stock_engine, "data_sensor")
+                        and self.china_stock_engine.data_sensor
+                        else None
+                    )
 
                     if data_sensor:
                         stats = data_sensor.get_stats()
@@ -3523,7 +3625,9 @@ class DataCenterService(BaseService, LoggerMixin):
                     }
 
             except Exception as e:
-                self.logger.error("质量检查失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+                self.logger.error(
+                    "质量检查失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+                )
                 return {
                     "success": False,
                     "message": f"检查失败: {str(e)}",
@@ -3537,7 +3641,12 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.error(
                 "检查数据质量失败",
                 exc_info=True,
-                extra={"log_type": "SYSTEM", "scenario": "data_quality", "symbol": symbol, "interval": interval}
+                extra={
+                    "log_type": "SYSTEM",
+                    "scenario": "data_quality",
+                    "symbol": symbol,
+                    "interval": interval,
+                },
             )
             self._log_error("检查数据质量", e, exc_info=True, symbol=symbol)
             return {
@@ -3582,7 +3691,7 @@ class DataCenterService(BaseService, LoggerMixin):
 
             # 获取DataSensor实例
             engine = get_china_stock_engine()
-            if engine and hasattr(engine, 'data_sensor') and engine.data_sensor:
+            if engine and hasattr(engine, "data_sensor") and engine.data_sensor:
                 data_sensor = engine.data_sensor
             else:
                 # 创建新的DataSensor实例
@@ -3609,9 +3718,15 @@ class DataCenterService(BaseService, LoggerMixin):
             # 🔧 修复：quality_overview 是字典，应该用字典访问
             outdated_symbols = quality_overview.get("outdated_symbols", 0)
             avg_gap_days = quality_overview.get("avg_gap_days", 0)
-            max_gap_days = quality_overview.get("max_gap_days", quality_overview.get("data_lagging_days", 0))
+            max_gap_days = quality_overview.get(
+                "max_gap_days", quality_overview.get("data_lagging_days", 0)
+            )
             base_date = quality_overview.get("base_date")
-            latest_trading_day_str = base_date.strftime("%Y-%m-%d") if base_date and hasattr(base_date, 'strftime') else None
+            latest_trading_day_str = (
+                base_date.strftime("%Y-%m-%d")
+                if base_date and hasattr(base_date, "strftime")
+                else None
+            )
 
             return {
                 "success": True,
@@ -3626,7 +3741,7 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.error(
                 "获取数据更新状态概览失败",
                 exc_info=True,
-                extra={"log_type": "SYSTEM", "scenario": "data_quality"}
+                extra={"log_type": "SYSTEM", "scenario": "data_quality"},
             )
             self._log_error("获取数据更新状态概览", e, exc_info=True)
             return {
@@ -3735,7 +3850,9 @@ class DataCenterService(BaseService, LoggerMixin):
             }
 
         except Exception as e:
-            self.logger.error("获取数据质量概览失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                "获取数据质量概览失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+            )
             return {
                 "success": False,
                 "message": f"获取失败: {str(e)}",
@@ -3758,21 +3875,21 @@ class DataCenterService(BaseService, LoggerMixin):
         try:
             self.logger.debug(
                 f"[SCAN-SERVICE] 开始触发数据质量扫描: force_refresh={force_refresh}",
-                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
             )
             self.logger.info(
                 f"[SCAN-SERVICE] 手动触发数据质量扫描（后台执行）: force_refresh={force_refresh}",
-                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
             )
-            
+
             if not self.china_stock_engine:
                 self.logger.debug(
                     "[SCAN-SERVICE] ChinaStockEngine不可用",
-                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                 )
                 self.logger.warning(
                     "[SCAN-SERVICE] ⚠️ ChinaStockEngine不可用，无法触发扫描",
-                    extra={"log_type": "ALERT", "scenario": "manual_data_scan"}
+                    extra={"log_type": "ALERT", "scenario": "manual_data_scan"},
                 )
                 return False
 
@@ -3781,7 +3898,7 @@ class DataCenterService(BaseService, LoggerMixin):
 
             self.logger.debug(
                 "[SCAN-SERVICE] 创建后台线程执行扫描...",
-                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
             )
             thread = threading.Thread(
                 target=self._do_quality_scan, args=(force_refresh,), daemon=True
@@ -3789,28 +3906,28 @@ class DataCenterService(BaseService, LoggerMixin):
             thread.start()
             self.logger.debug(
                 f"[SCAN-SERVICE] 后台线程已启动: thread_id={thread.ident}",
-                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
             )
             self.logger.info(
                 "[SCAN-SERVICE] ✅ 数据质量扫描已触发（后台执行）",
-                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
             )
             return True
 
         except Exception as e:
             self.logger.debug(
                 f"[SCAN-SERVICE] 触发数据质量扫描异常详情: {type(e).__name__}: {str(e)}",
-                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
             )
             logger_alert.error(
                 f"[SCAN-SERVICE] ❌ 触发数据质量扫描失败: {e}",
                 exc_info=True,
-                extra={"log_type": "ALERT", "scenario": "manual_data_scan"}
+                extra={"log_type": "ALERT", "scenario": "manual_data_scan"},
             )
             self.logger.critical(
                 f"[SCAN-SERVICE] 🔥 触发数据质量扫描严重失败，可能影响数据质量监控: {e}",
                 exc_info=True,
-                extra={"log_type": "ALERT", "scenario": "manual_data_scan"}
+                extra={"log_type": "ALERT", "scenario": "manual_data_scan"},
             )
             return False
 
@@ -3822,30 +3939,35 @@ class DataCenterService(BaseService, LoggerMixin):
         """
         import time
         from contextlib import suppress
-        
+
         start_time = time.time()
-        
+
         # 设置日志上下文
         try:
-            from backend.infrastructure.system_vnpy.unified_log_system import (
+            from backend.infrastructure.system_vnpy.logging_system import (
                 get_logging_hub,
                 ai_log_process,
             )
+
             hub = get_logging_hub()
         except ImportError:
             hub = None
-        
+
         stage_logger = logging.getLogger("task.manual_data_scan.stage")
-        
+
         # 使用ai_log_process创建独立日志文件
         try:
-            context_manager = ai_log_process(
-                "manual_data_scan",
-                {"force_refresh": force_refresh, "scan_type": "quality_scan"}
-            ) if hub else suppress()
+            context_manager = (
+                ai_log_process(
+                    "manual_data_scan",
+                    {"force_refresh": force_refresh, "scan_type": "quality_scan"},
+                )
+                if hub
+                else suppress()
+            )
         except Exception:
             context_manager = suppress()
-        
+
         with context_manager:
             try:
                 # 阶段节点（输出到Terminal）
@@ -3853,26 +3975,26 @@ class DataCenterService(BaseService, LoggerMixin):
                     f"📍 手动数据扫描开始: force_refresh={force_refresh}",
                     extra={"log_type": "STAGE_NODE", "scenario": "manual_data_scan"},
                 )
-                
+
                 # DEBUG日志（只写入AI日志文件）
                 self.logger.debug(
                     "[SCAN-SERVICE] 开始手动数据扫描",
-                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                 )
                 self.logger.info(
                     f"[SCAN-SERVICE] 手动数据扫描任务开始: force_refresh={force_refresh}",
-                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                 )
-            
+
                 # 确保 china_stock_engine 可用
                 if not self.china_stock_engine:
                     self.logger.error(
                         "[SCAN-SERVICE] ❌ ChinaStockEngine 不可用，无法执行数据质量扫描",
-                        extra={"log_type": "ALERT", "scenario": "manual_data_scan"}
+                        extra={"log_type": "ALERT", "scenario": "manual_data_scan"},
                     )
                     self.logger.debug(
                         "[SCAN-SERVICE] ChinaStockEngine状态: None",
-                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                     )
                     stage_logger.error(
                         "❌ ChinaStockEngine不可用，无法执行数据质量扫描",
@@ -3887,7 +4009,7 @@ class DataCenterService(BaseService, LoggerMixin):
                 # 数据质量扫描 - 日志埋点v4.0
                 self.logger.debug(
                     "[SCAN-SERVICE] 调用china_stock_engine.trigger_data_quality_scan方法...",
-                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                 )
                 scan_start_time = time.time()
                 overview = self.china_stock_engine.trigger_data_quality_scan(
@@ -3897,36 +4019,36 @@ class DataCenterService(BaseService, LoggerMixin):
                 total_elapsed = time.time() - start_time
                 self.logger.debug(
                     f"[SCAN-SERVICE] trigger_data_quality_scan方法调用完成: 耗时={scan_elapsed:.2f}s",
-                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                 )
-            
+
                 if overview:
                     # 推送事件
                     self.logger.debug(
                         "[SCAN-SERVICE] 开始推送质量概览事件...",
-                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                     )
                     event_start_time = time.time()
                     self.china_stock_engine._push_quality_overview_event(overview)
                     event_elapsed = time.time() - event_start_time
                     self.logger.debug(
                         f"[SCAN-SERVICE] 质量概览事件推送完成: 耗时={event_elapsed:.2f}s",
-                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                     )
-                    
+
                     quality_score = overview.quality_score
                     self.logger.info(
                         f"[SCAN-SERVICE] ✓ 数据质量扫描完成: 评分={quality_score:.2f}, "
                         f"扫描耗时={scan_elapsed:.2f}s, 总耗时={total_elapsed:.2f}s",
-                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                     )
                     self.logger.debug(
                         f"[SCAN-SERVICE] 扫描结果详情: quality_score={quality_score}, "
                         f"scan_elapsed={scan_elapsed:.2f}s, event_elapsed={event_elapsed:.2f}s, "
                         f"total_elapsed={total_elapsed:.2f}s",
-                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                     )
-                    
+
                     # 阶段节点（输出到Terminal）
                     stage_logger.info(
                         f"✅ 手动数据扫描完成: 评分={quality_score:.2f}, 耗时={total_elapsed:.2f}s",
@@ -3937,11 +4059,11 @@ class DataCenterService(BaseService, LoggerMixin):
                     if quality_score < 60:
                         logger_alert.warning(
                             f"[SCAN-SERVICE] ⚠️ 数据质量告警: 评分过低={quality_score:.2f}, 建议检查数据完整性",
-                            extra={"log_type": "ALERT", "scenario": "manual_data_scan"}
+                            extra={"log_type": "ALERT", "scenario": "manual_data_scan"},
                         )
                         self.logger.debug(
                             f"[SCAN-SERVICE] 质量评分过低: quality_score={quality_score:.2f} < 60",
-                            extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                            extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                         )
                         stage_logger.warning(
                             f"⚠️ 数据质量评分过低: {quality_score:.2f} < 60",
@@ -3950,11 +4072,11 @@ class DataCenterService(BaseService, LoggerMixin):
                 else:
                     self.logger.warning(
                         f"[SCAN-SERVICE] ⚠️ 数据质量扫描未返回结果, 耗时={total_elapsed:.2f}s",
-                        extra={"log_type": "ALERT", "scenario": "manual_data_scan"}
+                        extra={"log_type": "ALERT", "scenario": "manual_data_scan"},
                     )
                     self.logger.debug(
                         "[SCAN-SERVICE] 扫描结果: overview=None",
-                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                     )
                     stage_logger.warning(
                         f"⚠️ 数据质量扫描未返回结果, 耗时={total_elapsed:.2f}s",
@@ -3966,11 +4088,11 @@ class DataCenterService(BaseService, LoggerMixin):
                 self.logger.error(
                     f"[SCAN-SERVICE] ❌ 数据质量扫描失败: {e}, 耗时={total_elapsed:.2f}s",
                     exc_info=True,
-                    extra={"log_type": "ALERT", "scenario": "manual_data_scan"}
+                    extra={"log_type": "ALERT", "scenario": "manual_data_scan"},
                 )
                 self.logger.debug(
                     f"[SCAN-SERVICE] 异常类型: {type(e).__name__}, 异常详情: {str(e)}",
-                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                 )
                 stage_logger.error(
                     f"❌ 数据质量扫描失败: {e}, 耗时={total_elapsed:.2f}s",
@@ -4029,7 +4151,9 @@ class DataCenterService(BaseService, LoggerMixin):
                     }
 
             except Exception as e:
-                self.logger.error("连接%s失败: %s", datafeed_type, e, exc_info=True, extra={"log_type": "SYSTEM"})
+                self.logger.error(
+                    "连接%s失败: %s", datafeed_type, e, exc_info=True, extra={"log_type": "SYSTEM"}
+                )
                 return {
                     "success": False,
                     "message": f"连接失败: {str(e)}",
@@ -4073,9 +4197,15 @@ class DataCenterService(BaseService, LoggerMixin):
                     self.logger.info("已调用%s的close方法", datafeed_type)
                 except Exception as e:
                     self.logger.warning(
-                        "关闭%s失败: %s", datafeed_type, e,
+                        "关闭%s失败: %s",
+                        datafeed_type,
+                        e,
                         exc_info=True,
-                        extra={"log_type": "SYSTEM", "scenario": "datafeed_management", "datafeed_type": datafeed_type}
+                        extra={
+                            "log_type": "SYSTEM",
+                            "scenario": "datafeed_management",
+                            "datafeed_type": datafeed_type,
+                        },
                     )
 
             # 清除引用
@@ -4098,7 +4228,11 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.error(
                 "断开数据源失败",
                 exc_info=True,
-                extra={"log_type": "SYSTEM", "scenario": "datafeed_management", "datafeed_type": datafeed_type}
+                extra={
+                    "log_type": "SYSTEM",
+                    "scenario": "datafeed_management",
+                    "datafeed_type": datafeed_type,
+                },
             )
             self._log_error("断开数据源", e, exc_info=True, type=datafeed_type)
             return {
@@ -4164,7 +4298,7 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.error(
                 "启动实时推送失败",
                 exc_info=True,
-                extra={"log_type": "SYSTEM", "scenario": "realtime_push"}
+                extra={"log_type": "SYSTEM", "scenario": "realtime_push"},
             )
             self._log_error("启动实时推送", e, exc_info=True)
             return {
@@ -4198,7 +4332,7 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.error(
                 "停止实时推送失败",
                 exc_info=True,
-                extra={"log_type": "SYSTEM", "scenario": "realtime_push"}
+                extra={"log_type": "SYSTEM", "scenario": "realtime_push"},
             )
             self._log_error("停止实时推送", e, exc_info=True)
             return {
@@ -4275,7 +4409,9 @@ class DataCenterService(BaseService, LoggerMixin):
                     "message": "vnpy_datarecorder包未安装",
                 }
             except Exception as e:
-                self.logger.error("启动录制失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+                self.logger.error(
+                    "启动录制失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+                )
                 return {
                     "success": False,
                     "message": f"启动失败: {str(e)}",
@@ -4285,7 +4421,7 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.error(
                 "启动数据录制失败",
                 exc_info=True,
-                extra={"log_type": "SYSTEM", "scenario": "data_recording"}
+                extra={"log_type": "SYSTEM", "scenario": "data_recording"},
             )
             self._log_error("启动数据录制", e, exc_info=True)
             return {
@@ -4324,7 +4460,7 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.error(
                 "停止数据录制失败",
                 exc_info=True,
-                extra={"log_type": "SYSTEM", "scenario": "data_recording"}
+                extra={"log_type": "SYSTEM", "scenario": "data_recording"},
             )
             self._log_error("停止数据录制", e, exc_info=True)
             return {
@@ -4426,7 +4562,9 @@ class DataCenterService(BaseService, LoggerMixin):
                 self.recorder_engine = self.main_engine.add_app(DataRecorderApp)
                 self.logger.info("✅ DataRecorder引擎已创建")
             except Exception as e:
-                self.logger.error("创建DataRecorder引擎失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+                self.logger.error(
+                    "创建DataRecorder引擎失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+                )
                 return {
                     "success": False,
                     "message": f"创建录制引擎失败: {str(e)}",
@@ -4447,7 +4585,9 @@ class DataCenterService(BaseService, LoggerMixin):
                         # 注意：实际订阅需要网关连接后才能进行
                         pass
                     except Exception as e:
-                        self.logger.warning("订阅品种 %s 失败: %s", symbol, e, extra={"log_type": "SYSTEM"})
+                        self.logger.warning(
+                            "订阅品种 %s 失败: %s", symbol, e, extra={"log_type": "SYSTEM"}
+                        )
 
             self.logger.info(
                 "数据录制已启动: Tick=%s, Bar=%s, 品种数=%d",
@@ -4466,7 +4606,7 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.error(
                 "启动实时数据录制失败",
                 exc_info=True,
-                extra={"log_type": "SYSTEM", "scenario": "realtime_data_recording"}
+                extra={"log_type": "SYSTEM", "scenario": "realtime_data_recording"},
             )
             self._log_error("启动数据录制", e, exc_info=True)
             return {
@@ -4499,7 +4639,9 @@ class DataCenterService(BaseService, LoggerMixin):
                 }
 
             except Exception as e:
-                self.logger.error("停止录制失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+                self.logger.error(
+                    "停止录制失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+                )
                 return {
                     "success": False,
                     "message": f"停止失败: {str(e)}",
@@ -4509,7 +4651,7 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.error(
                 "停止实时数据录制失败",
                 exc_info=True,
-                extra={"log_type": "SYSTEM", "scenario": "realtime_data_recording"}
+                extra={"log_type": "SYSTEM", "scenario": "realtime_data_recording"},
             )
             self._log_error("停止数据录制", e, exc_info=True)
             return {
@@ -4550,7 +4692,7 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.error(
                 "获取录制状态失败",
                 exc_info=True,
-                extra={"log_type": "SYSTEM", "scenario": "data_recording"}
+                extra={"log_type": "SYSTEM", "scenario": "data_recording"},
             )
             self._log_error("获取录制状态", e, exc_info=True)
             return {
@@ -4608,9 +4750,15 @@ class DataCenterService(BaseService, LoggerMixin):
 
         except Exception as e:
             self.logger.warning(
-                "获取录制数据失败: %s", e,
+                "获取录制数据失败: %s",
+                e,
                 exc_info=True,
-                extra={"log_type": "SYSTEM", "scenario": "data_recording", "symbol": symbol, "date": date}
+                extra={
+                    "log_type": "SYSTEM",
+                    "scenario": "data_recording",
+                    "symbol": symbol,
+                    "date": date,
+                },
             )
             return None
 
@@ -4663,7 +4811,9 @@ class DataCenterService(BaseService, LoggerMixin):
 
             # 使用storage_manager保存数据
             if not self.china_stock_engine:
-                self.logger.warning("ChinaStockEngine不可用，无法同步录制数据", extra={"log_type": "SYSTEM"})
+                self.logger.warning(
+                    "ChinaStockEngine不可用，无法同步录制数据", extra={"log_type": "SYSTEM"}
+                )
                 return {
                     "success": False,
                     "message": "ChinaStockEngine不可用",
@@ -4699,9 +4849,15 @@ class DataCenterService(BaseService, LoggerMixin):
                 except Exception as e:
                     failed_count += 1
                     self.logger.warning(
-                        "同步文件 %s 失败: %s", file_path, e,
+                        "同步文件 %s 失败: %s",
+                        file_path,
+                        e,
                         exc_info=True,
-                        extra={"log_type": "SYSTEM", "scenario": "data_recording", "file_path": str(file_path)}
+                        extra={
+                            "log_type": "SYSTEM",
+                            "scenario": "data_recording",
+                            "file_path": str(file_path),
+                        },
                     )
 
             message = f"已同步 {synced_count} 个品种的录制数据"
@@ -4721,7 +4877,7 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.error(
                 "同步录制数据失败",
                 exc_info=True,
-                extra={"log_type": "SYSTEM", "scenario": "data_recording"}
+                extra={"log_type": "SYSTEM", "scenario": "data_recording"},
             )
             self._log_error("同步录制数据", e, exc_info=True)
             return {
@@ -4801,9 +4957,15 @@ class DataCenterService(BaseService, LoggerMixin):
                     self.logger.debug("跳过非日期目录: %s", date_dir.name)
                 except Exception as e:
                     self.logger.warning(
-                        "处理录制数据目录 %s 失败: %s", date_dir, e,
+                        "处理录制数据目录 %s 失败: %s",
+                        date_dir,
+                        e,
                         exc_info=True,
-                        extra={"log_type": "SYSTEM", "scenario": "data_recording", "date_dir": str(date_dir)}
+                        extra={
+                            "log_type": "SYSTEM",
+                            "scenario": "data_recording",
+                            "date_dir": str(date_dir),
+                        },
                     )
 
             message = f"已清理 {deleted_dirs} 个过期录制目录"
@@ -4828,7 +4990,7 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.error(
                 "清理录制数据失败",
                 exc_info=True,
-                extra={"log_type": "SYSTEM", "scenario": "data_recording"}
+                extra={"log_type": "SYSTEM", "scenario": "data_recording"},
             )
             self._log_error("清理录制数据", e, exc_info=True)
             return {
@@ -4872,9 +5034,15 @@ class DataCenterService(BaseService, LoggerMixin):
 
         except Exception as e:
             self.logger.warning(
-                "发送下载完成事件失败: %s", e,
+                "发送下载完成事件失败: %s",
+                e,
                 exc_info=True,
-                extra={"log_type": "SYSTEM", "scenario": "data_download", "task_id": task_id, "download_type": download_type}
+                extra={
+                    "log_type": "SYSTEM",
+                    "scenario": "data_download",
+                    "task_id": task_id,
+                    "download_type": download_type,
+                },
             )
 
     def _auto_start_recording_on_push(self) -> Dict[str, Any]:
@@ -4904,7 +5072,9 @@ class DataCenterService(BaseService, LoggerMixin):
             return result
 
         except Exception as e:
-            self.logger.error("自动启动录制失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                "自动启动录制失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+            )
             return {
                 "success": False,
                 "message": f"自动启动失败: {str(e)}",
@@ -4971,9 +5141,15 @@ class DataCenterService(BaseService, LoggerMixin):
 
                 except Exception as e:
                     self.logger.warning(
-                        "处理旧缓存目录 %s 失败: %s", date_dir, e,
+                        "处理旧缓存目录 %s 失败: %s",
+                        date_dir,
+                        e,
                         exc_info=True,
-                        extra={"log_type": "SYSTEM", "scenario": "cache_cleanup", "date_dir": str(date_dir)}
+                        extra={
+                            "log_type": "SYSTEM",
+                            "scenario": "cache_cleanup",
+                            "date_dir": str(date_dir),
+                        },
                     )
 
             freed_mb = deleted_size / 1024 / 1024
@@ -4993,7 +5169,9 @@ class DataCenterService(BaseService, LoggerMixin):
             }
 
         except Exception as e:
-            self.logger.error("登录时缓存清理失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                "登录时缓存清理失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+            )
             return {
                 "success": False,
                 "message": f"清理失败: {str(e)}",
@@ -5056,7 +5234,9 @@ class DataCenterService(BaseService, LoggerMixin):
                 # 向后兼容：PollingGateway别名
                 PollingGateway = TdxDataSource
             except ImportError as e:
-                self.logger.error("导入TdxDataSource失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+                self.logger.error(
+                    "导入TdxDataSource失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+                )
                 return {
                     "success": False,
                     "message": f"导入数据源失败: {str(e)}",
@@ -5074,6 +5254,7 @@ class DataCenterService(BaseService, LoggerMixin):
             gateway_name = "POLLING"
             # TdxDataSource 构造函数: __init__(event_engine, config_manager)
             from backend.infrastructure.data_module_vnpy import ConfigManager
+
             config_manager = ConfigManager.get_instance()
             self.polling_gateway = PollingGateway(event_engine, config_manager)
 
@@ -5112,7 +5293,11 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.error(
                 "启动轮询网关失败",
                 exc_info=True,
-                extra={"log_type": "SYSTEM", "scenario": "gateway_management", "gateway_type": "polling"}
+                extra={
+                    "log_type": "SYSTEM",
+                    "scenario": "gateway_management",
+                    "gateway_type": "polling",
+                },
             )
             self._log_error("启动轮询网关", e, exc_info=True)
             # 清理
@@ -5144,9 +5329,14 @@ class DataCenterService(BaseService, LoggerMixin):
                         self.logger.info("✅ 数据录制已停止")
                 except Exception as e:
                     self.logger.warning(
-                        "停止录制引擎失败: %s", e,
+                        "停止录制引擎失败: %s",
+                        e,
                         exc_info=True,
-                        extra={"log_type": "SYSTEM", "scenario": "data_recording", "gateway_type": "polling"}
+                        extra={
+                            "log_type": "SYSTEM",
+                            "scenario": "data_recording",
+                            "gateway_type": "polling",
+                        },
                     )
 
             # 关闭网关
@@ -5170,7 +5360,11 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.error(
                 "停止轮询网关失败",
                 exc_info=True,
-                extra={"log_type": "SYSTEM", "scenario": "gateway_management", "gateway_type": "polling"}
+                extra={
+                    "log_type": "SYSTEM",
+                    "scenario": "gateway_management",
+                    "gateway_type": "polling",
+                },
             )
             self._log_error("停止轮询网关", e, exc_info=True)
             # 强制清理状态，避免状态不一致
@@ -5213,7 +5407,11 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.error(
                 "获取轮询网关状态失败",
                 exc_info=True,
-                extra={"log_type": "SYSTEM", "scenario": "gateway_management", "gateway_type": "polling"}
+                extra={
+                    "log_type": "SYSTEM",
+                    "scenario": "gateway_management",
+                    "gateway_type": "polling",
+                },
             )
             self._log_error("获取轮询网关状态", e, exc_info=True)
             return {
@@ -5252,7 +5450,7 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.error(
                 "获取服务器池配置失败",
                 exc_info=True,
-                extra={"log_type": "SYSTEM", "scenario": "gateway_management"}
+                extra={"log_type": "SYSTEM", "scenario": "gateway_management"},
             )
             self._log_error("获取服务器池配置", e, exc_info=True)
             return {"success": False, "message": f"获取失败: {str(e)}"}
@@ -5287,7 +5485,11 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.error(
                 "设置服务器池大小失败",
                 exc_info=True,
-                extra={"log_type": "SYSTEM", "scenario": "gateway_management", "server_pool_size": size}
+                extra={
+                    "log_type": "SYSTEM",
+                    "scenario": "gateway_management",
+                    "server_pool_size": size,
+                },
             )
             self._log_error("设置服务器池大小", e, exc_info=True)
             return {"success": False, "message": f"设置失败: {str(e)}"}
@@ -5355,7 +5557,9 @@ class DataCenterService(BaseService, LoggerMixin):
                 # 向后兼容：VirtualGateway别名
                 VirtualGateway = VirtualDataSource
             except ImportError as e:
-                self.logger.error("导入VirtualDataSource失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+                self.logger.error(
+                    "导入VirtualDataSource失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+                )
                 return {
                     "success": False,
                     "message": f"导入数据源失败: {str(e)}",
@@ -5373,6 +5577,7 @@ class DataCenterService(BaseService, LoggerMixin):
             gateway_name = "VIRTUAL"
             # VirtualDataSource 构造函数: __init__(event_engine, storage_manager)
             from backend.infrastructure.data_module_vnpy import StorageManager
+
             storage_manager = StorageManager()
             self.virtual_gateway = VirtualGateway(event_engine, storage_manager)
 
@@ -5408,7 +5613,11 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.error(
                 "启动虚拟网关失败",
                 exc_info=True,
-                extra={"log_type": "SYSTEM", "scenario": "gateway_management", "gateway_type": "virtual"}
+                extra={
+                    "log_type": "SYSTEM",
+                    "scenario": "gateway_management",
+                    "gateway_type": "virtual",
+                },
             )
             self._log_error("启动虚拟网关", e, exc_info=True)
             # 清理
@@ -5440,9 +5649,14 @@ class DataCenterService(BaseService, LoggerMixin):
                         self.logger.info("✅ 数据录制已停止")
                 except Exception as e:
                     self.logger.warning(
-                        "停止录制引擎失败: %s", e,
+                        "停止录制引擎失败: %s",
+                        e,
                         exc_info=True,
-                        extra={"log_type": "SYSTEM", "scenario": "data_recording", "gateway_type": "virtual"}
+                        extra={
+                            "log_type": "SYSTEM",
+                            "scenario": "data_recording",
+                            "gateway_type": "virtual",
+                        },
                     )
 
             # 关闭网关
@@ -5466,7 +5680,11 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.error(
                 "停止虚拟网关失败",
                 exc_info=True,
-                extra={"log_type": "SYSTEM", "scenario": "gateway_management", "gateway_type": "virtual"}
+                extra={
+                    "log_type": "SYSTEM",
+                    "scenario": "gateway_management",
+                    "gateway_type": "virtual",
+                },
             )
             self._log_error("停止虚拟网关", e, exc_info=True)
             # 强制清理状态，避免状态不一致
@@ -5512,7 +5730,11 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.error(
                 "获取虚拟网关状态失败",
                 exc_info=True,
-                extra={"log_type": "SYSTEM", "scenario": "gateway_management", "gateway_type": "virtual"}
+                extra={
+                    "log_type": "SYSTEM",
+                    "scenario": "gateway_management",
+                    "gateway_type": "virtual",
+                },
             )
             self._log_error("获取虚拟网关状态", e, exc_info=True)
             return {
@@ -5532,28 +5754,29 @@ class DataCenterService(BaseService, LoggerMixin):
         import time
         import logging
         from contextlib import suppress
-        
+
         start_time = time.time()
-        
+
         # 设置日志上下文
         try:
-            from backend.infrastructure.system_vnpy.unified_log_system import (
+            from backend.infrastructure.system_vnpy.logging_system import (
                 get_logging_hub,
                 ai_log_process,
             )
+
             hub = get_logging_hub()
         except ImportError:
             hub = None
-        
+
         stage_logger = logging.getLogger("task.manual_data_scan.stage")
-        
+
         # 使用ai_log_process创建独立日志文件
         # 注意：场景信息通过日志记录的extra参数传递，无需全局设置
         try:
             context_manager = ai_log_process("manual_data_scan") if hub else suppress()
         except Exception:
             context_manager = suppress()
-        
+
         with context_manager:
             try:
                 # 阶段节点（输出到Terminal）
@@ -5561,21 +5784,21 @@ class DataCenterService(BaseService, LoggerMixin):
                     "📍 手动数据扫描开始",
                     extra={"log_type": "STAGE_NODE", "scenario": "manual_data_scan"},
                 )
-                
+
                 # DEBUG日志（只写入AI日志文件）
                 self.logger.debug(
                     "[DATA-SCAN] 开始手动数据扫描",
-                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                 )
-                
+
                 if not self.china_stock_engine:
                     self.logger.error(
                         "[DATA-SCAN] ❌ ChinaStockEngine不可用",
-                        extra={"log_type": "ALERT", "scenario": "manual_data_scan"}
+                        extra={"log_type": "ALERT", "scenario": "manual_data_scan"},
                     )
                     self.logger.debug(
                         "[DATA-SCAN] ChinaStockEngine状态检查: None",
-                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                     )
                     stage_logger.error(
                         "❌ 手动数据扫描失败: ChinaStockEngine不可用",
@@ -5589,76 +5812,80 @@ class DataCenterService(BaseService, LoggerMixin):
                 # 获取参考品种列表
                 self.logger.debug(
                     "[DATA-SCAN] 开始获取参考品种列表",
-                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                 )
                 symbol_list_start_time = time.time()
                 reference_symbols = self.china_stock_engine.symbol_loader.extract_all_codes()
                 symbol_list_elapsed = time.time() - symbol_list_start_time
-                
+
                 self.logger.debug(
                     f"[DATA-SCAN] 品种列表获取完成: 品种数={len(reference_symbols)}, 耗时={symbol_list_elapsed:.2f}s",
-                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                 )
                 self.logger.info(
                     f"[DATA-SCAN] 开始扫描: 品种数={len(reference_symbols)}, 周期=[1d, 5m, 1m]",
-                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                 )
 
                 # 🔧 修复：调用质量扫描
                 self.logger.debug(
                     "[DATA-SCAN] 开始获取DataSensor实例",
-                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                 )
                 data_sensor = self.china_stock_engine.data_sensor
                 if not data_sensor:
                     self.logger.debug(
                         "[DATA-SCAN] DataSensor不可用，创建新实例",
-                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                     )
                     from backend.infrastructure.data_module_vnpy.data_quality import DataSensor
+
                     data_sensor = DataSensor()
                     self.logger.debug(
                         "[DATA-SCAN] DataSensor实例创建完成",
-                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                     )
                 else:
                     self.logger.debug(
                         "[DATA-SCAN] DataSensor实例已存在",
-                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                        extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                     )
 
                 # 注册进度回调
                 scan_progress_reports = []
+
                 def progress_callback(completed: int, total: int, message: str = ""):
                     """进度回调函数"""
                     try:
-                        scan_progress_reports.append({
-                            "completed": completed,
-                            "total": total,
-                            "message": message,
-                            "timestamp": time.time()
-                        })
+                        scan_progress_reports.append(
+                            {
+                                "completed": completed,
+                                "total": total,
+                                "message": message,
+                                "timestamp": time.time(),
+                            }
+                        )
                         self.logger.debug(
                             f"[DATA-SCAN] 扫描进度: {completed}/{total} ({completed/total*100:.1f}%) - {message}",
-                            extra={"log_type": "PROGRESS", "scenario": "manual_data_scan"}
+                            extra={"log_type": "PROGRESS", "scenario": "manual_data_scan"},
                         )
                     except Exception as e:
                         self.logger.warning(
                             f"[DATA-SCAN] ⚠️ 进度回调执行失败: {e}",
                             exc_info=True,
-                            extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                            extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                         )
-                
+
                 data_sensor.register_progress_callback(progress_callback)
                 self.logger.debug(
                     "[DATA-SCAN] 进度回调已注册",
-                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                 )
 
                 # 执行质量扫描
                 self.logger.debug(
                     f"[DATA-SCAN] 开始执行质量扫描: 品种数={len(reference_symbols)}, 周期=[1d, 5m, 1m], 异步=True",
-                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                 )
                 scan_start_time = time.time()
                 overview = data_sensor.scan_quality(
@@ -5669,13 +5896,13 @@ class DataCenterService(BaseService, LoggerMixin):
                 scan_elapsed = time.time() - scan_start_time
                 self.logger.debug(
                     f"[DATA-SCAN] 质量扫描完成: 耗时={scan_elapsed:.2f}s, 结果数={len(overview)}",
-                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                 )
 
                 # overview是字典，需要统计
                 self.logger.debug(
                     "[DATA-SCAN] 开始统计扫描结果",
-                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                 )
                 stat_start_time = time.time()
                 total_symbols = len(reference_symbols)
@@ -5683,20 +5910,20 @@ class DataCenterService(BaseService, LoggerMixin):
                 error_symbols = sum(1 for r in overview.values() if r.quality_level.value >= 4)
                 warning_symbols = sum(1 for r in overview.values() if r.quality_level.value == 3)
                 stat_elapsed = time.time() - stat_start_time
-                
+
                 self.logger.debug(
                     f"[DATA-SCAN] 结果统计完成: 总品种={total_symbols}, 缺失={missing_symbols}, "
                     f"错误={error_symbols}, 警告={warning_symbols}, 耗时={stat_elapsed:.3f}s",
-                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                 )
-                
+
                 total_elapsed = time.time() - start_time
                 self.logger.info(
                     f"[DATA-SCAN] 扫描完成: 总品种={total_symbols}, 缺失={missing_symbols}, "
                     f"错误={error_symbols}, 警告={warning_symbols}, 总耗时={total_elapsed:.2f}s",
-                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                 )
-                
+
                 # 阶段节点（输出到Terminal）
                 stage_logger.info(
                     f"✅ 手动数据扫描完成: 缺失={missing_symbols}, 错误={error_symbols}, "
@@ -5720,19 +5947,19 @@ class DataCenterService(BaseService, LoggerMixin):
                 self.logger.error(
                     f"[DATA-SCAN] ❌ 扫描错误缺失数据失败: {e}, 耗时={total_elapsed:.2f}s",
                     exc_info=True,
-                    extra={"log_type": "ALERT", "scenario": "manual_data_scan"}
+                    extra={"log_type": "ALERT", "scenario": "manual_data_scan"},
                 )
                 self.logger.debug(
                     f"[DATA-SCAN] 异常详情: 异常类型={type(e).__name__}, 异常消息={str(e)}",
-                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"}
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                 )
-                
+
                 # 阶段节点（输出到Terminal）
                 stage_logger.error(
                     f"❌ 手动数据扫描异常: {e}, 耗时={total_elapsed:.2f}s",
                     extra={"log_type": "STAGE_NODE", "scenario": "manual_data_scan"},
                 )
-                
+
                 return {
                     "success": False,
                     "message": f"扫描失败: {str(e)}",
@@ -5777,6 +6004,7 @@ class DataCenterService(BaseService, LoggerMixin):
                     ChinaStockEngine,
                 )
                 from vnpy.event import Event
+
                 EVENT_DATA_METRICS_UPDATED = ChinaStockEngine.EVENT_DATA_METRICS_UPDATED
                 from datetime import datetime
 
@@ -5802,11 +6030,10 @@ class DataCenterService(BaseService, LoggerMixin):
             self.logger.error(
                 "删除失效品种失败",
                 exc_info=True,
-                extra={"log_type": "SYSTEM", "scenario": "symbol_management"}
+                extra={"log_type": "SYSTEM", "scenario": "symbol_management"},
             )
             self._log_error("删除失效品种", e, exc_info=True)
             return {
                 "success": False,
                 "message": f"删除失败: {str(e)}",
             }
-

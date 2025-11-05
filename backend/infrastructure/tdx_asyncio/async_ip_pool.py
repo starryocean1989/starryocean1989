@@ -384,17 +384,17 @@ async def example_usage():
     """
     使用示例
     """
-    from .constants import HQ_HOSTS_ALL
+    from .constants import BROKER_SERVERS_7709
 
     # 1. 创建随机IP池（负载均衡）
-    # 注意：HQ_HOSTS_ALL 是 (名称, IP, 端口) 格式，需要转换为 (IP, 端口)
-    random_pool = AsyncRandomIPPool([(ip, port) for _, ip, port in HQ_HOSTS_ALL[:10]])
+    # ✅ BROKER_SERVERS_7709 是 (名称, IP, 端口, 最大连接数) 格式，直接转换为 (IP, 端口)
+    random_pool = AsyncRandomIPPool([(ip, port) for _, ip, port, _ in BROKER_SERVERS_7709[:10]])
     random_servers = await random_pool.get_servers()
     print(f"随机排序的前3个服务器: {random_servers[:3]}")
 
     # 2. 创建智能IP池（动态测速）
     smart_pool = AsyncSmartIPPool(
-        servers=[(ip, port) for _, ip, port in HQ_HOSTS_ALL[:20]],
+        servers=[(ip, port) for _, ip, port, _ in BROKER_SERVERS_7709[:20]],
         update_interval=300.0,
         test_timeout=2.0,  # 5分钟更新
     )

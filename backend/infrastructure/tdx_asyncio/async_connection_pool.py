@@ -1,22 +1,22 @@
 # -*- coding: utf-8 -*-
 """
-异步连接池管理器 v2.0
+异步连接池管理器 v2.1
 
 核心特性：
-1. 单TCP地址=单连接原则（保留）
-2. 主备热切换机制（新增）
-3. 动态服务器监控（新增）
-4. 自动故障转移（新增）
-5. 配置化重试策略（新增）
+1. 智能连接分配策略（支持多连接/服务器）
+2. 主备热切换机制
+3. 动态服务器监控
+4. 自动故障转移
+5. 配置化重试策略
 
 架构设计：
-- 主连接池：N个活跃连接（默认38个）
+- 主连接池：N个活跃连接（基于智能分配策略）
 - 备用连接池：M个备用连接（默认10个）
 - IP池管理：动态排序和优选
 - 全异步架构：零线程开销
 
 作者：[项目名称]
-版本：2.0
+版本：2.1
 """
 import asyncio
 import logging
@@ -25,7 +25,7 @@ from dataclasses import dataclass
 
 from .async_hq import AsyncTdxHq_API
 from .async_ip_pool import AsyncSmartIPPool
-from .constants import HQ_HOSTS_ALL
+from .constants import BROKER_SERVERS_7709
 from .logger import logger
 
 
@@ -77,7 +77,8 @@ class AsyncConnectionPool:
 
         # 服务器列表
         if servers is None:
-            servers = [(host[1], host[2]) for host in HQ_HOSTS_ALL]
+            # ✅ 使用BROKER_SERVERS_7709作为默认服务器列表
+            servers = [(ip, port) for _, ip, port, _ in BROKER_SERVERS_7709]
         self.all_servers = servers
 
         total_servers = len(self.all_servers)
@@ -376,7 +377,7 @@ async def example_usage():
     """
     使用示例展示新特性
     """
-    from .constants import HQ_HOSTS_ALL
+    from .constants import BROKER_SERVERS_7709
 
     # 1. 基本用法（完全兼容原有API）
     pool = AsyncConnectionPool(max_connections=10)
@@ -407,8 +408,9 @@ async def example_usage():
             pool.release(conn)
 
     # 3. 使用IP池（独立使用）
+    # ✅ 使用BROKER_SERVERS_7709作为服务器列表
     ip_pool = AsyncSmartIPPool(
-        servers=[(h[1], h[2]) for h in HQ_HOSTS_ALL[:50]], update_interval=300.0  # 5分钟更新
+        servers=[(ip, port) for _, ip, port, _ in BROKER_SERVERS_7709[:50]], update_interval=300.0  # 5分钟更新
     )
 
     await ip_pool.start()

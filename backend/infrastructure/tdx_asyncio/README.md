@@ -1,7 +1,7 @@
 # tdx_asyncio - 异步通达信行情数据接口库
 
-**版本**: v2.1.1（完整功能增强版）⭐全面升级
-**最后更新**: 2025-10-17
+**版本**: v2.2.0（智能连接分配版）⭐全面升级
+**最后更新**: 2025-01-XX
 
 ## 📖 项目背景
 
@@ -117,6 +117,15 @@ tdx_asyncio/
 - **13个期货/扩展市场服务器**（pytdx.util.best_ip）
 - **按质量分级**：云服务器(38个) > 官方主站(31个) > 券商服务器(120+个)
 - **自动优选最稳定、最快的服务器**
+
+#### 5. 智能连接分配策略（v2.2新增）⭐
+- **多连接支持**: 每个服务器可创建多个连接（受限于max_connections字段）
+- **三阶段分配策略**:
+  1. **第一阶段**: 每个服务器至少1个连接（负载均衡）
+  2. **第二阶段**: 优先分配给max_connections为19和20的服务器，平均分配负载
+  3. **第三阶段**: 当19/20的服务器达到上限后，再分配给其他服务器
+- **动态连接数计算**: 直接累加所有活跃服务器的max_connections计算总连接数
+- **性能提升**: 突破单服务器单连接限制，总协程数可达到所有活跃服务器max_connections累加
 
 ---
 
@@ -262,6 +271,51 @@ class AsyncSmartIPPool:
 1. 🚀 **连接复用**: 38个连接持续使用，避免频繁握手
 2. ⚡ **零线程开销**: 单线程事件循环，无GIL竞争
 3. 🎯 **并行等待**: 38个请求同时发送，异步等待
+
+---
+
+### v2.2 新特性 ⭐⭐⭐
+
+#### 智能连接分配策略 🔥
+
+**核心改进**: 突破单服务器单连接限制，支持基于服务器容量的智能连接分配
+
+**分配策略**:
+```python
+# ServerPoolManager.allocate_connections_intelligently()
+分配优先级：
+1. 第一阶段：每个服务器至少1个连接（负载均衡）
+2. 第二阶段：优先使用max_connections为19和20的服务器，平均分配负载
+3. 第三阶段：当19/20的服务器达到上限后，再分配给其他服务器
+```
+
+**使用示例**:
+```python
+from backend.infrastructure.data_module_vnpy.load_balancer import ServerPoolManager
+
+pool_manager = ServerPoolManager()
+
+# 计算总连接数需求（直接累加所有活跃服务器的max_connections）
+total_connections = pool_manager.calculate_total_max_connections()
+
+# 智能分配连接
+allocations = pool_manager.allocate_connections_intelligently(total_connections)
+# 返回: [(ip, port, connections_count), ...]
+
+# 结果示例:
+# - 337个活跃服务器
+# - 总连接数: 所有服务器max_connections累加（例如：20+19+20+...+20 = 6740个）
+# - 高容量服务器(19/20)优先获得更多连接
+```
+
+**性能提升**:
+- **之前**: 单服务器单连接限制，总协程数 ≤ 服务器数（例如：337个协程）
+- **现在**: 每个服务器可创建多个连接，总协程数 ≤ 所有活跃服务器max_connections累加
+- **提升倍数**: 约 **20倍**（取决于服务器的平均max_connections）
+
+**集成位置**:
+- `RetryConnectionPool`: 阶段1和阶段2连接池自动使用智能分配策略
+- `LoadBalancer`: 根据所有活跃服务器max_connections累加计算总协程限制
 
 ---
 
@@ -520,11 +574,12 @@ async with pool:
 ### 使用智能IP池管理
 
 ```python
-from backend.infrastructure.tdx_asyncio import AsyncSmartIPPool, HQ_HOSTS_ALL
+from backend.infrastructure.tdx_asyncio import AsyncSmartIPPool, BROKER_SERVERS_7709
 
 # 创建IP池（自动测速排序）
+# ✅ 使用BROKER_SERVERS_7709（4字段格式：券商名称, IP, 端口, 最大连接数）
 ip_pool = AsyncSmartIPPool(
-    servers=[(h[1], h[2]) for h in HQ_HOSTS_ALL[:50]],
+    servers=[(ip, port) for _, ip, port, _ in BROKER_SERVERS_7709[:50]],
     update_interval=300.0  # 5分钟更新一次
 )
 
@@ -1092,7 +1147,7 @@ async def realtime_monitor(watch_list):
 | 财务数据100只 | ~125秒 | ~2.9秒 | **43x** | 38个* |
 | 历史分时100只×30天 | ~125分钟 | ~3分钟 | **40x** | 38个* |
 
-*注：虽然提交的任务数可能超过38个，但实际同时执行的请求最多为38个（受TCP连接数限制），其余任务自动排队等待
+*注：实际同时执行的请求数取决于智能连接分配策略计算的总连接数。基于服务器max_connections字段，总连接数可达数千个，大幅提升并发能力。
 
 ---
 

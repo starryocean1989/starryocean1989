@@ -16,20 +16,12 @@
 - SmartMonitor.get_smart_data() - SMART采集
 """
 
-import sys
-from pathlib import Path
-
-# 添加项目根目录到Python路径（用于独立运行）
-if __name__ == "__main__":
-    project_root = Path(__file__).parent.parent.parent.parent
-    if str(project_root) not in sys.path:
-        sys.path.insert(0, str(project_root))
-
 import asyncio
 import json
 import logging
 import os
 import platform
+import sys
 import threading
 import time
 from collections import defaultdict, deque
@@ -37,7 +29,13 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Protocol, Tuple
+from typing import Any, Dict, List, Optional, Protocol
+
+# 添加项目根目录到Python路径（用于独立运行）
+if __name__ == "__main__":
+    project_root = Path(__file__).parent.parent.parent.parent
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
 
 import numpy as np
 
@@ -45,6 +43,7 @@ import numpy as np
 try:
     from backend.infrastructure.native_ipc import AsyncIPCPipe, IPC_AVAILABLE
     from typing import TYPE_CHECKING
+
     if TYPE_CHECKING:
         from backend.infrastructure.native_ipc import AsyncIPCPipe as _AsyncIPCPipe
     NATIVE_IPC_AVAILABLE = IPC_AVAILABLE
@@ -82,15 +81,17 @@ except ImportError:
 # 网络测速功能使用自研模块（基于公共测速站点，无第三方依赖）
 # NetworkSpeedTester 类已集成到本文件中
 
+# 导入测速所需的模块
+import random
+
 # 从 monitor_toolkit 导入 SMART 相关类（新架构）
 from backend.infrastructure.system_vnpy import (
     DiskSmartData,
     SmartMonitor,
 )
 
-# 导入测速所需的模块
+# 第三方库导入
 import requests
-import random
 
 # =============================================================================
 # Part 0: 网络测速模块（自研）
@@ -100,7 +101,9 @@ import random
 class NetworkSpeedTester:
     """网络测速器 - 基于公共测速站点的纯Python实现"""
 
-    def __init__(self, timeout: int = 15, use_browser_headers: bool = False, scenario: Optional[str] = None):
+    def __init__(
+        self, timeout: int = 15, use_browser_headers: bool = False, scenario: Optional[str] = None
+    ):
         """初始化测速器
 
         Args:
@@ -114,31 +117,35 @@ class NetworkSpeedTester:
 
         if use_browser_headers:
             # 完整模拟真实浏览器头部，降低被识别为爬虫的风险
-            self.session.headers.update({
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'none',
-                'Sec-Fetch-User': '?1',
-                'Cache-Control': 'max-age=0',
-            })
+            self.session.headers.update(
+                {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+                    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                    "Accept-Encoding": "gzip, deflate, br",
+                    "Connection": "keep-alive",
+                    "Upgrade-Insecure-Requests": "1",
+                    "Sec-Fetch-Dest": "document",
+                    "Sec-Fetch-Mode": "navigate",
+                    "Sec-Fetch-Site": "none",
+                    "Sec-Fetch-User": "?1",
+                    "Cache-Control": "max-age=0",
+                }
+            )
             logger.info(
                 f"[SPEEDTEST-INIT] 初始化网络测速器（浏览器模式），超时={timeout}秒",
-                extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                extra={"log_type": "SYSTEM", "scenario": self.scenario},
             )
         else:
             # 简化头部（用于带宽测试，镜像站使用）
-            self.session.headers.update({
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Terminal/0.50 NetworkSpeedTester'
-            })
+            self.session.headers.update(
+                {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Terminal/0.50 NetworkSpeedTester"
+                }
+            )
             logger.info(
                 f"[SPEEDTEST-INIT] 初始化网络测速器，超时={timeout}秒",
-                extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                extra={"log_type": "SYSTEM", "scenario": self.scenario},
             )
 
     def test_latency(self, url: str) -> Dict[str, Any]:
@@ -153,60 +160,53 @@ class NetworkSpeedTester:
         try:
             logger.debug(
                 f"[SPEEDTEST-PING] 开始测试延迟: {url} (超时={self.timeout}秒)",
-                extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                extra={"log_type": "SYSTEM", "scenario": self.scenario},
             )
             start = time.perf_counter()
             # 使用实例的超时时间（支持动态配置），设置连接和读取超时
-            response = self.session.head(url, timeout=(self.timeout, self.timeout), allow_redirects=True)
+            response = self.session.head(
+                url, timeout=(self.timeout, self.timeout), allow_redirects=True
+            )
             elapsed_ms = (time.perf_counter() - start) * 1000
 
             if response.status_code < 400:
-                result = {
-                    'ping_ms': round(elapsed_ms, 2),
-                    'url': url,
-                    'status': 'success'
-                }
+                result = {"ping_ms": round(elapsed_ms, 2), "url": url, "status": "success"}
                 logger.info(
                     f"[SPEEDTEST-PING] ✅ 成功: {elapsed_ms:.2f}ms - {url}",
-                    extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                    extra={"log_type": "SYSTEM", "scenario": self.scenario},
                 )
                 return result
             else:
                 logger.warning(
                     f"[SPEEDTEST-PING] ❌ HTTP {response.status_code}: {url}",
-                    extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                    extra={"log_type": "SYSTEM", "scenario": self.scenario},
                 )
                 return {
-                    'ping_ms': -1,
-                    'url': url,
-                    'error': f'HTTP {response.status_code}',
-                    'status': 'failed'
+                    "ping_ms": -1,
+                    "url": url,
+                    "error": f"HTTP {response.status_code}",
+                    "status": "failed",
                 }
 
         except requests.exceptions.Timeout:
-            elapsed_ms = (time.perf_counter() - start) * 1000 if 'start' in locals() else 0
+            elapsed_ms = (time.perf_counter() - start) * 1000 if "start" in locals() else 0
             logger.warning(
                 f"[SPEEDTEST-PING] ❌ 超时({elapsed_ms:.0f}ms, 超时设置={self.timeout}秒): {url}",
-                extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                extra={"log_type": "SYSTEM", "scenario": self.scenario},
             )
             return {
-                'ping_ms': -1,
-                'url': url,
-                'error': f'请求超时（{self.timeout}秒）',
-                'status': 'timeout'
+                "ping_ms": -1,
+                "url": url,
+                "error": f"请求超时（{self.timeout}秒）",
+                "status": "timeout",
             }
         except Exception as e:
-            elapsed_ms = (time.perf_counter() - start) * 1000 if 'start' in locals() else 0
+            elapsed_ms = (time.perf_counter() - start) * 1000 if "start" in locals() else 0
             logger.error(
                 f"[SPEEDTEST-PING] ❌ 失败({elapsed_ms:.0f}ms): {url} - {e}",
-                extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                extra={"log_type": "SYSTEM", "scenario": self.scenario},
             )
-            return {
-                'ping_ms': -1,
-                'url': url,
-                'error': str(e),
-                'status': 'failed'
-            }
+            return {"ping_ms": -1, "url": url, "error": str(e), "status": "failed"}
 
     def test_latency_browser_mode(self, url: str) -> Dict[str, Any]:
         """测试网络延迟（浏览器模式：GET请求+完整头部，但只读响应头）
@@ -223,7 +223,7 @@ class NetworkSpeedTester:
         try:
             logger.debug(
                 f"[SPEEDTEST-PING-BROWSER] 开始测试延迟（浏览器模式）: {url} (超时={self.timeout}秒)",
-                extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                extra={"log_type": "SYSTEM", "scenario": self.scenario},
             )
             start = time.perf_counter()
 
@@ -232,7 +232,7 @@ class NetworkSpeedTester:
                 url,
                 timeout=(self.timeout, self.timeout),
                 allow_redirects=True,
-                stream=True  # 流式模式，可以立即关闭连接
+                stream=True,  # 流式模式，可以立即关闭连接
             )
 
             # 只测量到响应头返回的时间（不下载内容）
@@ -242,54 +242,47 @@ class NetworkSpeedTester:
             response.close()
 
             if response.status_code < 400:
-                result = {
-                    'ping_ms': round(elapsed_ms, 2),
-                    'url': url,
-                    'status': 'success'
-                }
+                result = {"ping_ms": round(elapsed_ms, 2), "url": url, "status": "success"}
                 logger.info(
                     f"[SPEEDTEST-PING-BROWSER] ✅ 成功: {elapsed_ms:.2f}ms - {url}",
-                    extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                    extra={"log_type": "SYSTEM", "scenario": self.scenario},
                 )
                 return result
             else:
                 logger.warning(
                     f"[SPEEDTEST-PING-BROWSER] ❌ HTTP {response.status_code}: {url}",
-                    extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                    extra={"log_type": "SYSTEM", "scenario": self.scenario},
                 )
                 return {
-                    'ping_ms': -1,
-                    'url': url,
-                    'error': f'HTTP {response.status_code}',
-                    'status': 'failed'
+                    "ping_ms": -1,
+                    "url": url,
+                    "error": f"HTTP {response.status_code}",
+                    "status": "failed",
                 }
 
         except requests.exceptions.Timeout:
-            elapsed_ms = (time.perf_counter() - start) * 1000 if 'start' in locals() else 0
+            elapsed_ms = (time.perf_counter() - start) * 1000 if "start" in locals() else 0
             logger.warning(
                 f"[SPEEDTEST-PING-BROWSER] ❌ 超时({elapsed_ms:.0f}ms, 超时设置={self.timeout}秒): {url}",
-                extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                extra={"log_type": "SYSTEM", "scenario": self.scenario},
             )
             return {
-                'ping_ms': -1,
-                'url': url,
-                'error': f'请求超时（{self.timeout}秒）',
-                'status': 'timeout'
+                "ping_ms": -1,
+                "url": url,
+                "error": f"请求超时（{self.timeout}秒）",
+                "status": "timeout",
             }
         except Exception as e:
-            elapsed_ms = (time.perf_counter() - start) * 1000 if 'start' in locals() else 0
+            elapsed_ms = (time.perf_counter() - start) * 1000 if "start" in locals() else 0
             logger.error(
                 f"[SPEEDTEST-PING-BROWSER] ❌ 失败({elapsed_ms:.0f}ms): {url} - {e}",
-                extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                extra={"log_type": "SYSTEM", "scenario": self.scenario},
             )
-            return {
-                'ping_ms': -1,
-                'url': url,
-                'error': str(e),
-                'status': 'failed'
-            }
+            return {"ping_ms": -1, "url": url, "error": str(e), "status": "failed"}
 
-    def test_download_speed(self, url: str, max_duration: int = 10, max_bytes: Optional[int] = None) -> Dict[str, Any]:
+    def test_download_speed(
+        self, url: str, max_duration: int = 10, max_bytes: Optional[int] = None
+    ) -> Dict[str, Any]:
         """测试下载速度
 
         Args:
@@ -303,17 +296,17 @@ class NetworkSpeedTester:
         try:
             logger.info(
                 f"[SPEEDTEST-DOWNLOAD] 开始测速: {url} (超时={self.timeout}秒, 最大时长={max_duration}秒, 最大字节数={max_bytes or '无限制'})",
-                extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                extra={"log_type": "SYSTEM", "scenario": self.scenario},
             )
             start = time.perf_counter()
 
             # 设置请求头（如果需要Range请求）
             headers = {}
             if max_bytes:
-                headers['Range'] = f'bytes=0-{max_bytes - 1}'
+                headers["Range"] = f"bytes=0-{max_bytes - 1}"
                 logger.debug(
                     f"[SPEEDTEST-DOWNLOAD] 使用Range请求: bytes=0-{max_bytes - 1}",
-                    extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                    extra={"log_type": "SYSTEM", "scenario": self.scenario},
                 )
 
             # 设置连接和读取超时
@@ -321,33 +314,33 @@ class NetworkSpeedTester:
                 url,
                 timeout=(self.timeout, self.timeout),  # (连接超时, 读取超时)
                 stream=True,  # 流式下载
-                headers=headers
+                headers=headers,
             )
 
             # 支持200（完整下载）和206（部分内容，Range请求）
             if response.status_code not in (200, 206):
                 # 404或其他错误，记录详细错误信息
-                error_msg = f'HTTP {response.status_code}'
+                error_msg = f"HTTP {response.status_code}"
                 if response.status_code == 404:
-                    error_msg = f'HTTP 404 (文件不存在，URL可能已失效): {url}'
+                    error_msg = f"HTTP 404 (文件不存在，URL可能已失效): {url}"
                 logger.error(
                     f"[SPEEDTEST-DOWNLOAD] {error_msg}",
-                    extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                    extra={"log_type": "SYSTEM", "scenario": self.scenario},
                 )
                 return {
-                    'download_mbps': -1,
-                    'download_MB_s': -1,
-                    'error': error_msg,
-                    'url': url,
-                    'status': 'failed',
-                    'http_status': response.status_code
+                    "download_mbps": -1,
+                    "download_MB_s": -1,
+                    "error": error_msg,
+                    "url": url,
+                    "status": "failed",
+                    "http_status": response.status_code,
                 }
 
             # Range请求返回206是正常的
             if response.status_code == 206:
                 logger.debug(
                     f"[SPEEDTEST-DOWNLOAD] Range请求成功（206 Partial Content）",
-                    extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                    extra={"log_type": "SYSTEM", "scenario": self.scenario},
                 )
 
             total_bytes = 0
@@ -368,25 +361,27 @@ class NetworkSpeedTester:
                     if elapsed > max_duration:
                         logger.debug(
                             f"[SPEEDTEST-DOWNLOAD] 达到最大时长 {max_duration}秒，停止下载",
-                            extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                            extra={"log_type": "SYSTEM", "scenario": self.scenario},
                         )
                         stop_flag.set()
                         try:
                             response.close()
-                        except:
+                        except Exception:
                             pass
                         break
 
                     # 检查无进度超时（关键修复：防止iter_content无限阻塞）
-                    if no_progress_elapsed > no_progress_timeout and elapsed > 2.0:  # 至少等待2秒才开始检查无进度
+                    if (
+                        no_progress_elapsed > no_progress_timeout and elapsed > 2.0
+                    ):  # 至少等待2秒才开始检查无进度
                         logger.warning(
                             f"[SPEEDTEST-DOWNLOAD] 无进度超时（{no_progress_timeout}秒无数据），停止下载",
-                            extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                            extra={"log_type": "SYSTEM", "scenario": self.scenario},
                         )
                         stop_flag.set()
                         try:
                             response.close()
-                        except:
+                        except Exception:
                             pass
                         break
 
@@ -409,7 +404,7 @@ class NetworkSpeedTester:
                         if max_bytes and total_bytes >= max_bytes:
                             logger.debug(
                                 f"[SPEEDTEST-DOWNLOAD] 已下载{max_bytes}字节，达到上限，停止下载",
-                                extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                                extra={"log_type": "SYSTEM", "scenario": self.scenario},
                             )
                             break
 
@@ -421,22 +416,22 @@ class NetworkSpeedTester:
             except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
                 logger.warning(
                     f"[SPEEDTEST-DOWNLOAD] 连接异常: {e}（已下载{total_bytes}字节）",
-                    extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                    extra={"log_type": "SYSTEM", "scenario": self.scenario},
                 )
                 stop_flag.set()
                 try:
                     response.close()
-                except:
+                except Exception:
                     pass
             except Exception as e:
                 logger.warning(
                     f"[SPEEDTEST-DOWNLOAD] 读取异常: {e}（已下载{total_bytes}字节）",
-                    extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                    extra={"log_type": "SYSTEM", "scenario": self.scenario},
                 )
                 stop_flag.set()
                 try:
                     response.close()
-                except:
+                except Exception:
                     pass
             finally:
                 stop_flag.set()  # 确保监控线程退出
@@ -446,7 +441,7 @@ class NetworkSpeedTester:
             # 计算速度
             if elapsed > 0 and total_bytes > 0:
                 speed_bps = (total_bytes * 8) / elapsed  # bits per second
-                speed_mbps = speed_bps / 1_000_000       # Mbps
+                speed_mbps = speed_bps / 1_000_000  # Mbps
                 speed_MB_s = total_bytes / elapsed / 1_048_576  # MB/s
             else:
                 speed_mbps = 0
@@ -456,62 +451,60 @@ class NetworkSpeedTester:
             if total_bytes == 0:
                 logger.error(
                     f"[SPEEDTEST-DOWNLOAD] 未下载到任何数据（耗时{elapsed:.2f}秒）",
-                    extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                    extra={"log_type": "SYSTEM", "scenario": self.scenario},
                 )
                 return {
-                    'download_mbps': -1,
-                    'download_MB_s': -1,
-                    'error': f'未下载到任何数据（耗时{elapsed:.2f}秒）',
-                    'url': url,
-                    'status': 'failed'
+                    "download_mbps": -1,
+                    "download_MB_s": -1,
+                    "error": f"未下载到任何数据（耗时{elapsed:.2f}秒）",
+                    "url": url,
+                    "status": "failed",
                 }
 
             result = {
-                'download_mbps': round(speed_mbps, 2),
-                'download_MB_s': round(speed_MB_s, 2),
-                'total_bytes': total_bytes,
-                'total_MB': round(total_bytes / 1_048_576, 2),
-                'elapsed_seconds': round(elapsed, 2),
-                'url': url,
-                'status': 'success'
+                "download_mbps": round(speed_mbps, 2),
+                "download_MB_s": round(speed_MB_s, 2),
+                "total_bytes": total_bytes,
+                "total_MB": round(total_bytes / 1_048_576, 2),
+                "elapsed_seconds": round(elapsed, 2),
+                "url": url,
+                "status": "success",
             }
 
             logger.info(
                 f"[SPEEDTEST-DOWNLOAD] 成功: {result['download_mbps']} Mbps "
                 f"({result['download_MB_s']} MB/s) - 下载 {result['total_MB']} MB",
-                extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                extra={"log_type": "SYSTEM", "scenario": self.scenario},
             )
             return result
 
         except requests.exceptions.Timeout:
             logger.error(
                 f"[SPEEDTEST-DOWNLOAD] 超时({self.timeout}秒): {url}",
-                extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                extra={"log_type": "SYSTEM", "scenario": self.scenario},
             )
             return {
-                'download_mbps': -1,
-                'download_MB_s': -1,
-                'error': f'超时({self.timeout}秒)',
-                'url': url,
-                'status': 'timeout'
+                "download_mbps": -1,
+                "download_MB_s": -1,
+                "error": f"超时({self.timeout}秒)",
+                "url": url,
+                "status": "timeout",
             }
         except Exception as e:
             logger.error(
                 f"[SPEEDTEST-DOWNLOAD] 失败: {url} - {e}",
-                extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                extra={"log_type": "SYSTEM", "scenario": self.scenario},
             )
             return {
-                'download_mbps': -1,
-                'download_MB_s': -1,
-                'error': str(e),
-                'url': url,
-                'status': 'failed'
+                "download_mbps": -1,
+                "download_MB_s": -1,
+                "error": str(e),
+                "url": url,
+                "status": "failed",
             }
 
     def test_with_fallback(
-        self,
-        server_configs: List[Dict[str, Any]],
-        test_type: str = 'both'
+        self, server_configs: List[Dict[str, Any]], test_type: str = "both"
     ) -> Dict[str, Any]:
         """带降级的测速（尝试多个服务器，按顺序）
 
@@ -529,11 +522,11 @@ class NetworkSpeedTester:
         start_time = time.perf_counter()
 
         # 添加总体超时保护（避免所有服务器都超时导致总时间过长）
-        max_total_time = 30 if test_type == 'ping' else 60  # 延迟测试30秒，完整测试60秒
+        max_total_time = 30 if test_type == "ping" else 60  # 延迟测试30秒，完整测试60秒
 
         logger.info(
             f"[SPEEDTEST-FALLBACK] 开始测速（类型={test_type}，最多{len(server_configs)}个服务器，总体超时={max_total_time}秒）",
-            extra={"log_type": "SYSTEM", "scenario": self.scenario}
+            extra={"log_type": "SYSTEM", "scenario": self.scenario},
         )
 
         for i, config in enumerate(server_configs, 1):
@@ -542,49 +535,51 @@ class NetworkSpeedTester:
             if elapsed >= max_total_time:
                 logger.warning(
                     f"[SPEEDTEST-FALLBACK] 总体超时（{elapsed:.1f}秒 >= {max_total_time}秒），停止测试",
-                    extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                    extra={"log_type": "SYSTEM", "scenario": self.scenario},
                 )
                 break
 
-            server_name = config.get('name', f'服务器{i}')
-            server_timeout = config.get('timeout', self.timeout)
+            server_name = config.get("name", f"服务器{i}")
+            server_timeout = config.get("timeout", self.timeout)
             logger.info(
                 f"[SPEEDTEST-FALLBACK] 尝试服务器 {i}/{len(server_configs)}: {server_name} (超时={server_timeout}秒)",
-                extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                extra={"log_type": "SYSTEM", "scenario": self.scenario},
             )
 
             result = {
-                'server_name': server_name,
-                'server_index': i,
-                'test_time': datetime.now().isoformat(),
-                'test_type': test_type
+                "server_name": server_name,
+                "server_index": i,
+                "test_time": datetime.now().isoformat(),
+                "test_type": test_type,
             }
 
             # 测试延迟
-            if test_type in ('ping', 'both'):
-                ping_url = config.get('ping_url')
+            if test_type in ("ping", "both"):
+                ping_url = config.get("ping_url")
                 if ping_url:
                     ping_start = time.perf_counter()
                     ping_result = self.test_latency(ping_url)
                     ping_elapsed = time.perf_counter() - ping_start
                     logger.debug(f"[SPEEDTEST-FALLBACK] 延迟测试耗时: {ping_elapsed:.2f}秒")
 
-                    if ping_result.get('status') == 'success':
-                        result['ping_ms'] = ping_result['ping_ms']
-                        result['ping_url'] = ping_url
-                        logger.info(f"[SPEEDTEST-FALLBACK] ✅ 延迟测试成功: {server_name} ({ping_result['ping_ms']}ms)")
+                    if ping_result.get("status") == "success":
+                        result["ping_ms"] = ping_result["ping_ms"]
+                        result["ping_url"] = ping_url
+                        logger.info(
+                            f"[SPEEDTEST-FALLBACK] ✅ 延迟测试成功: {server_name} ({ping_result['ping_ms']}ms)"
+                        )
                     else:
                         logger.warning(
                             f"[SPEEDTEST-FALLBACK] ❌ 延迟测试失败: {server_name} - "
                             f"{ping_result.get('error')} (耗时{ping_elapsed:.2f}秒)",
-                            extra={"log_type": "SYSTEM"}
+                            extra={"log_type": "SYSTEM"},
                         )
-                        last_error = ping_result.get('error')
+                        last_error = ping_result.get("error")
                         continue
 
             # 测试下载速度
-            if test_type in ('download', 'both'):
-                download_url = config.get('download_url')
+            if test_type in ("download", "both"):
+                download_url = config.get("download_url")
                 if download_url:
                     download_start = time.perf_counter()
                     # 使用服务器配置的超时时间
@@ -598,11 +593,11 @@ class NetworkSpeedTester:
                     download_elapsed = time.perf_counter() - download_start
                     logger.debug(f"[SPEEDTEST-FALLBACK] 下载测试耗时: {download_elapsed:.2f}秒")
 
-                    if download_result.get('status') == 'success':
-                        result['download_mbps'] = download_result['download_mbps']
-                        result['download_MB_s'] = download_result['download_MB_s']
-                        result['download_url'] = download_url
-                        result['status'] = 'success'
+                    if download_result.get("status") == "success":
+                        result["download_mbps"] = download_result["download_mbps"]
+                        result["download_MB_s"] = download_result["download_MB_s"]
+                        result["download_url"] = download_url
+                        result["status"] = "success"
                         total_elapsed = time.perf_counter() - start_time
                         logger.info(
                             f"[SPEEDTEST-FALLBACK] ✅ 测速成功: {server_name} "
@@ -613,14 +608,14 @@ class NetworkSpeedTester:
                         logger.warning(
                             f"[SPEEDTEST-FALLBACK] ❌ 下载测速失败: {server_name} - "
                             f"{download_result.get('error')} (耗时{download_elapsed:.2f}秒)",
-                            extra={"log_type": "SYSTEM"}
+                            extra={"log_type": "SYSTEM"},
                         )
-                        last_error = download_result.get('error')
+                        last_error = download_result.get("error")
                         continue
 
             # 如果只测延迟且成功，返回结果
-            if test_type == 'ping' and 'ping_ms' in result:
-                result['status'] = 'success'
+            if test_type == "ping" and "ping_ms" in result:
+                result["status"] = "success"
                 total_elapsed = time.perf_counter() - start_time
                 logger.info(
                     f"[SPEEDTEST-FALLBACK] ✅ 延迟测试成功: {server_name} "
@@ -633,21 +628,18 @@ class NetworkSpeedTester:
         logger.error(
             f"[SPEEDTEST-FALLBACK] ❌ 所有测速服务器均不可用 "
             f"(尝试了{len(server_configs)}个服务器，总耗时{total_elapsed:.2f}秒)",
-            extra={"log_type": "ALERT"}
+            extra={"log_type": "ALERT"},
         )
         return {
-            'error': last_error or '所有测速服务器均不可用',
-            'status': 'all_failed',
-            'test_time': datetime.now().isoformat(),
-            'test_type': test_type,
-            'total_time_seconds': round(total_elapsed, 2)
+            "error": last_error or "所有测速服务器均不可用",
+            "status": "all_failed",
+            "test_time": datetime.now().isoformat(),
+            "test_type": test_type,
+            "total_time_seconds": round(total_elapsed, 2),
         }
 
     def test_ping_with_random_retry(
-        self,
-        server_configs: List[Dict[str, Any]],
-        max_retries: int = 3,
-        timeout: int = 5
+        self, server_configs: List[Dict[str, Any]], max_retries: int = 3, timeout: int = 5
     ) -> Dict[str, Any]:
         """延迟测试（随机选择+重试策略）
 
@@ -668,18 +660,18 @@ class NetworkSpeedTester:
         """
         if not server_configs:
             return {
-                'error': '服务器池为空',
-                'status': 'failed',
-                'test_time': datetime.now().isoformat()
+                "error": "服务器池为空",
+                "status": "failed",
+                "test_time": datetime.now().isoformat(),
             }
 
         # 过滤出启用的服务器
-        enabled_servers = [s for s in server_configs if s.get('enabled', True)]
+        enabled_servers = [s for s in server_configs if s.get("enabled", True)]
         if not enabled_servers:
             return {
-                'error': '没有启用的服务器',
-                'status': 'failed',
-                'test_time': datetime.now().isoformat()
+                "error": "没有启用的服务器",
+                "status": "failed",
+                "test_time": datetime.now().isoformat(),
             }
 
         last_error = None
@@ -693,7 +685,7 @@ class NetworkSpeedTester:
             if total_elapsed > max_total_time:
                 logger.warning(
                     f"[PING-RANDOM] 总体超时（{total_elapsed:.1f}秒 > {max_total_time}秒），停止重试",
-                    extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                    extra={"log_type": "SYSTEM", "scenario": self.scenario},
                 )
                 break
 
@@ -707,20 +699,20 @@ class NetworkSpeedTester:
             selected_server = random.choice(available_servers)
             tested_servers.append(selected_server)
 
-            server_name = selected_server.get('name', '未知服务器')
-            ping_url = selected_server.get('ping_url')
+            server_name = selected_server.get("name", "未知服务器")
+            ping_url = selected_server.get("ping_url")
 
             if not ping_url:
-                last_error = f'{server_name} 缺少ping_url配置'
+                last_error = f"{server_name} 缺少ping_url配置"
                 logger.warning(
                     f"[PING-RANDOM] 第{attempt}次尝试失败: {last_error}",
-                    extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                    extra={"log_type": "SYSTEM", "scenario": self.scenario},
                 )
                 continue
 
             logger.info(
                 f"[PING-RANDOM] 第{attempt}次尝试，随机选择: {server_name}",
-                extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                extra={"log_type": "SYSTEM", "scenario": self.scenario},
             )
 
             # 临时修改超时时间
@@ -732,46 +724,43 @@ class NetworkSpeedTester:
             finally:
                 self.timeout = original_timeout
 
-            if ping_result.get('status') == 'success':
+            if ping_result.get("status") == "success":
                 elapsed = time.perf_counter() - test_start_time
                 logger.info(
                     f"[PING-RANDOM] ✅ 成功（第{attempt}次，总耗时{elapsed:.2f}秒）: {server_name} ({ping_result['ping_ms']}ms)",
-                    extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                    extra={"log_type": "SYSTEM", "scenario": self.scenario},
                 )
                 return {
-                    'ping_ms': ping_result['ping_ms'],
-                    'server_name': server_name,
-                    'ping_url': ping_url,
-                    'attempt': attempt,
-                    'status': 'success',
-                    'test_time': datetime.now().isoformat(),
-                    'total_time_seconds': round(elapsed, 2)
+                    "ping_ms": ping_result["ping_ms"],
+                    "server_name": server_name,
+                    "ping_url": ping_url,
+                    "attempt": attempt,
+                    "status": "success",
+                    "test_time": datetime.now().isoformat(),
+                    "total_time_seconds": round(elapsed, 2),
                 }
             else:
-                last_error = ping_result.get('error', '未知错误')
+                last_error = ping_result.get("error", "未知错误")
                 elapsed = time.perf_counter() - test_start_time
                 logger.warning(
                     f"[PING-RANDOM] ❌ 第{attempt}次尝试失败（耗时{elapsed:.2f}秒）: {server_name} - {last_error}",
-                    extra={"log_type": "SYSTEM", "scenario": self.scenario}
+                    extra={"log_type": "SYSTEM", "scenario": self.scenario},
                 )
 
         # 所有重试都失败
         logger.error(
             f"[PING-RANDOM] ❌ 所有{max_retries}次尝试均失败",
-            extra={"log_type": "SYSTEM", "scenario": self.scenario}
+            extra={"log_type": "SYSTEM", "scenario": self.scenario},
         )
         return {
-            'error': last_error or '所有服务器测试失败',
-            'status': 'all_failed',
-            'attempts': max_retries,
-            'test_time': datetime.now().isoformat()
+            "error": last_error or "所有服务器测试失败",
+            "status": "all_failed",
+            "attempts": max_retries,
+            "test_time": datetime.now().isoformat(),
         }
 
     def test_bandwidth_with_random_retry(
-        self,
-        server_configs: List[Dict[str, Any]],
-        max_retries: int = 3,
-        timeout: int = 10
+        self, server_configs: List[Dict[str, Any]], max_retries: int = 3, timeout: int = 10
     ) -> Dict[str, Any]:
         """带宽测试（随机选择+重试策略）
 
@@ -794,18 +783,18 @@ class NetworkSpeedTester:
         """
         if not server_configs:
             return {
-                'error': '服务器池为空',
-                'status': 'failed',
-                'test_time': datetime.now().isoformat()
+                "error": "服务器池为空",
+                "status": "failed",
+                "test_time": datetime.now().isoformat(),
             }
 
         # 过滤出启用的服务器
-        enabled_servers = [s for s in server_configs if s.get('enabled', True)]
+        enabled_servers = [s for s in server_configs if s.get("enabled", True)]
         if not enabled_servers:
             return {
-                'error': '没有启用的服务器',
-                'status': 'failed',
-                'test_time': datetime.now().isoformat()
+                "error": "没有启用的服务器",
+                "status": "failed",
+                "test_time": datetime.now().isoformat(),
             }
 
         last_error = None
@@ -837,9 +826,9 @@ class NetworkSpeedTester:
             selected_server = random.choice(available_servers)
             tested_servers.append(selected_server)
 
-            server_name = selected_server.get('name', '未知服务器')
-            ping_url = selected_server.get('ping_url')
-            download_url = selected_server.get('download_url')
+            server_name = selected_server.get("name", "未知服务器")
+            ping_url = selected_server.get("ping_url")
+            download_url = selected_server.get("download_url")
 
             logger.debug(
                 f"[BANDWIDTH-RANDOM] 第{attempt}次尝试，随机选择服务器: {server_name}, "
@@ -848,7 +837,7 @@ class NetworkSpeedTester:
             )
 
             if not ping_url or not download_url:
-                last_error = f'{server_name} 缺少ping_url或download_url配置'
+                last_error = f"{server_name} 缺少ping_url或download_url配置"
                 logger.warning(
                     f"[BANDWIDTH-RANDOM] 第{attempt}次尝试失败: {last_error}",
                     extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
@@ -872,7 +861,7 @@ class NetworkSpeedTester:
                 )
                 ping_result = self.test_latency(ping_url)
 
-                if ping_result.get('status') != 'success':
+                if ping_result.get("status") != "success":
                     last_error = f'延迟测试失败: {ping_result.get("error")}'
                     elapsed = time.perf_counter() - test_start_time
                     logger.warning(
@@ -891,9 +880,11 @@ class NetworkSpeedTester:
                     f"[BANDWIDTH-RANDOM] 开始下载速度测试: {server_name}, download_url={download_url}",
                     extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
                 )
-                download_result = self.test_download_speed(download_url, max_duration=20, max_bytes=10 * 1024 * 1024)
+                download_result = self.test_download_speed(
+                    download_url, max_duration=20, max_bytes=10 * 1024 * 1024
+                )
 
-                if download_result.get('status') == 'success':
+                if download_result.get("status") == "success":
                     elapsed = time.perf_counter() - test_start_time
                     logger.debug(
                         f"[BANDWIDTH-RANDOM] 下载速度测试成功: {server_name}, "
@@ -906,16 +897,16 @@ class NetworkSpeedTester:
                         extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
                     )
                     return {
-                        'ping_ms': ping_result['ping_ms'],
-                        'download_mbps': download_result['download_mbps'],
-                        'download_MB_s': download_result['download_MB_s'],
-                        'server_name': server_name,
-                        'ping_url': ping_url,
-                        'download_url': download_url,
-                        'attempt': attempt,
-                        'status': 'success',
-                        'test_time': datetime.now().isoformat(),
-                        'total_time_seconds': round(elapsed, 2)
+                        "ping_ms": ping_result["ping_ms"],
+                        "download_mbps": download_result["download_mbps"],
+                        "download_MB_s": download_result["download_MB_s"],
+                        "server_name": server_name,
+                        "ping_url": ping_url,
+                        "download_url": download_url,
+                        "attempt": attempt,
+                        "status": "success",
+                        "test_time": datetime.now().isoformat(),
+                        "total_time_seconds": round(elapsed, 2),
                     }
                 else:
                     last_error = f'下载测试失败: {download_result.get("error")}'
@@ -933,7 +924,7 @@ class NetworkSpeedTester:
                 # 恢复超时时间
                 self.timeout = original_timeout
 
-                last_error = f'测试异常: {str(e)}'
+                last_error = f"测试异常: {str(e)}"
                 elapsed = time.perf_counter() - test_start_time
                 logger.debug(
                     f"[BANDWIDTH-RANDOM] 第{attempt}次尝试发生异常: {type(e).__name__}: {str(e)}",
@@ -960,10 +951,10 @@ class NetworkSpeedTester:
             extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
         )
         return {
-            'error': last_error or '所有服务器测试失败',
-            'status': 'all_failed',
-            'attempts': max_retries,
-            'test_time': datetime.now().isoformat()
+            "error": last_error or "所有服务器测试失败",
+            "status": "all_failed",
+            "attempts": max_retries,
+            "test_time": datetime.now().isoformat(),
         }
 
     def close(self):
@@ -1284,13 +1275,24 @@ class HardwareMonitorFactory:
                 HardwareMonitorFactory._instance = monitor
                 return monitor
             else:
-                logger.error("❌ LibreHardwareMonitor 不可用，请确保：", extra={"log_type": "SYSTEM"})
-                logger.error("   1. 已安装 pythonnet: pip install pythonnet", extra={"log_type": "SYSTEM"})
-                logger.error("   2. LibreHardwareMonitor.dll 在正确路径", extra={"log_type": "SYSTEM"})
+                logger.error(
+                    "❌ LibreHardwareMonitor 不可用，请确保：", extra={"log_type": "SYSTEM"}
+                )
+                logger.error(
+                    "   1. 已安装 pythonnet: pip install pythonnet", extra={"log_type": "SYSTEM"}
+                )
+                logger.error(
+                    "   2. LibreHardwareMonitor.dll 在正确路径", extra={"log_type": "SYSTEM"}
+                )
                 logger.error("   3. 以管理员权限运行程序", extra={"log_type": "SYSTEM"})
                 return None
         except Exception as e:
-            logger.error("❌ [HardwareMonitorFactory] LibreHardwareMonitor 初始化失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            logger.error(
+                "❌ [HardwareMonitorFactory] LibreHardwareMonitor 初始化失败: %s",
+                e,
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
+            )
             logger.error("   硬件监控功能将不可用", extra={"log_type": "SYSTEM"})
             return None
 
@@ -1829,7 +1831,9 @@ class ScenarioAnalyzer:
         event_queue_depth = 0  # 默认值
         processing_latency = 0  # 默认值
         if self.business_metrics:
-            event_queue_depth = self.business_metrics.get_latest_value("event_queue_depth", default=0)
+            event_queue_depth = self.business_metrics.get_latest_value(
+                "event_queue_depth", default=0
+            )
             processing_latency = self.business_metrics.get_latest_value(
                 "event_processing_latency_ms", default=0
             )
@@ -2121,7 +2125,9 @@ class MonitoringProcessV2:
         self.process_bottleneck_analyzer = ProcessBottleneckAnalyzer()  # 进程级瓶颈分析器
         self.system_bottleneck_analyzer = SystemBottleneckAnalyzer()  # 系统级瓶颈分析器（本地）
         self.business_metrics_collector = get_business_metrics_collector()  # 业务指标采集器
-        self.scenario_analyzer = ScenarioAnalyzer(self.business_metrics_collector)  # 场景分析器（注入业务指标）
+        self.scenario_analyzer = ScenarioAnalyzer(
+            self.business_metrics_collector
+        )  # 场景分析器（注入业务指标）
         # ✅ 优化：延迟创建硬件监控器（避免阻塞启动，在_initialize_components中异步创建）
         self.hardware_monitor = None  # 将在start()中后台异步创建
         self.smart_monitor = SmartMonitor()
@@ -2150,7 +2156,7 @@ class MonitoringProcessV2:
 
         # 启动阶段优化 - 前60秒使用更低频率
         self.startup_phase_duration = 60  # 启动阶段持续60秒
-        self.startup_fast_interval = 5   # 启动阶段系统指标间隔
+        self.startup_fast_interval = 5  # 启动阶段系统指标间隔
         self.startup_slow_interval = 15  # 启动阶段硬件指标间隔
         self.start_time = time.time()
 
@@ -2171,23 +2177,27 @@ class MonitoringProcessV2:
 
             # 查找旧的监控进程实例
             killed_any = False
-            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+            for proc in psutil.process_iter(["pid", "name", "cmdline"]):
                 try:
                     # 获取进程信息
-                    pinfo = getattr(proc, 'info', None)
-                    if not pinfo or not pinfo.get('cmdline'):
+                    pinfo = getattr(proc, "info", None)
+                    if not pinfo or not pinfo.get("cmdline"):
                         continue
-                    cmdline = " ".join(pinfo['cmdline'])
+                    cmdline = " ".join(pinfo["cmdline"])
 
                     # 检查是否是监控进程（检查 monitor_system.py）
                     if "monitor_system.py" in cmdline:
-                        pid = pinfo['pid']
+                        pid = pinfo["pid"]
 
                         # 检查是否是当前进程
                         if pid == os.getpid():
                             continue
 
-                        logger.warning("[清理] 发现旧监控进程 (PID=%d)，正在终止...", pid, extra={"log_type": "SYSTEM"})
+                        logger.warning(
+                            "[清理] 发现旧监控进程 (PID=%d)，正在终止...",
+                            pid,
+                            extra={"log_type": "SYSTEM"},
+                        )
                         proc.terminate()
 
                         # 等待进程退出
@@ -2196,7 +2206,9 @@ class MonitoringProcessV2:
                             logger.info("[清理] ✅ 旧监控进程 (PID=%d) 已正常终止", pid)
                             killed_any = True
                         except psutil.TimeoutExpired:
-                            logger.warning("[清理] 旧进程未响应，强制杀死...", extra={"log_type": "SYSTEM"})
+                            logger.warning(
+                                "[清理] 旧进程未响应，强制杀死...", extra={"log_type": "SYSTEM"}
+                            )
                             proc.kill()
                             logger.info("[清理] ✅ 旧监控进程 (PID=%d) 已强制终止", pid)
                             killed_any = True
@@ -2212,7 +2224,9 @@ class MonitoringProcessV2:
                 logger.info("[清理] 未发现需要清理的旧监控进程")
 
         except Exception as e:
-            logger.error("[清理] 清理旧进程时出错: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            logger.error(
+                "[清理] 清理旧进程时出错: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+            )
             # 不抛出异常，继续启动流程
 
     async def start(self):
@@ -2223,12 +2237,28 @@ class MonitoringProcessV2:
         logger.info("=" * 60)
         logger.info("监控进程V2 启动")
         logger.info("=" * 60)
-        logger.debug("启动监控进程")
+        logger.debug(
+            f"[START] 启动监控进程，PID={os.getpid()}, 事件循环={self.loop}",
+            extra={"log_type": "SYSTEM"}
+        )
 
         try:
-            logger.debug("开始初始化组件（native_ipc、数据库等）")
+            logger.debug(
+                "[START] 开始初始化组件（native_ipc、数据库等）",
+                extra={"log_type": "SYSTEM"}
+            )
+            logger.info("[START] ℹ️ 开始初始化组件...")
+            init_start_time = time.time()
             await self._initialize_components()
-            logger.debug("组件初始化完成，开始启动协程")
+            init_elapsed = (time.time() - init_start_time) * 1000
+            logger.info(
+                f"[START] ✅ 组件初始化完成，耗时={init_elapsed:.0f}ms",
+                extra={"log_type": "SYSTEM"}
+            )
+            logger.debug(
+                "[START] 组件初始化完成，开始启动协程",
+                extra={"log_type": "SYSTEM"}
+            )
 
             # 创建启动事件
             self.coroutine_ready_events = {
@@ -2280,7 +2310,7 @@ class MonitoringProcessV2:
                             os.fsync(f.fileno())
 
                         logger.info("[INIT] ✓ 就绪信号已更新（Level 2: 功能完整）")
-                        
+
                         # 阶段节点日志（输出到Terminal）- Level 2就绪
                         try:
                             stage_logger = logging.getLogger("startup.stage")
@@ -2332,10 +2362,15 @@ class MonitoringProcessV2:
                 task_name = tasks[i].get_name()
                 if isinstance(result, Exception):
                     logger.error(
-                        f"[TASK-EXIT] ❌ 任务 {task_name} 异常退出: {result}", exc_info=result, extra={"log_type": "ALERT"}
+                        f"[TASK-EXIT] ❌ 任务 {task_name} 异常退出: {result}",
+                        exc_info=result,
+                        extra={"log_type": "ALERT"},
                     )
                 elif result is not None:
-                    logger.warning(f"[TASK-EXIT] ⚠️  任务 {task_name} 意外返回: {result}", extra={"log_type": "SYSTEM"})
+                    logger.warning(
+                        f"[TASK-EXIT] ⚠️  任务 {task_name} 意外返回: {result}",
+                        extra={"log_type": "SYSTEM"},
+                    )
 
         except KeyboardInterrupt:
             logger.info("收到中断信号，正在关闭...")
@@ -2343,24 +2378,104 @@ class MonitoringProcessV2:
             logger.critical("🔥 监控进程异常: %s", e, exc_info=True, extra={"log_type": "ALERT"})
         finally:
             await self.stop()
+            # 清理监控就绪信号文件
+            _cleanup_signal_file()
 
     async def _initialize_components(self):
         """初始化组件 - DEBUG检查点."""
         logger.info("[INIT] 初始化组件...")
+        logger.debug(
+            f"[INIT] 当前进程PID: {os.getpid()}, 工作目录: {os.getcwd()}",
+            extra={"log_type": "SYSTEM"}
+        )
 
         # 检查native_ipc是否可用
         if not NATIVE_IPC_AVAILABLE or AsyncIPCPipe is None:
-            raise RuntimeError("native_ipc不可用，请确保C扩展已编译")
+            error_msg = "native_ipc不可用，请确保C扩展已编译"
+            logger.critical(
+                f"[INIT] ❌ {error_msg}",
+                exc_info=True,
+                extra={"log_type": "ALERT"}
+            )
+            raise RuntimeError(error_msg)
+
+        logger.debug(
+            "[INIT] native_ipc可用，开始创建管道...",
+            extra={"log_type": "SYSTEM"}
+        )
 
         # 初始化native_ipc管道
         try:
+            # ✅ 提前创建初始信号文件（标记监控进程已启动，正在初始化管道）
+            # 这样即使管道创建失败，主进程也能知道监控进程已启动
+            try:
+                from pathlib import Path
+                initial_signal_file = Path("logs/monitor_ready.signal")
+                initial_signal_file.parent.mkdir(parents=True, exist_ok=True)
+                initial_signal = {
+                    "pid": os.getpid(),
+                    "timestamp": time.time(),
+                    "status": "initializing",  # 正在初始化
+                    "level": 0,  # 初始级别
+                    "pipes": {
+                        "query": None,
+                        "status": None,
+                        "alerts": None,
+                    },
+                }
+                with open(initial_signal_file, "w", encoding="utf-8") as f:
+                    json.dump(initial_signal, f, ensure_ascii=False, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())
+                logger.debug(
+                    f"[INIT] ✓ 初始信号文件已创建（Level 0: 正在初始化, PID={os.getpid()}）",
+                    extra={"log_type": "SYSTEM"}
+                )
+            except Exception as init_signal_error:
+                logger.warning(
+                    f"[INIT] 创建初始信号文件失败: {init_signal_error}",
+                    extra={"log_type": "SYSTEM"}
+                )
+
             # 创建查询服务端管道（响应主进程查询）
-            self.query_pipe = await AsyncIPCPipe.server("monitor_query")
-            logger.info("[IPC] ✅ 查询服务端管道已创建: monitor_query")
+            logger.debug(
+                "[INIT] 开始创建查询服务端管道: monitor_query",
+                extra={"log_type": "SYSTEM"}
+            )
+            logger.info("[INIT] ℹ️ 开始创建查询服务端管道: monitor_query")
+            pipe_start_time = time.time()
+            try:
+                self.query_pipe = await AsyncIPCPipe.server("monitor_query")
+                pipe_elapsed = (time.time() - pipe_start_time) * 1000
+                logger.info(f"[IPC] ✅ 查询服务端管道已创建: monitor_query (耗时={pipe_elapsed:.0f}ms)")
+            except Exception as query_pipe_error:
+                pipe_elapsed = (time.time() - pipe_start_time) * 1000
+                logger.error(
+                    f"[IPC] ❌ 创建查询服务端管道失败: {query_pipe_error}，耗时={pipe_elapsed:.0f}ms",
+                    exc_info=True,
+                    extra={"log_type": "ALERT"}
+                )
+                raise
 
             # 创建状态服务端管道（接收主进程状态推送）
-            self.status_pipe = await AsyncIPCPipe.server("monitor_status")
-            logger.info("[IPC] ✅ 状态服务端管道已创建: monitor_status")
+            logger.debug(
+                "[INIT] 开始创建状态服务端管道: monitor_status",
+                extra={"log_type": "SYSTEM"}
+            )
+            logger.info("[INIT] ℹ️ 开始创建状态服务端管道: monitor_status")
+            pipe_start_time = time.time()
+            try:
+                self.status_pipe = await AsyncIPCPipe.server("monitor_status")
+                pipe_elapsed = (time.time() - pipe_start_time) * 1000
+                logger.info(f"[IPC] ✅ 状态服务端管道已创建: monitor_status (耗时={pipe_elapsed:.0f}ms)")
+            except Exception as status_pipe_error:
+                pipe_elapsed = (time.time() - pipe_start_time) * 1000
+                logger.error(
+                    f"[IPC] ❌ 创建状态服务端管道失败: {status_pipe_error}，耗时={pipe_elapsed:.0f}ms",
+                    exc_info=True,
+                    extra={"log_type": "ALERT"}
+                )
+                raise
 
             # ✅ 创建就绪信号文件（先标记前两个管道就绪，让主进程可以开始初始化）
             try:
@@ -2379,14 +2494,36 @@ class MonitoringProcessV2:
                 }
 
                 signal_file = Path("logs/monitor_ready.signal")
+                logger.debug(
+                    f"[IPC] 准备创建信号文件: {signal_file.absolute()}, PID={os.getpid()}",
+                    extra={"log_type": "SYSTEM"}
+                )
+                
+                # 确保logs目录存在
+                signal_file.parent.mkdir(parents=True, exist_ok=True)
+                
                 with open(signal_file, "w", encoding="utf-8") as f:
                     json.dump(ready_signal, f, ensure_ascii=False, indent=2)
                     f.flush()
                     os.fsync(f.fileno())  # 强制写入磁盘
 
-                logger.info("[IPC] ✓ 初步就绪信号文件已创建（Level 1: query+status就绪）")
+                logger.info(
+                    f"[IPC] ✓ 初步就绪信号文件已创建（Level 1: query+status就绪, PID={os.getpid()}）"
+                )
+                logger.debug(
+                    f"[IPC] 信号文件路径: {signal_file.absolute()}, 文件大小: {signal_file.stat().st_size} bytes",
+                    extra={"log_type": "SYSTEM"}
+                )
             except Exception as e:
-                logger.warning("[IPC] 创建就绪信号文件失败: %s", e, extra={"log_type": "SYSTEM"})
+                logger.error(
+                    f"[IPC] ❌ 创建就绪信号文件失败: {e}",
+                    exc_info=True,
+                    extra={"log_type": "ALERT"}
+                )
+                logger.warning(
+                    "[IPC] ⚠️ 创建就绪信号文件失败，主进程可能无法检测到监控进程就绪",
+                    extra={"log_type": "ALERT"}
+                )
 
             # 🔄 延迟创建告警客户端管道（等待主进程告警服务端就绪）
             self.alerts_pipe = None
@@ -2412,7 +2549,7 @@ class MonitoringProcessV2:
                         max_retries,
                         e,
                         retry_delay,
-                        extra={"log_type": "SYSTEM"}
+                        extra={"log_type": "SYSTEM"},
                     )
                     await asyncio.sleep(retry_delay)
 
@@ -2420,7 +2557,7 @@ class MonitoringProcessV2:
                 logger.error(
                     "[IPC] ❌ 创建告警客户端管道最终失败（已重试%d次），告警推送功能将不可用",
                     max_retries,
-                    extra={"log_type": "ALERT"}
+                    extra={"log_type": "ALERT"},
                 )
 
             # 更新就绪信号文件（添加告警管道状态）
@@ -2433,21 +2570,30 @@ class MonitoringProcessV2:
                     ready_signal["status"] = (
                         "pipes_ready" if self.alerts_pipe else "partial_pipes_ready"
                     )
-                    ready_signal["pipes"]["alerts"] = (
-                        "monitor_alerts" if self.alerts_pipe else None
-                    )
+                    ready_signal["pipes"]["alerts"] = "monitor_alerts" if self.alerts_pipe else None
 
                     with open(signal_file, "w", encoding="utf-8") as f:
                         json.dump(ready_signal, f, ensure_ascii=False, indent=2)
                         f.flush()
                         os.fsync(f.fileno())
 
-                    logger.info("[IPC] ✓ 就绪信号文件已更新（Level 1状态: %s）", ready_signal["status"])
+                    logger.info(
+                        "[IPC] ✓ 就绪信号文件已更新（Level 1状态: %s）", ready_signal["status"]
+                    )
             except Exception as e:
                 logger.warning("[IPC] 更新就绪信号文件失败: %s", e, extra={"log_type": "SYSTEM"})
 
         except Exception as e:
-            logger.critical("🔥 [IPC] 创建native_ipc管道失败: %s", e, exc_info=True, extra={"log_type": "ALERT"})
+            logger.critical(
+                f"🔥 [IPC] 创建native_ipc管道失败: {e}",
+                exc_info=True,
+                extra={"log_type": "ALERT"}
+            )
+            logger.error(
+                f"[IPC] ❌ 监控进程无法创建IPC管道，PID={os.getpid()}, 错误详情: {type(e).__name__}: {str(e)}",
+                exc_info=True,
+                extra={"log_type": "ALERT"}
+            )
             raise RuntimeError(f"native_ipc管道创建失败: {e}") from e
 
         logger.info("[IPC] ✅ 所有管道已配置完成")
@@ -2467,7 +2613,12 @@ class MonitoringProcessV2:
                     logger.info("[INIT] ✅ 硬件监控器初始化完成（耗时: %.1fs）", elapsed)
                     return monitor
                 except Exception as e:
-                    logger.warning("[INIT] ⚠️ 硬件监控器初始化失败: %s (硬件监控为可选功能，不影响核心功能)", e, exc_info=True, extra={"log_type": "SYSTEM"})
+                    logger.warning(
+                        "[INIT] ⚠️ 硬件监控器初始化失败: %s (硬件监控为可选功能，不影响核心功能)",
+                        e,
+                        exc_info=True,
+                        extra={"log_type": "SYSTEM"},
+                    )
                     return None
 
             # 在后台线程池中创建（不阻塞主循环）
@@ -2481,7 +2632,7 @@ class MonitoringProcessV2:
             else:
                 logger.warning(
                     "[INIT] ⚠️ 硬件监控器初始化失败，系统将以降级模式运行（无硬件温度监控）",
-                    extra={"log_type": "SYSTEM"}
+                    extra={"log_type": "SYSTEM"},
                 )
 
         # 初始化队列
@@ -2548,7 +2699,10 @@ class MonitoringProcessV2:
                     else:
                         # ExtendedLHMWrapper doesn't have get_temperature_info, use get_all_sensor_data
                         sensor_data = {}
-                        logger.warning("Hardware monitor doesn't have get_all_sensor_data method", extra={"log_type": "SYSTEM"})
+                        logger.warning(
+                            "Hardware monitor doesn't have get_all_sensor_data method",
+                            extra={"log_type": "SYSTEM"},
+                        )
 
                     if self.loop and sensor_data and self.hardware_queue:
                         asyncio.run_coroutine_threadsafe(
@@ -2560,7 +2714,9 @@ class MonitoringProcessV2:
                 time.sleep(sleep_time)
 
             except Exception as e:
-                logger.error("[HARDWARE-THREAD] 采集失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+                logger.error(
+                    "[HARDWARE-THREAD] 采集失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+                )
                 time.sleep(self.slow_interval)
 
         logger.info("[HARDWARE-THREAD] 硬件传感器采集线程停止")
@@ -2604,12 +2760,16 @@ class MonitoringProcessV2:
             availability = getattr(self.smart_monitor, "is_available", None)
             if callable(availability):
                 if not availability():
-                    logger.warning("[SMART] SMART监控不可用，将跳过采集", extra={"log_type": "SYSTEM"})
+                    logger.warning(
+                        "[SMART] SMART监控不可用，将跳过采集", extra={"log_type": "SYSTEM"}
+                    )
                     return
             logger.info("[SMART] 开始采集SMART数据...")
             start_time = time.time()
             smart_data = self.smart_monitor.get_smart_data_with_alerts()
-            smart_payload = smart_data.get("smart_data", {}) if isinstance(smart_data, dict) else smart_data
+            smart_payload = (
+                smart_data.get("smart_data", {}) if isinstance(smart_data, dict) else smart_data
+            )
             elapsed = time.time() - start_time
             logger.info(
                 "[SMART] ✅ 采集完成，耗时%.2fs，%d个硬盘",
@@ -2661,7 +2821,11 @@ class MonitoringProcessV2:
             except Exception:
                 pass
 
-            logger.warning("[IPC] ⚠️  while循环退出（self.running=%s）", self.running, extra={"log_type": "SYSTEM"})
+            logger.warning(
+                "[IPC] ⚠️  while循环退出（self.running=%s）",
+                self.running,
+                extra={"log_type": "SYSTEM"},
+            )
 
         except Exception as e:
             logger.error("[IPC] ❌ 协程异常退出: %s", e, exc_info=True, extra={"log_type": "ALERT"})
@@ -2681,12 +2845,12 @@ class MonitoringProcessV2:
 
                     # 🔧 修复JSON解析问题：处理数据截断和多JSON对象
                     try:
-                        decoded_data = request_data.decode('utf-8')
+                        decoded_data = request_data.decode("utf-8")
 
                         # 检查是否有多个JSON对象（用换行符分隔）
-                        if '\n' in decoded_data:
+                        if "\n" in decoded_data:
                             # 取第一个完整的JSON对象
-                            json_lines = decoded_data.strip().split('\n')
+                            json_lines = decoded_data.strip().split("\n")
                             for line in json_lines:
                                 if line.strip():
                                     try:
@@ -2702,12 +2866,18 @@ class MonitoringProcessV2:
                             request = json.loads(decoded_data)
 
                     except json.JSONDecodeError as e:
-                        logger.warning(f"[IPC] JSON解析失败: {e}, 数据长度: {len(request_data)}", extra={"log_type": "SYSTEM"})
+                        logger.warning(
+                            f"[IPC] JSON解析失败: {e}, 数据长度: {len(request_data)}",
+                            extra={"log_type": "SYSTEM"},
+                        )
                         logger.debug(f"[IPC] 原始数据: {request_data[:100]}...")
                         # 使用默认请求
                         request = {"action": "get_data"}
                     except UnicodeDecodeError as e:
-                        logger.warning(f"[IPC] 数据解码失败: {e}, 数据长度: {len(request_data)}", extra={"log_type": "SYSTEM"})
+                        logger.warning(
+                            f"[IPC] 数据解码失败: {e}, 数据长度: {len(request_data)}",
+                            extra={"log_type": "SYSTEM"},
+                        )
                         # 使用默认请求
                         request = {"action": "get_data"}
                     action = request.get("action", "get_data")
@@ -2734,7 +2904,9 @@ class MonitoringProcessV2:
                         if self.adaptive_threshold:
                             response["thresholds"] = self.adaptive_threshold.get_all_thresholds()
                         try:
-                            concurrent_tasks = self.business_metrics_collector.get_concurrent_tasks()
+                            concurrent_tasks = (
+                                self.business_metrics_collector.get_concurrent_tasks()
+                            )
                             response["concurrent_tasks"] = concurrent_tasks
                         except Exception:
                             response["concurrent_tasks"] = {
@@ -2745,35 +2917,48 @@ class MonitoringProcessV2:
                             }
 
                         # 压缩JSON输出并检查大小
-                        response_json = json.dumps(response, separators=(',', ':'))
+                        response_json = json.dumps(response, separators=(",", ":"))
                         response_bytes = response_json.encode()
 
                         # 检查数据大小，如果超过32KB则警告
                         if len(response_bytes) > 32768:
-                            logger.warning("[IPC] 响应数据过大: %d bytes，可能导致传输问题", len(response_bytes), extra={"log_type": "SYSTEM"})
+                            logger.warning(
+                                "[IPC] 响应数据过大: %d bytes，可能导致传输问题",
+                                len(response_bytes),
+                                extra={"log_type": "SYSTEM"},
+                            )
                             # 如果数据过大，尝试进一步精简
                             if len(response_bytes) > 60000:  # 接近64KB限制
-                                logger.warning("[IPC] 数据接近缓冲区限制，进行精简", extra={"log_type": "SYSTEM"})
+                                logger.warning(
+                                    "[IPC] 数据接近缓冲区限制，进行精简",
+                                    extra={"log_type": "SYSTEM"},
+                                )
                                 # 移除详细的进程信息
                                 if "process" in response and isinstance(response["process"], dict):
                                     if "processes" in response["process"]:
                                         # 只保留前10个进程
-                                        response["process"]["processes"] = response["process"]["processes"][:10]
-                                response_json = json.dumps(response, separators=(',', ':'))
+                                        response["process"]["processes"] = response["process"][
+                                            "processes"
+                                        ][:10]
+                                response_json = json.dumps(response, separators=(",", ":"))
                                 response_bytes = response_json.encode()
                                 logger.info("[IPC] 精简后数据大小: %d bytes", len(response_bytes))
 
                         # 🔧 验证响应数据完整性
                         try:
                             # 验证JSON格式
-                            json.loads(response_bytes.decode('utf-8'))
+                            json.loads(response_bytes.decode("utf-8"))
                             await self.query_pipe.write(response_bytes)
                             logger.debug(f"[IPC] 响应已发送: {len(response_bytes)} bytes")
                         except json.JSONDecodeError as e:
-                            logger.error(f"[IPC] 响应JSON格式错误: {e}", extra={"log_type": "SYSTEM"})
+                            logger.error(
+                                f"[IPC] 响应JSON格式错误: {e}", extra={"log_type": "SYSTEM"}
+                            )
                             # 发送错误响应
-                            error_response = json.dumps({"status": "error", "message": "响应数据格式错误"})
-                            await self.query_pipe.write(error_response.encode('utf-8'))
+                            error_response = json.dumps(
+                                {"status": "error", "message": "响应数据格式错误"}
+                            )
+                            await self.query_pipe.write(error_response.encode("utf-8"))
                         except Exception as e:
                             logger.error(f"[IPC] 发送响应失败: {e}", extra={"log_type": "SYSTEM"})
                     elif action == "trigger_smart":
@@ -2783,21 +2968,35 @@ class MonitoringProcessV2:
                     elif action == "test_bandwidth_full":
                         # 手动触发完整带宽测试（后台任务模式）
                         try:
-                            if self._background_bandwidth_task and not self._background_bandwidth_task.done():
-                                logger.warning("[BANDWIDTH] 测试已在运行中，拒绝新请求", extra={"log_type": "SYSTEM"})
-                                await self.query_pipe.write(json.dumps({
-                                    "status": "testing",
-                                    "message": "带宽测试正在进行中，请稍后查询结果"
-                                }).encode())
+                            if (
+                                self._background_bandwidth_task
+                                and not self._background_bandwidth_task.done()
+                            ):
+                                logger.warning(
+                                    "[BANDWIDTH] 测试已在运行中，拒绝新请求",
+                                    extra={"log_type": "SYSTEM"},
+                                )
+                                await self.query_pipe.write(
+                                    json.dumps(
+                                        {
+                                            "status": "testing",
+                                            "message": "带宽测试正在进行中，请稍后查询结果",
+                                        }
+                                    ).encode()
+                                )
                             else:
                                 self._background_bandwidth_task = asyncio.create_task(
                                     self.system_monitor.bandwidth_monitor.test_bandwidth_full_async()
                                 )
                                 logger.info("[IPC] ✅ 带宽测试后台任务已启动")
-                                await self.query_pipe.write(json.dumps({
-                                    "status": "started",
-                                    "message": "带宽测试已启动，预计30-60秒完成，请通过get_bandwidth查询结果"
-                                }).encode())
+                                await self.query_pipe.write(
+                                    json.dumps(
+                                        {
+                                            "status": "started",
+                                            "message": "带宽测试已启动，预计30-60秒完成，请通过get_bandwidth查询结果",
+                                        }
+                                    ).encode()
+                                )
 
                                 def on_bandwidth_done(task):
                                     try:
@@ -2805,38 +3004,68 @@ class MonitoringProcessV2:
                                         if result:
                                             logger.info(f"[IPC] ✅ 带宽测试后台任务完成：{result}")
                                         else:
-                                            logger.warning(f"[IPC] ⚠️ 带宽测试后台任务返回None", extra={"log_type": "SYSTEM"})
+                                            logger.warning(
+                                                f"[IPC] ⚠️ 带宽测试后台任务返回None",
+                                                extra={"log_type": "SYSTEM"},
+                                            )
                                     except Exception as e:
-                                        logger.error(f"[IPC] ❌ 带宽测试后台任务异常：{e}", exc_info=True, extra={"log_type": "SYSTEM"})
+                                        logger.error(
+                                            f"[IPC] ❌ 带宽测试后台任务异常：{e}",
+                                            exc_info=True,
+                                            extra={"log_type": "SYSTEM"},
+                                        )
 
                                 self._background_bandwidth_task.add_done_callback(on_bandwidth_done)
                         except Exception as e:
-                            logger.error(f"[IPC] 启动带宽测试失败：{e}", exc_info=True, extra={"log_type": "SYSTEM"})
-                            await self.query_pipe.write(json.dumps({"status": "error", "message": str(e)}).encode())
+                            logger.error(
+                                f"[IPC] 启动带宽测试失败：{e}",
+                                exc_info=True,
+                                extra={"log_type": "SYSTEM"},
+                            )
+                            await self.query_pipe.write(
+                                json.dumps({"status": "error", "message": str(e)}).encode()
+                            )
                     elif action == "retry_latency":
                         try:
                             logger.info("[IPC] 收到延迟监控重试请求")
                             await self.system_monitor.latency_monitor.retry_initialize()
-                            await self.query_pipe.write(json.dumps({
-                                "status": "success",
-                                "message": "延迟监控器已重新初始化"
-                            }).encode())
+                            await self.query_pipe.write(
+                                json.dumps(
+                                    {"status": "success", "message": "延迟监控器已重新初始化"}
+                                ).encode()
+                            )
                         except Exception as e:
-                            logger.error(f"[IPC] 重试延迟监控失败：{e}", exc_info=True, extra={"log_type": "SYSTEM"})
-                            await self.query_pipe.write(json.dumps({"status": "error", "message": str(e)}).encode())
+                            logger.error(
+                                f"[IPC] 重试延迟监控失败：{e}",
+                                exc_info=True,
+                                extra={"log_type": "SYSTEM"},
+                            )
+                            await self.query_pipe.write(
+                                json.dumps({"status": "error", "message": str(e)}).encode()
+                            )
                     elif action == "get_bandwidth":
                         try:
                             result = self.system_monitor.get_bandwidth_info()
                             logger.debug(f"[IPC] get_bandwidth返回：{result}")
                             # 确保返回的数据格式正确
                             if isinstance(result, dict):
-                                await self.query_pipe.write(json.dumps({"status": "success", "data": result}).encode())
+                                await self.query_pipe.write(
+                                    json.dumps({"status": "success", "data": result}).encode()
+                                )
                             else:
-                                logger.warning(f"[IPC] get_bandwidth返回数据格式错误: {type(result)}")
-                                await self.query_pipe.write(json.dumps({"status": "error", "message": "数据格式错误"}).encode())
+                                logger.warning(
+                                    f"[IPC] get_bandwidth返回数据格式错误: {type(result)}"
+                                )
+                                await self.query_pipe.write(
+                                    json.dumps(
+                                        {"status": "error", "message": "数据格式错误"}
+                                    ).encode()
+                                )
                         except Exception as e:
                             logger.error(f"[IPC] get_bandwidth失败：{e}", exc_info=True)
-                            await self.query_pipe.write(json.dumps({"status": "error", "message": str(e)}).encode())
+                            await self.query_pipe.write(
+                                json.dumps({"status": "error", "message": str(e)}).encode()
+                            )
                     elif action == "get_all":
                         try:
                             response = {
@@ -2850,9 +3079,13 @@ class MonitoringProcessV2:
                             }
                             await self.query_pipe.write(json.dumps(response).encode())
                         except Exception as e:
-                            await self.query_pipe.write(json.dumps({"status": "error", "message": str(e)}).encode())
+                            await self.query_pipe.write(
+                                json.dumps({"status": "error", "message": str(e)}).encode()
+                            )
                     else:
-                        await self.query_pipe.write(json.dumps({"error": f"Unknown action: {action}"}).encode())
+                        await self.query_pipe.write(
+                            json.dumps({"error": f"Unknown action: {action}"}).encode()
+                        )
                 except asyncio.CancelledError:
                     break
                 except Exception as e:
@@ -2906,12 +3139,10 @@ class MonitoringProcessV2:
                     start_time = time.time()
 
                     # 采集系统指标 - 异步
-                    t1 = time.time()
                     logger.debug("[FAST-METRICS] 开始采集系统指标...")
                     system_metrics = await self._collect_system_metrics()
                     logger.debug("[FAST-METRICS] 系统指标采集完成")
                     self.monitoring_data["system"] = system_metrics
-                    # logger.debug("[PERF] 系统指标采集耗时: %.3fs", time.time() - t1)  # 🔧 已优化：降低输出频率
 
                     # 学习基线
                     if self.adaptive_threshold:
@@ -2923,10 +3154,8 @@ class MonitoringProcessV2:
                         )
 
                     # 采集进程监控 - 异步
-                    t2 = time.time()
                     process_metrics = await self._collect_process_metrics()
                     self.monitoring_data["process"] = process_metrics
-                    # logger.debug("[PERF] 进程指标采集耗时: %.3fs", time.time() - t2)  # 🔧 已优化：降低输出频率
 
                     # 动态调整采集间隔 - 启动阶段使用更低频率
                     elapsed_since_start = time.time() - self.start_time
@@ -2947,30 +3176,38 @@ class MonitoringProcessV2:
                         self.monitoring_data["smart"] = self._serialize_smart_data(smart_data)
 
                     # 新增：执行瓶颈分析和场景分析
-                    t3 = time.time()
                     analysis_result = await self._perform_analysis()
                     self.monitoring_data["analysis"] = analysis_result
-                    # logger.debug("[PERF] 瓶颈分析耗时: %.3fs", time.time() - t3)  # 🔧 已优化：降低输出频率
 
                     # 将数据加入数据库写入队列
                     await self._queue_for_database()
 
                     # 总耗时统计
-                    total_time = time.time() - start_time
-                    # logger.debug("[PERF] 总采集耗时: %.3fs", total_time)  # 🔧 已优化：降低输出频率
+                    # logger.debug("[PERF] 总采集耗时: %.3fs", time.time() - start_time)  # 🔧 已优化：降低输出频率
 
                     elapsed = time.time() - start_time
                     sleep_time = max(0, current_interval - elapsed)
                     await asyncio.sleep(sleep_time)
 
                 except Exception as e:
-                    logger.error("[FAST-METRICS] 采集失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+                    logger.error(
+                        "[FAST-METRICS] 采集失败: %s",
+                        e,
+                        exc_info=True,
+                        extra={"log_type": "SYSTEM"},
+                    )
                     await asyncio.sleep(self.fast_interval)
 
-            logger.warning("[FAST-METRICS] ⚠️  while循环退出（self.running=%s）", self.running, extra={"log_type": "SYSTEM"})
+            logger.warning(
+                "[FAST-METRICS] ⚠️  while循环退出（self.running=%s）",
+                self.running,
+                extra={"log_type": "SYSTEM"},
+            )
 
         except Exception as e:
-            logger.error("[FAST-METRICS] ❌ 协程异常退出: %s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            logger.error(
+                "[FAST-METRICS] ❌ 协程异常退出: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+            )
         finally:
             logger.info("[FAST-METRICS] 快速指标采集协程停止")
 
@@ -3200,7 +3437,9 @@ class MonitoringProcessV2:
         result = {}
 
         # 支持新的字典格式 {smart_data: {...}, alerts: [...]}
-        smart_payload = smart_data.get("smart_data", smart_data) if isinstance(smart_data, dict) else smart_data
+        smart_payload = (
+            smart_data.get("smart_data", smart_data) if isinstance(smart_data, dict) else smart_data
+        )
 
         for disk_name, data in smart_payload.items():
             if isinstance(data, dict):
@@ -3229,7 +3468,7 @@ class MonitoringProcessV2:
                     "uncorrectable_errors": getattr(data, "uncorrectable_errors", 0) or 0,
                     "timestamp": (
                         getattr(data, "timestamp", None).isoformat()
-                        if getattr(data, "timestamp", None)
+                        if getattr(data, "timestamp", None) is not None
                         else None
                     ),
                 }
@@ -3653,6 +3892,20 @@ class MonitoringProcessV2:
 
         logger.info("监控进程已停止")
 
+        # 清理监控就绪信号文件
+        _cleanup_signal_file()
+
+
+def _cleanup_signal_file():
+    """清理监控就绪信号文件（监控进程内部使用）"""
+    try:
+        signal_file = Path("logs/monitor_ready.signal")
+        if signal_file.exists():
+            signal_file.unlink()
+            logger.debug("[MONITOR-PROCESS] 已清理 monitor_ready.signal 文件", extra={"log_type": "SYSTEM"})
+    except Exception as e:
+        logger.debug(f"[MONITOR-PROCESS] 清理信号文件失败（可接受）: {e}", extra={"log_type": "SYSTEM"})
+
 
 # =============================================================================
 # Part 7-10: 系统/进程监控和业务指标（来自 monitors.py）
@@ -3817,7 +4070,7 @@ class BandwidthMonitor:
 
         try:
             if os.path.exists(config_file):
-                with open(config_file, 'r', encoding='utf-8') as f:
+                with open(config_file, "r", encoding="utf-8") as f:
                     config = yaml.safe_load(f)
 
                 # 确保config是字典类型
@@ -3827,30 +4080,32 @@ class BandwidthMonitor:
                     return
 
                 # 加载默认服务器（仅加载category='domestic'的服务器）
-                servers = config.get('servers', []) or []
+                servers = config.get("servers", []) or []
                 enabled_servers = [
-                    s for s in servers
+                    s
+                    for s in servers
                     if isinstance(s, dict)
-                    and s.get('enabled', True)
-                    and s.get('category') == 'domestic'
+                    and s.get("enabled", True)
+                    and s.get("category") == "domestic"
                 ]
 
                 # 加载用户自定义服务器（仅加载category='domestic'的服务器）
-                custom_servers = config.get('custom_servers', []) or []
+                custom_servers = config.get("custom_servers", []) or []
                 enabled_custom = [
-                    s for s in custom_servers
+                    s
+                    for s in custom_servers
                     if isinstance(s, dict)
-                    and s.get('enabled', True)
-                    and s.get('category') == 'domestic'
+                    and s.get("enabled", True)
+                    and s.get("category") == "domestic"
                 ]
 
                 self._server_configs = enabled_servers + enabled_custom
 
                 # 加载策略配置（仅带宽测试相关）
-                strategy = config.get('strategy', {}) or {}
+                strategy = config.get("strategy", {}) or {}
                 if isinstance(strategy, dict):
-                    self._bandwidth_timeout = strategy.get('bandwidth_timeout', 10)
-                    self._bandwidth_max_retries = strategy.get('bandwidth_max_retries', 3)
+                    self._bandwidth_timeout = strategy.get("bandwidth_timeout", 10)
+                    self._bandwidth_max_retries = strategy.get("bandwidth_max_retries", 3)
 
                 logger.info(f"[BANDWIDTH-CONFIG] 加载 {len(self._server_configs)} 个国内测速服务器")
                 for i, server in enumerate(self._server_configs[:3], 1):
@@ -3871,24 +4126,23 @@ class BandwidthMonitor:
         """使用默认配置（当配置文件不存在或加载失败时，仅使用国内服务器）"""
         self._server_configs = [
             {
-                'name': '阿里云镜像站',
-                'category': 'domestic',
-                'ping_url': 'https://mirrors.aliyun.com',
-                'download_url': 'https://mirrors.aliyun.com/alpine/v3.19/releases/x86_64/alpine-standard-3.19.1-x86_64.iso',
-                'timeout': 10,
-                'enabled': True
+                "name": "阿里云镜像站",
+                "category": "domestic",
+                "ping_url": "https://mirrors.aliyun.com",
+                "download_url": "https://mirrors.aliyun.com/alpine/v3.19/releases/x86_64/alpine-standard-3.19.1-x86_64.iso",
+                "timeout": 10,
+                "enabled": True,
             },
             {
-                'name': '腾讯云镜像站',
-                'category': 'domestic',
-                'ping_url': 'https://mirrors.cloud.tencent.com',
-                'download_url': 'https://mirrors.cloud.tencent.com/alpine/v3.19/releases/x86_64/alpine-standard-3.19.1-x86_64.iso',
-                'timeout': 10,
-                'enabled': True
-            }
+                "name": "腾讯云镜像站",
+                "category": "domestic",
+                "ping_url": "https://mirrors.cloud.tencent.com",
+                "download_url": "https://mirrors.cloud.tencent.com/alpine/v3.19/releases/x86_64/alpine-standard-3.19.1-x86_64.iso",
+                "timeout": 10,
+                "enabled": True,
+            },
         ]
         logger.info(f"[BANDWIDTH-CONFIG] 使用默认配置: {len(self._server_configs)} 个国内服务器")
-
 
     def test_bandwidth_full(self) -> Optional[Dict[str, Any]]:
         """完整带宽测试（包含延迟和下载速度）
@@ -3901,16 +4155,20 @@ class BandwidthMonitor:
         if self._testing:
             logger.warning(
                 "带宽测试正在进行中，请稍后再试",
-                extra={"log_type": "ALERT", "scenario": "manual_speedtest"}
+                extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
             )
             self._last_error = "测试正在进行中，请稍后再试"
             return None
 
-        # 导入AI日志流程管理器
-        from backend.infrastructure.system_vnpy.unified_log_system import (
-            ai_log_process,
-            ProcessNames
-        )
+        # 导入事件日志流程管理器（新架构）
+        try:
+            from backend.infrastructure.system_vnpy.logging_system import (
+                event_log_process,
+                ProcessNames
+            )
+        except ImportError:
+            event_log_process = None
+            ProcessNames = None
 
         try:
             self._testing = True
@@ -3926,293 +4184,175 @@ class BandwidthMonitor:
 
             logger.info(
                 f"[BANDWIDTH] 准备开始测试，服务器池大小: {len(self._server_configs)}",
-                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"}
+                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
             )
 
             # 使用AI日志流程上下文管理器，生成独立AI日志文件
             # 添加异常处理，确保即使AI日志初始化失败也不影响测试
             stage_logger = logging.getLogger("task.manual_speedtest.stage")
-            
-            try:
-                with ai_log_process(
-                    ProcessNames.NETWORK_SPEEDTEST_BANDWIDTH,
-                    metadata={
-                        "test_type": "full",
-                        "max_retries": self._bandwidth_max_retries,
-                        "timeout": self._bandwidth_timeout,
-                        "server_count": len(self._server_configs)
-                    }
-                ):
-                    # 阶段节点日志（输出到Terminal）
-                    stage_logger.info(
-                        "📍 带宽测试开始: 正在连接到测速服务器...",
-                        extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
-                    )
-                    
-                    # DEBUG日志（记录测试开始）
-                    logger.debug(
-                        "[BANDWIDTH] 开始完整带宽测试",
-                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-                    )
-                    logger.debug(
-                        f"[BANDWIDTH] 测试配置: max_retries={self._bandwidth_max_retries}, "
-                        f"timeout={self._bandwidth_timeout}, server_count={len(self._server_configs)}",
-                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-                    )
-                    logger.info(
-                        "开始完整带宽测试（预计耗时10-15秒）...",
-                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-                    )
 
-                    # 使用本地集成的自研测速模块
+            # TODO: 使用AI日志流程上下文管理器（当前不可用）
+            # 执行带宽测试（无AI日志）
+            # 阶段节点日志（输出到Terminal）
+            stage_logger.info(
+                "📍 带宽测试开始: 正在连接到测速服务器...",
+                extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
+            )
 
-                    # 创建测速器
-                    logger.debug(
-                        f"[BANDWIDTH] 创建NetworkSpeedTester实例: timeout={self._bandwidth_timeout}",
-                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-                    )
-                    tester = NetworkSpeedTester(timeout=self._bandwidth_timeout, scenario="manual_speedtest")
+            # DEBUG日志（记录测试开始）
+            logger.debug(
+                "[BANDWIDTH] 开始完整带宽测试",
+                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+            )
+            logger.debug(
+                f"[BANDWIDTH] 测试配置: max_retries={self._bandwidth_max_retries}, "
+                f"timeout={self._bandwidth_timeout}, server_count={len(self._server_configs)}",
+                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+            )
+            logger.info(
+                "开始完整带宽测试（预计耗时10-15秒）...",
+                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+            )
 
-                    # 添加时间追踪
-                    test_start_time = datetime.now()
-                    logger.info(
-                        f"[BANDWIDTH] 开始完整带宽测试（随机选择+重试策略），开始时间: {test_start_time.strftime('%H:%M:%S')}",
-                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-                    )
-                    logger.debug(
-                        f"[BANDWIDTH] 测试开始时间戳: {test_start_time.isoformat()}",
-                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-                    )
+            # 使用本地集成的自研测速模块
 
-                    # 使用随机选择+重试策略的带宽测试
-                    logger.debug(
-                        "[BANDWIDTH] 调用test_bandwidth_with_random_retry方法",
-                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-                    )
-                    result_data = tester.test_bandwidth_with_random_retry(
-                        server_configs=self._server_configs,
-                        max_retries=self._bandwidth_max_retries,
-                        timeout=self._bandwidth_timeout
-                    )
-                    logger.debug(
-                        f"[BANDWIDTH] test_bandwidth_with_random_retry返回: status={result_data.get('status')}",
-                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-                    )
+            # 创建测速器
+            logger.debug(
+                f"[BANDWIDTH] 创建NetworkSpeedTester实例: timeout={self._bandwidth_timeout}",
+                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+            )
+            tester = NetworkSpeedTester(
+                timeout=self._bandwidth_timeout, scenario="manual_speedtest"
+            )
 
-                    test_elapsed = (datetime.now() - test_start_time).total_seconds()
-                    logger.info(
-                        f"[BANDWIDTH] 完整带宽测试耗时: {test_elapsed:.2f}秒",
-                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-                    )
-                    logger.debug(
-                        f"[BANDWIDTH] 测试耗时详情: {test_elapsed:.3f}秒",
-                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-                    )
+            # 添加时间追踪
+            test_start_time = datetime.now()
+            logger.info(
+                f"[BANDWIDTH] 开始完整带宽测试（随机选择+重试策略），开始时间: {test_start_time.strftime('%H:%M:%S')}",
+                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+            )
+            logger.debug(
+                f"[BANDWIDTH] 测试开始时间戳: {test_start_time.isoformat()}",
+                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+            )
 
-                    # 关闭测速器
-                    logger.debug(
-                        "[BANDWIDTH] 关闭NetworkSpeedTester实例",
-                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-                    )
-                    tester.close()
+            # 使用随机选择+重试策略的带宽测试
+            logger.debug(
+                "[BANDWIDTH] 调用test_bandwidth_with_random_retry方法",
+                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+            )
+            result_data = tester.test_bandwidth_with_random_retry(
+                server_configs=self._server_configs,
+                max_retries=self._bandwidth_max_retries,
+                timeout=self._bandwidth_timeout,
+            )
+            logger.debug(
+                f"[BANDWIDTH] test_bandwidth_with_random_retry返回: status={result_data.get('status')}",
+                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+            )
 
-                    # 处理测试结果
-                    if result_data.get('status') == 'success':
-                        # 组装结果（保持与原API兼容）
-                        result = {
-                            "download_mbps": result_data.get('download_mbps', 0),
-                            "upload_mbps": 0,  # 自研方案不支持上传测速
-                            "ping_ms": result_data.get('ping_ms', 0),
-                            "test_time": result_data.get('test_time'),
-                            "test_type": "full",
-                            "server_name": result_data.get('server_name', 'Unknown')
-                        }
+            test_elapsed = (datetime.now() - test_start_time).total_seconds()
+            logger.info(
+                f"[BANDWIDTH] 完整带宽测试耗时: {test_elapsed:.2f}秒",
+                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+            )
+            logger.debug(
+                f"[BANDWIDTH] 测试耗时详情: {test_elapsed:.3f}秒",
+                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+            )
 
-                        self._last_full_result = result
-                        self._full_test_time = datetime.now()
+            # 关闭测速器
+            logger.debug(
+                "[BANDWIDTH] 关闭NetworkSpeedTester实例",
+                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+            )
+            tester.close()
 
-                        attempt = result_data.get('attempt', 1)
-                        logger.debug(
-                            f"[BANDWIDTH] 测试结果详情: download_mbps={result['download_mbps']}, "
-                            f"ping_ms={result['ping_ms']}, server_name={result['server_name']}, "
-                            f"attempt={attempt}",
-                            extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-                        )
-                        logger.info(
-                            f"✅ 完整带宽测试完成: 下载 {result['download_mbps']}Mbps, "
-                            f"延迟 {result['ping_ms']}ms, 服务器 {result['server_name']} (第{attempt}次尝试)",
-                            extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-                        )
-                        logger.info(
-                            f"[SPEEDTEST-SAVE] 保存完整测速结果: {result}",
-                            extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-                        )
-                        
-                        # 阶段节点日志（输出到Terminal）
-                        stage_logger.info(
-                            f"✅ 带宽测试完成: 下载 {result['download_mbps']}Mbps, "
-                            f"延迟 {result['ping_ms']}ms, 耗时={test_elapsed:.2f}s",
-                            extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
-                        )
+            # 处理测试结果
+            if result_data.get("status") == "success":
+                # 组装结果（保持与原API兼容）
+                result = {
+                    "download_mbps": result_data.get("download_mbps", 0),
+                    "upload_mbps": 0,  # 自研方案不支持上传测速
+                    "ping_ms": result_data.get("ping_ms", 0),
+                    "test_time": result_data.get("test_time"),
+                    "test_type": "full",
+                    "server_name": result_data.get("server_name", "Unknown"),
+                }
 
-                        return result
-                    else:
-                        # 测试失败
-                        error_msg = result_data.get('error', '所有测速服务器均不可用')
-                        logger.debug(
-                            f"[BANDWIDTH] 测试失败详情: error={error_msg}, result_data={result_data}",
-                            extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-                        )
-                        logger.error(
-                            f"❌ 完整带宽测试失败: {error_msg}",
-                            extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
-                        )
-                        self._last_error = error_msg
+                self._last_full_result = result
+                self._full_test_time = datetime.now()
 
-                        result = {
-                            "download_mbps": -1,
-                            "upload_mbps": -1,
-                            "ping_ms": -1,
-                            "test_time": datetime.now().isoformat(),
-                            "test_type": "full",
-                            "error": error_msg
-                        }
-                        self._last_full_result = result
-                        self._full_test_time = datetime.now()
-                        
-                        # 阶段节点日志（输出到Terminal）
-                        stage_logger.warning(
-                            f"⚠️ 带宽测试失败: {error_msg}, 耗时={test_elapsed:.2f}s",
-                            extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
-                        )
-
-                        return result
-            except Exception as ai_log_error:
-                # AI日志初始化失败，继续执行测试（降级模式）
-                logger.warning(
-                    f"[BANDWIDTH] AI日志初始化失败，继续测试（降级模式）: {ai_log_error}",
-                    extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
-                )
+                attempt = result_data.get("attempt", 1)
                 logger.debug(
-                    f"[BANDWIDTH] AI日志异常详情: {type(ai_log_error).__name__}: {str(ai_log_error)}",
+                    f"[BANDWIDTH] 测试结果详情: download_mbps={result['download_mbps']}, "
+                    f"ping_ms={result['ping_ms']}, server_name={result['server_name']}, "
+                    f"attempt={attempt}",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                )
+                logger.info(
+                    f"✅ 完整带宽测试完成: 下载 {result['download_mbps']}Mbps, "
+                    f"延迟 {result['ping_ms']}ms, 服务器 {result['server_name']} (第{attempt}次尝试)",
+                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                )
+                logger.info(
+                    f"[SPEEDTEST-SAVE] 保存完整测速结果: {result}",
                     extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
                 )
 
-                # 阶段节点日志（输出到Terminal，降级模式）
+                # 阶段节点日志（输出到Terminal）
                 stage_logger.info(
-                    "📍 带宽测试开始: 正在连接到测速服务器...（降级模式）",
+                    f"✅ 带宽测试完成: 下载 {result['download_mbps']}Mbps, "
+                    f"延迟 {result['ping_ms']}ms, 耗时={test_elapsed:.2f}s",
                     extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
                 )
 
-                logger.info(
-                    "开始完整带宽测试（预计耗时10-15秒）...",
-                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-                )
-
-                # 使用本地集成的自研测速模块
-
-                # 创建测速器
+            else:
+                # 测试失败
+                error_msg = result_data.get("error", "所有测速服务器均不可用")
                 logger.debug(
-                    f"[BANDWIDTH] 创建NetworkSpeedTester实例（降级模式）: timeout={self._bandwidth_timeout}",
+                    f"[BANDWIDTH] 测试失败详情: error={error_msg}, result_data={result_data}",
                     extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
                 )
-                tester = NetworkSpeedTester(timeout=self._bandwidth_timeout, scenario="manual_speedtest")
+                logger.error(
+                    f"❌ 完整带宽测试失败: {error_msg}",
+                    extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
+                )
+                self._last_error = error_msg
 
-                # 添加时间追踪
-                test_start_time = datetime.now()
-                logger.info(
-                    f"[BANDWIDTH] 开始完整带宽测试（随机选择+重试策略），开始时间: {test_start_time.strftime('%H:%M:%S')}",
-                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                result = {
+                    "download_mbps": -1,
+                    "upload_mbps": -1,
+                    "ping_ms": -1,
+                    "test_time": datetime.now().isoformat(),
+                    "test_type": "full",
+                    "error": error_msg,
+                }
+                self._last_full_result = result
+                self._full_test_time = datetime.now()
+
+                # 阶段节点日志（输出到Terminal）
+                stage_logger.warning(
+                    f"⚠️ 带宽测试失败: {error_msg}, 耗时={test_elapsed:.2f}s",
+                    extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
                 )
 
-                # 使用随机选择+重试策略的带宽测试
-                logger.debug(
-                    "[BANDWIDTH] 调用test_bandwidth_with_random_retry方法（降级模式）",
-                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-                )
-                result_data = tester.test_bandwidth_with_random_retry(
-                    server_configs=self._server_configs,
-                    max_retries=self._bandwidth_max_retries,
-                    timeout=self._bandwidth_timeout
-                )
+                return result
+                # TODO: 注释掉AI日志except块（当前不可用）
+                # except Exception as ai_log_error:
+                #     # AI日志初始化失败，继续执行测试（降级模式）
+                #     logger.warning(
+                #         f"[BANDWIDTH] AI日志初始化失败，继续测试（降级模式）: {ai_log_error}",
+                #         extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
+                #     )
+                #     logger.debug(
+                #         f"[BANDWIDTH] AI日志异常详情: {type(ai_log_error).__name__}: {str(ai_log_error)}",
+                #         extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
+                #     )
 
-                test_elapsed = (datetime.now() - test_start_time).total_seconds()
-                logger.info(
-                    f"[BANDWIDTH] 完整带宽测试耗时: {test_elapsed:.2f}秒",
-                    extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-                )
-
-                # 关闭测速器
-                tester.close()
-
-                # 处理测试结果
-                if result_data.get('status') == 'success':
-                    # 组装结果（保持与原API兼容）
-                    result = {
-                        "download_mbps": result_data.get('download_mbps', 0),
-                        "upload_mbps": 0,  # 自研方案不支持上传测速
-                        "ping_ms": result_data.get('ping_ms', 0),
-                        "test_time": result_data.get('test_time'),
-                        "test_type": "full",
-                        "server_name": result_data.get('server_name', 'Unknown')
-                    }
-
-                    self._last_full_result = result
-                    self._full_test_time = datetime.now()
-
-                    attempt = result_data.get('attempt', 1)
-                    logger.info(
-                        f"✅ 完整带宽测试完成: 下载 {result['download_mbps']}Mbps, "
-                        f"延迟 {result['ping_ms']}ms, 服务器 {result['server_name']} (第{attempt}次尝试)",
-                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-                    )
-                    logger.info(
-                        f"[SPEEDTEST-SAVE] 保存完整测速结果: {result}",
-                        extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-                    )
-                    
-                    # 阶段节点日志（输出到Terminal，降级模式）
-                    stage_logger.info(
-                        f"✅ 带宽测试完成: 下载 {result['download_mbps']}Mbps, "
-                        f"延迟 {result['ping_ms']}ms, 耗时={test_elapsed:.2f}s（降级模式）",
-                        extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
-                    )
-
-                    return result
-                else:
-                    # 测试失败
-                    error_msg = result_data.get('error', '所有测速服务器均不可用')
-                    logger.error(
-                        f"❌ 完整带宽测试失败: {error_msg}",
-                        extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
-                    )
-                    self._last_error = error_msg
-
-                    result = {
-                        "download_mbps": -1,
-                        "upload_mbps": -1,
-                        "ping_ms": -1,
-                        "test_time": datetime.now().isoformat(),
-                        "test_type": "full",
-                        "error": error_msg
-                    }
-                    self._last_full_result = result
-                    self._full_test_time = datetime.now()
-
-                    # 阶段节点日志（输出到Terminal，降级模式）
-                    stage_logger.warning(
-                        f"⚠️ 带宽测试失败: {error_msg}, 耗时={test_elapsed:.2f}s（降级模式）",
-                        extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
-                    )
-
-                    return result
+            return result
 
         except Exception as e:
-            # DEBUG日志（记录异常发生）
-            logger.debug(
-                f"[BANDWIDTH] 带宽测试发生异常: {type(e).__name__}: {str(e)}",
-                extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-            )
             logger.error(
                 f"❌ 完整带宽测试失败: {e}",
                 exc_info=True,
@@ -4310,7 +4450,7 @@ class LatencyMonitor:
 
         try:
             if os.path.exists(config_file):
-                with open(config_file, 'r', encoding='utf-8') as f:
+                with open(config_file, "r", encoding="utf-8") as f:
                     config = yaml.safe_load(f)
 
                 if not isinstance(config, dict):
@@ -4319,10 +4459,9 @@ class LatencyMonitor:
                     return
 
                 # 加载所有启用的服务器
-                servers = config.get('servers', []) or []
+                servers = config.get("servers", []) or []
                 self._all_servers = [
-                    s for s in servers
-                    if isinstance(s, dict) and s.get('enabled', True)
+                    s for s in servers if isinstance(s, dict) and s.get("enabled", True)
                 ]
 
                 logger.info(f"[LATENCY-CONFIG] 加载 {len(self._all_servers)} 个延迟测试服务器")
@@ -4338,26 +4477,26 @@ class LatencyMonitor:
         # 使用一些常见门户网站作为默认
         self._all_servers = [
             {
-                'name': '百度',
-                'category': 'portal',
-                'ping_url': 'https://www.baidu.com',
-                'timeout': 5,
-                'enabled': True
+                "name": "百度",
+                "category": "portal",
+                "ping_url": "https://www.baidu.com",
+                "timeout": 5,
+                "enabled": True,
             },
             {
-                'name': '网易',
-                'category': 'portal',
-                'ping_url': 'https://www.163.com',
-                'timeout': 5,
-                'enabled': True
+                "name": "网易",
+                "category": "portal",
+                "ping_url": "https://www.163.com",
+                "timeout": 5,
+                "enabled": True,
             },
             {
-                'name': '搜狐',
-                'category': 'portal',
-                'ping_url': 'https://www.sohu.com',
-                'timeout': 5,
-                'enabled': True
-            }
+                "name": "搜狐",
+                "category": "portal",
+                "ping_url": "https://www.sohu.com",
+                "timeout": 5,
+                "enabled": True,
+            },
         ]
         logger.info(f"[LATENCY-CONFIG] 使用默认配置: {len(self._all_servers)} 个服务器")
 
@@ -4367,18 +4506,22 @@ class LatencyMonitor:
             if not os.path.exists(self._server_cache_file):
                 return False
 
-            with open(self._server_cache_file, 'r', encoding='utf-8') as f:
+            with open(self._server_cache_file, "r", encoding="utf-8") as f:
                 cache_data = json.load(f)
 
-            cache_date = cache_data.get('date')
-            today = datetime.now().strftime('%Y-%m-%d')
+            cache_date = cache_data.get("date")
+            today = datetime.now().strftime("%Y-%m-%d")
 
             if cache_date == today:
-                self._available_servers = cache_data.get('servers', [])
-                logger.info(f"[LATENCY-CACHE] 加载缓存成功: {len(self._available_servers)} 个可用服务器（日期: {cache_date}）")
+                self._available_servers = cache_data.get("servers", [])
+                logger.info(
+                    f"[LATENCY-CACHE] 加载缓存成功: {len(self._available_servers)} 个可用服务器（日期: {cache_date}）"
+                )
                 return True
             else:
-                logger.info(f"[LATENCY-CACHE] 缓存已过期（缓存日期: {cache_date}, 今天: {today}），将重新测试")
+                logger.info(
+                    f"[LATENCY-CACHE] 缓存已过期（缓存日期: {cache_date}, 今天: {today}），将重新测试"
+                )
                 return False
         except Exception as e:
             logger.warning(f"[LATENCY-CACHE] 加载缓存失败: {e}")
@@ -4390,14 +4533,16 @@ class LatencyMonitor:
             os.makedirs(os.path.dirname(self._server_cache_file), exist_ok=True)
 
             cache_data = {
-                'date': datetime.now().strftime('%Y-%m-%d'),
-                'servers': self._available_servers
+                "date": datetime.now().strftime("%Y-%m-%d"),
+                "servers": self._available_servers,
             }
 
-            with open(self._server_cache_file, 'w', encoding='utf-8') as f:
+            with open(self._server_cache_file, "w", encoding="utf-8") as f:
                 json.dump(cache_data, f, ensure_ascii=False, indent=2)
 
-            logger.info(f"[LATENCY-CACHE] 保存缓存成功: {len(self._available_servers)} 个可用服务器")
+            logger.info(
+                f"[LATENCY-CACHE] 保存缓存成功: {len(self._available_servers)} 个可用服务器"
+            )
         except Exception as e:
             logger.warning(f"[LATENCY-CACHE] 保存缓存失败: {e}")
 
@@ -4405,11 +4550,11 @@ class LatencyMonitor:
         """测试单个服务器延迟（异步）"""
         # 使用本地集成的自研测速模块
 
-        ping_url = server.get('ping_url')
+        ping_url = server.get("ping_url")
         if not ping_url:
             return None
 
-        timeout = server.get('timeout', self._timeout)
+        timeout = server.get("timeout", self._timeout)
 
         try:
             # 在线程池中执行同步测试（避免阻塞事件循环）
@@ -4422,12 +4567,8 @@ class LatencyMonitor:
             result = await loop.run_in_executor(None, sync_test)
             tester.close()
 
-            if result and result.get('status') == 'success':
-                return {
-                    'server': server,
-                    'ping_ms': result.get('ping_ms'),
-                    'url': ping_url
-                }
+            if result and result.get("status") == "success":
+                return {"server": server, "ping_ms": result.get("ping_ms"), "url": ping_url}
             return None
         except Exception as e:
             logger.debug(f"[LATENCY-TEST] 测试失败 {server.get('name')}: {e}")
@@ -4459,10 +4600,12 @@ class LatencyMonitor:
         available = []
         for result in results:
             if isinstance(result, dict) and result:
-                available.append(result['server'])
+                available.append(result["server"])
 
         elapsed = time.time() - start_time
-        logger.info(f"[LATENCY-INIT] 连通性测试完成（耗时{elapsed:.2f}秒）: {len(available)}/{len(self._all_servers)} 个服务器可用")
+        logger.info(
+            f"[LATENCY-INIT] 连通性测试完成（耗时{elapsed:.2f}秒）: {len(available)}/{len(self._all_servers)} 个服务器可用"
+        )
 
         # 3. 如果所有服务器都不可用，尝试降级使用镜像站
         if not available:
@@ -4493,7 +4636,7 @@ class LatencyMonitor:
 
         try:
             if os.path.exists(config_file):
-                with open(config_file, 'r', encoding='utf-8') as f:
+                with open(config_file, "r", encoding="utf-8") as f:
                     config = yaml.safe_load(f)
 
                 # 确保config是字典类型
@@ -4501,17 +4644,17 @@ class LatencyMonitor:
                     logger.warning("[LATENCY-FALLBACK] 配置文件格式错误")
                     return []
 
-                servers = config.get('servers', []) or []
+                servers = config.get("servers", []) or []
                 mirror_servers = [
                     {
-                        'name': s.get('name', 'Unknown'),
-                        'category': 'mirror',
-                        'ping_url': s.get('ping_url'),
-                        'timeout': s.get('timeout', 5),
-                        'enabled': True
+                        "name": s.get("name", "Unknown"),
+                        "category": "mirror",
+                        "ping_url": s.get("ping_url"),
+                        "timeout": s.get("timeout", 5),
+                        "enabled": True,
                     }
                     for s in servers
-                    if isinstance(s, dict) and s.get('enabled', True) and s.get('ping_url')
+                    if isinstance(s, dict) and s.get("enabled", True) and s.get("ping_url")
                 ]
 
                 # 测试镜像站连通性
@@ -4520,9 +4663,11 @@ class LatencyMonitor:
 
                 for result in results:
                     if isinstance(result, dict) and result:
-                        fallback_servers.append(result['server'])
+                        fallback_servers.append(result["server"])
 
-                logger.info(f"[LATENCY-FALLBACK] 镜像站连通性测试: {len(fallback_servers)}/{len(mirror_servers)} 个可用")
+                logger.info(
+                    f"[LATENCY-FALLBACK] 镜像站连通性测试: {len(fallback_servers)}/{len(mirror_servers)} 个可用"
+                )
         except Exception as e:
             logger.warning(f"[LATENCY-FALLBACK] 降级到镜像站失败: {e}")
 
@@ -4540,7 +4685,9 @@ class LatencyMonitor:
             return
 
         self._running = True
-        logger.info(f"[LATENCY-AUTO] 启动自动延迟测试（间隔{self._test_interval}秒，可用服务器{len(self._available_servers)}个）")
+        logger.info(
+            f"[LATENCY-AUTO] 启动自动延迟测试（间隔{self._test_interval}秒，可用服务器{len(self._available_servers)}个）"
+        )
 
         # 创建后台任务
         self._auto_test_task = asyncio.create_task(self._auto_test_loop())
@@ -4557,6 +4704,7 @@ class LatencyMonitor:
 
                 # 随机选择一个服务器
                 import random
+
                 selected_server = random.choice(self._available_servers)
 
                 # 测试延迟
@@ -4565,14 +4713,16 @@ class LatencyMonitor:
                 if result:
                     # 测试成功
                     self._last_ping_result = {
-                        "ping_ms": result['ping_ms'],
+                        "ping_ms": result["ping_ms"],
                         "test_time": datetime.now().isoformat(),
                         "test_type": "auto",
-                        "server_name": selected_server.get('name', 'Unknown')
+                        "server_name": selected_server.get("name", "Unknown"),
                     }
                     self._last_ping_time = datetime.now()
                     self._network_disconnected = False
-                    logger.debug(f"[LATENCY-AUTO] ✅ 延迟测试成功: {result['ping_ms']}ms ({selected_server.get('name')})")
+                    logger.debug(
+                        f"[LATENCY-AUTO] ✅ 延迟测试成功: {result['ping_ms']}ms ({selected_server.get('name')})"
+                    )
                 else:
                     # 测试失败，可能网络断开
                     logger.warning(f"[LATENCY-AUTO] ❌ 延迟测试失败: {selected_server.get('name')}")
@@ -5111,19 +5261,39 @@ class SystemMonitor:
                             # 查找CPU相关的时钟传感器
                             cpu_max_freqs = []
                             import math
+
                             try:
                                 for device_name, sensors in clock_sensors_raw.items():
                                     # 检查是否是CPU设备（名称包含CPU或处理器相关关键词）
-                                    if any(keyword in device_name.lower() for keyword in ["cpu", "processor", "ryzen", "intel", "core"]):
+                                    if any(
+                                        keyword in device_name.lower()
+                                        for keyword in [
+                                            "cpu",
+                                            "processor",
+                                            "ryzen",
+                                            "intel",
+                                            "core",
+                                        ]
+                                    ):
                                         if isinstance(sensors, list):
                                             for sensor in sensors:
-                                                max_val = sensor.get("max") if isinstance(sensor, dict) else None
-                                                if max_val is not None and not math.isnan(max_val) and max_val > 0:
+                                                max_val = (
+                                                    sensor.get("max")
+                                                    if isinstance(sensor, dict)
+                                                    else None
+                                                )
+                                                if (
+                                                    max_val is not None
+                                                    and not math.isnan(max_val)
+                                                    and max_val > 0
+                                                ):
                                                     cpu_max_freqs.append(max_val)
 
                                 if cpu_max_freqs:
                                     max_freq_from_lhm = max(cpu_max_freqs)
-                                    logger.debug(f"[CPU-FREQ] 从LibreHardwareMonitor获取最大频率: {max_freq_from_lhm:.2f} MHz")
+                                    logger.debug(
+                                        f"[CPU-FREQ] 从LibreHardwareMonitor获取最大频率: {max_freq_from_lhm:.2f} MHz"
+                                    )
                             except Exception:
                                 pass
             except Exception as e:
@@ -5138,9 +5308,13 @@ class SystemMonitor:
                 max_freq = cpu_freq.max if cpu_freq else 0
                 if max_freq_from_lhm and max_freq_from_lhm > max_freq:
                     max_freq = max_freq_from_lhm
-                    logger.debug(f"[CPU-FREQ] 使用LibreHardwareMonitor的最大频率（可能包含Turbo Boost）: {max_freq:.2f} MHz")
+                    logger.debug(
+                        f"[CPU-FREQ] 使用LibreHardwareMonitor的最大频率（可能包含Turbo Boost）: {max_freq:.2f} MHz"
+                    )
                 elif max_freq_from_lhm:
-                    logger.debug(f"[CPU-FREQ] LibreHardwareMonitor频率({max_freq_from_lhm:.2f}MHz)不高于psutil({max_freq:.2f}MHz)，使用psutil值")
+                    logger.debug(
+                        f"[CPU-FREQ] LibreHardwareMonitor频率({max_freq_from_lhm:.2f}MHz)不高于psutil({max_freq:.2f}MHz)，使用psutil值"
+                    )
 
                 return {
                     "cpu_count_physical": psutil.cpu_count(logical=False),
@@ -6952,15 +7126,16 @@ def main():
         handlers=[stream_handler],
     )
     logger = logging.getLogger("MonitorProcess")
-    
+
     # 🎯 获取LoggingHub并切换阶段
     try:
         from backend.infrastructure.system_vnpy import get_logging_hub
+
         hub = get_logging_hub()
         hub.set_stage("monitor_init")
-        
+
         stage_logger = logging.getLogger("startup.stage")
-        
+
         # 🎯 使用STAGE_NODE标记监控进程启动
         stage_logger.info("📍 监控进程启动开始", extra={"log_type": "STAGE_NODE"})
     except ImportError as e:
@@ -6991,57 +7166,130 @@ def main():
         logger.info(
             f"[PARENT-PID] 父进程PID（主应用）: {parent_pid}, 当前进程PID（监控进程）: {os.getpid()}"
         )
-        
+
         # 🎯 使用STAGE_NODE显示监控进程PID
-        stage_logger.info(f"✅ monitor_system.py进程已启动 (PID: {os.getpid()})", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info(
+            f"✅ monitor_system.py进程已启动 (PID: {os.getpid()})", extra={"log_type": "STAGE_NODE"}
+        )
         stage_logger.info("✅ 创建native_ipc管道", extra={"log_type": "STAGE_NODE"})
 
         monitor = MonitoringProcessV2(parent_pid=parent_pid)
         logger.info("✅ MonitoringProcessV2实例创建成功")
-        
-        # 🎯 使用STAGE_NODE显示管道创建完成
-        stage_logger.info("✅ 创建native_ipc管道完成", extra={"log_type": "STAGE_NODE"})
+        logger.debug(
+            f"[MAIN] MonitoringProcessV2实例创建完成，PID={os.getpid()}, 工作目录={os.getcwd()}",
+            extra={"log_type": "SYSTEM"}
+        )
+
+        # 🎯 使用STAGE_NODE显示管道创建完成（这些消息是预显示的，实际创建在start()中）
+        stage_logger.info("✅ 创建native_ipc管道", extra={"log_type": "STAGE_NODE"})
         stage_logger.info("  ├─ monitor_alerts ✅", extra={"log_type": "STAGE_NODE"})
         stage_logger.info("  ├─ monitor_status ✅", extra={"log_type": "STAGE_NODE"})
         stage_logger.info("  └─ monitor_query ✅", extra={"log_type": "STAGE_NODE"})
-        
-        # 🎯 监控组件初始化
+
+        # 🎯 监控组件初始化（这些消息是预显示的，实际初始化在start()中）
         stage_logger.info("✅ 监控组件初始化", extra={"log_type": "STAGE_NODE"})
         stage_logger.info("  ├─ SystemMonitor ✅", extra={"log_type": "STAGE_NODE"})
         stage_logger.info("  ├─ ProcessMonitor ✅", extra={"log_type": "STAGE_NODE"})
         stage_logger.info("  ├─ HardwareMonitor (后台异步) ⏳", extra={"log_type": "STAGE_NODE"})
         stage_logger.info("  └─ BandwidthMonitor ✅", extra={"log_type": "STAGE_NODE"})
-        
-        # 🎯 Level 1就绪
-        stage_logger.info("✅ Level 1就绪 (管道就绪)", extra={"log_type": "STAGE_NODE"})
-        
+
+        # 注意：Level 1就绪消息将在实际创建信号文件后显示
+        logger.debug(
+            "[MAIN] 准备启动事件循环并执行 monitor.start()...",
+            extra={"log_type": "SYSTEM"}
+        )
+
         logger.info("正在启动监控进程主循环...")
+        logger.debug(
+            f"[MAIN] 准备创建事件循环，PID={os.getpid()}, 工作目录={os.getcwd()}",
+            extra={"log_type": "SYSTEM"}
+        )
+        
         # 创建新的事件循环并使用当前策略
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        
-        # 🎯 看门狗启动
+        logger.info(
+            f"[MAIN] ✅ 事件循环已创建: {type(loop).__name__}, PID={os.getpid()}"
+        )
+        logger.debug(
+            f"[MAIN] 事件循环详情: {loop}, PID={os.getpid()}",
+            extra={"log_type": "SYSTEM"}
+        )
+
+        # 🎯 看门狗启动（预显示消息）
         stage_logger.info("✅ 监控进程看门狗启动", extra={"log_type": "STAGE_NODE"})
-        
-        # 🎯 完成（计算实际耗时）
+
+        # 🎯 完成（计算实际耗时）- 这是预显示消息，实际完成在start()中
         elapsed = time.time() - start_time
         stage_logger.info(f"✅ 监控进程完全就绪 ({elapsed:.1f}s)", extra={"log_type": "STAGE_NODE"})
-        
+
         # 🎯 切换到运行阶段
         try:
             hub.set_stage("monitoring")
-        except:
-            pass
-        
+            logger.debug("[MAIN] 已切换到monitoring阶段", extra={"log_type": "SYSTEM"})
+        except Exception as stage_error:
+            logger.warning(
+                f"[MAIN] 切换阶段失败: {stage_error}",
+                extra={"log_type": "SYSTEM"}
+            )
+
         try:
+            logger.info("[MAIN] 开始执行 monitor.start()...")
+            logger.debug(
+                f"[MAIN] 事件循环: {loop}, 监控进程PID: {os.getpid()}, monitor对象: {monitor}",
+                extra={"log_type": "SYSTEM"}
+            )
+            start_main_time = time.time()
+            
+            # 执行monitor.start()，这会创建管道和信号文件
+            logger.info("[MAIN] ℹ️ 调用 monitor.start()，这将创建IPC管道和信号文件...")
             loop.run_until_complete(monitor.start())
+            start_main_elapsed = time.time() - start_main_time
+            logger.info(
+                f"[MAIN] ✅ monitor.start() 执行完成，耗时={start_main_elapsed:.2f}s"
+            )
+        except Exception as start_error:
+            start_main_elapsed = time.time() - start_main_time if "start_main_time" in locals() else 0
+            logger.error(
+                f"[MAIN] ❌ monitor.start() 执行失败: {start_error}，耗时={start_main_elapsed:.2f}s",
+                exc_info=True,
+                extra={"log_type": "ALERT"}
+            )
+            logger.critical(
+                f"[MAIN] 🔥 监控进程启动失败，PID={os.getpid()}, 错误: {type(start_error).__name__}: {str(start_error)}",
+                exc_info=True,
+                extra={"log_type": "ALERT"}
+            )
+            # 确保错误信息被记录到日志文件
+            logger.error(
+                f"[MAIN] 监控进程启动异常详情: {repr(start_error)}",
+                exc_info=True,
+                extra={"log_type": "ALERT"}
+            )
+            raise
         finally:
             loop.close()
+            logger.debug("[MAIN] 事件循环已关闭", extra={"log_type": "SYSTEM"})
+            # 清理监控就绪信号文件
+            _cleanup_signal_file()
 
     except KeyboardInterrupt:
         logger.info("收到中断信号")
+        # 清理监控就绪信号文件
+        _cleanup_signal_file()
     except Exception as e:
-        logger.error("❌ 监控进程启动失败: %s", e, exc_info=True)
+        logger.error(
+            f"❌ 监控进程启动失败: {e}",
+            exc_info=True,
+            extra={"log_type": "ALERT"}
+        )
+        logger.critical(
+            f"[MAIN] 🔥 监控进程严重错误，PID={os.getpid()}, 错误类型: {type(e).__name__}, 错误消息: {str(e)}",
+            exc_info=True,
+            extra={"log_type": "ALERT"}
+        )
+        # 清理监控就绪信号文件
+        _cleanup_signal_file()
         sys.exit(1)
 
 
