@@ -1634,70 +1634,90 @@ class SymbolLoader:
             extra={"log_type": "SYSTEM", "scenario": scenario}
         )
 
-        # 获取服务器配置
+        # 使用RetryConnectionPool进行两阶段重试
+        from backend.infrastructure.tdx_asyncio.retry_connection_pool import RetryConnectionPool
+        from backend.infrastructure.data_module_vnpy.load_balancer import get_server_pool_manager
         from backend.infrastructure.tdx_asyncio.constants import HQ_HOSTS_ALL
-
-        if not HQ_HOSTS_ALL:
-            logger.debug(
-                "[SYMBOL-LOADER] 服务器列表为空",
+        
+        # 获取ServerPoolManager实例
+        pool_mgr = get_server_pool_manager()
+        
+        # 🔧 修复：确保服务器池中有可用服务器
+        # 如果服务器池中没有可用服务器，使用默认服务器列表
+        mixed_servers = pool_mgr.get_mixed_servers(shuffle=False, exclude=None)
+        if not mixed_servers:
+            logger.warning(
+                "⚠️ 服务器池中无可用服务器，使用默认服务器列表（回退方案）",
                 extra={"log_type": "SYSTEM", "scenario": scenario}
             )
-            logger.critical(
-                "[SYMBOL-LOADER] 🔥 服务器列表为空，无法加载品种，核心功能不可用",
-                extra={"log_type": "ALERT", "scenario": scenario}
-            )
-            return pd.DataFrame()
-
-        # 选择第一个可用服务器
-        server = HQ_HOSTS_ALL[0]
-        if len(server) == 3:
-            _, ip, port = server
-        else:
-            ip, port = server[0], server[1]
-
-        logger.debug(
-            f"[SYMBOL-LOADER] 选择服务器: {ip}:{port}, 服务器总数={len(HQ_HOSTS_ALL)}",
-            extra={"log_type": "SYSTEM", "scenario": scenario}
-        )
-
-        # 创建API连接
-        api = AsyncTdxHq_API()
-
-        try:
-            # 连接服务器
-            # 🔧 修复：AsyncBaseSocketClient.connect() 的参数名是 time_out（下划线），不是 timeout
-            logger.debug(
-                f"[SYMBOL-LOADER] 开始连接服务器: {ip}:{port}",
-                extra={"log_type": "SYSTEM", "scenario": scenario}
-            )
-            logger.info(
-                f"[SYMBOL-LOADER] ℹ️ 正在连接服务器: {ip}:{port}",
-                extra={"log_type": "SYSTEM", "scenario": scenario}
-            )
-            connected = await api.connect(ip, port, time_out=5.0)
-            if not connected:
-                logger.debug(
-                    f"[SYMBOL-LOADER] 连接服务器失败: {ip}:{port}",
-                    extra={"log_type": "SYSTEM", "scenario": scenario}
-                )
+            # 使用默认服务器列表（从constants.py）
+            if not HQ_HOSTS_ALL:
                 logger.error(
-                    f"[SYMBOL-LOADER] ❌ 连接服务器失败: {ip}:{port}",
+                    "[SYMBOL-LOADER] ❌ 默认服务器列表为空，无法加载品种",
                     extra={"log_type": "ALERT", "scenario": scenario}
                 )
                 return pd.DataFrame()
-
-            logger.debug(
-                f"[SYMBOL-LOADER] 已连接到服务器: {ip}:{port}",
-                extra={"log_type": "SYSTEM", "scenario": scenario}
-            )
+            
+            # 使用第一个默认服务器作为回退方案
+            server = HQ_HOSTS_ALL[0]
+            if len(server) == 3:
+                _, ip, port = server
+            else:
+                ip, port = server[0], server[1]
+            
             logger.info(
-                f"[SYMBOL-LOADER] ✅ 已连接到服务器: {ip}:{port}",
+                f"[SYMBOL-LOADER] 使用默认服务器回退方案: {ip}:{port}",
                 extra={"log_type": "SYSTEM", "scenario": scenario}
             )
+            
+            # 回退到单连接方式（使用原有逻辑）
+            # 创建临时API连接
+            api = AsyncTdxHq_API()
+            try:
+                connected = await api.connect(ip, port, time_out=5.0)
+                if not connected:
+                    logger.error(
+                        f"[SYMBOL-LOADER] ❌ 连接默认服务器失败: {ip}:{port}",
+                        extra={"log_type": "ALERT", "scenario": scenario}
+                    )
+                    return pd.DataFrame()
+                
+                logger.info(
+                    f"[SYMBOL-LOADER] ✅ 已连接到默认服务器: {ip}:{port}",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                
+                # 使用单连接方式获取品种列表（保持原有逻辑）
+                return await self._load_with_single_connection(api, scenario)
+            finally:
+                try:
+                    await api.disconnect()
+                except Exception:
+                    pass
+        
+        logger.debug(
+            "[SYMBOL-LOADER] 开始创建RetryConnectionPool: phase1_max=10, phase2_max=5",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+        
+        # 创建RetryConnectionPool
+        retry_pool = RetryConnectionPool(
+            server_pool_manager=pool_mgr,
+            phase1_max_attempts=10,
+            phase2_max_attempts=5,
+            connection_timeout=5.0,
+            enable_connection_pool=True
+        )
+        
+        logger.info(
+            "[SYMBOL-LOADER] ✅ RetryConnectionPool已创建，使用两阶段重试机制",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
 
+        try:
             # 并发获取深证和上证品种（分页获取所有数据）
             async def fetch_all_market_symbols(market: int) -> pd.DataFrame:
-                """分页获取指定市场的所有品种
+                """分页获取指定市场的所有品种（使用RetryConnectionPool实现真正并发）
                 
                 Args:
                     market: 市场代码（0=深证，1=上证）
@@ -1709,6 +1729,7 @@ class SymbolLoader:
                 start = 0
                 page_size = 1000  # 每页最多1000条
                 market_name = "深证" if market == 0 else "上证"
+                attempted_servers = []  # 每个市场独立维护已尝试服务器列表
                 
                 logger.debug(
                     f"[SYMBOL-LOADER] 开始获取{market_name}品种列表",
@@ -1727,9 +1748,19 @@ class SymbolLoader:
                             f"[SYMBOL-LOADER] 获取{market_name}第{page_num}页数据: start={start}",
                             extra={"log_type": "SYSTEM", "scenario": scenario}
                         )
-                        page_result = await api.get_security_list(market=market, start=start)
                         
-                        if page_result is None or (isinstance(page_result, list) and len(page_result) == 0):
+                        # 使用RetryConnectionPool获取分页数据
+                        async def fetch_page_task(api):
+                            """任务函数：获取分页数据"""
+                            return await api.get_security_list(market=market, start=start)
+                        
+                        page_result, success = await retry_pool.execute_with_retry(
+                            fetch_page_task,
+                            attempted_servers,
+                            scenario=scenario
+                        )
+                        
+                        if not success or page_result is None or (isinstance(page_result, list) and len(page_result) == 0):
                             # 没有更多数据，退出循环
                             logger.debug(
                                 f"[SYMBOL-LOADER] {market_name}第{page_num}页无数据，结束分页获取",
@@ -1875,9 +1906,19 @@ class SymbolLoader:
                 extra={"log_type": "SYSTEM", "scenario": scenario}
             )
             logger.info(
-                f"[SYMBOL-LOADER] ✅ 从TDX API加载品种完成，共{len(merged_df)}个品种",
+                f"[SYMBOL-LOADER] ✅ 从TDX API加载品种完成，共{len(merged_df)}个品种（使用RetryConnectionPool）",
                 extra={"log_type": "SYSTEM", "scenario": scenario}
             )
+            
+            # 关闭RetryConnectionPool
+            try:
+                await retry_pool.close_all()
+            except Exception as e:
+                logger.debug(
+                    f"[SYMBOL-LOADER] 关闭RetryConnectionPool异常: {e}",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+            
             return merged_df
 
         except Exception as e:
@@ -1898,8 +1939,201 @@ class SymbolLoader:
             return pd.DataFrame()
 
         finally:
-            # 关闭连接
-            await api.close()
+            # 确保RetryConnectionPool关闭
+            try:
+                if 'retry_pool' in locals():
+                    await retry_pool.close_all()
+            except Exception:
+                pass
+
+    async def _load_with_single_connection(self, api: AsyncTdxHq_API, scenario: str) -> pd.DataFrame:
+        """使用单连接方式加载品种列表（回退方案）
+        
+        Args:
+            api: AsyncTdxHq_API 连接实例
+            scenario: 场景标识
+            
+        Returns:
+            包含所有品种的DataFrame
+        """
+        # 并发获取深证和上证品种（分页获取所有数据）
+        async def fetch_all_market_symbols(market: int) -> pd.DataFrame:
+            """分页获取指定市场的所有品种"""
+            all_results = []
+            start = 0
+            page_size = 1000  # 每页最多1000条
+            market_name = "深证" if market == 0 else "上证"
+            
+            logger.debug(
+                f"[SYMBOL-LOADER] 开始获取{market_name}品种列表",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            logger.info(
+                f"[SYMBOL-LOADER] ℹ️ 开始获取{market_name}品种列表",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            
+            while True:
+                try:
+                    # 获取当前页数据
+                    page_num = start // page_size + 1
+                    logger.debug(
+                        f"[SYMBOL-LOADER] 获取{market_name}第{page_num}页数据: start={start}",
+                        extra={"log_type": "SYSTEM", "scenario": scenario}
+                    )
+                    page_result = await api.get_security_list(market=market, start=start)
+                    
+                    if page_result is None or (isinstance(page_result, list) and len(page_result) == 0):
+                        # 没有更多数据，退出循环
+                        logger.debug(
+                            f"[SYMBOL-LOADER] {market_name}第{page_num}页无数据，结束分页获取",
+                            extra={"log_type": "SYSTEM", "scenario": scenario}
+                        )
+                        break
+                    
+                    all_results.extend(page_result)
+                    logger.debug(
+                        f"[SYMBOL-LOADER] {market_name}第{page_num}页: 获取{len(page_result)}个品种，累计{len(all_results)}个",
+                        extra={"log_type": "SYSTEM", "scenario": scenario}
+                    )
+                    
+                    # 如果返回的数据少于1000条，说明已经是最后一页
+                    if len(page_result) < page_size:
+                        logger.debug(
+                            f"[SYMBOL-LOADER] {market_name}第{page_num}页为最后一页（返回{len(page_result)}<{page_size}）",
+                            extra={"log_type": "SYSTEM", "scenario": scenario}
+                        )
+                        break
+                    
+                    # 继续获取下一页
+                    start += page_size
+                    
+                except Exception as e:
+                    page_num = start // page_size + 1
+                    logger.debug(
+                        f"[SYMBOL-LOADER] 获取{market_name}第{page_num}页异常详情: {type(e).__name__}: {str(e)}",
+                        extra={"log_type": "SYSTEM", "scenario": scenario}
+                    )
+                    logger.error(
+                        f"[SYMBOL-LOADER] ❌ 获取{market_name}第{page_num}页失败: {e}",
+                        exc_info=True,
+                        extra={"log_type": "ALERT", "scenario": scenario}
+                    )
+                    logger.warning(
+                        f"[SYMBOL-LOADER] ⚠️ 获取{market_name}第{page_num}页失败，已获取{len(all_results)}个品种",
+                        extra={"log_type": "ALERT", "scenario": scenario}
+                    )
+                    break
+            
+            if not all_results:
+                logger.debug(
+                    f"[SYMBOL-LOADER] {market_name}未获取到任何品种",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                logger.warning(
+                    f"[SYMBOL-LOADER] ⚠️ {market_name}未获取到任何品种",
+                    extra={"log_type": "ALERT", "scenario": scenario}
+                )
+                return pd.DataFrame()
+            
+            # 转换为DataFrame
+            df = pd.DataFrame(all_results)
+            df["market"] = market
+            logger.debug(
+                f"[SYMBOL-LOADER] {market_name}品种转换为DataFrame完成: 记录数={len(df)}",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            logger.info(
+                f"[SYMBOL-LOADER] ✅ {market_name}总共获取{len(df)}个品种",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            return df
+        
+        # 并发获取两个市场的所有品种
+        logger.debug(
+            "[SYMBOL-LOADER] 开始并发获取深证和上证品种列表（单连接回退模式）",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+        logger.info(
+            "[SYMBOL-LOADER] ℹ️ 开始并发获取深证和上证品种列表（单连接回退模式）",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+        tasks = [
+            fetch_all_market_symbols(market=0),  # 深证
+            fetch_all_market_symbols(market=1),  # 上证
+        ]
+        
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # 处理结果
+        all_symbols = []
+        
+        for market, result in enumerate(results):
+            market_name = "深证" if market == 0 else "上证"
+            if isinstance(result, Exception):
+                logger.debug(
+                    f"[SYMBOL-LOADER] 获取{market_name}品种异常详情: {type(result).__name__}: {str(result)}",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                logger.error(
+                    f"[SYMBOL-LOADER] ❌ 获取{market_name}品种失败: {result}",
+                    extra={"log_type": "ALERT", "scenario": scenario}
+                )
+                continue
+            
+            if result is None or (isinstance(result, pd.DataFrame) and result.empty):
+                logger.debug(
+                    f"[SYMBOL-LOADER] {market_name}品种列表为空",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                logger.warning(
+                    f"[SYMBOL-LOADER] ⚠️ {market_name}品种列表为空",
+                    extra={"log_type": "ALERT", "scenario": scenario}
+                )
+                continue
+            
+            # result已经是DataFrame，直接添加
+            all_symbols.append(result)
+            logger.debug(
+                f"[SYMBOL-LOADER] {market_name}品种添加成功: 记录数={len(result)}",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+
+        # 合并结果
+        if not all_symbols:
+            logger.debug(
+                "[SYMBOL-LOADER] 未获取到任何品种数据",
+                extra={"log_type": "SYSTEM", "scenario": scenario}
+            )
+            logger.error(
+                "[SYMBOL-LOADER] ❌ 未获取到任何品种数据",
+                extra={"log_type": "ALERT", "scenario": scenario}
+            )
+            return pd.DataFrame()
+
+        logger.debug(
+            f"[SYMBOL-LOADER] 开始合并品种数据: 市场数={len(all_symbols)}",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+        merged_df = pd.concat(all_symbols, ignore_index=True)
+
+        # 代码标准化（补齐6位）
+        merged_df["code"] = merged_df["code"].astype(str).str.zfill(6)
+        logger.debug(
+            f"[SYMBOL-LOADER] 品种代码标准化完成: 总记录数={len(merged_df)}",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+
+        logger.debug(
+            f"[SYMBOL-LOADER] 从TDX API加载品种完成: 总记录数={len(merged_df)}",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+        logger.info(
+            f"[SYMBOL-LOADER] ✅ 从TDX API加载品种完成，共{len(merged_df)}个品种（单连接回退模式）",
+            extra={"log_type": "SYSTEM", "scenario": scenario}
+        )
+        
+        return merged_df
 
     def reload_and_classify(
         self,

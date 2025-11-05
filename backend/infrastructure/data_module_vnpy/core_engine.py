@@ -510,17 +510,36 @@ class DailyCacheManager:
             # 获取真实日期
             real_date = NetworkTimeSync.get_instance().get_real_date()
             cache_date = date.fromisoformat(cache_date_str)
+            
+            # 🔧 修复：添加系统日期作为对比，便于调试
+            system_date = date.today()
 
             # 检查是否当日缓存
             is_valid = (cache_date == real_date)
+            
+            # 🔧 修复：添加详细的调试日志（WARNING级别，确保Terminal可见）
+            logger.warning(
+                f"📅 日期验证: {cache_file.name} "
+                f"(缓存日期: {cache_date}, 真实日期: {real_date}, 系统日期: {system_date}, "
+                f"is_valid: {is_valid})",
+                extra={"log_type": "SYSTEM"}
+            )
 
             if is_valid:
                 logger.debug(f"✓ 缓存有效: {cache_file.name} (日期: {cache_date})")
             else:
+                # 🔧 修复：详细记录日期不匹配的原因
                 logger.debug(
                     f"⚠️ 缓存已过期: {cache_file.name} "
-                    f"(缓存日期: {cache_date}, 当前日期: {real_date})"
+                    f"(缓存日期: {cache_date}, 真实日期: {real_date}, 系统日期: {system_date})"
                 )
+                # 🔧 修复：如果缓存日期等于系统日期，说明网络时间同步可能有问题，使用系统日期
+                if cache_date == system_date:
+                    logger.warning(
+                        f"⚠️ 缓存日期与系统日期一致，但与网络时间不一致，使用系统日期验证",
+                        extra={"log_type": "SYSTEM"}
+                    )
+                    is_valid = True
 
             return data, cache_date_str, is_valid
 

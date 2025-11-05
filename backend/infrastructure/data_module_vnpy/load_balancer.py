@@ -551,13 +551,14 @@ class ServerPoolManager:
                 # 只有当缓存中有实际数据时才使用缓存
                 if ipv4_servers_data or ipv6_servers_data:
                     # 转换为ServerInfo
+                    # 🔧 修复：从缓存加载时，保留缓存中的 available 状态，优先使用本地缓存
                     self._ipv4_servers = [
                         ServerInfo(
                             ip=s.get("ip", ""),
                             port=s.get("port", 7709),
                             name=s.get("name", ""),
                             ping_time=s.get("ping_time", 9999.0),
-                            available=s.get("available", False),
+                            available=s.get("available", True),  # 🔧 从缓存加载，保留缓存中的状态
                             last_test=datetime.fromisoformat(s["last_test"]) if s.get("last_test") else None
                         )
                         for s in ipv4_servers_data
@@ -569,13 +570,21 @@ class ServerPoolManager:
                             port=s.get("port", 7709),
                             name=s.get("name", ""),
                             ping_time=s.get("ping_time", 9999.0),
-                            available=s.get("available", False),
+                            available=s.get("available", True),  # 🔧 从缓存加载，保留缓存中的状态
                             last_test=datetime.fromisoformat(s["last_test"]) if s.get("last_test") else None
                         )
                         for s in ipv6_servers_data
                     ]
 
-                    logger.info(f"✅ 从缓存加载服务器池: IPv4={len(self._ipv4_servers)}, IPv6={len(self._ipv6_servers)}")
+                    # 统计可用服务器数量
+                    ipv4_available = sum(1 for s in self._ipv4_servers if s.available)
+                    ipv6_available = sum(1 for s in self._ipv6_servers if s.available)
+                    
+                    logger.info(
+                        f"✅ 从缓存加载服务器池: "
+                        f"IPv4={len(self._ipv4_servers)} (可用: {ipv4_available}), "
+                        f"IPv6={len(self._ipv6_servers)} (可用: {ipv6_available})"
+                    )
                     return
                 else:
                     logger.debug("缓存文件存在但为空，将使用默认服务器列表")

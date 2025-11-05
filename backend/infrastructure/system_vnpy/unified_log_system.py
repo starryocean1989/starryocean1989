@@ -34,6 +34,8 @@ import yaml
 import gzip
 import os
 import asyncio
+import multiprocessing
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -43,6 +45,7 @@ from pathlib import Path
 from threading import Lock, RLock
 from typing import Any, Dict, List, Optional, Callable
 from functools import lru_cache
+from logging.handlers import QueueHandler, QueueListener, MemoryHandler
 
 from vnpy.event import Event, EventEngine
 
@@ -346,6 +349,250 @@ class RoutingRuleEngine:
 
 
 # =============================================================================
+# Part 4: 多进程日志收集和持久化缓冲
+# =============================================================================
+
+
+class PersistentBufferHandler(logging.Handler):
+    """持久化缓冲Handler - 防止进程崩溃导致日志丢失
+    
+    在日志系统初始化前，将日志写入临时文件。
+    日志系统就绪后，重放临时文件中的日志。
+    """
+
+    def __init__(self, buffer_dir: str = "logs/buffer", capacity: int = 10000):
+        """初始化持久化缓冲Handler.
+        
+        Args:
+            buffer_dir: 缓冲文件目录
+            capacity: 内存缓冲容量（超过此容量后写入文件）
+        """
+        super().__init__()
+        self.setLevel(logging.DEBUG)
+        
+        self.buffer_dir = Path(buffer_dir)
+        self.buffer_dir.mkdir(parents=True, exist_ok=True)
+        self.capacity = capacity
+        
+        # 内存缓冲（快速）
+        self._memory_buffer: List[logging.LogRecord] = []
+        self._lock = Lock()
+        
+        # 持久化文件
+        self._buffer_file: Optional[Path] = None
+        self._file_handle: Optional[Any] = None
+        self._init_buffer_file()
+        
+        self.logger = logging.getLogger("backend.infrastructure.system_vnpy.persistent_buffer")
+
+    def _init_buffer_file(self):
+        """初始化缓冲文件."""
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"init_buffer_{timestamp}.log"
+            self._buffer_file = self.buffer_dir / filename
+            self._file_handle = open(self._buffer_file, "w", encoding="utf-8")
+            self.logger.debug(f"持久化缓冲文件已创建: {self._buffer_file}")
+        except Exception as e:
+            self.logger.error(f"创建持久化缓冲文件失败: {e}", exc_info=True)
+            self._buffer_file = None
+            self._file_handle = None
+
+    def emit(self, record: logging.LogRecord):
+        """处理日志记录."""
+        try:
+            with self._lock:
+                # 添加到内存缓冲
+                self._memory_buffer.append(record)
+                
+                # 如果内存缓冲超过容量，写入文件
+                if len(self._memory_buffer) >= self.capacity:
+                    self._flush_to_file()
+        except Exception:
+            pass
+
+    def _flush_to_file(self):
+        """将内存缓冲刷新到文件."""
+        if not self._file_handle or not self._memory_buffer:
+            return
+        
+        try:
+            for record in self._memory_buffer:
+                # 序列化日志记录
+                record_dict = {
+                    "name": record.name,
+                    "levelno": record.levelno,
+                    "levelname": record.levelname,
+                    "pathname": record.pathname,
+                    "lineno": record.lineno,
+                    "msg": record.getMessage(),
+                    "created": record.created,
+                    "funcName": record.funcName,
+                    "exc_info": str(record.exc_info) if record.exc_info else None,
+                    "exc_text": record.exc_text if hasattr(record, "exc_text") else None,
+                }
+                line = json.dumps(record_dict, ensure_ascii=False, default=str) + "\n"
+                self._file_handle.write(line)
+            
+            self._file_handle.flush()
+            self._memory_buffer.clear()
+            self.logger.debug(f"已刷新 {self.capacity} 条日志到缓冲文件")
+        except Exception as e:
+            self.logger.error(f"刷新日志到文件失败: {e}", exc_info=True)
+
+    def replay_to_logging_hub(self, logging_hub: "LoggingHub"):
+        """重放缓冲日志到LoggingHub.
+        
+        Args:
+            logging_hub: LoggingHub实例
+        """
+        try:
+            with self._lock:
+                # 重放内存缓冲
+                for record in self._memory_buffer:
+                    # 恢复日志记录的时间戳
+                    record.created = record.created if hasattr(record, "created") else time.time()
+                    logging_hub.emit(record)
+                
+                self._memory_buffer.clear()
+                
+                # 重放文件缓冲
+                if self._buffer_file and self._buffer_file.exists():
+                    self.logger.info(f"开始重放持久化缓冲文件: {self._buffer_file}")
+                    with open(self._buffer_file, "r", encoding="utf-8") as f:
+                        for line in f:
+                            try:
+                                record_dict = json.loads(line.strip())
+                                # 重建LogRecord
+                                record = logging.LogRecord(
+                                    name=record_dict["name"],
+                                    level=record_dict["levelno"],
+                                    pathname=record_dict["pathname"],
+                                    lineno=record_dict["lineno"],
+                                    msg=record_dict["msg"],
+                                    args=(),
+                                    exc_info=None,
+                                )
+                                record.created = record_dict["created"]
+                                record.funcName = record_dict.get("funcName", "")
+                                logging_hub.emit(record)
+                            except Exception as e:
+                                self.logger.warning(f"重放日志记录失败: {e}")
+                    
+                    # 删除缓冲文件
+                    try:
+                        self._buffer_file.unlink()
+                        self.logger.info(f"缓冲文件已删除: {self._buffer_file}")
+                    except Exception:
+                        pass
+                
+                self.logger.info("持久化缓冲日志重放完成")
+        except Exception as e:
+            self.logger.error(f"重放缓冲日志失败: {e}", exc_info=True)
+
+    def close(self):
+        """关闭Handler."""
+        try:
+            with self._lock:
+                # 刷新剩余内存缓冲
+                self._flush_to_file()
+                
+                # 关闭文件
+                if self._file_handle:
+                    self._file_handle.close()
+                    self._file_handle = None
+        except Exception:
+            pass
+        finally:
+            super().close()
+
+
+class MultiProcessLogCollector:
+    """多进程日志收集器
+    
+    主进程监听器，从multiprocessing.Queue读取子进程日志，
+    并转发到主进程的LoggingHub。
+    """
+
+    def __init__(self, logging_hub: "LoggingHub", queue: Optional[multiprocessing.Queue] = None):
+        """初始化多进程日志收集器.
+        
+        Args:
+            logging_hub: 主进程的LoggingHub实例
+            queue: 共享队列（如果为None，自动创建）
+        """
+        self.logging_hub = logging_hub
+        self.queue = queue or multiprocessing.Queue(-1)
+        self.queue_listener: Optional[QueueListener] = None
+        self._running = False
+        self._lock = Lock()
+        self.logger = logging.getLogger("backend.infrastructure.system_vnpy.multiprocess_collector")
+
+    def start(self):
+        """启动日志收集."""
+        if self._running:
+            return
+        
+        try:
+            with self._lock:
+                # 创建QueueListener，将所有日志转发到LoggingHub
+                self.queue_listener = QueueListener(
+                    self.queue,
+                    self.logging_hub,
+                    respect_handler_level=True,
+                )
+                self.queue_listener.start()
+                self._running = True
+                self.logger.info("多进程日志收集器已启动")
+        except Exception as e:
+            self.logger.error(f"启动多进程日志收集器失败: {e}", exc_info=True)
+
+    def stop(self):
+        """停止日志收集."""
+        if not self._running:
+            return
+        
+        try:
+            with self._lock:
+                if self.queue_listener:
+                    self.queue_listener.stop()
+                    self.queue_listener = None
+                self._running = False
+                self.logger.info("多进程日志收集器已停止")
+        except Exception as e:
+            self.logger.error(f"停止多进程日志收集器失败: {e}", exc_info=True)
+
+    def get_queue(self) -> multiprocessing.Queue:
+        """获取共享队列（供子进程使用）.
+        
+        Returns:
+            multiprocessing.Queue实例
+        """
+        return self.queue
+
+
+def setup_subprocess_logging(queue: multiprocessing.Queue, level: int = logging.DEBUG):
+    """配置子进程日志（子进程调用）.
+    
+    Args:
+        queue: 共享的multiprocessing.Queue
+        level: 日志级别
+    """
+    # 获取根logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(level)
+    
+    # 移除所有现有handlers
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+    
+    # 添加QueueHandler
+    queue_handler = QueueHandler(queue)
+    queue_handler.setLevel(level)
+    root_logger.addHandler(queue_handler)
+
+
+# =============================================================================
 # Part 5: AI日志Handler
 # =============================================================================
 
@@ -412,22 +659,45 @@ class AILogFileHandler(logging.Handler):
             filename = f"{process_name}_{timestamp}.log"
             file_path = self.base_dir / filename
 
+            # 🔧 修复：检查是否已有相同进程名的文件存在（可能时间戳不同）
+            # 如果存在，使用已存在的文件（追加模式）；否则创建新文件
+            existing_files = list(self.base_dir.glob(f"{process_name}_*.log"))
+            if existing_files:
+                # 使用最新的同名文件（按修改时间）
+                file_path = max(existing_files, key=lambda p: p.stat().st_mtime)
+                file_exists = True
+                file_mode = "a"
+            else:
+                file_exists = False
+                file_mode = "w"
+
             # 如果支持异步I/O，使用异步队列；否则使用同步文件
             if getattr(self, "_use_async_io", False):
                 self._async_write_queue = asyncio.Queue(maxsize=10000)
                 self._async_writer_task = asyncio.create_task(self._async_writer_loop(file_path))
                 self._current_file = None  # 异步模式下不使用同步文件
             else:
-                self._current_file = open(file_path, "w", encoding=self.encoding, buffering=1)
+                self._current_file = open(file_path, file_mode, encoding=self.encoding, buffering=1)
 
             self._current_file_path = file_path
             self._current_process = process_name
             self._process_count += 1
 
-            # ✅ 重置级别统计
-            self._level_counts = {"DEBUG": 0, "INFO": 0, "WARNING": 0, "ERROR": 0, "CRITICAL": 0}
+            # ✅ 重置级别统计（但如果文件已存在，不重置，保持累计统计）
+            if not file_exists:
+                self._level_counts = {"DEBUG": 0, "INFO": 0, "WARNING": 0, "ERROR": 0, "CRITICAL": 0}
 
-            self._write_file_header(process_name, metadata)
+            # 🔧 修复：如果文件已存在（StartupAILogHandler 已写入文件头），不重复写入文件头
+            if not file_exists:
+                self._write_file_header(process_name, metadata)
+            else:
+                # 文件已存在，添加分隔符以区分不同Handler的日志
+                if self._current_file:
+                    self._current_file.write("\n" + "=" * 80 + "\n")
+                    self._current_file.write(f"统一日志系统继续写入 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    self._current_file.write("=" * 80 + "\n\n")
+                    self._current_file.flush()
+
             return file_path
 
     def _write_file_header(self, process_name: str, metadata: Optional[Dict[str, Any]] = None):
@@ -881,6 +1151,12 @@ class LoggingHub(logging.Handler):
         self._last_error_time: Optional[datetime] = None
         self._init_error_log_file()
 
+        # 有序日志队列管理
+        self._ordered_queue_enabled = False
+        self._ordered_queue: Optional[Any] = None
+        self._ordered_queue_sequence = 0
+        self._ordered_queue_lock = Lock()
+
     def _init_error_log_file(self):
         """初始化错误日志文件."""
         try:
@@ -960,6 +1236,25 @@ class LoggingHub(logging.Handler):
         # 设置输出回调
         if ordered_queue:
             ordered_queue.set_output_callback(self._output_ordered_log)
+
+    def enable_ordered_queue(self, scenario: str = "startup"):
+        """启用有序队列（启动、批量下载等并发场景）
+        
+        Args:
+            scenario: 场景名称（startup, bulk_download, data_scan等）
+        """
+        with self._ordered_queue_lock:
+            if self._ordered_queue:
+                self._ordered_queue_enabled = True
+                logger.debug(f"有序队列已启用: {scenario}")
+            else:
+                logger.warning(f"无法启用有序队列: OrderedLogQueue未设置", extra={"log_type": "SYSTEM"})
+
+    def disable_ordered_queue(self):
+        """禁用有序队列（正常运行阶段）"""
+        with self._ordered_queue_lock:
+            self._ordered_queue_enabled = False
+            logger.debug("有序队列已禁用")
 
     def start_async_worker(self, queue_size: int = 10000):
         """启动异步日志worker."""
@@ -1051,16 +1346,39 @@ class LoggingHub(logging.Handler):
 
     def _output_ordered_log(self, record: UnifiedLogRecord):
         """输出有序日志（回调函数）
-
+        
+        启动阶段的有序队列输出：根据路由规则，独立输出到Terminal和AI日志文件。
+        Terminal和AI日志文件完全独立，互不影响。
+        
         Args:
             record: UnifiedLogRecord实例
         """
-        # 输出到Terminal
-        self._to_console_direct(record)
-
-        # 输出到AI日志文件
-        if self._ai_log_handler:
-            self._to_ai_log_file(record)
+        # 获取路由目标（重新路由，确保输出到正确的目标）
+        targets = self._get_targets(record)
+        
+        # 根据路由目标输出（Terminal和AI日志文件完全独立）
+        for target in targets:
+            try:
+                if target == "console":
+                    # Terminal输出：只输出符合条件的内容（由_to_console_direct实现）
+                    self._to_console_direct(record)
+                elif target == "ai_file":
+                    # AI日志文件：无条件全量输出（由_to_ai_log_file_direct实现）
+                    self._to_ai_log_file_direct(record)
+                elif target in ("file", "logger_file"):
+                    self._to_logger_file(record)
+                elif target == "database":
+                    self._to_database_batched(record)
+                elif target == "event":
+                    self._to_event(record)
+                elif target == "event_throttled":
+                    self._to_event_throttled(record)
+                elif target == "ui_statusbar":
+                    self._to_ui_statusbar(record)
+                elif target == "ui_dialog":
+                    self._to_ui_dialog(record)
+            except Exception:
+                pass
 
     def _to_console_direct(self, record: UnifiedLogRecord):
         """直接输出到控制台（不经过有序队列）
@@ -1307,6 +1625,36 @@ class LoggingHub(logging.Handler):
 
     def _dispatch(self, targets: List[str], record: UnifiedLogRecord):
         """分发日志."""
+        # 🔧 优化：如果启用了有序队列，且目标是console或ai_file，添加到有序队列
+        if self._ordered_queue_enabled and self._ordered_log_queue:
+            # 检查是否有需要有序输出的目标
+            needs_ordered_output = any(target in ("console", "ai_file") for target in targets)
+            if needs_ordered_output:
+                with self._ordered_queue_lock:
+                    sequence = self._ordered_queue_sequence
+                    self._ordered_queue_sequence += 1
+                self._ordered_log_queue.add_log(record, sequence)
+                # 对于其他目标（database, event等），直接处理
+                for target in targets:
+                    if target not in ("console", "ai_file"):
+                        try:
+                            if target in ("file", "logger_file"):
+                                self._to_logger_file(record)
+                            elif target == "database":
+                                self._to_database_batched(record)
+                            elif target == "event":
+                                self._to_event(record)
+                            elif target == "event_throttled":
+                                self._to_event_throttled(record)
+                            elif target == "ui_statusbar":
+                                self._to_ui_statusbar(record)
+                            elif target == "ui_dialog":
+                                self._to_ui_dialog(record)
+                        except Exception:
+                            pass
+                return  # 已处理，直接返回
+        
+        # 未启用有序队列，直接分发
         for target in targets:
             try:
                 if target == "console":
@@ -1329,27 +1677,17 @@ class LoggingHub(logging.Handler):
                 pass
 
     def _to_console(self, record: UnifiedLogRecord):
-        """输出到控制台（Terminal）
-
+        """输出到控制台（Terminal）- 简洁输出
+        
+        核心原则：Terminal只显示关键信息，不影响AI日志文件。
         输出规则：
-        1. 特定类型的日志（STAGE_NODE, NOTIFICATION, ALERT）
-        2. WARNING及以上级别的日志（WARNING, ERROR, CRITICAL）
-
-        # 优化原因：统一Terminal日志输出规则，减少刷屏
-        # 问题：原先只输出特定类型，导致WARNING/ERROR不显示在Terminal，用户无法及时发现问题
-        # 解决：添加日志级别判断，WARNING及以上级别自动输出到Terminal
-        # 效果：
-        #   - Terminal保持简洁：只显示流程关键节点 + 警告错误
-        #   - AI日志文件保持详细：包含所有INFO及以上日志
-        #   - 用户体验改善：重要问题能立即在Terminal看到
-
-        # 🆕 启动阶段增强：如果启用了有序日志队列，则通过队列输出（确保顺序）
+          1. 特定类型的日志（STAGE_NODE, NOTIFICATION, ALERT）
+          2. WARNING及以上级别的日志（WARNING, ERROR, CRITICAL）
         """
         if not self._console_handler:
             return
 
-        # 检查是否应该输出到console
-        # 优化原因：双重过滤机制 - 既按类型过滤，也按级别过滤
+        # 检查是否应该输出到console（简洁输出规则）
         should_output = (
             record.type in self._console_enabled_types  # 特定类型（流程节点、通知、告警）
             or record.level >= logging.WARNING  # WARNING及以上级别（警告、错误、严重）
@@ -1358,17 +1696,14 @@ class LoggingHub(logging.Handler):
         if not should_output:
             return
 
-        # 🆕 如果启用了有序日志队列（启动阶段），则通过队列输出
+        # 启动阶段：使用有序队列确保日志按顺序输出
         if self._ordered_log_queue and self._is_startup_phase():
-            # 获取序列号
             with self._sequence_lock:
                 sequence = self._sequence_counter
                 self._sequence_counter += 1
-
-            # 添加到有序队列
             self._ordered_log_queue.add_log(record, sequence)
         else:
-            # 直接输出（非启动阶段或不使用有序队列）
+            # 非启动阶段：直接输出
             self._to_console_direct(record)
 
     def _is_startup_phase(self) -> bool:
@@ -1415,39 +1750,47 @@ class LoggingHub(logging.Handler):
         self._file_writes += 1
 
     def _to_ai_log_file(self, record: UnifiedLogRecord):
-        """输出到AI日志."""
-        # 排除自动延迟测试的日志（每10秒一次，不需要生成AI日志文件）
-        # 1. 检查日志消息中是否包含自动测试标记
-        if "[LATENCY-AUTO]" in record.message:
+        """输出到AI日志文件（全量输出，不受Terminal输出影响）
+        
+        核心原则：AI日志文件应该记录所有路由到ai_file的日志，无条件。
+        只有特定的自动测试日志会被过滤掉（避免噪音）。
+        """
+        # 检查AI日志Handler是否可用
+        if not self._ai_log_handler:
             return
 
-        # 2. 排除自动测试循环相关的函数日志
+        # 只过滤特定的自动测试日志（避免噪音）
+        # 这些过滤不影响正常的业务日志
+        message = record.message
+        if "[LATENCY-AUTO]" in message:
+            return
         if record.function in ("_test_single_latency", "_auto_test_loop", "start_auto_test"):
             if "monitor_system" in record.logger_name or "monitor_process" in record.logger_name:
                 return
+        if "[LATENCY-INIT]" in message or "[LATENCY-CACHE]" in message or "[LATENCY-FALLBACK]" in message:
+            return
+        if "speedtest_native" in record.logger_name or "SPEEDTEST" in message:
+            current_process = self._ai_log_handler.get_current_process()
+            if not current_process:  # 自动测试，排除
+                return
 
-        # 3. 排除初始化服务器时的日志（启动时一次性测试，不需要AI日志）
-        if (
-            "[LATENCY-INIT]" in record.message
-            or "[LATENCY-CACHE]" in record.message
-            or "[LATENCY-FALLBACK]" in record.message
-        ):
+        # 🔧 启动阶段：使用有序队列确保日志按顺序输出
+        if self._ordered_log_queue and self._is_startup_phase():
+            with self._sequence_lock:
+                sequence = self._sequence_counter
+                self._sequence_counter += 1
+            self._ordered_log_queue.add_log(record, sequence)
             return
 
-        # 4. 排除自动测试中调用网络测速产生的日志
-        # 手动测试会使用ai_log_process上下文管理器，会创建独立的AI日志文件
-        # 自动测试不会使用ai_log_process，所以网络测速的日志如果是自动测试产生的，
-        # 应该被排除。我们通过检查AILogFileHandler是否有活动的process来判断
-        # 注意：NetworkSpeedTester已集成到monitor_system.py，日志名称可能包含SPEEDTEST标记
-        if "speedtest_native" in record.logger_name or "SPEEDTEST" in record.message:
-            # 检查当前是否有活动的AI日志进程（手动测试会在ai_log_process中）
-            if self._ai_log_handler:
-                current_process = self._ai_log_handler.get_current_process()
-                # 如果没有活动的process，说明不在ai_log_process上下文中，可能是自动测试
-                # 排除这些日志（手动测试会设置process_name）
-                if not current_process:
-                    return
+        # 非启动阶段：直接写入AI日志文件
+        self._to_ai_log_file_direct(record)
 
+    def _to_ai_log_file_direct(self, record: UnifiedLogRecord):
+        """直接写入AI日志文件（内部方法，不经过有序队列）
+
+        Args:
+            record: UnifiedLogRecord实例
+        """
         if not self._ai_log_handler:
             return
 

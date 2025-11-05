@@ -17,6 +17,7 @@ from typing import Optional
 
 from backend.startup.stages.base import StartupStage, StageResult
 from backend.startup.context import StartupContext
+from backend.infrastructure.system_vnpy.unified_log_system import PersistentBufferHandler, MultiProcessLogCollector
 
 
 class LoggingInitStage(StartupStage):
@@ -35,6 +36,8 @@ class LoggingInitStage(StartupStage):
             description="日志系统初始化 - 初始化LoggingHub并重放缓冲日志",
         )
         self.memory_handler: Optional[MemoryHandler] = None
+        self.persistent_buffer: Optional[PersistentBufferHandler] = None
+        self.multiprocess_collector: Optional[MultiProcessLogCollector] = None
 
     async def _execute(self, context: StartupContext) -> StageResult:
         """执行日志系统初始化逻辑
@@ -63,13 +66,16 @@ class LoggingInitStage(StartupStage):
                     "[LOG-INIT] MemoryHandler不存在，创建新的MemoryHandler",
                     extra={"log_type": "SYSTEM", "scenario": "application_startup"}
                 )
-                memory_handler = self._setup_memory_logging()
+                memory_handler, persistent_buffer = self._setup_memory_logging()
+                self.persistent_buffer = persistent_buffer
             else:
                 buffered_count = len(memory_handler.buffer) if hasattr(memory_handler, 'buffer') else 0
                 logger.debug(
                     f"[LOG-INIT] 使用环境准备阶段的MemoryHandler，已缓冲{buffered_count}条日志",
                     extra={"log_type": "SYSTEM", "scenario": "application_startup"}
                 )
+                # 获取持久化缓冲Handler（如果存在）
+                self.persistent_buffer = getattr(context, '_persistent_buffer', None)
             self.memory_handler = memory_handler
 
             # 2. 初始化LoggingHub并重放缓冲日志
@@ -127,11 +133,11 @@ class LoggingInitStage(StartupStage):
                 error=e,
             )
 
-    def _setup_memory_logging(self) -> MemoryHandler:
-        """设置MemoryHandler缓冲日志系统初始化前的日志
+    def _setup_memory_logging(self) -> tuple[MemoryHandler, PersistentBufferHandler]:
+        """设置MemoryHandler和PersistentBufferHandler缓冲日志系统初始化前的日志
 
         Returns:
-            MemoryHandler: MemoryHandler实例
+            tuple[MemoryHandler, PersistentBufferHandler]: MemoryHandler和PersistentBufferHandler实例
         """
         logger = logging.getLogger("backend.startup.stages.logging_init")
         
@@ -178,17 +184,26 @@ class LoggingInitStage(StartupStage):
         logger.debug(
             f"[LOG-INIT] root logger级别已设置: {logging.getLevelName(old_level)} -> DEBUG",
             extra={"log_type": "SYSTEM", "scenario": "application_startup"}
-        )
+                  )
 
-        # 创建MemoryHandler作为临时缓冲（容量10000条）
-        # target先设为None，LoggingHub初始化后再设置
-        memory_handler = MemoryHandler(capacity=10000, target=None)
-        memory_handler.setLevel(logging.DEBUG)
-        root_logger.addHandler(memory_handler)
-        logger.debug(
-            f"[LOG-INIT] MemoryHandler已创建: 容量={memory_handler.capacity}条",
-            extra={"log_type": "SYSTEM", "scenario": "application_startup"}
-        )
+          # 创建MemoryHandler作为临时缓冲（容量10000条）
+          # target先设为None，LoggingHub初始化后再设置
+          memory_handler = MemoryHandler(capacity=10000, target=None)
+          memory_handler.setLevel(logging.DEBUG)
+          root_logger.addHandler(memory_handler)
+          logger.debug(
+              f"[LOG-INIT] MemoryHandler已创建: 容量={memory_handler.capacity}条",
+              extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+          )
+
+          # 🔧 优化：创建持久化缓冲Handler（防止进程崩溃导致日志丢失）
+          persistent_buffer = PersistentBufferHandler(buffer_dir="logs/buffer", capacity=10000)
+          persistent_buffer.setLevel(logging.DEBUG)
+          root_logger.addHandler(persistent_buffer)
+          logger.debug(
+              "[LOG-INIT] PersistentBufferHandler已创建",
+              extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+          )
 
         # 创建启动logger
         from backend.core.base import setup_logging as base_setup_logging
@@ -219,7 +234,7 @@ class LoggingInitStage(StartupStage):
             extra={"log_type": "SYSTEM", "scenario": "application_startup"}
         )
 
-        return memory_handler
+        return memory_handler, persistent_buffer
 
     async def _initialize_logging_hub(
         self, memory_handler: MemoryHandler, context: StartupContext
@@ -317,19 +332,33 @@ class LoggingInitStage(StartupStage):
             
             # 注意：场景信息通过日志记录的extra参数传递，无需全局设置
 
-            # 4. 集成有序日志队列（启动阶段）
-            from backend.startup.startup_logging.startup_logger import OrderedLogQueue
+                          # 4. 集成多进程日志收集器
+              logger.debug(
+                  "[LOG-INIT] 开始创建多进程日志收集器",
+                  extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+              )
+              multiprocess_collector = MultiProcessLogCollector(logging_hub)
+              multiprocess_collector.start()
+              self.multiprocess_collector = multiprocess_collector
+              logger.debug(
+                  "[LOG-INIT] 多进程日志收集器已启动",
+                  extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+              )
 
-            logger.debug(
-                "[LOG-INIT] 开始创建有序日志队列",
-                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
-            )
-            ordered_queue = OrderedLogQueue(max_wait_seconds=30)
-            logging_hub.set_ordered_log_queue(ordered_queue)
-            logger.debug(
-                f"[LOG-INIT] 有序日志队列已创建: 最大等待时间={ordered_queue.max_wait_seconds}秒",
-                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
-            )
+              # 5. 集成有序日志队列（启动阶段）
+              from backend.startup.startup_logging.startup_logger import OrderedLogQueue
+
+              logger.debug(
+                  "[LOG-INIT] 开始创建有序日志队列",
+                  extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+              )
+              ordered_queue = OrderedLogQueue(max_wait_seconds=30)
+              logging_hub.set_ordered_log_queue(ordered_queue)
+              logging_hub.enable_ordered_queue(scenario="startup")
+              logger.debug(
+                  f"[LOG-INIT] 有序日志队列已创建并启用: 最大等待时间={ordered_queue.max_wait_seconds}秒",
+                  extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+              )
 
             stage_logger.info(
                 "✅ 有序日志队列初始化完成", 
@@ -363,7 +392,7 @@ class LoggingInitStage(StartupStage):
                 extra={"log_type": "SYSTEM", "scenario": "application_startup"}
             )
 
-            # 8. 移除MemoryHandler（已完成使命）
+                          # 9. 移除MemoryHandler（已完成使命）
             root_logger.removeHandler(memory_handler)
             memory_handler.close()
             logger.debug(

@@ -139,124 +139,6 @@ class OrderedLogQueue:
             self._check_thread.join(timeout=1.0)
 
 
-class StartupAILogHandler:
-    """启动专用AI日志处理器
-
-    每次启动生成一个日志文件到 logs/ai/，包含所有级别的日志（DEBUG+）。
-    """
-
-    def __init__(self):
-        """初始化启动AI日志处理器"""
-        self.current_log_file: Optional[Path] = None
-        self.log_dir = Path("logs/ai")
-        self.log_dir.mkdir(parents=True, exist_ok=True)
-        self._file_handle: Optional[Any] = None
-        self._lock = threading.Lock()
-
-    def start_startup_log(self, metadata: Optional[Dict[str, Any]] = None) -> Path:
-        """开始启动日志文件
-
-        Args:
-            metadata: 元数据（可选）
-
-        Returns:
-            Path: 日志文件路径
-        """
-        with self._lock:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"application_startup_{timestamp}.log"
-            self.current_log_file = self.log_dir / filename
-
-            # 写入文件头
-            try:
-                self._file_handle = open(self.current_log_file, "w", encoding="utf-8")
-                self._file_handle.write("=" * 80 + "\n")
-                self._file_handle.write(f"AI助手专用日志文件 - application_startup\n")
-                self._file_handle.write(f"开始时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                if metadata:
-                    self._file_handle.write(f"元数据: {metadata}\n")
-                self._file_handle.write("=" * 80 + "\n\n")
-                self._file_handle.flush()
-            except Exception as e:
-                logger.exception(f"创建启动日志文件失败: {e}")
-                self._file_handle = None
-
-            return self.current_log_file
-
-    def write_log(self, record: Any):
-        """写入日志到文件
-
-        Args:
-            record: 日志记录（UnifiedLogRecord）
-        """
-        if not self._file_handle:
-            return
-
-        try:
-            with self._lock:
-                # 格式化日志
-                log_line = self._format_log(record)
-                self._file_handle.write(log_line)
-                self._file_handle.flush()
-        except Exception as e:
-            logger.exception(f"写入日志到文件失败: {e}")
-
-    def _format_log(self, record: Any) -> str:
-        """格式化日志记录
-
-        Args:
-            record: 日志记录（UnifiedLogRecord）
-
-        Returns:
-            str: 格式化后的日志字符串
-        """
-        timestamp = record.timestamp.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-        level_name = logging.getLevelName(record.level)
-        logger_name = record.logger_name or "unknown"
-
-        # 构建日志行
-        log_line = f"[{level_name}] {timestamp} - {logger_name} - {record.message}"
-
-        # 添加异常信息
-        if record.exception:
-            log_line += f"\n{record.exception}"
-
-        log_line += "\n"
-
-        return log_line
-
-    def end_startup_log(self, success: bool = True, summary: Optional[str] = None):
-        """结束启动日志文件
-
-        Args:
-            success: 是否成功
-            summary: 摘要信息（可选）
-        """
-        if not self._file_handle:
-            return
-
-        try:
-            with self._lock:
-                self._file_handle.write("\n" + "=" * 80 + "\n")
-                self._file_handle.write(f"流程结束时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                self._file_handle.write(f"执行结果: {'✅ 成功' if success else '❌ 失败'}\n")
-                if summary:
-                    self._file_handle.write(f"摘要: {summary}\n")
-                self._file_handle.write("=" * 80 + "\n")
-
-                self._file_handle.close()
-                self._file_handle = None
-        except Exception as e:
-            logger.exception(f"结束启动日志文件失败: {e}")
-
-    def get_current_file_path(self) -> Optional[Path]:
-        """获取当前日志文件路径
-
-        Returns:
-            Path: 当前日志文件路径，如果未创建返回None
-        """
-        return self.current_log_file
-
 
 class StartupLogger:
     """启动专用日志记录器
@@ -272,34 +154,22 @@ class StartupLogger:
         """初始化启动日志记录器"""
         self.logger = logging.getLogger("startup.stage")
         self.ordered_queue: Optional[OrderedLogQueue] = None
-        self.ai_log_handler: Optional[StartupAILogHandler] = None
         self._sequence_counter = 0
         self._sequence_lock = threading.Lock()
         self._is_startup_phase = True  # 是否处于启动阶段
 
-    def initialize(self, enable_ordered_queue: bool = True, enable_ai_log: bool = True):
+    def initialize(self, enable_ordered_queue: bool = True):
         """初始化日志系统
+
+        🔧 优化：已删除StartupAILogHandler，AI日志统一通过LoggingHub的AILogFileHandler处理
 
         Args:
             enable_ordered_queue: 是否启用有序队列（启动阶段建议启用）
-            enable_ai_log: 是否启用AI日志文件（启动阶段建议启用）
         """
         if enable_ordered_queue:
             self.ordered_queue = OrderedLogQueue(max_wait_seconds=30)
-            # 设置输出回调（输出到Terminal和AI文件）
+            # 设置输出回调（只输出到Terminal，AI日志由LoggingHub统一处理）
             self.ordered_queue.set_output_callback(self._output_record)
-
-        if enable_ai_log:
-            self.ai_log_handler = StartupAILogHandler()
-            # 开始启动日志文件
-            metadata = {
-                "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
-                "platform": sys.platform,
-            }
-            log_file = self.ai_log_handler.start_startup_log(metadata)
-            # 不在Terminal输出，因为这会干扰环境准备阶段的输出格式
-            # 只在AI日志文件中记录
-            # self.logger.info(f"启动AI日志文件: {log_file}")
 
     def stage_start(self, stage_name: str):
         """阶段开始日志
@@ -374,15 +244,13 @@ class StartupLogger:
     def _output_record(self, record: Any):
         """输出日志记录（回调函数）
 
+        🔧 优化：只输出到Terminal，AI日志由LoggingHub的AILogFileHandler统一处理
+
         Args:
             record: 日志记录（UnifiedLogRecord）
         """
         # 输出到Terminal（通过标准logger）
         self.logger.info(record.message, extra={"log_type": "STAGE_NODE"})
-
-        # 输出到AI日志文件
-        if self.ai_log_handler:
-            self.ai_log_handler.write_log(record)
 
     def close(self, success: bool = True, summary: Optional[str] = None):
         """关闭日志系统
@@ -395,7 +263,6 @@ class StartupLogger:
         if self.ordered_queue:
             self.ordered_queue.close()
 
-        # 结束AI日志文件
-        if self.ai_log_handler:
-            self.ai_log_handler.end_startup_log(success, summary)
+        # 🔧 修复：不再调用 StartupAILogHandler.end_startup_log
+        # AI日志文件的结束由统一日志系统的 end_ai_process 处理（在 orchestrator 中调用）
 
