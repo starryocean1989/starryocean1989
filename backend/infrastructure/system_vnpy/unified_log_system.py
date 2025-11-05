@@ -652,31 +652,113 @@ class AILogFileHandler(logging.Handler):
 
     def start_process(self, process_name: str, metadata: Optional[Dict[str, Any]] = None) -> Path:
         """开始新流程."""
-        with self._lock:
-            self._close_current_file()
+        try:
+            with self._lock:
+                # 🔧 修复：确保目录存在，如果不存在则创建
+                try:
+                    self.base_dir.mkdir(parents=True, exist_ok=True)
+                except Exception as e:
+                    logger.error(
+                        f"[AILogFileHandler] 创建日志目录失败: {self.base_dir}, 错误: {e}",
+                        exc_info=True,
+                        extra={"log_type": "SYSTEM"}
+                    )
+                    raise RuntimeError(f"无法创建日志目录 {self.base_dir}: {e}") from e
 
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"{process_name}_{timestamp}.log"
-            file_path = self.base_dir / filename
+                self._close_current_file()
 
-            # 🔧 修复：检查是否已有相同进程名的文件存在（可能时间戳不同）
-            # 如果存在，使用已存在的文件（追加模式）；否则创建新文件
-            existing_files = list(self.base_dir.glob(f"{process_name}_*.log"))
-            if existing_files:
-                # 使用最新的同名文件（按修改时间）
-                file_path = max(existing_files, key=lambda p: p.stat().st_mtime)
-                file_exists = True
-                file_mode = "a"
-            else:
-                file_exists = False
-                file_mode = "w"
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"{process_name}_{timestamp}.log"
+                file_path = self.base_dir / filename
 
-            # 如果支持异步I/O，使用异步队列；否则使用同步文件
+                # 🔧 修复：检查是否已有相同进程名的文件存在（可能时间戳不同）
+                # 如果存在，使用已存在的文件（追加模式）；否则创建新文件
+                try:
+                    existing_files = list(self.base_dir.glob(f"{process_name}_*.log"))
+                    if existing_files:
+                        # 使用最新的同名文件（按修改时间）
+                        file_path = max(existing_files, key=lambda p: p.stat().st_mtime)
+                        file_exists = True
+                        file_mode = "a"
+                    else:
+                        file_exists = False
+                        file_mode = "w"
+                except Exception as e:
+                    logger.error(
+                        f"[AILogFileHandler] 检查现有文件失败: {e}",
+                        exc_info=True,
+                        extra={"log_type": "SYSTEM"}
+                    )
+                    file_exists = False
+                    file_mode = "w"
+
+            # 🔧 修复：确保文件先被创建（同步创建），然后再启动异步写入
+            # 这样可以确保文件头能够正确写入
             if getattr(self, "_use_async_io", False):
+                # 异步模式：先同步创建文件并写入文件头，然后启动异步写入循环
+                # 如果是新文件，先创建并写入文件头
+                if not file_exists:
+                    # 同步创建文件并写入文件头
+                    with open(file_path, "w", encoding=self.encoding) as f:
+                        header = self._build_file_header(process_name, file_path, metadata)
+                        f.write(header)
+                        f.flush()
+                
+                # 启动异步写入循环（追加模式）
                 self._async_write_queue = asyncio.Queue(maxsize=10000)
-                self._async_writer_task = asyncio.create_task(self._async_writer_loop(file_path))
-                self._current_file = None  # 异步模式下不使用同步文件
+                # 🔧 修复：确保在事件循环中启动异步任务，如果失败则降级到同步模式
+                async_task_started = False
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        try:
+                            self._async_writer_task = asyncio.create_task(self._async_writer_loop(file_path))
+                            # 验证任务是否成功创建
+                            if self._async_writer_task and not self._async_writer_task.done():
+                                async_task_started = True
+                                self._current_file = None  # 异步模式下不使用同步文件
+                            else:
+                                # 任务创建失败，降级到同步模式
+                                logger.warning(
+                                    "[AILogFileHandler] 异步写入任务创建失败，降级到同步模式",
+                                    extra={"log_type": "SYSTEM"}
+                                )
+                                self._use_async_io = False
+                                self._async_write_queue = None
+                                self._async_writer_task = None
+                                self._current_file = open(file_path, file_mode, encoding=self.encoding, buffering=1)
+                        except Exception as e:
+                            # 异步任务创建异常，降级到同步模式
+                            logger.warning(
+                                f"[AILogFileHandler] 异步写入任务创建异常: {e}，降级到同步模式",
+                                extra={"log_type": "SYSTEM"}
+                            )
+                            self._use_async_io = False
+                            self._async_write_queue = None
+                            self._async_writer_task = None
+                            self._current_file = open(file_path, file_mode, encoding=self.encoding, buffering=1)
+                    else:
+                        # 如果没有运行中的事件循环，降级到同步模式
+                        logger.warning(
+                            "[AILogFileHandler] 事件循环未运行，异步写入降级到同步模式",
+                            extra={"log_type": "SYSTEM"}
+                        )
+                        self._use_async_io = False
+                        self._async_write_queue = None
+                        self._async_writer_task = None
+                        self._current_file = open(file_path, file_mode, encoding=self.encoding, buffering=1)
+                except RuntimeError:
+                    # 没有事件循环，降级到同步模式
+                    logger.warning(
+                        "[AILogFileHandler] 无法获取事件循环，异步写入降级到同步模式",
+                        extra={"log_type": "SYSTEM"}
+                    )
+                    self._use_async_io = False
+                    self._async_write_queue = None
+                    self._async_writer_task = None
+                    self._current_file = open(file_path, file_mode, encoding=self.encoding, buffering=1)
             else:
+                # 同步模式：直接打开文件
                 self._current_file = open(file_path, file_mode, encoding=self.encoding, buffering=1)
 
             self._current_file_path = file_path
@@ -689,16 +771,69 @@ class AILogFileHandler(logging.Handler):
 
             # 🔧 修复：如果文件已存在（StartupAILogHandler 已写入文件头），不重复写入文件头
             if not file_exists:
-                self._write_file_header(process_name, metadata)
+                # 异步模式下文件头已经在上面同步写入了，这里只需要同步模式写入
+                if not getattr(self, "_use_async_io", False) and self._current_file:
+                    self._write_file_header(process_name, metadata)
             else:
                 # 文件已存在，添加分隔符以区分不同Handler的日志
-                if self._current_file:
+                if not getattr(self, "_use_async_io", False) and self._current_file:
                     self._current_file.write("\n" + "=" * 80 + "\n")
                     self._current_file.write(f"统一日志系统继续写入 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
                     self._current_file.write("=" * 80 + "\n\n")
                     self._current_file.flush()
+                elif getattr(self, "_use_async_io", False) and self._async_write_queue:
+                    # 异步模式：通过队列写入分隔符
+                    separator = "\n" + "=" * 80 + "\n"
+                    separator += f"统一日志系统继续写入 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    separator += "=" * 80 + "\n\n"
+                    try:
+                        self._async_write_queue.put_nowait(separator)
+                    except asyncio.QueueFull:
+                        self._async_write_sync(separator)
+
+            # 🔧 修复：验证文件是否成功创建（必须在所有分支后）
+            if not file_path.exists():
+                raise RuntimeError(f"AI日志文件创建失败: {file_path}")
+
+            logger.info(
+                f"[AILogFileHandler] AI日志文件已创建: {file_path.absolute()}",
+                extra={"log_type": "SYSTEM"}
+            )
 
             return file_path
+        except Exception as e:
+            logger.error(
+                f"[AILogFileHandler] 启动AI日志流程失败: {process_name}, 错误: {e}",
+                exc_info=True,
+                extra={"log_type": "SYSTEM"}
+            )
+            raise
+
+    def _build_file_header(self, process_name: str, file_path: Path, metadata: Optional[Dict[str, Any]] = None) -> str:
+        """构建文件头字符串（不写入文件）."""
+        header = f"""{'=' * 80}
+AI助手专用日志文件 - {process_name}
+{'=' * 80}
+流程名称: {process_name}
+开始时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+文件路径: {file_path}
+日志级别: DEBUG及以上所有级别
+日志用途: AI助手分析、问题诊断、性能分析
+
+说明：
+  1. 本文件包含完整的DEBUG/INFO/WARNING/ERROR/CRITICAL日志
+  2. Terminal输出经过简化，仅显示关键节点
+  3. 本文件提供完整上下文，供AI助手深度分析
+  4. 异常时包含完整堆栈信息
+  5. 实时写入，确保崩溃时可追溯
+"""
+        if metadata:
+            header += "\n流程元数据:\n"
+            for key, value in metadata.items():
+                header += f"  - {key}: {value}\n"
+
+        header += f"\n{'=' * 80}\n\n"
+        return header
 
     def _write_file_header(self, process_name: str, metadata: Optional[Dict[str, Any]] = None):
         """写入文件头."""
@@ -826,6 +961,7 @@ AI助手专用日志文件 - {process_name}
             compat_aopen = getattr(self, "_compat_aopen", None)
             if not compat_aopen:
                 return
+            # 🔧 修复：使用追加模式（"ab"），文件头已在 start_process 中同步写入
             # aopen默认使用二进制模式，需要手动编码
             async with await compat_aopen(file_path, "ab") as f:
                 while True:
@@ -909,17 +1045,66 @@ AI助手专用日志文件 - {process_name}
                 message_with_newline = msg + "\n"
 
                 # 根据模式选择写入方式
-                if getattr(self, "_use_async_io", False) and self._async_write_queue:
-                    # 异步写入
+                if getattr(self, "_use_async_io", False) and self._async_write_queue and self._async_writer_task:
+                    # 异步写入：检查任务是否还在运行
                     try:
-                        self._async_write_queue.put_nowait(message_with_newline)
-                    except asyncio.QueueFull:
-                        # 队列满时降级到同步写入
-                        self._async_write_sync(message_with_newline)
+                        if self._async_writer_task.done():
+                            # 异步任务已结束（可能是异常退出），降级到同步模式
+                            logger.warning(
+                                "[AILogFileHandler] 异步写入任务已结束，降级到同步模式",
+                                extra={"log_type": "SYSTEM"}
+                            )
+                            self._use_async_io = False
+                            self._async_write_queue = None
+                            self._async_writer_task = None
+                            # 打开同步文件（追加模式）
+                            if not self._current_file:
+                                self._current_file = open(self._current_file_path, "a", encoding=self.encoding, buffering=1)
+                            self._current_file.write(message_with_newline)
+                            self._current_file.flush()
+                        else:
+                            # 任务正在运行，使用异步写入
+                            try:
+                                self._async_write_queue.put_nowait(message_with_newline)
+                            except asyncio.QueueFull:
+                                # 队列满时降级到同步写入
+                                self._async_write_sync(message_with_newline)
+                    except Exception as e:
+                        # 异步写入异常，降级到同步模式
+                        logger.warning(
+                            f"[AILogFileHandler] 异步写入异常: {e}，降级到同步模式",
+                            extra={"log_type": "SYSTEM"}
+                        )
+                        self._use_async_io = False
+                        self._async_write_queue = None
+                        self._async_writer_task = None
+                        # 打开同步文件（追加模式）
+                        if not self._current_file:
+                            self._current_file = open(self._current_file_path, "a", encoding=self.encoding, buffering=1)
+                        self._current_file.write(message_with_newline)
+                        self._current_file.flush()
                 elif self._current_file:
                     # 同步写入
                     self._current_file.write(message_with_newline)
                     self._current_file.flush()
+                else:
+                    # 如果既没有异步队列也没有同步文件，尝试打开同步文件
+                    try:
+                        if self._current_file_path:
+                            self._current_file = open(self._current_file_path, "a", encoding=self.encoding, buffering=1)
+                            self._current_file.write(message_with_newline)
+                            self._current_file.flush()
+                        else:
+                            logger.error(
+                                "[AILogFileHandler] 无法写入日志：既没有异步队列也没有同步文件，且_current_file_path为None",
+                                extra={"log_type": "SYSTEM"}
+                            )
+                    except Exception as e:
+                        logger.error(
+                            f"[AILogFileHandler] 无法打开同步文件进行写入: {e}",
+                            exc_info=True,
+                            extra={"log_type": "SYSTEM"}
+                        )
 
                 self._total_logs += 1
             except Exception as e:
@@ -1145,11 +1330,9 @@ class LoggingHub(logging.Handler):
         self._db_last_flush = time.time()
         self._db_flush_interval = 5.0
 
-        # 错误日志文件
-        self._error_log_file: Optional[logging.FileHandler] = None
+        # 错误统计（错误日志将写入当前活动的AI日志文件，而不是单独的错误日志文件）
         self._error_count = 0
         self._last_error_time: Optional[datetime] = None
-        self._init_error_log_file()
 
         # 有序日志队列管理
         self._ordered_queue_enabled = False
@@ -1157,46 +1340,36 @@ class LoggingHub(logging.Handler):
         self._ordered_queue_sequence = 0
         self._ordered_queue_lock = Lock()
 
-    def _init_error_log_file(self):
-        """初始化错误日志文件."""
-        try:
-            error_log_dir = Path("logs/ai")
-            error_log_dir.mkdir(parents=True, exist_ok=True)
-            error_log_path = error_log_dir / "logging_errors.log"
-            self._error_log_file = logging.FileHandler(error_log_path, mode="a", encoding="utf-8")
-            self._error_log_file.setLevel(logging.ERROR)
-            self._error_log_file.setFormatter(
-                logging.Formatter(
-                    "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-                    datefmt="%Y-%m-%d %H:%M:%S",
-                )
-            )
-        except Exception:
-            # 错误日志文件初始化失败不影响主功能
-            self._error_log_file = None
-
     def _log_error_to_file(self, error_type: str, error_message: str, exc_info=None):
-        """记录错误到错误日志文件."""
-        if not self._error_log_file:
-            return
-
+        """记录错误到当前活动的AI日志文件（统一日志输出）.
+        
+        🔧 优化：错误日志不再写入单独的错误日志文件，
+        而是写入当前活动的AI日志文件，确保所有日志集中在一个文件中。
+        """
         try:
             self._error_count += 1
             self._last_error_time = datetime.now()
 
-            # 创建错误日志记录（避免无限递归，不通过LoggingHub）
-            error_record = logging.LogRecord(
-                name="LoggingHub.Error",
-                level=logging.ERROR,
-                pathname="",
-                lineno=0,
-                msg=f"[{error_type}] {error_message}",
-                args=(),
-                exc_info=exc_info,
-            )
-            error_record.created = time.time()
-            self._error_log_file.emit(error_record)
-            self._error_log_file.flush()
+            # 将错误日志写入当前活动的AI日志文件
+            # 通过AILogFileHandler直接写入，避免无限递归（不通过LoggingHub）
+            if self._ai_log_handler and hasattr(self._ai_log_handler, '_current_file'):
+                try:
+                    # 创建错误日志记录
+                    error_record = logging.LogRecord(
+                        name="LoggingHub.Error",
+                        level=logging.ERROR,
+                        pathname="",
+                        lineno=0,
+                        msg=f"[日志系统错误] [{error_type}] {error_message}",
+                        args=(),
+                        exc_info=exc_info,
+                    )
+                    error_record.created = time.time()
+                    # 直接通过AILogFileHandler写入，避免递归
+                    self._ai_log_handler.emit(error_record)
+                except Exception:
+                    # AI日志Handler写入失败，静默处理（避免递归）
+                    pass
         except Exception:
             # 错误日志记录失败不影响主功能
             pass
@@ -2009,8 +2182,7 @@ class LoggingHub(logging.Handler):
         self.stop_async_worker()
 
         self._flush_db_batch()
-        if self._error_log_file:
-            self._error_log_file.close()
+        # 🔧 优化：错误日志已统一写入AI日志文件，无需单独关闭错误日志文件
         super().close()
 
 
@@ -2021,15 +2193,34 @@ class LoggingHub(logging.Handler):
 
 def start_ai_process(process_name: str, metadata: Optional[Dict[str, Any]] = None) -> Path:
     """开始AI日志流程."""
-    handler = get_ai_log_handler()
-    file_path = handler.start_process(process_name, metadata)
+    try:
+        handler = get_ai_log_handler()
+        file_path = handler.start_process(process_name, metadata)
 
-    logger = logging.getLogger(f"ai.process.{process_name}")
-    logger.info(f"🚀 流程开始: {process_name}")
-    if metadata:
-        logger.info(f"流程元数据: {metadata}")
+        # 🔧 修复：验证文件是否成功创建
+        if not file_path or not file_path.exists():
+            raise RuntimeError(f"AI日志文件创建失败: {file_path}")
 
-    return file_path
+        # 🔧 修复：在文件创建后再记录日志，确保日志能写入AI日志文件
+        # 注意：此时_current_file_path已经被设置，日志可以正常写入
+        logger = logging.getLogger(f"ai.process.{process_name}")
+        logger.info(f"🚀 流程开始: {process_name}")
+        if metadata:
+            logger.info(f"流程元数据: {metadata}")
+
+        return file_path
+    except Exception as e:
+        # 🔧 修复：确保异常被记录，不要吞掉
+        import sys
+        error_logger = logging.getLogger("backend.infrastructure.system_vnpy.unified_log_system")
+        error_logger.error(
+            f"[start_ai_process] 启动AI日志流程失败: {process_name}, 错误: {e}",
+            exc_info=True,
+            extra={"log_type": "SYSTEM"}
+        )
+        # 打印到stderr，确保用户能看到错误
+        print(f"[错误] AI日志文件创建失败: {process_name}, 错误: {e}", file=sys.stderr)
+        raise
 
 
 def end_ai_process(success: bool = True, summary: Optional[str] = None):

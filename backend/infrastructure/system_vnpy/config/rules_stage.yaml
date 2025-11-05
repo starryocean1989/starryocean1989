@@ -32,8 +32,11 @@ stage_startup:
 
   # 启动阶段的异常详细化
   ERROR:
-    level: [file, console, database, event]
-    include_traceback: true  # 🆕 包含完整堆栈
+    DEBUG: [file, ai_file]  # ✅ 启动阶段全量输出到AI日志
+    INFO: [file, ai_file]  # ✅ 启动阶段全量输出到AI日志
+    WARNING: [file, console, database, event, ai_file]  # ✅ 启动阶段全量输出到AI日志
+    ERROR: [file, console, database, event, ai_file]  # ✅ 启动阶段全量输出到AI日志
+    CRITICAL: [file, console, database, event, ui_dialog, ai_file]  # ✅ 启动阶段全量输出到AI日志
 
 # 数据感知阶段 (10-30秒): 品种加载、缓存验证
 stage_sensing:

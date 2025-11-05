@@ -188,20 +188,18 @@ def test_logging_system():
         from backend.startup.startup_logging.startup_logger import (
             StartupLogger,
             OrderedLogQueue,
-            StartupAILogHandler,
         )
-        
+
         # 测试StartupLogger
         logger = StartupLogger()
         print("✅ StartupLogger 创建成功")
-        
+
         # 测试OrderedLogQueue
         queue = OrderedLogQueue(max_wait_seconds=30)
         print("✅ OrderedLogQueue 创建成功")
-        
-        # 测试StartupAILogHandler
-        handler = StartupAILogHandler()
-        print("✅ StartupAILogHandler 创建成功")
+
+        # 🔧 优化：StartupAILogHandler已删除，AI日志统一通过LoggingHub的AILogFileHandler处理
+        print("✅ StartupAILogHandler已移除，AI日志由LoggingHub统一处理")
         
         return True
     except Exception as e:

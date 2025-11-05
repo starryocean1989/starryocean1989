@@ -4,12 +4,10 @@
 from backend.startup.startup_logging.startup_logger import (
     StartupLogger,
     OrderedLogQueue,
-    StartupAILogHandler,
 )
 
 __all__ = [
     "StartupLogger",
     "OrderedLogQueue",
-    "StartupAILogHandler",
 ]
 
