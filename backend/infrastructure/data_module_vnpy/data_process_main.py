@@ -154,6 +154,16 @@ class DataProcess:
             self.unified_data_manager = UnifiedDataManager(event_engine=event_engine)
             logger.info("│ ✅ UnifiedDataManager初始化完成", extra={"log_type": "STAGE_NODE"})
 
+            # 初始化DataCenterService（作为数据进程中的RPC服务器）
+            logger.info("│ ⏳ 初始化DataCenterService（RPC服务器）...", extra={"log_type": "STAGE_NODE"})
+            from backend.services.data_center_service import DataCenterService
+
+            # 创建DataCenterService实例，但跳过主进程中的初始化逻辑
+            self.data_center_service = DataCenterService()
+            # 注意：不在数据进程中调用initialize()，因为某些依赖在主进程中
+            # DataCenterService将作为RPC服务器提供服务
+            logger.info("│ ✅ DataCenterService（RPC服务器）初始化完成", extra={"log_type": "STAGE_NODE"})
+
             # 初始化LoadBalancer
             logger.info("│ ⏳ 初始化LoadBalancer...", extra={"log_type": "STAGE_NODE"})
             from backend.infrastructure.data_module_vnpy.load_balancer import LoadBalancer
@@ -668,7 +678,7 @@ class DataProcess:
             # 🔧 调试：记录数据进程启动
             import sys
             print(f"[DEBUG] 数据进程开始运行 (PID={os.getpid()})", file=sys.stderr)
-            
+
             # 初始化
             print(f"[DEBUG] 数据进程开始初始化...", file=sys.stderr)
             await self.initialize()

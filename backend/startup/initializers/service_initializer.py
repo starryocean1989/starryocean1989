@@ -1022,8 +1022,9 @@ class ServiceInitializer:
         success_count = 0
 
         # 🎯 三进程架构：数据服务在数据进程中初始化，这里只记录日志
+        # 注意：DataCenterService在数据进程中实现为RPC服务器，在主进程中创建RPC客户端代理
         self.logger.info(
-            "ℹ️ 三进程架构：数据服务（ChinaStockEngine、DataCenterService）已在数据进程中初始化",
+            "ℹ️ 三进程架构：数据服务（ChinaStockEngine）已在数据进程中初始化，DataCenterService通过RPC代理访问",
             extra={"log_type": "SYSTEM"},
         )
         stage_logger.info("✅ 数据服务已在数据进程中初始化", extra={"log_type": "STAGE_NODE"})

@@ -77,147 +77,33 @@ class BackendInitializerWorker(StartupWorker):
                     elapsed_ms=(time.time() - start_time) * 1000,
                 )
 
-            # 2. 初始化ChinaStockEngine
-            # 注意：阶段3.1的日志输出由BackendInitStage统一管理，这里只负责初始化
-            china_stock_engine = None
-            init_success = False
+            # 2. 根据三进程架构迁移方案步骤5，ChinaStockEngine和DataCenterService
+            # 已迁移到数据进程中，主进程不再初始化这些服务
+            self.logger.info(
+                "[BACKEND-INIT-WORKER] ℹ️ ChinaStockEngine和DataCenterService已迁移到数据进程，主进程不再初始化",
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+            )
 
-            try:
-                self.logger.debug(
-                    "[BACKEND-INIT-WORKER] 开始初始化ChinaStockEngine...",
-                    extra={"log_type": "SYSTEM", "scenario": "application_startup"}
-                )
-                from backend.infrastructure.data_module_vnpy import ChinaStockEngine
-                from backend.core.base import set_china_stock_engine
-
-                self.logger.debug(
-                    "[BACKEND-INIT-WORKER] ChinaStockEngine类已导入，开始实例化",
-                    extra={"log_type": "SYSTEM", "scenario": "application_startup"}
-                )
-                china_stock_engine = ChinaStockEngine(main_engine, event_engine)
-                self.logger.debug(
-                    "[BACKEND-INIT-WORKER] ChinaStockEngine实例已创建，开始调用initialize()",
-                    extra={"log_type": "SYSTEM", "scenario": "application_startup"}
-                )
-                init_success = china_stock_engine.initialize()
-
-                if init_success:
-                    self.logger.debug(
-                        "[BACKEND-INIT-WORKER] ✅ ChinaStockEngine.initialize()返回成功",
-                        extra={"log_type": "SYSTEM", "scenario": "application_startup"}
-                    )
-                    set_china_stock_engine(china_stock_engine)
-                    context.china_stock_engine = china_stock_engine
-                    self.logger.info(
-                        "[BACKEND-INIT-WORKER] ✅ ChinaStockEngine已注册到全局和context",
-                        extra={"log_type": "SYSTEM", "scenario": "application_startup"}
-                    )
-                else:
-                    self.logger.warning(
-                        "[BACKEND-INIT-WORKER] ⚠️ ChinaStockEngine.initialize()返回False",
-                        extra={"log_type": "ALERT", "scenario": "application_startup"}
-                    )
-            except ImportError as e:
-                self.logger.error(
-                    f"[BACKEND-INIT-WORKER] ❌ ChinaStockEngine导入失败: {e}",
-                    exc_info=True,
-                    extra={"log_type": "ALERT", "scenario": "application_startup"}
-                )
-                init_success = False
-            except Exception as e:
-                self.logger.error(
-                    f"[BACKEND-INIT-WORKER] ❌ ChinaStockEngine初始化异常: {e}",
-                    exc_info=True,
-                    extra={"log_type": "ALERT", "scenario": "application_startup"}
-                )
-                init_success = False
-
-            # 3. 初始化DataCenterService
-            # 注意：DataCenterService的日志输出由其自身管理，这里只负责初始化
-            data_service = None
-            data_init_success = False
-
-            try:
-                self.logger.debug(
-                    "[BACKEND-INIT-WORKER] 开始初始化DataCenterService...",
-                    extra={"log_type": "SYSTEM", "scenario": "application_startup"}
-                )
-                from backend.services.data_center_service import DataCenterService
-
-                self.logger.debug(
-                    "[BACKEND-INIT-WORKER] DataCenterService类已导入，开始实例化",
-                    extra={"log_type": "SYSTEM", "scenario": "application_startup"}
-                )
-                data_service = DataCenterService()
-                self.logger.debug(
-                    "[BACKEND-INIT-WORKER] DataCenterService实例已创建，开始调用initialize()",
-                    extra={"log_type": "SYSTEM", "scenario": "application_startup"}
-                )
-                data_init_success = data_service.initialize()
-
-                if data_init_success:
-                    self.logger.debug(
-                        "[BACKEND-INIT-WORKER] ✅ DataCenterService.initialize()返回成功",
-                        extra={"log_type": "SYSTEM", "scenario": "application_startup"}
-                    )
-                    context.service_manager.register_service("data_center_service", data_service)
-                    context.data_service = data_service
-                    self.logger.info(
-                        "[BACKEND-INIT-WORKER] ✅ DataCenterService已注册到ServiceManager和context",
-                        extra={"log_type": "SYSTEM", "scenario": "application_startup"}
-                    )
-                else:
-                    self.logger.warning(
-                        "[BACKEND-INIT-WORKER] ⚠️ DataCenterService.initialize()返回False",
-                        extra={"log_type": "ALERT", "scenario": "application_startup"}
-                    )
-            except ImportError as e:
-                self.logger.error(
-                    f"[BACKEND-INIT-WORKER] ❌ DataCenterService导入失败: {e}",
-                    exc_info=True,
-                    extra={"log_type": "ALERT", "scenario": "application_startup"}
-                )
-                data_init_success = False
-            except Exception as e:
-                self.logger.error(
-                    f"[BACKEND-INIT-WORKER] ❌ DataCenterService初始化异常: {e}",
-                    exc_info=True,
-                    extra={"log_type": "ALERT", "scenario": "application_startup"}
-                )
-                data_init_success = False
-
-            # 4. 返回结果
-            success = init_success and data_init_success
+            # 3. 返回结果 - 成功（因为没有需要初始化的数据服务）
+            success = True
             elapsed_ms = (time.time() - start_time) * 1000
 
-            if success:
-                self.logger.debug(
-                    f"[BACKEND-INIT-WORKER] ✅ 后端数据服务初始化成功 ({elapsed_ms:.0f}ms)",
-                    extra={"log_type": "SYSTEM", "scenario": "application_startup"}
-                )
-                self.logger.info(
-                    f"[BACKEND-INIT-WORKER] ✅ 后端数据服务初始化完成: "
-                    f"ChinaStockEngine={'成功' if init_success else '失败'}, "
-                    f"DataCenterService={'成功' if data_init_success else '失败'}",
-                    extra={"log_type": "SYSTEM", "scenario": "application_startup"}
-                )
-            else:
-                self.logger.warning(
-                    f"[BACKEND-INIT-WORKER] ⚠️ 后端数据服务初始化部分失败 ({elapsed_ms:.0f}ms): "
-                    f"ChinaStockEngine={'成功' if init_success else '失败'}, "
-                    f"DataCenterService={'成功' if data_init_success else '失败'}",
-                    extra={"log_type": "ALERT", "scenario": "application_startup"}
-                )
+            self.logger.debug(
+                f"[BACKEND-INIT-WORKER] ✅ 后端服务初始化成功 ({elapsed_ms:.0f}ms)",
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+            )
+            self.logger.info(
+                "[BACKEND-INIT-WORKER] ✅ 后端服务初始化完成（三进程架构）",
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
+            )
 
             return WorkerResult(
                 success=success,
-                message="后端数据服务初始化完成" if success else "后端数据服务初始化失败",
+                message="后端服务初始化完成（三进程架构）",
                 elapsed_ms=elapsed_ms,
                 data={
-                    "china_stock_engine": china_stock_engine,
-                    "data_service": data_service,
-                    "china_stock_success": init_success,
-                    "data_service_success": data_init_success,
+                    "architecture": "three_process",
+                    "data_services_migrated": True,
                 },
             )
 

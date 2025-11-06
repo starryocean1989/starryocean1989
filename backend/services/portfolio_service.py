@@ -145,6 +145,9 @@ class PortfolioService(BaseService):
         try:
             self.logger.info("正在初始化组合投资服务...")
 
+            # 初始化数据进程RPC客户端
+            self._init_data_client()
+
             # 注册vnpy事件处理器（用于实时数据获取）
             self._register_trading_events()
 
@@ -159,6 +162,22 @@ class PortfolioService(BaseService):
         except Exception as e:
             self._log_error("初始化", e)
             return False
+
+    def _init_data_client(self):
+        """初始化数据进程RPC客户端."""
+        try:
+            from backend.infrastructure.data_module_vnpy.data_process_client import (
+                get_data_process_client,
+            )
+
+            self.data_client = get_data_process_client()
+            self.logger.info("✅ 已初始化数据进程RPC客户端")
+
+        except Exception as e:
+            self.logger.error(
+                "初始化数据进程客户端失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+            )
+            self.data_client = None
 
     def _register_trading_events(self):
         """注册vnpy事件处理器（获取实时交易数据）."""
@@ -2087,15 +2106,43 @@ class PortfolioService(BaseService):
             }
         """
         try:
-            # ✅ 从data_center_service获取真实基准指数数据
-            from backend.core.base import get_service_manager
+            # ✅ 三进程架构：通过RPC客户端获取数据进程中的基准指数数据
+            if self.data_client:
+                try:
+                    # 通过RPC调用数据进程的get_index_returns方法
+                    result = self.data_client.call(
+                        "get_index_returns",
+                        index_code=index_code,
+                        lookback_days=lookback_days,
+                    )
 
-            service_manager = get_service_manager()
-            data_center = service_manager.get_service("data_center_service")
+                    if result and isinstance(result, dict) and result.get("success", False):
+                        returns = result.get("returns", [])
+                        index_name = result.get("index_name", f"指数{index_code}")
 
-            if not data_center:
-                self.logger.warning("数据中心服务不可用，使用模拟数据", extra={"log_type": "SYSTEM"})
-                return self._get_mock_benchmark_returns(lookback_days)
+                        self.logger.info(f"✅ 通过RPC获取基准数据成功: {index_name}, {len(returns)}个数据点")
+                        return {
+                            "success": True,
+                            "returns": returns,
+                            "benchmark": index_name,
+                            "index_code": index_code
+                        }
+                    else:
+                        self.logger.warning(f"RPC调用失败: {result.get('message', '未知错误')}", extra={"log_type": "SYSTEM"})
+                        return self._get_mock_benchmark_returns(lookback_days)
+                except Exception as e:
+                    self.logger.warning(f"RPC调用异常: {e}，使用模拟数据", extra={"log_type": "SYSTEM"}, exc_info=True)
+                    return self._get_mock_benchmark_returns(lookback_days)
+            else:
+                # 降级：尝试从data_center_service获取（兼容模式）
+                from backend.core.base import get_service_manager
+
+                service_manager = get_service_manager()
+                data_center = service_manager.get_service("data_center_service")
+
+                if not data_center:
+                    self.logger.warning("数据中心服务不可用，使用模拟数据", extra={"log_type": "SYSTEM"})
+                    return self._get_mock_benchmark_returns(lookback_days)
 
             # 调用数据中心的指数收益率查询API
             result = data_center.get_index_returns(
