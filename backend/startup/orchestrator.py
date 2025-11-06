@@ -107,22 +107,18 @@ class StartupOrchestrator:
         start_time = time.time()
         scenario = "application_startup"
 
-        # 🎯 启动流程日志埋点：使用ai_log_process上下文管理器
+        # 🎯 启动流程日志埋点：事件日志流程已在initialize_logging_hub_complete中启动
+        # 注意：不要在日志系统初始化之前就使用event_log_process，因为此时_event_log_handler可能还没有注入
+        # initialize_logging_hub_complete已经在日志系统初始化时启动了application_startup事件
         try:
-            from backend.infrastructure.system_vnpy.logging_system import (
-                event_log_process,
-                get_logging_hub,
-            )
+            from backend.infrastructure.system_vnpy.logging_system import get_logging_hub
             from contextlib import nullcontext
 
             hub = get_logging_hub()
             if hub:
                 hub.set_stage("startup")
-            context_manager = (
-                event_log_process("application_startup", {"mode": "orchestrator"})
-                if hub
-                else nullcontext()
-            )
+            # 不再在这里启动event_log_process，因为initialize_logging_hub_complete已经启动了
+            context_manager = nullcontext()
         except ImportError:
             from contextlib import nullcontext
 

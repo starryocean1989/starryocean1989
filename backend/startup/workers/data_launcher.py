@@ -201,14 +201,24 @@ class DataLauncherWorker(StartupWorker):
             except Exception:
                 pass
 
+        # 🔧 修复：重定向stderr以便捕获调试信息
+        import tempfile
+        stderr_file = tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix='.log', prefix='data_process_stderr_')
+        stderr_file.close()
+        stderr_path = stderr_file.name
+        
         self.data_process_handle = subprocess.Popen(
             launch_args,
             stdout=None,  # 不重定向，使用默认输出
-            stderr=None,  # 不重定向，使用默认输出
+            stderr=open(stderr_path, 'w'),  # 重定向stderr到文件以便调试
             cwd=str(context.project_root),  # 确保数据进程在项目根目录工作
             creationflags=creation_flags,
             env=env,
         )
+        
+        # 保存stderr文件路径以便后续读取
+        self.data_process_stderr_path = stderr_path
+        logger.debug(f"[DATA-PROCESS] 数据进程stderr重定向到: {stderr_path}")
 
         # 获取PID并显示
         pid = self.data_process_handle.pid

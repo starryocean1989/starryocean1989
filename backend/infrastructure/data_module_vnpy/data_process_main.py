@@ -93,21 +93,33 @@ class DataProcess:
     async def initialize(self):
         """初始化数据服务"""
         try:
+            import sys
+            print(f"[DEBUG] 数据进程initialize开始 (PID={os.getpid()})", file=sys.stderr)
             logger.info("📍 数据进程初始化开始", extra={"log_type": "STAGE_NODE"})
 
             # 1. 初始化数据服务
+            print(f"[DEBUG] 数据进程开始初始化数据服务...", file=sys.stderr)
             await self._initialize_data_services()
+            print(f"[DEBUG] 数据进程数据服务初始化完成", file=sys.stderr)
 
             # 2. 初始化IPC服务器
+            print(f"[DEBUG] 数据进程开始初始化IPC服务器...", file=sys.stderr)
             await self._initialize_ipc_server()
+            print(f"[DEBUG] 数据进程IPC服务器初始化完成", file=sys.stderr)
 
             # 3. 标记就绪
+            print(f"[DEBUG] 数据进程开始写入就绪信号文件...", file=sys.stderr)
             self._is_ready = True
             self._write_ready_signal()
+            print(f"[DEBUG] 数据进程就绪信号文件已写入", file=sys.stderr)
 
             logger.info("✅ 数据进程初始化完成", extra={"log_type": "STAGE_NODE"})
 
         except Exception as e:
+            import sys
+            print(f"[DEBUG] 数据进程初始化失败: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc(file=sys.stderr)
             logger.error(f"❌ 数据进程初始化失败: {e}", exc_info=True, extra={"log_type": "ALERT"})
             raise
 
@@ -617,11 +629,14 @@ class DataProcess:
     def _write_ready_signal(self):
         """写入就绪信号文件"""
         try:
+            import sys
             root = get_root()
             signal_file = root / "logs" / "data_process_ready.signal"
+            print(f"[DEBUG] 数据进程准备写入就绪信号文件: {signal_file} (PID={os.getpid()})", file=sys.stderr)
 
             # 确保logs目录存在
             signal_file.parent.mkdir(parents=True, exist_ok=True)
+            print(f"[DEBUG] 数据进程logs目录已确保存在", file=sys.stderr)
 
             # 写入信号文件
             signal_data = {
@@ -630,13 +645,19 @@ class DataProcess:
                 "level": 2,  # Level 2: 功能完整
                 "pipes": list(self._ipc_pipes.keys()),
             }
+            print(f"[DEBUG] 数据进程信号数据: {signal_data}", file=sys.stderr)
 
             with open(signal_file, "w", encoding="utf-8") as f:
                 json.dump(signal_data, f, indent=2)
+            print(f"[DEBUG] 数据进程就绪信号文件已写入: {signal_file}", file=sys.stderr)
 
             logger.info(f"✅ 就绪信号文件已写入: {signal_file}", extra={"log_type": "STAGE_NODE"})
 
         except Exception as e:
+            import sys
+            print(f"[DEBUG] 数据进程写入就绪信号文件失败: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc(file=sys.stderr)
             logger.error(
                 f"❌ 写入就绪信号文件失败: {e}", exc_info=True, extra={"log_type": "ALERT"}
             )
@@ -644,8 +665,14 @@ class DataProcess:
     async def run(self):
         """运行数据进程"""
         try:
+            # 🔧 调试：记录数据进程启动
+            import sys
+            print(f"[DEBUG] 数据进程开始运行 (PID={os.getpid()})", file=sys.stderr)
+            
             # 初始化
+            print(f"[DEBUG] 数据进程开始初始化...", file=sys.stderr)
             await self.initialize()
+            print(f"[DEBUG] 数据进程初始化完成", file=sys.stderr)
 
             # 保持运行
             while True:
@@ -654,6 +681,10 @@ class DataProcess:
         except KeyboardInterrupt:
             logger.info("📍 数据进程收到中断信号，正在退出...", extra={"log_type": "STAGE_NODE"})
         except Exception as e:
+            import sys
+            print(f"[DEBUG] 数据进程运行异常: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc(file=sys.stderr)
             logger.error(f"❌ 数据进程运行异常: {e}", exc_info=True, extra={"log_type": "ALERT"})
         finally:
             # 清理资源

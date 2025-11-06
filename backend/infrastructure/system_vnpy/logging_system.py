@@ -880,12 +880,29 @@ class EventLogFileHandler(logging.Handler):
 
                 # 写入当前事件日志文件（如果存在）
                 if self._current_event_file:
-                    self._current_event_file.write(message_with_newline)
-                    self._current_event_file.flush()
+                    try:
+                        self._current_event_file.write(message_with_newline)
+                        self._current_event_file.flush()
+                    except Exception as write_error:
+                        # 🔧 调试：如果写入失败，记录错误
+                        import sys
+                        print(f"[DEBUG] EventLogFileHandler.emit: 写入文件失败: {write_error}", file=sys.stderr)
+                        print(f"[DEBUG] EventLogFileHandler.emit: _current_event_file状态: closed={self._current_event_file.closed}, path={self._current_event_file_path}", file=sys.stderr)
+                else:
+                    # 🔧 调试：如果_current_event_file为None，记录警告
+                    import sys
+                    print(f"[DEBUG] EventLogFileHandler.emit: _current_event_file为None，无法写入文件", file=sys.stderr)
+                    print(f"[DEBUG] EventLogFileHandler.emit: _current_event={self._current_event}, _current_event_file_path={self._current_event_file_path}", file=sys.stderr)
 
                 self._total_logs += 1
             except Exception as e:
-                logger.error(f"[EventLogFileHandler] 日志写入失败: {e}", exc_info=True)
+                # 🔧 调试：如果emit失败，记录错误
+                import sys
+                print(f"[DEBUG] EventLogFileHandler.emit: 处理日志记录失败: {e}", file=sys.stderr)
+                import traceback
+                traceback.print_exc(file=sys.stderr)
+                # 原有的错误处理（可能会造成递归）
+                # logger.error(f"[EventLogFileHandler] 日志写入失败: {e}", exc_info=True)
 
     def get_current_event_file_path(self) -> Optional[Path]:
         """获取当前事件日志文件路径."""
@@ -983,12 +1000,46 @@ class LoggingHub(logging.Handler):
 
         # 🚀 性能优化：使用native HighPerfLRUCache替代@lru_cache装饰器
         # 日志类型分类缓存（最大1000项，与原来的@lru_cache(maxsize=1000)一致）
-        if not NATIVE_COLLECTIONS_AVAILABLE or HighPerfLRUCache is None:
-            raise RuntimeError(
-                "HighPerfLRUCache is required but not available. "
-                "Please ensure native_collections is properly installed."
+        # 如果native不可用，使用Python标准库的functools.lru_cache作为降级方案
+        if NATIVE_COLLECTIONS_AVAILABLE and HighPerfLRUCache is not None:
+            self._log_type_cache: Any = HighPerfLRUCache(1000)  # type: ignore
+            self._use_native_cache = True
+        else:
+            # 降级方案：使用简单的字典缓存（带大小限制）
+            from functools import lru_cache
+            # 创建一个简单的LRU缓存包装器
+            class SimpleLRUCache:
+                def __init__(self, maxsize: int):
+                    self._cache: Dict[Any, Any] = {}
+                    self._maxsize = maxsize
+                    self._access_order: List[Any] = []
+                
+                def get(self, key: Any) -> Optional[Any]:
+                    if key in self._cache:
+                        # 更新访问顺序
+                        if key in self._access_order:
+                            self._access_order.remove(key)
+                        self._access_order.append(key)
+                        return self._cache[key]
+                    return None
+                
+                def set(self, key: Any, value: Any):
+                    # 如果超过最大大小，删除最旧的项
+                    if len(self._cache) >= self._maxsize and key not in self._cache:
+                        if self._access_order:
+                            oldest_key = self._access_order.pop(0)
+                            self._cache.pop(oldest_key, None)
+                    self._cache[key] = value
+                    if key in self._access_order:
+                        self._access_order.remove(key)
+                    self._access_order.append(key)
+            
+            self._log_type_cache = SimpleLRUCache(1000)
+            self._use_native_cache = False
+            logger.warning(
+                "HighPerfLRUCache不可用，使用降级缓存方案",
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"}
             )
-        self._log_type_cache: Any = HighPerfLRUCache(1000)  # type: ignore
 
     def set_event_engine(self, event_engine: EventEngine):
         """注入EventEngine."""
@@ -1058,11 +1109,21 @@ class LoggingHub(logging.Handler):
             setattr(record, "_unified_hub_processed", True)
 
             if self._should_skip(record):
+                # 🔧 调试：记录被跳过的日志
+                import sys
+                if record.name.startswith("startup.stage") or record.level >= logging.WARNING:
+                    print(f"[DEBUG] LoggingHub.emit: 日志被跳过 (logger={record.name}, level={record.levelno}, message={record.getMessage()[:50]})", file=sys.stderr)
                 return
 
             self._total_logs += 1
             unified_record = self._convert_to_unified(record)
             targets = self._get_targets(unified_record)
+            
+            # 🔧 调试：记录日志分发
+            import sys
+            if record.name.startswith("startup.stage") or record.level >= logging.WARNING:
+                print(f"[DEBUG] LoggingHub.emit: 准备分发日志 (logger={record.name}, level={record.levelno}, targets={targets}, message={record.getMessage()[:50]})", file=sys.stderr)
+            
             self._dispatch(targets, unified_record)
             self._check_throttler()
             self._maybe_flush_db_batch()
@@ -1314,6 +1375,19 @@ class LoggingHub(logging.Handler):
 
     def _dispatch(self, targets: List[str], record: UnifiedLogRecord):
         """分发日志."""
+        # 🔧 修复：文件输出应该始终直接处理，不经过有序队列
+        # 文件输出直接处理（所有日志都写入文件，不等待有序队列）
+        if "file" in targets:
+            try:
+                # 🔧 调试：记录文件输出调用
+                import sys
+                if record.logger_name.startswith("startup.stage") or record.level >= logging.WARNING:
+                    print(f"[DEBUG] _dispatch: 准备写入文件 (logger={record.logger_name}, level={record.level}, message={record.message[:50]})", file=sys.stderr)
+                self._to_file(record)
+            except Exception as e:
+                import sys
+                print(f"[DEBUG] _dispatch: 文件输出失败: {e} (logger={record.logger_name}, message={record.message[:50]})", file=sys.stderr)
+        
         # 如果启用了有序队列，且目标是console或database，添加到有序队列
         if self._ordered_queue_enabled and self._ordered_log_queue is not None:
             needs_ordered_output = any(target in ("console", "database") for target in targets)
@@ -1322,13 +1396,23 @@ class LoggingHub(logging.Handler):
                     sequence = self._sequence_counter
                     self._sequence_counter += 1
                 self._ordered_log_queue.add_log(record, sequence)
-                # 对于其他目标（file, event等），直接处理
+                # 对于其他目标（event等），直接处理（不经过有序队列）
                 for target in targets:
-                    if target not in ("console", "database"):
+                    if target not in ("console", "database", "file"):
                         try:
-                            if target == "file":
-                                self._to_file(record)
-                            elif target == "event":
+                            if target == "event":
+                                self._to_event(record)
+                            elif target == "event_throttled":
+                                self._to_event_throttled(record)
+                        except Exception:
+                            pass
+                return  # 已处理，直接返回
+            else:
+                # 如果没有需要有序输出的目标，但启用了有序队列，仍然需要处理event等目标
+                for target in targets:
+                    if target not in ("file",):  # file已经处理过了
+                        try:
+                            if target == "event":
                                 self._to_event(record)
                             elif target == "event_throttled":
                                 self._to_event_throttled(record)
@@ -1358,6 +1442,9 @@ class LoggingHub(logging.Handler):
         Args:
             record: UnifiedLogRecord实例
         """
+        # 🔧 注意：文件输出已经在_dispatch中直接处理，这里不再重复处理
+        # 有序队列只负责console和database的输出顺序
+        
         # 根据路由目标输出（console和database）
         if record.level >= logging.WARNING or (
             record.type == LogType.STAGE_NODE and record.level == logging.INFO
@@ -1416,8 +1503,35 @@ class LoggingHub(logging.Handler):
     def _to_file(self, record: UnifiedLogRecord):
         """输出到文件（通过EventLogFileHandler）"""
         if not self._event_log_handler:
+            # 🔧 调试：如果_event_log_handler未设置，记录警告
+            import sys
+            print(f"[DEBUG] _to_file: _event_log_handler未设置，无法写入文件", file=sys.stderr)
             return
 
+        # 🔧 验证EventLogFileHandler是否有当前事件文件
+        if not hasattr(self._event_log_handler, '_current_event_file') or not self._event_log_handler._current_event_file:
+            # 如果当前事件文件不存在，尝试重新启动事件
+            try:
+                current_event = self._event_log_handler.get_current_event()
+                if current_event:
+                    # 事件已启动，但文件不存在，可能是文件被关闭了
+                    import sys
+                    print(f"[DEBUG] _to_file: 当前事件文件不存在，但事件已启动: {current_event}", file=sys.stderr)
+                else:
+                    # 事件未启动，尝试启动默认事件
+                    import sys
+                    print(f"[DEBUG] _to_file: 事件未启动，尝试启动application_startup事件", file=sys.stderr)
+                    try:
+                        from backend.infrastructure.system_vnpy.logging_system import start_event_process
+                        start_event_process("application_startup")
+                    except Exception as e:
+                        import sys
+                        print(f"[DEBUG] _to_file: 启动事件失败: {e}", file=sys.stderr)
+            except Exception as e:
+                import sys
+                print(f"[DEBUG] _to_file: 检查事件文件时出错: {e}", file=sys.stderr)
+
+        # 🔧 修复：直接调用EventLogFileHandler的emit方法，但需要标记记录已处理，避免被LoggingHub再次处理
         # 创建LogRecord并通过EventLogFileHandler写入
         exc_info = None
         if record.exception:
@@ -1437,9 +1551,43 @@ class LoggingHub(logging.Handler):
 
         if record.exception:
             log_record.exc_text = record.exception
+        
+        # 🔧 关键修复：标记记录已处理，避免被LoggingHub再次处理（防止无限递归）
+        setattr(log_record, "_unified_hub_processed", True)
 
-        self._event_log_handler.emit(log_record)
-        self._file_writes += 1
+        try:
+            # 🔧 调试：检查EventLogFileHandler的状态
+            if not hasattr(self._event_log_handler, '_current_event_file'):
+                import sys
+                print(f"[DEBUG] _to_file: EventLogFileHandler没有_current_event_file属性", file=sys.stderr)
+                return
+            
+            # 使用锁保护，检查_current_event_file状态
+            with self._event_log_handler._lock:
+                current_file = self._event_log_handler._current_event_file
+                if current_file is None:
+                    import sys
+                    print(f"[DEBUG] _to_file: _current_event_file为None，无法写入文件 (logger={record.logger_name}, message={record.message[:50]})", file=sys.stderr)
+                    return
+                
+                # 检查文件是否已关闭
+                if current_file.closed:
+                    import sys
+                    print(f"[DEBUG] _to_file: _current_event_file已关闭，无法写入文件 (logger={record.logger_name}, message={record.message[:50]})", file=sys.stderr)
+                    return
+            
+            # 调用emit方法（emit方法内部会使用锁）
+            # 🔧 注意：EventLogFileHandler.emit方法会检查_unified_hub_processed标记，如果存在则跳过
+            # 但我们需要直接写入文件，所以需要绕过LoggingHub
+            # 实际上，EventLogFileHandler不是LoggingHub的子类，所以不会触发LoggingHub
+            self._event_log_handler.emit(log_record)
+            self._file_writes += 1
+        except Exception as e:
+            # 🔧 调试：如果写入失败，记录错误
+            import sys
+            print(f"[DEBUG] _to_file: 写入文件失败: {e} (logger={record.logger_name}, message={record.message[:50]})", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
 
     def _to_database_batched(self, record: UnifiedLogRecord):
         """批量输出到数据库"""
@@ -1972,11 +2120,30 @@ async def initialize_logging_hub_complete(
             extra={"log_type": "SYSTEM", "scenario": scenario}
         )
         event_handler = get_event_log_handler()
-        logging_hub.set_event_log_handler(event_handler)
-        logger.debug(
-            "[LOG-SETUP] EventLogFileHandler已获取并注入",
-            extra={"log_type": "SYSTEM", "scenario": scenario}
-        )
+        if not event_handler:
+            logger.error(
+                "[LOG-SETUP] ❌ EventLogFileHandler获取失败",
+                extra={"log_type": "ALERT", "scenario": scenario}
+            )
+            import sys
+            print("[DEBUG] EventLogFileHandler获取失败", file=sys.stderr)
+        else:
+            logging_hub.set_event_log_handler(event_handler)
+            # 🔧 验证注入是否成功
+            if logging_hub._event_log_handler != event_handler:
+                logger.error(
+                    "[LOG-SETUP] ❌ EventLogFileHandler注入失败",
+                    extra={"log_type": "ALERT", "scenario": scenario}
+                )
+                import sys
+                print(f"[DEBUG] EventLogFileHandler注入失败: hub._event_log_handler={logging_hub._event_log_handler}, event_handler={event_handler}", file=sys.stderr)
+            else:
+                logger.debug(
+                    "[LOG-SETUP] EventLogFileHandler已获取并注入",
+                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                )
+                import sys
+                print(f"[DEBUG] EventLogFileHandler已注入: {event_handler}", file=sys.stderr)
 
         # 4. 启动事件日志流程（application_startup）
         logger.debug(
