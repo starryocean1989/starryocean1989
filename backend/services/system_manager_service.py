@@ -39,6 +39,12 @@ from backend.infrastructure.system_vnpy import NetworkTester, PortScanner
 from backend.services.database_adapter import get_db_manager
 from backend.core.config import get_settings
 
+# 专用logger
+logger = logging.getLogger("backend.system_manager")
+
+# 直接使用native序列化优化
+from backend.infrastructure.native.native_serialization import zero_copy_serialize
+
 # 专用logger - 日志埋点v4.0
 logger_monitor = logging.getLogger("backend.system.monitor")
 logger_alert = logging.getLogger("backend.system.alert")
@@ -47,6 +53,25 @@ logger_alert = logging.getLogger("backend.system.alert")
 EVENT_LOG_RECORD = "eLogRecord"
 EVENT_ALERT_CREATED = "eAlertCreated"
 EVENT_ALERT_UPDATED = "eAlertUpdated"
+
+
+def _serialize_json(obj: Any) -> str:
+    """
+    使用native序列化优化JSON序列化
+
+    Args:
+        obj: 要序列化的对象
+
+    Returns:
+        JSON字符串
+    """
+    # 对于JSON兼容的数据，直接使用json.dumps
+    if isinstance(obj, (dict, list, str, int, float, bool)) or obj is None:
+        return json.dumps(obj, ensure_ascii=False)
+    else:
+        # 对于复杂对象，使用native序列化的结果
+        serialized_bytes = zero_copy_serialize(obj)
+        return serialized_bytes.decode("latin1")  # pickle使用latin1编码
 
 
 # =============================================================================
@@ -93,7 +118,7 @@ class LogDatabase:
                     log_data["level"],
                     log_data["module"],
                     log_data["message"],
-                    json.dumps(
+                    _serialize_json(
                         {
                             "logger_name": log_data.get("logger_name"),
                             "function": log_data.get("function"),
@@ -2814,7 +2839,7 @@ class SystemManagerService(BaseService):
 
         # native_ipc通信管道（连接到独立监控进程）
         try:
-            from backend.infrastructure.native_ipc import AsyncIPCPipe, IPC_AVAILABLE
+            from backend.infrastructure.native.native_ipc import AsyncIPCPipe, IPC_AVAILABLE
 
             if IPC_AVAILABLE and self._admin_privileges:
                 self._query_pipe = None  # 客户端：查询监控数据
@@ -3073,7 +3098,7 @@ class SystemManagerService(BaseService):
     async def _initialize_alerts_server(self):
         """初始化monitor_alerts服务端（接收监控进程推送的告警）."""
         try:
-            from backend.infrastructure.native_ipc import AsyncIPCPipe
+            from backend.infrastructure.native.native_ipc import AsyncIPCPipe
 
             self._alerts_pipe = await AsyncIPCPipe.server("monitor_alerts")
             self.logger.info("[IPC] ✅ 告警服务端管道已创建: monitor_alerts")
@@ -3094,7 +3119,7 @@ class SystemManagerService(BaseService):
     async def _initialize_query_client(self):
         """初始化monitor_query客户端（查询监控数据）."""
         try:
-            from backend.infrastructure.native_ipc import AsyncIPCPipe
+            from backend.infrastructure.native.native_ipc import AsyncIPCPipe
             from pathlib import Path
             import json
 
@@ -3160,7 +3185,7 @@ class SystemManagerService(BaseService):
     async def _initialize_status_client(self):
         """初始化monitor_status客户端（推送服务状态）."""
         try:
-            from backend.infrastructure.native_ipc import AsyncIPCPipe
+            from backend.infrastructure.native.native_ipc import AsyncIPCPipe
             from pathlib import Path
             import json
 

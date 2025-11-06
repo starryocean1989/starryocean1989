@@ -23,6 +23,9 @@ except ImportError:
     pd = None
     PANDAS_AVAILABLE = False
 
+# 导入native_collections（高性能LRU缓存）
+from backend.infrastructure.native.native_collections import HighPerfLRUCache
+
 # ✅ 添加logger定义
 logger = logging.getLogger("backend.core.models")
 logger_quality = logging.getLogger("backend.data.quality")  # 数据质量专用
@@ -150,8 +153,11 @@ class UnifiedMarketData:  # pylint: disable=too-many-instance-attributes
 
         except AttributeError as e:
             logger.error(
-                "❌ Tick数据字段缺失: 品种=%s, 错误=%s", getattr(tick, "symbol", "UNKNOWN"), e,
-                exc_info=True, extra={"log_type": "SYSTEM"}
+                "❌ Tick数据字段缺失: 品种=%s, 错误=%s",
+                getattr(tick, "symbol", "UNKNOWN"),
+                e,
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
             )
             raise
         except Exception as e:
@@ -207,8 +213,11 @@ class UnifiedMarketData:  # pylint: disable=too-many-instance-attributes
 
         except AttributeError as e:
             logger.error(
-                "❌ Bar数据字段缺失: 品种=%s, 错误=%s", getattr(bar_data, "symbol", "UNKNOWN"), e,
-                exc_info=True, extra={"log_type": "SYSTEM"}
+                "❌ Bar数据字段缺失: 品种=%s, 错误=%s",
+                getattr(bar_data, "symbol", "UNKNOWN"),
+                e,
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
             )
             raise
         except Exception as e:
@@ -1049,66 +1058,87 @@ class DataModelManager:
     def __init__(self):
         """初始化数据模型管理器."""
         self.logger = logging.getLogger(__name__)
-        self._market_data_cache: Dict[str, List[UnifiedMarketData]] = {}
-        self._order_cache: Dict[str, UnifiedOrder] = {}
-        self._trade_cache: Dict[str, UnifiedTrade] = {}
-        self._position_cache: Dict[str, UnifiedPosition] = {}
-        self._account_cache: Dict[str, UnifiedAccount] = {}
+
+        # 市场数据缓存：使用HighPerfLRUCache存储品种列表（自动淘汰不常用的品种）
+        # 每个品种的列表最大5000条，超过时自动淘汰最旧的数据
+        # 最多缓存1000个品种（基于访问频率自动淘汰）
+        # type: ignore - HighPerfLRUCache是C扩展，类型检查器无法识别其构造函数
+        self._market_data_cache: Any = HighPerfLRUCache(1000)  # 最多1000个品种  # type: ignore
+        self._order_cache: Any = HighPerfLRUCache(10000)  # 最大10000个订单  # type: ignore
+        self._trade_cache: Any = HighPerfLRUCache(10000)  # 最大10000个成交  # type: ignore
+        self._position_cache: Any = HighPerfLRUCache(5000)  # 最大5000个持仓  # type: ignore
+        self._account_cache: Any = HighPerfLRUCache(100)  # 最大100个账户  # type: ignore
+
+        # 每个品种的最大缓存条数
+        self._max_market_data_per_symbol = 5000
 
     def add_market_data(self, data: UnifiedMarketData):
         """添加行情数据."""
         key = f"{data.symbol}_{data.exchange}"
-        if key not in self._market_data_cache:
-            self._market_data_cache[key] = []
-        self._market_data_cache[key].append(data)
 
-        # 限制缓存大小
-        if len(self._market_data_cache[key]) > 10000:
-            self._market_data_cache[key] = self._market_data_cache[key][-5000:]
+        # 从缓存获取列表（如果存在）
+        data_list = self._market_data_cache.get(key)  # type: ignore
+        if data_list is None:
+            data_list = []
+
+        # 添加新数据
+        data_list.append(data)
+
+        # 限制每个品种的缓存大小（最大5000条，自动淘汰最旧的数据）
+        if len(data_list) > self._max_market_data_per_symbol:
+            # 只保留最新的max_size条数据
+            data_list = data_list[-self._max_market_data_per_symbol:]
+
+        # 更新缓存（会自动更新LRU顺序）
+        self._market_data_cache.set(key, data_list)  # type: ignore
 
     def get_market_data(
         self, symbol: str, exchange: str = "", limit: int = 100
     ) -> List[UnifiedMarketData]:
         """获取行情数据."""
         key = f"{symbol}_{exchange}"
-        data_list = self._market_data_cache.get(key, [])
+
+        # get()方法会自动更新LRU顺序
+        data_list = self._market_data_cache.get(key)  # type: ignore
+        if data_list is None:
+            return []
         return data_list[-limit:] if data_list else []
 
     def add_order(self, order: UnifiedOrder):
         """添加订单."""
-        self._order_cache[order.order_id] = order
+        self._order_cache.set(order.order_id, order)  # type: ignore
 
     def get_order(self, order_id: str) -> Optional[UnifiedOrder]:
         """获取订单."""
-        return self._order_cache.get(order_id)
+        return self._order_cache.get(order_id)  # type: ignore
 
     def add_trade(self, trade: UnifiedTrade):
         """添加成交."""
-        self._trade_cache[trade.trade_id] = trade
+        self._trade_cache.set(trade.trade_id, trade)  # type: ignore
 
     def get_trade(self, trade_id: str) -> Optional[UnifiedTrade]:
         """获取成交."""
-        return self._trade_cache.get(trade_id)
+        return self._trade_cache.get(trade_id)  # type: ignore
 
     def add_position(self, position: UnifiedPosition):
         """添加持仓."""
         key = f"{position.symbol}_{position.exchange}_{position.direction}"
-        self._position_cache[key] = position
+        self._position_cache.set(key, position)  # type: ignore
 
     def get_position(
         self, symbol: str, exchange: str = "", direction: str = "long"
     ) -> Optional[UnifiedPosition]:
         """获取持仓."""
         key = f"{symbol}_{exchange}_{direction}"
-        return self._position_cache.get(key)
+        return self._position_cache.get(key)  # type: ignore
 
     def add_account(self, account: UnifiedAccount):
         """添加账户."""
-        self._account_cache[account.account_id] = account
+        self._account_cache.set(account.account_id, account)  # type: ignore
 
     def get_account(self, account_id: str) -> Optional[UnifiedAccount]:
         """获取账户."""
-        return self._account_cache.get(account_id)
+        return self._account_cache.get(account_id)  # type: ignore
 
     def to_pandas_dataframe(self, data_list: List[UnifiedMarketData]) -> Optional[Any]:
         """将行情数据转换为pandas DataFrame."""
@@ -1123,17 +1153,24 @@ class DataModelManager:
                 df.set_index("datetime", inplace=True)
             return df
         except (ValueError, TypeError, AttributeError) as e:
-            self.logger.error("转换为pandas DataFrame失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
+            self.logger.error(
+                "转换为pandas DataFrame失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True
+            )
             return None
 
     def get_statistics(self) -> Dict[str, Any]:
         """获取数据统计信息."""
+        # 注意：HighPerfLRUCache没有直接遍历的方法，这里使用size()获取品种数量
+        # 实际数据条数无法精确统计，使用估算值
+        market_data_count = self._market_data_cache.size() * 100  # type: ignore  # 估算：每个品种平均100条
+
         return {
-            "market_data_count": sum(len(v) for v in self._market_data_cache.values()),
-            "order_count": len(self._order_cache),
-            "trade_count": len(self._trade_cache),
-            "position_count": len(self._position_cache),
-            "account_count": len(self._account_cache),
+            "market_data_count": market_data_count,
+            "market_symbol_count": self._market_data_cache.size(),  # type: ignore
+            "order_count": self._order_cache.size(),  # type: ignore
+            "trade_count": self._trade_cache.size(),  # type: ignore
+            "position_count": self._position_cache.size(),  # type: ignore
+            "account_count": self._account_cache.size(),  # type: ignore
             "cache_memory_usage": self._estimate_memory_usage(),
         }
 
@@ -1142,17 +1179,21 @@ class DataModelManager:
         try:
             total_size = 0
 
-            # 估算市场数据内存
-            for data_list in self._market_data_cache.values():
-                total_size += sys.getsizeof(data_list) + sum(
-                    sys.getsizeof(data) for data in data_list
-                )
+            # 注意：HighPerfLRUCache是C扩展，sys.getsizeof可能不准确
+            # 使用size()获取元素数量，粗略估算每个元素平均大小
+            avg_market_data_size = 300  # 每个市场数据条目平均大小（字节）
+            avg_element_size = 200  # 其他数据条目平均大小（字节）
+
+            # 估算市场数据内存（品种数 * 平均每个品种的数据条数 * 平均大小）
+            market_symbol_count = self._market_data_cache.size()  # type: ignore
+            avg_data_per_symbol = 100  # 估算每个品种平均100条数据
+            total_size += market_symbol_count * avg_data_per_symbol * avg_market_data_size
 
             # 估算其他数据内存
-            total_size += sys.getsizeof(self._order_cache)
-            total_size += sys.getsizeof(self._trade_cache)
-            total_size += sys.getsizeof(self._position_cache)
-            total_size += sys.getsizeof(self._account_cache)
+            total_size += self._order_cache.size() * avg_element_size  # type: ignore
+            total_size += self._trade_cache.size() * avg_element_size  # type: ignore
+            total_size += self._position_cache.size() * avg_element_size  # type: ignore
+            total_size += self._account_cache.size() * avg_element_size  # type: ignore
 
             if total_size < 1024:
                 return f"{total_size} B"
@@ -1165,20 +1206,21 @@ class DataModelManager:
 
     def clear_cache(self, data_type: str = "all"):
         """清空缓存."""
+        # HighPerfLRUCache没有clear()方法，需要重新创建实例
         if data_type in ["all", "market"]:
-            self._market_data_cache.clear()
+            self._market_data_cache = HighPerfLRUCache(1000)  # type: ignore
 
         if data_type in ["all", "order"]:
-            self._order_cache.clear()
+            self._order_cache = HighPerfLRUCache(10000)  # type: ignore
 
         if data_type in ["all", "trade"]:
-            self._trade_cache.clear()
+            self._trade_cache = HighPerfLRUCache(10000)  # type: ignore
 
         if data_type in ["all", "position"]:
-            self._position_cache.clear()
+            self._position_cache = HighPerfLRUCache(5000)  # type: ignore
 
         if data_type in ["all", "account"]:
-            self._account_cache.clear()
+            self._account_cache = HighPerfLRUCache(100)  # type: ignore
 
         self.logger.info("缓存已清空: %s", data_type)
 

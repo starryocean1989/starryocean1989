@@ -44,7 +44,7 @@ except ImportError:
 
 # 导入native_ipc（支持降级）
 try:
-    from backend.infrastructure.native_ipc import AsyncIPCPipe
+    from backend.infrastructure.native.native_ipc import AsyncIPCPipe
     IPC_AVAILABLE = True
 except ImportError:
     IPC_AVAILABLE = False

@@ -1,10 +1,21 @@
 @echo off
-chcp 65001 >nul
+chcp 65001 >nul 2>&1
 setlocal enabledelayedexpansion
 
 REM ========================================
 REM 星辰金融终端 - 新架构版启动脚本
 REM ========================================
+
+REM 🔧 优化控制台显示：设置窗口大小和字体大小，重点改善行间距
+REM 设置窗口大小：140列，50行（提供更大的显示区域）
+mode con: cols=140 lines=50 >nul 2>&1
+
+REM 🔧 使用PowerShell设置控制台字体大小（通过注册表，重点增加行间距）
+REM 注意：增大字体可以间接增加行间距，因为行间距与字体大小成正比
+REM FontSize值说明：1048576 = 16pt, 1179648 = 18pt, 1310720 = 20pt, 1441792 = 22pt
+REM 使用20pt字体以确保足够的行间距（字体越大，行间距越大）
+REM 注意：字体设置需要新窗口才能生效，当前窗口可能仍使用旧设置
+powershell -NoProfile -ExecutionPolicy Bypass -Command "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8; try { $regPath = 'HKCU:\Console'; if (-not (Test-Path $regPath)) { New-Item -Path $regPath -Force | Out-Null }; $fontSize = 1310720; Set-ItemProperty -Path $regPath -Name 'FontSize' -Value $fontSize -Type DWord -ErrorAction SilentlyContinue; Set-ItemProperty -Path $regPath -Name 'FontFamily' -Value 54 -Type DWord -ErrorAction SilentlyContinue; Set-ItemProperty -Path $regPath -Name 'FontWeight' -Value 400 -Type DWord -ErrorAction SilentlyContinue; Set-ItemProperty -Path $regPath -Name 'FaceName' -Value 'Consolas' -Type String -ErrorAction SilentlyContinue } catch { }" >nul 2>&1
 
 REM 检查管理员权限（自动提权）
 net session >nul 2>&1
@@ -23,8 +34,26 @@ if %errorLevel% neq 0 (
     exit /b 0
 )
 
+REM 🔧 再次设置控制台窗口大小（提权后可能重置了窗口属性）
+mode con: cols=140 lines=50 >nul 2>&1
+
+REM 🔧 再次设置字体大小（提权后需要重新设置，确保行间距足够）
+REM 使用20pt字体以确保足够的行间距（字体越大，行间距越大）
+REM 注意：字体设置需要新窗口才能生效，如果当前窗口字体仍小，请关闭重新打开
+powershell -NoProfile -ExecutionPolicy Bypass -Command "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8; try { $regPath = 'HKCU:\Console'; if (-not (Test-Path $regPath)) { New-Item -Path $regPath -Force | Out-Null }; $fontSize = 1310720; Set-ItemProperty -Path $regPath -Name 'FontSize' -Value $fontSize -Type DWord -ErrorAction SilentlyContinue; Set-ItemProperty -Path $regPath -Name 'FontFamily' -Value 54 -Type DWord -ErrorAction SilentlyContinue; Set-ItemProperty -Path $regPath -Name 'FontWeight' -Value 400 -Type DWord -ErrorAction SilentlyContinue; Set-ItemProperty -Path $regPath -Name 'FaceName' -Value 'Consolas' -Type String -ErrorAction SilentlyContinue } catch { }" >nul 2>&1
+
 title 星辰金融终端 v5.0 - 新架构启动中...
 
+REM 🔧 行间距优化说明
+REM 注意：Windows控制台的行间距主要由字体大小决定
+REM 已设置20pt字体（FontSize=1310720），这将显著增加行间距
+REM 如果行间距仍然不够，可以通过以下方式进一步调整：
+REM 1. 右键点击窗口标题栏 -> 属性 -> 字体 -> 选择更大的字体（如22pt或24pt）
+REM 2. 按住Ctrl键并滚动鼠标滚轮来动态调整字体大小
+REM 3. 字体大小设置会保存，下次打开时会自动应用
+
+REM 🔧 在每个输出后添加空行，增加视觉行间距
+echo.
 echo.
 echo ╔════════════════════════════════════════╗
 echo ║     星辰金融终端 v5.0                  ║
@@ -38,6 +67,7 @@ set "PROJECT_ROOT=%CD%"
 
 echo [✓] 项目根目录: %PROJECT_ROOT%
 echo.
+echo.
 
 REM ========================================
 REM 步骤1: 清理残留进程
@@ -45,16 +75,18 @@ REM ========================================
 
 echo [步骤 1/5] 清理残留进程...
 echo.
+echo.
 
 REM 使用PowerShell清理残留进程
 echo [清理] 使用PowerShell检查并清理残留进程...
-powershell -ExecutionPolicy Bypass -Command "& {$cleaned = 0; Get-Process python -ErrorAction SilentlyContinue | ForEach-Object { try { $cmdline = (Get-WmiObject Win32_Process -Filter \"ProcessId = $($_.Id)\").CommandLine; if ($cmdline) { if ($cmdline -match 'monitor_system\.py') { Write-Host \"[清理] 发现旧监控进程 (PID=$($_.Id))，正在终止...\"; Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue; if ($?) { Write-Host \"[OK] 已终止旧监控进程 (PID=$($_.Id))\"; $cleaned = 1 } } elseif ($cmdline -match 'start_new\.py|start_async_fixed\.py') { Write-Host \"[清理] 发现残留主进程 (PID=$($_.Id))，正在终止...\"; Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue; if ($?) { Write-Host \"[OK] 已终止残留主进程 (PID=$($_.Id))\"; $cleaned = 1 } } } } catch { } }; if ($cleaned -eq 0) { Write-Host \"[OK] 未发现残留进程\" } else { Write-Host \"[OK] 已清理残留进程，等待资源释放...\"; Start-Sleep -Seconds 2 } }"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8; $cleaned = 0; Get-Process python -ErrorAction SilentlyContinue | ForEach-Object { try { $cmdline = (Get-WmiObject Win32_Process -Filter \"ProcessId = $($_.Id)\").CommandLine; if ($cmdline) { if ($cmdline -match 'monitor_system\.py') { Write-Host \"[清理] 发现旧监控进程 (PID=$($_.Id))，正在终止...\"; Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue; if ($?) { Write-Host \"[OK] 已终止旧监控进程 (PID=$($_.Id))\"; $cleaned = 1 } } elseif ($cmdline -match 'start_new\.py|start_async_fixed\.py') { Write-Host \"[清理] 发现残留主进程 (PID=$($_.Id))，正在终止...\"; Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue; if ($?) { Write-Host \"[OK] 已终止残留主进程 (PID=$($_.Id))\"; $cleaned = 1 } } } } catch { } }; if ($cleaned -eq 0) { Write-Host \"[OK] 未发现残留进程\" } else { Write-Host \"[OK] 已清理残留进程，等待资源释放...\"; Start-Sleep -Seconds 2 }"
 
 REM 检查端口占用情况
 echo [清理] 检查端口占用情况...
-powershell -ExecutionPolicy Bypass -Command "& {$ports = Get-NetTCPConnection -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -in 5557,5558,5559 -and $_.State -eq 'Listen' }; if ($ports) { $ports | ForEach-Object { $proc = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue; if ($proc) { Write-Host \"[警告] 端口 $($_.LocalPort) 被进程 $($_.OwningProcess) ($($proc.ProcessName)) 占用\" } } } else { Write-Host \"[OK] 监控端口未被占用\" } }"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8; $ports = Get-NetTCPConnection -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -in 5557,5558,5559 -and $_.State -eq 'Listen' }; if ($ports) { $ports | ForEach-Object { $proc = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue; if ($proc) { Write-Host \"[警告] 端口 $($_.LocalPort) 被进程 $($_.OwningProcess) ($($proc.ProcessName)) 占用\" } } } else { Write-Host \"[OK] 监控端口未被占用\" }"
 
 echo [OK] 进程清理完成
+echo.
 echo.
 
 REM ========================================
@@ -62,6 +94,7 @@ REM 步骤2: 检查Python环境
 REM ========================================
 
 echo [步骤 2/5] 检查Python环境...
+echo.
 
 REM 优先使用虚拟环境
 set "PYTHON_EXE="
@@ -91,6 +124,7 @@ if errorlevel 1 (
 )
 
 echo.
+echo.
 
 REM ========================================
 REM 激活虚拟环境
@@ -109,12 +143,14 @@ if defined VENV_ACTIVATE (
 )
 
 echo.
+echo.
 
 REM ========================================
 REM 检查必要文件
 REM ========================================
 
 echo [步骤 4/5] 检查必要文件...
+echo.
 
 set "MISSING_FILES="
 
@@ -150,12 +186,14 @@ if defined MISSING_FILES (
 
 echo [✓] 所有必要文件存在
 echo.
+echo.
 
 REM ========================================
 REM 启动应用程序
 REM ========================================
 
 echo [步骤 5/5] 启动应用程序...
+echo.
 echo.
 echo ========================================
 echo   应用程序运行中...
@@ -184,7 +222,7 @@ if %EXIT_CODE% equ 0 (
 ) else (
     echo [✗] 程序异常退出 ^(错误代码: %EXIT_CODE%^)
     echo.
-    echo 💡 提示:
+    echo 提示:
     echo    - 检查日志文件: logs\ai\application_startup_*.log
     echo    - 检查终端输出的错误信息
     echo    - 如果问题持续，请查看 logs\ 目录下的其他日志
@@ -206,4 +244,3 @@ pause >nul
 exit /b 1
 
 endlocal
-

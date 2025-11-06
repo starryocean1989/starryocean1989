@@ -9,7 +9,7 @@
 > **📖 文档分工**:
 > - **本文档**:专注于业务流程、规则细节、实现逻辑、算法描述、**微观架构设计**
 > - **最佳实践文档**:专注于架构设计、技术选型、性能目标、组件设计
-> 
+>
 > 两文档遵循单一事实原则,互相引用但不重复内容。
 >
 > **📌 v3.1更新**:
@@ -73,20 +73,20 @@ import pandas as pd
 
 class BaseClassifier(ABC):
     """品种分类器基类"""
-    
+
     @abstractmethod
     def classify(self, complete_df: pd.DataFrame, **kwargs) -> List[Dict[str, Any]]:
         """分类方法
-        
+
         Args:
             complete_df: 完整的品种数据DataFrame（来自TDX API）
             **kwargs: 额外的分类参数（如配置解析器）
-            
+
         Returns:
             分类结果列表，每个元素包含 code, name, market 字段
         """
         pass
-    
+
     @abstractmethod
     def get_classifier_name(self) -> str:
         """获取分类器名称"""
@@ -95,72 +95,72 @@ class BaseClassifier(ABC):
 
 class ShanghaiStockClassifier(BaseClassifier):
     """上证A股分类器"""
-    
+
     def classify(self, complete_df: pd.DataFrame, **kwargs) -> List[Dict[str, Any]]:
         """识别上证A股
-        
+
         规则：
         - market == 1
         - code以688（科创板）或60开头
         - code长度为6位数字
         """
         filtered = complete_df[
-            (complete_df['market'] == 1) & 
+            (complete_df['market'] == 1) &
             (complete_df['code'].str.len() == 6) &
             (complete_df['code'].str.isdigit()) &
-            (complete_df['code'].str.startswith('688') | 
+            (complete_df['code'].str.startswith('688') |
              complete_df['code'].str.startswith('60'))
         ]
-        
+
         return filtered[['code', 'name', 'market']].to_dict('records')
-    
+
     def get_classifier_name(self) -> str:
         return "上证A股"
 
 
 class ShenzhenStockClassifier(BaseClassifier):
     """深证A股分类器"""
-    
+
     def classify(self, complete_df: pd.DataFrame, **kwargs) -> List[Dict[str, Any]]:
         """识别深证A股
-        
+
         规则：
         - market == 0
         - code以000/001/002（主板/中小板）或300/301（创业板）开头
         - code长度为6位数字
         """
         filtered = complete_df[
-            (complete_df['market'] == 0) & 
+            (complete_df['market'] == 0) &
             (complete_df['code'].str.len() == 6) &
             (complete_df['code'].str.isdigit()) &
             (complete_df['code'].str.startswith(('000', '001', '002', '300', '301')))
         ]
-        
+
         return filtered[['code', 'name', 'market']].to_dict('records')
-    
+
     def get_classifier_name(self) -> str:
         return "深证A股"
 
 
 class BeijingStockClassifier(BaseClassifier):
     """北证A股分类器"""
-    
+
     def classify(self, complete_df: pd.DataFrame, **kwargs) -> List[Dict[str, Any]]:
         """识别北证A股
-        
+
         数据来源：从addedcode_bj.cfg配置文件解析
         市场代码：2（硬编码值）
-        
+
         注意：北证A股不从TDX API获取，从配置文件解析
         """
         config_parser = kwargs.get('config_parser')
         if not config_parser:
             logger.warning("北证A股分类器缺少config_parser参数，返回空列表")
             return []
-        
+
         # 从配置文件解析北证品种
         beijing_stocks = config_parser.parse_addedcode_bj()
-        
+
         # 添加固定市场代码2
         result = []
         for stock in beijing_stocks:
@@ -169,19 +169,19 @@ class BeijingStockClassifier(BaseClassifier):
                 "name": stock["name"],
                 "market": 2  # 硬编码值
             })
-        
+
         return result
-    
+
     def get_classifier_name(self) -> str:
         return "北证A股"
 
 
 class T0FundClassifier(BaseClassifier):
     """T+0基金分类器"""
-    
+
     def classify(self, complete_df: pd.DataFrame, **kwargs) -> List[Dict[str, Any]]:
         """识别T+0基金
-        
+
         数据来源：从spblock.dat配置文件获取市场+代码列表
         匹配逻辑：从complete_df中匹配名称
         过滤规则：API中不存在的品种会被过滤
@@ -190,38 +190,38 @@ class T0FundClassifier(BaseClassifier):
         if not block_parser:
             logger.warning("T+0基金分类器缺少block_parser参数，返回空列表")
             return []
-        
+
         # 从spblock.dat获取T+0基金代码列表
         t0_fund_codes = block_parser.get_t0_fund_codes()
-        
+
         result = []
         for fund in t0_fund_codes:
             market = int(fund["market"])
             code = str(fund["code"]).zfill(6)
-            
+
             # 从complete_df中匹配名称
             matched = complete_df[
-                (complete_df["market"] == market) & 
+                (complete_df["market"] == market) &
                 (complete_df["code"] == code)
             ]
-            
+
             if len(matched) > 0:
                 name = str(matched.iloc[0].get("name", ""))
                 result.append({"code": code, "name": name, "market": market})
             # API中无匹配的品种视为不存在，直接跳过
-        
+
         return result
-    
+
     def get_classifier_name(self) -> str:
         return "T+0基金"
 
 
 class ConvertibleBondClassifier(BaseClassifier):
     """可转债分类器"""
-    
+
     def classify(self, complete_df: pd.DataFrame, **kwargs) -> List[Dict[str, Any]]:
         """识别可转债
-        
+
         数据来源：从tdxstat2.cfg配置文件获取市场+代码列表
         匹配逻辑：从complete_df中匹配名称，支持市场代码容错（0↔1）
         过滤规则：如果有多个匹配，过滤掉指数和ETF
@@ -230,33 +230,33 @@ class ConvertibleBondClassifier(BaseClassifier):
         if not config_parser:
             logger.warning("可转债分类器缺少config_parser参数，返回空列表")
             return []
-        
+
         # 从tdxstat2.cfg获取可转债代码列表
         convertible_codes_by_market = config_parser.parse_tdxstat2()
-        
+
         result = []
         for market, codes in convertible_codes_by_market.items():
             mkt = int(market)
             for raw_code in codes:
                 code = str(raw_code).zfill(6)
-                
+
                 # 尝试原始市场代码匹配
                 matched = complete_df[
-                    (complete_df["market"] == mkt) & 
+                    (complete_df["market"] == mkt) &
                     (complete_df["code"] == code)
                 ]
-                
+
                 # 如果原始市场匹配不到，尝试交换市场代码（0↔1）
                 if len(matched) == 0:
                     alt_mkt = 1 if mkt == 0 else 0
                     matched_alt = complete_df[
-                        (complete_df["market"] == alt_mkt) & 
+                        (complete_df["market"] == alt_mkt) &
                         (complete_df["code"] == code)
                     ]
                     if len(matched_alt) > 0:
                         matched = matched_alt
                         mkt = alt_mkt  # 使用交换后的市场代码
-                
+
                 if len(matched) > 0:
                     # 如果有多个匹配，过滤掉指数和ETF
                     if len(matched) > 1:
@@ -265,13 +265,13 @@ class ConvertibleBondClassifier(BaseClassifier):
                         ]
                         if len(non_index) > 0:
                             matched = non_index
-                    
+
                     name = str(matched.iloc[0].get("name", ""))
                     result.append({"code": code, "name": name, "market": mkt})
                 # API中无匹配的品种视为不存在，直接跳过
-        
+
         return result
-    
+
     def get_classifier_name(self) -> str:
         return "可转债"
 ```
@@ -281,17 +281,17 @@ class ConvertibleBondClassifier(BaseClassifier):
 ```python
 class ClassifierRegistry:
     """分类器注册表
-    
+
     管理所有品种分类器的注册、查询和执行
     """
-    
+
     def __init__(self):
         self._classifiers: Dict[str, BaseClassifier] = {}
         self._execution_order: List[str] = []
-    
+
     def register(self, classifier: BaseClassifier, order: int = 999):
         """注册分类器
-        
+
         Args:
             classifier: 分类器实例
             order: 执行顺序（数字越小越先执行）
@@ -300,10 +300,10 @@ class ClassifierRegistry:
         self._classifiers[name] = classifier
         self._execution_order.append((order, name))
         self._execution_order.sort(key=lambda x: x[0])
-    
+
     def classify_all(self, complete_df: pd.DataFrame, **kwargs) -> Dict[str, List[Dict]]:
         """执行所有分类器
-        
+
         Returns:
             分类结果字典，key为分类器名称，value为分类结果列表
         """
@@ -317,9 +317,9 @@ class ClassifierRegistry:
             except Exception as e:
                 logger.error(f"分类器 {name} 执行失败: {e}", exc_info=True)
                 results[name] = []
-        
+
         return results
-    
+
     def get_classifier(self, name: str) -> BaseClassifier:
         """获取指定分类器"""
         return self._classifiers.get(name)
@@ -332,11 +332,11 @@ class ClassifierRegistry:
 class SymbolLoader:
     def __init__(self, event_engine: Optional[EventEngine] = None):
         self.event_engine = event_engine
-        
+
         # 初始化分类器注册表
         self.classifier_registry = ClassifierRegistry()
         self._register_classifiers()
-    
+
     def _register_classifiers(self):
         """注册所有分类器"""
         # 注册顺序决定执行顺序
@@ -345,23 +345,23 @@ class SymbolLoader:
         self.classifier_registry.register(BeijingStockClassifier(), order=3)
         self.classifier_registry.register(T0FundClassifier(), order=4)
         self.classifier_registry.register(ConvertibleBondClassifier(), order=5)
-    
+
     async def reload_and_classify_async(self) -> Dict:
         """重新加载并分类"""
         # 1. 从API加载完整品种列表
         complete_df = await self.load_from_api_async()
-        
+
         # 2. 准备分类参数
         config_parser = TdxConfigFileParser()
         block_parser = BlockParser()
-        
+
         # 3. 执行所有分类器
         classified_results = self.classifier_registry.classify_all(
             complete_df,
             config_parser=config_parser,
             block_parser=block_parser
         )
-        
+
         # 4. 后续处理（去重、验证、IPO日期集成等）
         # ...
 ```
@@ -389,20 +389,20 @@ from typing import List, Dict, Any, Tuple
 
 class BaseFilter(ABC):
     """品种过滤器基类"""
-    
+
     @abstractmethod
     def filter(self, symbols: List[Dict[str, Any]], **kwargs) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """过滤方法
-        
+
         Args:
             symbols: 待过滤的品种列表
             **kwargs: 额外的过滤参数（如IPO日期字典）
-            
+
         Returns:
             (保留的品种列表, 过滤掉的品种列表)
         """
         pass
-    
+
     @abstractmethod
     def get_filter_name(self) -> str:
         """获取过滤器名称"""
@@ -411,10 +411,10 @@ class BaseFilter(ABC):
 
 class UnlistedSymbolFilter(BaseFilter):
     """未上市品种过滤器"""
-    
+
     def filter(self, symbols: List[Dict[str, Any]], **kwargs) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """过滤未上市品种
-        
+
         规则：
         - IPO日期为None或无效日期的品种将被标记为未上市
         - IPO日期原始值 < 19900000（如70这种无效值）
@@ -422,14 +422,14 @@ class UnlistedSymbolFilter(BaseFilter):
         - IPO日期为0或None
         """
         ipo_dates = kwargs.get('ipo_dates', {})
-        
+
         kept = []
         filtered = []
-        
+
         for symbol in symbols:
             code = symbol['code']
             ipo_date = ipo_dates.get(code)
-            
+
             # 判断是否未上市
             if ipo_date is None or not self._is_valid_ipo_date(ipo_date):
                 filtered.append({
@@ -438,15 +438,15 @@ class UnlistedSymbolFilter(BaseFilter):
                 })
             else:
                 kept.append(symbol)
-        
+
         logger.debug(f"{self.get_filter_name()}：保留{len(kept)}个，过滤{len(filtered)}个")
         return kept, filtered
-    
+
     def _is_valid_ipo_date(self, ipo_date: Any) -> bool:
         """验证IPO日期有效性"""
         if ipo_date is None:
             return False
-        
+
         # 检查日期范围
         try:
             if isinstance(ipo_date, (int, float)):
@@ -459,21 +459,21 @@ class UnlistedSymbolFilter(BaseFilter):
                     return False
             else:
                 return False
-            
+
             return True
         except Exception:
             return False
-    
+
     def get_filter_name(self) -> str:
         return "未上市品种过滤器"
 
 
 class DuplicateSymbolFilter(BaseFilter):
     """重复品种过滤器"""
-    
+
     def filter(self, symbols: List[Dict[str, Any]], **kwargs) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """过滤重复品种
-        
+
         规则：
         - 同一品种代码只保留一条记录
         - 按出现顺序，保留第一条
@@ -481,7 +481,7 @@ class DuplicateSymbolFilter(BaseFilter):
         seen_codes = set()
         kept = []
         filtered = []
-        
+
         for symbol in symbols:
             code = symbol['code']
             if code in seen_codes:
@@ -492,30 +492,30 @@ class DuplicateSymbolFilter(BaseFilter):
             else:
                 seen_codes.add(code)
                 kept.append(symbol)
-        
+
         logger.debug(f"{self.get_filter_name()}：保留{len(kept)}个，过滤{len(filtered)}个")
         return kept, filtered
-    
+
     def get_filter_name(self) -> str:
         return "重复品种过滤器"
 
 
 class InvalidDataFilter(BaseFilter):
     """无效数据过滤器"""
-    
+
     def filter(self, symbols: List[Dict[str, Any]], **kwargs) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """过滤无效数据
-        
+
         规则：
         - code和name都必须有效（非空且去除空格后不为空）
         """
         kept = []
         filtered = []
-        
+
         for symbol in symbols:
             code = str(symbol.get('code', '')).strip()
             name = str(symbol.get('name', '')).strip()
-            
+
             if not code or not name:
                 filtered.append({
                     **symbol,
@@ -523,10 +523,10 @@ class InvalidDataFilter(BaseFilter):
                 })
             else:
                 kept.append(symbol)
-        
+
         logger.debug(f"{self.get_filter_name()}：保留{len(kept)}个，过滤{len(filtered)}个")
         return kept, filtered
-    
+
     def get_filter_name(self) -> str:
         return "无效数据过滤器"
 ```
@@ -536,30 +536,30 @@ class InvalidDataFilter(BaseFilter):
 ```python
 class FilterChain:
     """过滤器链
-    
+
     按顺序执行多个过滤器，支持中间结果统计
     """
-    
+
     def __init__(self):
         self._filters: List[BaseFilter] = []
         self._filter_stats: Dict[str, Dict[str, int]] = {}
-    
+
     def add_filter(self, filter_instance: BaseFilter):
         """添加过滤器到链中"""
         self._filters.append(filter_instance)
-    
+
     def execute(self, symbols: List[Dict[str, Any]], **kwargs) -> Tuple[List[Dict[str, Any]], Dict]:
         """执行过滤器链
-        
+
         Returns:
             (最终保留的品种列表, 过滤统计信息)
         """
         current_symbols = symbols
         total_filtered = []
-        
+
         for filter_instance in self._filters:
             kept, filtered = filter_instance.filter(current_symbols, **kwargs)
-            
+
             # 记录统计
             filter_name = filter_instance.get_filter_name()
             self._filter_stats[filter_name] = {
@@ -567,17 +567,17 @@ class FilterChain:
                 'kept': len(kept),
                 'filtered': len(filtered)
             }
-            
+
             # 更新当前品种列表
             current_symbols = kept
             total_filtered.extend(filtered)
-        
+
         # 生成统计报告
         stats = self._generate_stats_report(len(symbols), len(current_symbols), total_filtered)
-        
+
         return current_symbols, stats
-    
-    def _generate_stats_report(self, initial_count: int, final_count: int, 
+
+    def _generate_stats_report(self, initial_count: int, final_count: int,
                                filtered_symbols: List[Dict]) -> Dict:
         """生成统计报告"""
         return {
@@ -595,40 +595,40 @@ class FilterChain:
 class SymbolLoader:
     def __init__(self, event_engine: Optional[EventEngine] = None):
         self.event_engine = event_engine
-        
+
         # 初始化过滤器链
         self.filter_chain = FilterChain()
         self._register_filters()
-    
+
     def _register_filters(self):
         """注册所有过滤器"""
         # 顺序很重要：先去重，再过滤无效数据，最后过滤未上市品种
         self.filter_chain.add_filter(DuplicateSymbolFilter())
         self.filter_chain.add_filter(InvalidDataFilter())
         self.filter_chain.add_filter(UnlistedSymbolFilter())
-    
+
     async def reload_and_classify_async(self) -> Dict:
         """重新加载并分类"""
         # 1. 分类
         classified_results = self.classifier_registry.classify_all(...)
-        
+
         # 2. 合并所有分类结果
         all_symbols = []
         for category, symbols in classified_results.items():
             all_symbols.extend(symbols)
-        
+
         # 3. 执行过滤器链
         ipo_dates = await self._load_ipo_dates()
         final_symbols, filter_stats = self.filter_chain.execute(
             all_symbols,
             ipo_dates=ipo_dates
         )
-        
+
         # 4. 输出统计信息
         logger.info(f"品种过滤完成：初始{filter_stats['initial_count']}个，"
                    f"最终{filter_stats['final_count']}个，"
                    f"过滤{filter_stats['total_filtered']}个")
-        
+
         return final_symbols
 ```
 
@@ -956,14 +956,14 @@ class DownloadStatistics:
     skipped_tasks: int = 0
     start_time: Optional[float] = None
     end_time: Optional[float] = None
-    
+
     @property
     def success_rate(self) -> float:
         """成功率"""
         if self.total_tasks == 0:
             return 0.0
         return (self.completed_tasks / self.total_tasks) * 100
-    
+
     @property
     def elapsed_time(self) -> float:
         """已用时间(秒)"""
@@ -974,15 +974,15 @@ class DownloadStatistics:
 
 class DownloadStateMachine:
     """下载状态机
-    
+
     管理下载任务的状态流转,确保状态变更的合法性和一致性
     """
-    
+
     # 定义合法的状态转换规则
     VALID_TRANSITIONS = {
         DownloadState.IDLE: [DownloadState.PREPARING],
         DownloadState.PREPARING: [DownloadState.RUNNING, DownloadState.FAILED],
-        DownloadState.RUNNING: [DownloadState.PAUSED, DownloadState.STOPPING, 
+        DownloadState.RUNNING: [DownloadState.PAUSED, DownloadState.STOPPING,
                                 DownloadState.COMPLETED, DownloadState.FAILED],
         DownloadState.PAUSED: [DownloadState.RUNNING, DownloadState.STOPPING, DownloadState.CANCELLED],
         DownloadState.STOPPING: [DownloadState.CANCELLED],
@@ -990,27 +990,27 @@ class DownloadStateMachine:
         DownloadState.FAILED: [DownloadState.IDLE],     # 可重新开始
         DownloadState.CANCELLED: [DownloadState.IDLE],  # 可重新开始
     }
-    
+
     def __init__(self):
         self._current_state = DownloadState.IDLE
         self._state_lock = threading.Lock()
         self._state_history: List[Tuple[DownloadState, float]] = []
         self._statistics = DownloadStatistics()
         self._event_callbacks: Dict[DownloadState, List[callable]] = {}
-    
+
     @property
     def current_state(self) -> DownloadState:
         """获取当前状态(线程安全)"""
         with self._state_lock:
             return self._current_state
-    
+
     def transition_to(self, new_state: DownloadState, force: bool = False) -> bool:
         """状态转换
-        
+
         Args:
             new_state: 目标状态
             force: 是否强制转换(跳过合法性检查)
-            
+
         Returns:
             转换是否成功
         """
@@ -1021,37 +1021,37 @@ class DownloadStateMachine:
                     f"非法状态转换: {self._current_state.name} -> {new_state.name}"
                 )
                 return False
-            
+
             old_state = self._current_state
             self._current_state = new_state
-            
+
             # 记录状态历史
             self._state_history.append((new_state, time.time()))
-            
+
             # 更新统计信息
             self._update_statistics(new_state)
-            
+
             logger.info(f"状态转换: {old_state.name} -> {new_state.name}")
-            
+
             # 触发状态变更回调
             self._trigger_callbacks(new_state)
-            
+
             return True
-    
+
     def _update_statistics(self, new_state: DownloadState):
         """更新统计信息"""
         if new_state == DownloadState.RUNNING and self._statistics.start_time is None:
             self._statistics.start_time = time.time()
-        
+
         if new_state in [DownloadState.COMPLETED, DownloadState.FAILED, DownloadState.CANCELLED]:
             self._statistics.end_time = time.time()
-    
+
     def register_callback(self, state: DownloadState, callback: callable):
         """注册状态变更回调"""
         if state not in self._event_callbacks:
             self._event_callbacks[state] = []
         self._event_callbacks[state].append(callback)
-    
+
     def _trigger_callbacks(self, state: DownloadState):
         """触发状态变更回调"""
         callbacks = self._event_callbacks.get(state, [])
@@ -1060,19 +1060,19 @@ class DownloadStateMachine:
                 callback(state)
             except Exception as e:
                 logger.error(f"状态回调执行失败: {e}", exc_info=True)
-    
+
     def update_statistics(self, **kwargs):
         """更新统计信息"""
         with self._state_lock:
             for key, value in kwargs.items():
                 if hasattr(self._statistics, key):
                     setattr(self._statistics, key, value)
-    
+
     def get_statistics(self) -> DownloadStatistics:
         """获取统计信息副本"""
         with self._state_lock:
             return dataclass.replace(self._statistics)
-    
+
     def reset(self):
         """重置状态机"""
         with self._state_lock:
@@ -1087,48 +1087,48 @@ class DownloadStateMachine:
 class MultiProcessStockFetcher:
     def __init__(self, event_engine: Optional[EventEngine] = None):
         self.event_engine = event_engine
-        
+
         # 初始化状态机
         self.state_machine = DownloadStateMachine()
-        
+
         # 注册状态变更回调
         self.state_machine.register_callback(
-            DownloadState.RUNNING, 
+            DownloadState.RUNNING,
             self._on_download_started
         )
         self.state_machine.register_callback(
-            DownloadState.COMPLETED, 
+            DownloadState.COMPLETED,
             self._on_download_completed
         )
-    
+
     async def download_incremental_kline_async(self, symbols, start_date, intervals):
         """异步增量下载"""
         try:
             # 状态转换: IDLE -> PREPARING
             if not self.state_machine.transition_to(DownloadState.PREPARING):
                 raise RuntimeError("状态转换失败:无法开始准备")
-            
+
             # 准备资源
             await self._prepare_download(symbols, intervals)
-            
+
             # 状态转换: PREPARING -> RUNNING
             if not self.state_machine.transition_to(DownloadState.RUNNING):
                 raise RuntimeError("状态转换失败:无法开始下载")
-            
+
             # 执行下载
             result = await self._execute_download()
-            
+
             # 状态转换: RUNNING -> COMPLETED
             self.state_machine.transition_to(DownloadState.COMPLETED)
-            
+
             return result
-            
+
         except Exception as e:
             # 状态转换: * -> FAILED
             self.state_machine.transition_to(DownloadState.FAILED, force=True)
             logger.error(f"下载失败: {e}", exc_info=True)
             raise
-    
+
     def pause_download(self):
         """暂停下载"""
         if self.state_machine.current_state == DownloadState.RUNNING:
@@ -1136,7 +1136,7 @@ class MultiProcessStockFetcher:
             # 设置暂停事件
             if self.pause_event:
                 self.pause_event.clear()
-    
+
     def resume_download(self):
         """恢复下载"""
         if self.state_machine.current_state == DownloadState.PAUSED:
@@ -1144,7 +1144,7 @@ class MultiProcessStockFetcher:
             # 清除暂停事件
             if self.pause_event:
                 self.pause_event.set()
-    
+
     def stop_download(self):
         """停止下载"""
         if self.state_machine.current_state in [DownloadState.RUNNING, DownloadState.PAUSED]:
@@ -1187,23 +1187,23 @@ class DownloadTask:
     retry_count: int = 0
     max_retries: int = 3
     metadata: Dict[str, Any] = field(default_factory=dict)
-    
+
     def __lt__(self, other):
         """支持优先级队列排序"""
         return self.priority > other.priority  # 优先级高的排在前面
 
 class TaskQueueManager:
     """任务队列管理器
-    
+
     管理多进程共享的任务队列,支持优先级、背压控制和统计监控
     """
-    
+
     def __init__(self, max_queue_size: int = 10000, enable_priority: bool = False):
         from multiprocessing import Manager
-        
+
         self.manager = Manager()
         self.enable_priority = enable_priority
-        
+
         # 任务队列(使用Manager.Queue支持多进程)
         if enable_priority:
             # 优先级队列需要自己实现
@@ -1211,43 +1211,43 @@ class TaskQueueManager:
             self._priority_lock = threading.Lock()
         else:
             self.task_queue = self.manager.Queue(maxsize=max_queue_size)
-        
+
         # 统计信息
         self._stats_lock = threading.Lock()
         self._total_submitted = 0
         self._total_completed = 0
         self._total_failed = 0
         self._total_skipped = 0
-    
+
     def submit_task(self, task: DownloadTask, timeout: float = 1.0) -> bool:
         """提交任务到队列
-        
+
         Args:
             task: 下载任务
             timeout: 入队超时时间
-            
+
         Returns:
             是否成功入队
         """
         try:
             self.task_queue.put(task, timeout=timeout)
-            
+
             with self._stats_lock:
                 self._total_submitted += 1
-            
+
             return True
-            
+
         except Full:
             logger.warning(f"任务队列已满,跳过任务: {task.symbol}_{task.interval}")
-            
+
             with self._stats_lock:
                 self._total_skipped += 1
-            
+
             return False
-    
+
     def submit_batch(self, tasks: List[DownloadTask], timeout: float = 1.0) -> int:
         """批量提交任务
-        
+
         Returns:
             成功入队的任务数量
         """
@@ -1256,13 +1256,13 @@ class TaskQueueManager:
             if self.submit_task(task, timeout):
                 success_count += 1
         return success_count
-    
+
     def get_task(self, timeout: float = 0.1) -> Optional[DownloadTask]:
         """获取任务(阻塞)
-        
+
         Args:
             timeout: 等待超时时间
-            
+
         Returns:
             下载任务,如果队列为空则返回None
         """
@@ -1270,21 +1270,21 @@ class TaskQueueManager:
             return self.task_queue.get(timeout=timeout)
         except Empty:
             return None
-    
+
     def mark_completed(self, task: DownloadTask):
         """标记任务完成"""
         with self._stats_lock:
             self._total_completed += 1
-    
+
     def mark_failed(self, task: DownloadTask, retry: bool = True) -> bool:
         """标记任务失败
-        
+
         Returns:
             是否需要重试
         """
         with self._stats_lock:
             self._total_failed += 1
-        
+
         # 检查是否需要重试
         if retry and task.retry_count < task.max_retries:
             task.retry_count += 1
@@ -1292,9 +1292,9 @@ class TaskQueueManager:
             task.priority -= 1
             self.submit_task(task)
             return True
-        
+
         return False
-    
+
     def get_queue_size(self) -> int:
         """获取队列大小"""
         try:
@@ -1302,7 +1302,7 @@ class TaskQueueManager:
         except NotImplementedError:
             # 某些平台不支持qsize()
             return -1
-    
+
     def get_statistics(self) -> Dict[str, int]:
         """获取统计信息"""
         with self._stats_lock:
@@ -1314,7 +1314,7 @@ class TaskQueueManager:
                 'queue_size': self.get_queue_size(),
                 'pending': self._total_submitted - self._total_completed - self._total_failed
             }
-    
+
     def clear(self):
         """清空队列"""
         while not self.task_queue.empty():
@@ -1343,14 +1343,14 @@ import asyncio
 # 位于 backend/infrastructure/tdx_asyncio/retry_connection_pool.py
 class RetryConnectionPool:
     """两阶段重试连接池
-    
+
     提供带智能重试机制的连接池包装器，支持：
     - 阶段1：IPv4+IPv6混合池，最多10次尝试
     - 阶段2：IPv4最快30%服务器，最多5次尝试
     - 自动排除已尝试的服务器
     - 详细日志记录
     """
-    
+
     async def execute_with_retry(
         self,
         task_func: Callable[[AsyncTdxHq_API], Any],
@@ -1358,12 +1358,12 @@ class RetryConnectionPool:
         scenario: str = "download",
     ) -> Tuple[Optional[Any], bool]:
         """执行带重试的任务
-        
+
         Args:
             task_func: 任务函数，接受 AsyncTdxHq_API 作为参数
             attempted_servers: 已尝试服务器列表（格式：["ip:port", ...]）
             scenario: 场景标识（用于日志）
-        
+
         Returns:
             (result, success): 结果和是否成功
         """
@@ -1371,17 +1371,17 @@ class RetryConnectionPool:
         result = await self._phase1_retry(task_func, attempted_servers, scenario)
         if result is not None:
             return result, True
-            
+
         # 阶段2: 最快30%服务器重试
         result = await self._phase2_retry(task_func, attempted_servers, scenario)
         if result is not None:
             return result, True
-        
+
         return None, False
 ```
             host, port = server
             client = None
-            
+
             # 重试机制
             for attempt in range(max_retries + 1):
                 try:
@@ -1391,23 +1391,23 @@ class RetryConnectionPool:
                         client.connect(host, port),
                         timeout=timeout
                     )
-                    
+
                     # 健康检查
                     if health_check:
                         if not await self._health_check(client):
                             await client.close()
                             client = None
                             continue
-                    
+
                     # 记录活跃连接
                     self._active_connections.append((f"{host}:{port}", client))
                     connections.append(client)
-                    
+
                     self.logger.debug(
                         f"Worker {self.worker_id} 成功连接服务器 {host}:{port}"
                     )
                     break
-                    
+
                 except asyncio.TimeoutError:
                     self.logger.debug(
                         f"Worker {self.worker_id} 连接服务器 {host}:{port} 超时 "
@@ -1416,7 +1416,7 @@ class RetryConnectionPool:
                     if client:
                         await client.close()
                     client = None
-                    
+
                 except Exception as e:
                     self.logger.debug(
                         f"Worker {self.worker_id} 连接服务器 {host}:{port} 失败: {e} "
@@ -1425,19 +1425,19 @@ class RetryConnectionPool:
                     if client:
                         await client.close()
                     client = None
-            
+
             # 如果所有重试都失败,添加None占位
             if client is None:
                 connections.append(None)
-        
+
         successful_count = sum(1 for c in connections if c is not None)
         self.logger.info(
             f"Worker {self.worker_id} 连接创建完成: "
             f"{successful_count}/{len(servers)} 成功"
         )
-        
+
         return connections
-    
+
     async def _health_check(self, client) -> bool:
         """健康检查"""
         try:
@@ -1450,22 +1450,22 @@ class RetryConnectionPool:
         except Exception as e:
             self.logger.debug(f"健康检查失败: {e}")
             return False
-    
+
     async def close_all(self):
         """关闭所有连接"""
         close_tasks = []
-        
+
         for server, client in self._active_connections:
             if client:
                 close_tasks.append(self._safe_close(client, server))
-        
+
         if close_tasks:
             await asyncio.gather(*close_tasks, return_exceptions=True)
-        
+
         self._active_connections.clear()
-        
+
         self.logger.info(f"Worker {self.worker_id} 所有连接已关闭")
-    
+
     async def _safe_close(self, client, server: str):
         """安全关闭连接"""
         try:
@@ -1473,7 +1473,7 @@ class RetryConnectionPool:
             self.logger.debug(f"Worker {self.worker_id} 关闭连接 {server}")
         except Exception as e:
             self.logger.debug(f"Worker {self.worker_id} 关闭连接 {server} 失败: {e}")
-    
+
     def get_active_count(self) -> int:
         """获取活跃连接数"""
         return len(self._active_connections)
@@ -2009,25 +2009,25 @@ class ValidationResult:
 
 class BaseValidator(ABC):
     """验证器基类"""
-    
+
     @abstractmethod
     def validate(self, df: pd.DataFrame, context: 'ValidationContext') -> ValidationResult:
         """执行验证
-        
+
         Args:
             df: 待验证的DataFrame
             context: 验证上下文(共享数据)
-            
+
         Returns:
             验证结果
         """
         pass
-    
+
     @abstractmethod
     def get_validator_name(self) -> str:
         """获取验证器名称"""
         pass
-    
+
     @abstractmethod
     def get_weight(self) -> float:
         """获取验证器权重(0-1)"""
@@ -2035,10 +2035,10 @@ class BaseValidator(ABC):
 
 class FormatValidator(BaseValidator):
     """格式验证器"""
-    
+
     def validate(self, df: pd.DataFrame, context: 'ValidationContext') -> ValidationResult:
         """验证DataFrame格式
-        
+
         验证项:
         - 必需列是否存在
         - 数据类型是否正确
@@ -2046,18 +2046,18 @@ class FormatValidator(BaseValidator):
         """
         errors = []
         warnings = []
-        
+
         # 1. 必需列检查
         required_columns = ['datetime', 'open', 'high', 'low', 'close', 'volume']
         missing_columns = [col for col in required_columns if col not in df.columns]
-        
+
         if missing_columns:
             errors.append(ValidationError(
                 type="missing_columns",
                 severity="error",
                 message=f"缺少必需列: {missing_columns}"
             ))
-        
+
         # 2. 数据类型检查
         if 'datetime' in df.columns:
             if not pd.api.types.is_datetime64_any_dtype(df['datetime']):
@@ -2066,7 +2066,7 @@ class FormatValidator(BaseValidator):
                     severity="error",
                     message="datetime列不是日期时间类型"
                 ))
-        
+
         # 3. 数值列检查
         numeric_columns = ['open', 'high', 'low', 'close', 'volume']
         for col in numeric_columns:
@@ -2078,7 +2078,7 @@ class FormatValidator(BaseValidator):
                         column=col,
                         message=f"{col}列不是数值类型"
                     ))
-                
+
                 # 4. 空值检查
                 elif df[col].isna().any():
                     na_count = df[col].isna().sum()
@@ -2088,10 +2088,10 @@ class FormatValidator(BaseValidator):
                         column=col,
                         message=f"{col}列包含{na_count}个空值"
                     ))
-        
+
         # 计算评分
         score = 100.0 if not errors else max(0, 100 - len(errors) * 20)
-        
+
         return ValidationResult(
             validator_name=self.get_validator_name(),
             is_valid=len(errors) == 0,
@@ -2100,19 +2100,19 @@ class FormatValidator(BaseValidator):
             warnings=warnings,
             statistics={'total_columns': len(df.columns)}
         )
-    
+
     def get_validator_name(self) -> str:
         return "格式验证器"
-    
+
     def get_weight(self) -> float:
         return 0.3  # 30%权重
 
 class LogicValidator(BaseValidator):
     """逻辑验证器"""
-    
+
     def validate(self, df: pd.DataFrame, context: 'ValidationContext') -> ValidationResult:
         """验证OHLC逻辑关系
-        
+
         验证项:
         - 最高价 >= 最低价
         - 最高价 >= 开盘价/收盘价
@@ -2121,7 +2121,7 @@ class LogicValidator(BaseValidator):
         """
         errors = []
         warnings = []
-        
+
         if all(col in df.columns for col in ['open', 'high', 'low', 'close']):
             # 1. 最高价 >= 最低价
             invalid_high_low = df[df['high'] < df['low']]
@@ -2130,40 +2130,40 @@ class LogicValidator(BaseValidator):
                     idx_date = pd.Timestamp(idx).date() if pd.notna(idx) else None
                 except (ValueError, TypeError):
                     idx_date = None
-                
+
                 errors.append(ValidationError(
                     type="high_low_error",
                     severity="error",
                     date=idx_date,
                     message=f"最高价小于最低价: high={row['high']}, low={row['low']}"
                 ))
-            
+
             # 2. 最高价 >= 开盘价/收盘价
             invalid_high_open = df[df['high'] < df['open']]
             invalid_high_close = df[df['high'] < df['close']]
-            
+
             if not invalid_high_open.empty:
                 errors.append(ValidationError(
                     type="high_less_than_open",
                     severity="error",
                     message=f"最高价小于开盘价,共{len(invalid_high_open)}条"
                 ))
-            
+
             # 3. 价格合理性检查(警告级别)
             invalid_open = df[df['open'] <= 0]
             invalid_close = df[df['close'] <= 0]
-            
+
             if not invalid_open.empty:
                 warnings.append(ValidationError(
                     type="invalid_price",
                     severity="warning",
                     message=f"存在开盘价<=0的情况,共{len(invalid_open)}条"
                 ))
-        
+
         # 计算评分
         total_errors = len(errors)
         score = 100.0 if total_errors == 0 else max(0, 100 - total_errors * 10)
-        
+
         return ValidationResult(
             validator_name=self.get_validator_name(),
             is_valid=len(errors) == 0,
@@ -2172,26 +2172,26 @@ class LogicValidator(BaseValidator):
             warnings=warnings,
             statistics={'total_rows': len(df)}
         )
-    
+
     def get_validator_name(self) -> str:
         return "逻辑验证器"
-    
+
     def get_weight(self) -> float:
         return 0.2  # 20%权重
 
 class CompletenessValidator(BaseValidator):
     """完整性验证器"""
-    
+
     def validate(self, df: pd.DataFrame, context: 'ValidationContext') -> ValidationResult:
         """验证数据完整性
-        
+
         验证项:
         - 交易日数据缺失
         - 数据记录数量
         """
         errors = []
         warnings = []
-        
+
         # 1. 计算有效起始日期
         symbol = context.current_symbol
         effective_start = self._compute_effective_start_date(
@@ -2200,11 +2200,11 @@ class CompletenessValidator(BaseValidator):
             base_date=context.base_date,
             ipo_dates=context.ipo_dates
         )
-        
+
         # 2. 获取期间内所有交易日
         check_end_date = min(df['datetime'].max().date() if not df.empty else date.today(),
                             context.latest_trading_day)
-        
+
         if effective_start > check_end_date:
             # 日期范围异常
             return ValidationResult(
@@ -2217,27 +2217,27 @@ class CompletenessValidator(BaseValidator):
                     message=f"日期范围异常: 有效起点({effective_start}) > 检测终点({check_end_date})"
                 )]
             )
-        
+
         expected_trading_days = context.get_trading_days_in_range(effective_start, check_end_date)
         actual_dates = set(df['datetime'].dt.date)
-        
+
         # 3. 找出缺失的交易日
         missing_dates = [d for d in expected_trading_days if d not in actual_dates]
-        
+
         if missing_dates:
             errors.append(ValidationError(
                 type="missing_trading_days",
                 severity="error",
                 message=f"缺失{len(missing_dates)}个交易日"
             ))
-        
+
         # 4. 计算完整性评分
         if expected_trading_days:
-            completeness = ((len(expected_trading_days) - len(missing_dates)) / 
+            completeness = ((len(expected_trading_days) - len(missing_dates)) /
                           len(expected_trading_days)) * 100
         else:
             completeness = 0
-        
+
         return ValidationResult(
             validator_name=self.get_validator_name(),
             is_valid=len(missing_dates) == 0,
@@ -2250,11 +2250,11 @@ class CompletenessValidator(BaseValidator):
                 'missing_days': len(missing_dates)
             }
         )
-    
+
     def _compute_effective_start_date(self, symbol, data_start, base_date, ipo_dates) -> date:
         """计算有效起始日期"""
         ipo_date = ipo_dates.get(symbol) if symbol else None
-        
+
         candidates = []
         if ipo_date:
             candidates.append(ipo_date)
@@ -2262,27 +2262,27 @@ class CompletenessValidator(BaseValidator):
             candidates.append(data_start)
         if base_date:
             candidates.append(base_date)
-        
+
         return max(candidates) if candidates else date(2020, 1, 1)
-    
+
     def get_validator_name(self) -> str:
         return "完整性验证器"
-    
+
     def get_weight(self) -> float:
         return 0.3  # 30%权重
 
 class FreshnessValidator(BaseValidator):
     """新鲜度验证器"""
-    
+
     def validate(self, df: pd.DataFrame, context: 'ValidationContext') -> ValidationResult:
         """验证数据新鲜度
-        
+
         验证项:
         - 数据最新日期与最新交易日的滞后天数
         """
         errors = []
         warnings = []
-        
+
         if df.empty:
             return ValidationResult(
                 validator_name=self.get_validator_name(),
@@ -2294,21 +2294,21 @@ class FreshnessValidator(BaseValidator):
                     message="数据为空"
                 )]
             )
-        
+
         # 1. 获取数据最新日期
         latest_data_date = df['datetime'].dt.date.max()
         latest_trading_day = context.latest_trading_day
-        
+
         # 2. 计算滞后天数(使用粗略估算)
         if latest_data_date >= latest_trading_day:
             gap_days = 0
         else:
             calendar_gap = (latest_trading_day - latest_data_date).days
             gap_days = max(0, int(calendar_gap / 1.4))  # 粗略估算
-        
+
         # 3. 判断新鲜度
         is_fresh = gap_days <= 1  # 允许1个交易日延迟
-        
+
         # 4. 计算评分
         if gap_days == 0:
             score = 100.0
@@ -2320,7 +2320,7 @@ class FreshnessValidator(BaseValidator):
             score = max(30.0, 70.0 - (gap_days - context.freshness_days_warning) * 10)
         else:
             score = 0.0
-        
+
         # 5. 生成错误/警告
         if gap_days > context.freshness_days_error:
             errors.append(ValidationError(
@@ -2334,7 +2334,7 @@ class FreshnessValidator(BaseValidator):
                 severity="warning",
                 message=f"数据较旧,滞后{gap_days}个交易日"
             ))
-        
+
         return ValidationResult(
             validator_name=self.get_validator_name(),
             is_valid=is_fresh,
@@ -2347,10 +2347,10 @@ class FreshnessValidator(BaseValidator):
                 'gap_days': gap_days
             }
         )
-    
+
     def get_validator_name(self) -> str:
         return "新鲜度验证器"
-    
+
     def get_weight(self) -> float:
         return 0.2  # 20%权重
 ```
@@ -2379,23 +2379,23 @@ class AggregatedValidationResult:
 
 class ValidationResultAggregator:
     """验证结果聚合器
-    
+
     聚合多个验证器的结果,计算木桶理论评分（取最短板）
     """
-    
+
     def __init__(self, validators: List[BaseValidator]):
         self.validators = validators
         # 木桶理论不需要权重总和
-    
-    def aggregate(self, results: Dict[str, ValidationResult], 
+
+    def aggregate(self, results: Dict[str, ValidationResult],
                  symbol: str, interval: str) -> AggregatedValidationResult:
         """聚合验证结果
-        
+
         Args:
             results: 验证器名称 -> 验证结果
             symbol: 品种代码
             interval: 周期
-            
+
         Returns:
             聚合验证结果
         """
@@ -2403,29 +2403,29 @@ class ValidationResultAggregator:
         scores = []
         total_errors = 0
         total_warnings = 0
-        
+
         for validator in self.validators:
             validator_name = validator.get_validator_name()
             result = results.get(validator_name)
-            
+
             if result:
                 scores.append(result.score)
                 total_errors += len(result.errors)
                 total_warnings += len(result.warnings)
-        
+
         # 木桶理论：只看最短板
         overall_score = min(scores) if scores else 0
-        
+
         # 2. 判断总体是否有效
         is_valid = all(r.is_valid for r in results.values())
-        
+
         # 3. 生成统计信息
         statistics = {
             'validator_count': len(results),
             'passed_validators': sum(1 for r in results.values() if r.is_valid),
             'failed_validators': sum(1 for r in results.values() if not r.is_valid)
         }
-        
+
         return AggregatedValidationResult(
             symbol=symbol,
             interval=interval,
@@ -2450,23 +2450,23 @@ class StatelessValidator:
             CompletenessValidator(),
             FreshnessValidator()
         ]
-        
+
         # 初始化聚合器
         self.aggregator = ValidationResultAggregator(self.validators)
-    
+
     @staticmethod
-    def validate_symbol(symbol: str, interval: str, df: pd.DataFrame, 
+    def validate_symbol(symbol: str, interval: str, df: pd.DataFrame,
                        context: ValidationContext) -> AggregatedValidationResult:
         """验证单个品种"""
         # 设置当前品种
         context.current_symbol = symbol
-        
+
         # 执行所有验证器
         results = {}
         for validator in self.validators:
             result = validator.validate(df, context)
             results[validator.get_validator_name()] = result
-        
+
         # 聚合结果
         return self.aggregator.aggregate(results, symbol, interval)
 ```
@@ -3029,19 +3029,19 @@ logger = logging.getLogger(__name__)
 
 class CacheStrategy(ABC):
     """缓存失效策略基类"""
-    
+
     @abstractmethod
     def is_valid(self, cache_metadata: Dict[str, Any]) -> bool:
         """判断缓存是否有效
-        
+
         Args:
             cache_metadata: 缓存元数据（包含创建时间、访问时间等）
-            
+
         Returns:
             True表示缓存有效，False表示已失效
         """
         pass
-    
+
     @abstractmethod
     def get_strategy_name(self) -> str:
         """获取策略名称"""
@@ -3050,10 +3050,10 @@ class CacheStrategy(ABC):
 
 class DateBasedStrategy(CacheStrategy):
     """日期失效策略：次日0时失效"""
-    
+
     def is_valid(self, cache_metadata: Dict[str, Any]) -> bool:
         """检查缓存日期是否为今天
-        
+
         规则：
         - 缓存日期 = 今天 → 有效
         - 缓存日期 < 今天 → 失效
@@ -3062,11 +3062,11 @@ class DateBasedStrategy(CacheStrategy):
         cache_date_str = cache_metadata.get("cache_date")
         if not cache_date_str:
             return False
-        
+
         try:
             cache_date = datetime.strptime(cache_date_str, "%Y-%m-%d").date()
             today = date.today()
-            
+
             if cache_date == today:
                 return True
             elif cache_date < today:
@@ -3075,29 +3075,29 @@ class DateBasedStrategy(CacheStrategy):
             else:
                 logger.warning(f"缓存日期异常（未来日期）: cache_date={cache_date}, today={today}")
                 return False
-                
+
         except ValueError as e:
             logger.error(f"缓存日期格式错误: {cache_date_str}, error={e}")
             return False
-    
+
     def get_strategy_name(self) -> str:
         return "DateBasedStrategy"
 
 
 class TTLStrategy(CacheStrategy):
     """TTL失效策略：超过指定时间失效"""
-    
+
     def __init__(self, ttl_seconds: float):
         """初始化TTL策略
-        
+
         Args:
             ttl_seconds: 缓存生存时间（秒）
         """
         self.ttl_seconds = ttl_seconds
-    
+
     def is_valid(self, cache_metadata: Dict[str, Any]) -> bool:
         """检查缓存是否在TTL时间内
-        
+
         规则：
         - (当前时间 - 创建时间) <= TTL → 有效
         - (当前时间 - 创建时间) > TTL → 失效
@@ -3105,61 +3105,61 @@ class TTLStrategy(CacheStrategy):
         created_at = cache_metadata.get("created_at")
         if not created_at:
             return False
-        
+
         elapsed = time.time() - created_at
         is_valid = elapsed <= self.ttl_seconds
-        
+
         if not is_valid:
             logger.debug(
                 f"TTL缓存已过期: elapsed={elapsed:.2f}s, ttl={self.ttl_seconds}s"
             )
-        
+
         return is_valid
-    
+
     def get_strategy_name(self) -> str:
         return f"TTLStrategy({self.ttl_seconds}s)"
 
 
 class LRUStrategy(CacheStrategy):
     """LRU失效策略：最近最少使用"""
-    
+
     def __init__(self, max_capacity: int):
         """初始化LRU策略
-        
+
         Args:
             max_capacity: 最大缓存容量
         """
         self.max_capacity = max_capacity
         self.access_order = []  # 访问顺序列表
-    
+
     def is_valid(self, cache_metadata: Dict[str, Any]) -> bool:
         """LRU策略不直接判定有效性，由CacheManager调用should_evict"""
         return True  # 默认有效，由容量控制淘汰
-    
+
     def should_evict(self, current_size: int, cache_key: str) -> bool:
         """判断是否应该淘汰
-        
+
         Args:
             current_size: 当前缓存大小
             cache_key: 缓存键
-            
+
         Returns:
             True表示应该淘汰，False表示保留
         """
         if current_size <= self.max_capacity:
             return False
-        
+
         # 检查是否是最少使用的
         if cache_key in self.access_order:
             # 如果是队列前部（最少使用），应该淘汰
             lru_key = self.access_order[0]
             return cache_key == lru_key
-        
+
         return False
-    
+
     def mark_accessed(self, cache_key: str):
         """标记缓存被访问
-        
+
         规则：
         - 如果key已存在，移动到队尾（最近使用）
         - 如果key不存在，添加到队尾
@@ -3167,31 +3167,31 @@ class LRUStrategy(CacheStrategy):
         if cache_key in self.access_order:
             self.access_order.remove(cache_key)
         self.access_order.append(cache_key)
-    
+
     def get_lru_key(self) -> Optional[str]:
         """获取最少使用的key"""
         return self.access_order[0] if self.access_order else None
-    
+
     def remove_key(self, cache_key: str):
         """从访问列表中移除key"""
         if cache_key in self.access_order:
             self.access_order.remove(cache_key)
-    
+
     def get_strategy_name(self) -> str:
         return f"LRUStrategy(max={self.max_capacity})"
 
 
 class CompositeStrategy(CacheStrategy):
     """组合策略：同时满足多个策略才有效"""
-    
+
     def __init__(self, strategies: list[CacheStrategy]):
         """初始化组合策略
-        
+
         Args:
             strategies: 策略列表
         """
         self.strategies = strategies
-    
+
     def is_valid(self, cache_metadata: Dict[str, Any]) -> bool:
         """所有策略都有效才返回True"""
         for strategy in self.strategies:
@@ -3201,7 +3201,7 @@ class CompositeStrategy(CacheStrategy):
                 )
                 return False
         return True
-    
+
     def get_strategy_name(self) -> str:
         names = [s.get_strategy_name() for s in self.strategies]
         return f"CompositeStrategy({', '.join(names)})"
@@ -3211,47 +3211,47 @@ class CompositeStrategy(CacheStrategy):
 
 class CacheStorage(ABC):
     """缓存存储抽象接口"""
-    
+
     @abstractmethod
     def load(self, cache_key: str) -> Optional[Dict[str, Any]]:
         """加载缓存数据
-        
+
         Args:
             cache_key: 缓存键
-            
+
         Returns:
             缓存对象（包含data和metadata），不存在返回None
         """
         pass
-    
+
     @abstractmethod
     def save(self, cache_key: str, data: Any, metadata: Dict[str, Any]) -> bool:
         """保存缓存数据
-        
+
         Args:
             cache_key: 缓存键
             data: 缓存数据
             metadata: 缓存元数据
-            
+
         Returns:
             True表示保存成功
         """
         pass
-    
+
     @abstractmethod
     def exists(self, cache_key: str) -> bool:
         """检查缓存是否存在"""
         pass
-    
+
     @abstractmethod
     def delete(self, cache_key: str) -> bool:
         """删除缓存"""
         pass
-    
+
     @abstractmethod
     def clear(self) -> int:
         """清空所有缓存
-        
+
         Returns:
             清理的缓存数量
         """
@@ -3260,30 +3260,30 @@ class CacheStorage(ABC):
 
 class FileBasedStorage(CacheStorage):
     """文件存储实现"""
-    
+
     def __init__(self, cache_dir: Path):
         """初始化文件存储
-        
+
         Args:
             cache_dir: 缓存目录
         """
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-    
+
     def _get_cache_path(self, cache_key: str) -> Path:
         """获取缓存文件路径"""
         # 使用cache_key的hash作为文件名（避免特殊字符）
         import hashlib
         key_hash = hashlib.md5(cache_key.encode()).hexdigest()
         return self.cache_dir / f"{key_hash}.json"
-    
+
     def load(self, cache_key: str) -> Optional[Dict[str, Any]]:
         """从文件加载缓存"""
         cache_path = self._get_cache_path(cache_key)
-        
+
         if not cache_path.exists():
             return None
-        
+
         try:
             import json
             with open(cache_path, 'r', encoding='utf-8') as f:
@@ -3292,35 +3292,35 @@ class FileBasedStorage(CacheStorage):
         except Exception as e:
             logger.error(f"加载缓存文件失败 ({cache_path}): {e}")
             return None
-    
+
     def save(self, cache_key: str, data: Any, metadata: Dict[str, Any]) -> bool:
         """保存缓存到文件"""
         cache_path = self._get_cache_path(cache_key)
-        
+
         try:
             import json
             cache_obj = {
                 "data": data,
                 "metadata": metadata
             }
-            
+
             with open(cache_path, 'w', encoding='utf-8') as f:
                 json.dump(cache_obj, f, ensure_ascii=False, indent=2, default=str)
-            
+
             return True
         except Exception as e:
             logger.error(f"保存缓存文件失败 ({cache_path}): {e}")
             return False
-    
+
     def exists(self, cache_key: str) -> bool:
         """检查缓存文件是否存在"""
         cache_path = self._get_cache_path(cache_key)
         return cache_path.exists()
-    
+
     def delete(self, cache_key: str) -> bool:
         """删除缓存文件"""
         cache_path = self._get_cache_path(cache_key)
-        
+
         try:
             if cache_path.exists():
                 cache_path.unlink()
@@ -3329,7 +3329,7 @@ class FileBasedStorage(CacheStorage):
         except Exception as e:
             logger.error(f"删除缓存文件失败 ({cache_path}): {e}")
             return False
-    
+
     def clear(self) -> int:
         """清空缓存目录"""
         count = 0
@@ -3346,18 +3346,18 @@ class FileBasedStorage(CacheStorage):
 
 class MemoryBasedStorage(CacheStorage):
     """内存存储实现"""
-    
+
     def __init__(self):
         """初始化内存存储"""
         self._cache: Dict[str, Dict[str, Any]] = {}
         from threading import Lock
         self._lock = Lock()
-    
+
     def load(self, cache_key: str) -> Optional[Dict[str, Any]]:
         """从内存加载缓存"""
         with self._lock:
             return self._cache.get(cache_key)
-    
+
     def save(self, cache_key: str, data: Any, metadata: Dict[str, Any]) -> bool:
         """保存缓存到内存"""
         with self._lock:
@@ -3366,12 +3366,12 @@ class MemoryBasedStorage(CacheStorage):
                 "metadata": metadata
             }
             return True
-    
+
     def exists(self, cache_key: str) -> bool:
         """检查缓存是否存在"""
         with self._lock:
             return cache_key in self._cache
-    
+
     def delete(self, cache_key: str) -> bool:
         """删除缓存"""
         with self._lock:
@@ -3379,7 +3379,7 @@ class MemoryBasedStorage(CacheStorage):
                 del self._cache[cache_key]
                 return True
             return False
-    
+
     def clear(self) -> int:
         """清空缓存"""
         with self._lock:
@@ -3393,22 +3393,22 @@ class MemoryBasedStorage(CacheStorage):
 
 class UnifiedCacheManager:
     """统一缓存管理器
-    
+
     组合策略模式和存储适配器模式，提供灵活的缓存管理。
-    
+
     使用示例：
         # 创建日期失效缓存
         manager = UnifiedCacheManager(
             storage=FileBasedStorage(cache_dir),
             strategy=DateBasedStrategy()
         )
-        
+
         # 保存缓存
         manager.set("stock_list", stock_data)
-        
+
         # 加载缓存（自动验证有效性）
         data = manager.get("stock_list")
-        
+
         # 创建LRU+TTL组合缓存
         lru_ttl_manager = UnifiedCacheManager(
             storage=MemoryBasedStorage(),
@@ -3418,17 +3418,17 @@ class UnifiedCacheManager:
             ])
         )
     """
-    
+
     def __init__(self, storage: CacheStorage, strategy: CacheStrategy):
         """初始化缓存管理器
-        
+
         Args:
             storage: 缓存存储实现
             strategy: 缓存失效策略
         """
         self.storage = storage
         self.strategy = strategy
-        
+
         # 统计信息
         self._stats = {
             "hits": 0,
@@ -3436,25 +3436,25 @@ class UnifiedCacheManager:
             "evictions": 0,
             "saves": 0
         }
-    
+
     def get(self, cache_key: str, default: Any = None) -> Optional[Any]:
         """获取缓存数据（带有效性验证）
-        
+
         Args:
             cache_key: 缓存键
             default: 默认值
-            
+
         Returns:
             缓存数据，失效或不存在返回default
         """
         # 加载缓存对象
         cache_obj = self.storage.load(cache_key)
-        
+
         if cache_obj is None:
             self._stats["misses"] += 1
             logger.debug(f"缓存未命中: {cache_key}")
             return default
-        
+
         # 验证缓存有效性
         metadata = cache_obj.get("metadata", {})
         if not self.strategy.is_valid(metadata):
@@ -3463,10 +3463,10 @@ class UnifiedCacheManager:
             # 删除失效缓存
             self.storage.delete(cache_key)
             return default
-        
+
         # 缓存命中
         self._stats["hits"] += 1
-        
+
         # LRU策略：标记访问
         if isinstance(self.strategy, LRUStrategy):
             self.strategy.mark_accessed(cache_key)
@@ -3474,17 +3474,17 @@ class UnifiedCacheManager:
             for s in self.strategy.strategies:
                 if isinstance(s, LRUStrategy):
                     s.mark_accessed(cache_key)
-        
+
         return cache_obj.get("data")
-    
+
     def set(self, cache_key: str, data: Any, extra_metadata: Optional[Dict] = None) -> bool:
         """设置缓存数据
-        
+
         Args:
             cache_key: 缓存键
             data: 缓存数据
             extra_metadata: 额外的元数据
-            
+
         Returns:
             True表示保存成功
         """
@@ -3494,16 +3494,16 @@ class UnifiedCacheManager:
             "created_at": time.time(),
             "accessed_at": time.time()
         }
-        
+
         if extra_metadata:
             metadata.update(extra_metadata)
-        
+
         # 保存缓存
         success = self.storage.save(cache_key, data, metadata)
-        
+
         if success:
             self._stats["saves"] += 1
-            
+
             # LRU策略：标记访问
             if isinstance(self.strategy, LRUStrategy):
                 self.strategy.mark_accessed(cache_key)
@@ -3511,15 +3511,15 @@ class UnifiedCacheManager:
                 for s in self.strategy.strategies:
                     if isinstance(s, LRUStrategy):
                         s.mark_accessed(cache_key)
-        
+
         return success
-    
+
     def delete(self, cache_key: str) -> bool:
         """删除缓存"""
         success = self.storage.delete(cache_key)
         if success:
             self._stats["evictions"] += 1
-            
+
             # LRU策略：从访问列表移除
             if isinstance(self.strategy, LRUStrategy):
                 self.strategy.remove_key(cache_key)
@@ -3527,20 +3527,20 @@ class UnifiedCacheManager:
                 for s in self.strategy.strategies:
                     if isinstance(s, LRUStrategy):
                         s.remove_key(cache_key)
-        
+
         return success
-    
+
     def clear(self) -> int:
         """清空所有缓存"""
         count = self.storage.clear()
         self._stats["evictions"] += count
         return count
-    
+
     def get_stats(self) -> Dict[str, Any]:
         """获取缓存统计"""
         total_requests = self._stats["hits"] + self._stats["misses"]
         hit_rate = (self._stats["hits"] / total_requests * 100) if total_requests > 0 else 0.0
-        
+
         return {
             "hits": self._stats["hits"],
             "misses": self._stats["misses"],
@@ -3748,18 +3748,18 @@ logger = logging.getLogger(__name__)
 @dataclass
 class PressureDimension:
     """压力维度数据模型"""
-    
+
     name: str  # 维度名称
     value: float  # 当前值(0-100)
     weight: float  # 权重(0-1)
     threshold_warning: float = 70.0  # 警告阈值
     threshold_critical: float = 90.0  # 严重阈值
     sub_metrics: Dict[str, float] = field(default_factory=dict)  # 子指标
-    
+
     def get_score(self) -> float:
         """获取评分值"""
         return self.value
-    
+
     def get_status(self) -> str:
         """获取状态"""
         if self.value >= self.threshold_critical:
@@ -3773,13 +3773,13 @@ class PressureDimension:
 @dataclass
 class PressureReport:
     """压力评估报告"""
-    
+
     overall_score: float  # 综合压力评分(0-100)
     bottleneck: str  # 瓶颈维度
     dimensions: Dict[str, PressureDimension]  # 各维度详情
     timestamp: float = field(default_factory=time.time)
     recommendation: str = ""  # 优化建议
-    
+
     def get_adjustment_hint(self) -> str:
         """获取调整建议"""
         if self.overall_score < 30:
@@ -3796,18 +3796,18 @@ class PressureReport:
 
 class PressureEvaluator:
     """压力评估器(木桶理论实现)
-    
+
     实现木桶理论:
     - 综合压力由最高的维度决定(木桶短板)
     - 各维度按权重计算加权平均
     - 支持子指标聚合(如CPU的多个子指标)
     - 使用EMA平滑波动
-    
+
     使用示例:
         evaluator = PressureEvaluator(
             weights={"cpu": 0.4, "memory": 0.25, "disk": 0.25, "network": 0.15}
         )
-        
+
         # 收集系统指标
         metrics = {
             "cpu": {"cpu_percent": 45, "context_switches": 1500, "interrupts": 800},
@@ -3815,12 +3815,12 @@ class PressureEvaluator:
             "disk": {"disk_usage": 70, "io_wait": 5},
             "network": {"bandwidth_usage": 30, "packet_loss": 0.1}
         }
-        
+
         # 评估压力
         report = evaluator.evaluate(metrics)
         print(f"综合压力: {report.overall_score}, 瓶颈: {report.bottleneck}")
     """
-    
+
     def __init__(
         self,
         weights: Dict[str, float],
@@ -3828,7 +3828,7 @@ class PressureEvaluator:
         sub_metric_weights: Optional[Dict[str, Dict[str, float]]] = None
     ):
         """初始化压力评估器
-        
+
         Args:
             weights: 各维度权重 {"cpu": 0.4, "memory": 0.25, ...}
             ema_alpha: EMA平滑系数(0-1), 越大越敏感
@@ -3837,57 +3837,57 @@ class PressureEvaluator:
         self.weights = weights
         self.ema_alpha = ema_alpha
         self.sub_metric_weights = sub_metric_weights or {}
-        
+
         # EMA历史值
         self._ema_values: Dict[str, float] = {dim: 0.0 for dim in weights.keys()}
-        
+
         # 木桶理论：不使用权重，只记录维度名称
         self.dimensions = list(weights.keys())
-        
+
         logger.info(f"压力评估器已初始化: 权重={self.weights}, EMA_alpha={ema_alpha}")
-    
+
     def _aggregate_sub_metrics(
         self,
         dimension: str,
         sub_metrics: Dict[str, float]
     ) -> float:
         """聚合子指标为单一评分
-        
+
         Args:
             dimension: 维度名称
             sub_metrics: 子指标字典
-            
+
         Returns:
             聚合后的评分(0-100)
         """
         # 获取该维度的子指标权重
         sub_weights = self.sub_metric_weights.get(dimension, {})
-        
+
         if not sub_weights:
             # 木桶理论：取最小值
             values = list(sub_metrics.values())
             return sum(values) / len(values) if values else 0.0
-        
+
         # 加权聚合
         weighted_sum = 0.0
         total_weight = 0.0
-        
+
         for metric_name, value in sub_metrics.items():
             weight = sub_weights.get(metric_name, 1.0)
             weighted_sum += value * weight
             total_weight += weight
-        
+
         return weighted_sum / total_weight if total_weight > 0 else 0.0
-    
+
     def _apply_ema(self, dimension: str, current_value: float) -> float:
         """应用EMA平滑
-        
+
         公式: EMA_new = alpha * current + (1 - alpha) * EMA_old
-        
+
         Args:
             dimension: 维度名称
             current_value: 当前值
-            
+
         Returns:
             平滑后的值
         """
@@ -3895,10 +3895,10 @@ class PressureEvaluator:
         ema_new = self.ema_alpha * current_value + (1 - self.ema_alpha) * ema_old
         self._ema_values[dimension] = ema_new
         return ema_new
-    
+
     def evaluate(self, metrics: Dict[str, Dict[str, float]]) -> PressureReport:
         """评估系统压力
-        
+
         Args:
             metrics: 系统指标字典
                 {
@@ -3907,28 +3907,28 @@ class PressureEvaluator:
                     "disk": {"disk_usage": 70, "io_wait": 5},
                     "network": {"bandwidth_usage": 30, "packet_loss": 0.1}
                 }
-            
+
         Returns:
             压力评估报告
         """
         dimensions = {}
         max_pressure = 0.0
         bottleneck = "none"
-        
+
         # 1. 计算各维度压力
         for dim_name, weight in self.weights.items():
             sub_metrics = metrics.get(dim_name, {})
-            
+
             if not sub_metrics:
                 logger.warning(f"维度 {dim_name} 缺少指标数据,跳过")
                 continue
-            
+
             # 聚合子指标
             raw_score = self._aggregate_sub_metrics(dim_name, sub_metrics)
-            
+
             # 应用EMA平滑
             smoothed_score = self._apply_ema(dim_name, raw_score)
-            
+
             # 创建维度对象
             dimension = PressureDimension(
                 name=dim_name,
@@ -3937,17 +3937,17 @@ class PressureEvaluator:
                 sub_metrics=sub_metrics
             )
             dimensions[dim_name] = dimension
-            
+
             # 2. 记录最大压力(木桶短板)
             if smoothed_score > max_pressure:
                 max_pressure = smoothed_score
                 bottleneck = dim_name
-        
+
         # 3. 计算综合压力(木桶理论)
         # 只看最短的板
         all_scores = [dim.get_score() for dim in dimensions.values()]
         overall_score = min(all_scores) if all_scores else 0
-        
+
         # 4. 生成报告
         report = PressureReport(
             overall_score=round(overall_score, 2),
@@ -3955,12 +3955,12 @@ class PressureEvaluator:
             dimensions=dimensions
         )
         report.recommendation = report.get_adjustment_hint()
-        
+
         logger.debug(
             f"压力评估完成: 综合={overall_score:.2f}, 瓶颈={bottleneck}, "
             f"建议={report.recommendation}"
         )
-        
+
         return report
 
 
@@ -3968,15 +3968,15 @@ class PressureEvaluator:
 
 class ConcurrencyCalculator:
     """并发配置计算器
-    
+
     基于压力评估结果动态调整并发配置。
-    
+
     调整策略:
     - 压力<30: 增加并发(scale up)
     - 压力30-70: 维持当前配置
     - 压力70-90: 减少并发(scale down)
     - 压力>90: 大幅减少并发(emergency scale down)
-    
+
     使用示例:
         calculator = ConcurrencyCalculator(
             base_workers=10,
@@ -3984,12 +3984,12 @@ class ConcurrencyCalculator:
             max_workers=20,
             step_size=2
         )
-        
+
         # 根据压力调整
         new_config = calculator.calculate(pressure_score=75.0)
         print(f"建议workers数: {new_config['workers']}")
     """
-    
+
     def __init__(
         self,
         base_workers: int,
@@ -3999,7 +3999,7 @@ class ConcurrencyCalculator:
         cooldown_seconds: float = 10.0
     ):
         """初始化并发配置计算器
-        
+
         Args:
             base_workers: 基准worker数量
             min_workers: 最小worker数量
@@ -4012,27 +4012,27 @@ class ConcurrencyCalculator:
         self.max_workers = max_workers
         self.step_size = step_size
         self.cooldown_seconds = cooldown_seconds
-        
+
         # 当前配置
         self.current_workers = base_workers
         self.last_adjust_time = 0.0
-        
+
         logger.info(
             f"并发计算器已初始化: base={base_workers}, "
             f"range=[{min_workers}, {max_workers}], step={step_size}"
         )
-    
+
     def calculate(self, pressure_score: float) -> Dict[str, Any]:
         """计算并发配置
-        
+
         Args:
             pressure_score: 压力评分(0-100)
-            
+
         Returns:
             配置字典 {"workers": int, "adjustment": str, "reason": str}
         """
         now = time.time()
-        
+
         # 检查冷却时间
         if now - self.last_adjust_time < self.cooldown_seconds:
             return {
@@ -4040,7 +4040,7 @@ class ConcurrencyCalculator:
                 "adjustment": "no_change",
                 "reason": "cooldown"
             }
-        
+
         # 决定调整方向
         if pressure_score < 30:
             # 压力低,增加并发
@@ -4050,13 +4050,13 @@ class ConcurrencyCalculator:
             )
             adjustment = "scale_up"
             reason = "low_pressure"
-            
+
         elif pressure_score < 70:
             # 压力正常,维持不变
             new_workers = self.current_workers
             adjustment = "no_change"
             reason = "normal_pressure"
-            
+
         elif pressure_score < 90:
             # 压力较高,减少并发
             new_workers = max(
@@ -4065,7 +4065,7 @@ class ConcurrencyCalculator:
             )
             adjustment = "scale_down"
             reason = "high_pressure"
-            
+
         else:
             # 压力严重,大幅减少并发
             new_workers = max(
@@ -4074,7 +4074,7 @@ class ConcurrencyCalculator:
             )
             adjustment = "emergency_scale_down"
             reason = "critical_pressure"
-        
+
         # 更新状态
         if new_workers != self.current_workers:
             logger.info(
@@ -4083,7 +4083,7 @@ class ConcurrencyCalculator:
             )
             self.current_workers = new_workers
             self.last_adjust_time = now
-        
+
         return {
             "workers": new_workers,
             "adjustment": adjustment,
@@ -4096,29 +4096,29 @@ class ConcurrencyCalculator:
 
 class IntelligentDebounceManager:
     """智能防抖管理器
-    
+
     动态调整防抖间隔,避免频繁操作。
-    
+
     规则:
     - 记录历史操作频率
     - 频率高时增大防抖间隔
     - 频率低时减小防抖间隔
     - 支持最小/最大间隔限制
-    
+
     使用示例:
         debounce = IntelligentDebounceManager(
             min_interval=0.5,
             max_interval=5.0,
             window_size=10
         )
-        
+
         # 检查是否应该执行操作
         if debounce.should_execute("download_task"):
             # 执行下载
             download()
             debounce.record_execution("download_task")
     """
-    
+
     def __init__(
         self,
         min_interval: float = 0.5,
@@ -4126,7 +4126,7 @@ class IntelligentDebounceManager:
         window_size: int = 10
     ):
         """初始化防抖管理器
-        
+
         Args:
             min_interval: 最小防抖间隔(秒)
             max_interval: 最大防抖间隔(秒)
@@ -4135,43 +4135,43 @@ class IntelligentDebounceManager:
         self.min_interval = min_interval
         self.max_interval = max_interval
         self.window_size = window_size
-        
+
         # 操作历史: {key: [timestamp1, timestamp2, ...]}
         self._history: Dict[str, list] = {}
-        
+
         # 最后执行时间: {key: timestamp}
         self._last_execution: Dict[str, float] = {}
-        
+
         logger.info(
             f"防抖管理器已初始化: interval=[{min_interval}, {max_interval}], "
             f"window={window_size}"
         )
-    
+
     def _calculate_dynamic_interval(self, operation_key: str) -> float:
         """计算动态防抖间隔
-        
+
         规则:
         - 统计窗口内的操作频率
         - 频率越高,间隔越大
         - 频率越低,间隔越小
-        
+
         Args:
             operation_key: 操作标识
-            
+
         Returns:
             动态间隔(秒)
         """
         history = self._history.get(operation_key, [])
-        
+
         if len(history) < 2:
             # 历史数据不足,使用最小间隔
             return self.min_interval
-        
+
         # 计算平均间隔
         recent = history[-self.window_size:]
         intervals = [recent[i] - recent[i-1] for i in range(1, len(recent))]
         avg_interval = sum(intervals) / len(intervals) if intervals else self.min_interval
-        
+
         # 根据平均间隔动态调整
         if avg_interval < 1.0:
             # 操作频繁,增大防抖间隔
@@ -4179,54 +4179,54 @@ class IntelligentDebounceManager:
         else:
             # 操作不频繁,使用中等间隔
             dynamic_interval = min(avg_interval, self.max_interval)
-        
+
         # 限制在最小/最大范围内
         return max(self.min_interval, min(dynamic_interval, self.max_interval))
-    
+
     def should_execute(self, operation_key: str) -> bool:
         """判断是否应该执行操作
-        
+
         Args:
             operation_key: 操作标识
-            
+
         Returns:
             True表示可以执行,False表示应该防抖
         """
         now = time.time()
         last_time = self._last_execution.get(operation_key, 0.0)
-        
+
         # 计算动态间隔
         interval = self._calculate_dynamic_interval(operation_key)
-        
+
         # 判断是否超过防抖间隔
         elapsed = now - last_time
         should_exec = elapsed >= interval
-        
+
         if not should_exec:
             logger.debug(
                 f"防抖拦截: {operation_key}, elapsed={elapsed:.2f}s, "
                 f"required={interval:.2f}s"
             )
-        
+
         return should_exec
-    
+
     def record_execution(self, operation_key: str):
         """记录操作执行
-        
+
         Args:
             operation_key: 操作标识
         """
         now = time.time()
-        
+
         # 更新最后执行时间
         self._last_execution[operation_key] = now
-        
+
         # 添加到历史记录
         if operation_key not in self._history:
             self._history[operation_key] = []
-        
+
         self._history[operation_key].append(now)
-        
+
         # 限制历史记录长度
         if len(self._history[operation_key]) > self.window_size:
             self._history[operation_key].pop(0)
@@ -4279,17 +4279,17 @@ calculator = ConcurrencyCalculator(
 while True:
     # 收集系统指标
     metrics = collect_system_metrics()
-    
+
     # 评估压力
     report = evaluator.evaluate(metrics)
-    
+
     # 计算新配置
     config = calculator.calculate(report.overall_score)
-    
+
     # 应用配置
     if config["adjustment"] != "no_change":
         adjust_worker_pool(config["workers"])
-    
+
     time.sleep(5)
 ```
 
@@ -4308,7 +4308,7 @@ while True:
         # 执行批量下载
         download_batch(tasks)
         debounce.record_execution("batch_download")
-    
+
     await asyncio.sleep(0.1)
 ```
 
@@ -4422,21 +4422,21 @@ logger = logging.getLogger(__name__)
 @dataclass
 class IPORecord:
     """IPO日期记录"""
-    
+
     symbol: str
     ipo_date: date
     market: int  # 0=深圳, 1=上海, 2=北京
     source: str  # "tushare"/"tdx"/"manual"
     confidence: float = 1.0  # 置信度(0-1)
     updated_at: datetime = None
-    
+
     def __post_init__(self):
         if self.updated_at is None:
             self.updated_at = datetime.now()
-    
+
     def is_valid(self, base_date: date = None) -> bool:
         """验证IPO日期合法性
-        
+
         规则:
         1. IPO日期不能超过今天+30天
         2. IPO日期不能早于1990年
@@ -4444,17 +4444,17 @@ class IPORecord:
         """
         if base_date is None:
             base_date = date.today()
-        
+
         # 规则1: 不能超过今天+30天
         if self.ipo_date > base_date + timedelta(days=30):
             return False
-        
+
         # 规则2: 不能早于1990年
         if self.ipo_date.year < 1990:
             return False
-        
+
         return True
-    
+
     def to_dict(self) -> Dict:
         """转换为字典"""
         return {
@@ -4465,7 +4465,7 @@ class IPORecord:
             "confidence": self.confidence,
             "updated_at": self.updated_at.isoformat()
         }
-    
+
     @classmethod
     def from_dict(cls, data: Dict) -> "IPORecord":
         """从字典创建"""
@@ -4483,54 +4483,54 @@ class IPORecord:
 
 class TwoLevelCacheManager:
     """IPO日期双层缓存管理器
-    
+
     架构设计:
     - L1 Cache (内存):
       - 存储类型: Dict[str, IPORecord]
       - 失效策略: 进程生命周期(不失效)
       - 查询性能: O(1)
       - 使用场景: 高频查询
-    
+
     - L2 Cache (文件):
       - 存储类型: JSON文件
       - 失效策略: 日期失效(次日0时)
       - 查询性能: 文件I/O
       - 使用场景: 跨进程/重启后恢复
-    
+
     查询流程:
     1. 尝试从 L1 内存缓存查询
     2. 如果 L1 miss,从 L2 文件缓存加载
     3. 如果 L2 miss 或已过期,从数据源获取
     4. 获取后同时更新 L1 和 L2
-    
+
     使用示例:
         cache = TwoLevelCacheManager(cache_dir=Path("./cache"))
-        
+
         # 查询IPO日期
         ipo_date, source = cache.get("000001.SZ")
-        
+
         # 批量设置
         cache.set_batch(ipo_records)
-        
+
         # 清空缓存
         cache.clear()
     """
-    
+
     def __init__(self, cache_dir: Path):
         """初始化双层缓存
-        
+
         Args:
             cache_dir: 缓存目录
         """
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # L1 内存缓存
         self._memory_cache: Dict[str, IPORecord] = {}
-        
+
         # L2 文件缓存路径
         self._file_cache_path = self.cache_dir / "ipo_dates.json"
-        
+
         # 统计信息
         self._stats = {
             "l1_hits": 0,
@@ -4538,34 +4538,34 @@ class TwoLevelCacheManager:
             "misses": 0,
             "updates": 0
         }
-        
+
         # 启动时加载 L2 缓存
         self._load_from_l2()
-        
+
         logger.info(
             f"IPO双层缓存已初始化: 加载{len(self._memory_cache)}条记录"
         )
-    
+
     def _load_from_l2(self) -> bool:
         """从 L2 文件缓存加载到 L1 内存
-        
+
         Returns:
             True表示加载成功
         """
         if not self._file_cache_path.exists():
             logger.debug("L2 缓存文件不存在")
             return False
-        
+
         try:
             with open(self._file_cache_path, 'r', encoding='utf-8') as f:
                 cache_obj = json.load(f)
-            
+
             # 验证缓存日期
             cache_date_str = cache_obj.get("cache_date")
             if cache_date_str != date.today().strftime("%Y-%m-%d"):
                 logger.info(f"L2 缓存已过期: {cache_date_str}")
                 return False
-            
+
             # 加载数据
             data = cache_obj.get("data", {})
             for symbol, record_dict in data.items():
@@ -4574,17 +4574,17 @@ class TwoLevelCacheManager:
                     self._memory_cache[symbol] = record
                 else:
                     logger.warning(f"IPO记录无效: {symbol}, 跳过")
-            
+
             logger.info(f"L2 缓存加载成功: {len(self._memory_cache)}条记录")
             return True
-            
+
         except Exception as e:
             logger.error(f"L2 缓存加载失败: {e}", exc_info=True)
             return False
-    
+
     def _save_to_l2(self) -> bool:
         """保存 L1 内存缓存到 L2 文件
-        
+
         Returns:
             True表示保存成功
         """
@@ -4597,41 +4597,41 @@ class TwoLevelCacheManager:
                     for symbol, record in self._memory_cache.items()
                 }
             }
-            
+
             # 写入文件
             with open(self._file_cache_path, 'w', encoding='utf-8') as f:
                 json.dump(cache_obj, f, ensure_ascii=False, indent=2)
-            
+
             logger.debug(f"L2 缓存保存成功: {len(self._memory_cache)}条记录")
             return True
-            
+
         except Exception as e:
             logger.error(f"L2 缓存保存失败: {e}", exc_info=True)
             return False
-    
+
     def get(self, symbol: str) -> Tuple[Optional[date], Optional[str]]:
         """获取IPO日期
-        
+
         Args:
             symbol: 品种代码
-            
+
         Returns:
             (ipo_date, source)元组,不存在返回(None, None)
         """
         # 尝试从 L1 内存缓存查询
         record = self._memory_cache.get(symbol)
-        
+
         if record:
             self._stats["l1_hits"] += 1
             return record.ipo_date, record.source
-        
+
         # L1 miss
         self._stats["misses"] += 1
         return None, None
-    
+
     def get_all(self) -> Dict[str, Tuple[date, str]]:
         """获取所有IPO日期
-        
+
         Returns:
             {symbol: (ipo_date, source)} 字典
         """
@@ -4639,16 +4639,16 @@ class TwoLevelCacheManager:
             symbol: (record.ipo_date, record.source)
             for symbol, record in self._memory_cache.items()
         }
-    
+
     def set(self, symbol: str, ipo_date: date, source: str, market: int = 0) -> bool:
         """设置IPO日期
-        
+
         Args:
             symbol: 品种代码
             ipo_date: IPO日期
             source: 数据源
             market: 市场代码
-            
+
         Returns:
             True表示设置成功
         """
@@ -4659,24 +4659,24 @@ class TwoLevelCacheManager:
             market=market,
             source=source
         )
-        
+
         # 验证合法性
         if not record.is_valid():
             logger.warning(f"IPO日期无效: {symbol}={ipo_date}, 跳过")
             return False
-        
+
         # 更新 L1 内存缓存
         self._memory_cache[symbol] = record
         self._stats["updates"] += 1
-        
+
         return True
-    
+
     def set_batch(self, records: Dict[str, Tuple[date, str, int]]) -> int:
         """批量设置IPO日期
-        
+
         Args:
             records: {symbol: (ipo_date, source, market)} 字典
-            
+
         Returns:
             成功设置的数量
         """
@@ -4684,35 +4684,35 @@ class TwoLevelCacheManager:
         for symbol, (ipo_date, source, market) in records.items():
             if self.set(symbol, ipo_date, source, market):
                 count += 1
-        
+
         # 批量更新后保存到 L2
         self._save_to_l2()
-        
+
         logger.info(f"批量设置IPO日期: {count}/{len(records)} 条成功")
         return count
-    
+
     def exists(self, symbol: str) -> bool:
         """检查IPO日期是否存在"""
         return symbol in self._memory_cache
-    
+
     def clear(self) -> int:
         """清空所有缓存
-        
+
         Returns:
             清理的记录数量
         """
         count = len(self._memory_cache)
-        
+
         # 清空 L1
         self._memory_cache.clear()
-        
+
         # 删除 L2
         if self._file_cache_path.exists():
             self._file_cache_path.unlink()
-        
+
         logger.info(f"已清空 IPO缓存: {count}条记录")
         return count
-    
+
     def get_stats(self) -> Dict:
         """获取缓存统计"""
         total_requests = sum([
@@ -4720,12 +4720,12 @@ class TwoLevelCacheManager:
             self._stats["l2_hits"],
             self._stats["misses"]
         ])
-        
+
         l1_hit_rate = (
             self._stats["l1_hits"] / total_requests * 100
             if total_requests > 0 else 0.0
         )
-        
+
         return {
             "size": len(self._memory_cache),
             "l1_hits": self._stats["l1_hits"],
@@ -4740,31 +4740,31 @@ class TwoLevelCacheManager:
 
 class IPOFetcher:
     """IPO日期获取器
-    
+
     支持多数据源:
     1. Tushare API (优先)
     2. TDX 本地文件 (降级)
     3. 手动配置 (最后降级)
-    
+
     使用示例:
         fetcher = IPOFetcher(tushare_token="xxx")
-        
+
         # 单个获取
         ipo_date = fetcher.fetch_single("000001.SZ")
-        
+
         # 批量获取
         ipo_dict = fetcher.fetch_batch(["000001.SZ", "600000.SH"])
     """
-    
+
     def __init__(self, tushare_token: Optional[str] = None):
         """初始化IPO获取器
-        
+
         Args:
             tushare_token: Tushare API token(可选)
         """
         self.tushare_token = tushare_token
         self._tushare_available = False
-        
+
         # 尝试初始化Tushare
         if tushare_token:
             try:
@@ -4775,17 +4775,17 @@ class IPOFetcher:
                 logger.info("✅ Tushare API已初始化")
             except Exception as e:
                 logger.warning(f"⚠️ Tushare API初始化失败: {e}")
-        
+
         logger.info(
             f"IPO获取器已初始化: Tushare={'available' if self._tushare_available else 'unavailable'}"
         )
-    
+
     def fetch_single(self, symbol: str) -> Optional[date]:
         """获取单个IPO日期
-        
+
         Args:
             symbol: 品种代码
-            
+
         Returns:
             IPO日期,获取失败返回None
         """
@@ -4794,63 +4794,63 @@ class IPOFetcher:
             ipo_date = self._fetch_from_tushare(symbol)
             if ipo_date:
                 return ipo_date
-        
+
         # 2. 尝试从 TDX 本地文件获取
         ipo_date = self._fetch_from_tdx(symbol)
         if ipo_date:
             return ipo_date
-        
+
         # 3. 所有数据源都失败
         logger.warning(f"无法获取IPO日期: {symbol}")
         return None
-    
+
     def fetch_batch(self, symbols: list) -> Dict[str, date]:
         """批量获取IPO日期
-        
+
         Args:
             symbols: 品种代码列表
-            
+
         Returns:
             {symbol: ipo_date} 字典
         """
         result = {}
-        
+
         for symbol in symbols:
             ipo_date = self.fetch_single(symbol)
             if ipo_date:
                 result[symbol] = ipo_date
-        
+
         logger.info(f"批量获取IPO日期: {len(result)}/{len(symbols)} 条成功")
         return result
-    
+
     def _fetch_from_tushare(self, symbol: str) -> Optional[date]:
         """从 Tushare API 获取"""
         try:
             # Tushare码转换: 000001.SZ -> 000001.SZ
             ts_code = symbol
-            
+
             # 查询股票基本信息
             df = self.pro.stock_basic(
                 ts_code=ts_code,
                 fields='ts_code,list_date'
             )
-            
+
             if df.empty:
                 return None
-            
+
             list_date_str = df.iloc[0]['list_date']
             if not list_date_str or list_date_str == '':
                 return None
-            
+
             # 转换为日期
             ipo_date = datetime.strptime(list_date_str, "%Y%m%d").date()
             logger.debug(f"Tushare获取: {symbol} = {ipo_date}")
             return ipo_date
-            
+
         except Exception as e:
             logger.debug(f"Tushare获取失败: {symbol}, {e}")
             return None
-    
+
     def _fetch_from_tdx(self, symbol: str) -> Optional[date]:
         """从 TDX 本地文件获取"""
         # TODO: 实现从 TDX 本地文件读取逻辑
@@ -4992,42 +4992,42 @@ logger = logging.getLogger(__name__)
 @dataclass
 class QualityMetrics:
     """数据质量指标"""
-    
+
     symbol: str
     interval: str
-    
+
     # 基础指标
     total_records: int = 0
     missing_records: int = 0
     duplicate_records: int = 0
-    
+
     # 格式质量(0-100)
     format_score: float = 0.0
     format_errors: List[str] = field(default_factory=list)
-    
+
     # 逻辑质量(0-100)
     logic_score: float = 0.0
     logic_errors: List[str] = field(default_factory=list)
-    
+
     # 完整性质量(0-100)
     completeness_score: float = 0.0
     missing_dates: List[str] = field(default_factory=list)
-    
+
     # 新鲜度质量(0-100)
     freshness_score: float = 0.0
     lag_days: int = 0
-    
+
     # 木桶理论评分(0-100)
     overall_score: float = 0.0
     quality_level: str = "unknown"  # excellent/good/fair/poor
-    
+
     # 扫描元信息
     scanned_at: datetime = field(default_factory=datetime.now)
     file_size_mb: float = 0.0
-    
+
     def calculate_overall_score(self, weights: Dict[str, float] = None):
         """计算木桶理论评分
-        
+
         默认权重: 格式30% + 逻辑20% + 完整性30% + 新鲜度20%
         """
         if weights is None:
@@ -5037,14 +5037,14 @@ class QualityMetrics:
                 "completeness": 0.3,
                 "freshness": 0.2
             }
-        
+
         self.overall_score = (
             self.format_score * weights["format"] +
             self.logic_score * weights["logic"] +
             self.completeness_score * weights["completeness"] +
             self.freshness_score * weights["freshness"]
         )
-        
+
         # 确定质量等级
         if self.overall_score >= 90:
             self.quality_level = "excellent"
@@ -5054,7 +5054,7 @@ class QualityMetrics:
             self.quality_level = "fair"
         else:
             self.quality_level = "poor"
-    
+
     def needs_repair(self, threshold: float = 60.0) -> bool:
         """判断是否需要修复"""
         return self.overall_score < threshold
@@ -5063,12 +5063,12 @@ class QualityMetrics:
 @dataclass
 class ScanTask:
     """扫描任务"""
-    
+
     symbol: str
     interval: str
     file_path: Path
     priority: int = 0  # 优先级(数值越大越优先)
-    
+
     def get_task_id(self) -> str:
         """获取任务唯一标识"""
         return f"{self.symbol}_{self.interval}"
@@ -5078,12 +5078,12 @@ class ScanTask:
 
 class ScanRecordManager:
     """扫描记录管理器
-    
+
     记录已扫描文件的校验和,实现增量扫描。
-    
+
     使用示例:
         manager = ScanRecordManager(record_file=Path("./scan_records.json"))
-        
+
         # 检查是否需要扫描
         if manager.should_scan(file_path):
             # 执行扫描
@@ -5091,7 +5091,7 @@ class ScanRecordManager:
             # 标记已扫描
             manager.mark_scanned(file_path, checksum)
     """
-    
+
     def __init__(self, record_file: Path):
         """
         Args:
@@ -5099,15 +5099,15 @@ class ScanRecordManager:
         """
         self.record_file = record_file
         self._records: Dict[str, Dict] = {}  # {file_path: {checksum, scanned_at}}
-        
+
         # 加载历史记录
         self._load_records()
-    
+
     def _load_records(self):
         """加载扫描记录"""
         if not self.record_file.exists():
             return
-        
+
         try:
             import json
             with open(self.record_file, 'r', encoding='utf-8') as f:
@@ -5115,7 +5115,7 @@ class ScanRecordManager:
             logger.info(f"已加载 {len(self._records)} 条扫描记录")
         except Exception as e:
             logger.error(f"加载扫描记录失败: {e}")
-    
+
     def _save_records(self):
         """保存扫描记录"""
         try:
@@ -5125,7 +5125,7 @@ class ScanRecordManager:
                 json.dump(self._records, f, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.error(f"保存扫描记录失败: {e}")
-    
+
     def _calculate_checksum(self, file_path: Path) -> str:
         """计算文件校验和(使用文件大小+修改时间)"""
         try:
@@ -5135,10 +5135,10 @@ class ScanRecordManager:
         except Exception as e:
             logger.error(f"计算校验和失败 ({file_path}): {e}")
             return ""
-    
+
     def should_scan(self, file_path: Path) -> bool:
         """判断文件是否需要扫描
-        
+
         规则:
         - 文件不存在于记录中 → 需要扫描
         - 文件校验和变化 → 需要扫描
@@ -5146,34 +5146,34 @@ class ScanRecordManager:
         """
         file_key = str(file_path)
         current_checksum = self._calculate_checksum(file_path)
-        
+
         if not current_checksum:
             return True
-        
+
         if file_key not in self._records:
             return True
-        
+
         old_checksum = self._records[file_key].get("checksum", "")
         return current_checksum != old_checksum
-    
+
     def mark_scanned(self, file_path: Path, quality_score: float = None):
         """标记文件已扫描
-        
+
         Args:
             file_path: 文件路径
             quality_score: 质量评分(可选)
         """
         file_key = str(file_path)
         checksum = self._calculate_checksum(file_path)
-        
+
         self._records[file_key] = {
             "checksum": checksum,
             "scanned_at": datetime.now().isoformat(),
             "quality_score": quality_score
         }
-        
+
         self._save_records()
-    
+
     def clear_records(self):
         """清空所有记录"""
         self._records.clear()
@@ -5185,26 +5185,26 @@ class ScanRecordManager:
 
 class QualityScanner:
     """数据质量扫描器
-    
+
     职责:
     1. 扫描数据文件,生成质量指标
     2. 支持增量扫描,避免重复扫描
     3. 多进程并发扫描,提升效率
     4. 生成质量报告
-    
+
     使用示例:
         scanner = QualityScanner(
             data_dir=Path("./data"),
             record_file=Path("./scan_records.json")
         )
-        
+
         # 扫描所有数据
         results = scanner.scan_all(intervals=["1d", "1h"])
-        
+
         # 生成报告
         report = scanner.generate_report(results)
     """
-    
+
     def __init__(
         self,
         data_dir: Path,
@@ -5220,9 +5220,9 @@ class QualityScanner:
         self.data_dir = Path(data_dir)
         self.record_manager = ScanRecordManager(record_file)
         self.validators = validators or self._get_default_validators()
-        
+
         logger.info(f"质量扫描器已初始化: data_dir={data_dir}")
-    
+
     def _get_default_validators(self) -> List:
         """获取默认验证器列表"""
         # 引用第三章定义的验证器
@@ -5232,20 +5232,20 @@ class QualityScanner:
             CompletenessValidator,
             FreshnessValidator
         )
-        
+
         return [
             FormatValidator(),
             LogicValidator(),
             CompletenessValidator(),
             FreshnessValidator()
         ]
-    
+
     def scan_file(self, task: ScanTask) -> Optional[QualityMetrics]:
         """扫描单个文件
-        
+
         Args:
             task: 扫描任务
-            
+
         Returns:
             质量指标,扫描失败返回None
         """
@@ -5253,12 +5253,12 @@ class QualityScanner:
         if not self.record_manager.should_scan(task.file_path):
             logger.debug(f"跳过已扫描文件: {task.file_path}")
             return None
-        
+
         try:
             # 读取数据文件
             import pandas as pd
             df = pd.read_parquet(task.file_path)
-            
+
             # 创建质量指标对象
             metrics = QualityMetrics(
                 symbol=task.symbol,
@@ -5266,11 +5266,11 @@ class QualityScanner:
                 total_records=len(df),
                 file_size_mb=task.file_path.stat().st_size / (1024 * 1024)
             )
-            
+
             # 执行所有验证器
             for validator in self.validators:
                 result = validator.validate(df, context=None)
-                
+
                 # 根据验证器类型更新指标
                 if "Format" in validator.__class__.__name__:
                     metrics.format_score = result.score
@@ -5285,27 +5285,27 @@ class QualityScanner:
                     metrics.freshness_score = result.score
                     if result.statistics:
                         metrics.lag_days = result.statistics.get("gap_days", 0)
-            
+
             # 计算木桶理论评分
             metrics.calculate_overall_score()
-            
+
             # 标记已扫描
             self.record_manager.mark_scanned(
                 task.file_path,
                 quality_score=metrics.overall_score
             )
-            
+
             logger.debug(
                 f"扫描完成: {task.symbol} {task.interval}, "
                 f"评分={metrics.overall_score:.2f}"
             )
-            
+
             return metrics
-            
+
         except Exception as e:
             logger.error(f"扫描文件失败 ({task.file_path}): {e}", exc_info=True)
             return None
-    
+
     def scan_all(
         self,
         intervals: List[str],
@@ -5313,84 +5313,84 @@ class QualityScanner:
         num_processes: int = 4
     ) -> Dict[str, QualityMetrics]:
         """扫描所有数据文件
-        
+
         Args:
             intervals: 周期列表
             symbols: 品种列表(None表示扫描所有)
             num_processes: 进程数
-            
+
         Returns:
             {task_id: metrics} 字典
         """
         # 生成扫描任务
         tasks = self._generate_tasks(intervals, symbols)
-        
+
         logger.info(f"开始质量扫描: {len(tasks)} 个任务, {num_processes} 进程")
-        
+
         # 多进程扫描
         from multiprocessing import Pool
-        
+
         results = {}
         with Pool(processes=num_processes) as pool:
             metrics_list = pool.map(self.scan_file, tasks)
-            
+
             for task, metrics in zip(tasks, metrics_list):
                 if metrics:
                     results[task.get_task_id()] = metrics
-        
+
         logger.info(
             f"扫描完成: {len(results)}/{len(tasks)} 个任务成功"
         )
-        
+
         return results
-    
+
     def _generate_tasks(self, intervals: List[str], symbols: List[str] = None) -> List[ScanTask]:
         """生成扫描任务列表"""
         tasks = []
-        
+
         for interval in intervals:
             interval_dir = self.data_dir / interval
             if not interval_dir.exists():
                 continue
-            
+
             for file_path in interval_dir.glob("*.parquet"):
                 symbol = file_path.stem
-                
+
                 # 过滤品种
                 if symbols and symbol not in symbols:
                     continue
-                
+
                 task = ScanTask(
                     symbol=symbol,
                     interval=interval,
                     file_path=file_path
                 )
                 tasks.append(task)
-        
+
         return tasks
-    
+
     def generate_report(self, results: Dict[str, QualityMetrics]) -> Dict:
         """生成质量报告
-        
+
         Args:
             results: 扫描结果
-            
+
         Returns:
             质量报告字典
         """
         if not results:
             return {}
-        
+
         # 统计各质量等级数量
         level_counts = {"excellent": 0, "good": 0, "fair": 0, "poor": 0}
         total_score = 0.0
-        
+
         poor_quality_items = []
-        
+
         for task_id, metrics in results.items():
             level_counts[metrics.quality_level] += 1
             total_score += metrics.overall_score
-            
+
             # 收集低质量数据
             if metrics.quality_level == "poor":
                 poor_quality_items.append({
@@ -5399,7 +5399,7 @@ class QualityScanner:
                     "score": metrics.overall_score,
                     "errors": metrics.format_errors + metrics.logic_errors
                 })
-        
+
         # 生成报告
         report = {
             "total_files": len(results),
@@ -5408,7 +5408,7 @@ class QualityScanner:
             "poor_quality_items": poor_quality_items,
             "generated_at": datetime.now().isoformat()
         }
-        
+
         logger.info(
             f"质量报告生成: 平均分={report['average_score']:.2f}, "
             f"优秀={level_counts['excellent']}, "
@@ -5416,7 +5416,7 @@ class QualityScanner:
             f"一般={level_counts['fair']}, "
             f"较差={level_counts['poor']}"
         )
-        
+
         return report
 ```
 
@@ -5508,7 +5508,7 @@ logger = logging.getLogger(__name__)
 
 class QueryLayer(ABC):
     """查询层抽象接口"""
-    
+
     @abstractmethod
     def query(
         self,
@@ -5518,18 +5518,18 @@ class QueryLayer(ABC):
         end_date: Optional[date] = None
     ) -> Optional[pd.DataFrame]:
         """查询数据
-        
+
         Args:
             symbol: 品种代码
             interval: 周期
             start_date: 起始日期(可选)
             end_date: 结束日期(可选)
-            
+
         Returns:
             DataFrame,查询失败返回None
         """
         pass
-    
+
     @abstractmethod
     def get_layer_name(self) -> str:
         """获取层名称"""
@@ -5538,11 +5538,11 @@ class QueryLayer(ABC):
 
 class L1MemoryCacheLayer(QueryLayer):
     """L1 内存缓存层"""
-    
+
     def __init__(self, cache_manager):
         """Args: cache_manager: LRU缓存管理器"""
         self.cache = cache_manager
-    
+
     def query(
         self,
         symbol: str,
@@ -5553,40 +5553,40 @@ class L1MemoryCacheLayer(QueryLayer):
         """从内存缓存查询"""
         cache_key = f"{symbol}_{interval}"
         df = self.cache.get(cache_key)
-        
+
         if df is None:
             logger.debug(f"L1 Cache Miss: {cache_key}")
             return None
-        
+
         # 日期过滤
         if start_date or end_date:
             df = self._filter_by_date(df, start_date, end_date)
-        
+
         logger.debug(f"L1 Cache Hit: {cache_key}, {len(df)} 条记录")
         return df.copy()
-    
+
     def _filter_by_date(self, df: pd.DataFrame, start: date, end: date) -> pd.DataFrame:
         """日期过滤"""
         mask = pd.Series([True] * len(df), index=df.index)
-        
+
         if start:
             mask &= df['datetime'].dt.date >= start
         if end:
             mask &= df['datetime'].dt.date <= end
-        
+
         return df[mask]
-    
+
     def get_layer_name(self) -> str:
         return "L1_Memory_Cache"
 
 
 class L2LocalFileLayer(QueryLayer):
     """L2 本地文件层"""
-    
+
     def __init__(self, storage_manager):
         """Args: storage_manager: 存储管理器"""
         self.storage = storage_manager
-    
+
     def query(
         self,
         symbol: str,
@@ -5597,29 +5597,29 @@ class L2LocalFileLayer(QueryLayer):
         """从本地文件查询"""
         try:
             df = self.storage.load_data(symbol, interval, start_date, end_date)
-            
+
             if df is None or df.empty:
                 logger.debug(f"L2 File Miss: {symbol} {interval}")
                 return None
-            
+
             logger.debug(f"L2 File Hit: {symbol} {interval}, {len(df)} 条记录")
             return df
-            
+
         except Exception as e:
             logger.error(f"L2查询失败: {e}")
             return None
-    
+
     def get_layer_name(self) -> str:
         return "L2_Local_File"
 
 
 class L3RealtimeDownloadLayer(QueryLayer):
     """L3 实时下载层"""
-    
+
     def __init__(self, downloader):
         """Args: downloader: 数据下载器"""
         self.downloader = downloader
-    
+
     def query(
         self,
         symbol: str,
@@ -5630,7 +5630,7 @@ class L3RealtimeDownloadLayer(QueryLayer):
         """实时下载数据"""
         try:
             logger.info(f"L3 实时下载: {symbol} {interval}")
-            
+
             # 触发下载
             df = self.downloader.download_single(
                 symbol=symbol,
@@ -5638,29 +5638,29 @@ class L3RealtimeDownloadLayer(QueryLayer):
                 start_date=start_date,
                 end_date=end_date
             )
-            
+
             if df is None or df.empty:
                 logger.warning(f"L3下载失败: {symbol} {interval}")
                 return None
-            
+
             logger.info(f"L3下载成功: {symbol} {interval}, {len(df)} 条记录")
             return df
-            
+
         except Exception as e:
             logger.error(f"L3下载异常: {e}")
             return None
-    
+
     def get_layer_name(self) -> str:
         return "L3_Realtime_Download"
 
 
 class L4DataSourceReplayLayer(QueryLayer):
     """L4 数据源回放层"""
-    
+
     def __init__(self, replay_source):
         """Args: replay_source: 回放数据源"""
         self.replay = replay_source
-    
+
     def query(
         self,
         symbol: str,
@@ -5671,25 +5671,25 @@ class L4DataSourceReplayLayer(QueryLayer):
         """从数据源回放"""
         try:
             logger.info(f"L4 数据源回放: {symbol} {interval}")
-            
+
             df = self.replay.replay_data(
                 symbol=symbol,
                 interval=interval,
                 start_date=start_date,
                 end_date=end_date
             )
-            
+
             if df is None or df.empty:
                 logger.warning(f"L4回放失败: {symbol} {interval}")
                 return None
-            
+
             logger.info(f"L4回放成功: {symbol} {interval}, {len(df)} 条记录")
             return df
-            
+
         except Exception as e:
             logger.error(f"L4回放异常: {e}")
             return None
-    
+
     def get_layer_name(self) -> str:
         return "L4_DataSource_Replay"
 
@@ -5698,20 +5698,20 @@ class L4DataSourceReplayLayer(QueryLayer):
 
 class UnifiedDataManager:
     """统一数据查询管理器
-    
+
     实现四层融合查询:
     1. L1 内存缓存(毫秒级)
     2. L2 本地文件(秒级)
     3. L3 实时下载(分钟级)
     4. L4 数据源回放(分钟级)
-    
+
     查询流程:
     - 优先从L1查询
     - L1 miss → L2查询
     - L2 miss → L3下载
     - L3失败 → L4回放
     - 查询成功后回写上层缓存
-    
+
     使用示例:
         manager = UnifiedDataManager(
             l1_cache=memory_cache,
@@ -5719,7 +5719,7 @@ class UnifiedDataManager:
             l3_downloader=downloader,
             l4_replay=replay_source
         )
-        
+
         # 统一查询接口
         df = manager.query_unified(
             symbol="000001.SZ",
@@ -5727,7 +5727,7 @@ class UnifiedDataManager:
             start_date=date(2024, 1, 1)
         )
     """
-    
+
     def __init__(
         self,
         l1_cache=None,
@@ -5738,7 +5738,7 @@ class UnifiedDataManager:
         """初始化统一查询管理器"""
         # 构建查询层列表
         self.layers: List[QueryLayer] = []
-        
+
         if l1_cache:
             self.layers.append(L1MemoryCacheLayer(l1_cache))
         if l2_storage:
@@ -5747,18 +5747,18 @@ class UnifiedDataManager:
             self.layers.append(L3RealtimeDownloadLayer(l3_downloader))
         if l4_replay:
             self.layers.append(L4DataSourceReplayLayer(l4_replay))
-        
+
         # 统计信息
         self._stats = {
             "total_queries": 0,
             "layer_hits": {layer.get_layer_name(): 0 for layer in self.layers},
             "failures": 0
         }
-        
+
         logger.info(
             f"统一查询管理器已初始化: {len(self.layers)} 个查询层"
         )
-    
+
     def query_unified(
         self,
         symbol: str,
@@ -5767,51 +5767,51 @@ class UnifiedDataManager:
         end_date: Optional[date] = None
     ) -> Optional[pd.DataFrame]:
         """统一查询接口
-        
+
         按优先级依次查询各层,第一个成功的结果即返回。
-        
+
         Args:
             symbol: 品种代码
             interval: 周期
             start_date: 起始日期
             end_date: 结束日期
-            
+
         Returns:
             DataFrame,所有层都失败返回None
         """
         self._stats["total_queries"] += 1
-        
+
         # 按优先级查询各层
         for layer in self.layers:
             try:
                 df = layer.query(symbol, interval, start_date, end_date)
-                
+
                 if df is not None and not df.empty:
                     # 查询成功
                     layer_name = layer.get_layer_name()
                     self._stats["layer_hits"][layer_name] += 1
-                    
+
                     logger.info(
                         f"查询成功: {symbol} {interval}, "
                         f"来源={layer_name}, {len(df)} 条记录"
                     )
-                    
+
                     # 回写上层缓存
                     self._writeback_cache(symbol, interval, df, layer)
-                    
+
                     return df
-                    
+
             except Exception as e:
                 logger.error(
                     f"查询层异常 ({layer.get_layer_name()}): {e}"
                 )
                 continue
-        
+
         # 所有层都失败
         self._stats["failures"] += 1
         logger.warning(f"查询失败: {symbol} {interval}, 所有层都无数据")
         return None
-    
+
     def _writeback_cache(
         self,
         symbol: str,
@@ -5820,14 +5820,14 @@ class UnifiedDataManager:
         source_layer: QueryLayer
     ):
         """回写上层缓存
-        
+
         规则:
         - L2成功 → 回写L1
         - L3成功 → 回写L2和L1
         - L4成功 → 回写L3、L2和L1
         """
         source_index = self.layers.index(source_layer)
-        
+
         # 回写所有上层
         for i in range(source_index):
             upper_layer = self.layers[i]
@@ -5837,25 +5837,25 @@ class UnifiedDataManager:
                     cache_key = f"{symbol}_{interval}"
                     upper_layer.cache.set(cache_key, df)
                     logger.debug(f"回写L1缓存: {cache_key}")
-                    
+
                 elif isinstance(upper_layer, L2LocalFileLayer):
                     # 回写L2本地文件
                     upper_layer.storage.save_data(symbol, interval, df)
                     logger.debug(f"回写L2文件: {symbol} {interval}")
-                    
+
             except Exception as e:
                 logger.error(f"回写缓存失败 ({upper_layer.get_layer_name()}): {e}")
-    
+
     def get_stats(self) -> Dict:
         """获取查询统计"""
         total = self._stats["total_queries"]
-        
+
         # 计算各层命中率
         layer_hit_rates = {}
         for layer_name, hits in self._stats["layer_hits"].items():
             rate = (hits / total * 100) if total > 0 else 0.0
             layer_hit_rates[layer_name] = round(rate, 2)
-        
+
         return {
             "total_queries": total,
             "layer_hits": self._stats["layer_hits"],
@@ -5950,7 +5950,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class RealtimeTick:
     """实时tick数据"""
-    
+
     symbol: str
     datetime: str
     last_price: float
@@ -5958,7 +5958,7 @@ class RealtimeTick:
     amount: float
     bid1: float = 0.0
     ask1: float = 0.0
-    
+
     def to_dict(self) -> Dict:
         """转换为字典"""
         return {
@@ -5976,38 +5976,38 @@ class RealtimeTick:
 
 class RealtimeDataSource(ABC):
     """实时数据源抽象接口"""
-    
+
     @abstractmethod
     async def connect(self) -> bool:
         """连接数据源
-        
+
         Returns:
             True表示连接成功
         """
         pass
-    
+
     @abstractmethod
     async def disconnect(self):
         """断开连接"""
         pass
-    
+
     @abstractmethod
     async def subscribe(self, symbols: List[str]) -> bool:
         """订阅品种
-        
+
         Args:
             symbols: 品种列表
-            
+
         Returns:
             True表示订阅成功
         """
         pass
-    
+
     @abstractmethod
     async def unsubscribe(self, symbols: List[str]) -> bool:
         """取消订阅"""
         pass
-    
+
     @abstractmethod
     def get_source_name(self) -> str:
         """获取数据源名称"""
@@ -6016,7 +6016,7 @@ class RealtimeDataSource(ABC):
 
 class TDXRealtimeSource(RealtimeDataSource):
     """TDX实时数据源适配器"""
-    
+
     def __init__(self, host: str, port: int, callback: Callable):
         """
         Args:
@@ -6030,12 +6030,12 @@ class TDXRealtimeSource(RealtimeDataSource):
         self._client = None
         self._subscribed_symbols: List[str] = []
         self._running = False
-    
+
     async def connect(self) -> bool:
         """连接TDX服务器"""
         try:
             from pytdx.hq import TdxHq_API
-            
+
             self._client = TdxHq_API()
             await asyncio.get_event_loop().run_in_executor(
                 None,
@@ -6043,14 +6043,14 @@ class TDXRealtimeSource(RealtimeDataSource):
                 self.host,
                 self.port
             )
-            
+
             logger.info(f"TDX连接成功: {self.host}:{self.port}")
             return True
-            
+
         except Exception as e:
             logger.error(f"TDX连接失败: {e}")
             return False
-    
+
     async def disconnect(self):
         """断开TDX连接"""
         self._running = False
@@ -6060,31 +6060,31 @@ class TDXRealtimeSource(RealtimeDataSource):
                 self._client.disconnect
             )
             logger.info("TDX连接已断开")
-    
+
     async def subscribe(self, symbols: List[str]) -> bool:
         """订阅品种(启动轮询)
-        
+
         TDX没有推送机制,使用轮询模拟
         """
         self._subscribed_symbols.extend(symbols)
         self._subscribed_symbols = list(set(self._subscribed_symbols))
-        
+
         if not self._running:
             self._running = True
             asyncio.create_task(self._polling_loop())
-        
+
         logger.info(f"TDX订阅成功: {len(self._subscribed_symbols)}个品种")
         return True
-    
+
     async def unsubscribe(self, symbols: List[str]) -> bool:
         """取消订阅"""
         for symbol in symbols:
             if symbol in self._subscribed_symbols:
                 self._subscribed_symbols.remove(symbol)
-        
+
         logger.info(f"TDX取消订阅: 剩余{len(self._subscribed_symbols)}个品种")
         return True
-    
+
     async def _polling_loop(self):
         """轮询循环(模拟推送)"""
         while self._running:
@@ -6092,26 +6092,26 @@ class TDXRealtimeSource(RealtimeDataSource):
                 # 批量获取实时行情
                 for symbol in self._subscribed_symbols:
                     market, code = self._parse_symbol(symbol)
-                    
+
                     # 获取实时行情
                     quote = await asyncio.get_event_loop().run_in_executor(
                         None,
                         self._client.get_security_quotes,
                         [(market, code)]
                     )
-                    
+
                     if quote:
                         tick = self._convert_to_tick(quote[0], symbol)
                         # 触发回调
                         await self.callback(tick)
-                
+
                 # 轮询间隔(1秒)
                 await asyncio.sleep(1.0)
-                
+
             except Exception as e:
                 logger.error(f"TDX轮询异常: {e}")
                 await asyncio.sleep(5.0)  # 异常后等待5秒重试
-    
+
     def _parse_symbol(self, symbol: str) -> tuple:
         """解析品种代码"""
         if symbol.endswith(".SZ"):
@@ -6120,7 +6120,7 @@ class TDXRealtimeSource(RealtimeDataSource):
             return 1, symbol[:6]
         else:
             return 0, symbol
-    
+
     def _convert_to_tick(self, quote: Dict, symbol: str) -> RealtimeTick:
         """转换TDX行情为Tick"""
         return RealtimeTick(
@@ -6132,7 +6132,7 @@ class TDXRealtimeSource(RealtimeDataSource):
             bid1=quote.get("bid1", 0.0),
             ask1=quote.get("ask1", 0.0)
         )
-    
+
     def get_source_name(self) -> str:
         return "TDX_Realtime"
 
@@ -6141,127 +6141,127 @@ class TDXRealtimeSource(RealtimeDataSource):
 
 class SubscriptionManager:
     """订阅管理器
-    
+
     职责:
     1. 管理多个数据源的订阅
     2. 自动重连和异常恢复
     3. 订阅频率控制
     4. 数据分发
-    
+
     使用示例:
         manager = SubscriptionManager()
-        
+
         # 添加数据源
         tdx_source = TDXRealtimeSource(host, port, callback)
         manager.add_source(tdx_source)
-        
+
         # 订阅品种
         await manager.subscribe(["000001.SZ", "600000.SH"])
-        
+
         # 启动
         await manager.start()
     """
-    
+
     def __init__(self):
         """初始化订阅管理器"""
         self._sources: List[RealtimeDataSource] = []
         self._callbacks: List[Callable] = []
         self._subscribed_symbols: set = set()
         self._running = False
-        
+
         logger.info("订阅管理器已初始化")
-    
+
     def add_source(self, source: RealtimeDataSource):
         """添加数据源
-        
+
         Args:
             source: 实时数据源
         """
         self._sources.append(source)
         logger.info(f"已添加数据源: {source.get_source_name()}")
-    
+
     def add_callback(self, callback: Callable):
         """添加数据回调
-        
+
         Args:
             callback: 回调函数 callback(tick: RealtimeTick)
         """
         self._callbacks.append(callback)
         logger.info("已添加数据回调")
-    
+
     async def subscribe(self, symbols: List[str]) -> bool:
         """订阅品种
-        
+
         Args:
             symbols: 品种列表
-            
+
         Returns:
             True表示订阅成功
         """
         # 记录订阅
         self._subscribed_symbols.update(symbols)
-        
+
         # 订阅所有数据源
         success = True
         for source in self._sources:
             result = await source.subscribe(symbols)
             success = success and result
-        
+
         logger.info(
             f"订阅完成: {len(symbols)}个品种, "
             f"总订阅{len(self._subscribed_symbols)}个"
         )
-        
+
         return success
-    
+
     async def unsubscribe(self, symbols: List[str]) -> bool:
         """取消订阅
-        
+
         Args:
             symbols: 品种列表
-            
+
         Returns:
             True表示取消成功
         """
         # 移除订阅
         self._subscribed_symbols.difference_update(symbols)
-        
+
         # 取消所有数据源订阅
         success = True
         for source in self._sources:
             result = await source.unsubscribe(symbols)
             success = success and result
-        
+
         logger.info(
             f"取消订阅: {len(symbols)}个品种, "
             f"剩余{len(self._subscribed_symbols)}个"
         )
-        
+
         return success
-    
+
     async def start(self):
         """启动订阅管理器"""
         self._running = True
-        
+
         # 连接所有数据源
         for source in self._sources:
             await source.connect()
-        
+
         # 自动重连任务
         asyncio.create_task(self._auto_reconnect_loop())
-        
+
         logger.info("订阅管理器已启动")
-    
+
     async def stop(self):
         """停止订阅管理器"""
         self._running = False
-        
+
         # 断开所有数据源
         for source in self._sources:
             await source.disconnect()
-        
+
         logger.info("订阅管理器已停止")
-    
+
     async def _auto_reconnect_loop(self):
         """自动重连循环"""
         while self._running:
@@ -6271,17 +6271,17 @@ class SubscriptionManager:
                     # 如果断线,尝试重连
                     # TODO: 实现连接状态检查
                     pass
-                
+
                 # 每30秒检查一次
                 await asyncio.sleep(30)
-                
+
             except Exception as e:
                 logger.error(f"自动重连异常: {e}")
                 await asyncio.sleep(60)
-    
+
     async def _dispatch_tick(self, tick: RealtimeTick):
         """分发tick数据到所有回调
-        
+
         Args:
             tick: tick数据
         """
@@ -6382,7 +6382,7 @@ logger = logging.getLogger(__name__)
 
 class FileChangeEvent:
     """文件变化事件"""
-    
+
     def __init__(
         self,
         event_type: str,  # created/modified/deleted
@@ -6392,7 +6392,7 @@ class FileChangeEvent:
         self.event_type = event_type
         self.file_path = file_path
         self.timestamp = timestamp
-    
+
     def __repr__(self) -> str:
         return f"FileChangeEvent({self.event_type}, {self.file_path})"
 
@@ -6401,18 +6401,18 @@ class FileChangeEvent:
 
 class DebounceManager:
     """防抖管理器
-    
+
     避免同一文件短时间内多次触发事件
-    
+
     使用示例:
         debounce = DebounceManager(interval=1.0)
-        
+
         if debounce.should_trigger(file_path, event_type):
             # 执行事件处理
             handle_event()
             debounce.mark_triggered(file_path, event_type)
     """
-    
+
     def __init__(self, interval: float = 1.0):
         """
         Args:
@@ -6421,56 +6421,56 @@ class DebounceManager:
         self.interval = interval
         # {file_path: {event_type: last_trigger_time}}
         self._trigger_history: Dict[str, Dict[str, float]] = {}
-    
+
     def should_trigger(self, file_path: Path, event_type: str) -> bool:
         """判断是否应该触发事件
-        
+
         Args:
             file_path: 文件路径
             event_type: 事件类型
-            
+
         Returns:
             True表示应该触发
         """
         file_key = str(file_path)
         now = time.time()
-        
+
         if file_key not in self._trigger_history:
             return True
-        
+
         event_history = self._trigger_history[file_key]
         if event_type not in event_history:
             return True
-        
+
         last_time = event_history[event_type]
         elapsed = now - last_time
-        
+
         return elapsed >= self.interval
-    
+
     def mark_triggered(self, file_path: Path, event_type: str):
         """标记事件已触发
-        
+
         Args:
             file_path: 文件路径
             event_type: 事件类型
         """
         file_key = str(file_path)
         now = time.time()
-        
+
         if file_key not in self._trigger_history:
             self._trigger_history[file_key] = {}
-        
+
         self._trigger_history[file_key][event_type] = now
-    
+
     def cleanup_old_records(self, max_age: float = 3600):
         """清理过期记录
-        
+
         Args:
             max_age: 最大保留时间(秒)
         """
         now = time.time()
         expired_files = []
-        
+
         for file_key, event_history in self._trigger_history.items():
             # 检查所有事件是否都过期
             all_expired = all(
@@ -6479,10 +6479,10 @@ class DebounceManager:
             )
             if all_expired:
                 expired_files.append(file_key)
-        
+
         for file_key in expired_files:
             del self._trigger_history[file_key]
-        
+
         if expired_files:
             logger.debug(f"清理{len(expired_files)}条过期防抖记录")
 
@@ -6491,24 +6491,24 @@ class DebounceManager:
 
 class DataFileMonitor:
     """数据文件监控器
-    
+
     使用watchdog监控数据目录变化,支持防抖和异步事件分发。
-    
+
     使用示例:
         monitor = DataFileMonitor(
             watch_dir=Path("./data"),
             debounce_interval=1.0
         )
-        
+
         # 注册事件回调
         monitor.on_file_created(callback_created)
         monitor.on_file_modified(callback_modified)
         monitor.on_file_deleted(callback_deleted)
-        
+
         # 启动监控
         monitor.start()
     """
-    
+
     def __init__(
         self,
         watch_dir: Path,
@@ -6524,37 +6524,37 @@ class DataFileMonitor:
         self.watch_dir = Path(watch_dir)
         self.file_pattern = file_pattern
         self.debounce = DebounceManager(interval=debounce_interval)
-        
+
         # 事件回调
         self._on_created_callbacks: List[Callable] = []
         self._on_modified_callbacks: List[Callable] = []
         self._on_deleted_callbacks: List[Callable] = []
-        
+
         # watchdog组件
         self._observer = None
         self._event_handler = None
-        
+
         logger.info(
             f"文件监控器已初始化: watch_dir={watch_dir}, "
             f"debounce={debounce_interval}s"
         )
-    
+
     def on_file_created(self, callback: Callable):
         """注册文件创建回调
-        
+
         Args:
             callback: 回调函数 callback(event: FileChangeEvent)
         """
         self._on_created_callbacks.append(callback)
-    
+
     def on_file_modified(self, callback: Callable):
         """注册文件修改回调"""
         self._on_modified_callbacks.append(callback)
-    
+
     def on_file_deleted(self, callback: Callable):
         """注册文件删除回调"""
         self._on_deleted_callbacks.append(callback)
-    
+
     def start(self):
         """启动文件监控"""
         # 创建事件处理器
@@ -6562,7 +6562,7 @@ class DataFileMonitor:
             monitor=self,
             file_pattern=self.file_pattern
         )
-        
+
         # 创建观察者
         self._observer = Observer()
         self._observer.schedule(
@@ -6571,19 +6571,19 @@ class DataFileMonitor:
             recursive=True
         )
         self._observer.start()
-        
+
         logger.info(f"文件监控已启动: {self.watch_dir}")
-    
+
     def stop(self):
         """停止文件监控"""
         if self._observer:
             self._observer.stop()
             self._observer.join()
             logger.info("文件监控已停止")
-    
+
     async def _dispatch_event(self, event: FileChangeEvent):
         """分发事件到回调
-        
+
         Args:
             event: 文件变化事件
         """
@@ -6596,7 +6596,7 @@ class DataFileMonitor:
             callbacks = self._on_deleted_callbacks
         else:
             return
-        
+
         # 执行所有回调
         for callback in callbacks:
             try:
@@ -6610,86 +6610,86 @@ class DataFileMonitor:
 
 class _FileEventHandler(FileSystemEventHandler):
     """watchdog事件处理器(内部类)"""
-    
+
     def __init__(self, monitor: DataFileMonitor, file_pattern: str):
         self.monitor = monitor
         self.file_pattern = file_pattern
         super().__init__()
-    
+
     def on_created(self, event: FileSystemEvent):
         """文件创建事件"""
         if event.is_directory:
             return
-        
+
         file_path = Path(event.src_path)
         if not file_path.match(self.file_pattern):
             return
-        
+
         # 防抖检查
         if not self.monitor.debounce.should_trigger(file_path, "created"):
             return
-        
+
         # 创建事件对象
         change_event = FileChangeEvent(
             event_type="created",
             file_path=file_path,
             timestamp=time.time()
         )
-        
+
         # 标记已触发
         self.monitor.debounce.mark_triggered(file_path, "created")
-        
+
         # 异步分发事件
         asyncio.create_task(self.monitor._dispatch_event(change_event))
-        
+
         logger.debug(f"文件创建: {file_path}")
-    
+
     def on_modified(self, event: FileSystemEvent):
         """文件修改事件"""
         if event.is_directory:
             return
-        
+
         file_path = Path(event.src_path)
         if not file_path.match(self.file_pattern):
             return
-        
+
         # 防抖检查
         if not self.monitor.debounce.should_trigger(file_path, "modified"):
             return
-        
+
         change_event = FileChangeEvent(
             event_type="modified",
             file_path=file_path,
             timestamp=time.time()
         )
-        
+
         self.monitor.debounce.mark_triggered(file_path, "modified")
         asyncio.create_task(self.monitor._dispatch_event(change_event))
-        
+
         logger.debug(f"文件修改: {file_path}")
-    
+
     def on_deleted(self, event: FileSystemEvent):
         """文件删除事件"""
         if event.is_directory:
             return
-        
+
         file_path = Path(event.src_path)
         if not file_path.match(self.file_pattern):
             return
-        
+
         # 防抖检查
         if not self.monitor.debounce.should_trigger(file_path, "deleted"):
             return
-        
+
         change_event = FileChangeEvent(
             event_type="deleted",
             file_path=file_path,
             timestamp=time.time()
         )
-        
+
         self.monitor.debounce.mark_triggered(file_path, "deleted")
         asyncio.create_task(self.monitor._dispatch_event(change_event))
-        
+
         logger.debug(f"文件删除: {file_path}")
 ```
 
@@ -6801,29 +6801,29 @@ class IOPerformanceMetrics:
 
 class IOStrategy(ABC):
     """文件I/O策略抽象基类"""
-    
+
     @abstractmethod
     async def read_file(self, file_path: Path) -> bytes:
         """异步读取文件
-        
+
         Args:
             file_path: 文件路径
-            
+
         Returns:
             文件内容字节
         """
         pass
-    
+
     @abstractmethod
     async def write_file(self, file_path: Path, data: bytes) -> None:
         """异步写入文件
-        
+
         Args:
             file_path: 文件路径
             data: 要写入的数据
         """
         pass
-    
+
     @abstractmethod
     def get_strategy_name(self) -> str:
         """获取策略名称"""
@@ -6832,11 +6832,11 @@ class IOStrategy(ABC):
 
 class NativeIOCPStrategy(IOStrategy):
     """native_iocp真异步I/O策略（Level 1）"""
-    
+
     def __init__(self):
         # 尝试导入native_iocp
         try:
-            from backend.infrastructure.native_iocp import compat_aopen
+            from backend.infrastructure.native.native_iocp import compat_aopen
             self.compat_aopen = compat_aopen
             self.available = True
             logger.info("✅ native_iocp策略初始化成功")
@@ -6844,78 +6844,78 @@ class NativeIOCPStrategy(IOStrategy):
             self.compat_aopen = None
             self.available = False
             logger.warning(f"⚠️ native_iocp不可用: {e}")
-    
+
     async def read_file(self, file_path: Path) -> bytes:
         """IOCP异步读取"""
         if not self.available:
             raise RuntimeError("native_iocp不可用")
-        
+
         async with await self.compat_aopen(file_path, 'rb') as f:
             data = await f.read()
         return data
-    
+
     async def write_file(self, file_path: Path, data: bytes) -> None:
         """IOCP异步写入"""
         if not self.available:
             raise RuntimeError("native_iocp不可用")
-        
+
         async with await self.compat_aopen(file_path, 'wb') as f:
             await f.write(data)
-    
+
     def get_strategy_name(self) -> str:
         return "native_iocp"
 
 
 class SyncIOStrategy(IOStrategy):
     """同步I/O策略（Level 3，最终降级）"""
-    
+
     async def read_file(self, file_path: Path) -> bytes:
         """在executor中执行同步读取"""
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
-            None, 
+            None,
             lambda: file_path.read_bytes()
         )
-    
+
     async def write_file(self, file_path: Path, data: bytes) -> None:
         """在executor中执行同步写入"""
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(
-            None, 
+            None,
             lambda: file_path.write_bytes(data)
         )
-    
+
     def get_strategy_name(self) -> str:
         return "sync"
 
 
 class IOStrategyFactory:
     """I/O策略工厂
-    
+
     负责创建、管理、切换I/O策略
     """
-    
+
     def __init__(self):
         # 初始化所有策略
         self._strategies = {
             "native_iocp": NativeIOCPStrategy(),
             "sync": SyncIOStrategy()
         }
-        
+
         # 选择默认策略
         self._current_strategy = self._select_default_strategy()
-        
+
         # 性能监控
         self._metrics_history = []
         self._strategy_usage_count = {
             "native_iocp": 0,
             "sync": 0
         }
-        
+
         logger.info(
             f"🚀 I/O策略工厂初始化完成，默认策略: {self._current_strategy.get_strategy_name()}"
         )
-    
+
     def _select_default_strategy(self) -> IOStrategy:
         """选择默认策略"""
         # 优先选择native_iocp
@@ -6923,27 +6923,27 @@ class IOStrategyFactory:
             return self._strategies["native_iocp"]
         # 降级到同步I/O
         return self._strategies["sync"]
-    
+
     async def read_parquet_async(self, file_path: Union[str, Path]) -> pd.DataFrame:
         """异步读取Parquet文件（带性能监控）
-        
+
         Returns:
             DataFrame
         """
         file_path = Path(file_path)
         start_time = time.time()
         file_size_mb = file_path.stat().st_size / (1024 * 1024)
-        
+
         try:
             # 尝试当前策略
             data = await self._current_strategy.read_file(file_path)
-            
+
             # 解析Parquet
             import pyarrow.parquet as pq
             from io import BytesIO
             table = pq.read_table(BytesIO(data))
             df = table.to_pandas()
-            
+
             # 记录成功指标
             metrics = self._record_metrics(
                 io_mode=self._current_strategy.get_strategy_name(),
@@ -6951,15 +6951,15 @@ class IOStrategyFactory:
                 start_time=start_time,
                 success=True
             )
-            
+
             logger.debug(
                 f"📁 读取Parquet: {file_path.name}, "
                 f"{file_size_mb:.2f} MB, {metrics.elapsed_time:.3f}s, "
                 f"{metrics.throughput_mbps:.2f} MB/s, 模式={metrics.io_mode}"
             )
-            
+
             return df
-            
+
         except Exception as e:
             # 记录失败指标
             self._record_metrics(
@@ -6969,7 +6969,7 @@ class IOStrategyFactory:
                 success=False,
                 error_msg=str(e)
             )
-            
+
             # 尝试降级
             fallback_strategy = self._strategies["sync"]
             if fallback_strategy != self._current_strategy:
@@ -6977,7 +6977,7 @@ class IOStrategyFactory:
                     f"⚠️ {self._current_strategy.get_strategy_name()}读取失败，"
                     f"降级到{fallback_strategy.get_strategy_name()}: {e}"
                 )
-                
+
                 # 使用降级策略重试
                 data = await fallback_strategy.read_file(file_path)
                 import pyarrow.parquet as pq
@@ -6986,32 +6986,32 @@ class IOStrategyFactory:
                 return table.to_pandas()
             else:
                 raise
-    
+
     async def write_parquet_async(
-        self, 
-        file_path: Union[str, Path], 
+        self,
+        file_path: Union[str, Path],
         df: pd.DataFrame
     ) -> bool:
         """异步写入Parquet文件（带性能监控）
-        
+
         Returns:
             bool: 成功/失败
         """
         file_path = Path(file_path)
         start_time = time.time()
-        
+
         try:
             # 先序列化到内存
             from io import BytesIO
             buffer = BytesIO()
             df.to_parquet(buffer, engine='pyarrow', compression='snappy')
             data = buffer.getvalue()
-            
+
             file_size_mb = len(data) / (1024 * 1024)
-            
+
             # 异步写入
             await self._current_strategy.write_file(file_path, data)
-            
+
             # 记录成功指标
             metrics = self._record_metrics(
                 io_mode=self._current_strategy.get_strategy_name(),
@@ -7019,15 +7019,15 @@ class IOStrategyFactory:
                 start_time=start_time,
                 success=True
             )
-            
+
             logger.debug(
                 f"💾 写入Parquet: {file_path.name}, "
                 f"{file_size_mb:.2f} MB, {metrics.elapsed_time:.3f}s, "
                 f"{metrics.throughput_mbps:.2f} MB/s, 模式={metrics.io_mode}"
             )
-            
+
             return True
-            
+
         except Exception as e:
             # 记录失败指标
             self._record_metrics(
@@ -7037,7 +7037,7 @@ class IOStrategyFactory:
                 success=False,
                 error_msg=str(e)
             )
-            
+
             # 尝试降级
             fallback_strategy = self._strategies["sync"]
             if fallback_strategy != self._current_strategy:
@@ -7045,14 +7045,14 @@ class IOStrategyFactory:
                     f"⚠️ {self._current_strategy.get_strategy_name()}写入失败，"
                     f"降级到{fallback_strategy.get_strategy_name()}: {e}"
                 )
-                
+
                 # 使用降级策略重试
                 await fallback_strategy.write_file(file_path, data)
                 return True
             else:
                 logger.error(f"❌ 写入Parquet失败: {e}", exc_info=True)
                 return False
-    
+
     def _record_metrics(
         self,
         io_mode: str,
@@ -7065,7 +7065,7 @@ class IOStrategyFactory:
         elapsed_time = time.time() - start_time
         throughput = file_size_mb / elapsed_time if elapsed_time > 0 else 0
         latency_ms = elapsed_time * 1000
-        
+
         metrics = IOPerformanceMetrics(
             io_mode=io_mode,
             file_size_mb=file_size_mb,
@@ -7075,24 +7075,24 @@ class IOStrategyFactory:
             success=success,
             error_msg=error_msg
         )
-        
+
         # 记录历史指标
         self._metrics_history.append(metrics)
-        
+
         # 统计使用次数
         if success:
             self._strategy_usage_count[io_mode] += 1
-        
+
         return metrics
-    
+
     def get_performance_report(self) -> Dict[str, Any]:
         """生成性能报告"""
         if not self._metrics_history:
             return {"total_operations": 0}
-        
+
         total = len(self._metrics_history)
         success_count = sum(1 for m in self._metrics_history if m.success)
-        
+
         # 按模式统计
         by_mode = {}
         for mode in ["native_iocp", "sync"]:
@@ -7105,7 +7105,7 @@ class IOStrategyFactory:
                     "avg_throughput_mbps": avg_throughput,
                     "avg_latency_ms": avg_latency
                 }
-        
+
         return {
             "total_operations": total,
             "success_count": success_count,
@@ -7167,7 +7167,7 @@ class IOStrategyFactory:
 ```python
 # 在模块加载阶段检测
 try:
-    from backend.infrastructure.native_iocp import compat_aopen
+    from backend.infrastructure.native.native_iocp import compat_aopen
     _USE_IOCP = True
 except ImportError:
     compat_aopen = None
@@ -7287,7 +7287,7 @@ async def _read_parquet_async_with_metrics(
     start_time = time.time()
     file_size_mb = Path(file_path).stat().st_size / (1024 * 1024)
     io_mode = "unknown"
-    
+
     try:
         if _USE_IOCP and compat_aopen is not None:
             # Level 1: native_iocp
@@ -7295,7 +7295,7 @@ async def _read_parquet_async_with_metrics(
             file_obj = await compat_aopen(file_path, 'rb')
             async with file_obj:
                 data = await file_obj.read()
-            
+
             import pyarrow.parquet as pq
             import io
             table = pq.read_table(io.BytesIO(data))
@@ -7305,22 +7305,22 @@ async def _read_parquet_async_with_metrics(
             io_mode = "sync"
             loop = asyncio.get_event_loop()
             df = await loop.run_in_executor(None, pd.read_parquet, file_path)
-        
+
         # 计算性能指标
         elapsed_time = time.time() - start_time
         throughput = file_size_mb / elapsed_time if elapsed_time > 0 else 0
         latency_ms = elapsed_time * 1000
-        
+
         # 记录性能日志
         logger.debug(
             "文件读取性能: 文件=%s, 大小=%.2f MB, "
             "耗时=%.3f秒, 吞吐量=%.2f MB/s, 延迟=%.2f ms, 模式=%s",
-            file_path, file_size_mb, elapsed_time, 
+            file_path, file_size_mb, elapsed_time,
             throughput, latency_ms, io_mode
         )
-        
+
         return df
-        
+
     except Exception as e:
         elapsed_time = time.time() - start_time
         logger.warning(
@@ -7350,25 +7350,25 @@ class StorageManager:
     ) -> Optional[pd.DataFrame]:
         """异步加载数据（使用native_iocp）"""
         file_path = self.get_data_path(symbol, interval)
-        
+
         if not file_path.exists():
             return None
-        
+
         try:
             # 🚀 使用native_iocp异步读取
-            from backend.infrastructure.native_iocp import compat_aopen
+            from backend.infrastructure.native.native_iocp import compat_aopen
             from io import BytesIO
-            
+
             async with await compat_aopen(file_path, 'rb') as f:
                 data = await f.read()
-            
+
             # 解析Parquet
             df = pd.read_parquet(BytesIO(data))
-            
+
             # 日期过滤
             if start_date or end_date:
                 df = self._filter_by_date(df, start_date, end_date)
-            
+
             return df
         except Exception as e:
             logger.error(f"加载数据失败: {e}", exc_info=True)
@@ -7385,21 +7385,21 @@ class StorageManager:
     ) -> bool:
         """异步保存数据（使用native_iocp）"""
         file_path = self.get_data_path(symbol, interval)
-        
+
         try:
             # 🚀 使用native_iocp异步写入
-            from backend.infrastructure.native_iocp import compat_aopen
+            from backend.infrastructure.native.native_iocp import compat_aopen
             from io import BytesIO
-            
+
             # 先同步到内存
             buffer = BytesIO()
             df.to_parquet(buffer, engine='pyarrow', compression='snappy')
             data = buffer.getvalue()
-            
+
             # 异步写入文件
             async with await compat_aopen(file_path, 'wb') as f:
                 await f.write(data)
-            
+
             return True
         except Exception as e:
             logger.error(f"保存数据失败: {e}", exc_info=True)
@@ -7417,30 +7417,30 @@ class DailyCacheManager:
     async def save_with_date_async(data: Any, cache_file: Path) -> bool:
         """异步保存数据并记录日期（使用native_iocp）"""
         try:
-            from backend.infrastructure.native_iocp import compat_aopen
+            from backend.infrastructure.native.native_iocp import compat_aopen
             import json
-            
+
             # 构建缓存对象
             cache_obj = {
                 "cache_date": DailyCacheManager.get_today(),
                 "data": data
             }
-            
+
             # 序列化为JSON
             json_data = json.dumps(
-                cache_obj, 
-                ensure_ascii=False, 
-                indent=2, 
+                cache_obj,
+                ensure_ascii=False,
+                indent=2,
                 default=str
             )
-            
+
             # 🚀 使用native_iocp异步写入
             async with await compat_aopen(cache_file, 'w', encoding='utf-8') as f:
                 await f.write(json_data)
-            
+
             logger.debug("缓存已保存: %s (日期: %s)", cache_file, cache_obj["cache_date"])
             return True
-            
+
         except Exception as e:
             logger.error("保存缓存失败 (%s): %s", cache_file, e, exc_info=True)
             return False
@@ -7456,27 +7456,27 @@ class DailyCacheManager:
         try:
             if not cache_file.exists():
                 return None, None, False
-            
-            from backend.infrastructure.native_iocp import compat_aopen
+
+            from backend.infrastructure.native.native_iocp import compat_aopen
             import json
-            
+
             # 🚀 使用native_iocp异步读取
             async with await compat_aopen(cache_file, 'r', encoding='utf-8') as f:
                 content = await f.read()
-            
+
             if not content.strip():
                 logger.warning("缓存文件为空: %s", cache_file)
                 return None, None, False
-            
+
             cache_obj = json.loads(content)
             data = cache_obj.get("data")
             cache_date = cache_obj.get("cache_date")
-            
+
             # 验证日期
             is_valid = DailyCacheManager.is_cache_valid(cache_date)
-            
+
             return data, cache_date, is_valid
-            
+
         except Exception as e:
             logger.error("加载缓存失败: %s", e, exc_info=True)
             return None, None, False
@@ -7488,30 +7488,30 @@ class DailyCacheManager:
 
 ```python
 async def _scan_symbol_quality_async(
-    symbol: str, 
-    intervals: List[str], 
+    symbol: str,
+    intervals: List[str],
     data_dir: str
 ) -> Optional[dict]:
     """异步扫描单个品种的质量（使用native_iocp）"""
     try:
         quality_dict = {"symbol": symbol, "intervals": {}}
-        
+
         for interval in intervals:
             file_path = Path(data_dir) / interval / f"{symbol}.parquet"
-            
+
             if not file_path.exists():
                 quality_dict["intervals"][interval] = {"missing": True}
                 continue
-            
+
             # 🚀 使用native_iocp异步读取
             df = await _read_parquet_async(file_path)
-            
+
             # 执行质量检查
             quality_result = validate_data_quality(df)
             quality_dict["intervals"][interval] = quality_result
-        
+
         return quality_dict
-        
+
     except Exception as e:
         logger.error(f"异步扫描品种 {symbol} 失败: {e}")
         return None
@@ -7558,70 +7558,70 @@ class SubprocessLogConfig:
     task_type: str  # "worker"/"quality_scan"/"ipo"/"finance"
     logger_name: str
     level: SubprocessLogLevel = SubprocessLogLevel.DEBUG
-    
+
 
 class SubprocessLogConfigManager:
     """子进程日志配置管理器
-    
+
     统一管理所有子进程的日志配置，提供标准化的配置接口
     """
-    
+
     _instance = None
     _lock = threading.Lock()
-    
+
     def __new__(cls):
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
                     cls._instance = super().__new__(cls)
         return cls._instance
-    
+
     def __init__(self):
         if not hasattr(self, '_initialized'):
             self._configs: Dict[str, SubprocessLogConfig] = {}
             self._loghub_available = True
             self._initialized = True
-    
+
     def configure_subprocess_logging(
         self,
         worker_id: int,
         task_type: str = "worker"
     ) -> logging.Logger:
         """配置子进程日志系统，接入LogHub统一路由
-        
+
         四步配置流程：
         1. 获取LogHub实例
         2. 清理继承的handler
         3. 添加LogHub到root logger
         4. 创建子进程专用logger
-        
+
         Args:
             worker_id: 子进程ID
             task_type: 任务类型
-            
+
         Returns:
             配置好的logger实例
         """
         import sys
-        
+
         try:
             # Step 1: 获取LogHub实例
             from backend.infrastructure.system_vnpy.unified_log_system import get_logging_hub
             hub = get_logging_hub()
-            
+
             # Step 2: 清理子进程继承的所有handler（避免重复输出）
             root_logger = logging.getLogger()
             cleared_count = self._clear_inherited_handlers(root_logger)
-            
+
             # Step 3: 将LogHub添加到root logger
             root_logger.addHandler(hub)
             root_logger.setLevel(logging.DEBUG)
-            
+
             # Step 4: 创建子进程专用logger（带worker_id标识）
             logger_name = f"subprocess.{task_type}.{worker_id}"
             subprocess_logger = logging.getLogger(logger_name)
             subprocess_logger.propagate = True  # 让日志传播到root logger
-            
+
             # 记录配置
             config = SubprocessLogConfig(
                 worker_id=worker_id,
@@ -7630,14 +7630,14 @@ class SubprocessLogConfigManager:
                 level=SubprocessLogLevel.DEBUG
             )
             self._configs[logger_name] = config
-            
+
             subprocess_logger.info(
                 f"✅ 子进程 {worker_id} ({task_type}) 日志系统已接入LogHub "
                 f"(清理{cleared_count}个handler)"
             )
-            
+
             return subprocess_logger
-            
+
         except Exception as e:
             # 降级：如果LogHub配置失败，使用标准logger
             self._loghub_available = False
@@ -7646,54 +7646,54 @@ class SubprocessLogConfigManager:
                 f"⚠️ 子进程 {worker_id} ({task_type}) LogHub配置失败，使用降级日志: {e}"
             )
             return fallback_logger
-    
+
     def _clear_inherited_handlers(self, root_logger: logging.Logger) -> int:
         """清理继承的handler
-        
+
         Args:
             root_logger: root logger实例
-            
+
         Returns:
             清理的handler数量
         """
         cleared_count = 0
-        
+
         # 遍历所有handler（使用切片复制，避免遍历时修改）
         for handler in root_logger.handlers[:]:
             try:
                 # 介root logger移除handler
                 root_logger.removeHandler(handler)
-                
+
                 # 关闭handler，释放资源
                 # - FileHandler: 关闭文件句柄
                 # - StreamHandler: 刷新缓冲区
                 # - SocketHandler: 关闭网络连接
                 handler.close()
-                
+
                 cleared_count += 1
             except Exception as e:
                 # 忽略清理异常，继续清理其他handler
                 pass
-        
+
         return cleared_count
-    
+
     def _create_fallback_logger(
         self,
         worker_id: int,
         task_type: str
     ) -> logging.Logger:
         """创建降级logger（LogHub不可用时）
-        
+
         Args:
             worker_id: 子进程ID
             task_type: 任务类型
-            
+
         Returns:
             降级logger
         """
         logger_name = f"subprocess.{task_type}.{worker_id}.fallback"
         fallback_logger = logging.getLogger(logger_name)
-        
+
         # 配置基本的StreamHandler
         if not fallback_logger.handlers:
             handler = logging.StreamHandler()
@@ -7703,17 +7703,17 @@ class SubprocessLogConfigManager:
             handler.setFormatter(formatter)
             fallback_logger.addHandler(handler)
             fallback_logger.setLevel(logging.DEBUG)
-        
+
         return fallback_logger
-    
+
     def get_config(self, logger_name: str) -> Optional[SubprocessLogConfig]:
         """获取指定logger的配置"""
         return self._configs.get(logger_name)
-    
+
     def get_all_configs(self) -> Dict[str, SubprocessLogConfig]:
         """获取所有配置"""
         return dict(self._configs)
-    
+
     def is_loghub_available(self) -> bool:
         """检查LogHub是否可用"""
         return self._loghub_available
@@ -7731,13 +7731,13 @@ def configure_subprocess_logging(
     task_type: str = "worker"
 ) -> logging.Logger:
     """配置子进程日志（便捷函数）
-    
+
     封装细节，提供简单的接口
-    
+
     Args:
         worker_id: 子进程ID
         task_type: 任务类型 (worker/quality_scan/ipo/finance等)
-        
+
     Returns:
         配置好的logger
     """
@@ -7825,44 +7825,44 @@ subprocess_logger.propagate = True
 
 ```python
 def _configure_subprocess_logging(
-    worker_id: int, 
+    worker_id: int,
     task_type: str = "worker"
 ):
     """配置子进程日志系统，接入LogHub统一路由
-    
+
     Args:
         worker_id: 子进程ID
         task_type: 任务类型（worker/quality_scan/ipo/finance等）
-    
+
     Returns:
         配置好的logger实例
     """
     import logging
     import sys
-    
+
     try:
         # Step 1: 获取LogHub实例
         from backend.infrastructure.system_vnpy.unified_log_system import get_logging_hub
         hub = get_logging_hub()
-        
+
         # Step 2: 清理子进程继承的所有handler（避免重复输出）
         root_logger = logging.getLogger()
         for handler in root_logger.handlers[:]:
             root_logger.removeHandler(handler)
             handler.close()
-        
+
         # Step 3: 将LogHub添加到root logger
         root_logger.addHandler(hub)
         root_logger.setLevel(logging.DEBUG)
-        
+
         # Step 4: 创建子进程专用logger（带worker_id标识）
         logger_name = f"subprocess.{task_type}.{worker_id}"
         subprocess_logger = logging.getLogger(logger_name)
         subprocess_logger.propagate = True  # 让日志传播到root logger
-        
+
         subprocess_logger.info(f"✅ 子进程 {worker_id} 日志系统已接入LogHub")
         return subprocess_logger
-        
+
     except Exception as e:
         # 降级：如果LogHub配置失败，使用标准logger
         fallback_logger = logging.getLogger(__name__)
@@ -7938,7 +7938,7 @@ root_logger = logging.getLogger()
 for handler in root_logger.handlers[:]:
     # 从root logger移除handler
     root_logger.removeHandler(handler)
-    
+
     # 关闭handler，释放资源
     # - FileHandler: 关闭文件句柄
     # - StreamHandler: 刷新缓冲区
@@ -8022,20 +8022,20 @@ subprocess_logger = logging.getLogger(f"subprocess.{task_type}.{worker_id}")
 def _run_kline_download_worker(*args):
     """K线下载worker进程入口函数"""
     import warnings
-    
+
     # 抑制ResourceWarning
     warnings.filterwarnings(
-        "ignore", 
-        category=ResourceWarning, 
+        "ignore",
+        category=ResourceWarning,
         message=".*socket.*"
     )
-    
+
     # 配置子进程日志
     logger = _configure_subprocess_logging(
         worker_id=args[0],  # 第一个参数是worker_id
         task_type="worker"
     )
-    
+
     # 运行异步事件循环
     asyncio.run(_kline_download_worker_async(*args))
 ```
@@ -8046,20 +8046,20 @@ def _run_kline_download_worker(*args):
 def _run_quality_scan_worker(*args):
     """质量扫描worker进程入口函数"""
     import warnings
-    
+
     # 抑制ResourceWarning
     warnings.filterwarnings(
-        "ignore", 
-        category=ResourceWarning, 
+        "ignore",
+        category=ResourceWarning,
         message=".*socket.*"
     )
-    
+
     # 配置子进程日志
     logger = _configure_subprocess_logging(
         worker_id=args[0],
         task_type="quality_scan"
     )
-    
+
     # 运行异步事件循环
     asyncio.run(_quality_scan_worker_async(*args))
 ```
@@ -8074,7 +8074,7 @@ def _run_ipo_download_worker(*args):
         worker_id=args[0],
         task_type="ipo"
     )
-    
+
     # 运行异步事件循环
     asyncio.run(_ipo_download_worker_async(*args))
 ```
@@ -8144,14 +8144,14 @@ class QueueSkipStats:
     last_warning: int = 0  # 上次告警时的skip_count值
     first_skip_time: Optional[float] = None
     last_skip_time: Optional[float] = None
-    
+
     @property
     def stats_key(self) -> str:
         """生成统计key"""
         if self.worker_id is not None:
             return f"{self.queue_name}_{self.worker_id}"
         return self.queue_name
-    
+
     @property
     def skip_duration(self) -> float:
         """跳过持续时间（秒）"""
@@ -8162,22 +8162,22 @@ class QueueSkipStats:
 
 class QueuePressureMonitor:
     """队列压力监控器
-    
+
     统一管理所有队列的积压监控，分级告警，统计数据收集
     """
-    
+
     # 告警阈值
     WARNING_THRESHOLD_1 = 3      # 前3次每次告警
     WARNING_THRESHOLD_10 = 10    # 第10次起每10次告警
     ERROR_THRESHOLD_100 = 100    # 第100次严重告警
     ERROR_THRESHOLD_500 = 500    # 第500次起每500次告警
-    
+
     def __init__(self):
         self._stats: Dict[str, QueueSkipStats] = {}
         self._lock = threading.Lock()
         self._logger = logging.getLogger("backend.data_module.queue")
         self._alert_logger = logging.getLogger("backend.data_module.alert")
-    
+
     def record_skip(
         self,
         queue_name: str,
@@ -8186,20 +8186,20 @@ class QueuePressureMonitor:
         error_type: str = "Full"
     ) -> int:
         """记录队列跳过事件
-        
+
         Args:
             queue_name: 队列名称
             worker_id: Worker ID
             timeout: 超时时间
             error_type: 异常类型
-            
+
         Returns:
             当前累计跳过次数
         """
         with self._lock:
             # 生成stats_key
             stats_key = self._make_stats_key(queue_name, worker_id)
-            
+
             # 初始化或更新统计
             if stats_key not in self._stats:
                 self._stats[stats_key] = QueueSkipStats(
@@ -8209,17 +8209,17 @@ class QueuePressureMonitor:
                     last_warning=0,
                     first_skip_time=time.time()
                 )
-            
+
             stats = self._stats[stats_key]
             stats.skip_count += 1
             stats.last_skip_time = time.time()
             skip_count = stats.skip_count
-            
+
             # 分级告警
             self._trigger_alert(stats, timeout, error_type)
-            
+
             return skip_count
-    
+
     def _trigger_alert(
         self,
         stats: QueueSkipStats,
@@ -8227,14 +8227,14 @@ class QueuePressureMonitor:
         error_type: str
     ):
         """触发分级告警
-        
+
         Args:
             stats: 统计数据
             timeout: 超时时间
             error_type: 异常类型
         """
         skip_count = stats.skip_count
-        
+
         # 前3次：每次都记录WARNING
         if skip_count <= self.WARNING_THRESHOLD_1:
             self._logger.warning(
@@ -8243,7 +8243,7 @@ class QueuePressureMonitor:
                 f"累计跳过={skip_count}次, 超时={timeout}s"
             )
             stats.last_warning = skip_count
-        
+
         # 第10次起：每10次记录一次WARNING
         elif skip_count >= self.WARNING_THRESHOLD_10 and skip_count % 10 == 1:
             self._logger.warning(
@@ -8252,7 +8252,7 @@ class QueuePressureMonitor:
                 f"累计跳过={skip_count}次, 超时={timeout}s"
             )
             stats.last_warning = skip_count
-        
+
         # 第100次：记录ERROR级别严重告警
         if skip_count == self.ERROR_THRESHOLD_100:
             self._alert_logger.error(
@@ -8260,7 +8260,7 @@ class QueuePressureMonitor:
                 f"队列={stats.queue_name}, Worker={stats.worker_id}, "
                 f"累计跳过={skip_count}次，消费者可能过慢！"
             )
-        
+
         # 第500次起：每500次记录一次ERROR
         elif skip_count >= self.ERROR_THRESHOLD_500 and skip_count % 500 == 0:
             self._alert_logger.error(
@@ -8268,37 +8268,37 @@ class QueuePressureMonitor:
                 f"队列={stats.queue_name}, Worker={stats.worker_id}, "
                 f"累计跳过={skip_count}次，消费者可能过慢！"
             )
-    
+
     def _make_stats_key(self, queue_name: str, worker_id: Optional[int]) -> str:
         """生成统计key"""
         if worker_id is not None:
             return f"{queue_name}_{worker_id}"
         return queue_name
-    
+
     def get_stats(self, queue_name: str, worker_id: Optional[int] = None) -> Optional[QueueSkipStats]:
         """获取指定队列的统计数据"""
         stats_key = self._make_stats_key(queue_name, worker_id)
         with self._lock:
             return self._stats.get(stats_key)
-    
+
     def get_all_stats(self) -> Dict[str, QueueSkipStats]:
         """获取所有统计数据（用于监控）"""
         with self._lock:
             return dict(self._stats)
-    
+
     def reset(self):
         """重置队列跳过统计"""
         with self._lock:
             self._stats.clear()
         self._logger.info("队列跳过统计已重置")
-    
+
     def log_summary(self):
         """输出统计摘要（用于诊断）"""
         with self._lock:
             if not self._stats:
                 self._logger.info("无队列跳过统计")
                 return
-            
+
             self._logger.info("===== 队列跳过统计 =====")
             for stats_key, stats in self._stats.items():
                 self._logger.info(
@@ -8325,28 +8325,28 @@ def safe_put_queue(
     worker_id: Optional[int] = None,
 ) -> bool:
     """安全入队，支持超时阻塞和跳过策略（背压控制）
-    
+
     Args:
         q: 队列对象
         item: 要入队的数据
         timeout: 超时时间（秒）
         queue_name: 队列名称（用于日志）
         worker_id: Worker ID（用于统计）
-    
+
     Returns:
         bool: True=入队成功, False=入队失败（队列满）
     """
     monitor = get_queue_pressure_monitor()
-    
+
     try:
         # 尝试入队（阻塞等待，最多timeout秒）
         q.put(item, timeout=timeout)
         return True
-        
+
     except Exception as e:
         # 队列满或其他异常
         error_type = type(e).__name__
-        
+
         # 记录跳过事件（自动触发分级告警）
         skip_count = monitor.record_skip(
             queue_name=queue_name,
@@ -8354,7 +8354,7 @@ def safe_put_queue(
             timeout=timeout,
             error_type=error_type
         )
-        
+
         return False
 ```
 
@@ -8482,7 +8482,7 @@ logger.info("队列跳过统计已重置")
 ```python
 def _get_queue_skip_stats() -> Dict[str, Dict[str, int]]:
     """获取队列跳过统计（用于监控）
-    
+
     Returns:
         统计字典的副本
     """
@@ -8513,14 +8513,14 @@ def _safe_put_queue(
     worker_id: Optional[int] = None,
 ) -> bool:
     """安全入队，支持超时阻塞和跳过策略（背压控制）
-    
+
     Args:
         q: 队列对象
         item: 要入队的数据
         timeout: 超时时间（秒）
         queue_name: 队列名称（用于日志）
         worker_id: Worker ID（用于统计）
-    
+
     Returns:
         bool: True=入队成功, False=入队失败（队列满）
     """
@@ -8555,36 +8555,36 @@ def _safe_put_queue(
 ) -> bool:
     """安全入队，支持超时阻塞和跳过策略（背压控制）"""
     import logging
-    
+
     logger = logging.getLogger("backend.data_module.download")
     logger_alert = logging.getLogger("backend.data_module.alert")
-    
+
     try:
         # 尝试入队（阻塞等待，最多timeout秒）
         q.put(item, timeout=timeout)
         return True
-        
+
     except Exception as e:
         # 队列满或其他异常
         error_type = type(e).__name__
-        
+
         # 统计跳过次数（线程安全）
         stats_key = (
-            f"{queue_name}_{worker_id}" 
-            if worker_id is not None 
+            f"{queue_name}_{worker_id}"
+            if worker_id is not None
             else queue_name
         )
-        
+
         with _queue_skip_lock:
             if stats_key not in _queue_skip_stats:
                 _queue_skip_stats[stats_key] = {
-                    "skip_count": 0, 
+                    "skip_count": 0,
                     "last_warning": 0
                 }
-            
+
             _queue_skip_stats[stats_key]["skip_count"] += 1
             skip_count = _queue_skip_stats[stats_key]["skip_count"]
-            
+
             # 分级告警
             if skip_count % 10 == 1 or skip_count <= 3:
                 logger.warning(
@@ -8593,7 +8593,7 @@ def _safe_put_queue(
                     f"累计跳过={skip_count}次, 超时={timeout}s"
                 )
                 _queue_skip_stats[stats_key]["last_warning"] = skip_count
-            
+
             # 严重告警
             if skip_count == 100 or skip_count % 500 == 0:
                 logger_alert.error(
@@ -8601,7 +8601,7 @@ def _safe_put_queue(
                     f"队列={queue_name}, Worker={worker_id}, "
                     f"累计跳过={skip_count}次，消费者可能过慢！"
                 )
-        
+
         return False
 ```
 
@@ -8615,10 +8615,10 @@ async def kline_download_worker(worker_id, task_queue, result_queue, ...):
     while True:
         # 获取任务
         symbol, interval = await get_task_from_queue(task_queue)
-        
+
         # 下载数据
         data = await download_kline(symbol, interval)
-        
+
         # 🆕 背压控制：使用_safe_put_queue代替原来的无限等待
         success = await asyncio.to_thread(
             _safe_put_queue,
@@ -8628,7 +8628,7 @@ async def kline_download_worker(worker_id, task_queue, result_queue, ...):
             queue_name="result_queue",
             worker_id=worker_id,
         )
-        
+
         if success:
             await asyncio.to_thread(progress_queue.put, (symbol, interval, "success"))
         else:
@@ -8644,10 +8644,10 @@ async def quality_scan_worker(worker_id, task_queue, result_queue, progress_queu
     while True:
         # 获取任务
         symbol = await get_task_from_queue(task_queue)
-        
+
         # 扫描质量
         quality_dict = await scan_symbol_quality(symbol)
-        
+
         # 上报进度（带背压控制）
         success = await asyncio.to_thread(
             _safe_put_queue,
@@ -8657,7 +8657,7 @@ async def quality_scan_worker(worker_id, task_queue, result_queue, progress_queu
             queue_name="progress_queue",
             worker_id=worker_id,
         )
-        
+
         if not success:
             logger.debug(f"进度上报失败，跳过: {symbol}")
 ```
@@ -8671,10 +8671,10 @@ async def quality_scan_worker(worker_id, task_queue, result_queue, progress_queu
 def monitor_queue_pressure():
     """监控队列压力"""
     stats = _get_queue_skip_stats()
-    
+
     for queue_key, queue_stats in stats.items():
         skip_count = queue_stats["skip_count"]
-        
+
         if skip_count > 100:
             logger_alert.warning(
                 f"⚠️ 队列 {queue_key} 积压严重: {skip_count}次跳过"
@@ -8692,7 +8692,7 @@ def monitor_queue_pressure():
 def log_queue_statistics():
     """输出队列统计信息（用于诊断）"""
     stats = _get_queue_skip_stats()
-    
+
     if stats:
         logger.info("===== 队列跳过统计 =====")
         for queue_key, queue_stats in stats.items():
@@ -8700,7 +8700,7 @@ def log_queue_statistics():
                 f"  {queue_key}: {queue_stats['skip_count']}次跳过"
             )
         logger.info("==========================")
-    
+
     # 重置统计
     _reset_queue_skip_stats()
 ```
@@ -8724,7 +8724,7 @@ def log_queue_statistics():
 
 ### 业务流程
 - 品种加载完整流程
-- 下载任务管理流程  
+- 下载任务管理流程
 - 数据验证执行流程
 
 > **技术架构参考**：详细的组件设计、异步操作、错误处理等技术架构请参考 [最佳实践文档](./data_module_vnpy新架构最佳实践cursor版.md)

@@ -356,7 +356,7 @@ class ThresholdConfigLoader:
     @staticmethod
     async def load_config_async(config_file: Path) -> Dict[str, Any]:
         """异步加载配置（使用native_iocp）"""
-        from backend.infrastructure.native_iocp import compat_aopen
+        from backend.infrastructure.native.native_iocp import compat_aopen
 
         try:
             async with await compat_aopen(config_file, 'r', encoding='utf-8') as f:

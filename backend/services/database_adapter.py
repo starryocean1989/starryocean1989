@@ -20,6 +20,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
+# 创建logger
+logger = logging.getLogger(__name__)
+
+# 直接使用native序列化优化
+try:
+    from backend.infrastructure.native.native_serialization import zero_copy_serialize
+except ImportError:
+    # 如果 native_serialization 不可用，使用标准 pickle
+    import pickle
+    def zero_copy_serialize(obj: Any) -> bytes:
+        return pickle.dumps(obj)
+
 if TYPE_CHECKING:
     # 类型检查时的导入，避免运行时依赖
     try:
@@ -52,6 +64,25 @@ logger = logging.getLogger(__name__)
 
 # 专用logger - 日志埋点v4.0
 logger_alert = logging.getLogger("backend.database.alert")
+
+
+def _serialize_json(obj: Any) -> str:
+    """
+    使用native序列化优化JSON序列化
+
+    Args:
+        obj: 要序列化的对象
+
+    Returns:
+        JSON字符串
+    """
+    # 对于JSON兼容的数据，转换为JSON字符串
+    if isinstance(obj, (dict, list, str, int, float, bool)) or obj is None:
+        return json.dumps(obj, ensure_ascii=False)
+    else:
+        # 对于复杂对象，使用native序列化的结果
+        serialized_bytes = zero_copy_serialize(obj)
+        return serialized_bytes.decode("latin1")  # pickle使用latin1编码
 
 
 # =============================================================================
@@ -632,7 +663,11 @@ class DatabaseManager:
         elapsed = time.time() - start_time
         if elapsed > 1.0:  # 超过1秒的慢查询
             logger_alert.warning(
-                "慢查询检测: 耗时=%.2fs, 结果数=%d, SQL=%s", elapsed, len(result), query[:200], extra={"log_type": "ALERT"}
+                "慢查询检测: 耗时=%.2fs, 结果数=%d, SQL=%s",
+                elapsed,
+                len(result),
+                query[:200],
+                extra={"log_type": "ALERT"},
             )
 
         return result
@@ -666,7 +701,11 @@ class DatabaseManager:
         elapsed = time.time() - start_time
         if elapsed > 1.0:  # 超过1秒的慢查询
             logger_alert.warning(
-                "慢更新检测: 耗时=%.2fs, 影响行数=%d, SQL=%s", elapsed, rowcount, query[:200], extra={"log_type": "ALERT"}
+                "慢更新检测: 耗时=%.2fs, 影响行数=%d, SQL=%s",
+                elapsed,
+                rowcount,
+                query[:200],
+                extra={"log_type": "ALERT"},
             )
 
         return rowcount
@@ -687,6 +726,72 @@ class DatabaseManager:
             cursor.executemany(query, params_list)
             conn.commit()
             return cursor.rowcount
+
+    # ==================== 日志批量/单条写入（供LoggingHub调用） ====================
+    def insert_log(self, record: Dict[str, Any]) -> bool:
+        """插入单条日志（匹配system_logs表: timestamp, level, module, message, extra）."""
+        # DatabaseManager使用自身连接池，无需初始化检查
+        try:
+            ts = record.get("timestamp") or datetime.now().isoformat()
+            level = record.get("level") or "INFO"
+            module = record.get("module") or (record.get("logger_name") or "")
+            message = record.get("message") or ""
+            extra_json = _serialize_json(record)
+            self.execute_update(
+                """
+                INSERT INTO system_logs (timestamp, level, module, message, extra)
+                VALUES (?, ?, ?, ?, ?)
+            """,
+                (ts, level, module, message, extra_json),
+            )
+            return True
+        except Exception as e:
+            logger.error("插入单条日志失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            return False
+
+    def batch_insert_logs(self, records: List[Dict[str, Any]]) -> int:
+        """批量插入日志.
+
+        将每条记录映射为 (timestamp, level, module, message, extra_json)
+        使用 execute_many 提升插入性能。
+        """
+        # DatabaseManager使用自身连接池，无需初始化检查
+        if not records:
+            return 0
+        try:
+            params: List[Tuple] = []
+            for rec in records:
+                ts = rec.get("timestamp") or datetime.now().isoformat()
+                level = rec.get("level") or "INFO"
+                module = rec.get("module") or (rec.get("logger_name") or "")
+                message = rec.get("message") or ""
+                extra_json = _serialize_json(rec)
+                params.append((ts, level, module, message, extra_json))
+
+            affected = self.execute_many(
+                """
+                INSERT INTO system_logs (timestamp, level, module, message, extra)
+                VALUES (?, ?, ?, ?, ?)
+            """,
+                params,
+            )
+            return affected
+        except Exception as e:
+            logger.error("批量插入日志失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            return 0
+
+    def batch_insert_logs_serialized(self, payload: bytes) -> int:
+        """接收序列化的批量日志payload（pickle），解包后批量插入."""
+        try:
+            import pickle
+
+            records = pickle.loads(payload)
+            if not isinstance(records, list):
+                return 0
+            return self.batch_insert_logs(records)
+        except Exception as e:
+            logger.error("反序列化批量日志失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            return 0
 
     # ========== 下载历史管理 ==========
 
@@ -980,10 +1085,15 @@ class SQLiteManager:
 
         except ImportError:
             logger.warning("⚠️ vnpy_sqlite未安装，SQLite功能不可用", extra={"log_type": "SYSTEM"})
-            logger.warning("   请安装: pip install git+https://github.com/vnpy/vnpy_sqlite.git", extra={"log_type": "SYSTEM"})
+            logger.warning(
+                "   请安装: pip install git+https://github.com/vnpy/vnpy_sqlite.git",
+                extra={"log_type": "SYSTEM"},
+            )
             return False
         except Exception as e:
-            logger.error("❌ SQLite数据库初始化失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            logger.error(
+                "❌ SQLite数据库初始化失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+            )
             return False
 
     def _create_tables(self):
@@ -1198,6 +1308,82 @@ class SQLiteManager:
             logger.error("获取模块配置失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
             return {}
 
+    # ==================== 日志批量/单条写入（供LoggingHub调用） ====================
+    def insert_log(self, record: Dict[str, Any]) -> bool:
+        """插入单条日志（匹配SQLiteManager的system_logs: level, module, message, details）。"""
+        if not self._initialized or not self.database:
+            return False
+        try:
+            level = record.get("level") or "INFO"
+            module = record.get("module") or (record.get("logger_name") or "")
+            message = record.get("message") or ""
+            details_json = _serialize_json(record)
+            self.database.execute(
+                """
+                INSERT INTO system_logs (level, module, message, details)
+                VALUES (?, ?, ?, ?)
+            """,
+                (level, module, message, details_json),
+            )
+            return True
+        except Exception as e:
+            logger.error(
+                "插入单条日志失败（SQLiteManager）：%s",
+                e,
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
+            )
+            return False
+
+    def batch_insert_logs(self, records: List[Dict[str, Any]]) -> int:
+        """批量插入日志（SQLiteManager）。驱动不提供executemany，这里逐条执行。"""
+        if not self._initialized or not self.database:
+            return 0
+        if not records:
+            return 0
+        try:
+            count = 0
+            for rec in records:
+                level = rec.get("level") or "INFO"
+                module = rec.get("module") or (rec.get("logger_name") or "")
+                message = rec.get("message") or ""
+                details_json = _serialize_json(rec)
+                self.database.execute(
+                    """
+                    INSERT INTO system_logs (level, module, message, details)
+                    VALUES (?, ?, ?, ?)
+                """,
+                    (level, module, message, details_json),
+                )
+                count += 1
+            return count
+        except Exception as e:
+            logger.error(
+                "批量插入日志失败（SQLiteManager）：%s",
+                e,
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
+            )
+            return 0
+
+    def batch_insert_logs_serialized(self, payload: bytes) -> int:
+        """接收序列化的批量日志payload（pickle），解包后批量插入（SQLiteManager）。"""
+        try:
+            import pickle
+
+            records = pickle.loads(payload)
+            if not isinstance(records, list):
+                return 0
+            return self.batch_insert_logs(records)
+        except Exception as e:
+            logger.error(
+                "反序列化批量日志失败（SQLiteManager）：%s",
+                e,
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
+            )
+            return 0
+
     # ========== 交易记录管理 ==========
 
     def save_trade(self, trade_data: Dict[str, Any]) -> bool:
@@ -1338,7 +1524,7 @@ class SQLiteManager:
                     result_data.get("annual_return", 0.0),
                     result_data.get("max_drawdown", 0.0),
                     result_data.get("sharpe_ratio", 0.0),
-                    json.dumps(result_data.get("details", {})),
+                    _serialize_json(result_data.get("details", {})),
                 ),
             )
 
@@ -1440,7 +1626,9 @@ class SQLiteManager:
                 self.database.close()
                 logger.info("SQLite数据库连接已关闭")
             except Exception as e:
-                logger.error("关闭数据库连接失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+                logger.error(
+                    "关闭数据库连接失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+                )
 
         self._initialized = False
 

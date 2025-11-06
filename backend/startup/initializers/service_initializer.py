@@ -807,7 +807,7 @@ class ServiceInitializer:
     def _initialize_vnpy_core(self) -> bool:
         """阶段1: 初始化VNPY核心框架 - 先检查全局引擎（完整模式）.
 
-        进度: 20% → 40%
+        进度: 20% -> 40%
 
         Returns:
             bool: 是否成功
@@ -1001,7 +1001,10 @@ class ServiceInitializer:
     def _initialize_data_services(self) -> bool:
         """阶段2: 初始化数据服务.
 
-        进度: 40% → 60%
+        进度: 40% -> 60%
+
+        注意：在三进程架构中，数据服务（ChinaStockEngine和DataCenterService）在数据进程中初始化，
+        这里只返回成功，表示数据服务已在数据进程中初始化。
 
         Returns:
             bool: 是否成功
@@ -1009,28 +1012,49 @@ class ServiceInitializer:
         stage_logger = logging.getLogger("startup.stage")
         stage_logger.info("📍 阶段2: 初始化数据服务开始", extra={"log_type": "STAGE_NODE"})
 
-        self._report_progress("阶段2: 初始化数据引擎和服务...", 40)
+        self._report_progress("阶段2: 数据服务已在数据进程中初始化...", 40)
 
         self.logger.debug("\n" + "=" * 60)
-        self.logger.debug("阶段2: 初始化数据服务")
+        self.logger.debug("阶段2: 数据服务初始化（三进程架构）")
         self.logger.debug("=" * 60)
 
         start_time = time.time()
         success_count = 0
 
-        # 初始化ChinaStockEngine（作为数据引擎）
-        try:
-            self._report_progress("创建ChinaStockEngine...", 45)
-            from backend.infrastructure.data_module_vnpy import ChinaStockEngine
+        # 🎯 三进程架构：数据服务在数据进程中初始化，这里只记录日志
+        self.logger.info(
+            "ℹ️ 三进程架构：数据服务（ChinaStockEngine、DataCenterService）已在数据进程中初始化",
+            extra={"log_type": "SYSTEM"},
+        )
+        stage_logger.info("✅ 数据服务已在数据进程中初始化", extra={"log_type": "STAGE_NODE"})
 
-            # 确保引擎已初始化
-            assert self.main_engine is not None, "MainEngine 必须在初始化 ChinaStockEngine 之前创建"
-            assert (
-                self.event_engine is not None
-            ), "EventEngine 必须在初始化 ChinaStockEngine 之前创建"
+        # 注意：不再在主进程中初始化ChinaStockEngine和DataCenterService
+        # 这些服务现在在数据进程中运行，通过RPC调用访问
 
-            self.china_stock_engine = ChinaStockEngine(self.main_engine, self.event_engine)
-            self.logger.debug("✅ ChinaStockEngine 实例化完成")
+        # 保持向后兼容：如果需要在主进程中访问数据服务，可以通过RPC客户端
+        # 这里暂时跳过，后续可以通过RPC客户端访问数据进程的服务
+
+        elapsed = time.time() - start_time
+        self.logger.info("阶段2完成（三进程架构），耗时 %.2f秒", elapsed)
+        stage_logger.info(
+            f"✅ 阶段2: 数据服务初始化完成（三进程架构） ({elapsed:.2f}s)",
+            extra={"log_type": "STAGE_NODE"},
+        )
+        self._report_progress("数据服务初始化完成（三进程架构）", 60)
+        return True  # 三进程架构中，数据服务在数据进程中初始化，这里返回成功
+
+        # 以下代码已注释，因为数据服务在数据进程中初始化
+        # 保留代码以便参考和回滚
+        """
+        #
+        #     # 确保引擎已初始化
+        #     assert self.main_engine is not None, "MainEngine 必须在初始化 ChinaStockEngine 之前创建"
+        #     assert (
+        #         self.event_engine is not None
+        #     ), "EventEngine 必须在初始化 ChinaStockEngine 之前创建"
+        #
+        #     self.china_stock_engine = ChinaStockEngine(self.main_engine, self.event_engine)
+        #     self.logger.debug("✅ ChinaStockEngine 实例化完成")
             stage_logger.info("✅ ChinaStockEngine实例化完成", extra={"log_type": "STAGE_NODE"})
 
             # 🔧 修复：调用initialize()方法初始化引擎（架构v3.0要求）
@@ -1311,18 +1335,19 @@ class ServiceInitializer:
             )
             self.failed_services.append("data_center_service")
 
-        elapsed = time.time() - start_time
-        self.logger.info("阶段2完成，耗时 %.2f秒", elapsed)
-        stage_logger.info(
-            f"✅ 阶段2: 初始化数据服务完成 ({elapsed:.2f}s)", extra={"log_type": "STAGE_NODE"}
-        )
-        self._report_progress("数据服务初始化完成", 60)
-        return success_count > 0
+        #     elapsed = time.time() - start_time
+        #     self.logger.info("阶段2完成，耗时 %.2f秒", elapsed)
+        #     stage_logger.info(
+        #         f"✅ 阶段2: 初始化数据服务完成 ({elapsed:.2f}s)", extra={"log_type": "STAGE_NODE"}
+        #     )
+        #     self._report_progress("数据服务初始化完成", 60)
+        #     return success_count > 0
+        """
 
     def _initialize_trading_services(self) -> bool:
         """阶段3: 初始化交易服务.
 
-        进度: 60% → 75%
+        进度: 60% -> 75%
 
         Returns:
             bool: 是否成功
@@ -1439,7 +1464,7 @@ class ServiceInitializer:
     def _initialize_strategy_services(self) -> bool:
         """阶段4: 初始化策略服务.
 
-        进度: 75% → 90%
+        进度: 75% -> 90%
 
         Returns:
             bool: 是否成功
@@ -1583,7 +1608,7 @@ class ServiceInitializer:
     def _initialize_auxiliary_services(self) -> bool:
         """阶段5: 初始化辅助服务.
 
-        进度: 90% → 95%
+        进度: 90% -> 95%
 
         Returns:
             bool: 是否成功

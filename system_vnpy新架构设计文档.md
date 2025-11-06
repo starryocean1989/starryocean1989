@@ -674,7 +674,7 @@ class SystemManagerEngine:
 
 **实现方式**：
 ```python
-from backend.infrastructure.native_iocp import compat_aopen
+from backend.infrastructure.native.native_iocp import compat_aopen
 
 async def load_config_async(config_file: Path) -> Dict:
     """异步加载配置文件"""
@@ -722,7 +722,7 @@ logger.info("监控数据已采集")
 **降级方案**：
 ```python
 try:
-    from backend.infrastructure.native_iocp import compat_aopen, IOCP_AVAILABLE
+    from backend.infrastructure.native.native_iocp import compat_aopen, IOCP_AVAILABLE
     if IOCP_AVAILABLE:
         # 使用native_iocp
         async with await compat_aopen(file_path, 'r') as f:
@@ -1189,7 +1189,7 @@ import psutil
 
 # 项目内导入
 from backend.core.base import MainEngine
-from backend.infrastructure.native_iocp import compat_aopen
+from backend.infrastructure.native.native_iocp import compat_aopen
 
 # 相对导入
 from .monitor_toolkit import SmartMonitor

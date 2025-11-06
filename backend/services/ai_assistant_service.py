@@ -10,11 +10,22 @@ AI助手服务.
 """
 
 import logging
-from typing import Any, Dict, List, Optional
+import asyncio
+from typing import Any, Dict, List, Optional, Callable, Union
+from pathlib import Path
 from datetime import datetime
 
 from backend.core.service_base import BaseService
 from backend.core.config import get_settings
+
+# 必需依赖：native_iocp（异步文件I/O）
+try:
+    from backend.infrastructure.native.native_iocp.compat import aopen as compat_aopen  # type: ignore
+
+    IOCP_AVAILABLE = True
+except ImportError:
+    compat_aopen = None  # type: ignore
+    IOCP_AVAILABLE = False
 
 # 专用logger - 日志埋点v4.0
 logger_alert = logging.getLogger("backend.ai_assistant.alert")
@@ -154,7 +165,7 @@ class AIAssistantService(BaseService):
         import logging
         start_time = time.time()
         stage_logger = logging.getLogger("task.ai_chat.stage")
-        
+
         try:
             if not HAS_REQUESTS:
                 return {
@@ -177,7 +188,7 @@ class AIAssistantService(BaseService):
             # 阶段节点日志（输出到Terminal，仅对关键操作记录）
             # 注意：chat方法可能被频繁调用，只记录首次或重要调用
             message_preview = user_message[:50] + "..." if len(user_message) > 50 else user_message
-            
+
             # 构建完整的用户消息（包含上下文）
             full_message = user_message
             if context:
@@ -633,14 +644,14 @@ class AIAssistantService(BaseService):
         import logging
         start_time = time.time()
         stage_logger = logging.getLogger("task.strategy_generation.stage")
-        
+
         try:
             # 阶段节点日志（输出到Terminal）
             stage_logger.info(
                 f"📍 策略生成开始: type={strategy_type}, description={strategy_description[:50]}...",
                 extra={"log_type": "STAGE_NODE", "scenario": "strategy_generation"},
             )
-            
+
             # 构建提示词
             prompt = f"""请根据以下描述生成一个{strategy_type}类型的VnPy策略代码：
 
@@ -659,7 +670,7 @@ class AIAssistantService(BaseService):
             response = self.chat(prompt)
 
             elapsed_ms = (time.time() - start_time) * 1000
-            
+
             if response["success"] and response["message_type"] in ["code", "mixed"]:
                 code_length = len(response.get("code", ""))
                 # 阶段节点日志（输出到Terminal）
@@ -938,7 +949,7 @@ class AIAssistantService(BaseService):
             return f"错误：工具执行失败 - {str(e)}"
 
     def _tool_read_file(self, file_path: str) -> str:
-        """工具：读取文件内容.
+        """工具：读取文件内容（使用native_iocp异步I/O优化）.
 
         Args:
             file_path: 文件路径
@@ -972,9 +983,35 @@ class AIAssistantService(BaseService):
             if file_size > 1024 * 1024:
                 return f"错误：文件过大（{file_size / 1024:.1f}KB），最大支持 1MB"
 
-            # 读取文件
-            with open(target, "r", encoding="utf-8") as f:
-                content = f.read()
+            # 使用native_iocp异步读取
+            if compat_aopen is None:
+                return "错误：native_iocp不可用，无法读取文件"
+
+            _aopen = compat_aopen  # 类型检查器需要这个中间变量
+            assert _aopen is not None  # 类型断言
+
+            try:
+                # 尝试使用现有事件循环
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # 如果事件循环正在运行，无法使用异步I/O
+                    return "错误：事件循环正在运行，无法执行异步文件读取"
+                else:
+                    # 使用异步I/O（二进制模式，然后解码）
+                    async def _async_read():
+                        async with await _aopen(target, "rb") as f:  # type: ignore
+                            data = await f.read()
+                            return data.decode("utf-8")
+
+                    content = loop.run_until_complete(_async_read())
+            except RuntimeError:
+                # 没有事件循环，使用asyncio.run()
+                async def _async_read():
+                    async with await _aopen(target, "rb") as f:  # type: ignore
+                        data = await f.read()
+                        return data.decode("utf-8")
+
+                content = asyncio.run(_async_read())
 
             self.logger.info("成功读取文件：%s（%d 字节）", file_path, len(content))
             return f"文件内容（{file_path}）：\n\n{content}"
@@ -988,7 +1025,7 @@ class AIAssistantService(BaseService):
             return f"错误：读取文件失败 - {str(e)}"
 
     def _tool_write_file(self, file_path: str, content: str) -> str:
-        """工具：写入文件内容（仅限策略目录）.
+        """工具：写入文件内容（仅限策略目录，使用native_iocp异步I/O优化）.
 
         Args:
             file_path: 文件路径
@@ -1024,9 +1061,35 @@ class AIAssistantService(BaseService):
             # 创建目录（如果不存在）
             target.parent.mkdir(parents=True, exist_ok=True)
 
-            # 写入文件
-            with open(target, "w", encoding="utf-8") as f:
-                f.write(content)
+            # 使用native_iocp异步写入
+            if compat_aopen is None:
+                return "错误：native_iocp不可用，无法写入文件"
+
+            _aopen = compat_aopen  # 类型检查器需要这个中间变量
+            assert _aopen is not None  # 类型断言
+
+            try:
+                # 尝试使用现有事件循环
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # 如果事件循环正在运行，无法使用异步I/O
+                    return "错误：事件循环正在运行，无法执行异步文件写入"
+                else:
+                    # 使用异步I/O（编码为bytes，然后写入）
+                    async def _async_write():
+                        data = content.encode("utf-8")
+                        async with await _aopen(target, "wb") as f:  # type: ignore
+                            await f.write(data)
+
+                    loop.run_until_complete(_async_write())
+            except RuntimeError:
+                # 没有事件循环，使用asyncio.run()
+                async def _async_write():
+                    data = content.encode("utf-8")
+                    async with await _aopen(target, "wb") as f:  # type: ignore
+                        await f.write(data)
+
+                asyncio.run(_async_write())
 
             self.logger.info("成功写入文件：%s（%d 字节）", file_path, len(content))
             return f"✅ 成功写入文件：{file_path} ({len(content)} 字节)"

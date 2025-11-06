@@ -18,9 +18,31 @@ from enum import Enum
 from backend.core.service_base import BaseService, LoggerMixin
 from backend.services.database_adapter import get_db_manager
 
+# 直接使用native序列化优化
+from backend.infrastructure.native.native_serialization import zero_copy_serialize
+
 # 专用logger - 日志埋点v4.0
 logger_order = logging.getLogger("backend.trading.order")
 logger_alert = logging.getLogger("backend.trading.alert")
+
+
+def _serialize_json(obj: Any) -> str:
+    """
+    使用native序列化优化JSON序列化
+
+    Args:
+        obj: 要序列化的对象
+
+    Returns:
+        JSON字符串
+    """
+    # 对于JSON兼容的数据，直接使用json.dumps
+    if isinstance(obj, (dict, list, str, int, float, bool)) or obj is None:
+        return json.dumps(obj, ensure_ascii=False)
+    else:
+        # 对于复杂对象，使用native序列化的结果
+        serialized_bytes = zero_copy_serialize(obj)
+        return serialized_bytes.decode("latin1")  # pickle使用latin1编码
 
 
 class GatewayType(Enum):
@@ -331,7 +353,9 @@ class TradingGatewayService(BaseService, LoggerMixin):
                 self.gateway_classes[GatewayType.PAPER_ACCOUNT.value] = PaperAccountGatewayAdapter
                 self.logger.info("✅ PaperAccount网关类可用（内部适配器）")
             except Exception as e:
-                self.logger.warning("⚠️ PaperAccount网关类不可用：%s", e, extra={"log_type": "SYSTEM"})
+                self.logger.warning(
+                    "⚠️ PaperAccount网关类不可用：%s", e, extra={"log_type": "SYSTEM"}
+                )
 
             # CTP Mini
             try:
@@ -379,13 +403,17 @@ class TradingGatewayService(BaseService, LoggerMixin):
                 self.logger.warning("⚠️ TradeX网关类不可用：%s", e, extra={"log_type": "SYSTEM"})
 
         except Exception as e:
-            self.logger.error("初始化网关类失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                "初始化网关类失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+            )
 
     def _init_risk_manager(self):
         """初始化风险管理引擎."""
         try:
             if not self.main_engine:
-                self.logger.warning("MainEngine不可用，无法初始化风险管理", extra={"log_type": "SYSTEM"})
+                self.logger.warning(
+                    "MainEngine不可用，无法初始化风险管理", extra={"log_type": "SYSTEM"}
+                )
                 return
 
             # 尝试导入vnpy_riskmanager
@@ -407,7 +435,9 @@ class TradingGatewayService(BaseService, LoggerMixin):
                 self.logger.warning("⚠️ vnpy_riskmanager未安装", extra={"log_type": "SYSTEM"})
 
         except Exception as e:
-            self.logger.error("风险管理引擎初始化失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                "风险管理引擎初始化失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+            )
 
     def _set_default_risk_parameters(self):
         """设置默认风控参数."""
@@ -480,14 +510,16 @@ class TradingGatewayService(BaseService, LoggerMixin):
             self.logger.info("网关配置加载完成")
 
         except Exception as e:
-            self.logger.error("加载网关配置失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                "加载网关配置失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+            )
 
     def _save_gateway_configs(self):
         """保存网关配置到数据库（使用统一database）."""
         try:
             # 保存每个网关到database
             for name, info in self.gateway_instances.items():
-                config_json = json.dumps(info["config"], ensure_ascii=False)
+                config_json = _serialize_json(info["config"])
                 status = info.get("status", "disconnected")
 
                 # 使用INSERT OR REPLACE保存
@@ -503,7 +535,9 @@ class TradingGatewayService(BaseService, LoggerMixin):
             self.logger.info("网关配置已保存，共 %d 个网关", len(self.gateway_instances))
 
         except Exception as e:
-            self.logger.error("保存网关配置失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                "保存网关配置失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+            )
 
     # ==================== 网关管理 ====================
 
@@ -619,10 +653,10 @@ class TradingGatewayService(BaseService, LoggerMixin):
         """
         import time
         import logging
-        
+
         start_time = time.time()
         stage_logger = logging.getLogger("task.trading_gateway_connection.stage")
-        
+
         try:
             self._log_operation("连接网关", name=gateway_name)
 
@@ -666,17 +700,17 @@ class TradingGatewayService(BaseService, LoggerMixin):
             gateway_info["connected"] = True
 
             elapsed_ms = (time.time() - start_time) * 1000
-            
+
             # 阶段节点日志（输出到Terminal）
             stage_logger.info(
                 f"✅ 交易网关连接完成: 网关={gateway_name}, 类型={gateway_type}, 耗时={elapsed_ms:.0f}ms",
                 extra={"log_type": "STAGE_NODE", "scenario": "trading_gateway_connection"},
             )
-            
+
             self.logger.info(
                 "网关 '%s' 连接请求已发送",
                 gateway_name,
-                extra={"log_type": "SYSTEM", "scenario": "trading_gateway_connection"}
+                extra={"log_type": "SYSTEM", "scenario": "trading_gateway_connection"},
             )
 
             # ✨ 发送网关状态变化事件
@@ -690,13 +724,13 @@ class TradingGatewayService(BaseService, LoggerMixin):
 
         except Exception as e:
             elapsed_ms = (time.time() - start_time) * 1000
-            
+
             # 阶段节点日志（输出到Terminal）
             stage_logger.error(
                 f"❌ 交易网关连接失败: 网关={gateway_name}, 错误={str(e)}, 耗时={elapsed_ms:.0f}ms",
                 extra={"log_type": "STAGE_NODE", "scenario": "trading_gateway_connection"},
             )
-            
+
             self._log_error("连接网关", e, name=gateway_name)
             return {
                 "success": False,
@@ -841,7 +875,9 @@ class TradingGatewayService(BaseService, LoggerMixin):
             if result.get("success"):
                 return result.get("strategies", [])
             else:
-                self.logger.error("获取策略列表失败：%s", result.get("message"), extra={"log_type": "SYSTEM"})
+                self.logger.error(
+                    "获取策略列表失败：%s", result.get("message"), extra={"log_type": "SYSTEM"}
+                )
                 return []
 
         except Exception as e:
@@ -893,17 +929,17 @@ class TradingGatewayService(BaseService, LoggerMixin):
         """
         import time
         import logging
-        
+
         start_time = time.time()
         stage_logger = logging.getLogger("task.strategy_loading.stage")
-        
+
         try:
             # 阶段节点：策略加载开始
             stage_logger.info(
                 f"📍 策略加载开始: file={file_path}, strategy={strategy_name}",
                 extra={"log_type": "STAGE_NODE", "scenario": "strategy_loading"},
             )
-            
+
             self._log_operation(
                 "从文件加载策略", gateway=gateway_name, strategy=strategy_name, file=file_path
             )
@@ -943,7 +979,7 @@ class TradingGatewayService(BaseService, LoggerMixin):
                 f"✅ 策略文件解析成功: class={strategy_class}, engine={engine_type}",
                 extra={"log_type": "STAGE_NODE", "scenario": "strategy_loading"},
             )
-            
+
             # 调用原有的部署方法
             deploy_result = self.deploy_strategy(
                 gateway_name=gateway_name,
@@ -951,7 +987,7 @@ class TradingGatewayService(BaseService, LoggerMixin):
                 strategy_class=strategy_class,
                 strategy_params=strategy_params,
             )
-            
+
             elapsed_ms = (time.time() - start_time) * 1000
             if deploy_result.get("success"):
                 stage_logger.info(
@@ -963,7 +999,7 @@ class TradingGatewayService(BaseService, LoggerMixin):
                     f"❌ 策略加载失败: {deploy_result.get('message', '未知错误')}, 耗时={elapsed_ms:.0f}ms",
                     extra={"log_type": "STAGE_NODE", "scenario": "strategy_loading"},
                 )
-            
+
             return deploy_result
 
         except Exception as e:
@@ -998,17 +1034,17 @@ class TradingGatewayService(BaseService, LoggerMixin):
         """
         import time
         import logging
-        
+
         start_time = time.time()
         stage_logger = logging.getLogger("task.strategy_deployment.stage")
-        
+
         try:
             # 阶段节点：策略部署开始
             stage_logger.info(
                 f"📍 策略部署开始: strategy={strategy_name}, class={strategy_class}, gateway={gateway_name}",
                 extra={"log_type": "STAGE_NODE", "scenario": "strategy_deployment"},
             )
-            
+
             self._log_operation(
                 "部署策略", gateway=gateway_name, strategy=strategy_name, class_name=strategy_class
             )
@@ -1105,7 +1141,9 @@ class TradingGatewayService(BaseService, LoggerMixin):
                 deployed_info = deploy_result["info"]
 
             except Exception as e:
-                self.logger.error("添加策略失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+                self.logger.error(
+                    "添加策略失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+                )
                 return {
                     "success": False,
                     "message": f"添加策略失败: {str(e)}",
@@ -1119,8 +1157,8 @@ class TradingGatewayService(BaseService, LoggerMixin):
                 "engine_name": engine_name,
                 "deployed_info": deployed_info,  # 引擎特定的部署信息
                 "status": "stopped",
-                                  "deploy_time": datetime.now(),
-              }
+                "deploy_time": datetime.now(),
+            }
 
             elapsed_ms = (time.time() - start_time) * 1000
             # 阶段节点：策略部署成功
@@ -1214,17 +1252,17 @@ class TradingGatewayService(BaseService, LoggerMixin):
             # 初始化并启动策略
             import time
             import logging
-            
+
             strategy_start_time = time.time()
             stage_logger = logging.getLogger("task.strategy_execution.stage")
-            
+
             try:
                 # 阶段节点日志（输出到Terminal）
                 stage_logger.info(
                     f"📍 策略执行开始: 策略={strategy_name}, 网关={gateway_name}, 引擎={engine_name}",
                     extra={"log_type": "STAGE_NODE", "scenario": "strategy_execution"},
                 )
-                
+
                 # 切换到交易阶段 - 日志埋点v4.0
                 try:
                     from backend.infrastructure.system_vnpy.logging_context import (
@@ -1235,25 +1273,25 @@ class TradingGatewayService(BaseService, LoggerMixin):
                     ctx.set_stage("trading")
                     self.logger.info(
                         "📍 切换到交易阶段，启动策略实盘交易",
-                        extra={"log_type": "SYSTEM", "scenario": "strategy_execution"}
+                        extra={"log_type": "SYSTEM", "scenario": "strategy_execution"},
                     )
                 except ImportError:
                     self.logger.debug(
                         "logging_context模块不可用，跳过阶段切换",
-                        extra={"log_type": "SYSTEM", "scenario": "strategy_execution"}
+                        extra={"log_type": "SYSTEM", "scenario": "strategy_execution"},
                     )
 
                 # 先初始化策略
                 self.logger.info(
                     "正在初始化策略 '%s'... ",
                     strategy_name,
-                    extra={"log_type": "SYSTEM", "scenario": "strategy_execution"}
+                    extra={"log_type": "SYSTEM", "scenario": "strategy_execution"},
                 )
                 strategy_engine.init_strategy(strategy_name)
                 self.logger.info(
                     "✅ 策略 '%s' 初始化完成",
                     strategy_name,
-                    extra={"log_type": "SYSTEM", "scenario": "strategy_execution"}
+                    extra={"log_type": "SYSTEM", "scenario": "strategy_execution"},
                 )
 
                 # 等待初始化完成（init_strategy可能是异步的）
@@ -1263,7 +1301,7 @@ class TradingGatewayService(BaseService, LoggerMixin):
                 self.logger.info(
                     "正在启动策略 '%s'... ",
                     strategy_name,
-                    extra={"log_type": "SYSTEM", "scenario": "strategy_execution"}
+                    extra={"log_type": "SYSTEM", "scenario": "strategy_execution"},
                 )
                 strategy_engine.start_strategy(strategy_name)
                 logger_order.info(
@@ -1271,37 +1309,37 @@ class TradingGatewayService(BaseService, LoggerMixin):
                     strategy_name,
                     gateway_name,
                     engine_name,
-                    extra={"log_type": "SYSTEM", "scenario": "strategy_execution"}
+                    extra={"log_type": "SYSTEM", "scenario": "strategy_execution"},
                 )
-                
+
                 elapsed_ms = (time.time() - strategy_start_time) * 1000
-                
+
                 # 阶段节点日志（输出到Terminal）
                 stage_logger.info(
                     f"✅ 策略执行完成: 策略={strategy_name}, 网关={gateway_name}, 耗时={elapsed_ms:.0f}ms",
                     extra={"log_type": "STAGE_NODE", "scenario": "strategy_execution"},
                 )
-                
+
                 self.logger.info(
                     "✅ 策略 '%s' 已启动",
                     strategy_name,
-                    extra={"log_type": "SYSTEM", "scenario": "strategy_execution"}
+                    extra={"log_type": "SYSTEM", "scenario": "strategy_execution"},
                 )
 
             except Exception as e:
                 elapsed_ms = (time.time() - strategy_start_time) * 1000
-                
+
                 # 阶段节点日志（输出到Terminal）
                 stage_logger.error(
                     f"❌ 策略执行失败: 策略={strategy_name}, 网关={gateway_name}, 错误={str(e)}, 耗时={elapsed_ms:.0f}ms",
                     extra={"log_type": "STAGE_NODE", "scenario": "strategy_execution"},
                 )
-                
+
                 self.logger.error(
                     "启动策略失败：%s",
                     e,
                     exc_info=True,
-                    extra={"log_type": "ALERT", "scenario": "strategy_execution"}
+                    extra={"log_type": "ALERT", "scenario": "strategy_execution"},
                 )
                 return {
                     "success": False,
@@ -1389,7 +1427,9 @@ class TradingGatewayService(BaseService, LoggerMixin):
                 self.logger.info("策略 '%s' 已停止", strategy_name)
 
             except Exception as e:
-                self.logger.error("停止策略失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+                self.logger.error(
+                    "停止策略失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+                )
                 return {
                     "success": False,
                     "message": f"停止策略失败: {str(e)}",
@@ -1743,7 +1783,9 @@ class TradingGatewayService(BaseService, LoggerMixin):
                 }
 
         except Exception as e:
-            self.logger.error("部署策略到引擎失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                "部署策略到引擎失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+            )
             return {
                 "success": False,
                 "message": f"部署失败: {str(e)}",
@@ -1794,7 +1836,9 @@ class TradingGatewayService(BaseService, LoggerMixin):
             gateway_info = self.gateway_instances[gateway_name]
             if not gateway_info.get("connected", False):
                 issues.append("网关未连接")
-                self.logger.warning("⚠️ 网关 '%s' 未连接", gateway_name, extra={"log_type": "SYSTEM"})
+                self.logger.warning(
+                    "⚠️ 网关 '%s' 未连接", gateway_name, extra={"log_type": "SYSTEM"}
+                )
 
         # 2. 检查合约数据
         if self.main_engine:
@@ -1873,7 +1917,12 @@ class TradingGatewayService(BaseService, LoggerMixin):
         is_installed = self._check_package_installed(module_name)
 
         if not is_installed:
-            self.logger.error("❌ %s引擎不可用：扩展包 %s 未安装", display_name, module_name, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                "❌ %s引擎不可用：扩展包 %s 未安装",
+                display_name,
+                module_name,
+                extra={"log_type": "SYSTEM"},
+            )
             return False
 
         try:
@@ -1891,13 +1940,23 @@ class TradingGatewayService(BaseService, LoggerMixin):
             return True
 
         except ImportError as e:
-            self.logger.error("❌ 策略包 %s 导入失败：%s", module_name, e, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                "❌ 策略包 %s 导入失败：%s", module_name, e, extra={"log_type": "SYSTEM"}
+            )
             return False
         except AttributeError as e:
-            self.logger.error("❌ 策略应用类 %s 不存在：%s", class_name, e, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                "❌ 策略应用类 %s 不存在：%s", class_name, e, extra={"log_type": "SYSTEM"}
+            )
             return False
         except Exception as e:
-            self.logger.error("❌ 加载策略应用 %s 失败：%s", engine_name, e, exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                "❌ 加载策略应用 %s 失败：%s",
+                engine_name,
+                e,
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
+            )
             return False
 
     def get_available_engine_types(self) -> List[Dict[str, Any]]:
@@ -2085,7 +2144,10 @@ class TradingGatewayService(BaseService, LoggerMixin):
                     flow_count = params.get("flow_count", 0)
                     if flow_limit > 0 and flow_count >= flow_limit * 0.8:
                         logger_alert.warning(
-                            "风控告警: 交易流控接近上限, 当前=%d, 限额=%d", flow_count, flow_limit, extra={"log_type": "ALERT"}
+                            "风控告警: 交易流控接近上限, 当前=%d, 限额=%d",
+                            flow_count,
+                            flow_limit,
+                            extra={"log_type": "ALERT"},
                         )
 
                 # 检查单日亏损是否接近上限
@@ -2094,7 +2156,10 @@ class TradingGatewayService(BaseService, LoggerMixin):
                     trade_count = params.get("trade_count", 0)
                     if trade_limit > 0 and trade_count >= trade_limit * 0.9:
                         logger_alert.error(
-                            "风控告警: 交易次数接近上限, 当前=%d, 限额=%d", trade_count, trade_limit, extra={"log_type": "ALERT"}
+                            "风控告警: 交易次数接近上限, 当前=%d, 限额=%d",
+                            trade_count,
+                            trade_limit,
+                            extra={"log_type": "ALERT"},
                         )
 
             return {

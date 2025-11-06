@@ -21,7 +21,10 @@ from backend.infrastructure.system_vnpy.logging_system import (
     PersistentBufferHandler,
     setup_memory_logging,
     initialize_logging_hub_complete,
+    MultiProcessLogCollector,
+    get_logging_hub,
 )
+import multiprocessing
 
 
 class LoggingInitStage(StartupStage):
@@ -43,6 +46,7 @@ class LoggingInitStage(StartupStage):
         )
         self.memory_handler: Optional[MemoryHandler] = None
         self.persistent_buffer: Optional[PersistentBufferHandler] = None
+        self.log_collector: Optional[MultiProcessLogCollector] = None
 
     async def _execute(self, context: StartupContext) -> StageResult:
         """执行日志系统初始化逻辑
@@ -109,7 +113,36 @@ class LoggingInitStage(StartupStage):
                     elapsed_ms=(time.time() - start_time) * 1000,
                 )
 
-            # 3. 标记日志系统已初始化
+            # 3. 初始化MultiProcessLogCollector（用于跨进程日志收集）
+            logger.debug(
+                "[LOG-INIT] 开始初始化MultiProcessLogCollector",
+                extra={"log_type": "SYSTEM", "scenario": "application_startup"},
+            )
+            try:
+                log_collector = MultiProcessLogCollector(logging_hub)
+                log_collector.start()
+                self.log_collector = log_collector
+
+                # 将日志队列保存到context（供子进程使用）
+                context.log_queue = log_collector.get_queue()
+
+                logger.info(
+                    "[LOG-INIT] ✅ MultiProcessLogCollector已启动",
+                    extra={"log_type": "STAGE_NODE", "scenario": "application_startup"},
+                )
+                logger.debug(
+                    "[LOG-INIT] 日志队列已保存到context",
+                    extra={"log_type": "SYSTEM", "scenario": "application_startup"},
+                )
+            except Exception as e:
+                logger.warning(
+                    f"[LOG-INIT] ⚠️ MultiProcessLogCollector初始化失败: {e}，将使用降级方案",
+                    extra={"log_type": "SYSTEM", "scenario": "application_startup"},
+                )
+                # 降级处理：继续执行，但不支持跨进程日志收集
+                context.log_queue = None
+
+            # 4. 标记日志系统已初始化
             context.logging_hub_initialized = True
             logger.debug(
                 "[LOG-INIT] 日志系统已标记为已初始化",
@@ -127,7 +160,11 @@ class LoggingInitStage(StartupStage):
                 success=True,
                 message="日志系统初始化完成",
                 elapsed_ms=elapsed_ms,
-                data={"logging_hub": logging_hub, "memory_handler": memory_handler},
+                data={
+                    "logging_hub": logging_hub,
+                    "memory_handler": memory_handler,
+                    "log_collector": self.log_collector,
+                },
             )
 
         except Exception as e:

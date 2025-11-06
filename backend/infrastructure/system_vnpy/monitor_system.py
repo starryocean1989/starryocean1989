@@ -39,13 +39,28 @@ if __name__ == "__main__":
 
 import numpy as np
 
+
+def get_root() -> Path:
+    """获取项目根目录路径（统一方法，与工作目录解绑）
+
+    通过当前文件的路径向上查找项目根目录。
+    monitor_system.py 位于 backend/infrastructure/system_vnpy/
+    需要向上4级到达项目根目录。
+
+    Returns:
+        Path: 项目根目录的Path对象
+    """
+    current_file = Path(__file__).resolve()
+    root_path = current_file.parent.parent.parent.parent
+    return root_path
+
 # 尝试导入native_ipc
 try:
-    from backend.infrastructure.native_ipc import AsyncIPCPipe, IPC_AVAILABLE
+    from backend.infrastructure.native.native_ipc import AsyncIPCPipe, IPC_AVAILABLE
     from typing import TYPE_CHECKING
 
     if TYPE_CHECKING:
-        from backend.infrastructure.native_ipc import AsyncIPCPipe as _AsyncIPCPipe
+        from backend.infrastructure.native.native_ipc import AsyncIPCPipe as _AsyncIPCPipe
     NATIVE_IPC_AVAILABLE = IPC_AVAILABLE
 except ImportError:
     NATIVE_IPC_AVAILABLE = False
@@ -2295,7 +2310,7 @@ class MonitoringProcessV2:
                 try:
                     from pathlib import Path
 
-                    signal_file = Path("logs/monitor_ready.signal")
+                    signal_file = get_root() / "logs" / "monitor_ready.signal"
                     if signal_file.exists():
                         with open(signal_file, "r", encoding="utf-8") as f:
                             ready_signal = json.load(f)
@@ -2410,7 +2425,7 @@ class MonitoringProcessV2:
             # 这样即使管道创建失败，主进程也能知道监控进程已启动
             try:
                 from pathlib import Path
-                initial_signal_file = Path("logs/monitor_ready.signal")
+                initial_signal_file = get_root() / "logs" / "monitor_ready.signal"
                 initial_signal_file.parent.mkdir(parents=True, exist_ok=True)
                 initial_signal = {
                     "pid": os.getpid(),
@@ -2493,15 +2508,15 @@ class MonitoringProcessV2:
                     },
                 }
 
-                signal_file = Path("logs/monitor_ready.signal")
+                signal_file = get_root() / "logs" / "monitor_ready.signal"
                 logger.debug(
                     f"[IPC] 准备创建信号文件: {signal_file.absolute()}, PID={os.getpid()}",
                     extra={"log_type": "SYSTEM"}
                 )
-                
+
                 # 确保logs目录存在
                 signal_file.parent.mkdir(parents=True, exist_ok=True)
-                
+
                 with open(signal_file, "w", encoding="utf-8") as f:
                     json.dump(ready_signal, f, ensure_ascii=False, indent=2)
                     f.flush()
@@ -2562,7 +2577,7 @@ class MonitoringProcessV2:
 
             # 更新就绪信号文件（添加告警管道状态）
             try:
-                signal_file = Path("logs/monitor_ready.signal")
+                signal_file = get_root() / "logs" / "monitor_ready.signal"
                 if signal_file.exists():
                     with open(signal_file, "r", encoding="utf-8") as f:
                         ready_signal = json.load(f)
@@ -2676,7 +2691,19 @@ class MonitoringProcessV2:
                 )
             )
 
-        logger.info("[THRESHOLD] 已注册 %d 个监控指标", len(metrics))
+        # 注册Socket缓冲区监控指标
+        socket_buffer_metrics = {
+            "socket_recv_buffer_usage_ratio": (80.0, 95.0),  # 接收缓冲区使用率：警告80%，严重95%
+            "socket_send_buffer_usage_ratio": (80.0, 95.0),  # 发送缓冲区使用率：警告80%，严重95%
+        }
+        for name, (warning, critical) in socket_buffer_metrics.items():
+            self.adaptive_threshold.register_metric(
+                ThresholdConfig(
+                    metric_name=name, default_warning=warning, default_critical=critical
+                )
+            )
+
+        logger.info("[THRESHOLD] 已注册 %d 个监控指标（包含Socket缓冲区指标）", len(metrics) + len(socket_buffer_metrics))
 
     def _start_worker_threads(self):
         """启动工作线程."""
@@ -3899,7 +3926,7 @@ class MonitoringProcessV2:
 def _cleanup_signal_file():
     """清理监控就绪信号文件（监控进程内部使用）"""
     try:
-        signal_file = Path("logs/monitor_ready.signal")
+        signal_file = get_root() / "logs" / "monitor_ready.signal"
         if signal_file.exists():
             signal_file.unlink()
             logger.debug("[MONITOR-PROCESS] 已清理 monitor_ready.signal 文件", extra={"log_type": "SYSTEM"})
@@ -4429,12 +4456,8 @@ class LatencyMonitor:
         Returns:
             项目根目录的Path对象
         """
-        # 通过当前文件的路径向上查找项目根目录
-        # monitor_system.py 位于 backend/infrastructure/system_vnpy/
-        # 需要向上3级到达项目根目录
-        current_file = Path(__file__)
-        root_path = current_file.parent.parent.parent.parent
-        return root_path
+        # 使用模块级别的get_root()函数
+        return get_root()
 
     def _load_server_config(self):
         """加载延迟测试服务器配置"""
@@ -6013,6 +6036,265 @@ class SystemMonitor:
             logger.exception("获取存储子系统指标失败: %s", e)
             return {}
 
+    def get_socket_buffer_info(self) -> Dict[str, Any]:
+        """获取Socket缓冲区信息（跨平台兼容实现）.
+
+        Returns:
+            Dict: Socket缓冲区统计信息，格式:
+            {
+                "recv_buffer_size_avg": int,      # 平均接收缓冲区大小（字节）
+                "send_buffer_size_avg": int,      # 平均发送缓冲区大小（字节）
+                "recv_buffer_size_max": int,      # 最大接收缓冲区
+                "send_buffer_size_max": int,      # 最大发送缓冲区
+                "recv_buffer_size_min": int,      # 最小接收缓冲区
+                "send_buffer_size_min": int,      # 最小发送缓冲区
+                "recv_buffer_usage_ratio": float, # 接收缓冲区使用率（百分比，估算）
+                "send_buffer_usage_ratio": float, # 发送缓冲区使用率（百分比，估算）
+                "total_connections": int,         # 总连接数
+                "tcp_connections": int,           # TCP连接数
+                "established_connections": int    # ESTABLISHED状态连接数
+            }
+        """
+        try:
+            if not HAS_PSUTIL:
+                logger.debug("[SOCKET-BUFFER] psutil未安装，无法获取Socket缓冲区信息", extra={"log_type": "SYSTEM"})
+                return {}
+
+            import socket as socket_module
+
+            # 获取所有网络连接
+            try:
+                connections = psutil.net_connections(kind='inet')
+                logger.debug(
+                    "[SOCKET-BUFFER] 获取到 %d 个网络连接",
+                    len(connections) if connections else 0,
+                    extra={"log_type": "SYSTEM"}
+                )
+            except (psutil.AccessDenied, PermissionError) as e:
+                logger.warning(
+                    "[SOCKET-BUFFER] 获取网络连接失败（权限不足）: %s",
+                    e,
+                    extra={"log_type": "SYSTEM"}
+                )
+                return {}
+            except Exception as e:
+                logger.debug(
+                    "[SOCKET-BUFFER] 获取网络连接失败: %s",
+                    e,
+                    extra={"log_type": "SYSTEM"}
+                )
+                return {}
+
+            if not connections:
+                return {
+                    "recv_buffer_size_avg": 0,
+                    "send_buffer_size_avg": 0,
+                    "recv_buffer_size_max": 0,
+                    "send_buffer_size_max": 0,
+                    "recv_buffer_size_min": 0,
+                    "send_buffer_size_min": 0,
+                    "recv_buffer_usage_ratio": 0.0,
+                    "send_buffer_usage_ratio": 0.0,
+                    "total_connections": 0,
+                    "tcp_connections": 0,
+                    "established_connections": 0,
+                }
+
+            total_connections = len(connections)
+            tcp_connections = 0
+            established_connections = 0
+            recv_buffer_sizes = []
+            send_buffer_sizes = []
+
+            # 遍历连接，尝试获取缓冲区大小
+            for conn in connections:
+                try:
+                    # 只处理TCP连接
+                    if conn.type != socket_module.SOCK_STREAM:
+                        continue
+
+                    tcp_connections += 1
+
+                    # 统计ESTABLISHED状态的连接
+                    if conn.status == 'ESTABLISHED':
+                        established_connections += 1
+
+                    # 尝试通过文件描述符获取socket对象
+                    # 注意：在某些系统上可能需要特殊权限
+                    if hasattr(conn, 'fd') and conn.fd is not None and conn.fd >= 0:
+                        try:
+                            # 创建socket对象（从文件描述符）
+                            # 注意：这在不同平台上的行为可能不同
+                            sock = socket_module.fromfd(
+                                conn.fd,
+                                socket_module.AF_INET,
+                                socket_module.SOCK_STREAM
+                            )
+
+                            # 获取接收缓冲区大小
+                            try:
+                                recv_buf = sock.getsockopt(
+                                    socket_module.SOL_SOCKET,
+                                    socket_module.SO_RCVBUF
+                                )
+                                if recv_buf > 0:
+                                    recv_buffer_sizes.append(recv_buf)
+                            except Exception:
+                                pass
+
+                            # 获取发送缓冲区大小
+                            try:
+                                send_buf = sock.getsockopt(
+                                    socket_module.SOL_SOCKET,
+                                    socket_module.SO_SNDBUF
+                                )
+                                if send_buf > 0:
+                                    send_buffer_sizes.append(send_buf)
+                            except Exception:
+                                pass
+
+                            sock.close()
+                        except (OSError, ValueError, AttributeError) as e:
+                            # 文件描述符无效或无法创建socket对象
+                            logger.debug(
+                                "[SOCKET-BUFFER] 无法从文件描述符创建socket: %s",
+                                e,
+                                extra={"log_type": "SYSTEM"}
+                            )
+                            continue
+
+                except Exception as e:
+                    logger.debug(
+                        "[SOCKET-BUFFER] 处理连接失败: %s",
+                        e,
+                        extra={"log_type": "SYSTEM"}
+                    )
+                    continue
+
+            # 计算统计信息
+            recv_buffer_size_avg = int(sum(recv_buffer_sizes) / len(recv_buffer_sizes)) if recv_buffer_sizes else 0
+            send_buffer_size_avg = int(sum(send_buffer_sizes) / len(send_buffer_sizes)) if send_buffer_sizes else 0
+            recv_buffer_size_max = max(recv_buffer_sizes) if recv_buffer_sizes else 0
+            send_buffer_size_max = max(send_buffer_sizes) if send_buffer_sizes else 0
+            recv_buffer_size_min = min(recv_buffer_sizes) if recv_buffer_sizes else 0
+            send_buffer_size_min = min(send_buffer_sizes) if send_buffer_sizes else 0
+
+            # 记录统计信息（DEBUG级别）
+            logger.debug(
+                "[SOCKET-BUFFER] 统计完成: TCP连接=%d, ESTABLISHED=%d, "
+                "接收缓冲区=%dKB(平均), 发送缓冲区=%dKB(平均), "
+                "成功获取缓冲区大小的连接: 接收=%d, 发送=%d",
+                tcp_connections,
+                established_connections,
+                recv_buffer_size_avg // 1024,
+                send_buffer_size_avg // 1024,
+                len(recv_buffer_sizes),
+                len(send_buffer_sizes),
+                extra={"log_type": "SYSTEM"}
+            )
+
+            # 估算缓冲区使用率（基于连接状态和网络I/O速率）
+            # 这是一个简化的估算方法，实际使用率难以直接获取
+            recv_buffer_usage_ratio = 0.0
+            send_buffer_usage_ratio = 0.0
+
+            if recv_buffer_size_avg > 0:
+                # 通过ESTABLISHED连接比例和网络I/O速率估算
+                # 如果大量连接处于ESTABLISHED状态，说明缓冲区可能在使用
+                activity_ratio = established_connections / max(1, tcp_connections)
+
+                # 获取当前网络I/O速率
+                try:
+                    net_io_1: Any = psutil.net_io_counters()
+                    time.sleep(0.05)
+                    net_io_2: Any = psutil.net_io_counters()
+                    if net_io_1 and net_io_2:
+                        recv_bytes_per_sec = (net_io_2.bytes_recv - net_io_1.bytes_recv) / 0.05  # type: ignore[attr-defined]
+                        # 估算：如果接收速率接近缓冲区大小，说明使用率较高
+                        # 这里使用一个简化的估算公式
+                        recv_usage_estimate = min(100.0, (recv_bytes_per_sec / recv_buffer_size_avg) * 100 * activity_ratio)
+                        recv_buffer_usage_ratio = round(recv_usage_estimate, 2)
+                except Exception:
+                    # 如果无法获取网络I/O，使用连接活跃度估算
+                    recv_buffer_usage_ratio = round(activity_ratio * 50.0, 2)  # 保守估算
+
+            if send_buffer_size_avg > 0:
+                activity_ratio_send = established_connections / max(1, tcp_connections)
+                try:
+                    net_io_send_1: Any = psutil.net_io_counters()
+                    time.sleep(0.05)
+                    net_io_send_2: Any = psutil.net_io_counters()
+                    if net_io_send_1 and net_io_send_2:
+                        send_bytes_per_sec = (net_io_send_2.bytes_sent - net_io_send_1.bytes_sent) / 0.05  # type: ignore[attr-defined]
+                        send_usage_estimate = min(100.0, (send_bytes_per_sec / send_buffer_size_avg) * 100 * activity_ratio_send)
+                        send_buffer_usage_ratio = round(send_usage_estimate, 2)
+                except Exception:
+                    # 如果无法获取网络I/O，使用连接活跃度估算
+                    send_buffer_usage_ratio = round(activity_ratio_send * 50.0, 2)  # 保守估算
+
+            # 检查缓冲区使用率是否超过阈值，记录告警
+            if recv_buffer_usage_ratio > 95.0 or send_buffer_usage_ratio > 95.0:
+                logger.warning(
+                    "[SOCKET-BUFFER] ⚠️ Socket缓冲区使用率严重告警: 接收=%.1f%%, 发送=%.1f%%",
+                    recv_buffer_usage_ratio,
+                    send_buffer_usage_ratio,
+                    extra={"log_type": "ALERT"}
+                )
+            elif recv_buffer_usage_ratio > 80.0 or send_buffer_usage_ratio > 80.0:
+                logger.info(
+                    "[SOCKET-BUFFER] ⚠️ Socket缓冲区使用率警告: 接收=%.1f%%, 发送=%.1f%%",
+                    recv_buffer_usage_ratio,
+                    send_buffer_usage_ratio,
+                    extra={"log_type": "SYSTEM"}
+                )
+
+            result = {
+                "recv_buffer_size_avg": recv_buffer_size_avg,
+                "send_buffer_size_avg": send_buffer_size_avg,
+                "recv_buffer_size_max": recv_buffer_size_max,
+                "send_buffer_size_max": send_buffer_size_max,
+                "recv_buffer_size_min": recv_buffer_size_min,
+                "send_buffer_size_min": send_buffer_size_min,
+                "recv_buffer_usage_ratio": recv_buffer_usage_ratio,
+                "send_buffer_usage_ratio": send_buffer_usage_ratio,
+                "total_connections": total_connections,
+                "tcp_connections": tcp_connections,
+                "established_connections": established_connections,
+            }
+
+            logger.debug(
+                "[SOCKET-BUFFER] 返回结果: %s",
+                {
+                    "recv_buffer_avg_kb": recv_buffer_size_avg // 1024,
+                    "send_buffer_avg_kb": send_buffer_size_avg // 1024,
+                    "recv_usage": recv_buffer_usage_ratio,
+                    "send_usage": send_buffer_usage_ratio,
+                    "tcp_connections": tcp_connections,
+                },
+                extra={"log_type": "SYSTEM"}
+            )
+
+            return result
+        except Exception as e:
+            logger.exception(
+                "[SOCKET-BUFFER] ❌ 获取Socket缓冲区信息失败: %s",
+                e,
+                extra={"log_type": "SYSTEM"}
+            )
+            return {
+                "recv_buffer_size_avg": 0,
+                "send_buffer_size_avg": 0,
+                "recv_buffer_size_max": 0,
+                "send_buffer_size_max": 0,
+                "recv_buffer_size_min": 0,
+                "send_buffer_size_min": 0,
+                "recv_buffer_usage_ratio": 0.0,
+                "send_buffer_usage_ratio": 0.0,
+                "total_connections": 0,
+                "tcp_connections": 0,
+                "established_connections": 0,
+            }
+
     def get_network_subsystem_metrics(self) -> Dict[str, Any]:
         """获取网络子系统指标（重传/RTT跨平台不可得，尽力估计丢包率）."""
         try:
@@ -6033,14 +6315,35 @@ class SystemMonitor:
             loss_in = dropin / float(pin) if pin > 0 else 0.0
             loss_out = dropout / float(pout) if pout > 0 else 0.0
 
+            # 获取Socket缓冲区信息
+            socket_buffer_info = self.get_socket_buffer_info()
+
+            # 记录Socket缓冲区信息获取结果
+            if socket_buffer_info:
+                logger.debug(
+                    "[NETWORK-SUBSYSTEM] Socket缓冲区信息已集成: TCP=%d, "
+                    "接收缓冲区=%dKB(使用率=%.1f%%), 发送缓冲区=%dKB(使用率=%.1f%%)",
+                    socket_buffer_info.get("tcp_connections", 0),
+                    socket_buffer_info.get("recv_buffer_size_avg", 0) // 1024,
+                    socket_buffer_info.get("recv_buffer_usage_ratio", 0.0),
+                    socket_buffer_info.get("send_buffer_size_avg", 0) // 1024,
+                    socket_buffer_info.get("send_buffer_usage_ratio", 0.0),
+                    extra={"log_type": "SYSTEM"}
+                )
+
             return {
                 "packet_loss_rate_in": round(loss_in * 100, 4),
                 "packet_loss_rate_out": round(loss_out * 100, 4),
                 "tcp_retransmissions_per_sec": None,  # 无直接跨平台指标
                 "rtt_ms": None,  # 不做主动探测
+                "socket_buffer_info": socket_buffer_info,  # Socket缓冲区信息
             }
         except Exception as e:
-            logger.exception("获取网络子系统指标失败: %s", e)
+            logger.exception(
+                "[NETWORK-SUBSYSTEM] ❌ 获取网络子系统指标失败: %s",
+                e,
+                extra={"log_type": "SYSTEM"}
+            )
             return {}
 
     async def get_network_speed_async(self) -> Dict[str, Any]:
@@ -7105,7 +7408,7 @@ def main():
     from pathlib import Path
 
     # 添加项目根目录到Python路径
-    project_root = Path(__file__).parent.parent.parent.parent
+    project_root = get_root()
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
 
@@ -7204,7 +7507,7 @@ def main():
             f"[MAIN] 准备创建事件循环，PID={os.getpid()}, 工作目录={os.getcwd()}",
             extra={"log_type": "SYSTEM"}
         )
-        
+
         # 创建新的事件循环并使用当前策略
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -7240,7 +7543,7 @@ def main():
                 extra={"log_type": "SYSTEM"}
             )
             start_main_time = time.time()
-            
+
             # 执行monitor.start()，这会创建管道和信号文件
             logger.info("[MAIN] ℹ️ 调用 monitor.start()，这将创建IPC管道和信号文件...")
             loop.run_until_complete(monitor.start())

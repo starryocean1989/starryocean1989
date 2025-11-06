@@ -1,5 +1,5 @@
 """
-数据质量管理模块 - 架构v3.0重构版
+数据质量管理模块 - 架构v3.6重构版
 
 本模块负责数据质量管理，包括：
 - 数据质量感知（DataSensor）
@@ -13,7 +13,13 @@
 - native_ipc集成：多进程验证结果汇总，文件监控事件跨进程推送
 - 混合异步扫描：协程+线程+进程，最大2000并发
 - 增量推送：500ms最小间隔
+- 性能优化：集成 native C 扩展，优化关键性能路径
 - 100% API向后兼容
+
+v3.6 更新：
+- 工具函数迁移：configure_subprocess_logging 已迁移到 tdx_asyncio.utils.helper
+- 性能优化：集成 native_compute，优化数值计算部分
+- 引用链更新：所有引用已更新，从 tdx_asyncio 导入
 
 重构日期：2025年
 作者：AI Assistant (基于v2.1重构)
@@ -36,7 +42,7 @@ import pandas as pd
 
 # 导入native_iocp（支持降级）
 try:
-    from backend.infrastructure.native_iocp.compat import aopen as compat_aopen
+    from backend.infrastructure.native.native_iocp.compat import aopen as compat_aopen
 
     IOCP_AVAILABLE = True
 except ImportError:
@@ -51,14 +57,47 @@ except ImportError:
         compat_aopen = None
         IOCP_AVAILABLE = False
 
+# 导入native_iocp批量目录遍历（支持降级）
+try:
+    from backend.infrastructure.native.native_iocp import fast_dir_walk, BATCH_AVAILABLE
+
+    NATIVE_IOCP_AVAILABLE = BATCH_AVAILABLE
+except ImportError:
+    fast_dir_walk = None  # type: ignore
+    NATIVE_IOCP_AVAILABLE = False
+
 # 导入native_ipc（支持降级）
 try:
-    from backend.infrastructure.native_ipc import AsyncIPCPipe
+    from backend.infrastructure.native.native_ipc import AsyncIPCPipe
 
     IPC_AVAILABLE = True
 except ImportError:
     IPC_AVAILABLE = False
     AsyncIPCPipe = None
+
+# 导入native_collections（支持降级）
+try:
+    from backend.infrastructure.native.native_collections import (
+        HighPerfLRUCache,
+        COLLECTIONS_AVAILABLE,
+    )
+
+    NATIVE_COLLECTIONS_AVAILABLE = COLLECTIONS_AVAILABLE
+except ImportError:
+    HighPerfLRUCache = None
+    NATIVE_COLLECTIONS_AVAILABLE = False
+
+# 导入native_compute（支持降级）
+try:
+    from backend.infrastructure.native.native_compute import (
+        batch_compute,
+        COMPUTE_AVAILABLE,
+    )
+
+    NATIVE_COMPUTE_AVAILABLE = COMPUTE_AVAILABLE
+except ImportError:
+    batch_compute = None
+    NATIVE_COMPUTE_AVAILABLE = False
 
 # 导入核心模块
 from .core_engine import (
@@ -672,7 +711,7 @@ class DataSensor:
                 load_start_time = time.time()
 
                 # 异步读取数据
-                df = await self.storage_manager.load_kline_async(symbol, interval)
+                df = await self.storage_manager.load_data_async(symbol, interval)
                 load_elapsed = time.time() - load_start_time
 
                 logger.debug(
@@ -683,7 +722,9 @@ class DataSensor:
 
                 # 验证数据质量
                 validate_start_time = time.time()
-                result = self._validate_dataframe(symbol, interval, df)
+                result = self._validate_dataframe(
+                    symbol, interval, df if df is not None else pd.DataFrame()
+                )
                 validate_elapsed = time.time() - validate_start_time
 
                 logger.debug(
@@ -911,6 +952,8 @@ class DataSensor:
             )
 
         # 计算完整性
+        # 注意：单个数值计算使用 Python 已经足够快，native_compute 主要用于批量操作
+        # 这里保持原样，因为除法运算 native_compute 不支持，且单个计算使用 C 扩展可能反而增加开销
         expected_bars = self._calculate_expected_bars(symbol, interval, df)
         logger.debug(
             f"[VALIDATE] 预期数据条数: symbol={symbol}, interval={interval}, expected_bars={expected_bars}",
@@ -1100,12 +1143,10 @@ def _scan_single_worker(symbol: str, interval: str) -> QualityScanResult:
     scenario = "manual_data_scan"
     # 设置子进程日志接入loghub
     try:
-        from backend.infrastructure.data_module_vnpy.data_acquisition import (
-            _configure_subprocess_logging,
-        )
+        from backend.infrastructure.tdx_asyncio import configure_subprocess_logging
 
         worker_id = hash(f"{symbol}_{interval}") % 1000  # 使用symbol和interval的hash作为worker_id
-        worker_logger = _configure_subprocess_logging(
+        worker_logger = configure_subprocess_logging(
             worker_id=worker_id, task_type="data_scan", scenario=scenario
         )
     except Exception:
@@ -1122,7 +1163,7 @@ def _scan_single_worker(symbol: str, interval: str) -> QualityScanResult:
 
         # 同步读取数据
         load_start_time = time.time()
-        df = storage_manager.load_kline(symbol, interval)
+        df = storage_manager.load_data(symbol, interval)
         load_elapsed = time.time() - load_start_time
 
         worker_logger.debug(
@@ -1134,7 +1175,9 @@ def _scan_single_worker(symbol: str, interval: str) -> QualityScanResult:
         # 创建临时DataSensor进行验证
         sensor = DataSensor()
         validate_start_time = time.time()
-        result = sensor._validate_dataframe(symbol, interval, df)
+        result = sensor._validate_dataframe(
+            symbol, interval, df if df is not None else pd.DataFrame()
+        )
         validate_elapsed = time.time() - validate_start_time
 
         total_elapsed = time.time() - load_start_time
@@ -1516,8 +1559,44 @@ class DataFileWatcher:
         if not self.watch_dir.exists():
             return
 
-        # 扫描所有Parquet文件
-        for file_path in self.watch_dir.rglob("*.parquet"):
+        # 扫描所有Parquet文件（优先使用native_iocp高性能目录遍历）
+        try:
+            if NATIVE_IOCP_AVAILABLE and fast_dir_walk is not None:
+
+                def _recursive_walk(directory: Path) -> List[Path]:
+                    files: List[Path] = []
+                    try:
+                        # fast_dir_walk返回: [(root, dirs_list, files_list), ...]
+                        result = fast_dir_walk(str(directory))  # type: ignore[call-arg]
+                        if result and len(result) > 0:
+                            _root, dirs_list, files_list = result[0]
+
+                            # 当前目录文件
+                            for file_name in files_list:
+                                file_path = Path(file_name)
+                                if file_path.suffix == ".parquet":
+                                    files.append(file_path)
+
+                            # 子目录递归
+                            for dir_name in dirs_list:
+                                files.extend(_recursive_walk(Path(dir_name)))
+                    except Exception as e:
+                        # 回退到标准rglob
+                        logger.debug(f"fast_dir_walk失败，回退到rglob: {e}")
+                        return list(directory.rglob("*.parquet"))
+                    return files
+
+                file_paths = _recursive_walk(self.watch_dir)
+            else:
+                # 降级：使用标准rglob
+                file_paths = list(self.watch_dir.rglob("*.parquet"))
+        except Exception as e:
+            # 任意异常统一回退到rglob
+            logger.debug(f"目录扫描异常，使用rglob回退: {e}")
+            file_paths = list(self.watch_dir.rglob("*.parquet"))
+
+        # 处理文件状态与事件
+        for file_path in file_paths:
             try:
                 mtime = file_path.stat().st_mtime
 
@@ -1731,6 +1810,10 @@ class IPODateCache:
     两级缓存（内存+文件），目标命中率95%+：
     - Level 1: 内存缓存（LRU）
     - Level 2: 文件缓存（native_iocp异步读写）
+
+    文件I/O支持：
+    - 同步方法：save() 和 _load_from_file() 用于初始化等同步场景
+    - 异步方法：save_async() 和 _load_from_file_async() 使用 native_iocp 异步I/O
     """
 
     def __init__(self, cache_file: Optional[Path] = None, max_memory_size: int = 10000):
@@ -1750,9 +1833,29 @@ class IPODateCache:
         self.cache_file = cache_file
         self.max_memory_size = max_memory_size
 
-        # 内存缓存
+        # 尝试使用native_collections，否则回退到手动LRU实现
+        self._use_native = NATIVE_COLLECTIONS_AVAILABLE and HighPerfLRUCache is not None
+
+        # 统一类型声明
+        self._all_data: Optional[Dict[str, Optional[date]]] = None
+        self._cache: Any = None
         self._memory_cache: Dict[str, Optional[date]] = {}
-        self._access_order: List[str] = []  # LRU访问顺序
+        self._access_order: List[str] = []
+
+        if self._use_native and HighPerfLRUCache is not None:
+            # 使用native_collections.HighPerfLRUCache作为底层存储
+            # HighPerfLRUCache构造函数接受一个可选参数maxsize
+            self._cache = HighPerfLRUCache(max_memory_size)  # type: ignore
+            # 额外维护一个字典用于遍历和保存（因为HighPerfLRUCache没有遍历方法）
+            # 这个字典与缓存保持同步，但不参与LRU淘汰
+            self._all_data = {}
+            logger.debug("✅ [IPODateCache] 使用native_collections.HighPerfLRUCache")
+        else:
+            # 回退到手动LRU实现
+            self._memory_cache = {}
+            self._access_order = []
+            logger.debug("⚠️ [IPODateCache] native_collections不可用，回退到手动LRU实现")
+
         self._lock = threading.Lock()
 
         # 统计信息
@@ -1762,7 +1865,7 @@ class IPODateCache:
             "misses": 0,
         }
 
-        # 初始加载
+        # 初始加载（同步，因为初始化需要等待数据）
         self._load_from_file()
 
     def get(self, symbol: str) -> Optional[date]:
@@ -1775,18 +1878,36 @@ class IPODateCache:
             IPO日期，如果不存在则返回None
         """
         with self._lock:
-            # Level 1: 内存缓存
-            if symbol in self._memory_cache:
-                self._stats["memory_hits"] += 1
-                # 更新LRU
-                if symbol in self._access_order:
-                    self._access_order.remove(symbol)
-                self._access_order.append(symbol)
-                return self._memory_cache[symbol]
+            if self._use_native:
+                # 使用native_collections实现
+                try:
+                    if self._cache is not None:
+                        ipo_date = self._cache.get(symbol)
+                        if ipo_date is not None:
+                            self._stats["memory_hits"] += 1
+                            # 更新_all_data（如果不存在）
+                            if self._all_data is not None:
+                                if symbol not in self._all_data:
+                                    self._all_data[symbol] = ipo_date
+                            return ipo_date
+                except (KeyError, AttributeError):
+                    # key不存在或缓存未初始化
+                    pass
+                self._stats["misses"] += 1
+                return None
+            else:
+                # 使用手动LRU实现
+                if symbol in self._memory_cache:
+                    self._stats["memory_hits"] += 1
+                    # 更新LRU
+                    if symbol in self._access_order:
+                        self._access_order.remove(symbol)
+                    self._access_order.append(symbol)
+                    return self._memory_cache[symbol]
 
-            # Level 2: 文件缓存（已在初始化时加载）
-            self._stats["misses"] += 1
-            return None
+                # Level 2: 文件缓存（已在初始化时加载）
+                self._stats["misses"] += 1
+                return None
 
     def set(self, symbol: str, ipo_date: Optional[date]):
         """设置IPO日期
@@ -1796,20 +1917,29 @@ class IPODateCache:
             ipo_date: IPO日期
         """
         with self._lock:
-            # 更新内存缓存
-            if symbol not in self._memory_cache:
-                # 检查是否需要清理
-                if len(self._memory_cache) >= self.max_memory_size:
-                    # LRU清理
-                    oldest = self._access_order.pop(0)
-                    self._memory_cache.pop(oldest, None)
+            if self._use_native:
+                # 使用native_collections实现
+                # HighPerfLRUCache会自动处理LRU淘汰
+                if self._cache is not None:
+                    self._cache.set(symbol, ipo_date)
+                # 更新_all_data用于遍历和保存
+                if self._all_data is not None:
+                    self._all_data[symbol] = ipo_date
+            else:
+                # 使用手动LRU实现
+                if symbol not in self._memory_cache:
+                    # 检查是否需要清理
+                    if len(self._memory_cache) >= self.max_memory_size:
+                        # LRU清理
+                        oldest = self._access_order.pop(0)
+                        self._memory_cache.pop(oldest, None)
 
-            self._memory_cache[symbol] = ipo_date
+                self._memory_cache[symbol] = ipo_date
 
-            # 更新LRU
-            if symbol in self._access_order:
-                self._access_order.remove(symbol)
-            self._access_order.append(symbol)
+                # 更新LRU
+                if symbol in self._access_order:
+                    self._access_order.remove(symbol)
+                self._access_order.append(symbol)
 
     def batch_set(self, ipo_dates: Dict[str, Optional[date]]):
         """批量设置IPO日期
@@ -1827,11 +1957,21 @@ class IPODateCache:
 
             # 转换为JSON格式
             data = {}
-            for symbol, ipo_date in self._memory_cache.items():
-                if ipo_date:
-                    data[symbol] = ipo_date.isoformat()
+            with self._lock:
+                if self._use_native and self._all_data is not None:
+                    # 使用_all_data来获取所有数据
+                    for symbol, ipo_date in self._all_data.items():
+                        if ipo_date:
+                            data[symbol] = ipo_date.isoformat()
+                        else:
+                            data[symbol] = None
                 else:
-                    data[symbol] = None
+                    # 使用手动LRU实现
+                    for symbol, ipo_date in self._memory_cache.items():
+                        if ipo_date:
+                            data[symbol] = ipo_date.isoformat()
+                        else:
+                            data[symbol] = None
 
             with open(self.cache_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
@@ -1839,6 +1979,48 @@ class IPODateCache:
             logger.info(f"✅ IPO缓存已保存: {len(data)}条")
         except Exception as e:
             logger.error(f"❌ 保存IPO缓存失败: {e}", extra={"log_type": "SYSTEM"}, exc_info=True)
+
+    async def save_async(self):
+        """保存缓存到文件（异步版本，使用 native_iocp）
+
+        Returns:
+            bool: 保存是否成功
+        """
+        try:
+            self.cache_file.parent.mkdir(parents=True, exist_ok=True)
+
+            # 转换为JSON格式
+            data = {}
+            with self._lock:
+                if self._use_native and self._all_data is not None:
+                    # 使用_all_data来获取所有数据
+                    for symbol, ipo_date in self._all_data.items():
+                        if ipo_date:
+                            data[symbol] = ipo_date.isoformat()
+                        else:
+                            data[symbol] = None
+                else:
+                    # 使用手动LRU实现
+                    for symbol, ipo_date in self._memory_cache.items():
+                        if ipo_date:
+                            data[symbol] = ipo_date.isoformat()
+                        else:
+                            data[symbol] = None
+
+            # 将数据序列化为JSON字符串
+            json_str = json.dumps(data, ensure_ascii=False, indent=2)
+            json_bytes = json_str.encode("utf-8")
+
+            # 使用 native_iocp 异步写入
+            async with await compat_aopen(self.cache_file, "wb") as f:
+                await f.write(json_bytes)
+
+            logger.info(f"✅ IPO缓存已保存（异步）: {len(data)}条")
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ 保存IPO缓存失败: {e}", extra={"log_type": "SYSTEM"}, exc_info=True)
+            return False
 
     def _load_from_file(self):
         """从文件加载缓存（同步版本）"""
@@ -1855,13 +2037,74 @@ class IPODateCache:
             ipo_dates = ChinaStockEngine._extract_ipo_data_from_cache(data)
 
             # 更新内存缓存
-            self._memory_cache.update(ipo_dates)
+            with self._lock:
+                if self._use_native:
+                    # 使用native_collections实现
+                    if self._cache is not None:
+                        for symbol, ipo_date in ipo_dates.items():
+                            self._cache.set(symbol, ipo_date)
+                            if self._all_data is not None:
+                                self._all_data[symbol] = ipo_date
+                        cache_size = self._cache.size()
+                    else:
+                        cache_size = 0
+                else:
+                    # 使用手动LRU实现
+                    self._memory_cache.update(ipo_dates)
+                    cache_size = len(self._memory_cache)
 
-            logger.info(f"✅ IPO缓存已加载: {len(self._memory_cache)}条")
+            logger.info(f"✅ IPO缓存已加载: {cache_size}条")
         except Exception as e:
             logger.error(f"❌ 加载IPO缓存失败: {e}", extra={"log_type": "SYSTEM"}, exc_info=True)
 
-    def get_stats(self) -> Dict[str, int]:
+    async def _load_from_file_async(self):
+        """从文件加载缓存（异步版本，使用 native_iocp）
+
+        Returns:
+            bool: 加载是否成功
+        """
+        if not self.cache_file.exists():
+            return True
+
+        try:
+            # 使用 native_iocp 异步读取
+            async with await compat_aopen(self.cache_file, "rb") as f:
+                json_bytes = await f.read()
+
+            # 解码并解析JSON
+            json_str = json_bytes.decode("utf-8")
+            data = json.loads(json_str)
+
+            # 使用统一的提取函数处理缓存格式（兼容新旧两种格式）
+            from backend.infrastructure.data_module_vnpy.core_engine import ChinaStockEngine
+
+            ipo_dates = ChinaStockEngine._extract_ipo_data_from_cache(data)
+
+            # 更新内存缓存
+            with self._lock:
+                if self._use_native:
+                    # 使用native_collections实现
+                    if self._cache is not None:
+                        for symbol, ipo_date in ipo_dates.items():
+                            self._cache.set(symbol, ipo_date)
+                            if self._all_data is not None:
+                                self._all_data[symbol] = ipo_date
+                        cache_size = self._cache.size()
+                    else:
+                        cache_size = 0
+                else:
+                    # 使用手动LRU实现
+                    self._memory_cache.update(ipo_dates)
+                    cache_size = len(self._memory_cache)
+
+            logger.info(f"✅ IPO缓存已加载（异步）: {cache_size}条")
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ 加载IPO缓存失败: {e}", extra={"log_type": "SYSTEM"}, exc_info=True)
+            return False
+
+    def get_stats(self) -> Dict[str, Any]:
         """获取缓存统计
 
         Returns:
@@ -1875,11 +2118,17 @@ class IPODateCache:
                     (self._stats["memory_hits"] + self._stats["file_hits"]) / total_requests * 100
                 )
 
+            # 获取缓存大小
+            if self._use_native:
+                cache_size = self._cache.size() if self._cache else 0
+            else:
+                cache_size = len(self._memory_cache)
+
             return {
                 **self._stats,
                 "total_requests": total_requests,
                 "hit_rate": hit_rate,
-                "cache_size": len(self._memory_cache),
+                "cache_size": cache_size,
             }
 
 

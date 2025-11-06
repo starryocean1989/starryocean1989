@@ -1,12 +1,11 @@
 {
-  "pid": 19628,
-  "timestamp": 1762364056.1166625,
-  "status": "fully_ready",
-  "level": 2,
+  "pid": 20628,
+  "timestamp": 1762435395.0621035,
+  "status": "partial_pipes_ready",
+  "level": 1,
   "pipes": {
     "query": "monitor_query",
     "status": "monitor_status",
     "alerts": null
-  },
-  "coroutines_ready_at": 1762364118.300739
+  }
 }

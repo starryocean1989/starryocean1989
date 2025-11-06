@@ -125,7 +125,7 @@ class ConfigManager:
         try:
             # 尝试使用native_iocp
             try:
-                from backend.infrastructure.native_iocp import compat_aopen, IOCP_AVAILABLE
+                from backend.infrastructure.native.native_iocp import compat_aopen, IOCP_AVAILABLE
 
                 if IOCP_AVAILABLE:
                     # 使用native_iocp加载系统配置
@@ -348,14 +348,38 @@ class CacheManager:
         """
         try:
             CacheManager._ensure_cache_dir()
+            # 优先保存为二进制（native_serialization + pickle），同时保留JSON回退
+            bin_file = CacheManager.CACHE_DIR / f"{cache_key}.bin"
             cache_file = CacheManager.CACHE_DIR / f"{cache_key}.json"
 
             cached_data = CachedData(
                 data=data, timestamp=time.time(), ttl=ttl, cache_key=cache_key
             )
 
-            with open(cache_file, "w", encoding="utf-8") as f:
-                json.dump(asdict(cached_data), f, ensure_ascii=False, indent=2)
+            # 二进制序列化优先
+            try:
+                from backend.infrastructure.native.native_serialization import (
+                    zero_copy_serialize,
+                    SERIALIZATION_AVAILABLE,
+                )
+                if SERIALIZATION_AVAILABLE:
+                    blob = zero_copy_serialize(cached_data)
+                else:
+                    raise ImportError
+            except Exception:
+                import pickle  # 本地回退
+                blob = pickle.dumps(cached_data)
+
+            # 写入二进制缓存
+            with open(bin_file, "wb") as bf:
+                bf.write(blob)
+
+            # 兼容性：同时写入JSON（便于人工检查），失败不影响主流程
+            try:
+                with open(cache_file, "w", encoding="utf-8") as f:
+                    json.dump(asdict(cached_data), f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
 
             logger.debug(f"缓存数据保存成功: {cache_key}")
             return True
@@ -379,37 +403,78 @@ class CacheManager:
         """
         try:
             CacheManager._ensure_cache_dir()
-            cache_file = CacheManager.CACHE_DIR / f"{cache_key}.json"
+            # 二进制优先，JSON作为回退/可读副本
+            bin_file = CacheManager.CACHE_DIR / f"{cache_key}.bin"
+            json_file = CacheManager.CACHE_DIR / f"{cache_key}.json"
 
             cached_data = CachedData(
                 data=data, timestamp=time.time(), ttl=ttl, cache_key=cache_key
             )
 
-            json_data = json.dumps(asdict(cached_data), ensure_ascii=False, indent=2)
-
-            # 尝试使用native_iocp
+            # 序列化（优先native_serialization）
             try:
-                from backend.infrastructure.native_iocp import compat_aopen, IOCP_AVAILABLE
+                from backend.infrastructure.native.native_serialization import (
+                    zero_copy_serialize,
+                    SERIALIZATION_AVAILABLE,
+                )
+                if SERIALIZATION_AVAILABLE:
+                    blob = zero_copy_serialize(cached_data)
+                else:
+                    raise ImportError
+            except Exception:
+                import pickle
+                blob = pickle.dumps(cached_data)
+
+            # 尝试使用native_iocp写入二进制
+            try:
+                from backend.infrastructure.native.native_iocp import compat_aopen, IOCP_AVAILABLE
 
                 if IOCP_AVAILABLE:
-                    async with await compat_aopen(
-                        cache_file, "w", encoding="utf-8"
-                    ) as f:
-                        await f.write(json_data)
-                    logger.debug(f"缓存数据保存成功（native_iocp）: {cache_key}")
+                    async with await compat_aopen(bin_file, "wb") as bf:
+                        await bf.write(blob)
+                    # 尝试写入JSON副本（不影响主流程）
+                    try:
+                        async with await compat_aopen(
+                            json_file, "w", encoding="utf-8"
+                        ) as jf:
+                            await jf.write(
+                                json.dumps(asdict(cached_data), ensure_ascii=False, indent=2)
+                            )
+                    except Exception:
+                        pass
+
+                    logger.debug(f"缓存数据保存成功（二进制, native_iocp）: {cache_key}")
                     return True
 
             except ImportError:
-                logger.debug("native_iocp不可用，降级到aiofiles")
+                logger.debug("native_iocp不可用，降级到aiofiles/同步")
 
-            # 降级到aiofiles
-            import aiofiles
-
-            async with aiofiles.open(cache_file, "w", encoding="utf-8") as f:
-                await f.write(json_data)
-
-            logger.debug(f"缓存数据保存成功（aiofiles）: {cache_key}")
-            return True
+            # 降级到aiofiles写入二进制
+            try:
+                import aiofiles
+                async with aiofiles.open(bin_file, "wb") as bf:
+                    await bf.write(blob)
+                # JSON副本（可选）
+                try:
+                    async with aiofiles.open(json_file, "w", encoding="utf-8") as jf:
+                        await jf.write(
+                            json.dumps(asdict(cached_data), ensure_ascii=False, indent=2)
+                        )
+                except Exception:
+                    pass
+                logger.debug(f"缓存数据保存成功（二进制, aiofiles）: {cache_key}")
+                return True
+            except Exception:
+                # 最后回退到同步写入
+                with open(bin_file, "wb") as bf:
+                    bf.write(blob)
+                try:
+                    with open(json_file, "w", encoding="utf-8") as jf:
+                        json.dump(asdict(cached_data), jf, ensure_ascii=False, indent=2)
+                except Exception:
+                    pass
+                logger.debug(f"缓存数据保存成功（二进制, 同步）: {cache_key}")
+                return True
 
         except Exception as e:
             logger.error(f"保存缓存失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
@@ -425,12 +490,44 @@ class CacheManager:
             Tuple[Any, bool]: (数据, 是否有效)
         """
         try:
-            cache_file = CacheManager.CACHE_DIR / f"{cache_key}.json"
+            bin_file = CacheManager.CACHE_DIR / f"{cache_key}.bin"
+            json_file = CacheManager.CACHE_DIR / f"{cache_key}.json"
 
-            if not cache_file.exists():
+            # 二进制优先
+            if bin_file.exists():
+                try:
+                    with open(bin_file, "rb") as bf:
+                        blob = bf.read()
+                    try:
+                        from backend.infrastructure.native.native_serialization import (
+                            batch_deserialize,
+                            SERIALIZATION_AVAILABLE,
+                        )
+                        if SERIALIZATION_AVAILABLE:
+                            cached_obj = batch_deserialize([blob])[0]
+                        else:
+                            raise ImportError
+                    except Exception:
+                        import pickle
+                        cached_obj = pickle.loads(blob)
+
+                    cached_data = cached_obj if isinstance(cached_obj, CachedData) else CachedData(**cached_obj)
+
+                    if cached_data.is_valid():
+                        logger.debug(f"缓存数据加载成功（二进制）: {cache_key}")
+                        return cached_data.data, True
+                    else:
+                        logger.debug(f"缓存数据已过期（二进制）: {cache_key}")
+                        return cached_data.data, False
+                except Exception:
+                    # 回退到JSON
+                    pass
+
+            # JSON回退
+            if not json_file.exists():
                 return None, False
 
-            with open(cache_file, "r", encoding="utf-8") as f:
+            with open(json_file, "r", encoding="utf-8") as f:
                 cached_dict = json.load(f)
 
             cached_data = CachedData(**cached_dict)
@@ -457,52 +554,85 @@ class CacheManager:
             Tuple[Any, bool]: (数据, 是否有效)
         """
         try:
-            cache_file = CacheManager.CACHE_DIR / f"{cache_key}.json"
+            bin_file = CacheManager.CACHE_DIR / f"{cache_key}.bin"
+            json_file = CacheManager.CACHE_DIR / f"{cache_key}.json"
 
-            if not cache_file.exists():
-                return None, False
+            # 尝试优先读取二进制（native_iocp或aiofiles）
+            if bin_file.exists():
+                try:
+                    # native_iocp优先
+                    try:
+                        from backend.infrastructure.native.native_iocp import compat_aopen, IOCP_AVAILABLE
+                        if IOCP_AVAILABLE:
+                            async with await compat_aopen(bin_file, "rb") as bf:
+                                blob = await bf.read()
+                        else:
+                            raise ImportError
+                    except Exception:
+                        import aiofiles
+                        async with aiofiles.open(bin_file, "rb") as bf:
+                            blob = await bf.read()
 
-            # 尝试使用native_iocp
-            try:
-                from backend.infrastructure.native_iocp import compat_aopen, IOCP_AVAILABLE
+                    # 反序列化（优先native_serialization）
+                    try:
+                        from backend.infrastructure.native.native_serialization import (
+                            batch_deserialize,
+                            SERIALIZATION_AVAILABLE,
+                        )
+                        if SERIALIZATION_AVAILABLE:
+                            cached_obj = batch_deserialize([blob])[0]
+                        else:
+                            raise ImportError
+                    except Exception:
+                        import pickle
+                        cached_obj = pickle.loads(blob)
 
-                if IOCP_AVAILABLE:
-                    async with await compat_aopen(
-                        cache_file, "r", encoding="utf-8"
-                    ) as f:
-                        content = await f.read()
-                        cached_dict = json.loads(content)
-
-                    cached_data = CachedData(**cached_dict)
+                    cached_data = cached_obj if isinstance(cached_obj, CachedData) else CachedData(**cached_obj)
 
                     if cached_data.is_valid():
-                        logger.debug(f"缓存数据加载成功（native_iocp）: {cache_key}")
+                        logger.debug(f"缓存数据加载成功（二进制）: {cache_key}")
                         return cached_data.data, True
                     else:
-                        logger.debug(f"缓存数据已过期: {cache_key}")
+                        logger.debug(f"缓存数据已过期（二进制）: {cache_key}")
                         return cached_data.data, False
+                except Exception:
+                    # 回退到JSON
+                    pass
 
-            except ImportError:
-                logger.debug("native_iocp不可用，降级到aiofiles")
+            # 回退到JSON读取
+            if not json_file.exists():
+                return None, False
 
-            # 降级到aiofiles
-            import aiofiles
+            try:
+                # native_iocp优先
+                try:
+                    from backend.infrastructure.native.native_iocp import compat_aopen, IOCP_AVAILABLE
+                    if IOCP_AVAILABLE:
+                        async with await compat_aopen(json_file, "r", encoding="utf-8") as f:
+                            content = await f.read()
+                    else:
+                        raise ImportError
+                except Exception:
+                    import aiofiles
+                    async with aiofiles.open(json_file, "r", encoding="utf-8") as f:
+                        content = await f.read()
 
-            async with aiofiles.open(cache_file, "r", encoding="utf-8") as f:
-                content = await f.read()
                 cached_dict = json.loads(content)
+                cached_data = CachedData(**cached_dict)
 
-            cached_data = CachedData(**cached_dict)
-
-            if cached_data.is_valid():
-                logger.debug(f"缓存数据加载成功（aiofiles）: {cache_key}")
-                return cached_data.data, True
-            else:
-                logger.debug(f"缓存数据已过期: {cache_key}")
-                return cached_data.data, False
+                if cached_data.is_valid():
+                    logger.debug(f"缓存数据加载成功（JSON）: {cache_key}")
+                    return cached_data.data, True
+                else:
+                    logger.debug(f"缓存数据已过期（JSON）: {cache_key}")
+                    return cached_data.data, False
+            except Exception as e:
+                logger.debug(f"加载缓存失败（JSON）: {e}")
+                return None, False
 
         except Exception as e:
-            logger.debug(f"加载缓存失败: {e}")
+            # 兜底：异步加载流程的最外层异常处理
+            logger.debug(f"加载缓存失败（异步）: {e}")
             return None, False
 
 
@@ -825,7 +955,7 @@ class SystemManagerEngine:
 
             # 1. 检查native_ipc可用性
             try:
-                from backend.infrastructure.native_ipc import AsyncIPCPipe, IPC_AVAILABLE
+                from backend.infrastructure.native.native_ipc import AsyncIPCPipe, IPC_AVAILABLE
 
                 if not IPC_AVAILABLE:
                     logger.warning("⚠️ native_ipc不可用，监控功能将在主进程运行（降级模式）", extra={"log_type": "SYSTEM"})
@@ -856,7 +986,7 @@ class SystemManagerEngine:
             if not monitor_script.exists():
                 logger.error(
                     f"❌ 监控进程入口文件不存在: {monitor_script}。"
-                    f" 解决方案: 1) 确保monitor_system.py文件存在于正确位置；2) 检查文件路径配置", 
+                    f" 解决方案: 1) 确保monitor_system.py文件存在于正确位置；2) 检查文件路径配置",
                     extra={"log_type": "ALERT"}
                 )
                 return False
@@ -960,7 +1090,7 @@ class SystemManagerEngine:
             监控数据或None
         """
         try:
-            from backend.infrastructure.native_ipc import AsyncIPCPipe
+            from backend.infrastructure.native.native_ipc import AsyncIPCPipe
 
             ipc_config = self.config_manager.get_ipc_config()
             pipe_names = ipc_config.get("pipe_names", {})

@@ -15,6 +15,16 @@ import logging
 
 from backend.core.service_base import BaseService
 
+# 导入高性能LRU缓存（支持降级）
+try:
+    from backend.infrastructure.native.native_collections import (
+        HighPerfLRUCache,
+        COLLECTIONS_AVAILABLE,
+    )
+except ImportError:
+    COLLECTIONS_AVAILABLE = False
+    HighPerfLRUCache = None
+
 # 专用logger - 日志埋点v4.0
 logger_alert = logging.getLogger("backend.portfolio.alert")
 
@@ -45,15 +55,90 @@ class PortfolioService(BaseService):
         self.scan_timer: Optional[Timer] = None
         self.scan_interval = 30  # 扫描间隔（秒）
 
-        # ✨ 实时数据缓存（提升性能）
-        self.realtime_positions: Dict[str, List[Any]] = {}  # 按网关名称缓存持仓
-        self.realtime_accounts: Dict[str, List[Any]] = {}  # 按网关名称缓存账户
-        self.realtime_trades: Dict[str, List[Any]] = {}  # 按网关名称缓存成交
+        # ✨ 实时数据缓存（使用高性能LRU缓存，支持降级）
+        # 设置 maxsize=100，支持最多100个网关的缓存
+        if COLLECTIONS_AVAILABLE and HighPerfLRUCache is not None:
+            # type: ignore[call-arg] - HighPerfLRUCache 是 C 扩展，类型检查器无法识别其构造函数
+            self.realtime_positions: Any = HighPerfLRUCache(100)  # 按网关名称缓存持仓  # type: ignore[call-arg]
+            self.realtime_accounts: Any = HighPerfLRUCache(100)  # 按网关名称缓存账户  # type: ignore[call-arg]
+            self.realtime_trades: Any = HighPerfLRUCache(100)  # 按网关名称缓存成交  # type: ignore[call-arg]
+            self.logger.info("✅ 使用高性能LRU缓存（native_collections）")
+        else:
+            # 降级方案：使用普通字典
+            self.realtime_positions: Dict[str, List[Any]] = {}
+            self.realtime_accounts: Dict[str, List[Any]] = {}
+            self.realtime_trades: Dict[str, List[Any]] = {}
+            self.logger.info("⚠️ native_collections不可用，使用普通字典缓存")
+
+        # 标记是否使用高性能缓存
+        self._use_high_perf_cache = COLLECTIONS_AVAILABLE and HighPerfLRUCache is not None
 
         # ✨ 开仓成本追踪（用于Trading P&L计算）
         self.position_costs: Dict[str, Dict[str, float]] = {}  # {gateway: {symbol: cost}}
 
         self.logger.info("组合投资服务已创建")
+
+    def _cache_get(self, cache: Any, key: str, default: Any = None) -> Any:
+        """统一的缓存获取方法（支持HighPerfLRUCache和普通字典）.
+
+        Args:
+            cache: 缓存对象（HighPerfLRUCache或字典）
+            key: 缓存键
+            default: 默认值
+
+        Returns:
+            缓存值或默认值
+        """
+        if self._use_high_perf_cache:
+            value = cache.get(key)
+            return value if value is not None else default
+        else:
+            return cache.get(key, default)
+
+    def _cache_set(self, cache: Any, key: str, value: Any) -> None:
+        """统一的缓存设置方法（支持HighPerfLRUCache和普通字典）.
+
+        Args:
+            cache: 缓存对象（HighPerfLRUCache或字典）
+            key: 缓存键
+            value: 缓存值
+        """
+        if self._use_high_perf_cache:
+            cache.set(key, value)
+        else:
+            cache[key] = value
+
+    def _cache_contains(self, cache: Any, key: str) -> bool:
+        """统一的缓存包含检查方法（支持HighPerfLRUCache和普通字典）.
+
+        Args:
+            cache: 缓存对象（HighPerfLRUCache或字典）
+            key: 缓存键
+
+        Returns:
+            是否包含该键
+        """
+        if self._use_high_perf_cache:
+            return cache.get(key) is not None
+        else:
+            return key in cache
+
+    def _cache_get_all_values(self, cache: Any) -> List[Any]:
+        """获取缓存中所有值（支持HighPerfLRUCache和普通字典）.
+
+        Args:
+            cache: 缓存对象（HighPerfLRUCache或字典）
+
+        Returns:
+            所有值的列表
+        """
+        if self._use_high_perf_cache:
+            # HighPerfLRUCache 没有直接的遍历方法
+            # 这里返回空列表，因为在实际使用中我们通常知道要查询的键
+            # 如果需要遍历所有值，需要维护一个键列表
+            return []
+        else:
+            return list(cache.values())
 
     def _do_initialize(self) -> bool:
         """初始化组合投资服务."""
@@ -125,20 +210,24 @@ class PortfolioService(BaseService):
             gateway_name = position.gateway_name
             symbol = position.vt_symbol
 
-            # 初始化网关缓存
-            if gateway_name not in self.realtime_positions:
-                self.realtime_positions[gateway_name] = []
+            # 获取或初始化网关缓存
+            positions_list = self._cache_get(self.realtime_positions, gateway_name, [])
+            if not positions_list:
+                positions_list = []
 
             # 更新或添加持仓
             found = False
-            for i, pos in enumerate(self.realtime_positions[gateway_name]):
+            for i, pos in enumerate(positions_list):
                 if pos.vt_symbol == symbol and pos.direction == position.direction:
-                    self.realtime_positions[gateway_name][i] = position
+                    positions_list[i] = position
                     found = True
                     break
 
             if not found:
-                self.realtime_positions[gateway_name].append(position)
+                positions_list.append(position)
+
+            # 保存回缓存
+            self._cache_set(self.realtime_positions, gateway_name, positions_list)
 
             self.logger.debug(
                 "持仓已缓存: gateway=%s, symbol=%s, volume=%s, pnl=%s",
@@ -165,20 +254,24 @@ class PortfolioService(BaseService):
             # ✨ 缓存资金数据
             gateway_name = account.gateway_name
 
-            # 初始化网关缓存
-            if gateway_name not in self.realtime_accounts:
-                self.realtime_accounts[gateway_name] = []
+            # 获取或初始化网关缓存
+            accounts_list = self._cache_get(self.realtime_accounts, gateway_name, [])
+            if not accounts_list:
+                accounts_list = []
 
             # 更新或添加账户
             found = False
-            for i, acc in enumerate(self.realtime_accounts[gateway_name]):
+            for i, acc in enumerate(accounts_list):
                 if acc.accountid == account.accountid:
-                    self.realtime_accounts[gateway_name][i] = account
+                    accounts_list[i] = account
                     found = True
                     break
 
             if not found:
-                self.realtime_accounts[gateway_name].append(account)
+                accounts_list.append(account)
+
+            # 保存回缓存
+            self._cache_set(self.realtime_accounts, gateway_name, accounts_list)
 
             self.logger.debug(
                 "资金已缓存: gateway=%s, account=%s, balance=%s",
@@ -205,11 +298,15 @@ class PortfolioService(BaseService):
             gateway_name = trade.gateway_name
             symbol = trade.vt_symbol
 
-            # 初始化网关缓存
-            if gateway_name not in self.realtime_trades:
-                self.realtime_trades[gateway_name] = []
+            # 获取或初始化网关缓存
+            trades_list = self._cache_get(self.realtime_trades, gateway_name, [])
+            if not trades_list:
+                trades_list = []
 
-            self.realtime_trades[gateway_name].append(trade)
+            trades_list.append(trade)
+
+            # 保存回缓存
+            self._cache_set(self.realtime_trades, gateway_name, trades_list)
 
             # ✨ 更新开仓成本（用于Trading P&L计算）
             self._update_position_cost(gateway_name, trade)
@@ -525,7 +622,7 @@ class PortfolioService(BaseService):
         import time
         start_time = time.time()
         stage_logger = logging.getLogger("task.portfolio_pnl_calculation.stage")
-        
+
         try:
             # 查找组合
             portfolio = None
@@ -559,14 +656,14 @@ class PortfolioService(BaseService):
             for gw_name in gateway_names:
                 try:
                     # ✨ 优先使用缓存数据（事件驱动已更新，避免重复查询）
-                    gateway_positions = self.realtime_positions.get(gw_name, [])
+                    gateway_positions = self._cache_get(self.realtime_positions, gw_name, [])
 
                     # 如果缓存为空，从main_engine获取（降级方案）
                     if not gateway_positions and self.main_engine:
                         positions = self.main_engine.get_all_positions()
                         gateway_positions = [p for p in positions if p.gateway_name == gw_name]
                         # 更新缓存
-                        self.realtime_positions[gw_name] = gateway_positions
+                        self._cache_set(self.realtime_positions, gw_name, gateway_positions)
                         self.logger.debug(
                             f"从main_engine获取持仓并缓存: {gw_name}, {len(gateway_positions)}条"
                         )
@@ -598,14 +695,14 @@ class PortfolioService(BaseService):
                         total_trading_pnl += trading_pnl
 
                     # ✨ 优先使用缓存的账户数据
-                    gateway_accounts = self.realtime_accounts.get(gw_name, [])
+                    gateway_accounts = self._cache_get(self.realtime_accounts, gw_name, [])
 
                     # 如果缓存为空，从main_engine获取
                     if not gateway_accounts and self.main_engine:
                         accounts = self.main_engine.get_all_accounts()
                         gateway_accounts = [a for a in accounts if a.gateway_name == gw_name]
                         # 更新缓存
-                        self.realtime_accounts[gw_name] = gateway_accounts
+                        self._cache_set(self.realtime_accounts, gw_name, gateway_accounts)
                         self.logger.debug(
                             f"从main_engine获取账户并缓存: {gw_name}, {len(gateway_accounts)}条"
                         )
@@ -638,7 +735,7 @@ class PortfolioService(BaseService):
                 total_trading_pnl,
                 len(positions_detail),
             )
-            
+
             # 阶段节点日志（输出到Terminal，仅记录关键计算结果，避免频繁输出）
             # 注意：由于可能被频繁调用，只在有持仓或盈亏不为0时记录
             if len(positions_detail) > 0 or abs(total_pnl) > 0.01:
@@ -690,7 +787,7 @@ class PortfolioService(BaseService):
             cached_gateways = sum(
                 1
                 for gw in gateway_names
-                if gw in self.realtime_positions or gw in self.realtime_accounts
+                if self._cache_contains(self.realtime_positions, gw) or self._cache_contains(self.realtime_accounts, gw)
             )
 
             return cached_gateways / total_gateways if total_gateways > 0 else 0.0
@@ -710,10 +807,11 @@ class PortfolioService(BaseService):
         """
         try:
             # 简化实现：基于成交记录计算
-            if gateway_name not in self.realtime_trades:
+            gateway_trades = self._cache_get(self.realtime_trades, gateway_name, [])
+            if not gateway_trades:
                 return 0.0
 
-            symbol_trades = [t for t in self.realtime_trades[gateway_name] if t.vt_symbol == symbol]
+            symbol_trades = [t for t in gateway_trades if t.vt_symbol == symbol]
 
             if not symbol_trades:
                 return 0.0
@@ -938,18 +1036,37 @@ class PortfolioService(BaseService):
                 # 特定组合
                 if portfolio_name.startswith("auto_"):
                     gateway_name = portfolio_name.replace("auto_", "")
-                    if gateway_name in self.realtime_trades:
-                        all_trades = self.realtime_trades[gateway_name]
+                    gateway_trades = self._cache_get(self.realtime_trades, gateway_name, [])
+                    if gateway_trades:
+                        all_trades = gateway_trades
                 elif portfolio_name in self.custom_portfolios:
                     # 自定义组合：聚合多个网关
                     portfolio = self.custom_portfolios[portfolio_name]
                     for gw_name in portfolio.get("gateway_names", []):
-                        if gw_name in self.realtime_trades:
-                            all_trades.extend(self.realtime_trades[gw_name])
+                        gateway_trades = self._cache_get(self.realtime_trades, gw_name, [])
+                        if gateway_trades:
+                            all_trades.extend(gateway_trades)
             else:
-                # 所有组合
-                for trades_list in self.realtime_trades.values():
-                    all_trades.extend(trades_list)
+                # 所有组合 - 遍历所有缓存值
+                # 注意：HighPerfLRUCache 不支持直接遍历，这里使用降级方案
+                if self._use_high_perf_cache:
+                    # 对于高性能缓存，我们需要知道所有可能的网关名称
+                    # 这里从 auto_portfolios 和 custom_portfolios 获取网关名称
+                    all_gateway_names = set()
+                    for portfolio in self.auto_portfolios.values():
+                        all_gateway_names.add(portfolio.get("gateway_name", ""))
+                    for portfolio in self.custom_portfolios.values():
+                        all_gateway_names.update(portfolio.get("gateway_names", []))
+
+                    for gw_name in all_gateway_names:
+                        if gw_name:
+                            gateway_trades = self._cache_get(self.realtime_trades, gw_name, [])
+                            if gateway_trades:
+                                all_trades.extend(gateway_trades)
+                else:
+                    # 普通字典可以直接遍历
+                    for trades_list in self.realtime_trades.values():
+                        all_trades.extend(trades_list)
 
             if not all_trades:
                 return {

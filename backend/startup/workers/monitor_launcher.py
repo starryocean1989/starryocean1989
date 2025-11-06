@@ -17,6 +17,21 @@ from typing import Optional
 from backend.startup.workers.base import StartupWorker, WorkerResult
 from backend.startup.context import StartupContext
 
+
+def get_root() -> Path:
+    """获取项目根目录路径（统一方法，与工作目录解绑）
+    
+    通过当前文件的路径向上查找项目根目录。
+    monitor_launcher.py 位于 backend/startup/workers/
+    需要向上4级到达项目根目录。
+    
+    Returns:
+        Path: 项目根目录的Path对象
+    """
+    current_file = Path(__file__).resolve()
+    root_path = current_file.parent.parent.parent.parent
+    return root_path
+
 logger = logging.getLogger("backend.startup.workers.monitor_launcher")
 
 # 全局变量用于进程清理
@@ -236,7 +251,12 @@ class MonitorLauncherWorker(StartupWorker):
         }
 
     async def _wait_monitor_ready(self, max_wait: float = 15.0, wait_for_level: int = 1) -> dict:
-        """等待监控进程就绪
+        """等待监控进程就绪（多维度验证架构）
+
+        验证策略（按优先级）：
+        1. PID验证（基础验证）
+        2. 时间戳验证（Windows PID不一致时的主要验证）
+        3. IPC连接验证（最可靠，可选）
 
         Args:
             max_wait: 最大等待时间（秒）
@@ -245,19 +265,42 @@ class MonitorLauncherWorker(StartupWorker):
         Returns:
             dict: 端口信息（仅Level 1时返回）
         """
-        # 使用相对路径（监控进程在项目根目录工作）
-        signal_file = Path("logs/monitor_ready.signal")
+        # 使用绝对路径（与工作目录解绑）
+        signal_file = get_root() / "logs" / "monitor_ready.signal"
         wait_start = time.time()
         
         # 获取当前监控进程的PID
         current_monitor_pid = self.monitor_process_handle.pid if self.monitor_process_handle else None
+        
+        # 获取进程启动时间（用于时间戳验证）
+        process_start_time = time.time()
+        if self.monitor_process_handle:
+            try:
+                import psutil
+                proc = psutil.Process(self.monitor_process_handle.pid)
+                process_start_time = proc.create_time()
+                self.logger.debug(
+                    f"[MONITOR-PROCESS] 进程启动时间: {process_start_time} (PID={current_monitor_pid})",
+                    extra={"log_type": "SYSTEM", "scenario": "monitor_launch"}
+                )
+            except ImportError:
+                self.logger.debug(
+                    "[MONITOR-PROCESS] psutil不可用，使用当前时间作为进程启动时间",
+                    extra={"log_type": "SYSTEM", "scenario": "monitor_launch"}
+                )
+            except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
+                self.logger.debug(
+                    f"[MONITOR-PROCESS] 无法获取进程创建时间: {e}，使用当前时间",
+                    extra={"log_type": "SYSTEM", "scenario": "monitor_launch"}
+                )
+        
         if current_monitor_pid:
             self.logger.debug(
-                f"[MONITOR-PROCESS] 等待监控进程就绪: 期望PID={current_monitor_pid}, 等待级别={wait_for_level}",
-                extra={"log_type": "SYSTEM"}
+                f"[MONITOR-PROCESS] 等待监控进程就绪: 期望PID={current_monitor_pid}, 等待级别={wait_for_level}, 进程启动时间={process_start_time}",
+                extra={"log_type": "SYSTEM", "scenario": "monitor_launch"}
             )
 
-        # 等待信号文件出现，并验证PID匹配
+        # 等待信号文件出现，并验证PID匹配和时间戳
         import json
         current_level = 0
         
@@ -268,42 +311,69 @@ class MonitorLauncherWorker(StartupWorker):
                         signal_data = json.load(f)
                     
                     signal_pid = signal_data.get("pid")
+                    signal_timestamp = signal_data.get("timestamp", 0)
                     
-                    # 验证PID是否匹配
-                    if current_monitor_pid and signal_pid != current_monitor_pid:
-                        # PID不匹配，可能是旧进程的信号文件，删除它并继续等待
+                    # 多维度验证
+                    pid_valid = (not current_monitor_pid) or (signal_pid == current_monitor_pid)
+                    timestamp_valid = signal_timestamp >= (process_start_time - 1.0)  # 允许1秒误差
+                    
+                    self.logger.debug(
+                        f"[MONITOR-PROCESS] 验证信号文件: PID={signal_pid}, 时间戳={signal_timestamp}, "
+                        f"PID验证={'通过' if pid_valid else '失败'}, 时间戳验证={'通过' if timestamp_valid else '失败'}",
+                        extra={"log_type": "SYSTEM", "scenario": "monitor_launch"}
+                    )
+                    
+                    # 验证决策
+                    if pid_valid:
+                        # PID匹配，直接通过
+                        self.logger.debug(
+                            f"[MONITOR-PROCESS] PID验证通过: {signal_pid}",
+                            extra={"log_type": "SYSTEM", "scenario": "monitor_launch"}
+                        )
+                    elif timestamp_valid:
+                        # PID不匹配但时间戳有效（Windows正常情况）
+                        self.logger.info(
+                            f"[MONITOR-PROCESS] PID不一致但时间戳有效（Windows正常情况）: "
+                            f"期望PID={current_monitor_pid}, 实际PID={signal_pid}, "
+                            f"时间戳={signal_timestamp}, 进程启动时间={process_start_time}",
+                            extra={"log_type": "SYSTEM", "scenario": "monitor_launch"}
+                        )
+                    else:
+                        # 所有验证都失败，删除旧文件
                         self.logger.warning(
-                            f"[MONITOR-PROCESS] 信号文件PID不匹配: 期望={current_monitor_pid}, 实际={signal_pid}，删除旧文件并继续等待",
-                            extra={"log_type": "SYSTEM"}
+                            f"[MONITOR-PROCESS] 信号文件验证失败（PID和时间戳都不匹配）: "
+                            f"期望PID={current_monitor_pid}, 实际PID={signal_pid}, "
+                            f"时间戳={signal_timestamp}, 进程启动时间={process_start_time}，删除旧文件并继续等待",
+                            extra={"log_type": "SYSTEM", "scenario": "monitor_launch"}
                         )
                         try:
                             signal_file.unlink()
                             self.logger.debug(
                                 f"[MONITOR-PROCESS] 已删除旧信号文件（PID={signal_pid}）",
-                                extra={"log_type": "SYSTEM"}
+                                extra={"log_type": "SYSTEM", "scenario": "monitor_launch"}
                             )
                         except Exception as e:
                             self.logger.warning(
                                 f"[MONITOR-PROCESS] 删除旧信号文件失败: {e}",
-                                extra={"log_type": "SYSTEM"}
+                                extra={"log_type": "SYSTEM", "scenario": "monitor_launch"}
                             )
                         await asyncio.sleep(0.5)
                         continue
                     
-                    # PID匹配（或没有PID验证），检查级别
+                    # 验证通过（PID匹配或时间戳有效），检查级别
                     current_level = signal_data.get("level", 0)
                     ports_info = signal_data.get("ports", {})
                     
                     self.logger.debug(
-                        f"[MONITOR-PROCESS] 信号文件有效: PID={signal_pid}, level={current_level}, 目标级别={wait_for_level}",
-                        extra={"log_type": "SYSTEM"}
+                        f"[MONITOR-PROCESS] 信号文件有效: PID={signal_pid}, level={current_level}, 目标级别={wait_for_level}, 时间戳={signal_timestamp}",
+                        extra={"log_type": "SYSTEM", "scenario": "monitor_launch"}
                     )
                     
                     # 如果已达到目标级别，返回
                     if current_level >= wait_for_level:
                         self.logger.info(
-                            f"[MONITOR-PROCESS] ✅ 监控进程Level {wait_for_level}已就绪（PID={signal_pid}）",
-                            extra={"log_type": "SYSTEM"}
+                            f"[MONITOR-PROCESS] ✅ 监控进程Level {wait_for_level}已就绪（PID={signal_pid}, 时间戳={signal_timestamp}）",
+                            extra={"log_type": "SYSTEM", "scenario": "monitor_launch"}
                         )
                         return ports_info
                     
@@ -312,21 +382,21 @@ class MonitorLauncherWorker(StartupWorker):
                 except json.JSONDecodeError as e:
                     self.logger.warning(
                         f"[MONITOR-PROCESS] 解析信号文件失败: {e}，删除并继续等待",
-                        extra={"log_type": "SYSTEM"}
+                        extra={"log_type": "SYSTEM", "scenario": "monitor_launch"}
                     )
                     try:
                         signal_file.unlink()
                     except Exception as cleanup_error:
                         self.logger.debug(
                             f"[MONITOR-PROCESS] 删除损坏信号文件失败: {cleanup_error}",
-                            extra={"log_type": "SYSTEM"}
+                            extra={"log_type": "SYSTEM", "scenario": "monitor_launch"}
                         )
                     await asyncio.sleep(0.5)
                     continue
                 except Exception as e:
                     self.logger.warning(
                         f"[MONITOR-PROCESS] 读取信号文件失败: {e}",
-                        extra={"log_type": "SYSTEM"}
+                        extra={"log_type": "SYSTEM", "scenario": "monitor_launch"}
                     )
                     await asyncio.sleep(0.5)
                     continue
@@ -336,13 +406,19 @@ class MonitorLauncherWorker(StartupWorker):
         
         # 超时仍未找到匹配的信号文件
         if current_monitor_pid:
-            raise RuntimeError(
-                f"监控进程就绪超时（等待 {max_wait} 秒，期望PID={current_monitor_pid}，当前级别={current_level}）"
+            error_msg = f"监控进程就绪超时（等待 {max_wait} 秒，期望PID={current_monitor_pid}，当前级别={current_level}）"
+            self.logger.error(
+                f"[MONITOR-PROCESS] ❌ {error_msg}",
+                extra={"log_type": "ALERT", "scenario": "monitor_launch"}
             )
+            raise RuntimeError(error_msg)
         else:
-            raise RuntimeError(
-                f"监控进程就绪超时（等待 {max_wait} 秒，当前级别={current_level}）"
+            error_msg = f"监控进程就绪超时（等待 {max_wait} 秒，当前级别={current_level}）"
+            self.logger.error(
+                f"[MONITOR-PROCESS] ❌ {error_msg}",
+                extra={"log_type": "ALERT", "scenario": "monitor_launch"}
             )
+            raise RuntimeError(error_msg)
 
     def _start_watchdog(self, context: StartupContext):
         """启动看门狗线程（监控监控进程健康状态）
@@ -402,7 +478,7 @@ class MonitorLauncherWorker(StartupWorker):
     def _cleanup_signal_file(self):
         """清理监控就绪信号文件"""
         try:
-            signal_file = Path("logs/monitor_ready.signal")
+            signal_file = get_root() / "logs" / "monitor_ready.signal"
             if signal_file.exists():
                 signal_file.unlink()
                 self.logger.debug("[MONITOR-PROCESS] 已清理 monitor_ready.signal 文件", extra={"log_type": "SYSTEM"})
@@ -437,7 +513,7 @@ def cleanup_all_processes():
 def _cleanup_signal_file():
     """清理监控就绪信号文件（独立函数，可在任何地方调用）"""
     try:
-        signal_file = Path("logs/monitor_ready.signal")
+        signal_file = get_root() / "logs" / "monitor_ready.signal"
         if signal_file.exists():
             signal_file.unlink()
             logger.debug("[CLEANUP] 已清理 monitor_ready.signal 文件", extra={"log_type": "SYSTEM"})

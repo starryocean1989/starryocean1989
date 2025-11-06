@@ -24,13 +24,35 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from functools import wraps, lru_cache
+from functools import wraps
 from pathlib import Path
 from threading import Lock, RLock
 from typing import Any, Dict, List, Optional, Callable, Tuple
 from logging.handlers import QueueHandler, QueueListener, MemoryHandler
 
 from vnpy.event import Event, EventEngine
+
+# 可选：native 优先队列和LRU缓存（仅 Windows 支持）
+try:
+    from backend.infrastructure.native.native_collections import (
+        HighPerfPriorityQueue,
+        HighPerfLRUCache,
+        COLLECTIONS_AVAILABLE as NATIVE_COLLECTIONS_AVAILABLE,
+    )
+except Exception:
+    HighPerfPriorityQueue = None  # type: ignore
+    HighPerfLRUCache = None  # type: ignore
+    NATIVE_COLLECTIONS_AVAILABLE = False  # type: ignore
+
+# 可选的native序列化（Windows C扩展，存在则用于批量写库打包）
+try:
+    from backend.infrastructure.native.native_serialization import (
+        zero_copy_serialize,
+    )
+    NATIVE_SERIALIZATION_AVAILABLE = True
+except Exception:
+    zero_copy_serialize = None  # type: ignore
+    NATIVE_SERIALIZATION_AVAILABLE = False
 
 # 日志配置
 logger = logging.getLogger("backend.infrastructure.system_vnpy.logging_system")
@@ -141,7 +163,10 @@ class OrderedLogQueue:
         Args:
             max_wait_seconds: 最大等待时间（秒），超过此时间即使前面的日志未到也输出
         """
-        self.queue: List[Tuple[float, Any]] = []  # [(timestamp, record), ...]
+        # 根据系统环境选择实现：native 优先队列或 Python heapq
+        self._use_native = bool(NATIVE_COLLECTIONS_AVAILABLE and HighPerfPriorityQueue)
+        self.queue: List[Tuple[float, Any]] = []  # [(timestamp, record), ...]（回退实现）
+        self._pq = HighPerfPriorityQueue() if self._use_native else None  # type: ignore
         self.lock = threading.Lock()
         self.max_wait_seconds = max_wait_seconds
         self.logger = logging.getLogger(
@@ -182,19 +207,53 @@ class OrderedLogQueue:
             if not isinstance(timestamp, (int, float)):
                 timestamp = time.time()
             record.sequence = sequence
-            heapq.heappush(self.queue, (timestamp, record))
-            self._record_timestamps[timestamp] = time.time()
+
+            if self._use_native and self._pq is not None:
+                # native 优先队列为“高优先级先出”，为了最早时间先出，使用负数优先级
+                try:
+                    self._pq.put(record, -float(timestamp))  # type: ignore
+                except Exception:
+                    # 发生异常时回退到 Python 实现
+                    self._use_native = False
+                    self.queue.append((timestamp, record))
+                    heapq.heapify(self.queue)
+                self._record_timestamps[timestamp] = time.time()
+            else:
+                heapq.heappush(self.queue, (timestamp, record))
+                self._record_timestamps[timestamp] = time.time()
+
             self._try_flush()
 
     def _try_flush(self):
         """尝试输出队列中已准备好的日志（按时间顺序）"""
-        # 按时间顺序输出所有日志
-        while self.queue:
-            timestamp, record = heapq.heappop(self.queue)
-            # 输出日志
-            self._output_log(record)
-            # 清理时间戳
-            self._record_timestamps.pop(timestamp, None)
+        if self._use_native and self._pq is not None:
+            try:
+                # 按时间顺序输出所有日志
+                while self._pq.size() > 0:  # type: ignore
+                    record = self._pq.get()  # type: ignore
+                    # 重新获取时间戳用于清理
+                    ts = (
+                        record.timestamp.timestamp()
+                        if hasattr(record.timestamp, "timestamp")
+                        else record.timestamp
+                    )
+                    if not isinstance(ts, (int, float)):
+                        ts = time.time()
+                    self._output_log(record)
+                    self._record_timestamps.pop(float(ts), None)
+            except Exception:
+                # 任意异常回退到 Python 实现
+                self._use_native = False
+                # 无法直接获取 native 队列剩余元素，保持现有状态
+                # 后续 add_log 将使用 Python heapq 路径
+        else:
+            # 按时间顺序输出所有日志
+            while self.queue:
+                timestamp, record = heapq.heappop(self.queue)
+                # 输出日志
+                self._output_log(record)
+                # 清理时间戳
+                self._record_timestamps.pop(timestamp, None)
 
     def _output_log(self, record: Any):
         """输出日志到回调函数
@@ -230,18 +289,45 @@ class OrderedLogQueue:
                     # 对超时的日志按时间排序
                     timeout_timestamps.sort()
 
-                    for timeout_ts in timeout_timestamps:
-                        # 找到对应的日志记录
-                        for i, (q_ts, q_record) in enumerate(self.queue):
-                            if q_ts == timeout_ts:
-                                # 输出日志
-                                self._output_log(q_record)
-                                # 从队列中移除
-                                self.queue.pop(i)
-                                heapq.heapify(self.queue)
-                                # 清理时间戳
-                                self._record_timestamps.pop(timeout_ts, None)
-                                break
+                    if self._use_native and self._pq is not None:
+                        try:
+                            # 将所有元素取出，输出超时的，保留未超时的
+                            remaining: List[Tuple[float, Any]] = []
+                            while self._pq.size() > 0:  # type: ignore
+                                rec = self._pq.get()  # type: ignore
+                                ts = (
+                                    rec.timestamp.timestamp()
+                                    if hasattr(rec.timestamp, "timestamp")
+                                    else rec.timestamp
+                                )
+                                if not isinstance(ts, (int, float)):
+                                    ts = time.time()
+                                fts = float(ts)
+                                if fts in timeout_timestamps:
+                                    self._output_log(rec)
+                                    self._record_timestamps.pop(fts, None)
+                                else:
+                                    remaining.append((fts, rec))
+                            # 重新插回未超时的
+                            for fts, rec in remaining:
+                                self._pq.put(rec, -fts)  # type: ignore
+                        except Exception:
+                            # 回退到 Python 路径
+                            self._use_native = False
+                            # 无法恢复 native 队列内容，后续由 add_log 填充
+                    else:
+                        for timeout_ts in timeout_timestamps:
+                            # 找到对应的日志记录
+                            for i, (q_ts, q_record) in enumerate(self.queue):
+                                if q_ts == timeout_ts:
+                                    # 输出日志
+                                    self._output_log(q_record)
+                                    # 从队列中移除
+                                    self.queue.pop(i)
+                                    heapq.heapify(self.queue)
+                                    # 清理时间戳
+                                    self._record_timestamps.pop(timeout_ts, None)
+                                    break
 
                 # 继续尝试正常输出
                 self._try_flush()
@@ -895,6 +981,15 @@ class LoggingHub(logging.Handler):
             "cache_validation_step8",
         }
 
+        # 🚀 性能优化：使用native HighPerfLRUCache替代@lru_cache装饰器
+        # 日志类型分类缓存（最大1000项，与原来的@lru_cache(maxsize=1000)一致）
+        if not NATIVE_COLLECTIONS_AVAILABLE or HighPerfLRUCache is None:
+            raise RuntimeError(
+                "HighPerfLRUCache is required but not available. "
+                "Please ensure native_collections is properly installed."
+            )
+        self._log_type_cache: Any = HighPerfLRUCache(1000)  # type: ignore
+
     def set_event_engine(self, event_engine: EventEngine):
         """注入EventEngine."""
         self.event_engine = event_engine
@@ -1028,7 +1123,6 @@ class LoggingHub(logging.Handler):
             exception=exception_text,
         )
 
-    @lru_cache(maxsize=1000)
     def _classify_log_type_cached(
         self,
         logger_name_lower: str,
@@ -1036,7 +1130,36 @@ class LoggingHub(logging.Handler):
         levelno: int,
         log_type_attr_str: Optional[str],
     ) -> LogType:
-        """缓存的日志类型分类（辅助方法）."""
+        """缓存的日志类型分类（辅助方法）.
+
+        🚀 性能优化：使用native HighPerfLRUCache替代@lru_cache装饰器
+        """
+        # 生成缓存键
+        cache_key = (logger_name_lower, message_lower, levelno, log_type_attr_str)
+
+        # 从缓存获取
+        cached_result = self._log_type_cache.get(cache_key)  # type: ignore
+        if cached_result is not None:
+            return cached_result
+
+        # 计算日志类型
+        result = self._classify_log_type_impl(
+            logger_name_lower, message_lower, levelno, log_type_attr_str
+        )
+
+        # 存入缓存
+        self._log_type_cache.set(cache_key, result)  # type: ignore
+
+        return result
+
+    def _classify_log_type_impl(
+        self,
+        logger_name_lower: str,
+        message_lower: str,
+        levelno: int,
+        log_type_attr_str: Optional[str],
+    ) -> LogType:
+        """日志类型分类实现（无缓存）."""
         # 优先检查extra参数中的log_type（显式指定）
         if log_type_attr_str:
             try:
@@ -1413,14 +1536,27 @@ class LoggingHub(logging.Handler):
             return
 
         try:
-            # 这里假设db_manager有批量写入方法
-            if hasattr(self.db_manager, "batch_insert_logs"):
-                self.db_manager.batch_insert_logs(self._db_batch_cache)
+            # 优先使用native序列化打包，减少Python层传递开销
+            if NATIVE_SERIALIZATION_AVAILABLE and hasattr(self.db_manager, "batch_insert_logs_serialized"):
+                try:
+                    payload = zero_copy_serialize(self._db_batch_cache)  # type: ignore
+                    self.db_manager.batch_insert_logs_serialized(payload)
+                except Exception:
+                    # native路径失败则回退普通批量
+                    if hasattr(self.db_manager, "batch_insert_logs"):
+                        self.db_manager.batch_insert_logs(self._db_batch_cache)
+                    else:
+                        for record in self._db_batch_cache:
+                            if hasattr(self.db_manager, "insert_log"):
+                                self.db_manager.insert_log(record)
             else:
-                # 降级为逐条插入
-                for record in self._db_batch_cache:
-                    if hasattr(self.db_manager, "insert_log"):
-                        self.db_manager.insert_log(record)
+                # 普通批量接口或逐条降级
+                if hasattr(self.db_manager, "batch_insert_logs"):
+                    self.db_manager.batch_insert_logs(self._db_batch_cache)
+                else:
+                    for record in self._db_batch_cache:
+                        if hasattr(self.db_manager, "insert_log"):
+                            self.db_manager.insert_log(record)
 
             self._db_batch_cache.clear()
             self._db_last_flush = time.time()

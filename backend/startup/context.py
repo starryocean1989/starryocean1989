@@ -9,8 +9,10 @@ import logging
 import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any
+
 try:
     from typing import TYPE_CHECKING
+
     if TYPE_CHECKING:
         from asyncio import Task
 except ImportError:
@@ -47,6 +49,8 @@ class StartupContext:
         # 进程管理
         self.monitor_process: Optional[subprocess.Popen] = None
         self.monitor_process_pid: Optional[int] = None
+        self.data_process: Optional[subprocess.Popen] = None
+        self.data_process_pid: Optional[int] = None
 
         # 服务管理器（从backend.core.base导入）
         from backend.core.base import get_service_manager
@@ -69,12 +73,15 @@ class StartupContext:
         # UI预加载
         self.ui_preload_task: Optional[Task] = None  # asyncio.Task
         self.ui_preloaded: bool = False
-        
+
         # 阶段结果存储（用于日志输出）
         self.stage_results: Dict[str, Any] = {}
-        
+
         # MemoryHandler（环境准备阶段设置，日志系统初始化阶段使用）
         self._memory_handler: Optional[Any] = None
+
+        # 日志队列（用于跨进程日志收集）
+        self.log_queue: Optional[Any] = None  # multiprocessing.Queue
 
     def validate(self, required_deps: Optional[list] = None) -> bool:
         """验证所有必需的依赖是否已初始化
@@ -148,6 +155,15 @@ class StartupContext:
         self.monitor_process = process
         self.monitor_process_pid = process.pid
 
+    def set_data_process(self, process: subprocess.Popen):
+        """设置数据进程
+
+        Args:
+            process: 数据进程Popen对象
+        """
+        self.data_process = process
+        self.data_process_pid = process.pid
+
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典格式（用于日志和调试）
 
@@ -161,8 +177,8 @@ class StartupContext:
             "app": self.app is not None,
             "main_window": self.main_window is not None,
             "monitor_process_pid": self.monitor_process_pid,
+            "data_process_pid": self.data_process_pid,
             "logging_hub_initialized": self.logging_hub_initialized,
             "backend_initialized": self.backend_initialized,
             "ui_initialized": self.ui_initialized,
         }
-

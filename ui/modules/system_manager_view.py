@@ -913,6 +913,15 @@ class UnifiedMonitorCard(QWidget):
         )
         self.bandwidth_detail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main_layout.addWidget(self.bandwidth_detail_label)
+        
+        # Socket缓冲区信息标签
+        self.socket_buffer_label = QLabel("Socket缓冲区: --")
+        self.socket_buffer_label.setStyleSheet(
+            "font-size: 9px; color: #666; border: none; padding: 2px;"
+        )
+        self.socket_buffer_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.socket_buffer_label.setWordWrap(True)
+        main_layout.addWidget(self.socket_buffer_label)
 
         # 延迟列的无网络连接标签和重试按钮引用（延迟初始化）
         self.latency_network_disconnected_label: Optional[QLabel] = None
@@ -938,6 +947,50 @@ class UnifiedMonitorCard(QWidget):
             )
         else:
             self.bandwidth_detail_label.setText("带宽未测试")
+    
+    def update_socket_buffer_info(self, socket_buffer_info: Dict[str, Any]):
+        """更新Socket缓冲区信息显示.
+
+        Args:
+            socket_buffer_info: Socket缓冲区信息字典
+        """
+        if not hasattr(self, "socket_buffer_label") or not socket_buffer_info:
+            return
+        
+        try:
+            recv_size_kb = socket_buffer_info.get("recv_buffer_size_avg", 0) / 1024
+            send_size_kb = socket_buffer_info.get("send_buffer_size_avg", 0) / 1024
+            recv_usage = socket_buffer_info.get("recv_buffer_usage_ratio", 0.0)
+            send_usage = socket_buffer_info.get("send_buffer_usage_ratio", 0.0)
+            
+            # 根据使用率设置颜色
+            recv_color = "#888"  # 默认灰色
+            send_color = "#888"
+            if recv_usage > 95:
+                recv_color = "#FF4444"  # 严重-红色
+            elif recv_usage > 80:
+                recv_color = "#FFAA00"  # 警告-橙色
+            
+            if send_usage > 95:
+                send_color = "#FF4444"  # 严重-红色
+            elif send_usage > 80:
+                send_color = "#FFAA00"  # 警告-橙色
+            
+            buffer_text = f"Socket缓冲区: 接收{recv_size_kb:.0f}KB({recv_usage:.0f}%) 发送{send_size_kb:.0f}KB({send_usage:.0f}%)"
+            self.socket_buffer_label.setText(buffer_text)
+            
+            # 如果任一使用率超过阈值，使用警告颜色
+            if recv_usage > 80 or send_usage > 80:
+                warning_color = send_color if send_usage > recv_usage else recv_color
+                self.socket_buffer_label.setStyleSheet(
+                    f"font-size: 9px; color: {warning_color}; border: none; padding: 2px; font-weight: bold;"
+                )
+            else:
+                self.socket_buffer_label.setStyleSheet(
+                    "font-size: 9px; color: #666; border: none; padding: 2px;"
+                )
+        except Exception as e:
+            self.socket_buffer_label.setText("Socket缓冲区: 数据错误")
 
     def update_network_status(self, disconnected: bool, retry_callback=None):
         """更新无网络连接状态显示.
@@ -1022,6 +1075,15 @@ class NetworkMonitorCard(VerticalThresholdHeatmap):
                 self.bandwidth_detail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.bandwidth_detail_label.setWordWrap(True)
                 container_layout.addWidget(self.bandwidth_detail_label)
+                
+                # 添加Socket缓冲区信息标签
+                self.socket_buffer_label = QLabel("Socket缓冲区: --")
+                self.socket_buffer_label.setStyleSheet(
+                    "font-size: 8px; color: #666; border: none; margin-top: 2px;"
+                )
+                self.socket_buffer_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.socket_buffer_label.setWordWrap(True)
+                container_layout.addWidget(self.socket_buffer_label)
 
         # 在延迟列下方添加无网络连接显示和重试按钮
         # 获取延迟对应的value_container（第2个）
@@ -1071,6 +1133,50 @@ class NetworkMonitorCard(VerticalThresholdHeatmap):
                 )
             else:
                 self.bandwidth_detail_label.setText("未测试")
+    
+    def update_socket_buffer_info(self, socket_buffer_info: Dict[str, Any]):
+        """更新Socket缓冲区信息显示.
+
+        Args:
+            socket_buffer_info: Socket缓冲区信息字典
+        """
+        if not hasattr(self, "socket_buffer_label") or not socket_buffer_info:
+            return
+        
+        try:
+            recv_size_kb = socket_buffer_info.get("recv_buffer_size_avg", 0) / 1024
+            send_size_kb = socket_buffer_info.get("send_buffer_size_avg", 0) / 1024
+            recv_usage = socket_buffer_info.get("recv_buffer_usage_ratio", 0.0)
+            send_usage = socket_buffer_info.get("send_buffer_usage_ratio", 0.0)
+            
+            # 根据使用率设置颜色
+            recv_color = "#888"  # 默认灰色
+            send_color = "#888"
+            if recv_usage > 95:
+                recv_color = "#FF4444"  # 严重-红色
+            elif recv_usage > 80:
+                recv_color = "#FFAA00"  # 警告-橙色
+            
+            if send_usage > 95:
+                send_color = "#FF4444"  # 严重-红色
+            elif send_usage > 80:
+                send_color = "#FFAA00"  # 警告-橙色
+            
+            buffer_text = f"接收:{recv_size_kb:.0f}KB({recv_usage:.0f}%) 发送:{send_size_kb:.0f}KB({send_usage:.0f}%)"
+            self.socket_buffer_label.setText(buffer_text)
+            
+            # 如果任一使用率超过阈值，使用警告颜色
+            if recv_usage > 80 or send_usage > 80:
+                warning_color = send_color if send_usage > recv_usage else recv_color
+                self.socket_buffer_label.setStyleSheet(
+                    f"font-size: 8px; color: {warning_color}; border: none; margin-top: 2px; font-weight: bold;"
+                )
+            else:
+                self.socket_buffer_label.setStyleSheet(
+                    "font-size: 8px; color: #666; border: none; margin-top: 2px;"
+                )
+        except Exception as e:
+            self.socket_buffer_label.setText("Socket缓冲区: 数据错误")
 
 
 class MemoryMonitorCard(VerticalThresholdHeatmap):
@@ -3782,6 +3888,12 @@ class SystemManager(BaseWidget, LoggerMixin):
                 self.unified_monitor_card.update_network_status(
                     network_disconnected, retry_callback=self._retry_latency_test
                 )
+                
+                # 更新Socket缓冲区信息
+                network_subsystem = metrics.get("network_subsystem", {})
+                socket_buffer_info = network_subsystem.get("socket_buffer_info", {})
+                if socket_buffer_info and hasattr(self.unified_monitor_card, "update_socket_buffer_info"):
+                    self.unified_monitor_card.update_socket_buffer_info(socket_buffer_info)
 
             # 4. 硬盘监控卡片
             # SMART数据现在通过EVENT_SMART_STATUS事件更新
@@ -9967,6 +10079,46 @@ class SystemManager(BaseWidget, LoggerMixin):
                         f"{self.metric_thresholds['packet_loss']:.1f}%",
                     )
                 )
+                
+                # 新增：Socket缓冲区信息
+                socket_buffer_info = network_subsystem.get("socket_buffer_info", {})
+                if socket_buffer_info:
+                    recv_size_kb = socket_buffer_info.get("recv_buffer_size_avg", 0) / 1024
+                    send_size_kb = socket_buffer_info.get("send_buffer_size_avg", 0) / 1024
+                    recv_usage = socket_buffer_info.get("recv_buffer_usage_ratio", 0.0)
+                    send_usage = socket_buffer_info.get("send_buffer_usage_ratio", 0.0)
+                    tcp_connections = socket_buffer_info.get("tcp_connections", 0)
+                    established_connections = socket_buffer_info.get("established_connections", 0)
+                    
+                    # Socket接收缓冲区
+                    rows.append(
+                        (
+                            "Socket接收缓冲区",
+                            f"{recv_size_kb:.0f}KB ({recv_usage:.1f}%)",
+                            f"{recv_size_kb:.0f}KB",
+                            "80%",
+                        )
+                    )
+                    
+                    # Socket发送缓冲区
+                    rows.append(
+                        (
+                            "Socket发送缓冲区",
+                            f"{send_size_kb:.0f}KB ({send_usage:.1f}%)",
+                            f"{send_size_kb:.0f}KB",
+                            "80%",
+                        )
+                    )
+                    
+                    # TCP连接数
+                    rows.append(
+                        (
+                            "TCP连接数",
+                            f"{established_connections}/{tcp_connections}",
+                            f"{tcp_connections}",
+                            "--",
+                        )
+                    )
 
             # 新增：SMART扇区告警（硬盘健康关键指标）
             smart_data = metrics.get("smart", {})

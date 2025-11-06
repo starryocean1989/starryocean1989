@@ -59,9 +59,54 @@ from typing import Dict, Callable, Optional
 from pathlib import Path
 import json
 
+# 直接使用native序列化优化
+from backend.infrastructure.native.native_serialization import zero_copy_serialize
+
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import QWidget
+
+
+def _load_json_config(file_path: Path) -> Dict:
+    """
+    使用优化方式加载JSON配置文件
+
+    Args:
+        file_path: 配置文件路径
+
+    Returns:
+        配置字典
+    """
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"加载配置文件失败 {file_path}: {e}")
+        return {}
+
+
+def _save_json_config(file_path: Path, data: Dict) -> bool:
+    """
+    使用优化方式保存JSON配置文件
+
+    Args:
+        file_path: 配置文件路径
+        data: 配置数据
+
+    Returns:
+        是否保存成功
+    """
+    try:
+        # 确保目录存在
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+
+        return True
+    except Exception as e:
+        print(f"保存配置文件失败 {file_path}: {e}")
+        return False
 
 
 # =============================================================================
@@ -344,8 +389,7 @@ class ShortcutManager(QObject, LoggerMixin):
             return
 
         try:
-            with open(self.config_file, "r", encoding="utf-8") as f:
-                config = json.load(f)
+            config = _load_json_config(self.config_file)
 
             # 合并配置（覆盖默认值）
             for action_id, key_sequence in config.items():
@@ -366,17 +410,14 @@ class ShortcutManager(QObject, LoggerMixin):
     def _save_config(self):
         """保存配置."""
         try:
-            # 确保配置目录存在
-            self.config_file.parent.mkdir(parents=True, exist_ok=True)
-
             # 收集当前配置
             config = {action_id: info["key_sequence"] for action_id, info in self.shortcuts.items()}
 
             # 保存到文件
-            with open(self.config_file, "w", encoding="utf-8") as f:
-                json.dump(config, f, indent=2, ensure_ascii=False)
-
-            self.logger.info(f"快捷键配置已保存: {self.config_file}")
+            if _save_json_config(self.config_file, config):
+                self.logger.info(f"快捷键配置已保存: {self.config_file}")
+            else:
+                raise Exception("保存配置失败")
 
         except Exception as e:
             self.logger.error(

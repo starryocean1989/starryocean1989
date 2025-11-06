@@ -9,6 +9,7 @@
 """
 
 import ast
+import json
 import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -24,9 +25,47 @@ from backend.infrastructure.system_vnpy.logging_system import (
     get_logging_hub,
 )
 
+# 直接使用native序列化优化
+from backend.infrastructure.native.native_serialization import zero_copy_serialize
+
+# 尝试导入native_iocp的高性能目录遍历功能
+try:
+    from backend.infrastructure.native.native_iocp import (
+        fast_dir_walk,
+        fast_dir_list,
+        batch_file_stat,
+        BATCH_AVAILABLE,
+    )
+
+    NATIVE_IOCP_AVAILABLE = BATCH_AVAILABLE
+except ImportError:
+    NATIVE_IOCP_AVAILABLE = False
+    fast_dir_walk = None
+    fast_dir_list = None
+    batch_file_stat = None
+
 # 专用logger - 日志埋点v4.0
 logger_backtest = logging.getLogger("backend.strategy.backtest")
 logger_alert = logging.getLogger("backend.strategy.alert")
+
+
+def _serialize_json(obj: Any) -> str:
+    """
+    使用native序列化优化JSON序列化
+
+    Args:
+        obj: 要序列化的对象
+
+    Returns:
+        JSON字符串
+    """
+    # 对于JSON兼容的数据，直接使用json.dumps
+    if isinstance(obj, (dict, list, str, int, float, bool)) or obj is None:
+        return json.dumps(obj, ensure_ascii=False)
+    else:
+        # 对于复杂对象，使用native序列化的结果
+        serialized_bytes = zero_copy_serialize(obj)
+        return serialized_bytes.decode("latin1")  # pickle使用latin1编码
 
 
 # =============================================================================
@@ -675,16 +714,75 @@ class StrategyCenterService(BaseService, LoggerMixin):
                 return {"success": False, "message": "目录不存在", "files": []}
 
             files = []
-            for item in target_dir.iterdir():
+
+            # ✨ 优化：使用native_iocp的高性能目录遍历
+            if not NATIVE_IOCP_AVAILABLE or fast_dir_list is None or batch_file_stat is None:
+                return {
+                    "success": False,
+                    "message": "native_iocp不可用，无法列出文件",
+                    "files": [],
+                }
+
+            # 使用fast_dir_list获取目录项列表（返回完整路径列表）
+            dir_items = fast_dir_list(str(target_dir))  # type: ignore[call-arg]
+
+            # 批量获取文件统计信息
+            # batch_file_stat返回一个列表,与输入列表顺序对应
+            # 每个元素是一个字典,包含 "size" 和 "mtime" 键,或 None(如果文件不存在)
+            file_stats_list = batch_file_stat(dir_items)  # type: ignore[call-arg]
+
+            for idx, item_path in enumerate(dir_items):
+                item_path_obj = Path(item_path)
+                relative_path = item_path_obj.relative_to(self.strategy_root)
+
+                # 从批量统计信息中获取文件信息
+                if idx < len(file_stats_list) and file_stats_list[idx] is not None:
+                    stat_dict = file_stats_list[idx]
+                    if isinstance(stat_dict, dict):
+                        # 从字典中获取统计信息
+                        size = stat_dict.get("size", 0)
+                        mtime_raw = stat_dict.get("mtime", 0)
+
+                        # mtime是Windows FILETIME格式(100纳秒单位,从1601-01-01开始)
+                        # 需要转换为Unix时间戳
+                        if mtime_raw > 0:
+                            # Windows FILETIME to Unix timestamp
+                            # FILETIME epoch: 1601-01-01 00:00:00 UTC
+                            # Unix epoch: 1970-01-01 00:00:00 UTC
+                            # Difference: 11644473600 seconds
+                            unix_timestamp = (mtime_raw / 10000000.0) - 11644473600
+                            mtime = unix_timestamp
+                        else:
+                            mtime = 0
+
+                        # 判断是否为目录(需要单独检查)
+                        is_dir = item_path_obj.is_dir()
+
+                        # 如果是目录,size应该为0
+                        if is_dir:
+                            size = 0
+                    else:
+                        # 统计信息格式错误，跳过该项
+                        continue
+                else:
+                    # 统计信息为None或索引超出范围，跳过该项
+                    continue
+
                 files.append(
                     {
-                        "name": item.name,
-                        "path": str(item.relative_to(self.strategy_root)),
-                        "is_dir": item.is_dir(),
-                        "size": item.stat().st_size if item.is_file() else 0,
-                        "modified": datetime.fromtimestamp(item.stat().st_mtime).isoformat(),
+                        "name": item_path_obj.name,
+                        "path": str(relative_path),
+                        "is_dir": is_dir,
+                        "size": size,
+                        "modified": (
+                            datetime.fromtimestamp(mtime).isoformat()
+                            if mtime > 0
+                            else datetime.now().isoformat()
+                        ),
                     }
                 )
+
+            self.logger.debug(f"✓ 使用native_iocp高性能目录遍历列出 {len(files)} 个文件/目录")
 
             return {
                 "success": True,
@@ -1010,9 +1108,67 @@ class MyPortfolioStrategy(StrategyTemplate):
             strategies = []
             folders_set = set()
 
-            # 递归扫描所有.py文件
-            for file_path in scan_dir.rglob("*.py"):
-                # 跳过__init__文件和私有文件
+            # 使用native_iocp高性能目录遍历（如果可用），否则回退到rglob
+            if NATIVE_IOCP_AVAILABLE and fast_dir_walk is not None:
+                # 使用fast_dir_walk递归遍历目录
+                def _recursive_walk(directory: Path) -> List[Path]:
+                    """递归遍历目录，返回所有.py文件路径"""
+                    py_files = []
+                    try:
+                        # fast_dir_walk返回: [(root, dirs_list, files_list), ...]
+                        # 类型检查：fast_dir_walk在if条件中已确保不为None
+                        if fast_dir_walk is None:  # 类型检查保护
+                            return list(directory.rglob("*.py"))
+                        result = fast_dir_walk(str(directory))  # type: ignore[call-arg]
+                        if result and len(result) > 0:
+                            _root, dirs_list, files_list = result[0]
+
+                            # 处理当前目录的文件
+                            for file_name in files_list:
+                                file_path = Path(file_name)
+                                # 只处理.py文件，跳过__init__文件
+                                if file_path.suffix == ".py" and not file_path.name.startswith(
+                                    "__"
+                                ):
+                                    py_files.append(file_path)
+
+                            # 递归处理子目录
+                            for dir_name in dirs_list:
+                                sub_dir = Path(dir_name)
+                                py_files.extend(_recursive_walk(sub_dir))
+                    except Exception as e:
+                        # 如果fast_dir_walk失败，记录错误并回退
+                        self.logger.warning(
+                            "fast_dir_walk失败，回退到rglob: %s", e, extra={"log_type": "SYSTEM"}
+                        )
+                        # 回退到rglob
+                        return list(directory.rglob("*.py"))
+
+                    return py_files
+
+                # 使用高性能遍历
+                try:
+                    self.logger.debug(
+                        "使用native_iocp高性能目录遍历扫描策略文件", extra={"log_type": "SYSTEM"}
+                    )
+                    file_paths = _recursive_walk(scan_dir)
+                except Exception as e:
+                    self.logger.warning(
+                        "native_iocp目录遍历失败，回退到rglob: %s", e, extra={"log_type": "SYSTEM"}
+                    )
+                    # 回退到rglob
+                    file_paths = list(scan_dir.rglob("*.py"))
+            else:
+                # 回退到标准rglob实现
+                if not NATIVE_IOCP_AVAILABLE:
+                    self.logger.debug(
+                        "native_iocp不可用，使用标准rglob扫描策略文件", extra={"log_type": "SYSTEM"}
+                    )
+                file_paths = list(scan_dir.rglob("*.py"))
+
+            # 处理扫描到的文件
+            for file_path in file_paths:
+                # 跳过__init__文件和私有文件（如果使用rglob，这里需要再次过滤）
                 if file_path.name.startswith("__"):
                     continue
 
@@ -1389,7 +1545,7 @@ class MyPortfolioStrategy(StrategyTemplate):
                     (
                         task_id,
                         strategy_file,
-                        json.dumps(config, ensure_ascii=False),
+                        _serialize_json(config),
                         "running",
                         0,
                         task_data["start_time"].isoformat(),
@@ -1733,7 +1889,7 @@ class MyPortfolioStrategy(StrategyTemplate):
                                     float(max_drawdown),
                                     int(total_trades),
                                     float(winning_rate),
-                                    json.dumps(statistics, ensure_ascii=False),
+                                    _serialize_json(statistics),
                                     datetime.now().isoformat(),
                                 ),
                             )

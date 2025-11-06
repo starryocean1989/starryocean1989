@@ -890,7 +890,7 @@ class StorageManager:
 
         try:
             # 使用native_iocp异步写入
-            from backend.infrastructure.native_iocp import compat_aopen
+            from backend.infrastructure.native.native_iocp import compat_aopen
             from io import BytesIO
 
             # 先同步到内存
@@ -922,7 +922,7 @@ class StorageManager:
 
         try:
             # 使用native_iocp异步读取
-            from backend.infrastructure.native_iocp import compat_aopen
+            from backend.infrastructure.native.native_iocp import compat_aopen
             from io import BytesIO
 
             async with await compat_aopen(file_path, 'rb') as f:
@@ -1142,7 +1142,7 @@ class SubscriptionManager:
 
     async def _sync_subscriptions_to_processes(self) -> None:
         """跨进程同步订阅信息"""
-        from backend.infrastructure.native_ipc import AsyncIPCPipe
+        from backend.infrastructure.native.native_ipc import AsyncIPCPipe
 
         if self._ipc_sync_pipe is None:
             self._ipc_sync_pipe = await AsyncIPCPipe.server("data_subscriptions")
@@ -1236,7 +1236,7 @@ class SubscriptionManager:
 **降级策略**：
 ```python
 try:
-    from backend.infrastructure.native_iocp import compat_aopen
+    from backend.infrastructure.native.native_iocp import compat_aopen
     _USE_IOCP = True
 except ImportError:
     # 降级到aiofiles
@@ -1356,7 +1356,7 @@ async def read_single_async(...) -> Optional[pd.DataFrame]:
 **新方案（native_ipc）**：
 ```python
 # native_ipc通信
-from backend.infrastructure.native_ipc import AsyncIPCPipe
+from backend.infrastructure.native.native_ipc import AsyncIPCPipe
 
 async def send_alert(alert_data: Dict):
     async with AsyncIPCPipe.client("monitor_alerts") as pipe:
@@ -1410,7 +1410,7 @@ class SubscriptionSync:
 
     async def sync_subscriptions(self, subscriptions: Dict):
         """同步订阅信息到所有子进程"""
-        from backend.infrastructure.native_ipc import AsyncIPCPipe
+        from backend.infrastructure.native.native_ipc import AsyncIPCPipe
 
         # 主进程作为服务端
         async with AsyncIPCPipe.server("data_subscriptions") as server_pipe:
@@ -1668,7 +1668,7 @@ async def preload_batch_async(
 ```python
 async def sync_cache_to_processes(self, cache_updates: Dict):
     """跨进程同步缓存更新"""
-    from backend.infrastructure.native_ipc import AsyncIPCPipe
+    from backend.infrastructure.native.native_ipc import AsyncIPCPipe
 
     async with AsyncIPCPipe.server("cache_updates") as pipe:
         await pipe.write(json.dumps(cache_updates).encode())
@@ -1892,7 +1892,7 @@ async def load_data_async(self, ...) -> Optional[pd.DataFrame]:
 **降级机制**：
 ```python
 try:
-    from backend.infrastructure.native_iocp import compat_aopen
+    from backend.infrastructure.native.native_iocp import compat_aopen
     _USE_IOCP = True
 except ImportError:
     # 降级到aiofiles
@@ -1911,7 +1911,7 @@ except ImportError:
 **降级机制**：
 ```python
 try:
-    from backend.infrastructure.native_ipc import AsyncIPCPipe
+    from backend.infrastructure.native.native_ipc import AsyncIPCPipe
     _USE_IPC = True
 except ImportError:
     # 降级到ZMQ

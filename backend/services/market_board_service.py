@@ -66,25 +66,23 @@ class MarketBoardService(BaseService):
     def _init_unified_data_manager(self):
         """初始化data_module_vnpy统一数据管理器."""
         try:
-            # 直接从全局获取ChinaStockEngine
-            from backend.core.base import get_china_stock_engine
+            # 在三进程架构中，通过RPC客户端访问数据进程
+            from backend.infrastructure.data_module_vnpy.data_process_client import (
+                get_data_process_client,
+            )
 
-            china_stock_engine = get_china_stock_engine()
-            if not china_stock_engine:
-                self.logger.warning("⚠️ ChinaStockEngine不可用，将使用DataCenterService", extra={"log_type": "SYSTEM"})
-                return
+            self.data_client = get_data_process_client()
 
-            # 获取统一数据管理器
-            if hasattr(china_stock_engine, "unified_data_manager"):
-                self.unified_data_manager = china_stock_engine.unified_data_manager
-                if self.unified_data_manager:
-                    self.logger.info("✅ 已获取data_module_vnpy统一数据管理器")
-                    return
+            # 连接数据进程（延迟到首次使用时连接）
+            # self.data_client.connect()  # 延迟连接，避免启动时阻塞
 
-            self.logger.warning("⚠️ 无法获取统一数据管理器，将使用DataCenterService", extra={"log_type": "SYSTEM"})
+            self.logger.info("✅ 已初始化数据进程RPC客户端")
 
         except Exception as e:
-            self.logger.error("获取统一数据管理器失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            self.logger.error(
+                "初始化数据进程客户端失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"}
+            )
+            self.data_client = None
 
     def _do_shutdown(self) -> bool:
         """关闭行情看板服务."""
@@ -98,7 +96,8 @@ class MarketBoardService(BaseService):
         """健康检查."""
         return {
             "talib_available": self.talib is not None,
-            "unified_data_manager_available": self.unified_data_manager is not None,
+            "data_client_available": self.data_client is not None
+            and self.data_client.is_connected(),
         }
 
     def _init_talib(self):
@@ -138,13 +137,12 @@ class MarketBoardService(BaseService):
                 - message: str
         """
         try:
-            # 优先使用data_module_vnpy统一数据管理器
-            if self.unified_data_manager:
+            # 优先使用数据进程RPC客户端
+            if self.data_client:
                 try:
-                    import pandas as pd
-
-                    # 调用UnifiedDataManager.get_kline_data
-                    df = self.unified_data_manager.get_kline_data(
+                    # 通过RPC调用数据进程的get_kline_data方法
+                    result = self.data_client.call(
+                        "get_kline_data",
                         symbol=symbol,
                         interval=interval,
                         start_date=start_date,
@@ -153,40 +151,47 @@ class MarketBoardService(BaseService):
                         use_preload=True,
                     )
 
-                    if df is not None and not df.empty:
-                        # 将DataFrame转换为Dict格式
-                        data = []
-                        for idx, row in df.iterrows():
-                            data.append(
-                                {
-                                    "datetime": (
-                                        idx.isoformat()
-                                        if isinstance(idx, pd.Timestamp)
-                                        else str(idx)
-                                    ),
-                                    "open": float(row.get("open", 0)),
-                                    "high": float(row.get("high", 0)),
-                                    "low": float(row.get("low", 0)),
-                                    "close": float(row.get("close", 0)),
-                                    "volume": float(row.get("volume", 0)),
-                                }
+                    if result and isinstance(result, dict):
+                        if result.get("success", False):
+                            return result
+                        else:
+                            self.logger.warning(
+                                f"数据进程返回失败: {result.get('message', '未知错误')}"
                             )
-
-                        return {
-                            "success": True,
-                            "data": data,
-                            "message": f"从 data_module_vnpy 获取 {len(data)} 条数据",
-                        }
                     else:
-                        return {
-                            "success": False,
-                            "message": "数据为空",
-                            "data": [],
-                        }
+                        # 如果返回的是DataFrame格式（兼容旧格式）
+                        import pandas as pd
+
+                        if isinstance(result, pd.DataFrame) and not result.empty:
+                            # 将DataFrame转换为Dict格式
+                            data = []
+                            for idx, row in result.iterrows():
+                                data.append(
+                                    {
+                                        "datetime": (
+                                            idx.isoformat()
+                                            if isinstance(idx, pd.Timestamp)
+                                            else str(idx)
+                                        ),
+                                        "open": float(row.get("open", 0)),
+                                        "high": float(row.get("high", 0)),
+                                        "low": float(row.get("low", 0)),
+                                        "close": float(row.get("close", 0)),
+                                        "volume": float(row.get("volume", 0)),
+                                    }
+                                )
+
+                            return {
+                                "success": True,
+                                "data": data,
+                                "message": f"从数据进程获取 {len(data)} 条数据",
+                            }
 
                 except Exception as e:
                     self.logger.warning(
-                        "从data_module_vnpy查询失败：%s，尝试使用DataCenterService", e, extra={"log_type": "SYSTEM"}
+                        "从数据进程查询失败：%s，尝试使用DataCenterService",
+                        e,
+                        extra={"log_type": "SYSTEM"},
                     )
 
             # 备用方案：使用DataCenterService
