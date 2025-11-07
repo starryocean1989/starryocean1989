@@ -945,8 +945,14 @@ class StartupCoordinator(QObject):
         """隐藏启动画面."""
         if self.splash:
             try:
-                self.logger.info("[COORDINATOR] 隐藏启动画面")
-                print("[COORDINATOR] 开始隐藏启动画面...")
+                self.logger.info(
+                    "[COORDINATOR] 隐藏启动画面",
+                    extra={"log_type": "STAGE_NODE"},
+                )
+                self.logger.info(
+                    "[COORDINATOR] 开始隐藏启动画面...",
+                    extra={"log_type": "STAGE_NODE"},
+                )
                 if main_window:
                     try:
                         self.splash.finish(main_window)
@@ -958,14 +964,29 @@ class StartupCoordinator(QObject):
                         self.splash.close()
                 else:
                     self.splash.close()
-                print("[COORDINATOR] 启动画面已关闭")
+                self.logger.info(
+                    "[COORDINATOR] 启动画面已关闭",
+                    extra={"log_type": "STAGE_NODE"},
+                )
                 self.splash.deleteLater()
-                print("[COORDINATOR] 启动画面已标记删除")
+                self.logger.info(
+                    "[COORDINATOR] 启动画面已标记删除",
+                    extra={"log_type": "STAGE_NODE"},
+                )
                 self.splash = None
-                print("[COORDINATOR] ✅ 启动画面已隐藏")
-                self.logger.info("[COORDINATOR] ✅ 启动画面已成功隐藏")
+                self.logger.info(
+                    "[COORDINATOR] ✅ 启动画面已隐藏",
+                    extra={"log_type": "STAGE_NODE"},
+                )
+                self.logger.info(
+                    "[COORDINATOR] ✅ 启动画面已成功隐藏",
+                    extra={"log_type": "STAGE_NODE"},
+                )
             except Exception as e:
                 self.logger.exception("隐藏启动画面失败: %s", e)
-                print(f"[COORDINATOR] ❌ 隐藏启动画面失败: {e}")
+                self.logger.info(
+                    f"[COORDINATOR] ❌ 隐藏启动画面失败: {e}",
+                    extra={"log_type": "STAGE_NODE"},
+                )
                 # 即使失败，也设置为None避免重复操作
                 self.splash = None

@@ -49,19 +49,16 @@ class EnvSetupStage(StartupStage):
         start_time = time.time()
 
         try:
-            # 在日志系统初始化前，使用print直接输出到终端
-            # 确保输出格式与设计文档一致
-            print()
-            print("=" * 70)
-            print("【阶段0: 环境准备】 (0-5%)")
-            print("=" * 70)
-            print()
-            print("📍 阶段0: 环境准备开始")
+            # 统一使用日志输出到终端（简版）
+            logger.info("=" * 70, extra={"log_type": "STAGE_NODE"})
+            logger.info("【阶段0: 环境准备】 (0-5%)", extra={"log_type": "STAGE_NODE"})
+            logger.info("=" * 70, extra={"log_type": "STAGE_NODE"})
+            logger.info("📍 阶段0: 环境准备开始", extra={"log_type": "STAGE_NODE"})
 
             # 禁用Python字节码缓存，确保总是使用最新代码
             os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
             sys.dont_write_bytecode = True
-            print("✅ Python字节码缓存已禁用")
+            logger.info("✅ Python字节码缓存已禁用", extra={"log_type": "STAGE_NODE"})
             
             # DEBUG日志（只写入AI日志文件）
             logger.debug(
@@ -105,7 +102,7 @@ class EnvSetupStage(StartupStage):
                     f"[ENV-SETUP] 项目路径已存在于sys.path: {project_root}",
                     extra={"log_type": "SYSTEM", "scenario": "application_startup"}
                 )
-            print("✅ 项目路径已添加到sys.path")
+            logger.info("✅ 项目路径已添加到sys.path", extra={"log_type": "STAGE_NODE"})
             
             # DEBUG日志（只写入AI日志文件）
             logger.debug(
@@ -151,13 +148,13 @@ class EnvSetupStage(StartupStage):
                 )
             
             if python_executable_set or qt_webengine_set:
-                print("✅ Python解释器路径已设置")
-                print("✅ Qt WebEngine解释器路径已设置")
+                logger.info("✅ Python解释器路径已设置", extra={"log_type": "STAGE_NODE"})
+                logger.info("✅ Qt WebEngine解释器路径已设置", extra={"log_type": "STAGE_NODE"})
 
             # 设置Qt环境变量（避免缩放问题）
             os.environ["QT_AUTO_SCREEN_SCALE_FACTOR"] = "1"
             os.environ["QT_ENABLE_HIGHDPI_SCALING"] = "0"
-            print("✅ Qt高DPI缩放已配置")
+            logger.info("✅ Qt高DPI缩放已配置", extra={"log_type": "STAGE_NODE"})
             
             # DEBUG日志（记录Qt环境变量配置）
             logger.debug(
@@ -170,7 +167,7 @@ class EnvSetupStage(StartupStage):
             config_file = project_root / "config" / "terminal_config.json"
             context.config_file = str(config_file)
             os.environ["CONFIG_FILE"] = str(config_file)
-            print("✅ 配置文件路径已设置")
+            logger.info("✅ 配置文件路径已设置", extra={"log_type": "STAGE_NODE"})
             
             # DEBUG日志（只写入AI日志文件）
             logger.debug(
@@ -232,8 +229,11 @@ class EnvSetupStage(StartupStage):
 
             elapsed_ms = (time.time() - start_time) * 1000
 
-            # 输出完成信息
-            print(f"✅ 环境准备完成 ({elapsed_ms:.0f}ms)")
+            # 输出完成信息（终端简版阶段日志）
+            logger.info(
+                f"✅ 环境准备完成 ({elapsed_ms:.0f}ms)",
+                extra={"log_type": "STAGE_NODE"},
+            )
             
             # INFO日志（记录环境准备完成信息）
             logger.info(
@@ -250,8 +250,11 @@ class EnvSetupStage(StartupStage):
 
         except Exception as e:
             elapsed_ms = (time.time() - start_time) * 1000
-
-            print(f"❌ 环境准备失败: {str(e)}")
+            # 终端简版错误（阶段日志）
+            logger.error(
+                f"❌ 环境准备失败: {str(e)}",
+                extra={"log_type": "STAGE_NODE"},
+            )
             
             # 错误日志（输出到Terminal和AI日志文件）
             logger.error(

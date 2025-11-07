@@ -10,7 +10,7 @@
 - 数据源管理（轮询转推送、虚拟推送）
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 from datetime import datetime, timedelta
 from contextlib import suppress
 from pathlib import Path
@@ -22,6 +22,7 @@ from backend.infrastructure.system_vnpy.logging_system import (
     ai_log_process,
     get_logging_hub,
 )
+from backend.infrastructure.native.native_serialization import build_dataframe_payload
 
 # 导入高性能LRU缓存
 from backend.infrastructure.native.native_collections import HighPerfLRUCache
@@ -2431,10 +2432,13 @@ class DataCenterService(BaseService, LoggerMixin):
                     f"[下载-{task_id}] 引擎已启动，开始轮询进度...",
                     extra={"log_type": "SYSTEM", "scenario": "data_download"},
                 )
-                print(">>> [SERVICE] 引擎已启动，正在初始化下载任务...", flush=True)
-                print(
+                logger_download.info(
+                    ">>> [SERVICE] 引擎已启动，正在初始化下载任务...",
+                    extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                )
+                logger_download.info(
                     ">>> [SERVICE] 提示：初始化可能需要15-30秒（发现服务器、构建任务列表）",
-                    flush=True,
+                    extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
                 )
 
                 last_pct = -1
@@ -2468,9 +2472,9 @@ class DataCenterService(BaseService, LoggerMixin):
                             if not initialization_notified and is_downloading and total > 0:
                                 initialization_notified = True
                                 elapsed_init = current_time - download_start_time
-                                print(
+                                logger_download.info(
                                     f">>> [SERVICE] ✓ 初始化完成！耗时 {elapsed_init:.1f}秒，开始下载 {total} 个任务...",
-                                    flush=True,
+                                    extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
                                 )
 
                             # 进度更新：回调通知
@@ -2544,9 +2548,9 @@ class DataCenterService(BaseService, LoggerMixin):
                                         f"total={total}, 耗时={download_elapsed:.2f}s",
                                         extra={"log_type": "SYSTEM", "scenario": "data_download"},
                                     )
-                                    print(
+                                    logger_download.info(
                                         f">>> [SERVICE] ✓ 下载已完成 ({completed}/{total})",
-                                        flush=True,
+                                        extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
                                     )
                                     break
                                 elif total > 0 and completed < total:
@@ -2573,17 +2577,17 @@ class DataCenterService(BaseService, LoggerMixin):
                                                 "scenario": "data_download",
                                             },
                                         )
-                                        print(
+                                        logger_download.warning(
                                             ">>> [SERVICE] ⚠️ 下载初始化超过30秒，可能存在问题",
-                                            flush=True,
+                                            extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
                                         )
                                     time.sleep(1.0)
                             else:
                                 # 正常下载中，每20秒输出一次状态确认
                                 if current_time - last_log_time >= 20:
-                                    print(
+                                    logger_download.info(
                                         f">>> [SERVICE] 下载进行中: {pct}% ({completed}/{total})",
-                                        flush=True,
+                                        extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
                                     )
                                 time.sleep(0.5)
                         else:
@@ -3425,18 +3429,24 @@ class DataCenterService(BaseService, LoggerMixin):
                 )
 
                 if data is not None and not data.empty:
-                    # 转换为字典列表
-                    data_list = data.to_dict("records")
-                    return {
-                        "success": True,
-                        "message": f"查询成功，共{len(data_list)}条数据",
-                        "data": data_list,
-                    }
+                    payload = build_dataframe_payload(data, prefer_format="records")
+                    payload_dict = payload.to_dict()
+                    payload_dict.update(
+                        {
+                            "success": True,
+                            "message": f"查询成功，共{payload.rows}条数据",
+                        }
+                    )
+                    return payload_dict
                 else:
                     return {
                         "success": True,
                         "message": "查询成功，无数据",
+                        "format": "records",
+                        "transport": "json",
                         "data": [],
+                        "rows": 0,
+                        "columns": [],
                     }
 
             except Exception as e:
@@ -4813,7 +4823,8 @@ class DataCenterService(BaseService, LoggerMixin):
             df = pd.read_csv(data_file)
 
             # 转换为标准格式
-            data = df.to_dict("records")
+            payload = build_dataframe_payload(df, prefer_format="records")
+            data = cast(List[Dict[str, Any]], payload.data)
 
             self.logger.info(
                 "从录制数据加载 %d 条记录: symbol=%s, date=%s", len(data), symbol, date

@@ -1,149 +1,86 @@
-"""
-连接池复用机制测试
-
-测试场景：
-1. 启动时测速（keep_pool=True）- 连接池应保持打开
-2. 手动测速（keep_pool=False）- 连接池应立即关闭
-3. 关闭连接池 - 应正常关闭
-"""
+from __future__ import annotations
 
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterator, Optional, cast
 
-# 添加项目根目录到路径
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
+import pytest
 
-import logging
+from concurrent.futures import ProcessPoolExecutor
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from backend.infrastructure.data_module_vnpy.load_balancer import ServerPoolManager
-from backend.infrastructure.data_module_vnpy.core_engine import ConfigManager
-
-# 配置日志
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-
-logger = logging.getLogger(__name__)
 
 
-def test_startup_mode():
-    """测试启动模式（keep_pool=True）"""
-    logger.info("=" * 60)
-    logger.info("测试1: 启动模式（keep_pool=True）")
-    logger.info("=" * 60)
-    
+@dataclass
+class _DummyPool:
+    closed: bool = False
+
+    def shutdown(self, wait: bool = True) -> None:  # pragma: no cover - 行为简单
+        self.closed = True
+
+
+@pytest.fixture
+def server_pool(monkeypatch, tmp_path: Path) -> Iterator[ServerPoolManager]:
+    from backend.infrastructure.data_module_vnpy.core_engine import ConfigManager, DailyCacheManager
+
+    def fake_init_defaults(cls) -> None:
+        cls.DEFAULT_IPV4_SERVERS = [
+            {"ip": "127.0.0.1", "port": 7709, "name": "local-1"},
+            {"ip": "127.0.0.2", "port": 7709, "name": "local-2"},
+        ]
+        cls.DEFAULT_IPV6_SERVERS = []
+
+    monkeypatch.setattr(
+        ServerPoolManager,
+        "_init_default_servers",
+        classmethod(lambda cls: fake_init_defaults(cls)),
+    )
+
+    monkeypatch.setattr(
+        DailyCacheManager,
+        "load_with_validation",
+        staticmethod(lambda path: (None, None, False)),
+    )
+    monkeypatch.setattr(
+        DailyCacheManager,
+        "save_with_date",
+        staticmethod(lambda data, path: True),
+    )
+
+    async def fake_batch(self, servers, max_concurrent: Optional[int] = None, timeout: float = 3.0):
+        return {tuple(server): 0.001 * (index + 1) for index, server in enumerate(servers)}
+
+    monkeypatch.setattr(
+        "backend.infrastructure.tdx_asyncio.ServerTester.batch_test_servers",
+        fake_batch,
+        raising=False,
+    )
+
     config_manager = ConfigManager()
-    pool_manager = ServerPoolManager(config_manager)
-    
-    # 测速并保持连接池
-    logger.info("开始测速（keep_pool=True）...")
-    pool_manager.test_servers(max_workers=2, keep_pool=True)
-    
-    # 检查连接池是否保持
-    if pool_manager._connection_pool is not None:
-        logger.info("✅ 连接池已保持打开状态")
-        logger.info(f"   连接池模式: {pool_manager._pool_mode}")
-    else:
-        logger.error("❌ 连接池未保持打开状态")
-    
-    # 关闭连接池
-    logger.info("关闭连接池...")
-    pool_manager.close_connection_pool()
-    
-    # 检查连接池是否关闭
-    if pool_manager._connection_pool is None:
-        logger.info("✅ 连接池已成功关闭")
-        logger.info(f"   连接池模式: {pool_manager._pool_mode}")
-    else:
-        logger.error("❌ 连接池未成功关闭")
-    
-    logger.info("")
+    monkeypatch.setattr(config_manager, "get_cache_dir", lambda: tmp_path)
+
+    pool = ServerPoolManager(config_manager)
+    yield pool
+    pool.close_connection_pool()
+    pool._retry_connection_pool = None
 
 
-def test_manual_mode():
-    """测试手动模式（keep_pool=False）"""
-    logger.info("=" * 60)
-    logger.info("测试2: 手动模式（keep_pool=False，默认值）")
-    logger.info("=" * 60)
-    
-    config_manager = ConfigManager()
-    pool_manager = ServerPoolManager(config_manager)
-    
-    # 测速（不保持连接池）
-    logger.info("开始测速（keep_pool=False）...")
-    pool_manager.test_servers(max_workers=2, keep_pool=False)
-    
-    # 检查连接池是否立即关闭
-    if pool_manager._connection_pool is None:
-        logger.info("✅ 连接池已立即关闭（符合预期）")
-        logger.info(f"   连接池模式: {pool_manager._pool_mode}")
-    else:
-        logger.error("❌ 连接池未立即关闭")
-    
-    logger.info("")
+def test_test_servers_updates_latency(server_pool: ServerPoolManager) -> None:
+    server_pool.test_servers(max_workers=1)
+    assert all(server.ping_time > 0 for server in server_pool._ipv4_servers)
+    assert all(server.available for server in server_pool._ipv4_servers)
 
 
-def test_default_mode():
-    """测试默认模式（不传递keep_pool参数）"""
-    logger.info("=" * 60)
-    logger.info("测试3: 默认模式（不传递keep_pool参数）")
-    logger.info("=" * 60)
-    
-    config_manager = ConfigManager()
-    pool_manager = ServerPoolManager(config_manager)
-    
-    # 测速（使用默认参数）
-    logger.info("开始测速（使用默认参数）...")
-    pool_manager.test_servers(max_workers=2)
-    
-    # 检查连接池是否立即关闭
-    if pool_manager._connection_pool is None:
-        logger.info("✅ 连接池已立即关闭（默认行为）")
-        logger.info(f"   连接池模式: {pool_manager._pool_mode}")
-    else:
-        logger.error("❌ 连接池未立即关闭")
-    
-    logger.info("")
+def test_close_connection_pool_idempotent(server_pool: ServerPoolManager) -> None:
+    dummy_pool = _DummyPool()
+    server_pool._connection_pool = cast("ProcessPoolExecutor", dummy_pool)  # type: ignore[assignment]
+    server_pool.close_connection_pool()
+    assert dummy_pool.closed is True
+    assert server_pool._connection_pool is None
+    server_pool.close_connection_pool()  # second call should be a no-op
 
-
-def test_close_twice():
-    """测试重复关闭连接池"""
-    logger.info("=" * 60)
-    logger.info("测试4: 重复关闭连接池")
-    logger.info("=" * 60)
-    
-    config_manager = ConfigManager()
-    pool_manager = ServerPoolManager(config_manager)
-    
-    # 测速并保持连接池
-    logger.info("开始测速（keep_pool=True）...")
-    pool_manager.test_servers(max_workers=2, keep_pool=True)
-    
-    # 第一次关闭
-    logger.info("第一次关闭连接池...")
-    pool_manager.close_connection_pool()
-    
-    # 第二次关闭（应该不会报错）
-    logger.info("第二次关闭连接池（应该不会报错）...")
-    pool_manager.close_connection_pool()
-    
-    logger.info("✅ 重复关闭测试通过")
-    logger.info("")
-
-
-if __name__ == "__main__":
-    try:
-        # 运行所有测试
-        test_startup_mode()
-        test_manual_mode()
-        test_default_mode()
-        test_close_twice()
-        
-        logger.info("=" * 60)
-        logger.info("✅ 所有测试完成")
-        logger.info("=" * 60)
-        
-    except Exception as e:
-        logger.error(f"❌ 测试失败: {e}", exc_info=True)
-        sys.exit(1)

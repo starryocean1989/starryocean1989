@@ -90,25 +90,32 @@ __all__ = ["MainWindow", "ThemeManager"]
 **原因**：启动协调器属于后端启动流程的一部分，已整合到后端启动模块  
 **位置**：`backend/startup/ui_startup/startup_coordinator.py`
 
-**原始功能**：
-- 后台线程异步初始化后端服务（六阶段初始化策略）
-- 管理启动进度显示和用户反馈
-- 启动监控系统（wmi_smart_monitor）
-- 监控进程看门狗管理
-- 异常处理和错误恢复机制
+**架构更新（v0.50 三进程）**：
+- UI 进程只负责 UI + 业务服务骨架，真实数据服务与监控服务分别运行在数据进程、监控进程。
+- `StartupCoordinator` 不再直接驱动六阶段初始化，而是作为 UI 侧的观测者，连接 `StartupOrchestrator` 的阶段信号、Terminal 输出与启动画面。
+- 三大 Worker (`DataLauncherWorker`、`MonitorLauncherWorker`、`BackendInitializerWorker`) 由 `BackendInitStage` 管理，`StartupCoordinator` 负责：
+  - 监听 `startup.stage` 日志，将 Stage 3 的分支 A/B/C 进度转换为 UI 文案；
+  - 根据 `BackendInitStage` 结果触发 UI 预加载与主窗口展示；
+  - 捕获 `MultiProcessLogCollector` Level 0/1/2 事件，在启动画面实时呈现数据/监控进程状态；
+  - 在异常情况下回放 `application_startup_*.log` 的关键信息，提示用户查看详细日志。
+
+**三进程职责概览**：
+- UI 进程：`StartupCoordinator` + `MainWindow`，渲染界面、注册服务代理、订阅事件。
+- 数据进程：`data_process_main.py`，执行数据下载、质量扫描、RPC 请求处理，并通过 `data_process_ready.signal` 反馈状态。
+- 监控进程：`monitor_system.py`，负责系统/硬件监控，向 UI 进程推送 `ALERT`/`NOTIFICATION` 事件。
+- 跨进程通信：统一通过 `native_ipc` + `LOGGING_QUEUE_TOKEN`，日志路由回主进程的 `LoggingHub`。
 
 **关键类**：
-- `BackendInitializerWorker(QObject)` - 后端初始化工作线程
+- `BackendInitializerWorker(QObject)` - UI 线程内的占位 Worker，现仅在需要时用于回放业务服务初始化日志；
   - 信号：`progress_updated` / `initialization_completed` / `error_occurred`
-  - 方法：`run()` - 并行启动后端服务和监控系统
+  - 方法：`run()` - 兼容模式下仍可串行执行旧版六阶段流程（测试环境使用）
+- `StartupCoordinator` - Splash 层控制器，负责：
+  - `start()`：订阅 `StartupOrchestrator` 事件，显示启动画面；
+  - `handle_stage_update()`：解析 Stage 3 分支日志（PID、IPC、Level 2）并更新 UI；
+  - `on_startup_completed()`：通知 `MainWindow` 初始化功能模块，关闭 Splash；
+  - `on_startup_failed()`：展示错误对话框并附带日志路径。
 
-**六阶段初始化流程**：
-1. **阶段1（0-10%）**：配置系统初始化
-2. **阶段2（10-30%）**：核心服务初始化
-3. **阶段3（30-60%）**：业务服务初始化
-4. **阶段4（60-80%）**：数据服务初始化
-5. **阶段5（80-95%）**：监控服务初始化
-6. **阶段6（95-100%）**：启动完成
+> ✅ **提示**：Terminal 的 Stage 3 输出与启动画面完全一致。Terminal 仅展示 `STAGE_NODE` / `WARNING+`，详细 DEBUG 日志保存在 `logs/application_startup_YYYYMMDD_HHMMSS.log`，`StartupCoordinator` 的“查看详版日志”按钮即指向该文件。
 
 ---
 
@@ -700,8 +707,9 @@ __all__ = ["MainWindow", "ThemeManager"]
 
 ### 2. 事件驱动
 
-所有UI组件通过EventEngine监听后端事件，实现松耦合：
+所有UI组件通过EventEngine监听后端事件，实现松耦合。在三进程架构下，事件可以跨进程传递：
 
+**UI进程内事件**：
 ```python
 from vnpy.event import Event, EventEngine
 
@@ -713,6 +721,10 @@ def on_tick(self, event: Event):
     tick = event.data
     self.update_display(tick)
 ```
+
+**跨进程事件**（通过native_ipc）：
+- 数据进程 → UI进程：数据下载进度、质量扫描结果
+- 监控进程 → UI进程：系统告警、资源监控数据
 
 ### 3. 服务注入
 

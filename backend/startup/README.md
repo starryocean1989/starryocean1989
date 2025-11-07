@@ -187,15 +187,28 @@ backend/startup/
 
 **文件**: `stages/backend_init.py`
 
-**职责**: **这是链接前端和底层功能的关键文件**
+**目标流程（v1.3 三进程）**
 
-- **检查并使用阶段2预创建的引擎**（不创建，符合单一事实原则）
-- 调用Worker初始化数据服务和监控进程（并行）
-- 初始化业务服务（阶段3.4-3.6）：交易服务、策略服务、辅助服务
-- 将服务注册到ServiceManager（暴露给前端）
-- 管理服务依赖关系
+1. **继承阶段2产物**：读取 `StartupContext` 中的 `EventEngine`、`MainEngine` 并确认唯一性。
+2. **并行启动三条子流程**：
+   - `MonitorLauncherWorker` → 启动监控进程、完成 Level 1/2 就绪校验并挂载 2s 轮询 watchdog；
+   - `DataLauncherWorker` → 启动数据进程，写入 `data_process_ready.signal`，完成 IPC 管道握手并安装 2s 轮询 watchdog；
+   - `BackendInitializerWorker` → 初始化主进程内的业务服务骨架，为后续跨进程代理预留依赖。
+3. **跨进程日志桥接**：等待 `MultiProcessLogCollector` 与子进程 `QueueHandler` 建立连接，Terminal 仅展示阶段节点与 WARNING 及以上日志；若桥接失败会自动降级并输出警告。
+4. **缓存验证当前状态**：`CacheValidatorWorker` 仍输出“将在数据进程执行”的占位日志，RPC 化正在推进；完成后会回放 8 步进度并触发降级策略。
+5. **业务服务激活**：在数据进程 Level 2 就绪后，主进程仅初始化交易、策略、辅助服务骨架并注册到 `ServiceManager`；远程 RPC 客户端使用占位实现，待数据通道完成后替换。
+6. **并行 UI 预加载**：触发 `context.ui_preload_task`，让 UI 预加载与缓存验证并行，确保 Stage 4 能拿到 “预加载完成” 的 Future。
 
-**关键**: 确保VNPY核心和业务服务只初始化一次，符合单一事实原则
+**阶段输出设计**
+
+- Terminal：展示阶段标题、三条子流程的关键里程碑（进程 PID、Level 就绪、日志桥接、RPC 连通性）。
+- 事件日志：完整记录子流程的 DEBUG/INFO、缓存验证明细以及远程调用耗时，用于排查跨进程问题。
+
+**设计要点**
+
+- DataLauncher/MonitorLauncher 需要输出 `Level 0 (PID)`、`Level 1 (IPC)`、`Level 2 (服务)` 三个检查点，配合 watchdog 实现自恢复。
+- `StartupContext` 应保存子进程 PID、日志队列句柄、IPC 管道元数据，供后续阶段与退出流程使用。
+- 保持“主进程不再直接初始化数据服务”的原则，所有数据相关操作通过数据进程 RPC 处理。
 
 #### 3.4.5 UIActivationStage（UI激活阶段）
 
@@ -226,23 +239,44 @@ backend/startup/
 **文件**: `workers/backend_initializer.py`
 
 **职责**:
-- **只初始化数据相关服务**（ChinaStockEngine、DataCenterService）
-- 使用阶段3已初始化的引擎（不重复初始化VNPY核心）
-- 报告初始化进度
-- 处理初始化错误
+- 在三进程架构下**不再直接创建ChinaStockEngine**，而是为数据进程预留 RPC 客户端占位
+- 逐步初始化交易、策略、辅助等主进程服务，并等待数据进程 Level 2 就绪后注入远程依赖
+- 报告初始化进度、错误信息，并将所有阶段日志交由 `StartupLogger` 输出
 
-**关键**: 不调用ServiceInitializer初始化所有服务，只负责数据服务的初始化，符合单一事实原则
+**关键设计点**:
+
+- 通过 `StartupContext` 读取数据进程的 IPC/Queue 元信息，为服务创建远程代理（后续步骤中落地）。
+- `initialize_services()` 进入“骨架初始化”模式，仅注册服务容器、事件订阅，具体数据请求转到数据进程。
+- Standalone 运行时保持向后兼容：若检测到无数据进程（例如旧入口或测试环境），可回退到单进程初始化路径。
 
 #### 3.6.2 MonitorLauncherWorker（监控进程启动Worker）
 
 **文件**: `workers/monitor_launcher.py`
 
 **职责**:
-- 启动监控进程
-- 等待监控进程就绪
+- 启动监控进程（`monitor_system.py`）
+- 创建native_ipc管道（3条：`monitor_alerts`, `monitor_status`, `monitor_query`）
+- 等待监控进程Level 1就绪（管道就绪）
 - 管理监控进程生命周期
 
-#### 3.6.3 CacheValidatorWorker（缓存验证Worker）
+#### 3.6.3 DataLauncherWorker（数据进程启动Worker）
+
+**文件**: `workers/data_launcher.py`
+
+**职责**:
+- 启动数据进程（`data_process_main.py`）
+- 创建native_ipc管道（2条：`data_query`, `data_calculation`）
+- 等待数据进程就绪
+- 管理数据进程生命周期
+- 向子进程注入 `LOGGING_QUEUE_TOKEN`，复用主进程的 `MultiProcessLogCollector`
+
+**三进程要点**:
+
+- Level 0/1/2 三段就绪：PID → IPC → 数据服务。每个阶段都会向 `startup.stage` logger 输出 `STAGE_NODE`，并在事件日志中记录详细耗时。
+- 通过 `data_process_ready.signal` 反馈 PID、时间戳及管道信息，`BackendInitStage` 会进行 PID + 启动时间双验证，避免陈旧信号干扰。
+- Watchdog 线程以 2 秒频率确认子进程存活，如检测到进程异常退出，会记录 `ALERT` 日志并交由 `StartupContext` 统一清理。
+
+#### 3.6.4 CacheValidatorWorker（缓存验证Worker）
 
 **文件**: `workers/cache_validator.py`
 
@@ -250,6 +284,7 @@ backend/startup/
 - 封装`_smart_cache_validation_and_sensing`的8步验证流程
 - 使用async/await支持异步执行
 - 报告进度
+- 在三进程模式下仅输出占位日志，实际 8 步验证将迁移至数据进程 RPC，完成后会通过事件日志重放进度条并触发 UI 回放。
 
 ### 3.7 服务初始化器模块（已迁移）
 
@@ -329,7 +364,7 @@ from backend.startup.ui_startup import StartupCoordinator, BootOrchestrator
 #### 3.9.3 StartupAILogHandler（启动AI日志处理器）
 
 **职责**:
-- 每次启动生成一个日志文件到 `logs/ai/`
+- 每次启动生成一个日志文件到 `logs/`
 - 文件命名格式：`application_startup_YYYYMMDD_HHMMSS.log`
 - 包含所有级别的日志（DEBUG+）
 
@@ -561,11 +596,17 @@ Terminal只显示：
 
 #### 6.2.4 详细的AI日志文件
 
-每次启动生成一个完整的日志文件到 `logs/ai/`：
+每次启动生成一个完整的日志文件到 `logs/`：
 - 文件名格式：`application_startup_YYYYMMDD_HHMMSS.log`
 - 包含所有级别的日志（DEBUG+）
 - 包含完整的异常堆栈
 - 包含启动元数据（Python版本、平台等）
+
+### 6.3 三进程日志桥接（设计目标）
+
+- `LoggingInitStage` 初始化 `MultiProcessLogCollector` 后，将 `SyncManager` 暴露的队列代理保存在 `StartupContext.log_queue`，供后续 Worker 使用。
+- `DataLauncherWorker` / `MonitorLauncherWorker` 在启动子进程时注入该代理（环境变量或命令行参数），子进程负责调用 `setup_subprocess_logging(queue_proxy)`。
+- 主进程 `QueueListener` 将子进程日志重新注入 `OrderedLogQueue`，Terminal 只保留阶段节点与 WARNING+，详细内容写入事件日志，确保三进程仍呈现一条有序的时间线。
 
 ---
 
@@ -600,7 +641,7 @@ class MyNewWorker(StartupWorker):
 
 ### 7.3 调试技巧
 
-1. **查看启动日志**: 检查 `logs/ai/application_startup_*.log` 文件
+1. **查看启动日志**: 检查 `logs/application_startup_*.log` 文件
 2. **查看阶段结果**: `result.stage_results` 包含每个阶段的执行结果
 3. **查看启动上下文**: `orchestrator.get_context()` 获取完整的启动上下文
 4. **启用调试日志**: 设置日志级别为 `DEBUG`
@@ -612,7 +653,7 @@ class MyNewWorker(StartupWorker):
 ### 8.1 启动失败怎么办？
 
 1. 检查 `StartupResult` 的 `error` 字段获取详细错误信息
-2. 查看 `logs/ai/application_startup_*.log` 文件获取完整日志
+2. 查看 `logs/application_startup_*.log` 文件获取完整日志
 3. 检查 `result.stage_results` 查看哪个阶段失败
 
 ### 8.2 如何自定义日志输出？

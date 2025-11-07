@@ -60,9 +60,9 @@ def create_test_strategy_files(test_dir: Path, num_files: int = 10) -> List[Path
 
 def test_native_iocp_scan():
     """测试native_iocp优化后的扫描"""
-    print("\n" + "=" * 60)
-    print("测试1: native_iocp优化后的扫描")
-    print("=" * 60)
+    logger.info("\n" + "=" * 60, extra={"log_type": "STAGE_NODE"})
+    logger.info("测试1: native_iocp优化后的扫描", extra={"log_type": "STAGE_NODE"})
+    logger.info("=" * 60, extra={"log_type": "STAGE_NODE"})
 
     # 检查native_iocp是否可用
     try:
@@ -72,11 +72,11 @@ def test_native_iocp_scan():
         )
 
         if not BATCH_AVAILABLE:
-            print("⚠️ native_iocp不可用，跳过此测试")
+            logger.warning("⚠️ native_iocp不可用，跳过此测试", extra={"log_type": "STAGE_NODE"})
             return False
-        print("✅ native_iocp可用")
+        logger.info("✅ native_iocp可用", extra={"log_type": "STAGE_NODE"})
     except ImportError:
-        print("⚠️ native_iocp未安装，跳过此测试")
+        logger.warning("⚠️ native_iocp未安装，跳过此测试", extra={"log_type": "STAGE_NODE"})
         return False
 
     # 创建临时测试目录
@@ -84,57 +84,58 @@ def test_native_iocp_scan():
     try:
         # 创建测试文件
         created_files = create_test_strategy_files(test_dir, num_files=10)
-        print(f"✅ 创建了 {len(created_files)} 个测试文件")
+        logger.info(f"✅ 创建了 {len(created_files)} 个测试文件", extra={"log_type": "STAGE_NODE"})
 
         # 测试fast_dir_walk
         start_time = time.time()
         result = fast_dir_walk(str(test_dir))  # type: ignore[call-arg]
         elapsed = time.time() - start_time
 
-        print(f"✅ fast_dir_walk执行时间: {elapsed*1000:.2f}ms")
+        logger.info(f"✅ fast_dir_walk执行时间: {elapsed*1000:.2f}ms", extra={"log_type": "STAGE_NODE"})
 
         if result and len(result) > 0:
             root, dirs_list, files_list = result[0]
-            print(
-                f"✅ 扫描结果: 根目录={root}, 子目录数={len(dirs_list)}, 文件数={len(files_list)}"
+            logger.info(
+                f"✅ 扫描结果: 根目录={root}, 子目录数={len(dirs_list)}, 文件数={len(files_list)}",
+                extra={"log_type": "STAGE_NODE"},
             )
 
             # 验证结果
             py_files = [
                 f for f in files_list if f.endswith(".py") and not Path(f).name.startswith("__")
             ]
-            print(f"✅ 找到 {len(py_files)} 个.py文件（排除__init__）")
+            logger.info(
+                f"✅ 找到 {len(py_files)} 个.py文件（排除__init__）",
+                extra={"log_type": "STAGE_NODE"},
+            )
 
             return True
         else:
-            print("❌ fast_dir_walk返回空结果")
+            logger.warning("❌ fast_dir_walk返回空结果", extra={"log_type": "STAGE_NODE"})
             return False
 
     except Exception as e:
-        print(f"❌ 测试失败: {e}")
-        import traceback
-
-        traceback.print_exc()
+        logger.error(f"❌ 测试失败: {e}", exc_info=True, extra={"log_type": "STAGE_NODE"})
         return False
     finally:
         # 清理测试目录
         if test_dir.exists():
             shutil.rmtree(test_dir)
-            print(f"✅ 清理测试目录: {test_dir}")
+            logger.info(f"✅ 清理测试目录: {test_dir}", extra={"log_type": "STAGE_NODE"})
 
 
 def test_strategy_service_scan():
     """测试策略中心服务的扫描功能（测试文件扫描，不依赖策略解析）"""
-    print("\n" + "=" * 60)
-    print("测试2: 策略中心服务扫描功能")
-    print("=" * 60)
+    logger.info("\n" + "=" * 60, extra={"log_type": "STAGE_NODE"})
+    logger.info("测试2: 策略中心服务扫描功能", extra={"log_type": "STAGE_NODE"})
+    logger.info("=" * 60, extra={"log_type": "STAGE_NODE"})
 
     # 创建临时测试目录
     test_dir = Path(tempfile.mkdtemp(prefix="test_strategy_service_"))
     try:
         # 创建测试文件
         created_files = create_test_strategy_files(test_dir, num_files=10)
-        print(f"✅ 创建了 {len(created_files)} 个测试文件")
+        logger.info(f"✅ 创建了 {len(created_files)} 个测试文件", extra={"log_type": "STAGE_NODE"})
 
         # 直接测试扫描逻辑（不依赖策略解析）
         # 模拟get_available_strategies中的扫描部分
@@ -168,19 +169,19 @@ def test_strategy_service_scan():
                             sub_dir = Path(dir_name)
                             py_files.extend(_recursive_walk(sub_dir))
                 except Exception as e:
-                    print(f"⚠️ fast_dir_walk失败，回退到rglob: {e}")
+                    logger.warning(f"⚠️ fast_dir_walk失败，回退到rglob: {e}", extra={"log_type": "STAGE_NODE"})
                     return list(directory.rglob("*.py"))
                 return py_files
 
             try:
                 file_paths = _recursive_walk(scan_dir)
-                print("✅ 使用native_iocp扫描")
+                logger.info("✅ 使用native_iocp扫描", extra={"log_type": "STAGE_NODE"})
             except Exception as e:
-                print(f"⚠️ native_iocp扫描失败，回退到rglob: {e}")
+                logger.warning(f"⚠️ native_iocp扫描失败，回退到rglob: {e}", extra={"log_type": "STAGE_NODE"})
                 file_paths = list(scan_dir.rglob("*.py"))
         else:
             file_paths = list(scan_dir.rglob("*.py"))
-            print("✅ 使用rglob扫描（降级模式）")
+            logger.info("✅ 使用rglob扫描（降级模式）", extra={"log_type": "STAGE_NODE"})
 
         # 过滤__init__文件
         file_paths = [f for f in file_paths if not f.name.startswith("__")]
@@ -189,52 +190,55 @@ def test_strategy_service_scan():
         start_time = time.time()
         elapsed = time.time() - start_time
 
-        print(f"✅ 扫描执行时间: {elapsed*1000:.2f}ms")
-        print(f"✅ 扫描成功: 找到 {len(file_paths)} 个.py文件")
+        logger.info(f"✅ 扫描执行时间: {elapsed*1000:.2f}ms", extra={"log_type": "STAGE_NODE"})
+        logger.info(f"✅ 扫描成功: 找到 {len(file_paths)} 个.py文件", extra={"log_type": "STAGE_NODE"})
 
         # 验证结果
         expected_count = len(created_files)  # 应该找到所有创建的.py文件
         if len(file_paths) == expected_count:
-            print(f"✅ 文件数量正确（期望 {expected_count} 个，实际 {len(file_paths)} 个）")
+            logger.info(
+                f"✅ 文件数量正确（期望 {expected_count} 个，实际 {len(file_paths)} 个）",
+                extra={"log_type": "STAGE_NODE"},
+            )
             return True
         else:
-            print(f"⚠️ 文件数量不匹配（期望 {expected_count} 个，实际 {len(file_paths)} 个）")
+            logger.warning(
+                f"⚠️ 文件数量不匹配（期望 {expected_count} 个，实际 {len(file_paths)} 个）",
+                extra={"log_type": "STAGE_NODE"},
+            )
             # 显示差异
             expected_files = {f.name for f in created_files}
             found_files = {f.name for f in file_paths}
             missing = expected_files - found_files
             extra = found_files - expected_files
             if missing:
-                print(f"   缺失文件: {missing}")
+                logger.info(f"   缺失文件: {missing}", extra={"log_type": "STAGE_NODE"})
             if extra:
-                print(f"   额外文件: {extra}")
+                logger.info(f"   额外文件: {extra}", extra={"log_type": "STAGE_NODE"})
             return False
 
     except Exception as e:
-        print(f"❌ 测试失败: {e}")
-        import traceback
-
-        traceback.print_exc()
+        logger.error(f"❌ 测试失败: {e}", exc_info=True, extra={"log_type": "STAGE_NODE"})
         return False
     finally:
         # 清理测试目录
         if test_dir.exists():
             shutil.rmtree(test_dir)
-            print(f"✅ 清理测试目录: {test_dir}")
+            logger.info(f"✅ 清理测试目录: {test_dir}", extra={"log_type": "STAGE_NODE"})
 
 
 def test_fallback_logic():
     """测试降级逻辑"""
-    print("\n" + "=" * 60)
-    print("测试3: 降级逻辑测试")
-    print("=" * 60)
+    logger.info("\n" + "=" * 60, extra={"log_type": "STAGE_NODE"})
+    logger.info("测试3: 降级逻辑测试", extra={"log_type": "STAGE_NODE"})
+    logger.info("=" * 60, extra={"log_type": "STAGE_NODE"})
 
     # 创建临时测试目录
     test_dir = Path(tempfile.mkdtemp(prefix="test_fallback_"))
     try:
         # 创建测试文件
         created_files = create_test_strategy_files(test_dir, num_files=5)
-        print(f"✅ 创建了 {len(created_files)} 个测试文件")
+        logger.info(f"✅ 创建了 {len(created_files)} 个测试文件", extra={"log_type": "STAGE_NODE"})
 
         # 模拟native_iocp不可用的情况
         import backend.services.strategy_center_service as strategy_module
@@ -255,12 +259,15 @@ def test_fallback_logic():
             # 使用与get_available_strategies相同的扫描逻辑
             if strategy_module.NATIVE_IOCP_AVAILABLE and strategy_module.fast_dir_walk is not None:
                 # 不应该进入这里
-                print("❌ 降级逻辑失败: 应该使用rglob，但进入了native_iocp分支")
+                logger.error(
+                    "❌ 降级逻辑失败: 应该使用rglob，但进入了native_iocp分支",
+                    extra={"log_type": "STAGE_NODE"},
+                )
                 return False
             else:
                 # 应该使用rglob
                 file_paths = list(scan_dir.rglob("*.py"))
-                print("✅ 使用rglob扫描（降级模式）")
+                logger.info("✅ 使用rglob扫描（降级模式）", extra={"log_type": "STAGE_NODE"})
 
             # 过滤__init__文件
             file_paths = [f for f in file_paths if not f.name.startswith("__")]
@@ -268,10 +275,16 @@ def test_fallback_logic():
             # 验证结果
             expected_count = len(created_files)
             if len(file_paths) == expected_count:
-                print(f"✅ 降级逻辑工作正常: 找到 {len(file_paths)} 个文件（使用rglob）")
+                logger.info(
+                    f"✅ 降级逻辑工作正常: 找到 {len(file_paths)} 个文件（使用rglob）",
+                    extra={"log_type": "STAGE_NODE"},
+                )
                 return True
             else:
-                print(f"⚠️ 文件数量不匹配（期望 {expected_count} 个，实际 {len(file_paths)} 个）")
+                logger.warning(
+                    f"⚠️ 文件数量不匹配（期望 {expected_count} 个，实际 {len(file_paths)} 个）",
+                    extra={"log_type": "STAGE_NODE"},
+                )
                 return False
 
         finally:
@@ -280,23 +293,20 @@ def test_fallback_logic():
             strategy_module.fast_dir_walk = original_fast_dir_walk
 
     except Exception as e:
-        print(f"❌ 测试失败: {e}")
-        import traceback
-
-        traceback.print_exc()
+        logger.error(f"❌ 测试失败: {e}", exc_info=True, extra={"log_type": "STAGE_NODE"})
         return False
     finally:
         # 清理测试目录
         if test_dir.exists():
             shutil.rmtree(test_dir)
-            print(f"✅ 清理测试目录: {test_dir}")
+            logger.info(f"✅ 清理测试目录: {test_dir}", extra={"log_type": "STAGE_NODE"})
 
 
 def test_performance_comparison():
     """性能对比测试"""
-    print("\n" + "=" * 60)
-    print("测试4: 性能对比测试")
-    print("=" * 60)
+    logger.info("\n" + "=" * 60, extra={"log_type": "STAGE_NODE"})
+    logger.info("测试4: 性能对比测试", extra={"log_type": "STAGE_NODE"})
+    logger.info("=" * 60, extra={"log_type": "STAGE_NODE"})
 
     # 创建临时测试目录（更多文件）
     test_dir = Path(tempfile.mkdtemp(prefix="test_performance_"))
@@ -315,7 +325,7 @@ def test_performance_comparison():
                 )
                 created_files.append(file_path)
 
-        print(f"✅ 创建了 {len(created_files)} 个测试文件")
+        logger.info(f"✅ 创建了 {len(created_files)} 个测试文件", extra={"log_type": "STAGE_NODE"})
 
         # 测试rglob性能
         start_time = time.time()
@@ -323,7 +333,10 @@ def test_performance_comparison():
         rglob_elapsed = time.time() - start_time
         rglob_count = len([f for f in rglob_files if not f.name.startswith("__")])
 
-        print(f"✅ rglob执行时间: {rglob_elapsed*1000:.2f}ms, 找到 {rglob_count} 个文件")
+        logger.info(
+            f"✅ rglob执行时间: {rglob_elapsed*1000:.2f}ms, 找到 {rglob_count} 个文件",
+            extra={"log_type": "STAGE_NODE"},
+        )
 
         # 测试native_iocp性能（如果可用）
         try:
@@ -361,46 +374,50 @@ def test_performance_comparison():
                 native_elapsed = time.time() - start_time
                 native_count = len(native_files)
 
-                print(
-                    f"✅ native_iocp执行时间: {native_elapsed*1000:.2f}ms, 找到 {native_count} 个文件"
+                logger.info(
+                    f"✅ native_iocp执行时间: {native_elapsed*1000:.2f}ms, 找到 {native_count} 个文件",
+                    extra={"log_type": "STAGE_NODE"},
                 )
 
                 if native_elapsed > 0:
                     speedup = rglob_elapsed / native_elapsed
-                    print(f"✅ 性能提升: {speedup:.2f}x")
+                    logger.info(f"✅ 性能提升: {speedup:.2f}x", extra={"log_type": "STAGE_NODE"})
 
                     if speedup > 1.0:
-                        print(f"✅ native_iocp比rglob快 {speedup:.2f} 倍")
+                        logger.info(
+                            f"✅ native_iocp比rglob快 {speedup:.2f} 倍",
+                            extra={"log_type": "STAGE_NODE"},
+                        )
                     else:
-                        print("⚠️ native_iocp性能未提升（可能文件数量较少）")
+                        logger.warning(
+                            "⚠️ native_iocp性能未提升（可能文件数量较少）",
+                            extra={"log_type": "STAGE_NODE"},
+                        )
 
                 return True
             else:
-                print("⚠️ native_iocp不可用，跳过性能对比")
+                logger.warning("⚠️ native_iocp不可用，跳过性能对比", extra={"log_type": "STAGE_NODE"})
                 return True
 
         except ImportError:
-            print("⚠️ native_iocp未安装，跳过性能对比")
+            logger.warning("⚠️ native_iocp未安装，跳过性能对比", extra={"log_type": "STAGE_NODE"})
             return True
 
     except Exception as e:
-        print(f"❌ 测试失败: {e}")
-        import traceback
-
-        traceback.print_exc()
+        logger.error(f"❌ 测试失败: {e}", exc_info=True, extra={"log_type": "STAGE_NODE"})
         return False
     finally:
         # 清理测试目录
         if test_dir.exists():
             shutil.rmtree(test_dir)
-            print(f"✅ 清理测试目录: {test_dir}")
+            logger.info(f"✅ 清理测试目录: {test_dir}", extra={"log_type": "STAGE_NODE"})
 
 
 def main():
     """主测试函数"""
-    print("=" * 60)
-    print("策略文件扫描优化测试")
-    print("=" * 60)
+    logger.info("=" * 60, extra={"log_type": "STAGE_NODE"})
+    logger.info("策略文件扫描优化测试", extra={"log_type": "STAGE_NODE"})
+    logger.info("=" * 60, extra={"log_type": "STAGE_NODE"})
 
     results = []
 
@@ -417,28 +434,28 @@ def main():
     results.append(("性能对比", test_performance_comparison()))
 
     # 输出测试结果
-    print("\n" + "=" * 60)
-    print("测试结果汇总")
-    print("=" * 60)
+    logger.info("\n" + "=" * 60, extra={"log_type": "STAGE_NODE"})
+    logger.info("测试结果汇总", extra={"log_type": "STAGE_NODE"})
+    logger.info("=" * 60, extra={"log_type": "STAGE_NODE"})
 
     passed = 0
     failed = 0
 
     for test_name, result in results:
         status = "✅ 通过" if result else "❌ 失败"
-        print(f"{test_name}: {status}")
+        logger.info(f"{test_name}: {status}", extra={"log_type": "STAGE_NODE"})
         if result:
             passed += 1
         else:
             failed += 1
 
-    print(f"\n总计: {passed} 个通过, {failed} 个失败")
+    logger.info(f"\n总计: {passed} 个通过, {failed} 个失败", extra={"log_type": "STAGE_NODE"})
 
     if failed == 0:
-        print("\n🎉 所有测试通过！")
+        logger.info("\n🎉 所有测试通过！", extra={"log_type": "STAGE_NODE"})
         return 0
     else:
-        print(f"\n⚠️ 有 {failed} 个测试失败")
+        logger.warning(f"\n⚠️ 有 {failed} 个测试失败", extra={"log_type": "STAGE_NODE"})
         return 1
 
 

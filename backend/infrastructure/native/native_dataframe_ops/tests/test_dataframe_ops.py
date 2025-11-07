@@ -1,0 +1,54 @@
+# -*- coding: utf-8 -*-
+"""native_dataframe_ops 单元测试."""
+
+import platform
+
+import pandas as pd
+import pytest
+
+from backend.infrastructure.native.native_dataframe_ops import (
+    DATAFRAME_OPS_AVAILABLE,
+    dataframe_quality_counters,
+    dataframe_to_records,
+)
+
+
+WINDOWS = platform.system() == "Windows"
+
+
+@pytest.mark.skipif(not (WINDOWS and DATAFRAME_OPS_AVAILABLE), reason="native_dataframe_ops 不可用")
+def test_dataframe_to_records_basic():
+    df = pd.DataFrame({"code": ["000001", "000002"], "name": ["平安银行", "万 科Ａ"]})
+    records = dataframe_to_records(df)
+    assert isinstance(records, list)
+    assert len(records) == 2
+    assert records[0]["code"] == "000001"
+    assert records[1]["name"] == "万 科Ａ"
+
+
+@pytest.mark.skipif(not (WINDOWS and DATAFRAME_OPS_AVAILABLE), reason="native_dataframe_ops 不可用")
+def test_dataframe_to_records_with_index():
+    df = pd.DataFrame({"value": [1, 2, 3]})
+    df.index.name = "datetime"
+    records = dataframe_to_records(df, include_index=True, index_field="datetime")
+    assert records[0]["datetime"] == 0
+    assert records[1]["value"] == 2
+
+
+@pytest.mark.skipif(not (WINDOWS and DATAFRAME_OPS_AVAILABLE), reason="native_dataframe_ops 不可用")
+def test_dataframe_quality_counters():
+    df = pd.DataFrame(
+        {
+            "open": [1.0, None, 3.0],
+            "high": [1.1, None, 3.1],
+            "low": [0.9, None, 2.9],
+            "close": [1.05, None, 3.05],
+        }
+    )
+    df = pd.concat([df, df.iloc[[2]]], axis=0)
+    df.index = [0, 1, 2, 2]
+    duplicate_count, invalid_count = dataframe_quality_counters(df, ["open", "high", "low", "close"])
+    assert duplicate_count == 1
+    assert invalid_count == 1
+
+

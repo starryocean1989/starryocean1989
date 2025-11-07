@@ -7,6 +7,13 @@
 
 `tdx_asyncio` 是基于 `pytdx`、`tdxpy` 和 `mootdx` 库的完全异步重写版本，旨在解决原同步库的性能瓶颈并提供企业级连接管理功能。
 
+## 📦 安装与发布流程（常量模块）
+
+- **更新常量**：若新增或调整券商服务器/协议常量，请先修改 `network/constants.py`，保持主数据源唯一。
+- **完整校验**：运行 `python -m backend.infrastructure.tdx_asyncio.scripts.test_hq_api_methods` 以及自定义服务器连通性脚本，确认最新常量可用。
+- **兼容导出**：`backend.infrastructure.tdx_asyncio.constants` 会自动从 `network.constants` 重新导出所有公开常量；发布前确认该模块可正确导入。
+- **打包发布**：执行打包命令前，确保上述脚本通过，并在变更日志中标注常量更新时间，以便负载均衡器载入最新服务器池。
+
 ### 为什么需要异步重写？
 
 #### 原始架构问题

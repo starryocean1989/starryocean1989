@@ -1247,7 +1247,7 @@ class ServiceInitializer:
                                         event_data,
                                     )
                                 )
-                                # 🎯 日志埋点：记录到 logs/ai
+                                # 🎯 日志埋点：记录到 logs/
                                 self.logger.info(
                                     "✅ 已发布 UnifiedDataManager 就绪事件: 品种数=%d, 模式=%s",
                                     contract_count,

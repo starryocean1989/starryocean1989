@@ -245,6 +245,25 @@ data_module_vnpy/
 - IPO日期获取相关函数已优化，使用统一的 `get_market_from_code()` 替代重复的市场代码判断逻辑。
 - `_download_ipo_batch()` 已简化，直接调用 `tdx_asyncio.api.finance.batch_get_ipo_dates()` 的实现。
 
+### 三进程运行模式 (v0.50)
+
+| 角色 | 进程 | 核心文件 | 关键职责 |
+|------|------|----------|----------|
+| 数据进程 | 独立子进程 | `data_process_main.py` | 初始化 `ChinaStockEngine`、`UnifiedDataManager`、`LoadBalancer`；创建 `native_ipc` 管道（`data_query` / `data_calculation`）；在 Level 0/1/2 阶段写入 `logs/data_process_ready.signal`；处理来自主进程的 JSON-RPC 请求。|
+| 主进程代理 | UI / 业务进程 | `data_process_client.py`、`core_engine.py` | 在 `BackendInitStage` Level 2 后获取 `LOGGING_QUEUE_TOKEN`、`pipes` 等元数据；维护 RPC 客户端连接；为 `DataCenterService`、`MarketBoardService` 等注入远程调用能力。|
+| 日志桥接 | 主进程 | `backend.infrastructure.system_vnpy.logging_system` | `DataLauncherWorker` 将 `LOGGING_QUEUE_TOKEN` 注入子进程环境；子进程通过 `load_queue_from_env()` + `setup_subprocess_logging()` 将日志回传至主进程的 `LoggingHub`；异常时自动降级至本地文件日志并输出 `WARNING`。|
+
+**握手流程**
+1. `DataLauncherWorker` 启动 `data_process_main.py`，清理旧的 `data_process_ready.signal`，并将 `LOGGING_QUEUE_TOKEN` 写入环境变量。
+2. 子进程完成初始化后写入 `logs/data_process_ready.signal`，包含 `pid`、`timestamp`、`level`、`pipes` 等信息，并启动 watchdog。
+3. 主进程根据 PID 与启动时间双验证信号文件，保存 `StartupContext.data_process_info`，并在 Stage 3 输出“Level 1/2 就绪”。
+4. 若日志队列桥接失败，会在 Terminal 输出 `⚠️` 警告，同时记录到事件日志，启动流程仍然继续。
+
+**RPC 入口**
+- `data_process_client.py` 暴露同步/异步调用接口（`call_sync` / `call_async`）；通过 `get_global_client()` 复用连接。
+- 默认注册的方法由 `data_runtime.py` / `data_acquisition.py` 提供（如 `get_kline_data`、`get_symbol_list`、`calculate_indicator`、`scan_quality`）。
+- 所有请求都通过 `native_ipc.AsyncIPCPipe` 发送 JSON 序列化的 payload，响应同样使用 JSON。连接异常时会自动重试并写入日志统计。
+
 ### 技术栈
 
 | 技术 | 说明 |
@@ -457,6 +476,34 @@ china_stock.download_incremental(
 df = china_stock.query_data("000001", "1d")
 print(df.head())
 ```
+
+### 连接数据进程（v0.50+）
+
+```python
+import asyncio
+from backend.infrastructure.data_module_vnpy.data_process_client import DataProcessClient
+
+
+async def main():
+    client = DataProcessClient.get_global_client()
+    # BackendInitStage 启动数据进程后，可直接复用现有管道；若独立运行需调用 connect_async()
+    await client.connect_async()
+
+    result = await client.call_async(
+        method="get_symbol_list",
+        params={"market": "SZ"}
+    )
+
+    if result.get("success"):
+        print(f"收到 {len(result['data']['symbols'])} 个深证品种")
+    else:
+        print(f"调用失败: {result}")
+
+
+asyncio.run(main())
+```
+
+> ℹ️ `DataLauncherWorker` 会在 Stage 3 自动启动数据进程并注入 `native_ipc` 管道。上例适用于独立脚本或调试场景；常规 UI / 服务调用会通过代理自动转发到数据进程。
 
 ### 事件订阅
 
@@ -883,6 +930,17 @@ from backend.infrastructure.data_module_vnpy import (
     _reset_queue_skip_stats,
 )
 ```
+
+### v3.7 (2025-11-07) - 子进程日志桥接统一
+
+**主要变更**:
+- ✅ `tdx_asyncio.utils.helper.configure_subprocess_logging` 现已优先通过 `LOGGING_QUEUE_TOKEN` 恢复队列并调用 `setup_subprocess_logging(queue)`，将 `multiprocessing` 子进程日志回传至主进程的 `LoggingHub`。
+- ⚠️ 若队列恢复失败（环境变量缺失或解码失败），将自动回退到本地 `LogHub` 注入（不跨进程），并输出 `WARNING` 提示。
+
+**影响范围**:
+- `data_acquisition.py` 与 `data_quality.py` 中的 Worker 进程（如 `kline_download`、`tdx_executor`）无需改动调用方式，即可统一桥接到主进程日志系统。
+- Terminal输出与事件日志文件保持一致的路由规则：`STAGE_NODE.INFO` 与 `WARNING/ERROR/CRITICAL` 输出至Terminal，所有日志全量写入文件。
+
 
 ### v3.4 (2025-11-06) - 底层工具迁移和性能优化
 

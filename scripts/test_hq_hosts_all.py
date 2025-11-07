@@ -6,6 +6,7 @@ HQ_HOSTS_ALL 服务器连接测试脚本
 """
 
 import sys
+import logging
 import asyncio
 import time
 from pathlib import Path
@@ -19,6 +20,9 @@ sys.path.insert(0, str(project_root))
 from backend.infrastructure.tdx_asyncio import AsyncTdxHq_API
 from backend.infrastructure.tdx_asyncio.constants import HQ_HOSTS_ALL
 
+# 统一测试日志
+log = logging.getLogger(__name__)
+
 
 async def test_server(name: str, ip: str, port: int, timeout: float = 5.0) -> Tuple[bool, float]:
     """测试单个服务器连接"""
@@ -31,16 +35,16 @@ async def test_server(name: str, ip: str, port: int, timeout: float = 5.0) -> Tu
         if connected:
             latency = (time.time() - start_time) * 1000
             await api.disconnect()
-            print(f"  ✅ {name} ({ip}:{port}) - {latency:.0f}ms")
+            log.info(f"  ✅ {name} ({ip}:{port}) - {latency:.0f}ms", extra={"log_type": "STAGE_NODE"})
             return True, latency
         else:
-            print(f"  ❌ {name} ({ip}:{port}) - 连接失败")
+            log.warning(f"  ❌ {name} ({ip}:{port}) - 连接失败", extra={"log_type": "STAGE_NODE"})
             return False, float('inf')
     except asyncio.TimeoutError:
-        print(f"  ⏱️ {name} ({ip}:{port}) - 超时 (>{timeout}s)")
+        log.warning(f"  ⏱️ {name} ({ip}:{port}) - 超时 (>{timeout}s)", extra={"log_type": "STAGE_NODE"})
         return False, float('inf')
     except Exception as e:
-        print(f"  ❌ {name} ({ip}:{port}) - 异常: {type(e).__name__}")
+        log.error(f"  ❌ {name} ({ip}:{port}) - 异常: {type(e).__name__}", extra={"log_type": "STAGE_NODE"})
         return False, float('inf')
 
 
@@ -53,8 +57,8 @@ async def test_servers_batch(
     results = {}
     total = len(servers)
 
-    print(f"\n开始测试 HQ_HOSTS_ALL: 总共 {total} 个服务器，每批 {batch_size} 个")
-    print("=" * 60)
+    log.info(f"\n开始测试 HQ_HOSTS_ALL: 总共 {total} 个服务器，每批 {batch_size} 个", extra={"log_type": "STAGE_NODE"})
+    log.info("=" * 60, extra={"log_type": "STAGE_NODE"})
 
     start_time = time.time()
 
@@ -63,8 +67,8 @@ async def test_servers_batch(
         batch_num = i // batch_size + 1
         total_batches = (total + batch_size - 1) // batch_size
 
-        print(f"\n📦 批次 {batch_num}/{total_batches} (服务器 {i+1}-{min(i+batch_size, total)}/{total})")
-        print("-" * 60)
+        log.info(f"\n📦 批次 {batch_num}/{total_batches} (服务器 {i+1}-{min(i+batch_size, total)}/{total})", extra={"log_type": "STAGE_NODE"})
+        log.info("-" * 60, extra={"log_type": "STAGE_NODE"})
 
         tasks = [test_server(name, ip, port, timeout) for name, ip, port in batch]
         batch_results = await asyncio.gather(*tasks)
@@ -73,7 +77,7 @@ async def test_servers_batch(
             results[server] = (passed, latency)
 
         batch_passed = sum(1 for passed, _ in batch_results if passed)
-        print(f"\n  批次统计: 通过 {batch_passed}/{len(batch)}")
+        log.info(f"\n  批次统计: 通过 {batch_passed}/{len(batch)}", extra={"log_type": "STAGE_NODE"})
 
     elapsed = time.time() - start_time
     return results, elapsed
@@ -81,20 +85,20 @@ async def test_servers_batch(
 
 async def main():
     """主函数"""
-    print("\n" + "=" * 60)
-    print("HQ_HOSTS_ALL 服务器连接测试")
-    print("=" * 60)
+    log.info("\n" + "=" * 60, extra={"log_type": "STAGE_NODE"})
+    log.info("HQ_HOSTS_ALL 服务器连接测试", extra={"log_type": "STAGE_NODE"})
+    log.info("=" * 60, extra={"log_type": "STAGE_NODE"})
 
     # 显示当前状态
-    print(f"\n📊 当前状态:")
-    print(f"  - HQ_HOSTS_ALL: {len(HQ_HOSTS_ALL)} 个服务器")
+    log.info(f"\n📊 当前状态:", extra={"log_type": "STAGE_NODE"})
+    log.info(f"  - HQ_HOSTS_ALL: {len(HQ_HOSTS_ALL)} 个服务器", extra={"log_type": "STAGE_NODE"})
 
     if not HQ_HOSTS_ALL:
-        print("\n❌ HQ_HOSTS_ALL 为空，没有服务器可测试")
+        log.error("\n❌ HQ_HOSTS_ALL 为空，没有服务器可测试", extra={"log_type": "STAGE_NODE"})
         return
 
     # 执行测试
-    print(f"\n⏱️ 预计耗时: {len(HQ_HOSTS_ALL) * 0.5 / 10:.1f} - {len(HQ_HOSTS_ALL) * 1.5 / 10:.1f} 分钟")
+    log.info(f"\n⏱️ 预计耗时: {len(HQ_HOSTS_ALL) * 0.5 / 10:.1f} - {len(HQ_HOSTS_ALL) * 1.5 / 10:.1f} 分钟", extra={"log_type": "STAGE_NODE"})
 
     results, elapsed = await test_servers_batch(
         HQ_HOSTS_ALL,
@@ -110,41 +114,39 @@ async def main():
     passed_servers.sort(key=lambda x: x[1])
 
     # 显示统计
-    print(f"\n" + "=" * 60)
-    print(f"📊 测试结果统计")
-    print("=" * 60)
-    print(f"  - 总测试数: {len(results)}")
-    print(f"  - ✅ 通过: {len(passed_servers)} ({len(passed_servers)/len(results)*100:.1f}%)")
-    print(f"  - ❌ 失败: {len(failed_servers)} ({len(failed_servers)/len(results)*100:.1f}%)")
-    print(f"  - 总耗时: {elapsed:.1f}秒 ({elapsed/60:.1f}分钟)")
+    log.info(f"\n" + "=" * 60, extra={"log_type": "STAGE_NODE"})
+    log.info(f"📊 测试结果统计", extra={"log_type": "STAGE_NODE"})
+    log.info("=" * 60, extra={"log_type": "STAGE_NODE"})
+    log.info(f"  - 总测试数: {len(results)}", extra={"log_type": "STAGE_NODE"})
+    log.info(f"  - ✅ 通过: {len(passed_servers)} ({len(passed_servers)/len(results)*100:.1f}%)", extra={"log_type": "STAGE_NODE"})
+    log.info(f"  - ❌ 失败: {len(failed_servers)} ({len(failed_servers)/len(results)*100:.1f}%)", extra={"log_type": "STAGE_NODE"})
+    log.info(f"  - 总耗时: {elapsed:.1f}秒 ({elapsed/60:.1f}分钟)", extra={"log_type": "STAGE_NODE"})
 
     # 显示通过的服务器
     if passed_servers:
-        print(f"\n✅ 通过的服务器（按延迟排序）:")
+        log.info(f"\n✅ 通过的服务器（按延迟排序）:", extra={"log_type": "STAGE_NODE"})
         for i, (server, latency) in enumerate(passed_servers, 1):
             name, ip, port = server
-            print(f"  {i:2d}. {name:30s} {ip:15s}:{port} - {latency:.0f}ms")
+            log.info(f"  {i:2d}. {name:30s} {ip:15s}:{port} - {latency:.0f}ms", extra={"log_type": "STAGE_NODE"})
     else:
-        print(f"\n❌ 没有服务器通过测试")
+        log.warning(f"\n❌ 没有服务器通过测试", extra={"log_type": "STAGE_NODE"})
 
     # 显示失败的服务器
     if failed_servers:
-        print(f"\n❌ 失败的服务器:")
+        log.info(f"\n❌ 失败的服务器:", extra={"log_type": "STAGE_NODE"})
         for i, server in enumerate(failed_servers, 1):
             name, ip, port = server
-            print(f"  {i:2d}. {name:30s} {ip:15s}:{port}")
+            log.info(f"  {i:2d}. {name:30s} {ip:15s}:{port}", extra={"log_type": "STAGE_NODE"})
 
-    print(f"\n" + "=" * 60)
-    print("测试完成")
-    print("=" * 60)
+    log.info(f"\n" + "=" * 60, extra={"log_type": "STAGE_NODE"})
+    log.info("测试完成", extra={"log_type": "STAGE_NODE"})
+    log.info("=" * 60, extra={"log_type": "STAGE_NODE"})
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n\n⚠️ 用户中断测试")
+        log.warning("\n\n⚠️ 用户中断测试", extra={"log_type": "STAGE_NODE"})
     except Exception as e:
-        print(f"\n❌ 发生错误: {e}")
-        import traceback
-        traceback.print_exc()
+        log.error(f"\n❌ 发生错误: {e}", extra={"log_type": "STAGE_NODE"}, exc_info=True)

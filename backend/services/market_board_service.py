@@ -12,10 +12,17 @@
 - 数据录制 → 数据中心模块负责
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 import logging
 
 from backend.core.service_base import BaseService
+from backend.infrastructure.data_module_vnpy.arrow_utils import (
+    ARROW_AVAILABLE as ARROW_IPC_AVAILABLE,
+)
+from backend.infrastructure.native.native_serialization import (
+    build_dataframe_payload,
+    payload_to_records,
+)
 
 # 专用logger - 日志埋点v4.0
 logger_alert = logging.getLogger("backend.market.alert")
@@ -43,6 +50,7 @@ class MarketBoardService(BaseService):
 
         # data_module_vnpy统一数据管理器
         self.unified_data_manager = None
+        self.data_client: Optional[Any] = None
 
         self.logger.info("行情看板服务已创建（重构版）")
 
@@ -138,60 +146,24 @@ class MarketBoardService(BaseService):
         """
         try:
             # 优先使用数据进程RPC客户端
-            if self.data_client:
-                try:
-                    # 通过RPC调用数据进程的get_kline_data方法
-                    result = self.data_client.call(
-                        "get_kline_data",
-                        symbol=symbol,
-                        interval=interval,
-                        start_date=start_date,
-                        end_date=end_date,
-                        check_gaps=check_gaps,
-                        use_preload=True,
-                    )
+            data_client = self.data_client
+            if data_client is not None:
+                request_params = {
+                    "symbol": symbol,
+                    "interval": interval,
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "check_gaps": check_gaps,
+                    "use_preload": True,
+                }
 
-                    if result and isinstance(result, dict):
-                        if result.get("success", False):
-                            return result
-                        else:
-                            self.logger.warning(
-                                f"数据进程返回失败: {result.get('message', '未知错误')}"
-                            )
-                    else:
-                        # 如果返回的是DataFrame格式（兼容旧格式）
-                        import pandas as pd
-
-                        if isinstance(result, pd.DataFrame) and not result.empty:
-                            # 将DataFrame转换为Dict格式
-                            data = []
-                            for idx, row in result.iterrows():
-                                data.append(
-                                    {
-                                        "datetime": (
-                                            idx.isoformat()
-                                            if isinstance(idx, pd.Timestamp)
-                                            else str(idx)
-                                        ),
-                                        "open": float(row.get("open", 0)),
-                                        "high": float(row.get("high", 0)),
-                                        "low": float(row.get("low", 0)),
-                                        "close": float(row.get("close", 0)),
-                                        "volume": float(row.get("volume", 0)),
-                                    }
-                                )
-
-                            return {
-                                "success": True,
-                                "data": data,
-                                "message": f"从数据进程获取 {len(data)} 条数据",
-                            }
-
-                except Exception as e:
+                result = self._fetch_kline_via_data_process(request_params)
+                if result:
+                    if result.get("success", False):
+                        return result
                     self.logger.warning(
-                        "从数据进程查询失败：%s，尝试使用DataCenterService",
-                        e,
-                        extra={"log_type": "SYSTEM"},
+                        "数据进程返回失败: %s",
+                        result.get("message", "未知错误"),
                     )
 
             # 备用方案：使用DataCenterService
@@ -219,6 +191,105 @@ class MarketBoardService(BaseService):
             return {"success": False, "message": str(e), "data": []}
 
     # ==================== 技术指标计算 ====================
+
+    def _fetch_kline_via_data_process(self, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """通过数据进程获取K线数据，优先使用Arrow格式."""
+
+        data_client = cast(Any, self.data_client)
+        if data_client is None:
+            return None
+
+        try:
+            result = data_client.call("get_kline_data", prefer_format="arrow", **params)
+            normalized = self._normalize_kline_result(result, params)
+            if normalized is not None:
+                return normalized
+        except Exception as exc:
+            self.logger.warning(
+                "从数据进程查询失败：%s，准备使用回退方案",
+                exc,
+                extra={"log_type": "SYSTEM"},
+            )
+        return None
+
+    def _normalize_kline_result(
+        self,
+        result: Any,
+        request_params: Dict[str, Any],
+        allow_retry: bool = True,
+    ) -> Optional[Dict[str, Any]]:
+        """对数据进程返回结果进行格式化处理."""
+
+        if isinstance(result, dict):
+            if result.get("success") and result.get("format") in {"arrow", "records"}:
+                if result.get("format") == "arrow" and not ARROW_IPC_AVAILABLE:
+                    self.logger.warning(
+                        "pyarrow 不可用，准备回退到 records 格式",
+                        extra={"log_type": "SYSTEM"},
+                    )
+                else:
+                    try:
+                        records = payload_to_records(result)
+                        normalized = dict(result)
+                        normalized["format"] = "records"
+                        normalized["data"] = records
+                        normalized.setdefault("message", f"获取 {len(records)} 条数据")
+                        return normalized
+                    except ImportError:
+                        self.logger.warning(
+                            "Arrow 解析依赖缺失，准备回退到 records",
+                            extra={"log_type": "SYSTEM"},
+                        )
+                    except Exception:
+                        self.logger.warning(
+                            "数据载荷解析失败，准备回退到 records 格式",
+                            exc_info=True,
+                            extra={"log_type": "SYSTEM"},
+                        )
+
+                if result.get("format") == "arrow" and allow_retry:
+                    data_client = cast(Any, self.data_client)
+                    if data_client is not None:
+                        try:
+                            fallback = data_client.call(
+                                "get_kline_data", prefer_format="records", **request_params
+                            )
+                            return self._normalize_kline_result(
+                                fallback, request_params, allow_retry=False
+                            )
+                        except Exception:
+                            self.logger.warning(
+                                "回退 records 格式失败",
+                                exc_info=True,
+                                extra={"log_type": "SYSTEM"},
+                            )
+                    return None
+
+            if result.get("format") == "records" and isinstance(result.get("data"), list):
+                return result
+
+            if isinstance(result.get("data"), list):
+                result.setdefault("format", "records")
+                return result
+
+            try:
+                import pandas as pd
+
+                if isinstance(result, pd.DataFrame) and not result.empty:
+                    payload = build_dataframe_payload(result, prefer_format="records")
+                    return {
+                        "success": True,
+                        "format": "records",
+                        "transport": payload.transport,
+                        "data": payload.data,
+                        "message": f"从数据进程获取 {payload.rows} 条数据",
+                    }
+            except ImportError:  # pragma: no cover - pandas 必然存在
+                pass
+
+            return result
+
+        return None
 
     def calculate_indicator(
         self, data: List[float], indicator_name: str, params: Optional[Dict[str, Any]] = None

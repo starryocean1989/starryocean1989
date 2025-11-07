@@ -17,6 +17,7 @@ native_compute_module = Extension(
         'native_compute.c',
         'batch_compute.c',
         'batch_hash.c',
+        'batch_date.c',
     ],
     libraries=['kernel32'],
     define_macros=[('PY_SSIZE_T_CLEAN', None)],

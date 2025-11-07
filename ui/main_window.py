@@ -81,7 +81,13 @@ def _load_json_config(file_path: Path) -> Dict:
         with open(file_path, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
-        print(f"加载配置文件失败 {file_path}: {e}")
+        logger.error(
+            "加载配置文件失败 %s: %s",
+            str(file_path),
+            str(e),
+            extra={"log_type": "SYSTEM"},
+            exc_info=True,
+        )
         return {}
 
 
@@ -105,7 +111,13 @@ def _save_json_config(file_path: Path, data: Dict) -> bool:
 
         return True
     except Exception as e:
-        print(f"保存配置文件失败 {file_path}: {e}")
+        logger.error(
+            "保存配置文件失败 %s: %s",
+            str(file_path),
+            str(e),
+            extra={"log_type": "SYSTEM"},
+            exc_info=True,
+        )
         return False
 
 
@@ -1469,7 +1481,10 @@ class MainWindow(QMainWindow, LoggerMixin):
         interfaces = [(interface_id, None) for interface_id in self.interface_order]
 
         self.logger.info("准备创建%d个功能界面", len(interfaces))
-        print("[SERIAL] 准备创建6个界面（严格串行模式）")
+        self.logger.info(
+            "[SERIAL] 准备创建6个界面（严格串行模式）",
+            extra={"log_type": "STAGE_NODE"},
+        )
 
         # ✅ 严格串行化：阻塞所有可能触发事件的组件
         blocked_widgets = []
@@ -1484,14 +1499,23 @@ class MainWindow(QMainWindow, LoggerMixin):
         self.blockSignals(True)
         blocked_widgets.append(("MainWindow", self))
 
-        self.logger.info("✅ 已阻塞 %d 个组件的信号，确保100%%串行创建", len(blocked_widgets))
-        print(f"[SERIAL] 已阻塞 {len(blocked_widgets)} 个组件的信号")
+        self.logger.info(
+            "✅ 已阻塞 %d 个组件的信号，确保100%%串行创建",
+            len(blocked_widgets),
+        )
+        self.logger.info(
+            f"[SERIAL] 已阻塞 {len(blocked_widgets)} 个组件的信号",
+            extra={"log_type": "STAGE_NODE"},
+        )
 
         # ✅ 强制刷新所有挂起的Qt事件（清空队列）
         from PySide6.QtWidgets import QApplication
 
         QApplication.processEvents()
-        print("[SERIAL] 已清空Qt事件队列")
+        self.logger.info(
+            "[SERIAL] 已清空Qt事件队列",
+            extra={"log_type": "STAGE_NODE"},
+        )
 
         for idx, (interface_id, interface_class) in enumerate(interfaces, 1):
             self.logger.info("-" * 70)
@@ -1503,14 +1527,18 @@ class MainWindow(QMainWindow, LoggerMixin):
                 (interface_class.__name__ if interface_class else "Lazy(SystemManager)"),
             )
             self.logger.info("-" * 70)
-            print(
-                f"[UI-CREATE] 正在创建界面 {idx}/{len(interfaces)}: {interface_id} ({interface_class.__name__ if interface_class else 'Lazy'})"
+            self.logger.info(
+                f"[UI-CREATE] 正在创建界面 {idx}/{len(interfaces)}: {interface_id} ({interface_class.__name__ if interface_class else 'Lazy'})",
+                extra={"log_type": "STAGE_NODE"},
             )
 
             try:
                 self._create_interface(interface_id, interface_class)
                 self.logger.info("✅ 界面 %s 创建完成", interface_id)
-                print(f"[UI-CREATE] ✅ 界面 {interface_id} 创建成功")
+                self.logger.info(
+                    f"[UI-CREATE] ✅ 界面 {interface_id} 创建成功",
+                    extra={"log_type": "STAGE_NODE"},
+                )
             except Exception as e:
                 self.logger.error(
                     "❌ 界面 %s 创建失败: %s",
@@ -1519,10 +1547,16 @@ class MainWindow(QMainWindow, LoggerMixin):
                     exc_info=True,
                     extra={"log_type": "SYSTEM"},
                 )
-                print(f"[UI-CREATE] ❌ 界面 {interface_id} 创建失败: {e}")
+                self.logger.info(
+                    f"[UI-CREATE] ❌ 界面 {interface_id} 创建失败: {e}",
+                    extra={"log_type": "STAGE_NODE"},
+                )
                 # 继续创建下一个界面，不中断整个流程
 
-        print("[SERIAL] 所有6个界面占位符创建完成")
+        self.logger.info(
+            "[SERIAL] 所有6个界面占位符创建完成",
+            extra={"log_type": "STAGE_NODE"},
+        )
         self.logger.info("=" * 70)
         self.logger.info("✅ 所有功能界面创建完成")
         self.logger.info("=" * 70)
@@ -1534,7 +1568,10 @@ class MainWindow(QMainWindow, LoggerMixin):
             self.content_stack.blockSignals(False)
         self.blockSignals(False)
         self.logger.info("✅ 已恢复所有组件信号")
-        print("[SERIAL] 已恢复所有组件信号，准备进入下一阶段")
+        self.logger.info(
+            "[SERIAL] 已恢复所有组件信号，准备进入下一阶段",
+            extra={"log_type": "STAGE_NODE"},
+        )
 
         # ✅ 标记占位符创建完成
         self._interfaces_created = True
@@ -1617,8 +1654,14 @@ class MainWindow(QMainWindow, LoggerMixin):
                 extra={"log_type": "SYSTEM"},
                 exc_info=True,
             )
-            print(f"\n⚠️  界面 '{interface_id}' 创建失败: {e}")
-            print(f"   类名: {interface_class.__name__ if interface_class else 'Lazy'}")
+            self.logger.info(
+                f"\n⚠️  界面 '{interface_id}' 创建失败: {e}",
+                extra={"log_type": "STAGE_NODE"},
+            )
+            self.logger.info(
+                f"   类名: {interface_class.__name__ if interface_class else 'Lazy'}",
+                extra={"log_type": "STAGE_NODE"},
+            )
 
             # 创建错误占位符
             placeholder = self._create_error_placeholder(interface_id, str(e))
@@ -2219,10 +2262,17 @@ def main():
 
         config_file = os.getenv("CONFIG_FILE")
         if config_file:
-            logging.getLogger(__name__).info("主入口：从环境变量加载配置: %s", config_file)
+            logging.getLogger(__name__).info(
+                "主入口：从环境变量加载配置: %s",
+                config_file,
+                extra={"log_type": "STAGE_NODE"},
+            )
             init_settings(config_file)
         else:
-            logging.getLogger(__name__).info("主入口：使用默认配置文件")
+            logging.getLogger(__name__).info(
+                "主入口：使用默认配置文件",
+                extra={"log_type": "STAGE_NODE"},
+            )
             init_settings()
 
         # 创建启动协调器（告知配置已初始化）
@@ -2236,37 +2286,57 @@ def main():
         # 连接信号
         def on_startup_completed():
             """启动完成回调."""
-            logging.getLogger(__name__).info("=" * 70)
-            logging.getLogger(__name__).info("📡 收到启动完成信号")
-            logging.getLogger(__name__).info("=" * 70)
+            logging.getLogger(__name__).info("=" * 70, extra={"log_type": "STAGE_NODE"})
+            logging.getLogger(__name__).info("📡 收到启动完成信号", extra={"log_type": "STAGE_NODE"})
+            logging.getLogger(__name__).info("=" * 70, extra={"log_type": "STAGE_NODE"})
 
             # 初始化功能界面
-            logging.getLogger(__name__).info("步骤1: 初始化UI组件...")
+            logging.getLogger(__name__).info(
+                "步骤1: 初始化UI组件...",
+                extra={"log_type": "STAGE_NODE"},
+            )
             main_window.initialize_function_interfaces_after_backend()
-            logging.getLogger(__name__).info("✅ UI组件初始化完成")
+            logging.getLogger(__name__).info(
+                "✅ UI组件初始化完成",
+                extra={"log_type": "STAGE_NODE"},
+            )
 
             # 显示主窗口
-            logging.getLogger(__name__).info("步骤2: 显示主窗口...")
+            logging.getLogger(__name__).info(
+                "步骤2: 显示主窗口...",
+                extra={"log_type": "STAGE_NODE"},
+            )
             main_window.show()
             main_window.raise_()
             main_window.activateWindow()
-            logging.getLogger(__name__).info("✅ 主窗口已显示")
+            logging.getLogger(__name__).info(
+                "✅ 主窗口已显示",
+                extra={"log_type": "STAGE_NODE"},
+            )
 
             # 隐藏启动画面
-            logging.getLogger(__name__).info("步骤3: 隐藏启动画面...")
+            logging.getLogger(__name__).info(
+                "步骤3: 隐藏启动画面...",
+                extra={"log_type": "STAGE_NODE"},
+            )
             coordinator.hide_splash(main_window)
-            logging.getLogger(__name__).info("✅ 启动画面已隐藏")
+            logging.getLogger(__name__).info(
+                "✅ 启动画面已隐藏",
+                extra={"log_type": "STAGE_NODE"},
+            )
 
-            logging.getLogger(__name__).info("=" * 70)
-            logging.getLogger(__name__).info("🎉 应用启动完成！")
-            logging.getLogger(__name__).info("=" * 70)
+            logging.getLogger(__name__).info("=" * 70, extra={"log_type": "STAGE_NODE"})
+            logging.getLogger(__name__).info("🎉 应用启动完成！", extra={"log_type": "STAGE_NODE"})
+            logging.getLogger(__name__).info("=" * 70, extra={"log_type": "STAGE_NODE"})
 
         def on_startup_failed(error: str):
             """启动失败回调."""
-            logging.getLogger(__name__).error("=" * 70)
-            logging.getLogger(__name__).error("💥 启动失败")
-            logging.getLogger(__name__).error("=" * 70)
-            logging.getLogger(__name__).error("错误信息: %s", error)
+            logging.getLogger(__name__).error("=" * 70, extra={"log_type": "STAGE_NODE"})
+            logging.getLogger(__name__).error("💥 启动失败", extra={"log_type": "STAGE_NODE"})
+            logging.getLogger(__name__).error("=" * 70, extra={"log_type": "STAGE_NODE"})
+            logging.getLogger(__name__).error(
+                "错误信息: %s", error, extra={"log_type": "STAGE_NODE"}
+            )
             coordinator.hide_splash()
 
             # 显示错误对话框

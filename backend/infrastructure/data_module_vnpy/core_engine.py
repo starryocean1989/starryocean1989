@@ -40,7 +40,7 @@ import time
 import gc
 from pathlib import Path
 from datetime import datetime, date, timedelta
-from typing import Optional, Dict, Any, List, Tuple, Callable
+from typing import Optional, Dict, Any, List, Tuple, Callable, Awaitable, Union, cast
 from dataclasses import dataclass
 
 # VNPy相关
@@ -65,17 +65,21 @@ except ImportError:
     ntplib = None
 
 # 可选依赖：native_iocp
+compat_aopen: Optional[Callable[..., Awaitable[Any]]]
 try:
-    from backend.infrastructure.native.native_iocp.compat import aopen as compat_aopen
+    from backend.infrastructure.native.native_iocp.compat import aopen as compat_aopen  # type: ignore[assignment]
 
     IOCP_AVAILABLE = True
 except ImportError:
     try:
         import aiofiles
 
-        async def compat_aopen(file, mode="r", **kwargs):
-            return aiofiles.open(file, mode, **kwargs)
+        async def _aiofiles_aopen(
+            filepath: Union[str, Path], mode: str = "rb", **kwargs: Any
+        ) -> Any:
+            return await aiofiles.open(filepath, mode, **kwargs)  # type: ignore[return-value]
 
+        compat_aopen = _aiofiles_aopen
         IOCP_AVAILABLE = False
     except ImportError:
         compat_aopen = None
@@ -500,7 +504,7 @@ class DailyCacheManager:
             try:
                 # 二进制序列化
                 if NATIVE_SER_AVAILABLE and zero_copy_serialize:
-                    payload = zero_copy_serialize(cache_obj)
+                    payload = zero_copy_serialize(cache_obj)  # type: ignore[misc]
                 else:
                     payload = pickle.dumps(cache_obj, protocol=pickle.HIGHEST_PROTOCOL)
 
@@ -623,7 +627,7 @@ class DailyCacheManager:
                 # 反序列化
                 try:
                     if NATIVE_SER_AVAILABLE and batch_deserialize:
-                        cache_obj = batch_deserialize([payload])[0]
+                        cache_obj = batch_deserialize([payload])[0]  # type: ignore[misc]
                     else:
                         cache_obj = pickle.loads(payload)
                 except Exception:
@@ -783,7 +787,7 @@ class DailyCacheManager:
             try:
                 payload = None
                 if NATIVE_SER_AVAILABLE and zero_copy_serialize:
-                    payload = zero_copy_serialize(cache_obj)
+                    payload = zero_copy_serialize(cache_obj)  # type: ignore[misc]
                 else:
                     payload = pickle.dumps(cache_obj, protocol=pickle.HIGHEST_PROTOCOL)
                 async with await compat_aopen(bin_file, "wb") as f:
@@ -849,7 +853,7 @@ class DailyCacheManager:
                     payload = await f.read()
                 try:
                     if NATIVE_SER_AVAILABLE and batch_deserialize:
-                        cache_obj = batch_deserialize([payload])[0]
+                        cache_obj = batch_deserialize([payload])[0]  # type: ignore[misc]
                     else:
                         cache_obj = pickle.loads(payload)
                 except Exception:
@@ -1012,7 +1016,7 @@ class DailyCacheManager:
                     payload = f.read()
                 try:
                     if NATIVE_SER_AVAILABLE and batch_deserialize:
-                        cache_obj = batch_deserialize([payload])[0]
+                        cache_obj = batch_deserialize([payload])[0]  # type: ignore[misc]
                     else:
                         cache_obj = pickle.loads(payload)
                 except Exception:
@@ -1333,7 +1337,7 @@ class ConfigManager:
         """通过native_ipc通知配置更新（跨进程）"""
         try:
             if self._ipc_pipe is None:
-                self._ipc_pipe = await AsyncIPCPipe.server("config_updates")
+                self._ipc_pipe = await AsyncIPCPipe.server("config_updates")  # type: ignore[attr-defined]
 
             # 发送配置更新通知
             if self._ipc_pipe is None:
@@ -1925,10 +1929,19 @@ class ChinaStockEngine:
             symbols_data = self.symbol_loader.get_all_classified()
             all_symbols = self.symbol_loader.extract_all_codes()
 
+            start_date_obj: Optional[date] = None
+            if start_date:
+                try:
+                    start_date_obj = datetime.strptime(start_date, "%Y-%m-%d").date()
+                except ValueError:
+                    logger.warning(
+                        "⚠️ 增量下载起始日期格式无效，已忽略: %s", start_date, extra={"log_type": "SYSTEM"}
+                    )
+
             # 执行下载
             result = self.data_fetcher.download_incremental_kline(
                 symbols=all_symbols,
-                start_date=start_date,
+                start_date=start_date_obj,
                 intervals=intervals,
                 use_adaptive=True,
                 use_two_phase=True,
@@ -1960,10 +1973,14 @@ class ChinaStockEngine:
 
                 self.unified_data_manager = UnifiedDataManager(self)
 
+            query_method = getattr(self.unified_data_manager, "query_unified", None)
+            if not callable(query_method):
+                raise AttributeError("UnifiedDataManager 缺少 query_unified 方法")
+
             # 执行查询
-            df = self.unified_data_manager.query_unified(
+            df = query_method(
                 symbol=symbol, interval=interval, start_date=start, end_date=end, check_gaps=True
-            )
+            )  # type: ignore[misc]
 
             return df
 
@@ -1974,33 +1991,6 @@ class ChinaStockEngine:
                 extra={"log_type": "SYSTEM"},
             )
             return None
-
-    def healthcheck(self) -> Dict[str, Any]:
-        """
-        健康检查
-
-        Returns:
-            健康状态字典
-        """
-        try:
-            health_status = {
-                "engine_ready": self._is_ready,
-                "config_loaded": self.config_manager._config_file is not None,
-                "time_synced": (
-                    self.time_sync.is_synced() if hasattr(self.time_sync, "is_synced") else False
-                ),
-                "symbol_loader_ready": self.symbol_loader is not None,
-                "data_fetcher_ready": self.data_fetcher is not None,
-                "storage_manager_ready": self.storage_manager is not None,
-                "offline_mode": self._offline_mode,
-                "offline_reason": self._offline_reason,
-            }
-
-            return health_status
-
-        except Exception as e:
-            logger.error(f"✗ 健康检查失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
-            return {"engine_ready": False, "error": str(e)}
 
     # ========================================
     # 离线模式管理
@@ -3932,16 +3922,24 @@ class ChinaStockEngine:
                     total_files = 0
                     total_size_bytes = 0
 
-                    if self.storage_manager and hasattr(self.storage_manager, "get_stats"):
-                        try:
-                            stats = self.storage_manager.get_stats()
-                            if stats:
-                                valid_symbols = stats.get("valid_symbols", 0)
-                                invalid_symbols = stats.get("invalid_symbols", 0)
-                                total_files = stats.get("total_files", 0)
-                                total_size_bytes = stats.get("total_size_bytes", 0)
-                        except Exception as e:
-                            logger.debug(f"获取StorageManager统计失败: {e}")
+                    if self.storage_manager:
+                        get_stats = getattr(self.storage_manager, "get_stats", None)
+                        if callable(get_stats):
+                            try:
+                                stats = cast(Dict[str, Any], get_stats())
+                            except Exception as e:
+                                logger.debug(f"获取StorageManager统计失败: {e}")
+                                stats = {}
+                        else:
+                            stats = {}
+                    else:
+                        stats = {}
+
+                    if stats:
+                        valid_symbols = stats.get("valid_symbols", 0)
+                        invalid_symbols = stats.get("invalid_symbols", 0)
+                        total_files = stats.get("total_files", 0)
+                        total_size_bytes = stats.get("total_size_bytes", 0)
 
                     # 发布事件通知UI
                     if self.event_engine:
@@ -4064,7 +4062,7 @@ class ChinaStockEngine:
             stage_logger.info("│ ✅ UnifiedDataManager初始化完成", extra={"log_type": "STAGE_NODE"})
             stage_logger.info("│   - 四层数据融合已启用", extra={"log_type": "STAGE_NODE"})
 
-            # 记录详细的启动信息到 logs/ai（使用PROGRESS级别）
+            # 记录详细的启动信息到 logs/（使用PROGRESS级别）
             logger.info(
                 "✅ UnifiedDataManager初始化完成：模式=%s, 离线=%s",
                 self.unified_data_manager.get_mode(),
@@ -4265,10 +4263,22 @@ class ChinaStockEngine:
             健康状态字典
         """
         try:
+            time_synced = False
+            is_synced_method = getattr(self.time_sync, "is_synced", None)
+            if callable(is_synced_method):
+                try:
+                    time_synced = bool(is_synced_method())
+                except Exception:
+                    time_synced = False
+            else:
+                time_synced = getattr(self.time_sync, "_cached_offset", None) is not None
+
             health_status = {
                 "engine_ready": self._is_ready,
                 "config_loaded": self.config_manager._config_file is not None,
-                "time_synced": self.time_sync._cached_offset is not None,
+                "time_synced": time_synced,
+                "offline_mode": self._offline_mode,
+                "offline_reason": self._offline_reason,
                 "components": {
                     "symbol_loader": self.symbol_loader is not None,
                     "data_fetcher": self.data_fetcher is not None,
@@ -4303,7 +4313,11 @@ class ChinaStockEngine:
                 self.data_sensor = DataSensor(self.event_engine, self.config_manager)
 
             # 从DataSensor获取统计信息
-            stats = self.data_sensor.get_stats()
+            stats_getter = getattr(self.data_sensor, "get_stats", None)
+            if callable(stats_getter):
+                stats = cast(Dict[str, Any], stats_getter())
+            else:
+                stats = {}
 
             # 转换为概览格式
             overview = {

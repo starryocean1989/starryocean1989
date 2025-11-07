@@ -11,7 +11,10 @@ from collections import defaultdict
 from typing import Dict, List, Any, Callable, Optional
 from pathlib import Path
 import threading
+import logging
 
+
+logger = logging.getLogger(__name__)
 
 class ExecutionTracker:
     """执行追踪器"""
@@ -303,5 +306,5 @@ if __name__ == "__main__":
     test_func()
     
     report = tracker.generate_report()
-    print(report)
+    logger.info(report, extra={"log_type": "SYSTEM"})
 

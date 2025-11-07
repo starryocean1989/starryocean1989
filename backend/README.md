@@ -234,6 +234,8 @@ class SystemManagerService(BaseService):
 - **数据源管理**：TDX轮询网关、虚拟推送网关、数据源连接管理
 - **服务器池管理**：TDX服务器池测速、配置管理
 
+> 📌 **三进程提示**：自 v0.50 起，数据进程负责执行上述重型任务。UI 进程中的 `DataCenterService` 仅保留轻量代理和降级逻辑，通过 native IPC 将请求转发到独立的 `data_process_main.py`。当数据进程不可用时，代理会自动降级为只读缓存模式，并在 Terminal 输出 `WARNING` 级别日志提示。
+
 **核心接口：**
 ```python
 class DataCenterService(BaseService):
@@ -595,15 +597,98 @@ psutil, PSUTIL_AVAILABLE
 
 ---
 
-## 🔗 服务依赖关系
+## 🔗 三进程架构与服务依赖关系
+
+### 三进程划分 (v0.50 架构)
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    UI进程 (主进程)                          │
+│  ┌───────────────────────────────────────────────────────┐ │
+│  │ UI层 + 业务服务层                                      │ │
+│  │ - MainWindow (PySide6)                                 │ │
+│  │ - MarketBoardService                                   │ │
+│  │ - TradingGatewayService                                │ │
+│  │ - PortfolioService                                     │ │
+│  │ - StrategyCenterService                                │ │
+│  │ - AIAssistantService                                   │ │
+│  │ - SystemManagerService                                 │ │
+│  │ - DataCenterService (代理层)                           │ │
+│  └───────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────┘
+         │                                │
+         │ native_ipc                     │ native_ipc
+         │ (data_query,                  │ (monitor_alerts,
+         │  data_calculation)            │  monitor_status,
+         │                                │  monitor_query)
+         ↓                                ↓
+┌──────────────────────┐      ┌──────────────────────┐
+│   数据进程           │      │   监控进程           │
+│  ┌────────────────┐ │      │  ┌────────────────┐ │
+│  │ ChinaStockEngine│ │      │  │MonitoringProcess│ │
+│  │ UnifiedDataMgr │ │      │  │ SystemMonitor  │ │
+│  │ LoadBalancer   │ │      │  │ ProcessMonitor │ │
+│  │ ServerPoolMgr  │ │      │  │ HardwareMonitor│ │
+│  └────────────────┘ │      │  └────────────────┘ │
+└──────────────────────┘      └──────────────────────┘
+         │                                │
+         │                                │
+         ↓                                ↓
+┌─────────────────────────────────────────────────────────────┐
+│              Infrastructure层（底层基础设施）                │
+│  ├── native_ipc (Windows Named Pipe + IOCP 跨进程通信)      │
+│  ├── native_iocp (异步文件I/O)                               │
+│  ├── native_collections (高性能容器: LRU缓存、优先队列)      │
+│  ├── native_memory (零拷贝内存操作)                          │
+│  ├── native_serialization (批量序列化)                       │
+│  ├── native_compute (批量数值运算、哈希计算)                 │
+│  ├── native_conversion (批量类型转换)                        │
+│  ├── native_gil (无锁队列、无锁哈希表)                       │
+│  ├── tdx_asyncio (通达信异步客户端)                          │
+│  └── VnPy框架                                                │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 启动阶段与Worker职责对照 (v0.50 三进程)
+
+| 阶段 | 主要组件 | 关键Worker/流程 | 重要输出 |
+|------|----------|----------------|----------|
+| 阶段0 `EnvSetupStage` | 环境变量、路径、DPI 配置 | - | Terminal 输出阶段标记，禁用字节码 |
+| 阶段1 `LoggingInitStage` | LoggingHub、MultiProcessLogCollector | - | 生成 `application_startup_*.log`，注册跨进程日志队列 |
+| 阶段2 `QtFrameworkStage` | QApplication、EventEngine、MainEngine | - | 预创建事件引擎与主引擎，为后续 Worker 提供上下文 |
+| 阶段3 `BackendInitStage` | 三进程并行启动 | `MonitorLauncherWorker`：拉起 `monitor_system.py` 并建立 `monitor_*` 管道;<br>`DataLauncherWorker`：运行 `data_process_main.py`，写入 `data_process_ready.signal`，回放日志队列;<br>`BackendInitializerWorker`：在主进程注册业务服务骨架，等待数据进程 Level 2 | Terminal Stage 3 分支 A/B/C 输出；UI 预加载任务启动 |
+| 阶段4 `UIActivationStage` | MainWindow、模块视图 | - | 绑定服务代理，展示主窗口 |
+
+> 以上阶段由 `start_new.py` 驱动，Terminal 仅展示 `STAGE_NODE`、`WARNING+` 级别日志，完整调试信息写入 `logs/application_startup_YYYYMMDD_HHMMSS.log`。
+
+### 关键架构特点
+
+**1. 三进程隔离**
+- UI进程:处理用户交互和业务逻辑
+- 数据进程:专注于高性能数据处理
+- 监控进程:独立监控系统资源
+
+**2. native_ipc通信**
+- 替代传统的线程/队列通信
+- 基于Windows Named Pipe + IOCP
+- 真正的异步跨进程通信
+- 延迟<10ms
+
+**3. C扩展性能优化**
+- native_iocp:文件I/O性能提升60%
+- native_collections:LRU缓存性能提升80%
+- native_ipc:跨进程通信延迟降低70%
+- native_serialization:序列化性能提升50%
+
+### 服务依赖关系 (UI进程内)
 
 ```
 UI层
   ↓
 Services层（业务服务）
   ├── SystemManagerService
-  ├── DataCenterService → data_module_vnpy
-  ├── MarketBoardService → DataCenterService / data_module_vnpy
+  ├── DataCenterService (代理层) ──[native_ipc]──> 数据进程
+  ├── MarketBoardService → DataCenterService
   ├── StrategyCenterService
   ├── AIAssistantService → StrategyCenterService
   ├── TradingGatewayService → StrategyCenterService
@@ -614,13 +699,6 @@ Core层（核心基础）
   ├── config.py (配置管理)
   ├── models.py (数据模型)
   └── service_base.py (服务基类)
-  ↓
-Infrastructure层（底层基础设施）
-  ├── data_module_vnpy (数据获取与管理)
-  ├── system_vnpy (系统监控与工具)
-  └── tdx_asyncio (通达信异步客户端)
-  ↓
-VnPy框架
 ```
 
 ---

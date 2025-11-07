@@ -48,6 +48,15 @@ import pandas as pd
 from typing import Union, Coroutine, Any
 
 try:
+    from backend.infrastructure.native.native_dataframe_ops import (
+        DATAFRAME_OPS_AVAILABLE,
+        dataframe_to_records as native_df_to_records,
+    )
+except ImportError:
+    DATAFRAME_OPS_AVAILABLE = False
+    native_df_to_records = None  # type: ignore
+
+try:
     from backend.infrastructure.native.native_iocp.compat import aopen as compat_aopen  # type: ignore
 
     IOCP_AVAILABLE = True
@@ -516,17 +525,13 @@ class ShanghaiStockClassifier(BaseClassifier):
             & (~all_symbols["code"].str.startswith("11"))
         ]
 
-        results = []
-        for _, row in shanghai_stocks.iterrows():
-            results.append(
-                {
-                    "code": row["code"],
-                    "name": row["name"],
-                    "market": 1,
-                    "exchange": "SSE",
-                    "category": "上证A股",
-                }
-            )
+        results_df = shanghai_stocks.loc[:, ["code", "name"]].copy()
+        results_df = results_df.assign(market=1, exchange="SSE", category="上证A股")
+
+        if DATAFRAME_OPS_AVAILABLE and native_df_to_records is not None:
+            results = native_df_to_records(results_df)
+        else:
+            results = results_df.to_dict("records")
 
         logger.debug(f"✅ 上证A股分类完成，共 {len(results)} 个品种")
         return results
@@ -575,17 +580,13 @@ class ShenzhenStockClassifier(BaseClassifier):
             & (~all_symbols["code"].isin(t0_fund_codes))
         ]
 
-        results = []
-        for _, row in shenzhen_stocks.iterrows():
-            results.append(
-                {
-                    "code": row["code"],
-                    "name": row["name"],
-                    "market": 0,
-                    "exchange": "SZSE",
-                    "category": "深证A股",
-                }
-            )
+        results_df = shenzhen_stocks.loc[:, ["code", "name"]].copy()
+        results_df = results_df.assign(market=0, exchange="SZSE", category="深证A股")
+
+        if DATAFRAME_OPS_AVAILABLE and native_df_to_records is not None:
+            results = native_df_to_records(results_df)
+        else:
+            results = results_df.to_dict("records")
 
         logger.debug(f"✅ 深证A股分类完成，共 {len(results)} 个品种")
         return results

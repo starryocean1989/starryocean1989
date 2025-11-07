@@ -125,6 +125,7 @@ class LoggingInitStage(StartupStage):
 
                 # 将日志队列保存到context（供子进程使用）
                 context.log_queue = log_collector.get_queue()
+                context.log_queue_token = log_collector.get_bridge_token()
 
                 logger.info(
                     "[LOG-INIT] ✅ MultiProcessLogCollector已启动",

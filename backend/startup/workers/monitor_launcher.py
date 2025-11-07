@@ -16,6 +16,7 @@ from typing import Optional
 
 from backend.startup.workers.base import StartupWorker, WorkerResult
 from backend.startup.context import StartupContext
+from backend.infrastructure.system_vnpy.logging_system import LOGGING_QUEUE_TOKEN_ENV
 
 
 def get_root() -> Path:
@@ -178,12 +179,22 @@ class MonitorLauncherWorker(StartupWorker):
             except Exception:
                 pass
 
+        import os
+
+        env = os.environ.copy()
+        if getattr(context, "log_queue_token", None):
+            env[LOGGING_QUEUE_TOKEN_ENV] = context.log_queue_token  # type: ignore[arg-type]
+            logger.debug(
+                "[MONITOR-PROCESS] 已注入日志队列token", extra={"log_type": "SYSTEM"}
+            )
+
         self.monitor_process_handle = subprocess.Popen(
             [sys.executable, str(monitor_script)],
             stdout=None,  # 不重定向，使用默认输出
             stderr=None,  # 不重定向，使用默认输出
             cwd=str(context.project_root),  # 确保监控进程在项目根目录工作
             creationflags=creation_flags,
+            env=env,
         )
 
         # 获取PID并显示
@@ -229,7 +240,7 @@ class MonitorLauncherWorker(StartupWorker):
             extra={"log_type": "STAGE_NODE", "scenario": "monitor_launch"}
         )
         stage_logger.info(
-            "✅ 监控进程看门狗启动",
+            "✅ 监控进程看门狗启动（2s 轮询）",
             extra={"log_type": "STAGE_NODE", "scenario": "monitor_launch"}
         )
 
@@ -430,6 +441,7 @@ class MonitorLauncherWorker(StartupWorker):
 
         def watchdog():
             """看门狗线程"""
+            interval = 2.0
             while self.watchdog_running:
                 if self.monitor_process_handle:
                     # 检查进程是否还在运行
@@ -438,7 +450,7 @@ class MonitorLauncherWorker(StartupWorker):
                         self.logger.error("❌ [MonitorLauncherWorker] 监控进程意外退出", exc_info=True, extra={"log_type": "SYSTEM"})
                         self.watchdog_running = False
                         break
-                time.sleep(5)  # 每5秒检查一次
+                time.sleep(interval)  # 每2秒检查一次
 
         self.watchdog_running = True
         watchdog_thread = threading.Thread(target=watchdog, daemon=True)

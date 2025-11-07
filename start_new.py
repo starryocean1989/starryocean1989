@@ -51,20 +51,48 @@ def setup_process_cleanup():
     - 窗口关闭（Qt事件）
     - 异常退出（finally块）
     """
+    try:
+        from backend.startup.workers.monitor_launcher import cleanup_all_processes as cleanup_monitor
+        from backend.startup.workers.monitor_launcher import _cleanup_signal_file as cleanup_monitor_signal
+    except ImportError:  # pragma: no cover
+        cleanup_monitor = None
+        cleanup_monitor_signal = None
+
+    try:
+        from backend.startup.workers.data_launcher import cleanup_all_processes as cleanup_data
+        from backend.startup.workers.data_launcher import _cleanup_signal_file as cleanup_data_signal
+    except ImportError:  # pragma: no cover
+        cleanup_data = None
+        cleanup_data_signal = None
+
+    def _run_cleanup(label: str = "清理流程"):
+        errors = []
+
+        if cleanup_monitor:
+            try:
+                cleanup_monitor()
+            except Exception as exc:  # pragma: no cover
+                errors.append(f"监控进程: {exc}")
+        if cleanup_data:
+            try:
+                cleanup_data()
+            except Exception as exc:  # pragma: no cover
+                errors.append(f"数据进程: {exc}")
+
+        for signal_cleanup in (cleanup_monitor_signal, cleanup_data_signal):
+            if signal_cleanup:
+                try:
+                    signal_cleanup()
+                except Exception:
+                    pass
+
+        if errors:
+            print(f"❌ {label}失败: {'; '.join(errors)}")
+
     def signal_handler(signum, frame):
         """信号处理器"""
         print(f"\n⚠️ 收到信号 {signum}，正在清理进程...")
-        try:
-            from backend.startup.workers.monitor_launcher import cleanup_all_processes
-            cleanup_all_processes()
-        except Exception as e:
-            print(f"❌ 清理进程失败: {e}")
-        # 确保清理信号文件（即使cleanup_all_processes失败）
-        try:
-            from backend.startup.workers.monitor_launcher import _cleanup_signal_file
-            _cleanup_signal_file()
-        except Exception:
-            pass
+        _run_cleanup(label="进程清理")
         sys.exit(1)
 
     # 注册信号处理器（Windows上只支持SIGINT和SIGTERM）
@@ -79,17 +107,7 @@ def setup_process_cleanup():
 
     # 注册atexit清理（作为后备）
     def cleanup_on_exit():
-        try:
-            from backend.startup.workers.monitor_launcher import cleanup_all_processes
-            cleanup_all_processes()
-        except Exception:
-            pass  # atexit中不要抛出异常
-        # 确保清理信号文件（即使cleanup_all_processes失败）
-        try:
-            from backend.startup.workers.monitor_launcher import _cleanup_signal_file
-            _cleanup_signal_file()
-        except Exception:
-            pass
+        _run_cleanup()
 
     atexit.register(cleanup_on_exit)
 

@@ -120,6 +120,20 @@ try:
 except ImportError:
     pass
 
+# Socket 缓冲指标 - native_socket_metrics
+try:
+    from .native_socket_metrics import (
+        SOCKET_METRICS_AVAILABLE,
+        get_socket_metrics,
+    )
+    __all__.extend([
+        'SOCKET_METRICS_AVAILABLE',
+        'get_socket_metrics',
+    ])
+except ImportError:
+    SOCKET_METRICS_AVAILABLE = False  # type: ignore
+    get_socket_metrics = None  # type: ignore
+
 # 数据转换 - native_conversion
 try:
     from .native_conversion import (
@@ -134,6 +148,23 @@ try:
     ])
 except ImportError:
     pass
+
+# DataFrame 扩展 - native_dataframe_ops
+try:
+    from .native_dataframe_ops import (
+        DATAFRAME_OPS_AVAILABLE,
+        dataframe_to_records,
+        dataframe_quality_counters,
+    )
+    __all__.extend([
+        'DATAFRAME_OPS_AVAILABLE',
+        'dataframe_to_records',
+        'dataframe_quality_counters',
+    ])
+except ImportError:
+    DATAFRAME_OPS_AVAILABLE = False  # type: ignore
+    dataframe_to_records = None  # type: ignore
+    dataframe_quality_counters = None  # type: ignore
 
 # 高性能容器 - native_collections
 try:

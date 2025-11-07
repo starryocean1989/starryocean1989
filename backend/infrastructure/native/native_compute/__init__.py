@@ -17,6 +17,8 @@ if IS_WINDOWS:
             batch_compute,
             batch_hash,
             batch_get_price,
+            batch_validate_iso_dates,
+            batch_compare_dates,
         )
 
         COMPUTE_AVAILABLE = True
@@ -24,6 +26,8 @@ if IS_WINDOWS:
             "batch_compute",
             "batch_hash",
             "batch_get_price",
+            "batch_validate_iso_dates",
+            "batch_compare_dates",
             "COMPUTE_AVAILABLE",
         ]
     except ImportError:

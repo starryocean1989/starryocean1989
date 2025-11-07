@@ -223,7 +223,7 @@ if %EXIT_CODE% equ 0 (
     echo [✗] 程序异常退出 ^(错误代码: %EXIT_CODE%^)
     echo.
     echo 提示:
-    echo    - 检查日志文件: logs\ai\application_startup_*.log
+    echo    - 检查日志文件: logs\application_startup_*.log
     echo    - 检查终端输出的错误信息
     echo    - 如果问题持续，请查看 logs\ 目录下的其他日志
     goto :error_exit

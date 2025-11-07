@@ -29,6 +29,15 @@ from typing import Any, Dict, Optional, Union
 from concurrent.futures import ThreadPoolExecutor, Future
 import threading
 
+# 高性能JSON库（优先使用orjson）
+try:
+    import orjson
+    JSON_ENCODER = orjson
+    HAS_ORJSON = True
+except ImportError:
+    import json as JSON_ENCODER
+    HAS_ORJSON = False
+
 # native_ipc相关导入
 try:
     from backend.infrastructure.native.native_ipc import AsyncIPCPipe, IPC_AVAILABLE
@@ -59,6 +68,12 @@ class DataProcessClient:
         self._call_timeout = 30.0
         self._max_retries = 3
         self._retry_delay = 1.0
+
+        # 记录使用的JSON库
+        if HAS_ORJSON:
+            logger.info("✅ 使用orjson高性能JSON库")
+        else:
+            logger.warning("⚠️ orjson不可用，使用标准json库（降级模式）")
 
         logger.info("数据进程客户端已创建")
 
@@ -232,8 +247,13 @@ class DataProcessClient:
             raise ConnectionError(f"管道不可用: {pipe_name}")
 
         try:
-            # 序列化请求
-            request_data = json.dumps(request, ensure_ascii=False).encode("utf-8")
+            # 序列化请求（使用orjson优化）
+            if HAS_ORJSON:
+                # orjson.dumps返回bytes，直接使用
+                request_data = orjson.dumps(request)
+            else:
+                # 降级到标准json
+                request_data = json.dumps(request, ensure_ascii=False).encode("utf-8")
 
             # 发送请求
             await pipe.write(request_data)
@@ -241,8 +261,12 @@ class DataProcessClient:
             # 读取响应（带超时）
             response_data = await asyncio.wait_for(pipe.read(), timeout=self._call_timeout)
 
-            # 反序列化响应
-            response = json.loads(response_data.decode("utf-8"))
+            # 反序列化响应（使用orjson优化）
+            if HAS_ORJSON:
+                response = orjson.loads(response_data)
+            else:
+                # 降级到标准json
+                response = json.loads(response_data.decode("utf-8"))
 
             # 验证响应ID
             if response.get("id") != request_id:

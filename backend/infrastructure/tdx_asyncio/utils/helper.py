@@ -522,7 +522,11 @@ def reset_queue_skip_stats():
 def configure_subprocess_logging(
     worker_id: int, task_type: str = "worker", scenario: Optional[str] = None
 ):
-    """配置子进程日志系统，接入LogHub统一路由
+    """配置子进程日志系统，优先接入主进程的多进程日志队列。
+
+    优先尝试通过 `LOGGING_QUEUE_TOKEN` 环境变量恢复队列并调用
+    `setup_subprocess_logging(queue)`，实现跨进程日志回传到主进程的
+    LoggingHub；若恢复失败，则回退到在本进程注入LogHub（仅本地处理）。
 
     Args:
         worker_id: 子进程ID
@@ -530,57 +534,69 @@ def configure_subprocess_logging(
         scenario: 场景标记（用于日志路由，如data_download、manual_data_scan等）
 
     Returns:
-        配置好的logger实例
+        配置好的logger实例（`logging.getLogger(f"subprocess.{task_type}.{worker_id}")`）
     """
+    logger_name = f"subprocess.{task_type}.{worker_id}"
+    subprocess_logger = logging.getLogger(logger_name)
+    subprocess_logger.propagate = True
+
+    log_extra = {"log_type": "SYSTEM"}
+    if scenario:
+        log_extra["scenario"] = scenario
+
     try:
+        # 尝试通过环境变量恢复队列并配置QueueHandler（跨进程回传）
+        from backend.infrastructure.system_vnpy.logging_system import (
+            load_queue_from_env,
+            setup_subprocess_logging,
+        )
+
+        queue_proxy = load_queue_from_env()
+        if queue_proxy is not None:
+            # 通过QueueHandler将当前子进程日志回传到主进程
+            setup_subprocess_logging(queue_proxy, level=logging.DEBUG)
+            subprocess_logger.info(
+                f"✅ 子进程 {worker_id} (类型: {task_type}) 已接入主进程日志队列桥接",
+                extra=log_extra,
+            )
+            subprocess_logger.debug(
+                f"[SUBPROCESS-{worker_id}] 使用QueueHandler桥接成功: task_type={task_type}, scenario={scenario}",
+                extra=log_extra,
+            )
+            return subprocess_logger
+
+        # 若队列恢复失败，回退到注入本地LogHub（不跨进程）
         from backend.infrastructure.system_vnpy.logging_system import get_logging_hub
 
         hub = get_logging_hub()
         root_logger = logging.getLogger()
 
-        # 清理旧的handler
+        # 清理旧的handler，避免重复输出或绕过统一路由
         for handler in root_logger.handlers[:]:
             root_logger.removeHandler(handler)
-            handler.close()
+            try:
+                handler.close()
+            except Exception:
+                pass
 
-        # 添加LogHub
         root_logger.addHandler(hub)
         root_logger.setLevel(logging.DEBUG)
-
-        # 创建子进程专用的logger
-        logger_name = f"subprocess.{task_type}.{worker_id}"
-        subprocess_logger = logging.getLogger(logger_name)
-        subprocess_logger.propagate = True
-
-        # 记录子进程日志接入信息（使用场景标记）
-        log_extra = {"log_type": "SYSTEM"}
-        if scenario:
-            log_extra["scenario"] = scenario
-
-        subprocess_logger.info(
-            f"✅ 子进程 {worker_id} (类型: {task_type}) 日志系统已接入LogHub", extra=log_extra
-        )
-        subprocess_logger.debug(
-            f"[SUBPROCESS-{worker_id}] 子进程日志配置完成: task_type={task_type}, scenario={scenario}",
+        subprocess_logger.warning(
+            "⚠️ 未找到日志队列token，已回退为本地LogHub处理（不跨进程）",
             extra=log_extra,
         )
-
         return subprocess_logger
     except ImportError as e:
-        fallback_logger = logging.getLogger(__name__)
-        fallback_logger.warning(
-            f"⚠️ 子进程 {worker_id} LogHub导入失败，使用降级日志: {e}",
-            extra={"log_type": "SYSTEM", "scenario": scenario},
+        # 无法导入统一日志系统，保持基础logger
+        subprocess_logger.warning(
+            f"⚠️ 统一日志系统导入失败，使用基础日志: {e}", extra=log_extra
         )
-        return fallback_logger
+        return subprocess_logger
     except Exception as e:
-        fallback_logger = logging.getLogger(__name__)
-        fallback_logger.error(
-            f"❌ 子进程 {worker_id} LogHub配置失败，使用降级日志: {e}",
-            exc_info=True,
-            extra={"log_type": "SYSTEM", "scenario": scenario},
+        subprocess_logger.error(
+            f"❌ 子进程日志配置失败: {e}", exc_info=True, extra=log_extra
         )
-        return fallback_logger
+        return subprocess_logger
 
 
 # 向后兼容：保留带下划线的函数名

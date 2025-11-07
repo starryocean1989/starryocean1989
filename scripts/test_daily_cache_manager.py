@@ -2,6 +2,7 @@ import os
 import asyncio
 from pathlib import Path
 import sys
+import logging
 
 # 将仓库根目录加入sys.path，确保能导入backend包
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,13 +20,18 @@ assert spec and spec.loader
 spec.loader.exec_module(dmce_module)  # type: ignore
 DailyCacheManager = dmce_module.DailyCacheManager
 
+# 统一测试日志
+log = logging.getLogger(__name__)
+
 
 def print_header(msg: str):
-    print(f"\n=== {msg} ===")
+    log.info(f"\n=== {msg} ===", extra={"log_type": "STAGE_NODE"})
 
 
 def assert_true(name: str, cond: bool):
-    print(f"[{'OK' if cond else 'FAIL'}] {name}")
+    status = 'OK' if cond else 'FAIL'
+    level = logging.INFO if cond else logging.WARNING
+    log.log(level, f"[{status}] {name}", extra={"log_type": "STAGE_NODE"})
 
 
 def run_sync_tests(base_file: Path):
@@ -92,7 +98,7 @@ async def run_async_tests(base_file: Path):
     try:
         DailyCacheManager.clear_cache(base_file)
     except Exception as e:
-        print(f"清理原路径失败（忽略）：{e}")
+        log.warning(f"清理原路径失败（忽略）：{e}", extra={"log_type": "STAGE_NODE"})
     DailyCacheManager.clear_cache(base_file_json_only)
 
 
@@ -101,10 +107,13 @@ def main():
     # 检查native_serialization可用性（避免导入整个core_engine模块导致不必要依赖）
     try:
         from backend.infrastructure.native.native_serialization import SERIALIZATION_AVAILABLE
-        print(f"native_serialization available: {SERIALIZATION_AVAILABLE}")
+        log.info(f"native_serialization available: {SERIALIZATION_AVAILABLE}", extra={"log_type": "STAGE_NODE"})
     except Exception:
         # 降级：直接从已加载的dmce_module判断
-        print(f"native_serialization available: {getattr(dmce_module, 'NATIVE_SER_AVAILABLE', False)}")
+        log.info(
+            f"native_serialization available: {getattr(dmce_module, 'NATIVE_SER_AVAILABLE', False)}",
+            extra={"log_type": "STAGE_NODE"},
+        )
     base_file = Path('data/test_cache/daily_cache.json')
 
     run_sync_tests(base_file)

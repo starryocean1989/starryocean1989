@@ -8,15 +8,12 @@
 import logging
 import subprocess
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, TYPE_CHECKING
 
-try:
-    from typing import TYPE_CHECKING
-
-    if TYPE_CHECKING:
-        from asyncio import Task
-except ImportError:
-    Task = Any
+if TYPE_CHECKING:
+    from asyncio import Task
+else:  # pragma: no cover
+    Task = Any  # type: ignore
 
 logger = logging.getLogger("backend.startup.context")
 
@@ -82,6 +79,7 @@ class StartupContext:
 
         # 日志队列（用于跨进程日志收集）
         self.log_queue: Optional[Any] = None  # multiprocessing.Queue
+        self.log_queue_token: Optional[str] = None  # 序列化的队列代理，供子进程恢复
 
     def validate(self, required_deps: Optional[list] = None) -> bool:
         """验证所有必需的依赖是否已初始化

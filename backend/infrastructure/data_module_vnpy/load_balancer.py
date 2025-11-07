@@ -492,6 +492,10 @@ class ServerPoolManager:
         cache_dir = self.config_manager.get_cache_dir()
         self._cache_file = cache_dir / "server_pool.json"
 
+        # 🔧 新增：缓存验证结果，避免重复IO
+        self._cache_validation_result: Optional[tuple] = None  # (cached_data, cache_date, is_valid)
+        self._cache_validation_time: float = 0.0  # 缓存验证时间戳
+
         # 🎯 连接池复用机制
         self._connection_pool: Optional[ProcessPoolExecutor] = (
             None  # ProcessPoolExecutor连接池（用于启动时复用）
@@ -516,12 +520,28 @@ class ServerPoolManager:
     def _check_cache_status(self):
         """检查缓存状态（不阻塞）"""
         try:
-            from .core_engine import DailyCacheManager
+            # 🔧 优化：使用缓存的验证结果，避免重复IO（5秒内有效）
+            current_time = time.time()
+            if self._cache_validation_result is not None and (current_time - self._cache_validation_time) < 5.0:
+                cached_data, cache_date, is_valid = self._cache_validation_result
+                logger.debug(
+                    f"[SERVER-POOL] 使用缓存的验证结果（缓存时间: {current_time - self._cache_validation_time:.2f}s前）",
+                    extra={"log_type": "SYSTEM"}
+                )
+            else:
+                from .core_engine import DailyCacheManager
 
-            # 检查缓存是否存在且有效
-            cached_data, cache_date, is_valid = DailyCacheManager.load_with_validation(
-                self._cache_file
-            )
+                # 检查缓存是否存在且有效
+                cached_data, cache_date, is_valid = DailyCacheManager.load_with_validation(
+                    self._cache_file
+                )
+                # 保存验证结果和时间戳
+                self._cache_validation_result = (cached_data, cache_date, is_valid)
+                self._cache_validation_time = current_time
+                logger.debug(
+                    f"[SERVER-POOL] 执行缓存验证: 有效={is_valid}, 日期={cache_date}",
+                    extra={"log_type": "SYSTEM"}
+                )
 
             if cached_data is not None and is_valid:
                 # 缓存有效，无需更新
@@ -550,11 +570,27 @@ class ServerPoolManager:
         """
         # 🔧 修复：首先尝试从缓存加载
         try:
-            from .core_engine import DailyCacheManager
+            # 🔧 优化：使用缓存的验证结果，避免重复IO（5秒内有效）
+            current_time = time.time()
+            if self._cache_validation_result is not None and (current_time - self._cache_validation_time) < 5.0:
+                cached_data, cache_date, is_valid = self._cache_validation_result
+                logger.debug(
+                    f"[SERVER-POOL] _load_servers使用缓存的验证结果（{current_time - self._cache_validation_time:.2f}s前）",
+                    extra={"log_type": "SYSTEM"}
+                )
+            else:
+                from .core_engine import DailyCacheManager
 
-            cached_data, cache_date, is_valid = DailyCacheManager.load_with_validation(
-                self._cache_file
-            )
+                cached_data, cache_date, is_valid = DailyCacheManager.load_with_validation(
+                    self._cache_file
+                )
+                # 保存验证结果和时间戳
+                self._cache_validation_result = (cached_data, cache_date, is_valid)
+                self._cache_validation_time = current_time
+                logger.debug(
+                    f"[SERVER-POOL] _load_servers执行缓存验证: 有效={is_valid}",
+                    extra={"log_type": "SYSTEM"}
+                )
 
             if cached_data is not None and is_valid and isinstance(cached_data, dict):
                 # 从缓存恢复服务器列表

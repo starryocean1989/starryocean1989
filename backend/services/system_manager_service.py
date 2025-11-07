@@ -71,6 +71,15 @@ def _serialize_json(obj: Any) -> str:
     else:
         # 对于复杂对象，使用native序列化的结果
         serialized_bytes = zero_copy_serialize(obj)
+
+        if isinstance(serialized_bytes, memoryview):
+            serialized_bytes = serialized_bytes.tobytes()
+        elif isinstance(serialized_bytes, bytearray):
+            serialized_bytes = bytes(serialized_bytes)
+
+        if not isinstance(serialized_bytes, (bytes, bytearray)):
+            serialized_bytes = bytes(serialized_bytes)
+
         return serialized_bytes.decode("latin1")  # pickle使用latin1编码
 
 
@@ -572,7 +581,7 @@ class LogManager:
     def shutdown(self) -> None:
         """关闭日志管理系统."""
         try:
-            print("[DEBUG] 关闭日志管理系统...")
+            self.logger.debug("[DEBUG] 关闭日志管理系统...", extra={"log_type": "STAGE_NODE"})
 
             # 标记正在关闭，停止定时器循环
             self._is_shutting_down = True
@@ -784,7 +793,7 @@ def initialize_logging_system(event_engine=None, config: Optional[Dict[str, Any]
     """初始化日志系统（使用统一database）."""
     try:
         start_time = time.time()
-        print("[启动] 日志系统初始化开始...")
+        logging.info("[启动] 日志系统初始化开始...", extra={"log_type": "STAGE_NODE"})
 
         if config is None:
             config = {"db_path": "data/terminal.db", "retention_days": 30}
@@ -801,17 +810,23 @@ def initialize_logging_system(event_engine=None, config: Optional[Dict[str, Any]
 
         if success:
             total_time = time.time() - start_time
-            print(f"[启动] ✅ 日志系统初始化成功，总耗时: {total_time:.3f}s")
+            logging.info(
+                f"[启动] ✅ 日志系统初始化成功，总耗时: {total_time:.3f}s",
+                extra={"log_type": "STAGE_NODE"},
+            )
             logging.info("日志系统初始化完成")
         else:
             total_time = time.time() - start_time
-            print(f"[启动] ❌ 日志系统初始化失败，总耗时: {total_time:.3f}s")
+            logging.error(
+                f"[启动] ❌ 日志系统初始化失败，总耗时: {total_time:.3f}s",
+                extra={"log_type": "STAGE_NODE"},
+            )
             logging.error("日志系统初始化失败", extra={"log_type": "SYSTEM"})
 
         return success
 
     except Exception as e:
-        print(f"[启动] ❌ 初始化日志系统异常: {e}")
+        logging.error(f"[启动] ❌ 初始化日志系统异常: {e}", extra={"log_type": "STAGE_NODE"})
         logging.error("初始化日志系统失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
         return False
 
@@ -1471,7 +1486,9 @@ class AlertDatabase:
                 return results
 
         except Exception as e:
-            print(f"获取未解决告警失败: {e}")
+            self.logger.error(
+                "获取未解决告警失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True
+            )
             return []
 
     def delete_resolved_alerts(self, older_than_days: int = 30) -> int:
@@ -1495,7 +1512,9 @@ class AlertDatabase:
                     return deleted_count
 
         except Exception as e:
-            print(f"删除已解决告警失败: {e}")
+            self.logger.error(
+                "删除已解决告警失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True
+            )
             return 0
 
 
@@ -1778,7 +1797,7 @@ def initialize_alert_system(event_engine, config: Optional[Dict[str, Any]] = Non
     """初始化扩展告警系统."""
     try:
         start_time = time.time()
-        print("[启动] 告警系统初始化开始...")
+        logging.info("[启动] 告警系统初始化开始...", extra={"log_type": "STAGE_NODE"})
 
         if config is None:
             config = {"db_path": "data/alerts.db", "suppression_window": 300}
@@ -1799,19 +1818,35 @@ def initialize_alert_system(event_engine, config: Optional[Dict[str, Any]] = Non
                 for rule in get_default_log_alert_rules():
                     alert_engine.add_rule(rule)
 
-                print("[DEBUG] ✅ 默认日志告警规则创建完成")
+                logging.debug(
+                    "[DEBUG] ✅ 默认日志告警规则创建完成",
+                    extra={"log_type": "STAGE_NODE"},
+                )
             except Exception as e:
-                print(f"[DEBUG] ❌ 创建默认告警规则失败: {e}")
+                logging.error(
+                    "[DEBUG] ❌ 创建默认告警规则失败: %s",
+                    e,
+                    extra={"log_type": "SYSTEM"},
+                    exc_info=True,
+                )
 
         threading.Thread(target=_create_default_rules_async, daemon=True).start()
 
         total_time = time.time() - start_time
-        print(f"[启动] ✅ 告警系统初始化完成，总耗时: {total_time:.3f}s")
+        logging.info(
+            f"[启动] ✅ 告警系统初始化完成，总耗时: {total_time:.3f}s",
+            extra={"log_type": "STAGE_NODE"},
+        )
 
         return True
 
     except Exception as e:
-        print(f"[启动] ❌ 告警系统初始化失败，错误: {e}")
+        logging.error(
+            "[启动] ❌ 告警系统初始化失败，错误: %s",
+            e,
+            extra={"log_type": "SYSTEM"},
+            exc_info=True,
+        )
         return False
 
 
@@ -1820,7 +1855,7 @@ def shutdown_alert_system() -> None:
     global _alert_database
     if _alert_database:
         _alert_database = None
-        print("扩展告警系统已关闭")
+        logging.info("扩展告警系统已关闭", extra={"log_type": "STAGE_NODE"})
 
 
 __all__ = [
@@ -6598,23 +6633,33 @@ class SystemManagerService(BaseService):
                     symbols_by_market = self._get_symbols_from_cache(markets)
                     cache_elapsed = time.time() - cache_start_time
 
-                    # 🔍 DEBUG: 强制打印品种获取统计到控制台
+                    # 📊 统一日志：输出品种获取统计到终端（STAGE_NODE）
                     total_symbols = sum(len(symbols) for symbols in symbols_by_market.values())
-                    print("\n" + "=" * 60)
-                    print("📊 品种缓存获取结果:")
-                    for market_code, symbols in symbols_by_market.items():
-                        print(f"  - 市场 {market_code.upper()}: {len(symbols)} 个品种")
-                    print(f"  - 总计: {total_symbols} 个品种")
-                    print("=" * 60 + "\n")
 
-                    self.logger.info("=" * 60)
-                    self.logger.info("📊 品种缓存获取结果:")
+                    self.logger.info(
+                        "=" * 60,
+                        extra={"log_type": "STAGE_NODE", "scenario": "tdx_data_read"},
+                    )
+                    self.logger.info(
+                        "📊 品种缓存获取结果:",
+                        extra={"log_type": "STAGE_NODE", "scenario": "tdx_data_read"},
+                    )
                     for market_code, symbols in symbols_by_market.items():
                         self.logger.info(
-                            "  - 市场 %s: %d 个品种", market_code.upper(), len(symbols)
+                            "  - 市场 %s: %d 个品种",
+                            market_code.upper(),
+                            len(symbols),
+                            extra={"log_type": "STAGE_NODE", "scenario": "tdx_data_read"},
                         )
-                    self.logger.info("  - 总计: %d 个品种", total_symbols)
-                    self.logger.info("=" * 60)
+                    self.logger.info(
+                        "  - 总计: %d 个品种",
+                        total_symbols,
+                        extra={"log_type": "STAGE_NODE", "scenario": "tdx_data_read"},
+                    )
+                    self.logger.info(
+                        "=" * 60,
+                        extra={"log_type": "STAGE_NODE", "scenario": "tdx_data_read"},
+                    )
                     self.logger.debug(
                         f"[TDX-READ-SERVICE] 品种缓存获取完成: 耗时={cache_elapsed:.2f}s, 总计={total_symbols}个品种",
                         extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},

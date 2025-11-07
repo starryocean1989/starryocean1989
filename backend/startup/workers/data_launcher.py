@@ -18,6 +18,7 @@ from typing import Optional
 
 from backend.startup.workers.base import StartupWorker, WorkerResult
 from backend.startup.context import StartupContext
+from backend.infrastructure.system_vnpy.logging_system import LOGGING_QUEUE_TOKEN_ENV
 
 
 def get_root() -> Path:
@@ -177,12 +178,12 @@ class DataLauncherWorker(StartupWorker):
         launch_args = [sys.executable, str(data_script)]
 
         # 如果提供了日志队列，需要通过环境变量传递（multiprocessing.Queue不能直接序列化）
-        # 注意：这里简化处理，日志队列通过setup_subprocess_logging在子进程中配置
         env = os.environ.copy()
-        if log_queue:
-            # 注意：multiprocessing.Queue不能通过环境变量传递
-            # 需要在子进程中通过其他方式获取（如通过文件或共享内存）
-            pass
+        if getattr(context, "log_queue_token", None):
+            env[LOGGING_QUEUE_TOKEN_ENV] = context.log_queue_token  # type: ignore[arg-type]
+            logger.debug(
+                "[DATA-PROCESS] 已注入日志队列token", extra={"log_type": "SYSTEM"}
+            )
 
         # 启动数据进程（指定工作目录为项目根目录）
         # 在Windows上确保权限传递
@@ -260,7 +261,7 @@ class DataLauncherWorker(StartupWorker):
             extra={"log_type": "STAGE_NODE", "scenario": "data_launch"}
         )
         stage_logger.info(
-            "✅ 数据进程看门狗启动",
+            "✅ 数据进程看门狗启动（2s 轮询）",
             extra={"log_type": "STAGE_NODE", "scenario": "data_launch"}
         )
 
@@ -460,6 +461,7 @@ class DataLauncherWorker(StartupWorker):
 
         def watchdog():
             """看门狗线程"""
+            interval = 2.0
             while self.watchdog_running:
                 if self.data_process_handle:
                     # 检查进程是否还在运行
@@ -472,7 +474,7 @@ class DataLauncherWorker(StartupWorker):
                         )
                         self.watchdog_running = False
                         break
-                time.sleep(5)  # 每5秒检查一次
+                time.sleep(interval)  # 每2秒检查一次
 
         self.watchdog_running = True
         watchdog_thread = threading.Thread(target=watchdog, daemon=True)

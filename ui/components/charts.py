@@ -67,7 +67,11 @@ class VnPyAdapter:
 
         except ImportError as e:
             self.main_engine = None
-            print(f"VnPy引擎初始化失败: {e}")
+            logger.warning(
+                "VnPy引擎初始化失败: %s",
+                e,
+                extra={"log_type": "SYSTEM"},
+            )
 
     def get_kline_data(self, symbol: str, period: str, limit: int = 200) -> List[Dict[str, Any]]:
         """获取K线数据.
@@ -90,7 +94,12 @@ class VnPyAdapter:
             return self._get_mock_kline_data(symbol, period, limit)
 
         except Exception as e:
-            print(f"获取K线数据失败: {e}")
+            logger.error(
+                "获取K线数据失败: %s",
+                e,
+                extra={"log_type": "SYSTEM"},
+                exc_info=True,
+            )
             return self._get_mock_kline_data(symbol, period, limit)
 
     def _get_mock_kline_data(self, symbol: str, period: str, limit: int) -> List[Dict[str, Any]]:

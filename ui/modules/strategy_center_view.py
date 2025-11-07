@@ -63,9 +63,15 @@ try:
         _editor_widget_class = MonacoEditorWidget
         _editor_widget_available = True
         _editor_widget_name = "Monaco Editor"
-        print("✓ Monaco Editor 可用（异步加载版）")
+        logger_user.info(
+            "✓ Monaco Editor 可用（异步加载版）",
+            extra={"log_type": "STAGE_NODE"},
+        )
     else:
-        print("✗ Monaco Editor 不可用 (缺少 PySide6-WebEngine)")
+        logger_user.warning(
+            "✗ Monaco Editor 不可用 (缺少 PySide6-WebEngine)",
+            extra={"log_type": "STAGE_NODE"},
+        )
 except ImportError as e:
     import logging
     logger = logging.getLogger(__name__)

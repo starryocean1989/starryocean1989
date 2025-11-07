@@ -36,25 +36,41 @@ from dataclasses import dataclass, field
 from datetime import datetime, date, timedelta
 from enum import Enum, auto
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Awaitable, Callable, Dict, Hashable, List, Optional, Set, Tuple, Union, cast
 
 import pandas as pd
 
+# 导入 native dataframe ops（支持降级）
+try:
+    from backend.infrastructure.native.native_dataframe_ops import (
+        DATAFRAME_OPS_AVAILABLE as NATIVE_DF_AVAILABLE,
+        dataframe_quality_counters,
+    )
+except ImportError:
+    NATIVE_DF_AVAILABLE = False
+    dataframe_quality_counters = None  # type: ignore
+
 # 导入native_iocp（支持降级）
 try:
-    from backend.infrastructure.native.native_iocp.compat import aopen as compat_aopen
+    from backend.infrastructure.native.native_iocp.compat import aopen as _iocp_aopen
+
+    async def compat_aopen(filepath: Union[str, Path], mode: str = "rb", **kwargs: Any) -> Any:
+        return await _iocp_aopen(filepath, mode, **kwargs)
 
     IOCP_AVAILABLE = True
 except ImportError:
     try:
         import aiofiles
 
-        async def compat_aopen(file, mode="r", **kwargs):
-            return aiofiles.open(file, mode, **kwargs)
+        async def compat_aopen(filepath: Union[str, Path], mode: str = "r", **kwargs: Any) -> Any:
+            return await aiofiles.open(filepath, mode, **kwargs)
 
         IOCP_AVAILABLE = False
-    except ImportError:
-        compat_aopen = None
+    except ImportError:  # pragma: no cover - 无异步文件支持时的兜底
+
+        async def compat_aopen(filepath: Union[str, Path], mode: str = "r", **kwargs: Any) -> Any:
+            raise RuntimeError("async file open is not available on this platform")
+
         IOCP_AVAILABLE = False
 
 # 导入native_iocp批量目录遍历（支持降级）
@@ -247,10 +263,10 @@ class DataSensor:
     def scan_quality(
         self,
         symbols: List[str],
-        intervals: List[str] = None,
+        intervals: Optional[List[str]] = None,
         use_async: bool = True,
-        max_workers: int = None,  # v3.1：改为可选，由LoadBalancer决定
-        max_concurrent: int = None,  # v3.1：改为可选，由LoadBalancer决定
+        max_workers: Optional[int] = None,  # v3.1：改为可选，由LoadBalancer决定
+        max_concurrent: Optional[int] = None,  # v3.1：改为可选，由LoadBalancer决定
     ) -> Dict[Tuple[str, str], QualityScanResult]:
         """扫描数据质量（主入口）
 
@@ -268,6 +284,9 @@ class DataSensor:
         from contextlib import suppress
 
         start_time = time.time()
+
+        if intervals is None:
+            intervals = ["1d", "5m", "1m"]
 
         # 设置日志上下文
         try:
@@ -362,9 +381,12 @@ class DataSensor:
                         extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                     )
 
+                max_workers_effective = max_workers or 4
+                max_concurrent_effective = max_concurrent or 100
+
                 logger.info(
                     f"[DATA-SENSOR] 🔍 开始数据质量扫描: 品种数={len(symbols)}, 周期={intervals}, "
-                    f"异步模式={use_async}, 进程数={max_workers}, 最大并发={max_concurrent}",
+                    f"异步模式={use_async}, 进程数={max_workers_effective}, 最大并发={max_concurrent_effective}",
                     extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                 )
 
@@ -379,7 +401,7 @@ class DataSensor:
                         "[DATA-SENSOR] ℹ️ 使用异步扫描模式",
                         extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                     )
-                    results = self._scan_async(symbols, intervals, max_concurrent)
+                    results = self._scan_async(symbols, intervals, max_concurrent_effective)
                 else:
                     # 多进程扫描
                     logger.debug(
@@ -390,7 +412,7 @@ class DataSensor:
                         "[DATA-SENSOR] ℹ️ 使用多进程扫描模式",
                         extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                     )
-                    results = self._scan_multiprocess(symbols, intervals, max_workers)
+                    results = self._scan_multiprocess(symbols, intervals, max_workers_effective)
                 scan_elapsed = time.time() - scan_start_time
                 logger.debug(
                     f"[DATA-SENSOR] 扫描完成: 结果数={len(results)}, 耗时={scan_elapsed:.2f}s",
@@ -932,18 +954,41 @@ class DataSensor:
             extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
         )
 
-        # 检查重复数据
-        if df.index.duplicated().any():
-            result.duplicate_bars = df.index.duplicated().sum()
+        quality_columns: List[str] = ["open", "high", "low", "close"]
+        duplicate_count = 0
+        invalid_count = 0
+
+        if NATIVE_DF_AVAILABLE and callable(dataframe_quality_counters):
+            try:
+                native_counts = dataframe_quality_counters(df, quality_columns)
+                duplicate_count, invalid_count = cast(Tuple[int, int], native_counts)
+            except Exception:
+                logger.debug(
+                    "[VALIDATE] 原生数据质量统计失败，回退到pandas实现",
+                    exc_info=True,
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
+                )
+
+        if duplicate_count == 0:
+            duplicate_count = int(df.index.duplicated().sum())
+
+        if invalid_count == 0:
+            missing_columns = [col for col in quality_columns if col not in df.columns]
+            if missing_columns:
+                invalid_count = result.total_bars
+            else:
+                invalid_mask = df.loc[:, quality_columns].isna().any(axis=1)
+                invalid_count = int(invalid_mask.sum())
+
+        result.duplicate_bars = duplicate_count
+        if result.duplicate_bars > 0:
             result.errors.append(f"发现重复数据: {result.duplicate_bars}条")
             logger.debug(
                 f"[VALIDATE] 发现重复数据: symbol={symbol}, interval={interval}, duplicate_bars={result.duplicate_bars}",
                 extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
             )
 
-        # 检查无效数据
-        invalid_mask = df["open"].isna() | df["high"].isna() | df["low"].isna() | df["close"].isna()
-        result.invalid_bars = invalid_mask.sum()
+        result.invalid_bars = invalid_count
         if result.invalid_bars > 0:
             result.errors.append(f"发现无效数据: {result.invalid_bars}条")
             logger.debug(
@@ -974,7 +1019,19 @@ class DataSensor:
 
         # 最后更新时间
         if not df.empty:
-            result.last_update = df.index[-1].to_pydatetime()
+            if isinstance(df.index, pd.DatetimeIndex):
+                last_value = df.index.to_pydatetime()[-1]  # type: ignore[attr-defined]
+            else:
+                last_value = df.index[-1]
+                if isinstance(last_value, pd.Timestamp):
+                    last_value = last_value.to_pydatetime()
+                elif hasattr(last_value, "to_pydatetime"):
+                    last_value = last_value.to_pydatetime()  # type: ignore[attr-defined]
+
+            if isinstance(last_value, datetime):
+                result.last_update = last_value
+            else:
+                result.last_update = datetime.fromisoformat(str(last_value))
             logger.debug(
                 f"[VALIDATE] 最后更新时间: symbol={symbol}, interval={interval}, last_update={result.last_update}",
                 extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
@@ -1416,11 +1473,11 @@ class StatelessValidator:
             return result
 
         # 获取最后一条数据的时间
-        last_update = df.index[-1]
+        raw_last_update = df.index[-1]
 
         # 获取当前时间（使用网络时间）
         try:
-            current_time = NetworkTimeSync.get_time()
+            current_time = NetworkTimeSync.get_instance().get_real_datetime()
         except Exception as e:
             logger.debug(
                 f"⚠️ [DataQuality] 获取网络时间失败，使用系统时间: {e}", extra={"log_type": "SYSTEM"}
@@ -1428,12 +1485,18 @@ class StatelessValidator:
             current_time = datetime.now()
 
         # 计算时间差
-        if isinstance(last_update, pd.Timestamp):
-            last_update = last_update.to_pydatetime()
+        if isinstance(raw_last_update, pd.Timestamp):
+            last_update_dt = raw_last_update.to_pydatetime()
+        elif hasattr(raw_last_update, "to_pydatetime"):
+            last_update_dt = raw_last_update.to_pydatetime()  # type: ignore[attr-defined]
+        elif isinstance(raw_last_update, datetime):
+            last_update_dt = raw_last_update
+        else:
+            last_update_dt = datetime.fromisoformat(str(raw_last_update))
 
-        age_days = (current_time - last_update).days
+        age_days = (current_time - last_update_dt).days
 
-        result.metrics["last_update"] = last_update.isoformat()
+        result.metrics["last_update"] = last_update_dt.isoformat()
         result.metrics["age_days"] = age_days
         result.metrics["max_age_days"] = max_age_days
 

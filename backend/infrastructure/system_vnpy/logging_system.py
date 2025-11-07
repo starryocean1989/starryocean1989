@@ -13,6 +13,7 @@
 版本：v6.0 (简化重构版)
 """
 
+import base64
 import json
 import logging
 import time
@@ -20,6 +21,9 @@ import asyncio
 import multiprocessing
 import threading
 import heapq
+import os
+import pickle
+import secrets
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -29,6 +33,7 @@ from pathlib import Path
 from threading import Lock, RLock
 from typing import Any, Dict, List, Optional, Callable, Tuple
 from logging.handlers import QueueHandler, QueueListener, MemoryHandler
+from multiprocessing.managers import SyncManager
 
 from vnpy.event import Event, EventEngine
 
@@ -56,6 +61,9 @@ except Exception:
 
 # 日志配置
 logger = logging.getLogger("backend.infrastructure.system_vnpy.logging_system")
+
+# 子进程通过环境变量接收日志队列代理
+LOGGING_QUEUE_TOKEN_ENV = "LOGGING_QUEUE_TOKEN"
 
 # =============================================================================
 # Part 1: 数据结构定义
@@ -209,7 +217,7 @@ class OrderedLogQueue:
             record.sequence = sequence
 
             if self._use_native and self._pq is not None:
-                # native 优先队列为“高优先级先出”，为了最早时间先出，使用负数优先级
+                # native 优先队列为"高优先级先出"，为了最早时间先出，使用负数优先级
                 try:
                     self._pq.put(record, -float(timestamp))  # type: ignore
                 except Exception:
@@ -505,10 +513,15 @@ class PersistentBufferHandler(logging.Handler):
 
 
 class MultiProcessLogCollector:
-    """多进程日志收集器
+    """多进程日志收集器。
 
-    主进程监听器，从multiprocessing.Queue读取子进程日志，
-    并转发到主进程的LoggingHub。
+    使用 ``multiprocessing.managers.SyncManager`` 托管跨进程队列，并在主进程中
+    启动 ``QueueListener`` 将子进程日志统一路由到 ``LoggingHub``。收集器会：
+
+    1. 在 ``start()`` 时构建 SyncManager 与 QueueListener；
+    2. 通过 ``get_queue()`` 暴露 QueueProxy，供主进程直接写入启动阶段日志；
+    3. 通过 ``get_bridge_token()`` 生成 Base64 token，便于子进程通过环境变量复用；
+    4. 当子进程无法还原队列时，记录 WARNING 并让子进程回退到本地日志，确保启动流程不中断。
     """
 
     def __init__(self, logging_hub: "LoggingHub", queue: Optional[multiprocessing.Queue] = None):
@@ -519,13 +532,40 @@ class MultiProcessLogCollector:
             queue: 共享队列（如果为None，自动创建）
         """
         self.logging_hub = logging_hub
-        self.queue = queue or multiprocessing.Queue(-1)
+        self._manager: Optional[SyncManager] = None
+        self._queue_token: Optional[str] = None
+        self.queue = queue or self._create_managed_queue()
         self.queue_listener: Optional[QueueListener] = None
         self._running = False
         self._lock = Lock()
         self.logger = logging.getLogger(
             "backend.infrastructure.system_vnpy.logging_system.multiprocess_collector"
         )
+
+    def _create_managed_queue(self) -> Any:
+        """创建由 SyncManager 托管的队列，并序列化代理供子进程复用."""
+        authkey = secrets.token_bytes(32)
+        manager = SyncManager(address=("127.0.0.1", 0), authkey=authkey)
+        manager.start()
+
+        queue_proxy = manager.Queue(-1)
+        # 将队列代理序列化为 Base64，便于通过环境变量传递
+        try:
+            queue_pickled = base64.b64encode(pickle.dumps(queue_proxy)).decode("ascii")
+            token_payload = {
+                "version": 2,
+                "queue_pickled": queue_pickled,
+                "authkey": base64.b64encode(authkey).decode("ascii"),
+                "address": manager.address,
+            }
+            token_bytes = json.dumps(token_payload).encode("utf-8")
+            self._queue_token = base64.b64encode(token_bytes).decode("ascii")
+        except Exception as exc:
+            manager.shutdown()
+            raise RuntimeError(f"无法序列化日志队列代理: {exc}")
+
+        self._manager = manager
+        return queue_proxy
 
     def start(self):
         """启动日志收集."""
@@ -558,16 +598,30 @@ class MultiProcessLogCollector:
                     self.queue_listener = None
                 self._running = False
                 self.logger.info("多进程日志收集器已停止")
+                if self._manager:
+                    try:
+                        self._manager.shutdown()
+                    except Exception as shutdown_error:
+                        self.logger.debug(
+                            "关闭日志队列管理器失败: %s", shutdown_error, extra={"log_type": "SYSTEM"}
+                        )
+                    finally:
+                        self._manager = None
         except Exception as e:
             self.logger.error(f"停止多进程日志收集器失败: {e}", exc_info=True)
 
-    def get_queue(self) -> multiprocessing.Queue:
+    def get_queue(self) -> Any:
         """获取共享队列（供子进程使用）.
 
         Returns:
             multiprocessing.Queue实例
         """
         return self.queue
+
+    def get_bridge_token(self) -> Optional[str]:
+        """返回可序列化的队列代理，供子进程通过环境变量复用."""
+
+        return self._queue_token
 
 
 def setup_subprocess_logging(queue: multiprocessing.Queue, level: int = logging.DEBUG):
@@ -589,6 +643,76 @@ def setup_subprocess_logging(queue: multiprocessing.Queue, level: int = logging.
     queue_handler = QueueHandler(queue)
     queue_handler.setLevel(level)
     root_logger.addHandler(queue_handler)
+
+
+def restore_queue_from_token(token: str) -> Optional[multiprocessing.Queue]:
+    """根据token还原队列代理（供子进程使用）。"""
+
+    try:
+        raw_bytes = base64.b64decode(token.encode("ascii"))
+    except Exception as exc:
+        logger.error("日志队列token解码失败: %s", exc, exc_info=True)
+        return None
+
+    expected_auth: Optional[bytes] = None
+    expected_address: Optional[Any] = None
+    queue: Optional[multiprocessing.Queue] = None
+
+    # 优先尝试新版JSON格式（v2）
+    try:
+        payload = json.loads(raw_bytes.decode("utf-8"))
+        if isinstance(payload, dict) and "queue_pickled" in payload:
+            queue_pickled_b64 = payload.get("queue_pickled")
+            authkey_b64 = payload.get("authkey")
+            expected_address = payload.get("address")
+
+            if authkey_b64:
+                try:
+                    expected_auth = base64.b64decode(authkey_b64.encode("ascii"))
+                    multiprocessing.current_process().authkey = expected_auth  # type: ignore[attr-defined]
+                except Exception as auth_exc:
+                    logger.debug(
+                        "无法设置当前进程authkey: %s",
+                        auth_exc,
+                        extra={"log_type": "SYSTEM"},
+                    )
+
+            if not queue_pickled_b64:
+                raise ValueError("队列代理缺失")
+
+            queue_bytes = base64.b64decode(queue_pickled_b64.encode("ascii"))
+            queue = pickle.loads(queue_bytes)
+    except Exception:
+        queue = None
+
+    # 兼容旧版pickle格式（v1）
+    if queue is None:
+        try:
+            legacy_payload = pickle.loads(raw_bytes)
+            queue = legacy_payload.get("queue")
+            if queue is None:
+                raise ValueError("队列代理缺失")
+            expected_auth = legacy_payload.get("authkey")
+            expected_address = legacy_payload.get("address")
+        except Exception as exc:
+            logger.error("无法还原日志队列代理: %s", exc, exc_info=True)
+            return None
+
+    if hasattr(queue, "_authkey") and expected_auth and queue._authkey != expected_auth:  # type: ignore[attr-defined]
+        logger.debug("子进程日志队列authkey不一致，使用队列内置值", extra={"log_type": "SYSTEM"})
+    if hasattr(queue, "_address") and expected_address and queue._address != tuple(expected_address):  # type: ignore[attr-defined]
+        logger.debug("子进程日志队列address不一致，使用队列内置值", extra={"log_type": "SYSTEM"})
+
+    return queue
+
+
+def load_queue_from_env() -> Optional[multiprocessing.Queue]:
+    """从预定义环境变量中恢复日志队列代理."""
+
+    token = os.environ.get(LOGGING_QUEUE_TOKEN_ENV)
+    if not token:
+        return None
+    return restore_queue_from_token(token)
 
 
 # =============================================================================
@@ -883,24 +1007,15 @@ class EventLogFileHandler(logging.Handler):
                     try:
                         self._current_event_file.write(message_with_newline)
                         self._current_event_file.flush()
-                    except Exception as write_error:
-                        # 🔧 调试：如果写入失败，记录错误
-                        import sys
-                        print(f"[DEBUG] EventLogFileHandler.emit: 写入文件失败: {write_error}", file=sys.stderr)
-                        print(f"[DEBUG] EventLogFileHandler.emit: _current_event_file状态: closed={self._current_event_file.closed}, path={self._current_event_file_path}", file=sys.stderr)
-                else:
-                    # 🔧 调试：如果_current_event_file为None，记录警告
-                    import sys
-                    print(f"[DEBUG] EventLogFileHandler.emit: _current_event_file为None，无法写入文件", file=sys.stderr)
-                    print(f"[DEBUG] EventLogFileHandler.emit: _current_event={self._current_event}, _current_event_file_path={self._current_event_file_path}", file=sys.stderr)
+                    except Exception:
+                        # 静默处理，避免污染terminal输出
+                        pass
+                # 如果_current_event_file为None，静默处理
 
                 self._total_logs += 1
-            except Exception as e:
-                # 🔧 调试：如果emit失败，记录错误
-                import sys
-                print(f"[DEBUG] EventLogFileHandler.emit: 处理日志记录失败: {e}", file=sys.stderr)
-                import traceback
-                traceback.print_exc(file=sys.stderr)
+            except Exception:
+                # 静默处理，避免污染terminal输出
+                pass
                 # 原有的错误处理（可能会造成递归）
                 # logger.error(f"[EventLogFileHandler] 日志写入失败: {e}", exc_info=True)
 
@@ -1013,7 +1128,7 @@ class LoggingHub(logging.Handler):
                     self._cache: Dict[Any, Any] = {}
                     self._maxsize = maxsize
                     self._access_order: List[Any] = []
-                
+
                 def get(self, key: Any) -> Optional[Any]:
                     if key in self._cache:
                         # 更新访问顺序
@@ -1022,7 +1137,7 @@ class LoggingHub(logging.Handler):
                         self._access_order.append(key)
                         return self._cache[key]
                     return None
-                
+
                 def set(self, key: Any, value: Any):
                     # 如果超过最大大小，删除最旧的项
                     if len(self._cache) >= self._maxsize and key not in self._cache:
@@ -1033,7 +1148,7 @@ class LoggingHub(logging.Handler):
                     if key in self._access_order:
                         self._access_order.remove(key)
                     self._access_order.append(key)
-            
+
             self._log_type_cache = SimpleLRUCache(1000)
             self._use_native_cache = False
             logger.warning(
@@ -1109,31 +1224,30 @@ class LoggingHub(logging.Handler):
             setattr(record, "_unified_hub_processed", True)
 
             if self._should_skip(record):
-                # 🔧 调试：记录被跳过的日志
-                import sys
-                if record.name.startswith("startup.stage") or record.level >= logging.WARNING:
-                    print(f"[DEBUG] LoggingHub.emit: 日志被跳过 (logger={record.name}, level={record.levelno}, message={record.getMessage()[:50]})", file=sys.stderr)
                 return
 
             self._total_logs += 1
             unified_record = self._convert_to_unified(record)
             targets = self._get_targets(unified_record)
-            
-            # 🔧 调试：记录日志分发
-            import sys
-            if record.name.startswith("startup.stage") or record.level >= logging.WARNING:
-                print(f"[DEBUG] LoggingHub.emit: 准备分发日志 (logger={record.name}, level={record.levelno}, targets={targets}, message={record.getMessage()[:50]})", file=sys.stderr)
-            
+
             self._dispatch(targets, unified_record)
             self._check_throttler()
             self._maybe_flush_db_batch()
 
         except RecursionError as e:
-            logger.error(f"日志处理递归错误: {e}", exc_info=True)
+            # 🔧 修复：使用print直接输出到stderr，避免触发日志系统导致递归
+            # 符合设计文档要求：防止无限递归（统一日志系统说明文档第1143行）
+            import sys
+            import traceback
+            print(f"[LoggingHub] ❌ 日志处理递归错误: {e}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
         except Exception as e:
-            logger.error(
-                f"日志处理异常: {e}, logger={record.name}, level={record.levelno}", exc_info=True
-            )
+            # 🔧 修复：使用print直接输出到stderr，避免触发日志系统导致递归
+            # 符合设计文档要求：防止无限递归（统一日志系统说明文档第1143行）
+            import sys
+            import traceback
+            print(f"[LoggingHub] ❌ 日志处理异常: {e}, logger={record.name}, level={record.levelno}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
         finally:
             self._in_emit = False
 
@@ -1199,9 +1313,14 @@ class LoggingHub(logging.Handler):
         cache_key = (logger_name_lower, message_lower, levelno, log_type_attr_str)
 
         # 从缓存获取
-        cached_result = self._log_type_cache.get(cache_key)  # type: ignore
-        if cached_result is not None:
-            return cached_result
+        # 🔧 修复：HighPerfLRUCache.get()在键不存在时会抛出KeyError，而不是返回None
+        try:
+            cached_result = self._log_type_cache.get(cache_key)  # type: ignore
+            if cached_result is not None:
+                return cached_result
+        except KeyError:
+            # 键不存在，继续计算
+            pass
 
         # 计算日志类型
         result = self._classify_log_type_impl(
@@ -1242,8 +1361,11 @@ class LoggingHub(logging.Handler):
             except Exception:
                 pass
 
-        # 流程节点（严格模式）
+        # 流程节点：阶段日志器优先处理
+        # 规则：阶段日志器的WARNING/ERROR/CRITICAL升级为ALERT；否则为STAGE_NODE
         if ".stage" in logger_name_lower:
+            if levelno >= logging.WARNING:
+                return LogType.ALERT
             return LogType.STAGE_NODE
 
         if levelno == logging.INFO:
@@ -1272,6 +1394,40 @@ class LoggingHub(logging.Handler):
         # 告警
         if "alert" in logger_name_lower or "monitor" in logger_name_lower:
             if levelno >= logging.WARNING:
+                return LogType.ALERT
+
+        # 基于内容的告警标记（强标记，直接判定为ALERT）
+        # 注意：这些标记通常用于UI或系统关键故障提示
+        strong_alert_markers = [
+            "❌",
+            "🔥",
+            "⚠️",
+            "崩溃",
+            "宕机",
+            "致命",
+            "fatal",
+            "panic",
+            "超时",
+            "卡死",
+            "不可恢复",
+            "数据损坏",
+        ]
+        if any(marker in message_lower for marker in strong_alert_markers):
+            return LogType.ALERT
+
+        # 基于内容的弱告警标记：仅当等级达到WARNING及以上才提升为ALERT
+        weak_alert_markers = [
+            "失败",
+            "异常",
+            "错误",
+            "严重",
+            "warning",
+            "error",
+            "exception",
+            "fail",
+        ]
+        if levelno >= logging.WARNING:
+            if any(marker in message_lower for marker in weak_alert_markers):
                 return LogType.ALERT
 
         # 进度
@@ -1379,15 +1535,12 @@ class LoggingHub(logging.Handler):
         # 文件输出直接处理（所有日志都写入文件，不等待有序队列）
         if "file" in targets:
             try:
-                # 🔧 调试：记录文件输出调用
-                import sys
-                if record.logger_name.startswith("startup.stage") or record.level >= logging.WARNING:
-                    print(f"[DEBUG] _dispatch: 准备写入文件 (logger={record.logger_name}, level={record.level}, message={record.message[:50]})", file=sys.stderr)
                 self._to_file(record)
             except Exception as e:
+                # 文件输出失败时，静默处理，避免污染terminal输出
                 import sys
-                print(f"[DEBUG] _dispatch: 文件输出失败: {e} (logger={record.logger_name}, message={record.message[:50]})", file=sys.stderr)
-        
+                print(f"[LoggingHub] 文件输出失败: {e}", file=sys.stderr)
+
         # 如果启用了有序队列，且目标是console或database，添加到有序队列
         if self._ordered_queue_enabled and self._ordered_log_queue is not None:
             needs_ordered_output = any(target in ("console", "database") for target in targets)
@@ -1444,7 +1597,7 @@ class LoggingHub(logging.Handler):
         """
         # 🔧 注意：文件输出已经在_dispatch中直接处理，这里不再重复处理
         # 有序队列只负责console和database的输出顺序
-        
+
         # 根据路由目标输出（console和database）
         if record.level >= logging.WARNING or (
             record.type == LogType.STAGE_NODE and record.level == logging.INFO
@@ -1503,9 +1656,6 @@ class LoggingHub(logging.Handler):
     def _to_file(self, record: UnifiedLogRecord):
         """输出到文件（通过EventLogFileHandler）"""
         if not self._event_log_handler:
-            # 🔧 调试：如果_event_log_handler未设置，记录警告
-            import sys
-            print(f"[DEBUG] _to_file: _event_log_handler未设置，无法写入文件", file=sys.stderr)
             return
 
         # 🔧 验证EventLogFileHandler是否有当前事件文件
@@ -1513,23 +1663,15 @@ class LoggingHub(logging.Handler):
             # 如果当前事件文件不存在，尝试重新启动事件
             try:
                 current_event = self._event_log_handler.get_current_event()
-                if current_event:
-                    # 事件已启动，但文件不存在，可能是文件被关闭了
-                    import sys
-                    print(f"[DEBUG] _to_file: 当前事件文件不存在，但事件已启动: {current_event}", file=sys.stderr)
-                else:
+                if not current_event:
                     # 事件未启动，尝试启动默认事件
-                    import sys
-                    print(f"[DEBUG] _to_file: 事件未启动，尝试启动application_startup事件", file=sys.stderr)
                     try:
                         from backend.infrastructure.system_vnpy.logging_system import start_event_process
                         start_event_process("application_startup")
-                    except Exception as e:
-                        import sys
-                        print(f"[DEBUG] _to_file: 启动事件失败: {e}", file=sys.stderr)
-            except Exception as e:
-                import sys
-                print(f"[DEBUG] _to_file: 检查事件文件时出错: {e}", file=sys.stderr)
+                    except Exception:
+                        pass  # 静默处理，避免污染terminal输出
+            except Exception:
+                pass  # 静默处理，避免污染terminal输出
 
         # 🔧 修复：直接调用EventLogFileHandler的emit方法，但需要标记记录已处理，避免被LoggingHub再次处理
         # 创建LogRecord并通过EventLogFileHandler写入
@@ -1551,43 +1693,30 @@ class LoggingHub(logging.Handler):
 
         if record.exception:
             log_record.exc_text = record.exception
-        
+
         # 🔧 关键修复：标记记录已处理，避免被LoggingHub再次处理（防止无限递归）
         setattr(log_record, "_unified_hub_processed", True)
 
         try:
-            # 🔧 调试：检查EventLogFileHandler的状态
+            # 检查EventLogFileHandler的状态
             if not hasattr(self._event_log_handler, '_current_event_file'):
-                import sys
-                print(f"[DEBUG] _to_file: EventLogFileHandler没有_current_event_file属性", file=sys.stderr)
                 return
-            
+
             # 使用锁保护，检查_current_event_file状态
             with self._event_log_handler._lock:
                 current_file = self._event_log_handler._current_event_file
-                if current_file is None:
-                    import sys
-                    print(f"[DEBUG] _to_file: _current_event_file为None，无法写入文件 (logger={record.logger_name}, message={record.message[:50]})", file=sys.stderr)
+                if current_file is None or current_file.closed:
                     return
-                
-                # 检查文件是否已关闭
-                if current_file.closed:
-                    import sys
-                    print(f"[DEBUG] _to_file: _current_event_file已关闭，无法写入文件 (logger={record.logger_name}, message={record.message[:50]})", file=sys.stderr)
-                    return
-            
+
             # 调用emit方法（emit方法内部会使用锁）
             # 🔧 注意：EventLogFileHandler.emit方法会检查_unified_hub_processed标记，如果存在则跳过
             # 但我们需要直接写入文件，所以需要绕过LoggingHub
             # 实际上，EventLogFileHandler不是LoggingHub的子类，所以不会触发LoggingHub
             self._event_log_handler.emit(log_record)
             self._file_writes += 1
-        except Exception as e:
-            # 🔧 调试：如果写入失败，记录错误
-            import sys
-            print(f"[DEBUG] _to_file: 写入文件失败: {e} (logger={record.logger_name}, message={record.message[:50]})", file=sys.stderr)
-            import traceback
-            traceback.print_exc()
+        except Exception:
+            # 静默处理，避免污染terminal输出
+            pass
 
     def _to_database_batched(self, record: UnifiedLogRecord):
         """批量输出到数据库"""
@@ -2125,8 +2254,6 @@ async def initialize_logging_hub_complete(
                 "[LOG-SETUP] ❌ EventLogFileHandler获取失败",
                 extra={"log_type": "ALERT", "scenario": scenario}
             )
-            import sys
-            print("[DEBUG] EventLogFileHandler获取失败", file=sys.stderr)
         else:
             logging_hub.set_event_log_handler(event_handler)
             # 🔧 验证注入是否成功
@@ -2135,15 +2262,11 @@ async def initialize_logging_hub_complete(
                     "[LOG-SETUP] ❌ EventLogFileHandler注入失败",
                     extra={"log_type": "ALERT", "scenario": scenario}
                 )
-                import sys
-                print(f"[DEBUG] EventLogFileHandler注入失败: hub._event_log_handler={logging_hub._event_log_handler}, event_handler={event_handler}", file=sys.stderr)
             else:
                 logger.debug(
                     "[LOG-SETUP] EventLogFileHandler已获取并注入",
                     extra={"log_type": "SYSTEM", "scenario": scenario}
                 )
-                import sys
-                print(f"[DEBUG] EventLogFileHandler已注入: {event_handler}", file=sys.stderr)
 
         # 4. 启动事件日志流程（application_startup）
         logger.debug(
@@ -2555,6 +2678,9 @@ __all__ = [
     "cleanup_all_logger_handlers",
     # 子进程日志设置
     "setup_subprocess_logging",
+    "restore_queue_from_token",
+    "load_queue_from_env",
+    "LOGGING_QUEUE_TOKEN_ENV",
     # 向后兼容API
     "start_ai_process",
     "end_ai_process",

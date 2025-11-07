@@ -8,7 +8,6 @@ import zlib
 from typing import Optional
 
 from ..utils.logger import logger
-from .raw import AsyncRawParser
 
 
 class SocketClientNotReady(Exception):
@@ -136,6 +135,8 @@ class AsyncBaseParser:
 
         :return: 解析后的数据
         """
+        from .raw import AsyncRawParser  # 延迟导入避免循环引用
+
         self.setup()
 
         if not self.reader or not self.writer:

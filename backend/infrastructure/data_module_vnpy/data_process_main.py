@@ -21,6 +21,24 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+# 高性能JSON库（优先使用orjson）
+try:
+    import orjson
+    HAS_ORJSON = True
+except ImportError:
+    HAS_ORJSON = False
+
+# 在导入项目内模块前确保加入项目根目录，避免多进程环境下的导入失败
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from backend.infrastructure.system_vnpy.logging_system import (
+    load_queue_from_env,
+    setup_subprocess_logging,
+)
+from backend.infrastructure.native.native_serialization import build_dataframe_payload
+
 # 添加项目根目录到Python路径（用于独立运行）
 if __name__ == "__main__":
     project_root = Path(__file__).parent.parent.parent.parent
@@ -46,6 +64,12 @@ def get_root() -> Path:
 # 创建专用logger（模块级别，数据进程独立）
 logger = logging.getLogger("data_process")
 logger_rpc = logging.getLogger("data_process.rpc")
+
+# 记录使用的JSON库
+if HAS_ORJSON:
+    logger.info("✅ 数据进程使用orjson高性能JSON库")
+else:
+    logger.warning("⚠️ 数据进程orjson不可用，使用标准json库（降级模式）")
 
 
 # 尝试导入native_ipc
@@ -89,6 +113,10 @@ class DataProcess:
         # 管道连接状态跟踪（避免频繁尝试读取未连接的管道）
         self._pipe_connected: Dict[str, bool] = {}  # {pipe_name: is_connected}
         self._pipe_last_attempt: Dict[str, float] = {}  # {pipe_name: last_attempt_time}
+        
+        # 批量处理配置
+        self._batch_size = 10  # 每批最多处理的请求数
+        self._batch_timeout = 0.01  # 批次等待超时（秒）- 降低以提升响应速度
 
     async def initialize(self):
         """初始化数据服务"""
@@ -248,7 +276,7 @@ class DataProcess:
             logger.error(f"❌ RPC服务器任务异常: {e}", exc_info=True, extra={"log_type": "ALERT"})
 
     async def _handle_data_query_requests(self):
-        """处理数据查询请求"""
+        """处理数据查询请求（批量优化版）"""
         try:
             pipe = self._ipc_pipes.get("data_query")
             if not pipe:
@@ -264,11 +292,18 @@ class DataProcess:
                     return
                 self._pipe_last_attempt[pipe_name] = current_time
 
-            # 读取请求（非阻塞）
+            # 批量读取请求
+            batch_requests = []
+            
+            # 读取第一个请求（阻塞等待）
             try:
-                request_data = await asyncio.wait_for(pipe.read(), timeout=0.1)
+                first_request_data = await asyncio.wait_for(pipe.read(), timeout=0.1)
                 # 成功读取，标记为已连接
                 self._pipe_connected[pipe_name] = True
+                
+                if first_request_data:
+                    batch_requests.append(first_request_data)
+                    
             except asyncio.TimeoutError:
                 return
             except ValueError as e:
@@ -283,54 +318,115 @@ class DataProcess:
                 # 其他异常，记录日志但不中断
                 logger.debug(f"读取管道时发生异常: {e}", extra={"log_type": "SYSTEM"})
                 return
-
-            if not request_data:
+            
+            # 尝试读取更多请求（非阻塞，短超时）
+            for _ in range(self._batch_size - 1):
+                try:
+                    extra_request_data = await asyncio.wait_for(
+                        pipe.read(), 
+                        timeout=self._batch_timeout
+                    )
+                    if extra_request_data:
+                        batch_requests.append(extra_request_data)
+                except asyncio.TimeoutError:
+                    # 没有更多请求，退出循环
+                    break
+                except Exception:
+                    # 其他异常，退出循环
+                    break
+            
+            # 如果没有读取到任何请求，直接返回
+            if not batch_requests:
                 return
-
-            # 解析请求（request_data是bytes类型，需要先解码）
-            try:
-                if isinstance(request_data, bytes):
-                    request = json.loads(request_data.decode("utf-8"))
-                else:
-                    request = json.loads(request_data)
-            except (json.JSONDecodeError, UnicodeDecodeError) as e:
-                logger.warning(f"⚠️ 无效的RPC请求格式: {e}", extra={"log_type": "SYSTEM"})
-                return
-
-            # 处理请求
-            method = request.get("method")
-            params = request.get("params", {})
-            request_id = request.get("id")
-
-            try:
-                if method == "get_kline_data":
-                    result = await self._handle_get_kline_data(params)
-                elif method == "get_symbol_list":
-                    result = await self._handle_get_symbol_list(params)
-                else:
-                    result = {"success": False, "message": f"未知方法: {method}"}
-
-                # 发送响应
-                response = {"id": request_id, "result": result}
-                response_data = json.dumps(response, ensure_ascii=False).encode("utf-8")
-                await pipe.write(response_data)
-
-            except Exception as e:
-                logger.error(
-                    f"❌ 处理RPC请求失败: {method}, 错误: {e}",
-                    exc_info=True,
-                    extra={"log_type": "ALERT"},
-                )
-                # 发送错误响应
-                response = {"id": request_id, "error": str(e)}
-                response_data = json.dumps(response, ensure_ascii=False).encode("utf-8")
-                await pipe.write(response_data)
+            
+            # 批量处理请求
+            batch_responses = await self._process_batch_requests(batch_requests)
+            
+            # 批量发送响应
+            for response_data in batch_responses:
+                try:
+                    await pipe.write(response_data)
+                except Exception as e:
+                    logger.error(
+                        f"❌ 发送批量响应失败: {e}",
+                        exc_info=True,
+                        extra={"log_type": "ALERT"},
+                    )
 
         except Exception as e:
             logger.error(
                 f"❌ 处理数据查询请求异常: {e}", exc_info=True, extra={"log_type": "ALERT"}
             )
 
+    async def _process_batch_requests(self, batch_requests: list) -> list:
+        """批量处理RPC请求
+        
+        Args:
+            batch_requests: 请求数据列表（bytes）
+            
+        Returns:
+            响应数据列表（bytes）
+        """
+        responses = []
+        
+        for request_data in batch_requests:
+            try:
+                # 解析请求
+                try:
+                    if HAS_ORJSON:
+                        request = orjson.loads(request_data)
+                    else:
+                        if isinstance(request_data, bytes):
+                            request = json.loads(request_data.decode("utf-8"))
+                        else:
+                            request = json.loads(request_data)
+                except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                    logger.warning(f"⚠️ 批量处理: 无效的RPC请求格式: {e}", extra={"log_type": "SYSTEM"})
+                    continue
+                
+                # 提取请求信息
+                method = request.get("method")
+                params = request.get("params", {})
+                request_id = request.get("id")
+                
+                # 处理请求
+                try:
+                    if method == "get_kline_data":
+                        result = await self._handle_get_kline_data(params)
+                    elif method == "get_symbol_list":
+                        result = await self._handle_get_symbol_list(params)
+                    else:
+                        result = {"success": False, "message": f"未知方法: {method}"}
+                    
+                    # 构造响应
+                    response = {"id": request_id, "result": result}
+                    
+                except Exception as e:
+                    logger.error(
+                        f"❌ 批量处理RPC请求失败: {method}, 错误: {e}",
+                        exc_info=True,
+                        extra={"log_type": "ALERT"},
+                    )
+                    # 构造错误响应
+                    response = {"id": request_id, "error": str(e)}
+                
+                # 序列化响应
+                if HAS_ORJSON:
+                    response_data = orjson.dumps(response)
+                else:
+                    response_data = json.dumps(response, ensure_ascii=False).encode("utf-8")
+                    
+                responses.append(response_data)
+                
+            except Exception as e:
+                logger.error(
+                    f"❌ 批量处理请求异常: {e}",
+                    exc_info=True,
+                    extra={"log_type": "ALERT"},
+                )
+        
+        return responses
+    
     async def _handle_calculation_requests(self):
         """处理计算任务请求"""
         try:
@@ -373,7 +469,12 @@ class DataProcess:
 
             # 解析请求
             try:
-                request = json.loads(request_data)
+                if HAS_ORJSON:
+                    # orjson.loads可以直接处理bytes
+                    request = orjson.loads(request_data)
+                else:
+                    # 降级到标准json
+                    request = json.loads(request_data)
             except json.JSONDecodeError:
                 logger.warning("⚠️ 无效的计算任务请求格式", extra={"log_type": "SYSTEM"})
                 return
@@ -393,7 +494,12 @@ class DataProcess:
 
                 # 发送响应
                 response = {"id": request_id, "result": result}
-                response_data = json.dumps(response, ensure_ascii=False).encode("utf-8")
+                if HAS_ORJSON:
+                    # orjson.dumps返回bytes，直接使用
+                    response_data = orjson.dumps(response)
+                else:
+                    # 降级到标准json
+                    response_data = json.dumps(response, ensure_ascii=False).encode("utf-8")
                 await pipe.write(response_data)
 
             except Exception as e:
@@ -404,7 +510,12 @@ class DataProcess:
                 )
                 # 发送错误响应
                 response = {"id": request_id, "error": str(e)}
-                response_data = json.dumps(response, ensure_ascii=False).encode("utf-8")
+                if HAS_ORJSON:
+                    # orjson.dumps返回bytes，直接使用
+                    response_data = orjson.dumps(response)
+                else:
+                    # 降级到标准json
+                    response_data = json.dumps(response, ensure_ascii=False).encode("utf-8")
                 await pipe.write(response_data)
 
         except Exception as e:
@@ -423,6 +534,7 @@ class DataProcess:
             start_date = params.get("start_date")
             end_date = params.get("end_date")
             check_gaps = params.get("check_gaps", False)
+            prefer_format = params.get("prefer_format", "arrow")
 
             df = self.unified_data_manager.get_kline_data(
                 symbol=symbol,
@@ -434,23 +546,30 @@ class DataProcess:
             )
 
             if df is not None and not df.empty:
-                # 转换为字典格式
-                data = []
-                for idx, row in df.iterrows():
-                    data.append(
-                        {
-                            "datetime": idx.isoformat() if hasattr(idx, "isoformat") else str(idx),
-                            "open": float(row.get("open", 0)),
-                            "high": float(row.get("high", 0)),
-                            "low": float(row.get("low", 0)),
-                            "close": float(row.get("close", 0)),
-                            "volume": float(row.get("volume", 0)),
-                        }
-                    )
+                payload = build_dataframe_payload(
+                    df,
+                    prefer_format="arrow" if prefer_format == "arrow" else "records",
+                )
 
-                return {"success": True, "data": data, "message": f"获取 {len(data)} 条数据"}
+                payload_dict = payload.to_dict()
+                payload_dict.update(
+                    {
+                        "success": True,
+                        "message": f"获取 {payload.rows} 条数据",
+                    }
+                )
+
+                return payload_dict
             else:
-                return {"success": False, "message": "数据为空"}
+                return {
+                    "success": False,
+                    "message": "数据为空",
+                    "format": "records",
+                    "transport": "json",
+                    "data": [],
+                    "rows": 0,
+                    "columns": [],
+                }
 
         except Exception as e:
             logger.error(f"❌ 获取K线数据失败: {e}", exc_info=True, extra={"log_type": "ALERT"})
@@ -658,7 +777,13 @@ class DataProcess:
             print(f"[DEBUG] 数据进程信号数据: {signal_data}", file=sys.stderr)
 
             with open(signal_file, "w", encoding="utf-8") as f:
-                json.dump(signal_data, f, indent=2)
+                if HAS_ORJSON:
+                    # orjson不支持直接写入文件，先序列化为bytes再解码写入
+                    json_bytes = orjson.dumps(signal_data, option=orjson.OPT_INDENT_2)
+                    f.write(json_bytes.decode("utf-8"))
+                else:
+                    # 降级到标准json
+                    json.dump(signal_data, f, indent=2)
             print(f"[DEBUG] 数据进程就绪信号文件已写入: {signal_file}", file=sys.stderr)
 
             logger.info(f"✅ 就绪信号文件已写入: {signal_file}", extra={"log_type": "STAGE_NODE"})
@@ -735,6 +860,10 @@ async def main():
     """主函数"""
     # 获取日志队列（从环境变量或命令行参数）
     log_queue = None
+    env_queue = load_queue_from_env()
+    if env_queue is not None:
+        log_queue = env_queue
+        logger.info("✅ 通过环境变量获取日志队列", extra={"log_type": "STAGE_NODE"})
     if len(sys.argv) > 1:
         # 从命令行参数获取队列（序列化后的队列对象）
         # 注意：multiprocessing.Queue不能直接序列化，需要通过其他方式传递
@@ -743,8 +872,6 @@ async def main():
     # 如果提供了日志队列，配置子进程日志
     if log_queue:
         try:
-            from backend.infrastructure.system_vnpy.logging_system import setup_subprocess_logging
-
             setup_subprocess_logging(log_queue)
             logger.info("✅ 子进程日志配置完成", extra={"log_type": "STAGE_NODE"})
         except Exception as e:

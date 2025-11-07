@@ -293,7 +293,9 @@ def main():
     results = analyzer.analyze_all()
     report = analyzer.generate_report(results)
     
-    print(report)
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(report, extra={"log_type": "SYSTEM"})
     
     # 保存报告到文件
     report_path = analyzer.project_root / "logs" / "startup_call_chain_analysis.md"
@@ -301,7 +303,7 @@ def main():
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(report)
     
-    print(f"\n报告已保存到: {report_path}")
+    logger.info(f"\n报告已保存到: {report_path}", extra={"log_type": "SYSTEM"})
     
     return results
 

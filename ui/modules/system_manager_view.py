@@ -2199,7 +2199,12 @@ class LogManagerWidget(QWidget):
 
         except Exception as e:
             # 更新模块列表失败不影响主要功能
-            print(f"更新模块列表失败: {e}")
+            import logging
+            logging.getLogger(__name__).warning(
+                "更新模块列表失败: %s",
+                e,
+                extra={"log_type": "SYSTEM"},
+            )
 
     def _apply_filters(self) -> None:
         """应用筛选条件."""
@@ -2977,12 +2982,18 @@ class SystemManager(BaseWidget, LoggerMixin):
 
         # 🔥 连接线程安全的UI更新信号
         self.ui_update_signal.connect(self._do_throttled_ui_update)
-        print("[SystemManager] ✅ UI更新信号已连接")
+        self.logger.info(
+            "[SystemManager] ✅ UI更新信号已连接",
+            extra={"log_type": "STAGE_NODE"},
+        )
 
         # 🔥 连接网络测速结果信号（线程安全）
         self.bandwidth_test_success_signal.connect(self._update_bandwidth_result_success)
         self.bandwidth_test_error_signal.connect(self._update_bandwidth_result_error)
-        print("[SystemManager] ✅ 网络测速信号已连接")
+        self.logger.info(
+            "[SystemManager] ✅ 网络测速信号已连接",
+            extra={"log_type": "STAGE_NODE"},
+        )
 
         # 启动数据源连通性定时更新（每10秒刷新一次）
         self.datasource_connectivity_timer = QTimer(self)
@@ -3054,15 +3065,21 @@ class SystemManager(BaseWidget, LoggerMixin):
             self._debug_logger.info("=" * 60)
 
             # 强制输出确认
-            print(f"[SystemManager] ✅ DEBUG日志文件已创建: {log_file.absolute()}")
+            self.logger.info(
+                "[SystemManager] ✅ DEBUG日志文件已创建: %s",
+                log_file.absolute(),
+                extra={"log_type": "SYSTEM"},
+            )
             self.logger.info(f"✅ DEBUG日志已启用: {log_file}")
 
         except Exception as e:
-            print(f"[SystemManager] ❌ DEBUG日志设置失败: {e}")
-            import traceback
-
-            traceback.print_exc()
-            self.logger.error(f"DEBUG日志设置失败: {e}", exc_info=True)
+            self.logger.error(
+                "[SystemManager] ❌ DEBUG日志设置失败: %s",
+                e,
+                extra={"log_type": "SYSTEM"},
+                exc_info=True,
+            )
+            # 已通过exc_info输出详细堆栈，无需重复打印
             self._debug_logger = self.logger  # 降级使用普通logger
 
     @property

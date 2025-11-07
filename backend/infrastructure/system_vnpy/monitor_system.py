@@ -29,7 +29,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Protocol
+from typing import Any, Dict, List, Optional, Protocol, cast
 
 # 添加项目根目录到Python路径（用于独立运行）
 if __name__ == "__main__":
@@ -84,6 +84,16 @@ except ImportError:
     HAS_PSUTIL = False
     logger.warning("psutil模块未安装,将使用基础系统监控功能", extra={"log_type": "SYSTEM"})
 
+# 尝试导入原生 Socket 指标采集扩展
+try:
+    from backend.infrastructure.native.native_socket_metrics import (
+        SOCKET_METRICS_AVAILABLE,
+        get_socket_metrics as native_get_socket_metrics,
+    )
+except ImportError:
+    SOCKET_METRICS_AVAILABLE = False
+    native_get_socket_metrics = None  # type: ignore
+
 # 尝试导入WMI（Windows Management Instrumentation）
 try:
     import wmi
@@ -103,6 +113,10 @@ import random
 from backend.infrastructure.system_vnpy import (
     DiskSmartData,
     SmartMonitor,
+)
+from backend.infrastructure.system_vnpy.logging_system import (
+    load_queue_from_env,
+    setup_subprocess_logging,
 )
 
 # 第三方库导入
@@ -2540,52 +2554,27 @@ class MonitoringProcessV2:
                     extra={"log_type": "ALERT"}
                 )
 
-            # 🔄 延迟创建告警客户端管道（等待主进程告警服务端就绪）
+            # 🔄 延迟创建告警客户端管道（改为懒加载模式，避免启动时握手失败）
+            # 注意：alerts_pipe将在首次发送告警时才建立连接（见_push_alert方法）
             self.alerts_pipe = None
-            max_retries = 60
-            retry_delay = 1.0
+            self._alerts_pipe_retry_count = 0  # 连接重试计数
+            self._alerts_pipe_max_retries = 3  # 最大重试次数
+            self._alerts_pipe_last_retry_time = 0.0  # 上次重试时间
+            
+            logger.info(
+                "[IPC] ✅ 告警管道将采用懒加载模式（首次发送告警时连接）",
+                extra={"log_type": "SYSTEM"}
+            )
 
-            for attempt in range(max_retries):
-                try:
-                    logger.info(
-                        f"[IPC] 尝试创建告警客户端管道 (尝试 {attempt + 1}/{max_retries})..."
-                    )
-                    self.alerts_pipe = await AsyncIPCPipe.client("monitor_alerts")
-                    logger.info("[IPC] ✅ 告警客户端管道已创建: monitor_alerts")
-                    break
-                except FileNotFoundError:
-                    # 服务端尚未创建，等待后重试
-                    await asyncio.sleep(retry_delay)
-                    continue
-                except Exception as e:
-                    logger.warning(
-                        "[IPC] ⚠️ 创建告警客户端管道失败（尝试 %d/%d）: %s，等待 %.1f 秒后重试",
-                        attempt + 1,
-                        max_retries,
-                        e,
-                        retry_delay,
-                        extra={"log_type": "SYSTEM"},
-                    )
-                    await asyncio.sleep(retry_delay)
-
-            if self.alerts_pipe is None:
-                logger.error(
-                    "[IPC] ❌ 创建告警客户端管道最终失败（已重试%d次），告警推送功能将不可用",
-                    max_retries,
-                    extra={"log_type": "ALERT"},
-                )
-
-            # 更新就绪信号文件（添加告警管道状态）
+            # 更新就绪信号文件（标记告警管道为懒加载模式）
             try:
                 signal_file = get_root() / "logs" / "monitor_ready.signal"
                 if signal_file.exists():
                     with open(signal_file, "r", encoding="utf-8") as f:
                         ready_signal = json.load(f)
 
-                    ready_signal["status"] = (
-                        "pipes_ready" if self.alerts_pipe else "partial_pipes_ready"
-                    )
-                    ready_signal["pipes"]["alerts"] = "monitor_alerts" if self.alerts_pipe else None
+                    ready_signal["status"] = "pipes_ready"
+                    ready_signal["pipes"]["alerts"] = "lazy_load"  # 标记为懒加载
 
                     with open(signal_file, "w", encoding="utf-8") as f:
                         json.dump(ready_signal, f, ensure_ascii=False, indent=2)
@@ -2593,7 +2582,7 @@ class MonitoringProcessV2:
                         os.fsync(f.fileno())
 
                     logger.info(
-                        "[IPC] ✓ 就绪信号文件已更新（Level 1状态: %s）", ready_signal["status"]
+                        "[IPC] ✓ 就绪信号文件已更新（Level 1状态: %s, 告警管道: 懒加载）", ready_signal["status"]
                     )
             except Exception as e:
                 logger.warning("[IPC] 更新就绪信号文件失败: %s", e, extra={"log_type": "SYSTEM"})
@@ -3483,6 +3472,7 @@ class MonitoringProcessV2:
                     "timestamp": data.get("timestamp"),
                 }
             else:
+                timestamp_value = getattr(data, "timestamp", None)
                 result[disk_name] = {
                     "model": getattr(data, "model", None),
                     "serial": getattr(data, "serial", None),
@@ -3493,11 +3483,7 @@ class MonitoringProcessV2:
                     "reallocated_sectors": getattr(data, "reallocated_sectors", 0) or 0,
                     "pending_sectors": getattr(data, "pending_sectors", 0) or 0,
                     "uncorrectable_errors": getattr(data, "uncorrectable_errors", 0) or 0,
-                    "timestamp": (
-                        getattr(data, "timestamp", None).isoformat()
-                        if getattr(data, "timestamp", None) is not None
-                        else None
-                    ),
+                    "timestamp": timestamp_value.isoformat() if timestamp_value is not None else None,
                 }
         return result
 
@@ -3870,16 +3856,96 @@ class MonitoringProcessV2:
         }
 
     async def _push_alert(self, alert: Dict[str, Any]):
-        """推送告警到主进程（native_ipc客户端）."""
+        """推送告警到主进程（native_ipc客户端，懒加载连接）."""
+        # 🔧 优化：懒加载连接，避免启动时握手失败
         if not self.alerts_pipe:
-            return
+            # 检查是否应该重试（避免频繁重试）
+            current_time = time.time()
+            if self._alerts_pipe_retry_count >= self._alerts_pipe_max_retries:
+                # 超过最大重试次数，降级为本地文件告警
+                logger.debug(
+                    "[ALERT] 告警管道连接失败次数过多，降级为本地文件告警",
+                    extra={"log_type": "SYSTEM"}
+                )
+                await self._write_alert_to_file(alert)
+                return
+            
+            # 限制重试频率（每5秒最多1次）
+            if current_time - self._alerts_pipe_last_retry_time < 5.0:
+                logger.debug(
+                    "[ALERT] 告警管道连接重试冷却中，降级为本地文件告警",
+                    extra={"log_type": "SYSTEM"}
+                )
+                await self._write_alert_to_file(alert)
+                return
+            
+            # 尝试建立连接
+            try:
+                logger.info("[IPC] 尝试建立告警客户端管道连接...")
+                self.alerts_pipe = await AsyncIPCPipe.client("monitor_alerts")
+                logger.info("[IPC] ✅ 告警客户端管道已连接: monitor_alerts")
+                self._alerts_pipe_retry_count = 0  # 重置重试计数
+            except FileNotFoundError:
+                self._alerts_pipe_retry_count += 1
+                self._alerts_pipe_last_retry_time = current_time
+                logger.warning(
+                    "[IPC] 告警服务端管道未就绪（尝试 %d/%d），降级为本地文件告警",
+                    self._alerts_pipe_retry_count,
+                    self._alerts_pipe_max_retries,
+                    extra={"log_type": "SYSTEM"}
+                )
+                await self._write_alert_to_file(alert)
+                return
+            except Exception as e:
+                self._alerts_pipe_retry_count += 1
+                self._alerts_pipe_last_retry_time = current_time
+                logger.warning(
+                    "[IPC] 创建告警客户端管道失败（尝试 %d/%d）: %s，降级为本地文件告警",
+                    self._alerts_pipe_retry_count,
+                    self._alerts_pipe_max_retries,
+                    e,
+                    extra={"log_type": "SYSTEM"}
+                )
+                await self._write_alert_to_file(alert)
+                return
 
+        # 推送告警到管道
         try:
             alert_data = json.dumps(alert).encode()
             await self.alerts_pipe.write(alert_data)
             logger.info("[ALERT] 推送告警: %s", alert["message"])
         except Exception as e:
-            logger.exception("[ALERT] 推送失败: %s", e)
+            logger.exception("[ALERT] 推送失败: %s，降级为本地文件告警", e)
+            # 推送失败，关闭管道并降级
+            try:
+                await self.alerts_pipe.close()
+            except Exception:
+                pass
+            self.alerts_pipe = None
+            await self._write_alert_to_file(alert)
+    
+    async def _write_alert_to_file(self, alert: Dict[str, Any]):
+        """将告警写入本地文件（降级方案）."""
+        try:
+            alert_file = get_root() / "logs" / "monitor_alerts.jsonl"
+            alert_file.parent.mkdir(parents=True, exist_ok=True)
+            
+            with open(alert_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(alert, ensure_ascii=False) + "\n")
+                f.flush()
+            
+            logger.debug(
+                "[ALERT] 告警已写入本地文件: %s",
+                alert["message"],
+                extra={"log_type": "SYSTEM"}
+            )
+        except Exception as e:
+            logger.error(
+                "[ALERT] 写入本地告警文件失败: %s",
+                e,
+                exc_info=True,
+                extra={"log_type": "SYSTEM"}
+            )
 
     async def stop(self):
         """停止监控进程."""
@@ -5281,12 +5347,13 @@ class SystemMonitor:
                     if sensor_data and isinstance(sensor_data, dict):
                         clock_sensors_raw = sensor_data.get("clock", {})
                         if clock_sensors_raw and isinstance(clock_sensors_raw, dict):
+                            clock_sensors = cast(Dict[str, Any], clock_sensors_raw)
                             # 查找CPU相关的时钟传感器
                             cpu_max_freqs = []
                             import math
 
                             try:
-                                for device_name, sensors in clock_sensors_raw.items():
+                                for device_name, sensors in clock_sensors.items():
                                     # 检查是否是CPU设备（名称包含CPU或处理器相关关键词）
                                     if any(
                                         keyword in device_name.lower()
@@ -6056,6 +6123,18 @@ class SystemMonitor:
             }
         """
         try:
+            if SOCKET_METRICS_AVAILABLE and native_get_socket_metrics is not None:
+                try:
+                    native_result = native_get_socket_metrics()
+                    if native_result:
+                        return native_result
+                except Exception:
+                    logger.debug(
+                        "[SOCKET-BUFFER] 原生采集失败，回退到psutil实现",
+                        exc_info=True,
+                        extra={"log_type": "SYSTEM"},
+                    )
+
             if not HAS_PSUTIL:
                 logger.debug("[SOCKET-BUFFER] psutil未安装，无法获取Socket缓冲区信息", extra={"log_type": "SYSTEM"})
                 return {}
@@ -7412,23 +7491,28 @@ def main():
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
 
-    # 配置日志（仅Terminal输出）
-    # 确保stdout使用UTF-8编码（Python 3.7+）
-    if hasattr(sys.stdout, "reconfigure"):
-        try:
-            sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
-        except (OSError, ValueError):
-            # 在某些环境下reconfigure可能失败（如已重定向或已配置）
-            # 不影响功能，继续执行
-            pass
+    bridge_attached = False
+    queue_proxy = load_queue_from_env()
+    if queue_proxy is not None:
+        setup_subprocess_logging(queue_proxy, level=logging.INFO)
+        bridge_attached = True
+        logger = logging.getLogger("MonitorProcess")
+    else:
+        # 配置日志（仅Terminal输出）
+        # 确保stdout使用UTF-8编码（Python 3.7+）
+        if hasattr(sys.stdout, "reconfigure"):
+            try:
+                sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+            except (OSError, ValueError):
+                pass
 
-    stream_handler = logging.StreamHandler(sys.stdout)
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        handlers=[stream_handler],
-    )
-    logger = logging.getLogger("MonitorProcess")
+        stream_handler = logging.StreamHandler(sys.stdout)
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+            handlers=[stream_handler],
+        )
+        logger = logging.getLogger("MonitorProcess")
 
     # 🎯 获取LoggingHub并切换阶段
     try:
@@ -7440,7 +7524,15 @@ def main():
         stage_logger = logging.getLogger("startup.stage")
 
         # 🎯 使用STAGE_NODE标记监控进程启动
-        stage_logger.info("📍 监控进程启动开始", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info(
+            "📍 监控进程启动开始",
+            extra={"log_type": "STAGE_NODE", "scenario": "monitor_init"},
+        )
+        if bridge_attached:
+            stage_logger.info(
+                "✅ MultiProcessLogCollector已接入 monitor_process 日志队列",
+                extra={"log_type": "STAGE_NODE", "scenario": "monitor_init"},
+            )
     except ImportError as e:
         logger.warning("⚠️ 无法导入LoggingHub: %s", e)
         stage_logger = logger

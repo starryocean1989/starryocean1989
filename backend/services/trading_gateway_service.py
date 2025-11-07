@@ -42,6 +42,15 @@ def _serialize_json(obj: Any) -> str:
     else:
         # 对于复杂对象，使用native序列化的结果
         serialized_bytes = zero_copy_serialize(obj)
+
+        if isinstance(serialized_bytes, memoryview):
+            serialized_bytes = serialized_bytes.tobytes()
+        elif isinstance(serialized_bytes, bytearray):
+            serialized_bytes = bytes(serialized_bytes)
+
+        if not isinstance(serialized_bytes, (bytes, bytearray)):
+            serialized_bytes = bytes(serialized_bytes)
+
         return serialized_bytes.decode("latin1")  # pickle使用latin1编码
 
 

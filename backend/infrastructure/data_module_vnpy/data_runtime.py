@@ -25,9 +25,19 @@ import time
 from datetime import datetime, date, timedelta
 from enum import Enum, auto
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, cast
+from typing import Any, Callable, Dict, Hashable, List, Optional, Set, Tuple, cast
 
 import pandas as pd
+
+# 导入 native dataframe ops（支持降级）
+try:
+    from backend.infrastructure.native.native_dataframe_ops import (
+        DATAFRAME_OPS_AVAILABLE,
+        dataframe_to_records as native_df_to_records,
+    )
+except ImportError:
+    DATAFRAME_OPS_AVAILABLE = False
+    native_df_to_records = None  # type: ignore
 
 # 导入VnPy相关
 try:
@@ -198,26 +208,46 @@ class UnifiedDataManager:
             if df is None or df.empty:
                 return []
 
-            bars: List[Dict[str, Any]] = []
-            for idx, row in df.iterrows():
-                bars.append(
-                    {
-                        "symbol": symbol,
-                        "exchange": "SSE",
-                        "interval": interval,
-                        "datetime": idx,
-                        "volume": float(row.get("volume") or 0),
-                        "turnover": float(row.get("amount") or 0),
-                        "open_price": float(row.get("open") or 0),
-                        "high_price": float(row.get("high") or 0),
-                        "low_price": float(row.get("low") or 0),
-                        "close_price": float(row.get("close") or 0),
-                        "open_interest": float(row.get("open_interest") or 0),
-                        "gateway_name": "china_stock",
-                    }
-                )
+            records_df = df.reset_index()
+            index_column = cast(Hashable, records_df.columns[0])
+            if index_column != "datetime":
+                records_df = records_df.rename(columns={index_column: "datetime"})
 
-            return bars
+            rename_map = {
+                "amount": "turnover",
+                "open": "open_price",
+                "high": "high_price",
+                "low": "low_price",
+                "close": "close_price",
+            }
+            records_df = records_df.rename(columns=rename_map)
+
+            records_df = records_df.assign(
+                symbol=symbol,
+                exchange="SSE",
+                interval=interval,
+                gateway_name="china_stock",
+            )
+
+            numeric_fields = [
+                "volume",
+                "turnover",
+                "open_price",
+                "high_price",
+                "low_price",
+                "close_price",
+                "open_interest",
+            ]
+
+            for field in numeric_fields:
+                if field in records_df.columns:
+                    records_df[field] = pd.to_numeric(records_df[field], errors="coerce")
+                    records_df[field] = records_df[field].fillna(0.0)
+
+            if DATAFRAME_OPS_AVAILABLE and native_df_to_records is not None:
+                return native_df_to_records(records_df)
+
+            return records_df.to_dict("records")
 
         except Exception as exc:
             logger.error(
