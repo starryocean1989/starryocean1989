@@ -143,24 +143,24 @@ class ReloadSymbolsThread(QThread):
         start_time = time.time()
 
         try:
-            # 使用ai_log_process包裹重新请求品种列表流程
+            # 使用事件日志流程包裹重新请求品种列表流程
             try:
                 from backend.infrastructure.system_vnpy.logging_system import (
                     get_logging_hub,
-                    ai_log_process,
+                    event_log_process,
                 )
             except ImportError:
-                ai_log_process = None
+                event_log_process = None
                 get_logging_hub = None
 
-            if ai_log_process:
+            if event_log_process:
                 stage_logger = logging.getLogger("task.refresh_symbol_list.stage")
                 try:
                     hub = get_logging_hub() if get_logging_hub else None
                 except ImportError:
                     hub = None
                 try:
-                    context_manager = ai_log_process("symbol_list_reload") if hub else None
+                    context_manager = event_log_process("refresh_symbol_list") if hub else None
                 except Exception:
                     context_manager = None
 
@@ -173,25 +173,25 @@ class ReloadSymbolsThread(QThread):
                         # 阶段节点日志（输出到Terminal）
                         stage_logger.info(
                             "📍 重新请求品种列表开始",
-                            extra={"log_type": "STAGE_NODE", "scenario": "symbol_list_reload"},
+                            extra={"log_type": "STAGE_NODE", "scenario": "refresh_symbol_list"},
                         )
 
                         # 详细日志（只写入AI日志文件）
                         self.logger.debug(
                             "[SYMBOL-RELOAD] 品种重载工作线程开始",
-                            extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
+                            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
                         )
                         self.logger.debug(
                             f"[SYMBOL-RELOAD] 服务实例类型: {type(self.data_center_service).__name__}",
-                            extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
+                            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
                         )
                         self.logger.debug(
                             f"[SYMBOL-RELOAD] 服务实例: {self.data_center_service}",
-                            extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
+                            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
                         )
                         self.logger.debug(
                             "[SYMBOL-RELOAD] 强制重新加载: force=True",
-                            extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
+                            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
                         )
                         self.progress_signal.emit("正在连接服务器...")
 
@@ -199,7 +199,7 @@ class ReloadSymbolsThread(QThread):
                         reload_start_time = time.time()
                         self.logger.debug(
                             "[SYMBOL-RELOAD] 调用服务层reload_symbol_list方法...",
-                            extra={"log_type": "SYSTEM", "scenario": "symbol_list_reload"},
+                            extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
                         )
                         result = self.data_center_service.reload_symbol_list(force=True)
                         reload_elapsed = time.time() - reload_start_time
@@ -332,18 +332,18 @@ class DownloadThread(QThread):
         import time
 
         try:
-            # 使用ai_log_process包裹数据下载流程
+            # 使用事件日志流程包裹数据下载流程
             try:
                 from backend.infrastructure.system_vnpy.logging_system import (
-                    ai_log_process,
+                    event_log_process,
                 )
             except ImportError:
-                ai_log_process = None
+                event_log_process = None
 
             # 记录开始时间（用于历史记录）
             self.start_time = datetime.now()
 
-            if ai_log_process:
+            if event_log_process:
                 stage_logger = logging.getLogger("task.data_download")
                 download_type = "修复下载" if self.symbols else "增量下载"
                 metadata = {
@@ -354,7 +354,7 @@ class DownloadThread(QThread):
                 if self.end_date:
                     metadata["end_date"] = str(self.end_date)
 
-                with ai_log_process("data_download", metadata):
+                with event_log_process("data_download", metadata):
                     # 阶段节点日志（输出到Terminal）
                     stage_logger.info(
                         f"📍 数据下载开始: {download_type}",
@@ -1867,11 +1867,11 @@ class DataCenter(BaseWidget, LoggerMixin):
 
                     start_time = time.time()
 
-                    # 使用ai_log_process上下文管理器
+                    # 使用事件日志流程上下文管理器
                     try:
                         from backend.infrastructure.system_vnpy.logging_system import (
                             get_logging_hub,
-                            ai_log_process,
+                            event_log_process,
                         )
 
                         stage_logger = logging.getLogger("task.manual_speedtest.stage")
@@ -1882,7 +1882,7 @@ class DataCenter(BaseWidget, LoggerMixin):
                             hub = None
 
                         try:
-                            context_manager = ai_log_process("manual_speedtest") if hub else None
+                            context_manager = event_log_process("manual_speedtest") if hub else None
                         except Exception:
                             context_manager = None
 
@@ -1901,7 +1901,7 @@ class DataCenter(BaseWidget, LoggerMixin):
                                     },
                                 )
 
-                                # DEBUG日志（只写入AI日志文件，通过extra传递scenario）
+                                # DEBUG日志（只写入事件日志文件，通过extra传递scenario）
                                 self.logger.debug(
                                     "[SPEEDTEST] 开始执行服务器池测速",
                                     extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
@@ -6182,21 +6182,21 @@ class DataCenter(BaseWidget, LoggerMixin):
             def run_scan():
                 """后台线程执行扫描"""
                 try:
-                    # 使用ai_log_process包裹手动数据扫描流程
+                    # 使用事件日志上下文包裹手动数据扫描流程
                     try:
                         from backend.infrastructure.system_vnpy.logging_system import (
-                            ai_log_process,
+                            event_log_process,
                         )
                     except ImportError:
-                        ai_log_process = None
+                        event_log_process = None
 
                     import time
 
                     start_time = time.time()
 
-                    if ai_log_process:
+                    if event_log_process:
                         stage_logger = logging.getLogger("task.manual_data_scan")
-                        with ai_log_process(
+                        with event_log_process(
                             "manual_data_scan",
                             {
                                 "scan_type": "errors_missing_only",
@@ -6314,7 +6314,7 @@ class DataCenter(BaseWidget, LoggerMixin):
                                     lambda: self.show_error(f"扫描失败: {msg}"),
                                 )
                     else:
-                        # 降级处理：如果ai_log_process不可用，直接执行
+                        # 降级处理：如果事件日志系统不可用，直接执行
                         self.logger.warning(
                             "[DATA-SCAN] ⚠️ 日志系统不可用，使用降级模式",
                             extra={"log_type": "ALERT", "scenario": "manual_data_scan"},

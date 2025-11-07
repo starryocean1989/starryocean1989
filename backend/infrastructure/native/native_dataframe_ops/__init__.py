@@ -70,7 +70,20 @@ if platform.system() == "Windows":
     try:
         from . import dataframe_ops as _native_ops  # type: ignore[import]
 
-        dataframe_quality_counters = _native_ops.dataframe_quality_counters  # type: ignore[attr-defined]
+        def dataframe_quality_counters(  # type: ignore[override]
+            df: pd.DataFrame, columns: Iterable[str]
+        ) -> Any:
+            """调用原生实现，遇到 pandas any 参数兼容问题时回退到 Python 逻辑."""
+
+            try:
+                return _native_ops.dataframe_quality_counters(df, list(columns))  # type: ignore[attr-defined]
+            except TypeError as error:
+                # 兼容 pandas.DataFrame.any 新签名（额外位置参数会触发 TypeError）
+                if "DataFrame.any" in str(error):
+                    stats = _scan_quality_py(df, columns)
+                    return stats["duplicate_count"], stats["invalid_count"]
+                raise
+
         dataframe_to_records = _native_ops.dataframe_to_records  # type: ignore[attr-defined]
         scan_quality = getattr(_native_ops, "scan_quality", _scan_quality_py)
         validate_numeric = getattr(_native_ops, "validate_numeric", _validate_numeric_py)

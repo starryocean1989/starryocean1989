@@ -6515,7 +6515,7 @@ class SystemManagerService(BaseService):
         try:
             from backend.infrastructure.system_vnpy.logging_system import (
                 get_logging_hub,
-                ai_log_process,
+                event_log_process,
             )
 
             hub = get_logging_hub()
@@ -6524,10 +6524,10 @@ class SystemManagerService(BaseService):
 
         stage_logger = logging.getLogger("task.tdx_data_read.stage")
 
-        # 使用ai_log_process创建独立日志文件
+        # 使用事件日志流程创建独立日志文件
         try:
             context_manager = (
-                ai_log_process(
+                event_log_process(
                     "tdx_data_read",
                     {
                         "data_types": config.get("data_types", []),

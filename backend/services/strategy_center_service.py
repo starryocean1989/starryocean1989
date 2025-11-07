@@ -20,8 +20,8 @@ import logging
 from backend.core.service_base import BaseService, LoggerMixin
 from backend.services.database_adapter import get_db_manager
 from backend.infrastructure.system_vnpy.logging_system import (
-    start_ai_process,
-    end_ai_process,
+    start_event_process,
+    end_event_process,
     get_logging_hub,
     stage_node,
     alert,
@@ -1479,17 +1479,17 @@ class MyPortfolioStrategy(StrategyTemplate):
         try:
             task_id = f"backtest_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
-            # ✅ 开始AI日志流程（记录启动信息）
+            # ✅ 开始事件日志流程（记录启动信息）
             ai_log_started = False
             try:
-                ai_log_file = start_ai_process(
+                event_log_file = start_event_process(
                     "backtest_run",
                     metadata={"task_id": task_id, "strategy_file": strategy_file, "config": config},
                 )
                 ai_log_started = True
-                self.logger.info(f"AI日志文件: {ai_log_file}")
+                self.logger.info(f"事件日志文件: {event_log_file}")
             except Exception as e:
-                self.logger.warning(f"启动AI日志流程失败: {e}", extra={"log_type": "SYSTEM"})
+                self.logger.warning(f"启动事件日志流程失败: {e}", extra={"log_type": "SYSTEM"})
 
             try:
                 self.log_operation_start("启动回测任务", task_id=task_id, strategy=strategy_file)
@@ -1500,7 +1500,7 @@ class MyPortfolioStrategy(StrategyTemplate):
                         "回测引擎不可用（vnpy_ctabacktester未安装）", extra={"log_type": "SYSTEM"}
                     )
                     if ai_log_started:
-                        end_ai_process(
+                        end_event_process(
                             success=False, summary="回测引擎不可用（vnpy_ctabacktester未安装）"
                         )
                     return {
@@ -1517,7 +1517,7 @@ class MyPortfolioStrategy(StrategyTemplate):
                         "策略文件不存在：%s", strategy_file, extra={"log_type": "SYSTEM"}
                     )
                     if ai_log_started:
-                        end_ai_process(success=False, summary=f"策略文件不存在: {strategy_file}")
+                        end_event_process(success=False, summary=f"策略文件不存在: {strategy_file}")
                     return {
                         "success": False,
                         "message": f"策略文件不存在: {strategy_file}",
@@ -1577,10 +1577,10 @@ class MyPortfolioStrategy(StrategyTemplate):
                     start_time = time.time()
                     # 使用统一便捷接口替代本地stage_logger
 
-                    # ✅ 开始AI日志流程（实际回测执行）
+                    # ✅ 开始事件日志流程（实际回测执行）
                     ai_log_started_backtest = False
                     try:
-                        ai_log_file = start_ai_process(
+                        ai_log_file = start_event_process(
                             "backtest_run",
                             metadata={
                                 "task_id": task_id,
@@ -1590,12 +1590,12 @@ class MyPortfolioStrategy(StrategyTemplate):
                         )
                         ai_log_started_backtest = True
                         self.logger.info(
-                            f"AI日志文件（回测执行）: {ai_log_file}",
+                            f"事件日志文件（回测执行）: {ai_log_file}",
                             extra={"log_type": "SYSTEM", "scenario": "backtest_execution"},
                         )
                     except Exception as e:
                         self.logger.warning(
-                            f"启动AI日志流程失败: {e}",
+                            f"启动事件日志流程失败: {e}",
                             extra={"log_type": "SYSTEM", "scenario": "backtest_execution"},
                         )
 
@@ -1931,9 +1931,9 @@ class MyPortfolioStrategy(StrategyTemplate):
                             if strategy_module_name in sys.modules:
                                 del sys.modules[strategy_module_name]
 
-                            # ✅ 结束AI日志流程（成功）
+                            # ✅ 结束事件日志流程（成功）
                             if ai_log_started_backtest:
-                                end_ai_process(
+                                end_event_process(
                                     success=True,
                                     summary=f"回测完成 - 总收益: {total_return:.2%}, 夏普比率: {sharpe_ratio:.2f}, 最大回撤: {max_drawdown:.2%}, 交易次数: {total_trades}",
                                 )
@@ -1971,9 +1971,9 @@ class MyPortfolioStrategy(StrategyTemplate):
                                 ("failed", 0, datetime.now().isoformat(), task_id),
                             )
 
-                            # ✅ 结束AI日志流程（导入失败）
+                            # ✅ 结束事件日志流程（导入失败）
                             if ai_log_started_backtest:
-                                end_ai_process(
+                                end_event_process(
                                     success=False, summary=f"vnpy_ctabacktester包未安装: {str(e)}"
                                 )
 
@@ -2014,14 +2014,14 @@ class MyPortfolioStrategy(StrategyTemplate):
                             ("failed", 0, datetime.now().isoformat(), task_id),
                         )
 
-                        # ✅ 结束AI日志流程（异常）
+                        # ✅ 结束事件日志流程（异常）
                         if ai_log_started_backtest:
-                            end_ai_process(success=False, summary=f"回测失败: {str(e)}")
+                            end_event_process(success=False, summary=f"回测失败: {str(e)}")
                     finally:
-                        # ✅ 确保AI日志流程结束（兜底）
+                        # ✅ 确保事件日志流程结束（兜底）
                         if ai_log_started_backtest:
                             try:
-                                end_ai_process(success=False, summary="回测流程异常结束")
+                                end_event_process(success=False, summary="回测流程异常结束")
                             except Exception:
                                 pass
 
@@ -2054,7 +2054,7 @@ class MyPortfolioStrategy(StrategyTemplate):
             except Exception as e:
                 self.log_operation_failure("启动回测任务", e, task_id=task_id)
                 if ai_log_started:
-                    end_ai_process(success=False, summary=f"回测启动失败: {str(e)}")
+                    end_event_process(success=False, summary=f"回测启动失败: {str(e)}")
                 return {
                     "success": False,
                     "message": f"回测启动失败: {str(e)}",
@@ -2065,7 +2065,7 @@ class MyPortfolioStrategy(StrategyTemplate):
             # 注意：ai_log_started在最外层try中定义，这里可以安全访问
             if ai_log_started:
                 try:
-                    end_ai_process(success=False, summary=f"启动回测异常: {str(e)}")
+                    end_event_process(success=False, summary=f"启动回测异常: {str(e)}")
                 except Exception:
                     pass
             return {"success": False, "message": str(e)}

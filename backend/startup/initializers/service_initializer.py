@@ -135,10 +135,10 @@ class ServiceInitializer:
         Returns:
             bool: 是否成功初始化核心服务
         """
-        # 🎯 启动流程日志埋点：使用ai_log_process上下文管理器
+        # 🎯 启动流程日志埋点：使用事件日志流程上下文管理器
         try:
             from backend.infrastructure.system_vnpy.logging_system import (
-                ai_log_process,
+                event_log_process,
                 get_logging_hub,
             )
             from contextlib import nullcontext
@@ -147,7 +147,7 @@ class ServiceInitializer:
             if hub:
                 hub.set_stage("startup")
             context_manager = (
-                ai_log_process("application_startup", {"mode": "fast_startup"})
+                event_log_process("application_startup", {"mode": "fast_startup"})
                 if hub
                 else nullcontext()
             )
@@ -160,7 +160,7 @@ class ServiceInitializer:
         stage_logger = logging.getLogger("startup.stage")
         scenario = "application_startup"
 
-        # 使用ai_log_process创建独立日志文件
+        # 使用事件日志流程创建独立日志文件
         try:
             with context_manager:
                 # 阶段节点日志（输出到Terminal）
@@ -302,16 +302,20 @@ class ServiceInitializer:
         Returns:
             Dict[str, bool]: 服务名称到初始化结果的映射
         """
-        # 🎯 启动流程日志埋点：使用ai_log_process上下文管理器
+        # 🎯 启动流程日志埋点：使用事件日志流程上下文管理器
         try:
             from backend.infrastructure.system_vnpy.logging_system import (
-                ai_log_process,
+                event_log_process,
                 get_logging_hub,
             )
             from contextlib import nullcontext
 
             hub = get_logging_hub()
-            context_manager = ai_log_process("optional_services_init") if hub else nullcontext()
+            context_manager = (
+                event_log_process("application_startup", {"phase": "optional_services_init"})
+                if hub
+                else nullcontext()
+            )
         except ImportError:
             from contextlib import nullcontext
 
@@ -504,10 +508,10 @@ class ServiceInitializer:
         Returns:
             bool: 是否成功初始化（允许部分失败）
         """
-        # 🎯 启动流程日志埋点：使用ai_log_process上下文管理器
+        # 🎯 启动流程日志埋点：使用事件日志流程上下文管理器
         try:
             from backend.infrastructure.system_vnpy.logging_system import (
-                ai_log_process,
+                event_log_process,
                 get_logging_hub,
             )
             from contextlib import nullcontext
@@ -516,7 +520,7 @@ class ServiceInitializer:
             if hub:
                 hub.set_stage("startup")
             context_manager = (
-                ai_log_process("application_startup", {"mode": "full_startup"})
+                event_log_process("application_startup", {"mode": "full_startup"})
                 if hub
                 else nullcontext()
             )

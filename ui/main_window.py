@@ -1239,14 +1239,14 @@ class MainWindow(QMainWindow, LoggerMixin):
                     "❌ 分支C业务服务初始化失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
                 )
 
-            # 结束AI日志流程
+            # 结束事件日志流程
             try:
                 from backend.infrastructure.system_vnpy.logging_system import end_event_process
 
-                end_ai_process()
-                self.logger.info("✅ AI日志流程已结束")
+                end_event_process()
+                self.logger.info("✅ 事件日志流程已结束")
             except Exception as e:
-                self.logger.warning(f"AI日志流程结束失败: {e}", extra={"log_type": "SYSTEM"})
+                self.logger.warning(f"事件日志流程结束失败: {e}", extra={"log_type": "SYSTEM"})
 
             # 更新状态栏
             if hasattr(self, "status_bar") and self.status_bar:

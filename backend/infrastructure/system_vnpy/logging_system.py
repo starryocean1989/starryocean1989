@@ -148,6 +148,7 @@ SUPPORTED_EVENTS = {
     "refresh_symbol_list",
     "data_download",
     "manual_data_scan",
+    "backtest_run",
 }
 
 

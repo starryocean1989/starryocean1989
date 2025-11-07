@@ -6826,15 +6826,15 @@ class SystemManager(BaseWidget, LoggerMixin):
 
                 start_time = time.time()
 
-                # 使用ai_log_process上下文管理器
+                # 使用事件日志流程上下文管理器
                 try:
                     from backend.infrastructure.system_vnpy.logging_system import (
-                        ai_log_process,
+                        event_log_process,
                     )
 
                     stage_logger = logging.getLogger("task.tdx_data_read")
 
-                    with ai_log_process(
+                    with event_log_process(
                         "tdx_data_read",
                         {
                             "data_types": data_types,
@@ -6848,7 +6848,7 @@ class SystemManager(BaseWidget, LoggerMixin):
                             extra={"log_type": "STAGE_NODE", "scenario": "tdx_data_read"},
                         )
 
-                        # DEBUG日志（只写入AI日志文件）
+                        # DEBUG日志（只写入事件日志文件）
                         self.logger.debug(
                             "[TDX-READ] 开始读取TDX数据",
                             extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
@@ -7026,13 +7026,13 @@ class SystemManager(BaseWidget, LoggerMixin):
     def _test_bandwidth_full(self):
         """测试服务商带宽（完整测试）."""
         try:
-            # 导入AI日志流程管理器
+            # 导入事件日志流程管理器
             try:
                 from backend.infrastructure.system_vnpy.logging_system import (
-                    ai_log_process,
+                    event_log_process,
                 )
             except ImportError:
-                ai_log_process = None
+                event_log_process = None
 
             self.test_bandwidth_btn.setEnabled(False)
             self.test_bandwidth_btn.setText("测试中...")
@@ -7047,10 +7047,10 @@ class SystemManager(BaseWidget, LoggerMixin):
 
             def run_test():
                 try:
-                    # 使用ai_log_process包裹手动测速流程
-                    if ai_log_process:
+                    # 使用事件日志流程包裹手动测速流程
+                    if event_log_process:
                         stage_logger = logging.getLogger("task.manual_speedtest")
-                        with ai_log_process(
+                        with event_log_process(
                             "manual_speedtest",
                             {
                                 "test_type": "full_bandwidth",
@@ -7063,7 +7063,7 @@ class SystemManager(BaseWidget, LoggerMixin):
                                 extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
                             )
 
-                            # 详细日志（只写入AI日志文件）
+                            # 详细日志（只写入事件日志文件）
                             self.logger.debug(
                                 "[MANUAL-SPEEDTEST] 开始手动测速流程: 测试类型=full_bandwidth",
                                 extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},

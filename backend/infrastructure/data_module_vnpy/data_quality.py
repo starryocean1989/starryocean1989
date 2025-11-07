@@ -322,7 +322,7 @@ class DataSensor:
         try:
             from backend.infrastructure.system_vnpy.logging_system import (
                 get_logging_hub,
-                ai_log_process,
+                event_log_process,
             )
 
             hub = get_logging_hub()
@@ -331,10 +331,10 @@ class DataSensor:
 
         stage_logger = logging.getLogger("task.manual_data_scan.stage")
 
-        # 使用ai_log_process创建独立日志文件
+        # 使用事件日志流程创建独立日志文件
         # 注意：场景信息通过日志记录的extra参数传递，无需全局设置
         try:
-            context_manager = ai_log_process("manual_data_scan") if hub else suppress()
+            context_manager = event_log_process("manual_data_scan") if hub else suppress()
         except Exception:
             context_manager = suppress()
 

@@ -59,10 +59,10 @@ class BackendInitializerWorker(QObject):
         5. 策略服务（StrategyCenterService, AIAssistantService）
         6. 辅助服务（PortfolioService, MarketBoardService, SystemManagerService）
         """
-        # 🎯 启动流程日志埋点：使用ai_log_process上下文管理器
+        # 🎯 启动流程日志埋点：使用事件日志流程上下文管理器
         try:
             from backend.infrastructure.system_vnpy.logging_system import (
-                ai_log_process,
+                event_log_process,
                 get_logging_hub,
             )
             hub = get_logging_hub()
@@ -75,8 +75,8 @@ class BackendInitializerWorker(QObject):
         stage_logger = logging.getLogger("startup.stage")
 
         backend_init_start = time.time()
-        # 使用ai_log_process创建独立日志文件
-        context_manager = ai_log_process("backend_init", {"mode": "parallel"}) if hub else __import__("contextlib").nullcontext()
+        # 使用事件日志流程创建独立日志文件（统一到application_startup事件）
+        context_manager = event_log_process("application_startup", {"mode": "parallel"}) if hub else __import__("contextlib").nullcontext()
         try:
             with context_manager:
                 self.logger.debug("=" * 70)

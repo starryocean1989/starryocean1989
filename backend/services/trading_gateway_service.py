@@ -1269,9 +1269,9 @@ class TradingGatewayService(BaseService, LoggerMixin):
                 return precondition_check
 
             # 初始化并启动策略
-        import time
+            import time
 
-        strategy_start_time = time.time()
+            strategy_start_time = time.time()
 
             try:
                 # 阶段节点：策略执行开始

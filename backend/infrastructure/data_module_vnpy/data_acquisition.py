@@ -4699,15 +4699,12 @@ def _download_ipo_dates_single(
     symbols: List[str],
     progress_callback: Optional[Callable] = None,
 ) -> Dict[str, Optional[date]]:
-    """Download IPO dates using a single process with async concurrency."""
-
-    Args:
-        symbols: Security codes to query.
-        progress_callback: Optional progress reporting callback.
-
-    Returns:
-        Mapping of symbol to IPO date.
-    """
+    # 使用单进程异步并发方式下载IPO日期
+    # Args:
+    #     symbols: 需要查询的品种代码列表
+    #     progress_callback: 可选的进度回调
+    # Returns:
+    #     品种到IPO日期的映射
     results = {}
     total = len(symbols)
 
@@ -4762,7 +4759,7 @@ def _download_ipo_dates_single(
         )
 
         async def download_with_retry_pool():
-            """使用RetryConnectionPool并发下载"""
+            # 使用RetryConnectionPool并发下载
             # 创建重试连接池
             retry_pool = RetryConnectionPool(
                 server_pool_manager=pool_mgr,
@@ -4781,12 +4778,12 @@ def _download_ipo_dates_single(
             for symbol in symbols:
                 # 为每个品种创建协程任务(使用默认参数避免闭包问题)
                 async def fetch_symbol(sym: str = symbol):
-                    """Fetch IPO date for a single symbol via RetryConnectionPool."""
+                    # 通过 RetryConnectionPool 获取单个品种的 IPO 日期
                     # 每个品种独立维护已尝试服务器列表
                     attempted_servers = []
 
                     async def fetch_task(api):
-                        """Task executed within the retry pool to fetch IPO date."""
+                        # 在重试池中执行的单次 IPO 日期抓取任务
                         return await _fetch_single_ipo_date_with_pool(sym, api)
 
                     # 使用RetryConnectionPool执行带重试的下载
@@ -4884,17 +4881,14 @@ def _download_ipo_dates_async(
     shared_retry_pool=None,
     max_concurrent: Optional[int] = None,
 ) -> Dict[str, Optional[date]]:
-    """异步下载IPO日期(使用共享连接池和并发限制)
-
-    Args:
-        symbols: 品种代码列表
-        progress_callback: 进度回调函数
-        shared_retry_pool: 共享的RetryConnectionPool实例
-        max_concurrent: 最大并发数限制(None=无限制)
-
-    Returns:
-        {symbol: ipo_date}
-    """
+    # 异步下载IPO日期(使用共享连接池和并发限制)
+    # Args:
+    #     symbols: 品种代码列表
+    #     progress_callback: 进度回调函数
+    #     shared_retry_pool: 共享的RetryConnectionPool实例
+    #     max_concurrent: 最大并发数限制(None=无限制)
+    # Returns:
+    #     {symbol: ipo_date}
     results = {}
     total = len(symbols)
 
@@ -4916,7 +4910,7 @@ def _download_ipo_dates_async(
     try:
 
         async def download_with_shared_pool():
-            """使用共享连接池并发下载"""
+            # 使用共享连接池并发下载
             # 使用共享连接池
             retry_pool = shared_retry_pool
 
@@ -4928,7 +4922,7 @@ def _download_ipo_dates_async(
 
             # 创建所有协程任务(每个品种一个协程)
             async def fetch_symbol_with_limit(sym: str):
-                """获取单个品种的IPO日期(带并发限制)"""
+                # 获取单个品种的IPO日期(带并发限制)
                 # 如果设置了并发限制,先获取信号量
                 if semaphore:
                     async with semaphore:
@@ -5094,20 +5088,17 @@ def _download_ipo_dates_async(
 async def _fetch_ipo_date_with_retry_pool(
     symbol: str, retry_pool, scenario: str = "refresh_symbol_list"
 ) -> Tuple[str, Optional[date]]:
-    """使用RetryConnectionPool获取单个品种的IPO日期(异步函数)
-
-    Args:
-        symbol: 品种代码
-        retry_pool: RetryConnectionPool实例
-        scenario: 场景标识
-
-    Returns:
-        (symbol, ipo_date) 元组
-    """
+    # 使用RetryConnectionPool获取单个品种的IPO日期(异步函数)
+    # Args:
+    #     symbol: 品种代码
+    #     retry_pool: RetryConnectionPool实例
+    #     scenario: 场景标识
+    # Returns:
+    #     (symbol, ipo_date) 元组
     attempted_servers = []
 
     async def fetch_task(api):
-        """Task executed within the retry pool to fetch IPO date."""
+        # 在重试池内执行的 IPO 日期获取任务
 
         return await _fetch_single_ipo_date_with_pool(symbol, api)
 
@@ -5125,7 +5116,7 @@ def _download_ipo_dates_multiprocess(
     progress_callback: Optional[Callable] = None,
     max_workers: int = 4,
 ) -> Dict[str, Optional[date]]:
-    """Download IPO dates using a multiprocessing worker pool."""
+    # 使用多进程池批量下载IPO日期
     results = {}
 
     # 分批
@@ -5160,7 +5151,7 @@ def _download_ipo_dates_multiprocess(
 
 
 def _download_ipo_batch(symbols: List[str]) -> Dict[str, Optional[date]]:
-    """Download a batch of IPO dates via tdx_asyncio batch_get_ipo_dates."""
+    # 借助 tdx_asyncio.batch_get_ipo_dates 批量查询 IPO 日期
     if not symbols:
         return {}
 
@@ -5179,15 +5170,12 @@ def _download_ipo_batch(symbols: List[str]) -> Dict[str, Optional[date]]:
 
 
 async def _fetch_single_ipo_date_with_pool(symbol: str, api: AsyncTdxHq_API) -> Optional[date]:
-    """使用连接池获取单个品种IPO日期(协程函数)
-
-    Args:
-        symbol: 品种代码
-        api: TDX API连接(从连接池获取)
-
-    Returns:
-        IPO日期
-    """
+    # 使用连接池获取单个品种IPO日期(协程函数)
+    # Args:
+    #     symbol: 品种代码
+    #     api: TDX API连接(从连接池获取)
+    # Returns:
+    #     IPO日期
     # 使用新的封装函数(自动处理市场代码、错误处理)
     return await get_ipo_date_safe(
         api=api,

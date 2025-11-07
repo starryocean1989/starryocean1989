@@ -4316,11 +4316,11 @@ class BandwidthMonitor:
                 extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
             )
 
-            # 使用AI日志流程上下文管理器，生成独立AI日志文件
-            # 添加异常处理，确保即使AI日志初始化失败也不影响测试
+            # 使用事件日志流程上下文管理器，生成独立事件日志文件
+            # 添加异常处理，确保即使事件日志初始化失败也不影响测试
             stage_logger = logging.getLogger("task.manual_speedtest.stage")
 
-            # TODO: 使用AI日志流程上下文管理器（当前不可用）
+            # TODO: 使用事件日志流程上下文管理器（当前不可用）
             # 执行带宽测试（无AI日志）
             # 阶段节点日志（输出到Terminal）
             stage_logger.info(

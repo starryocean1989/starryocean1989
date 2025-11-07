@@ -14,6 +14,12 @@ project_root = Path(__file__).parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
+# 配置基础日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(levelname)s - %(message)s'
+)
+
 # 统一日志
 log = logging.getLogger(__name__)
 
@@ -177,21 +183,17 @@ def test_logging_system():
     log.info("=" * 70, extra={"log_type": "STAGE_NODE"})
     
     try:
-        from backend.startup.startup_logging.startup_logger import (
-            StartupLogger,
-            OrderedLogQueue,
+        from backend.infrastructure.system_vnpy.logging_system import (
+            get_logging_hub,
+            LoggingHub,
         )
 
-        # 测试StartupLogger
-        logger = StartupLogger()
-        log.info("✅ StartupLogger 创建成功", extra={"log_type": "STAGE_NODE"})
+        # 测试LoggingHub
+        hub = get_logging_hub()
+        log.info("✅ LoggingHub 获取成功", extra={"log_type": "STAGE_NODE"})
 
-        # 测试OrderedLogQueue
-        queue = OrderedLogQueue(max_wait_seconds=30)
-        log.info("✅ OrderedLogQueue 创建成功", extra={"log_type": "STAGE_NODE"})
-
-        # 🔧 优化：StartupAILogHandler已删除，AI日志统一通过LoggingHub的AILogFileHandler处理
-        log.info("✅ StartupAILogHandler已移除，AI日志由LoggingHub统一处理", extra={"log_type": "STAGE_NODE"})
+        # 说明: 启动日志功能已整合到LoggingHub中
+        log.info("✅ 启动日志功能已整合到统一日志系统(LoggingHub)", extra={"log_type": "STAGE_NODE"})
         
         return True
     except Exception as e:
