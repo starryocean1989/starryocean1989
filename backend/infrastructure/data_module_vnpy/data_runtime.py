@@ -34,10 +34,12 @@ try:
     from backend.infrastructure.native.native_dataframe_ops import (
         DATAFRAME_OPS_AVAILABLE,
         dataframe_to_records as native_df_to_records,
+        validate_numeric as native_validate_numeric,
     )
 except ImportError:
     DATAFRAME_OPS_AVAILABLE = False
     native_df_to_records = None  # type: ignore
+    native_validate_numeric = None  # type: ignore
 
 # 导入VnPy相关
 try:
@@ -239,10 +241,26 @@ class UnifiedDataManager:
                 "open_interest",
             ]
 
-            for field in numeric_fields:
-                if field in records_df.columns:
-                    records_df[field] = pd.to_numeric(records_df[field], errors="coerce")
-                    records_df[field] = records_df[field].fillna(0.0)
+            if native_validate_numeric is not None:
+                try:
+                    records_df = native_validate_numeric(records_df, numeric_fields)
+                except Exception:
+                    logger.debug(
+                        "[RUNTIME] validate_numeric 调用失败，使用pandas回退",
+                        exc_info=True,
+                        extra={"log_type": "SYSTEM"},
+                    )
+                    for field in numeric_fields:
+                        if field in records_df.columns:
+                            numeric_array = pd.to_numeric(records_df[field], errors="coerce")
+                            numeric_series = pd.Series(numeric_array, index=records_df.index)
+                            records_df[field] = numeric_series.fillna(0.0)
+            else:
+                for field in numeric_fields:
+                    if field in records_df.columns:
+                        numeric_array = pd.to_numeric(records_df[field], errors="coerce")
+                        numeric_series = pd.Series(numeric_array, index=records_df.index)
+                        records_df[field] = numeric_series.fillna(0.0)
 
             if DATAFRAME_OPS_AVAILABLE and native_df_to_records is not None:
                 return native_df_to_records(records_df)

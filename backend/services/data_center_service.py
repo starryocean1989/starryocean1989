@@ -23,6 +23,9 @@ from backend.infrastructure.system_vnpy.logging_system import (
     get_logging_hub,
     stage_node,
     alert,
+    event_log_process,
+    log_progress,
+    notify_complete,
 )
 from backend.infrastructure.native.native_serialization import build_dataframe_payload
 
@@ -605,7 +608,6 @@ class DataCenterService(BaseService, LoggerMixin):
             Dict: { success, stats, message }
         """
         import time
-        import logging
         from contextlib import suppress
 
         start_time = time.time()
@@ -2196,7 +2198,6 @@ class DataCenterService(BaseService, LoggerMixin):
         download_start_time = time.time()
 
         # 设置日志上下文
-        import logging
         from contextlib import suppress
 
         try:
@@ -2211,7 +2212,7 @@ class DataCenterService(BaseService, LoggerMixin):
         except ImportError:
             hub = None
 
-        stage_logger = logging.getLogger("task.data_download.stage")
+        # 统一改用便捷API输出阶段日志与告警
 
         # 使用ai_log_process创建独立日志文件
         download_type = "修复下载" if symbols else "增量下载"
@@ -2223,9 +2224,10 @@ class DataCenterService(BaseService, LoggerMixin):
         with context_manager:
             try:
                 # 阶段节点（输出到Terminal）
-                stage_logger.info(
+                stage_node(
+                    "data_center",
                     f"📍 数据下载开始: {download_type}, 开始日期={start_date}",
-                    extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                    scenario="data_download",
                 )
 
                 self.logger.debug(
@@ -2248,10 +2250,12 @@ class DataCenterService(BaseService, LoggerMixin):
                         "[DOWNLOAD-SERVICE] ChinaStockEngine状态: None",
                         extra={"log_type": "SYSTEM", "scenario": "data_download"},
                     )
-                    # 阶段节点（输出到Terminal）
-                    stage_logger.error(
+                    # 告警（输出到Terminal）
+                    alert(
+                        "ERROR",
+                        "data_center",
                         "❌ 数据下载失败: 中国股票引擎不可用",
-                        extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                        scenario="data_download",
                     )
                     return {
                         "success": False,
@@ -2282,10 +2286,12 @@ class DataCenterService(BaseService, LoggerMixin):
                         f"[DOWNLOAD-SERVICE] 异常类型: {type(e).__name__}, 异常详情: {str(e)}",
                         extra={"log_type": "SYSTEM", "scenario": "data_download"},
                     )
-                    # 阶段节点（输出到Terminal）
-                    stage_logger.error(
+                    # 告警（输出到Terminal）
+                    alert(
+                        "ERROR",
+                        "data_center",
                         f"❌ 数据下载失败: 日期格式错误 - {str(e)}",
-                        extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                        scenario="data_download",
                     )
                     return {
                         "success": False,
@@ -2304,10 +2310,12 @@ class DataCenterService(BaseService, LoggerMixin):
                         f"[DOWNLOAD-SERVICE] ⚠️ 日期超出范围: {days_diff}天前（最多支持100天）",
                         extra={"log_type": "ALERT", "scenario": "data_download"},
                     )
-                    # 阶段节点（输出到Terminal）
-                    stage_logger.warning(
+                    # 告警（输出到Terminal）
+                    alert(
+                        "WARNING",
+                        "data_center",
                         f"⚠️ 数据下载失败: 日期超出范围 - {days_diff}天前（最多支持100天）",
-                        extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                        scenario="data_download",
                     )
                     return {
                         "success": False,
@@ -2319,10 +2327,12 @@ class DataCenterService(BaseService, LoggerMixin):
                         f"[DOWNLOAD-SERVICE] ⚠️ 开始日期不能晚于今天: {start_dt} > {today}",
                         extra={"log_type": "ALERT", "scenario": "data_download"},
                     )
-                    # 阶段节点（输出到Terminal）
-                    stage_logger.warning(
+                    # 告警（输出到Terminal）
+                    alert(
+                        "WARNING",
+                        "data_center",
                         "⚠️ 数据下载失败: 开始日期不能晚于今天",
-                        extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                        scenario="data_download",
                     )
                     return {
                         "success": False,
@@ -2360,10 +2370,12 @@ class DataCenterService(BaseService, LoggerMixin):
                         "[DOWNLOAD-SERVICE] 品种列表详情: symbols为空或None",
                         extra={"log_type": "SYSTEM", "scenario": "data_download"},
                     )
-                    # 阶段节点（输出到Terminal）
-                    stage_logger.warning(
+                    # 告警（输出到Terminal）
+                    alert(
+                        "WARNING",
+                        "data_center",
                         f"⚠️ 数据下载失败: {error_msg}",
-                        extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                        scenario="data_download",
                     )
                     return {
                         "success": False,
@@ -2415,10 +2427,12 @@ class DataCenterService(BaseService, LoggerMixin):
                         "[DOWNLOAD-SERVICE] 启动失败详情: started=False",
                         extra={"log_type": "SYSTEM", "scenario": "data_download"},
                     )
-                    # 阶段节点（输出到Terminal）
-                    stage_logger.error(
+                    # 告警（输出到Terminal）
+                    alert(
+                        "ERROR",
+                        "data_center",
                         "❌ 数据下载失败: 下载启动失败，已有任务在运行或启动失败",
-                        extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                        scenario="data_download",
                     )
                     return {
                         "success": False,
@@ -2554,9 +2568,10 @@ class DataCenterService(BaseService, LoggerMixin):
                                         f"total={total}, 耗时={download_elapsed:.2f}s",
                                         extra={"log_type": "SYSTEM", "scenario": "data_download"},
                                     )
-                                    logger_download.info(
+                                    stage_node(
+                                        "data_center.download",
                                         f">>> [SERVICE] ✓ 下载已完成 ({completed}/{total})",
-                                        extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                                        scenario="data_download",
                                     )
                                     break
                                 elif total > 0 and completed < total:
@@ -2583,17 +2598,20 @@ class DataCenterService(BaseService, LoggerMixin):
                                                 "scenario": "data_download",
                                             },
                                         )
-                                        logger_download.warning(
+                                        alert(
+                                            "WARNING",
+                                            "data_center",
                                             ">>> [SERVICE] ⚠️ 下载初始化超过30秒，可能存在问题",
-                                            extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                                            scenario="data_download",
                                         )
                                     time.sleep(1.0)
                             else:
                                 # 正常下载中，每20秒输出一次状态确认
                                 if current_time - last_log_time >= 20:
-                                    logger_download.info(
+                                    stage_node(
+                                        "data_center.download",
                                         f">>> [SERVICE] 下载进行中: {pct}% ({completed}/{total})",
-                                        extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                                        scenario="data_download",
                                     )
                                 time.sleep(0.5)
                         else:
@@ -2667,9 +2685,11 @@ class DataCenterService(BaseService, LoggerMixin):
                         "增量数据下载", Exception(error_msg), task_id=task_id
                     )
                     # 阶段节点（输出到Terminal）
-                    stage_logger.error(
+                    alert(
+                        "ERROR",
+                        "data_center",
                         f"❌ 数据下载失败: {error_msg}",
-                        extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                        scenario="data_download",
                     )
                     return {
                         "success": False,
@@ -2687,9 +2707,10 @@ class DataCenterService(BaseService, LoggerMixin):
                 self.log_operation_success("增量数据下载", task_id=task_id, days=days_diff)
 
                 # 阶段节点（输出到Terminal）
-                stage_logger.info(
+                stage_node(
+                    "data_center",
                     f"✅ 数据下载完成: 耗时={download_duration/1000:.2f}s, 成功={task.get('success_count', 0)}, 失败={task.get('failed_count', 0)}",
-                    extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                    scenario="data_download",
                 )
 
                 self.logger.info(
@@ -2724,10 +2745,12 @@ class DataCenterService(BaseService, LoggerMixin):
                 self.log_performance("增量数据下载", download_duration, False, {"error": str(e)})
                 self.log_operation_failure("增量数据下载", e, start_date=start_date)
 
-                # 阶段节点（输出到Terminal）
-                stage_logger.error(
+                # 告警（输出到Terminal）
+                alert(
+                    "ERROR",
+                    "data_center",
                     f"❌ 数据下载异常: {e}, 耗时={download_duration/1000:.2f}s",
-                    extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                    scenario="data_download",
                 )
 
                 return {
@@ -2752,33 +2775,25 @@ class DataCenterService(BaseService, LoggerMixin):
 
         start_time = time.time()
 
-        # 设置日志上下文
-        try:
-            from backend.infrastructure.system_vnpy.logging_system import (
-                get_logging_hub,
-                ai_log_process,
-            )
-
-            hub = get_logging_hub()
-        except ImportError:
-            hub = None
-
-        stage_logger = logging.getLogger("task.data_download.stage")
-
-        # 使用ai_log_process创建独立日志文件
-        try:
-            context_manager = (
-                ai_log_process("data_download", {"start_date": start_date}) if hub else suppress()
-            )
-        except Exception:
-            context_manager = suppress()
+        # 设置统一事件日志上下文（创建独立事件日志文件）
+        context_manager = event_log_process("data_download", {"start_date": start_date})
 
         with context_manager:
             try:
                 # 阶段节点（输出到Terminal）
-                stage_logger.info(
+                stage_node(
+                    "data_center",
                     f"📍 数据下载开始: 开始日期={start_date}",
-                    extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                    scenario="data_download",
+                )
+
+                # 统一进度日志（初始）
+                log_progress(
+                    "data_center.download",
+                    "增量下载任务创建并准备启动",
+                    0.0,
+                    scenario="data_download",
+                    start_date=start_date,
                 )
 
                 # DEBUG/INFO日志（只写入AI日志文件）
@@ -2806,9 +2821,11 @@ class DataCenterService(BaseService, LoggerMixin):
                         "[DATA-DOWNLOAD-SERVICE] 🔥 data_module_vnpy不可用，数据下载无法启动",
                         extra={"log_type": "ALERT", "scenario": "data_download"},
                     )
-                    stage_logger.error(
+                    alert(
+                        "ERROR",
+                        "data_center",
                         "❌ data_module_vnpy不可用",
-                        extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                        scenario="data_download",
                     )
                     return {
                         "success": False,
@@ -2839,9 +2856,11 @@ class DataCenterService(BaseService, LoggerMixin):
                         exc_info=True,
                         extra={"log_type": "ALERT", "scenario": "data_download"},
                     )
-                    stage_logger.error(
+                    alert(
+                        "ERROR",
+                        "data_center",
                         f"❌ 日期格式错误: {e}",
-                        extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                        scenario="data_download",
                     )
                     return {
                         "success": False,
@@ -2871,9 +2890,11 @@ class DataCenterService(BaseService, LoggerMixin):
                         f"[DATA-DOWNLOAD-SERVICE] ❌ 日期范围超过限制，无法启动下载: {days_diff}天",
                         extra={"log_type": "ALERT", "scenario": "data_download"},
                     )
-                    stage_logger.warning(
+                    alert(
+                        "WARNING",
+                        "data_center",
                         f"⚠️ 日期范围超过100天限制: {days_diff}天",
-                        extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                        scenario="data_download",
                     )
                     return {
                         "success": False,
@@ -2894,9 +2915,11 @@ class DataCenterService(BaseService, LoggerMixin):
                         "[DATA-DOWNLOAD-SERVICE] ❌ 开始日期不能晚于今天，无法启动下载",
                         extra={"log_type": "ALERT", "scenario": "data_download"},
                     )
-                    stage_logger.warning(
+                    alert(
+                        "WARNING",
+                        "data_center",
                         "⚠️ 开始日期不能晚于今天",
-                        extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                        scenario="data_download",
                     )
                     return {
                         "success": False,
@@ -2939,9 +2962,11 @@ class DataCenterService(BaseService, LoggerMixin):
                             "[DATA-DOWNLOAD-SERVICE] ❌ 下载失败，可能原因：本地品种缓存不存在或为空",
                             extra={"log_type": "ALERT", "scenario": "data_download"},
                         )
-                        stage_logger.warning(
+                        alert(
+                            "WARNING",
+                            "data_center",
                             "⚠️ 下载失败: 本地品种缓存不存在或为空",
-                            extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                            scenario="data_download",
                         )
                         return {
                             "success": False,
@@ -2969,6 +2994,15 @@ class DataCenterService(BaseService, LoggerMixin):
                     # ✨ 发送数据下载完成事件（支持跨模块通知）
                     self._emit_download_complete_event(task_id, "incremental", start_date)
 
+                    # 统一进度日志（任务已提交到引擎）
+                    log_progress(
+                        "data_center.download",
+                        "增量下载任务已提交到引擎",
+                        0.01,
+                        scenario="data_download",
+                        start_date=start_date,
+                    )
+
                     total_elapsed = time.time() - start_time
                     self.logger.debug(
                         f"[DATA-DOWNLOAD-SERVICE] 增量下载已启动: task_id={task_id}, 下载耗时={download_elapsed:.2f}s, 总耗时={total_elapsed:.2f}s",
@@ -2978,9 +3012,10 @@ class DataCenterService(BaseService, LoggerMixin):
                         f"[DATA-DOWNLOAD-SERVICE] ✅ 增量下载已启动: task_id={task_id}, 耗时={total_elapsed:.2f}s",
                         extra={"log_type": "SYSTEM", "scenario": "data_download"},
                     )
-                    stage_logger.info(
+                    stage_node(
+                        "data_center",
                         f"✅ 数据下载已启动: task_id={task_id}, 耗时={total_elapsed:.2f}s",
-                        extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                        scenario="data_download",
                     )
 
                     return {
@@ -3008,9 +3043,11 @@ class DataCenterService(BaseService, LoggerMixin):
                         f"[DATA-DOWNLOAD-SERVICE] 异常类型: {type(e).__name__}, 异常详情: {str(e)}",
                         extra={"log_type": "SYSTEM", "scenario": "data_download"},
                     )
-                    stage_logger.error(
+                    alert(
+                        "ERROR",
+                        "data_center",
                         f"❌ 数据下载启动失败: {e}, 耗时={total_elapsed:.2f}s",
-                        extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                        scenario="data_download",
                     )
                     return {
                         "success": False,
@@ -3025,9 +3062,11 @@ class DataCenterService(BaseService, LoggerMixin):
                     exc_info=True,
                     extra={"log_type": "ALERT", "scenario": "data_download"},
                 )
-                stage_logger.error(
+                alert(
+                    "ERROR",
+                    "data_center",
                     f"❌ 数据下载流程异常: {e}, 耗时={total_elapsed:.2f}s",
-                    extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
+                    scenario="data_download",
                 )
                 self._log_error("启动增量下载", e, start_date=start_date)
                 return {
@@ -3970,6 +4009,16 @@ class DataCenterService(BaseService, LoggerMixin):
                 f"[SCAN-SERVICE] 手动触发数据质量扫描（后台执行）: force_refresh={force_refresh}",
                 extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
             )
+            # 统一进度日志：入口触发
+            try:
+                log_progress(
+                    "开始触发数据质量扫描",
+                    percent=0,
+                    scenario="manual_data_scan",
+                    meta={"force_refresh": force_refresh},
+                )
+            except Exception:
+                pass
 
             if not self.china_stock_engine:
                 self.logger.debug(
@@ -4001,6 +4050,15 @@ class DataCenterService(BaseService, LoggerMixin):
                 "[SCAN-SERVICE] ✅ 数据质量扫描已触发（后台执行）",
                 extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
             )
+            try:
+                log_progress(
+                    "已触发数据质量扫描（后台执行）",
+                    percent=5,
+                    scenario="manual_data_scan",
+                    meta={"thread_id": thread.ident},
+                )
+            except Exception:
+                pass
             return True
 
         except Exception as e:
@@ -4031,38 +4089,29 @@ class DataCenterService(BaseService, LoggerMixin):
 
         start_time = time.time()
 
-        # 设置日志上下文
+        # 使用事件日志上下文，创建独立日志文件并绑定元信息
         try:
-            from backend.infrastructure.system_vnpy.logging_system import (
-                get_logging_hub,
-                ai_log_process,
-            )
-
-            hub = get_logging_hub()
-        except ImportError:
-            hub = None
-
-        stage_logger = logging.getLogger("task.manual_data_scan.stage")
-
-        # 使用ai_log_process创建独立日志文件
-        try:
-            context_manager = (
-                ai_log_process(
-                    "manual_data_scan",
-                    {"force_refresh": force_refresh, "scan_type": "quality_scan"},
-                )
-                if hub
-                else suppress()
+            context_manager = event_log_process(
+                "manual_data_scan",
+                {"force_refresh": force_refresh, "scan_type": "quality_scan"},
             )
         except Exception:
             context_manager = suppress()
 
         with context_manager:
             try:
+                # 统一进度日志
+                log_progress(
+                    f"开始手动数据扫描: force_refresh={force_refresh}",
+                    percent=0,
+                    scenario="manual_data_scan",
+                    meta={"force_refresh": force_refresh},
+                )
                 # 阶段节点（输出到Terminal）
-                stage_logger.info(
+                stage_node(
+                    "data_center",
                     f"📍 手动数据扫描开始: force_refresh={force_refresh}",
-                    extra={"log_type": "STAGE_NODE", "scenario": "manual_data_scan"},
+                    scenario="manual_data_scan",
                 )
 
                 # DEBUG日志（只写入AI日志文件）
@@ -4085,9 +4134,11 @@ class DataCenterService(BaseService, LoggerMixin):
                         "[SCAN-SERVICE] ChinaStockEngine状态: None",
                         extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                     )
-                    stage_logger.error(
+                    alert(
+                        "ERROR",
+                        "data_center",
                         "❌ ChinaStockEngine不可用，无法执行数据质量扫描",
-                        extra={"log_type": "STAGE_NODE", "scenario": "manual_data_scan"},
+                        scenario="manual_data_scan",
                     )
                     return
 
@@ -4100,6 +4151,11 @@ class DataCenterService(BaseService, LoggerMixin):
                     "[SCAN-SERVICE] 调用china_stock_engine.trigger_data_quality_scan方法...",
                     extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                 )
+                log_progress(
+                    "提交质量扫描到引擎",
+                    percent=10,
+                    scenario="manual_data_scan",
+                )
                 scan_start_time = time.time()
                 overview = self.china_stock_engine.trigger_data_quality_scan(
                     force_refresh=force_refresh
@@ -4110,6 +4166,12 @@ class DataCenterService(BaseService, LoggerMixin):
                     f"[SCAN-SERVICE] trigger_data_quality_scan方法调用完成: 耗时={scan_elapsed:.2f}s",
                     extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                 )
+                log_progress(
+                    "质量扫描引擎返回结果",
+                    percent=60,
+                    scenario="manual_data_scan",
+                    meta={"scan_elapsed": round(scan_elapsed, 2)},
+                )
 
                 if overview:
                     # 推送事件
@@ -4117,12 +4179,23 @@ class DataCenterService(BaseService, LoggerMixin):
                         "[SCAN-SERVICE] 开始推送质量概览事件...",
                         extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                     )
+                    log_progress(
+                        "开始推送质量概览事件",
+                        percent=80,
+                        scenario="manual_data_scan",
+                    )
                     event_start_time = time.time()
                     self.china_stock_engine._push_quality_overview_event(overview)
                     event_elapsed = time.time() - event_start_time
                     self.logger.debug(
                         f"[SCAN-SERVICE] 质量概览事件推送完成: 耗时={event_elapsed:.2f}s",
                         extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
+                    )
+                    log_progress(
+                        "质量概览事件推送完成",
+                        percent=90,
+                        scenario="manual_data_scan",
+                        meta={"event_elapsed": round(event_elapsed, 2)},
                     )
 
                     quality_score = overview.quality_score
@@ -4139,10 +4212,24 @@ class DataCenterService(BaseService, LoggerMixin):
                     )
 
                     # 阶段节点（输出到Terminal）
-                    stage_logger.info(
+                    stage_node(
+                        "data_center",
                         f"✅ 手动数据扫描完成: 评分={quality_score:.2f}, 耗时={total_elapsed:.2f}s",
-                        extra={"log_type": "STAGE_NODE", "scenario": "manual_data_scan"},
+                        scenario="manual_data_scan",
                     )
+                    log_progress(
+                        "数据质量扫描完成",
+                        percent=100,
+                        scenario="manual_data_scan",
+                        meta={
+                            "quality_score": round(quality_score, 2),
+                            "total_elapsed": round(total_elapsed, 2),
+                        },
+                    )
+                    try:
+                        notify_complete(True, scenario="manual_data_scan")
+                    except Exception:
+                        pass
 
                     # 数据质量告警 - 日志埋点v4.0
                     if quality_score < 60:
@@ -4154,9 +4241,11 @@ class DataCenterService(BaseService, LoggerMixin):
                             f"[SCAN-SERVICE] 质量评分过低: quality_score={quality_score:.2f} < 60",
                             extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                         )
-                        stage_logger.warning(
+                        alert(
+                            "WARNING",
+                            "data_center",
                             f"⚠️ 数据质量评分过低: {quality_score:.2f} < 60",
-                            extra={"log_type": "STAGE_NODE", "scenario": "manual_data_scan"},
+                            scenario="manual_data_scan",
                         )
                 else:
                     self.logger.warning(
@@ -4167,10 +4256,16 @@ class DataCenterService(BaseService, LoggerMixin):
                         "[SCAN-SERVICE] 扫描结果: overview=None",
                         extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                     )
-                    stage_logger.warning(
+                    alert(
+                        "WARNING",
+                        "data_center",
                         f"⚠️ 数据质量扫描未返回结果, 耗时={total_elapsed:.2f}s",
-                        extra={"log_type": "STAGE_NODE", "scenario": "manual_data_scan"},
+                        scenario="manual_data_scan",
                     )
+                    try:
+                        notify_complete(False, scenario="manual_data_scan")
+                    except Exception:
+                        pass
 
             except Exception as e:
                 total_elapsed = time.time() - start_time
@@ -4183,10 +4278,16 @@ class DataCenterService(BaseService, LoggerMixin):
                     f"[SCAN-SERVICE] 异常类型: {type(e).__name__}, 异常详情: {str(e)}",
                     extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                 )
-                stage_logger.error(
+                alert(
+                    "ERROR",
+                    "data_center",
                     f"❌ 数据质量扫描失败: {e}, 耗时={total_elapsed:.2f}s",
-                    extra={"log_type": "STAGE_NODE", "scenario": "manual_data_scan"},
+                    scenario="manual_data_scan",
                 )
+                try:
+                    notify_complete(False, scenario="manual_data_scan")
+                except Exception:
+                    pass
 
     # ==================== 数据源管理 ====================
 
@@ -4440,14 +4541,34 @@ class DataCenterService(BaseService, LoggerMixin):
         Returns:
             Dict: 操作结果
         """
+        # 使用事件日志上下文，记录录制入口
+        from contextlib import suppress
         try:
-            self._log_operation("启动数据录制")
+            context_manager = event_log_process(
+                "data_download",
+                {"entry": "start_data_recording", "custom_path": custom_path},
+            )
+        except Exception:
+            context_manager = suppress()
+
+        with context_manager:
+            try:
+                self._log_operation("启动数据录制")
 
             # 获取录制路径配置
             from backend.core.config import get_settings
 
             settings = get_settings()
             recording_path = custom_path or settings.vnpy.recording_data_path
+            try:
+                log_progress(
+                    "准备启动数据录制",
+                    percent=0,
+                    scenario="data_recording",
+                    meta={"recording_path": recording_path},
+                )
+            except Exception:
+                pass
 
             # 确保录制目录存在
             Path(recording_path).mkdir(parents=True, exist_ok=True)
@@ -4468,10 +4589,21 @@ class DataCenterService(BaseService, LoggerMixin):
                         recorder_app = DataRecorderApp
                         recorder_engine = main_engine.add_app(recorder_app)
                         self.recorder_engine = recorder_engine
+                        log_progress(
+                            "已创建DataRecorder引擎",
+                            percent=40,
+                            scenario="data_recording",
+                        )
 
                         # 配置录制路径（如果recorder_engine支持）
                         if hasattr(self.recorder_engine, "set_recording_path"):
                             self.recorder_engine.set_recording_path(recording_path)
+                            log_progress(
+                                "已配置录制路径",
+                                percent=60,
+                                scenario="data_recording",
+                                meta={"recording_path": recording_path},
+                            )
 
                         self.logger.info("DataRecorder应用已添加")
 
@@ -4479,6 +4611,16 @@ class DataCenterService(BaseService, LoggerMixin):
                     if hasattr(self.recorder_engine, "start"):
                         self.recorder_engine.start()
                         self.logger.info("数据录制已启动")
+                        log_progress(
+                            "数据录制已启动",
+                            percent=100,
+                            scenario="data_recording",
+                            meta={"recording_path": recording_path},
+                        )
+                        try:
+                            notify_complete(True, scenario="data_recording")
+                        except Exception:
+                            pass
 
                     return {
                         "success": True,
@@ -4501,22 +4643,30 @@ class DataCenterService(BaseService, LoggerMixin):
                 self.logger.error(
                     "启动录制失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
                 )
+                try:
+                    notify_complete(False, scenario="data_recording")
+                except Exception:
+                    pass
                 return {
                     "success": False,
                     "message": f"启动失败: {str(e)}",
                 }
-
-        except Exception as e:
-            self.logger.error(
-                "启动数据录制失败",
-                exc_info=True,
-                extra={"log_type": "SYSTEM", "scenario": "data_recording"},
-            )
-            self._log_error("启动数据录制", e, exc_info=True)
-            return {
-                "success": False,
-                "message": f"启动失败: {str(e)}",
-            }
+            except Exception as e:
+                self.logger.error(
+                    "启动数据录制失败",
+                    exc_info=True,
+                    extra={"log_type": "SYSTEM", "scenario": "data_recording"},
+                )
+                self._log_error("启动数据录制", e, exc_info=True)
+                alert("ERROR", "data_center", f"启动录制失败: {e}", scenario="data_recording")
+                try:
+                    notify_complete(False, scenario="data_recording")
+                except Exception:
+                    pass
+                return {
+                    "success": False,
+                    "message": f"启动失败: {str(e)}",
+                }
 
     def stop_data_recording(self) -> Dict[str, Any]:
         """停止实时数据录制.
@@ -4622,7 +4772,36 @@ class DataCenterService(BaseService, LoggerMixin):
         Returns:
             Dict: 启动结果
         """
+        # 统一事件与进度日志
+        from contextlib import suppress
         try:
+            context_manager = event_log_process(
+                "data_download",
+                {
+                    "entry": "start_realtime_data_recording",
+                    "symbols": symbols or [],
+                    "record_tick": record_tick,
+                    "record_bar": record_bar,
+                },
+            )
+        except Exception:
+            context_manager = suppress()
+
+        with context_manager:
+            try:
+                try:
+                    log_progress(
+                        "准备启动实时数据录制",
+                        percent=0,
+                        scenario="realtime_data_recording",
+                        meta={
+                            "symbols": symbols or [],
+                            "record_tick": record_tick,
+                            "record_bar": record_bar,
+                        },
+                    )
+                except Exception:
+                    pass
             # 检查是否已有录制引擎
             if self.recorder_engine:
                 return {
@@ -4633,7 +4812,16 @@ class DataCenterService(BaseService, LoggerMixin):
             # 尝试导入vnpy_datarecorder
             try:
                 from vnpy_datarecorder import DataRecorderApp  # type: ignore[import-untyped]
+                log_progress(
+                    "已加载DataRecorderApp",
+                    percent=20,
+                    scenario="realtime_data_recording",
+                )
             except ImportError:
+                try:
+                    notify_complete(False, scenario="realtime_data_recording")
+                except Exception:
+                    pass
                 return {
                     "success": False,
                     "message": "vnpy_datarecorder包未安装，请先安装: pip install vnpy_datarecorder",
@@ -4641,19 +4829,38 @@ class DataCenterService(BaseService, LoggerMixin):
 
             # 检查main_engine是否可用
             if not self.main_engine:
+                try:
+                    notify_complete(False, scenario="realtime_data_recording")
+                except Exception:
+                    pass
                 return {
                     "success": False,
                     "message": "MainEngine不可用，无法启动录制",
                 }
+            else:
+                log_progress(
+                    "MainEngine可用",
+                    percent=30,
+                    scenario="realtime_data_recording",
+                )
 
             # 添加DataRecorder应用
             try:
                 self.recorder_engine = self.main_engine.add_app(DataRecorderApp)
                 self.logger.info("✅ DataRecorder引擎已创建")
+                log_progress(
+                    "已创建DataRecorder引擎",
+                    percent=60,
+                    scenario="realtime_data_recording",
+                )
             except Exception as e:
                 self.logger.error(
                     "创建DataRecorder引擎失败: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
                 )
+                try:
+                    notify_complete(False, scenario="realtime_data_recording")
+                except Exception:
+                    pass
                 return {
                     "success": False,
                     "message": f"创建录制引擎失败: {str(e)}",
@@ -4665,6 +4872,12 @@ class DataCenterService(BaseService, LoggerMixin):
                 "record_bar": record_bar,
                 "symbols": symbols or [],
             }
+            log_progress(
+                "已设置录制参数",
+                percent=80,
+                scenario="realtime_data_recording",
+                meta=recording_config,
+            )
 
             # 如果提供了品种列表，添加订阅
             if symbols:
@@ -4684,6 +4897,16 @@ class DataCenterService(BaseService, LoggerMixin):
                 record_bar,
                 len(symbols) if symbols else 0,
             )
+            log_progress(
+                "实时数据录制已启动",
+                percent=100,
+                scenario="realtime_data_recording",
+                meta=recording_config,
+            )
+            try:
+                notify_complete(True, scenario="realtime_data_recording")
+            except Exception:
+                pass
 
             return {
                 "success": True,
@@ -4698,6 +4921,10 @@ class DataCenterService(BaseService, LoggerMixin):
                 extra={"log_type": "SYSTEM", "scenario": "realtime_data_recording"},
             )
             self._log_error("启动数据录制", e, exc_info=True)
+            try:
+                notify_complete(False, scenario="realtime_data_recording")
+            except Exception:
+                pass
             return {
                 "success": False,
                 "message": f"启动失败: {str(e)}",
@@ -4867,7 +5094,18 @@ class DataCenterService(BaseService, LoggerMixin):
         Returns:
             Dict: 同步结果
         """
+        # 统一事件与进度日志
+        from contextlib import suppress
         try:
+            context_manager = event_log_process(
+                "data_download",
+                {"entry": "sync_recorded_data_to_storage", "symbol": symbol, "date": date},
+            )
+        except Exception:
+            context_manager = suppress()
+
+        with context_manager:
+            try:
             from datetime import datetime
             from pathlib import Path
             import pandas as pd
@@ -4875,6 +5113,16 @@ class DataCenterService(BaseService, LoggerMixin):
             # 默认使用今天的日期
             if not date:
                 date = datetime.now().strftime("%Y-%m-%d")
+
+            try:
+                log_progress(
+                    "准备同步录制数据",
+                    percent=0,
+                    scenario="data_recording",
+                    meta={"symbol": symbol, "date": date},
+                )
+            except Exception:
+                pass
 
             # 录制数据路径
             recording_path = Path(".vntrader/data_recorder")
@@ -4898,6 +5146,12 @@ class DataCenterService(BaseService, LoggerMixin):
                 recorded_files = list(date_dir.glob("*"))
 
             self.logger.info("找到 %d 个录制文件待同步", len(recorded_files))
+            log_progress(
+                "已扫描录制文件",
+                percent=20,
+                scenario="data_recording",
+                meta={"files": len(recorded_files)},
+            )
 
             # 使用storage_manager保存数据
             if not self.china_stock_engine:
@@ -4910,6 +5164,11 @@ class DataCenterService(BaseService, LoggerMixin):
                 }
 
             storage_manager = self.china_stock_engine.storage_manager
+            log_progress(
+                "已连接存储管理器",
+                percent=60,
+                scenario="data_recording",
+            )
 
             for file_path in recorded_files:
                 try:
@@ -4955,6 +5214,16 @@ class DataCenterService(BaseService, LoggerMixin):
                 message += f"，{failed_count} 个失败"
 
             self.logger.info(message)
+            log_progress(
+                "录制数据同步完成",
+                percent=100,
+                scenario="data_recording",
+                meta={"synced": synced_count, "failed": failed_count},
+            )
+            try:
+                notify_complete(True, scenario="data_recording")
+            except Exception:
+                pass
 
             return {
                 "success": True,
@@ -4970,6 +5239,10 @@ class DataCenterService(BaseService, LoggerMixin):
                 extra={"log_type": "SYSTEM", "scenario": "data_recording"},
             )
             self._log_error("同步录制数据", e, exc_info=True)
+            try:
+                notify_complete(False, scenario="data_recording")
+            except Exception:
+                pass
             return {
                 "success": False,
                 "message": f"同步失败: {str(e)}",
@@ -5864,32 +6137,25 @@ class DataCenterService(BaseService, LoggerMixin):
 
         start_time = time.time()
 
-        # 设置日志上下文
+        # 使用事件日志上下文，创建独立日志文件，并绑定场景信息
         try:
-            from backend.infrastructure.system_vnpy.logging_system import (
-                get_logging_hub,
-                ai_log_process,
-            )
-
-            hub = get_logging_hub()
-        except ImportError:
-            hub = None
-
-        stage_logger = logging.getLogger("task.manual_data_scan.stage")
-
-        # 使用ai_log_process创建独立日志文件
-        # 注意：场景信息通过日志记录的extra参数传递，无需全局设置
-        try:
-            context_manager = ai_log_process("manual_data_scan") if hub else suppress()
+            context_manager = event_log_process("manual_data_scan")
         except Exception:
             context_manager = suppress()
 
         with context_manager:
             try:
+                # 统一进度日志
+                log_progress(
+                    "开始手动数据扫描",
+                    percent=0,
+                    scenario="manual_data_scan",
+                )
                 # 阶段节点（输出到Terminal）
-                stage_logger.info(
+                stage_node(
+                    "data_center",
                     "📍 手动数据扫描开始",
-                    extra={"log_type": "STAGE_NODE", "scenario": "manual_data_scan"},
+                    scenario="manual_data_scan",
                 )
 
                 # DEBUG日志（只写入AI日志文件）
@@ -5907,9 +6173,11 @@ class DataCenterService(BaseService, LoggerMixin):
                         "[DATA-SCAN] ChinaStockEngine状态检查: None",
                         extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                     )
-                    stage_logger.error(
+                    alert(
+                        "ERROR",
+                        "data_center",
                         "❌ 手动数据扫描失败: ChinaStockEngine不可用",
-                        extra={"log_type": "STAGE_NODE", "scenario": "manual_data_scan"},
+                        scenario="manual_data_scan",
                     )
                     return {
                         "success": False,
@@ -5924,6 +6192,12 @@ class DataCenterService(BaseService, LoggerMixin):
                 symbol_list_start_time = time.time()
                 reference_symbols = self.china_stock_engine.symbol_loader.extract_all_codes()
                 symbol_list_elapsed = time.time() - symbol_list_start_time
+                log_progress(
+                    "参考品种列表获取完成",
+                    percent=20,
+                    scenario="manual_data_scan",
+                    meta={"symbols": len(reference_symbols), "elapsed": round(symbol_list_elapsed, 2)},
+                )
 
                 self.logger.debug(
                     f"[DATA-SCAN] 品种列表获取完成: 品种数={len(reference_symbols)}, 耗时={symbol_list_elapsed:.2f}s",
@@ -5988,6 +6262,11 @@ class DataCenterService(BaseService, LoggerMixin):
                     "[DATA-SCAN] 进度回调已注册",
                     extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                 )
+                log_progress(
+                    "已注册扫描进度回调",
+                    percent=30,
+                    scenario="manual_data_scan",
+                )
 
                 # 执行质量扫描
                 self.logger.debug(
@@ -6004,6 +6283,12 @@ class DataCenterService(BaseService, LoggerMixin):
                 self.logger.debug(
                     f"[DATA-SCAN] 质量扫描完成: 耗时={scan_elapsed:.2f}s, 结果数={len(overview)}",
                     extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
+                )
+                log_progress(
+                    "质量扫描完成（原始结果）",
+                    percent=70,
+                    scenario="manual_data_scan",
+                    meta={"scan_elapsed": round(scan_elapsed, 2), "result_size": len(overview)},
                 )
 
                 # overview是字典，需要统计
@@ -6023,6 +6308,18 @@ class DataCenterService(BaseService, LoggerMixin):
                     f"错误={error_symbols}, 警告={warning_symbols}, 耗时={stat_elapsed:.3f}s",
                     extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                 )
+                log_progress(
+                    "统计扫描结果完成",
+                    percent=90,
+                    scenario="manual_data_scan",
+                    meta={
+                        "total_symbols": total_symbols,
+                        "missing": missing_symbols,
+                        "errors": error_symbols,
+                        "warnings": warning_symbols,
+                        "stat_elapsed": round(stat_elapsed, 3),
+                    },
+                )
 
                 total_elapsed = time.time() - start_time
                 self.logger.info(
@@ -6032,11 +6329,27 @@ class DataCenterService(BaseService, LoggerMixin):
                 )
 
                 # 阶段节点（输出到Terminal）
-                stage_logger.info(
+                stage_node(
+                    "data_center",
                     f"✅ 手动数据扫描完成: 缺失={missing_symbols}, 错误={error_symbols}, "
                     f"警告={warning_symbols}, 耗时={total_elapsed:.2f}s",
-                    extra={"log_type": "STAGE_NODE", "scenario": "manual_data_scan"},
+                    scenario="manual_data_scan",
                 )
+                log_progress(
+                    "数据扫描完成",
+                    percent=100,
+                    scenario="manual_data_scan",
+                    meta={
+                        "missing": missing_symbols,
+                        "errors": error_symbols,
+                        "warnings": warning_symbols,
+                        "total_elapsed": round(total_elapsed, 2),
+                    },
+                )
+                try:
+                    notify_complete(True, scenario="manual_data_scan")
+                except Exception:
+                    pass
 
                 return {
                     "success": True,
@@ -6062,10 +6375,16 @@ class DataCenterService(BaseService, LoggerMixin):
                 )
 
                 # 阶段节点（输出到Terminal）
-                stage_logger.error(
+                alert(
+                    "ERROR",
+                    "data_center",
                     f"❌ 手动数据扫描异常: {e}, 耗时={total_elapsed:.2f}s",
-                    extra={"log_type": "STAGE_NODE", "scenario": "manual_data_scan"},
+                    scenario="manual_data_scan",
                 )
+                try:
+                    notify_complete(False, scenario="manual_data_scan")
+                except Exception:
+                    pass
 
                 return {
                     "success": False,

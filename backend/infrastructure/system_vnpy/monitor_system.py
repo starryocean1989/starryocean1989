@@ -84,15 +84,36 @@ except ImportError:
     HAS_PSUTIL = False
     logger.warning("psutil模块未安装,将使用基础系统监控功能", extra={"log_type": "SYSTEM"})
 
+# 尝试导入原生进程/系统指标扩展
+try:
+    from backend.infrastructure.native.native_process_metrics import (
+        get_system_metrics as native_get_system_metrics,
+        get_process_snapshot as native_get_process_snapshot,
+    )
+
+    NATIVE_PROCESS_METRICS_AVAILABLE = True
+except ImportError:
+    native_get_system_metrics = None  # type: ignore
+    native_get_process_snapshot = None  # type: ignore
+    NATIVE_PROCESS_METRICS_AVAILABLE = False
+
 # 尝试导入原生 Socket 指标采集扩展
 try:
-    from backend.infrastructure.native.native_socket_metrics import (
-        SOCKET_METRICS_AVAILABLE,
-        get_socket_metrics as native_get_socket_metrics,
+    from backend.infrastructure.native import native_socket_metrics as _native_socket_metrics  # type: ignore
+
+    SOCKET_METRICS_AVAILABLE = getattr(
+        _native_socket_metrics, "SOCKET_METRICS_AVAILABLE", False
+    )
+    native_get_socket_metrics = getattr(
+        _native_socket_metrics, "get_socket_metrics", None
+    )
+    native_get_socket_metrics_detailed = getattr(
+        _native_socket_metrics, "get_socket_metrics_detailed", None
     )
 except ImportError:
     SOCKET_METRICS_AVAILABLE = False
     native_get_socket_metrics = None  # type: ignore
+    native_get_socket_metrics_detailed = None  # type: ignore
 
 # 尝试导入WMI（Windows Management Instrumentation）
 try:
@@ -3310,14 +3331,29 @@ class MonitoringProcessV2:
             bottlenecks = []
             for proc in python_processes[:5]:
                 try:
-                    # 在executor中执行阻塞进程指标获取
-                    metrics = await loop.run_in_executor(
-                        self.executor,
-                        self.process_monitor.get_process_metrics,
-                        proc.get("id", ""),
-                        proc.get("name", ""),
-                        proc.get("type", ""),
-                    )
+                    proc_id = proc.get("id", "")
+                    proc_name = proc.get("name", "")
+                    proc_type = proc.get("type", "")
+
+                    metrics: Optional[ProcessMetrics] = None
+                    if NATIVE_PROCESS_METRICS_AVAILABLE and callable(
+                        native_get_process_snapshot
+                    ):
+                        metrics = self.process_monitor.get_process_metrics(
+                            proc_id,
+                            proc_name,
+                            proc_type,
+                        )
+
+                    if metrics is None:
+                        # 在executor中执行阻塞进程指标获取
+                        metrics = await loop.run_in_executor(
+                            self.executor,
+                            self.process_monitor.get_process_metrics,
+                            proc_id,
+                            proc_name,
+                            proc_type,
+                        )
                     if metrics:
                         result = self.process_bottleneck_analyzer.find_bottleneck(metrics)
                         if result.has_bottleneck:
@@ -4889,6 +4925,60 @@ class SystemMonitor:
         # 添加延迟监控器（负责延迟测试）
         self.latency_monitor = LatencyMonitor()
 
+    def _get_resource_usage_native(self) -> Optional[ResourceUsage]:
+        """尝试通过原生扩展获取系统资源指标."""
+        if not (NATIVE_PROCESS_METRICS_AVAILABLE and callable(native_get_system_metrics)):
+            return None
+
+        try:
+            raw_metrics = native_get_system_metrics()
+            if not isinstance(raw_metrics, dict) or not raw_metrics:
+                return None
+
+            load_average_raw = raw_metrics.get("load_average") or [0.0, 0.0, 0.0]
+            load_average = [float(value) for value in load_average_raw]
+
+            timestamp_raw = raw_metrics.get("timestamp")
+            if isinstance(timestamp_raw, (int, float)):
+                if timestamp_raw > 1e12:  # 毫秒时间戳
+                    timestamp_value = timestamp_raw / 1000.0
+                else:
+                    timestamp_value = timestamp_raw
+                timestamp = datetime.fromtimestamp(timestamp_value)
+            else:
+                timestamp = datetime.now()
+
+            disk_percent = raw_metrics.get("disk_percent")
+            if disk_percent is None:
+                disk_percent = raw_metrics.get("disk_usage_percent", 0.0)
+
+            process_count = raw_metrics.get("process_count")
+            if process_count is None:
+                aggregate = raw_metrics.get("aggregate")
+                if isinstance(aggregate, dict):
+                    process_count = aggregate.get("process_count")
+
+            return ResourceUsage(
+                cpu_percent=float(raw_metrics.get("cpu_percent", 0.0)),
+                memory_percent=float(raw_metrics.get("memory_percent", 0.0)),
+                disk_percent=float(disk_percent or 0.0),
+                network_sent=int(
+                    raw_metrics.get("net_sent_bytes", raw_metrics.get("network_sent", 0))
+                ),
+                network_recv=int(
+                    raw_metrics.get("net_recv_bytes", raw_metrics.get("network_recv", 0))
+                ),
+                process_count=int(process_count or 0),
+                load_average=load_average,
+                timestamp=timestamp,
+            )
+        except Exception:
+            logger.debug(
+                "[NATIVE] 获取系统资源指标失败，回退到psutil实现",
+                exc_info=True,
+            )
+            return None
+
     def get_bandwidth_info(self) -> Dict[str, Any]:
         """获取运营商带宽信息（返回缓存结果）.
 
@@ -5242,6 +5332,10 @@ class SystemMonitor:
 
     def get_resource_usage(self) -> ResourceUsage:
         """获取资源使用情况."""
+        native_usage = self._get_resource_usage_native()
+        if native_usage is not None:
+            return native_usage
+
         try:
             if HAS_PSUTIL:
                 # CPU使用率
@@ -6123,17 +6217,24 @@ class SystemMonitor:
             }
         """
         try:
-            if SOCKET_METRICS_AVAILABLE and native_get_socket_metrics is not None:
-                try:
-                    native_result = native_get_socket_metrics()
-                    if native_result:
-                        return native_result
-                except Exception:
-                    logger.debug(
-                        "[SOCKET-BUFFER] 原生采集失败，回退到psutil实现",
-                        exc_info=True,
-                        extra={"log_type": "SYSTEM"},
-                    )
+            if SOCKET_METRICS_AVAILABLE:
+                native_socket_func = None
+                if callable(native_get_socket_metrics_detailed):
+                    native_socket_func = native_get_socket_metrics_detailed  # type: ignore[assignment]
+                elif callable(native_get_socket_metrics):
+                    native_socket_func = native_get_socket_metrics  # type: ignore[assignment]
+
+                if native_socket_func is not None:
+                    try:
+                        native_result = native_socket_func()
+                        if native_result:
+                            return native_result
+                    except Exception:
+                        logger.debug(
+                            "[SOCKET-BUFFER] 原生采集失败，回退到psutil实现",
+                            exc_info=True,
+                            extra={"log_type": "SYSTEM"},
+                        )
 
             if not HAS_PSUTIL:
                 logger.debug("[SOCKET-BUFFER] psutil未安装，无法获取Socket缓冲区信息", extra={"log_type": "SYSTEM"})
@@ -6768,6 +6869,67 @@ class ProcessMonitor:
             except Exception:
                 pass
 
+    def _get_process_metrics_native(
+        self, process_id: str, process_name: str, process_type: str
+    ) -> Optional[ProcessMetrics]:
+        """尝试通过原生扩展获取进程指标."""
+
+        if not (NATIVE_PROCESS_METRICS_AVAILABLE and callable(native_get_process_snapshot)):
+            return None
+
+        prefix = "process_"
+        if not process_id.startswith(prefix):
+            return None
+
+        try:
+            pid = int(process_id[len(prefix) :])
+        except ValueError:
+            return None
+
+        try:
+            snapshot = native_get_process_snapshot(pid)
+        except Exception:
+            self.logger.debug(
+                "[NATIVE] 获取进程快照失败，回退到psutil",
+                exc_info=True,
+            )
+            return None
+
+        if not isinstance(snapshot, dict) or not snapshot:
+            return None
+
+        timestamp_raw = snapshot.get("timestamp")
+        if isinstance(timestamp_raw, (int, float)):
+            if timestamp_raw > 1e12:
+                timestamp_value = timestamp_raw / 1000.0
+            else:
+                timestamp_value = timestamp_raw
+            timestamp = datetime.fromtimestamp(timestamp_value)
+        else:
+            timestamp = datetime.now()
+
+        memory_rss = float(snapshot.get("memory_rss", 0))
+        memory_mb = memory_rss / (1024 * 1024)
+
+        inferred_status = snapshot.get("status")
+        if not inferred_status:
+            inferred_status = "running" if snapshot.get("cpu_percent", 0.0) > 1.0 else "idle"
+
+        return ProcessMetrics(
+            process_id=process_id,
+            process_name=snapshot.get("name", process_name),
+            process_type=snapshot.get("process_type", process_type or "unknown"),
+            status=inferred_status,
+            cpu_percent=float(snapshot.get("cpu_percent", 0.0)),
+            memory_mb=memory_mb,
+            memory_percent=float(snapshot.get("memory_percent", 0.0)),
+            disk_read_mbps=float(snapshot.get("disk_read_mbps", 0.0)),
+            disk_write_mbps=float(snapshot.get("disk_write_mbps", 0.0)),
+            network_recv_mbps=float(snapshot.get("network_recv_mbps", 0.0)),
+            network_send_mbps=float(snapshot.get("network_send_mbps", 0.0)),
+            timestamp=timestamp,
+        )
+
     def identify_processes(self) -> List[Dict[str, Any]]:
         """识别所有关键进程.
 
@@ -6845,6 +7007,10 @@ class ProcessMonitor:
         Returns:
             Optional[ProcessMetrics]: 进程指标，如果获取失败返回None
         """
+        native_metrics = self._get_process_metrics_native(process_id, process_name, process_type)
+        if native_metrics is not None:
+            return native_metrics
+
         if not HAS_PSUTIL:
             return None
 

@@ -45,10 +45,40 @@ try:
     from backend.infrastructure.native.native_dataframe_ops import (
         DATAFRAME_OPS_AVAILABLE as NATIVE_DF_AVAILABLE,
         dataframe_quality_counters,
+        scan_quality as native_scan_quality,
+        validate_numeric as native_validate_numeric,
     )
 except ImportError:
     NATIVE_DF_AVAILABLE = False
     dataframe_quality_counters = None  # type: ignore
+    native_scan_quality = None  # type: ignore
+    native_validate_numeric = None  # type: ignore
+
+
+def _scan_quality_py(df: pd.DataFrame, columns: List[str]) -> Dict[str, Any]:
+    duplicate_count = int(df.index.duplicated().sum())
+    missing_columns = [col for col in columns if col not in df.columns]
+    if missing_columns:
+        invalid_count = len(df)
+    else:
+        invalid_mask = df.loc[:, columns].isna().any(axis=1)
+        invalid_count = int(invalid_mask.sum())
+    return {
+        "duplicate_count": duplicate_count,
+        "invalid_count": invalid_count,
+        "missing_columns": missing_columns,
+    }
+
+
+def _validate_numeric_py(df: pd.DataFrame, columns: List[str]) -> pd.DataFrame:
+    converted = df.copy()
+    for field in columns:
+        if field not in converted.columns:
+            continue
+        numeric_array = pd.to_numeric(converted[field], errors="coerce")
+        numeric_series = pd.Series(numeric_array, index=converted.index)
+        converted[field] = numeric_series.fillna(0.0)
+    return converted
 
 # 导入native_iocp（支持降级）
 try:
@@ -958,13 +988,27 @@ class DataSensor:
         duplicate_count = 0
         invalid_count = 0
 
-        if NATIVE_DF_AVAILABLE and callable(dataframe_quality_counters):
+        quality_summary: Optional[Dict[str, Any]] = None
+        if native_scan_quality is not None:
+            try:
+                quality_summary = native_scan_quality(df, quality_columns)
+            except Exception:
+                logger.debug(
+                    "[VALIDATE] scan_quality 调用失败，回退到Python实现",
+                    exc_info=True,
+                    extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
+                )
+
+        if quality_summary:
+            duplicate_count = int(quality_summary.get("duplicate_count", 0))
+            invalid_count = int(quality_summary.get("invalid_count", 0))
+        elif NATIVE_DF_AVAILABLE and callable(dataframe_quality_counters):
             try:
                 native_counts = dataframe_quality_counters(df, quality_columns)
                 duplicate_count, invalid_count = cast(Tuple[int, int], native_counts)
             except Exception:
                 logger.debug(
-                    "[VALIDATE] 原生数据质量统计失败，回退到pandas实现",
+                    "[VALIDATE] dataframe_quality_counters 调用失败，回退到Python实现",
                     exc_info=True,
                     extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
                 )
@@ -973,12 +1017,7 @@ class DataSensor:
             duplicate_count = int(df.index.duplicated().sum())
 
         if invalid_count == 0:
-            missing_columns = [col for col in quality_columns if col not in df.columns]
-            if missing_columns:
-                invalid_count = result.total_bars
-            else:
-                invalid_mask = df.loc[:, quality_columns].isna().any(axis=1)
-                invalid_count = int(invalid_mask.sum())
+            invalid_count = int(_scan_quality_py(df, quality_columns)["invalid_count"])
 
         result.duplicate_bars = duplicate_count
         if result.duplicate_bars > 0:
