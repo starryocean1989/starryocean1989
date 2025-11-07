@@ -20,6 +20,7 @@ from backend.services.database_adapter import get_db_manager
 
 # 直接使用native序列化优化
 from backend.infrastructure.native.native_serialization import zero_copy_serialize
+from backend.infrastructure.system_vnpy.logging_system import stage_node, alert
 
 # 专用logger - 日志埋点v4.0
 logger_order = logging.getLogger("backend.trading.order")
@@ -661,10 +662,8 @@ class TradingGatewayService(BaseService, LoggerMixin):
             Dict: 连接结果
         """
         import time
-        import logging
 
         start_time = time.time()
-        stage_logger = logging.getLogger("task.trading_gateway_connection.stage")
 
         try:
             self._log_operation("连接网关", name=gateway_name)
@@ -678,10 +677,11 @@ class TradingGatewayService(BaseService, LoggerMixin):
             gateway_info = self.gateway_instances[gateway_name]
             gateway_type = gateway_info["type"]
 
-            # 阶段节点日志（输出到Terminal）
-            stage_logger.info(
+            # 阶段节点：连接开始
+            stage_node(
+                "trading",
                 f"📍 交易网关连接开始: 网关={gateway_name}, 类型={gateway_type}",
-                extra={"log_type": "STAGE_NODE", "scenario": "trading_gateway_connection"},
+                scenario="trading_gateway_connection",
             )
 
             # 准备连接配置
@@ -692,9 +692,11 @@ class TradingGatewayService(BaseService, LoggerMixin):
             # 检查main_engine是否可用
             if self.main_engine is None:
                 elapsed_ms = (time.time() - start_time) * 1000
-                stage_logger.error(
+                alert(
+                    "ERROR",
+                    "trading",
                     f"❌ 交易网关连接失败: MainEngine不可用, 耗时={elapsed_ms:.0f}ms",
-                    extra={"log_type": "STAGE_NODE", "scenario": "trading_gateway_connection"},
+                    scenario="trading_gateway_connection",
                 )
                 return {
                     "success": False,
@@ -710,10 +712,11 @@ class TradingGatewayService(BaseService, LoggerMixin):
 
             elapsed_ms = (time.time() - start_time) * 1000
 
-            # 阶段节点日志（输出到Terminal）
-            stage_logger.info(
+            # 阶段节点：连接完成
+            stage_node(
+                "trading",
                 f"✅ 交易网关连接完成: 网关={gateway_name}, 类型={gateway_type}, 耗时={elapsed_ms:.0f}ms",
-                extra={"log_type": "STAGE_NODE", "scenario": "trading_gateway_connection"},
+                scenario="trading_gateway_connection",
             )
 
             self.logger.info(
@@ -734,10 +737,12 @@ class TradingGatewayService(BaseService, LoggerMixin):
         except Exception as e:
             elapsed_ms = (time.time() - start_time) * 1000
 
-            # 阶段节点日志（输出到Terminal）
-            stage_logger.error(
+            # 告警：连接失败
+            alert(
+                "ERROR",
+                "trading",
                 f"❌ 交易网关连接失败: 网关={gateway_name}, 错误={str(e)}, 耗时={elapsed_ms:.0f}ms",
-                extra={"log_type": "STAGE_NODE", "scenario": "trading_gateway_connection"},
+                scenario="trading_gateway_connection",
             )
 
             self._log_error("连接网关", e, name=gateway_name)
@@ -937,16 +942,15 @@ class TradingGatewayService(BaseService, LoggerMixin):
             Dict: 部署结果
         """
         import time
-        import logging
 
         start_time = time.time()
-        stage_logger = logging.getLogger("task.strategy_loading.stage")
 
         try:
             # 阶段节点：策略加载开始
-            stage_logger.info(
+            stage_node(
+                "trading",
                 f"📍 策略加载开始: file={file_path}, strategy={strategy_name}",
-                extra={"log_type": "STAGE_NODE", "scenario": "strategy_loading"},
+                scenario="strategy_loading",
             )
 
             self._log_operation(
@@ -984,9 +988,10 @@ class TradingGatewayService(BaseService, LoggerMixin):
             strategy_params["file_path"] = file_path  # 记录原文件路径
 
             # 阶段节点：策略文件解析成功
-            stage_logger.info(
+            stage_node(
+                "trading",
                 f"✅ 策略文件解析成功: class={strategy_class}, engine={engine_type}",
-                extra={"log_type": "STAGE_NODE", "scenario": "strategy_loading"},
+                scenario="strategy_loading",
             )
 
             # 调用原有的部署方法
@@ -999,14 +1004,17 @@ class TradingGatewayService(BaseService, LoggerMixin):
 
             elapsed_ms = (time.time() - start_time) * 1000
             if deploy_result.get("success"):
-                stage_logger.info(
+                stage_node(
+                    "trading",
                     f"✅ 策略加载完成: strategy={strategy_name}, 耗时={elapsed_ms:.0f}ms",
-                    extra={"log_type": "STAGE_NODE", "scenario": "strategy_loading"},
+                    scenario="strategy_loading",
                 )
             else:
-                stage_logger.error(
+                alert(
+                    "ERROR",
+                    "trading",
                     f"❌ 策略加载失败: {deploy_result.get('message', '未知错误')}, 耗时={elapsed_ms:.0f}ms",
-                    extra={"log_type": "STAGE_NODE", "scenario": "strategy_loading"},
+                    scenario="strategy_loading",
                 )
 
             return deploy_result
@@ -1042,16 +1050,15 @@ class TradingGatewayService(BaseService, LoggerMixin):
             Dict: 部署结果
         """
         import time
-        import logging
 
         start_time = time.time()
-        stage_logger = logging.getLogger("task.strategy_deployment.stage")
 
         try:
             # 阶段节点：策略部署开始
-            stage_logger.info(
+            stage_node(
+                "trading",
                 f"📍 策略部署开始: strategy={strategy_name}, class={strategy_class}, gateway={gateway_name}",
-                extra={"log_type": "STAGE_NODE", "scenario": "strategy_deployment"},
+                scenario="strategy_deployment",
             )
 
             self._log_operation(
@@ -1171,9 +1178,10 @@ class TradingGatewayService(BaseService, LoggerMixin):
 
             elapsed_ms = (time.time() - start_time) * 1000
             # 阶段节点：策略部署成功
-            stage_logger.info(
+            stage_node(
+                "trading",
                 f"✅ 策略部署成功: strategy={strategy_name}, 耗时={elapsed_ms:.0f}ms",
-                extra={"log_type": "STAGE_NODE", "scenario": "strategy_deployment"},
+                scenario="strategy_deployment",
             )
 
             return {
@@ -1186,9 +1194,11 @@ class TradingGatewayService(BaseService, LoggerMixin):
         except Exception as e:
             elapsed_ms = (time.time() - start_time) * 1000
             self._log_error("部署策略", e, gateway=gateway_name, strategy=strategy_name)
-            stage_logger.error(
+            alert(
+                "ERROR",
+                "trading",
                 f"❌ 策略部署失败: {str(e)}, 耗时={elapsed_ms:.0f}ms",
-                extra={"log_type": "STAGE_NODE", "scenario": "strategy_deployment"},
+                scenario="strategy_deployment",
             )
             return {
                 "success": False,
@@ -1259,17 +1269,16 @@ class TradingGatewayService(BaseService, LoggerMixin):
                 return precondition_check
 
             # 初始化并启动策略
-            import time
-            import logging
+        import time
 
-            strategy_start_time = time.time()
-            stage_logger = logging.getLogger("task.strategy_execution.stage")
+        strategy_start_time = time.time()
 
             try:
-                # 阶段节点日志（输出到Terminal）
-                stage_logger.info(
+                # 阶段节点：策略执行开始
+                stage_node(
+                    "trading",
                     f"📍 策略执行开始: 策略={strategy_name}, 网关={gateway_name}, 引擎={engine_name}",
-                    extra={"log_type": "STAGE_NODE", "scenario": "strategy_execution"},
+                    scenario="strategy_execution",
                 )
 
                 # 切换到交易阶段 - 日志埋点v4.0
@@ -1323,10 +1332,11 @@ class TradingGatewayService(BaseService, LoggerMixin):
 
                 elapsed_ms = (time.time() - strategy_start_time) * 1000
 
-                # 阶段节点日志（输出到Terminal）
-                stage_logger.info(
+                # 阶段节点：策略执行完成
+                stage_node(
+                    "trading",
                     f"✅ 策略执行完成: 策略={strategy_name}, 网关={gateway_name}, 耗时={elapsed_ms:.0f}ms",
-                    extra={"log_type": "STAGE_NODE", "scenario": "strategy_execution"},
+                    scenario="strategy_execution",
                 )
 
                 self.logger.info(
@@ -1338,10 +1348,12 @@ class TradingGatewayService(BaseService, LoggerMixin):
             except Exception as e:
                 elapsed_ms = (time.time() - strategy_start_time) * 1000
 
-                # 阶段节点日志（输出到Terminal）
-                stage_logger.error(
+                # 告警：策略执行失败
+                alert(
+                    "ERROR",
+                    "trading",
                     f"❌ 策略执行失败: 策略={strategy_name}, 网关={gateway_name}, 错误={str(e)}, 耗时={elapsed_ms:.0f}ms",
-                    extra={"log_type": "STAGE_NODE", "scenario": "strategy_execution"},
+                    scenario="strategy_execution",
                 )
 
                 self.logger.error(

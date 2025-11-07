@@ -21,6 +21,8 @@ from backend.core.service_base import BaseService, LoggerMixin
 from backend.infrastructure.system_vnpy.logging_system import (
     ai_log_process,
     get_logging_hub,
+    stage_node,
+    alert,
 )
 from backend.infrastructure.native.native_serialization import build_dataframe_payload
 
@@ -124,10 +126,8 @@ class DataCenterService(BaseService, LoggerMixin):
     def _do_initialize(self) -> bool:
         """初始化数据中心服务."""
         try:
-            # 🆕 创建阶段logger
-            stage_logger = logging.getLogger(f"{self.__class__.__name__}.stage")
-
-            stage_logger.info("数据中心服务初始化开始")
+            # 使用统一便捷接口记录阶段节点
+            stage_node("data_center", "📍 数据中心服务初始化开始", scenario="service_init")
             self.log_operation_start("数据中心服务初始化")
 
             # 初始化任务调度器
@@ -155,7 +155,7 @@ class DataCenterService(BaseService, LoggerMixin):
             self._register_validation_events()
 
             self.log_operation_success("数据中心服务初始化")
-            stage_logger.info("数据中心服务初始化完成")
+            stage_node("data_center", "✅ 数据中心服务初始化完成", scenario="service_init")
             return True
 
         except Exception as e:
@@ -621,7 +621,7 @@ class DataCenterService(BaseService, LoggerMixin):
         except ImportError:
             hub = None
 
-        stage_logger = logging.getLogger("task.manual_speedtest.stage")
+        # 使用统一便捷接口替代阶段logger
 
         # 使用ai_log_process创建独立日志文件
         # 注意：场景信息通过日志记录的extra参数传递，无需全局设置
@@ -633,9 +633,10 @@ class DataCenterService(BaseService, LoggerMixin):
         with context_manager:
             try:
                 # 阶段节点（输出到Terminal）
-                stage_logger.info(
+                stage_node(
+                    "data_center",
                     "📍 手动测速开始: 正在连接到服务器池...",
-                    extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
+                    scenario="manual_speedtest",
                 )
 
                 # DEBUG/INFO日志（只写入AI日志文件）
@@ -874,18 +875,21 @@ class DataCenterService(BaseService, LoggerMixin):
                         extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
                     )
 
-                # 阶段节点（输出到Terminal）
+                # 阶段节点/告警（输出到Terminal）
                 if success:
                     ipv4_count = stats.get("ipv4_available", 0)
                     ipv6_count = stats.get("ipv6_available", 0)
-                    stage_logger.info(
+                    stage_node(
+                        "data_center",
                         f"✅ 手动测速完成: IPv4可用={ipv4_count}, IPv6可用={ipv6_count}, 耗时={total_elapsed:.2f}s",
-                        extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
+                        scenario="manual_speedtest",
                     )
                 else:
-                    stage_logger.warning(
+                    alert(
+                        "WARNING",
+                        "data_center",
                         f"⚠️ 手动测速失败: 耗时={total_elapsed:.2f}s",
-                        extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
+                        scenario="manual_speedtest",
                     )
 
                 return {"success": success, "stats": stats}
@@ -907,10 +911,12 @@ class DataCenterService(BaseService, LoggerMixin):
                     extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
                 )
 
-                # 阶段节点（输出到Terminal）
-                stage_logger.error(
+                # 告警（输出到事件与控制台）
+                alert(
+                    "ERROR",
+                    "data_center",
                     f"❌ 手动测速异常: {e}, 耗时={total_elapsed:.2f}s",
-                    extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
+                    scenario="manual_speedtest",
                 )
 
                 return {"success": False, "message": str(e)}

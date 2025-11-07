@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, date
 from enum import Enum, auto
 from io import BytesIO
-from multiprocessing import Manager, Event, Process, Queue
+import multiprocessing as mp
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
@@ -2565,7 +2565,12 @@ class DownloadStateMachine:
 # ==============================================================================
 
 
-@dataclass
+# 映射表：为了跨进程传输尽量使用紧凑的数值编码
+_DOWNLOAD_INTERVAL_TO_CODE = {"1d": 1, "5m": 2, "1m": 3}
+_DOWNLOAD_CODE_TO_INTERVAL = {v: k for k, v in _DOWNLOAD_INTERVAL_TO_CODE.items()}
+
+
+@dataclass(slots=True)
 class DownloadTask:
     """下载任务数据类"""
 
@@ -2596,6 +2601,84 @@ class DownloadTask:
         if not isinstance(other, DownloadTask):
             return False
         return self.symbol == other.symbol and self.interval == other.interval
+
+    def to_wire_payload(self) -> "DownloadTaskWire":
+        """转换为跨进程紧凑载荷."""
+
+        interval_code = _DOWNLOAD_INTERVAL_TO_CODE.get(self.interval, 0)
+        start_ordinal = self.start_date.toordinal() if self.start_date else -1
+        end_ordinal = self.end_date.toordinal() if self.end_date else -1
+
+        return DownloadTaskWire(
+            symbol=self.symbol,
+            interval_code=interval_code,
+            interval_text=self.interval,
+            market=self.market or "",
+            category=self.category or "",
+            start_ordinal=start_ordinal,
+            end_ordinal=end_ordinal,
+            priority=int(self.priority),
+            retry_count=int(self.retry_count),
+            max_retries=int(self.max_retries),
+            task_id=self.task_id,
+            phase=int(self.phase),
+            created_at_ts=self.created_at.timestamp(),
+        )
+
+    @classmethod
+    def from_wire_payload(cls, payload: "DownloadTaskWire") -> "DownloadTask":
+        """从跨进程载荷还原 DownloadTask."""
+
+        interval = _DOWNLOAD_CODE_TO_INTERVAL.get(payload.interval_code, payload.interval_text)
+        start_date = date.fromordinal(payload.start_ordinal) if payload.start_ordinal > 0 else None
+        end_date = date.fromordinal(payload.end_ordinal) if payload.end_ordinal > 0 else None
+
+        created_at = (
+            datetime.fromtimestamp(payload.created_at_ts)
+            if payload.created_at_ts > 0
+            else datetime.now()
+        )
+
+        task_id = payload.task_id or f"{int(time.time() * 1_000_000)}"
+
+        return cls(
+            symbol=payload.symbol,
+            interval=interval,
+            market=payload.market,
+            category=payload.category,
+            start_date=start_date,
+            end_date=end_date,
+            priority=payload.priority,
+            retry_count=payload.retry_count,
+            max_retries=payload.max_retries,
+            task_id=task_id,
+            created_at=created_at,
+            phase=payload.phase,
+        )
+
+
+@dataclass(slots=True)
+class DownloadTaskWire:
+    """跨进程传输的精简任务载荷."""
+
+    symbol: str
+    interval_code: int
+    interval_text: str
+    market: str
+    category: str
+    start_ordinal: int
+    end_ordinal: int
+    priority: int
+    retry_count: int
+    max_retries: int
+    task_id: str
+    phase: int
+    created_at_ts: float
+
+    def to_download_task(self) -> DownloadTask:
+        """便捷还原为 DownloadTask."""
+
+        return DownloadTask.from_wire_payload(self)
 
 
 class TaskQueueManager:
