@@ -4914,21 +4914,21 @@ class DataCenterService(BaseService, LoggerMixin):
                 "config": recording_config,
             }
 
-        except Exception as e:
-            self.logger.error(
-                "启动实时数据录制失败",
-                exc_info=True,
-                extra={"log_type": "SYSTEM", "scenario": "realtime_data_recording"},
-            )
-            self._log_error("启动数据录制", e, exc_info=True)
-            try:
-                notify_complete(False, scenario="realtime_data_recording")
-            except Exception:
-                pass
-            return {
-                "success": False,
-                "message": f"启动失败: {str(e)}",
-            }
+            except Exception as e:
+                self.logger.error(
+                    "启动实时数据录制失败",
+                    exc_info=True,
+                    extra={"log_type": "SYSTEM", "scenario": "realtime_data_recording"},
+                )
+                self._log_error("启动数据录制", e, exc_info=True)
+                try:
+                    notify_complete(False, scenario="realtime_data_recording")
+                except Exception:
+                    pass
+                return {
+                    "success": False,
+                    "message": f"启动失败: {str(e)}",
+                }
 
     def stop_realtime_data_recording(self) -> Dict[str, Any]:
         """停止实时数据录制.
