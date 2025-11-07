@@ -20,6 +20,7 @@
    - MonacoEditorWidget: Monaco编辑器增强版
 """
 import logging
+import os
 import re
 from collections import deque, namedtuple
 from enum import Enum
@@ -48,6 +49,24 @@ from PySide6.QtWidgets import (
 )
 
 from ui.components.theme_system import DashboardTheme
+
+try:
+    from native_qhighlighter import NativePythonHighlighter  # type: ignore
+
+    NATIVE_QHIGHLIGHTER_AVAILABLE = True
+except Exception:  # noqa: BLE001 - 仅用于探测
+    NativePythonHighlighter = None  # type: ignore
+    NATIVE_QHIGHLIGHTER_AVAILABLE = False
+
+
+def _should_use_native_highlighter() -> bool:
+    """根据环境变量决定是否启用原生高亮器."""
+
+    if not NATIVE_QHIGHLIGHTER_AVAILABLE:
+        return False
+
+    value = os.getenv("NATIVE_QHIGHLIGHTER", "1").strip().lower()
+    return value not in {"0", "false", "off"}
 
 
 # ==================== 第1部分：基础框架 ====================
@@ -139,7 +158,7 @@ class ErrorHandler:
             log_type = "ALERT"
         else:
             log_type = "SYSTEM"
-        
+
         self.logger.log(
             log_level,
             "UI错误处理: 类别=%s, 严重性=%s, ID=%s, 消息=%s, 重试=%d/%d",
@@ -1032,8 +1051,21 @@ class MonacoEditorWidget(QPlainTextEdit):
         # 设置编辑器样式
         self._setup_editor_style()
 
-        # 安装语法高亮器
-        self.highlighter = PythonHighlighter(self.document())
+        # 安装语法高亮器（优先使用原生实现）
+        if _should_use_native_highlighter() and NativePythonHighlighter is not None:
+            try:
+                self.highlighter = NativePythonHighlighter(
+                    self.document(), theme="monaco-dark"
+                )
+                self._using_native_highlighter = True
+                self.logger.info("native_qhighlighter 已启用")
+            except Exception as exc:  # noqa: BLE001
+                self.logger.debug("native_qhighlighter 启用失败: %s", exc)
+                self.highlighter = PythonHighlighter(self.document())
+                self._using_native_highlighter = False
+        else:
+            self.highlighter = PythonHighlighter(self.document())
+            self._using_native_highlighter = False
 
         # 连接信号
         self.blockCountChanged.connect(self.update_line_number_area_width)

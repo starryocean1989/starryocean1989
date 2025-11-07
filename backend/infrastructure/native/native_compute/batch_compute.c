@@ -282,3 +282,88 @@ PyObject* batch_get_price_func(PyObject *self, PyObject *args) {
     return result;
 }
 
+/* 前缀和 + 缩放运算（用于逐笔成交价格计算） */
+PyObject* prefix_sum_scale_func(PyObject *self, PyObject *args) {
+    PyObject *diffs_obj;
+    const char *operation = "divide";
+    double custom_scale = 0.0;
+
+    if (!PyArg_ParseTuple(args, "O|sd", &diffs_obj, &operation, &custom_scale)) {
+        return NULL;
+    }
+
+    PyObject *seq = PySequence_Fast(diffs_obj, "diffs must be a sequence");
+    if (seq == NULL) {
+        return NULL;
+    }
+
+    Py_ssize_t count = PySequence_Fast_GET_SIZE(seq);
+    PyObject **items = PySequence_Fast_ITEMS(seq);
+
+    if (count == 0) {
+        Py_DECREF(seq);
+        return PyList_New(0);
+    }
+
+    double scale_factor = 100.0;
+    if (operation && strcmp(operation, "divide") == 0) {
+        scale_factor = 100.0;
+    } else if (operation && (strcmp(operation, "divide_by_100") == 0)) {
+        scale_factor = 100.0;
+    } else if (operation && strcmp(operation, "divide_by_1000") == 0) {
+        scale_factor = 1000.0;
+    } else if (operation && strcmp(operation, "divide_by_10000") == 0) {
+        scale_factor = 10000.0;
+    } else if (operation && strcmp(operation, "scale") == 0) {
+        if (custom_scale == 0.0) {
+            Py_DECREF(seq);
+            PyErr_SetString(PyExc_ValueError, "scale operation requires non-zero custom scale");
+            return NULL;
+        }
+        scale_factor = custom_scale;
+    } else {
+        Py_DECREF(seq);
+        PyErr_SetString(PyExc_ValueError, "Unsupported operation for prefix_sum_scale");
+        return NULL;
+    }
+
+    if (scale_factor == 0.0) {
+        Py_DECREF(seq);
+        PyErr_SetString(PyExc_ZeroDivisionError, "scale factor must not be zero");
+        return NULL;
+    }
+
+    PyObject *result_list = PyList_New(count);
+    if (result_list == NULL) {
+        Py_DECREF(seq);
+        return NULL;
+    }
+
+    long long cumulative = 0;
+
+    for (Py_ssize_t i = 0; i < count; i++) {
+        PyObject *item = items[i];
+        long value = PyLong_AsLong(item);
+        if (PyErr_Occurred()) {
+            Py_DECREF(seq);
+            Py_DECREF(result_list);
+            return NULL;
+        }
+
+        cumulative += (long long)value;
+        double scaled = (double)cumulative / scale_factor;
+
+        PyObject *py_value = PyFloat_FromDouble(scaled);
+        if (py_value == NULL) {
+            Py_DECREF(seq);
+            Py_DECREF(result_list);
+            return NULL;
+        }
+
+        PyList_SET_ITEM(result_list, i, py_value);
+    }
+
+    Py_DECREF(seq);
+    return result_list;
+}
+

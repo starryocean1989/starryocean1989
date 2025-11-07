@@ -30,13 +30,20 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Callable, Union
+from typing import Any, Dict, List, Optional, Callable, Union, TYPE_CHECKING
 
 from backend.core.service_base import BaseService
 from backend.core.models import UnifiedMarketData, get_data_model_manager
 from backend.infrastructure.system_vnpy.monitor_system import SystemMonitor
 from backend.infrastructure.system_vnpy import NetworkTester, PortScanner
+from backend.infrastructure.system_vnpy.native_log_pipeline import (
+    flush_and_close as flush_native_log_pipeline,
+    try_install as try_install_native_log_pipeline,
+)
 from backend.services.database_adapter import get_db_manager
+
+if TYPE_CHECKING:
+    from backend.infrastructure.system_vnpy.native_log_pipeline import NativePipelineAdapter
 from backend.core.config import get_settings
 
 # 专用logger
@@ -513,6 +520,10 @@ class LogManager:
         self._batch_lock = threading.RLock()  # 使用可重入锁，避免死锁
         self._batch_timer: Optional[threading.Timer] = None
 
+        # Handler 引用
+        self._python_handler: Optional[logging.Handler] = None
+        self._native_adapter: Optional["NativePipelineAdapter"] = None
+
         # 处理器注册标志
         self._handler_registered: bool = False
 
@@ -530,10 +541,27 @@ class LogManager:
 
             # 创建自定义日志处理器
             log_handler = LogRecordHandler(self)
+            self._python_handler = log_handler
 
-            # 添加到根日志记录器
             root_logger = logging.getLogger()
-            root_logger.addHandler(log_handler)
+
+            native_adapter = try_install_native_log_pipeline(
+                python_handler=log_handler,
+                db_path=self.db_path,
+                event_callback=self.publish_log_record if self.event_engine else None,
+                batch_size=int(os.getenv("NATIVE_LOG_PIPELINE_BATCH", "128")),
+                flush_interval_ms=int(os.getenv("NATIVE_LOG_PIPELINE_FLUSH_MS", "500")),
+                logger=self.logger,
+            )
+
+            if native_adapter and native_adapter.handler:
+                root_logger.addHandler(native_adapter.handler)
+                self._native_adapter = native_adapter
+                self.logger.info("native_log_pipeline 扩展已启用")
+            else:
+                root_logger.addHandler(log_handler)
+                self._native_adapter = None
+
             root_logger.setLevel(logging.DEBUG)
 
             # 🔧 修复：启动定期刷新定时器，确保少量日志也能写入数据库
@@ -595,9 +623,31 @@ class LogManager:
 
             # 移除日志处理器
             root_logger = logging.getLogger()
+            if self._native_adapter and self._native_adapter.handler:
+                try:
+                    root_logger.removeHandler(self._native_adapter.handler)
+                except (ValueError, AttributeError):
+                    pass
+                try:
+                    self._native_adapter.close()
+                except Exception as exc:  # noqa: BLE001
+                    self.logger.debug("native_log_pipeline 关闭异常: %s", exc)
+                finally:
+                    self._native_adapter = None
+
+            if self._python_handler:
+                try:
+                    root_logger.removeHandler(self._python_handler)
+                except (ValueError, AttributeError):
+                    pass
+                finally:
+                    self._python_handler = None
+
             for handler in root_logger.handlers[:]:
                 if isinstance(handler, LogRecordHandler):
                     root_logger.removeHandler(handler)
+
+            flush_native_log_pipeline(self.logger)
 
             self.logger.info("日志管理系统已关闭")
 
@@ -6549,7 +6599,7 @@ class SystemManagerService(BaseService):
                     extra={"log_type": "STAGE_NODE", "scenario": "tdx_data_read"},
                 )
 
-                # DEBUG日志（只写入AI日志文件）
+# DEBUG日志（只写入事件日志文件）
                 self.logger.debug(
                     "[TDX-READ-SERVICE] 开始读取TDX数据",
                     extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},

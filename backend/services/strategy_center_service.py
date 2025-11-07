@@ -1481,6 +1481,7 @@ class MyPortfolioStrategy(StrategyTemplate):
 
             # ✅ 开始事件日志流程（记录启动信息）
             ai_log_started = False
+            event_log_file = None
             try:
                 event_log_file = start_event_process(
                     "backtest_run",
@@ -1541,6 +1542,7 @@ class MyPortfolioStrategy(StrategyTemplate):
                     "start_time": datetime.now(),
                     "progress": 0,  # 真实进度，从0开始
                     "result": None,
+                    "event_log_file": str(event_log_file) if event_log_file else None,
                 }
                 self._backtest_tasks[task_id] = task_data
 
@@ -1593,6 +1595,13 @@ class MyPortfolioStrategy(StrategyTemplate):
                             f"事件日志文件（回测执行）: {ai_log_file}",
                             extra={"log_type": "SYSTEM", "scenario": "backtest_execution"},
                         )
+                        # 将执行阶段事件日志文件写入任务数据，供UI轮询读取
+                        try:
+                            task = self._backtest_tasks.get(task_id)
+                            if task is not None:
+                                task["event_log_file"] = str(ai_log_file)
+                        except Exception:
+                            pass
                     except Exception as e:
                         self.logger.warning(
                             f"启动事件日志流程失败: {e}",
@@ -2049,6 +2058,7 @@ class MyPortfolioStrategy(StrategyTemplate):
                     "success": True,
                     "task_id": task_id,
                     "message": "回测已启动",
+                    "event_log_file": str(event_log_file) if event_log_file else None,
                 }
 
             except Exception as e:
@@ -2116,6 +2126,31 @@ class MyPortfolioStrategy(StrategyTemplate):
         except Exception as e:
             self._log_error("渲染回测结果", e)
             return {"success": False, "message": str(e)}
+
+    def get_backtest_status(self, task_id: str) -> Dict[str, Any]:
+        """查询回测任务状态和进度（包含事件日志路径）.
+
+        Args:
+            task_id: 回测任务ID
+
+        Returns:
+            Dict: 当前任务状态，包括`status`、`progress`、`result`、`event_log_file`等
+        """
+        try:
+            task = self._backtest_tasks.get(task_id)
+            if not task:
+                return {}
+
+            return {
+                "task_id": task_id,
+                "status": task.get("status", "unknown"),
+                "progress": task.get("progress", 0),
+                "result": task.get("result", {}),
+                "event_log_file": task.get("event_log_file"),
+            }
+        except Exception as e:
+            self._log_error("获取回测状态", e, task_id=task_id)
+            return {}
 
     def _stop_all_backtests(self):
         """停止所有回测任务."""

@@ -21,12 +21,13 @@ result = await client.call_async("get_kline_data", symbol="000001.SZ", start_dat
 """
 
 import asyncio
+import base64
 import json
 import logging
 import time
 import uuid
-from typing import Any, Dict, Optional, Union
-from concurrent.futures import ThreadPoolExecutor, Future
+from concurrent.futures import Future, ThreadPoolExecutor
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 import threading
 
 # 高性能JSON库（优先使用orjson）
@@ -45,6 +46,37 @@ except ImportError:
     IPC_AVAILABLE = False
     AsyncIPCPipe = None
 
+# 原生RPC桥接
+try:
+    from backend.infrastructure.native.native_rpc_bridge import (
+        RPC_BRIDGE_AVAILABLE,
+        create_request_header,
+        get_method_id,
+        get_method_name,
+    )
+except ImportError:  # pragma: no cover - C 扩展缺失时降级
+    RPC_BRIDGE_AVAILABLE = False  # type: ignore
+
+    def create_request_header(method_id: int, payload_size: int) -> Dict[str, Any]:  # type: ignore
+        raise ImportError("native_rpc_bridge not available")
+
+
+    def get_method_id(method_name: str) -> int:  # type: ignore
+        raise ImportError("native_rpc_bridge not available")
+
+
+    def get_method_name(method_id: int) -> Optional[str]:  # type: ignore
+        return None
+
+# RPC 协议封装
+from backend.infrastructure.data_module_vnpy.rpc_protocol import (
+    FLAG_BATCH,
+    RPCResponse,
+    attach_binary_fields,
+    decode_response,
+    encode_native_request,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -62,6 +94,8 @@ class DataProcessClient:
         self._response_futures: Dict[str, asyncio.Future] = {}
         self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="data_client")
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._native_enabled = RPC_BRIDGE_AVAILABLE
+        self._method_id_cache: Dict[str, int] = {}
 
         # 连接配置
         self._connect_timeout = 5.0
@@ -75,7 +109,126 @@ class DataProcessClient:
         else:
             logger.warning("⚠️ orjson不可用，使用标准json库（降级模式）")
 
+        if self._native_enabled:
+            logger.info("✅ 原生RPC协议已启用 (native_rpc_bridge)")
+        else:
+            logger.info("ℹ️ 使用 JSON RPC 协议模式")
+
         logger.info("数据进程客户端已创建")
+
+    # ==================== 底层辅助方法 ====================
+
+    def _serialize_json(self, payload: Dict[str, Any]) -> bytes:
+        if HAS_ORJSON:
+            return JSON_ENCODER.dumps(payload)
+        return JSON_ENCODER.dumps(payload, ensure_ascii=False).encode("utf-8")  # type: ignore[call-arg]
+
+    def _deserialize_json(self, payload: bytes) -> Dict[str, Any]:
+        if HAS_ORJSON:
+            return JSON_ENCODER.loads(payload)
+        return json.loads(payload.decode("utf-8"))
+
+    def _get_method_id(self, method: str) -> Optional[int]:
+        if not self._native_enabled:
+            return None
+        cached = self._method_id_cache.get(method)
+        if cached:
+            return cached
+        try:
+            method_id = int(get_method_id(method))
+        except Exception:
+            logger.debug("native_rpc_bridge 无法获取方法ID，回退到JSON: %s", method)
+            return None
+        if method_id <= 0:
+            return None
+        self._method_id_cache[method] = method_id
+        return method_id
+
+    def _build_request_message(
+        self,
+        method: str,
+        params: Dict[str, Any],
+        *,
+        extra_metadata: Optional[Dict[str, Any]] = None,
+        request_flags: int = 0,
+    ) -> Tuple[Union[int, str], bytes, bool]:
+        method_id = self._get_method_id(method)
+        if method_id is not None:
+            try:
+                request_id, message = encode_native_request(
+                    method_id,
+                    params,
+                    create_header=create_request_header,
+                    method_name=method,
+                    extra_metadata=extra_metadata,
+                    flags=request_flags,
+                )
+                return request_id, message, True
+            except Exception:  # pragma: no cover - C 扩展异常时回退
+                logger.debug("原生RPC编码失败，回退JSON协议", exc_info=True)
+                self._native_enabled = False
+
+        request_id = str(uuid.uuid4())
+        request_payload = {
+            "id": request_id,
+            "method": method,
+            "params": params,
+            "timestamp": time.time(),
+        }
+        if extra_metadata:
+            request_payload.update(extra_metadata)
+        message = self._serialize_json(request_payload)
+        return request_id, message, False
+
+    def _parse_response_buffer(
+        self,
+        response_bytes: bytes,
+        *,
+        expect_native: bool,
+        expected_request_id: Union[int, str],
+    ) -> Any:
+        if expect_native:
+            decoded: RPCResponse = decode_response(response_bytes)
+            if decoded.request_id != expected_request_id:
+                logger.warning(
+                    "响应ID不匹配: 期望 %s, 实际 %s", expected_request_id, decoded.request_id
+                )
+            metadata = decoded.metadata or {}
+            binary_fields = metadata.get("binary_fields") if isinstance(metadata, dict) else None
+            if binary_fields and decoded.payload is not None:
+                attach_binary_fields(metadata, binary_fields, decoded.payload)
+                # 避免调用方看到内部字段
+                metadata.pop("binary_fields", None)
+
+            if decoded.error:
+                raise RuntimeError(f"RPC调用失败: {decoded.error}")
+
+            return metadata.get("result") if isinstance(metadata, dict) else decoded.result
+
+        response_payload = self._deserialize_json(response_bytes)
+        if response_payload.get("id") != expected_request_id:
+            logger.warning(
+                "响应ID不匹配: 期望 %s, 实际 %s",
+                expected_request_id,
+                response_payload.get("id"),
+            )
+
+        if response_payload.get("error"):
+            raise RuntimeError(f"RPC调用失败: {response_payload['error']}")
+
+        result = response_payload.get("result")
+        if (
+            isinstance(result, dict)
+            and result.get("transport") == "base64"
+            and isinstance(result.get("data"), str)
+        ):
+            try:
+                decoded_bytes = base64.b64decode(result["data"], validate=True)
+                result["data"] = memoryview(decoded_bytes)
+                result["transport"] = "buffer"
+            except Exception:
+                logger.debug("base64 数据解析失败，保持原样", exc_info=True)
+        return result
 
     async def connect_async(self) -> bool:
         """异步连接到数据进程.
@@ -232,13 +385,8 @@ class DataProcessClient:
             if not await self.connect_async():
                 raise ConnectionError("无法连接到数据进程")
 
-        request_id = str(uuid.uuid4())
-
-        # 构建请求
-        request = {"id": request_id, "method": method, "params": kwargs, "timestamp": time.time()}
-
         # 选择管道（根据方法类型选择）
-        pipe_name = "data_query"  # 默认使用数据查询管道
+        pipe_name = "data_query"
         if method.startswith("calculate_") or method.startswith("compute_"):
             pipe_name = "data_calculation"
 
@@ -246,44 +394,51 @@ class DataProcessClient:
         if not pipe:
             raise ConnectionError(f"管道不可用: {pipe_name}")
 
+        request_id, payload_bytes, use_native = self._build_request_message(
+            method,
+            kwargs,
+            extra_metadata={"protocol": "native_v1"} if self._native_enabled else None,
+        )
+
         try:
-            # 序列化请求（使用orjson优化）
-            if HAS_ORJSON:
-                # orjson.dumps返回bytes，直接使用
-                request_data = orjson.dumps(request)
-            else:
-                # 降级到标准json
-                request_data = json.dumps(request, ensure_ascii=False).encode("utf-8")
-
-            # 发送请求
-            await pipe.write(request_data)
-
-            # 读取响应（带超时）
+            await pipe.write(payload_bytes)
             response_data = await asyncio.wait_for(pipe.read(), timeout=self._call_timeout)
-
-            # 反序列化响应（使用orjson优化）
-            if HAS_ORJSON:
-                response = orjson.loads(response_data)
-            else:
-                # 降级到标准json
-                response = json.loads(response_data.decode("utf-8"))
-
-            # 验证响应ID
-            if response.get("id") != request_id:
-                logger.warning(f"响应ID不匹配: 期望{request_id}, 收到{response.get('id')}")
-
-            # 处理响应
-            if response.get("error"):
-                error = response["error"]
-                raise Exception(f"RPC调用失败: {error}")
-
-            return response.get("result")
-
-        except asyncio.TimeoutError:
-            raise TimeoutError(f"RPC调用超时: {method}")
-        except Exception as e:
-            logger.error(f"RPC调用失败: {method}, 错误: {e}", exc_info=True)
+            return self._parse_response_buffer(
+                response_data,
+                expect_native=use_native,
+                expected_request_id=request_id,
+            )
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError(f"RPC调用超时: {method}") from exc
+        except Exception as exc:
+            logger.error(f"RPC调用失败: {method}, 错误: {exc}", exc_info=True)
             raise
+
+    async def call_many_async(
+        self,
+        method: str,
+        params_list: Sequence[Dict[str, Any]],
+    ) -> List[Any]:
+        """批量异步RPC调用（顺序执行，复用同一连接）."""
+
+        if not params_list:
+            return []
+        results: List[Any] = []
+        for params in params_list:
+            if not isinstance(params, dict):
+                raise TypeError("params_list 中的元素必须为 dict")
+            result = await self.call_async(method, **params)
+            results.append(result)
+        return results
+
+    def call_many(self, method: str, params_list: Sequence[Dict[str, Any]]) -> List[Any]:
+        """批量同步RPC调用."""
+
+        if not self._connected and not self.connect():
+            raise ConnectionError("无法连接到数据进程")
+
+        loop = asyncio.get_event_loop()
+        return loop.run_until_complete(self.call_many_async(method, params_list))
 
     def __enter__(self):
         """上下文管理器入口."""

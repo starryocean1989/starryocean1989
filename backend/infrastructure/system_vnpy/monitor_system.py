@@ -4321,7 +4321,7 @@ class BandwidthMonitor:
             stage_logger = logging.getLogger("task.manual_speedtest.stage")
 
             # TODO: 使用事件日志流程上下文管理器（当前不可用）
-            # 执行带宽测试（无AI日志）
+# 执行带宽测试（无事件日志）
             # 阶段节点日志（输出到Terminal）
             stage_logger.info(
                 "📍 带宽测试开始: 正在连接到测速服务器...",
@@ -4467,15 +4467,15 @@ class BandwidthMonitor:
                 )
 
                 return result
-                # TODO: 注释掉AI日志except块（当前不可用）
+# TODO: 注释掉事件日志 except 块（当前不可用）
                 # except Exception as ai_log_error:
-                #     # AI日志初始化失败，继续执行测试（降级模式）
+#     # 事件日志初始化失败，继续执行测试（降级模式）
                 #     logger.warning(
-                #         f"[BANDWIDTH] AI日志初始化失败，继续测试（降级模式）: {ai_log_error}",
+#         f"[BANDWIDTH] 事件日志初始化失败，继续测试（降级模式）: {ai_log_error}",
                 #         extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
                 #     )
                 #     logger.debug(
-                #         f"[BANDWIDTH] AI日志异常详情: {type(ai_log_error).__name__}: {str(ai_log_error)}",
+#         f"[BANDWIDTH] 事件日志异常详情: {type(ai_log_error).__name__}: {str(ai_log_error)}",
                 #         extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
                 #     )
 

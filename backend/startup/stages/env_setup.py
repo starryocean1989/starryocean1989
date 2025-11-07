@@ -60,7 +60,7 @@ class EnvSetupStage(StartupStage):
             sys.dont_write_bytecode = True
             logger.info("✅ Python字节码缓存已禁用", extra={"log_type": "STAGE_NODE"})
             
-            # DEBUG日志（只写入AI日志文件）
+# DEBUG日志（只写入事件日志文件）
             logger.debug(
                 f"[ENV-SETUP] Python解释器: {sys.executable}",
                 extra={"log_type": "SYSTEM", "scenario": "application_startup"}
@@ -104,7 +104,7 @@ class EnvSetupStage(StartupStage):
                 )
             logger.info("✅ 项目路径已添加到sys.path", extra={"log_type": "STAGE_NODE"})
             
-            # DEBUG日志（只写入AI日志文件）
+# DEBUG日志（只写入事件日志文件）
             logger.debug(
                 f"[ENV-SETUP] 项目根目录: {project_root}",
                 extra={"log_type": "SYSTEM", "scenario": "application_startup"}
@@ -169,7 +169,7 @@ class EnvSetupStage(StartupStage):
             os.environ["CONFIG_FILE"] = str(config_file)
             logger.info("✅ 配置文件路径已设置", extra={"log_type": "STAGE_NODE"})
             
-            # DEBUG日志（只写入AI日志文件）
+# DEBUG日志（只写入事件日志文件）
             logger.debug(
                 f"[ENV-SETUP] 配置文件路径: {config_file}",
                 extra={"log_type": "SYSTEM", "scenario": "application_startup"}
@@ -256,7 +256,7 @@ class EnvSetupStage(StartupStage):
                 extra={"log_type": "STAGE_NODE"},
             )
             
-            # 错误日志（输出到Terminal和AI日志文件）
+# 错误日志（输出到Terminal和事件日志文件）
             logger.error(
                 f"❌ 环境准备失败: {str(e)}",
                 extra={"log_type": "ALERT", "scenario": "application_startup"},

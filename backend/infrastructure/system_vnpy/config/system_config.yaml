@@ -86,9 +86,9 @@ logging:
   # 日志级别
   level: "INFO"                  # DEBUG, INFO, WARNING, ERROR, CRITICAL
 
-  # AI日志配置
+# 事件日志配置（兼容 ai_logging 配置项）
   ai_logging:
-    enabled: true                # 启用AI日志
+enabled: true                # 启用事件日志
     progress_throttle: 0.1       # 进度节流间隔（秒）
 
 # 性能配置

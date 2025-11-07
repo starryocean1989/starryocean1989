@@ -232,7 +232,7 @@ class UIActivationStage(StartupStage):
                 f"[UI-ACTIVATION] UI激活阶段发生异常: {type(e).__name__}: {str(e)}",
                 extra={"log_type": "SYSTEM", "scenario": "application_startup"}
             )
-            # 错误日志（输出到Terminal和AI日志文件）
+# 错误日志（输出到Terminal和事件日志文件）
             logger.error(
                 f"❌ UI激活失败: {str(e)}",
                 extra={"log_type": "ALERT", "scenario": "application_startup"},

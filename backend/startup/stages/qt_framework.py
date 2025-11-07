@@ -310,7 +310,7 @@ class QtFrameworkStage(StartupStage):
         except Exception as e:
             elapsed_ms = (time.time() - start_time) * 1000
 
-            # 错误日志（输出到Terminal和AI日志文件）
+# 错误日志（输出到Terminal和事件日志文件）
             logger.error(
                 f"[QT-INIT] ❌ Qt框架初始化失败: {str(e)}",
                 extra={"log_type": "ALERT", "scenario": "application_startup"},

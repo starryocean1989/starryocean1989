@@ -524,7 +524,7 @@ class BackendInitStage(StartupStage):
         except Exception as e:
             elapsed_ms = (time.time() - start_time) * 1000
 
-            # 错误日志（输出到Terminal和AI日志文件）
+# 错误日志（输出到Terminal和事件日志文件）
             logger.debug(
                 f"[BACKEND-INIT] 后端服务初始化失败: {type(e).__name__}: {str(e)}",
                 extra={"log_type": "SYSTEM", "scenario": scenario},

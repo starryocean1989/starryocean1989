@@ -10,6 +10,7 @@
 """
 
 import logging
+import os
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional, List, Union
 from datetime import datetime
@@ -27,6 +28,70 @@ from backend.core.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# 原生批量转换扩展探测
+try:
+    import native_vnpy_conversion as _native_vnpy_conversion  # type: ignore
+
+    NATIVE_VNPY_CONVERSION_AVAILABLE = True
+except Exception:  # noqa: BLE001 - 仅用于探测
+    _native_vnpy_conversion = None  # type: ignore
+    NATIVE_VNPY_CONVERSION_AVAILABLE = False
+
+_NATIVE_VNPY_OUTPUT_MODE = os.getenv("NATIVE_VNPY_CONVERSION_OUTPUT", "dict").strip().lower()
+
+
+def _should_use_native_vnpy_conversion() -> bool:
+    if not NATIVE_VNPY_CONVERSION_AVAILABLE:
+        return False
+
+    value = os.getenv("NATIVE_VNPY_CONVERSION", "1").strip().lower()
+    return value not in {"0", "false", "off"}
+
+
+def _native_batch_convert(data_list: List[Any], data_type: str) -> Optional[List[Dict[str, Any]]]:
+    if not _should_use_native_vnpy_conversion():
+        return None
+
+    if _NATIVE_VNPY_OUTPUT_MODE and _NATIVE_VNPY_OUTPUT_MODE not in {"dict", ""}:
+        logger.debug(
+            "native_vnpy_conversion 当前仅支持 dict 输出，检测到模式 %s，回退到 Python 实现",
+            _NATIVE_VNPY_OUTPUT_MODE,
+        )
+        return None
+
+    if not data_list:
+        return []
+
+    if _native_vnpy_conversion is None:
+        return None
+
+    convert_fn = getattr(_native_vnpy_conversion, "batch_convert", None)
+    if convert_fn is None:
+        convert_fn = getattr(_native_vnpy_conversion, "convert_batch", None)
+
+    if convert_fn is None:
+        logger.debug("native_vnpy_conversion 未提供 batch_convert 接口，回退到 Python 实现")
+        return None
+
+    try:
+        try:
+            result = convert_fn(data_list, data_type=data_type, output="dict")
+        except TypeError:
+            result = convert_fn(data_list, data_type=data_type)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("native_vnpy_conversion 调用失败: %s", exc, exc_info=True)
+        return None
+
+    if isinstance(result, list) and all(isinstance(item, dict) for item in result):
+        return result
+
+    logger.debug(
+        "native_vnpy_conversion 返回结果类型不受支持 (%s)，回退到 Python 实现",
+        type(result),
+    )
+    return None
 
 
 # =============================================================================
@@ -592,6 +657,10 @@ class DataConverter:
     def batch_convert_vnpy_data(data_list: List[Any], data_type: str) -> List[Dict[str, Any]]:
         """批量转换VnPy数据."""
         try:
+            native_result = _native_batch_convert(data_list, data_type)
+            if native_result is not None:
+                return native_result
+
             converted_data = []
 
             for data in data_list:

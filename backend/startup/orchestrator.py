@@ -117,6 +117,37 @@ class StartupOrchestrator:
             hub = get_logging_hub()
             if hub:
                 hub.set_stage("startup")
+            # 🔧 兜底检查：如果事件日志流程未启动，则启动application_startup事件
+            try:
+                from backend.infrastructure.system_vnpy.logging_system import (
+                    get_event_log_handler,
+                    start_event_process,
+                )
+
+                handler = get_event_log_handler()
+                need_start = True
+                # 若当前事件文件存在且未关闭，则认为事件流程已启动
+                if hasattr(handler, "_current_event_file"):
+                    current_file = getattr(handler, "_current_event_file", None)
+                    if current_file is not None and not getattr(current_file, "closed", True):
+                        need_start = False
+
+                if need_start:
+                    start_event_process("application_startup", {"mode": "orchestrator"})
+                    self.logger.debug(
+                        "[STARTUP] 兜底启动事件日志流程(application_startup)",
+                        extra={"log_type": "SYSTEM", "scenario": scenario},
+                    )
+                else:
+                    self.logger.debug(
+                        "[STARTUP] 检测到事件日志已启动，跳过兜底", 
+                        extra={"log_type": "SYSTEM", "scenario": scenario},
+                    )
+            except Exception as e:
+                self.logger.warning(
+                    f"[STARTUP] ⚠️ 事件日志兜底启动失败: {e}",
+                    extra={"log_type": "SYSTEM", "scenario": scenario},
+                )
             # 不再在这里启动event_log_process，因为initialize_logging_hub_complete已经启动了
             context_manager = nullcontext()
         except ImportError:

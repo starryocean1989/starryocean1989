@@ -640,7 +640,7 @@ class DataCenterService(BaseService, LoggerMixin):
                     scenario="manual_speedtest",
                 )
 
-                # DEBUG/INFO日志（只写入AI日志文件）
+# DEBUG/INFO日志（只写入事件日志文件）
                 self.logger.debug(
                     "[SPEEDTEST-SERVICE] 开始重新测速服务器池",
                     extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
@@ -2795,7 +2795,7 @@ class DataCenterService(BaseService, LoggerMixin):
                     start_date=start_date,
                 )
 
-                # DEBUG/INFO日志（只写入AI日志文件）
+# DEBUG/INFO日志（只写入事件日志文件）
                 self.logger.debug(
                     f"[DATA-DOWNLOAD-SERVICE] 开始启动增量数据下载: start_date={start_date}",
                     extra={"log_type": "SYSTEM", "scenario": "data_download"},
@@ -4113,7 +4113,7 @@ class DataCenterService(BaseService, LoggerMixin):
                     scenario="manual_data_scan",
                 )
 
-                # DEBUG日志（只写入AI日志文件）
+# DEBUG日志（只写入事件日志文件）
                 self.logger.debug(
                     "[SCAN-SERVICE] 开始手动数据扫描",
                     extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},
@@ -6160,7 +6160,7 @@ class DataCenterService(BaseService, LoggerMixin):
                     scenario="manual_data_scan",
                 )
 
-                # DEBUG日志（只写入AI日志文件）
+# DEBUG日志（只写入事件日志文件）
                 self.logger.debug(
                     "[DATA-SCAN] 开始手动数据扫描",
                     extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},

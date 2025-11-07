@@ -361,7 +361,7 @@ from backend.startup.ui_startup import StartupCoordinator, BootOrchestrator
 - 并发启动时日志按顺序展示
 - 超时自动输出（默认30秒）
 
-#### 3.9.3 StartupAILogHandler（启动AI日志处理器）
+#### 3.9.3 EventLogFileHandler（事件日志处理器）
 
 **职责**:
 - 每次启动生成一个日志文件到 `logs/`
@@ -584,7 +584,7 @@ orchestrator.on_ready("backend_ready", callback_function)
 
 - `MemoryHandler` 缓冲日志系统初始化前的日志（容量10000条）
 - `OrderedLogQueue` 支持日志滞后处理（超时30秒）
-- 所有日志最终都会输出到Terminal和AI日志文件
+- 所有日志最终都会输出到Terminal和事件日志文件
 
 #### 6.2.3 简洁的Terminal输出
 
@@ -594,7 +594,7 @@ Terminal只显示：
 - 阶段错误日志（❌ 标记）
 - WARNING及以上级别的日志
 
-#### 6.2.4 详细的AI日志文件
+#### 6.2.4 详细的事件日志文件
 
 每次启动生成一个完整的日志文件到 `logs/`：
 - 文件名格式：`application_startup_YYYYMMDD_HHMMSS.log`
@@ -661,7 +661,7 @@ class MyNewWorker(StartupWorker):
 可以通过修改 `StartupLogger` 的配置：
 - `configure_console_output()`: 配置Terminal输出类型
 - `OrderedLogQueue`: 调整超时时间（默认30秒）
-- `StartupAILogHandler`: 自定义AI日志文件格式
+- `EventLogFileHandler`: 自定义事件日志文件格式
 
 ### 8.3 如何跳过某个阶段？
 

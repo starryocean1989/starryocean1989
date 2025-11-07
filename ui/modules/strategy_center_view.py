@@ -20,8 +20,8 @@ from typing import Any, Dict, List, Optional, Set
 # UI层专用logger
 logger_user = logging.getLogger("ui.user_feedback")
 
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QFont, QKeySequence, QShortcut, QTextCursor
+from PySide6.QtCore import Qt, QTimer, Signal, QUrl
+from PySide6.QtGui import QFont, QKeySequence, QShortcut, QTextCursor, QDesktopServices
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -1995,12 +1995,15 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         self.end_date_input: Optional[QLineEdit] = None
         self.run_backtest_btn: Optional[QPushButton] = None
         self.stop_backtest_btn: Optional[QPushButton] = None
+        self.open_event_log_btn: Optional[QPushButton] = None
+        self.open_log_folder_btn: Optional[QPushButton] = None
         self.backtest_progress: Optional[QProgressBar] = None
         self.backtest_status_label: Optional[QLabel] = None
         self.backtest_results: Optional[QTextEdit] = None
 
         # 回测任务追踪
         self.current_backtest_task_id: Optional[str] = None
+        self.current_backtest_event_log_file: Optional[str] = None
         self.backtest_timer: Optional[QTimer] = None
 
         # 调用父类初始化
@@ -2300,6 +2303,19 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         self.stop_backtest_btn.clicked.connect(self._stop_backtest)
         self.stop_backtest_btn.setEnabled(False)
         control_layout.addWidget(self.stop_backtest_btn)
+
+        # 查看事件日志
+        self.open_event_log_btn = QPushButton("📘 查看事件日志")
+        self.open_event_log_btn.setToolTip("打开本次回测的事件日志文件或日志文件夹")
+        self.open_event_log_btn.clicked.connect(self._open_backtest_event_log)
+        self.open_event_log_btn.setEnabled(False)
+        control_layout.addWidget(self.open_event_log_btn)
+
+        # 打开日志文件夹
+        self.open_log_folder_btn = QPushButton("📂 打开日志文件夹")
+        self.open_log_folder_btn.setToolTip("打开日志文件夹")
+        self.open_log_folder_btn.clicked.connect(self._open_log_folder)
+        control_layout.addWidget(self.open_log_folder_btn)
 
         control_layout.addStretch()
 
@@ -2770,6 +2786,10 @@ class StrategyCenter(BaseWidget, LoggerMixin):
 
         if result.get("success"):
             self.current_backtest_task_id = result.get("task_id")
+            # 记录事件日志文件路径（若服务提供）
+            self.current_backtest_event_log_file = result.get("event_log_file")
+            if self.open_event_log_btn:
+                self.open_event_log_btn.setEnabled(bool(self.current_backtest_event_log_file))
             self.show_info("回测已启动，正在后台运行...")
 
             # 启动进度监控定时器
@@ -2782,6 +2802,8 @@ class StrategyCenter(BaseWidget, LoggerMixin):
                 self.run_backtest_btn.setEnabled(True)
             if self.stop_backtest_btn:
                 self.stop_backtest_btn.setEnabled(False)
+            if self.open_event_log_btn:
+                self.open_event_log_btn.setEnabled(False)
 
     def _check_backtest_progress(self):
         """检查回测进度."""
@@ -2792,6 +2814,13 @@ class StrategyCenter(BaseWidget, LoggerMixin):
 
         if not status:
             return
+
+        # 优先使用状态中的事件日志路径
+        status_event_log_file = status.get("event_log_file")
+        if status_event_log_file:
+            self.current_backtest_event_log_file = status_event_log_file
+            if self.open_event_log_btn:
+                self.open_event_log_btn.setEnabled(True)
 
         progress = status.get("progress", 0)
         task_status = status.get("status", "unknown")
@@ -2856,6 +2885,33 @@ class StrategyCenter(BaseWidget, LoggerMixin):
             self.run_backtest_btn.setEnabled(True)
         if self.stop_backtest_btn:
             self.stop_backtest_btn.setEnabled(False)
+        if self.open_event_log_btn:
+            self.open_event_log_btn.setEnabled(False)
+
+    def _open_backtest_event_log(self):
+        """打开本次回测的事件日志文件或日志目录."""
+        # 优先打开具体事件日志文件
+        target_path = None
+        if self.current_backtest_event_log_file:
+            target_path = self.current_backtest_event_log_file
+        else:
+            # 兜底：打开logs目录
+            target_path = str(Path("logs").absolute())
+
+        try:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(target_path))
+            self.show_info("已打开事件日志")
+        except Exception as e:
+            self.show_warning(f"无法打开事件日志: {e}")
+
+    def _open_log_folder(self):
+        """打开日志文件夹."""
+        try:
+            folder = str(Path("logs").absolute())
+            QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+            self.show_info("已打开日志文件夹")
+        except Exception as e:
+            self.show_warning(f"无法打开日志文件夹: {e}")
 
     def refresh_data(self):
         """刷新数据."""

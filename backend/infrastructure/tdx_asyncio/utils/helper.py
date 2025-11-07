@@ -571,16 +571,28 @@ def configure_subprocess_logging(
         hub = get_logging_hub()
         root_logger = logging.getLogger()
 
-        # 清理旧的handler，避免重复输出或绕过统一路由
-        for handler in root_logger.handlers[:]:
-            root_logger.removeHandler(handler)
-            try:
-                handler.close()
-            except Exception:
-                pass
+        # 仅在缺少LoggingHub时注入，避免误清理其他handlers（如MemoryHandler/NativePipeline等）
+        try:
+            _LoggingHubType = type(hub)
+        except Exception:
+            _LoggingHubType = None
 
-        root_logger.addHandler(hub)
+        has_hub = False
+        for h in root_logger.handlers:
+            if _LoggingHubType is not None and isinstance(h, _LoggingHubType):
+                has_hub = True
+                break
+            # 兜底：直接对象比较，防止类型判断失败
+            if h is hub:
+                has_hub = True
+                break
+
+        if not has_hub:
+            root_logger.addHandler(hub)
+
+        # 确保能够接收所有级别日志（由LoggingHub内部做过滤与路由）
         root_logger.setLevel(logging.DEBUG)
+
         subprocess_logger.warning(
             "⚠️ 未找到日志队列token，已回退为本地LogHub处理（不跨进程）",
             extra=log_extra,

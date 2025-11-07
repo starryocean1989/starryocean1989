@@ -176,7 +176,7 @@ class ReloadSymbolsThread(QThread):
                             extra={"log_type": "STAGE_NODE", "scenario": "refresh_symbol_list"},
                         )
 
-                        # 详细日志（只写入AI日志文件）
+                        # 详细日志（只写入事件日志文件）
                         self.logger.debug(
                             "[SYMBOL-RELOAD] 品种重载工作线程开始",
                             extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
@@ -361,7 +361,7 @@ class DownloadThread(QThread):
                         extra={"log_type": "STAGE_NODE", "scenario": "data_download"},
                     )
 
-                    # 详细日志（只写入AI日志文件）
+                    # 详细日志（只写入事件日志文件）
                     if self.symbols:
                         self.logger.debug(
                             f"[DATA-DOWNLOAD] 开始批量下载: 开始日期={self.start_date}, 品种数={len(self.symbols)}, "
@@ -6209,7 +6209,7 @@ class DataCenter(BaseWidget, LoggerMixin):
                                 extra={"log_type": "STAGE_NODE", "scenario": "manual_data_scan"},
                             )
 
-                            # 详细日志（只写入AI日志文件）
+                            # 详细日志（只写入事件日志文件）
                             self.logger.debug(
                                 "[DATA-SCAN] 开始执行数据扫描...",
                                 extra={"log_type": "SYSTEM", "scenario": "manual_data_scan"},

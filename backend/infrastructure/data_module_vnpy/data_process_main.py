@@ -19,7 +19,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 # 高性能JSON库（优先使用orjson）
 try:
@@ -38,6 +38,40 @@ from backend.infrastructure.system_vnpy.logging_system import (
     setup_subprocess_logging,
 )
 from backend.infrastructure.native.native_serialization import build_dataframe_payload
+from backend.infrastructure.data_module_vnpy.rpc_protocol import (
+    RPCRequest,
+    encode_native_response,
+    decode_request,
+    prepare_json_payload,
+)
+# 原生RPC桥接（用于方法ID映射）
+try:
+    from backend.infrastructure.native.native_rpc_bridge import get_method_name, RPC_BRIDGE_AVAILABLE
+except ImportError:  # pragma: no cover - 构建失败时降级
+    RPC_BRIDGE_AVAILABLE = False  # type: ignore
+
+    def get_method_name(method_id: int) -> Optional[str]:  # type: ignore
+        return None
+
+# 原生指标计算
+try:
+    from backend.infrastructure.native.native_indicator import (
+        INDICATOR_AVAILABLE as NATIVE_INDICATOR_AVAILABLE,
+        calculate_indicator as native_calculate_indicator,
+    )
+except ImportError:
+    NATIVE_INDICATOR_AVAILABLE = False
+    native_calculate_indicator = None  # type: ignore
+
+# 原生风险指标
+try:
+    from backend.infrastructure.native.native_finance_ops import (
+        FINANCE_OPS_AVAILABLE,
+        compute_return_metrics as native_compute_return_metrics,
+    )
+except ImportError:
+    FINANCE_OPS_AVAILABLE = False
+    native_compute_return_metrics = None  # type: ignore
 
 # 添加项目根目录到Python路径（用于独立运行）
 if __name__ == "__main__":
@@ -359,72 +393,89 @@ class DataProcess:
             )
 
     async def _process_batch_requests(self, batch_requests: list) -> list:
-        """批量处理RPC请求
-        
-        Args:
-            batch_requests: 请求数据列表（bytes）
-            
-        Returns:
-            响应数据列表（bytes）
-        """
-        responses = []
-        
+        """批量处理RPC请求并返回序列化响应数据."""
+
+        responses: List[bytes] = []
+
+        method_resolver = get_method_name if RPC_BRIDGE_AVAILABLE else (lambda _: "")
+
         for request_data in batch_requests:
             try:
-                # 解析请求
                 try:
-                    if HAS_ORJSON:
-                        request = orjson.loads(request_data)
-                    else:
-                        if isinstance(request_data, bytes):
-                            request = json.loads(request_data.decode("utf-8"))
-                        else:
-                            request = json.loads(request_data)
-                except (json.JSONDecodeError, UnicodeDecodeError) as e:
-                    logger.warning(f"⚠️ 批量处理: 无效的RPC请求格式: {e}", extra={"log_type": "SYSTEM"})
+                    rpc_request: RPCRequest = decode_request(
+                        request_data,
+                        method_resolver=method_resolver,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "⚠️ 批量处理: 无法解析RPC请求: %s", exc, extra={"log_type": "SYSTEM"}
+                    )
                     continue
-                
-                # 提取请求信息
-                method = request.get("method")
-                params = request.get("params", {})
-                request_id = request.get("id")
-                
-                # 处理请求
+
+                method = rpc_request.method
+                params = rpc_request.params or {}
+                is_native = rpc_request.is_native
+                binary_payload = None
+                response_payload: Any = None
+                error_message: Optional[str] = None
+
                 try:
                     if method == "get_kline_data":
-                        result = await self._handle_get_kline_data(params)
+                        response_payload, binary_payload = await self._handle_get_kline_data(params)
                     elif method == "get_symbol_list":
-                        result = await self._handle_get_symbol_list(params)
+                        response_payload = await self._handle_get_symbol_list(params)
                     else:
-                        result = {"success": False, "message": f"未知方法: {method}"}
-                    
-                    # 构造响应
-                    response = {"id": request_id, "result": result}
-                    
-                except Exception as e:
+                        error_message = f"未知方法: {method}"
+                except Exception as exc:
                     logger.error(
-                        f"❌ 批量处理RPC请求失败: {method}, 错误: {e}",
-                        exc_info=True,
+                        "❌ 批量处理RPC请求失败: %s, 错误: %s",
+                        method,
+                        exc,
                         extra={"log_type": "ALERT"},
+                        exc_info=True,
                     )
-                    # 构造错误响应
-                    response = {"id": request_id, "error": str(e)}
-                
-                # 序列化响应
-                if HAS_ORJSON:
-                    response_data = orjson.dumps(response)
+                    error_message = str(exc)
+
+                if is_native:
+                    if error_message:
+                        response_bytes = encode_native_response(
+                            request_id=rpc_request.request_id,
+                            method_id=rpc_request.method_id,
+                            result=None,
+                            error=error_message,
+                        )
+                    else:
+                        response_bytes = encode_native_response(
+                            request_id=rpc_request.request_id,
+                            method_id=rpc_request.method_id,
+                            result=response_payload,
+                            binary_payload=binary_payload,
+                            binary_field_path=("result", "data") if binary_payload is not None else None,
+                        )
+                    responses.append(response_bytes)
+                    continue
+
+                if error_message:
+                    response_dict = {"id": rpc_request.request_id, "error": error_message}
                 else:
-                    response_data = json.dumps(response, ensure_ascii=False).encode("utf-8")
-                    
-                responses.append(response_data)
-                
-            except Exception as e:
+                    result_payload = response_payload
+                    if binary_payload is not None and isinstance(response_payload, dict):
+                        result_payload = prepare_json_payload(response_payload, binary_payload)
+                    response_dict = {"id": rpc_request.request_id, "result": result_payload}
+
+                if HAS_ORJSON:
+                    responses.append(orjson.dumps(response_dict))
+                else:
+                    responses.append(json.dumps(response_dict, ensure_ascii=False).encode("utf-8"))
+
+            except Exception as exc:
                 logger.error(
-                    f"❌ 批量处理请求异常: {e}",
+                    "❌ 批量处理请求异常: %s",
+                    exc,
                     exc_info=True,
                     extra={"log_type": "ALERT"},
                 )
-        
+
         return responses
     
     async def _handle_calculation_requests(self):
@@ -523,11 +574,11 @@ class DataProcess:
                 f"❌ 处理计算任务请求异常: {e}", exc_info=True, extra={"log_type": "ALERT"}
             )
 
-    async def _handle_get_kline_data(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def _handle_get_kline_data(self, params: Dict[str, Any]) -> Tuple[Dict[str, Any], Optional[memoryview]]:
         """处理获取K线数据请求"""
         try:
             if not self.unified_data_manager:
-                return {"success": False, "message": "UnifiedDataManager未初始化"}
+                return {"success": False, "message": "UnifiedDataManager未初始化"}, None
 
             symbol = params.get("symbol")
             interval = params.get("interval", "1d")
@@ -551,29 +602,50 @@ class DataProcess:
                     prefer_format="arrow" if prefer_format == "arrow" else "records",
                 )
 
-                payload_dict = payload.to_dict()
-                payload_dict.update(
+                if payload.transport == "buffer" and isinstance(payload.data, (memoryview, bytes, bytearray)):
+                    binary_view = payload.data if isinstance(payload.data, memoryview) else memoryview(payload.data)
+                    result_payload: Dict[str, Any] = {
+                        "success": True,
+                        "message": f"获取 {payload.rows} 条数据",
+                        "format": payload.format,
+                        "transport": payload.transport,
+                        "rows": payload.rows,
+                        "columns": payload.columns,
+                        "metadata": payload.metadata,
+                        "data": [],
+                    }
+                    return result_payload, binary_view
+
+                return (
                     {
                         "success": True,
                         "message": f"获取 {payload.rows} 条数据",
-                    }
+                        "format": payload.format,
+                        "transport": payload.transport,
+                        "rows": payload.rows,
+                        "columns": payload.columns,
+                        "metadata": payload.metadata,
+                        "data": payload.data,
+                    },
+                    None,
                 )
-
-                return payload_dict
             else:
-                return {
-                    "success": False,
-                    "message": "数据为空",
-                    "format": "records",
-                    "transport": "json",
-                    "data": [],
-                    "rows": 0,
-                    "columns": [],
-                }
+                return (
+                    {
+                        "success": False,
+                        "message": "数据为空",
+                        "format": "records",
+                        "transport": "json",
+                        "data": [],
+                        "rows": 0,
+                        "columns": [],
+                    },
+                    None,
+                )
 
         except Exception as e:
             logger.error(f"❌ 获取K线数据失败: {e}", exc_info=True, extra={"log_type": "ALERT"})
-            return {"success": False, "message": str(e)}
+            return {"success": False, "message": str(e)}, None
 
     async def _handle_get_symbol_list(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """处理获取品种列表请求"""
@@ -617,33 +689,45 @@ class DataProcess:
 
     def _do_calculate_indicator(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """执行技术指标计算（在线程池中执行）"""
+        data = params.get("data", [])
+        indicator_name = params.get("indicator_name")
+        indicator_params = params.get("params", {})
+
+        if not data:
+            return {"success": False, "message": "数据为空"}
+
+        closes = [float(d.get("close", 0.0)) for d in data]
+
+        if NATIVE_INDICATOR_AVAILABLE and native_calculate_indicator is not None:
+            try:
+                result_native = native_calculate_indicator(indicator_name, closes, **indicator_params)
+                return {
+                    "success": True,
+                    "data": result_native,
+                    "engine": "native_indicator",
+                    "message": f"计算 {indicator_name} 完成",
+                }
+            except Exception:
+                logger.debug("native_indicator 计算失败，回退到talib", exc_info=True)
+
         try:
             import talib
             import numpy as np
 
-            data = params.get("data", [])
-            indicator_name = params.get("indicator_name")
-            indicator_params = params.get("params", {})
+            closes_array = np.array(closes, dtype=float)
 
-            if not data:
-                return {"success": False, "message": "数据为空"}
-
-            # 转换为numpy数组
-            closes = np.array([float(d.get("close", 0)) for d in data])
-
-            # 计算技术指标
             if indicator_name == "SMA":
                 period = indicator_params.get("period", 5)
-                result = talib.SMA(closes, timeperiod=period)
+                result = talib.SMA(closes_array, timeperiod=period)
             elif indicator_name == "EMA":
                 period = indicator_params.get("period", 5)
-                result = talib.EMA(closes, timeperiod=period)
+                result = talib.EMA(closes_array, timeperiod=period)
             elif indicator_name == "MACD":
                 fast = indicator_params.get("fast", 12)
                 slow = indicator_params.get("slow", 26)
                 signal = indicator_params.get("signal", 9)
                 macd, signal_line, hist = talib.MACD(
-                    closes, fastperiod=fast, slowperiod=slow, signalperiod=signal
+                    closes_array, fastperiod=fast, slowperiod=slow, signalperiod=signal
                 )
                 result = {
                     "macd": macd.tolist(),
@@ -652,19 +736,23 @@ class DataProcess:
                 }
             elif indicator_name == "RSI":
                 period = indicator_params.get("period", 14)
-                result = talib.RSI(closes, timeperiod=period)
+                result = talib.RSI(closes_array, timeperiod=period)
             else:
                 return {"success": False, "message": f"未知指标: {indicator_name}"}
 
-            # 转换为列表
             if isinstance(result, dict):
-                result_list = {
+                result_payload = {
                     k: v.tolist() if hasattr(v, "tolist") else v for k, v in result.items()
                 }
             else:
-                result_list = result.tolist() if hasattr(result, "tolist") else result
+                result_payload = result.tolist() if hasattr(result, "tolist") else result
 
-            return {"success": True, "data": result_list, "message": f"计算 {indicator_name} 完成"}
+            return {
+                "success": True,
+                "data": result_payload,
+                "engine": "talib",
+                "message": f"计算 {indicator_name} 完成",
+            }
 
         except ImportError:
             return {"success": False, "message": "talib未安装"}
@@ -710,29 +798,56 @@ class DataProcess:
             # 计算收益率
             returns = np.diff(prices) / prices[:-1]
 
-            # 计算波动率（年化）
-            volatility = np.std(returns) * np.sqrt(252)  # 假设252个交易日
+            volatility = float(np.std(returns) * np.sqrt(252))
 
-            # 计算VaR（Value at Risk）
             var_percentile = (1 - confidence_level) * 100
-            var_value = np.percentile(returns, var_percentile)
-            var_amount = abs(var_value * prices[-1])  # 转换为金额
+            var_value = float(np.percentile(returns, var_percentile))
+            var_amount = abs(var_value * prices[-1])
 
-            # 计算CVaR（Conditional VaR，期望损失）
             cvar_returns = returns[returns <= var_value]
-            cvar_value = np.mean(cvar_returns) if len(cvar_returns) > 0 else var_value
+            cvar_value = float(np.mean(cvar_returns)) if len(cvar_returns) > 0 else var_value
             cvar_amount = abs(cvar_value * prices[-1])
 
-            # 计算最大回撤
             cumulative = np.cumprod(1 + returns)
             running_max = np.maximum.accumulate(cumulative)
             drawdowns = (cumulative - running_max) / running_max
-            max_drawdown = np.min(drawdowns) if len(drawdowns) > 0 else 0.0
+            max_drawdown = float(np.min(drawdowns)) if len(drawdowns) > 0 else 0.0
 
-            # 计算夏普比率（假设无风险利率为3%）
             risk_free_rate = 0.03
-            excess_returns = np.mean(returns) * 252 - risk_free_rate
+            excess_returns = float(np.mean(returns) * 252 - risk_free_rate)
             sharpe_ratio = excess_returns / volatility if volatility > 0 else 0.0
+
+            additional_metrics: Dict[str, Any] = {}
+
+            if FINANCE_OPS_AVAILABLE and native_compute_return_metrics is not None:
+                try:
+                    pnl_series = returns.tolist()
+                    equity_series = cumulative.tolist()
+                    native_metrics = native_compute_return_metrics(
+                        pnl_series,
+                        equity_series,
+                        trading_days_per_year=252,
+                    )
+                    if isinstance(native_metrics, dict) and native_metrics:
+                        volatility = float(native_metrics.get("volatility", volatility))
+                        sharpe_ratio = float(native_metrics.get("sharpe_ratio", sharpe_ratio))
+                        max_drawdown = float(native_metrics.get("max_drawdown", max_drawdown))
+                        additional_metrics.update(
+                            {
+                                "total_return": float(native_metrics.get("total_return", 0.0)),
+                                "annualized_return": float(native_metrics.get("annualized_return", 0.0)),
+                                "calmar_ratio": float(native_metrics.get("calmar_ratio", 0.0)),
+                            }
+                        )
+                except Exception:
+                    logger.debug("native_finance_ops 计算失败，回退到numpy实现", exc_info=True)
+
+            if not additional_metrics:
+                additional_metrics = {
+                    "total_return": float(np.sum(returns)),
+                    "annualized_return": float(np.mean(returns) * 252),
+                    "calmar_ratio": float(sharpe_ratio / abs(max_drawdown)) if max_drawdown else 0.0,
+                }
 
             return {
                 "success": True,
@@ -744,6 +859,7 @@ class DataProcess:
                     "sharpe_ratio": float(sharpe_ratio),
                     "mean_return": float(np.mean(returns)),
                     "std_return": float(np.std(returns)),
+                    **additional_metrics,
                 },
             }
 
