@@ -19,9 +19,10 @@ from backend.startup.workers.base import StartupWorker, WorkerResult
 from backend.startup.context import StartupContext
 from backend.infrastructure.system_vnpy.logging_system import (
     LOGGING_QUEUE_TOKEN_ENV,
+    alert_log,
     get_alert_logger,
     get_configured_logger,
-    get_stage_logger,
+    stage_log,
 )
 
 
@@ -92,15 +93,13 @@ class DataLauncherWorker(StartupWorker):
         start_time = time.time()
 
         try:
-            stage_logger = get_stage_logger("startup.stage", scenario="data_launch")
-
-            stage_logger.info("")
-            stage_logger.info("┌" + "─" * 66 + "┐")
-            stage_logger.info("│ 分支B: 数据进程                                                   │")
-            stage_logger.info("└" + "─" * 66 + "┘")
-            stage_logger.info("")
-
-            stage_logger.info("📍 数据进程启动开始")
+            stage_scenario = "data_launch"
+            stage_log("", scenario=stage_scenario, stacklevel=3)
+            stage_log("┌" + "─" * 66 + "┐", scenario=stage_scenario, stacklevel=3)
+            stage_log("│ 分支B: 数据进程                                                   │", scenario=stage_scenario, stacklevel=3)
+            stage_log("└" + "─" * 66 + "┘", scenario=stage_scenario, stacklevel=3)
+            stage_log("", scenario=stage_scenario, stacklevel=3)
+            stage_log("📍 数据进程启动开始", scenario=stage_scenario, stacklevel=3)
 
             # 启动数据进程
             data_info = await self._launch_data_process(context)
@@ -111,7 +110,11 @@ class DataLauncherWorker(StartupWorker):
 
             elapsed_ms = (time.time() - start_time) * 1000
 
-            stage_logger.info(f"✅ 数据进程完全就绪 ({elapsed_ms/1000:.1f}s)")
+            stage_log(
+                f"✅ 数据进程完全就绪 ({elapsed_ms/1000:.1f}s)",
+                scenario=stage_scenario,
+                stacklevel=3,
+            )
 
             return WorkerResult(
                 success=True,
@@ -148,7 +151,7 @@ class DataLauncherWorker(StartupWorker):
             RuntimeError: 数据进程启动失败
         """
         start_time = time.time()
-        stage_logger = get_stage_logger("startup.stage", scenario="data_launch")
+        stage_scenario = "data_launch"
 
         data_script = (
             context.project_root
@@ -181,6 +184,12 @@ class DataLauncherWorker(StartupWorker):
         if getattr(context, "log_queue_token", None):
             env[LOGGING_QUEUE_TOKEN_ENV] = context.log_queue_token  # type: ignore[arg-type]
             logger.debug("[DATA-PROCESS] 已注入日志队列token")
+        else:
+            alert_log(
+                "⚠️ 未检测到日志队列令牌，数据进程日志将回退至本地输出",
+                scenario=stage_scenario,
+                stacklevel=3,
+            )
 
         # 启动数据进程（指定工作目录为项目根目录）
         # 在Windows上确保权限传递
@@ -220,44 +229,52 @@ class DataLauncherWorker(StartupWorker):
 
         # 获取PID并显示
         pid = self.data_process_handle.pid
-        stage_logger.info(f"✅ data_process_main.py进程已启动 (PID: {pid})")
+        stage_log(
+            f"✅ data_process_main.py进程已启动 (PID: {pid})",
+            scenario=stage_scenario,
+            stacklevel=3,
+        )
 
         # 注册清理函数
         atexit.register(self.cleanup_data_process)
 
         # 启动看门狗线程
         self._start_watchdog(context)
-
-        # 显示native_ipc管道创建过程
-        stage_logger.info("✅ 创建native_ipc管道")
-        stage_logger.info("  ├─ data_query ✅")
-        stage_logger.info("  └─ data_calculation ✅")
-
-        # 显示数据组件初始化
-        stage_logger.info("✅ 数据组件初始化")
-        stage_logger.info("  ├─ ChinaStockEngine ✅")
-        stage_logger.info("  ├─ UnifiedDataManager ✅")
-        stage_logger.info("  ├─ LoadBalancer (后台异步) ⏳")
-        stage_logger.info("  └─ ServerPoolManager ✅")
+        stage_log(
+            "✅ 数据进程看门狗启动（2s 轮询）",
+            scenario=stage_scenario,
+            stacklevel=3,
+        )
 
         # 等待数据进程Level 1就绪（管道就绪）
         # 正常2-3秒，设置15秒超时（已非常宽松）
-        pipes_info = await self._wait_data_process_ready(max_wait=15.0, wait_for_level=1)
-
-        stage_logger.info("✅ Level 1就绪 (管道就绪)")
-        stage_logger.info("✅ 数据进程看门狗启动（2s 轮询）")
+        level1_info = await self._wait_data_process_ready(max_wait=15.0, wait_for_level=1)
+        pipe_names = level1_info.get("pipes", []) if isinstance(level1_info, dict) else []
+        if pipe_names:
+            pipe_text = ", ".join(pipe_names)
+            stage_log(
+                f"✅ Level 1就绪 (IPC管道: {pipe_text})",
+                scenario=stage_scenario,
+                stacklevel=3,
+            )
+        else:
+            stage_log("✅ Level 1就绪 (IPC管道准备完成)", scenario=stage_scenario, stacklevel=3)
 
         # 等待数据进程Level 2就绪（功能完整）
         # 数据服务初始化可能需要30-60秒，设置90秒超时
         await self._wait_data_process_ready(max_wait=90.0, wait_for_level=2)
 
-        stage_logger.info("✅ Level 2就绪 (功能完整)")
+        stage_log(
+            "✅ Level 2就绪 (数据服务功能完整)",
+            scenario=stage_scenario,
+            stacklevel=3,
+        )
 
         elapsed = time.time() - start_time
 
         return {
             "pid": self.data_process_handle.pid,
-            "pipes": pipes_info,
+            "pipes": level1_info,
             "elapsed": elapsed,
         }
 

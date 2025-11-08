@@ -51,15 +51,15 @@ results = batch_test_connections(servers, timeout=2.0, max_concurrent=10)
 """
 
 try:
-    from .native_netprobe import (
+    from .netprobe import (
         test_connection,
         batch_test_connections,
         NETPROBE_AVAILABLE,
-        VERSION,
     )
     
     _AVAILABLE = True
     _ERROR = None
+    VERSION = "1.0.0"  # Version defined in Python wrapper
     
 except ImportError as e:
     _AVAILABLE = False

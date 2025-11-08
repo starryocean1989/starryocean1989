@@ -337,48 +337,62 @@ class BackendInitializerWorker(QObject):
                         extra={"log_type": "SYSTEM", "scenario": "backend_init"}
                     )
                     from backend.services.data_center_service import DataCenterService
+                    from backend.services.data_center_proxy import DataCenterServiceProxy
+                    from backend.core.base import get_service_manager
 
-                    data_service = DataCenterService()
-                    data_init_start_time = time.time()
-                    data_init_success = data_service.initialize()
-                    data_init_elapsed = (time.time() - data_init_start_time) * 1000
+                    service_manager = get_service_manager()
+                    data_service = None
+                    data_init_success = False
+                    data_init_elapsed = 0.0
 
-                    if data_init_success:
-                        self.logger.debug(
-                            "[BACKEND-INIT] ✅ DataCenterService 初始化成功，耗时=%.0fms",
-                            data_init_elapsed,
-                            extra={"log_type": "SYSTEM", "scenario": "backend_init"}
-                        )
-                        self.logger.info(
-                            "[BACKEND-INIT] ✅ DataCenterService 初始化成功，耗时=%.0fms",
-                            data_init_elapsed,
-                            extra={"log_type": "SYSTEM", "scenario": "backend_init"}
-                        )
+                    for service_cls, label in (
+                        (DataCenterService, "DataCenterService"),
+                        (DataCenterServiceProxy, "DataCenterServiceProxy"),
+                    ):
+                        try:
+                            data_service_candidate = service_cls()
+                            data_init_start_time = time.time()
+                            init_success = data_service_candidate.initialize()
+                            data_init_elapsed = (time.time() - data_init_start_time) * 1000
+                            if init_success:
+                                data_service = data_service_candidate
+                                data_init_success = True
+                                self.logger.info(
+                                    "[BACKEND-INIT] ✅ %s 初始化成功，耗时=%.0fms",
+                                    label,
+                                    data_init_elapsed,
+                                    extra={"log_type": "SYSTEM", "scenario": "backend_init"},
+                                )
+                                break
+                            self.logger.warning(
+                                "[BACKEND-INIT] ⚠️ %s 初始化失败，耗时=%.0fms",
+                                label,
+                                data_init_elapsed,
+                                extra={"log_type": "ALERT", "scenario": "backend_init"},
+                            )
+                        except Exception as init_exc:
+                            self.logger.error(
+                                "❌ %s 初始化异常: %s",
+                                label,
+                                init_exc,
+                                exc_info=True,
+                                extra={"log_type": "ALERT", "scenario": "backend_init"},
+                            )
+
+                    if data_init_success and data_service:
                         stage_logger.info(
-                            "[DATA-INIT] ✅ DataCenterService初始化完成",
-                            extra={"log_type": "STAGE_NODE", "scenario": "backend_init"}
+                            "[DATA-INIT] ✅ 数据中心服务初始化完成",
+                            extra={"log_type": "STAGE_NODE", "scenario": "backend_init"},
                         )
-                        # 注册到服务管理器
-                        from backend.core.base import get_service_manager
-                        service_manager = get_service_manager()
                         service_manager.register_service("data_center_service", data_service)
                         self.logger.debug(
-                            "[BACKEND-INIT] DataCenterService已注册到ServiceManager",
-                            extra={"log_type": "SYSTEM", "scenario": "backend_init"}
+                            "[BACKEND-INIT] 数据中心服务已注册到ServiceManager",
+                            extra={"log_type": "SYSTEM", "scenario": "backend_init"},
                         )
                     else:
-                        self.logger.warning(
-                            "[BACKEND-INIT] ⚠️ DataCenterService 初始化失败",
-                            extra={"log_type": "ALERT", "scenario": "backend_init"}
-                        )
-                        self.logger.error(
-                            "[BACKEND-INIT] ❌ DataCenterService 初始化失败，耗时=%.0fms",
-                            data_init_elapsed,
-                            extra={"log_type": "ALERT", "scenario": "backend_init"}
-                        )
-                        stage_logger.warning(
-                            "[DATA-INIT] ⚠️ DataCenterService初始化失败",
-                            extra={"log_type": "STAGE_NODE", "scenario": "backend_init"}
+                        stage_logger.error(
+                            "[DATA-INIT] ❌ 数据中心服务初始化失败",
+                            extra={"log_type": "STAGE_NODE", "scenario": "backend_init"},
                         )
                 except Exception as e:
                     self.logger.debug(

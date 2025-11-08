@@ -559,14 +559,6 @@ class LogManager:
             # 移除print语句，使用logger统一输出（日志会被MemoryHandler缓冲）
             self.logger.info("[启动] 日志管理系统初始化开始...")
 
-            # 创建自定义日志处理器
-            log_handler = LogRecordHandler(self)
-            self._python_handler = log_handler
-
-            root_logger = logging.getLogger()
-
-            root_logger.addHandler(log_handler)
-
             self._native_pipeline = install_pipeline(
                 on_batch=self._on_native_batch,
                 logger=self.logger,
@@ -585,8 +577,9 @@ class LogManager:
                 )
             else:
                 self.logger.info("native_log_pipeline 未启用，维持 Python 日志路径")
-
-            root_logger.setLevel(logging.DEBUG)
+            # 统一由 LoggingHub 管理 root logger 的级别与 handlers
+            # 这里不再向 root logger 注册自定义处理器，避免与 LoggingHub 重复和递归
+            self._python_handler = None
 
             # 🔧 修复：启动定期刷新定时器，确保少量日志也能写入数据库
             # 之前只有缓冲区>=10条才刷新，导致少量日志永远不会写入
@@ -721,15 +714,7 @@ class LogManager:
             if self._batch_timer:
                 self._batch_timer.cancel()
 
-            # 移除日志处理器
-            root_logger = logging.getLogger()
-            if self._python_handler:
-                try:
-                    root_logger.removeHandler(self._python_handler)
-                except (ValueError, AttributeError):
-                    pass
-                finally:
-                    self._python_handler = None
+            # 自定义 Python 处理器已移除，统一由 LoggingHub 托管
 
             self._flush_native_pipeline(force=True)
             if self._native_pipeline is not None:
@@ -741,10 +726,6 @@ class LogManager:
                 self._native_pipeline = None
                 if stats:
                     self.logger.info("native_log_pipeline 已关闭, stats=%s", stats)
-
-            for handler in root_logger.handlers[:]:
-                if isinstance(handler, LogRecordHandler):
-                    root_logger.removeHandler(handler)
 
             self.logger.info("日志管理系统已关闭")
 
@@ -937,10 +918,8 @@ def get_log_manager(event_engine=None, force_reinit: bool = False) -> LogManager
         with _log_manager_lock:
             if _log_manager is None:
                 _log_manager = LogManager()
-                # 🔧 关键修复：创建后立即初始化，确保LogRecordHandler被注册
-                # 否则日志永远不会写入数据库
+                # 初始化以启用 native_log_pipeline 与批量刷写，不再注册自定义 root handler
                 _log_manager.initialize()
-                _log_manager._handler_registered = True
 
     # 如果需要注入event_engine
     if event_engine is not None and _log_manager.event_engine is None:
@@ -6021,10 +6000,30 @@ class SystemManagerService(BaseService):
                         if df.get("connected")
                     )
 
+                    download_tasks = getattr(data_center_service, "_download_tasks", None)
+                    if download_tasks is not None and hasattr(download_tasks, "__len__"):
+                        active_downloads = len(download_tasks)
+                    elif hasattr(data_center_service, "get_download_task_count"):
+                        try:
+                            count_result = data_center_service.get_download_task_count()
+                            if isinstance(count_result, dict):
+                                active_downloads = int(count_result.get("count", 0))
+                            else:
+                                active_downloads = int(count_result or 0)
+                        except Exception as err:
+                            self.logger.debug(
+                                "获取远程下载任务数量失败: %s",
+                                err,
+                                extra={"log_type": "SYSTEM"},
+                            )
+                            active_downloads = 0
+                    else:
+                        active_downloads = 0
+
                     metrics["data_center"] = {
                         "symbol_count": symbol_count,
                         "connected_datafeeds": connected_datafeeds,
-                        "active_downloads": len(data_center_service._download_tasks),
+                        "active_downloads": active_downloads,
                         "recording_enabled": datafeed_status.get("recording", {}).get(
                             "enabled", False
                         ),

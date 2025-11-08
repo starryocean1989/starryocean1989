@@ -19,7 +19,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 # 导入 talib 和 numpy
 try:
@@ -44,10 +44,13 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from backend.infrastructure.system_vnpy.logging_system import (
+    alert_log,
     bind_logger_defaults,
     load_queue_from_env,
     setup_subprocess_logging,
+    stage_log,
 )
+from backend.infrastructure.system_vnpy.process_watchdog import ensure_parent_watchdog
 from backend.infrastructure.native.native_serialization import build_dataframe_payload
 from backend.infrastructure.data_module_vnpy.rpc_protocol import (
     FLAG_BINARY_PAYLOAD,
@@ -60,12 +63,21 @@ from backend.infrastructure.data_module_vnpy.rpc_protocol import (
 )
 # 原生RPC桥接（用于方法ID映射）
 try:
-    from backend.infrastructure.native.native_rpc_bridge import get_method_name, RPC_BRIDGE_AVAILABLE
+    from backend.infrastructure.native.native_rpc_bridge import (
+        RPC_BRIDGE_AVAILABLE,
+        batch_decode_requests,
+        get_method_name,
+    )
 except ImportError:  # pragma: no cover - 构建失败时降级
     RPC_BRIDGE_AVAILABLE = False  # type: ignore
 
     def get_method_name(method_id: int) -> Optional[str]:  # type: ignore
         return None
+
+    def batch_decode_requests(  # type: ignore
+        buffer_sequence, method_resolver=None
+    ):
+        raise NotImplementedError
 
 # 原生指标计算
 try:
@@ -122,6 +134,20 @@ logger_rpc = bind_logger_defaults(
 )
 
 DATA_PROCESS_SCENARIO = "data_process_init"
+
+if not NATIVE_INDICATOR_AVAILABLE:
+    alert_log(
+        "⚠️ native_indicator扩展不可用，指标计算将回退到talib实现",
+        scenario=DATA_PROCESS_SCENARIO,
+        stacklevel=3,
+    )
+
+if not FINANCE_OPS_AVAILABLE:
+    alert_log(
+        "⚠️ native_finance_ops扩展不可用，风险指标计算将使用Python实现",
+        scenario=DATA_PROCESS_SCENARIO,
+        stacklevel=3,
+    )
 
 # 记录使用的JSON库
 if HAS_ORJSON:
@@ -180,6 +206,30 @@ class DataProcess:
         self._batch_size = 10  # 每批最多处理的请求数
         self._batch_timeout = 0.01  # 批次等待超时（秒）- 降低以提升响应速度
 
+    def _parse_call_arguments(self, raw_params: Any) -> Tuple[List[Any], Dict[str, Any]]:
+        """解析RPC请求中的位置参数和关键字参数."""
+        if isinstance(raw_params, dict):
+            args = raw_params.get("_args")
+            kwargs = raw_params.get("_kwargs")
+
+            if kwargs is None:
+                kwargs_dict = dict(raw_params)
+                kwargs_dict.pop("_args", None)
+                kwargs_dict.pop("_kwargs", None)
+            else:
+                kwargs_dict = dict(kwargs) if isinstance(kwargs, dict) else {}
+
+            if args is None:
+                args_list: List[Any] = []
+            elif isinstance(args, list):
+                args_list = list(args)
+            else:
+                args_list = [args]
+
+            return args_list, kwargs_dict
+
+        return [], {}
+
     async def initialize(self):
         """初始化数据服务"""
         try:
@@ -187,10 +237,7 @@ class DataProcess:
                 f"[DEBUG] 数据进程initialize开始 (PID={os.getpid()})",
                 extra={"log_type": "DEBUG", "scenario": "data_process_init"},
             )
-            logger.info(
-                "📍 数据进程初始化开始",
-                extra={"log_type": "STAGE_NODE", "scenario": "data_process_init"},
-            )
+            stage_log("📍 数据进程初始化开始", scenario="data_process_init", stacklevel=3)
 
             # 1. 初始化数据服务
             logger.debug(
@@ -226,10 +273,7 @@ class DataProcess:
                 extra={"log_type": "DEBUG", "scenario": "data_process_init"},
             )
 
-            logger.info(
-                "✅ 数据进程初始化完成",
-                extra={"log_type": "STAGE_NODE", "scenario": "data_process_init"},
-            )
+            stage_log("✅ 数据进程初始化完成", scenario="data_process_init", stacklevel=3)
 
         except Exception as e:
             logger.debug(
@@ -248,20 +292,14 @@ class DataProcess:
         """初始化数据服务"""
         try:
             if self.talib:
-                logger.info(
-                    "│ ✅ talib可用，指标计算功能完整",
-                    extra={"log_type": "STAGE_NODE", "scenario": "data_process_init"},
-                )
+                stage_log("│ ✅ talib可用，指标计算功能完整", scenario="data_process_init", stacklevel=4)
             else:
                 logger.warning(
                     "│ ⚠️ talib不可用，部分指标计算将受限",
                     extra={"log_type": "SYSTEM", "scenario": "data_process_init"},
                 )
 
-            logger.info(
-                "│ ⏳ 初始化ChinaStockEngine...",
-                extra={"log_type": "STAGE_NODE", "scenario": "data_process_init"},
-            )
+            stage_log("│ ⏳ 初始化ChinaStockEngine...", scenario="data_process_init", stacklevel=4)
 
             # 创建EventEngine（数据进程内部使用）
             from vnpy.event import EventEngine
@@ -279,61 +317,34 @@ class DataProcess:
             if not success:
                 raise RuntimeError("ChinaStockEngine初始化失败")
 
-            logger.info(
-                "│ ✅ ChinaStockEngine初始化完成",
-                extra={"log_type": "STAGE_NODE", "scenario": "data_process_init"},
-            )
+            stage_log("│ ✅ ChinaStockEngine初始化完成", scenario="data_process_init", stacklevel=4)
 
-            logger.info(
-                "│ ⏳ 初始化UnifiedDataManager...",
-                extra={"log_type": "STAGE_NODE", "scenario": "data_process_init"},
-            )
+            stage_log("│ ⏳ 初始化UnifiedDataManager...", scenario="data_process_init", stacklevel=4)
             from backend.infrastructure.data_module_vnpy.data_runtime import UnifiedDataManager
 
             self.unified_data_manager = UnifiedDataManager(event_engine=event_engine)
-            logger.info(
-                "│ ✅ UnifiedDataManager初始化完成",
-                extra={"log_type": "STAGE_NODE", "scenario": "data_process_init"},
-            )
+            stage_log("│ ✅ UnifiedDataManager初始化完成", scenario="data_process_init", stacklevel=4)
 
-            logger.info(
-                "│ ⏳ 初始化DataCenterService（RPC服务器）...",
-                extra={"log_type": "STAGE_NODE", "scenario": "data_process_init"},
-            )
+            stage_log("│ ⏳ 初始化DataCenterService（RPC服务器）...", scenario="data_process_init", stacklevel=4)
             from backend.services.data_center_service import DataCenterService
 
             self.data_center_service = DataCenterService()
-            logger.info(
-                "│ ✅ DataCenterService（RPC服务器）初始化完成",
-                extra={"log_type": "STAGE_NODE", "scenario": "data_process_init"},
-            )
+            stage_log("│ ✅ DataCenterService（RPC服务器）初始化完成", scenario="data_process_init", stacklevel=4)
 
-            logger.info(
-                "│ ⏳ 初始化LoadBalancer...",
-                extra={"log_type": "STAGE_NODE", "scenario": "data_process_init"},
-            )
+            stage_log("│ ⏳ 初始化LoadBalancer...", scenario="data_process_init", stacklevel=4)
             from backend.infrastructure.data_module_vnpy.load_balancer import LoadBalancer
 
             config_manager = self.china_stock_engine.config_manager
             self.load_balancer = LoadBalancer(config_manager=config_manager)
-            logger.info(
-                "│ ✅ LoadBalancer初始化完成",
-                extra={"log_type": "STAGE_NODE", "scenario": "data_process_init"},
-            )
+            stage_log("│ ✅ LoadBalancer初始化完成", scenario="data_process_init", stacklevel=4)
 
-            logger.info(
-                "│ ⏳ 初始化ServerPoolManager...",
-                extra={"log_type": "STAGE_NODE", "scenario": "data_process_init"},
-            )
+            stage_log("│ ⏳ 初始化ServerPoolManager...", scenario="data_process_init", stacklevel=4)
             from backend.infrastructure.data_module_vnpy.load_balancer import (
                 get_server_pool_manager,
             )
 
             self.server_pool_manager = get_server_pool_manager()
-            logger.info(
-                "│ ✅ ServerPoolManager初始化完成",
-                extra={"log_type": "STAGE_NODE", "scenario": DATA_PROCESS_SCENARIO},
-            )
+            stage_log("│ ✅ ServerPoolManager初始化完成", scenario=DATA_PROCESS_SCENARIO, stacklevel=4)
 
         except Exception as e:
             logger.error(f"❌ 数据服务初始化失败: {e}", exc_info=True, extra={"log_type": "ALERT"})
@@ -342,14 +353,11 @@ class DataProcess:
     async def _initialize_ipc_server(self):
         """初始化IPC服务器"""
         if not NATIVE_IPC_AVAILABLE:
-            logger.warning("⚠️ native_ipc不可用，将使用降级方案", extra={"log_type": "SYSTEM"})
+            alert_log("⚠️ native_ipc不可用，将使用降级方案", scenario=DATA_PROCESS_SCENARIO, stacklevel=3)
             return
 
         try:
-            logger.info(
-                "│ ⏳ 初始化IPC服务器...",
-                extra={"log_type": "STAGE_NODE", "scenario": DATA_PROCESS_SCENARIO},
-            )
+            stage_log("│ ⏳ 初始化IPC服务器...", scenario=DATA_PROCESS_SCENARIO, stacklevel=4)
 
             # 创建IPC管道
             # data_query: 数据查询管道
@@ -367,9 +375,10 @@ class DataProcess:
                     # 初始化连接状态跟踪
                     self._pipe_connected[pipe_name] = False
                     self._pipe_last_attempt[pipe_name] = 0
-                    logger.info(
+                    stage_log(
                         f"│ ✅ IPC管道已创建: {pipe_name}",
-                        extra={"log_type": "STAGE_NODE", "scenario": DATA_PROCESS_SCENARIO},
+                        scenario=DATA_PROCESS_SCENARIO,
+                        stacklevel=4,
                     )
                 except Exception as e:
                     logger.error(
@@ -381,10 +390,7 @@ class DataProcess:
             # 启动RPC服务器任务
             asyncio.create_task(self._rpc_server_task())
 
-            logger.info(
-                "│ ✅ IPC服务器初始化完成",
-                extra={"log_type": "STAGE_NODE", "scenario": DATA_PROCESS_SCENARIO},
-            )
+            stage_log("│ ✅ IPC服务器初始化完成", scenario=DATA_PROCESS_SCENARIO, stacklevel=4)
 
         except Exception as e:
             logger.error(f"❌ IPC服务器初始化失败: {e}", exc_info=True, extra={"log_type": "ALERT"})
@@ -566,12 +572,21 @@ class DataProcess:
                 error_message: Optional[str] = None
 
                 try:
+                    args, kwargs = self._parse_call_arguments(params)
+                    params_dict = kwargs if kwargs else (params if isinstance(params, dict) else {})
                     if method == "get_kline_data":
-                        response_payload, binary_payload = await self._handle_get_kline_data(params)
+                        response_payload, binary_payload = await self._handle_get_kline_data(params_dict)
                     elif method == "get_symbol_list":
-                        response_payload = await self._handle_get_symbol_list(params)
+                        response_payload = await self._handle_get_symbol_list(params_dict)
                     else:
-                        error_message = f"未知方法: {method}"
+                        try:
+                            response_payload = await self._invoke_data_center_method(
+                                method, args, kwargs
+                            )
+                        except AttributeError:
+                            error_message = f"未知方法: {method}"
+                        except Exception as exc:
+                            error_message = str(exc)
                 except Exception as exc:
                     logger.error(
                         "❌ 批量处理RPC请求失败: %s, 错误: %s",
@@ -657,6 +672,26 @@ class DataProcess:
 
         return responses
 
+    async def _invoke_data_center_method(
+        self,
+        method: str,
+        args: Sequence[Any],
+        kwargs: Dict[str, Any],
+    ) -> Any:
+        """调用数据中心服务方法."""
+        service = getattr(self, "data_center_service", None)
+        if service is None:
+            raise RuntimeError("DataCenterService 未初始化")
+
+        target = getattr(service, method, None)
+        if target is None:
+            raise AttributeError(f"DataCenterService 未实现方法: {method}")
+
+        if asyncio.iscoroutinefunction(target):
+            return await target(*args, **kwargs)
+
+        return await asyncio.to_thread(target, *args, **kwargs)
+
     async def _handle_calculation_requests(self):
         """处理计算任务请求"""
         try:
@@ -720,16 +755,23 @@ class DataProcess:
             logger.debug(f"收到计算任务请求: {method}", extra={"log_type": "SYSTEM", "request_id": request_id})
 
             try:
+                args, kwargs = self._parse_call_arguments(params)
+                params_dict = kwargs if kwargs else (params if isinstance(params, dict) else {})
                 if method == "calculate_indicator":
-                    result = await self._handle_calculate_indicator(params)
+                    result = await self._handle_calculate_indicator(params_dict)
                 elif method == "calculate_risk_metrics":
-                    result = await self._handle_calculate_risk_metrics(params)
+                    result = await self._handle_calculate_risk_metrics(params_dict)
                 elif method == "compute_period_statistics":
-                    result = await self._handle_compute_period_statistics(params)
+                    result = await self._handle_compute_period_statistics(params_dict)
                 elif method == "compute_risk_profile":
-                    result = await self._handle_compute_risk_profile(params)
+                    result = await self._handle_compute_risk_profile(params_dict)
                 else:
-                    result = {"success": False, "message": f"未知方法: {method}"}
+                    try:
+                        result = await self._invoke_data_center_method(method, args, kwargs)
+                    except AttributeError:
+                        result = {"success": False, "message": f"未知方法: {method}"}
+                    except Exception as exc:
+                        result = {"success": False, "message": str(exc)}
 
                 # 发送响应
                 response = {"id": request_id, "result": result}
@@ -1472,10 +1514,7 @@ class DataProcess:
                 extra={"log_type": "DEBUG", "scenario": "data_process_init"},
             )
 
-            logger.info(
-                f"✅ 就绪信号文件已写入: {signal_file}",
-                extra={"log_type": "STAGE_NODE", "scenario": "data_process_init"},
-            )
+            stage_log(f"✅ 就绪信号文件已写入: {signal_file}", scenario="data_process_init", stacklevel=4)
 
         except Exception as e:
             logger.debug(
@@ -1516,10 +1555,7 @@ class DataProcess:
                 await asyncio.sleep(1)
 
         except KeyboardInterrupt:
-            logger.info(
-                "📍 数据进程收到中断信号，正在退出...",
-                extra={"log_type": "STAGE_NODE", "scenario": DATA_PROCESS_SCENARIO},
-            )
+            stage_log("📍 数据进程收到中断信号，正在退出...", scenario=DATA_PROCESS_SCENARIO, stacklevel=3)
         except Exception as e:
             import sys
             print(f"[DEBUG] 数据进程运行异常: {e}", file=sys.stderr)
@@ -1533,19 +1569,13 @@ class DataProcess:
     async def cleanup(self):
         """清理资源"""
         try:
-            logger.info(
-                "📍 数据进程清理资源...",
-                extra={"log_type": "STAGE_NODE", "scenario": DATA_PROCESS_SCENARIO},
-            )
+            stage_log("📍 数据进程清理资源...", scenario=DATA_PROCESS_SCENARIO, stacklevel=3)
 
             # 关闭IPC管道
             for pipe_name, pipe in self._ipc_pipes.items():
                 try:
                     await pipe.close()
-                    logger.info(
-                        f"✅ IPC管道已关闭: {pipe_name}",
-                        extra={"log_type": "STAGE_NODE", "scenario": DATA_PROCESS_SCENARIO},
-                    )
+                    stage_log(f"✅ IPC管道已关闭: {pipe_name}", scenario=DATA_PROCESS_SCENARIO, stacklevel=4)
                 except Exception as e:
                     logger.warning(
                         f"⚠️ 关闭IPC管道失败: {pipe_name}, 错误: {e}", extra={"log_type": "SYSTEM"}
@@ -1557,17 +1587,11 @@ class DataProcess:
                 signal_file = root / "logs" / "data_process_ready.signal"
                 if signal_file.exists():
                     signal_file.unlink()
-                    logger.info(
-                        "✅ 就绪信号文件已清理",
-                        extra={"log_type": "STAGE_NODE", "scenario": DATA_PROCESS_SCENARIO},
-                    )
+                    stage_log("✅ 就绪信号文件已清理", scenario=DATA_PROCESS_SCENARIO, stacklevel=4)
             except Exception as e:
                 logger.warning(f"⚠️ 清理就绪信号文件失败: {e}", extra={"log_type": "SYSTEM"})
 
-            logger.info(
-                "✅ 数据进程清理完成",
-                extra={"log_type": "STAGE_NODE", "scenario": DATA_PROCESS_SCENARIO},
-            )
+            stage_log("✅ 数据进程清理完成", scenario=DATA_PROCESS_SCENARIO, stacklevel=3)
 
         except Exception as e:
             logger.error(f"❌ 数据进程清理失败: {e}", exc_info=True, extra={"log_type": "ALERT"})
@@ -1580,10 +1604,7 @@ async def main():
     env_queue = load_queue_from_env()
     if env_queue is not None:
         log_queue = env_queue
-        logger.info(
-            "✅ 通过环境变量获取日志队列",
-            extra={"log_type": "STAGE_NODE", "scenario": DATA_PROCESS_SCENARIO},
-        )
+        stage_log("✅ 通过环境变量获取日志队列", scenario=DATA_PROCESS_SCENARIO, stacklevel=3)
     if len(sys.argv) > 1:
         # 从命令行参数获取队列（序列化后的队列对象）
         # 注意：multiprocessing.Queue不能直接序列化，需要通过其他方式传递
@@ -1593,12 +1614,15 @@ async def main():
     if log_queue:
         try:
             setup_subprocess_logging(log_queue)
-            logger.info(
-                "✅ 子进程日志配置完成",
-                extra={"log_type": "STAGE_NODE", "scenario": DATA_PROCESS_SCENARIO},
-            )
+            stage_log("✅ 子进程日志配置完成", scenario=DATA_PROCESS_SCENARIO, stacklevel=3)
         except Exception as e:
             logger.warning(f"⚠️ 子进程日志配置失败: {e}", extra={"log_type": "SYSTEM"})
+
+    ensure_parent_watchdog(
+        label="data_process",
+        logger=logger,
+        check_interval=5.0,
+    )
 
     # 创建并运行数据进程
     data_process = DataProcess(log_queue=log_queue)
@@ -1606,19 +1630,28 @@ async def main():
 
 
 if __name__ == "__main__":
-    # 设置基本日志（在日志系统初始化前）
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    )
+    # 轻量降级日志（在统一日志系统初始化前），避免basicConfig破坏托管
+    try:
+        stream_handler = logging.StreamHandler()
+        formatter = logging.Formatter(
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        )
+        stream_handler.setLevel(logging.INFO)
+        stream_handler.setFormatter(formatter)
+
+        root_logger = logging.getLogger()
+        for h in root_logger.handlers[:]:
+            root_logger.removeHandler(h)
+        root_logger.setLevel(logging.INFO)
+        root_logger.addHandler(stream_handler)
+    except Exception:
+        pass
 
     # 运行主函数
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info(
-            "📍 数据进程已退出",
-            extra={"log_type": "STAGE_NODE", "scenario": DATA_PROCESS_SCENARIO},
-        )
+        stage_log("📍 数据进程已退出", scenario=DATA_PROCESS_SCENARIO, stacklevel=3)
     except Exception as e:
         logger.error(f"❌ 数据进程启动失败: {e}", exc_info=True, extra={"log_type": "ALERT"})
         sys.exit(1)

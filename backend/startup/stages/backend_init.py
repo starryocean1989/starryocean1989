@@ -15,7 +15,7 @@ import asyncio
 import logging
 import time
 
-from backend.infrastructure.system_vnpy.logging_system import bind_logger_defaults
+from backend.infrastructure.system_vnpy.logging_system import bind_logger_defaults, stage_log
 from backend.startup.context import StartupContext
 from backend.startup.stages.base import StartupStage, StageResult
 from backend.startup.workers.backend_initializer import BackendInitializerWorker
@@ -94,33 +94,21 @@ class BackendInitStage(StartupStage):
                     hub.set_stage("backend_init")
                 # 注意：场景信息通过日志记录的extra参数传递，无需全局设置
 
-                stage_logger = logging.getLogger("startup.stage")
+                stage_scenario = "application_startup"
 
                 # 阶段3标题
-                stage_logger.info(
-                    "", extra={"log_type": "STAGE_NODE", "scenario": "application_startup"}
-                )
-                stage_logger.info(
-                    "=" * 70, extra={"log_type": "STAGE_NODE", "scenario": "application_startup"}
-                )
-                stage_logger.info(
+                stage_log("", scenario=stage_scenario, stacklevel=3)
+                stage_log("=" * 70, scenario=stage_scenario, stacklevel=3)
+                stage_log(
                     "【阶段3: 后端服务初始化】 (20-90%) - 并行执行",
-                    extra={"log_type": "STAGE_NODE", "scenario": "application_startup"},
+                    scenario=stage_scenario,
+                    stacklevel=3,
                 )
-                stage_logger.info(
-                    "=" * 70, extra={"log_type": "STAGE_NODE", "scenario": "application_startup"}
-                )
-                stage_logger.info(
-                    "", extra={"log_type": "STAGE_NODE", "scenario": "application_startup"}
-                )
+                stage_log("=" * 70, scenario=stage_scenario, stacklevel=3)
+                stage_log("", scenario=stage_scenario, stacklevel=3)
 
-                stage_logger.info(
-                    "📍 阶段3: 后端服务初始化开始",
-                    extra={"log_type": "STAGE_NODE", "scenario": "application_startup"},
-                )
-                stage_logger.info(
-                    "", extra={"log_type": "STAGE_NODE", "scenario": "application_startup"}
-                )
+                stage_log("📍 阶段3: 后端服务初始化开始", scenario=stage_scenario, stacklevel=3)
+                stage_log("", scenario=stage_scenario, stacklevel=3)
 
                 # 1. 初始化VNPY核心框架（如果尚未初始化）
                 logger.debug(
@@ -302,6 +290,30 @@ class BackendInitStage(StartupStage):
                 extra={"log_type": "SYSTEM", "scenario": scenario},
             )
 
+            # 额外步骤：确保主进程RPC客户端连接到数据进程，避免IPC长时间等待
+            try:
+                from backend.infrastructure.data_module_vnpy.data_process_client import (
+                    get_data_process_client,
+                )
+
+                data_client = get_data_process_client()
+                if await data_client.connect_async():
+                    logger.info(
+                        "[BACKEND-INIT] ✅ 数据进程RPC客户端连接成功",
+                        extra={"log_type": "SYSTEM", "scenario": scenario},
+                    )
+                else:
+                    logger.warning(
+                        "[BACKEND-INIT] ⚠️ 数据进程RPC客户端连接失败（将继续重试逻辑）",
+                        extra={"log_type": "ALERT", "scenario": scenario},
+                    )
+            except Exception as rpc_error:
+                logger.warning(
+                    f"[BACKEND-INIT] ⚠️ 数据进程RPC客户端初始化异常: {rpc_error}",
+                    exc_info=True,
+                    extra={"log_type": "ALERT", "scenario": scenario},
+                )
+
             # 3. 执行8步缓存验证流程（作为分支B的一部分，需要等待数据进程就绪）
             # 注意：在三进程架构中，ChinaStockEngine在数据进程中，这里不再检查context.china_stock_engine
             # 缓存验证流程需要与数据进程通信，这里暂时跳过或改为通过RPC调用
@@ -316,41 +328,28 @@ class BackendInitStage(StartupStage):
                 )
 
                 # 显示分支B标题（数据引擎初始化包括8步验证）
-                stage_logger.info(
-                    "", extra={"log_type": "STAGE_NODE", "scenario": "application_startup"}
-                )
-                stage_logger.info(
-                    "┌" + "─" * 66 + "┐",
-                    extra={"log_type": "STAGE_NODE", "scenario": "application_startup"},
-                )
-                stage_logger.info(
+                stage_log("", scenario=stage_scenario, stacklevel=3)
+                stage_log("┌" + "─" * 66 + "┐", scenario=stage_scenario, stacklevel=3)
+                stage_log(
                     "│ 分支B: 数据引擎初始化（smart_cache_validation_and_sensing）      │",
-                    extra={"log_type": "STAGE_NODE", "scenario": "application_startup"},
+                    scenario=stage_scenario,
+                    stacklevel=3,
                 )
-                stage_logger.info(
-                    "└" + "─" * 66 + "┘",
-                    extra={"log_type": "STAGE_NODE", "scenario": "application_startup"},
-                )
-                stage_logger.info(
-                    "", extra={"log_type": "STAGE_NODE", "scenario": "application_startup"}
-                )
+                stage_log("└" + "─" * 66 + "┘", scenario=stage_scenario, stacklevel=3)
+                stage_log("", scenario=stage_scenario, stacklevel=3)
 
                 # 输出数据进程初始化完成信息（DataLauncherWorker已完成）
-                stage_logger.info(
-                    "📍 阶段3.1: 数据进程初始化开始",
-                    extra={"log_type": "STAGE_NODE", "scenario": "application_startup"},
-                )
+                stage_log("📍 阶段3.1: 数据进程初始化开始", scenario=stage_scenario, stacklevel=3)
                 logger.debug(
                     "[BACKEND-INIT] 数据进程已就绪",
                     extra={"log_type": "SYSTEM", "scenario": "application_startup"},
                 )
-                stage_logger.info(
+                stage_log(
                     "✅ 数据进程已就绪（ChinaStockEngine在数据进程中）",
-                    extra={"log_type": "STAGE_NODE", "scenario": "application_startup"},
+                    scenario=stage_scenario,
+                    stacklevel=3,
                 )
-                stage_logger.info(
-                    "", extra={"log_type": "STAGE_NODE", "scenario": "application_startup"}
-                )
+                stage_log("", scenario=stage_scenario, stacklevel=3)
 
                 # 🚀 优化4：在此处启动UI预加载任务（与缓存验证并行）
                 # 当数据进程就绪后，开始UI预加载
@@ -509,9 +508,10 @@ class BackendInitStage(StartupStage):
                 f"[BACKEND-INIT] ✅ 后端服务初始化完成: 耗时={elapsed_ms:.0f}ms",
                 extra={"log_type": "SYSTEM", "scenario": scenario},
             )
-            stage_logger.info(
+            stage_log(
                 f"✅ 后端服务完全就绪 (耗时: {elapsed_ms:.0f}ms)",
-                extra={"log_type": "STAGE_NODE", "scenario": scenario},
+                scenario=scenario,
+                stacklevel=3,
             )
 
             return StageResult(
@@ -621,32 +621,24 @@ class BackendInitStage(StartupStage):
             context.set_engines(context.event_engine, context.main_engine, None)
 
             # 初始化日志管理系统（即使引擎已预创建，也需要初始化日志管理）
-            stage_logger = logging.getLogger("startup.stage")
             try:
                 from backend.services.system_manager_service import get_log_manager
 
                 _ = get_log_manager(event_engine=context.event_engine, force_reinit=True)
-                stage_logger.info(
-                    "✅ 日志持久化已启用",
-                    extra={"log_type": "STAGE_NODE", "scenario": "application_startup"},
-                )
+                stage_log("✅ 日志持久化已启用", scenario="application_startup", stacklevel=4)
             except Exception as e:
                 logger.exception(
                     f"[LOG-MANAGER] 日志管理系统初始化失败: {e}",
                     extra={"log_type": "ALERT", "scenario": "application_startup"},
                 )
-                stage_logger.info(
+                stage_log(
                     f"❌ 日志持久化启用失败 - {str(e)}",
-                    extra={"log_type": "STAGE_NODE", "scenario": "application_startup"},
+                    scenario="application_startup",
+                    stacklevel=4,
                 )
 
-            stage_logger.info(
-                "✅ VNPY核心就绪",
-                extra={"log_type": "STAGE_NODE", "scenario": "application_startup"},
-            )
+            stage_log("✅ VNPY核心就绪", scenario="application_startup", stacklevel=4)
             return
-
-        stage_logger = logging.getLogger("startup.stage")
 
         # 切换到vnpy_core阶段
         from backend.infrastructure.system_vnpy import get_logging_hub
@@ -655,10 +647,7 @@ class BackendInitStage(StartupStage):
         hub.set_stage("vnpy_core")
         # 注意：场景信息通过日志记录的extra参数传递，无需全局设置
 
-        stage_logger.info(
-            "📍 阶段2.5: VNPY核心初始化开始",
-            extra={"log_type": "STAGE_NODE", "scenario": "application_startup"},
-        )
+        stage_log("📍 阶段2.5: VNPY核心初始化开始", scenario="application_startup", stacklevel=3)
 
         try:
             from vnpy.event import EventEngine
@@ -751,10 +740,7 @@ class BackendInitStage(StartupStage):
                     "[VNPY-CORE] 日志持久化已启用",
                     extra={"log_type": "SYSTEM", "scenario": "application_startup"},
                 )
-                stage_logger.info(
-                    "✅ 日志持久化已启用",
-                    extra={"log_type": "STAGE_NODE", "scenario": "application_startup"},
-                )
+                stage_log("✅ 日志持久化已启用", scenario="application_startup", stacklevel=4)
             except Exception as e:
                 logger.exception(
                     f"[LOG-MANAGER] 日志管理系统初始化失败: {e}",
@@ -764,18 +750,16 @@ class BackendInitStage(StartupStage):
                     f"[LOG-MANAGER] ⚠️ 日志持久化启用失败: {e}",
                     extra={"log_type": "ALERT", "scenario": "application_startup"},
                 )
-                stage_logger.info(
+                stage_log(
                     f"❌ 日志持久化启用失败 - {str(e)}",
-                    extra={"log_type": "STAGE_NODE", "scenario": "application_startup"},
+                    scenario="application_startup",
+                    stacklevel=4,
                 )
 
             # 设置引擎到上下文
             context.set_engines(context.event_engine, context.main_engine, None)
 
-            stage_logger.info(
-                "✅ VNPY核心就绪",
-                extra={"log_type": "STAGE_NODE", "scenario": "application_startup"},
-            )
+            stage_log("✅ VNPY核心就绪", scenario="application_startup", stacklevel=4)
 
         except Exception as e:
             logger.exception(
@@ -826,6 +810,22 @@ class BackendInitStage(StartupStage):
             logger.debug(
                 "[BACKEND-INIT] ChinaStockEngine已设置到ServiceInitializer",
                 extra={"log_type": "SYSTEM", "scenario": "application_startup"},
+            )
+
+        # 优先初始化数据服务代理
+        try:
+            data_service_ready = initializer._initialize_data_services()
+        except Exception as exc:
+            data_service_ready = False
+            logger.exception(
+                f"[BACKEND-INIT] ❌ 数据中心服务代理初始化异常: {exc}",
+                extra={"log_type": "ALERT", "scenario": "application_startup"},
+            )
+
+        if not data_service_ready:
+            logger.warning(
+                "[BACKEND-INIT] ⚠️ 数据中心服务代理初始化失败，将继续后续服务初始化",
+                extra={"log_type": "ALERT", "scenario": "application_startup"},
             )
 
         # 阶段3.4: 交易服务初始化

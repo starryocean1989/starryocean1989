@@ -1003,50 +1003,54 @@ class ServiceInitializer:
             self.logger.warning("⚠️ 事件队列监控将不可用", extra={"log_type": "SYSTEM"})
 
     def _initialize_data_services(self) -> bool:
-        """阶段2: 初始化数据服务.
+        """阶段2: 初始化数据服务代理（主进程侧）."""
 
-        进度: 40% -> 60%
-
-        注意：在三进程架构中，数据服务（ChinaStockEngine和DataCenterService）在数据进程中初始化，
-        这里只返回成功，表示数据服务已在数据进程中初始化。
-
-        Returns:
-            bool: 是否成功
-        """
         stage_logger = logging.getLogger("startup.stage")
         stage_logger.info("📍 阶段2: 初始化数据服务开始", extra={"log_type": "STAGE_NODE"})
 
-        self._report_progress("阶段2: 数据服务已在数据进程中初始化...", 40)
+        self._report_progress("阶段2: 连接数据进程...", 40)
 
-        self.logger.debug("\n" + "=" * 60)
-        self.logger.debug("阶段2: 数据服务初始化（三进程架构）")
-        self.logger.debug("=" * 60)
+        from backend.services.data_center_proxy import DataCenterServiceProxy
 
         start_time = time.time()
-        success_count = 0
+        data_service = DataCenterServiceProxy()
+        self.logger.debug("阶段2: 创建DataCenterServiceProxy实例", extra={"log_type": "SYSTEM"})
 
-        # 🎯 三进程架构：数据服务在数据进程中初始化，这里只记录日志
-        # 注意：DataCenterService在数据进程中实现为RPC服务器，在主进程中创建RPC客户端代理
-        self.logger.info(
-            "ℹ️ 三进程架构：数据服务（ChinaStockEngine）已在数据进程中初始化，DataCenterService通过RPC代理访问",
-            extra={"log_type": "SYSTEM"},
-        )
-        stage_logger.info("✅ 数据服务已在数据进程中初始化", extra={"log_type": "STAGE_NODE"})
-
-        # 注意：不再在主进程中初始化ChinaStockEngine和DataCenterService
-        # 这些服务现在在数据进程中运行，通过RPC调用访问
-
-        # 保持向后兼容：如果需要在主进程中访问数据服务，可以通过RPC客户端
-        # 这里暂时跳过，后续可以通过RPC客户端访问数据进程的服务
+        try:
+            proxy_initialized = data_service.initialize()
+        except Exception as exc:  # pragma: no cover - 初始化异常
+            proxy_initialized = False
+            self.logger.error(
+                "❌ DataCenterServiceProxy 初始化异常: %s",
+                exc,
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
+            )
 
         elapsed = time.time() - start_time
-        self.logger.info("阶段2完成（三进程架构），耗时 %.2f秒", elapsed)
-        stage_logger.info(
-            f"✅ 阶段2: 数据服务初始化完成（三进程架构） ({elapsed:.2f}s)",
+
+        if proxy_initialized:
+            self.service_manager.register_service("data_center_service", data_service)
+            self.initialized_services["data_center_service"] = data_service
+            self.logger.info(
+                "✅ DataCenterServiceProxy 初始化完成，耗时 %.2f秒", elapsed, extra={"log_type": "SYSTEM"}
+            )
+            stage_logger.info(
+                f"✅ DataCenterService代理初始化完成 ({elapsed:.2f}s)",
+                extra={"log_type": "STAGE_NODE"},
+            )
+            self._report_progress("数据服务代理就绪", 60)
+            return True
+
+        self.failed_services.append("data_center_service")
+        self.logger.error(
+            "❌ DataCenterServiceProxy 初始化失败，耗时 %.2f秒", elapsed, extra={"log_type": "SYSTEM"}
+        )
+        stage_logger.error(
+            f"❌ DataCenterService代理初始化失败 ({elapsed:.2f}s)",
             extra={"log_type": "STAGE_NODE"},
         )
-        self._report_progress("数据服务初始化完成（三进程架构）", 60)
-        return True  # 三进程架构中，数据服务在数据进程中初始化，这里返回成功
+        return False
 
         # 以下代码已注释，因为数据服务在数据进程中初始化
         # 保留代码以便参考和回滚

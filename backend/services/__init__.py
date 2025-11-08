@@ -8,6 +8,7 @@ Backend功能模块.
 # 导出主要服务类
 from .system_manager_service import SystemManagerService
 from .data_center_service import DataCenterService
+from .data_center_proxy import DataCenterServiceProxy
 from .market_board_service import MarketBoardService
 from .strategy_center_service import StrategyCenterService
 from .ai_assistant_service import AIAssistantService
@@ -50,6 +51,7 @@ __all__ = [
     # 主要服务
     "SystemManagerService",
     "DataCenterService",
+    "DataCenterServiceProxy",
     "MarketBoardService",
     "StrategyCenterService",
     "AIAssistantService",

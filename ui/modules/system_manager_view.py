@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """系统管理界面 - 主视图（重构版）.
 
 标准架构：8个子界面采用选项卡形式。
@@ -3042,35 +3042,35 @@ class SystemManager(BaseWidget, LoggerMixin):
             # 创建专门的DEBUG logger
             self._debug_logger = logging.getLogger(f"SystemManager.DEBUG.{id(self)}")
             self._debug_logger.setLevel(logging.DEBUG)
-            self._debug_logger.propagate = False  # 不传播到父logger
+            # 传播到父logger，由统一LoggingHub接管并写入事件日志文件
+            self._debug_logger.propagate = True
 
             # 清除旧的handlers
             for handler in self._debug_logger.handlers[:]:
                 self._debug_logger.removeHandler(handler)
 
-            # 文件handler
-            log_file = log_dir / "systemmanager_debug.log"
-            file_handler = logging.FileHandler(log_file, mode="w", encoding="utf-8")
-            file_handler.setLevel(logging.DEBUG)
-
-            # 格式化器
-            formatter = logging.Formatter(
-                "%(asctime)s.%(msecs)03d - %(levelname)s - %(message)s", datefmt="%H:%M:%S"
-            )
-            file_handler.setFormatter(formatter)
-            self._debug_logger.addHandler(file_handler)
+            # 使用统一事件日志流程替代独立FileHandler
+            try:
+                from backend.infrastructure.system_vnpy.logging_system import start_event_process
+                event_file = start_event_process(
+                    "ui_debug_session",
+                    metadata={"view_id": id(self)},
+                )
+                # 在DEBUG logger中记录事件文件路径，便于查阅
+                self._debug_logger.info("UI调试会话事件日志: %s", str(event_file))
+            except Exception:
+                # 事件流程不可用时静默降级（仍通过父logger输出到Terminal）
+                pass
 
             self._debug_logger.info("=" * 60)
             self._debug_logger.info("SystemManager DEBUG日志启动")
             self._debug_logger.info("=" * 60)
 
-            # 强制输出确认
+            # 使用统一日志系统
             self.logger.info(
-                "[SystemManager] ✅ DEBUG日志文件已创建: %s",
-                log_file.absolute(),
+                "[SystemManager] ✅ DEBUG日志已启用（由LoggingHub统一管理）",
                 extra={"log_type": "SYSTEM"},
             )
-            self.logger.info(f"✅ DEBUG日志已启用: {log_file}")
 
         except Exception as e:
             self.logger.error(

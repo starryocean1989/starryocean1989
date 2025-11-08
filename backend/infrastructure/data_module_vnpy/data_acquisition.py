@@ -218,8 +218,17 @@ else:
     _NATIVE_SCHEDULER_BRIDGE = None
 
 # ==================== 日志配置 ====================
-logger = logging.getLogger("backend.data_module.acquisition")
-logger_alert = logging.getLogger("backend.data_module.alert")
+from backend.infrastructure.system_vnpy.logging_system import bind_logger_defaults, get_alert_logger
+
+# 使用 bind_logger_defaults 初始化 logger，确保所有日志都有正确的 log_type 和 scenario
+logger = bind_logger_defaults(
+    logging.getLogger("backend.data_module.acquisition"),
+    log_type="SYSTEM",
+    scenario="data_module.download"
+)
+
+# 使用 get_alert_logger 获取告警专用的 logger
+logger_alert = get_alert_logger("backend.data_module.alert", scenario="data_module.alert")
 
 
 # ==============================================================================
@@ -5571,6 +5580,14 @@ def _download_ipo_batch(symbols: List[str]) -> Dict[str, Optional[date]]:
     if not symbols:
         return {}
 
+    # 配置子进程日志记录
+    from backend.infrastructure.system_vnpy.logging_system import configure_subprocess_logging
+    configure_subprocess_logging(
+        logger_name="data_module.ipo_download",
+        log_type="SYSTEM",
+        scenario="data_module.download"
+    )
+
     # 在子进程中创建新的事件循环并调用 tdx_asyncio 的协程版本
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -5581,8 +5598,26 @@ def _download_ipo_batch(symbols: List[str]) -> Dict[str, Optional[date]]:
             batch_get_ipo_dates(symbols, pool=None, max_concurrent=38, timeout=10.0)
         )
         return result
+    except Exception as e:
+        # 记录错误日志
+        logger.error(
+            f"批量查询IPO日期时发生错误: {str(e)}",
+            exc_info=True,
+            extra={
+                "symbols_count": len(symbols),
+                "error_type": type(e).__name__,
+                "function": "_download_ipo_batch"
+            }
+        )
+        # 返回空字典表示失败
+        return {symbol: None for symbol in symbols}
     finally:
-        loop.close()
+        try:
+            loop.close()
+        except Exception as e:
+            logger.warning(f"关闭事件循环时发生错误: {str(e)}")
+        # 确保日志消息被刷新
+        logging.shutdown()
 
 
 async def _fetch_single_ipo_date_with_pool(symbol: str, api: AsyncTdxHq_API) -> Optional[date]:

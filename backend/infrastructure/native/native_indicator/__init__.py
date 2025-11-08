@@ -11,7 +11,7 @@ else:
     _NDArrayFloat = Any  # type: ignore[misc]
 
 try:
-    import native_indicator_core as _native_core  # type: ignore
+    from . import native_indicator_core as _native_core  # type: ignore
 except ImportError:
     _native_core = None  # type: ignore
 

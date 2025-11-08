@@ -23,7 +23,10 @@ import threading
 import heapq
 import os
 import pickle
+import queue
 import secrets
+import sys
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -31,7 +34,7 @@ from enum import Enum
 from functools import wraps
 from pathlib import Path
 from threading import Lock, RLock
-from typing import Any, Dict, List, Optional, Callable, Tuple
+from typing import Any, Dict, List, Optional, Callable, Tuple, Union
 from logging.handlers import QueueHandler, QueueListener, MemoryHandler
 from multiprocessing.managers import SyncManager
 
@@ -131,18 +134,29 @@ _SCENARIO_PREFIX_RULES: Tuple[Tuple[str, str], ...] = (
     ("backend.services.system_manager", "system_manager"),
     ("backend.system_manager", "system_manager"),
     ("backend.services.data_center", "data_center"),
+    ("backend.data_center", "data_center"),
     ("backend.services.database_adapter", "database_adapter"),
     ("backend.services.ai_assistant", "ai_assistant"),
     ("backend.services", "backend_services"),
-    # 基础设施模块
+    # 数据模块
+    ("backend.data_module", "data_module_vnpy"),
     ("backend.infrastructure.data_module_vnpy", "data_module_vnpy"),
+    # 系统模块
+    ("backend.system", "system_manager"),
     ("backend.infrastructure.system_vnpy", "system_vnpy"),
+    # 原生扩展
     ("backend.infrastructure.native", "native_infrastructure"),
+    # 投资组合
+    ("backend.portfolio", "portfolio"),
     # 核心与进程
     ("backend.core", "core_services"),
     ("data_process", "data_process_init"),
     # UI 模块
     ("ui.modules", "ui"),
+    # 市场数据
+    ("backend.market", "market_data"),
+    # 策略模块
+    ("backend.strategy", "strategy"),
 )
 
 
@@ -197,9 +211,116 @@ def get_progress_logger(name: str, *, scenario: Optional[str] = None) -> logging
     return get_configured_logger(name, log_type="PROGRESS", scenario=scenario)
 
 
+def _coerce_logger(
+    logger: Optional[logging.Logger],
+    *,
+    default_name: str,
+    log_type: str,
+    scenario: Optional[str],
+) -> logging.Logger:
+    """确保返回的logger带有统一日志所需的默认字段."""
+
+    if logger is None:
+        if log_type == "STAGE_NODE":
+            return get_stage_logger(default_name, scenario=scenario or "application_startup")
+        if log_type == "ALERT":
+            return get_alert_logger(default_name, scenario=scenario)
+        if log_type == "PROGRESS":
+            return get_progress_logger(default_name, scenario=scenario)
+        return get_configured_logger(default_name, log_type=log_type, scenario=scenario)
+
+    return bind_logger_defaults(logger, log_type=log_type, scenario=scenario)
+
+
+def stage_log(
+    message: str,
+    *,
+    logger: Optional[logging.Logger] = None,
+    name: str = "startup.stage",
+    scenario: Optional[str] = None,
+    level: int = logging.INFO,
+    extra: Optional[Dict[str, Any]] = None,
+    stacklevel: int = 2,
+    **kwargs: Any,
+) -> None:
+    """输出阶段节点日志，自动补齐 ``log_type`` / ``scenario`` 信息."""
+
+    target_logger = _coerce_logger(logger, default_name=name, log_type="STAGE_NODE", scenario=scenario)
+    payload = dict(extra) if extra else {}
+    if scenario and "scenario" not in payload:
+        payload["scenario"] = scenario
+    target_logger.log(level, message, extra=payload or None, stacklevel=stacklevel, **kwargs)
+
+
+def alert_log(
+    message: str,
+    *,
+    logger: Optional[logging.Logger] = None,
+    name: str = "backend.alert",
+    scenario: Optional[str] = None,
+    level: int = logging.WARNING,
+    extra: Optional[Dict[str, Any]] = None,
+    stacklevel: int = 2,
+    **kwargs: Any,
+) -> None:
+    """输出告警日志，统一 ``log_type`` 与可选场景."""
+
+    target_logger = _coerce_logger(logger, default_name=name, log_type="ALERT", scenario=scenario)
+    payload = dict(extra) if extra else {}
+    if scenario and "scenario" not in payload:
+        payload["scenario"] = scenario
+    target_logger.log(level, message, extra=payload or None, stacklevel=stacklevel, **kwargs)
+
+
+def progress_log(
+    message: str,
+    *,
+    logger: Optional[logging.Logger] = None,
+    name: str = "backend.progress",
+    scenario: Optional[str] = None,
+    progress: Optional[float] = None,
+    level: int = logging.INFO,
+    extra: Optional[Dict[str, Any]] = None,
+    stacklevel: int = 2,
+    **kwargs: Any,
+) -> None:
+    """输出进度日志，自动补全进度与场景字段."""
+
+    target_logger = _coerce_logger(logger, default_name=name, log_type="PROGRESS", scenario=scenario)
+    payload = dict(extra) if extra else {}
+    if progress is not None:
+        payload.setdefault("progress", progress)
+    if scenario and "scenario" not in payload:
+        payload["scenario"] = scenario
+    target_logger.log(level, message, extra=payload or None, stacklevel=stacklevel, **kwargs)
+
+
 @dataclass
 class UnifiedLogRecord:
-    """统一日志记录."""
+    """统一日志记录
+    
+    扩展字段说明：
+    - type: 日志类型（LogType枚举）
+    - level: 日志级别（logging.INFO等）
+    - module: 模块名
+    - message: 日志消息
+    - details: 详细信息（字典）
+    - timestamp: 时间戳
+    - logger_name: 记录器名称
+    - function: 函数名
+    - line: 行号
+    - filename: 文件名
+    - thread: 线程ID
+    - thread_name: 线程名称
+    - exception: 异常信息
+    - request_id: 请求ID（用于跟踪请求链路）
+    - session_id: 会话ID（用于关联用户会话）
+    - user_id: 用户ID（如果适用）
+    - component: 组件名称（如模块名）
+    - operation: 操作名称（如函数名）
+    - duration: 操作耗时（毫秒）
+    - extra: 额外自定义字段（字典）
+    """
 
     type: LogType
     level: int
@@ -214,6 +335,86 @@ class UnifiedLogRecord:
     thread: int = 0
     thread_name: str = ""
     exception: str = ""
+    
+    # 请求和会话信息
+    request_id: Optional[str] = None
+    session_id: Optional[str] = None
+    user_id: Optional[str] = None
+    
+    # 组件和操作信息
+    component: str = ""
+    operation: str = ""
+    
+    # 性能指标
+    duration: Optional[float] = None  # 毫秒
+    
+    # 额外自定义字段
+    extra: Dict[str, Any] = field(default_factory=dict)
+    
+    def __post_init__(self):
+        # 如果未设置component，使用logger_name
+        if not self.component and self.logger_name:
+            self.component = self.logger_name
+            
+        # 如果未设置operation，使用function
+        if not self.operation and self.function:
+            self.operation = self.function
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """将日志记录转换为字典格式"""
+        result = {
+            'timestamp': self.timestamp.isoformat(),
+            'level': logging.getLevelName(self.level),
+            'levelno': self.level,
+            'logger': self.logger_name,
+            'message': self.message,
+            'type': self.type.name if hasattr(self.type, 'name') else str(self.type),
+            'module': self.module,
+            'function': self.function,
+            'filename': self.filename,
+            'line': self.line,
+            'thread': self.thread,
+            'thread_name': self.thread_name,
+            'request_id': self.request_id,
+            'session_id': self.session_id,
+            'user_id': self.user_id,
+            'component': self.component,
+            'operation': self.operation,
+            'duration': self.duration,
+        }
+        
+        # 添加异常信息
+        if self.exception:
+            result['exception'] = self.exception
+            
+        # 添加详细信息
+        if self.details:
+            result['details'] = self.details
+            
+        # 添加额外字段
+        if self.extra:
+            result.update(self.extra)
+            
+        return result
+    
+    def to_json(self, **kwargs) -> str:
+        """将日志记录转换为JSON字符串
+        
+        Args:
+            **kwargs: 传递给json.dumps的参数
+            
+        Returns:
+            JSON格式的字符串
+        """
+        import json
+        default_kwargs = {
+            'ensure_ascii': False,
+            'default': str,
+            'indent': None,
+            'separators': (',', ':')
+        }
+        default_kwargs.update(kwargs)
+        return json.dumps(self.to_dict(), **default_kwargs)
 
 
 def bind_logger_defaults(
@@ -1624,6 +1825,54 @@ class LoggingHub(logging.Handler):
                     return LogType.SYSTEM
             except Exception:
                 pass
+                
+        # 增强错误和异常检测
+        error_keywords = [
+            "error", "exception", "failed", "failure", "error occurred",
+            "unhandled exception", "traceback", "crash", "fatal", "critical",
+            "unexpected error", "operation failed", "unable to", "could not",
+            "failed to", "unable to process", "processing failed", "invalid",
+            "not found", "timeout", "timed out", "connection lost", "disconnected"
+        ]
+        if any(word in message_lower for word in error_keywords):
+            return LogType.ALERT if levelno >= logging.ERROR else LogType.SYSTEM
+
+        # 增强警告检测
+        warning_keywords = [
+            "warning", "warn", "caution", "attention", "notice",
+            "deprecated", "deprecation", "obsolete", "legacy", "outdated",
+            "retry", "retrying", "fallback", "falling back", "slow", "performance"
+        ]
+        if any(word in message_lower for word in warning_keywords):
+            return LogType.ALERT if levelno >= logging.WARNING else LogType.SYSTEM
+
+        # 增强进度检测
+        progress_keywords = [
+            "progress", "processing", "handling", "loading", "saving",
+            "downloading", "uploading", "exporting", "importing", "generating",
+            "calculating", "analyzing", "validating", "initializing", "starting",
+            "stopping", "restarting", "updating", "refreshing", "synchronizing"
+        ]
+        progress_indicators = ["%", "complete", "done", "finish", "completed", "success"]
+        if any(word in message_lower for word in progress_keywords):
+            if any(word in message_lower for word in progress_indicators):
+                return LogType.PROGRESS
+
+        # 增强阶段节点检测
+        stage_keywords = ["stage", "phase", "step", "task", "job", "process", "workflow"]
+        stage_indicators = ["start", "begin", "end", "complete", "finish", "initializing", "finalizing"]
+        if any(word in message_lower for word in stage_indicators):
+            if any(word in message_lower for word in stage_keywords):
+                return LogType.STAGE_NODE
+
+        # 增强通知检测
+        notification_keywords = [
+            "notify", "notification", "alert", "notice", "info", "information",
+            "message", "announcement", "update", "status", "summary", "report",
+            "success", "completed", "finished", "ready", "available", "done"
+        ]
+        if any(word in message_lower for word in notification_keywords):
+            return LogType.NOTIFICATION
 
         # 流程节点：阶段日志器优先处理
         # 规则：阶段日志器的WARNING/ERROR/CRITICAL升级为ALERT；否则为STAGE_NODE
@@ -1757,41 +2006,111 @@ class LoggingHub(logging.Handler):
         )
 
     def _get_targets(self, record: UnifiedLogRecord) -> List[str]:
-        """获取路由目标（简化的硬编码规则）.
+        """获取路由目标（优化版）
 
-        路由规则（硬编码）：
-        - Terminal输出：WARNING/ERROR/CRITICAL + STAGE_NODE.INFO
-        - 数据库输出：与terminal一致（WARNING/ERROR/CRITICAL + STAGE_NODE.INFO）
+        路由规则（优化后）：
         - 文件输出：所有日志都写入文件（全量）
+        - 控制台输出：WARNING/ERROR/CRITICAL + STAGE_NODE.INFO + ALERT + 自定义规则
+        - 数据库输出：与控制台一致，或根据自定义规则
         - 事件引擎：NOTIFICATION和ALERT类型（用于内部通知）
         - 节流事件：PROGRESS类型（500ms聚合）
+        
+        动态路由规则：
+        1. 支持通过 extra 参数动态指定目标
+        2. 支持通过日志级别、类型、来源等条件进行路由
+        3. 支持自定义路由规则
         """
-        targets = []
+        # 使用集合自动去重
+        targets = {"file"}
+        
+        # 1. 检查是否有显式指定的目标
+        if hasattr(record, 'targets') and isinstance(record.targets, (list, tuple, set)):
+            targets.update(record.targets)
+            return list(targets)
+            
+        # 2. 应用内置路由规则
+        
+        # 控制台和数据库输出条件
+        needs_console = (
+            record.level >= logging.WARNING or  # WARNING及以上级别
+            record.type in (LogType.ALERT, LogType.NOTIFICATION) or  # 告警和通知类型
+            (record.type == LogType.STAGE_NODE and record.level == logging.INFO) or  # 阶段节点信息
+            (record.level == logging.INFO and hasattr(record, 'show_in_console') and record.show_in_console)  # 显式指定显示在控制台
+        )
 
-        # 文件输出：所有日志都写入文件（全量）
-        targets.append("file")
+        # 数据库输出条件（可以单独控制）
+        needs_database = (
+            needs_console or  # 默认与控制台一致
+            (hasattr(record, 'save_to_database') and record.save_to_database)  # 显式指定保存到数据库
+        )
 
-        # Terminal输出：WARNING/ERROR/CRITICAL + STAGE_NODE.INFO
-        if record.level >= logging.WARNING or (
-            record.type == LogType.STAGE_NODE and record.level == logging.INFO
-        ):
-            targets.append("console")
-
-        # 数据库输出：与terminal一致
-        if record.level >= logging.WARNING or (
-            record.type == LogType.STAGE_NODE and record.level == logging.INFO
-        ):
-            targets.append("database")
+        # 添加控制台和数据库目标
+        if needs_console:
+            targets.add("console")
+        if needs_database and self.db_manager is not None:  # 只有在数据库管理器可用时才添加数据库目标
+            targets.add("database")
 
         # 事件引擎：NOTIFICATION和ALERT类型
         if record.type in (LogType.NOTIFICATION, LogType.ALERT):
-            targets.append("event")
+            targets.add("event")
 
         # 节流事件：PROGRESS类型
         if record.type == LogType.PROGRESS:
-            targets.append("event_throttled")
+            targets.add("event_throttled")
+            
+        # 3. 应用自定义路由规则
+        if hasattr(self, '_custom_routing_rules') and self._custom_routing_rules:
+            for rule in self._custom_routing_rules:
+                if self._match_rule(rule, record):
+                    targets.update(rule.get('targets', []))
 
-        return targets
+        # 4. 调试模式：所有DEBUG日志输出到控制台
+        if record.level == logging.DEBUG and getattr(self, "debug_mode", False):
+            targets.add("console")
+
+        return list(targets)
+        
+    def _match_rule(self, rule: Dict, record: UnifiedLogRecord) -> bool:
+        """检查日志记录是否匹配自定义路由规则"""
+        # 检查日志级别
+        if 'min_level' in rule and record.levelno < getattr(logging, rule['min_level']):
+            return False
+            
+        # 检查日志类型
+        if 'log_types' in rule and record.type.name not in rule['log_types']:
+            return False
+            
+        # 检查记录器名称模式
+        if 'logger_patterns' in rule:
+            if not any(pattern in record.name for pattern in rule['logger_patterns']):
+                return False
+                
+        # 检查消息内容模式
+        if 'message_patterns' in rule:
+            message = record.getMessage().lower()
+            if not any(pattern.lower() in message for pattern in rule['message_patterns']):
+                return False
+                
+        return True
+        
+    def add_routing_rule(self, rule: Dict) -> None:
+        """添加自定义路由规则
+        
+        Args:
+            rule: 路由规则字典，包含以下可选键：
+                - targets: 目标列表，如 ["console", "database", "event"]
+                - min_level: 最小日志级别（如 "WARNING"）
+                - log_types: 日志类型列表，如 ["ALERT", "NOTIFICATION"]
+                - logger_patterns: 记录器名称模式列表，如 ["backend.services", "data_module"]
+                - message_patterns: 消息内容模式列表，如 ["error", "failed"]
+        """
+        if not hasattr(self, '_custom_routing_rules'):
+            self._custom_routing_rules = []
+            
+        if 'targets' not in rule or not rule['targets']:
+            raise ValueError("路由规则必须包含 'targets' 字段")
+            
+        self._custom_routing_rules.append(rule)
 
     def _dispatch(self, targets: List[str], record: UnifiedLogRecord):
         """分发日志."""
@@ -2230,41 +2549,65 @@ def event_log_process_decorator(
 
 def log_progress(module: str, message: str, progress: float, **details):
     """记录进度日志（自动节流）."""
-    details["progress"] = progress
-    logger = logging.getLogger(f"backend.{module}")
-    logger.info(message, extra={"log_type": "PROGRESS", **details})
+    payload = dict(details)
+    scenario = payload.pop("scenario", None)
+    logger = get_configured_logger(f"backend.{module}", log_type="PROGRESS", scenario=scenario)
+    progress_log(
+        message,
+        logger=logger,
+        scenario=scenario,
+        progress=progress,
+        extra=payload,
+        stacklevel=3,
+    )
 
 
 def notify_complete(module: str, message: str, **details):
     """任务完成通知."""
-    logger = logging.getLogger(f"backend.{module}")
-    logger.info(message, extra={"log_type": "NOTIFICATION", **details})
+    payload = dict(details)
+    scenario = payload.pop("scenario", None)
+    logger = get_configured_logger(f"backend.{module}", log_type="NOTIFICATION", scenario=scenario)
+    logger.info(message, extra=payload or None, stacklevel=3)
 
 
 def alert(severity: str, module: str, message: str, **details):
     """发送告警."""
-    logger = logging.getLogger(f"backend.{module}")
+    payload = dict(details)
+    scenario = payload.pop("scenario", None)
+    logger = get_configured_logger(f"backend.{module}", log_type="ALERT", scenario=scenario)
     level = getattr(logging, severity.upper(), logging.WARNING)
-    logger.log(level, message, extra={"log_type": "ALERT", **details})
+    alert_log(message, logger=logger, scenario=scenario, level=level, extra=payload, stacklevel=3)
 
 
 def log_system(level: str, module: str, message: str, **details):
     """记录系统日志."""
-    logger = logging.getLogger(f"backend.{module}")
+    payload = dict(details)
+    scenario = payload.pop("scenario", None)
+    logger = get_configured_logger(f"backend.{module}", log_type="SYSTEM", scenario=scenario)
     log_level = getattr(logging, level.upper(), logging.INFO)
-    logger.log(log_level, message, extra={"log_type": "SYSTEM", **details})
+    extra = payload or None
+    if extra is not None and scenario and "scenario" not in extra:
+        extra["scenario"] = scenario
+    logger.log(log_level, message, extra=extra, stacklevel=3)
 
 
 def stage_node(module: str, message: str, **details):
     """记录阶段节点日志."""
-    logger = logging.getLogger(f"backend.{module}")
-    logger.info(message, extra={"log_type": "STAGE_NODE", **details})
+    payload = dict(details)
+    scenario = payload.pop("scenario", None)
+    logger = get_configured_logger(f"backend.{module}", log_type="STAGE_NODE", scenario=scenario)
+    stage_log(message, logger=logger, scenario=scenario, extra=payload, stacklevel=3)
 
 
 def debug_log(module: str, message: str, **details):
     """记录调试日志."""
-    logger = logging.getLogger(f"backend.{module}")
-    logger.debug(message, extra={"log_type": "DEBUG", **details})
+    payload = dict(details)
+    scenario = payload.pop("scenario", None)
+    logger = get_configured_logger(f"backend.{module}", log_type="DEBUG", scenario=scenario)
+    extra = payload or None
+    if extra is not None and scenario and "scenario" not in extra:
+        extra["scenario"] = scenario
+    logger.debug(message, extra=extra, stacklevel=3)
 
 
 # =============================================================================
@@ -2868,6 +3211,166 @@ def ai_log_process(event_name: str, metadata: Optional[Dict[str, Any]] = None):
     return event_log_process(event_name, metadata)
 
 
+# =============================================================================
+# 日志实用工具函数
+# =============================================================================
+
+@contextmanager
+def log_process_context(
+    process_name: str, 
+    logger_name: str = "process",
+    log_level: int = logging.INFO,
+    **metadata
+):
+    """记录流程开始和结束的上下文管理器。
+    
+    Args:
+        process_name: 流程名称
+        logger_name: 记录器名称，默认为"process"
+        log_level: 日志级别，默认为INFO
+        **metadata: 额外的元数据
+    """
+    logger = logging.getLogger(f"{logger_name}.{process_name}")
+    start_time = time.time()
+    
+    # 记录开始
+    logger.log(
+        log_level,
+        f"🚀 开始: {process_name}",
+        extra={
+            "log_type": "STAGE_NODE",
+            "action": "start",
+            "timestamp": start_time,
+            **metadata
+        }
+    )
+    
+    try:
+        yield
+        # 记录成功完成
+        duration = time.time() - start_time
+        logger.log(
+            log_level,
+            f"✅ 完成: {process_name} (耗时: {duration:.2f}s)",
+            extra={
+                "log_type": "STAGE_NODE",
+                "action": "complete",
+                "duration": duration,
+                "status": "success",
+                "timestamp": time.time(),
+                **metadata
+            }
+        )
+    except Exception as e:
+        # 记录失败
+        duration = time.time() - start_time
+        logger.error(
+            f"❌ 失败: {process_name} (错误: {str(e)})",
+            extra={
+                "log_type": "ALERT",
+                "action": "error",
+                "duration": duration,
+                "status": "failed",
+                "error": str(e),
+                "timestamp": time.time(),
+                **metadata
+            },
+            exc_info=True
+        )
+        raise
+
+
+def log_progress(
+    message: str,
+    progress: Optional[float] = None,
+    logger_name: str = "progress",
+    **details
+):
+    """记录进度日志。
+    
+    Args:
+        message: 进度消息
+        progress: 进度值 (0.0 到 1.0)
+        logger_name: 记录器名称
+        **details: 额外的详情信息
+    """
+    logger = logging.getLogger(logger_name)
+    extra = {
+        "log_type": "PROGRESS",
+        **details
+    }
+    if progress is not None:
+        extra["progress"] = max(0.0, min(1.0, float(progress)))
+    
+    logger.info(
+        f"⏳ {message}" + (f" ({progress*100:.1f}%)" if progress is not None else ""),
+        extra=extra
+    )
+
+
+def log_alert(
+    message: str,
+    severity: str = "WARNING",
+    logger_name: str = "alert",
+    **details
+):
+    """记录告警日志。
+    
+    Args:
+        message: 告警消息
+        severity: 严重程度 (WARNING, ERROR, CRITICAL)
+        logger_name: 记录器名称
+        **details: 额外的详情信息
+    """
+    logger = logging.getLogger(logger_name)
+    severity = severity.upper()
+    level = getattr(logging, severity, logging.WARNING)
+    
+    emoji = "⚠️"
+    if severity == "ERROR":
+        emoji = "❌"
+    elif severity == "CRITICAL":
+        emoji = "🔥"
+    
+    logger.log(
+        level,
+        f"{emoji} {message}",
+        extra={
+            "log_type": "ALERT",
+            "severity": severity,
+            **details
+        }
+    )
+
+
+def log_system(
+    message: str,
+    level: str = "INFO",
+    logger_name: str = "system",
+    **details
+):
+    """记录系统日志。
+    
+    Args:
+        message: 系统消息
+        level: 日志级别 (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+        logger_name: 记录器名称
+        **details: 额外的详情信息
+    """
+    logger = logging.getLogger(logger_name)
+    log_level = getattr(logging, level.upper(), logging.INFO)
+    
+    logger.log(
+        log_level,
+        message,
+        extra={
+            "log_type": "SYSTEM",
+            **details
+        }
+    )
+
+
+# =============================================================================
 # 进程名称常量（向后兼容）
 class ProcessNames:
     """预定义的流程名称常量（向后兼容）"""
@@ -2906,6 +3409,9 @@ __all__ = [
     "get_stage_logger",
     "get_alert_logger",
     "get_progress_logger",
+    "stage_log",
+    "alert_log",
+    "progress_log",
     # 核心类
     "LoggingHub",
     "OrderedLogQueue",

@@ -147,6 +147,7 @@ class DataProcessClient:
     def _build_request_message(
         self,
         method: str,
+        args: Sequence[Any],
         params: Dict[str, Any],
         *,
         extra_metadata: Optional[Dict[str, Any]] = None,
@@ -157,7 +158,7 @@ class DataProcessClient:
             try:
                 request_id, message = encode_native_request(
                     method_id,
-                    params,
+                    {"args": list(args), "kwargs": params},
                     create_header=create_request_header,
                     method_name=method,
                     extra_metadata=extra_metadata,
@@ -172,7 +173,10 @@ class DataProcessClient:
         request_payload = {
             "id": request_id,
             "method": method,
-            "params": params,
+            "params": {
+                "_args": list(args) if args else [],
+                "_kwargs": params,
+            },
             "timestamp": time.time(),
         }
         if extra_metadata:
@@ -348,11 +352,12 @@ class DataProcessClient:
         """
         return self._connected
 
-    def call(self, method: str, **kwargs) -> Any:
+    def call(self, method: str, *args, **kwargs) -> Any:
         """同步RPC调用.
 
         Args:
             method: 方法名
+            *args: 位置参数
             **kwargs: 方法参数
 
         Returns:
@@ -366,13 +371,14 @@ class DataProcessClient:
 
         # 创建异步任务并等待结果
         loop = asyncio.get_event_loop()
-        return loop.run_until_complete(self.call_async(method, **kwargs))
+        return loop.run_until_complete(self.call_async(method, *args, **kwargs))
 
-    async def call_async(self, method: str, **kwargs) -> Any:
+    async def call_async(self, method: str, *args, **kwargs) -> Any:
         """异步RPC调用.
 
         Args:
             method: 方法名
+            *args: 位置参数
             **kwargs: 方法参数
 
         Returns:
@@ -396,6 +402,7 @@ class DataProcessClient:
 
         request_id, payload_bytes, use_native = self._build_request_message(
             method,
+            args,
             kwargs,
             extra_metadata={"protocol": "native_v1"} if self._native_enabled else None,
         )

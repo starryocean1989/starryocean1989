@@ -17,6 +17,7 @@ import time
 from backend.infrastructure.system_vnpy.logging_system import bind_logger_defaults
 from backend.startup.context import StartupContext
 from backend.startup.stages.base import StartupStage, StageResult
+from backend.startup.cleanup_utils import run_backend_process_cleanup
 
 logger = bind_logger_defaults(
     logging.getLogger("backend.startup.stages.qt_framework"),
@@ -93,6 +94,16 @@ class QtFrameworkStage(StartupStage):
             app.setOrganizationName("星辰科技")
 
             context.app = app
+
+            # 确保Qt事件循环退出时优先触发子进程清理
+            def _on_app_about_to_quit() -> None:
+                logger.info(
+                    "[QT-INIT] QApplication.aboutToQuit() 触发进程清理",
+                    extra={"log_type": "SYSTEM", "scenario": "application_startup"},
+                )
+                run_backend_process_cleanup(label="Qt事件清理")
+
+            app.aboutToQuit.connect(_on_app_about_to_quit)  # type: ignore[arg-type]
 
             logger.debug(
                 f"[QT-INIT] QApplication已创建: 应用名={app.applicationName()}, 版本={app.applicationVersion()}, 组织={app.organizationName()}",

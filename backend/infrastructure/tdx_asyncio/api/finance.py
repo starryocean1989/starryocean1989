@@ -372,8 +372,36 @@ def _download_ipo_batch_worker(symbols: List[str]) -> Dict[str, Optional[date]]:
         symbols: 品种代码列表
 
     Returns:
-        {symbol: ipo_date} 字典
+        {symbol: ipo_date} 字典，查询失败的品种值为None
     """
+    # 配置子进程日志记录
+    import logging
+    from backend.infrastructure.system_vnpy.logging_system import (
+        configure_subprocess_logging,
+        LogType,
+        get_alert_logger
+    )
+    
+    # 配置子进程日志
+    configure_subprocess_logging(
+        logger_name="tdx.ipo_worker",
+        log_type=LogType.SYSTEM.value,
+        scenario="tdx.ipo_download"
+    )
+    
+    # 获取logger
+    logger = logging.getLogger("tdx.ipo_worker")
+    alert_logger = get_alert_logger("tdx.ipo_worker.alert", scenario="tdx.ipo_download")
+    
+    # 记录任务开始
+    logger.info(
+        f"开始批量下载IPO日期，共 {len(symbols)} 个品种",
+        extra={
+            "symbols_count": len(symbols),
+            "sample_symbols": symbols[:5] if len(symbols) > 5 else symbols
+        }
+    )
+
     # 在子进程中创建新的事件循环
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -383,7 +411,41 @@ def _download_ipo_batch_worker(symbols: List[str]) -> Dict[str, Optional[date]]:
         result = loop.run_until_complete(
             batch_get_ipo_dates(symbols, pool=None, max_concurrent=38, timeout=10.0)
         )
+        
+        # 统计成功/失败数量
+        success_count = sum(1 for v in result.values() if v is not None)
+        failed_count = len(symbols) - success_count
+        
+        if failed_count > 0:
+            logger.warning(
+                f"IPO日期下载完成，成功 {success_count} 个，失败 {failed_count} 个",
+                extra={
+                    "success_count": success_count,
+                    "failed_count": failed_count,
+                    "success_rate": f"{success_count / len(symbols):.1%}" if symbols else "0%"
+                }
+            )
+        else:
+            logger.info(
+                f"IPO日期下载完成，全部 {success_count} 个成功",
+                extra={"success_count": success_count}
+            )
+            
         return result
+    except Exception as e:
+        # 记录严重错误
+        error_msg = f"批量下载IPO日期时发生严重错误: {str(e)}"
+        alert_logger.critical(
+            error_msg,
+            exc_info=True,
+            extra={
+                "error_type": type(e).__name__,
+                "symbols_count": len(symbols),
+                "sample_symbols": symbols[:5] if len(symbols) > 5 else symbols
+            }
+        )
+        # 返回所有None表示全部失败
+        return {symbol: None for symbol in symbols}
     finally:
         loop.close()
 

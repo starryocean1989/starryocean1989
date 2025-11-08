@@ -28,6 +28,9 @@ from backend.infrastructure.system_vnpy.logging_system import (
     bind_logger_defaults,
 )
 from backend.infrastructure.native.native_serialization import build_dataframe_payload
+from backend.infrastructure.data_module_vnpy.data_process_client import (
+    get_data_process_client,
+)
 
 # 导入高性能LRU缓存
 from backend.infrastructure.native.native_collections import HighPerfLRUCache
@@ -282,6 +285,17 @@ class DataCenterService(BaseService, LoggerMixin):
             任务数量
         """
         return self._download_tasks.size()
+
+    def get_download_task_count(self) -> Dict[str, Any]:
+        """获取当前下载任务数量."""
+        try:
+            count = int(self._download_tasks.size())
+        except Exception:
+            count = 0
+        return {
+            "success": True,
+            "count": count,
+        }
 
     # ==================== 指数数据查询（基准数据支持） ====================
 

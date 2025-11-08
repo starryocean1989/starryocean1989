@@ -22,9 +22,9 @@ import signal
 import sys
 from pathlib import Path
 
-# 在环境准备阶段之前禁用所有日志输出，确保环境准备阶段的输出是第一个输出
-# 环境准备阶段会使用print直接输出，不使用logger
-logging.basicConfig(level=logging.CRITICAL, force=True)
+# 在环境准备阶段之前降低日志级别，避免重置handlers干扰统一日志系统
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.CRITICAL)
 
 # 添加项目根目录到Python路径
 project_root = Path(__file__).parent
@@ -40,6 +40,7 @@ from backend.startup import (
     BackendInitStage,
     UIActivationStage,
 )
+from backend.startup.cleanup_utils import run_backend_process_cleanup
 
 
 def setup_process_cleanup():
@@ -51,48 +52,10 @@ def setup_process_cleanup():
     - 窗口关闭（Qt事件）
     - 异常退出（finally块）
     """
-    try:
-        from backend.startup.workers.monitor_launcher import cleanup_all_processes as cleanup_monitor
-        from backend.startup.workers.monitor_launcher import _cleanup_signal_file as cleanup_monitor_signal
-    except ImportError:  # pragma: no cover
-        cleanup_monitor = None
-        cleanup_monitor_signal = None
-
-    try:
-        from backend.startup.workers.data_launcher import cleanup_all_processes as cleanup_data
-        from backend.startup.workers.data_launcher import _cleanup_signal_file as cleanup_data_signal
-    except ImportError:  # pragma: no cover
-        cleanup_data = None
-        cleanup_data_signal = None
-
-    def _run_cleanup(label: str = "清理流程"):
-        errors = []
-
-        if cleanup_monitor:
-            try:
-                cleanup_monitor()
-            except Exception as exc:  # pragma: no cover
-                errors.append(f"监控进程: {exc}")
-        if cleanup_data:
-            try:
-                cleanup_data()
-            except Exception as exc:  # pragma: no cover
-                errors.append(f"数据进程: {exc}")
-
-        for signal_cleanup in (cleanup_monitor_signal, cleanup_data_signal):
-            if signal_cleanup:
-                try:
-                    signal_cleanup()
-                except Exception:
-                    pass
-
-        if errors:
-            print(f"❌ {label}失败: {'; '.join(errors)}")
-
     def signal_handler(signum, frame):
         """信号处理器"""
         print(f"\n⚠️ 收到信号 {signum}，正在清理进程...")
-        _run_cleanup(label="进程清理")
+        run_backend_process_cleanup(label="进程清理")
         sys.exit(1)
 
     # 注册信号处理器（Windows上只支持SIGINT和SIGTERM）
@@ -107,7 +70,7 @@ def setup_process_cleanup():
 
     # 注册atexit清理（作为后备）
     def cleanup_on_exit():
-        _run_cleanup()
+        run_backend_process_cleanup(label="进程清理")
 
     atexit.register(cleanup_on_exit)
 

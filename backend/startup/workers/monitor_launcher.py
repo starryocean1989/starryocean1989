@@ -17,9 +17,10 @@ from backend.startup.workers.base import StartupWorker, WorkerResult
 from backend.startup.context import StartupContext
 from backend.infrastructure.system_vnpy.logging_system import (
     LOGGING_QUEUE_TOKEN_ENV,
+    alert_log,
     get_alert_logger,
     get_configured_logger,
-    get_stage_logger,
+    stage_log,
 )
 
 
@@ -91,15 +92,12 @@ class MonitorLauncherWorker(StartupWorker):
         start_time = time.time()
 
         try:
-            stage_logger = get_stage_logger("startup.stage", scenario=STARTUP_SCENARIO)
-
-            stage_logger.info("")
-            stage_logger.info("┌" + "─" * 66 + "┐")
-            stage_logger.info("│ 分支A: 监控进程                                                   │")
-            stage_logger.info("└" + "─" * 66 + "┘")
-            stage_logger.info("")
-
-            stage_logger.info("📍 监控进程启动开始")
+            stage_log("", scenario=STARTUP_SCENARIO, stacklevel=3)
+            stage_log("┌" + "─" * 66 + "┐", scenario=STARTUP_SCENARIO, stacklevel=3)
+            stage_log("│ 分支A: 监控进程                                                   │", scenario=STARTUP_SCENARIO, stacklevel=3)
+            stage_log("└" + "─" * 66 + "┘", scenario=STARTUP_SCENARIO, stacklevel=3)
+            stage_log("", scenario=STARTUP_SCENARIO, stacklevel=3)
+            stage_log("📍 监控进程启动开始", scenario=STARTUP_SCENARIO, stacklevel=3)
 
             # 启动监控进程
             monitor_info = await self._launch_monitor_process(context)
@@ -110,7 +108,11 @@ class MonitorLauncherWorker(StartupWorker):
 
             elapsed_ms = (time.time() - start_time) * 1000
 
-            stage_logger.info(f"✅ 监控进程完全就绪 ({elapsed_ms/1000:.1f}s)")
+            stage_log(
+                f"✅ 监控进程完全就绪 ({elapsed_ms/1000:.1f}s)",
+                scenario=STARTUP_SCENARIO,
+                stacklevel=3,
+            )
 
             return WorkerResult(
                 success=True,
@@ -147,7 +149,7 @@ class MonitorLauncherWorker(StartupWorker):
             RuntimeError: 监控进程启动失败
         """
         start_time = time.time()
-        stage_logger = get_stage_logger("startup.stage", scenario="monitor_launch")
+        stage_scenario = "monitor_launch"
 
         monitor_script = (
             context.project_root
@@ -195,6 +197,12 @@ class MonitorLauncherWorker(StartupWorker):
         if getattr(context, "log_queue_token", None):
             env[LOGGING_QUEUE_TOKEN_ENV] = context.log_queue_token  # type: ignore[arg-type]
             logger.debug("[MONITOR-PROCESS] 已注入日志队列token")
+        else:
+            alert_log(
+                "⚠️ 未检测到日志队列令牌，监控进程日志将回退至本地输出",
+                scenario=stage_scenario,
+                stacklevel=3,
+            )
 
         self.monitor_process_handle = subprocess.Popen(
             [sys.executable, str(monitor_script)],
@@ -207,45 +215,51 @@ class MonitorLauncherWorker(StartupWorker):
 
         # 获取PID并显示
         pid = self.monitor_process_handle.pid
-        stage_logger.info(f"✅ monitor_system.py进程已启动 (PID: {pid})")
+        stage_log(
+            f"✅ monitor_system.py进程已启动 (PID: {pid})",
+            scenario=stage_scenario,
+            stacklevel=3,
+        )
 
         # 注册清理函数
         atexit.register(self.cleanup_monitor)
 
         # 启动看门狗线程
         self._start_watchdog(context)
-
-        # 显示native_ipc管道创建过程
-        stage_logger.info("✅ 创建native_ipc管道")
-        stage_logger.info("  ├─ monitor_alerts ✅")
-        stage_logger.info("  ├─ monitor_status ✅")
-        stage_logger.info("  └─ monitor_query ✅")
-
-        # 显示监控组件初始化
-        stage_logger.info("✅ 监控组件初始化")
-        stage_logger.info("  ├─ SystemMonitor ✅")
-        stage_logger.info("  ├─ ProcessMonitor ✅")
-        stage_logger.info("  ├─ HardwareMonitor (后台异步) ⏳")
-        stage_logger.info("  └─ BandwidthMonitor ✅")
+        stage_log(
+            "✅ 监控进程看门狗启动（2s 轮询）",
+            scenario=stage_scenario,
+            stacklevel=3,
+        )
 
         # 等待监控进程Level 1就绪（管道就绪）
         # 正常2-3秒，设置15秒超时（已非常宽松）
-        ports_info = await self._wait_monitor_ready(max_wait=15.0, wait_for_level=1)
-
-        stage_logger.info("✅ Level 1就绪 (管道就绪)")
-        stage_logger.info("✅ 监控进程看门狗启动（2s 轮询）")
+        level1_ports = await self._wait_monitor_ready(max_wait=15.0, wait_for_level=1)
+        if isinstance(level1_ports, dict) and level1_ports:
+            port_names = ", ".join(level1_ports.keys())
+            stage_log(
+                f"✅ Level 1就绪 (IPC管道: {port_names})",
+                scenario=stage_scenario,
+                stacklevel=3,
+            )
+        else:
+            stage_log("✅ Level 1就绪 (IPC管道准备完成)", scenario=stage_scenario, stacklevel=3)
 
         # 等待监控进程Level 2就绪（功能完整）
         # 硬件监控初始化可能需要30-60秒，设置90秒超时
         await self._wait_monitor_ready(max_wait=90.0, wait_for_level=2)
 
-        stage_logger.info("✅ Level 2就绪 (功能完整)")
+        stage_log(
+            "✅ Level 2就绪 (监控能力完整)",
+            scenario=stage_scenario,
+            stacklevel=3,
+        )
 
         elapsed = time.time() - start_time
 
         return {
             "pid": self.monitor_process_handle.pid,
-            "ports": ports_info,
+            "ports": level1_ports,
             "elapsed": elapsed,
         }
 

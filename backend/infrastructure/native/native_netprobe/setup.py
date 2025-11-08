@@ -14,14 +14,12 @@ if platform.system() != "Windows":
 
 ROOT = Path(__file__).resolve().parent
 
-native_netprobe_module = Extension(
-    "native_netprobe",
-    sources=[
-        str(ROOT / "native_netprobe.c"),
-        str(ROOT / "netprobe.c"),
-    ],
+# netprobe C扩展模块（独立完整实现）
+netprobe_module = Extension(
+    "netprobe",
+    sources=[str(ROOT / "netprobe.c")],
     libraries=["ws2_32", "kernel32", "Mswsock"],
-    extra_compile_args=["/std:c11", "/W3", "/O2"],
+    extra_compile_args=["/ std:c11", "/W3", "/O2"],
 )
 
 setup(
@@ -29,7 +27,7 @@ setup(
     version="1.0.0",
     description="Native network probe for fast batch connectivity testing (Windows)",
     author="Terminal Project",
-    ext_modules=[native_netprobe_module],
+    ext_modules=[netprobe_module],
     platforms=["win32"],
     python_requires=">=3.8",
 )

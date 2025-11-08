@@ -29,7 +29,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Deque, Dict, List, Optional, Protocol, TYPE_CHECKING, cast, Tuple
+from typing import Any, Awaitable, Callable, Deque, Dict, List, Optional, Protocol, TYPE_CHECKING, cast, Tuple
 from urllib.parse import urlparse
 
 # 添加项目根目录到Python路径（用于独立运行）
@@ -41,10 +41,13 @@ if __name__ == "__main__":
 import numpy as np
 
 from backend.infrastructure.system_vnpy.logging_system import (
+    alert_log,
     bind_logger_defaults,
     load_queue_from_env,
     setup_subprocess_logging,
+    stage_log,
 )
+from backend.infrastructure.system_vnpy.process_watchdog import ensure_parent_watchdog
 
 
 def get_root() -> Path:
@@ -60,6 +63,20 @@ def get_root() -> Path:
     current_file = Path(__file__).resolve()
     root_path = current_file.parent.parent.parent.parent
     return root_path
+
+
+def _safe_asdict(obj: Any) -> Dict[str, Any]:
+    """安全地将 psutil 返回对象转换为字典."""
+    if obj is None:
+        return {}
+    if hasattr(obj, "_asdict"):
+        try:
+            return dict(obj._asdict())  # type: ignore[attr-defined]
+        except Exception:
+            return {}
+    if isinstance(obj, dict):
+        return dict(obj)
+    return {}
 
 # 尝试导入native_ipc
 try:
@@ -181,6 +198,44 @@ except ImportError:
     HAS_WMI = False
     logger.debug("WMI模块未安装，将使用简化磁盘检测")
 
+# 记录原生能力降级提示
+if not NATIVE_PROCESS_METRICS_AVAILABLE:
+    alert_log(
+        "⚠️ native_process_metrics扩展不可用，系统监控将使用psutil回退",
+        scenario=MONITOR_LAUNCH_SCENARIO,
+        stacklevel=3,
+    )
+
+if not NATIVE_NETPROBE_AVAILABLE:
+    alert_log(
+        "⚠️ native_netprobe扩展不可用，网络探测将使用Python回退",
+        scenario=MONITOR_LAUNCH_SCENARIO,
+        stacklevel=3,
+    )
+
+if not SOCKET_METRICS_AVAILABLE:
+    alert_log(
+        "⚠️ native_socket_metrics扩展不可用，Socket缓冲监控将部分受限",
+        scenario=MONITOR_LAUNCH_SCENARIO,
+        stacklevel=3,
+    )
+
+if not NATIVE_STATISTICS_AVAILABLE:
+    alert_log(
+        "⚠️ native_statistics扩展不可用，流式统计将使用Python回退",
+        scenario=MONITOR_LAUNCH_SCENARIO,
+        stacklevel=3,
+    )
+
+if not HAS_WMI:
+    alert_log(
+        "⚠️ WMI 模块不可用，SMART 监控将受限",
+        scenario=MONITOR_LAUNCH_SCENARIO,
+        stacklevel=3,
+    )
+
+# 网络测速功能使用自研模块（基于公共测速站点，无第三方依赖）
+# NetworkSpeedTester 类已集成到本文件中
 # 网络测速功能使用自研模块（基于公共测速站点，无第三方依赖）
 # NetworkSpeedTester 类已集成到本文件中
 
@@ -2598,14 +2653,11 @@ class MonitoringProcessV2:
                         logger.info("[INIT] ✓ 就绪信号已更新（Level 2: 功能完整）")
 
                         # 阶段节点日志（输出到Terminal）- Level 2就绪
-                        try:
-                            stage_logger = logging.getLogger("startup.stage")
-                            stage_logger.info(
-                                "✅ Level 2就绪 (功能完整)",
-                                extra={"log_type": "STAGE_NODE", "scenario": "monitor_launch"},
-                            )
-                        except Exception:
-                            pass  # 如果无法获取stage_logger，忽略（降级处理）
+                        stage_log(
+                            "✅ Level 2就绪 (功能完整)",
+                            scenario="monitor_launch",
+                            stacklevel=4,
+                        )
                 except Exception as e:
                     logger.warning("[INIT] 更新就绪信号失败: %s", e, extra={"log_type": "SYSTEM"})
 
@@ -3109,283 +3161,317 @@ class MonitoringProcessV2:
             logger.error("[IPC] ❌ 协程异常退出: %s", e, exc_info=True, extra={"log_type": "ALERT"})
         finally:
             logger.info("[IPC] 通信处理协程停止")
+
     async def _handle_query_pipe(self):
         """处理查询管道（native_ipc服务端）."""
         if not self.query_pipe:
             return
 
-        try:
-            try:
-                await self.query_pipe.wait_for_client(timeout=30.0)
-                logger.info("[IPC] 查询管道客户端已连接", extra={"log_type": "SYSTEM"})
-            except Exception as connect_error:
-                logger.error(
-                    "[IPC] 查询管道等待客户端连接失败: %s",
-                    connect_error,
-                    exc_info=True,
-                    extra={"log_type": "ALERT"},
-                )
-                return
+        retry_delay = 1.0
 
+        try:
             while self.running:
                 try:
-                    # 读取请求（使用更大的缓冲区）
-                    request_data = await self.query_pipe.read(size=65536)
+                    await self.query_pipe.wait_for_client(timeout=30.0)
+                    logger.info("[IPC] 查询管道客户端已连接", extra={"log_type": "SYSTEM"})
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "[IPC] 查询管道等待客户端连接超时（30s），将重试",
+                        extra={"log_type": "SYSTEM"},
+                    )
+                    await asyncio.sleep(min(retry_delay, 5.0))
+                    retry_delay = min(retry_delay * 1.5, 10.0)
+                    continue
+                except Exception as connect_error:
+                    logger.error(
+                        "[IPC] 查询管道等待客户端连接失败: %s",
+                        connect_error,
+                        exc_info=True,
+                        extra={"log_type": "ALERT"},
+                    )
+                    await asyncio.sleep(min(retry_delay, 5.0))
+                    retry_delay = min(retry_delay * 1.5, 10.0)
+                    continue
 
-                    # 🔧 修复JSON解析问题：处理数据截断和多JSON对象
+                retry_delay = 1.0
+
+                while self.running:
                     try:
-                        decoded_data = request_data.decode("utf-8")
+                        # 读取请求（使用更大的缓冲区）
+                        request_data = await self.query_pipe.read(size=65536)
 
-                        # 检查是否有多个JSON对象（用换行符分隔）
-                        if "\n" in decoded_data:
-                            # 取第一个完整的JSON对象
-                            json_lines = decoded_data.strip().split("\n")
-                            for line in json_lines:
-                                if line.strip():
-                                    try:
-                                        request = json.loads(line.strip())
-                                        break
-                                    except json.JSONDecodeError:
-                                        continue
-                            else:
-                                # 如果没有找到有效的JSON，使用默认请求
-                                request = {"action": "get_data"}
-                        else:
-                            # 单个JSON对象，直接解析
-                            request = json.loads(decoded_data)
-
-                    except json.JSONDecodeError as e:
-                        logger.warning(
-                            f"[IPC] JSON解析失败: {e}, 数据长度: {len(request_data)}",
-                            extra={"log_type": "SYSTEM"},
-                        )
-                        logger.debug(f"[IPC] 原始数据: {request_data[:100]}...")
-                        # 使用默认请求
-                        request = {"action": "get_data"}
-                    except UnicodeDecodeError as e:
-                        logger.warning(
-                            f"[IPC] 数据解码失败: {e}, 数据长度: {len(request_data)}",
-                            extra={"log_type": "SYSTEM"},
-                        )
-                        # 使用默认请求
-                        request = {"action": "get_data"}
-                    action = request.get("action", "get_data")
-
-                    # 处理请求
-                    if action == "get_data":
-                        # 构建精简响应，避免数据过大
-                        response = {
-                            "timestamp": datetime.now().isoformat(),
-                            "system": self.monitoring_data.get("system", {}),
-                            "process": self.monitoring_data.get("process", {}),
-                            "service": self.monitoring_data.get("service", {}),
-                        }
-
-                        # 只在需要时添加硬件和SMART数据
-                        if "hardware" in self.monitoring_data and self.monitoring_data["hardware"]:
-                            response["hardware"] = self.monitoring_data["hardware"]
-                        if "smart" in self.monitoring_data and self.monitoring_data["smart"]:
-                            response["smart"] = self.monitoring_data["smart"]
-                        if "analysis" in self.monitoring_data and self.monitoring_data["analysis"]:
-                            response["analysis"] = self.monitoring_data["analysis"]
-
-                        # 添加阈值和并发任务数
-                        if self.adaptive_threshold:
-                            response["thresholds"] = self.adaptive_threshold.get_all_thresholds()
-                        try:
-                            concurrent_tasks = (
-                                self.business_metrics_collector.get_concurrent_tasks()
-                            )
-                            response["concurrent_tasks"] = concurrent_tasks
-                        except Exception:
-                            response["concurrent_tasks"] = {
-                                "download": 0,
-                                "backtest": 0,
-                                "trading": 0,
-                                "total": 0,
-                            }
-
-                        # 压缩JSON输出并检查大小
-                        response_json = json.dumps(response, separators=(",", ":"))
-                        response_bytes = response_json.encode()
-
-                        # 检查数据大小，如果超过32KB则警告
-                        if len(response_bytes) > 32768:
-                            logger.warning(
-                                "[IPC] 响应数据过大: %d bytes，可能导致传输问题",
-                                len(response_bytes),
+                        if not request_data:
+                            logger.info(
+                                "[IPC] 查询管道收到空数据，视为客户端已断开，将重新等待连接",
                                 extra={"log_type": "SYSTEM"},
                             )
-                            # 如果数据过大，尝试进一步精简
-                            if len(response_bytes) > 60000:  # 接近64KB限制
-                                logger.warning(
-                                    "[IPC] 数据接近缓冲区限制，进行精简",
-                                    extra={"log_type": "SYSTEM"},
-                                )
-                                # 移除详细的进程信息
-                                if "process" in response and isinstance(response["process"], dict):
-                                    if "processes" in response["process"]:
-                                        # 只保留前10个进程
-                                        response["process"]["processes"] = response["process"][
-                                            "processes"
-                                        ][:10]
-                                response_json = json.dumps(response, separators=(",", ":"))
-                                response_bytes = response_json.encode()
-                                logger.info("[IPC] 精简后数据大小: %d bytes", len(response_bytes))
+                            break
 
-                        # 🔧 验证响应数据完整性
+                        # 🔧 修复JSON解析问题：处理数据截断和多JSON对象
                         try:
-                            # 验证JSON格式
-                            json.loads(response_bytes.decode("utf-8"))
-                            await self.query_pipe.write(response_bytes)
-                            logger.debug(f"[IPC] 响应已发送: {len(response_bytes)} bytes")
-                        except json.JSONDecodeError as e:
-                            logger.error(
-                                f"[IPC] 响应JSON格式错误: {e}", extra={"log_type": "SYSTEM"}
-                            )
-                            # 发送错误响应
-                            error_response = json.dumps(
-                                {"status": "error", "message": "响应数据格式错误"}
-                            )
-                            await self.query_pipe.write(error_response.encode("utf-8"))
-                        except Exception as e:
-                            logger.error(f"[IPC] 发送响应失败: {e}", extra={"log_type": "SYSTEM"})
-                    elif action == "trigger_smart":
-                        if self.smart_trigger_event:
-                            self.smart_trigger_event.set()
-                        await self.query_pipe.write(json.dumps({"status": "success"}).encode())
-                    elif action == "test_bandwidth_full":
-                        # 手动触发完整带宽测试（后台任务模式）
-                        try:
-                            if (
-                                self._background_bandwidth_task
-                                and not self._background_bandwidth_task.done()
-                            ):
-                                logger.warning(
-                                    "[BANDWIDTH] 测试已在运行中，拒绝新请求",
-                                    extra={"log_type": "SYSTEM"},
-                                )
-                                await self.query_pipe.write(
-                                    json.dumps(
-                                        {
-                                            "status": "testing",
-                                            "message": "带宽测试正在进行中，请稍后查询结果",
-                                        }
-                                    ).encode()
-                                )
+                            decoded_data = request_data.decode("utf-8")
+
+                            # 检查是否有多个JSON对象（用换行符分隔）
+                            if "\n" in decoded_data:
+                                # 取第一个完整的JSON对象
+                                json_lines = decoded_data.strip().split("\n")
+                                for line in json_lines:
+                                    if line.strip():
+                                        try:
+                                            request = json.loads(line.strip())
+                                            break
+                                        except json.JSONDecodeError:
+                                            continue
+                                else:
+                                    # 如果没有找到有效的JSON，使用默认请求
+                                    request = {"action": "get_data"}
                             else:
-                                self._background_bandwidth_task = asyncio.create_task(
-                                    self.system_monitor.bandwidth_monitor.test_bandwidth_full_async()
-                                )
-                                logger.info("[IPC] ✅ 带宽测试后台任务已启动")
-                                await self.query_pipe.write(
-                                    json.dumps(
-                                        {
-                                            "status": "started",
-                                            "message": "带宽测试已启动，预计30-60秒完成，请通过get_bandwidth查询结果",
-                                        }
-                                    ).encode()
-                                )
+                                # 单个JSON对象，直接解析
+                                request = json.loads(decoded_data)
 
-                                def on_bandwidth_done(task):
-                                    try:
-                                        result = task.result()
-                                        if result:
-                                            logger.info(f"[IPC] ✅ 带宽测试后台任务完成：{result}")
-                                        else:
-                                            logger.warning(
-                                                f"[IPC] ⚠️ 带宽测试后台任务返回None",
+                        except json.JSONDecodeError as e:
+                            logger.warning(
+                                f"[IPC] JSON解析失败: {e}, 数据长度: {len(request_data)}",
+                                extra={"log_type": "SYSTEM"},
+                            )
+                            logger.debug(f"[IPC] 原始数据: {request_data[:100]}...")
+                            # 使用默认请求
+                            request = {"action": "get_data"}
+                        except UnicodeDecodeError as e:
+                            logger.warning(
+                                f"[IPC] 数据解码失败: {e}, 数据长度: {len(request_data)}",
+                                extra={"log_type": "SYSTEM"},
+                            )
+                            # 使用默认请求
+                            request = {"action": "get_data"}
+                        action = request.get("action", "get_data")
+
+                        # 处理请求
+                        if action == "get_data":
+                            # 构建精简响应，避免数据过大
+                            response = {
+                                "timestamp": datetime.now().isoformat(),
+                                "system": self.monitoring_data.get("system", {}),
+                                "process": self.monitoring_data.get("process", {}),
+                                "service": self.monitoring_data.get("service", {}),
+                            }
+
+                            # 只在需要时添加硬件和SMART数据
+                            if "hardware" in self.monitoring_data and self.monitoring_data["hardware"]:
+                                response["hardware"] = self.monitoring_data["hardware"]
+                            if "smart" in self.monitoring_data and self.monitoring_data["smart"]:
+                                response["smart"] = self.monitoring_data["smart"]
+                            if "analysis" in self.monitoring_data and self.monitoring_data["analysis"]:
+                                response["analysis"] = self.monitoring_data["analysis"]
+
+                            # 添加阈值和并发任务数
+                            if self.adaptive_threshold:
+                                response["thresholds"] = self.adaptive_threshold.get_all_thresholds()
+                            try:
+                                concurrent_tasks = (
+                                    self.business_metrics_collector.get_concurrent_tasks()
+                                )
+                                response["concurrent_tasks"] = concurrent_tasks
+                            except Exception:
+                                response["concurrent_tasks"] = {
+                                    "download": 0,
+                                    "backtest": 0,
+                                    "trading": 0,
+                                    "total": 0,
+                                }
+
+                            # 压缩JSON输出并检查大小
+                            response_json = json.dumps(response, separators=(",", ":"))
+                            response_bytes = response_json.encode()
+
+                            # 检查数据大小，如果超过32KB则警告
+                            if len(response_bytes) > 32768:
+                                logger.warning(
+                                    "[IPC] 响应数据过大: %d bytes，可能导致传输问题",
+                                    len(response_bytes),
+                                    extra={"log_type": "SYSTEM"},
+                                )
+                                # 如果数据过大，尝试进一步精简
+                                if len(response_bytes) > 60000:  # 接近64KB限制
+                                    logger.warning(
+                                        "[IPC] 数据接近缓冲区限制，进行精简",
+                                        extra={"log_type": "SYSTEM"},
+                                    )
+                                    # 移除详细的进程信息
+                                    if "process" in response and isinstance(response["process"], dict):
+                                        if "processes" in response["process"]:
+                                            # 只保留前10个进程
+                                            response["process"]["processes"] = response["process"][
+                                                "processes"
+                                            ][:10]
+                                    response_json = json.dumps(response, separators=(",", ":"))
+                                    response_bytes = response_json.encode()
+                                    logger.info("[IPC] 精简后数据大小: %d bytes", len(response_bytes))
+
+                            # 🔧 验证响应数据完整性
+                            try:
+                                # 验证JSON格式
+                                json.loads(response_bytes.decode("utf-8"))
+                                await self.query_pipe.write(response_bytes)
+                                logger.debug(f"[IPC] 响应已发送: {len(response_bytes)} bytes")
+                            except json.JSONDecodeError as e:
+                                logger.error(
+                                    f"[IPC] 响应JSON格式错误: {e}", extra={"log_type": "SYSTEM"}
+                                )
+                                # 发送错误响应
+                                error_response = json.dumps(
+                                    {"status": "error", "message": "响应数据格式错误"}
+                                ).encode()
+                                await self.query_pipe.write(error_response)
+                            except Exception as e:
+                                logger.error(f"[IPC] 发送响应失败: {e}", extra={"log_type": "SYSTEM"})
+                        elif action == "trigger_smart":
+                            if self.smart_trigger_event:
+                                self.smart_trigger_event.set()
+                            await self.query_pipe.write(json.dumps({"status": "success"}).encode())
+                        elif action == "test_bandwidth_full":
+                            # 手动触发完整带宽测试（后台任务模式）
+                            try:
+                                if (
+                                    self._background_bandwidth_task
+                                    and not self._background_bandwidth_task.done()
+                                ):
+                                    logger.warning(
+                                        "[BANDWIDTH] 测试已在运行中，拒绝新请求",
+                                        extra={"log_type": "SYSTEM"},
+                                    )
+                                    await self.query_pipe.write(
+                                        json.dumps(
+                                            {
+                                                "status": "testing",
+                                                "message": "带宽测试正在进行中，请稍后查询结果",
+                                            }
+                                        ).encode()
+                                    )
+                                else:
+                                    self._background_bandwidth_task = asyncio.create_task(
+                                        self.system_monitor.bandwidth_monitor.test_bandwidth_full_async()
+                                    )
+                                    logger.info("[IPC] ✅ 带宽测试后台任务已启动")
+                                    await self.query_pipe.write(
+                                        json.dumps(
+                                            {
+                                                "status": "started",
+                                                "message": "带宽测试已启动，预计30-60秒完成，请通过get_bandwidth查询结果",
+                                            }
+                                        ).encode()
+                                    )
+
+                                    def on_bandwidth_done(task):
+                                        try:
+                                            result = task.result()
+                                            if result:
+                                                logger.info(f"[IPC] ✅ 带宽测试后台任务完成：{result}")
+                                            else:
+                                                logger.warning(
+                                                    f"[IPC] ⚠️ 带宽测试后台任务返回None",
+                                                    extra={"log_type": "SYSTEM"},
+                                                )
+                                        except Exception as e:
+                                            logger.error(
+                                                f"[IPC] ❌ 带宽测试后台任务异常：{e}",
+                                                exc_info=True,
                                                 extra={"log_type": "SYSTEM"},
                                             )
-                                    except Exception as e:
-                                        logger.error(
-                                            f"[IPC] ❌ 带宽测试后台任务异常：{e}",
-                                            exc_info=True,
-                                            extra={"log_type": "SYSTEM"},
-                                        )
 
-                                self._background_bandwidth_task.add_done_callback(on_bandwidth_done)
-                        except Exception as e:
-                            logger.error(
-                                f"[IPC] 启动带宽测试失败：{e}",
-                                exc_info=True,
-                                extra={"log_type": "SYSTEM"},
-                            )
-                            await self.query_pipe.write(
-                                json.dumps({"status": "error", "message": str(e)}).encode()
-                            )
-                    elif action == "retry_latency":
-                        try:
-                            logger.info("[IPC] 收到延迟监控重试请求")
-                            await self.system_monitor.latency_monitor.retry_initialize()
-                            await self.query_pipe.write(
-                                json.dumps(
-                                    {"status": "success", "message": "延迟监控器已重新初始化"}
-                                ).encode()
-                            )
-                        except Exception as e:
-                            logger.error(
-                                f"[IPC] 重试延迟监控失败：{e}",
-                                exc_info=True,
-                                extra={"log_type": "SYSTEM"},
-                            )
-                            await self.query_pipe.write(
-                                json.dumps({"status": "error", "message": str(e)}).encode()
-                            )
-                    elif action == "get_bandwidth":
-                        try:
-                            result = self.system_monitor.get_bandwidth_info()
-                            logger.debug(f"[IPC] get_bandwidth返回：{result}")
-                            # 确保返回的数据格式正确
-                            if isinstance(result, dict):
+                                    self._background_bandwidth_task.add_done_callback(on_bandwidth_done)
+                            except Exception as e:
+                                logger.error(
+                                    f"[IPC] 启动带宽测试失败：{e}",
+                                    exc_info=True,
+                                    extra={"log_type": "SYSTEM"},
+                                )
                                 await self.query_pipe.write(
-                                    json.dumps({"status": "success", "data": result}).encode()
+                                    json.dumps({"status": "error", "message": str(e)}).encode()
                                 )
-                            else:
-                                logger.warning(
-                                    f"[IPC] get_bandwidth返回数据格式错误: {type(result)}"
-                                )
+                        elif action == "retry_latency":
+                            try:
+                                logger.info("[IPC] 收到延迟监控重试请求")
+                                await self.system_monitor.latency_monitor.retry_initialize()
                                 await self.query_pipe.write(
                                     json.dumps(
-                                        {"status": "error", "message": "数据格式错误"}
+                                        {"status": "success", "message": "延迟监控器已重新初始化"}
                                     ).encode()
                                 )
-                        except Exception as e:
-                            logger.error(f"[IPC] get_bandwidth失败：{e}", exc_info=True)
+                            except Exception as e:
+                                logger.error(
+                                    f"[IPC] 重试延迟监控失败：{e}",
+                                    exc_info=True,
+                                    extra={"log_type": "SYSTEM"},
+                                )
+                                await self.query_pipe.write(
+                                    json.dumps({"status": "error", "message": str(e)}).encode()
+                                )
+                        elif action == "get_bandwidth":
+                            try:
+                                result = self.system_monitor.get_bandwidth_info()
+                                logger.debug(f"[IPC] get_bandwidth返回：{result}")
+                                # 确保返回的数据格式正确
+                                if isinstance(result, dict):
+                                    await self.query_pipe.write(
+                                        json.dumps({"status": "success", "data": result}).encode()
+                                    )
+                                else:
+                                    logger.warning(
+                                        f"[IPC] get_bandwidth返回数据格式错误: {type(result)}"
+                                    )
+                                    await self.query_pipe.write(
+                                        json.dumps(
+                                            {"status": "error", "message": "数据格式错误"}
+                                        ).encode()
+                                    )
+                            except Exception as e:
+                                logger.error(f"[IPC] get_bandwidth失败：{e}", exc_info=True)
+                                await self.query_pipe.write(
+                                    json.dumps({"status": "error", "message": str(e)}).encode()
+                                )
+                        elif action == "get_all":
+                            try:
+                                response = {
+                                    "status": "success",
+                                    "data": {
+                                        "system": self.monitoring_data.get("system", {}),
+                                        "hardware": self.monitoring_data.get("hardware", {}),
+                                        "process": self.monitoring_data.get("process", {}),
+                                        "bandwidth": self.system_monitor.get_bandwidth_info(),
+                                    },
+                                }
+                                await self.query_pipe.write(json.dumps(response).encode())
+                            except Exception as e:
+                                await self.query_pipe.write(
+                                    json.dumps({"status": "error", "message": str(e)}).encode()
+                                )
+                        else:
                             await self.query_pipe.write(
-                                json.dumps({"status": "error", "message": str(e)}).encode()
+                                json.dumps({"error": f"Unknown action: {action}"}).encode()
                             )
-                    elif action == "get_all":
+                    except asyncio.CancelledError:
+                        raise
+                    except ValueError as pipe_error:
+                        if "Pipe not opened" in str(pipe_error) or "Pipe is closed" in str(pipe_error):
+                            logger.warning(
+                                "[IPC] 查询管道读写失败：管道未连接或已关闭，将重新等待客户端",
+                                extra={"log_type": "SYSTEM"},
+                            )
+                            break
+                        raise
+                    except Exception as e:
+                        logger.error("[IPC] 处理查询失败: %s", e, exc_info=True)
                         try:
-                            response = {
-                                "status": "success",
-                                "data": {
-                                    "system": self.monitoring_data.get("system", {}),
-                                    "hardware": self.monitoring_data.get("hardware", {}),
-                                    "process": self.monitoring_data.get("process", {}),
-                                    "bandwidth": self.system_monitor.get_bandwidth_info(),
-                                },
-                            }
-                            await self.query_pipe.write(json.dumps(response).encode())
-                        except Exception as e:
-                            await self.query_pipe.write(
-                                json.dumps({"status": "error", "message": str(e)}).encode()
-                            )
-                    else:
-                        await self.query_pipe.write(
-                            json.dumps({"error": f"Unknown action: {action}"}).encode()
-                        )
-                except asyncio.CancelledError:
-                    break
-                except Exception as e:
-                    logger.error("[IPC] 处理查询失败: %s", e, exc_info=True)
-                    try:
-                        await self.query_pipe.write(json.dumps({"error": str(e)}).encode())
-                    except Exception:
-                        pass
-                    await asyncio.sleep(0.1)
+                            await self.query_pipe.write(json.dumps({"error": str(e)}).encode())
+                        except Exception:
+                            pass
+                        await asyncio.sleep(0.1)
+
+                await asyncio.sleep(0.1)
+
         except asyncio.CancelledError:
-            pass
+            raise
         except Exception as e:
             logger.error("[IPC] 查询管道处理异常: %s", e, exc_info=True)
 
@@ -3394,33 +3480,74 @@ class MonitoringProcessV2:
         if not self.status_pipe:
             return
 
-        try:
-            try:
-                await self.status_pipe.wait_for_client(timeout=30.0)
-                logger.info("[IPC] 状态管道客户端已连接", extra={"log_type": "SYSTEM"})
-            except Exception as connect_error:
-                logger.error(
-                    "[IPC] 状态管道等待客户端连接失败: %s",
-                    connect_error,
-                    exc_info=True,
-                    extra={"log_type": "ALERT"},
-                )
-                return
+        retry_delay = 1.0
 
+        try:
             while self.running:
                 try:
-                    # 读取状态（使用更大的缓冲区）
-                    status_data = await self.status_pipe.read(size=65536)
-                    status = json.loads(status_data.decode())
-                    self.monitoring_data["service"] = status
-                    logger.debug("[IPC] 收到服务状态更新")
-                except asyncio.CancelledError:
-                    break
-                except Exception as e:
-                    logger.exception("[IPC] 接收服务状态失败: %s", e)
-                    await asyncio.sleep(0.1)
+                    await self.status_pipe.wait_for_client(timeout=30.0)
+                    logger.info("[IPC] 状态管道客户端已连接", extra={"log_type": "SYSTEM"})
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "[IPC] 状态管道等待客户端连接超时（30s），将重试",
+                        extra={"log_type": "SYSTEM"},
+                    )
+                    await asyncio.sleep(min(retry_delay, 5.0))
+                    retry_delay = min(retry_delay * 1.5, 10.0)
+                    continue
+                except Exception as connect_error:
+                    logger.error(
+                        "[IPC] 状态管道等待客户端连接失败: %s",
+                        connect_error,
+                        exc_info=True,
+                        extra={"log_type": "ALERT"},
+                    )
+                    await asyncio.sleep(min(retry_delay, 5.0))
+                    retry_delay = min(retry_delay * 1.5, 10.0)
+                    continue
+
+                retry_delay = 1.0
+
+                while self.running:
+                    try:
+                        # 读取状态（使用更大的缓冲区）
+                        status_data = await self.status_pipe.read(size=65536)
+
+                        if not status_data:
+                            logger.info(
+                                "[IPC] 状态管道收到空数据，视为客户端已断开，将重新等待连接",
+                                extra={"log_type": "SYSTEM"},
+                            )
+                            break
+
+                        status = json.loads(status_data.decode())
+                        self.monitoring_data["service"] = status
+                        logger.debug("[IPC] 收到服务状态更新")
+                    except asyncio.CancelledError:
+                        raise
+                    except ValueError as pipe_error:
+                        if isinstance(pipe_error, json.JSONDecodeError):
+                            logger.warning(
+                                "[IPC] 状态管道数据解析失败: %s",
+                                pipe_error,
+                                extra={"log_type": "SYSTEM"},
+                            )
+                            continue
+                        if "Pipe not opened" in str(pipe_error) or "Pipe is closed" in str(pipe_error):
+                            logger.warning(
+                                "[IPC] 状态管道读写失败：管道未连接或已关闭，将重新等待客户端",
+                                extra={"log_type": "SYSTEM"},
+                            )
+                            break
+                        raise
+                    except Exception as e:
+                        logger.exception("[IPC] 接收服务状态失败: %s", e)
+                        await asyncio.sleep(0.1)
+
+                await asyncio.sleep(0.1)
+
         except asyncio.CancelledError:
-            pass
+            raise
         except Exception as e:
             logger.error("[IPC] 状态管道处理异常: %s", e, exc_info=True)
 
@@ -3518,35 +3645,175 @@ class MonitoringProcessV2:
             # 在executor中执行阻塞psutil调用
             loop = asyncio.get_event_loop()
             system_monitor = cast(Any, self.system_monitor)
-            resource_usage = await loop.run_in_executor(
-                self.executor, system_monitor.get_resource_usage
+
+            def _default_resource_usage() -> ResourceUsage:
+                """当SystemMonitor缺少实现时返回默认资源数据."""
+                now = datetime.now()
+                return ResourceUsage(
+                    cpu_percent=0.0,
+                    memory_percent=0.0,
+                    disk_percent=0.0,
+                    network_sent=0,
+                    network_recv=0,
+                    process_count=0,
+                    load_average=[0.0, 0.0, 0.0],
+                    timestamp=now,
+                )
+
+            resource_usage_callable = getattr(system_monitor, "get_resource_usage", None)
+            if not callable(resource_usage_callable):
+                logger.warning(
+                    "[SYSTEM-MONITOR] get_resource_usage 未实现，使用默认值",
+                    extra={"log_type": "SYSTEM"},
+                )
+                resource_usage_callable = _default_resource_usage
+
+            resource_usage = cast(
+                ResourceUsage,
+                await loop.run_in_executor(self.executor, resource_usage_callable),
             )
 
             # 并发执行IO速度采集（都是async方法）
+            async def _default_disk_io_speed_async() -> Dict[str, float]:
+                """默认磁盘IO速度."""
+                return {"read_kbps": 0.0, "write_kbps": 0.0}
+
+            async def _default_network_speed_async() -> Dict[str, float]:
+                """默认网络速度."""
+                return {"download_mbps": 0.0, "upload_mbps": 0.0}
+
+            get_disk_io_speed_async_ref = getattr(system_monitor, "get_disk_io_speed_async", None)
+            if not callable(get_disk_io_speed_async_ref):
+                logger.warning(
+                    "[SYSTEM-MONITOR] get_disk_io_speed_async 未实现，使用默认值",
+                    extra={"log_type": "SYSTEM"},
+                )
+                get_disk_io_speed_async_ref = _default_disk_io_speed_async
+            get_disk_io_speed_async = cast(
+                Callable[[], Awaitable[Dict[str, float]]], get_disk_io_speed_async_ref
+            )
+
+            get_network_speed_async_ref = getattr(system_monitor, "get_network_speed_async", None)
+            if not callable(get_network_speed_async_ref):
+                logger.warning(
+                    "[SYSTEM-MONITOR] get_network_speed_async 未实现，使用默认值",
+                    extra={"log_type": "SYSTEM"},
+                )
+                get_network_speed_async_ref = _default_network_speed_async
+            get_network_speed_async = cast(
+                Callable[[], Awaitable[Dict[str, float]]], get_network_speed_async_ref
+            )
+
             disk_io_speed, network_speed = await asyncio.gather(
-                system_monitor.get_disk_io_speed_async(),
-                system_monitor.get_network_speed_async(),
+                get_disk_io_speed_async(),
+                get_network_speed_async(),
             )
 
             # 在executor中采集新增子系统指标（避免阻塞事件循环）
-            cpu_os_detailed, cpu_info, memory_subsystem, storage_subsystem, network_subsystem = (
-                await asyncio.gather(
-                    loop.run_in_executor(self.executor, system_monitor.get_cpu_os_detailed),
-                    loop.run_in_executor(self.executor, system_monitor.get_cpu_info),
-                    loop.run_in_executor(
-                        self.executor, system_monitor.get_memory_subsystem_metrics
-                    ),
-                    loop.run_in_executor(
-                        self.executor, system_monitor.get_storage_subsystem_metrics
-                    ),
-                    loop.run_in_executor(
-                        self.executor, system_monitor.get_network_subsystem_metrics
-                    ),
+            def _default_cpu_os_detailed() -> Dict[str, Any]:
+                return {}
+
+            def _default_cpu_info() -> Dict[str, Any]:
+                return {}
+
+            def _default_memory_subsystem_metrics() -> Dict[str, Any]:
+                return {}
+
+            def _default_storage_subsystem_metrics() -> Dict[str, Any]:
+                return {}
+
+            def _default_network_subsystem_metrics() -> Dict[str, Any]:
+                return {}
+
+            cpu_os_callable = getattr(system_monitor, "get_cpu_os_detailed", None)
+            if not callable(cpu_os_callable):
+                logger.warning(
+                    "[SYSTEM-MONITOR] get_cpu_os_detailed 未实现，使用默认值",
+                    extra={"log_type": "SYSTEM"},
                 )
+                cpu_os_callable = _default_cpu_os_detailed
+
+            cpu_info_callable = getattr(system_monitor, "get_cpu_info", None)
+            if not callable(cpu_info_callable):
+                logger.warning(
+                    "[SYSTEM-MONITOR] get_cpu_info 未实现，使用默认值",
+                    extra={"log_type": "SYSTEM"},
+                )
+                cpu_info_callable = _default_cpu_info
+
+            memory_metrics_callable = getattr(system_monitor, "get_memory_subsystem_metrics", None)
+            if not callable(memory_metrics_callable):
+                logger.warning(
+                    "[SYSTEM-MONITOR] get_memory_subsystem_metrics 未实现，使用默认值",
+                    extra={"log_type": "SYSTEM"},
+                )
+                memory_metrics_callable = _default_memory_subsystem_metrics
+
+            storage_metrics_callable = getattr(
+                system_monitor, "get_storage_subsystem_metrics", None
+            )
+            if not callable(storage_metrics_callable):
+                logger.warning(
+                    "[SYSTEM-MONITOR] get_storage_subsystem_metrics 未实现，使用默认值",
+                    extra={"log_type": "SYSTEM"},
+                )
+                storage_metrics_callable = _default_storage_subsystem_metrics
+
+            network_metrics_callable = getattr(
+                system_monitor, "get_network_subsystem_metrics", None
+            )
+            if not callable(network_metrics_callable):
+                logger.warning(
+                    "[SYSTEM-MONITOR] get_network_subsystem_metrics 未实现，使用默认值",
+                    extra={"log_type": "SYSTEM"},
+                )
+                network_metrics_callable = _default_network_subsystem_metrics
+
+            cpu_os_future = cast(
+                Awaitable[Dict[str, Any]],
+                loop.run_in_executor(self.executor, cpu_os_callable),
+            )
+            cpu_info_future = cast(
+                Awaitable[Dict[str, Any]],
+                loop.run_in_executor(self.executor, cpu_info_callable),
+            )
+            memory_future = cast(
+                Awaitable[Dict[str, Any]],
+                loop.run_in_executor(self.executor, memory_metrics_callable),
+            )
+            storage_future = cast(
+                Awaitable[Dict[str, Any]],
+                loop.run_in_executor(self.executor, storage_metrics_callable),
+            )
+            network_future = cast(
+                Awaitable[Dict[str, Any]],
+                loop.run_in_executor(self.executor, network_metrics_callable),
+            )
+            (
+                cpu_os_detailed_raw,
+                cpu_info_raw,
+                memory_subsystem_raw,
+                storage_subsystem_raw,
+                network_subsystem_raw,
+            ) = await asyncio.gather(
+                cpu_os_future,
+                cpu_info_future,
+                memory_future,
+                storage_future,
+                network_future,
             )
 
+            cpu_os_detailed = cast(Dict[str, Any], cpu_os_detailed_raw)
+            cpu_info = cast(Dict[str, Any], cpu_info_raw)
+            memory_subsystem = cast(Dict[str, Any], memory_subsystem_raw)
+            storage_subsystem = cast(Dict[str, Any], storage_subsystem_raw)
+            network_subsystem = cast(Dict[str, Any], network_subsystem_raw)
+
             # 合并 cpu_os_detailed 和 cpu_info 为完整的 cpu_detailed
-            cpu_detailed = {**cpu_os_detailed, **cpu_info}
+            cpu_detailed = {
+                **cast(Dict[str, Any], cpu_os_detailed),
+                **cast(Dict[str, Any], cpu_info),
+            }
 
             # 诊断日志：确认 cpu_frequency 数据采集成功
             if "cpu_frequency" in cpu_detailed:
@@ -4312,23 +4579,22 @@ class BottleneckResult:
 
 
 # Protocol定义（用于类型检查）
-if TYPE_CHECKING:
+class _AsyncPipeProto(Protocol):
+    async def write(self, data: bytes) -> Any: ...
+    async def close(self) -> Any: ...
 
-    class _AsyncPipeProto(Protocol):
-        async def write(self, data: bytes) -> Any: ...
-        async def close(self) -> Any: ...
 
-    class _AsyncIPCPipeFactory(Protocol):
-        @staticmethod
-        async def client(name: str) -> _AsyncPipeProto: ...
+class _AsyncIPCPipeFactory(Protocol):
+    @staticmethod
+    async def client(name: str) -> _AsyncPipeProto: ...
 
-        @staticmethod
-        async def server(
-            name: str,
-            *,
-            wait_for_client: bool = ...,
-            connect_timeout: Optional[float] = ...,
-        ) -> Any: ...
+    @staticmethod
+    async def server(
+        name: str,
+        *,
+        wait_for_client: bool = ...,
+        connect_timeout: Optional[float] = ...,
+    ) -> Any: ...
 
 if HAS_PSUTIL:
 
@@ -4513,14 +4779,10 @@ class BandwidthMonitor:
 
             # 使用事件日志流程上下文管理器，生成独立事件日志文件
             # 添加异常处理，确保即使事件日志初始化失败也不影响测试
-            stage_logger = logging.getLogger("task.manual_speedtest.stage")
-
-            # TODO: 使用事件日志流程上下文管理器（当前不可用）
-# 执行带宽测试（无事件日志）
-            # 阶段节点日志（输出到Terminal）
-            stage_logger.info(
+            stage_log(
                 "📍 带宽测试开始: 正在连接到测速服务器...",
-                extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
+                scenario="manual_speedtest",
+                stacklevel=4,
             )
 
             # DEBUG日志（记录测试开始）
@@ -4625,10 +4887,10 @@ class BandwidthMonitor:
                 )
 
                 # 阶段节点日志（输出到Terminal）
-                stage_logger.info(
-                    f"✅ 带宽测试完成: 下载 {result['download_mbps']}Mbps, "
-                    f"延迟 {result['ping_ms']}ms, 耗时={test_elapsed:.2f}s",
-                    extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
+                stage_log(
+                    f"✅ 带宽测试完成: 下载 {result['download_mbps']}Mbps, 延迟 {result['ping_ms']}ms, 耗时={test_elapsed:.2f}s",
+                    scenario="manual_speedtest",
+                    stacklevel=4,
                 )
 
             else:
@@ -4656,9 +4918,11 @@ class BandwidthMonitor:
                 self._full_test_time = datetime.now()
 
                 # 阶段节点日志（输出到Terminal）
-                stage_logger.warning(
+                stage_log(
                     f"⚠️ 带宽测试失败: {error_msg}, 耗时={test_elapsed:.2f}s",
-                    extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
+                    scenario="manual_speedtest",
+                    level=logging.WARNING,
+                    stacklevel=4,
                 )
 
                 return result
@@ -4670,14 +4934,12 @@ class BandwidthMonitor:
                 extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
             )
             # 阶段节点日志（输出到Terminal）
-            try:
-                stage_logger = logging.getLogger("task.manual_speedtest.stage")
-                stage_logger.error(
-                    f"❌ 带宽测试异常: {str(e)}",
-                    extra={"log_type": "STAGE_NODE", "scenario": "manual_speedtest"},
-                )
-            except Exception:
-                pass  # 如果stage_logger获取失败，忽略
+            stage_log(
+                f"❌ 带宽测试异常: {str(e)}",
+                scenario="manual_speedtest",
+                level=logging.ERROR,
+                stacklevel=4,
+            )
             self._last_error = str(e)
             return None
 
@@ -7937,6 +8199,292 @@ class ProcessBottleneckAnalyzer:
 # =============================================================================
 
 
+class PatchedSystemMonitor(SystemMonitor):
+    """扩展的SystemMonitor，实现系统资源采集方法."""
+
+    def __init__(self):
+        super().__init__()
+        self._last_disk_io: Optional[Any] = None
+        self._last_disk_io_time: Optional[float] = None
+        self._last_net_io: Optional[Any] = None
+        self._last_net_io_time: Optional[float] = None
+
+    def get_system_info(self) -> SystemInfo:
+        if HAS_PSUTIL:
+            try:
+                network_interfaces = list(psutil.net_if_addrs().keys())
+            except Exception:
+                network_interfaces = []
+
+            try:
+                root_path = Path(os.getcwd()).anchor or "C:\\"
+                disk_usage = psutil.disk_usage(root_path)
+            except Exception:
+                try:
+                    disk_usage = psutil.disk_usage("/")
+                except Exception:
+                    disk_usage = None
+
+            boot_time = (
+                datetime.fromtimestamp(psutil.boot_time())
+                if hasattr(psutil, "boot_time")
+                else datetime.now()
+            )
+
+            return SystemInfo(
+                platform=platform.system(),
+                platform_version=platform.version(),
+                architecture=platform.architecture()[0],
+                hostname=platform.node(),
+                cpu_count=psutil.cpu_count(logical=False) or 1,
+                cpu_count_logical=psutil.cpu_count(logical=True) or 1,
+                memory_total=psutil.virtual_memory().total if hasattr(psutil, "virtual_memory") else 0,
+                disk_total=disk_usage.total if disk_usage else 0,
+                network_interfaces=network_interfaces,
+                boot_time=boot_time,
+            )
+
+        return SystemInfo(
+            platform=platform.system(),
+            platform_version=platform.version(),
+            architecture=platform.architecture()[0],
+            hostname=platform.node(),
+            cpu_count=os.cpu_count() or 1,
+            cpu_count_logical=os.cpu_count() or 1,
+            memory_total=1024 * 1024 * 1024,
+            disk_total=100 * 1024 * 1024 * 1024,
+            network_interfaces=["eth0"],
+            boot_time=datetime.now(),
+        )
+
+    def get_resource_usage(self) -> ResourceUsage:
+        if HAS_PSUTIL:
+            cpu_percent_raw = psutil.cpu_percent(interval=None, percpu=False)
+            if isinstance(cpu_percent_raw, (list, tuple)):
+                cpu_percent = float(cpu_percent_raw[0]) if cpu_percent_raw else 0.0
+            else:
+                cpu_percent = float(cpu_percent_raw)
+            memory = psutil.virtual_memory()
+            try:
+                disk = psutil.disk_usage(Path(os.getcwd()).anchor or "C:\\")
+            except Exception:
+                disk = None
+            try:
+                net_io = psutil.net_io_counters()
+            except Exception:
+                net_io = None
+            process_count = len(psutil.pids())
+            try:
+                load_avg = list(psutil.getloadavg())
+            except (AttributeError, OSError):
+                load_avg = [0.0, 0.0, 0.0]
+
+            disk_percent = (disk.used / disk.total) * 100 if disk else 0.0
+
+            bytes_sent = int(getattr(net_io, "bytes_sent", 0)) if net_io else 0
+            bytes_recv = int(getattr(net_io, "bytes_recv", 0)) if net_io else 0
+
+            return ResourceUsage(
+                cpu_percent=float(cpu_percent),
+                memory_percent=float(memory.percent),
+                disk_percent=float(disk_percent),
+                network_sent=bytes_sent,
+                network_recv=bytes_recv,
+                process_count=int(process_count),
+                load_average=[float(x) for x in load_avg],
+                timestamp=datetime.now(),
+            )
+
+        return ResourceUsage(
+            cpu_percent=0.0,
+            memory_percent=0.0,
+            disk_percent=0.0,
+            network_sent=0,
+            network_recv=0,
+            process_count=0,
+            load_average=[0.0, 0.0, 0.0],
+            timestamp=datetime.now(),
+        )
+
+    def _get_disk_io_snapshot(self) -> Optional[Any]:
+        if not HAS_PSUTIL:
+            return None
+        try:
+            return psutil.disk_io_counters()
+        except Exception:
+            return None
+
+    def _get_net_io_snapshot(self) -> Optional[Any]:
+        if not HAS_PSUTIL:
+            return None
+        try:
+            return psutil.net_io_counters()
+        except Exception:
+            return None
+
+    def get_disk_io_speed(self) -> Dict[str, float]:
+        snapshot = self._get_disk_io_snapshot()
+        now = time.time()
+        if snapshot is None:
+            return {"read_kbps": 0.0, "write_kbps": 0.0}
+
+        if not self._last_disk_io or not self._last_disk_io_time:
+            self._last_disk_io = snapshot
+            self._last_disk_io_time = now
+            return {"read_kbps": 0.0, "write_kbps": 0.0}
+
+        elapsed = max(now - self._last_disk_io_time, 1e-6)
+        read_diff = snapshot.read_bytes - self._last_disk_io.read_bytes
+        write_diff = snapshot.write_bytes - self._last_disk_io.write_bytes
+        self._last_disk_io = snapshot
+        self._last_disk_io_time = now
+        return {
+            "read_kbps": max(read_diff / elapsed / 1024, 0.0),
+            "write_kbps": max(write_diff / elapsed / 1024, 0.0),
+        }
+
+    async def get_disk_io_speed_async(self) -> Dict[str, float]:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self.get_disk_io_speed)
+
+    def get_network_speed(self) -> Dict[str, float]:
+        snapshot = self._get_net_io_snapshot()
+        now = time.time()
+        if snapshot is None:
+            return {"download_mbps": 0.0, "upload_mbps": 0.0}
+
+        if not self._last_net_io or not self._last_net_io_time:
+            self._last_net_io = snapshot
+            self._last_net_io_time = now
+            return {"download_mbps": 0.0, "upload_mbps": 0.0}
+
+        elapsed = max(now - self._last_net_io_time, 1e-6)
+        download_diff = snapshot.bytes_recv - self._last_net_io.bytes_recv
+        upload_diff = snapshot.bytes_sent - self._last_net_io.bytes_sent
+        self._last_net_io = snapshot
+        self._last_net_io_time = now
+        return {
+            "download_mbps": max(download_diff / elapsed / 1024 / 1024 * 8, 0.0),
+            "upload_mbps": max(upload_diff / elapsed / 1024 / 1024 * 8, 0.0),
+        }
+
+    async def get_network_speed_async(self) -> Dict[str, float]:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self.get_network_speed)
+
+    def get_cpu_info(self) -> Dict[str, Any]:
+        info: Dict[str, Any] = {
+            "cpu_count_physical": os.cpu_count() or 1,
+            "cpu_count_logical": os.cpu_count() or 1,
+        }
+        if HAS_PSUTIL:
+            try:
+                cpu_freq_raw = psutil.cpu_freq(percpu=False)
+                freq_value = None
+                if isinstance(cpu_freq_raw, list):
+                    freq_value = cpu_freq_raw[0] if cpu_freq_raw else None
+                else:
+                    freq_value = cpu_freq_raw
+                if freq_value:
+                    info["cpu_frequency"] = {
+                        "current": float(getattr(freq_value, "current", 0.0)),
+                        "min": float(getattr(freq_value, "min", 0.0)),
+                        "max": float(getattr(freq_value, "max", 0.0)),
+                    }
+            except Exception:
+                pass
+        return info
+
+    def get_cpu_os_detailed(self) -> Dict[str, Any]:
+        details: Dict[str, Any] = {}
+        if HAS_PSUTIL:
+            try:
+                cpu_times_percent = psutil.cpu_times_percent(interval=None, percpu=False)
+                details["cpu_times_percent"] = _safe_asdict(cpu_times_percent)
+            except Exception:
+                details["cpu_times_percent"] = {}
+
+            try:
+                load_avg = list(psutil.getloadavg())
+            except (AttributeError, OSError):
+                load_avg = [0.0, 0.0, 0.0]
+            details["load_average"] = load_avg
+
+            try:
+                stats = psutil.cpu_stats()
+                details["cpu_stats"] = {
+                    "context_switches": int(stats.ctx_switches),
+                    "interrupts": int(stats.interrupts),
+                }
+            except Exception:
+                details["cpu_stats"] = {}
+
+        return details
+
+    def get_memory_subsystem_metrics(self) -> Dict[str, Any]:
+        if HAS_PSUTIL:
+            try:
+                virtual_mem = psutil.virtual_memory()
+                swap_mem = psutil.swap_memory()
+                return {
+                    "virtual_memory": _safe_asdict(virtual_mem),
+                    "swap_memory": _safe_asdict(swap_mem),
+                }
+            except Exception:
+                pass
+        return {"virtual_memory": {}, "swap_memory": {}}
+
+    def get_storage_subsystem_metrics(self) -> Dict[str, Any]:
+        disks: Dict[str, Any] = {}
+        if HAS_PSUTIL:
+            try:
+                partitions = psutil.disk_partitions()
+                for part in partitions:
+                    mount_point = part.mountpoint
+                    try:
+                        usage = psutil.disk_usage(mount_point)
+                        disks[mount_point] = {
+                            "fstype": part.fstype,
+                            "total": usage.total,
+                            "used": usage.used,
+                            "free": usage.free,
+                            "percent": usage.percent,
+                        }
+                    except Exception:
+                        disks[mount_point] = {"fstype": part.fstype}
+            except Exception:
+                pass
+        return {"disks": disks}
+
+    def get_network_subsystem_metrics(self) -> Dict[str, Any]:
+        metrics: Dict[str, Any] = {}
+        if HAS_PSUTIL:
+            try:
+                io_counters = psutil.net_io_counters()
+                metrics["io_counters"] = _safe_asdict(io_counters)
+            except Exception:
+                metrics["io_counters"] = {}
+            try:
+                metrics["connections"] = [
+                    {
+                        "fd": conn.fd,
+                        "family": int(conn.family),
+                        "type": int(conn.type),
+                        "laddr": _safe_asdict(conn.laddr) or conn.laddr,
+                        "raddr": _safe_asdict(conn.raddr) or conn.raddr,
+                        "status": conn.status,
+                    }
+                    for conn in psutil.net_connections()[:20]
+                ]
+            except Exception:
+                metrics["connections"] = []
+        return metrics
+
+
+# 用扩展版本替换默认实现
+SystemMonitor = PatchedSystemMonitor
+
+
 def get_system_info() -> SystemInfo:
     """获取系统信息."""
     monitor = SystemMonitor()
@@ -8273,12 +8821,19 @@ def main():
             except (OSError, ValueError):
                 pass
 
+        # 手动配置root logger的降级输出，避免basicConfig破坏统一日志托管
         stream_handler = logging.StreamHandler(sys.stdout)
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-            handlers=[stream_handler],
+        formatter = logging.Formatter(
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
         )
+        stream_handler.setLevel(logging.INFO)
+        stream_handler.setFormatter(formatter)
+
+        root_logger = logging.getLogger()
+        for h in root_logger.handlers[:]:
+            root_logger.removeHandler(h)
+        root_logger.setLevel(logging.INFO)
+        root_logger.addHandler(stream_handler)
         logger = bind_logger_defaults(
             logging.getLogger("MonitorProcess"),
             scenario="monitor_process.entry",
@@ -8290,22 +8845,21 @@ def main():
 
         hub = get_logging_hub()
         hub.set_stage("monitor_init")
-
-        stage_logger = logging.getLogger("startup.stage")
-
-        # 🎯 使用STAGE_NODE标记监控进程启动
-        stage_logger.info(
-            "📍 监控进程启动开始",
-            extra={"log_type": "STAGE_NODE", "scenario": "monitor_init"},
-        )
+        stage_log("📍 监控进程启动开始", scenario="monitor_init", stacklevel=3)
         if bridge_attached:
-            stage_logger.info(
+            stage_log(
                 "✅ MultiProcessLogCollector已接入 monitor_process 日志队列",
-                extra={"log_type": "STAGE_NODE", "scenario": "monitor_init"},
+                scenario="monitor_init",
+                stacklevel=3,
+            )
+        else:
+            alert_log(
+                "⚠️ 未检测到日志队列令牌，监控进程日志将回退至本地输出",
+                scenario="monitor_init",
+                stacklevel=3,
             )
     except ImportError as e:
         logger.warning("⚠️ 无法导入LoggingHub: %s", e)
-        stage_logger = logger
 
     logger.info("=" * 60)
     logger.info("独立监控进程启动（V2 - 混合并发架构）")
@@ -8332,14 +8886,17 @@ def main():
             f"[PARENT-PID] 父进程PID（主应用）: {parent_pid}, 当前进程PID（监控进程）: {os.getpid()}"
         )
 
-        # 🎯 使用STAGE_NODE显示监控进程PID
-        stage_logger.info(
-            f"✅ monitor_system.py进程已启动 (PID: {os.getpid()})",
-            extra={"log_type": "STAGE_NODE", "scenario": MONITOR_LAUNCH_SCENARIO},
+        ensure_parent_watchdog(
+            label="monitor_process",
+            logger=logger,
+            check_interval=5.0,
         )
-        stage_logger.info(
-            "✅ 创建native_ipc管道",
-            extra={"log_type": "STAGE_NODE", "scenario": MONITOR_LAUNCH_SCENARIO},
+
+        # 🎯 使用stage_log显示监控进程PID
+        stage_log(
+            f"✅ monitor_system.py进程已启动 (PID: {os.getpid()})",
+            scenario=MONITOR_LAUNCH_SCENARIO,
+            stacklevel=3,
         )
 
         monitor = MonitoringProcessV2(parent_pid=parent_pid)
@@ -8347,46 +8904,6 @@ def main():
         logger.debug(
             f"[MAIN] MonitoringProcessV2实例创建完成，PID={os.getpid()}, 工作目录={os.getcwd()}",
             extra={"log_type": "SYSTEM"}
-        )
-
-        # 🎯 使用STAGE_NODE显示管道创建完成（这些消息是预显示的，实际创建在start()中）
-        stage_logger.info(
-            "✅ 创建native_ipc管道",
-            extra={"log_type": "STAGE_NODE", "scenario": MONITOR_LAUNCH_SCENARIO},
-        )
-        stage_logger.info(
-            "  ├─ monitor_alerts ✅",
-            extra={"log_type": "STAGE_NODE", "scenario": MONITOR_LAUNCH_SCENARIO},
-        )
-        stage_logger.info(
-            "  ├─ monitor_status ✅",
-            extra={"log_type": "STAGE_NODE", "scenario": MONITOR_LAUNCH_SCENARIO},
-        )
-        stage_logger.info(
-            "  └─ monitor_query ✅",
-            extra={"log_type": "STAGE_NODE", "scenario": MONITOR_LAUNCH_SCENARIO},
-        )
-
-        # 🎯 监控组件初始化（这些消息是预显示的，实际初始化在start()中）
-        stage_logger.info(
-            "✅ 监控组件初始化",
-            extra={"log_type": "STAGE_NODE", "scenario": MONITOR_LAUNCH_SCENARIO},
-        )
-        stage_logger.info(
-            "  ├─ SystemMonitor ✅",
-            extra={"log_type": "STAGE_NODE", "scenario": MONITOR_LAUNCH_SCENARIO},
-        )
-        stage_logger.info(
-            "  ├─ ProcessMonitor ✅",
-            extra={"log_type": "STAGE_NODE", "scenario": MONITOR_LAUNCH_SCENARIO},
-        )
-        stage_logger.info(
-            "  ├─ HardwareMonitor (后台异步) ⏳",
-            extra={"log_type": "STAGE_NODE", "scenario": MONITOR_LAUNCH_SCENARIO},
-        )
-        stage_logger.info(
-            "  └─ BandwidthMonitor ✅",
-            extra={"log_type": "STAGE_NODE", "scenario": MONITOR_LAUNCH_SCENARIO},
         )
 
         # 注意：Level 1就绪消息将在实际创建信号文件后显示
@@ -8412,17 +8929,11 @@ def main():
             extra={"log_type": "SYSTEM"}
         )
 
-        # 🎯 看门狗启动（预显示消息）
-        stage_logger.info(
+        # 🎯 看门狗启动记录
+        stage_log(
             "✅ 监控进程看门狗启动",
-            extra={"log_type": "STAGE_NODE", "scenario": MONITOR_LAUNCH_SCENARIO},
-        )
-
-        # 🎯 完成（计算实际耗时）- 这是预显示消息，实际完成在start()中
-        elapsed = time.time() - start_time
-        stage_logger.info(
-            f"✅ 监控进程完全就绪 ({elapsed:.1f}s)",
-            extra={"log_type": "STAGE_NODE", "scenario": MONITOR_LAUNCH_SCENARIO},
+            scenario=MONITOR_LAUNCH_SCENARIO,
+            stacklevel=3,
         )
 
         # 🎯 切换到运行阶段
