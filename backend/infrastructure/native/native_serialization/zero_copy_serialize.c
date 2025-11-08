@@ -134,6 +134,17 @@ PyObject *zero_copy_serialize_object(PyObject *obj) {
     if (is_instance_of(obj, "pandas", "DataFrame", &pandas_dataframe_type)) {
         PyObject *arrow_buffer = serialize_dataframe(obj);
         if (arrow_buffer != NULL) {
+            if (PyMemoryView_Check(arrow_buffer)) {
+                Py_buffer *view = PyMemoryView_GET_BUFFER(arrow_buffer);
+                if (view != NULL && !view->readonly) {
+                    PyObject *readonly_view = PyObject_CallMethod(arrow_buffer, "toreadonly", NULL);
+                    if (readonly_view != NULL) {
+                        Py_DECREF(arrow_buffer);
+                        return readonly_view;
+                    }
+                    PyErr_Clear();
+                }
+            }
             return arrow_buffer;
         }
         /* 转换失败时清理错误并回退 */

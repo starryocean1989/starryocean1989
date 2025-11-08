@@ -8,7 +8,6 @@
 import asyncio
 import atexit
 import json
-import logging
 import os
 import subprocess
 import sys
@@ -18,7 +17,12 @@ from typing import Optional
 
 from backend.startup.workers.base import StartupWorker, WorkerResult
 from backend.startup.context import StartupContext
-from backend.infrastructure.system_vnpy.logging_system import LOGGING_QUEUE_TOKEN_ENV
+from backend.infrastructure.system_vnpy.logging_system import (
+    LOGGING_QUEUE_TOKEN_ENV,
+    get_alert_logger,
+    get_configured_logger,
+    get_stage_logger,
+)
 
 
 def get_root() -> Path:
@@ -36,7 +40,14 @@ def get_root() -> Path:
     return root_path
 
 
-logger = logging.getLogger("backend.startup.workers.data_launcher")
+logger = get_configured_logger(
+    "backend.startup.workers.data_launcher",
+    scenario="data_launch",
+)
+alert_logger = get_alert_logger(
+    "backend.startup.workers.data_launcher.alert",
+    scenario="data_launch",
+)
 
 # 全局变量用于进程清理
 _global_data_worker: Optional['DataLauncherWorker'] = None
@@ -57,6 +68,11 @@ class DataLauncherWorker(StartupWorker):
             name="data_launcher",
             description="数据进程启动Worker - 启动数据进程",
         )
+        self.logger = get_configured_logger(
+            f"backend.startup.workers.{self.name}",
+            scenario="data_launch",
+        )
+        self._alert_logger = alert_logger
         self.data_process_handle: Optional[subprocess.Popen] = None
         self.watchdog_running = False
 
@@ -76,22 +92,15 @@ class DataLauncherWorker(StartupWorker):
         start_time = time.time()
 
         try:
-            stage_logger = logging.getLogger("startup.stage")
+            stage_logger = get_stage_logger("startup.stage", scenario="data_launch")
 
-            stage_logger.info("", extra={"log_type": "STAGE_NODE"})
-            stage_logger.info(
-                "┌" + "─" * 66 + "┐", extra={"log_type": "STAGE_NODE"}
-            )
-            stage_logger.info(
-                "│ 分支B: 数据进程                                                   │",
-                extra={"log_type": "STAGE_NODE"},
-            )
-            stage_logger.info(
-                "└" + "─" * 66 + "┘", extra={"log_type": "STAGE_NODE"}
-            )
-            stage_logger.info("", extra={"log_type": "STAGE_NODE"})
+            stage_logger.info("")
+            stage_logger.info("┌" + "─" * 66 + "┐")
+            stage_logger.info("│ 分支B: 数据进程                                                   │")
+            stage_logger.info("└" + "─" * 66 + "┘")
+            stage_logger.info("")
 
-            stage_logger.info("📍 数据进程启动开始", extra={"log_type": "STAGE_NODE"})
+            stage_logger.info("📍 数据进程启动开始")
 
             # 启动数据进程
             data_info = await self._launch_data_process(context)
@@ -102,10 +111,7 @@ class DataLauncherWorker(StartupWorker):
 
             elapsed_ms = (time.time() - start_time) * 1000
 
-            stage_logger.info(
-                f"✅ 数据进程完全就绪 ({elapsed_ms/1000:.1f}s)",
-                extra={"log_type": "STAGE_NODE"},
-            )
+            stage_logger.info(f"✅ 数据进程完全就绪 ({elapsed_ms/1000:.1f}s)")
 
             return WorkerResult(
                 success=True,
@@ -117,10 +123,9 @@ class DataLauncherWorker(StartupWorker):
         except Exception as e:
             elapsed_ms = (time.time() - start_time) * 1000
 
-            self.logger.error(
+            self._alert_logger.error(
                 f"❌ [DataLauncherWorker] 数据进程启动Worker异常: {e}",
                 exc_info=True,
-                extra={"log_type": "SYSTEM"}
             )
 
             return WorkerResult(
@@ -143,7 +148,7 @@ class DataLauncherWorker(StartupWorker):
             RuntimeError: 数据进程启动失败
         """
         start_time = time.time()
-        stage_logger = logging.getLogger("startup.stage")
+        stage_logger = get_stage_logger("startup.stage", scenario="data_launch")
 
         data_script = (
             context.project_root
@@ -166,13 +171,7 @@ class DataLauncherWorker(StartupWorker):
                 logger.warning(
                     "[DATA-PROCESS] 无法删除旧的 data_process_ready.signal: %s",
                     cleanup_error,
-                    extra={"log_type": "SYSTEM"}
                 )
-
-        # 获取日志队列（如果已初始化）
-        log_queue = None
-        if hasattr(context, "log_queue") and context.log_queue:
-            log_queue = context.log_queue
 
         # 准备启动参数
         launch_args = [sys.executable, str(data_script)]
@@ -181,9 +180,7 @@ class DataLauncherWorker(StartupWorker):
         env = os.environ.copy()
         if getattr(context, "log_queue_token", None):
             env[LOGGING_QUEUE_TOKEN_ENV] = context.log_queue_token  # type: ignore[arg-type]
-            logger.debug(
-                "[DATA-PROCESS] 已注入日志队列token", extra={"log_type": "SYSTEM"}
-            )
+            logger.debug("[DATA-PROCESS] 已注入日志队列token")
 
         # 启动数据进程（指定工作目录为项目根目录）
         # 在Windows上确保权限传递
@@ -223,10 +220,7 @@ class DataLauncherWorker(StartupWorker):
 
         # 获取PID并显示
         pid = self.data_process_handle.pid
-        stage_logger.info(
-            f"✅ data_process_main.py进程已启动 (PID: {pid})",
-            extra={"log_type": "STAGE_NODE"},
-        )
+        stage_logger.info(f"✅ data_process_main.py进程已启动 (PID: {pid})")
 
         # 注册清理函数
         atexit.register(self.cleanup_data_process)
@@ -235,44 +229,29 @@ class DataLauncherWorker(StartupWorker):
         self._start_watchdog(context)
 
         # 显示native_ipc管道创建过程
-        stage_logger.info("✅ 创建native_ipc管道", extra={"log_type": "STAGE_NODE"})
-        stage_logger.info(
-            "  ├─ data_query ✅", extra={"log_type": "STAGE_NODE"}
-        )
-        stage_logger.info(
-            "  └─ data_calculation ✅", extra={"log_type": "STAGE_NODE"}
-        )
+        stage_logger.info("✅ 创建native_ipc管道")
+        stage_logger.info("  ├─ data_query ✅")
+        stage_logger.info("  └─ data_calculation ✅")
 
         # 显示数据组件初始化
-        stage_logger.info("✅ 数据组件初始化", extra={"log_type": "STAGE_NODE"})
-        stage_logger.info("  ├─ ChinaStockEngine ✅", extra={"log_type": "STAGE_NODE"})
-        stage_logger.info("  ├─ UnifiedDataManager ✅", extra={"log_type": "STAGE_NODE"})
-        stage_logger.info(
-            "  ├─ LoadBalancer (后台异步) ⏳", extra={"log_type": "STAGE_NODE"}
-        )
-        stage_logger.info("  └─ ServerPoolManager ✅", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("✅ 数据组件初始化")
+        stage_logger.info("  ├─ ChinaStockEngine ✅")
+        stage_logger.info("  ├─ UnifiedDataManager ✅")
+        stage_logger.info("  ├─ LoadBalancer (后台异步) ⏳")
+        stage_logger.info("  └─ ServerPoolManager ✅")
 
         # 等待数据进程Level 1就绪（管道就绪）
         # 正常2-3秒，设置15秒超时（已非常宽松）
         pipes_info = await self._wait_data_process_ready(max_wait=15.0, wait_for_level=1)
 
-        stage_logger.info(
-            "✅ Level 1就绪 (管道就绪)",
-            extra={"log_type": "STAGE_NODE", "scenario": "data_launch"}
-        )
-        stage_logger.info(
-            "✅ 数据进程看门狗启动（2s 轮询）",
-            extra={"log_type": "STAGE_NODE", "scenario": "data_launch"}
-        )
+        stage_logger.info("✅ Level 1就绪 (管道就绪)")
+        stage_logger.info("✅ 数据进程看门狗启动（2s 轮询）")
 
         # 等待数据进程Level 2就绪（功能完整）
         # 数据服务初始化可能需要30-60秒，设置90秒超时
         await self._wait_data_process_ready(max_wait=90.0, wait_for_level=2)
 
-        stage_logger.info(
-            "✅ Level 2就绪 (功能完整)",
-            extra={"log_type": "STAGE_NODE", "scenario": "data_launch"}
-        )
+        stage_logger.info("✅ Level 2就绪 (功能完整)")
 
         elapsed = time.time() - start_time
 
@@ -312,24 +291,20 @@ class DataLauncherWorker(StartupWorker):
                 proc = psutil.Process(self.data_process_handle.pid)
                 process_start_time = proc.create_time()
                 self.logger.debug(
-                    f"[DATA-PROCESS] 进程启动时间: {process_start_time} (PID={current_data_pid})",
-                    extra={"log_type": "SYSTEM", "scenario": "data_launch"}
+                    f"[DATA-PROCESS] 进程启动时间: {process_start_time} (PID={current_data_pid})"
                 )
             except ImportError:
                 self.logger.debug(
-                    "[DATA-PROCESS] psutil不可用，使用当前时间作为进程启动时间",
-                    extra={"log_type": "SYSTEM", "scenario": "data_launch"}
+                    "[DATA-PROCESS] psutil不可用，使用当前时间作为进程启动时间"
                 )
             except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
                 self.logger.debug(
-                    f"[DATA-PROCESS] 无法获取进程创建时间: {e}，使用当前时间",
-                    extra={"log_type": "SYSTEM", "scenario": "data_launch"}
+                    f"[DATA-PROCESS] 无法获取进程创建时间: {e}，使用当前时间"
                 )
 
         if current_data_pid:
             self.logger.debug(
-                f"[DATA-PROCESS] 等待数据进程就绪: 期望PID={current_data_pid}, 等待级别={wait_for_level}, 进程启动时间={process_start_time}",
-                extra={"log_type": "SYSTEM", "scenario": "data_launch"}
+                f"[DATA-PROCESS] 等待数据进程就绪: 期望PID={current_data_pid}, 等待级别={wait_for_level}, 进程启动时间={process_start_time}"
             )
 
         # 等待信号文件出现，并验证PID匹配和时间戳
@@ -350,43 +325,34 @@ class DataLauncherWorker(StartupWorker):
 
                     self.logger.debug(
                         f"[DATA-PROCESS] 验证信号文件: PID={signal_pid}, 时间戳={signal_timestamp}, "
-                        f"PID验证={'通过' if pid_valid else '失败'}, 时间戳验证={'通过' if timestamp_valid else '失败'}",
-                        extra={"log_type": "SYSTEM", "scenario": "data_launch"}
+                        f"PID验证={'通过' if pid_valid else '失败'}, 时间戳验证={'通过' if timestamp_valid else '失败'}"
                     )
 
                     # 验证决策
                     if pid_valid:
-                        # PID匹配，直接通过
                         self.logger.debug(
-                            f"[DATA-PROCESS] PID验证通过: {signal_pid}",
-                            extra={"log_type": "SYSTEM", "scenario": "data_launch"}
+                            f"[DATA-PROCESS] PID验证通过: {signal_pid}"
                         )
                     elif timestamp_valid:
-                        # PID不匹配但时间戳有效（Windows正常情况）
                         self.logger.info(
                             f"[DATA-PROCESS] PID不一致但时间戳有效（Windows正常情况）: "
                             f"期望PID={current_data_pid}, 实际PID={signal_pid}, "
-                            f"时间戳={signal_timestamp}, 进程启动时间={process_start_time}",
-                            extra={"log_type": "SYSTEM", "scenario": "data_launch"}
+                            f"时间戳={signal_timestamp}, 进程启动时间={process_start_time}"
                         )
                     else:
-                        # 所有验证都失败，删除旧文件
                         self.logger.warning(
                             f"[DATA-PROCESS] 信号文件验证失败（PID和时间戳都不匹配）: "
                             f"期望PID={current_data_pid}, 实际PID={signal_pid}, "
-                            f"时间戳={signal_timestamp}, 进程启动时间={process_start_time}，删除旧文件并继续等待",
-                            extra={"log_type": "SYSTEM", "scenario": "data_launch"}
+                            f"时间戳={signal_timestamp}, 进程启动时间={process_start_time}"
                         )
                         try:
                             signal_file.unlink()
                             self.logger.debug(
-                                f"[DATA-PROCESS] 已删除旧信号文件（PID={signal_pid}）",
-                                extra={"log_type": "SYSTEM", "scenario": "data_launch"}
+                                f"[DATA-PROCESS] 已删除旧信号文件（PID={signal_pid}）"
                             )
-                        except Exception as e:
+                        except Exception as exc:
                             self.logger.warning(
-                                f"[DATA-PROCESS] 删除旧信号文件失败: {e}",
-                                extra={"log_type": "SYSTEM", "scenario": "data_launch"}
+                                f"[DATA-PROCESS] 删除旧信号文件失败: {exc}"
                             )
                         await asyncio.sleep(0.5)
                         continue
@@ -396,15 +362,13 @@ class DataLauncherWorker(StartupWorker):
                     pipes_info = signal_data.get("pipes", [])
 
                     self.logger.debug(
-                        f"[DATA-PROCESS] 信号文件有效: PID={signal_pid}, level={current_level}, 目标级别={wait_for_level}, 时间戳={signal_timestamp}",
-                        extra={"log_type": "SYSTEM", "scenario": "data_launch"}
+                        f"[DATA-PROCESS] 信号文件有效: PID={signal_pid}, level={current_level}, 目标级别={wait_for_level}, 时间戳={signal_timestamp}"
                     )
 
                     # 如果已达到目标级别，返回
                     if current_level >= wait_for_level:
                         self.logger.info(
-                            f"[DATA-PROCESS] ✅ 数据进程Level {wait_for_level}已就绪（PID={signal_pid}, 时间戳={signal_timestamp}）",
-                            extra={"log_type": "SYSTEM", "scenario": "data_launch"}
+                            f"[DATA-PROCESS] ✅ 数据进程Level {wait_for_level}已就绪（PID={signal_pid}, 时间戳={signal_timestamp}）"
                         )
                         return {"pipes": pipes_info}
 
@@ -412,22 +376,19 @@ class DataLauncherWorker(StartupWorker):
                     await asyncio.sleep(0.5)
                 except json.JSONDecodeError as e:
                     self.logger.warning(
-                        f"[DATA-PROCESS] 解析信号文件失败: {e}，删除并继续等待",
-                        extra={"log_type": "SYSTEM", "scenario": "data_launch"}
+                        f"[DATA-PROCESS] 解析信号文件失败: {e}，删除并继续等待"
                     )
                     try:
                         signal_file.unlink()
                     except Exception as cleanup_error:
                         self.logger.debug(
-                            f"[DATA-PROCESS] 删除损坏信号文件失败: {cleanup_error}",
-                            extra={"log_type": "SYSTEM", "scenario": "data_launch"}
+                            f"[DATA-PROCESS] 删除损坏信号文件失败: {cleanup_error}"
                         )
                     await asyncio.sleep(0.5)
                     continue
                 except Exception as e:
                     self.logger.warning(
-                        f"[DATA-PROCESS] 读取信号文件失败: {e}",
-                        extra={"log_type": "SYSTEM", "scenario": "data_launch"}
+                        f"[DATA-PROCESS] 读取信号文件失败: {e}"
                     )
                     await asyncio.sleep(0.5)
                     continue
@@ -438,17 +399,11 @@ class DataLauncherWorker(StartupWorker):
         # 超时仍未找到匹配的信号文件
         if current_data_pid:
             error_msg = f"数据进程就绪超时（等待 {max_wait} 秒，期望PID={current_data_pid}，当前级别={current_level}）"
-            self.logger.error(
-                f"[DATA-PROCESS] ❌ {error_msg}",
-                extra={"log_type": "ALERT", "scenario": "data_launch"}
-            )
+            self._alert_logger.error(f"[DATA-PROCESS] ❌ {error_msg}")
             raise RuntimeError(error_msg)
         else:
             error_msg = f"数据进程就绪超时（等待 {max_wait} 秒，当前级别={current_level}）"
-            self.logger.error(
-                f"[DATA-PROCESS] ❌ {error_msg}",
-                extra={"log_type": "ALERT", "scenario": "data_launch"}
-            )
+            self._alert_logger.error(f"[DATA-PROCESS] ❌ {error_msg}")
             raise RuntimeError(error_msg)
 
     def _start_watchdog(self, context: StartupContext):
@@ -467,10 +422,9 @@ class DataLauncherWorker(StartupWorker):
                     # 检查进程是否还在运行
                     if self.data_process_handle.poll() is not None:
                         # 进程已退出
-                        self.logger.error(
+                        self._alert_logger.error(
                             "❌ [DataLauncherWorker] 数据进程意外退出",
                             exc_info=True,
-                            extra={"log_type": "SYSTEM"}
                         )
                         self.watchdog_running = False
                         break
@@ -489,24 +443,19 @@ class DataLauncherWorker(StartupWorker):
                 self.data_process_handle.wait(timeout=5)
                 self.logger.info("数据进程已终止")
             except subprocess.TimeoutExpired:
-                self.logger.warning(
-                    "数据进程终止超时，强制结束...",
-                    extra={"log_type": "SYSTEM"}
-                )
+                self.logger.warning("数据进程终止超时，强制结束...")
                 try:
                     self.data_process_handle.kill()
                     self.data_process_handle.wait(timeout=2)
                     self.logger.info("数据进程已强制结束")
                 except Exception as e:
-                    self.logger.error(
+                    self._alert_logger.error(
                         f"❌ [DataLauncherWorker] 强制结束数据进程失败: {e}",
                         exc_info=True,
-                        extra={"log_type": "SYSTEM"}
                     )
             except Exception as e:
                 self.logger.warning(
-                    f"⚠️ [DataLauncherWorker] 终止数据进程失败: {e}",
-                    extra={"log_type": "SYSTEM"}
+                    f"⚠️ [DataLauncherWorker] 终止数据进程失败: {e}"
                 )
                 try:
                     self.data_process_handle.kill()
@@ -527,14 +476,10 @@ class DataLauncherWorker(StartupWorker):
             signal_file = get_root() / "logs" / "data_process_ready.signal"
             if signal_file.exists():
                 signal_file.unlink()
-                self.logger.debug(
-                    "[DATA-PROCESS] 已清理 data_process_ready.signal 文件",
-                    extra={"log_type": "SYSTEM"}
-                )
+                self.logger.debug("[DATA-PROCESS] 已清理 data_process_ready.signal 文件")
         except Exception as e:
             self.logger.debug(
-                f"[DATA-PROCESS] 清理信号文件失败（可接受）: {e}",
-                extra={"log_type": "SYSTEM"}
+                f"[DATA-PROCESS] 清理信号文件失败（可接受）: {e}"
             )
 
 
@@ -546,10 +491,9 @@ def cleanup_all_processes():
         try:
             _global_data_worker.cleanup_data_process()
         except Exception as e:
-            logger.error(
+            alert_logger.error(
                 f"❌ [DataLauncherWorker] 清理数据进程失败: {e}",
                 exc_info=True,
-                extra={"log_type": "SYSTEM"}
             )
 
     # 清理数据就绪信号文件（无论数据进程是否正常退出）
@@ -562,14 +506,8 @@ def _cleanup_signal_file():
         signal_file = get_root() / "logs" / "data_process_ready.signal"
         if signal_file.exists():
             signal_file.unlink()
-            logger.debug(
-                "[CLEANUP] 已清理 data_process_ready.signal 文件",
-                extra={"log_type": "SYSTEM"}
-            )
+            logger.debug("[CLEANUP] 已清理 data_process_ready.signal 文件")
     except Exception as e:
         # 清理失败不影响程序退出，只记录调试日志
-        logger.debug(
-            f"[CLEANUP] 清理信号文件失败（可接受）: {e}",
-            extra={"log_type": "SYSTEM"}
-        )
+        logger.debug(f"[CLEANUP] 清理信号文件失败（可接受）: {e}")
 

@@ -1,0 +1,27 @@
+{
+    "monaco-dark": {
+        "keyword": {
+            "pattern": "\\b(class|def|return|import|from|if|elif|else|while|for|try|except|with|as|lambda|yield|async|await)\\b",
+            "color": "#C586C0",
+            "bold": true
+        },
+        "builtin": {
+            "pattern": "\\b(True|False|None|super|range|len|print|dict|list|set|tuple|int|float|str|bytes)\\b",
+            "color": "#4EC9B0"
+        },
+        "string": {
+            "pattern": "(['\\\"])((?:\\\\.|(?!\\1).)*)\\1",
+            "color": "#CE9178"
+        },
+        "comment": {
+            "pattern": "#[^\\n]*",
+            "color": "#6A9955",
+            "italic": true
+        },
+        "number": {
+            "pattern": "\\b\\d+(?:\\.\\d+)?\\b",
+            "color": "#B5CEA8"
+        }
+    }
+}
+

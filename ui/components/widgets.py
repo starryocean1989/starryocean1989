@@ -52,11 +52,18 @@ from ui.components.theme_system import DashboardTheme
 
 try:
     from native_qhighlighter import NativePythonHighlighter  # type: ignore
-
+except Exception:  # noqa: BLE001
+    try:
+        from ui.native_extensions.native_qhighlighter import (
+            NativePythonHighlighter,
+        )  # type: ignore
+    except Exception:  # noqa: BLE001 - 仅用于探测
+        NativePythonHighlighter = None  # type: ignore
+        NATIVE_QHIGHLIGHTER_AVAILABLE = False
+    else:
+        NATIVE_QHIGHLIGHTER_AVAILABLE = True
+else:
     NATIVE_QHIGHLIGHTER_AVAILABLE = True
-except Exception:  # noqa: BLE001 - 仅用于探测
-    NativePythonHighlighter = None  # type: ignore
-    NATIVE_QHIGHLIGHTER_AVAILABLE = False
 
 
 def _should_use_native_highlighter() -> bool:
@@ -1039,7 +1046,7 @@ class MonacoEditorWidget(QPlainTextEdit):
         super().__init__(parent)
 
         self.logger = logging.getLogger(self.__class__.__name__)
-        self.logger.info("🔍 [DEBUG] Monaco增强版初始化（Pygments语法高亮）")
+        self.logger.debug("🔍 [DEBUG] Monaco增强版初始化（Pygments语法高亮）")
 
         # Monaco兼容状态
         self._is_ready = True

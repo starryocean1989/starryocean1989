@@ -11,21 +11,6 @@
 // 静态请求ID计数器
 static uint32_t g_request_id_counter = 0;
 
-// 方法名到ID的映射表
-typedef struct {
-    const char* name;
-    uint32_t id;
-} MethodMapping;
-
-static const MethodMapping method_mappings[] = {
-    {"get_kline_data", METHOD_GET_KLINE_DATA},
-    {"get_stock_list", METHOD_GET_STOCK_LIST},
-    {"get_cache_status", METHOD_GET_CACHE_STATUS},
-    {"calculate_indicators", METHOD_CALCULATE_INDICATORS},
-    {"scan_data_quality", METHOD_SCAN_DATA_QUALITY},
-    {NULL, 0}
-};
-
 // 创建RPC消息头
 RPCMessageHeader* create_rpc_header(uint32_t method_id, uint32_t payload_size) {
     RPCMessageHeader* header = (RPCMessageHeader*)malloc(sizeof(RPCMessageHeader));
@@ -109,27 +94,4 @@ void free_rpc_response(RPCResponse* response) {
         }
         free(response);
     }
-}
-
-// 方法名到ID的映射
-uint32_t get_method_id(const char* method_name) {
-    if (!method_name) return 0;
-    
-    for (int i = 0; method_mappings[i].name != NULL; i++) {
-        if (strcmp(method_mappings[i].name, method_name) == 0) {
-            return method_mappings[i].id;
-        }
-    }
-    
-    return 0; // 未找到
-}
-
-const char* get_method_name(uint32_t method_id) {
-    for (int i = 0; method_mappings[i].name != NULL; i++) {
-        if (method_mappings[i].id == method_id) {
-            return method_mappings[i].name;
-        }
-    }
-    
-    return NULL;
 }

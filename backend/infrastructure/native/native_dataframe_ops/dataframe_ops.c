@@ -1,6 +1,68 @@
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
 
+static int trim_unicode(PyObject *value, PyObject **out_trimmed, int drop_empty) {
+    if (value == NULL || value == Py_None) {
+        return 1;
+    }
+
+    PyObject *unicode = PyUnicode_FromObject(value);
+    if (unicode == NULL) {
+        return -1;
+    }
+
+    if (PyUnicode_READY(unicode) == -1) {
+        Py_DECREF(unicode);
+        return -1;
+    }
+
+    const Py_ssize_t original_length = PyUnicode_GET_LENGTH(unicode);
+    Py_ssize_t start = 0;
+    Py_ssize_t end = original_length;
+
+    void *data = PyUnicode_DATA(unicode);
+    int kind = PyUnicode_KIND(unicode);
+
+    while (start < end) {
+        Py_UCS4 ch = PyUnicode_READ(kind, data, start);
+        if (!Py_UNICODE_ISSPACE(ch)) {
+            break;
+        }
+        start++;
+    }
+
+    while (end > start) {
+        Py_UCS4 ch = PyUnicode_READ(kind, data, end - 1);
+        if (!Py_UNICODE_ISSPACE(ch)) {
+            break;
+        }
+        end--;
+    }
+
+    if (start == 0 && end == original_length) {
+        if (drop_empty && original_length == 0) {
+            Py_DECREF(unicode);
+            return 1;
+        }
+        *out_trimmed = unicode;
+        return 0;
+    }
+
+    PyObject *substring = PyUnicode_Substring(unicode, start, end);
+    Py_DECREF(unicode);
+    if (substring == NULL) {
+        return -1;
+    }
+
+    if (drop_empty && PyUnicode_GetLength(substring) == 0) {
+        Py_DECREF(substring);
+        return 1;
+    }
+
+    *out_trimmed = substring;
+    return 0;
+}
+
 static PyObject *dataframe_to_records(PyObject *self, PyObject *args, PyObject *kwargs) {
     PyObject *df = NULL;
     int include_index = 0;
@@ -242,9 +304,130 @@ static PyObject *dataframe_quality_counters(PyObject *self, PyObject *args) {
     return Py_BuildValue("(LL)", duplicate_count, invalid_count);
 }
 
+static PyObject *filter_symbols(PyObject *self, PyObject *args, PyObject *kwargs) {
+    PyObject *records_obj = NULL;
+    int deduplicate = 1;
+    int drop_empty_code = 1;
+    int require_name = 0;
+
+    static char *kwlist[] = {"records", "deduplicate", "drop_empty_code", "require_name", NULL};
+
+    if (!PyArg_ParseTupleAndKeywords(
+            args,
+            kwargs,
+            "O|ppp",
+            kwlist,
+            &records_obj,
+            &deduplicate,
+            &drop_empty_code,
+            &require_name)) {
+        return NULL;
+    }
+
+    PyObject *records = PySequence_Fast(records_obj, "records must be a sequence");
+    if (records == NULL) {
+        return NULL;
+    }
+
+    PyObject *result = PyList_New(0);
+    if (result == NULL) {
+        Py_DECREF(records);
+        return NULL;
+    }
+
+    PyObject *seen_codes = NULL;
+    if (deduplicate) {
+        seen_codes = PySet_New(NULL);
+        if (seen_codes == NULL) {
+            Py_DECREF(records);
+            Py_DECREF(result);
+            return NULL;
+        }
+    }
+
+    PyObject **items = PySequence_Fast_ITEMS(records);
+    const Py_ssize_t count = PySequence_Fast_GET_SIZE(records);
+
+    for (Py_ssize_t index = 0; index < count; ++index) {
+        PyObject *item = items[index];
+        if (!PyDict_Check(item)) {
+            continue;
+        }
+
+        PyObject *code_trim = NULL;
+        int code_state = trim_unicode(PyDict_GetItemString(item, "code"), &code_trim, drop_empty_code);
+        if (code_state != 0) {
+            if (code_state < 0) {
+                Py_DECREF(records);
+                Py_XDECREF(code_trim);
+                Py_XDECREF(seen_codes);
+                Py_DECREF(result);
+                return NULL;
+            }
+            Py_XDECREF(code_trim);
+            continue;
+        }
+
+        if (require_name) {
+            PyObject *name_trim = NULL;
+            int name_state = trim_unicode(PyDict_GetItemString(item, "name"), &name_trim, 1);
+            if (name_state != 0) {
+                if (name_state < 0) {
+                    Py_DECREF(records);
+                    Py_DECREF(code_trim);
+                    Py_XDECREF(name_trim);
+                    Py_XDECREF(seen_codes);
+                    Py_DECREF(result);
+                    return NULL;
+                }
+                Py_DECREF(code_trim);
+                Py_XDECREF(name_trim);
+                continue;
+            }
+            Py_DECREF(name_trim);
+        }
+
+        if (deduplicate) {
+            int contains = PySet_Contains(seen_codes, code_trim);
+            if (contains == 1) {
+                Py_DECREF(code_trim);
+                continue;
+            }
+            if (contains == -1) {
+                Py_DECREF(records);
+                Py_DECREF(code_trim);
+                Py_DECREF(seen_codes);
+                Py_DECREF(result);
+                return NULL;
+            }
+            if (PySet_Add(seen_codes, code_trim) != 0) {
+                Py_DECREF(records);
+                Py_DECREF(code_trim);
+                Py_DECREF(seen_codes);
+                Py_DECREF(result);
+                return NULL;
+            }
+        }
+
+        Py_DECREF(code_trim);
+
+        if (PyList_Append(result, item) != 0) {
+            Py_DECREF(records);
+            Py_XDECREF(seen_codes);
+            Py_DECREF(result);
+            return NULL;
+        }
+    }
+
+    Py_DECREF(records);
+    Py_XDECREF(seen_codes);
+    return result;
+}
+
 static PyMethodDef DataFrameOpsMethods[] = {
     {"dataframe_to_records", (PyCFunction)dataframe_to_records, METH_VARARGS | METH_KEYWORDS, "Convert pandas DataFrame to list of dict records"},
     {"dataframe_quality_counters", dataframe_quality_counters, METH_VARARGS, "Return duplicate and invalid counts for DataFrame"},
+    {"filter_symbols", (PyCFunction)filter_symbols, METH_VARARGS | METH_KEYWORDS, "Filter symbol dictionaries with native optimizations"},
     {NULL, NULL, 0, NULL}
 };
 

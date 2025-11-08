@@ -17,6 +17,7 @@ native_collections_module = Extension(
         'native_collections.c',
         'lru_cache.c',
         'priority_queue.c',
+        'match_cache.c',
     ],
     libraries=['kernel32'],
     define_macros=[('PY_SSIZE_T_CLEAN', None)],

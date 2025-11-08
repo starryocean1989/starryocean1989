@@ -1,116 +1,45 @@
 # -*- coding: utf-8 -*-
-# Native扩展包集合
+# Native 扩展包集合
 
 ## 概述
 
-本目录包含一系列高性能C扩展包，用于解决Python在特定场景下的性能瓶颈。所有包均针对Windows平台优化，使用Windows原生API实现，提供比纯Python实现更优的性能。
+本目录汇总了 21 个 Windows 优化的 C/C++ 扩展包，覆盖无锁容器、异步 IO、数据转换、指标采集等关键路径；所有模块均可通过 `compile_all.bat` 一键重建，并在失败时回退到纯 Python 方案，确保业务不中断。
 
-## 包列表
+## 模块一览
 
-### 1. native_gil - GIL管理和无锁数据结构
+| 序号 | 模块 | 核心能力 | 文档 |
+| --- | --- | --- | --- |
+| 1 | `native_gil` | GIL 管理、无锁队列/哈希、同步原语 | [native_gil/README.md](./native_gil/README.md) |
+| 2 | `native_memory` | 零拷贝内存、线程安全内存池 | [native_memory/README.md](./native_memory/README.md) |
+| 3 | `native_serialization` | 批量序列化与零拷贝反序列化 | [native_serialization/README.md](./native_serialization/README.md) |
+| 4 | `native_conversion` | 基础类型批量转换、字符串编解码 | [native_conversion/README.md](./native_conversion/README.md) |
+| 5 | `native_vnpy_conversion` | VnPy Tick/Bar/订单批量转换 | [native_vnpy_conversion/README.md](./native_vnpy_conversion/README.md) |
+| 6 | `native_compute` | 批量数值/哈希运算 | [native_compute/README.md](./native_compute/README.md) |
+| 7 | `native_dataframe_ops` | DataFrame/数组批量算子 | [native_dataframe_ops/README.md](./native_dataframe_ops/README.md) |
+| 8 | `native_finance_ops` | 量化指标、金融统计批处理 | [native_finance_ops/README.md](./native_finance_ops/README.md) |
+| 9 | `native_collections` | LRU、优先队列、链表 | [native_collections/README.md](./native_collections/README.md) |
+| 10 | `native_iocp` | IOCP 文件异步读写/目录遍历 | [native_iocp/README.md](./native_iocp/README.md) |
+| 11 | `native_fs` | 目录变更原生监控（ReadDirectoryChangesW） | [native_fs/README.md](./native_fs/README.md) |
+| 12 | `native_ipc` | IOCP + Named Pipe 异步 IPC | [native_ipc/README.md](./native_ipc/README.md) |
+| 13 | `native_netprobe` | IOCP ConnectEx 网络探测 | [native_netprobe/README.md](./native_netprobe/README.md) |
+| 14 | `native_socket_metrics` | TCP 连接、带宽利用率采集 | [native_socket_metrics/README.md](./native_socket_metrics/README.md) |
+| 15 | `native_process_metrics` | 系统/进程 CPU、内存、IO 统计 | [native_process_metrics/README.md](./native_process_metrics/README.md) |
+| 16 | `native_smart_monitor` | SMART 温度/健康采集 | [native_smart_monitor/README.md](./native_smart_monitor/README.md) |
+| 17 | `native_log_pipeline` | 日志批量缓冲、SQLite 落盘 | [native_log_pipeline/README.md](./native_log_pipeline/README.md) |
+| 18 | `native_async` | 异步任务归约、进度切片 | [native_async/README.md](./native_async/README.md) |
+| 19 | `native_symbol_index` | LockFree 品种索引、查询加速 | [native_symbol_index/README.md](./native_symbol_index/README.md) |
+| 20 | `native_indicator` | 技术指标计算（MACD/RSI 等） | [native_indicator/README.md](./native_indicator/README.md) |
+| 21 | `native_rpc_bridge` | 多语言 RPC 桥接、数据通道 | [native_rpc_bridge/README.md](./native_rpc_bridge/README.md) |
 
-提供底层的GIL管理工具、无锁数据结构和高性能同步原语。
+> UI 侧的 `native_qhighlighter` 位于 `ui/native_extensions`，由脚本末尾额外构建。
 
-**核心功能**：
-- GIL释放/恢复接口
-- 无锁队列（LockFreeQueue）
-- 无锁哈希表（LockFreeHashMap）
-- 高性能事件/条件变量
+## 统一特性
 
-**文档**：[native_gil/README.md](./native_gil/README.md)
-
----
-
-### 2. native_memory - 内存操作
-
-提供高性能内存操作功能，包括零拷贝内存视图、内存池和批量操作。
-
-**核心功能**：
-- 零拷贝内存操作（ZeroCopyMemory）
-- 线程安全内存池（MemoryPool）
-- 批量内存分配/释放
-
-**文档**：[native_memory/README.md](./native_memory/README.md)
-
----
-
-### 3. native_serialization - 序列化
-
-提供高性能序列化功能，包括批量序列化/反序列化。
-
-**核心功能**：
-- 批量序列化/反序列化
-- 零拷贝序列化
-- 减少Python调用开销
-
-**文档**：[native_serialization/README.md](./native_serialization/README.md)
-
----
-
-### 4. native_iocp - 异步文件I/O
-
-提供基于Windows IOCP（完成端口）的异步文件I/O和批量文件操作。
-
-**核心功能**：
-- 真正的异步文件I/O（不使用线程池）
-- 批量文件操作（存在检查、删除、统计）
-- 高性能目录遍历
-
-**文档**：[native_iocp/README.md](./native_iocp/README.md)
-
----
-
-### 5. native_ipc - 异步跨进程通信
-
-提供基于Windows IOCP + Named Pipe的异步跨进程通信。
-
-**核心功能**：
-- 异步跨进程通信
-- 基于Named Pipe + IOCP
-- 完全对标native_iocp的架构
-
-**文档**：[native_ipc/README.md](./native_ipc/README.md)
-
----
-
-### 6. native_conversion - 类型转换
-
-提供高性能类型转换和字符串操作功能。
-
-**核心功能**：
-- 批量类型转换（int、float、str、bytes等）
-- 批量字符串编码/解码
-- 减少Python调用开销
-
-**文档**：[native_conversion/README.md](./native_conversion/README.md)
-
----
-
-### 7. native_collections - 高性能容器
-
-提供高性能数据结构，包括LRU缓存和优先级队列。
-
-**核心功能**：
-- 高性能LRU缓存（HighPerfLRUCache）
-- 高性能优先级队列（HighPerfPriorityQueue）
-- C实现的双向链表/链表
-
-**文档**：[native_collections/README.md](./native_collections/README.md)
-
----
-
-### 8. native_compute - 数值计算
-
-提供高性能数值运算和哈希计算功能。
-
-**核心功能**：
-- 批量数值运算（add、multiply、square等）
-- 批量哈希计算（md5、sha1、sha256等）
-- 减少Python调用开销
-
-**文档**：[native_compute/README.md](./native_compute/README.md)
-
----
+- **Windows 原生 API**：利用 IOCP、PDH、Named Pipe、QueryPerformanceCounter 等系统能力。
+- **锁粒度最小化**：核心路径使用 `LockFreeHashMap` / `LockFreeQueue`，跨进程通信配合环形缓冲。
+- **降级机制**：模块通过 `*_AVAILABLE` 常量告知状态；不可用时自动回退 Python 实现。
+- **测试矩阵**：`backend/infrastructure/native/tests` 覆盖核心模块的单元/集成/性能基准（部分扩展待补充专用用例）。
+- **一键构建**：`compile_all.bat` 顺序编译 20 个扩展（含 UI 高亮），遇到错误立即中止并打印日志。
 
 ## 编译要求
 
@@ -125,25 +54,26 @@
 ### 编译所有包
 
 ```bash
-# 进入native目录
+# 进入 native 目录
 cd backend/infrastructure/native
 
-# 编译所有包（需要在每个包目录下执行）
-cd native_gil && python setup.py build_ext --inplace && cd ..
-cd native_memory && python setup.py build_ext --inplace && cd ..
-cd native_serialization && python setup.py build_ext --inplace && cd ..
-cd native_iocp && python setup.py build_ext --inplace && cd ..
-cd native_ipc && python setup.py build_ext --inplace && cd ..
-cd native_conversion && python setup.py build_ext --inplace && cd ..
-cd native_collections && python setup.py build_ext --inplace && cd ..
-cd native_compute && python setup.py build_ext --inplace && cd ..
+# 一键编译（推荐，遇错即停）
+compile_all.bat
 ```
+
+脚本共 22 步：前 21 步依次构建当前目录内全部扩展，第 22 步进入 `ui/native_extensions/native_qhighlighter` 完成 UI 原生高亮编译。若任一步失败，脚本会打印错误并暂停，便于定位。
 
 ### 编译单个包
 
 ```bash
 cd backend/infrastructure/native/<包名>
 python setup.py build_ext --inplace
+```
+
+如需额外依赖（例如 `pybind11`），请提前安装：
+
+```bash
+python -m pip install pybind11
 ```
 
 ## 使用示例
@@ -255,15 +185,28 @@ native/
 ├── native_memory/              # 内存操作
 ├── native_serialization/        # 序列化
 ├── native_iocp/                 # 异步文件I/O
+├── native_fs/                   # 目录变更监控
 ├── native_ipc/                  # 异步跨进程通信
 ├── native_conversion/           # 类型转换
 ├── native_collections/          # 高性能容器
 ├── native_compute/              # 数值计算
+├── native_dataframe_ops/        # DataFrame 批量算子
+├── native_finance_ops/          # 金融指标批处理
+├── native_process_metrics/      # 进程/系统指标
+├── native_socket_metrics/       # Socket 指标（网络）
+├── native_netprobe/             # 网络探测
+├── native_log_pipeline/         # 日志批处理
+├── native_async/                # 异步任务归约
+├── native_symbol_index/         # 品种索引构建
+├── native_indicator/            # 技术指标计算
+├── native_rpc_bridge/           # RPC 桥接
+├── native_vnpy_conversion/      # VnPy 数据转换
 └── tests/                       # 测试套件
-    ├── test_native_gil.py
-    ├── test_native_memory.py
-    ├── test_all.py
-    └── benchmark.py
+    ├── test_native_indicator.py
+    ├── test_native_log_pipeline.py
+    ├── test_native_netprobe.py
+    ├── test_native_process_metrics.py
+    └── test_native_vnpy_conversion.py
 ```
 
 ## 相关文档
@@ -277,5 +220,5 @@ MIT License
 
 ---
 
-**最后更新**: 2025-11-06
+**最后更新**: 2025-11-08
 

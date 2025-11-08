@@ -105,6 +105,11 @@ PyObject* batch_file_delete(PyObject *self, PyObject *args) {
         success = DeleteFileA(file_path);
         if (success) {
             success_count++;
+        } else {
+            char warning_message[256];
+            snprintf(warning_message, sizeof(warning_message),
+                     "Failed to delete file: %s, error code: %ld", file_path, GetLastError());
+            PyErr_WarnEx(PyExc_RuntimeWarning, warning_message, 1);
         }
     }
 
@@ -174,6 +179,11 @@ PyObject* batch_file_stat(PyObject *self, PyObject *args) {
                 Py_XDECREF(size);
                 Py_XDECREF(mtime);
             }
+        } else {
+            char warning_message[256];
+            snprintf(warning_message, sizeof(warning_message),
+                     "Failed to get stat for file: %s, error code: %ld", file_path, GetLastError());
+            PyErr_WarnEx(PyExc_RuntimeWarning, warning_message, 1);
         }
 
         if (stat_dict == NULL) {
@@ -186,4 +196,4 @@ PyObject* batch_file_stat(PyObject *self, PyObject *args) {
 
     return result;
 }
-
+

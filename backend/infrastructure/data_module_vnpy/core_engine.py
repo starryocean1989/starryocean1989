@@ -43,6 +43,8 @@ from datetime import datetime, date, timedelta
 from typing import Optional, Dict, Any, List, Tuple, Callable, Awaitable, Union, cast
 from dataclasses import dataclass
 
+from backend.infrastructure.system_vnpy.logging_system import bind_logger_defaults
+
 # VNPy相关
 from vnpy.event import EventEngine, Event
 
@@ -111,7 +113,11 @@ except ImportError:
 from backend.infrastructure.tdx_asyncio import TdxPathHelper, find_tdx_root
 
 # 日志配置
-logger = logging.getLogger("backend.data_module.core_engine")
+logger = bind_logger_defaults(
+    logging.getLogger("backend.data_module.core_engine"),
+    log_type="SYSTEM",
+    scenario="data_module.core_engine",
+)
 
 
 # ==============================================================================
@@ -1337,11 +1343,22 @@ class ConfigManager:
         """通过native_ipc通知配置更新（跨进程）"""
         try:
             if self._ipc_pipe is None:
-                self._ipc_pipe = await AsyncIPCPipe.server("config_updates")  # type: ignore[attr-defined]
+                self._ipc_pipe = await AsyncIPCPipe.server(  # type: ignore[attr-defined]
+                    "config_updates", wait_for_client=False
+                )
 
             # 发送配置更新通知
             if self._ipc_pipe is None:
                 logger.warning("⚠️ IPC管道未初始化，跳过配置更新通知", extra={"log_type": "SYSTEM"})
+                return
+
+            try:
+                await self._ipc_pipe.wait_for_client(timeout=5.0)
+            except Exception:
+                logger.debug(
+                    "config_updates 管道客户端未连接，跳过当前通知",
+                    extra={"log_type": "SYSTEM"},
+                )
                 return
 
             update_data = {
@@ -1349,8 +1366,16 @@ class ConfigManager:
                 "timestamp": datetime.now().isoformat(),
             }
 
-            await self._ipc_pipe.write(json.dumps(update_data).encode())
-            logger.debug("✓ 配置更新已通知到其他进程")
+            try:
+                await self._ipc_pipe.write(json.dumps(update_data).encode())
+                logger.debug("✓ 配置更新已通知到其他进程")
+            except Exception as write_error:
+                logger.warning(
+                    "⚠️ 配置更新通知未发送成功: %s",
+                    write_error,
+                    exc_info=True,
+                    extra={"log_type": "SYSTEM"},
+                )
 
         except Exception as e:
             logger.error(f"✗ 配置更新通知失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
@@ -1776,7 +1801,11 @@ class ChinaStockEngine:
 
         start_time = time.time()
         scenario = "reload_symbol_list"
-        stage_logger = logging.getLogger("startup.stage")
+        stage_logger = bind_logger_defaults(
+            logging.getLogger("startup.stage.reload_symbol_list"),
+            log_type="STAGE_NODE",
+            scenario=scenario,
+        )
 
         try:
             # DEBUG日志（记录开始）
@@ -2066,8 +2095,12 @@ class ChinaStockEngine:
         hub = get_logging_hub()
         hub.set_stage("data_engine")
 
-        stage_logger = logging.getLogger("startup.stage")
         scenario = "application_startup"
+        stage_logger = bind_logger_defaults(
+            logging.getLogger("startup.stage.data_engine"),
+            log_type="STAGE_NODE",
+            scenario=scenario,
+        )
 
         # 🔍 详细埋点：记录流程开始
         logger.debug(
@@ -2254,10 +2287,7 @@ class ChinaStockEngine:
                     f"[步骤4] 验证品种列表缓存开始: 步骤间隔={step4_interval:.1f}ms, 累计耗时={cumulative_elapsed:.1f}ms",
                     extra={"log_type": "SYSTEM", "scenario": scenario},
                 )
-                stage_logger.info(
-                    "┌─ 步骤4: 验证品种列表缓存 ─┐",
-                    extra={"log_type": "STAGE_NODE", "scenario": scenario},
-                )
+                stage_logger.info("┌─ 步骤4: 验证品种列表缓存 ─┐")
                 _progress("步骤4/8: 验证品种列表缓存...", 35)
                 step4_result = self._validate_symbol_list_cache(current_date, stage_logger)
                 _step_done(4, "验证品种列表缓存", step4_result)
@@ -2273,7 +2303,7 @@ class ChinaStockEngine:
                     self.symbol_loader.reload_and_classify(
                         shared_retry_pool=self._shared_retry_pool
                     )
-                    stage_logger.info("│ ✅ 品种列表已重新加载", extra={"log_type": "STAGE_NODE"})
+                    stage_logger.info("│ ✅ 品种列表已重新加载")
 
                     # 获取并显示分类统计
                     try:
@@ -2284,12 +2314,8 @@ class ChinaStockEngine:
                             for category in categories:
                                 count = len(classified.get(category, []))
                                 total_count += count
-                                stage_logger.info(
-                                    f"│   - {category}: {count}", extra={"log_type": "STAGE_NODE"}
-                                )
-                            stage_logger.info(
-                                f"│   - 总计: {total_count}品种", extra={"log_type": "STAGE_NODE"}
-                            )
+                                stage_logger.info(f"│   - {category}: {count}")
+                            stage_logger.info(f"│   - 总计: {total_count}品种")
                     except Exception as e:
                         logger.warning(f"获取品种统计失败: {e}", extra={"log_type": "SYSTEM"})
 
@@ -2842,7 +2868,7 @@ class ChinaStockEngine:
                 f"[步骤2] _get_current_date开始", extra={"log_type": "SYSTEM", "scenario": scenario}
             )
 
-            stage_logger.info("│ ⏳ 正在同步网络时间...", extra={"log_type": "STAGE_NODE"})
+            stage_logger.info("│ ⏳ 正在同步网络时间...")
 
             # 执行网络时间同步（单一事实原则：这是网络时间同步的唯一执行点）
             sync_start_time = time.time()
@@ -2865,17 +2891,12 @@ class ChinaStockEngine:
                 abs_offset = abs(offset)
                 # 统一格式：始终显示为毫秒，符合设计文档要求
                 abs_offset_ms = abs_offset * 1000
-                stage_logger.info(
-                    f"│ ✅ 网络时间同步成功，偏差 {abs_offset_ms:.1f}毫秒",
-                    extra={"log_type": "STAGE_NODE"},
-                )
+                stage_logger.info(f"│ ✅ 网络时间同步成功，偏差 {abs_offset_ms:.1f}毫秒")
             else:
                 logger.debug(
                     f"[步骤2] 网络时间同步失败，将使用系统时间", extra={"log_type": "SYSTEM"}
                 )
-                stage_logger.info(
-                    "│ ⚠️ 网络时间同步失败，将使用系统时间", extra={"log_type": "STAGE_NODE"}
-                )
+                stage_logger.info("│ ⚠️ 网络时间同步失败，将使用系统时间")
 
             # 获取网络时间日期
             date_get_start_time = time.time()
@@ -2891,10 +2912,8 @@ class ChinaStockEngine:
                 f"[步骤2] 日期获取完成: 日期={current_date_str}, 耗时={date_get_elapsed:.1f}ms",
                 extra={"log_type": "SYSTEM"},
             )
-            stage_logger.info(
-                f"│ ✅ 当前日期（网络时间）: {current_date_str}", extra={"log_type": "STAGE_NODE"}
-            )
-            stage_logger.info("└─────────────────────────────┘", extra={"log_type": "STAGE_NODE"})
+            stage_logger.info(f"│ ✅ 当前日期（网络时间）: {current_date_str}")
+            stage_logger.info("└─────────────────────────────┘")
 
             step_elapsed = (time.time() - step_start_time) * 1000
             logger.debug(
@@ -3415,8 +3434,7 @@ class ChinaStockEngine:
                                     extra={"log_type": "SYSTEM"},
                                 )
                                 stage_logger.info(
-                                    f"│ ⚠️ 关键分类为空: {', '.join(missing_categories)}（TDX配置文件存在但解析失败或数据为空）",
-                                    extra={"log_type": "STAGE_NODE"},
+                                    f"│ ⚠️ 关键分类为空: {', '.join(missing_categories)}（TDX配置文件存在但解析失败或数据为空）"
                                 )
 
                     reload_total_elapsed = (time.time() - reload_start_time) * 1000
@@ -3426,12 +3444,8 @@ class ChinaStockEngine:
                         f"步骤总耗时={step_elapsed:.1f}ms, 总品种数={total_count}",
                         extra={"log_type": "SYSTEM"},
                     )
-                    stage_logger.info(
-                        f"│   - 总计: {total_count}品种", extra={"log_type": "STAGE_NODE"}
-                    )
-                    stage_logger.info(
-                        "└─────────────────────────────┘", extra={"log_type": "STAGE_NODE"}
-                    )
+                    stage_logger.info(f"│   - 总计: {total_count}品种")
+                    stage_logger.info("└─────────────────────────────┘")
                     return {
                         "success": True,
                         "cache_valid": True,
@@ -3446,10 +3460,8 @@ class ChinaStockEngine:
                         f"步骤总耗时={step_elapsed:.1f}ms",
                         extra={"log_type": "SYSTEM"},
                     )
-                    stage_logger.info("│ ❌ 重新加载失败", extra={"log_type": "STAGE_NODE"})
-                    stage_logger.info(
-                        "└─────────────────────────────┘", extra={"log_type": "STAGE_NODE"}
-                    )
+                    stage_logger.info("│ ❌ 重新加载失败")
+                    stage_logger.info("└─────────────────────────────┘")
                     return {
                         "success": False,
                         "cache_valid": False,

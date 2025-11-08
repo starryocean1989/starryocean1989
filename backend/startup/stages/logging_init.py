@@ -15,16 +15,25 @@ import time
 from logging.handlers import MemoryHandler
 from typing import Optional
 
-from backend.startup.stages.base import StartupStage, StageResult
-from backend.startup.context import StartupContext
+import multiprocessing
+
 from backend.infrastructure.system_vnpy.logging_system import (
     PersistentBufferHandler,
+    bind_logger_defaults,
     setup_memory_logging,
     initialize_logging_hub_complete,
     MultiProcessLogCollector,
     get_logging_hub,
 )
-import multiprocessing
+from backend.startup.stages.base import StartupStage, StageResult
+from backend.startup.context import StartupContext
+
+
+logger = bind_logger_defaults(
+    logging.getLogger("backend.startup.stages.logging_init"),
+    log_type="SYSTEM",
+    scenario="application_startup",
+)
 
 
 class LoggingInitStage(StartupStage):
@@ -60,7 +69,6 @@ class LoggingInitStage(StartupStage):
         注意：核心逻辑在 logging_system.py 中，此方法只负责调用
         """
         start_time = time.time()
-        logger = logging.getLogger("backend.startup.stages.logging_init")
 
         try:
             # DEBUG日志（记录初始化开始）

@@ -38,6 +38,8 @@ v3.6 更新：
 import logging
 import asyncio
 import time
+import os
+import struct
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple, Generic, TypeVar, Callable, Set
 from collections import OrderedDict
@@ -46,6 +48,18 @@ from threading import Lock
 from datetime import date
 from io import BytesIO
 from multiprocessing import managers, Manager
+try:  # Python 3.8+
+    from multiprocessing import shared_memory as _shared_memory  # type: ignore
+    HAS_SHARED_MEMORY = True
+except Exception:
+    _shared_memory = None  # type: ignore
+    HAS_SHARED_MEMORY = False
+try:
+    import orjson as _orjson  # type: ignore
+    HAS_ORJSON = True
+except Exception:  # pragma: no cover - 稀有环境回退
+    import json as _orjson  # type: ignore
+    HAS_ORJSON = False
 
 # Pandas和PyArrow
 import pandas as pd
@@ -1113,31 +1127,56 @@ class SharedMemoryManager:
         self._shared_dict: Optional[Dict] = None
         self._is_started = False
 
-        logger.info("✓ SharedMemoryManager 已创建")
+        # 原生共享内存模式（优先使用）
+        self._native_mode: bool = HAS_SHARED_MEMORY
+        self._shm: Optional[object] = None  # _shared_memory.SharedMemory
+        self._shm_name: str = "terminal_v050_validation_ctx"
+        self._shm_size: int = 0
+
+        logger.info("✓ SharedMemoryManager 已创建 (native_shm=%s)", self._native_mode)
 
     def start(self) -> None:
         """启动管理器"""
         if self._is_started:
             return
 
-        self.manager = Manager()
-        self._shared_dict = self.manager.dict()
-        self._is_started = True
+        if self._native_mode:
+            # 原生共享内存模式：延迟在 prepare_shared_data 期间创建具体段
+            self._is_started = True
+        else:
+            self.manager = Manager()
+            self._shared_dict = self.manager.dict()
+            self._is_started = True
 
-        logger.info("✓ SharedMemoryManager 已启动")
+        logger.info("✓ SharedMemoryManager 已启动 (native_shm=%s)", self._native_mode)
 
     def stop(self) -> None:
         """停止管理器"""
         if not self._is_started:
             return
 
-        if self.manager:
-            self.manager.shutdown()
-            self.manager = None
+        if self._native_mode:
+            try:
+                if self._shm is not None:
+                    # 关闭并尝试删除共享段
+                    try:
+                        self._shm.close()  # type: ignore[attr-defined]
+                    finally:
+                        try:
+                            self._shm.unlink()  # type: ignore[attr-defined]
+                        except Exception:
+                            # Windows 上同名段不同进程重复 unlink 会报错，忽略
+                            pass
+            finally:
+                self._shm = None
+                self._shm_size = 0
+        else:
+            if self.manager:
+                self.manager.shutdown()
+                self.manager = None
+            self._shared_dict = None
 
-        self._shared_dict = None
         self._is_started = False
-
         logger.info("✓ SharedMemoryManager 已停止")
 
     def prepare_shared_data(
@@ -1159,14 +1198,27 @@ class SharedMemoryManager:
         if not self._is_started:
             raise RuntimeError("SharedMemoryManager未启动，请先调用start()")
 
-        # 存储到共享字典
-        self._shared_dict["ipo_dates"] = ipo_dates
-        self._shared_dict["trading_days"] = trading_days
-        self._shared_dict["latest_trading_day"] = latest_trading_day
-        self._shared_dict["base_date"] = base_date
+        if self._native_mode:
+            # 序列化为紧凑结构（避免pickle，降低写入延迟）
+            payload = self._serialize_validation_ctx(ipo_dates, trading_days, latest_trading_day, base_date)
+
+            # 头部8字节存放长度（Q，unsigned long long）+ 有效负载
+            total_size = 8 + len(payload)
+            self._ensure_native_segment(total_size)
+
+            # 写入共享内存
+            buf = self._shm.buf  # type: ignore[attr-defined]
+            struct.pack_into("<Q", buf, 0, len(payload))
+            buf[8 : 8 + len(payload)] = payload
+        else:
+            # 存储到共享字典（降级路径）
+            self._shared_dict["ipo_dates"] = ipo_dates
+            self._shared_dict["trading_days"] = trading_days
+            self._shared_dict["latest_trading_day"] = latest_trading_day
+            self._shared_dict["base_date"] = base_date
 
         logger.debug(
-            f"✓ 共享数据已准备: {len(ipo_dates)}个IPO日期, " f"{len(trading_days)}个交易日"
+            f"✓ 共享数据已准备: {len(ipo_dates)}个IPO日期, {len(trading_days)}个交易日"
         )
 
     def get_validation_context(self) -> ValidationContext:
@@ -1176,15 +1228,24 @@ class SharedMemoryManager:
         Returns:
             ValidationContext实例
         """
-        if not self._is_started or not self._shared_dict:
+        if not self._is_started:
             raise RuntimeError("SharedMemoryManager未启动或数据未准备")
 
-        return ValidationContext(
-            ipo_dates=self._shared_dict.get("ipo_dates", {}),
-            trading_days=self._shared_dict.get("trading_days", set()),
-            latest_trading_day=self._shared_dict.get("latest_trading_day"),
-            base_date=self._shared_dict.get("base_date"),
-        )
+        if self._native_mode:
+            # 连接已存在的共享段（允许子进程独立构造管理器实例）
+            ctx = self._read_native_ctx()
+            if ctx is None:
+                raise RuntimeError("原生共享内存未找到或数据未准备")
+            return ctx
+        else:
+            if not self._shared_dict:
+                raise RuntimeError("共享字典未初始化")
+            return ValidationContext(
+                ipo_dates=self._shared_dict.get("ipo_dates", {}),
+                trading_days=self._shared_dict.get("trading_days", set()),
+                latest_trading_day=self._shared_dict.get("latest_trading_day"),
+                base_date=self._shared_dict.get("base_date"),
+            )
 
     def get_shared_data_info(self) -> Dict[str, Any]:
         """
@@ -1193,16 +1254,146 @@ class SharedMemoryManager:
         Returns:
             信息字典
         """
-        if not self._is_started or not self._shared_dict:
+        if not self._is_started:
             return {"started": False}
 
-        return {
-            "started": True,
-            "ipo_dates_count": len(self._shared_dict.get("ipo_dates", {})),
-            "trading_days_count": len(self._shared_dict.get("trading_days", set())),
-            "latest_trading_day": self._shared_dict.get("latest_trading_day"),
-            "base_date": self._shared_dict.get("base_date"),
+        if self._native_mode:
+            ctx = self._read_native_ctx()
+            if ctx is None:
+                return {"started": False}
+            return {
+                "started": True,
+                "ipo_dates_count": len(ctx.ipo_dates),
+                "trading_days_count": len(ctx.trading_days),
+                "latest_trading_day": ctx.latest_trading_day,
+                "base_date": ctx.base_date,
+            }
+        else:
+            if not self._shared_dict:
+                return {"started": False}
+            return {
+                "started": True,
+                "ipo_dates_count": len(self._shared_dict.get("ipo_dates", {})),
+                "trading_days_count": len(self._shared_dict.get("trading_days", set())),
+                "latest_trading_day": self._shared_dict.get("latest_trading_day"),
+                "base_date": self._shared_dict.get("base_date"),
+            }
+
+    # ======= 原生共享内存实现辅助方法 =======
+    def _ensure_native_segment(self, size: int) -> None:
+        """确保共享内存段存在且容量足够。"""
+        if not self._native_mode:
+            return
+        if self._shm is not None and self._shm_size >= size:
+            return
+        # 若已有段但容量不足，关闭并删除
+        if self._shm is not None:
+            try:
+                self._shm.close()  # type: ignore[attr-defined]
+            finally:
+                try:
+                    self._shm.unlink()  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+            self._shm = None
+            self._shm_size = 0
+
+        # 尝试创建新的共享段
+        assert _shared_memory is not None
+        try:
+            self._shm = _shared_memory.SharedMemory(name=self._shm_name, create=True, size=size)  # type: ignore[attr-defined]
+            self._shm_size = size
+        except FileExistsError:
+            # 同名已存在则连接并校验容量，不足则重新创建唯一名（加后缀）
+            try:
+                self._shm = _shared_memory.SharedMemory(name=self._shm_name, create=False)  # type: ignore[attr-defined]
+                self._shm_size = int(getattr(self._shm, "size", size))  # type: ignore[attr-defined]
+            except Exception:
+                # 后缀名重试
+                suffix = f"_{os.getpid()}"
+                alt_name = self._shm_name + suffix
+                self._shm = _shared_memory.SharedMemory(name=alt_name, create=True, size=size)  # type: ignore[attr-defined]
+                self._shm_name = alt_name
+                self._shm_size = size
+
+    @staticmethod
+    def _to_iso(d: date) -> str:
+        return d.isoformat()
+
+    @staticmethod
+    def _from_iso(s: str) -> date:
+        # date.fromisoformat 是最快的安全解析
+        return date.fromisoformat(s)
+
+    def _serialize_validation_ctx(
+        self,
+        ipo_dates: Dict[str, date],
+        trading_days: Set[date],
+        latest_trading_day: date,
+        base_date: date,
+    ) -> bytes:
+        """将验证上下文序列化为紧凑字节。"""
+        # 转换为可序列化结构
+        payload = {
+            "ipo_dates": {k: self._to_iso(v) for k, v in ipo_dates.items()},
+            "trading_days": [self._to_iso(d) for d in sorted(trading_days)],
+            "latest_trading_day": self._to_iso(latest_trading_day),
+            "base_date": self._to_iso(base_date),
         }
+        try:
+            if HAS_ORJSON and hasattr(_orjson, "dumps"):
+                return _orjson.dumps(payload)  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        # 回退到标准库json
+        return _orjson.dumps(payload).encode("utf-8")  # type: ignore[attr-defined]
+
+    def _read_native_ctx(self) -> Optional[ValidationContext]:
+        """读取原生共享内存中的验证上下文。"""
+        if not self._native_mode:
+            return None
+
+        assert _shared_memory is not None
+        shm_obj = None
+        try:
+            # 优先使用当前记录的共享段名
+            if self._shm is not None:
+                shm_obj = self._shm
+            else:
+                shm_obj = _shared_memory.SharedMemory(name=self._shm_name, create=False)  # type: ignore[attr-defined]
+        except Exception:
+            return None
+
+        try:
+            buf = shm_obj.buf  # type: ignore[attr-defined]
+            if len(buf) < 8:
+                return None
+            length = struct.unpack_from("<Q", buf, 0)[0]
+            if length <= 0 or 8 + length > len(buf):
+                return None
+            raw = bytes(buf[8 : 8 + length])
+            try:
+                if HAS_ORJSON and hasattr(_orjson, "loads"):
+                    data = _orjson.loads(raw)  # type: ignore[attr-defined]
+                else:
+                    data = _orjson.loads(raw.decode("utf-8"))  # type: ignore[attr-defined]
+            except Exception:
+                return None
+
+            ipo_dates = {k: self._from_iso(v) for k, v in data.get("ipo_dates", {}).items()}
+            trading_days = {self._from_iso(s) for s in data.get("trading_days", [])}
+            latest_trading_day = self._from_iso(data.get("latest_trading_day"))
+            base_date = self._from_iso(data.get("base_date"))
+
+            return ValidationContext(
+                ipo_dates=ipo_dates,
+                trading_days=trading_days, 
+                latest_trading_day=latest_trading_day,
+                base_date=base_date,
+            )
+        except Exception:
+            return None
+
 
 
 # ==============================================================================

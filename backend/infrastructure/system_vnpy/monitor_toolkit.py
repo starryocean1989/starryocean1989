@@ -23,6 +23,7 @@ Version: v1.0 (Complete Refactor)
 """
 
 import ctypes
+import importlib
 import logging
 import socket
 import sys
@@ -43,6 +44,26 @@ except ImportError:
 
 # 日志配置
 logger = logging.getLogger("monitor_toolkit")
+
+# 原生 SMART 监控
+_native_smart_monitor = None
+try:  # pragma: no cover - 导入失败时降级
+    _native_smart_monitor = importlib.import_module(
+        "backend.infrastructure.native.native_smart_monitor"
+    )
+except ImportError:
+    _native_smart_monitor = None
+
+if _native_smart_monitor:
+    NATIVE_SMART_AVAILABLE = bool(
+        getattr(_native_smart_monitor, "SMART_MONITOR_AVAILABLE", False)
+    )
+    native_get_drive_temperature_data = getattr(
+        _native_smart_monitor, "get_drive_temperature_data", None
+    )
+else:
+    NATIVE_SMART_AVAILABLE = False
+    native_get_drive_temperature_data = None
 
 # ==============================================================================
 # Part 1: 管理员权限工具
@@ -711,7 +732,148 @@ class SmartMonitor:
     """
 
     def __init__(self):
+        self._native_available = bool(
+            NATIVE_SMART_AVAILABLE and native_get_drive_temperature_data is not None
+        )
+        self._native_failed = False
         self.wmi_monitor = get_wmi_smart_monitor()
+
+    @staticmethod
+    def _format_capacity(size_bytes: int) -> str:
+        if size_bytes <= 0:
+            return "Unknown"
+        size_gb = size_bytes / (1024**3)
+        if size_gb >= 1024:
+            return f"{size_gb / 1024:.2f} TB"
+        return f"{size_gb:.1f} GB"
+
+    @staticmethod
+    def _lookup_attr_name(attr_id: int) -> str:
+        return WMISmartMonitor._get_smart_attr_name(attr_id)
+
+    def _collect_native_data(self) -> Dict[str, DiskSmartData]:
+        if not self._native_available or native_get_drive_temperature_data is None:
+            return {}
+
+        try:
+            raw_records = native_get_drive_temperature_data()
+        except Exception as exc:  # pragma: no cover - 原生接口异常时降级
+            logger.warning(
+                "native_smart_monitor 获取SMART数据失败: %s",
+                exc,
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
+            )
+            self._native_failed = True
+            self._native_available = False
+            return {}
+
+        result: Dict[str, DiskSmartData] = {}
+        for record in raw_records:
+            try:
+                disk_name = str(
+                    record.get(
+                        "device_path",
+                        f"PhysicalDrive{record.get('drive_index', '0')}",
+                    )
+                )
+                model = record.get("model") or "Unknown"
+                serial = record.get("serial_number") or "Unknown"
+                interface = record.get("bus_type") or "unknown"
+                size_bytes = int(record.get("size_bytes", 0)
+                                 if record.get("size_bytes") is not None
+                                 else 0)
+                capacity = self._format_capacity(size_bytes)
+                temperature = record.get("temperature_celsius")
+                temperature_value = None
+                if isinstance(temperature, (int, float)):
+                    temperature_value = int(temperature)
+                reallocated = int(record.get("reallocated_sectors", 0)
+                                  if record.get("reallocated_sectors") is not None
+                                  else 0)
+                pending = int(record.get("pending_sectors", 0)
+                              if record.get("pending_sectors") is not None
+                              else 0)
+                uncorrectable = int(record.get("uncorrectable_errors", 0)
+                                    if record.get("uncorrectable_errors") is not None
+                                    else 0)
+                power_on_hours = int(record.get("power_on_hours", 0)
+                                     if record.get("power_on_hours") is not None
+                                     else 0)
+
+                attributes_raw = record.get("attributes") or []
+                attributes: List[SmartAttribute] = []
+                for attr in attributes_raw:
+                    try:
+                        attr_id = int(attr.get("id", 0))
+                        attr_name = self._lookup_attr_name(attr_id)
+                        attr_value = int(attr.get("value", 0))
+                        worst_value = int(attr.get("worst", 0))
+                        raw_value = int(attr.get("raw", 0))
+                        status = "OK"
+                        if attr_value <= 5:
+                            status = "CRITICAL"
+                        elif attr_value <= 20:
+                            status = "WARNING"
+
+                        attributes.append(
+                            SmartAttribute(
+                                id=attr_id,
+                                name=attr_name,
+                                value=attr_value,
+                                worst=worst_value,
+                                threshold=0,
+                                raw_value=raw_value,
+                                status=status,
+                            )
+                        )
+                    except Exception as attr_exc:
+                        logger.debug(
+                            "native SMART 属性解析失败: %s",
+                            attr_exc,
+                            exc_info=True,
+                        )
+
+                assessment = WMISmartMonitor._assess_health(
+                    predict_failure=False,
+                    attributes=attributes,
+                    reallocated=reallocated,
+                    pending=pending,
+                    uncorrectable=uncorrectable,
+                )
+
+                status = (record.get("status") or "unknown").lower()
+                if status == "critical":
+                    assessment = "严重警告(原生SMART)"
+                elif status == "warning" and "严重" not in assessment:
+                    assessment = "警告(原生SMART)"
+                elif status == "unavailable" and not attributes:
+                    assessment = "未知(原生SMART不可用)"
+
+                disk_data = DiskSmartData(
+                    disk_name=disk_name,
+                    model=model,
+                    serial=serial,
+                    capacity=capacity,
+                    interface=str(interface),
+                    assessment=assessment,
+                    temperature=temperature_value,
+                    power_on_hours=power_on_hours,
+                    reallocated_sectors=reallocated,
+                    pending_sectors=pending,
+                    uncorrectable_errors=uncorrectable,
+                    attributes=attributes,
+                    timestamp=datetime.now(),
+                )
+                result[disk_name] = disk_data
+            except Exception as record_exc:
+                logger.debug(
+                    "native SMART 数据转换失败: %s",
+                    record_exc,
+                    exc_info=True,
+                )
+
+        return result
 
     def get_smart_data_with_alerts(self) -> Dict[str, Any]:
         """获取SMART数据并生成告警
@@ -719,7 +881,13 @@ class SmartMonitor:
         Returns:
             包含SMART数据和告警的字典
         """
-        smart_data = self.wmi_monitor.get_smart_data()
+        smart_data: Dict[str, DiskSmartData] = {}
+
+        if self._native_available and not self._native_failed:
+            smart_data = self._collect_native_data()
+
+        if not smart_data:
+            smart_data = self.wmi_monitor.get_smart_data()
 
         alerts = []
         for disk_name, data in smart_data.items():
@@ -794,7 +962,7 @@ EVENT_ALERT_UPDATED = "eAlertUpdated"  # 告警更新事件
 # ==============================================================================
 
 
-class MonitoredEventEngine(EventEngine):
+class MonitoredEventEngine(EventEngine):  # type: ignore[misc]
     """带监控的事件引擎
 
     扩展功能:
@@ -1146,10 +1314,10 @@ class ServiceHealthChecker:
 
         # 1. 检查EventEngine
         try:
-            from vnpy.event import EventEngine
-            from backend.infrastructure.system_vnpy import event_engine
+            from backend.core.base import get_event_engine
 
-            if event_engine and hasattr(event_engine, "_active"):
+            event_engine_instance = get_event_engine()
+            if event_engine_instance and hasattr(event_engine_instance, "_active"):
                 dependencies["event_engine"] = {
                     "name": "VnPy EventEngine",
                     "status": "healthy",

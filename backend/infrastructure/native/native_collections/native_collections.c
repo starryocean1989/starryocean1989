@@ -6,10 +6,12 @@
 #include <Python.h>
 #include "lru_cache.h"
 #include "priority_queue.h"
+#include "match_cache.h"
 
 /* 前向声明 */
 extern PyTypeObject* get_LRUCacheType(void);
 extern PyTypeObject* get_PriorityQueueType(void);
+extern PyTypeObject* get_MatchCacheType(void);
 
 static struct PyModuleDef native_collectionsmodule = {
     PyModuleDef_HEAD_INIT,
@@ -41,6 +43,17 @@ PyMODINIT_FUNC PyInit_native_collections(void) {
     Py_INCREF(get_PriorityQueueType());
     if (PyModule_AddObject(m, "HighPerfPriorityQueue", (PyObject *)get_PriorityQueueType()) < 0) {
         Py_DECREF(get_PriorityQueueType());
+        Py_DECREF(m);
+        return NULL;
+    }
+
+    /* 添加HighPerfMatchCache类型 */
+    if (PyType_Ready(get_MatchCacheType()) < 0) {
+        return NULL;
+    }
+    Py_INCREF(get_MatchCacheType());
+    if (PyModule_AddObject(m, "HighPerfMatchCache", (PyObject *)get_MatchCacheType()) < 0) {
+        Py_DECREF(get_MatchCacheType());
         Py_DECREF(m);
         return NULL;
     }

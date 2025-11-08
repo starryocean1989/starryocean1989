@@ -89,6 +89,11 @@ PyObject* fast_dir_walk(PyObject *self, PyObject *args) {
         } while (FindNextFileA(find_handle, &find_data));
 
         FindClose(find_handle);
+    } else {
+        char warning_message[256];
+        snprintf(warning_message, sizeof(warning_message),
+                 "Failed to find first file in: %s, error code: %ld", root_path, GetLastError());
+        PyErr_WarnEx(PyExc_RuntimeWarning, warning_message, 1);
     }
 
     /* 构建结果元组 */
@@ -165,8 +170,13 @@ PyObject* fast_dir_list(PyObject *self, PyObject *args) {
         } while (FindNextFileA(find_handle, &find_data));
 
         FindClose(find_handle);
+    } else {
+        char warning_message[256];
+        snprintf(warning_message, sizeof(warning_message),
+                 "Failed to find first file in: %s, error code: %ld", dir_path, GetLastError());
+        PyErr_WarnEx(PyExc_RuntimeWarning, warning_message, 1);
     }
 
     return result;
 }
-
+

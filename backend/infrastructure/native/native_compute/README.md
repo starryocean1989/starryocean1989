@@ -18,6 +18,8 @@ cd backend/infrastructure/native/native_compute
 python setup.py build_ext --inplace
 ```
 
+> 可在 `backend/infrastructure/native` 目录运行 `compile_all.bat`，一次性构建全部扩展（含本模块）；脚本遇到错误会暂停并打印日志。
+
 ## API
 
 ### 批量数值运算

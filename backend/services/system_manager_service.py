@@ -14,6 +14,7 @@
 """
 
 import asyncio
+import pathlib
 import gc
 import json
 import logging
@@ -30,31 +31,46 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Callable, Union, TYPE_CHECKING
+from typing import Any, Dict, Iterable, List, Optional, Callable, Union, TYPE_CHECKING, cast
 
 from backend.core.service_base import BaseService
 from backend.core.models import UnifiedMarketData, get_data_model_manager
 from backend.infrastructure.system_vnpy.monitor_system import SystemMonitor
 from backend.infrastructure.system_vnpy import NetworkTester, PortScanner
+from backend.infrastructure.system_vnpy.logging_system import bind_logger_defaults
 from backend.infrastructure.system_vnpy.native_log_pipeline import (
-    flush_and_close as flush_native_log_pipeline,
-    try_install as try_install_native_log_pipeline,
+    PipelineHandle,
+    dispose_pipeline,
+    flush_pipeline,
+    install_pipeline,
 )
 from backend.services.database_adapter import get_db_manager
 
 if TYPE_CHECKING:
-    from backend.infrastructure.system_vnpy.native_log_pipeline import NativePipelineAdapter
+    from backend.infrastructure.system_vnpy.native_log_pipeline import PipelineHandle as _PipelineHandle
 from backend.core.config import get_settings
 
 # 专用logger
-logger = logging.getLogger("backend.system_manager")
+logger = bind_logger_defaults(
+    logging.getLogger("backend.system_manager"),
+    log_type="SYSTEM",
+    scenario="system_manager",
+)
 
 # 直接使用native序列化优化
 from backend.infrastructure.native.native_serialization import zero_copy_serialize
 
 # 专用logger - 日志埋点v4.0
-logger_monitor = logging.getLogger("backend.system.monitor")
-logger_alert = logging.getLogger("backend.system.alert")
+logger_monitor = bind_logger_defaults(
+    logging.getLogger("backend.system.monitor"),
+    log_type="SYSTEM",
+    scenario="system_monitor",
+)
+logger_alert = bind_logger_defaults(
+    logging.getLogger("backend.system.alert"),
+    log_type="ALERT",
+    scenario="system_alert",
+)
 
 # 事件常量
 EVENT_LOG_RECORD = "eLogRecord"
@@ -110,7 +126,11 @@ class LogDatabase:
         self.db_path = db_path
         self._lock = threading.Lock()
         self.db_manager = get_db_manager()
-        self.logger = logging.getLogger(__name__)
+        self.logger = bind_logger_defaults(
+            logging.getLogger(f"{__name__}.log_database"),
+            log_type="SYSTEM",
+            scenario="system_manager.log_database",
+        )
 
         # system_logs表由DatabaseManager在_init_tables中创建
         self.logger.info("日志数据库使用统一database：%s", db_path)
@@ -479,13 +499,9 @@ class LogRecordHandler(logging.Handler):
             # 清理标记
             if hasattr(record, "_in_log_handler"):
                 delattr(record, "_in_log_handler")
-
-
 # =============================================================================
 # 日志管理器
 # =============================================================================
-
-
 class LogManager:
     """日志系统管理器（使用统一database）.
 
@@ -522,10 +538,14 @@ class LogManager:
 
         # Handler 引用
         self._python_handler: Optional[logging.Handler] = None
-        self._native_adapter: Optional["NativePipelineAdapter"] = None
+        self._native_pipeline: Optional[PipelineHandle] = None
 
         # 处理器注册标志
         self._handler_registered: bool = False
+
+        # 原生管线定时刷新间隔（秒）
+        self._flush_interval: float = 2.0
+        self.running: bool = True
 
     def initialize(self) -> bool:
         """初始化日志管理系统.
@@ -545,22 +565,26 @@ class LogManager:
 
             root_logger = logging.getLogger()
 
-            native_adapter = try_install_native_log_pipeline(
-                python_handler=log_handler,
-                db_path=self.db_path,
-                event_callback=self.publish_log_record if self.event_engine else None,
-                batch_size=int(os.getenv("NATIVE_LOG_PIPELINE_BATCH", "128")),
-                flush_interval_ms=int(os.getenv("NATIVE_LOG_PIPELINE_FLUSH_MS", "500")),
+            root_logger.addHandler(log_handler)
+
+            self._native_pipeline = install_pipeline(
+                on_batch=self._on_native_batch,
                 logger=self.logger,
             )
-
-            if native_adapter and native_adapter.handler:
-                root_logger.addHandler(native_adapter.handler)
-                self._native_adapter = native_adapter
-                self.logger.info("native_log_pipeline 扩展已启用")
+            if self._native_pipeline is not None:
+                stats = self._native_pipeline.stats()
+                flush_ms = stats.get("flush_ms") if isinstance(stats, dict) else None
+                if isinstance(flush_ms, (int, float)) and flush_ms > 0:
+                    self._flush_interval = max(float(flush_ms) / 1000.0, 0.2)
+                else:
+                    self._flush_interval = max(self._flush_interval, 2.0)
+                self.logger.info(
+                    "native_log_pipeline 已启用 batch=%s flush_ms=%s",
+                    stats.get("batch_size") if isinstance(stats, dict) else "unknown",
+                    stats.get("flush_ms") if isinstance(stats, dict) else "unknown",
+                )
             else:
-                root_logger.addHandler(log_handler)
-                self._native_adapter = None
+                self.logger.info("native_log_pipeline 未启用，维持 Python 日志路径")
 
             root_logger.setLevel(logging.DEBUG)
 
@@ -591,13 +615,15 @@ class LogManager:
         if self._batch_timer:
             self._batch_timer.cancel()
 
-        self._batch_timer = threading.Timer(2.0, self._batch_flush_loop)
+        interval = max(self._flush_interval, 0.2)
+        self._batch_timer = threading.Timer(interval, self._batch_flush_loop)
         self._batch_timer.daemon = True
         self._batch_timer.start()
 
     def _batch_flush_loop(self) -> None:
         """批量刷新循环（每2秒刷新一次）."""
         try:
+            self._flush_native_pipeline(force=True)
             self._flush_batch_buffer()
         except Exception:
             pass
@@ -605,6 +631,77 @@ class LogManager:
             # 重新启动定时器
             if not hasattr(self, "_is_shutting_down") or not self._is_shutting_down:
                 self._start_batch_flush_timer()
+
+    def _flush_native_pipeline(self, *, force: bool) -> None:
+        """触发原生日志管线刷写，批次通过回调进入 Python 缓冲."""
+        if self._native_pipeline is None:
+            return
+
+        try:
+            flushed = flush_pipeline(self._native_pipeline, force=force)
+        except Exception as exc:  # noqa: BLE001
+            self._disable_native_pipeline("flush_failed", exc)
+            return
+
+        if flushed:
+            try:
+                stats = self._native_pipeline.stats()
+                self.logger.debug(
+                    "native_log_pipeline flush 完成，stats=%s",
+                    stats,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _disable_native_pipeline(self, reason: str, exc: Optional[Exception] = None) -> None:
+        """关闭并禁用原生日志管线."""
+        if self._native_pipeline is None:
+            return
+
+        try:
+            stats = self._native_pipeline.stats()
+        except Exception:  # noqa: BLE001
+            stats = {}
+
+        dispose_pipeline(self._native_pipeline)
+        self._native_pipeline = None
+
+        message = f"native_log_pipeline 已降级（{reason}）"
+        if exc:
+            self.logger.warning(message, exc_info=True)
+        else:
+            self.logger.warning(message)
+        if stats:
+            self.logger.debug("native_log_pipeline 上次统计: %s", stats)
+        self._flush_interval = max(self._flush_interval, 2.0)
+
+    def _normalize_native_batch(self, batch: Iterable[dict]) -> list[dict]:
+        """处理 C 批次，展开重复并移除内部字段."""
+        normalized: list[dict] = []
+        for item in batch:
+            if not isinstance(item, dict):
+                continue
+            repeat = 1
+            try:
+                repeat = int(item.get("_repeat", 1))
+            except Exception:  # noqa: BLE001
+                repeat = 1
+            repeat = max(repeat, 1)
+
+            base = dict(item)
+            base.pop("_repeat", None)
+            for _ in range(repeat):
+                normalized.append(dict(base))
+        return normalized
+
+    def _on_native_batch(self, batch: Iterable[dict]) -> None:
+        """接收原生日志批次，追加到 Python 缓冲."""
+        normalized = self._normalize_native_batch(batch)
+        if not normalized:
+            return
+
+        with self._batch_lock:
+            self._batch_buffer.extend(normalized)
 
     def shutdown(self) -> None:
         """关闭日志管理系统."""
@@ -617,24 +714,15 @@ class LogManager:
             # 刷新剩余的批量缓冲区
             self._flush_batch_buffer()
 
+            # 再次确保无残留数据
+            self._flush_batch_buffer()
+
             # 取消所有定时器
             if self._batch_timer:
                 self._batch_timer.cancel()
 
             # 移除日志处理器
             root_logger = logging.getLogger()
-            if self._native_adapter and self._native_adapter.handler:
-                try:
-                    root_logger.removeHandler(self._native_adapter.handler)
-                except (ValueError, AttributeError):
-                    pass
-                try:
-                    self._native_adapter.close()
-                except Exception as exc:  # noqa: BLE001
-                    self.logger.debug("native_log_pipeline 关闭异常: %s", exc)
-                finally:
-                    self._native_adapter = None
-
             if self._python_handler:
                 try:
                     root_logger.removeHandler(self._python_handler)
@@ -643,11 +731,20 @@ class LogManager:
                 finally:
                     self._python_handler = None
 
+            self._flush_native_pipeline(force=True)
+            if self._native_pipeline is not None:
+                try:
+                    stats = self._native_pipeline.stats()
+                except Exception:  # noqa: BLE001
+                    stats = {}
+                dispose_pipeline(self._native_pipeline)
+                self._native_pipeline = None
+                if stats:
+                    self.logger.info("native_log_pipeline 已关闭, stats=%s", stats)
+
             for handler in root_logger.handlers[:]:
                 if isinstance(handler, LogRecordHandler):
                     root_logger.removeHandler(handler)
-
-            flush_native_log_pipeline(self.logger)
 
             self.logger.info("日志管理系统已关闭")
 
@@ -662,6 +759,21 @@ class LogManager:
         Args:
             log_data: 日志数据
         """
+        if self._native_pipeline is not None:
+            try:
+                should_flush = self._native_pipeline.push(log_data)
+                if should_flush:
+                    self._flush_native_pipeline(force=False)
+                    self._flush_batch_buffer()
+                return
+            except Exception as exc:  # noqa: BLE001
+                self.logger.debug(
+                    "native_log_pipeline.push 失败，回退 Python 批处理: %s",
+                    exc,
+                    exc_info=True,
+                )
+                self._disable_native_pipeline("push_failed", exc)
+
         with self._batch_lock:
             self._batch_buffer.append(log_data)
 
@@ -673,7 +785,8 @@ class LogManager:
                 if self._batch_timer:
                     self._batch_timer.cancel()
 
-                self._batch_timer = threading.Timer(1.0, self._flush_batch_buffer)
+                interval = max(self._flush_interval, 0.2)
+                self._batch_timer = threading.Timer(interval, self._flush_batch_buffer)
                 self._batch_timer.daemon = True
                 self._batch_timer.start()
 
@@ -704,12 +817,11 @@ class LogManager:
 
     def _flush_batch_buffer(self) -> None:
         """刷新批量缓冲区到数据库."""
-        if not self._batch_buffer:
-            return
-
+        self._flush_native_pipeline(force=False)
         try:
             with self._batch_lock:
-                # 获取当前缓冲区内容
+                if not self._batch_buffer:
+                    return
                 buffer_to_flush = self._batch_buffer.copy()
                 self._batch_buffer.clear()
 
@@ -806,7 +918,6 @@ class LogManager:
 # =============================================================================
 # 全局实例和初始化函数
 # =============================================================================
-
 _log_manager: Optional[LogManager] = None
 _log_manager_lock = threading.Lock()
 
@@ -843,7 +954,11 @@ def initialize_logging_system(event_engine=None, config: Optional[Dict[str, Any]
     """初始化日志系统（使用统一database）."""
     try:
         start_time = time.time()
-        logging.info("[启动] 日志系统初始化开始...", extra={"log_type": "STAGE_NODE"})
+        stage_logger = logging.getLogger("startup.stage")
+        stage_logger.info(
+            "[启动] 日志系统初始化开始...",
+            extra={"log_type": "STAGE_NODE", "scenario": "application_startup"},
+        )
 
         if config is None:
             config = {"db_path": "data/terminal.db", "retention_days": 30}
@@ -860,24 +975,28 @@ def initialize_logging_system(event_engine=None, config: Optional[Dict[str, Any]
 
         if success:
             total_time = time.time() - start_time
-            logging.info(
+            stage_logger.info(
                 f"[启动] ✅ 日志系统初始化成功，总耗时: {total_time:.3f}s",
-                extra={"log_type": "STAGE_NODE"},
+                extra={"log_type": "STAGE_NODE", "scenario": "application_startup"},
             )
-            logging.info("日志系统初始化完成")
+            logger.info("日志系统初始化完成")
         else:
             total_time = time.time() - start_time
-            logging.error(
+            stage_logger.error(
                 f"[启动] ❌ 日志系统初始化失败，总耗时: {total_time:.3f}s",
-                extra={"log_type": "STAGE_NODE"},
+                extra={"log_type": "STAGE_NODE", "scenario": "application_startup"},
             )
-            logging.error("日志系统初始化失败", extra={"log_type": "SYSTEM"})
+            logger.error("日志系统初始化失败")
 
         return success
 
     except Exception as e:
-        logging.error(f"[启动] ❌ 初始化日志系统异常: {e}", extra={"log_type": "STAGE_NODE"})
-        logging.error("初始化日志系统失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
+        stage_logger = logging.getLogger("startup.stage")
+        stage_logger.error(
+            f"[启动] ❌ 初始化日志系统异常: {e}",
+            extra={"log_type": "STAGE_NODE", "scenario": "application_startup"},
+        )
+        logger.error("初始化日志系统失败: %s", e, exc_info=True)
         return False
 
 
@@ -887,7 +1006,7 @@ def shutdown_logging_system() -> None:
     if _log_manager:
         _log_manager.shutdown()
         _log_manager = None
-        logging.info("日志系统已关闭")
+        logger.info("日志系统已关闭")
 
 
 __all__ = [
@@ -1164,13 +1283,9 @@ class Alert:
             "resolved_at": self.resolved_at.isoformat() if self.resolved_at else None,
             "notes": self.notes,
         }
-
-
 # =============================================================================
 # 告警引擎
 # =============================================================================
-
-
 class AlertEngine:
     """告警引擎."""
 
@@ -1571,8 +1686,6 @@ class AlertDatabase:
 # =============================================================================
 # 告警事件发布器
 # =============================================================================
-
-
 class AlertEventPublisher:
     """告警事件发布器."""
 
@@ -1847,7 +1960,11 @@ def initialize_alert_system(event_engine, config: Optional[Dict[str, Any]] = Non
     """初始化扩展告警系统."""
     try:
         start_time = time.time()
-        logging.info("[启动] 告警系统初始化开始...", extra={"log_type": "STAGE_NODE"})
+        stage_logger = logging.getLogger("startup.stage")
+        stage_logger.info(
+            "[启动] 告警系统初始化开始...",
+            extra={"log_type": "STAGE_NODE", "scenario": "application_startup"},
+        )
 
         if config is None:
             config = {"db_path": "data/alerts.db", "suppression_window": 300}
@@ -1868,35 +1985,25 @@ def initialize_alert_system(event_engine, config: Optional[Dict[str, Any]] = Non
                 for rule in get_default_log_alert_rules():
                     alert_engine.add_rule(rule)
 
-                logging.debug(
+                stage_logger.debug(
                     "[DEBUG] ✅ 默认日志告警规则创建完成",
-                    extra={"log_type": "STAGE_NODE"},
+                    extra={"log_type": "STAGE_NODE", "scenario": "application_startup"},
                 )
             except Exception as e:
-                logging.error(
-                    "[DEBUG] ❌ 创建默认告警规则失败: %s",
-                    e,
-                    extra={"log_type": "SYSTEM"},
-                    exc_info=True,
-                )
+                logger_alert.error("[DEBUG] ❌ 创建默认告警规则失败: %s", e, exc_info=True)
 
         threading.Thread(target=_create_default_rules_async, daemon=True).start()
 
         total_time = time.time() - start_time
-        logging.info(
+        stage_logger.info(
             f"[启动] ✅ 告警系统初始化完成，总耗时: {total_time:.3f}s",
-            extra={"log_type": "STAGE_NODE"},
+            extra={"log_type": "STAGE_NODE", "scenario": "application_startup"},
         )
 
         return True
 
     except Exception as e:
-        logging.error(
-            "[启动] ❌ 告警系统初始化失败，错误: %s",
-            e,
-            extra={"log_type": "SYSTEM"},
-            exc_info=True,
-        )
+        logger_alert.error("[启动] ❌ 告警系统初始化失败，错误: %s", e, exc_info=True)
         return False
 
 
@@ -1905,7 +2012,11 @@ def shutdown_alert_system() -> None:
     global _alert_database
     if _alert_database:
         _alert_database = None
-        logging.info("扩展告警系统已关闭", extra={"log_type": "STAGE_NODE"})
+        stage_logger = logging.getLogger("startup.stage")
+        stage_logger.info(
+            "扩展告警系统已关闭",
+            extra={"log_type": "STAGE_NODE", "scenario": "application_startup"},
+        )
 
 
 __all__ = [
@@ -1936,13 +2047,9 @@ __all__ = [
     "EVENT_ALERT_CREATED",
     "EVENT_ALERT_UPDATED",
 ]
-
-
 # =============================================================================
 # Part 3: 性能监控（从performance_monitor.py合并）
 # =============================================================================
-
-
 class PerformanceMonitor:
     """性能监控器."""
 
@@ -2343,8 +2450,6 @@ class TestRunner:
 # =============================================================================
 # 监控管理器
 # =============================================================================
-
-
 class MonitoringManager:
     """监控管理器."""
 
@@ -2734,13 +2839,9 @@ class AsyncTaskManager:
             del self._tasks[task_id]
 
         return cancelled
-
-
 # =============================================================================
 # 异步数据处理器
 # =============================================================================
-
-
 class AsyncDataProcessor:
     """异步数据处理器."""
 
@@ -2815,8 +2916,6 @@ __all__ = [
 # =============================================================================
 # Part 6: 系统管理服务主类
 # =============================================================================
-
-
 class SystemManagerService(BaseService):
     """系统管理服务.
 
@@ -2849,8 +2948,8 @@ class SystemManagerService(BaseService):
 
         # system_vnpy工具
         self.system_monitor = SystemMonitor()
-        self.network_tester = NetworkTester()
-        self.port_scanner = PortScanner()
+        self.network_tester = cast(Any, NetworkTester())
+        self.port_scanner = cast(Any, PortScanner())
 
         # 数据读取任务控制
         self._tdx_reader_stop_flag = False
@@ -2864,8 +2963,10 @@ class SystemManagerService(BaseService):
         self.logging_hub = get_logging_hub()
 
         # 只配置EventEngine和DatabaseManager（handlers已在启动时配置）
-        if hasattr(self.main_engine, "event_engine") and self.main_engine.event_engine:
-            self.logging_hub.set_event_engine(self.main_engine.event_engine)
+        main_engine = getattr(self, "main_engine", None)
+        event_engine_obj = getattr(main_engine, "event_engine", None)
+        if event_engine_obj:
+            self.logging_hub.set_event_engine(event_engine_obj)
             self.logger.info("✅ LoggingHub已注入EventEngine")
 
         self.logging_hub.set_db_manager(get_db_manager())
@@ -2874,10 +2975,10 @@ class SystemManagerService(BaseService):
         self.logger.info("✅ LoggingHub配置完成（handlers已在启动时配置）")
 
         # 日志管理器（保留查询功能）
-        self.log_manager = get_log_manager()
+        self.log_manager = cast(Any, get_log_manager())
 
         # 告警引擎
-        self.alert_engine = get_alert_engine()
+        self.alert_engine = cast(Any, get_alert_engine())
 
         # 性能监控器
         self.performance_monitor = PerformanceMonitor()
@@ -2895,10 +2996,11 @@ class SystemManagerService(BaseService):
             PerformanceAnalyzer,
         )
 
-        self.log_analyzer = LogAnalyzer()
-        self.performance_analyzer = PerformanceAnalyzer()
+        self.log_analyzer = cast(Any, LogAnalyzer())
+        self.performance_analyzer = cast(Any, PerformanceAnalyzer())
         # AutoFixer 在新架构中未实现，移除引用
         # self.auto_fixer = AutoFixer()
+        self.auto_fixer: Optional[Any] = None
 
         # 新增：服务管理工具
         from backend.infrastructure.system_vnpy import (
@@ -2906,8 +3008,8 @@ class SystemManagerService(BaseService):
             ServiceRestarter,
         )
 
-        self.service_health_checker = ServiceHealthChecker()
-        self.service_restarter = ServiceRestarter()
+        self.service_health_checker = cast(Any, ServiceHealthChecker())
+        self.service_restarter = cast(Any, ServiceRestarter())
 
         # 新增：进程监控工具
         from backend.infrastructure.system_vnpy.monitor_system import (
@@ -2915,8 +3017,8 @@ class SystemManagerService(BaseService):
             ProcessBottleneckAnalyzer,
         )
 
-        self.process_monitor = ProcessMonitor()
-        self.bottleneck_analyzer = ProcessBottleneckAnalyzer()
+        self.process_monitor = cast(Any, ProcessMonitor())
+        self.bottleneck_analyzer = cast(Any, ProcessBottleneckAnalyzer())
 
         # IPC模式和权限检查
         self._ipc_mode = "disabled"  # disabled, native, fallback
@@ -2956,7 +3058,7 @@ class SystemManagerService(BaseService):
             )
 
         self._monitoring_interval = 2  # 默认2秒
-        self._ipc_loop = None  # asyncio事件循环（用于native_ipc）
+        self._ipc_loop: Optional[asyncio.AbstractEventLoop] = None  # asyncio事件循环（用于native_ipc）
         self._ipc_tasks = []  # 后台IPC任务
 
         # 监控数据缓存（避免频繁跨进程查询）
@@ -3124,7 +3226,8 @@ class SystemManagerService(BaseService):
 
     def _schedule_ipc_reconnect(self, delay_seconds: float = 5.0) -> None:
         """在后台线程中调度IPC重新连接尝试."""
-        if not self._ipc_loop:
+        loop = self._ipc_loop
+        if loop is None:
             return
 
         def _reconnect():
@@ -3135,10 +3238,10 @@ class SystemManagerService(BaseService):
 
             try:
                 reconnect_query = asyncio.run_coroutine_threadsafe(
-                    self._initialize_query_client(), self._ipc_loop
+                    self._initialize_query_client(), loop
                 )
                 reconnect_status = asyncio.run_coroutine_threadsafe(
-                    self._initialize_status_client(), self._ipc_loop
+                    self._initialize_status_client(), loop
                 )
                 reconnect_query.result(timeout=20.0)
                 reconnect_status.result(timeout=20.0)
@@ -3185,7 +3288,9 @@ class SystemManagerService(BaseService):
         try:
             from backend.infrastructure.native.native_ipc import AsyncIPCPipe
 
-            self._alerts_pipe = await AsyncIPCPipe.server("monitor_alerts")
+            self._alerts_pipe = await AsyncIPCPipe.server(
+                "monitor_alerts", wait_for_client=False
+            )
             self.logger.info("[IPC] ✅ 告警服务端管道已创建: monitor_alerts")
 
             # 启动告警接收协程
@@ -3341,6 +3446,18 @@ class SystemManagerService(BaseService):
         self.logger.info("[IPC] 告警服务端循环启动...")
 
         try:
+            try:
+                await self._alerts_pipe.wait_for_client(timeout=30.0)
+                self.logger.info("[IPC] 告警服务端已建立客户端连接", extra={"log_type": "SYSTEM"})
+            except Exception as connect_error:
+                self.logger.error(
+                    "[IPC] 告警服务端等待客户端连接失败: %s",
+                    connect_error,
+                    exc_info=True,
+                    extra={"log_type": "SYSTEM"},
+                )
+                return
+
             while True:
                 try:
                     # 读取告警数据（使用更大的缓冲区）
@@ -3519,7 +3636,6 @@ class SystemManagerService(BaseService):
                 "[IPC] IPC管道重连异常: %s", e, exc_info=True, extra={"log_type": "SYSTEM"}
             )
             return False
-
     async def _test_query_pipe(self) -> bool:
         """测试查询管道（异步）."""
         try:
@@ -3600,7 +3716,6 @@ class SystemManagerService(BaseService):
             await self._status_pipe.write(status_json)
         except Exception as e:
             self.logger.debug("异步推送服务状态失败：%s", e)
-
     def trigger_smart_collection(self) -> bool:
         """触发监控进程执行SMART数据采集.
 
@@ -4220,15 +4335,16 @@ class SystemManagerService(BaseService):
 
                 event_engine = get_event_engine()
                 if event_engine:
-                    lb = (
-                        LoadBalancer.get_instance(event_engine)
-                        if hasattr(LoadBalancer, "get_instance")
-                        else LoadBalancer(ConfigManager.get_instance())
-                    )
+                    lb_cls: Any = LoadBalancer
+                    if hasattr(lb_cls, "get_instance"):
+                        lb = lb_cls.get_instance(event_engine)  # type: ignore[call-arg]
+                    else:
+                        lb = lb_cls(ConfigManager.get_instance())
                 else:
                     lb = LoadBalancer(ConfigManager.get_instance())
-                if hasattr(lb, "get_stats"):
-                    lb_stats = lb.get_stats()
+                lb_any = cast(Any, lb)
+                if hasattr(lb_any, "get_stats"):
+                    lb_stats = lb_any.get_stats()
                     # 根据LoadBalancer的运行状态确定状态
                     is_running = lb_stats.get("running", False)
                     available_servers = lb_stats.get("available", 0)
@@ -4260,11 +4376,11 @@ class SystemManagerService(BaseService):
                 "suggested_concurrency": {},
                 "status": "error",
             }
-
     def _do_shutdown(self) -> bool:
         """关闭系统管理服务."""
         try:
             self.logger.info("正在关闭系统管理服务...")
+            self.running = False
 
             # 停止QTimer
             if self._status_push_timer:
@@ -4397,7 +4513,6 @@ class SystemManagerService(BaseService):
                 await pipe.close()
         except Exception:
             pass
-
     def _do_health_check(self) -> Dict[str, Any]:
         """健康检查."""
         return {
@@ -5044,9 +5159,6 @@ class SystemManagerService(BaseService):
         except Exception as e:
             self._log_error("配置告警通知", e)
             return {"success": False, "message": str(e)}
-
-    # ==================== 服务健康检查 ====================
-
     def check_all_services(self) -> Dict[str, Any]:
         """检查所有服务健康状态（增强版）.
 
@@ -5195,7 +5307,6 @@ class SystemManagerService(BaseService):
         except Exception as e:
             self._log_error("获取日志统计", e)
             return {"success": False, "message": str(e), "stats": {}}
-
     def export_logs(
         self,
         file_path: str,
@@ -5331,10 +5442,15 @@ class SystemManagerService(BaseService):
             # 生成修复建议
             fix_suggestions = []
             try:
-                if log_analysis.get("success") and log_analysis.get("top_errors"):
+                if (
+                    log_analysis.get("success")
+                    and log_analysis.get("top_errors")
+                    and self.auto_fixer
+                    and hasattr(self.auto_fixer, "suggest_fixes")
+                ):
                     for error in log_analysis["top_errors"][:5]:  # 只处理前5个
                         error_type = error["type"]
-                        fixes = self.auto_fixer.suggest_fixes(error_type)
+                        fixes = self.auto_fixer.suggest_fixes(error_type)  # type: ignore[call-arg]
                         fix_suggestions.extend(fixes)
             except Exception as e:
                 self.logger.warning("生成修复建议失败: %s", e, extra={"log_type": "SYSTEM"})
@@ -5791,9 +5907,6 @@ class SystemManagerService(BaseService):
         except Exception as e:
             self._log_error("获取告警统计", e)
             return {"success": False, "message": str(e), "stats": {}}
-
-    # ==================== 服务重载 ====================
-
     def reload_ai_service(self) -> Dict[str, Any]:
         """重新加载AI助手服务.
 
@@ -5873,7 +5986,6 @@ class SystemManagerService(BaseService):
             }
 
     # ==================== 业务指标监控 ====================
-
     def get_business_metrics(self) -> Dict[str, Any]:
         """获取业务指标监控数据.
 
@@ -6268,16 +6380,14 @@ class SystemManagerService(BaseService):
                 # 🔧 修复：保存到正确的配置文件路径
                 if settings.config_file:
                     # 使用配置对象中保存的路径
-                    config_file = Path(settings.config_file)
+                    config_file = pathlib.Path(settings.config_file)
                 else:
                     # 从环境变量获取或使用默认值
                     config_file_str = os.getenv("CONFIG_FILE") or "config/terminal_config.json"
-                    config_file = Path(config_file_str)
+                    config_file = pathlib.Path(config_file_str)
                     # 如果是相对路径，转换为绝对路径
                     if not config_file.is_absolute():
-                        from pathlib import Path as P
-
-                        project_root = P(__file__).parent.parent.parent
+                        project_root = pathlib.Path(__file__).parent.parent.parent
                         config_file = project_root / config_file
 
                 self.logger.info("保存配置到文件: %s", str(config_file.absolute()))
@@ -6335,8 +6445,8 @@ class SystemManagerService(BaseService):
             config_file = config_manager.get_config_file()
 
             # 加载现有配置（如果存在）
-            if config_file and config_file.exists():
-                with open(config_file, "r", encoding="utf-8") as f:
+            if config_file is not None and config_file.exists():
+                with config_file.open("r", encoding="utf-8") as f:
                     existing_config = json.load(f)
             else:
                 existing_config = {}
@@ -6345,7 +6455,10 @@ class SystemManagerService(BaseService):
             existing_config.update(config_data)
 
             # 保存配置
-            with open(config_file, "w", encoding="utf-8") as f:
+            if config_file is None:
+                raise ValueError("Config file path is not configured")
+
+            with config_file.open("w", encoding="utf-8") as f:
                 json.dump(existing_config, f, indent=4, ensure_ascii=False)
 
             self.logger.info("配置已保存: %s", list(config_data.keys()))
@@ -6534,7 +6647,6 @@ class SystemManagerService(BaseService):
                 "readers": [],
                 "message": f"获取失败: {str(e)}",
             }
-
     def read_tdx_data(self, config: Dict[str, Any], progress_callback=None) -> Dict[str, Any]:
         """读取通达信数据并标准化保存（多市场、多周期、自适应多线程）.
 
@@ -6598,7 +6710,6 @@ class SystemManagerService(BaseService):
                     f"📍 TDX数据读取开始: 数据类型={config.get('data_types', [])}, 市场={config.get('markets', [])}",
                     extra={"log_type": "STAGE_NODE", "scenario": "tdx_data_read"},
                 )
-
 # DEBUG日志（只写入事件日志文件）
                 self.logger.debug(
                     "[TDX-READ-SERVICE] 开始读取TDX数据",
@@ -6784,7 +6895,8 @@ class SystemManagerService(BaseService):
                     "[TDX-READ-SERVICE] 创建TdxDynamicExecutor实例...",
                     extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
                 )
-                executor = TdxDynamicExecutor(tdx_dir=tdx_path, logger=self.logger)
+                executor_cls: Any = TdxDynamicExecutor
+                executor = cast(Any, executor_cls(tdx_dir=tdx_path, logger=self.logger))
                 self.logger.debug(
                     "[TDX-READ-SERVICE] TdxDynamicExecutor实例创建成功",
                     extra={"log_type": "SYSTEM", "scenario": "tdx_data_read"},
@@ -7331,7 +7443,6 @@ class SystemManagerService(BaseService):
                 "processes": [],
                 "message": str(e),
             }
-
     def get_data_source_connectivity(self) -> Dict[str, Any]:
         """获取数据源连通性状态.
 
@@ -7527,7 +7638,7 @@ class SystemManagerService(BaseService):
                 StorageManager,
             )
 
-            storage_manager = StorageManager()
+            storage_manager = cast(Any, StorageManager())
 
             # 调用扫描方法，传入进度回调
             result = storage_manager.scan_and_repair_corrupted_files(

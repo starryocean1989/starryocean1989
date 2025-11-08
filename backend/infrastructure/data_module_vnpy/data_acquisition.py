@@ -28,6 +28,7 @@ v3.6 更新:
 
 import asyncio
 import csv
+import importlib
 import logging
 import os
 import queue
@@ -40,9 +41,21 @@ from enum import Enum, auto
 from io import BytesIO
 import multiprocessing as mp
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TYPE_CHECKING
 
+import os
 import pandas as pd
+
+try:
+    from .native_scheduler_bridge import NativeSchedulerBridge
+except Exception:  # pragma: no cover - 调度扩展缺失时降级
+    NativeSchedulerBridge = None  # type: ignore
+
+# 类型提示支持
+if TYPE_CHECKING:
+    from multiprocessing.context import BaseContext as MPBaseContext
+else:
+    MPBaseContext = Any
 
 # 导入native_iocp(支持降级)
 from typing import Union, Coroutine, Any
@@ -51,10 +64,48 @@ try:
     from backend.infrastructure.native.native_dataframe_ops import (
         DATAFRAME_OPS_AVAILABLE,
         dataframe_to_records as native_df_to_records,
+        filter_symbols as native_filter_symbols,
     )
 except ImportError:
     DATAFRAME_OPS_AVAILABLE = False
     native_df_to_records = None  # type: ignore
+    native_filter_symbols = None  # type: ignore
+
+    def native_filter_symbols(  # type: ignore[override]
+        records,
+        *,
+        deduplicate: bool = True,
+        drop_empty_code: bool = True,
+        require_name: bool = False,
+    ):
+        seen = set()
+        results = []
+
+        for symbol in records:
+            if not isinstance(symbol, dict):
+                continue
+
+            code = symbol.get("code")
+            if code is None:
+                continue
+
+            code_text = str(code).strip()
+            if drop_empty_code and not code_text:
+                continue
+
+            if require_name:
+                name = symbol.get("name")
+                if name is None or str(name).strip() == "":
+                    continue
+
+            if deduplicate:
+                if code_text in seen:
+                    continue
+                seen.add(code_text)
+
+            results.append(symbol)
+
+        return results
 
 try:
     from backend.infrastructure.native.native_iocp.compat import aopen as compat_aopen  # type: ignore
@@ -91,6 +142,12 @@ try:
 except ImportError:
     COLLECTIONS_AVAILABLE = False
     HighPerfPriorityQueue = None
+
+try:
+    _native_async_module = importlib.import_module("backend.infrastructure.native.native_async")
+    native_reduce_task_results = getattr(_native_async_module, "reduce_task_results")
+except Exception as _async_import_error:  # noqa: BLE001
+    raise RuntimeError("native_async 模块不可用") from _async_import_error
 
 # 导入TDX异步API
 from backend.infrastructure.tdx_asyncio import (
@@ -143,6 +200,22 @@ from .core_engine import (
 
 # 导入存储管理
 from .data_storage import StorageManager
+
+_DISABLE_NATIVE_SCHEDULER = os.getenv("DISABLE_NATIVE_SCHEDULER", "0").strip().lower() in {"1", "true", "yes"}
+
+if NativeSchedulerBridge is not None and not _DISABLE_NATIVE_SCHEDULER:
+    try:
+        _NATIVE_SCHEDULER_BRIDGE = NativeSchedulerBridge(
+            categories={
+                "network_download": {"queue_capacity": 8192, "max_workers": 16},
+                "local_scan": {"queue_capacity": 8192, "max_workers": 8},
+                "local_read": {"queue_capacity": 4096, "max_workers": 8},
+            }
+        )
+    except Exception:  # pragma: no cover
+        _NATIVE_SCHEDULER_BRIDGE = None
+else:
+    _NATIVE_SCHEDULER_BRIDGE = None
 
 # ==================== 日志配置 ====================
 logger = logging.getLogger("backend.data_module.acquisition")
@@ -1006,21 +1079,17 @@ class DuplicateSymbolFilter(BaseFilter):
         Returns:
             过滤后的品种列表
         """
-        seen_codes = set()
-        results = []
+        filtered = native_filter_symbols(
+            symbols,
+            deduplicate=True,
+            drop_empty_code=False,
+            require_name=False,
+        )
 
-        for symbol in symbols:
-            code = symbol.get("code")
-            if code is None:
-                continue
-
-            # 如果未见过,添加到结果
-            if code not in seen_codes:
-                seen_codes.add(code)
-                results.append(symbol)
-
-        logger.debug(f"✅ 重复品种过滤完成,过滤前 {len(symbols)} 个,过滤后 {len(results)} 个")
-        return results
+        logger.debug(
+            f"✅ 重复品种过滤完成,过滤前 {len(symbols)} 个,过滤后 {len(filtered)} 个"
+        )
+        return filtered
 
 
 class InvalidDataFilter(BaseFilter):
@@ -1050,29 +1119,27 @@ class InvalidDataFilter(BaseFilter):
         Returns:
             过滤后的品种列表
         """
-        results = []
+        filtered = native_filter_symbols(
+            symbols,
+            deduplicate=False,
+            drop_empty_code=True,
+            require_name=self.check_name,
+        )
 
-        for symbol in symbols:
-            code = symbol.get("code")
-            name = symbol.get("name")
-
-            # 检查code
-            if not code or code.strip() == "":
-                continue
-
-            # 检查name(如果启用)
-            if self.check_name and (not name or name.strip() == ""):
-                continue
-
-            results.append(symbol)
-
-        logger.debug(f"✅ 无效数据过滤完成,过滤前 {len(symbols)} 个,过滤后 {len(results)} 个")
-        return results
+        logger.debug(
+            f"✅ 无效数据过滤完成,过滤前 {len(symbols)} 个,过滤后 {len(filtered)} 个"
+        )
+        return filtered
 
 
 # ==============================================================================
 # Part 7: SymbolLoader(品种加载器)
 # ==============================================================================
+
+
+def _should_use_native_symbol_index() -> bool:
+    value = os.getenv("NATIVE_SYMBOL_INDEX", "1").strip().lower()
+    return value not in {"0", "false", "off"}
 
 
 class SymbolLoader:
@@ -1115,6 +1182,15 @@ class SymbolLoader:
         self.all_symbols: Optional[pd.DataFrame] = None
         self.classified_symbols: Dict[str, List[Dict[str, Any]]] = {}
 
+        # 原生索引
+        self._symbol_index = None
+        self._symbol_index_factory = None
+        self._python_symbol_index_cls = None
+        self._using_native_symbol_index = False
+        self._symbol_index_impl = "python"
+        self._symbol_index_engine: str = "python"
+        self._init_symbol_index()
+
         logger.info(
             "✅ SymbolLoader 初始化完成",
             extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
@@ -1140,6 +1216,254 @@ class SymbolLoader:
             "✅ 已注册 2 个品种过滤器",
             extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
         )
+
+    def _init_symbol_index(self) -> None:
+        if self._symbol_index is not None:
+            return
+
+        try:
+            from backend.infrastructure.native.native_symbol_index import (  # type: ignore
+                LOCKFREE_INDEX_AVAILABLE,
+                SYMBOL_INDEX_AVAILABLE,
+                LockFreeSymbolIndex,
+                NativeSymbolIndex,
+                PythonSymbolIndex,
+                create_symbol_index,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "native_symbol_index 模块导入失败, 使用轻量Python索引: %s",
+                exc,
+                exc_info=True,
+            )
+
+            class _InlinePythonSymbolIndex:
+                IS_NATIVE = False
+
+                def __init__(self) -> None:
+                    self._code_index: Dict[str, Dict[str, Any]] = {}
+                    self._market_index: Dict[str, List[str]] = {}
+                    self._sorted_codes: List[str] = []
+
+                def build(self, records: List[Dict[str, Any]]) -> None:
+                    self._code_index.clear()
+                    self._market_index.clear()
+                    for record in records:
+                        code = str(record.get("code", "")).zfill(6)
+                        if not code:
+                            continue
+                        market = str(record.get("market", record.get("market_name", "")))
+                        self._code_index[code] = dict(record)
+                        self._market_index.setdefault(market, []).append(code)
+                    self._sorted_codes = sorted(self._code_index.keys())
+
+                def get_symbol(self, code: str) -> Optional[Dict[str, Any]]:
+                    return self._code_index.get(code.zfill(6))
+
+                def get_codes_by_market(self, market: str) -> List[str]:
+                    return sorted(self._market_index.get(market, []))
+
+                def all_codes(self) -> List[str]:
+                    return list(self._sorted_codes)
+
+                def size(self) -> int:
+                    return len(self._code_index)
+
+            self._python_symbol_index_cls = _InlinePythonSymbolIndex
+            self._symbol_index_factory = lambda use_native=False: _InlinePythonSymbolIndex()
+            self._symbol_index = _InlinePythonSymbolIndex()
+            self._using_native_symbol_index = False
+            self._symbol_index_impl = "python-inline"
+            self._symbol_index_engine = "python-inline"
+            return
+
+        self._python_symbol_index_cls = PythonSymbolIndex
+        self._symbol_index_factory = create_symbol_index
+
+        use_native = _should_use_native_symbol_index() and SYMBOL_INDEX_AVAILABLE
+        index = create_symbol_index(use_native=use_native)
+        self._symbol_index = index
+        self._using_native_symbol_index = bool(getattr(index, "IS_NATIVE", False))
+        self._symbol_index_impl = type(index).__name__
+        self._symbol_index_engine = getattr(index, "ENGINE", "python")
+        lockfree_status = (
+            "LOCKFREE_INDEX_AVAILABLE" in locals() and LOCKFREE_INDEX_AVAILABLE and isinstance(index, LockFreeSymbolIndex)
+        )
+        logger.debug(
+            "SymbolLoader: 索引初始化结果 -> impl=%s, engine=%s, native=%s, lockfree_active=%s",
+            self._symbol_index_impl,
+            self._symbol_index_engine,
+            self._using_native_symbol_index,
+            lockfree_status,
+        )
+        if self._using_native_symbol_index:
+            logger.info(
+                "native_symbol_index 已启用，用于快速查询品种信息 (engine=%s)",
+                self._symbol_index_engine,
+            )
+        elif use_native:
+            logger.warning(
+                "native_symbol_index 未成功启用，回退到 Python 索引实现 (engine=%s)",
+                self._symbol_index_engine,
+            )
+        else:
+            logger.debug(
+                "native_symbol_index 已根据环境变量禁用，当前使用引擎=%s",
+                self._symbol_index_engine,
+            )
+
+    def _ensure_symbol_index(self) -> None:
+        if self._symbol_index is None:
+            self._init_symbol_index()
+        if self._symbol_index is not None and self.classified_symbols:
+            if getattr(self._symbol_index, "size", None):
+                try:
+                    if self._symbol_index.size() > 0:
+                        return
+                except Exception:  # noqa: BLE001 - 如果 size 不可用则忽略
+                    pass
+            self._rebuild_symbol_index(self.classified_symbols)
+
+    def has_native_symbol_index(self) -> bool:
+        """判断当前是否启用了原生索引实现."""
+
+        return bool(
+            self._symbol_index is not None
+            and getattr(self._symbol_index, "IS_NATIVE", False)
+            and self._using_native_symbol_index
+        )
+
+    def _rebuild_symbol_index(self, classified: Dict[str, List[Dict[str, Any]]]) -> None:
+        if not classified:
+            return
+        if self._symbol_index is None:
+            self._init_symbol_index()
+        if self._symbol_index is None:
+            return
+
+        records: List[Dict[str, Any]] = []
+        for market_name, symbols in classified.items():
+            for symbol in symbols:
+                if not symbol:
+                    continue
+                record = dict(symbol)
+                record.setdefault("market", market_name)
+                records.append(record)
+
+        try:
+            self._symbol_index.build(records)
+            self._symbol_index_engine = getattr(self._symbol_index, "ENGINE", "python")
+            self._using_native_symbol_index = bool(
+                getattr(self._symbol_index, "IS_NATIVE", False)
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "native_symbol_index 构建失败，自动降级到 Python 实现: %s",
+                exc,
+                exc_info=True,
+            )
+            if self._python_symbol_index_cls is not None:
+                self._symbol_index = self._python_symbol_index_cls()
+                self._using_native_symbol_index = bool(
+                    getattr(self._symbol_index, "IS_NATIVE", False)
+                )
+                self._symbol_index_engine = getattr(self._symbol_index, "ENGINE", "python")
+                self._symbol_index.build(records)
+        else:
+            engine = self._symbol_index_engine
+            logger.info(
+                "SymbolLoader: %s 索引构建完成（记录数=%d）",
+                engine,
+                len(records),
+            )
+
+    def get_all_codes_native(self) -> Optional[List[str]]:
+        """返回全部代码列表。
+
+        - 优先调用当前索引的 `all_codes` 方法（无论是否为原生实现）。
+        - 如索引未初始化或方法缺失/异常，回退到 `classified_symbols` 聚合生成。
+        """
+        self._ensure_symbol_index()
+        if self._symbol_index is None:
+            logger.debug(
+                "symbol_index 尚未初始化，无法获取全部代码 (engine=%s)",
+                self._symbol_index_engine,
+            )
+            return None
+
+        getter = getattr(self._symbol_index, "all_codes", None)
+        if getter is not None:
+            try:
+                codes = getter()
+                if codes:
+                    return sorted(set(str(code).zfill(6) for code in codes))
+            except Exception:
+                logger.debug("symbol_index.all_codes 调用失败，使用回退路径", exc_info=True)
+
+        # 回退：基于分类字典聚合代码
+        if not self.classified_symbols:
+            return []
+        agg: List[str] = []
+        for records in self.classified_symbols.values():
+            for rec in records:
+                code = str(rec.get("code", "")).zfill(6)
+                if code:
+                    agg.append(code)
+        return sorted(set(agg))
+
+    def get_codes_by_market_native(self, market: str) -> Optional[List[str]]:
+        """返回指定市场的代码列表，原生不可用时回退到 Python 实现。"""
+        self._ensure_symbol_index()
+        if self._symbol_index is None:
+            return None
+
+        getter = getattr(self._symbol_index, "get_codes_by_market", None)
+        if getter is not None:
+            try:
+                result = getter(market)
+                if result:
+                    return sorted(str(code).zfill(6) for code in result)
+            except Exception:
+                logger.debug(
+                    "symbol_index.get_codes_by_market 失败 (market=%s, engine=%s)",
+                    market,
+                    self._symbol_index_engine,
+                    exc_info=True,
+                )
+
+        # 回退：从分类字典提取
+        records = self.classified_symbols.get(market, [])
+        if not records:
+            return []
+        return sorted(set(str(rec.get("code", "")).zfill(6) for rec in records))
+
+    def get_symbol_info_native(self, code: str) -> Optional[Dict[str, Any]]:
+        """返回单个品种信息，原生不可用时回退到 Python 实现。"""
+        self._ensure_symbol_index()
+        if self._symbol_index is None:
+            return None
+
+        getter = getattr(self._symbol_index, "get_symbol", None)
+        normalised = code.zfill(6)
+        if getter is not None:
+            try:
+                result = getter(normalised)
+                if result is not None:
+                    return dict(result)
+            except Exception:
+                logger.debug(
+                    "symbol_index.get_symbol 失败 (code=%s, engine=%s)",
+                    normalised,
+                    self._symbol_index_engine,
+                    exc_info=True,
+                )
+
+        # 回退：在分类字典中查找
+        for records in self.classified_symbols.values():
+            for rec in records:
+                if str(rec.get("code", "")).zfill(6) == normalised:
+                    return dict(rec)
+        return None
 
     async def load_from_api_async(
         self, startup_mode: bool = False, shared_retry_pool=None
@@ -2006,6 +2330,7 @@ class SymbolLoader:
                     f"✅ 从缓存加载品种分类,共 {sum(len(v) for v in cached_data.values())} 个品种"
                 )
                 self.classified_symbols = cached_data
+                self._rebuild_symbol_index(self.classified_symbols)
                 return cached_data
             else:
                 # 🔧 修复:缓存不存在或已过时,自动从API请求数据生成
@@ -2221,6 +2546,7 @@ class SymbolLoader:
             )
 
         self.classified_symbols = filtered_classified
+        self._rebuild_symbol_index(self.classified_symbols)
         return filtered_classified
 
     def extract_all_codes(self) -> List[str]:
@@ -2235,14 +2561,27 @@ class SymbolLoader:
             )
             return []
 
+        native_codes = self.get_all_codes_native()
+        if native_codes is not None:
+            return native_codes
+
+        self._ensure_symbol_index()
+        if self._symbol_index is not None:
+            try:
+                codes = self._symbol_index.all_codes()
+                if codes:
+                    return list(codes)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("native_symbol_index all_codes 查询失败: %s", exc, exc_info=True)
+
         all_codes = set()
         for symbols in self.classified_symbols.values():
             for symbol in symbols:
                 code = symbol.get("code")
                 if code:
-                    all_codes.add(code)
+                    all_codes.add(str(code))
 
-        return sorted(list(all_codes))
+        return sorted(all_codes)
 
     def extract_codes_by_market(self, markets: List[str]) -> List[str]:
         """按市场提取品种代码
@@ -2259,15 +2598,27 @@ class SymbolLoader:
             )
             return []
 
+        native_results: List[str] = []
+        native_hit = False
+        for market in markets:
+            native_codes = self.get_codes_by_market_native(market)
+            if native_codes is None:
+                continue
+            native_hit = True
+            native_results.extend(native_codes)
+
+        if native_hit and native_results:
+            return sorted(set(native_results))
+
         codes = set()
         for market in markets:
             symbols = self.classified_symbols.get(market, [])
             for symbol in symbols:
                 code = symbol.get("code")
                 if code:
-                    codes.add(code)
+                    codes.add(str(code))
 
-        return sorted(list(codes))
+        return sorted(codes)
 
     def get_symbol_info(self, code: str) -> Optional[Dict[str, Any]]:
         """获取品种详细信息
@@ -2286,6 +2637,19 @@ class SymbolLoader:
 
         # 标准化代码
         code = code.zfill(6)
+
+        native = self.get_symbol_info_native(code)
+        if native is not None:
+            return native
+
+        self._ensure_symbol_index()
+        if self._symbol_index is not None:
+            try:
+                result = self._symbol_index.get_symbol(code)
+                if result is not None:
+                    return dict(result)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("native_symbol_index get_symbol 查询失败: %s", exc, exc_info=True)
 
         # 遍历所有分类查找
         for symbols in self.classified_symbols.values():
@@ -3399,9 +3763,11 @@ class MultiProcessStockFetcher:
         """
         # 创建进程间通信对象(优先使用mp.Queue以避免Manager开销)
         queue_backend = "mp.Queue"
-        ctx: Optional[mp.context.BaseContext] = None
+        ctx: Optional[MPBaseContext] = None
         try:
             ctx = mp.get_context("spawn")
+            if ctx is None:
+                raise RuntimeError("spawn context is unavailable")
             task_queue = ctx.Queue()
             result_queue = ctx.Queue()
             self._stop_event = ctx.Event()
@@ -4356,9 +4722,11 @@ class TdxDynamicExecutor:
             结果列表
         """
         # 创建进程间通信对象(避免Manager带来的Pickle代理开销)
-        executor_ctx: Optional[mp.context.BaseContext] = None
+        executor_ctx: Optional[MPBaseContext] = None
         try:
             executor_ctx = mp.get_context("spawn")
+            if executor_ctx is None:
+                raise RuntimeError("spawn context is unavailable")
             task_queue = executor_ctx.Queue()
             result_queue = executor_ctx.Queue()
         except Exception as exec_ctx_error:  # pragma: no cover - 兼容回退
@@ -4573,6 +4941,8 @@ def download_ipo_dates(
     cached_dates = ChinaStockEngine._extract_ipo_data_from_cache(cached_data) if cached_data else {}
 
     # 如果缓存有效,使用增量更新策略
+    symbols_to_download: List[str] = []
+
     if is_valid and cached_dates:
         uncached_symbols = [s for s in symbols if s not in cached_dates]
         if not uncached_symbols:
@@ -4749,6 +5119,8 @@ def _download_ipo_dates_single(
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
+    symbols_for_download: List[str] = list(symbols)
+
     try:
         # 使用RetryConnectionPool进行两阶段重试
         from backend.infrastructure.tdx_asyncio.retry_connection_pool import RetryConnectionPool
@@ -4758,7 +5130,7 @@ def _download_ipo_dates_single(
             extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
         )
 
-        async def download_with_retry_pool():
+        async def download_with_retry_pool(symbol_list: List[str]):
             # 使用RetryConnectionPool并发下载
             # 创建重试连接池
             retry_pool = RetryConnectionPool(
@@ -4775,7 +5147,7 @@ def _download_ipo_dates_single(
 
             # 创建所有协程任务(每个品种一个协程)
             tasks = []
-            for symbol in symbols:
+            for symbol in symbol_list:
                 # 为每个品种创建协程任务(使用默认参数避免闭包问题)
                 async def fetch_symbol(sym: str = symbol):
                     # 通过 RetryConnectionPool 获取单个品种的 IPO 日期
@@ -4804,50 +5176,47 @@ def _download_ipo_dates_single(
             )
             task_results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            # 处理结果
-            completed = 0
-            success_count = 0
-            null_count = 0
-            error_count = 0
+            progress_stride = max(1, total // 10) if total > 0 else 0
+            progress_cb = progress_callback
+            callback_wrapper = None
+            if progress_cb is not None:
+                def _progress_wrapper(current: int, total_count: int, symbol_value: Any) -> None:
+                    progress_cb(current, total_count, f"已处理: {symbol_value}")
 
-            for result in task_results:
-                if isinstance(result, Exception):
-                    logger.debug(
-                        f"[IPO-DOWNLOAD] 协程执行异常: {result}",
-                        extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
-                    )
-                    error_count += 1
-                    completed += 1
+                callback_wrapper = _progress_wrapper
+            reduce_payload = native_reduce_task_results(
+                task_results,
+                total=total,
+                progress_stride=progress_stride,
+                progress_callback=callback_wrapper,
+                symbols=symbol_list,
+            )
+
+            summary = reduce_payload.get("summary", {})
+            success_count = int(summary.get("success_count", 0))
+            null_count = int(summary.get("null_count", 0))
+            error_count = int(summary.get("error_count", 0))
+            completed = int(summary.get("total", 0))
+
+            for sym, ipo_date in reduce_payload.get("items", []):
+                results[sym] = ipo_date
+
+            for error_msg in reduce_payload.get("errors", []):
+                logger.debug(
+                    f"[IPO-DOWNLOAD] 协程执行异常: {error_msg}",
+                    extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
+                )
+
+            for milestone in reduce_payload.get("milestones", []):
+                if not isinstance(milestone, (list, tuple)) or len(milestone) != 4:
                     continue
-
-                if isinstance(result, tuple) and len(result) == 2:
-                    sym, ipo_date = result
-                    results[sym] = ipo_date
-                    completed += 1
-
-                    if ipo_date is not None:
-                        success_count += 1
-                    else:
-                        null_count += 1
-
-                    # 进度回调(每10%输出一次日志)
-                    if progress_callback:
-                        try:
-                            progress_callback(completed, total, f"已处理: {sym}")
-                        except Exception as e:
-                            logger.warning(
-                                f"⚠️ [IPO-DOWNLOAD] 进度回调执行失败: {e}",
-                                extra={"log_type": "SYSTEM", "scenario": "refresh_symbol_list"},
-                            )
-
-                    # 每10%输出进度日志
-                    if completed % max(1, total // 10) == 0 or completed == total:
-                        percent = (completed / total * 100) if total > 0 else 0
-                        logger.debug(
-                            f"[IPO-DOWNLOAD] 下载进度: {completed}/{total} ({percent:.1f}%), "
-                            f"成功={success_count}, null={null_count}, 失败={error_count}",
-                            extra={"log_type": "PROGRESS", "scenario": "refresh_symbol_list"},
-                        )
+                milestone_completed, milestone_success, milestone_null, milestone_errors = milestone
+                percent = (milestone_completed / total * 100) if total > 0 else 0
+                logger.debug(
+                    f"[IPO-DOWNLOAD] 下载进度: {milestone_completed}/{total} ({percent:.1f}%), "
+                    f"成功={milestone_success}, null={milestone_null}, 失败={milestone_errors}",
+                    extra={"log_type": "PROGRESS", "scenario": "refresh_symbol_list"},
+                )
 
             logger.info(
                 f"[IPO-DOWNLOAD] 下载完成: 总数={total}, 成功={success_count}, null={null_count}, 失败={error_count}",
@@ -4857,7 +5226,7 @@ def _download_ipo_dates_single(
             return results
 
         # 运行异步函数
-        results = loop.run_until_complete(download_with_retry_pool())
+        results = loop.run_until_complete(download_with_retry_pool(symbols_for_download))
 
     except Exception as e:
         logger.error(
@@ -4909,7 +5278,7 @@ def _download_ipo_dates_async(
 
     try:
 
-        async def download_with_shared_pool():
+        async def download_with_shared_pool(symbol_list: List[str]):
             # 使用共享连接池并发下载
             # 使用共享连接池
             retry_pool = shared_retry_pool
@@ -4930,7 +5299,7 @@ def _download_ipo_dates_async(
                 else:
                     return await _fetch_ipo_date_with_retry_pool(sym, retry_pool, scenario)
 
-            tasks = [fetch_symbol_with_limit(sym) for sym in symbols]
+            tasks = [fetch_symbol_with_limit(sym) for sym in symbol_list]
             task_creation_elapsed = (time.time() - task_creation_start) * 1000
 
             # 🎯 性能埋点:记录连接池状态(执行前)
@@ -4987,52 +5356,56 @@ def _download_ipo_dates_async(
                 extra={"log_type": "SYSTEM", "scenario": scenario},
             )
 
-            # 处理结果
             result_processing_start = time.time()
-            completed = 0
-            success_count = 0
-            null_count = 0
-            error_count = 0
 
-            for i, result in enumerate(task_results):
-                if isinstance(result, Exception):
-                    logger.debug(
-                        f"[IPO-DOWNLOAD-ASYNC] 协程执行异常: 品种={symbols[i]}, 异常={result}",
-                        extra={"log_type": "SYSTEM", "scenario": scenario},
-                    )
-                    results[symbols[i]] = None
-                    error_count += 1
-                    completed += 1
+            progress_stride = max(1, total // 10) if total > 0 else 0
+            progress_cb = progress_callback
+            callback_wrapper = None
+            if progress_cb is not None:
+                def _async_progress_wrapper(current: int, total_count: int, symbol_value: Any) -> None:
+                    progress_cb(current, total_count, f"已处理: {symbol_value}")
+
+                callback_wrapper = _async_progress_wrapper
+            reduce_payload = native_reduce_task_results(
+                task_results,
+                total=total,
+                progress_stride=progress_stride,
+                progress_callback=callback_wrapper,
+                symbols=symbol_list,
+            )
+
+            summary = reduce_payload.get("summary", {})
+            success_count = int(summary.get("success_count", 0))
+            null_count = int(summary.get("null_count", 0))
+            error_count = int(summary.get("error_count", 0))
+            completed = int(summary.get("total", 0))
+
+            item_symbols = set()
+            for sym, ipo_date in reduce_payload.get("items", []):
+                results[sym] = ipo_date
+                item_symbols.add(sym)
+
+            for error_msg in reduce_payload.get("errors", []):
+                logger.debug(
+                    f"[IPO-DOWNLOAD-ASYNC] 协程执行异常: {error_msg}",
+                    extra={"log_type": "SYSTEM", "scenario": scenario},
+                )
+
+            for sym in reduce_payload.get("error_symbols", []):
+                if sym is None or sym in item_symbols:
                     continue
+                results[sym] = None
 
-                if isinstance(result, tuple) and len(result) == 2:
-                    sym, ipo_date = result
-                    results[sym] = ipo_date
-                    completed += 1
-
-                    if ipo_date is not None:
-                        success_count += 1
-                    else:
-                        null_count += 1
-
-                    # 进度回调
-                    if progress_callback:
-                        try:
-                            progress_callback(completed, total, f"已处理: {sym}")
-                        except Exception as e:
-                            logger.warning(
-                                f"⚠️ [IPO-DOWNLOAD-ASYNC] 进度回调执行失败: {e}",
-                                extra={"log_type": "SYSTEM", "scenario": scenario},
-                            )
-
-                    # 每10%输出进度日志
-                    if completed % max(1, total // 10) == 0 or completed == total:
-                        percent = (completed / total * 100) if total > 0 else 0
-                        logger.debug(
-                            f"[IPO-DOWNLOAD-ASYNC] 下载进度: {completed}/{total} ({percent:.1f}%), "
-                            f"成功={success_count}, null={null_count}, 失败={error_count}",
-                            extra={"log_type": "PROGRESS", "scenario": scenario},
-                        )
+            for milestone in reduce_payload.get("milestones", []):
+                if not isinstance(milestone, (list, tuple)) or len(milestone) != 4:
+                    continue
+                milestone_completed, milestone_success, milestone_null, milestone_errors = milestone
+                percent = (milestone_completed / total * 100) if total > 0 else 0
+                logger.debug(
+                    f"[IPO-DOWNLOAD-ASYNC] 下载进度: {milestone_completed}/{total} ({percent:.1f}%), "
+                    f"成功={milestone_success}, null={milestone_null}, 失败={milestone_errors}",
+                    extra={"log_type": "PROGRESS", "scenario": scenario},
+                )
 
             result_processing_elapsed = (time.time() - result_processing_start) * 1000
 
@@ -5067,7 +5440,7 @@ def _download_ipo_dates_async(
             return results
 
         # 运行异步函数
-        results = loop.run_until_complete(download_with_shared_pool())
+        results = loop.run_until_complete(download_with_shared_pool(symbols))
 
     except Exception as e:
         logger.error(
@@ -5116,12 +5489,55 @@ def _download_ipo_dates_multiprocess(
     progress_callback: Optional[Callable] = None,
     max_workers: int = 4,
 ) -> Dict[str, Optional[date]]:
-    # 使用多进程池批量下载IPO日期
     results = {}
 
     # 分批
     batch_size = (len(symbols) + max_workers - 1) // max_workers
     batches = [symbols[i : i + batch_size] for i in range(0, len(symbols), batch_size)]
+
+    if _NATIVE_SCHEDULER_BRIDGE is not None and _NATIVE_SCHEDULER_BRIDGE.available:
+        futures = []
+        queue_capacity = max(len(batches) * 2, 1024)
+        try:
+            _NATIVE_SCHEDULER_BRIDGE.ensure_category(
+                "local_read",
+                queue_capacity=queue_capacity,
+                max_workers=max(1, max_workers),
+            )
+        except Exception:  # pragma: no cover - 安全回退
+            logger.debug(
+                "[IPO-下载] native_scheduler.ensure_category 调整失败，继续使用既有配置",
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
+            )
+        for batch in batches:
+            if not batch:
+                continue
+            future = _NATIVE_SCHEDULER_BRIDGE.submit("local_read", _download_ipo_batch, (batch,), None)
+            futures.append((future, len(batch)))
+
+        completed = 0
+        total = len(symbols)
+        for future, batch_size in futures:
+            try:
+                batch_results = future.result()
+            except Exception as e:  # pragma: no cover - 原生调度失败时降级
+                logger.warning(f"⚠️ [IPO批量下载] 调度任务失败: {e}", extra={"log_type": "SYSTEM"})
+                continue
+            results.update(batch_results)
+            completed += batch_size
+            if progress_callback:
+                try:
+                    progress_callback(completed, total, "")
+                except Exception as e:  # pragma: no cover - 回调异常
+                    logger.warning(
+                        f"⚠️ [IPO批量下载] 进度回调执行失败: {e}", extra={"log_type": "SYSTEM"}
+                    )
+        metrics = _NATIVE_SCHEDULER_BRIDGE.get_metrics()
+        logger.debug(
+            "[IPO-下载] 使用 native 调度: stats=%s", metrics, extra={"log_type": "SYSTEM"}
+        )
+        return results
 
     # 使用进程池
     with ProcessPoolExecutor(max_workers=max_workers) as executor:

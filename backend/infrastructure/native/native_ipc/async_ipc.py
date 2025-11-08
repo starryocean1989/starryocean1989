@@ -10,8 +10,7 @@ import asyncio
 import sys
 import platform
 import logging
-from typing import Optional, Union
-from pathlib import Path
+from typing import Optional, Type
 
 # 创建logger
 logger = logging.getLogger(__name__)
@@ -35,6 +34,48 @@ except ImportError:
         # C扩展未编译
         ipc_async = None  # type: ignore
         IPC_AVAILABLE = False
+
+
+class _IPCPipeFactory:
+    """支持await和async with的IPC管道工厂"""
+
+    def __init__(
+        self,
+        pipe_cls: Type["AsyncIPCPipe"],
+        pipe_name: str,
+        role: str,
+        wait_for_client: bool = True,
+        connect_timeout: Optional[float] = None,
+    ) -> None:
+        self._pipe_cls = pipe_cls
+        self._pipe_name = pipe_name
+        self._role = role
+        self._wait_for_client = wait_for_client
+        self._connect_timeout = connect_timeout
+        self._instance: Optional["AsyncIPCPipe"] = None
+
+    async def _create(self) -> "AsyncIPCPipe":
+        instance = self._pipe_cls(self._pipe_name, role=self._role)
+        if self._role == "server":
+            await instance._create_server(
+                wait_for_client=self._wait_for_client,
+                timeout=self._connect_timeout,
+            )
+        else:
+            await instance._create_client()
+        return instance
+
+    def __await__(self):  # type: ignore[override]
+        return self._create().__await__()
+
+    async def __aenter__(self) -> "AsyncIPCPipe":
+        self._instance = await self._create()
+        return self._instance
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        if self._instance is not None:
+            await self._instance.close()
+            self._instance = None
 
 
 class AsyncIPCPipe:
@@ -80,12 +121,20 @@ class AsyncIPCPipe:
         return False
 
     @classmethod
-    async def server(cls, pipe_name: str) -> "AsyncIPCPipe":
+    def server(
+        cls,
+        pipe_name: str,
+        *,
+        wait_for_client: bool = True,
+        connect_timeout: Optional[float] = None,
+    ) -> _IPCPipeFactory:
         """
         创建服务端管道（工厂方法）
 
         Args:
             pipe_name: 管道名称
+            wait_for_client: 是否在返回前等待客户端连接完成
+            connect_timeout: 等待客户端连接的超时时间（秒），None为无限等待
 
         Returns:
             AsyncIPCPipe实例
@@ -94,12 +143,16 @@ class AsyncIPCPipe:
             async with AsyncIPCPipe.server("monitor_service") as pipe:
                 data = await pipe.read()
         """
-        instance = cls(pipe_name, role="server")
-        await instance._create_server()
-        return instance
+        return _IPCPipeFactory(
+            cls,
+            pipe_name,
+            role="server",
+            wait_for_client=wait_for_client,
+            connect_timeout=connect_timeout,
+        )
 
     @classmethod
-    async def client(cls, pipe_name: str) -> "AsyncIPCPipe":
+    def client(cls, pipe_name: str) -> _IPCPipeFactory:
         """
         连接到服务端管道（工厂方法）
 
@@ -113,11 +166,14 @@ class AsyncIPCPipe:
             async with AsyncIPCPipe.client("monitor_service") as pipe:
                 await pipe.write(b"request")
         """
-        instance = cls(pipe_name, role="client")
-        await instance._create_client()
-        return instance
+        return _IPCPipeFactory(cls, pipe_name, role="client")
 
-    async def _create_server(self):
+    async def _create_server(
+        self,
+        *,
+        wait_for_client: bool = True,
+        timeout: Optional[float] = None,
+    ):
         """创建服务端管道（内部方法）"""
         if self._closed:
             logger.error("管道已关闭，无法创建服务端", extra={"log_type": "SYSTEM"})
@@ -155,6 +211,21 @@ class AsyncIPCPipe:
             logger.error(f"注册IPC管道到事件循环扩展失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
             raise
 
+        # 等待客户端连接完成，避免在连接建立前执行读操作
+        if wait_for_client:
+            try:
+                logger.info(f"IPC服务端 {self.pipe_name} 等待客户端连接...", extra={"log_type": "SYSTEM"})
+                await self._wait_for_client_connection(timeout=timeout)
+                logger.info(f"IPC服务端 {self.pipe_name} 客户端连接成功", extra={"log_type": "SYSTEM"})
+            except Exception as exc:
+                logger.error(
+                    f"等待IPC客户端连接失败: {exc}",
+                    exc_info=True,
+                    extra={"log_type": "SYSTEM"},
+                )
+                await self.close()
+                raise
+
     async def _create_client(self):
         """连接到服务端管道（内部方法）"""
         if self._closed:
@@ -180,7 +251,9 @@ class AsyncIPCPipe:
 
         # 连接到服务端管道
         try:
+            logger.info(f"IPC客户端尝试连接服务端: {self.pipe_name}", extra={"log_type": "SYSTEM"})
             self._pipe.create_client_pipe(self.pipe_name)
+            logger.info(f"IPC客户端连接服务端成功: {self.pipe_name}", extra={"log_type": "SYSTEM"})
         except Exception as e:
             logger.error(f"连接服务端管道失败: {self.pipe_name}, 错误: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
             raise
@@ -362,14 +435,44 @@ class AsyncIPCPipe:
         status = "closed" if self._closed else ("open" if self._pipe else "not opened")
         return f"<AsyncIPCPipe: {self.pipe_name} role={self.role} status={status}>"
 
+    async def _wait_for_client_connection(self, timeout: Optional[float] = None) -> None:
+        """等待客户端连接完成，确保命名管道已建立连接"""
+        if self._pipe is None:
+            raise RuntimeError("IPC pipe not initialized")
+        if self._extension is None:
+            raise RuntimeError("Event loop extension not initialized")
+
+        # 连接操作使用与读写相同的事件句柄，wait_for_completion会在事件触发后返回
+        await self._extension.wait_for_completion(
+            self._pipe,
+            operation_type="connect",
+            timeout=timeout,
+        )
+
+    async def wait_for_client(self, timeout: Optional[float] = None) -> None:
+        """显式等待客户端连接完成
+
+        Args:
+            timeout: 等待超时时间（秒），None表示无限等待
+        """
+
+        await self._wait_for_client_connection(timeout=timeout)
+
 
 # 简化API（对标aopen）
-async def aopen_server(pipe_name: str) -> AsyncIPCPipe:
+async def aopen_server(
+    pipe_name: str,
+    *,
+    wait_for_client: bool = True,
+    connect_timeout: Optional[float] = None,
+) -> AsyncIPCPipe:
     """
     创建服务端管道（简化API）
 
     Args:
         pipe_name: 管道名称
+        wait_for_client: 是否在返回前等待客户端连接完成
+        connect_timeout: 等待客户端连接的超时时间（秒），None为无限等待
 
     Returns:
         AsyncIPCPipe对象
@@ -378,7 +481,11 @@ async def aopen_server(pipe_name: str) -> AsyncIPCPipe:
         async with aopen_server("monitor_service") as pipe:
             data = await pipe.read()
     """
-    return await AsyncIPCPipe.server(pipe_name)
+    return await AsyncIPCPipe.server(
+        pipe_name,
+        wait_for_client=wait_for_client,
+        connect_timeout=connect_timeout,
+    )
 
 
 async def aopen_client(pipe_name: str) -> AsyncIPCPipe:
@@ -399,3 +506,4 @@ async def aopen_client(pipe_name: str) -> AsyncIPCPipe:
 
 
 __all__ = ["AsyncIPCPipe", "aopen_server", "aopen_client"]
+

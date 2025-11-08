@@ -19,7 +19,17 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+# 导入 talib 和 numpy
+try:
+    import talib
+    import numpy as np
+    TALIB_AVAILABLE = True
+except ImportError:
+    TALIB_AVAILABLE = False
+    talib = None
+    np = None
 
 # 高性能JSON库（优先使用orjson）
 try:
@@ -34,6 +44,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from backend.infrastructure.system_vnpy.logging_system import (
+    bind_logger_defaults,
     load_queue_from_env,
     setup_subprocess_logging,
 )
@@ -68,10 +79,14 @@ try:
     from backend.infrastructure.native.native_finance_ops import (
         FINANCE_OPS_AVAILABLE,
         compute_return_metrics as native_compute_return_metrics,
+        compute_period_statistics as native_compute_period_statistics,
+        compute_risk_profile as native_compute_risk_profile,
     )
 except ImportError:
     FINANCE_OPS_AVAILABLE = False
     native_compute_return_metrics = None  # type: ignore
+    native_compute_period_statistics = None  # type: ignore
+    native_compute_risk_profile = None  # type: ignore
 
 # 添加项目根目录到Python路径（用于独立运行）
 if __name__ == "__main__":
@@ -96,8 +111,14 @@ def get_root() -> Path:
 
 
 # 创建专用logger（模块级别，数据进程独立）
-logger = logging.getLogger("data_process")
-logger_rpc = logging.getLogger("data_process.rpc")
+logger = bind_logger_defaults(
+    logging.getLogger("data_process"), log_type="SYSTEM", scenario="data_process"
+)
+logger_rpc = bind_logger_defaults(
+    logging.getLogger("data_process.rpc"), log_type="SYSTEM", scenario="data_process.rpc"
+)
+
+DATA_PROCESS_SCENARIO = "data_process_init"
 
 # 记录使用的JSON库
 if HAS_ORJSON:
@@ -144,10 +165,14 @@ class DataProcess:
         self._rpc_server: Optional[Any] = None
         self._ipc_pipes: Dict[str, Any] = {}
 
+        # 指标计算库
+        self.talib = talib
+        self.np = np
+
         # 管道连接状态跟踪（避免频繁尝试读取未连接的管道）
         self._pipe_connected: Dict[str, bool] = {}  # {pipe_name: is_connected}
         self._pipe_last_attempt: Dict[str, float] = {}  # {pipe_name: last_attempt_time}
-        
+
         # 批量处理配置
         self._batch_size = 10  # 每批最多处理的请求数
         self._batch_timeout = 0.01  # 批次等待超时（秒）- 降低以提升响应速度
@@ -155,40 +180,85 @@ class DataProcess:
     async def initialize(self):
         """初始化数据服务"""
         try:
-            import sys
-            print(f"[DEBUG] 数据进程initialize开始 (PID={os.getpid()})", file=sys.stderr)
-            logger.info("📍 数据进程初始化开始", extra={"log_type": "STAGE_NODE"})
+            logger.debug(
+                f"[DEBUG] 数据进程initialize开始 (PID={os.getpid()})",
+                extra={"log_type": "DEBUG", "scenario": "data_process_init"},
+            )
+            logger.info(
+                "📍 数据进程初始化开始",
+                extra={"log_type": "STAGE_NODE", "scenario": "data_process_init"},
+            )
 
             # 1. 初始化数据服务
-            print(f"[DEBUG] 数据进程开始初始化数据服务...", file=sys.stderr)
+            logger.debug(
+                "[DEBUG] 数据进程开始初始化数据服务...",
+                extra={"log_type": "DEBUG", "scenario": "data_process_init"},
+            )
             await self._initialize_data_services()
-            print(f"[DEBUG] 数据进程数据服务初始化完成", file=sys.stderr)
+            logger.debug(
+                "[DEBUG] 数据进程数据服务初始化完成",
+                extra={"log_type": "DEBUG", "scenario": "data_process_init"},
+            )
 
             # 2. 初始化IPC服务器
-            print(f"[DEBUG] 数据进程开始初始化IPC服务器...", file=sys.stderr)
+            logger.debug(
+                "[DEBUG] 数据进程开始初始化IPC服务器...",
+                extra={"log_type": "DEBUG", "scenario": "data_process_init"},
+            )
             await self._initialize_ipc_server()
-            print(f"[DEBUG] 数据进程IPC服务器初始化完成", file=sys.stderr)
+            logger.debug(
+                "[DEBUG] 数据进程IPC服务器初始化完成",
+                extra={"log_type": "DEBUG", "scenario": "data_process_init"},
+            )
 
             # 3. 标记就绪
-            print(f"[DEBUG] 数据进程开始写入就绪信号文件...", file=sys.stderr)
+            logger.debug(
+                "[DEBUG] 数据进程开始写入就绪信号文件...",
+                extra={"log_type": "DEBUG", "scenario": "data_process_init"},
+            )
             self._is_ready = True
             self._write_ready_signal()
-            print(f"[DEBUG] 数据进程就绪信号文件已写入", file=sys.stderr)
+            logger.debug(
+                "[DEBUG] 数据进程就绪信号文件已写入",
+                extra={"log_type": "DEBUG", "scenario": "data_process_init"},
+            )
 
-            logger.info("✅ 数据进程初始化完成", extra={"log_type": "STAGE_NODE"})
+            logger.info(
+                "✅ 数据进程初始化完成",
+                extra={"log_type": "STAGE_NODE", "scenario": "data_process_init"},
+            )
 
         except Exception as e:
-            import sys
-            print(f"[DEBUG] 数据进程初始化失败: {e}", file=sys.stderr)
+            logger.debug(
+                f"[DEBUG] 数据进程初始化失败: {e}",
+                extra={"log_type": "DEBUG", "scenario": "data_process_init"},
+            )
             import traceback
-            traceback.print_exc(file=sys.stderr)
+            logger.debug(
+                "[DEBUG] 数据进程初始化失败堆栈:",
+                extra={"log_type": "DEBUG", "scenario": "data_process_init"},
+            )
             logger.error(f"❌ 数据进程初始化失败: {e}", exc_info=True, extra={"log_type": "ALERT"})
             raise
 
     async def _initialize_data_services(self):
         """初始化数据服务"""
         try:
-            logger.info("│ ⏳ 初始化ChinaStockEngine...", extra={"log_type": "STAGE_NODE"})
+            if self.talib:
+                logger.info(
+                    "│ ✅ talib可用，指标计算功能完整",
+                    extra={"log_type": "STAGE_NODE", "scenario": "data_process_init"},
+                )
+            else:
+                logger.warning(
+                    "│ ⚠️ talib不可用，部分指标计算将受限",
+                    extra={"log_type": "SYSTEM", "scenario": "data_process_init"},
+                )
+
+            logger.info(
+                "│ ⏳ 初始化ChinaStockEngine...",
+                extra={"log_type": "STAGE_NODE", "scenario": "data_process_init"},
+            )
 
             # 创建EventEngine（数据进程内部使用）
             from vnpy.event import EventEngine
@@ -202,47 +272,65 @@ class DataProcess:
             # 在数据进程中，main_engine为None（因为MainEngine在主进程）
             # ChinaStockEngine需要兼容这种情况
             self.china_stock_engine = ChinaStockEngine(main_engine=None, event_engine=event_engine)
-            # initialize()返回bool，不是协程
             success = self.china_stock_engine.initialize()
             if not success:
                 raise RuntimeError("ChinaStockEngine初始化失败")
 
-            logger.info("│ ✅ ChinaStockEngine初始化完成", extra={"log_type": "STAGE_NODE"})
+            logger.info(
+                "│ ✅ ChinaStockEngine初始化完成",
+                extra={"log_type": "STAGE_NODE", "scenario": "data_process_init"},
+            )
 
-            # 初始化UnifiedDataManager
-            logger.info("│ ⏳ 初始化UnifiedDataManager...", extra={"log_type": "STAGE_NODE"})
+            logger.info(
+                "│ ⏳ 初始化UnifiedDataManager...",
+                extra={"log_type": "STAGE_NODE", "scenario": "data_process_init"},
+            )
             from backend.infrastructure.data_module_vnpy.data_runtime import UnifiedDataManager
 
             self.unified_data_manager = UnifiedDataManager(event_engine=event_engine)
-            logger.info("│ ✅ UnifiedDataManager初始化完成", extra={"log_type": "STAGE_NODE"})
+            logger.info(
+                "│ ✅ UnifiedDataManager初始化完成",
+                extra={"log_type": "STAGE_NODE", "scenario": "data_process_init"},
+            )
 
-            # 初始化DataCenterService（作为数据进程中的RPC服务器）
-            logger.info("│ ⏳ 初始化DataCenterService（RPC服务器）...", extra={"log_type": "STAGE_NODE"})
+            logger.info(
+                "│ ⏳ 初始化DataCenterService（RPC服务器）...",
+                extra={"log_type": "STAGE_NODE", "scenario": "data_process_init"},
+            )
             from backend.services.data_center_service import DataCenterService
 
-            # 创建DataCenterService实例，但跳过主进程中的初始化逻辑
             self.data_center_service = DataCenterService()
-            # 注意：不在数据进程中调用initialize()，因为某些依赖在主进程中
-            # DataCenterService将作为RPC服务器提供服务
-            logger.info("│ ✅ DataCenterService（RPC服务器）初始化完成", extra={"log_type": "STAGE_NODE"})
+            logger.info(
+                "│ ✅ DataCenterService（RPC服务器）初始化完成",
+                extra={"log_type": "STAGE_NODE", "scenario": "data_process_init"},
+            )
 
-            # 初始化LoadBalancer
-            logger.info("│ ⏳ 初始化LoadBalancer...", extra={"log_type": "STAGE_NODE"})
+            logger.info(
+                "│ ⏳ 初始化LoadBalancer...",
+                extra={"log_type": "STAGE_NODE", "scenario": "data_process_init"},
+            )
             from backend.infrastructure.data_module_vnpy.load_balancer import LoadBalancer
 
-            # LoadBalancer需要config_manager，从ChinaStockEngine获取
             config_manager = self.china_stock_engine.config_manager
             self.load_balancer = LoadBalancer(config_manager=config_manager)
-            logger.info("│ ✅ LoadBalancer初始化完成", extra={"log_type": "STAGE_NODE"})
+            logger.info(
+                "│ ✅ LoadBalancer初始化完成",
+                extra={"log_type": "STAGE_NODE", "scenario": "data_process_init"},
+            )
 
-            # 初始化ServerPoolManager
-            logger.info("│ ⏳ 初始化ServerPoolManager...", extra={"log_type": "STAGE_NODE"})
+            logger.info(
+                "│ ⏳ 初始化ServerPoolManager...",
+                extra={"log_type": "STAGE_NODE", "scenario": "data_process_init"},
+            )
             from backend.infrastructure.data_module_vnpy.load_balancer import (
                 get_server_pool_manager,
             )
 
             self.server_pool_manager = get_server_pool_manager()
-            logger.info("│ ✅ ServerPoolManager初始化完成", extra={"log_type": "STAGE_NODE"})
+            logger.info(
+                "│ ✅ ServerPoolManager初始化完成",
+                extra={"log_type": "STAGE_NODE", "scenario": DATA_PROCESS_SCENARIO},
+            )
 
         except Exception as e:
             logger.error(f"❌ 数据服务初始化失败: {e}", exc_info=True, extra={"log_type": "ALERT"})
@@ -255,7 +343,10 @@ class DataProcess:
             return
 
         try:
-            logger.info("│ ⏳ 初始化IPC服务器...", extra={"log_type": "STAGE_NODE"})
+            logger.info(
+                "│ ⏳ 初始化IPC服务器...",
+                extra={"log_type": "STAGE_NODE", "scenario": DATA_PROCESS_SCENARIO},
+            )
 
             # 创建IPC管道
             # data_query: 数据查询管道
@@ -268,13 +359,14 @@ class DataProcess:
                     if not NATIVE_IPC_AVAILABLE or AsyncIPCPipe is None:
                         raise RuntimeError("native_ipc扩展不可用")
                     # AsyncIPCPipe使用server类方法创建服务端管道
-                    pipe = await AsyncIPCPipe.server(pipe_name)
+                    pipe = await AsyncIPCPipe.server(pipe_name, wait_for_client=False)
                     self._ipc_pipes[pipe_name] = pipe
                     # 初始化连接状态跟踪
                     self._pipe_connected[pipe_name] = False
                     self._pipe_last_attempt[pipe_name] = 0
                     logger.info(
-                        f"│ ✅ IPC管道已创建: {pipe_name}", extra={"log_type": "STAGE_NODE"}
+                        f"│ ✅ IPC管道已创建: {pipe_name}",
+                        extra={"log_type": "STAGE_NODE", "scenario": DATA_PROCESS_SCENARIO},
                     )
                 except Exception as e:
                     logger.error(
@@ -286,7 +378,10 @@ class DataProcess:
             # 启动RPC服务器任务
             asyncio.create_task(self._rpc_server_task())
 
-            logger.info("│ ✅ IPC服务器初始化完成", extra={"log_type": "STAGE_NODE"})
+            logger.info(
+                "│ ✅ IPC服务器初始化完成",
+                extra={"log_type": "STAGE_NODE", "scenario": DATA_PROCESS_SCENARIO},
+            )
 
         except Exception as e:
             logger.error(f"❌ IPC服务器初始化失败: {e}", exc_info=True, extra={"log_type": "ALERT"})
@@ -325,19 +420,23 @@ class DataProcess:
                 if current_time - last_attempt < 1.0:  # 未连接时，每1秒尝试一次
                     return
                 self._pipe_last_attempt[pipe_name] = current_time
+                # 如果超过10秒未连接，记录警告
+                if current_time - self._pipe_last_attempt.get(f"{pipe_name}_warning_ts", 0) > 10.0:
+                    logger.warning(f"IPC管道 '{pipe_name}' 超过10秒未连接", extra={"log_type": "SYSTEM"})
+                    self._pipe_last_attempt[f"{pipe_name}_warning_ts"] = current_time
 
             # 批量读取请求
             batch_requests = []
-            
+
             # 读取第一个请求（阻塞等待）
             try:
                 first_request_data = await asyncio.wait_for(pipe.read(), timeout=0.1)
                 # 成功读取，标记为已连接
                 self._pipe_connected[pipe_name] = True
-                
+
                 if first_request_data:
                     batch_requests.append(first_request_data)
-                    
+
             except asyncio.TimeoutError:
                 return
             except ValueError as e:
@@ -352,12 +451,12 @@ class DataProcess:
                 # 其他异常，记录日志但不中断
                 logger.debug(f"读取管道时发生异常: {e}", extra={"log_type": "SYSTEM"})
                 return
-            
+
             # 尝试读取更多请求（非阻塞，短超时）
             for _ in range(self._batch_size - 1):
                 try:
                     extra_request_data = await asyncio.wait_for(
-                        pipe.read(), 
+                        pipe.read(),
                         timeout=self._batch_timeout
                     )
                     if extra_request_data:
@@ -368,14 +467,15 @@ class DataProcess:
                 except Exception:
                     # 其他异常，退出循环
                     break
-            
+
             # 如果没有读取到任何请求，直接返回
             if not batch_requests:
                 return
-            
+
+            logger.info(f"开始处理 {len(batch_requests)} 个批量请求", extra={"log_type": "SYSTEM"})
             # 批量处理请求
             batch_responses = await self._process_batch_requests(batch_requests)
-            
+
             # 批量发送响应
             for response_data in batch_responses:
                 try:
@@ -406,6 +506,7 @@ class DataProcess:
                         request_data,
                         method_resolver=method_resolver,
                     )
+                    logger.debug(f"收到RPC请求: {rpc_request.method}", extra={"log_type": "SYSTEM", "request_id": rpc_request.request_id})
                 except Exception as exc:
                     logger.warning(
                         "⚠️ 批量处理: 无法解析RPC请求: %s", exc, extra={"log_type": "SYSTEM"}
@@ -453,6 +554,7 @@ class DataProcess:
                             binary_field_path=("result", "data") if binary_payload is not None else None,
                         )
                     responses.append(response_bytes)
+                    logger.debug(f"发送本地响应: {rpc_request.method}", extra={"log_type": "SYSTEM", "request_id": rpc_request.request_id})
                     continue
 
                 if error_message:
@@ -467,6 +569,7 @@ class DataProcess:
                     responses.append(orjson.dumps(response_dict))
                 else:
                     responses.append(json.dumps(response_dict, ensure_ascii=False).encode("utf-8"))
+                logger.debug(f"发送JSON响应: {rpc_request.method}", extra={"log_type": "SYSTEM", "request_id": rpc_request.request_id})
 
             except Exception as exc:
                 logger.error(
@@ -477,7 +580,7 @@ class DataProcess:
                 )
 
         return responses
-    
+
     async def _handle_calculation_requests(self):
         """处理计算任务请求"""
         try:
@@ -494,6 +597,10 @@ class DataProcess:
                 if current_time - last_attempt < 1.0:  # 未连接时，每1秒尝试一次
                     return
                 self._pipe_last_attempt[pipe_name] = current_time
+                # 如果超过10秒未连接，记录警告
+                if current_time - self._pipe_last_attempt.get(f"{pipe_name}_warning_ts", 0) > 10.0:
+                    logger.warning(f"IPC管道 '{pipe_name}' 超过10秒未连接", extra={"log_type": "SYSTEM"})
+                    self._pipe_last_attempt[f"{pipe_name}_warning_ts"] = current_time
 
             # 读取请求（非阻塞）
             try:
@@ -534,12 +641,17 @@ class DataProcess:
             method = request.get("method")
             params = request.get("params", {})
             request_id = request.get("id")
+            logger.debug(f"收到计算任务请求: {method}", extra={"log_type": "SYSTEM", "request_id": request_id})
 
             try:
                 if method == "calculate_indicator":
                     result = await self._handle_calculate_indicator(params)
                 elif method == "calculate_risk_metrics":
                     result = await self._handle_calculate_risk_metrics(params)
+                elif method == "compute_period_statistics":
+                    result = await self._handle_compute_period_statistics(params)
+                elif method == "compute_risk_profile":
+                    result = await self._handle_compute_risk_profile(params)
                 else:
                     result = {"success": False, "message": f"未知方法: {method}"}
 
@@ -552,6 +664,7 @@ class DataProcess:
                     # 降级到标准json
                     response_data = json.dumps(response, ensure_ascii=False).encode("utf-8")
                 await pipe.write(response_data)
+                logger.debug(f"发送计算任务响应: {method}", extra={"log_type": "SYSTEM", "request_id": request_id})
 
             except Exception as e:
                 logger.error(
@@ -568,6 +681,7 @@ class DataProcess:
                     # 降级到标准json
                     response_data = json.dumps(response, ensure_ascii=False).encode("utf-8")
                 await pipe.write(response_data)
+                logger.debug(f"发送计算任务错误响应: {method}", extra={"log_type": "SYSTEM", "request_id": request_id})
 
         except Exception as e:
             logger.error(
@@ -688,79 +802,81 @@ class DataProcess:
             return {"success": False, "message": str(e)}
 
     def _do_calculate_indicator(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """执行技术指标计算（在线程池中执行）"""
+        """执行技术指标计算（优先native，回退talib）"""
         data = params.get("data", [])
-        indicator_name = params.get("indicator_name")
+        indicator_name_raw = params.get("indicator_name")
         indicator_params = params.get("params", {})
 
+        indicator_name = str(indicator_name_raw or "").strip()
+        if not indicator_name:
+            return {"success": False, "message": "缺少指标名称"}
+
         if not data:
-            return {"success": False, "message": "数据为空"}
+            return {"success": False, "message": "输入数据为空"}
 
-        closes = [float(d.get("close", 0.0)) for d in data]
+        closes: List[float] = []
+        for item in data:
+            if isinstance(item, dict):
+                closes.append(float(item.get("close", 0.0)))
+            else:
+                closes.append(float(item))
 
+        # 1. 尝试使用 native_indicator
         if NATIVE_INDICATOR_AVAILABLE and native_calculate_indicator is not None:
             try:
                 result_native = native_calculate_indicator(indicator_name, closes, **indicator_params)
-                return {
-                    "success": True,
-                    "data": result_native,
-                    "engine": "native_indicator",
-                    "message": f"计算 {indicator_name} 完成",
-                }
+                if isinstance(result_native, dict) and result_native.get("success"):
+                    native_data = result_native.get("data")
+                    return {
+                        "success": True,
+                        "data": native_data,
+                        "engine": "native_indicator",
+                        "message": f"计算 {indicator_name} 完成",
+                    }
+                logger.debug("native_indicator 计算失败，回退到talib")
             except Exception:
-                logger.debug("native_indicator 计算失败，回退到talib", exc_info=True)
+                logger.debug("native_indicator 计算异常，回退到talib", exc_info=True)
 
+        # 2. 回退到 talib
         try:
             import talib
             import numpy as np
 
             closes_array = np.array(closes, dtype=float)
+            indicator_name_upper = indicator_name.upper()
 
-            if indicator_name == "SMA":
-                period = indicator_params.get("period", 5)
-                result = talib.SMA(closes_array, timeperiod=period)
-            elif indicator_name == "EMA":
-                period = indicator_params.get("period", 5)
-                result = talib.EMA(closes_array, timeperiod=period)
-            elif indicator_name == "MACD":
-                fast = indicator_params.get("fast", 12)
-                slow = indicator_params.get("slow", 26)
-                signal = indicator_params.get("signal", 9)
-                macd, signal_line, hist = talib.MACD(
-                    closes_array, fastperiod=fast, slowperiod=slow, signalperiod=signal
+            result_data = None
+            if indicator_name_upper == "SMA":
+                result_data = talib.SMA(closes_array, timeperiod=indicator_params.get("period", 5))
+            elif indicator_name_upper == "EMA":
+                result_data = talib.EMA(closes_array, timeperiod=indicator_params.get("period", 5))
+            elif indicator_name_upper == "MACD":
+                macd, signal, hist = talib.MACD(
+                    closes_array,
+                    fastperiod=indicator_params.get("fast", 12),
+                    slowperiod=indicator_params.get("slow", 26),
+                    signalperiod=indicator_params.get("signal", 9),
                 )
-                result = {
-                    "macd": macd.tolist(),
-                    "signal": signal_line.tolist(),
-                    "hist": hist.tolist(),
-                }
-            elif indicator_name == "RSI":
-                period = indicator_params.get("period", 14)
-                result = talib.RSI(closes_array, timeperiod=period)
+                result_data = {"macd": macd.tolist(), "signal": signal.tolist(), "hist": hist.tolist()}
+            elif indicator_name_upper == "RSI":
+                result_data = talib.RSI(closes_array, timeperiod=indicator_params.get("period", 14))
             else:
-                return {"success": False, "message": f"未知指标: {indicator_name}"}
+                return {"success": False, "message": f"指标 {indicator_name} 在talib中不支持"}
 
-            if isinstance(result, dict):
-                result_payload = {
-                    k: v.tolist() if hasattr(v, "tolist") else v for k, v in result.items()
-                }
-            else:
-                result_payload = result.tolist() if hasattr(result, "tolist") else result
+            if isinstance(result_data, np.ndarray):
+                result_data = result_data.tolist()
 
             return {
                 "success": True,
-                "data": result_payload,
+                "data": result_data,
                 "engine": "talib",
                 "message": f"计算 {indicator_name} 完成",
             }
-
         except ImportError:
-            return {"success": False, "message": "talib未安装"}
+            return {"success": False, "message": "指标计算引擎talib不可用"}
         except Exception as e:
-            logger.error(
-                f"❌ 执行技术指标计算失败: {e}", exc_info=True, extra={"log_type": "ALERT"}
-            )
-            return {"success": False, "message": str(e)}
+            logger.error(f"talib 计算失败: {e}", exc_info=True)
+            return {"success": False, "message": f"talib 计算失败: {e}"}
 
     async def _handle_calculate_risk_metrics(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """处理计算风险指标请求"""
@@ -871,17 +987,389 @@ class DataProcess:
             )
             return {"success": False, "message": str(e)}
 
+    async def _handle_compute_period_statistics(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """处理周期统计请求"""
+        try:
+            loop = asyncio.get_event_loop()
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                result = await loop.run_in_executor(executor, self._do_compute_period_statistics, params)
+            return result
+        except Exception as e:
+            logger.error("❌ 计算周期统计失败: %s", e, exc_info=True, extra={"log_type": "ALERT"})
+            return {"success": False, "message": str(e)}
+
+    def _do_compute_period_statistics(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        dates = params.get("dates") or []
+        pnl = params.get("pnl") or []
+        initial_equity = float(params.get("initial_equity", 1_000_000.0))
+        risk_free_rate = float(params.get("risk_free_rate", 0.03))
+        trading_days = int(params.get("trading_days_per_year", 252))
+
+        if not dates or not pnl or len(dates) != len(pnl):
+            return {"success": False, "message": "缺少有效的日期或盈亏数据"}
+
+        if FINANCE_OPS_AVAILABLE and native_compute_period_statistics:
+            try:
+                result = native_compute_period_statistics(
+                    dates,
+                    pnl,
+                    initial_equity=initial_equity,
+                    risk_free_rate=risk_free_rate,
+                    trading_days_per_year=trading_days,
+                )
+                if isinstance(result, dict):
+                    result.setdefault("success", True)
+                    return result
+            except Exception:
+                logger.debug(
+                    "native_finance_ops.compute_period_statistics失败, 回退Python实现",
+                    exc_info=True,
+                )
+
+        return self._python_compute_period_statistics(
+            dates, pnl, initial_equity, risk_free_rate, trading_days
+        )
+
+    def _python_compute_period_statistics(
+        self,
+        dates: Sequence[Any],
+        pnl: Sequence[float],
+        initial_equity: float,
+        risk_free_rate: float,
+        trading_days: int,
+    ) -> Dict[str, Any]:
+        from collections import OrderedDict
+        from datetime import datetime
+        import math
+
+        def parse_date(value: Any) -> datetime:
+            if isinstance(value, datetime):
+                return value
+            if isinstance(value, (int, float)):
+                text = f"{int(value):08d}"
+                return datetime.strptime(text, "%Y%m%d")
+            if isinstance(value, str):
+                text = value.strip()
+                if len(text) >= 10 and text[4] == "-" and text[7] == "-":
+                    return datetime.strptime(text[:10], "%Y-%m-%d")
+                if len(text) == 8 and text.isdigit():
+                    return datetime.strptime(text, "%Y%m%d")
+            raise ValueError(f"无法解析日期: {value}")
+
+        try:
+            combined = []
+            for d, amount in zip(dates, pnl):
+                dt = parse_date(d)
+                combined.append((dt, float(amount)))
+
+            combined.sort(key=lambda x: x[0])
+            if not combined:
+                return {
+                    "success": True,
+                    "daily": [],
+                    "weekly": [],
+                    "monthly": [],
+                    "equity_curve": [],
+                    "summary": {
+                        "initial_equity": initial_equity,
+                        "final_equity": initial_equity,
+                        "total_pnl": 0.0,
+                        "total_return": 0.0,
+                        "annual_return": 0.0,
+                        "volatility": 0.0,
+                        "sharpe_ratio": 0.0,
+                        "max_drawdown": 0.0,
+                        "max_drawdown_duration": 0.0,
+                        "win_rate": 0.0,
+                        "trading_days": 0,
+                    },
+                }
+
+            daily_map: OrderedDict[str, float] = OrderedDict()
+            for dt, amount in combined:
+                key = dt.strftime("%Y-%m-%d")
+                daily_map[key] = daily_map.get(key, 0.0) + amount
+
+            equity = initial_equity
+            daily_entries: List[Dict[str, Any]] = []
+            equity_curve: List[Dict[str, Any]] = []
+            sum_returns = 0.0
+            sum_square_returns = 0.0
+            win_days = 0
+            raw_daily = []
+
+            for key, amount in daily_map.items():
+                start_equity = equity
+                equity += amount
+                daily_return = amount / start_equity if start_equity > 0 else 0.0
+                cumulative_return = (equity - initial_equity) / initial_equity if initial_equity > 0 else 0.0
+
+                daily_entries.append(
+                    {
+                        "period": key,
+                        "pnl": float(amount),
+                        "return": float(daily_return),
+                        "start_equity": float(start_equity),
+                        "end_equity": float(equity),
+                        "cumulative_return": float(cumulative_return),
+                    }
+                )
+                equity_curve.append({"date": key, "equity": float(equity)})
+                raw_daily.append((datetime.strptime(key, "%Y-%m-%d"), start_equity, equity, amount))
+
+                sum_returns += daily_return
+                sum_square_returns += daily_return * daily_return
+                if amount > 0:
+                    win_days += 1
+
+            def aggregate_period(mode: str) -> List[Dict[str, Any]]:
+                aggregated: OrderedDict[str, Dict[str, Any]] = OrderedDict()
+                for dt, start_eq, end_eq, amount in raw_daily:
+                    if mode == "weekly":
+                        key = dt.strftime("%G-W%V")
+                    elif mode == "monthly":
+                        key = dt.strftime("%Y-%m")
+                    else:
+                        key = dt.strftime("%Y")
+
+                    entry = aggregated.get(key)
+                    if not entry:
+                        entry = {
+                            "period": key,
+                            "pnl": 0.0,
+                            "start_equity": float(start_eq),
+                            "end_equity": float(end_eq),
+                        }
+                        aggregated[key] = entry
+
+                    entry["pnl"] += float(amount)
+                    entry["end_equity"] = float(end_eq)
+
+                result_items: List[Dict[str, Any]] = []
+                for entry in aggregated.values():
+                    start_eq = entry["start_equity"]
+                    end_eq = entry["end_equity"]
+                    entry["return"] = (end_eq - start_eq) / start_eq if start_eq > 0 else 0.0
+                    entry["cumulative_return"] = (end_eq - initial_equity) / initial_equity if initial_equity > 0 else 0.0
+                    result_items.append(entry)
+                return result_items
+
+            weekly_entries = aggregate_period("weekly")
+            monthly_entries = aggregate_period("monthly")
+
+            trading_days_count = len(daily_entries)
+            mean_return = sum_returns / trading_days_count if trading_days_count else 0.0
+            variance = (sum_square_returns / trading_days_count - mean_return * mean_return) if trading_days_count else 0.0
+            variance = max(variance, 0.0)
+            std_daily = math.sqrt(variance)
+            annual_return = mean_return * trading_days
+            annual_volatility = std_daily * math.sqrt(trading_days)
+            sharpe_ratio = (annual_return - risk_free_rate) / annual_volatility if annual_volatility > 0 else 0.0
+            win_rate = win_days / trading_days_count if trading_days_count else 0.0
+            total_pnl = equity - initial_equity
+            total_return = (equity - initial_equity) / initial_equity if initial_equity > 0 else 0.0
+
+            peak = initial_equity
+            max_drawdown = 0.0
+            peak_index = 0
+            trough_index = 0
+            current_peak_index = 0
+            equity_values = [point["equity"] for point in equity_curve]
+            for idx, eq in enumerate(equity_values):
+                if eq > peak:
+                    peak = eq
+                    current_peak_index = idx
+                dd = (eq - peak) / peak if peak > 0 else 0.0
+                if dd < max_drawdown:
+                    max_drawdown = dd
+                    peak_index = current_peak_index
+                    trough_index = idx
+
+            max_drawdown_duration = float(trough_index - peak_index) if trough_index > peak_index else 0.0
+
+            summary = {
+                "initial_equity": float(initial_equity),
+                "final_equity": float(equity),
+                "total_pnl": float(total_pnl),
+                "total_return": float(total_return),
+                "annual_return": float(annual_return),
+                "volatility": float(annual_volatility),
+                "sharpe_ratio": float(sharpe_ratio),
+                "max_drawdown": float(max_drawdown),
+                "max_drawdown_duration": float(max_drawdown_duration),
+                "win_rate": float(win_rate),
+                "trading_days": trading_days_count,
+            }
+
+            return {
+                "success": True,
+                "daily": daily_entries,
+                "weekly": weekly_entries,
+                "monthly": monthly_entries,
+                "equity_curve": equity_curve,
+                "summary": summary,
+            }
+        except Exception as exc:
+            logger.error("Python周期统计失败: %s", exc, exc_info=True, extra={"log_type": "ALERT"})
+            return {"success": False, "message": str(exc)}
+
+    async def _handle_compute_risk_profile(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """处理风险画像请求"""
+        try:
+            loop = asyncio.get_event_loop()
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                result = await loop.run_in_executor(executor, self._do_compute_risk_profile, params)
+            return result
+        except Exception as e:
+            logger.error("❌ 计算风险画像失败: %s", e, exc_info=True, extra={"log_type": "ALERT"})
+            return {"success": False, "message": str(e)}
+
+    def _do_compute_risk_profile(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        returns = params.get("returns") or []
+        scale = float(params.get("scale", 1.0))
+        risk_free_rate = float(params.get("risk_free_rate", 0.03))
+        trading_days = int(params.get("trading_days_per_year", 252))
+        confidence_levels = params.get("confidence_levels") or [0.95, 0.99]
+
+        if not returns or len(returns) < 2:
+            return {"success": False, "message": "缺少足够的收益率数据"}
+
+        if FINANCE_OPS_AVAILABLE and native_compute_risk_profile:
+            try:
+                result = native_compute_risk_profile(
+                    returns,
+                    scale=scale,
+                    risk_free_rate=risk_free_rate,
+                    trading_days_per_year=trading_days,
+                    confidence_levels=confidence_levels,
+                )
+                if isinstance(result, dict):
+                    result["success"] = True
+                    return result
+            except Exception:
+                logger.debug(
+                    "native_finance_ops.compute_risk_profile失败, 回退Python实现",
+                    exc_info=True,
+                )
+
+        return self._python_compute_risk_profile(
+            returns, scale, risk_free_rate, trading_days, confidence_levels
+        )
+
+    def _python_compute_risk_profile(
+        self,
+        returns: Sequence[float],
+        scale: float,
+        risk_free_rate: float,
+        trading_days: int,
+        confidence_levels: Sequence[float],
+    ) -> Dict[str, Any]:
+        try:
+            import numpy as np
+
+            returns_arr = np.asarray(returns, dtype=float)
+            if returns_arr.size < 2:
+                return {"success": False, "message": "收益率数据不足"}
+
+            mean_return = float(np.mean(returns_arr))
+            std_return = float(np.std(returns_arr))
+            annual_return = mean_return * trading_days
+            annual_volatility = std_return * np.sqrt(trading_days)
+            sharpe_ratio = (
+                (annual_return - risk_free_rate) / annual_volatility if annual_volatility > 0 else 0.0
+            )
+
+            downside = returns_arr[returns_arr < 0]
+            downside_deviation = float(np.std(downside) * np.sqrt(trading_days)) if downside.size > 0 else 0.0
+            sortino_ratio = (
+                (annual_return - risk_free_rate) / downside_deviation if downside_deviation > 0 else 0.0
+            )
+
+            win_rate = float(np.mean(returns_arr > 0))
+            loss_rate = float(np.mean(returns_arr < 0))
+            avg_gain = float(np.mean(returns_arr[returns_arr > 0])) if np.any(returns_arr > 0) else 0.0
+            avg_loss = float(np.mean(returns_arr[returns_arr < 0])) if np.any(returns_arr < 0) else 0.0
+
+            skewness = (
+                float(((returns_arr - mean_return) ** 3).mean() / (std_return**3)) if std_return > 0 else 0.0
+            )
+            kurtosis = (
+                float(((returns_arr - mean_return) ** 4).mean() / (std_return**4)) if std_return > 0 else 0.0
+            )
+
+            levels = confidence_levels if confidence_levels else [0.95, 0.99]
+            var_result: Dict[str, Dict[str, float]] = {}
+            for level in levels:
+                level_float = float(level)
+                level_float = min(max(level_float, 0.0), 0.999)
+                var_value = float(np.quantile(returns_arr, 1.0 - level_float))
+                tail = returns_arr[returns_arr <= var_value]
+                cvar_value = float(tail.mean()) if tail.size > 0 else var_value
+                key = f"{level_float:.2f}"
+                var_result[key] = {
+                    "var_value": var_value,
+                    "var_amount": abs(var_value * scale),
+                    "cvar_value": cvar_value,
+                    "cvar_amount": abs(cvar_value * scale),
+                }
+
+            equity_curve = np.cumprod(np.concatenate(([1.0], 1 + returns_arr)))
+            peak = np.maximum.accumulate(equity_curve)
+            drawdowns = (equity_curve - peak) / peak
+            max_drawdown = float(np.min(drawdowns))
+            trough_index = int(np.argmin(drawdowns))
+            peak_index = int(np.argmax(equity_curve[: trough_index + 1])) if trough_index >= 0 else 0
+            max_drawdown_duration = float(trough_index - peak_index) if trough_index > peak_index else 0.0
+            calmar_ratio = (annual_return / abs(max_drawdown)) if max_drawdown < 0 else 0.0
+            cumulative_return = float(equity_curve[-1] - 1.0)
+
+            return {
+                "success": True,
+                "count": int(returns_arr.size),
+                "mean_return": mean_return,
+                "std_return": std_return,
+                "annual_return": annual_return,
+                "annual_volatility": annual_volatility,
+                "sharpe_ratio": sharpe_ratio,
+                "sortino_ratio": sortino_ratio,
+                "skewness": skewness,
+                "kurtosis": kurtosis,
+                "win_rate": win_rate,
+                "loss_rate": loss_rate,
+                "avg_gain": avg_gain,
+                "avg_loss": avg_loss,
+                "downside_deviation": downside_deviation,
+                "max_drawdown": max_drawdown,
+                "max_drawdown_duration": max_drawdown_duration,
+                "calmar_ratio": calmar_ratio,
+                "cumulative_return": cumulative_return,
+                "var": var_result,
+                "equity_curve": equity_curve.tolist(),
+            }
+        except Exception as exc:
+            logger.error("Python风险画像计算失败: %s", exc, exc_info=True, extra={"log_type": "ALERT"})
+            return {"success": False, "message": str(exc)}
+
     def _write_ready_signal(self):
         """写入就绪信号文件"""
         try:
-            import sys
             root = get_root()
             signal_file = root / "logs" / "data_process_ready.signal"
-            print(f"[DEBUG] 数据进程准备写入就绪信号文件: {signal_file} (PID={os.getpid()})", file=sys.stderr)
+            logger.debug(
+                f"[DEBUG] 数据进程准备写入就绪信号文件: {signal_file} (PID={os.getpid()})",
+                extra={"log_type": "DEBUG", "scenario": "data_process_init"},
+            )
 
             # 确保logs目录存在
             signal_file.parent.mkdir(parents=True, exist_ok=True)
-            print(f"[DEBUG] 数据进程logs目录已确保存在", file=sys.stderr)
+            logger.debug(
+                "[DEBUG] 数据进程logs目录已确保存在",
+                extra={"log_type": "DEBUG", "scenario": "data_process_init"},
+            )
 
             # 写入信号文件
             signal_data = {
@@ -890,7 +1378,10 @@ class DataProcess:
                 "level": 2,  # Level 2: 功能完整
                 "pipes": list(self._ipc_pipes.keys()),
             }
-            print(f"[DEBUG] 数据进程信号数据: {signal_data}", file=sys.stderr)
+            logger.debug(
+                f"[DEBUG] 数据进程信号数据: {signal_data}",
+                extra={"log_type": "DEBUG", "scenario": "data_process_init"},
+            )
 
             with open(signal_file, "w", encoding="utf-8") as f:
                 if HAS_ORJSON:
@@ -900,15 +1391,26 @@ class DataProcess:
                 else:
                     # 降级到标准json
                     json.dump(signal_data, f, indent=2)
-            print(f"[DEBUG] 数据进程就绪信号文件已写入: {signal_file}", file=sys.stderr)
+            logger.debug(
+                f"[DEBUG] 数据进程就绪信号文件已写入: {signal_file}",
+                extra={"log_type": "DEBUG", "scenario": "data_process_init"},
+            )
 
-            logger.info(f"✅ 就绪信号文件已写入: {signal_file}", extra={"log_type": "STAGE_NODE"})
+            logger.info(
+                f"✅ 就绪信号文件已写入: {signal_file}",
+                extra={"log_type": "STAGE_NODE", "scenario": "data_process_init"},
+            )
 
         except Exception as e:
-            import sys
-            print(f"[DEBUG] 数据进程写入就绪信号文件失败: {e}", file=sys.stderr)
+            logger.debug(
+                f"[DEBUG] 数据进程写入就绪信号文件失败: {e}",
+                extra={"log_type": "DEBUG", "scenario": "data_process_init"},
+            )
             import traceback
-            traceback.print_exc(file=sys.stderr)
+            logger.debug(
+                "[DEBUG] 写入就绪信号文件失败堆栈:",
+                extra={"log_type": "DEBUG", "scenario": "data_process_init"},
+            )
             logger.error(
                 f"❌ 写入就绪信号文件失败: {e}", exc_info=True, extra={"log_type": "ALERT"}
             )
@@ -917,20 +1419,31 @@ class DataProcess:
         """运行数据进程"""
         try:
             # 🔧 调试：记录数据进程启动
-            import sys
-            print(f"[DEBUG] 数据进程开始运行 (PID={os.getpid()})", file=sys.stderr)
+            logger.debug(
+                f"[DEBUG] 数据进程开始运行 (PID={os.getpid()})",
+                extra={"log_type": "DEBUG", "scenario": "data_process_run"},
+            )
 
             # 初始化
-            print(f"[DEBUG] 数据进程开始初始化...", file=sys.stderr)
+            logger.debug(
+                "[DEBUG] 数据进程开始初始化...",
+                extra={"log_type": "DEBUG", "scenario": "data_process_run"},
+            )
             await self.initialize()
-            print(f"[DEBUG] 数据进程初始化完成", file=sys.stderr)
+            logger.debug(
+                "[DEBUG] 数据进程初始化完成",
+                extra={"log_type": "DEBUG", "scenario": "data_process_run"},
+            )
 
             # 保持运行
             while True:
                 await asyncio.sleep(1)
 
         except KeyboardInterrupt:
-            logger.info("📍 数据进程收到中断信号，正在退出...", extra={"log_type": "STAGE_NODE"})
+            logger.info(
+                "📍 数据进程收到中断信号，正在退出...",
+                extra={"log_type": "STAGE_NODE", "scenario": DATA_PROCESS_SCENARIO},
+            )
         except Exception as e:
             import sys
             print(f"[DEBUG] 数据进程运行异常: {e}", file=sys.stderr)
@@ -944,13 +1457,19 @@ class DataProcess:
     async def cleanup(self):
         """清理资源"""
         try:
-            logger.info("📍 数据进程清理资源...", extra={"log_type": "STAGE_NODE"})
+            logger.info(
+                "📍 数据进程清理资源...",
+                extra={"log_type": "STAGE_NODE", "scenario": DATA_PROCESS_SCENARIO},
+            )
 
             # 关闭IPC管道
             for pipe_name, pipe in self._ipc_pipes.items():
                 try:
                     await pipe.close()
-                    logger.info(f"✅ IPC管道已关闭: {pipe_name}", extra={"log_type": "STAGE_NODE"})
+                    logger.info(
+                        f"✅ IPC管道已关闭: {pipe_name}",
+                        extra={"log_type": "STAGE_NODE", "scenario": DATA_PROCESS_SCENARIO},
+                    )
                 except Exception as e:
                     logger.warning(
                         f"⚠️ 关闭IPC管道失败: {pipe_name}, 错误: {e}", extra={"log_type": "SYSTEM"}
@@ -962,11 +1481,17 @@ class DataProcess:
                 signal_file = root / "logs" / "data_process_ready.signal"
                 if signal_file.exists():
                     signal_file.unlink()
-                    logger.info("✅ 就绪信号文件已清理", extra={"log_type": "STAGE_NODE"})
+                    logger.info(
+                        "✅ 就绪信号文件已清理",
+                        extra={"log_type": "STAGE_NODE", "scenario": DATA_PROCESS_SCENARIO},
+                    )
             except Exception as e:
                 logger.warning(f"⚠️ 清理就绪信号文件失败: {e}", extra={"log_type": "SYSTEM"})
 
-            logger.info("✅ 数据进程清理完成", extra={"log_type": "STAGE_NODE"})
+            logger.info(
+                "✅ 数据进程清理完成",
+                extra={"log_type": "STAGE_NODE", "scenario": DATA_PROCESS_SCENARIO},
+            )
 
         except Exception as e:
             logger.error(f"❌ 数据进程清理失败: {e}", exc_info=True, extra={"log_type": "ALERT"})
@@ -979,7 +1504,10 @@ async def main():
     env_queue = load_queue_from_env()
     if env_queue is not None:
         log_queue = env_queue
-        logger.info("✅ 通过环境变量获取日志队列", extra={"log_type": "STAGE_NODE"})
+        logger.info(
+            "✅ 通过环境变量获取日志队列",
+            extra={"log_type": "STAGE_NODE", "scenario": DATA_PROCESS_SCENARIO},
+        )
     if len(sys.argv) > 1:
         # 从命令行参数获取队列（序列化后的队列对象）
         # 注意：multiprocessing.Queue不能直接序列化，需要通过其他方式传递
@@ -989,7 +1517,10 @@ async def main():
     if log_queue:
         try:
             setup_subprocess_logging(log_queue)
-            logger.info("✅ 子进程日志配置完成", extra={"log_type": "STAGE_NODE"})
+            logger.info(
+                "✅ 子进程日志配置完成",
+                extra={"log_type": "STAGE_NODE", "scenario": DATA_PROCESS_SCENARIO},
+            )
         except Exception as e:
             logger.warning(f"⚠️ 子进程日志配置失败: {e}", extra={"log_type": "SYSTEM"})
 
@@ -1008,7 +1539,11 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("📍 数据进程已退出", extra={"log_type": "STAGE_NODE"})
+        logger.info(
+            "📍 数据进程已退出",
+            extra={"log_type": "STAGE_NODE", "scenario": DATA_PROCESS_SCENARIO},
+        )
     except Exception as e:
         logger.error(f"❌ 数据进程启动失败: {e}", exc_info=True, extra={"log_type": "ALERT"})
         sys.exit(1)
+

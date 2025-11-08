@@ -32,7 +32,7 @@ WAIT_FAILED = 0xFFFFFFFF
 INFINITE = 0xFFFFFFFF
 
 try:
-    from . import ipc_async
+    from . import ipc_async  # type: ignore
     IPC_AVAILABLE = True
 except ImportError:
     try:
@@ -277,8 +277,8 @@ class IPCEventLoopExtension:
             # ProactorEventLoop支持IOCP
             pass
 
-        # 优化轮询方案
-        check_interval = 0.001  # 1ms
+        # 优化轮询方案，缩短轮询间隔
+        check_interval = 0.0001  # 100µs，加快完成通知响应
 
         while True:
             # yield让出控制权
@@ -317,8 +317,18 @@ def get_loop_extension(loop: Optional[asyncio.AbstractEventLoop] = None) -> IPCE
     """
     global _loop_extension
 
-    if _loop_extension is None:
-        _loop_extension = IPCEventLoopExtension(loop)
+    current_loop = loop or asyncio.get_event_loop()
+
+    if (
+        _loop_extension is None
+        or _loop_extension.loop is None
+        or _loop_extension.loop is not current_loop
+        or _loop_extension.loop.is_closed()
+    ):
+        if _loop_extension is not None:
+            # 旧循环可能已关闭，确保停止监听任务
+            _loop_extension.completion_handler.stop_monitoring()
+        _loop_extension = IPCEventLoopExtension(current_loop)
 
     return _loop_extension
 

@@ -18,6 +18,8 @@ cd backend/infrastructure/native/native_iocp
 python setup.py build_ext --inplace
 ```
 
+> 可直接运行 `backend/infrastructure/native/compile_all.bat` 一键构建全部扩展（含本模块），脚本遇到错误会暂停并打印日志。
+
 ## API
 
 ### 异步文件I/O

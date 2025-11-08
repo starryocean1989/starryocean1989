@@ -133,10 +133,12 @@ class MyCustomWidget(BaseWidget):
 ```
 
 #### MonacoEditorWidget
-基于QPlainTextEdit + Pygments的代码编辑器组件（Monaco风格）。
+基于QPlainTextEdit + Pygments的代码编辑器组件（Monaco风格），在启用
+`native_qhighlighter` 扩展后可切换到 C++ 正则驱动的高性能高亮方案。
 
 特性：
 - Python语法高亮（Monaco暗色主题）
+- 原生语法高亮（可选，NATIVE_QHIGHLIGHTER 默认开启，失败自动降级）
 - 行号显示
 - 当前行高亮
 - 自动缩进
@@ -152,6 +154,10 @@ editor.setText("print('Hello World')")
 # 获取代码
 code = editor.text()
 ```
+
+> 📌 **原生高亮说明**：若需编译原生高亮扩展，可在
+> `ui/native_extensions/native_qhighlighter` 执行 `python setup.py build_ext --inplace`。
+> 当扩展不可用或设置 `NATIVE_QHIGHLIGHTER=0` 时会自动回退到 Python 实现。
 
 ### 图表组件
 

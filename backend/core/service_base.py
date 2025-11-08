@@ -16,6 +16,8 @@ from typing import Any, Dict, Optional, List, Union
 from datetime import datetime
 from enum import Enum
 
+from backend.infrastructure.system_vnpy.logging_system import bind_logger_defaults
+
 from backend.core.models import (
     UnifiedMarketData,
     UnifiedOrder,
@@ -125,7 +127,11 @@ class BaseService(ABC):
         self.service_name = self.__class__.__name__
         # 使用子类的模块名而不是BaseService的模块名
         child_module = self.__class__.__module__
-        self._logger = logging.getLogger(child_module)
+        self._logger = bind_logger_defaults(
+            logging.getLogger(child_module),
+            log_type="SYSTEM",
+            scenario=f"service.{self.service_name.lower()}",
+        )
         self.status = ServiceStatus.STOPPED
         self.is_initialized = False
         self.start_time: Optional[datetime] = None
@@ -799,8 +805,13 @@ class LoggerMixin:
 
     def __init__(self):
         """初始化日志记录器混入."""
-        # 创建以类名命名的日志记录器
-        self._logger = logging.getLogger(self.__class__.__name__)
+        # 创建以类名命名的日志记录器并绑定统一日志默认字段
+        scenario_name = f"mixin.{self.__class__.__name__.lower()}"
+        self._logger = bind_logger_defaults(
+            logging.getLogger(self.__class__.__name__),
+            log_type="SYSTEM",
+            scenario=scenario_name,
+        )
 
     @property
     def logger(self) -> logging.Logger:

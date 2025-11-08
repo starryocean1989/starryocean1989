@@ -7,7 +7,6 @@
 
 import asyncio
 import atexit
-import logging
 import subprocess
 import sys
 import time
@@ -16,7 +15,12 @@ from typing import Optional
 
 from backend.startup.workers.base import StartupWorker, WorkerResult
 from backend.startup.context import StartupContext
-from backend.infrastructure.system_vnpy.logging_system import LOGGING_QUEUE_TOKEN_ENV
+from backend.infrastructure.system_vnpy.logging_system import (
+    LOGGING_QUEUE_TOKEN_ENV,
+    get_alert_logger,
+    get_configured_logger,
+    get_stage_logger,
+)
 
 
 def get_root() -> Path:
@@ -33,7 +37,16 @@ def get_root() -> Path:
     root_path = current_file.parent.parent.parent.parent
     return root_path
 
-logger = logging.getLogger("backend.startup.workers.monitor_launcher")
+logger = get_configured_logger(
+    "backend.startup.workers.monitor_launcher",
+    scenario="monitor_launch",
+)
+alert_logger = get_alert_logger(
+    "backend.startup.workers.monitor_launcher.alert",
+    scenario="monitor_launch",
+)
+
+STARTUP_SCENARIO = "application_startup"
 
 # 全局变量用于进程清理
 _global_monitor_worker: Optional['MonitorLauncherWorker'] = None
@@ -54,6 +67,11 @@ class MonitorLauncherWorker(StartupWorker):
             name="monitor_launcher",
             description="监控进程启动Worker - 启动监控进程",
         )
+        self.logger = get_configured_logger(
+            f"backend.startup.workers.{self.name}",
+            scenario="monitor_launch",
+        )
+        self._alert_logger = alert_logger
         self.monitor_process_handle: Optional[subprocess.Popen] = None
         self.watchdog_running = False
 
@@ -73,22 +91,15 @@ class MonitorLauncherWorker(StartupWorker):
         start_time = time.time()
 
         try:
-            stage_logger = logging.getLogger("startup.stage")
+            stage_logger = get_stage_logger("startup.stage", scenario=STARTUP_SCENARIO)
 
-            stage_logger.info("", extra={"log_type": "STAGE_NODE"})
-            stage_logger.info(
-                "┌" + "─" * 66 + "┐", extra={"log_type": "STAGE_NODE"}
-            )
-            stage_logger.info(
-                "│ 分支A: 监控进程                                                   │",
-                extra={"log_type": "STAGE_NODE"},
-            )
-            stage_logger.info(
-                "└" + "─" * 66 + "┘", extra={"log_type": "STAGE_NODE"}
-            )
-            stage_logger.info("", extra={"log_type": "STAGE_NODE"})
+            stage_logger.info("")
+            stage_logger.info("┌" + "─" * 66 + "┐")
+            stage_logger.info("│ 分支A: 监控进程                                                   │")
+            stage_logger.info("└" + "─" * 66 + "┘")
+            stage_logger.info("")
 
-            stage_logger.info("📍 监控进程启动开始", extra={"log_type": "STAGE_NODE"})
+            stage_logger.info("📍 监控进程启动开始")
 
             # 启动监控进程
             monitor_info = await self._launch_monitor_process(context)
@@ -99,10 +110,7 @@ class MonitorLauncherWorker(StartupWorker):
 
             elapsed_ms = (time.time() - start_time) * 1000
 
-            stage_logger.info(
-                f"✅ 监控进程完全就绪 ({elapsed_ms/1000:.1f}s)",
-                extra={"log_type": "STAGE_NODE"},
-            )
+            stage_logger.info(f"✅ 监控进程完全就绪 ({elapsed_ms/1000:.1f}s)")
 
             return WorkerResult(
                 success=True,
@@ -114,7 +122,10 @@ class MonitorLauncherWorker(StartupWorker):
         except Exception as e:
             elapsed_ms = (time.time() - start_time) * 1000
 
-            self.logger.error(f"❌ [MonitorLauncherWorker] 监控进程启动Worker异常: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            self._alert_logger.error(
+                f"❌ [MonitorLauncherWorker] 监控进程启动Worker异常: {e}",
+                exc_info=True,
+            )
 
             return WorkerResult(
                 success=False,
@@ -136,7 +147,7 @@ class MonitorLauncherWorker(StartupWorker):
             RuntimeError: 监控进程启动失败
         """
         start_time = time.time()
-        stage_logger = logging.getLogger("startup.stage")
+        stage_logger = get_stage_logger("startup.stage", scenario="monitor_launch")
 
         monitor_script = (
             context.project_root
@@ -159,7 +170,6 @@ class MonitorLauncherWorker(StartupWorker):
                 logger.warning(
                     "[MONITOR-PROCESS] 无法删除旧的 monitor_ready.signal: %s",
                     cleanup_error,
-                    extra={"log_type": "SYSTEM"}
                 )
 
         # 启动监控进程（指定工作目录为项目根目录）
@@ -184,9 +194,7 @@ class MonitorLauncherWorker(StartupWorker):
         env = os.environ.copy()
         if getattr(context, "log_queue_token", None):
             env[LOGGING_QUEUE_TOKEN_ENV] = context.log_queue_token  # type: ignore[arg-type]
-            logger.debug(
-                "[MONITOR-PROCESS] 已注入日志队列token", extra={"log_type": "SYSTEM"}
-            )
+            logger.debug("[MONITOR-PROCESS] 已注入日志队列token")
 
         self.monitor_process_handle = subprocess.Popen(
             [sys.executable, str(monitor_script)],
@@ -199,10 +207,7 @@ class MonitorLauncherWorker(StartupWorker):
 
         # 获取PID并显示
         pid = self.monitor_process_handle.pid
-        stage_logger.info(
-            f"✅ monitor_system.py进程已启动 (PID: {pid})",
-            extra={"log_type": "STAGE_NODE"},
-        )
+        stage_logger.info(f"✅ monitor_system.py进程已启动 (PID: {pid})")
 
         # 注册清理函数
         atexit.register(self.cleanup_monitor)
@@ -211,47 +216,30 @@ class MonitorLauncherWorker(StartupWorker):
         self._start_watchdog(context)
 
         # 显示native_ipc管道创建过程
-        stage_logger.info("✅ 创建native_ipc管道", extra={"log_type": "STAGE_NODE"})
-        stage_logger.info(
-            "  ├─ monitor_alerts ✅", extra={"log_type": "STAGE_NODE"}
-        )
-        stage_logger.info(
-            "  ├─ monitor_status ✅", extra={"log_type": "STAGE_NODE"}
-        )
-        stage_logger.info(
-            "  └─ monitor_query ✅", extra={"log_type": "STAGE_NODE"}
-        )
+        stage_logger.info("✅ 创建native_ipc管道")
+        stage_logger.info("  ├─ monitor_alerts ✅")
+        stage_logger.info("  ├─ monitor_status ✅")
+        stage_logger.info("  └─ monitor_query ✅")
 
         # 显示监控组件初始化
-        stage_logger.info("✅ 监控组件初始化", extra={"log_type": "STAGE_NODE"})
-        stage_logger.info("  ├─ SystemMonitor ✅", extra={"log_type": "STAGE_NODE"})
-        stage_logger.info("  ├─ ProcessMonitor ✅", extra={"log_type": "STAGE_NODE"})
-        stage_logger.info(
-            "  ├─ HardwareMonitor (后台异步) ⏳", extra={"log_type": "STAGE_NODE"}
-        )
-        stage_logger.info("  └─ BandwidthMonitor ✅", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info("✅ 监控组件初始化")
+        stage_logger.info("  ├─ SystemMonitor ✅")
+        stage_logger.info("  ├─ ProcessMonitor ✅")
+        stage_logger.info("  ├─ HardwareMonitor (后台异步) ⏳")
+        stage_logger.info("  └─ BandwidthMonitor ✅")
 
         # 等待监控进程Level 1就绪（管道就绪）
         # 正常2-3秒，设置15秒超时（已非常宽松）
         ports_info = await self._wait_monitor_ready(max_wait=15.0, wait_for_level=1)
 
-        stage_logger.info(
-            "✅ Level 1就绪 (管道就绪)",
-            extra={"log_type": "STAGE_NODE", "scenario": "monitor_launch"}
-        )
-        stage_logger.info(
-            "✅ 监控进程看门狗启动（2s 轮询）",
-            extra={"log_type": "STAGE_NODE", "scenario": "monitor_launch"}
-        )
+        stage_logger.info("✅ Level 1就绪 (管道就绪)")
+        stage_logger.info("✅ 监控进程看门狗启动（2s 轮询）")
 
         # 等待监控进程Level 2就绪（功能完整）
         # 硬件监控初始化可能需要30-60秒，设置90秒超时
         await self._wait_monitor_ready(max_wait=90.0, wait_for_level=2)
 
-        stage_logger.info(
-            "✅ Level 2就绪 (功能完整)",
-            extra={"log_type": "STAGE_NODE", "scenario": "monitor_launch"}
-        )
+        stage_logger.info("✅ Level 2就绪 (功能完整)")
 
         elapsed = time.time() - start_time
 
@@ -291,24 +279,20 @@ class MonitorLauncherWorker(StartupWorker):
                 proc = psutil.Process(self.monitor_process_handle.pid)
                 process_start_time = proc.create_time()
                 self.logger.debug(
-                    f"[MONITOR-PROCESS] 进程启动时间: {process_start_time} (PID={current_monitor_pid})",
-                    extra={"log_type": "SYSTEM", "scenario": "monitor_launch"}
+                    f"[MONITOR-PROCESS] 进程启动时间: {process_start_time} (PID={current_monitor_pid})"
                 )
             except ImportError:
                 self.logger.debug(
-                    "[MONITOR-PROCESS] psutil不可用，使用当前时间作为进程启动时间",
-                    extra={"log_type": "SYSTEM", "scenario": "monitor_launch"}
+                    "[MONITOR-PROCESS] psutil不可用，使用当前时间作为进程启动时间"
                 )
             except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
                 self.logger.debug(
-                    f"[MONITOR-PROCESS] 无法获取进程创建时间: {e}，使用当前时间",
-                    extra={"log_type": "SYSTEM", "scenario": "monitor_launch"}
+                    f"[MONITOR-PROCESS] 无法获取进程创建时间: {e}，使用当前时间"
                 )
         
         if current_monitor_pid:
             self.logger.debug(
-                f"[MONITOR-PROCESS] 等待监控进程就绪: 期望PID={current_monitor_pid}, 等待级别={wait_for_level}, 进程启动时间={process_start_time}",
-                extra={"log_type": "SYSTEM", "scenario": "monitor_launch"}
+                f"[MONITOR-PROCESS] 等待监控进程就绪: 期望PID={current_monitor_pid}, 等待级别={wait_for_level}, 进程启动时间={process_start_time}"
             )
 
         # 等待信号文件出现，并验证PID匹配和时间戳
@@ -330,43 +314,37 @@ class MonitorLauncherWorker(StartupWorker):
                     
                     self.logger.debug(
                         f"[MONITOR-PROCESS] 验证信号文件: PID={signal_pid}, 时间戳={signal_timestamp}, "
-                        f"PID验证={'通过' if pid_valid else '失败'}, 时间戳验证={'通过' if timestamp_valid else '失败'}",
-                        extra={"log_type": "SYSTEM", "scenario": "monitor_launch"}
+                        f"PID验证={'通过' if pid_valid else '失败'}, 时间戳验证={'通过' if timestamp_valid else '失败'}"
                     )
                     
                     # 验证决策
                     if pid_valid:
                         # PID匹配，直接通过
                         self.logger.debug(
-                            f"[MONITOR-PROCESS] PID验证通过: {signal_pid}",
-                            extra={"log_type": "SYSTEM", "scenario": "monitor_launch"}
+                            f"[MONITOR-PROCESS] PID验证通过: {signal_pid}"
                         )
                     elif timestamp_valid:
                         # PID不匹配但时间戳有效（Windows正常情况）
                         self.logger.info(
                             f"[MONITOR-PROCESS] PID不一致但时间戳有效（Windows正常情况）: "
                             f"期望PID={current_monitor_pid}, 实际PID={signal_pid}, "
-                            f"时间戳={signal_timestamp}, 进程启动时间={process_start_time}",
-                            extra={"log_type": "SYSTEM", "scenario": "monitor_launch"}
+                            f"时间戳={signal_timestamp}, 进程启动时间={process_start_time}"
                         )
                     else:
                         # 所有验证都失败，删除旧文件
                         self.logger.warning(
                             f"[MONITOR-PROCESS] 信号文件验证失败（PID和时间戳都不匹配）: "
                             f"期望PID={current_monitor_pid}, 实际PID={signal_pid}, "
-                            f"时间戳={signal_timestamp}, 进程启动时间={process_start_time}，删除旧文件并继续等待",
-                            extra={"log_type": "SYSTEM", "scenario": "monitor_launch"}
+                            f"时间戳={signal_timestamp}, 进程启动时间={process_start_time}，删除旧文件并继续等待"
                         )
                         try:
                             signal_file.unlink()
                             self.logger.debug(
-                                f"[MONITOR-PROCESS] 已删除旧信号文件（PID={signal_pid}）",
-                                extra={"log_type": "SYSTEM", "scenario": "monitor_launch"}
+                                f"[MONITOR-PROCESS] 已删除旧信号文件（PID={signal_pid}）"
                             )
                         except Exception as e:
                             self.logger.warning(
-                                f"[MONITOR-PROCESS] 删除旧信号文件失败: {e}",
-                                extra={"log_type": "SYSTEM", "scenario": "monitor_launch"}
+                                f"[MONITOR-PROCESS] 删除旧信号文件失败: {e}"
                             )
                         await asyncio.sleep(0.5)
                         continue
@@ -376,15 +354,13 @@ class MonitorLauncherWorker(StartupWorker):
                     ports_info = signal_data.get("ports", {})
                     
                     self.logger.debug(
-                        f"[MONITOR-PROCESS] 信号文件有效: PID={signal_pid}, level={current_level}, 目标级别={wait_for_level}, 时间戳={signal_timestamp}",
-                        extra={"log_type": "SYSTEM", "scenario": "monitor_launch"}
+                        f"[MONITOR-PROCESS] 信号文件有效: PID={signal_pid}, level={current_level}, 目标级别={wait_for_level}, 时间戳={signal_timestamp}"
                     )
                     
                     # 如果已达到目标级别，返回
                     if current_level >= wait_for_level:
                         self.logger.info(
-                            f"[MONITOR-PROCESS] ✅ 监控进程Level {wait_for_level}已就绪（PID={signal_pid}, 时间戳={signal_timestamp}）",
-                            extra={"log_type": "SYSTEM", "scenario": "monitor_launch"}
+                            f"[MONITOR-PROCESS] ✅ 监控进程Level {wait_for_level}已就绪（PID={signal_pid}, 时间戳={signal_timestamp}）"
                         )
                         return ports_info
                     
@@ -392,22 +368,19 @@ class MonitorLauncherWorker(StartupWorker):
                     await asyncio.sleep(0.5)
                 except json.JSONDecodeError as e:
                     self.logger.warning(
-                        f"[MONITOR-PROCESS] 解析信号文件失败: {e}，删除并继续等待",
-                        extra={"log_type": "SYSTEM", "scenario": "monitor_launch"}
+                        f"[MONITOR-PROCESS] 解析信号文件失败: {e}，删除并继续等待"
                     )
                     try:
                         signal_file.unlink()
                     except Exception as cleanup_error:
                         self.logger.debug(
-                            f"[MONITOR-PROCESS] 删除损坏信号文件失败: {cleanup_error}",
-                            extra={"log_type": "SYSTEM", "scenario": "monitor_launch"}
+                            f"[MONITOR-PROCESS] 删除损坏信号文件失败: {cleanup_error}"
                         )
                     await asyncio.sleep(0.5)
                     continue
                 except Exception as e:
                     self.logger.warning(
-                        f"[MONITOR-PROCESS] 读取信号文件失败: {e}",
-                        extra={"log_type": "SYSTEM", "scenario": "monitor_launch"}
+                        f"[MONITOR-PROCESS] 读取信号文件失败: {e}"
                     )
                     await asyncio.sleep(0.5)
                     continue
@@ -418,17 +391,11 @@ class MonitorLauncherWorker(StartupWorker):
         # 超时仍未找到匹配的信号文件
         if current_monitor_pid:
             error_msg = f"监控进程就绪超时（等待 {max_wait} 秒，期望PID={current_monitor_pid}，当前级别={current_level}）"
-            self.logger.error(
-                f"[MONITOR-PROCESS] ❌ {error_msg}",
-                extra={"log_type": "ALERT", "scenario": "monitor_launch"}
-            )
+            self._alert_logger.error(f"[MONITOR-PROCESS] ❌ {error_msg}")
             raise RuntimeError(error_msg)
         else:
             error_msg = f"监控进程就绪超时（等待 {max_wait} 秒，当前级别={current_level}）"
-            self.logger.error(
-                f"[MONITOR-PROCESS] ❌ {error_msg}",
-                extra={"log_type": "ALERT", "scenario": "monitor_launch"}
-            )
+            self._alert_logger.error(f"[MONITOR-PROCESS] ❌ {error_msg}")
             raise RuntimeError(error_msg)
 
     def _start_watchdog(self, context: StartupContext):
@@ -447,7 +414,10 @@ class MonitorLauncherWorker(StartupWorker):
                     # 检查进程是否还在运行
                     if self.monitor_process_handle.poll() is not None:
                         # 进程已退出
-                        self.logger.error("❌ [MonitorLauncherWorker] 监控进程意外退出", exc_info=True, extra={"log_type": "SYSTEM"})
+                        self._alert_logger.error(
+                            "❌ [MonitorLauncherWorker] 监控进程意外退出",
+                            exc_info=True,
+                        )
                         self.watchdog_running = False
                         break
                 time.sleep(interval)  # 每2秒检查一次
@@ -465,15 +435,18 @@ class MonitorLauncherWorker(StartupWorker):
                 self.monitor_process_handle.wait(timeout=5)
                 self.logger.info("监控进程已终止")
             except subprocess.TimeoutExpired:
-                self.logger.warning("监控进程终止超时，强制结束...", extra={"log_type": "SYSTEM"})
+                self.logger.warning("监控进程终止超时，强制结束...")
                 try:
                     self.monitor_process_handle.kill()
                     self.monitor_process_handle.wait(timeout=2)
                     self.logger.info("监控进程已强制结束")
                 except Exception as e:
-                    self.logger.error(f"❌ [MonitorLauncherWorker] 强制结束监控进程失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+                    self._alert_logger.error(
+                        f"❌ [MonitorLauncherWorker] 强制结束监控进程失败: {e}",
+                        exc_info=True,
+                    )
             except Exception as e:
-                self.logger.warning(f"⚠️ [MonitorLauncherWorker] 终止监控进程失败: {e}", extra={"log_type": "SYSTEM"})
+                self.logger.warning(f"⚠️ [MonitorLauncherWorker] 终止监控进程失败: {e}")
                 try:
                     self.monitor_process_handle.kill()
                     self.monitor_process_handle.wait(timeout=2)
@@ -493,9 +466,9 @@ class MonitorLauncherWorker(StartupWorker):
             signal_file = get_root() / "logs" / "monitor_ready.signal"
             if signal_file.exists():
                 signal_file.unlink()
-                self.logger.debug("[MONITOR-PROCESS] 已清理 monitor_ready.signal 文件", extra={"log_type": "SYSTEM"})
+                self.logger.debug("[MONITOR-PROCESS] 已清理 monitor_ready.signal 文件")
         except Exception as e:
-            self.logger.debug(f"[MONITOR-PROCESS] 清理信号文件失败（可接受）: {e}", extra={"log_type": "SYSTEM"})
+            self.logger.debug(f"[MONITOR-PROCESS] 清理信号文件失败（可接受）: {e}")
 
 
 def cleanup_all_processes():
@@ -506,7 +479,10 @@ def cleanup_all_processes():
         try:
             _global_monitor_worker.cleanup_monitor()
         except Exception as e:
-            logger.error(f"❌ [MonitorLauncherWorker] 清理监控进程失败: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
+            alert_logger.error(
+                f"❌ [MonitorLauncherWorker] 清理监控进程失败: {e}",
+                exc_info=True,
+            )
 
     # 也可以清理其他进程
     # 从StartupContext获取监控进程并清理（备用方案）
@@ -528,9 +504,9 @@ def _cleanup_signal_file():
         signal_file = get_root() / "logs" / "monitor_ready.signal"
         if signal_file.exists():
             signal_file.unlink()
-            logger.debug("[CLEANUP] 已清理 monitor_ready.signal 文件", extra={"log_type": "SYSTEM"})
+            logger.debug("[CLEANUP] 已清理 monitor_ready.signal 文件")
     except Exception as e:
         # 清理失败不影响程序退出，只记录调试日志
-        logger.debug(f"[CLEANUP] 清理信号文件失败（可接受）: {e}", extra={"log_type": "SYSTEM"})
+        logger.debug(f"[CLEANUP] 清理信号文件失败（可接受）: {e}")
 
 

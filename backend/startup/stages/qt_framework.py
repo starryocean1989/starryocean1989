@@ -14,10 +14,15 @@ import os
 import sys
 import time
 
-from backend.startup.stages.base import StartupStage, StageResult
+from backend.infrastructure.system_vnpy.logging_system import bind_logger_defaults
 from backend.startup.context import StartupContext
+from backend.startup.stages.base import StartupStage, StageResult
 
-logger = logging.getLogger("backend.startup.stages.qt_framework")
+logger = bind_logger_defaults(
+    logging.getLogger("backend.startup.stages.qt_framework"),
+    log_type="SYSTEM",
+    scenario="application_startup",
+)
 
 
 class QtFrameworkStage(StartupStage):

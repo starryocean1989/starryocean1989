@@ -11,9 +11,14 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
 
+from backend.infrastructure.system_vnpy.logging_system import bind_logger_defaults
 from backend.startup.context import StartupContext
 
-logger = logging.getLogger("backend.startup.workers.base")
+logger = bind_logger_defaults(
+    logging.getLogger("backend.startup.workers.base"),
+    log_type="SYSTEM",
+    scenario="application_startup",
+)
 
 
 @dataclass
@@ -58,7 +63,11 @@ class StartupWorker(ABC):
         """
         self.name = name
         self.description = description
-        self.logger = logging.getLogger(f"backend.startup.workers.{name}")
+        self.logger = bind_logger_defaults(
+            logging.getLogger(f"backend.startup.workers.{name}"),
+            log_type="SYSTEM",
+            scenario="application_startup",
+        )
 
     async def run(self, context: StartupContext) -> WorkerResult:
         """运行Worker（模板方法）

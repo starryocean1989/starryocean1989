@@ -11,9 +11,14 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
 
+from backend.infrastructure.system_vnpy.logging_system import bind_logger_defaults
 from backend.startup.context import StartupContext
 
-logger = logging.getLogger("backend.startup.stages.base")
+logger = bind_logger_defaults(
+    logging.getLogger("backend.startup.stages.base"),
+    log_type="SYSTEM",
+    scenario="application_startup",
+)
 
 
 @dataclass
@@ -58,7 +63,11 @@ class StartupStage(ABC):
         """
         self.name = name
         self.description = description
-        self.logger = logging.getLogger(f"backend.startup.stages.{name}")
+        self.logger = bind_logger_defaults(
+            logging.getLogger(f"backend.startup.stages.{name}"),
+            log_type="SYSTEM",
+            scenario="application_startup",
+        )
         # 注意：新架构不再需要startup_logger，日志系统已统一管理
 
     async def execute(self, context: StartupContext) -> StageResult:

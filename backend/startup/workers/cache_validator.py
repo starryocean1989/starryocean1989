@@ -5,14 +5,30 @@
 负责执行_smart_cache_validation_and_sensing的8步验证流程。
 """
 
-import logging
 import time
 from typing import Optional, Dict, Any, Callable
 
+from backend.infrastructure.system_vnpy.logging_system import (
+    get_alert_logger,
+    get_configured_logger,
+    get_progress_logger,
+    get_stage_logger,
+)
 from backend.startup.workers.base import StartupWorker, WorkerResult
 from backend.startup.context import StartupContext
 
-logger = logging.getLogger("backend.startup.workers.cache_validator")
+logger = get_configured_logger(
+    "backend.startup.workers.cache_validator",
+    scenario="application_startup",
+)
+alert_logger = get_alert_logger(
+    "backend.startup.workers.cache_validator.alert",
+    scenario="application_startup",
+)
+progress_logger = get_progress_logger(
+    "backend.startup.workers.cache_validator.progress",
+    scenario="application_startup",
+)
 
 
 class CacheValidatorWorker(StartupWorker):
@@ -47,41 +63,26 @@ class CacheValidatorWorker(StartupWorker):
         try:
             # 获取ChinaStockEngine
             if not context.china_stock_engine:
-                logger.debug(
-                    "[CACHE-VALIDATOR] ChinaStockEngine未初始化",
-                    extra={"log_type": "SYSTEM", "scenario": scenario}
-                )
-                logger.error(
-                    "[CACHE-VALIDATOR] ❌ ChinaStockEngine未初始化",
-                    extra={"log_type": "ALERT", "scenario": scenario}
-                )
+                logger.debug("[CACHE-VALIDATOR] ChinaStockEngine未初始化")
+                alert_logger.error("[CACHE-VALIDATOR] ❌ ChinaStockEngine未初始化")
                 raise RuntimeError("ChinaStockEngine未初始化")
 
             engine = context.china_stock_engine
-            stage_logger = logging.getLogger("startup.stage")
+            stage_logger = get_stage_logger("startup.stage", scenario=scenario)
 
-            logger.debug(
-                "[CACHE-VALIDATOR] 开始执行8步缓存验证流程",
-                extra={"log_type": "SYSTEM", "scenario": scenario}
-            )
-            logger.info(
-                "[CACHE-VALIDATOR] ℹ️ 开始执行8步缓存验证流程",
-                extra={"log_type": "SYSTEM", "scenario": scenario}
-            )
+            logger.debug("[CACHE-VALIDATOR] 开始执行8步缓存验证流程")
+            logger.info("[CACHE-VALIDATOR] ℹ️ 开始执行8步缓存验证流程")
 
             # 注意：分支B标题和ChinaStockEngine初始化信息已在BackendInitStage中输出
             # 这里只输出8步验证的开始标记
-            stage_logger.info(
-                "📍 开始缓存验证与感知流程（8步）",
-                extra={"log_type": "STAGE_NODE", "scenario": scenario}
-            )
+            stage_logger.info("📍 开始缓存验证与感知流程（8步）")
 
             # 创建进度回调函数
             def progress_callback(description: str, percent: int):
                 """进度回调函数"""
-                logger.debug(
+                progress_logger.info(
                     f"[CACHE-VALIDATOR] [进度 {percent}%] {description}",
-                    extra={"log_type": "PROGRESS", "scenario": scenario}
+                    extra={"progress": percent},
                 )
                 self._report_progress(description, percent)
 
@@ -91,12 +92,10 @@ class CacheValidatorWorker(StartupWorker):
                 elapsed = step_result.get("elapsed", 0)
                 progress = step_result.get("progress", 0)
                 logger.debug(
-                    f"[CACHE-VALIDATOR] 步骤{step_num}完成: {step_name}, 耗时={elapsed:.0f}ms, 进度={progress}%",
-                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                    f"[CACHE-VALIDATOR] 步骤{step_num}完成: {step_name}, 耗时={elapsed:.0f}ms, 进度={progress}%"
                 )
                 stage_logger.info(
-                    f"✅ 步骤{step_num}完成: {step_name} ({elapsed:.0f}ms) [进度: {progress}%]",
-                    extra={"log_type": "STAGE_NODE", "scenario": scenario},
+                    f"✅ 步骤{step_num}完成: {step_name} ({elapsed:.0f}ms) [进度: {progress}%]"
                 )
 
             # 执行8步验证流程
@@ -117,29 +116,20 @@ class CacheValidatorWorker(StartupWorker):
             # 注意：离线模式信息已在_smart_cache_validation_and_sensing中输出
             if result.get("offline_mode"):
                 offline_reason = result.get("offline_reason", "未知原因")
-                logger.debug(
-                    f"[CACHE-VALIDATOR] 检测到离线模式: {offline_reason}",
-                    extra={"log_type": "SYSTEM", "scenario": scenario}
+                logger.debug(f"[CACHE-VALIDATOR] 检测到离线模式: {offline_reason}")
+                alert_logger.warning(
+                    f"[CACHE-VALIDATOR] ⚠️ 触发离线降级: {offline_reason}"
                 )
-                logger.warning(
-                    f"[CACHE-VALIDATOR] ⚠️ 触发离线降级: {offline_reason}",
-                    extra={"log_type": "ALERT", "scenario": scenario}
-                )
-                stage_logger.warning(
-                    f"🔴 触发离线降级: {offline_reason}",
-                    extra={"log_type": "STAGE_NODE", "scenario": scenario},
-                )
+                stage_logger.warning(f"🔴 触发离线降级: {offline_reason}")
 
             # 注意："✅ 数据引擎完全就绪"已在_smart_cache_validation_and_sensing中输出，
             # 这里不需要重复输出
             logger.debug(
                 f"[CACHE-VALIDATOR] 8步缓存验证流程完成: 成功={result.get('success', False)}, "
-                f"耗时={elapsed_ms:.0f}ms, 完成步骤数={result.get('steps_completed', 0)}",
-                extra={"log_type": "SYSTEM", "scenario": scenario}
+                f"耗时={elapsed_ms:.0f}ms, 完成步骤数={result.get('steps_completed', 0)}"
             )
             logger.info(
-                f"[CACHE-VALIDATOR] ✅ 8步缓存验证流程完成: 耗时={elapsed_ms:.0f}ms",
-                extra={"log_type": "SYSTEM", "scenario": scenario}
+                f"[CACHE-VALIDATOR] ✅ 8步缓存验证流程完成: 耗时={elapsed_ms:.0f}ms"
             )
 
             return WorkerResult(
@@ -154,13 +144,11 @@ class CacheValidatorWorker(StartupWorker):
             scenario = "application_startup"
 
             logger.debug(
-                f"[CACHE-VALIDATOR] 缓存验证Worker异常详情: {type(e).__name__}: {str(e)}, 耗时={elapsed_ms:.0f}ms",
-                extra={"log_type": "SYSTEM", "scenario": scenario}
+                f"[CACHE-VALIDATOR] 缓存验证Worker异常详情: {type(e).__name__}: {str(e)}, 耗时={elapsed_ms:.0f}ms"
             )
-            logger.error(
+            alert_logger.error(
                 f"[CACHE-VALIDATOR] ❌ 缓存验证Worker异常: {e}",
                 exc_info=True,
-                extra={"log_type": "ALERT", "scenario": scenario}
             )
 
             return WorkerResult(
@@ -174,12 +162,6 @@ class CacheValidatorWorker(StartupWorker):
         """取消验证"""
         self._cancelled = True
         scenario = "application_startup"
-        logger.debug(
-            "[CACHE-VALIDATOR] 缓存验证被取消",
-            extra={"log_type": "SYSTEM", "scenario": scenario}
-        )
-        logger.warning(
-            "[CACHE-VALIDATOR] ⚠️ 缓存验证被取消",
-            extra={"log_type": "ALERT", "scenario": scenario}
-        )
+        logger.debug("[CACHE-VALIDATOR] 缓存验证被取消")
+        alert_logger.warning("[CACHE-VALIDATOR] ⚠️ 缓存验证被取消")
 

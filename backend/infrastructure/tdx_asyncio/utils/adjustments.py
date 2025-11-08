@@ -17,7 +17,17 @@
 import asyncio
 from typing import List, Optional, Union
 
+import numpy as np
 import pandas as pd
+
+try:
+    from backend.infrastructure.native.native_finance_ops import (
+        apply_price_adjustments as native_apply_price_adjustments,
+        FINANCE_OPS_AVAILABLE as NATIVE_FINANCE_AVAILABLE,
+    )
+except ImportError:
+    native_apply_price_adjustments = None
+    NATIVE_FINANCE_AVAILABLE = False
 
 from ..api.hq import AsyncTdxHq_API
 from .logger import logger
@@ -194,47 +204,99 @@ def _apply_full_adjustment(
     # 数据补全
     data = data.fillna(0)
 
-    # 核心算法：计算前日收盘价（mootdx核心公式）
+    # 优先尝试原生实现
+    native_used = _apply_full_adjustment_native(data, adjust_type)
+
+    if not native_used:
+        _apply_adjustments_python_inplace(data, adjust_type)
+
+    return _finalize_adjusted_frame(data)
+
+
+def _apply_full_adjustment_native(data: pd.DataFrame, adjust_type: Optional[str]) -> bool:
+    if not NATIVE_FINANCE_AVAILABLE or native_apply_price_adjustments is None:
+        return False
+
+    if adjust_type is None:
+        return False
+
+    if data.empty:
+        # 空数据无需进一步处理
+        return True
+
+    try:
+        length = len(data.index)
+        price_arrays = {}
+
+        for col in ("open", "high", "low", "close", "volume", "vol"):
+            if col in data.columns:
+                price_arrays[col] = np.ascontiguousarray(
+                    data[col].to_numpy(dtype="float64", copy=True)
+                )
+
+        if "close" not in price_arrays:
+            return False
+
+        price_arrays["preclose"] = np.zeros(length, dtype=np.float64)
+        price_arrays["adj"] = np.ones(length, dtype=np.float64)
+
+        adjustment_arrays = {}
+        for col in ("fenhong", "peigu", "peigujia", "songzhuangu"):
+            if col in data.columns:
+                adjustment_arrays[col] = np.ascontiguousarray(
+                    data[col].to_numpy(dtype="float64", copy=True)
+                )
+            else:
+                adjustment_arrays[col] = np.zeros(length, dtype=np.float64)
+
+        native_apply_price_adjustments(price_arrays, adjustment_arrays, adjust_type)
+
+        for key, arr in price_arrays.items():
+            data[key] = arr
+
+        return True
+    except Exception as exc:
+        logger.warning(
+            f"原生复权计算失败，降级到Python实现: {exc}",
+            exc_info=True,
+        )
+        return False
+
+
+def _apply_adjustments_python_inplace(data: pd.DataFrame, adjust_type: str) -> None:
     data["preclose"] = (
         data["close"].shift(1) * 10 - data["fenhong"] + data["peigu"] * data["peigujia"]
     ) / (10 + data["peigu"] + data["songzhuangu"])
 
-    # 计算复权因子
-    if adjust_type.lower() in ["qfq", "01", "before"]:
-        # 前复权（mootdx核心公式）
-        data["adj"] = (data["preclose"].shift(-1) / data["close"]).fillna(1)[::-1].cumprod()
+    adjust_lower = (adjust_type or "").lower()
 
-        # 价格复权（前复权）
+    if adjust_lower in {"qfq", "01", "before"}:
+        data["adj"] = (data["preclose"].shift(-1) / data["close"]).fillna(1)[::-1].cumprod()
         for col in ["open", "high", "low", "close", "preclose"]:
             if col in data.columns:
                 data[col] = data[col] * data["adj"]
-
-    elif adjust_type.lower() in ["hfq", "02", "after"]:
-        # 后复权（mootdx核心公式）
+    elif adjust_lower in {"hfq", "02", "after"}:
         data["adj"] = (data["preclose"].shift(-1) / data["close"]).fillna(1).cumprod()
-
-        # 价格复权（后复权）
         for col in ["open", "high", "low", "close", "preclose"]:
             if col in data.columns:
                 data[col] = data[col] / data["adj"]
+    else:
+        raise ValueError(f"不支持的复权类型: {adjust_type}")
 
-    # 成交量复权（统一调整）
     if "volume" in data.columns and "adj" in data.columns:
         data["volume"] = data["volume"] / data["adj"]
-    elif "vol" in data.columns and "adj" in data.columns:
+    if "vol" in data.columns and "adj" in data.columns:
         data["vol"] = data["vol"] / data["adj"]
 
-    # 清理：只保留交易日数据，且开盘价不为0
-    data = data.query("if_trade==1 and open != 0")
 
-    # 删除辅助列
-    data = data.drop(
+def _finalize_adjusted_frame(data: pd.DataFrame) -> pd.DataFrame:
+    filtered = data.query("if_trade==1 and open != 0")
+    cleaned = filtered.drop(
         ["fenhong", "peigu", "peigujia", "songzhuangu", "if_trade", "category", "adj", "preclose"],
         axis=1,
         errors="ignore",
     )
-
-    return data
+    return cleaned
 
 
 # ==================== 便捷函数 ====================

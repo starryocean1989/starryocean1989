@@ -14,6 +14,7 @@ __all__ = [
     "dataframe_quality_counters",
     "scan_quality",
     "validate_numeric",
+    "filter_symbols",
 ]
 
 
@@ -58,6 +59,45 @@ def _validate_numeric_py(
     return converted
 
 
+def _filter_symbols_py(
+    records: Iterable[Dict[str, Any]],
+    *,
+    deduplicate: bool = True,
+    drop_empty_code: bool = True,
+    require_name: bool = False,
+) -> List[Dict[str, Any]]:
+    """纯 Python 兜底实现：过滤与去重品种列表。"""
+
+    seen_codes: set[str] = set()
+    filtered: List[Dict[str, Any]] = []
+
+    for symbol in records:
+        if not isinstance(symbol, dict):
+            continue
+
+        raw_code = symbol.get("code")
+        if raw_code is None:
+            continue
+
+        code_text = str(raw_code).strip()
+        if drop_empty_code and not code_text:
+            continue
+
+        if require_name:
+            raw_name = symbol.get("name")
+            if raw_name is None or str(raw_name).strip() == "":
+                continue
+
+        if deduplicate:
+            if code_text in seen_codes:
+                continue
+            seen_codes.add(code_text)
+
+        filtered.append(symbol)
+
+    return filtered
+
+
 def _raise_import_error(*args: Any, **kwargs: Any) -> Any:  # pragma: no cover - 构建失败
     raise ImportError("native_dataframe_ops extension is not compiled")
 
@@ -87,6 +127,7 @@ if platform.system() == "Windows":
         dataframe_to_records = _native_ops.dataframe_to_records  # type: ignore[attr-defined]
         scan_quality = getattr(_native_ops, "scan_quality", _scan_quality_py)
         validate_numeric = getattr(_native_ops, "validate_numeric", _validate_numeric_py)
+        filter_symbols = getattr(_native_ops, "filter_symbols", _filter_symbols_py)
         DATAFRAME_OPS_AVAILABLE = True
     except ImportError:  # pragma: no cover - 构建失败
         DATAFRAME_OPS_AVAILABLE = False
@@ -94,11 +135,13 @@ if platform.system() == "Windows":
         dataframe_quality_counters = _raise_import_error  # type: ignore[assignment]
         scan_quality = _scan_quality_py  # type: ignore[assignment]
         validate_numeric = _validate_numeric_py  # type: ignore[assignment]
+        filter_symbols = _filter_symbols_py  # type: ignore[assignment]
 else:  # pragma: no cover
     DATAFRAME_OPS_AVAILABLE = False
     dataframe_to_records = _raise_platform_error  # type: ignore[assignment]
     dataframe_quality_counters = _raise_platform_error  # type: ignore[assignment]
     scan_quality = _scan_quality_py  # type: ignore[assignment]
     validate_numeric = _validate_numeric_py  # type: ignore[assignment]
+    filter_symbols = _filter_symbols_py  # type: ignore[assignment]
 
 

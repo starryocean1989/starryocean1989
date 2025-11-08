@@ -13,6 +13,8 @@ Native扩展模块统一导入
 - native_compute: 数值计算（批量数值运算、批量哈希计算）
 """
 
+import importlib
+
 __all__ = []
 
 # 并发/同步 - native_gil
@@ -72,6 +74,23 @@ try:
         pass
 except ImportError:
     pass
+
+# 文件监控 - native_fs
+try:
+    from .native_fs import (
+        FS_WATCH_AVAILABLE,
+        DirectoryWatcher,
+        watch_directory,
+    )
+    __all__.extend([
+        'FS_WATCH_AVAILABLE',
+        'DirectoryWatcher',
+        'watch_directory',
+    ])
+except ImportError:
+    FS_WATCH_AVAILABLE = False  # type: ignore
+    DirectoryWatcher = None  # type: ignore
+    watch_directory = None  # type: ignore
 
 # IPC通信 - native_ipc
 try:
@@ -134,6 +153,26 @@ except ImportError:
     SOCKET_METRICS_AVAILABLE = False  # type: ignore
     get_socket_metrics = None  # type: ignore
 
+# SMART 监控 - native_smart_monitor
+try:
+    _native_smart_monitor_module = importlib.import_module(
+        ".native_smart_monitor", __name__
+    )
+except ImportError:
+    SMART_MONITOR_AVAILABLE = False  # type: ignore
+    get_drive_temperature_data = None  # type: ignore
+else:
+    SMART_MONITOR_AVAILABLE = bool(
+        getattr(_native_smart_monitor_module, "SMART_MONITOR_AVAILABLE", False)
+    )
+    get_drive_temperature_data = getattr(
+        _native_smart_monitor_module, "get_drive_temperature_data", None
+    )
+    __all__.extend([
+        'SMART_MONITOR_AVAILABLE',
+        'get_drive_temperature_data',
+    ])
+
 # 数据转换 - native_conversion
 try:
     from .native_conversion import (
@@ -166,6 +205,23 @@ except ImportError:
     dataframe_to_records = None  # type: ignore
     dataframe_quality_counters = None  # type: ignore
 
+# 流式统计 - native_statistics
+try:
+    from .native_statistics import (
+        STATISTICS_AVAILABLE,
+        create_streaming_metric,
+        StreamingMetricHandle,
+    )
+    __all__.extend([
+        'STATISTICS_AVAILABLE',
+        'create_streaming_metric',
+        'StreamingMetricHandle',
+    ])
+except ImportError:
+    STATISTICS_AVAILABLE = False  # type: ignore
+    create_streaming_metric = None  # type: ignore
+    StreamingMetricHandle = None  # type: ignore
+
 # 高性能容器 - native_collections
 try:
     from .native_collections import (
@@ -191,3 +247,101 @@ try:
     ])
 except ImportError:
     pass
+
+# 日志缓冲 - native_log_pipeline
+try:
+    from .native_log_pipeline import (  # type: ignore
+        Pipeline,
+        create,
+        flush_and_close,
+        install,
+    )
+    __all__.extend([
+        'Pipeline',
+        'create',
+        'install',
+        'flush_and_close',
+        'create_log_pipeline',
+    ])
+    create_log_pipeline = install
+except ImportError:
+    Pipeline = None  # type: ignore
+    create = install = flush_and_close = None  # type: ignore
+    create_log_pipeline = None  # type: ignore
+
+# 进程指标 - native_process_metrics
+try:
+    from .native_process_metrics import (  # type: ignore
+        PROCESS_METRICS_AVAILABLE,
+        get_process_snapshot,
+        get_system_metrics,
+    )
+    __all__.extend([
+        'PROCESS_METRICS_AVAILABLE',
+        'get_process_snapshot',
+        'get_system_metrics',
+    ])
+except ImportError:
+    PROCESS_METRICS_AVAILABLE = False  # type: ignore
+    get_process_snapshot = None  # type: ignore
+    get_system_metrics = None  # type: ignore
+
+# 网络探测 - native_netprobe
+try:
+    from .native_netprobe import (  # type: ignore
+        NETPROBE_AVAILABLE,
+        batch_test_connections,
+        test_connection,
+    )
+    __all__.extend([
+        'NETPROBE_AVAILABLE',
+        'batch_test_connections',
+        'test_connection',
+    ])
+except ImportError:
+    NETPROBE_AVAILABLE = False  # type: ignore
+    batch_test_connections = None  # type: ignore
+    test_connection = None  # type: ignore
+
+# VNPY 数据转换 - native_vnpy_conversion
+try:
+    from . import native_vnpy_conversion as _vnpy_conversion  # type: ignore
+    VNPY_CONVERSION_AVAILABLE = getattr(_vnpy_conversion, "CONVERSION_AVAILABLE", False)
+    vnpy_batch_convert = getattr(_vnpy_conversion, "batch_convert", None)
+    vnpy_convert_one = getattr(_vnpy_conversion, "convert_one", None)
+    __all__.extend([
+        'VNPY_CONVERSION_AVAILABLE',
+        'vnpy_batch_convert',
+        'vnpy_convert_one',
+    ])
+except ImportError:
+    VNPY_CONVERSION_AVAILABLE = False  # type: ignore
+    vnpy_batch_convert = vnpy_convert_one = None  # type: ignore
+
+# 技术指标 - native_indicator
+try:
+    from .native_indicator import (  # type: ignore
+        CORE_AVAILABLE as NATIVE_INDICATOR_CORE_AVAILABLE,
+        INDICATOR_AVAILABLE as NATIVE_INDICATOR_AVAILABLE,
+        calculate_indicator,
+        calculate_indicator_batch,
+        sma,
+        ema,
+        macd,
+        rsi,
+    )
+    __all__.extend([
+        'NATIVE_INDICATOR_CORE_AVAILABLE',
+        'NATIVE_INDICATOR_AVAILABLE',
+        'calculate_indicator',
+        'calculate_indicator_batch',
+        'sma',
+        'ema',
+        'macd',
+        'rsi',
+    ])
+except ImportError:
+    NATIVE_INDICATOR_CORE_AVAILABLE = False  # type: ignore
+    NATIVE_INDICATOR_AVAILABLE = False  # type: ignore
+    calculate_indicator = calculate_indicator_batch = None  # type: ignore
+    sma = ema = macd = rsi = None  # type: ignore

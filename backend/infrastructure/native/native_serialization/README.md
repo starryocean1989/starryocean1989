@@ -18,6 +18,8 @@ cd backend/infrastructure/native/native_serialization
 python setup.py build_ext --inplace
 ```
 
+> 推荐使用 `backend/infrastructure/native/compile_all.bat` 一键构建，脚本会顺序编译全部扩展（含本模块），遇错即停便于定位。
+
 ## API
 
 ### 批量序列化

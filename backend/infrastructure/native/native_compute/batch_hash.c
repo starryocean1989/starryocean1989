@@ -18,7 +18,8 @@ PyObject* batch_hash_func(PyObject *self, PyObject *args) {
     Py_ssize_t count;
     const char *algo = "md5";
 
-    if (!PyArg_ParseTuple(args, "O|s", &data, &algorithm)) {
+    /* 解析参数：data 列表，algorithm 可选的字符串对象 */
+    if (!PyArg_ParseTuple(args, "O|O", &data, &algorithm)) {
         return NULL;
     }
 
@@ -27,7 +28,11 @@ PyObject* batch_hash_func(PyObject *self, PyObject *args) {
         return NULL;
     }
 
-    if (algorithm != NULL && PyUnicode_Check(algorithm)) {
+    if (algorithm != NULL) {
+        if (!PyUnicode_Check(algorithm)) {
+            PyErr_SetString(PyExc_TypeError, "algorithm must be a string");
+            return NULL;
+        }
         algo = PyUnicode_AsUTF8(algorithm);
         if (algo == NULL) {
             return NULL;

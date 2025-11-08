@@ -7,34 +7,6 @@
 #include <Python.h>
 #include "rpc_bridge.h"
 
-// Python函数：get_method_id
-static PyObject* py_get_method_id(PyObject* self, PyObject* args) {
-    const char* method_name;
-    
-    if (!PyArg_ParseTuple(args, "s", &method_name)) {
-        return NULL;
-    }
-    
-    uint32_t method_id = get_method_id(method_name);
-    return PyLong_FromUnsignedLong(method_id);
-}
-
-// Python函数：get_method_name
-static PyObject* py_get_method_name(PyObject* self, PyObject* args) {
-    unsigned long method_id;
-    
-    if (!PyArg_ParseTuple(args, "k", &method_id)) {
-        return NULL;
-    }
-    
-    const char* method_name = get_method_name((uint32_t)method_id);
-    if (method_name) {
-        return PyUnicode_FromString(method_name);
-    }
-    
-    Py_RETURN_NONE;
-}
-
 // Python函数：create_request_header
 static PyObject* py_create_request_header(PyObject* self, PyObject* args) {
     unsigned long method_id;
@@ -82,10 +54,6 @@ static PyObject* py_serialize_request(PyObject* self, PyObject* args) {
 
 // 方法定义表
 static PyMethodDef RPCBridgeMethods[] = {
-    {"get_method_id", py_get_method_id, METH_VARARGS,
-     "Get method ID from method name"},
-    {"get_method_name", py_get_method_name, METH_VARARGS,
-     "Get method name from method ID"},
     {"create_request_header", py_create_request_header, METH_VARARGS,
      "Create RPC request header"},
     {"serialize_request", py_serialize_request, METH_VARARGS,
@@ -112,13 +80,6 @@ PyMODINIT_FUNC PyInit_native_rpc_bridge(void) {
     // 添加常量
     PyModule_AddIntConstant(module, "RPC_BRIDGE_AVAILABLE", 1);
     PyModule_AddStringConstant(module, "VERSION", "1.0.0");
-    
-    // 添加方法ID常量
-    PyModule_AddIntConstant(module, "METHOD_GET_KLINE_DATA", METHOD_GET_KLINE_DATA);
-    PyModule_AddIntConstant(module, "METHOD_GET_STOCK_LIST", METHOD_GET_STOCK_LIST);
-    PyModule_AddIntConstant(module, "METHOD_GET_CACHE_STATUS", METHOD_GET_CACHE_STATUS);
-    PyModule_AddIntConstant(module, "METHOD_CALCULATE_INDICATORS", METHOD_CALCULATE_INDICATORS);
-    PyModule_AddIntConstant(module, "METHOD_SCAN_DATA_QUALITY", METHOD_SCAN_DATA_QUALITY);
     
     return module;
 }

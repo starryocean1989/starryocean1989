@@ -791,7 +791,10 @@ class DatabaseManager:
             return 0
 
     def batch_insert_logs_serialized(self, payload: bytes) -> int:
-        """接收序列化的批量日志payload（pickle），解包后批量插入."""
+        """接收序列化的批量日志payload（pickle），解包后批量插入。
+
+        ✅ 优化：调用 batch_insert_logs，利用其事务能力提升性能。
+        """
         try:
             import pickle
 
@@ -800,7 +803,12 @@ class DatabaseManager:
                 return 0
             return self.batch_insert_logs(records)
         except Exception as e:
-            logger.error("反序列化批量日志失败：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
+            logger.error(
+                "反序列化批量日志失败（SQLiteManager）：%s",
+                e,
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
+            )
             return 0
 
     # ========== 下载历史管理 ==========
@@ -1346,12 +1354,16 @@ class SQLiteManager:
             return False
 
     def batch_insert_logs(self, records: List[Dict[str, Any]]) -> int:
-        """批量插入日志（SQLiteManager）。驱动不提供executemany，这里逐条执行。"""
+        """批量插入日志（SQLiteManager）。
+
+        ✅ 优化：使用事务（begin/commit）包装批量插入，大幅提升性能。
+        """
         if not self._initialized or not self.database:
             return 0
         if not records:
             return 0
         try:
+            self.database.begin()  # 开始事务
             count = 0
             for rec in records:
                 level = rec.get("level") or "INFO"
@@ -1366,6 +1378,7 @@ class SQLiteManager:
                     (level, module, message, details_json),
                 )
                 count += 1
+            self.database.commit()  # 提交事务
             return count
         except Exception as e:
             logger.error(
@@ -1374,10 +1387,22 @@ class SQLiteManager:
                 exc_info=True,
                 extra={"log_type": "SYSTEM"},
             )
+            try:
+                self.database.rollback()  # 出错时回滚
+            except Exception as e_rb:
+                logger.error(
+                    "回滚批量插入事务失败（SQLiteManager）：%s",
+                    e_rb,
+                    exc_info=True,
+                    extra={"log_type": "SYSTEM"},
+                )
             return 0
 
     def batch_insert_logs_serialized(self, payload: bytes) -> int:
-        """接收序列化的批量日志payload（pickle），解包后批量插入（SQLiteManager）。"""
+        """接收序列化的批量日志payload（pickle），解包后批量插入.
+
+        ✅ 优化：调用 batch_insert_logs，利用其事务能力提升性能。
+        """
         try:
             import pickle
 
@@ -1700,3 +1725,4 @@ __all__ = [
     "get_sqlite_manager",
     "get_database_manager",
 ]
+

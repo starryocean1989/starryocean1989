@@ -20,6 +20,7 @@
 """
 
 import asyncio
+import os
 import logging
 import psutil
 import threading
@@ -225,89 +226,254 @@ class TaskStrategyRegistry:
 # ==============================================================================
 
 
+def _should_use_native_resource_monitor() -> bool:
+    value = os.getenv("NATIVE_RESOURCE_MONITOR", "1").strip().lower()
+    return value not in {"0", "false", "off"}
+
+
 @dataclass
 class ResourceMetrics:
-    """资源指标"""
+    """资源指标."""
 
     cpu_percent: float = 0.0
     memory_percent: float = 0.0
     disk_io_percent: float = 0.0
     network_io_percent: float = 0.0
-    bottleneck: str = "unknown"  # 瓶颈资源
+    bottleneck: str = "unknown"
     timestamp: datetime = field(default_factory=datetime.now)
+    source: str = "psutil"
 
 
 class ResourceMonitor:
-    """系统资源监控器
-
-    实时监控系统资源，计算木桶理论指标：
-    - CPU使用率
-    - 内存使用率
-    - 磁盘I/O使用率
-    - 网络I/O使用率
-    """
+    """系统资源监控器，优先调用原生指标扩展。"""
 
     def __init__(self):
-        """初始化资源监控器"""
-        self._last_disk_io = None
-        self._last_network_io = None
-        self._last_check_time = None
+        self._last_disk_io: Optional[Dict[str, float]] = None
+        self._last_network_io: Optional[Dict[str, float]] = None
+        self._last_disk_check_ts: Optional[float] = None
+        self._last_network_check_ts: Optional[float] = None
 
-    def get_metrics(self) -> ResourceMetrics:
-        """获取当前资源指标
+        self._use_native = _should_use_native_resource_monitor()
+        self._native_get_system_metrics = None
+        self._native_get_socket_metrics = None
+        self._native_error_cls: Optional[type[Exception]] = None
+        self._native_degraded = False
+        self._socket_degraded_logged = False
+        self._last_native_network: Optional[Dict[str, float]] = None
+        self._last_native_disk: Optional[Dict[str, float]] = None
+        self._native_disabled_reason: Optional[str] = None
+        self._network_baseline_mbps = float(
+            os.getenv("RESOURCE_MONITOR_NETWORK_BASELINE_MBPS", "100") or 100.0
+        )
+        self._disk_baseline_mbps = float(os.getenv("RESOURCE_MONITOR_DISK_BASELINE_MBPS", "100") or 100.0)
 
-        Returns:
-            资源指标
-        """
-        metrics = ResourceMetrics()
+        self._init_native_extensions()
 
-        # CPU使用率
+    def _init_native_extensions(self) -> None:
+        if not self._use_native:
+            logger.debug("ResourceMonitor: 原生资源监控已通过环境变量禁用")
+            return
+
         try:
-            cpu_usage = psutil.cpu_percent(interval=0.1)
-            if isinstance(cpu_usage, (int, float)):
-                metrics.cpu_percent = float(cpu_usage)
-        except Exception as e:
-            logger.debug(f"获取CPU使用率失败: {e}")
-            metrics.cpu_percent = 0.0
+            from backend.infrastructure.native import (  # type: ignore
+                PROCESS_METRICS_AVAILABLE,
+                SOCKET_METRICS_AVAILABLE,
+                get_system_metrics as native_get_system_metrics,
+                get_socket_metrics as native_get_socket_metrics,
+            )
+            from backend.infrastructure.native.native_process_metrics import (  # type: ignore
+                NativeProcessMetricsError,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("ResourceMonitor: 导入原生指标扩展失败，自动降级: %s", exc, exc_info=True)
+            self._use_native = False
+            self._native_disabled_reason = f"import_failed:{exc}"
+            return
 
-        # 内存使用率
-        try:
-            memory = psutil.virtual_memory()
-            metrics.memory_percent = memory.percent
-        except Exception as e:
-            logger.debug(f"获取内存使用率失败: {e}")
-            metrics.memory_percent = 0.0
+        if PROCESS_METRICS_AVAILABLE and callable(native_get_system_metrics):
+            self._native_get_system_metrics = native_get_system_metrics
+            self._native_error_cls = NativeProcessMetricsError
+            logger.info("ResourceMonitor: native_process_metrics 已启用")
+        else:
+            self._use_native = False
+            self._native_disabled_reason = "process_metrics_unavailable"
+            logger.debug("ResourceMonitor: native_process_metrics 不可用，改用 psutil")
+            return
 
-        # 磁盘I/O使用率（简化估算）
-        try:
-            disk_io = psutil.disk_io_counters()
-            current_time = time.time()
+        if SOCKET_METRICS_AVAILABLE and callable(native_get_socket_metrics):
+            self._native_get_socket_metrics = native_get_socket_metrics
+        else:
+            self._native_get_socket_metrics = None
 
-            if disk_io and self._last_disk_io and self._last_check_time:
-                time_delta = current_time - self._last_check_time
-                read_bytes_delta = disk_io.read_bytes - self._last_disk_io.read_bytes  # type: ignore
-                write_bytes_delta = disk_io.write_bytes - self._last_disk_io.write_bytes  # type: ignore
-
-                # 计算I/O速率（MB/s）
-                io_rate = (read_bytes_delta + write_bytes_delta) / time_delta / (1024 * 1024)
-                # 假设最大I/O速率为100 MB/s（HDD），计算百分比
-                metrics.disk_io_percent = min(100.0, io_rate / 100.0 * 100.0)
-
-            self._last_disk_io = disk_io
-            self._last_check_time = current_time
-        except Exception as e:
-            logger.debug(f"获取磁盘I/O使用率失败: {e}")
-            metrics.disk_io_percent = 0.0
-
-        # 确定瓶颈（木桶理论）
+    @staticmethod
+    def _update_bottleneck(metrics: ResourceMetrics) -> None:
         resources = {
             "CPU": metrics.cpu_percent,
             "Memory": metrics.memory_percent,
             "DiskIO": metrics.disk_io_percent,
+            "NetworkIO": metrics.network_io_percent,
         }
-        metrics.bottleneck = max(resources, key=lambda k: resources[k])  # type: ignore
+        metrics.bottleneck = max(resources, key=lambda key: resources[key])
 
+    def _estimate_disk_percent(self, raw: Dict[str, Any]) -> float:
+        read_bytes = float(raw.get("disk_read_bytes", 0.0))
+        write_bytes = float(raw.get("disk_write_bytes", 0.0))
+        timestamp = float(raw.get("timestamp", time.time()))
+        if self._last_native_disk is None:
+            self._last_native_disk = {
+                "timestamp": timestamp,
+                "read_bytes": read_bytes,
+                "write_bytes": write_bytes,
+            }
+            return 0.0
+
+        elapsed = max(timestamp - self._last_native_disk["timestamp"], 1e-3)
+        read_delta = max(read_bytes - self._last_native_disk["read_bytes"], 0.0)
+        write_delta = max(write_bytes - self._last_native_disk["write_bytes"], 0.0)
+        self._last_native_disk = {
+            "timestamp": timestamp,
+            "read_bytes": read_bytes,
+            "write_bytes": write_bytes,
+        }
+        mbps = (read_delta + write_delta) / elapsed / (1024 * 1024)
+        return min(100.0, (mbps / self._disk_baseline_mbps) * 100.0)
+
+    def _estimate_network_percent(self, raw: Dict[str, Any]) -> float:
+        sent = float(raw.get("net_sent_bytes", 0.0))
+        recv = float(raw.get("net_recv_bytes", 0.0))
+        timestamp = float(raw.get("timestamp", time.time()))
+        if self._last_native_network is None:
+            self._last_native_network = {"timestamp": timestamp, "sent": sent, "recv": recv}
+            return 0.0
+
+        elapsed = max(timestamp - self._last_native_network["timestamp"], 1e-3)
+        delta = max(
+            (sent - self._last_native_network["sent"]) + (recv - self._last_native_network["recv"]),
+            0.0,
+        )
+        self._last_native_network = {"timestamp": timestamp, "sent": sent, "recv": recv}
+        mbps = delta / elapsed / (1024 * 1024)
+        return min(100.0, (mbps / self._network_baseline_mbps) * 100.0)
+
+    def _collect_native_metrics(self) -> Optional[ResourceMetrics]:
+        if not self._native_get_system_metrics or not self._use_native:
+            return None
+
+        try:
+            raw = self._native_get_system_metrics()  # type: ignore[operator]
+        except Exception as exc:  # noqa: BLE001
+            if not self._native_degraded:
+                logger.warning(
+                    "ResourceMonitor: native_process_metrics 调用失败，切换到 psutil: %s",
+                    exc,
+                )
+            self._native_degraded = True
+            self._use_native = False
+            self._native_disabled_reason = f"runtime_error:{exc}"
+            return None
+
+        metrics = ResourceMetrics(source="native")
+        timestamp = float(raw.get("timestamp", time.time()))
+        metrics.timestamp = datetime.fromtimestamp(timestamp)
+        metrics.cpu_percent = float(raw.get("cpu_percent", 0.0))
+        metrics.memory_percent = float(raw.get("memory_percent", 0.0))
+
+        disk_percent = raw.get("disk_percent")
+        if isinstance(disk_percent, (int, float)):
+            metrics.disk_io_percent = float(disk_percent)
+        else:
+            metrics.disk_io_percent = self._estimate_disk_percent(raw)
+
+        metrics.network_io_percent = self._estimate_network_percent(raw)
+
+        if self._native_get_socket_metrics is not None:
+            try:
+                socket_metrics = self._native_get_socket_metrics()  # type: ignore[operator]
+                bandwidth_percent = socket_metrics.get("bandwidth_percent")
+                if isinstance(bandwidth_percent, (int, float)):
+                    metrics.network_io_percent = float(bandwidth_percent)
+            except Exception as exc:  # noqa: BLE001
+                if not self._socket_degraded_logged:
+                    logger.debug(
+                        "ResourceMonitor: native_socket_metrics 调用失败，继续使用系统指标: %s",
+                        exc,
+                        exc_info=True,
+                    )
+                    self._socket_degraded_logged = True
+                self._native_get_socket_metrics = None
+
+        self._update_bottleneck(metrics)
         return metrics
+
+    def _collect_psutil_metrics(self) -> ResourceMetrics:
+        metrics = ResourceMetrics(source="psutil")
+
+        try:
+            cpu_usage = psutil.cpu_percent(interval=None)
+            if isinstance(cpu_usage, (int, float)):
+                metrics.cpu_percent = float(cpu_usage)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("ResourceMonitor: 获取CPU使用率失败: %s", exc)
+
+        try:
+            memory = psutil.virtual_memory()
+            metrics.memory_percent = float(memory.percent)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("ResourceMonitor: 获取内存使用率失败: %s", exc)
+
+        try:
+            disk_io = psutil.disk_io_counters()
+            current_time = time.time()
+            read_bytes = float(getattr(disk_io, "read_bytes", 0)) if disk_io else 0.0
+            write_bytes = float(getattr(disk_io, "write_bytes", 0)) if disk_io else 0.0
+            if self._last_disk_io and self._last_disk_check_ts:
+                elapsed = max(current_time - self._last_disk_check_ts, 1e-3)
+                read_delta = max(read_bytes - self._last_disk_io["read_bytes"], 0.0)
+                write_delta = max(write_bytes - self._last_disk_io["write_bytes"], 0.0)
+                mbps = (read_delta + write_delta) / elapsed / (1024 * 1024)
+                metrics.disk_io_percent = min(100.0, (mbps / self._disk_baseline_mbps) * 100.0)
+            self._last_disk_io = {"read_bytes": read_bytes, "write_bytes": write_bytes}
+            self._last_disk_check_ts = current_time
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("ResourceMonitor: 获取磁盘I/O使用率失败: %s", exc)
+
+        try:
+            net_io = psutil.net_io_counters()
+            current_time = time.time()
+            bytes_sent = float(getattr(net_io, "bytes_sent", 0)) if net_io else 0.0
+            bytes_recv = float(getattr(net_io, "bytes_recv", 0)) if net_io else 0.0
+            if self._last_network_io and self._last_network_check_ts:
+                elapsed = max(current_time - self._last_network_check_ts, 1e-3)
+                delta = max(
+                    (bytes_sent - self._last_network_io["bytes_sent"])
+                    + (bytes_recv - self._last_network_io["bytes_recv"]),
+                    0.0,
+                )
+                mbps = delta / elapsed / (1024 * 1024)
+                metrics.network_io_percent = min(100.0, (mbps / self._network_baseline_mbps) * 100.0)
+            self._last_network_io = {"bytes_sent": bytes_sent, "bytes_recv": bytes_recv}
+            self._last_network_check_ts = current_time
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("ResourceMonitor: 获取网络使用率失败: %s", exc)
+
+        self._update_bottleneck(metrics)
+        return metrics
+
+    def get_metrics(self) -> ResourceMetrics:
+        """获取当前资源指标。"""
+
+        if self._use_native:
+            metrics = self._collect_native_metrics()
+            if metrics is not None:
+                return metrics
+
+        if self._native_disabled_reason and self._native_degraded:
+            logger.debug(
+                "ResourceMonitor: 使用 psutil 回退（原因=%s）",
+                self._native_disabled_reason,
+            )
+
+        return self._collect_psutil_metrics()
 
 
 # ==============================================================================

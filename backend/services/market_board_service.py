@@ -294,113 +294,23 @@ class MarketBoardService(BaseService):
     def calculate_indicator(
         self, data: List[float], indicator_name: str, params: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        """计算技术指标.
-
-        Args:
-            data: 价格数据
-            indicator_name: 指标名称（如：SMA, EMA, MACD等）
-            params: 指标参数
-
-        Returns:
-            Dict: 指标计算结果
-        """
-        try:
-            if self.talib is None:
-                return {
-                    "success": False,
-                    "message": "talib不可用",
-                    "data": [],
-                }
-
-            # 转换数据为numpy数组
-            import numpy as np
-
-            price_array = np.array(data, dtype=float)
-
-            if len(price_array) == 0:
-                return {
-                    "success": False,
-                    "message": "数据为空",
-                    "data": [],
-                }
-
-            # 根据指标名称调用对应的talib函数
-            params = params or {}
-
-            if indicator_name.upper() == "SMA":
-                timeperiod = params.get("timeperiod", 20)
-                result = self.talib.SMA(price_array, timeperiod=timeperiod)
-
-            elif indicator_name.upper() == "EMA":
-                timeperiod = params.get("timeperiod", 20)
-                result = self.talib.EMA(price_array, timeperiod=timeperiod)
-
-            elif indicator_name.upper() == "MA":
-                timeperiod = params.get("timeperiod", 20)
-                result = self.talib.MA(price_array, timeperiod=timeperiod)
-
-            elif indicator_name.upper() == "BBANDS":
-                timeperiod = params.get("timeperiod", 20)
-                nbdevup = params.get("nbdevup", 2)
-                nbdevdn = params.get("nbdevdn", 2)
-                upper, middle, lower = self.talib.BBANDS(
-                    price_array, timeperiod=timeperiod, nbdevup=nbdevup, nbdevdn=nbdevdn
-                )
-                result = {
-                    "upper": upper.tolist(),
-                    "middle": middle.tolist(),
-                    "lower": lower.tolist(),
-                }
-
-            elif indicator_name.upper() == "MACD":
-                fastperiod = params.get("fastperiod", 12)
-                slowperiod = params.get("slowperiod", 26)
-                signalperiod = params.get("signalperiod", 9)
-                macd, signal, hist = self.talib.MACD(
-                    price_array,
-                    fastperiod=fastperiod,
-                    slowperiod=slowperiod,
-                    signalperiod=signalperiod,
-                )
-                result = {"macd": macd.tolist(), "signal": signal.tolist(), "hist": hist.tolist()}
-
-            elif indicator_name.upper() == "RSI":
-                timeperiod = params.get("timeperiod", 14)
-                result = self.talib.RSI(price_array, timeperiod=timeperiod)
-
-            elif indicator_name.upper() == "KDJ":
-                # KDJ需要高低收三个价格
-                # 这里简化处理，仅计算STOCH
-                fastk_period = params.get("fastk_period", 9)
-                slowk_period = params.get("slowk_period", 3)
-                slowd_period = params.get("slowd_period", 3)
-                slowk, slowd = self.talib.STOCH(
-                    price_array,
-                    price_array,
-                    price_array,
-                    fastk_period=fastk_period,
-                    slowk_period=slowk_period,
-                    slowd_period=slowd_period,
-                )
-                result = {"k": slowk.tolist(), "d": slowd.tolist()}
-
-            else:
-                return {
-                    "success": False,
-                    "message": f"不支持的指标: {indicator_name}",
-                    "data": [],
-                }
-
-            # 转换为列表格式
-            if isinstance(result, np.ndarray):
-                result = result.tolist()
-
+        """计算技术指标（通过数据进程RPC调用）."""
+        if self.data_client is None:
             return {
-                "success": True,
-                "indicator": indicator_name,
-                "data": result,
-                "params": params,
+                "success": False,
+                "message": "数据服务客户端不可用",
+                "data": [],
             }
+
+        try:
+            request_params = {
+                "indicator_name": indicator_name,
+                "closes": data,
+                "params": params or {},
+            }
+            
+            result = self.data_client.call("calculate_indicator", **request_params)
+            return result
 
         except Exception as e:
             self._log_error("计算技术指标", e)

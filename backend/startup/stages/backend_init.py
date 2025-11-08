@@ -15,15 +15,20 @@ import asyncio
 import logging
 import time
 
-from backend.startup.stages.base import StartupStage, StageResult
+from backend.infrastructure.system_vnpy.logging_system import bind_logger_defaults
 from backend.startup.context import StartupContext
+from backend.startup.stages.base import StartupStage, StageResult
 from backend.startup.workers.backend_initializer import BackendInitializerWorker
 from backend.startup.workers.cache_validator import CacheValidatorWorker
 from backend.startup.workers.monitor_launcher import MonitorLauncherWorker
 from backend.startup.workers.data_launcher import DataLauncherWorker
 from backend.startup.workers.base import WorkerResult
 
-logger = logging.getLogger("backend.startup.stages.backend_init")
+logger = bind_logger_defaults(
+    logging.getLogger("backend.startup.stages.backend_init"),
+    log_type="SYSTEM",
+    scenario="application_startup",
+)
 
 
 class BackendInitStage(StartupStage):

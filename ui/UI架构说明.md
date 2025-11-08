@@ -86,8 +86,8 @@ __all__ = ["MainWindow", "ThemeManager"]
 ---
 
 #### 1.3 `startup_coordinator.py` ⚠️ 已迁移
-**状态**：已迁移到 `backend/startup/ui_startup/startup_coordinator.py`  
-**原因**：启动协调器属于后端启动流程的一部分，已整合到后端启动模块  
+**状态**：已迁移到 `backend/startup/ui_startup/startup_coordinator.py`
+**原因**：启动协调器属于后端启动流程的一部分，已整合到后端启动模块
 **位置**：`backend/startup/ui_startup/startup_coordinator.py`
 
 **架构更新（v0.50 三进程）**：
@@ -192,15 +192,18 @@ __all__ = ["MainWindow", "ThemeManager"]
 - `StatusIndicator` - 状态指示器（成功/警告/错误）
 - `CompactTable` - 紧凑型表格
 
-**3️⃣ Monaco编辑器**：
 - `LineNumberArea` - 行号显示区域
 - `PythonHighlighter` - Python语法高亮器
 - `MonacoEditorWidget` - Monaco风格代码编辑器（基于QPlainTextEdit + Pygments）
+- `native_qhighlighter`（可选）- 基于 C++/PySide6 的原生代码高亮器
 
 **特性**：
-- 零外部依赖（无需WebEngine）
-- 统一使用DashboardTheme主题配置
-- 高性能渲染和实时更新
+- 默认内置 Python 实现；若已编译并启用 `native_qhighlighter_core` 扩展，将自动切换至原生高亮路径（环境变量 `NATIVE_QHIGHLIGHTER=0` 可显式关闭）。
+- 原生实现支持主题热切换、批量 token 化，5k 行脚本滚动延迟显著降低。
+- `compile_all.bat` 会自动编译扩展，也可在 `ui/native_extensions/native_qhighlighter` 手动运行 `python setup.py build_ext --inplace`。
+- 任意异常都会写入 UI 日志并即时回退到 Python 版本，确保编辑器始终可用。
+- 零外部依赖（无需WebEngine），继续统一使用 DashboardTheme 主题配置。
+- 高性能渲染和实时更新。
 
 ---
 
@@ -1001,7 +1004,7 @@ self.right_panel.addWidget(self.my_module_view)
 # ❌ 传统方式:需要手动创建QThread
 class ReloadSymbolsThread(QThread):
     finished_signal = Signal(dict)
-    
+
     def run(self):
         # 在子线程中同步等待异步任务
         result = self.data_center_service.reload_symbol_list()
@@ -1138,8 +1141,8 @@ else:
 
 ## 6.3 async_utils工具包 ⚠️ 已迁移
 
-> **状态**：已合并到 `ui/modules/data_center_view.py`  
-> **原因**：该工具包仅被 `DataCenterView` 使用，为减少模块间依赖，已合并到使用者文件  
+> **状态**：已合并到 `ui/modules/data_center_view.py`
+> **原因**：该工具包仅被 `DataCenterView` 使用，为减少模块间依赖，已合并到使用者文件
 > **位置**：`ui/modules/data_center_view.py` 文件开头部分的合并代码
 
 > **原始位置**：`ui/core/async_utils.py` (已删除)
@@ -1161,7 +1164,7 @@ class MyWidget(QWidget):
         self.button = QPushButton("加载数据")
         # 直接连接async函数
         self.button.clicked.connect(self.on_button_clicked)
-    
+
     @async_slot  # 将async函数转为Slot
     async def on_button_clicked(self):
         print("开始加载...")
@@ -1194,10 +1197,10 @@ def async_slot(*args, **kwargs):
         def wrapper(self_or_first_arg, *func_args, **func_kwargs):
             # 获取事件循环
             loop = _get_event_loop()
-            
+
             # 创建协程任务
             coro = func(self_or_first_arg, *func_args, **func_kwargs)
-            
+
             if QASYNC_AVAILABLE and loop is not None:
                 # qasync模式: 提交到asyncio事件循环
                 task = asyncio.ensure_future(coro, loop=loop)
@@ -1205,7 +1208,7 @@ def async_slot(*args, **kwargs):
             else:
                 # 回退模式: 在后台线程执行
                 _run_async_in_thread(coro, func.__name__)
-        
+
         return wrapper
     return decorator
 ```
@@ -1228,22 +1231,22 @@ from ui.modules.data_center_view import AsyncTaskRunner
 class DataProcessingWidget(QWidget):
     def __init__(self):
         super().__init__()
-        
+
         # 创建任务管理器
         self.task_runner = AsyncTaskRunner()
-        
+
         # 连接任务完成信号
         self.task_runner.task_completed.connect(self.on_task_completed)
-        
+
         self.start_button = QPushButton("开始处理")
         self.cancel_button = QPushButton("取消")
         self.status_label = QLabel("就绪")
-        
+
         self.start_button.clicked.connect(self.start_processing)
         self.cancel_button.clicked.connect(self.cancel_processing)
-        
+
         self.current_task_id = None
-    
+
     def start_processing(self):
         # 提交异步任务
         self.current_task_id = self.task_runner.submit(
@@ -1251,14 +1254,14 @@ class DataProcessingWidget(QWidget):
         )
         self.status_label.setText(f"处理中... (Task: {self.current_task_id[:8]})")
         self.start_button.setEnabled(False)
-    
+
     def cancel_processing(self):
         if self.current_task_id:
             # 取消任务
             if self.task_runner.cancel(self.current_task_id):
                 self.status_label.setText("已取消")
                 self.start_button.setEnabled(True)
-    
+
     def on_task_completed(self, task_id: str, success: bool, result):
         if task_id == self.current_task_id:
             if success:
@@ -1463,11 +1466,11 @@ async def bad_example3(self):
 class ReloadSymbolsThread(QThread):
     finished_signal = Signal(dict)
     error_signal = Signal(str)
-    
+
     def __init__(self, service):
         super().__init__()
         self.service = service
-    
+
     def run(self):
         try:
             result = self.service.reload_symbol_list()
@@ -1478,16 +1481,16 @@ class ReloadSymbolsThread(QThread):
 class DataCenterView(QWidget):
     def on_reload_button_clicked(self):
         self.reload_button.setEnabled(False)
-        
+
         self.reload_thread = ReloadSymbolsThread(self.service)
         self.reload_thread.finished_signal.connect(self._on_reload_finished)
         self.reload_thread.error_signal.connect(self._on_reload_error)
         self.reload_thread.start()
-    
+
     def _on_reload_finished(self, result: dict):
         self.reload_button.setEnabled(True)
         self.update_ui(result)
-    
+
     def _on_reload_error(self, error: str):
         self.reload_button.setEnabled(True)
         self.show_error(error)

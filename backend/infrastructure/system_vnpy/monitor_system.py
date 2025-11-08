@@ -29,7 +29,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Protocol, cast
+from typing import Any, Deque, Dict, List, Optional, Protocol, cast, Tuple
+from urllib.parse import urlparse
 
 # 添加项目根目录到Python路径（用于独立运行）
 if __name__ == "__main__":
@@ -38,6 +39,12 @@ if __name__ == "__main__":
         sys.path.insert(0, str(project_root))
 
 import numpy as np
+
+from backend.infrastructure.system_vnpy.logging_system import (
+    bind_logger_defaults,
+    load_queue_from_env,
+    setup_subprocess_logging,
+)
 
 
 def get_root() -> Path:
@@ -69,10 +76,28 @@ except ImportError:
 
 # ==================== 日志配置 ====================
 # 创建专用logger（模块级别，监控进程独立）
-logger = logging.getLogger("monitor_process")
-logger_alert = logging.getLogger("monitor_process.alert")
-logger_sensor = logging.getLogger("monitor_process.sensor")
-logger_ipc = logging.getLogger("monitor_process.ipc")
+logger = bind_logger_defaults(
+    logging.getLogger("monitor_process"),
+    log_type="SYSTEM",
+    scenario="monitor_process",
+)
+logger_alert = bind_logger_defaults(
+    logging.getLogger("monitor_process.alert"),
+    log_type="ALERT",
+    scenario="monitor_process.alert",
+)
+logger_sensor = bind_logger_defaults(
+    logging.getLogger("monitor_process.sensor"),
+    log_type="SYSTEM",
+    scenario="monitor_process.sensor",
+)
+logger_ipc = bind_logger_defaults(
+    logging.getLogger("monitor_process.ipc"),
+    log_type="SYSTEM",
+    scenario="monitor_process.ipc",
+)
+
+MONITOR_LAUNCH_SCENARIO = "monitor_launch"
 
 # 尝试导入psutil,如果没有则使用基础实现
 try:
@@ -87,15 +112,31 @@ except ImportError:
 # 尝试导入原生进程/系统指标扩展
 try:
     from backend.infrastructure.native.native_process_metrics import (
+        NativeProcessMetricsError,
+        enumerate_processes as native_enumerate_processes,
         get_system_metrics as native_get_system_metrics,
         get_process_snapshot as native_get_process_snapshot,
     )
 
     NATIVE_PROCESS_METRICS_AVAILABLE = True
 except ImportError:
+    NativeProcessMetricsError = Exception  # type: ignore
+    native_enumerate_processes = None  # type: ignore
     native_get_system_metrics = None  # type: ignore
     native_get_process_snapshot = None  # type: ignore
     NATIVE_PROCESS_METRICS_AVAILABLE = False
+
+# 尝试导入原生网络探测扩展
+try:
+    from backend.infrastructure.native.native_netprobe import (
+        NETPROBE_AVAILABLE as NATIVE_NETPROBE_AVAILABLE,
+        batch_test_connections as native_batch_test_connections,
+        test_connection as native_test_connection,
+    )
+except ImportError:
+    NATIVE_NETPROBE_AVAILABLE = False
+    native_test_connection = None  # type: ignore
+    native_batch_test_connections = None  # type: ignore
 
 # 尝试导入原生 Socket 指标采集扩展
 try:
@@ -114,6 +155,18 @@ except ImportError:
     SOCKET_METRICS_AVAILABLE = False
     native_get_socket_metrics = None  # type: ignore
     native_get_socket_metrics_detailed = None  # type: ignore
+
+# 尝试导入原生统计扩展
+try:
+    from backend.infrastructure.native import (
+        STATISTICS_AVAILABLE as NATIVE_STATISTICS_AVAILABLE,
+        create_streaming_metric,
+        StreamingMetricHandle,
+    )
+except ImportError:
+    NATIVE_STATISTICS_AVAILABLE = False  # type: ignore[assignment]
+    create_streaming_metric = None  # type: ignore[assignment]
+    StreamingMetricHandle = None  # type: ignore[assignment]
 
 # 尝试导入WMI（Windows Management Instrumentation）
 try:
@@ -134,10 +187,6 @@ import random
 from backend.infrastructure.system_vnpy import (
     DiskSmartData,
     SmartMonitor,
-)
-from backend.infrastructure.system_vnpy.logging_system import (
-    load_queue_from_env,
-    setup_subprocess_logging,
 )
 
 # 第三方库导入
@@ -207,6 +256,47 @@ class NetworkSpeedTester:
         Returns:
             测试结果字典，包含 ping_ms、url、status
         """
+        # 优先使用原生 netprobe（TCP 层探测）
+        if NATIVE_NETPROBE_AVAILABLE and native_test_connection is not None:
+            try:
+                parsed = urlparse(url)
+                host = parsed.hostname or url
+                if host:
+                    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+                    probe_obj = native_test_connection(host, port, timeout=float(self.timeout))
+                    probe: Dict[str, Any] = probe_obj if isinstance(probe_obj, dict) else {}
+                    status = probe.get("status")
+                    if status == "success":
+                        result = {
+                            "ping_ms": round(float(probe.get("ping_ms", 0.0)), 2),
+                            "url": url,
+                            "status": "success",
+                        }
+                        logger.debug(
+                            f"[SPEEDTEST-PING] native_netprobe success: {host}:{port} {result['ping_ms']}ms",
+                            extra={"log_type": "SYSTEM", "scenario": self.scenario},
+                        )
+                        return result
+                    if status == "timeout":
+                        return {
+                            "ping_ms": -1,
+                            "url": url,
+                            "error": "timeout",
+                            "status": "timeout",
+                        }
+                    if status == "error":
+                        error_reason = probe.get("error")
+                        logger.debug(
+                            f"[SPEEDTEST-PING] native_netprobe error: {host}:{port} code={error_reason}",
+                            extra={"log_type": "SYSTEM", "scenario": self.scenario},
+                        )
+            except Exception as native_error:  # noqa: BLE001
+                logger.debug(
+                    f"[SPEEDTEST-PING] native_netprobe fallback: {native_error}",
+                    exc_info=True,
+                    extra={"log_type": "SYSTEM", "scenario": self.scenario},
+                )
+
         try:
             logger.debug(
                 f"[SPEEDTEST-PING] 开始测试延迟: {url} (超时={self.timeout}秒)",
@@ -270,6 +360,35 @@ class NetworkSpeedTester:
         Returns:
             测试结果字典，包含 ping_ms、url、status
         """
+        if NATIVE_NETPROBE_AVAILABLE and native_test_connection is not None:
+            try:
+                parsed = urlparse(url)
+                host = parsed.hostname or url
+                if host:
+                    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+                    probe_obj = native_test_connection(host, port, timeout=float(self.timeout))
+                    probe: Dict[str, Any] = probe_obj if isinstance(probe_obj, dict) else {}
+                    status = probe.get("status")
+                    if status == "success":
+                        return {
+                            "ping_ms": round(float(probe.get("ping_ms", 0.0)), 2),
+                            "url": url,
+                            "status": "success",
+                        }
+                    if status == "timeout":
+                        return {
+                            "ping_ms": -1,
+                            "url": url,
+                            "error": "timeout",
+                            "status": "timeout",
+                        }
+            except Exception as native_error:  # noqa: BLE001
+                logger.debug(
+                    f"[SPEEDTEST-PING-BROWSER] native_netprobe fallback: {native_error}",
+                    exc_info=True,
+                    extra={"log_type": "SYSTEM", "scenario": self.scenario},
+                )
+
         try:
             logger.debug(
                 f"[SPEEDTEST-PING-BROWSER] 开始测试延迟（浏览器模式）: {url} (超时={self.timeout}秒)",
@@ -1061,15 +1180,35 @@ class AdaptiveThresholdManager:
 
     def __init__(self, db_manager=None):
         self.db_manager = db_manager
-        self._metric_history: Dict[str, deque] = defaultdict(lambda: deque(maxlen=1440))
         self._configs: Dict[str, ThresholdConfig] = {}
         self._current_thresholds: Dict[str, ThresholdResult] = {}
         self._last_update_time: Dict[str, float] = {}
         self._update_interval = 3600
+        self._statistics_handles: Dict[str, "StreamingMetricHandle"] = {}
+        self._fallback_history: Dict[str, Deque[float]] = {}
         logger.info("自适应阈值管理器初始化完成")
 
     def register_metric(self, config: ThresholdConfig):
         self._configs[config.metric_name] = config
+        if not NATIVE_STATISTICS_AVAILABLE or create_streaming_metric is None:
+            logger.debug(
+                "原生统计扩展不可用, 指标=%s 使用Python回退",
+                config.metric_name,
+            )
+        else:
+            try:
+                handle = create_streaming_metric(window_size=config.window_size)
+                self._statistics_handles[config.metric_name] = handle
+                logger.debug(
+                    "创建原生统计句柄: %s (窗口=%d)",
+                    config.metric_name,
+                    config.window_size,
+                )
+            except Exception:
+                logger.exception(
+                    "创建原生统计句柄失败, 将使用Python回退: %s",
+                    config.metric_name,
+                )
         logger.info(
             "注册指标: %s (默认警告=%s, 默认严重=%s)",
             config.metric_name,
@@ -1080,7 +1219,26 @@ class AdaptiveThresholdManager:
     def learn_baseline(self, metric_name: str, value: float):
         if metric_name not in self._configs:
             return
-        self._metric_history[metric_name].append(value)
+        statistics_handle = self._statistics_handles.get(metric_name)
+        if statistics_handle is not None:
+            try:
+                statistics_handle.update(float(value))
+            except Exception:
+                logger.exception(
+                    "更新原生统计句柄失败, 切换到Python回退: %s",
+                    metric_name,
+                )
+                self._statistics_handles.pop(metric_name, None)
+                self._fallback_history.setdefault(metric_name, deque(maxlen=self._configs[metric_name].window_size)).append(
+                    value
+                )
+            else:
+                if metric_name in self._fallback_history:
+                    self._fallback_history.pop(metric_name, None)
+        else:
+            self._fallback_history.setdefault(metric_name, deque(maxlen=self._configs[metric_name].window_size)).append(
+                value
+            )
         last_update = self._last_update_time.get(metric_name, 0)
         if time.time() - last_update >= self._update_interval:
             self._update_threshold(metric_name)
@@ -1136,16 +1294,28 @@ class AdaptiveThresholdManager:
 
     def _update_threshold(self, metric_name: str):
         config = self._configs[metric_name]
-        history = list(self._metric_history[metric_name])
-        sample_count = len(history)
+        statistics_handle = self._statistics_handles.get(metric_name)
+        snapshot: Optional[Dict[str, Any]] = None
+        if statistics_handle is not None:
+            try:
+                snapshot = statistics_handle.snapshot()
+            except Exception:
+                logger.exception(
+                    "获取原生统计快照失败, 将切换到Python回退: %s",
+                    metric_name,
+                )
+                self._statistics_handles.pop(metric_name, None)
+        if snapshot is None:
+            history_queue = self._fallback_history.setdefault(
+                metric_name, deque(maxlen=config.window_size)
+            )
+            history = list(history_queue)
+            sample_count = len(history)
+        else:
+            sample_count = int(snapshot.get("sample_count", 0))
+            history = None
 
         if sample_count < config.min_samples:
-            logger.debug(
-                "阈值学习: 指标=%s, 样本不足=%d/%d (使用默认阈值)",
-                metric_name,
-                sample_count,
-                config.min_samples,
-            )
             logger.debug(
                 "阈值学习: 指标=%s, 样本不足=%d/%d (使用默认阈值)",
                 metric_name,
@@ -1168,14 +1338,37 @@ class AdaptiveThresholdManager:
             self._last_update_time[metric_name] = time.time()
             return
 
-        try:
-            mean = float(np.mean(history))
-            stddev = float(np.std(history))
-            p95 = float(np.percentile(history, 95))
-            p99 = float(np.percentile(history, 99))
-        except Exception as e:
-            logger.exception("计算统计量失败 (%s): %s", metric_name, e)
-            return
+        if snapshot is None:
+            try:
+                mean = float(np.mean(history))
+                stddev = float(np.std(history))
+                p95 = float(np.percentile(history, 95))
+                p99 = float(np.percentile(history, 99))
+            except Exception as error:
+                logger.exception("计算统计量失败 (%s): %s", metric_name, error)
+                return
+        else:
+            mean = snapshot.get("mean")
+            stddev = snapshot.get("stddev")
+            p95 = snapshot.get("p95")
+            p99 = snapshot.get("p99")
+            if any(value is None for value in (mean, stddev, p95, p99)):
+                logger.debug(
+                    "原生统计快照缺少值, 指标=%s, 切换到Python回退",
+                    metric_name,
+                )
+                history_queue = self._fallback_history.setdefault(
+                    metric_name, deque(maxlen=config.window_size)
+                )
+                history = list(history_queue)
+                try:
+                    mean = float(np.mean(history))
+                    stddev = float(np.std(history))
+                    p95 = float(np.percentile(history, 95))
+                    p99 = float(np.percentile(history, 99))
+                except Exception as error:
+                    logger.exception("计算统计量失败 (%s): %s", metric_name, error)
+                    return
 
         warning_learned = self._calculate_threshold(p95, p99, stddev, config.warning_formula)
         critical_learned = self._calculate_threshold(p95, p99, stddev, config.critical_formula)
@@ -1202,6 +1395,15 @@ class AdaptiveThresholdManager:
 
         self._current_thresholds[metric_name] = result
         self._last_update_time[metric_name] = time.time()
+        logger.debug(
+            "阈值学习快照: 指标=%s, 样本=%d, 均值=%.2f, 标准差=%.2f, P95=%.2f, P99=%.2f",
+            metric_name,
+            sample_count,
+            mean if mean is not None else float("nan"),
+            stddev if stddev is not None else float("nan"),
+            p95 if p95 is not None else float("nan"),
+            p99 if p99 is not None else float("nan"),
+        )
 
         # 详细学习过程日志
         logger.info(
@@ -1363,13 +1565,9 @@ def get_hardware_monitor_instance():
         ExtendedLHMWrapper实例或None
     """
     return HardwareMonitorFactory.get_instance()
-
-
 # =============================================================================
 # Part 5: 系统分析器（从独立文件合并）
 # =============================================================================
-
-
 class SystemBottleneckAnalyzer:
     """系统级瓶颈分析引擎（从 bottleneck_analyzer.py 合并）.
 
@@ -1386,7 +1584,10 @@ class SystemBottleneckAnalyzer:
 
     def __init__(self):
         """初始化瓶颈分析器."""
-        self.logger = logging.getLogger(__name__)
+        self.logger = bind_logger_defaults(
+            logging.getLogger(f"{__name__}.SystemBottleneckAnalyzer"),
+            scenario="monitor_process.bottleneck",
+        )
 
         # 木桶理论配置（不使用权重，只看最短板）
         self.resource_types = ["cpu", "memory", "disk", "network"]
@@ -1693,7 +1894,10 @@ class ScenarioAnalyzer:
         Args:
             business_metrics: 业务指标采集器（可选，用于获取业务指标）
         """
-        self.logger = logging.getLogger(__name__)
+        self.logger = bind_logger_defaults(
+            logging.getLogger(f"{__name__}.ScenarioAnalyzer"),
+            scenario="monitor_process.scenario",
+        )
         self.business_metrics = business_metrics
 
         # 场景关键字映射
@@ -2099,13 +2303,9 @@ class ScenarioAnalyzer:
             return 1.1
         else:
             return 1.0
-
-
 # =============================================================================
 # Part 6: 监控进程V2主类（混合并发架构）
 # =============================================================================
-
-
 class MonitoringProcessV2:
     """监控进程V2 - 混合并发架构.
 
@@ -2495,7 +2695,9 @@ class MonitoringProcessV2:
             logger.info("[INIT] ℹ️ 开始创建查询服务端管道: monitor_query")
             pipe_start_time = time.time()
             try:
-                self.query_pipe = await AsyncIPCPipe.server("monitor_query")
+                self.query_pipe = await AsyncIPCPipe.server(
+                    "monitor_query", wait_for_client=False
+                )
                 pipe_elapsed = (time.time() - pipe_start_time) * 1000
                 logger.info(f"[IPC] ✅ 查询服务端管道已创建: monitor_query (耗时={pipe_elapsed:.0f}ms)")
             except Exception as query_pipe_error:
@@ -2515,7 +2717,9 @@ class MonitoringProcessV2:
             logger.info("[INIT] ℹ️ 开始创建状态服务端管道: monitor_status")
             pipe_start_time = time.time()
             try:
-                self.status_pipe = await AsyncIPCPipe.server("monitor_status")
+                self.status_pipe = await AsyncIPCPipe.server(
+                    "monitor_status", wait_for_client=False
+                )
                 pipe_elapsed = (time.time() - pipe_start_time) * 1000
                 logger.info(f"[IPC] ✅ 状态服务端管道已创建: monitor_status (耗时={pipe_elapsed:.0f}ms)")
             except Exception as status_pipe_error:
@@ -2581,7 +2785,7 @@ class MonitoringProcessV2:
             self._alerts_pipe_retry_count = 0  # 连接重试计数
             self._alerts_pipe_max_retries = 3  # 最大重试次数
             self._alerts_pipe_last_retry_time = 0.0  # 上次重试时间
-            
+
             logger.info(
                 "[IPC] ✅ 告警管道将采用懒加载模式（首次发送告警时连接）",
                 extra={"log_type": "SYSTEM"}
@@ -2868,13 +3072,24 @@ class MonitoringProcessV2:
             logger.error("[IPC] ❌ 协程异常退出: %s", e, exc_info=True, extra={"log_type": "ALERT"})
         finally:
             logger.info("[IPC] 通信处理协程停止")
-
     async def _handle_query_pipe(self):
         """处理查询管道（native_ipc服务端）."""
         if not self.query_pipe:
             return
 
         try:
+            try:
+                await self.query_pipe.wait_for_client(timeout=30.0)
+                logger.info("[IPC] 查询管道客户端已连接", extra={"log_type": "SYSTEM"})
+            except Exception as connect_error:
+                logger.error(
+                    "[IPC] 查询管道等待客户端连接失败: %s",
+                    connect_error,
+                    exc_info=True,
+                    extra={"log_type": "ALERT"},
+                )
+                return
+
             while self.running:
                 try:
                     # 读取请求（使用更大的缓冲区）
@@ -3143,6 +3358,18 @@ class MonitoringProcessV2:
             return
 
         try:
+            try:
+                await self.status_pipe.wait_for_client(timeout=30.0)
+                logger.info("[IPC] 状态管道客户端已连接", extra={"log_type": "SYSTEM"})
+            except Exception as connect_error:
+                logger.error(
+                    "[IPC] 状态管道等待客户端连接失败: %s",
+                    connect_error,
+                    exc_info=True,
+                    extra={"log_type": "ALERT"},
+                )
+                return
+
             while self.running:
                 try:
                     # 读取状态（使用更大的缓冲区）
@@ -3596,111 +3823,6 @@ class MonitoringProcessV2:
 
         except Exception as e:
             logger.exception("加入数据库队列失败: %s", e)
-
-    async def db_writer_loop(self):
-        """数据库写入循环."""
-        logger.info("[DB-WRITER] 数据库写入协程启动")
-
-        # 标记协程已就绪
-        if "db_writer" in self.coroutine_ready_events:
-            self.coroutine_ready_events["db_writer"].set()
-            logger.info("[DB-WRITER] ✅ 协程就绪")
-
-        try:
-            batch = []
-            batch_size = 100
-            flush_interval = 300
-            last_flush_time = time.time()
-
-            while self.running:
-                try:
-                    if not self.db_write_queue:
-                        await asyncio.sleep(1)
-                        continue
-
-                    try:
-                        item = await asyncio.wait_for(self.db_write_queue.get(), timeout=5)
-                        batch.append(item)
-                    except asyncio.TimeoutError:
-                        pass
-
-                    current_time = time.time()
-                    should_flush = len(batch) >= batch_size or (
-                        batch and current_time - last_flush_time >= flush_interval
-                    )
-
-                    if should_flush:
-                        await self._flush_to_database(batch)
-                        batch.clear()
-                        last_flush_time = current_time
-
-                except Exception as e:
-                    logger.exception("[DB-WRITER] 错误: %s", e)
-                    await asyncio.sleep(1)
-
-            if batch:
-                await self._flush_to_database(batch)
-
-        except Exception as e:
-            logger.error("[DB-WRITER] ❌ 协程异常退出: %s", e, exc_info=True)
-        finally:
-            logger.info("[DB-WRITER] 数据库写入协程停止")
-
-    async def _flush_to_database(self, batch: List[Dict]):
-        """批量写入数据库."""
-        if not batch:
-            return
-
-        try:
-            from backend.services.database_adapter import get_db_manager
-
-            db_manager = get_db_manager()
-
-            for record in batch:
-                db_manager.execute_update(
-                    """INSERT INTO monitoring_history
-                    (timestamp, metric_type, metric_name, value, unit, metadata)
-                    VALUES (?, ?, ?, ?, ?, ?)""",
-                    (
-                        record["timestamp"].isoformat(),
-                        record["metric_type"],
-                        record["metric_name"],
-                        record["value"],
-                        record.get("unit", ""),
-                        record.get("metadata", ""),
-                    ),
-                )
-
-            logger.info("[DB-WRITER] ✅ 批量写入 %d 条记录", len(batch))
-
-        except Exception as e:
-            logger.error("[DB-WRITER] 批量写入失败: %s", e)
-
-    async def alert_evaluator_loop(self):
-        """告警评估循环 - DEBUG断点位置."""
-        logger.info("[ALERT-EVAL] 告警评估协程启动")
-
-        # 标记协程已就绪
-        if "alert_eval" in self.coroutine_ready_events:
-            self.coroutine_ready_events["alert_eval"].set()
-            logger.info("[ALERT-EVAL] ✅ 协程就绪")
-
-        try:
-            while self.running:
-                try:
-                    await asyncio.sleep(self.fast_interval)
-                    alerts = await self._evaluate_alerts()
-                    for alert in alerts:
-                        await self._push_alert(alert)
-                except Exception as e:
-                    logger.exception("[ALERT-EVAL] 评估失败: %s", e)
-                    await asyncio.sleep(self.fast_interval)
-
-        except Exception as e:
-            logger.error("[ALERT-EVAL] ❌ 协程异常退出: %s", e, exc_info=True)
-        finally:
-            logger.info("[ALERT-EVAL] 告警评估协程停止")
-
     async def parent_process_watcher(self):
         """监控父进程是否存活，防止成为孤儿进程."""
         logger.info("[PARENT-WATCHER] 父进程监控协程启动")
@@ -3905,7 +4027,7 @@ class MonitoringProcessV2:
                 )
                 await self._write_alert_to_file(alert)
                 return
-            
+
             # 限制重试频率（每5秒最多1次）
             if current_time - self._alerts_pipe_last_retry_time < 5.0:
                 logger.debug(
@@ -3914,7 +4036,7 @@ class MonitoringProcessV2:
                 )
                 await self._write_alert_to_file(alert)
                 return
-            
+
             # 尝试建立连接
             try:
                 logger.info("[IPC] 尝试建立告警客户端管道连接...")
@@ -3959,17 +4081,17 @@ class MonitoringProcessV2:
                 pass
             self.alerts_pipe = None
             await self._write_alert_to_file(alert)
-    
+
     async def _write_alert_to_file(self, alert: Dict[str, Any]):
         """将告警写入本地文件（降级方案）."""
         try:
             alert_file = get_root() / "logs" / "monitor_alerts.jsonl"
             alert_file.parent.mkdir(parents=True, exist_ok=True)
-            
+
             with open(alert_file, "a", encoding="utf-8") as f:
                 f.write(json.dumps(alert, ensure_ascii=False) + "\n")
                 f.flush()
-            
+
             logger.debug(
                 "[ALERT] 告警已写入本地文件: %s",
                 alert["message"],
@@ -4467,19 +4589,6 @@ class BandwidthMonitor:
                 )
 
                 return result
-# TODO: 注释掉事件日志 except 块（当前不可用）
-                # except Exception as ai_log_error:
-#     # 事件日志初始化失败，继续执行测试（降级模式）
-                #     logger.warning(
-#         f"[BANDWIDTH] 事件日志初始化失败，继续测试（降级模式）: {ai_log_error}",
-                #         extra={"log_type": "ALERT", "scenario": "manual_speedtest"},
-                #     )
-                #     logger.debug(
-#         f"[BANDWIDTH] 事件日志异常详情: {type(ai_log_error).__name__}: {str(ai_log_error)}",
-                #         extra={"log_type": "SYSTEM", "scenario": "manual_speedtest"},
-                #     )
-
-            return result
 
         except Exception as e:
             logger.error(
@@ -4897,8 +5006,6 @@ class LatencyMonitor:
     def get_available_server_count(self) -> int:
         """获取可用服务器数量"""
         return len(self._available_servers)
-
-
 class SystemMonitor:
     """系统监控器."""
 
@@ -5086,24 +5193,36 @@ class SystemMonitor:
         return disk_type
 
     def get_physical_disks_info(self) -> Dict[str, Dict[str, Any]]:
-        """获取物理磁盘信息（使用WMI区分物理磁盘和逻辑分区）
+        """获取物理磁盘信息（优先使用Windows原生API，回退到WMI/psutil）。
 
-        Returns:
-            {
-                "PhysicalDrive0": {
-                    "device_id": "\\\\.\\PHYSICALDRIVE0",
-                    "disk_type": "ssd",  # hdd/ssd/nvme
-                    "is_system_disk": True,  # C:所在磁盘
-                    "partitions": ["C:", "D:"],
-                    "interface_type": "NVMe",
-                    "size_bytes": 512000000000,
-                }
-            }
+        优先路径：
+        - Windows：使用 `DeviceIoControl` + 物理盘枚举 + 卷扩展映射，实现无WMI的磁盘拓扑采集；
+          - 判定 `disk_type`: NVMe（BusTypeNVMe），否则根据 `IncursSeekPenalty` 判别HDD/SSD
+          - 映射分区：通过 `IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS` 将盘符关联到PhysicalDrive编号
+        - 其他平台或失败：保持原有WMI/psutil回退逻辑
         """
-        physical_disks = {}
+        physical_disks: Dict[str, Dict[str, Any]] = {}
+
+        # 读取缓存（10分钟TTL）
+        try:
+            now = time.time()
+            ttl = 600.0
+            cache = getattr(self, "_physical_disks_cache", None)
+            cache_ts = getattr(self, "_physical_disks_cache_ts", 0.0)
+            if cache and (now - cache_ts) < ttl:
+                return cache  # 使用缓存
+        except Exception:
+            pass
 
         try:
             system = platform.system()
+
+            # Windows优先使用原生API获取拓扑信息
+            if system == "Windows":
+                try:
+                    physical_disks = _windows_physical_disks_native()
+                except Exception as e:
+                    logger.debug("Windows原生磁盘拓扑采集失败，回退到WMI: %s", e)
 
             if system == "Windows" and HAS_WMI and HAS_PSUTIL:
                 # 使用WMI获取物理磁盘信息
@@ -5222,7 +5341,308 @@ class SystemMonitor:
         except Exception as e:
             logger.error("获取物理磁盘信息失败: %s", e)
 
+        # 写入缓存
+        try:
+            setattr(self, "_physical_disks_cache", physical_disks)
+            setattr(self, "_physical_disks_cache_ts", time.time())
+        except Exception:
+            pass
+
         return physical_disks
+
+
+def _windows_physical_disks_native() -> Dict[str, Dict[str, Any]]:
+    """使用Windows原生API采集物理磁盘拓扑信息（不依赖WMI）。
+
+    采集内容：device_id、interface_type（BusType）、disk_type（NVMe/SSD/HDD）、size_bytes、分区映射、系统盘。
+    """
+    result: Dict[str, Dict[str, Any]] = {}
+
+    try:
+        import os
+        import ctypes
+        from ctypes import wintypes
+        import psutil  # 仅用于枚举盘符，不参与设备属性查询
+
+        # CreateFile flags
+        GENERIC_READ = 0x80000000
+        FILE_SHARE_READ = 0x00000001
+        FILE_SHARE_WRITE = 0x00000002
+        OPEN_EXISTING = 3
+
+        # IOCTL codes
+        IOCTL_STORAGE_QUERY_PROPERTY = 0x2D1400
+        IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS = 0x560000
+        IOCTL_DISK_GET_LENGTH_INFO = 0x0007405C
+
+        # STORAGE enums
+        PropertyStandardQuery = 0
+        StorageDeviceProperty = 0
+        StorageDeviceSeekPenaltyProperty = 7
+
+        # WinAPI
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        CreateFileW = kernel32.CreateFileW
+        CreateFileW.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        ]
+        CreateFileW.restype = wintypes.HANDLE
+
+        DeviceIoControl = kernel32.DeviceIoControl
+        DeviceIoControl.argtypes = [
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+            wintypes.LPVOID,
+        ]
+        DeviceIoControl.restype = wintypes.BOOL
+
+        CloseHandle = kernel32.CloseHandle
+        CloseHandle.argtypes = [wintypes.HANDLE]
+        CloseHandle.restype = wintypes.BOOL
+
+        class STORAGE_PROPERTY_QUERY(ctypes.Structure):
+            _fields_ = [
+                ("PropertyId", ctypes.c_int),
+                ("QueryType", ctypes.c_int),
+                ("AdditionalParameters", ctypes.c_byte * 1),
+            ]
+
+        class DEVICE_SEEK_PENALTY_DESCRIPTOR(ctypes.Structure):
+            _fields_ = [
+                ("Version", wintypes.DWORD),
+                ("Size", wintypes.DWORD),
+                ("IncursSeekPenalty", wintypes.BOOLEAN),
+            ]
+
+        class STORAGE_DEVICE_DESCRIPTOR(ctypes.Structure):
+            _fields_ = [
+                ("Version", wintypes.DWORD),
+                ("Size", wintypes.DWORD),
+                ("DeviceType", ctypes.c_byte),
+                ("DeviceTypeModifier", ctypes.c_byte),
+                ("RemovableMedia", wintypes.BOOLEAN),
+                ("CommandQueueing", wintypes.BOOLEAN),
+                ("VendorIdOffset", wintypes.DWORD),
+                ("ProductIdOffset", wintypes.DWORD),
+                ("ProductRevisionOffset", wintypes.DWORD),
+                ("SerialNumberOffset", wintypes.DWORD),
+                ("BusType", wintypes.DWORD),
+                ("RawPropertiesLength", wintypes.DWORD),
+            ]
+
+        # BusType枚举映射（简化）
+        BUS_TYPE_MAP = {
+            0: "Unknown",
+            1: "SCSI",
+            2: "ATAPI",
+            3: "ATA",
+            4: "IEEE1394",
+            5: "SSA",
+            6: "Fibre",
+            7: "USB",
+            8: "RAID",
+            9: "iSCSI",
+            10: "SAS",
+            11: "SATA",
+            12: "SD",
+            13: "MMC",
+            14: "Virtual",
+            15: "FileBackedVirtual",
+            16: "Spaces",
+            17: "NVMe",
+            18: "SCM",
+        }
+
+        def _open_handle(path: str) -> wintypes.HANDLE:
+            h = CreateFileW(
+                path,
+                GENERIC_READ,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                None,
+                OPEN_EXISTING,
+                0,
+                None,
+            )
+            return h
+
+        def _get_bus_type_and_seek(h: wintypes.HANDLE) -> Tuple[str, Optional[bool]]:
+            # 设备描述符（获取BusType）
+            query = STORAGE_PROPERTY_QUERY()
+            query.PropertyId = StorageDeviceProperty
+            query.QueryType = PropertyStandardQuery
+            buf = ctypes.create_string_buffer(1024)
+            returned = wintypes.DWORD(0)
+            bus_type_name = "Unknown"
+            seek_penalty: Optional[bool] = None
+
+            ok = DeviceIoControl(
+                h,
+                IOCTL_STORAGE_QUERY_PROPERTY,
+                ctypes.byref(query),
+                ctypes.sizeof(query),
+                buf,
+                ctypes.sizeof(buf),
+                ctypes.byref(returned),
+                None,
+            )
+            if ok:
+                try:
+                    desc = STORAGE_DEVICE_DESCRIPTOR.from_buffer_copy(buf)
+                    bus_type_name = BUS_TYPE_MAP.get(int(desc.BusType), "Unknown")
+                except Exception:
+                    pass
+
+            # SeekPenalty（判别机械盘）
+            query2 = STORAGE_PROPERTY_QUERY()
+            query2.PropertyId = StorageDeviceSeekPenaltyProperty
+            query2.QueryType = PropertyStandardQuery
+            buf2 = ctypes.create_string_buffer(ctypes.sizeof(DEVICE_SEEK_PENALTY_DESCRIPTOR))
+            returned2 = wintypes.DWORD(0)
+            ok2 = DeviceIoControl(
+                h,
+                IOCTL_STORAGE_QUERY_PROPERTY,
+                ctypes.byref(query2),
+                ctypes.sizeof(query2),
+                buf2,
+                ctypes.sizeof(buf2),
+                ctypes.byref(returned2),
+                None,
+            )
+            if ok2 and returned2.value >= ctypes.sizeof(DEVICE_SEEK_PENALTY_DESCRIPTOR):
+                try:
+                    sp = DEVICE_SEEK_PENALTY_DESCRIPTOR.from_buffer_copy(buf2)
+                    seek_penalty = bool(sp.IncursSeekPenalty)
+                except Exception:
+                    pass
+
+            return bus_type_name, seek_penalty
+
+        def _get_disk_size(h: wintypes.HANDLE) -> int:
+            buf = ctypes.create_string_buffer(8)  # LARGE_INTEGER
+            returned = wintypes.DWORD(0)
+            ok = DeviceIoControl(
+                h,
+                IOCTL_DISK_GET_LENGTH_INFO,
+                None,
+                0,
+                buf,
+                ctypes.sizeof(buf),
+                ctypes.byref(returned),
+                None,
+            )
+            if ok and returned.value >= 8:
+                return int(ctypes.c_longlong.from_buffer_copy(buf).value)
+            return 0
+
+        # 构建卷到物理盘的映射
+        volume_to_disknums: Dict[str, List[int]] = {}
+        try:
+            for p in psutil.disk_partitions():
+                # 盘符形如 'C:\\'，截取 'C:'
+                if p.device and \
+                   (":" in p.device):
+                    letter = p.device.split(":")[0] + ":"
+                else:
+                    continue
+
+                vol_path = f"\\\\.\\{letter}"
+                h = _open_handle(vol_path)
+                if int(h) == -1:
+                    continue
+                try:
+                    buf = ctypes.create_string_buffer(4096)
+                    returned = wintypes.DWORD(0)
+                    ok = DeviceIoControl(
+                        h,
+                        IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS,
+                        None,
+                        0,
+                        buf,
+                        ctypes.sizeof(buf),
+                        ctypes.byref(returned),
+                        None,
+                    )
+                    if ok and returned.value >= 4:
+                        # 结构：DWORD NumberOfDiskExtents; 后续为DISK_EXTENT数组
+                        num = ctypes.cast(buf, ctypes.POINTER(wintypes.DWORD)).contents.value
+                        disknums: List[int] = []
+                        offset = 4
+                        for _ in range(num):
+                            # DISK_EXTENT: DWORD, LARGE_INTEGER, LARGE_INTEGER => 4 + 8 + 8
+                            dn = ctypes.cast(ctypes.byref(buf, offset), ctypes.POINTER(wintypes.DWORD)).contents.value
+                            disknums.append(int(dn))
+                            offset += 4 + 8 + 8
+                        volume_to_disknums[letter] = disknums
+                finally:
+                    try:
+                        CloseHandle(h)
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.debug("枚举卷-物理盘映射失败: %s", e)
+
+        # 枚举物理盘并采集属性
+        system_drive = os.environ.get("SystemDrive", "C:")
+        for n in range(0, 64):
+            path = f"\\\\.\\PhysicalDrive{n}"
+            h = _open_handle(path)
+            if int(h) == -1:
+                continue
+            try:
+                bus_type, seek_penalty = _get_bus_type_and_seek(h)
+                size_bytes = _get_disk_size(h)
+
+                # 映射分区（盘符）
+                partitions: List[str] = []
+                for letter, nums in volume_to_disknums.items():
+                    if n in nums:
+                        partitions.append(letter)
+
+                # 判定系统盘
+                is_system = system_drive in partitions
+
+                # 判定磁盘类型
+                if bus_type == "NVMe":
+                    disk_type = DiskType.NVME
+                else:
+                    if seek_penalty is True:
+                        disk_type = DiskType.HDD
+                    elif seek_penalty is False:
+                        disk_type = DiskType.SSD
+                    else:
+                        disk_type = DiskType.UNKNOWN
+
+                result[f"PhysicalDrive{n}"] = {
+                    "device_id": path,
+                    "disk_type": disk_type,
+                    "is_system_disk": is_system,
+                    "partitions": partitions,
+                    "interface_type": bus_type,
+                    "size_bytes": size_bytes,
+                }
+            except Exception as e:
+                logger.debug("采集物理盘属性失败 (%s): %s", path, e)
+            finally:
+                try:
+                    CloseHandle(h)
+                except Exception:
+                    pass
+
+    except Exception as e:
+        logger.debug("Windows原生物理磁盘采集异常: %s", e)
+
+    return result
 
     def get_disks_with_types(self) -> Dict[str, Dict[str, Any]]:
         """获取所有磁盘及其类型信息.
@@ -5680,7 +6100,6 @@ class SystemMonitor:
         except (OSError, AttributeError, ImportError) as e:
             logger.error("获取网络信息失败: %s", e)
             return {}
-
     def get_disk_io_speed(self) -> Dict[str, Dict[str, Any]]:
         """获取各磁盘I/O速度 (MB/s).
 
@@ -6474,7 +6893,6 @@ class SystemMonitor:
                 "tcp_connections": 0,
                 "established_connections": 0,
             }
-
     def get_network_subsystem_metrics(self) -> Dict[str, Any]:
         """获取网络子系统指标（重传/RTT跨平台不可得，尽力估计丢包率）."""
         try:
@@ -6607,7 +7025,7 @@ class SystemMonitor:
     def get_process_list(self, sort_by: str = "cpu_percent") -> List[Dict[str, Any]]:
         """获取进程列表."""
         try:
-            if not HAS_PSUTIL:
+            if not HAS_PSUTIL and not (NATIVE_PROCESS_METRICS_AVAILABLE and native_enumerate_processes):
                 # 返回默认数据(无psutil时)
                 return [
                     {
@@ -6636,7 +7054,75 @@ class SystemMonitor:
                     },
                 ]
 
-            processes = []
+            processes: List[Dict[str, Any]] = []
+
+            if NATIVE_PROCESS_METRICS_AVAILABLE and native_enumerate_processes:
+                try:
+                    sort_mapping = {
+                        "cpu_percent": "cpu_percent",
+                        "memory_percent": "memory_percent",
+                        "memory_mb": "memory_rss",
+                    }
+                    native_sort_key = sort_mapping.get(sort_by, "memory_rss")
+                    native_result = native_enumerate_processes(limit=50, sort_key=native_sort_key)
+                    for entry in native_result.get("processes", []):
+                        memory_rss = float(entry.get("memory_rss", 0) or 0)
+                        processes.append(
+                            {
+                                "pid": entry.get("pid"),
+                                "name": entry.get("name", ""),
+                                "cpu_percent": float(entry.get("cpu_percent", 0.0) or 0.0),
+                                "memory_percent": float(entry.get("memory_percent", 0.0) or 0.0),
+                                "memory_mb": memory_rss / (1024 * 1024),
+                                "status": entry.get("status", "unknown"),
+                            }
+                        )
+                    if processes:
+                        if sort_by in ["cpu_percent", "memory_percent", "memory_mb"]:
+                            processes.sort(key=lambda x: x.get(sort_by, 0), reverse=True)
+                        return processes
+                except NativeProcessMetricsError as exc:
+                    logger.debug(
+                        "原生进程枚举失败，回退psutil: %s",
+                        exc,
+                        extra={"log_type": "SYSTEM"},
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(
+                        "原生进程枚举异常: %s",
+                        exc,
+                        extra={"log_type": "SYSTEM"},
+                    )
+
+            if not HAS_PSUTIL:
+                if processes:
+                    return processes
+                return [
+                    {
+                        "pid": 1,
+                        "name": "python",
+                        "cpu_percent": 25.0,
+                        "memory_percent": 15.0,
+                        "memory_mb": 256.0,
+                        "status": "running",
+                    },
+                    {
+                        "pid": 2,
+                        "name": "chrome",
+                        "cpu_percent": 15.0,
+                        "memory_percent": 20.0,
+                        "memory_mb": 512.0,
+                        "status": "running",
+                    },
+                    {
+                        "pid": 3,
+                        "name": "system",
+                        "cpu_percent": 5.0,
+                        "memory_percent": 10.0,
+                        "memory_mb": 128.0,
+                        "status": "running",
+                    },
+                ]
 
             for proc in psutil.process_iter(
                 ["pid", "name", "cpu_percent", "memory_percent", "status"]
@@ -6841,7 +7327,10 @@ class ProcessMonitor:
 
     def __init__(self):
         """初始化进程监控器."""
-        self.logger = logging.getLogger(__name__)
+        self.logger = bind_logger_defaults(
+            logging.getLogger(f"{__name__}.ProcessMonitor"),
+            scenario="monitor_process.process",
+        )
 
         # 进程识别关键词
         self.process_keywords = {
@@ -7130,14 +7619,15 @@ class ProcessMonitor:
         with self._lock:
             history = self._metrics_history.get(process_id, [])
             return history[-limit:]
-
-
 class ProcessBottleneckAnalyzer:
     """进程级瓶颈分析器 - 采用"最短木板"原理识别进程瓶颈."""
 
     def __init__(self):
         """初始化瓶颈分析器."""
-        self.logger = logging.getLogger(__name__)
+        self.logger = bind_logger_defaults(
+            logging.getLogger(f"{__name__}.ProcessBottleneckAnalyzer"),
+            scenario="monitor_process.process_bottleneck",
+        )
 
         # 理论最大值（用于计算使用率）
         self.theoretical_limits = {
@@ -7407,7 +7897,10 @@ class BusinessMetricsCollector:
         Args:
             window_size: 时间窗口大小（秒），默认5分钟
         """
-        self.logger = logging.getLogger(__name__)
+        self.logger = bind_logger_defaults(
+            logging.getLogger(f"{__name__}.BusinessMetricsCollector"),
+            scenario="monitor_process.business_metrics",
+        )
         self.window_size = window_size
 
         # 指标存储：{metric_type: deque[(timestamp, value, metadata)]}
@@ -7662,7 +8155,10 @@ def main():
     if queue_proxy is not None:
         setup_subprocess_logging(queue_proxy, level=logging.INFO)
         bridge_attached = True
-        logger = logging.getLogger("MonitorProcess")
+        logger = bind_logger_defaults(
+            logging.getLogger("MonitorProcess"),
+            scenario="monitor_process.entry",
+        )
     else:
         # 配置日志（仅Terminal输出）
         # 确保stdout使用UTF-8编码（Python 3.7+）
@@ -7678,7 +8174,10 @@ def main():
             format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
             handlers=[stream_handler],
         )
-        logger = logging.getLogger("MonitorProcess")
+        logger = bind_logger_defaults(
+            logging.getLogger("MonitorProcess"),
+            scenario="monitor_process.entry",
+        )
 
     # 🎯 获取LoggingHub并切换阶段
     try:
@@ -7730,9 +8229,13 @@ def main():
 
         # 🎯 使用STAGE_NODE显示监控进程PID
         stage_logger.info(
-            f"✅ monitor_system.py进程已启动 (PID: {os.getpid()})", extra={"log_type": "STAGE_NODE"}
+            f"✅ monitor_system.py进程已启动 (PID: {os.getpid()})",
+            extra={"log_type": "STAGE_NODE", "scenario": MONITOR_LAUNCH_SCENARIO},
         )
-        stage_logger.info("✅ 创建native_ipc管道", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info(
+            "✅ 创建native_ipc管道",
+            extra={"log_type": "STAGE_NODE", "scenario": MONITOR_LAUNCH_SCENARIO},
+        )
 
         monitor = MonitoringProcessV2(parent_pid=parent_pid)
         logger.info("✅ MonitoringProcessV2实例创建成功")
@@ -7742,17 +8245,44 @@ def main():
         )
 
         # 🎯 使用STAGE_NODE显示管道创建完成（这些消息是预显示的，实际创建在start()中）
-        stage_logger.info("✅ 创建native_ipc管道", extra={"log_type": "STAGE_NODE"})
-        stage_logger.info("  ├─ monitor_alerts ✅", extra={"log_type": "STAGE_NODE"})
-        stage_logger.info("  ├─ monitor_status ✅", extra={"log_type": "STAGE_NODE"})
-        stage_logger.info("  └─ monitor_query ✅", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info(
+            "✅ 创建native_ipc管道",
+            extra={"log_type": "STAGE_NODE", "scenario": MONITOR_LAUNCH_SCENARIO},
+        )
+        stage_logger.info(
+            "  ├─ monitor_alerts ✅",
+            extra={"log_type": "STAGE_NODE", "scenario": MONITOR_LAUNCH_SCENARIO},
+        )
+        stage_logger.info(
+            "  ├─ monitor_status ✅",
+            extra={"log_type": "STAGE_NODE", "scenario": MONITOR_LAUNCH_SCENARIO},
+        )
+        stage_logger.info(
+            "  └─ monitor_query ✅",
+            extra={"log_type": "STAGE_NODE", "scenario": MONITOR_LAUNCH_SCENARIO},
+        )
 
         # 🎯 监控组件初始化（这些消息是预显示的，实际初始化在start()中）
-        stage_logger.info("✅ 监控组件初始化", extra={"log_type": "STAGE_NODE"})
-        stage_logger.info("  ├─ SystemMonitor ✅", extra={"log_type": "STAGE_NODE"})
-        stage_logger.info("  ├─ ProcessMonitor ✅", extra={"log_type": "STAGE_NODE"})
-        stage_logger.info("  ├─ HardwareMonitor (后台异步) ⏳", extra={"log_type": "STAGE_NODE"})
-        stage_logger.info("  └─ BandwidthMonitor ✅", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info(
+            "✅ 监控组件初始化",
+            extra={"log_type": "STAGE_NODE", "scenario": MONITOR_LAUNCH_SCENARIO},
+        )
+        stage_logger.info(
+            "  ├─ SystemMonitor ✅",
+            extra={"log_type": "STAGE_NODE", "scenario": MONITOR_LAUNCH_SCENARIO},
+        )
+        stage_logger.info(
+            "  ├─ ProcessMonitor ✅",
+            extra={"log_type": "STAGE_NODE", "scenario": MONITOR_LAUNCH_SCENARIO},
+        )
+        stage_logger.info(
+            "  ├─ HardwareMonitor (后台异步) ⏳",
+            extra={"log_type": "STAGE_NODE", "scenario": MONITOR_LAUNCH_SCENARIO},
+        )
+        stage_logger.info(
+            "  └─ BandwidthMonitor ✅",
+            extra={"log_type": "STAGE_NODE", "scenario": MONITOR_LAUNCH_SCENARIO},
+        )
 
         # 注意：Level 1就绪消息将在实际创建信号文件后显示
         logger.debug(
@@ -7778,11 +8308,17 @@ def main():
         )
 
         # 🎯 看门狗启动（预显示消息）
-        stage_logger.info("✅ 监控进程看门狗启动", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info(
+            "✅ 监控进程看门狗启动",
+            extra={"log_type": "STAGE_NODE", "scenario": MONITOR_LAUNCH_SCENARIO},
+        )
 
         # 🎯 完成（计算实际耗时）- 这是预显示消息，实际完成在start()中
         elapsed = time.time() - start_time
-        stage_logger.info(f"✅ 监控进程完全就绪 ({elapsed:.1f}s)", extra={"log_type": "STAGE_NODE"})
+        stage_logger.info(
+            f"✅ 监控进程完全就绪 ({elapsed:.1f}s)",
+            extra={"log_type": "STAGE_NODE", "scenario": MONITOR_LAUNCH_SCENARIO},
+        )
 
         # 🎯 切换到运行阶段
         try:

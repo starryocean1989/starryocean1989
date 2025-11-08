@@ -444,10 +444,16 @@ class AIAssistantService(BaseService):
             }
 
         except requests.exceptions.Timeout:
-            self.logger.warning("API请求超时，可能是因为工具调用处理时间较长", extra={"log_type": "SYSTEM"})
+            # 增加超时时间日志 - 日志埋点v4.0
+            timeout_value = self.timeout
+            self.logger.warning(
+                "API请求超时: timeout=%s秒, 可能是因为工具调用处理时间较长",
+                timeout_value,
+                extra={"log_type": "SYSTEM"},
+            )
             return {
                 "success": False,
-                "message": "API请求超时。如果AI正在调用文件操作工具，请增加超时时间（在系统管理→系统配置中设置）。建议超时时间：60-90秒。",
+                "message": f"API请求超时({timeout_value}秒)。如果AI正在调用文件操作工具，请增加超时时间（在系统管理→系统配置中设置）。建议超时时间：60-90秒。",
             }
         except requests.exceptions.ConnectionError as e:
             self.logger.error("连接错误：%s", e, exc_info=True, extra={"log_type": "SYSTEM"})
@@ -714,7 +720,18 @@ class AIAssistantService(BaseService):
         Returns:
             Dict: 包含优化建议和优化后的代码
         """
+        import time
+        import logging
+        start_time = time.time()
+        stage_logger = logging.getLogger("task.strategy_optimization.stage")
+
         try:
+            # 阶段节点日志
+            stage_logger.info(
+                f"📍 策略优化开始: code_length={len(strategy_code)}字节",
+                extra={"log_type": "STAGE_NODE", "scenario": "strategy_optimization"},
+            )
+
             prompt = """请分析以下策略代码，并提供优化建议和优化后的代码：
 
 1. 性能优化
@@ -728,10 +745,32 @@ class AIAssistantService(BaseService):
 
             response = self.chat(prompt, context)
 
+            elapsed_ms = (time.time() - start_time) * 1000
+
+            if response["success"]:
+                # 阶段节点日志
+                stage_logger.info(
+                    f"✅ 策略优化完成: 耗时={elapsed_ms:.0f}ms",
+                    extra={"log_type": "STAGE_NODE", "scenario": "strategy_optimization"},
+                )
+            else:
+                error_msg = response.get("message", "未知错误")
+                # 阶段节点日志
+                stage_logger.error(
+                    f"❌ 策略优化失败: {error_msg}, 耗时={elapsed_ms:.0f}ms",
+                    extra={"log_type": "STAGE_NODE", "scenario": "strategy_optimization"},
+                )
+
             return response
 
         except Exception as e:
+            elapsed_ms = (time.time() - start_time) * 1000
             self._log_error("优化策略代码", e)
+            # 阶段节点日志
+            stage_logger.error(
+                f"❌ 策略优化异常: {str(e)}, 耗时={elapsed_ms:.0f}ms",
+                extra={"log_type": "STAGE_NODE", "scenario": "strategy_optimization"},
+            )
             return {
                 "success": False,
                 "message": f"优化失败: {str(e)}",
@@ -746,7 +785,18 @@ class AIAssistantService(BaseService):
         Returns:
             Dict: 包含策略解释
         """
+        import time
+        import logging
+        start_time = time.time()
+        stage_logger = logging.getLogger("task.strategy_explanation.stage")
+
         try:
+            # 阶段节点日志
+            stage_logger.info(
+                f"📍 策略解释开始: code_length={len(strategy_code)}字节",
+                extra={"log_type": "STAGE_NODE", "scenario": "strategy_explanation"},
+            )
+
             prompt = """请详细解释以下策略代码的逻辑：
 
 1. 策略的核心思想
@@ -759,10 +809,32 @@ class AIAssistantService(BaseService):
 
             response = self.chat(prompt, context)
 
+            elapsed_ms = (time.time() - start_time) * 1000
+
+            if response["success"]:
+                # 阶段节点日志
+                stage_logger.info(
+                    f"✅ 策略解释完成: 耗时={elapsed_ms:.0f}ms",
+                    extra={"log_type": "STAGE_NODE", "scenario": "strategy_explanation"},
+                )
+            else:
+                error_msg = response.get("message", "未知错误")
+                # 阶段节点日志
+                stage_logger.error(
+                    f"❌ 策略解释失败: {error_msg}, 耗时={elapsed_ms:.0f}ms",
+                    extra={"log_type": "STAGE_NODE", "scenario": "strategy_explanation"},
+                )
+
             return response
 
         except Exception as e:
+            elapsed_ms = (time.time() - start_time) * 1000
             self._log_error("解释策略代码", e)
+            # 阶段节点日志
+            stage_logger.error(
+                f"❌ 策略解释异常: {str(e)}, 耗时={elapsed_ms:.0f}ms",
+                extra={"log_type": "STAGE_NODE", "scenario": "strategy_explanation"},
+            )
             return {
                 "success": False,
                 "message": f"解释失败: {str(e)}",
@@ -778,7 +850,18 @@ class AIAssistantService(BaseService):
         Returns:
             Dict: 包含错误分析和修复建议
         """
+        import time
+        import logging
+        start_time = time.time()
+        stage_logger = logging.getLogger("task.strategy_debugging.stage")
+
         try:
+            # 阶段节点日志
+            stage_logger.info(
+                f"📍 策略调试开始: code_length={len(strategy_code)}字节, error_message={error_message[:100]}...",
+                extra={"log_type": "STAGE_NODE", "scenario": "strategy_debugging"},
+            )
+
             prompt = """策略运行时出现了错误，请帮助分析错误原因并提供修复方案。
 
 请提供：
@@ -794,16 +877,38 @@ class AIAssistantService(BaseService):
 
             response = self.chat(prompt, context)
 
+            elapsed_ms = (time.time() - start_time) * 1000
+
+            if response["success"]:
+                # 阶段节点日志
+                stage_logger.info(
+                    f"✅ 策略调试完成: 耗时={elapsed_ms:.0f}ms",
+                    extra={"log_type": "STAGE_NODE", "scenario": "strategy_debugging"},
+                )
+            else:
+                error_msg = response.get("message", "未知错误")
+                # 阶段节点日志
+                stage_logger.error(
+                    f"❌ 策略调试失败: {error_msg}, 耗时={elapsed_ms:.0f}ms",
+                    extra={"log_type": "STAGE_NODE", "scenario": "strategy_debugging"},
+                )
+
             return response
 
         except Exception as e:
+            elapsed_ms = (time.time() - start_time) * 1000
             self._log_error("调试策略错误", e)
+            # 阶段节点日志
+            stage_logger.error(
+                f"❌ 策略调试异常: {str(e)}, 耗时={elapsed_ms:.0f}ms",
+                extra={"log_type": "STAGE_NODE", "scenario": "strategy_debugging"},
+            )
             return {
                 "success": False,
                 "message": f"调试失败: {str(e)}",
             }
 
-    # ==================== MCP 功能：文件操作工具 ====================
+    # 🔧 MCP 功能：文件操作工具
 
     def _define_tools(self) -> List[Dict[str, Any]]:
         """定义AI可以使用的文件操作工具（符合DeepSeek API格式）.

@@ -93,7 +93,9 @@ class AsyncIOCPFile:
 
         # 打开文件（同步操作，很快）
         try:
+            logger.info(f"Opening file: {self.filepath} with mode: {self.mode}", extra={"log_type": "SYSTEM"})
             self._file.open(str(self.filepath), self.mode)
+            logger.info(f"Successfully opened file: {self.filepath}", extra={"log_type": "SYSTEM"})
         except Exception as e:
             logger.error(f"打开文件失败: {self.filepath}, 错误: {e}", exc_info=True, extra={"log_type": "SYSTEM"})
             raise
@@ -130,6 +132,7 @@ class AsyncIOCPFile:
             logger.error("事件循环扩展未初始化", extra={"log_type": "SYSTEM"})
             raise RuntimeError("Event loop extension not initialized")
 
+        logger.info(f"Reading {size} bytes from {self.filepath}", extra={"log_type": "SYSTEM"})
         # 启动异步读取
         result = self._file.read_async(size)  # type: ignore
 
@@ -227,6 +230,7 @@ class AsyncIOCPFile:
             logger.error("事件循环扩展未初始化", extra={"log_type": "SYSTEM"})
             raise RuntimeError("Event loop extension not initialized")
 
+        logger.info(f"Writing {len(data)} bytes to {self.filepath}", extra={"log_type": "SYSTEM"})
         # 启动异步写入
         result = self._file.write_async(data)  # type: ignore
 
@@ -276,10 +280,12 @@ class AsyncIOCPFile:
                 self._extension.unregister_iocp_file(self._file)
 
             # 关闭文件
+            logger.info(f"Closing file: {self.filepath}", extra={"log_type": "SYSTEM"})
             self._file.close()
             self._file = None
 
         self._closed = True
+        logger.info(f"File closed: {self.filepath}", extra={"log_type": "SYSTEM"})
 
     def __repr__(self):
         status = "closed" if self._closed else ("open" if self._file else "not opened")
@@ -322,3 +328,4 @@ async def aopen(filepath: Union[str, Path], mode: str = "rb") -> AsyncIOCPFile:
 
 
 __all__ = ["AsyncIOCPFile", "open_file", "aopen"]
+

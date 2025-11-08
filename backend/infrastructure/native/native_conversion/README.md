@@ -17,6 +17,8 @@ cd backend/infrastructure/native/native_conversion
 python setup.py build_ext --inplace
 ```
 
+> 亦可在 `backend/infrastructure/native` 目录执行 `compile_all.bat`，脚本会顺序编译全部扩展（含本模块），遇错即停并输出日志。
+
 ## API
 
 ### 批量类型转换

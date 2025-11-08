@@ -17,10 +17,26 @@ import asyncio
 import logging
 import time
 from multiprocessing import Manager, Process
+from multiprocessing import shared_memory
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple, Any
 
 import pandas as pd
+try:
+    import pyarrow as pa  # type: ignore
+    HAS_PYARROW = True
+except Exception:
+    pa = None  # type: ignore
+    HAS_PYARROW = False
+
+try:
+    from backend.infrastructure.native.native_serialization import (
+        zero_copy_serialize,
+    )
+    NATIVE_SERIALIZATION_AVAILABLE = True
+except Exception:
+    zero_copy_serialize = None  # type: ignore
+    NATIVE_SERIALIZATION_AVAILABLE = False
 
 from .binary_reader import TdxBinaryReader
 
@@ -147,14 +163,36 @@ class TdxDataReader:
             p.start()
             processes.append(p)
 
-        # 收集结果
-        results = {}
+        # 收集结果（共享内存零拷贝反序列化）
+        results: Dict[str, pd.DataFrame] = {}
         completed = 0
 
         while completed < total_tasks:
             try:
-                symbol, df = result_queue.get(timeout=1)
-                results[symbol] = df
+                # 子进程返回: (symbol, kind, meta)
+                # kind: 'empty' | 'arrow_ipc'
+                # meta: None | (shm_name, size)
+                symbol, kind, meta = result_queue.get(timeout=1)
+
+                if kind == "empty" or meta is None:
+                    results[symbol] = pd.DataFrame()
+                elif kind == "arrow_ipc":
+                    shm_name, size = meta
+                    try:
+                        df = _deserialize_df_from_shared_memory(shm_name, size)
+                    finally:
+                        # 主进程负责清理共享段
+                        try:
+                            shm_obj = shared_memory.SharedMemory(name=shm_name, create=False)
+                            shm_obj.close()
+                            try:
+                                shm_obj.unlink()
+                            except Exception:
+                                pass
+                        except Exception:
+                            pass
+                    results[symbol] = df
+
                 completed += 1
 
                 if progress_callback:
@@ -210,6 +248,109 @@ class TdxDataReader:
             return "bj"
         else:
             return "sz"  # 默认深证
+
+
+def _serialize_df_to_shared_memory(df: pd.DataFrame) -> tuple[str, int]:
+    """将DataFrame序列化为Arrow IPC并写入共享内存，返回(name, size)。
+
+    优先使用native zero_copy_serialize；回退到PyArrow；最终回退到pickle。
+    """
+    # 1) 优先native零拷贝序列化
+    mv: Optional[memoryview] = None
+    if NATIVE_SERIALIZATION_AVAILABLE and zero_copy_serialize is not None:
+        try:
+            payload = zero_copy_serialize(df)
+            if isinstance(payload, memoryview):
+                mv = payload
+            elif isinstance(payload, (bytes, bytearray)):
+                mv = memoryview(payload)
+        except Exception:
+            mv = None
+
+    # 2) 回退到PyArrow IPC序列化
+    if mv is None:
+        if HAS_PYARROW and pa is not None:
+            try:
+                table = pa.Table.from_pandas(df, preserve_index=False)
+                sink = pa.BufferOutputStream()
+                with pa.ipc.new_stream(sink, table.schema) as writer:
+                    writer.write_table(table)
+                buf = sink.getvalue()  # pyarrow.Buffer
+                try:
+                    # 尝试直接memoryview（若支持缓冲协议）
+                    mv = memoryview(buf)  # type: ignore[arg-type]
+                except Exception:
+                    mv = memoryview(buf.to_pybytes())
+            except Exception:
+                mv = None
+
+    # 3) 最终回退到pickle
+    if mv is None:
+        import pickle
+        raw = pickle.dumps(df, protocol=pickle.HIGHEST_PROTOCOL)
+        mv = memoryview(raw)
+
+    # 写入共享内存
+    shm_obj = shared_memory.SharedMemory(name=None, create=True, size=len(mv))
+    # 使用tobytes确保写入兼容性（避免结构不匹配的memoryview赋值错误）
+    shm_obj.buf[: len(mv)] = mv.tobytes()
+    return shm_obj.name, len(mv)
+
+
+def _deserialize_df_from_shared_memory(shm_name: str, size: int) -> pd.DataFrame:
+    """从共享内存读取Arrow IPC并反序列化为DataFrame。
+
+    如果没有PyArrow，则回退到pickle。
+    """
+    shm_obj = shared_memory.SharedMemory(name=shm_name, create=False)
+    # 注意：必须在关闭共享内存之前释放所有导出的内存视图/Reader，
+    # 否则Windows上会出现“cannot close exported pointers exist”。
+    buf_view = None
+    try:
+        buf_view = shm_obj.buf[:size]
+        if HAS_PYARROW and pa is not None:
+            try:
+                # 为避免共享内存关闭时导出指针仍存在，使用bytes复制一份读取
+                buf_bytes = bytes(buf_view)
+                br = pa.BufferReader(buf_bytes)
+                reader = pa.ipc.RecordBatchStreamReader(br)
+                table = reader.read_all()
+                df = table.to_pandas()
+                # 释放PyArrow相关资源与视图引用
+                try:
+                    reader.close()
+                except Exception:
+                    pass
+                try:
+                    br.close()
+                except Exception:
+                    pass
+                del reader
+                del br
+                del buf_bytes
+                del buf_view
+                try:
+                    del table
+                except Exception:
+                    pass
+                return df
+            except Exception:
+                # 如果PyArrow失败，回退到pickle
+                pass
+        # 回退到pickle
+        import pickle
+        if buf_view is None:
+            buf_view = shm_obj.buf[:size]
+        df = pickle.loads(bytes(buf_view))
+        # 释放视图后返回，由finally负责关闭共享内存
+        del buf_view
+        return df
+    finally:
+        # 避免残留句柄，这里容错清理
+        try:
+            shm_obj.close()
+        except Exception:
+            pass
 
 
 def _tdx_reader_worker(
@@ -298,8 +439,12 @@ async def _tdx_reader_worker_async(
                             extra={"log_type": "ALERT", "scenario": scenario},
                         )
 
-                    # 返回结果
-                    result_queue.put((symbol, df))
+                    # 通过共享内存零拷贝传递结果（跨进程不复制Python对象）
+                    if df is None or df.empty:
+                        result_queue.put((symbol, "empty", None))
+                    else:
+                        shm_name, size = _serialize_df_to_shared_memory(df)
+                        result_queue.put((symbol, "arrow_ipc", (shm_name, size)))
 
                 except Exception as e:
                     task_elapsed = time.time() - task_start_time
@@ -314,7 +459,7 @@ async def _tdx_reader_worker_async(
                         exc_info=True,
                         extra={"log_type": "ALERT", "scenario": scenario},
                     )
-                    result_queue.put((symbol, pd.DataFrame()))
+                    result_queue.put((symbol, "empty", None))
 
     # 启动多个协程任务
     scenario = "tdx_data_read"

@@ -1,9 +1,0 @@
-{
-  "pid": 20108,
-  "timestamp": 1762490417.853106,
-  "level": 2,
-  "pipes": [
-    "data_query",
-    "data_calculation"
-  ]
-}

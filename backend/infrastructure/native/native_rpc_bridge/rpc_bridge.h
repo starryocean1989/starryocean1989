@@ -20,15 +20,6 @@ typedef struct {
     size_t data_size;        // 数据大小
 } RPCResponse;
 
-// 方法ID映射表
-enum RPCMethodID {
-    METHOD_GET_KLINE_DATA = 1,
-    METHOD_GET_STOCK_LIST = 2,
-    METHOD_GET_CACHE_STATUS = 3,
-    METHOD_CALCULATE_INDICATORS = 10,
-    METHOD_SCAN_DATA_QUALITY = 11,
-};
-
 // 函数声明
 
 // 创建RPC消息头
@@ -43,9 +34,5 @@ RPCResponse* deserialize_rpc_response(const char* data, size_t size);
 // 清理函数
 void free_rpc_header(RPCMessageHeader* header);
 void free_rpc_response(RPCResponse* response);
-
-// 方法名到ID的映射
-uint32_t get_method_id(const char* method_name);
-const char* get_method_name(uint32_t method_id);
 
 #endif // RPC_BRIDGE_H

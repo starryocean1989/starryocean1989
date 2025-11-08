@@ -35,7 +35,7 @@ from .core.retry_pool import RetryConnectionPool
 from .network.ip_pool import AsyncIPPool, AsyncRandomIPPool, AsyncSmartIPPool
 
 # 交易日历系统（v2.1新增）
-from .utils.calendar import (
+from .utils.trading_calendar import (
     TradingCalendar,
     trading_calendar,
     get_trading_calendar_global,

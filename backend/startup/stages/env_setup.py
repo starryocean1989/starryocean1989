@@ -15,10 +15,15 @@ import time
 from logging.handlers import MemoryHandler
 from pathlib import Path
 
+from backend.infrastructure.system_vnpy.logging_system import bind_logger_defaults
 from backend.startup.stages.base import StartupStage, StageResult
 from backend.startup.context import StartupContext
 
-logger = logging.getLogger("backend.startup.stages.env_setup")
+logger = bind_logger_defaults(
+    logging.getLogger("backend.startup.stages.env_setup"),
+    log_type="SYSTEM",
+    scenario="application_startup",
+)
 
 
 class EnvSetupStage(StartupStage):

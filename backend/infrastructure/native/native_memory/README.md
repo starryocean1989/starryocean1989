@@ -18,6 +18,8 @@ cd backend/infrastructure/native/native_memory
 python setup.py build_ext --inplace
 ```
 
+> 建议通过 `backend/infrastructure/native/compile_all.bat` 一键构建，脚本会按顺序编译全部扩展（含本模块），并在失败时暂停以便排查。
+
 ## API
 
 ### 零拷贝内存

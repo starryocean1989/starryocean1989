@@ -110,6 +110,93 @@ _EXCLUDED_FIELDS = frozenset(
 )
 
 
+# 常用场景前缀映射（全部使用小写，以logger名称前缀匹配）
+_SCENARIO_PREFIX_RULES: Tuple[Tuple[str, str], ...] = (
+    # 任务类阶段日志
+    ("task.manual_speedtest", "manual_speedtest"),
+    ("task.refresh_symbol_list", "refresh_symbol_list"),
+    ("task.strategy_generation", "strategy_generation"),
+    ("task.strategy_optimization", "strategy_optimization"),
+    ("task.strategy_explanation", "strategy_explanation"),
+    ("task.strategy_debugging", "strategy_debugging"),
+    ("task.data_download", "data_download"),
+    ("task.manual_data_scan", "manual_data_scan"),
+    ("task.portfolio_pnl_calculation", "portfolio_pnl_calculation"),
+    ("task.tdx_data_read", "tdx_data_read"),
+    ("task.optional_services_init", "optional_services_init"),
+    # 启动流程
+    ("backend.startup", "application_startup"),
+    ("startup", "application_startup"),
+    # 后端服务
+    ("backend.services.system_manager", "system_manager"),
+    ("backend.system_manager", "system_manager"),
+    ("backend.services.data_center", "data_center"),
+    ("backend.services.database_adapter", "database_adapter"),
+    ("backend.services.ai_assistant", "ai_assistant"),
+    ("backend.services", "backend_services"),
+    # 基础设施模块
+    ("backend.infrastructure.data_module_vnpy", "data_module_vnpy"),
+    ("backend.infrastructure.system_vnpy", "system_vnpy"),
+    ("backend.infrastructure.native", "native_infrastructure"),
+    # 核心与进程
+    ("backend.core", "core_services"),
+    ("data_process", "data_process_init"),
+    # UI 模块
+    ("ui.modules", "ui"),
+)
+
+
+def _infer_scenario_from_logger(logger_name: str) -> Optional[str]:
+    """基于logger名称推断场景标识."""
+
+    lower_name = logger_name.lower()
+
+    # task.<scenario>.stage -> 取scenario作为场景名
+    if lower_name.startswith("task.") and ".stage" in lower_name:
+        scenario_part = lower_name[len("task.") : lower_name.index(".stage")]
+        if scenario_part:
+            return scenario_part.replace(".", "_")
+
+    # startup.stage.* 默认归类为启动流程
+    if lower_name.startswith("startup.stage"):
+        return "application_startup"
+
+    for prefix, scenario in _SCENARIO_PREFIX_RULES:
+        if lower_name.startswith(prefix):
+            return scenario
+
+    return None
+
+
+def get_configured_logger(
+    name: str,
+    *,
+    log_type: str = "SYSTEM",
+    scenario: Optional[str] = None,
+) -> logging.Logger:
+    """获取已绑定默认log_type与场景的logger."""
+
+    return bind_logger_defaults(logging.getLogger(name), log_type=log_type, scenario=scenario)
+
+
+def get_stage_logger(name: str, *, scenario: str = "application_startup") -> logging.Logger:
+    """获取阶段节点日志logger."""
+
+    return get_configured_logger(name, log_type="STAGE_NODE", scenario=scenario)
+
+
+def get_alert_logger(name: str, *, scenario: Optional[str] = None) -> logging.Logger:
+    """获取告警日志logger."""
+
+    return get_configured_logger(name, log_type="ALERT", scenario=scenario)
+
+
+def get_progress_logger(name: str, *, scenario: Optional[str] = None) -> logging.Logger:
+    """获取进度日志logger."""
+
+    return get_configured_logger(name, log_type="PROGRESS", scenario=scenario)
+
+
 @dataclass
 class UnifiedLogRecord:
     """统一日志记录."""
@@ -127,6 +214,75 @@ class UnifiedLogRecord:
     thread: int = 0
     thread_name: str = ""
     exception: str = ""
+
+
+def bind_logger_defaults(
+    logger: logging.Logger,
+    *,
+    log_type: str = "SYSTEM",
+    scenario: Optional[str] = None,
+) -> logging.Logger:
+    """为指定 logger 绑定默认的日志类型与场景元数据.
+
+    由于大量模块在迁移过程中逐步补充埋点，部分调用缺失 ``extra`` 参数。
+    该辅助函数会在 logger 的常用方法上自动注入 ``extra``，确保统一日志系统
+    能正确路由到对应的 LogType/场景，同时保留调用方已经显式指定的 ``extra``。
+
+    Args:
+        logger: 需要绑定默认属性的 ``logging.Logger`` 实例。
+        log_type: 默认的 ``log_type``，例如 ``"SYSTEM"``、``"ALERT"`` 等。
+        scenario: 可选的 ``scenario`` 标识，便于统一日志系统做精细化路由。
+
+    Returns:
+        同一个 logger 实例，便于链式调用。
+    """
+
+    signature = (log_type, scenario)
+    if getattr(logger, "_log_defaults_signature", None) == signature:
+        return logger
+
+    def _prepare_extra(extra: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        base: Dict[str, Any]
+        if extra is None:
+            base = {}
+        elif isinstance(extra, dict):
+            base = dict(extra)
+        else:
+            # 避免修改原对象，尽力转换为dict
+            base = dict(extra)
+
+        base.setdefault("log_type", log_type)
+        if scenario and "scenario" not in base:
+            base["scenario"] = scenario
+        return base
+
+    def _wrap(method_name: str, expects_level: bool = False):
+        original = getattr(logger, method_name)
+
+        if expects_level:
+
+            @wraps(original)
+            def wrapper(level, msg, *args, **kwargs):  # type: ignore[override]
+                kwargs["extra"] = _prepare_extra(kwargs.get("extra"))
+                return original(level, msg, *args, **kwargs)
+
+        else:
+
+            @wraps(original)
+            def wrapper(msg, *args, **kwargs):  # type: ignore[override]
+                kwargs["extra"] = _prepare_extra(kwargs.get("extra"))
+                if method_name == "exception":
+                    kwargs.setdefault("exc_info", True)
+                return original(msg, *args, **kwargs)
+
+        return wrapper
+
+    for name in ("debug", "info", "warning", "error", "critical", "exception"):
+        setattr(logger, name, _wrap(name))
+
+    setattr(logger, "log", _wrap("log", expects_level=True))
+    logger._log_defaults_signature = signature  # type: ignore[attr-defined]
+    return logger
 
 
 # =============================================================================
@@ -535,13 +691,55 @@ class MultiProcessLogCollector:
         self.logging_hub = logging_hub
         self._manager: Optional[SyncManager] = None
         self._queue_token: Optional[str] = None
-        self.queue = queue or self._create_managed_queue()
+        self._ring: Optional["SharedLogRing"] = None
+        self._ring_consumer: Optional["SharedRingConsumer"] = None
+        self.queue = queue
+        if self.queue is None:
+            if not self._try_create_shared_ring():
+                self.queue = self._create_managed_queue()
         self.queue_listener: Optional[QueueListener] = None
         self._running = False
         self._lock = Lock()
         self.logger = logging.getLogger(
             "backend.infrastructure.system_vnpy.logging_system.multiprocess_collector"
         )
+
+    def _try_create_shared_ring(self) -> bool:
+        if self._ring is not None:
+            return True
+        try:
+            from backend.infrastructure.system_vnpy.native_log_bridge import (
+                SharedLogRing,
+                SharedRingConsumer,
+                create_shared_log_ring,
+            )
+        except Exception:
+            return False
+
+        ring = create_shared_log_ring()
+        if not ring:
+            return False
+
+        try:
+            token_payload = {
+                "version": 3,
+                "mode": "shared_ring",
+                "ring": ring.export_token(),
+            }
+            raw_token = json.dumps(token_payload).encode("utf-8")
+            self._queue_token = base64.b64encode(raw_token).decode("ascii")
+        except Exception:
+            ring.close(unlink=True)
+            return False
+
+        self._ring = ring
+        self._ring_consumer = None  # 延迟在 start() 中创建
+        self.logger.info(
+            "原生日志共享环缓存已启用 (capacity=%d)",
+            ring.capacity,
+            extra={"log_type": "SYSTEM"},
+        )
+        return True
 
     def _create_managed_queue(self) -> Any:
         """创建由 SyncManager 托管的队列，并序列化代理供子进程复用."""
@@ -575,6 +773,21 @@ class MultiProcessLogCollector:
 
         try:
             with self._lock:
+                if self._ring is not None:
+                    from backend.infrastructure.system_vnpy.native_log_bridge import SharedRingConsumer
+
+                    consumer = SharedRingConsumer(
+                        self._ring,
+                        self._handle_ring_record,
+                        poll_interval=0.001,
+                        name="shared-log-consumer",
+                    )
+                    consumer.start()
+                    self._ring_consumer = consumer
+                    self._running = True
+                    self.logger.info("多进程日志收集器已启动 (shared ring)")
+                    return
+
                 # 创建QueueListener，将所有日志转发到LoggingHub
                 self.queue_listener = QueueListener(
                     self.queue,
@@ -587,6 +800,22 @@ class MultiProcessLogCollector:
         except Exception as e:
             self.logger.error(f"启动多进程日志收集器失败: {e}", exc_info=True)
 
+    def _handle_ring_record(self, payload: Any) -> None:
+        try:
+            if isinstance(payload, logging.LogRecord):
+                record = payload
+            elif isinstance(payload, dict):
+                record = logging.makeLogRecord(payload)
+            else:
+                record = logging.makeLogRecord(getattr(payload, "__dict__", {}))
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning("共享日志环解析失败: %s", exc, exc_info=True)
+            return
+        try:
+            self.logging_hub.handle(record)
+        except Exception:  # noqa: BLE001
+            self.logger.error("shared ring record dispatch failed", exc_info=True)
+
     def stop(self):
         """停止日志收集."""
         if not self._running:
@@ -594,6 +823,12 @@ class MultiProcessLogCollector:
 
         try:
             with self._lock:
+                if self._ring_consumer is not None:
+                    self._ring_consumer.stop()
+                    self._ring_consumer = None
+                if self._ring is not None:
+                    self._ring.close(unlink=True)
+                    self._ring = None
                 if self.queue_listener:
                     self.queue_listener.stop()
                     self.queue_listener = None
@@ -659,10 +894,30 @@ def restore_queue_from_token(token: str) -> Optional[multiprocessing.Queue]:
     expected_address: Optional[Any] = None
     queue: Optional[multiprocessing.Queue] = None
 
-    # 优先尝试新版JSON格式（v2）
+    payload: Optional[Any] = None
     try:
         payload = json.loads(raw_bytes.decode("utf-8"))
-        if isinstance(payload, dict) and "queue_pickled" in payload:
+    except Exception:
+        payload = None
+
+    if isinstance(payload, dict) and payload.get("mode") == "shared_ring":
+        ring_token = payload.get("ring")
+        if not ring_token:
+            logger.error("共享日志环 token 缺失")
+            return None
+        try:
+            from backend.infrastructure.system_vnpy.native_log_bridge import attach_shared_log_ring
+
+            adapter = attach_shared_log_ring(ring_token)
+        except Exception as exc:
+            logger.error("共享日志环恢复失败: %s", exc, exc_info=True)
+            return None
+        if adapter is None:
+            logger.error("共享日志环不可用")
+        return adapter
+
+    if isinstance(payload, dict) and "queue_pickled" in payload:
+        try:
             queue_pickled_b64 = payload.get("queue_pickled")
             authkey_b64 = payload.get("authkey")
             expected_address = payload.get("address")
@@ -683,8 +938,8 @@ def restore_queue_from_token(token: str) -> Optional[multiprocessing.Queue]:
 
             queue_bytes = base64.b64decode(queue_pickled_b64.encode("ascii"))
             queue = pickle.loads(queue_bytes)
-    except Exception:
-        queue = None
+        except Exception:
+            queue = None
 
     # 兼容旧版pickle格式（v1）
     if queue is None:
@@ -1275,18 +1530,26 @@ class LoggingHub(logging.Handler):
             exception_text = "".join(traceback.format_exception(*record.exc_info))
 
         log_type = self._classify_log_type(record)
-        details = {}
+        details: Dict[str, Any] = {}
         if hasattr(record, "__dict__"):
             for key, value in record.__dict__.items():
                 if key not in _EXCLUDED_FIELDS:
                     details[key] = value
+
+        # 自动补充场景信息（仅在未显式提供时）
+        if not details.get("scenario"):
+            inferred_scenario = _infer_scenario_from_logger(record.name)
+            if inferred_scenario:
+                details["scenario"] = inferred_scenario
+
+        details_payload = details if details else None
 
         return UnifiedLogRecord(
             type=log_type,
             level=record.levelno,
             module=record.module,
             message=record.getMessage(),
-            details=details if details else None,
+            details=details_payload,
             timestamp=datetime.fromtimestamp(record.created),
             logger_name=record.name,
             function=record.funcName,
@@ -2638,6 +2901,11 @@ __all__ = [
     # 数据结构
     "LogType",
     "UnifiedLogRecord",
+    "bind_logger_defaults",
+    "get_configured_logger",
+    "get_stage_logger",
+    "get_alert_logger",
+    "get_progress_logger",
     # 核心类
     "LoggingHub",
     "OrderedLogQueue",

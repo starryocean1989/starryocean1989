@@ -14,16 +14,7 @@ from threading import Timer
 import logging
 
 from backend.core.service_base import BaseService
-
-# 导入高性能LRU缓存（支持降级）
-try:
-    from backend.infrastructure.native.native_collections import (
-        HighPerfLRUCache,
-        COLLECTIONS_AVAILABLE,
-    )
-except ImportError:
-    COLLECTIONS_AVAILABLE = False
-    HighPerfLRUCache = None
+from backend.infrastructure.native.match_cache import create_match_cache
 
 # 专用logger - 日志埋点v4.0
 logger_alert = logging.getLogger("backend.portfolio.alert")
@@ -55,90 +46,17 @@ class PortfolioService(BaseService):
         self.scan_timer: Optional[Timer] = None
         self.scan_interval = 30  # 扫描间隔（秒）
 
-        # ✨ 实时数据缓存（使用高性能LRU缓存，支持降级）
-        # 设置 maxsize=100，支持最多100个网关的缓存
-        if COLLECTIONS_AVAILABLE and HighPerfLRUCache is not None:
-            # type: ignore[call-arg] - HighPerfLRUCache 是 C 扩展，类型检查器无法识别其构造函数
-            self.realtime_positions: Any = HighPerfLRUCache(100)  # 按网关名称缓存持仓  # type: ignore[call-arg]
-            self.realtime_accounts: Any = HighPerfLRUCache(100)  # 按网关名称缓存账户  # type: ignore[call-arg]
-            self.realtime_trades: Any = HighPerfLRUCache(100)  # 按网关名称缓存成交  # type: ignore[call-arg]
-            self.logger.info("✅ 使用高性能LRU缓存（native_collections）")
+        # ✨ 实时数据缓存（组合撮合缓存，自动降级）
+        self.realtime_cache, self._use_native_match_cache = create_match_cache()
+        if self._use_native_match_cache:
+            self.logger.info("✅ 使用原生组合撮合缓存（HighPerfMatchCache）")
         else:
-            # 降级方案：使用普通字典
-            self.realtime_positions: Dict[str, List[Any]] = {}
-            self.realtime_accounts: Dict[str, List[Any]] = {}
-            self.realtime_trades: Dict[str, List[Any]] = {}
-            self.logger.info("⚠️ native_collections不可用，使用普通字典缓存")
-
-        # 标记是否使用高性能缓存
-        self._use_high_perf_cache = COLLECTIONS_AVAILABLE and HighPerfLRUCache is not None
+            self.logger.info("⚠️ 组合撮合缓存降级为Python实现")
 
         # ✨ 开仓成本追踪（用于Trading P&L计算）
         self.position_costs: Dict[str, Dict[str, float]] = {}  # {gateway: {symbol: cost}}
 
         self.logger.info("组合投资服务已创建")
-
-    def _cache_get(self, cache: Any, key: str, default: Any = None) -> Any:
-        """统一的缓存获取方法（支持HighPerfLRUCache和普通字典）.
-
-        Args:
-            cache: 缓存对象（HighPerfLRUCache或字典）
-            key: 缓存键
-            default: 默认值
-
-        Returns:
-            缓存值或默认值
-        """
-        if self._use_high_perf_cache:
-            value = cache.get(key)
-            return value if value is not None else default
-        else:
-            return cache.get(key, default)
-
-    def _cache_set(self, cache: Any, key: str, value: Any) -> None:
-        """统一的缓存设置方法（支持HighPerfLRUCache和普通字典）.
-
-        Args:
-            cache: 缓存对象（HighPerfLRUCache或字典）
-            key: 缓存键
-            value: 缓存值
-        """
-        if self._use_high_perf_cache:
-            cache.set(key, value)
-        else:
-            cache[key] = value
-
-    def _cache_contains(self, cache: Any, key: str) -> bool:
-        """统一的缓存包含检查方法（支持HighPerfLRUCache和普通字典）.
-
-        Args:
-            cache: 缓存对象（HighPerfLRUCache或字典）
-            key: 缓存键
-
-        Returns:
-            是否包含该键
-        """
-        if self._use_high_perf_cache:
-            return cache.get(key) is not None
-        else:
-            return key in cache
-
-    def _cache_get_all_values(self, cache: Any) -> List[Any]:
-        """获取缓存中所有值（支持HighPerfLRUCache和普通字典）.
-
-        Args:
-            cache: 缓存对象（HighPerfLRUCache或字典）
-
-        Returns:
-            所有值的列表
-        """
-        if self._use_high_perf_cache:
-            # HighPerfLRUCache 没有直接的遍历方法
-            # 这里返回空列表，因为在实际使用中我们通常知道要查询的键
-            # 如果需要遍历所有值，需要维护一个键列表
-            return []
-        else:
-            return list(cache.values())
 
     def _do_initialize(self) -> bool:
         """初始化组合投资服务."""
@@ -225,28 +143,11 @@ class PortfolioService(BaseService):
             if not position:
                 return
 
-            # ✨ 缓存持仓数据（用于实时业绩计算）
             gateway_name = position.gateway_name
             symbol = position.vt_symbol
 
-            # 获取或初始化网关缓存
-            positions_list = self._cache_get(self.realtime_positions, gateway_name, [])
-            if not positions_list:
-                positions_list = []
-
-            # 更新或添加持仓
-            found = False
-            for i, pos in enumerate(positions_list):
-                if pos.vt_symbol == symbol and pos.direction == position.direction:
-                    positions_list[i] = position
-                    found = True
-                    break
-
-            if not found:
-                positions_list.append(position)
-
-            # 保存回缓存
-            self._cache_set(self.realtime_positions, gateway_name, positions_list)
+            # ✨ 缓存持仓数据（用于实时业绩计算）
+            self.realtime_cache.upsert_position(position)
 
             self.logger.debug(
                 "持仓已缓存: gateway=%s, symbol=%s, volume=%s, pnl=%s",
@@ -270,27 +171,10 @@ class PortfolioService(BaseService):
             if not account:
                 return
 
-            # ✨ 缓存资金数据
             gateway_name = account.gateway_name
 
-            # 获取或初始化网关缓存
-            accounts_list = self._cache_get(self.realtime_accounts, gateway_name, [])
-            if not accounts_list:
-                accounts_list = []
-
-            # 更新或添加账户
-            found = False
-            for i, acc in enumerate(accounts_list):
-                if acc.accountid == account.accountid:
-                    accounts_list[i] = account
-                    found = True
-                    break
-
-            if not found:
-                accounts_list.append(account)
-
-            # 保存回缓存
-            self._cache_set(self.realtime_accounts, gateway_name, accounts_list)
+            # ✨ 缓存资金数据
+            self.realtime_cache.upsert_account(account)
 
             self.logger.debug(
                 "资金已缓存: gateway=%s, account=%s, balance=%s",
@@ -313,19 +197,11 @@ class PortfolioService(BaseService):
             if not trade:
                 return
 
-            # ✨ 缓存成交数据
             gateway_name = trade.gateway_name
             symbol = trade.vt_symbol
 
-            # 获取或初始化网关缓存
-            trades_list = self._cache_get(self.realtime_trades, gateway_name, [])
-            if not trades_list:
-                trades_list = []
-
-            trades_list.append(trade)
-
-            # 保存回缓存
-            self._cache_set(self.realtime_trades, gateway_name, trades_list)
+            # ✨ 缓存成交数据
+            self.realtime_cache.upsert_trade(trade)
 
             # ✨ 更新开仓成本（用于Trading P&L计算）
             self._update_position_cost(gateway_name, trade)
@@ -675,14 +551,14 @@ class PortfolioService(BaseService):
             for gw_name in gateway_names:
                 try:
                     # ✨ 优先使用缓存数据（事件驱动已更新，避免重复查询）
-                    gateway_positions = self._cache_get(self.realtime_positions, gw_name, [])
+                    gateway_positions = self.realtime_cache.get_positions(gw_name)
 
                     # 如果缓存为空，从main_engine获取（降级方案）
                     if not gateway_positions and self.main_engine:
                         positions = self.main_engine.get_all_positions()
                         gateway_positions = [p for p in positions if p.gateway_name == gw_name]
-                        # 更新缓存
-                        self._cache_set(self.realtime_positions, gw_name, gateway_positions)
+                        for position in gateway_positions:
+                            self.realtime_cache.upsert_position(position)
                         self.logger.debug(
                             f"从main_engine获取持仓并缓存: {gw_name}, {len(gateway_positions)}条"
                         )
@@ -714,14 +590,14 @@ class PortfolioService(BaseService):
                         total_trading_pnl += trading_pnl
 
                     # ✨ 优先使用缓存的账户数据
-                    gateway_accounts = self._cache_get(self.realtime_accounts, gw_name, [])
+                    gateway_accounts = self.realtime_cache.get_accounts(gw_name)
 
                     # 如果缓存为空，从main_engine获取
                     if not gateway_accounts and self.main_engine:
                         accounts = self.main_engine.get_all_accounts()
                         gateway_accounts = [a for a in accounts if a.gateway_name == gw_name]
-                        # 更新缓存
-                        self._cache_set(self.realtime_accounts, gw_name, gateway_accounts)
+                        for account in gateway_accounts:
+                            self.realtime_cache.upsert_account(account)
                         self.logger.debug(
                             f"从main_engine获取账户并缓存: {gw_name}, {len(gateway_accounts)}条"
                         )
@@ -806,7 +682,7 @@ class PortfolioService(BaseService):
             cached_gateways = sum(
                 1
                 for gw in gateway_names
-                if self._cache_contains(self.realtime_positions, gw) or self._cache_contains(self.realtime_accounts, gw)
+                if self.realtime_cache.has_positions(gw) or self.realtime_cache.has_accounts(gw)
             )
 
             return cached_gateways / total_gateways if total_gateways > 0 else 0.0
@@ -825,33 +701,14 @@ class PortfolioService(BaseService):
             float: 已实现收益
         """
         try:
-            # 简化实现：基于成交记录计算
-            gateway_trades = self._cache_get(self.realtime_trades, gateway_name, [])
-            if not gateway_trades:
+            stats = self.realtime_cache.get_trade_stats(gateway_name, symbol)
+            if not stats:
                 return 0.0
 
-            symbol_trades = [t for t in gateway_trades if t.vt_symbol == symbol]
+            buy_value = float(stats.get("buy_value", 0.0))
+            sell_value = float(stats.get("sell_value", 0.0))
 
-            if not symbol_trades:
-                return 0.0
-
-            # 简单计算：卖出成交 - 买入成交
-            from vnpy.trader.constant import Direction
-
-            buy_value = sum(
-                t.price * t.volume
-                for t in symbol_trades
-                if hasattr(t, "direction") and t.direction == Direction.LONG
-            )
-            sell_value = sum(
-                t.price * t.volume
-                for t in symbol_trades
-                if hasattr(t, "direction") and t.direction == Direction.SHORT
-            )
-
-            trading_pnl = sell_value - buy_value
-
-            return trading_pnl
+            return sell_value - buy_value
 
         except Exception as e:
             self.logger.warning(f"计算Trading P&L失败: {e}", extra={"log_type": "SYSTEM"})
@@ -1055,37 +912,19 @@ class PortfolioService(BaseService):
                 # 特定组合
                 if portfolio_name.startswith("auto_"):
                     gateway_name = portfolio_name.replace("auto_", "")
-                    gateway_trades = self._cache_get(self.realtime_trades, gateway_name, [])
+                    gateway_trades = self.realtime_cache.get_trades(gateway_name)
                     if gateway_trades:
                         all_trades = gateway_trades
                 elif portfolio_name in self.custom_portfolios:
                     # 自定义组合：聚合多个网关
                     portfolio = self.custom_portfolios[portfolio_name]
                     for gw_name in portfolio.get("gateway_names", []):
-                        gateway_trades = self._cache_get(self.realtime_trades, gw_name, [])
+                        gateway_trades = self.realtime_cache.get_trades(gw_name)
                         if gateway_trades:
                             all_trades.extend(gateway_trades)
             else:
                 # 所有组合 - 遍历所有缓存值
-                # 注意：HighPerfLRUCache 不支持直接遍历，这里使用降级方案
-                if self._use_high_perf_cache:
-                    # 对于高性能缓存，我们需要知道所有可能的网关名称
-                    # 这里从 auto_portfolios 和 custom_portfolios 获取网关名称
-                    all_gateway_names = set()
-                    for portfolio in self.auto_portfolios.values():
-                        all_gateway_names.add(portfolio.get("gateway_name", ""))
-                    for portfolio in self.custom_portfolios.values():
-                        all_gateway_names.update(portfolio.get("gateway_names", []))
-
-                    for gw_name in all_gateway_names:
-                        if gw_name:
-                            gateway_trades = self._cache_get(self.realtime_trades, gw_name, [])
-                            if gateway_trades:
-                                all_trades.extend(gateway_trades)
-                else:
-                    # 普通字典可以直接遍历
-                    for trades_list in self.realtime_trades.values():
-                        all_trades.extend(trades_list)
+                all_trades = self.realtime_cache.get_trades()
 
             if not all_trades:
                 return {
@@ -1130,97 +969,59 @@ class PortfolioService(BaseService):
                 except Exception as e:
                     self.logger.debug(f"跳过无效成交记录: {e}")
 
+            initial_equity = 1_000_000.0
+
             if not trade_records:
-                return {
-                    "success": True,
-                    "period_type": period_type,
-                    "statistics": {
-                        "daily": [],
-                        "weekly": [],
-                        "monthly": [],
-                    },
-                    "message": "无有效成交记录",
-                }
+                return self._calculate_period_statistics_local(
+                    trade_records, portfolio_name, period_type, initial_equity
+                )
 
-            df = pd.DataFrame(trade_records)
-            df["date"] = pd.to_datetime(df["date"])
+            dates = [record["date"] for record in trade_records]
+            amounts = [record["amount"] for record in trade_records]
 
-            # 3. 计算日度收益
-            daily_pnl = df.groupby("date")["amount"].sum().reset_index()
-            daily_pnl.columns = ["date", "pnl"]
-            daily_pnl["date_str"] = daily_pnl["date"].dt.strftime("%Y-%m-%d")
-            daily_pnl["return"] = daily_pnl["pnl"] / (daily_pnl["pnl"].cumsum().shift(1) + 10000)
-            daily_pnl["cumulative_return"] = (1 + daily_pnl["return"].fillna(0)).cumprod() - 1
+            if self.data_client:
+                try:
+                    rpc_result = self.data_client.call(
+                        "compute_period_statistics",
+                        dates=dates,
+                        pnl=amounts,
+                        initial_equity=initial_equity,
+                        risk_free_rate=0.03,
+                        trading_days_per_year=252,
+                    )
+                    if isinstance(rpc_result, dict) and rpc_result.get("success"):
+                        summary = rpc_result.get("summary", {})
+                        statistics = {
+                            "daily": rpc_result.get("daily", []),
+                            "weekly": rpc_result.get("weekly", []),
+                            "monthly": rpc_result.get("monthly", []),
+                            "equity_curve": rpc_result.get("equity_curve", []),
+                            "summary": summary,
+                            "total_return": float(summary.get("total_return", 0.0)),
+                            "max_drawdown": float(summary.get("max_drawdown", 0.0)),
+                            "sharpe_ratio": float(summary.get("sharpe_ratio", 0.0)),
+                            "win_rate": float(summary.get("win_rate", 0.0)),
+                            "total_pnl": float(summary.get("total_pnl", sum(amounts))),
+                        }
+                        return {
+                            "success": True,
+                            "portfolio_name": portfolio_name or "全部组合",
+                            "period_type": period_type,
+                            "statistics": statistics,
+                            "message": "周期统计计算完成（数据进程）",
+                        }
+                except Exception as rpc_exc:
+                    self.logger.warning(
+                        "数据进程周期统计计算失败，回退本地实现: %s",
+                        rpc_exc,
+                        exc_info=True,
+                        extra={"log_type": "SYSTEM"},
+                    )
 
-            # 4. 周度和月度聚合
-            weekly_pnl = daily_pnl.set_index("date")["pnl"].resample("W").sum().reset_index()
-            weekly_pnl.columns = ["date", "pnl"]
-            weekly_pnl["date_str"] = weekly_pnl["date"].dt.strftime("%Y-W%U")
-            weekly_pnl["return"] = weekly_pnl["pnl"] / (weekly_pnl["pnl"].cumsum().shift(1) + 10000)
-            weekly_pnl["cumulative_return"] = (1 + weekly_pnl["return"].fillna(0)).cumprod() - 1
-
-            monthly_pnl = daily_pnl.set_index("date")["pnl"].resample("M").sum().reset_index()
-            monthly_pnl.columns = ["date", "pnl"]
-            monthly_pnl["date_str"] = monthly_pnl["date"].dt.strftime("%Y-%m")
-            monthly_pnl["return"] = monthly_pnl["pnl"] / (
-                monthly_pnl["pnl"].cumsum().shift(1) + 10000
-            )
-            monthly_pnl["cumulative_return"] = (1 + monthly_pnl["return"].fillna(0)).cumprod() - 1
-
-            # 5. 计算业绩指标
-            total_pnl = daily_pnl["pnl"].sum()
-            total_return = daily_pnl["cumulative_return"].iloc[-1] if len(daily_pnl) > 0 else 0.0
-
-            # 最大回撤
-            cumulative = (1 + daily_pnl["return"].fillna(0)).cumprod()
-            running_max = cumulative.cummax()
-            drawdowns = (cumulative - running_max) / running_max
-            max_drawdown = drawdowns.min() if len(drawdowns) > 0 else 0.0
-
-            # 夏普比率（假设无风险利率3%，年化）
-            if len(daily_pnl) > 1:
-                mean_return = daily_pnl["return"].mean() * 252  # 年化收益
-                std_return = daily_pnl["return"].std() * np.sqrt(252)  # 年化波动率
-                sharpe_ratio = (mean_return - 0.03) / std_return if std_return > 0 else 0.0
-            else:
-                sharpe_ratio = 0.0
-
-            # 胜率
-            win_count = (daily_pnl["pnl"] > 0).sum()
-            total_count = len(daily_pnl)
-            win_rate = win_count / total_count if total_count > 0 else 0.0
-
-            # 6. 转换为返回格式
-            daily_stats = daily_pnl[["date_str", "pnl", "return", "cumulative_return"]].to_dict(  # type: ignore[call-overload]
-                orient="records"
-            )
-            weekly_stats = weekly_pnl[["date_str", "pnl", "return", "cumulative_return"]].to_dict(
-                orient="records"
-            )
-            monthly_stats = monthly_pnl[["date_str", "pnl", "return", "cumulative_return"]].to_dict(
-                orient="records"
+            return self._calculate_period_statistics_local(
+                trade_records, portfolio_name, period_type, initial_equity
             )
 
-            return {
-                "success": True,
-                "portfolio_name": portfolio_name or "全部组合",
-                "period_type": period_type,
-                "statistics": {
-                    "daily": daily_stats,
-                    "weekly": weekly_stats,
-                    "monthly": monthly_stats,
-                    "total_return": float(total_return),
-                    "max_drawdown": float(max_drawdown),
-                    "sharpe_ratio": float(sharpe_ratio),
-                    "win_rate": float(win_rate),
-                    "total_pnl": float(total_pnl),
-                },
-                "message": "周期统计计算完成",
-            }
-
-        except ImportError as e:
-            self.logger.error("pandas未安装，无法计算周期统计: %s", e, extra={"log_type": "SYSTEM"})
-            return {"success": False, "message": "pandas库未安装"}
         except Exception as e:
             self._log_error("计算周期统计", e)
             return {"success": False, "message": str(e)}
@@ -1613,6 +1414,138 @@ class PortfolioService(BaseService):
             self.logger.error("计算周期统计失败: %s", e, extra={"log_type": "SYSTEM"}, exc_info=True)
             return []
 
+    def _calculate_period_statistics_local(
+        self,
+        trade_records: List[Dict[str, Any]],
+        portfolio_name: str | None,
+        period_type: str,
+        initial_equity: float,
+    ) -> Dict[str, Any]:
+        """本地降级版周期统计（使用pandas/numpy）"""
+        try:
+            import pandas as pd
+            import numpy as np
+
+            if not trade_records:
+                return {
+                    "success": True,
+                    "portfolio_name": portfolio_name or "全部组合",
+                    "period_type": period_type,
+                    "statistics": {
+                        "daily": [],
+                        "weekly": [],
+                        "monthly": [],
+                        "total_return": 0.0,
+                        "max_drawdown": 0.0,
+                        "sharpe_ratio": 0.0,
+                        "win_rate": 0.0,
+                        "total_pnl": 0.0,
+                        "summary": {
+                            "initial_equity": initial_equity,
+                            "final_equity": initial_equity,
+                        },
+                    },
+                    "message": "暂无成交数据",
+                }
+
+            df = pd.DataFrame(trade_records)
+            df["date"] = pd.to_datetime(df["date"])
+
+            daily_pnl = df.groupby("date")["amount"].sum().reset_index()
+            daily_pnl.columns = ["date", "pnl"]
+            daily_pnl["date_str"] = daily_pnl["date"].dt.strftime("%Y-%m-%d")
+
+            cumulative_pnl = daily_pnl["pnl"].cumsum()
+            prev_equity = cumulative_pnl.shift(1) + initial_equity
+            prev_equity.iloc[0] = initial_equity
+            daily_pnl["return"] = np.where(prev_equity > 0, daily_pnl["pnl"] / prev_equity, 0.0)
+            daily_pnl["cumulative_return"] = (1 + daily_pnl["return"].fillna(0)).cumprod() - 1
+
+            weekly_pnl = (
+                daily_pnl.set_index("date")["pnl"].resample("W").sum().reset_index()
+            )
+            weekly_pnl.columns = ["date", "pnl"]
+            weekly_prev_equity = weekly_pnl["pnl"].cumsum().shift(1) + initial_equity
+            weekly_prev_equity.iloc[0] = initial_equity
+            weekly_pnl["date_str"] = weekly_pnl["date"].dt.strftime("%Y-W%U")
+            weekly_pnl["return"] = np.where(
+                weekly_prev_equity > 0, weekly_pnl["pnl"] / weekly_prev_equity, 0.0
+            )
+            weekly_pnl["cumulative_return"] = (1 + weekly_pnl["return"].fillna(0)).cumprod() - 1
+
+            monthly_pnl = (
+                daily_pnl.set_index("date")["pnl"].resample("M").sum().reset_index()
+            )
+            monthly_pnl.columns = ["date", "pnl"]
+            monthly_prev_equity = monthly_pnl["pnl"].cumsum().shift(1) + initial_equity
+            monthly_prev_equity.iloc[0] = initial_equity
+            monthly_pnl["date_str"] = monthly_pnl["date"].dt.strftime("%Y-%m")
+            monthly_pnl["return"] = np.where(
+                monthly_prev_equity > 0, monthly_pnl["pnl"] / monthly_prev_equity, 0.0
+            )
+            monthly_pnl["cumulative_return"] = (
+                1 + monthly_pnl["return"].fillna(0)
+            ).cumprod() - 1
+
+            total_pnl = daily_pnl["pnl"].sum()
+            total_return = daily_pnl["cumulative_return"].iloc[-1] if len(daily_pnl) > 0 else 0.0
+
+            cumulative = (1 + daily_pnl["return"].fillna(0)).cumprod()
+            running_max = cumulative.cummax()
+            drawdowns = (cumulative - running_max) / running_max
+            max_drawdown = drawdowns.min() if len(drawdowns) > 0 else 0.0
+
+            if len(daily_pnl) > 1:
+                mean_return = daily_pnl["return"].mean() * 252
+                std_return = daily_pnl["return"].std() * np.sqrt(252)
+                sharpe_ratio = (mean_return - 0.03) / std_return if std_return > 0 else 0.0
+            else:
+                sharpe_ratio = 0.0
+
+            win_count = (daily_pnl["pnl"] > 0).sum()
+            total_count = len(daily_pnl)
+            win_rate = win_count / total_count if total_count > 0 else 0.0
+
+            daily_stats = daily_pnl[
+                ["date_str", "pnl", "return", "cumulative_return"]
+            ].rename(columns={"date_str": "period"}).to_dict(orient="records")  # type: ignore[arg-type]
+            weekly_stats = weekly_pnl[
+                ["date_str", "pnl", "return", "cumulative_return"]
+            ].rename(columns={"date_str": "period"}).to_dict(orient="records")  # type: ignore[arg-type]
+            monthly_stats = monthly_pnl[
+                ["date_str", "pnl", "return", "cumulative_return"]
+            ].rename(columns={"date_str": "period"}).to_dict(orient="records")  # type: ignore[arg-type]
+
+            statistics = {
+                "daily": daily_stats,
+                "weekly": weekly_stats,
+                "monthly": monthly_stats,
+                "total_return": float(total_return),
+                "max_drawdown": float(max_drawdown),
+                "sharpe_ratio": float(sharpe_ratio),
+                "win_rate": float(win_rate),
+                "total_pnl": float(total_pnl),
+                "summary": {
+                    "initial_equity": float(initial_equity),
+                    "final_equity": float(initial_equity + total_pnl),
+                },
+            }
+
+            return {
+                "success": True,
+                "portfolio_name": portfolio_name or "全部组合",
+                "period_type": period_type,
+                "statistics": statistics,
+                "message": "周期统计计算完成（本地）",
+            }
+
+        except ImportError as e:
+            self.logger.error("pandas未安装，无法计算周期统计: %s", e, extra={"log_type": "SYSTEM"})
+            return {"success": False, "message": "pandas库未安装"}
+        except Exception as e:
+            self._log_error("计算周期统计", e)
+            return {"success": False, "message": str(e)}
+
     def _analyze_drawdowns(self, performance_curve: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """分析回撤情况.
 
@@ -1861,7 +1794,7 @@ class PortfolioService(BaseService):
 
     # ==================== 高级风险指标计算 ====================
 
-    def calculate_risk_metrics(
+    def _calculate_risk_metrics_legacy(
         self, portfolio_name: str, lookback_days: int = 60
     ) -> Dict[str, Any]:
         """计算高级风险指标（VaR、CVaR、夏普比率等）.
@@ -2021,6 +1954,191 @@ class PortfolioService(BaseService):
         except Exception as e:
             self._log_error("计算风险指标", e)
             return {"success": False, "message": f"计算失败: {str(e)}"}
+
+    def calculate_risk_metrics(
+        self, portfolio_name: str, lookback_days: int = 60
+    ) -> Dict[str, Any]:
+        """计算高级风险指标，优先使用数据进程原生实现."""
+        try:
+            returns_result = self._get_portfolio_returns(portfolio_name, lookback_days)
+            if not returns_result.get("success"):
+                return returns_result
+
+            returns = returns_result.get("returns", [])
+            equity_curve = returns_result.get("equity_curve", [])
+            dates = returns_result.get("dates", [])
+
+            if not returns or len(returns) < 30:
+                return {
+                    "success": False,
+                    "message": f"数据不足（需要至少30天数据，当前{len(returns)}天）",
+                }
+
+            scale = equity_curve[-1] if equity_curve else 1.0
+            benchmark_result = self._get_benchmark_returns(lookback_days)
+            risk_profile: Optional[Dict[str, Any]] = None
+
+            if self.data_client:
+                try:
+                    risk_profile = self.data_client.call(
+                        "compute_risk_profile",
+                        returns=returns,
+                        scale=scale,
+                        risk_free_rate=0.03,
+                        trading_days_per_year=252,
+                        confidence_levels=[0.95, 0.99],
+                    )
+                    if not isinstance(risk_profile, dict) or not risk_profile.get("success", True):
+                        risk_profile = None
+                except Exception as rpc_exc:
+                    self.logger.warning(
+                        "数据进程风险画像计算失败，回退本地实现: %s",
+                        rpc_exc,
+                        exc_info=True,
+                        extra={"log_type": "SYSTEM"},
+                    )
+                    risk_profile = None
+
+            if risk_profile:
+                try:
+                    var_map = (
+                        risk_profile.get("var", {})
+                        if isinstance(risk_profile.get("var"), dict)
+                        else {}
+                    )
+                    var_95 = float(var_map.get("0.95", {}).get("var_amount", 0.0))
+                    var_99 = float(var_map.get("0.99", {}).get("var_amount", 0.0))
+                    cvar_95 = float(var_map.get("0.95", {}).get("cvar_amount", 0.0))
+                    cvar_99 = float(var_map.get("0.99", {}).get("cvar_amount", 0.0))
+
+                    volatility = float(risk_profile.get("annual_volatility", 0.0))
+                    sharpe_ratio = float(risk_profile.get("sharpe_ratio", 0.0))
+                    sortino_ratio = float(risk_profile.get("sortino_ratio", 0.0))
+                    max_drawdown = float(risk_profile.get("max_drawdown", 0.0))
+                    max_drawdown_duration = int(risk_profile.get("max_drawdown_duration", 0))
+                    calmar_ratio = float(risk_profile.get("calmar_ratio", 0.0))
+                    annual_return = float(risk_profile.get("annual_return", 0.0))
+                    mean_return = float(risk_profile.get("mean_return", 0.0))
+                    std_return = float(risk_profile.get("std_return", 0.0))
+                    cumulative_return = float(risk_profile.get("cumulative_return", 0.0))
+
+                    beta = None
+                    alpha = None
+                    information_ratio = None
+
+                    try:
+                        import numpy as np
+
+                        if benchmark_result.get("success"):
+                            benchmark_returns = np.array(benchmark_result.get("returns", []), dtype=float)
+                            min_len = min(len(returns), len(benchmark_returns))
+                            if min_len > 0:
+                                returns_array = np.array(returns[-min_len:], dtype=float)
+                                benchmark_array = benchmark_returns[-min_len:]
+
+                                covariance = float(np.cov(returns_array, benchmark_array)[0, 1])
+                                benchmark_variance = float(np.var(benchmark_array))
+                                if benchmark_variance > 0:
+                                    beta = covariance / benchmark_variance
+
+                                benchmark_return = float(np.mean(benchmark_array) * 252)
+                                portfolio_return = mean_return * 252
+                                risk_free_rate = 0.03
+                                if beta is not None:
+                                    alpha = portfolio_return - (
+                                        risk_free_rate + beta * (benchmark_return - risk_free_rate)
+                                    )
+
+                                active_returns = returns_array - benchmark_array
+                                tracking_error = float(np.std(active_returns) * np.sqrt(252))
+                                if tracking_error > 0:
+                                    information_ratio = (portfolio_return - benchmark_return) / tracking_error
+                    except Exception:
+                        self.logger.debug(
+                            "计算Beta/Alpha信息比率失败（数据进程路径）",
+                            exc_info=True,
+                            extra={"log_type": "SYSTEM"},
+                        )
+
+                    metrics: Dict[str, Any] = {
+                        "volatility": float(volatility),
+                        "var_95": float(var_95),
+                        "var_99": float(var_99),
+                        "cvar_95": float(cvar_95),
+                        "cvar_99": float(cvar_99),
+                        "max_drawdown": float(max_drawdown),
+                        "max_drawdown_duration": int(max_drawdown_duration),
+                        "sharpe_ratio": float(sharpe_ratio),
+                        "sortino_ratio": float(sortino_ratio),
+                        "calmar_ratio": float(calmar_ratio),
+                        "annual_return": float(annual_return),
+                        "mean_return": float(mean_return),
+                        "std_return": float(std_return),
+                        "total_return": float(cumulative_return),
+                        "beta": float(beta) if beta is not None else None,
+                        "alpha": float(alpha) if alpha is not None else None,
+                        "information_ratio": float(information_ratio) if information_ratio is not None else None,
+                        "skewness": float(risk_profile.get("skewness", 0.0)),
+                        "kurtosis": float(risk_profile.get("kurtosis", 0.0)),
+                        "win_rate": float(risk_profile.get("win_rate", 0.0)),
+                        "loss_rate": float(risk_profile.get("loss_rate", 0.0)),
+                        "avg_gain": float(risk_profile.get("avg_gain", 0.0)),
+                        "avg_loss": float(risk_profile.get("avg_loss", 0.0)),
+                        "downside_deviation": float(risk_profile.get("downside_deviation", 0.0)),
+                    }
+
+                    if abs(max_drawdown) > 0.20:
+                        logger_alert.warning(
+                            "风险告警: 最大回撤过大, 组合=%s, 最大回撤=%.2f%%",
+                            portfolio_name,
+                            max_drawdown * 100,
+                            extra={"log_type": "ALERT"},
+                        )
+                    if volatility > 0.40:
+                        logger_alert.warning(
+                            "风险告警: 波动率过高, 组合=%s, 年化波动率=%.2f%%",
+                            portfolio_name,
+                            volatility * 100,
+                            extra={"log_type": "ALERT"},
+                        )
+                    if sharpe_ratio < 0:
+                        logger_alert.error(
+                            "风险告警: 夏普比率为负, 组合=%s, 夏普比率=%.2f",
+                            portfolio_name,
+                            sharpe_ratio,
+                            extra={"log_type": "ALERT"},
+                        )
+
+                    self.logger.info(
+                        "组合 %s 风险指标计算完成（数据进程）: VaR95=%.2f, CVaR95=%.2f, 最大回撤=%.2f%%, 夏普=%.2f",
+                        portfolio_name,
+                        var_95,
+                        cvar_95,
+                        max_drawdown * 100,
+                        sharpe_ratio,
+                    )
+
+                    return {
+                        "success": True,
+                        "portfolio_name": portfolio_name,
+                        "lookback_days": lookback_days,
+                        "metrics": metrics,
+                        "dates": dates,
+                        "message": "风险指标计算成功（数据进程）",
+                    }
+                except Exception as build_exc:
+                    self.logger.warning(
+                        "解析数据进程风险画像结果失败，回退本地实现: %s",
+                        build_exc,
+                        exc_info=True,
+                        extra={"log_type": "SYSTEM"},
+                    )
+
+            return self._calculate_risk_metrics_legacy(portfolio_name, lookback_days)
+
+        except Exception as e:
+            self._log_error("计算风险指标", e)
+            return {"success": False, "message": str(e)}
 
     def _get_portfolio_returns(
         self, portfolio_name: str, lookback_days: int = 60

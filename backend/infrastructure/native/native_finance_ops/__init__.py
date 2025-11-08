@@ -30,38 +30,53 @@ metrics = compute_return_metrics(pnl_series, equity_series, trading_days_per_yea
 
 try:
     from .native_finance_ops import (
+        apply_price_adjustments,
         aggregate_daily_pnl,
         compute_return_metrics,
         bucketize_period,
+        compute_period_statistics,
+        compute_risk_profile,
         FINANCE_OPS_AVAILABLE,
         VERSION
     )
-    
+
     _AVAILABLE = True
     _ERROR = None
-    
+
 except ImportError as e:
     _AVAILABLE = False
     _ERROR = str(e)
     FINANCE_OPS_AVAILABLE = False
-    
+
     # 提供降级函数
     def aggregate_daily_pnl(*args, **kwargs):
         raise ImportError(f"native_finance_ops not available: {_ERROR}")
-    
+
     def compute_return_metrics(*args, **kwargs):
         raise ImportError(f"native_finance_ops not available: {_ERROR}")
-    
+
     def bucketize_period(*args, **kwargs):
         raise ImportError(f"native_finance_ops not available: {_ERROR}")
-    
+
+    def compute_period_statistics(*args, **kwargs):
+        raise ImportError(f"native_finance_ops not available: {_ERROR}")
+
+    def compute_risk_profile(*args, **kwargs):
+        raise ImportError(f"native_finance_ops not available: {_ERROR}")
+
+    def apply_price_adjustments(*args, **kwargs):
+        raise ImportError(f"native_finance_ops not available: {_ERROR}")
+
     VERSION = "0.0.0"
 
 
 __all__ = [
+    'apply_price_adjustments',
     'aggregate_daily_pnl',
     'compute_return_metrics',
     'bucketize_period',
+    'compute_period_statistics',
+    'compute_risk_profile',
     'FINANCE_OPS_AVAILABLE',
     'VERSION',
 ]

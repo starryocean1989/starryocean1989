@@ -1,145 +1,178 @@
 # -*- coding: utf-8 -*-
-"""native_log_pipeline 集成适配层.
-
-本模块不会直接依赖真实的 C 扩展实现，而是提供一个轻量的探测与回退封装，
-便于在运行环境中优先启用 `native_log_pipeline`，无法加载时自动回落到
-既有的 Python Handler 逻辑。
-"""
+"""native_log_pipeline 扩展的集成封装."""
 
 from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass
 from importlib import import_module
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterable, Optional
 
-_NATIVE_MODULE: Optional[Any] = None
+DEFAULT_BATCH_SIZE = 256
+DEFAULT_FLUSH_MS = 2000.0
 
-
-def _is_env_enabled() -> bool:
-    """读取环境变量开关，默认开启。"""
-
-    value = os.getenv("NATIVE_LOG_PIPELINE", "1").strip().lower()
-    return value not in {"0", "false", "off"}
+BatchCallback = Callable[[Iterable[dict]], None]
 
 
-def _load_native(logger: Optional[logging.Logger] = None) -> Optional[Any]:
-    """尝试加载 native 扩展模块，失败时返回 ``None``。"""
+def _env_flag(name: str, default: str = "1") -> bool:
+    value = os.getenv(name, default)
+    if value is None:
+        return False
+    return value.strip().lower() not in {"0", "false", "off", "no"}
 
-    global _NATIVE_MODULE
 
-    if _NATIVE_MODULE is not None:
-        return _NATIVE_MODULE
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name, "")
+    try:
+        return int(raw.strip() or default)
+    except ValueError:
+        return default
 
-    if not _is_env_enabled():
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name, "")
+    try:
+        return float(raw.strip() or default)
+    except ValueError:
+        return default
+
+
+class PipelineHandle:
+    """包装 native_log_pipeline.Pipeline，提供统一操作。"""
+
+    __slots__ = ("pipeline", "_logger")
+
+    def __init__(self, pipeline: Any, logger: Optional[logging.Logger] = None) -> None:
+        self.pipeline = pipeline
+        self._logger = logger
+
+    def push(self, record: dict) -> bool:
+        return bool(self.pipeline.push(record))
+
+    def pending(self) -> int:
+        return int(self.pipeline.pending())
+
+    def flush(self, *, force: bool = False) -> bool:
+        try:
+            return bool(self.pipeline.flush(force=bool(force)))
+        except AttributeError:
+            if self._logger:
+                self._logger.debug("native pipeline 缺少 flush 接口，尝试 take_batch")
+            batch = self.pipeline.take_batch()
+            return bool(batch)
+
+    def flush_and_close(self) -> None:
+        try:
+            self.pipeline.flush_and_close()
+        except AttributeError:
+            try:
+                self.pipeline.clear()
+            except Exception:  # noqa: BLE001
+                if self._logger:
+                    self._logger.debug("native pipeline clear 失败", exc_info=True)
+
+    def set_fallback(self, callback: BatchCallback) -> None:
+        try:
+            self.pipeline.set_fallback(callback)
+        except AttributeError:
+            if self._logger:
+                self._logger.debug("native pipeline 不支持 set_fallback 接口")
+
+    def stats(self) -> dict[str, Any]:
+        try:
+            stats_obj = self.pipeline.stats()
+        except AttributeError:
+            return {}
+        if isinstance(stats_obj, dict):
+            return stats_obj
+        return dict(stats_obj or {})
+
+
+def _should_enable() -> bool:
+    return _env_flag("NATIVE_LOG_PIPELINE", "1")
+
+
+def install_pipeline(
+    on_batch: BatchCallback,
+    logger: Optional[logging.Logger] = None,
+    *,
+    sqlite_path: Optional[str] = None,
+) -> Optional[PipelineHandle]:
+    """根据环境变量安装原生日志管线，安装失败自动回退."""
+
+    if not _should_enable():
         if logger:
-            logger.debug("NATIVE_LOG_PIPELINE 环境变量已关闭，保持 Python 实现")
+            logger.debug("native_log_pipeline 被 NATIVE_LOG_PIPELINE=0 禁用")
         return None
 
     try:
         module = import_module("native_log_pipeline")
-        _NATIVE_MODULE = module
-        if logger:
-            logger.info("检测到 native_log_pipeline 扩展，准备启用")
-        return module
-    except Exception as exc:  # noqa: BLE001 - 仅做探测日志
-        if logger:
-            logger.debug("native_log_pipeline 不可用: %s", exc, exc_info=True)
-        return None
-
-
-@dataclass
-class NativePipelineAdapter:
-    """原生日志管线适配器."""
-
-    handler: Optional[logging.Handler]
-    close: Callable[[], None]
-
-
-def try_install(
-    *,
-    python_handler: logging.Handler,
-    db_path: str,
-    event_callback: Optional[Callable[[dict], None]],
-    batch_size: int = 128,
-    flush_interval_ms: int = 500,
-    logger: Optional[logging.Logger] = None,
-) -> Optional[NativePipelineAdapter]:
-    """尝试安装 native 日志管线。
-
-    如果扩展不可用或初始化失败，将返回 ``None``，调用方应继续使用
-    原有的 Python Handler。
-    """
-
-    native = _load_native(logger)
-    if native is None:
-        return None
-
-    # 允许调用方控制是否启用事件桥接
-    enable_event_bridge = event_callback is not None
-
-    try:
-        install_fn = getattr(native, "install", None)
-        if install_fn is None:
-            raise AttributeError("native_log_pipeline.install 不存在")
-
-        handler = install_fn(
-            batch_size=batch_size,
-            flush_interval_ms=flush_interval_ms,
-            sqlite_path=db_path,
-            enable_event_bridge=enable_event_bridge,
-        )
-    except Exception as exc:  # noqa: BLE001 - 兼容未知扩展签名
-        if logger:
-            logger.warning(
-                "native_log_pipeline.install 执行失败，回退到 Python Handler: %s",
-                exc,
-            )
-        return None
-
-    # 设置回退 emit
-    if hasattr(native, "set_fallback"):
-        try:
-            native.set_fallback(python_handler.emit)
-        except Exception as exc:  # noqa: BLE001
-            if logger:
-                logger.debug("native_log_pipeline.set_fallback 调用失败: %s", exc)
-
-    # 如果扩展支持事件回调，则绑定统一的发布函数
-    if event_callback and hasattr(native, "set_event_callback"):
-        try:
-            native.set_event_callback(event_callback)
-        except Exception as exc:  # noqa: BLE001
-            if logger:
-                logger.debug("native_log_pipeline.set_event_callback 调用失败: %s", exc)
-
-    def _close() -> None:
-        try:
-            if hasattr(native, "flush_and_close"):
-                native.flush_and_close()
-            elif hasattr(native, "flush"):
-                native.flush()
-        except Exception as exc:  # noqa: BLE001
-            if logger:
-                logger.debug("native_log_pipeline 关闭失败: %s", exc)
-
-    return NativePipelineAdapter(handler=handler if isinstance(handler, logging.Handler) else None, close=_close)
-
-
-def flush_and_close(logger: Optional[logging.Logger] = None) -> None:
-    """显式触发扩展的刷新与关闭。"""
-
-    native = _load_native(logger)
-    if native is None:
-        return
-
-    try:
-        if hasattr(native, "flush_and_close"):
-            native.flush_and_close()
-        elif hasattr(native, "flush"):
-            native.flush()
     except Exception as exc:  # noqa: BLE001
         if logger:
-            logger.debug("native_log_pipeline.flush_and_close 调用失败: %s", exc)
+            logger.debug("native_log_pipeline 模块导入失败：%s", exc, exc_info=True)
+        return None
+
+    batch_size = max(1, _env_int("NATIVE_LOG_PIPELINE_BATCH", DEFAULT_BATCH_SIZE))
+    flush_ms = max(0.0, _env_float("NATIVE_LOG_PIPELINE_FLUSH_MS", DEFAULT_FLUSH_MS))
+
+    env_sqlite = os.getenv("NATIVE_LOG_PIPELINE_SQLITE", "").strip()
+    if env_sqlite:
+        sqlite_path = env_sqlite
+
+    def _fallback(batch: Iterable[dict]) -> None:
+        try:
+            on_batch(list(batch))
+        except Exception:  # noqa: BLE001
+            if logger:
+                logger.error("native_log_pipeline fallback 处理失败", exc_info=True)
+
+    try:
+        pipeline_obj = module.install(
+            batch_size=batch_size,
+            flush_ms=flush_ms,
+            fallback=_fallback,
+            event_callback=None,
+            sqlite_path=sqlite_path,
+        )
+    except Exception as exc:  # noqa: BLE001
+        if logger:
+            logger.debug("native_log_pipeline.install 失败: %s", exc, exc_info=True)
+        return None
+
+    handle = PipelineHandle(pipeline=pipeline_obj, logger=logger)
+    if logger:
+        config_msg = (
+            f"native_log_pipeline 已启用(batch={batch_size}, "
+            f"flush_ms={flush_ms}, sqlite={'auto' if sqlite_path else 'disabled'})"
+        )
+        logger.info(config_msg)
+    return handle
+
+
+def flush_pipeline(handle: Optional[PipelineHandle], *, force: bool = False) -> bool:
+    if handle is None:
+        return False
+    return handle.flush(force=force)
+
+
+def dispose_pipeline(handle: Optional[PipelineHandle]) -> None:
+    if handle is None:
+        return
+    try:
+        handle.flush_and_close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+# 兼容旧接口名称
+create_pipeline = install_pipeline
+
+
+__all__ = [
+    "PipelineHandle",
+    "install_pipeline",
+    "create_pipeline",
+    "flush_pipeline",
+    "dispose_pipeline",
+]
 

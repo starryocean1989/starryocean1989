@@ -10,6 +10,9 @@ from backend.infrastructure.native.native_dataframe_ops import (
     DATAFRAME_OPS_AVAILABLE,
     dataframe_quality_counters,
     dataframe_to_records,
+    filter_symbols,
+    scan_quality,
+    validate_numeric,
 )
 
 
@@ -50,5 +53,37 @@ def test_dataframe_quality_counters():
     duplicate_count, invalid_count = dataframe_quality_counters(df, ["open", "high", "low", "close"])
     assert duplicate_count == 1
     assert invalid_count == 1
+
+
+@pytest.mark.skipif(not (WINDOWS and DATAFRAME_OPS_AVAILABLE), reason="native_dataframe_ops 不可用")
+def test_scan_quality_returns_expected_structure():
+    df = pd.DataFrame(
+        {
+            "open": [1.0, None, 3.0],
+            "close": [1.1, 2.2, None],
+        },
+        index=[0, 0, 1],
+    )
+
+    stats = scan_quality(df, ["open", "close"])
+    assert isinstance(stats, dict)
+    assert stats["duplicate_count"] == 1
+    assert stats["invalid_count"] == 2
+    assert stats["total"] == 3
+    assert stats["missing_columns"] == []
+
+
+@pytest.mark.skipif(not (WINDOWS and DATAFRAME_OPS_AVAILABLE), reason="native_dataframe_ops 不可用")
+def test_validate_numeric_coerces_values_and_fills():
+    df = pd.DataFrame(
+        {
+            "price": ["1.0", "invalid", None, "3.5"],
+            "volume": ["10", "20", "oops", None],
+        }
+    )
+
+    converted = validate_numeric(df, ["price", "volume"], fill_value=-1.0)
+    assert converted["price"].tolist() == pytest.approx([1.0, -1.0, -1.0, 3.5])
+    assert converted["volume"].tolist() == pytest.approx([10.0, 20.0, -1.0, -1.0])
 
 

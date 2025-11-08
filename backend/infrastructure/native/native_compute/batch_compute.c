@@ -17,7 +17,8 @@ PyObject* batch_compute_func(PyObject *self, PyObject *args) {
     Py_ssize_t count;
     const char *op = "add";
 
-    if (!PyArg_ParseTuple(args, "O|sO", &data, &operation, &operands)) {
+    /* 解析参数：data 列表，operation 可选的字符串对象，operands 可选列表 */
+    if (!PyArg_ParseTuple(args, "O|OO", &data, &operation, &operands)) {
         return NULL;
     }
 
@@ -26,7 +27,11 @@ PyObject* batch_compute_func(PyObject *self, PyObject *args) {
         return NULL;
     }
 
-    if (operation != NULL && PyUnicode_Check(operation)) {
+    if (operation != NULL) {
+        if (!PyUnicode_Check(operation)) {
+            PyErr_SetString(PyExc_TypeError, "operation must be a string");
+            return NULL;
+        }
         op = PyUnicode_AsUTF8(operation);
         if (op == NULL) {
             return NULL;

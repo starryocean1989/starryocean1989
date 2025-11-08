@@ -135,6 +135,7 @@ static PyObject* LockFreeQueue_put(LockFreeQueue *self, PyObject *args) {
         /* 失败，重试 */
         retry_count++;
         if (retry_count < MAX_RETRIES) {
+            PyErr_WarnEx(PyExc_RuntimeWarning, "Queue put CAS failed, retrying...", 1);
             Sleep(0);  /* 短暂等待后重试 */
         }
     }
@@ -194,6 +195,7 @@ static PyObject* LockFreeQueue_get(LockFreeQueue *self, PyObject *args) {
                 PyErr_SetString(PyExc_RuntimeError, "Queue get timeout: item not available");
                 return NULL;
             }
+            PyErr_WarnEx(PyExc_RuntimeWarning, "Queue get item not available, retrying...", 1);
             /* 短暂等待后重试 */
             Sleep(0);
             continue;
@@ -216,6 +218,8 @@ static PyObject* LockFreeQueue_get(LockFreeQueue *self, PyObject *args) {
         }
         /* 失败，重试 */
         retry_count++;
+        retry_count++;
+        PyErr_WarnEx(PyExc_RuntimeWarning, "Queue get CAS failed, retrying...", 1);
     }
 
     if (retry_count >= MAX_RETRIES) {
@@ -345,8 +349,10 @@ static PyObject* LockFreeHashMap_set(LockFreeHashMap *self, PyObject *args) {
         return NULL;
     }
 
+    /* 使用按位与确保索引在范围内（bucket_count 需为 2 的幂） */
     hash_val = calc_hash(key);
-    index = ((Py_ssize_t)hash_val % self->bucket_count) * 2;
+    Py_ssize_t mask = self->bucket_count - 1;
+    index = (((Py_ssize_t)hash_val) & mask) * 2;
 
     /* 使用CAS操作设置键值对 */
     Py_INCREF(key);
@@ -375,7 +381,8 @@ static PyObject* LockFreeHashMap_get(LockFreeHashMap *self, PyObject *args) {
     }
 
     hash_val = calc_hash(key);
-    index = ((Py_ssize_t)hash_val % self->bucket_count) * 2;
+    Py_ssize_t mask = self->bucket_count - 1;
+    index = (((Py_ssize_t)hash_val) & mask) * 2;
 
     stored_key = (PyObject *)self->buckets[index];
     if (stored_key == NULL) {
@@ -406,7 +413,8 @@ static PyObject* LockFreeHashMap_remove(LockFreeHashMap *self, PyObject *args) {
     }
 
     hash_val = calc_hash(key);
-    index = ((Py_ssize_t)hash_val % self->bucket_count) * 2;
+    Py_ssize_t mask = self->bucket_count - 1;
+    index = (((Py_ssize_t)hash_val) & mask) * 2;
 
     stored_key = (PyObject *)self->buckets[index];
     if (stored_key == NULL) {
@@ -435,4 +443,5 @@ PyTypeObject* get_LockFreeQueueType(void) {
 PyTypeObject* get_LockFreeHashMapType(void) {
     return &LockFreeHashMapType;
 }
+
 

@@ -6,9 +6,12 @@ REM ========================================
 REM 星辰金融终端 - 新架构版启动脚本
 REM ========================================
 
-REM 🔧 优化控制台显示：设置窗口大小和字体大小，重点改善行间距
+REM 🔧 优化控制台显示：设置窗口大小、缓冲区与字体大小，重点改善行间距
 REM 设置窗口大小：140列，50行（提供更大的显示区域）
 mode con: cols=140 lines=50 >nul 2>&1
+
+REM 🔧 扩展屏幕缓冲区高度，恢复鼠标滚动历史查看能力
+powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $rawUI = (Get-Host).UI.RawUI; $window = $rawUI.WindowSize; $buffer = $rawUI.BufferSize; $buffer.Width = [Math]::Max($window.Width, 160); $buffer.Height = [Math]::Max($buffer.Height, 9000); $rawUI.BufferSize = $buffer; $window.Width = 140; $window.Height = 50; $rawUI.WindowSize = $window } catch { }" >nul 2>&1
 
 REM 🔧 使用PowerShell设置控制台字体大小（通过注册表，重点增加行间距）
 REM 注意：增大字体可以间接增加行间距，因为行间距与字体大小成正比
@@ -25,10 +28,10 @@ if %errorLevel% neq 0 (
     echo 提示: 正在自动请求管理员权限...
     echo      如果出现UAC提示，请点击是 以继续
     echo.
-    
+
     REM 自动请求管理员权限并启动新的管理员实例
     powershell -Command "Start-Process '%~f0' -Verb RunAs"
-    
+
     REM 提权成功后会启动新的管理员实例，当前实例退出
     timeout /t 1 /nobreak >nul
     exit /b 0
@@ -36,6 +39,9 @@ if %errorLevel% neq 0 (
 
 REM 🔧 再次设置控制台窗口大小（提权后可能重置了窗口属性）
 mode con: cols=140 lines=50 >nul 2>&1
+
+REM 🔧 重新扩展缓冲区高度，防止管理员模式下丢失滚动能力
+powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $rawUI = (Get-Host).UI.RawUI; $window = $rawUI.WindowSize; $buffer = $rawUI.BufferSize; $buffer.Width = [Math]::Max($window.Width, 160); $buffer.Height = [Math]::Max($buffer.Height, 9000); $rawUI.BufferSize = $buffer; $window.Width = 140; $window.Height = 50; $rawUI.WindowSize = $window } catch { }" >nul 2>&1
 
 REM 🔧 再次设置字体大小（提权后需要重新设置，确保行间距足够）
 REM 使用20pt字体以确保足够的行间距（字体越大，行间距越大）

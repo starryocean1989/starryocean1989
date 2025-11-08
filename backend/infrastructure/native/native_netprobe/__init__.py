@@ -1,4 +1,30 @@
 # -*- coding: utf-8 -*-
+"""native_netprobe Python 接口."""
+
+from __future__ import annotations
+
+try:
+    from .netprobe import (  # type: ignore[F401]
+        NETPROBE_AVAILABLE,
+        batch_test_connections,
+        test_connection,
+    )
+except ImportError as exc:  # pragma: no cover - 扩展不可用回退
+    NETPROBE_AVAILABLE = False  # type: ignore[assignment]
+
+    def _raise(*_args, **_kwargs):  # type: ignore[override]
+        raise ImportError(f"native_netprobe not available: {exc}")
+
+    test_connection = _raise  # type: ignore[assignment]
+    batch_test_connections = _raise  # type: ignore[assignment]
+
+__all__ = [
+    "NETPROBE_AVAILABLE",
+    "test_connection",
+    "batch_test_connections",
+]
+
+# -*- coding: utf-8 -*-
 """
 native_netprobe - 网络探测器
 

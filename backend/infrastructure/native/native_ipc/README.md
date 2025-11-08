@@ -18,6 +18,8 @@ cd backend/infrastructure/native/native_ipc
 python setup.py build_ext --inplace
 ```
 
+> 推荐在 `backend/infrastructure/native` 目录执行 `compile_all.bat`，脚本会顺序编译全部扩展（含本模块），遇到错误自动暂停。
+
 ## API
 
 ### 基础使用

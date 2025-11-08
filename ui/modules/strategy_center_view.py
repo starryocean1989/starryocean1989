@@ -210,7 +210,7 @@ class EditorTabWidget(QTabWidget, LoggerMixin):
 
             # 🔧 创建Monaco Editor（异步加载版）
             try:
-                self.logger.info("🔍 [DEBUG] 开始创建Monaco编辑器")
+                self.logger.debug("🔍 [DEBUG] 开始创建Monaco编辑器")
 
                 if not _editor_widget_available or _editor_widget_class is None:
                     self.logger.error("Monaco Editor不可用")
@@ -223,7 +223,7 @@ class EditorTabWidget(QTabWidget, LoggerMixin):
                     )
                     return False
 
-                self.logger.info("🔍 [DEBUG] === 开始创建Monaco Editor实例 ===")
+                self.logger.debug("🔍 [DEBUG] === 开始创建Monaco Editor实例 ===")
 
                 try:
                     editor = _editor_widget_class()
@@ -234,7 +234,7 @@ class EditorTabWidget(QTabWidget, LoggerMixin):
 
                 try:
                     # 设置内容（Monaco Editor 会自动处理异步加载）
-                    self.logger.info("🔍 [DEBUG] 准备设置内容...")
+                    self.logger.debug("🔍 [DEBUG] 准备设置内容...")
                     editor.setPlainText(content)
                     self.logger.info("✓ 内容设置完成")
                 except Exception as content_error:
@@ -256,7 +256,7 @@ class EditorTabWidget(QTabWidget, LoggerMixin):
                     self.logger.info("编辑器内容设置完成")
 
                 # 🔧 修复：延迟连接信号，避免初始化时触发
-                self.logger.info("🔍 [DEBUG] 准备连接内容变化信号")
+                self.logger.debug("🔍 [DEBUG] 准备连接内容变化信号")
 
                 # 监控内容变化（兼容不同编辑器的信号）
                 try:
@@ -296,18 +296,18 @@ class EditorTabWidget(QTabWidget, LoggerMixin):
 
             # 添加标签
             file_name = Path(file_path).name
-            self.logger.info(f"🔍 [DEBUG] 准备添加标签: {file_name}")
+            self.logger.debug(f"🔍 [DEBUG] 准备添加标签: {file_name}")
 
             try:
                 index = self.addTab(editor, file_name)
-                self.logger.info(f"🔍 [DEBUG] 标签添加成功，索引: {index}")
+                self.logger.debug(f"🔍 [DEBUG] 标签添加成功，索引: {index}")
 
                 # 设置标签提示（显示完整路径）
                 self.setTabToolTip(index, file_path)
 
                 # 切换到新标签
                 self.setCurrentIndex(index)
-                self.logger.info("🔍 [DEBUG] 已切换到新标签")
+                self.logger.debug("🔍 [DEBUG] 已切换到新标签")
 
                 # 发送信号
                 self.file_opened.emit(file_path)
@@ -2430,12 +2430,12 @@ class StrategyCenter(BaseWidget, LoggerMixin):
         Args:
             file_path: 文件路径
         """
-        self.logger.info("🔍 [DEBUG] _handle_file_select_for_backtest 被调用")
-        self.logger.info("🔍 [DEBUG] 完整文件路径: %s", file_path)
+        self.logger.debug("🔍 [DEBUG] _handle_file_select_for_backtest 被调用")
+        self.logger.debug("🔍 [DEBUG] 完整文件路径: %s", file_path)
 
         # 获取文件名（不含路径）
         file_name = Path(file_path).name
-        self.logger.info("🔍 [DEBUG] 提取的文件名: %s", file_name)
+        self.logger.debug("🔍 [DEBUG] 提取的文件名: %s", file_name)
 
         # 检查是否是Python文件
         if not file_name.endswith(".py"):
@@ -2449,21 +2449,21 @@ class StrategyCenter(BaseWidget, LoggerMixin):
             return
 
         # 🔧 修复：每次选择时都刷新策略列表，确保列表最新
-        self.logger.info("🔍 [DEBUG] 开始刷新策略列表")
+        self.logger.debug("🔍 [DEBUG] 开始刷新策略列表")
         self._load_strategy_list()
 
         # 打印当前下拉框中的所有项
-        self.logger.info("🔍 [DEBUG] 下拉框中的项数: %s", self.backtest_target_combo.count())
+        self.logger.debug("🔍 [DEBUG] 下拉框中的项数: %s", self.backtest_target_combo.count())
         for i in range(self.backtest_target_combo.count()):
             item_text = self.backtest_target_combo.itemText(i)
-            self.logger.info(
+            self.logger.debug(
                 "🔍 [DEBUG] 下拉框项 [%s]: '%s' (长度: %s)", i, item_text, len(item_text)
             )
 
         # 查找并选中该策略
-        self.logger.info("🔍 [DEBUG] 尝试查找文件名: '%s' (长度: %s)", file_name, len(file_name))
+        self.logger.debug("🔍 [DEBUG] 尝试查找文件名: '%s' (长度: %s)", file_name, len(file_name))
         index = self.backtest_target_combo.findText(file_name)
-        self.logger.info("🔍 [DEBUG] findText 返回索引: %s", index)
+        self.logger.debug("🔍 [DEBUG] findText 返回索引: %s", index)
 
         if index >= 0:
             self.backtest_target_combo.setCurrentIndex(index)
@@ -2471,7 +2471,7 @@ class StrategyCenter(BaseWidget, LoggerMixin):
             self.show_info(f"✓ 已选中回测策略: {file_name}")
         else:
             self.logger.error("✗ 回测列表中未找到策略: %s", file_name)
-            self.logger.error(
+            self.logger.debug(
                 "🔍 [DEBUG] 匹配失败详情 - 查找: '%s', 列表: %s",
                 file_name,
                 [

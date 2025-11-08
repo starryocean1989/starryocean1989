@@ -54,6 +54,17 @@ except ImportError:
     native_scan_quality = None  # type: ignore
     native_validate_numeric = None  # type: ignore
 
+# 导入 native scheduler（支持降级）
+try:
+    from .native_scheduler_bridge import NativeSchedulerBridge
+except Exception:  # pragma: no cover - 调度扩展缺失时降级
+    NativeSchedulerBridge = None  # type: ignore
+
+_QUALITY_SCHEDULER_AVAILABLE = (
+    NativeSchedulerBridge is not None
+    and os.getenv("DISABLE_NATIVE_SCHEDULER", "0").strip().lower() not in {"1", "true", "yes"}
+)
+
 
 def _scan_quality_py(df: pd.DataFrame, columns: List[str]) -> Dict[str, Any]:
     duplicate_count = int(df.index.duplicated().sum())
@@ -111,6 +122,16 @@ try:
 except ImportError:
     fast_dir_walk = None  # type: ignore
     NATIVE_IOCP_AVAILABLE = False
+
+# 导入 native_fs（支持降级）
+try:
+    from backend.infrastructure.native.native_fs import (  # type: ignore
+        FS_WATCH_AVAILABLE as NATIVE_FS_AVAILABLE,
+        watch_directory as native_watch_directory,
+    )
+except Exception:  # pragma: no cover - 扩展缺失或平台不支持
+    NATIVE_FS_AVAILABLE = False
+    native_watch_directory = None  # type: ignore
 
 # 导入native_ipc（支持降级）
 try:
@@ -815,26 +836,143 @@ class DataSensor:
         intervals: List[str],
         max_workers: int,
     ) -> Dict[Tuple[str, str], QualityScanResult]:
-        """多进程扫描
+        """并发扫描入口，优先使用原生调度器"""
 
-        Args:
-            symbols: 品种代码列表
-            intervals: 周期列表
-            max_workers: 最大进程数
-
-        Returns:
-            扫描结果字典
-        """
-        results = {}
-
-        # 创建任务列表
         tasks = [(symbol, interval) for symbol in symbols for interval in intervals]
+        scenario = "manual_data_scan"
+
+        if _QUALITY_SCHEDULER_AVAILABLE:
+            try:
+                return self._scan_with_native_scheduler(tasks, max_workers, scenario)
+            except Exception as native_error:  # pragma: no cover - 安全回退
+                logger.warning(
+                    f"[SCAN-NATIVE] ⚠️ 原生调度执行失败，回退多进程: {native_error}",
+                    extra={"log_type": "SYSTEM", "scenario": scenario},
+                )
+
+        return self._scan_with_process_pool(tasks, max_workers, scenario)
+
+    def _scan_with_native_scheduler(
+        self,
+        tasks: List[Tuple[str, str]],
+        max_workers: int,
+        scenario: str,
+    ) -> Dict[Tuple[str, str], QualityScanResult]:
+        results: Dict[Tuple[str, str], QualityScanResult] = {}
         total = len(tasks)
 
-        scenario = "manual_data_scan"
-        import time
+        if total == 0:
+            return results
 
-        scan_start_time = time.time()
+        if NativeSchedulerBridge is None:  # 类型保护，理论上不会触发
+            raise RuntimeError("native scheduler bridge unavailable")
+
+        queue_capacity = max(1024, total * 2)
+        scheduler = NativeSchedulerBridge(
+            categories={
+                "quality_scan": {
+                    "queue_capacity": queue_capacity,
+                    "max_workers": max(1, max_workers),
+                }
+            },
+            auto_shutdown=False,
+        )
+        scheduler.ensure_category("quality_scan", queue_capacity=queue_capacity, max_workers=max(1, max_workers))
+
+        logger.debug(
+            f"[SCAN-NATIVE] 使用 native_scheduler 扫描: 任务数={total}, 线程数={max_workers}",
+            extra={"log_type": "SYSTEM", "scenario": scenario},
+        )
+        logger.info(
+            f"[SCAN-NATIVE] 🚀 启动原生调度扫描: 任务数={total}, queue={queue_capacity}, workers={max_workers}",
+            extra={"log_type": "SYSTEM", "scenario": scenario},
+        )
+
+        pending: List[Dict[str, Any]] = []
+        for symbol, interval in tasks:
+            future = scheduler.submit("quality_scan", _scan_single_worker, (symbol, interval), None)
+            pending.append({"future": future, "symbol": symbol, "interval": interval})
+
+        completed = 0
+        start_time = time.time()
+
+        try:
+            while pending:
+                progress_made = False
+                for entry in list(pending):
+                    future = entry["future"]
+                    if not future.done():
+                        continue
+
+                    symbol = entry["symbol"]
+                    interval = entry["interval"]
+
+                    try:
+                        result = future.result()
+                    except Exception as exc:  # pragma: no cover - worker异常
+                        logger.debug(
+                            f"[SCAN-NATIVE] 扫描异常详情: symbol={symbol}, interval={interval}, "
+                            f"异常类型={type(exc).__name__}, 异常消息={str(exc)}",
+                            extra={"log_type": "SYSTEM", "scenario": scenario},
+                        )
+                        logger.warning(
+                            f"[SCAN-NATIVE] ⚠️ 扫描失败: {symbol}/{interval}, 错误: {exc}",
+                            extra={"log_type": "ALERT", "scenario": scenario},
+                        )
+                        results[(symbol, interval)] = QualityScanResult(
+                            symbol=symbol,
+                            interval=interval,
+                            errors=[str(exc)],
+                        )
+                    else:
+                        results[(symbol, interval)] = result
+                        logger.debug(
+                            f"[SCAN-NATIVE] 任务完成: symbol={symbol}, interval={interval}, "
+                            f"quality_level={result.quality_level.name}, completeness={result.completeness:.2f}%",
+                            extra={"log_type": "SYSTEM", "scenario": scenario},
+                        )
+
+                    pending.remove(entry)
+                    completed += 1
+                    self._notify_progress(completed, total, f"已扫描: {symbol}/{interval}")
+                    progress_made = True
+
+                    if completed % 100 == 0:
+                        elapsed = time.time() - start_time
+                        speed = completed / elapsed if elapsed > 0 else 0
+                        remaining = total - completed
+                        estimated_remaining = remaining / speed if speed > 0 else 0
+                        logger.info(
+                            f"[SCAN-NATIVE] 扫描进度: {completed}/{total} ({completed/total*100:.1f}%), "
+                            f"速度={speed:.2f}任务/秒, 预计剩余={estimated_remaining:.0f}秒",
+                            extra={"log_type": "PROGRESS", "scenario": scenario},
+                        )
+
+                if pending and not progress_made:
+                    time.sleep(0.005)
+        finally:
+            scheduler.shutdown(wait=True)
+
+        elapsed_total = time.time() - start_time
+        logger.debug(
+            f"[SCAN-NATIVE] 原生调度扫描完成: 总任务={total}, 完成={completed}, 耗时={elapsed_total:.2f}s",
+            extra={"log_type": "SYSTEM", "scenario": scenario},
+        )
+        logger.info(
+            f"[SCAN-NATIVE] ✅ 原生调度扫描完成: 总任务={total}, 完成={completed}, 耗时={elapsed_total:.2f}s",
+            extra={"log_type": "SYSTEM", "scenario": scenario},
+        )
+
+        return results
+
+    def _scan_with_process_pool(
+        self,
+        tasks: List[Tuple[str, str]],
+        max_workers: int,
+        scenario: str,
+    ) -> Dict[Tuple[str, str], QualityScanResult]:
+        results: Dict[Tuple[str, str], QualityScanResult] = {}
+        total = len(tasks)
 
         logger.debug(
             f"[SCAN-MULTIPROCESS] 开始多进程扫描: 任务数={total}, 进程数={max_workers}",
@@ -845,7 +983,8 @@ class DataSensor:
             extra={"log_type": "SYSTEM", "scenario": scenario},
         )
 
-        # 使用进程池
+        scan_start_time = time.time()
+
         try:
             with ProcessPoolExecutor(max_workers=max_workers) as executor:
                 futures = {
@@ -897,7 +1036,6 @@ class DataSensor:
                     completed += 1
                     self._notify_progress(completed, total, f"已扫描: {symbol}/{interval}")
 
-                    # 每100个任务记录一次进度
                     if completed % 100 == 0:
                         elapsed = time.time() - scan_start_time
                         speed = completed / elapsed if elapsed > 0 else 0
@@ -1587,6 +1725,13 @@ class StatelessValidator:
 # ==============================================================================
 
 
+_NATIVE_FS_ENABLED = (
+    NATIVE_FS_AVAILABLE
+    and native_watch_directory is not None
+    and os.getenv("DISABLE_NATIVE_FS_WATCH", "0").strip().lower() not in {"1", "true", "yes"}
+)
+
+
 class DataFileWatcher:
     """数据文件监控器
 
@@ -1608,14 +1753,17 @@ class DataFileWatcher:
 
         # 监控状态
         self._watching = False
-        self._watch_thread = None
+        self._watch_thread: Optional[threading.Thread] = None
+        self._native_watcher = None
+        self._use_native = False
 
         # 文件状态缓存
         self._file_states: Dict[Path, float] = {}  # {file_path: last_modified_time}
 
         # 防抖控制
         self._debounce_interval = 1.0  # 1秒
-        self._pending_events: Dict[Path, float] = {}  # {file_path: event_time}
+        self._pending_events: Dict[Path, Dict[str, Any]] = {}  # {file_path: {"time": ts, "event": str}}
+        self._pending_lock = threading.Lock()
 
         logger.info(f"🔍 文件监控器初始化: {self.watch_dir}")
 
@@ -1625,11 +1773,45 @@ class DataFileWatcher:
             logger.warning("⚠️ 文件监控已经启动", extra={"log_type": "SYSTEM"})
             return
 
+        if _NATIVE_FS_ENABLED:
+            try:
+                self._native_watcher = native_watch_directory(
+                    str(self.watch_dir),
+                    self._handle_native_event,
+                    recursive=True,
+                    buffer_size=128 * 1024,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "⚠️ native_fs 目录监控初始化失败，回退至轮询: %s",
+                    exc,
+                    extra={"log_type": "SYSTEM"},
+                )
+                self._native_watcher = None
+                self._use_native = False
+            else:
+                self._use_native = True
+                self._watching = True
+                self._watch_thread = threading.Thread(
+                    target=self._native_flush_loop,
+                    name="DataFileWatcherNativeLoop",
+                    daemon=True,
+                )
+                self._watch_thread.start()
+                logger.info("✅ 文件监控已通过 native_fs 启动")
+                return
+
+        # 降级：使用轮询扫描
+        self._use_native = False
         self._watching = True
-        self._watch_thread = threading.Thread(target=self._watch_loop, daemon=True)
+        self._watch_thread = threading.Thread(
+            target=self._watch_loop,
+            name="DataFileWatcherPollingLoop",
+            daemon=True,
+        )
         self._watch_thread.start()
 
-        logger.info("✅ 文件监控已启动")
+        logger.info("✅ 文件监控已启动（轮询模式）")
 
     def stop(self):
         """停止监控"""
@@ -1639,8 +1821,43 @@ class DataFileWatcher:
         self._watching = False
         if self._watch_thread:
             self._watch_thread.join(timeout=2)
+            self._watch_thread = None
+
+        if self._native_watcher:
+            try:
+                self._native_watcher.stop()
+            except Exception as exc:
+                logger.debug(
+                    "⚠️ 停止 native_fs 目录监控失败: %s",
+                    exc,
+                    exc_info=True,
+                    extra={"log_type": "SYSTEM"},
+                )
+            finally:
+                self._native_watcher = None
+
+        # 停止时强制处理剩余事件
+        self._process_pending_events(force=True)
 
         logger.info("✅ 文件监控已停止")
+
+    def _native_flush_loop(self):
+        """原生事件防抖循环."""
+        logger.info("🔄 Native 文件监控防抖循环启动")
+        interval = max(0.1, self._debounce_interval / 2.0)
+
+        while self._watching:
+            try:
+                self._process_pending_events()
+                time.sleep(interval)
+            except Exception as e:
+                logger.error(
+                    "❌ Native 文件监控循环异常: %s",
+                    e,
+                    exc_info=True,
+                    extra={"log_type": "SYSTEM"},
+                )
+                time.sleep(0.5)
 
     def _watch_loop(self):
         """监控循环"""
@@ -1721,30 +1938,39 @@ class DataFileWatcher:
             file_path: 文件路径
             event_type: 事件类型
         """
-        self._pending_events[file_path] = time.time()
+        now = time.time()
+        with self._pending_lock:
+            existing = self._pending_events.get(file_path)
+            if existing:
+                existing["time"] = now
+                existing["event"] = event_type or existing.get("event", "modified")
+            else:
+                self._pending_events[file_path] = {"time": now, "event": event_type}
 
-    def _process_pending_events(self):
+    def _process_pending_events(self, *, force: bool = False):
         """处理待处理事件（防抖）"""
         current_time = time.time()
-        processed_files = []
+        ready: List[Tuple[Path, Dict[str, Any]]] = []
 
-        for file_path, event_time in self._pending_events.items():
-            # 检查是否超过防抖间隔
-            if current_time - event_time >= self._debounce_interval:
-                self._publish_event(file_path)
-                processed_files.append(file_path)
+        with self._pending_lock:
+            for file_path, payload in list(self._pending_events.items()):
+                event_time = float(payload.get("time", 0.0))
+                if force or current_time - event_time >= self._debounce_interval:
+                    ready.append((file_path, payload))
+                    self._pending_events.pop(file_path, None)
 
-        # 清理已处理事件
-        for file_path in processed_files:
-            self._pending_events.pop(file_path, None)
+        for file_path, payload in ready:
+            event_type = str(payload.get("event", "modified"))
+            self._publish_event(file_path, event_type)
 
-    def _publish_event(self, file_path: Path):
+    def _publish_event(self, file_path: Path, event_type: str = "modified"):
         """发布文件变化事件
 
         Args:
             file_path: 文件路径
+            event_type: 事件类型
         """
-        logger.info(f"📢 文件变化: {file_path.name}")
+        logger.info(f"📢 文件变化({event_type}): {file_path.name}")
 
         # 发送到EventEngine
         if self.event_engine:
@@ -1756,12 +1982,58 @@ class DataFileWatcher:
                     data={
                         "file_path": str(file_path),
                         "file_name": file_path.name,
+                        "event_type": event_type,
                         "timestamp": datetime.now().isoformat(),
                     },
                 )
                 self.event_engine.put(event)
             except Exception as e:
                 logger.warning(f"⚠️ 发送文件变化事件失败: {e}", extra={"log_type": "SYSTEM"})
+
+    def _handle_native_event(self, event: Dict[str, Any]) -> None:
+        """native_fs 回调，推送事件到待处理列表."""
+        try:
+            event_type_raw = event.get("event", "")
+            relative_name = event.get("name")
+            if not isinstance(relative_name, str):
+                return
+
+            relative_path = Path(relative_name)
+            base_join = self.watch_dir / relative_path
+            try:
+                file_path = base_join.resolve(strict=False)
+            except Exception:
+                file_path = base_join
+
+            if not file_path.suffix.lower().endswith(".parquet"):
+                return
+
+            event_type = str(event_type_raw).lower()
+            mapped_event = {
+                "created": "created",
+                "renamed_new": "created",
+                "deleted": "deleted",
+                "renamed_old": "deleted",
+                "modified": "modified",
+            }.get(event_type, "modified")
+
+            if mapped_event == "deleted":
+                self._file_states.pop(file_path, None)
+            else:
+                try:
+                    mtime = file_path.stat().st_mtime
+                except FileNotFoundError:
+                    mtime = time.time()
+                self._file_states[file_path] = mtime
+
+            self._add_pending_event(file_path, mapped_event)
+        except Exception as exc:
+            logger.debug(
+                "⚠️ 处理 native_fs 文件事件失败: %s",
+                exc,
+                exc_info=True,
+                extra={"log_type": "SYSTEM"},
+            )
 
 
 # ==============================================================================

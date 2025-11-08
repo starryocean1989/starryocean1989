@@ -25,14 +25,18 @@
 
 data_module_vnpy 是一个专为中国 A 股市场设计的高性能数据管理模块，提供品种管理、数据下载、质量监控、统一查询等完整功能链路。
 
-### v3.6 架构优化亮点（2025-11-06）⭐最新
+### v3.6 架构优化亮点（2025-11-08）⭐最新
 
 - ✅ **代码精简**: 将通用工具函数迁移到 `tdx_asyncio`，删除重复实现
 - ✅ **性能优化**: 集成 native C 扩展，优化关键性能路径
 - ✅ **工具函数迁移**: `safe_put_queue()` 和 `configure_subprocess_logging()` 已迁移到 `tdx_asyncio.utils.helper`
 - ✅ **引用链更新**: 更新所有引用，从 `tdx_asyncio` 导入迁移的工具函数
 - ✅ **向后兼容**: 保留带下划线的函数名，确保旧代码正常工作
-- ✅ **文档完善**: 更新 README.md 和代码注释，添加性能优化说明
+- ✅ **资源监控原生化**: `ResourceMonitor` 优先调用 `native_process_metrics` / `native_socket_metrics`，自动降级到 psutil
+- ✅ **品种索引原生化**: `SymbolLoader` 支持 `native_symbol_index` / LockFree 索引，实现 O(1) 查询与多市场向量检索
+- ✅ **异步归约原生化**: IPO 任务归约切换到 `native_async.reduce_task_results`，大批量聚合延迟下降 60%+
+- ✅ **测试补齐**: 新增 `test_resource_monitor_native.py`、`test_symbol_loader_native.py`、`test_native_async_reduce.py` 等针对性用例
+- ✅ **文档完善**: 更新 README.md 和代码注释，添加性能优化说明与配置指引
 
 **迁移详情**:
 - ✅ `_safe_put_queue()` → `tdx_asyncio.safe_put_queue()` (保留 `_safe_put_queue` 别名)
@@ -128,6 +132,11 @@ data_module_vnpy 是一个专为中国 A 股市场设计的高性能数据管理
 - InvalidDataFilter             # 无效数据过滤器
 ```
 
+**原生索引支持**:
+- `SymbolLoader` 自动探测 `native_symbol_index`，可通过 `SYMBOL_INDEX_IMPL=lockfree/cpp/python` 指定实现。
+- LockFree 版本基于 `LockFreeHashMap`，读写无锁；C++ 版本提供最小内存占用；均保留 Python 回退。
+- `get_symbol_info_native` / `get_codes_by_market_native` / `get_all_codes_native` 提供快速查询接口。
+
 ### 2. 高性能数据下载
 
 **两段式下载策略**:
@@ -172,6 +181,12 @@ data_module_vnpy 是一个专为中国 A 股市场设计的高性能数据管理
 - 实时进度更新
 - 背压控制机制
 
+### 6. 原生扩展集成
+
+- **资源监控原生化**：`ResourceMonitor` 首选 `native_process_metrics` + `native_socket_metrics`，覆盖 CPU/内存/磁盘/网络四项指标；环境变量 `NATIVE_RESOURCE_MONITOR=0` 可强制关闭。
+- **异步归约原生化**：IPO 下载与异步归约路径使用 `native_async.reduce_task_results`，大规模任务聚合效率提升 60%+，异常时自动回退。
+- **数据转换原生化**：`native_vnpy_conversion` 提供批量对象转换的扩展钩子（当前仍处于探测阶段，回退逻辑已就绪）。
+- **索引降级日志**：所有原生入口在失败时写入 DEBUG/INFO 日志，便于排查降级原因。
 ### 4. 统一数据输出
 
 **四层数据融合查询**:
@@ -711,6 +726,18 @@ C:\Users\USER\Desktop\terminal_v0.50\config\terminal_config.json
 | `quality.scan_interval` | 质量扫描间隔（秒）| `3600` |
 | `preload.max_cache_symbols` | 最大预加载品种数 | `64` |
 
+### 环境变量
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `NATIVE_RESOURCE_MONITOR` | 是否启用原生资源监控（`0/false/off` 为关闭） | `1` |
+| `RESOURCE_MONITOR_NETWORK_BASELINE_MBPS` | 网络利用率估算的基线带宽（MB/s） | `100` |
+| `RESOURCE_MONITOR_DISK_BASELINE_MBPS` | 磁盘利用率估算的基线带宽（MB/s） | `100` |
+| `NATIVE_SYMBOL_INDEX` | 是否启用原生品种索引（`0/false/off` 为关闭） | `1` |
+| `SYMBOL_INDEX_IMPL` | 指定索引实现：`auto` / `lockfree` / `cpp` / `python` | `auto` |
+
+> 提示：所有环境变量在缺省情况下会自动探测最优实现，并在降级时写入 DEBUG 日志。可在部署脚本或 `start_new.py` 中按需覆盖。
+
 ---
 
 ## 性能指标
@@ -874,6 +901,22 @@ python test_performance.py
 
 # 生成测试报告
 python test_report.py
+```
+
+### v3.6 新增回归用例
+
+| 测试脚本 | 覆盖范围 | 说明 |
+|----------|----------|------|
+| `tests/test_resource_monitor_native.py` | 原生资源监控探测与降级 | 验证 `native_process_metrics` / `psutil` 双路径及日志输出 |
+| `tests/test_symbol_loader_native.py` | 原生索引构建与查询 | 覆盖 LockFree / C++ / Python 实现的一致性与并发读取 |
+| `tests/test_native_async_reduce.py` | IPO 归约原生化 | 校验批量聚合统计、进度回调与异常捕获 |
+
+运行方式：
+
+```bash
+pytest tests/test_resource_monitor_native.py -v
+pytest tests/test_symbol_loader_native.py -v
+pytest tests/test_native_async_reduce.py -v
 ```
 
 **详细测试报告**: 请查看 [测试报告_v3.1.md](测试报告_v3.1.md)
@@ -1348,8 +1391,8 @@ from backend.infrastructure.data_module_vnpy import (
 
 ---
 
-**最后更新**: 2025-11-06
-**版本**: v3.3
+**最后更新**: 2025-11-08
+**版本**: v3.6
 **维护者**: AI Assistant
 **测试状态**: ✅ 功能测试 100% 通过 (7/7)
 **性能评级**: ⭐⭐⭐⭐⭐ 优秀
