@@ -204,14 +204,23 @@ class MonitorLauncherWorker(StartupWorker):
                 stacklevel=3,
             )
 
+        # 🔧 修复：重定向stderr以便捕获调试信息
+        import tempfile
+        stderr_file = tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix='.log', prefix='monitor_process_stderr_')
+        stderr_file.close()
+        stderr_path = stderr_file.name
+        
         self.monitor_process_handle = subprocess.Popen(
             [sys.executable, str(monitor_script)],
             stdout=None,  # 不重定向，使用默认输出
-            stderr=None,  # 不重定向，使用默认输出
+            stderr=open(stderr_path, 'w'),  # 重定向stderr到文件以便调试
             cwd=str(context.project_root),  # 确保监控进程在项目根目录工作
             creationflags=creation_flags,
             env=env,
         )
+        
+        # 保存stderr文件路径以便后续读取
+        self.monitor_process_stderr_path = stderr_path
 
         # 获取PID并显示
         pid = self.monitor_process_handle.pid
@@ -403,6 +412,19 @@ class MonitorLauncherWorker(StartupWorker):
                 await asyncio.sleep(0.5)
         
         # 超时仍未找到匹配的信号文件
+        # 🔧 读取stderr输出以诊断问题
+        stderr_content = ""
+        if hasattr(self, 'monitor_process_stderr_path'):
+            try:
+                with open(self.monitor_process_stderr_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    stderr_content = f.read()
+                if stderr_content:
+                    self._alert_logger.error(
+                        f"[MONITOR-PROCESS] 监控进程 stderr 输出:\n{stderr_content}"
+                    )
+            except Exception as read_err:
+                self._alert_logger.warning(f"[MONITOR-PROCESS] 无法读取stderr: {read_err}")
+        
         if current_monitor_pid:
             error_msg = f"监控进程就绪超时（等待 {max_wait} 秒，期望PID={current_monitor_pid}，当前级别={current_level}）"
             self._alert_logger.error(f"[MONITOR-PROCESS] ❌ {error_msg}")

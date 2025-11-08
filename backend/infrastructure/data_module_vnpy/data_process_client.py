@@ -24,11 +24,13 @@ import asyncio
 import base64
 import json
 import logging
+import threading
 import time
 import uuid
-from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
-import threading
+from concurrent.futures import Future
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union, Coroutine, TypeVar, cast
+
+T = TypeVar("T")
 
 # 高性能JSON库（优先使用orjson）
 try:
@@ -92,8 +94,15 @@ class DataProcessClient:
         self._pipes: Dict[str, Any] = {}  # {pipe_type: AsyncIPCPipe}
         self._lock = threading.Lock()
         self._response_futures: Dict[str, asyncio.Future] = {}
-        self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="data_client")
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._loop: asyncio.AbstractEventLoop = asyncio.new_event_loop()
+        self._loop_ready = threading.Event()
+        self._loop_thread = threading.Thread(
+            target=self._run_event_loop,
+            name="DataProcessClientLoop",
+            daemon=True,
+        )
+        self._loop_thread.start()
+        self._loop_ready.wait()
         self._native_enabled = RPC_BRIDGE_AVAILABLE
         self._method_id_cache: Dict[str, int] = {}
 
@@ -118,9 +127,87 @@ class DataProcessClient:
 
     # ==================== 底层辅助方法 ====================
 
+    def _run_event_loop(self) -> None:
+        asyncio.set_event_loop(self._loop)
+        self._loop_ready.set()
+        self._loop.run_forever()
+
+    def _submit_coroutine(self, coro: Coroutine[Any, Any, T]) -> Future:
+        if not self._loop_ready.is_set():
+            self._loop_ready.wait()
+        return asyncio.run_coroutine_threadsafe(coro, self._loop)
+
+    async def _connect_internal(self) -> bool:
+        if not IPC_AVAILABLE or AsyncIPCPipe is None:
+            logger.error("❌ native_ipc不可用，无法连接数据进程")
+            return False
+
+        with self._lock:
+            if self._connected:
+                logger.debug("数据进程客户端已连接")
+                return True
+
+        try:
+            logger.info("正在连接数据进程...")
+
+            data_query_pipe = await AsyncIPCPipe.client("data_query")
+            data_calculation_pipe: Optional[Any] = None
+            try:
+                data_calculation_pipe = await AsyncIPCPipe.client("data_calculation")
+            except Exception as exc:
+                logger.warning("⚠️ 无法连接计算任务管道: %s（可选）", exc)
+
+            with self._lock:
+                self._pipes["data_query"] = data_query_pipe
+                if data_calculation_pipe:
+                    self._pipes["data_calculation"] = data_calculation_pipe
+                self._connected = True
+
+            logger.info("✅ 数据进程连接成功")
+            return True
+
+        except Exception as exc:
+            logger.error("❌ 连接数据进程失败: %s", exc, exc_info=True)
+            self._close_pipes()
+            return False
+
+    async def _call_internal(self, method: str, *args, **kwargs) -> Any:
+        if not self._connected:
+            if not await self._connect_internal():
+                raise ConnectionError("无法连接到数据进程")
+
+        pipe_name = "data_query"
+        if method.startswith("calculate_") or method.startswith("compute_"):
+            pipe_name = "data_calculation"
+
+        pipe = self._pipes.get(pipe_name)
+        if not pipe:
+            raise ConnectionError(f"管道不可用: {pipe_name}")
+
+        request_id, payload_bytes, use_native = self._build_request_message(
+            method,
+            args,
+            kwargs,
+            extra_metadata={"protocol": "native_v1"} if self._native_enabled else None,
+        )
+
+        try:
+            await pipe.write(payload_bytes)
+            response_data = await asyncio.wait_for(pipe.read(), timeout=self._call_timeout)
+            return self._parse_response_buffer(
+                response_data,
+                expect_native=use_native,
+                expected_request_id=request_id,
+            )
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError(f"RPC调用超时: {method}") from exc
+        except Exception as exc:
+            logger.error("RPC调用失败: %s, 错误: %s", method, exc, exc_info=True)
+            raise
+
     def _serialize_json(self, payload: Dict[str, Any]) -> bytes:
         if HAS_ORJSON:
-            return JSON_ENCODER.dumps(payload)
+            return cast(bytes, JSON_ENCODER.dumps(payload))
         return JSON_ENCODER.dumps(payload, ensure_ascii=False).encode("utf-8")  # type: ignore[call-arg]
 
     def _deserialize_json(self, payload: bytes) -> Dict[str, Any]:
@@ -240,45 +327,17 @@ class DataProcessClient:
         Returns:
             bool: 连接是否成功
         """
-        if not IPC_AVAILABLE or AsyncIPCPipe is None:
-            logger.error("❌ native_ipc不可用，无法连接数据进程")
-            return False
+        running_loop = None
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            pass
 
-        with self._lock:
-            if self._connected:
-                logger.debug("数据进程客户端已连接")
-                return True
+        if running_loop is self._loop:
+            return await self._connect_internal()
 
-            try:
-                logger.info("正在连接数据进程...")
-
-                # 连接数据查询管道（用于发送数据请求）
-                try:
-                    data_query_pipe = await AsyncIPCPipe.client("data_query")
-                    self._pipes["data_query"] = data_query_pipe
-                    logger.info("✅ 数据查询管道连接成功")
-                except Exception as e:
-                    logger.error(f"❌ 无法连接数据查询管道: {e}")
-                    self._close_pipes()
-                    return False
-
-                # 连接计算任务管道（用于发送计算任务）
-                try:
-                    data_calculation_pipe = await AsyncIPCPipe.client("data_calculation")
-                    self._pipes["data_calculation"] = data_calculation_pipe
-                    logger.info("✅ 计算任务管道连接成功")
-                except Exception as e:
-                    logger.warning(f"⚠️ 无法连接计算任务管道: {e}（可选）")
-
-                self._connected = True
-                logger.info("✅ 数据进程连接成功")
-
-                return True
-
-            except Exception as e:
-                logger.error(f"❌ 连接数据进程失败: {e}", exc_info=True)
-                self._close_pipes()
-                return False
+        future = self._submit_coroutine(self._connect_internal())
+        return await asyncio.wrap_future(future)
 
     def connect(self) -> bool:
         """同步连接到数据进程（内部使用异步方法）.
@@ -286,39 +345,8 @@ class DataProcessClient:
         Returns:
             bool: 连接是否成功
         """
-        if not IPC_AVAILABLE or AsyncIPCPipe is None:
-            logger.error("❌ native_ipc不可用，无法连接数据进程")
-            return False
-
-        # 获取或创建事件循环
-        try:
-            loop = asyncio.get_event_loop()
-            # 如果事件循环已经在运行，使用run_coroutine_threadsafe
-            if loop.is_running():
-                future = Future()
-                asyncio.run_coroutine_threadsafe(self._connect_with_future(future), loop)
-                return future.result(timeout=self._connect_timeout)
-            else:
-                # 事件循环未运行，可以使用run_until_complete
-                self._loop = loop
-                return loop.run_until_complete(self.connect_async())
-        except RuntimeError:
-            # 没有事件循环，创建新的
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            self._loop = loop
-            try:
-                return loop.run_until_complete(self.connect_async())
-            finally:
-                loop.close()
-
-    async def _connect_with_future(self, future: Future) -> None:
-        """在已运行的事件循环中连接，并将结果设置到Future中."""
-        try:
-            result = await self.connect_async()
-            future.set_result(result)
-        except Exception as e:
-            future.set_exception(e)
+        future = self._submit_coroutine(self._connect_internal())
+        return future.result(timeout=self._connect_timeout)
 
     def disconnect(self) -> None:
         """断开与数据进程的连接."""
@@ -366,12 +394,8 @@ class DataProcessClient:
         Raises:
             Exception: 调用失败时抛出异常
         """
-        if not self._connected and not self.connect():
-            raise ConnectionError("无法连接到数据进程")
-
-        # 创建异步任务并等待结果
-        loop = asyncio.get_event_loop()
-        return loop.run_until_complete(self.call_async(method, *args, **kwargs))
+        future = self._submit_coroutine(self._call_internal(method, *args, **kwargs))
+        return future.result(timeout=self._call_timeout)
 
     async def call_async(self, method: str, *args, **kwargs) -> Any:
         """异步RPC调用.
@@ -387,39 +411,17 @@ class DataProcessClient:
         Raises:
             Exception: 调用失败时抛出异常
         """
-        if not self._connected:
-            if not await self.connect_async():
-                raise ConnectionError("无法连接到数据进程")
-
-        # 选择管道（根据方法类型选择）
-        pipe_name = "data_query"
-        if method.startswith("calculate_") or method.startswith("compute_"):
-            pipe_name = "data_calculation"
-
-        pipe = self._pipes.get(pipe_name)
-        if not pipe:
-            raise ConnectionError(f"管道不可用: {pipe_name}")
-
-        request_id, payload_bytes, use_native = self._build_request_message(
-            method,
-            args,
-            kwargs,
-            extra_metadata={"protocol": "native_v1"} if self._native_enabled else None,
-        )
-
+        running_loop = None
         try:
-            await pipe.write(payload_bytes)
-            response_data = await asyncio.wait_for(pipe.read(), timeout=self._call_timeout)
-            return self._parse_response_buffer(
-                response_data,
-                expect_native=use_native,
-                expected_request_id=request_id,
-            )
-        except asyncio.TimeoutError as exc:
-            raise TimeoutError(f"RPC调用超时: {method}") from exc
-        except Exception as exc:
-            logger.error(f"RPC调用失败: {method}, 错误: {exc}", exc_info=True)
-            raise
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+
+        if running_loop is self._loop:
+            return await self._call_internal(method, *args, **kwargs)
+
+        future = self._submit_coroutine(self._call_internal(method, *args, **kwargs))
+        return await asyncio.wrap_future(future)
 
     async def call_many_async(
         self,
@@ -430,22 +432,33 @@ class DataProcessClient:
 
         if not params_list:
             return []
+        running_loop = None
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+
         results: List[Any] = []
         for params in params_list:
             if not isinstance(params, dict):
                 raise TypeError("params_list 中的元素必须为 dict")
-            result = await self.call_async(method, **params)
-            results.append(result)
+
+            if running_loop is self._loop:
+                results.append(await self._call_internal(method, **params))
+            else:
+                future = self._submit_coroutine(self._call_internal(method, **params))
+                results.append(await asyncio.wrap_future(future))
         return results
 
     def call_many(self, method: str, params_list: Sequence[Dict[str, Any]]) -> List[Any]:
         """批量同步RPC调用."""
 
-        if not self._connected and not self.connect():
-            raise ConnectionError("无法连接到数据进程")
-
-        loop = asyncio.get_event_loop()
-        return loop.run_until_complete(self.call_many_async(method, params_list))
+        results: List[Any] = []
+        for params in params_list:
+            if not isinstance(params, dict):
+                raise TypeError("params_list 中的元素必须为 dict")
+            results.append(self.call(method, **params))
+        return results
 
     def __enter__(self):
         """上下文管理器入口."""

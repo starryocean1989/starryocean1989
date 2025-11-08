@@ -8794,9 +8794,34 @@ __all__ = [
 
 def main():
     """监控进程入口函数（可作为独立进程运行）."""
+    # 🔧 修复：在任何可能失败的初始化之前，先创建早期Level 0信号文件
     import logging
     import sys
     from pathlib import Path
+    
+    try:
+        import os
+        import time
+        import json
+        
+        signal_file = get_root() / "logs" / "monitor_ready.signal"
+        signal_file.parent.mkdir(parents=True, exist_ok=True)
+        initial_signal = {
+            "pid": os.getpid(),
+            "timestamp": time.time(),
+            "status": "initializing",
+            "level": 0,
+            "message": "监控进程已启动，正在初始化日志系统"
+        }
+        with open(signal_file, "w", encoding="utf-8") as f:
+            json.dump(initial_signal, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        print(f"[MONITOR-EARLY] Level 0信号文件已创建 (PID={os.getpid()})", file=sys.stderr, flush=True)
+    except Exception as early_signal_error:
+        print(f"[MONITOR-EARLY-ERROR] 无法创建初始信号文件: {early_signal_error}", file=sys.stderr, flush=True)
+        import traceback
+        traceback.print_exc(file=sys.stderr)
 
     # 添加项目根目录到Python路径
     project_root = get_root()
@@ -8991,16 +9016,31 @@ def main():
         # 清理监控就绪信号文件
         _cleanup_signal_file()
     except Exception as e:
-        logger.error(
-            f"❌ 监控进程启动失败: {e}",
-            exc_info=True,
-            extra={"log_type": "ALERT"}
-        )
-        logger.critical(
-            f"[MAIN] 🔥 监控进程严重错误，PID={os.getpid()}, 错误类型: {type(e).__name__}, 错误消息: {str(e)}",
-            exc_info=True,
-            extra={"log_type": "ALERT"}
-        )
+        # 🔧 增强异常输出：同时输出到stderr和logger
+        import traceback
+        error_details = traceback.format_exc()
+        
+        # 输出到stderr（即使日志系统失败也能看到）
+        print(f"\n[MONITOR-CRITICAL-ERROR] 监控进程崩溃 (PID={os.getpid()}):", file=sys.stderr, flush=True)
+        print(f"Error Type: {type(e).__name__}", file=sys.stderr, flush=True)
+        print(f"Error Message: {str(e)}", file=sys.stderr, flush=True)
+        print(f"\nFull Traceback:\n{error_details}", file=sys.stderr, flush=True)
+        
+        # 输出到logger（如果可用）
+        try:
+            logger.error(
+                f"❌ 监控进程启动失败: {e}",
+                exc_info=True,
+                extra={"log_type": "ALERT"}
+            )
+            logger.critical(
+                f"[MAIN] 🔥 监控进程严重错误，PID={os.getpid()}, 错误类型: {type(e).__name__}, 错误消息: {str(e)}",
+                exc_info=True,
+                extra={"log_type": "ALERT"}
+            )
+        except:
+            pass  # 如果logger不可用，忽略
+        
         # 清理监控就绪信号文件
         _cleanup_signal_file()
         sys.exit(1)

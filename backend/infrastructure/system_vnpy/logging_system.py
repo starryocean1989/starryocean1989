@@ -85,6 +85,107 @@ class LogType(Enum):
     STAGE_NODE = "stage_node"
 
 
+class AsyncLoggingHandler(logging.Handler):
+    """异步日志处理器
+    
+    将日志记录放入队列中，由后台线程处理，避免阻塞主线程。
+    """
+    
+    def __init__(self, target_handler: logging.Handler, max_queue_size: int = 10000, 
+                 worker_count: int = 1, drop_when_full: bool = False):
+        """初始化异步日志处理器
+        
+        Args:
+            target_handler: 目标日志处理器，实际处理日志的处理器
+            max_queue_size: 最大队列大小，超过此大小会根据drop_when_full决定是阻塞还是丢弃
+            worker_count: 工作线程数
+            drop_when_full: 当队列满时是否丢弃日志（True=丢弃，False=阻塞）
+        """
+        super().__init__()
+        self.target_handler = target_handler
+        self.max_queue_size = max_queue_size
+        self.worker_count = worker_count
+        self.drop_when_full = drop_when_full
+        self._queue = queue.Queue(maxsize=max_queue_size)
+        self._executor = ThreadPoolExecutor(
+            max_workers=worker_count,
+            thread_name_prefix="AsyncLoggingWorker"
+        )
+        self._running = True
+        self._workers = []
+        
+        # 启动工作线程
+        for i in range(worker_count):
+            t = threading.Thread(
+                target=self._worker_loop,
+                name=f"AsyncLoggingWorker-{i}",
+                daemon=True
+            )
+            t.start()
+    
+    def _worker_loop(self):
+        """工作线程主循环"""
+        while self._running or not self._queue.empty():
+            try:
+                record = self._queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            except Exception as exc:  # pragma: no cover
+                print(f"Unexpected error in async logging worker (fetch): {exc}", file=sys.stderr)
+                continue
+
+            try:
+                self.target_handler.handle(record)
+            except Exception as exc:  # pragma: no cover
+                # 避免递归调用，直接打印错误
+                print(f"Error in async logging handler: {exc}", file=sys.stderr)
+            finally:
+                self._queue.task_done()
+    
+    def emit(self, record):
+        """发送日志记录到队列"""
+        if not self._running:
+            return
+            
+        try:
+            if self.drop_when_full:
+                # 如果队列已满，尝试非阻塞放入
+                try:
+                    self._queue.put_nowait(record)
+                except queue.Full:
+                    # 队列已满，丢弃日志
+                    pass
+            else:
+                # 阻塞直到队列有空间
+                self._queue.put(record, block=True)
+        except Exception as e:
+            # 避免递归调用，直接打印错误
+            print(f"Error in async logging emit: {e}", file=sys.stderr)
+    
+    def flush(self):
+        """刷新日志"""
+        self.target_handler.flush()
+    
+    def close(self):
+        """关闭处理器"""
+        self._running = False
+        
+        # 等待队列中的日志处理完成
+        self._queue.join()
+        
+        # 关闭线程池
+        self._executor.shutdown(wait=True)
+        
+        # 关闭目标处理器
+        self.target_handler.close()
+        
+        super().close()
+    
+    def __getattr__(self, name):
+        """将未定义的属性调用委托给目标处理器"""
+        return getattr(self.target_handler, name)
+
+
 # 排除字段集合（类级别常量，避免每次重新创建）
 _EXCLUDED_FIELDS = frozenset(
     [
@@ -1061,25 +1162,83 @@ class MultiProcessLogCollector:
         return self._queue_token
 
 
-def setup_subprocess_logging(queue: multiprocessing.Queue, level: int = logging.DEBUG):
-    """配置子进程日志（子进程调用）.
+def setup_subprocess_logging(queue: multiprocessing.Queue, level: int = logging.DEBUG, process_name: str = None):
+    """配置子进程日志（子进程调用）
 
     Args:
         queue: 共享的multiprocessing.Queue
         level: 日志级别
+        process_name: 进程名称，用于日志标识
     """
-    # 获取根logger
+    import os
+    import socket
+    import getpass
+    from typing import Dict, Any, Optional
+    
+    # 获取进程信息
+    process_name = process_name or multiprocessing.current_process().name
+    hostname = socket.gethostname()
+    username = getpass.getuser()
+    pid = os.getpid()
+    
+    # 创建日志记录工厂函数
+    old_factory = logging.getLogRecordFactory()
+    
+    def record_factory(*args, **kwargs):
+        record = old_factory(*args, **kwargs)
+        # 添加进程上下文信息
+        record.process_name = process_name
+        record.hostname = hostname
+        record.username = username
+        record.pid = pid
+        
+        # 确保extra字典存在
+        if not hasattr(record, 'extra'):
+            record.extra = {}
+            
+        # 添加追踪ID（如果存在）
+        if hasattr(record, 'trace_id'):
+            record.extra['trace_id'] = record.trace_id
+            
+        return record
+    
+    # 设置日志记录工厂
+    logging.setLogRecordFactory(record_factory)
+    
+    # 创建根logger
     root_logger = logging.getLogger()
     root_logger.setLevel(level)
 
     # 移除所有现有handlers
     for handler in root_logger.handlers[:]:
         root_logger.removeHandler(handler)
+        handler.close()
 
     # 添加QueueHandler
     queue_handler = QueueHandler(queue)
     queue_handler.setLevel(level)
+    
+    # 优化日志格式，包含进程信息
+    formatter = logging.Formatter(
+        '%(asctime)s [%(process_name)s:%(pid)s] [%(levelname)-8s] %(name)-40s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    queue_handler.setFormatter(formatter)
     root_logger.addHandler(queue_handler)
+    
+    # 配置常见库的日志级别
+    logging.getLogger('asyncio').setLevel(logging.WARNING)
+    logging.getLogger('urllib3').setLevel(logging.WARNING)
+    logging.getLogger('sqlalchemy').setLevel(logging.WARNING)
+    logging.getLogger('matplotlib').setLevel(logging.WARNING)
+    
+    # 记录启动信息
+    logger = logging.getLogger(__name__)
+    # 🔧 修复：避免在extra中使用process_name（与LogRecord内置属性冲突），改用格式化字符串
+    logger.info(
+        "子进程日志系统已初始化 (process=%s, pid=%d, host=%s, user=%s)",
+        process_name, pid, hostname, username
+    )
 
 
 def restore_queue_from_token(token: str) -> Optional[multiprocessing.Queue]:
@@ -1512,6 +1671,38 @@ class EventLogFileHandler(logging.Handler):
 class LoggingHub(logging.Handler):
     """统一日志中心（拦截所有日志并按简化的硬编码规则分发）."""
 
+    @contextmanager
+    def log_context(self, **context):
+        """日志上下文管理器，用于在代码块中添加上下文信息到日志记录中。
+        
+        Args:
+            **context: 要添加到日志记录中的上下文信息，如 request_id, user_id, component 等
+            
+        Example:
+            with logging_hub.log_context(request_id=request_id, user_id=user_id):
+                logger.info("Processing request")
+        """
+        # 获取当前线程的上下文变量
+        current_context = getattr(threading.current_thread(), '_log_context', {})
+        
+        # 更新上下文
+        new_context = {**current_context, **context}
+        
+        # 设置新的上下文
+        thread = threading.current_thread()
+        original_context = getattr(thread, '_log_context', {})
+        thread._log_context = new_context
+        
+        try:
+            yield
+        finally:
+            # 恢复原始上下文
+            thread._log_context = original_context
+    
+    def _get_current_context(self):
+        """获取当前线程的日志上下文"""
+        return getattr(threading.current_thread(), '_log_context', {})
+    
     def __init__(self):
         """初始化LoggingHub."""
         super().__init__()
@@ -1534,6 +1725,14 @@ class LoggingHub(logging.Handler):
         self._sequence_counter = 0
         self._sequence_lock = Lock()
         self._emit_lock = RLock()
+        
+        # 批量处理相关
+        self._batch_buffer: List[UnifiedLogRecord] = []
+        self._batch_size = 100  # 每100条批量处理一次
+        self._batch_lock = threading.Lock()
+        self._last_flush = time.time()
+        self._flush_interval = 1.0  # 最多1秒刷新一次
+        self._batch_processor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="LogBatchProcessor")
 
         # 统计
         self._total_logs = 0
@@ -1669,6 +1868,13 @@ class LoggingHub(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         """拦截日志输出."""
+        # 添加上下文信息
+        context = self._get_current_context()
+        if context:
+            for key, value in context.items():
+                if not hasattr(record, key):
+                    setattr(record, key, value)
+        
         emit_start = time.perf_counter()
         try:
             if self._in_emit:
@@ -1686,27 +1892,156 @@ class LoggingHub(logging.Handler):
             self._total_logs += 1
             unified_record = self._convert_to_unified(record)
             targets = self._get_targets(unified_record)
-
-            self._dispatch(targets, unified_record)
+            
+            # 检查是否需要批量处理
+            if self._should_batch_process(record):
+                self._add_to_batch(unified_record, targets)
+            else:
+                # 直接处理高优先级日志
+                self._dispatch(targets, unified_record)
+                
             self._check_throttler()
-            self._maybe_flush_db_batch()
+            self._maybe_flush_batch()
 
         except RecursionError as e:
-            # 🔧 修复：使用print直接输出到stderr，避免触发日志系统导致递归
-            # 符合设计文档要求：防止无限递归（统一日志系统说明文档第1143行）
+            # 使用print直接输出到stderr，避免触发日志系统导致递归
             import sys
             import traceback
             print(f"[LoggingHub] ❌ 日志处理递归错误: {e}", file=sys.stderr)
             traceback.print_exc(file=sys.stderr)
         except Exception as e:
-            # 🔧 修复：使用print直接输出到stderr，避免触发日志系统导致递归
-            # 符合设计文档要求：防止无限递归（统一日志系统说明文档第1143行）
+            # 使用print直接输出到stderr，避免触发日志系统导致递归
             import sys
             import traceback
             print(f"[LoggingHub] ❌ 日志处理异常: {e}, logger={record.name}, level={record.levelno}", file=sys.stderr)
             traceback.print_exc(file=sys.stderr)
         finally:
             self._in_emit = False
+            
+    def _should_batch_process(self, record: logging.LogRecord) -> bool:
+        """判断是否应该批量处理日志"""
+        # 高优先级的日志（如ERROR、CRITICAL）立即处理
+        if record.levelno >= logging.ERROR:
+            return False
+            
+        # 检查是否在启动阶段
+        if self._is_startup_phase():
+            return False
+            
+        # 检查日志类型
+        log_type = getattr(record, 'log_type', '')
+        if log_type in ['ALERT', 'NOTIFICATION']:
+            return False
+            
+        return True
+        
+    def _add_to_batch(self, record, targets):
+        """将日志添加到批量处理队列"""
+        with self._batch_lock:
+            self._batch_buffer.append((record, targets))
+            
+            # 检查是否达到批量大小或超时
+            current_time = time.time()
+            if (len(self._batch_buffer) >= self._batch_size or 
+                (current_time - self._last_flush) >= self._flush_interval):
+                self._flush_batch()
+                self._last_flush = current_time
+                
+    def _maybe_flush_batch(self):
+        """检查是否需要刷新批量日志"""
+        with self._batch_lock:
+            current_time = time.time()
+            if self._batch_buffer and (current_time - self._last_flush) >= self._flush_interval:
+                self._flush_batch()
+                self._last_flush = current_time
+    
+    def _flush_batch(self):
+        """处理批量日志"""
+        if not self._batch_buffer:
+            return
+            
+        # 获取当前批次的日志
+        with self._batch_lock:
+            batch = self._batch_buffer
+            self._batch_buffer = []
+            
+        if not batch:
+            return
+            
+        # 按目标分组
+        target_records = {}
+        for record, targets in batch:
+            for target in targets:
+                if target not in target_records:
+                    target_records[target] = []
+                target_records[target].append(record)
+        
+        # 批量处理每个目标
+        for target, records in target_records.items():
+            if not records:
+                continue
+                
+            try:
+                if target == 'console':
+                    for record in records:
+                        self._to_console(record)
+                elif target == 'file' and self._event_log_handler:
+                    self._batch_to_file(records)
+                elif target == 'database':
+                    self._batch_to_database(records)
+                elif target == 'event':
+                    for record in records:
+                        self._to_event(record)
+                elif target == 'event_throttled':
+                    for record in records:
+                        self._to_event_throttled(record)
+            except Exception as e:
+                import sys
+                print(f"批量处理日志到 {target} 失败: {e}", file=sys.stderr)
+                
+    def _batch_to_file(self, records):
+        """批量写入文件"""
+        if not self._event_log_handler:
+            return
+            
+        try:
+            for record in records:
+                self._to_file(record)
+        except Exception as e:
+            import sys
+            print(f"批量写入文件失败: {e}", file=sys.stderr)
+            
+    def _batch_to_database(self, records):
+        """批量写入数据库"""
+        if not self.db_manager or not records:
+            return
+            
+        try:
+            # 转换为数据库记录
+            db_records = []
+            for record in records:
+                db_record = {
+                    'timestamp': record.timestamp,
+                    'level': record.levelname,
+                    'logger': record.logger_name,
+                    'message': record.message,
+                    'process': getattr(record, 'process_name', None),
+                    'pid': getattr(record, 'pid', None),
+                    'hostname': getattr(record, 'hostname', None),
+                    'extra': json.dumps(record.extra) if hasattr(record, 'extra') and record.extra else None
+                }
+                db_records.append(db_record)
+                
+            # 批量插入数据库
+            if db_records:
+                self.db_manager.bulk_insert('logs', db_records)
+                self._db_writes += len(db_records)
+                
+        except Exception as e:
+            import sys
+            import traceback
+            print(f"批量写入数据库失败: {e}", file=sys.stderr)
+            traceback.print_exc()
 
     def _should_skip(self, record: logging.LogRecord) -> bool:
         """判断是否应跳过.

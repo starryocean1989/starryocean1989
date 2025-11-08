@@ -1,0 +1,12 @@
+{
+  "pid": 25028,
+  "timestamp": 1762609457.79481,
+  "status": "fully_ready",
+  "level": 2,
+  "pipes": {
+    "query": "monitor_query",
+    "status": "monitor_status",
+    "alerts": "lazy_load"
+  },
+  "coroutines_ready_at": 1762609459.948731
+}
