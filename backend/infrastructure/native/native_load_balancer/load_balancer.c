@@ -5,6 +5,130 @@
 
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
+#include <math.h>
+
+static long clamp_long(long value, long min_value, long max_value)
+{
+    if (value < min_value) {
+        return min_value;
+    }
+    if (max_value > 0 && value > max_value) {
+        return max_value;
+    }
+    return value;
+}
+
+static long round_up_positive(double value)
+{
+    if (value <= 0.0) {
+        return 0;
+    }
+    return (long)ceil(value);
+}
+
+static unsigned long long min_ull(unsigned long long a, unsigned long long b)
+{
+    return (a < b) ? a : b;
+}
+
+static void adjust_to_target_total(
+    unsigned long long target_total,
+    long min_coroutines,
+    long max_coroutines,
+    long max_processes,
+    long *processes,
+    long *coroutines)
+{
+    if (target_total == 0ULL) {
+        target_total = 1ULL;
+    }
+
+    long proc = (*processes < 1) ? 1 : *processes;
+    if (max_processes > 0 && proc > max_processes) {
+        proc = max_processes;
+    }
+
+    unsigned long long max_proc_by_target = target_total / (unsigned long long)((min_coroutines < 1) ? 1 : min_coroutines);
+    if (max_proc_by_target == 0ULL) {
+        max_proc_by_target = 1ULL;
+    }
+    if ((unsigned long long)proc > max_proc_by_target) {
+        proc = (long)max_proc_by_target;
+        if (proc < 1) {
+            proc = 1;
+        }
+    }
+
+    unsigned long long per_process = target_total / (unsigned long long)proc;
+    if (per_process == 0ULL) {
+        per_process = 1ULL;
+    }
+
+    long coro = (long)per_process;
+    if (coro < min_coroutines) {
+        coro = min_coroutines;
+    }
+    if (max_coroutines > 0 && coro > max_coroutines) {
+        coro = max_coroutines;
+    }
+
+    unsigned long long total = (unsigned long long)proc * (unsigned long long)coro;
+    if (total > target_total) {
+        unsigned long long max_allowed = target_total / (unsigned long long)proc;
+        if (max_allowed == 0ULL) {
+            max_allowed = 1ULL;
+        }
+        if (max_allowed < (unsigned long long)min_coroutines) {
+            max_allowed = (unsigned long long)min_coroutines;
+        }
+        if (max_coroutines > 0 && max_allowed > (unsigned long long)max_coroutines) {
+            max_allowed = (unsigned long long)max_coroutines;
+        }
+        coro = (long)max_allowed;
+        total = (unsigned long long)proc * (unsigned long long)coro;
+
+        while (total > target_total && coro > min_coroutines) {
+            coro--;
+            total -= (unsigned long long)proc;
+        }
+
+        if (total > target_total && proc > 1) {
+            long new_proc = (long)((target_total + (unsigned long long)coro - 1ULL) / (unsigned long long)coro);
+            if (new_proc < 1) {
+                new_proc = 1;
+            }
+            if (new_proc < proc) {
+                proc = new_proc;
+                if (proc > max_processes && max_processes > 0) {
+                    proc = max_processes;
+                }
+                total = (unsigned long long)proc * (unsigned long long)coro;
+                while (total > target_total && coro > min_coroutines) {
+                    coro--;
+                    total -= (unsigned long long)proc;
+                }
+            }
+        }
+    } else if (total < target_total) {
+        while (coro < max_coroutines || max_coroutines <= 0) {
+            unsigned long long next_total = (unsigned long long)proc * (unsigned long long)(coro + 1);
+            if (next_total > target_total) {
+                break;
+            }
+            coro += 1;
+        }
+    }
+
+    if (proc < 1) {
+        proc = 1;
+    }
+    if (coro < 1) {
+        coro = 1;
+    }
+
+    *processes = proc;
+    *coroutines = coro;
+}
 
 static PyObject *
 py_optimize(PyObject *Py_UNUSED(self), PyObject *args, PyObject *kwargs)
@@ -49,21 +173,11 @@ py_optimize(PyObject *Py_UNUSED(self), PyObject *args, PyObject *kwargs)
         return NULL;
     }
 
-    if (base_processes < 1) {
-        base_processes = 1;
-    }
-    if (base_coroutines < 1) {
-        base_coroutines = 1;
-    }
-    if (min_coroutines < 1) {
-        min_coroutines = 1;
-    }
-    if (max_processes < 1) {
-        max_processes = 1;
-    }
-    if (max_coroutines < 1) {
-        max_coroutines = 1;
-    }
+    if (base_processes < 1) base_processes = 1;
+    if (base_coroutines < 1) base_coroutines = 1;
+    if (min_coroutines < 1) min_coroutines = 1;
+    if (max_processes < 1) max_processes = 1;
+    if (max_coroutines < 1) max_coroutines = 1;
 
     double resource_scale = 1.0;
     if (bottleneck_value > 80.0) {
@@ -76,110 +190,58 @@ py_optimize(PyObject *Py_UNUSED(self), PyObject *args, PyObject *kwargs)
         resource_scale = 1.6;
     }
 
-    long processes = (long)((double)base_processes * resource_scale);
-    if (processes < 1) {
-        processes = 1;
-    }
+    long base_proc_scaled = round_up_positive((double)base_processes * resource_scale);
+    long base_coro_scaled = round_up_positive((double)base_coroutines * resource_scale);
+    base_proc_scaled = clamp_long(base_proc_scaled, 1, max_processes);
+    base_coro_scaled = clamp_long(base_coro_scaled, min_coroutines, max_coroutines);
 
-    long coroutines = (long)((double)base_coroutines * resource_scale);
-    if (coroutines < min_coroutines) {
-        coroutines = min_coroutines;
-    }
+    unsigned long long pre_constraint_concurrency =
+        (unsigned long long)base_proc_scaled * (unsigned long long)base_coro_scaled;
 
-    if (queue_factor > 0.0 && queue_factor != 1.0) {
-        long scaled_processes = (long)((double)processes * queue_factor);
-        long scaled_coroutines = (long)((double)coroutines * queue_factor);
-        if (scaled_processes < 1) {
-            scaled_processes = 1;
-        }
-        if (scaled_coroutines < min_coroutines) {
-            scaled_coroutines = min_coroutines;
-        }
-        processes = scaled_processes;
-        coroutines = scaled_coroutines;
-    }
+    double effective_queue = (queue_factor > 0.0) ? queue_factor : 1.0;
+    long processes = round_up_positive((double)base_proc_scaled * effective_queue);
+    long coroutines = round_up_positive((double)base_coro_scaled * effective_queue);
+    processes = clamp_long(processes, 1, max_processes);
+    coroutines = clamp_long(coroutines, min_coroutines, max_coroutines);
+
+    unsigned long long unconstrained_concurrency =
+        (unsigned long long)processes * (unsigned long long)coroutines;
 
     int server_constrained = 0;
-    if (total_max_connections > 0ULL) {
-        unsigned long long total_concurrency = (unsigned long long)processes * (unsigned long long)coroutines;
-        if (total_concurrency > total_max_connections) {
-            server_constrained = 1;
-            if (processes > 0) {
-                long new_coroutines = (long)(total_max_connections / (unsigned long long)processes);
-                if (new_coroutines < 1) {
-                    new_coroutines = 1;
-                }
-                coroutines = new_coroutines;
-                if (coroutines < min_coroutines) {
-                    coroutines = min_coroutines;
-                }
-                if (coroutines < 3 && processes > 1) {
-                    long new_processes = (long)(total_max_connections / 3ULL);
-                    if (new_processes < 1) {
-                        new_processes = 1;
-                    }
-                    processes = new_processes;
-                    long recomputed = (long)(total_max_connections / (unsigned long long)processes);
-                    if (recomputed < 1) {
-                        recomputed = 1;
-                    }
-                    coroutines = recomputed;
-                    if (coroutines < min_coroutines) {
-                        coroutines = min_coroutines;
-                    }
-                }
-            }
-        }
+    if (total_max_connections > 0ULL &&
+        (pre_constraint_concurrency > total_max_connections || unconstrained_concurrency > total_max_connections)) {
+        server_constrained = 1;
     }
 
     int task_constrained = 0;
-    if (task_total_count > 0ULL) {
-        unsigned long long total_concurrency = (unsigned long long)processes * (unsigned long long)coroutines;
-        if (total_concurrency > task_total_count) {
-            task_constrained = 1;
-            if (processes > 0) {
-                long new_coroutines = (long)(task_total_count / (unsigned long long)processes);
-                if (new_coroutines < 1) {
-                    new_coroutines = 1;
-                }
-                coroutines = new_coroutines;
-                if (coroutines < min_coroutines) {
-                    coroutines = min_coroutines;
-                }
-                if (coroutines < 3 && processes > 1) {
-                    long new_processes = (long)(task_total_count / 3ULL);
-                    if (new_processes < 1) {
-                        new_processes = 1;
-                    }
-                    processes = new_processes;
-                    long recomputed = (long)(task_total_count / (unsigned long long)processes);
-                    if (recomputed < 1) {
-                        recomputed = 1;
-                    }
-                    coroutines = recomputed;
-                    if (coroutines < min_coroutines) {
-                        coroutines = min_coroutines;
-                    }
-                }
-            }
-        }
+    if (task_total_count > 0ULL &&
+        (pre_constraint_concurrency > task_total_count || unconstrained_concurrency > task_total_count)) {
+        task_constrained = 1;
     }
 
-    if (processes > max_processes) {
-        processes = max_processes;
+    unsigned long long target_total = unconstrained_concurrency;
+    if (total_max_connections > 0ULL && target_total > total_max_connections) {
+        target_total = total_max_connections;
     }
-    if (coroutines > max_coroutines) {
-        coroutines = max_coroutines;
-    }
-
-    if (processes < 1) {
-        processes = 1;
-    }
-    if (coroutines < 1) {
-        coroutines = 1;
+    if (task_total_count > 0ULL && target_total > task_total_count) {
+        target_total = task_total_count;
     }
 
-    unsigned long long total_concurrency = (unsigned long long)processes * (unsigned long long)coroutines;
+    unsigned long long max_capacity = (unsigned long long)max_processes * (unsigned long long)max_coroutines;
+    if (max_capacity > 0ULL) {
+        target_total = min_ull(target_total, max_capacity);
+    }
+
+    adjust_to_target_total(
+        target_total,
+        min_coroutines,
+        max_coroutines,
+        max_processes,
+        &processes,
+        &coroutines);
+
+    unsigned long long total_concurrency =
+        (unsigned long long)processes * (unsigned long long)coroutines;
 
     PyObject *result = PyDict_New();
     if (!result) {

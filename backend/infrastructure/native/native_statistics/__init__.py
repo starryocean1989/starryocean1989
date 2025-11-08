@@ -116,8 +116,7 @@ except Exception:  # pragma: no cover
 
 else:  # 导入成功，直接导出原生实现
 
-    class StreamingMetricHandle(_NativeStreamingMetricHandle):
-        """向外暴露的 StreamingMetricHandle 类型."""
+    StreamingMetricHandle = _NativeStreamingMetricHandle
 
     def create_streaming_metric(window_size: int = 1440) -> StreamingMetricHandle:
         return StreamingMetricHandle(window_size=window_size)

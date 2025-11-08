@@ -108,18 +108,72 @@ exit /b 0
 
 :run_python_build
 set "MODULE_NAME=%~1"
-python setup.py build_ext --inplace
-if %ERRORLEVEL% EQU 0 (
-    echo ✅ %MODULE_NAME% 编译成功
-    exit /b 0
-)
-echo ⚠️ %MODULE_NAME% 首次编译失败（可能是已有文件被占用），尝试使用临时输出目录...
+set "BUILD_MODE=packaged"
+
+call :clean_directory build\temp
+call :clean_directory build\lib
+
 python setup.py build_ext --build-temp build\temp --build-lib build\lib
-if %ERRORLEVEL% NEQ 0 (
-    echo ❌ %MODULE_NAME% 编译失败
+if ERRORLEVEL 1 (
+    echo ℹ️ %MODULE_NAME% 需要使用 inplace 构建模式，正在切换...
+    call :clean_directory build\temp
+    call :clean_directory build\lib
+    python setup.py build_ext --inplace
+    if ERRORLEVEL 1 (
+        echo ❌ %MODULE_NAME% 编译失败
+        exit /b 1
+    )
+    set "BUILD_MODE=inplace"
+)
+
+if /I "%BUILD_MODE%"=="packaged" (
+    call :deploy_built_artifacts "%MODULE_NAME%"
+    if ERRORLEVEL 1 exit /b 1
+) else (
+    call :clean_directory build\temp
+    call :clean_directory build\lib
+)
+
+echo ✅ %MODULE_NAME% 编译成功
+exit /b 0
+
+:deploy_built_artifacts
+set "MODULE_NAME=%~1"
+set "COPY_WARN=0"
+
+if not exist build\lib (
+    echo ❌ %MODULE_NAME% 未生成任何二进制产物
     exit /b 1
 )
-echo ✅ %MODULE_NAME% 编译成功（使用临时输出目录 build\lib）
+
+for /r "build\lib" %%F in (*.pyd) do (
+    call :copy_single "%%~fF"
+    if ERRORLEVEL 1 set "COPY_WARN=1"
+)
+
+call :clean_directory build\temp
+if %COPY_WARN% EQU 0 (
+    call :clean_directory build\lib
+) else (
+    echo ⚠️ %MODULE_NAME% 目标文件被占用，新构建版本保留在 build\lib，请释放占用后手动替换。
+)
+
+exit /b 0
+
+:copy_single
+set "SRC=%~1"
+set "DEST=%CD%\%~nx1"
+copy /Y "%SRC%" "%DEST%" >nul 2>&1
+if %ERRORLEVEL% NEQ 0 (
+    exit /b 1
+)
+exit /b 0
+
+:clean_directory
+set "TARGET_DIR=%~1"
+if exist "%TARGET_DIR%" (
+    rmdir /s /q "%TARGET_DIR%" >nul 2>&1
+)
 exit /b 0
 
 :SUCCESS

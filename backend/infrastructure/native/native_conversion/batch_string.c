@@ -10,25 +10,18 @@
 
 /* 批量编码函数 */
 PyObject* batch_encode_func(PyObject *self, PyObject *args) {
-    PyObject *strings, *encoding = NULL;
+    PyObject *strings;
     PyObject *result = NULL;
     Py_ssize_t count;
     const char *enc = "utf-8";
 
-    if (!PyArg_ParseTuple(args, "O|s", &strings, &encoding)) {
+    if (!PyArg_ParseTuple(args, "O|s", &strings, &enc)) {
         return NULL;
     }
 
     if (!PyList_Check(strings)) {
         PyErr_SetString(PyExc_TypeError, "strings must be a list");
         return NULL;
-    }
-
-    if (encoding != NULL && PyUnicode_Check(encoding)) {
-        enc = PyUnicode_AsUTF8(encoding);
-        if (enc == NULL) {
-            return NULL;
-        }
     }
 
     count = PyList_Size(strings);
@@ -73,25 +66,18 @@ PyObject* batch_encode_func(PyObject *self, PyObject *args) {
 
 /* 批量解码函数 */
 PyObject* batch_decode_func(PyObject *self, PyObject *args) {
-    PyObject *bytes_list, *encoding = NULL;
+    PyObject *bytes_list;
     PyObject *result = NULL;
     Py_ssize_t count;
     const char *enc = "utf-8";
 
-    if (!PyArg_ParseTuple(args, "O|s", &bytes_list, &encoding)) {
+    if (!PyArg_ParseTuple(args, "O|s", &bytes_list, &enc)) {
         return NULL;
     }
 
     if (!PyList_Check(bytes_list)) {
         PyErr_SetString(PyExc_TypeError, "bytes_list must be a list");
         return NULL;
-    }
-
-    if (encoding != NULL && PyUnicode_Check(encoding)) {
-        enc = PyUnicode_AsUTF8(encoding);
-        if (enc == NULL) {
-            return NULL;
-        }
     }
 
     count = PyList_Size(bytes_list);

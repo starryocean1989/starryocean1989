@@ -18,6 +18,7 @@ typedef struct {
     HANDLE dir_handle;           /* 目录句柄 */
     HANDLE stop_event;           /* 停止事件 */
     HANDLE notify_event;         /* Overlapped 完成事件 */
+    HANDLE ready_event;          /* 线程准备就绪事件 */
     HANDLE thread_handle;        /* 工作线程 */
     OVERLAPPED overlapped;       /* Overlapped 结构 */
     BYTE *buffer;                /* 事件缓冲区 */
@@ -95,6 +96,16 @@ dispatch_event(DirectoryWatcherObject *self, DWORD bytes_transferred)
     while (cursor < end) {
         FILE_NOTIFY_INFORMATION *info = (FILE_NOTIFY_INFORMATION *)cursor;
 
+        if (!self->recursive) {
+            size_t char_count = info->FileNameLength / sizeof(WCHAR);
+            for (size_t i = 0; i < char_count; ++i) {
+                WCHAR ch = info->FileName[i];
+                if (ch == L'\\' || ch == L'/') {
+                    goto next_entry;
+                }
+            }
+        }
+
         PyObject *relative = py_from_widechar(info->FileName, info->FileNameLength);
         if (!relative) {
             PyErr_WriteUnraisable((PyObject *)self->callback);
@@ -166,7 +177,7 @@ directory_watcher_thread(void *arg)
                 self->dir_handle,
                 self->buffer,
                 self->buffer_size,
-                self->recursive,
+                TRUE,
                 notify_filter,
                 NULL,
                 &self->overlapped,
@@ -180,6 +191,9 @@ directory_watcher_thread(void *arg)
             PyErr_WriteUnraisable((PyObject *)self);
             PyGILState_Release(gstate);
             break;
+        }
+        if (self->ready_event) {
+            SetEvent(self->ready_event);
         }
 
         DWORD wait_result = WaitForMultipleObjects(2, wait_handles, FALSE, INFINITE);
@@ -256,6 +270,7 @@ DirectoryWatcher_init(DirectoryWatcherObject *self, PyObject *args, PyObject *kw
     self->dir_handle = INVALID_HANDLE_VALUE;
     self->stop_event = NULL;
     self->notify_event = NULL;
+    self->ready_event = NULL;
 
     Py_INCREF(path_obj);
     self->base_path = path_obj;
@@ -311,11 +326,30 @@ DirectoryWatcher_init(DirectoryWatcherObject *self, PyObject *args, PyObject *kw
             CloseHandle(self->notify_event);
             self->notify_event = NULL;
         }
+        if (self->ready_event) {
+            CloseHandle(self->ready_event);
+            self->ready_event = NULL;
+        }
         if (self->dir_handle && self->dir_handle != INVALID_HANDLE_VALUE) {
             CloseHandle(self->dir_handle);
             self->dir_handle = INVALID_HANDLE_VALUE;
         }
         PyErr_SetFromWindowsErr(0);
+        return -1;
+    }
+
+    self->ready_event = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (!self->ready_event) {
+        DWORD err = GetLastError();
+        CloseHandle(self->stop_event);
+        self->stop_event = NULL;
+        CloseHandle(self->notify_event);
+        self->notify_event = NULL;
+        if (self->dir_handle && self->dir_handle != INVALID_HANDLE_VALUE) {
+            CloseHandle(self->dir_handle);
+            self->dir_handle = INVALID_HANDLE_VALUE;
+        }
+        PyErr_SetFromWindowsErr(err);
         return -1;
     }
 
@@ -335,6 +369,10 @@ DirectoryWatcher_init(DirectoryWatcherObject *self, PyObject *args, PyObject *kw
         self->stop_event = NULL;
         CloseHandle(self->notify_event);
         self->notify_event = NULL;
+        if (self->ready_event) {
+            CloseHandle(self->ready_event);
+            self->ready_event = NULL;
+        }
         if (self->dir_handle && self->dir_handle != INVALID_HANDLE_VALUE) {
             CloseHandle(self->dir_handle);
             self->dir_handle = INVALID_HANDLE_VALUE;
@@ -345,6 +383,36 @@ DirectoryWatcher_init(DirectoryWatcherObject *self, PyObject *args, PyObject *kw
     }
 
     self->thread_handle = (HANDLE)h_thread;
+
+    DWORD wait_status = WaitForSingleObject(self->ready_event, 5000);
+    if (wait_status != WAIT_OBJECT_0) {
+        InterlockedExchange(&self->running, 0);
+        SetEvent(self->stop_event);
+        CancelIoEx(self->dir_handle, &self->overlapped);
+        if (self->thread_handle) {
+            WaitForSingleObject(self->thread_handle, 5000);
+            CloseHandle(self->thread_handle);
+            self->thread_handle = NULL;
+        }
+        if (self->dir_handle && self->dir_handle != INVALID_HANDLE_VALUE) {
+            CloseHandle(self->dir_handle);
+            self->dir_handle = INVALID_HANDLE_VALUE;
+        }
+        if (self->stop_event) {
+            CloseHandle(self->stop_event);
+            self->stop_event = NULL;
+        }
+        if (self->notify_event) {
+            CloseHandle(self->notify_event);
+            self->notify_event = NULL;
+        }
+        if (self->ready_event) {
+            CloseHandle(self->ready_event);
+            self->ready_event = NULL;
+        }
+        PyErr_SetString(PyExc_RuntimeError, "watch_directory failed to initialize within timeout");
+        return -1;
+    }
 
     return 0;
 }
@@ -376,6 +444,10 @@ DirectoryWatcher_dealloc(DirectoryWatcherObject *self)
         CloseHandle(self->notify_event);
         self->notify_event = NULL;
     }
+    if (self->ready_event) {
+        CloseHandle(self->ready_event);
+        self->ready_event = NULL;
+    }
     if (self->buffer) {
         PyMem_Free(self->buffer);
         self->buffer = NULL;
@@ -399,6 +471,9 @@ DirectoryWatcher_stop(DirectoryWatcherObject *self, PyObject *Py_UNUSED(args))
         }
         if (self->thread_handle) {
             WaitForSingleObject(self->thread_handle, 5000);
+        }
+        if (self->ready_event) {
+            ResetEvent(self->ready_event);
         }
     }
     Py_RETURN_NONE;

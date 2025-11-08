@@ -71,7 +71,7 @@ static PyObject* MemoryPool_new(PyTypeObject *type, PyObject *args, PyObject *kw
 
         /* 预分配对象 */
         for (Py_ssize_t i = 0; i < count; i++) {
-            PyObject *obj = PyBytes_FromStringAndSize(NULL, size);
+            PyObject *obj = PyByteArray_FromStringAndSize(NULL, size);
             if (obj == NULL) {
                 /* 清理已分配的对象 */
                 for (Py_ssize_t j = 0; j < i; j++) {
@@ -107,6 +107,7 @@ static void MemoryPool_dealloc(MemoryPool *self) {
 /* 分配内存 */
 static PyObject* MemoryPool_alloc(MemoryPool *self, PyObject *args) {
     PyObject *obj = NULL;
+    PyObject *view = NULL;
 
     EnterCriticalSection(&self->lock);
 
@@ -115,10 +116,9 @@ static PyObject* MemoryPool_alloc(MemoryPool *self, PyObject *args) {
         self->size--;
         obj = self->pool[self->size];
         self->pool[self->size] = NULL;
-        Py_INCREF(obj);
     } else {
         /* 池为空，创建新对象 */
-        obj = PyBytes_FromStringAndSize(NULL, self->obj_size);
+        obj = PyByteArray_FromStringAndSize(NULL, self->obj_size);
     }
 
     LeaveCriticalSection(&self->lock);
@@ -128,7 +128,13 @@ static PyObject* MemoryPool_alloc(MemoryPool *self, PyObject *args) {
         return NULL;
     }
 
-    return obj;
+    view = PyMemoryView_FromObject(obj);
+    if (!view) {
+        Py_DECREF(obj);
+        return NULL;
+    }
+    Py_DECREF(obj);
+    return view;
 }
 
 /* 释放内存 */
@@ -139,31 +145,56 @@ static PyObject* MemoryPool_free(MemoryPool *self, PyObject *args) {
         return NULL;
     }
 
+    PyObject *base = NULL;
+
+    if (PyMemoryView_Check(obj)) {
+        PyObject *base_attr = PyObject_GetAttrString(obj, "obj");
+        if (!base_attr) {
+            return NULL;
+        }
+        if (!PyByteArray_Check(base_attr)) {
+            Py_DECREF(base_attr);
+            PyErr_SetString(PyExc_TypeError, "memoryview base must be bytearray");
+            return NULL;
+        }
+        base = base_attr;
+        PyObject *release_result = PyObject_CallMethod(obj, "release", NULL);
+        if (!release_result) {
+            Py_DECREF(base);
+            return NULL;
+        }
+        Py_DECREF(release_result);
+    } else if (PyByteArray_Check(obj)) {
+        base = obj;
+        Py_INCREF(base);
+    } else {
+        PyErr_SetString(PyExc_TypeError, "free expects memoryview or bytearray");
+        return NULL;
+    }
+
+    if (PyByteArray_Size(base) != self->obj_size) {
+        Py_DECREF(base);
+        PyErr_SetString(PyExc_ValueError, "buffer size mismatch");
+        return NULL;
+    }
+
     EnterCriticalSection(&self->lock);
 
     if (self->size < self->capacity) {
-        /* 归还到池中 */
-        Py_INCREF(obj);
-        self->pool[self->size] = obj;
+        self->pool[self->size] = base;
         self->size++;
         LeaveCriticalSection(&self->lock);
-        Py_RETURN_NONE;
     } else {
-        /* 池已满，直接释放 */
         LeaveCriticalSection(&self->lock);
-        Py_RETURN_NONE;
+        Py_DECREF(base);
     }
+
+    Py_RETURN_NONE;
 }
 
 /* 获取池大小 */
 static PyObject* MemoryPool_size(MemoryPool *self, PyObject *args) {
-    Py_ssize_t size;
-
-    EnterCriticalSection(&self->lock);
-    size = self->size;
-    LeaveCriticalSection(&self->lock);
-
-    return PyLong_FromSsize_t(size);
+    return PyLong_FromSsize_t(self->obj_size);
 }
 
 /* 获取池容量 */

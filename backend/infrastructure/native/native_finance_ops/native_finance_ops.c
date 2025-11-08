@@ -730,10 +730,14 @@ cleanup:
 
 
 // Python函数：aggregate_daily_pnl
-static PyObject* py_aggregate_daily_pnl(PyObject* self, PyObject* args) {
+static PyObject* py_aggregate_daily_pnl(PyObject* self, PyObject* args, PyObject* kwargs) {
     PyObject *dates_obj, *pnl_obj;
+    double initial_equity = 1000000.0;  // 默认值
 
-    if (!PyArg_ParseTuple(args, "OO", &dates_obj, &pnl_obj)) {
+    static char* kwlist[] = {"dates", "pnl", "initial_equity", NULL};
+
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OO|d", kwlist,
+                                     &dates_obj, &pnl_obj, &initial_equity)) {
         return NULL;
     }
 
@@ -773,6 +777,13 @@ static PyObject* py_aggregate_daily_pnl(PyObject* self, PyObject* args) {
     if (!result) {
         PyErr_SetString(PyExc_RuntimeError, "Failed to aggregate daily PnL");
         return NULL;
+    }
+
+    // 应用 initial_equity 调整
+    if (initial_equity != 1.0) {
+        for (size_t i = 0; i < result->count; i++) {
+            result->cumulative_equity[i] = (result->cumulative_equity[i] - 1.0) * initial_equity + initial_equity;
+        }
     }
 
     // 转换为Python dict
@@ -864,11 +875,14 @@ static PyObject* py_compute_return_metrics(PyObject* self, PyObject* args, PyObj
 }
 
 // Python函数：bucketize_period
-static PyObject* py_bucketize_period(PyObject* self, PyObject* args) {
+static PyObject* py_bucketize_period(PyObject* self, PyObject* args, PyObject* kwargs) {
     PyObject *equity_obj, *dates_obj;
     const char* period_mode = "monthly";
 
-    if (!PyArg_ParseTuple(args, "OO|s", &equity_obj, &dates_obj, &period_mode)) {
+    static char* kwlist[] = {"equity", "dates", "mode", NULL};
+
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OO|s", kwlist,
+                                     &equity_obj, &dates_obj, &period_mode)) {
         return NULL;
     }
 
@@ -1571,11 +1585,11 @@ static PyObject* py_compute_risk_profile(PyObject* self, PyObject* args, PyObjec
 static PyMethodDef FinanceOpsMethods[] = {
     {"apply_price_adjustments", (PyCFunction)py_apply_price_adjustments, METH_VARARGS | METH_KEYWORDS,
      "Apply price adjustments (前复权/后复权) using native implementation"},
-    {"aggregate_daily_pnl", py_aggregate_daily_pnl, METH_VARARGS,
+    {"aggregate_daily_pnl", (PyCFunction)py_aggregate_daily_pnl, METH_VARARGS | METH_KEYWORDS,
      "Aggregate daily PnL and generate cumulative equity curve"},
     {"compute_return_metrics", (PyCFunction)py_compute_return_metrics, METH_VARARGS | METH_KEYWORDS,
      "Compute performance metrics (return, volatility, sharpe, drawdown, etc.)"},
-    {"bucketize_period", py_bucketize_period, METH_VARARGS,
+    {"bucketize_period", (PyCFunction)py_bucketize_period, METH_VARARGS | METH_KEYWORDS,
      "Bucketize equity series by period (weekly, monthly, yearly)"},
     {"compute_period_statistics", (PyCFunction)py_compute_period_statistics, METH_VARARGS | METH_KEYWORDS,
      "Compute aggregated period statistics (daily/weekly/monthly) using native routines"},

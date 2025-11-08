@@ -14,11 +14,21 @@ IS_WINDOWS = platform.system() == "Windows"
 if IS_WINDOWS:
     try:
         from .native_conversion import (
-            batch_convert,
-            batch_encode,
-            batch_decode,
+            batch_convert as _native_batch_convert,
+            batch_encode as _native_batch_encode,
+            batch_decode as _native_batch_decode,
         )
         CONVERSION_AVAILABLE = True
+
+        def batch_convert(payload, target_type):
+            return _native_batch_convert(payload, target_type)
+
+        def batch_encode(payload, encoding="utf-8"):
+            return _native_batch_encode(payload, encoding)
+
+        def batch_decode(payload, encoding="utf-8"):
+            return _native_batch_decode(payload, encoding)
+
         __all__ = [
             "batch_convert",
             "batch_encode",
